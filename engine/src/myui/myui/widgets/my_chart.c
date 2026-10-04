@@ -498,6 +498,64 @@ static void chart_draw_pie(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_radar(const my_chart_t* chart, my_vgcanvas_t* vg,
+                             float x, float y, float w, float h) {
+  size_t count = chart_category_count(chart);
+  float cx = x + w * 0.5f;
+  float cy = y + h * 0.5f;
+  float radius = fminf(w, h) * 0.36f;
+  float y_min, y_max;
+  if (count < 3u) return;
+  chart_axis_range(chart, 0u, &y_min, &y_max);
+  for (unsigned ring = 1u; ring <= 4u; ring++) {
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xD8DEE6AAu));
+    my_vgcanvas_begin_path(vg);
+    for (size_t i = 0u; i < count; i++) {
+      float angle = -0.5f * CHART_PI + 2.0f * CHART_PI * (float)i / (float)count;
+      float r = radius * (float)ring / 4.0f;
+      float px = cx + cosf(angle) * r;
+      float py = cy + sinf(angle) * r;
+      if (i == 0u) my_vgcanvas_move_to(vg, px, py);
+      else my_vgcanvas_line_to(vg, px, py);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_stroke(vg);
+  }
+  for (size_t i = 0u; i < count; i++) {
+    float angle = -0.5f * CHART_PI + 2.0f * CHART_PI * (float)i / (float)count;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, cx, cy);
+    my_vgcanvas_line_to(vg, cx + cosf(angle) * radius,
+                        cy + sinf(angle) * radius);
+    my_vgcanvas_stroke(vg);
+  }
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    const my_chart_series_t* series = &chart->series[s];
+    if (!chart->series_visible[s] || series->values == NULL ||
+        series->count < count) continue;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        chart_visual_color(chart, series->values[0], series->color) & 0x55FFFFFFu));
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
+    my_vgcanvas_set_line_width(vg, 2.0f);
+    my_vgcanvas_begin_path(vg);
+    for (size_t i = 0u; i < count; i++) {
+      float value = chart_animated_value(chart, series->values[i]);
+      float normalized = (value - y_min) / (y_max - y_min);
+      if (normalized < 0.0f) normalized = 0.0f;
+      if (normalized > 1.0f) normalized = 1.0f;
+      float angle = -0.5f * CHART_PI + 2.0f * CHART_PI * (float)i / (float)count;
+      float r = radius * normalized;
+      float px = cx + cosf(angle) * r;
+      float py = cy + sinf(angle) * r;
+      if (i == 0u) my_vgcanvas_move_to(vg, px, py);
+      else my_vgcanvas_line_to(vg, px, py);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_fill(vg);
+    my_vgcanvas_stroke(vg);
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -726,8 +784,10 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->title[0] != '\0') my_vgcanvas_draw_text(vg, chart->title, 12, 8);
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
   chart_range(chart, &y_min, &y_max);
-  chart_grid(widget, vg, x, y, w, h, y_min, y_max);
-  chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
+  if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR) {
+    chart_grid(widget, vg, x, y, w, h, y_min, y_max);
+    chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
+  }
   if (chart->labels != NULL && chart->label_count > 0u) {
     size_t label_count = chart->label_count;
     size_t label_index;
@@ -751,6 +811,8 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     chart_draw_pie(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_BAR) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
+  } else if (chart->mode == MY_CHART_RADAR) {
+    chart_draw_radar(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_SCATTER) {
     for (i = 0; i < chart->series_count; i++) {
       if (!chart->series_visible[i]) continue;
@@ -966,7 +1028,7 @@ static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
-      mode != MY_CHART_PIE)
+      mode != MY_CHART_PIE && mode != MY_CHART_RADAR)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
