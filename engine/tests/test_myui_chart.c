@@ -336,6 +336,13 @@ TEST(chart_supports_pie_mode) {
   chart->rect.w = 320;
   chart->rect.h = 180;
   ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  {
+    my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+    event.u.pointer.x = 205;
+    event.u.pointer.y = 115;
+    ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+    ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  }
   ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
   chart->vtable->on_paint(chart, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);

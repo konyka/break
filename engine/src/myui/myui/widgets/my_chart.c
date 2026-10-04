@@ -792,6 +792,46 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
+  if (chart->mode == MY_CHART_PIE && event->type == MY_EVENT_POINTER_MOVE) {
+    const my_chart_series_t* series = NULL;
+    float cx = x + w * 0.5f;
+    float cy = y + h * 0.5f;
+    float radius = fminf(w, h) * 0.38f;
+    float dx = (float)local_x - cx;
+    float dy = (float)local_y - cy;
+    float distance = sqrtf(dx * dx + dy * dy);
+    float total = 0.0f;
+    float angle;
+    if (distance > radius) {
+      chart->hover_index = CHART_HOVER_NONE;
+      return MY_RET_NOT_SUPPORTED;
+    }
+    for (size_t s = 0u; s < chart->series_count; s++) {
+      if (chart->series_visible[s] && chart->series[s].values != NULL &&
+          chart->series[s].count > 0u) {
+        series = &chart->series[s];
+        break;
+      }
+    }
+    if (series == NULL) return MY_RET_NOT_SUPPORTED;
+    for (size_t i = 0u; i < series->count; i++)
+      if (series->values[i] > 0.0f) total += series->values[i];
+    if (total <= 0.0f) return MY_RET_NOT_SUPPORTED;
+    angle = atan2f(dy, dx) + 0.5f * CHART_PI;
+    if (angle < 0.0f) angle += 2.0f * CHART_PI;
+    for (size_t i = 0u; i < series->count; i++) {
+      float sweep = (series->values[i] > 0.0f ? series->values[i] : 0.0f) /
+                    total * 2.0f * CHART_PI;
+      if (angle <= sweep) { index = i; break; }
+      angle -= sweep;
+      index = i;
+    }
+    if (chart->hover_index != index) {
+      chart->hover_index = index;
+      my_widget_invalidate(widget, NULL);
+    }
+    return MY_RET_OK;
+  }
   if (event->type == MY_EVENT_POINTER_DOWN && event->u.pointer.button == 1u &&
       chart->show_legend && local_y >= 10 && local_y <= 32) {
     float offset = (float)local_x - x;
