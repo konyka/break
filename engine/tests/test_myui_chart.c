@@ -147,6 +147,23 @@ TEST(chart_manages_mark_lines) {
   my_widget_unref(chart);
 }
 
+TEST(chart_manages_mark_areas) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_get_mark_area_count(chart), 0u);
+  ASSERT_EQ(my_chart_add_mark_area(chart, 20.0f, 40.0f, "band", 0x3A86FF44u),
+            MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_area_count(chart), 1u);
+  ASSERT_EQ(my_chart_add_mark_area(chart, 40.0f, 20.0f, "bad", 0u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_add_mark_area(chart, NAN, 20.0f, "bad", 0u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_clear_mark_areas(chart), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_area_count(chart), 0u);
+  my_widget_unref(chart);
+}
+
 TEST(chart_axis_configuration) {
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   ASSERT_NOT_NULL(chart);
@@ -569,6 +586,41 @@ TEST(chart_line_series_share_category_positions) {
   my_widget_unref(chart);
 }
 
+TEST(chart_paints_mark_area) {
+  static const float values[] = {10.0f, 20.0f, 30.0f};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t area_pixels = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  /* Distinctive opaque fill so the band is unambiguous in the framebuffer. */
+  ASSERT_EQ(my_chart_add_mark_area(chart, 12.0f, 24.0f, "band", 0xE85D75FFu),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u) {
+    if (pixels[i] == 0x75u && pixels[i + 1u] == 0x5Du &&
+        pixels[i + 2u] == 0xE8u && pixels[i + 3u] == 0xFFu) {
+      area_pixels++;
+    }
+  }
+  ASSERT_TRUE(area_pixels > 100u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -576,6 +628,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_manages_mark_points);
   RUN_TEST(chart_data_zoom_limits_category_window);
   RUN_TEST(chart_manages_mark_lines);
+  RUN_TEST(chart_manages_mark_areas);
   RUN_TEST(chart_axis_configuration);
   RUN_TEST(chart_secondary_axis_binding);
   RUN_TEST(chart_series_visibility_controls_tooltip);
@@ -589,5 +642,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
   RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
   RUN_TEST(chart_paints_mark_point_annotation);
+  RUN_TEST(chart_paints_mark_area);
   RUN_TEST(chart_line_series_share_category_positions);
 TEST_MAIN_END()

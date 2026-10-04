@@ -64,6 +64,11 @@ bound to the right axis, and the right axis draws its own tick labels.
 `my_chart_get_axis_range()` returns the effective range per axis and
 `my_chart_set_secondary_range()` fixes an explicit right-axis range. Series on
 different axes are scaled independently while sharing the same category axis.
+`my_chart_add_mark_area(chart, y_min, y_max, label, color)` paints a shaded
+Y-band (ECharts `markArea` equivalent) behind the series, with an optional
+borrowed label and ARGB color; `y_max` must be greater than `y_min`. Up to
+`MY_CHART_MAX_MARK_AREAS` bands are stored; `my_chart_clear_mark_areas()` and
+`my_chart_get_mark_area_count()` manage the active set.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

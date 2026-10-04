@@ -573,6 +573,31 @@ static void chart_draw_mark_lines(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_mark_areas(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                  float x, float y, float w, float h,
+                                  float y_min, float y_max) {
+  if (chart->area_count == 0u) return;
+  my_vgcanvas_set_font(vg, NULL, 10);
+  for (size_t m = 0u; m < chart->area_count; m++) {
+    float top_value = chart->areas[m].y_max;
+    float bottom_value = chart->areas[m].y_min;
+    float top_y;
+    float bottom_y;
+    uint32_t color = chart->areas[m].color != 0u ? chart->areas[m].color
+                                                 : 0x3A86FF33u;
+    if (top_value < y_min || bottom_value > y_max) continue;
+    top_y = my_chart_value_to_y(top_value, y_min, y_max, y, h);
+    bottom_y = my_chart_value_to_y(bottom_value, y_min, y_max, y, h);
+    if (bottom_y < top_y) { float t = top_y; top_y = bottom_y; bottom_y = t; }
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){x, top_y, w, bottom_y - top_y});
+    if (chart->areas[m].label != NULL && chart->areas[m].label[0] != '\0') {
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+      my_vgcanvas_draw_text(vg, chart->areas[m].label, x + 4.0f, top_y - 4.0f);
+    }
+  }
+}
+
 static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_chart_t* chart = (my_chart_t*)widget;
   float x, y, w, h, y_min, y_max;
@@ -617,6 +642,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_points(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_lines(chart, vg, x, y, w, h, y_min, y_max);
+  chart_draw_mark_areas(chart, vg, x, y, w, h, y_min, y_max);
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
@@ -972,6 +998,35 @@ my_ret_t my_chart_clear_mark_lines(my_widget_t* widget) {
 size_t my_chart_get_mark_line_count(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL ? chart->line_count : 0u;
+}
+
+my_ret_t my_chart_add_mark_area(my_widget_t* widget, float y_min, float y_max,
+                                const char* label, uint32_t color) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min ||
+      chart->area_count >= MY_CHART_MAX_MARK_AREAS)
+    return MY_RET_INVALID_PARAMS;
+  chart->areas[chart->area_count].y_min = y_min;
+  chart->areas[chart->area_count].y_max = y_max;
+  chart->areas[chart->area_count].label = label;
+  chart->areas[chart->area_count].color = color;
+  chart->area_count++;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_mark_areas(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  memset(chart->areas, 0, sizeof(chart->areas));
+  chart->area_count = 0u;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+size_t my_chart_get_mark_area_count(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL ? chart->area_count : 0u;
 }
 
 size_t my_chart_get_hover_index(const my_widget_t* widget) {
