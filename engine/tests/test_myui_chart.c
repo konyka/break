@@ -100,6 +100,39 @@ TEST(chart_manages_mark_points) {
   my_widget_unref(chart);
 }
 
+TEST(chart_data_zoom_limits_category_window) {
+  static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  size_t start = 99u, end = 99u;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_FALSE(my_chart_get_data_zoom(chart, &start, &end));
+  ASSERT_EQ(my_chart_set_data_zoom(chart, 3u, 3u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_data_zoom(chart, 1u, 4u), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_data_zoom(chart, &start, &end));
+  ASSERT_EQ(start, 1u);
+  ASSERT_EQ(end, 4u);
+
+  /* Pointer selection must stay inside the zoom window. */
+  event = my_event_init(MY_EVENT_POINTER_MOVE);
+  event.u.pointer.x = 44;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  event.u.pointer.x = 306;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 3u);
+
+  ASSERT_EQ(my_chart_clear_data_zoom(chart), MY_RET_OK);
+  ASSERT_FALSE(my_chart_get_data_zoom(chart, &start, &end));
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
@@ -489,6 +522,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_hidden_series_excluded_from_auto_range);
   RUN_TEST(chart_manages_mark_points);
+  RUN_TEST(chart_data_zoom_limits_category_window);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);

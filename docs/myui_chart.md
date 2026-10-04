@@ -40,6 +40,12 @@ label to one series category sample (ECharts `markPoint` equivalent). Up to
 removes them and `my_chart_get_mark_point_count()` reports the active count.
 Mark points on stacked bars follow the same visible segment endpoint as hover
 markers.
+`my_chart_set_data_zoom(chart, start, end)` restricts the rendered category
+window to `[start, end)` (ECharts `dataZoom` equivalent); `end` must be greater
+than `start`. `my_chart_clear_data_zoom()` restores the full range and
+`my_chart_get_data_zoom()` reports whether a window is active. The Y range,
+legends, and tooltip contents continue to use the full data set, while line,
+bar, hover, and mark-point geometry are clipped to the window.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

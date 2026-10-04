@@ -81,6 +81,35 @@ static size_t chart_category_count(const my_chart_t* chart) {
   return count;
 }
 
+/* Effective [begin, end) category window for dataZoom. Stale or invalid windows
+ * (e.g. after series shrinking) fall back to the full range. */
+static void chart_zoom_range(const my_chart_t* chart, size_t* begin,
+                             size_t* count) {
+  size_t total = chart_category_count(chart);
+  size_t b = 0u;
+  size_t e = total;
+  if (chart->zoom_set && total > 0u) {
+    b = chart->zoom_start;
+    e = chart->zoom_end;
+    if (b > total) b = total;
+    if (e > total) e = total;
+    if (e <= b) { b = 0u; e = total; }
+  }
+  *begin = b;
+  *count = e - b;
+}
+
+static bool chart_category_in_window(size_t category, size_t begin,
+                                     size_t count) {
+  return category >= begin && category < begin + count;
+}
+
+static float chart_category_x(size_t category, size_t begin, size_t count,
+                              float x, float w) {
+  if (count <= 1u) return x + w * 0.5f;
+  return x + w * (float)(category - begin) / (float)(count - 1u);
+}
+
 /* Stacked base for a value at `category_index`: the sum of same-sign visible
  * samples from lower series indices. Used by both hover markers and marks so
  * annotations land on the rendered segment instead of the raw value. */
@@ -218,22 +247,21 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
                                    const my_chart_series_t* series, float x,
                                    float y, float w, float h, float y_min,
                                    float y_max) {
-  size_t i;
-  size_t category_count = chart_category_count(chart);
+  size_t begin, count;
+  bool started = false;
   if (series->values == NULL || series->count == 0u) return;
-  if (category_count < series->count) category_count = series->count;
+  chart_zoom_range(chart, &begin, &count);
+  if (count == 0u) return;
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
   my_vgcanvas_set_line_width(vg, 2.0f);
   my_vgcanvas_begin_path(vg);
-  for (i = 0; i < series->count; i++) {
-    float px = x + (category_count > 1u
-                        ? w * (float)i / (float)(category_count - 1u)
-                        : w * 0.5f);
+  for (size_t i = begin; i < begin + count && i < series->count; i++) {
+    float px = chart_category_x(i, begin, count, x, w);
     float py = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
-    if (i == 0u) my_vgcanvas_move_to(vg, px, py);
+    if (!started) { my_vgcanvas_move_to(vg, px, py); started = true; }
     else my_vgcanvas_line_to(vg, px, py);
   }
-  my_vgcanvas_stroke(vg);
+  if (started) my_vgcanvas_stroke(vg);
 }
 
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
@@ -247,55 +275,63 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
     if (chart->series[series_index].count > category_count)
       category_count = chart->series[series_index].count;
   }
-  if (category_count == 0u) return;
-  zero_y = my_chart_value_to_y(0.0f, y_min, y_max, y, h);
-  for (size_t category = 0u; category < category_count; category++) {
-    float slot = w / (float)category_count;
-    float group_width = slot * 0.82f;
-    float group_left = x + slot * (float)category + (slot - group_width) * 0.5f;
-    float group_slot = group_width / (float)chart->series_count;
-    float positive_base = 0.0f;
-    float negative_base = 0.0f;
-    for (series_index = 0u; series_index < chart->series_count; series_index++) {
-      const my_chart_series_t* series = &chart->series[series_index];
-      float bar_w;
-      float bar_x;
-      float value_y;
-      float top;
-      float height;
-      if (!chart->series_visible[series_index] || series->values == NULL ||
-          category >= series->count) continue;
-      if (chart->stacked) {
-        bar_w = group_width;
-        bar_x = group_left;
-      } else {
-        bar_w = group_slot * 0.82f;
-        bar_x = group_left + group_slot * (float)series_index +
-                (group_slot - bar_w) * 0.5f;
-      }
-      value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
-      if (chart->stacked) {
-        float value = series->values[category];
-        float base = value >= 0.0f ? positive_base : negative_base;
-        float base_y = my_chart_value_to_y(base, y_min, y_max, y, h);
-        float end_y = my_chart_value_to_y(base + value, y_min, y_max, y, h);
-        if (value >= 0.0f) {
-          top = end_y < base_y ? end_y : base_y;
-          height = fabsf(end_y - base_y);
-          positive_base += value;
+  {
+    size_t begin, window;
+    chart_zoom_range(chart, &begin, &window);
+    if (window == 0u) return;
+    zero_y = my_chart_value_to_y(0.0f, y_min, y_max, y, h);
+    for (size_t category = begin; category < begin + window; category++) {
+      float slot = w / (float)window;
+      float group_width = slot * 0.82f;
+      float group_left = x + slot * (float)(category - begin) +
+                         (slot - group_width) * 0.5f;
+      float group_slot = group_width / (float)chart->series_count;
+      float positive_base = 0.0f;
+      float negative_base = 0.0f;
+      if (category >= category_count) break;
+      for (series_index = 0u; series_index < chart->series_count; series_index++) {
+        const my_chart_series_t* series = &chart->series[series_index];
+        float bar_w;
+        float bar_x;
+        float value_y;
+        float top;
+        float height;
+        if (!chart->series_visible[series_index] || series->values == NULL ||
+            category >= series->count) continue;
+        if (chart->stacked) {
+          bar_w = group_width;
+          bar_x = group_left;
         } else {
-          top = base_y < end_y ? base_y : end_y;
-          height = fabsf(end_y - base_y);
-          negative_base += value;
+          bar_w = group_slot * 0.82f;
+          bar_x = group_left + group_slot * (float)series_index +
+                  (group_slot - bar_w) * 0.5f;
         }
-      } else {
-        top = value_y < zero_y ? value_y : zero_y;
-        height = fabsf(value_y - zero_y);
+        value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
+        if (chart->stacked) {
+          float value = series->values[category];
+          float base = value >= 0.0f ? positive_base : negative_base;
+          float base_y = my_chart_value_to_y(base, y_min, y_max, y, h);
+          float end_y = my_chart_value_to_y(base + value, y_min, y_max, y, h);
+          if (value >= 0.0f) {
+            top = end_y < base_y ? end_y : base_y;
+            height = fabsf(end_y - base_y);
+            positive_base += value;
+          } else {
+            top = base_y < end_y ? base_y : end_y;
+            height = fabsf(end_y - base_y);
+            negative_base += value;
+          }
+        } else {
+          top = value_y < zero_y ? value_y : zero_y;
+          height = fabsf(value_y - zero_y);
+        }
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
+        my_vgcanvas_fill_rounded_rect(vg,
+                                      &(my_rectf_t){bar_x, top, bar_w, height},
+                                      3.0f);
       }
-      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
-      my_vgcanvas_fill_rounded_rect(vg, &(my_rectf_t){bar_x, top, bar_w, height},
-                                    3.0f);
     }
+    return;
   }
 }
 
@@ -304,16 +340,19 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
                                      float y_min, float y_max) {
   size_t i;
   size_t category_count = chart_category_count(chart);
+  size_t begin, window;
   if (chart->hover_index == CHART_HOVER_NONE || category_count == 0u) return;
+  chart_zoom_range(chart, &begin, &window);
+  if (window == 0u ||
+      !chart_category_in_window(chart->hover_index, begin, window))
+    return;
   for (i = 0u; i < chart->series_count; i++) {
     const my_chart_series_t* series = &chart->series[i];
     float point_x;
     float point_y;
     if (!chart->series_visible[i] || series->values == NULL ||
         chart->hover_index >= series->count) continue;
-    point_x = x + (category_count > 1u
-                       ? w * (float)chart->hover_index / (float)(category_count - 1u)
-                       : w * 0.5f);
+    point_x = chart_category_x(chart->hover_index, begin, window, x, w);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = series->values[chart->hover_index];
       float base = chart_stacked_base(chart, i, chart->hover_index, value);
@@ -339,7 +378,10 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
                                    float x, float y, float w, float h,
                                    float y_min, float y_max) {
   size_t category_count = chart_category_count(chart);
+  size_t begin, window;
   if (category_count == 0u) return;
+  chart_zoom_range(chart, &begin, &window);
+  if (window == 0u) return;
   my_vgcanvas_set_font(vg, NULL, 10);
   for (size_t m = 0u; m < chart->mark_count; m++) {
     const my_chart_mark_point_t* mark = &chart->marks[m];
@@ -351,9 +393,8 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
       continue;
     series = &chart->series[mark->series_index];
     if (series->values == NULL || mark->category_index >= series->count) continue;
-    px = x + (category_count > 1u
-                  ? w * (float)mark->category_index / (float)(category_count - 1u)
-                  : w * 0.5f);
+    if (!chart_category_in_window(mark->category_index, begin, window)) continue;
+    px = chart_category_x(mark->category_index, begin, window, x, w);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = series->values[mark->category_index];
       float base = chart_stacked_base(chart, mark->series_index,
@@ -391,13 +432,15 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     size_t label_count = chart->label_count;
     size_t label_index;
     size_t data_count = chart_category_count(chart);
+    size_t zoom_begin, zoom_window;
     if (data_count > 0u && label_count > data_count) label_count = data_count;
+    chart_zoom_range(chart, &zoom_begin, &zoom_window);
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
-    for (label_index = 0; label_index < label_count; label_index++) {
-      float label_x = x + (label_count > 1u
-                                ? w * (float)label_index / (float)(label_count - 1u)
-                                : w * 0.5f);
+    for (label_index = zoom_begin;
+         label_index < zoom_begin + zoom_window && label_index < label_count;
+         label_index++) {
+      float label_x = chart_category_x(label_index, zoom_begin, zoom_window, x, w);
       my_vgcanvas_draw_text(vg, chart->labels[label_index] != NULL
                                    ? chart->labels[label_index]
                                    : "",
@@ -418,11 +461,12 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
-    size_t category_count = chart_category_count(chart);
-    float hover_x = x + (category_count > 1u
-                             ? w * (float)chart->hover_index /
-                                   (float)(category_count - 1u)
-                             : w * 0.5f);
+    size_t zoom_begin, zoom_window;
+    chart_zoom_range(chart, &zoom_begin, &zoom_window);
+    if (zoom_window > 0u &&
+        chart_category_in_window(chart->hover_index, zoom_begin, zoom_window)) {
+    float hover_x = chart_category_x(chart->hover_index, zoom_begin, zoom_window,
+                                     x, w);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, y, 1.0f, h});
     if (my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
@@ -434,6 +478,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
       my_vgcanvas_set_font(vg, NULL, 10);
       my_vgcanvas_draw_text(vg, tooltip, hover_x + 10.0f, y + 11.0f);
+    }
     }
   }
   if (chart->show_legend) {
@@ -489,10 +534,15 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   }
   {
     size_t category_count = chart_category_count(chart);
-    index = category_count > 1u
-               ? (size_t)lroundf(((float)local_x - x) / w *
-                                 (float)(category_count - 1u))
-               : 0u;
+    size_t begin, window;
+    chart_zoom_range(chart, &begin, &window);
+    if (window == 0u) return MY_RET_NOT_SUPPORTED;
+    if (window > 1u)
+      index = begin + (size_t)lroundf(((float)local_x - x) / w *
+                                      (float)(window - 1u));
+    else
+      index = begin;
+    if (index >= begin + window) index = begin + window - 1u;
     if (index >= category_count) index = category_count - 1u;
   }
   if (chart->hover_index != index) {
@@ -620,6 +670,38 @@ my_ret_t my_chart_set_stacked(my_widget_t* widget, bool stacked) {
 bool my_chart_get_stacked(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && chart->stacked;
+}
+
+my_ret_t my_chart_set_data_zoom(my_widget_t* widget, size_t start,
+                                size_t end) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || end <= start) return MY_RET_INVALID_PARAMS;
+  chart->zoom_set = true;
+  chart->zoom_start = start;
+  chart->zoom_end = end;
+  chart->hover_index = CHART_HOVER_NONE;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_data_zoom(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  chart->zoom_set = false;
+  chart->zoom_start = 0u;
+  chart->zoom_end = 0u;
+  chart->hover_index = CHART_HOVER_NONE;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_get_data_zoom(const my_widget_t* widget, size_t* start,
+                            size_t* end) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || !chart->zoom_set) return false;
+  if (start != NULL) *start = chart->zoom_start;
+  if (end != NULL) *end = chart->zoom_end;
+  return true;
 }
 
 my_ret_t my_chart_add_mark_point(my_widget_t* widget, size_t series_index,

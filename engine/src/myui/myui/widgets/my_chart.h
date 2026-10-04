@@ -44,6 +44,9 @@ typedef struct my_chart_t {
   bool range_set;
   bool show_legend;
   bool stacked;
+  bool zoom_set;
+  size_t zoom_start;
+  size_t zoom_end;
   size_t hover_index;
   my_chart_mark_point_t marks[MY_CHART_MAX_MARK_POINTS];
   size_t mark_count;
@@ -68,6 +71,11 @@ my_ret_t my_chart_get_range(const my_widget_t* chart, float* y_min,
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);
 my_ret_t my_chart_set_stacked(my_widget_t* chart, bool stacked);
 bool my_chart_get_stacked(const my_widget_t* chart);
+my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
+                                size_t end);
+my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);
+bool my_chart_get_data_zoom(const my_widget_t* chart, size_t* start,
+                            size_t* end);
 my_ret_t my_chart_add_mark_point(my_widget_t* chart, size_t series_index,
                                  size_t category_index, const char* label);
 my_ret_t my_chart_clear_mark_points(my_widget_t* chart);
