@@ -69,6 +69,10 @@ Y-band (ECharts `markArea` equivalent) behind the series, with an optional
 borrowed label and ARGB color; `y_max` must be greater than `y_min`. Up to
 `MY_CHART_MAX_MARK_AREAS` bands are stored; `my_chart_clear_mark_areas()` and
 `my_chart_get_mark_area_count()` manage the active set.
+Chart types are selected with `my_chart_create(allocator, mode)`:
+`MY_CHART_LINE`, `MY_CHART_BAR`, or `MY_CHART_SCATTER` (ECharts `series.type`
+equivalent). Scatter draws one filled point per category sample and honors
+series visibility, zoom, and secondary-axis bindings like line mode.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

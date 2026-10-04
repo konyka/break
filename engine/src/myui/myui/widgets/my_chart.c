@@ -387,6 +387,26 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
   if (started) my_vgcanvas_stroke(vg);
 }
 
+static void chart_draw_scatter_series(const my_chart_t* chart,
+                                      my_vgcanvas_t* vg, size_t series_index,
+                                      float x, float y, float w, float h) {
+  const my_chart_series_t* series = &chart->series[series_index];
+  float y_min, y_max;
+  size_t begin, count;
+  if (series->values == NULL || series->count == 0u) return;
+  chart_axis_range(chart, chart_series_axis(chart, series_index), &y_min, &y_max);
+  chart_zoom_range(chart, &begin, &count);
+  if (count == 0u) return;
+  for (size_t i = begin; i < begin + count && i < series->count; i++) {
+    float px = chart_category_x(i, begin, count, x, w);
+    float py = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
+    my_vgcanvas_fill_rounded_rect(vg,
+                                  &(my_rectf_t){px - 4.0f, py - 4.0f, 8.0f, 8.0f},
+                                  4.0f);
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -633,6 +653,11 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   }
   if (chart->mode == MY_CHART_BAR) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
+  } else if (chart->mode == MY_CHART_SCATTER) {
+    for (i = 0; i < chart->series_count; i++) {
+      if (!chart->series_visible[i]) continue;
+      chart_draw_scatter_series(chart, vg, i, x, y, w, h);
+    }
   } else {
     for (i = 0; i < chart->series_count; i++) {
       if (!chart->series_visible[i]) continue;
@@ -742,7 +767,8 @@ static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
-  if (mode != MY_CHART_LINE && mode != MY_CHART_BAR) return NULL;
+  if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER)
+    return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
   if (my_widget_init((my_widget_t*)chart, allocator, &s_chart_vtable, "chart") !=
