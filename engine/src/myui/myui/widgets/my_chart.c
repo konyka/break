@@ -112,6 +112,10 @@ static float chart_category_x(size_t category, size_t begin, size_t count,
   return x + w * (float)(category - begin) / (float)(count - 1u);
 }
 
+static float chart_animated_value(const my_chart_t* chart, float value) {
+  return value * chart->animation_progress;
+}
+
 /* Stacked base for a value at `category_index`: the sum of same-sign visible
  * samples from lower series indices. Used by both hover markers and marks so
  * annotations land on the rendered segment instead of the raw value. */
@@ -125,7 +129,7 @@ static float chart_stacked_base(const my_chart_t* chart, size_t series_index,
     if (!chart->series_visible[i] || series->values == NULL ||
         category_index >= series->count)
       continue;
-    sample = series->values[category_index];
+    sample = chart_animated_value(chart, series->values[category_index]);
     if ((value >= 0.0f) == (sample >= 0.0f)) base += sample;
   }
   return base;
@@ -380,7 +384,8 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
   my_vgcanvas_begin_path(vg);
   for (size_t i = begin; i < begin + count && i < series->count; i++) {
     float px = chart_category_x(i, begin, count, x, w);
-    float py = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
+    float py = my_chart_value_to_y(chart_animated_value(chart, series->values[i]),
+                                   y_min, y_max, y, h);
     if (!started) { my_vgcanvas_move_to(vg, px, py); started = true; }
     else my_vgcanvas_line_to(vg, px, py);
   }
@@ -399,7 +404,8 @@ static void chart_draw_scatter_series(const my_chart_t* chart,
   if (count == 0u) return;
   for (size_t i = begin; i < begin + count && i < series->count; i++) {
     float px = chart_category_x(i, begin, count, x, w);
-    float py = my_chart_value_to_y(series->values[i], y_min, y_max, y, h);
+    float py = my_chart_value_to_y(chart_animated_value(chart, series->values[i]),
+                                   y_min, y_max, y, h);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
     my_vgcanvas_fill_rounded_rect(vg,
                                   &(my_rectf_t){px - 4.0f, py - 4.0f, 8.0f, 8.0f},
@@ -453,9 +459,11 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
           bar_x = group_left + group_slot * (float)series_index +
                   (group_slot - bar_w) * 0.5f;
         }
-        value_y = my_chart_value_to_y(series->values[category], sy_min, sy_max, y, h);
+        value_y = my_chart_value_to_y(
+            chart_animated_value(chart, series->values[category]), sy_min, sy_max,
+            y, h);
         if (chart->stacked) {
-          float value = series->values[category];
+          float value = chart_animated_value(chart, series->values[category]);
           float base = value >= 0.0f ? positive_base : negative_base;
           float base_y = my_chart_value_to_y(base, sy_min, sy_max, y, h);
           float end_y = my_chart_value_to_y(base + value, sy_min, sy_max, y, h);
@@ -504,12 +512,13 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
     point_x = chart_category_x(chart->hover_index, begin, window, x, w);
     chart_axis_range(chart, chart_series_axis(chart, i), &sy_min, &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
-      float value = series->values[chart->hover_index];
+      float value = chart_animated_value(chart, series->values[chart->hover_index]);
       float base = chart_stacked_base(chart, i, chart->hover_index, value);
       point_y = my_chart_stacked_value_to_y(value, base, sy_min, sy_max, y, h);
     } else {
-      point_y = my_chart_value_to_y(series->values[chart->hover_index], sy_min,
-                                    sy_max, y, h);
+      point_y = my_chart_value_to_y(chart_animated_value(
+                                      chart, series->values[chart->hover_index]),
+                                    sy_min, sy_max, y, h);
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
     my_vgcanvas_fill_rounded_rect(vg,
@@ -550,13 +559,14 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
     chart_axis_range(chart, chart_series_axis(chart, mark->series_index), &sy_min,
                      &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
-      float value = series->values[mark->category_index];
+      float value = chart_animated_value(chart, series->values[mark->category_index]);
       float base = chart_stacked_base(chart, mark->series_index,
                                       mark->category_index, value);
       py = my_chart_stacked_value_to_y(value, base, sy_min, sy_max, y, h);
     } else {
-      py = my_chart_value_to_y(series->values[mark->category_index], sy_min,
-                               sy_max, y, h);
+      py = my_chart_value_to_y(chart_animated_value(
+                                   chart, series->values[mark->category_index]),
+                               sy_min, sy_max, y, h);
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
     my_vgcanvas_fill_rounded_rect(vg,
@@ -780,6 +790,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
   chart->stacked = false;
+  chart->animation_progress = 1.0f;
   for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
@@ -909,6 +920,20 @@ my_ret_t my_chart_set_stacked(my_widget_t* widget, bool stacked) {
 bool my_chart_get_stacked(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && chart->stacked;
+}
+
+my_ret_t my_chart_set_animation_progress(my_widget_t* widget, float progress) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || !isfinite(progress) || progress < 0.0f || progress > 1.0f)
+    return MY_RET_INVALID_PARAMS;
+  chart->animation_progress = progress;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+float my_chart_get_animation_progress(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL ? chart->animation_progress : 0.0f;
 }
 
 my_ret_t my_chart_set_data_zoom(my_widget_t* widget, size_t start,

@@ -52,6 +52,7 @@ typedef struct my_chart_t {
   bool range2_set;
   bool show_legend;
   bool stacked;
+  float animation_progress;
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
@@ -102,6 +103,9 @@ my_ret_t my_chart_get_range(const my_widget_t* chart, float* y_min,
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);
 my_ret_t my_chart_set_stacked(my_widget_t* chart, bool stacked);
 bool my_chart_get_stacked(const my_widget_t* chart);
+/** @brief Set deterministic render progress for external animation drivers. */
+my_ret_t my_chart_set_animation_progress(my_widget_t* chart, float progress);
+float my_chart_get_animation_progress(const my_widget_t* chart);
 my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
                                 size_t end);
 my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);

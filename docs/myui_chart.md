@@ -73,6 +73,12 @@ Chart types are selected with `my_chart_create(allocator, mode)`:
 `MY_CHART_LINE`, `MY_CHART_BAR`, or `MY_CHART_SCATTER` (ECharts `series.type`
 equivalent). Scatter draws one filled point per category sample and honors
 series visibility, zoom, and secondary-axis bindings like line mode.
+Rendering progress is deterministic and externally driven with
+`my_chart_set_animation_progress(chart, progress)`, where `0` renders values
+from the zero baseline and `1` renders final values. The default is `1`; a
+window-manager or `my_animator` callback can update progress and invalidate the
+widget without the chart owning a timer. `my_chart_get_animation_progress()`
+reports the current value.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

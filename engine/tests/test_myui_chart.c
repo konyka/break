@@ -133,6 +133,17 @@ TEST(chart_data_zoom_limits_category_window) {
   my_widget_unref(chart);
 }
 
+TEST(chart_animation_progress_is_deterministic) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_FLOAT_EQ(my_chart_get_animation_progress(chart), 1.0f, 1e-5f);
+  ASSERT_EQ(my_chart_set_animation_progress(chart, 0.5f), MY_RET_OK);
+  ASSERT_FLOAT_EQ(my_chart_get_animation_progress(chart), 0.5f, 1e-5f);
+  ASSERT_EQ(my_chart_set_animation_progress(chart, -0.1f), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_animation_progress(chart, 1.1f), MY_RET_INVALID_PARAMS);
+  my_widget_unref(chart);
+}
+
 TEST(chart_manages_mark_lines) {
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
 
@@ -658,6 +669,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_hidden_series_excluded_from_auto_range);
   RUN_TEST(chart_manages_mark_points);
   RUN_TEST(chart_data_zoom_limits_category_window);
+  RUN_TEST(chart_animation_progress_is_deterministic);
   RUN_TEST(chart_manages_mark_lines);
   RUN_TEST(chart_manages_mark_areas);
   RUN_TEST(chart_axis_configuration);
