@@ -71,8 +71,11 @@ borrowed label and ARGB color; `y_max` must be greater than `y_min`. Up to
 `my_chart_get_mark_area_count()` manage the active set.
 Chart types are selected with `my_chart_create(allocator, mode)`:
 `MY_CHART_LINE`, `MY_CHART_BAR`, or `MY_CHART_SCATTER` (ECharts `series.type`
-equivalent). Scatter draws one filled point per category sample and honors
+equivalent), or `MY_CHART_PIE`. Scatter draws one filled point per category sample and honors
 series visibility, zoom, and secondary-axis bindings like line mode.
+Pie uses the first visible series as positive slice weights, approximates each
+sector with a backend-neutral polygon path, and honors visibility and animation
+progress. Non-positive slices are skipped; all-zero data produces no sectors.
 Rendering progress is deterministic and externally driven with
 `my_chart_set_animation_progress(chart, progress)`, where `0` renders values
 from the zero baseline and `1` renders final values. The default is `1`; a

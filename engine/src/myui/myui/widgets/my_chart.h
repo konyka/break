@@ -15,7 +15,8 @@
 typedef enum my_chart_mode_t {
   MY_CHART_LINE = 0,
   MY_CHART_BAR,
-  MY_CHART_SCATTER
+  MY_CHART_SCATTER,
+  MY_CHART_PIE
 } my_chart_mode_t;
 
 /** @brief A borrowed data series; caller owns name and values. */

@@ -23,6 +23,7 @@
 #define CHART_DEFAULT_MIN 0.0f
 #define CHART_DEFAULT_MAX 100.0f
 #define CHART_HOVER_NONE SIZE_MAX
+#define CHART_PI 3.14159265358979323846f
 
 static const uint32_t s_colors[MY_CHART_MAX_SERIES] = {
     0xE85D75FFu, 0x3A86FFFF, 0xF4A261FFu, 0x2A9D8FFF};
@@ -413,6 +414,41 @@ static void chart_draw_scatter_series(const my_chart_t* chart,
   }
 }
 
+static void chart_draw_pie(const my_chart_t* chart, my_vgcanvas_t* vg,
+                           float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float total = 0.0f;
+  float cx = x + w * 0.5f;
+  float cy = y + h * 0.5f;
+  float radius = fminf(w, h) * 0.38f;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) { series = &chart->series[s]; break; }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > 0.0f) total += series->values[i];
+  if (total <= 0.0f) return;
+  float angle = -0.5f * CHART_PI;
+  for (size_t i = 0u; i < series->count; i++) {
+    float value = series->values[i] > 0.0f ? series->values[i] : 0.0f;
+    float sweep = value / total * 2.0f * CHART_PI * chart->animation_progress;
+    if (sweep <= 0.0f) continue;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, cx, cy);
+    my_vgcanvas_line_to(vg, cx + cosf(angle) * radius,
+                        cy + sinf(angle) * radius);
+    for (unsigned step = 1u; step <= 24u; step++) {
+      float a = angle + sweep * (float)step / 24.0f;
+      my_vgcanvas_line_to(vg, cx + cosf(a) * radius, cy + sinf(a) * radius);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(s_colors[i % MY_CHART_MAX_SERIES]));
+    my_vgcanvas_fill(vg);
+    angle += value / total * 2.0f * CHART_PI;
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -661,7 +697,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_BAR) {
+  if (chart->mode == MY_CHART_PIE) {
+    chart_draw_pie(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_BAR) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
   } else if (chart->mode == MY_CHART_SCATTER) {
     for (i = 0; i < chart->series_count; i++) {
@@ -777,7 +815,8 @@ static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
-  if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER)
+  if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
+      mode != MY_CHART_PIE)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
