@@ -598,6 +598,31 @@ static void chart_draw_funnel(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_heatmap(const my_chart_t* chart, my_vgcanvas_t* vg,
+                               float x, float y, float w, float h) {
+  size_t columns = chart_category_count(chart);
+  size_t rows = 0u;
+  for (size_t i = 0u; i < chart->series_count; i++)
+    if (chart->series_visible[i] && chart->series[i].count > 0u) rows++;
+  if (columns == 0u || rows == 0u) return;
+  float cell_w = w / (float)columns;
+  float cell_h = h / (float)rows;
+  size_t row = 0u;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    const my_chart_series_t* series = &chart->series[s];
+    if (!chart->series_visible[s] || series->values == NULL || series->count == 0u)
+      continue;
+    for (size_t col = 0u; col < series->count && col < columns; col++) {
+      uint32_t color = chart_visual_color(chart, series->values[col], series->color);
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+      my_vgcanvas_fill_rect(vg, &(my_rectf_t){x + col * cell_w + 1.0f,
+                                             y + row * cell_h + 1.0f,
+                                             cell_w - 2.0f, cell_h - 2.0f});
+    }
+    row++;
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -827,7 +852,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
   chart_range(chart, &y_min, &y_max);
   if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR &&
-      chart->mode != MY_CHART_FUNNEL) {
+      chart->mode != MY_CHART_FUNNEL && chart->mode != MY_CHART_HEATMAP) {
     chart_grid(widget, vg, x, y, w, h, y_min, y_max);
     chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
   }
@@ -850,7 +875,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_PIE) {
+  if (chart->mode == MY_CHART_HEATMAP) {
+    chart_draw_heatmap(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_PIE) {
     chart_draw_pie(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_BAR) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
@@ -1073,7 +1100,8 @@ static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
-      mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL)
+      mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL &&
+      mode != MY_CHART_HEATMAP)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
