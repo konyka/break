@@ -372,6 +372,35 @@ TEST(chart_supports_radar_mode_and_rejects_invalid_data) {
   my_widget_unref(chart);
 }
 
+TEST(chart_supports_funnel_mode) {
+  static const float values[] = {100.0f, 70.0f, 40.0f, 20.0f};
+  my_chart_series_t series = {"Funnel", values, 4u, 0xE85D75FFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_FUNNEL);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u) {
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu ||
+        pixels[i + 2u] != 0xFFu) colored++;
+  }
+  ASSERT_TRUE(colored > 1000u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST(chart_paints_radar_polygon_to_software_canvas) {
   static const float values[] = {20.0f, 40.0f, 60.0f, 80.0f};
   my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u};
@@ -875,6 +904,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_scatter_mode);
   RUN_TEST(chart_supports_pie_mode);
   RUN_TEST(chart_supports_radar_mode_and_rejects_invalid_data);
+  RUN_TEST(chart_supports_funnel_mode);
   RUN_TEST(chart_paints_radar_polygon_to_software_canvas);
   RUN_TEST(chart_visual_map_configuration);
   RUN_TEST(chart_brush_selects_category_window);

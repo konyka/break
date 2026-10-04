@@ -556,6 +556,48 @@ static void chart_draw_radar(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_funnel(const my_chart_t* chart, my_vgcanvas_t* vg,
+                              float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float max_value = 0.0f;
+  size_t count = 0u;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) { series = &chart->series[s]; break; }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > max_value) max_value = series->values[i];
+  if (max_value <= 0.0f) return;
+  count = series->count;
+  float slot_h = h / (float)count;
+  for (size_t i = 0u; i < count; i++) {
+    float value = series->values[i] > 0.0f ? series->values[i] : 0.0f;
+    float top_width = w * value / max_value * chart->animation_progress;
+    float next_value = i + 1u < count && series->values[i + 1u] > 0.0f
+                           ? series->values[i + 1u] : 0.0f;
+    float bottom_width = w * next_value / max_value * chart->animation_progress;
+    float cy = y + slot_h * ((float)i + 0.5f);
+    float top_y = y + slot_h * (float)i;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, x + (w - top_width) * 0.5f, top_y);
+    my_vgcanvas_line_to(vg, x + (w + top_width) * 0.5f, top_y);
+    my_vgcanvas_line_to(vg, x + (w + bottom_width) * 0.5f, top_y + slot_h);
+    my_vgcanvas_line_to(vg, x + (w - bottom_width) * 0.5f, top_y + slot_h);
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        chart_visual_color(chart, value, s_colors[i % MY_CHART_MAX_SERIES])));
+    my_vgcanvas_fill(vg);
+    if (chart->labels != NULL && i < chart->label_count &&
+        chart->labels[i] != NULL) {
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
+      my_vgcanvas_set_font(vg, NULL, 10);
+      my_vgcanvas_draw_text(vg, chart->labels[i], x + w * 0.5f - 16.0f,
+                            cy - 4.0f);
+    }
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -784,7 +826,8 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->title[0] != '\0') my_vgcanvas_draw_text(vg, chart->title, 12, 8);
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
   chart_range(chart, &y_min, &y_max);
-  if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR) {
+  if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR &&
+      chart->mode != MY_CHART_FUNNEL) {
     chart_grid(widget, vg, x, y, w, h, y_min, y_max);
     chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
   }
@@ -813,6 +856,8 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
   } else if (chart->mode == MY_CHART_RADAR) {
     chart_draw_radar(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_FUNNEL) {
+    chart_draw_funnel(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_SCATTER) {
     for (i = 0; i < chart->series_count; i++) {
       if (!chart->series_visible[i]) continue;
@@ -1028,7 +1073,7 @@ static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
-      mode != MY_CHART_PIE && mode != MY_CHART_RADAR)
+      mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;

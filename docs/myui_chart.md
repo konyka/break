@@ -70,7 +70,8 @@ borrowed label and ARGB color; `y_max` must be greater than `y_min`. Up to
 `MY_CHART_MAX_MARK_AREAS` bands are stored; `my_chart_clear_mark_areas()` and
 `my_chart_get_mark_area_count()` manage the active set.
 Chart types are selected with `my_chart_create(allocator, mode)`:
-`MY_CHART_LINE`, `MY_CHART_BAR`, `MY_CHART_SCATTER`, `MY_CHART_PIE`, or
+`MY_CHART_LINE`, `MY_CHART_BAR`, `MY_CHART_SCATTER`, `MY_CHART_PIE`,
+`MY_CHART_RADAR`, or `MY_CHART_FUNNEL`
 `MY_CHART_RADAR` (ECharts `series.type` equivalents). Scatter draws one filled
 point per category sample and honors
 series visibility, zoom, and secondary-axis bindings like line mode.
@@ -80,6 +81,9 @@ progress. Non-positive slices are skipped; all-zero data produces no sectors.
 Radar uses labels as polygon axes and each visible series as a filled data
 polygon; it reuses the configured Y range, animation progress, and visualMap
 colors.
+Funnel uses the first visible series as positive stage weights and draws
+centered trapezoid stages that narrow toward the final stage; labels are drawn
+inside each stage when provided and animation progress scales stage widths.
 Rendering progress is deterministic and externally driven with
 `my_chart_set_animation_progress(chart, progress)`, where `0` renders values
 from the zero baseline and `1` renders final values. The default is `1`; a
