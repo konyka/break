@@ -414,6 +414,31 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_mark_lines(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                  float x, float y, float w, float h,
+                                  float y_min, float y_max) {
+  if (chart->line_count == 0u) return;
+  my_vgcanvas_set_font(vg, NULL, 10);
+  for (size_t m = 0u; m < chart->line_count; m++) {
+    float line_y;
+    uint32_t color = chart->lines[m].color != 0u ? chart->lines[m].color
+                                                 : 0x9AA5B1FFu;
+    if (chart->lines[m].value < y_min || chart->lines[m].value > y_max) continue;
+    line_y = my_chart_value_to_y(chart->lines[m].value, y_min, y_max, y, h);
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(color));
+    my_vgcanvas_set_line_width(vg, 1.0f);
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, x, line_y);
+    my_vgcanvas_line_to(vg, x + w, line_y);
+    my_vgcanvas_stroke(vg);
+    if (chart->lines[m].label != NULL && chart->lines[m].label[0] != '\0') {
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+      my_vgcanvas_draw_text(vg, chart->lines[m].label, x + w - 48.0f,
+                            line_y - 4.0f);
+    }
+  }
+}
+
 static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_chart_t* chart = (my_chart_t*)widget;
   float x, y, w, h, y_min, y_max;
@@ -458,6 +483,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   }
   chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_points(chart, vg, x, y, w, h, y_min, y_max);
+  chart_draw_mark_lines(chart, vg, x, y, w, h, y_min, y_max);
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
@@ -731,6 +757,34 @@ my_ret_t my_chart_clear_mark_points(my_widget_t* widget) {
 size_t my_chart_get_mark_point_count(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL ? chart->mark_count : 0u;
+}
+
+my_ret_t my_chart_add_mark_line(my_widget_t* widget, float value,
+                                const char* label, uint32_t color) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || !isfinite(value) ||
+      chart->line_count >= MY_CHART_MAX_MARK_LINES)
+    return MY_RET_INVALID_PARAMS;
+  chart->lines[chart->line_count].value = value;
+  chart->lines[chart->line_count].label = label;
+  chart->lines[chart->line_count].color = color;
+  chart->line_count++;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_mark_lines(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  memset(chart->lines, 0, sizeof(chart->lines));
+  chart->line_count = 0u;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+size_t my_chart_get_mark_line_count(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL ? chart->line_count : 0u;
 }
 
 size_t my_chart_get_hover_index(const my_widget_t* widget) {

@@ -133,6 +133,20 @@ TEST(chart_data_zoom_limits_category_window) {
   my_widget_unref(chart);
 }
 
+TEST(chart_manages_mark_lines) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_get_mark_line_count(chart), 0u);
+  ASSERT_EQ(my_chart_add_mark_line(chart, 42.0f, "target", 0xE85D75FFu),
+            MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_line_count(chart), 1u);
+  ASSERT_EQ(my_chart_add_mark_line(chart, NAN, "bad", 0u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_clear_mark_lines(chart), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_line_count(chart), 0u);
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
@@ -523,6 +537,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_hidden_series_excluded_from_auto_range);
   RUN_TEST(chart_manages_mark_points);
   RUN_TEST(chart_data_zoom_limits_category_window);
+  RUN_TEST(chart_manages_mark_lines);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);

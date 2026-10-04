@@ -9,6 +9,7 @@
 
 #define MY_CHART_MAX_SERIES 4u
 #define MY_CHART_MAX_MARK_POINTS 8u
+#define MY_CHART_MAX_MARK_LINES 4u
 
 typedef enum my_chart_mode_t {
   MY_CHART_LINE = 0,
@@ -50,6 +51,12 @@ typedef struct my_chart_t {
   size_t hover_index;
   my_chart_mark_point_t marks[MY_CHART_MAX_MARK_POINTS];
   size_t mark_count;
+  struct {
+    float value;
+    const char* label;
+    uint32_t color;
+  } lines[MY_CHART_MAX_MARK_LINES];
+  size_t line_count;
 } my_chart_t;
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator,
@@ -80,6 +87,10 @@ my_ret_t my_chart_add_mark_point(my_widget_t* chart, size_t series_index,
                                  size_t category_index, const char* label);
 my_ret_t my_chart_clear_mark_points(my_widget_t* chart);
 size_t my_chart_get_mark_point_count(const my_widget_t* chart);
+my_ret_t my_chart_add_mark_line(my_widget_t* chart, float value,
+                                const char* label, uint32_t color);
+my_ret_t my_chart_clear_mark_lines(my_widget_t* chart);
+size_t my_chart_get_mark_line_count(const my_widget_t* chart);
 size_t my_chart_get_hover_index(const my_widget_t* chart);
 my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
                               size_t capacity);
