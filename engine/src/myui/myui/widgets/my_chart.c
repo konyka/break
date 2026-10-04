@@ -186,6 +186,90 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
   *y_max = hi;
 }
 
+static unsigned chart_series_axis(const my_chart_t* chart, size_t index) {
+  return chart->series[index].y_axis == 1u ? 1u : 0u;
+}
+
+static bool chart_has_secondary(const my_chart_t* chart) {
+  for (size_t i = 0u; i < chart->series_count; i++) {
+    if (chart_series_axis(chart, i) == 1u) return true;
+  }
+  return false;
+}
+
+/* Range for one axis (0=left, 1=right). Falls back to the shared/default range
+ * when no series is bound to that axis. */
+static void chart_axis_range(const my_chart_t* chart, unsigned axis,
+                             float* y_min, float* y_max) {
+  size_t i;
+  float lo = 0.0f;
+  float hi = 1.0f;
+  bool found = false;
+  if (axis == 1u) {
+    if (chart->range2_set) {
+      *y_min = chart->y2_min;
+      *y_max = chart->y2_max;
+      return;
+    }
+  } else if (chart->range_set) {
+    *y_min = chart->y_min;
+    *y_max = chart->y_max;
+    return;
+  }
+  if (chart->stacked && chart->mode == MY_CHART_BAR) {
+    size_t category_count = chart_category_count(chart);
+    for (size_t category = 0u; category < category_count; category++) {
+      float positive = 0.0f;
+      float negative = 0.0f;
+      for (i = 0u; i < chart->series_count; i++) {
+        if (!chart->series_visible[i] || chart->series[i].values == NULL ||
+            chart_series_axis(chart, i) != axis ||
+            category >= chart->series[i].count)
+          continue;
+        if (chart->series[i].values[category] >= 0.0f)
+          positive += chart->series[i].values[category];
+        else
+          negative += chart->series[i].values[category];
+      }
+      if (positive != 0.0f) {
+        if (!found || positive > hi) hi = positive;
+        found = true;
+      }
+      if (negative != 0.0f) {
+        if (!found || negative < lo) lo = negative;
+        found = true;
+      }
+    }
+    if (found) {
+      if (lo == hi) { lo -= 1.0f; hi += 1.0f; }
+      *y_min = lo;
+      *y_max = hi;
+      return;
+    }
+  }
+  for (i = 0u; i < chart->series_count; i++) {
+    size_t j;
+    const my_chart_series_t* series = &chart->series[i];
+    if (!chart->series_visible[i] || chart_series_axis(chart, i) != axis)
+      continue;
+    for (j = 0u; j < series->count; j++) {
+      float value = series->values != NULL ? series->values[j] : 0.0f;
+      if (series->values == NULL || !isfinite(value)) break;
+      if (!found || value < lo) lo = value;
+      if (!found || value > hi) hi = value;
+      found = true;
+    }
+  }
+  if (!found) {
+    if (axis == 1u) { *y_min = 0.0f; *y_max = 0.0f; return; }
+    chart_range(chart, y_min, y_max);
+    return;
+  }
+  if (lo == hi) { lo -= 1.0f; hi += 1.0f; }
+  *y_min = lo;
+  *y_max = hi;
+}
+
 float my_chart_value_to_y(float value, float y_min, float y_max,
                           float plot_top, float plot_height) {
   long double span;
@@ -216,6 +300,20 @@ my_ret_t my_chart_get_range(const my_widget_t* widget, float* y_min,
     return MY_RET_INVALID_PARAMS;
   chart_range(chart, y_min, y_max);
   return MY_RET_OK;
+}
+
+my_ret_t my_chart_get_axis_range(const my_widget_t* widget, unsigned axis,
+                                 float* y_min, float* y_max) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || axis > 1u || y_min == NULL || y_max == NULL)
+    return MY_RET_INVALID_PARAMS;
+  chart_axis_range(chart, axis, y_min, y_max);
+  return MY_RET_OK;
+}
+
+bool my_chart_has_secondary_axis(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL && chart_has_secondary(chart);
 }
 
 static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
@@ -251,15 +349,30 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_draw_text(vg, chart->axis_title, 5.0f, y - 4.0f);
   }
+  if (chart != NULL && chart_has_secondary(chart)) {
+    float y2_min, y2_max;
+    chart_axis_range(chart, 1u, &y2_min, &y2_max);
+    my_vgcanvas_set_font(vg, NULL, 10);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
+    for (i = 0; i < grid_lines; i++) {
+      float ratio = (float)i / (float)(grid_lines - 1u);
+      float line_y = y + h * ratio;
+      (void)my_chart_format_tick(y2_max - (y2_max - y2_min) * ratio, text,
+                                 sizeof(text));
+      my_vgcanvas_draw_text(vg, text, x + w + 4.0f, line_y - 5.0f);
+    }
+  }
 }
 
 static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
-                                   const my_chart_series_t* series, float x,
-                                   float y, float w, float h, float y_min,
-                                   float y_max) {
+                                   size_t series_index, float x,
+                                   float y, float w, float h) {
+  const my_chart_series_t* series = &chart->series[series_index];
+  float y_min, y_max;
   size_t begin, count;
   bool started = false;
   if (series->values == NULL || series->count == 0u) return;
+  chart_axis_range(chart, chart_series_axis(chart, series_index), &y_min, &y_max);
   chart_zoom_range(chart, &begin, &count);
   if (count == 0u) return;
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
@@ -304,10 +417,14 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
         float bar_w;
         float bar_x;
         float value_y;
+        float sy_min = y_min;
+        float sy_max = y_max;
         float top;
         float height;
         if (!chart->series_visible[series_index] || series->values == NULL ||
             category >= series->count) continue;
+        chart_axis_range(chart, chart_series_axis(chart, series_index), &sy_min,
+                         &sy_max);
         if (chart->stacked) {
           bar_w = group_width;
           bar_x = group_left;
@@ -316,12 +433,12 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
           bar_x = group_left + group_slot * (float)series_index +
                   (group_slot - bar_w) * 0.5f;
         }
-        value_y = my_chart_value_to_y(series->values[category], y_min, y_max, y, h);
+        value_y = my_chart_value_to_y(series->values[category], sy_min, sy_max, y, h);
         if (chart->stacked) {
           float value = series->values[category];
           float base = value >= 0.0f ? positive_base : negative_base;
-          float base_y = my_chart_value_to_y(base, y_min, y_max, y, h);
-          float end_y = my_chart_value_to_y(base + value, y_min, y_max, y, h);
+          float base_y = my_chart_value_to_y(base, sy_min, sy_max, y, h);
+          float end_y = my_chart_value_to_y(base + value, sy_min, sy_max, y, h);
           if (value >= 0.0f) {
             top = end_y < base_y ? end_y : base_y;
             height = fabsf(end_y - base_y);
@@ -360,16 +477,19 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
     const my_chart_series_t* series = &chart->series[i];
     float point_x;
     float point_y;
+    float sy_min = y_min;
+    float sy_max = y_max;
     if (!chart->series_visible[i] || series->values == NULL ||
         chart->hover_index >= series->count) continue;
     point_x = chart_category_x(chart->hover_index, begin, window, x, w);
+    chart_axis_range(chart, chart_series_axis(chart, i), &sy_min, &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = series->values[chart->hover_index];
       float base = chart_stacked_base(chart, i, chart->hover_index, value);
-      point_y = my_chart_stacked_value_to_y(value, base, y_min, y_max, y, h);
+      point_y = my_chart_stacked_value_to_y(value, base, sy_min, sy_max, y, h);
     } else {
-      point_y = my_chart_value_to_y(series->values[chart->hover_index], y_min,
-                                    y_max, y, h);
+      point_y = my_chart_value_to_y(series->values[chart->hover_index], sy_min,
+                                    sy_max, y, h);
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
     my_vgcanvas_fill_rounded_rect(vg,
@@ -398,6 +518,8 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
     const my_chart_series_t* series;
     float px;
     float py;
+    float sy_min = y_min;
+    float sy_max = y_max;
     if (mark->series_index >= chart->series_count ||
         !chart->series_visible[mark->series_index])
       continue;
@@ -405,14 +527,16 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
     if (series->values == NULL || mark->category_index >= series->count) continue;
     if (!chart_category_in_window(mark->category_index, begin, window)) continue;
     px = chart_category_x(mark->category_index, begin, window, x, w);
+    chart_axis_range(chart, chart_series_axis(chart, mark->series_index), &sy_min,
+                     &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = series->values[mark->category_index];
       float base = chart_stacked_base(chart, mark->series_index,
                                       mark->category_index, value);
-      py = my_chart_stacked_value_to_y(value, base, y_min, y_max, y, h);
+      py = my_chart_stacked_value_to_y(value, base, sy_min, sy_max, y, h);
     } else {
-      py = my_chart_value_to_y(series->values[mark->category_index], y_min,
-                               y_max, y, h);
+      py = my_chart_value_to_y(series->values[mark->category_index], sy_min,
+                               sy_max, y, h);
     }
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
     my_vgcanvas_fill_rounded_rect(vg,
@@ -487,8 +611,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   } else {
     for (i = 0; i < chart->series_count; i++) {
       if (!chart->series_visible[i]) continue;
-      chart_draw_line_series(chart, vg, &chart->series[i], x, y, w, h, y_min,
-                             y_max);
+      chart_draw_line_series(chart, vg, i, x, y, w, h);
     }
   }
   chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
@@ -671,6 +794,22 @@ my_ret_t my_chart_set_series_visible(my_widget_t* widget, size_t index,
   return MY_RET_OK;
 }
 
+my_ret_t my_chart_set_series_axis(my_widget_t* widget, size_t index,
+                                  unsigned axis) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || index >= chart->series_count || axis > 1u)
+    return MY_RET_INVALID_PARAMS;
+  chart->series[index].y_axis = (unsigned char)axis;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+unsigned my_chart_get_series_axis(const my_widget_t* widget, size_t index) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || index >= chart->series_count) return 0u;
+  return chart_series_axis(chart, index);
+}
+
 bool my_chart_get_series_visible(const my_widget_t* widget, size_t index) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && index < chart->series_count && chart->series_visible[index];
@@ -683,6 +822,18 @@ my_ret_t my_chart_set_range(my_widget_t* widget, float y_min, float y_max) {
   chart->y_min = y_min;
   chart->y_max = y_max;
   chart->range_set = true;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_set_secondary_range(my_widget_t* widget, float y_min,
+                                      float y_max) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min)
+    return MY_RET_INVALID_PARAMS;
+  chart->y2_min = y_min;
+  chart->y2_max = y_max;
+  chart->range2_set = true;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }

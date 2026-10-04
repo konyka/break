@@ -22,6 +22,8 @@ typedef struct my_chart_series_t {
   const float* values;
   size_t count;
   uint32_t color;
+  /** @brief Y axis binding: 0 = left axis, 1 = right axis. */
+  unsigned char y_axis;
 } my_chart_series_t;
 
 /** @brief A borrowed annotation anchored to one series category sample. */
@@ -43,6 +45,9 @@ typedef struct my_chart_t {
   float y_min;
   float y_max;
   bool range_set;
+  float y2_min;
+  float y2_max;
+  bool range2_set;
   bool show_legend;
   bool stacked;
   bool zoom_set;
@@ -72,8 +77,16 @@ my_ret_t my_chart_set_series(my_widget_t* chart, size_t index,
 my_ret_t my_chart_set_series_visible(my_widget_t* chart, size_t index,
                                      bool visible);
 bool my_chart_get_series_visible(const my_widget_t* chart, size_t index);
+my_ret_t my_chart_set_series_axis(my_widget_t* chart, size_t index,
+                                  unsigned axis);
+unsigned my_chart_get_series_axis(const my_widget_t* chart, size_t index);
+bool my_chart_has_secondary_axis(const my_widget_t* chart);
+my_ret_t my_chart_get_axis_range(const my_widget_t* chart, unsigned axis,
+                                 float* y_min, float* y_max);
 my_ret_t my_chart_clear_series(my_widget_t* chart);
 my_ret_t my_chart_set_range(my_widget_t* chart, float y_min, float y_max);
+my_ret_t my_chart_set_secondary_range(my_widget_t* chart, float y_min,
+                                      float y_max);
 /** @brief Report the effective Y range (explicit or automatic). */
 my_ret_t my_chart_get_range(const my_widget_t* chart, float* y_min,
                             float* y_max);

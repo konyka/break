@@ -36,7 +36,7 @@ static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
 
 TEST(chart_rejects_invalid_series_and_range) {
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
-  my_chart_series_t series = {"Revenue", NULL, 0u, 0xE85D75FFu};
+  my_chart_series_t series = {"Revenue", NULL, 0u, 0xE85D75FFu, 0u};
 
   ASSERT_NOT_NULL(chart);
   ASSERT_TRUE(my_chart_is_instance(chart));
@@ -67,8 +67,8 @@ TEST(chart_formats_fractional_axis_ticks) {
 TEST(chart_hidden_series_excluded_from_auto_range) {
   static const float small_values[] = {1.0f, 2.0f};
   static const float huge_values[] = {1.0f, 1000.0f};
-  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu};
-  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu};
+  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   float y_min = 0.0f, y_max = 0.0f;
 
@@ -85,7 +85,7 @@ TEST(chart_hidden_series_excluded_from_auto_range) {
 
 TEST(chart_manages_mark_points) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
-  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
 
   ASSERT_NOT_NULL(chart);
@@ -102,7 +102,7 @@ TEST(chart_manages_mark_points) {
 
 TEST(chart_data_zoom_limits_category_window) {
   static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu};
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   size_t start = 99u, end = 99u;
   my_event_t event;
@@ -160,11 +160,37 @@ TEST(chart_axis_configuration) {
   my_widget_unref(chart);
 }
 
+TEST(chart_secondary_axis_binding) {
+  static const float price[] = {10.0f, 20.0f};
+  static const float volume[] = {1000.0f, 2000.0f};
+  my_chart_series_t price_series = {"Price", price, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t volume_series = {"Volume", volume, 2u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  float lo = 0.0f, hi = 0.0f;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &price_series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &volume_series), MY_RET_OK);
+  ASSERT_FALSE(my_chart_has_secondary_axis(chart));
+  ASSERT_EQ(my_chart_set_series_axis(chart, 1u, 1u), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_series_axis(chart, 1u), 1u);
+  ASSERT_TRUE(my_chart_has_secondary_axis(chart));
+  ASSERT_EQ(my_chart_set_series_axis(chart, 0u, 2u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_get_axis_range(chart, 0u, &lo, &hi), MY_RET_OK);
+  ASSERT_TRUE(hi <= 25.0f);
+  ASSERT_EQ(my_chart_get_axis_range(chart, 1u, &lo, &hi), MY_RET_OK);
+  ASSERT_TRUE(hi >= 2000.0f);
+  ASSERT_EQ(my_chart_set_secondary_range(chart, 0.0f, 5000.0f), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_axis_range(chart, 1u, &lo, &hi), MY_RET_OK);
+  ASSERT_TRUE(hi == 5000.0f);
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
-  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu};
-  my_chart_series_t second = {"Orders", second_values, 2u, 0x3A86FFFFu};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t second = {"Orders", second_values, 2u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[128];
   my_event_t event;
@@ -190,7 +216,7 @@ TEST(chart_series_visibility_controls_tooltip) {
 
 TEST(chart_legend_click_toggles_series_visibility) {
   static const float values[] = {1.0f, 2.0f};
-  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_event_t event;
 
@@ -211,7 +237,7 @@ TEST(chart_legend_click_toggles_series_visibility) {
 
 TEST(chart_hover_emphasis_is_reported) {
   static const float values[] = {10.0f, 30.0f};
-  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_event_t event;
 
@@ -246,8 +272,8 @@ TEST(chart_stacked_endpoint_matches_segment_geometry) {
 TEST(chart_stacked_bars_share_category_slot) {
   static const float first_values[] = {10.0f};
   static const float second_values[] = {20.0f};
-  my_chart_series_t first = {"A", first_values, 1u, 0xE85D75FFu};
-  my_chart_series_t second = {"B", second_values, 1u, 0x3A86FFFFu};
+  my_chart_series_t first = {"A", first_values, 1u, 0xE85D75FFu, 0u};
+  my_chart_series_t second = {"B", second_values, 1u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -293,7 +319,7 @@ TEST(chart_stacked_bars_share_category_slot) {
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
-  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[64];
 
@@ -331,8 +357,8 @@ TEST(chart_clamps_values_and_formats_hover_tooltip) {
 TEST(chart_hover_tooltip_includes_all_series_at_category) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f, 12.0f, 16.0f};
-  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu};
-  my_chart_series_t second = {"Orders", second_values, 4u, 0x3A86FFFFu};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t second = {"Orders", second_values, 4u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[128];
   my_event_t event;
@@ -362,7 +388,7 @@ TEST(chart_hover_tooltip_includes_all_series_at_category) {
 
 TEST(chart_paints_visible_series_to_software_canvas) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -402,9 +428,8 @@ TEST(chart_paints_visible_series_to_software_canvas) {
 TEST(chart_paints_grouped_bar_series_to_software_canvas) {
   static const float primary_values[] = {10.0f, 24.0f, 16.0f};
   static const float secondary_values[] = {18.0f, 12.0f, 28.0f};
-  my_chart_series_t primary = {"Primary", primary_values, 3u, 0xE85D75FFu};
-  my_chart_series_t secondary = {"Secondary", secondary_values, 3u,
-                                 0x3A86FFFFu};
+  my_chart_series_t primary = {"Primary", primary_values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t secondary = {"Secondary", secondary_values, 3u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -457,7 +482,7 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
 
 TEST(chart_paints_mark_point_annotation) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -503,8 +528,8 @@ TEST(chart_paints_mark_point_annotation) {
 TEST(chart_line_series_share_category_positions) {
   static const float long_values[] = {10.0f, 20.0f, 30.0f, 40.0f};
   static const float short_values[] = {15.0f, 25.0f};
-  my_chart_series_t long_series = {"Long", long_values, 4u, 0xE85D75FFu};
-  my_chart_series_t short_series = {"Short", short_values, 2u, 0x3A86FFFFu};
+  my_chart_series_t long_series = {"Long", long_values, 4u, 0xE85D75FFu, 0u};
+  my_chart_series_t short_series = {"Short", short_values, 2u, 0x3A86FFFFu, 0u};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -552,6 +577,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_data_zoom_limits_category_window);
   RUN_TEST(chart_manages_mark_lines);
   RUN_TEST(chart_axis_configuration);
+  RUN_TEST(chart_secondary_axis_binding);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);

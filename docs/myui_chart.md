@@ -57,6 +57,13 @@ Axis configuration matches ECharts `yAxis.name` / `yAxis.splitNumber`:
 `my_chart_set_grid_line_count()` sets the horizontal grid line count
 (2..8, default 5); `my_chart_get_grid_line_count()` reports the effective
 value.
+Secondary Y axis (ECharts dual-axis) is available via
+`my_chart_set_series_axis(chart, index, 0|1)`; `0` binds the left axis and `1`
+the right axis. `my_chart_has_secondary_axis()` reports whether any series is
+bound to the right axis, and the right axis draws its own tick labels.
+`my_chart_get_axis_range()` returns the effective range per axis and
+`my_chart_set_secondary_range()` fixes an explicit right-axis range. Series on
+different axes are scaled independently while sharing the same category axis.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and
