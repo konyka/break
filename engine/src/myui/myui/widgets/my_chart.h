@@ -54,6 +54,11 @@ typedef struct my_chart_t {
   bool show_legend;
   bool stacked;
   float animation_progress;
+  bool visual_map_set;
+  float visual_map_min;
+  float visual_map_max;
+  uint32_t visual_map_low_color;
+  uint32_t visual_map_high_color;
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
@@ -107,6 +112,11 @@ bool my_chart_get_stacked(const my_widget_t* chart);
 /** @brief Set deterministic render progress for external animation drivers. */
 my_ret_t my_chart_set_animation_progress(my_widget_t* chart, float progress);
 float my_chart_get_animation_progress(const my_widget_t* chart);
+my_ret_t my_chart_set_visual_map(my_widget_t* chart, float min_value,
+                                 float max_value, uint32_t low_color,
+                                 uint32_t high_color);
+my_ret_t my_chart_clear_visual_map(my_widget_t* chart);
+bool my_chart_has_visual_map(const my_widget_t* chart);
 my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
                                 size_t end);
 my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);

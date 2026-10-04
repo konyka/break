@@ -117,6 +117,30 @@ static float chart_animated_value(const my_chart_t* chart, float value) {
   return value * chart->animation_progress;
 }
 
+static uint32_t chart_visual_color(const my_chart_t* chart, float value,
+                                   uint32_t fallback) {
+  float t;
+  uint8_t lr, lg, lb, la, hr, hg, hb, ha;
+  if (!chart->visual_map_set || chart->visual_map_max <= chart->visual_map_min)
+    return fallback;
+  t = (value - chart->visual_map_min) /
+      (chart->visual_map_max - chart->visual_map_min);
+  if (t < 0.0f) t = 0.0f;
+  if (t > 1.0f) t = 1.0f;
+  lr = (uint8_t)(chart->visual_map_low_color >> 24);
+  lg = (uint8_t)(chart->visual_map_low_color >> 16);
+  lb = (uint8_t)(chart->visual_map_low_color >> 8);
+  la = (uint8_t)chart->visual_map_low_color;
+  hr = (uint8_t)(chart->visual_map_high_color >> 24);
+  hg = (uint8_t)(chart->visual_map_high_color >> 16);
+  hb = (uint8_t)(chart->visual_map_high_color >> 8);
+  ha = (uint8_t)chart->visual_map_high_color;
+  return ((uint32_t)(lr + (uint8_t)((hr - lr) * t)) << 24) |
+         ((uint32_t)(lg + (uint8_t)((hg - lg) * t)) << 16) |
+         ((uint32_t)(lb + (uint8_t)((hb - lb) * t)) << 8) |
+         (uint32_t)(la + (uint8_t)((ha - la) * t));
+}
+
 /* Stacked base for a value at `category_index`: the sum of same-sign visible
  * samples from lower series indices. Used by both hover markers and marks so
  * annotations land on the rendered segment instead of the raw value. */
@@ -407,7 +431,8 @@ static void chart_draw_scatter_series(const my_chart_t* chart,
     float px = chart_category_x(i, begin, count, x, w);
     float py = my_chart_value_to_y(chart_animated_value(chart, series->values[i]),
                                    y_min, y_max, y, h);
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        chart_visual_color(chart, series->values[i], series->color)));
     my_vgcanvas_fill_rounded_rect(vg,
                                   &(my_rectf_t){px - 4.0f, py - 4.0f, 8.0f, 8.0f},
                                   4.0f);
@@ -959,6 +984,35 @@ my_ret_t my_chart_set_stacked(my_widget_t* widget, bool stacked) {
 bool my_chart_get_stacked(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && chart->stacked;
+}
+
+my_ret_t my_chart_set_visual_map(my_widget_t* widget, float min_value,
+                                 float max_value, uint32_t low_color,
+                                 uint32_t high_color) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || !isfinite(min_value) || !isfinite(max_value) ||
+      max_value <= min_value)
+    return MY_RET_INVALID_PARAMS;
+  chart->visual_map_set = true;
+  chart->visual_map_min = min_value;
+  chart->visual_map_max = max_value;
+  chart->visual_map_low_color = low_color;
+  chart->visual_map_high_color = high_color;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_visual_map(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  chart->visual_map_set = false;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_has_visual_map(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL && chart->visual_map_set;
 }
 
 my_ret_t my_chart_set_animation_progress(my_widget_t* widget, float progress) {

@@ -82,6 +82,10 @@ from the zero baseline and `1` renders final values. The default is `1`; a
 window-manager or `my_animator` callback can update progress and invalidate the
 widget without the chart owning a timer. `my_chart_get_animation_progress()`
 reports the current value.
+`my_chart_set_visual_map(chart, min, max, low_color, high_color)` enables a
+linear ECharts `visualMap`-style color interpolation for data values. It is
+applied to line/scatter strokes and points, bars, and their annotations;
+`my_chart_clear_visual_map()` restores each series' configured color.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

@@ -352,6 +352,20 @@ TEST(chart_supports_pie_mode) {
   my_widget_unref(chart);
 }
 
+TEST(chart_visual_map_configuration) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_FALSE(my_chart_has_visual_map(chart));
+  ASSERT_EQ(my_chart_set_visual_map(chart, 0.0f, 100.0f, 0x0000FFFFu,
+                                    0xFF0000FFu), MY_RET_OK);
+  ASSERT_TRUE(my_chart_has_visual_map(chart));
+  ASSERT_EQ(my_chart_set_visual_map(chart, 10.0f, 10.0f, 0u, 0u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_clear_visual_map(chart), MY_RET_OK);
+  ASSERT_FALSE(my_chart_has_visual_map(chart));
+  my_widget_unref(chart);
+}
+
 TEST(chart_stacked_endpoint_matches_segment_geometry) {
   ASSERT_FLOAT_EQ(my_chart_stacked_value_to_y(20.0f, 10.0f, 0.0f, 30.0f,
                                               30.0f, 120.0f),
@@ -711,6 +725,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_stacked_bar_mode);
   RUN_TEST(chart_supports_scatter_mode);
   RUN_TEST(chart_supports_pie_mode);
+  RUN_TEST(chart_visual_map_configuration);
   RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
   RUN_TEST(chart_stacked_bars_share_category_slot);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
