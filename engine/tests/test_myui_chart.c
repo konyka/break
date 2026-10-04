@@ -147,6 +147,19 @@ TEST(chart_manages_mark_lines) {
   my_widget_unref(chart);
 }
 
+TEST(chart_axis_configuration) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_get_grid_line_count(chart), 5u);
+  ASSERT_EQ(my_chart_set_grid_line_count(chart, 0u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid_line_count(chart, 10u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid_line_count(chart, 3u), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_grid_line_count(chart), 3u);
+  ASSERT_EQ(my_chart_set_axis_title(chart, "USD"), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_axis_title(chart, "toolongtoolongtoolongtoolongtoolongtoolongtoolongtoolong"), MY_RET_OK);
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
@@ -538,6 +551,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_manages_mark_points);
   RUN_TEST(chart_data_zoom_limits_category_window);
   RUN_TEST(chart_manages_mark_lines);
+  RUN_TEST(chart_axis_configuration);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);

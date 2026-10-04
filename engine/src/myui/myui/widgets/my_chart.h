@@ -48,6 +48,8 @@ typedef struct my_chart_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  char axis_title[48];
+  u32 grid_line_count;
   size_t hover_index;
   my_chart_mark_point_t marks[MY_CHART_MAX_MARK_POINTS];
   size_t mark_count;
@@ -83,6 +85,9 @@ my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
 my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);
 bool my_chart_get_data_zoom(const my_widget_t* chart, size_t* start,
                             size_t* end);
+my_ret_t my_chart_set_axis_title(my_widget_t* chart, const char* title);
+my_ret_t my_chart_set_grid_line_count(my_widget_t* chart, u32 count);
+u32 my_chart_get_grid_line_count(const my_widget_t* chart);
 my_ret_t my_chart_add_mark_point(my_widget_t* chart, size_t series_index,
                                  size_t category_index, const char* label);
 my_ret_t my_chart_clear_mark_points(my_widget_t* chart);

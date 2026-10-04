@@ -52,6 +52,11 @@ borrowed label and color; up to `MY_CHART_MAX_MARK_LINES` lines are stored.
 `my_chart_clear_mark_lines()` removes them and
 `my_chart_get_mark_line_count()` reports the active count. Lines outside the
 visible Y range are skipped.
+Axis configuration matches ECharts `yAxis.name` / `yAxis.splitNumber`:
+`my_chart_set_axis_title()` draws a Y-axis label and
+`my_chart_set_grid_line_count()` sets the horizontal grid line count
+(2..8, default 5); `my_chart_get_grid_line_count()` reports the effective
+value.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

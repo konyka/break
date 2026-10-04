@@ -18,6 +18,8 @@
 #define CHART_PAD_TOP 30.0f
 #define CHART_PAD_BOTTOM 26.0f
 #define CHART_GRID_LINES 5u
+#define CHART_GRID_LINES_MIN 2u
+#define CHART_GRID_LINES_MAX 8u
 #define CHART_DEFAULT_MIN 0.0f
 #define CHART_DEFAULT_MAX 100.0f
 #define CHART_HOVER_NONE SIZE_MAX
@@ -218,12 +220,16 @@ my_ret_t my_chart_get_range(const my_widget_t* widget, float* y_min,
 
 static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
                        float w, float h, float y_min, float y_max) {
+  my_chart_t* chart = (my_chart_t*)widget;
+  u32 grid_lines = chart != NULL && chart->grid_line_count != 0u
+                       ? chart->grid_line_count
+                       : CHART_GRID_LINES;
   size_t i;
   char text[24];
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xE6EAF0FFu));
   my_vgcanvas_set_line_width(vg, 1.0f);
-  for (i = 0; i < CHART_GRID_LINES; i++) {
-    float ratio = (float)i / (float)(CHART_GRID_LINES - 1u);
+  for (i = 0; i < grid_lines; i++) {
+    float ratio = (float)i / (float)(grid_lines - 1u);
     float line_y = y + h * ratio;
     my_vgcanvas_begin_path(vg);
     my_vgcanvas_move_to(vg, x, line_y);
@@ -240,7 +246,11 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
   my_vgcanvas_line_to(vg, x, y + h);
   my_vgcanvas_line_to(vg, x + w, y + h);
   my_vgcanvas_stroke(vg);
-  (void)widget;
+  if (chart != NULL && chart->axis_title[0] != '\0') {
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
+    my_vgcanvas_set_font(vg, NULL, 10);
+    my_vgcanvas_draw_text(vg, chart->axis_title, 5.0f, y - 4.0f);
+  }
 }
 
 static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
@@ -728,6 +738,32 @@ bool my_chart_get_data_zoom(const my_widget_t* widget, size_t* start,
   if (start != NULL) *start = chart->zoom_start;
   if (end != NULL) *end = chart->zoom_end;
   return true;
+}
+
+my_ret_t my_chart_set_axis_title(my_widget_t* widget, const char* title) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  snprintf(chart->axis_title, sizeof(chart->axis_title), "%s",
+           title != NULL ? title : "");
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_set_grid_line_count(my_widget_t* widget, u32 count) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || count < CHART_GRID_LINES_MIN ||
+      count > CHART_GRID_LINES_MAX)
+    return MY_RET_INVALID_PARAMS;
+  chart->grid_line_count = count;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+u32 my_chart_get_grid_line_count(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL) return 0u;
+  return chart->grid_line_count != 0u ? chart->grid_line_count
+                                      : CHART_GRID_LINES;
 }
 
 my_ret_t my_chart_add_mark_point(my_widget_t* widget, size_t series_index,
