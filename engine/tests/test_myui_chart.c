@@ -373,6 +373,39 @@ TEST(chart_visual_map_configuration) {
   my_widget_unref(chart);
 }
 
+TEST(chart_brush_selects_category_window) {
+  static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_event_t event;
+  size_t start = 0u, end = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_brush(chart, &start, &end), MY_RET_NOT_SUPPORTED);
+  event = my_event_init(MY_EVENT_POINTER_DOWN);
+  event.u.pointer.x = 80;
+  event.u.pointer.y = 100;
+  event.u.pointer.button = 1u;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  event = my_event_init(MY_EVENT_POINTER_MOVE);
+  event.u.pointer.x = 240;
+  event.u.pointer.y = 70;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  event = my_event_init(MY_EVENT_POINTER_UP);
+  event.u.pointer.x = 240;
+  event.u.pointer.y = 70;
+  event.u.pointer.button = 1u;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_brush(chart, &start, &end), MY_RET_OK);
+  ASSERT_TRUE(start < end);
+  ASSERT_EQ(my_chart_clear_brush(chart), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_brush(chart, &start, &end), MY_RET_NOT_SUPPORTED);
+  my_widget_unref(chart);
+}
+
 TEST(chart_paints_visual_map_legend) {
   static const float values[] = {0.0f, 50.0f, 100.0f};
   my_chart_series_t series = {"v", values, 3u, 0x3A86FFFFu, 0u};
@@ -767,6 +800,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_scatter_mode);
   RUN_TEST(chart_supports_pie_mode);
   RUN_TEST(chart_visual_map_configuration);
+  RUN_TEST(chart_brush_selects_category_window);
   RUN_TEST(chart_paints_visual_map_legend);
   RUN_TEST(chart_stacked_endpoint_matches_segment_geometry);
   RUN_TEST(chart_stacked_bars_share_category_slot);

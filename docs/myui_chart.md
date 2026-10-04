@@ -88,6 +88,11 @@ applied to line/scatter strokes and points, bars, and their annotations;
 `my_chart_clear_visual_map()` restores each series' configured color.
 An enabled visualMap also renders a compact continuous gradient legend with
 its low/high numeric labels in the plot header.
+Brush selection is available for Cartesian charts: drag with the left pointer
+button across the plot to select a category interval, query it with
+`my_chart_get_brush()`, and clear it with `my_chart_clear_brush()`. The selected
+window is rendered as a translucent overlay; pie charts use sector hover rather
+than brush selection.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

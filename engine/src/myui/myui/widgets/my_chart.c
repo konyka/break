@@ -766,6 +766,23 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   chart_draw_mark_points(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_lines(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_areas(chart, vg, x, y, w, h, y_min, y_max);
+  if (chart->brush_active && chart->brush_start != SIZE_MAX &&
+      chart->brush_end != SIZE_MAX) {
+    size_t begin = chart->brush_start < chart->brush_end ? chart->brush_start
+                                                         : chart->brush_end;
+    size_t end = chart->brush_start < chart->brush_end ? chart->brush_end
+                                                       : chart->brush_start;
+    size_t zoom_begin, zoom_window;
+    chart_zoom_range(chart, &zoom_begin, &zoom_window);
+    if (zoom_window > 1u && end >= zoom_begin && begin < zoom_begin + zoom_window) {
+      if (begin < zoom_begin) begin = zoom_begin;
+      if (end >= zoom_begin + zoom_window) end = zoom_begin + zoom_window - 1u;
+      float bx = chart_category_x(begin, zoom_begin, zoom_window, x, w);
+      float ex = chart_category_x(end, zoom_begin, zoom_window, x, w);
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x3A86FF33u));
+      my_vgcanvas_fill_rect(vg, &(my_rectf_t){bx, y, ex - bx, h});
+    }
+  }
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
@@ -817,6 +834,33 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
+  if ((event->type == MY_EVENT_POINTER_DOWN || event->type == MY_EVENT_POINTER_MOVE ||
+       event->type == MY_EVENT_POINTER_UP) && event->u.pointer.button == 1u &&
+      chart->mode != MY_CHART_PIE && (float)local_x >= x &&
+      (float)local_x <= x + w && (float)local_y >= y &&
+      (float)local_y <= y + h) {
+    size_t begin, window, category;
+    chart_zoom_range(chart, &begin, &window);
+    if (window == 0u) return MY_RET_NOT_SUPPORTED;
+    category = begin + (window > 1u
+                            ? (size_t)lroundf(((float)local_x - x) / w *
+                                              (float)(window - 1u))
+                            : 0u);
+    if (category >= begin + window) category = begin + window - 1u;
+    if (event->type == MY_EVENT_POINTER_DOWN) {
+      chart->brush_active = true;
+      chart->brush_start = category;
+      chart->brush_end = category;
+    } else if (event->type == MY_EVENT_POINTER_MOVE && chart->brush_active) {
+      chart->brush_end = category;
+    } else if (event->type == MY_EVENT_POINTER_UP && chart->brush_active) {
+      chart->brush_end = category;
+      my_widget_invalidate(widget, NULL);
+      return MY_RET_OK;
+    }
+    my_widget_invalidate(widget, NULL);
+    return MY_RET_OK;
+  }
   if (chart->mode == MY_CHART_PIE && event->type == MY_EVENT_POINTER_MOVE) {
     const my_chart_series_t* series = NULL;
     float cx = x + w * 0.5f;
@@ -920,6 +964,8 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->show_legend = true;
   chart->stacked = false;
   chart->animation_progress = 1.0f;
+  chart->brush_start = SIZE_MAX;
+  chart->brush_end = SIZE_MAX;
   for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
@@ -1078,6 +1124,29 @@ my_ret_t my_chart_clear_visual_map(my_widget_t* widget) {
 bool my_chart_has_visual_map(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && chart->visual_map_set;
+}
+
+my_ret_t my_chart_get_brush(const my_widget_t* widget, size_t* start,
+                            size_t* end) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || start == NULL || end == NULL)
+    return MY_RET_INVALID_PARAMS;
+  if (!chart->brush_active) return MY_RET_NOT_SUPPORTED;
+  *start = chart->brush_start < chart->brush_end ? chart->brush_start
+                                                 : chart->brush_end;
+  *end = chart->brush_start < chart->brush_end ? chart->brush_end
+                                               : chart->brush_start;
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_brush(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  chart->brush_active = false;
+  chart->brush_start = SIZE_MAX;
+  chart->brush_end = SIZE_MAX;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
 }
 
 my_ret_t my_chart_set_animation_progress(my_widget_t* widget, float progress) {
