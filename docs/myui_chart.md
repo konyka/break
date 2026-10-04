@@ -34,6 +34,12 @@ All segments in one category share the same horizontal bar slot; grouped mode
 remains the default when stacking is disabled.
 Hover markers on stacked bars follow the visible segment endpoint rather than
 the raw unstacked value.
+Static annotations use `my_chart_add_mark_point()`, which anchors a borrowed
+label to one series category sample (ECharts `markPoint` equivalent). Up to
+`MY_CHART_MAX_MARK_POINTS` marks are stored; `my_chart_clear_mark_points()`
+removes them and `my_chart_get_mark_point_count()` reports the active count.
+Mark points on stacked bars follow the same visible segment endpoint as hover
+markers.
 Series must be added contiguously starting at index `0`; attempting to create a
 hole in the series array is rejected.
 Series values must be finite; `my_chart_set_series()` rejects `NaN` and

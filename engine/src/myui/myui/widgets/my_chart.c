@@ -81,6 +81,25 @@ static size_t chart_category_count(const my_chart_t* chart) {
   return count;
 }
 
+/* Stacked base for a value at `category_index`: the sum of same-sign visible
+ * samples from lower series indices. Used by both hover markers and marks so
+ * annotations land on the rendered segment instead of the raw value. */
+static float chart_stacked_base(const my_chart_t* chart, size_t series_index,
+                                size_t category_index, float value) {
+  float base = 0.0f;
+  size_t i;
+  for (i = 0u; i < series_index; i++) {
+    const my_chart_series_t* series = &chart->series[i];
+    float sample;
+    if (!chart->series_visible[i] || series->values == NULL ||
+        category_index >= series->count)
+      continue;
+    sample = series->values[category_index];
+    if ((value >= 0.0f) == (sample >= 0.0f)) base += sample;
+  }
+  return base;
+}
+
 static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
   size_t i;
   float lo = 0.0f;
@@ -296,23 +315,9 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
                        ? w * (float)chart->hover_index / (float)(category_count - 1u)
                        : w * 0.5f);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
-      float positive_base = 0.0f;
-      float negative_base = 0.0f;
-      for (size_t previous = 0u; previous < i; previous++) {
-        if (!chart->series_visible[previous] ||
-            chart->series[previous].values == NULL ||
-            chart->hover_index >= chart->series[previous].count) continue;
-        if (chart->series[previous].values[chart->hover_index] >= 0.0f)
-          positive_base += chart->series[previous].values[chart->hover_index];
-        else
-          negative_base += chart->series[previous].values[chart->hover_index];
-      }
-      if (series->values[chart->hover_index] >= 0.0f)
-        point_y = my_chart_stacked_value_to_y(
-            series->values[chart->hover_index], positive_base, y_min, y_max, y, h);
-      else
-        point_y = my_chart_stacked_value_to_y(
-            series->values[chart->hover_index], negative_base, y_min, y_max, y, h);
+      float value = series->values[chart->hover_index];
+      float base = chart_stacked_base(chart, i, chart->hover_index, value);
+      point_y = my_chart_stacked_value_to_y(value, base, y_min, y_max, y, h);
     } else {
       point_y = my_chart_value_to_y(series->values[chart->hover_index], y_min,
                                     y_max, y, h);
@@ -327,6 +332,44 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
                                   &(my_rectf_t){point_x - 2.0f, point_y - 2.0f,
                                                 4.0f, 4.0f},
                                   1.5f);
+  }
+}
+
+static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                   float x, float y, float w, float h,
+                                   float y_min, float y_max) {
+  size_t category_count = chart_category_count(chart);
+  if (category_count == 0u) return;
+  my_vgcanvas_set_font(vg, NULL, 10);
+  for (size_t m = 0u; m < chart->mark_count; m++) {
+    const my_chart_mark_point_t* mark = &chart->marks[m];
+    const my_chart_series_t* series;
+    float px;
+    float py;
+    if (mark->series_index >= chart->series_count ||
+        !chart->series_visible[mark->series_index])
+      continue;
+    series = &chart->series[mark->series_index];
+    if (series->values == NULL || mark->category_index >= series->count) continue;
+    px = x + (category_count > 1u
+                  ? w * (float)mark->category_index / (float)(category_count - 1u)
+                  : w * 0.5f);
+    if (chart->stacked && chart->mode == MY_CHART_BAR) {
+      float value = series->values[mark->category_index];
+      float base = chart_stacked_base(chart, mark->series_index,
+                                      mark->category_index, value);
+      py = my_chart_stacked_value_to_y(value, base, y_min, y_max, y, h);
+    } else {
+      py = my_chart_value_to_y(series->values[mark->category_index], y_min,
+                               y_max, y, h);
+    }
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(series->color));
+    my_vgcanvas_fill_rounded_rect(vg,
+                                  &(my_rectf_t){px - 4.0f, py - 4.0f, 8.0f, 8.0f},
+                                  2.0f);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
+    my_vgcanvas_draw_text(vg, mark->label != NULL ? mark->label : "",
+                          px + 6.0f, py - 4.0f);
   }
 }
 
@@ -371,6 +414,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     }
   }
   chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
+  chart_draw_mark_points(chart, vg, x, y, w, h, y_min, y_max);
   if (chart->hover_index != CHART_HOVER_NONE &&
       chart_category_count(chart) > 0u) {
     char tooltip[64];
@@ -576,6 +620,35 @@ my_ret_t my_chart_set_stacked(my_widget_t* widget, bool stacked) {
 bool my_chart_get_stacked(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL && chart->stacked;
+}
+
+my_ret_t my_chart_add_mark_point(my_widget_t* widget, size_t series_index,
+                                 size_t category_index, const char* label) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || series_index >= chart->series_count ||
+      category_index >= chart->series[series_index].count ||
+      chart->mark_count >= MY_CHART_MAX_MARK_POINTS)
+    return MY_RET_INVALID_PARAMS;
+  chart->marks[chart->mark_count].series_index = series_index;
+  chart->marks[chart->mark_count].category_index = category_index;
+  chart->marks[chart->mark_count].label = label;
+  chart->mark_count++;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_clear_mark_points(my_widget_t* widget) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  memset(chart->marks, 0, sizeof(chart->marks));
+  chart->mark_count = 0u;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+size_t my_chart_get_mark_point_count(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL ? chart->mark_count : 0u;
 }
 
 size_t my_chart_get_hover_index(const my_widget_t* widget) {

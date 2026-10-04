@@ -83,6 +83,23 @@ TEST(chart_hidden_series_excluded_from_auto_range) {
   my_widget_unref(chart);
 }
 
+TEST(chart_manages_mark_points) {
+  static const float values[] = {10.0f, 20.0f, 30.0f};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_point_count(chart), 0u);
+  ASSERT_EQ(my_chart_add_mark_point(chart, 0u, 2u, "peak"), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_point_count(chart), 1u);
+  ASSERT_EQ(my_chart_add_mark_point(chart, 1u, 0u, "bad"), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_add_mark_point(chart, 0u, 3u, "bad"), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_clear_mark_points(chart), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_mark_point_count(chart), 0u);
+  my_widget_unref(chart);
+}
+
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
@@ -378,6 +395,51 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
   my_widget_unref(chart);
 }
 
+TEST(chart_paints_mark_point_annotation) {
+  static const float values[] = {5.0f, 30.0f, 15.0f};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t without_mark = 0u;
+  size_t with_mark = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u) {
+    if (pixels[i] == 0xFFu && pixels[i + 1u] == 0x86u &&
+        pixels[i + 2u] == 0x3Au && pixels[i + 3u] == 0xFFu) {
+      without_mark++;
+    }
+  }
+
+  ASSERT_EQ(my_chart_add_mark_point(chart, 0u, 1u, "peak"), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u) {
+    if (pixels[i] == 0xFFu && pixels[i + 1u] == 0x86u &&
+        pixels[i + 2u] == 0x3Au && pixels[i + 3u] == 0xFFu) {
+      with_mark++;
+    }
+  }
+  /* The mark marker square adds series-colored pixels at the annotated point. */
+  ASSERT_TRUE(with_mark > without_mark);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST(chart_line_series_share_category_positions) {
   static const float long_values[] = {10.0f, 20.0f, 30.0f, 40.0f};
   static const float short_values[] = {15.0f, 25.0f};
@@ -426,6 +488,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_hidden_series_excluded_from_auto_range);
+  RUN_TEST(chart_manages_mark_points);
   RUN_TEST(chart_series_visibility_controls_tooltip);
   RUN_TEST(chart_legend_click_toggles_series_visibility);
   RUN_TEST(chart_hover_emphasis_is_reported);
@@ -436,5 +499,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
   RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
+  RUN_TEST(chart_paints_mark_point_annotation);
   RUN_TEST(chart_line_series_share_category_positions);
 TEST_MAIN_END()

@@ -8,6 +8,7 @@
 #include "myui/my_widget.h"
 
 #define MY_CHART_MAX_SERIES 4u
+#define MY_CHART_MAX_MARK_POINTS 8u
 
 typedef enum my_chart_mode_t {
   MY_CHART_LINE = 0,
@@ -21,6 +22,13 @@ typedef struct my_chart_series_t {
   size_t count;
   uint32_t color;
 } my_chart_series_t;
+
+/** @brief A borrowed annotation anchored to one series category sample. */
+typedef struct my_chart_mark_point_t {
+  size_t series_index;
+  size_t category_index;
+  const char* label;
+} my_chart_mark_point_t;
 
 typedef struct my_chart_t {
   my_widget_t base;
@@ -37,6 +45,8 @@ typedef struct my_chart_t {
   bool show_legend;
   bool stacked;
   size_t hover_index;
+  my_chart_mark_point_t marks[MY_CHART_MAX_MARK_POINTS];
+  size_t mark_count;
 } my_chart_t;
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator,
@@ -58,6 +68,10 @@ my_ret_t my_chart_get_range(const my_widget_t* chart, float* y_min,
 my_ret_t my_chart_set_legend_visible(my_widget_t* chart, bool visible);
 my_ret_t my_chart_set_stacked(my_widget_t* chart, bool stacked);
 bool my_chart_get_stacked(const my_widget_t* chart);
+my_ret_t my_chart_add_mark_point(my_widget_t* chart, size_t series_index,
+                                 size_t category_index, const char* label);
+my_ret_t my_chart_clear_mark_points(my_widget_t* chart);
+size_t my_chart_get_mark_point_count(const my_widget_t* chart);
 size_t my_chart_get_hover_index(const my_widget_t* chart);
 my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
                               size_t capacity);
