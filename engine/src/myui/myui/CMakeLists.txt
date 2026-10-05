@@ -35,6 +35,8 @@ add_library(myui STATIC
   widgets/my_node_view.c
   my_css.c
   echarts/my_echart_event.c
+  echarts/my_echart_option.c
+  echarts/my_echart_adapter.c
 )
 
 set(MYUI_SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." CACHE PATH

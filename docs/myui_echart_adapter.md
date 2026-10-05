@@ -1,0 +1,24 @@
+# myui ECharts renderer adapter
+
+`my_echart_adapter_t` is a small ownership bridge from a normalized
+`my_echart_option_t` to the existing typed `my_chart_t` widget. It is not a
+full ECharts implementation.
+
+The supported subset is:
+
+- line, bar, and scatter series;
+- one or more series of one shared type;
+- finite double values converted to finite `float` values within `FLT_MAX`;
+- category labels, title, visibility, and left/right axis selection;
+- bar options where every series uses the same non-empty stack name.
+
+Mixed series types, mixed stack names, stacks on non-bar charts, and other
+ECharts series/configuration features are rejected with
+`MY_RET_NOT_SUPPORTED`; they are not silently discarded.
+
+The adapter retains the chart widget, deep-copies the normalized option, and
+owns converted float buffers for as long as the chart borrows them. Applying
+an option stages and validates all allocations and conversions before changing
+the native widget. Invalid input and out-of-memory failures leave the prior
+chart/model unchanged. Destroying the adapter first detaches borrowed labels
+and series, then releases the owned payload and widget reference.

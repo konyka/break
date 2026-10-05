@@ -421,6 +421,8 @@ set(MYUI_CORE_SOURCES
     src/myui/myui/widgets/my_node_view.c
     src/myui/myui/my_css.c
     src/myui/myui/echarts/my_echart_event.c
+    src/myui/myui/echarts/my_echart_option.c
+    src/myui/myui/echarts/my_echart_adapter.c
     src/myui/mymvvm/my_view_model.c
     src/myui/mymvvm/my_view_model_array.c
     src/myui/mymvvm/my_value_converter.c
@@ -1439,6 +1441,11 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_echart_animation PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_echart_animation COMMAND test_myui_echart_animation)
+    add_executable(test_myui_echart_adapter tests/test_myui_echart_adapter.c)
+    target_include_directories(test_myui_echart_adapter PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_echart_adapter PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_echart_adapter COMMAND test_myui_echart_adapter)
 
     add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
     target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})
