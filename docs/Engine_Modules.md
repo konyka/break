@@ -1465,6 +1465,8 @@ bool scene_instantiate_prefab(World *w, Scene *s,
                               const char *path, Vec3 position);
 ```
 
+**恢复消费（R615）：** 加载得到的 Scene 经 `asset_scene_restore(ctx, scene, texture_base_dir)` 一次调用重建全部 GPU 面存储——按依赖序组合：清单材质（R606）→ 静态网格缓冲（R612）→ 蒙皮网格缓冲（R613）→ 纹理重绑（R607，尽力而为）；骨架/片段为 CPU 数据已在 Scene 中就位（R614），调用方传 `skeleton_set_joints`。任一重建步报腐败即 false（场景保持有效但可能部分重建，应 `asset_scene_free` 丢弃而非渲染）；无清单老文件空转为诚实空场景。demo N 键由此替换渲染场景（temp-scene-move，镜像 R381 temp-world；失败保旧场景）。
+
 ### 11.2 集成策略
 
 主循环中的场景存储采用双文件策略：

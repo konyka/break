@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R615 BSCN 全场景恢复（TDD）— asset_scene_restore 消费链 + N 键替换渲染场景；R612-R615 弧"保存自包含→恢复可用"全闭环
+
+- **缺口**（R614 落账"剩余仅消费端：demo N 键仍只换 ECS world"):N 键把 BSCN 载入后只替换 ECS world,R612-R614 载入的几何/材质/骨架全部随 `bscn_scene` 丢弃（scene_serial_free)，渲染场景保持启动时的 glTF 原样——保存-恢复弧有数据无消费。
+- **方案**:asset 层新 API **`asset_scene_restore(ctx, scene, texture_base_dir)`**——按依赖序组合四个已锁死的重建步：清单材质（R606)→静态网格缓冲（R612)→蒙皮网格缓冲（R613)→纹理重绑（R607，尽力而为永不败调用）；骨架为 CPU 数据已在 Scene 中就位（R614 契约：调用方传 skeleton_set_joints)。任一步报腐败即 false（短路，各步自身回滚语义），场景保持有效但可能部分重建——契约=调用方丢弃（asset_scene_free）而非渲染；无清单老文件空转为诚实空场景。N 键接线：载入成功→restore→**temp-scene-move 替换渲染场景**(asset_scene_free 旧场景全量 GPU+CPU→结构体移动→bscn_scene 清零，镜像 R381 temp-world 模式，restore 失败保旧渲染场景）;**渲染缓存复位**——render.anim_clip 重拷、skeleton_set_joints 重灌、anim_blend 状态对旧场景 anim_clips 的悬垂指针重指（blen_clips 是真指针非拷贝，调研钓出）;N 键清理统一为 asset_scene_free（覆盖 serial free + 失败 restore 遗留的 GPU 资源）。纹理重绑基准=源模型目录（R604/R607 调用方供基政策，model_path dirname 推导）。
+- **TDD（红→绿实证）**:test_asset_gltf +5——组合清单（材质 refs-only+网格+蒙皮条目）+双几何存储往返（材质默认回填/双网格重建/4 缓冲创建计数全验）、腐败材质拒（零创建零接触）、腐败网格拒（材质已重建=文档化部分态，网格蒙皮未触）、腐败蒙皮拒（静态已建 2 创建）、空场景空转。RED 如实红 4/5(corrupt_materials 对存根平凡过=守卫测试，历轮同型）;GREEN 首轮即过 **47/47**。test_asset_gltf 链接补 scene_serial.c+ecs.c(restore 调 R606 重建——asset.c 对 scene_serial.c 的首个链接依赖，本轮落账）。
+- **图形门（双端 E2E)**：图形套件新门 **SCENE RESTORE**(SKIN MESH ROUNDTRIP 之后，双端共享段；TV_RESTORE_* 后端标签文件名）——真设备源场景（静态三角+蒙皮三角+真 BMP 纹理材质（texture_sources 接线）+3 关节 rig 带片段）经生产 reader 保存→加载→restore 一次调用→**双网格回读逐字节精确+material_idx+albedo 重绑像素回读（R607 同断言）+rig 字段全验**；随后**第二轮 load+restore 循环**（N 键重复替换模式）,asset_scene_free 首轮场景于次轮重建之后——真设备销毁序在 validation 层下实证。**GL 全套件 ALL PASSED;VK 门过+validation 0**。
+- **回归**：双树非图形 CTest **119/119**(GL 全量）与 **117/117**(VK headless);VK 套件失败项恰为已知基线三项；demo 四配置各 120 帧优雅退出、VK validation 0。demo 的 B 键保存（R612-R614 数据自此全带）→N 键恢复链自此可用（交互路径无可驱动 CTest——门覆盖了同一 restore 调用链，main.c 接线为薄组合，demo 四配置验证编译/链接/未触发路径不回归）。
+- **边界**:**BSCN 弧全闭环**(R604 身份→R605 接线→R606 材质→R607 纹理→R612 静态几何→R613 蒙皮几何→R614 骨架/动画→R615 恢复消费）;N 键恢复对 ECS 运行时数据（相机/物理/水）仍走 scene_state.bin 伴生文件（既有分工未动）;restore 后 render.anim_clip 等缓存在无 rig 场景保持旧值（消费端以 joint_count==0 守卫，与启动路径同约）;JSON 格式无恢复（同历轮让渡）;anim blend 的 layer/权重运行态不入盘（R614 已落账）;R611 基线与 MRT bind 清屏语义差异保留。
+
 ## 本轮更新：R614 BSCN 骨架与动画入库（TDD）— SKELETON + ANIMS chunk;R613 边界"骨骼本体不入 BSCN"关闭，蒙皮场景数据面自此全闭环
 
 - **缺口**（R613 落账"骨骼本体 joint_parents/inverse_bind/anim_clips 仍不入 BSCN——蒙皮场景恢复的最后缺口")：蒙皮网格几何（R613）与节点 skin 接线（SCENE_NODES 本就往返）之外，骨架层级/逆绑定矩阵/动画片段仍只存于内存——BSCN 保存→加载后蒙皮场景失骨架。调研定论四点：① 数据纯 CPU 常驻——**无需 reader 回调**(R612/R613 的 GPU 回读接线不适用于此），场景有合法骨架即发射，存在即表意；② 新双 chunk 而非单 chunk——骨架（定长布局）与片段（变长嵌套）校验族各自独立，沿用可选 chunk 旧读取端跳过原则，v3 不升版本；③ `AnimClip` 是 ~330KB 定长巨型结构体——磁盘格式必须稀疏化（只写有效通道/关键帧/事件），且 clip_count 需独立硬上限（`BSCN_MAX_ANIM_CLIPS=64`，文件尺寸上限单独不足以约束分配）;④ 加载端填 `AnimClip` 逐字段直填而非调 `anim_clip_*` helper——skeleton.c 拖 RHI 链接依赖进 scene_serial.c 与测试二进制（直填语义等价，首轮试链 helper 即撞上此边界）。
