@@ -372,6 +372,19 @@ fail:
     return false;
 }
 
+/* R615: see asset.h. Composition of the four rebuild steps in dependency
+ * order; each step's own validation/rollback semantics apply (R606/R612/
+ * R613), and the R607 rebind stays best-effort. */
+bool asset_scene_restore(AssetCtx *ctx, Scene *scene,
+                         const char *texture_base_dir) {
+    if (!ctx || !scene) return false;
+    if (!scene_rebuild_materials_from_manifest(scene)) return false;
+    if (!asset_scene_rebuild_meshes(ctx, scene)) return false;
+    if (!asset_scene_rebuild_skinned_meshes(ctx, scene)) return false;
+    asset_scene_rebind_textures(ctx, scene, texture_base_dir);
+    return true;
+}
+
 typedef struct {
     f32 pos[3];
     f32 normal[3];

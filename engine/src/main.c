@@ -4823,6 +4823,48 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     netrep_ghost = (Entity){0};
                     bscn_ok = true;
                     LOG_INFO("Scene loaded (BSCN binary)");
+                    /* R615: full-scene restore — rebuild every GPU-facing
+                     * store from the loaded manifest/payloads and replace the
+                     * render scene (the N key used to swap only the ECS world
+                     * and leave the render scene stale). The texture rebind
+                     * base is the source model's directory (manifest texture
+                     * paths are authored relative to the glTF — R604/R607
+                     * policy: the caller supplies the base). On restore
+                     * failure the old render scene is kept (the ECS world was
+                     * already swapped; render stays as before). */
+                    {
+                        char tex_base[260];
+                        const char *slash = strrchr(model_path, '/');
+                        if (slash && (usize)(slash - model_path) < sizeof(tex_base)) {
+                            memcpy(tex_base, model_path, (usize)(slash - model_path));
+                            tex_base[slash - model_path] = '\0';
+                        } else {
+                            tex_base[0] = '\0';
+                        }
+                        if (asset_scene_restore(&asset, &bscn_scene, tex_base)) {
+                            asset_scene_free(&asset, &scene);
+                            scene = bscn_scene; /* move; bscn_scene zeroed below */
+                            memset(&bscn_scene, 0, sizeof(bscn_scene));
+                            if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
+                                skeleton_set_joints(&render.skeleton, scene.joint_count,
+                                                    scene.joint_parents, scene.inverse_bind);
+                                render.anim_clip = scene.anim_clips[0];
+                            }
+                            if (anim_blend_ready) {
+                                /* The blend state pointed into the old scene's
+                                 * clips — re-init against the restored rig. */
+                                anim_blend_state_init(&anim_blend, scene.joint_count);
+                                anim_layer_play(&anim_blend, 0, 0u, 1.0f, true);
+                                blend_clips = scene.anim_clips;
+                                blend_clip_count = scene.anim_clip_count;
+                                if (scene.anim_clip_count == 0)
+                                    anim_blend_ready = false;
+                            }
+                            LOG_INFO("Render scene restored (meshes/materials/textures/rig)");
+                        } else {
+                            LOG_WARN("BSCN restore failed; render scene unchanged");
+                        }
+                    }
                     if (netrep_enabled) {
                         Entity ge = world_create_entity(world);
                         CTransform *gt = world_add_component(world, ge, COMP_TRANSFORM);
@@ -4840,8 +4882,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 } else {
                     LOG_WARN("BSCN load failed or file not found");
                 }
-                /* R382/R383: nodes + resources both come from the loader. */
-                scene_serial_free(&bscn_scene);
+                /* R615: asset_scene_free covers scene_serial_free's stores
+                 * plus any GPU resources a failed restore left behind; on the
+                 * success path bscn_scene was zeroed by the move, so this is
+                 * a no-op there. */
+                asset_scene_free(&asset, &bscn_scene);
                 if (tmp_world) world_destroy(tmp_world);
             }
             if (bscn_ok) {

@@ -1047,10 +1047,14 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
 #define TV_REBIND_BMP "tmp_tex_rebind_vk.bmp"
 #define TV_GEOM_BSCN  "tmp_mesh_geom_vk.bscn"
 #define TV_SGEOM_BSCN "tmp_skin_geom_vk.bscn"
+#define TV_RESTORE_BSCN "tmp_restore_vk.bscn"
+#define TV_RESTORE_BMP  "tmp_restore_tex_vk.bmp"
 #else
 #define TV_REBIND_BMP "tmp_tex_rebind_gl.bmp"
 #define TV_GEOM_BSCN  "tmp_mesh_geom_gl.bscn"
 #define TV_SGEOM_BSCN "tmp_skin_geom_gl.bscn"
+#define TV_RESTORE_BSCN "tmp_restore_gl.bscn"
+#define TV_RESTORE_BMP  "tmp_restore_tex_gl.bmp"
 #endif
 
 static bool tv_write_test_bmp(const char *path) {
@@ -1457,6 +1461,237 @@ static bool tv_test_skin_geometry_roundtrip(RHIDevice *dev) {
     asset_scene_free(&actx, &src);
     world_destroy(w);
     remove(path);
+    return pass;
+}
+
+/* R615: SCENE RESTORE gate — real-device end-to-end for
+ * asset_scene_restore, the consumption half of the R612-R614 BSCN
+ * roundtrips. A source scene carrying one static mesh, one skinned mesh, a
+ * textured material (a real BMP on disk, manifest-wired via
+ * texture_sources), and a 3-joint rig rides the production save path; a
+ * fresh scene loads it and restores every GPU-facing store in one call.
+ * Verified: rebuilt mesh buffers byte-exact, the material rebuilt with its
+ * albedo rebound (pixels read back), and the rig present. A second
+ * load+restore cycle then replaces the first (the N-key pattern), proving
+ * real-device destroy ordering under the validation layer. */
+static bool tv_test_scene_restore(RHIDevice *dev) {
+    bool pass = true;
+    char bscn_path[96], bmp_path[96];
+    snprintf(bscn_path, sizeof(bscn_path), "tests/%s", TV_RESTORE_BSCN);
+    snprintf(bmp_path, sizeof(bmp_path), "tests/%s", TV_RESTORE_BMP);
+
+    typedef struct {
+        f32 pos[3]; f32 nrm[3]; f32 uv[2]; u32 joints[4]; f32 weights[4];
+    } TvSkinVertex;
+    static const f32 verts0[3 * 8] = {
+        0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f,
+    };
+    static const u32 idx0[3] = { 0u, 1u, 2u };
+    static const TvSkinVertex sverts[3] = {
+        { { 2.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f },
+          { 0u, 1u, 0u, 0u }, { 0.5f, 0.5f, 0.0f, 0.0f } },
+        { { 3.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f },
+          { 1u, 2u, 0u, 0u }, { 0.25f, 0.75f, 0.0f, 0.0f } },
+        { { 2.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f },
+          { 2u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+    };
+    static const u32 sidx[3] = { 0u, 1u, 2u };
+
+    AssetCtx actx;
+    asset_ctx_init(&actx, dev);
+    World *w = world_create();
+    Scene src;
+    memset(&src, 0, sizeof(src));
+    if (!w || !tv_write_test_bmp(bmp_path)) {
+        LOG_ERROR("FAIL: restore gate setup (world/bmp)");
+        if (w) world_destroy(w);
+        return false;
+    }
+    src.mesh_count = 1;
+    src.meshes = (Mesh *)calloc(1, sizeof(Mesh));
+    src.skinned_mesh_count = 1;
+    src.skinned_meshes = (SkinnedMesh *)calloc(1, sizeof(SkinnedMesh));
+    src.material_count = 1;
+    src.materials = (Material *)calloc(1, sizeof(Material));
+    if (!src.meshes || !src.skinned_meshes || !src.materials) {
+        LOG_ERROR("FAIL: restore gate setup (alloc)");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+    RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                         .size = sizeof(verts0), .initial_data = verts0 };
+    src.meshes[0].vertex_buf = rhi_buffer_create(dev, &vd);
+    RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                         .size = sizeof(idx0), .initial_data = idx0 };
+    src.meshes[0].index_buf = rhi_buffer_create(dev, &id);
+    src.meshes[0].vertex_count = 3;
+    src.meshes[0].index_count = 3;
+    src.meshes[0].material_idx = 0;
+    src.meshes[0].aabb_min = vec3(0.0f, 0.0f, 0.0f);
+    src.meshes[0].aabb_max = vec3(1.0f, 1.0f, 0.0f);
+    RHIBufferDesc svd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(sverts), .initial_data = sverts };
+    src.skinned_meshes[0].vertex_buf = rhi_buffer_create(dev, &svd);
+    RHIBufferDesc sid = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(sidx), .initial_data = sidx };
+    src.skinned_meshes[0].index_buf = rhi_buffer_create(dev, &sid);
+    src.skinned_meshes[0].vertex_count = 3;
+    src.skinned_meshes[0].index_count = 3;
+    src.skinned_meshes[0].material_idx = 0;
+    src.skinned_meshes[0].skinned = true;
+    /* Textured material + the load-time source table the serializer needs
+     * to write the texture entry's path (R604). */
+    src.materials[0].albedo = asset_load_texture(&actx, bmp_path);
+    src.materials[0].base_color[0] = 1.0f;
+    src.materials[0].base_color[3] = 1.0f;
+    src.texture_source_count = 1;
+    src.texture_sources =
+        (SceneTextureSource *)calloc(1, sizeof(SceneTextureSource));
+    if (!rhi_handle_valid(src.meshes[0].vertex_buf) ||
+        !rhi_handle_valid(src.meshes[0].index_buf) ||
+        !rhi_handle_valid(src.skinned_meshes[0].vertex_buf) ||
+        !rhi_handle_valid(src.skinned_meshes[0].index_buf) ||
+        !rhi_handle_valid(src.materials[0].albedo) || !src.texture_sources) {
+        LOG_ERROR("FAIL: restore gate source resources");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+    src.texture_sources[0].handle_index = src.materials[0].albedo.index;
+    snprintf(src.texture_sources[0].uri,
+             sizeof(src.texture_sources[0].uri), "%s", TV_RESTORE_BMP);
+    /* 3-joint rig with one 2-keyframe channel (rides the save with no
+     * reader callback, R614). */
+    src.joint_count = 3;
+    {
+        usize jp_bytes = 3 * sizeof(u32);
+        usize ib_off = (jp_bytes + 15u) & ~(usize)15u;
+        u8 *buf = (u8 *)calloc(1, ib_off + 3 * sizeof(Mat4));
+        src.joint_parents = (u32 *)buf;
+        src.inverse_bind = (Mat4 *)(buf + ib_off);
+    }
+    src.joint_parents[0] = UINT32_MAX;
+    src.joint_parents[1] = 0u;
+    src.joint_parents[2] = 1u;
+    src.inverse_bind[0] = mat4_identity();
+    src.inverse_bind[1] = mat4_identity();
+    src.inverse_bind[2] = mat4_translation(1.0f, 2.0f, 3.0f);
+    src.anim_clip_count = 1;
+    src.anim_clips = (AnimClip *)calloc(1, sizeof(AnimClip));
+    if (!src.joint_parents || !src.anim_clips) {
+        LOG_ERROR("FAIL: restore gate rig alloc");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+    src.anim_clips[0].duration = 1.0f;
+    src.anim_clips[0].loop = true;
+    src.anim_clips[0].channel_count = 1;
+    src.anim_clips[0].channels[0].joint_index = 1;
+    src.anim_clips[0].channels[0].path = ANIM_PATH_TRANSLATION;
+    src.anim_clips[0].channels[0].keyframe_count = 2;
+    src.anim_clips[0].channels[0].times[1] = 1.0f;
+    src.anim_clips[0].channels[0].values[1][1] = 2.0f;
+
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_mesh_geometry = asset_mesh_geometry_reader,
+          .read_mesh_geometry_user = dev,
+          .read_skinned_mesh_geometry = asset_skinned_mesh_geometry_reader,
+          .read_skinned_mesh_geometry_user = dev };
+    if (!scene_save_binary(w, &src, bscn_path, &opts)) {
+        LOG_ERROR("FAIL: restore gate save");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+
+    /* One full load+restore+verify cycle; run twice — the second cycle
+     * replaces the first (asset_scene_free between) to exercise real-device
+     * destroy ordering (the N-key restore pattern). */
+    Scene kept; memset(&kept, 0, sizeof(kept));
+    for (u32 cycle = 0; cycle < 2 && pass; cycle++) {
+        World *wl = world_create();
+        Scene dst;
+        memset(&dst, 0, sizeof(dst));
+        if (!wl || !scene_load_binary(wl, &dst, bscn_path)) {
+            LOG_ERROR("FAIL: restore gate load (cycle %u)", cycle);
+            pass = false;
+        } else if (!asset_scene_restore(&actx, &dst, "tests")) {
+            LOG_ERROR("FAIL: restore gate restore (cycle %u)", cycle);
+            pass = false;
+        } else {
+            if (dst.mesh_count != 1u || dst.skinned_mesh_count != 1u ||
+                dst.material_count != 1u || dst.joint_count != 3u ||
+                dst.anim_clip_count != 1u) {
+                LOG_ERROR("FAIL: restore gate counts (cycle %u): "
+                          "%u/%u/%u/%u/%u", cycle, dst.mesh_count,
+                          dst.skinned_mesh_count, dst.material_count,
+                          dst.joint_count, dst.anim_clip_count);
+                pass = false;
+            }
+            u8 rb_v[sizeof(verts0)] = {0}, rb_sv[sizeof(sverts)] = {0};
+            u32 rb_i[3] = {0};
+            if (pass &&
+                (!rhi_buffer_read(dev, dst.meshes[0].vertex_buf, rb_v, 0,
+                                  sizeof(verts0)) ||
+                 !rhi_buffer_read(dev, dst.skinned_meshes[0].vertex_buf,
+                                  rb_sv, 0, sizeof(sverts)) ||
+                 !rhi_buffer_read(dev, dst.skinned_meshes[0].index_buf,
+                                  rb_i, 0, sizeof(sidx)))) {
+                LOG_ERROR("FAIL: restore gate rebuilt readback (cycle %u)",
+                          cycle);
+                pass = false;
+            } else if (pass &&
+                       (memcmp(rb_v, verts0, sizeof(verts0)) != 0 ||
+                        memcmp(rb_sv, sverts, sizeof(sverts)) != 0 ||
+                        memcmp(rb_i, sidx, sizeof(sidx)) != 0)) {
+                LOG_ERROR("FAIL: restore gate rebuilt payload (cycle %u)",
+                          cycle);
+                pass = false;
+            }
+            if (pass && dst.meshes[0].material_idx != 0u) {
+                LOG_ERROR("FAIL: restore gate material_idx");
+                pass = false;
+            }
+            /* The albedo rode manifest path -> rebind; pixels come back. */
+            static const u8 want_px[8] = { 255,0,0,255, 0,255,0,255 };
+            u8 rb_px[8] = {0};
+            if (pass &&
+                (!rhi_handle_valid(dst.materials[0].albedo) ||
+                 !rhi_texture_read_pixels(dev, dst.materials[0].albedo,
+                                          rb_px, sizeof(rb_px)) ||
+                 memcmp(rb_px, want_px, sizeof(rb_px)) != 0)) {
+                LOG_ERROR("FAIL: restore gate albedo rebind (cycle %u)",
+                          cycle);
+                pass = false;
+            }
+            if (pass &&
+                (dst.joint_parents[2] != 1u ||
+                 fabsf(dst.inverse_bind[2].e[3][0] - 1.0f) > 1e-6f ||
+                 fabsf(dst.anim_clips[0].channels[0].values[1][1] - 2.0f)
+                     > 1e-6f)) {
+                LOG_ERROR("FAIL: restore gate rig (cycle %u)", cycle);
+                pass = false;
+            }
+        }
+        if (cycle == 0 && pass) {
+            kept = dst; /* hold the first restored scene across the second */
+        } else {
+            asset_scene_free(&actx, &dst);
+        }
+        if (wl) world_destroy(wl);
+    }
+    /* Destroy the first cycle's scene AFTER the second cycle rebuilt its own
+     * buffers from the same bytes — the N-key replace ordering. */
+    asset_scene_free(&actx, &kept);
+    asset_scene_free(&actx, &src);
+    world_destroy(w);
+    remove(bscn_path);
+    remove(bmp_path);
     return pass;
 }
 
@@ -4543,6 +4778,13 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: SKIN MESH ROUNDTRIP TEST %s",
              sgeom_pass ? "PASSED ✓" : "FAILED");
 
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: SCENE RESTORE (BSCN -> GPU, FULL CHAIN)");
+    LOG_INFO("============================================");
+    bool restore_pass = tv_test_scene_restore(render.device);
+    LOG_INFO("RESULT: SCENE RESTORE TEST %s",
+             restore_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -4639,7 +4881,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -5653,7 +5895,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

@@ -1692,6 +1692,161 @@ TEST(rebuild_skinned_meshes_replaces_existing)
     asset_scene_free(&ctx, &scene);
 }
 
+/* ---- R615: asset_scene_restore (BSCN consumption chain) ---- */
+
+/* Combined manifest builder — the restore tests need material + mesh +
+ * skinned entries in ONE resources array (the R612/R613 helpers each own a
+ * fresh single-entry array). */
+typedef struct {
+    u32 type; u32 ref; u32 flags; u32 u0, u1, u2;
+} RestoreEntry;
+
+static bool restore_test_manifest(Scene *scene, const RestoreEntry *es,
+                                  u32 n) {
+    scene->resources = (SceneResource *)calloc(n ? n : 1,
+                                               sizeof(SceneResource));
+    if (!scene->resources) return false;
+    scene->resource_count = n;
+    for (u32 i = 0; i < n; i++) {
+        scene->resources[i].type = es[i].type;
+        scene->resources[i].ref_index = es[i].ref;
+        scene->resources[i].flags = es[i].flags;
+        scene->resources[i].u0 = es[i].u0;
+        scene->resources[i].u1 = es[i].u1;
+        scene->resources[i].u2 = es[i].u2;
+        memset(scene->resources[i].tex_slots, 0xFF,
+               sizeof(scene->resources[i].tex_slots));
+    }
+    return true;
+}
+
+TEST(scene_restore_roundtrip)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    const RestoreEntry es[3] = {
+        { BSCN_RES_MATERIAL, 0u, 0u, 0u, 0u, 0u },      /* refs-only: defaults */
+        { BSCN_RES_MESH, 0u, 1u, 3u, 4u, 1u },          /* 3 idx, 4 v, mat 1 */
+        { BSCN_RES_SKINNED_MESH, 0u, 1u, 3u, 3u, 0u }, /* 3 idx, 3 v, mat 0 */
+    };
+    ASSERT_TRUE(restore_test_manifest(&scene, es, 3u));
+    SceneMeshGeometry *g = geom_test_add_record(&scene, 0u);
+    ASSERT_NOT_NULL(g);
+    SceneMeshGeometry *sg = sgeom_test_add_record(&scene, 0u);
+    ASSERT_NOT_NULL(sg);
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    g_geom_destroy_count = 0;
+    ASSERT_TRUE(asset_scene_restore(&ctx, &scene, NULL));
+    g_geom_capture = false;
+
+    /* Materials from the manifest (refs-only → R606 glTF defaults). */
+    ASSERT_EQ(scene.material_count, 1u);
+    ASSERT_FLOAT_EQ(scene.materials[0].roughness_factor, 1.0f, 1e-6f);
+    /* Meshes rebuilt from the geometry store (R612). */
+    ASSERT_EQ(scene.mesh_count, 1u);
+    ASSERT_EQ(scene.meshes[0].vertex_count, 4u);
+    ASSERT_EQ(scene.meshes[0].material_idx, 1u);
+    ASSERT_TRUE(rhi_handle_valid(scene.meshes[0].vertex_buf));
+    /* Skinned meshes rebuilt (R613). */
+    ASSERT_EQ(scene.skinned_mesh_count, 1u);
+    ASSERT_EQ(scene.skinned_meshes[0].vertex_count, 3u);
+    ASSERT_TRUE(scene.skinned_meshes[0].skinned);
+    ASSERT_TRUE(rhi_handle_valid(scene.skinned_meshes[0].vertex_buf));
+    /* vertex+index buffers for both meshes reached the device. */
+    ASSERT_EQ(g_geom_cap_count, 4u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(scene_restore_rejects_corrupt_materials)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* ref_index 3 >= resource_count 1 — corrupt manifest (R606 rule). */
+    const RestoreEntry es[1] = { { BSCN_RES_MATERIAL, 3u, 0u, 0u, 0u, 0u } };
+    ASSERT_TRUE(restore_test_manifest(&scene, es, 1u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_FALSE(asset_scene_restore(&ctx, &scene, NULL));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_cap_count, 0u); /* refused before any buffer creation */
+    ASSERT_TRUE(scene.materials == NULL);
+    ASSERT_TRUE(scene.meshes == NULL);
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(scene_restore_rejects_corrupt_meshes)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Valid material, but geometry for a slot the manifest never declares. */
+    const RestoreEntry es[1] = { { BSCN_RES_MATERIAL, 0u, 0u, 0u, 0u, 0u } };
+    ASSERT_TRUE(restore_test_manifest(&scene, es, 1u));
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_FALSE(asset_scene_restore(&ctx, &scene, NULL));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_cap_count, 0u); /* orphan check precedes creation */
+    /* Materials were rebuilt before the meshes step failed (documented
+     * partial state — the caller discards the scene on false). */
+    ASSERT_EQ(scene.material_count, 1u);
+    ASSERT_TRUE(scene.meshes == NULL);
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(scene_restore_rejects_corrupt_skinned)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    const RestoreEntry es[2] = {
+        { BSCN_RES_MATERIAL, 0u, 0u, 0u, 0u, 0u },
+        { BSCN_RES_MESH, 0u, 1u, 3u, 4u, 0u },
+    };
+    ASSERT_TRUE(restore_test_manifest(&scene, es, 2u));
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+    /* Skinned geometry with no skinned manifest entry. */
+    ASSERT_NOT_NULL(sgeom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_FALSE(asset_scene_restore(&ctx, &scene, NULL));
+    g_geom_capture = false;
+
+    /* The static mesh rebuilt first (vertex+index), then the skinned step
+     * refused before creating anything. */
+    ASSERT_EQ(g_geom_cap_count, 2u);
+    ASSERT_EQ(scene.mesh_count, 1u);
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(scene_restore_vacuous_for_bare_scene)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+
+    /* An old v1-v3 file with no manifest/payloads restores to an honestly
+     * empty scene (R612/R613 vacuous rules compose). */
+    ASSERT_TRUE(asset_scene_restore(&ctx, &scene, NULL));
+    ASSERT_TRUE(scene.materials == NULL);
+    ASSERT_TRUE(scene.meshes == NULL);
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(asset_ctx_init_clears_vfs);
     RUN_TEST(rebuild_meshes_roundtrip);
@@ -1708,6 +1863,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(rebuild_skinned_meshes_sparse_slot_stays_empty);
     RUN_TEST(rebuild_skinned_meshes_no_manifest_is_vacuous);
     RUN_TEST(rebuild_skinned_meshes_replaces_existing);
+    RUN_TEST(scene_restore_roundtrip);
+    RUN_TEST(scene_restore_rejects_corrupt_materials);
+    RUN_TEST(scene_restore_rejects_corrupt_meshes);
+    RUN_TEST(scene_restore_rejects_corrupt_skinned);
+    RUN_TEST(scene_restore_vacuous_for_bare_scene);
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);

@@ -1983,7 +1983,10 @@ if(ENGINE_BUILD_TESTS)
     # with the test's link-only RHI stubs.
     add_executable(test_asset_gltf tests/test_asset_gltf.c
         src/asset/asset.c src/asset/vfs.c src/animation/skeleton.c
-        src/core/log.c src/math/math.c)
+        src/core/log.c src/math/math.c
+        # R615: asset_scene_restore composes scene_serial.c's manifest
+        # rebuild, which needs the ECS world for its loaders.
+        src/scene/scene_serial.c src/ecs/ecs.c)
     target_include_directories(test_asset_gltf PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_asset_gltf PRIVATE ENGINE_PLATFORM_WINDOWS=1)

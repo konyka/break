@@ -256,6 +256,21 @@ bool     asset_skinned_mesh_geometry_reader(void *user,
  * empty. */
 bool     asset_scene_rebuild_skinned_meshes(AssetCtx *ctx, Scene *scene);
 
+/* R615: full GPU-facing restore of a BSCN-loaded Scene — the consumption
+ * half of the R612-R614 roundtrips, composing the four rebuild steps in
+ * dependency order: materials from the manifest (CPU, R606), static mesh
+ * buffers from the geometry store (R612), skinned mesh buffers (R613),
+ * texture rebind from the manifest paths (R607, best-effort — never fails
+ * the call). The rig (joint_parents/inverse_bind/anim_clips) is CPU data
+ * already live in the Scene: nothing to rebuild; the caller passes it to
+ * skeleton_set_joints. Returns false when a rebuild step reports corrupt
+ * data; on false the scene is left valid but possibly partially rebuilt
+ * (earlier steps stay applied) — discard it (asset_scene_free) rather than
+ * render it. A manifest-less scene (old v1-v3 files) restores vacuously to
+ * an honestly empty scene. */
+bool     asset_scene_restore(AssetCtx *ctx, Scene *scene,
+                             const char *texture_base_dir);
+
 /* out_scene must be zero-initialized before the call (memset or {}): failure
  * paths unwind via asset_scene_free(ctx, out_scene), which frees whatever the
  * pointer fields hold. All in-tree callers zero it first. */
