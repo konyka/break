@@ -1437,6 +1437,7 @@ int main(void) {
 | `BSCN_CHUNK_RESOURCES` | 资源引用表（网格/纹理/材质） |
 | `BSCN_CHUNK_SCENE_NODES` | 场景节点变换 + 网格引用 |
 | `BSCN_CHUNK_MESH_DATA` | 可选（R612）：静态网格几何载荷（顶点 32B/个 + u32 索引）。仅当保存端提供几何源（`SerializeOptions.read_mesh_geometry`，生产接线 `asset_mesh_geometry_reader` = GPU 缓冲回读）时发出；旧读取端按未知 chunk 跳过，故不升版本。加载进 `Scene.mesh_geometry` CPU 存储，`asset_scene_rebuild_meshes` 重建 GPU 缓冲（清单网格条目=槽位权威，AABB 从几何重算） |
+| `BSCN_CHUNK_SKIN_MESH_DATA` | 可选（R613）：蒙皮网格几何载荷——MESH_DATA 的蒙皮对应物（同记录布局，顶点 64B/个 = pos3+nrm3+uv2 f32 + joints u32x4 + weights f32x4，槽位空间独立）。生产接线 `asset_skinned_mesh_geometry_reader`；加载进 `Scene.skinned_mesh_geometry`，`asset_scene_rebuild_skinned_meshes` 重建（清单 `BSCN_RES_SKINNED_MESH` 条目=槽位权威，蒙皮网格无 AABB）。RESOURCES 清单同步覆盖蒙皮条目（u0/u1/u2 = index/vertex 计数 + material_idx，旧加载端对未知资源类型惰性保留） |
 
 **核心 API：**
 
