@@ -329,7 +329,6 @@ TEST(chart_supports_pie_mode) {
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
   uint8_t* pixels;
   size_t colored = 0u;
-
   ASSERT_NOT_NULL(chart);
   ASSERT_NOT_NULL(lcd);
   ASSERT_NOT_NULL(canvas);
@@ -442,6 +441,9 @@ TEST(chart_supports_boxplot_mode) {
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
   uint8_t* pixels;
   size_t colored = 0u;
+  bool has_top_whisker = false;
+  bool has_bottom_whisker = false;
+  bool has_median = false;
 
   ASSERT_NOT_NULL(chart);
   ASSERT_NOT_NULL(lcd);
@@ -453,10 +455,28 @@ TEST(chart_supports_boxplot_mode) {
   chart->vtable->on_paint(chart, canvas);
   ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
   pixels = my_lcd_mem_get_buffer(lcd);
+  dump_ppm(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd),
+           getenv("MYUI_CHART_BOXPLOT_DUMP_PPM"));
   for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
     if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
       colored++;
   ASSERT_TRUE(colored > 500u);
+  for (uint32_t x = 100u; x < 240u; x++) {
+    size_t top = ((size_t)30u * 320u + x) * 4u;
+    size_t bottom = ((size_t)154u * 320u + x) * 4u;
+    if (pixels[top] == 0x75u && pixels[top + 1u] == 0x5Du &&
+        pixels[top + 2u] == 0xE8u) has_top_whisker = true;
+    if (pixels[bottom] == 0x75u && pixels[bottom + 1u] == 0x5Du &&
+        pixels[bottom + 2u] == 0xE8u) has_bottom_whisker = true;
+  }
+  for (uint32_t x = 100u; x < 240u; x++) {
+    size_t median = ((size_t)92u * 320u + x) * 4u;
+    if (pixels[median] < 0x40u && pixels[median + 1u] < 0x40u &&
+        pixels[median + 2u] < 0x40u) has_median = true;
+  }
+  ASSERT_TRUE(has_top_whisker);
+  ASSERT_TRUE(has_bottom_whisker);
+  ASSERT_TRUE(has_median);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
   my_widget_unref(chart);
