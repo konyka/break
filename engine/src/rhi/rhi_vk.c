@@ -8518,10 +8518,17 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
      * DEPTH_STENCIL_ATTACHMENT_OPTIMAL (the render pass finalLayout).  Track
      * that so a later rhi_cmd_transition_depth_to_read re-makes it readable
      * (post-fx like tonemap/cinematic re-bind the scene FBO then god rays /
-     * debug viz sample its depth). */
+     * debug viz sample its depth).
+     * R611: under MSAA the wrapper wraps the single-sample RESOLVE TARGET,
+     * not the multisampled attachment — that image ends the pass in
+     * DEPTH_STENCIL_READ_ONLY_OPTIMAL (the resolve attachment finalLayout),
+     * which is also what rhi_texture_read_pixels' R603 fbo_depth path needs
+     * as oldLayout. */
     VKTextureData *dtd = (VKTextureData *)rhi_get_resource_typed(
         g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
-    if (dtd) dtd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    if (dtd) dtd->cur_layout = (fd->samples != VK_SAMPLE_COUNT_1_BIT)
+        ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL
+        : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);

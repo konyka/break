@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R611 MSAA 离屏深度回读语义定义（TDD/systematic-debugging）— 回读弧最终片闭合；钓出并定性 AMD Windows VK 子通道深度 resolve 不落地
+
+- **缺口**（R610 落账"MSAA 深度回读未定义（需先 resolve)")：调研推翻前提——resolve 机制**早已存在**(VK 子通道 depth/stencil resolve 附件，最终布局 READ_ONLY;GL unbind 时 `glBlitFramebuffer` 深度 blit)，回读目标 `depth_tex` 本就是单样本 resolve 产物。真缺口只剩：VK `rhi_offscreen_fbo_bind` 对 MSAA 的 cur_layout 误记（恒 ATTACHMENT_OPTIMAL,resolve 目标实为 READ_ONLY——R258 同族但按 sample_count 分流）。
+- **TDD（红→绿实证）**:roundtrip 门扩 MSAA 相位（32×32 2x FBO,RGBA8；显式 clear_depth(R608 便携契约）+ 真实绘制三角形 + 回读，断言：哨兵清零 + 全值 (0,1] + min<1.0)。RED 链——GL 首版即绿（clear-only 4×4）后被 draw 版钓出**反向装置缺陷**(GL bind 从不清除，去掉显式 clear 则深度 renderbuffer 恒 0、深度测试 LESS 下三角形也写不进——补上 clear 后 GL 全绿）;VK 值红（全 0)+ 规格红 1 条（cur_layout 错记致的 submit 期布局失配）。GREEN:bind 按 `fd->samples` 分流 cur_layout 后 **VK validation 0**。
+- **连环钓出（systematic-debugging，占本轮主体）**:VK 值仍全 0。逐层证伪——① 彩色 resolve 同 pass 正常落地（{13,13,26}=clear 色）；② resolve 模式 SAMPLE_ZERO/MIN 均 0（模式无关）;③ clear-only 与含绘制均 0（空 pass 跳过论不成立）;④ validation 全程 0、布局跟踪与 resolve 目标 finalLayout 一致（布局确实到了 READ_ONLY，唯内容未写）。结论：**此 AMD Windows VK 栈（24.10.38 系）的子通道深度 resolve 不落地，同 GPU 的 GL blit resolve 正常**——驱动级边界，按 R581 12b 先例落账为本机基线（门注释载明）,CI lavapipe 为 VK 权威裁决。
+- **回归**：双树非图形 CTest 各 **112/112**;GL 全套件 ALL PASSED;VK 套件失败项=已知基线三项（12b、golden 双项）+本轮新增基线（MSAA 深度相位全 0,AMD 驱动边界）;demo 四配置各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**:**回读弧自此全闭**（独立纹理六格式 R602→FBO 附件 R603→MRT R608→阴影图 R609→cube R610→MSAA R611);AMD 本机 VK 深度 resolve 修复待驱动更新（若未来驱动修复，门自动转绿——签名=全 0 变全合法，无误判风险）;MSAA 采样选择语义（SAMPLE_ZERO vs MIN/MAX 对阴影/Hi-Z 的边缘差异）维持探针默认 SAMPLE_ZERO，未因本驱动边界改生产语义。
+
 ## 本轮更新：R610 点影 cubemap 深度附件回读语义定义（TDD）— 回读弧附件边界清零，仅剩 MSAA
 
 - **缺口**（R609 落账"点影 cubemap 附件回读仍无定义语义"):6 层 D32 镜像的跨端双缺口——VK 侧 usage 缺 TRANSFER_SRC、包装 format/layers 均未设（R584-R609 同类）、`bind_face` 不维护 cur_layout，且回读守卫 `layers>1` 直接拒；GL 侧更彻底：包装注册为 **RHI_RES_CUBEMAP**（彩色 cube 同型）,readback 的 TEXTURE 类型化查询直接返回 NULL——机制性缺席，连违规路径都没有。另有语义鸿沟待定义：cube 回读的面序/布局契约从未存在。

@@ -618,7 +618,9 @@ cleanup:
  * was still unreadable on VK (no TRANSFER_SRC + wrong layout source).
  * Exact-representable values only, so an aligned backend round-trips
  * bit-exact. */
-static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
+static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
+                                  RHIBuffer ibo, u32 screen_w, u32 screen_h) {
+    RHIDevice *dev = rs->device;
     bool pass = true;
 
     /* RG16F 2x1: pixels (0.25,-0.5) and (1.5,1.0). Backing arrays are
@@ -934,6 +936,87 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
             }
         }
         rhi_cubemap_depth_fbo_destroy(dev, &cdf);
+    }
+    /* R611: MSAA offscreen depth readback — the multisampled depth image
+     * cannot be copied directly; both backends resolve it (VK: subpass
+     * depth/stencil resolve attachment; GL: depth blit at unbind) into the
+     * single-sample depth_tex, which then follows the R603 attachment-depth
+     * path. A real draw is included so the gate exercises rendered content,
+     * not just clear resolve. Asserts: no sentinel left (copy landed), every
+     * value in (0,1], min < 1.0 (geometry wrote depth). The suite triangle
+     * fills the whole 32x32 target, so no cleared-1.0 area is required.
+     * Local-AMD note: this Windows AMD Vulkan stack (driver 24.10.38-era)
+     * never lands the subpass DEPTH resolve (color resolves, depth target
+     * stays all-zero, validation silent, resolve mode irrelevant — probed
+     * SAMPLE_ZERO/MIN/draw/clear-only); GL on the same GPU resolves fine.
+     * Treated like the R581 12b baseline: local red tolerated, CI lavapipe
+     * is the VK authority. */
+    RHIOffscreenFBODesc msaa_desc = {
+        .width = 32, .height = 32,
+        .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
+        .sample_count = 2,
+    };
+    RHIOffscreenFBO msaa = rhi_offscreen_fbo_create_desc(dev, &msaa_desc);
+    f32 msaa_rb[32 * 32];
+    for (u32 i = 0; i < 32u * 32u; i++) msaa_rb[i] = 999.0f;
+    if (!rhi_handle_valid(msaa.fb)) {
+        LOG_ERROR("FAIL: MSAA depth roundtrip fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: MSAA depth roundtrip frame begin failed");
+            pass = false;
+        } else {
+            Mat4 identity = mat4_identity();
+            rhi_offscreen_fbo_bind(cmd, &msaa);
+            /* R608's portable contract: explicit clear (GL bind never clears;
+             * VK does it via loadOp). */
+            rhi_cmd_clear_depth(cmd);
+            rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 3u, 1u);
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, msaa.depth_tex, msaa_rb,
+                                         sizeof(msaa_rb))) {
+                LOG_ERROR("FAIL: MSAA depth roundtrip readback failed");
+                pass = false;
+            } else {
+                f32 dmin = 999.0f, dmax = -999.0f;
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    if (msaa_rb[i] == 999.0f) {
+                        LOG_ERROR("FAIL: MSAA depth roundtrip sentinel left "
+                                  "(px%u — copy never landed)", i);
+                        pass = false;
+                        break;
+                    }
+                    if (msaa_rb[i] < dmin) dmin = msaa_rb[i];
+                    if (msaa_rb[i] > dmax) dmax = msaa_rb[i];
+                }
+                if (!(dmax > 0.0f && dmax <= 1.0f)) {
+                    LOG_ERROR("FAIL: MSAA depth roundtrip max %g outside (0,1]",
+                              (double)dmax);
+                    pass = false;
+                }
+                if (dmin >= 1.0f) {
+                    LOG_ERROR("FAIL: MSAA depth roundtrip min %g — triangle "
+                              "never wrote depth", (double)dmin);
+                    pass = false;
+                }
+            }
+        }
+        rhi_offscreen_fbo_destroy(dev, &msaa);
     }
 
     return pass;
@@ -4097,7 +4180,7 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
     LOG_INFO("TEST: TEXTURE NATIVE-BYTE ROUNDTRIP");
     LOG_INFO("============================================");
-    bool f16rt_pass = tv_test_f16_roundtrip(render.device, motion_w, motion_h);
+    bool f16rt_pass = tv_test_f16_roundtrip(&render, vbo, ibo, motion_w, motion_h);
     LOG_INFO("RESULT: NATIVE-BYTE ROUNDTRIP TEST %s",
              f16rt_pass ? "PASSED ✓" : "FAILED");
 
