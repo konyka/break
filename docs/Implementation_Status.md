@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R616 MRT bind 清屏语义统一（TDD）— GL 对齐 VK:bind=清、bind_load=保；R608 起四轮重复落账的渲染语义开口关闭
+
+- **缺口**(R608/R611/R614/R615 四轮边界重复落账"GL/VK 的 MRT bind 清屏语义差异保留")：语义对的本意是 **bind=崭新（清屏）、bind_load=续渲（保留）**(offscreen 对 R196-A 已是此契约）;VK 的 MRT render pass 以 loadOp 清全部颜色附件（0,0,0,0)+深度（1.0）并实现双 pass(`render_pass`/`render_pass_load`),GL 的 bind 却完全不清——**GL 的 bind 与 bind_load 无从区分**，语义对在 GL 端形同虚设。
+- **调研定论（方向裁决）**:① 生产+测试全部 7 个 `rhi_mrt_fbo_bind` 调用点（main.c 前向 MRT、deferred.c G-buffer、5 处门）本就显式 `rhi_cmd_clear_color`+`rhi_cmd_clear_depth` 双清——对齐 GL 到"bind 自清"对调用点零行为变更（冗余双清无害），且消除"忘清即分叉"的潜在陷阱；② 反向（VK 去 loadOp）会令语义对在双端蒸发且放弃 tiler 友好的 loadOp-CLEAR——否决；③ `glClearBuffer` 系遵守写掩码——深度掩码按 `rhi_cmd_clear_depth` 同款强制（R259/R2411 模式），颜色掩码本后端从不收窄（全文件无 glColorMask 调用）无需强制；④ draw-buffer 表在 create 时已 `glDrawBuffers` 设好（per-FBO 状态）,clearBuffer 索引 i 直映射附件 i。
+- **修复**:GL `rhi_mrt_fbo_bind` 在 `gl_set_fbo_pass_state` 后逐附件 `glClearBufferfv(GL_COLOR,i,0)`+强制深度掩码 `glClear(GL_DEPTH_BUFFER_BIT)`;**`rhi_mrt_fbo_bind_load` 脱钩重写**(原直接转发 bind——bind 变清后转发即毁保留语义，本轮唯一钓出的连带缺口）为 bind-minus-clear 同体无清版；rhi.h 契约注释落定语义对。VK 零改动。
+- **TDD（红→绿实证）**：图形套件 roundtrip 门（R603-R616 回读族）扩 **MRT bind-clear 相位**——4×4 双 RGBA8 MRT FBO，显式脏化（clear_color 精确 unorm {204,51,153}+clear_depth 1.0）后**不做任何显式清除直接再 bind**，回读断言颜色全 0+深度全 1.0;**bind_load-preserve 守护相位**（同 FBO 第二帧：bind 清→脏化→bind_load→脏字节 {204,51,153,255} 全留——守护 GREEN 不把 preserve 侧改坏）。**RED 双端异型如实红/绿**:GL 值红（px0=204 脏色保留）、VK 即绿（loadOp 本就清）;GREEN 后 **GL 全套件 ALL PASSED、VK 相位过+validation 0**(VK 唯一失败项仍为已知基线 MSAA 深度+12b+golden 双项）。R608 相位注释同步（显式 clear 转为钉值冗余而非便携必需）。
+- **回归**：双树非图形 CTest 唯 `test_platform_win32_runtime` 红一项——`OpenClipboard failed` 系**本机 OS 级剪贴板卡死**（系统级 Get-Clipboard 同挂，与 diff 无关，先例 7e9defc 同型瞬态），其余全绿；demo 四配置各 120 帧优雅退出、VK validation 0（前向 MRT 与延迟 G-buffer 正是改动路径，双端实跑验证）。
+- **边界**:**offscreen FBO bind 同款分叉仍在**(VK loadOp 清、GL 不清——main.c:8146 与 8432/8455 的 bind/bind_load 生产双用法使其行为变更面大于 MRT，留作下一轮候选，同族修复路径已铺）;MRT bind_load 仍无生产调用方（语义对补齐后随需启用）;R611 AMD 基线与 MSAA 采样选择语义保留。
+
 ## 本轮更新：R615 BSCN 全场景恢复（TDD）— asset_scene_restore 消费链 + N 键替换渲染场景；R612-R615 弧"保存自包含→恢复可用"全闭环
 
 - **缺口**（R614 落账"剩余仅消费端：demo N 键仍只换 ECS world"):N 键把 BSCN 载入后只替换 ECS world,R612-R614 载入的几何/材质/骨架全部随 `bscn_scene` 丢弃（scene_serial_free)，渲染场景保持启动时的 glTF 原样——保存-恢复弧有数据无消费。

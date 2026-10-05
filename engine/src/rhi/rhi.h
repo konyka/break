@@ -473,6 +473,12 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
 bool      rhi_mrt_desc_validate(u32 width, u32 height,
                                 const RHIFormat *formats, u32 attachment_count);
 void      rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo);
+/* R616: the bind pair's contract is unified on both backends —
+ * bind = fresh target: clears every color attachment to (0,0,0,0) and depth
+ * to 1.0 (VK has always done it via the render-pass loadOp; GL joins with
+ * explicit clears as of R616 — before that GL preserved, which made GL's
+ * bind indistinguishable from bind_load).
+ * bind_load = resume: preserves all attachment content. */
 void      rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo);
 void      rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);

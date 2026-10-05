@@ -3345,10 +3345,36 @@ void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     gl_bind_fbo_cached(md->gl_fbo);
     /* R230-B: Same as offscreen — full MRT rect scissor + depth 0..1. */
     gl_set_fbo_pass_state(fbo->width, fbo->height);
+    /* R616: unified bind semantics — bind = fresh target on BOTH backends.
+     * VK's MRT render pass has always loadOp-cleared every color attachment
+     * to (0,0,0,0) and depth to 1.0; GL's bind used to preserve, which made
+     * GL's bind indistinguishable from bind_load (the pair's contract is
+     * bind = fresh, bind_load = resume). glClearBuffer respects the write
+     * masks: color masks are never narrowed anywhere in this backend, and
+     * the depth mask is forced on the way rhi_cmd_clear_depth does it. The
+     * draw-buffer table was set at create (glDrawBuffers above), so buffer
+     * index i maps to COLOR_ATTACHMENTi. */
+    {
+        static const f32 zero4[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (u32 i = 0; i < md->attachment_count; i++)
+            glClearBufferfv(GL_COLOR, (GLint)i, zero4);
+    }
+    if (!g_gl_depth_mask) { glDepthMask(GL_TRUE); g_gl_depth_mask = true; }
+    glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
-    rhi_mrt_fbo_bind(cmd, fbo);
+    (void)cmd;
+    if (!gl_cmd_device_ready(cmd) || !fbo) return;
+    GLMRTFBOData *md = (GLMRTFBOData *)rhi_get_resource_typed(
+        g_current_device, fbo->fb, RHI_RES_MRT_FBO);
+    if (!md) return;
+    /* R616: the preserve half of the pair — same target state as bind but NO
+     * clears (VK resumes with the LOAD render pass). Bind alone used to be
+     * the preserve entry point; since R616 bind is the fresh (clearing)
+     * variant, so this can no longer forward to it. */
+    gl_bind_fbo_cached(md->gl_fbo);
+    gl_set_fbo_pass_state(fbo->width, fbo->height);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {

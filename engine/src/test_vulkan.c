@@ -822,9 +822,10 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             pass = false;
         } else {
             rhi_mrt_fbo_bind(cmd, &mfbo);
-            /* VK's MRT render pass clears depth via loadOp; GL's bind does
-             * not clear at all — the portable contract is the explicit
-             * clear (same as the offscreen phase above). */
+            /* R616: the bind itself now clears on both backends; the explicit
+             * clear stays as belt-and-suspenders (and as the pin for the
+             * value: the semantics are locked by the bind-clear phase below
+             * rather than left implicit). */
             rhi_cmd_clear_depth(cmd);
             /* unbind takes the RETURN-TO surface dims (same contract as the
              * offscreen unbind above). */
@@ -843,6 +844,107 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
                                   i, (double)mrt_rb[i]);
                         pass = false;
                         break;
+                    }
+                }
+            }
+        }
+        rhi_mrt_fbo_destroy(dev, &mfbo);
+    }
+
+    /* R616: unified MRT bind semantics — rhi_mrt_fbo_bind itself clears every
+     * color attachment to (0,0,0,0) and depth to 1.0 on BOTH backends (VK has
+     * always done it via the render-pass loadOp; GL's bind used to preserve,
+     * which made GL's bind indistinguishable from bind_load — the API pair's
+     * contract is bind = fresh, bind_load = resume). Dirty every channel
+     * deterministically, then re-bind WITHOUT any explicit clear: the dirty
+     * color must be gone and depth must be 1.0. Pre-R616 GL keeps the dirty
+     * values (this phase's RED); the explicit-clear phases above stay valid
+     * as belt-and-suspenders on both backends. */
+    mfbo = rhi_mrt_fbo_create(dev, 4, 4, mrt_fmts, 2);
+    u8 mrt_c_rb[16 * 4];
+    memset(mrt_c_rb, 0xAB, sizeof(mrt_c_rb)); /* sentinel: readback must land */
+    if (!rhi_handle_valid(mfbo.fb)) {
+        LOG_ERROR("FAIL: MRT bind-clear fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: MRT bind-clear frame begin failed");
+            pass = false;
+        } else {
+            rhi_mrt_fbo_bind(cmd, &mfbo);
+            /* Dirty color with a non-zero clear and depth to 1.0 — content a
+             * preserving bind would keep. (0.8, 0.2, 0.6) land on exact
+             * unorm bytes {204, 51, 153} for the preserve check below. */
+            rhi_cmd_clear_color(cmd, 0.8f, 0.2f, 0.6f, 1.0f);
+            rhi_cmd_clear_depth(cmd);
+            /* Re-bind with NO explicit clear: unified semantics say the bind
+             * itself cleared. */
+            rhi_mrt_fbo_bind(cmd, &mfbo);
+            rhi_mrt_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            bool rb_ok =
+                rhi_texture_read_pixels(dev, mfbo.color_tex[0], mrt_c_rb,
+                                        sizeof(mrt_c_rb));
+            for (u32 i = 0; i < 16u; i++) mrt_rb[i] = 999.0f;
+            bool rd_ok =
+                rhi_texture_read_pixels(dev, mfbo.depth_tex, mrt_rb,
+                                        sizeof(mrt_rb));
+            if (!rb_ok || !rd_ok) {
+                LOG_ERROR("FAIL: MRT bind-clear readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 16u * 4u; i++) {
+                    if (mrt_c_rb[i] != 0u) {
+                        LOG_ERROR("FAIL: MRT bind-clear color px%u byte%u "
+                                  "got %u, want 0 (bind must clear)", i / 4u,
+                                  i % 4u, mrt_c_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+                for (u32 i = 0; i < 16u; i++) {
+                    if (mrt_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: MRT bind-clear depth px%u got %g, "
+                                  "want 1.0", i, (double)mrt_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+
+            /* The pair's other half (guard): bind_load must PRESERVE. Dirty
+             * the color, then bind_load with no explicit clear — the dirty
+             * bytes stay. */
+            RHICmdBuffer *cmd2 = rhi_frame_begin(dev);
+            if (!cmd2) {
+                LOG_ERROR("FAIL: MRT bind_load-preserve frame begin failed");
+                pass = false;
+            } else {
+                rhi_mrt_fbo_bind(cmd2, &mfbo); /* fresh (clears) */
+                rhi_cmd_clear_color(cmd2, 0.8f, 0.2f, 0.6f, 1.0f);
+                rhi_mrt_fbo_bind_load(cmd2, &mfbo); /* resume: preserve */
+                rhi_mrt_fbo_unbind(cmd2, screen_w, screen_h);
+                rhi_frame_end(dev);
+                rhi_present(dev);
+                memset(mrt_c_rb, 0xAB, sizeof(mrt_c_rb));
+                if (!rhi_texture_read_pixels(dev, mfbo.color_tex[0], mrt_c_rb,
+                                             sizeof(mrt_c_rb))) {
+                    LOG_ERROR("FAIL: MRT bind_load-preserve readback failed");
+                    pass = false;
+                } else {
+                    static const u8 want4[4] = { 204u, 51u, 153u, 255u };
+                    for (u32 i = 0; i < 16u; i++) {
+                        if (memcmp(mrt_c_rb + (usize)i * 4u, want4, 4u) != 0) {
+                            LOG_ERROR("FAIL: MRT bind_load-preserve px%u got "
+                                      "{%u,%u,%u,%u}, want {204,51,153,255}",
+                                      i, mrt_c_rb[i * 4u], mrt_c_rb[i * 4u + 1u],
+                                      mrt_c_rb[i * 4u + 2u],
+                                      mrt_c_rb[i * 4u + 3u]);
+                            pass = false;
+                            break;
+                        }
                     }
                 }
             }
