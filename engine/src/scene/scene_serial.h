@@ -86,6 +86,17 @@ void scene_resources_free(Scene *s);
  * Safe on NULL and on repeated calls. */
 void scene_serial_free(Scene *s);
 
+/* R606: rebuild scene->materials from the loaded RESOURCES manifest (the
+ * CPU half of material roundtrip). Each BSCN_RES_MATERIAL entry's ref_index
+ * is the material slot; descriptorless entries (refs-only saves) and sparse
+ * holes get glTF defaults (base_color 1, metallic/roughness 1, cutoff 0.5,
+ * occlusion_strength 1, emissive_factor 0, ALPHA_OPAQUE). Texture handles
+ * stay invalid — rebinding needs a device + path base. Replaces any existing
+ * materials array (freed by the scene's usual teardown). Returns false when
+ * a material ref_index is out of range (>= resource_count, i.e. corrupt) or
+ * on allocation failure; on false the materials array is left empty. */
+bool scene_rebuild_materials_from_manifest(Scene *s);
+
 /* ---- JSON text format (debug/editor) ---- */
 bool scene_save_json(const World *w, const Scene *s,
                      const char *path, const SerializeOptions *opts);

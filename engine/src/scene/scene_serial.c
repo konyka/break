@@ -595,6 +595,67 @@ void scene_serial_free(Scene *s) {
     scene_resources_free(s);
 }
 
+/* R606: glTF spec defaults — the material a descriptorless entry or a sparse
+ * hole represents (matches cgltf's zero-fill + factor defaults). */
+static void material_gltf_defaults(Material *m) {
+    memset(m, 0, sizeof(*m));
+    m->base_color[0] = 1.0f; m->base_color[1] = 1.0f;
+    m->base_color[2] = 1.0f; m->base_color[3] = 1.0f;
+    m->metallic_factor = 1.0f;
+    m->roughness_factor = 1.0f;
+    m->emissive_strength = 1.0f;
+    m->alpha_cutoff = 0.5f;
+    m->occlusion_strength = 1.0f;
+    m->alpha_mode = ALPHA_OPAQUE;
+}
+
+bool scene_rebuild_materials_from_manifest(Scene *s) {
+    if (!s) return false;
+    free(s->materials);
+    s->materials = NULL;
+    s->material_count = 0;
+
+    /* ref_index is the material slot. Legit files have dense indices below
+     * resource_count (the manifest holds one entry per material at minimum),
+     * so anything beyond that is corrupt — refuse before it drives calloc. */
+    u32 max_ref = 0;
+    bool any = false;
+    for (u32 i = 0; i < s->resource_count; i++) {
+        const SceneResource *r = &s->resources[i];
+        if (r->type != (u32)BSCN_RES_MATERIAL) continue;
+        if (r->ref_index >= s->resource_count) return false;
+        if (!any || r->ref_index > max_ref) max_ref = r->ref_index;
+        any = true;
+    }
+    if (!any) return true;
+
+    Material *arr = (Material *)calloc(max_ref + 1u, sizeof(Material));
+    if (!arr) return false;
+    for (u32 i = 0; i <= max_ref; i++) material_gltf_defaults(&arr[i]);
+    for (u32 i = 0; i < s->resource_count; i++) {
+        const SceneResource *r = &s->resources[i];
+        if (r->type != (u32)BSCN_RES_MATERIAL || !(r->flags & 1u)) continue;
+        Material *m = &arr[r->ref_index]; /* duplicate refs: last wins */
+        m->alpha_mode = (r->u0 <= (u32)ALPHA_BLEND) ? (AlphaMode)r->u0
+                                                    : ALPHA_OPAQUE;
+        m->base_color[0] = r->f[0]; m->base_color[1] = r->f[1];
+        m->base_color[2] = r->f[2]; m->base_color[3] = r->f[3];
+        m->metallic_factor = r->f[4];
+        m->roughness_factor = r->f[5];
+        m->emissive_strength = r->f[6];
+        m->alpha_cutoff = r->f[7];
+        m->occlusion_strength = r->f[8];
+        m->emissive_factor[0] = r->f[9];
+        m->emissive_factor[1] = r->f[10];
+        m->emissive_factor[2] = r->f[11];
+        /* Texture handles stay invalid: tex_slots record the wiring but the
+         * GPU-side rebind needs a device + path base (separate step). */
+    }
+    s->materials = arr;
+    s->material_count = max_ref + 1u;
+    return true;
+}
+
 /* Smallest on-disk RESOURCES entry: guid(8) + type(4) + ref_index(4) +
  * flags(4) + path_len(4). Anything the header claims beyond what the chunk can
  * physically hold is bogus. */

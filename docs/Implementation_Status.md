@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R606 BSCN 加载端材质因子重建（TDD）— R585"材质全量往返"的 CPU 半片落地：清单自此可还原 Material
+
+- **缺口**(R585 终局边界的加载端）：清单（R581-R605 历轮）已完备携带材质全量因子+纹理身份+逐槽接线，但 `scene_load_binary` 只把清单留在 `scene->resources` 供外部工具读——引擎侧 `scene->materials` 加载后恒空，清单无法回流为可用 Material。
+- **方案**：新显式 API **`scene_rebuild_materials_from_manifest(Scene*)`**(scene_serial.h/c，序列化域自有，非自动挂入 load——main.c 的 N 键重载等现有调用方语义零扰动）。语义：材质条目的 `ref_index` 即槽位（稀疏孔洞与 refs-only 无描述符条目回填 glTF 默认：base_color 全 1、metallic/roughness 1、cutoff 0.5、occlusion_strength 1、emissive_factor 0、ALPHA_OPAQUE——与 cgltf 零默认一致）;v1/v2 文件的加载期回填（R585/R605）使旧文件同样可重建。**防御**:ref_index ≥ resource_count 判损坏拒载（合法文件槽位稠密于资源数之下，R387 同哲学——从内容自身推导上界，先于 calloc);alpha_mode 越界钳 OPAQUE；非有限值已在加载期被 `scene_resource_finite` 拒。纹理句柄保持无效（tex_slots 记录了接线，但 GPU 侧重绑定需设备+路径基准=R607 候选）。所有权：`materials` 仍由场景既有释放链覆盖（asset_scene_free/free_scene_src 本就在 free 它）。
+- **TDD（红→绿实证）**：先声明+存根（return false)+三测试——① `rebuild_materials_from_manifest_roundtrip`：双材质全字段（含 R581-R585 历轮因子）保存→加载→重建，逐字段精确断言+纹理无效断言+加载后未重建前 materials==NULL 断言；② `rebuild_materials_refs_only_defaults`:refs-only 保存→重建得 glTF 默认双材质；③ `rebuild_materials_rejects_out_of_range_ref`：手构 v3 文件 ref=5(count=1)→load 过、重建拒、materials 留空。RED 如实失败恰 ①②（③ 对存根偶然过=守卫测试，GREEN 后为正确原因而绿）。GREEN 后 **100/100**。
+- **回归**：双树非图形 CTest 各 **112/112**;GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b+golden 双项）,validation 0;GL 前向/延迟与 VK 延迟 demo 各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**：纹理重绑定仍无（需 AssetCtx+解析基准——BSCN 相对目录 vs glTF 原目录，缺失文件策略——R607 候选，届时 tex_slots（接线）×path（身份）齐备）;load→rebuild→save 链对纹理接线/存在位降级（重建不带纹理，再保存时纹理条目消失——因子不丢；完全无损往返以 R607 为前提）;mesh 几何不入 BSCN（清单的 mesh 条目无几何载荷，重建网格属资产域议题）。
+
 ## 本轮更新：R605 BSCN v3 材质逐槽纹理链接（TDD）— 清单材质→纹理接线补全，R585"材质全量往返"格式侧清零
 
 - **缺口**（R585 终局边界的格式残片）：v2 清单的材质条目只有 u1/u2 纹理**存在位**（"有没有"），不记录**接哪个**——`resources_material_extended_descriptor_roundtrip` 的 5 纹理材质在清单里留下 5 个纹理条目 + 一个 0xF 掩码，外部工具无法重建哪个纹理进哪个槽，材质往返的最后一环缺失。

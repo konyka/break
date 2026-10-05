@@ -2211,6 +2211,157 @@ TEST(load_binary_v2_resources_defaults)
     remove(path);
 }
 
+/* R606: load-side material rebuild — the CPU half of the material roundtrip.
+ * A saved+loaded scene's manifest must be sufficient to reconstruct every
+ * material factor field; textures stay invalid (GPU rebind is separate). */
+TEST(rebuild_materials_from_manifest_roundtrip)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rebuild_mats.bscn");
+    World *w = world_create();
+    Scene src; memset(&src, 0, sizeof(src));
+    src.material_count = 2;
+    src.materials = (Material *)calloc(2, sizeof(Material));
+    ASSERT_NOT_NULL(src.materials);
+    Material *m0 = &src.materials[0];
+    m0->alpha_mode = ALPHA_MASK;
+    m0->base_color[0] = 0.25f; m0->base_color[1] = 0.5f;
+    m0->base_color[2] = 0.75f; m0->base_color[3] = 0.9f;
+    m0->metallic_factor = 0.3f; m0->roughness_factor = 0.6f;
+    m0->emissive_strength = 2.5f; m0->alpha_cutoff = 0.33f;
+    m0->occlusion_strength = 0.65f;
+    m0->emissive_factor[0] = 0.1f; m0->emissive_factor[1] = 0.9f;
+    m0->emissive_factor[2] = 0.3f;
+    Material *m1 = &src.materials[1];
+    m1->alpha_mode = ALPHA_BLEND;
+    m1->base_color[0] = 1.0f; m1->base_color[3] = 0.5f;
+    m1->metallic_factor = 1.0f; m1->roughness_factor = 0.0f;
+    m1->emissive_strength = 1.0f; m1->alpha_cutoff = 0.5f;
+    m1->occlusion_strength = 1.0f;
+
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_TRUE(dst.materials == NULL); /* load alone does not rebuild */
+
+    ASSERT_TRUE(scene_rebuild_materials_from_manifest(&dst));
+    ASSERT_EQ(dst.material_count, 2u);
+    const Material *r0 = &dst.materials[0];
+    ASSERT_EQ((u32)r0->alpha_mode, (u32)ALPHA_MASK);
+    ASSERT_TRUE(fabsf(r0->base_color[0] - 0.25f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->base_color[1] - 0.5f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->base_color[2] - 0.75f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->base_color[3] - 0.9f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->metallic_factor - 0.3f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->roughness_factor - 0.6f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->emissive_strength - 2.5f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->alpha_cutoff - 0.33f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->occlusion_strength - 0.65f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->emissive_factor[0] - 0.1f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->emissive_factor[1] - 0.9f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r0->emissive_factor[2] - 0.3f) < 1e-6f);
+    ASSERT_TRUE(!rhi_handle_valid(r0->albedo)); /* no GPU rebind here */
+    const Material *r1 = &dst.materials[1];
+    ASSERT_EQ((u32)r1->alpha_mode, (u32)ALPHA_BLEND);
+    ASSERT_TRUE(fabsf(r1->base_color[3] - 0.5f) < 1e-6f);
+    ASSERT_TRUE(fabsf(r1->metallic_factor - 1.0f) < 1e-6f);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* R606: refs-only saves (no inlined descriptor) still establish the material
+ * slots — rebuilt materials get glTF defaults. */
+TEST(rebuild_materials_refs_only_defaults)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rebuild_refs.bscn");
+    World *w = world_create();
+    Scene src; make_scene(&src); /* 2 meshes + 2 materials */
+
+    SerializeOptions opts = { .include_resources = false, .pretty_json = false };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_TRUE(scene_rebuild_materials_from_manifest(&dst));
+    ASSERT_EQ(dst.material_count, 2u);
+    for (u32 i = 0; i < dst.material_count; i++) {
+        const Material *m = &dst.materials[i];
+        ASSERT_EQ((u32)m->alpha_mode, (u32)ALPHA_OPAQUE);
+        ASSERT_TRUE(fabsf(m->base_color[0] - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->base_color[3] - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->metallic_factor - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->roughness_factor - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->emissive_strength - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->alpha_cutoff - 0.5f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->occlusion_strength - 1.0f) < 1e-6f);
+        ASSERT_TRUE(fabsf(m->emissive_factor[0]) < 1e-9f);
+    }
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* R606: a material entry whose ref_index exceeds what the chunk could
+ * legitimately hold (>= resource_count) is corrupt — rebuild refuses rather
+ * than allocating file-controlled amounts. */
+TEST(rebuild_materials_rejects_out_of_range_ref)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rebuild_badref.bscn");
+    const f32 f12[12] = {0};
+    const u32 slots[5] = { ~0u, ~0u, ~0u, ~0u, ~0u };
+    {
+        BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION,
+                              .chunk_count = 1 };
+        const u32 payload_off = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+        /* count(4) + guid(8) + type/ref/flags(12) + u(12) + slots(20) + f(48) + plen(4) */
+        const u32 payload_size = 4u + 8u + 4u * 3u + 12u + 20u + 48u + 4u;
+        BscnChunkEntry entry = { .type = BSCN_CHUNK_RESOURCES,
+                                 .offset = payload_off, .size = payload_size };
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+        u32 count = 1u;
+        u64 guid = 0x42ull;
+        u32 type = (u32)BSCN_RES_MATERIAL, ref = 5u, flags = 1u;
+        u32 u0 = 0u, u1 = 0u, u2 = 0u, plen = 0u;
+        ASSERT_EQ(fwrite(&count, sizeof(count), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&guid, sizeof(guid), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&type, sizeof(type), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&ref, sizeof(ref), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&flags, sizeof(flags), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u0, sizeof(u0), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u1, sizeof(u1), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u2, sizeof(u2), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(slots, sizeof(slots), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(f12, sizeof(f12), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&plen, sizeof(plen), 1, fp), (usize)1);
+        ASSERT_EQ(fclose(fp), 0);
+    }
+
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w, &dst, path)); /* load itself is fine */
+    ASSERT_EQ(dst.resource_count, 1u);
+    ASSERT_FALSE(scene_rebuild_materials_from_manifest(&dst));
+    ASSERT_TRUE(dst.materials == NULL);
+    ASSERT_EQ(dst.material_count, 0u);
+
+    free_scene_src(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_binary_rejects_more_than_256_distinct_material_textures)
 {
     char path[64];
@@ -2854,6 +3005,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(load_binary_v1_resources_defaults);
     RUN_TEST(resources_material_partial_texture_links);
     RUN_TEST(load_binary_v2_resources_defaults);
+    RUN_TEST(rebuild_materials_from_manifest_roundtrip);
+    RUN_TEST(rebuild_materials_refs_only_defaults);
+    RUN_TEST(rebuild_materials_rejects_out_of_range_ref);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);
