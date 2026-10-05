@@ -149,6 +149,22 @@ typedef struct {
     u32                 texture_source_count;
 } Scene;
 
+/* R607: rebind manifest-wired textures into a scene's materials — the GPU
+ * half of the BSCN material roundtrip. Precondition: the manifest
+ * (scene->resources) is loaded and scene->materials is populated (call
+ * scene_rebuild_materials_from_manifest first for BSCN-loaded scenes).
+ * For every material resource entry, each tex_slots[k] naming a texture
+ * entry with a non-empty path is loaded from base_dir + '/' + path
+ * (path as-is when base_dir is NULL/empty) and assigned to the material's
+ * k-th slot (albedo/mr/normal/emissive/occlusion). Best-effort: missing
+ * files / unknown refs keep the slot's current handle; slots already
+ * holding a valid handle are never touched. Repeated references share one
+ * load (generational handles make the duplicate destroy in
+ * asset_scene_free a no-op, same as R426). Returns the number of slots
+ * rebound. */
+u32      asset_scene_rebind_textures(AssetCtx *ctx, Scene *scene,
+                                     const char *base_dir);
+
 /* out_scene must be zero-initialized before the call (memset or {}): failure
  * paths unwind via asset_scene_free(ctx, out_scene), which frees whatever the
  * pointer fields hold. All in-tree callers zero it first. */

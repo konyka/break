@@ -13,6 +13,7 @@
 #include <renderer/indirect_draw.h> /* R437: TEST 10 grouped compact gate */
 #include <renderer/occlusion_cull.h> /* R436: TEST 9 Hi-Z occlusion assertions */
 #include <asset/asset.h>
+#include <scene/scene_serial.h> /* R607: rebuild + BSCN_RES_* for the rebind gate */
 #include <ecs/ecs.h>
 #include <physics/physics.h>
 #include <core/log.h>
@@ -797,6 +798,106 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
         rhi_offscreen_fbo_destroy(dev, &dfbo);
     }
 
+    return pass;
+}
+
+/* R607: asset_scene_rebind_textures — the GPU half of the BSCN material
+ * roundtrip. A hand-built manifest mimics a loaded BSCN: one material entry
+ * wired (tex_slots) to two texture entries — one real BMP on disk, one
+ * deliberately missing. Flow: scene_rebuild_materials_from_manifest (R606)
+ * -> rebind("tests") -> albedo carries the BMP pixels (readback-verified),
+ * the missing file's slot stays invalid (best-effort), count reports 1.
+ * Backend-tagged file names keep the GL/VK suites race-free when run
+ * concurrently from the same cwd. */
+#ifdef ENGINE_VULKAN
+#define TV_REBIND_BMP "tmp_tex_rebind_vk.bmp"
+#else
+#define TV_REBIND_BMP "tmp_tex_rebind_gl.bmp"
+#endif
+
+static bool tv_write_test_bmp(const char *path) {
+    /* 2x1 24-bit BMP: red, green (BGR byte order on disk). */
+    static const u8 hdr[54] = {
+        'B','M', 62,0,0,0, 0,0,0,0, 54,0,0,0,
+        40,0,0,0, 2,0,0,0, 1,0,0,0, 1,0, 24,0,
+        0,0,0,0, 8,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0, 0,0,0,0,
+    };
+    static const u8 px[8] = { 0,0,255, 0,255,0, 0,0 }; /* + row pad to 4 */
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    bool ok = fwrite(hdr, 1, sizeof(hdr), f) == sizeof(hdr) &&
+              fwrite(px, 1, sizeof(px), f) == sizeof(px);
+    fclose(f);
+    return ok;
+}
+
+static bool tv_test_texture_rebind(RHIDevice *dev) {
+    bool pass = true;
+    char bmp_path[96];
+    snprintf(bmp_path, sizeof(bmp_path), "tests/%s", TV_REBIND_BMP);
+
+    Scene scene;
+    memset(&scene, 0, sizeof(scene));
+    scene.resource_count = 3;
+    scene.resources = (SceneResource *)calloc(3, sizeof(SceneResource));
+    if (!scene.resources || !tv_write_test_bmp(bmp_path)) {
+        LOG_ERROR("FAIL: rebind gate setup (bmp/scene) failed");
+        free(scene.resources);
+        return false;
+    }
+    SceneResource *mr = &scene.resources[0];
+    mr->type = BSCN_RES_MATERIAL; mr->ref_index = 0; mr->flags = 1;
+    mr->u0 = (u32)ALPHA_OPAQUE; mr->u1 = 1; mr->u2 = 1; /* albedo + mr */
+    mr->tex_slots[0] = 77u; mr->tex_slots[1] = 88u;
+    mr->tex_slots[2] = ~0u; mr->tex_slots[3] = ~0u; mr->tex_slots[4] = ~0u;
+    mr->f[0] = 1.0f; mr->f[1] = 1.0f; mr->f[2] = 1.0f; mr->f[3] = 1.0f;
+    mr->f[4] = 1.0f; mr->f[5] = 1.0f; mr->f[6] = 1.0f;
+    mr->f[7] = 0.5f; mr->f[8] = 1.0f;
+    SceneResource *t0 = &scene.resources[1];
+    t0->type = BSCN_RES_TEXTURE; t0->ref_index = 77u;
+    snprintf(t0->path, sizeof(t0->path), "%s", TV_REBIND_BMP);
+    SceneResource *t1 = &scene.resources[2];
+    t1->type = BSCN_RES_TEXTURE; t1->ref_index = 88u;
+    snprintf(t1->path, sizeof(t1->path), "%s", "definitely_missing_r607.bmp");
+
+    AssetCtx actx;
+    asset_ctx_init(&actx, dev);
+    if (!scene_rebuild_materials_from_manifest(&scene)) {
+        LOG_ERROR("FAIL: rebind gate manifest rebuild failed");
+        pass = false;
+    } else {
+        u32 rebound = asset_scene_rebind_textures(&actx, &scene, "tests");
+        if (rebound != 1u) {
+            LOG_ERROR("FAIL: rebind count %u, want 1", rebound);
+            pass = false;
+        }
+        if (!rhi_handle_valid(scene.materials[0].albedo)) {
+            LOG_ERROR("FAIL: rebind albedo still invalid");
+            pass = false;
+        } else {
+            /* R601 semantics: RGBA8 readback is native RGBA byte order on
+             * both backends — red px0, green px1. */
+            static const u8 want[8] = { 255,0,0,255, 0,255,0,255 };
+            u8 rb[8] = {0};
+            if (!rhi_texture_read_pixels(dev, scene.materials[0].albedo,
+                                         rb, sizeof(rb))) {
+                LOG_ERROR("FAIL: rebind albedo readback failed");
+                pass = false;
+            } else if (memcmp(rb, want, sizeof(rb)) != 0) {
+                LOG_ERROR("FAIL: rebind albedo pixels "
+                          "(got %u,%u,%u,%u / %u,%u,%u,%u)",
+                          rb[0], rb[1], rb[2], rb[3],
+                          rb[4], rb[5], rb[6], rb[7]);
+                pass = false;
+            }
+        }
+        if (rhi_handle_valid(scene.materials[0].metallic_roughness)) {
+            LOG_ERROR("FAIL: rebind missing-file slot should stay invalid");
+            pass = false;
+        }
+    }
+    asset_scene_free(&actx, &scene);
+    remove(bmp_path);
     return pass;
 }
 
@@ -3862,6 +3963,13 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: NATIVE-BYTE ROUNDTRIP TEST %s",
              f16rt_pass ? "PASSED ✓" : "FAILED");
 
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: TEXTURE REBIND (BSCN MANIFEST -> GPU)");
+    LOG_INFO("============================================");
+    bool rebind_pass = tv_test_texture_rebind(render.device);
+    LOG_INFO("RESULT: TEXTURE REBIND TEST %s",
+             rebind_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -3958,7 +4066,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -4972,7 +5080,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && f16rt_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

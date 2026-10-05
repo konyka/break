@@ -1,6 +1,7 @@
 #include <asset/asset.h>
 #include <asset/async_loader.h>
 #include <asset/vfs.h>
+#include <scene/scene_serial.h> /* R607: BSCN_RES_* for asset_scene_rebind_textures */
 #include <core/log.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -73,6 +74,68 @@ RHITexture asset_load_texture(AssetCtx *ctx, const char *path) {
 
 void asset_texture_free(AssetCtx *ctx, RHITexture tex) {
     if (rhi_handle_valid(tex)) rhi_texture_destroy(ctx->device, tex);
+}
+
+u32 asset_scene_rebind_textures(AssetCtx *ctx, Scene *scene,
+                                const char *base_dir) {
+    if (!ctx || !scene || !scene->resources || !scene->materials) return 0;
+    /* Dedup cache: texture ref_index -> loaded handle. Cold path; one
+     * allocation bounded by the manifest size (distinct texture entries
+     * can't exceed resource_count). */
+    typedef struct { u32 ref; RHITexture tex; } RebindCache;
+    RebindCache *cache = (RebindCache *)calloc(scene->resource_count,
+                                               sizeof(RebindCache));
+    if (!cache) return 0;
+    u32 cache_n = 0, rebound = 0;
+    for (u32 i = 0; i < scene->resource_count; i++) {
+        const SceneResource *me = &scene->resources[i];
+        if (me->type != (u32)BSCN_RES_MATERIAL) continue;
+        if (me->ref_index >= scene->material_count) continue; /* corrupt/mismatched */
+        Material *mat = &scene->materials[me->ref_index];
+        RHITexture *slots[5] = { &mat->albedo, &mat->metallic_roughness,
+                                 &mat->normal_map, &mat->emissive,
+                                 &mat->occlusion };
+        for (u32 k = 0; k < 5; k++) {
+            u32 ref = me->tex_slots[k];
+            if (ref == ~0u || rhi_handle_valid(*slots[k])) continue;
+            const SceneResource *te = NULL;
+            for (u32 j = 0; j < scene->resource_count; j++) {
+                if (scene->resources[j].type == (u32)BSCN_RES_TEXTURE &&
+                    scene->resources[j].ref_index == ref) { te = &scene->resources[j]; break; }
+            }
+            if (!te || !te->path[0]) continue; /* unknown ref / no identity */
+            RHITexture tex = RHI_HANDLE_NULL;
+            for (u32 c = 0; c < cache_n; c++)
+                if (cache[c].ref == ref) { tex = cache[c].tex; break; }
+            if (!rhi_handle_valid(tex)) {
+                char full[512];
+                if (base_dir && *base_dir) {
+                    int len = snprintf(full, sizeof(full), "%s/%s",
+                                       base_dir, te->path);
+                    if (len < 0 || (usize)len >= sizeof(full)) {
+                        LOG_WARN("rebind: path too long: %s", te->path);
+                        continue;
+                    }
+                } else {
+                    usize pl = strlen(te->path);
+                    if (pl >= sizeof(full)) {
+                        LOG_WARN("rebind: path too long: %s", te->path);
+                        continue;
+                    }
+                    memcpy(full, te->path, pl + 1);
+                }
+                tex = asset_load_texture(ctx, full);
+                if (!rhi_handle_valid(tex)) continue; /* already logged */
+                cache[cache_n].ref = ref;
+                cache[cache_n].tex = tex;
+                cache_n++;
+            }
+            *slots[k] = tex;
+            rebound++;
+        }
+    }
+    free(cache);
+    return rebound;
 }
 
 typedef struct {

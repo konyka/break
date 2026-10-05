@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R607 BSCN 纹理重绑定（TDD）— R585"材质全量往返"终片落地：清单→GPU 纹理回路闭合
+
+- **缺口**（R606 落账）：因子重建（R606）后材质的纹理槽仍是无效句柄——清单里接线（R605 `tex_slots`）与身份（R604 `path`=glTF image URI）齐备但无消费方，材质往返缺 GPU 半片。
+- **方案**：新 API **`asset_scene_rebind_textures(ctx, scene, base_dir)`**(asset.h/c)——遍历清单材质条目，逐槽把 `tex_slots[k]` 解析到纹理条目（ref_index 联接），按其 `path` 经 `base_dir + '/' + path` 拼接（base_dir 空则 path 原样）加载并赋给材质第 k 槽（albedo/mr/normal/emissive/occlusion)。策略=glTF 加载同族**尽力而为**：缺失文件/未知引用/路径超长 → LOG_WARN/ERROR 后跳槽保现状；已持有效句柄的槽不动（非破坏）；同 ref 多槽共享一次加载（ref→handle 去重表，按 resource_count 定界单次分配；世代句柄使 asset_scene_free 的重复销毁为空操作，R426 同约）。返回重绑定槽数。前置条件=清单已加载且 materials 已重建（显式两步，各自由门独立锁死）。
+- **TDD（红→绿实证）**：图形套件新门 **TEXTURE REBIND**（双端共享段，f16 roundtrip 门之后）——手写 2×1 BMP（红/绿，后端标签文件名防 GL/VK 套件同 cwd 并发竞争），手构三条目清单（材质 ref0 slots{77,88,~0,~0,~0} + 纹理 77→真 BMP + 纹理 88→缺失文件）,`scene_rebuild_materials_from_manifest`(R606 产物在图形路径首次被真实消费）→ rebind("tests") → 四重断言：count==1、albedo 有效且**回读 8 字节精确=={红，绿}**(R601 RGBA8 原生语义双端统一后的首个生产消费方）、缺失文件槽保持无效。RED 如实失败（count 0 + albedo invalid);GREEN 后 **GL 全套件 ALL PASSED**、**VK 门过**(validation 0)。首轮编译错一处：声明置于 asset.h 的 Scene 定义之前——移后即愈（头文件内序，无语义影响）。
+- **回归**：双树非图形 CTest 各 **112/112**;GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界+golden 双项异机漂移）,validation 门 0;demo 三配置（GL 前向/延迟、VK 延迟）各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**：路径解析基准由调用方给定（BSCN 保存于 glTF 旁时 `base_dir=gltf 目录` 即还原——引擎内尚无自动推导，属接线层策略）;**材质全量往返至此闭环**（因子 R606+纹理 R607)，仅剩已知让渡：load→rebuild→rebind→save 的 tex_slots 以新句柄 index 重写（跨进程本无意义，path 身份不变）;mesh 几何不入 BSCN（资产域议题）;myui @scope 组合器与 MRT/阴影附件深度回读仍为独立边界。
+
 ## 本轮更新：R606 BSCN 加载端材质因子重建（TDD）— R585"材质全量往返"的 CPU 半片落地：清单自此可还原 Material
 
 - **缺口**(R585 终局边界的加载端）：清单（R581-R605 历轮）已完备携带材质全量因子+纹理身份+逐槽接线，但 `scene_load_binary` 只把清单留在 `scene->resources` 供外部工具读——引擎侧 `scene->materials` 加载后恒空，清单无法回流为可用 Material。
