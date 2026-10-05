@@ -249,7 +249,13 @@ void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
  * BOTH backends (R587/R593/R601/R602): RGBA8 → 4B/px RGBA; BGRA8 → 4B/px BGRA
  * order; RG16F → 4B/px f16 pairs; RGBA16F → 8B/px f16 quads; R32F → 4B/px
  * f32; D32 → 4B/px f32 depth (R602: the last undefined format joined — every
- * RHIFormat now has defined readback semantics). */
+ * RHIFormat now has defined readback semantics). R608/R609/R610 extended the
+ * same D32 semantics to FBO ATTACHMENT depths (offscreen/MRT/shadow-map);
+ * R610 also defines the point-shadow depth CUBE: readback yields all six
+ * faces face-major (+X,-X,+Y,-Y,+Z,-Z layer order), 4B f32 per texel, so the
+ * caller buffer is w*h*4*6. VK: defined once every face has been rendered at
+ * least once (unrendered faces keep undefined contents — their layout was
+ * never transitioned out of UNDEFINED). */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.

@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R610 点影 cubemap 深度附件回读语义定义（TDD）— 回读弧附件边界清零，仅剩 MSAA
+
+- **缺口**（R609 落账"点影 cubemap 附件回读仍无定义语义"):6 层 D32 镜像的跨端双缺口——VK 侧 usage 缺 TRANSFER_SRC、包装 format/layers 均未设（R584-R609 同类）、`bind_face` 不维护 cur_layout，且回读守卫 `layers>1` 直接拒；GL 侧更彻底：包装注册为 **RHI_RES_CUBEMAP**（彩色 cube 同型）,readback 的 TEXTURE 类型化查询直接返回 NULL——机制性缺席，连违规路径都没有。另有语义鸿沟待定义：cube 回读的面序/布局契约从未存在。
+- **语义定义**（写入 rhi.h 契约）：深度 cube 回读=**六面 face-major(+X..-Z 层序）、每纹素 4B f32**，缓冲区 w*h*4*6;VK 侧定义为"每面至少渲染过一次后"（未渲染面从未出 UNDEFINED，整镜像屏障下内容未定义=诚实语义）。GL 归一化（D24 内部格式经 GL_FLOAT 读出 [0,1]）与 VK 原生 f32 同值域。
+- **TDD（红→绿实证）**:roundtrip 门扩 cube 相位——4×4 六面，逐面 bind+clear_depth+unbind，回读 96 个 f32 全 1.0。RED 双端异型如实红：**GL 机制红**(readback false=类型化查询缺席）、**VK 值红+规格红**(face1 起哨兵 999=单层拷贝只填 face0;6 条 validation 两类同 R608/R609 签名）。GREEN 首轮 GL 仍值红（999)——钓出装置级遗漏：**glGetTexImage 的 cube 面 target 读取绑定在 GL_TEXTURE_CUBE_MAP 上的纹理，未 bind 静默零写**；补 bind/unbind+缓存失效（R190-A 同约）后双端全绿：GL 全套件 ALL PASSED,VK 门过+validation 0+失败项恰为已知基线（12b+golden 双项）。
+- **修复清单**:VK ①usage+TRANSFER_SRC;②注册补 `format=D32`+`layers=6`(mip_levels 仍 0,fbo_depth 判别式命中);③`bind_face` 维护 `cur_layout=DEPTH_STENCIL_READ_ONLY`(finalLayout,R258/R609 同族）;④回读放宽守卫：仅 fbo_depth 且 layers==6 放行 6 层拷贝（其余数组纹理维持 R441 禁读）,staging/拷贝按层数扩——`VKArrayTransferCtx` 的 layer_count 通路 R602 已铺，零新机制。GL：回读增 RHI_RES_CUBEMAP 回退分支（仅 D24/D32F 内部格式放行，彩色 cube 维持 false)，逐面 glGetTexImage(CUBE_MAP_POSITIVE_X+face)，前置 glFinish(R603 驱动陷阱对 FBO 附属深度纹理普适）。
+- **回归**：双树非图形 CTest 各 **112/112**;demo 四配置（点影 cube 是延迟路径点光源阴影的现役件）各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**:R603 落账的附件回读边界**仅剩 MSAA 深度一片**（多采样镜像不可直拷，需先 resolve——resolve 机制本身尚不存在，属新特性而非语义定义，留作独立议题）;cube 回读对"六面均渲染过"的前置要求已入 rhi.h 契约；彩色 cube（非深度）回读仍无定义（无调用方，随需）。
+
 ## 本轮更新：R609 阴影图（2D atlas）深度附件回读语义定义（TDD）— R608 边界推进，同族三联修复
 
 - **缺口**（R608 落账"阴影图附件回读仍无定义语义")：调研定论——GL 端天然已齐（阴影深度走 `rhi_texture_create` 独立纹理路径=R602 D32 语义直就）;VK 三缺口同族：① 深度镜像 usage 缺 `TRANSFER_SRC`;② 包装 `td->format` 未设（R584/R608 同类遗留，R602 aspect 分流与 R603 fbo_depth 判别式因此失效）;③ `rhi_cmd_bind_shadow_map` 不维护 `cur_layout`（阴影 pass finalLayout=SHADER_READ_ONLY，包装恒 UNDEFINED——判别式命中后 oldLayout=UNDEFINED 将丢内容，与 R258 MRT 同属一类）。

@@ -892,6 +892,50 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
         rhi_shadow_map_destroy(dev, &sm);
     }
 
+    /* R610: point-shadow cubemap depth readback — all six faces, face-major
+     * (+X,-X,+Y,-Y,+Z,-Z layer order), 4B f32 per texel. Each face cleared
+     * to 1.0 via the explicit-clear portable contract (R608). VK needed
+     * TRANSFER_SRC usage + the wrapper format/layers fields + bind_face
+     * cur_layout tracking; GL needed the readback to accept RHI_RES_CUBEMAP
+     * depth cubes (the typed lookup used to miss) via per-face cube targets. */
+    RHICubemapDepthFBO cdf = rhi_cubemap_depth_fbo_create(dev, 4);
+    f32 cube_rb[16 * 6];
+    for (u32 i = 0; i < 96u; i++) cube_rb[i] = 999.0f;
+    if (!rhi_handle_valid(cdf.fb)) {
+        LOG_ERROR("FAIL: cube depth roundtrip fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: cube depth roundtrip frame begin failed");
+            pass = false;
+        } else {
+            for (u32 face = 0; face < 6u; face++) {
+                rhi_cubemap_depth_fbo_bind_face(cmd, &cdf, face);
+                rhi_cmd_clear_depth(cmd);
+                rhi_cubemap_depth_fbo_unbind(cmd, screen_w, screen_h);
+            }
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, cdf.depth_tex, cube_rb,
+                                         sizeof(cube_rb))) {
+                LOG_ERROR("FAIL: cube depth roundtrip readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 96u; i++) {
+                    if (cube_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: cube depth roundtrip mismatch "
+                                  "(face %u px%u got %g, want 1.0)",
+                                  i / 16u, i % 16u, (double)cube_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_cubemap_depth_fbo_destroy(dev, &cdf);
+    }
+
     return pass;
 }
 

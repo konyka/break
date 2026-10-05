@@ -1959,7 +1959,31 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h
 
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (!td || !dst_rgba8 || td->is_array) return false;
+    if (!td) {
+        /* R610: point-shadow depth cubes register as RHI_RES_CUBEMAP — read
+         * back all six faces (face-major +X..-Z, 4B f32 depth per texel)
+         * through the per-face cube targets. Color cubes keep the legacy
+         * no-readback (false). */
+        GLTextureData *cd = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (!cd || !dst_rgba8) return false;
+        if (cd->gl_internal_format != GL_DEPTH_COMPONENT24 &&
+            cd->gl_internal_format != GL_DEPTH_COMPONENT32F) return false;
+        usize face_bytes = (usize)cd->width * cd->height * 4u;
+        if (size < face_bytes * 6u) return false;
+        /* R603 quirk holds here too: FBO-attached depth texture. */
+        glFinish();
+        glBindTexture(GL_TEXTURE_CUBE_MAP, cd->gl_tex);
+        for (u32 face = 0; face < 6u; face++) {
+            glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0,
+                          GL_DEPTH_COMPONENT, GL_FLOAT,
+                          (u8 *)dst_rgba8 + face * face_bytes);
+        }
+        glBindTexture(GL_TEXTURE_CUBE_MAP, 0);
+        /* R190-A: direct bind bypasses gl_bind_tex_unit — drop the cache. */
+        if (g_active_unit < 16) g_tex_cache[g_active_unit] = 0;
+        return true;
+    }
+    if (!dst_rgba8 || td->is_array) return false;
     /* R587: RGBA16F reads back NATIVE half-float bytes (8B/px), aligning the
      * VK backend's semantics (the R579-(三) divergence — GL always returned
      * clamped RGBA8 — is retired). HDR values past 1.0 are no longer lost to

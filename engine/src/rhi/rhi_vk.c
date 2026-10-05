@@ -5040,12 +5040,19 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
     VKBackend *vk = vk_backend(dev);
     VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (!vk || !td || !dst_rgba8 || td->layers > 1) return false;
+    if (!vk || !td || !dst_rgba8) return false;
+    /* R610: a point-shadow depth cube (fbo_depth wrapper with layers==6)
+     * reads back all six faces face-major (+X..-Z layer order); every other
+     * array texture keeps the R441 no-readback rule. */
+    bool fbo_depth = (td->mip_levels == 0 &&
+                      td->format == VK_FORMAT_D32_SFLOAT);
+    u32 layer_count = (fbo_depth && td->layers == 6u) ? 6u : 1u;
+    if (td->layers > 1u && layer_count == 1u) return false;
     /* R445: bytes-per-pixel must follow the image format — the old hard-coded
      * 4B/px read back only half of an RGBA16F texel stream (and the copy
      * itself overflowed the w*h*4 staging buffer with w*h*8 bytes). */
     u32 bpp = (td->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 8u : 4u;
-    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * bpp;
+    VkDeviceSize data_size = (VkDeviceSize)td->width * td->height * bpp * layer_count;
     if (size < (usize)data_size) return false;
 
     /* Bake-time sync readback — in-flight frames must not race the barrier. */
@@ -5066,9 +5073,12 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
      * may also be 0 but they are COLOR formats) keeps the mip_layout[0]
      * derivation with the SHADER_READ_ONLY fallback. A virgin depth wrapper
      * (never rendered) keeps UNDEFINED: the copy then yields undefined
-     * contents, the honest semantic for reading before any render. */
-    bool fbo_depth = (td->mip_levels == 0 &&
-                      td->format == VK_FORMAT_D32_SFLOAT);
+     * contents, the honest semantic for reading before any render.
+     * R610: the cube variant shares this path — all rendered faces sit in
+     * DEPTH_STENCIL_READ_ONLY (tracked via cur_layout by bind_face); faces
+     * never rendered keep UNDEFINED contents under a whole-image barrier,
+     * so readback is defined once every face has been rendered at least
+     * once (the gate's six-face clear). */
     VkImageLayout old_layout = fbo_depth ? td->cur_layout : td->mip_layout[0];
     if (old_layout == VK_IMAGE_LAYOUT_UNDEFINED && !fbo_depth)
         old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -5079,7 +5089,7 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     ctx.width = td->width;
     ctx.height = td->height;
     ctx.base_layer = 0;
-    ctx.layer_count = 1;
+    ctx.layer_count = layer_count;
     ctx.old_layout = old_layout;
     ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     ctx.copy = true;
@@ -9154,7 +9164,10 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     ci.arrayLayers = 6;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    /* R610: TRANSFER_SRC lets rhi_texture_read_pixels copy the cubemap depth
+     * out (same permission-only class as R602/R603/R608/R609). */
+    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(vk->device, &ci, NULL, &cd->depth_image) != VK_SUCCESS) {
@@ -9323,6 +9336,12 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     td->memory = cd->depth_memory;
     td->width = size;
     td->height = size;
+    /* R610: format keys the R602 aspect split and the R603 fbo_depth
+     * readback discriminator; layers=6 marks the point-shadow cube so the
+     * readback copies all six faces (mip_levels stays 0 — layout is tracked
+     * via cur_layout, set by rhi_cubemap_depth_fbo_bind_face). */
+    td->format = VK_FORMAT_D32_SFLOAT;
+    td->layers = 6u;
     dev->slots[tidx].ptr  = td;
     dev->slots[tidx].type = RHI_RES_TEXTURE;
     fbo.depth_tex = rhi_make_handle(tidx, dev->slots[tidx].generation);
@@ -9378,6 +9397,15 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource_typed(
         g_current_device, fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
     if (!cd) return;
+
+    /* R610: every face pass ends with its layer in DEPTH_STENCIL_READ_ONLY
+     * (the finalLayout set at create). Track it on the wrapper so readback's
+     * R603 fbo_depth path gets a correct oldLayout (R258/R609 fix class;
+     * layers share one tracked layout — passes leave all rendered faces in
+     * the same state). */
+    VKTextureData *ctd = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
+    if (ctd) ctd->cur_layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
