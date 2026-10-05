@@ -595,6 +595,86 @@ static bool emit_skin_mesh_data_chunk(const Scene *s,
     return true;
 }
 
+/* R614: clip count cap for the ANIMS chunk — AnimClip is a large fixed-size
+ * struct (~330KB), so the count must be bounded by something stronger than
+ * the file-size cap alone. No real scene carries more than a handful. */
+#define BSCN_MAX_ANIM_CLIPS 64u
+
+/* R614: writer eligibility for the rig chunks. The loader rejects any file
+ * whose rig/clip data breaks the format rules, so the writer must never
+ * produce one: an ineligible rig or clip set drops its chunk with a warning
+ * (best-effort, R607 policy) instead of writing an unloadable file. */
+static bool rig_definition_valid(const Scene *s) {
+    if (s->joint_count == 0 || s->joint_count > (u32)SKELETON_MAX_JOINTS)
+        return false;
+    for (u32 i = 0; i < s->joint_count; i++) {
+        u32 p = s->joint_parents[i];
+        if (p != UINT32_MAX && p >= s->joint_count) return false;
+    }
+    return true;
+}
+
+/* Type-bounded fields (channel/keyframe/event counts) are guaranteed by
+ * AnimClip's fixed arrays; the one cross-field rule the loader enforces is
+ * the joint reference, plus a finite duration. */
+static bool rig_clips_valid(const Scene *s) {
+    for (u32 ci = 0; ci < s->anim_clip_count; ci++) {
+        const AnimClip *clip = &s->anim_clips[ci];
+        if (!isfinite(clip->duration) || clip->duration < 0.0f) return false;
+        for (u32 k = 0; k < clip->channel_count; k++) {
+            if (clip->channels[k].joint_index >= s->joint_count) return false;
+        }
+    }
+    return true;
+}
+
+/* R614: rig payload — see the format comment by BscnChunkType. Caller has
+ * already validated eligibility (rig_definition_valid). */
+static bool emit_skeleton_chunk(const Scene *s, ByteBuf *out) {
+    if (!bb_u32(out, s->joint_count)) return false;
+    for (u32 i = 0; i < s->joint_count; i++)
+        if (!bb_u32(out, s->joint_parents[i])) return false;
+    for (u32 i = 0; i < s->joint_count; i++)
+        for (u32 c = 0; c < 4; c++)
+            for (u32 r = 0; r < 4; r++)
+                if (!bb_f32(out, s->inverse_bind[i].e[c][r])) return false;
+    return true;
+}
+
+/* R614: animation-clip payload — see the format comment by BscnChunkType.
+ * Runtime state (clip time/playing) is intentionally not serialized. */
+static bool emit_anims_chunk(const Scene *s, ByteBuf *out) {
+    if (!bb_u32(out, s->anim_clip_count)) return false;
+    for (u32 ci = 0; ci < s->anim_clip_count; ci++) {
+        const AnimClip *clip = &s->anim_clips[ci];
+        if (!bb_f32(out, clip->duration) ||
+            !bb_u32(out, clip->loop ? 1u : 0u) ||
+            !bb_u32(out, clip->channel_count)) return false;
+        for (u32 k = 0; k < clip->channel_count; k++) {
+            const AnimChannel *ch = &clip->channels[k];
+            if (!bb_u32(out, ch->joint_index) ||
+                !bb_u32(out, (u32)ch->path) ||
+                !bb_u32(out, (u32)ch->interp) ||
+                !bb_u32(out, ch->keyframe_count)) return false;
+            for (u32 i = 0; i < ch->keyframe_count; i++)
+                if (!bb_f32(out, ch->times[i])) return false;
+            for (u32 i = 0; i < ch->keyframe_count; i++)
+                for (u32 c = 0; c < 4; c++)
+                    if (!bb_f32(out, ch->values[i][c])) return false;
+        }
+        if (!bb_u32(out, clip->event_count)) return false;
+        for (u32 e = 0; e < clip->event_count; e++) {
+            const AnimEvent *ev = &clip->events[e];
+            u32 len = 0;
+            while (len < (u32)SKELETON_MAX_EVENT_NAME - 1u && ev->name[len])
+                len++;
+            if (!bb_f32(out, ev->time) || !bb_u32(out, len)) return false;
+            if (len && !bb_write(out, ev->name, len)) return false;
+        }
+    }
+    return true;
+}
+
 bool scene_save_binary(const World *w, const Scene *s,
                        const char *path, const SerializeOptions *opts) {
     if (!w || !path) return false;
@@ -605,12 +685,33 @@ bool scene_save_binary(const World *w, const Scene *s,
     /* R613: same existence-as-intent rule for the skinned payload. */
     bool want_sgeom = opts && opts->read_skinned_mesh_geometry && s &&
                       s->skinned_mesh_count > 0;
+    /* R614: the rig chunks are CPU-resident data — no reader callback, the
+     * scene either has a usable rig or it does not. An ineligible rig (over
+     * the skinning limit or with corrupt parents) drops its chunk with a
+     * warning rather than writing a file the loader would reject; clips go
+     * only with a rig (channels index joints). */
+    bool want_skeleton = s && s->joint_count > 0 && s->joint_parents &&
+                         s->inverse_bind;
+    if (want_skeleton && !rig_definition_valid(s)) {
+        LOG_WARN("BSCN: rig fails the format rules (joints %u); skeleton "
+                 "chunk skipped", s->joint_count);
+        want_skeleton = false;
+    }
+    bool want_anims = want_skeleton && s->anim_clip_count > 0 && s->anim_clips;
+    if (want_anims && (s->anim_clip_count > BSCN_MAX_ANIM_CLIPS ||
+                       !rig_clips_valid(s))) {
+        LOG_WARN("BSCN: %u clips fail the format rules; anims chunk skipped",
+                 s->anim_clip_count);
+        want_anims = false;
+    }
+    if (!want_skeleton && s && s->anim_clip_count > 0)
+        LOG_WARN("BSCN: %u clips not saved — no valid rig", s->anim_clip_count);
 
     EntityMap m = {0};
     if (!emap_build(w, &m)) return false;
 
-    ByteBuf chunks[7];
-    for (u32 i = 0; i < 7; i++) bb_init(&chunks[i]);
+    ByteBuf chunks[9];
+    for (u32 i = 0; i < 9; i++) bb_init(&chunks[i]);
 
     bool ok =
         emit_entities_chunk(w, &m, &chunks[0]) &&
@@ -619,20 +720,24 @@ bool scene_save_binary(const World *w, const Scene *s,
         emit_resources_chunk(s, include_res, &chunks[3]) &&
         emit_scene_nodes_chunk(s, &chunks[4]) &&
         (!want_geom || emit_mesh_data_chunk(s, opts, &chunks[5])) &&
-        (!want_sgeom || emit_skin_mesh_data_chunk(s, opts, &chunks[6]));
+        (!want_sgeom || emit_skin_mesh_data_chunk(s, opts, &chunks[6])) &&
+        (!want_skeleton || emit_skeleton_chunk(s, &chunks[7])) &&
+        (!want_anims || emit_anims_chunk(s, &chunks[8]));
     if (!ok) goto fail;
 
     /* Map table slots to chunk buffers, skipping disabled optional chunks. */
-    static const u32 ctypes[7] = {
+    static const u32 ctypes[9] = {
         BSCN_CHUNK_ENTITIES, BSCN_CHUNK_COMPONENTS, BSCN_CHUNK_HIERARCHY,
         BSCN_CHUNK_RESOURCES, BSCN_CHUNK_SCENE_NODES, BSCN_CHUNK_MESH_DATA,
-        BSCN_CHUNK_SKIN_MESH_DATA
+        BSCN_CHUNK_SKIN_MESH_DATA, BSCN_CHUNK_SKELETON, BSCN_CHUNK_ANIMS
     };
-    u32 slot_src[7];
+    u32 slot_src[9];
     u32 nchunks = 0;
     for (u32 i = 0; i < 5; i++) slot_src[nchunks++] = i;
     if (want_geom) slot_src[nchunks++] = 5;
     if (want_sgeom) slot_src[nchunks++] = 6;
+    if (want_skeleton) slot_src[nchunks++] = 7;
+    if (want_anims) slot_src[nchunks++] = 8;
 
     u64 file_size = (u64)sizeof(BscnHeader) +
                     (u64)nchunks * (u64)sizeof(BscnChunkEntry);
@@ -651,7 +756,7 @@ bool scene_save_binary(const World *w, const Scene *s,
     bool write_ok = fwrite(&h, sizeof(h), 1, fp) == 1;
 
     u32 base = (u32)sizeof(BscnHeader) + nchunks * (u32)sizeof(BscnChunkEntry);
-    BscnChunkEntry table[7];
+    BscnChunkEntry table[9];
     u32 cursor = base;
     for (u32 i = 0; i < nchunks; i++) {
         u32 srci = slot_src[i];
@@ -672,12 +777,12 @@ bool scene_save_binary(const World *w, const Scene *s,
     if (fclose(fp) != 0) write_ok = false;
     if (!write_ok) goto fail;
 
-    for (u32 i = 0; i < 7; i++) bb_free(&chunks[i]);
+    for (u32 i = 0; i < 9; i++) bb_free(&chunks[i]);
     emap_free(&m);
     return true;
 
 fail:
-    for (u32 i = 0; i < 7; i++) bb_free(&chunks[i]);
+    for (u32 i = 0; i < 9; i++) bb_free(&chunks[i]);
     emap_free(&m);
     return false;
 }
@@ -748,6 +853,15 @@ void scene_serial_free(Scene *s) {
                              s->skinned_mesh_geometry_count);
     s->skinned_mesh_geometry = NULL;
     s->skinned_mesh_geometry_count = 0;
+    /* R614: rig + clips from SKELETON/ANIMS chunks (joint_parents' single
+     * alloc covers inverse_bind, same layout the glTF loader uses). */
+    free(s->joint_parents);
+    s->joint_parents = NULL;
+    s->inverse_bind = NULL;
+    s->joint_count = 0;
+    free(s->anim_clips);
+    s->anim_clips = NULL;
+    s->anim_clip_count = 0;
 }
 
 /* R606: glTF spec defaults — the material a descriptorless entry or a sparse
@@ -1267,6 +1381,152 @@ fail:
     return false;
 }
 
+/* R614: SKELETON chunk — see the format comment by BscnChunkType. The joint
+ * store is allocated in the glTF loader's single-alloc layout (joint_parents
+ * + 16B-aligned inverse_bind in one block) so the scene's usual teardown
+ * (asset_scene_free / scene_serial_free) releases it with one free.
+ * out_joint_count is recorded even in validate-only mode (s == NULL): the
+ * ANIMS cross-check needs it. */
+static bool load_skeleton_chunk(Scene *s, Reader *r, u32 *out_joint_count) {
+    u32 n = 0;
+    if (!rd_u32(r, &n)) return false;
+    if (n == 0 || n > (u32)SKELETON_MAX_JOINTS) return false;
+    /* Fixed layout: parents then one Mat4 per joint. */
+    if ((u64)n * 4u + (u64)n * 64u > (u64)(r->end - r->p)) return false;
+    u8 *buf = NULL;
+    Mat4 *ibm = NULL;
+    if (s) {
+        usize jp_bytes = (usize)n * sizeof(u32);
+        usize ib_off = (jp_bytes + 15u) & ~(usize)15u;
+        buf = (u8 *)calloc(1, ib_off + (usize)n * sizeof(Mat4));
+        if (!buf) return false;
+        ibm = (Mat4 *)(buf + ib_off);
+    }
+    u32 *parents = (u32 *)buf;
+    for (u32 i = 0; i < n; i++) {
+        u32 p = 0;
+        if (!rd_u32(r, &p)) goto fail;
+        /* ~0u marks a root (and a joint whose glTF parent is not a joint);
+         * anything else must name an earlier-declared slot's range. */
+        if (p != UINT32_MAX && p >= n) goto fail;
+        if (parents) parents[i] = p;
+    }
+    for (u32 i = 0; i < n; i++) {
+        Mat4 m;
+        if (!rd_bytes(r, &m, (u32)sizeof(m))) goto fail;
+        if (!scene_mat4_finite(&m)) goto fail;
+        if (ibm) ibm[i] = m;
+    }
+    if (s) {
+        free(s->joint_parents); /* single alloc covers inverse_bind */
+        s->joint_parents = parents;
+        s->inverse_bind = ibm;
+        s->joint_count = n;
+    }
+    *out_joint_count = n;
+    return true;
+
+fail:
+    free(buf);
+    return false;
+}
+
+/* R614: ANIMS chunk — see the format comment by BscnChunkType. Clips are
+ * filled field-by-field (mirroring anim_clip_init/add_channel/add_event
+ * semantics without depending on skeleton.c): loaded clips start at time 0,
+ * playing, like a fresh glTF load. out_joint_max records the highest
+ * referenced joint index + 1 (0 when no channel exists) even in
+ * validate-only mode, for the SKELETON cross-check. */
+static bool load_anims_chunk(Scene *s, Reader *r, u32 *out_joint_max) {
+    u32 nclips = 0;
+    if (!rd_u32(r, &nclips)) return false;
+    if (nclips == 0 || nclips > BSCN_MAX_ANIM_CLIPS) return false;
+    /* Smallest clip = the 12-byte header with zero channels and a trailing
+     * event_count (4 more): 16 bytes. */
+    if ((u64)nclips * 16u > (u64)(r->end - r->p)) return false;
+    AnimClip *clips = NULL;
+    if (s) {
+        clips = (AnimClip *)calloc(nclips, sizeof(AnimClip));
+        if (!clips) return false;
+    }
+    u32 joint_max = 0;
+    for (u32 ci = 0; ci < nclips; ci++) {
+        f32 duration = 0.0f;
+        u32 loop = 0, nch = 0;
+        if (!rd_bytes(r, &duration, sizeof(duration)) ||
+            !rd_u32(r, &loop) || !rd_u32(r, &nch)) goto fail;
+        if (!isfinite(duration) || duration < 0.0f) goto fail;
+        if (loop > 1u) goto fail;
+        if (nch > (u32)SKELETON_MAX_CHANNELS) goto fail;
+        AnimClip *clip = clips ? &clips[ci] : NULL;
+        if (clip) {
+            clip->duration = duration;
+            clip->loop = (loop != 0u);
+            clip->playing = true; /* anim_clip_init semantics */
+        }
+        for (u32 k = 0; k < nch; k++) {
+            u32 joint = 0, path = 0, interp = 0, kf = 0;
+            if (!rd_u32(r, &joint) || !rd_u32(r, &path) ||
+                !rd_u32(r, &interp) || !rd_u32(r, &kf)) goto fail;
+            if (joint >= (u32)SKELETON_MAX_JOINTS) goto fail;
+            if (path > (u32)ANIM_PATH_SCALE) goto fail;
+            if (interp > (u32)ANIM_INTERP_STEP) goto fail;
+            /* The writer never emits a keyframeless channel. */
+            if (kf == 0 || kf > (u32)SKELETON_MAX_KEYFRAMES) goto fail;
+            if (joint + 1u > joint_max) joint_max = joint + 1u;
+            AnimChannel *ch = clip ? &clip->channels[clip->channel_count++]
+                                   : NULL;
+            if (ch) {
+                ch->joint_index = joint;
+                ch->path = (AnimPathType)path;
+                ch->interp = (AnimInterp)interp;
+                ch->keyframe_count = kf;
+            }
+            for (u32 i = 0; i < kf; i++) {
+                f32 t = 0.0f;
+                if (!rd_bytes(r, &t, sizeof(t)) || !isfinite(t)) goto fail;
+                if (ch) ch->times[i] = t;
+            }
+            for (u32 i = 0; i < kf; i++) {
+                f32 v[4];
+                if (!rd_bytes(r, v, (u32)sizeof(v))) goto fail;
+                for (u32 c = 0; c < 4; c++)
+                    if (!isfinite(v[c])) goto fail;
+                if (ch) memcpy(ch->values[i], v, sizeof(v));
+            }
+        }
+        u32 nev = 0;
+        if (!rd_u32(r, &nev)) goto fail;
+        if (nev > (u32)SKELETON_MAX_EVENTS) goto fail;
+        for (u32 e = 0; e < nev; e++) {
+            f32 t = 0.0f;
+            u32 len = 0;
+            if (!rd_bytes(r, &t, sizeof(t)) || !rd_u32(r, &len)) goto fail;
+            if (!isfinite(t)) goto fail;
+            if (len >= (u32)SKELETON_MAX_EVENT_NAME) goto fail;
+            char name[SKELETON_MAX_EVENT_NAME];
+            memset(name, 0, sizeof(name));
+            if (len && !rd_bytes(r, name, len)) goto fail;
+            if (clip) {
+                AnimEvent *ev = &clip->events[clip->event_count++];
+                ev->time = t;
+                memcpy(ev->name, name, sizeof(name));
+            }
+        }
+    }
+    if (s) {
+        free(s->anim_clips);
+        s->anim_clips = clips;
+        s->anim_clip_count = nclips;
+    }
+    *out_joint_max = joint_max;
+    return true;
+
+fail:
+    free(clips);
+    return false;
+}
+
 bool scene_probe_binary(const char *path) {
     if (!path) return false;
     FILE *fp = fopen(path, "rb");
@@ -1360,6 +1620,12 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     bool seen_resources = false;
     bool seen_mesh_data = false;
     bool seen_skin_mesh_data = false;
+    bool seen_skeleton = false;
+    bool seen_anims = false;
+    /* R614: recorded even in validate-only mode for the rig/clip cross-check
+     * (chunk order is file-controlled, so the check runs after both passes). */
+    u32 rig_joint_count = 0;
+    u32 anim_joint_max = 0;
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
         /* R108-1: validate chunk data bounds */
         u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
@@ -1389,6 +1655,16 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
             if (seen_skin_mesh_data) { ok = false; break; }
             seen_skin_mesh_data = true;
             ok = load_skin_mesh_data_chunk(dst, &r) && r.p == r.end; break;
+        case BSCN_CHUNK_SKELETON:
+            if (seen_skeleton) { ok = false; break; }
+            seen_skeleton = true;
+            ok = load_skeleton_chunk(dst, &r, &rig_joint_count) &&
+                 r.p == r.end; break;
+        case BSCN_CHUNK_ANIMS:
+            if (seen_anims) { ok = false; break; }
+            seen_anims = true;
+            ok = load_anims_chunk(dst, &r, &anim_joint_max) &&
+                 r.p == r.end; break;
         case BSCN_CHUNK_HIERARCHY:
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
@@ -1402,6 +1678,15 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
         for (u32 type = 0; type < ECS_MAX_COMPONENTS; type++) {
             if (declared_known[type]) { ok = false; break; }
         }
+    }
+
+    /* R614: clips index joints — ANIMS without SKELETON is corrupt, and a
+     * channel naming a joint the rig does not have means the two chunks
+     * disagree (the writer never produces either). Checked after the passes
+     * because chunk order is file-controlled; validate-only mode (s == NULL)
+     * applies it too. */
+    if (ok && seen_anims) {
+        if (!seen_skeleton || anim_joint_max > rig_joint_count) ok = false;
     }
 
     /* R353: COMPONENTS/NODES/RESOURCES failure must not leave orphan entities. */
@@ -1429,6 +1714,15 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
             s->skinned_mesh_geometry = staged.skinned_mesh_geometry;
             s->skinned_mesh_geometry_count =
                 staged.skinned_mesh_geometry_count;
+            /* R614: the rig and the clips swap with the same commit
+             * semantics (joint_parents' single alloc covers inverse_bind). */
+            free(s->joint_parents);
+            s->joint_parents = staged.joint_parents;
+            s->inverse_bind = staged.inverse_bind;
+            s->joint_count = staged.joint_count;
+            free(s->anim_clips);
+            s->anim_clips = staged.anim_clips;
+            s->anim_clip_count = staged.anim_clip_count;
         } else {
             scene_serial_free(&staged);
         }

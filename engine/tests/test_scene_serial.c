@@ -3089,6 +3089,516 @@ TEST(skin_mesh_data_combined_with_static_seven_chunks)
     remove(path);
 }
 
+/* ---------------------------------------------------------------- */
+/* R614: SKELETON + ANIMS chunks — rig & animation clips in BSCN      */
+/* ---------------------------------------------------------------- */
+
+/* Scene with a 3-joint rig (root + chain) and one 2-channel clip carrying an
+ * event. The joint store uses the loader's single-alloc layout
+ * (joint_parents + 16B-aligned inverse_bind in one block) so the scene's
+ * usual teardown releases it correctly. */
+static void make_rig_scene(Scene *s) {
+    memset(s, 0, sizeof(*s));
+    s->joint_count = 3;
+    usize jp_bytes = 3 * sizeof(u32);
+    usize ib_off = (jp_bytes + 15u) & ~(usize)15u;
+    u8 *buf = (u8 *)calloc(1, ib_off + 3 * sizeof(Mat4));
+    s->joint_parents = (u32 *)buf;
+    s->inverse_bind = (Mat4 *)(buf + ib_off);
+    s->joint_parents[0] = UINT32_MAX;
+    s->joint_parents[1] = 0u;
+    s->joint_parents[2] = 1u;
+    s->inverse_bind[0] = mat4_identity();
+    s->inverse_bind[1] = mat4_translation(1.0f, 2.0f, 3.0f);
+    /* Per-element distinct values catch any transpose in the roundtrip. */
+    for (u32 c = 0; c < 4; c++)
+        for (u32 r = 0; r < 4; r++)
+            s->inverse_bind[2].e[c][r] = (f32)(c * 4 + r) + 0.5f;
+
+    s->anim_clip_count = 1;
+    s->anim_clips = (AnimClip *)calloc(1, sizeof(AnimClip));
+    AnimClip *clip = &s->anim_clips[0];
+    /* Direct field fill — the anim_clip_* helpers live in skeleton.c, which
+     * drags RHI link deps into this test binary (the ANIMS loader fills the
+     * struct the same way). */
+    clip->duration = 2.5f;
+    clip->loop = true;
+    clip->playing = true; /* matches anim_clip_init (fresh glTF load) */
+    AnimChannel *ch0 = &clip->channels[clip->channel_count++];
+    ch0->joint_index = 0u;
+    ch0->path = ANIM_PATH_TRANSLATION;
+    ch0->interp = ANIM_INTERP_LINEAR;
+    ch0->keyframe_count = 2u;
+    ch0->times[0] = 0.0f; ch0->times[1] = 2.5f;
+    ch0->values[1][0] = 1.0f; ch0->values[1][1] = 2.0f; ch0->values[1][2] = 3.0f;
+    AnimChannel *ch1 = &clip->channels[clip->channel_count++];
+    ch1->joint_index = 2u;
+    ch1->path = ANIM_PATH_ROTATION;
+    ch1->interp = ANIM_INTERP_STEP;
+    ch1->keyframe_count = 3u;
+    ch1->times[0] = 0.0f; ch1->times[1] = 1.0f; ch1->times[2] = 2.5f;
+    ch1->values[0][3] = 1.0f;
+    ch1->values[1][1] = 0.7071f; ch1->values[1][3] = 0.7071f;
+    ch1->values[2][1] = 1.0f;
+    clip->event_count = 1u;
+    clip->events[0].time = 1.25f;
+    strcpy(clip->events[0].name, "footstep");
+}
+
+/* Exact-match assertion of the make_rig_scene contents after a load. */
+static void assert_rig_scene(const Scene *s) {
+    ASSERT_EQ(s->joint_count, 3u);
+    ASSERT_NOT_NULL(s->joint_parents);
+    ASSERT_NOT_NULL(s->inverse_bind);
+    ASSERT_EQ(s->joint_parents[0], UINT32_MAX);
+    ASSERT_EQ(s->joint_parents[1], 0u);
+    ASSERT_EQ(s->joint_parents[2], 1u);
+    for (u32 c = 0; c < 4; c++)
+        for (u32 r = 0; r < 4; r++) {
+            ASSERT_FLOAT_EQ(s->inverse_bind[0].e[c][r],
+                            (c == r) ? 1.0f : 0.0f, 1e-6f);
+            ASSERT_FLOAT_EQ(s->inverse_bind[2].e[c][r],
+                            (f32)(c * 4 + r) + 0.5f, 1e-6f);
+        }
+    ASSERT_FLOAT_EQ(s->inverse_bind[1].e[3][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s->inverse_bind[1].e[3][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(s->inverse_bind[1].e[3][2], 3.0f, 1e-6f);
+
+    ASSERT_EQ(s->anim_clip_count, 1u);
+    ASSERT_NOT_NULL(s->anim_clips);
+    const AnimClip *clip = &s->anim_clips[0];
+    ASSERT_FLOAT_EQ(clip->duration, 2.5f, 1e-6f);
+    ASSERT_TRUE(clip->loop);
+    ASSERT_EQ(clip->channel_count, 2u);
+    const AnimChannel *ch0 = &clip->channels[0];
+    ASSERT_EQ(ch0->joint_index, 0u);
+    ASSERT_EQ((u32)ch0->path, (u32)ANIM_PATH_TRANSLATION);
+    ASSERT_EQ((u32)ch0->interp, (u32)ANIM_INTERP_LINEAR);
+    ASSERT_EQ(ch0->keyframe_count, 2u);
+    ASSERT_FLOAT_EQ(ch0->times[0], 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch0->times[1], 2.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch0->values[1][0], 1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch0->values[1][1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch0->values[1][2], 3.0f, 1e-6f);
+    const AnimChannel *ch1 = &clip->channels[1];
+    ASSERT_EQ(ch1->joint_index, 2u);
+    ASSERT_EQ((u32)ch1->path, (u32)ANIM_PATH_ROTATION);
+    ASSERT_EQ((u32)ch1->interp, (u32)ANIM_INTERP_STEP);
+    ASSERT_EQ(ch1->keyframe_count, 3u);
+    ASSERT_FLOAT_EQ(ch1->times[2], 2.5f, 1e-6f);
+    ASSERT_FLOAT_EQ(ch1->values[1][1], 0.7071f, 1e-4f);
+    ASSERT_EQ(clip->event_count, 1u);
+    ASSERT_FLOAT_EQ(clip->events[0].time, 1.25f, 1e-6f);
+    ASSERT_TRUE(strcmp(clip->events[0].name, "footstep") == 0);
+}
+
+static u32 file_chunk_count(const char *path) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0u;
+    BscnHeader h;
+    u32 n = (fread(&h, sizeof(h), 1, fp) == 1) ? h.chunk_count : 0u;
+    fclose(fp);
+    return n;
+}
+
+TEST(skeleton_anims_roundtrip)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_rt.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_rig_scene(&src);
+
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    /* 5 base chunks + SKELETON + ANIMS (CPU-resident data needs no reader). */
+    ASSERT_EQ(file_chunk_count(path), 7u);
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    assert_rig_scene(&dst);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(skeleton_omitted_without_rig)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_none.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src); /* meshes/materials only */
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(file_chunk_count(path), 5u);
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.joint_count, 0u);
+    ASSERT_TRUE(dst.joint_parents == NULL);
+    ASSERT_TRUE(dst.inverse_bind == NULL);
+    ASSERT_EQ(dst.anim_clip_count, 0u);
+    ASSERT_TRUE(dst.anim_clips == NULL);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(skeleton_only_without_anims)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_skel.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_rig_scene(&src);
+    free(src.anim_clips);
+    src.anim_clips = NULL;
+    src.anim_clip_count = 0;
+
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(file_chunk_count(path), 6u); /* base 5 + SKELETON only */
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.joint_count, 3u);
+    ASSERT_EQ(dst.joint_parents[2], 1u);
+    ASSERT_EQ(dst.anim_clip_count, 0u);
+    ASSERT_TRUE(dst.anim_clips == NULL);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* Overwrite the u32 at `offset` inside chunk `chunk_type` of a saved file. */
+static bool patch_chunk_bytes_at(const char *path, u32 chunk_type, u32 offset,
+                                 u32 value) {
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    bool done = fread(&h, sizeof(h), 1, f) == 1;
+    for (u32 i = 0; done && i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long entry_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, entry_off, SEEK_SET) != 0 ||
+            fread(&e, sizeof(e), 1, f) != 1)
+            break;
+        if (e.type != chunk_type) continue;
+        if (fseek(f, (long)e.offset + (long)offset, SEEK_SET) != 0) break;
+        done = fwrite(&value, sizeof(value), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+/* SKELETON corrupt family — fixed layout, so patches land exactly:
+ * offset 0 = joint_count, 4..15 = parents, 16.. = inverse_bind floats. */
+TEST(skeleton_rejects_corrupt)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_corrupt.bscn");
+    const struct { u32 offset; u32 value; } patches[] = {
+        { 0u, 129u },        /* joint_count past SKELETON_MAX_JOINTS */
+        { 8u, 7u },          /* parents[1] >= joint_count (and != ~0u) */
+        { 16u, 0x7FC00000u },/* inverse_bind[0].e[0][0] = NaN */
+    };
+    for (usize i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_rig_scene(&src);
+        SerializeOptions opts = { .include_resources = true };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_chunk_bytes_at(path, BSCN_CHUNK_SKELETON,
+                                         patches[i].offset, patches[i].value));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+        ASSERT_EQ(dst.joint_count, 0u);
+
+        free_scene_src(&dst);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+
+    /* Truncated inside the inverse_bind block. */
+    {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_rig_scene(&src);
+        SerializeOptions opts = { .include_resources = true };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_chunk_declared_size(path, BSCN_CHUNK_SKELETON, 10u));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+
+        free_scene_src(&dst);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+    remove(path);
+}
+
+/* Canonical 3-joint SKELETON payload (208 bytes) for hand-crafted files. */
+static usize build_skel_payload(u8 *p) {
+    usize n = 0;
+    memcpy(p + n, &(u32){3u}, 4); n += 4;
+    memcpy(p + n, &(u32){UINT32_MAX}, 4); n += 4;
+    memcpy(p + n, &(u32){0u}, 4); n += 4;
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    for (u32 j = 0; j < 3; j++)
+        for (u32 i = 0; i < 16; i++) {
+            f32 v = (i % 5 == 0) ? 1.0f : 0.0f; /* identity */
+            memcpy(p + n, &v, 4); n += 4;
+        }
+    return n;
+}
+
+/* Canonical 1-clip ANIMS payload (88 bytes); every field offset is fixed:
+ * 0 clip_count, 4 duration, 8 loop, 12 channel_count, 16 joint_index,
+ * 20 path, 24 interp, 28 keyframe_count, 32/36 times, 40..71 values,
+ * 72 event_count, 76 event time, 80 name_len, 84 name. */
+static usize build_anims_payload(u8 *p) {
+    usize n = 0;
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    memcpy(p + n, &(f32){2.0f}, 4); n += 4;
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    memcpy(p + n, &(u32){0u}, 4); n += 4;
+    memcpy(p + n, &(u32){0u}, 4); n += 4;
+    memcpy(p + n, &(u32){2u}, 4); n += 4;
+    memcpy(p + n, &(f32){0.0f}, 4); n += 4;
+    memcpy(p + n, &(f32){2.0f}, 4); n += 4;
+    static const f32 vals[8] = { 0,0,0,0, 1,1,1,0 };
+    memcpy(p + n, vals, sizeof(vals)); n += sizeof(vals);
+    memcpy(p + n, &(u32){1u}, 4); n += 4;
+    memcpy(p + n, &(f32){0.5f}, 4); n += 4;
+    memcpy(p + n, &(u32){4u}, 4); n += 4;
+    memcpy(p + n, "step", 4); n += 4;
+    return n;
+}
+
+/* Write a whole BSCN file from explicit chunk payloads. */
+static bool write_chunks_file(const char *path, const u32 *types,
+                              const u8 **payloads, const u32 *sizes,
+                              u32 nchunks) {
+    FILE *fp = fopen(path, "wb");
+    if (!fp) return false;
+    BscnHeader h = { BSCN_MAGIC, BSCN_VERSION, nchunks };
+    bool ok = fwrite(&h, sizeof(h), 1, fp) == 1;
+    u32 cursor = (u32)sizeof(h) + nchunks * (u32)sizeof(BscnChunkEntry);
+    for (u32 i = 0; ok && i < nchunks; i++) {
+        BscnChunkEntry e = { types[i], cursor, sizes[i] };
+        ok = fwrite(&e, sizeof(e), 1, fp) == 1;
+        cursor += sizes[i];
+    }
+    for (u32 i = 0; ok && i < nchunks; i++)
+        ok = fwrite(payloads[i], 1, sizes[i], fp) == sizes[i];
+    if (fclose(fp) != 0) ok = false;
+    return ok;
+}
+
+TEST(anims_rejects_corrupt)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_anim_corrupt.bscn");
+    u8 skel[208], anim[88];
+    const struct { u32 offset; u32 value; } patches[] = {
+        { 12u, 65u },         /* channel_count past SKELETON_MAX_CHANNELS */
+        { 16u, 128u },        /* joint_index past SKELETON_MAX_JOINTS */
+        { 16u, 3u },          /* joint_index >= the file's joint_count */
+        { 20u, 3u },          /* unknown animation path */
+        { 24u, 2u },          /* unknown interpolation */
+        { 28u, 0u },          /* keyframeless channel */
+        { 28u, 257u },        /* past SKELETON_MAX_KEYFRAMES */
+        { 72u, 33u },         /* event_count past SKELETON_MAX_EVENTS */
+        { 80u, 32u },         /* event name past SKELETON_MAX_EVENT_NAME */
+        { 4u, 0x7FC00000u },  /* NaN duration */
+        { 32u, 0x7FC00000u }, /* NaN keyframe time */
+    };
+    for (usize i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+        u32 ssz = (u32)build_skel_payload(skel);
+        u32 asz = (u32)build_anims_payload(anim);
+        memcpy(anim + patches[i].offset, &patches[i].value, 4);
+        const u32 types[2] = { BSCN_CHUNK_SKELETON, BSCN_CHUNK_ANIMS };
+        const u8 *pls[2] = { skel, anim };
+        const u32 szs[2] = { ssz, asz };
+        ASSERT_TRUE(write_chunks_file(path, types, pls, szs, 2u));
+
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w, &dst, path));
+        ASSERT_EQ(dst.anim_clip_count, 0u);
+        free_scene_src(&dst);
+        world_destroy(w);
+    }
+
+    /* Truncated inside the channel block. */
+    {
+        u32 ssz = (u32)build_skel_payload(skel);
+        build_anims_payload(anim); /* payload content; declared short below */
+        const u32 types[2] = { BSCN_CHUNK_SKELETON, BSCN_CHUNK_ANIMS };
+        const u8 *pls[2] = { skel, anim };
+        const u32 szs[2] = { ssz, 40u }; /* declared short */
+        ASSERT_TRUE(write_chunks_file(path, types, pls, szs, 2u));
+
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w, &dst, path));
+        free_scene_src(&dst);
+        world_destroy(w);
+    }
+    remove(path);
+}
+
+/* The writer only emits ANIMS alongside SKELETON (channels index joints);
+ * a file carrying clips without a rig is corrupt. */
+TEST(anims_rejected_without_skeleton_chunk)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_orphan_anim.bscn");
+    u8 anim[88];
+    u32 asz = (u32)build_anims_payload(anim);
+    const u32 types[1] = { BSCN_CHUNK_ANIMS };
+    const u8 *pls[1] = { anim };
+    const u32 szs[1] = { asz };
+    ASSERT_TRUE(write_chunks_file(path, types, pls, szs, 1u));
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_FALSE(scene_load_binary(w, &dst, path));
+    free_scene_src(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(skeleton_anims_reject_duplicate_chunks)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_dup.bscn");
+    u8 skel[208], anim[88];
+    u32 ssz = (u32)build_skel_payload(skel);
+    u32 asz = (u32)build_anims_payload(anim);
+
+    const u32 types_s[2] = { BSCN_CHUNK_SKELETON, BSCN_CHUNK_SKELETON };
+    const u8 *pls_s[2] = { skel, skel };
+    const u32 szs_s[2] = { ssz, ssz };
+    ASSERT_TRUE(write_chunks_file(path, types_s, pls_s, szs_s, 2u));
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+
+    const u32 types_a[3] = { BSCN_CHUNK_SKELETON, BSCN_CHUNK_ANIMS,
+                             BSCN_CHUNK_ANIMS };
+    const u8 *pls_a[3] = { skel, anim, anim };
+    const u32 szs_a[3] = { ssz, asz, asz };
+    ASSERT_TRUE(write_chunks_file(path, types_a, pls_a, szs_a, 3u));
+    w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+
+    remove(path);
+}
+
+/* A NULL Scene means parse-and-discard; validation must not weaken. */
+TEST(skeleton_anims_validate_with_null_scene)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_null.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_rig_scene(&src);
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    ASSERT_TRUE(scene_load_binary(w2, NULL, path));
+
+    ASSERT_TRUE(patch_chunk_bytes_at(path, BSCN_CHUNK_SKELETON, 0u, 129u));
+    World *w3 = world_create();
+    ASSERT_NOT_NULL(w3);
+    ASSERT_FALSE(scene_load_binary(w3, NULL, path));
+
+    world_destroy(w3);
+    world_destroy(w2);
+    free_scene_src(&src);
+    world_destroy(w);
+    remove(path);
+}
+
+/* Full skinned scene: static + skinned geometry payloads and the rig ride
+ * one save (9 chunks), each store landing on load. */
+TEST(rig_combined_with_geometry_chunks)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_rig_full.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+    src.skinned_mesh_count = 1;
+    src.skinned_meshes = (SkinnedMesh *)calloc(1, sizeof(SkinnedMesh));
+    ASSERT_NOT_NULL(src.skinned_meshes);
+    src.skinned_meshes[0].vertex_count = 4;
+    src.skinned_meshes[0].index_count = 6;
+    src.skinned_meshes[0].material_idx = 1;
+    src.skinned_meshes[0].skinned = true;
+    /* Rig from make_rig_scene (make_scene has none). */
+    {
+        Scene rig; make_rig_scene(&rig);
+        src.joint_count = rig.joint_count;
+        src.joint_parents = rig.joint_parents;
+        src.inverse_bind = rig.inverse_bind;
+        src.anim_clip_count = rig.anim_clip_count;
+        src.anim_clips = rig.anim_clips;
+    }
+
+    FakeGeomSrc gs = { 0u, 0u }, sgs = { 0u, 0u };
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_mesh_geometry = fake_mesh_geometry_reader,
+          .read_mesh_geometry_user = &gs,
+          .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+          .read_skinned_mesh_geometry_user = &sgs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(file_chunk_count(path), 9u);
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.mesh_geometry_count, 2u);
+    ASSERT_EQ(dst.skinned_mesh_geometry_count, 1u);
+    assert_rig_scene(&dst);
+
+    free_scene_src(&dst);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
 TEST(save_binary_rejects_more_than_256_distinct_material_textures)
 {
     char path[64];
@@ -3748,6 +4258,15 @@ TEST_MAIN_BEGIN()
     RUN_TEST(skin_mesh_data_validates_with_null_scene);
     RUN_TEST(skin_mesh_data_rejects_duplicate_chunk);
     RUN_TEST(skin_mesh_data_combined_with_static_seven_chunks);
+    RUN_TEST(skeleton_anims_roundtrip);
+    RUN_TEST(skeleton_omitted_without_rig);
+    RUN_TEST(skeleton_only_without_anims);
+    RUN_TEST(skeleton_rejects_corrupt);
+    RUN_TEST(anims_rejects_corrupt);
+    RUN_TEST(anims_rejected_without_skeleton_chunk);
+    RUN_TEST(skeleton_anims_reject_duplicate_chunks);
+    RUN_TEST(skeleton_anims_validate_with_null_scene);
+    RUN_TEST(rig_combined_with_geometry_chunks);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);

@@ -63,7 +63,37 @@ typedef enum {
      * must be BSCN_SKINNED_MESH_VERTEX_STRIDE and mesh_index names a slot in
      * Scene.skinned_meshes (== the manifest's BSCN_RES_SKINNED_MESH
      * ref_index), an index space separate from the static MESH_DATA one. */
-    BSCN_CHUNK_SKIN_MESH_DATA = 7
+    BSCN_CHUNK_SKIN_MESH_DATA = 7,
+    /* R614: optional rig payload — the scene's joint hierarchy + inverse
+     * bind matrices. Emitted whenever the saved scene has a rig
+     * (joint_count > 0 with both arrays present; CPU-resident data, so no
+     * reader callback is needed — presence signals the rig existed).
+     * Readers that predate it skip unknown chunk types (the load switch's
+     * default), so it stays compatible with BSCN v3 without a version bump.
+     * Layout:
+     *   u32 joint_count              — 1..SKELETON_MAX_JOINTS
+     *   u32 joint_parents[count]     — < joint_count, or ~0u for a root (and
+     *                                  for joints whose glTF parent is not a
+     *                                  joint, mirroring the loader)
+     *   f32 inverse_bind[count][16]  — column-major Mat4, all finite
+     */
+    BSCN_CHUNK_SKELETON = 8,
+    /* R614: optional animation-clip payload. Emitted only when the scene has
+     * clips AND a rig (channels index joints — clips without the SKELETON
+     * chunk are meaningless, and the loader rejects such files). Same
+     * v3-compat skip rule as the other optional chunks.
+     * Layout: u32 clip_count (1..64), then per clip:
+     *   f32 duration (finite), u32 loop (0/1)
+     *   u32 channel_count (0..SKELETON_MAX_CHANNELS), then per channel:
+     *     u32 joint_index (< joint_count), u32 path (0..2), u32 interp (0..1),
+     *     u32 keyframe_count (1..SKELETON_MAX_KEYFRAMES),
+     *     f32 times[count], f32 values[count][4] (all finite)
+     *   u32 event_count (0..SKELETON_MAX_EVENTS), then per event:
+     *     f32 time (finite), u32 name_len (< SKELETON_MAX_EVENT_NAME),
+     *     u8 name[name_len] (no NUL on disk)
+     * Runtime state (clip time/playing) is not serialized: loaded clips are
+     * re-initialized like fresh glTF loads (time 0, playing). */
+    BSCN_CHUNK_ANIMS = 9
 } BscnChunkType;
 
 /* R612: byte stride of the engine's static mesh vertex contract
