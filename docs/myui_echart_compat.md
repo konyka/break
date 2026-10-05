@@ -20,13 +20,25 @@ deterministic lazy-update mode. Lazy updates remain invisible through
 existing series by stable `id`; adding/removing series and richer component
 merging are reserved for the next adapter phases.
 
-## Planned phases
+## Phase 3: native event/action adapter
 
-1. `setOption` replace/merge/lazy-update semantics.
-2. MyUI native pointer/key events mapped to semantic chart events/actions.
-3. Fake-clock animation scheduling.
-4. Adapter from normalized options to `my_chart`.
-5. Dataset/encode, multi-grid/multi-axis, and additional series options.
+`my_echart_event_adapter_t` maps MyUI pointer down/move/up, wheel, and left/right
+key events to stable semantic chart events. Event payloads preserve native
+coordinates, time, button/modifiers, and reserved series/data/category indexes.
+The adapter also exposes explicit `highlight`, `legendSelect`, `dataZoom`,
+`brush`, `showTip`, and `hideTip` action payloads through removable callback
+subscriptions. Subscription removal is safe during dispatch, and destroying an
+adapter prevents later callbacks; destruction from a callback is deferred until
+the active dispatch unwinds.
+
+This phase is a native event/action adapter only. It does not integrate with a
+renderer, hit-test chart data, or claim full ECharts parity.
+
+## Remaining phases
+
+1. Fake-clock animation scheduling.
+2. Adapter from normalized options to `my_chart`.
+3. Dataset/encode, multi-grid/multi-axis, and additional series options.
 
 Unsupported options will return deterministic errors rather than being silently
 ignored. The adapter uses MyUI native events and does not introduce a browser or
