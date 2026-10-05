@@ -119,11 +119,16 @@ TEST(echart_adapter_destroy_keeps_caller_reference_and_renders) {
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 240u, 160u, MY_PIXEL_FORMAT_ARGB8888);
   my_vgcanvas_t* vg = my_vgcanvas_soft_create(NULL, lcd);
   FILE* artifact;
+  /* Per-process OS-temp path: a bare "/tmp/..." resolves against the current
+   * drive on Windows (CI's D:\a has no \tmp) and a fixed name races parallel
+   * ctest trees (R444). */
+  char artifact_path[128];
   ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
   chart->rect.w = 240; chart->rect.h = 160;
   my_widget_paint(chart, vg);
   ASSERT_TRUE(my_lcd_mem_get_buffer(lcd) != NULL);
-  artifact = fopen("/tmp/phase5_echart_adapter.ppm", "wb");
+  artifact = fopen(test_tmp(artifact_path, sizeof artifact_path,
+                            "phase5_echart_adapter.ppm"), "wb");
   ASSERT_NOT_NULL(artifact);
   fprintf(artifact, "P6\n240 160\n255\n");
   for (size_t i = 0u; i < 240u * 160u; i++) {
