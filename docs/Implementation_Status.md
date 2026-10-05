@@ -1,5 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R612 BSCN 静态网格几何入库（TDD）— MESH_DATA chunk 使 BSCN 对静态网格自包含；R585 起"mesh 几何不入 BSCN"边界关闭
+
+- **缺口**（R604-R607 历轮落账"mesh 几何不入 BSCN（资产域议题）")：清单的网格条目只有计数/材质/AABB 元数据，几何本体只存于 GPU 缓冲——BSCN 保存→加载后场景丢光全部网格几何。调研定论了三个关键点：① 几何数据源无需新增 CPU 常驻副本——`rhi_buffer_read`(R186,HOST_VISIBLE 与 DEVICE_LOCAL staging 皆可）已被 MegaBuffer 烘焙路径在真实设备上实证；② **无需升版本**——加载端 switch 的 `default: break` 天然跳过未知 chunk 类型，可选新 chunk 对旧读取端透明（v3 兼容保持）;③ `Mesh` 顶点契约固定 32B(pos3+nrm3+uv2)，索引在 glTF 加载时已统一扩为 u32——磁盘格式直接沿用。
+- **格式**：新 chunk `BSCN_CHUNK_MESH_DATA=6`（可选，仅当保存端获得几何源时发出——存在即表意）。记录={mesh_index(=清单网格条目 ref_index)、vertex_count(>0)、index_count(0=非索引）、vertex_stride（恒 `BSCN_MESH_VERTEX_STRIDE=32`，其它值拒读——未来布局变更=新格式而非静默重解释）、顶点字节、u32 索引}。
+- **保存端**:`SerializeOptions` 增 `read_mesh_geometry` 回调+user——**scene_serial.c 保持零 RHI 调用**（纯 CTest 由假 reader 驱动全格式路径）；读取失败=尽力跳过该网格并告警（R607 纹理重绑同约）,vertex_count==0 跳过，OOM/超文件上限=保存失败。生产 adapter=`asset_mesh_geometry_reader`(user=RHIDevice,rhi_buffer_read 双缓冲）;demo B 键保存自此携带几何。
+- **加载端**：解析入 Scene 新 CPU 存储 `mesh_geometry`(R384 暂存-提交模式；`scene_serial_free`/`asset_scene_free` 双释放）。校验族（R387 哲学，全部从 chunk 自身字节推导）:count×16≤剩余、stride==32、vcount>0、mesh_index<100000（位图查重+重建侧 calloc 上界）、重复 mesh_index 拒、重复 chunk 拒（R387 同型 seen 旗标）、顶点/索引字节不得越界；s==NULL 仅校验不存储（与 RESOURCES 同约）。
+- **GPU 半片**:`asset_scene_rebuild_meshes(ctx,scene)`(asset.c,R606 镜像）——清单网格条目=槽位权威（mesh_count=max ref_index+1;ref_index≥resource_count 拒），孤儿几何（无清单条目）拒，描述符 flags&1 时 u0/u1 与几何记录计数不一致拒；material_idx 取描述符 u2（无描述符=0);**AABB 从几何位置重算**（几何=唯一诚实来源）；无几何记录的槽位留全零 Mesh（旧 v1-v3 文件无 chunk=诚实降级为空网格）；替换语义：既有 GPU 缓冲先销毁再换；任一缓冲创建失败=整体回滚返 false。
+- **TDD（红→绿实证）**:test_scene_serial +6——假 reader 双网格往返（字节精确+chunk_count==6)、无 reader 不发 chunk(chunk_count==5)、reader 失败跳过该网格（单记录+另一网格字节精确）、腐败记录六变体+截断全拒（vcount 0/越界×2、stride 24、重复 mesh_index、越界 mesh_index、表尺寸截断）、NULL scene 校验不弱化、重复 chunk 拒。RED 如实红 5/6(omitted 为守卫测试）;GREEN 后 **106/106**。test_asset_gltf +7(stub 扩捕获模式：有效句柄+载荷快照+销毁计数）——往返（计数/material_idx/AABB 重算/双缓冲载荷字节精确）、清单不匹配拒（零创建）、孤儿几何拒、越界清单 ref 拒、稀疏槽空、无清单空转、替换销毁旧缓冲。RED 如实红 4/7（三拒载=守卫测试）;GREEN 后 **35/35**（含既有 28 项零回归）。
+- **图形门（双端 E2E)**：图形套件新门 **MESH DATA ROUNDTRIP**(TEXTURE REBIND 之后，双端共享）——真设备双网格（三角形+四边形，已知字节）经生产 reader 保存→加载→rebuild→**重建缓冲 rhi_buffer_read 回读与源字节逐字节精确**+计数/material_idx/AABB 全验。**GL 全套件 ALL PASSED;VK 门过 + validation 0**。
+- **回归**：双树非图形 CTest 各 **114/114**(112→+2=另一会话 echarts 测试，与本 diff 无关）;VK 套件失败项恰为已知基线（12b 驱动边界 em b=1.568 + golden 双项异机漂移 + R611 MSAA 深度相位 AMD 驱动边界）;demo 四配置（GL 前向/延迟、VK 前向/延迟）各 120 帧优雅退出、VK validation 0。
+- **边界**：蒙皮网格不入 MESH_DATA（清单本就不覆盖 skinned_meshes——SkinnedMesh 无 vertex_count，属独立议题）;JSON 格式无几何（JSON 本就无 RESOURCES chunk);demo N 键加载仍只换 ECS world 不替换渲染场景（几何消费属未来全场景恢复路径，本轮未改既有调用方语义——R606 同约）;main.c 的 N 键重载不调 rebuild_meshes/rebuild_materials（显式两步由调用方组合）;GL/VK 的 MRT bind 清屏语义差异保留（R608 落账）。
+
 ## 本轮更新：R611 MSAA 离屏深度回读语义定义（TDD/systematic-debugging）— 回读弧最终片闭合；钓出并定性 AMD Windows VK 子通道深度 resolve 不落地
 
 - **缺口**（R610 落账"MSAA 深度回读未定义（需先 resolve)")：调研推翻前提——resolve 机制**早已存在**(VK 子通道 depth/stencil resolve 附件，最终布局 READ_ONLY;GL unbind 时 `glBlitFramebuffer` 深度 blit)，回读目标 `depth_tex` 本就是单样本 resolve 产物。真缺口只剩：VK `rhi_offscreen_fbo_bind` 对 MSAA 的 cur_layout 误记（恒 ATTACHMENT_OPTIMAL,resolve 目标实为 READ_ONLY——R258 同族但按 sample_count 分流）。

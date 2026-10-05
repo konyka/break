@@ -138,6 +138,125 @@ u32 asset_scene_rebind_textures(AssetCtx *ctx, Scene *scene,
     return rebound;
 }
 
+/* R612: see asset.h. Host readback of the mesh's GPU buffers — the R186
+ * MegaBuffer bake has done exactly this on DEVICE_LOCAL mesh buffers since
+ * its introduction, on both backends. */
+bool asset_mesh_geometry_reader(void *user, const Mesh *mesh, u32 mesh_index,
+                                void *dst_vertices, usize vertex_bytes,
+                                void *dst_indices, usize index_bytes) {
+    (void)mesh_index;
+    RHIDevice *dev = (RHIDevice *)user;
+    if (!dev || !mesh || !dst_vertices) return false;
+    if (!rhi_handle_valid(mesh->vertex_buf)) return false;
+    if (!rhi_buffer_read(dev, mesh->vertex_buf, dst_vertices, 0, vertex_bytes))
+        return false;
+    if (mesh->index_count == 0) return true; /* non-indexed: no payload */
+    if (!dst_indices || !rhi_handle_valid(mesh->index_buf)) return false;
+    return rhi_buffer_read(dev, mesh->index_buf, dst_indices, 0, index_bytes);
+}
+
+/* R612: see asset.h. The manifest's mesh entries are the slot-count
+ * authority; the geometry store supplies the bytes. */
+bool asset_scene_rebuild_meshes(AssetCtx *ctx, Scene *scene) {
+    if (!ctx || !scene) return false;
+
+    /* Replace semantics (R606 mirror): destroy existing GPU buffers before
+     * dropping the array. */
+    for (u32 i = 0; i < scene->mesh_count; i++) {
+        Mesh *m = &scene->meshes[i];
+        if (rhi_handle_valid(m->vertex_buf))
+            rhi_buffer_destroy(ctx->device, m->vertex_buf);
+        if (rhi_handle_valid(m->index_buf))
+            rhi_buffer_destroy(ctx->device, m->index_buf);
+    }
+    free(scene->meshes);
+    scene->meshes = NULL;
+    scene->mesh_count = 0;
+
+    /* mesh_count = max manifest mesh ref_index + 1; an out-of-range ref is
+     * corrupt (same rule as scene_rebuild_materials_from_manifest). */
+    u32 max_ref = 0;
+    bool any = false;
+    for (u32 i = 0; i < scene->resource_count; i++) {
+        const SceneResource *r = &scene->resources[i];
+        if (r->type != (u32)BSCN_RES_MESH) continue;
+        if (r->ref_index >= scene->resource_count) return false;
+        if (!any || r->ref_index > max_ref) max_ref = r->ref_index;
+        any = true;
+    }
+    u32 mesh_count = any ? max_ref + 1u : 0u;
+
+    /* Geometry records must name a declared slot — orphan geometry means the
+     * manifest and the payload disagree about the scene. */
+    for (u32 i = 0; i < scene->mesh_geometry_count; i++) {
+        if (scene->mesh_geometry[i].mesh_index >= mesh_count) return false;
+    }
+    if (mesh_count == 0) return true; /* nothing declared: vacuous */
+
+    Mesh *arr = (Mesh *)calloc(mesh_count, sizeof(Mesh));
+    if (!arr) return false;
+
+    for (u32 i = 0; i < scene->mesh_geometry_count; i++) {
+        const SceneMeshGeometry *g = &scene->mesh_geometry[i];
+        Mesh *m = &arr[g->mesh_index];
+        u32 material_idx = 0;
+        for (u32 j = 0; j < scene->resource_count; j++) {
+            const SceneResource *r = &scene->resources[j];
+            if (r->type != (u32)BSCN_RES_MESH || r->ref_index != g->mesh_index)
+                continue;
+            if (r->flags & 1u) {
+                /* The inline descriptor's counts must agree with the
+                 * payload; a mismatch means one of them was tampered with. */
+                if (r->u0 != g->index_count || r->u1 != g->vertex_count)
+                    goto fail;
+                material_idx = r->u2;
+            }
+            break;
+        }
+        RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                             .size = (usize)g->vertex_count * BSCN_MESH_VERTEX_STRIDE,
+                             .initial_data = g->vertices };
+        m->vertex_buf = rhi_buffer_create(ctx->device, &vd);
+        if (!rhi_handle_valid(m->vertex_buf)) goto fail;
+        if (g->index_count > 0) {
+            RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                 .size = (usize)g->index_count * sizeof(u32),
+                                 .initial_data = g->indices };
+            m->index_buf = rhi_buffer_create(ctx->device, &id);
+            if (!rhi_handle_valid(m->index_buf)) goto fail;
+        }
+        m->index_count = g->index_count;
+        m->vertex_count = g->vertex_count;
+        m->material_idx = material_idx;
+        /* AABB from the geometry itself — the only source that cannot lie
+         * about what was actually saved. */
+        m->aabb_min = vec3(1e30f, 1e30f, 1e30f);
+        m->aabb_max = vec3(-1e30f, -1e30f, -1e30f);
+        for (u32 vi = 0; vi < g->vertex_count; vi++) {
+            const f32 *p = (const f32 *)(g->vertices +
+                (usize)vi * BSCN_MESH_VERTEX_STRIDE);
+            f32 *mn = m->aabb_min.e, *mx = m->aabb_max.e;
+            for (u32 c = 0; c < 3; c++) {
+                if (p[c] < mn[c]) mn[c] = p[c];
+                if (p[c] > mx[c]) mx[c] = p[c];
+            }
+        }
+    }
+    scene->meshes = arr;
+    scene->mesh_count = mesh_count;
+    return true;
+
+fail:
+    for (u32 i = 0; i < mesh_count; i++) {
+        if (rhi_handle_valid(arr[i].vertex_buf))
+            rhi_buffer_destroy(ctx->device, arr[i].vertex_buf);
+        if (rhi_handle_valid(arr[i].index_buf))
+            rhi_buffer_destroy(ctx->device, arr[i].index_buf);
+    }
+    free(arr);
+    return false;
+}
+
 typedef struct {
     f32 pos[3];
     f32 normal[3];
@@ -1328,6 +1447,12 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
     free(scene->anim_clips);
     free(scene->resources);
     free(scene->texture_sources); /* R604 */
+    /* R612: CPU geometry store from a BSCN MESH_DATA chunk. */
+    for (u32 i = 0; i < scene->mesh_geometry_count; i++) {
+        free(scene->mesh_geometry[i].vertices);
+        free(scene->mesh_geometry[i].indices);
+    }
+    free(scene->mesh_geometry);
     memset(scene, 0, sizeof(*scene));
 }
 

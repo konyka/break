@@ -39,8 +39,27 @@ typedef enum {
     BSCN_CHUNK_COMPONENTS  = 2,
     BSCN_CHUNK_HIERARCHY   = 3,
     BSCN_CHUNK_RESOURCES   = 4,
-    BSCN_CHUNK_SCENE_NODES = 5
+    BSCN_CHUNK_SCENE_NODES = 5,
+    /* R612: optional static-mesh geometry payload. The chunk is emitted only
+     * when the save is given a geometry source (SerializeOptions
+     * .read_mesh_geometry) and the scene has meshes; readers that predate it
+     * skip unknown chunk types (the load switch's default), so it stays
+     * compatible with BSCN v3 without a version bump.
+     * Layout: u32 record_count, then per record:
+     *   u32 mesh_index    — scene mesh slot == manifest mesh ref_index
+     *   u32 vertex_count  — > 0
+     *   u32 index_count   — 0 = non-indexed mesh (no index payload)
+     *   u32 vertex_stride — must be BSCN_MESH_VERTEX_STRIDE
+     *   u8  vertices[vertex_count * vertex_stride]
+     *   u32 indices[index_count]
+     */
+    BSCN_CHUNK_MESH_DATA   = 6
 } BscnChunkType;
+
+/* R612: byte stride of the engine's static mesh vertex contract
+ * (pos3 + normal3 + uv2, all f32). The loader rejects records with any other
+ * stride — a future layout change is a new format, not a silent reinterpret. */
+#define BSCN_MESH_VERTEX_STRIDE 32u
 
 typedef struct {
     u32 type;
@@ -67,6 +86,20 @@ typedef enum {
 typedef struct {
     bool include_resources; /* inline resource bytes (false = path-only refs) */
     bool pretty_json;       /* pretty-printed JSON output */
+    /* R612: optional static-mesh geometry source. When set (and the scene has
+     * meshes), scene_save_binary emits a MESH_DATA chunk: for each mesh the
+     * serializer stages vertex_count * BSCN_MESH_VERTEX_STRIDE vertex bytes
+     * and index_count * 4 index bytes and calls this to fill them. The
+     * callback is the validity/authority layer — the serializer itself makes
+     * no RHI calls, so tests can drive it with a fake. A false return skips
+     * that mesh's record with a warning (best-effort, mirrors the R607
+     * texture rebind policy); the save still succeeds. Meshes with
+     * vertex_count == 0 are skipped without calling the reader.
+     * Production wiring: asset_mesh_geometry_reader with user = RHIDevice. */
+    bool (*read_mesh_geometry)(void *user, const Mesh *mesh, u32 mesh_index,
+                               void *dst_vertices, usize vertex_bytes,
+                               void *dst_indices, usize index_bytes);
+    void *read_mesh_geometry_user;
 } SerializeOptions;
 
 /* ---- Binary format ---- */

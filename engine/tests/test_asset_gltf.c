@@ -16,6 +16,7 @@
 #include <asset/asset.h>
 #include <asset/async_loader.h>
 #include <asset/vfs.h>
+#include <scene/scene_serial.h> /* R612: BSCN_RES_MESH manifest entry types */
 #include <rhi/rhi.h>
 #include <stdio.h>
 #include <string.h>
@@ -39,6 +40,14 @@ static u32 g_texture_create_count = 0;
 static u32 g_last_ib[64];
 static u32 g_last_ib_count = 0;
 
+/* R612: rebuild tests enable a capturing fake that snapshots each created
+ * buffer's descriptor + payload and returns valid handles. */
+#define GEOM_CAP_MAX 8
+static struct { u32 usage; usize size; u8 data[512]; } g_geom_cap[GEOM_CAP_MAX];
+static u32 g_geom_cap_count = 0;
+static bool g_geom_capture = false;
+static u32 g_geom_destroy_count = 0;
+
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     (void)dev;
     if (desc && desc->usage == RHI_BUFFER_USAGE_INDEX && desc->initial_data &&
@@ -46,15 +55,38 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         memcpy(g_last_ib, desc->initial_data, desc->size);
         g_last_ib_count = (u32)(desc->size / sizeof(u32));
     }
+    /* R612: rebuild tests enable a capturing fake that snapshots each created
+     * buffer's payload and returns valid handles. */
+    if (g_geom_capture && desc && g_geom_cap_count < GEOM_CAP_MAX &&
+        desc->size <= sizeof(g_geom_cap[0].data)) {
+        g_geom_cap[g_geom_cap_count].usage = (u32)desc->usage;
+        g_geom_cap[g_geom_cap_count].size = desc->size;
+        if (desc->initial_data)
+            memcpy(g_geom_cap[g_geom_cap_count].data, desc->initial_data,
+                   desc->size);
+        g_geom_cap_count++;
+        RHIBuffer h = { g_geom_cap_count, 1u };
+        return h;
+    }
     return s_null_buffer;
 }
-void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) { (void)dev; (void)buf; }
+void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
+    (void)dev;
+    if (g_geom_capture && rhi_handle_valid(buf)) g_geom_destroy_count++;
+}
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
     (void)dev; (void)buf; (void)data; (void)size;
 }
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
                               const void *data, usize size) {
     (void)dev; (void)buf; (void)offset; (void)data; (void)size;
+}
+/* R612: link-only — the geometry reader adapter references it; these tests
+ * never drive a readback. */
+bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
+                     usize size) {
+    (void)dev; (void)buf; (void)dst; (void)offset; (void)size;
+    return false;
 }
 u32 rhi_frame_index(RHIDevice *dev) { (void)dev; return 0u; }
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
@@ -1247,8 +1279,223 @@ TEST(gltf_strided_anim_times_read_correctly)
     remove(bin_path);
 }
 
+/* ---- R612: asset_scene_rebuild_meshes (BSCN mesh geometry GPU half) ---- */
+
+/* 4 vertices (32B stride: pos3 + pattern rest) with a known AABB. */
+static void geom_test_vertices(u8 *v) {
+    static const f32 pos[4][3] = {
+        { 0.0f, 0.0f, 0.0f }, { 1.0f, 2.0f, 3.0f },
+        { -1.0f, -1.0f, -1.0f }, { 2.0f, 0.0f, 2.0f },
+    };
+    for (u32 i = 0; i < 4; i++) {
+        memcpy(v + i * 32, pos[i], sizeof(f32) * 3);
+        for (u32 b = 12; b < 32; b++) v[i * 32 + b] = (u8)(0xA0u + i);
+    }
+}
+
+static SceneMeshGeometry *geom_test_add_record(Scene *scene, u32 mesh_index) {
+    scene->mesh_geometry_count = 1;
+    scene->mesh_geometry =
+        (SceneMeshGeometry *)calloc(1, sizeof(SceneMeshGeometry));
+    if (!scene->mesh_geometry) return NULL;
+    SceneMeshGeometry *g = &scene->mesh_geometry[0];
+    g->mesh_index = mesh_index;
+    g->vertex_count = 4;
+    g->index_count = 3;
+    g->vertices = (u8 *)malloc(4 * 32);
+    g->indices = (u32 *)malloc(3 * sizeof(u32));
+    if (!g->vertices || !g->indices) return NULL;
+    geom_test_vertices(g->vertices);
+    g->indices[0] = 2u; g->indices[1] = 1u; g->indices[2] = 0u;
+    return g;
+}
+
+static bool geom_test_add_mesh_entry(Scene *scene, u32 ref, u32 icount,
+                                     u32 vcount, u32 mat_idx) {
+    scene->resource_count = 1;
+    scene->resources = (SceneResource *)calloc(1, sizeof(SceneResource));
+    if (!scene->resources) return false;
+    scene->resources[0].type = BSCN_RES_MESH;
+    scene->resources[0].ref_index = ref;
+    scene->resources[0].flags = 1u; /* inline descriptor */
+    scene->resources[0].u0 = icount;
+    scene->resources[0].u1 = vcount;
+    scene->resources[0].u2 = mat_idx;
+    return true;
+}
+
+TEST(rebuild_meshes_roundtrip)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(geom_test_add_mesh_entry(&scene, 0u, 3u, 4u, 1u));
+    SceneMeshGeometry *g = geom_test_add_record(&scene, 0u);
+    ASSERT_NOT_NULL(g);
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    g_geom_destroy_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(scene.mesh_count, 1u);
+    const Mesh *m = &scene.meshes[0];
+    ASSERT_EQ(m->vertex_count, 4u);
+    ASSERT_EQ(m->index_count, 3u);
+    ASSERT_EQ(m->material_idx, 1u); /* from the descriptor's u2 */
+    ASSERT_TRUE(rhi_handle_valid(m->vertex_buf));
+    ASSERT_TRUE(rhi_handle_valid(m->index_buf));
+    /* AABB recomputed from the geometry, not trusted from anywhere else. */
+    ASSERT_FLOAT_EQ(m->aabb_min.e[0], -1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(m->aabb_min.e[1], -1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(m->aabb_min.e[2], -1.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(m->aabb_max.e[0], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(m->aabb_max.e[1], 2.0f, 1e-6f);
+    ASSERT_FLOAT_EQ(m->aabb_max.e[2], 3.0f, 1e-6f);
+    /* Exact payloads reached the buffer creations (vertex first). */
+    ASSERT_EQ(g_geom_cap_count, 2u);
+    ASSERT_EQ(g_geom_cap[0].usage, (u32)RHI_BUFFER_USAGE_VERTEX);
+    ASSERT_EQ(g_geom_cap[0].size, (usize)(4 * 32));
+    ASSERT_TRUE(memcmp(g_geom_cap[0].data, g->vertices, 4 * 32) == 0);
+    ASSERT_EQ(g_geom_cap[1].usage, (u32)RHI_BUFFER_USAGE_INDEX);
+    ASSERT_EQ(g_geom_cap[1].size, (usize)(3 * sizeof(u32)));
+    ASSERT_TRUE(memcmp(g_geom_cap[1].data, g->indices, 3 * sizeof(u32)) == 0);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_rejects_manifest_mismatch)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Descriptor claims 99 indices; the geometry record carries 3. */
+    ASSERT_TRUE(geom_test_add_mesh_entry(&scene, 0u, 99u, 4u, 0u));
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_FALSE(asset_scene_rebuild_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_cap_count, 0u); /* refused before any buffer creation */
+    ASSERT_TRUE(scene.meshes == NULL);
+    ASSERT_EQ(scene.mesh_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_rejects_orphan_geometry)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Geometry for slot 0 but no manifest mesh entry at all. */
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+
+    ASSERT_FALSE(asset_scene_rebuild_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_rejects_out_of_range_manifest_ref)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* ref_index 3 >= resource_count 1 — corrupt manifest (R606 rule). */
+    ASSERT_TRUE(geom_test_add_mesh_entry(&scene, 3u, 3u, 4u, 0u));
+
+    ASSERT_FALSE(asset_scene_rebuild_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_sparse_slot_stays_empty)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Two manifest mesh slots; geometry only for slot 0. */
+    scene.resource_count = 2;
+    scene.resources = (SceneResource *)calloc(2, sizeof(SceneResource));
+    ASSERT_NOT_NULL(scene.resources);
+    for (u32 i = 0; i < 2; i++) {
+        scene.resources[i].type = BSCN_RES_MESH;
+        scene.resources[i].ref_index = i;
+        scene.resources[i].flags = 1u;
+    }
+    scene.resources[0].u0 = 3u; scene.resources[0].u1 = 4u;
+    scene.resources[1].u0 = 9u; scene.resources[1].u1 = 9u;
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(scene.mesh_count, 2u);
+    ASSERT_TRUE(rhi_handle_valid(scene.meshes[0].vertex_buf));
+    ASSERT_EQ(scene.meshes[0].vertex_count, 4u);
+    /* Slot 1 has no geometry: zeroed Mesh with invalid handles (old files
+     * without a MESH_DATA chunk degrade to empty meshes, never corrupt). */
+    ASSERT_TRUE(!rhi_handle_valid(scene.meshes[1].vertex_buf));
+    ASSERT_TRUE(!rhi_handle_valid(scene.meshes[1].index_buf));
+    ASSERT_EQ(scene.meshes[1].vertex_count, 0u);
+    ASSERT_EQ(scene.meshes[1].index_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_no_manifest_is_vacuous)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_scene_rebuild_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.meshes == NULL);
+    ASSERT_EQ(scene.mesh_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_meshes_replaces_existing)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Pre-existing mesh with a valid buffer handle must be destroyed, not
+     * leaked, when the rebuild replaces the array. */
+    scene.mesh_count = 1;
+    scene.meshes = (Mesh *)calloc(1, sizeof(Mesh));
+    ASSERT_NOT_NULL(scene.meshes);
+    scene.meshes[0].vertex_buf.index = 42u;
+    scene.meshes[0].vertex_buf.generation = 1u;
+    scene.meshes[0].vertex_count = 99u;
+
+    ASSERT_TRUE(geom_test_add_mesh_entry(&scene, 0u, 3u, 4u, 0u));
+    ASSERT_NOT_NULL(geom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    g_geom_destroy_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_destroy_count, 1u); /* the old vertex buffer */
+    ASSERT_EQ(scene.mesh_count, 1u);
+    ASSERT_EQ(scene.meshes[0].vertex_count, 4u);
+    ASSERT_TRUE(rhi_handle_valid(scene.meshes[0].vertex_buf));
+
+    asset_scene_free(&ctx, &scene);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(asset_ctx_init_clears_vfs);
+    RUN_TEST(rebuild_meshes_roundtrip);
+    RUN_TEST(rebuild_meshes_rejects_manifest_mismatch);
+    RUN_TEST(rebuild_meshes_rejects_orphan_geometry);
+    RUN_TEST(rebuild_meshes_rejects_out_of_range_manifest_ref);
+    RUN_TEST(rebuild_meshes_sparse_slot_stays_empty);
+    RUN_TEST(rebuild_meshes_no_manifest_is_vacuous);
+    RUN_TEST(rebuild_meshes_replaces_existing);
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);

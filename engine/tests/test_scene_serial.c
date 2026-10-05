@@ -2362,6 +2362,336 @@ TEST(rebuild_materials_rejects_out_of_range_ref)
     remove(path);
 }
 
+/* ---------------------------------------------------------------- */
+/* R612: MESH_DATA chunk — static-mesh geometry in BSCN             */
+/* ---------------------------------------------------------------- */
+
+/* Fake geometry source: deterministic per-slot bytes so the roundtrip can
+ * tell slots apart; fail_mask bit i makes mesh i's read fail (drives the
+ * best-effort skip path). */
+typedef struct {
+    u32 fail_mask;
+    u32 calls;
+} FakeGeomSrc;
+
+static void fake_geom_expected(u32 mesh_index, u8 *v, usize vbytes,
+                               u32 *idx, usize icount) {
+    for (usize i = 0; i < vbytes; i++)
+        v[i] = (u8)(mesh_index * 17u + (u32)(i & 0xFFu));
+    for (usize i = 0; i < icount; i++)
+        idx[i] = mesh_index * 1000u + (u32)i;
+}
+
+static bool fake_mesh_geometry_reader(void *user, const Mesh *mesh, u32 mesh_index,
+                                      void *dst_vertices, usize vertex_bytes,
+                                      void *dst_indices, usize index_bytes) {
+    FakeGeomSrc *src = (FakeGeomSrc *)user;
+    src->calls++;
+    if (mesh_index >= 32u) return false;
+    if (src->fail_mask & (1u << mesh_index)) return false;
+    if (vertex_bytes != (usize)mesh->vertex_count * BSCN_MESH_VERTEX_STRIDE)
+        return false;
+    if (index_bytes != (usize)mesh->index_count * sizeof(u32)) return false;
+    fake_geom_expected(mesh_index, (u8 *)dst_vertices, vertex_bytes,
+                       (u32 *)dst_indices, index_bytes / sizeof(u32));
+    return true;
+}
+
+/* Overwrite a u32 field (0 mesh_index, 1 vertex_count, 2 index_count,
+ * 3 vertex_stride) of MESH_DATA record `record` in a saved file. */
+static bool patch_mesh_data_field(const char *path, u32 record, u32 field,
+                                  u32 value)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    bool done = fread(&h, sizeof(h), 1, f) == 1;
+    for (u32 i = 0; done && i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long entry_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, entry_off, SEEK_SET) != 0 || fread(&e, sizeof(e), 1, f) != 1)
+            break;
+        if (e.type != BSCN_CHUNK_MESH_DATA) continue;
+        u32 off = e.offset + 4u; /* skip record_count */
+        for (u32 r = 0; r < record; r++) {
+            u32 vc = 0, ic = 0, stride = 0;
+            if (fseek(f, (long)off + 4, SEEK_SET) != 0) { done = false; break; }
+            if (fread(&vc, 4, 1, f) != 1 || fread(&ic, 4, 1, f) != 1 ||
+                fread(&stride, 4, 1, f) != 1) { done = false; break; }
+            off += 16u + vc * stride + ic * 4u;
+        }
+        if (!done) break;
+        if (fseek(f, (long)off + (long)field * 4, SEEK_SET) != 0) break;
+        done = fwrite(&value, sizeof(value), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+/* Rewrite a chunk's declared size in the table (truncation attacks). */
+static bool patch_chunk_declared_size(const char *path, u32 chunk_type,
+                                      u32 new_size)
+{
+    FILE *f = fopen(path, "r+b");
+    if (!f) return false;
+    BscnHeader h;
+    bool done = fread(&h, sizeof(h), 1, f) == 1;
+    for (u32 i = 0; done && i < h.chunk_count; i++) {
+        BscnChunkEntry e;
+        long entry_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
+        if (fseek(f, entry_off, SEEK_SET) != 0 || fread(&e, sizeof(e), 1, f) != 1)
+            break;
+        if (e.type != chunk_type) continue;
+        e.size = new_size;
+        if (fseek(f, entry_off, SEEK_SET) != 0) break;
+        done = fwrite(&e, sizeof(e), 1, f) == 1;
+        break;
+    }
+    fclose(f);
+    return done;
+}
+
+TEST(mesh_data_roundtrip_fake_reader)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_rt.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+
+    FakeGeomSrc gs = { 0u, 0u };
+    SerializeOptions opts = { .include_resources = true,
+                              .read_mesh_geometry = fake_mesh_geometry_reader,
+                              .read_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(gs.calls, 2u);
+
+    /* The writer emitted the optional sixth chunk. */
+    {
+        FILE *fp = fopen(path, "rb");
+        ASSERT_NOT_NULL(fp);
+        BscnHeader h;
+        ASSERT_EQ(fread(&h, sizeof(h), 1, fp), (usize)1);
+        fclose(fp);
+        ASSERT_EQ(h.chunk_count, 6u);
+    }
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.mesh_geometry_count, 2u);
+
+    for (u32 r = 0; r < dst.mesh_geometry_count; r++) {
+        const SceneMeshGeometry *g = &dst.mesh_geometry[r];
+        u32 mi = g->mesh_index;
+        ASSERT_TRUE(mi < 2u);
+        u32 want_v = (mi == 0u) ? 24u : 4u;
+        u32 want_i = (mi == 0u) ? 36u : 6u;
+        ASSERT_EQ(g->vertex_count, want_v);
+        ASSERT_EQ(g->index_count, want_i);
+        u8 ev[24 * 32]; u32 ei[36];
+        fake_geom_expected(mi, ev, (usize)want_v * BSCN_MESH_VERTEX_STRIDE,
+                           ei, want_i);
+        ASSERT_TRUE(memcmp(g->vertices, ev,
+                           (usize)want_v * BSCN_MESH_VERTEX_STRIDE) == 0);
+        ASSERT_TRUE(memcmp(g->indices, ei, (usize)want_i * sizeof(u32)) == 0);
+    }
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(mesh_data_omitted_without_reader)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_none.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    /* No geometry source -> the optional chunk is not emitted at all. */
+    {
+        FILE *fp = fopen(path, "rb");
+        ASSERT_NOT_NULL(fp);
+        BscnHeader h;
+        ASSERT_EQ(fread(&h, sizeof(h), 1, fp), (usize)1);
+        fclose(fp);
+        ASSERT_EQ(h.chunk_count, 5u);
+    }
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.mesh_geometry_count, 0u);
+    ASSERT_TRUE(dst.mesh_geometry == NULL);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(mesh_data_reader_failure_skips_mesh)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_skip.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+
+    FakeGeomSrc gs = { 1u, 0u }; /* mesh 0's read fails */
+    SerializeOptions opts = { .include_resources = true,
+                              .read_mesh_geometry = fake_mesh_geometry_reader,
+                              .read_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(gs.calls, 2u); /* both meshes were attempted */
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.mesh_geometry_count, 1u);
+    ASSERT_EQ(dst.mesh_geometry[0].mesh_index, 1u);
+    ASSERT_EQ(dst.mesh_geometry[0].vertex_count, 4u);
+    ASSERT_EQ(dst.mesh_geometry[0].index_count, 6u);
+    u8 ev[4 * 32]; u32 ei[6];
+    fake_geom_expected(1u, ev, sizeof(ev), ei, 6u);
+    ASSERT_TRUE(memcmp(dst.mesh_geometry[0].vertices, ev, sizeof(ev)) == 0);
+    ASSERT_TRUE(memcmp(dst.mesh_geometry[0].indices, ei, sizeof(ei)) == 0);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* The writer cannot produce these shapes, so accepting one means the loader
+ * stopped validating (R387 philosophy: bounds derived from the chunk's own
+ * bytes, never trusted from the file). */
+TEST(mesh_data_rejects_corrupt_records)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_corrupt.bscn");
+    const struct { u32 record; u32 field; u32 value; } patches[] = {
+        { 0u, 1u, 0u },          /* vertex_count 0 — records always carry verts */
+        { 0u, 1u, 0x10000000u }, /* vertex bytes far past the chunk */
+        { 0u, 2u, 0x10000000u }, /* index bytes far past the chunk */
+        { 0u, 3u, 24u },         /* unknown vertex stride */
+        { 1u, 0u, 0u },          /* duplicate mesh_index (record 1 -> 0) */
+        { 0u, 0u, 100000u },     /* mesh_index past the slot bound */
+    };
+    for (usize i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_scene(&src);
+        FakeGeomSrc gs = { 0u, 0u };
+        SerializeOptions opts = { .include_resources = true,
+                                  .read_mesh_geometry = fake_mesh_geometry_reader,
+                                  .read_mesh_geometry_user = &gs };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_mesh_data_field(path, patches[i].record,
+                                          patches[i].field, patches[i].value));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+        ASSERT_EQ(dst.mesh_geometry_count, 0u);
+
+        free_scene_src(&dst);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+
+    /* Truncated: the count claims two records but the chunk ends inside the
+     * first record's header. */
+    {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_scene(&src);
+        FakeGeomSrc gs = { 0u, 0u };
+        SerializeOptions opts = { .include_resources = true,
+                                  .read_mesh_geometry = fake_mesh_geometry_reader,
+                                  .read_mesh_geometry_user = &gs };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_chunk_declared_size(path, BSCN_CHUNK_MESH_DATA, 8u));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+
+        free_scene_src(&dst);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+    remove(path);
+}
+
+/* A NULL Scene means parse-and-discard; validation must not weaken. */
+TEST(mesh_data_validates_with_null_scene)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_null.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+    FakeGeomSrc gs = { 0u, 0u };
+    SerializeOptions opts = { .include_resources = true,
+                              .read_mesh_geometry = fake_mesh_geometry_reader,
+                              .read_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    ASSERT_TRUE(scene_load_binary(w2, NULL, path));
+
+    ASSERT_TRUE(patch_mesh_data_field(path, 0u, 3u, 24u)); /* bad stride */
+    World *w3 = world_create();
+    ASSERT_NOT_NULL(w3);
+    ASSERT_FALSE(scene_load_binary(w3, NULL, path));
+
+    world_destroy(w3);
+    world_destroy(w2);
+    free_scene_src(&src);
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(mesh_data_rejects_duplicate_chunk)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_mesh_geom_dup.bscn");
+    const u32 empty[] = { 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION,
+                          .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_MESH_DATA, .offset = base, .size = sizeof(empty) },
+        { .type = BSCN_CHUNK_MESH_DATA, .offset = base + sizeof(empty),
+          .size = sizeof(empty) }
+    };
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty, sizeof(empty), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty, sizeof(empty), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
 TEST(save_binary_rejects_more_than_256_distinct_material_textures)
 {
     char path[64];
@@ -3008,6 +3338,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(rebuild_materials_from_manifest_roundtrip);
     RUN_TEST(rebuild_materials_refs_only_defaults);
     RUN_TEST(rebuild_materials_rejects_out_of_range_ref);
+    RUN_TEST(mesh_data_roundtrip_fake_reader);
+    RUN_TEST(mesh_data_omitted_without_reader);
+    RUN_TEST(mesh_data_reader_failure_skips_mesh);
+    RUN_TEST(mesh_data_rejects_corrupt_records);
+    RUN_TEST(mesh_data_validates_with_null_scene);
+    RUN_TEST(mesh_data_rejects_duplicate_chunk);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);

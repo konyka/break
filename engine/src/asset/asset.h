@@ -57,6 +57,20 @@ typedef struct {
     Vec3      aabb_max;
 } Mesh;
 
+/* R612: CPU-side static-mesh geometry recovered from a BSCN MESH_DATA chunk.
+ * The GPU half (asset_scene_rebuild_meshes) uploads these bytes into fresh
+ * buffers. `vertices` is vertex_count * BSCN_MESH_VERTEX_STRIDE bytes in the
+ * engine's static Vertex layout (pos3 + normal3 + uv2, 32 bytes); `indices`
+ * holds index_count u32 entries (the loader widens all glTF index widths to
+ * u32, so that is the on-disk width too). Owned by Scene. */
+typedef struct {
+    u32  mesh_index;   /* scene mesh slot == manifest mesh entry ref_index */
+    u32  vertex_count;
+    u32  index_count;  /* 0 = non-indexed */
+    u8  *vertices;
+    u32 *indices;
+} SceneMeshGeometry;
+
 typedef struct {
     RHIBuffer vertex_buf;
     RHIBuffer index_buf;
@@ -147,6 +161,12 @@ typedef struct {
      * Owned by Scene, freed by asset_scene_free. */
     SceneTextureSource *texture_sources;
     u32                 texture_source_count;
+    /* R612: static-mesh geometry recovered from a BSCN MESH_DATA chunk
+     * (scene_load_binary). Populated only by BSCN load; glTF loads leave it
+     * empty (their geometry goes straight to GPU buffers). Freed by
+     * scene_serial_free / asset_scene_free. */
+    SceneMeshGeometry  *mesh_geometry;
+    u32                 mesh_geometry_count;
 } Scene;
 
 /* R607: rebind manifest-wired textures into a scene's materials — the GPU
@@ -164,6 +184,33 @@ typedef struct {
  * rebound. */
 u32      asset_scene_rebind_textures(AssetCtx *ctx, Scene *scene,
                                      const char *base_dir);
+
+/* R612: production geometry source for SerializeOptions.read_mesh_geometry.
+ * `user` is the RHIDevice *; fills dst_vertices (vertex_count * 32 bytes) and
+ * dst_indices (index_count * 4 bytes) by host readback of the mesh's GPU
+ * buffers (rhi_buffer_read — the R186 MegaBuffer bake path proves this works
+ * for DEVICE_LOCAL mesh buffers on both backends). Returns false for invalid
+ * buffer handles or a failed readback; index_count == 0 meshes read no
+ * indices (dst_indices may be NULL). */
+bool     asset_mesh_geometry_reader(void *user, const Mesh *mesh, u32 mesh_index,
+                                    void *dst_vertices, usize vertex_bytes,
+                                    void *dst_indices, usize index_bytes);
+
+/* R612: rebuild scene->meshes from the loaded manifest (mesh entries carry
+ * the slot wiring) + mesh_geometry store (the bytes) — the GPU half of the
+ * BSCN static-mesh geometry roundtrip. The manifest's BSCN_RES_MESH entries
+ * are the slot-count authority (mesh_count = max ref_index + 1, mirroring
+ * scene_rebuild_materials_from_manifest): a geometry record naming a slot
+ * with no manifest entry is corrupt and fails the whole call, as is a
+ * descriptor (flags & 1) whose u0/u1 disagree with the record's
+ * index/vertex counts. Slots without a geometry record keep zeroed Mesh
+ * structs (invalid handles — old v1-v3 files without a MESH_DATA chunk
+ * degrade to empty meshes). material_idx comes from the descriptor's u2
+ * when inlined, else 0; the AABB is recomputed from the vertex positions
+ * (geometry is the source of truth). REPLACES scene->meshes: existing GPU
+ * buffers are destroyed first. Returns false on corrupt data or GPU buffer
+ * creation failure; on false scene->meshes is left empty. */
+bool     asset_scene_rebuild_meshes(AssetCtx *ctx, Scene *scene);
 
 /* out_scene must be zero-initialized before the call (memset or {}): failure
  * paths unwind via asset_scene_free(ctx, out_scene), which frees whatever the

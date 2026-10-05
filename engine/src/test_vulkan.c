@@ -1045,8 +1045,10 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
  * concurrently from the same cwd. */
 #ifdef ENGINE_VULKAN
 #define TV_REBIND_BMP "tmp_tex_rebind_vk.bmp"
+#define TV_GEOM_BSCN  "tmp_mesh_geom_vk.bscn"
 #else
 #define TV_REBIND_BMP "tmp_tex_rebind_gl.bmp"
+#define TV_GEOM_BSCN  "tmp_mesh_geom_gl.bscn"
 #endif
 
 static bool tv_write_test_bmp(const char *path) {
@@ -1132,6 +1134,164 @@ static bool tv_test_texture_rebind(RHIDevice *dev) {
     }
     asset_scene_free(&actx, &scene);
     remove(bmp_path);
+    return pass;
+}
+
+/* R612: MESH DATA ROUNDTRIP gate — real-device end-to-end for the BSCN
+ * static-mesh geometry chunk: two meshes with known bytes ride the
+ * production save path (asset_mesh_geometry_reader = rhi_buffer_read of the
+ * GPU buffers, the R186 path) into a MESH_DATA chunk; a fresh scene loads
+ * it; asset_scene_rebuild_meshes recreates the GPU buffers. The rebuilt
+ * buffers are read back and compared byte-exact against the sources, and the
+ * rebuilt meshes must carry the manifest's counts/material_idx plus an
+ * AABB recomputed from the geometry. Backend-tagged file name keeps the
+ * GL/VK suites race-free from the same cwd (the R607 convention). */
+static bool tv_test_mesh_geometry_roundtrip(RHIDevice *dev) {
+    bool pass = true;
+    char path[96];
+    snprintf(path, sizeof(path), "tests/%s", TV_GEOM_BSCN);
+
+    /* Vertex contract: 32B stride (pos3 f32 + normal3 f32 + uv2 f32). */
+    static const f32 verts0[3 * 8] = {
+        0.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,  0.0f, 0.0f, 1.0f,  1.0f, 0.0f,
+        0.0f, 1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  0.0f, 1.0f,
+    };
+    static const u32 idx0[3] = { 0u, 1u, 2u };
+    static const f32 verts1[4 * 8] = {
+        5.0f, 5.0f, 5.0f,  0.0f, 1.0f, 0.0f,  0.0f, 0.0f,
+        6.0f, 5.0f, 5.0f,  0.0f, 1.0f, 0.0f,  1.0f, 0.0f,
+        6.0f, 6.0f, 5.0f,  0.0f, 1.0f, 0.0f,  1.0f, 1.0f,
+        5.0f, 6.0f, 5.0f,  0.0f, 1.0f, 0.0f,  0.0f, 1.0f,
+    };
+    static const u32 idx1[6] = { 0u, 1u, 2u, 2u, 3u, 0u };
+
+    AssetCtx actx;
+    asset_ctx_init(&actx, dev);
+    World *w = world_create();
+    Scene src;
+    memset(&src, 0, sizeof(src));
+    src.mesh_count = 2;
+    src.meshes = (Mesh *)calloc(2, sizeof(Mesh));
+    src.material_count = 2;
+    src.materials = (Material *)calloc(2, sizeof(Material));
+    if (!w || !src.meshes || !src.materials) {
+        LOG_ERROR("FAIL: geom gate setup (alloc)");
+        free(src.meshes); free(src.materials);
+        if (w) world_destroy(w);
+        return false;
+    }
+
+    RHIBufferDesc vd0 = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(verts0), .initial_data = verts0 };
+    src.meshes[0].vertex_buf = rhi_buffer_create(dev, &vd0);
+    RHIBufferDesc id0 = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(idx0), .initial_data = idx0 };
+    src.meshes[0].index_buf = rhi_buffer_create(dev, &id0);
+    src.meshes[0].vertex_count = 3; src.meshes[0].index_count = 3;
+    src.meshes[0].material_idx = 0;
+    src.meshes[0].aabb_min = vec3(0.0f, 0.0f, 0.0f);
+    src.meshes[0].aabb_max = vec3(1.0f, 1.0f, 0.0f);
+
+    RHIBufferDesc vd1 = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(verts1), .initial_data = verts1 };
+    src.meshes[1].vertex_buf = rhi_buffer_create(dev, &vd1);
+    RHIBufferDesc id1 = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(idx1), .initial_data = idx1 };
+    src.meshes[1].index_buf = rhi_buffer_create(dev, &id1);
+    src.meshes[1].vertex_count = 4; src.meshes[1].index_count = 6;
+    src.meshes[1].material_idx = 1;
+    src.meshes[1].aabb_min = vec3(5.0f, 5.0f, 5.0f);
+    src.meshes[1].aabb_max = vec3(6.0f, 6.0f, 5.0f);
+
+    if (!rhi_handle_valid(src.meshes[0].vertex_buf) ||
+        !rhi_handle_valid(src.meshes[0].index_buf) ||
+        !rhi_handle_valid(src.meshes[1].vertex_buf) ||
+        !rhi_handle_valid(src.meshes[1].index_buf)) {
+        LOG_ERROR("FAIL: geom gate source buffer creation");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+
+    SerializeOptions opts = { .include_resources = true,
+                              .read_mesh_geometry = asset_mesh_geometry_reader,
+                              .read_mesh_geometry_user = dev };
+    if (!scene_save_binary(w, &src, path, &opts)) {
+        LOG_ERROR("FAIL: geom gate save");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+
+    World *w2 = world_create();
+    Scene dst;
+    memset(&dst, 0, sizeof(dst));
+    if (!w2 || !scene_load_binary(w2, &dst, path)) {
+        LOG_ERROR("FAIL: geom gate load");
+        pass = false;
+    } else if (dst.mesh_geometry_count != 2u) {
+        LOG_ERROR("FAIL: geom gate store count %u, want 2",
+                  dst.mesh_geometry_count);
+        pass = false;
+    } else if (!asset_scene_rebuild_meshes(&actx, &dst)) {
+        LOG_ERROR("FAIL: geom gate rebuild");
+        pass = false;
+    } else {
+        if (dst.mesh_count != 2u) {
+            LOG_ERROR("FAIL: geom gate mesh_count %u, want 2", dst.mesh_count);
+            pass = false;
+        } else {
+            static const f32 *want_v[2] = { verts0, verts1 };
+            static const u32 want_vc[2] = { 3u, 4u };
+            static const u32 want_ic[2] = { 3u, 6u };
+            static const u32 *want_i[2] = { idx0, idx1 };
+            for (u32 mi = 0; mi < 2 && pass; mi++) {
+                const Mesh *m = &dst.meshes[mi];
+                if (m->vertex_count != want_vc[mi] ||
+                    m->index_count != want_ic[mi] ||
+                    m->material_idx != mi) {
+                    LOG_ERROR("FAIL: geom gate mesh %u counts/mat "
+                              "(%u/%u/%u)", mi, m->vertex_count,
+                              m->index_count, m->material_idx);
+                    pass = false;
+                    break;
+                }
+                u8 rb_v[4 * 32] = {0};
+                u32 rb_i[6] = {0};
+                if (!rhi_buffer_read(dev, m->vertex_buf, rb_v, 0,
+                                     want_vc[mi] * 32u) ||
+                    !rhi_buffer_read(dev, m->index_buf, rb_i, 0,
+                                     want_ic[mi] * sizeof(u32))) {
+                    LOG_ERROR("FAIL: geom gate mesh %u rebuilt readback", mi);
+                    pass = false;
+                    break;
+                }
+                if (memcmp(rb_v, want_v[mi], want_vc[mi] * 32u) != 0 ||
+                    memcmp(rb_i, want_i[mi], want_ic[mi] * sizeof(u32)) != 0) {
+                    LOG_ERROR("FAIL: geom gate mesh %u payload mismatch", mi);
+                    pass = false;
+                    break;
+                }
+            }
+            /* AABB recomputed from geometry: mesh 0 spans the unit triangle. */
+            if (pass &&
+                (fabsf(dst.meshes[0].aabb_max.e[0] - 1.0f) > 1e-6f ||
+                 fabsf(dst.meshes[0].aabb_max.e[1] - 1.0f) > 1e-6f ||
+                 fabsf(dst.meshes[0].aabb_min.e[2] - 0.0f) > 1e-6f ||
+                 fabsf(dst.meshes[1].aabb_min.e[0] - 5.0f) > 1e-6f ||
+                 fabsf(dst.meshes[1].aabb_max.e[2] - 5.0f) > 1e-6f)) {
+                LOG_ERROR("FAIL: geom gate AABB");
+                pass = false;
+            }
+        }
+    }
+
+    asset_scene_free(&actx, &dst);
+    if (w2) world_destroy(w2);
+    asset_scene_free(&actx, &src);
+    world_destroy(w);
+    remove(path);
     return pass;
 }
 
@@ -4204,6 +4364,13 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: TEXTURE REBIND TEST %s",
              rebind_pass ? "PASSED ✓" : "FAILED");
 
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: MESH DATA ROUNDTRIP (BSCN GEOMETRY)");
+    LOG_INFO("============================================");
+    bool geom_pass = tv_test_mesh_geometry_roundtrip(render.device);
+    LOG_INFO("RESULT: MESH DATA ROUNDTRIP TEST %s",
+             geom_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -4300,7 +4467,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -5314,7 +5481,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&
