@@ -1436,6 +1436,7 @@ int main(void) {
 | `BSCN_CHUNK_HIERARCHY` | 场景层级结构（父子关系） |
 | `BSCN_CHUNK_RESOURCES` | 资源引用表（网格/纹理/材质） |
 | `BSCN_CHUNK_SCENE_NODES` | 场景节点变换 + 网格引用 |
+| `BSCN_CHUNK_MESH_DATA` | 可选（R612）：静态网格几何载荷（顶点 32B/个 + u32 索引）。仅当保存端提供几何源（`SerializeOptions.read_mesh_geometry`，生产接线 `asset_mesh_geometry_reader` = GPU 缓冲回读）时发出；旧读取端按未知 chunk 跳过，故不升版本。加载进 `Scene.mesh_geometry` CPU 存储，`asset_scene_rebuild_meshes` 重建 GPU 缓冲（清单网格条目=槽位权威，AABB 从几何重算） |
 
 **核心 API：**
 
