@@ -1438,6 +1438,8 @@ int main(void) {
 | `BSCN_CHUNK_SCENE_NODES` | 场景节点变换 + 网格引用 |
 | `BSCN_CHUNK_MESH_DATA` | 可选（R612）：静态网格几何载荷（顶点 32B/个 + u32 索引）。仅当保存端提供几何源（`SerializeOptions.read_mesh_geometry`，生产接线 `asset_mesh_geometry_reader` = GPU 缓冲回读）时发出；旧读取端按未知 chunk 跳过，故不升版本。加载进 `Scene.mesh_geometry` CPU 存储，`asset_scene_rebuild_meshes` 重建 GPU 缓冲（清单网格条目=槽位权威，AABB 从几何重算） |
 | `BSCN_CHUNK_SKIN_MESH_DATA` | 可选（R613）：蒙皮网格几何载荷——MESH_DATA 的蒙皮对应物（同记录布局，顶点 64B/个 = pos3+nrm3+uv2 f32 + joints u32x4 + weights f32x4，槽位空间独立）。生产接线 `asset_skinned_mesh_geometry_reader`；加载进 `Scene.skinned_mesh_geometry`，`asset_scene_rebuild_skinned_meshes` 重建（清单 `BSCN_RES_SKINNED_MESH` 条目=槽位权威，蒙皮网格无 AABB）。RESOURCES 清单同步覆盖蒙皮条目（u0/u1/u2 = index/vertex 计数 + material_idx，旧加载端对未知资源类型惰性保留） |
+| `BSCN_CHUNK_SKELETON` | 可选（R614）：骨架本体——u32 joint_count（1..128）+ 每关节 u32 parent（< count 或 ~0u=根/非关节父）+ 每关节 16×f32 inverse_bind（全有限）。CPU 常驻数据，场景有合法骨架即发射（无需 reader 回调）；不合规骨架（超限/父索引越界）告警跳过，不产出加载端会拒的文件。加载进 `Scene.joint_parents/inverse_bind`（glTF 加载端同款单分配布局，一次 free 覆盖） |
+| `BSCN_CHUNK_ANIMS` | 可选（R614）：动画片段——u32 clip_count（1..64）+ 每片段 {duration, loop, 通道×{joint_index, path(0..2), interp(0..1), keyframes×{time, value[4]}}, 事件×{time, name}}。仅随 SKELETON 发射（通道索引关节；孤儿 ANIMS 文件拒载），加载后交叉校验 joint_index < joint_count；运行态（time/playing）不入盘，载入片段如 glTF 新载（time 0、playing） |
 
 **核心 API：**
 
