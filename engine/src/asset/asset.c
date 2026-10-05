@@ -240,6 +240,41 @@ static RHITexture load_gltf_texture_cached(AssetCtx *ctx, const char *gltf_path,
     return cache[idx];
 }
 
+/* R604: record which uri a texture handle was loaded from so the BSCN
+ * serializer can fill SceneResource.path — the glTF image uri (as authored,
+ * relative to the glTF file) is the texture's content-stable identity,
+ * unlike the handle index, which is meaningless across processes. Dedup by
+ * handle (R426 shares one handle across materials/slots). Tracking failure
+ * is non-fatal: the manifest is advisory and an incomplete one still loads. */
+static void scene_track_texture_source(Scene *scene, RHITexture tex,
+                                       const cgltf_texture *src) {
+    if (!scene || !rhi_handle_valid(tex) || !src || !src->image ||
+        !src->image->uri) return;
+    for (u32 i = 0; i < scene->texture_source_count; i++)
+        if (scene->texture_sources[i].handle_index == tex.index) return;
+    u32 n = scene->texture_source_count;
+    SceneTextureSource *grown = (SceneTextureSource *)realloc(
+        scene->texture_sources, (usize)(n + 1) * sizeof(*grown));
+    if (!grown) {
+        LOG_WARN("glTF: texture source tracking OOM — path manifest incomplete");
+        return;
+    }
+    scene->texture_sources = grown;
+    grown[n].handle_index = tex.index;
+    snprintf(grown[n].uri, sizeof(grown[n].uri), "%s", src->image->uri);
+    scene->texture_source_count = n + 1;
+}
+
+/* R604: load + source-track in one place so no material slot can forget the
+ * manifest entry (the BSCN texture path is only as complete as this list). */
+static RHITexture load_gltf_texture_tracked(AssetCtx *ctx, const char *gltf_path,
+                                            cgltf_texture *tex, const cgltf_data *data,
+                                            RHITexture *cache, u8 *tried, Scene *scene) {
+    RHITexture t = load_gltf_texture_cached(ctx, gltf_path, tex, data, cache, tried);
+    scene_track_texture_source(scene, t, tex);
+    return t;
+}
+
 static const u8 *cgltf_buffer_data(cgltf_accessor *acc) {
     if (!acc || !acc->buffer_view) return NULL;
     cgltf_buffer_view *bv = acc->buffer_view;
@@ -610,24 +645,24 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             else mat->alpha_mode = ALPHA_BLEND;
             mat->alpha_cutoff = cm->alpha_cutoff;
 
-            mat->albedo = load_gltf_texture_cached(ctx, path,
+            mat->albedo = load_gltf_texture_tracked(ctx, path,
                 cm->pbr_metallic_roughness.base_color_texture.texture,
-                data, image_tex_cache, image_tex_tried);
-            mat->metallic_roughness = load_gltf_texture_cached(ctx, path,
+                data, image_tex_cache, image_tex_tried, out_scene);
+            mat->metallic_roughness = load_gltf_texture_tracked(ctx, path,
                 cm->pbr_metallic_roughness.metallic_roughness_texture.texture,
-                data, image_tex_cache, image_tex_tried);
-            mat->normal_map = load_gltf_texture_cached(ctx, path,
+                data, image_tex_cache, image_tex_tried, out_scene);
+            mat->normal_map = load_gltf_texture_tracked(ctx, path,
                 cm->normal_texture.texture,
-                data, image_tex_cache, image_tex_tried);
-            mat->emissive = load_gltf_texture_cached(ctx, path,
+                data, image_tex_cache, image_tex_tried, out_scene);
+            mat->emissive = load_gltf_texture_tracked(ctx, path,
                 cm->emissive_texture.texture,
-                data, image_tex_cache, image_tex_tried);
+                data, image_tex_cache, image_tex_tried, out_scene);
             /* R583: glTF occlusionTexture — the R channel modulates ambient
              * occlusion per-pixel in the deferred G-Buffer (strength already
              * parsed above into occlusion_strength). */
-            mat->occlusion = load_gltf_texture_cached(ctx, path,
+            mat->occlusion = load_gltf_texture_tracked(ctx, path,
                 cm->occlusion_texture.texture,
-                data, image_tex_cache, image_tex_tried);
+                data, image_tex_cache, image_tex_tried, out_scene);
         }
         free(image_tex_cache);
         free(image_tex_tried);
@@ -1229,6 +1264,7 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
     free(scene->joint_parents); /* single alloc: joint_parents + inverse_bind */
     free(scene->anim_clips);
     free(scene->resources);
+    free(scene->texture_sources); /* R604 */
     memset(scene, 0, sizeof(*scene));
 }
 

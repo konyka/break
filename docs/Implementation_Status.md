@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R604 BSCN 纹理源路径追踪（TDD）— R585 边界首片落地：`SceneResource.path[64]` 由恒空转为纹理持久身份载体
+
+- **缺口**（R585 落账"`path[64]` 仍为空（源路径追踪未实现）"）：RESOURCES 清单的纹理条目只有 `ref_index`=RHI 句柄 index——跨进程无意义，外部工具无法从 BSCN 得知纹理来自哪个文件；`path[64]` 字段自引入起恒为空串。此片是 R585 定性"材质全量往返"史诗中**纹理持久身份**的有界首片：纹理的内容稳定身份=源文件 URI，而非句柄。
+- **方案**：`Scene` 增纹理源清单（`SceneTextureSource{handle_index, uri[64]}` 表，asset.h）——`asset_load_gltf` 材质循环经新 `load_gltf_texture_tracked` 包装（`load_gltf_texture_cached` + `scene_track_texture_source`）在全部五个纹理槽统一登记，单点封装保证无一槽位漏登；键=句柄 index（R426 去重同键，共享图像只记一条目），值=glTF image URI **原文**（相对 glTF 文件——内容稳定、与 BSCN 保存位置/加载机器无关；超 63 字符在登记时截断）。登记失败（OOM）非致命：清单是 advisory，LOG_WARN 后加载继续。序列化端 `emit_resources_chunk` 发纹理条目时按句柄查表填 `r.path`（strncpy 防御夹紧）；网格/材质条目与未登记纹理（程序化场景）保持空串——"empty when unknown"语义不动。guid 哈希域不随路径扩（路径非描述符内容，R585 约定不扰）。释放链：`asset_scene_free` + 测试侧 `free_scene_src` 同步。读取端零改动（v2 线格式的 path_len+bytes 读取与夹紧早已存在，本轮回填的是写出端）。
+- **TDD（红→绿实证）**：新增 `resources_texture_source_path_roundtrip`——手工场景：单材质双假纹理句柄（11/33），源清单仅登记 11→"textures/wood.png"；include_resources 保存→加载，三向断言：纹理 11 条目 `path` 精确往返、纹理 33（未登记）空、材质条目空。RED 如实失败（strcmp 假=写出端恒空），其余 94 项不受影响；GREEN 后 **95/95**。
+- **回归**：双树非图形 CTest 各 **111/112**（唯一失败=test_platform_win32_runtime 剪贴板子项外部持锁，R577 定性环境瞬态，本 diff 不涉平台层）；GL 全套件 ALL PASSED；VK 套件失败项恰为已知基线（12b 驱动边界 em b=1.568 签名 + golden 双项异机漂移），validation 门 0；GL 前向/延迟 demo 各 120 帧优雅退出 rc=0；VK 延迟 demo 120 帧优雅退出 rc=0、validation 0（R577 基线未发作）。
+- **边界**：纹理身份仅此一半——BSCN 加载端不回填纹理（resources 清单只读；`texture_sources` 是 glTF 加载专有，scene_load_binary 不重建——加载后场景的源路径在 `resources[].path` 里，供外部工具消费）；嵌入式纹理（buffer_view/data URI）本就不加载（image->uri NULL → 无句柄无条目）；网格/材质无源路径概念（glTF 里是 name 非 path，如需属独立后续）；材质全量往返（纹理按 URI 重绑定 + 全因子回填 Material）仍是 R585 终局边界。
+
 ## 本轮更新：R603 离屏 FBO 附件深度回读语义定义（TDD/systematic-debugging）— 回读弧最终残片清零；钓出并固化 AMD GL 附件深度 GetTexImage 驱动陷阱
 
 - **缺口**（R602 落账"FBO 附件深度回读仍无定义语义")：调研定论——GL 附件深度包装字段 R601/R602 已齐（`gl_internal_format=GL_DEPTH_COMPONENT32F`)，读回即通；VK 双缺口：`fd->depth_image` usage 缺 `TRANSFER_SRC`(VUID-00186 + layout 不兼容），且读回 old_layout 从 `mip_layout[0]` 推导（深度包装刻意 `mip_levels=0` → UNDEFINED→SHADER_READ_ONLY 回退——正确来源是 `rhi_cmd_transition_depth_to_read`/FBO 绑定路径持有的 `cur_layout`)。

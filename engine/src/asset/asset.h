@@ -98,8 +98,23 @@ typedef struct {
                          occlusion_strength (f[8], R585; v1 loads default
                          1.0) + emissive_factor rgb (f[9..11], R585; v1
                          loads default 0) */
-    char path[64];    /* optional source path; empty when unknown */
+    char path[64];    /* optional source path; empty when unknown. R604: for
+                         BSCN_RES_TEXTURE entries the serializer fills this
+                         from Scene.texture_sources (the glTF image uri as
+                         authored, relative to the glTF file) — a content-
+                         stable identity, unlike the cross-process-meaningless
+                         handle index in ref_index. */
 } SceneResource;
+
+/* R604: texture source-path manifest entry — maps a texture handle index to
+ * the glTF image uri it was loaded from (as authored, relative to the glTF
+ * file; truncated to 63 chars at record time). Populated by asset_load_gltf
+ * only; programmatic scenes leave the table empty and their texture resource
+ * paths stay empty (= "unknown"). */
+typedef struct {
+    u32  handle_index; /* RHITexture.index */
+    char uri[64];
+} SceneTextureSource;
 
 typedef struct {
     Material     *materials;
@@ -118,6 +133,11 @@ typedef struct {
     /* Resource manifest (RESOURCES chunk); populated on load, owned by Scene. */
     SceneResource *resources;
     u32            resource_count;
+    /* R604: texture handle -> source uri table (glTF loads only); consumed by
+     * the BSCN serializer to fill SceneResource.path for texture entries.
+     * Owned by Scene, freed by asset_scene_free. */
+    SceneTextureSource *texture_sources;
+    u32                 texture_source_count;
 } Scene;
 
 /* out_scene must be zero-initialized before the call (memset or {}): failure

@@ -1414,6 +1414,7 @@ static void make_scene(Scene *s) {
 static void free_scene_src(Scene *s) {
     free(s->meshes);
     free(s->materials);
+    free(s->texture_sources); /* R604 */
     /* R383: scene_load_binary also allocates `nodes` — and does so even for a
      * zero-node scene, so node_count==0 is no proof there is nothing to free. */
     scene_serial_free(s);
@@ -1974,6 +1975,65 @@ TEST(resources_material_extended_descriptor_roundtrip)
     }
     ASSERT_TRUE(found_mat);
     ASSERT_EQ(tex_mask, 31u);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* R604: texture source-path manifest — the serializer fills
+ * SceneResource.path for texture entries from Scene.texture_sources (the
+ * glTF image uri = content-stable identity, unlike the handle index);
+ * untracked textures and mesh/material entries keep the empty path
+ * ("unknown"). */
+TEST(resources_texture_source_path_roundtrip)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_res_texpath.bscn");
+    World *w = world_create();
+    Scene src; memset(&src, 0, sizeof(src));
+    src.material_count = 1;
+    src.materials = (Material *)calloc(1, sizeof(Material));
+    ASSERT_NOT_NULL(src.materials);
+    Material *m = &src.materials[0];
+    m->base_color[0] = 1.0f; m->base_color[3] = 1.0f;
+    m->albedo.index = 11u;     m->albedo.generation = 1u;
+    m->normal_map.index = 33u; m->normal_map.generation = 1u;
+
+    src.texture_source_count = 1;
+    src.texture_sources = (SceneTextureSource *)calloc(1, sizeof(SceneTextureSource));
+    ASSERT_NOT_NULL(src.texture_sources);
+    src.texture_sources[0].handle_index = 11u;
+    strcpy(src.texture_sources[0].uri, "textures/wood.png");
+
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+
+    /* 1 material + 2 texture references (albedo/normal_map). */
+    ASSERT_EQ(dst.resource_count, 3u);
+    bool found_tex11 = false, found_tex33 = false, found_mat = false;
+    for (u32 i = 0; i < dst.resource_count; i++) {
+        SceneResource *r = &dst.resources[i];
+        if (r->type == BSCN_RES_TEXTURE && r->ref_index == 11u) {
+            found_tex11 = true;
+            ASSERT_TRUE(strcmp(r->path, "textures/wood.png") == 0);
+        } else if (r->type == BSCN_RES_TEXTURE && r->ref_index == 33u) {
+            found_tex33 = true;
+            ASSERT_TRUE(r->path[0] == '\0'); /* untracked -> unknown */
+        } else {
+            ASSERT_EQ(r->type, (u32)BSCN_RES_MATERIAL);
+            found_mat = true;
+            ASSERT_TRUE(r->path[0] == '\0'); /* materials carry no source path */
+        }
+    }
+    ASSERT_TRUE(found_tex11);
+    ASSERT_TRUE(found_tex33);
+    ASSERT_TRUE(found_mat);
 
     free_scene_src(&dst);
     free_scene_src(&src);
@@ -2679,6 +2739,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_roundtrip_include);
     RUN_TEST(resources_roundtrip_refs_only);
     RUN_TEST(resources_material_extended_descriptor_roundtrip);
+    RUN_TEST(resources_texture_source_path_roundtrip);
     RUN_TEST(load_binary_v1_resources_defaults);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);

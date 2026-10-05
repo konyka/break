@@ -445,6 +445,17 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         memset(&r, 0, sizeof(r));
         r.type = BSCN_RES_TEXTURE;
         r.ref_index = tex_handles[i];
+        /* R604: fill the source path from the load-time manifest — the glTF
+         * image uri is the texture's content-stable identity (the handle
+         * index in ref_index is meaningless across processes). Untracked
+         * textures keep the empty path (= "unknown"). */
+        for (u32 k = 0; k < s->texture_source_count; k++) {
+            if (s->texture_sources[k].handle_index == tex_handles[i]) {
+                strncpy(r.path, s->texture_sources[k].uri, sizeof(r.path) - 1);
+                r.path[sizeof(r.path) - 1] = '\0';
+                break;
+            }
+        }
         r.guid = resource_guid(r.type, r.ref_index, NULL, 0);
         if (!emit_one_resource(out, &r, include)) return false;
     }
