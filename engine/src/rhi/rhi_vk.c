@@ -7023,7 +7023,10 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     ci.arrayLayers = 1;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    /* R609: TRANSFER_SRC lets rhi_texture_read_pixels copy the shadow depth
+     * out (same permission-only class as R602/R603/R608). */
+    ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (vkCreateImage(vk->device, &ci, NULL, &sd->depth_image) != VK_SUCCESS) {
@@ -7152,6 +7155,10 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     td->memory = sd->depth_memory;
     td->width = width;
     td->height = height;
+    /* R609: format keys the R602 aspect split and the R603 fbo_depth
+     * readback discriminator (mip_levels stays 0 — layout is tracked via
+     * cur_layout, set by rhi_cmd_bind_shadow_map). */
+    td->format = VK_FORMAT_D32_SFLOAT;
     dev->slots[tidx].ptr = td;
     dev->slots[tidx].type = RHI_RES_TEXTURE;
     sm.depth_tex = rhi_make_handle(tidx, dev->slots[tidx].generation);
@@ -7207,6 +7214,14 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     if (!vk) return;
     VKShadowData *sd = rhi_get_resource_typed(g_current_device, sm->fbo, RHI_RES_FRAMEBUFFER);
     if (!sd) return;
+
+    /* R609: the shadow pass ends with depth in SHADER_READ_ONLY_OPTIMAL (the
+     * finalLayout set at create). Track it on the wrapper so readback's R603
+     * fbo_depth path gets a correct oldLayout (same fix class as R258's MRT
+     * bind tracking). */
+    VKTextureData *sdt = (VKTextureData *)rhi_get_resource_typed(
+        g_current_device, sm->depth_tex, RHI_RES_TEXTURE);
+    if (sdt) sdt->cur_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
     if (vk->render_pass_active) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);

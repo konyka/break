@@ -848,6 +848,50 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
         rhi_mrt_fbo_destroy(dev, &mfbo);
     }
 
+    /* R609: shadow-map depth attachment readback. GL shadows are plain R602
+     * D32 textures (readback already defined there); VK needed TRANSFER_SRC
+     * usage, the wrapper format field (R584/R608-class omission), and
+     * cur_layout tracking in rhi_cmd_bind_shadow_map (the pass finalLayout
+     * is SHADER_READ_ONLY — same fix class as R258's MRT bind). */
+    RHIShadowMap sm = rhi_shadow_map_create(dev, 4, 4);
+    f32 sm_rb[16];
+    for (u32 i = 0; i < 16u; i++) sm_rb[i] = 999.0f;
+    if (!rhi_handle_valid(sm.fbo)) {
+        LOG_ERROR("FAIL: shadow depth roundtrip map create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: shadow depth roundtrip frame begin failed");
+            pass = false;
+        } else {
+            rhi_cmd_bind_shadow_map(cmd, &sm);
+            /* Explicit clear is the portable contract (R608: VK passes clear
+             * via loadOp, GL shadow bind clears too — the explicit call pins
+             * the value regardless of backend). */
+            rhi_cmd_clear_depth(cmd);
+            rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, sm.depth_tex, sm_rb,
+                                         sizeof(sm_rb))) {
+                LOG_ERROR("FAIL: shadow depth roundtrip readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 16u; i++) {
+                    if (sm_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: shadow depth roundtrip mismatch "
+                                  "(px%u got %g, want 1.0)",
+                                  i, (double)sm_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_shadow_map_destroy(dev, &sm);
+    }
+
     return pass;
 }
 

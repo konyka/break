@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R609 阴影图（2D atlas）深度附件回读语义定义（TDD）— R608 边界推进，同族三联修复
+
+- **缺口**（R608 落账"阴影图附件回读仍无定义语义")：调研定论——GL 端天然已齐（阴影深度走 `rhi_texture_create` 独立纹理路径=R602 D32 语义直就）;VK 三缺口同族：① 深度镜像 usage 缺 `TRANSFER_SRC`;② 包装 `td->format` 未设（R584/R608 同类遗留，R602 aspect 分流与 R603 fbo_depth 判别式因此失效）;③ `rhi_cmd_bind_shadow_map` 不维护 `cur_layout`（阴影 pass finalLayout=SHADER_READ_ONLY，包装恒 UNDEFINED——判别式命中后 oldLayout=UNDEFINED 将丢内容，与 R258 MRT 同属一类）。
+- **TDD（红→绿实证）**:roundtrip 门再扩阴影相位——4×4 阴影图，bind+显式 `rhi_cmd_clear_depth`+unbind+回读 16px 全 1.0。GL 即绿（R602 路径实证）;VK **规格红 6 条两类**(aspect COLOR×3 + TRANSFER_SRC 缺×3，与 R608 签名逐条同型；值因驱动宽容偶绿）,validation 计数门如实失败。GREEN 三联修复（usage+format+bind 维护 cur_layout=finalLayout）后：**VK validation 0、门绿、全套件失败项恰为已知基线**(12b+golden 双项）;GL 全套件 ALL PASSED（回归轮复跑同绿）。
+- **回归**：双树非图形 CTest 各 **112/112**;demo 四配置（GL 前向/延迟、VK 前向/延迟——前向路径逐帧渲染阴影图，正是改动处）各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**：点影 cubemap 深度附件回读仍无定义语义（`rhi_cubemap_depth_fbo_create` 独立路径：6 面逐面渲染、包装无 cur_layout 维护、逐面布局语义需先定义——回读 API 亦需 face 参数或全图约定）;MSAA 深度回读未定义（需先 resolve);**R603 落账的附件回读边界自此仅剩 cube+MSAA 两片**。
+
 ## 本轮更新：R608 MRT 深度附件回读语义定义（TDD）— R603 边界首片清零；钓出 R584 遗漏的深度包装 format 字段
 
 - **缺口**（R603 落账"MRT 深度与阴影图附件回读仍无定义语义")：调研定论——GL 端其实已齐（MRT 深度注册 `gl_internal_format=GL_DEPTH_COMPONENT32F` → R602 d32 分支 + R603 glFinish 全生效）;VK 双缺口：① 深度镜像 usage 缺 `TRANSFER_SRC`;② **深度包装 `dd->format` 从未设置**(calloc=UNDEFINED)——R584 修彩色附件时遗留的同族遗漏，致 R602 的 aspect 按 format 分流（UNDEFINED≠D32 → COLOR aspect 上深度镜像）与 R603 的 fbo_depth 判别式（mip_levels==0 && format==D32 → cur_layout）双双失效。cur_layout 由 `rhi_mrt_fbo_bind` 维护（R258:pass 末 DEPTH_STENCIL_READ_ONLY)，判别式一旦命中即有正确 old_layout。
