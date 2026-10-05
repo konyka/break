@@ -1421,6 +1421,12 @@ if(ENGINE_BUILD_TESTS)
         ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_echart_option PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_echart_option COMMAND test_myui_echart_option)
+    add_executable(test_myui_echart tests/test_myui_echart.c
+        src/myui/myui/echarts/my_echart.c src/myui/myui/echarts/my_echart_option.c)
+    target_include_directories(test_myui_echart PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_echart PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_echart COMMAND test_myui_echart)
 
     add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
     target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})

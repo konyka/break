@@ -12,6 +12,14 @@ does not claim JSON parsing or complete ECharts parity.
   indexes, missing required strings/data, and non-finite numeric samples.
 - Failed copies leave an existing destination option unchanged.
 
+## Phase 2: setOption
+
+`my_echart_set_option()` now supports replace (`not_merge=true`) and a
+deterministic lazy-update mode. Lazy updates remain invisible through
+`my_echart_get_option()` until `my_echart_flush()` is called. Merge mode updates
+existing series by stable `id`; adding/removing series and richer component
+merging are reserved for the next adapter phases.
+
 ## Planned phases
 
 1. `setOption` replace/merge/lazy-update semantics.
