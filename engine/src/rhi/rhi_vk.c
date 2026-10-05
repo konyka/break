@@ -8757,7 +8757,10 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ci.arrayLayers = 1;
         ci.samples = VK_SAMPLE_COUNT_1_BIT;
         ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        /* R608: TRANSFER_SRC lets rhi_texture_read_pixels copy the MRT depth
+         * attachment out (same permission-only class as R602/R603). */
+        ci.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         if (vkCreateImage(vk->device, &ci, NULL, &md->depth_image) != VK_SUCCESS) {
@@ -8949,6 +8952,11 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         dd->memory = md->depth_memory;
         dd->width = width;
         dd->height = height;
+        /* R608: the depth wrapper never got its format (R584 fixed the color
+         * attachments only) — the R602 aspect split and the R603 fbo_depth
+         * readback discriminator both key on it. mip_levels stays 0: layout
+         * is tracked via cur_layout (rhi_mrt_fbo_bind, R258). */
+        dd->format = VK_FORMAT_D32_SFLOAT;
         dev->slots[didx].ptr  = dd;
         dev->slots[didx].type = RHI_RES_TEXTURE;
         fbo.depth_tex = rhi_make_handle(didx, dev->slots[didx].generation);

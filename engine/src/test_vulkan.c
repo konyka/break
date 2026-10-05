@@ -798,6 +798,56 @@ static bool tv_test_f16_roundtrip(RHIDevice *dev, u32 screen_w, u32 screen_h) {
         rhi_offscreen_fbo_destroy(dev, &dfbo);
     }
 
+    /* R608: MRT depth attachment readback. The MRT render pass clears depth
+     * to 1.0 (no draws), so a 4x4 MRT FBO's depth_tex must read back all-1.0
+     * via the R602 D32 path. VK needed two fixes: TRANSFER_SRC usage on the
+     * depth image, and the wrapper's format field (R584-class omission — the
+     * color attachments got it, the depth registration did not; without it
+     * the R603 fbo_depth discriminator and the R602 aspect split both miss).
+     * GL was already aligned (gl_internal_format + R603 glFinish). */
+    const RHIFormat mrt_fmts[2] = { RHI_FORMAT_R8G8B8A8_UNORM,
+                                    RHI_FORMAT_R8G8B8A8_UNORM };
+    RHIMRTFBO mfbo = rhi_mrt_fbo_create(dev, 4, 4, mrt_fmts, 2);
+    f32 mrt_rb[16];
+    for (u32 i = 0; i < 16u; i++) mrt_rb[i] = 999.0f;
+    if (!rhi_handle_valid(mfbo.fb)) {
+        LOG_ERROR("FAIL: MRT depth roundtrip fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: MRT depth roundtrip frame begin failed");
+            pass = false;
+        } else {
+            rhi_mrt_fbo_bind(cmd, &mfbo);
+            /* VK's MRT render pass clears depth via loadOp; GL's bind does
+             * not clear at all — the portable contract is the explicit
+             * clear (same as the offscreen phase above). */
+            rhi_cmd_clear_depth(cmd);
+            /* unbind takes the RETURN-TO surface dims (same contract as the
+             * offscreen unbind above). */
+            rhi_mrt_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, mfbo.depth_tex, mrt_rb,
+                                         sizeof(mrt_rb))) {
+                LOG_ERROR("FAIL: MRT depth roundtrip readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 16u; i++) {
+                    if (mrt_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: MRT depth roundtrip mismatch "
+                                  "(px%u got %g, want 1.0)",
+                                  i, (double)mrt_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_mrt_fbo_destroy(dev, &mfbo);
+    }
+
     return pass;
 }
 

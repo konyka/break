@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R608 MRT 深度附件回读语义定义（TDD）— R603 边界首片清零；钓出 R584 遗漏的深度包装 format 字段
+
+- **缺口**（R603 落账"MRT 深度与阴影图附件回读仍无定义语义")：调研定论——GL 端其实已齐（MRT 深度注册 `gl_internal_format=GL_DEPTH_COMPONENT32F` → R602 d32 分支 + R603 glFinish 全生效）;VK 双缺口：① 深度镜像 usage 缺 `TRANSFER_SRC`;② **深度包装 `dd->format` 从未设置**(calloc=UNDEFINED)——R584 修彩色附件时遗留的同族遗漏，致 R602 的 aspect 按 format 分流（UNDEFINED≠D32 → COLOR aspect 上深度镜像）与 R603 的 fbo_depth 判别式（mip_levels==0 && format==D32 → cur_layout）双双失效。cur_layout 由 `rhi_mrt_fbo_bind` 维护（R258:pass 末 DEPTH_STENCIL_READ_ONLY)，判别式一旦命中即有正确 old_layout。
+- **TDD（红→绿实证）**:roundtrip 门（R593-R603 家族）扩 MRT 深度相位——4×4 双 RGBA8 MRT FBO,bind+`rhi_cmd_clear_depth`+unbind（返回目标尺寸，R603 装置教训沿用）+回读 16px 全 1.0。**装置首版钓出跨端语义差**:VK MRT pass 以 loadOp 清深度而 GL `rhi_mrt_fbo_bind` 完全不清——GL 值红（px0=0)；门改用显式 `rhi_cmd_clear_depth`（离屏相位同款便携契约）后 GL 即绿。VK **规格红 6 条两类**(aspect COLOR×3 + TRANSFER_SRC 缺失×3，值因驱动宽容偶绿——R602 同型）,validation 计数门如实失败。GREEN:usage 增 TRANSFER_SRC（许可性旗标）+ 注册补 `dd->format=VK_FORMAT_D32_SFLOAT` 后 **VK validation 0、门绿、全套件失败项恰为已知基线**(12b+golden 双项）;GL 全套件 ALL PASSED。
+- **回归**：双树非图形 CTest 各 **112/112**;demo 四配置（GL 前向/延迟、VK 前向/延迟——VK 延迟重踩改动路径：G-buffer 即该 MRT 创建处）各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**：阴影图（atlas/cube）附件回读仍无定义语义（独立创建路径、布局跟踪不同——cube 面无 cur_layout 维护，需先定义其布局语义）;MSAA 深度回读未定义（需先 resolve);GL/VK 的 MRT bind 清屏语义差异保留（VK loadOp 清、GL 不清——便携契约为显式 clear，本门已固化，统一语义属独立议题）。
+
 ## 本轮更新：R607 BSCN 纹理重绑定（TDD）— R585"材质全量往返"终片落地：清单→GPU 纹理回路闭合
 
 - **缺口**（R606 落账）：因子重建（R606）后材质的纹理槽仍是无效句柄——清单里接线（R605 `tex_slots`）与身份（R604 `path`=glTF image URI）齐备但无消费方，材质往返缺 GPU 半片。
