@@ -71,8 +71,8 @@ borrowed label and ARGB color; `y_max` must be greater than `y_min`. Up to
 `my_chart_get_mark_area_count()` manage the active set.
 Chart types are selected with `my_chart_create(allocator, mode)`:
 `MY_CHART_LINE`, `MY_CHART_BAR`, `MY_CHART_SCATTER`, `MY_CHART_PIE`,
-`MY_CHART_RADAR`, or `MY_CHART_FUNNEL`
-or `MY_CHART_HEATMAP`
+`MY_CHART_RADAR`, `MY_CHART_FUNNEL`, `MY_CHART_HEATMAP`, or
+`MY_CHART_BOXPLOT`
 `MY_CHART_RADAR` (ECharts `series.type` equivalents). Scatter draws one filled
 point per category sample and honors
 series visibility, zoom, and secondary-axis bindings like line mode.
@@ -87,6 +87,9 @@ centered trapezoid stages that narrow toward the final stage; labels are drawn
 inside each stage when provided and animation progress scales stage widths.
 Heatmap uses each visible series as a row and each value index as a column;
 visualMap colors the cells, and short rows leave trailing cells empty.
+Boxplot uses the first five values of each visible series as
+`min/Q1/median/Q3/max` and draws whiskers, an interquartile box, and a median
+stroke for each series.
 Rendering progress is deterministic and externally driven with
 `my_chart_set_animation_progress(chart, progress)`, where `0` renders values
 from the zero baseline and `1` renders final values. The default is `1`; a

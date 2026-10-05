@@ -19,7 +19,8 @@ typedef enum my_chart_mode_t {
   MY_CHART_PIE,
   MY_CHART_RADAR,
   MY_CHART_FUNNEL,
-  MY_CHART_HEATMAP
+  MY_CHART_HEATMAP,
+  MY_CHART_BOXPLOT
 } my_chart_mode_t;
 
 /** @brief A borrowed data series; caller owns name and values. */

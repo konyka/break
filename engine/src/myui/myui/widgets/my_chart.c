@@ -623,6 +623,53 @@ static void chart_draw_heatmap(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_boxplot(const my_chart_t* chart, my_vgcanvas_t* vg,
+                               float x, float y, float w, float h) {
+  size_t visible = 0u;
+  for (size_t i = 0u; i < chart->series_count; i++)
+    if (chart->series_visible[i] && chart->series[i].values != NULL &&
+        chart->series[i].count >= 5u) visible++;
+  if (visible == 0u) return;
+  for (size_t s = 0u, slot = 0u; s < chart->series_count; s++) {
+    const my_chart_series_t* series = &chart->series[s];
+    float y_min, y_max;
+    float center_x, box_w;
+    float y_q1, y_q3, y_med, y_lo, y_hi;
+    if (!chart->series_visible[s] || series->values == NULL || series->count < 5u)
+      continue;
+    chart_axis_range(chart, chart_series_axis(chart, s), &y_min, &y_max);
+    center_x = x + w * ((float)slot + 0.5f) / (float)visible;
+    box_w = w / (float)visible * 0.5f;
+    y_lo = my_chart_value_to_y(series->values[0], y_min, y_max, y, h);
+    y_q1 = my_chart_value_to_y(series->values[1], y_min, y_max, y, h);
+    y_med = my_chart_value_to_y(series->values[2], y_min, y_max, y, h);
+    y_q3 = my_chart_value_to_y(series->values[3], y_min, y_max, y, h);
+    y_hi = my_chart_value_to_y(series->values[4], y_min, y_max, y, h);
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
+    my_vgcanvas_set_line_width(vg, 2.0f);
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, center_x, y_lo);
+    my_vgcanvas_line_to(vg, center_x, y_hi);
+    my_vgcanvas_move_to(vg, center_x - box_w * 0.5f, y_lo);
+    my_vgcanvas_line_to(vg, center_x + box_w * 0.5f, y_lo);
+    my_vgcanvas_move_to(vg, center_x - box_w * 0.5f, y_hi);
+    my_vgcanvas_line_to(vg, center_x + box_w * 0.5f, y_hi);
+    my_vgcanvas_stroke(vg);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        chart_visual_color(chart, series->values[2], series->color)));
+    my_vgcanvas_fill_rounded_rect(vg,
+                                  &(my_rectf_t){center_x - box_w * 0.5f,
+                                                fminf(y_q1, y_q3), box_w,
+                                                fabsf(y_q3 - y_q1)}, 3.0f);
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0x1F2933FFu));
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, center_x - box_w * 0.5f, y_med);
+    my_vgcanvas_line_to(vg, center_x + box_w * 0.5f, y_med);
+    my_vgcanvas_stroke(vg);
+    slot++;
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -875,7 +922,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_HEATMAP) {
+  if (chart->mode == MY_CHART_BOXPLOT) {
+    chart_draw_boxplot(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_HEATMAP) {
     chart_draw_heatmap(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_PIE) {
     chart_draw_pie(chart, vg, x, y, w, h);
@@ -1101,7 +1150,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   my_chart_t* chart;
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
       mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL &&
-      mode != MY_CHART_HEATMAP)
+      mode != MY_CHART_HEATMAP && mode != MY_CHART_BOXPLOT)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
