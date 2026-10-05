@@ -1433,6 +1433,12 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_echart_event PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_echart_event COMMAND test_myui_echart_event)
+    add_executable(test_myui_echart_animation tests/test_myui_echart_animation.c
+        src/myui/myui/echarts/my_echart_animation.c)
+    target_include_directories(test_myui_echart_animation PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_echart_animation PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_echart_animation COMMAND test_myui_echart_animation)
 
     add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
     target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})

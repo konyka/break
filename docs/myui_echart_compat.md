@@ -34,6 +34,13 @@ the active dispatch unwinds.
 This phase is a native event/action adapter only. It does not integrate with a
 renderer, hit-test chart data, or claim full ECharts parity.
 
+## Phase 4: deterministic animation
+
+`my_echart_animation_t` provides fake-clock progress from `0` to `1` without
+owning a timer. Callers pass the progress to `my_chart_set_animation_progress`
+from their MyUI/window-manager animation callback. This keeps animation tests
+deterministic while allowing a real timer to drive production rendering.
+
 ## Remaining phases
 
 1. Fake-clock animation scheduling.
