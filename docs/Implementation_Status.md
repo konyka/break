@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R617 offscreen FBO bind 清屏语义统一（TDD）— R616 同族收官：bind 语义对（清/保）双端全线一致
+
+- **缺口**（R616 落账"offscreen FBO bind 同款分叉仍在——VK loadOp 清、GL 不清，行为变更面大于 MRT")：语义对契约 bind=崭新、bind_load=续渲在 offscreen 对上早已存在（R196-A 注释明载 bind_load 为"re-bind WITHOUT clearing"，反推 bind=清——GL 从未履行）；调研新增关键事实：VK 的清屏**颜色值非零**(`{0.05,0.05,0.1,1.0}` 烘焙在 loadOp 清除值里）+深度 1.0，统一即定义该值为便携契约。
+- **调研定论（方向裁决）**:① **GL 端无 preserve 依赖点可证**——GL demo 今日全配置正确运行（每个调用点要么显式清要么全屏覆写），任何"plain bind 依赖保留"的调用点在 VK 上今日就是 bug(VK 清屏），而 VK demo 同样正确——故 GL 对齐"bind 自清"在生产零行为变更（与 R616 同一论证模式，~25 模块 ~40 调用点过堂）;② 反向（VK 去 loadOp）令语义对蒸发且弃 tiler 友好——同 R616 否决；③ 统一值=VK 现值 `{0.05,0.05,0.1,1.0}`+深度 1.0(VK 零行为变更；魔值本就事实契约，文档化即诚实）;④ `gl_offscreen_bind_common` 抽出共享体（resolve 前序+bind+pass state)——MSAA 变体同路径自然生效。
+- **修复**:GL `rhi_offscreen_fbo_bind` 在 common 后 `glClearBufferfv(GL_COLOR,0,{0.05,0.05,0.1,1.0})`+强制深度掩码 `glClear(DEPTH)`;**`rhi_offscreen_fbo_bind_load` 脱钩**（原转发 bind，同 R616 连带缺口——bind 变清后转发即毁保留语义）为 common 无清版；rhi.h 契约注释落定语义对+R196-A 背景。VK 零改动。
+- **TDD（红→绿实证）**：图形套件 roundtrip 门扩 **offscreen bind-clear 相位**——32×32 RGBA8 offscreen FBO(**显式 create_fmt 指定 RGBA8**：首轮用默认 swapchain 格式 FBO 在 VK 钓出 BGRA 原生字节序 {26,13,13} 反转——R601 "原生字节序"语义的实战提醒），显式脏色+真实三角形绘制（套件三角形覆满 32×32，深度确定性 <1.0）后**不做任何显式清除直接再 bind**，回读断言颜色≈{13,13,26,255}(0.05/0.1 的 unorm 转换容忍 ±1)+深度全 1.0;**bind_load-preserve 守护帧**（脏字节 {204,51,153,255} 全留）。**RED 双向**:GL 颜色+深度双红（px0={89,45,26,255} 着色三角形、深度 0.5)、VK 即绿（loadOp);GREEN 后 **GL 全套件 ALL PASSED、VK 相位过+validation 0**(VK 失败项仍为已知基线 MSAA 深度+12b+golden 双项）。R611/R608 相位注释同步（显式 clear 转为钉值冗余）。
+- **回归**：双树非图形 CTest **119/119 + 117/117 全绿**（上轮的剪贴板 OS 级卡死本轮自复，15/15);demo 四配置各 120 帧优雅退出、VK validation 0(~25 个后处理模块的 FBO bind 正是改动路径，双端实跑）。
+- **边界**:**FBO bind 语义对自此双端全线一致**(MRT R616+offscreen R617);阴影图/cube 面的 bind 清屏语义由各自路径独立承载（R609/R610 已落账，非此族）;0.05/0.1 清屏色作为场景背景默认值仍是 RHI 层魔数（生产各 pass 显式自清，值仅在"无任何绘制"时可观察——改由调用方全权属另一议题）;R611 AMD 基线与 MSAA 采样选择语义保留。
+
 ## 本轮更新：R616 MRT bind 清屏语义统一（TDD）— GL 对齐 VK:bind=清、bind_load=保；R608 起四轮重复落账的渲染语义开口关闭
 
 - **缺口**(R608/R611/R614/R615 四轮边界重复落账"GL/VK 的 MRT bind 清屏语义差异保留")：语义对的本意是 **bind=崭新（清屏）、bind_load=续渲（保留）**(offscreen 对 R196-A 已是此契约）;VK 的 MRT render pass 以 loadOp 清全部颜色附件（0,0,0,0)+深度（1.0）并实现双 pass(`render_pass`/`render_pass_load`),GL 的 bind 却完全不清——**GL 的 bind 与 bind_load 无从区分**，语义对在 GL 端形同虚设。

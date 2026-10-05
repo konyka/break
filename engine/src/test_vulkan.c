@@ -800,6 +800,129 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         rhi_offscreen_fbo_destroy(dev, &dfbo);
     }
 
+    /* R617: unified offscreen bind semantics — rhi_offscreen_fbo_bind itself
+     * clears color to {0.05, 0.05, 0.1, 1.0} and depth to 1.0 on BOTH
+     * backends (VK has always done it via the render-pass loadOp — the value
+     * is baked into its clear values; GL's bind used to preserve, which made
+     * GL's bind indistinguishable from bind_load — the pair's contract is
+     * bind = fresh, bind_load = resume, R196-A). Dirty color with a
+     * non-zero clear and depth with a real draw (the suite triangle fills
+     * the 32x32 target), then re-bind WITHOUT any explicit clear: color must
+     * come back the VK clear value and depth 1.0. Pre-R617 GL keeps the
+     * dirty content (this phase's RED); VK is green via its loadOp. The
+     * bind_load-preserve guard follows in the second frame. */
+    /* RGBA8 explicitly: the default (swapchain-format) FBO is BGRA on this
+     * class of driver, whose native readback byte order would swap the
+     * expected channels. */
+    RHIOffscreenFBO bfbo = rhi_offscreen_fbo_create_fmt(dev, 32, 32,
+                                                        RHI_FORMAT_R8G8B8A8_UNORM);
+    u8 bc_rb[32 * 32 * 4];
+    f32 bd_rb[32 * 32];
+    if (!rhi_handle_valid(bfbo.fb)) {
+        LOG_ERROR("FAIL: offscreen bind-clear fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: offscreen bind-clear frame begin failed");
+            pass = false;
+        } else {
+            Mat4 identity = mat4_identity();
+            rhi_offscreen_fbo_bind(cmd, &bfbo);
+            rhi_cmd_clear_color(cmd, 0.8f, 0.2f, 0.6f, 1.0f);
+            rhi_cmd_clear_depth(cmd);
+            rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
+            rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
+            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 3u, 1u);
+            /* Re-bind with NO explicit clear: unified semantics say the bind
+             * itself cleared (color {0.05,0.05,0.1,1}, depth 1.0). */
+            rhi_offscreen_fbo_bind(cmd, &bfbo);
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            memset(bc_rb, 0xAB, sizeof(bc_rb));
+            for (u32 i = 0; i < 32u * 32u; i++) bd_rb[i] = 999.0f;
+            bool c_ok = rhi_texture_read_pixels(dev, bfbo.color_tex, bc_rb,
+                                                sizeof(bc_rb));
+            bool d_ok = rhi_texture_read_pixels(dev, bfbo.depth_tex, bd_rb,
+                                                sizeof(bd_rb));
+            if (!c_ok || !d_ok) {
+                LOG_ERROR("FAIL: offscreen bind-clear readback failed");
+                pass = false;
+            } else {
+                /* 0.05*255 = 12.75, 0.1*255 = 25.5 — the float->unorm
+                 * rounding is backend territory, so tolerate +-1. */
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    const u8 *px = bc_rb + (usize)i * 4u;
+                    if (px[0] < 12u || px[0] > 14u ||
+                        px[1] < 12u || px[1] > 14u ||
+                        px[2] < 24u || px[2] > 27u || px[3] != 255u) {
+                        LOG_ERROR("FAIL: offscreen bind-clear color px%u got "
+                                  "{%u,%u,%u,%u}, want ~{13,13,26,255} "
+                                  "(bind must clear)", i, px[0], px[1],
+                                  px[2], px[3]);
+                        pass = false;
+                        break;
+                    }
+                }
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    if (bd_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: offscreen bind-clear depth px%u got "
+                                  "%g, want 1.0", i, (double)bd_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+
+            /* The pair's other half (guard): bind_load must PRESERVE. Dirty
+             * the color, then bind_load with no explicit clear — the dirty
+             * bytes stay. */
+            RHICmdBuffer *cmd2 = rhi_frame_begin(dev);
+            if (!cmd2) {
+                LOG_ERROR("FAIL: offscreen bind_load-preserve frame begin");
+                pass = false;
+            } else {
+                rhi_offscreen_fbo_bind(cmd2, &bfbo); /* fresh (clears) */
+                rhi_cmd_clear_color(cmd2, 0.8f, 0.2f, 0.6f, 1.0f);
+                rhi_offscreen_fbo_bind_load(cmd2, &bfbo); /* resume: keep */
+                rhi_offscreen_fbo_unbind(cmd2, screen_w, screen_h);
+                rhi_frame_end(dev);
+                rhi_present(dev);
+                memset(bc_rb, 0xAB, sizeof(bc_rb));
+                if (!rhi_texture_read_pixels(dev, bfbo.color_tex, bc_rb,
+                                             sizeof(bc_rb))) {
+                    LOG_ERROR("FAIL: offscreen bind_load-preserve readback");
+                    pass = false;
+                } else {
+                    static const u8 want4[4] = { 204u, 51u, 153u, 255u };
+                    for (u32 i = 0; i < 32u * 32u; i++) {
+                        if (memcmp(bc_rb + (usize)i * 4u, want4, 4u) != 0) {
+                            LOG_ERROR("FAIL: offscreen bind_load-preserve "
+                                      "px%u got {%u,%u,%u,%u}, want "
+                                      "{204,51,153,255}", i,
+                                      bc_rb[i * 4u], bc_rb[i * 4u + 1u],
+                                      bc_rb[i * 4u + 2u],
+                                      bc_rb[i * 4u + 3u]);
+                            pass = false;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        rhi_offscreen_fbo_destroy(dev, &bfbo);
+    }
+
     /* R608: MRT depth attachment readback. The MRT render pass clears depth
      * to 1.0 (no draws), so a 4x4 MRT FBO's depth_tex must read back all-1.0
      * via the R602 D32 path. VK needed two fixes: TRANSFER_SRC usage on the
@@ -1082,8 +1205,10 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         } else {
             Mat4 identity = mat4_identity();
             rhi_offscreen_fbo_bind(cmd, &msaa);
-            /* R608's portable contract: explicit clear (GL bind never clears;
-             * VK does it via loadOp). */
+            /* Explicit clear pins the value regardless of backend (R608's
+             * portable contract; since R617 the offscreen bind itself also
+             * clears on both backends — this stays as the deterministic
+             * pin). */
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);

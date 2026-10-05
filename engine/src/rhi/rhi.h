@@ -451,9 +451,16 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
 bool            rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
                                                 const RHIOffscreenFBODesc *desc);
 void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
+/* R617: the bind pair's contract is unified on both backends —
+ * bind = fresh target: clears color to {0.05, 0.05, 0.1, 1.0} and depth to
+ * 1.0 (VK has always done it via the render-pass loadOp — those exact
+ * values are the portable contract; GL joins with explicit clears as of
+ * R617 — before that GL preserved, which made GL's bind indistinguishable
+ * from bind_load).
+ * bind_load = resume: preserves all attachment content (R196-A: tonemap/
+ * cinematic reuse scene_fbo; a CLEAR bind would wipe depth needed by god
+ * rays/upscale). */
 void            rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
-/* R196-A: re-bind without clearing (preserve color+depth). Tonemap/cinematic
- * reuse scene_fbo; CLEAR bind would wipe depth needed by god_rays/upscale. */
 void            rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 

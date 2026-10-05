@@ -2918,22 +2918,49 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 heig
     return rhi_offscreen_fbo_create_desc(dev, &desc);
 }
 
-void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    (void)cmd;
-    if (!gl_cmd_device_ready(cmd) || !fbo) return;
-    GLFBOData *fd = rhi_get_resource_typed(g_current_device, fbo->fb, RHI_RES_FRAMEBUFFER);
-    if (!fd) return;
+/* R617: shared bind target setup (resolve previous, bind, pass state) —
+ * rhi_offscreen_fbo_bind adds the fresh-clear on top, bind_load does not. */
+static GLFBOData *gl_offscreen_bind_common(RHICmdBuffer *cmd,
+                                           RHIOffscreenFBO *fbo) {
+    if (!gl_cmd_device_ready(cmd) || !fbo) return NULL;
+    GLFBOData *fd = rhi_get_resource_typed(g_current_device, fbo->fb,
+                                           RHI_RES_FRAMEBUFFER);
+    if (!fd) return NULL;
     gl_resolve_active_offscreen();
     gl_bind_fbo_cached(fd->gl_fbo);
     g_gl_active_offscreen = fd;
     g_gl_target_height = fbo->height;
     /* R230-A: VK sets full-FBO viewport/scissor + depth 0..1 on bind. */
     gl_set_fbo_pass_state(fbo->width, fbo->height);
+    return fd;
+}
+
+void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
+    (void)cmd;
+    if (!gl_offscreen_bind_common(cmd, fbo)) return;
+    /* R617: unified bind semantics — bind = fresh target on BOTH backends
+     * (the pair's contract is bind = fresh, bind_load = resume, R196-A).
+     * VK's offscreen render pass has always loadOp-cleared color to
+     * {0.05, 0.05, 0.1, 1.0} and depth to 1.0 — those exact values are the
+     * portable contract (GL's bind used to preserve, making it
+     * indistinguishable from bind_load). Depth mask forced the way
+     * rhi_cmd_clear_depth does it; the single color attachment is draw
+     * buffer 0 (the FBO default). */
+    {
+        static const f32 cc[4] = { 0.05f, 0.05f, 0.1f, 1.0f };
+        glClearBufferfv(GL_COLOR, 0, cc);
+    }
+    if (!g_gl_depth_mask) { glDepthMask(GL_TRUE); g_gl_depth_mask = true; }
+    glClear(GL_DEPTH_BUFFER_BIT);
 }
 
 void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    /* GL bind never clears attachments — LOAD and CLEAR are identical. */
-    rhi_offscreen_fbo_bind(cmd, fbo);
+    (void)cmd;
+    /* R617: the preserve half of the pair — bind_common without the clears
+     * (VK resumes with the LOAD render pass). Bind alone used to be the
+     * preserve entry point; since R617 bind is the fresh (clearing)
+     * variant, so this can no longer forward to it. */
+    (void)gl_offscreen_bind_common(cmd, fbo);
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
