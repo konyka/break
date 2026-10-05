@@ -31,7 +31,7 @@ TEST(bscn_version)
     /* R585: v2 — RESOURCES material descriptor f[8]->f[12] (+occlusion strength,
      * +emissive factor rgb) + u2 texture-presence bits; v1 files stay loadable
      * (see load_binary_v1_resources_defaults). */
-    ASSERT_EQ(BSCN_VERSION, 2u);
+    ASSERT_EQ(BSCN_VERSION, 3u); /* R605: v3 — per-slot texture links */
     ASSERT_EQ(BSCN_VERSION_V1, 1u);
 }
 
@@ -1507,7 +1507,7 @@ TEST(load_binary_rejects_nonfinite_scene_values)
     src.nodes[0].world_transform = mat4_identity();
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
     const struct { u32 type; u32 relative_offset; } patches[] = {
-        { BSCN_CHUNK_RESOURCES, 36u }, /* count + entry header + u0/u1/u2 + f[0] */
+        { BSCN_CHUNK_RESOURCES, 56u }, /* count + entry header + u0/u1/u2 + tex_slots (R605 v3) + f[0] */
         { BSCN_CHUNK_SCENE_NODES, 4u }, /* count + local_transform[0][0] */
         { BSCN_CHUNK_SCENE_NODES, 4u + (u32)sizeof(Mat4) },
     };
@@ -1963,6 +1963,13 @@ TEST(resources_material_extended_descriptor_roundtrip)
         ASSERT_EQ(r->u0, (u32)ALPHA_MASK);
         ASSERT_EQ(r->u1, 1u);        /* has_albedo */
         ASSERT_EQ(r->u2, 0xFu);      /* mr | normal | emissive | occlusion */
+        /* R605: v3 per-slot texture links round-trip (albedo/mr/normal/
+         * emissive/occlusion -> the texture entries' ref_index values). */
+        ASSERT_EQ(r->tex_slots[0], 11u);
+        ASSERT_EQ(r->tex_slots[1], 22u);
+        ASSERT_EQ(r->tex_slots[2], 33u);
+        ASSERT_EQ(r->tex_slots[3], 44u);
+        ASSERT_EQ(r->tex_slots[4], 55u);
         ASSERT_TRUE(fabsf(r->f[0] - 0.5f) < 1e-6f);
         ASSERT_TRUE(fabsf(r->f[4] - 0.3f) < 1e-6f);
         ASSERT_TRUE(fabsf(r->f[5] - 0.6f) < 1e-6f);
@@ -2088,12 +2095,116 @@ TEST(load_binary_v1_resources_defaults)
     ASSERT_EQ(r->type, (u32)BSCN_RES_MATERIAL);
     ASSERT_EQ(r->u0, (u32)ALPHA_OPAQUE);
     ASSERT_EQ(r->u2, 0u);                          /* v1: no presence bits */
+    /* R605: v1 files predate per-slot links — back-fill "unknown" (~0u). */
+    for (int ts = 0; ts < 5; ts++) ASSERT_EQ(r->tex_slots[ts], ~0u);
     ASSERT_TRUE(fabsf(r->f[0] - 0.1f) < 1e-6f);    /* v1 layout preserved */
     ASSERT_TRUE(fabsf(r->f[7] - 0.8f) < 1e-6f);
     ASSERT_TRUE(fabsf(r->f[8] - 1.0f) < 1e-6f);    /* glTF defaults back-filled */
     ASSERT_TRUE(fabsf(r->f[9]) < 1e-9f);
     ASSERT_TRUE(fabsf(r->f[10]) < 1e-9f);
     ASSERT_TRUE(fabsf(r->f[11]) < 1e-9f);
+
+    free_scene_src(&dst);
+    world_destroy(w);
+    remove(path);
+}
+
+/* R605: BSCN v3 — per-slot texture links with a partially-textured material:
+ * populated slots carry the texture entries' ref_index, empty slots ~0u. */
+TEST(resources_material_partial_texture_links)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_res_links_v3.bscn");
+    World *w = world_create();
+    Scene src; memset(&src, 0, sizeof(src));
+    src.material_count = 1;
+    src.materials = (Material *)calloc(1, sizeof(Material));
+    ASSERT_NOT_NULL(src.materials);
+    Material *m = &src.materials[0];
+    m->base_color[0] = 1.0f; m->base_color[3] = 1.0f;
+    m->albedo.index = 11u;   m->albedo.generation = 1u;
+    m->emissive.index = 44u; m->emissive.generation = 1u;
+    /* mr/normal/occlusion deliberately absent. */
+
+    SerializeOptions opts = { .include_resources = true, .pretty_json = false };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+
+    /* 1 material + 2 texture references. */
+    ASSERT_EQ(dst.resource_count, 3u);
+    bool found_mat = false;
+    for (u32 i = 0; i < dst.resource_count; i++) {
+        SceneResource *r = &dst.resources[i];
+        if (r->type != BSCN_RES_MATERIAL) continue;
+        found_mat = true;
+        ASSERT_EQ(r->u2, 4u);            /* emissive presence bit only */
+        ASSERT_EQ(r->tex_slots[0], 11u); /* albedo -> texture entry 11 */
+        ASSERT_EQ(r->tex_slots[1], ~0u);
+        ASSERT_EQ(r->tex_slots[2], ~0u);
+        ASSERT_EQ(r->tex_slots[3], 44u); /* emissive -> texture entry 44 */
+        ASSERT_EQ(r->tex_slots[4], ~0u);
+    }
+    ASSERT_TRUE(found_mat);
+
+    free_scene_src(&dst);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* R605: v2 files (12-float descriptor, no tex_slots) stay loadable — slot
+ * links back-fill "unknown" (~0u), descriptor content preserved. */
+TEST(load_binary_v2_resources_defaults)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_res_v2_compat.bscn");
+    /* Hand-craft a minimal v2 file: header(v2) + one RESOURCES chunk holding
+     * a single material entry with the v2 wire layout (u0,u1,u2 + f[12]). */
+    const f32 f12[12] = { 0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f,
+                          0.7f, 0.8f, 0.9f, 1.0f, 1.1f, 1.2f };
+    {
+        BscnHeader header = { .magic = BSCN_MAGIC, .version = 2u,
+                              .chunk_count = 1 };
+        const u32 payload_off = (u32)sizeof(BscnHeader) + (u32)sizeof(BscnChunkEntry);
+        /* count(4) + guid(8) + type/ref/flags(12) + u(12) + f(48) + plen(4) */
+        const u32 payload_size = 4u + 8u + 4u * 3u + 12u + 48u + 4u;
+        BscnChunkEntry entry = { .type = BSCN_CHUNK_RESOURCES,
+                                 .offset = payload_off, .size = payload_size };
+        FILE *fp = fopen(path, "wb");
+        ASSERT_NOT_NULL(fp);
+        ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&entry, sizeof(entry), 1, fp), (usize)1);
+        u32 count = 1u;
+        u64 guid = 0x1122334455667788ull;
+        u32 type = (u32)BSCN_RES_MATERIAL, ref = 0u, flags = 1u;
+        u32 u0 = (u32)ALPHA_BLEND, u1 = 1u, u2 = 5u, plen = 0u;
+        ASSERT_EQ(fwrite(&count, sizeof(count), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&guid, sizeof(guid), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&type, sizeof(type), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&ref, sizeof(ref), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&flags, sizeof(flags), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u0, sizeof(u0), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u1, sizeof(u1), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&u2, sizeof(u2), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(f12, sizeof(f12), 1, fp), (usize)1);
+        ASSERT_EQ(fwrite(&plen, sizeof(plen), 1, fp), (usize)1);
+        ASSERT_EQ(fclose(fp), 0);
+    }
+
+    ASSERT_TRUE(scene_probe_binary(path));
+    World *w = world_create();
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w, &dst, path));
+    ASSERT_EQ(dst.resource_count, 1u);
+    const SceneResource *r = &dst.resources[0];
+    ASSERT_EQ(r->type, (u32)BSCN_RES_MATERIAL);
+    ASSERT_EQ(r->u0, (u32)ALPHA_BLEND);
+    ASSERT_EQ(r->u2, 5u);                          /* v2 presence bits kept */
+    ASSERT_TRUE(fabsf(r->f[0] - 0.1f) < 1e-6f);  /* v2 layout preserved */
+    ASSERT_TRUE(fabsf(r->f[11] - 1.2f) < 1e-6f);
+    for (int ts = 0; ts < 5; ts++) ASSERT_EQ(r->tex_slots[ts], ~0u);
 
     free_scene_src(&dst);
     world_destroy(w);
@@ -2741,6 +2852,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resources_material_extended_descriptor_roundtrip);
     RUN_TEST(resources_texture_source_path_roundtrip);
     RUN_TEST(load_binary_v1_resources_defaults);
+    RUN_TEST(resources_material_partial_texture_links);
+    RUN_TEST(load_binary_v2_resources_defaults);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);

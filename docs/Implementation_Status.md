@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R605 BSCN v3 材质逐槽纹理链接（TDD）— 清单材质→纹理接线补全，R585"材质全量往返"格式侧清零
+
+- **缺口**（R585 终局边界的格式残片）：v2 清单的材质条目只有 u1/u2 纹理**存在位**（"有没有"），不记录**接哪个**——`resources_material_extended_descriptor_roundtrip` 的 5 纹理材质在清单里留下 5 个纹理条目 + 一个 0xF 掩码，外部工具无法重建哪个纹理进哪个槽，材质往返的最后一环缺失。
+- **版本策略**:`BSCN_VERSION` 2→3，`SceneResource` 增 `tex_slots[5]`（置于 u0..u2 与 f[12] 之间——guid 哈希域保持一段连续：8 u32 + 12 f32)：**仅材质条目有意义**，[0..4]=albedo/mr/normal/emissive/occlusion 所连纹理条目的 ref_index（保存期句柄 index),`~0u`=空槽/未知；网格/纹理条目写出端恒 ~0u,v1/v2 文件读取端回填 ~0u。线格式：内联描述符由 u(12B)+f(48B) 扩为 u(12B)+slots(20B)+f(48B);**读取端三版本兼容**(v1=u+8f、v2=u+12f、v3=u+slots+12f，三处版本闸+JSON 闸全量跟进）,guid 域随描述符扩展（同内容 v2↔v3 guid 不同=升版自然语义，R585 同约）。写出端恒 v3。R604 的 path[64] 与本轮正交（身份=URI，接线=ref_index)。
+- **TDD（红→绿实证）**：① R585 扩展测试加 5 条槽断言（{11,22,33,44,55});② 新增 `resources_material_partial_texture_links`（仅 albedo+emissive 的材质：slots={11,~0,~0,44,~0},u2=4——存在位与槽链接交叉验证）;③ 新增 `load_binary_v2_resources_defaults`（手构 v2 线格式文件：probe/load 接受、描述符保留、槽回填 ~0u);④ v1 兼容测试加槽回填断言；⑤ `bscn_version` 钉 3。RED 如实失败恰 5 处（版本钉 + 四条槽断言族），零误伤。GREEN 首轮 96/97——`load_binary_rejects_nonfinite_scene_values` 的 NaN 补丁偏移是**硬编码 v2 线格式**(36=count+header+u0..u2→f[0]),v3 下 f[0] 移至 56,NaN 落进 tex_slots（无有限性语义）被合法接受——测试装置随格式升版改 56（非生产缺陷，正是"手写偏移=格式文档"的固有维护成本）。
+- **回归**：双树非图形 CTest 各 **112/112** 全过（剪贴板锁本轮未发作）;GL 全套件 ALL PASSED;VK 套件失败项恰为已知基线（12b 驱动边界 + golden 双项异机漂移）,validation 门 0;GL 前向/延迟 demo 与 VK 延迟 demo 各 120 帧优雅退出 rc=0,VK validation 0(R577 基线未发作)。
+- **边界**：清单自此完备表达材质→纹理接线，但**加载端仍不回填 Material/纹理**（语义重建属独立后续：因子回填为纯 CPU，纹理按 R604 的 path URI 重载需 GPU+解析基准——相对 BSCN 文件目录还是 glTF 原目录未定，且缺失文件策略需定义）;`tex_slots` 对 mesh/texture 条目无意义（恒 ~0u);BSCN 仍不含网格几何（几何属 glTF/资产域，非本轮议题）;refs-only 模式（include_resources=false）不带描述符，槽链接仅随内联描述符存在。
+
 ## 本轮更新：R604 BSCN 纹理源路径追踪（TDD）— R585 边界首片落地：`SceneResource.path[64]` 由恒空转为纹理持久身份载体
 
 - **缺口**（R585 落账"`path[64]` 仍为空（源路径追踪未实现）"）：RESOURCES 清单的纹理条目只有 `ref_index`=RHI 句柄 index——跨进程无意义，外部工具无法从 BSCN 得知纹理来自哪个文件；`path[64]` 字段自引入起恒为空串。此片是 R585 定性"材质全量往返"史诗中**纹理持久身份**的有界首片：纹理的内容稳定身份=源文件 URI，而非句柄。

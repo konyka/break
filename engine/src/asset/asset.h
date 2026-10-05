@@ -92,6 +92,15 @@ typedef struct {
                          material: alpha_mode, has_albedo, texture-presence
                          bits (R585, BSCN v2: bit0 mr, bit1 normal,
                          bit2 emissive, bit3 occlusion; 0 in v1 files) */
+    /* R605 (BSCN v3): material per-slot texture links — the manifest's
+     * material->texture wiring, which presence bits alone cannot express.
+     * tex_slots[0..4] = albedo, metallic_roughness, normal, emissive,
+     * occlusion; the value is the linked texture entry's ref_index (RHI
+     * handle index at save time), or ~0u when the slot is empty / unknown
+     * (v1/v2 files back-fill ~0u; non-material entries write ~0u). Kept
+     * between u0..u2 and f[] so the guid hash domain stays one contiguous
+     * run (8 u32 + 12 f32). */
+    u32  tex_slots[5];
     f32  f[12];       /* mesh: aabb_min(3)+aabb_max(3)
                          material: base_color(4)+metallic+roughness+
                          emissive_strength+cutoff (f[0..7], v1 layout) +

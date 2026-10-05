@@ -20,8 +20,13 @@
 /* R585: v2 — the RESOURCES material descriptor grows from f[8] to f[12]
  * (+occlusion_strength, +emissive_factor rgb) and u2 gains texture-presence
  * bits; v1 files (f[8] descriptors) remain loadable and get glTF defaults
- * (occlusion_strength 1.0, emissive_factor 0). */
-#define BSCN_VERSION    2u
+ * (occlusion_strength 1.0, emissive_factor 0).
+ * R605: v3 — the inline descriptor gains tex_slots[5] between u0..u2 and
+ * f[12]: material per-slot texture links (albedo/mr/normal/emissive/
+ * occlusion -> linked texture entry's ref_index, ~0u = empty/unknown).
+ * v1/v2 files remain loadable with tex_slots back-filled to ~0u. */
+#define BSCN_VERSION    3u
+#define BSCN_VERSION_V2 2u
 #define BSCN_VERSION_V1 1u
 /* R398: load paths read the whole file into memory; cap before malloc. */
 #define BSCN_MAX_FILE_BYTES (64u << 20)  /* 64 MiB */
