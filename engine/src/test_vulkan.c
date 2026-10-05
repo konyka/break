@@ -945,12 +945,22 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
      * not just clear resolve. Asserts: no sentinel left (copy landed), every
      * value in (0,1], min < 1.0 (geometry wrote depth). The suite triangle
      * fills the whole 32x32 target, so no cleared-1.0 area is required.
+     * Caps-guarded like the pre-existing MSAA color test: where 2x MSAA +
+     * depth resolve is unsupported (CI lavapipe lacks depth resolve) the FBO
+     * create itself is refused, so the phase skips clean.
      * Local-AMD note: this Windows AMD Vulkan stack (driver 24.10.38-era)
      * never lands the subpass DEPTH resolve (color resolves, depth target
      * stays all-zero, validation silent, resolve mode irrelevant — probed
      * SAMPLE_ZERO/MIN/draw/clear-only); GL on the same GPU resolves fine.
      * Treated like the R581 12b baseline: local red tolerated, CI lavapipe
      * is the VK authority. */
+    RHICapabilities msaa_caps = {0};
+    bool msaa_ok = rhi_device_get_capabilities(dev, &msaa_caps);
+    const u32 msaa_bit2 = rhi_sample_count_bit(2u);
+    if (msaa_ok &&
+        (msaa_caps.color_sample_counts & msaa_bit2) != 0u &&
+        (msaa_caps.depth_sample_counts & msaa_bit2) != 0u &&
+        msaa_caps.color_resolve_supported && msaa_caps.depth_resolve_supported) {
     RHIOffscreenFBODesc msaa_desc = {
         .width = 32, .height = 32,
         .color_format = RHI_FORMAT_R8G8B8A8_UNORM,
@@ -1017,6 +1027,9 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             }
         }
         rhi_offscreen_fbo_destroy(dev, &msaa);
+    }
+    } else {
+        LOG_INFO("SKIP: 2x MSAA depth resolve unsupported — phase skipped");
     }
 
     return pass;
