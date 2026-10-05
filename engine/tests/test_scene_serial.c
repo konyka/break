@@ -2398,9 +2398,10 @@ static bool fake_mesh_geometry_reader(void *user, const Mesh *mesh, u32 mesh_ind
 }
 
 /* Overwrite a u32 field (0 mesh_index, 1 vertex_count, 2 index_count,
- * 3 vertex_stride) of MESH_DATA record `record` in a saved file. */
-static bool patch_mesh_data_field(const char *path, u32 record, u32 field,
-                                  u32 value)
+ * 3 vertex_stride) of record `record` in chunk `chunk_type` of a saved file.
+ * MESH_DATA and SKIN_MESH_DATA share the record layout (R613). */
+static bool patch_geom_record_field(const char *path, u32 chunk_type,
+                                    u32 record, u32 field, u32 value)
 {
     FILE *f = fopen(path, "r+b");
     if (!f) return false;
@@ -2411,7 +2412,7 @@ static bool patch_mesh_data_field(const char *path, u32 record, u32 field,
         long entry_off = (long)(sizeof(BscnHeader) + i * sizeof(BscnChunkEntry));
         if (fseek(f, entry_off, SEEK_SET) != 0 || fread(&e, sizeof(e), 1, f) != 1)
             break;
-        if (e.type != BSCN_CHUNK_MESH_DATA) continue;
+        if (e.type != chunk_type) continue;
         u32 off = e.offset + 4u; /* skip record_count */
         for (u32 r = 0; r < record; r++) {
             u32 vc = 0, ic = 0, stride = 0;
@@ -2427,6 +2428,13 @@ static bool patch_mesh_data_field(const char *path, u32 record, u32 field,
     }
     fclose(f);
     return done;
+}
+
+static bool patch_mesh_data_field(const char *path, u32 record, u32 field,
+                                  u32 value)
+{
+    return patch_geom_record_field(path, BSCN_CHUNK_MESH_DATA, record, field,
+                                   value);
 }
 
 /* Rewrite a chunk's declared size in the table (truncation attacks). */
@@ -2689,6 +2697,395 @@ TEST(mesh_data_rejects_duplicate_chunk)
     ASSERT_NOT_NULL(w);
     ASSERT_FALSE(scene_load_binary(w, NULL, path));
     world_destroy(w);
+    remove(path);
+}
+
+/* ---------------------------------------------------------------- */
+/* R613: SKIN_MESH_DATA chunk — skinned-mesh geometry in BSCN         */
+/* ---------------------------------------------------------------- */
+
+/* The skinned vertex contract is the 64-byte stride
+ * (BSCN_SKINNED_MESH_VERTEX_STRIDE); the deterministic bytes come from the
+ * same fake_geom_expected pattern as the static side. */
+static bool fake_skinned_geometry_reader(void *user, const SkinnedMesh *mesh,
+                                         u32 mesh_index, void *dst_vertices,
+                                         usize vertex_bytes, void *dst_indices,
+                                         usize index_bytes) {
+    FakeGeomSrc *src = (FakeGeomSrc *)user;
+    src->calls++;
+    if (mesh_index >= 32u) return false;
+    if (src->fail_mask & (1u << mesh_index)) return false;
+    if (vertex_bytes !=
+        (usize)mesh->vertex_count * BSCN_SKINNED_MESH_VERTEX_STRIDE)
+        return false;
+    if (index_bytes != (usize)mesh->index_count * sizeof(u32)) return false;
+    fake_geom_expected(mesh_index, (u8 *)dst_vertices, vertex_bytes,
+                       (u32 *)dst_indices, index_bytes / sizeof(u32));
+    return true;
+}
+
+/* Scene with two skinned meshes and no static ones: slot 0 = 3 verts /
+ * 3 indices / material 1, slot 1 = 4 verts / 6 indices / material 0. Two
+ * bare materials keep material_idx 1 a live slot. */
+static void make_skinned_scene(Scene *s) {
+    memset(s, 0, sizeof(*s));
+    s->skinned_mesh_count = 2;
+    s->skinned_meshes = (SkinnedMesh *)calloc(2, sizeof(SkinnedMesh));
+    s->skinned_meshes[0].vertex_count = 3;
+    s->skinned_meshes[0].index_count = 3;
+    s->skinned_meshes[0].material_idx = 1;
+    s->skinned_meshes[0].skinned = true;
+    s->skinned_meshes[1].vertex_count = 4;
+    s->skinned_meshes[1].index_count = 6;
+    s->skinned_meshes[1].material_idx = 0;
+    s->skinned_meshes[1].skinned = true;
+    s->material_count = 2;
+    s->materials = (Material *)calloc(2, sizeof(Material));
+}
+
+/* Count manifest entries of one resource type. */
+static u32 manifest_count_type(const Scene *s, u32 type) {
+    u32 n = 0;
+    for (u32 i = 0; i < s->resource_count; i++)
+        if (s->resources[i].type == type) n++;
+    return n;
+}
+
+TEST(skin_mesh_data_roundtrip_fake_reader)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_rt.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_skinned_scene(&src);
+
+    FakeGeomSrc gs = { 0u, 0u };
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+          .read_skinned_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(gs.calls, 2u);
+
+    /* No static geometry source was given, so the file carries the five base
+     * chunks plus SKIN_MESH_DATA only. */
+    {
+        FILE *fp = fopen(path, "rb");
+        ASSERT_NOT_NULL(fp);
+        BscnHeader h;
+        ASSERT_EQ(fread(&h, sizeof(h), 1, fp), (usize)1);
+        fclose(fp);
+        ASSERT_EQ(h.chunk_count, 6u);
+    }
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.skinned_mesh_geometry_count, 2u);
+
+    for (u32 r = 0; r < dst.skinned_mesh_geometry_count; r++) {
+        const SceneMeshGeometry *g = &dst.skinned_mesh_geometry[r];
+        u32 mi = g->mesh_index;
+        ASSERT_TRUE(mi < 2u);
+        u32 want_v = (mi == 0u) ? 3u : 4u;
+        u32 want_i = (mi == 0u) ? 3u : 6u;
+        ASSERT_EQ(g->vertex_count, want_v);
+        ASSERT_EQ(g->index_count, want_i);
+        u8 ev[4 * 64]; u32 ei[6];
+        fake_geom_expected(mi, ev,
+                           (usize)want_v * BSCN_SKINNED_MESH_VERTEX_STRIDE,
+                           ei, want_i);
+        ASSERT_TRUE(memcmp(g->vertices, ev,
+                           (usize)want_v * BSCN_SKINNED_MESH_VERTEX_STRIDE) == 0);
+        ASSERT_TRUE(memcmp(g->indices, ei, (usize)want_i * sizeof(u32)) == 0);
+    }
+
+    /* Manifest: one SKINNED_MESH entry per slot carrying counts + material. */
+    ASSERT_EQ(manifest_count_type(&dst, BSCN_RES_SKINNED_MESH), 2u);
+    ASSERT_EQ(manifest_count_type(&dst, BSCN_RES_MESH), 0u);
+    for (u32 i = 0; i < dst.resource_count; i++) {
+        const SceneResource *r = &dst.resources[i];
+        if (r->type != BSCN_RES_SKINNED_MESH) continue;
+        ASSERT_TRUE(r->ref_index < 2u);
+        ASSERT_EQ(r->flags & 1u, 1u); /* include_resources inlined it */
+        ASSERT_EQ(r->u0, (r->ref_index == 0u) ? 3u : 6u);
+        ASSERT_EQ(r->u1, (r->ref_index == 0u) ? 3u : 4u);
+        ASSERT_EQ(r->u2, (r->ref_index == 0u) ? 1u : 0u);
+    }
+
+    free_scene_src(&dst);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(skin_mesh_data_omitted_without_reader)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_none.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_skinned_scene(&src);
+    SerializeOptions opts = { .include_resources = true };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    /* No geometry source -> the optional chunk is not emitted at all. The
+     * manifest still describes the skinned slots (the payload is the
+     * optional half, mirroring R612). */
+    {
+        FILE *fp = fopen(path, "rb");
+        ASSERT_NOT_NULL(fp);
+        BscnHeader h;
+        ASSERT_EQ(fread(&h, sizeof(h), 1, fp), (usize)1);
+        fclose(fp);
+        ASSERT_EQ(h.chunk_count, 5u);
+    }
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.skinned_mesh_geometry_count, 0u);
+    ASSERT_TRUE(dst.skinned_mesh_geometry == NULL);
+    ASSERT_EQ(manifest_count_type(&dst, BSCN_RES_SKINNED_MESH), 2u);
+
+    free_scene_src(&dst);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+TEST(skin_mesh_data_reader_failure_skips_mesh)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_skip.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_skinned_scene(&src);
+
+    FakeGeomSrc gs = { 1u, 0u }; /* skinned mesh 0's read fails */
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+          .read_skinned_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(gs.calls, 2u); /* both meshes were attempted */
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.skinned_mesh_geometry_count, 1u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].mesh_index, 1u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].vertex_count, 4u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].index_count, 6u);
+    u8 ev[4 * 64]; u32 ei[6];
+    fake_geom_expected(1u, ev, sizeof(ev), ei, 6u);
+    ASSERT_TRUE(memcmp(dst.skinned_mesh_geometry[0].vertices, ev,
+                       sizeof(ev)) == 0);
+    ASSERT_TRUE(memcmp(dst.skinned_mesh_geometry[0].indices, ei,
+                       sizeof(ei)) == 0);
+
+    free_scene_src(&dst);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
+    remove(path);
+}
+
+/* Same shapes as the static corrupt-record family (R612); the writer never
+ * emits any of them, so accepting one means the loader stopped validating. */
+TEST(skin_mesh_data_rejects_corrupt_records)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_corrupt.bscn");
+    const struct { u32 record; u32 field; u32 value; } patches[] = {
+        { 0u, 1u, 0u },          /* vertex_count 0 — records always carry verts */
+        { 0u, 1u, 0x10000000u }, /* vertex bytes far past the chunk */
+        { 0u, 2u, 0x10000000u }, /* index bytes far past the chunk */
+        { 0u, 3u, BSCN_MESH_VERTEX_STRIDE }, /* static stride in a skin record */
+        { 1u, 0u, 0u },          /* duplicate mesh_index (record 1 -> 0) */
+        { 0u, 0u, 100000u },     /* mesh_index past the slot bound */
+    };
+    for (usize i = 0; i < sizeof(patches) / sizeof(patches[0]); i++) {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_skinned_scene(&src);
+        FakeGeomSrc gs = { 0u, 0u };
+        SerializeOptions opts =
+            { .include_resources = true,
+              .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+              .read_skinned_mesh_geometry_user = &gs };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_geom_record_field(path, BSCN_CHUNK_SKIN_MESH_DATA,
+                                            patches[i].record,
+                                            patches[i].field,
+                                            patches[i].value));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+        ASSERT_EQ(dst.skinned_mesh_geometry_count, 0u);
+
+        free_scene_src(&dst);
+        free(src.skinned_meshes);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+
+    /* Truncated: the count claims two records but the chunk ends inside the
+     * first record's header. */
+    {
+        World *w = world_create();
+        ASSERT_NOT_NULL(w);
+        Scene src; make_skinned_scene(&src);
+        FakeGeomSrc gs = { 0u, 0u };
+        SerializeOptions opts =
+            { .include_resources = true,
+              .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+              .read_skinned_mesh_geometry_user = &gs };
+        ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+        ASSERT_TRUE(patch_chunk_declared_size(path, BSCN_CHUNK_SKIN_MESH_DATA,
+                                              8u));
+
+        World *w2 = world_create();
+        ASSERT_NOT_NULL(w2);
+        Scene dst; memset(&dst, 0, sizeof(dst));
+        ASSERT_FALSE(scene_load_binary(w2, &dst, path));
+
+        free_scene_src(&dst);
+        free(src.skinned_meshes);
+        free_scene_src(&src);
+        world_destroy(w);
+        world_destroy(w2);
+    }
+    remove(path);
+}
+
+/* A NULL Scene means parse-and-discard; validation must not weaken. */
+TEST(skin_mesh_data_validates_with_null_scene)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_null.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_skinned_scene(&src);
+    FakeGeomSrc gs = { 0u, 0u };
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+          .read_skinned_mesh_geometry_user = &gs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    ASSERT_TRUE(scene_load_binary(w2, NULL, path));
+
+    /* The static stride is invalid inside a SKIN_MESH_DATA record. */
+    ASSERT_TRUE(patch_geom_record_field(path, BSCN_CHUNK_SKIN_MESH_DATA,
+                                        0u, 3u, BSCN_MESH_VERTEX_STRIDE));
+    World *w3 = world_create();
+    ASSERT_NOT_NULL(w3);
+    ASSERT_FALSE(scene_load_binary(w3, NULL, path));
+
+    world_destroy(w3);
+    world_destroy(w2);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    remove(path);
+}
+
+TEST(skin_mesh_data_rejects_duplicate_chunk)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_dup.bscn");
+    const u32 empty[] = { 0u };
+    const u32 base = (u32)sizeof(BscnHeader) + 2u * (u32)sizeof(BscnChunkEntry);
+    BscnHeader header = { .magic = BSCN_MAGIC, .version = BSCN_VERSION,
+                          .chunk_count = 2 };
+    BscnChunkEntry table[2] = {
+        { .type = BSCN_CHUNK_SKIN_MESH_DATA, .offset = base,
+          .size = sizeof(empty) },
+        { .type = BSCN_CHUNK_SKIN_MESH_DATA, .offset = base + sizeof(empty),
+          .size = sizeof(empty) }
+    };
+    FILE *fp = fopen(path, "wb");
+    ASSERT_NOT_NULL(fp);
+    ASSERT_EQ(fwrite(&header, sizeof(header), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(table, sizeof(table), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty, sizeof(empty), 1, fp), (usize)1);
+    ASSERT_EQ(fwrite(empty, sizeof(empty), 1, fp), (usize)1);
+    ASSERT_EQ(fclose(fp), 0);
+
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    ASSERT_FALSE(scene_load_binary(w, NULL, path));
+    world_destroy(w);
+    remove(path);
+}
+
+/* Static + skinned geometry sources together: both optional chunks ride the
+ * same save (7 chunks), each landing in its own store on load. */
+TEST(skin_mesh_data_combined_with_static_seven_chunks)
+{
+    char path[64]; test_tmp(path, sizeof path, "test_skin_geom_both.bscn");
+    World *w = world_create();
+    ASSERT_NOT_NULL(w);
+    Scene src; make_scene(&src);
+    src.skinned_mesh_count = 1;
+    src.skinned_meshes = (SkinnedMesh *)calloc(1, sizeof(SkinnedMesh));
+    ASSERT_NOT_NULL(src.skinned_meshes);
+    src.skinned_meshes[0].vertex_count = 4;
+    src.skinned_meshes[0].index_count = 6;
+    src.skinned_meshes[0].material_idx = 1;
+    src.skinned_meshes[0].skinned = true;
+
+    FakeGeomSrc gs = { 0u, 0u }, sgs = { 0u, 0u };
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_mesh_geometry = fake_mesh_geometry_reader,
+          .read_mesh_geometry_user = &gs,
+          .read_skinned_mesh_geometry = fake_skinned_geometry_reader,
+          .read_skinned_mesh_geometry_user = &sgs };
+    ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
+    ASSERT_EQ(gs.calls, 2u);
+    ASSERT_EQ(sgs.calls, 1u);
+
+    {
+        FILE *fp = fopen(path, "rb");
+        ASSERT_NOT_NULL(fp);
+        BscnHeader h;
+        ASSERT_EQ(fread(&h, sizeof(h), 1, fp), (usize)1);
+        fclose(fp);
+        ASSERT_EQ(h.chunk_count, 7u);
+    }
+
+    World *w2 = world_create();
+    ASSERT_NOT_NULL(w2);
+    Scene dst; memset(&dst, 0, sizeof(dst));
+    ASSERT_TRUE(scene_load_binary(w2, &dst, path));
+    ASSERT_EQ(dst.mesh_geometry_count, 2u);
+    ASSERT_EQ(dst.skinned_mesh_geometry_count, 1u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].mesh_index, 0u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].vertex_count, 4u);
+    ASSERT_EQ(dst.skinned_mesh_geometry[0].index_count, 6u);
+    u8 ev[4 * 64]; u32 ei[6];
+    fake_geom_expected(0u, ev, sizeof(ev), ei, 6u);
+    ASSERT_TRUE(memcmp(dst.skinned_mesh_geometry[0].vertices, ev,
+                       sizeof(ev)) == 0);
+    ASSERT_TRUE(memcmp(dst.skinned_mesh_geometry[0].indices, ei,
+                       sizeof(ei)) == 0);
+    ASSERT_EQ(manifest_count_type(&dst, BSCN_RES_MESH), 2u);
+    ASSERT_EQ(manifest_count_type(&dst, BSCN_RES_SKINNED_MESH), 1u);
+
+    free_scene_src(&dst);
+    free(src.skinned_meshes);
+    free_scene_src(&src);
+    world_destroy(w);
+    world_destroy(w2);
     remove(path);
 }
 
@@ -3344,6 +3741,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mesh_data_rejects_corrupt_records);
     RUN_TEST(mesh_data_validates_with_null_scene);
     RUN_TEST(mesh_data_rejects_duplicate_chunk);
+    RUN_TEST(skin_mesh_data_roundtrip_fake_reader);
+    RUN_TEST(skin_mesh_data_omitted_without_reader);
+    RUN_TEST(skin_mesh_data_reader_failure_skips_mesh);
+    RUN_TEST(skin_mesh_data_rejects_corrupt_records);
+    RUN_TEST(skin_mesh_data_validates_with_null_scene);
+    RUN_TEST(skin_mesh_data_rejects_duplicate_chunk);
+    RUN_TEST(skin_mesh_data_combined_with_static_seven_chunks);
     RUN_TEST(save_binary_rejects_more_than_256_distinct_material_textures);
     RUN_TEST(save_binary_rejects_files_above_load_limit);
     RUN_TEST(save_prefab_rejects_files_above_load_limit);

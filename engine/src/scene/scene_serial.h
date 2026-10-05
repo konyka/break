@@ -53,13 +53,28 @@ typedef enum {
      *   u8  vertices[vertex_count * vertex_stride]
      *   u32 indices[index_count]
      */
-    BSCN_CHUNK_MESH_DATA   = 6
+    BSCN_CHUNK_MESH_DATA   = 6,
+    /* R613: optional skinned-mesh geometry payload — the skinned counterpart
+     * of MESH_DATA. Emitted only when the save is given a skinned geometry
+     * source (SerializeOptions.read_skinned_mesh_geometry) and the scene has
+     * skinned meshes; readers that predate it skip unknown chunk types (the
+     * load switch's default), so it stays compatible with BSCN v3 without a
+     * version bump. Same record layout as MESH_DATA, except vertex_stride
+     * must be BSCN_SKINNED_MESH_VERTEX_STRIDE and mesh_index names a slot in
+     * Scene.skinned_meshes (== the manifest's BSCN_RES_SKINNED_MESH
+     * ref_index), an index space separate from the static MESH_DATA one. */
+    BSCN_CHUNK_SKIN_MESH_DATA = 7
 } BscnChunkType;
 
 /* R612: byte stride of the engine's static mesh vertex contract
  * (pos3 + normal3 + uv2, all f32). The loader rejects records with any other
  * stride — a future layout change is a new format, not a silent reinterpret. */
 #define BSCN_MESH_VERTEX_STRIDE 32u
+
+/* R613: byte stride of the engine's skinned mesh vertex contract (pos3 +
+ * normal3 + uv2 f32 = 32, then joints u32x4 = 16 and weights f32x4 = 16).
+ * SKIN_MESH_DATA records must carry exactly this stride. */
+#define BSCN_SKINNED_MESH_VERTEX_STRIDE 64u
 
 typedef struct {
     u32 type;
@@ -79,7 +94,14 @@ typedef enum {
     BSCN_RES_MESH     = 1,
     BSCN_RES_TEXTURE  = 2,
     BSCN_RES_MATERIAL = 3,
-    BSCN_RES_SCENE    = 4
+    BSCN_RES_SCENE    = 4,
+    /* R613: skinned-mesh manifest entry — one per Scene.skinned_meshes slot.
+     * ref_index is the skinned-mesh slot (an index space separate from
+     * BSCN_RES_MESH); the inline descriptor carries u0 = index_count,
+     * u1 = vertex_count, u2 = material_idx (f[] stays zero — skinned meshes
+     * carry no AABB). Loaders that predate R613 keep the entry in the
+     * manifest and never act on it (load_resources_chunk is type-agnostic). */
+    BSCN_RES_SKINNED_MESH = 5
 } BscnResourceType;
 
 /* Serialization options. */
@@ -100,6 +122,21 @@ typedef struct {
                                void *dst_vertices, usize vertex_bytes,
                                void *dst_indices, usize index_bytes);
     void *read_mesh_geometry_user;
+    /* R613: optional skinned-mesh geometry source — the skinned counterpart
+     * of read_mesh_geometry. When set (and the scene has skinned meshes),
+     * scene_save_binary emits a SKIN_MESH_DATA chunk: for each skinned mesh
+     * the serializer stages vertex_count * BSCN_SKINNED_MESH_VERTEX_STRIDE
+     * vertex bytes and index_count * 4 index bytes and calls this to fill
+     * them. A false return skips that mesh's record with a warning
+     * (best-effort); meshes with vertex_count == 0 are skipped without
+     * calling the reader.
+     * Production wiring: asset_skinned_mesh_geometry_reader with
+     * user = RHIDevice. */
+    bool (*read_skinned_mesh_geometry)(void *user, const SkinnedMesh *mesh,
+                                       u32 mesh_index, void *dst_vertices,
+                                       usize vertex_bytes, void *dst_indices,
+                                       usize index_bytes);
+    void *read_skinned_mesh_geometry_user;
 } SerializeOptions;
 
 /* ---- Binary format ---- */

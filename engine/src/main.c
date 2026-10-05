@@ -4768,10 +4768,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             } else {
                 /* Save BSCN binary (ECS entities + scene graph). R612: the
                  * static-mesh geometry payload rides along via the production
-                 * readback reader, so the saved file is self-contained. */
+                 * readback reader, so the saved file is self-contained.
+                 * R613: skinned meshes get the same treatment. */
                 SerializeOptions opts = {0};
                 opts.read_mesh_geometry = asset_mesh_geometry_reader;
                 opts.read_mesh_geometry_user = render.device;
+                opts.read_skinned_mesh_geometry = asset_skinned_mesh_geometry_reader;
+                opts.read_skinned_mesh_geometry_user = render.device;
                 if (scene_save_binary(world, &scene, "scene_save.bscn", &opts))
                     LOG_INFO("Scene saved (BSCN binary)");
                 else

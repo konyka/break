@@ -257,6 +257,121 @@ fail:
     return false;
 }
 
+/* R613: see asset.h. Host readback of the skinned mesh's GPU buffers — the
+ * same R186-proven path as the static reader. */
+bool asset_skinned_mesh_geometry_reader(void *user,
+                                        const SkinnedMesh *mesh,
+                                        u32 mesh_index,
+                                        void *dst_vertices,
+                                        usize vertex_bytes,
+                                        void *dst_indices,
+                                        usize index_bytes) {
+    (void)mesh_index;
+    RHIDevice *dev = (RHIDevice *)user;
+    if (!dev || !mesh || !dst_vertices) return false;
+    if (!rhi_handle_valid(mesh->vertex_buf)) return false;
+    if (!rhi_buffer_read(dev, mesh->vertex_buf, dst_vertices, 0, vertex_bytes))
+        return false;
+    if (mesh->index_count == 0) return true; /* non-indexed: no payload */
+    if (!dst_indices || !rhi_handle_valid(mesh->index_buf)) return false;
+    return rhi_buffer_read(dev, mesh->index_buf, dst_indices, 0, index_bytes);
+}
+
+/* R613: see asset.h. The manifest's skinned-mesh entries are the slot-count
+ * authority; the geometry store supplies the bytes. Mirrors
+ * asset_scene_rebuild_meshes minus the AABB (skinned meshes carry none). */
+bool asset_scene_rebuild_skinned_meshes(AssetCtx *ctx, Scene *scene) {
+    if (!ctx || !scene) return false;
+
+    /* Replace semantics (R606 mirror): destroy existing GPU buffers before
+     * dropping the array. */
+    for (u32 i = 0; i < scene->skinned_mesh_count; i++) {
+        SkinnedMesh *m = &scene->skinned_meshes[i];
+        if (rhi_handle_valid(m->vertex_buf))
+            rhi_buffer_destroy(ctx->device, m->vertex_buf);
+        if (rhi_handle_valid(m->index_buf))
+            rhi_buffer_destroy(ctx->device, m->index_buf);
+    }
+    free(scene->skinned_meshes);
+    scene->skinned_meshes = NULL;
+    scene->skinned_mesh_count = 0;
+
+    /* skinned_mesh_count = max manifest skinned-mesh ref_index + 1; an
+     * out-of-range ref is corrupt (same rule as
+     * scene_rebuild_materials_from_manifest). */
+    u32 max_ref = 0;
+    bool any = false;
+    for (u32 i = 0; i < scene->resource_count; i++) {
+        const SceneResource *r = &scene->resources[i];
+        if (r->type != (u32)BSCN_RES_SKINNED_MESH) continue;
+        if (r->ref_index >= scene->resource_count) return false;
+        if (!any || r->ref_index > max_ref) max_ref = r->ref_index;
+        any = true;
+    }
+    u32 mesh_count = any ? max_ref + 1u : 0u;
+
+    /* Geometry records must name a declared slot — orphan geometry means the
+     * manifest and the payload disagree about the scene. */
+    for (u32 i = 0; i < scene->skinned_mesh_geometry_count; i++) {
+        if (scene->skinned_mesh_geometry[i].mesh_index >= mesh_count)
+            return false;
+    }
+    if (mesh_count == 0) return true; /* nothing declared: vacuous */
+
+    SkinnedMesh *arr = (SkinnedMesh *)calloc(mesh_count, sizeof(SkinnedMesh));
+    if (!arr) return false;
+
+    for (u32 i = 0; i < scene->skinned_mesh_geometry_count; i++) {
+        const SceneMeshGeometry *g = &scene->skinned_mesh_geometry[i];
+        SkinnedMesh *m = &arr[g->mesh_index];
+        u32 material_idx = 0;
+        for (u32 j = 0; j < scene->resource_count; j++) {
+            const SceneResource *r = &scene->resources[j];
+            if (r->type != (u32)BSCN_RES_SKINNED_MESH ||
+                r->ref_index != g->mesh_index)
+                continue;
+            if (r->flags & 1u) {
+                /* The inline descriptor's counts must agree with the
+                 * payload; a mismatch means one of them was tampered with. */
+                if (r->u0 != g->index_count || r->u1 != g->vertex_count)
+                    goto fail;
+                material_idx = r->u2;
+            }
+            break;
+        }
+        RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                             .size = (usize)g->vertex_count *
+                                     BSCN_SKINNED_MESH_VERTEX_STRIDE,
+                             .initial_data = g->vertices };
+        m->vertex_buf = rhi_buffer_create(ctx->device, &vd);
+        if (!rhi_handle_valid(m->vertex_buf)) goto fail;
+        if (g->index_count > 0) {
+            RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                 .size = (usize)g->index_count * sizeof(u32),
+                                 .initial_data = g->indices };
+            m->index_buf = rhi_buffer_create(ctx->device, &id);
+            if (!rhi_handle_valid(m->index_buf)) goto fail;
+        }
+        m->index_count = g->index_count;
+        m->vertex_count = g->vertex_count;
+        m->material_idx = material_idx;
+        m->skinned = true;
+    }
+    scene->skinned_meshes = arr;
+    scene->skinned_mesh_count = mesh_count;
+    return true;
+
+fail:
+    for (u32 i = 0; i < mesh_count; i++) {
+        if (rhi_handle_valid(arr[i].vertex_buf))
+            rhi_buffer_destroy(ctx->device, arr[i].vertex_buf);
+        if (rhi_handle_valid(arr[i].index_buf))
+            rhi_buffer_destroy(ctx->device, arr[i].index_buf);
+    }
+    free(arr);
+    return false;
+}
+
 typedef struct {
     f32 pos[3];
     f32 normal[3];
@@ -1077,6 +1192,9 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 sm->vertex_buf = vbuf;
                 sm->index_buf = ibuf;
                 sm->index_count = idx_count;
+                /* R613: recorded for the BSCN skinned-geometry save path
+                 * (the serializer sizes its staging from it). */
+                sm->vertex_count = vert_count;
                 sm->material_idx = mat_idx;
                 sm->skinned = true;
                 /* R431: one node per primitive — duplicates for primitives
@@ -1453,6 +1571,12 @@ void asset_scene_free(AssetCtx *ctx, Scene *scene) {
         free(scene->mesh_geometry[i].indices);
     }
     free(scene->mesh_geometry);
+    /* R613: CPU geometry store from a BSCN SKIN_MESH_DATA chunk. */
+    for (u32 i = 0; i < scene->skinned_mesh_geometry_count; i++) {
+        free(scene->skinned_mesh_geometry[i].vertices);
+        free(scene->skinned_mesh_geometry[i].indices);
+    }
+    free(scene->skinned_mesh_geometry);
     memset(scene, 0, sizeof(*scene));
 }
 

@@ -1046,9 +1046,11 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
 #ifdef ENGINE_VULKAN
 #define TV_REBIND_BMP "tmp_tex_rebind_vk.bmp"
 #define TV_GEOM_BSCN  "tmp_mesh_geom_vk.bscn"
+#define TV_SGEOM_BSCN "tmp_skin_geom_vk.bscn"
 #else
 #define TV_REBIND_BMP "tmp_tex_rebind_gl.bmp"
 #define TV_GEOM_BSCN  "tmp_mesh_geom_gl.bscn"
+#define TV_SGEOM_BSCN "tmp_skin_geom_gl.bscn"
 #endif
 
 static bool tv_write_test_bmp(const char *path) {
@@ -1283,6 +1285,169 @@ static bool tv_test_mesh_geometry_roundtrip(RHIDevice *dev) {
                  fabsf(dst.meshes[1].aabb_max.e[2] - 5.0f) > 1e-6f)) {
                 LOG_ERROR("FAIL: geom gate AABB");
                 pass = false;
+            }
+        }
+    }
+
+    asset_scene_free(&actx, &dst);
+    if (w2) world_destroy(w2);
+    asset_scene_free(&actx, &src);
+    world_destroy(w);
+    remove(path);
+    return pass;
+}
+
+/* R613: SKIN MESH ROUNDTRIP gate — real-device end-to-end for the BSCN
+ * skinned-mesh geometry chunk: two skinned meshes with known bytes ride the
+ * production save path (asset_skinned_mesh_geometry_reader = rhi_buffer_read
+ * of the GPU buffers) into a SKIN_MESH_DATA chunk; a fresh scene loads it;
+ * asset_scene_rebuild_skinned_meshes recreates the GPU buffers. The rebuilt
+ * buffers are read back and compared byte-exact against the sources, and the
+ * rebuilt meshes must carry the manifest's counts/material_idx plus the
+ * skinned flag. Backend-tagged file name (the R607 convention). */
+static bool tv_test_skin_geometry_roundtrip(RHIDevice *dev) {
+    bool pass = true;
+    char path[96];
+    snprintf(path, sizeof(path), "tests/%s", TV_SGEOM_BSCN);
+
+    /* Skinned vertex contract: 64B stride (pos3 + normal3 + uv2 f32, then
+     * joints u32x4 + weights f32x4). */
+    typedef struct {
+        f32 pos[3]; f32 nrm[3]; f32 uv[2]; u32 joints[4]; f32 weights[4];
+    } TvSkinVertex;
+    static const TvSkinVertex verts0[3] = {
+        { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f },
+          { 0u, 1u, 0u, 0u }, { 0.5f, 0.5f, 0.0f, 0.0f } },
+        { { 1.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f },
+          { 1u, 2u, 0u, 0u }, { 0.25f, 0.75f, 0.0f, 0.0f } },
+        { { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f },
+          { 2u, 3u, 4u, 5u }, { 0.1f, 0.2f, 0.3f, 0.4f } },
+    };
+    static const u32 idx0[3] = { 0u, 1u, 2u };
+    static const TvSkinVertex verts1[4] = {
+        { { 5.0f, 5.0f, 5.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { { 6.0f, 5.0f, 5.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 0.0f },
+          { 3u, 1u, 0u, 0u }, { 0.6f, 0.4f, 0.0f, 0.0f } },
+        { { 6.0f, 6.0f, 5.0f }, { 0.0f, 1.0f, 0.0f }, { 1.0f, 1.0f },
+          { 4u, 2u, 1u, 0u }, { 0.3f, 0.3f, 0.4f, 0.0f } },
+        { { 5.0f, 6.0f, 5.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f },
+          { 7u, 6u, 5u, 4u }, { 0.2f, 0.2f, 0.2f, 0.4f } },
+    };
+    static const u32 idx1[6] = { 0u, 1u, 2u, 2u, 3u, 0u };
+
+    AssetCtx actx;
+    asset_ctx_init(&actx, dev);
+    World *w = world_create();
+    Scene src;
+    memset(&src, 0, sizeof(src));
+    src.skinned_mesh_count = 2;
+    src.skinned_meshes = (SkinnedMesh *)calloc(2, sizeof(SkinnedMesh));
+    src.material_count = 2;
+    src.materials = (Material *)calloc(2, sizeof(Material));
+    if (!w || !src.skinned_meshes || !src.materials) {
+        LOG_ERROR("FAIL: skin geom gate setup (alloc)");
+        free(src.skinned_meshes); free(src.materials);
+        if (w) world_destroy(w);
+        return false;
+    }
+
+    RHIBufferDesc vd0 = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(verts0), .initial_data = verts0 };
+    src.skinned_meshes[0].vertex_buf = rhi_buffer_create(dev, &vd0);
+    RHIBufferDesc id0 = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(idx0), .initial_data = idx0 };
+    src.skinned_meshes[0].index_buf = rhi_buffer_create(dev, &id0);
+    src.skinned_meshes[0].vertex_count = 3;
+    src.skinned_meshes[0].index_count = 3;
+    src.skinned_meshes[0].material_idx = 0;
+    src.skinned_meshes[0].skinned = true;
+
+    RHIBufferDesc vd1 = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(verts1), .initial_data = verts1 };
+    src.skinned_meshes[1].vertex_buf = rhi_buffer_create(dev, &vd1);
+    RHIBufferDesc id1 = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(idx1), .initial_data = idx1 };
+    src.skinned_meshes[1].index_buf = rhi_buffer_create(dev, &id1);
+    src.skinned_meshes[1].vertex_count = 4;
+    src.skinned_meshes[1].index_count = 6;
+    src.skinned_meshes[1].material_idx = 1;
+    src.skinned_meshes[1].skinned = true;
+
+    if (!rhi_handle_valid(src.skinned_meshes[0].vertex_buf) ||
+        !rhi_handle_valid(src.skinned_meshes[0].index_buf) ||
+        !rhi_handle_valid(src.skinned_meshes[1].vertex_buf) ||
+        !rhi_handle_valid(src.skinned_meshes[1].index_buf)) {
+        LOG_ERROR("FAIL: skin geom gate source buffer creation");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+
+    SerializeOptions opts =
+        { .include_resources = true,
+          .read_skinned_mesh_geometry = asset_skinned_mesh_geometry_reader,
+          .read_skinned_mesh_geometry_user = dev };
+    if (!scene_save_binary(w, &src, path, &opts)) {
+        LOG_ERROR("FAIL: skin geom gate save");
+        asset_scene_free(&actx, &src);
+        world_destroy(w);
+        return false;
+    }
+
+    World *w2 = world_create();
+    Scene dst;
+    memset(&dst, 0, sizeof(dst));
+    if (!w2 || !scene_load_binary(w2, &dst, path)) {
+        LOG_ERROR("FAIL: skin geom gate load");
+        pass = false;
+    } else if (dst.skinned_mesh_geometry_count != 2u) {
+        LOG_ERROR("FAIL: skin geom gate store count %u, want 2",
+                  dst.skinned_mesh_geometry_count);
+        pass = false;
+    } else if (!asset_scene_rebuild_skinned_meshes(&actx, &dst)) {
+        LOG_ERROR("FAIL: skin geom gate rebuild");
+        pass = false;
+    } else {
+        if (dst.skinned_mesh_count != 2u) {
+            LOG_ERROR("FAIL: skin geom gate skinned_mesh_count %u, want 2",
+                      dst.skinned_mesh_count);
+            pass = false;
+        } else {
+            static const TvSkinVertex *want_v[2] = { verts0, verts1 };
+            static const u32 want_vc[2] = { 3u, 4u };
+            static const u32 want_ic[2] = { 3u, 6u };
+            static const u32 *want_i[2] = { idx0, idx1 };
+            for (u32 mi = 0; mi < 2 && pass; mi++) {
+                const SkinnedMesh *m = &dst.skinned_meshes[mi];
+                if (m->vertex_count != want_vc[mi] ||
+                    m->index_count != want_ic[mi] ||
+                    m->material_idx != mi || !m->skinned) {
+                    LOG_ERROR("FAIL: skin geom gate mesh %u counts/mat/skin "
+                              "(%u/%u/%u/%d)", mi, m->vertex_count,
+                              m->index_count, m->material_idx,
+                              (int)m->skinned);
+                    pass = false;
+                    break;
+                }
+                u8 rb_v[4 * 64] = {0};
+                u32 rb_i[6] = {0};
+                if (!rhi_buffer_read(dev, m->vertex_buf, rb_v, 0,
+                                     want_vc[mi] * 64u) ||
+                    !rhi_buffer_read(dev, m->index_buf, rb_i, 0,
+                                     want_ic[mi] * sizeof(u32))) {
+                    LOG_ERROR("FAIL: skin geom gate mesh %u rebuilt readback",
+                              mi);
+                    pass = false;
+                    break;
+                }
+                if (memcmp(rb_v, want_v[mi], want_vc[mi] * 64u) != 0 ||
+                    memcmp(rb_i, want_i[mi], want_ic[mi] * sizeof(u32)) != 0) {
+                    LOG_ERROR("FAIL: skin geom gate mesh %u payload mismatch",
+                              mi);
+                    pass = false;
+                    break;
+                }
             }
         }
     }
@@ -4371,6 +4536,13 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: MESH DATA ROUNDTRIP TEST %s",
              geom_pass ? "PASSED ✓" : "FAILED");
 
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: SKIN MESH ROUNDTRIP (BSCN GEOMETRY)");
+    LOG_INFO("============================================");
+    bool sgeom_pass = tv_test_skin_geometry_roundtrip(render.device);
+    LOG_INFO("RESULT: SKIN MESH ROUNDTRIP TEST %s",
+             sgeom_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -4467,7 +4639,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -5481,7 +5653,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

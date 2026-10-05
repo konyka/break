@@ -366,6 +366,7 @@ static bool emit_one_resource(ByteBuf *out, const SceneResource *res, bool inlin
 static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
     if (!s) return bb_u32(out, 0);
     if ((s->mesh_count && !s->meshes) ||
+        (s->skinned_mesh_count && !s->skinned_meshes) ||
         (s->material_count && !s->materials)) return false;
 
     /* Collect distinct texture handle indices referenced by materials
@@ -392,8 +393,10 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         }
     }
 
-    if (s->mesh_count > UINT32_MAX - s->material_count) return false;
-    u32 total = s->mesh_count + s->material_count;
+    if (s->mesh_count > UINT32_MAX - s->skinned_mesh_count) return false;
+    u32 total = s->mesh_count + s->skinned_mesh_count;
+    if (total > UINT32_MAX - s->material_count) return false;
+    total += s->material_count;
     if (total > UINT32_MAX - tex_count) return false;
     total += tex_count;
     if (!bb_u32(out, total)) return false;
@@ -413,6 +416,24 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
         r.f[3] = me->aabb_max.e[0]; r.f[4] = me->aabb_max.e[1]; r.f[5] = me->aabb_max.e[2];
         /* R605: guid hashes the full v3 descriptor — u0..u2 + tex_slots[5] +
          * f[0..11] are one contiguous run in SceneResource. */
+        r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 8 + sizeof(f32) * 12);
+        if (!emit_one_resource(out, &r, include)) return false;
+    }
+
+    /* R613: skinned meshes — same slot wiring as static meshes but in their
+     * own index space (BSCN_RES_SKINNED_MESH ref_index == Scene
+     * .skinned_meshes slot). Skinned meshes carry no AABB (they deform), so
+     * f[] stays zeroed; tex_slots are "no link" like the static entries. */
+    for (u32 i = 0; i < s->skinned_mesh_count; i++) {
+        const SkinnedMesh *sm = &s->skinned_meshes[i];
+        SceneResource r;
+        memset(&r, 0, sizeof(r));
+        memset(r.tex_slots, 0xFF, sizeof(r.tex_slots)); /* R605: no link */
+        r.type = BSCN_RES_SKINNED_MESH;
+        r.ref_index = i;
+        r.u0 = sm->index_count;
+        r.u1 = sm->vertex_count;
+        r.u2 = sm->material_idx;
         r.guid = resource_guid(r.type, r.ref_index, &r.u0, sizeof(u32) * 8 + sizeof(f32) * 12);
         if (!emit_one_resource(out, &r, include)) return false;
     }
@@ -525,6 +546,55 @@ static bool emit_mesh_data_chunk(const Scene *s, const SerializeOptions *opts,
     return true;
 }
 
+/* R613: skinned-mesh geometry payload — the skinned counterpart of
+ * emit_mesh_data_chunk (same record layout, BSCN_SKINNED_MESH_VERTEX_STRIDE,
+ * Scene.skinned_meshes slot space). */
+static bool emit_skin_mesh_data_chunk(const Scene *s,
+                                      const SerializeOptions *opts,
+                                      ByteBuf *out) {
+    if (!bb_u32(out, 0)) return false; /* record_count, patched below */
+    const u32 count_pos = out->size - 4u;
+    u32 count = 0;
+    for (u32 i = 0; i < s->skinned_mesh_count; i++) {
+        const SkinnedMesh *sm = &s->skinned_meshes[i];
+        if (sm->vertex_count == 0) continue;
+        u64 vbytes = (u64)sm->vertex_count * BSCN_SKINNED_MESH_VERTEX_STRIDE;
+        u64 ibytes = (u64)sm->index_count * sizeof(u32);
+        if (vbytes + ibytes > (u64)BSCN_MAX_FILE_BYTES) {
+            LOG_WARN("BSCN: skinned mesh %u geometry exceeds the file cap; skipped", i);
+            continue;
+        }
+        u8 *vbuf = (u8 *)malloc((usize)vbytes);
+        u32 *ibuf = ibytes ? (u32 *)malloc((usize)ibytes) : NULL;
+        if (!vbuf || (ibytes && !ibuf)) {
+            free(vbuf);
+            free(ibuf);
+            return false;
+        }
+        bool got = opts->read_skinned_mesh_geometry(
+            opts->read_skinned_mesh_geometry_user, sm, i, vbuf, (usize)vbytes,
+            ibuf, (usize)ibytes);
+        if (!got) {
+            LOG_WARN("BSCN: skinned mesh %u geometry readback failed; skipped", i);
+            free(vbuf);
+            free(ibuf);
+            continue;
+        }
+        bool wrote = bb_u32(out, i) &&
+                     bb_u32(out, sm->vertex_count) &&
+                     bb_u32(out, sm->index_count) &&
+                     bb_u32(out, BSCN_SKINNED_MESH_VERTEX_STRIDE) &&
+                     bb_write(out, vbuf, (u32)vbytes) &&
+                     (ibytes == 0 || bb_write(out, ibuf, (u32)ibytes));
+        free(vbuf);
+        free(ibuf);
+        if (!wrote) return false;
+        count++;
+    }
+    memcpy(out->data + count_pos, &count, sizeof(count));
+    return true;
+}
+
 bool scene_save_binary(const World *w, const Scene *s,
                        const char *path, const SerializeOptions *opts) {
     if (!w || !path) return false;
@@ -532,13 +602,15 @@ bool scene_save_binary(const World *w, const Scene *s,
     /* R612: the optional MESH_DATA chunk exists only when a geometry source
      * was provided and the scene has meshes — its presence signals intent. */
     bool want_geom = opts && opts->read_mesh_geometry && s && s->mesh_count > 0;
-    const u32 nchunks = want_geom ? 6u : 5u;
+    /* R613: same existence-as-intent rule for the skinned payload. */
+    bool want_sgeom = opts && opts->read_skinned_mesh_geometry && s &&
+                      s->skinned_mesh_count > 0;
 
     EntityMap m = {0};
     if (!emap_build(w, &m)) return false;
 
-    ByteBuf chunks[6];
-    for (u32 i = 0; i < 6; i++) bb_init(&chunks[i]);
+    ByteBuf chunks[7];
+    for (u32 i = 0; i < 7; i++) bb_init(&chunks[i]);
 
     bool ok =
         emit_entities_chunk(w, &m, &chunks[0]) &&
@@ -546,20 +618,28 @@ bool scene_save_binary(const World *w, const Scene *s,
         emit_hierarchy_chunk(s, &chunks[2]) &&
         emit_resources_chunk(s, include_res, &chunks[3]) &&
         emit_scene_nodes_chunk(s, &chunks[4]) &&
-        (!want_geom || emit_mesh_data_chunk(s, opts, &chunks[5]));
+        (!want_geom || emit_mesh_data_chunk(s, opts, &chunks[5])) &&
+        (!want_sgeom || emit_skin_mesh_data_chunk(s, opts, &chunks[6]));
     if (!ok) goto fail;
+
+    /* Map table slots to chunk buffers, skipping disabled optional chunks. */
+    static const u32 ctypes[7] = {
+        BSCN_CHUNK_ENTITIES, BSCN_CHUNK_COMPONENTS, BSCN_CHUNK_HIERARCHY,
+        BSCN_CHUNK_RESOURCES, BSCN_CHUNK_SCENE_NODES, BSCN_CHUNK_MESH_DATA,
+        BSCN_CHUNK_SKIN_MESH_DATA
+    };
+    u32 slot_src[7];
+    u32 nchunks = 0;
+    for (u32 i = 0; i < 5; i++) slot_src[nchunks++] = i;
+    if (want_geom) slot_src[nchunks++] = 5;
+    if (want_sgeom) slot_src[nchunks++] = 6;
 
     u64 file_size = (u64)sizeof(BscnHeader) +
                     (u64)nchunks * (u64)sizeof(BscnChunkEntry);
-    for (u32 i = 0; i < nchunks; i++) file_size += chunks[i].size;
+    for (u32 i = 0; i < nchunks; i++) file_size += chunks[slot_src[i]].size;
     /* Readers reject files above this bound before allocating their input
      * buffer, so never report a successful save for an unloadable BSCN. */
     if (file_size > BSCN_MAX_FILE_BYTES) goto fail;
-
-    static const u32 ctypes[6] = {
-        BSCN_CHUNK_ENTITIES, BSCN_CHUNK_COMPONENTS, BSCN_CHUNK_HIERARCHY,
-        BSCN_CHUNK_RESOURCES, BSCN_CHUNK_SCENE_NODES, BSCN_CHUNK_MESH_DATA
-    };
 
     FILE *fp = fopen(path, "wb");
     if (!fp) goto fail;
@@ -571,18 +651,20 @@ bool scene_save_binary(const World *w, const Scene *s,
     bool write_ok = fwrite(&h, sizeof(h), 1, fp) == 1;
 
     u32 base = (u32)sizeof(BscnHeader) + nchunks * (u32)sizeof(BscnChunkEntry);
-    BscnChunkEntry table[6];
+    BscnChunkEntry table[7];
     u32 cursor = base;
     for (u32 i = 0; i < nchunks; i++) {
-        table[i].type = ctypes[i];
+        u32 srci = slot_src[i];
+        table[i].type = ctypes[srci];
         table[i].offset = cursor;
-        table[i].size = chunks[i].size;
-        cursor += chunks[i].size;
+        table[i].size = chunks[srci].size;
+        cursor += chunks[srci].size;
     }
     if (write_ok && fwrite(table, sizeof(BscnChunkEntry) * nchunks, 1, fp) != 1) write_ok = false;
 
     for (u32 i = 0; i < nchunks && write_ok; i++) {
-        if (chunks[i].size && fwrite(chunks[i].data, 1, chunks[i].size, fp) != chunks[i].size) {
+        const ByteBuf *c = &chunks[slot_src[i]];
+        if (c->size && fwrite(c->data, 1, c->size, fp) != c->size) {
             write_ok = false;
         }
     }
@@ -590,12 +672,12 @@ bool scene_save_binary(const World *w, const Scene *s,
     if (fclose(fp) != 0) write_ok = false;
     if (!write_ok) goto fail;
 
-    for (u32 i = 0; i < 6; i++) bb_free(&chunks[i]);
+    for (u32 i = 0; i < 7; i++) bb_free(&chunks[i]);
     emap_free(&m);
     return true;
 
 fail:
-    for (u32 i = 0; i < 6; i++) bb_free(&chunks[i]);
+    for (u32 i = 0; i < 7; i++) bb_free(&chunks[i]);
     emap_free(&m);
     return false;
 }
@@ -661,6 +743,11 @@ void scene_serial_free(Scene *s) {
     mesh_geometry_store_free(s->mesh_geometry, s->mesh_geometry_count);
     s->mesh_geometry = NULL;
     s->mesh_geometry_count = 0;
+    /* R613: the skinned store shares the record type and the free helper. */
+    mesh_geometry_store_free(s->skinned_mesh_geometry,
+                             s->skinned_mesh_geometry_count);
+    s->skinned_mesh_geometry = NULL;
+    s->skinned_mesh_geometry_count = 0;
 }
 
 /* R606: glTF spec defaults — the material a descriptorless entry or a sparse
@@ -1114,6 +1201,72 @@ fail:
     return false;
 }
 
+/* R613: SKIN_MESH_DATA chunk — the skinned counterpart of
+ * load_mesh_data_chunk (same record layout; the stride must be
+ * BSCN_SKINNED_MESH_VERTEX_STRIDE and mesh_index names a Scene
+ * .skinned_meshes slot — a separate index space from MESH_DATA's, so the
+ * duplicate bitmap is this chunk's own). Same rule: every bound is derived
+ * from the chunk's own remaining bytes or the fixed caps. */
+static bool load_skin_mesh_data_chunk(Scene *s, Reader *r) {
+    u32 n = 0;
+    if (!rd_u32(r, &n)) return false;
+    /* Smallest record = the 16-byte header (zero payloads are rejected). */
+    if ((u64)n * 16u > (u64)(r->end - r->p)) return false;
+    SceneMeshGeometry *arr = NULL;
+    if (s && n) {
+        arr = (SceneMeshGeometry *)calloc(n, sizeof(SceneMeshGeometry));
+        if (!arr) return false;
+    }
+    u8 *seen = NULL;
+    if (n) {
+        seen = (u8 *)calloc(BSCN_MAX_MESH_SLOTS / 8u, 1u);
+        if (!seen) { free(arr); return false; }
+    }
+    for (u32 i = 0; i < n; i++) {
+        u32 mesh_index = 0, vcount = 0, icount = 0, stride = 0;
+        if (!rd_u32(r, &mesh_index) || !rd_u32(r, &vcount) ||
+            !rd_u32(r, &icount) || !rd_u32(r, &stride)) goto fail;
+        /* The writer never emits these shapes — accepting one means the
+         * record was tampered with. */
+        if (stride != BSCN_SKINNED_MESH_VERTEX_STRIDE) goto fail;
+        if (vcount == 0) goto fail;
+        if (mesh_index >= BSCN_MAX_MESH_SLOTS) goto fail;
+        if (seen[mesh_index / 8u] & (u8)(1u << (mesh_index % 8u))) goto fail;
+        seen[mesh_index / 8u] |= (u8)(1u << (mesh_index % 8u));
+        u64 vbytes = (u64)vcount * BSCN_SKINNED_MESH_VERTEX_STRIDE;
+        u64 ibytes = (u64)icount * sizeof(u32);
+        u64 rem = (u64)(r->end - r->p);
+        if (vbytes > rem || ibytes > rem - vbytes) goto fail;
+        if (arr) {
+            arr[i].mesh_index = mesh_index;
+            arr[i].vertex_count = vcount;
+            arr[i].index_count = icount;
+            arr[i].vertices = (u8 *)malloc((usize)vbytes);
+            if (!arr[i].vertices) goto fail;
+            memcpy(arr[i].vertices, r->p, (usize)vbytes);
+            if (ibytes) {
+                arr[i].indices = (u32 *)malloc((usize)ibytes);
+                if (!arr[i].indices) goto fail;
+                memcpy(arr[i].indices, r->p + (usize)vbytes, (usize)ibytes);
+            }
+        }
+        r->p += (usize)(vbytes + ibytes);
+    }
+    free(seen);
+    if (s) {
+        mesh_geometry_store_free(s->skinned_mesh_geometry,
+                                 s->skinned_mesh_geometry_count);
+        s->skinned_mesh_geometry = arr;
+        s->skinned_mesh_geometry_count = n;
+    }
+    return true;
+
+fail:
+    free(seen);
+    mesh_geometry_store_free(arr, n);
+    return false;
+}
+
 bool scene_probe_binary(const char *path) {
     if (!path) return false;
     FILE *fp = fopen(path, "rb");
@@ -1206,6 +1359,7 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
     bool seen_scene_nodes = false;
     bool seen_resources = false;
     bool seen_mesh_data = false;
+    bool seen_skin_mesh_data = false;
     for (u32 i = 0; i < h.chunk_count && ok; i++) {
         /* R108-1: validate chunk data bounds */
         u64 chunk_end = (u64)table[i].offset + (u64)table[i].size;
@@ -1231,6 +1385,10 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
             if (seen_mesh_data) { ok = false; break; }
             seen_mesh_data = true;
             ok = load_mesh_data_chunk(dst, &r) && r.p == r.end; break;
+        case BSCN_CHUNK_SKIN_MESH_DATA:
+            if (seen_skin_mesh_data) { ok = false; break; }
+            seen_skin_mesh_data = true;
+            ok = load_skin_mesh_data_chunk(dst, &r) && r.p == r.end; break;
         case BSCN_CHUNK_HIERARCHY:
         default:
             /* Hierarchy is implicit in SceneNode.parent_index. Skip silently. */
@@ -1265,6 +1423,12 @@ bool scene_load_binary(World *w, Scene *s, const char *path) {
             mesh_geometry_store_free(s->mesh_geometry, s->mesh_geometry_count);
             s->mesh_geometry = staged.mesh_geometry;
             s->mesh_geometry_count = staged.mesh_geometry_count;
+            /* R613: and so does the skinned geometry store. */
+            mesh_geometry_store_free(s->skinned_mesh_geometry,
+                                     s->skinned_mesh_geometry_count);
+            s->skinned_mesh_geometry = staged.skinned_mesh_geometry;
+            s->skinned_mesh_geometry_count =
+                staged.skinned_mesh_geometry_count;
         } else {
             scene_serial_free(&staged);
         }

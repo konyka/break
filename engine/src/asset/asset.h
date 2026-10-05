@@ -57,12 +57,17 @@ typedef struct {
     Vec3      aabb_max;
 } Mesh;
 
-/* R612: CPU-side static-mesh geometry recovered from a BSCN MESH_DATA chunk.
- * The GPU half (asset_scene_rebuild_meshes) uploads these bytes into fresh
- * buffers. `vertices` is vertex_count * BSCN_MESH_VERTEX_STRIDE bytes in the
- * engine's static Vertex layout (pos3 + normal3 + uv2, 32 bytes); `indices`
- * holds index_count u32 entries (the loader widens all glTF index widths to
- * u32, so that is the on-disk width too). Owned by Scene. */
+/* R612: CPU-side mesh geometry recovered from a BSCN MESH_DATA chunk (or, as
+ * of R613, a SKIN_MESH_DATA chunk — the same record shape serves both stores;
+ * the stride is implied by which store holds the record: 32 for
+ * Scene.mesh_geometry, 64 for Scene.skinned_mesh_geometry).
+ * The GPU halves (asset_scene_rebuild_meshes /
+ * asset_scene_rebuild_skinned_meshes) upload these bytes into fresh buffers.
+ * `vertices` is vertex_count * stride bytes in the engine's Vertex layout
+ * (pos3 + normal3 + uv2, 32 bytes) or SkinnedVertex layout (+ joints u32x4 +
+ * weights f32x4, 64 bytes); `indices` holds index_count u32 entries (the
+ * loader widens all glTF index widths to u32, so that is the on-disk width
+ * too). Owned by Scene. */
 typedef struct {
     u32  mesh_index;   /* scene mesh slot == manifest mesh entry ref_index */
     u32  vertex_count;
@@ -75,6 +80,10 @@ typedef struct {
     RHIBuffer vertex_buf;
     RHIBuffer index_buf;
     u32       index_count;
+    /* R613: vertex count — recorded so the BSCN skinned-geometry save path
+     * can size its staging without a GPU query (SkinnedMesh carries no
+     * AABB; skinned meshes are not culled by one). */
+    u32       vertex_count;
     u32       material_idx;
     bool      skinned;
 } SkinnedMesh;
@@ -167,6 +176,13 @@ typedef struct {
      * scene_serial_free / asset_scene_free. */
     SceneMeshGeometry  *mesh_geometry;
     u32                 mesh_geometry_count;
+    /* R613: skinned-mesh geometry recovered from a BSCN SKIN_MESH_DATA chunk
+     * (scene_load_binary) — the skinned counterpart of mesh_geometry.
+     * Populated only by BSCN load; glTF loads leave it empty (their geometry
+     * goes straight to GPU buffers). Freed by scene_serial_free /
+     * asset_scene_free. */
+    SceneMeshGeometry  *skinned_mesh_geometry;
+    u32                 skinned_mesh_geometry_count;
 } Scene;
 
 /* R607: rebind manifest-wired textures into a scene's materials — the GPU
@@ -211,6 +227,34 @@ bool     asset_mesh_geometry_reader(void *user, const Mesh *mesh, u32 mesh_index
  * buffers are destroyed first. Returns false on corrupt data or GPU buffer
  * creation failure; on false scene->meshes is left empty. */
 bool     asset_scene_rebuild_meshes(AssetCtx *ctx, Scene *scene);
+
+/* R613: production geometry source for
+ * SerializeOptions.read_skinned_mesh_geometry — the skinned counterpart of
+ * asset_mesh_geometry_reader (host readback of the skinned mesh's GPU
+ * buffers; user is the RHIDevice *). */
+bool     asset_skinned_mesh_geometry_reader(void *user,
+                                            const SkinnedMesh *mesh,
+                                            u32 mesh_index,
+                                            void *dst_vertices,
+                                            usize vertex_bytes,
+                                            void *dst_indices,
+                                            usize index_bytes);
+
+/* R613: rebuild scene->skinned_meshes from the loaded manifest
+ * (BSCN_RES_SKINNED_MESH entries are the slot-count authority,
+ * skinned_mesh_count = max ref_index + 1) + skinned_mesh_geometry store (the
+ * bytes) — the GPU half of the BSCN skinned-mesh geometry roundtrip,
+ * mirroring asset_scene_rebuild_meshes. A geometry record naming a slot with
+ * no manifest entry is corrupt and fails the whole call, as is an inline
+ * descriptor whose u0/u1 disagree with the record's index/vertex counts.
+ * Slots without a geometry record keep zeroed SkinnedMesh structs (invalid
+ * handles — old v1-v3 files without a SKIN_MESH_DATA chunk degrade to empty
+ * meshes). material_idx comes from the descriptor's u2 when inlined, else 0;
+ * every rebuilt mesh is flagged skinned. REPLACES scene->skinned_meshes:
+ * existing GPU buffers are destroyed first. Returns false on corrupt data or
+ * GPU buffer creation failure; on false scene->skinned_meshes is left
+ * empty. */
+bool     asset_scene_rebuild_skinned_meshes(AssetCtx *ctx, Scene *scene);
 
 /* out_scene must be zero-initialized before the call (memset or {}): failure
  * paths unwind via asset_scene_free(ctx, out_scene), which frees whatever the

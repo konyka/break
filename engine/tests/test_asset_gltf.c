@@ -723,6 +723,9 @@ TEST(gltf_normalized_u8_weights_load_safely)
     ASSERT_TRUE(asset_load_gltf(&ctx, TMP_GLTF, &scene));
     ASSERT_EQ(scene.skinned_mesh_count, 1u);
     ASSERT_EQ(scene.mesh_count, 0u);
+    /* R613: the vertex count is recorded (the BSCN skinned-geometry save
+     * path sizes its staging from it). */
+    ASSERT_EQ(scene.skinned_meshes[0].vertex_count, 3u);
 
     asset_scene_free(&ctx, &scene);
     remove(TMP_GLTF);
@@ -1487,6 +1490,208 @@ TEST(rebuild_meshes_replaces_existing)
     asset_scene_free(&ctx, &scene);
 }
 
+/* ---- R613: asset_scene_rebuild_skinned_meshes (BSCN skinned GPU half) ---- */
+
+/* 3 skinned vertices (64B stride: pos3 + pattern rest). */
+static void sgeom_test_vertices(u8 *v) {
+    for (u32 i = 0; i < 3; i++) {
+        static const f32 pos[3][3] = {
+            { 0.0f, 0.0f, 0.0f }, { 1.0f, 2.0f, 3.0f }, { -1.0f, -1.0f, -1.0f },
+        };
+        memcpy(v + i * 64, pos[i], sizeof(f32) * 3);
+        for (u32 b = 12; b < 64; b++) v[i * 64 + b] = (u8)(0xB0u + i);
+    }
+}
+
+static SceneMeshGeometry *sgeom_test_add_record(Scene *scene, u32 mesh_index) {
+    scene->skinned_mesh_geometry_count = 1;
+    scene->skinned_mesh_geometry =
+        (SceneMeshGeometry *)calloc(1, sizeof(SceneMeshGeometry));
+    if (!scene->skinned_mesh_geometry) return NULL;
+    SceneMeshGeometry *g = &scene->skinned_mesh_geometry[0];
+    g->mesh_index = mesh_index;
+    g->vertex_count = 3;
+    g->index_count = 3;
+    g->vertices = (u8 *)malloc(3 * 64);
+    g->indices = (u32 *)malloc(3 * sizeof(u32));
+    if (!g->vertices || !g->indices) return NULL;
+    sgeom_test_vertices(g->vertices);
+    g->indices[0] = 2u; g->indices[1] = 1u; g->indices[2] = 0u;
+    return g;
+}
+
+static bool sgeom_test_add_mesh_entry(Scene *scene, u32 ref, u32 icount,
+                                      u32 vcount, u32 mat_idx) {
+    scene->resource_count = 1;
+    scene->resources = (SceneResource *)calloc(1, sizeof(SceneResource));
+    if (!scene->resources) return false;
+    scene->resources[0].type = BSCN_RES_SKINNED_MESH;
+    scene->resources[0].ref_index = ref;
+    scene->resources[0].flags = 1u; /* inline descriptor */
+    scene->resources[0].u0 = icount;
+    scene->resources[0].u1 = vcount;
+    scene->resources[0].u2 = mat_idx;
+    return true;
+}
+
+TEST(rebuild_skinned_meshes_roundtrip)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    ASSERT_TRUE(sgeom_test_add_mesh_entry(&scene, 0u, 3u, 3u, 1u));
+    SceneMeshGeometry *g = sgeom_test_add_record(&scene, 0u);
+    ASSERT_NOT_NULL(g);
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    g_geom_destroy_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(scene.skinned_mesh_count, 1u);
+    const SkinnedMesh *m = &scene.skinned_meshes[0];
+    ASSERT_EQ(m->vertex_count, 3u);
+    ASSERT_EQ(m->index_count, 3u);
+    ASSERT_EQ(m->material_idx, 1u); /* from the descriptor's u2 */
+    ASSERT_TRUE(m->skinned);
+    ASSERT_TRUE(rhi_handle_valid(m->vertex_buf));
+    ASSERT_TRUE(rhi_handle_valid(m->index_buf));
+    /* Exact payloads reached the buffer creations (vertex first). */
+    ASSERT_EQ(g_geom_cap_count, 2u);
+    ASSERT_EQ(g_geom_cap[0].usage, (u32)RHI_BUFFER_USAGE_VERTEX);
+    ASSERT_EQ(g_geom_cap[0].size, (usize)(3 * 64));
+    ASSERT_TRUE(memcmp(g_geom_cap[0].data, g->vertices, 3 * 64) == 0);
+    ASSERT_EQ(g_geom_cap[1].usage, (u32)RHI_BUFFER_USAGE_INDEX);
+    ASSERT_EQ(g_geom_cap[1].size, (usize)(3 * sizeof(u32)));
+    ASSERT_TRUE(memcmp(g_geom_cap[1].data, g->indices, 3 * sizeof(u32)) == 0);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_rejects_manifest_mismatch)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Descriptor claims 99 indices; the geometry record carries 3. */
+    ASSERT_TRUE(sgeom_test_add_mesh_entry(&scene, 0u, 99u, 3u, 0u));
+    ASSERT_NOT_NULL(sgeom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_FALSE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_cap_count, 0u); /* refused before any buffer creation */
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+    ASSERT_EQ(scene.skinned_mesh_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_rejects_orphan_geometry)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Geometry for slot 0 but no manifest skinned-mesh entry at all. */
+    ASSERT_NOT_NULL(sgeom_test_add_record(&scene, 0u));
+
+    ASSERT_FALSE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_rejects_out_of_range_manifest_ref)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* ref_index 3 >= resource_count 1 — corrupt manifest (R606 rule). */
+    ASSERT_TRUE(sgeom_test_add_mesh_entry(&scene, 3u, 3u, 3u, 0u));
+
+    ASSERT_FALSE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_sparse_slot_stays_empty)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Two manifest skinned slots; geometry only for slot 0. */
+    scene.resource_count = 2;
+    scene.resources = (SceneResource *)calloc(2, sizeof(SceneResource));
+    ASSERT_NOT_NULL(scene.resources);
+    for (u32 i = 0; i < 2; i++) {
+        scene.resources[i].type = BSCN_RES_SKINNED_MESH;
+        scene.resources[i].ref_index = i;
+        scene.resources[i].flags = 1u;
+    }
+    scene.resources[0].u0 = 3u; scene.resources[0].u1 = 3u;
+    scene.resources[1].u0 = 9u; scene.resources[1].u1 = 9u;
+    ASSERT_NOT_NULL(sgeom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(scene.skinned_mesh_count, 2u);
+    ASSERT_TRUE(rhi_handle_valid(scene.skinned_meshes[0].vertex_buf));
+    ASSERT_EQ(scene.skinned_meshes[0].vertex_count, 3u);
+    ASSERT_TRUE(scene.skinned_meshes[0].skinned);
+    /* Slot 1 has no geometry: zeroed SkinnedMesh with invalid handles (old
+     * files without a SKIN_MESH_DATA chunk degrade to empty meshes). */
+    ASSERT_TRUE(!rhi_handle_valid(scene.skinned_meshes[1].vertex_buf));
+    ASSERT_TRUE(!rhi_handle_valid(scene.skinned_meshes[1].index_buf));
+    ASSERT_EQ(scene.skinned_meshes[1].vertex_count, 0u);
+    ASSERT_EQ(scene.skinned_meshes[1].index_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_no_manifest_is_vacuous)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+
+    ASSERT_TRUE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    ASSERT_TRUE(scene.skinned_meshes == NULL);
+    ASSERT_EQ(scene.skinned_mesh_count, 0u);
+
+    asset_scene_free(&ctx, &scene);
+}
+
+TEST(rebuild_skinned_meshes_replaces_existing)
+{
+    AssetCtx ctx; asset_ctx_init(&ctx, NULL);
+    Scene scene; memset(&scene, 0, sizeof(scene));
+    /* Pre-existing skinned mesh with a valid buffer handle must be destroyed,
+     * not leaked, when the rebuild replaces the array. */
+    scene.skinned_mesh_count = 1;
+    scene.skinned_meshes = (SkinnedMesh *)calloc(1, sizeof(SkinnedMesh));
+    ASSERT_NOT_NULL(scene.skinned_meshes);
+    scene.skinned_meshes[0].vertex_buf.index = 42u;
+    scene.skinned_meshes[0].vertex_buf.generation = 1u;
+    scene.skinned_meshes[0].vertex_count = 99u;
+
+    ASSERT_TRUE(sgeom_test_add_mesh_entry(&scene, 0u, 3u, 3u, 0u));
+    ASSERT_NOT_NULL(sgeom_test_add_record(&scene, 0u));
+
+    g_geom_capture = true;
+    g_geom_cap_count = 0;
+    g_geom_destroy_count = 0;
+    ASSERT_TRUE(asset_scene_rebuild_skinned_meshes(&ctx, &scene));
+    g_geom_capture = false;
+
+    ASSERT_EQ(g_geom_destroy_count, 1u); /* the old vertex buffer */
+    ASSERT_EQ(scene.skinned_mesh_count, 1u);
+    ASSERT_EQ(scene.skinned_meshes[0].vertex_count, 3u);
+    ASSERT_TRUE(rhi_handle_valid(scene.skinned_meshes[0].vertex_buf));
+
+    asset_scene_free(&ctx, &scene);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(asset_ctx_init_clears_vfs);
     RUN_TEST(rebuild_meshes_roundtrip);
@@ -1496,6 +1701,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(rebuild_meshes_sparse_slot_stays_empty);
     RUN_TEST(rebuild_meshes_no_manifest_is_vacuous);
     RUN_TEST(rebuild_meshes_replaces_existing);
+    RUN_TEST(rebuild_skinned_meshes_roundtrip);
+    RUN_TEST(rebuild_skinned_meshes_rejects_manifest_mismatch);
+    RUN_TEST(rebuild_skinned_meshes_rejects_orphan_geometry);
+    RUN_TEST(rebuild_skinned_meshes_rejects_out_of_range_manifest_ref);
+    RUN_TEST(rebuild_skinned_meshes_sparse_slot_stays_empty);
+    RUN_TEST(rebuild_skinned_meshes_no_manifest_is_vacuous);
+    RUN_TEST(rebuild_skinned_meshes_replaces_existing);
     RUN_TEST(gltf_rejects_accessor_count_past_buffer_view);
     RUN_TEST(gltf_rejects_accessor_offset_past_buffer_view);
     RUN_TEST(gltf_rejects_buffer_view_past_buffer);
