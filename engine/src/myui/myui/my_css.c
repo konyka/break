@@ -48,6 +48,7 @@ typedef struct css_p_t {
   my_css_error_t* err;
   uint32_t flags;
   const my_css_media_context_ex_t* media;
+  const my_css_container_context_t* container; /* R663 */
   bool failed;
   my_css_import_resolver_fn_t resolve_import;
   void* import_context;
@@ -791,6 +792,9 @@ static bool css_layer_name_valid(const char* name, size_t length);
 static uint32_t css_layer_find_or_add(css_p_t* p, const char* name,
                                       size_t length);
 static uint32_t css_layer_add_anonymous(css_p_t* p);
+static bool css_container_query_matches(css_p_t* p, const char* query,
+                                        size_t query_length, bool* matches);
+static bool css_container_query_opens(css_p_t* p);
 
 /* R654: !important lifts a declaration into a flat top cascade tier — the
  * boost must clear the deepest layered negative (-64*100000) plus the full
@@ -1593,18 +1597,25 @@ static bool css_stmt_is_nested_rule(const css_p_t* p) {
  * directly against the enclosing rule (declarations append in source
  * order, which for an identical selector IS the spec's split-rule
  * cascade; `&` statements desugar against the same parent; deeper
- * conditionals recurse), a non-matching group is skipped whole. */
+ * conditionals recurse), a non-matching group is skipped whole. R663:
+ * kind 2 = @container (phase-1 unnamed size queries). */
+#define CSS_NEST_COND_MEDIA 0
+#define CSS_NEST_COND_SUPPORTS 1
+#define CSS_NEST_COND_CONTAINER 2
 static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
                                          my_css_sheet_t* sheet, u32 depth,
-                                         size_t at_depth, bool is_media) {
+                                         size_t at_depth, int kind) {
   bool matches = false;
   if (at_depth >= MY_CSS_MAX_AT_RULE_NESTING) {
-    css_fail(p, is_media ? "@media nesting depth exceeded"
-                         : "@supports nesting depth exceeded");
+    css_fail(p, kind == CSS_NEST_COND_MEDIA
+                    ? "@media nesting depth exceeded"
+                    : kind == CSS_NEST_COND_SUPPORTS
+                          ? "@supports nesting depth exceeded"
+                          : "@container nesting depth exceeded");
     return false;
   }
   c_ws(p);
-  if (is_media) {
+  if (kind == CSS_NEST_COND_MEDIA) {
     char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
     size_t query_length = 0u;
     bool conditional = false;
@@ -1624,7 +1635,7 @@ static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
     if (conditional && p->media == NULL) {
       return css_skip_or_reject_atrule(p);
     }
-  } else {
+  } else if (kind == CSS_NEST_COND_SUPPORTS) {
     char query[MY_CSS_MAX_SUPPORTS_QUERY_BYTES + 1u];
     size_t query_length = 0u;
     if (!css_read_atrule_prelude(p, query, sizeof(query), &query_length) ||
@@ -1632,6 +1643,27 @@ static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
                                 &matches)) {
       return css_skip_or_reject_atrule_with_capability(
           p, (uint32_t)MY_CSS_FEATURE_SUPPORTS);
+    }
+  } else {
+    /* R663: nested @container — unnamed query, CONTAINER capability. */
+    char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+    size_t query_length = 0u;
+    if (!css_container_query_opens(p)) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+    }
+    while (c_peek(p) >= 0 && c_peek(p) != '{') {
+      if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+        css_fail(p, "media query too long");
+        return false;
+      }
+      query[query_length++] = (char)c_next(p);
+    }
+    query[query_length] = '\0';
+    if (c_peek(p) != '{' ||
+        !css_container_query_matches(p, query, query_length, &matches)) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
     }
   }
   if (!matches) {
@@ -1667,9 +1699,15 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
       char at_name[MY_STYLE_KEY_LEN];
       c_next(p);
       if (c_ident(p, at_name, sizeof(at_name))) {
-        if (my_str_eq(at_name, "media") || my_str_eq(at_name, "supports")) {
+        if (my_str_eq(at_name, "media") || my_str_eq(at_name, "supports") ||
+            my_str_eq(at_name, "container")) {
+          int kind = my_str_eq(at_name, "media")
+                         ? CSS_NEST_COND_MEDIA
+                         : my_str_eq(at_name, "supports")
+                               ? CSS_NEST_COND_SUPPORTS
+                               : CSS_NEST_COND_CONTAINER;
           if (!css_parse_nested_conditional(p, r, sheet, depth, at_depth,
-                                            at_name[0] == 'm')) {
+                                            kind)) {
             return false;
           }
           continue;
@@ -3173,6 +3211,157 @@ static bool css_media_condition(css_p_t* p, const char* query, size_t length,
   }
 }
 
+/* R663: container query phase-1 validation — every feature name in the
+ * query must be a size feature (the media machinery evaluates them against
+ * a synthetic viewport built from the container context); media types are
+ * rejected up front. */
+static bool css_container_feature_name_ok(const char* name) {
+  return my_str_eq(name, "width") || my_str_eq(name, "height") ||
+         my_str_eq(name, "min-width") || my_str_eq(name, "max-width") ||
+         my_str_eq(name, "min-height") || my_str_eq(name, "max-height") ||
+         my_str_eq(name, "aspect-ratio") || my_str_eq(name, "orientation");
+}
+
+static bool css_container_features_valid(const char* query, size_t length) {
+  size_t i = 0u;
+  char quote = '\0';
+  /* a leading media type (all/screen/only) belongs to @media. */
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  if (i < length && c_ident_char((unsigned char)query[i])) {
+    char word[8];
+    size_t wl = 0u;
+    while (i < length && c_ident_char((unsigned char)query[i]) &&
+           wl + 1u < sizeof(word)) {
+      word[wl++] = query[i++];
+    }
+    word[wl] = '\0';
+    if (my_str_eq(word, "all") || my_str_eq(word, "screen") ||
+        my_str_eq(word, "only")) {
+      return false;
+    }
+  }
+  for (i = 0u; i < length; ++i) {
+    if (quote != '\0') {
+      if (query[i] == '\\' && i + 1u < length) {
+        ++i;
+      } else if (query[i] == quote) {
+        quote = '\0';
+      }
+      continue;
+    }
+    if (query[i] == '\'' || query[i] == '"') {
+      quote = query[i];
+      continue;
+    }
+    if (query[i] == '(') {
+      size_t j = i + 1u;
+      char name[24];
+      size_t nl = 0u;
+      while (j < length &&
+             (query[j] == ' ' || query[j] == '\t' || query[j] == '\r' ||
+              query[j] == '\n')) {
+        j++;
+      }
+      while (j < length && c_ident_char((unsigned char)query[j])) {
+        if (nl + 1u >= sizeof(name)) return false;
+        name[nl++] = query[j++];
+      }
+      name[nl] = '\0';
+      if (nl == 0u || my_str_eq(name, "not") || my_str_eq(name, "and") ||
+          my_str_eq(name, "or")) {
+        continue;
+      }
+      if (!css_container_feature_name_ok(name)) return false;
+    }
+  }
+  return true;
+}
+
+/* R663: does the container query open here? Phase 1 is unnamed only, but
+ * `not` is query syntax (negation), not a container name — any other
+ * leading ident is a name and rejected truthfully. */
+static bool css_container_query_opens(css_p_t* p) {
+  size_t saved = p->pos;
+  char word[8];
+  c_ws(p);
+  if (c_peek(p) == '(') return true;
+  if (c_ident(p, word, sizeof(word)) && my_str_eq(word, "not") &&
+      !c_ident_char((unsigned char)c_peek(p))) {
+    p->pos = saved;
+    return true;
+  }
+  p->pos = saved;
+  return false;
+}
+
+/* R663: evaluate an @container query against the injected container size —
+ * the media machinery with a synthetic viewport (phase 1 is unnamed size
+ * queries only; per-element container resolution is a later phase). */
+static bool css_container_query_matches(css_p_t* p, const char* query,
+                                        size_t query_length, bool* matches) {
+  css_p_t probe;
+  my_css_media_context_ex_t synthetic;
+  bool conditional = false;
+  if (p->container == NULL || !css_container_features_valid(query,
+                                                            query_length)) {
+    return false;
+  }
+  memset(&synthetic, 0, sizeof(synthetic));
+  synthetic.base.viewport_width_px = p->container->width_px;
+  synthetic.base.viewport_height_px = p->container->height_px;
+  synthetic.base.screen = true;
+  probe = *p;
+  probe.media = &synthetic;
+  if (!css_media_condition(&probe, query, query_length, matches,
+                           &conditional)) {
+    return false;
+  }
+  return true;
+}
+
+static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
+                                       size_t at_rule_depth,
+                                       uint32_t layer_id) {
+  char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+  size_t query_length = 0u;
+  bool matches = false;
+
+  c_ws(p);
+  /* phase 1 is unnamed only: the query itself must open with '(' or the
+   * negating `not`. */
+  if (!css_container_query_opens(p)) {
+    return css_skip_or_reject_atrule_with_capability(
+        p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+  }
+  while (c_peek(p) >= 0 && c_peek(p) != '{') {
+    if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+      css_fail(p, "media query too long");
+      return false;
+    }
+    query[query_length++] = (char)c_next(p);
+  }
+  query[query_length] = '\0';
+  if (c_peek(p) != '{' ||
+      !css_container_query_matches(p, query, query_length, &matches)) {
+    return css_skip_or_reject_atrule_with_capability(
+        p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+  }
+  if (at_rule_depth >= MY_CSS_MAX_AT_RULE_NESTING) {
+    css_fail(p, "@container nesting depth exceeded");
+    return false;
+  }
+  if (!matches) {
+    css_skip_atrule(p, false);
+    return !c_failed(p);
+  }
+  c_next(p);
+  return css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_id);
+}
+
 /* Media predicates are evaluated once while parsing; theme lookup stays hot. */
 static bool css_parse_media_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                    size_t media_depth,
@@ -3748,6 +3937,10 @@ static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
     if (!nested) p->import_window_closed = true;
     return css_parse_supports_atrule(p, sheet, media_depth, layer_id);
   }
+  if (my_str_eq(name, "container")) {
+    if (!nested) p->import_window_closed = true;
+    return css_parse_container_atrule(p, sheet, media_depth, layer_id);
+  }
   if (my_str_eq(name, "layer")) {
     return css_parse_layer_atrule(p, sheet, media_depth, layer_id);
   }
@@ -3859,6 +4052,7 @@ my_css_sheet_t* my_css_parse_with_options(
   p.err = err;
   p.flags = flags;
   p.media = options != NULL ? options->media : NULL;
+  p.container = options != NULL ? options->container : NULL;
   p.resolve_import = options != NULL ? options->resolve_import : NULL;
   p.import_context = options != NULL ? options->import_context : NULL;
   p.import_total_bytes = len;
@@ -3909,7 +4103,7 @@ my_css_sheet_t* my_css_parse_with_options(
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len, uint32_t flags,
                                 my_css_error_t* err) {
-  my_css_parse_options_t options = {flags, NULL, NULL, NULL};
+  my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};
   return my_css_parse_with_options(allocator, css, len, &options, err);
 }
 
@@ -3923,7 +4117,7 @@ my_css_sheet_t* my_css_parse_media_ex2(
     const my_allocator_t* allocator, const char* css, size_t len,
     uint32_t flags, const my_css_media_context_ex_t* media,
     my_css_error_t* err) {
-  my_css_parse_options_t options = {flags, media, NULL, NULL};
+  my_css_parse_options_t options = {flags, media, NULL, NULL, NULL};
   return my_css_parse_with_options(allocator, css, len, &options, err);
 }
 
@@ -3947,7 +4141,7 @@ const my_css_capabilities_t* my_css_capabilities(void) {
                  MY_CSS_FEATURE_AT_RULES | MY_CSS_FEATURE_CONDITIONAL_MEDIA |
                  MY_CSS_FEATURE_SUPPORTS | MY_CSS_FEATURE_LAYERS |
                  MY_CSS_FEATURE_IMPORTS | MY_CSS_FEATURE_SCOPE |
-                 MY_CSS_FEATURE_NESTING),
+                 MY_CSS_FEATURE_NESTING | MY_CSS_FEATURE_CONTAINER),
       (uint32_t)MY_CSS_PARSE_STRICT_AT_RULES, MY_CSS_MAX_BYTES,
       MY_CSS_MAX_ANCESTORS};
   return &capabilities;
@@ -4202,7 +4396,7 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
 
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
                               uint32_t flags) {
-  my_css_parse_options_t options = {flags, NULL, NULL, NULL};
+  my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};
   return my_theme_load_css_internal(theme, css, &options);
 }
 
@@ -4211,7 +4405,7 @@ my_ret_t my_theme_load_css_media_ex(
     const my_css_media_context_t* media) {
   if (media == NULL) return MY_RET_INVALID_PARAMS;
   {
-    my_css_parse_options_t options = {flags, NULL, NULL, NULL};
+    my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};
     my_css_media_context_ex_t extended = {*media, 0u};
     options.media = &extended;
     return my_theme_load_css_internal(theme, css, &options);
@@ -4223,7 +4417,7 @@ my_ret_t my_theme_load_css_media_ex2(
     const my_css_media_context_ex_t* media) {
   if (media == NULL) return MY_RET_INVALID_PARAMS;
   {
-    my_css_parse_options_t options = {flags, media, NULL, NULL};
+    my_css_parse_options_t options = {flags, media, NULL, NULL, NULL};
     return my_theme_load_css_internal(theme, css, &options);
   }
 }

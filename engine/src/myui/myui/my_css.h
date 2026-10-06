@@ -76,7 +76,8 @@ typedef enum my_css_feature_t {
   MY_CSS_FEATURE_LAYERS = 1u << 7,
   MY_CSS_FEATURE_IMPORTS = 1u << 8,
   MY_CSS_FEATURE_SCOPE = 1u << 9,
-  MY_CSS_FEATURE_NESTING = 1u << 10
+  MY_CSS_FEATURE_NESTING = 1u << 10,
+  MY_CSS_FEATURE_CONTAINER = 1u << 11
 } my_css_feature_t;
 
 /** @brief Device capabilities available to conditional media evaluation. */
@@ -101,6 +102,12 @@ typedef enum my_css_media_capability_t {
                                          MY_CSS_MEDIA_CAP_COLOR_P3 | \
                                          MY_CSS_MEDIA_CAP_COLOR_REC2020 | \
                                          MY_CSS_MEDIA_CAP_HDR))
+
+/* R663: host-injected container size for @container size queries. */
+typedef struct my_css_container_context_t {
+  uint32_t width_px;
+  uint32_t height_px;
+} my_css_container_context_t;
 
 /** @brief Media facts for which the platform also knows the negative state. */
 typedef enum my_css_media_known_t {
@@ -168,6 +175,9 @@ typedef struct my_css_parse_options_t {
   const my_css_media_context_ex_t* media;
   my_css_import_resolver_fn_t resolve_import;
   void* import_context;
+  /* R663: host-injected container size for @container evaluation (NULL =
+   * container queries reject in strict mode / skip otherwise). */
+  const my_css_container_context_t* container;
 } my_css_parse_options_t;
 
 /** @brief Immutable parser capability registry. */

@@ -766,7 +766,7 @@ TEST(css_import_without_resolver_is_rejected_in_strict_mode)
 {
   const char* css = "@import \"buttons.css\"; button { color: blue; }";
   my_css_parse_options_t options = {MY_CSS_PARSE_STRICT_AT_RULES, NULL, NULL,
-                                    NULL};
+                                    NULL, NULL};
   my_css_error_t error = {0};
 
   ASSERT_TRUE(my_css_parse_with_options(NULL, css, strlen(css), &options,
@@ -812,6 +812,123 @@ TEST(css_import_rejects_absolute_and_traversal_paths)
                                           &options, &error) == NULL);
     ASSERT_EQ(error.code, MY_CSS_ERROR_IMPORT);
   }
+}
+
+TEST(css_container_size_queries_evaluate_at_parse_time)
+{
+  /* R663: @container phase 1 — unnamed size queries evaluate at parse
+   * time against the host-injected container context (the @media pattern).
+   * Only size features are legal (width/height family, orientation,
+   * aspect-ratio, including range forms and boolean logic). */
+  const char* hit =
+      "@container (min-width: 700px) { button { color: red; } }"
+      "@container (width >= 700px) and (height <= 600px) { label { color: blue; } }"
+      "@container (orientation: landscape) { edit { color: green; } }"
+      "@container (aspect-ratio: 4/3) { slider { color: white; } }"
+      "@container (min-width: 900px) or (min-height: 500px) { check { color: black; } }"
+      "@container not (min-width: 900px) { radio { color: gray; } }";
+  const char* miss = "@container (min-width: 900px) { button { color: red; } }";
+  const char* malformed[] = {
+      /* phase 1 is unnamed only */
+      "@container side (min-width: 1px) { button { color: red; } }",
+      /* non-size features are invalid in container queries */
+      "@container (hover: hover) { button { color: red; } }",
+      /* media types belong to @media */
+      "@container screen and (min-width: 1px) { button { color: red; } }",
+      "@container (min-width: nope) { button { color: red; } }"};
+  const char* too_deep =
+      "@container (min-width: 1px) { @container (min-width: 1px) {"
+      " @container (min-width: 1px) { @container (min-width: 1px) {"
+      " @container (min-width: 1px) { button { color: red; } } } } } }";
+  my_css_container_context_t container = {800u, 600u};
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  size_t i;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.container = &container;
+
+  sheet = my_css_parse_with_options(NULL, hit, strlen(hit), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 6u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "button");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 5u), 0u)->widget_type,
+                "radio");
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, miss, strlen(miss), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_with_options(NULL, malformed[i],
+                                          strlen(malformed[i]), &options,
+                                          &error) == NULL);
+  }
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, too_deep, strlen(too_deep),
+                                        &options, &error) == NULL);
+
+  /* no container context: strict rejects, compatibility skips. */
+  options.container = NULL;
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, hit, strlen(hit), &options,
+                                        &error) == NULL);
+  options.flags = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, miss, strlen(miss), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_container_nested_in_rule_blocks)
+{
+  /* @container is a conditional group, so CSS Nesting admits it into a
+   * declaration block — matching declarations merge in source order. */
+  const char* css =
+      "button { color: blue; @container (min-width: 700px) { color: red; } }"
+      "label { color: green; @container (min-width: 900px) { color: white; } }";
+  const char* theme_css =
+      "button { color: blue; @container (min-width: 700px) { color: red; } }";
+  my_css_container_context_t container = {800u, 600u};
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  const my_value_t* value;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.container = &container;
+
+  sheet = my_css_parse_with_options(NULL, css, strlen(css), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  /* the matching group's declaration lands last on the same rule. */
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 1u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_with_options(theme, theme_css, &options),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
 }
 
 TEST(css_import_position_and_charset_conformance)
@@ -3662,11 +3779,11 @@ TEST(css_nest_non_conditional_at_rules_have_dedicated_signature)
   /* CSS Nesting admits only style rules and conditional group rules into a
    * declaration block; every other nested @-rule (even ones supported at
    * top level, like @layer/@scope) rejects with one truthful signature
-   * instead of the misleading "expected declaration key". */
+   * instead of the misleading "expected declaration key". (@container was
+   * in this list in R645; R663 made it a legal nested conditional group.) */
   const char* cases[] = {
       "button { @layer x { color: red; } }",
       "button { @scope (.x) { color: red; } }",
-      "button { @container (min-width: 100px) { color: red; } }",
       "button { @font-face { font-family: x; } }",
       "button { color: blue; @layer x { color: red; } }"};
   my_css_error_t error = {0};
@@ -6256,6 +6373,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_rejects_absolute_and_traversal_paths);
     RUN_TEST(css_import_media_qualifier_gates_resolution);
     RUN_TEST(css_import_position_and_charset_conformance);
+    RUN_TEST(css_container_size_queries_evaluate_at_parse_time);
+    RUN_TEST(css_container_nested_in_rule_blocks);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_scope_applies_rules_only_inside_root);

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R663 `@container` 一期（TDD）— css-conditional 族收官：未命名尺寸查询解析期求值（宿主注入容器上下文，@media 同型）；条件组嵌套全谱（media/supports/container）
+
+- **缺口**（R645/R650 落账"css 条件规则域仅剩 @container"）：容器查询全缺——strict 下 unsupported @-rule 拒、块内嵌套按 R645 签名拒。
+- **方案**（@media 同型的解析期求值，一期诚实切片）：① API 面：`my_css_container_context_t{w,h}` + `my_css_parse_options_t` 尾增 `container` 字段（位置初始化兼容，内部三处/测试一处补 NULL)+ `MY_CSS_FEATURE_CONTAINER` 位（注册表同步）;② 求值：prelude 经特性名扫描器（仅 width/height 族+aspect-ratio/orientation——非尺寸特性如实拒；前导 all/screen/only 媒体类型拒）后委托 `css_media_condition`——以容器尺寸构建合成视口的探针解析器（R650 MQ4 全谱机械零改动复用：区间/布尔/嵌套）;③ 未命名一期：`not` 是查询语法非容器名——`css_container_query_opens` 判定（`(`/词界 `not` 放行，其余前导 ident 按名拒——**首轮 `peek!='('` 误拒 `not (...)`，第六用例钓出**);④ 嵌套：`css_parse_nested_conditional` 的 is_media 布尔升 kind 三态，块内 @container 落地（R638 条件组哲学同型）;⑤ R645 拒签组契约变更（@container 出列，先例同约）。无上下文/具名/畸形：CONTAINER capability 规约（strict 拒/compat 跳）。
+- **TDD（红→绿实证）**：test_myui_css +2——① 顶层六形态（min-width/区间 and/orientation/aspect-ratio/or 链/not)+miss+畸形四拒+深度预算+无上下文双模式；② 块内嵌套（匹配组声明源序并入+theme 行为红值钉死）。**RED 如实红 2/2**（首正例 sheet NULL);GREEN 一钓（`not` 误拒，见上）后 **170/170**(168+2)。
+- **回归**：双树非图形 CTest 各 **118/118**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有媒体/嵌套/导入组全绿未动。
+- **边界**：一期语义=宿主注入容器尺寸的解析期求值（@media 同型，文档化）;**二期=逐元素容器解析**（container-name/container-type 属性+匹配层祖先容器查找，史诗后续）；具名容器一期如实拒（二期名注册）;`style()` 容器查询未涉；R611 AMD 基线不动。
+
 ## 本轮更新：R662 Ctrl+词跳/词删（TDD）— 新 myr/my_word_break 模块（三词类有界子集）;my_edit/text_area 编辑器标准 Ctrl+箭头/Ctrl+Backspace 落地
 
 - **缺口**（widget 编辑面普查钓出）：Ctrl+Left/Right 静默退化为普通箭头（case 不分修饰键）——编辑器标准的词跳/词删全缺。
