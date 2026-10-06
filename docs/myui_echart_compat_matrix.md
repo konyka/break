@@ -19,10 +19,12 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 
 ## Supported only by the native adapter subset
 
-The current renderer adapter accepts line/bar/scatter, finite numeric data,
+The current renderer adapter accepts every native series type
+(line/bar/scatter/pie/radar/funnel/heatmap/boxplot) with finite numeric data,
 category labels, title, visibility, Y-axis selection, and one shared bar stack.
-Mixed types, mixed stacks, non-bar stacks, unsupported axis/component options,
-and native-capacity overflow return `MY_RET_NOT_SUPPORTED`.
+Boxplot series require at least five samples. Mixed types, mixed stacks,
+non-bar stacks, unsupported axis/component options, and native-capacity
+overflow return `MY_RET_NOT_SUPPORTED`.
 
 ## Not implemented
 

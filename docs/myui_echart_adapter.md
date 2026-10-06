@@ -6,11 +6,13 @@ full ECharts implementation.
 
 The supported subset is:
 
-- line, bar, and scatter series;
+- line, bar, scatter, pie, radar, funnel, heatmap, and boxplot series;
 - one or more series of one shared type;
 - finite double values converted to finite `float` values within `FLT_MAX`;
 - category labels, title, visibility, and left/right axis selection;
-- bar options where every series uses the same non-empty stack name.
+- bar options where every series uses the same non-empty stack name;
+- boxplot series carrying at least five samples
+  (`min/Q1/median/Q3/max`).
 
 Mixed series types, mixed stack names, stacks on non-bar charts, and other
 ECharts series/configuration features are rejected with

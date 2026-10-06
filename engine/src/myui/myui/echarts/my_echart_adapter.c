@@ -22,6 +22,11 @@ static my_chart_mode_t mode_for(my_echart_series_type_t type) {
     case MY_ECHART_LINE: return MY_CHART_LINE;
     case MY_ECHART_BAR: return MY_CHART_BAR;
     case MY_ECHART_SCATTER: return MY_CHART_SCATTER;
+    case MY_ECHART_PIE: return MY_CHART_PIE;
+    case MY_ECHART_RADAR: return MY_CHART_RADAR;
+    case MY_ECHART_FUNNEL: return MY_CHART_FUNNEL;
+    case MY_ECHART_HEATMAP: return MY_CHART_HEATMAP;
+    case MY_ECHART_BOXPLOT: return MY_CHART_BOXPLOT;
     default: return (my_chart_mode_t)-1;
   }
 }
@@ -59,6 +64,9 @@ static my_ret_t validate_option(const my_echart_option_t* option,
       return mode_for(series->type) != *mode ? MY_RET_NOT_SUPPORTED
                                              : MY_RET_INVALID_PARAMS;
     if (series->stack != NULL && series->stack[0] == '\0')
+      return MY_RET_INVALID_PARAMS;
+    /* Boxplot series render min/Q1/median/Q3/max; fewer samples are invalid. */
+    if (series->type == MY_ECHART_BOXPLOT && series->data_count < 5u)
       return MY_RET_INVALID_PARAMS;
     if (i == 0u) stack = series->stack;
     else if ((stack == NULL) != (series->stack == NULL) ||
