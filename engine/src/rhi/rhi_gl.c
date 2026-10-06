@@ -129,6 +129,7 @@ typedef struct {
     u32    width;
     u32    height;
     u32    sample_count;
+    f32    clear_color[4]; /* R619: caller-owned bind clear (create installs the default) */
 } GLFBOData;
 
 typedef struct {
@@ -2740,6 +2741,10 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreen
     fd->width = width;
     fd->height = height;
     fd->sample_count = sample_count;
+    /* R619: the R617 portable-contract default; caller may replace it via
+     * rhi_offscreen_fbo_set_clear_color. */
+    fd->clear_color[0] = 0.05f; fd->clear_color[1] = 0.05f;
+    fd->clear_color[2] = 0.1f;  fd->clear_color[3] = 1.0f;
 
     if (sample_count > 1u) {
         glGenRenderbuffers(1, &fd->color_rb);
@@ -2937,19 +2942,16 @@ static GLFBOData *gl_offscreen_bind_common(RHICmdBuffer *cmd,
 
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     (void)cmd;
-    if (!gl_offscreen_bind_common(cmd, fbo)) return;
+    GLFBOData *fd = gl_offscreen_bind_common(cmd, fbo);
+    if (!fd) return;
     /* R617: unified bind semantics — bind = fresh target on BOTH backends
      * (the pair's contract is bind = fresh, bind_load = resume, R196-A).
-     * VK's offscreen render pass has always loadOp-cleared color to
-     * {0.05, 0.05, 0.1, 1.0} and depth to 1.0 — those exact values are the
-     * portable contract (GL's bind used to preserve, making it
-     * indistinguishable from bind_load). Depth mask forced the way
+     * The clear color is the FBO's stored value (R619: caller-owned, the
+     * R617 portable-contract default {0.05, 0.05, 0.1, 1.0} is installed at
+     * create); depth clears to 1.0. Depth mask forced the way
      * rhi_cmd_clear_depth does it; the single color attachment is draw
      * buffer 0 (the FBO default). */
-    {
-        static const f32 cc[4] = { 0.05f, 0.05f, 0.1f, 1.0f };
-        glClearBufferfv(GL_COLOR, 0, cc);
-    }
+    glClearBufferfv(GL_COLOR, 0, fd->clear_color);
     if (!g_gl_depth_mask) { glDepthMask(GL_TRUE); g_gl_depth_mask = true; }
     glClear(GL_DEPTH_BUFFER_BIT);
 }
@@ -2961,6 +2963,16 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
      * preserve entry point; since R617 bind is the fresh (clearing)
      * variant, so this can no longer forward to it. */
     (void)gl_offscreen_bind_common(cmd, fbo);
+}
+
+/* R619: caller-owned clear color — stored per-FBO, used by the next bind. */
+void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo,
+                                       f32 r, f32 g, f32 b, f32 a) {
+    if (!dev || !fbo || !rhi_handle_valid(fbo->fb)) return;
+    GLFBOData *fd = rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
+    if (!fd) return;
+    fd->clear_color[0] = r; fd->clear_color[1] = g;
+    fd->clear_color[2] = b; fd->clear_color[3] = a;
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {

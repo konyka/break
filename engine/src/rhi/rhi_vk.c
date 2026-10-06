@@ -249,6 +249,7 @@ typedef struct {
     VkRenderPass   render_pass_load;  /* LOAD-op twin for compute suspend/resume */
     VkFormat       color_fmt;         /* for render-pass-compatible pipeline variants */
     VkSampleCountFlagBits samples;
+    f32            clear_color[4];    /* R619: caller-owned bind clear (create installs the default) */
 } VKFBOData;
 
 typedef struct {
@@ -8107,6 +8108,10 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
     if (!fd) return fbo;
     fd->magic = VK_FBO_DATA_MAGIC;
     fd->color_fmt = vk_color_fmt;
+    /* R619: the R617 portable-contract default; caller may replace it via
+     * rhi_offscreen_fbo_set_clear_color. */
+    fd->clear_color[0] = 0.05f; fd->clear_color[1] = 0.05f;
+    fd->clear_color[2] = 0.1f;  fd->clear_color[3] = 1.0f;
     VkAttachmentDescription attachments[4] = {0};
 
     VkImageCreateInfo ci = {0};
@@ -8543,10 +8548,12 @@ void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     rpi.renderArea.extent.height = fbo->height;
     VkClearValue clears[4];
     memset(clears, 0, sizeof(clears));
-    clears[0].color.float32[0] = 0.05f;
-    clears[0].color.float32[1] = 0.05f;
-    clears[0].color.float32[2] = 0.1f;
-    clears[0].color.float32[3] = 1.0f;
+    /* R619: caller-owned bind clear color (stored per-FBO; the R617
+     * portable-contract default is installed at create). Depth stays 1.0. */
+    clears[0].color.float32[0] = fd->clear_color[0];
+    clears[0].color.float32[1] = fd->clear_color[1];
+    clears[0].color.float32[2] = fd->clear_color[2];
+    clears[0].color.float32[3] = fd->clear_color[3];
     clears[fd->samples == VK_SAMPLE_COUNT_1_BIT ? 1u : 2u].depthStencil.depth = 1.0f;
     rpi.clearValueCount = fd->samples == VK_SAMPLE_COUNT_1_BIT ? 2u : 4u;
     rpi.pClearValues = clears;
@@ -8625,6 +8632,16 @@ void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     VkRect2D sc = {{0, 0}, {fbo->width, fbo->height}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
     vk->vp_valid = false; vk->sc_valid = false;
+}
+
+/* R619: caller-owned clear color — stored per-FBO, used by the next bind. */
+void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo,
+                                       f32 r, f32 g, f32 b, f32 a) {
+    if (!dev || !fbo || !rhi_handle_valid(fbo->fb)) return;
+    VKFBOData *fd = rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
+    if (!fd) return;
+    fd->clear_color[0] = r; fd->clear_color[1] = g;
+    fd->clear_color[2] = b; fd->clear_color[3] = a;
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {

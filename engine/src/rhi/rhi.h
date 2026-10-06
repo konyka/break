@@ -469,6 +469,14 @@ void            rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo);
 void            rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
+/* R619: caller-owned bind clear color. Replaces the RHI-baked default
+ * {0.05, 0.05, 0.1, 1.0} for THIS FBO's bind clear (both backends; MSAA
+ * variants share the path). Depth clear stays 1.0 and bind_load never
+ * clears — only the bind color value is caller-owned. The default is
+ * installed at create, so existing callers see zero behavior change. */
+void            rhi_offscreen_fbo_set_clear_color(RHIDevice *dev,
+                                                  RHIOffscreenFBO *fbo,
+                                                  f32 r, f32 g, f32 b, f32 a);
 
 /* ---- MRT (Multiple Render Targets) framebuffer ---- */
 

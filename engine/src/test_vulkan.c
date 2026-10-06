@@ -923,6 +923,92 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         rhi_offscreen_fbo_destroy(dev, &bfbo);
     }
 
+    /* R619: caller-owned bind clear color (rhi_offscreen_fbo_set_clear_color).
+     * Frame 1 (custom): FBO whose clear color was set to {0.8,0.2,0.6,1} —
+     * exact unorm {204,51,153,255} — is bound with NO explicit clear; color
+     * must come back the custom value, depth still 1.0 (depth is not
+     * caller-owned). Frame 2 (default guard): a second FBO that never got
+     * the setter must still clear to the baked default ~{13,13,26,255}.
+     * RGBA8 explicit, same BGRA lesson as R617. */
+    RHIOffscreenFBO cfbo = rhi_offscreen_fbo_create_fmt(dev, 32, 32,
+                                                        RHI_FORMAT_R8G8B8A8_UNORM);
+    RHIOffscreenFBO gfbo = rhi_offscreen_fbo_create_fmt(dev, 32, 32,
+                                                        RHI_FORMAT_R8G8B8A8_UNORM);
+    u8 cc_rb[32 * 32 * 4];
+    f32 cd_rb[32 * 32];
+    if (!rhi_handle_valid(cfbo.fb) || !rhi_handle_valid(gfbo.fb)) {
+        LOG_ERROR("FAIL: offscreen custom-clear fbo create failed");
+        pass = false;
+    } else {
+        rhi_offscreen_fbo_set_clear_color(dev, &cfbo, 0.8f, 0.2f, 0.6f, 1.0f);
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: offscreen custom-clear frame begin failed");
+            pass = false;
+        } else {
+            rhi_offscreen_fbo_bind(cmd, &cfbo);
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_offscreen_fbo_bind(cmd, &gfbo);
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            memset(cc_rb, 0xAB, sizeof(cc_rb));
+            for (u32 i = 0; i < 32u * 32u; i++) cd_rb[i] = 999.0f;
+            bool c_ok = rhi_texture_read_pixels(dev, cfbo.color_tex, cc_rb,
+                                                sizeof(cc_rb));
+            bool d_ok = rhi_texture_read_pixels(dev, cfbo.depth_tex, cd_rb,
+                                                sizeof(cd_rb));
+            if (!c_ok || !d_ok) {
+                LOG_ERROR("FAIL: offscreen custom-clear readback failed");
+                pass = false;
+            } else {
+                static const u8 wantc[4] = { 204u, 51u, 153u, 255u };
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    if (memcmp(cc_rb + (usize)i * 4u, wantc, 4u) != 0) {
+                        LOG_ERROR("FAIL: offscreen custom-clear color px%u "
+                                  "got {%u,%u,%u,%u}, want {204,51,153,255} "
+                                  "(caller-owned bind clear)", i, cc_rb[i * 4u],
+                                  cc_rb[i * 4u + 1u], cc_rb[i * 4u + 2u],
+                                  cc_rb[i * 4u + 3u]);
+                        pass = false;
+                        break;
+                    }
+                }
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    if (cd_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: offscreen custom-clear depth px%u "
+                                  "got %g, want 1.0 (depth not caller-owned)",
+                                  i, (double)cd_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+            memset(cc_rb, 0xAB, sizeof(cc_rb));
+            if (!rhi_texture_read_pixels(dev, gfbo.color_tex, cc_rb,
+                                         sizeof(cc_rb))) {
+                LOG_ERROR("FAIL: offscreen default-clear guard readback");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 32u * 32u; i++) {
+                    const u8 *px = cc_rb + (usize)i * 4u;
+                    if (px[0] < 12u || px[0] > 14u ||
+                        px[1] < 12u || px[1] > 14u ||
+                        px[2] < 24u || px[2] > 27u || px[3] != 255u) {
+                        LOG_ERROR("FAIL: offscreen default-clear guard px%u "
+                                  "got {%u,%u,%u,%u}, want ~{13,13,26,255} "
+                                  "(default must survive)", i, px[0], px[1],
+                                  px[2], px[3]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_offscreen_fbo_destroy(dev, &cfbo);
+        rhi_offscreen_fbo_destroy(dev, &gfbo);
+    }
+
     /* R608: MRT depth attachment readback. The MRT render pass clears depth
      * to 1.0 (no draws), so a 4x4 MRT FBO's depth_tex must read back all-1.0
      * via the R602 D32 path. VK needed two fixes: TRANSFER_SRC usage on the

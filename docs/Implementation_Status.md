@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R619 offscreen bind 清屏色调用方全权（TDD）— R617 边界"魔数归属"关闭：RHI 烘焙默认值 → 逐 FBO 可替换
+
+- **缺口**（R617 落账"清屏色魔数 {0.05,0.05,0.1,1.0} 仍是 RHI 层烘焙——改由调用方全权属另一议题"):bind=清屏契约双端统一后，清除值本身仍硬编码（VK 烘焙在 loadOp 清除值、GL R617 内联常量），调用方无法替换。
+- **方案**：新 API **`rhi_offscreen_fbo_set_clear_color(dev, fbo, r, g, b, a)`**——逐 FBO 存储清屏色（GLFBOData/VKFBOData 各增 `clear_color[4]`),**create 时安装 R617 便携契约默认值=现存调用方零行为变更**;bind 用存储值（GL `glClearBufferfv`、VK `pClearValues`),MSAA 变体同路径自然生效（R617 共享体/同一 BeginInfo)。**深度清 1.0 不开放、bind_load 永不清**——仅颜色值移交调用方（rhi.h 契约注释落定）。
+- **TDD（红→绿实证）**:roundtrip 门新增 **custom-clear 相位**（紧挨 R617 相位）——双 32×32 RGBA8 FBO(R617 BGRA 教训沿用显式 fmt)：其一 set_clear_color {0.8,0.2,0.6,1}（精确 unorm {204,51,153,255},R616/R617 守护相位实证该值双端无舍入歧义），同帧先后 bind+unbind **均无显式清除**；断言①自定义 FBO 回读字节精确 {204,51,153,255}、②其深度仍全 1.0（深度非调用方所有）、③**默认值守护**：未调 setter 的 FBO 仍清为 ~{13,13,26,255}。**RED 双端同型如实红**(px0 得魔数 {13,13,26,255}，存根未存值——深度与默认守护两断言对存根即绿=守卫测试同约）;GREEN（结构体字段+create 默认+bind 取用+setter 实装，双端各 4 处）首轮即过：**GL 全套件 ALL PASSED;VK 相位过+validation 0**，失败项恰为已知基线（MSAA 深度 AMD+12b+golden 双项）。
+- **回归**：双树非图形 CTest 各 **118/118**;demo 四配置各 120 帧优雅退出 rc=0、VK validation 0（改动路径=全部 offscreen bind，四配置实跑）。
+- **边界**:bind 清屏**色值**自此调用方全权（offscreen 族；MRT 清屏值全零无魔数问题，随需同模式可加）;shadow/cube 深度清 1.0 不开放（无调用方需求，R618 钉桩契约）;myui @scope 组合器、彩色 cube（非深度）回读（无调用方）保留；R611 AMD 基线不动。
+
 ## 本轮更新：R618 阴影图/点影 cube bind 清屏语义审计+钉桩 — FBO bind 语义族全线收官：四类 FBO 的"bind=崭新"双端一致且全钉死
 
 - **缺口**（R617 落账"阴影图/cube 面的 bind 清屏语义由各自路径独立承载（R609/R610，非此族）")：MRT(R616）与 offscreen(R617）统一后，阴影族两条路径的 bind 清屏语义从未经同族审查，且 rhi.h 契约注释空白（R616/R617 均在契约头落定语义对，阴影族无）。
