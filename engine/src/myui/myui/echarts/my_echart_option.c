@@ -196,6 +196,7 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
     }
   }
   candidate.legend_hidden = src->legend_hidden;
+  candidate.tooltip_hidden = src->tooltip_hidden;
   candidate.range_set = src->range_set;
   candidate.y_min = src->y_min;
   candidate.y_max = src->y_max;

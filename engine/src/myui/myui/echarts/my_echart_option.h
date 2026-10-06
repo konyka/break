@@ -60,6 +60,7 @@ typedef struct my_echart_option_input_t {
   const my_echart_series_input_t* series;
   size_t series_count;
   bool legend_hidden;
+  bool tooltip_hidden;
   bool range_set;
   double y_min;
   double y_max;
@@ -118,6 +119,7 @@ typedef struct my_echart_option_t {
   my_echart_series_t* series;
   size_t series_count;
   bool legend_hidden;
+  bool tooltip_hidden;
   bool range_set;
   double y_min;
   double y_max;

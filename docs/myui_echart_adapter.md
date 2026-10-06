@@ -13,9 +13,10 @@ The supported subset is:
 - bar options where every series uses the same non-empty stack name;
 - boxplot series carrying at least five samples
   (`min/Q1/median/Q3/max`);
-- legend visibility (`legend_hidden`), explicit Y range, a category
-  `dataZoom` window, and a continuous `visualMap` (min/max with low/high
-  colors), all committed through the same atomic snapshot;
+- legend visibility (`legend_hidden`) and tooltip visibility
+  (`tooltip_hidden`), an explicit Y range, a category `dataZoom` window, and a
+  continuous `visualMap` (min/max with low/high colors), all committed through
+  the same atomic snapshot;
 - `markPoint`, `markLine`, and `markArea` annotations with deep-copied
   labels and bounded counts matching the native renderer limits.
 

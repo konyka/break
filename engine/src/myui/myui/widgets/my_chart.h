@@ -64,6 +64,7 @@ typedef struct my_chart_snapshot_t {
   size_t series_count;
   bool stacked;
   bool show_legend;
+  bool tooltip_enabled;
   bool range_set;
   float y_min;
   float y_max;
@@ -99,6 +100,7 @@ typedef struct my_chart_t {
   float y2_max;
   bool range2_set;
   bool show_legend;
+  bool tooltip_enabled;
   bool stacked;
   float animation_progress;
   bool visual_map_set;

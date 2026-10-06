@@ -977,7 +977,8 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                      x, w);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
     my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, y, 1.0f, h});
-    if (my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
+    if (chart->tooltip_enabled &&
+        my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
       my_vgcanvas_fill_rounded_rect(vg,
                                     &(my_rectf_t){hover_x + 6.0f, y + 6.0f,
@@ -1162,6 +1163,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->mode = mode;
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
+  chart->tooltip_enabled = true;
   chart->stacked = false;
   chart->animation_progress = 1.0f;
   chart->brush_start = SIZE_MAX;
@@ -1237,6 +1239,7 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->series_count = snapshot->series_count;
   chart->stacked = snapshot->stacked;
   chart->show_legend = snapshot->show_legend;
+  chart->tooltip_enabled = snapshot->tooltip_enabled;
   chart->range_set = snapshot->range_set;
   chart->y_min = snapshot->y_min;
   chart->y_max = snapshot->y_max;

@@ -10,7 +10,7 @@ TEST(echart_option_copies_owned_data) {
   static const char* labels[] = {"A", "B"};
   my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE,
                                      values, 2u, 0xE85D75FFu, 0u, NULL, true};
-  my_echart_option_input_t input = {"Dashboard", labels, 2u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"Dashboard", labels, 2u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
   my_echart_option_t option;
 
   my_echart_option_init(&option, NULL);
@@ -36,7 +36,7 @@ TEST(echart_option_copies_component_state) {
   static const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 6u,
                                      0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
   my_echart_option_t option;
 
   input.legend_hidden = true;
@@ -63,7 +63,7 @@ TEST(echart_option_rejects_invalid_component_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u,
                                      0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
 
   input.range_set = true;
   input.y_min = 5.0;
@@ -84,7 +84,7 @@ TEST(echart_option_copies_visual_map_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u,
                                      0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
   my_echart_option_t option;
 
   input.visual_map_set = true;
@@ -107,7 +107,7 @@ TEST(echart_option_rejects_invalid_visual_map) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u,
                                      0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
 
   input.visual_map_set = true;
   input.visual_map_min = 50.0;
@@ -125,7 +125,7 @@ TEST(echart_option_copies_annotations) {
   my_echart_mark_point_input_t points[] = {{0u, 1u, "peak"}, {0u, 2u, NULL}};
   my_echart_mark_line_input_t lines[] = {{42.0, "target", 0xE85D75FFu}};
   my_echart_mark_area_input_t areas[] = {{10.0, 30.0, "band", 0x3A86FF44u}};
-  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
   my_echart_option_t option;
 
   input.mark_points = points;
@@ -155,7 +155,7 @@ TEST(echart_option_rejects_invalid_annotations) {
                                      0u, 0u, NULL, true};
   my_echart_mark_line_input_t lines[] = {{NAN, "bad", 0u}};
   my_echart_mark_area_input_t areas[] = {{30.0, 10.0, "bad", 0u}};
-  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
 
   input.mark_lines = lines;
   input.mark_line_count = 1u;
@@ -168,6 +168,22 @@ TEST(echart_option_rejects_invalid_annotations) {
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
 }
 
+TEST(echart_option_copies_tooltip_hidden) {
+  static const double values[] = {1.0};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u,
+                                     0u, 0u, NULL, true};
+  my_echart_option_input_t input = {"tt", NULL, 0u, &series, 1u,
+                                     false, false, false, 0.0, 0.0, false,
+                                     0u, 0u, false, 0.0, 0.0, 0u, 0u,
+                                     NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_t option;
+  input.tooltip_hidden = true;
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  ASSERT_TRUE(option.tooltip_hidden);
+  my_echart_option_free(&option);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_option_copies_owned_data);
   RUN_TEST(echart_option_rejects_invalid_input);
@@ -177,4 +193,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_option_rejects_invalid_visual_map);
   RUN_TEST(echart_option_copies_annotations);
   RUN_TEST(echart_option_rejects_invalid_annotations);
+  RUN_TEST(echart_option_copies_tooltip_hidden);
 TEST_MAIN_END()
