@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R638 CSS 规则块内嵌套条件组（TDD）— 嵌套弧解析侧最后一片落地：`button { @media … { … } }` / `@supports` 块内形态互操作
+
+- **缺口**(R629 落账"@media/@supports 块内嵌套规则"让渡）:CSS Nesting 规范允许条件组直接写在规则块内（`button { @media (min-width:…) { color: … } }`、嵌套规则自己的块内亦可）——本引擎此前遇 `@` 即按"expected declaration key"硬拒。
+- **方案**（解析期脱糖，与 @media/@supports 顶层同机制复用）：条件组前奏在解析期求值——**命中则其语句直接贴着外围规则解析**（声明按源序追加到同一规则：选择器同一 → 规则内声明序即规范拆规则级联序的精确等价；`&` 语句对同一父脱糖；更深的条件组递归）,**不命中则整块有界跳过**。新机制仅两处：① `css_parse_nested_conditional`(media/supports 双臂，前奏读取/求值/strict-skip-or-reject 全部复用顶层函数）;② **at-rule 深度穿线**:`css_parse_decl_block`/`css_nest_rule`/`css_rule` 增加 `at_depth` 形参（`css_parse_rules` 的 media_depth 直通），嵌套条件组与顶层 @-规则共享 `MY_CSS_MAX_AT_RULE_NESTING=4` 预算（4 层外 @media + 规则内 1 层=越界拒绝，报错信息与顶层一致）。其它 @-规则（@layer/@import/@scope）在块内维持原硬拒签名不变。
+- **TDD（红→绿实证）**:test_myui_css +5——① 命中合并（`red; @media all { blue; }; green` → 单规则 3 声明逐值断言+主题级 green 胜，钉死"规则内序=级联序"等价性）;② 不命中跳过（`min-width:800px` 于 640 上下文 → 仅 red;1024 → 双声明，媒体上下文经 `my_css_parse_media_ex` 注入）;③ 条件组内容器嵌套规则+嵌套规则块内再套条件组+不命中时嵌套规则随块消失（三 CSS 对拍）;④ @supports 双臂（命中合并/`not (color: red)` 合法假条件整块丢弃/块内 `&:hover` 脱糖）;⑤ 拒绝三例（4+1 深度越界、strict 畸形查询 UNSUPPORTED_FEATURE、未知 @-规则保持 SYNTAX 旧签名）。**RED 如实红 5/5**（正例 sheet NULL=@ 硬拒；畸形查询例旧路径报 SYNTAX 而非 UNSUPPORTED——签名区分缺特性）;GREEN 一钓（测试误选 `font-size:14px` 作"不支持"条件——注册表实受支持，改 `not (color: red)` 合法假条件）——修后 **147/147**(142+5)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_css 同 147/147。纯解析器改动，theme/桥接/图形零触点。build-gate 首轮 CTest 遇 test_net_replication 单次失败——R633 在案的网络定时 flake（与本轮解析器改动无机械关联），单测 30 连跑 0 失败+全套件复跑 118/118 取证，持续观察条目不变。
+- **边界**：嵌套条件组落地；剩余让渡=`:scope` 限定/伪类叠加形态、深度 3+ `&`、块内 @layer/@import/@scope（规范亦无块内 @import;@scope 块内语义特殊，单列）;strict 模式无媒体上下文时条件查询仍按顶层同规约拒绝；R611 AMD 基线不动。
+
 ## 本轮更新：R637 CSS `&` 非首位标记（TDD）— R629 边界"前导 `&`"关闭：`.card { .theme-dark & {} }` 主题祖先/链中形态全量互操作
 
 - **缺口**(R629 落账"标记必须前导")：嵌套选择器只允许 `&` 打头——真实样式表两大高频形态整体被拒：① 尾置主体槽（`.theme-dark &`,“主题祖先”标准写法）;② 链中槽（`.x & .y`，父选择器作中间祖先）。且即便放行解析也无路可达：块内语句只有 `&` 打头才进嵌套解析器。

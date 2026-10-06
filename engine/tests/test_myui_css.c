@@ -2786,6 +2786,206 @@ TEST(css_nest_marker_position_rejects_malformed)
   }
 }
 
+TEST(css_nest_media_merges_matching_declarations)
+{
+  /* `button { color: red; @media all { color: blue; } color: green; }` —
+   * a conditional group nested in a rule evaluates at parse time; its
+   * declarations append to the enclosing rule in source order (identical
+   * selector, so within-rule order IS the spec's split-rule cascade). */
+  const char* css =
+      "button { color: red; @media all { color: blue; } color: green; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* btn = my_widget_create(NULL, "btn");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_decl_count(rule), 3u);
+  ASSERT_EQ(my_value_get_uint32(&my_css_decl(rule, 0u)->value), 0xFF0000FFu);
+  ASSERT_EQ(my_value_get_uint32(&my_css_decl(rule, 1u)->value), 0x0000FFFFu);
+  ASSERT_EQ(my_value_get_uint32(&my_css_decl(rule, 2u)->value), 0x008000FFu);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  btn->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  my_widget_unref(btn);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_media_skips_non_matching)
+{
+  /* the same nested group disappears when its query fails: the enclosing
+   * rule keeps only its own declarations. */
+  const char* css =
+      "button { color: red; @media (min-width: 800px) { color: blue; } }";
+  my_css_media_context_t narrow = {640u, 480u, true, false, false, 0u};
+  my_css_media_context_t wide = {1024u, 768u, true, false, false, 0u};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  sheet = my_css_parse_media_ex(NULL, css, strlen(css),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  ASSERT_EQ(my_value_get_uint32(
+                &my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+            0xFF0000FFu);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, css, strlen(css),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_EQ(my_value_get_uint32(
+                &my_css_decl(my_css_rule(sheet, 0u), 1u)->value),
+            0x0000FFFFu);
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_nest_media_hosts_nested_rules)
+{
+  /* `&` rules inside a nested conditional desugar against the enclosing
+   * rule, and a nested conditional inside a `&` rule's own block appends
+   * to that nested rule. */
+  const char* css =
+      "button { color: green; @media all { &:hover { color: red; } } }";
+  const char* css2 =
+      "button { &:hover { @media all { color: red; } } }";
+  const char* css3 =
+      "button { color: green; @media (min-width: 800px) {"
+      " &:hover { color: red; } } }";
+  my_css_media_context_t narrow = {640u, 480u, true, false, false, 0u};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* btn = my_widget_create(NULL, "btn");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 1u), 0u)->state,
+            (int32_t)MY_STATE_HOVER);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, css2, strlen(css2),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 1u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_media_ex(NULL, css3, strlen(css3),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  btn->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  my_widget_unref(btn);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_supports_in_rule)
+{
+  /* `button { color: green; @supports (color: red) { color: blue; } }` —
+   * the condition evaluates against the parser's property registry;
+   * unsupported conditions drop their block. */
+  const char* css =
+      "button { color: green; @supports (color: red) { color: blue; } }";
+  const char* css2 =
+      "button { color: green; @supports not (color: red) { color: blue; } }";
+  const char* css3 =
+      "button { @supports (color: red) { &:hover { color: red; } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* btn = my_widget_create(NULL, "btn");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, css2, strlen(css2),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, css3, strlen(css3),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 1u), 0u)->state,
+            (int32_t)MY_STATE_HOVER);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  btn->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  my_widget_unref(btn);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_conditional_rejects_malformed)
+{
+  /* the nested form shares the at-rule depth budget: four outer @media
+   * plus one inside the rule exceeds MY_CSS_MAX_AT_RULE_NESTING. */
+  const char* too_deep =
+      "@media all { @media all { @media all { @media all {"
+      " button { @media all { color: red; } } } } } }";
+  /* strict mode: a malformed nested query rejects (not skip). */
+  const char* bad_query = "button { @media (bogus) { color: red; } }";
+  /* other @-rules keep the old declaration-path error. */
+  const char* unknown = "button { @layer x { color: red; } }";
+  my_css_error_t error = {0};
+
+  ASSERT_TRUE(my_css_parse_ex(NULL, too_deep, strlen(too_deep),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_TRUE(error.msg[0] != '\0');
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, bad_query, strlen(bad_query),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, unknown, strlen(unknown),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -4581,6 +4781,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_marker_mid_chain);
     RUN_TEST(css_nest_marker_mid_chain_direct_edges);
     RUN_TEST(css_nest_marker_position_rejects_malformed);
+    RUN_TEST(css_nest_media_merges_matching_declarations);
+    RUN_TEST(css_nest_media_skips_non_matching);
+    RUN_TEST(css_nest_media_hosts_nested_rules);
+    RUN_TEST(css_nest_supports_in_rule);
+    RUN_TEST(css_nest_conditional_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

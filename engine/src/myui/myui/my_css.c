@@ -915,7 +915,21 @@ static bool css_rule_push_selector(css_p_t* p, my_css_rule_t* r,
 }
 
 static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
-                                 my_css_sheet_t* sheet, u32 depth);
+                                 my_css_sheet_t* sheet, u32 depth,
+                                 size_t at_depth);
+
+/* R638: nested conditional groups evaluate their prelude with the same
+ * machinery as the rules-level at-rules (defined further down). */
+static bool css_skip_or_reject_atrule(css_p_t* p);
+static bool css_skip_or_reject_atrule_with_capability(css_p_t* p,
+                                                      uint32_t capability);
+static bool css_read_atrule_prelude(css_p_t* p, char* out, size_t cap,
+                                    size_t* length);
+static bool css_supports_condition(const char* query, size_t length,
+                                   const my_allocator_t* allocator,
+                                   bool* matches);
+static bool css_media_condition(css_p_t* p, const char* query, size_t length,
+                                bool* matches, bool* conditional);
 
 /* R629/R636: the subset nests two levels (a nested rule's own block takes
  * one further level of `&` rules; depth 3+ is rejected). */
@@ -942,7 +956,7 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
  * level of `&` rules — the parent's selectors are already fully desugared,
  * so the same substitution recurses unchanged. */
 static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
-                          my_css_sheet_t* sheet, u32 depth) {
+                          my_css_sheet_t* sheet, u32 depth, size_t at_depth) {
   my_css_selector_t arms[MY_CSS_MAX_NEST_ARMS][MY_CSS_MAX_ANCESTORS + 1u];
   bool arm_direct[MY_CSS_MAX_NEST_ARMS][MY_CSS_MAX_ANCESTORS + 1u];
   size_t arm_counts[MY_CSS_MAX_NEST_ARMS];
@@ -1254,7 +1268,7 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
     css_fail(p, "oom");
     return false;
   }
-  if (!css_parse_decl_block(p, nr, sheet, depth + 1u)) {
+  if (!css_parse_decl_block(p, nr, sheet, depth + 1u, at_depth)) {
     return false;
   }
   return true;
@@ -1287,11 +1301,68 @@ static bool css_stmt_is_nested_rule(const css_p_t* p) {
   return false;
 }
 
+/* R638: a conditional group (@media/@supports) nested in a declaration
+ * block. The prelude evaluates at parse time with the same machinery as
+ * the rules-level at-rules — a matching group parses its statements
+ * directly against the enclosing rule (declarations append in source
+ * order, which for an identical selector IS the spec's split-rule
+ * cascade; `&` statements desugar against the same parent; deeper
+ * conditionals recurse), a non-matching group is skipped whole. */
+static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
+                                         my_css_sheet_t* sheet, u32 depth,
+                                         size_t at_depth, bool is_media) {
+  bool matches = false;
+  if (at_depth >= MY_CSS_MAX_AT_RULE_NESTING) {
+    css_fail(p, is_media ? "@media nesting depth exceeded"
+                         : "@supports nesting depth exceeded");
+    return false;
+  }
+  c_ws(p);
+  if (is_media) {
+    char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+    size_t query_length = 0u;
+    bool conditional = false;
+    while (c_peek(p) >= 0 && c_peek(p) != '{') {
+      if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+        css_fail(p, "media query too long");
+        return false;
+      }
+      query[query_length++] = (char)c_next(p);
+    }
+    query[query_length] = '\0';
+    if (c_peek(p) != '{' ||
+        !css_media_condition(p, query, query_length, &matches,
+                             &conditional)) {
+      return css_skip_or_reject_atrule(p);
+    }
+    if (conditional && p->media == NULL) {
+      return css_skip_or_reject_atrule(p);
+    }
+  } else {
+    char query[MY_CSS_MAX_SUPPORTS_QUERY_BYTES + 1u];
+    size_t query_length = 0u;
+    if (!css_read_atrule_prelude(p, query, sizeof(query), &query_length) ||
+        !css_supports_condition(query, query_length, p->allocator,
+                                &matches)) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_SUPPORTS);
+    }
+  }
+  if (!matches) {
+    css_skip_atrule(p, false);
+    return !c_failed(p);
+  }
+  c_next(p); /* '{' */
+  return css_parse_decl_block(p, r, sheet, depth, at_depth + 1u);
+}
+
 /* R629: declaration block body (after '{', through the closing '}').
  * Statements whose prelude holds a top-level '&' are nested rules (R637:
- * the marker may sit mid-chain, not just at the statement start). */
+ * the marker may sit mid-chain, not just at the statement start). R638:
+ * `@media`/`@supports` statements are nested conditional groups. */
 static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
-                                 my_css_sheet_t* sheet, u32 depth) {
+                                 my_css_sheet_t* sheet, u32 depth,
+                                 size_t at_depth) {
   for (;;) {
     char key[MY_STYLE_KEY_LEN];
     char mapped[MY_STYLE_KEY_LEN];
@@ -1301,10 +1372,24 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
       return false;
     }
     if (c_peek(p) == '&' || css_stmt_is_nested_rule(p)) {
-      if (!css_nest_rule(p, r, sheet, depth)) {
+      if (!css_nest_rule(p, r, sheet, depth, at_depth)) {
         return false;
       }
       continue;
+    }
+    if (c_peek(p) == '@') {
+      char at_name[MY_STYLE_KEY_LEN];
+      c_next(p);
+      if (c_ident(p, at_name, sizeof(at_name)) &&
+          (my_str_eq(at_name, "media") || my_str_eq(at_name, "supports"))) {
+        if (!css_parse_nested_conditional(p, r, sheet, depth, at_depth,
+                                          at_name[0] == 'm')) {
+          return false;
+        }
+        continue;
+      }
+      css_fail(p, "expected declaration key");
+      return false;
     }
     if (c_peek(p) == '}') {
       c_next(p);
@@ -1382,7 +1467,7 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
 
 /** @brief One rule: selectors { declarations }. */
 static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
-                               uint32_t layer_id) {
+                               size_t at_depth, uint32_t layer_id) {
   my_css_rule_t* r = css_rule_new(p->allocator, layer_id);
   my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
   bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
@@ -1643,7 +1728,7 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
   }
   c_next(p);
   /* declarations (+ R629 nested `&` rules) */
-  if (!css_parse_decl_block(p, r, sheet, 0u)) {
+  if (!css_parse_decl_block(p, r, sheet, 0u, at_depth)) {
     css_rule_destroy(p->allocator, r);
     return NULL;
   }
@@ -2983,7 +3068,7 @@ static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
       }
       continue;
     }
-    rule = css_rule(p, sheet, layer_id);
+    rule = css_rule(p, sheet, media_depth, layer_id);
     if (rule == NULL) {
       return false;
     }

@@ -295,7 +295,13 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * a nested rule's block takes one further `&` level, desugared against the
  * already-resolved outer form; flush order keeps desugared source order.
  * A state-qualified parent, an id-qualified marker, and `&` outside a rule
- * are rejected. */
+ * are rejected. Conditional groups may also nest inside a declaration
+ * block (R638): `@media`/`@supports` statements evaluate their prelude at
+ * parse time with the same machinery as the rules-level at-rules (sharing
+ * the MY_CSS_MAX_AT_RULE_NESTING budget) — a matching group's statements
+ * parse against the enclosing rule (declarations append in source order,
+ * `&` rules desugar against the same parent), a non-matching group is
+ * skipped whole. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);
