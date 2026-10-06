@@ -296,9 +296,10 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * ancestors; mid-chain the whole parent selector lands in the marker's
  * slot, parent ancestors traveling with it. The prelude
  * is a comma group (R634): each arm desugars independently against every
- * parent variant, bounded by MY_CSS_MAX_NEST_ARMS. Two levels deep (R636):
- * a nested rule's block takes one further `&` level, desugared against the
- * already-resolved outer form; flush order keeps desugared source order.
+ * parent variant, bounded by MY_CSS_MAX_NEST_ARMS. Three levels deep
+ * (R636/R641): a nested rule's block takes further `&` levels down to
+ * depth 3, each desugared against the already-resolved outer form; flush
+ * order keeps desugared source order at every depth.
  * A state-qualified parent, an id-qualified marker, and `&` outside a rule
  * are rejected. Conditional groups may also nest inside a declaration
  * block (R638): `@media`/`@supports` statements evaluate their prelude at

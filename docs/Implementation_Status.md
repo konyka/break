@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R641 CSS `&` 三级深度（TDD）— 嵌套弧收尾：深度上限 2→3,pending 前置挂序对任意深度的结构性成立获钉桩
+
+- **缺口**(R636 落账"深度 3+ 保持拒绝")：三级嵌套（`.a { & .b { & .c { & .d {} } } }`、`button { &.a { &.b { &:hover {} } } }`）整体被拒。
+- **方案**：零新机制——R636 的"块解析前置 pending"对任意深度已结构性成立（每层规则先入队再解析其块，更深者自然排后，冲刷序=全脱糖源序，本轮 T1 四规则序逐字段断言钉死）;`MY_CSS_MAX_NEST_DEPTH` 2→3 即完成。深度 4+ 维持 "CSS & nesting depth exceeded"(SYNTAX+NESTING，报错面不变）。
+- **TDD（红→绿实证）**:test_myui_css +3——① 三级后代链（四规则序=父/L1/L2/L3 逐字段+四层树行为：全链命中/缺中间层 miss);② 三级主体合并组合（`&.a→green/&.b→blue/&:hover→red`：行为四对拍，含 only_a hover 回退 `&.a` 规则——初版误断言 NULL，实际级联语义=无态规则适用于所有态，改钉 green 回退）;③ 深度 4 拒绝（SYNTAX+NESTING)。**RED 如实红 2/2 正例**(sheet NULL=深度拒绝；深度 4 拒绝例前后皆绿=守卫）;GREEN 首轮正例全过，唯上述级联语义误断言一钓。R636 拒绝组的 depth-3 例契约变更（自此合法）——移除后 **156/156**(153+3)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_css 同 156/156。纯解析器改动（单常量+注释），零行为触点外溢。
+- **边界**：嵌套深度 3 落地；深度 4+ 维持拒绝（有界解析哲学，真实样式表 3 级已覆盖嵌套实践）;CSS 弧让渡至此仅剩块内 @layer/@scope（规范语义特殊，单列评估）;R611 AMD 基线不动。
+
 ## 本轮更新：R640 CSS `:scope` 类限定（TDD）— R627 边界"裸 `:scope`"完全关闭：`@scope panel { :scope.dark:hover {} }` 根级类/态叠加全形态互操作
 
 - **缺口**(R639 落账"类/id 限定需伪类后限定语法扩展"):`@scope panel { :scope.dark {} }`——按根的类进一步过滤根自身的规范写法——两种书写序（`:scope.dark` / `.dark:scope`）分别死于"unexpected selector token"(capability=0）与主体校验拒绝。

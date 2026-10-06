@@ -978,9 +978,9 @@ static bool css_supports_condition(const char* query, size_t length,
 static bool css_media_condition(css_p_t* p, const char* query, size_t length,
                                 bool* matches, bool* conditional);
 
-/* R629/R636: the subset nests two levels (a nested rule's own block takes
- * one further level of `&` rules; depth 3+ is rejected). */
-#define MY_CSS_MAX_NEST_DEPTH 2u
+/* R629/R636/R641: the subset nests three levels (a nested rule's own block
+ * takes further `&` rules down to depth 3; depth 4+ is rejected). */
+#define MY_CSS_MAX_NEST_DEPTH 3u
 
 /* R634: a nested rule's selector prelude is a comma group; each arm is
  * desugared against every parent selector (arms x variants cross product). */

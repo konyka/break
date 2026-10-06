@@ -2482,8 +2482,6 @@ TEST(css_nest_second_level_sibling_order)
 TEST(css_nest_second_level_rejects_malformed)
 {
   const char* malformed[] = {
-      /* depth 3 stays out of the subset */
-      "a { & b { & c { & d { color: red; } } } }",
       /* a state-qualified parent can't become an ancestor */
       "button { &:hover { & .x { color: red; } } }",
       /* a state-qualified marker in ancestor form can't be expressed */
@@ -2783,6 +2781,150 @@ TEST(css_nest_marker_position_rejects_malformed)
     ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
     ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
   }
+}
+
+TEST(css_nest_third_level_chains)
+{
+  /* `.a { & .b { & .c { & .d { color: red; } } } }` — three nesting
+   * levels: the pending pre-push order keeps full desugared source order
+   * at any depth. */
+  const char* css =
+      ".a { & .b { & .c { & .d { color: red; } } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  my_widget_t* c = my_widget_create(NULL, "c");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* a2 = my_widget_create(NULL, "a2");
+  my_widget_t* b2 = my_widget_create(NULL, "b2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 4u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "b");
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  sel = my_css_selector(my_css_rule(sheet, 2u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "c");
+  ASSERT_EQ(sel->ancestor_count, 2u);
+  sel = my_css_selector(my_css_rule(sheet, 3u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "d");
+  ASSERT_EQ(sel->ancestor_count, 3u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "c");
+  ASSERT_STR_EQ(sel->ancestors[1].style_class, "b");
+  ASSERT_STR_EQ(sel->ancestors[2].style_class, "a");
+  ASSERT_TRUE(sel->nest_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  a->widget_type = "panel";
+  b->widget_type = "wrap";
+  c->widget_type = "wrap";
+  hit->widget_type = "wrap";
+  a2->widget_type = "panel";
+  b2->widget_type = "wrap";
+  miss->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b, "b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(c, "c"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(hit, "d"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(a2, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b2, "b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(miss, "d"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, b), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(b, c), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(c, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a2, b2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(b2, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* a2 > b2 > miss: the .c level is missing from the chain. */
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(b2);
+  my_widget_unref(a2);
+  my_widget_unref(hit);
+  my_widget_unref(c);
+  my_widget_unref(b);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_third_level_mixed_subject_merges)
+{
+  /* `button { &.a { color: green; &.b { color: blue; &:hover { color: red;
+   * } } } }` — subject merges compose through three levels. */
+  const char* css =
+      "button { &.a { color: green; &.b { color: blue;"
+      " &:hover { color: red; } } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* ab = my_widget_create(NULL, "ab");
+  my_widget_t* only_a = my_widget_create(NULL, "only_a");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 4u);
+  sel = my_css_selector(my_css_rule(sheet, 2u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "button");
+  ASSERT_STR_EQ(sel->style_class, "a b");
+  ASSERT_EQ(sel->state, -1);
+  sel = my_css_selector(my_css_rule(sheet, 3u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "a b");
+  ASSERT_EQ(sel->state, (int32_t)MY_STATE_HOVER);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  ab->widget_type = "button";
+  only_a->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(ab, "a b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(only_a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, ab, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, ab, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  value = my_theme_get_for_widget(theme, only_a, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  value = my_theme_get_for_widget(theme, only_a, MY_STATE_HOVER, "fg_color");
+  /* the hover rule needs class b; only_a falls back to the `&.a` rule. */
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  my_widget_unref(only_a);
+  my_widget_unref(ab);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_fourth_level_rejects)
+{
+  const char* css = "a { & b { & c { & d { & e { color: red; } } } } }";
+  my_css_error_t error = {0};
+
+  ASSERT_TRUE(my_css_parse_ex(NULL, css, strlen(css),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
 }
 
 TEST(css_nest_media_merges_matching_declarations)
@@ -5023,6 +5165,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_marker_mid_chain);
     RUN_TEST(css_nest_marker_mid_chain_direct_edges);
     RUN_TEST(css_nest_marker_position_rejects_malformed);
+    RUN_TEST(css_nest_third_level_chains);
+    RUN_TEST(css_nest_third_level_mixed_subject_merges);
+    RUN_TEST(css_nest_fourth_level_rejects);
     RUN_TEST(css_nest_media_merges_matching_declarations);
     RUN_TEST(css_nest_media_skips_non_matching);
     RUN_TEST(css_nest_media_hosts_nested_rules);
