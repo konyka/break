@@ -734,6 +734,41 @@ TEST(text_layout_boundaries_skip_zwj_and_flag_clusters)
   my_text_layout_destroy(family);
 }
 
+TEST(boundaries_keep_indic_and_khmer_conjoint_clusters)
+{
+  /* R661: bounded GB9c — a virama/coeng links the following consonant into
+   * the same cluster, in both the layout boundary API and the byte-space
+   * API. (Viramas are already combining marks, so the mark side always
+   * attached; this closes the consonant side.) */
+  const char* kssa = "\xE0\xA4\x95\xE0\xA5\x8D\xE0\xA4\xB7"; /* क + ् + ष */
+  const char* kvira_x = "\xE0\xA4\x95\xE0\xA5\x8D" "x";    /* क् + x */
+  const char* khmer = "\xE1\x9E\x80\xE1\x9F\x92\xE1\x9E\x93"; /* ក + ្ + ន */
+  my_text_layout_t* kssa_layout = my_text_layout_process(NULL, kssa);
+  my_text_layout_t* khmer_layout = my_text_layout_process(NULL, khmer);
+
+  ASSERT_NOT_NULL(kssa_layout);
+  ASSERT_NOT_NULL(khmer_layout);
+
+  /* layout API: the whole conjunct is one cluster. */
+  ASSERT_EQ(my_text_layout_boundary_right(kssa_layout, 0u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(kssa_layout, 3u), 0u);
+  ASSERT_EQ(my_text_layout_boundary_right(khmer_layout, 0u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(khmer_layout, 3u), 0u);
+
+  /* byte-space API: same attachment (9 bytes / 9 bytes). */
+  ASSERT_EQ(my_grapheme_boundary_right(kssa, 9u, 0u), 9u);
+  ASSERT_EQ(my_grapheme_boundary_left(kssa, 9u, 9u), 0u);
+  ASSERT_EQ(my_grapheme_boundary_right(khmer, 9u, 0u), 9u);
+  ASSERT_EQ(my_grapheme_boundary_left(khmer, 9u, 9u), 0u);
+
+  /* no conjunct without a following consonant: क् + x stays two clusters. */
+  ASSERT_EQ(my_grapheme_boundary_right(kvira_x, 7u, 0u), 6u);
+  ASSERT_EQ(my_grapheme_boundary_right(kvira_x, 7u, 6u), 7u);
+
+  my_text_layout_destroy(khmer_layout);
+  my_text_layout_destroy(kssa_layout);
+}
+
 TEST(grapheme_byte_boundaries_skip_cluster_interior)
 {
   /* R659: the allocation-free byte-space API (same bounded UAX#29 subset
@@ -3746,6 +3781,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_boundaries_skip_combining_cluster_interior);
     RUN_TEST(text_layout_boundaries_skip_zwj_and_flag_clusters);
     RUN_TEST(grapheme_byte_boundaries_skip_cluster_interior);
+    RUN_TEST(boundaries_keep_indic_and_khmer_conjoint_clusters);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_maps_additional_unicode_scripts);
     RUN_TEST(text_layout_keeps_arabic_common_punctuation_with_neighbor_script);

@@ -47,6 +47,28 @@ static bool gr_is_regional_indicator(uint32_t cp) {
   return cp >= 0x1F1E6u && cp <= 0x1F1FFu;
 }
 
+/* R661: bounded GB9c — the Indic virama set and the script blocks whose
+ * consonants it links into one cluster. */
+static bool gr_is_virama(uint32_t cp) {
+  switch (cp) {
+    case 0x094Du: case 0x09CDu: case 0x0A4Du: case 0x0ACDu:
+    case 0x0BCDu: case 0x0C4Du: case 0x0CCDu: case 0x0D4Du:
+    case 0x0DCAu: case 0x0F84u: case 0x1039u: case 0x103Au:
+    case 0x17D2u: case 0x1B44u:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool gr_is_indic_script_cp(uint32_t cp) {
+  return (cp >= 0x0900u && cp <= 0x0DFFu) ||
+         (cp >= 0x0F00u && cp <= 0x0FFFu) ||
+         (cp >= 0x1000u && cp <= 0x109Fu) ||
+         (cp >= 0x1780u && cp <= 0x17FFu) ||
+         (cp >= 0x1B00u && cp <= 0x1B7Fu);
+}
+
 static size_t gr_cp_bytes(uint8_t lead) {
   if (lead < 0x80u) return 1u;
   if (lead < 0xC0u) return 1u; /* stray continuation: treat as one byte */
@@ -100,8 +122,13 @@ static bool gr_cluster_interior(const char* text, size_t len, size_t b) {
     return (run & 1u) != 0u;
   }
   /* GB11 bounded: a pictograph right after a ZWJ joins the chain. */
-  return gr_is_extended_pictographic(cp) &&
-         gr_cp_at(text, len, gr_prev_start(text, b)) == 0x200Du;
+  if (gr_is_extended_pictographic(cp) &&
+      gr_cp_at(text, len, gr_prev_start(text, b)) == 0x200Du) {
+    return true;
+  }
+  /* R661: bounded GB9c — virama + consonant conjuncts. */
+  return gr_is_indic_script_cp(cp) &&
+         gr_is_virama(gr_cp_at(text, len, gr_prev_start(text, b)));
 }
 
 size_t my_grapheme_boundary_right(const char* text, size_t len,

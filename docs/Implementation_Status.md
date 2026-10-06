@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R661 GB9c 印梵/高棉合字簇（TDD）— 有界 virama 集 + 文字块续簇规则，layout/字节双 API 同构；字素弧有界子集收官
+
+- **缺口**（R658 落账"GB9c 维持让渡"）：合字辅音侧可拆——क ् ष（KA+virama+SSA）的 ्/ष 边界是合法停（virama 侧经 GB9 早已闭合，辅音侧无规则）；R643 高棉语料（ក្នុង/ខ្មែរ 含 COENG U+17D2）同型受害。
+- **方案**（双簇判定同构加规则，机制零新增）：有界 GB9c——停点 b 的 `cps[b]` 落印度系块（0900-0DFF/0F00-0FFF/1000-109F/1780-17FF/1B00-1B7F）且 `cps[b-1]` 为 virama 集成员（094D/09CD/0A4D/0ACD/0BCD/0C4D/0CCD/0D4D/0DCA/0F84/1039/103A/17D2/1B44 硬编码有界表，文档化子集）即内部；非续辅音（क्+x）正常间断。`tl_cluster_interior`/`gr_cluster_interior` 同码双落（两模块既有的表 duplication 设计同约）。
+- **TDD（红→绿实证）**：test_myui_text_layout +1——双 API 同用例：天城 क्ष（3 码点整簇双向）、高棉 ក្ន（R643 语料字形护佑）、क्+x 两簇反例。**RED 如实红**（layout 右界 ≠3，合字被拆）;GREEN 一次过 **140/140**(139+1)。
+- **回归**：双树非图形 CTest 各 **118/118**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有簇测试组（组合符/ZWJ/旗帜）全绿未动。
+- **边界**:virama 集为硬编码有界表（14 个高知名 halant/coeng——锡金/古吉拉特等低频变体随需增补，生成化属过度工程）;GB9c 完整形的 Linker 链（virama+组合符交织）未开——紧邻形覆盖现实主导；**字素弧有界子集（Extend/ZWJ/EP 链/RI 对/合字）自此收官**;R611 AMD 基线不动。
+
 ## 本轮更新：R660 text_area 方向键簇感知（TDD）— R659 落账"LTR 落空"关闭：无 layout 文本箭头走字节域字素 API，硬换行行跨语义零变化
 
 - **缺口**（R659 落账"text_area 方向键簇感知单列"）：无 layout（纯 LTR）时 LEFT/RIGHT 走 `cursor_col±1` 逐码点——"á" 簇内部停可达；R657-R659 的簇感知在 text_area 箭头键上仍只对 bidi 文本生效。

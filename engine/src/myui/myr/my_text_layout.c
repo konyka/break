@@ -69,6 +69,30 @@ static bool tl_is_extended_pictographic(uint32_t cp) {
   return false;
 }
 
+/* R661: bounded GB9c conjunct support — the well-known Indic virama set
+ * (each script's halant/coeng) and the script blocks whose consonants it
+ * links. Viramas are already combining marks (the mark side attached via
+ * GB9); this closes the consonant side. */
+static bool tl_is_virama(uint32_t cp) {
+  switch (cp) {
+    case 0x094Du: case 0x09CDu: case 0x0A4Du: case 0x0ACDu:
+    case 0x0BCDu: case 0x0C4Du: case 0x0CCDu: case 0x0D4Du:
+    case 0x0DCAu: case 0x0F84u: case 0x1039u: case 0x103Au:
+    case 0x17D2u: case 0x1B44u:
+      return true;
+    default:
+      return false;
+  }
+}
+
+static bool tl_is_indic_script_cp(uint32_t cp) {
+  return (cp >= 0x0900u && cp <= 0x0DFFu) ||
+         (cp >= 0x0F00u && cp <= 0x0FFFu) ||
+         (cp >= 0x1000u && cp <= 0x109Fu) ||
+         (cp >= 0x1780u && cp <= 0x17FFu) ||
+         (cp >= 0x1B00u && cp <= 0x1B7Fu);
+}
+
 /* R658: is logical boundary b inside a grapheme cluster? Bounded UAX#29:
  * GB9 (Extend/ZWJ attach forward), GB11 bounded (a pictograph right after
  * a ZWJ joins the chain), GB12/13 (regional indicators cluster in pairs —
@@ -89,8 +113,13 @@ static bool tl_cluster_interior(const my_text_layout_t* l, size_t b) {
     }
     return (run & 1u) != 0u;
   }
-  return tl_is_extended_pictographic(cp) &&
-         tl_logical_cp(l, b - 1u) == 0x200Du;
+  if (tl_is_extended_pictographic(cp) &&
+      tl_logical_cp(l, b - 1u) == 0x200Du) {
+    return true;
+  }
+  /* R661: bounded GB9c — virama + consonant conjuncts. */
+  return tl_is_indic_script_cp(cp) &&
+         tl_is_virama(tl_logical_cp(l, b - 1u));
 }
 
 #if defined(MYUI_BIDI)
