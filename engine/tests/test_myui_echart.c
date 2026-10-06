@@ -1,6 +1,8 @@
 #include "test_framework.h"
 #include "myui/echarts/my_echart.h"
 
+#include <stdio.h>
+
 TEST(echart_set_option_replace_and_lazy_update) {
   static const double a[] = {1.0, 2.0};
   static const double b[] = {3.0};
@@ -36,7 +38,61 @@ TEST(echart_legend_action_reduces_model_state) {
   my_echart_destroy(chart);
 }
 
+TEST(echart_merge_appends_new_series) {
+  static const double a[] = {1.0, 2.0};
+  static const double b[] = {3.0};
+  my_echart_series_input_t sa[2] = {
+      {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true},
+      {"b", "B", MY_ECHART_LINE, b, 1u, 0u, 0u, NULL, true}};
+  my_echart_option_input_t first = {"m", NULL, 0u, &sa[0], 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t both = {"m2", NULL, 0u, sa, 2u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_t* chart = my_echart_create(NULL);
+  const my_echart_option_t* option;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_echart_set_option(chart, &first, true, false), MY_RET_OK);
+  ASSERT_EQ(my_echart_set_option(chart, &both, false, false), MY_RET_OK);
+  option = my_echart_get_option(chart);
+  ASSERT_EQ(option->series_count, 2u);
+  ASSERT_TRUE(strcmp(option->series[0].id, "a") == 0);
+  ASSERT_TRUE(strcmp(option->series[1].id, "b") == 0);
+  ASSERT_TRUE(strcmp(option->title, "m2") == 0);
+  my_echart_destroy(chart);
+}
+
+TEST(echart_merge_rejects_capacity_overflow) {
+  static const double v[] = {1.0};
+  my_echart_series_input_t series[MY_ECHART_MAX_SERIES + 1u];
+  my_echart_option_input_t input;
+  my_echart_series_input_t first_series = {"s0", "S0", MY_ECHART_LINE, v, 1u, 0u, 0u, NULL, true};
+  my_echart_t* chart;
+  char ids[MY_ECHART_MAX_SERIES + 1u][8];
+  for (size_t i = 0u; i <= MY_ECHART_MAX_SERIES; i++) {
+    snprintf(ids[i], sizeof(ids[i]), "s%zu", i);
+    series[i] = (my_echart_series_input_t){ids[i], ids[i], MY_ECHART_LINE, v,
+                                           1u, 0u, 0u, NULL, true};
+  }
+  input = (my_echart_option_input_t){"cap", NULL, 0u, series,
+                                     MY_ECHART_MAX_SERIES + 1u, false, false,
+                                     0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0,
+                                     0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  chart = my_echart_create(NULL);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_echart_set_option(chart, &input, true, false), MY_RET_INVALID_PARAMS);
+  input.series_count = 1u;
+  input.series = &first_series;
+  ASSERT_EQ(my_echart_set_option(chart, &input, true, false), MY_RET_OK);
+  input.series = series;
+  input.series_count = MY_ECHART_MAX_SERIES + 1u;
+  ASSERT_EQ(my_echart_set_option(chart, &input, false, false),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_echart_get_option(chart)->series_count, 1u);
+  my_echart_destroy(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_set_option_replace_and_lazy_update);
   RUN_TEST(echart_legend_action_reduces_model_state);
+  RUN_TEST(echart_merge_appends_new_series);
+  RUN_TEST(echart_merge_rejects_capacity_overflow);
 TEST_MAIN_END()

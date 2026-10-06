@@ -17,8 +17,11 @@ does not claim JSON parsing or complete ECharts parity.
 `my_echart_set_option()` now supports replace (`not_merge=true`) and a
 deterministic lazy-update mode. Lazy updates remain invisible through
 `my_echart_get_option()` until `my_echart_flush()` is called. Merge mode updates
-existing series by stable `id`; adding/removing series and richer component
-merging are reserved for the next adapter phases.
+existing series by stable `id` and appends unknown ids up to
+`MY_ECHART_MAX_SERIES`; option-level title and set component state (range,
+zoom, visualMap, legend visibility) are taken from the incoming option, while
+annotations are retained from the current model. Series removal and
+`replaceMerge` remain reserved for later phases.
 
 ## Phase 3: native event/action adapter
 

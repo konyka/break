@@ -7,7 +7,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 
 | Area | Supported |
 |---|---|
-| Core model | owned typed option, validation, replace/lazy update, basic id merge |
+| Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection |
 | Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |

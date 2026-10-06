@@ -40,15 +40,25 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
       return MY_RET_INVALID_PARAMS;
   } else {
     my_echart_option_input_t base = {
-        chart->current.title, (const char* const*)chart->current.x_axis_data,
+        input->title != NULL ? input->title : chart->current.title,
+        (const char* const*)chart->current.x_axis_data,
         chart->current.x_axis_count, NULL, 0u,
-        chart->current.legend_hidden, chart->current.range_set,
-        chart->current.y_min, chart->current.y_max,
-        chart->current.zoom_set, chart->current.zoom_start,
-        chart->current.zoom_end, chart->current.visual_map_set,
-        chart->current.visual_map_min, chart->current.visual_map_max,
-        chart->current.visual_map_low_color,
-        chart->current.visual_map_high_color,
+        input->legend_hidden,
+        input->range_set ? true : chart->current.range_set,
+        input->range_set ? input->y_min : chart->current.y_min,
+        input->range_set ? input->y_max : chart->current.y_max,
+        input->zoom_set ? true : chart->current.zoom_set,
+        input->zoom_set ? input->zoom_start : chart->current.zoom_start,
+        input->zoom_set ? input->zoom_end : chart->current.zoom_end,
+        input->visual_map_set ? true : chart->current.visual_map_set,
+        input->visual_map_set ? input->visual_map_min
+                              : chart->current.visual_map_min,
+        input->visual_map_set ? input->visual_map_max
+                              : chart->current.visual_map_max,
+        input->visual_map_set ? input->visual_map_low_color
+                              : chart->current.visual_map_low_color,
+        input->visual_map_set ? input->visual_map_high_color
+                              : chart->current.visual_map_high_color,
         NULL, 0u, NULL, 0u, NULL, 0u};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
@@ -116,7 +126,21 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
       size_t found = candidate.series_count;
       for (size_t j = 0u; j < candidate.series_count; j++)
         if (same_id(candidate.series[j].id, incoming->id)) { found = j; break; }
-      if (found == candidate.series_count) { my_echart_option_free(&candidate); return MY_RET_INVALID_PARAMS; }
+      if (found == candidate.series_count) {
+        my_echart_series_t* grown;
+        if (candidate.series_count >= MY_ECHART_MAX_SERIES) {
+          my_echart_option_free(&candidate);
+          return MY_RET_INVALID_PARAMS;
+        }
+        grown = (my_echart_series_t*)my_mem_realloc(
+            chart->allocator, candidate.series,
+            (candidate.series_count + 1u) * sizeof(*grown));
+        if (grown == NULL) { my_echart_option_free(&candidate); return MY_RET_OOM; }
+        memset(&grown[candidate.series_count], 0, sizeof(*grown));
+        candidate.series = grown;
+        found = candidate.series_count;
+        candidate.series_count++;
+      }
       my_echart_series_t replacement = {0};
       my_echart_option_input_t one = {NULL, NULL, 0u, incoming, 1u,
                                       input->legend_hidden, input->range_set,
