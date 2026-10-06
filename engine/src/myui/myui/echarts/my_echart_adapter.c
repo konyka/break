@@ -107,6 +107,7 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
   my_echart_mark_point_input_t* point_inputs = NULL;
   my_echart_mark_line_input_t* line_inputs = NULL;
   my_echart_mark_area_input_t* area_inputs = NULL;
+  my_echart_grid_input_t* grid_inputs = NULL;
   my_echart_option_input_t input;
   my_ret_t ret;
   candidate = (my_echart_adapter_payload_t*)my_mem_calloc(
@@ -129,6 +130,11 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
       adapter->allocator,
       source->mark_area_count ? source->mark_area_count : 1u,
       sizeof(*area_inputs));
+  if (source->grid_count > 0u) {
+    grid_inputs = (my_echart_grid_input_t*)my_mem_calloc(
+        adapter->allocator, source->grid_count, sizeof(*grid_inputs));
+    if (grid_inputs == NULL) { ret = MY_RET_OOM; goto done; }
+  }
   if (series_inputs == NULL || point_inputs == NULL || line_inputs == NULL ||
       area_inputs == NULL) {
     ret = MY_RET_OOM;
@@ -152,6 +158,14 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
     area_inputs[i] = (my_echart_mark_area_input_t){
         source->mark_areas[i].y_min, source->mark_areas[i].y_max,
         source->mark_areas[i].label, source->mark_areas[i].color};
+  for (size_t i = 0u; i < source->grid_count; i++)
+    grid_inputs[i] = (my_echart_grid_input_t){
+        source->grids[i].left, source->grids[i].top, source->grids[i].width,
+        source->grids[i].height, source->grids[i].series_indices,
+        source->grids[i].series_count, source->grids[i].range_set,
+        source->grids[i].y_min, source->grids[i].y_max,
+        source->grids[i].range2_set, source->grids[i].y2_min,
+        source->grids[i].y2_max};
 
   input = (my_echart_option_input_t){
       source->title, (const char* const*)source->x_axis_data,
@@ -163,7 +177,8 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
       source->visual_map_low_color, source->visual_map_high_color,
       point_inputs, source->mark_point_count, line_inputs,
       source->mark_line_count, area_inputs, source->mark_area_count,
-      NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0};
+      NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL,
+      0.0, grid_inputs, source->grid_count};
   ret = my_echart_option_copy(&candidate->option, &input, adapter->allocator);
   if (ret == MY_RET_OK) {
     for (size_t i = 0u; i < candidate->option.series_count; i++) {
@@ -181,6 +196,7 @@ done:
   my_mem_free(adapter->allocator, point_inputs);
   my_mem_free(adapter->allocator, line_inputs);
   my_mem_free(adapter->allocator, area_inputs);
+  my_mem_free(adapter->allocator, grid_inputs);
   if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
   *result = candidate;
   return MY_RET_OK;
@@ -275,6 +291,34 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
     ret = my_chart_apply_snapshot(adapter->chart, &snapshot);
     if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
     }
+  }
+  if (candidate->option.grid_count > 0u) {
+    ret = my_chart_set_grid_count(adapter->chart,
+                                  candidate->option.grid_count);
+    if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
+    for (size_t i = 0u; i < candidate->option.grid_count; i++) {
+      const my_echart_grid_t* grid = &candidate->option.grids[i];
+      my_chart_grid_desc_t desc = {0};
+      desc.left = (float)grid->left;
+      desc.top = (float)grid->top;
+      desc.width = (float)grid->width;
+      desc.height = (float)grid->height;
+      memcpy(desc.series_indices, grid->series_indices,
+             grid->series_count * sizeof(size_t));
+      desc.series_count = grid->series_count;
+      desc.range_set = grid->range_set;
+      desc.y_min = (float)grid->y_min;
+      desc.y_max = (float)grid->y_max;
+      desc.range2_set = grid->range2_set;
+      desc.y2_min = (float)grid->y2_min;
+      desc.y2_max = (float)grid->y2_max;
+      desc.visible = true;
+      ret = my_chart_set_grid(adapter->chart, i, &desc);
+      if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
+    }
+  } else {
+    ret = my_chart_set_grid_count(adapter->chart, 1u);
+    if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
   }
   old = adapter->payload;
   adapter->payload = candidate;

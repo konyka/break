@@ -11,6 +11,8 @@
 #define MY_CHART_MAX_MARK_POINTS 8u
 #define MY_CHART_MAX_MARK_LINES 4u
 #define MY_CHART_MAX_MARK_AREAS 4u
+#define MY_CHART_MAX_GRIDS 4u
+#define MY_CHART_NO_GRID SIZE_MAX
 
 typedef enum my_chart_mode_t {
   MY_CHART_LINE = 0,
@@ -61,6 +63,23 @@ typedef struct my_chart_mark_area_state_t {
   uint32_t color;
 } my_chart_mark_area_state_t;
 
+/** @brief One plot area: fractional rect plus the series drawn inside it. */
+typedef struct my_chart_grid_desc_t {
+  float left;
+  float top;
+  float width;
+  float height;
+  size_t series_indices[MY_CHART_MAX_SERIES];
+  size_t series_count;
+  bool range_set;
+  float y_min;
+  float y_max;
+  bool range2_set;
+  float y2_min;
+  float y2_max;
+  bool visible;
+} my_chart_grid_desc_t;
+
 /** @brief Borrowed renderer state committed atomically to a chart widget. */
 typedef struct my_chart_snapshot_t {
   my_chart_mode_t mode;
@@ -101,12 +120,22 @@ typedef struct my_chart_t {
   my_chart_series_t series[MY_CHART_MAX_SERIES];
   bool series_visible[MY_CHART_MAX_SERIES];
   size_t series_count;
-  float y_min;
-  float y_max;
-  bool range_set;
-  float y2_min;
-  float y2_max;
-  bool range2_set;
+  float grid_y_min[MY_CHART_MAX_GRIDS];
+  float grid_y_max[MY_CHART_MAX_GRIDS];
+  bool grid_range_set[MY_CHART_MAX_GRIDS];
+  float grid_y2_min[MY_CHART_MAX_GRIDS];
+  float grid_y2_max[MY_CHART_MAX_GRIDS];
+  bool grid_range2_set[MY_CHART_MAX_GRIDS];
+  float grid_left[MY_CHART_MAX_GRIDS];
+  float grid_top[MY_CHART_MAX_GRIDS];
+  float grid_width[MY_CHART_MAX_GRIDS];
+  float grid_height[MY_CHART_MAX_GRIDS];
+  bool grid_explicit[MY_CHART_MAX_GRIDS];
+  bool grid_visible[MY_CHART_MAX_GRIDS];
+  size_t grid_count;
+  unsigned char series_grid[MY_CHART_MAX_SERIES];
+  unsigned char paint_grid;
+  unsigned char hover_grid;
   bool show_legend;
   bool tooltip_enabled;
   bool stacked;
@@ -144,6 +173,17 @@ typedef struct my_chart_t {
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator,
                               my_chart_mode_t mode);
+my_ret_t my_chart_set_grid_count(my_widget_t* chart, size_t count);
+size_t my_chart_get_grid_count(const my_widget_t* chart);
+my_ret_t my_chart_set_grid(my_widget_t* chart, size_t index,
+                           const my_chart_grid_desc_t* desc);
+size_t my_chart_get_series_grid(const my_widget_t* chart, size_t series);
+my_ret_t my_chart_get_grid_rect(const my_widget_t* chart, size_t index,
+                                float* x, float* y, float* w, float* h);
+my_ret_t my_chart_get_grid_range(const my_widget_t* chart, size_t index,
+                                 unsigned axis, float* y_min, float* y_max);
+size_t chart_grid_at(const my_widget_t* chart, int32_t local_x,
+                     int32_t local_y);
 my_ret_t my_chart_apply_snapshot(my_widget_t* chart,
                                  const my_chart_snapshot_t* snapshot);
 bool my_chart_is_instance(const my_widget_t* widget);

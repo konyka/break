@@ -43,6 +43,10 @@ void my_echart_option_free(my_echart_option_t* option) {
   if (option->mark_lines != NULL)
     for (size_t i = 0u; i < option->mark_line_count; i++)
       my_mem_free(option->allocator, option->mark_lines[i].label);
+  if (option->grids != NULL)
+    for (size_t i = 0u; i < option->grid_count; i++)
+      my_mem_free(option->allocator, option->grids[i].series_indices);
+  my_mem_free(option->allocator, option->grids);
   if (option->mark_areas != NULL)
     for (size_t i = 0u; i < option->mark_area_count; i++)
       my_mem_free(option->allocator, option->mark_areas[i].label);
@@ -155,6 +159,39 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
     }
     if (!key_found) return MY_RET_INVALID_PARAMS;
     if (key_count == 0u) return MY_RET_INVALID_PARAMS;
+  }
+  if (input->grid_count > MY_ECHART_MAX_GRIDS ||
+      (input->grid_count > 0u && input->grids == NULL))
+    return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < input->grid_count; i++) {
+    const my_echart_grid_input_t* grid = &input->grids[i];
+    if (!isfinite(grid->left) || !isfinite(grid->top) ||
+        !isfinite(grid->width) || !isfinite(grid->height) ||
+        grid->left < 0.0 || grid->top < 0.0 ||
+        grid->width <= 0.0 || grid->height <= 0.0 ||
+        grid->left + grid->width > 1.0 + 1e-9 ||
+        grid->top + grid->height > 1.0 + 1e-9)
+      return MY_RET_INVALID_PARAMS;
+    if (grid->series_count > input->series_count)
+      return MY_RET_INVALID_PARAMS;
+    if (grid->series_count > 0u && grid->series_indices == NULL)
+      return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < grid->series_count; j++) {
+      if (grid->series_indices[j] >= input->series_count)
+        return MY_RET_INVALID_PARAMS;
+      for (size_t k = 0u; k < i; k++)
+        for (size_t m = 0u; m < input->grids[k].series_count; m++)
+          if (input->grids[k].series_indices[m] == grid->series_indices[j])
+            return MY_RET_INVALID_PARAMS;
+    }
+    if (grid->range_set &&
+        (!isfinite(grid->y_min) || !isfinite(grid->y_max) ||
+         grid->y_max <= grid->y_min))
+      return MY_RET_INVALID_PARAMS;
+    if (grid->range2_set &&
+        (!isfinite(grid->y2_min) || !isfinite(grid->y2_max) ||
+         grid->y2_max <= grid->y2_min))
+      return MY_RET_INVALID_PARAMS;
   }
   return MY_RET_OK;
 }
@@ -328,6 +365,33 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
   candidate.visual_map_max = src->visual_map_max;
   candidate.visual_map_low_color = src->visual_map_low_color;
   candidate.visual_map_high_color = src->visual_map_high_color;
+  candidate.grid_count = src->grid_count;
+  if (candidate.grid_count > 0u) {
+    candidate.grids = (my_echart_grid_t*)my_mem_calloc(
+        allocator, candidate.grid_count, sizeof(*candidate.grids));
+    if (candidate.grids == NULL) goto oom;
+    for (size_t i = 0u; i < candidate.grid_count; i++) {
+      candidate.grids[i].left = src->grids[i].left;
+      candidate.grids[i].top = src->grids[i].top;
+      candidate.grids[i].width = src->grids[i].width;
+      candidate.grids[i].height = src->grids[i].height;
+      candidate.grids[i].range_set = src->grids[i].range_set;
+      candidate.grids[i].y_min = src->grids[i].y_min;
+      candidate.grids[i].y_max = src->grids[i].y_max;
+      candidate.grids[i].range2_set = src->grids[i].range2_set;
+      candidate.grids[i].y2_min = src->grids[i].y2_min;
+      candidate.grids[i].y2_max = src->grids[i].y2_max;
+      candidate.grids[i].series_count = src->grids[i].series_count;
+      if (candidate.grids[i].series_count > 0u) {
+        candidate.grids[i].series_indices = (size_t*)my_mem_alloc(
+            allocator,
+            candidate.grids[i].series_count * sizeof(size_t));
+        if (candidate.grids[i].series_indices == NULL) goto oom;
+        memcpy(candidate.grids[i].series_indices, src->grids[i].series_indices,
+               candidate.grids[i].series_count * sizeof(size_t));
+      }
+    }
+  }
   my_mem_free(allocator, row_order);
   *dst = candidate;
   return MY_RET_OK;

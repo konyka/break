@@ -61,16 +61,30 @@ static const my_chart_t* chart_const_cast(const my_widget_t* widget) {
   return my_chart_is_instance(widget) ? (const my_chart_t*)widget : NULL;
 }
 
-static bool chart_plot_rect(const my_widget_t* widget, float* x, float* y,
-                            float* w, float* h) {
-  if (widget == NULL || x == NULL || y == NULL || w == NULL || h == NULL) {
+static bool chart_grid_rect(const my_widget_t* widget, size_t grid, float* x,
+                            float* y, float* w, float* h) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || grid >= chart->grid_count || x == NULL || y == NULL ||
+      w == NULL || h == NULL || !chart->grid_visible[grid]) {
     return false;
   }
-  *x = CHART_PAD_LEFT;
-  *y = CHART_PAD_TOP;
-  *w = (float)widget->rect.w - CHART_PAD_LEFT - CHART_PAD_RIGHT;
-  *h = (float)widget->rect.h - CHART_PAD_TOP - CHART_PAD_BOTTOM;
+  if (chart->grid_explicit[grid]) {
+    *x = chart->grid_left[grid] * (float)widget->rect.w;
+    *y = chart->grid_top[grid] * (float)widget->rect.h;
+    *w = chart->grid_width[grid] * (float)widget->rect.w;
+    *h = chart->grid_height[grid] * (float)widget->rect.h;
+  } else {
+    *x = CHART_PAD_LEFT;
+    *y = CHART_PAD_TOP;
+    *w = (float)widget->rect.w - CHART_PAD_LEFT - CHART_PAD_RIGHT;
+    *h = (float)widget->rect.h - CHART_PAD_TOP - CHART_PAD_BOTTOM;
+  }
   return *w > 0.0f && *h > 0.0f;
+}
+
+static bool chart_plot_rect(const my_widget_t* widget, float* x, float* y,
+                            float* w, float* h) {
+  return chart_grid_rect(widget, 0u, x, y, w, h);
 }
 
 static size_t chart_category_count(const my_chart_t* chart) {
@@ -184,14 +198,15 @@ static float chart_stacked_base(const my_chart_t* chart, size_t series_index,
   return base;
 }
 
-static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
+static void chart_range(const my_chart_t* chart, size_t grid, float* y_min,
+                        float* y_max) {
   size_t i;
   float lo = 0.0f;
   float hi = 1.0f;
   bool found = false;
-  if (chart->range_set) {
-    *y_min = chart->y_min;
-    *y_max = chart->y_max;
+  if (chart->grid_range_set[grid]) {
+    *y_min = chart->grid_y_min[grid];
+    *y_max = chart->grid_y_max[grid];
     return;
   }
   if (chart->stacked && chart->mode == MY_CHART_BAR) {
@@ -201,6 +216,7 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
       float negative = 0.0f;
       for (i = 0u; i < chart->series_count; i++) {
         if (!chart->series_visible[i] || chart->series[i].values == NULL ||
+            chart->series_grid[i] != grid ||
             category >= chart->series[i].count) continue;
         if (chart->series[i].values[category] >= 0.0f)
           positive += chart->series[i].values[category];
@@ -219,7 +235,7 @@ static void chart_range(const my_chart_t* chart, float* y_min, float* y_max) {
   } else for (i = 0; i < chart->series_count; i++) {
     size_t j;
     const my_chart_series_t* series = &chart->series[i];
-    if (!chart->series_visible[i]) continue;
+    if (!chart->series_visible[i] || chart->series_grid[i] != grid) continue;
     for (j = 0; j < series->count; j++) {
       float value = series->values[j];
       if (!isfinite(value)) continue;
@@ -252,21 +268,21 @@ static bool chart_has_secondary(const my_chart_t* chart) {
 
 /* Range for one axis (0=left, 1=right). Falls back to the shared/default range
  * when no series is bound to that axis. */
-static void chart_axis_range(const my_chart_t* chart, unsigned axis,
-                             float* y_min, float* y_max) {
+static void chart_axis_range(const my_chart_t* chart, size_t grid,
+                             unsigned axis, float* y_min, float* y_max) {
   size_t i;
   float lo = 0.0f;
   float hi = 1.0f;
   bool found = false;
   if (axis == 1u) {
-    if (chart->range2_set) {
-      *y_min = chart->y2_min;
-      *y_max = chart->y2_max;
+    if (chart->grid_range2_set[grid]) {
+      *y_min = chart->grid_y2_min[grid];
+      *y_max = chart->grid_y2_max[grid];
       return;
     }
-  } else if (chart->range_set) {
-    *y_min = chart->y_min;
-    *y_max = chart->y_max;
+  } else if (chart->grid_range_set[grid]) {
+    *y_min = chart->grid_y_min[grid];
+    *y_max = chart->grid_y_max[grid];
     return;
   }
   if (chart->stacked && chart->mode == MY_CHART_BAR) {
@@ -276,6 +292,7 @@ static void chart_axis_range(const my_chart_t* chart, unsigned axis,
       float negative = 0.0f;
       for (i = 0u; i < chart->series_count; i++) {
         if (!chart->series_visible[i] || chart->series[i].values == NULL ||
+            chart->series_grid[i] != grid ||
             chart_series_axis(chart, i) != axis ||
             category >= chart->series[i].count)
           continue;
@@ -303,7 +320,8 @@ static void chart_axis_range(const my_chart_t* chart, unsigned axis,
   for (i = 0u; i < chart->series_count; i++) {
     size_t j;
     const my_chart_series_t* series = &chart->series[i];
-    if (!chart->series_visible[i] || chart_series_axis(chart, i) != axis)
+    if (!chart->series_visible[i] || chart->series_grid[i] != grid ||
+        chart_series_axis(chart, i) != axis)
       continue;
     for (j = 0u; j < series->count; j++) {
       float value = series->values != NULL ? series->values[j] : 0.0f;
@@ -315,7 +333,7 @@ static void chart_axis_range(const my_chart_t* chart, unsigned axis,
   }
   if (!found) {
     if (axis == 1u) { *y_min = 0.0f; *y_max = 0.0f; return; }
-    chart_range(chart, y_min, y_max);
+    chart_range(chart, grid, y_min, y_max);
     return;
   }
   if (lo == hi) { lo -= 1.0f; hi += 1.0f; }
@@ -351,7 +369,7 @@ my_ret_t my_chart_get_range(const my_widget_t* widget, float* y_min,
   const my_chart_t* chart = chart_const_cast(widget);
   if (chart == NULL || y_min == NULL || y_max == NULL)
     return MY_RET_INVALID_PARAMS;
-  chart_range(chart, y_min, y_max);
+  chart_range(chart, 0u, y_min, y_max);
   return MY_RET_OK;
 }
 
@@ -360,7 +378,7 @@ my_ret_t my_chart_get_axis_range(const my_widget_t* widget, unsigned axis,
   const my_chart_t* chart = chart_const_cast(widget);
   if (chart == NULL || axis > 1u || y_min == NULL || y_max == NULL)
     return MY_RET_INVALID_PARAMS;
-  chart_axis_range(chart, axis, y_min, y_max);
+  chart_axis_range(chart, 0u, axis, y_min, y_max);
   return MY_RET_OK;
 }
 
@@ -404,7 +422,7 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
   }
   if (chart != NULL && chart_has_secondary(chart)) {
     float y2_min, y2_max;
-    chart_axis_range(chart, 1u, &y2_min, &y2_max);
+    chart_axis_range(chart, chart->paint_grid, 1u, &y2_min, &y2_max);
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
     for (i = 0; i < grid_lines; i++) {
@@ -425,7 +443,8 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
   size_t begin, count;
   bool started = false;
   if (series->values == NULL || series->count == 0u) return;
-  chart_axis_range(chart, chart_series_axis(chart, series_index), &y_min, &y_max);
+  chart_axis_range(chart, chart->paint_grid,
+                    chart_series_axis(chart, series_index), &y_min, &y_max);
   chart_zoom_range(chart, &begin, &count);
   if (count == 0u) return;
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(series->color));
@@ -448,7 +467,8 @@ static void chart_draw_scatter_series(const my_chart_t* chart,
   float y_min, y_max;
   size_t begin, count;
   if (series->values == NULL || series->count == 0u) return;
-  chart_axis_range(chart, chart_series_axis(chart, series_index), &y_min, &y_max);
+  chart_axis_range(chart, chart->paint_grid,
+                    chart_series_axis(chart, series_index), &y_min, &y_max);
   chart_zoom_range(chart, &begin, &count);
   if (count == 0u) return;
   for (size_t i = begin; i < begin + count && i < series->count; i++) {
@@ -506,7 +526,7 @@ static void chart_draw_radar(const my_chart_t* chart, my_vgcanvas_t* vg,
   float radius = fminf(w, h) * 0.36f;
   float y_min, y_max;
   if (count < 3u) return;
-  chart_axis_range(chart, 0u, &y_min, &y_max);
+  chart_axis_range(chart, chart->paint_grid, 0u, &y_min, &y_max);
   for (unsigned ring = 1u; ring <= 4u; ring++) {
     my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xD8DEE6AAu));
     my_vgcanvas_begin_path(vg);
@@ -603,12 +623,17 @@ static void chart_draw_heatmap(const my_chart_t* chart, my_vgcanvas_t* vg,
   size_t columns = chart_category_count(chart);
   size_t rows = 0u;
   for (size_t i = 0u; i < chart->series_count; i++)
-    if (chart->series_visible[i] && chart->series[i].count > 0u) rows++;
+    if (chart->series_visible[i] && chart->series_grid[i] == chart->paint_grid &&
+        chart->series[i].count > 0u)
+      rows++;
   if (columns == 0u || rows == 0u) return;
   float cell_w = w / (float)columns;
   float cell_h = h / (float)rows;
   size_t row = 0u;
   for (size_t s = 0u; s < chart->series_count; s++) {
+    if (!chart->series_visible[s] || chart->series_grid[s] != chart->paint_grid) {
+      continue;
+    }
     const my_chart_series_t* series = &chart->series[s];
     if (!chart->series_visible[s] || series->values == NULL || series->count == 0u)
       continue;
@@ -637,7 +662,8 @@ static void chart_draw_boxplot(const my_chart_t* chart, my_vgcanvas_t* vg,
     float y_q1, y_q3, y_med, y_lo, y_hi;
     if (!chart->series_visible[s] || series->values == NULL || series->count < 5u)
       continue;
-    chart_axis_range(chart, chart_series_axis(chart, s), &y_min, &y_max);
+    chart_axis_range(chart, chart->paint_grid,
+                      chart_series_axis(chart, s), &y_min, &y_max);
     center_x = x + w * ((float)slot + 0.5f) / (float)visible;
     box_w = w / (float)visible * 0.5f;
     y_lo = my_chart_value_to_y(series->values[0], y_min, y_max, y, h);
@@ -688,7 +714,8 @@ static void chart_draw_candlestick(const my_chart_t* chart, my_vgcanvas_t* vg,
       if (!chart->series_visible[s] || series->values == NULL ||
           series->count < 4u || (series->count % 4u) != 0u)
         continue;
-      chart_axis_range(chart, chart_series_axis(chart, s), &y_min, &y_max);
+      chart_axis_range(chart, chart->paint_grid,
+                      chart_series_axis(chart, s), &y_min, &y_max);
       for (size_t c = 0u; c < series->count / 4u; c++, candle++) {
         float open = series->values[c * 4u + 0u];
         float high = series->values[c * 4u + 1u];
@@ -843,7 +870,7 @@ static void chart_draw_parallel(const my_chart_t* chart, my_vgcanvas_t* vg,
     }
   }
   if (axes == 0u || rows == 0u) return;
-  chart_axis_range(chart, 0u, &y_min, &y_max);
+  chart_axis_range(chart, chart->paint_grid, 0u, &y_min, &y_max);
   if (y_max <= y_min) { y_min = 0.0f; y_max = 1.0f; }
   my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xAAB4C0FFu));
   my_vgcanvas_set_line_width(vg, 1.0f);
@@ -1040,7 +1067,7 @@ static void chart_draw_theme_river(const my_chart_t* chart, my_vgcanvas_t* vg,
     }
   }
   if (visible == 0u || max_count < 2u) return;
-  chart_axis_range(chart, 0u, &y_min, &y_max);
+  chart_axis_range(chart, chart->paint_grid, 0u, &y_min, &y_max);
   if (y_max <= y_min) {
     y_min = 0.0f;
     y_max = 1.0f;
@@ -1097,7 +1124,9 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
   float zero_y;
   if (chart->series_count == 0u) return;
   for (series_index = 0u; series_index < chart->series_count; series_index++) {
-    if (!chart->series_visible[series_index]) continue;
+    if (!chart->series_visible[series_index] ||
+        chart->series_grid[series_index] != chart->paint_grid)
+      continue;
     if (chart->series[series_index].count > category_count)
       category_count = chart->series[series_index].count;
   }
@@ -1124,9 +1153,12 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
         float sy_max = y_max;
         float top;
         float height;
-        if (!chart->series_visible[series_index] || series->values == NULL ||
-            category >= series->count) continue;
-        chart_axis_range(chart, chart_series_axis(chart, series_index), &sy_min,
+        if (!chart->series_visible[series_index] ||
+            chart->series_grid[series_index] != chart->paint_grid ||
+            series->values == NULL || category >= series->count)
+          continue;
+        chart_axis_range(chart, chart->paint_grid,
+                         chart_series_axis(chart, series_index), &sy_min,
                          &sy_max);
         if (chart->stacked) {
           bar_w = group_width;
@@ -1167,9 +1199,8 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
   }
 }
 
-static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
-                                     float x, float y, float w, float h,
-                                     float y_min, float y_max) {
+static void chart_draw_hover_markers(const my_chart_t* chart,
+                                     my_vgcanvas_t* vg) {
   size_t i;
   size_t category_count = chart_category_count(chart);
   size_t begin, window;
@@ -1182,12 +1213,16 @@ static void chart_draw_hover_markers(const my_chart_t* chart, my_vgcanvas_t* vg,
     const my_chart_series_t* series = &chart->series[i];
     float point_x;
     float point_y;
-    float sy_min = y_min;
-    float sy_max = y_max;
+    float x, y, w, h;
+    float sy_min, sy_max;
     if (!chart->series_visible[i] || series->values == NULL ||
         chart->hover_index >= series->count) continue;
+    if (!chart_grid_rect((const my_widget_t*)chart, chart->series_grid[i],
+                         &x, &y, &w, &h))
+      continue;
     point_x = chart_category_x(chart->hover_index, begin, window, x, w);
-    chart_axis_range(chart, chart_series_axis(chart, i), &sy_min, &sy_max);
+    chart_axis_range(chart, chart->series_grid[i],
+                      chart_series_axis(chart, i), &sy_min, &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = chart_animated_value(chart, series->values[chart->hover_index]);
       float base = chart_stacked_base(chart, i, chart->hover_index, value);
@@ -1233,7 +1268,8 @@ static void chart_draw_mark_points(const my_chart_t* chart, my_vgcanvas_t* vg,
     if (series->values == NULL || mark->category_index >= series->count) continue;
     if (!chart_category_in_window(mark->category_index, begin, window)) continue;
     px = chart_category_x(mark->category_index, begin, window, x, w);
-    chart_axis_range(chart, chart_series_axis(chart, mark->series_index), &sy_min,
+    chart_axis_range(chart, chart->series_grid[mark->series_index],
+                     chart_series_axis(chart, mark->series_index), &sy_min,
                      &sy_max);
     if (chart->stacked && chart->mode == MY_CHART_BAR) {
       float value = chart_animated_value(chart, series->values[mark->category_index]);
@@ -1317,34 +1353,77 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
   if (chart->title[0] != '\0') my_vgcanvas_draw_text(vg, chart->title, 12, 8);
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
-  chart_range(chart, &y_min, &y_max);
-  if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR &&
-      chart->mode != MY_CHART_FUNNEL && chart->mode != MY_CHART_HEATMAP &&
-      chart->mode != MY_CHART_GAUGE && chart->mode != MY_CHART_SANKEY &&
-      chart->mode != MY_CHART_PARALLEL && chart->mode != MY_CHART_TREEMAP &&
-      chart->mode != MY_CHART_GRAPH && chart->mode != MY_CHART_CALENDAR &&
-      chart->mode != MY_CHART_THEME_RIVER) {
-    chart_grid(widget, vg, x, y, w, h, y_min, y_max);
-    chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
-  }
-  if (chart->labels != NULL && chart->label_count > 0u) {
-    size_t label_count = chart->label_count;
-    size_t label_index;
-    size_t data_count = chart_category_count(chart);
-    size_t zoom_begin, zoom_window;
-    if (data_count > 0u && label_count > data_count) label_count = data_count;
-    chart_zoom_range(chart, &zoom_begin, &zoom_window);
-    my_vgcanvas_set_font(vg, NULL, 10);
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
-    for (label_index = zoom_begin;
-         label_index < zoom_begin + zoom_window && label_index < label_count;
-         label_index++) {
-      float label_x = chart_category_x(label_index, zoom_begin, zoom_window, x, w);
-      my_vgcanvas_draw_text(vg, chart->labels[label_index] != NULL
-                                   ? chart->labels[label_index]
-                                   : "",
-                            label_x - 12.0f, y + h + 6.0f);
+  chart_range(chart, 0u, &y_min, &y_max);
+  chart->paint_grid = 0u;
+  if (chart->mode == MY_CHART_LINE || chart->mode == MY_CHART_BAR ||
+      chart->mode == MY_CHART_SCATTER || chart->mode == MY_CHART_BOXPLOT ||
+      chart->mode == MY_CHART_CANDLESTICK || chart->mode == MY_CHART_HEATMAP) {
+    size_t grid_index;
+    for (grid_index = 0u; grid_index < chart->grid_count; grid_index++) {
+      float gx, gy, gw, gh, gy_min, gy_max;
+      chart->paint_grid = (unsigned char)grid_index;
+      if (!chart_grid_rect(widget, grid_index, &gx, &gy, &gw, &gh)) continue;
+      chart_range(chart, grid_index, &gy_min, &gy_max);
+      chart_grid(widget, vg, gx, gy, gw, gh, gy_min, gy_max);
+      if (grid_index == 0u)
+        chart_draw_visual_map(chart, vg, gx, gy + 2.0f, gw);
+      if (chart->labels != NULL && chart->label_count > 0u) {
+        size_t label_count = chart->label_count;
+        size_t label_index;
+        size_t grid_data_count = 0u;
+        size_t zoom_begin, zoom_window;
+        for (label_index = 0u; label_index < chart->series_count;
+             label_index++) {
+          if (!chart->series_visible[label_index] ||
+              chart->series_grid[label_index] != grid_index)
+            continue;
+          if (chart->series[label_index].count > grid_data_count)
+            grid_data_count = chart->series[label_index].count;
+        }
+        if (grid_data_count > 0u && label_count > grid_data_count)
+          label_count = grid_data_count;
+        chart_zoom_range(chart, &zoom_begin, &zoom_window);
+        my_vgcanvas_set_font(vg, NULL, 10);
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
+        for (label_index = zoom_begin;
+             label_index < zoom_begin + zoom_window &&
+             label_index < label_count;
+             label_index++) {
+          float label_x =
+              chart_category_x(label_index, zoom_begin, zoom_window, gx, gw);
+          my_vgcanvas_draw_text(vg, chart->labels[label_index] != NULL
+                                       ? chart->labels[label_index]
+                                       : "",
+                                label_x - 12.0f, gy + gh + 6.0f);
+        }
+      }
+      if (chart->mode == MY_CHART_CANDLESTICK) {
+        chart_draw_candlestick(chart, vg, gx, gy, gw, gh);
+      } else if (chart->mode == MY_CHART_BOXPLOT) {
+        chart_draw_boxplot(chart, vg, gx, gy, gw, gh);
+      } else if (chart->mode == MY_CHART_HEATMAP) {
+        chart_draw_heatmap(chart, vg, gx, gy, gw, gh);
+      } else if (chart->mode == MY_CHART_BAR) {
+        chart_draw_bars(chart, vg, gx, gy, gw, gh, gy_min, gy_max);
+      } else if (chart->mode == MY_CHART_SCATTER) {
+        for (i = 0; i < chart->series_count; i++) {
+          if (!chart->series_visible[i] ||
+              chart->series_grid[i] != grid_index)
+            continue;
+          chart_draw_scatter_series(chart, vg, i, gx, gy, gw, gh);
+        }
+      } else {
+        for (i = 0; i < chart->series_count; i++) {
+          if (!chart->series_visible[i] ||
+              chart->series_grid[i] != grid_index)
+            continue;
+          chart_draw_line_series(chart, vg, i, gx, gy, gw, gh);
+        }
+      }
     }
+    chart->paint_grid = 0u;
+    if (!chart_grid_rect(widget, 0u, &x, &y, &w, &h)) return;
+    chart_range(chart, 0u, &y_min, &y_max);
   }
   if (chart->mode == MY_CHART_TREEMAP) {
     chart_draw_treemap(chart, vg, x, y, w, h);
@@ -1360,32 +1439,14 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     chart_draw_sankey(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_PARALLEL) {
     chart_draw_parallel(chart, vg, x, y, w, h);
-  } else if (chart->mode == MY_CHART_CANDLESTICK) {
-    chart_draw_candlestick(chart, vg, x, y, w, h);
-  } else if (chart->mode == MY_CHART_BOXPLOT) {
-    chart_draw_boxplot(chart, vg, x, y, w, h);
-  } else if (chart->mode == MY_CHART_HEATMAP) {
-    chart_draw_heatmap(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_PIE) {
     chart_draw_pie(chart, vg, x, y, w, h);
-  } else if (chart->mode == MY_CHART_BAR) {
-    chart_draw_bars(chart, vg, x, y, w, h, y_min, y_max);
   } else if (chart->mode == MY_CHART_RADAR) {
     chart_draw_radar(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_FUNNEL) {
     chart_draw_funnel(chart, vg, x, y, w, h);
-  } else if (chart->mode == MY_CHART_SCATTER) {
-    for (i = 0; i < chart->series_count; i++) {
-      if (!chart->series_visible[i]) continue;
-      chart_draw_scatter_series(chart, vg, i, x, y, w, h);
-    }
-  } else {
-    for (i = 0; i < chart->series_count; i++) {
-      if (!chart->series_visible[i]) continue;
-      chart_draw_line_series(chart, vg, i, x, y, w, h);
-    }
   }
-  chart_draw_hover_markers(chart, vg, x, y, w, h, y_min, y_max);
+  chart_draw_hover_markers(chart, vg);
   chart_draw_mark_points(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_lines(chart, vg, x, y, w, h, y_min, y_max);
   chart_draw_mark_areas(chart, vg, x, y, w, h, y_min, y_max);
@@ -1413,20 +1474,27 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     chart_zoom_range(chart, &zoom_begin, &zoom_window);
     if (zoom_window > 0u &&
         chart_category_in_window(chart->hover_index, zoom_begin, zoom_window)) {
-    float hover_x = chart_category_x(chart->hover_index, zoom_begin, zoom_window,
-                                     x, w);
+    float hx, hy, hw, hh;
+    float hover_x;
+    size_t hover_grid = chart->hover_grid < chart->grid_count
+                            ? chart->hover_grid : 0u;
+    if (!chart_grid_rect(widget, hover_grid, &hx, &hy, &hw, &hh)) {
+      hx = x; hy = y; hw = w; hh = h;
+    }
+    hover_x = chart_category_x(chart->hover_index, zoom_begin, zoom_window,
+                               hx, hw);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
-    my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, y, 1.0f, h});
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, hy, 1.0f, hh});
     if (chart->tooltip_enabled &&
         my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
       my_vgcanvas_fill_rounded_rect(vg,
-                                    &(my_rectf_t){hover_x + 6.0f, y + 6.0f,
+                                    &(my_rectf_t){hover_x + 6.0f, hy + 6.0f,
                                                   96.0f, 22.0f},
                                     4.0f);
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
       my_vgcanvas_set_font(vg, NULL, 10);
-      my_vgcanvas_draw_text(vg, tooltip, hover_x + 10.0f, y + 11.0f);
+      my_vgcanvas_draw_text(vg, tooltip, hover_x + 10.0f, hy + 11.0f);
     }
     }
   }
@@ -1559,23 +1627,18 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   if (event->type != MY_EVENT_POINTER_MOVE || chart_category_count(chart) == 0u) {
     return MY_RET_NOT_SUPPORTED;
   }
-  if ((float)local_x < x || (float)local_x > x + w || (float)local_y < y ||
-       (float)local_y > y + h) {
-    chart->hover_index = CHART_HOVER_NONE;
-    return MY_RET_NOT_SUPPORTED;
-  }
   {
-    size_t category_count = chart_category_count(chart);
-    size_t begin, window;
-    chart_zoom_range(chart, &begin, &window);
-    if (window == 0u) return MY_RET_NOT_SUPPORTED;
-    if (window > 1u)
-      index = begin + (size_t)lroundf(((float)local_x - x) / w *
-                                      (float)(window - 1u));
-    else
-      index = begin;
-    if (index >= begin + window) index = begin + window - 1u;
-    if (index >= category_count) index = category_count - 1u;
+    size_t grid = chart_grid_at(widget, local_x, local_y);
+    if (grid == MY_CHART_NO_GRID) {
+      if (chart->hover_index != CHART_HOVER_NONE) {
+        chart->hover_index = CHART_HOVER_NONE;
+        my_widget_invalidate(widget, NULL);
+      }
+      return MY_RET_NOT_SUPPORTED;
+    }
+    index = my_chart_hit_test(widget, local_x, local_y);
+    if (index == CHART_HOVER_NONE) return MY_RET_NOT_SUPPORTED;
+    chart->hover_grid = (unsigned char)grid;
   }
   if (chart->hover_index != index) {
     chart->hover_index = index;
@@ -1586,6 +1649,97 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
 
 static const my_widget_vtable_t s_chart_vtable = {chart_on_paint, chart_on_event,
                                                    NULL, NULL};
+
+my_ret_t my_chart_set_grid_count(my_widget_t* widget, size_t count) {
+  my_chart_t* chart = chart_cast(widget);
+  size_t i;
+  if (chart == NULL || count == 0u || count > MY_CHART_MAX_GRIDS)
+    return MY_RET_INVALID_PARAMS;
+  if (count < chart->grid_count) {
+    for (i = 0u; i < MY_CHART_MAX_SERIES; i++)
+      if (chart->series_grid[i] >= count) chart->series_grid[i] = 0u;
+    for (i = count; i < MY_CHART_MAX_GRIDS; i++) {
+      chart->grid_explicit[i] = false;
+      chart->grid_range_set[i] = false;
+      chart->grid_range2_set[i] = false;
+    }
+  }
+  chart->grid_count = count;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+size_t my_chart_get_grid_count(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL ? chart->grid_count : 0u;
+}
+
+my_ret_t my_chart_set_grid(my_widget_t* widget, size_t index,
+                           const my_chart_grid_desc_t* desc) {
+  my_chart_t* chart = chart_cast(widget);
+  size_t i;
+  if (chart == NULL || desc == NULL || index >= chart->grid_count)
+    return MY_RET_INVALID_PARAMS;
+  if (!isfinite(desc->left) || !isfinite(desc->top) || !isfinite(desc->width) ||
+      !isfinite(desc->height) || desc->left < 0.0f || desc->top < 0.0f ||
+      desc->width <= 0.0f || desc->height <= 0.0f ||
+      desc->left + desc->width > 1.0f + 1e-6f ||
+      desc->top + desc->height > 1.0f + 1e-6f)
+    return MY_RET_INVALID_PARAMS;
+  if (desc->series_count > MY_CHART_MAX_SERIES)
+    return MY_RET_INVALID_PARAMS;
+  for (i = 0u; i < desc->series_count; i++)
+    if (desc->series_indices[i] >= MY_CHART_MAX_SERIES)
+      return MY_RET_INVALID_PARAMS;
+  if (desc->range_set && !(desc->y_min < desc->y_max))
+    return MY_RET_INVALID_PARAMS;
+  if (desc->range2_set && !(desc->y2_min < desc->y2_max))
+    return MY_RET_INVALID_PARAMS;
+  for (i = 0u; i < MY_CHART_MAX_SERIES; i++)
+    if (chart->series_grid[i] == index) chart->series_grid[i] = 0u;
+  for (i = 0u; i < desc->series_count; i++)
+    chart->series_grid[desc->series_indices[i]] = (unsigned char)index;
+  chart->grid_left[index] = desc->left;
+  chart->grid_top[index] = desc->top;
+  chart->grid_width[index] = desc->width;
+  chart->grid_height[index] = desc->height;
+  chart->grid_explicit[index] = true;
+  chart->grid_visible[index] = desc->visible;
+  chart->grid_range_set[index] = desc->range_set;
+  chart->grid_y_min[index] = desc->y_min;
+  chart->grid_y_max[index] = desc->y_max;
+  chart->grid_range2_set[index] = desc->range2_set;
+  chart->grid_y2_min[index] = desc->y2_min;
+  chart->grid_y2_max[index] = desc->y2_max;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+size_t my_chart_get_series_grid(const my_widget_t* widget, size_t series) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || series >= MY_CHART_MAX_SERIES) return 0u;
+  return chart->series_grid[series];
+}
+
+my_ret_t my_chart_get_grid_rect(const my_widget_t* widget, size_t index,
+                                float* x, float* y, float* w, float* h) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || index >= chart->grid_count)
+    return MY_RET_INVALID_PARAMS;
+  if (!chart_grid_rect(widget, index, x, y, w, h))
+    return MY_RET_FAIL;
+  return MY_RET_OK;
+}
+
+my_ret_t my_chart_get_grid_range(const my_widget_t* widget, size_t index,
+                                 unsigned axis, float* y_min, float* y_max) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || index >= chart->grid_count || axis > 1u ||
+      y_min == NULL || y_max == NULL)
+    return MY_RET_INVALID_PARAMS;
+  chart_axis_range(chart, index, axis, y_min, y_max);
+  return MY_RET_OK;
+}
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mode) {
   my_chart_t* chart;
@@ -1613,6 +1767,8 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   chart->brush_start = SIZE_MAX;
   chart->brush_end = SIZE_MAX;
   for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
+  for (size_t g = 0u; g < MY_CHART_MAX_GRIDS; g++) chart->grid_visible[g] = true;
+  chart->grid_count = 1u;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
   return (my_widget_t*)chart;
@@ -1685,9 +1841,9 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->stacked = snapshot->stacked;
   chart->show_legend = snapshot->show_legend;
   chart->tooltip_enabled = snapshot->tooltip_enabled;
-  chart->range_set = snapshot->range_set;
-  chart->y_min = snapshot->y_min;
-  chart->y_max = snapshot->y_max;
+  chart->grid_range_set[0] = snapshot->range_set;
+  chart->grid_y_min[0] = snapshot->y_min;
+  chart->grid_y_max[0] = snapshot->y_max;
   chart->zoom_set = snapshot->zoom_set;
   chart->zoom_start = snapshot->zoom_start;
   chart->zoom_end = snapshot->zoom_end;
@@ -1800,9 +1956,9 @@ my_ret_t my_chart_set_range(my_widget_t* widget, float y_min, float y_max) {
   my_chart_t* chart = chart_cast(widget);
   if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min)
     return MY_RET_INVALID_PARAMS;
-  chart->y_min = y_min;
-  chart->y_max = y_max;
-  chart->range_set = true;
+  chart->grid_y_min[0] = y_min;
+  chart->grid_y_max[0] = y_max;
+  chart->grid_range_set[0] = true;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }
@@ -1812,9 +1968,9 @@ my_ret_t my_chart_set_secondary_range(my_widget_t* widget, float y_min,
   my_chart_t* chart = chart_cast(widget);
   if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min)
     return MY_RET_INVALID_PARAMS;
-  chart->y2_min = y_min;
-  chart->y2_max = y_max;
-  chart->range2_set = true;
+  chart->grid_y2_min[0] = y_min;
+  chart->grid_y2_max[0] = y_max;
+  chart->grid_range2_set[0] = true;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }
@@ -2055,15 +2211,31 @@ size_t my_chart_get_hover_index(const my_widget_t* widget) {
   return chart != NULL ? chart->hover_index : CHART_HOVER_NONE;
 }
 
+size_t chart_grid_at(const my_widget_t* widget, int32_t local_x,
+                      int32_t local_y) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  size_t grid;
+  if (chart == NULL) return MY_CHART_NO_GRID;
+  for (grid = chart->grid_count; grid > 0u; grid--) {
+    float x, y, w, h;
+    if (!chart_grid_rect(widget, grid - 1u, &x, &y, &w, &h)) continue;
+    if ((float)local_x >= x && (float)local_x <= x + w &&
+        (float)local_y >= y && (float)local_y <= y + h)
+      return grid - 1u;
+  }
+  return MY_CHART_NO_GRID;
+}
+
 size_t my_chart_hit_test(const my_widget_t* widget, int32_t local_x,
                          int32_t local_y) {
   const my_chart_t* chart = chart_const_cast(widget);
   float x, y, w, h;
   size_t begin, window, category_count;
-  if (chart == NULL || !chart_plot_rect(widget, &x, &y, &w, &h))
-    return CHART_HOVER_NONE;
-  if ((float)local_x < x || (float)local_x > x + w || (float)local_y < y ||
-      (float)local_y > y + h)
+  size_t grid;
+  if (chart == NULL) return CHART_HOVER_NONE;
+  grid = chart_grid_at(widget, local_x, local_y);
+  if (grid == MY_CHART_NO_GRID) return CHART_HOVER_NONE;
+  if (!chart_grid_rect(widget, grid, &x, &y, &w, &h))
     return CHART_HOVER_NONE;
   category_count = chart_category_count(chart);
   chart_zoom_range(chart, &begin, &window);

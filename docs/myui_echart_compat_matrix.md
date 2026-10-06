@@ -9,7 +9,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 |---|---|
 | Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) with row-aligned sort and filter transforms |
 | Series | all 16 native modes: line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel, treemap, graph, calendar, themeRiver |
-| Cartesian | category labels, grid, fractional ticks, left/right Y axes |
+| Cartesian | category labels, grid, fractional ticks, left/right Y axes, up to 4 grids (multi-grid layout, per-grid series assignment, per-grid axis ranges, per-grid hit test) |
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom; adapter-event bridge fills series/data/category indexes via chart hit-test |
 | Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
@@ -32,7 +32,9 @@ overflow return `MY_RET_NOT_SUPPORTED`.
 - JSON/JavaScript option parsing or a browser runtime;
 - dataset transforms beyond row-aligned sort/filter and multi-dimensional
   `encode`;
-- multiple grids and arbitrary axis counts;
+- more than one grid with independent left/right Y axes is now supported
+  (up to `MY_CHART_MAX_GRIDS` = 4); arbitrary per-grid axis counts beyond
+  left/right remain unimplemented;
 - full tooltip formatter/trigger/position semantics;
 - complete dataZoom/visualMap/brush action payloads and cross-chart linkage;
 - native hit-test results in semantic event payloads for every chart type;

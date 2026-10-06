@@ -84,6 +84,23 @@ typedef struct my_echart_mark_area_input_t {
   uint32_t color;
 } my_echart_mark_area_input_t;
 
+#define MY_ECHART_MAX_GRIDS 4u
+
+typedef struct my_echart_grid_input_t {
+  double left;
+  double top;
+  double width;
+  double height;
+  const size_t* series_indices;
+  size_t series_count;
+  bool range_set;
+  double y_min;
+  double y_max;
+  bool range2_set;
+  double y2_min;
+  double y2_max;
+} my_echart_grid_input_t;
+
 typedef struct my_echart_option_input_t {
   const char* title;
   const char* const* x_axis_data;
@@ -116,6 +133,8 @@ typedef struct my_echart_option_input_t {
   my_echart_filter_op_t filter_op;
   const char* filter_dimension;
   double filter_value;
+  const my_echart_grid_input_t* grids;
+  size_t grid_count;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
@@ -149,6 +168,21 @@ typedef struct my_echart_mark_area_t {
   uint32_t color;
 } my_echart_mark_area_t;
 
+typedef struct my_echart_grid_t {
+  double left;
+  double top;
+  double width;
+  double height;
+  size_t* series_indices;
+  size_t series_count;
+  bool range_set;
+  double y_min;
+  double y_max;
+  bool range2_set;
+  double y2_min;
+  double y2_max;
+} my_echart_grid_t;
+
 typedef struct my_echart_option_t {
   const my_allocator_t* allocator;
   char* title;
@@ -175,6 +209,8 @@ typedef struct my_echart_option_t {
   size_t mark_line_count;
   my_echart_mark_area_t* mark_areas;
   size_t mark_area_count;
+  my_echart_grid_t* grids;
+  size_t grid_count;
 } my_echart_option_t;
 
 void my_echart_option_init(my_echart_option_t* option,

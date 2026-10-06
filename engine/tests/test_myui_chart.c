@@ -1234,6 +1234,178 @@ TEST(chart_supports_theme_river_mode) {
   my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
 }
 
+static size_t chart_count_color_in_region(const uint8_t* pixels,
+                                          uint32_t stride, uint32_t x0,
+                                          uint32_t y0, uint32_t x1,
+                                          uint32_t y1, uint32_t color) {
+  const uint8_t r = (uint8_t)(color >> 24);
+  const uint8_t g = (uint8_t)(color >> 16);
+  const uint8_t b = (uint8_t)(color >> 8);
+  const uint8_t a = (uint8_t)color;
+  size_t matched = 0u;
+  for (uint32_t y = y0; y < y1; y++) {
+    for (uint32_t x = x0; x < x1; x++) {
+      const uint8_t* p = pixels + y * stride + x * 4u;
+      if (p[0] == b && p[1] == g && p[2] == r && p[3] == a) matched++;
+    }
+  }
+  return matched;
+}
+
+TEST(chart_multi_grid_layout_and_assignment) {
+  static const float values[] = {1.0f, 2.0f, 3.0f};
+  my_chart_series_t series = {"S", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_grid_desc_t grid;
+  float x, y, w, h;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320; chart->rect.h = 180;
+
+  ASSERT_EQ((size_t)my_chart_get_grid_count(chart), 1u);
+  ASSERT_EQ(my_chart_get_grid_rect(chart, 0u, &x, &y, &w, &h), MY_RET_OK);
+  ASSERT_TRUE(w > 0.0f && h > 0.0f);
+
+  ASSERT_EQ(my_chart_set_grid_count(chart, 0u), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid_count(chart, MY_CHART_MAX_GRIDS + 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
+  ASSERT_EQ((size_t)my_chart_get_grid_count(chart), 2u);
+
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  memset(&grid, 0, sizeof(grid));
+  grid.left = 0.1f; grid.top = 0.55f; grid.width = 0.8f; grid.height = 0.35f;
+  grid.series_indices[0] = 0u;
+  grid.series_count = 1u;
+  grid.visible = true;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_OK);
+  ASSERT_EQ((size_t)my_chart_get_series_grid(chart, 0u), 1u);
+
+  grid.left = -0.1f;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_INVALID_PARAMS);
+  grid.left = 0.1f;
+  grid.width = 1.5f;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_INVALID_PARAMS);
+  grid.width = NAN;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_INVALID_PARAMS);
+  grid.width = 0.8f;
+  grid.series_count = MY_CHART_MAX_SERIES + 1u;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_INVALID_PARAMS);
+  grid.series_count = 1u;
+  grid.series_indices[0] = 99u;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_INVALID_PARAMS);
+  grid.series_indices[0] = 0u;
+  ASSERT_EQ(my_chart_set_grid(chart, 2u, &grid), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, NULL), MY_RET_INVALID_PARAMS);
+
+  ASSERT_EQ(my_chart_get_grid_rect(chart, 1u, &x, &y, &w, &h), MY_RET_OK);
+  ASSERT_TRUE(w > 0.0f && h > 0.0f);
+  ASSERT_EQ(my_chart_get_grid_rect(chart, 2u, &x, &y, &w, &h),
+            MY_RET_INVALID_PARAMS);
+
+  ASSERT_EQ(my_chart_set_grid_count(chart, 1u), MY_RET_OK);
+  ASSERT_EQ((size_t)my_chart_get_series_grid(chart, 0u), 0u);
+  my_widget_unref(chart);
+}
+
+TEST(chart_multi_grid_renders_series_in_own_rect) {
+  static const float top_values[] = {1.0f, 3.0f, 2.0f};
+  static const float bottom_values[] = {2.0f, 1.0f, 3.0f};
+  my_chart_series_t top = {"top", top_values, 3u, 0xFF0000FFu, 0u};
+  my_chart_series_t bottom = {"bottom", bottom_values, 3u, 0x00FF00FFu, 0u};
+  my_chart_grid_desc_t grid;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  ASSERT_NOT_NULL(chart); ASSERT_NOT_NULL(lcd); ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_legend_visible(chart, false), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &top), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &bottom), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
+
+  memset(&grid, 0, sizeof(grid));
+  grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
+  grid.series_indices[0] = 0u;
+  grid.series_count = 1u;
+  grid.visible = true;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_OK);
+  grid.top = 0.55f;
+  grid.series_indices[0] = 1u;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_OK);
+
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  ASSERT_TRUE(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd), 40u, 10u,
+                                          300u, 80u, 0xFF0000FFu) > 30u);
+  ASSERT_TRUE(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd), 40u, 100u,
+                                          300u, 170u, 0x00FF00FFu) > 30u);
+  ASSERT_EQ(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd), 40u, 10u,
+                                        300u, 80u, 0x00FF00FFu), 0u);
+  ASSERT_EQ(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd), 40u, 100u,
+                                        300u, 170u, 0xFF0000FFu), 0u);
+  my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
+}
+
+TEST(chart_multi_grid_auto_range_isolated) {
+  static const float small_values[] = {1.0f, 10.0f};
+  static const float huge_values[] = {100.0f, 1000.0f};
+  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u};
+  my_chart_grid_desc_t grid;
+  float lo, hi;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &small), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &huge), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
+  memset(&grid, 0, sizeof(grid));
+  grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
+  grid.series_indices[0] = 1u;
+  grid.series_count = 1u;
+  grid.visible = true;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_OK);
+
+  ASSERT_EQ(my_chart_get_grid_range(chart, 0u, 0u, &lo, &hi), MY_RET_OK);
+  ASSERT_TRUE(hi <= 12.0f);
+  ASSERT_EQ(my_chart_get_grid_range(chart, 1u, 0u, &lo, &hi), MY_RET_OK);
+  ASSERT_TRUE(hi >= 999.0f);
+  ASSERT_EQ(my_chart_get_grid_range(chart, 2u, 0u, &lo, &hi),
+            MY_RET_INVALID_PARAMS);
+  my_widget_unref(chart);
+}
+
+
+TEST(chart_multi_grid_hit_test_resolves_own_grid) {
+  static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
+  my_chart_series_t series = {"S", values, 5u, 0xE85D75FFu, 0u};
+  my_chart_grid_desc_t grid;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
+  memset(&grid, 0, sizeof(grid));
+  grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
+  grid.series_indices[0] = 0u;
+  grid.series_count = 1u;
+  grid.visible = true;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_OK);
+  grid.top = 0.55f;
+  ASSERT_EQ(my_chart_set_grid(chart, 1u, &grid), MY_RET_OK);
+
+  ASSERT_EQ(chart_grid_at(chart, 100, 40), 0u);
+  ASSERT_EQ(chart_grid_at(chart, 100, 140), 1u);
+  ASSERT_EQ(chart_grid_at(chart, 100, 90), MY_CHART_NO_GRID);
+  ASSERT_EQ(my_chart_hit_test(chart, 100, 40), 1u);
+  ASSERT_EQ(my_chart_hit_test(chart, 100, 140), 1u);
+  ASSERT_EQ(my_chart_hit_test(chart, 100, 90), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -1279,4 +1451,8 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_graph_mode);
   RUN_TEST(chart_supports_calendar_mode);
   RUN_TEST(chart_supports_theme_river_mode);
+  RUN_TEST(chart_multi_grid_layout_and_assignment);
+  RUN_TEST(chart_multi_grid_renders_series_in_own_rect);
+  RUN_TEST(chart_multi_grid_auto_range_isolated);
+  RUN_TEST(chart_multi_grid_hit_test_resolves_own_grid);
 TEST_MAIN_END()
