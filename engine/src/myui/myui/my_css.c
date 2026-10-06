@@ -2681,9 +2681,16 @@ static bool css_media_query(css_media_cursor_t* cursor,
   bool has_type = false;
   bool need_and = false;
   bool negated = false;
+  bool only = false;
   css_media_ws(cursor);
   if (css_media_word(cursor, "not")) {
     negated = true;
+    css_media_ws(cursor);
+  }
+  /* R648: legacy `only` modifier — a no-op synonym for the bare media type.
+   * It cannot combine with `not` and requires a following type. */
+  if (!negated && css_media_word(cursor, "only")) {
+    only = true;
     css_media_ws(cursor);
   }
   if (cursor->position < cursor->length &&
@@ -2699,6 +2706,7 @@ static bool css_media_query(css_media_cursor_t* cursor,
     if (negated) return false;
     need_and = true;
   }
+  if (only && !has_type) return false;
   css_media_ws(cursor);
   while (cursor->position < cursor->length) {
     if (cursor->text[cursor->position] == ',') break;

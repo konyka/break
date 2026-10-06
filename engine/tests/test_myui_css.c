@@ -4583,6 +4583,79 @@ TEST(css_conditional_media_supports_aspect_ratio_range)
   }
 }
 
+TEST(css_conditional_media_supports_only_modifier)
+{
+  /* R648: the legacy `only` modifier (extremely common in real-world
+   * stylesheets) is a no-op synonym for the bare media type:
+   * `only screen` ≡ `screen`, `only all` ≡ `all`. It requires a following
+   * media type and cannot combine with `not`. */
+  const char* only_screen =
+      "@media only screen and (min-width: 800px) { button { color: red; } }";
+  const char* only_all =
+      "@media only all and (min-width: 800px) { button { color: red; } }";
+  const char* bare_type = "@media only screen { button { color: red; } }";
+  const char* only_malformed[] = {
+      "@media only (min-width: 1px) { button { color: red; } }",
+      "@media not only screen { button { color: red; } }",
+      "@media only not screen { button { color: red; } }",
+      "@media onlyonly screen { button { color: red; } }"};
+  my_css_media_context_t screen_wide = {1024u, 768u, true, false, false, 0u};
+  my_css_media_context_t screen_narrow = {600u, 768u, true, false, false, 0u};
+  my_css_media_context_t non_screen = {1024u, 768u, false, false, false, 0u};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  size_t i;
+
+  sheet = my_css_parse_media_ex(NULL, only_screen, strlen(only_screen),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &screen_wide,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* feature still gates: narrow viewport misses. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, only_screen, strlen(only_screen),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &screen_narrow,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* type still gates: non-screen context misses. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, only_screen, strlen(only_screen),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &non_screen,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, only_all, strlen(only_all),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &screen_wide,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, bare_type, strlen(bare_type),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &screen_wide,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  for (i = 0u; i < sizeof(only_malformed) / sizeof(only_malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_media_ex(NULL, only_malformed[i],
+                                      strlen(only_malformed[i]),
+                                      MY_CSS_PARSE_STRICT_AT_RULES,
+                                      &screen_wide, &error) == NULL);
+  }
+}
+
 TEST(css_conditional_media_rejects_oversized_query_and_invalid_units)
 {
   char* oversized = (char*)malloc(MY_CSS_MAX_MEDIA_QUERY_BYTES + 32u);
@@ -5464,6 +5537,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_conditional_media_supports_orientation_and_motion_preferences);
     RUN_TEST(css_conditional_media_supports_aspect_ratio);
     RUN_TEST(css_conditional_media_supports_aspect_ratio_range);
+    RUN_TEST(css_conditional_media_supports_only_modifier);
     RUN_TEST(css_conditional_media_rejects_oversized_query_and_invalid_units);
     RUN_TEST(css_conditional_media_rejects_missing_and_operator);
     RUN_TEST(css_conditional_media_supports_bounded_range_syntax);

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R648 `@media` `only` 修饰符（TDD）— 真实样式表高频写法 `only screen and (...)` 从 strict 拒收改为正确no-op 透传
+
+- **缺口**（MQ 面普查钓出）：css_media_query 只认 `not` 修饰符——`@media only screen and (min-width: 800px)`（真实世界最常见的媒体查询写法之一，为古早浏览器隐藏而生的 `only`）按语法错误拒绝，strict 下整张表作废。
+- **方案**（解析器三行级改动，语义等价类落地）：`not` 解析后、类型解析前接受可选 `only`（词界由 css_media_word 既有检查保证，`onlyonly screen` 不误配）;`only` 与 `not` 互斥（`not only screen` 走类型失配拒）、`only` 必须跟类型（`only (min-width: 1px)` 显式拒——`only && !has_type` 钉死）。求值语义：`only screen`≡`screen`（非 screen 上下文仍 miss）、`only all`≡`all`、特性门与类型门照常参与。
+- **TDD（红→绿实证）**：test_myui_css +1——only screen 命中/特性门窄屏 miss/类型门非 screen miss、only all 命中、裸类型 `only screen` 命中、畸形四例（缺类型/`not only`/`only not`/词界粘连）strict 拒。**RED 如实红**（首正例 sheet NULL）;GREEN 一次过 **160/160**(159+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯查询解析器改动，既有 `not` 语义测试组全绿未动。
+- **边界**:MQ 常用面自此进一步贴近真实样式表（`not`/`only`/类型/特性/区间/比值域全谱）;`resolution`/`monochrome` 等余项仍需媒体上下文扩字段（ABI 面，维持让渡）;R611 AMD 基线不动。
+
 ## 本轮更新：R647 `@media` aspect-ratio 区间写法（TDD）— R646 落账收尾：比值域接入 range 解析器，`(aspect-ratio >= 16/9)`/`(1/1 <= aspect-ratio <= 2/1)` 全形态落地
 
 - **缺口**（R646 落账"区间写法未开"）：range 解析器只认 width/height 数值域——`(aspect-ratio >= 16/9)` 按 -1 拒绝（strict sheet NULL）；MQ4 比值域三形态（名前/值前/链式）全缺。
