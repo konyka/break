@@ -40,6 +40,19 @@ typedef struct my_chart_mark_point_t {
   const char* label;
 } my_chart_mark_point_t;
 
+typedef struct my_chart_mark_line_state_t {
+  float value;
+  const char* label;
+  uint32_t color;
+} my_chart_mark_line_state_t;
+
+typedef struct my_chart_mark_area_state_t {
+  float y_min;
+  float y_max;
+  const char* label;
+  uint32_t color;
+} my_chart_mark_area_state_t;
+
 /** @brief Borrowed renderer state committed atomically to a chart widget. */
 typedef struct my_chart_snapshot_t {
   my_chart_mode_t mode;
@@ -62,6 +75,12 @@ typedef struct my_chart_snapshot_t {
   float visual_map_max;
   uint32_t visual_map_low_color;
   uint32_t visual_map_high_color;
+  const my_chart_mark_point_t* marks;
+  size_t mark_count;
+  const my_chart_mark_line_state_t* lines;
+  size_t line_count;
+  const my_chart_mark_area_state_t* areas;
+  size_t area_count;
 } my_chart_snapshot_t;
 
 typedef struct my_chart_t {

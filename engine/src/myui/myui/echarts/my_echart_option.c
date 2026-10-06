@@ -37,6 +37,18 @@ void my_echart_option_free(my_echart_option_t* option) {
     for (size_t i = 0u; i < option->x_axis_count; i++)
       my_mem_free(option->allocator, option->x_axis_data[i]);
   }
+  if (option->mark_points != NULL)
+    for (size_t i = 0u; i < option->mark_point_count; i++)
+      my_mem_free(option->allocator, option->mark_points[i].label);
+  if (option->mark_lines != NULL)
+    for (size_t i = 0u; i < option->mark_line_count; i++)
+      my_mem_free(option->allocator, option->mark_lines[i].label);
+  if (option->mark_areas != NULL)
+    for (size_t i = 0u; i < option->mark_area_count; i++)
+      my_mem_free(option->allocator, option->mark_areas[i].label);
+  my_mem_free(option->allocator, option->mark_points);
+  my_mem_free(option->allocator, option->mark_lines);
+  my_mem_free(option->allocator, option->mark_areas);
   my_mem_free(option->allocator, option->series);
   my_mem_free(option->allocator, option->x_axis_data);
   my_mem_free(option->allocator, option->title);
@@ -72,6 +84,20 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
       (!isfinite(input->visual_map_min) || !isfinite(input->visual_map_max) ||
        input->visual_map_max <= input->visual_map_min))
     return MY_RET_INVALID_PARAMS;
+  if (input->mark_point_count > MY_ECHART_MAX_MARK_POINTS ||
+      (input->mark_point_count > 0u && input->mark_points == NULL) ||
+      input->mark_line_count > MY_ECHART_MAX_MARK_LINES ||
+      (input->mark_line_count > 0u && input->mark_lines == NULL) ||
+      input->mark_area_count > MY_ECHART_MAX_MARK_AREAS ||
+      (input->mark_area_count > 0u && input->mark_areas == NULL))
+    return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < input->mark_line_count; i++)
+    if (!isfinite(input->mark_lines[i].value)) return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < input->mark_area_count; i++)
+    if (!isfinite(input->mark_areas[i].y_min) ||
+        !isfinite(input->mark_areas[i].y_max) ||
+        input->mark_areas[i].y_max <= input->mark_areas[i].y_min)
+      return MY_RET_INVALID_PARAMS;
   return MY_RET_OK;
 }
 
@@ -122,6 +148,53 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
     }
   }
   my_echart_option_free(dst);
+  candidate.mark_point_count = src->mark_point_count;
+  if (candidate.mark_point_count > 0u) {
+    candidate.mark_points = (my_echart_mark_point_t*)my_mem_calloc(
+        allocator, candidate.mark_point_count, sizeof(*candidate.mark_points));
+    if (candidate.mark_points == NULL) goto oom;
+    for (size_t i = 0u; i < candidate.mark_point_count; i++) {
+      candidate.mark_points[i].series_index = src->mark_points[i].series_index;
+      candidate.mark_points[i].category_index =
+          src->mark_points[i].category_index;
+      if (src->mark_points[i].label != NULL) {
+        candidate.mark_points[i].label =
+            copy_string(allocator, src->mark_points[i].label);
+        if (candidate.mark_points[i].label == NULL) goto oom;
+      }
+    }
+  }
+  candidate.mark_line_count = src->mark_line_count;
+  if (candidate.mark_line_count > 0u) {
+    candidate.mark_lines = (my_echart_mark_line_t*)my_mem_calloc(
+        allocator, candidate.mark_line_count, sizeof(*candidate.mark_lines));
+    if (candidate.mark_lines == NULL) goto oom;
+    for (size_t i = 0u; i < candidate.mark_line_count; i++) {
+      candidate.mark_lines[i].value = src->mark_lines[i].value;
+      candidate.mark_lines[i].color = src->mark_lines[i].color;
+      if (src->mark_lines[i].label != NULL) {
+        candidate.mark_lines[i].label =
+            copy_string(allocator, src->mark_lines[i].label);
+        if (candidate.mark_lines[i].label == NULL) goto oom;
+      }
+    }
+  }
+  candidate.mark_area_count = src->mark_area_count;
+  if (candidate.mark_area_count > 0u) {
+    candidate.mark_areas = (my_echart_mark_area_t*)my_mem_calloc(
+        allocator, candidate.mark_area_count, sizeof(*candidate.mark_areas));
+    if (candidate.mark_areas == NULL) goto oom;
+    for (size_t i = 0u; i < candidate.mark_area_count; i++) {
+      candidate.mark_areas[i].y_min = src->mark_areas[i].y_min;
+      candidate.mark_areas[i].y_max = src->mark_areas[i].y_max;
+      candidate.mark_areas[i].color = src->mark_areas[i].color;
+      if (src->mark_areas[i].label != NULL) {
+        candidate.mark_areas[i].label =
+            copy_string(allocator, src->mark_areas[i].label);
+        if (candidate.mark_areas[i].label == NULL) goto oom;
+      }
+    }
+  }
   candidate.legend_hidden = src->legend_hidden;
   candidate.range_set = src->range_set;
   candidate.y_min = src->y_min;

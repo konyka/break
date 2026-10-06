@@ -86,89 +86,83 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
                               const my_echart_option_t* source,
                               my_echart_adapter_payload_t** result) {
   my_echart_adapter_payload_t* candidate;
-  my_chart_mode_t mode;
-  bool stacked;
-  size_t title_length;
-  my_ret_t ret = validate_option(source, &mode, &stacked);
-  if (ret != MY_RET_OK) return ret;
+  my_echart_series_input_t* series_inputs = NULL;
+  my_echart_mark_point_input_t* point_inputs = NULL;
+  my_echart_mark_line_input_t* line_inputs = NULL;
+  my_echart_mark_area_input_t* area_inputs = NULL;
+  my_echart_option_input_t input;
+  my_ret_t ret;
   candidate = (my_echart_adapter_payload_t*)my_mem_calloc(
       adapter->allocator, 1u, sizeof(*candidate));
   if (candidate == NULL) return MY_RET_OOM;
   my_echart_option_init(&candidate->option, adapter->allocator);
-  title_length = strlen(source->title);
-  candidate->option.title = (char*)my_mem_alloc(adapter->allocator, title_length + 1u);
-  if (candidate->option.title == NULL) ret = MY_RET_OOM;
-  else {
-    memcpy(candidate->option.title, source->title, title_length + 1u);
-    candidate->option.x_axis_count = source->x_axis_count;
-    candidate->option.series_count = source->series_count;
-    if (source->x_axis_count > 0u) {
-      candidate->option.x_axis_data = (char**)my_mem_calloc(
-          adapter->allocator, source->x_axis_count, sizeof(char*));
-      if (candidate->option.x_axis_data == NULL) ret = MY_RET_OOM;
-    }
-    candidate->option.series = (my_echart_series_t*)my_mem_calloc(
-        adapter->allocator, source->series_count, sizeof(*candidate->option.series));
-    if (candidate->option.series == NULL) ret = MY_RET_OOM;
+
+  series_inputs = (my_echart_series_input_t*)my_mem_calloc(
+      adapter->allocator, source->series_count ? source->series_count : 1u,
+      sizeof(*series_inputs));
+  point_inputs = (my_echart_mark_point_input_t*)my_mem_calloc(
+      adapter->allocator,
+      source->mark_point_count ? source->mark_point_count : 1u,
+      sizeof(*point_inputs));
+  line_inputs = (my_echart_mark_line_input_t*)my_mem_calloc(
+      adapter->allocator,
+      source->mark_line_count ? source->mark_line_count : 1u,
+      sizeof(*line_inputs));
+  area_inputs = (my_echart_mark_area_input_t*)my_mem_calloc(
+      adapter->allocator,
+      source->mark_area_count ? source->mark_area_count : 1u,
+      sizeof(*area_inputs));
+  if (series_inputs == NULL || point_inputs == NULL || line_inputs == NULL ||
+      area_inputs == NULL) {
+    ret = MY_RET_OOM;
+    goto done;
   }
-  for (size_t i = 0u; ret == MY_RET_OK && i < source->x_axis_count; i++) {
-    size_t length = strlen(source->x_axis_data[i]);
-    candidate->option.x_axis_data[i] = (char*)my_mem_alloc(adapter->allocator, length + 1u);
-    if (candidate->option.x_axis_data[i] == NULL) { ret = MY_RET_OOM; break; }
-    memcpy(candidate->option.x_axis_data[i], source->x_axis_data[i], length + 1u);
+  for (size_t i = 0u; i < source->series_count; i++) {
+    const my_echart_series_t* s = &source->series[i];
+    series_inputs[i] = (my_echart_series_input_t){
+        s->id, s->name, s->type, s->data, s->data_count, s->color,
+        s->y_axis_index, s->stack, s->show};
   }
-  for (size_t i = 0u; ret == MY_RET_OK && i < source->series_count; i++) {
-    const my_echart_series_t* src = &source->series[i];
-    my_echart_series_t* dst = &candidate->option.series[i];
-    size_t length = strlen(src->name);
-    dst->name = (char*)my_mem_alloc(adapter->allocator, length + 1u);
-    if (dst->name == NULL) { ret = MY_RET_OOM; break; }
-    memcpy(dst->name, src->name, length + 1u);
-    if (src->id != NULL) {
-      length = strlen(src->id);
-      dst->id = (char*)my_mem_alloc(adapter->allocator, length + 1u);
-      if (dst->id == NULL) { ret = MY_RET_OOM; break; }
-      memcpy(dst->id, src->id, length + 1u);
-    }
-    if (src->stack != NULL) {
-      length = strlen(src->stack);
-      dst->stack = (char*)my_mem_alloc(adapter->allocator, length + 1u);
-      if (dst->stack == NULL) { ret = MY_RET_OOM; break; }
-      memcpy(dst->stack, src->stack, length + 1u);
-    }
-    dst->type = src->type;
-    dst->data_count = src->data_count;
-    dst->color = src->color;
-    dst->y_axis_index = src->y_axis_index;
-    dst->show = src->show;
-    if (src->data_count > 0u) {
+  for (size_t i = 0u; i < source->mark_point_count; i++)
+    point_inputs[i] = (my_echart_mark_point_input_t){
+        source->mark_points[i].series_index,
+        source->mark_points[i].category_index, source->mark_points[i].label};
+  for (size_t i = 0u; i < source->mark_line_count; i++)
+    line_inputs[i] = (my_echart_mark_line_input_t){
+        source->mark_lines[i].value, source->mark_lines[i].label,
+        source->mark_lines[i].color};
+  for (size_t i = 0u; i < source->mark_area_count; i++)
+    area_inputs[i] = (my_echart_mark_area_input_t){
+        source->mark_areas[i].y_min, source->mark_areas[i].y_max,
+        source->mark_areas[i].label, source->mark_areas[i].color};
+
+  input = (my_echart_option_input_t){
+      source->title, (const char* const*)source->x_axis_data,
+      source->x_axis_count, series_inputs, source->series_count,
+      source->legend_hidden, source->range_set, source->y_min, source->y_max,
+      source->zoom_set, source->zoom_start, source->zoom_end,
+      source->visual_map_set, source->visual_map_min, source->visual_map_max,
+      source->visual_map_low_color, source->visual_map_high_color,
+      point_inputs, source->mark_point_count, line_inputs,
+      source->mark_line_count, area_inputs, source->mark_area_count};
+  ret = my_echart_option_copy(&candidate->option, &input, adapter->allocator);
+  if (ret == MY_RET_OK) {
+    for (size_t i = 0u; i < candidate->option.series_count; i++) {
+      const my_echart_series_t* s = &candidate->option.series[i];
+      if (s->data_count == 0u) continue;
       candidate->values[i] = (float*)my_mem_alloc(
-          adapter->allocator, src->data_count * sizeof(float));
+          adapter->allocator, s->data_count * sizeof(float));
       if (candidate->values[i] == NULL) { ret = MY_RET_OOM; break; }
-      dst->data = (double*)my_mem_alloc(adapter->allocator,
-                                        src->data_count * sizeof(double));
-      if (dst->data == NULL) { ret = MY_RET_OOM; break; }
-      for (size_t j = 0u; j < src->data_count; j++) {
-        dst->data[j] = src->data[j];
-        candidate->values[i][j] = (float)src->data[j];
-      }
+      for (size_t j = 0u; j < s->data_count; j++)
+        candidate->values[i][j] = (float)s->data[j];
     }
   }
+done:
+  my_mem_free(adapter->allocator, series_inputs);
+  my_mem_free(adapter->allocator, point_inputs);
+  my_mem_free(adapter->allocator, line_inputs);
+  my_mem_free(adapter->allocator, area_inputs);
   if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
-  candidate->option.legend_hidden = source->legend_hidden;
-  candidate->option.range_set = source->range_set;
-  candidate->option.y_min = source->y_min;
-  candidate->option.y_max = source->y_max;
-  candidate->option.zoom_set = source->zoom_set;
-  candidate->option.zoom_start = source->zoom_start;
-  candidate->option.zoom_end = source->zoom_end;
-  candidate->option.visual_map_set = source->visual_map_set;
-  candidate->option.visual_map_min = source->visual_map_min;
-  candidate->option.visual_map_max = source->visual_map_max;
-  candidate->option.visual_map_low_color = source->visual_map_low_color;
-  candidate->option.visual_map_high_color = source->visual_map_high_color;
-  (void)mode;
-  (void)stacked;
   *result = candidate;
   return MY_RET_OK;
 }
@@ -189,6 +183,9 @@ void my_echart_adapter_destroy(my_echart_adapter_t* adapter) {
   if (adapter->payload != NULL) {
     my_chart_set_labels(adapter->chart, NULL, 0u);
     my_chart_clear_series(adapter->chart);
+    my_chart_clear_mark_points(adapter->chart);
+    my_chart_clear_mark_lines(adapter->chart);
+    my_chart_clear_mark_areas(adapter->chart);
     payload_free(adapter, adapter->payload);
   }
   my_widget_unref(adapter->chart);
@@ -219,6 +216,26 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
     visible[i] = series->show;
   }
   {
+    my_chart_mark_point_t marks[MY_ECHART_MAX_MARK_POINTS] = {{0}};
+    my_chart_mark_line_state_t lines[MY_ECHART_MAX_MARK_LINES] = {{0}};
+    my_chart_mark_area_state_t areas[MY_ECHART_MAX_MARK_AREAS] = {{0}};
+    for (size_t i = 0u; i < candidate->option.mark_point_count; i++)
+      marks[i] = (my_chart_mark_point_t){
+          candidate->option.mark_points[i].series_index,
+          candidate->option.mark_points[i].category_index,
+          candidate->option.mark_points[i].label};
+    for (size_t i = 0u; i < candidate->option.mark_line_count; i++)
+      lines[i] = (my_chart_mark_line_state_t){
+          (float)candidate->option.mark_lines[i].value,
+          candidate->option.mark_lines[i].label,
+          candidate->option.mark_lines[i].color};
+    for (size_t i = 0u; i < candidate->option.mark_area_count; i++)
+      areas[i] = (my_chart_mark_area_state_t){
+          (float)candidate->option.mark_areas[i].y_min,
+          (float)candidate->option.mark_areas[i].y_max,
+          candidate->option.mark_areas[i].label,
+          candidate->option.mark_areas[i].color};
+    {
     my_chart_snapshot_t snapshot = {
         mode, candidate->option.title,
         (const char* const*)candidate->option.x_axis_data,
@@ -232,9 +249,13 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
         candidate->option.visual_map_set, (float)candidate->option.visual_map_min,
         (float)candidate->option.visual_map_max,
         candidate->option.visual_map_low_color,
-        candidate->option.visual_map_high_color};
+        candidate->option.visual_map_high_color,
+        marks, candidate->option.mark_point_count, lines,
+        candidate->option.mark_line_count, areas,
+        candidate->option.mark_area_count};
     ret = my_chart_apply_snapshot(adapter->chart, &snapshot);
     if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
+    }
   }
   old = adapter->payload;
   adapter->payload = candidate;

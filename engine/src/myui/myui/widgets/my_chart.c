@@ -1208,6 +1208,20 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
        !isfinite(snapshot->visual_map_max) ||
        snapshot->visual_map_max <= snapshot->visual_map_min))
     return MY_RET_INVALID_PARAMS;
+  if (snapshot->mark_count > MY_CHART_MAX_MARK_POINTS ||
+      (snapshot->mark_count > 0u && snapshot->marks == NULL) ||
+      snapshot->line_count > MY_CHART_MAX_MARK_LINES ||
+      (snapshot->line_count > 0u && snapshot->lines == NULL) ||
+      snapshot->area_count > MY_CHART_MAX_MARK_AREAS ||
+      (snapshot->area_count > 0u && snapshot->areas == NULL))
+    return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < snapshot->line_count; i++)
+    if (!isfinite(snapshot->lines[i].value)) return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < snapshot->area_count; i++)
+    if (!isfinite(snapshot->areas[i].y_min) ||
+        !isfinite(snapshot->areas[i].y_max) ||
+        snapshot->areas[i].y_max <= snapshot->areas[i].y_min)
+      return MY_RET_INVALID_PARAMS;
   chart->mode = snapshot->mode;
   snprintf(chart->title, sizeof(chart->title), "%s", snapshot->title);
   chart->labels = snapshot->labels;
@@ -1234,6 +1248,24 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->visual_map_max = snapshot->visual_map_max;
   chart->visual_map_low_color = snapshot->visual_map_low_color;
   chart->visual_map_high_color = snapshot->visual_map_high_color;
+  for (size_t i = 0u; i < snapshot->mark_count; i++) {
+    chart->marks[i] = snapshot->marks[i];
+    chart->marks[i].label = snapshot->marks[i].label;
+  }
+  for (size_t i = 0u; i < snapshot->line_count; i++) {
+    chart->lines[i].value = snapshot->lines[i].value;
+    chart->lines[i].label = snapshot->lines[i].label;
+    chart->lines[i].color = snapshot->lines[i].color;
+  }
+  for (size_t i = 0u; i < snapshot->area_count; i++) {
+    chart->areas[i].y_min = snapshot->areas[i].y_min;
+    chart->areas[i].y_max = snapshot->areas[i].y_max;
+    chart->areas[i].label = snapshot->areas[i].label;
+    chart->areas[i].color = snapshot->areas[i].color;
+  }
+  chart->mark_count = snapshot->mark_count;
+  chart->line_count = snapshot->line_count;
+  chart->area_count = snapshot->area_count;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;

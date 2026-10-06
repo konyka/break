@@ -48,11 +48,33 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
         chart->current.zoom_end, chart->current.visual_map_set,
         chart->current.visual_map_min, chart->current.visual_map_max,
         chart->current.visual_map_low_color,
-        chart->current.visual_map_high_color};
+        chart->current.visual_map_high_color,
+        NULL, 0u, NULL, 0u, NULL, 0u};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
                       sizeof(*series));
-    if (series == NULL) return MY_RET_OOM;
+    my_echart_mark_point_input_t* points = chart->current.mark_point_count > 0u
+        ? (my_echart_mark_point_input_t*)my_mem_calloc(
+              chart->allocator, chart->current.mark_point_count, sizeof(*points))
+        : NULL;
+    my_echart_mark_line_input_t* lines = chart->current.mark_line_count > 0u
+        ? (my_echart_mark_line_input_t*)my_mem_calloc(
+              chart->allocator, chart->current.mark_line_count, sizeof(*lines))
+        : NULL;
+    my_echart_mark_area_input_t* areas = chart->current.mark_area_count > 0u
+        ? (my_echart_mark_area_input_t*)my_mem_calloc(
+              chart->allocator, chart->current.mark_area_count, sizeof(*areas))
+        : NULL;
+    if (series == NULL ||
+        (chart->current.mark_point_count > 0u && points == NULL) ||
+        (chart->current.mark_line_count > 0u && lines == NULL) ||
+        (chart->current.mark_area_count > 0u && areas == NULL)) {
+      my_mem_free(chart->allocator, series);
+      my_mem_free(chart->allocator, points);
+      my_mem_free(chart->allocator, lines);
+      my_mem_free(chart->allocator, areas);
+      return MY_RET_OOM;
+    }
     base.series_count = chart->current.series_count;
     for (size_t i = 0u; i < base.series_count; i++) {
       const my_echart_series_t* s = &chart->current.series[i];
@@ -60,9 +82,34 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                                              s->data_count, s->color,
                                              s->y_axis_index, s->stack, s->show};
     }
+    for (size_t i = 0u; i < chart->current.mark_point_count; i++)
+      points[i] = (my_echart_mark_point_input_t){
+          chart->current.mark_points[i].series_index,
+          chart->current.mark_points[i].category_index,
+          chart->current.mark_points[i].label};
+    for (size_t i = 0u; i < chart->current.mark_line_count; i++)
+      lines[i] = (my_echart_mark_line_input_t){
+          chart->current.mark_lines[i].value,
+          chart->current.mark_lines[i].label,
+          chart->current.mark_lines[i].color};
+    for (size_t i = 0u; i < chart->current.mark_area_count; i++)
+      areas[i] = (my_echart_mark_area_input_t){
+          chart->current.mark_areas[i].y_min,
+          chart->current.mark_areas[i].y_max,
+          chart->current.mark_areas[i].label,
+          chart->current.mark_areas[i].color};
     base.series = series;
+    base.mark_points = points;
+    base.mark_point_count = chart->current.mark_point_count;
+    base.mark_lines = lines;
+    base.mark_line_count = chart->current.mark_line_count;
+    base.mark_areas = areas;
+    base.mark_area_count = chart->current.mark_area_count;
     my_ret_t result = my_echart_option_copy(&candidate, &base, chart->allocator);
     my_mem_free(chart->allocator, series);
+    my_mem_free(chart->allocator, points);
+    my_mem_free(chart->allocator, lines);
+    my_mem_free(chart->allocator, areas);
     if (result != MY_RET_OK) { my_echart_option_free(&candidate); return result; }
     for (size_t i = 0u; i < input->series_count; i++) {
       const my_echart_series_input_t* incoming = &input->series[i];
@@ -79,7 +126,8 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                                       input->visual_map_min,
                                       input->visual_map_max,
                                       input->visual_map_low_color,
-                                      input->visual_map_high_color};
+                                      input->visual_map_high_color,
+                                      NULL, 0u, NULL, 0u, NULL, 0u};
       my_echart_option_t temp;
       my_echart_option_init(&temp, chart->allocator);
       if (my_echart_option_copy(&temp, &one, chart->allocator) != MY_RET_OK) {

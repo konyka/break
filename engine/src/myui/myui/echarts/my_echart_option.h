@@ -7,6 +7,9 @@
 #define MY_ECHART_MAX_SERIES 8u
 #define MY_ECHART_MAX_TITLE 128u
 #define MY_ECHART_MAX_ID 64u
+#define MY_ECHART_MAX_MARK_POINTS 8u
+#define MY_ECHART_MAX_MARK_LINES 4u
+#define MY_ECHART_MAX_MARK_AREAS 4u
 
 typedef enum my_echart_series_type_t {
   MY_ECHART_LINE = 0,
@@ -31,6 +34,25 @@ typedef struct my_echart_series_input_t {
   bool show;
 } my_echart_series_input_t;
 
+typedef struct my_echart_mark_point_input_t {
+  size_t series_index;
+  size_t category_index;
+  const char* label;
+} my_echart_mark_point_input_t;
+
+typedef struct my_echart_mark_line_input_t {
+  double value;
+  const char* label;
+  uint32_t color;
+} my_echart_mark_line_input_t;
+
+typedef struct my_echart_mark_area_input_t {
+  double y_min;
+  double y_max;
+  const char* label;
+  uint32_t color;
+} my_echart_mark_area_input_t;
+
 typedef struct my_echart_option_input_t {
   const char* title;
   const char* const* x_axis_data;
@@ -49,6 +71,12 @@ typedef struct my_echart_option_input_t {
   double visual_map_max;
   uint32_t visual_map_low_color;
   uint32_t visual_map_high_color;
+  const my_echart_mark_point_input_t* mark_points;
+  size_t mark_point_count;
+  const my_echart_mark_line_input_t* mark_lines;
+  size_t mark_line_count;
+  const my_echart_mark_area_input_t* mark_areas;
+  size_t mark_area_count;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
@@ -62,6 +90,25 @@ typedef struct my_echart_series_t {
   char* stack;
   bool show;
 } my_echart_series_t;
+
+typedef struct my_echart_mark_point_t {
+  size_t series_index;
+  size_t category_index;
+  char* label;
+} my_echart_mark_point_t;
+
+typedef struct my_echart_mark_line_t {
+  double value;
+  char* label;
+  uint32_t color;
+} my_echart_mark_line_t;
+
+typedef struct my_echart_mark_area_t {
+  double y_min;
+  double y_max;
+  char* label;
+  uint32_t color;
+} my_echart_mark_area_t;
 
 typedef struct my_echart_option_t {
   const my_allocator_t* allocator;
@@ -82,6 +129,12 @@ typedef struct my_echart_option_t {
   double visual_map_max;
   uint32_t visual_map_low_color;
   uint32_t visual_map_high_color;
+  my_echart_mark_point_t* mark_points;
+  size_t mark_point_count;
+  my_echart_mark_line_t* mark_lines;
+  size_t mark_line_count;
+  my_echart_mark_area_t* mark_areas;
+  size_t mark_area_count;
 } my_echart_option_t;
 
 void my_echart_option_init(my_echart_option_t* option,

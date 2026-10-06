@@ -12,7 +12,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom |
-| Annotations | markPoint, markLine, markArea |
+| Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
 | Styling | series colors, visualMap interpolation and gradient legend |
 | Animation | externally driven deterministic progress and fake-clock scheduler |
 | MVVM | owned option pointer binding, explicit sync, property notification sync |
