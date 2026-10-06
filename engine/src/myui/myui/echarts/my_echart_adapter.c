@@ -32,6 +32,10 @@ static my_chart_mode_t mode_for(my_echart_series_type_t type) {
     case MY_ECHART_GAUGE: return MY_CHART_GAUGE;
     case MY_ECHART_SANKEY: return MY_CHART_SANKEY;
     case MY_ECHART_PARALLEL: return MY_CHART_PARALLEL;
+    case MY_ECHART_TREEMAP: return MY_CHART_TREEMAP;
+    case MY_ECHART_GRAPH: return MY_CHART_GRAPH;
+    case MY_ECHART_CALENDAR: return MY_CHART_CALENDAR;
+    case MY_ECHART_THEME_RIVER: return MY_CHART_THEME_RIVER;
     default: return (my_chart_mode_t)-1;
   }
 }

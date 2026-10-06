@@ -8,7 +8,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Area | Supported |
 |---|---|
 | Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) with row-aligned sort and filter transforms |
-| Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel, treemap, graph, calendar, themeRiver (16 native modes) |
+| Series | all 16 native modes: line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel, treemap, graph, calendar, themeRiver |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom; adapter-event bridge fills series/data/category indexes via chart hit-test |

@@ -23,7 +23,11 @@ typedef enum my_echart_series_type_t {
   MY_ECHART_CANDLESTICK,
   MY_ECHART_GAUGE,
   MY_ECHART_SANKEY,
-  MY_ECHART_PARALLEL
+  MY_ECHART_PARALLEL,
+  MY_ECHART_TREEMAP,
+  MY_ECHART_GRAPH,
+  MY_ECHART_CALENDAR,
+  MY_ECHART_THEME_RIVER
 } my_echart_series_type_t;
 
 typedef enum my_echart_transform_t {

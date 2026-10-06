@@ -65,7 +65,7 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
   for (size_t i = 0u; i < input->series_count; i++) {
     const my_echart_series_input_t* series = &input->series[i];
     if (!valid_string(series->id) || !valid_string(series->name) ||
-        series->type < MY_ECHART_LINE || series->type > MY_ECHART_PARALLEL ||
+        series->type < MY_ECHART_LINE || series->type > MY_ECHART_THEME_RIVER ||
         (series->data_count > 0u && series->data == NULL) ||
         series->y_axis_index > 1u)
       return MY_RET_INVALID_PARAMS;
