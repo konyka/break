@@ -720,6 +720,168 @@ static void chart_draw_candlestick(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_gauge(const my_chart_t* chart, my_vgcanvas_t* vg,
+                             float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float total = 0.0f;
+  float cx, cy, radius, angle;
+  if (chart->series_count == 0u) return;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      series = &chart->series[s];
+      break;
+    }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > 0.0f) total += series->values[i];
+  if (total <= 0.0f) return;
+  cx = x + w * 0.5f;
+  cy = y + h * 0.55f;
+  radius = fminf(w, h) * 0.42f;
+  angle = CHART_PI;
+  for (size_t i = 0u; i < series->count; i++) {
+    float value = series->values[i] > 0.0f ? series->values[i] : 0.0f;
+    float sweep = value / total * CHART_PI;
+    if (sweep <= 0.0f) continue;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, cx, cy);
+    my_vgcanvas_line_to(vg, cx + cosf(angle) * radius,
+                        cy + sinf(angle) * radius);
+    for (unsigned step = 1u; step <= 24u; step++) {
+      float a = angle + sweep * (float)step / 24.0f;
+      my_vgcanvas_line_to(vg, cx + cosf(a) * radius, cy + sinf(a) * radius);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        s_colors[i % MY_CHART_MAX_SERIES]));
+    my_vgcanvas_fill(vg);
+    angle += sweep;
+  }
+}
+
+static void chart_draw_sankey(const my_chart_t* chart, my_vgcanvas_t* vg,
+                              float x, float y, float w, float h) {
+  const my_chart_series_t* cols[2] = {NULL, NULL};
+  float totals[2] = {0.0f, 0.0f};
+  size_t found = 0u;
+  for (size_t s = 0u; s < chart->series_count && found < 2u; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      cols[found] = &chart->series[s];
+      for (size_t i = 0u; i < chart->series[s].count; i++)
+        if (chart->series[s].values[i] > 0.0f)
+          totals[found] += chart->series[s].values[i];
+      found++;
+    }
+  }
+  if (found == 0u || totals[0] <= 0.0f) return;
+  {
+    float bar_max_h = h * 0.4f;
+    float gap = 2.0f;
+    float offsets[2] = {0.0f, 0.0f};
+    float xs[2] = {x + w * 0.15f, x + w * 0.85f};
+    for (size_t c = 0u; c < found; c++) {
+      size_t count = cols[c]->count;
+      float total = totals[c];
+      float spacing = count > 1u ? (h - bar_max_h) / (float)(count - 1u) : 0.0f;
+      for (size_t i = 0u; i < count; i++) {
+        float value = cols[c]->values[i] > 0.0f ? cols[c]->values[i] : 0.0f;
+        float bar_h = value / total * bar_max_h;
+        float bar_y = y + (float)i * spacing + offsets[c];
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+            s_colors[i % MY_CHART_MAX_SERIES]));
+        my_vgcanvas_fill_rect(vg, &(my_rectf_t){xs[c] - 4.0f, bar_y, 8.0f, bar_h});
+        offsets[c] += 0.0f;
+        if (c == 1u) continue;
+      }
+    }
+    if (found == 2u && totals[1] > 0.0f) {
+      size_t links = cols[0]->count < cols[1]->count ? cols[0]->count
+                                                     : cols[1]->count;
+      float src_off = 0.0f, dst_off = 0.0f;
+      float src_spacing = cols[0]->count > 1u
+                              ? (h - bar_max_h) / (float)(cols[0]->count - 1u)
+                              : 0.0f;
+      float dst_spacing = cols[1]->count > 1u
+                              ? (h - bar_max_h) / (float)(cols[1]->count - 1u)
+                              : 0.0f;
+      (void)gap;
+      for (size_t i = 0u; i < links; i++) {
+        float sv = cols[0]->values[i] > 0.0f ? cols[0]->values[i] : 0.0f;
+        float tv = cols[1]->values[i] > 0.0f ? cols[1]->values[i] : 0.0f;
+        float sh = sv / totals[0] * bar_max_h;
+        float th = tv / totals[1] * bar_max_h;
+        float sy = y + (float)i * src_spacing + src_off;
+        float ty = y + (float)i * dst_spacing + dst_off;
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x3A86FF33u));
+        my_vgcanvas_begin_path(vg);
+        my_vgcanvas_move_to(vg, xs[0] + 4.0f, sy);
+        my_vgcanvas_line_to(vg, xs[1] - 4.0f, ty);
+        my_vgcanvas_line_to(vg, xs[1] - 4.0f, ty + th);
+        my_vgcanvas_line_to(vg, xs[0] + 4.0f, sy + sh);
+        my_vgcanvas_close_path(vg);
+        my_vgcanvas_fill(vg);
+        src_off += 0.0f;
+        dst_off += 0.0f;
+      }
+    }
+  }
+}
+
+static void chart_draw_parallel(const my_chart_t* chart, my_vgcanvas_t* vg,
+                               float x, float y, float w, float h) {
+  size_t axes = 0u;
+  size_t rows = 0u;
+  float y_min = 0.0f, y_max = 1.0f;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      axes++;
+      if (chart->series[s].count > rows) rows = chart->series[s].count;
+    }
+  }
+  if (axes == 0u || rows == 0u) return;
+  chart_axis_range(chart, 0u, &y_min, &y_max);
+  if (y_max <= y_min) { y_min = 0.0f; y_max = 1.0f; }
+  my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xAAB4C0FFu));
+  my_vgcanvas_set_line_width(vg, 1.0f);
+  for (size_t a = 0u; a < axes; a++) {
+    float ax = axes > 1u ? x + w * (float)a / (float)(axes - 1u) : x + w * 0.5f;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, ax, y);
+    my_vgcanvas_line_to(vg, ax, y + h);
+    my_vgcanvas_stroke(vg);
+  }
+  for (size_t r = 0u; r < rows; r++) {
+    bool started = false;
+    my_vgcanvas_begin_path(vg);
+    for (size_t a = 0u, s = 0u; s < chart->series_count; s++) {
+      const my_chart_series_t* series = &chart->series[s];
+      float ax, py;
+      if (!chart->series_visible[s] || series->values == NULL ||
+          r >= series->count)
+        continue;
+      ax = axes > 1u ? x + w * (float)a / (float)(axes - 1u) : x + w * 0.5f;
+      py = my_chart_value_to_y(series->values[r], y_min, y_max, y, h);
+      if (!started) {
+        my_vgcanvas_move_to(vg, ax, py);
+        started = true;
+      } else {
+        my_vgcanvas_line_to(vg, ax, py);
+      }
+      a++;
+    }
+    if (started) {
+      my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(
+          s_colors[r % MY_CHART_MAX_SERIES]));
+      my_vgcanvas_set_line_width(vg, 1.5f);
+      my_vgcanvas_stroke(vg);
+    }
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -949,7 +1111,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (!chart_plot_rect(widget, &x, &y, &w, &h)) return;
   chart_range(chart, &y_min, &y_max);
   if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR &&
-      chart->mode != MY_CHART_FUNNEL && chart->mode != MY_CHART_HEATMAP) {
+      chart->mode != MY_CHART_FUNNEL && chart->mode != MY_CHART_HEATMAP &&
+      chart->mode != MY_CHART_GAUGE && chart->mode != MY_CHART_SANKEY &&
+      chart->mode != MY_CHART_PARALLEL) {
     chart_grid(widget, vg, x, y, w, h, y_min, y_max);
     chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
   }
@@ -972,7 +1136,13 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_CANDLESTICK) {
+  if (chart->mode == MY_CHART_GAUGE) {
+    chart_draw_gauge(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_SANKEY) {
+    chart_draw_sankey(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_PARALLEL) {
+    chart_draw_parallel(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_CANDLESTICK) {
     chart_draw_candlestick(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_BOXPLOT) {
     chart_draw_boxplot(chart, vg, x, y, w, h);
@@ -1204,7 +1374,8 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
       mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL &&
       mode != MY_CHART_HEATMAP && mode != MY_CHART_BOXPLOT &&
-      mode != MY_CHART_CANDLESTICK)
+      mode != MY_CHART_CANDLESTICK && mode != MY_CHART_GAUGE &&
+      mode != MY_CHART_SANKEY && mode != MY_CHART_PARALLEL)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
@@ -1240,7 +1411,7 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
       (snapshot->series_count > 0u && snapshot->series == NULL) ||
       (snapshot->series_count > 0u && snapshot->series_visible == NULL) ||
       snapshot->mode < MY_CHART_LINE ||
-      snapshot->mode > MY_CHART_CANDLESTICK)
+      snapshot->mode > MY_CHART_PARALLEL)
     return MY_RET_INVALID_PARAMS;
   if (strlen(snapshot->title) >= sizeof(chart->title)) return MY_RET_INVALID_PARAMS;
   for (size_t i = 0u; i < snapshot->label_count; i++)

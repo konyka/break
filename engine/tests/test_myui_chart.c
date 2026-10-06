@@ -1048,6 +1048,101 @@ TEST(chart_supports_candlestick_mode) {
   my_widget_unref(chart);
 }
 
+TEST(chart_supports_gauge_mode) {
+  static const float values[] = {30.0f, 70.0f};
+  my_chart_series_t series = {"Gauge", values, 2u, 0xE85D75FFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_GAUGE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 200u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
+TEST(chart_supports_sankey_mode) {
+  static const float src[] = {10.0f, 20.0f, 30.0f};
+  static const float dst[] = {25.0f, 15.0f, 20.0f};
+  my_chart_series_t cols[2] = {
+      {"Source", src, 3u, 0xE85D75FFu, 0u},
+      {"Target", dst, 3u, 0x3A86FFFFu, 0u}};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_SANKEY);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &cols[0]), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &cols[1]), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 100u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
+TEST(chart_supports_parallel_mode) {
+  static const float a[] = {1.0f, 5.0f, 3.0f};
+  static const float b[] = {2.0f, 4.0f, 1.0f};
+  static const float c[] = {3.0f, 2.0f, 2.0f};
+  my_chart_series_t axes[3] = {
+      {"A", a, 3u, 0xE85D75FFu, 0u},
+      {"B", b, 3u, 0x3A86FFFFu, 0u},
+      {"C", c, 3u, 0x2A9D8FFFu, 0u}};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_PARALLEL);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &axes[0]), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &axes[1]), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 2u, &axes[2]), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 100u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -1086,4 +1181,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_renders_at_supported_viewports);
   RUN_TEST(chart_hit_test_is_pure_and_bounded);
   RUN_TEST(chart_supports_candlestick_mode);
+  RUN_TEST(chart_supports_gauge_mode);
+  RUN_TEST(chart_supports_sankey_mode);
+  RUN_TEST(chart_supports_parallel_mode);
 TEST_MAIN_END()

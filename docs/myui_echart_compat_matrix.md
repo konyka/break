@@ -8,7 +8,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Area | Supported |
 |---|---|
 | Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) with row-aligned sort and filter transforms |
-| Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick |
+| Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel (native modes) |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom; adapter-event bridge fills series/data/category indexes via chart hit-test |
@@ -36,8 +36,7 @@ overflow return `MY_RET_NOT_SUPPORTED`.
 - full tooltip formatter/trigger/position semantics;
 - complete dataZoom/visualMap/brush action payloads and cross-chart linkage;
 - native hit-test results in semantic event payloads for every chart type;
-- graph, sankey, tree, treemap, parallel, gauge, calendar, themeRiver,
-  and custom series;
+- graph, tree, treemap, calendar, themeRiver, and custom series;
 - full theme/style/rich-text system and browser ARIA tree;
 - native setter-level atomic snapshot commit after a renderer setter failure.
 
