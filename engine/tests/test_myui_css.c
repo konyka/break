@@ -3086,9 +3086,135 @@ TEST(css_scope_subject_state_rejects_malformed)
       /* one state qualifier at most */
       "@scope panel { :scope:hover:pressed { color: red; } }",
       /* scope is not a state */
-      "@scope panel { :scope:scope { color: red; } }",
-      /* class-qualified :scope stays out of the subset */
-      "@scope panel { .x:scope { color: red; } }"};
+      "@scope panel { :scope:scope { color: red; } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+}
+
+TEST(css_scope_subject_class_form_filters_root)
+{
+  /* `@scope panel { :scope.dark { color: red; } }` — a class qualifier on
+   * `:scope` merges into the substituted root subject: the rule styles the
+   * root itself, but only when it carries the class. Both qualification
+   * orders (`:scope.dark` / `.dark:scope`) mean the same. */
+  const char* css = "@scope panel { :scope.dark { color: red; } }";
+  const char* css2 = "@scope panel { .dark:scope { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* dark = my_widget_create(NULL, "dark");
+  my_widget_t* plain = my_widget_create(NULL, "plain");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  sel = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "panel");
+  ASSERT_STR_EQ(sel->style_class, "dark");
+  ASSERT_EQ(sel->state, -1);
+  ASSERT_TRUE(sel->scope_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, css2, strlen(css2),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  sel = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "panel");
+  ASSERT_STR_EQ(sel->style_class, "dark");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  dark->widget_type = "panel";
+  plain->widget_type = "panel";
+  ASSERT_EQ(my_widget_set_style_class(dark, "dark"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, dark, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, plain, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(plain);
+  my_widget_unref(dark);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_subject_class_form_merges_root_classes_and_state)
+{
+  /* `@scope panel.card { :scope.dark:hover { color: red; } }` — the
+   * qualifier classes append to the root's own classes; a state qualifier
+   * stacks too. */
+  const char* css =
+      "@scope panel.card { :scope.dark:hover { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* full = my_widget_create(NULL, "full");
+  my_widget_t* card_only = my_widget_create(NULL, "card_only");
+  my_widget_t* dark_only = my_widget_create(NULL, "dark_only");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  sel = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "panel");
+  ASSERT_STR_EQ(sel->style_class, "card dark");
+  ASSERT_EQ(sel->state, (int32_t)MY_STATE_HOVER);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  full->widget_type = "panel";
+  card_only->widget_type = "panel";
+  dark_only->widget_type = "panel";
+  ASSERT_EQ(my_widget_set_style_class(full, "card dark"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(card_only, "card"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(dark_only, "dark"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, full, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* both class requirements are AND-ed: each partial match misses. */
+  value =
+      my_theme_get_for_widget(theme, card_only, MY_STATE_HOVER, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value =
+      my_theme_get_for_widget(theme, dark_only, MY_STATE_HOVER, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  /* the state qualifier is required too. */
+  value = my_theme_get_for_widget(theme, full, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(dark_only);
+  my_widget_unref(card_only);
+  my_widget_unref(full);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_subject_qual_rejects_malformed)
+{
+  const char* malformed[] = {
+      /* an id qualifier stays out of the subset */
+      "@scope panel { :scope#x { color: red; } }",
+      /* class quals on the ANCESTOR scope marker can't be expressed */
+      "@scope panel { :scope.dark button { color: red; } }",
+      /* one state qualifier at most */
+      "@scope panel { :scope.dark:hover:pressed { color: red; } }"};
   my_css_error_t error = {0};
   size_t i;
 
@@ -4905,6 +5031,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_subject_state_form_styles_root);
     RUN_TEST(css_scope_subject_state_form_root_list);
     RUN_TEST(css_scope_subject_state_rejects_malformed);
+    RUN_TEST(css_scope_subject_class_form_filters_root);
+    RUN_TEST(css_scope_subject_class_form_merges_root_classes_and_state);
+    RUN_TEST(css_scope_subject_qual_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

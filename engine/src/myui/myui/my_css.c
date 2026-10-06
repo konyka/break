@@ -359,30 +359,58 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
       out->state = MY_STATE_DISABLED;
     } else if (my_str_eq(pseudo, "scope")) {
       /* R627: parse-time marker — the @scope splice in css_rule validates
-       * and substitutes it. R639: one state qualifier may stack
-       * (`:scope:hover`); any further qualification stays rejected. */
+       * and substitutes it. R639/R640: trailing class qualifiers and one
+       * state qualifier may stack (`:scope.dark:hover`) — they merge into
+       * the substituted root subject. An id or a second pseudo stays
+       * rejected. */
       out->scope_ref = true;
-      if (c_peek(p) == ':') {
-        char state_pseudo[16];
-        c_next(p);
-        if (!c_ident(p, state_pseudo, sizeof(state_pseudo))) {
-          css_fail(p, "bad pseudo class");
-          return false;
+      for (;;) {
+        if (c_peek(p) == '.') {
+          char buf[MY_CSS_NAME_LEN];
+          size_t have;
+          size_t need;
+          c_next(p);
+          if (!c_ident(p, buf, sizeof(buf))) {
+            css_fail(p, "bad selector component");
+            return false;
+          }
+          have = strlen(out->style_class);
+          need = strlen(buf);
+          if (have + (have > 0u ? 1u : 0u) + need >=
+              sizeof(out->style_class)) {
+            css_fail(p, "selector classes too long");
+            return false;
+          }
+          if (have > 0u) {
+            out->style_class[have++] = ' ';
+          }
+          memcpy(out->style_class + have, buf, need + 1u);
+          continue;
         }
-        if (my_str_eq(state_pseudo, "hover")) {
-          out->state = MY_STATE_HOVER;
-        } else if (my_str_eq(state_pseudo, "pressed")) {
-          out->state = MY_STATE_PRESSED;
-        } else if (my_str_eq(state_pseudo, "disabled")) {
-          out->state = MY_STATE_DISABLED;
-        } else {
-          css_fail(p, ":scope must be unqualified and outermost");
-          return false;
+        if (c_peek(p) == ':' && out->state == -1) {
+          char state_pseudo[16];
+          c_next(p);
+          if (!c_ident(p, state_pseudo, sizeof(state_pseudo))) {
+            css_fail(p, "bad pseudo class");
+            return false;
+          }
+          if (my_str_eq(state_pseudo, "hover")) {
+            out->state = MY_STATE_HOVER;
+          } else if (my_str_eq(state_pseudo, "pressed")) {
+            out->state = MY_STATE_PRESSED;
+          } else if (my_str_eq(state_pseudo, "disabled")) {
+            out->state = MY_STATE_DISABLED;
+          } else {
+            css_fail(p, ":scope must be unqualified and outermost");
+            return false;
+          }
+          continue;
         }
-        if (c_peek(p) == ':' || c_peek(p) == '.' || c_peek(p) == '#') {
-          css_fail(p, ":scope must be unqualified and outermost");
-          return false;
-        }
+        break;
+      }
+      if (c_peek(p) == ':' || c_peek(p) == '#') {
+        css_fail(p, ":scope must be unqualified and outermost");
+        return false;
       }
     } else {
       css_fail(p, "unsupported pseudo class");
@@ -1544,9 +1572,11 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
       size_t source = compound_count - 2u - i;
       if (compounds[source].scope_ref) {
         /* R627: `:scope` ancestor marker — zeroed slot + mask bit; the
-         * scope splice substitutes it with the innermost root. R639: a
-         * state qualifier can't be expressed on an ancestor → reject. */
-        if (compounds[source].state != -1) {
+         * scope splice substitutes it with the innermost root. R639/R640:
+         * a state or class qualifier can't be expressed on an ancestor →
+         * reject. */
+        if (compounds[source].state != -1 ||
+            compounds[source].style_class[0] != '\0') {
           css_fail(p, ":scope must be unqualified and outermost");
           goto fail;
         }
@@ -1576,10 +1606,9 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
         goto fail;
       }
       if (sel.scope_ref && (sel.ancestor_count != 0u ||
-                            sel.widget_type[0] != '\0' || sel.id[0] != '\0' ||
-                            sel.style_class[0] != '\0')) {
-        /* R639: a state qualifier is the one allowed qualification — it
-         * rides the substituted root subject. */
+                            sel.widget_type[0] != '\0' || sel.id[0] != '\0')) {
+        /* R639/R640: state and class qualifiers are the allowed
+         * qualifications — they merge into the substituted root subject. */
         css_fail(p, ":scope must be unqualified and outermost");
         goto fail;
       }
@@ -1660,6 +1689,22 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
               memcpy(variant.id, root->subject.id, sizeof(variant.id));
               memcpy(variant.style_class, root->subject.style_class,
                      sizeof(variant.style_class));
+              /* R640: the `:scope` qualifier classes append to the root's
+               * own classes (AND semantics). */
+              if (sel.style_class[0] != '\0') {
+                size_t have = strlen(variant.style_class);
+                size_t need = strlen(sel.style_class);
+                size_t sep = have > 0u ? 1u : 0u;
+                if (have + sep + need >= sizeof(variant.style_class)) {
+                  css_fail(p, "selector classes too long");
+                  goto fail;
+                }
+                if (sep != 0u) {
+                  variant.style_class[have] = ' ';
+                }
+                memcpy(variant.style_class + have + sep, sel.style_class,
+                       need + 1u);
+              }
               variant.scope_ref = false;
               root_index = MY_CSS_SCOPE_ROOT_IMPLICIT;
               if ((size_t)slot_pos + root->ancestor_count >

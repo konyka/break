@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R640 CSS `:scope` 类限定（TDD）— R627 边界"裸 `:scope`"完全关闭：`@scope panel { :scope.dark:hover {} }` 根级类/态叠加全形态互操作
+
+- **缺口**(R639 落账"类/id 限定需伪类后限定语法扩展"):`@scope panel { :scope.dark {} }`——按根的类进一步过滤根自身的规范写法——两种书写序（`:scope.dark` / `.dark:scope`）分别死于"unexpected selector token"(capability=0）与主体校验拒绝。
+- **方案**（脱糖延伸，匹配层零改动——与 R639 同论证）:c_selector 的 scope 分支由"最多一个态伪类"改为**限定循环**：`.` 类追加（与主解析同一分隔/上界惯例）+ 至多一个态伪类，任意次序；`#` 或第二个 `:` 收尾仍按 ":scope must be unqualified and outermost" 拒（capability 签名统一为 SCOPE——`:scope#x` 此前死在意外的 capability=0 路径）。拼接主体形：根自身类 memcpy 后**追加**限定类（空格分隔、上界守卫，AND 语义="card dark" 双类全需）；祖先位 scope 标记的类限定与态限定同槽拒绝（fold scope_ref 分支）。`.dark:scope`（类在伪类前）经主解析的类循环自然落入同一表示，两序同义。
+- **TDD（红→绿实证）**:test_myui_css +3——① 类过滤根（`:scope.dark` 解析断言+行为：dark 根命中/裸根 miss;`.dark:scope` 等价位）;② 根类合并+态叠加（`panel.card { :scope.dark:hover }`：断言 "card dark"+HOVER；行为四对拍：全配 hover 命中/仅 card/仅 dark/全配 normal 三 miss);③ 拒绝三例（id 限定/祖先标记类限定/双态，SYNTAX+SCOPE)。**RED 如实红 3/3**（正例 sheet NULL;id 例旧路径 capability=0——签名区分缺特性）;GREEN 一钓：R639 拒绝组含 `.x:scope` 拒绝例（契约变更：自此合法，R640 T1 已钉等价位）——移除后 **153/153**(150+3)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_css 同 153/153。纯解析器改动，theme/桥接/图形零触点。
+- **边界**:`:scope` 主体形态限定全落地（类+单态）；剩余 CSS 弧让渡=`&` 深度 3+、块内 @layer/@scope;R611 AMD 基线不动。
+
 ## 本轮更新：R639 CSS `:scope` 态叠加（TDD）— R627 边界"裸 `:scope`"放宽一档：`@scope panel { :scope:hover {} }` 根本身态样式互操作
 
 - **缺口**(R627 落账":scope 必须裸用"):CSS 允许 `:scope:hover` 为 scope 根本身加态样式（"面板悬停时高亮"是根级态的标准写法）——本引擎在 c_selector 即拒（`:scope` 后遇第二个 `:` 硬拒）。
