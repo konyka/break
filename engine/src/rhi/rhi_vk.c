@@ -5033,7 +5033,16 @@ void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
 
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
     VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (!td || !out_w || !out_h) return false;
+    if (!td) {
+        /* R631: cubemap handles report the face extent (GL parity; VK depth
+         * cubes are TEXTURE-registered and already worked). */
+        VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (!cd || !out_w || !out_h) return false;
+        *out_w = cd->size;
+        *out_h = cd->size;
+        return true;
+    }
+    if (!out_w || !out_h) return false;
     *out_w = td->width;
     *out_h = td->height;
     return true;

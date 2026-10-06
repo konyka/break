@@ -1952,7 +1952,17 @@ void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
 
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
     GLTextureData *td = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (!td || !out_w || !out_h) return false;
+    if (!td) {
+        /* R631: cubemap handles (color cubes; GL depth cubes too — they
+         * register as RHI_RES_CUBEMAP) report the face extent, completing
+         * the R441 size-query half of the readback contract (R610/R624). */
+        GLTextureData *cd = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (!cd || !out_w || !out_h) return false;
+        *out_w = cd->width;
+        *out_h = cd->height;
+        return true;
+    }
+    if (!out_w || !out_h) return false;
     *out_w = td->width;
     *out_h = td->height;
     return true;

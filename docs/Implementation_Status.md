@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R631 rhi_texture_get_size 覆盖 cubemap（TDD）— R441 契约的 size 查询半片补齐：cube 回读的调用方自此能定缓冲区尺寸
+
+- **缺口**（回读弧收官审计发现）:R610/R624 定义了 cube（深度/彩色）回读，但回读的 R441 配套——size 查询——对 cube 句柄恒 false(GL 的 cube 全注册为 RHI_RES_CUBEMAP，类型化 TEXTURE 查找机制性缺席；VK 侧深度 cube 是 TEXTURE 注册本就工作，彩色 cube 缺席）——API 面不自洽：能读内容却不能问尺寸。
+- **修复**：双端 `rhi_texture_get_size` 在 TEXTURE 查找未命中时回退 RHI_RES_CUBEMAP，报告面尺寸（VK 用 R624 新增的 `VKCubemapData.size`;GL 的 GLTextureData 本就有 width/height)。纯加式，纹理路径零改动。
+- **TDD（红→绿实证）**：图形门 R610/R624 相位各增 get_size 断言（4×4 面尺寸）。**RED 异型如实红**:GL 双相位红（深度+彩色）、VK 仅彩色红（深度 cube 其 TEXTURE 注册早已工作——签名差异恰好实证了双端注册类型分歧的存在）;GREEN 首轮即过：GL 全套件 ALL PASSED、VK validation 0、失败项恰为已知基线三项。
+- **回归**：双树非图形 CTest 各 **124/124**（含 fuzz smoke 标签项——R630 后 fuzz 二进制在本机树常驻）;demo 四配置各 120 帧 rc=0、VK validation 0（改动仅 get_size,demo 无调用路径）。
+- **边界**：回读 API 面自此自洽（能读就能问尺寸）;cube 无 mip 尺寸查询（契约=mip 0 面尺寸，与回读同约）;RHI_RES_CUBEMAP_DEPTH_FBO 包装句柄本身不查（查其 depth_tex——R610 语义的消费面）;R611 AMD 基线不动。
+
 ## 本轮更新：R630 fuzz smoke 入 CI + Windows ASan 运行库修复 — R623 边界"sanitizer 实证需手工"关闭：五项 fuzzer 在 ASan job 持续有证
 
 - **缺口**(R623 落账）：五个手工 fuzzer(EXCLUDE_FROM_ALL）只在手工长跑时有证据，CI 从不构建/运行，sanitizer 下的加载器稳健性零持续覆盖；且 fuzzer 的 `/tmp` 固定名（Linux）在并行/双树场景有碰撞隐患（R444 教训）。

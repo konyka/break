@@ -1288,6 +1288,16 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
                         break;
                     }
                 }
+                /* R631: size query on the cube's depth texture (face extent
+                 * 4x4) — GL registered depth cubes as RHI_RES_CUBEMAP, which
+                 * the typed TEXTURE lookup missed. */
+                u32 qw = 0u, qh = 0u;
+                if (!rhi_texture_get_size(dev, cdf.depth_tex, &qw, &qh) ||
+                    qw != 4u || qh != 4u) {
+                    LOG_ERROR("FAIL: cube depth get_size (w=%u h=%u, want "
+                              "4x4)", qw, qh);
+                    pass = false;
+                }
             }
         }
         rhi_cubemap_depth_fbo_destroy(dev, &cdf);
@@ -1358,6 +1368,17 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             LOG_ERROR("FAIL: color cube readback create failed");
             pass = false;
         } else {
+            /* R631: the R441 contract's size-query half must cover cubes too
+             * (readback was defined in R624; a caller cannot size its buffer
+             * without this). Face extent 4x4. */
+            u32 qw = 0u, qh = 0u;
+            if (!rhi_texture_get_size(dev, ccm, &qw, &qh) ||
+                qw != 4u || qh != 4u) {
+                LOG_ERROR("FAIL: color cube get_size (ok=%d w=%u h=%u, want "
+                          "true 4x4)", (int)rhi_texture_get_size(dev, ccm,
+                          &qw, &qh), qw, qh);
+                pass = false;
+            }
             if (!rhi_texture_read_pixels(dev, ccm, ccm_rb, sizeof(ccm_rb))) {
                 LOG_ERROR("FAIL: color cube readback refused");
                 pass = false;
