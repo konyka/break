@@ -22,6 +22,10 @@ existing series by stable `id` and appends unknown ids up to
 zoom, visualMap, legend visibility) are taken from the incoming option, while
 annotations are retained from the current model. Series removal and
 `replaceMerge` remain reserved for later phases.
+`my_echart_revision()` exposes a monotonically increasing counter of committed
+model mutations (immediate `setOption` commits, `flush`, and state-changing
+actions); lazy staging does not bump it. Controllers can poll it to decide when
+to re-project the model through the renderer adapter.
 
 ## Phase 3: native event/action adapter
 

@@ -7,6 +7,7 @@ struct my_echart_t {
   my_echart_option_t current;
   my_echart_option_t pending;
   bool has_pending;
+  unsigned revision;
 };
 
 my_echart_t* my_echart_create(const my_allocator_t* allocator) {
@@ -176,6 +177,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
     my_echart_option_free(&chart->current);
     chart->current = candidate;
     chart->has_pending = false;
+    chart->revision++;
   }
   return MY_RET_OK;
 }
@@ -187,11 +189,16 @@ my_ret_t my_echart_flush(my_echart_t* chart) {
   chart->current = chart->pending;
   my_echart_option_init(&chart->pending, chart->allocator);
   chart->has_pending = false;
+  chart->revision++;
   return MY_RET_OK;
 }
 
 const my_echart_option_t* my_echart_get_option(const my_echart_t* chart) {
   return chart != NULL ? &chart->current : NULL;
+}
+
+unsigned my_echart_revision(const my_echart_t* chart) {
+  return chart != NULL ? chart->revision : 0u;
 }
 
 my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
@@ -207,6 +214,7 @@ my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
     else if (action->type == MY_ECHART_ACTION_LEGEND_UNSELECT) series->show = false;
     else if (action->type == MY_ECHART_ACTION_LEGEND_TOGGLE_SELECT) series->show = !series->show;
     else return MY_RET_NOT_SUPPORTED;
+    chart->revision++;
     return MY_RET_OK;
   }
   return MY_RET_NOT_FOUND;
