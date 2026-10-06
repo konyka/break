@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static unsigned long rng_state = 0x9E3779B9u;
+static unsigned long long rng_state = 0x9E3779B9u; /* 64-bit on LLP64 too */
 static unsigned rnd(void) {
     rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
     return (unsigned)(rng_state >> 33);
@@ -118,10 +118,14 @@ static void mutate(unsigned char *buf, long n, unsigned nmut) {
 
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)atoi(argv[1]) : 20000;
-    if (argc > 2) rng_state = (unsigned long)atoi(argv[2]);
+    if (argc > 2) rng_state = (unsigned long long)atoi(argv[2]);
     log_set_level(LOG_FATAL);
 
+#ifdef _WIN32
+    const char *mut_pak = "fuzz_mut.pak"; /* no /tmp on the Windows CRT */
+#else
     const char *mut_pak = "/tmp/fuzz_mut.pak";
+#endif
 
     long plen = 0;
     unsigned char *base = build_seed_pak(&plen);

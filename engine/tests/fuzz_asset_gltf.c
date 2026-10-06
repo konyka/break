@@ -53,6 +53,14 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
                               const void *data, usize size) {
     (void)dev; (void)buf; (void)offset; (void)data; (void)size;
 }
+/* R612's asset_mesh_geometry_reader pulls rhi_buffer_read into asset.c;
+ * the fuzzer never reaches it (no rebuild calls), so fail-stub it like
+ * test_asset_gltf does. */
+bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
+                     usize size) {
+    (void)dev; (void)buf; (void)dst; (void)offset; (void)size;
+    return false;
+}
 unsigned char *stbi_load_from_memory(const unsigned char *buffer, int len,
                                      int *x, int *y, int *channels_in_file,
                                      int desired_channels) {
@@ -208,12 +216,18 @@ static void load_once(const char *path) {
 
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)atoi(argv[1]) : 5000;
-    if (argc > 2) rng_state = (unsigned long)atoi(argv[2]);
+    if (argc > 2) rng_state = (unsigned long long)atoi(argv[2]);
     const char *glb_seed = argc > 3 ? argv[3] : "engine/assets/test.glb";
     log_set_level(LOG_FATAL);
 
+#ifdef _WIN32
+    /* No /tmp on the Windows CRT — cwd-relative scratch files. */
+    const char *mut_glb = "fuzz_mut.glb";
+    const char *mut_json = "fuzz_mut.gltf";
+#else
     const char *mut_glb = "/tmp/fuzz_mut.glb";
     const char *mut_json = "/tmp/fuzz_mut.gltf";
+#endif
 
     long glen = 0;
     unsigned char *gbase = read_file(glb_seed, &glen);

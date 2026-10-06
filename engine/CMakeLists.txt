@@ -1999,7 +1999,11 @@ if(ENGINE_BUILD_TESTS)
     # GLB seed path (default engine/assets/test.glb, relative to the repo root).
     add_executable(fuzz_asset_gltf EXCLUDE_FROM_ALL tests/fuzz_asset_gltf.c
         src/asset/asset.c src/asset/vfs.c src/animation/skeleton.c
-        src/core/log.c src/math/math.c)
+        src/core/log.c src/math/math.c
+        # R623: asset.c's R615 restore path references scene_serial.c's
+        # manifest rebuild, which needs the ECS world (test_asset_gltf's
+        # link line already carries both).
+        src/scene/scene_serial.c src/ecs/ecs.c)
     target_include_directories(fuzz_asset_gltf PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_asset_gltf PRIVATE m)
 

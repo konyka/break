@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R623 fuzz 目标 Windows/LLP64 全修复 — 5 个手工 fuzzer 在本平台全部可构建可运行（既往全数破窗）
+
+- **缺口**（长期预存，EXCLUDE_FROM_ALL 手工目标无人编译致破窗不可见）:5 个 fuzz 目标在 Windows 全数失败——① **四个同型 LLP64 编译炸**：复制粘贴的 LCG `unsigned long >> 33` 在 LLP64(32-bit long）下 `shift count >= width`(-Werror);fuzz_asset_gltf 的 RNG 已先修但 ② **链接断**:asset.c 的 R612 几何 reader/R615 restore 引入 `rhi_buffer_read`+`scene_rebuild_materials_from_manifest` 引用，目标链接行未跟进；③ 三处 `/tmp/...` 硬编码在 Windows CRT 下无此目录（R615 期 echart 适配器同型先例 5f91e3c)。
+- **修复**:RNG 四处统一 `unsigned long long`(LP64 序列不变=零行为变更，Windows 获得与 Linux 一致的确定性）;fuzz_asset_gltf 链接行补 `scene_serial.c + ecs.c`(test_asset_gltf 的 R615 先例）+ 源内补 `rhi_buffer_read` 失败 stub（既有 link-only stub 区同型）;`/tmp` 三处在 `_WIN32` 下转 cwd 相对名。零生产代码改动（tests/+CMake 链接行）。
+- **验证**:5 目标双树（GL/VK 同工具链）全部编译链接通过；功能跑全绿无崩溃——fuzz_scene_serial 5000 次（bscn 受 563/json 受 121)、fuzz_net_packet 5000 次（受 2907)、fuzz_decode_image 5000 次、fuzz_vfs_pak 5000 次（mount 2874)、fuzz_asset_gltf 3000 次（glb 种子实载）；临时文件自清。非图形 CTest 118/118（改动不触被测代码）。
+- **边界**:fuzz 目标设计用途=ASan/UBSan 下手工长跑（本机 Windows clang ASan 配置未验——Linux CI 的 ASan job 不构建 EXCLUDE_FROM_ALL 目标，sanitizer 实证仍需手工）;LLP64 教训=`>> 33` 类宽移位对 `unsigned long` 不可移植，新增 fuzzer/工具应直接用定宽类型（已固化为本轮五处的统一写法）。
+
 ## 本轮更新：R622 myui @scope root 选择器列表（TDD）— @scope 语法族收官：root/limit 双侧复杂选择器+双侧列表
 
 - **缺口**（R621 落账"root 选择器列表（`,`）仍拒"):`@scope panel, dialog { }` 多 root 被拒。语义=scope 取各 root 子树之并——内部规则选择器按 root 列表**展开为变体**（每变体携带一个 root 的路径）;limit 跨变体共享、各自以本变体的 root subject 槽为界。

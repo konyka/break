@@ -19,7 +19,7 @@ AssetState async_loader_status(u64 request_id) {
     return ASSET_LOADING;
 }
 
-static unsigned long rng_state = 0xDEC0DE42u;
+static unsigned long long rng_state = 0xDEC0DE42u; /* 64-bit on LLP64 too */
 static unsigned rnd(void) {
     rng_state = rng_state * 6364136223846793005ULL + 1442695040888963407ULL;
     return (unsigned)(rng_state >> 33);
@@ -89,7 +89,7 @@ static void mutate(unsigned char *buf, u32 *len, u32 cap, unsigned nmut) {
 
 int main(int argc, char **argv) {
     unsigned iters = argc > 1 ? (unsigned)atoi(argv[1]) : 5000;
-    if (argc > 2) rng_state = (unsigned long)atoi(argv[2]);
+    if (argc > 2) rng_state = (unsigned long long)atoi(argv[2]);
     log_set_level(LOG_FATAL);
 
     /* Assert the unmutated TGA seed decodes — otherwise fuzz only hits reject paths. */
