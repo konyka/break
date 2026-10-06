@@ -61,6 +61,11 @@ typedef struct css_p_t {
   /* R629: nested `&` rules are collected here during a rule's block and
    * flushed AFTER the parent rule is appended, preserving source order. */
   my_darray_t* nest_pending;
+  /* R656: import-position conformance — top-level statement count (for the
+   * @charset first-statement rule) and whether the @import window closed
+   * (a top-level style rule or conditional at-rule was seen). */
+  u32 top_statements;
+  bool import_window_closed;
   char layer_names[MY_CSS_MAX_LAYERS][MY_CSS_MAX_LAYER_NAME_BYTES + 1u];
   uint32_t layer_ranks[MY_CSS_MAX_LAYERS];
   size_t layer_count;
@@ -3673,8 +3678,58 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
   return parsed;
 }
 
+/* R656: @charset — a no-op statement valid only as the very first
+ * top-level statement, with a (case-insensitive) utf-8 label: the engine
+ * decodes UTF-8 only. Any other placement/label/form follows the usual
+ * skip-or-reject convention. */
+static bool css_parse_charset_atrule(css_p_t* p, bool nested,
+                                     u32 statement_index) {
+  static const char expected[] = "utf-8";
+  char label[8];
+  size_t length = 0u;
+  int quote;
+  size_t i;
+  if (nested || statement_index != 0u) {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_ws(p);
+  quote = c_peek(p);
+  if (quote != '"' && quote != '\'') {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_next(p);
+  while (c_peek(p) >= 0 && c_peek(p) != quote) {
+    if (length + 1u >= sizeof(label)) {
+      return css_skip_or_reject_atrule(p);
+    }
+    label[length++] = (char)c_next(p);
+  }
+  if (c_peek(p) != quote) {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_next(p);
+  c_ws(p);
+  if (c_peek(p) != ';') {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_next(p);
+  if (length != 5u) {
+    return css_skip_or_reject_atrule(p);
+  }
+  label[5] = '\0';
+  for (i = 0u; i < 5u; ++i) {
+    char c = label[i];
+    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+    if (c != expected[i]) {
+      return css_skip_or_reject_atrule(p);
+    }
+  }
+  return true;
+}
+
 static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
-                             size_t media_depth, uint32_t layer_id) {
+                             size_t media_depth, uint32_t layer_id,
+                             bool nested) {
   char name[MY_CSS_NAME_LEN];
 
   c_next(p); /* '@' */
@@ -3682,19 +3737,29 @@ static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
     css_fail(p, "expected @-rule name");
     return false;
   }
+  if (my_str_eq(name, "charset")) {
+    return css_parse_charset_atrule(p, nested, p->top_statements);
+  }
   if (my_str_eq(name, "media")) {
+    if (!nested) p->import_window_closed = true;
     return css_parse_media_atrule(p, sheet, media_depth, layer_id);
   }
   if (my_str_eq(name, "supports")) {
+    if (!nested) p->import_window_closed = true;
     return css_parse_supports_atrule(p, sheet, media_depth, layer_id);
   }
   if (my_str_eq(name, "layer")) {
     return css_parse_layer_atrule(p, sheet, media_depth, layer_id);
   }
   if (my_str_eq(name, "import")) {
+    if (nested || p->import_window_closed) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_IMPORTS);
+    }
     return css_parse_import_atrule(p, sheet, media_depth, layer_id);
   }
   if (my_str_eq(name, "scope")) {
+    if (!nested) p->import_window_closed = true;
     return css_parse_scope_atrule(p, sheet, media_depth, layer_id);
   }
   return css_skip_or_reject_atrule(p);
@@ -3726,9 +3791,10 @@ static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
       return false;
     }
     if (c_peek(p) == '@') {
-      if (!css_parse_atrule(p, sheet, media_depth, layer_id)) {
+      if (!css_parse_atrule(p, sheet, media_depth, layer_id, nested)) {
         return false;
       }
+      if (!nested) p->top_statements++;
       continue;
     }
     rule = css_rule(p, sheet, media_depth, layer_id);
@@ -3739,6 +3805,10 @@ static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
       css_rule_destroy(p->allocator, rule);
       css_fail(p, "oom");
       return false;
+    }
+    if (!nested) {
+      p->top_statements++;
+      p->import_window_closed = true;
     }
     /* R629: flush the rule's nested `&` rules after it (source order). */
     if (p->nest_pending != NULL) {

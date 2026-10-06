@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R656 导入位置语义 + `@charset`（TDD）— @import 仅顶层前序（规范位置窗口）;`@charset "utf-8";` 首语句 no-op 接受
+
+- **缺口**（导入弧审计钓出，双片）:① 引擎在任何位置接受 @import——规范只允许顶层前序（在样式规则/条件 @-规则之前，@charset/@layer 可先于它）;`button{} @import "x"`、`@media all { @import "x"; }` 全部静默接受（规范=无效）。② 真实样式表最常见的首行 `@charset "utf-8";` 按 unsupported @-rule 拒绝，strict 下整表作废。
+- **方案**（解析器位置状态 + 新微规则）:`css_p_t` 加 `top_statements`/`import_window_closed` 双字段（顶层语句计数/导入窗口关闭旗——顶层样式规则或 @media/@supports/@scope 关窗；@charset/@import/@layer 双形态不关）;`css_parse_atrule` 加 `nested` 形参穿线（嵌套块内 @import 一律无效）。错位导入走 IMPORTS capability 规约（strict 拒/compat 仅跳过该语句——浏览器"忽略"语义同型）。`@charset`:仅顶层第 0 语句、引号标签、大小写不敏感 utf-8（引擎只解 UTF-8)，违规一律走 skip-or-reject 规约。
+- **TDD（红→绿实证）**：test_myui_css +1——十形态：合规链（charset→import→layer 语句→规则，import 解析且源序展平）、首语句 charset（大小写）、规则后/媒体后/嵌套导入 strict 三拒（首支钉 IMPORTS capability)、compat 跳过错位导入（release 0+本地规则保留）、charset 晚到/嵌套/无引号/非 utf-8 标签 strict 四拒。**RED 如实红**（合规链 sheet NULL——charset 不存在）;GREEN 一次过 **168/168**(167+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5；既有导入/层/媒体测试组全绿未动（合规位置零扰动）。
+- **边界**:@charset 仅接受 utf-8 标签（其它编码=不支持的特性，如实拒——引擎全域 UTF-8);`@import` 双连（多条导入均在前序窗口内）合法未变；css 条件规则域让渡账自此仅剩 @container（容器上下文=匹配层史诗）;R611 AMD 基线不动。
+
 ## 本轮更新：R655 匿名层（TDD）— `@layer { ... }` 匿名块 + `@import "x.css" layer;` 裸写双形态落地；R653"匿名拒绝"契约正式转正
 
 - **缺口**（R653 落账"匿名层需统一立项"）：规范匿名层（每次出现即独立层，源序定秩）在引擎全域拒绝——`@layer { }` 死于 "invalid @layer name"，裸 `layer` 导入条件死于 qualifier 拒绝。

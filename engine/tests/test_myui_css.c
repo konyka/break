@@ -814,6 +814,104 @@ TEST(css_import_rejects_absolute_and_traversal_paths)
   }
 }
 
+TEST(css_import_position_and_charset_conformance)
+{
+  /* R656: import-position and @charset conformance — @import is valid only
+   * at top level before any style rule or conditional at-rule (@charset
+   * and @layer may precede); nested @import is invalid. @charset is valid
+   * only as the very first statement, with a (case-insensitive) utf-8
+   * label — the engine decodes UTF-8 only. */
+  const css_import_entry_t entries[] = {
+      {"x.css", "label { color: red; }", 21u}, {NULL, NULL, 0u}};
+  const char* after_rule = "button { color: blue; } @import \"x.css\";";
+  const char* after_media =
+      "@media all { label { color: green; } } @import \"x.css\";";
+  const char* nested = "@media all { @import \"x.css\"; }";
+  const char* good_order =
+      "@charset \"utf-8\"; @import \"x.css\"; @layer base;"
+      " button { color: blue; }";
+  const char* charset_first = "@charset \"UTF-8\"; button { color: blue; }";
+  const char* charset_late = "button { color: blue; } @charset \"utf-8\";";
+  const char* charset_nested = "@media all { @charset \"utf-8\"; }";
+  const char* charset_unquoted = "@charset utf-8; button { color: blue; }";
+  const char* charset_other = "@charset \"latin1\"; button { color: blue; }";
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+
+  /* conforming order: charset -> import -> layer statement -> rules. */
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, good_order, strlen(good_order),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "label");
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  /* @charset as the first statement (case-insensitive label). */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, charset_first,
+                                    strlen(charset_first), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* misplaced imports: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, after_rule,
+                                        strlen(after_rule), &options,
+                                        &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_IMPORTS);
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, after_media,
+                                        strlen(after_media), &options,
+                                        &error) == NULL);
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, nested, strlen(nested),
+                                        &options, &error) == NULL);
+
+  /* compatibility mode: a misplaced import is skipped, not fatal. */
+  options.flags = 0u;
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, after_rule, strlen(after_rule),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "button");
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+
+  /* @charset violations: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, charset_late,
+                                        strlen(charset_late), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, charset_nested,
+                                        strlen(charset_nested), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, charset_unquoted,
+                                        strlen(charset_unquoted), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, charset_other,
+                                        strlen(charset_other), &options,
+                                        &error) == NULL);
+}
+
 TEST(css_import_media_qualifier_gates_resolution)
 {
   /* R651: standard media-qualified imports — the query after the path is
@@ -6157,6 +6255,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_cycle_and_depth_are_bounded);
     RUN_TEST(css_import_rejects_absolute_and_traversal_paths);
     RUN_TEST(css_import_media_qualifier_gates_resolution);
+    RUN_TEST(css_import_position_and_charset_conformance);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_scope_applies_rules_only_inside_root);
