@@ -282,10 +282,14 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * styles the root itself; as the outermost ancestor compound
  * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root.
  * CSS nesting (R629): inside a rule's declaration block, a statement
- * starting with `&` is a nested rule — desugared at parse time against the
- * already-resolved parent selectors (one variant per parent selector;
- * `&`/`&:pseudo`/`&.class` merge onto the parent subject, `& path` /
- * `& > path` place the parent at the outermost ancestor slot). The prelude
+ * holding a top-level `&` is a nested rule — desugared at parse time
+ * against the already-resolved parent selectors (one variant per parent
+ * selector; `&`/`&:pseudo`/`&.class` merge onto the parent subject,
+ * `& path` / `& > path` place the parent at the outermost ancestor slot).
+ * The marker may sit at any compound position (R637): at the subject slot
+ * the arm compounds ahead of it land outward of the parent's own
+ * ancestors; mid-chain the whole parent selector lands in the marker's
+ * slot, parent ancestors traveling with it. The prelude
  * is a comma group (R634): each arm desugars independently against every
  * parent variant, bounded by MY_CSS_MAX_NEST_ARMS. Two levels deep (R636):
  * a nested rule's block takes one further `&` level, desugared against the

@@ -2502,6 +2502,290 @@ TEST(css_nest_second_level_rejects_malformed)
   }
 }
 
+TEST(css_nest_marker_trailing_subject_form)
+{
+  /* `.card { .theme-dark & { color: red; } }` — the marker may sit at the
+   * subject slot with arm compounds before it: the parent subject stays
+   * the subject, the arm compounds become its innermost ancestors. This
+   * is the canonical "theme ancestor" pattern. */
+  const char* css = ".card { .theme-dark & { color: red; } }";
+  /* a state-qualified parent stays legal here — it remains the subject. */
+  const char* css2 = "button:hover { .a & { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* dark = my_widget_create(NULL, "dark");
+  my_widget_t* card = my_widget_create(NULL, "card");
+  my_widget_t* plain = my_widget_create(NULL, "plain");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "card");
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "theme-dark");
+  ASSERT_TRUE(sel->ancestor_direct_path[0] == false);
+  ASSERT_TRUE(sel->nest_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, css2, strlen(css2),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "button");
+  ASSERT_EQ(sel->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "a");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  dark->widget_type = "panel";
+  card->widget_type = "wrap";
+  plain->widget_type = "panel";
+  miss->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(dark, "theme-dark"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(card, "card"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(miss, "card"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dark, card), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(plain, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, card, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(plain);
+  my_widget_unref(card);
+  my_widget_unref(dark);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_marker_trailing_parent_ancestors_shift)
+{
+  /* `panel item { .x > & { color: red; } }` — the arm's outward edge binds
+   * the parent's OUTERMOST compound: `.x > panel item`. The parent's own
+   * ancestors shift outward past the inserted arm compounds. (Top-level
+   * ancestors must carry a type, hence `panel item`.) */
+  const char* css = "panel item { .x > & { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* x = my_widget_create(NULL, "x");
+  my_widget_t* pa = my_widget_create(NULL, "pa");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* mid = my_widget_create(NULL, "mid");
+  my_widget_t* pa2 = my_widget_create(NULL, "pa2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "item");
+  ASSERT_EQ(sel->ancestor_count, 2u);
+  ASSERT_STR_EQ(sel->ancestors[0].widget_type, "panel");
+  ASSERT_TRUE(sel->ancestor_direct_path[0] == false);
+  ASSERT_STR_EQ(sel->ancestors[1].style_class, "x");
+  ASSERT_TRUE(sel->ancestor_direct_path[1] == true);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  x->widget_type = "wrap";
+  pa->widget_type = "panel";
+  hit->widget_type = "item";
+  mid->widget_type = "wrap";
+  pa2->widget_type = "panel";
+  miss->widget_type = "item";
+  ASSERT_EQ(my_widget_set_style_class(x, "x"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(x, pa), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(pa, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(x, mid), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(mid, pa2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(pa2, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* x > mid > pa2 > miss: the direct edge between x and panel is broken. */
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(pa2);
+  my_widget_unref(mid);
+  my_widget_unref(hit);
+  my_widget_unref(pa);
+  my_widget_unref(x);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_marker_mid_chain)
+{
+  /* `wrap .a { .x & .y { color: red; } }` — the marker sits mid-chain: the
+   * whole parent selector lands in its slot (parent ancestors travel with
+   * it, outward of the parent subject but inward of the arm's outward
+   * compounds): `.x wrap .a .y`. */
+  const char* css = "wrap .a { .x & .y { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* x = my_widget_create(NULL, "x");
+  my_widget_t* w = my_widget_create(NULL, "w");
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* w2 = my_widget_create(NULL, "w2");
+  my_widget_t* a2 = my_widget_create(NULL, "a2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "y");
+  ASSERT_EQ(sel->ancestor_count, 3u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "a");
+  ASSERT_STR_EQ(sel->ancestors[1].widget_type, "wrap");
+  ASSERT_STR_EQ(sel->ancestors[2].style_class, "x");
+  ASSERT_TRUE(sel->ancestor_direct_path[0] == false);
+  ASSERT_TRUE(sel->ancestor_direct_path[2] == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  x->widget_type = "panel";
+  w->widget_type = "wrap";
+  a->widget_type = "box";
+  hit->widget_type = "box";
+  w2->widget_type = "wrap";
+  a2->widget_type = "box";
+  miss->widget_type = "box";
+  ASSERT_EQ(my_widget_set_style_class(x, "x"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(hit, "y"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(a2, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(miss, "y"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(x, w), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(w, a), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(w2, a2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a2, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* no .x above the chain: the outward arm compound is required. */
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(a2);
+  my_widget_unref(w2);
+  my_widget_unref(hit);
+  my_widget_unref(a);
+  my_widget_unref(w);
+  my_widget_unref(x);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_marker_mid_chain_direct_edges)
+{
+  /* `.a { .x > & > .y { color: red; } }` — both parsed edges of the arm
+   * are kept: the inward edge lands on the parent-subject slot, the
+   * outward edge on the outward arm compound. */
+  const char* css = ".a { .x > & > .y { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* x = my_widget_create(NULL, "x");
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* mid = my_widget_create(NULL, "mid");
+  my_widget_t* a2 = my_widget_create(NULL, "a2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "y");
+  ASSERT_EQ(sel->ancestor_count, 2u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "a");
+  ASSERT_TRUE(sel->ancestor_direct_path[0] == true);
+  ASSERT_STR_EQ(sel->ancestors[1].style_class, "x");
+  ASSERT_TRUE(sel->ancestor_direct_path[1] == true);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  x->widget_type = "panel";
+  a->widget_type = "wrap";
+  hit->widget_type = "wrap";
+  mid->widget_type = "wrap";
+  a2->widget_type = "wrap";
+  miss->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(x, "x"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(hit, "y"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(a2, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(miss, "y"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(x, a), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(x, mid), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(mid, a2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a2, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* x > mid > a2 > miss: the direct edge between x and the parent is
+   * broken. */
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(a2);
+  my_widget_unref(mid);
+  my_widget_unref(hit);
+  my_widget_unref(a);
+  my_widget_unref(x);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_marker_position_rejects_malformed)
+{
+  const char* malformed[] = {
+      "button { .a & & { color: red; } }",           /* two markers */
+      "button { & .a & { color: red; } }",           /* leading + trailing */
+      "button { .a &:hover .x { color: red; } }",    /* state on mid marker */
+      "button:hover { .a & .x { color: red; } }"};   /* state parent as
+                                                        * mid ancestor */
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
+  }
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -4292,6 +4576,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_second_level_group_arms);
     RUN_TEST(css_nest_second_level_sibling_order);
     RUN_TEST(css_nest_second_level_rejects_malformed);
+    RUN_TEST(css_nest_marker_trailing_subject_form);
+    RUN_TEST(css_nest_marker_trailing_parent_ancestors_shift);
+    RUN_TEST(css_nest_marker_mid_chain);
+    RUN_TEST(css_nest_marker_mid_chain_direct_edges);
+    RUN_TEST(css_nest_marker_position_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

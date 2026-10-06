@@ -926,14 +926,18 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
 #define MY_CSS_MAX_NEST_ARMS 8u
 
 /* R629: parse one nested `&` rule at a declaration-block statement
- * boundary (the parser sits ON the '&'). The nested selector path must
- * start with the parent marker; `&` alone/`&:pseudo`/`&.class` merge onto
- * the parent subject, while `& <path>`/`& > <path>` place the parent at
- * the outermost ancestor slot. Parent selectors are already fully resolved
- * (scope spliced), so the desugar is a plain substitution — one variant
- * per parent selector, inheriting layer order and scope limits (root
- * indices shift past the substituted slots). R634: the prelude is a comma
- * group — each arm folds and substitutes independently into the same rule
+ * boundary (the parser sits on the statement's first compound). The
+ * selector path must hold exactly one parent marker; `&` alone/
+ * `&:pseudo`/`&.class` merge onto the parent subject, while `& <path>`/
+ * `& > <path>` place the parent at the outermost ancestor slot. R637: the
+ * marker may sit at any compound position — at the subject slot the arm
+ * compounds ahead of it become the parent's innermost ancestors; mid-chain
+ * the whole parent selector lands in the marker's slot (its ancestors
+ * travel with it). Parent selectors are already fully resolved (scope
+ * spliced), so the desugar is a plain substitution — one variant per
+ * parent selector, inheriting layer order and scope limits (root indices
+ * shift past the substituted slots). R634: the prelude is a comma group —
+ * each arm folds and substitutes independently into the same rule
  * (arm-major order). R636: the nested rule's own block takes one further
  * level of `&` rules — the parent's selectors are already fully desugared,
  * so the same substitution recurses unchanged. */
@@ -942,6 +946,7 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
   my_css_selector_t arms[MY_CSS_MAX_NEST_ARMS][MY_CSS_MAX_ANCESTORS + 1u];
   bool arm_direct[MY_CSS_MAX_NEST_ARMS][MY_CSS_MAX_ANCESTORS + 1u];
   size_t arm_counts[MY_CSS_MAX_NEST_ARMS];
+  size_t arm_marker[MY_CSS_MAX_NEST_ARMS];
   size_t arm_count = 0u;
   my_css_rule_t* nr;
   size_t ai, i, pi;
@@ -954,6 +959,8 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
     my_css_selector_t(*compounds)[MY_CSS_MAX_ANCESTORS + 1u];
     bool* direct_between;
     size_t count = 0u;
+    size_t marker_index = 0u;
+    bool seen_marker = false;
     bool pending_direct = false;
     if (arm_count >= MY_CSS_MAX_NEST_ARMS) {
       css_fail(p, "invalid & nested selector");
@@ -972,13 +979,22 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
         css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
         return false;
       }
-      /* exactly one leading '&'; no :scope markers; no type/id-qualified
-       * marker (class/pseudo quals merge; type can't follow '&' anyway). */
-      if (comp.scope_ref || comp.nest_ref != (count == 0u) ||
+      /* no :scope markers; no type/id-qualified marker (class/pseudo quals
+       * merge; type can't follow '&' anyway). R637: the marker may sit at
+       * any compound position; exactly one per arm. */
+      if (comp.scope_ref ||
           (comp.nest_ref &&
            (comp.widget_type[0] != '\0' || comp.id[0] != '\0'))) {
         css_fail(p, "invalid & nested selector");
         return false;
+      }
+      if (comp.nest_ref) {
+        if (seen_marker) {
+          css_fail(p, "invalid & nested selector");
+          return false;
+        }
+        seen_marker = true;
+        marker_index = count;
       }
       if (count >= MY_CSS_MAX_ANCESTORS + 1u) {
         css_fail(p, "selector ancestor depth exceeded");
@@ -1005,6 +1021,11 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
       }
       pending_direct = false; /* whitespace = descendant combinator */
     }
+    if (!seen_marker) {
+      css_fail(p, "invalid & nested selector");
+      return false;
+    }
+    arm_marker[arm_count] = marker_index;
     arm_counts[arm_count] = count;
     arm_count++;
     if (c_peek(p) == ',') {
@@ -1023,57 +1044,45 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
     const my_css_selector_t* compounds = arms[ai];
     const bool* direct_between = arm_direct[ai];
     size_t count = arm_counts[ai];
+    size_t marker = arm_marker[ai];
     my_css_selector_t nsel;
-    /* Fold: subject = last compound; the marker (compounds[0]) lands on the
-     * outermost ancestor slot whenever ancestors exist. Ancestor compounds
-     * copy field-wise (no type requirement — the scope splice convention);
-     * a pseudo state on an ancestor can't be expressed → reject. */
+    /* subject = last compound (the marker itself when it sits there).
+     * Ancestor compounds copy field-wise (no type requirement — the scope
+     * splice convention); a pseudo state on an ancestor can't be expressed
+     * → reject. R637: the marker may sit at any position — the whole parent
+     * selector lands in its slot (parent ancestors travel with it, outward
+     * of the parent subject but inward of the arm's outward compounds). */
     nsel = compounds[count - 1u];
-    nsel.ancestor_count = (u32)(count - 1u);
-    for (i = 0u; i + 1u < count; ++i) {
-      size_t source = count - 2u - i;
-      if (compounds[source].nest_ref) {
-        memset(&nsel.ancestors[i], 0, sizeof(nsel.ancestors[i]));
-        nsel.ancestor_direct_path[i] = direct_between[source + 1u];
-        continue;
-      }
-      if (compounds[source].state != -1) {
-        css_fail(p, "invalid & nested selector");
-        css_rule_destroy(p->allocator, nr);
-        return false;
-      }
-      memcpy(nsel.ancestors[i].widget_type, compounds[source].widget_type,
-             sizeof(nsel.ancestors[i].widget_type));
-      memcpy(nsel.ancestors[i].id, compounds[source].id,
-             sizeof(nsel.ancestors[i].id));
-      memcpy(nsel.ancestors[i].style_class, compounds[source].style_class,
-             sizeof(nsel.ancestors[i].style_class));
-      nsel.ancestor_direct_path[i] = direct_between[source + 1u];
-    }
-    /* a state-qualified marker in ancestor form can't be expressed either
-     * (`&.active button` merges the class; `&:hover button` is rejected). */
-    if (count > 1u && compounds[0].state != -1) {
-      css_fail(p, "invalid & nested selector");
-      css_rule_destroy(p->allocator, nr);
-      return false;
-    }
     for (pi = 0u; pi < my_darray_size(parent->selectors); ++pi) {
       const my_css_selector_t* psel =
           (const my_css_selector_t*)my_darray_get(parent->selectors, pi);
       my_css_selector_t out;
+      u32 pa;
+      u32 j;
       if (psel == NULL) {
         continue;
       }
-      if (psel->state != -1) {
-        /* a state-qualified parent can't be expressed once its subject
-         * becomes an ancestor — out of the subset. */
-        css_fail(p, "invalid & nested selector");
-        css_rule_destroy(p->allocator, nr);
-        return false;
-      }
-      if (count == 1u) {
-        /* subject merge: the parent's own selector, with the marker's
-         * pseudo state and/or extra classes merged in. */
+      pa = psel->ancestor_count;
+      if (marker + 1u == count) {
+        /* subject-slot marker (`.a &`, `.a &:hover`): merge the marker's
+         * pseudo state and/or extra classes onto the parent subject; the
+         * arm compounds ahead of the marker land OUTWARD of the parent's
+         * own ancestors (`.x &` on `panel item` → `.x panel item`). A
+         * state-qualified parent stays legal (it remains the subject). */
+        size_t lead = count - 1u;
+        if (lead + pa > MY_CSS_MAX_ANCESTORS) {
+          css_fail(p, "selector ancestor depth exceeded");
+          css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
+          css_rule_destroy(p->allocator, nr);
+          return false;
+        }
+        for (i = 0u; i < lead; ++i) {
+          if (compounds[lead - 1u - i].state != -1) {
+            css_fail(p, "invalid & nested selector");
+            css_rule_destroy(p->allocator, nr);
+            return false;
+          }
+        }
         out = *psel;
         if (nsel.state >= 0) {
           out.state = nsel.state;
@@ -1092,12 +1101,40 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
           }
           memcpy(out.style_class + have + sep, nsel.style_class, need + 1u);
         }
+        for (i = 0u; i < lead; ++i) {
+          size_t source = lead - 1u - i;
+          u32 slot = pa + (u32)i;
+          memcpy(out.ancestors[slot].widget_type,
+                 compounds[source].widget_type,
+                 sizeof(out.ancestors[slot].widget_type));
+          memcpy(out.ancestors[slot].id, compounds[source].id,
+                 sizeof(out.ancestors[slot].id));
+          memcpy(out.ancestors[slot].style_class,
+                 compounds[source].style_class,
+                 sizeof(out.ancestors[slot].style_class));
+          /* the first (innermost) arm compound takes the edge parsed
+           * against the marker; the rest keep their parsed edges. */
+          out.ancestor_direct_path[slot] =
+              i == 0u ? direct_between[lead] : direct_between[source + 1u];
+        }
+        out.ancestor_count = (u32)(lead + pa);
+        /* the parent's ancestors never moved — scope limits carry over
+         * unchanged. */
       } else {
-        /* ancestor form: [nested inner ancestors..., parent subject at the
-         * marker slot, parent ancestors outward]. */
-        u32 m = nsel.ancestor_count - 1u; /* marker slot (outermost) */
-        u32 total = (u32)(m + 1u + psel->ancestor_count);
-        u32 j;
+        /* ancestor-slot marker: [inner arm compounds..., parent subject at
+         * the marker slot, parent ancestors outward, outward arm
+         * compounds...]. A state-qualified parent can't be expressed once
+         * its subject becomes an ancestor; a state-qualified marker in an
+         * ancestor slot can't be expressed either. */
+        u32 m;
+        u32 total;
+        if (psel->state != -1 || compounds[marker].state != -1) {
+          css_fail(p, "invalid & nested selector");
+          css_rule_destroy(p->allocator, nr);
+          return false;
+        }
+        m = (u32)(count - 2u - marker); /* marker slot (innermost-first) */
+        total = m + 1u + pa + (u32)marker;
         if (total > MY_CSS_MAX_ANCESTORS) {
           css_fail(p, "selector ancestor depth exceeded");
           css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
@@ -1111,9 +1148,20 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
         snprintf(out.id, sizeof(out.id), "%s", nsel.id);
         snprintf(out.style_class, sizeof(out.style_class), "%s",
                  nsel.style_class);
-        for (j = 0u; j < m; ++j) {
-          out.ancestors[j] = nsel.ancestors[j];
-          out.ancestor_direct_path[j] = nsel.ancestor_direct_path[j];
+        for (i = 0u; i < m; ++i) {
+          size_t source = count - 2u - i;
+          if (compounds[source].state != -1) {
+            css_fail(p, "invalid & nested selector");
+            css_rule_destroy(p->allocator, nr);
+            return false;
+          }
+          memcpy(out.ancestors[i].widget_type, compounds[source].widget_type,
+                 sizeof(out.ancestors[i].widget_type));
+          memcpy(out.ancestors[i].id, compounds[source].id,
+                 sizeof(out.ancestors[i].id));
+          memcpy(out.ancestors[i].style_class, compounds[source].style_class,
+                 sizeof(out.ancestors[i].style_class));
+          out.ancestor_direct_path[i] = direct_between[source + 1u];
         }
         /* parent subject as the ancestor at the marker slot (the marker's
          * own class quals merge in), with the parsed edge flag kept. */
@@ -1122,11 +1170,11 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
                  psel->widget_type);
         snprintf(out.ancestors[m].id, sizeof(out.ancestors[m].id), "%s",
                  psel->id);
-        if (compounds[0].style_class[0] != '\0') {
+        if (compounds[marker].style_class[0] != '\0') {
           if (psel->style_class[0] != '\0') {
             int n = snprintf(out.ancestors[m].style_class,
                              sizeof(out.ancestors[m].style_class), "%s %s",
-                             psel->style_class, compounds[0].style_class);
+                             psel->style_class, compounds[marker].style_class);
             if (n < 0 || (size_t)n >= sizeof(out.ancestors[m].style_class)) {
               css_fail(p, "selector classes too long");
               css_rule_destroy(p->allocator, nr);
@@ -1135,18 +1183,39 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
           } else {
             snprintf(out.ancestors[m].style_class,
                      sizeof(out.ancestors[m].style_class), "%s",
-                     compounds[0].style_class);
+                     compounds[marker].style_class);
           }
         } else {
           snprintf(out.ancestors[m].style_class,
                    sizeof(out.ancestors[m].style_class), "%s",
                    psel->style_class);
         }
-        out.ancestor_direct_path[m] = nsel.ancestor_direct_path[m];
-        for (j = 0u; j < psel->ancestor_count; ++j) {
+        out.ancestor_direct_path[m] = direct_between[marker + 1u];
+        for (j = 0u; j < pa; ++j) {
           out.ancestors[m + 1u + j] = psel->ancestors[j];
           out.ancestor_direct_path[m + 1u + j] =
               psel->ancestor_direct_path[j];
+        }
+        /* arm compounds outward of the marker land beyond the parent's
+         * chain; the first takes the edge parsed against the marker. */
+        for (i = 0u; i < marker; ++i) {
+          size_t source = marker - 1u - i;
+          u32 slot = m + 1u + pa + (u32)i;
+          if (compounds[source].state != -1) {
+            css_fail(p, "invalid & nested selector");
+            css_rule_destroy(p->allocator, nr);
+            return false;
+          }
+          memcpy(out.ancestors[slot].widget_type,
+                 compounds[source].widget_type,
+                 sizeof(out.ancestors[slot].widget_type));
+          memcpy(out.ancestors[slot].id, compounds[source].id,
+                 sizeof(out.ancestors[slot].id));
+          memcpy(out.ancestors[slot].style_class,
+                 compounds[source].style_class,
+                 sizeof(out.ancestors[slot].style_class));
+          out.ancestor_direct_path[slot] =
+              i == 0u ? direct_between[marker] : direct_between[source + 1u];
         }
         out.ancestor_count = total;
         /* the parent's scope limits carry over; root indices shift past the
@@ -1191,8 +1260,36 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
   return true;
 }
 
+/* R637: a block statement that does not start with '&' may still be a
+ * nested rule (`.a & {}` — the marker sits mid-chain). Scan the statement:
+ * a top-level `&` before the next `{`/`;`/`}` means nested rule. Quoted
+ * spans are skipped so string values containing '&' stay declarations
+ * (backslash escapes inside quotes are not interpreted — no subset value
+ * needs them). */
+static bool css_stmt_is_nested_rule(const css_p_t* p) {
+  size_t pos = p->pos;
+  int quote = 0;
+  while (pos < p->len) {
+    char c = p->s[pos];
+    if (quote != 0) {
+      if (c == quote) {
+        quote = 0;
+      }
+    } else if (c == '"' || c == '\'') {
+      quote = c;
+    } else if (c == '&') {
+      return true;
+    } else if (c == '{' || c == ';' || c == '}') {
+      return false;
+    }
+    pos++;
+  }
+  return false;
+}
+
 /* R629: declaration block body (after '{', through the closing '}').
- * Statement boundaries that start with '&' are nested rules. */
+ * Statements whose prelude holds a top-level '&' are nested rules (R637:
+ * the marker may sit mid-chain, not just at the statement start). */
 static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
                                  my_css_sheet_t* sheet, u32 depth) {
   for (;;) {
@@ -1203,7 +1300,7 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
     if (c_failed(p)) {
       return false;
     }
-    if (c_peek(p) == '&') {
+    if (c_peek(p) == '&' || css_stmt_is_nested_rule(p)) {
       if (!css_nest_rule(p, r, sheet, depth)) {
         return false;
       }
