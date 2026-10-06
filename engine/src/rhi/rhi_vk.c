@@ -7937,6 +7937,31 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
         LOG_WARN("VK: rhi_cmd_update_buffer requires 4-byte align and size<=65536");
         return;
     }
+
+    /* WAR: a previous draw/dispatch may still be reading this buffer (the
+     * per-draw UBO rebind pattern updates one buffer twice in a frame). The
+     * post-update barrier below only orders the transfer write against LATER
+     * shader reads; without this pre barrier the write can land before an
+     * earlier draw's reads finish — observed as flaky identical pixels on
+     * MoltenVK (deferred gbuffer factor test). */
+    VkBufferMemoryBarrier pre_update = {0};
+    pre_update.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    pre_update.srcAccessMask = VK_ACCESS_SHADER_READ_BIT
+                             | VK_ACCESS_INDIRECT_COMMAND_READ_BIT
+                             | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    pre_update.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    pre_update.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre_update.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    pre_update.buffer = bd->buffer;
+    pre_update.offset = offset;
+    pre_update.size = size;
+    vkCmdPipelineBarrier(cb,
+        VK_PIPELINE_STAGE_VERTEX_INPUT_BIT | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+            | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        0, 0, NULL, 1, &pre_update, 0, NULL);
+
     vkCmdUpdateBuffer(cb, bd->buffer, (VkDeviceSize)offset, (VkDeviceSize)size, data);
 
     VkBufferMemoryBarrier to_shader = {0};
