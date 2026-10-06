@@ -2442,18 +2442,23 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
         }
         return MY_RET_OK;
       }
-      if (key == MY_KEY_LEFT) {
-        if (ta->cursor_col > 0) {
-          ta_move_to(ta, ta->cursor_row, ta->cursor_col - 1, shift);
-        } else if (ta->cursor_row > 0) {
-          ta_move_to(ta, ta->cursor_row - 1,
-                     ta_line_cp_len(ta, ta->cursor_row - 1), shift);
+      /* R660: without a layout (plain LTR text) arrows still skip grapheme
+       * cluster interiors — the byte-space walk over the whole buffer;
+       * hard newlines are their own clusters, so line crossing keeps the
+       * legacy semantics (previous line end / next line start). */
+      {
+        size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
+        size_t target = off;
+        if (key == MY_KEY_LEFT && off > 0) {
+          target = my_grapheme_boundary_left(ta->text, ta->text_len, off);
+        } else if (key == MY_KEY_RIGHT && off < ta->text_len) {
+          target = my_grapheme_boundary_right(ta->text, ta->text_len, off);
         }
-      } else {
-        if (ta->cursor_col < ta_line_cp_len(ta, ta->cursor_row)) {
-          ta_move_to(ta, ta->cursor_row, ta->cursor_col + 1, shift);
-        } else if (ta->cursor_row + 1 < ta_line_count(ta)) {
-          ta_move_to(ta, ta->cursor_row + 1, 0, shift);
+        if (target != off) {
+          size_t row;
+          size_t col;
+          ta_pos_of(ta, target, &row, &col);
+          ta_move_to(ta, row, col, shift);
         }
       }
       if (!shift) {

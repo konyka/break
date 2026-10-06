@@ -149,7 +149,65 @@ TEST(text_area_backspace_and_delete_are_grapheme_aware)
   my_widget_unref(widget);
 }
 
+TEST(text_area_arrows_skip_clusters_without_layout)
+{
+  /* R660: plain LTR text never builds a layout — arrows must still skip
+   * grapheme cluster interiors (byte-space walk), and hard-newline line
+   * crossing keeps the legacy semantics. */
+  my_widget_t* widget = my_text_area_create(NULL);
+  my_text_area_t* area = (my_text_area_t*)widget;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(widget);
+  area->focused = true;
+
+  ASSERT_EQ(my_text_area_set_text(widget, "a" "\xCC\x81" "b"), MY_RET_OK);
+  area->cursor_row = 0u;
+  area->cursor_col = 0u;
+  area->anchor_row = 0u;
+  area->anchor_col = 0u;
+
+  /* right from the start lands after the whole cluster (col 2). */
+  event = key_event(MY_KEY_RIGHT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 2u);
+  event = key_event(MY_KEY_RIGHT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 3u);
+  /* left from the end: 'b' first, then the whole cluster. */
+  event = key_event(MY_KEY_LEFT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 2u);
+  event = key_event(MY_KEY_LEFT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 0u);
+
+  /* hard newline: crossing keeps the legacy previous-end/next-start. */
+  ASSERT_EQ(my_text_area_set_text(widget, "x" "\n" "a" "\xCC\x81" "b"),
+            MY_RET_OK);
+  area->cursor_row = 1u;
+  area->cursor_col = 0u;
+  area->anchor_row = 1u;
+  area->anchor_col = 0u;
+  event = key_event(MY_KEY_LEFT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_row, 0u);
+  ASSERT_EQ(area->cursor_col, 1u);
+  event = key_event(MY_KEY_RIGHT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_row, 1u);
+  ASSERT_EQ(area->cursor_col, 0u);
+  /* and the cluster after the newline is skipped whole. */
+  event = key_event(MY_KEY_RIGHT);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_row, 1u);
+  ASSERT_EQ(area->cursor_col, 2u);
+
+  my_widget_unref(widget);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(edit_backspace_and_delete_are_grapheme_aware);
 RUN_TEST(text_area_backspace_and_delete_are_grapheme_aware);
+RUN_TEST(text_area_arrows_skip_clusters_without_layout);
 TEST_MAIN_END()

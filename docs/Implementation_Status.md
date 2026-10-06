@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R660 text_area 方向键簇感知（TDD）— R659 落账"LTR 落空"关闭：无 layout 文本箭头走字节域字素 API，硬换行行跨语义零变化
+
+- **缺口**（R659 落账"text_area 方向键簇感知单列"）：无 layout（纯 LTR）时 LEFT/RIGHT 走 `cursor_col±1` 逐码点——"á" 簇内部停可达；R657-R659 的簇感知在 text_area 箭头键上仍只对 bidi 文本生效。
+- **方案**（fallback 整体换轨，语义逐点等价）：`l==NULL` 分支从"col±1+手工行跨"改为 `ta_offset_of` → `my_grapheme_boundary_left/right(ta->text, ta->text_len, off)` → `ta_pos_of` 回映射——硬换行自身成簇（非 Extend/ZWJ/RI/EP),`\n` 边界天然给出"上一行尾/下一行首"的旧行跨语义（逐点推导互证）;`goal_col=cursor_col` 惯例原样（identity for LTR 注释同约）;layout 路径（bidi canonical）零触点。
+- **TDD（红→绿实证）**：test_myui_edit +1——簇内跳（right 0→2→3/left 3→2→0 双向）+ 硬换行行跨（left→(0,1)/right→(1,0)/right→(1,2) 三钉）。**RED 经 stash 实证**（暂存 widget 改动后旧码 col+1→1≠2 如实红）;GREEN 一钓：测试预期再犯"光标左邻簇"错位（left 3→0 应为 3→2→0 两段）,**3/3**。
+- **回归**：双树非图形 CTest 各 **118/118**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5。text_area 光标三语义面（移动/删除/选择经 ta_move_to 汇聚）自此簇一致。
+- **边界**:UP/DOWN 垂直移动经 goal_col 列号对齐（列内停点由后续水平键修正，与旧语义同）;wrap 模式的可见行 layout 路径（bidi 才建）同 R659 约定;GB9c 维持让渡；R611 AMD 基线不动。
+
 ## 本轮更新：R659 按簇删 + 字节域字素 API（TDD）— 新 myr/my_grapheme 模块（免分配有界 UAX#29);my_edit/text_area 退格删除不再拆簇；LTR 光标也簇感知
 
 - **缺口**（R658 落账"Backspace 按簇删属消费侧议题"，调研再加一片）：① 退格/删除逐码点——"á" 可被拆成 "a+孤符";② 更深一层：my_edit/text_area 的光标走查只在 `my_text_layout_may_need_bidi` 时建 layout——**纯 LTR 文本的 R657/R658 簇感知完全落空**（layout 门槛）。
