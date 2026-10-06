@@ -89,7 +89,8 @@ static my_css_error_code_t css_error_code_for(const char* msg) {
       strcmp(msg, "scope selector list expansion exceeded") == 0) {
     return MY_CSS_ERROR_UNSUPPORTED_FEATURE;
   }
-  if (strcmp(msg, "unsupported @-rule") == 0) {
+  if (strcmp(msg, "unsupported @-rule") == 0 ||
+      strcmp(msg, "unsupported nested @-rule") == 0) {
     return MY_CSS_ERROR_UNSUPPORTED_FEATURE;
   }
   return MY_CSS_ERROR_SYNTAX;
@@ -101,7 +102,8 @@ static void css_fail(css_p_t* p, const char* msg) {
     p->err->line = p->line;
     p->err->col = p->col;
     p->err->code = css_error_code_for(msg);
-    if (strcmp(msg, "unsupported @-rule") == 0) {
+    if (strcmp(msg, "unsupported @-rule") == 0 ||
+        strcmp(msg, "unsupported nested @-rule") == 0) {
       p->err->capability = (uint32_t)MY_CSS_FEATURE_AT_RULES;
     } else if (strcmp(msg, "CSS scope nesting depth exceeded") == 0 ||
                strcmp(msg, "scope ancestor depth exceeded") == 0 ||
@@ -1427,13 +1429,18 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
     if (c_peek(p) == '@') {
       char at_name[MY_STYLE_KEY_LEN];
       c_next(p);
-      if (c_ident(p, at_name, sizeof(at_name)) &&
-          (my_str_eq(at_name, "media") || my_str_eq(at_name, "supports"))) {
-        if (!css_parse_nested_conditional(p, r, sheet, depth, at_depth,
-                                          at_name[0] == 'm')) {
-          return false;
+      if (c_ident(p, at_name, sizeof(at_name))) {
+        if (my_str_eq(at_name, "media") || my_str_eq(at_name, "supports")) {
+          if (!css_parse_nested_conditional(p, r, sheet, depth, at_depth,
+                                            at_name[0] == 'm')) {
+            return false;
+          }
+          continue;
         }
-        continue;
+        /* R645: CSS Nesting admits only conditional group rules into a
+         * declaration block; other nested @-rules reject truthfully. */
+        css_fail(p, "unsupported nested @-rule");
+        return false;
       }
       css_fail(p, "expected declaration key");
       return false;

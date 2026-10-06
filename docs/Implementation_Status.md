@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R645 块内非条件 @-规则专属拒签（TDD）— CSS 嵌套弧收尾：块内 @layer/@scope/@container 等从误导性 "expected declaration key" 改 "unsupported nested @-rule"（UNSUPPORTED_FEATURE+AT_RULES）
+
+- **缺口**（R638 落账"其它 @-规则块内维持硬拒"但签名是借用）：`button { @layer x { color: red; } }` 死于 "expected declaration key"(SYNTAX+capability=0)——报错把"规范本就不允许入块的构造"误述为"声明键缺失"，诊断误导宿主；CSS Nesting 规范明确：声明块内只许样式规则与条件组规则（@media/@supports/@container），@layer/@scope 本就不能嵌套——维持拒绝即规范一致，但签名须如实。
+- **方案**（仅报错面，零行为触点）：`css_parse_decl_block` 的 `@` 分支重构——合法 at-name 非 media/supports 时 `css_fail("unsupported nested @-rule")`（新专属消息）；`css_error_code_for` 映射 UNSUPPORTED_FEATURE（与顶层 "unsupported @-rule" 同族）；`css_fail` capability 归 MY_CSS_FEATURE_AT_RULES。`@` 后非合法 ident 的畸形路径维持 "expected declaration key" 不变。顶层 @layer/@scope 支持面零改动（测试钉桩守卫）。
+- **TDD（红→绿实证）**：test_myui_css +1 新测试 + R638 malformed 用例第三支契约变更——① 新测试五例（嵌套 @layer/@scope/@container/@font-face/声明后 @layer）逐字段钉新签名+顶层 @layer 仍解析（守卫）;② R638 第三支从 SYNTAX 改钉新签名。**RED 如实红 2/2**（两测试首断言即红：旧路径回 SYNTAX≠UNSUPPORTED_FEATURE);GREEN 一次过 **157/157**(156+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯解析器报错面改动（失败路径）,theme/桥接/图形零触点；构建期间曾遇陈旧 .ninja_lock 干扰（被杀 ninja 残留，清除后构建即过——与改动无关，记录在案）。
+- **边界**：块内 @container 维持拒绝（css-conditional-3 条件组但引擎全层级未支持 @container，单列评估）;CSS 弧让渡项清零——嵌套全弧（`&` 三级/任意位标记/块内条件组/`:scope` 态+类限定/专属拒签）至此闭环；R611 AMD 基线不动。
+
 ## 本轮更新：R644 内建 SA 词典第四个 locale（TDD）— `my-Mymr` profile 落地：缅甸语有界语料断行；profile→语料分派四臂化
 
 - **缺口**（R642/R643 同账"更多 SA locale 可添但需语料来源评审"）：缅甸语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"my-Mymr"})`=false，`apply` 回 NOT_SUPPORTED。

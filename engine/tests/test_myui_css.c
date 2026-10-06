@@ -3108,7 +3108,7 @@ TEST(css_nest_conditional_rejects_malformed)
       " button { @media all { color: red; } } } } } }";
   /* strict mode: a malformed nested query rejects (not skip). */
   const char* bad_query = "button { @media (bogus) { color: red; } }";
-  /* other @-rules keep the old declaration-path error. */
+  /* other @-rules reject with the dedicated nested-at-rule signature. */
   const char* unknown = "button { @layer x { color: red; } }";
   my_css_error_t error = {0};
 
@@ -3124,7 +3124,46 @@ TEST(css_nest_conditional_rejects_malformed)
   memset(&error, 0, sizeof(error));
   ASSERT_TRUE(my_css_parse_ex(NULL, unknown, strlen(unknown),
                               MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
-  ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_AT_RULES);
+  ASSERT_STR_EQ(error.msg, "unsupported nested @-rule");
+}
+
+TEST(css_nest_non_conditional_at_rules_have_dedicated_signature)
+{
+  /* CSS Nesting admits only style rules and conditional group rules into a
+   * declaration block; every other nested @-rule (even ones supported at
+   * top level, like @layer/@scope) rejects with one truthful signature
+   * instead of the misleading "expected declaration key". */
+  const char* cases[] = {
+      "button { @layer x { color: red; } }",
+      "button { @scope (.x) { color: red; } }",
+      "button { @container (min-width: 100px) { color: red; } }",
+      "button { @font-face { font-family: x; } }",
+      "button { color: blue; @layer x { color: red; } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, cases[i], strlen(cases[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_AT_RULES);
+    ASSERT_STR_EQ(error.msg, "unsupported nested @-rule");
+  }
+  /* top-level @layer/@scope remain fully supported (guard). */
+  {
+    const char* css = "@layer x { button { color: red; } }";
+    my_css_sheet_t* sheet;
+    memset(&error, 0, sizeof(error));
+    sheet = my_css_parse_ex(NULL, css, strlen(css),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_rule_count(sheet), 1u);
+    my_css_sheet_destroy(sheet);
+  }
 }
 
 TEST(css_scope_subject_state_form_styles_root)
@@ -5173,6 +5212,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_media_hosts_nested_rules);
     RUN_TEST(css_nest_supports_in_rule);
     RUN_TEST(css_nest_conditional_rejects_malformed);
+    RUN_TEST(css_nest_non_conditional_at_rules_have_dedicated_signature);
     RUN_TEST(css_scope_subject_state_form_styles_root);
     RUN_TEST(css_scope_subject_state_form_root_list);
     RUN_TEST(css_scope_subject_state_rejects_malformed);
