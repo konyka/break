@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R647 `@media` aspect-ratio 区间写法（TDD）— R646 落账收尾：比值域接入 range 解析器，`(aspect-ratio >= 16/9)`/`(1/1 <= aspect-ratio <= 2/1)` 全形态落地
+
+- **缺口**（R646 落账"区间写法未开"）：range 解析器只认 width/height 数值域——`(aspect-ratio >= 16/9)` 按 -1 拒绝（strict sheet NULL）；MQ4 比值域三形态（名前/值前/链式）全缺。
+- **方案**（range 函数域分流，px 路径逐位保留）：① 新 `css_media_ratio_token`（游标消费比值记号+`css_media_ratio` 校验）与 `css_media_compare_u64`（交叉积比较）;② 值首次元按"px 探针成败"分流——探针用游标副本（失败的 px 探针不得吃掉数字），无成比值域；名首次元 `aspect-ratio` 走比值记号；③ 求值全部 u64 交叉乘法：名前=w×b R a×h、值前=a×h R w×b、链式二值=w×b₂ R₂ a₂×h;④ 域错配收紧：`aspect-ratio` 名配 px 值（名前）/px 值配 `aspect-ratio` 名（值前）显式拒——后者钓出并定点修补了 px 值前路径的"未知名宽松按 height 求值"怪癖（仅对已识别特性名收紧，未知名宽松原样保留，无媒体上下文的宽松解析双域同规约）;⑤ 链式仍仅值前可入（名前链 `(aspect-ratio > 1/1 <= 2/1)` 维持 -1 拒）。
+- **TDD（红→绿实证）**：test_myui_css +1——名前 ≥/</= 各两向、值前 ≤ 两向、链式三向（宽屏中/3:1 超界/竖屏越界）、畸形六例（残缺比值/零分量/名前链/双向域错配）。**RED 如实红**（首正例 sheet NULL）;GREEN 一钓：`(100px <= aspect-ratio)` 竟解析成功——R579 期 px 宽松怪癖把已识别特性名当 height 求值，定点收紧后 **159/159**(158+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯 range 求值器改动；既有 px 区间测试组（含宽松怪癖钉桩）全绿未动。
+- **边界**:aspect-ratio 族自此全形态闭环（R646 声明式+R647 区间式）;`resolution`/`monochrome` 等余下 MQ 特性需媒体上下文扩字段（ABI 面，维持让渡）;R611 AMD 基线不动。
+
 ## 本轮更新：R646 `@media` aspect-ratio 特性（TDD）— 常用 MQ 面补齐：`(aspect-ratio: a/b)` + min/max + 裸整数简写，u64 交叉乘法精确比较
 
 - **缺口**（媒体查询面调研落账）：引擎 MQ 面已覆盖宽高区间/orientation/prefers-*/hover/pointer/gamut/HDR，唯独最常用的 `aspect-ratio` 族全缺——strict 下 `(aspect-ratio: 16/9)` 按未知特性拒绝（sheet NULL）。

@@ -2212,6 +2212,26 @@ static bool css_media_ratio(const char* text, size_t length, uint32_t* a,
   return true;
 }
 
+/* R647: consume a ratio token (digits with an optional `/digits` tail) from
+ * the media cursor and validate it with css_media_ratio. */
+static bool css_media_ratio_token(css_media_cursor_t* cursor, uint32_t* a,
+                                  uint32_t* b) {
+  size_t start;
+  css_media_ws(cursor);
+  start = cursor->position;
+  while (cursor->position < cursor->length) {
+    char ch = cursor->text[cursor->position];
+    if ((ch >= '0' && ch <= '9') || ch == '/') {
+      cursor->position++;
+    } else {
+      break;
+    }
+  }
+  if (cursor->position == start) return false;
+  return css_media_ratio(cursor->text + start, cursor->position - start, a,
+                         b);
+}
+
 typedef enum css_media_relation_t {
   CSS_MEDIA_REL_LT,
   CSS_MEDIA_REL_LE,
@@ -2266,6 +2286,20 @@ static bool css_media_compare(uint32_t actual, css_media_relation_t relation,
   return false;
 }
 
+/* R647: u64 variant for the ratio cross-multiplication products. */
+static bool css_media_compare_u64(uint64_t actual,
+                                  css_media_relation_t relation,
+                                  uint64_t expected) {
+  switch (relation) {
+    case CSS_MEDIA_REL_LT: return actual < expected;
+    case CSS_MEDIA_REL_LE: return actual <= expected;
+    case CSS_MEDIA_REL_EQ: return actual == expected;
+    case CSS_MEDIA_REL_GE: return actual >= expected;
+    case CSS_MEDIA_REL_GT: return actual > expected;
+  }
+  return false;
+}
+
 static bool css_media_capabilities_valid(
     const my_css_media_context_ex_t* media) {
   return media == NULL ||
@@ -2294,9 +2328,14 @@ static int css_media_range(css_media_cursor_t* cursor,
   size_t name_length = 0u;
   uint32_t first_number = 0u;
   uint32_t second_number = 0u;
+  uint32_t first_a = 0u;
+  uint32_t first_b = 1u;
+  uint32_t second_a = 0u;
+  uint32_t second_b = 1u;
   css_media_relation_t first_relation;
   css_media_relation_t second_relation;
   bool first_is_number = false;
+  bool ratio_domain = false;
   bool result = true;
   css_media_cursor_t probe;
 
@@ -2305,7 +2344,17 @@ static int css_media_range(css_media_cursor_t* cursor,
   if (cursor->position >= cursor->length) return -1;
   if (cursor->text[cursor->position] >= '0' &&
       cursor->text[cursor->position] <= '9') {
-    if (!css_media_number_px(cursor, &first_number)) return -1;
+    /* R647: a value-first range is px-domain (width/height) when the value
+     * carries the px unit, ratio-domain (aspect-ratio) otherwise — a failed
+     * px probe must not consume the digits. */
+    probe = *cursor;
+    if (css_media_number_px(&probe, &first_number)) {
+      *cursor = probe;
+    } else if (css_media_ratio_token(cursor, &first_a, &first_b)) {
+      ratio_domain = true;
+    } else {
+      return -1;
+    }
     first_is_number = true;
   } else {
     while (cursor->position < cursor->length &&
@@ -2325,13 +2374,25 @@ static int css_media_range(css_media_cursor_t* cursor,
   if (!css_media_relation(cursor, &first_relation)) return -1;
 
   if (!first_is_number) {
-    if (!my_str_eq(name, "width") && !my_str_eq(name, "height")) return -1;
-    if (!css_media_number_px(cursor, &first_number)) return -1;
-    if (media != NULL) {
-      uint32_t actual = my_str_eq(name, "width")
-                            ? media->base.viewport_width_px
-                            : media->base.viewport_height_px;
-      result = css_media_compare(actual, first_relation, first_number);
+    if (my_str_eq(name, "aspect-ratio")) {
+      /* R647: name-first ratio — `(aspect-ratio >= 16/9)`. */
+      ratio_domain = true;
+      if (!css_media_ratio_token(cursor, &first_a, &first_b)) return -1;
+      if (media != NULL) {
+        result = css_media_compare_u64(
+            (uint64_t)media->base.viewport_width_px * (uint64_t)first_b,
+            first_relation,
+            (uint64_t)first_a * (uint64_t)media->base.viewport_height_px);
+      }
+    } else {
+      if (!my_str_eq(name, "width") && !my_str_eq(name, "height")) return -1;
+      if (!css_media_number_px(cursor, &first_number)) return -1;
+      if (media != NULL) {
+        uint32_t actual = my_str_eq(name, "width")
+                              ? media->base.viewport_width_px
+                              : media->base.viewport_height_px;
+        result = css_media_compare(actual, first_relation, first_number);
+      }
     }
   } else {
     css_media_ws(cursor);
@@ -2342,30 +2403,57 @@ static int css_media_range(css_media_cursor_t* cursor,
       name[name_length++] = cursor->text[cursor->position++];
     }
     name[name_length] = '\0';
-    if ((!my_str_eq(name, "width") && !my_str_eq(name, "height")) ||
-        media == NULL) {
+    if (ratio_domain) {
+      /* R647: value-first ratio requires the aspect-ratio feature (a
+       * non-empty unknown name is only tolerated without a media context,
+       * mirroring the px-domain leniency). */
+      if (!my_str_eq(name, "aspect-ratio") && media != NULL) return -1;
       if (name_length == 0u) return -1;
-    }
-    if (media != NULL) {
-      uint32_t actual = my_str_eq(name, "width")
-                            ? media->base.viewport_width_px
-                            : media->base.viewport_height_px;
-      result = css_media_compare(first_number, first_relation, actual);
+      if (media != NULL) {
+        result = css_media_compare_u64(
+            (uint64_t)first_a * (uint64_t)media->base.viewport_height_px,
+            first_relation,
+            (uint64_t)media->base.viewport_width_px * (uint64_t)first_b);
+      }
+    } else {
+      /* R647: a recognized ratio-domain feature with a px value is a domain
+       * error, not an unknown-name leniency case. */
+      if (my_str_eq(name, "aspect-ratio") && media != NULL) return -1;
+      if ((!my_str_eq(name, "width") && !my_str_eq(name, "height")) ||
+          media == NULL) {
+        if (name_length == 0u) return -1;
+      }
+      if (media != NULL) {
+        uint32_t actual = my_str_eq(name, "width")
+                              ? media->base.viewport_width_px
+                              : media->base.viewport_height_px;
+        result = css_media_compare(first_number, first_relation, actual);
+      }
     }
   }
 
   css_media_ws(cursor);
   if (cursor->position < cursor->length && cursor->text[cursor->position] != ')') {
-    if (!first_is_number || !css_media_relation(cursor, &second_relation) ||
-        !css_media_number_px(cursor, &second_number)) {
+    if (!first_is_number || !css_media_relation(cursor, &second_relation)) {
       return -1;
     }
-    if (media != NULL) {
-      uint32_t actual = my_str_eq(name, "width")
-                            ? media->base.viewport_width_px
-                            : media->base.viewport_height_px;
-      result = result &&
-               css_media_compare(actual, second_relation, second_number);
+    if (ratio_domain) {
+      if (!css_media_ratio_token(cursor, &second_a, &second_b)) return -1;
+      if (media != NULL) {
+        result = result && css_media_compare_u64(
+            (uint64_t)media->base.viewport_width_px * (uint64_t)second_b,
+            second_relation,
+            (uint64_t)second_a * (uint64_t)media->base.viewport_height_px);
+      }
+    } else {
+      if (!css_media_number_px(cursor, &second_number)) return -1;
+      if (media != NULL) {
+        uint32_t actual = my_str_eq(name, "width")
+                              ? media->base.viewport_width_px
+                              : media->base.viewport_height_px;
+        result = result &&
+                 css_media_compare(actual, second_relation, second_number);
+      }
     }
   }
   css_media_ws(cursor);
