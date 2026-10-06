@@ -1353,6 +1353,248 @@ TEST(css_scope_limit_combinator_rejects_malformed)
   }
 }
 
+TEST(css_scope_root_selector_list)
+{
+  const char* css = "@scope panel, dialog { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit1 = my_widget_create(NULL, "hit1");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* hit2 = my_widget_create(NULL, "hit2");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  /* one rule, TWO selector variants — one per root item. */
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_selector_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->ancestor_count, 1u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)
+                    ->ancestors[0]
+                    .widget_type,
+                "panel");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 1u)
+                    ->ancestors[0]
+                    .widget_type,
+                "dialog");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  hit1->widget_type = "button";
+  dialog->widget_type = "dialog";
+  hit2->widget_type = "button";
+  wrap->widget_type = "wrap";
+  miss->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, hit1), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, hit2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit1, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, hit2, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(wrap);
+  my_widget_unref(hit2);
+  my_widget_unref(dialog);
+  my_widget_unref(hit1);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_root_list_with_combinator_items)
+{
+  const char* css = "@scope app > panel, dialog { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* app = my_widget_create(NULL, "app");
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* panel2 = my_widget_create(NULL, "panel2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* hit2 = my_widget_create(NULL, "hit2");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  /* variant 0 carries the full path of the first root item. */
+  ASSERT_EQ(my_css_selector(rule, 0u)->ancestor_count, 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->ancestors[0].widget_type, "panel");
+  ASSERT_TRUE(my_css_selector(rule, 0u)->ancestor_direct_path[0] == false);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->ancestors[1].widget_type, "app");
+  ASSERT_TRUE(my_css_selector(rule, 0u)->ancestor_direct_path[1] == true);
+  ASSERT_EQ(my_css_selector(rule, 1u)->ancestor_count, 1u);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->ancestors[0].widget_type, "dialog");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  app->widget_type = "app";
+  panel->widget_type = "panel";
+  hit->widget_type = "button";
+  wrap->widget_type = "wrap";
+  panel2->widget_type = "panel";
+  miss->widget_type = "button";
+  dialog->widget_type = "dialog";
+  hit2->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(app, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  /* panel2 is not a DIRECT child of app: the first root item misses. */
+  ASSERT_EQ(my_widget_add_child(app, wrap), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, panel2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel2, miss), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, hit2), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value = my_theme_get_for_widget(theme, hit2, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  my_widget_unref(hit2);
+  my_widget_unref(dialog);
+  my_widget_unref(miss);
+  my_widget_unref(panel2);
+  my_widget_unref(wrap);
+  my_widget_unref(hit);
+  my_widget_unref(panel);
+  my_widget_unref(app);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_root_list_with_limit)
+{
+  /* limits are shared across root-list variants, each bounded at its own
+   * variant's root subject slot. */
+  const char* css = "@scope panel, dialog to box { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* box = my_widget_create(NULL, "box");
+  my_widget_t* blocked1 = my_widget_create(NULL, "blocked1");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* box2 = my_widget_create(NULL, "box2");
+  my_widget_t* blocked2 = my_widget_create(NULL, "blocked2");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_EQ(my_css_selector(rule, 0u)->scope_limit_count, 1u);
+  ASSERT_EQ(my_css_selector(rule, 0u)->scope_limit_root_index[0], 0u);
+  ASSERT_EQ(my_css_selector(rule, 1u)->scope_limit_count, 1u);
+  ASSERT_EQ(my_css_selector(rule, 1u)->scope_limit_root_index[0], 0u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  box->widget_type = "box";
+  blocked1->widget_type = "button";
+  dialog->widget_type = "dialog";
+  box2->widget_type = "box";
+  blocked2->widget_type = "button";
+  hit->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, box), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box, blocked1), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, box2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box2, blocked2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked1, MY_STATE_NORMAL,
+                                  "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value = my_theme_get_for_widget(theme, blocked2, MY_STATE_NORMAL,
+                                  "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(hit);
+  my_widget_unref(blocked2);
+  my_widget_unref(box2);
+  my_widget_unref(dialog);
+  my_widget_unref(blocked1);
+  my_widget_unref(box);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_root_list_expansion_is_bounded)
+{
+  /* nested root lists multiply: 2 x 2 = 4 variants here. */
+  const char* nested =
+      "@scope a, b { @scope c, d { button { color: red; } } }";
+  /* 4 x 4 x 2 = 32 variants exceeds the expansion budget. */
+  const char* over_budget =
+      "@scope a, b, c, d { @scope e, f, g, h {"
+      " @scope i, j { button { color: red; } } } }";
+  /* a single root list is capped at MY_CSS_MAX_SCOPE_NESTING items. */
+  const char* too_many =
+      "@scope a, b, c, d, e { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, nested, strlen(nested), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_selector_count(my_css_rule(sheet, 0u)), 4u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, over_budget, strlen(over_budget),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, too_many, strlen(too_many),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+}
+
+TEST(css_scope_root_list_rejects_malformed)
+{
+  const char* malformed[] = {
+      "@scope , panel { button { color: red; } }",
+      "@scope panel, { button { color: red; } }",
+      "@scope panel > , dialog { button { color: red; } }",
+      "@scope panel, dialog:hover { button { color: red; } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -3119,6 +3361,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_limit_combinator_excludes_boundary_itself);
     RUN_TEST(css_scope_limit_selector_list_with_paths);
     RUN_TEST(css_scope_limit_combinator_rejects_malformed);
+    RUN_TEST(css_scope_root_selector_list);
+    RUN_TEST(css_scope_root_list_with_combinator_items);
+    RUN_TEST(css_scope_root_list_with_limit);
+    RUN_TEST(css_scope_root_list_expansion_is_bounded);
+    RUN_TEST(css_scope_root_list_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

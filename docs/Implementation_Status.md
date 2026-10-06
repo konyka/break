@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R622 myui @scope root 选择器列表（TDD）— @scope 语法族收官：root/limit 双侧复杂选择器+双侧列表
+
+- **缺口**（R621 落账"root 选择器列表（`,`）仍拒"):`@scope panel, dialog { }` 多 root 被拒。语义=scope 取各 root 子树之并——内部规则选择器按 root 列表**展开为变体**（每变体携带一个 root 的路径）;limit 跨变体共享、各自以本变体的 root subject 槽为界。
+- **方案**：解析器 scope 栈重构为**帧**(`css_scope_frame_t`:root 列表+共享 limits；替代 R620 的单 selector+has_root)——root 项用瘦结构 `css_scope_root_t`（栈上 css_p_t 体积受控，弃直接复用膨胀后的 my_css_selector_t);css_rule 的 splice 改为**变体枚举**（嵌套 scope 的 root 数叉积，最内层变动最快），每变体独立做槽位预算（≤MY_CSS_MAX_ANCESTORS)、limit 复制（root_index=本变体 root subject 槽，R620 钉桩语义逐变体保持）、legacy 单祖先视图回填（提到 `css_rule_push_selector` helper，无 scope 路径同走）。**展开预算 `MY_CSS_MAX_SCOPE_VARIANTS=16`**（超限报 UNSUPPORTED_FEATURE+SCOPE capability，新消息注册进 css_fail/css_error_code_for 双表）；单 scope root 列表项数上限=MY_CSS_MAX_SCOPE_NESTING(SYNTAX，镜像 limit 列表惯例）。
+- **TDD（红→绿实证）**:test_myui_css +5——① 双 compound root 列表（解析双变体断言+主题级 panel/dialog 双命中、局外不命中）;② 含组合器项的列表（`app > panel, dialog`：变体 0 携全路径 [panel(desc),app(direct)]、变体 1 单槽 dialog;child 边失效不命中）;③ 列表+limit（双变体各携 limit、root_index==0;box 边界双端排除、直达命中）;④ 嵌套展开预算（2×2=4 变体过、4×4×2=32 拒 UNSUPPORTED_FEATURE、5 项单列表拒 SYNTAX);⑤ malformed 四例（空首项/空尾项/`,`前悬空 `>`/列表项伪类）全拒。**RED 如实红 4/5**(malformed 组对旧解析全拒=守卫）;GREEN 首轮即过 **118/118**(113+5)。
+- **回归**：双树非图形 CTest 各 **118/118**；纯 CSS 解析器改动（theme/桥接零触点——变体展开产出的是普通复杂选择器，R616-R621 既有通路直消）。`css_p_t` 栈体积：帧化后 ~16KB（原 ~10KB,embedded 栈安全阈值内——myui 历轮同型体量）。
+- **边界**:@scope 语法族自此全闭（root/limit × 组合器/列表）;剩余让渡=完整 CSS Scoping 规范（显式括号 prelude、`:scope` 伪类、样式规则内的 `&` 嵌套）与 `to` 关键字在 limit 路径中段的 corner(R621 落账）;彩色 cube 回读（无调用方）保留；R611 AMD 基线不动。
+
 ## 本轮更新：R621 myui @scope `to` limit 组合器（TDD）— "组合器未实现"缺口全闭：root/limit 双侧复杂选择器；theme API ex6 加式演进
 
 - **缺口**（R620 落账"组合器仅剩 to limit 侧——复杂 limit 需逐祖先位置的序列匹配"):limit 仅 compound,`@scope panel to dialog > box` 被拒。设计定论：① limit=完整选择器路径——候选元素匹配 subject compound 且其上方满足 limit 祖先路径即为边界（CSS donut-scope 的序列化语义）;② theme API 走 **exN 加式演进**(set_ex6 收 `my_theme_scope_limit_t` 路径数组，set_ex5 转 subject-only 路径转发——公开 API 零破坏）;③ css/theme 双侧 limit 结构体改携路径（subject compound 字段顶层平铺——既有 `scope_limits[i].widget_type` 访问源码兼容）;④ `theme_ancestor_path_matches` 拆出参数化 `theme_path_matches`,entry 祖先路径与 limit 路径共用。

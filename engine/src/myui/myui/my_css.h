@@ -261,10 +261,11 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * while parsing. Bounded `@layer` blocks and order statements are flattened
  * while parsing. A bounded `@scope root-selector [to selector-list] { ... }`
  * form applies descendant rules through the existing fixed ancestor path;
- * the root accepts compound selectors joined by descendant/child (`>`)
- * combinators (R620) and so does each `to` limit item (R621); the
- * omitted-root form is represented by a fixed internal boundary sentinel
- * and selector lists are capped by MY_CSS_MAX_SCOPE_NESTING. */
+ * the root accepts a bounded LIST of complex selectors (descendant/child
+ * combinators, R620/R622 — the cross-product expansion is capped) and so
+ * does each `to` limit item (R621); the omitted-root form is represented
+ * by a fixed internal boundary sentinel and selector lists are capped by
+ * MY_CSS_MAX_SCOPE_NESTING. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);

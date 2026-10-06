@@ -15,6 +15,29 @@
 
 /* ---------------- lexer-ish helpers ---------------- */
 
+/* R622: one root item of an @scope selector list — subject compound plus
+ * its own ancestor path (leaner than my_css_selector_t: limits live on the
+ * frame, not per root item). */
+typedef struct css_scope_root_t {
+  my_css_ancestor_t subject;
+  u32 ancestor_count;
+  my_css_ancestor_t ancestors[MY_CSS_MAX_ANCESTORS];
+  bool ancestor_direct_path[MY_CSS_MAX_ANCESTORS];
+} css_scope_root_t;
+
+/* R622: one active @scope frame — bounded root selector list plus the
+ * limits shared by all root items. */
+typedef struct css_scope_frame_t {
+  u32 root_count; /* 0 = implicit root */
+  css_scope_root_t roots[MY_CSS_MAX_SCOPE_NESTING];
+  u32 scope_limit_count;
+  my_css_scope_limit_t scope_limits[MY_CSS_MAX_SCOPE_NESTING];
+} css_scope_frame_t;
+
+/* Cap on the root-list cross-product expansion per rule selector
+ * (nested scopes multiply their root counts). */
+#define MY_CSS_MAX_SCOPE_VARIANTS 16u
+
 typedef struct css_p_t {
   const my_allocator_t* allocator;
   const char* s;
@@ -33,8 +56,7 @@ typedef struct css_p_t {
   size_t import_depth;
   char import_stack[MY_CSS_MAX_IMPORT_DEPTH]
                    [MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
-  my_css_selector_t scope_selectors[MY_CSS_MAX_SCOPE_NESTING];
-  bool scope_has_root[MY_CSS_MAX_SCOPE_NESTING];
+  css_scope_frame_t scope_frames[MY_CSS_MAX_SCOPE_NESTING];
   size_t scope_count;
   char layer_names[MY_CSS_MAX_LAYERS][MY_CSS_MAX_LAYER_NAME_BYTES + 1u];
   uint32_t layer_ranks[MY_CSS_MAX_LAYERS];
@@ -60,7 +82,8 @@ static my_css_error_code_t css_error_code_for(const char* msg) {
     return MY_CSS_ERROR_IMPORT;
   }
   if (strcmp(msg, "CSS scope nesting depth exceeded") == 0 ||
-      strcmp(msg, "scope ancestor depth exceeded") == 0) {
+      strcmp(msg, "scope ancestor depth exceeded") == 0 ||
+      strcmp(msg, "scope selector list expansion exceeded") == 0) {
     return MY_CSS_ERROR_UNSUPPORTED_FEATURE;
   }
   if (strcmp(msg, "unsupported @-rule") == 0) {
@@ -79,6 +102,7 @@ static void css_fail(css_p_t* p, const char* msg) {
       p->err->capability = (uint32_t)MY_CSS_FEATURE_AT_RULES;
     } else if (strcmp(msg, "CSS scope nesting depth exceeded") == 0 ||
                strcmp(msg, "scope ancestor depth exceeded") == 0 ||
+               strcmp(msg, "scope selector list expansion exceeded") == 0 ||
                strcmp(msg, "@scope nesting depth exceeded") == 0 ||
                strcmp(msg, "invalid @scope root selector") == 0 ||
                strcmp(msg, "invalid @scope limit selector") == 0 ||
@@ -822,6 +846,42 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
   return parsed;
 }
 
+/** @brief Fill the legacy single-ancestor view, then push a heap copy of
+ * SEL onto the rule's selector group. */
+static bool css_rule_push_selector(css_p_t* p, my_css_rule_t* r,
+                                   my_css_selector_t* sel) {
+  my_css_selector_t* slot;
+  if (sel->ancestor_count == 1u && sel->ancestors[0].id[0] == '\0') {
+    size_t type_len = strlen(sel->ancestors[0].widget_type);
+    size_t class_len = strlen(sel->ancestors[0].style_class);
+    if (type_len + (class_len > 0u ? 1u + class_len : 0u) <
+        sizeof(sel->ancestor_type)) {
+      memcpy(sel->ancestor_type, sel->ancestors[0].widget_type, type_len);
+      if (class_len > 0u) {
+        sel->ancestor_type[type_len] = '.';
+        memcpy(sel->ancestor_type + type_len + 1u,
+               sel->ancestors[0].style_class, class_len);
+      }
+      sel->ancestor_type[type_len + (class_len > 0u ? 1u + class_len : 0u)] =
+          '\0';
+      sel->ancestor_direct = sel->ancestor_direct_path[0];
+    }
+  }
+  slot = (my_css_selector_t*)my_mem_calloc(p->allocator, 1,
+                                           sizeof(my_css_selector_t));
+  if (slot == NULL) {
+    css_fail(p, "oom");
+    return false;
+  }
+  *slot = *sel;
+  if (my_darray_push(r->selectors, slot) != MY_RET_OK) {
+    my_mem_free(p->allocator, slot);
+    css_fail(p, "oom");
+    return false;
+  }
+  return true;
+}
+
 /** @brief One rule: selectors { declarations }. */
 static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
   my_css_rule_t* r = css_rule_new(p->allocator, layer_id);
@@ -836,7 +896,6 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
   /* selector group */
   for (;;) {
     my_css_selector_t sel;
-    my_css_selector_t* slot;
     bool separated;
     size_t i;
     c_ws(p);
@@ -884,92 +943,77 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
       sel.ancestor_direct_path[i] = direct_between[source + 1u];
     }
     if (p->scope_count > 0u) {
+      /* R622: enumerate the root-list cross-product (the innermost scope
+       * varies fastest). Each variant appends every active scope's chosen
+       * root path — the root subject with a descendant edge, then its own
+       * path outward (R620) — plus that scope's limits bounded at the root
+       * subject slot of THIS variant. */
+      size_t variant_count = 1u;
       size_t scope_index;
-      size_t existing = sel.ancestor_count;
-      size_t scope_root_count = 0u;
-      /* R620: a rooted scope contributes 1 + root ancestor_count slots
-       * (complex-selector roots carry their own path). */
+      size_t vi;
+      size_t limit_index;
       for (scope_index = 0u; scope_index < p->scope_count; ++scope_index) {
-        if (p->scope_has_root[scope_index]) {
-          scope_root_count +=
-              1u + p->scope_selectors[scope_index].ancestor_count;
+        const css_scope_frame_t* fr = &p->scope_frames[scope_index];
+        if (fr->root_count != 0u) {
+          variant_count *= fr->root_count;
         }
       }
-      if (existing + scope_root_count > MY_CSS_MAX_ANCESTORS) {
-        css_fail(p, "scope ancestor depth exceeded");
+      if (variant_count > MY_CSS_MAX_SCOPE_VARIANTS) {
+        css_fail(p, "scope selector list expansion exceeded");
         goto fail;
       }
-      scope_root_count = 0u;
-      for (scope_index = 0u; scope_index < p->scope_count; ++scope_index) {
-        const my_css_selector_t* scope =
-            &p->scope_selectors[p->scope_count - scope_index - 1u];
-        size_t root_index = MY_CSS_SCOPE_ROOT_IMPLICIT;
-        if (p->scope_has_root[p->scope_count - scope_index - 1u]) {
-          size_t slot = existing + scope_root_count;
-          size_t ai;
-          my_css_ancestor_t* ancestor = &sel.ancestors[slot];
-          memcpy(ancestor->widget_type, scope->widget_type,
-                 sizeof(ancestor->widget_type));
-          memcpy(ancestor->id, scope->id, sizeof(ancestor->id));
-          memcpy(ancestor->style_class, scope->style_class,
-                 sizeof(ancestor->style_class));
-          sel.ancestor_direct_path[slot] = false;
-          root_index = slot;
-          scope_root_count++;
-          /* R620: the root's own path follows outward, combinators kept. */
-          for (ai = 0u; ai < scope->ancestor_count; ++ai) {
-            sel.ancestors[existing + scope_root_count] = scope->ancestors[ai];
-            sel.ancestor_direct_path[existing + scope_root_count] =
-                scope->ancestor_direct_path[ai];
-            scope_root_count++;
+      for (vi = 0u; vi < variant_count; ++vi) {
+        my_css_selector_t variant = sel;
+        size_t remainder = vi;
+        u32 slot_pos = sel.ancestor_count;
+        variant.scope_limit_count = 0u;
+        for (scope_index = 0u; scope_index < p->scope_count; ++scope_index) {
+          const css_scope_frame_t* fr =
+              &p->scope_frames[p->scope_count - scope_index - 1u];
+          size_t root_index = MY_CSS_SCOPE_ROOT_IMPLICIT;
+          if (fr->root_count != 0u) {
+            const css_scope_root_t* root =
+                &fr->roots[remainder % fr->root_count];
+            size_t ai;
+            remainder /= fr->root_count;
+            if ((size_t)slot_pos + 1u + root->ancestor_count >
+                MY_CSS_MAX_ANCESTORS) {
+              css_fail(p, "scope ancestor depth exceeded");
+              goto fail;
+            }
+            root_index = slot_pos;
+            variant.ancestors[slot_pos] = root->subject;
+            variant.ancestor_direct_path[slot_pos] = false;
+            slot_pos++;
+            for (ai = 0u; ai < root->ancestor_count; ++ai) {
+              variant.ancestors[slot_pos] = root->ancestors[ai];
+              variant.ancestor_direct_path[slot_pos] =
+                  root->ancestor_direct_path[ai];
+              slot_pos++;
+            }
           }
-        }
-        if (scope->scope_limit_count != 0u) {
-          size_t limit_index;
-          if (sel.scope_limit_count + scope->scope_limit_count >
-              MY_CSS_MAX_SCOPE_NESTING) {
-            css_fail(p, "scope limit depth exceeded");
-            goto fail;
-          }
-          for (limit_index = 0u; limit_index < scope->scope_limit_count;
+          for (limit_index = 0u; limit_index < fr->scope_limit_count;
                ++limit_index) {
-            sel.scope_limits[sel.scope_limit_count] =
-                scope->scope_limits[limit_index];
-            sel.scope_limit_root_index[sel.scope_limit_count] =
+            if (variant.scope_limit_count >= MY_CSS_MAX_SCOPE_NESTING) {
+              css_fail(p, "scope limit depth exceeded");
+              goto fail;
+            }
+            variant.scope_limits[variant.scope_limit_count] =
+                fr->scope_limits[limit_index];
+            variant.scope_limit_root_index[variant.scope_limit_count] =
                 (u32)root_index;
-            sel.scope_limit_count++;
+            variant.scope_limit_count++;
           }
         }
-      }
-      sel.ancestor_count = (u32)(existing + scope_root_count);
-    }
-    if (sel.ancestor_count == 1u && sel.ancestors[0].id[0] == '\0') {
-      size_t type_len = strlen(sel.ancestors[0].widget_type);
-      size_t class_len = strlen(sel.ancestors[0].style_class);
-      if (type_len + (class_len > 0u ? 1u + class_len : 0u) <
-          sizeof(sel.ancestor_type)) {
-        memcpy(sel.ancestor_type, sel.ancestors[0].widget_type, type_len);
-        if (class_len > 0u) {
-          sel.ancestor_type[type_len] = '.';
-          memcpy(sel.ancestor_type + type_len + 1u,
-                 sel.ancestors[0].style_class, class_len);
+        variant.ancestor_count = slot_pos;
+        if (!css_rule_push_selector(p, r, &variant)) {
+          goto fail;
         }
-        sel.ancestor_type[type_len + (class_len > 0u ? 1u + class_len : 0u)] =
-            '\0';
-        sel.ancestor_direct = sel.ancestor_direct_path[0];
       }
-    }
-    slot = (my_css_selector_t*)my_mem_calloc(p->allocator, 1,
-                                             sizeof(my_css_selector_t));
-    if (slot == NULL) {
-      css_fail(p, "oom");
-      goto fail;
-    }
-    *slot = sel;
-    if (my_darray_push(r->selectors, slot) != MY_RET_OK) {
-      my_mem_free(p->allocator, slot);
-      css_fail(p, "oom");
-      goto fail;
+    } else {
+      if (!css_rule_push_selector(p, r, &sel)) {
+        goto fail;
+      }
     }
     if (c_peek(p) == ',') {
       c_next(p);
@@ -2160,6 +2204,8 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                    size_t at_rule_depth, uint32_t layer_id) {
   my_css_selector_t selector;
   my_css_selector_t limit;
+  css_scope_root_t root_items[MY_CSS_MAX_SCOPE_NESTING];
+  u32 root_item_count = 0u;
   bool parsed;
   bool has_root = false;
   bool has_limit = false;
@@ -2180,20 +2226,44 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
       }
       has_limit = true;
     } else {
-      /* R620/R621: the root prelude is a bounded complex selector via the
-       * shared path parser ('to' terminates at compound-start). Root
-       * selector LISTS remain unsupported. */
-      size_t path_compounds = 0u;
-      if (!c_scope_selector_path(p, &selector, true,
-                                 "invalid @scope root selector",
-                                 &path_compounds)) {
-        return false;
+      /* R622: the root prelude is a bounded selector LIST of complex
+       * selectors — items separated by ',', each via the shared path
+       * parser ('to' terminates at compound-start). All items collect into
+       * root_items; selector only carries the limits below. */
+      for (;;) {
+        my_css_selector_t item;
+        css_scope_root_t* dst;
+        size_t path_compounds = 0u;
+        if (root_item_count >= MY_CSS_MAX_SCOPE_NESTING) {
+          css_fail(p, "invalid @scope root selector");
+          css_mark_scope_error(p);
+          return false;
+        }
+        if (!c_scope_selector_path(p, &item, true,
+                                   "invalid @scope root selector",
+                                   &path_compounds)) {
+          return false;
+        }
+        if (path_compounds == 0u) {
+          css_fail(p, "invalid @scope root selector");
+          return false;
+        }
+        dst = &root_items[root_item_count];
+        memcpy(dst->subject.widget_type, item.widget_type,
+               sizeof(dst->subject.widget_type));
+        memcpy(dst->subject.id, item.id, sizeof(dst->subject.id));
+        memcpy(dst->subject.style_class, item.style_class,
+               sizeof(dst->subject.style_class));
+        dst->ancestor_count = item.ancestor_count;
+        memcpy(dst->ancestors, item.ancestors, sizeof(dst->ancestors));
+        memcpy(dst->ancestor_direct_path, item.ancestor_direct_path,
+               sizeof(dst->ancestor_direct_path));
+        root_item_count++;
+        has_root = true;
+        c_ws(p);
+        if (c_peek(p) != ',') break;
+        c_next(p);
       }
-      if (path_compounds == 0u) {
-        css_fail(p, "invalid @scope root selector");
-        return false;
-      }
-      has_root = true;
       c_ws(p);
       starts_to = c_peek(p) == 't' && p->pos + 2u < p->len &&
                   p->s[p->pos + 1u] == 'o' &&
@@ -2260,15 +2330,21 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
     return false;
   }
   if (has_root || selector.scope_limit_count != 0u) {
-    p->scope_selectors[p->scope_count] = selector;
-    p->scope_has_root[p->scope_count] = has_root;
+    css_scope_frame_t* fr = &p->scope_frames[p->scope_count];
+    u32 k;
+    fr->root_count = has_root ? (u32)root_item_count : 0u;
+    for (k = 0u; k < fr->root_count; ++k) {
+      fr->roots[k] = root_items[k];
+    }
+    fr->scope_limit_count = selector.scope_limit_count;
+    memcpy(fr->scope_limits, selector.scope_limits,
+           sizeof(fr->scope_limits));
     p->scope_count++;
   }
   c_next(p);
   parsed = css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_id);
   if (has_root || selector.scope_limit_count != 0u) {
     p->scope_count--;
-    p->scope_has_root[p->scope_count] = false;
   }
   return parsed;
 }
