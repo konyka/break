@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R618 阴影图/点影 cube bind 清屏语义审计+钉桩 — FBO bind 语义族全线收官：四类 FBO 的"bind=崭新"双端一致且全钉死
+
+- **缺口**（R617 落账"阴影图/cube 面的 bind 清屏语义由各自路径独立承载（R609/R610，非此族）")：MRT(R616）与 offscreen(R617）统一后，阴影族两条路径的 bind 清屏语义从未经同族审查，且 rhi.h 契约注释空白（R616/R617 均在契约头落定语义对，阴影族无）。
+- **审计定论（无代码缺口）**：逐行核对双端四路径——GL `rhi_cmd_bind_shadow_map` 显式 `glClear(DEPTH)`（强制深度掩码，R259 模式）;VK 同函数 render pass 深度 loadOp=CLEAR(clearValue 1.0,rhi_vk.c:7087);GL `rhi_cubemap_depth_fbo_bind_face` 重附面后 `glClear(DEPTH)`（同强制掩码）;VK 逐面 pass loadOp=CLEAR(1.0,rhi_vk.c:9228)。GL 全文件无 `glClearDepth` 调用——默认清深度值 1.0 永不被改，双端清除值一致。两路径均无 bind_load 公共变体（VK 的 render_pass_load 仅供 GPU-driven indirect 续 pass 内部使用；GL 立即执行无续 pass 概念）——阴影族天然只有"bind=崭新"半边，与 MRT/offscreen 语义对的同半边一致。
+- **钉桩（审计相位，如实落账）**:roundtrip 门新增双相位，紧挨 R609/R610——① **shadow bind-clear pin**：新图 bind→unbind **不做任何显式清除**，回读 16px 全 1.0;② **cube bind-clear pin**：六面逐面 bind→unbind 无显式清，回读 96 值全 1.0。若任一端丢失 bind 清除，GL 确定性红（零初始化深度存储读 0.0,R611 已实证该事实）、VK 读未定义内容。审计确认语义本已一致，双相位首轮即绿（characterization/守卫性质，与历轮守卫测试同约）——价值=回归钉+契约文档化。R609/R610 相位注释同步（显式 clear 转为钉值冗余，同 R617 对 R608/R611 的处理）。
+- **契约**:rhi.h 落定——`rhi_cmd_bind_shadow_map` 与 `rhi_cubemap_depth_fbo_bind_face` 注释明载"bind 清深度至 1.0、无 load/preserve 变体、与 R616/R617 语义对的 bind=崭新半边同族"。**双端生产代码零改动**。
+- **回归**：双树非图形 CTest 各 **118/118**(0 失败）;GL 全套件 ALL PASSED（钉桩相位过）;VK 套件钉桩相位过+validation 0，失败项恰为已知基线（R611 MSAA 深度相位 AMD 驱动边界+12b em b=1.568+golden 双项异机漂移）;demo 四配置各 120 帧优雅退出 rc=0、VK validation 0。
+- **边界**:**FBO bind 语义族自此全线收官**——MRT(R616)/offscreen(R617）语义对+阴影图/cube(R618 审计钉桩）四类 FBO 的"bind=崭新"契约双端一致且全部钉死；清屏色魔数 `{0.05,0.05,0.1,1.0}` 归属（RHI 层烘焙 vs 调用方全权）仍为独立议题；myui @scope 组合器、彩色 cube（非深度）回读（无调用方）保留；R611 AMD 基线不动。
+
 ## 本轮更新：R617 offscreen FBO bind 清屏语义统一（TDD）— R616 同族收官：bind 语义对（清/保）双端全线一致
 
 - **缺口**（R616 落账"offscreen FBO bind 同款分叉仍在——VK loadOp 清、GL 不清，行为变更面大于 MRT")：语义对契约 bind=崭新、bind_load=续渲在 offscreen 对上早已存在（R196-A 注释明载 bind_load 为"re-bind WITHOUT clearing"，反推 bind=清——GL 从未履行）；调研新增关键事实：VK 的清屏**颜色值非零**(`{0.05,0.05,0.1,1.0}` 烘焙在 loadOp 清除值里）+深度 1.0，统一即定义该值为便携契约。

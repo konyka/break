@@ -344,6 +344,12 @@ typedef struct {
 
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height);
 void         rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm);
+/* R618 contract: binding a shadow map CLEARS its depth to 1.0 on both
+ * backends (GL: explicit glClear under a forced depth mask; VK: the render
+ * pass depth loadOp with clear value 1.0). There is no load/preserve twin —
+ * every bind starts the atlas fresh. This is the same "bind == fresh" half
+ * of the R616/R617 MRT/offscreen semantic pair, audited consistent here and
+ * pinned by the graphics roundtrip gate's shadow bind-clear phase. */
 void         rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm);
 void         rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd);
@@ -499,7 +505,11 @@ typedef struct {
 
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size);
 void               rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo);
-/* Bind a single cubemap face for rendering (face 0..5 = +X,-X,+Y,-Y,+Z,-Z). */
+/* Bind a single cubemap face for rendering (face 0..5 = +X,-X,+Y,-Y,+Z,-Z).
+ * R618 contract: binding a face CLEARS that face's depth to 1.0 on both
+ * backends (GL: glClear after the face re-attachment; VK: per-face render
+ * pass depth loadOp). No load/preserve twin — every face bind starts fresh,
+ * matching rhi_cmd_bind_shadow_map. */
 void               rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo, u32 face);
 void               rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h);
 

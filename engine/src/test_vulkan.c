@@ -1093,9 +1093,9 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             pass = false;
         } else {
             rhi_cmd_bind_shadow_map(cmd, &sm);
-            /* Explicit clear is the portable contract (R608: VK passes clear
-             * via loadOp, GL shadow bind clears too — the explicit call pins
-             * the value regardless of backend). */
+            /* Explicit clear is the historical portable contract (R608). Since
+             * R618 the bind itself is pinned to clear depth on both backends —
+             * this call stays as a redundant value pin. */
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
             rhi_frame_end(dev);
@@ -1119,9 +1119,53 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         rhi_shadow_map_destroy(dev, &sm);
     }
 
+    /* R618: pin the audited bind-clears-depth contract (rhi.h): binding a
+     * shadow map clears its depth to 1.0 on BOTH backends (GL: explicit
+     * glClear under a forced depth mask; VK: the pass loadOp with depth clear
+     * 1.0). A fresh map is bound and unbound with NO explicit clear; readback
+     * must be all 1.0. Without the bind clear this is deterministically red
+     * on GL (zero-initialized depth storage reads 0.0) and undefined-content
+     * on VK. Audit: semantics were already consistent — this phase pins them. */
+    RHIShadowMap smp = rhi_shadow_map_create(dev, 4, 4);
+    f32 smp_rb[16];
+    for (u32 i = 0; i < 16u; i++) smp_rb[i] = 999.0f;
+    if (!rhi_handle_valid(smp.fbo)) {
+        LOG_ERROR("FAIL: shadow bind-clear pin map create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: shadow bind-clear pin frame begin failed");
+            pass = false;
+        } else {
+            rhi_cmd_bind_shadow_map(cmd, &smp);
+            rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, smp.depth_tex, smp_rb,
+                                         sizeof(smp_rb))) {
+                LOG_ERROR("FAIL: shadow bind-clear pin readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 16u; i++) {
+                    if (smp_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: shadow bind-clear pin px%u got %g, "
+                                  "want 1.0 (bind must clear depth)",
+                                  i, (double)smp_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_shadow_map_destroy(dev, &smp);
+    }
+
     /* R610: point-shadow cubemap depth readback — all six faces, face-major
      * (+X,-X,+Y,-Y,+Z,-Z layer order), 4B f32 per texel. Each face cleared
-     * to 1.0 via the explicit-clear portable contract (R608). VK needed
+     * to 1.0 via the explicit-clear portable contract (R608; since R618 the
+     * bind_face itself is pinned to clear — the explicit call is redundant).
+     * VK needed
      * TRANSFER_SRC usage + the wrapper format/layers fields + bind_face
      * cur_layout tracking; GL needed the readback to accept RHI_RES_CUBEMAP
      * depth cubes (the typed lookup used to miss) via per-face cube targets. */
@@ -1162,6 +1206,49 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         }
         rhi_cubemap_depth_fbo_destroy(dev, &cdf);
     }
+
+    /* R618: cube-face sibling of the shadow pin above — binding any face
+     * clears that face's depth to 1.0 on both backends (GL: glClear after the
+     * face re-attachment; VK: per-face pass loadOp). Six faces bound and
+     * unbound with NO explicit clear; readback must be all 1.0. Same audit
+     * result: already consistent, pinned here. */
+    RHICubemapDepthFBO cdp = rhi_cubemap_depth_fbo_create(dev, 4);
+    f32 cubep_rb[16 * 6];
+    for (u32 i = 0; i < 96u; i++) cubep_rb[i] = 999.0f;
+    if (!rhi_handle_valid(cdp.fb)) {
+        LOG_ERROR("FAIL: cube bind-clear pin fbo create failed");
+        pass = false;
+    } else {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) {
+            LOG_ERROR("FAIL: cube bind-clear pin frame begin failed");
+            pass = false;
+        } else {
+            for (u32 face = 0; face < 6u; face++) {
+                rhi_cubemap_depth_fbo_bind_face(cmd, &cdp, face);
+                rhi_cubemap_depth_fbo_unbind(cmd, screen_w, screen_h);
+            }
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            if (!rhi_texture_read_pixels(dev, cdp.depth_tex, cubep_rb,
+                                         sizeof(cubep_rb))) {
+                LOG_ERROR("FAIL: cube bind-clear pin readback failed");
+                pass = false;
+            } else {
+                for (u32 i = 0; i < 96u; i++) {
+                    if (cubep_rb[i] != 1.0f) {
+                        LOG_ERROR("FAIL: cube bind-clear pin face %u px%u "
+                                  "got %g, want 1.0 (bind must clear depth)",
+                                  i / 16u, i % 16u, (double)cubep_rb[i]);
+                        pass = false;
+                        break;
+                    }
+                }
+            }
+        }
+        rhi_cubemap_depth_fbo_destroy(dev, &cdp);
+    }
+
     /* R611: MSAA offscreen depth readback — the multisampled depth image
      * cannot be copied directly; both backends resolve it (VK: subpass
      * depth/stencil resolve attachment; GL: depth blit at unbind) into the
