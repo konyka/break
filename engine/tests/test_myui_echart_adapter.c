@@ -68,6 +68,10 @@ TEST(echart_adapter_rejects_without_mutating) {
   ASSERT_EQ(my_echart_adapter_apply(adapter, &good), MY_RET_OK);
   ASSERT_EQ(my_echart_adapter_apply(adapter, &bad), MY_RET_NOT_SUPPORTED);
   ASSERT_TRUE(strcmp(((my_chart_t*)chart)->title, "good") == 0);
+  ASSERT_EQ(((my_chart_t*)chart)->series_count, 1u);
+  ASSERT_TRUE(fabsf(((my_chart_t*)chart)->series[0].values[0] - 3.0f) < 0.0001f);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &bad), MY_RET_NOT_SUPPORTED);
+  ASSERT_TRUE(strcmp(((my_chart_t*)chart)->title, "good") == 0);
   my_echart_adapter_destroy(adapter);
   my_widget_unref(chart);
   my_echart_option_free(&good);
