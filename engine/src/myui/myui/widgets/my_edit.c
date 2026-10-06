@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "myc/my_str.h"
+#include "myr/my_grapheme.h"
 #include "myr/my_text_layout.h"
 #include "myui/my_undo_manager.h"
 #include "myui/my_undo_stack.h"
@@ -42,20 +43,6 @@ static size_t utf8_cp_count_n(const char* s, size_t n) {
     count++;
   }
   return count;
-}
-
-/** @brief Byte offset one codepoint to the left of pos (0 if at start). */
-static size_t cp_prev(const char* s, size_t pos) {
-  if (s == NULL) {
-    return 0;
-  }
-  while (pos > 0) {
-    pos--;
-    if ((s[pos] & 0xC0) != 0x80) {
-      return pos;
-    }
-  }
-  return 0;
 }
 
 /** @brief Byte offset one codepoint to the right of pos. */
@@ -782,8 +769,9 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
         next = edit_byte_of_cp(e->text, idx);
         my_text_layout_destroy(l);
       } else {
-        next = key == MY_KEY_LEFT ? cp_prev(e->text, e->cursor)
-                                  : cp_next(e->text, e->cursor);
+        next = key == MY_KEY_LEFT
+                   ? my_grapheme_boundary_left(e->text, len, e->cursor)
+                   : my_grapheme_boundary_right(e->text, len, e->cursor);
       }
       e->cursor = next;
       if (!shift) {
@@ -826,7 +814,20 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
         user_delete_range(e, e->cursor < e->anchor ? e->cursor : e->anchor,
                           e->cursor < e->anchor ? e->anchor : e->cursor);
       } else if (e->cursor > 0) {
-        user_delete_range(e, cp_prev(e->text, e->cursor), e->cursor);
+        /* R659: delete the whole grapheme cluster — bidi text uses the
+         * layout boundary map (canonical semantics), other text the
+         * allocation-free byte walk. */
+        size_t start;
+        my_text_layout_t* l = edit_layout_rtl(e, e->text);
+        if (l != NULL) {
+          size_t idx = edit_cp_index_of(e->text, e->cursor);
+          start = edit_byte_of_cp(e->text,
+                                  my_text_layout_boundary_left(l, idx));
+          my_text_layout_destroy(l);
+        } else {
+          start = my_grapheme_boundary_left(e->text, len, e->cursor);
+        }
+        user_delete_range(e, start, e->cursor);
       }
       return MY_RET_OK;
     case MY_KEY_DELETE:
@@ -834,7 +835,17 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
         user_delete_range(e, e->cursor < e->anchor ? e->cursor : e->anchor,
                           e->cursor < e->anchor ? e->anchor : e->cursor);
       } else if (e->cursor < len) {
-        user_delete_range(e, e->cursor, cp_next(e->text, e->cursor));
+        size_t end;
+        my_text_layout_t* l = edit_layout_rtl(e, e->text);
+        if (l != NULL) {
+          size_t idx = edit_cp_index_of(e->text, e->cursor);
+          end = edit_byte_of_cp(e->text,
+                                my_text_layout_boundary_right(l, idx));
+          my_text_layout_destroy(l);
+        } else {
+          end = my_grapheme_boundary_right(e->text, len, e->cursor);
+        }
+        user_delete_range(e, e->cursor, end);
       }
       return MY_RET_OK;
     case MY_KEY_RETURN:

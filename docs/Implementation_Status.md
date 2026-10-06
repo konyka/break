@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R659 按簇删 + 字节域字素 API（TDD）— 新 myr/my_grapheme 模块（免分配有界 UAX#29);my_edit/text_area 退格删除不再拆簇；LTR 光标也簇感知
+
+- **缺口**（R658 落账"Backspace 按簇删属消费侧议题"，调研再加一片）：① 退格/删除逐码点——"á" 可被拆成 "a+孤符";② 更深一层：my_edit/text_area 的光标走查只在 `my_text_layout_may_need_bidi` 时建 layout——**纯 LTR 文本的 R657/R658 簇感知完全落空**（layout 门槛）。
+- **方案**（新 myr 模块 + 双 widget 消费）：① 新 `my_grapheme.h/.c`——`my_grapheme_boundary_left/right(text, len, offset)` 字节域簇边界，免分配（自持有界 UTF-8 解码器+组合符/EP 生成表二分），规则与 layout 路径同子集（GB9 Extend+ZWJ/GB11 有界/GB12-13 RI 对）；② my_edit:Backspace/Delete 双路径——bidi 走 layout canonical（R657 语义）、其余走字节 API；方向键 fallback（无 layout=LTR）从 cp_prev/next 换字节 API（**LTR 光标自此也簇感知**)；死代码 `cp_prev` 清除；③ text_area:Backspace 的逐字节续字节走查与 Delete 的 char_len 步进同换字节 API（物理行/全局缓冲无歧——硬换行非 Extend 天然截断）。
+- **TDD（红→绿实证）**：① myr 层 test_myui_text_layout +1（组合符/家庭链/旗帜对/裸 ZWJ 四组）——**stub-RED**（簇判定 `return false` 桩逐码点，首断言 1≠3 如实红）→ GREEN 139/139;② **新挂具** test_myui_edit.c（widget vtable 事件注入，chart 先例；首个 edit/text_area 键程级测试）——双测试 RED 2/2（退格仅删组合符残 "á")→ GREEN 一钓且是真发现：**测试预期自身把"光标左侧簇"搞错**（[á][b] 尾光标左邻是 [b]，首轮预期 "ab" 属错位）——修正为分层语义（簇间退格删 á、尾端先删 b 再删簇）后 **2/2**。
+- **回归**：双树非图形 CTest 各 **118/118**（含新 test_myui_edit；在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5。
+- **边界**:text_area 方向键簇感知沿 layout 门槛（可见行 layout 仅在 bidi 时建——与 my_edit 同型的 LTR 落空，其箭头走 v->phys/vl 映射语义更繁，单列后续）;GB9c 印梵合字维持让渡；text_area IME_DELETE_SURROUNDING 沿码点（IME 协议域，未涉）;**首个 widget 键程挂具就位**（其余 widget 键行为自此可同法测试）;R611 AMD 基线不动。
+
 ## 本轮更新：R658 光标边界 UAX#29 规则族扩展（TDD）— GB9 ZWJ 前附/GB11 emoji 链/GB12-13 旗帜对，R657 的簇判定从"组合符单规则"升为完整有界子集
 
 - **缺口**（R657 落账"ZWJ/RI 为后续独立小轮"）：家庭 emoji（👨‍👩‍👧 = 5 码点）光标 4 停、旗帜（🇫🇷 = 2 码点）可拆——ZWJ 不在组合符表、Extended_Pictographic/RI 规则全缺。

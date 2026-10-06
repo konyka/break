@@ -10,6 +10,7 @@
 #include "myr/my_line_break_data.h"
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
+#include "myr/my_grapheme.h"
 #include "myr/my_font_ft.h"
 #include "myr/my_syntax.h"
 #include "myc/my_str.h"
@@ -731,6 +732,39 @@ TEST(text_layout_boundaries_skip_zwj_and_flag_clusters)
   my_text_layout_destroy(plain_zwj);
   my_text_layout_destroy(couple);
   my_text_layout_destroy(family);
+}
+
+TEST(grapheme_byte_boundaries_skip_cluster_interior)
+{
+  /* R659: the allocation-free byte-space API (same bounded UAX#29 subset
+   * as the layout boundaries) for text widgets whose cursor walk never
+   * builds a layout. */
+  const char* combining = "a" "\xCC\x81" "b";             /* 4 bytes */
+  const char* family = "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9"
+                       "\xE2\x80\x8D\xF0\x9F\x91\xA7";    /* 18 bytes */
+  const char* flags = "\xF0\x9F\x87\xAB\xF0\x9F\x87\xB7"
+                      "\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5"; /* 16 bytes */
+  const char* zwj_tail = "a" "\xE2\x80\x8D" "b";          /* 5 bytes */
+
+  /* combining mark attaches to its base in byte space. */
+  ASSERT_EQ(my_grapheme_boundary_right(combining, 4u, 0u), 3u);
+  ASSERT_EQ(my_grapheme_boundary_right(combining, 4u, 3u), 4u);
+  ASSERT_EQ(my_grapheme_boundary_left(combining, 4u, 4u), 3u);
+  ASSERT_EQ(my_grapheme_boundary_left(combining, 4u, 3u), 0u);
+
+  /* the whole emoji chain is one cluster. */
+  ASSERT_EQ(my_grapheme_boundary_right(family, 18u, 0u), 18u);
+  ASSERT_EQ(my_grapheme_boundary_left(family, 18u, 18u), 0u);
+
+  /* regional indicators pair up. */
+  ASSERT_EQ(my_grapheme_boundary_right(flags, 16u, 0u), 8u);
+  ASSERT_EQ(my_grapheme_boundary_right(flags, 16u, 8u), 16u);
+  ASSERT_EQ(my_grapheme_boundary_left(flags, 16u, 16u), 8u);
+
+  /* a + ZWJ + b: two clusters (the tail is no pictograph). */
+  ASSERT_EQ(my_grapheme_boundary_right(zwj_tail, 5u, 0u), 4u);
+  ASSERT_EQ(my_grapheme_boundary_right(zwj_tail, 5u, 4u), 5u);
+  ASSERT_EQ(my_grapheme_boundary_left(zwj_tail, 5u, 5u), 4u);
 }
 
 TEST(text_layout_maps_thai_to_thai_script)
@@ -3711,6 +3745,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_keeps_inherited_marks_with_previous_script);
     RUN_TEST(text_layout_boundaries_skip_combining_cluster_interior);
     RUN_TEST(text_layout_boundaries_skip_zwj_and_flag_clusters);
+    RUN_TEST(grapheme_byte_boundaries_skip_cluster_interior);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_maps_additional_unicode_scripts);
     RUN_TEST(text_layout_keeps_arabic_common_punctuation_with_neighbor_script);

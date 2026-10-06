@@ -13,6 +13,7 @@
 #include "myc/my_str.h"
 #include "myc/myconf/my_conf.h"
 #include "myr/my_font.h"
+#include "myr/my_grapheme.h"
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
 #include "myui/my_undo_manager.h"
@@ -2587,11 +2588,8 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       } else {
         size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
         if (off > 0) {
-          /* previous codepoint boundary (skip continuation bytes) */
-          size_t prev = off - 1;
-          while (prev > 0 && (ta->text[prev] & 0xC0) == 0x80) {
-            prev--;
-          }
+          /* R659: delete the whole grapheme cluster before the cursor. */
+          size_t prev = my_grapheme_boundary_left(ta->text, ta->text_len, off);
           user_delete_range(ta, prev, off);
         }
       }
@@ -2605,7 +2603,9 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       } else {
         size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
         if (off < ta->text_len) {
-          user_delete_range(ta, off, off + my_str_utf8_char_len(ta->text + off));
+          user_delete_range(
+              ta, off,
+              my_grapheme_boundary_right(ta->text, ta->text_len, off));
         }
       }
       return MY_RET_OK;

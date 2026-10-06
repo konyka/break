@@ -400,6 +400,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myr/my_bezier.c
     src/myui/myr/my_arabic_shape.c
     src/myui/myr/my_text_layout.c
+    src/myui/myr/my_grapheme.c
     src/myui/myr/my_text_paragraph.c
     src/myui/myr/my_line_break.c
     src/myui/myr/my_syntax.c
@@ -1439,6 +1440,12 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_chart PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_chart COMMAND test_myui_chart)
+
+    add_executable(test_myui_edit tests/test_myui_edit.c)
+    target_include_directories(test_myui_edit PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_edit PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_edit COMMAND test_myui_edit)
 
     add_executable(test_myui_echart_option tests/test_myui_echart_option.c)
     target_include_directories(test_myui_echart_option PRIVATE
