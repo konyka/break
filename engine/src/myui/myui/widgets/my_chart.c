@@ -882,6 +882,214 @@ static void chart_draw_parallel(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_treemap(const my_chart_t* chart, my_vgcanvas_t* vg,
+                               float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float total = 0.0f;
+  size_t positive = 0u;
+  if (chart->series_count == 0u) return;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      series = &chart->series[s];
+      break;
+    }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > 0.0f) {
+      total += series->values[i];
+      positive++;
+    }
+  if (total <= 0.0f || positive == 0u) return;
+  {
+    float rx = x, ry = y, rw = w, rh = h;
+    size_t slot = 0u;
+    for (size_t i = 0u; i < series->count && slot < positive; i++) {
+      float share;
+      float rect_w, rect_h;
+      if (series->values[i] <= 0.0f) continue;
+      share = series->values[i] / total;
+      if (rw >= rh) {
+        rect_w = rw * share;
+        rect_h = rh;
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+            s_colors[i % MY_CHART_MAX_SERIES]));
+        my_vgcanvas_fill_rect(vg, &(my_rectf_t){rx + 1.0f, ry + 1.0f,
+                                                rect_w - 2.0f, rect_h - 2.0f});
+        rx += rect_w;
+        rw -= rect_w;
+      } else {
+        rect_h = rh * share;
+        rect_w = rw;
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+            s_colors[i % MY_CHART_MAX_SERIES]));
+        my_vgcanvas_fill_rect(vg, &(my_rectf_t){rx + 1.0f, ry + 1.0f,
+                                                rect_w - 2.0f, rect_h - 2.0f});
+        ry += rect_h;
+        rh -= rect_h;
+      }
+      slot++;
+    }
+  }
+}
+
+static void chart_draw_graph(const my_chart_t* chart, my_vgcanvas_t* vg,
+                             float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float max_weight = 0.0f;
+  float cx, cy, radius;
+  if (chart->series_count == 0u) return;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count >= 2u) {
+      series = &chart->series[s];
+      break;
+    }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > max_weight) max_weight = series->values[i];
+  if (max_weight <= 0.0f) return;
+  cx = x + w * 0.5f;
+  cy = y + h * 0.5f;
+  radius = fminf(w, h) * 0.35f;
+  my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0xAAB4C0FFu));
+  my_vgcanvas_set_line_width(vg, 1.0f);
+  for (size_t i = 0u; i < series->count; i++) {
+    float a0 = 2.0f * CHART_PI * (float)i / (float)series->count;
+    float a1 = 2.0f * CHART_PI * (float)((i + 1u) % series->count) /
+               (float)series->count;
+    my_vgcanvas_begin_path(vg);
+    my_vgcanvas_move_to(vg, cx + cosf(a0) * radius, cy + sinf(a0) * radius);
+    my_vgcanvas_line_to(vg, cx + cosf(a1) * radius, cy + sinf(a1) * radius);
+    my_vgcanvas_stroke(vg);
+  }
+  for (size_t i = 0u; i < series->count; i++) {
+    float a = 2.0f * CHART_PI * (float)i / (float)series->count;
+    float node_r = 6.0f + (series->values[i] / max_weight) * 10.0f;
+    float nx = cx + cosf(a) * radius;
+    float ny = cy + sinf(a) * radius;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        s_colors[i % MY_CHART_MAX_SERIES]));
+    my_vgcanvas_begin_path(vg);
+    for (unsigned step = 0u; step <= 12u; step++) {
+      float t = 2.0f * CHART_PI * (float)step / 12.0f;
+      float px = nx + cosf(t) * node_r;
+      float py = ny + sinf(t) * node_r;
+      if (step == 0u) my_vgcanvas_move_to(vg, px, py);
+      else my_vgcanvas_line_to(vg, px, py);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_fill(vg);
+  }
+}
+
+static void chart_draw_calendar(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                float x, float y, float w, float h) {
+  const my_chart_series_t* series = NULL;
+  float max_value = 0.0f;
+  if (chart->series_count == 0u) return;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      series = &chart->series[s];
+      break;
+    }
+  }
+  if (series == NULL) return;
+  for (size_t i = 0u; i < series->count; i++)
+    if (series->values[i] > max_value) max_value = series->values[i];
+  if (max_value <= 0.0f) return;
+  {
+    size_t weeks = (series->count + 6u) / 7u;
+    float cell_w = w / 7.0f;
+    float cell_h = h / (float)weeks;
+    for (size_t i = 0u; i < series->count; i++) {
+      size_t day = i % 7u;
+      size_t week = i / 7u;
+      float t = series->values[i] / max_value;
+      uint32_t base = series->color != 0u ? series->color : 0x3A86FFFFu;
+      uint8_t br = (uint8_t)(base >> 24), bg = (uint8_t)(base >> 16),
+              bb = (uint8_t)(base >> 8);
+      uint8_t lr = 0xE6, lg = 0xEA, lb = 0xF0;
+      uint32_t color =
+          ((uint32_t)(lr + (uint8_t)((br - lr) * t)) << 24) |
+          ((uint32_t)(lg + (uint8_t)((bg - lg) * t)) << 16) |
+          ((uint32_t)(lb + (uint8_t)((bb - lb) * t)) << 8) | 0xFFu;
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(color));
+      my_vgcanvas_fill_rect(vg,
+                            &(my_rectf_t){x + (float)day * cell_w + 1.0f,
+                                          y + (float)week * cell_h + 1.0f,
+                                          cell_w - 2.0f, cell_h - 2.0f});
+    }
+  }
+}
+
+static void chart_draw_theme_river(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                   float x, float y, float w, float h) {
+  size_t series_map[MY_CHART_MAX_SERIES];
+  size_t visible = 0u;
+  size_t max_count = 0u;
+  float y_min = 0.0f, y_max = 1.0f;
+  for (size_t s = 0u; s < chart->series_count; s++) {
+    if (chart->series_visible[s] && chart->series[s].values != NULL &&
+        chart->series[s].count > 0u) {
+      series_map[visible++] = s;
+      if (chart->series[s].count > max_count) max_count = chart->series[s].count;
+    }
+  }
+  if (visible == 0u || max_count < 2u) return;
+  chart_axis_range(chart, 0u, &y_min, &y_max);
+  if (y_max <= y_min) {
+    y_min = 0.0f;
+    y_max = 1.0f;
+    for (size_t s = 0u; s < visible; s++)
+      for (size_t i = 0u; i < chart->series[series_map[s]].count; i++)
+        if (chart->series[series_map[s]].values[i] > y_max)
+          y_max = chart->series[series_map[s]].values[i];
+  }
+  for (size_t s = 0u; s < visible; s++) {
+    const my_chart_series_t* series = &chart->series[series_map[s]];
+    float below_prev = 0.0f;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+        series->color != 0u ? series->color
+                            : s_colors[s % MY_CHART_MAX_SERIES]));
+    my_vgcanvas_begin_path(vg);
+    for (size_t i = 0u; i < series->count; i++) {
+      float px = x + (max_count > 1u
+                          ? w * (float)i / (float)(max_count - 1u)
+                          : w * 0.5f);
+      float below = 0.0f;
+      for (size_t lower = 0u; lower < s; lower++) {
+        const my_chart_series_t* l = &chart->series[series_map[lower]];
+        if (i < l->count) below += l->values[i];
+      }
+      float py = my_chart_value_to_y(below + series->values[i], y_min, y_max,
+                                     y, h);
+      if (i == 0u) my_vgcanvas_move_to(vg, px, py);
+      else my_vgcanvas_line_to(vg, px, py);
+      below_prev = below;
+    }
+    for (size_t i = series->count; i > 0u; i--) {
+      size_t idx = i - 1u;
+      float px = x + (max_count > 1u
+                          ? w * (float)idx / (float)(max_count - 1u)
+                          : w * 0.5f);
+      float below = 0.0f;
+      for (size_t lower = 0u; lower < s; lower++) {
+        const my_chart_series_t* l = &chart->series[series_map[lower]];
+        if (idx < l->count) below += l->values[idx];
+      }
+      (void)below_prev;
+      float py = my_chart_value_to_y(below, y_min, y_max, y, h);
+      my_vgcanvas_line_to(vg, px, py);
+    }
+    my_vgcanvas_close_path(vg);
+    my_vgcanvas_fill(vg);
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -1113,7 +1321,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
   if (chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_RADAR &&
       chart->mode != MY_CHART_FUNNEL && chart->mode != MY_CHART_HEATMAP &&
       chart->mode != MY_CHART_GAUGE && chart->mode != MY_CHART_SANKEY &&
-      chart->mode != MY_CHART_PARALLEL) {
+      chart->mode != MY_CHART_PARALLEL && chart->mode != MY_CHART_TREEMAP &&
+      chart->mode != MY_CHART_GRAPH && chart->mode != MY_CHART_CALENDAR &&
+      chart->mode != MY_CHART_THEME_RIVER) {
     chart_grid(widget, vg, x, y, w, h, y_min, y_max);
     chart_draw_visual_map(chart, vg, x, y + 2.0f, w);
   }
@@ -1136,7 +1346,15 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_GAUGE) {
+  if (chart->mode == MY_CHART_TREEMAP) {
+    chart_draw_treemap(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_GRAPH) {
+    chart_draw_graph(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_CALENDAR) {
+    chart_draw_calendar(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_THEME_RIVER) {
+    chart_draw_theme_river(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_GAUGE) {
     chart_draw_gauge(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_SANKEY) {
     chart_draw_sankey(chart, vg, x, y, w, h);
@@ -1375,7 +1593,9 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
       mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL &&
       mode != MY_CHART_HEATMAP && mode != MY_CHART_BOXPLOT &&
       mode != MY_CHART_CANDLESTICK && mode != MY_CHART_GAUGE &&
-      mode != MY_CHART_SANKEY && mode != MY_CHART_PARALLEL)
+      mode != MY_CHART_SANKEY && mode != MY_CHART_PARALLEL &&
+      mode != MY_CHART_TREEMAP && mode != MY_CHART_GRAPH &&
+      mode != MY_CHART_CALENDAR && mode != MY_CHART_THEME_RIVER)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
@@ -1411,7 +1631,7 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
       (snapshot->series_count > 0u && snapshot->series == NULL) ||
       (snapshot->series_count > 0u && snapshot->series_visible == NULL) ||
       snapshot->mode < MY_CHART_LINE ||
-      snapshot->mode > MY_CHART_PARALLEL)
+      snapshot->mode > MY_CHART_THEME_RIVER)
     return MY_RET_INVALID_PARAMS;
   if (strlen(snapshot->title) >= sizeof(chart->title)) return MY_RET_INVALID_PARAMS;
   for (size_t i = 0u; i < snapshot->label_count; i++)

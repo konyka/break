@@ -1143,6 +1143,97 @@ TEST(chart_supports_parallel_mode) {
   my_widget_unref(chart);
 }
 
+TEST(chart_supports_treemap_mode) {
+  static const float values[] = {40.0f, 30.0f, 20.0f, 10.0f};
+  my_chart_series_t series = {"Tree", values, 4u, 0xE85D75FFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_TREEMAP);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+  ASSERT_NOT_NULL(chart); ASSERT_NOT_NULL(lcd); ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 150u);
+  my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
+}
+
+TEST(chart_supports_graph_mode) {
+  static const float values[] = {5.0f, 8.0f, 3.0f, 6.0f};
+  my_chart_series_t series = {"Graph", values, 4u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_GRAPH);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+  ASSERT_NOT_NULL(chart); ASSERT_NOT_NULL(lcd); ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 150u);
+  my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
+}
+
+TEST(chart_supports_calendar_mode) {
+  static const float values[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14};
+  my_chart_series_t series = {"Cal", values, 14u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_CALENDAR);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+  ASSERT_NOT_NULL(chart); ASSERT_NOT_NULL(lcd); ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 150u);
+  my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
+}
+
+TEST(chart_supports_theme_river_mode) {
+  static const float a[] = {3.0f, 5.0f, 2.0f, 4.0f};
+  static const float b[] = {2.0f, 4.0f, 3.0f, 1.0f};
+  my_chart_series_t bands[2] = {
+      {"A", a, 4u, 0xE85D75FFu, 0u}, {"B", b, 4u, 0x3A86FFFFu, 0u}};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_THEME_RIVER);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+  ASSERT_NOT_NULL(chart); ASSERT_NOT_NULL(lcd); ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &bands[0]), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &bands[1]), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 150u);
+  my_vgcanvas_destroy(canvas); my_lcd_destroy(lcd); my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -1184,4 +1275,8 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_gauge_mode);
   RUN_TEST(chart_supports_sankey_mode);
   RUN_TEST(chart_supports_parallel_mode);
+  RUN_TEST(chart_supports_treemap_mode);
+  RUN_TEST(chart_supports_graph_mode);
+  RUN_TEST(chart_supports_calendar_mode);
+  RUN_TEST(chart_supports_theme_river_mode);
 TEST_MAIN_END()

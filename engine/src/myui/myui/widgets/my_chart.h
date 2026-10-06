@@ -24,7 +24,11 @@ typedef enum my_chart_mode_t {
   MY_CHART_CANDLESTICK,
   MY_CHART_GAUGE,
   MY_CHART_SANKEY,
-  MY_CHART_PARALLEL
+  MY_CHART_PARALLEL,
+  MY_CHART_TREEMAP,
+  MY_CHART_GRAPH,
+  MY_CHART_CALENDAR,
+  MY_CHART_THEME_RIVER
 } my_chart_mode_t;
 
 /** @brief A borrowed data series; caller owns name and values. */

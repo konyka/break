@@ -29,6 +29,9 @@ static my_chart_mode_t mode_for(my_echart_series_type_t type) {
     case MY_ECHART_HEATMAP: return MY_CHART_HEATMAP;
     case MY_ECHART_BOXPLOT: return MY_CHART_BOXPLOT;
     case MY_ECHART_CANDLESTICK: return MY_CHART_CANDLESTICK;
+    case MY_ECHART_GAUGE: return MY_CHART_GAUGE;
+    case MY_ECHART_SANKEY: return MY_CHART_SANKEY;
+    case MY_ECHART_PARALLEL: return MY_CHART_PARALLEL;
     default: return (my_chart_mode_t)-1;
   }
 }

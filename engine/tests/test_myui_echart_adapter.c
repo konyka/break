@@ -155,6 +155,9 @@ TEST(echart_adapter_projects_all_native_series_types) {
   static const double boxplot_values[] = {10.0, 20.0, 30.0, 40.0, 50.0};
   static const double candle_values[] = {10.0, 15.0, 8.0, 12.0,
                                         12.0, 14.0, 11.0, 13.0};
+  static const double gauge_values[] = {30.0, 70.0};
+  static const double sankey_values[] = {10.0, 20.0, 30.0};
+  static const double parallel_a[] = {1.0, 5.0, 3.0};
   struct {
     my_echart_series_type_t type;
     const double* values;
@@ -166,7 +169,10 @@ TEST(echart_adapter_projects_all_native_series_types) {
       {MY_ECHART_FUNNEL, funnel_values, 3u, MY_CHART_FUNNEL},
       {MY_ECHART_HEATMAP, heatmap_values, 3u, MY_CHART_HEATMAP},
       {MY_ECHART_BOXPLOT, boxplot_values, 5u, MY_CHART_BOXPLOT},
-      {MY_ECHART_CANDLESTICK, candle_values, 8u, MY_CHART_CANDLESTICK}};
+      {MY_ECHART_CANDLESTICK, candle_values, 8u, MY_CHART_CANDLESTICK},
+      {MY_ECHART_GAUGE, gauge_values, 2u, MY_CHART_GAUGE},
+      {MY_ECHART_SANKEY, sankey_values, 3u, MY_CHART_SANKEY},
+      {MY_ECHART_PARALLEL, parallel_a, 3u, MY_CHART_PARALLEL}};
   for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); i++) {
     my_echart_series_input_t series = {"s", "Series", cases[i].type, cases[i].values, cases[i].count, 0u, 0u, NULL, true, NULL};
     my_echart_option_input_t input = {"all", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0};
