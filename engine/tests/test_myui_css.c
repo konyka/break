@@ -2076,7 +2076,6 @@ TEST(css_nest_rejects_malformed)
       "button { & > { color: red; } }",                 /* dangling '>' */
       "button { &#x { color: red; } }",                 /* id merge */
       "button:hover { & .x { color: red; } }",          /* state parent */
-      "button { & .x { & .y { color: red; } } }",       /* depth 2 */
       "button { & .x, .y { color: red; } }"};           /* nested group */
   my_css_error_t error = {0};
   size_t i;
@@ -2277,6 +2276,230 @@ TEST(css_nest_group_rejects_malformed)
                               strlen("button { , &:hover { color: red; } }"),
                               MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
   ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+}
+
+TEST(css_nest_second_level_descendant_chain)
+{
+  /* `.a { color: blue; & .b { color: green; & .c { color: red; } } }` —
+   * two nesting levels desugar recursively; the sheet order is parent,
+   * outer nested, inner nested (the inner rule sorts after its ancestor
+   * nested rule, matching the fully-desugared source order). */
+  const char* css =
+      ".a { color: blue; & .b { color: green; & .c { color: red; } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 3u);
+  /* rule 1 = `.a .b`, rule 2 = `.a .b .c` (inner after outer). */
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "b");
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "a");
+  sel = my_css_selector(my_css_rule(sheet, 2u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "c");
+  ASSERT_EQ(sel->ancestor_count, 2u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "b");
+  ASSERT_STR_EQ(sel->ancestors[1].style_class, "a");
+  ASSERT_TRUE(sel->nest_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  a->widget_type = "panel";
+  b->widget_type = "wrap";
+  hit->widget_type = "wrap";
+  miss->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b, "b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(hit, "c"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(miss, "c"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, b), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(b, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, b, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  value = my_theme_get_for_widget(theme, a, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(hit);
+  my_widget_unref(b);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_second_level_subject_merge)
+{
+  /* `button { &.on { color: green; &:hover { color: red; } } }` — the
+   * second level merges state onto the already-merged first level. */
+  const char* css =
+      "button { &.on { color: green; &:hover { color: red; } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* btn = my_widget_create(NULL, "btn");
+  my_widget_t* plain = my_widget_create(NULL, "plain");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 3u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "button");
+  ASSERT_STR_EQ(sel->style_class, "on");
+  ASSERT_EQ(sel->state, -1);
+  sel = my_css_selector(my_css_rule(sheet, 2u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "button");
+  ASSERT_STR_EQ(sel->style_class, "on");
+  ASSERT_EQ(sel->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_EQ(sel->ancestor_count, 0u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  btn->widget_type = "button";
+  plain->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(btn, "on"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x008000FFu);
+  value = my_theme_get_for_widget(theme, plain, MY_STATE_HOVER, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(plain);
+  my_widget_unref(btn);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_second_level_group_arms)
+{
+  /* `.a { & .b { &:hover, &:pressed { color: red; } } }` — arm groups work
+   * at the second level too, merging each state onto the outer desugared
+   * form. */
+  const char* css =
+      ".a { & .b { &:hover, &:pressed { color: red; } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 3u);
+  rule = my_css_rule(sheet, 2u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->style_class, "b");
+  ASSERT_EQ(my_css_selector(rule, 0u)->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_EQ(my_css_selector(rule, 0u)->ancestor_count, 1u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->ancestors[0].style_class, "a");
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->style_class, "b");
+  ASSERT_EQ(my_css_selector(rule, 1u)->state, (int32_t)MY_STATE_PRESSED);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->ancestors[0].style_class, "a");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  a->widget_type = "panel";
+  b->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b, "b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, b), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, b, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, b, MY_STATE_PRESSED, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, b, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(b);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_second_level_sibling_order)
+{
+  /* `panel { & .a { & .b { color: red; } } & .c { color: green; } }` — a
+   * second-level rule and a following first-level sibling: sheet order is
+   * panel, panel .a, panel .a .b, panel .c (the inner rule lands before
+   * the later sibling but after its own ancestor rule). */
+  const char* css =
+      "panel { & .a { & .b { color: red; } } & .c { color: green; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 4u);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "a");
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  ASSERT_STR_EQ(sel->ancestors[0].widget_type, "panel");
+  sel = my_css_selector(my_css_rule(sheet, 2u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "b");
+  ASSERT_EQ(sel->ancestor_count, 2u);
+  ASSERT_STR_EQ(sel->ancestors[0].style_class, "a");
+  ASSERT_STR_EQ(sel->ancestors[1].widget_type, "panel");
+  sel = my_css_selector(my_css_rule(sheet, 3u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->style_class, "c");
+  ASSERT_EQ(sel->ancestor_count, 1u);
+  ASSERT_STR_EQ(sel->ancestors[0].widget_type, "panel");
+  my_css_sheet_destroy(sheet);
+}
+
+TEST(css_nest_second_level_rejects_malformed)
+{
+  const char* malformed[] = {
+      /* depth 3 stays out of the subset */
+      "a { & b { & c { & d { color: red; } } } }",
+      /* a state-qualified parent can't become an ancestor */
+      "button { &:hover { & .x { color: red; } } }",
+      /* a state-qualified marker in ancestor form can't be expressed */
+      "button { &.on { &:hover .x { color: red; } } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
+  }
 }
 
 TEST(css_scope_to_clause_supports_universal_limit)
@@ -4064,6 +4287,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_group_ancestor_forms);
     RUN_TEST(css_nest_group_cross_product_with_parent_group);
     RUN_TEST(css_nest_group_rejects_malformed);
+    RUN_TEST(css_nest_second_level_descendant_chain);
+    RUN_TEST(css_nest_second_level_subject_merge);
+    RUN_TEST(css_nest_second_level_group_arms);
+    RUN_TEST(css_nest_second_level_sibling_order);
+    RUN_TEST(css_nest_second_level_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

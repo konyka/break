@@ -917,9 +917,9 @@ static bool css_rule_push_selector(css_p_t* p, my_css_rule_t* r,
 static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
                                  my_css_sheet_t* sheet, u32 depth);
 
-/* R629: the subset nests at most one level (a nested rule's own block does
- * not take further `&` rules). */
-#define MY_CSS_MAX_NEST_DEPTH 1u
+/* R629/R636: the subset nests two levels (a nested rule's own block takes
+ * one further level of `&` rules; depth 3+ is rejected). */
+#define MY_CSS_MAX_NEST_DEPTH 2u
 
 /* R634: a nested rule's selector prelude is a comma group; each arm is
  * desugared against every parent selector (arms x variants cross product). */
@@ -934,7 +934,9 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
  * per parent selector, inheriting layer order and scope limits (root
  * indices shift past the substituted slots). R634: the prelude is a comma
  * group — each arm folds and substitutes independently into the same rule
- * (arm-major order). */
+ * (arm-major order). R636: the nested rule's own block takes one further
+ * level of `&` rules — the parent's selectors are already fully desugared,
+ * so the same substitution recurses unchanged. */
 static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
                           my_css_sheet_t* sheet, u32 depth) {
   my_css_selector_t arms[MY_CSS_MAX_NEST_ARMS][MY_CSS_MAX_ANCESTORS + 1u];
@@ -1079,13 +1081,16 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
         if (nsel.style_class[0] != '\0') {
           size_t have = strlen(out.style_class);
           size_t need = strlen(nsel.style_class);
-          if (have + 1u + need >= sizeof(out.style_class)) {
+          size_t sep = have > 0u ? 1u : 0u;
+          if (have + sep + need >= sizeof(out.style_class)) {
             css_fail(p, "selector classes too long");
             css_rule_destroy(p->allocator, nr);
             return false;
           }
-          out.style_class[have] = ' ';
-          memcpy(out.style_class + have + 1u, nsel.style_class, need + 1u);
+          if (sep != 0u) {
+            out.style_class[have] = ' ';
+          }
+          memcpy(out.style_class + have + sep, nsel.style_class, need + 1u);
         }
       } else {
         /* ancestor form: [nested inner ancestors..., parent subject at the
@@ -1162,12 +1167,11 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
     }
   }
   c_next(p); /* '{' */
-  if (!css_parse_decl_block(p, nr, sheet, depth + 1u)) {
-    css_rule_destroy(p->allocator, nr);
-    return false;
-  }
-  /* R629: pend instead of pushing directly — css_parse_rules flushes after
-   * the parent rule lands, preserving source order. */
+  /* R629/R636: pend instead of pushing directly — css_parse_rules flushes
+   * after the parent rule lands, preserving source order. The rule pends
+   * BEFORE its block is parsed so that rules nested inside it (R636 second
+   * level) land after it in flush order; once pended, the parse teardown
+   * owns it on any later failure. */
   if (p->nest_pending == NULL) {
     p->nest_pending = my_darray_create(p->allocator, 0u);
     if (p->nest_pending == NULL) {
@@ -1179,6 +1183,9 @@ static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
   if (my_darray_push(p->nest_pending, nr) != MY_RET_OK) {
     css_rule_destroy(p->allocator, nr);
     css_fail(p, "oom");
+    return false;
+  }
+  if (!css_parse_decl_block(p, nr, sheet, depth + 1u)) {
     return false;
   }
   return true;

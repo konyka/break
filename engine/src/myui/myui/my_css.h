@@ -287,8 +287,10 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * `&`/`&:pseudo`/`&.class` merge onto the parent subject, `& path` /
  * `& > path` place the parent at the outermost ancestor slot). The prelude
  * is a comma group (R634): each arm desugars independently against every
- * parent variant, bounded by MY_CSS_MAX_NEST_ARMS. One level deep; a
- * state-qualified parent, an id-qualified marker, and `&` outside a rule
+ * parent variant, bounded by MY_CSS_MAX_NEST_ARMS. Two levels deep (R636):
+ * a nested rule's block takes one further `&` level, desugared against the
+ * already-resolved outer form; flush order keeps desugared source order.
+ * A state-qualified parent, an id-qualified marker, and `&` outside a rule
  * are rejected. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
