@@ -15,10 +15,13 @@ The supported subset is:
   (`min/Q1/median/Q3/max`);
 - legend visibility (`legend_hidden`) and tooltip visibility
   (`tooltip_hidden`), an explicit Y range, a category `dataZoom` window, and a
-  continuous `visualMap` (min/max with low/high colors), all committed through
-  the same atomic snapshot;
+  continuous `visualMap` (min/max with low/high
+  colors), all committed through the same atomic snapshot;
 - `markPoint`, `markLine`, and `markArea` annotations with deep-copied
-  labels and bounded counts matching the native renderer limits.
+  labels and bounded counts matching the native renderer limits;
+- option-level `dataset` columns with named dimensions: a series may set
+  `dataset_dimension` instead of inline `data`, and the named column is
+  resolved and deep-copied at option normalization (encode-by-dimension).
 
 Mixed series types, mixed stack names, stacks on non-bar charts, and other
 ECharts series/configuration features are rejected with

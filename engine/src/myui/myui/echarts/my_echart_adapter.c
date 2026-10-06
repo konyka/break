@@ -122,7 +122,7 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
     const my_echart_series_t* s = &source->series[i];
     series_inputs[i] = (my_echart_series_input_t){
         s->id, s->name, s->type, s->data, s->data_count, s->color,
-        s->y_axis_index, s->stack, s->show};
+        s->y_axis_index, s->stack, s->show, NULL};
   }
   for (size_t i = 0u; i < source->mark_point_count; i++)
     point_inputs[i] = (my_echart_mark_point_input_t){
@@ -146,7 +146,8 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
       source->visual_map_set, source->visual_map_min, source->visual_map_max,
       source->visual_map_low_color, source->visual_map_high_color,
       point_inputs, source->mark_point_count, line_inputs,
-      source->mark_line_count, area_inputs, source->mark_area_count};
+      source->mark_line_count, area_inputs, source->mark_area_count,
+      NULL, 0u};
   ret = my_echart_option_copy(&candidate->option, &input, adapter->allocator);
   if (ret == MY_RET_OK) {
     for (size_t i = 0u; i < candidate->option.series_count; i++) {

@@ -98,6 +98,32 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
         !isfinite(input->mark_areas[i].y_max) ||
         input->mark_areas[i].y_max <= input->mark_areas[i].y_min)
       return MY_RET_INVALID_PARAMS;
+  if (input->dataset_count > 0u && input->dataset == NULL)
+    return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < input->dataset_count; i++) {
+    const my_echart_dimension_input_t* dim = &input->dataset[i];
+    if (!valid_string(dim->name) ||
+        (dim->count > 0u && dim->values == NULL))
+      return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < dim->count; j++)
+      if (!isfinite(dim->values[j])) return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < i; j++)
+      if (strcmp(dim->name, input->dataset[j].name) == 0)
+        return MY_RET_INVALID_PARAMS;
+  }
+  for (size_t i = 0u; i < input->series_count; i++) {
+    const my_echart_series_input_t* series = &input->series[i];
+    bool resolves = false;
+    if (series->dataset_dimension == NULL) continue;
+    if (series->dataset_dimension[0] == '\0') return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < input->dataset_count; j++) {
+      if (strcmp(series->dataset_dimension, input->dataset[j].name) == 0) {
+        resolves = true;
+        break;
+      }
+    }
+    if (!resolves) return MY_RET_INVALID_PARAMS;
+  }
   return MY_RET_OK;
 }
 
@@ -128,22 +154,32 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
     for (size_t i = 0u; i < candidate.series_count; i++) {
       const my_echart_series_input_t* source = &src->series[i];
       my_echart_series_t* target = &candidate.series[i];
+      const double* data = source->data;
+      size_t data_count = source->data_count;
+      if (source->dataset_dimension != NULL) {
+        for (size_t j = 0u; j < src->dataset_count; j++) {
+          if (strcmp(source->dataset_dimension, src->dataset[j].name) == 0) {
+            data = src->dataset[j].values;
+            data_count = src->dataset[j].count;
+            break;
+          }
+        }
+      }
       target->id = copy_string(allocator, source->id);
       target->name = copy_string(allocator, source->name);
       target->stack = source->stack != NULL ? copy_string(allocator, source->stack) : NULL;
       target->type = source->type;
-      target->data_count = source->data_count;
+      target->data_count = data_count;
       target->color = source->color;
       target->y_axis_index = source->y_axis_index;
       target->show = source->show;
       if (target->id == NULL || target->name == NULL ||
           (source->stack != NULL && target->stack == NULL)) goto oom;
-      if (target->data_count > 0u) {
+      if (data_count > 0u) {
         target->data = (double*)my_mem_alloc(allocator,
-                                             target->data_count * sizeof(double));
+                                             data_count * sizeof(double));
         if (target->data == NULL) goto oom;
-        memcpy(target->data, source->data,
-               target->data_count * sizeof(double));
+        memcpy(target->data, data, data_count * sizeof(double));
       }
     }
   }

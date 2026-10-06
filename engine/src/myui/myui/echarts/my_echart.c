@@ -60,7 +60,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                               : chart->current.visual_map_low_color,
         input->visual_map_set ? input->visual_map_high_color
                               : chart->current.visual_map_high_color,
-        NULL, 0u, NULL, 0u, NULL, 0u};
+        NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
                       sizeof(*series));
@@ -91,7 +91,8 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
       const my_echart_series_t* s = &chart->current.series[i];
       series[i] = (my_echart_series_input_t){s->id, s->name, s->type, s->data,
                                              s->data_count, s->color,
-                                             s->y_axis_index, s->stack, s->show};
+                                             s->y_axis_index, s->stack, s->show,
+                                             NULL};
     }
     for (size_t i = 0u; i < chart->current.mark_point_count; i++)
       points[i] = (my_echart_mark_point_input_t){
@@ -153,7 +154,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                                       input->visual_map_max,
                                       input->visual_map_low_color,
                                       input->visual_map_high_color,
-                                      NULL, 0u, NULL, 0u, NULL, 0u};
+                                      NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
       my_echart_option_t temp;
       my_echart_option_init(&temp, chart->allocator);
       if (my_echart_option_copy(&temp, &one, chart->allocator) != MY_RET_OK) {

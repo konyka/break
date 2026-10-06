@@ -22,6 +22,12 @@ typedef enum my_echart_series_type_t {
   MY_ECHART_BOXPLOT
 } my_echart_series_type_t;
 
+typedef struct my_echart_dimension_input_t {
+  const char* name;
+  const double* values;
+  size_t count;
+} my_echart_dimension_input_t;
+
 typedef struct my_echart_series_input_t {
   const char* id;
   const char* name;
@@ -32,6 +38,7 @@ typedef struct my_echart_series_input_t {
   unsigned y_axis_index;
   const char* stack;
   bool show;
+  const char* dataset_dimension;
 } my_echart_series_input_t;
 
 typedef struct my_echart_mark_point_input_t {
@@ -78,6 +85,8 @@ typedef struct my_echart_option_input_t {
   size_t mark_line_count;
   const my_echart_mark_area_input_t* mark_areas;
   size_t mark_area_count;
+  const my_echart_dimension_input_t* dataset;
+  size_t dataset_count;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
