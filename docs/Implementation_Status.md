@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R650 `@media` MQ4 布尔逻辑（TDD）— 扁平链解析器重写为递归下降：or 链、括号嵌套条件、项级 not 全落地
+
+- **缺口**（R646-R648 MQ 弧收尾调研落账）：css_media_query 是扁平 and 链——`(a) or (b)`（MQ4 或链，逗号列表外的规范形态）、`((a) and (b)) or (c)`（括号嵌套条件）、`(a) and not (b)`（浏览器兼容的项级 not）全部语法拒绝；MQ3 整查询取反 `not ((a) and (b))` 无从表达。
+- **方案**（递归下降重写，既有契约逐条保留）：① 新 `css_media_item`（可选项级 not + 特性叶 | 括号嵌套条件——前瞻探针区分"(("或"(not"为嵌套）与 `css_media_cond`（同层链：首个分隔符锁定 and/or，混用即拒；`,`/`)`/结尾为界）;② 深度上限 `MY_CSS_MAX_MEDIA_COND_DEPTH=4`;③ query 主体三分支：类型查询仅 `and` 链接（`screen or` 维持拒）、查询级 not 维持既有契约（单项+禁续链+unknown-fact 取反得 false，`not not` 维持拒）但项可为嵌套组——MQ3 整查询取反由此获得诚实表达、特性优先走 cond;④ unknown-fact 语义（known=false 取反得 false）项级复刻，R-era 钉桩全绿。
+- **TDD（红→绿实证）**：test_myui_css +1——十三形态：or 链三上下文、嵌套 not 三上下文、嵌套组作 or 腿三上下文、项级 not 两上下文、整查询取反两上下文、拒绝四例（同层 and/or 混用/类型接 or/查询级 not 续链/括号失衡）。**RED 如实红**（首 or 例 sheet NULL）;GREEN 一次过 **162/162**(161+1)——递归重写下既有媒体测试组（not 契约/宽松怪癖/only/区间/比值域）零扰动。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯查询解析器重写，求值叶（feature/range/ratio）逐位未动。
+- **边界**:MQ 解析面自此贴近规范文法主干（类型/修饰符/特性/区间/比值/布尔逻辑全谱）;`resolution`/`monochrome` 等余特性需媒体上下文扩字段（ABI 面，维持让渡）;`not` 的 MQ3 整查询语义经嵌套组表达（`not (a) and (b)` 维持拒绝——既非 MQ3 整取反亦非 MQ4 合法形，契约有案）;R611 AMD 基线不动。
+
 ## 本轮更新：R649 `@supports selector()`（TDD）— css-conditional-3 双核心形态齐备：声明式 + 选择器函数式（语法级探针）
 
 - **缺口**（@supports 面调研落账）：引擎 @supports 只有声明形式（`(color: red)`）；规范另一核心形态 `selector(<complex-selector>)`（裸写或括号包裹皆合法）全缺——strict 下 `@supports selector(.x)` 按语法错误拒绝。

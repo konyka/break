@@ -4704,6 +4704,158 @@ TEST(css_conditional_media_supports_only_modifier)
   }
 }
 
+TEST(css_conditional_media_supports_mq4_boolean_logic)
+{
+  /* R650: MQ4 boolean logic — or-chains (uniform per level), nested
+   * conditions in parens, and item-level `not`. Query-level leading `not`
+   * keeps its existing contract (single item, no continuation); with a
+   * nested group it now expresses MQ3 whole-query negation. */
+  const char* or_css =
+      "@media (min-width: 800px) or (orientation: portrait) { button { color: red; } }";
+  const char* nested_not =
+      "@media (min-width: 800px) and (not (orientation: portrait)) { button { color: red; } }";
+  const char* group =
+      "@media ((min-width: 800px) and (orientation: landscape)) or (orientation: portrait) { button { color: red; } }";
+  const char* item_not =
+      "@media (min-width: 800px) and not (orientation: portrait) { button { color: red; } }";
+  const char* whole_not =
+      "@media not ((min-width: 800px) and (orientation: landscape)) { button { color: red; } }";
+  const char* malformed[] = {
+      /* and/or mixing at one level */
+      "@media (min-width: 1px) and (orientation: landscape) or (orientation: portrait) { button { color: red; } }",
+      /* type queries take `and` only */
+      "@media screen or (min-width: 1px) { button { color: red; } }",
+      /* query-level not takes no continuation (existing contract) */
+      "@media not (min-width: 1px) and (orientation: landscape) { button { color: red; } }",
+      /* unbalanced nesting */
+      "@media ((min-width: 1px) or (orientation: portrait) { button { color: red; } }"};
+  my_css_media_context_t wide_ls = {1024u, 768u, true, false, false, 0u};
+  my_css_media_context_t narrow_pt = {600u, 900u, true, false, false, 0u};
+  my_css_media_context_t narrow_ls = {700u, 600u, true, false, false, 0u};
+  my_css_media_context_t wide_pt = {1024u, 1200u, true, false, false, 0u};
+  my_css_media_context_t mid_ls = {600u, 768u, true, false, false, 0u};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  size_t i;
+
+  /* or-chain: either leg suffices. */
+  sheet = my_css_parse_media_ex(NULL, or_css, strlen(or_css),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, or_css, strlen(or_css),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow_pt,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, or_css, strlen(or_css),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* nested (not (...)) inside an and-chain. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, nested_not, strlen(nested_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, nested_not, strlen(nested_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_pt,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* nested group as an or-chain leg. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, group, strlen(group),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, group, strlen(group),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow_pt,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, group, strlen(group),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* pragmatic item-level not (browser-compatible form). */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, item_not, strlen(item_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, item_not, strlen(item_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_pt,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* query-level not over a nested group = whole-query negation. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, whole_not, strlen(whole_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &narrow_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, whole_not, strlen(whole_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* mid-width landscape misses both legs of nested_not's and-chain. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, nested_not, strlen(nested_not),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &mid_ls,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_media_ex(NULL, malformed[i],
+                                      strlen(malformed[i]),
+                                      MY_CSS_PARSE_STRICT_AT_RULES, &wide_ls,
+                                      &error) == NULL);
+  }
+}
+
 TEST(css_conditional_media_rejects_oversized_query_and_invalid_units)
 {
   char* oversized = (char*)malloc(MY_CSS_MAX_MEDIA_QUERY_BYTES + 32u);
@@ -5587,6 +5739,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_conditional_media_supports_aspect_ratio);
     RUN_TEST(css_conditional_media_supports_aspect_ratio_range);
     RUN_TEST(css_conditional_media_supports_only_modifier);
+    RUN_TEST(css_conditional_media_supports_mq4_boolean_logic);
     RUN_TEST(css_conditional_media_rejects_oversized_query_and_invalid_units);
     RUN_TEST(css_conditional_media_rejects_missing_and_operator);
     RUN_TEST(css_conditional_media_supports_bounded_range_syntax);

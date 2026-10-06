@@ -2726,14 +2726,113 @@ static bool css_media_feature(css_media_cursor_t* cursor,
   return false;
 }
 
+/* R650: MQ4 boolean logic — media-in-parens may hold a nested condition;
+ * one chain level is uniformly and or uniformly or; an item may carry a
+ * leading `not`. */
+#define MY_CSS_MAX_MEDIA_COND_DEPTH 4u
+
+static bool css_media_cond(css_media_cursor_t* cursor,
+                           const my_css_media_context_ex_t* media,
+                           size_t depth, bool* matches, bool* known);
+
+static bool css_media_item(css_media_cursor_t* cursor,
+                           const my_css_media_context_ex_t* media,
+                           size_t depth, bool allow_not, bool* matches,
+                           bool* known) {
+  bool negated = false;
+  *known = true;
+  css_media_ws(cursor);
+  if (allow_not && css_media_word(cursor, "not")) negated = true;
+  css_media_ws(cursor);
+  if (cursor->position >= cursor->length ||
+      cursor->text[cursor->position] != '(') {
+    return false;
+  }
+  {
+    css_media_cursor_t probe = *cursor;
+    probe.position++;
+    css_media_ws(&probe);
+    if (probe.position < probe.length &&
+        (probe.text[probe.position] == '(' ||
+         css_media_word(&probe, "not"))) {
+      /* nested condition in parens */
+      if (depth >= MY_CSS_MAX_MEDIA_COND_DEPTH) return false;
+      cursor->position++;
+      if (!css_media_cond(cursor, media, depth + 1u, matches, known)) {
+        return false;
+      }
+      css_media_ws(cursor);
+      if (cursor->position >= cursor->length ||
+          cursor->text[cursor->position] != ')') {
+        return false;
+      }
+      cursor->position++;
+      *known = true;
+      if (negated) *matches = !*matches;
+      return true;
+    }
+  }
+  if (!css_media_feature(cursor, media, matches, known)) return false;
+  if (negated) {
+    if (*known) *matches = !*matches;
+    else *matches = false;
+  }
+  return true;
+}
+
+static bool css_media_cond(css_media_cursor_t* cursor,
+                           const my_css_media_context_ex_t* media,
+                           size_t depth, bool* matches, bool* known) {
+  bool item_matches = false;
+  bool item_known = true;
+  bool result;
+  bool seen_separator = false;
+  bool or_chain = false;
+  (void)known;
+  if (!css_media_item(cursor, media, depth, true, &item_matches,
+                      &item_known)) {
+    return false;
+  }
+  result = item_matches;
+  for (;;) {
+    css_media_cursor_t probe;
+    bool next_matches = false;
+    bool next_known = true;
+    bool is_or;
+    css_media_ws(cursor);
+    if (cursor->position >= cursor->length) break;
+    if (cursor->text[cursor->position] == ')' ||
+        cursor->text[cursor->position] == ',') break;
+    probe = *cursor;
+    if (css_media_word(&probe, "and")) {
+      is_or = false;
+    } else {
+      probe = *cursor;
+      if (!css_media_word(&probe, "or")) return false;
+      is_or = true;
+    }
+    if (!seen_separator) {
+      seen_separator = true;
+      or_chain = is_or;
+    } else if (or_chain != is_or) {
+      return false;
+    }
+    *cursor = probe;
+    if (!css_media_item(cursor, media, depth, true, &next_matches,
+                        &next_known)) {
+      return false;
+    }
+    result = or_chain ? (result || next_matches) : (result && next_matches);
+  }
+  *matches = result;
+  return true;
+}
+
 static bool css_media_query(css_media_cursor_t* cursor,
                             const my_css_media_context_ex_t* media,
                             bool* matches, bool* conditional) {
   bool query_matches = true;
-  bool feature_matches = true;
-  bool feature_known = true;
   bool has_type = false;
-  bool need_and = false;
   bool negated = false;
   bool only = false;
   css_media_ws(cursor);
@@ -2758,34 +2857,46 @@ static bool css_media_query(css_media_cursor_t* cursor,
       return false;
     }
     if (negated) return false;
-    need_and = true;
   }
   if (only && !has_type) return false;
   css_media_ws(cursor);
-  while (cursor->position < cursor->length) {
-    if (cursor->text[cursor->position] == ',') break;
-    if (need_and && !css_media_word(cursor, "and")) {
-      return false;
-    }
-    if (cursor->text[cursor->position] == '(') {
-      if (!css_media_feature(cursor, media, &feature_matches,
-                             &feature_known)) {
+  if (has_type) {
+    if (cursor->position < cursor->length &&
+        cursor->text[cursor->position] != ',') {
+      bool cond_matches = false;
+      bool cond_known = true;
+      /* a type query chains with `and` only. */
+      if (!css_media_word(cursor, "and")) return false;
+      if (!css_media_cond(cursor, media, 0u, &cond_matches, &cond_known)) {
         return false;
       }
-    } else if (!css_media_feature(cursor, media, &feature_matches,
-                                  &feature_known)) {
+      *conditional = true;
+      query_matches = query_matches && cond_matches;
+    }
+  } else if (negated) {
+    /* query-level not: one item, no continuation (existing contract). */
+    css_media_cursor_t probe = *cursor;
+    bool item_known = true;
+    if (css_media_word(&probe, "not")) return false;
+    if (!css_media_item(cursor, media, 0u, false, &query_matches,
+                        &item_known)) {
       return false;
     }
-    if (negated) {
-      if (need_and) return false;
-      if (feature_known) feature_matches = !feature_matches;
-      else feature_matches = false;
-    }
-    need_and = true;
+    if (item_known) query_matches = !query_matches;
+    else query_matches = false;
     *conditional = true;
-    query_matches = query_matches && feature_matches;
     css_media_ws(cursor);
-    if (negated && cursor->position < cursor->length) return false;
+    if (cursor->position < cursor->length &&
+        cursor->text[cursor->position] != ',') {
+      return false;
+    }
+  } else if (cursor->position < cursor->length &&
+             cursor->text[cursor->position] != ',') {
+    bool cond_known = true;
+    if (!css_media_cond(cursor, media, 0u, &query_matches, &cond_known)) {
+      return false;
+    }
+    *conditional = true;
   }
   if (!has_type && !*conditional) return false;
   *matches = query_matches;
