@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R652 `supports(...)` 限定 `@import`（TDD）— 导入条件族补齐：`@import "x.css" supports (color: red) screen and (min-width: 800px);` 双门串联
+
+- **缺口**（R651 落账"supports/layer 限定同族让渡"中的前一半）：导入语句只认媒体限定——规范导入条件族的 supports 门（`supports(<supports-condition>)`，条件整包于函数括号内）按媒体查询误读后语法拒绝。
+- **方案**（限定词两段切分，双机械串联）：R651 的限定词团块读取后、media 求值前做词法切分——前导 ws 后 `supports` 关键字（ident 边界）+ 恰好一个平衡括号组（引号/转义感知）为 supports 段（整组含括号喂 `css_supports_condition`——其文法自带 `(` 起始要求，含 `not`/and/or/嵌套全谱），余部为媒体查询（可空=纯 supports 导入）。语义：supports 假=静默跳过（resolver 零调用，release 计数钉死）；双门串联（supports 先媒体后，各自独立跳过）；畸形（组失衡/未知声明）走 qualifier 规约（strict 拒 IMPORTS capability/compat 仅跳过该导入——与 @supports 严格模式"未知声明拒"契约一致）。
+- **TDD（红→绿实证）**：test_myui_css +1——七形态：supports 命中/合法假条件跳过（`supports (not (color: red))`)/双门命中/媒体腿 miss/未知声明 strict 拒/组失衡 strict 拒/compat 跳过。**RED 如实红**（首正例 sheet NULL）;GREEN 两钓皆实：① `css_supports_condition` 入口文法要 `(` 起始——首版把组内容剥壳喂入被拒，改整组喂；② 测试自身规范笔误——`supports not (x)` 非文法形（supports 条件须整包函数括号内），改 `supports (not (x))` 后 **164/164**(163+1)。回归途中 lld-link 崩溃一次（Exception 0xC000001D 非法指令，工具链瞬态 flake 与改动无关）,10 链接目标全灭后清锁重试即全绿。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯导入限定词路径改动；R651 媒体限定组与既有导入组全绿未动。
+- **边界**:layer 限定（`@import url layer(name)`）为导入修饰族余片——需导入期层序接线（层注册表在解析器尾部），单列让渡；GL f16 cube 门需图形测试基建（立项级）;R611 AMD 基线不动。
+
 ## 本轮更新：R651 媒体限定 `@import`（TDD）— `@import "x.css" screen and (min-width: 800px);` 标准条件导入落地；R650 MQ4 机械首个消费方
 
 - **缺口**（@import 面调研落账）：路径读取器在闭引号后硬要 `;`——标准 CSS 的媒体限定导入（命中才加载）按语法错误拒绝。（本轮先调研了 GL 侧 f16 cube 回读门：GL RHI 图形测试基建不存在（WGL 上下文测试无 CI 看守、Linux 侧无 GLX/EGL 挂具），单独立项，不在此轮。）

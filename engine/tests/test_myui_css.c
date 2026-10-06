@@ -812,6 +812,106 @@ TEST(css_import_media_qualifier_gates_resolution)
   ASSERT_EQ(css_import_release_count, 0u);
 }
 
+TEST(css_import_supports_qualifier_gates_resolution)
+{
+  /* R652: the `supports(...)` import condition (same family as the media
+   * qualifier) — evaluated with the @supports expression machinery before
+   * the optional media query. A false condition skips the import; a
+   * malformed one follows the qualifier convention (strict rejects,
+   * compatibility skips). */
+  const css_import_entry_t entries[] = {
+      {"wide.css", "label { color: red; }", 21u}, {NULL, NULL, 0u}};
+  const char* sup_hit =
+      "@import \"wide.css\" supports (color: red); button { color: blue; }";
+  const char* sup_miss =
+      "@import \"wide.css\" supports (not (color: red));"
+      " button { color: blue; }";
+  const char* combined_hit =
+      "@import \"wide.css\" supports (color: red) screen and"
+      " (min-width: 800px); button { color: blue; }";
+  const char* combined_media_miss =
+      "@import \"wide.css\" supports (color: red) screen and"
+      " (min-width: 2000px); button { color: blue; }";
+  const char* unknown_decl =
+      "@import \"wide.css\" supports (display: grid);"
+      " button { color: blue; }";
+  const char* unbalanced =
+      "@import \"wide.css\" supports (color: red;"
+      " button { color: blue; }";
+  my_css_media_context_ex_t media = {
+      {1024u, 768u, true, false, false, 0u}, MY_CSS_MEDIA_KNOWN_ALL};
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.media = &media;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+
+  /* supported declaration: the import resolves. */
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, sup_hit, strlen(sup_hit),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  /* legal false condition: skipped without resolving. */
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, sup_miss, strlen(sup_miss),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+
+  /* combined supports + media: both gates apply. */
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, combined_hit,
+                                    strlen(combined_hit), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, combined_media_miss,
+                                    strlen(combined_media_miss), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+
+  /* unknown declaration: strict rejects (the @supports contract). */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, unknown_decl,
+                                        strlen(unknown_decl), &options,
+                                        &error) == NULL);
+
+  /* unbalanced supports group: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, unbalanced,
+                                        strlen(unbalanced), &options,
+                                        &error) == NULL);
+
+  /* compatibility mode: malformed supports skips just the import. */
+  memset(&error, 0, sizeof(error));
+  options.flags = 0u;
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, unknown_decl,
+                                    strlen(unknown_decl), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+}
+
 TEST(css_scope_applies_rules_only_inside_root)
 {
   const char* css = "@scope panel { button { color: red; } }";
@@ -5752,6 +5852,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_cycle_and_depth_are_bounded);
     RUN_TEST(css_import_rejects_absolute_and_traversal_paths);
     RUN_TEST(css_import_media_qualifier_gates_resolution);
+    RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_scope_applies_rules_only_inside_root);
     RUN_TEST(css_scope_accepts_to_clause_and_rejects_malformed_limit);
     RUN_TEST(css_scope_to_clause_accepts_implicit_root);

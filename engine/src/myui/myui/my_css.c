@@ -779,6 +779,9 @@ static bool css_media_capabilities_valid(
     const my_css_media_context_ex_t* media);
 static bool css_media_condition(css_p_t* p, const char* query, size_t length,
                                 bool* matches, bool* conditional);
+static bool css_supports_condition(const char* query, size_t length,
+                                   const my_allocator_t* allocator,
+                                   bool* matches);
 
 static bool css_read_import_path(css_p_t* p, char* path, size_t cap,
                                  size_t* path_len) {
@@ -911,16 +914,88 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
       query[query_length++] = (char)c_next(p);
     }
     c_next(p); /* ';' */
-    if (quote != '\0' || paren_depth != 0u ||
-        !css_media_condition(p, query, query_length, &query_matches,
-                             &conditional)) {
-      return css_import_qualifier_fail(p);
-    }
-    if (conditional && p->media == NULL) {
-      return css_import_qualifier_fail(p);
-    }
-    if (!query_matches) {
-      return true;
+    {
+      /* R652: optional leading `supports(...)` import condition — the group
+       * is exactly one balanced paren group after the `supports` keyword;
+       * whatever follows is the media query. */
+      const char* media_query = query;
+      size_t media_length = query_length;
+      size_t qpos = 0u;
+      while (qpos < query_length &&
+             (query[qpos] == ' ' || query[qpos] == '\t' ||
+              query[qpos] == '\r' || query[qpos] == '\n')) {
+        qpos++;
+      }
+      if (query_length - qpos >= 9u &&
+          memcmp(query + qpos, "supports", 8u) == 0 &&
+          !c_ident_char((unsigned char)query[qpos + 8u])) {
+        size_t gpos = qpos + 8u;
+        while (gpos < query_length &&
+               (query[gpos] == ' ' || query[gpos] == '\t' ||
+                query[gpos] == '\r' || query[gpos] == '\n')) {
+          gpos++;
+        }
+        if (gpos < query_length && query[gpos] == '(') {
+          size_t depth = 0u;
+          size_t end = gpos;
+          char inner_quote = '\0';
+          bool closed = false;
+          bool supports_matches = false;
+          for (end = gpos; end < query_length; ++end) {
+            char ch = query[end];
+            if (inner_quote != '\0') {
+              if (ch == '\\' && end + 1u < query_length) {
+                ++end;
+                continue;
+              }
+              if (ch == inner_quote) inner_quote = '\0';
+              continue;
+            }
+            if (ch == '\'' || ch == '"') {
+              inner_quote = ch;
+            } else if (ch == '(') {
+              depth++;
+            } else if (ch == ')') {
+              depth--;
+              if (depth == 0u) {
+                closed = true;
+                break;
+              }
+            }
+          }
+          if (!closed) return css_import_qualifier_fail(p);
+          if (!css_supports_condition(query + gpos, end - gpos + 1u,
+                                      p->allocator, &supports_matches)) {
+            return css_import_qualifier_fail(p);
+          }
+          if (!supports_matches) {
+            return true;
+          }
+          media_query = query + end + 1u;
+          media_length = query_length - end - 1u;
+        }
+      }
+      while (media_length > 0u &&
+             (*media_query == ' ' || *media_query == '\t' ||
+              *media_query == '\r' || *media_query == '\n')) {
+        media_query++;
+        media_length--;
+      }
+      if (quote != '\0' || paren_depth != 0u) {
+        return css_import_qualifier_fail(p);
+      }
+      if (media_length > 0u) {
+        if (!css_media_condition(p, media_query, media_length,
+                                 &query_matches, &conditional)) {
+          return css_import_qualifier_fail(p);
+        }
+        if (conditional && p->media == NULL) {
+          return css_import_qualifier_fail(p);
+        }
+        if (!query_matches) {
+          return true;
+        }
+      }
     }
   }
   if (!css_import_path_safe(path, path_len)) {
