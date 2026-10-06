@@ -1018,6 +1018,36 @@ TEST(chart_hit_test_is_pure_and_bounded) {
   my_widget_unref(chart);
 }
 
+TEST(chart_supports_candlestick_mode) {
+  static const float ohlc[] = {10.0f, 15.0f, 8.0f, 12.0f,
+                               12.0f, 14.0f, 11.0f, 13.0f,
+                               13.0f, 16.0f, 12.5f, 14.5f};
+  my_chart_series_t series = {"Candles", ohlc, 12u, 0xE85D75FFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_CANDLESTICK);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (size_t i = 0u; i < 320u * 180u * 4u; i += 4u)
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+      colored++;
+  ASSERT_TRUE(colored > 200u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -1055,4 +1085,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_line_series_share_category_positions);
   RUN_TEST(chart_renders_at_supported_viewports);
   RUN_TEST(chart_hit_test_is_pure_and_bounded);
+  RUN_TEST(chart_supports_candlestick_mode);
 TEST_MAIN_END()

@@ -19,7 +19,8 @@ typedef enum my_echart_series_type_t {
   MY_ECHART_RADAR,
   MY_ECHART_FUNNEL,
   MY_ECHART_HEATMAP,
-  MY_ECHART_BOXPLOT
+  MY_ECHART_BOXPLOT,
+  MY_ECHART_CANDLESTICK
 } my_echart_series_type_t;
 
 typedef enum my_echart_transform_t {

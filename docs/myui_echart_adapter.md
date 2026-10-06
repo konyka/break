@@ -6,13 +6,17 @@ full ECharts implementation.
 
 The supported subset is:
 
-- line, bar, scatter, pie, radar, funnel, heatmap, and boxplot series;
+- line, bar, scatter, pie, radar, funnel, heatmap, boxplot, and candlestick
+  series;
 - one or more series of one shared type;
 - finite double values converted to finite `float` values within `FLT_MAX`;
 - category labels, title, visibility, and left/right axis selection;
 - bar options where every series uses the same non-empty stack name;
 - boxplot series carrying at least five samples
   (`min/Q1/median/Q3/max`);
+- candlestick series carrying OHLC groups of exactly four samples each
+  (`open/high/low/close`); ragged groups and `high < low` candles are
+  rejected;
 - legend visibility (`legend_hidden`) and tooltip visibility
   (`tooltip_hidden`), an explicit Y range, a category `dataZoom` window, and a
   continuous `visualMap` (min/max with low/high

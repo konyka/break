@@ -670,6 +670,56 @@ static void chart_draw_boxplot(const my_chart_t* chart, my_vgcanvas_t* vg,
   }
 }
 
+static void chart_draw_candlestick(const my_chart_t* chart, my_vgcanvas_t* vg,
+                                  float x, float y, float w, float h) {
+  size_t candles = 0u;
+  for (size_t i = 0u; i < chart->series_count; i++) {
+    const my_chart_series_t* series = &chart->series[i];
+    if (chart->series_visible[i] && series->values != NULL &&
+        series->count >= 4u && (series->count % 4u) == 0u)
+      candles += series->count / 4u;
+  }
+  if (candles == 0u) return;
+  {
+    size_t candle = 0u;
+    for (size_t s = 0u; s < chart->series_count; s++) {
+      const my_chart_series_t* series = &chart->series[s];
+      float y_min, y_max;
+      if (!chart->series_visible[s] || series->values == NULL ||
+          series->count < 4u || (series->count % 4u) != 0u)
+        continue;
+      chart_axis_range(chart, chart_series_axis(chart, s), &y_min, &y_max);
+      for (size_t c = 0u; c < series->count / 4u; c++, candle++) {
+        float open = series->values[c * 4u + 0u];
+        float high = series->values[c * 4u + 1u];
+        float low = series->values[c * 4u + 2u];
+        float close = series->values[c * 4u + 3u];
+        float slot = w / (float)candles;
+        float body_w = slot * 0.6f;
+        float center_x = x + slot * ((float)candle + 0.5f);
+        float y_high = my_chart_value_to_y(high, y_min, y_max, y, h);
+        float y_low = my_chart_value_to_y(low, y_min, y_max, y, h);
+        float y_open = my_chart_value_to_y(open, y_min, y_max, y, h);
+        float y_close = my_chart_value_to_y(close, y_min, y_max, y, h);
+        float body_top = fminf(y_open, y_close);
+        float body_h = fabsf(y_close - y_open);
+        bool bullish = close >= open;
+        uint32_t wick_color = bullish ? 0x2A9D8FFFu : 0xE85D75FFu;
+        my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(wick_color));
+        my_vgcanvas_set_line_width(vg, 1.5f);
+        my_vgcanvas_begin_path(vg);
+        my_vgcanvas_move_to(vg, center_x, y_high);
+        my_vgcanvas_line_to(vg, center_x, y_low);
+        my_vgcanvas_stroke(vg);
+        my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(
+            bullish ? 0x2A9D8FFFu : 0xE85D75FFu));
+        my_vgcanvas_fill_rect(vg, &(my_rectf_t){center_x - body_w * 0.5f,
+                                                body_top, body_w, body_h});
+      }
+    }
+  }
+}
+
 static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
                             float y, float w, float h, float y_min, float y_max) {
   size_t category_count = 0u;
@@ -922,7 +972,9 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                             label_x - 12.0f, y + h + 6.0f);
     }
   }
-  if (chart->mode == MY_CHART_BOXPLOT) {
+  if (chart->mode == MY_CHART_CANDLESTICK) {
+    chart_draw_candlestick(chart, vg, x, y, w, h);
+  } else if (chart->mode == MY_CHART_BOXPLOT) {
     chart_draw_boxplot(chart, vg, x, y, w, h);
   } else if (chart->mode == MY_CHART_HEATMAP) {
     chart_draw_heatmap(chart, vg, x, y, w, h);
@@ -1151,7 +1203,8 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   my_chart_t* chart;
   if (mode != MY_CHART_LINE && mode != MY_CHART_BAR && mode != MY_CHART_SCATTER &&
       mode != MY_CHART_PIE && mode != MY_CHART_RADAR && mode != MY_CHART_FUNNEL &&
-      mode != MY_CHART_HEATMAP && mode != MY_CHART_BOXPLOT)
+      mode != MY_CHART_HEATMAP && mode != MY_CHART_BOXPLOT &&
+      mode != MY_CHART_CANDLESTICK)
     return NULL;
   chart = (my_chart_t*)my_mem_calloc(allocator, 1, sizeof(*chart));
   if (chart == NULL) return NULL;
@@ -1186,7 +1239,8 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
       (snapshot->label_count > 0u && snapshot->labels == NULL) ||
       (snapshot->series_count > 0u && snapshot->series == NULL) ||
       (snapshot->series_count > 0u && snapshot->series_visible == NULL) ||
-      snapshot->mode < MY_CHART_LINE || snapshot->mode > MY_CHART_BOXPLOT)
+      snapshot->mode < MY_CHART_LINE ||
+      snapshot->mode > MY_CHART_CANDLESTICK)
     return MY_RET_INVALID_PARAMS;
   if (strlen(snapshot->title) >= sizeof(chart->title)) return MY_RET_INVALID_PARAMS;
   for (size_t i = 0u; i < snapshot->label_count; i++)

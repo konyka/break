@@ -28,6 +28,7 @@ static my_chart_mode_t mode_for(my_echart_series_type_t type) {
     case MY_ECHART_FUNNEL: return MY_CHART_FUNNEL;
     case MY_ECHART_HEATMAP: return MY_CHART_HEATMAP;
     case MY_ECHART_BOXPLOT: return MY_CHART_BOXPLOT;
+    case MY_ECHART_CANDLESTICK: return MY_CHART_CANDLESTICK;
     default: return (my_chart_mode_t)-1;
   }
 }
@@ -69,6 +70,14 @@ static my_ret_t validate_option(const my_echart_option_t* option,
     /* Boxplot series render min/Q1/median/Q3/max; fewer samples are invalid. */
     if (series->type == MY_ECHART_BOXPLOT && series->data_count < 5u)
       return MY_RET_INVALID_PARAMS;
+    /* Candlestick series carry OHLC groups of 4; ragged or high<low is invalid. */
+    if (series->type == MY_ECHART_CANDLESTICK &&
+        ((series->data_count % 4u) != 0u || series->data_count < 4u))
+      return MY_RET_INVALID_PARAMS;
+    if (series->type == MY_ECHART_CANDLESTICK)
+      for (size_t j = 0u; j + 3u < series->data_count; j += 4u)
+        if (series->data[j + 1u] < series->data[j + 2u])
+          return MY_RET_INVALID_PARAMS;
     if (i == 0u) stack = series->stack;
     else if ((stack == NULL) != (series->stack == NULL) ||
              (stack != NULL && strcmp(stack, series->stack) != 0))

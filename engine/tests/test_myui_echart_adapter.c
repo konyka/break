@@ -153,6 +153,8 @@ TEST(echart_adapter_projects_all_native_series_types) {
   static const double funnel_values[] = {100.0, 70.0, 40.0};
   static const double heatmap_values[] = {10.0, 50.0, 90.0};
   static const double boxplot_values[] = {10.0, 20.0, 30.0, 40.0, 50.0};
+  static const double candle_values[] = {10.0, 15.0, 8.0, 12.0,
+                                        12.0, 14.0, 11.0, 13.0};
   struct {
     my_echart_series_type_t type;
     const double* values;
@@ -163,7 +165,8 @@ TEST(echart_adapter_projects_all_native_series_types) {
       {MY_ECHART_RADAR, radar_values, 4u, MY_CHART_RADAR},
       {MY_ECHART_FUNNEL, funnel_values, 3u, MY_CHART_FUNNEL},
       {MY_ECHART_HEATMAP, heatmap_values, 3u, MY_CHART_HEATMAP},
-      {MY_ECHART_BOXPLOT, boxplot_values, 5u, MY_CHART_BOXPLOT}};
+      {MY_ECHART_BOXPLOT, boxplot_values, 5u, MY_CHART_BOXPLOT},
+      {MY_ECHART_CANDLESTICK, candle_values, 8u, MY_CHART_CANDLESTICK}};
   for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); i++) {
     my_echart_series_input_t series = {"s", "Series", cases[i].type, cases[i].values, cases[i].count, 0u, 0u, NULL, true, NULL};
     my_echart_option_input_t input = {"all", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0};
@@ -381,6 +384,41 @@ TEST(echart_adapter_sync_model_reprojects_after_action) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_rejects_malformed_candlestick) {
+  static const double odd[] = {10.0, 15.0, 8.0};
+  static const double bad_range[] = {10.0, 8.0, 12.0, 11.0};
+  my_echart_series_input_t odd_series = {"s", "Candles", MY_ECHART_CANDLESTICK,
+                                         odd, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t range_series = {"s", "Candles",
+                                           MY_ECHART_CANDLESTICK, bad_range,
+                                           4u, 0u, 0u, NULL, true, NULL};
+  my_echart_option_input_t input = {"c", NULL, 0u, &odd_series, 1u, false, false,
+                                    false, 0.0, 0.0, false, 0u, 0u, false,
+                                    0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,
+                                    NULL, 0u, NULL, 0u,
+                                    MY_ECHART_TRANSFORM_NONE, NULL,
+                                    MY_ECHART_FILTER_EQ, NULL, 0.0};
+  my_echart_option_t option;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_echart_adapter_t* adapter;
+
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_INVALID_PARAMS);
+  my_echart_adapter_destroy(adapter);
+  my_echart_option_free(&option);
+
+  input.series = &range_series;
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_INVALID_PARAMS);
+  my_echart_adapter_destroy(adapter);
+  my_echart_option_free(&option);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
   RUN_TEST(echart_adapter_rejects_without_mutating);
@@ -389,6 +427,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_destroy_keeps_caller_reference_and_renders);
   RUN_TEST(echart_adapter_projects_all_native_series_types);
   RUN_TEST(echart_adapter_rejects_boxplot_without_five_samples);
+  RUN_TEST(echart_adapter_rejects_malformed_candlestick);
   RUN_TEST(echart_adapter_projects_component_state);
   RUN_TEST(echart_adapter_projects_visual_map_state);
   RUN_TEST(echart_adapter_projects_annotations);
