@@ -305,6 +305,57 @@ TEST(echart_adapter_projects_annotations) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_fills_event_indexes_from_chart) {
+  static const double values[] = {10.0, 20.0, 30.0, 40.0};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values,
+                                     4u, 0u, 0u, NULL, true};
+  my_echart_option_input_t input = {"hit", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_t option;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_echart_adapter_t* adapter;
+  my_echart_event_t event;
+  my_event_t native;
+
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+
+  native = my_event_init(MY_EVENT_POINTER_MOVE);
+  native.time_ms = 7u;
+  native.u.pointer.x = 140;
+  native.u.pointer.y = 90;
+  native.u.pointer.button = 1u;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.type, MY_ECHART_EVENT_POINTER_MOVE);
+  ASSERT_EQ(event.time_ms, 7u);
+  ASSERT_EQ(event.x, 140);
+  ASSERT_EQ(event.category_index, 1u);
+  ASSERT_EQ(event.data_index, 1u);
+  ASSERT_EQ(event.series_index, 0u);
+
+  native.u.pointer.x = 5;
+  native.u.pointer.y = 5;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.category_index, MY_ECHART_INDEX_NONE);
+  ASSERT_EQ(event.data_index, MY_ECHART_INDEX_NONE);
+  ASSERT_EQ(event.series_index, MY_ECHART_INDEX_NONE);
+
+  native = my_event_init(MY_EVENT_KEY_DOWN);
+  native.u.key.key = MY_KEY_RIGHT;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.type, MY_ECHART_EVENT_KEY_RIGHT);
+  ASSERT_EQ(event.category_index, MY_ECHART_INDEX_NONE);
+
+  ASSERT_EQ(my_echart_adapter_event(adapter, NULL, &event), MY_RET_INVALID_PARAMS);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+  my_echart_option_free(&option);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
   RUN_TEST(echart_adapter_rejects_without_mutating);
@@ -316,4 +367,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_projects_component_state);
   RUN_TEST(echart_adapter_projects_visual_map_state);
   RUN_TEST(echart_adapter_projects_annotations);
+  RUN_TEST(echart_adapter_fills_event_indexes_from_chart);
 TEST_MAIN_END()

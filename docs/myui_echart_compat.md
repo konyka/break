@@ -30,7 +30,12 @@ key events to stable semantic chart events. Event payloads preserve native
 coordinates, time, button/modifiers, and reserved series/data/category indexes.
 `my_chart_hit_test()` offers a pure chart-local category lookup (plot-bounded,
 zoom-aware, no hover mutation) that controllers can use to fill those index
-payloads.
+payloads. `my_echart_adapter_event()` composes that bridge end to end: it maps
+one delivered MyUI native event to a semantic payload and fills
+series/data/category indexes from the adapter's chart (local-coordinate
+hit-test, first visible series with data at the category; indexes stay
+`MY_ECHART_INDEX_NONE` outside the plot, for key events, or when no visible
+series has data there).
 The adapter also exposes explicit `highlight`, `legendSelect`, `dataZoom`,
 `brush`, `showTip`, and `hideTip` action payloads through removable callback
 subscriptions. Subscription removal is safe during dispatch, and destroying an

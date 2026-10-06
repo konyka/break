@@ -1,6 +1,7 @@
 #ifndef MY_ECHART_ADAPTER_H
 #define MY_ECHART_ADAPTER_H
 
+#include "myui/echarts/my_echart_event.h"
 #include "myui/echarts/my_echart_option.h"
 #include "myui/my_widget.h"
 
@@ -12,5 +13,8 @@ my_echart_adapter_t* my_echart_adapter_create(
 void my_echart_adapter_destroy(my_echart_adapter_t* adapter);
 my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
                                  const my_echart_option_t* option);
+my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
+                                 const my_event_t* native,
+                                 my_echart_event_t* out);
 
 #endif

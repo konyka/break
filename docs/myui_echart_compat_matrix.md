@@ -11,7 +11,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |
-| Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom |
+| Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom; adapter-event bridge fills series/data/category indexes via chart hit-test |
 | Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
 | Styling | series colors, visualMap interpolation and gradient legend |
 | Animation | externally driven deterministic progress and fake-clock scheduler |

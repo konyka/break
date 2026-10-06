@@ -262,3 +262,63 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
   if (old != NULL) payload_free(adapter, old);
   return MY_RET_OK;
 }
+
+static my_echart_event_type_t bridge_event_type(const my_event_t* event) {
+  if (event->type == MY_EVENT_POINTER_DOWN) return MY_ECHART_EVENT_POINTER_DOWN;
+  if (event->type == MY_EVENT_POINTER_MOVE) return MY_ECHART_EVENT_POINTER_MOVE;
+  if (event->type == MY_EVENT_POINTER_UP) return MY_ECHART_EVENT_POINTER_UP;
+  if (event->type == MY_EVENT_POINTER_WHEEL) return MY_ECHART_EVENT_WHEEL;
+  if (event->type == MY_EVENT_KEY_DOWN && event->u.key.key == MY_KEY_LEFT)
+    return MY_ECHART_EVENT_KEY_LEFT;
+  if (event->type == MY_EVENT_KEY_DOWN && event->u.key.key == MY_KEY_RIGHT)
+    return MY_ECHART_EVENT_KEY_RIGHT;
+  return MY_ECHART_EVENT_ANY;
+}
+
+my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
+                                 const my_event_t* native,
+                                 my_echart_event_t* out) {
+  my_echart_event_type_t type;
+  if (adapter == NULL || native == NULL || out == NULL)
+    return MY_RET_INVALID_PARAMS;
+  type = bridge_event_type(native);
+  if (type == MY_ECHART_EVENT_ANY) return MY_RET_NOT_FOUND;
+  out->type = type;
+  out->time_ms = native->time_ms;
+  out->x = 0;
+  out->y = 0;
+  out->delta = 0;
+  out->button = 0u;
+  out->series_index = MY_ECHART_INDEX_NONE;
+  out->data_index = MY_ECHART_INDEX_NONE;
+  out->category_index = MY_ECHART_INDEX_NONE;
+  if (native->type == MY_EVENT_KEY_DOWN) {
+    out->modifiers = native->u.key.modifiers;
+    return MY_RET_OK;
+  }
+  out->x = native->u.pointer.x;
+  out->y = native->u.pointer.y;
+  out->delta = native->u.pointer.delta;
+  out->button = native->u.pointer.button;
+  out->modifiers = native->u.pointer.modifiers;
+  if (adapter->chart != NULL && my_chart_is_instance(adapter->chart)) {
+    int32_t local_x = native->u.pointer.x;
+    int32_t local_y = native->u.pointer.y;
+    size_t category;
+    my_widget_global_to_local(adapter->chart, &local_x, &local_y);
+    category = my_chart_hit_test(adapter->chart, local_x, local_y);
+    if (category != MY_ECHART_INDEX_NONE) {
+      const my_chart_t* chart = (const my_chart_t*)adapter->chart;
+      out->category_index = category;
+      out->data_index = category;
+      for (size_t i = 0u; i < chart->series_count; i++) {
+        if (chart->series_visible[i] && chart->series[i].values != NULL &&
+            category < chart->series[i].count) {
+          out->series_index = i;
+          break;
+        }
+      }
+    }
+  }
+  return MY_RET_OK;
+}
