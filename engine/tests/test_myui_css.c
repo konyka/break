@@ -561,6 +561,119 @@ TEST(css_multilevel_specificity_beats_simple_selector)
   my_theme_destroy(theme);
 }
 
+TEST(css_decl_important_flag_and_cascade)
+{
+  /* R654: `!important` — a declaration-level flag (public on my_css_decl_t)
+   * that lifts the declaration into a flat top cascade tier: important
+   * beats every normal declaration regardless of selector specificity or
+   * layer; among important declarations the usual order applies. The subset
+   * accepts lowercase `important` with optional whitespace after '!'. */
+  const char* css =
+      "button { color: red !important; font-size: 14px; }"
+      "label { color: blue ! important; }";
+  const char* malformed[] = {
+      "button { color: red !foo; }",
+      "button { color: red !IMPORTANT; }",
+      "button { color: red !; }"};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  size_t i;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_TRUE(my_css_decl(my_css_rule(sheet, 0u), 0u)->important);
+  ASSERT_FALSE(my_css_decl(my_css_rule(sheet, 0u), 1u)->important);
+  ASSERT_TRUE(my_css_decl(my_css_rule(sheet, 1u), 0u)->important);
+  my_css_sheet_destroy(sheet);
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+  }
+
+  /* specificity flip: the multilevel selector would normally win. */
+  {
+    const char* flip =
+        "window.primary panel button { color: blue; }"
+        "button { color: red !important; }";
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* window = my_widget_create(NULL, "main");
+    my_widget_t* panel = my_widget_create(NULL, "panel");
+    my_widget_t* button = my_widget_create(NULL, "button");
+    const my_value_t* value;
+
+    ASSERT_NOT_NULL(theme);
+    ASSERT_NOT_NULL(window);
+    ASSERT_NOT_NULL(panel);
+    ASSERT_NOT_NULL(button);
+    window->widget_type = "window";
+    panel->widget_type = "panel";
+    button->widget_type = "button";
+    ASSERT_EQ(my_widget_set_style_class(window, "primary"), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+    my_widget_unref(panel);
+    my_widget_unref(button);
+    ASSERT_EQ(my_theme_load_css_ex(theme, flip, MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                    "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+    my_widget_unref(window);
+    my_theme_destroy(theme);
+  }
+
+  /* layer flip: unlayered normal loses to layered important. */
+  {
+    const char* layered =
+        "@layer base { button { color: red !important; } }"
+        "button { color: blue; }";
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* widget = my_widget_create(NULL, "button");
+    const my_value_t* value;
+
+    ASSERT_NOT_NULL(theme);
+    ASSERT_NOT_NULL(widget);
+    widget->widget_type = "button";
+    ASSERT_EQ(my_theme_load_css_ex(theme, layered,
+                                   MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                    "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+    my_widget_unref(widget);
+    my_theme_destroy(theme);
+  }
+
+  /* among important declarations the usual source order applies. */
+  {
+    const char* order =
+        "button { color: red !important; }"
+        "button { color: blue !important; }";
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* widget = my_widget_create(NULL, "button");
+    const my_value_t* value;
+
+    ASSERT_NOT_NULL(theme);
+    ASSERT_NOT_NULL(widget);
+    widget->widget_type = "button";
+    ASSERT_EQ(my_theme_load_css_ex(theme, order, MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                    "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+    my_widget_unref(widget);
+    my_theme_destroy(theme);
+  }
+}
+
 TEST(css_rejects_selector_paths_over_depth_limit)
 {
   const char* css = "a b c d e f { color: red; }";
@@ -5950,6 +6063,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_multilevel_direct_path_rejects_wrong_intermediate);
     RUN_TEST(css_multilevel_ancestor_id_and_class_must_match);
     RUN_TEST(css_multilevel_specificity_beats_simple_selector);
+    RUN_TEST(css_decl_important_flag_and_cascade);
     RUN_TEST(css_rejects_selector_paths_over_depth_limit);
     RUN_TEST(css_rejects_dangling_and_repeated_combinators);
     RUN_TEST(css_rejects_adjacent_selector_tokens_without_combinator);

@@ -242,6 +242,7 @@ typedef struct my_css_selector_t {
 typedef struct my_css_decl_t {
   char key[MY_STYLE_KEY_LEN];
   my_value_t value;
+  bool important; /**< R654: declaration had the `!important` flag */
 } my_css_decl_t;
 
 /** @brief One rule: selector group + declarations. */

@@ -786,6 +786,12 @@ static bool css_layer_name_valid(const char* name, size_t length);
 static uint32_t css_layer_find_or_add(css_p_t* p, const char* name,
                                       size_t length);
 
+/* R654: !important lifts a declaration into a flat top cascade tier — the
+ * boost must clear the deepest layered negative (-64*100000) plus the full
+ * normal range (~90k); among important declarations the usual specificity
+ * applies. */
+#define MY_CSS_IMPORTANT_SPECIFICITY 10000000
+
 static bool css_read_import_path(css_p_t* p, char* path, size_t cap,
                                  size_t* path_len) {
   size_t length = 0u;
@@ -1712,6 +1718,22 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
       }
       css_fail(p, "unterminated declaration");
       return false;
+    }
+    c_ws(p);
+    /* R654: optional `!important` after the value — lowercase keyword with
+     * optional whitespace after '!'. */
+    if (c_peek(p) == '!') {
+      char important_word[16];
+      c_next(p);
+      c_ws(p);
+      if (!c_ident(p, important_word, sizeof(important_word)) ||
+          !my_str_eq(important_word, "important")) {
+        my_value_reset(&d->value);
+        my_mem_free(p->allocator, d);
+        css_fail(p, "expected 'important' after '!'");
+        return false;
+      }
+      d->important = true;
     }
     css_key_map(key, mapped, sizeof(mapped));
     snprintf(d->key, sizeof(d->key), "%s", mapped);
@@ -3914,13 +3936,19 @@ static my_ret_t my_theme_load_css_internal(
     return MY_RET_OOM;
   }
   target = candidate;
-  for (layer_pass = 0u; layer_pass <= MY_CSS_MAX_LAYERS; ++layer_pass) {
+  /* R654: declaration tiers are applied in three phases — layered normal
+   * (rank order), unlayered normal, then ALL important declarations in one
+   * final flat pass. Same-entry conflicts resolve by overwrite order (the
+   * theme's documented later-wins rule), so the important pass must come
+   * last; cross-entry conflicts still compare the boosted specificity. */
+  for (layer_pass = 0u; layer_pass <= MY_CSS_MAX_LAYERS + 1u; ++layer_pass) {
+    bool important_pass = layer_pass == MY_CSS_MAX_LAYERS + 1u;
     uint32_t wanted_layer = layer_pass == MY_CSS_MAX_LAYERS
                                 ? MY_CSS_UNLAYERED_ORDER
                                 : (uint32_t)layer_pass;
     for (ri = 0; ri < my_css_rule_count(sheet); ri++) {
       const my_css_rule_t* rule = my_css_rule(sheet, ri);
-      if (rule->layer_order != wanted_layer) continue;
+      if (!important_pass && rule->layer_order != wanted_layer) continue;
     for (si = 0; si < my_css_selector_count(rule); si++) {
       const my_css_selector_t* sel = my_css_selector(rule, si);
       my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
@@ -4016,13 +4044,16 @@ static my_ret_t my_theme_load_css_internal(
       }
       for (di = 0; di < my_css_decl_count(rule); di++) {
         const my_css_decl_t* d = my_css_decl(rule, di);
+        const int32_t decl_specificity =
+            specificity + (d->important ? MY_CSS_IMPORTANT_SPECIFICITY : 0);
+        if (important_pass != d->important) continue;
         if (sel->state >= 0) {
           ret = my_theme_set_ex6(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, (my_widget_state_t)sel->state,
-              d->key, &d->value, specificity + 100);
+              d->key, &d->value, decl_specificity + 100);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
@@ -4032,7 +4063,7 @@ static my_ret_t my_theme_load_css_internal(
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, MY_STATE_NORMAL, d->key, &d->value,
-              specificity);
+              decl_specificity);
         }
         if (ret != MY_RET_OK) {
           break;

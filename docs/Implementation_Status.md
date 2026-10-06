@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R654 声明级 `!important`（TDD）— CSS 级联顶层落地：公开 decl 旗标 + 桥接三相位应用（分层普通→未分层普通→全 important 末相位）
+
+- **缺口**（级联面普查钓出）：引擎连 `!important` 都没有——`color: red !important` 按 "expected ';' or '}'" 语法拒绝，主题作者无终局覆盖手段。
+- **方案**（声明旗标 + 应用相位重构）：① `my_css_decl_t` 公开新增 `bool important`（公共结构体演进沿 layer_order 先例；calloc 零初始化，darray 拷贝随行）;② 声明解析在值后接受可选 `!` + 可选空白 + 小写 `important`(ident 词界自然拒绝 `importantx`;`!foo`/`!IMPORTANT`/`!` 裸写 strict 拒，失败路径 value_reset+free 事务性）;③ 桥接应用重构为**三相位**：分层普通（层秩序）→未分层普通→**全部 important 声明合一末相位**——本轮实证的关键架构事实：同条目冲突靠 theme"后写覆盖"语义（set_ex6 无条件覆写值+特异性），层相位本就靠应用序实现"未分层胜分层"，故 important 必须应用在最后；跨条目冲突仍靠特异性比较，`MY_CSS_IMPORTANT_SPECIFICITY=10,000,000`（须清最深分层负槽 -64×100000 再盖普通全域 ~90k——首版 1M 被分层负槽吞没，层翻转用例钓出）。重要声明间：同相位内源序（扁平层近似，规范的分层倒序仅在 important 间生效，记为子集让渡）。
+- **TDD（红→绿实证）**：test_myui_css +1——结构断言（旗标 true/false/`! important` 空白容忍）+ 畸形三拒 + **三行为对拍**：特异性翻转（`window.primary panel button` 多级链败给 `button !important`)、层翻转（`@layer base` important 胜未分层普通）、important 间源序。**RED 如实红**(strict sheet NULL);GREEN 两钓皆实：① 加权 1M 不足盖分层负槽→10M;② 同条目覆盖序问题→三相位，**166/166**(165+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5；既有特异性/层/导入测试组全绿未动。
+- **边界**:important 扁平层近似（规范的分层倒序仅 important 间可观察，组合案例罕，记让渡）;`!important` 仅小写（引擎关键字全域小写子集同约）;transition/animation 的 important 屏蔽语义无涉（无动画引擎）;R611 AMD 基线不动。
+
 ## 本轮更新：R653 `layer(name)` 限定 `@import`（TDD）— 导入条件族全闭环：layer/supports/media 三段流水线；导入规则携带层序（未分层本地规则级联压制钉死）
 
 - **缺口**（R652 落账"layer 限定需导入期层序接线"）：导入条件族最后一片——`@import "x.css" layer(base);` 按语法拒绝，导入规则无法入层。
