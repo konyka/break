@@ -16,6 +16,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Styling | series colors, visualMap interpolation and gradient legend |
 | Animation | externally driven deterministic progress and fake-clock scheduler |
 | MVVM | owned option pointer binding, explicit sync, property notification sync |
+| Components | legend visibility, explicit Y range, category dataZoom window |
 
 ## Supported only by the native adapter subset
 

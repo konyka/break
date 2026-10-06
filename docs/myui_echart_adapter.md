@@ -12,7 +12,9 @@ The supported subset is:
 - category labels, title, visibility, and left/right axis selection;
 - bar options where every series uses the same non-empty stack name;
 - boxplot series carrying at least five samples
-  (`min/Q1/median/Q3/max`).
+  (`min/Q1/median/Q3/max`);
+- legend visibility (`legend_hidden`), explicit Y range, and a category
+  `dataZoom` window, committed through the same atomic snapshot.
 
 Mixed series types, mixed stack names, stacks on non-bar charts, and other
 ECharts series/configuration features are rejected with

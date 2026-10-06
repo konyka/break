@@ -50,6 +50,13 @@ typedef struct my_chart_snapshot_t {
   const bool* series_visible;
   size_t series_count;
   bool stacked;
+  bool show_legend;
+  bool range_set;
+  float y_min;
+  float y_max;
+  bool zoom_set;
+  size_t zoom_start;
+  size_t zoom_end;
 } my_chart_snapshot_t;
 
 typedef struct my_chart_t {

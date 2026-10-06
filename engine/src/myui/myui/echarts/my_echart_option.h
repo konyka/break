@@ -37,6 +37,13 @@ typedef struct my_echart_option_input_t {
   size_t x_axis_count;
   const my_echart_series_input_t* series;
   size_t series_count;
+  bool legend_hidden;
+  bool range_set;
+  double y_min;
+  double y_max;
+  bool zoom_set;
+  size_t zoom_start;
+  size_t zoom_end;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
@@ -58,6 +65,13 @@ typedef struct my_echart_option_t {
   size_t x_axis_count;
   my_echart_series_t* series;
   size_t series_count;
+  bool legend_hidden;
+  bool range_set;
+  double y_min;
+  double y_max;
+  bool zoom_set;
+  size_t zoom_start;
+  size_t zoom_end;
 } my_echart_option_t;
 
 void my_echart_option_init(my_echart_option_t* option,

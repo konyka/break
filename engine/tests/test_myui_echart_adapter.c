@@ -35,7 +35,7 @@ static my_echart_option_t make_option(const double* values, size_t count,
                                       my_echart_series_type_t type) {
   my_echart_series_input_t series = {"series", "Series", type, values, count,
                                      0xE85D75FFu, 0u, stack, true};
-  my_echart_option_input_t input = {title, NULL, 0u, &series, 1u};
+  my_echart_option_input_t input = {title, NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
   my_echart_option_t option;
   my_echart_option_init(&option, NULL);
   if (my_echart_option_copy(&option, &input, NULL) != MY_RET_OK) {
@@ -83,7 +83,7 @@ TEST(echart_adapter_rejects_mixed_types_and_float_overflow) {
   my_echart_series_input_t series[2] = {
       {"a", "A", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true},
       {"b", "B", MY_ECHART_BAR, values, 1u, 0u, 0u, NULL, true}};
-  my_echart_option_input_t input = {"bad", NULL, 0u, series, 2u};
+  my_echart_option_input_t input = {"bad", NULL, 0u, series, 2u, false, false, 0.0, 0.0, false, 0u, 0u};
   my_echart_option_t option;
   my_echart_option_init(&option, NULL);
   ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
@@ -169,7 +169,7 @@ TEST(echart_adapter_projects_all_native_series_types) {
     my_echart_series_input_t series = {"s", "Series", cases[i].type,
                                        cases[i].values, cases[i].count,
                                        0u, 0u, NULL, true};
-    my_echart_option_input_t input = {"all", NULL, 0u, &series, 1u};
+    my_echart_option_input_t input = {"all", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
     my_echart_option_t option;
     my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
     my_echart_adapter_t* adapter;
@@ -190,7 +190,7 @@ TEST(echart_adapter_rejects_boxplot_without_five_samples) {
   static const double short_values[] = {1.0, 2.0};
   my_echart_series_input_t series = {"s", "Stats", MY_ECHART_BOXPLOT,
                                      short_values, 2u, 0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"box", NULL, 0u, &series, 1u};
+  my_echart_option_input_t input = {"box", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_echart_adapter_t* adapter;
@@ -198,6 +198,40 @@ TEST(echart_adapter_rejects_boxplot_without_five_samples) {
   ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
   adapter = my_echart_adapter_create(chart, NULL);
   ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_INVALID_PARAMS);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+  my_echart_option_free(&option);
+}
+
+TEST(echart_adapter_projects_component_state) {
+  static const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values,
+                                     6u, 0u, 0u, NULL, true};
+  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
+  my_echart_option_t option;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_echart_adapter_t* adapter;
+
+  input.legend_hidden = true;
+  input.range_set = true;
+  input.y_min = -2.5;
+  input.y_max = 7.5;
+  input.zoom_set = true;
+  input.zoom_start = 1u;
+  input.zoom_end = 4u;
+
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+  ASSERT_FALSE(((my_chart_t*)chart)->show_legend);
+  ASSERT_TRUE(((my_chart_t*)chart)->range_set);
+  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->y_min, -2.5f, 1e-6f);
+  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->y_max, 7.5f, 1e-6f);
+  ASSERT_TRUE(((my_chart_t*)chart)->zoom_set);
+  ASSERT_EQ(((my_chart_t*)chart)->zoom_start, 1u);
+  ASSERT_EQ(((my_chart_t*)chart)->zoom_end, 4u);
   my_echart_adapter_destroy(adapter);
   my_widget_unref(chart);
   my_echart_option_free(&option);
@@ -211,4 +245,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_destroy_keeps_caller_reference_and_renders);
   RUN_TEST(echart_adapter_projects_all_native_series_types);
   RUN_TEST(echart_adapter_rejects_boxplot_without_five_samples);
+  RUN_TEST(echart_adapter_projects_component_state);
 TEST_MAIN_END()

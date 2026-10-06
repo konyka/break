@@ -41,7 +41,11 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
   } else {
     my_echart_option_input_t base = {
         chart->current.title, (const char* const*)chart->current.x_axis_data,
-        chart->current.x_axis_count, NULL, 0u};
+        chart->current.x_axis_count, NULL, 0u,
+        chart->current.legend_hidden, chart->current.range_set,
+        chart->current.y_min, chart->current.y_max,
+        chart->current.zoom_set, chart->current.zoom_start,
+        chart->current.zoom_end};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
                       sizeof(*series));
@@ -64,7 +68,11 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
         if (same_id(candidate.series[j].id, incoming->id)) { found = j; break; }
       if (found == candidate.series_count) { my_echart_option_free(&candidate); return MY_RET_INVALID_PARAMS; }
       my_echart_series_t replacement = {0};
-      my_echart_option_input_t one = {NULL, NULL, 0u, incoming, 1u};
+      my_echart_option_input_t one = {NULL, NULL, 0u, incoming, 1u,
+                                      input->legend_hidden, input->range_set,
+                                      input->y_min, input->y_max,
+                                      input->zoom_set, input->zoom_start,
+                                      input->zoom_end};
       my_echart_option_t temp;
       my_echart_option_init(&temp, chart->allocator);
       if (my_echart_option_copy(&temp, &one, chart->allocator) != MY_RET_OK) {

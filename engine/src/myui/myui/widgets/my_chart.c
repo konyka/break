@@ -1197,6 +1197,12 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
     for (size_t j = 0u; j < series->count; j++)
       if (!isfinite(series->values[j])) return MY_RET_INVALID_PARAMS;
   }
+  if (snapshot->range_set && (!isfinite(snapshot->y_min) ||
+                              !isfinite(snapshot->y_max) ||
+                              snapshot->y_max <= snapshot->y_min))
+    return MY_RET_INVALID_PARAMS;
+  if (snapshot->zoom_set && snapshot->zoom_end <= snapshot->zoom_start)
+    return MY_RET_INVALID_PARAMS;
   chart->mode = snapshot->mode;
   snprintf(chart->title, sizeof(chart->title), "%s", snapshot->title);
   chart->labels = snapshot->labels;
@@ -1211,6 +1217,13 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   }
   chart->series_count = snapshot->series_count;
   chart->stacked = snapshot->stacked;
+  chart->show_legend = snapshot->show_legend;
+  chart->range_set = snapshot->range_set;
+  chart->y_min = snapshot->y_min;
+  chart->y_max = snapshot->y_max;
+  chart->zoom_set = snapshot->zoom_set;
+  chart->zoom_start = snapshot->zoom_start;
+  chart->zoom_end = snapshot->zoom_end;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;

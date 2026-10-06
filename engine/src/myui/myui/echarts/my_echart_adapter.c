@@ -155,6 +155,13 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
     }
   }
   if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
+  candidate->option.legend_hidden = source->legend_hidden;
+  candidate->option.range_set = source->range_set;
+  candidate->option.y_min = source->y_min;
+  candidate->option.y_max = source->y_max;
+  candidate->option.zoom_set = source->zoom_set;
+  candidate->option.zoom_start = source->zoom_start;
+  candidate->option.zoom_end = source->zoom_end;
   (void)mode;
   (void)stacked;
   *result = candidate;
@@ -211,7 +218,12 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
         mode, candidate->option.title,
         (const char* const*)candidate->option.x_axis_data,
         candidate->option.x_axis_count, native_series, visible,
-        candidate->option.series_count, stacked};
+        candidate->option.series_count, stacked,
+        !candidate->option.legend_hidden,
+        candidate->option.range_set, (float)candidate->option.y_min,
+        (float)candidate->option.y_max,
+        candidate->option.zoom_set, candidate->option.zoom_start,
+        candidate->option.zoom_end};
     ret = my_chart_apply_snapshot(adapter->chart, &snapshot);
     if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
   }

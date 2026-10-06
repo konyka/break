@@ -62,6 +62,12 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
     for (size_t j = 0u; j < i; j++)
       if (strcmp(series->id, input->series[j].id) == 0) return MY_RET_INVALID_PARAMS;
   }
+  if (input->range_set &&
+      (!isfinite(input->y_min) || !isfinite(input->y_max) ||
+       input->y_max <= input->y_min))
+    return MY_RET_INVALID_PARAMS;
+  if (input->zoom_set && input->zoom_end <= input->zoom_start)
+    return MY_RET_INVALID_PARAMS;
   return MY_RET_OK;
 }
 
@@ -112,6 +118,13 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
     }
   }
   my_echart_option_free(dst);
+  candidate.legend_hidden = src->legend_hidden;
+  candidate.range_set = src->range_set;
+  candidate.y_min = src->y_min;
+  candidate.y_max = src->y_max;
+  candidate.zoom_set = src->zoom_set;
+  candidate.zoom_start = src->zoom_start;
+  candidate.zoom_end = src->zoom_end;
   *dst = candidate;
   return MY_RET_OK;
 oom:
