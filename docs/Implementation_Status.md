@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R649 `@supports selector()`（TDD）— css-conditional-3 双核心形态齐备：声明式 + 选择器函数式（语法级探针）
+
+- **缺口**（@supports 面调研落账）：引擎 @supports 只有声明形式（`(color: red)`）；规范另一核心形态 `selector(<complex-selector>)`（裸写或括号包裹皆合法）全缺——strict 下 `@supports selector(.x)` 按语法错误拒绝。
+- **方案**（表达式解析器两形态自然汇聚）：① 新 `css_supports_selector_probe`——语法级探针：参数须在引擎选择器语法下解析为"非空化合物链（后代 + `>` 组合器）"且全消耗；上下文约束（`&` 须在规则内、`:scope` 须在 @scope 内）非语法，故 `&`/`:scope` 化合物解析为受支持（保守语义钉死：未知伪类/悬垂组合器/尾随 junk/空参=condition false 而非解析错误）；探针以 err=NULL 的子解析器运行，c_selector 只抬局部 failed 旗，主解析零污染。② `css_supports_expr_primary` 扩展：首字符非 `(` 时识别裸 `selector(` 前缀（与括号包裹路径共用同一平衡扫描循环，零重复）；包裹形态 `(selector(.x))` 经既有"atom 属性值检查失败→嵌套表达式解析"路径自然落回 primary 的裸形式分支——atom 零改动。
+- **TDD（红→绿实证）**：test_myui_css +1——九形态：`.x`/组合器+态链/`&`/`:scope`/`not (selector(:bogus))` 翻转/与声明式 and 组合六规则，`:bogus`/悬垂 `>`/空参三例 condition false 跳过（非拒绝），失衡括号 strict 拒（UNSUPPORTED_FEATURE+SUPPORTS 签名钉死）。**RED 如实红**（首正例 sheet NULL）;GREEN 一钓：primary 原本只认 `(` 起始——规范裸形式 `selector(.x)` 是无包裹 supports-feature，补 primary 前缀分支后 **161/161**(160+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯 @supports 表达式解析器改动，声明式语义测试组全绿未动。
+- **边界**:selector() 语义=语法级（规范"实现能理解该选择器"的最保守读法）；上下文依赖选择器（`:scope`）恒定 supported 即使宿主不启用 @scope——与词典"未覆盖词不可断"同型保守；`font-tech()`/`font-format()` 等其余 supports 函数无调用方需求，维持让渡；R611 AMD 基线不动。
+
 ## 本轮更新：R648 `@media` `only` 修饰符（TDD）— 真实样式表高频写法 `only screen and (...)` 从 strict 拒收改为正确no-op 透传
 
 - **缺口**（MQ 面普查钓出）：css_media_query 只认 `not` 修饰符——`@media only screen and (min-width: 800px)`（真实世界最常见的媒体查询写法之一，为古早浏览器隐藏而生的 `only`）按语法错误拒绝，strict 下整张表作废。

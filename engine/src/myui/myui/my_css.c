@@ -1940,6 +1940,45 @@ static bool css_supports_expr_word(css_supports_expr_t* expr,
 static bool css_supports_expr_parse(css_supports_expr_t* expr,
                                     bool* matches);
 
+/* R649: @supports selector() — grammar-level probe: the argument must parse
+ * as a non-empty chain of compound selectors (descendant and '>'
+ * combinators) with full consumption. Context placement (`&` inside a rule,
+ * `:scope` inside @scope) is not grammar, so those compounds parse as
+ * supported. The probe runs with err=NULL — c_selector only raises the
+ * local failed flag. */
+static bool css_supports_selector_probe(const char* text, size_t length,
+                                        const my_allocator_t* allocator,
+                                        bool* matches) {
+  css_p_t probe;
+  size_t compounds = 0u;
+  bool need_compound = true;
+  memset(&probe, 0, sizeof(probe));
+  probe.allocator = allocator;
+  probe.s = text;
+  probe.len = length;
+  *matches = false;
+  for (;;) {
+    my_css_selector_t comp;
+    bool separated;
+    c_ws(&probe);
+    if (c_peek(&probe) < 0) break;
+    memset(&comp, 0, sizeof(comp));
+    comp.state = -1;
+    if (!c_selector(&probe, &comp)) return true;
+    compounds++;
+    need_compound = false;
+    separated = c_ws(&probe);
+    if (c_peek(&probe) == '>') {
+      c_next(&probe);
+      need_compound = true;
+      continue;
+    }
+    if (!separated && c_peek(&probe) >= 0) return true;
+  }
+  *matches = compounds > 0u && !need_compound && !c_failed(&probe);
+  return true;
+}
+
 static bool css_supports_expr_atom(const char* text, size_t length,
                                    size_t depth,
                                    const my_allocator_t* allocator,
@@ -1963,11 +2002,22 @@ static bool css_supports_expr_primary(css_supports_expr_t* expr,
   size_t end;
   size_t nested = 0u;
   char quote = '\0';
+  bool selector_fn = false;
   css_supports_expr_ws(expr);
-  if (expr->position >= expr->length || expr->text[expr->position] != '(') {
-    return false;
+  if (expr->position >= expr->length) return false;
+  if (expr->text[expr->position] != '(') {
+    /* R649: bare supports-selector-fn — `selector(...)` without a paren
+     * wrapper is itself a supports-feature. */
+    if (expr->length - expr->position >= 9u &&
+        memcmp(expr->text + expr->position, "selector(", 9u) == 0) {
+      selector_fn = true;
+      expr->position += 9u;
+    } else {
+      return false;
+    }
+  } else {
+    expr->position++;
   }
-  expr->position++;
   start = expr->position;
   while (expr->position < expr->length) {
     char c = expr->text[expr->position];
@@ -1998,6 +2048,10 @@ static bool css_supports_expr_primary(css_supports_expr_t* expr,
     return false;
   }
   end = expr->position++;
+  if (selector_fn) {
+    return css_supports_selector_probe(expr->text + start, end - start,
+                                       expr->allocator, matches);
+  }
   return css_supports_expr_atom(expr->text + start, end - start, expr->depth,
                                 expr->allocator, matches);
 }

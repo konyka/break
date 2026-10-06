@@ -4099,6 +4099,54 @@ TEST(css_supports_logical_conditions_reject_invalid_operator)
   ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SUPPORTS);
 }
 
+TEST(css_supports_selector_function_evaluates_grammar_support)
+{
+  /* R649: css-conditional-3 `selector()` — true when the argument parses
+   * under the engine's selector grammar (compound chains with descendant
+   * and '>' combinators; `&`/`:scope` count as grammar). Context placement
+   * (inside a rule / @scope) is not grammar, so those parse as supported.
+   * Unknown pseudo-classes, dangling combinators, and junk reject as
+   * unsupported (condition false), not as parse errors. */
+  const char* css =
+      "@supports selector(.x) { button { color: red; } }"
+      "@supports selector(panel > .item:hover) { label { color: blue; } }"
+      "@supports selector(&) { edit { color: green; } }"
+      "@supports selector(:scope) { slider { color: white; } }"
+      "@supports not (selector(:bogus)) { check { color: black; } }"
+      "@supports (color: red) and (selector(.x)) { radio { color: gray; } }"
+      "@supports selector(:bogus) { skipped1 { color: red; } }"
+      "@supports selector(div >) { skipped2 { color: red; } }"
+      "@supports selector() { skipped3 { color: red; } }";
+  const char* malformed =
+      "@supports (selector(.x) { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 6u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "button");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 1u), 0u)->widget_type,
+                "label");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 2u), 0u)->widget_type,
+                "edit");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 3u), 0u)->widget_type,
+                "slider");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 4u), 0u)->widget_type,
+                "check");
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 5u), 0u)->widget_type,
+                "radio");
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, malformed, strlen(malformed),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_TRUE(sheet == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+  ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SUPPORTS);
+}
+
 TEST(css_supports_logical_conditions_honor_precedence_and_depth_limit)
 {
   const char* precedence =
@@ -5524,6 +5572,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_supports_logical_conditions_are_evaluated_at_parse_time);
     RUN_TEST(css_supports_logical_conditions_reject_invalid_operator);
     RUN_TEST(css_supports_logical_conditions_honor_precedence_and_depth_limit);
+    RUN_TEST(css_supports_selector_function_evaluates_grammar_support);
     RUN_TEST(css_supports_rejects_complex_conditions_and_unknown_values);
     RUN_TEST(css_supports_compatibility_mode_skips_unsupported_query);
     RUN_TEST(css_supports_key_aliases_and_typed_values);
