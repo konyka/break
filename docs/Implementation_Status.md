@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R627 myui `:scope` 伪类（TDD）— CSS Scoping 收官：引用 scoping root 本体；解析期脱糖，匹配/桥接层零改动
+
+- **缺口**（R626 落账"完整 Scoping 剩余=`:scope` 伪类——需匹配层回传 root 命中元素，机制性新面")：调研推翻前提——无需匹配层回传：`:scope` 在**解析期脱糖**为普通复杂选择器。splice 变体展开时，规则选择器中的 `:scope` 标记被**替换**为最内层有 root 的帧的选中 root 项——替换后产出的是 R620-R622 既有通路直消的普通路径。
+- **语义**（写入 my_css.h 契约）：仅裸 `:scope`——① 作整个 subject(`:scope { }`)=给 root 元素本身上样式（替换式：规则 subject←root subject,root 自身路径照常追加，limit 边界=IMPLICIT——被查询 widget 即 root,limit 的自身检查仍生效=root 命中 limit 则被排除，浏览器一致）;② 作最外祖先 compound(`:scope > x` / `:scope x`)=root 起算的子代/后代（原位替换标记槽，**已解析的边组合器保留**——非强制后代）。有界让渡全拒（SYNTAX+SCOPE capability)：无 @scope 上下文、隐式 root 下、限定/伪类叠加（`:scope:hover`/`x:scope`)、mid-path、root/limit 内出现。嵌套时绑**最内层** rooted 帧；root 列表逐变体各替各的。
+- **实现**:`c_selector` 识别 `:scope`→parse-time 标记（`my_css_selector_t` 加 `scope_ref`+`ancestor_scope_ref_mask`,**存储的选择器永不携带**——splice 清除）;css_rule fold 保留标记祖先槽（跳过 c_ancestor_copy 的 type 必需校验）+位置校验；splice 变体循环加替换双臂；root/limit 解析（共享 helper）拒 `:scope`。theme/桥接零改动（再次实证脱糖路线）。
+- **TDD（红→绿实证）**:test_myui_css +4——① root 本体（`@scope panel { :scope { } }`:panel 红、子元素不受影响；解析断言 subject=="panel" 且标记已清；嵌套绑内层 b+外层 a 追加）;② 最外祖先（`:scope > button` 直系命中/深层不命中；`:scope button` 后代——解析断言 direct 标志逐位正确）;③ root 列表+limit(双变体各染各的 root;root 命中 limit 自身被排除）;④ 误用七例全拒。**RED 如实红 4/4**(3 例 ":scope" 伪类不支持 sheet NULL+1 例 capability 0);GREEN 首轮即过 **124/124**(120+4)。
+- **回归**：双树非图形 CTest 各 **119/119**;VK 树同 124/124。纯解析器改动。
+- **边界**:**CSS Scoping 子集自此功能全闭**（括号 prelude R626+组合器 R620/R621+列表 R622+`:scope` R627)；剩余规范让渡=样式规则内 `&` 嵌套（独立特性族，与 @scope 无耦）与 `:scope` 的限定/伪类叠加形态（已钉死拒绝语义）;R611 AMD 基线不动。
+
 ## 本轮更新：R626 myui @scope 括号 prelude（TDD）— CSS 规范形态互操作：`@scope (root) [to (limit)]` 与裸形式并存
 
 - **缺口**（历轮落账"完整 CSS Scoping 规范（显式括号 prelude 等）未实现"的有界首片）：真实 CSS 的 `@scope (.card) to (.content)` 规范形态被子集解析器整体拒绝（`(` 即 "empty selector")——书写兼容性缺口。

@@ -224,6 +224,12 @@ typedef struct my_css_selector_t {
   my_css_scope_limit_t scope_limits[MY_CSS_MAX_SCOPE_NESTING];
   u32 scope_limit_root_index[MY_CSS_MAX_SCOPE_NESTING];
   int32_t state; /**< -1 = all states; else my_widget_state_t */
+  /* R627: parse-time `:scope` markers — set on the subject compound and/or
+   * as a bitmask over ancestors[] (bit i marks ancestors[i]). The @scope
+   * splice substitutes them with the innermost rooted scope's chosen root
+   * item and clears the markers, so STORED selectors never carry them. */
+  bool scope_ref;
+  u32 ancestor_scope_ref_mask;
 } my_css_selector_t;
 
 /** @brief One declaration (value typed: UINT32 color / INT32 / DOUBLE / STR). */
@@ -265,7 +271,10 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * combinators, R620/R622 — the cross-product expansion is capped) and so
  * does each `to` limit item (R621); the omitted-root form is represented
  * by a fixed internal boundary sentinel and selector lists are capped by
- * MY_CSS_MAX_SCOPE_NESTING. */
+ * MY_CSS_MAX_SCOPE_NESTING. Inside @scope rules, a bare `:scope` (R627)
+ * references the innermost rooted scope's root: as the whole subject it
+ * styles the root itself; as the outermost ancestor compound
+ * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);

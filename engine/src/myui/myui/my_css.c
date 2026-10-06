@@ -106,6 +106,9 @@ static void css_fail(css_p_t* p, const char* msg) {
                strcmp(msg, "@scope nesting depth exceeded") == 0 ||
                strcmp(msg, "invalid @scope root selector") == 0 ||
                strcmp(msg, "invalid @scope limit selector") == 0 ||
+               strcmp(msg, ":scope outside @scope") == 0 ||
+               strcmp(msg, ":scope requires an explicit scope root") == 0 ||
+               strcmp(msg, ":scope must be unqualified and outermost") == 0 ||
                strcmp(msg, "unsupported @scope syntax") == 0) {
       p->err->capability = (uint32_t)MY_CSS_FEATURE_SCOPE;
     } else {
@@ -333,6 +336,14 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
       out->state = MY_STATE_PRESSED;
     } else if (my_str_eq(pseudo, "disabled")) {
       out->state = MY_STATE_DISABLED;
+    } else if (my_str_eq(pseudo, "scope")) {
+      /* R627: parse-time marker — the @scope splice in css_rule validates
+       * and substitutes it. Only the bare form (no state stacking). */
+      if (c_peek(p) == ':') {
+        css_fail(p, ":scope must be unqualified and outermost");
+        return false;
+      }
+      out->scope_ref = true;
     } else {
       css_fail(p, "unsupported pseudo class");
       return false;
@@ -935,12 +946,43 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
     }
     sel = compounds[compound_count - 1u];
     sel.ancestor_count = (u32)(compound_count - 1u);
+    sel.ancestor_scope_ref_mask = 0u;
     for (i = 0; i < compound_count - 1u; i++) {
       size_t source = compound_count - 2u - i;
+      if (compounds[source].scope_ref) {
+        /* R627: `:scope` ancestor marker — zeroed slot + mask bit; the
+         * scope splice substitutes it with the innermost root. */
+        memset(&sel.ancestors[i], 0, sizeof(sel.ancestors[i]));
+        sel.ancestor_scope_ref_mask |= (u32)1u << i;
+        sel.ancestor_direct_path[i] = direct_between[source + 1u];
+        continue;
+      }
       if (!c_ancestor_copy(p, &sel.ancestors[i], &compounds[source])) {
         goto fail;
       }
       sel.ancestor_direct_path[i] = direct_between[source + 1u];
+    }
+    /* R627: `:scope` markers are valid only inside @scope, unqualified, and
+     * only as the subject itself (:scope) or the outermost ancestor
+     * (:scope > x / :scope x). */
+    if (sel.scope_ref || sel.ancestor_scope_ref_mask != 0u) {
+      u32 mask = sel.ancestor_scope_ref_mask;
+      if (p->scope_count == 0u) {
+        css_fail(p, ":scope outside @scope");
+        goto fail;
+      }
+      if (sel.scope_ref && (sel.ancestor_count != 0u ||
+                            sel.widget_type[0] != '\0' || sel.id[0] != '\0' ||
+                            sel.style_class[0] != '\0' || sel.state != -1)) {
+        css_fail(p, ":scope must be unqualified and outermost");
+        goto fail;
+      }
+      if (mask != 0u &&
+          ((mask & (mask - 1u)) != 0u ||
+           mask != ((u32)1u << (sel.ancestor_count - 1u)))) {
+        css_fail(p, ":scope must be unqualified and outermost");
+        goto fail;
+      }
     }
     if (p->scope_count > 0u) {
       /* R622: enumerate the root-list cross-product (the innermost scope
@@ -962,6 +1004,24 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
         css_fail(p, "scope selector list expansion exceeded");
         goto fail;
       }
+      /* R627: a `:scope` marker substitutes at the innermost ROOTED frame
+       * (CSS: the innermost scope root). */
+      bool need_scope_sub =
+          (sel.scope_ref || sel.ancestor_scope_ref_mask != 0u);
+      size_t sub_frame = (size_t)-1;
+      if (need_scope_sub) {
+        size_t si;
+        for (si = 0u; si < p->scope_count; ++si) {
+          if (p->scope_frames[p->scope_count - si - 1u].root_count != 0u) {
+            sub_frame = si;
+            break;
+          }
+        }
+        if (sub_frame == (size_t)-1) {
+          css_fail(p, ":scope requires an explicit scope root");
+          goto fail;
+        }
+      }
       for (vi = 0u; vi < variant_count; ++vi) {
         my_css_selector_t variant = sel;
         size_t remainder = vi;
@@ -976,20 +1036,71 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
                 &fr->roots[remainder % fr->root_count];
             size_t ai;
             remainder /= fr->root_count;
-            if ((size_t)slot_pos + 1u + root->ancestor_count >
-                MY_CSS_MAX_ANCESTORS) {
-              css_fail(p, "scope ancestor depth exceeded");
-              goto fail;
-            }
-            root_index = slot_pos;
-            variant.ancestors[slot_pos] = root->subject;
-            variant.ancestor_direct_path[slot_pos] = false;
-            slot_pos++;
-            for (ai = 0u; ai < root->ancestor_count; ++ai) {
-              variant.ancestors[slot_pos] = root->ancestors[ai];
-              variant.ancestor_direct_path[slot_pos] =
-                  root->ancestor_direct_path[ai];
+            if (scope_index == sub_frame && variant.scope_ref) {
+              /* R627 subject form (`:scope { ... }`): the rule subject
+               * BECOMES the root subject; only the root's own path appends
+               * (no extra slot). Limits keep the implicit boundary — the
+               * queried widget IS the root, and the limit check tests it
+               * directly. */
+              memcpy(variant.widget_type, root->subject.widget_type,
+                     sizeof(variant.widget_type));
+              memcpy(variant.id, root->subject.id, sizeof(variant.id));
+              memcpy(variant.style_class, root->subject.style_class,
+                     sizeof(variant.style_class));
+              variant.scope_ref = false;
+              root_index = MY_CSS_SCOPE_ROOT_IMPLICIT;
+              if ((size_t)slot_pos + root->ancestor_count >
+                  MY_CSS_MAX_ANCESTORS) {
+                css_fail(p, "scope ancestor depth exceeded");
+                goto fail;
+              }
+              for (ai = 0u; ai < root->ancestor_count; ++ai) {
+                variant.ancestors[slot_pos] = root->ancestors[ai];
+                variant.ancestor_direct_path[slot_pos] =
+                    root->ancestor_direct_path[ai];
+                slot_pos++;
+              }
+            } else if (scope_index == sub_frame) {
+              /* R627 outermost-ancestor form (`:scope > x` / `:scope x`):
+               * substitute the marker slot in place — the PARSED edge flag
+               * onto the inner content stays — then the root's own path
+               * follows outward. */
+              u32 mark_k = 0u;
+              while ((variant.ancestor_scope_ref_mask & ((u32)1u << mark_k)) ==
+                     0u) {
+                mark_k++;
+              }
+              variant.ancestors[mark_k] = root->subject;
+              variant.ancestor_scope_ref_mask = 0u;
+              root_index = mark_k;
+              slot_pos = (u32)(mark_k + 1u);
+              if ((size_t)slot_pos + root->ancestor_count >
+                  MY_CSS_MAX_ANCESTORS) {
+                css_fail(p, "scope ancestor depth exceeded");
+                goto fail;
+              }
+              for (ai = 0u; ai < root->ancestor_count; ++ai) {
+                variant.ancestors[slot_pos] = root->ancestors[ai];
+                variant.ancestor_direct_path[slot_pos] =
+                    root->ancestor_direct_path[ai];
+                slot_pos++;
+              }
+            } else {
+              if ((size_t)slot_pos + 1u + root->ancestor_count >
+                  MY_CSS_MAX_ANCESTORS) {
+                css_fail(p, "scope ancestor depth exceeded");
+                goto fail;
+              }
+              root_index = slot_pos;
+              variant.ancestors[slot_pos] = root->subject;
+              variant.ancestor_direct_path[slot_pos] = false;
               slot_pos++;
+              for (ai = 0u; ai < root->ancestor_count; ++ai) {
+                variant.ancestors[slot_pos] = root->ancestors[ai];
+                variant.ancestor_direct_path[slot_pos] =
+                    root->ancestor_direct_path[ai];
+                slot_pos++;
+              }
             }
           }
           for (limit_index = 0u; limit_index < fr->scope_limit_count;
@@ -2161,7 +2272,7 @@ static bool c_scope_selector_path(css_p_t* p, my_css_selector_t* out,
     }
     memset(&comp, 0, sizeof(comp));
     comp.state = -1;
-    if (!c_selector(p, &comp) || comp.state != -1) {
+    if (!c_selector(p, &comp) || comp.state != -1 || comp.scope_ref) {
       css_fail(p, invalid_msg);
       css_mark_scope_error(p);
       return false;

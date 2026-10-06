@@ -1727,6 +1727,193 @@ TEST(css_scope_paren_prelude_rejects_malformed)
   }
 }
 
+TEST(css_scope_scope_pseudo_styles_root)
+{
+  /* :scope as the whole subject styles the scoping root element itself. */
+  const char* css = "@scope panel { :scope { color: red; } }";
+  /* nested: :scope binds the INNERMOST rooted scope. */
+  const char* nested =
+      "@scope a { @scope b { :scope { color: red; } } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* selector;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* child = my_widget_create(NULL, "child");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  /* desugared: the rule's subject IS the root compound, no ancestors. */
+  ASSERT_STR_EQ(selector->widget_type, "panel");
+  ASSERT_EQ(selector->ancestor_count, 0u);
+  ASSERT_TRUE(selector->scope_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, nested, strlen(nested),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  ASSERT_STR_EQ(selector->widget_type, "b");
+  ASSERT_EQ(selector->ancestor_count, 1u);
+  ASSERT_STR_EQ(selector->ancestors[0].widget_type, "a");
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  child->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, child), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, child, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(child);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_scope_pseudo_as_outermost_ancestor)
+{
+  /* :scope > button = the root's DIRECT children; :scope button = any
+   * descendant. The edge combinator is the parsed one, not forced. */
+  const char* direct = "@scope panel { :scope > button { color: red; } }";
+  const char* desc = "@scope panel { :scope button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, direct, strlen(direct), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* selector;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* mid = my_widget_create(NULL, "mid");
+  my_widget_t* deep = my_widget_create(NULL, "deep");
+  my_widget_t* outside = my_widget_create(NULL, "outside");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  ASSERT_STR_EQ(selector->widget_type, "button");
+  ASSERT_EQ(selector->ancestor_count, 1u);
+  ASSERT_STR_EQ(selector->ancestors[0].widget_type, "panel");
+  ASSERT_TRUE(selector->ancestor_direct_path[0] == true);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, desc, strlen(desc),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  ASSERT_EQ(selector->ancestor_count, 1u);
+  ASSERT_TRUE(selector->ancestor_direct_path[0] == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  hit->widget_type = "button";
+  mid->widget_type = "wrap";
+  deep->widget_type = "button";
+  outside->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, mid), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(mid, deep), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, direct, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, deep, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL); /* not a direct child of the root */
+  value = my_theme_get_for_widget(theme, outside, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(deep);
+  my_widget_unref(mid);
+  my_widget_unref(hit);
+  my_widget_unref(panel);
+  my_widget_unref(outside);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_scope_pseudo_with_limit_and_list)
+{
+  /* root list: one variant per root item, each styling its own root;
+   * a limit matching the root element itself still excludes it. */
+  const char* css = "@scope panel, dialog to .stop { :scope { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* stopped = my_widget_create(NULL, "stopped");
+  my_widget_t* outside = my_widget_create(NULL, "outside");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->widget_type, "panel");
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->widget_type, "dialog");
+  ASSERT_EQ(my_css_selector(rule, 0u)->scope_limit_count, 1u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  dialog->widget_type = "dialog";
+  stopped->widget_type = "panel";
+  outside->widget_type = "box";
+  ASSERT_EQ(my_widget_set_style_class(stopped, "stop"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, dialog, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  /* the root matching the limit compound is excluded (limit checks the
+   * queried widget itself first — the R621 path with an empty path). */
+  value = my_theme_get_for_widget(theme, stopped, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value = my_theme_get_for_widget(theme, outside, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(outside);
+  my_widget_unref(stopped);
+  my_widget_unref(dialog);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_scope_pseudo_rejects_misuse)
+{
+  const char* malformed[] = {
+      ":scope { color: red; }",                         /* outside @scope */
+      "@scope to dialog { :scope { color: red; } }",    /* implicit root */
+      "@scope panel { a :scope b { color: red; } }",    /* mid-path */
+      "@scope panel { :scope:hover { color: red; } }",  /* state-qualified */
+      "@scope panel { x:scope { color: red; } }",       /* type-qualified */
+      "@scope :scope { button { color: red; } }",       /* in the root */
+      "@scope panel to :scope { button { color: red; } }" /* in a limit */};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -3500,6 +3687,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_root_list_rejects_malformed);
     RUN_TEST(css_scope_paren_prelude_accepted);
     RUN_TEST(css_scope_paren_prelude_rejects_malformed);
+    RUN_TEST(css_scope_scope_pseudo_styles_root);
+    RUN_TEST(css_scope_scope_pseudo_as_outermost_ancestor);
+    RUN_TEST(css_scope_scope_pseudo_with_limit_and_list);
+    RUN_TEST(css_scope_scope_pseudo_rejects_misuse);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);
