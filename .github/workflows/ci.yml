@@ -31,7 +31,7 @@ jobs:
         run: |
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -30 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -74,7 +74,7 @@ jobs:
         run: |
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -30 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -119,7 +119,7 @@ jobs:
         run: |
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -30 | while IFS= read -r line; do
               echo "::error::$line"
             done
@@ -151,7 +151,7 @@ jobs:
         run: |
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
             grep -E "Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -30 | while IFS= read -r line; do
               echo "::error::$line"
             done
