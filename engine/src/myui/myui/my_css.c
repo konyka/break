@@ -2071,6 +2071,91 @@ static bool css_parse_layer_atrule(css_p_t* p, my_css_sheet_t* sheet,
   return css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_order);
 }
 
+/* R621: parse one bounded complex selector — compounds joined by descendant
+ * (whitespace) or child ('>') combinators — into OUT as the subject compound
+ * plus nearest-first ancestors with per-edge child flags (the same fold as
+ * css_rule's selector path; R620's scope-root loop generalized). Parsing
+ * stops WITHOUT consuming the terminator: '{' or ',', plus the 'to' keyword
+ * at compound-start when stop_at_to is set (root preludes only — a limit
+ * compound named "to" stays a plain type selector, as before R621). A
+ * dangling '>' at a terminator and pseudo classes in any compound are
+ * errors; the compound budget maps to "scope ancestor depth exceeded".
+ * compound_count_out receives the raw compound count (0 = empty path — the
+ * caller decides whether that is legal). */
+static bool c_scope_selector_path(css_p_t* p, my_css_selector_t* out,
+                                  bool stop_at_to, const char* invalid_msg,
+                                  size_t* compound_count_out) {
+  my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
+  bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
+  size_t compound_count = 0u;
+  bool pending_direct = false;
+  size_t ci;
+  memset(out, 0, sizeof(*out));
+  out->state = -1;
+  for (;;) {
+    my_css_selector_t comp;
+    bool separated;
+    c_ws(p);
+    if (c_peek(p) == '{' || c_peek(p) == ',' ||
+        (stop_at_to && c_peek(p) == 't' && p->pos + 2u < p->len &&
+         p->s[p->pos + 1u] == 'o' &&
+         !c_ident_char((unsigned char)p->s[p->pos + 2u]))) {
+      if (pending_direct) {
+        css_fail(p, invalid_msg);
+        css_mark_scope_error(p);
+        return false;
+      }
+      break;
+    }
+    if (compound_count >= MY_CSS_MAX_ANCESTORS + 1u) {
+      css_fail(p, "scope ancestor depth exceeded");
+      css_mark_scope_error(p);
+      return false;
+    }
+    memset(&comp, 0, sizeof(comp));
+    comp.state = -1;
+    if (!c_selector(p, &comp) || comp.state != -1) {
+      css_fail(p, invalid_msg);
+      css_mark_scope_error(p);
+      return false;
+    }
+    if (compound_count > 0u) {
+      direct_between[compound_count] = pending_direct;
+    }
+    compounds[compound_count++] = comp;
+    separated = c_ws(p);
+    if (c_peek(p) == '>') {
+      c_next(p);
+      c_ws(p);
+      pending_direct = true;
+      continue;
+    }
+    if (!separated && c_peek(p) != '{' && c_peek(p) != ',') {
+      css_fail(p, invalid_msg);
+      css_mark_scope_error(p);
+      return false;
+    }
+    pending_direct = false;
+  }
+  *compound_count_out = compound_count;
+  if (compound_count == 0u) {
+    return true;
+  }
+  *out = compounds[compound_count - 1u];
+  out->ancestor_count = (u32)(compound_count - 1u);
+  for (ci = 0u; ci + 1u < compound_count; ++ci) {
+    size_t source = compound_count - 2u - ci;
+    memcpy(out->ancestors[ci].widget_type, compounds[source].widget_type,
+           sizeof(out->ancestors[ci].widget_type));
+    memcpy(out->ancestors[ci].id, compounds[source].id,
+           sizeof(out->ancestors[ci].id));
+    memcpy(out->ancestors[ci].style_class, compounds[source].style_class,
+           sizeof(out->ancestors[ci].style_class));
+    out->ancestor_direct_path[ci] = direct_between[source + 1u];
+  }
+  return true;
+}
+
 static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                    size_t at_rule_depth, uint32_t layer_id) {
   my_css_selector_t selector;
@@ -2078,7 +2163,6 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
   bool parsed;
   bool has_root = false;
   bool has_limit = false;
-  bool limit_universal = false;
   size_t limit_count = 0u;
 
   c_ws(p);
@@ -2096,75 +2180,18 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
       }
       has_limit = true;
     } else {
-      /* R620: the root prelude is a bounded complex selector — compounds
-       * joined by descendant (whitespace) or child ('>') combinators,
-       * terminated by the 'to' keyword (at compound-start) or '{'.
-       * Compounds fold into selector as subject + nearest-first ancestors,
-       * exactly like a rule selector path (css_rule). Root selector LISTS
-       * and combinator 'to' limits remain unsupported. */
-      my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
-      bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
-      size_t compound_count = 0u;
-      bool pending_direct = false;
-      size_t ci;
-      for (;;) {
-        my_css_selector_t comp;
-        bool separated;
-        c_ws(p);
-        if (c_peek(p) == '{' ||
-            (c_peek(p) == 't' && p->pos + 2u < p->len &&
-             p->s[p->pos + 1u] == 'o' &&
-             !c_ident_char((unsigned char)p->s[p->pos + 2u]))) {
-          if (pending_direct) {
-            css_fail(p, "invalid @scope root selector");
-            css_mark_scope_error(p);
-            return false;
-          }
-          break;
-        }
-        memset(&comp, 0, sizeof(comp));
-        comp.state = -1;
-        if (compound_count >= MY_CSS_MAX_ANCESTORS + 1u) {
-          css_fail(p, "scope ancestor depth exceeded");
-          css_mark_scope_error(p);
-          return false;
-        }
-        if (!c_selector(p, &comp) || comp.state != -1) {
-          css_fail(p, "invalid @scope root selector");
-          css_mark_scope_error(p);
-          return false;
-        }
-        if (compound_count > 0u) {
-          direct_between[compound_count] = pending_direct;
-        }
-        compounds[compound_count++] = comp;
-        separated = c_ws(p);
-        if (c_peek(p) == '>') {
-          c_next(p);
-          c_ws(p);
-          pending_direct = true;
-          continue;
-        }
-        if (!separated && c_peek(p) != '{') {
-          css_fail(p, "invalid @scope root selector");
-          css_mark_scope_error(p);
-          return false;
-        }
-        pending_direct = false;
+      /* R620/R621: the root prelude is a bounded complex selector via the
+       * shared path parser ('to' terminates at compound-start). Root
+       * selector LISTS remain unsupported. */
+      size_t path_compounds = 0u;
+      if (!c_scope_selector_path(p, &selector, true,
+                                 "invalid @scope root selector",
+                                 &path_compounds)) {
+        return false;
       }
-      selector = compounds[compound_count - 1u];
-      selector.ancestor_count = (u32)(compound_count - 1u);
-      for (ci = 0u; ci + 1u < compound_count; ++ci) {
-        size_t source = compound_count - 2u - ci;
-        memcpy(selector.ancestors[ci].widget_type,
-               compounds[source].widget_type,
-               sizeof(selector.ancestors[ci].widget_type));
-        memcpy(selector.ancestors[ci].id, compounds[source].id,
-               sizeof(selector.ancestors[ci].id));
-        memcpy(selector.ancestors[ci].style_class,
-               compounds[source].style_class,
-               sizeof(selector.ancestors[ci].style_class));
-        selector.ancestor_direct_path[ci] = direct_between[source + 1u];
+      if (path_compounds == 0u) {
+        css_fail(p, "invalid @scope root selector");
+        return false;
       }
       has_root = true;
       c_ws(p);
@@ -2182,14 +2209,16 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
     }
     if (has_limit) {
       for (;;) {
+        /* R621: each limit item is a bounded complex selector too — the
+         * same path parser (',' terminates an item; 'to' is NOT special
+         * here, a limit compound named "to" stays a type selector). */
+        size_t path_compounds = 0u;
         c_ws(p);
-        memset(&limit, 0, sizeof(limit));
-        limit.state = -1;
-        limit_universal = c_peek(p) == '*';
         if (limit_count >= MY_CSS_MAX_SCOPE_NESTING ||
-            !c_selector(p, &limit) || limit.state != -1 ||
-            (!limit_universal && limit.widget_type[0] == '\0' &&
-             limit.id[0] == '\0' && limit.style_class[0] == '\0')) {
+            !c_scope_selector_path(p, &limit, false,
+                                   "invalid @scope limit selector",
+                                   &path_compounds) ||
+            path_compounds == 0u) {
           css_fail(p, "invalid @scope limit selector");
           css_mark_scope_error(p);
           return false;
@@ -2202,6 +2231,15 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
         memcpy(selector.scope_limits[limit_count].style_class,
                limit.style_class,
                sizeof(selector.scope_limits[limit_count].style_class));
+        selector.scope_limits[limit_count].ancestor_count =
+            limit.ancestor_count;
+        memcpy(selector.scope_limits[limit_count].ancestors,
+               limit.ancestors,
+               sizeof(selector.scope_limits[limit_count].ancestors));
+        memcpy(selector.scope_limits[limit_count].ancestor_direct_path,
+               limit.ancestor_direct_path,
+               sizeof(selector.scope_limits[limit_count]
+                          .ancestor_direct_path));
         limit_count++;
         c_ws(p);
         if (c_peek(p) != ',') break;
@@ -2509,7 +2547,7 @@ static my_ret_t my_theme_load_css_internal(
     for (si = 0; si < my_css_selector_count(rule); si++) {
       const my_css_selector_t* sel = my_css_selector(rule, si);
       my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
-      my_theme_ancestor_t scope_limits[MY_THEME_MAX_SCOPE_LIMITS];
+      my_theme_scope_limit_t scope_limits[MY_THEME_MAX_SCOPE_LIMITS];
       size_t scope_limit_root_indices[MY_THEME_MAX_SCOPE_LIMITS];
       int32_t specificity = rule->layer_order == MY_CSS_UNLAYERED_ORDER
                                 ? 0
@@ -2531,20 +2569,37 @@ static my_ret_t my_theme_load_css_internal(
                  sel->ancestors[ai].style_class);
       }
       for (ai = 0u; ai < sel->scope_limit_count; ++ai) {
+        size_t li;
         if (ai >= MY_THEME_MAX_SCOPE_LIMITS ||
+            sel->scope_limits[ai].ancestor_count > MY_THEME_MAX_ANCESTORS ||
             (sel->scope_limit_root_index[ai] != MY_CSS_SCOPE_ROOT_IMPLICIT &&
              sel->scope_limit_root_index[ai] >= sel->ancestor_count)) {
           ret = MY_RET_INVALID_PARAMS;
           break;
         }
-        snprintf(scope_limits[ai].widget_type,
-                 sizeof(scope_limits[ai].widget_type), "%s",
+        snprintf(scope_limits[ai].subject.widget_type,
+                 sizeof(scope_limits[ai].subject.widget_type), "%s",
                  sel->scope_limits[ai].widget_type);
-        snprintf(scope_limits[ai].name, sizeof(scope_limits[ai].name), "%s",
+        snprintf(scope_limits[ai].subject.name,
+                 sizeof(scope_limits[ai].subject.name), "%s",
                  sel->scope_limits[ai].id);
-        snprintf(scope_limits[ai].style_class,
-                 sizeof(scope_limits[ai].style_class), "%s",
+        snprintf(scope_limits[ai].subject.style_class,
+                 sizeof(scope_limits[ai].subject.style_class), "%s",
                  sel->scope_limits[ai].style_class);
+        scope_limits[ai].ancestor_count = sel->scope_limits[ai].ancestor_count;
+        for (li = 0u; li < sel->scope_limits[ai].ancestor_count; ++li) {
+          snprintf(scope_limits[ai].ancestors[li].widget_type,
+                   sizeof(scope_limits[ai].ancestors[li].widget_type), "%s",
+                   sel->scope_limits[ai].ancestors[li].widget_type);
+          snprintf(scope_limits[ai].ancestors[li].name,
+                   sizeof(scope_limits[ai].ancestors[li].name), "%s",
+                   sel->scope_limits[ai].ancestors[li].id);
+          snprintf(scope_limits[ai].ancestors[li].style_class,
+                   sizeof(scope_limits[ai].ancestors[li].style_class), "%s",
+                   sel->scope_limits[ai].ancestors[li].style_class);
+          scope_limits[ai].ancestor_direct_path[li] =
+              sel->scope_limits[ai].ancestor_direct_path[li];
+        }
         scope_limit_root_indices[ai] = sel->scope_limit_root_index[ai];
       }
       if (ret != MY_RET_OK) break;
@@ -2585,7 +2640,7 @@ static my_ret_t my_theme_load_css_internal(
       for (di = 0; di < my_css_decl_count(rule); di++) {
         const my_css_decl_t* d = my_css_decl(rule, di);
         if (sel->state >= 0) {
-          ret = my_theme_set_ex5(
+          ret = my_theme_set_ex6(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
@@ -2595,7 +2650,7 @@ static my_ret_t my_theme_load_css_internal(
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex5(
+          ret = my_theme_set_ex6(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,

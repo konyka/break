@@ -188,6 +188,19 @@ typedef struct my_css_ancestor_t {
   char style_class[MY_CSS_NAME_LEN];
 } my_css_ancestor_t;
 
+/** @brief One @scope limit selector: the subject compound plus a bounded
+ * ancestor path above it (nearest-first, per-edge child flags — R621
+ * combinator limits). The compound fields hold the limit's rightmost
+ * (subject) compound. */
+typedef struct my_css_scope_limit_t {
+  char widget_type[MY_CSS_TYPE_LEN];
+  char id[MY_CSS_NAME_LEN];
+  char style_class[MY_CSS_NAME_LEN];
+  u32 ancestor_count;
+  my_css_ancestor_t ancestors[MY_CSS_MAX_ANCESTORS];
+  bool ancestor_direct_path[MY_CSS_MAX_ANCESTORS];
+} my_css_scope_limit_t;
+
 /** @brief Parse/bridge error with 1-based position. */
 typedef struct my_css_error_t {
   int32_t line;
@@ -208,7 +221,7 @@ typedef struct my_css_selector_t {
   my_css_ancestor_t ancestors[MY_CSS_MAX_ANCESTORS];
   bool ancestor_direct_path[MY_CSS_MAX_ANCESTORS];
   u32 scope_limit_count;
-  my_css_ancestor_t scope_limits[MY_CSS_MAX_SCOPE_NESTING];
+  my_css_scope_limit_t scope_limits[MY_CSS_MAX_SCOPE_NESTING];
   u32 scope_limit_root_index[MY_CSS_MAX_SCOPE_NESTING];
   int32_t state; /**< -1 = all states; else my_widget_state_t */
 } my_css_selector_t;
@@ -249,9 +262,9 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * while parsing. A bounded `@scope root-selector [to selector-list] { ... }`
  * form applies descendant rules through the existing fixed ancestor path;
  * the root accepts compound selectors joined by descendant/child (`>`)
- * combinators (R620), the omitted-root form is represented by a fixed
- * internal boundary sentinel and selector lists are capped by
- * MY_CSS_MAX_SCOPE_NESTING. `to` limits stay compound-only. */
+ * combinators (R620) and so does each `to` limit item (R621); the
+ * omitted-root form is represented by a fixed internal boundary sentinel
+ * and selector lists are capped by MY_CSS_MAX_SCOPE_NESTING. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);

@@ -158,19 +158,33 @@ static bool theme_ancestor_path_equal(const my_theme_entry_t* entry,
 }
 
 static bool theme_scope_limits_equal(
-    const my_theme_entry_t* entry, const my_theme_ancestor_t* limits,
+    const my_theme_entry_t* entry, const my_theme_scope_limit_t* limits,
     size_t limit_count, const size_t* root_indices) {
-  size_t i;
+  size_t i, j;
   if (entry->scope_limit_count != limit_count) return false;
   for (i = 0u; i < limit_count; ++i) {
     if (root_indices == NULL || entry->scope_limit_root_index[i] !=
                                     (u32)root_indices[i] ||
-        !my_str_eq(entry->scope_limits[i].widget_type,
-                   limits[i].widget_type) ||
-        !my_str_eq(entry->scope_limits[i].name, limits[i].name) ||
-        !my_str_eq(entry->scope_limits[i].style_class,
-                   limits[i].style_class)) {
+        entry->scope_limits[i].ancestor_count != limits[i].ancestor_count ||
+        !my_str_eq(entry->scope_limits[i].subject.widget_type,
+                   limits[i].subject.widget_type) ||
+        !my_str_eq(entry->scope_limits[i].subject.name,
+                   limits[i].subject.name) ||
+        !my_str_eq(entry->scope_limits[i].subject.style_class,
+                   limits[i].subject.style_class)) {
       return false;
+    }
+    for (j = 0u; j < limits[i].ancestor_count; ++j) {
+      if (!my_str_eq(entry->scope_limits[i].ancestors[j].widget_type,
+                     limits[i].ancestors[j].widget_type) ||
+          !my_str_eq(entry->scope_limits[i].ancestors[j].name,
+                     limits[i].ancestors[j].name) ||
+          !my_str_eq(entry->scope_limits[i].ancestors[j].style_class,
+                     limits[i].ancestors[j].style_class) ||
+          entry->scope_limits[i].ancestor_direct_path[j] !=
+              limits[i].ancestor_direct_path[j]) {
+        return false;
+      }
     }
   }
   return true;
@@ -180,7 +194,7 @@ static my_theme_entry_t* theme_find_entry_scoped(
     my_theme_t* theme, const char* type, const char* name,
     const char* style_class, const char* ancestor_type, bool ancestor_direct,
     const my_theme_ancestor_t* ancestors, size_t ancestor_count,
-    const bool* direct_path, const my_theme_ancestor_t* scope_limits,
+    const bool* direct_path, const my_theme_scope_limit_t* scope_limits,
     size_t scope_limit_count, const size_t* scope_limit_root_indices,
     bool create) {
   size_t i, n = my_darray_size(theme->entries);
@@ -428,6 +442,34 @@ my_ret_t my_theme_set_ex5(my_theme_t* theme, const char* widget_type,
                           const size_t* scope_limit_root_indices,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value, int32_t specificity) {
+  /* R621: compound limits are subject-only paths — convert and forward. */
+  my_theme_scope_limit_t path_limits[MY_THEME_MAX_SCOPE_LIMITS];
+  size_t i;
+  if (scope_limit_count > MY_THEME_MAX_SCOPE_LIMITS ||
+      (scope_limit_count != 0u &&
+       (scope_limits == NULL || scope_limit_root_indices == NULL))) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  memset(path_limits, 0, sizeof(path_limits));
+  for (i = 0u; i < scope_limit_count; ++i) {
+    path_limits[i].subject = scope_limits[i];
+  }
+  return my_theme_set_ex6(theme, widget_type, name, style_class, ancestors,
+                          ancestor_count, ancestor_direct_path, path_limits,
+                          scope_limit_count, scope_limit_root_indices, state,
+                          key, value, specificity);
+}
+
+my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_scope_limit_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity) {
   my_theme_entry_t* e;
   my_ret_t ret;
   size_t i;
@@ -447,10 +489,21 @@ my_ret_t my_theme_set_ex5(my_theme_t* theme, const char* widget_type,
     return MY_RET_INVALID_PARAMS;
   }
   for (i = 0u; i < scope_limit_count; ++i) {
-    if (strlen(scope_limits[i].widget_type) >= MY_THEME_TYPE_LEN ||
-        strlen(scope_limits[i].name) >= MY_THEME_NAME_LEN ||
-        strlen(scope_limits[i].style_class) >= MY_THEME_NAME_LEN) {
+    size_t j;
+    if (strlen(scope_limits[i].subject.widget_type) >= MY_THEME_TYPE_LEN ||
+        strlen(scope_limits[i].subject.name) >= MY_THEME_NAME_LEN ||
+        strlen(scope_limits[i].subject.style_class) >= MY_THEME_NAME_LEN ||
+        scope_limits[i].ancestor_count > MY_THEME_MAX_ANCESTORS) {
       return MY_RET_INVALID_PARAMS;
+    }
+    for (j = 0u; j < scope_limits[i].ancestor_count; ++j) {
+      if (strlen(scope_limits[i].ancestors[j].widget_type) >=
+              MY_THEME_TYPE_LEN ||
+          strlen(scope_limits[i].ancestors[j].name) >= MY_THEME_NAME_LEN ||
+          strlen(scope_limits[i].ancestors[j].style_class) >=
+              MY_THEME_NAME_LEN) {
+        return MY_RET_INVALID_PARAMS;
+      }
     }
     if (scope_limit_root_indices[i] > MY_THEME_SCOPE_ROOT_IMPLICIT ||
         (scope_limit_root_indices[i] != MY_THEME_SCOPE_ROOT_IMPLICIT &&
@@ -629,20 +682,21 @@ static bool theme_ancestor_matches(const my_theme_ancestor_t* selector,
   return class_set_match(widget->style_class, selector->style_class);
 }
 
-static bool theme_ancestor_path_matches(const my_theme_entry_t* entry,
-                                        const my_widget_t* ancestor_anchor) {
+static bool theme_path_matches(const my_theme_ancestor_t* ancestors,
+                               size_t count, const bool* direct_path,
+                               const my_widget_t* ancestor_anchor) {
   size_t i;
   const my_widget_t* cursor = ancestor_anchor;
-  for (i = 0; i < entry->ancestor_count; i++) {
+  for (i = 0; i < count; i++) {
     const my_widget_t* candidate = cursor;
     bool found = false;
     while (candidate != NULL) {
-      if (theme_ancestor_matches(&entry->ancestors[i], candidate)) {
+      if (theme_ancestor_matches(&ancestors[i], candidate)) {
         found = true;
         cursor = candidate->parent;
         break;
       }
-      if (entry->ancestor_direct_path[i]) {
+      if (direct_path[i]) {
         break;
       }
       candidate = candidate->parent;
@@ -654,6 +708,12 @@ static bool theme_ancestor_path_matches(const my_theme_entry_t* entry,
   return true;
 }
 
+static bool theme_ancestor_path_matches(const my_theme_entry_t* entry,
+                                        const my_widget_t* ancestor_anchor) {
+  return theme_path_matches(entry->ancestors, entry->ancestor_count,
+                            entry->ancestor_direct_path, ancestor_anchor);
+}
+
 static bool theme_scope_limits_match(const my_theme_entry_t* entry,
                                      const char* type, const char* name,
                                      const char* style_class,
@@ -661,22 +721,28 @@ static bool theme_scope_limits_match(const my_theme_entry_t* entry,
   size_t limit_index;
   for (limit_index = 0u; limit_index < entry->scope_limit_count;
        ++limit_index) {
+    const my_theme_scope_limit_t* limit = &entry->scope_limits[limit_index];
     size_t root_index = entry->scope_limit_root_index[limit_index];
     const my_widget_t* candidate;
     if (root_index > MY_THEME_SCOPE_ROOT_IMPLICIT) return true;
-    if ((entry->scope_limits[limit_index].widget_type[0] == '\0' ||
-         my_str_eq(entry->scope_limits[limit_index].widget_type, type)) &&
-        (entry->scope_limits[limit_index].name[0] == '\0' ||
-         (name != NULL &&
-          my_str_eq(entry->scope_limits[limit_index].name, name))) &&
-        class_set_match(style_class,
-                        entry->scope_limits[limit_index].style_class)) {
+    /* R621: a limit is a full selector path — an element is a boundary when
+     * it matches the subject compound AND the limit's own ancestor path
+     * holds above it (empty paths degenerate to the compound behavior). */
+    if ((limit->subject.widget_type[0] == '\0' ||
+         my_str_eq(limit->subject.widget_type, type)) &&
+        (limit->subject.name[0] == '\0' ||
+         (name != NULL && my_str_eq(limit->subject.name, name))) &&
+        class_set_match(style_class, limit->subject.style_class) &&
+        theme_path_matches(limit->ancestors, limit->ancestor_count,
+                           limit->ancestor_direct_path, ancestor_anchor)) {
       return true;
     }
     for (candidate = ancestor_anchor; candidate != NULL;
          candidate = candidate->parent) {
-      if (theme_ancestor_matches(&entry->scope_limits[limit_index],
-                                 candidate)) {
+      if (theme_ancestor_matches(&limit->subject, candidate) &&
+          theme_path_matches(limit->ancestors, limit->ancestor_count,
+                             limit->ancestor_direct_path,
+                             candidate->parent)) {
         return true;
       }
       if (root_index != MY_THEME_SCOPE_ROOT_IMPLICIT &&

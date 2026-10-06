@@ -31,6 +31,15 @@ typedef struct my_theme_ancestor_t {
   char style_class[MY_THEME_NAME_LEN];
 } my_theme_ancestor_t;
 
+/** @brief R621: one @scope limit selector — the subject compound plus a
+ * bounded ancestor path above it (nearest-first, per-edge child flags). */
+typedef struct my_theme_scope_limit_t {
+  my_theme_ancestor_t subject;
+  u32 ancestor_count;
+  my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
+  bool ancestor_direct_path[MY_THEME_MAX_ANCESTORS];
+} my_theme_scope_limit_t;
+
 /** @brief One theme rule: style for a (type [, name][, class]
  * [, bounded ancestor path]) selector. */
 typedef struct my_theme_entry_t {
@@ -43,7 +52,7 @@ typedef struct my_theme_entry_t {
   my_theme_ancestor_t ancestors[MY_THEME_MAX_ANCESTORS];
   bool ancestor_direct_path[MY_THEME_MAX_ANCESTORS];
   u32 scope_limit_count;
-  my_theme_ancestor_t scope_limits[MY_THEME_MAX_SCOPE_LIMITS];
+  my_theme_scope_limit_t scope_limits[MY_THEME_MAX_SCOPE_LIMITS];
   u32 scope_limit_root_index[MY_THEME_MAX_SCOPE_LIMITS];
   int32_t specificity[MY_STATE_COUNT][MY_STYLE_MAX_PROPS];
   /**< CSS specificity parallel to style.props. */
@@ -137,6 +146,22 @@ my_ret_t my_theme_set_ex5(my_theme_t* theme, const char* widget_type,
                           size_t ancestor_count,
                           const bool* ancestor_direct_path,
                           const my_theme_ancestor_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity);
+
+/** @brief R621: ex5 with full limit SELECTOR PATHS — each limit is a
+ * subject compound plus a bounded nearest-first ancestor path with per-edge
+ * child flags (CSS complex scoping limits). A widget is excluded when some
+ * element between it and the scope root (inclusive of itself, bounded by
+ * the limit's root index) matches subject+path. */
+my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_scope_limit_t* scope_limits,
                           size_t scope_limit_count,
                           const size_t* scope_limit_root_indices,
                           my_widget_state_t state, const char* key,

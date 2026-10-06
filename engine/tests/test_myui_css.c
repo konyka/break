@@ -825,10 +825,12 @@ TEST(css_scope_implicit_root_to_clause_excludes_boundary)
 
 TEST(css_scope_implicit_root_rejects_malformed_limit)
 {
+  /* R621 note: "dialog extra" used to be malformed here — descendant limit
+   * paths are now a supported feature (covered by
+   * css_scope_limit_descendant_combinator). */
   const char* malformed[] = {
       "@scope to :hover { button { color: red; } }",
       "@scope to { button { color: red; } }",
-      "@scope to dialog extra { button { color: red; } }",
       "@scope to dialog, { button { color: red; } }",
       "@scope to a, b, c, d, e { button { color: red; } }"};
   my_css_error_t error = {0};
@@ -1076,6 +1078,260 @@ TEST(css_scope_root_combinator_rejects_malformed)
   const char* too_deep[] = {
       "@scope a b c d e f { button { color: red; } }",
       "@scope a b c { @scope d e { button { color: red; } } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+  for (i = 0u; i < sizeof(too_deep) / sizeof(too_deep[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, too_deep[i], strlen(too_deep[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_UNSUPPORTED_FEATURE);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+}
+
+TEST(css_scope_limit_child_combinator)
+{
+  const char* css = "@scope panel to dialog > box { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* selector;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* box = my_widget_create(NULL, "box");
+  my_widget_t* blocked = my_widget_create(NULL, "blocked");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* box2 = my_widget_create(NULL, "box2");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  /* the limit is a path: subject box + child edge onto dialog. */
+  ASSERT_EQ(selector->scope_limit_count, 1u);
+  ASSERT_STR_EQ(selector->scope_limits[0].widget_type, "box");
+  ASSERT_EQ(selector->scope_limits[0].ancestor_count, 1u);
+  ASSERT_STR_EQ(selector->scope_limits[0].ancestors[0].widget_type, "dialog");
+  ASSERT_TRUE(selector->scope_limits[0].ancestor_direct_path[0] == true);
+  ASSERT_EQ(selector->scope_limit_root_index[0], 0u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  dialog->widget_type = "dialog";
+  box->widget_type = "box";
+  blocked->widget_type = "button";
+  wrap->widget_type = "wrap";
+  box2->widget_type = "box";
+  hit->widget_type = "button";
+  /* box IS a direct child of dialog: boundary, excludes the subtree. */
+  ASSERT_EQ(my_widget_add_child(panel, dialog), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, box), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box, blocked), MY_RET_OK);
+  /* box2's parent is wrap (not dialog): the limit path does not match, the
+   * rule applies. */
+  ASSERT_EQ(my_widget_add_child(panel, wrap), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, box2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box2, hit), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(hit);
+  my_widget_unref(box2);
+  my_widget_unref(wrap);
+  my_widget_unref(blocked);
+  my_widget_unref(box);
+  my_widget_unref(dialog);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_limit_descendant_combinator)
+{
+  const char* css = "@scope panel to dialog box { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* selector;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* box = my_widget_create(NULL, "box");
+  my_widget_t* blocked = my_widget_create(NULL, "blocked");
+  my_widget_t* box2 = my_widget_create(NULL, "box2");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  ASSERT_EQ(selector->scope_limit_count, 1u);
+  ASSERT_STR_EQ(selector->scope_limits[0].widget_type, "box");
+  ASSERT_EQ(selector->scope_limits[0].ancestor_count, 1u);
+  ASSERT_STR_EQ(selector->scope_limits[0].ancestors[0].widget_type, "dialog");
+  ASSERT_TRUE(selector->scope_limits[0].ancestor_direct_path[0] == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  dialog->widget_type = "dialog";
+  wrap->widget_type = "wrap";
+  box->widget_type = "box";
+  blocked->widget_type = "button";
+  box2->widget_type = "box";
+  hit->widget_type = "button";
+  /* box has a dialog ANCESTOR (not necessarily parent): boundary. */
+  ASSERT_EQ(my_widget_add_child(panel, dialog), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, wrap), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, box), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box, blocked), MY_RET_OK);
+  /* box2 without any dialog ancestor: rule applies. */
+  ASSERT_EQ(my_widget_add_child(panel, box2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(box2, hit), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(hit);
+  my_widget_unref(box2);
+  my_widget_unref(blocked);
+  my_widget_unref(box);
+  my_widget_unref(wrap);
+  my_widget_unref(dialog);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_limit_combinator_excludes_boundary_itself)
+{
+  /* the complex-limit analogue of css_scope_to_clause_excludes_boundary_
+   * element_itself: a widget matching the full limit path (subject compound
+   * + ancestors) is itself outside the scope. */
+  const char* css = "@scope panel to dialog > button { button { color: red; } }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  my_widget_t* blocked = my_widget_create(NULL, "blocked");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  dialog->widget_type = "dialog";
+  blocked->widget_type = "button";
+  hit->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, dialog), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(dialog, blocked), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(hit);
+  my_widget_unref(blocked);
+  my_widget_unref(dialog);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_limit_selector_list_with_paths)
+{
+  const char* css = "@scope panel to a > b, c { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* selector;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* wa = my_widget_create(NULL, "wa");
+  my_widget_t* wb = my_widget_create(NULL, "wb");
+  my_widget_t* blocked1 = my_widget_create(NULL, "blocked1");
+  my_widget_t* wc = my_widget_create(NULL, "wc");
+  my_widget_t* blocked2 = my_widget_create(NULL, "blocked2");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  selector = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(selector);
+  ASSERT_EQ(selector->scope_limit_count, 2u);
+  ASSERT_STR_EQ(selector->scope_limits[0].widget_type, "b");
+  ASSERT_EQ(selector->scope_limits[0].ancestor_count, 1u);
+  ASSERT_STR_EQ(selector->scope_limits[0].ancestors[0].widget_type, "a");
+  ASSERT_TRUE(selector->scope_limits[0].ancestor_direct_path[0] == true);
+  ASSERT_STR_EQ(selector->scope_limits[1].widget_type, "c");
+  ASSERT_EQ(selector->scope_limits[1].ancestor_count, 0u);
+  ASSERT_EQ(selector->scope_limit_root_index[0], 0u);
+  ASSERT_EQ(selector->scope_limit_root_index[1], 0u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  wa->widget_type = "a";
+  wb->widget_type = "b";
+  blocked1->widget_type = "button";
+  wc->widget_type = "c";
+  blocked2->widget_type = "button";
+  hit->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, wa), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wa, wb), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wb, blocked1), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, wc), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wc, blocked2), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked1, MY_STATE_NORMAL,
+                                  "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value = my_theme_get_for_widget(theme, blocked2, MY_STATE_NORMAL,
+                                  "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(hit);
+  my_widget_unref(blocked2);
+  my_widget_unref(wc);
+  my_widget_unref(blocked1);
+  my_widget_unref(wb);
+  my_widget_unref(wa);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_limit_combinator_rejects_malformed)
+{
+  const char* malformed[] = {
+      "@scope panel to dialog > { button { color: red; } }",
+      "@scope panel to dialog > > box { button { color: red; } }",
+      "@scope panel to dialog > , box { button { color: red; } }",
+      "@scope panel to a > b:hover { button { color: red; } }"};
+  const char* too_deep[] = {
+      "@scope panel to a b c d e f { button { color: red; } }"};
   my_css_error_t error = {0};
   size_t i;
 
@@ -2858,6 +3114,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_root_path_to_limit_boundary);
     RUN_TEST(css_scope_limit_root_index_pins_subject_slot);
     RUN_TEST(css_scope_root_combinator_rejects_malformed);
+    RUN_TEST(css_scope_limit_child_combinator);
+    RUN_TEST(css_scope_limit_descendant_combinator);
+    RUN_TEST(css_scope_limit_combinator_excludes_boundary_itself);
+    RUN_TEST(css_scope_limit_selector_list_with_paths);
+    RUN_TEST(css_scope_limit_combinator_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

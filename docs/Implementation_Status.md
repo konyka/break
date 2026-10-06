@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R621 myui @scope `to` limit 组合器（TDD）— "组合器未实现"缺口全闭：root/limit 双侧复杂选择器；theme API ex6 加式演进
+
+- **缺口**（R620 落账"组合器仅剩 to limit 侧——复杂 limit 需逐祖先位置的序列匹配"):limit 仅 compound,`@scope panel to dialog > box` 被拒。设计定论：① limit=完整选择器路径——候选元素匹配 subject compound 且其上方满足 limit 祖先路径即为边界（CSS donut-scope 的序列化语义）;② theme API 走 **exN 加式演进**(set_ex6 收 `my_theme_scope_limit_t` 路径数组，set_ex5 转 subject-only 路径转发——公开 API 零破坏）;③ css/theme 双侧 limit 结构体改携路径（subject compound 字段顶层平铺——既有 `scope_limits[i].widget_type` 访问源码兼容）;④ `theme_ancestor_path_matches` 拆出参数化 `theme_path_matches`,entry 祖先路径与 limit 路径共用。
+- **解析**:R620 root 循环提为共享 helper **`c_scope_selector_path`**(root/limit 双侧复用）——终止符 `{`/`,`+（仅 root)`to` 关键字；悬空 `>`/伪类 compound 拒（SYNTAX+SCOPE capability)、路径超 5 compound 拒（UNSUPPORTED_FEATURE+SCOPE，沿用深度惯例）。**'to' 在 limit 侧非关键字**(`@scope to to` 的 type "to" 旧行为保持；corner 变化：`to a to b` 旧拒新收=limit 路径，已落账）。limit 列表各项独立路径，数量上限 MY_CSS_MAX_SCOPE_NESTING=4 不变。
+- **匹配**:theme_scope_limits_match 逐 limit——subject compound 命中候选元素（含被查询 widget 自身=边界元素自身排除的既有语义）且 `theme_path_matches(limit 路径, candidate->parent)` 成立即排除；root_index 边界止步逻辑不变（R620 钉桩的 subject 槽语义对 limit 路径同样成立）。entry 相等性比较/克隆/校验全链路携路径。
+- **TDD（红→绿实证）**:test_myui_css +5——① child limit(`dialog > box`:box 为 dialog 直系子=边界排除子树；wrap>box 不命中=规则适用）;② descendant limit(`dialog box`：深嵌 dialog 祖先即边界；无 dialog 祖先适用）;③ 边界元素自身排除的复杂版（`dialog > button`:button 自身命中路径即排除）;④ 路径+compound 混合列表（`a > b, c` 双 limit 解析断言+行为）;⑤ malformed 四例+深度一例全拒。**RED 如实红 5/5**(4 例解析拒 sheet NULL+1 例错误码 SYNTAX≠UNSUPPORTED_FEATURE);GREEN 首轮钓出一处**既有测试语义迁移**:`css_scope_implicit_root_rejects_malformed_limit` 的 "dialog extra" 例正是新特性本身（后代 limit)——从 malformed 移除并注记。修后双树 **113/113**(108+5)。
+- **回归**：双树非图形 CTest 各 **118/118**（上轮本机 OS 剪贴板 wedge 已自复，test_platform_win32_runtime 回绿）。my_theme_set_ex5 的既有调用方（测试×2+桥接旧签名）经 wrapper 路径全覆盖；纯 CSS/theme 改动，图形套件无触点未跑（myui 历轮同约）。
+- **边界**:@scope 组合器自此**双侧全闭**；剩余让渡：root/limit 选择器**列表**仅 limit 侧支持（root 列表仍拒）、完整 CSS Scoping 规范（显式括号 prelude、`:scope` 伪类等）未实现、`to` 关键字在 limit 路径中段按 type 选择器解析（上述 corner);R611 AMD 基线不动。
+
 ## 本轮更新：R620 myui @scope root 组合器（TDD）— 文档三处落账的"组合器未实现"首片关闭：root 接受后代/子代组合器路径
 
 - **缺口**（CSS 补充条目三处落账"@scope 组合器未实现"):@scope root 此前仅接受单个 compound(`c_selector` 直填），多 compound 路径（`@scope panel > box`/`@scope app panel`）一律 "unsupported @scope syntax" 拒。调研定论：规则选择器的复杂路径机制本就完备（css_rule 的 compounds+direct_between、theme_ancestor_path_matches 对 ancestor_count/direct_path 全泛型）——root 组合器=解析端复用同款折叠+splice 端多槽拷贝，**匹配/桥接层零改动**。
