@@ -28,7 +28,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
 
       - name: Test X11/OpenGL runtime
         run: |
@@ -62,7 +62,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
 
       - name: Test Vulkan graphics smoke
         run: |
@@ -98,7 +98,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
 
   linux-gcc-sanitizers:
     name: Linux + GCC (ASan + UBSan, headless)
@@ -121,7 +121,16 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+
+      # R630: deterministic fuzz smoke under ASan/UBSan — the manual fuzz
+      # targets (EXCLUDE_FROM_ALL) get continuous sanitizer evidence here.
+      - name: Fuzz smoke (ASan/UBSan)
+        run: |
+          cmake --build build --parallel --target \
+            fuzz_scene_serial fuzz_net_packet fuzz_asset_gltf \
+            fuzz_decode_image fuzz_vfs_pak
+          ctest --test-dir build -L fuzz --output-on-failure
 
   linux-graphics-smoke:
     name: Linux + Xvfb/software graphics smoke
@@ -278,7 +287,7 @@ jobs:
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE graphics --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
 
   macos-vulkan:
     name: macOS Cocoa + MoltenVK (Clang)

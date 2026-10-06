@@ -11,6 +11,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#define fuzz_getpid _getpid
+#else
+#include <unistd.h>
+#define fuzz_getpid getpid
+#endif
+
+/* R630: pid-unique scratch paths (parallel trees/runs never collide;
+ * R444's test_tmp pattern for the manual fuzzers). */
+static void fuzz_tmp_path(char *out, size_t cap, const char *name) {
+#ifdef _WIN32
+    snprintf(out, cap, "fuzz_%d_%s", (int)fuzz_getpid(), name);
+#else
+    snprintf(out, cap, "/tmp/fuzz_%d_%s", (int)fuzz_getpid(), name);
+#endif
+}
 
 enum { COMP_A = 1, COMP_B = 2 };
 typedef struct { float x, y, z; } CompA;
@@ -110,18 +127,11 @@ int main(int argc, char **argv) {
     if (argc > 2) rng_state = (unsigned long long)atoi(argv[2]);
     log_set_level(LOG_FATAL);
 
-#ifdef _WIN32
-    /* No /tmp on the Windows CRT — cwd-relative scratch files. */
-    const char *bscn = "fuzz_seed.bscn";
-    const char *json = "fuzz_seed.json";
-    const char *mut_b = "fuzz_mut.bscn";
-    const char *mut_j = "fuzz_mut.json";
-#else
-    const char *bscn = "/tmp/fuzz_seed.bscn";
-    const char *json = "/tmp/fuzz_seed.json";
-    const char *mut_b = "/tmp/fuzz_mut.bscn";
-    const char *mut_j = "/tmp/fuzz_mut.json";
-#endif
+    char bscn[80], json[80], mut_b[80], mut_j[80];
+    fuzz_tmp_path(bscn, sizeof(bscn), "seed.bscn");
+    fuzz_tmp_path(json, sizeof(json), "seed.json");
+    fuzz_tmp_path(mut_b, sizeof(mut_b), "mut.bscn");
+    fuzz_tmp_path(mut_j, sizeof(mut_j), "mut.json");
 
     /* Seed corpus. */
     {

@@ -136,6 +136,26 @@ if(ENGINE_USE_ASAN)
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
     endif()
+    # R630: Windows Clang ASan binaries need clang_rt.asan_dynamic-<arch>.dll
+    # beside them — the toolchain dir is never on PATH, so ASan builds only
+    # ever compiled (never ran) without this copy. One configure-time copy to
+    # the build root covers every test/fuzz exe in the tree.
+    if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+        execute_process(COMMAND ${CMAKE_C_COMPILER} -print-resource-dir
+            OUTPUT_VARIABLE _asan_resource_dir OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            set(_asan_arch "x86_64")
+        else()
+            set(_asan_arch "i386")
+        endif()
+        set(_asan_dll "${_asan_resource_dir}/lib/windows/clang_rt.asan_dynamic-${_asan_arch}.dll")
+        if(EXISTS "${_asan_dll}")
+            file(COPY "${_asan_dll}" DESTINATION "${CMAKE_BINARY_DIR}")
+            message(STATUS "ASan runtime DLL staged: ${_asan_dll}")
+        else()
+            message(WARNING "ASan runtime DLL not found at ${_asan_dll} — ASan test binaries will not launch")
+        endif()
+    endif()
 endif()
 if(ENGINE_USE_UBSAN)
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang" AND NOT MSVC)
@@ -2031,6 +2051,21 @@ if(ENGINE_BUILD_TESTS)
         src/asset/vfs.c src/core/log.c)
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
+
+    # R630: fuzz smoke — bounded deterministic runs of the manual fuzzers.
+    # Labeled "fuzz" so default runs skip them (like "graphics"); the
+    # ASan/UBSan CI job builds the targets explicitly and runs them under
+    # sanitizers (the R623 "manual sanitizer evidence" boundary, automated).
+    # Args are (iters, seed[, seed file]); scratch paths are pid-unique.
+    add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
+    add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
+    add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
+    add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
+    add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
+             "${CMAKE_SOURCE_DIR}/assets/test.glb")
+    set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
+        fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
+        PROPERTIES LABELS "fuzz")
 
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
     add_executable(test_camera_frustum tests/test_camera_frustum.c

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R630 fuzz smoke 入 CI + Windows ASan 运行库修复 — R623 边界"sanitizer 实证需手工"关闭：五项 fuzzer 在 ASan job 持续有证
+
+- **缺口**(R623 落账）：五个手工 fuzzer(EXCLUDE_FROM_ALL）只在手工长跑时有证据，CI 从不构建/运行，sanitizer 下的加载器稳健性零持续覆盖；且 fuzzer 的 `/tmp` 固定名（Linux）在并行/双树场景有碰撞隐患（R444 教训）。
+- **fuzz smoke 接线**：五个 fuzzer 注册为 CTest `fuzz` 标签 smoke(`fuzz_*_smoke`，有界迭代+固定种子：500/2000/800/2000/2000——本地非 ASan 合计 6.3s,ASan 下 24s)；默认门禁与 `-LE graphics` 并列排除（`-LE "graphics|fuzz"`，镜像 graphics 标签先例；二进制未构建时不会误入默认运行）;**ASan CI job 新增步骤**：显式构建五目标 + `ctest -L fuzz`——手工 sanitizer 实证自此自动化。fuzzer 暂存路径三文件改 pid 唯一（`_getpid`/`getpid`+`_WIN32` 分流，R444 test_tmp 模式的手工目标版）。
+- **钓出并修复（用户报告驱动）**：本机 ASan 树 fuzz smoke 全灭 `0xc0000135`——**Windows Clang ASan 二进制需要 `clang_rt.asan_dynamic-x86_64.dll` 同目录，而 LLVM 资源目录从不在 PATH**：该 ASan 树自建立起只编译过、从未跑过（`test_alloc` 同挂 rc=127=证据）。修复=CMake 配置期把 DLL 从 `clang -print-resource-dir` 解析的目录复制到构建根（`ENGINE_USE_ASAN`+WIN32+Clang 守卫，arch 由指针宽度推导，缺失时 WARN 不炸配置）。修复后该树 `test_alloc` 首跑即绿。
+- **验证**:build-gate `ctest -L fuzz` 5/5(6.3s);ASan+UBSan 树同 5/5(24.3s,**真实 sanitizer 证据**)；双树 `-LE "graphics|fuzz"` 各 118/118(CI 默认语义）、含 fuzz 全量（二进制已建）各 124/124;ci.yml 经 yaml 解析验证。
+- **边界**:fuzz smoke 是 CI 冒烟而非长 fuzz 会话（长跑仍手工，但语义由 CI 持续看守）;Windows MSVC ASan(/fsanitize=address）路径未涉（无 DLL 问题）;TSan 同理未涉（libtsan DLL 同型问题若启用需同模式扩展，已注）；图形标签的运行模型不变。
+
 ## 本轮更新：R629 CSS `&` 嵌套（TDD）— CSS Nesting 有界首片：解析期脱糖，匹配/桥接/主题层零改动
 
 - **缺口**（R627 落账"样式规则内 `&` 嵌套（独立特性族）")：真实样式表高频使用的 `parent { & > child { } }` / `&:hover` 形态整体被拒。

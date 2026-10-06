@@ -10,6 +10,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#define fuzz_getpid _getpid
+#else
+#include <unistd.h>
+#define fuzz_getpid getpid
+#endif
+
+/* R630: pid-unique scratch path (parallel trees never collide). */
+static void fuzz_tmp_path(char *out, size_t cap, const char *name) {
+#ifdef _WIN32
+    snprintf(out, cap, "fuzz_%d_%s", (int)fuzz_getpid(), name);
+#else
+    snprintf(out, cap, "/tmp/fuzz_%d_%s", (int)fuzz_getpid(), name);
+#endif
+}
 
 static unsigned long long rng_state = 0x9E3779B9u; /* 64-bit on LLP64 too */
 static unsigned rnd(void) {
@@ -121,11 +137,8 @@ int main(int argc, char **argv) {
     if (argc > 2) rng_state = (unsigned long long)atoi(argv[2]);
     log_set_level(LOG_FATAL);
 
-#ifdef _WIN32
-    const char *mut_pak = "fuzz_mut.pak"; /* no /tmp on the Windows CRT */
-#else
-    const char *mut_pak = "/tmp/fuzz_mut.pak";
-#endif
+    char mut_pak[80];
+    fuzz_tmp_path(mut_pak, sizeof(mut_pak), "mut.pak");
 
     long plen = 0;
     unsigned char *base = build_seed_pak(&plen);

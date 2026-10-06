@@ -17,6 +17,22 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <process.h>
+#define fuzz_getpid _getpid
+#else
+#include <unistd.h>
+#define fuzz_getpid getpid
+#endif
+
+/* R630: pid-unique scratch paths (parallel trees never collide). */
+static void fuzz_tmp_path(char *out, size_t cap, const char *name) {
+#ifdef _WIN32
+    snprintf(out, cap, "fuzz_%d_%s", (int)fuzz_getpid(), name);
+#else
+    snprintf(out, cap, "/tmp/fuzz_%d_%s", (int)fuzz_getpid(), name);
+#endif
+}
 
 /* ---- RHI / async stubs (link-only) ---- */
 
@@ -220,14 +236,9 @@ int main(int argc, char **argv) {
     const char *glb_seed = argc > 3 ? argv[3] : "engine/assets/test.glb";
     log_set_level(LOG_FATAL);
 
-#ifdef _WIN32
-    /* No /tmp on the Windows CRT — cwd-relative scratch files. */
-    const char *mut_glb = "fuzz_mut.glb";
-    const char *mut_json = "fuzz_mut.gltf";
-#else
-    const char *mut_glb = "/tmp/fuzz_mut.glb";
-    const char *mut_json = "/tmp/fuzz_mut.gltf";
-#endif
+    char mut_glb[80], mut_json[80];
+    fuzz_tmp_path(mut_glb, sizeof(mut_glb), "mut.glb");
+    fuzz_tmp_path(mut_json, sizeof(mut_json), "mut.gltf");
 
     long glen = 0;
     unsigned char *gbase = read_file(glb_seed, &glen);
