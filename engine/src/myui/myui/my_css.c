@@ -58,6 +58,9 @@ typedef struct css_p_t {
                    [MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
   css_scope_frame_t scope_frames[MY_CSS_MAX_SCOPE_NESTING];
   size_t scope_count;
+  /* R629: nested `&` rules are collected here during a rule's block and
+   * flushed AFTER the parent rule is appended, preserving source order. */
+  my_darray_t* nest_pending;
   char layer_names[MY_CSS_MAX_LAYERS][MY_CSS_MAX_LAYER_NAME_BYTES + 1u];
   uint32_t layer_ranks[MY_CSS_MAX_LAYERS];
   size_t layer_count;
@@ -111,6 +114,10 @@ static void css_fail(css_p_t* p, const char* msg) {
                strcmp(msg, ":scope must be unqualified and outermost") == 0 ||
                strcmp(msg, "unsupported @scope syntax") == 0) {
       p->err->capability = (uint32_t)MY_CSS_FEATURE_SCOPE;
+    } else if (strcmp(msg, "& outside a rule") == 0 ||
+               strcmp(msg, "invalid & nested selector") == 0 ||
+               strcmp(msg, "CSS & nesting depth exceeded") == 0) {
+      p->err->capability = (uint32_t)MY_CSS_FEATURE_NESTING;
     } else {
       p->err->capability = 0u;
     }
@@ -121,6 +128,13 @@ static void css_fail(css_p_t* p, const char* msg) {
 static void css_mark_scope_error(css_p_t* p) {
   if (p->err != NULL && p->err->msg[0] != '\0') {
     p->err->capability = (uint32_t)MY_CSS_FEATURE_SCOPE;
+  }
+}
+
+/* R629: generic variant — pin an already-recorded error to a capability. */
+static void css_mark_capability(css_p_t* p, uint32_t capability) {
+  if (p->err != NULL && p->err->msg[0] != '\0') {
+    p->err->capability = capability;
   }
 }
 
@@ -269,6 +283,12 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
 
   memset(out, 0, sizeof(*out));
   out->state = -1;
+  /* R629: '&' = the parent-selector marker for CSS nesting (resolved by the
+   * css_rule declaration block's nested-rule desugar). */
+  if (c_peek(p) == '&') {
+    c_next(p);
+    out->nest_ref = true;
+  }
   if (c_peek(p) == '*') {
     c_next(p);
     universal = true;
@@ -318,7 +338,8 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
     }
   }
   if (out->widget_type[0] == '\0' && out->style_class[0] == '\0' &&
-      out->id[0] == '\0' && c_peek(p) != ':' && !universal) {
+      out->id[0] == '\0' && c_peek(p) != ':' && !universal &&
+      !out->nest_ref) {
     css_fail(p, "empty selector");
     return false;
   }
@@ -893,8 +914,338 @@ static bool css_rule_push_selector(css_p_t* p, my_css_rule_t* r,
   return true;
 }
 
+static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
+                                 my_css_sheet_t* sheet, u32 depth);
+
+/* R629: the subset nests at most one level (a nested rule's own block does
+ * not take further `&` rules). */
+#define MY_CSS_MAX_NEST_DEPTH 1u
+
+/* R629: parse one nested `&` rule at a declaration-block statement
+ * boundary (the parser sits ON the '&'). The nested selector path must
+ * start with the parent marker; `&` alone/`&:pseudo`/`&.class` merge onto
+ * the parent subject, while `& <path>`/`& > <path>` place the parent at
+ * the outermost ancestor slot. Parent selectors are already fully resolved
+ * (scope spliced), so the desugar is a plain substitution — one variant
+ * per parent selector, inheriting layer order and scope limits (root
+ * indices shift past the substituted slots). */
+static bool css_nest_rule(css_p_t* p, my_css_rule_t* parent,
+                          my_css_sheet_t* sheet, u32 depth) {
+  my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
+  bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
+  size_t count = 0u;
+  bool pending_direct = false;
+  my_css_selector_t nsel;
+  my_css_rule_t* nr;
+  size_t i, pi;
+  if (depth >= MY_CSS_MAX_NEST_DEPTH) {
+    css_fail(p, "CSS & nesting depth exceeded");
+    return false;
+  }
+  for (;;) {
+    my_css_selector_t comp;
+    bool separated;
+    c_ws(p);
+    memset(&comp, 0, sizeof(comp));
+    comp.state = -1;
+    if (!c_selector(p, &comp)) {
+      css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
+      return false;
+    }
+    /* exactly one leading '&'; no :scope markers; no type/id-qualified
+     * marker (class/pseudo quals merge; type can't follow '&' anyway). */
+    if (comp.scope_ref || comp.nest_ref != (count == 0u) ||
+        (comp.nest_ref &&
+         (comp.widget_type[0] != '\0' || comp.id[0] != '\0'))) {
+      css_fail(p, "invalid & nested selector");
+      return false;
+    }
+    if (count >= MY_CSS_MAX_ANCESTORS + 1u) {
+      css_fail(p, "selector ancestor depth exceeded");
+      css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
+      return false;
+    }
+    if (count > 0u) {
+      direct_between[count] = pending_direct;
+    }
+    compounds[count++] = comp;
+    separated = c_ws(p);
+    if (c_peek(p) == '>') {
+      c_next(p);
+      c_ws(p);
+      pending_direct = true;
+      continue;
+    }
+    if (c_peek(p) == '{') {
+      break;
+    }
+    if (!separated) {
+      /* commas (nested groups) and adjacent junk are out of the subset. */
+      css_fail(p, "invalid & nested selector");
+      return false;
+    }
+    pending_direct = false; /* whitespace = descendant combinator */
+  }
+
+  /* Fold: subject = last compound; the marker (compounds[0]) lands on the
+   * outermost ancestor slot whenever ancestors exist. Ancestor compounds
+   * copy field-wise (no type requirement — the scope splice convention);
+   * a pseudo state on an ancestor can't be expressed → reject. */
+  nsel = compounds[count - 1u];
+  nsel.ancestor_count = (u32)(count - 1u);
+  for (i = 0u; i + 1u < count; ++i) {
+    size_t source = count - 2u - i;
+    if (compounds[source].nest_ref) {
+      memset(&nsel.ancestors[i], 0, sizeof(nsel.ancestors[i]));
+      nsel.ancestor_direct_path[i] = direct_between[source + 1u];
+      continue;
+    }
+    if (compounds[source].state != -1) {
+      css_fail(p, "invalid & nested selector");
+      return false;
+    }
+    memcpy(nsel.ancestors[i].widget_type, compounds[source].widget_type,
+           sizeof(nsel.ancestors[i].widget_type));
+    memcpy(nsel.ancestors[i].id, compounds[source].id,
+           sizeof(nsel.ancestors[i].id));
+    memcpy(nsel.ancestors[i].style_class, compounds[source].style_class,
+           sizeof(nsel.ancestors[i].style_class));
+    nsel.ancestor_direct_path[i] = direct_between[source + 1u];
+  }
+  /* a state-qualified marker in ancestor form can't be expressed either
+   * (`&.active button` merges the class; `&:hover button` is rejected). */
+  if (count > 1u && compounds[0].state != -1) {
+    css_fail(p, "invalid & nested selector");
+    return false;
+  }
+
+  nr = css_rule_new(p->allocator, parent->layer_order);
+  if (nr == NULL) {
+    css_fail(p, "oom");
+    return false;
+  }
+  for (pi = 0u; pi < my_darray_size(parent->selectors); ++pi) {
+    const my_css_selector_t* psel =
+        (const my_css_selector_t*)my_darray_get(parent->selectors, pi);
+    my_css_selector_t out;
+    if (psel == NULL) {
+      continue;
+    }
+    if (psel->state != -1) {
+      /* a state-qualified parent can't be expressed once its subject
+       * becomes an ancestor — out of the subset. */
+      css_fail(p, "invalid & nested selector");
+      css_rule_destroy(p->allocator, nr);
+      return false;
+    }
+    if (count == 1u) {
+      /* subject merge: the parent's own selector, with the marker's
+       * pseudo state and/or extra classes merged in. */
+      out = *psel;
+      if (nsel.state >= 0) {
+        out.state = nsel.state;
+      }
+      if (nsel.style_class[0] != '\0') {
+        size_t have = strlen(out.style_class);
+        size_t need = strlen(nsel.style_class);
+        if (have + 1u + need >= sizeof(out.style_class)) {
+          css_fail(p, "selector classes too long");
+          css_rule_destroy(p->allocator, nr);
+          return false;
+        }
+        out.style_class[have] = ' ';
+        memcpy(out.style_class + have + 1u, nsel.style_class, need + 1u);
+      }
+    } else {
+      /* ancestor form: [nested inner ancestors..., parent subject at the
+       * marker slot, parent ancestors outward]. */
+      u32 m = nsel.ancestor_count - 1u; /* marker slot (outermost) */
+      u32 total = (u32)(m + 1u + psel->ancestor_count);
+      u32 j;
+      if (total > MY_CSS_MAX_ANCESTORS) {
+        css_fail(p, "selector ancestor depth exceeded");
+        css_mark_capability(p, (uint32_t)MY_CSS_FEATURE_NESTING);
+        css_rule_destroy(p->allocator, nr);
+        return false;
+      }
+      memset(&out, 0, sizeof(out));
+      out.state = nsel.state;
+      snprintf(out.widget_type, sizeof(out.widget_type), "%s",
+               nsel.widget_type);
+      snprintf(out.id, sizeof(out.id), "%s", nsel.id);
+      snprintf(out.style_class, sizeof(out.style_class), "%s",
+               nsel.style_class);
+      for (j = 0u; j < m; ++j) {
+        out.ancestors[j] = nsel.ancestors[j];
+        out.ancestor_direct_path[j] = nsel.ancestor_direct_path[j];
+      }
+      /* parent subject as the ancestor at the marker slot (the marker's
+       * own class quals merge in), with the parsed edge flag kept. */
+      snprintf(out.ancestors[m].widget_type,
+               sizeof(out.ancestors[m].widget_type), "%s",
+               psel->widget_type);
+      snprintf(out.ancestors[m].id, sizeof(out.ancestors[m].id), "%s",
+               psel->id);
+      if (compounds[0].style_class[0] != '\0') {
+        if (psel->style_class[0] != '\0') {
+          int n = snprintf(out.ancestors[m].style_class,
+                           sizeof(out.ancestors[m].style_class), "%s %s",
+                           psel->style_class, compounds[0].style_class);
+          if (n < 0 || (size_t)n >= sizeof(out.ancestors[m].style_class)) {
+            css_fail(p, "selector classes too long");
+            css_rule_destroy(p->allocator, nr);
+            return false;
+          }
+        } else {
+          snprintf(out.ancestors[m].style_class,
+                   sizeof(out.ancestors[m].style_class), "%s",
+                   compounds[0].style_class);
+        }
+      } else {
+        snprintf(out.ancestors[m].style_class,
+                 sizeof(out.ancestors[m].style_class), "%s",
+                 psel->style_class);
+      }
+      out.ancestor_direct_path[m] = nsel.ancestor_direct_path[m];
+      for (j = 0u; j < psel->ancestor_count; ++j) {
+        out.ancestors[m + 1u + j] = psel->ancestors[j];
+        out.ancestor_direct_path[m + 1u + j] = psel->ancestor_direct_path[j];
+      }
+      out.ancestor_count = total;
+      /* the parent's scope limits carry over; root indices shift past the
+       * substituted slots. */
+      out.scope_limit_count = psel->scope_limit_count;
+      for (j = 0u; j < psel->scope_limit_count; ++j) {
+        out.scope_limits[j] = psel->scope_limits[j];
+        out.scope_limit_root_index[j] =
+            psel->scope_limit_root_index[j] == MY_CSS_SCOPE_ROOT_IMPLICIT
+                ? psel->scope_limit_root_index[j]
+                : psel->scope_limit_root_index[j] + m + 1u;
+      }
+    }
+    if (!css_rule_push_selector(p, nr, &out)) {
+      css_rule_destroy(p->allocator, nr);
+      return false;
+    }
+  }
+  c_next(p); /* '{' */
+  if (!css_parse_decl_block(p, nr, sheet, depth + 1u)) {
+    css_rule_destroy(p->allocator, nr);
+    return false;
+  }
+  /* R629: pend instead of pushing directly — css_parse_rules flushes after
+   * the parent rule lands, preserving source order. */
+  if (p->nest_pending == NULL) {
+    p->nest_pending = my_darray_create(p->allocator, 0u);
+    if (p->nest_pending == NULL) {
+      css_rule_destroy(p->allocator, nr);
+      css_fail(p, "oom");
+      return false;
+    }
+  }
+  if (my_darray_push(p->nest_pending, nr) != MY_RET_OK) {
+    css_rule_destroy(p->allocator, nr);
+    css_fail(p, "oom");
+    return false;
+  }
+  return true;
+}
+
+/* R629: declaration block body (after '{', through the closing '}').
+ * Statement boundaries that start with '&' are nested rules. */
+static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
+                                 my_css_sheet_t* sheet, u32 depth) {
+  for (;;) {
+    char key[MY_STYLE_KEY_LEN];
+    char mapped[MY_STYLE_KEY_LEN];
+    my_css_decl_t* d;
+    c_ws(p);
+    if (c_failed(p)) {
+      return false;
+    }
+    if (c_peek(p) == '&') {
+      if (!css_nest_rule(p, r, sheet, depth)) {
+        return false;
+      }
+      continue;
+    }
+    if (c_peek(p) == '}') {
+      c_next(p);
+      return true;
+    }
+    if (!c_ident(p, key, sizeof(key))) {
+      css_fail(p, "expected declaration key");
+      return false;
+    }
+    c_ws(p);
+    if (c_peek(p) != ':') {
+      /* lenient: skip to ';' or '}' with a warning */
+      MY_LOGW("my_css: skipping malformed declaration (key '%s')", key);
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') {
+        c_next(p);
+        continue;
+      }
+      if (c_peek(p) == '}') {
+        c_next(p);
+        return true;
+      }
+      css_fail(p, "unterminated declaration");
+      return false;
+    }
+    c_next(p);
+    c_ws(p);
+    d = (my_css_decl_t*)my_mem_calloc(p->allocator, 1, sizeof(my_css_decl_t));
+    if (d == NULL) {
+      css_fail(p, "oom");
+      return false;
+    }
+    my_value_init(&d->value, p->allocator);
+    if (!css_value(p, &d->value)) {
+      /* lenient: skip to ';' or '}' with a warning */
+      MY_LOGW("my_css: skipping bad value for '%s'", key);
+      my_mem_free(p->allocator, d);
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') {
+        c_next(p);
+        continue;
+      }
+      if (c_peek(p) == '}') {
+        c_next(p);
+        return true;
+      }
+      css_fail(p, "unterminated declaration");
+      return false;
+    }
+    css_key_map(key, mapped, sizeof(mapped));
+    snprintf(d->key, sizeof(d->key), "%s", mapped);
+    if (my_darray_push(r->decls, d) != MY_RET_OK) {
+      my_value_reset(&d->value);
+      my_mem_free(p->allocator, d);
+      css_fail(p, "oom");
+      return false;
+    }
+    c_ws(p);
+    if (c_peek(p) == ';') {
+      c_next(p);
+      continue;
+    }
+    if (c_peek(p) == '}') {
+      c_next(p);
+      return true;
+    }
+    css_fail(p, "expected ';' or '}'");
+    return false;
+  }
+}
+
 /** @brief One rule: selectors { declarations }. */
-static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
+static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
+                               uint32_t layer_id) {
   my_css_rule_t* r = css_rule_new(p->allocator, layer_id);
   my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
   bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
@@ -947,6 +1298,7 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
     sel = compounds[compound_count - 1u];
     sel.ancestor_count = (u32)(compound_count - 1u);
     sel.ancestor_scope_ref_mask = 0u;
+    sel.ancestor_nest_ref_mask = 0u;
     for (i = 0; i < compound_count - 1u; i++) {
       size_t source = compound_count - 2u - i;
       if (compounds[source].scope_ref) {
@@ -954,6 +1306,12 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
          * scope splice substitutes it with the innermost root. */
         memset(&sel.ancestors[i], 0, sizeof(sel.ancestors[i]));
         sel.ancestor_scope_ref_mask |= (u32)1u << i;
+        sel.ancestor_direct_path[i] = direct_between[source + 1u];
+        continue;
+      }
+      if (compounds[source].nest_ref) {
+        memset(&sel.ancestors[i], 0, sizeof(sel.ancestors[i]));
+        sel.ancestor_nest_ref_mask |= (u32)1u << i;
         sel.ancestor_direct_path[i] = direct_between[source + 1u];
         continue;
       }
@@ -983,6 +1341,13 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
         css_fail(p, ":scope must be unqualified and outermost");
         goto fail;
       }
+    }
+    /* R629: `&` markers only arise inside a rule's declaration block (the
+     * nested-rule desugar resolves them there) — reaching a top-level rule
+     * selector with one is misuse. */
+    if (sel.nest_ref || sel.ancestor_nest_ref_mask != 0u) {
+      css_fail(p, "& outside a rule");
+      goto fail;
     }
     if (p->scope_count > 0u) {
       /* R622: enumerate the root-list cross-product (the innermost scope
@@ -1140,87 +1505,12 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
     goto fail;
   }
   c_next(p);
-  /* declarations */
-  for (;;) {
-    char key[MY_STYLE_KEY_LEN];
-    char mapped[MY_STYLE_KEY_LEN];
-    my_css_decl_t* d;
-    c_ws(p);
-    if (c_failed(p)) {
-      goto fail;
-    }
-    if (c_peek(p) == '}') {
-      c_next(p);
-      return r;
-    }
-    if (!c_ident(p, key, sizeof(key))) {
-      css_fail(p, "expected declaration key");
-      goto fail;
-    }
-    c_ws(p);
-    if (c_peek(p) != ':') {
-      /* lenient: skip to ';' or '}' with a warning */
-      MY_LOGW("my_css: skipping malformed declaration (key '%s')", key);
-      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
-        c_next(p);
-      }
-      if (c_peek(p) == ';') {
-        c_next(p);
-        continue;
-      }
-      if (c_peek(p) == '}') {
-        c_next(p);
-        return r;
-      }
-      css_fail(p, "unterminated declaration");
-      goto fail;
-    }
-    c_next(p);
-    c_ws(p);
-    d = (my_css_decl_t*)my_mem_calloc(p->allocator, 1, sizeof(my_css_decl_t));
-    if (d == NULL) {
-      css_fail(p, "oom");
-      goto fail;
-    }
-    my_value_init(&d->value, p->allocator);
-    if (!css_value(p, &d->value)) {
-      /* lenient: skip to ';' or '}' with a warning */
-      MY_LOGW("my_css: skipping bad value for '%s'", key);
-      my_mem_free(p->allocator, d);
-      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
-        c_next(p);
-      }
-      if (c_peek(p) == ';') {
-        c_next(p);
-        continue;
-      }
-      if (c_peek(p) == '}') {
-        c_next(p);
-        return r;
-      }
-      css_fail(p, "unterminated declaration");
-      goto fail;
-    }
-    css_key_map(key, mapped, sizeof(mapped));
-    snprintf(d->key, sizeof(d->key), "%s", mapped);
-    if (my_darray_push(r->decls, d) != MY_RET_OK) {
-      my_value_reset(&d->value);
-      my_mem_free(p->allocator, d);
-      css_fail(p, "oom");
-      goto fail;
-    }
-    c_ws(p);
-    if (c_peek(p) == ';') {
-      c_next(p);
-      continue;
-    }
-    if (c_peek(p) == '}') {
-      c_next(p);
-      return r;
-    }
-    css_fail(p, "expected ';' or '}'");
-    goto fail;
+  /* declarations (+ R629 nested `&` rules) */
+  if (!css_parse_decl_block(p, r, sheet, 0u)) {
+    css_rule_destroy(p->allocator, r);
+    return NULL;
   }
+  return r;
 fail:
   css_rule_destroy(p->allocator, r);
   return NULL;
@@ -2272,7 +2562,8 @@ static bool c_scope_selector_path(css_p_t* p, my_css_selector_t* out,
     }
     memset(&comp, 0, sizeof(comp));
     comp.state = -1;
-    if (!c_selector(p, &comp) || comp.state != -1 || comp.scope_ref) {
+    if (!c_selector(p, &comp) || comp.state != -1 || comp.scope_ref ||
+        comp.nest_ref) {
       css_fail(p, invalid_msg);
       css_mark_scope_error(p);
       return false;
@@ -2555,7 +2846,7 @@ static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
       }
       continue;
     }
-    rule = css_rule(p, layer_id);
+    rule = css_rule(p, sheet, layer_id);
     if (rule == NULL) {
       return false;
     }
@@ -2563,6 +2854,27 @@ static bool css_parse_rules(css_p_t* p, my_css_sheet_t* sheet,
       css_rule_destroy(p->allocator, rule);
       css_fail(p, "oom");
       return false;
+    }
+    /* R629: flush the rule's nested `&` rules after it (source order). */
+    if (p->nest_pending != NULL) {
+      size_t ni, nn = my_darray_size(p->nest_pending);
+      for (ni = 0u; ni < nn; ++ni) {
+        my_css_rule_t* nr =
+            (my_css_rule_t*)my_darray_get(p->nest_pending, ni);
+        if (my_darray_push(sheet->rules, nr) != MY_RET_OK) {
+          /* leave the unflushed tail for the teardown cleanup */
+          while (ni < nn) {
+            css_rule_destroy(p->allocator,
+                             (my_css_rule_t*)my_darray_get(p->nest_pending,
+                                                           ni));
+            ni++;
+          }
+          my_darray_clear(p->nest_pending);
+          css_fail(p, "oom");
+          return false;
+        }
+      }
+      my_darray_clear(p->nest_pending);
     }
   }
 }
@@ -2621,7 +2933,19 @@ my_css_sheet_t* my_css_parse_with_options(
   }
   if (css_parse_rules(&p, sheet, false, 0u, MY_CSS_UNLAYERED_ORDER)) {
     css_finalize_layer_order(&p, sheet);
+    if (p.nest_pending != NULL) {
+      my_darray_destroy(p.nest_pending);
+    }
     return sheet;
+  }
+  /* R629: an error path may leave unflushed nested rules — destroy them. */
+  if (p.nest_pending != NULL) {
+    size_t ni, nn = my_darray_size(p.nest_pending);
+    for (ni = 0u; ni < nn; ++ni) {
+      css_rule_destroy(allocator,
+                       (my_css_rule_t*)my_darray_get(p.nest_pending, ni));
+    }
+    my_darray_destroy(p.nest_pending);
   }
   my_css_sheet_destroy(sheet);
   return NULL;
@@ -2667,7 +2991,8 @@ const my_css_capabilities_t* my_css_capabilities(void) {
                  MY_CSS_FEATURE_TYPED_VALUES | MY_CSS_FEATURE_CASCADE |
                  MY_CSS_FEATURE_AT_RULES | MY_CSS_FEATURE_CONDITIONAL_MEDIA |
                  MY_CSS_FEATURE_SUPPORTS | MY_CSS_FEATURE_LAYERS |
-                 MY_CSS_FEATURE_IMPORTS | MY_CSS_FEATURE_SCOPE),
+                 MY_CSS_FEATURE_IMPORTS | MY_CSS_FEATURE_SCOPE |
+                 MY_CSS_FEATURE_NESTING),
       (uint32_t)MY_CSS_PARSE_STRICT_AT_RULES, MY_CSS_MAX_BYTES,
       MY_CSS_MAX_ANCESTORS};
   return &capabilities;

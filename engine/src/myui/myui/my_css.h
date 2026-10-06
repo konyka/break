@@ -75,7 +75,8 @@ typedef enum my_css_feature_t {
   MY_CSS_FEATURE_SUPPORTS = 1u << 6,
   MY_CSS_FEATURE_LAYERS = 1u << 7,
   MY_CSS_FEATURE_IMPORTS = 1u << 8,
-  MY_CSS_FEATURE_SCOPE = 1u << 9
+  MY_CSS_FEATURE_SCOPE = 1u << 9,
+  MY_CSS_FEATURE_NESTING = 1u << 10
 } my_css_feature_t;
 
 /** @brief Device capabilities available to conditional media evaluation. */
@@ -230,6 +231,11 @@ typedef struct my_css_selector_t {
    * item and clears the markers, so STORED selectors never carry them. */
   bool scope_ref;
   u32 ancestor_scope_ref_mask;
+  /* R629: parse-time `&` markers for CSS nesting — same substitution
+   * discipline as the :scope markers (cleared by the desugar, so STORED
+   * selectors never carry them). */
+  bool nest_ref;
+  u32 ancestor_nest_ref_mask;
 } my_css_selector_t;
 
 /** @brief One declaration (value typed: UINT32 color / INT32 / DOUBLE / STR). */
@@ -274,7 +280,14 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * MY_CSS_MAX_SCOPE_NESTING. Inside @scope rules, a bare `:scope` (R627)
  * references the innermost rooted scope's root: as the whole subject it
  * styles the root itself; as the outermost ancestor compound
- * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root. */
+ * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root.
+ * CSS nesting (R629): inside a rule's declaration block, a statement
+ * starting with `&` is a nested rule — desugared at parse time against the
+ * already-resolved parent selectors (one variant per parent selector;
+ * `&`/`&:pseudo`/`&.class` merge onto the parent subject, `& path` /
+ * `& > path` place the parent at the outermost ancestor slot). One level
+ * deep; nested groups (`,`), a state-qualified parent, an id-qualified
+ * marker, and `&` outside a rule are rejected. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);

@@ -1914,6 +1914,183 @@ TEST(css_scope_scope_pseudo_rejects_misuse)
   }
 }
 
+TEST(css_nest_child_path)
+{
+  /* `.panel { color: blue; & > button { color: red; } }` — the nested rule
+   * desugars to `panel > button` at parse time, inheriting the parent's
+   * place in source order. */
+  const char* css =
+      ".panel { color: blue; & > button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* nested;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  /* rule 0 = the parent's own declarations. */
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->style_class,
+                "panel");
+  /* rule 1 = the desugared nested rule: button with direct parent panel. */
+  nested = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(nested);
+  ASSERT_STR_EQ(nested->widget_type, "button");
+  ASSERT_EQ(nested->ancestor_count, 1u);
+  ASSERT_STR_EQ(nested->ancestors[0].style_class, "panel");
+  ASSERT_TRUE(nested->ancestor_direct_path[0] == true);
+  ASSERT_TRUE(nested->nest_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  hit->widget_type = "button";
+  wrap->widget_type = "wrap";
+  miss->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(panel, "panel"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(wrap);
+  my_widget_unref(hit);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_descendant_and_group)
+{
+  /* group parent + descendant nested path: `.a, .b { & button {...} }`
+   * expands one variant per parent selector (descendant edge). */
+  const char* css = ".a, .b { & button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* hit1 = my_widget_create(NULL, "hit1");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  my_widget_t* hit2 = my_widget_create(NULL, "hit2");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  /* rule 0 = the parent (zero own declarations); rule 1 = the nested
+   * rule with one selector variant per parent (source order). */
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  rule = my_css_rule(sheet, 1u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->ancestors[0].style_class, "a");
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->ancestors[0].style_class, "b");
+  ASSERT_TRUE(my_css_selector(rule, 0u)->ancestor_direct_path[0] == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  a->widget_type = "wrap";
+  wrap->widget_type = "wrap";
+  hit1->widget_type = "button";
+  b->widget_type = "wrap";
+  hit2->widget_type = "button";
+  miss->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b, "b"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(a, wrap), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, hit1), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(b, hit2), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit1, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, hit2, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(hit2);
+  my_widget_unref(b);
+  my_widget_unref(hit1);
+  my_widget_unref(wrap);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_state_merge)
+{
+  /* `button { color: blue; &:hover { color: red; } }` — subject merge:
+   * same subject, the nested pseudo sets the rule's state. */
+  const char* css = "button { color: blue; &:hover { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* nested;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* btn = my_widget_create(NULL, "btn");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  nested = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(nested);
+  ASSERT_STR_EQ(nested->widget_type, "button");
+  ASSERT_EQ(nested->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_EQ(nested->ancestor_count, 0u);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  btn->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, btn, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  my_widget_unref(btn);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_rejects_malformed)
+{
+  const char* malformed[] = {
+      "& button { color: red; }",                       /* top-level & */
+      "button { & > { color: red; } }",                 /* dangling '>' */
+      "button { &#x { color: red; } }",                 /* id merge */
+      "button:hover { & .x { color: red; } }",          /* state parent */
+      "button { & .x { & .y { color: red; } } }",       /* depth 2 */
+      "button { & .x, .y { color: red; } }"};           /* nested group */
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
+  }
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -3691,6 +3868,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_scope_pseudo_as_outermost_ancestor);
     RUN_TEST(css_scope_scope_pseudo_with_limit_and_list);
     RUN_TEST(css_scope_scope_pseudo_rejects_misuse);
+    RUN_TEST(css_nest_child_path);
+    RUN_TEST(css_nest_descendant_and_group);
+    RUN_TEST(css_nest_state_merge);
+    RUN_TEST(css_nest_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);
