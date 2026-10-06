@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R655 匿名层（TDD）— `@layer { ... }` 匿名块 + `@import "x.css" layer;` 裸写双形态落地；R653"匿名拒绝"契约正式转正
+
+- **缺口**（R653 落账"匿名层需统一立项"）：规范匿名层（每次出现即独立层，源序定秩）在引擎全域拒绝——`@layer { }` 死于 "invalid @layer name"，裸 `layer` 导入条件死于 qualifier 拒绝。
+- **方案**（一个助手两个消费点，层机制零新增）：新 `css_layer_add_anonymous`——注册**空名**槽位（`css_layer_name_valid` 拒空名，故该槽永不被具名查找命中=每次出现天然独立新层）,rank=注册序；`css_finalize_layer_order`/桥接相位/特异性公式对空名槽无感复用。消费点：① `css_parse_layer_atrule` 在组件读取前识别裸 `'{'`→匿名块（嵌套于具名父层时无拼接——匿名层本就全局唯一，记档）;② 导入条件流水线的 layer 段：非 `'('` 即裸写→匿名导入层（R653 结构化预留的 else 分支直接落位）。R653 拒绝契约正式变更：裸 `layer` 自 strict 拒收转为接受（R653 测试对应支移除，R640/R641 契约变更先例）。
+- **TDD（红→绿实证）**：test_myui_css +1——结构断言（两匿名块+具名层各占 0/1/2 序槽）、裸 `layer` 导入（导入规则层 0/本地 UNLAYERED)、**行为对拍**：后匿名压前匿名（同选择器蓝胜红）、未分层压匿名层。**RED 如实红**（首正例 sheet NULL）;GREEN 一钓：else 分支引入吃掉原 layer 阶段 if 的闭括号（编译即捕），补全后 **167/167**(166+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5；途中 VK 树 `test_net_replication` 单次失败——R633 在案网络 flake，取证（单测 30 连跑 1/30 败+全套件复跑 118/118）与改动无关，记录在案。
+- **边界**：匿名层占注册表槽位（`MY_CSS_MAX_LAYERS` 上界同约，超限走 "CSS layer limit exceeded");`@layer base, { }` 混排（语句形式含匿名）规范本就非法，维持拒绝；层级联主干（具名/匿名/important/特异性）自此全谱；R611 AMD 基线不动。
+
 ## 本轮更新：R654 声明级 `!important`（TDD）— CSS 级联顶层落地：公开 decl 旗标 + 桥接三相位应用（分层普通→未分层普通→全 important 末相位）
 
 - **缺口**（级联面普查钓出）：引擎连 `!important` 都没有——`color: red !important` 按 "expected ';' or '}'" 语法拒绝，主题作者无终局覆盖手段。

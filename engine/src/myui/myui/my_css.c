@@ -785,6 +785,7 @@ static bool css_supports_condition(const char* query, size_t length,
 static bool css_layer_name_valid(const char* name, size_t length);
 static uint32_t css_layer_find_or_add(css_p_t* p, const char* name,
                                       size_t length);
+static uint32_t css_layer_add_anonymous(css_p_t* p);
 
 /* R654: !important lifts a declaration into a flat top cascade tier — the
  * boost must clear the deepest layered negative (-64*100000) plus the full
@@ -969,9 +970,9 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
       size_t media_length = query_length;
       size_t qpos = 0u;
       while (qpos < query_length && css_qualifier_is_ws(query[qpos])) qpos++;
-      /* R653: `layer(name)` — the imported rules carry the named layer's
-       * order. Bare `layer` (anonymous) follows the engine-wide subset:
-       * rejected everywhere. */
+      /* R653/R655: `layer(name)` — the imported rules carry the named
+       * layer's order; bare `layer` (anonymous, R655) registers a fresh
+       * order per occurrence. */
       if (query_length - qpos >= 5u &&
           memcmp(query + qpos, "layer", 5u) == 0 &&
           !c_ident_char((unsigned char)query[qpos + 5u])) {
@@ -983,10 +984,18 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
         while (gpos < query_length && css_qualifier_is_ws(query[gpos])) {
           gpos++;
         }
-        if (gpos >= query_length || query[gpos] != '(' ||
-            !css_qualifier_group_end(query, query_length, gpos, &end)) {
-          return css_import_qualifier_fail(p);
-        }
+        if (gpos >= query_length || query[gpos] != '(') {
+          /* R655: bare `layer` — anonymous import layer, a fresh order per
+           * occurrence. */
+          import_layer = css_layer_add_anonymous(p);
+          if (import_layer == MY_CSS_UNLAYERED_ORDER) {
+            return css_import_qualifier_fail(p);
+          }
+          qpos = gpos;
+        } else {
+          if (!css_qualifier_group_end(query, query_length, gpos, &end)) {
+            return css_import_qualifier_fail(p);
+          }
         name_start = gpos + 1u;
         name_length = end - name_start;
         while (name_length > 0u &&
@@ -1023,6 +1032,7 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
           return css_import_qualifier_fail(p);
         }
         qpos = end + 1u;
+        }
       }
       while (qpos < query_length && css_qualifier_is_ws(query[qpos])) qpos++;
       /* R652: `supports(...)` — exactly one balanced group after the
@@ -3232,6 +3242,19 @@ static uint32_t css_layer_find_or_add(css_p_t* p, const char* name,
   return (uint32_t)p->layer_count++;
 }
 
+/* R655: an anonymous layer registers a fresh order slot with an empty name
+ * (css_layer_name_valid rejects empty names, so the slot can never be found
+ * again by a named lookup — each occurrence is its own layer). */
+static uint32_t css_layer_add_anonymous(css_p_t* p) {
+  if (p->layer_count >= MY_CSS_MAX_LAYERS) {
+    css_fail(p, "CSS layer limit exceeded");
+    return MY_CSS_UNLAYERED_ORDER;
+  }
+  p->layer_names[p->layer_count][0] = '\0';
+  p->layer_ranks[p->layer_count] = (uint32_t)p->layer_count;
+  return (uint32_t)p->layer_count++;
+}
+
 static bool css_apply_layer_order(css_p_t* p, const uint32_t* ids,
                                   size_t count) {
   bool listed[MY_CSS_MAX_LAYERS] = {false};
@@ -3306,6 +3329,18 @@ static bool css_parse_layer_atrule(css_p_t* p, my_css_sheet_t* sheet,
   size_t length;
   uint32_t layer_order;
   c_ws(p);
+  /* R655: anonymous block form `@layer { ... }` — a fresh layer per
+   * occurrence (no name to concatenate under a parent layer). */
+  if (c_peek(p) == '{') {
+    layer_order = css_layer_add_anonymous(p);
+    if (layer_order == MY_CSS_UNLAYERED_ORDER) return false;
+    if (at_rule_depth >= MY_CSS_MAX_AT_RULE_NESTING) {
+      css_fail(p, "@layer nesting depth exceeded");
+      return false;
+    }
+    c_next(p);
+    return css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_order);
+  }
   if (!css_read_layer_component(p, name, sizeof(name))) {
     css_fail(p, "invalid @layer name");
     return false;

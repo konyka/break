@@ -1046,7 +1046,6 @@ TEST(css_import_layer_qualifier_assigns_layer_order)
   const char* layered_supports =
       "@import \"themed.css\" layer(base) supports (color: red);"
       " button { color: blue; }";
-  const char* anonymous = "@import \"themed.css\" layer;";
   const char* bad_name = "@import \"themed.css\" layer(..x..);";
   const char* unbalanced = "@import \"themed.css\" layer(base;";
   const char* cascade =
@@ -1120,10 +1119,9 @@ TEST(css_import_layer_qualifier_assigns_layer_order)
   my_widget_unref(widget);
   my_theme_destroy(theme);
 
-  /* anonymous and malformed layer conditions: strict rejects. */
-  memset(&error, 0, sizeof(error));
-  ASSERT_TRUE(my_css_parse_with_options(NULL, anonymous, strlen(anonymous),
-                                        &options, &error) == NULL);
+  /* malformed layer conditions: strict rejects. (The bare-`layer` case was
+   * an R653 subset rejection; R655 turned it into the anonymous import
+   * layer, pinned in css_anonymous_layers_get_unique_orders.) */
   memset(&error, 0, sizeof(error));
   ASSERT_TRUE(my_css_parse_with_options(NULL, bad_name, strlen(bad_name),
                                         &options, &error) == NULL);
@@ -5650,6 +5648,91 @@ TEST(css_late_layer_order_statement_reorders_existing_rules)
   my_theme_destroy(theme);
 }
 
+TEST(css_anonymous_layers_get_unique_orders)
+{
+  /* R655: anonymous layers — `@layer { ... }` without a name and the bare
+   * `layer` import condition. Each occurrence registers a fresh layer order
+   * (empty registry names can never collide with named lookups); the usual
+   * cascade rules apply (later anonymous outranks earlier, unlayered
+   * outranks all). */
+  const css_import_entry_t entries[] = {
+      {"themed.css", "label { color: red; }", 21u}, {NULL, NULL, 0u}};
+  const char* css =
+      "@layer { button { color: red; } }"
+      "@layer { label { color: blue; } }"
+      "@layer named { edit { color: green; } }";
+  const char* imported = "@import \"themed.css\" layer; button { color: blue; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  my_css_parse_options_t options = {0};
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 3u);
+  /* each anonymous occurrence is its own layer, in source order. */
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  ASSERT_EQ(my_css_rule(sheet, 1u)->layer_order, 1u);
+  ASSERT_EQ(my_css_rule(sheet, 2u)->layer_order, 2u);
+  my_css_sheet_destroy(sheet);
+
+  /* bare `layer` import: the imported rules are anonymous-layered. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, imported, strlen(imported),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  ASSERT_EQ(my_css_rule(sheet, 1u)->layer_order, MY_CSS_UNLAYERED_ORDER);
+  my_css_sheet_destroy(sheet);
+
+  /* later anonymous layer outranks earlier on the same selector. */
+  {
+    const char* order =
+        "@layer { button { color: red; } }"
+        "@layer { button { color: blue; } }";
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* widget = my_widget_create(NULL, "button");
+    const my_value_t* value;
+
+    ASSERT_NOT_NULL(theme);
+    ASSERT_NOT_NULL(widget);
+    widget->widget_type = "button";
+    ASSERT_EQ(my_theme_load_css_ex(theme, order, MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                    "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+    my_widget_unref(widget);
+    my_theme_destroy(theme);
+  }
+
+  /* unlayered still outranks an anonymous layer. */
+  {
+    const char* unlayered =
+        "@layer { button { color: red; } } button { color: blue; }";
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* widget = my_widget_create(NULL, "button");
+    const my_value_t* value;
+
+    ASSERT_NOT_NULL(theme);
+    ASSERT_NOT_NULL(widget);
+    widget->widget_type = "button";
+    ASSERT_EQ(my_theme_load_css_ex(theme, unlayered,
+                                   MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                    "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+    my_widget_unref(widget);
+    my_theme_destroy(theme);
+  }
+}
+
 TEST(css_layer_rejects_empty_duplicate_and_oversized_names)
 {
   const char* empty = "@layer ; button { color: red; }";
@@ -6194,6 +6277,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_layer_order_statement_is_respected);
     RUN_TEST(css_late_layer_order_statement_reorders_existing_rules);
     RUN_TEST(css_layer_rejects_empty_duplicate_and_oversized_names);
+    RUN_TEST(css_anonymous_layers_get_unique_orders);
     RUN_TEST(css_capability_registry_is_static_and_explicit);
     RUN_TEST(css_strict_error_identifies_missing_capability);
     RUN_TEST(css_error_codes_distinguish_policy_and_budget);
