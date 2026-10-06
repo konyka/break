@@ -10,6 +10,7 @@
 #include "myc/my_str.h"
 #include "myr/my_grapheme.h"
 #include "myr/my_text_layout.h"
+#include "myr/my_word_break.h"
 #include "myui/my_undo_manager.h"
 #include "myui/my_undo_stack.h"
 #include "myui/my_window.h"
@@ -759,10 +760,16 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
   switch (key) {
     case MY_KEY_LEFT:
     case MY_KEY_RIGHT: {
-      /* RTL (M12a): arrows move VISUALLY via the layout boundary map */
+      /* RTL (M12a): arrows move VISUALLY via the layout boundary map.
+       * R662: with Ctrl, arrows jump words (editor convention) in byte
+       * space — no layout or cluster walk needed. */
       my_text_layout_t* l = edit_layout_rtl(e, e->text);
       size_t next;
-      if (l != NULL) {
+      if (ctrl) {
+        next = key == MY_KEY_LEFT
+                   ? my_word_break_left(e->text, len, e->cursor)
+                   : my_word_break_right(e->text, len, e->cursor);
+      } else if (l != NULL) {
         size_t idx = edit_cp_index_of(e->text, e->cursor);
         idx = key == MY_KEY_LEFT ? my_text_layout_boundary_left(l, idx)
                                  : my_text_layout_boundary_right(l, idx);
@@ -816,10 +823,13 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
       } else if (e->cursor > 0) {
         /* R659: delete the whole grapheme cluster — bidi text uses the
          * layout boundary map (canonical semantics), other text the
-         * allocation-free byte walk. */
+         * allocation-free byte walk. R662: with Ctrl, delete to the word
+         * start. */
         size_t start;
         my_text_layout_t* l = edit_layout_rtl(e, e->text);
-        if (l != NULL) {
+        if (ctrl) {
+          start = my_word_break_left(e->text, len, e->cursor);
+        } else if (l != NULL) {
           size_t idx = edit_cp_index_of(e->text, e->cursor);
           start = edit_byte_of_cp(e->text,
                                   my_text_layout_boundary_left(l, idx));
@@ -837,7 +847,9 @@ static my_ret_t edit_on_key(my_edit_t* e, const my_event_t* event) {
       } else if (e->cursor < len) {
         size_t end;
         my_text_layout_t* l = edit_layout_rtl(e, e->text);
-        if (l != NULL) {
+        if (ctrl) {
+          end = my_word_break_right(e->text, len, e->cursor);
+        } else if (l != NULL) {
           size_t idx = edit_cp_index_of(e->text, e->cursor);
           end = edit_byte_of_cp(e->text,
                                 my_text_layout_boundary_right(l, idx));

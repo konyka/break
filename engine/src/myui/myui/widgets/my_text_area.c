@@ -16,6 +16,7 @@
 #include "myr/my_grapheme.h"
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
+#include "myr/my_word_break.h"
 #include "myui/my_undo_manager.h"
 #include "myui/my_undo_stack.h"
 #include "myui/my_window.h"
@@ -2356,6 +2357,24 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
   switch (key) {
     case MY_KEY_LEFT:
     case MY_KEY_RIGHT: {
+      /* R662: with Ctrl, arrows jump words (editor convention) — byte
+       * space over the whole buffer, hard newlines are whitespace. */
+      if (ctrl) {
+        size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
+        size_t target = key == MY_KEY_LEFT
+                            ? my_word_break_left(ta->text, ta->text_len, off)
+                            : my_word_break_right(ta->text, ta->text_len, off);
+        if (target != off) {
+          size_t row;
+          size_t col;
+          ta_pos_of(ta, target, &row, &col);
+          ta_move_to(ta, row, col, shift);
+        }
+        if (!shift) {
+          ta->goal_col = ta->cursor_col;
+        }
+        return MY_RET_OK;
+      }
       /* RTL (M12a): arrows move through the global visual-line order. The
        * adjacent visual line may belong to another physical line. */
       size_t vi;
@@ -2593,8 +2612,12 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       } else {
         size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
         if (off > 0) {
-          /* R659: delete the whole grapheme cluster before the cursor. */
-          size_t prev = my_grapheme_boundary_left(ta->text, ta->text_len, off);
+          /* R659: delete the whole grapheme cluster before the cursor.
+           * R662: with Ctrl, delete to the word start. */
+          size_t prev = ctrl
+                            ? my_word_break_left(ta->text, ta->text_len, off)
+                            : my_grapheme_boundary_left(ta->text,
+                                                        ta->text_len, off);
           user_delete_range(ta, prev, off);
         }
       }
@@ -2608,9 +2631,11 @@ static my_ret_t ta_on_key(my_text_area_t* ta, const my_event_t* event) {
       } else {
         size_t off = ta_offset_of(ta, ta->cursor_row, ta->cursor_col);
         if (off < ta->text_len) {
-          user_delete_range(
-              ta, off,
-              my_grapheme_boundary_right(ta->text, ta->text_len, off));
+          size_t end = ctrl
+                           ? my_word_break_right(ta->text, ta->text_len, off)
+                           : my_grapheme_boundary_right(ta->text,
+                                                        ta->text_len, off);
+          user_delete_range(ta, off, end);
         }
       }
       return MY_RET_OK;

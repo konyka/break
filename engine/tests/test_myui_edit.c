@@ -206,8 +206,84 @@ TEST(text_area_arrows_skip_clusters_without_layout)
   my_widget_unref(widget);
 }
 
+TEST(edit_ctrl_arrows_and_backspace_jump_words)
+{
+  /* R662: Ctrl+Left/Right jump words (editor convention), Ctrl+Backspace
+   * deletes to the word start. */
+  my_widget_t* widget = my_edit_create(NULL);
+  my_edit_t* edit = (my_edit_t*)widget;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(widget);
+  edit->focused = true;
+  ASSERT_EQ(my_edit_set_text(widget, "foo bar"), MY_RET_OK);
+
+  edit->cursor = 0u;
+  edit->anchor = 0u;
+  event = key_event(MY_KEY_RIGHT);
+  event.u.key.modifiers = MY_KEYMOD_CTRL;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->cursor, 4u);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->cursor, 7u);
+
+  event = key_event(MY_KEY_LEFT);
+  event.u.key.modifiers = MY_KEYMOD_CTRL;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->cursor, 4u);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->cursor, 0u);
+
+  /* ctrl+backspace deletes to the word start. */
+  edit->cursor = 7u;
+  edit->anchor = 7u;
+  event = key_event(MY_KEY_BACKSPACE);
+  event.u.key.modifiers = MY_KEYMOD_CTRL;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_edit_get_text(widget), "foo ");
+  ASSERT_EQ(edit->cursor, 4u);
+
+  my_widget_unref(widget);
+}
+
+TEST(text_area_ctrl_arrows_and_backspace_jump_words)
+{
+  my_widget_t* widget = my_text_area_create(NULL);
+  my_text_area_t* area = (my_text_area_t*)widget;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(widget);
+  area->focused = true;
+  ASSERT_EQ(my_text_area_set_text(widget, "foo bar"), MY_RET_OK);
+
+  area->cursor_row = 0u;
+  area->cursor_col = 0u;
+  area->anchor_row = 0u;
+  area->anchor_col = 0u;
+  event = key_event(MY_KEY_RIGHT);
+  event.u.key.modifiers = MY_KEYMOD_CTRL;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 4u);
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(area->cursor_col, 7u);
+
+  area->cursor_row = 0u;
+  area->cursor_col = 7u;
+  area->anchor_row = 0u;
+  area->anchor_col = 7u;
+  event = key_event(MY_KEY_BACKSPACE);
+  event.u.key.modifiers = MY_KEYMOD_CTRL;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_STR_EQ(my_text_area_get_text(widget), "foo ");
+  ASSERT_EQ(area->cursor_col, 4u);
+
+  my_widget_unref(widget);
+}
+
 TEST_MAIN_BEGIN()
 RUN_TEST(edit_backspace_and_delete_are_grapheme_aware);
 RUN_TEST(text_area_backspace_and_delete_are_grapheme_aware);
 RUN_TEST(text_area_arrows_skip_clusters_without_layout);
+RUN_TEST(edit_ctrl_arrows_and_backspace_jump_words);
+RUN_TEST(text_area_ctrl_arrows_and_backspace_jump_words);
 TEST_MAIN_END()

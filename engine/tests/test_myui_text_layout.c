@@ -11,6 +11,7 @@
 #include "myr/my_text_paragraph.h"
 #include "myr/my_text_layout.h"
 #include "myr/my_grapheme.h"
+#include "myr/my_word_break.h"
 #include "myr/my_font_ft.h"
 #include "myr/my_syntax.h"
 #include "myc/my_str.h"
@@ -732,6 +733,35 @@ TEST(text_layout_boundaries_skip_zwj_and_flag_clusters)
   my_text_layout_destroy(plain_zwj);
   my_text_layout_destroy(couple);
   my_text_layout_destroy(family);
+}
+
+TEST(word_break_boundaries_follow_editor_convention)
+{
+  /* R662: bounded word classes (whitespace / word / punctuation) with the
+   * common editor jump semantics — right lands on the next word start,
+   * left on the current or previous word start. */
+  const char* text = "foo bar  baz-qux";
+  const char* unicode = "h\xC3\xA9llo w\xC3\xB6rld";
+
+  ASSERT_EQ(my_word_break_right(text, 16u, 0u), 4u);
+  ASSERT_EQ(my_word_break_right(text, 16u, 4u), 9u);
+  ASSERT_EQ(my_word_break_right(text, 16u, 9u), 12u);
+  ASSERT_EQ(my_word_break_right(text, 16u, 12u), 13u);
+  ASSERT_EQ(my_word_break_right(text, 16u, 13u), 16u);
+  ASSERT_EQ(my_word_break_right(text, 16u, 16u), 16u);
+
+  ASSERT_EQ(my_word_break_left(text, 16u, 16u), 13u);
+  ASSERT_EQ(my_word_break_left(text, 16u, 13u), 12u);
+  ASSERT_EQ(my_word_break_left(text, 16u, 12u), 9u);
+  ASSERT_EQ(my_word_break_left(text, 16u, 9u), 4u);
+  ASSERT_EQ(my_word_break_left(text, 16u, 4u), 0u);
+  /* from the middle of a word: its start. */
+  ASSERT_EQ(my_word_break_left(text, 16u, 2u), 0u);
+  ASSERT_EQ(my_word_break_left(text, 16u, 6u), 4u);
+
+  /* non-ASCII codepoints are word-class. */
+  ASSERT_EQ(my_word_break_right(unicode, 12u, 0u), 7u);
+  ASSERT_EQ(my_word_break_left(unicode, 12u, 12u), 7u);
 }
 
 TEST(boundaries_keep_indic_and_khmer_conjoint_clusters)
@@ -3782,6 +3812,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_boundaries_skip_zwj_and_flag_clusters);
     RUN_TEST(grapheme_byte_boundaries_skip_cluster_interior);
     RUN_TEST(boundaries_keep_indic_and_khmer_conjoint_clusters);
+    RUN_TEST(word_break_boundaries_follow_editor_convention);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_maps_additional_unicode_scripts);
     RUN_TEST(text_layout_keeps_arabic_common_punctuation_with_neighbor_script);

@@ -401,6 +401,7 @@ set(MYUI_CORE_SOURCES
     src/myui/myr/my_arabic_shape.c
     src/myui/myr/my_text_layout.c
     src/myui/myr/my_grapheme.c
+    src/myui/myr/my_word_break.c
     src/myui/myr/my_text_paragraph.c
     src/myui/myr/my_line_break.c
     src/myui/myr/my_syntax.c

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R662 Ctrl+词跳/词删（TDD）— 新 myr/my_word_break 模块（三词类有界子集）;my_edit/text_area 编辑器标准 Ctrl+箭头/Ctrl+Backspace 落地
+
+- **缺口**（widget 编辑面普查钓出）：Ctrl+Left/Right 静默退化为普通箭头（case 不分修饰键）——编辑器标准的词跳/词删全缺。
+- **方案**（新 myr 模块 + 双 widget 消费）：① `my_word_break.h/.c`——`my_word_break_left/right(text, len, offset)`，三词类有界子集：空白（ASCII 空格/tab/CR/LF)/词（A-Za-z0-9_ + 全部非 ASCII 码点——组合符天然词内，簇对齐免处理）/标点；跳变语义随主流编辑器惯例（右=下一词首，左=当前/前一词首），免分配（前导字节定类+续字节走查）;② my_edit:LEFT/RIGHT 加 ctrl 分支（词跳优先于 layout/字素路径）、Backspace/Delete ctrl 分支（删至词界）;③ text_area：同型接线（offset 域 Ctrl 分支先于 wrap/vi 逻辑——词跳无需可见行映射；硬换行=空白天然跨行）。
+- **TDD（红→绿实证）**：① myr 层 test_myui_text_layout +1——"foo bar  baz-qux" 全链（双空格/连字符标点/中间起步/端点）+ 非 ASCII 词类（héllo wörld);**stub-RED**(boundary 直返 offset 桩，首断言 0≠4 如实红）→ GREEN 一次过 **141/141**;② widget 层 test_myui_edit +2——ctrl+right 两跳/ctrl+left 两跳/ctrl+backspace 删至词首（双 widget 同构）。**RED 如实红 2/2**(ctrl 退化普通箭头 1≠4)→ GREEN 一次过 **5/5**。
+- **回归**：双树非图形 CTest 各 **118/118**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有箭头/删除测试组全绿未动（无 ctrl 路径零扰动）。
+- **边界**：词类子集不实现 UAX#29 词界全规则（脚本化词分段/数字连写/Katakana 长音等——ASCII+非 ASCII 二分覆盖代码编辑器主导场景）;Ctrl+Home/End（文档首尾）本就有 Home/End 语义未涉；Ctrl+Shift 选择扩展经 shift 路径自然生效（anchor 不动）;R611 AMD 基线不动。
+
 ## 本轮更新：R661 GB9c 印梵/高棉合字簇（TDD）— 有界 virama 集 + 文字块续簇规则，layout/字节双 API 同构；字素弧有界子集收官
 
 - **缺口**（R658 落账"GB9c 维持让渡"）：合字辅音侧可拆——क ् ष（KA+virama+SSA）的 ्/ष 边界是合法停（virama 侧经 GB9 早已闭合，辅音侧无规则）；R643 高棉语料（ក្នុង/ខ្មែរ 含 COENG U+17D2）同型受害。
