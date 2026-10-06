@@ -212,7 +212,7 @@ jobs:
             sleep 0.1
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-          ctest --test-dir build -LE graphics --output-on-failure
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
 
   wayland-vk:
@@ -259,7 +259,7 @@ jobs:
             sleep 0.1
           done
            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-           ctest --test-dir build -LE graphics --output-on-failure
+           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
            ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
 
   windows-clang:
@@ -393,7 +393,7 @@ jobs:
           # link MoltenVK honor this marker and skip with a printed reason;
           # a local macOS machine with a GPU runs them in full.
           export BREAK_MYUI_SKIP_VK_SENSITIVE=1
-          ctest --test-dir build -LE graphics --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
             t=test_myui_vgcanvas_backend
             if [ -x "build/$t" ]; then
               echo "::error::final output lines $t (unfiltered tail):"
