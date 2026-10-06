@@ -193,6 +193,8 @@ my_ret_t my_chart_add_mark_area(my_widget_t* chart, float y_min, float y_max,
 my_ret_t my_chart_clear_mark_areas(my_widget_t* chart);
 size_t my_chart_get_mark_area_count(const my_widget_t* chart);
 size_t my_chart_get_hover_index(const my_widget_t* chart);
+size_t my_chart_hit_test(const my_widget_t* chart, int32_t local_x,
+                         int32_t local_y);
 my_ret_t my_chart_get_tooltip(const my_widget_t* chart, char* buffer,
                               size_t capacity);
 my_ret_t my_chart_get_accessible_description(const my_widget_t* chart,

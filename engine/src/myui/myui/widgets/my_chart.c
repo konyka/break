@@ -1607,6 +1607,30 @@ size_t my_chart_get_hover_index(const my_widget_t* widget) {
   return chart != NULL ? chart->hover_index : CHART_HOVER_NONE;
 }
 
+size_t my_chart_hit_test(const my_widget_t* widget, int32_t local_x,
+                         int32_t local_y) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  float x, y, w, h;
+  size_t begin, window, category_count;
+  if (chart == NULL || !chart_plot_rect(widget, &x, &y, &w, &h))
+    return CHART_HOVER_NONE;
+  if ((float)local_x < x || (float)local_x > x + w || (float)local_y < y ||
+      (float)local_y > y + h)
+    return CHART_HOVER_NONE;
+  category_count = chart_category_count(chart);
+  chart_zoom_range(chart, &begin, &window);
+  if (window == 0u || category_count == 0u) return CHART_HOVER_NONE;
+  {
+    size_t index = window > 1u
+                       ? begin + (size_t)lroundf(((float)local_x - x) / w *
+                                                 (float)(window - 1u))
+                       : begin;
+    if (index >= begin + window) index = begin + window - 1u;
+    if (index >= category_count) index = category_count - 1u;
+    return index;
+  }
+}
+
 my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
                               size_t capacity) {
   const my_chart_t* chart = chart_const_cast(widget);

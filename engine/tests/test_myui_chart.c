@@ -1000,6 +1000,24 @@ TEST(chart_paints_mark_area) {
   my_widget_unref(chart);
 }
 
+TEST(chart_hit_test_is_pure_and_bounded) {
+  static const float values[] = {10.0f, 20.0f, 30.0f, 40.0f};
+  my_chart_series_t series = {"v", values, 4u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_hit_test(chart, 44, 80), 0u);
+  ASSERT_EQ(my_chart_hit_test(chart, 140, 90), 1u);
+  ASSERT_EQ(my_chart_hit_test(chart, 306, 100), 3u);
+  ASSERT_EQ(my_chart_hit_test(chart, 10, 80), SIZE_MAX);
+  ASSERT_EQ(my_chart_hit_test(chart, 400, 80), SIZE_MAX);
+  ASSERT_EQ(my_chart_hit_test(chart, 175, 5), SIZE_MAX);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
@@ -1036,4 +1054,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_paints_mark_area);
   RUN_TEST(chart_line_series_share_category_positions);
   RUN_TEST(chart_renders_at_supported_viewports);
+  RUN_TEST(chart_hit_test_is_pure_and_bounded);
 TEST_MAIN_END()

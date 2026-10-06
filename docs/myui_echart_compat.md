@@ -28,6 +28,9 @@ annotations are retained from the current model. Series removal and
 `my_echart_event_adapter_t` maps MyUI pointer down/move/up, wheel, and left/right
 key events to stable semantic chart events. Event payloads preserve native
 coordinates, time, button/modifiers, and reserved series/data/category indexes.
+`my_chart_hit_test()` offers a pure chart-local category lookup (plot-bounded,
+zoom-aware, no hover mutation) that controllers can use to fill those index
+payloads.
 The adapter also exposes explicit `highlight`, `legendSelect`, `dataZoom`,
 `brush`, `showTip`, and `hideTip` action payloads through removable callback
 subscriptions. Subscription removal is safe during dispatch, and destroying an
