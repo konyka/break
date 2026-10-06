@@ -50,3 +50,20 @@ deterministic while allowing a real timer to drive production rendering.
 Unsupported options will return deterministic errors rather than being silently
 ignored. The adapter uses MyUI native events and does not introduce a browser or
 JavaScript runtime.
+
+## Visual verification gate
+
+The deterministic software-canvas chart suite renders representative line
+fixtures at `120x100`, `320x180`, and `640x360`. It asserts non-empty semantic
+geometry in each viewport; text rasterization is not compared by exact hash.
+OpenGL/Vulkan tests remain separate smoke gates. Full pixel goldens require
+reviewed, checked-in fixtures and are not replaced by an optional environment
+variable dump.
+
+## Atomic projection boundary
+
+The current adapter stages owned option data and float conversion before native
+projection, rejects unsupported/mixed configurations, and preserves the prior
+chart state on validation/OOM failures. A future native snapshot commit API is
+required before claiming setter-level atomicity for every possible renderer
+failure.

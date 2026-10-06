@@ -932,6 +932,39 @@ TEST(chart_line_series_share_category_positions) {
   my_widget_unref(chart);
 }
 
+TEST(chart_renders_at_supported_viewports) {
+  static const float values[] = {5.0f, 30.0f, 15.0f};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  const uint32_t sizes[][2] = {{120u, 100u}, {320u, 180u}, {640u, 360u}};
+  for (size_t viewport = 0u; viewport < 3u; viewport++) {
+    my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+    my_lcd_t* lcd = my_lcd_mem_create(NULL, sizes[viewport][0], sizes[viewport][1],
+                                      MY_PIXEL_FORMAT_BGRA8888);
+    my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+    size_t non_white = 0u;
+    ASSERT_NOT_NULL(chart);
+    ASSERT_NOT_NULL(lcd);
+    ASSERT_NOT_NULL(canvas);
+    chart->rect.w = (int32_t)sizes[viewport][0];
+    chart->rect.h = (int32_t)sizes[viewport][1];
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+    chart->vtable->on_paint(chart, canvas);
+    ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+    {
+      uint8_t* pixels = my_lcd_mem_get_buffer(lcd);
+      size_t bytes = (size_t)sizes[viewport][0] * sizes[viewport][1] * 4u;
+      for (size_t i = 0u; i < bytes; i += 4u)
+        if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu || pixels[i + 2u] != 0xFFu)
+          non_white++;
+    }
+    ASSERT_TRUE(non_white > 20u);
+    my_vgcanvas_destroy(canvas);
+    my_lcd_destroy(lcd);
+    my_widget_unref(chart);
+  }
+}
+
 TEST(chart_paints_mark_area) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
@@ -1002,4 +1035,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_paints_mark_point_annotation);
   RUN_TEST(chart_paints_mark_area);
   RUN_TEST(chart_line_series_share_category_positions);
+  RUN_TEST(chart_renders_at_supported_viewports);
 TEST_MAIN_END()
