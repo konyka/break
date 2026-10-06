@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R633 VK 命令缓冲写路径 WAR 屏障事故与修复 — test_vulkan 12b 偶发失败（~25%）根因消除；三条 buffer 写路径屏障审计补齐
+
+- **事故现象**：拉取远程后 macOS 平台验证时，test_vulkan 的 TEST 12b（deferred gbuffer factor channel）偶发失败——实测 8 次连跑失败 2 次（~25%），失败签名为左右 quad 像素完全相同（`L alb{64,64,64,0} mr{64,112,255} == R ...`），即两次 draw 都读到了第二次 UBO 更新的数据。单独重跑时常绿，纯运气型竞态。
+- **根因**（双层）：① `rhi_cmd_update_buffer` 只在 `vkCmdUpdateBuffer` **之后**有屏障（TRANSFER_WRITE→后续 SHADER_READ），**写前零屏障**——per-draw UBO 重绑模式（同一帧内对同一 UBO update→draw→update→draw，deferred gbuffer factors 的生产模式）下，第二次 transfer write 可抢先于第一次 draw 的 shader 读取落地（WAR 冒险）；桌面 GPU 管线时序下极少暴露，MoltenVK/Metal 命令编码差异使其以约 1/4 概率显形。② 审计发现同型缺陷另有两处：`rhi_cmd_copy_buffer`/`rhi_cmd_fill_buffer` 的写前屏障**声明了 `SHADER_READ` 等 srcAccessMask，但 srcStageMask 只含 COMPUTE/TRANSFER/HOST**——Vulkan 语义上屏障只同步 stage mask 覆盖阶段所产生的 access（stage 缺席=该 access 类型从未被排序），顶点/片段着色器及顶点输入的读取实际上不受保护。
+- **修复**（engine/src/rhi/rhi_vk.c，两提交 7ae8dea/2ff7f99）：`rhi_cmd_update_buffer` 补写前 WAR 屏障（SHADER_READ|INDIRECT_COMMAND_READ|VERTEX_ATTRIBUTE_READ → TRANSFER_WRITE，stage 覆盖 VERTEX_INPUT/VERTEX/FRAGMENT/COMPUTE/DRAW_INDIRECT）；`rhi_cmd_copy_buffer`/`rhi_cmd_fill_buffer` 的既有写前屏障 stage/access 掩码补齐至全读者集合。审计方法：grep 全部 `vkCmdUpdateBuffer`/`vkCmdFillBuffer`/`vkCmdCopyBuffer`/`vkCmdCopy*Image` 调用点逐一核对——mip 上传/纹理数组传输为一次性同步提交（fence 等待），无帧内竞态；GL 端 `glBufferSubData`/`glClearBufferSubData` 由驱动托管 WAR（可阻塞或 ghost），无此问题类。
+- **压测实证**：修复后 test_vulkan 连跑 **42/42 全绿**（12+30 两轮；修复前 ~25% 失败率）；头部套件 117/117 × 20 轮、fuzz smoke 5/5、Cocoa 运行时 3/3、VK validation 0 消息。同期 test_net_replication 的一次性失败经 50 次单独压测+20 轮全套件未复现（该测试已有 2000ms 内核级 recv 超时+PID 端口分配，设计健壮），记录在案持续观察。
+- **教训（三条硬规则，防同型复发）**：① **Vulkan 屏障同步范围 = srcStageMask ∩ 能产生 srcAccessMask 访问的阶段**——access 写了而 stage 没写等于没同步，审查屏障必须 stage/access 对照核对；② **任何记录进命令缓冲的 buffer/image 写必须前后双屏障**：前 WAR（所有既有读者→TRANSFER_WRITE）、后 RAW（TRANSFER_WRITE→所有后续读者），缺一即竞态；③ **图形/并发改动的"绿"不可信单次**——偶发竞态须 N 次连跑压测取证（本事故 25% 失败率意味着单次绿有约 3/4 概率是假阴性）。
+- **边界**：`rhi_buffer_update`（即时 memcpy 映射内存路径）的帧在飞安全由调用方契约保证（rhi_cmd_update_buffer 才是有序路径），不在本轮范围；sync validation（VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_EXT）可在运行时自动钓出此类冒险，MoltenVK 环境未接入，留作后续硬化选项；R611 AMD 基线不动。
+
 ## 本轮更新：R632 my_text_paragraph_replace 段级增量重排（TDD）— 段落模型从"建一次"到"可编辑"：编辑后只重排触及的硬断行段，契约=与全量重建逐行等价
 
 - **缺口**（文本域史诗"跨物理段落增量 visual rebreaking"的纯函数层切片）:`my_text_paragraph_t` 是 build-once 模型——任何文本编辑都要对整段重新 `process_n`(widget 层 R-prior 的 text_area 增量以物理行为粒度重建段落对象，段落本体无编辑能力）；无 replace 的段落对超长物理行（无 \n 的 MB 级段落）每次击键全量重排。
