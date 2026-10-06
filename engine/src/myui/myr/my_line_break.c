@@ -92,6 +92,49 @@ static const my_builtin_sa_word_t MY_BUILTIN_LO_WORDS[] = {
     {MY_BUILTIN_LO_SABAIDEE, sizeof(MY_BUILTIN_LO_SABAIDEE) /
                                   sizeof(MY_BUILTIN_LO_SABAIDEE[0])}};
 
+/* R643: bounded Khmer corpus (version-1 `km-Khmr` profile) — the same set
+ * of high-frequency function words as the Thai/Lao corpora, plus the formal
+ * greeting: phea-sa/khmae/ka/ning/robos/nov/chea/knong/min/chom-reab-suor.
+ * Unknown words remain unbreakable. */
+static const uint32_t MY_BUILTIN_KM_LANGUAGE[] = {
+    0x1797u, 0x17B6u, 0x179Fu, 0x17B6u};
+static const uint32_t MY_BUILTIN_KM_KHMER[] = {
+    0x1781u, 0x17D2u, 0x1798u, 0x17C2u, 0x179Au};
+static const uint32_t MY_BUILTIN_KM_KA[] = {0x1780u, 0x17B6u, 0x179Au};
+static const uint32_t MY_BUILTIN_KM_NING[] = {0x1793u, 0x17B7u, 0x1784u};
+static const uint32_t MY_BUILTIN_KM_ROBOS[] = {
+    0x179Au, 0x1794u, 0x179Fu, 0x17CBu};
+static const uint32_t MY_BUILTIN_KM_NOV[] = {0x1793u, 0x17C5u};
+static const uint32_t MY_BUILTIN_KM_CHEA[] = {0x1787u, 0x17B6u};
+static const uint32_t MY_BUILTIN_KM_KNONG[] = {
+    0x1780u, 0x17D2u, 0x1793u, 0x17BBu, 0x1784u};
+static const uint32_t MY_BUILTIN_KM_MIN[] = {0x1798u, 0x17B7u, 0x1793u};
+static const uint32_t MY_BUILTIN_KM_GREETING[] = {
+    0x1787u, 0x17C6u, 0x179Au, 0x17B6u,
+    0x1794u, 0x179Fu, 0x17BDu, 0x179Au};
+
+static const my_builtin_sa_word_t MY_BUILTIN_KM_WORDS[] = {
+    {MY_BUILTIN_KM_LANGUAGE, sizeof(MY_BUILTIN_KM_LANGUAGE) /
+                                  sizeof(MY_BUILTIN_KM_LANGUAGE[0])},
+    {MY_BUILTIN_KM_KHMER, sizeof(MY_BUILTIN_KM_KHMER) /
+                               sizeof(MY_BUILTIN_KM_KHMER[0])},
+    {MY_BUILTIN_KM_KA, sizeof(MY_BUILTIN_KM_KA) /
+                            sizeof(MY_BUILTIN_KM_KA[0])},
+    {MY_BUILTIN_KM_NING, sizeof(MY_BUILTIN_KM_NING) /
+                              sizeof(MY_BUILTIN_KM_NING[0])},
+    {MY_BUILTIN_KM_ROBOS, sizeof(MY_BUILTIN_KM_ROBOS) /
+                               sizeof(MY_BUILTIN_KM_ROBOS[0])},
+    {MY_BUILTIN_KM_NOV, sizeof(MY_BUILTIN_KM_NOV) /
+                             sizeof(MY_BUILTIN_KM_NOV[0])},
+    {MY_BUILTIN_KM_CHEA, sizeof(MY_BUILTIN_KM_CHEA) /
+                              sizeof(MY_BUILTIN_KM_CHEA[0])},
+    {MY_BUILTIN_KM_KNONG, sizeof(MY_BUILTIN_KM_KNONG) /
+                               sizeof(MY_BUILTIN_KM_KNONG[0])},
+    {MY_BUILTIN_KM_MIN, sizeof(MY_BUILTIN_KM_MIN) /
+                             sizeof(MY_BUILTIN_KM_MIN[0])},
+    {MY_BUILTIN_KM_GREETING, sizeof(MY_BUILTIN_KM_GREETING) /
+                                  sizeof(MY_BUILTIN_KM_GREETING[0])}};
+
 my_line_break_class_t my_line_break_class(uint32_t cp) {
   size_t lo = 0, hi = sizeof(MY_LINE_BREAKS) / sizeof(MY_LINE_BREAKS[0]);
   while (lo < hi) {
@@ -327,10 +370,18 @@ static bool my_builtin_dictionary_profile_is_lao(
          strcmp(profile->locale, "lo-Lao") == 0;
 }
 
+/* R643: third built-in profile. */
+static bool my_builtin_dictionary_profile_is_khmer(
+    const my_line_break_dictionary_profile_t* profile) {
+  return profile != NULL && my_line_break_dictionary_profile_valid(profile) &&
+         strcmp(profile->locale, "km-Khmr") == 0;
+}
+
 bool my_line_break_builtin_dictionary_supports(
     const my_line_break_dictionary_profile_t* profile) {
   return my_builtin_dictionary_profile_is_thai(profile) ||
-         my_builtin_dictionary_profile_is_lao(profile);
+         my_builtin_dictionary_profile_is_lao(profile) ||
+         my_builtin_dictionary_profile_is_khmer(profile);
 }
 
 static bool my_builtin_sa_word_matches(const my_builtin_sa_word_t* word,
@@ -368,6 +419,10 @@ my_ret_t my_line_break_apply_builtin_dictionary(
     words = MY_BUILTIN_LO_WORDS;
     word_count =
         sizeof(MY_BUILTIN_LO_WORDS) / sizeof(MY_BUILTIN_LO_WORDS[0]);
+  } else if (my_builtin_dictionary_profile_is_khmer(profile)) {
+    words = MY_BUILTIN_KM_WORDS;
+    word_count =
+        sizeof(MY_BUILTIN_KM_WORDS) / sizeof(MY_BUILTIN_KM_WORDS[0]);
   } else {
     return MY_RET_NOT_SUPPORTED;
   }

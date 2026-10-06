@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R643 内建 SA 词典第三个 locale（TDD）— `km-Khmr` profile 落地：高棉语有界语料断行；profile→语料分派三臂化
+
+- **缺口**（R642 落账"更多 SA locale 同机制可添但需语料来源评审"）：高棉语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"km-Khmr"})`=false，`apply` 回 NOT_SUPPORTED。
+- **方案**（机制零新增，语料+第三分派臂）：① 高棉语有界语料 10 词（镜像泰/老集语义：语言/高棉/名物化/和/属格/在/是/里/不/正式问候——码点逐词经 UTF-8 转储核验+外部拼写佐证（Wiktionary 等），全部落于 UAX#14 SA 类区间 0x1780-0x17D3，生成表忠实）；② `apply_builtin_dictionary`/`supports` 加 `km-Khmr` 臂，可达性 DP+最长匹配算法零改动复用。保守契约不变：未覆盖词一律不可断——含跨 profile（泰语语料遇高棉输入=OK 全 false，本轮钉死）。
+- **TDD（红→绿实证）**：test_myui_text_layout +2——① profile 支持面+短语断界（ភាសាខ្មែរ 9 码点仅词界 4 可断/跨 profile 保守/全 SA 非词不可断/`en` 仍 NOT_SUPPORTED）；② 复合词断界（ការនិងរបស់ 3+3+4 两界/ជានៅ 2+2 经 callback 适配器同界/问候词 ជំរាបសួរ 内部不断）。**RED 如实红 2/2**（supports=false/apply NOT_SUPPORTED）；GREEN 一次过 **134/134**（132+2）。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯语料+分派改动，泰/老路径逐位不动，无构造/渲染触点（demo 四配置不适用）。
+- **边界**：内建语料仍刻意小（10 词/locale）；缅甸 `my` 同机制可添但需语料来源评审；完整 locale tailoring（ICU 级词典）维持史诗外；R611 AMD 基线不动。
+
 ## 本轮更新：R642 内建 SA 词典第二个 locale（TDD）— `lo-Lao` profile 落地：老挝语有界语料断行；词典分派从"泰语特例"泛化为"按 profile 选语料"
 
 - **缺口**(`my_line_break.h` 落账"内建语料仅 version-1 `th-Thai`"):SA 文字（无空格分词）断行依赖词典裁剪，老挝语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"lo-Lao"})`=false,`apply` 回 NOT_SUPPORTED。
