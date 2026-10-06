@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R620 myui @scope root 组合器（TDD）— 文档三处落账的"组合器未实现"首片关闭：root 接受后代/子代组合器路径
+
+- **缺口**（CSS 补充条目三处落账"@scope 组合器未实现"):@scope root 此前仅接受单个 compound(`c_selector` 直填），多 compound 路径（`@scope panel > box`/`@scope app panel`）一律 "unsupported @scope syntax" 拒。调研定论：规则选择器的复杂路径机制本就完备（css_rule 的 compounds+direct_between、theme_ancestor_path_matches 对 ancestor_count/direct_path 全泛型）——root 组合器=解析端复用同款折叠+splice 端多槽拷贝，**匹配/桥接层零改动**。
+- **解析**:root prelude 重写为 css_rule 同款 compound 循环——whitespace=后代、`>`=子代，`to` 关键字（compound 起始位）或 `{` 终止；compounds 折叠为 subject+nearest-first ancestors(`ancestor_direct_path[i]`=该槽与内侧一级间的组合器）。约束沿用子集语义：每 compound 禁伪类（state≠-1 拒）、`to` 永不可作中段 compound（关键字保留，与既有首位置处理一致）、root 选择器列表仍拒（`,`)、root 路径上限 5 compound(subject+4 ancestors=MY_CSS_MAX_ANCESTORS 槽位上限）。
+- **splice**：嵌套 scope 的 root 贡献从 1 槽变为 `1+ancestor_count` 槽（root subject 居近端、direct=false——scope 与内部规则间恒为后代边；root 自身路径携组合器标志依次向外）;**limit 边界语义钉死**:scope_limit_root_index 指向 root **subject 槽**（最近端）——limit 扫描在 root subject 处止步，root 路径自身的中间 compound 永不触发 limit（CSS donut-scope 语义：scope=root subject 的后代域）。
+- **TDD（红→绿实证）**:test_myui_css +5——① child 组合器（`panel > box`：解析断言 ancestors=[box(desc),panel(direct)]+主题级 panel>box>button 命中/panel>wrap>box 不命中）;② 后代组合器（`panel box`：深嵌命中/无 panel 祖先不命中）;③ 组合器 root+to limit 边界（`app > panel to dialog`:root 路径**上方**的 dialog 不排除、root subject 与 subject 间的 dialog 排除，解析断言 root_index==0);④ root_index 钉 subject 槽的判别性用例（`app > panel to app`:limit 同型于路径外沿 compound——若 root_index 错指外沿槽则误排除，命中=钉死）;⑤ malformed 六例（悬空 `>`、双 `>`、`>` 后接 to、root 路径伪类、root 超 5 compound、嵌套路径预算 3+2>4）全拒+SCOPE capability（深度例 UNSUPPORTED_FEATURE、语法例 SYNTAX，沿用既有深度例惯例）。**RED 如实红 4/5**(malformed 例对旧解析全拒=守卫测试）;GREEN 首轮钓出两处错误归因修正（c_selector 失败的 capability 0→css_mark_scope_error 补齐；root 深度消息并入 UNSUPPORTED_FEATURE 惯例）后 **108/108**(103+5)。
+- **回归**：双树非图形 CTest 各 117/118——唯一红=test_platform_win32_runtime 的 `OpenClipboard failed`，系**本机 OS 级剪贴板 wedge**（系统 Get-Clipboard 与 Forms.Clipboard 同步卡死，R616 期同型先例 7e9defc，与本 diff 零交集——纯 CSS 解析器改动）,CI Windows job 为仲裁；VK 树 test_myui_css 同 108/108。my_theme/桥接层零改动（复杂选择器通路本就对规则选择器服役）。
+- **边界**:@scope 组合器仅剩 **`to` limit 侧**（limit 仍为 compound 列表，复杂 limit 需逐祖先位置的序列匹配——独立议题）;root 选择器列表（`,`)仍拒；完整 CSS Scoping 规范（显式括号 prelude 等）仍未实现；`test_platform_win32_runtime` 的本机剪贴板 wedge 待 OS 自复（CI 仲裁）。
+
 ## 本轮更新：R619 offscreen bind 清屏色调用方全权（TDD）— R617 边界"魔数归属"关闭：RHI 烘焙默认值 → 逐 FBO 可替换
 
 - **缺口**（R617 落账"清屏色魔数 {0.05,0.05,0.1,1.0} 仍是 RHI 层烘焙——改由调用方全权属另一议题"):bind=清屏契约双端统一后，清除值本身仍硬编码（VK 烘焙在 loadOp 清除值、GL R617 内联常量），调用方无法替换。

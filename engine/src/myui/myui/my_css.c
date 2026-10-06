@@ -887,10 +887,12 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
       size_t scope_index;
       size_t existing = sel.ancestor_count;
       size_t scope_root_count = 0u;
-      if (existing + p->scope_count > MY_CSS_MAX_ANCESTORS) {
-        size_t si;
-        for (si = 0u; si < p->scope_count; ++si) {
-          if (p->scope_has_root[si]) scope_root_count++;
+      /* R620: a rooted scope contributes 1 + root ancestor_count slots
+       * (complex-selector roots carry their own path). */
+      for (scope_index = 0u; scope_index < p->scope_count; ++scope_index) {
+        if (p->scope_has_root[scope_index]) {
+          scope_root_count +=
+              1u + p->scope_selectors[scope_index].ancestor_count;
         }
       }
       if (existing + scope_root_count > MY_CSS_MAX_ANCESTORS) {
@@ -903,16 +905,24 @@ static my_css_rule_t* css_rule(css_p_t* p, uint32_t layer_id) {
             &p->scope_selectors[p->scope_count - scope_index - 1u];
         size_t root_index = MY_CSS_SCOPE_ROOT_IMPLICIT;
         if (p->scope_has_root[p->scope_count - scope_index - 1u]) {
-          my_css_ancestor_t* ancestor =
-              &sel.ancestors[existing + scope_root_count];
+          size_t slot = existing + scope_root_count;
+          size_t ai;
+          my_css_ancestor_t* ancestor = &sel.ancestors[slot];
           memcpy(ancestor->widget_type, scope->widget_type,
                  sizeof(ancestor->widget_type));
           memcpy(ancestor->id, scope->id, sizeof(ancestor->id));
           memcpy(ancestor->style_class, scope->style_class,
                  sizeof(ancestor->style_class));
-          sel.ancestor_direct_path[existing + scope_root_count] = false;
-          root_index = existing + scope_root_count;
+          sel.ancestor_direct_path[slot] = false;
+          root_index = slot;
           scope_root_count++;
+          /* R620: the root's own path follows outward, combinators kept. */
+          for (ai = 0u; ai < scope->ancestor_count; ++ai) {
+            sel.ancestors[existing + scope_root_count] = scope->ancestors[ai];
+            sel.ancestor_direct_path[existing + scope_root_count] =
+                scope->ancestor_direct_path[ai];
+            scope_root_count++;
+          }
         }
         if (scope->scope_limit_count != 0u) {
           size_t limit_index;
@@ -2086,9 +2096,75 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
       }
       has_limit = true;
     } else {
-      if (!c_selector(p, &selector) || selector.state != -1) {
-        css_fail(p, "invalid @scope root selector");
-        return false;
+      /* R620: the root prelude is a bounded complex selector — compounds
+       * joined by descendant (whitespace) or child ('>') combinators,
+       * terminated by the 'to' keyword (at compound-start) or '{'.
+       * Compounds fold into selector as subject + nearest-first ancestors,
+       * exactly like a rule selector path (css_rule). Root selector LISTS
+       * and combinator 'to' limits remain unsupported. */
+      my_css_selector_t compounds[MY_CSS_MAX_ANCESTORS + 1u];
+      bool direct_between[MY_CSS_MAX_ANCESTORS + 1u];
+      size_t compound_count = 0u;
+      bool pending_direct = false;
+      size_t ci;
+      for (;;) {
+        my_css_selector_t comp;
+        bool separated;
+        c_ws(p);
+        if (c_peek(p) == '{' ||
+            (c_peek(p) == 't' && p->pos + 2u < p->len &&
+             p->s[p->pos + 1u] == 'o' &&
+             !c_ident_char((unsigned char)p->s[p->pos + 2u]))) {
+          if (pending_direct) {
+            css_fail(p, "invalid @scope root selector");
+            css_mark_scope_error(p);
+            return false;
+          }
+          break;
+        }
+        memset(&comp, 0, sizeof(comp));
+        comp.state = -1;
+        if (compound_count >= MY_CSS_MAX_ANCESTORS + 1u) {
+          css_fail(p, "scope ancestor depth exceeded");
+          css_mark_scope_error(p);
+          return false;
+        }
+        if (!c_selector(p, &comp) || comp.state != -1) {
+          css_fail(p, "invalid @scope root selector");
+          css_mark_scope_error(p);
+          return false;
+        }
+        if (compound_count > 0u) {
+          direct_between[compound_count] = pending_direct;
+        }
+        compounds[compound_count++] = comp;
+        separated = c_ws(p);
+        if (c_peek(p) == '>') {
+          c_next(p);
+          c_ws(p);
+          pending_direct = true;
+          continue;
+        }
+        if (!separated && c_peek(p) != '{') {
+          css_fail(p, "invalid @scope root selector");
+          css_mark_scope_error(p);
+          return false;
+        }
+        pending_direct = false;
+      }
+      selector = compounds[compound_count - 1u];
+      selector.ancestor_count = (u32)(compound_count - 1u);
+      for (ci = 0u; ci + 1u < compound_count; ++ci) {
+        size_t source = compound_count - 2u - ci;
+        memcpy(selector.ancestors[ci].widget_type,
+               compounds[source].widget_type,
+               sizeof(selector.ancestors[ci].widget_type));
+        memcpy(selector.ancestors[ci].id, compounds[source].id,
+               sizeof(selector.ancestors[ci].id));
+        memcpy(selector.ancestors[ci].style_class,
+               compounds[source].style_class,
+               sizeof(selector.ancestors[ci].style_class));
+        selector.ancestor_direct_path[ci] = direct_between[source + 1u];
       }
       has_root = true;
       c_ws(p);

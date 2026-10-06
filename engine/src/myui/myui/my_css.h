@@ -246,10 +246,12 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * MY_CSS_MAX_AT_RULE_NESTING. `@supports` accepts bounded `and`/`or`/`not`
  * expressions over parenthesized `property: value` queries and is evaluated
  * while parsing. Bounded `@layer` blocks and order statements are flattened
- * while parsing. A bounded `@scope simple-selector [to selector-list] { ... }`
+ * while parsing. A bounded `@scope root-selector [to selector-list] { ... }`
  * form applies descendant rules through the existing fixed ancestor path;
- * the omitted-root form is represented by a fixed internal boundary sentinel
- * and selector lists are capped by MY_CSS_MAX_SCOPE_NESTING. */
+ * the root accepts compound selectors joined by descendant/child (`>`)
+ * combinators (R620), the omitted-root form is represented by a fixed
+ * internal boundary sentinel and selector lists are capped by
+ * MY_CSS_MAX_SCOPE_NESTING. `to` limits stay compound-only. */
 my_css_sheet_t* my_css_parse_ex(const my_allocator_t* allocator,
                                 const char* css, size_t len,
                                 uint32_t flags, my_css_error_t* err);
