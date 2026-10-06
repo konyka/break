@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R625 RGBA16F cubemap faces[] CPU 上传（TDD）— R624 边界双片同闭：f16 面不再静默丢弃 + f16 cube 回读有门
+
+- **缺口**（R624 落账"f16 cube 对称路无门 + create 期 faces[] 上传不对称"——复核修正：实为**双端同型静默丢弃**,VK 跳过上传分支（R586 注释自承"HDR faces are compute-filled")、GL 传 NULL 数据配 GL_FLOAT 类型；R586 修 RGBA8 面时明确让渡 f16):HDR cube 的 CPU 面数据双端皆不入 GPU。
+- **契约**（写入 rhi.h):RGBA16F cube 的 faces[]=**原生 f16 字节**（逐面 mip 0,8B/px f16 quad)——正是 R624 回读返回的字节契约，上传↔回读字节精确往返。备选的 f32 源+驱动转换被否：VK staging 是裸字节拷贝无转换通路，原生 f16 字节是唯一双端对称且无歧义的形态（与 R587/R593 2D f16 上传同约）。
+- **修复**:**GL**——hdr 面改 `GL_HALF_FLOAT`+真实数据（mip>0 仍空配待 compute，不变）;**VK**——R586 上传分支去 f16 排除，face_bytes 按格式 4/8B 分流（staging/拷贝机制零新增）。生产零行为变更：IBL 三件 faces 恒 NULL(compute 填充）,RGBA8 面路径原样。
+- **TDD（红→绿实证）**：回读门 R624 相位旁新增 **f16 cube 相位**——4×4 RGBA16F cube 六面各填常量 f16 quad(0.5+f 逐面区分，全精确可表示）,R624 回读断言逐面逐字节精确==tv_f32_to_f16 编码。**RED 双端同型如实红**(0x0000 vs 0x3800——GL 零初始化存储、VK 丢弃内容，签名一致）;GREEN 首轮即过：**GL 全套件 ALL PASSED;VK 相位过+validation 0**，失败项恰为已知基线（R611 MSAA 深度 AMD+12b+golden 双项）。
+- **回归**：双树非图形 CTest 各 **118/118**;demo 四配置各 120 帧优雅退出 rc=0、VK validation 0(cubemap create 正是 IBL 路径，四配置实跑）。
+- **边界**:cubemap 数据面自此全闭（RGBA8/f16 上传+回读双端有门）;mip>0 面恒空待 compute 为既有分工（IBL prefilter 链路）;完整 CSS Scoping 规范保留；R611 AMD 基线不动。
+
 ## 本轮更新：R624 彩色 cubemap 回读语义定义（TDD）— 回读弧真正全闭：每一种可创建纹理/附件类型自此皆有定义回读
 
 - **缺口**（R610 落账"彩色 cube（非深度）回读仍无定义，无调用方，随需")：回读弧（R601-R611）覆盖了独立纹理六格式+FBO 附件（offscreen/MRT/阴影图/点影 cube 深度/MSAA 深度），唯 `rhi_cubemap_create` 的彩色 cube(GL RGBA8/RGBA16F,IBL 三件的载体类型）机制性拒读——GL 的 R610 cubemap 回退仅放行深度内部格式，VK 的 read_pixels 根本无 RHI_RES_CUBEMAP 路径。调用方自此存在：IBL 生成产物（compute 写入）的内容验证。

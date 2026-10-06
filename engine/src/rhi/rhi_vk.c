@@ -7540,9 +7540,14 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
      * on VK (only compute-generated IBL cubemaps had real content; tests that
      * expected black "worked" by accident). A cubemap is a 6-layer array:
      * reuse the texture-array transfer machinery per face. Mirrors the GL
-     * contract: mip 0 only, RGBA8 source (HDR faces are compute-filled). */
-    if (desc->format != RHI_FORMAT_R16G16B16A16_SFLOAT) {
-        const VkDeviceSize face_bytes = (VkDeviceSize)desc->size * desc->size * 4u;
+     * contract: mip 0 only.
+     * R625: RGBA16F faces join — the source is native f16 bytes (8B/px), the
+     * exact byte contract the R624 readback returns (pre-R625 f16 faces were
+     * skipped here, silently dropped just like the pre-R586 RGBA8 case). */
+    {
+        const VkDeviceSize face_bytes =
+            (VkDeviceSize)desc->size * desc->size *
+            (desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT ? 8u : 4u);
         for (u32 i = 0; i < 6u; i++) {
             if (!desc->faces[i]) continue;
             VkBuffer staging;

@@ -1379,6 +1379,54 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
         }
     }
 
+    /* R625: RGBA16F cubemap faces[] upload — faces carry native f16 bytes
+     * (8B/px), the exact contract R624's readback returns, so the roundtrip
+     * is byte-exact on both backends. Pre-R625 both backends silently
+     * DROPPED f16 faces (VK: skipped the upload branch; GL: NULL data with
+     * a GL_FLOAT type). This also gives R624's f16 readback path its gate.
+     * Per-face constant f16 quads 0.5+f (exactly representable). */
+    {
+        u16 f16_data[6][4 * 4 * 4];
+        u8 f16_rb[4 * 4 * 4 * 8 / 4 * 6]; /* 128B per face */
+        RHICubemapDesc hdesc = {0};
+        for (u32 f = 0; f < 6u; f++) {
+            u16 fv = tv_f32_to_f16(0.5f + (f32)f);
+            for (u32 i = 0; i < 4u * 4u * 4u; i++) f16_data[f][i] = fv;
+            hdesc.faces[f] = f16_data[f];
+        }
+        hdesc.size = 4;
+        hdesc.format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+        RHICubemap hcm = rhi_cubemap_create(dev, &hdesc);
+        memset(f16_rb, 0xAB, sizeof(f16_rb));
+        if (!rhi_handle_valid(hcm)) {
+            LOG_ERROR("FAIL: f16 cube upload create failed");
+            pass = false;
+        } else {
+            if (!rhi_texture_read_pixels(dev, hcm, f16_rb, sizeof(f16_rb))) {
+                LOG_ERROR("FAIL: f16 cube readback refused");
+                pass = false;
+            } else {
+                for (u32 f = 0; f < 6u; f++) {
+                    u16 want = tv_f32_to_f16(0.5f + (f32)f);
+                    for (u32 i = 0; i < 4u * 4u * 4u; i++) {
+                        usize off = (usize)f * 128u + (usize)i * 2u;
+                        u16 got = (u16)(f16_rb[off] |
+                                        ((u16)f16_rb[off + 1u] << 8));
+                        if (got != want) {
+                            LOG_ERROR("FAIL: f16 cube upload face %u pxch %u "
+                                      "got 0x%04x, want 0x%04x (faces[] "
+                                      "dropped?)", f, i, got, want);
+                            pass = false;
+                            break;
+                        }
+                    }
+                    if (!pass) break;
+                }
+            }
+            rhi_cubemap_destroy(dev, hcm);
+        }
+    }
+
     /* R611: MSAA offscreen depth readback — the multisampled depth image
      * cannot be copied directly; both backends resolve it (VK: subpass
      * depth/stencil resolve attachment; GL: depth blit at unbind) into the

@@ -262,8 +262,9 @@ void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
  * caller buffer is size*size*bpp*6. VK: defined while the cube is in
  * shader-read state (create and rhi_cubemap_transition_to_read both end
  * there; the copy restores SHADER_READ_ONLY — non-destructive), face
- * contents undefined until written. RGBA16F cube faces are compute-fill only
- * (create uploads faces[] only for RGBA8 — pre-existing upload asymmetry). */
+ * contents undefined until written. RGBA16F cube faces upload natively at
+ * create (R625: f16 bytes, GL_HALF_FLOAT on GL / 8B staging on VK —
+ * pre-R625 they were silently dropped on BOTH backends). */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.
@@ -365,6 +366,9 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd);
 /* ---- Cubemap ---- */
 typedef struct {
     u32         size;
+    /* mip 0 per face. RGBA8: 4B/px bytes. RGBA16F (R625): native f16 quads
+     * (8B/px) — the exact byte contract rhi_texture_read_pixels returns for
+     * the cube (R624), so upload and readback round-trip byte-exactly. */
     const void *faces[6];
     /* Optional. 0 (RHI_FORMAT_R8G8B8A8_UNORM) keeps the legacy RGBA8 behavior.
      * Set RHI_FORMAT_R16G16B16A16_SFLOAT for HDR env/IBL cubemaps. */

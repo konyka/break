@@ -2464,15 +2464,19 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     GLenum internal = rhi_format_to_gl_internal(desc->format);
     GLenum upload_fmt = rhi_format_to_gl_format(desc->format);
     bool hdr = (desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT);
-    GLenum upload_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    /* R625: HDR faces upload as native f16 bytes (GL_HALF_FLOAT, 8B/px) —
+     * the exact byte contract the R624 readback returns, so cube upload and
+     * readback round-trip byte-exactly. Pre-R625 HDR faces were silently
+     * dropped (NULL data). */
+    GLenum upload_type = hdr ? GL_HALF_FLOAT : GL_UNSIGNED_BYTE;
     u32 mips = desc->mip_levels ? desc->mip_levels : 1u;
 
     for (u32 m = 0; m < mips; m++) {
         u32 msz = desc->size >> m; if (msz == 0u) msz = 1u;
         for (u32 i = 0; i < 6; i++) {
-            /* Only upload mip 0 face data; higher mips (and HDR float faces with
-             * RGBA8 source data) are allocated empty and filled by compute. */
-            const void *data = (m == 0u && !hdr) ? desc->faces[i] : NULL;
+            /* Only upload mip 0 face data; higher mips are allocated empty
+             * and filled by compute. */
+            const void *data = (m == 0u) ? desc->faces[i] : NULL;
             glTexImage2D(GL_CUBE_FACES[i], (GLint)m, (GLint)internal,
                          (GLsizei)msz, (GLsizei)msz, 0,
                          upload_fmt, upload_type, data);
