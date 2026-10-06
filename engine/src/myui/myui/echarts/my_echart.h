@@ -22,6 +22,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                               const my_echart_option_input_t* input,
                               bool not_merge, bool lazy_update);
 my_ret_t my_echart_flush(my_echart_t* chart);
+my_ret_t my_echart_remove_series(my_echart_t* chart, const char* series_id);
 const my_echart_option_t* my_echart_get_option(const my_echart_t* chart);
 unsigned my_echart_revision(const my_echart_t* chart);
 my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,

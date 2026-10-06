@@ -30,6 +30,10 @@ to re-project the model through the renderer adapter.
 the model's committed option to the adapter's chart only when the model
 revision moved past the last synced revision, so repeated syncs are no-ops and
 renderer state never lags a committed action.
+`my_echart_remove_series(chart, id)` removes one series by stable id, frees its
+owned payload, compacts the array preserving order, and bumps the revision;
+unknown or empty ids return `MY_RET_NOT_FOUND` / `MY_RET_INVALID_PARAMS`
+without touching the model.
 
 ## Phase 3: native event/action adapter
 

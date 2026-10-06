@@ -201,6 +201,30 @@ unsigned my_echart_revision(const my_echart_t* chart) {
   return chart != NULL ? chart->revision : 0u;
 }
 
+my_ret_t my_echart_remove_series(my_echart_t* chart, const char* series_id) {
+  my_echart_option_t* option;
+  size_t found;
+  if (chart == NULL || series_id == NULL || series_id[0] == '\0')
+    return MY_RET_INVALID_PARAMS;
+  option = &chart->current;
+  found = option->series_count;
+  for (size_t i = 0u; i < option->series_count; i++)
+    if (strcmp(option->series[i].id, series_id) == 0) { found = i; break; }
+  if (found == option->series_count) return MY_RET_NOT_FOUND;
+  {
+    my_echart_series_t* victim = &option->series[found];
+    my_mem_free(option->allocator, victim->id);
+    my_mem_free(option->allocator, victim->name);
+    my_mem_free(option->allocator, victim->stack);
+    my_mem_free(option->allocator, victim->data);
+    memmove(&option->series[found], &option->series[found + 1u],
+            (option->series_count - found - 1u) * sizeof(*option->series));
+  }
+  option->series_count--;
+  chart->revision++;
+  return MY_RET_OK;
+}
+
 my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
                                          const my_echart_model_action_t* action) {
   my_echart_option_t* option;
