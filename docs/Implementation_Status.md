@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R624 彩色 cubemap 回读语义定义（TDD）— 回读弧真正全闭：每一种可创建纹理/附件类型自此皆有定义回读
+
+- **缺口**（R610 落账"彩色 cube（非深度）回读仍无定义，无调用方，随需")：回读弧（R601-R611）覆盖了独立纹理六格式+FBO 附件（offscreen/MRT/阴影图/点影 cube 深度/MSAA 深度），唯 `rhi_cubemap_create` 的彩色 cube(GL RGBA8/RGBA16F,IBL 三件的载体类型）机制性拒读——GL 的 R610 cubemap 回退仅放行深度内部格式，VK 的 read_pixels 根本无 RHI_RES_CUBEMAP 路径。调用方自此存在：IBL 生成产物（compute 写入）的内容验证。
+- **语义定义**（写入 rhi.h 契约）：彩色 cube 回读=六面 face-major(+X..-Z 层序）**mip 0**、每纹素原生字节（RGBA8 4B RGBA;RGBA16F 8B f16 quad——R601/R587 原生字节语义延伸），缓冲区 size²×bpp×6;VK 契约=cube 处于 shader-read 状态时（create 末/transition_to_read 末皆然；拷贝后布局恢复 SHADER_READ=非破坏读取），内容在写入前未定义（诚实语义，同 R610 深度 cube 的未渲染面让渡）。
+- **修复**:**GL**——R610 cubemap 回退从"仅深度"扩为格式分流（深度 4B f32/RGBA8 4B/RGBA16F 8B f16，逐面 glGetTexImage,glFinish 仅深度路保留 R603 quirk);**VK**——① cubemap create usage 补 `TRANSFER_SRC`(R602/R608-R610 同型许可性旗标）;② `VKCubemapData` 补 `size` 字段；③ read_pixels 增 RHI_RES_CUBEMAP 回退分支（6 层 mip0 拷贝，aspect COLOR,old_layout 恒 SHADER_READ_ONLY——create/transition_to_read 双端点契约，复用 R602 VKArrayTransferCtx 层通路零新机制）。
+- **TDD（红→绿实证）**：回读门新增 **COLOR CUBE 相位**(R610 深度 cube 相位后）——4×4 RGBA8 cube 六面各填可区分字节 {10,60,110,160,210,250}（创建时 faces[] 上传），回读逐面字节精确。**RED 双端同型如实红**(readback refused=机制性缺席，GL 深度限定拒+VK 无路径）;GREEN 首轮即过：**GL 全套件 ALL PASSED;VK 相位过+validation 0**，失败项恰为已知基线（R611 MSAA 深度 AMD+12b+golden 双项）。RGBA16F cube 路径对称实现但**无门**——双端 create 对 f16 面皆不上传（GL 分配空面待 compute 填充的预存不对称），门仅钉 RGBA8，已落账。
+- **回归**：双树非图形 CTest 各 **118/118**;demo 四配置各 120 帧优雅退出 rc=0、VK validation 0(IBL 三件=RGBA16F cube 正是改动路径的现役消费者，四配置实跑）。
+- **边界**:**回读弧自此真正全闭**——所有可创建纹理/附件类型（独立纹理六格式、offscreen/MRT/shadow/cube 深度附件、MSAA 深度、彩色 cube）皆有定义语义且有门（除 f16 cube 对称路无门）;RGBA16F cube 的 create 期 faces[] 上传不对称（GL 忽略）为预存让渡，随需独立议题；R611 AMD 基线不动。
+
 ## 本轮更新：R623 fuzz 目标 Windows/LLP64 全修复 — 5 个手工 fuzzer 在本平台全部可构建可运行（既往全数破窗）
 
 - **缺口**（长期预存，EXCLUDE_FROM_ALL 手工目标无人编译致破窗不可见）:5 个 fuzz 目标在 Windows 全数失败——① **四个同型 LLP64 编译炸**：复制粘贴的 LCG `unsigned long >> 33` 在 LLP64(32-bit long）下 `shift count >= width`(-Werror);fuzz_asset_gltf 的 RNG 已先修但 ② **链接断**:asset.c 的 R612 几何 reader/R615 restore 引入 `rhi_buffer_read`+`scene_rebuild_materials_from_manifest` 引用，目标链接行未跟进；③ 三处 `/tmp/...` 硬编码在 Windows CRT 下无此目录（R615 期 echart 适配器同型先例 5f91e3c)。

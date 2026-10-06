@@ -208,6 +208,7 @@ struct VKCubemapData {
     VkDeviceMemory memory;
     VkImageView    view;
     VkFormat       format;
+    u32            size;        /* face width == face height (R624) */
     u32            mip_levels;
     /* Lazily created per-face, per-mip storage views for compute write. */
     VkImageView    face_views[6][VK_MAX_MIP_VIEWS];
@@ -5041,7 +5042,54 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
     VKBackend *vk = vk_backend(dev);
     VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (!vk || !td || !dst_rgba8) return false;
+    if (!vk || !dst_rgba8) return false;
+    if (!td) {
+        /* R624: COLOR cubemap readback — six faces face-major (+X..-Z),
+         * mip 0, native bytes per format (RGBA8 4B/px; RGBA16F 8B/px f16).
+         * Defined while the cube is in shader-read state (create and
+         * rhi_cubemap_transition_to_read both end there); face contents are
+         * undefined until written (create upload or compute). The copy
+         * restores SHADER_READ_ONLY, so readback is non-destructive. */
+        VKCubemapData *cd = (VKCubemapData *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (!cd) return false;
+        u32 bpp = (cd->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 8u : 4u;
+        VkDeviceSize data_size = (VkDeviceSize)cd->size * cd->size * bpp * 6u;
+        if (size < (usize)data_size) return false;
+        if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+            LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap readback");
+        VkBuffer staging;
+        VkDeviceMemory staging_mem;
+        if (!vk_texture_staging_alloc(vk, data_size, NULL, &staging, &staging_mem)) {
+            LOG_WARN("VK: cubemap readback staging alloc failed");
+            return false;
+        }
+        VKArrayTransferCtx ctx = {0};
+        ctx.image = cd->image;
+        ctx.staging = staging;
+        ctx.width = cd->size;
+        ctx.height = cd->size;
+        ctx.base_layer = 0;
+        ctx.layer_count = 6;
+        ctx.old_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        ctx.mid_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        ctx.copy = true;
+        ctx.aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+        if (!vk_texture_sync_submit(vk, VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                    vk_array_transfer_record, &ctx)) {
+            LOG_WARN("VK: cubemap readback submit failed");
+            vkDestroyBuffer(vk->device, staging, NULL);
+            vkFreeMemory(vk->device, staging_mem, NULL);
+            return false;
+        }
+        void *mapped;
+        if (vkMapMemory(vk->device, staging_mem, 0, data_size, 0, &mapped) != VK_SUCCESS)
+            return false;
+        memcpy(dst_rgba8, mapped, (size_t)data_size);
+        vkUnmapMemory(vk->device, staging_mem);
+        vkDestroyBuffer(vk->device, staging, NULL);
+        vkFreeMemory(vk->device, staging_mem, NULL);
+        return true;
+    }
     /* R610: a point-shadow depth cube (fbo_depth wrapper with layers==6)
      * reads back all six faces face-major (+X..-Z layer order); every other
      * array texture keeps the R441 no-readback rule. */
@@ -7331,6 +7379,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     if (mips > VK_MAX_MIP_VIEWS) return RHI_HANDLE_NULL;
     cd->format = fmt;
     cd->mip_levels = mips;
+    cd->size = desc->size;
 
     VkImageCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -7343,7 +7392,8 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
     ci.arrayLayers = 6;
     ci.samples = VK_SAMPLE_COUNT_1_BIT;
     ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+               VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ci.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;

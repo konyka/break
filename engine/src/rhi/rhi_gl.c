@@ -1963,20 +1963,33 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     if (!td) {
         /* R610: point-shadow depth cubes register as RHI_RES_CUBEMAP — read
          * back all six faces (face-major +X..-Z, 4B f32 depth per texel)
-         * through the per-face cube targets. Color cubes keep the legacy
-         * no-readback (false). */
+         * through the per-face cube targets.
+         * R624: COLOR cubes join — six faces face-major mip 0 in the format's
+         * native bytes (RGBA8 4B/px; RGBA16F 8B/px f16, the R587 semantics
+         * extended to cube faces). */
         GLTextureData *cd = (GLTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
         if (!cd || !dst_rgba8) return false;
-        if (cd->gl_internal_format != GL_DEPTH_COMPONENT24 &&
-            cd->gl_internal_format != GL_DEPTH_COMPONENT32F) return false;
-        usize face_bytes = (usize)cd->width * cd->height * 4u;
+        GLenum rd_fmt, rd_type;
+        usize bpp;
+        bool is_depth = (cd->gl_internal_format == GL_DEPTH_COMPONENT24 ||
+                         cd->gl_internal_format == GL_DEPTH_COMPONENT32F);
+        if (is_depth) {
+            rd_fmt = GL_DEPTH_COMPONENT; rd_type = GL_FLOAT; bpp = 4u;
+        } else if (cd->gl_internal_format == GL_RGBA8) {
+            rd_fmt = GL_RGBA; rd_type = GL_UNSIGNED_BYTE; bpp = 4u;
+        } else if (cd->gl_internal_format == GL_RGBA16F) {
+            rd_fmt = GL_RGBA; rd_type = GL_HALF_FLOAT; bpp = 8u;
+        } else {
+            return false;
+        }
+        usize face_bytes = (usize)cd->width * cd->height * bpp;
         if (size < face_bytes * 6u) return false;
         /* R603 quirk holds here too: FBO-attached depth texture. */
-        glFinish();
+        if (is_depth) glFinish();
         glBindTexture(GL_TEXTURE_CUBE_MAP, cd->gl_tex);
         for (u32 face = 0; face < 6u; face++) {
             glGetTexImage(GL_TEXTURE_CUBE_MAP_POSITIVE_X + face, 0,
-                          GL_DEPTH_COMPONENT, GL_FLOAT,
+                          rd_fmt, rd_type,
                           (u8 *)dst_rgba8 + face * face_bytes);
         }
         glBindTexture(GL_TEXTURE_CUBE_MAP, 0);

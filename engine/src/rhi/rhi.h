@@ -255,7 +255,15 @@ void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
  * faces face-major (+X,-X,+Y,-Y,+Z,-Z layer order), 4B f32 per texel, so the
  * caller buffer is w*h*4*6. VK: defined once every face has been rendered at
  * least once (unrendered faces keep undefined contents — their layout was
- * never transitioned out of UNDEFINED). */
+ * never transitioned out of UNDEFINED).
+ * R624 defines the COLOR cubemap (rhi_cubemap_create): pass the RHICubemap
+ * handle here — readback yields all six faces face-major mip 0 in the
+ * format's native bytes (RGBA8 4B/px RGBA; RGBA16F 8B/px f16 quads), so the
+ * caller buffer is size*size*bpp*6. VK: defined while the cube is in
+ * shader-read state (create and rhi_cubemap_transition_to_read both end
+ * there; the copy restores SHADER_READ_ONLY — non-destructive), face
+ * contents undefined until written. RGBA16F cube faces are compute-fill only
+ * (create uploads faces[] only for RGBA8 — pre-existing upload asymmetry). */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.
