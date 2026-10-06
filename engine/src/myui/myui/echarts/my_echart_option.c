@@ -68,6 +68,10 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
     return MY_RET_INVALID_PARAMS;
   if (input->zoom_set && input->zoom_end <= input->zoom_start)
     return MY_RET_INVALID_PARAMS;
+  if (input->visual_map_set &&
+      (!isfinite(input->visual_map_min) || !isfinite(input->visual_map_max) ||
+       input->visual_map_max <= input->visual_map_min))
+    return MY_RET_INVALID_PARAMS;
   return MY_RET_OK;
 }
 
@@ -125,6 +129,11 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
   candidate.zoom_set = src->zoom_set;
   candidate.zoom_start = src->zoom_start;
   candidate.zoom_end = src->zoom_end;
+  candidate.visual_map_set = src->visual_map_set;
+  candidate.visual_map_min = src->visual_map_min;
+  candidate.visual_map_max = src->visual_map_max;
+  candidate.visual_map_low_color = src->visual_map_low_color;
+  candidate.visual_map_high_color = src->visual_map_high_color;
   *dst = candidate;
   return MY_RET_OK;
 oom:

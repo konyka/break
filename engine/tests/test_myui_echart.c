@@ -6,8 +6,8 @@ TEST(echart_set_option_replace_and_lazy_update) {
   static const double b[] = {3.0};
   my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true};
   my_echart_series_input_t sb = {"b", "B", MY_ECHART_BAR, b, 1u, 0u, 0u, NULL, true};
-  my_echart_option_input_t first = {"one", NULL, 0u, &sa, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
-  my_echart_option_input_t second = {"two", NULL, 0u, &sb, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
+  my_echart_option_input_t first = {"one", NULL, 0u, &sa, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u};
+  my_echart_option_input_t second = {"two", NULL, 0u, &sb, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u};
   my_echart_t* chart = my_echart_create(NULL);
 
   ASSERT_NOT_NULL(chart);
@@ -23,7 +23,7 @@ TEST(echart_set_option_replace_and_lazy_update) {
 TEST(echart_legend_action_reduces_model_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true};
-  my_echart_option_input_t input = {"one", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u};
+  my_echart_option_input_t input = {"one", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u};
   my_echart_action_t action = {MY_ECHART_ACTION_LEGEND_UNSELECT, "sales"};
   my_echart_t* chart = my_echart_create(NULL);
   ASSERT_NOT_NULL(chart);

@@ -1203,6 +1203,11 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
     return MY_RET_INVALID_PARAMS;
   if (snapshot->zoom_set && snapshot->zoom_end <= snapshot->zoom_start)
     return MY_RET_INVALID_PARAMS;
+  if (snapshot->visual_map_set &&
+      (!isfinite(snapshot->visual_map_min) ||
+       !isfinite(snapshot->visual_map_max) ||
+       snapshot->visual_map_max <= snapshot->visual_map_min))
+    return MY_RET_INVALID_PARAMS;
   chart->mode = snapshot->mode;
   snprintf(chart->title, sizeof(chart->title), "%s", snapshot->title);
   chart->labels = snapshot->labels;
@@ -1224,6 +1229,11 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->zoom_set = snapshot->zoom_set;
   chart->zoom_start = snapshot->zoom_start;
   chart->zoom_end = snapshot->zoom_end;
+  chart->visual_map_set = snapshot->visual_map_set;
+  chart->visual_map_min = snapshot->visual_map_min;
+  chart->visual_map_max = snapshot->visual_map_max;
+  chart->visual_map_low_color = snapshot->visual_map_low_color;
+  chart->visual_map_high_color = snapshot->visual_map_high_color;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;

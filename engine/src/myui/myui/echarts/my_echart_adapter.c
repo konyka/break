@@ -162,6 +162,11 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
   candidate->option.zoom_set = source->zoom_set;
   candidate->option.zoom_start = source->zoom_start;
   candidate->option.zoom_end = source->zoom_end;
+  candidate->option.visual_map_set = source->visual_map_set;
+  candidate->option.visual_map_min = source->visual_map_min;
+  candidate->option.visual_map_max = source->visual_map_max;
+  candidate->option.visual_map_low_color = source->visual_map_low_color;
+  candidate->option.visual_map_high_color = source->visual_map_high_color;
   (void)mode;
   (void)stacked;
   *result = candidate;
@@ -223,7 +228,11 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
         candidate->option.range_set, (float)candidate->option.y_min,
         (float)candidate->option.y_max,
         candidate->option.zoom_set, candidate->option.zoom_start,
-        candidate->option.zoom_end};
+        candidate->option.zoom_end,
+        candidate->option.visual_map_set, (float)candidate->option.visual_map_min,
+        (float)candidate->option.visual_map_max,
+        candidate->option.visual_map_low_color,
+        candidate->option.visual_map_high_color};
     ret = my_chart_apply_snapshot(adapter->chart, &snapshot);
     if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
   }

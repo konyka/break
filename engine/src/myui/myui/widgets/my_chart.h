@@ -57,6 +57,11 @@ typedef struct my_chart_snapshot_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  bool visual_map_set;
+  float visual_map_min;
+  float visual_map_max;
+  uint32_t visual_map_low_color;
+  uint32_t visual_map_high_color;
 } my_chart_snapshot_t;
 
 typedef struct my_chart_t {

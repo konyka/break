@@ -45,7 +45,10 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
         chart->current.legend_hidden, chart->current.range_set,
         chart->current.y_min, chart->current.y_max,
         chart->current.zoom_set, chart->current.zoom_start,
-        chart->current.zoom_end};
+        chart->current.zoom_end, chart->current.visual_map_set,
+        chart->current.visual_map_min, chart->current.visual_map_max,
+        chart->current.visual_map_low_color,
+        chart->current.visual_map_high_color};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
                       sizeof(*series));
@@ -72,7 +75,11 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                                       input->legend_hidden, input->range_set,
                                       input->y_min, input->y_max,
                                       input->zoom_set, input->zoom_start,
-                                      input->zoom_end};
+                                      input->zoom_end, input->visual_map_set,
+                                      input->visual_map_min,
+                                      input->visual_map_max,
+                                      input->visual_map_low_color,
+                                      input->visual_map_high_color};
       my_echart_option_t temp;
       my_echart_option_init(&temp, chart->allocator);
       if (my_echart_option_copy(&temp, &one, chart->allocator) != MY_RET_OK) {

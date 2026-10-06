@@ -44,6 +44,11 @@ typedef struct my_echart_option_input_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  bool visual_map_set;
+  double visual_map_min;
+  double visual_map_max;
+  uint32_t visual_map_low_color;
+  uint32_t visual_map_high_color;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
@@ -72,6 +77,11 @@ typedef struct my_echart_option_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  bool visual_map_set;
+  double visual_map_min;
+  double visual_map_max;
+  uint32_t visual_map_low_color;
+  uint32_t visual_map_high_color;
 } my_echart_option_t;
 
 void my_echart_option_init(my_echart_option_t* option,
