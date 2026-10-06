@@ -782,6 +782,9 @@ static bool css_media_condition(css_p_t* p, const char* query, size_t length,
 static bool css_supports_condition(const char* query, size_t length,
                                    const my_allocator_t* allocator,
                                    bool* matches);
+static bool css_layer_name_valid(const char* name, size_t length);
+static uint32_t css_layer_find_or_add(css_p_t* p, const char* name,
+                                      size_t length);
 
 static bool css_read_import_path(css_p_t* p, char* path, size_t cap,
                                  size_t* path_len) {
@@ -851,6 +854,43 @@ static bool css_import_qualifier_fail(css_p_t* p) {
   return true;
 }
 
+/* R652/R653: qualifier text helpers — whitespace test and a balanced paren
+ * group scan (quote/escape aware). Returns the index of the matching ')' of
+ * the group opening at text[start]. */
+static bool css_qualifier_is_ws(char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static bool css_qualifier_group_end(const char* text, size_t length,
+                                    size_t start, size_t* end) {
+  size_t depth = 0u;
+  char quote = '\0';
+  size_t i;
+  for (i = start; i < length; ++i) {
+    char ch = text[i];
+    if (quote != '\0') {
+      if (ch == '\\' && i + 1u < length) {
+        ++i;
+        continue;
+      }
+      if (ch == quote) quote = '\0';
+      continue;
+    }
+    if (ch == '\'' || ch == '"') {
+      quote = ch;
+    } else if (ch == '(') {
+      depth++;
+    } else if (ch == ')') {
+      depth--;
+      if (depth == 0u) {
+        *end = i;
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                     size_t media_depth, uint32_t layer_id) {
   char path[MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
@@ -860,6 +900,7 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
   int32_t old_line, old_col;
   size_t i;
   bool parsed;
+  uint32_t import_layer = layer_id;
 
   if (!css_read_import_path(p, path, sizeof(path), &path_len)) {
     return css_skip_or_reject_atrule_with_capability(
@@ -915,55 +956,84 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
     }
     c_next(p); /* ';' */
     {
-      /* R652: optional leading `supports(...)` import condition — the group
-       * is exactly one balanced paren group after the `supports` keyword;
-       * whatever follows is the media query. */
+      /* R652/R653: the qualifier is a three-stage pipeline — an optional
+       * leading `layer(name)` (R653), then an optional `supports(...)`
+       * (R652), then the media query (R651). */
       const char* media_query = query;
       size_t media_length = query_length;
       size_t qpos = 0u;
-      while (qpos < query_length &&
-             (query[qpos] == ' ' || query[qpos] == '\t' ||
-              query[qpos] == '\r' || query[qpos] == '\n')) {
-        qpos++;
+      while (qpos < query_length && css_qualifier_is_ws(query[qpos])) qpos++;
+      /* R653: `layer(name)` — the imported rules carry the named layer's
+       * order. Bare `layer` (anonymous) follows the engine-wide subset:
+       * rejected everywhere. */
+      if (query_length - qpos >= 5u &&
+          memcmp(query + qpos, "layer", 5u) == 0 &&
+          !c_ident_char((unsigned char)query[qpos + 5u])) {
+        size_t gpos = qpos + 5u;
+        size_t end = 0u;
+        size_t name_start;
+        size_t name_length;
+        char full_name[MY_CSS_MAX_LAYER_NAME_BYTES + 1u];
+        while (gpos < query_length && css_qualifier_is_ws(query[gpos])) {
+          gpos++;
+        }
+        if (gpos >= query_length || query[gpos] != '(' ||
+            !css_qualifier_group_end(query, query_length, gpos, &end)) {
+          return css_import_qualifier_fail(p);
+        }
+        name_start = gpos + 1u;
+        name_length = end - name_start;
+        while (name_length > 0u &&
+               css_qualifier_is_ws(query[name_start])) {
+          name_start++;
+          name_length--;
+        }
+        while (name_length > 0u &&
+               css_qualifier_is_ws(query[name_start + name_length - 1u])) {
+          name_length--;
+        }
+        if (!css_layer_name_valid(query + name_start, name_length)) {
+          return css_import_qualifier_fail(p);
+        }
+        if (layer_id != MY_CSS_UNLAYERED_ORDER) {
+          /* inside an @layer block the import layer nests (parent.name),
+           * mirroring the @layer at-rule. */
+          const char* parent = p->layer_names[layer_id];
+          size_t parent_len = strlen(parent);
+          if (parent_len + 1u + name_length > MY_CSS_MAX_LAYER_NAME_BYTES) {
+            css_fail(p, "nested CSS layer name too long");
+            return false;
+          }
+          memcpy(full_name, parent, parent_len);
+          full_name[parent_len] = '.';
+          memcpy(full_name + parent_len + 1u, query + name_start,
+                 name_length);
+          name_length += parent_len + 1u;
+        } else {
+          memcpy(full_name, query + name_start, name_length);
+        }
+        import_layer = css_layer_find_or_add(p, full_name, name_length);
+        if (import_layer == MY_CSS_UNLAYERED_ORDER) {
+          return css_import_qualifier_fail(p);
+        }
+        qpos = end + 1u;
       }
+      while (qpos < query_length && css_qualifier_is_ws(query[qpos])) qpos++;
+      /* R652: `supports(...)` — exactly one balanced group after the
+       * keyword; whatever follows is the media query. */
       if (query_length - qpos >= 9u &&
           memcmp(query + qpos, "supports", 8u) == 0 &&
           !c_ident_char((unsigned char)query[qpos + 8u])) {
         size_t gpos = qpos + 8u;
-        while (gpos < query_length &&
-               (query[gpos] == ' ' || query[gpos] == '\t' ||
-                query[gpos] == '\r' || query[gpos] == '\n')) {
+        size_t end = 0u;
+        bool supports_matches = false;
+        while (gpos < query_length && css_qualifier_is_ws(query[gpos])) {
           gpos++;
         }
         if (gpos < query_length && query[gpos] == '(') {
-          size_t depth = 0u;
-          size_t end = gpos;
-          char inner_quote = '\0';
-          bool closed = false;
-          bool supports_matches = false;
-          for (end = gpos; end < query_length; ++end) {
-            char ch = query[end];
-            if (inner_quote != '\0') {
-              if (ch == '\\' && end + 1u < query_length) {
-                ++end;
-                continue;
-              }
-              if (ch == inner_quote) inner_quote = '\0';
-              continue;
-            }
-            if (ch == '\'' || ch == '"') {
-              inner_quote = ch;
-            } else if (ch == '(') {
-              depth++;
-            } else if (ch == ')') {
-              depth--;
-              if (depth == 0u) {
-                closed = true;
-                break;
-              }
-            }
+          if (!css_qualifier_group_end(query, query_length, gpos, &end)) {
+            return css_import_qualifier_fail(p);
           }
-          if (!closed) return css_import_qualifier_fail(p);
           if (!css_supports_condition(query + gpos, end - gpos + 1u,
                                       p->allocator, &supports_matches)) {
             return css_import_qualifier_fail(p);
@@ -971,13 +1041,12 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
           if (!supports_matches) {
             return true;
           }
-          media_query = query + end + 1u;
-          media_length = query_length - end - 1u;
+          qpos = end + 1u;
         }
       }
-      while (media_length > 0u &&
-             (*media_query == ' ' || *media_query == '\t' ||
-              *media_query == '\r' || *media_query == '\n')) {
+      media_query = query + qpos;
+      media_length = query_length - qpos;
+      while (media_length > 0u && css_qualifier_is_ws(*media_query)) {
         media_query++;
         media_length--;
       }
@@ -1061,7 +1130,7 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
   p->line = 1;
   p->col = 1;
   p->import_depth++;
-  parsed = css_parse_rules(p, sheet, false, media_depth, layer_id);
+  parsed = css_parse_rules(p, sheet, false, media_depth, import_layer);
   p->import_depth--;
   p->s = old_s;
   p->len = old_len;

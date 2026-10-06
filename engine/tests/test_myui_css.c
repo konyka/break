@@ -912,6 +912,114 @@ TEST(css_import_supports_qualifier_gates_resolution)
   ASSERT_EQ(css_import_release_count, 0u);
 }
 
+TEST(css_import_layer_qualifier_assigns_layer_order)
+{
+  /* R653: `layer(name)` import condition — the imported rules carry the
+   * named layer's order (unlayered local rules still outrank them); it
+   * composes with the supports/media conditions after it. Anonymous
+   * `layer` follows the engine-wide subset: rejected everywhere. */
+  const css_import_entry_t entries[] = {
+      {"themed.css", "label { color: red; }", 21u},
+      {"btn.css", "button { color: red; }", 22u},
+      {NULL, NULL, 0u}};
+  const char* layered =
+      "@import \"themed.css\" layer(base); button { color: blue; }";
+  const char* layered_media =
+      "@import \"themed.css\" layer(base) screen and (min-width: 800px);"
+      " button { color: blue; }";
+  const char* layered_media_miss =
+      "@import \"themed.css\" layer(base) screen and (min-width: 2000px);"
+      " button { color: blue; }";
+  const char* layered_supports =
+      "@import \"themed.css\" layer(base) supports (color: red);"
+      " button { color: blue; }";
+  const char* anonymous = "@import \"themed.css\" layer;";
+  const char* bad_name = "@import \"themed.css\" layer(..x..);";
+  const char* unbalanced = "@import \"themed.css\" layer(base;";
+  const char* cascade =
+      "@import \"btn.css\" layer(base); button { color: blue; }";
+  my_css_media_context_ex_t media = {
+      {1024u, 768u, true, false, false, 0u}, MY_CSS_MEDIA_KNOWN_ALL};
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  const my_value_t* value;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.media = &media;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+
+  /* the imported rule carries the first registered layer; the local rule
+   * stays unlayered. */
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, layered, strlen(layered),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  ASSERT_EQ(my_css_rule(sheet, 1u)->layer_order, MY_CSS_UNLAYERED_ORDER);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  /* layer + media, both gates live. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, layered_media,
+                                    strlen(layered_media), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  my_css_sheet_destroy(sheet);
+
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, layered_media_miss,
+                                    strlen(layered_media_miss), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+
+  /* layer + supports. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, layered_supports,
+                                    strlen(layered_supports), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* cascade: the unlayered local rule outranks the layered import. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_with_options(theme, cascade, &options),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* anonymous and malformed layer conditions: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, anonymous, strlen(anonymous),
+                                        &options, &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, bad_name, strlen(bad_name),
+                                        &options, &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, unbalanced,
+                                        strlen(unbalanced), &options,
+                                        &error) == NULL);
+}
+
 TEST(css_scope_applies_rules_only_inside_root)
 {
   const char* css = "@scope panel { button { color: red; } }";
@@ -5853,6 +5961,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_rejects_absolute_and_traversal_paths);
     RUN_TEST(css_import_media_qualifier_gates_resolution);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
+    RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_scope_applies_rules_only_inside_root);
     RUN_TEST(css_scope_accepts_to_clause_and_rejects_malformed_limit);
     RUN_TEST(css_scope_to_clause_accepts_implicit_root);

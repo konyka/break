@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R653 `layer(name)` 限定 `@import`（TDD）— 导入条件族全闭环：layer/supports/media 三段流水线；导入规则携带层序（未分层本地规则级联压制钉死）
+
+- **缺口**（R652 落账"layer 限定需导入期层序接线"）：导入条件族最后一片——`@import "x.css" layer(base);` 按语法拒绝，导入规则无法入层。
+- **方案**（限定词评估重构为三段流水线）：抽公共助手 `css_qualifier_is_ws`/`css_qualifier_group_end`（平衡组扫描，引号/转义感知）；评估块依规范序串行——① `layer(name)`：名经 `css_layer_name_valid` 校验，`@layer` 块内嵌套按 parent.name 拼接（与 @layer 规则同码镜像），`css_layer_find_or_add` 注册，导入解析调用改传 `import_layer`（未限定=继承上下文层，零行为变化）；裸 `layer`（匿名）随引擎全域子集一致拒绝；② `supports(...)`（R652 段零改动迁入流水线）;③ 媒体查询（R651 段）。层行为零新机制——`css_finalize_layer_order` 收尾对导入规则自然生效。
+- **TDD（红→绿实证）**：test_myui_css +1——九形态：导入规则层序断言（首注册层 0/本地规则 UNLAYERED)、layer+media 双门命中与媒体腿 miss、layer+supports 命中、**级联行为**（theme 加载：未分层本地蓝压制分层导入红——CSS 未分层优先语义）、匿名/坏名/失衡 strict 三拒。**RED 如实红**（首正例 sheet NULL）;GREEN 一次过 **165/165**(164+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5；既有 @layer 组与导入组全绿未动。**环境记录在案**：回归期 lld-link 两度崩溃（非法指令）——根因查实=**E: 盘 100% 满**(2.8G 余量，PDB/exe 写出失败）；清理 13+124 个可再生历史构建树（约 3.9G→7.0G 余量）后构建即稳，与代码改动无关。
+- **边界**：匿名导入层维持拒绝（引擎子集全域无匿名层，如需则跨 @layer/@import 统一立项）；导入条件族（layer/supports/media 全谱）自此闭环;**E: 盘仍 99% 满（395G/402G）——非构建产物的大头在用户数据，需用户层面处置**;R611 AMD 基线不动。
+
 ## 本轮更新：R652 `supports(...)` 限定 `@import`（TDD）— 导入条件族补齐：`@import "x.css" supports (color: red) screen and (min-width: 800px);` 双门串联
 
 - **缺口**（R651 落账"supports/layer 限定同族让渡"中的前一半）：导入语句只认媒体限定——规范导入条件族的 supports 门（`supports(<supports-condition>)`，条件整包于函数括号内）按媒体查询误读后语法拒绝。
