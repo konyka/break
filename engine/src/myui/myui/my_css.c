@@ -777,6 +777,8 @@ static bool css_skip_or_reject_atrule_with_capability(
     css_p_t* p, uint32_t capability);
 static bool css_media_capabilities_valid(
     const my_css_media_context_ex_t* media);
+static bool css_media_condition(css_p_t* p, const char* query, size_t length,
+                                bool* matches, bool* conditional);
 
 static bool css_read_import_path(css_p_t* p, char* path, size_t cap,
                                  size_t* path_len) {
@@ -802,9 +804,6 @@ static bool css_read_import_path(css_p_t* p, char* path, size_t cap,
     path[length++] = (char)c;
   }
   if (c_peek(p) != quote) return false;
-  c_next(p);
-  c_ws(p);
-  if (c_peek(p) != ';') return false;
   c_next(p);
   path[length] = '\0';
   *path_len = length;
@@ -837,6 +836,18 @@ static bool css_import_path_safe(const char* path, size_t length) {
   return true;
 }
 
+/* R651: a bad media qualifier on @import — strict rejects with the IMPORTS
+ * capability; compatibility mode skips just the import (the statement has
+ * already been consumed, so no at-rule scan). */
+static bool css_import_qualifier_fail(css_p_t* p) {
+  if ((p->flags & MY_CSS_PARSE_STRICT_AT_RULES) != 0u) {
+    return css_skip_or_reject_atrule_with_capability(
+        p, (uint32_t)MY_CSS_FEATURE_IMPORTS);
+  }
+  MY_LOGW("my_css: skipping @import (invalid media qualifier)");
+  return true;
+}
+
 static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                     size_t media_depth, uint32_t layer_id) {
   char path[MY_CSS_MAX_IMPORT_PATH_BYTES + 1u];
@@ -850,6 +861,67 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
   if (!css_read_import_path(p, path, sizeof(path), &path_len)) {
     return css_skip_or_reject_atrule_with_capability(
         p, (uint32_t)MY_CSS_FEATURE_IMPORTS);
+  }
+  /* R651: optional media qualifier between the path and ';' — evaluated
+   * with the full media-condition machinery (R650); a non-matching import
+   * is skipped without resolving. */
+  c_ws(p);
+  if (c_peek(p) == ';') {
+    c_next(p);
+  } else {
+    char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+    size_t query_length = 0u;
+    size_t paren_depth = 0u;
+    char quote = '\0';
+    bool query_matches = false;
+    bool conditional = false;
+    for (;;) {
+      int c = c_peek(p);
+      if (c < 0) return css_import_qualifier_fail(p);
+      if (quote != '\0') {
+        if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+          css_fail(p, "media query too long");
+          return false;
+        }
+        query[query_length++] = (char)c_next(p);
+        if (c == '\\' && c_peek(p) >= 0) {
+          if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+            css_fail(p, "media query too long");
+            return false;
+          }
+          query[query_length++] = (char)c_next(p);
+        } else if (c == quote) {
+          quote = '\0';
+        }
+        continue;
+      }
+      if (c == '\'' || c == '"') {
+        quote = (char)c;
+      } else if (c == '(') {
+        paren_depth++;
+      } else if (c == ')' && paren_depth > 0u) {
+        paren_depth--;
+      } else if (c == ';' && paren_depth == 0u) {
+        break;
+      }
+      if (query_length >= MY_CSS_MAX_MEDIA_QUERY_BYTES) {
+        css_fail(p, "media query too long");
+        return false;
+      }
+      query[query_length++] = (char)c_next(p);
+    }
+    c_next(p); /* ';' */
+    if (quote != '\0' || paren_depth != 0u ||
+        !css_media_condition(p, query, query_length, &query_matches,
+                             &conditional)) {
+      return css_import_qualifier_fail(p);
+    }
+    if (conditional && p->media == NULL) {
+      return css_import_qualifier_fail(p);
+    }
+    if (!query_matches) {
+      return true;
+    }
   }
   if (!css_import_path_safe(path, path_len)) {
     css_fail(p, "invalid CSS import path");

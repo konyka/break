@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R651 媒体限定 `@import`（TDD）— `@import "x.css" screen and (min-width: 800px);` 标准条件导入落地；R650 MQ4 机械首个消费方
+
+- **缺口**（@import 面调研落账）：路径读取器在闭引号后硬要 `;`——标准 CSS 的媒体限定导入（命中才加载）按语法错误拒绝。（本轮先调研了 GL 侧 f16 cube 回读门：GL RHI 图形测试基建不存在（WGL 上下文测试无 CI 看守、Linux 侧无 GLX/EGL 挂具），单独立项，不在此轮。）
+- **方案**（导入语句结构化，复用全谱媒体条件）：`css_read_import_path` 止于闭引号（`';'` 消费上移）；caller 在 `';'` 前读取可选限定词（引号/括号平衡扫描，预算=`MY_CSS_MAX_MEDIA_QUERY_BYTES`），经 `css_media_condition` 求值——MQ4 全谱（类型/修饰符/特性/区间/比值/布尔逻辑）即刻可用。语义：命中=正常解析器链（内联展平）；不命中=静默跳过（resolver 零调用，测试以 release 计数钉死）；条件限定+无媒体上下文=@media 同规约（strict 拒 IMPORTS capability/compat 仅跳过该导入）；畸形限定（失衡/非法查询/未终止）strict 拒、compat 跳过。`'{'` 不特判（导入语句无块语义，引号/`;` 即止）。
+- **TDD（红→绿实证）**：test_myui_css +1——九形态：命中展平源序（label 先 button 后+release 1)/特性不命中跳过（release 0)/类型不命中跳过/MQ4 or 链限定命中（R650 机械直接消费）/畸形限定 strict 拒/未终止 strict 拒/无上下文 strict 拒/compat 跳过（release 0）。**RED 如实红**（首正例 sheet NULL）;GREEN 一钓：`css_media_condition` 原型声明在导入函数之后，前置原型补全后 **163/163**(162+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯导入路径改动；既有导入测试组（展平/环检测/预算/路径安全）全绿未动。
+- **边界**:supports 限定（`@import "x.css" supports(...)`）与 layer 限定（`@import url layer(name)`）同属规范导入修饰族，无调用方需求，单列让渡；GL f16 cube 门需图形测试基建（立项级）;R611 AMD 基线不动。
+
 ## 本轮更新：R650 `@media` MQ4 布尔逻辑（TDD）— 扁平链解析器重写为递归下降：or 链、括号嵌套条件、项级 not 全落地
 
 - **缺口**（R646-R648 MQ 弧收尾调研落账）：css_media_query 是扁平 and 链——`(a) or (b)`（MQ4 或链，逗号列表外的规范形态）、`((a) and (b)) or (c)`（括号嵌套条件）、`(a) and not (b)`（浏览器兼容的项级 not）全部语法拒绝；MQ3 整查询取反 `not ((a) and (b))` 无从表达。

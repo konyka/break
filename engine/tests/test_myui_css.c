@@ -701,6 +701,117 @@ TEST(css_import_rejects_absolute_and_traversal_paths)
   }
 }
 
+TEST(css_import_media_qualifier_gates_resolution)
+{
+  /* R651: standard media-qualified imports — the query after the path is
+   * evaluated with the full media-condition machinery (R650): a matching
+   * import resolves inline, a non-matching one is skipped silently, a
+   * conditional import without a media context follows the @media
+   * convention (strict rejects, compatibility skips). */
+  const css_import_entry_t entries[] = {
+      {"wide.css", "label { color: red; }", 21u}, {NULL, NULL, 0u}};
+  const char* matching =
+      "@import \"wide.css\" screen and (min-width: 800px);"
+      " button { color: blue; }";
+  const char* non_matching =
+      "@import \"wide.css\" screen and (min-width: 2000px);"
+      " button { color: blue; }";
+  const char* type_miss =
+      "@import \"wide.css\" screen; button { color: blue; }";
+  const char* mq4_or =
+      "@import \"wide.css\" (min-width: 2000px) or (orientation: landscape);"
+      " button { color: blue; }";
+  const char* malformed =
+      "@import \"wide.css\" screen and (bogus); button { color: blue; }";
+  const char* unterminated =
+      "@import \"wide.css\" screen and (min-width: 1px)";
+  my_css_media_context_ex_t media = {
+      {1024u, 768u, true, false, false, 0u}, MY_CSS_MEDIA_KNOWN_ALL};
+  my_css_media_context_ex_t off_screen = {
+      {1024u, 768u, false, false, false, 0u}, MY_CSS_MEDIA_KNOWN_ALL};
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.media = &media;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+
+  /* matching query: imported rule flattens in source order. */
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, matching, strlen(matching),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "label");
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  /* non-matching query: the import is skipped without resolving. */
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, non_matching,
+                                    strlen(non_matching), &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->widget_type,
+                "button");
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+
+  /* type mismatch skips the same way. */
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  options.media = &off_screen;
+  sheet = my_css_parse_with_options(NULL, type_miss, strlen(type_miss),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+  options.media = &media;
+
+  /* MQ4 or-chain in the qualifier (R650 machinery). */
+  css_import_release_count = 0u;
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, mq4_or, strlen(mq4_or), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 1u);
+
+  /* malformed qualifier: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, malformed, strlen(malformed),
+                                        &options, &error) == NULL);
+
+  /* qualifier without the terminating ';': strict rejects. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, unterminated,
+                                        strlen(unterminated), &options,
+                                        &error) == NULL);
+
+  /* conditional qualifier without a media context: strict rejects. */
+  memset(&error, 0, sizeof(error));
+  options.media = NULL;
+  ASSERT_TRUE(my_css_parse_with_options(NULL, matching, strlen(matching),
+                                        &options, &error) == NULL);
+
+  /* compatibility mode: the qualified import is skipped, not fatal. */
+  memset(&error, 0, sizeof(error));
+  options.flags = 0u;
+  css_import_release_count = 0u;
+  sheet = my_css_parse_with_options(NULL, matching, strlen(matching),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+  ASSERT_EQ(css_import_release_count, 0u);
+}
+
 TEST(css_scope_applies_rules_only_inside_root)
 {
   const char* css = "@scope panel { button { color: red; } }";
@@ -5640,6 +5751,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_without_resolver_is_rejected_in_strict_mode);
     RUN_TEST(css_import_cycle_and_depth_are_bounded);
     RUN_TEST(css_import_rejects_absolute_and_traversal_paths);
+    RUN_TEST(css_import_media_qualifier_gates_resolution);
     RUN_TEST(css_scope_applies_rules_only_inside_root);
     RUN_TEST(css_scope_accepts_to_clause_and_rejects_malformed_limit);
     RUN_TEST(css_scope_to_clause_accepts_implicit_root);
