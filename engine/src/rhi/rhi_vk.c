@@ -8012,7 +8012,9 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     barriers[0].size = size;
     barriers[1].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
     barriers[1].srcAccessMask = VK_ACCESS_HOST_READ_BIT | VK_ACCESS_SHADER_READ_BIT
-                               | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+                               | VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT
+                               | VK_ACCESS_INDIRECT_COMMAND_READ_BIT
+                               | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
     barriers[1].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barriers[1].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barriers[1].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -8021,7 +8023,9 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
     barriers[1].size = size;
     vkCmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT
-            | VK_PIPELINE_STAGE_HOST_BIT,
+            | VK_PIPELINE_STAGE_HOST_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 2, barriers, 0, NULL);
 
@@ -8070,7 +8074,8 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     /* R185: Also wait prior DRAW_INDIRECT / shader reads — CSM/point-shadow
      * reuse the same count/draws buffer across cascades in one CB. */
     to_transfer.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT
-                              | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT;
+                              | VK_ACCESS_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_SHADER_READ_BIT
+                              | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
     to_transfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     to_transfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     to_transfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -8079,7 +8084,8 @@ void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize s
     to_transfer.size = size;
     vkCmdPipelineBarrier(cb,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT
-            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+            | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_VERTEX_INPUT_BIT
+            | VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         0, 0, NULL, 1, &to_transfer, 0, NULL);
 
