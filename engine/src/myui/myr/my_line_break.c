@@ -52,6 +52,46 @@ static const my_builtin_sa_word_t MY_BUILTIN_TH_WORDS[] = {
     {MY_BUILTIN_TH_SAWATDEE, sizeof(MY_BUILTIN_TH_SAWATDEE) /
                                   sizeof(MY_BUILTIN_TH_SAWATDEE[0])}};
 
+/* R642: bounded Lao corpus (version-1 `lo-Lao` profile) — the same set of
+ * high-frequency function words as the Thai corpus, plus the greeting:
+ * pha-sa/lao/kan/lae/khong/thi/pen/nai/bo/sa-bai-di. Unknown words remain
+ * unbreakable. */
+static const uint32_t MY_BUILTIN_LO_LANGUAGE[] = {
+    0x0E9Eu, 0x0EB2u, 0x0EAAu, 0x0EB2u};
+static const uint32_t MY_BUILTIN_LO_LAO[] = {0x0EA5u, 0x0EB2u, 0x0EA7u};
+static const uint32_t MY_BUILTIN_LO_KAN[] = {0x0E81u, 0x0EB2u, 0x0E99u};
+static const uint32_t MY_BUILTIN_LO_LAE[] = {0x0EC1u, 0x0EA5u, 0x0EB0u};
+static const uint32_t MY_BUILTIN_LO_KHONG[] = {0x0E82u, 0x0EADu, 0x0E87u};
+static const uint32_t MY_BUILTIN_LO_THI[] = {0x0E97u, 0x0EB5u, 0x0EC8u};
+static const uint32_t MY_BUILTIN_LO_PEN[] = {
+    0x0EC0u, 0x0E9Bu, 0x0EB1u, 0x0E99u};
+static const uint32_t MY_BUILTIN_LO_NAI[] = {0x0EC3u, 0x0E99u};
+static const uint32_t MY_BUILTIN_LO_BO[] = {0x0E9Au, 0x0ECDu, 0x0EC8u};
+static const uint32_t MY_BUILTIN_LO_SABAIDEE[] = {
+    0x0EAAu, 0x0EB0u, 0x0E9Au, 0x0EB2u, 0x0E8Du, 0x0E94u, 0x0EB5u};
+
+static const my_builtin_sa_word_t MY_BUILTIN_LO_WORDS[] = {
+    {MY_BUILTIN_LO_LANGUAGE, sizeof(MY_BUILTIN_LO_LANGUAGE) /
+                                  sizeof(MY_BUILTIN_LO_LANGUAGE[0])},
+    {MY_BUILTIN_LO_LAO, sizeof(MY_BUILTIN_LO_LAO) /
+                             sizeof(MY_BUILTIN_LO_LAO[0])},
+    {MY_BUILTIN_LO_KAN, sizeof(MY_BUILTIN_LO_KAN) /
+                             sizeof(MY_BUILTIN_LO_KAN[0])},
+    {MY_BUILTIN_LO_LAE, sizeof(MY_BUILTIN_LO_LAE) /
+                             sizeof(MY_BUILTIN_LO_LAE[0])},
+    {MY_BUILTIN_LO_KHONG, sizeof(MY_BUILTIN_LO_KHONG) /
+                               sizeof(MY_BUILTIN_LO_KHONG[0])},
+    {MY_BUILTIN_LO_THI, sizeof(MY_BUILTIN_LO_THI) /
+                             sizeof(MY_BUILTIN_LO_THI[0])},
+    {MY_BUILTIN_LO_PEN, sizeof(MY_BUILTIN_LO_PEN) /
+                             sizeof(MY_BUILTIN_LO_PEN[0])},
+    {MY_BUILTIN_LO_NAI, sizeof(MY_BUILTIN_LO_NAI) /
+                             sizeof(MY_BUILTIN_LO_NAI[0])},
+    {MY_BUILTIN_LO_BO, sizeof(MY_BUILTIN_LO_BO) /
+                            sizeof(MY_BUILTIN_LO_BO[0])},
+    {MY_BUILTIN_LO_SABAIDEE, sizeof(MY_BUILTIN_LO_SABAIDEE) /
+                                  sizeof(MY_BUILTIN_LO_SABAIDEE[0])}};
+
 my_line_break_class_t my_line_break_class(uint32_t cp) {
   size_t lo = 0, hi = sizeof(MY_LINE_BREAKS) / sizeof(MY_LINE_BREAKS[0]);
   while (lo < hi) {
@@ -280,9 +320,17 @@ static bool my_builtin_dictionary_profile_is_thai(
          strcmp(profile->locale, "th-Thai") == 0;
 }
 
+/* R642: second built-in profile. */
+static bool my_builtin_dictionary_profile_is_lao(
+    const my_line_break_dictionary_profile_t* profile) {
+  return profile != NULL && my_line_break_dictionary_profile_valid(profile) &&
+         strcmp(profile->locale, "lo-Lao") == 0;
+}
+
 bool my_line_break_builtin_dictionary_supports(
     const my_line_break_dictionary_profile_t* profile) {
-  return my_builtin_dictionary_profile_is_thai(profile);
+  return my_builtin_dictionary_profile_is_thai(profile) ||
+         my_builtin_dictionary_profile_is_lao(profile);
 }
 
 static bool my_builtin_sa_word_matches(const my_builtin_sa_word_t* word,
@@ -304,15 +352,23 @@ my_ret_t my_line_break_apply_builtin_dictionary(
     const my_line_break_dictionary_profile_t* profile) {
   bool scratch[MY_LINE_BREAK_MAX_DICTIONARY_CODEPOINTS];
   bool reachable[MY_LINE_BREAK_MAX_DICTIONARY_CODEPOINTS + 1u];
+  const my_builtin_sa_word_t* words;
   size_t i;
   size_t word_index;
-  size_t word_count = sizeof(MY_BUILTIN_TH_WORDS) /
-                      sizeof(MY_BUILTIN_TH_WORDS[0]);
+  size_t word_count;
 
   if (!my_line_break_dictionary_profile_valid(profile)) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (!my_builtin_dictionary_profile_is_thai(profile)) {
+  if (my_builtin_dictionary_profile_is_thai(profile)) {
+    words = MY_BUILTIN_TH_WORDS;
+    word_count =
+        sizeof(MY_BUILTIN_TH_WORDS) / sizeof(MY_BUILTIN_TH_WORDS[0]);
+  } else if (my_builtin_dictionary_profile_is_lao(profile)) {
+    words = MY_BUILTIN_LO_WORDS;
+    word_count =
+        sizeof(MY_BUILTIN_LO_WORDS) / sizeof(MY_BUILTIN_LO_WORDS[0]);
+  } else {
     return MY_RET_NOT_SUPPORTED;
   }
   if (count != 0u && (codepoints == NULL || allow_before == NULL)) {
@@ -338,7 +394,7 @@ my_ret_t my_line_break_apply_builtin_dictionary(
   for (i = 0u; i < count; ++i) {
     if (!reachable[i]) continue;
     for (word_index = 0u; word_index < word_count; ++word_index) {
-      const my_builtin_sa_word_t* word = &MY_BUILTIN_TH_WORDS[word_index];
+      const my_builtin_sa_word_t* word = &words[word_index];
       if (my_builtin_sa_word_matches(word, codepoints, count, i)) {
         reachable[i + word->count] = true;
       }
@@ -352,7 +408,7 @@ my_ret_t my_line_break_apply_builtin_dictionary(
     while (offset < count) {
       const my_builtin_sa_word_t* best = NULL;
       for (word_index = 0u; word_index < word_count; ++word_index) {
-        const my_builtin_sa_word_t* word = &MY_BUILTIN_TH_WORDS[word_index];
+        const my_builtin_sa_word_t* word = &words[word_index];
         if (my_builtin_sa_word_matches(word, codepoints, count, offset) &&
             reachable[offset + word->count] &&
             (best == NULL || word->count > best->count)) {

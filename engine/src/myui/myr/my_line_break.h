@@ -130,8 +130,8 @@ bool my_line_break_builtin_dictionary_supports(
 /**
  * @brief Apply the fixed, allocation-free built-in SA dictionary.
  *
- * The built-in corpus is intentionally bounded and currently covers the
- * version-1 `th-Thai` profile only. Unknown words remain unbreakable; this
+ * The built-in corpus is intentionally bounded and covers the version-1
+ * `th-Thai` and `lo-Lao` profiles. Unknown words remain unbreakable; this
  * avoids inventing unsafe boundaries when a word is outside the corpus.
  */
 my_ret_t my_line_break_apply_builtin_dictionary(

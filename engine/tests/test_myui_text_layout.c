@@ -1781,6 +1781,96 @@ TEST(line_break_builtin_dictionary_rejects_invalid_input_transactionally)
   ASSERT_TRUE(too_many_boundaries[MY_LINE_BREAK_MAX_DICTIONARY_CODEPOINTS]);
 }
 
+TEST(line_break_builtin_dictionary_supports_lao_profile)
+{
+  /* `lo-Lao`: pha-sa + lao = 4+3 codepoints; the break lands before lao
+   * only. Unknown words stay unbreakable (conservative contract). */
+  uint32_t lao_phrase[] = {0x0E9Eu, 0x0EB2u, 0x0EAAu, 0x0EB2u,
+                           0x0EA5u, 0x0EB2u, 0x0EA7u};
+  /* an all-SA non-word stays unbreakable (0E83 is deliberately avoided —
+   * UAX#14 does not class it SA, so it would hit the INVALID_PARAMS
+   * contract instead). */
+  uint32_t unknown[] = {0x0E84u, 0x0E86u, 0x0E87u};
+  bool allow_before[] = {false, false, false, false, false, false, false};
+  bool unknown_boundaries[] = {false, false, false};
+  my_line_break_dictionary_profile_t lao = {1u, "lo-Lao"};
+  my_line_break_dictionary_profile_t thai = {1u, "th-Thai"};
+  my_line_break_dictionary_profile_t unsupported = {1u, "en"};
+
+  ASSERT_TRUE(my_line_break_builtin_dictionary_supports(&lao));
+  ASSERT_TRUE(my_line_break_builtin_dictionary_supports(&thai));
+  ASSERT_FALSE(my_line_break_builtin_dictionary_supports(&unsupported));
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                lao_phrase, 7u, allow_before, &lao),
+            MY_RET_OK);
+  ASSERT_FALSE(allow_before[1]);
+  ASSERT_FALSE(allow_before[2]);
+  ASSERT_FALSE(allow_before[3]);
+  ASSERT_TRUE(allow_before[4]);
+  ASSERT_FALSE(allow_before[5]);
+  ASSERT_FALSE(allow_before[6]);
+  /* the Lao corpus does not invent breaks for Thai words either. */
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                lao_phrase, 7u, allow_before, &thai),
+            MY_RET_OK);
+  ASSERT_FALSE(allow_before[4]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                unknown, 3u, unknown_boundaries, &lao),
+            MY_RET_OK);
+  ASSERT_FALSE(unknown_boundaries[1]);
+  ASSERT_FALSE(unknown_boundaries[2]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                lao_phrase, 7u, allow_before, &unsupported),
+            MY_RET_NOT_SUPPORTED);
+}
+
+TEST(line_break_builtin_dictionary_lao_compounds_and_callback)
+{
+  /* kan + lae + khong (3+3+3) breaks at 3 and 6; pen + nai (4+2) at 4;
+   * the greeting stays one word. The profile-callback adapter routes the
+   * Lao profile identically. */
+  uint32_t compound[] = {0x0E81u, 0x0EB2u, 0x0E99u, 0x0EC1u, 0x0EA5u,
+                         0x0EB0u, 0x0E82u, 0x0EADu, 0x0E87u};
+  uint32_t pen_nai[] = {0x0EC0u, 0x0E9Bu, 0x0EB1u,
+                        0x0E99u, 0x0EC3u, 0x0E99u};
+  uint32_t greeting[] = {0x0EAAu, 0x0EB0u, 0x0E9Au, 0x0EB2u,
+                         0x0E8Du, 0x0E94u, 0x0EB5u};
+  bool c_allow[] = {false, false, false, false, false,
+                    false, false, false, false};
+  bool p_allow[] = {false, false, false, false, false, false};
+  bool g_allow[] = {false, false, false, false, false, false, false};
+  my_line_break_dictionary_profile_t lao = {1u, "lo-Lao"};
+
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(compound, 9u, c_allow,
+                                                   &lao),
+            MY_RET_OK);
+  ASSERT_FALSE(c_allow[1]);
+  ASSERT_FALSE(c_allow[2]);
+  ASSERT_TRUE(c_allow[3]);
+  ASSERT_FALSE(c_allow[4]);
+  ASSERT_FALSE(c_allow[5]);
+  ASSERT_TRUE(c_allow[6]);
+  ASSERT_FALSE(c_allow[7]);
+  ASSERT_FALSE(c_allow[8]);
+  ASSERT_EQ(my_line_break_builtin_dictionary_callback(
+                NULL, &lao, pen_nai, 6u, p_allow),
+            MY_RET_OK);
+  ASSERT_FALSE(p_allow[1]);
+  ASSERT_FALSE(p_allow[2]);
+  ASSERT_FALSE(p_allow[3]);
+  ASSERT_TRUE(p_allow[4]);
+  ASSERT_FALSE(p_allow[5]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(greeting, 7u, g_allow,
+                                                   &lao),
+            MY_RET_OK);
+  ASSERT_FALSE(g_allow[1]);
+  ASSERT_FALSE(g_allow[2]);
+  ASSERT_FALSE(g_allow[3]);
+  ASSERT_FALSE(g_allow[4]);
+  ASSERT_FALSE(g_allow[5]);
+  ASSERT_FALSE(g_allow[6]);
+}
+
 TEST(line_break_profile_callback_receives_locale_without_legacy_abi_change)
 {
   uint32_t thai[] = {0x0E01u, 0x0E02u, 0x0E03u};
@@ -3383,6 +3473,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_dictionary_rejects_invalid_unicode_scalars);
     RUN_TEST(line_break_builtin_dictionary_is_bounded_and_conservative);
     RUN_TEST(line_break_builtin_dictionary_rejects_invalid_input_transactionally);
+    RUN_TEST(line_break_builtin_dictionary_supports_lao_profile);
+    RUN_TEST(line_break_builtin_dictionary_lao_compounds_and_callback);
     RUN_TEST(line_break_profile_callback_receives_locale_without_legacy_abi_change);
     RUN_TEST(line_break_profile_callback_budget_and_failure_are_transactional);
     RUN_TEST(paragraph_consumes_profile_aware_dictionary_callback);

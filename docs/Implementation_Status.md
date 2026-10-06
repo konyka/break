@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R642 内建 SA 词典第二个 locale（TDD）— `lo-Lao` profile 落地：老挝语有界语料断行；词典分派从"泰语特例"泛化为"按 profile 选语料"
+
+- **缺口**(`my_line_break.h` 落账"内建语料仅 version-1 `th-Thai`"):SA 文字（无空格分词）断行依赖词典裁剪，老挝语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"lo-Lao"})`=false,`apply` 回 NOT_SUPPORTED。
+- **方案**（机制零新增，语料+分派泛化）:① 老挝语有界语料 10 词（镜像泰语集语义：语言/老挝/名物化/和/属格/关系词/是/在/不/问候——码点逐词经 UTF-8 转储核验，全部落于 UAX#14 SA 类区间）;② `apply_builtin_dictionary` 的硬编码泰语特例改为 **profile→语料分派**(`th-Thai`/`lo-Lao` 两臂，其余 NOT_SUPPORTED),`supports` 同步；可达性 DP+最长匹配算法对两语料零改动复用。保守契约不变：未覆盖词一律不可断（不发明边界）——含跨 profile（泰语语料遇老挝语输入=OK 全 false，本轮钉死）。
+- **TDD（红→绿实证）**:test_myui_text_layout +2——① profile 支持面+短语断界（ພາສາລາວ 7 码点仅词界可断/跨 profile 保守/全 SA 非词不可断/`en` 仍 NOT_SUPPORTED);② 复合词断界（ການແລະຂອງ 3+3+3 两界/ເປັນໃນ 4+2 经 callback 适配器同界/问候词内部不断）。**RED 如实红 2/2**(supports=false/apply NOT_SUPPORTED);GREEN 一钓：测试初版"未知词"误含 **U+0E83**——UAX#14 LineBreak 数据本就将其排除在 SA 之外（0E81-0E82/0E84/0E86-0E8A… 区间孔洞，生成表忠实），apply 按全-SA 输入契约回 INVALID_PARAMS 而非保守 false——改全 SA 非词序列后 **132/132**(130+2)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_text_layout 同 132/132。纯语料+分派改动，泰语路径逐位不动。
+- **边界**：内建语料仍刻意小（10 词/locale)；更多 SA locale（高棉 `km`、缅 `my`）同机制可添但需语料来源评审；完整 locale tailoring（ICU 级词典）维持史诗外；R611 AMD 基线不动。
+
 ## 本轮更新：R641 CSS `&` 三级深度（TDD）— 嵌套弧收尾：深度上限 2→3,pending 前置挂序对任意深度的结构性成立获钉桩
 
 - **缺口**(R636 落账"深度 3+ 保持拒绝")：三级嵌套（`.a { & .b { & .c { & .d {} } } }`、`button { &.a { &.b { &:hover {} } } }`）整体被拒。
