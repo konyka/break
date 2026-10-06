@@ -298,7 +298,10 @@ typedef struct {
     bool             feat_fill_mode_non_solid; /* wireframe (polygonMode=LINE) usable */
     bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
+    bool             feat_multi_draw_indirect;  /* drawCount>1 in one indirect call */
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
+    bool             feat_uab_sampled_image;    /* descriptorBindingSampledImageUpdateAfterBind usable */
+    bool             validation_layer_present;  /* R635: VK_LAYER_KHRONOS_validation loaded */
     bool             feat_depth_stencil_resolve;
     bool             has_device_fault; /* R576: VK_EXT_device_fault enabled */
     bool             device_lost;      /* R578: latched VK_ERROR_DEVICE_LOST — all
@@ -773,6 +776,54 @@ static void vk_suspend_pass_for_compute(VKBackend *vk) {
     }
 }
 
+/* R635: SyncVal-clean external subpass dependency masks. The historical
+ * masks (srcAccess=0, srcStage=COLOR_ATTACHMENT_OUTPUT only) left pass-begin
+ * layout transitions and loadOp clears unsynchronized with the PREVIOUS
+ * pass's attachment writes and fragment/compute/transfer reads — 20 SyncVal
+ * hazards (WAW depth clear, RAW color/depth load) on every back-to-back
+ * pass pair, latent on every driver. src side therefore covers every way the
+ * attachments were last touched; dst side covers loadOp read + write + depth
+ * test. Render-pass compatibility compares dependencyCount only (R440), so
+ * widening the masks changes no compatibility class. */
+static void vk_external_dep_color_depth(VkSubpassDependency *dep) {
+    dep->srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep->dstSubpass = 0;
+    dep->srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                      | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                      | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                      | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                      | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                      | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dep->srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                       | VK_ACCESS_SHADER_READ_BIT
+                       | VK_ACCESS_TRANSFER_WRITE_BIT;
+    dep->dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT
+                      | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                      | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep->dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT
+                       | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT
+                       | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                       | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+}
+
+/* Depth-only variant (shadow map / point-shadow cube passes): prior use is
+ * depth sampling (fragment) or a previous depth render of the same map. */
+static void vk_external_dep_depth_only(VkSubpassDependency *dep) {
+    dep->srcSubpass = VK_SUBPASS_EXTERNAL;
+    dep->dstSubpass = 0;
+    dep->srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                      | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT
+                      | VK_PIPELINE_STAGE_TRANSFER_BIT;
+    dep->srcAccessMask = VK_ACCESS_SHADER_READ_BIT
+                       | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT
+                       | VK_ACCESS_TRANSFER_WRITE_BIT;
+    dep->dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT
+                      | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    dep->dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                       | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+}
+
 /* One-time-submit transition of a freshly created color image (all mips/layers)
  * from UNDEFINED to the given layout. Offscreen/MRT targets may be sampled by a
  * composite/post pass before their producing pass has ever rendered into them
@@ -1215,12 +1266,7 @@ static bool vk_create_render_pass(VKBackend *vk) {
     subpass.pDepthStencilAttachment = &depth_ref;
 
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_color_depth(&dep);
 
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -1399,11 +1445,54 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         }
     }
 
+    /* R635: opt-in synchronization validation (BREAK_VK_SYNC_VALIDATION=1).
+     * SyncVal catches WAR/RAW hazards between recorded commands — the class
+     * behind the flaky gbuffer-factor failure (R633) — that the default core
+     * checks cannot see. Off by default: it costs performance and its extra
+     * scrutiny belongs to deliberate hardening runs, not every debug init. */
+    VkValidationFeatureEnableEXT sync_enables[1];
+    VkValidationFeaturesEXT validation_features = {0};
+    const char *sync_env = getenv("BREAK_VK_SYNC_VALIDATION");
+    const bool sync_validation_on = validation_on && sync_env && sync_env[0] == '1';
+    if (sync_validation_on) {
+        /* VK_EXT_validation_features is provided BY the validation layer, so
+         * it never appears in the NULL (global) enumeration — query the
+         * layer's own extension list (enabling a layer makes its instance
+         * extensions enable-able). */
+        u32 avail_count = 0;
+        vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &avail_count, NULL);
+        VkExtensionProperties *avail = calloc(avail_count ? avail_count : 1u, sizeof(*avail));
+        bool has_vf = false;
+        if (avail) {
+            vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation", &avail_count, avail);
+            for (u32 i = 0; i < avail_count; i++) {
+                if (strcmp(avail[i].extensionName, VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME) == 0) {
+                    has_vf = true;
+                    break;
+                }
+            }
+            free(avail);
+        }
+        if (has_vf && ext_count < sizeof(extensions) / sizeof(extensions[0])) {
+            extensions[ext_count++] = VK_EXT_VALIDATION_FEATURES_EXTENSION_NAME;
+            sync_enables[0] = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
+            validation_features.sType = VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT;
+            validation_features.enabledValidationFeatureCount = 1;
+            validation_features.pEnabledValidationFeatures = sync_enables;
+            LOG_INFO("VK: synchronization validation enabled (BREAK_VK_SYNC_VALIDATION=1)");
+        } else {
+            LOG_WARN("VK: BREAK_VK_SYNC_VALIDATION=1 but VK_EXT_validation_features "
+                     "unavailable — sync validation off");
+        }
+    }
+
     VkInstanceCreateInfo ici = {0};
     ici.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     ici.pApplicationInfo = &app;
     ici.enabledExtensionCount = ext_count;
     ici.ppEnabledExtensionNames = extensions;
+    if (validation_features.sType != 0)
+        ici.pNext = &validation_features;
 #if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     /* MoltenVK is a portability driver — must opt in to enumeration. */
     ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
@@ -1422,6 +1511,13 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (found) {
             ici.enabledLayerCount = 1;
             ici.ppEnabledLayerNames = layers;
+            vk->validation_layer_present = true;
+        } else {
+            /* R635: without the layer the messenger counts nothing and the
+             * test_vulkan VALIDATION GATE was vacuously green (macOS SDK
+             * layer manifests are not on the loader search path by default).
+             * Fail loudly so a missing layer is never mistaken for a pass. */
+            LOG_WARN("VK: VK_LAYER_KHRONOS_validation not present — validation gate will count nothing");
         }
     }
 
@@ -1448,7 +1544,10 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
                               VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
             dci.pfnUserCallback = vk_debug_utils_callback;
             if (create_dbg(vk->instance, &dci, NULL, &vk->debug_messenger) == VK_SUCCESS) {
-                g_validation_gate_active = true;
+                /* R635: the gate is only meaningful with the layer attached —
+                 * a bare debug_utils messenger receives no messages and used
+                 * to print a vacuous "0 validation messages ✓". */
+                g_validation_gate_active = vk->validation_layer_present;
             } else {
                 vk->debug_messenger = VK_NULL_HANDLE;
                 LOG_WARN("VK: debug messenger creation failed — validation gate disabled");
@@ -1683,6 +1782,14 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     if (supported_features2.features.shaderTessellationAndGeometryPointSize) {
         enabled_features.shaderTessellationAndGeometryPointSize = VK_TRUE;
     }
+    /* R635: multiDrawIndirect is required for vkCmdDraw*Indirect with
+     * drawCount>1 — previously relied on driver leniency (validation error on
+     * every indirect batch; strict drivers may ignore the extra draws). When
+     * absent the indirect entry points fall back to per-draw loops. */
+    if (supported_features2.features.multiDrawIndirect) {
+        enabled_features.multiDrawIndirect = VK_TRUE;
+        vk->feat_multi_draw_indirect = true;
+    }
 
     VkPhysicalDeviceVulkan12Features enabled_vk12 = {0};
     enabled_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -1707,6 +1814,15 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     if (supported_vk12.descriptorBindingPartiallyBound) {
         enabled_vk12.descriptorBindingPartiallyBound = VK_TRUE;
         vk->feat_partially_bound = true;
+    }
+    /* R635: UPDATE_AFTER_BIND on the two shadow-cube array bindings moves them
+     * out of the (possibly tiny — spec minimum 16, MoltenVK exactly 16)
+     * maxPerStageDescriptorSamplers budget into the update-after-bind budget
+     * (1024 on MoltenVK); the material layout is otherwise non-conformant on
+     * any driver reporting the spec-minimum sampler limit. */
+    if (supported_vk12.descriptorBindingSampledImageUpdateAfterBind) {
+        enabled_vk12.descriptorBindingSampledImageUpdateAfterBind = VK_TRUE;
+        vk->feat_uab_sampled_image = true;
     }
 
     const char *dev_extensions[4];
@@ -1870,11 +1986,25 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         } else {
             binds[10].descriptorCount = 1;
         }
+        /* R635: the two shadow-cube arrays push the per-stage sampler total to
+         * 22, past the spec-minimum maxPerStageDescriptorSamplers of 16 (the
+         * exact MoltenVK figure — the layout was non-conformant everywhere,
+         * desktop drivers just report higher limits). UPDATE_AFTER_BIND moves
+         * the arrays into the maxPerStageDescriptorUpdateAfterBindSamplers
+         * budget (1024 on MoltenVK); the 14 remaining single bindings stay at
+         * 14 <= 16. Update timing is relaxed (superset), never tightened. */
+        bool uab_arrays = vk->feat_uab_sampled_image && vk->feat_partially_bound;
+        if (uab_arrays) {
+            bind_flags[5]  |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+            bind_flags[10] |= VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+        }
 
         VkDescriptorSetLayoutCreateInfo dli = {0};
         dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
         dli.bindingCount = RHI_MAX_TEXTURE_UNITS;
         dli.pBindings = binds;
+        if (uab_arrays)
+            dli.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
         if (vk->feat_partially_bound) dli.pNext = &flags_ci;
         if (vkCreateDescriptorSetLayout(vk->device, &dli, NULL, &vk->desc_layout) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to create desc layout");
@@ -2022,6 +2152,11 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         VkDescriptorPoolCreateInfo dpi = {0};
         dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
         dpi.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        /* R635: allocating sets whose layout carries UPDATE_AFTER_BIND
+         * (material texture layout, shadow-cube arrays) requires the pool
+         * flag; harmless for the legacy path. */
+        if (vk->feat_uab_sampled_image && vk->feat_partially_bound)
+            dpi.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         dpi.maxSets = 4096;
         dpi.poolSizeCount = 5;
         dpi.pPoolSizes = pool_sizes;
@@ -3000,12 +3135,7 @@ static VkRenderPass vk_pipeline_render_pass_fmt(VKBackend *vk, VkFormat vkfmt) {
     VkAttachmentReference color_ref = {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
     VkAttachmentReference depth_ref = {1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_color_depth(&dep);
     atts[1].format = VK_FORMAT_D32_SFLOAT;
     atts[1].samples = VK_SAMPLE_COUNT_1_BIT;
     atts[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -3110,13 +3240,14 @@ static VkRenderPass vk_pipeline_render_pass_fmt_samples(VKBackend *vk, VkFormat 
 
     VkSubpassDependency2 dependency = {0};
     dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstStageMask = dependency.srcStageMask;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency dep_masks = {0};
+    vk_external_dep_color_depth(&dep_masks);
+    dependency.srcSubpass = dep_masks.srcSubpass;
+    dependency.dstSubpass = dep_masks.dstSubpass;
+    dependency.srcStageMask = dep_masks.srcStageMask;
+    dependency.srcAccessMask = dep_masks.srcAccessMask;
+    dependency.dstStageMask = dep_masks.dstStageMask;
+    dependency.dstAccessMask = dep_masks.dstAccessMask;
     VkRenderPassCreateInfo2 create_info = {0};
     create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
     create_info.attachmentCount = 4;
@@ -3189,13 +3320,14 @@ static VkRenderPass vk_create_msaa_resume_pass(VKBackend *vk, VkFormat color_for
     info.pSubpasses = &subpass;
     VkSubpassDependency2 dependency = {0};
     dependency.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-    dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dependency.dstSubpass = 0;
-    dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                               VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dependency.dstStageMask = dependency.srcStageMask;
-    dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    VkSubpassDependency dep_masks = {0};
+    vk_external_dep_color_depth(&dep_masks);
+    dependency.srcSubpass = dep_masks.srcSubpass;
+    dependency.dstSubpass = dep_masks.dstSubpass;
+    dependency.srcStageMask = dep_masks.srcStageMask;
+    dependency.srcAccessMask = dep_masks.srcAccessMask;
+    dependency.dstStageMask = dep_masks.dstStageMask;
+    dependency.dstAccessMask = dep_masks.dstAccessMask;
     info.dependencyCount = 1;
     info.pDependencies = &dependency;
     VkRenderPass pass = VK_NULL_HANDLE;
@@ -3346,14 +3478,7 @@ static VkRenderPass vk_mrt_pipeline_render_pass(VKBackend *vk, const RHIFormat *
      * compares dependencyCount; the FBO pass has 1, this had 0, so the R440
      * MRT pipeline was never actually compatible with the G-buffer pass. */
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_color_depth(&dep);
 
     VkRenderPassCreateInfo ci = {0};
     ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -5450,9 +5575,18 @@ void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
     if (!bd) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);
-    vkCmdDrawIndirect(vk->cmd_buffers[vk->current_frame],
-                      bd->buffer, (VkDeviceSize)offset,
-                      draw_count, stride);
+    if (vk->feat_multi_draw_indirect || draw_count <= 1u) {
+        vkCmdDrawIndirect(vk->cmd_buffers[vk->current_frame],
+                          bd->buffer, (VkDeviceSize)offset,
+                          draw_count, stride);
+    } else {
+        /* R635: multiDrawIndirect absent — drawCount must be 0/1, loop. */
+        for (u32 i = 0; i < draw_count; i++) {
+            vkCmdDrawIndirect(vk->cmd_buffers[vk->current_frame],
+                              bd->buffer, (VkDeviceSize)(offset + (usize)i * stride),
+                              1u, stride);
+        }
+    }
 }
 
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
@@ -5464,9 +5598,18 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
     if (!bd) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
-    vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
-                             bd->buffer, (VkDeviceSize)offset,
-                             draw_count, stride);
+    if (vk->feat_multi_draw_indirect || draw_count <= 1u) {
+        vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
+                                 bd->buffer, (VkDeviceSize)offset,
+                                 draw_count, stride);
+    } else {
+        /* R635: multiDrawIndirect absent — drawCount must be 0/1, loop. */
+        for (u32 i = 0; i < draw_count; i++) {
+            vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
+                                     bd->buffer, (VkDeviceSize)(offset + (usize)i * stride),
+                                     1u, stride);
+        }
+    }
 }
 
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset,
@@ -5490,9 +5633,19 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
         /* Fallback when drawIndirectCount is unavailable: issue max_draws.
          * Callers (indirect_draw R234-B / gpucull R171) zero visible slots
          * before compact so surplus commands are no-ops (indexCount=0). */
-        vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
-                                 cmd_bd->buffer, (VkDeviceSize)cmd_offset,
-                                 max_draws, stride);
+        if (vk->feat_multi_draw_indirect || max_draws <= 1u) {
+            vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
+                                     cmd_bd->buffer, (VkDeviceSize)cmd_offset,
+                                     max_draws, stride);
+        } else {
+            /* R635: multiDrawIndirect absent — drawCount must be 0/1, loop. */
+            for (u32 i = 0; i < max_draws; i++) {
+                vkCmdDrawIndexedIndirect(vk->cmd_buffers[vk->current_frame],
+                                         cmd_bd->buffer,
+                                         (VkDeviceSize)(cmd_offset + (usize)i * stride),
+                                         1u, stride);
+            }
+        }
     }
 }
 
@@ -7155,11 +7308,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     sp.pDepthStencilAttachment = &depth_ref;
 
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_depth_only(&dep);
 
     VkRenderPassCreateInfo rpci = {0};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -8392,12 +8541,7 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
     }
 
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.srcAccessMask = 0;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_color_depth(&dep);
 
     VkSubpassDescription sp = {0};
     sp.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -8442,11 +8586,12 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
         sp2.pDepthStencilAttachment = &depth_ref2;
         VkSubpassDependency2 dep2 = {0};
         dep2.sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
-        dep2.srcSubpass = VK_SUBPASS_EXTERNAL;
-        dep2.dstSubpass = 0;
-        dep2.srcStageMask = dep.srcStageMask | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-        dep2.dstStageMask = dep2.srcStageMask;
-        dep2.dstAccessMask = dep.dstAccessMask | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dep2.srcSubpass = dep.srcSubpass;
+        dep2.dstSubpass = dep.dstSubpass;
+        dep2.srcStageMask = dep.srcStageMask;
+        dep2.srcAccessMask = dep.srcAccessMask;
+        dep2.dstStageMask = dep.dstStageMask;
+        dep2.dstAccessMask = dep.dstAccessMask;
         VkAttachmentDescription2 atts2[4] = {0};
         for (u32 i = 0; i < 4u; i++) {
             atts2[i].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
@@ -8990,14 +9135,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     sp.pDepthStencilAttachment = &depth_ref;
 
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
-                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
-                        VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_color_depth(&dep);
 
     VkRenderPassCreateInfo rpci = {0};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -9356,11 +9494,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
      * the real hazard: the prior frame samples this cube depth before we
      * overwrite it. */
     VkSubpassDependency dep = {0};
-    dep.srcSubpass = VK_SUBPASS_EXTERNAL;
-    dep.dstSubpass = 0;
-    dep.srcStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    dep.dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    dep.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    vk_external_dep_depth_only(&dep);
 
     VkRenderPassCreateInfo rpci = {0};
     rpci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;

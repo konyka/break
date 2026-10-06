@@ -6464,7 +6464,8 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             LOG_INFO("VALIDATION GATE: 0 Vulkan validation messages ✓");
         }
     } else {
-        LOG_WARN("VALIDATION GATE: debug messenger inactive — gate skipped");
+        LOG_WARN("VALIDATION GATE: validation layer or debug messenger inactive — "
+                 "gate skipped (a green gate requires VK_LAYER_KHRONOS_validation)");
     }
 #endif
 

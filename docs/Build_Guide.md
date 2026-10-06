@@ -69,6 +69,23 @@ gpus[0] + 回退 caps，见 rhi_vk.c R574/R575）；要强制指定某块卡（�
 AMD 核显的 caps 查询有驱动缺陷、需在 AMD 上验证），设
 `RE_VK_DEVICE_INDEX=<n>`（枚举顺序见运行日志里的 Vulkan GPU 行）。
 
+macOS 备注（2026-10-06 起可本机验证，R635）：macOS 加载器**不搜索
+Vulkan SDK 目录树**，ICD/层 manifest 须装到加载器搜索路径才生效。本机
+（`~/VulkanSDK` 1.4.357）的标准布局是：
+`~/.local/share/vulkan/icd.d/MoltenVK_icd.json`（绝对路径指向
+`~/VulkanSDK/macOS/lib/libMoltenVK.dylib`）与
+`~/.local/share/vulkan/explicit_layer.d/VkLayer_khronos_validation.json`
+（从 SDK 同名文件复制并把 `library_path` 改为绝对路径
+`~/VulkanSDK/macOS/lib/libVkLayer_khronos_validation.dylib`——相对路径
+`../../../lib/...` 只在 SDK 树内成立）。层 manifest 缺失时
+`VK_LAYER_KHRONOS_validation` 静默缺席，验证门曾因此常年空转
+（"0 messages ✓"是真空）；R635 起引擎在层缺席时 `LOG_WARN` 且门不亮。
+`VK_LOADER_DEBUG=layer ./build-macos/test_vulkan` 可核对层是否插入。
+同步验证（钓 WAR/RAW 命令间冒险，R633 事故类）以
+`BREAK_VK_SYNC_VALIDATION=1 ./build-macos/test_vulkan` 开启（默认关：
+有性能成本，属刻意硬化运行）；要求引擎以 Debug/ENGINE_VK_VALIDATION
+构建，且层 manifest 已安装。
+
 ### 2.2 myui / duanxianxia 集成构建
 
 `engine/src/myui` 与 `engine/apps/duanxianxia` 已作为引擎静态库和可执行目标

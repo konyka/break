@@ -7,6 +7,18 @@
 - **TDD（红→绿实证）**:test_myui_css +4——① 主题合并组（`&:hover, &:pressed`：解析断言双选择器态逐位正确+主题级 hover/pressed 命中、normal 不命中）;② 祖先形态组（`& > button, & label`：边组合器逐臂保留——direct/descendant 解析断言+命中/深层命中/旁系不命中）;③ 组×父组叉积（`.a, .b { &:hover, &.on }` → 4 选择器臂主序+行为）;④ 误用四例全拒（尾逗号/双逗号/无 `&` 臂/9 臂超上限，SYNTAX+NESTING capability）另钉**前导逗号**语义差异（语句以 `,` 起=声明语法错误，不进嵌套解析器——调研钓出，单独断言不定 capability)。**RED 如实红 4/4**（三例 sheet NULL+误用组 capability 不符）;GREEN 首轮 3/4，误用组一钓（前导逗号路径差异，上述）——修后 **132/132**(128+4)。R629 旧误用例 `& .x, .y` 保持拒绝（臂 2 无 `&`，同错误路径）。
 - **回归**：双树非图形 CTest 各 **118/118**;VK 树 test_myui_css 同 132/132。纯解析器改动，theme/桥接/图形零触点。
 - **边界**：嵌套组落地；剩余让渡=二级+嵌套（`MY_CSS_MAX_NEST_DEPTH=1`)、`&` 非首位形态（`.a & {}`)、`@media`/`@supports` 块内嵌套规则、`:scope` 限定/伪类叠加形态；R611 AMD 基线不动。
+## 本轮更新：R635 本机 MoltenVK 环境建立 — 验证门去虚空化；真实层首跑钓出并修复三类潜伏违规；sync validation 接入（R633 硬化项落地）
+
+- **事故起点（比预想更深）**：建立本机 MoltenVK 验证环境时发现——**验证层从未真正运行过**。macOS 加载器不搜索 SDK 目录树，而本机只在 `~/.local/share/vulkan/icd.d` 装了 MoltenVK ICD manifest，`explicit_layer.d` 为空、无 `VK_LAYER_PATH` → `VK_LAYER_KHRONOS_validation` 静默缺席（引擎查到层不在就不启用），`VALIDATION GATE: 0 messages ✓` 是**真空绿**：messenger 建在 MoltenVK 自带的 debug_utils 上，无层即无消息。R633 的三条硬规则之所以能漏网多年，根源在此。
+- **环境建立**（布局写入 Build_Guide macOS 节）：层 manifest 从 SDK 复制到 `~/.local/share/vulkan/explicit_layer.d/`，`library_path` 改绝对路径（相对路径 `../../../lib/...` 只在 SDK 树内成立）；`VK_LOADER_DEBUG=layer` 实证 "Insert instance layer VK_LAYER_KHRONOS_validation"。
+- **钓出并修复①——sampler 超限（核心验证 9 条）**：材质纹理布局每阶段 22 个 sampler（16 固定单元 + 绑定 5/10 阴影 cube 数组各 4），而 `maxPerStageDescriptorSamplers` 的**规范最小值就是 16**、MoltenVK 恰报 16——该布局在任何报最小值的驱动上都非规范，桌面驱动只是报得高而侥幸。修复（规范内正路）：探测确认 `descriptorBindingSampledImageUpdateAfterBind`+`maxPerStageDescriptorUpdateAfterBindSamplers=1024` 可用后，绑定 5/10 改 `UPDATE_AFTER_BIND`（预算挪入 1024；剩余 14 个单绑定 ≤16 达标），启用对应 vk12 feature、pool 加 `UPDATE_AFTER_BIND_BIT`；descriptor indexing 缺席的设备走原路径（零回归）。
+- **钓出并修复②——multiDrawIndirect（核心验证 6 条）**：indirect 批量以 drawCount=4 调 `vkCmdDraw*Indirect` 却从未启用 `multiDrawIndirect` feature（规范要求 drawCount≤1，严格驱动可丢弃多余 draw）。修复：feature 查询启用（MoltenVK 支持），三处 indirect 入口在缺席时回退逐次 drawCount=1 循环。
+- **钓出并修复③——pass 间冒险（SyncVal 20 条，全平台潜伏）**：`vkCmdBeginRenderPass` 的布局转换/loadOp 与前一 pass 的附件写/采样读从未同步——10 处 subpass 外部依赖 srcAccess=0、srcStage 仅 COLOR_ATTACHMENT_OUTPUT。统一收编为两个 helper（`vk_external_dep_color_depth`/`vk_external_dep_depth_only`）：src 侧覆盖附件写+shader/transfer 读的全部既往用法，dst 侧覆盖 loadOp 读写+深度测试。render-pass 兼容性只比 dependencyCount（R440 既有教训），掩码加宽零兼容变更。SyncVal 复跑 **0 消息**。
+- **门诚实化**：层缺席时 `LOG_WARN` 明示"gate will count nothing"；`g_validation_gate_active` 改为 messenger建成 **且层在场**；测试门提示文案同步。Linux CI 未装 validation layer，其 VK 门同样空转——R635 后至少留下 WARN 痕迹。
+- **sync validation 接入**：`BREAK_VK_SYNC_VALIDATION=1` 环境变量 opt-in（默认关：有性能成本，属刻意硬化运行），链 `VkValidationFeaturesEXT` 启用 SYNCHRONIZATION_VALIDATION。坑：`VK_EXT_validation_features` 由**层**提供，全局枚举查不到，须查 `vkEnumerateInstanceExtensionProperties("VK_LAYER_KHRONOS_validation")`。
+- **变异验证（R633 复盘闭环）**：回滚 R633 的 WAR 写前屏障 → SyncVal **确定性**钓出 `vkCmdUpdateBuffer WRITE_AFTER_WRITE` ×10、门 FAIL；恢复后 0 消息。该 bug 类自此在硬化运行中 100% 显形，不再依赖像素级偶发（25% 假阴性率）。
+- **验证**：真实层下 test_vulkan 普通连跑 **20/20**、SyncVal 连跑 **5/5**，门 0 消息（修复前真实层首跑即 15 条核心违规）；非图形套件 117/117、fuzz 5/5；引擎全量构建零告警。
+- **边界**：SyncVal 默认关，CI macOS job 因 runner 无 GPU session 仍跳过 VK 测试（`BREAK_MYUI_SKIP_VK_SENSITIVE`）——硬化跑法为本机/有 GPU 机器的刻意运行；R633 屏障修复保持独立提交，本轮不触碰；GL 端无 validation 概念（驱动托管同步）；R611 AMD 基线不动。
 
 ## 本轮更新：R633 VK 命令缓冲写路径 WAR 屏障事故与修复 — test_vulkan 12b 偶发失败（~25%）根因消除；三条 buffer 写路径屏障审计补齐
 
