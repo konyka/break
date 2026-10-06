@@ -1445,6 +1445,12 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_echart_adapter PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_echart_adapter COMMAND test_myui_echart_adapter)
+    add_executable(test_myui_echart_mvvm tests/test_myui_echart_mvvm.c
+        src/myui/myui/echarts/my_echart_mvvm.c)
+    target_include_directories(test_myui_echart_mvvm PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_echart_mvvm PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_echart_mvvm COMMAND test_myui_echart_mvvm)
 
     add_executable(test_font_shader_contract tests/test_font_shader_contract.c)
     target_include_directories(test_font_shader_contract PRIVATE ${TEST_INCLUDE_DIRS})
