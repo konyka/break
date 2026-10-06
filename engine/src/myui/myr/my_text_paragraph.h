@@ -44,6 +44,23 @@ typedef struct my_text_paragraph_t {
   my_text_paragraph_line_layout_cache_entry_t
       line_layout_cache[MY_TEXT_PARAGRAPH_LINE_LAYOUT_CACHE_CAPACITY];
   uint64_t line_layout_cache_tick;
+  /* Retained wrap configuration for my_text_paragraph_replace. `font` is
+   * borrowed: it must outlive the paragraph when replace is used. */
+  my_font_t* font;
+  int32_t size;
+  int32_t max_width;
+  bool break_options_valid;
+  my_line_break_options_t break_options;
+  bool profile_options_valid;
+  my_line_break_profile_options_t profile_options;
+  bool dictionary_profile_valid;
+  my_line_break_dictionary_profile_t dictionary_profile;
+  char* dictionary_profile_locale;
+  /* Replace observability (tests / instrumentation). */
+  size_t replace_count;
+  size_t last_replace_prefix_lines;
+  size_t last_replace_middle_lines;
+  size_t last_replace_suffix_lines;
 } my_text_paragraph_t;
 
 /** @brief Build a bounded paragraph; oversized text returns NULL, and
@@ -110,6 +127,28 @@ my_text_paragraph_t* my_text_paragraph_process_n_break_profile_callback_ex(
 
 /** @brief Destroy a paragraph returned by my_text_paragraph_process. */
 void my_text_paragraph_destroy(my_text_paragraph_t* paragraph);
+
+/**
+ * @brief Splice an edit into the paragraph text and re-wrap incrementally.
+ *
+ * Replaces bytes [start_byte, end_byte) with `text[0..byte_len)`
+ * (`text` may be NULL when `byte_len` is 0) and re-wraps only the
+ * hard-break segment(s) the edit touches; untouched segments before the
+ * edit keep their lines verbatim and untouched segments after it are
+ * reused with shifted offsets. The resulting line array is identical to a
+ * full rebuild of the spliced text with the construction-time font, size,
+ * max_width and break configuration (that is the contract; segments wrap
+ * independently, which makes it exact).
+ *
+ * The font passed at construction is borrowed and must still be alive.
+ * The call is transactional: on failure the paragraph is unchanged.
+ * Cached line layouts are invalidated on success.
+ * `replace_count` and `last_replace_*_lines` record the last rewrap's
+ * shape for tests and instrumentation.
+ */
+my_ret_t my_text_paragraph_replace(my_text_paragraph_t* paragraph,
+                                   size_t start_byte, size_t end_byte,
+                                   const char* text, size_t byte_len);
 
 /** @brief Read one logical line; NULL is returned for an invalid index. */
 const my_text_paragraph_line_t* my_text_paragraph_line_at(

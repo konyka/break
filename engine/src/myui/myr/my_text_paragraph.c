@@ -302,6 +302,174 @@ done:
   return ret;
 }
 
+typedef struct paragraph_wrap_config_t {
+  my_font_t* font;
+  int32_t size;
+  int32_t max_width;
+  const my_font_shape_params_t* shape_params;
+  const my_line_break_options_t* break_options;
+  const my_line_break_profile_options_t* profile_options;
+  const my_line_break_dictionary_profile_t* dictionary_profile;
+} paragraph_wrap_config_t;
+
+/* Wrap [range_start, range_end) of paragraph->text into lines, splitting at
+ * hard breaks. Hard-break detection sees the full remaining text so an
+ * atomic CRLF straddling range_end is recognized; such a break ends the
+ * range after the current segment without emitting a trailing empty segment
+ * (its '\n' belongs to the caller-owned suffix). When
+ * skip_leading_hard_break is set, a hard break at range_start (a CRLF whose
+ * '\r' belongs to the caller-owned prefix) is skipped without emitting an
+ * empty segment. *out_cp_count receives the emitted codepoint count (hard
+ * breaks excluded, matching the logical_len convention). */
+static my_ret_t paragraph_wrap_range(my_text_paragraph_t* paragraph,
+                                     size_t* capacity, size_t range_start,
+                                     size_t range_end,
+                                     bool skip_leading_hard_break,
+                                     size_t cp_base,
+                                     const paragraph_wrap_config_t* config,
+                                     size_t* out_cp_count) {
+  size_t pos = range_start;
+  size_t start_byte = range_start;
+  size_t start_cp = cp_base;
+  size_t cp_count = 0u;
+  while (pos <= range_end) {
+    size_t hard_break_len =
+        pos < paragraph->text_len
+            ? my_line_break_hard_break_len(paragraph->text + pos,
+                                           paragraph->text_len - pos)
+            : 0u;
+    if (pos == range_end || hard_break_len > 0u) {
+      my_ret_t ret;
+      bool emit;
+      if (hard_break_len > 0u && pos == range_start &&
+          skip_leading_hard_break) {
+        pos += hard_break_len;
+        start_byte = pos;
+        continue;
+      }
+      /* An empty trailing emit is only a real segment when the range ends
+       * at the text end or the suffix itself starts with a hard break;
+       * otherwise the next segment is suffix-owned and emitting here would
+       * duplicate its line. */
+      emit = start_byte < pos || range_end == paragraph->text_len ||
+             hard_break_len > 0u;
+      if (emit) {
+        ret = paragraph_build_segment(
+            paragraph, capacity, start_byte, pos, start_cp, cp_count,
+            config->font, config->size, config->max_width,
+            config->shape_params, config->break_options,
+            config->profile_options, config->dictionary_profile);
+        if (ret != MY_RET_OK) return ret;
+      }
+      start_cp += cp_count;
+      cp_count = 0u;
+      if (pos == range_end ||
+          hard_break_len > range_end - pos /* straddles the suffix */) {
+        break;
+      }
+      pos += hard_break_len;
+      start_byte = pos;
+      continue;
+    }
+    {
+      const char* next = paragraph->text + pos;
+      (void)my_utf8_next(&next);
+      pos = (size_t)(next - paragraph->text);
+      cp_count++;
+    }
+  }
+  *out_cp_count = start_cp + cp_count - cp_base;
+  return MY_RET_OK;
+}
+
+/* Count codepoints in [start, end), skipping hard breaks (the logical_len
+ * convention). */
+static size_t paragraph_count_cps(const char* text, size_t start, size_t end) {
+  size_t pos = start;
+  size_t count = 0u;
+  while (pos < end) {
+    size_t hard_break_len =
+        my_line_break_hard_break_len(text + pos, end - pos);
+    if (hard_break_len > 0u) {
+      pos += hard_break_len;
+      continue;
+    }
+    {
+      const char* next = text + pos;
+      (void)my_utf8_next(&next);
+      pos = (size_t)(next - text);
+      count++;
+    }
+  }
+  return count;
+}
+
+/* Locate the minimal byte region of the OLD text whose segments an edit
+ * [s, e) can affect. Segments wrap independently, so untouched segments
+ * keep their lines. The edit range is expanded over any hard-break bytes it
+ * intersects (deleting one side of a break merges/splits neighbors); for a
+ * pure insertion (s == e) a hard break STRICTLY CONTAINING the insertion
+ * point (splitting an atomic CRLF) counts as intersected. The region then
+ * covers every segment touching the closed range [rs, re]. */
+static void paragraph_edit_region(const char* text, size_t text_len, size_t s,
+                                  size_t e, size_t* out_start,
+                                  size_t* out_end, size_t* out_edit_end) {
+  size_t rs = s;
+  size_t re = e;
+  size_t pos = 0u;
+  size_t seg_start = 0u;
+  size_t region_start = text_len;
+  size_t region_end = 0u;
+  bool any = false;
+  while (pos < text_len) {
+    size_t hard_break_len =
+        my_line_break_hard_break_len(text + pos, text_len - pos);
+    if (hard_break_len > 0u) {
+      if (pos + hard_break_len > s && pos < e) {
+        if (pos < rs) rs = pos;
+        if (pos + hard_break_len > re) re = pos + hard_break_len;
+      }
+      pos += hard_break_len;
+      continue;
+    }
+    {
+      const char* next = text + pos;
+      (void)my_utf8_next(&next);
+      pos = (size_t)(next - text);
+    }
+  }
+  pos = 0u;
+  while (pos <= text_len) {
+    size_t hard_break_len =
+        pos < text_len ? my_line_break_hard_break_len(text + pos,
+                                                      text_len - pos)
+                       : 0u;
+    if (pos == text_len || hard_break_len > 0u) {
+      if (seg_start <= re && pos >= rs) {
+        if (!any || seg_start < region_start) region_start = seg_start;
+        if (!any || pos > region_end) region_end = pos;
+        any = true;
+      }
+      if (pos == text_len) break;
+      pos += hard_break_len;
+      seg_start = pos;
+      continue;
+    }
+    {
+      const char* next = text + pos;
+      (void)my_utf8_next(&next);
+      pos = (size_t)(next - text);
+    }
+  }
+  if (!any) {
+    region_start = 0u;
+    region_end = text_len;
+  }
+  *out_start = region_start;
+  *out_end = region_end;
+  *out_edit_end = re;
+}
+
 my_text_paragraph_t* my_text_paragraph_process_ex(
     const my_allocator_t* allocator, const char* text, my_font_t* font,
     int32_t size, int32_t max_width,
@@ -384,10 +552,9 @@ static my_text_paragraph_t* paragraph_process_n_break_profile_callback_ex(
   my_font_shape_params_t owned_shape_params;
   const my_font_shape_params_t* effective_shape_params;
   char normalized_features[MY_FONT_SHAPE_MAX_FEATURE_BYTES + 1u];
-  size_t capacity = 0, start_byte = 0, start_cp = 0, cp_count = 0;
+  size_t capacity = 0;
   size_t language_len;
   size_t features_len;
-  const char* p;
   if (dictionary_profile != NULL &&
       !my_line_break_dictionary_profile_valid(dictionary_profile)) {
     return NULL;
@@ -460,39 +627,54 @@ static my_text_paragraph_t* paragraph_process_n_break_profile_callback_ex(
     memcpy(paragraph->text, text, text_len);
   }
   paragraph->text[text_len] = '\0';
-  p = paragraph->text;
-  while ((size_t)(p - paragraph->text) <= text_len) {
-    size_t current_offset = (size_t)(p - paragraph->text);
-    size_t hard_break_len = current_offset < text_len
-                                ? my_line_break_hard_break_len(
-                                      p, text_len - current_offset)
-                                : 0u;
-    if (current_offset == text_len || hard_break_len > 0u) {
-      if (paragraph_build_segment(paragraph, &capacity, start_byte,
-                                  current_offset, start_cp,
-                                  cp_count, font, size, max_width,
-                                  effective_shape_params, break_options,
-                                  profile_options,
-                                  dictionary_profile) != MY_RET_OK) {
+  paragraph->font = font;
+  paragraph->size = size;
+  paragraph->max_width = max_width;
+  if (break_options != NULL) {
+    paragraph->break_options = *break_options;
+    paragraph->break_options_valid = true;
+  }
+  if (profile_options != NULL) {
+    paragraph->profile_options = *profile_options;
+    paragraph->profile_options_valid = true;
+  }
+  if (dictionary_profile != NULL) {
+    size_t locale_len = 0u;
+    paragraph->dictionary_profile = *dictionary_profile;
+    paragraph->dictionary_profile_valid = true;
+    if (dictionary_profile->locale != NULL) {
+      if (!paragraph_param_len(dictionary_profile->locale,
+                               MY_LINE_BREAK_DICTIONARY_MAX_LOCALE_BYTES,
+                               &locale_len)) {
         my_text_paragraph_destroy(paragraph);
         return NULL;
       }
-      if (current_offset == text_len) break;
-      p += hard_break_len;
-      start_byte = current_offset + hard_break_len;
-      start_cp += cp_count;
-      paragraph->logical_len = start_cp;
-      cp_count = 0;
-      continue;
-    }
-    {
-      const char* next = p;
-      (void)my_utf8_next(&next);
-      p = next;
-      cp_count++;
+      paragraph->dictionary_profile_locale = paragraph_copy_param(
+          allocator, dictionary_profile->locale, locale_len);
+      if (paragraph->dictionary_profile_locale == NULL) {
+        my_text_paragraph_destroy(paragraph);
+        return NULL;
+      }
+      paragraph->dictionary_profile.locale =
+          paragraph->dictionary_profile_locale;
     }
   }
-  paragraph->logical_len = start_cp + cp_count;
+  {
+    paragraph_wrap_config_t config;
+    config.font = font;
+    config.size = size;
+    config.max_width = max_width;
+    config.shape_params = &paragraph->shape_params;
+    config.break_options = break_options;
+    config.profile_options = profile_options;
+    config.dictionary_profile = dictionary_profile;
+    if (paragraph_wrap_range(paragraph, &capacity, 0u, text_len, false, 0u,
+                             &config,
+                             &paragraph->logical_len) != MY_RET_OK) {
+      my_text_paragraph_destroy(paragraph);
+      return NULL;
+    }
+  }
   return paragraph;
 }
 
@@ -532,9 +714,171 @@ void my_text_paragraph_destroy(my_text_paragraph_t* paragraph) {
   }
   my_mem_free(allocator, paragraph->shape_features);
   my_mem_free(allocator, paragraph->shape_language);
+  my_mem_free(allocator, paragraph->dictionary_profile_locale);
   my_mem_free(allocator, paragraph->text);
   my_mem_free(allocator, paragraph->lines);
   my_mem_free(allocator, paragraph);
+}
+
+my_ret_t my_text_paragraph_replace(my_text_paragraph_t* paragraph,
+                                   size_t start_byte, size_t end_byte,
+                                   const char* text, size_t byte_len) {
+  char* new_text;
+  char* old_text;
+  my_text_paragraph_line_t* old_lines;
+  size_t old_count;
+  size_t old_len;
+  size_t new_len;
+  size_t capacity = 0u;
+  size_t removed_cps;
+  size_t inserted_cps;
+  size_t region_lo;
+  size_t region_hi;
+  size_t region_edit_end;
+  size_t prefix_count = 0u;
+  size_t middle_count;
+  size_t suffix_count = 0u;
+  size_t i;
+  ptrdiff_t byte_delta;
+  ptrdiff_t cp_delta;
+  bool skip_leading = false;
+  paragraph_wrap_config_t config;
+  my_ret_t ret;
+
+  if (paragraph == NULL || start_byte > end_byte ||
+      end_byte > paragraph->text_len || (byte_len > 0u && text == NULL) ||
+      (byte_len > 0u && memchr(text, '\0', byte_len) != NULL)) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  if (byte_len > MY_TEXT_PARAGRAPH_MAX_BYTES) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  new_len = paragraph->text_len - (end_byte - start_byte) + byte_len;
+  if (new_len > MY_TEXT_PARAGRAPH_MAX_BYTES) {
+    return MY_RET_INVALID_PARAMS;
+  }
+
+  removed_cps = paragraph_count_cps(paragraph->text, start_byte, end_byte);
+  new_text = (char*)my_mem_alloc(paragraph->allocator, new_len + 1u);
+  if (new_text == NULL) return MY_RET_OOM;
+  memcpy(new_text, paragraph->text, start_byte);
+  if (byte_len > 0u) {
+    memcpy(new_text + start_byte, text, byte_len);
+  }
+  memcpy(new_text + start_byte + byte_len, paragraph->text + end_byte,
+         paragraph->text_len - end_byte);
+  new_text[new_len] = '\0';
+  inserted_cps =
+      paragraph_count_cps(new_text, start_byte, start_byte + byte_len);
+
+  paragraph_edit_region(paragraph->text, paragraph->text_len, start_byte,
+                        end_byte, &region_lo, &region_hi, &region_edit_end);
+  /* An inserted '\n' right after a prefix '\r' joins it into one atomic
+   * CRLF: wrap from the '\r' and skip the break without emitting. */
+  if (region_lo > 0u && region_lo < new_len &&
+      new_text[region_lo - 1u] == '\r' && new_text[region_lo] == '\n') {
+    skip_leading = true;
+  }
+  byte_delta = (ptrdiff_t)byte_len - (ptrdiff_t)(end_byte - start_byte);
+  cp_delta = (ptrdiff_t)inserted_cps - (ptrdiff_t)removed_cps;
+
+  config.font = paragraph->font;
+  config.size = paragraph->size;
+  config.max_width = paragraph->max_width;
+  config.shape_params = &paragraph->shape_params;
+  config.break_options =
+      paragraph->break_options_valid ? &paragraph->break_options : NULL;
+  config.profile_options =
+      paragraph->profile_options_valid ? &paragraph->profile_options : NULL;
+  config.dictionary_profile = paragraph->dictionary_profile_valid
+                                  ? &paragraph->dictionary_profile
+                                  : NULL;
+
+  old_text = paragraph->text;
+  old_len = paragraph->text_len;
+  old_lines = paragraph->lines;
+  old_count = paragraph->line_count;
+
+  /* Build into a fresh line array against the new text; roll back on any
+   * failure so the paragraph stays unchanged. */
+  paragraph->lines = NULL;
+  paragraph->line_count = 0u;
+  paragraph->text = new_text;
+  paragraph->text_len = new_len;
+
+  while (prefix_count < old_count &&
+         old_lines[prefix_count].start_byte < region_lo) {
+    const my_text_paragraph_line_t* line = &old_lines[prefix_count];
+    ret = paragraph_add_line(paragraph, &capacity, line->start_byte,
+                             line->end_byte, line->start_cp, line->cp_count);
+    if (ret != MY_RET_OK) goto rollback;
+    prefix_count++;
+  }
+  {
+    size_t wrap_start = skip_leading ? region_lo - 1u : region_lo;
+    size_t wrap_end = (size_t)((ptrdiff_t)region_hi + byte_delta);
+    size_t cp_base =
+        prefix_count > 0u
+            ? old_lines[prefix_count - 1u].start_cp +
+                  old_lines[prefix_count - 1u].cp_count
+            : 0u;
+    size_t middle_cps = 0u;
+    ret = paragraph_wrap_range(paragraph, &capacity, wrap_start, wrap_end,
+                               skip_leading, cp_base, &config, &middle_cps);
+    if (ret != MY_RET_OK) goto rollback;
+  }
+  middle_count = paragraph->line_count - prefix_count;
+  for (i = 0u; i < old_count; i++) {
+    const my_text_paragraph_line_t* line = &old_lines[i];
+    /* Untouched suffix lines shift by the edit deltas. Touched segments'
+     * lines sit inside [region_lo, region_hi]; the trailing boundary is
+     * subtle for an EMPTY segment exactly at region_hi: it was touched (and
+     * is rebuilt in the middle) iff the edit's closed end reached it, i.e.
+     * region_hi == region_edit_end; otherwise it follows the region's last
+     * hard break untouched and shifts as suffix. */
+    bool region_tail_empty =
+        line->start_byte == region_hi && line->end_byte == region_hi &&
+        region_hi == region_edit_end;
+    if (line->start_byte < region_hi || line->start_byte <= region_lo ||
+        region_tail_empty) {
+      continue;
+    }
+    if (cp_delta < 0 && line->start_cp < (size_t)-cp_delta) goto fail;
+    ret = paragraph_add_line(
+        paragraph, &capacity,
+        (size_t)((ptrdiff_t)line->start_byte + byte_delta),
+        (size_t)((ptrdiff_t)line->end_byte + byte_delta),
+        (size_t)((ptrdiff_t)line->start_cp + cp_delta), line->cp_count);
+    if (ret != MY_RET_OK) goto rollback;
+    suffix_count++;
+  }
+
+  paragraph->logical_len =
+      (size_t)((ptrdiff_t)paragraph->logical_len + cp_delta);
+  for (i = 0u; i < MY_TEXT_PARAGRAPH_LINE_LAYOUT_CACHE_CAPACITY; i++) {
+    my_text_layout_destroy(paragraph->line_layout_cache[i].layout);
+    paragraph->line_layout_cache[i].layout = NULL;
+    paragraph->line_layout_cache[i].line_index = 0u;
+    paragraph->line_layout_cache[i].last_used = 0u;
+  }
+  paragraph->replace_count++;
+  paragraph->last_replace_prefix_lines = prefix_count;
+  paragraph->last_replace_middle_lines = middle_count;
+  paragraph->last_replace_suffix_lines = suffix_count;
+  my_mem_free(paragraph->allocator, old_lines);
+  my_mem_free(paragraph->allocator, old_text);
+  return MY_RET_OK;
+
+fail:
+  ret = MY_RET_FAIL;
+rollback:
+  my_mem_free(paragraph->allocator, paragraph->lines);
+  paragraph->lines = old_lines;
+  paragraph->line_count = old_count;
+  paragraph->text = old_text;
+  paragraph->text_len = old_len;
+  my_mem_free(paragraph->allocator, new_text);
+  return ret;
 }
 
 const my_text_paragraph_line_t* my_text_paragraph_line_at(

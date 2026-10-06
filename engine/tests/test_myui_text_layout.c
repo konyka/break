@@ -3106,6 +3106,225 @@ TEST(paragraph_rejects_failed_sa_dictionary_transactionally)
                   NULL, &options) == NULL);
 }
 
+/* ---------------- paragraph replace (incremental rewrap) ---------------- */
+
+static void paragraph_expect_equivalent(const my_text_paragraph_t* paragraph) {
+  my_text_paragraph_t* fresh = my_text_paragraph_process_n(
+      NULL, paragraph->text, paragraph->text_len, NULL, 16, 32);
+  size_t i;
+  ASSERT_NOT_NULL(fresh);
+  if (fresh == NULL) return;
+  ASSERT_EQ(paragraph->line_count, fresh->line_count);
+  ASSERT_EQ(paragraph->logical_len, fresh->logical_len);
+  for (i = 0u; i < paragraph->line_count && i < fresh->line_count; i++) {
+    ASSERT_EQ(paragraph->lines[i].start_byte, fresh->lines[i].start_byte);
+    ASSERT_EQ(paragraph->lines[i].end_byte, fresh->lines[i].end_byte);
+    ASSERT_EQ(paragraph->lines[i].start_cp, fresh->lines[i].start_cp);
+    ASSERT_EQ(paragraph->lines[i].cp_count, fresh->lines[i].cp_count);
+  }
+  my_text_paragraph_destroy(fresh);
+}
+
+TEST(paragraph_replace_insert_rewraps_only_touched_segment)
+{
+  my_text_paragraph_t* paragraph = my_text_paragraph_process_n(
+      NULL, "aaaa bbbb\ncccc dddd\neeee ffff", 29u, NULL, 16, 32);
+
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 6u);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 12u, 12u, "zz ", 3u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "aaaa bbbb\ncczz cc dddd\neeee ffff"),
+            0);
+  ASSERT_EQ(paragraph->text_len, 32u);
+  ASSERT_EQ(paragraph->line_count, 7u);
+  ASSERT_EQ(paragraph->replace_count, 1u);
+  ASSERT_EQ(paragraph->last_replace_prefix_lines, 2u);
+  ASSERT_EQ(paragraph->last_replace_middle_lines, 3u);
+  ASSERT_EQ(paragraph->last_replace_suffix_lines, 2u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_replace_delete_hard_break_merges_segments)
+{
+  my_text_paragraph_t* paragraph = my_text_paragraph_process_n(
+      NULL, "aaaa bbbb\ncccc", 14u, NULL, 16, 32);
+
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 3u);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 9u, 10u, NULL, 0u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "aaaa bbbbcccc"), 0);
+  ASSERT_EQ(paragraph->line_count, 3u);
+  ASSERT_EQ(paragraph->last_replace_prefix_lines, 0u);
+  ASSERT_EQ(paragraph->last_replace_middle_lines, 3u);
+  ASSERT_EQ(paragraph->last_replace_suffix_lines, 0u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_replace_insert_hard_break_splits_segment)
+{
+  my_text_paragraph_t* paragraph =
+      my_text_paragraph_process_n(NULL, "aaaabbbb", 8u, NULL, 16, 32);
+
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 4u, 4u, "\n", 1u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "aaaa\nbbbb"), 0);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(paragraph->last_replace_prefix_lines, 0u);
+  ASSERT_EQ(paragraph->last_replace_middle_lines, 2u);
+  ASSERT_EQ(paragraph->last_replace_suffix_lines, 0u);
+  ASSERT_EQ(paragraph->logical_len, 8u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_replace_validates_and_is_transactional)
+{
+  my_text_paragraph_t* paragraph = my_text_paragraph_process_n(
+      NULL, "aaaa bbbb", 9u, NULL, 16, 32);
+
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 5u, 3u, "x", 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 0u, 10u, "x", 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 0u, 0u, "x\0y", 3u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 0u, 0u, NULL, 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_text_paragraph_replace(NULL, 0u, 0u, "x", 1u),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(paragraph->text_len, 9u);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(strcmp(paragraph->text, "aaaa bbbb"), 0);
+  ASSERT_EQ(paragraph->replace_count, 0u);
+
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 0u, 5u, NULL, 0u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "bbbb"), 0);
+  ASSERT_EQ(paragraph->line_count, 1u);
+  paragraph_expect_equivalent(paragraph);
+
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 4u, 4u, " cccc", 5u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "bbbb cccc"), 0);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+}
+
+TEST(paragraph_replace_handles_crlf_boundary_cases)
+{
+  my_text_paragraph_t* paragraph =
+      my_text_paragraph_process_n(NULL, "a\r\nb", 4u, NULL, 16, 32);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  /* Deleting the '\n' of an atomic CRLF re-wraps both neighbors. */
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 2u, 3u, NULL, 0u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "a\rb"), 0);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(paragraph->lines[0].start_byte, 0u);
+  ASSERT_EQ(paragraph->lines[0].end_byte, 1u);
+  ASSERT_EQ(paragraph->lines[1].start_byte, 2u);
+  ASSERT_EQ(paragraph->lines[1].end_byte, 3u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+
+  /* Inserted '\r' joins the suffix's '\n' into one atomic break. */
+  paragraph = my_text_paragraph_process_n(NULL, "a\nb", 3u, NULL, 16, 32);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 1u, 1u, "\r", 1u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "a\r\nb"), 0);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(paragraph->lines[0].start_byte, 0u);
+  ASSERT_EQ(paragraph->lines[0].end_byte, 1u);
+  ASSERT_EQ(paragraph->lines[1].start_byte, 3u);
+  ASSERT_EQ(paragraph->lines[1].end_byte, 4u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+
+  /* Inserted '\n' joins the prefix's '\r' into one atomic break. */
+  paragraph = my_text_paragraph_process_n(NULL, "a\rb", 3u, NULL, 16, 32);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 2u, 2u, "\n", 1u),
+            MY_RET_OK);
+  ASSERT_EQ(strcmp(paragraph->text, "a\r\nb"), 0);
+  ASSERT_EQ(paragraph->line_count, 2u);
+  ASSERT_EQ(paragraph->lines[0].start_byte, 0u);
+  ASSERT_EQ(paragraph->lines[0].end_byte, 1u);
+  ASSERT_EQ(paragraph->lines[1].start_byte, 3u);
+  ASSERT_EQ(paragraph->lines[1].end_byte, 4u);
+  ASSERT_EQ(paragraph->logical_len, 2u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+
+  /* Multibyte insert keeps codepoint accounting exact. */
+  paragraph = my_text_paragraph_process_n(NULL, "aabb", 4u, NULL, 16, 32);
+  ASSERT_NOT_NULL(paragraph);
+  ASSERT_EQ(my_text_paragraph_replace(paragraph, 2u, 2u, "\xE4\xB8\xAD", 3u),
+            MY_RET_OK);
+  ASSERT_EQ(paragraph->text_len, 7u);
+  ASSERT_EQ(paragraph->logical_len, 5u);
+  paragraph_expect_equivalent(paragraph);
+  my_text_paragraph_destroy(paragraph);
+}
+
+static uint64_t s_replace_battery_rng;
+static uint32_t replace_battery_rand(void) {
+  s_replace_battery_rng = s_replace_battery_rng * 6364136223846793005ull +
+                          1442695040888963407ull;
+  return (uint32_t)(s_replace_battery_rng >> 33);
+}
+
+TEST(paragraph_replace_random_edits_match_full_rebuild)
+{
+  static const char* const inserts[] = {"a",  "bb", " ",    "\n",
+                                        "\r", "cc dd", "\r\n"};
+  const char* base =
+      "alpha beta gamma\ndelta epsilon\nzeta eta theta iota kappa";
+  my_text_paragraph_t* paragraph = my_text_paragraph_process_n(
+      NULL, base, strlen(base), NULL, 16, 32);
+  size_t op;
+  size_t reused_ops = 0u;
+
+  ASSERT_NOT_NULL(paragraph);
+  s_replace_battery_rng = 0x9e3779b97f4a7c15ull;
+  for (op = 0u; op < 200u; op++) {
+    uint32_t kind = replace_battery_rand() % 3u;
+    size_t len = paragraph->text_len;
+    size_t start = len > 0u ? replace_battery_rand() % (len + 1u) : 0u;
+    size_t end = start;
+    const char* insert = "";
+    size_t insert_len = 0u;
+    if (kind != 0u && len > 0u) {
+      size_t span = replace_battery_rand() % 5u;
+      end = start + span > len ? len : start + span;
+    }
+    if (kind != 1u) {
+      insert = inserts[replace_battery_rand() % 7u];
+      insert_len = strlen(insert);
+    }
+    ASSERT_EQ(my_text_paragraph_replace(paragraph, start, end, insert,
+                                        insert_len),
+              MY_RET_OK);
+    paragraph_expect_equivalent(paragraph);
+    if (paragraph->last_replace_prefix_lines > 0u &&
+        paragraph->last_replace_suffix_lines > 0u) {
+      reused_ops++;
+    }
+  }
+  ASSERT_TRUE(reused_ops >= 10u);
+  my_text_paragraph_destroy(paragraph);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(arabic_shape_forms_lam_alef);
     RUN_TEST(text_layout_bidi_prescan_is_bounded);
@@ -3226,6 +3445,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(paragraph_consumes_bounded_sa_dictionary_options);
     RUN_TEST(paragraph_consumes_versioned_sa_dictionary_profile);
     RUN_TEST(paragraph_rejects_failed_sa_dictionary_transactionally);
+    RUN_TEST(paragraph_replace_insert_rewraps_only_touched_segment);
+    RUN_TEST(paragraph_replace_delete_hard_break_merges_segments);
+    RUN_TEST(paragraph_replace_insert_hard_break_splits_segment);
+    RUN_TEST(paragraph_replace_validates_and_is_transactional);
+    RUN_TEST(paragraph_replace_handles_crlf_boundary_cases);
+    RUN_TEST(paragraph_replace_random_edits_match_full_rebuild);
     RUN_TEST(syntax_cache_lexes_bounded_tokens_and_comments);
     RUN_TEST(syntax_cache_records_utf8_token_byte_ranges);
     RUN_TEST(syntax_cache_propagates_state_only_from_dirty_suffix);

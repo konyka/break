@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R632 my_text_paragraph_replace 段级增量重排（TDD）— 段落模型从"建一次"到"可编辑"：编辑后只重排触及的硬断行段，契约=与全量重建逐行等价
+
+- **缺口**（文本域史诗"跨物理段落增量 visual rebreaking"的纯函数层切片）:`my_text_paragraph_t` 是 build-once 模型——任何文本编辑都要对整段重新 `process_n`(widget 层 R-prior 的 text_area 增量以物理行为粒度重建段落对象，段落本体无编辑能力）；无 replace 的段落对超长物理行（无 \n 的 MB 级段落）每次击键全量重排。
+- **方案**（利用既有结构性质——`paragraph_build_segment` 对每个硬断行段独立重置断行/测量状态，段间零上下文）：`my_text_paragraph_replace(p, s, e, text, len)` 拼接字节后只重排**触及段**——前缀行逐字保留、后缀行按 delta 平移复用、中间段经 `paragraph_wrap_range`（构造主循环重构出的共享 helper，构造/编辑同一代码路径，等价性是结构性的而非巧合的）。正确性三难点均被 battery 钓出或钉死：① **CRLF 原子性跨界**——插入 `\r` 拼上后缀 `\n`（wrap_range 以全文上下文测 hb，跨界则收当前段即停，幻影空段不emit）/插入 `\n` 拼上前缀 `\r`（区域左扩一字节+skip_leading 跳过不断行）/在 CRLF 内部插入（pass-1 对纯插入以"严格包含"判定相交，断开点两侧段同触及）;② **尾空段歧义**——区域右端空段若被编辑触及（region_hi==扩展编辑端 re）须中段重建、suffix 过滤显式排除，否则其行双收；③ **尾随空行 emit 规则**——中段吞入 hb 恰好落在 range_end 时，仅当 range_end==text_len 或后缀首字节仍是 hb 才 emit 空行（否则下行是后缀所有）。构造期配置（font/size/max_width/break options/profile/dictionary locale）自此随段落保留（font 借用，契约写入头注释）;replace 事务性（失败原状恢复）、成功后冲刷行布局缓存、`replace_count`+`last_replace_*_lines` 统计供测试/观测。
+- **TDD（红→绿实证）**:test_myui_text_layout +6——① 段级增量钉桩（中段插入：prefix/middle/suffix=2/3/2 逐数断言+等价对拍）;② 删 `\n` 合并段；③ 插 `\n` 拆分段；④ 参数校验五例+事务性（失败后 text/lines 原状）+删除/追加；⑤ CRLF 三边界（删 `\n` of CRLF、`\r`+后缀`\n`、前缀`\r`+`\n`)+多字节插入 cp 账；⑥ **200 次确定性随机编辑对拍全量重建**（每步逐行四字段+logical_len 等价，且 ≥10 次双侧复用=增量性证据）。**RED 如实红 6/6**(NOT_SUPPORTED 桩，124 余项全绿）;GREEN 两钓：尾空段经 suffix 过滤双收（区域需输出 re 区分触及/未触及）+ CRLF 内插入无段触及致兜底全区时尾行泄漏（pass-1 去 `s<e` 守卫）——修后 **130/130**(124+6)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_text_layout 同 130/130;demo 四配置各 120 帧 rc=0、VK validation 0（构造路径经 wrap_range 重构=text_area 现役 wrap 路径，四配置实跑）。
+- **边界**:replace 契约=与全量重建逐行等价（battery 持续看守）;widget 层接线（text_area 长物理行改持单段落对象+replace）留待消费方立项；UTF-8 合法性沿袭构造期宽松语义（不校验，畸形序列按解码原样断行）;font 为借用指针（replace 用户须保证其存活——与 my_text_layout shape 缓存同约）;R611 AMD 基线不动。
+
 ## 本轮更新：R631 rhi_texture_get_size 覆盖 cubemap（TDD）— R441 契约的 size 查询半片补齐：cube 回读的调用方自此能定缓冲区尺寸
 
 - **缺口**（回读弧收官审计发现）:R610/R624 定义了 cube（深度/彩色）回读，但回读的 R441 配套——size 查询——对 cube 句柄恒 false(GL 的 cube 全注册为 RHI_RES_CUBEMAP，类型化 TEXTURE 查找机制性缺席；VK 侧深度 cube 是 TEXTURE 注册本就工作，彩色 cube 缺席）——API 面不自洽：能读内容却不能问尺寸。
