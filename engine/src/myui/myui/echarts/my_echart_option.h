@@ -25,8 +25,18 @@ typedef enum my_echart_series_type_t {
 typedef enum my_echart_transform_t {
   MY_ECHART_TRANSFORM_NONE = 0,
   MY_ECHART_TRANSFORM_SORT_ASC,
-  MY_ECHART_TRANSFORM_SORT_DESC
+  MY_ECHART_TRANSFORM_SORT_DESC,
+  MY_ECHART_TRANSFORM_FILTER
 } my_echart_transform_t;
+
+typedef enum my_echart_filter_op_t {
+  MY_ECHART_FILTER_EQ = 0,
+  MY_ECHART_FILTER_NE,
+  MY_ECHART_FILTER_GT,
+  MY_ECHART_FILTER_GE,
+  MY_ECHART_FILTER_LT,
+  MY_ECHART_FILTER_LE
+} my_echart_filter_op_t;
 
 typedef struct my_echart_dimension_input_t {
   const char* name;
@@ -95,6 +105,9 @@ typedef struct my_echart_option_input_t {
   size_t dataset_count;
   my_echart_transform_t transform;
   const char* transform_dimension;
+  my_echart_filter_op_t filter_op;
+  const char* filter_dimension;
+  double filter_value;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {

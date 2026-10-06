@@ -25,7 +25,11 @@ The supported subset is:
 - dataset `sort` transform (`transform` + `transform_dimension`): rows are
   reordered by the key dimension (ascending or descending) with every column
   permuted consistently during resolution; ragged datasets and unknown or
-  missing sort keys are rejected.
+  missing sort keys are rejected;
+- dataset `filter` transform (`MY_ECHART_TRANSFORM_FILTER` +
+  `filter_dimension`/`filter_op`/`filter_value`): rows whose key fails the
+  comparison (EQ/NE/GT/GE/LT/LE against a literal) are dropped from every
+  column consistently during resolution.
 
 Mixed series types, mixed stack names, stacks on non-bar charts, and other
 ECharts series/configuration features are rejected with

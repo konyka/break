@@ -127,6 +127,21 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
   if (input->transform != MY_ECHART_TRANSFORM_NONE) {
     bool key_found = false;
     size_t key_count = 0u;
+    if (input->transform == MY_ECHART_TRANSFORM_FILTER) {
+      if (input->filter_dimension == NULL ||
+          input->filter_dimension[0] == '\0' ||
+          input->filter_op < MY_ECHART_FILTER_EQ ||
+          input->filter_op > MY_ECHART_FILTER_LE)
+        return MY_RET_INVALID_PARAMS;
+      for (size_t i = 0u; i < input->dataset_count; i++) {
+        if (input->dataset[i].count != input->dataset[0].count)
+          return MY_RET_INVALID_PARAMS;
+        if (strcmp(input->filter_dimension, input->dataset[i].name) == 0)
+          key_found = true;
+      }
+      if (!key_found) return MY_RET_INVALID_PARAMS;
+      return MY_RET_OK;
+    }
     if (input->transform_dimension == NULL ||
         input->transform_dimension[0] == '\0')
       return MY_RET_INVALID_PARAMS;
@@ -149,10 +164,30 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
                                const my_allocator_t* allocator) {
   my_echart_option_t candidate;
   size_t* row_order = NULL;
+  size_t row_count = 0u;
   if (my_echart_option_validate(src) != MY_RET_OK || dst == NULL)
     return MY_RET_INVALID_PARAMS;
   my_echart_option_init(&candidate, allocator);
-  if (src->transform != MY_ECHART_TRANSFORM_NONE) {
+  if (src->transform == MY_ECHART_TRANSFORM_FILTER) {
+    const my_echart_dimension_input_t* key = NULL;
+    for (size_t i = 0u; i < src->dataset_count; i++)
+      if (strcmp(src->filter_dimension, src->dataset[i].name) == 0) {
+        key = &src->dataset[i];
+        break;
+      }
+    row_order = (size_t*)my_mem_alloc(allocator, key->count * sizeof(*row_order));
+    if (row_order == NULL) return MY_RET_OOM;
+    for (size_t i = 0u; i < key->count; i++) {
+      double v = key->values[i];
+      bool keep = src->filter_op == MY_ECHART_FILTER_EQ ? v == src->filter_value
+                   : src->filter_op == MY_ECHART_FILTER_NE ? v != src->filter_value
+                   : src->filter_op == MY_ECHART_FILTER_GT ? v > src->filter_value
+                   : src->filter_op == MY_ECHART_FILTER_GE ? v >= src->filter_value
+                   : src->filter_op == MY_ECHART_FILTER_LT ? v < src->filter_value
+                                                           : v <= src->filter_value;
+      if (keep) row_order[row_count++] = i;
+    }
+  } else if (src->transform != MY_ECHART_TRANSFORM_NONE) {
     const my_echart_dimension_input_t* key = NULL;
     for (size_t i = 0u; i < src->dataset_count; i++)
       if (strcmp(src->transform_dimension, src->dataset[i].name) == 0) {
@@ -161,6 +196,7 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
       }
     row_order = (size_t*)my_mem_alloc(allocator, key->count * sizeof(*row_order));
     if (row_order == NULL) return MY_RET_OOM;
+    row_count = key->count;
     for (size_t i = 0u; i < key->count; i++) row_order[i] = i;
     for (size_t i = 1u; i < key->count; i++) {
       size_t row = row_order[i];
@@ -206,6 +242,7 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
             break;
           }
         }
+        if (row_order != NULL) data_count = row_count;
       }
       target->id = copy_string(allocator, source->id);
       target->name = copy_string(allocator, source->name);

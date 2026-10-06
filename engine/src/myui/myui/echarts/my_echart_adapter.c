@@ -147,7 +147,7 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
       source->visual_map_low_color, source->visual_map_high_color,
       point_inputs, source->mark_point_count, line_inputs,
       source->mark_line_count, area_inputs, source->mark_area_count,
-      NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
+      NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0};
   ret = my_echart_option_copy(&candidate->option, &input, adapter->allocator);
   if (ret == MY_RET_OK) {
     for (size_t i = 0u; i < candidate->option.series_count; i++) {

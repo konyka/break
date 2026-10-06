@@ -4,13 +4,13 @@
 #include "myui/widgets/my_chart.h"
 #include <string.h>
 TEST(echart_mvvm_syncs_option_pointer) {
-  static const double values[] = {1.0,2.0}; my_echart_series_input_t s = {"v", "Values", MY_ECHART_LINE, values, 2, 0, 0, NULL, true, NULL}; my_echart_option_input_t in = {"MVVM", NULL, 0, &s, 1, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL}; my_echart_option_t o; my_view_model_t* vm=my_view_model_dummy_create(NULL); my_binding_context_t* c=my_binding_context_create(NULL,vm); my_widget_t* w=my_chart_create(NULL,MY_CHART_LINE); my_echart_adapter_t* a; my_echart_mvvm_binding_t* b; my_value_t v;
+  static const double values[] = {1.0,2.0}; my_echart_series_input_t s = {"v", "Values", MY_ECHART_LINE, values, 2, 0, 0, NULL, true, NULL}; my_echart_option_input_t in = {"MVVM", NULL, 0, &s, 1, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0}; my_echart_option_t o; my_view_model_t* vm=my_view_model_dummy_create(NULL); my_binding_context_t* c=my_binding_context_create(NULL,vm); my_widget_t* w=my_chart_create(NULL,MY_CHART_LINE); my_echart_adapter_t* a; my_echart_mvvm_binding_t* b; my_value_t v;
   ASSERT_NOT_NULL(vm); ASSERT_NOT_NULL(c); ASSERT_NOT_NULL(w); my_echart_option_init(&o,NULL); ASSERT_EQ(my_echart_option_copy(&o,&in,NULL),MY_RET_OK); a=my_echart_adapter_create(w,NULL); ASSERT_NOT_NULL(a); my_value_init(&v,NULL); my_value_set_pointer(&v,&o); ASSERT_EQ(my_view_model_set_prop(vm,"option",&v),MY_RET_OK); b=my_echart_mvvm_bind_option(NULL,c,a,"option"); ASSERT_NOT_NULL(b); ASSERT_TRUE(strcmp(((my_chart_t*)w)->title,"MVVM")==0); my_echart_mvvm_unbind_option(b); my_value_reset(&v); my_echart_adapter_destroy(a); my_widget_unref(w); my_binding_context_destroy(c); my_view_model_unref(vm); my_echart_option_free(&o);
 }
 TEST(echart_mvvm_property_notification_updates_chart) {
   static const double values[] = {1.0};
   my_echart_series_input_t s = {"v", "V", MY_ECHART_LINE, values, 1, 0, 0, NULL, true, NULL};
-  my_echart_option_input_t in = {"First", NULL, 0, &s, 1, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
+  my_echart_option_input_t in = {"First", NULL, 0, &s, 1, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0};
   my_echart_option_t first, second;
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
   my_binding_context_t* c = my_binding_context_create(NULL, vm);
