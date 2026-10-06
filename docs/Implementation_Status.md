@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R626 myui @scope 括号 prelude（TDD）— CSS 规范形态互操作：`@scope (root) [to (limit)]` 与裸形式并存
+
+- **缺口**（历轮落账"完整 CSS Scoping 规范（显式括号 prelude 等）未实现"的有界首片）：真实 CSS 的 `@scope (.card) to (.content)` 规范形态被子集解析器整体拒绝（`(` 即 "empty selector")——书写兼容性缺口。
+- **方案**（纯解析层，零语义/匹配改动）:root 与 limit 各自独立接纳可选 `(...)` 包裹——`(` 进入、列表照常（R620-R622 的组合器/列表机制原样复用）、`)` 必配（缺则 SYNTAX+SCOPE capability);`c_scope_selector_path` 终止符集补 `)`（悬空 `>` 后接 `)` 仍拒）。语义零新面：括号是纯语法壳。让渡钉死：`@scope (to x)`(to 入 root 括号）拒、嵌套括号拒、`@scope ()`/`to ()` 空括号拒、括号外杂项拒（malformed 七例）。
+- **TDD（红→绿实证）**:test_myui_css +2——① accepted 四形态解析断言（`(panel) to (.stop)`、`(app > panel)` 组合器入括号且 direct 标志位正确、`(panel, dialog)` 列表双变体、括号/裸混合 `(panel) to .stop`)+ 双 theme 行为实证（parenthesized 与裸形式逐点等价：limit 边界排除、组合器 child 边失效不命中）;② malformed 七例全拒。**RED 如实红 1/2**(accepted 组 sheet NULL;malformed 组对旧解析全拒=守卫）;GREEN 首轮即过 **120/120**(118+2)。
+- **回归**：双树非图形 CTest 各 **119/119**(计数+1=并行会话 echarts 新测试，与本 diff 无关）;VK 树 test_myui_css 同 120/120。纯 CSS 解析器改动，theme/桥接/图形零触点。
+- **边界**:@scope 与真实 CSS 的语法形态自此兼容（括号/裸写/组合器/列表全集）;完整 Scoping 规范剩余=`:scope` 伪类（引用 root 元素本身——需匹配层回传"root 命中于何元素"，机制性新面）与样式规则内 `&` 嵌套（独立特性族）;R611 AMD 基线不动。
+
 ## 本轮更新：R625 RGBA16F cubemap faces[] CPU 上传（TDD）— R624 边界双片同闭：f16 面不再静默丢弃 + f16 cube 回读有门
 
 - **缺口**（R624 落账"f16 cube 对称路无门 + create 期 faces[] 上传不对称"——复核修正：实为**双端同型静默丢弃**,VK 跳过上传分支（R586 注释自承"HDR faces are compute-filled")、GL 传 NULL 数据配 GL_FLOAT 类型；R586 修 RGBA8 面时明确让渡 f16):HDR cube 的 CPU 面数据双端皆不入 GPU。

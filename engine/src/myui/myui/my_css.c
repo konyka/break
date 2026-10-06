@@ -2119,9 +2119,12 @@ static bool css_parse_layer_atrule(css_p_t* p, my_css_sheet_t* sheet,
  * (whitespace) or child ('>') combinators — into OUT as the subject compound
  * plus nearest-first ancestors with per-edge child flags (the same fold as
  * css_rule's selector path; R620's scope-root loop generalized). Parsing
- * stops WITHOUT consuming the terminator: '{' or ',', plus the 'to' keyword
- * at compound-start when stop_at_to is set (root preludes only — a limit
- * compound named "to" stays a plain type selector, as before R621). A
+ * stops WITHOUT consuming the terminator: '{', ',' or ')' (the R626
+ * parenthesized-prelude close), plus the 'to' keyword at compound-start
+ * when stop_at_to is set (root preludes only — a limit compound named "to"
+ * stays a plain type selector, as before R621). A dangling '>' at a
+ * terminator and pseudo classes in any compound are
+ * errors; the compound budget maps to "scope ancestor depth exceeded".
  * dangling '>' at a terminator and pseudo classes in any compound are
  * errors; the compound budget maps to "scope ancestor depth exceeded".
  * compound_count_out receives the raw compound count (0 = empty path — the
@@ -2140,7 +2143,7 @@ static bool c_scope_selector_path(css_p_t* p, my_css_selector_t* out,
     my_css_selector_t comp;
     bool separated;
     c_ws(p);
-    if (c_peek(p) == '{' || c_peek(p) == ',' ||
+    if (c_peek(p) == '{' || c_peek(p) == ',' || c_peek(p) == ')' ||
         (stop_at_to && c_peek(p) == 't' && p->pos + 2u < p->len &&
          p->s[p->pos + 1u] == 'o' &&
          !c_ident_char((unsigned char)p->s[p->pos + 2u]))) {
@@ -2174,7 +2177,8 @@ static bool c_scope_selector_path(css_p_t* p, my_css_selector_t* out,
       pending_direct = true;
       continue;
     }
-    if (!separated && c_peek(p) != '{' && c_peek(p) != ',') {
+    if (!separated && c_peek(p) != '{' && c_peek(p) != ',' &&
+        c_peek(p) != ')') {
       css_fail(p, invalid_msg);
       css_mark_scope_error(p);
       return false;
@@ -2215,9 +2219,18 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
   memset(&selector, 0, sizeof(selector));
   selector.state = -1;
   if (c_peek(p) != '{') {
-    bool starts_to = c_peek(p) == 't' && p->pos + 2u < p->len &&
-                     p->s[p->pos + 1u] == 'o' &&
-                     !c_ident_char((unsigned char)p->s[p->pos + 2u]);
+    /* R626: optional parenthesized preludes — the CSS-canonical
+     * `@scope (root-list) [to (limit-list)]` form. Each side accepts its
+     * own parens independently (bare forms keep working). */
+    bool paren_root = false;
+    bool starts_to;
+    if (c_peek(p) == '(') {
+      c_next(p);
+      paren_root = true;
+    }
+    starts_to = !paren_root && c_peek(p) == 't' && p->pos + 2u < p->len &&
+                p->s[p->pos + 1u] == 'o' &&
+                !c_ident_char((unsigned char)p->s[p->pos + 2u]);
     if (starts_to) {
       char keyword[8];
       if (!c_ident(p, keyword, sizeof(keyword))) {
@@ -2264,6 +2277,15 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
         if (c_peek(p) != ',') break;
         c_next(p);
       }
+      if (paren_root) {
+        c_ws(p);
+        if (c_peek(p) != ')') {
+          css_fail(p, "invalid @scope root selector");
+          css_mark_scope_error(p);
+          return false;
+        }
+        c_next(p);
+      }
       c_ws(p);
       starts_to = c_peek(p) == 't' && p->pos + 2u < p->len &&
                   p->s[p->pos + 1u] == 'o' &&
@@ -2278,6 +2300,12 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
       }
     }
     if (has_limit) {
+      bool paren_limits = false;
+      c_ws(p);
+      if (c_peek(p) == '(') { /* R626: optional ( limit-list ) wrapper */
+        c_next(p);
+        paren_limits = true;
+      }
       for (;;) {
         /* R621: each limit item is a bounded complex selector too — the
          * same path parser (',' terminates an item; 'to' is NOT special
@@ -2313,6 +2341,15 @@ static bool css_parse_scope_atrule(css_p_t* p, my_css_sheet_t* sheet,
         limit_count++;
         c_ws(p);
         if (c_peek(p) != ',') break;
+        c_next(p);
+      }
+      if (paren_limits) {
+        c_ws(p);
+        if (c_peek(p) != ')') {
+          css_fail(p, "invalid @scope limit selector");
+          css_mark_scope_error(p);
+          return false;
+        }
         c_next(p);
       }
       selector.scope_limit_count = (u32)limit_count;

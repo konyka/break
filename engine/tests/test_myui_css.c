@@ -1595,6 +1595,138 @@ TEST(css_scope_root_list_rejects_malformed)
   }
 }
 
+TEST(css_scope_paren_prelude_accepted)
+{
+  /* CSS's canonical @scope (root) to (limit) form, including combinators
+   * and lists inside the parens; bare and parenthesized forms mix. */
+  const char* both = "@scope (panel) to (.stop) { button { color: red; } }";
+  const char* comb = "@scope (app > panel) { button { color: red; } }";
+  const char* list = "@scope (panel, dialog) { button { color: red; } }";
+  const char* mixed = "@scope (panel) to .stop { button { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  sheet = my_css_parse_ex(NULL, both, strlen(both),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->ancestor_count, 1u);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->scope_limit_count,
+            1u);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, comb, strlen(comb),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->ancestor_count, 2u);
+  ASSERT_TRUE(my_css_selector(my_css_rule(sheet, 0u), 0u)
+                  ->ancestor_direct_path[1] == true);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, list, strlen(list),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_selector_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  sheet = my_css_parse_ex(NULL, mixed, strlen(mixed),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_selector(my_css_rule(sheet, 0u), 0u)->scope_limit_count,
+            1u);
+  my_css_sheet_destroy(sheet);
+
+  /* theme behavior identical to the bare forms: (panel) to (.stop). */
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* stop = my_widget_create(NULL, "stop");
+  my_widget_t* blocked = my_widget_create(NULL, "blocked");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  hit->widget_type = "button";
+  stop->widget_type = "stop";
+  blocked->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(stop, "stop"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, stop), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(stop, blocked), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, both, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, blocked, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(blocked);
+  my_widget_unref(stop);
+  my_widget_unref(hit);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+
+  /* (app > panel): combinator inside parens behaves like the bare form. */
+  {
+    my_theme_t* theme2 = my_theme_create(NULL);
+    my_widget_t* app = my_widget_create(NULL, "app");
+    my_widget_t* panel2 = my_widget_create(NULL, "panel2");
+    my_widget_t* hit2 = my_widget_create(NULL, "hit2");
+    my_widget_t* wrap = my_widget_create(NULL, "wrap");
+    my_widget_t* panel3 = my_widget_create(NULL, "panel3");
+    my_widget_t* miss = my_widget_create(NULL, "miss");
+    ASSERT_NOT_NULL(theme2);
+    app->widget_type = "app";
+    panel2->widget_type = "panel";
+    hit2->widget_type = "button";
+    wrap->widget_type = "wrap";
+    panel3->widget_type = "panel";
+    miss->widget_type = "button";
+    ASSERT_EQ(my_widget_add_child(app, panel2), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(panel2, hit2), MY_RET_OK);
+    /* panel3 has an app ANCESTOR but not as its parent: child edge misses. */
+    ASSERT_EQ(my_widget_add_child(app, wrap), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(wrap, panel3), MY_RET_OK);
+    ASSERT_EQ(my_widget_add_child(panel3, miss), MY_RET_OK);
+    ASSERT_EQ(my_theme_load_css_ex(theme2, comb, MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    value = my_theme_get_for_widget(theme2, hit2, MY_STATE_NORMAL, "fg_color");
+    ASSERT_NOT_NULL(value);
+    ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+    value = my_theme_get_for_widget(theme2, miss, MY_STATE_NORMAL, "fg_color");
+    ASSERT_TRUE(value == NULL);
+    my_widget_unref(miss);
+    my_widget_unref(panel3);
+    my_widget_unref(wrap);
+    my_widget_unref(hit2);
+    my_widget_unref(panel2);
+    my_widget_unref(app);
+    my_theme_destroy(theme2);
+  }
+}
+
+TEST(css_scope_paren_prelude_rejects_malformed)
+{
+  const char* malformed[] = {
+      "@scope () { button { color: red; } }",
+      "@scope (.panel { button { color: red; } }",
+      "@scope (.panel)) { button { color: red; } }",
+      "@scope (.panel) extra { button { color: red; } }",
+      "@scope (panel to dialog) { button { color: red; } }",
+      "@scope to (dialog { button { color: red; } }",
+      "@scope to () { button { color: red; } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -3366,6 +3498,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_scope_root_list_with_limit);
     RUN_TEST(css_scope_root_list_expansion_is_bounded);
     RUN_TEST(css_scope_root_list_rejects_malformed);
+    RUN_TEST(css_scope_paren_prelude_accepted);
+    RUN_TEST(css_scope_paren_prelude_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);
