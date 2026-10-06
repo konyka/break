@@ -15,6 +15,7 @@ struct my_echart_adapter_t {
   my_widget_t* chart;
   const my_allocator_t* allocator;
   my_echart_adapter_payload_t* payload;
+  unsigned last_synced_revision;
 };
 
 static my_chart_mode_t mode_for(my_echart_series_type_t type) {
@@ -260,6 +261,17 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
   old = adapter->payload;
   adapter->payload = candidate;
   if (old != NULL) payload_free(adapter, old);
+  return MY_RET_OK;
+}
+
+my_ret_t my_echart_adapter_sync_model(my_echart_adapter_t* adapter,
+                                      my_echart_t* model) {
+  my_ret_t ret;
+  if (adapter == NULL || model == NULL) return MY_RET_INVALID_PARAMS;
+  if (my_echart_revision(model) == adapter->last_synced_revision) return MY_RET_OK;
+  ret = my_echart_adapter_apply(adapter, my_echart_get_option(model));
+  if (ret != MY_RET_OK) return ret;
+  adapter->last_synced_revision = my_echart_revision(model);
   return MY_RET_OK;
 }
 

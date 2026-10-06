@@ -202,7 +202,7 @@ unsigned my_echart_revision(const my_echart_t* chart) {
 }
 
 my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
-                                         const my_echart_action_t* action) {
+                                         const my_echart_model_action_t* action) {
   my_echart_option_t* option;
   if (chart == NULL || action == NULL || action->series_id == NULL)
     return MY_RET_INVALID_PARAMS;
@@ -210,9 +210,9 @@ my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
   for (size_t i = 0u; i < option->series_count; i++) {
     my_echart_series_t* series = &option->series[i];
     if (strcmp(series->id, action->series_id) != 0) continue;
-    if (action->type == MY_ECHART_ACTION_LEGEND_SELECT) series->show = true;
-    else if (action->type == MY_ECHART_ACTION_LEGEND_UNSELECT) series->show = false;
-    else if (action->type == MY_ECHART_ACTION_LEGEND_TOGGLE_SELECT) series->show = !series->show;
+    if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_SELECT) series->show = true;
+    else if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT) series->show = false;
+    else if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT) series->show = !series->show;
     else return MY_RET_NOT_SUPPORTED;
     chart->revision++;
     return MY_RET_OK;

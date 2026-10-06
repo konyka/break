@@ -26,6 +26,10 @@ annotations are retained from the current model. Series removal and
 model mutations (immediate `setOption` commits, `flush`, and state-changing
 actions); lazy staging does not bump it. Controllers can poll it to decide when
 to re-project the model through the renderer adapter.
+`my_echart_adapter_sync_model(adapter, model)` closes that loop: it re-applies
+the model's committed option to the adapter's chart only when the model
+revision moved past the last synced revision, so repeated syncs are no-ops and
+renderer state never lags a committed action.
 
 ## Phase 3: native event/action adapter
 

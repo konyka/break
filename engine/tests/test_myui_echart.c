@@ -26,13 +26,13 @@ TEST(echart_legend_action_reduces_model_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true};
   my_echart_option_input_t input = {"one", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
-  my_echart_action_t action = {MY_ECHART_ACTION_LEGEND_UNSELECT, "sales"};
+  my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT, "sales"};
   my_echart_t* chart = my_echart_create(NULL);
   ASSERT_NOT_NULL(chart);
   ASSERT_EQ(my_echart_set_option(chart, &input, true, false), MY_RET_OK);
   ASSERT_EQ(my_echart_model_dispatch_action(chart, &action), MY_RET_OK);
   ASSERT_FALSE(my_echart_get_option(chart)->series[0].show);
-  action.type = MY_ECHART_ACTION_LEGEND_SELECT;
+  action.type = MY_ECHART_MODEL_ACTION_LEGEND_SELECT;
   ASSERT_EQ(my_echart_model_dispatch_action(chart, &action), MY_RET_OK);
   ASSERT_TRUE(my_echart_get_option(chart)->series[0].show);
   my_echart_destroy(chart);
@@ -94,7 +94,7 @@ TEST(echart_revision_tracks_committed_mutations) {
   static const double a[] = {1.0};
   my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 1u, 0u, 0u, NULL, true};
   my_echart_option_input_t input = {"r", NULL, 0u, &sa, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
-  my_echart_action_t action = {MY_ECHART_ACTION_LEGEND_TOGGLE_SELECT, "a"};
+  my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT, "a"};
   my_echart_t* chart = my_echart_create(NULL);
   ASSERT_NOT_NULL(chart);
   ASSERT_EQ(my_echart_revision(chart), 0u);

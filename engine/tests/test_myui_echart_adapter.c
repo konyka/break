@@ -356,6 +356,40 @@ TEST(echart_adapter_fills_event_indexes_from_chart) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_sync_model_reprojects_after_action) {
+  static const double values[] = {1.0, 2.0};
+  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u,
+                                     0u, 0u, NULL, true};
+  my_echart_option_input_t input = {"sync", NULL, 0u, &series, 1u, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_t option;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_echart_adapter_t* adapter;
+  my_echart_t* model = my_echart_create(NULL);
+  my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT, "a"};
+
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+  ASSERT_TRUE(((my_chart_t*)chart)->series_visible[0]);
+
+  ASSERT_EQ(my_echart_set_option(model, &input, true, false), MY_RET_OK);
+  ASSERT_EQ(my_echart_adapter_sync_model(adapter, model), MY_RET_OK);
+  ASSERT_EQ(my_echart_model_dispatch_action(model, &action), MY_RET_OK);
+  ASSERT_TRUE(((my_chart_t*)chart)->series_visible[0]);
+  ASSERT_EQ(my_echart_adapter_sync_model(adapter, model), MY_RET_OK);
+  ASSERT_FALSE(((my_chart_t*)chart)->series_visible[0]);
+  ASSERT_EQ(my_echart_adapter_sync_model(adapter, model), MY_RET_OK);
+  ASSERT_FALSE(((my_chart_t*)chart)->series_visible[0]);
+
+  ASSERT_EQ(my_echart_adapter_sync_model(NULL, model), MY_RET_INVALID_PARAMS);
+  my_echart_destroy(model);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+  my_echart_option_free(&option);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
   RUN_TEST(echart_adapter_rejects_without_mutating);
@@ -368,4 +402,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_projects_visual_map_state);
   RUN_TEST(echart_adapter_projects_annotations);
   RUN_TEST(echart_adapter_fills_event_indexes_from_chart);
+  RUN_TEST(echart_adapter_sync_model_reprojects_after_action);
 TEST_MAIN_END()
