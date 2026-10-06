@@ -28,7 +28,12 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure >> "$GITHUB_STEP_SUMMARY" 2>&1
+            exit 1
+          fi
 
       - name: Test X11/OpenGL runtime
         run: |
@@ -62,7 +67,12 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure >> "$GITHUB_STEP_SUMMARY" 2>&1
+            exit 1
+          fi
 
       - name: Test Vulkan graphics smoke
         run: |
@@ -98,7 +108,12 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure >> "$GITHUB_STEP_SUMMARY" 2>&1
+            exit 1
+          fi
 
   linux-gcc-sanitizers:
     name: Linux + GCC (ASan + UBSan, headless)
@@ -121,7 +136,12 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure >> "$GITHUB_STEP_SUMMARY" 2>&1
+            exit 1
+          fi
 
       # R630: deterministic fuzz smoke under ASan/UBSan — the manual fuzz
       # targets (EXCLUDE_FROM_ALL) get continuous sanitizer evidence here.
@@ -287,7 +307,12 @@ jobs:
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure >> "$GITHUB_STEP_SUMMARY" 2>&1
+            exit 1
+          fi
 
   macos-vulkan:
     name: macOS Cocoa + MoltenVK (Clang)
