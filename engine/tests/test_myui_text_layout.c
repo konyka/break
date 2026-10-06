@@ -638,6 +638,55 @@ TEST(text_layout_keeps_inherited_marks_with_previous_script)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_boundaries_skip_combining_cluster_interior)
+{
+  /* R657: cursor boundaries are grapheme-aware — a combining mark
+   * (UAX#29 Extend subset) never gains its own stop: arrow-key movement
+   * steps over the whole cluster instead of landing inside it. */
+  my_text_layout_t* layout =
+      my_text_layout_process(NULL, "a" "\xCC\x81" "b");
+  my_text_layout_t* multi =
+      my_text_layout_process(NULL, "a" "\xCC\x81\xCC\x82" "b");
+  my_text_layout_t* leading =
+      my_text_layout_process(NULL, "\xCC\x81" "ab");
+  my_text_layout_t* hebrew =
+      my_text_layout_process(NULL, "\xD7\x90\xD6\xB0" "\xD7\x91");
+
+  ASSERT_NOT_NULL(layout);
+  ASSERT_NOT_NULL(multi);
+  ASSERT_NOT_NULL(leading);
+  ASSERT_NOT_NULL(hebrew);
+
+  /* a + U+0301 + b: no stop between the base and its mark. */
+  ASSERT_EQ(my_text_layout_boundary_right(layout, 0u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_right(layout, 2u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(layout, 3u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_left(layout, 2u), 0u);
+
+  /* two marks attach to the same cluster. */
+  ASSERT_EQ(my_text_layout_boundary_right(multi, 0u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(multi, 4u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(multi, 3u), 0u);
+
+  /* a leading mark has no base — it keeps its own stop. */
+  ASSERT_EQ(my_text_layout_boundary_right(leading, 0u), 1u);
+  ASSERT_EQ(my_text_layout_boundary_right(leading, 1u), 2u);
+
+  /* RTL runs (alef + U+05B0 + bet, displayed bet-first): the same logical
+   * attachment holds — the cluster-interior stop (before the mark) is
+   * skipped in the direction of travel, from either side. */
+  ASSERT_EQ(my_text_layout_boundary_right(hebrew, 3u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_right(hebrew, 2u), 0u);
+  ASSERT_EQ(my_text_layout_boundary_left(hebrew, 0u), 2u);
+  /* logical end is the visual start of an RTL run — left stays put. */
+  ASSERT_EQ(my_text_layout_boundary_left(hebrew, 3u), 3u);
+
+  my_text_layout_destroy(hebrew);
+  my_text_layout_destroy(leading);
+  my_text_layout_destroy(multi);
+  my_text_layout_destroy(layout);
+}
+
 TEST(text_layout_maps_thai_to_thai_script)
 {
   paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
@@ -3614,6 +3663,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_shape_cache_hit_only_allocates_output);
     RUN_TEST(text_layout_shape_ex_failure_rolls_back_segment_results);
     RUN_TEST(text_layout_keeps_inherited_marks_with_previous_script);
+    RUN_TEST(text_layout_boundaries_skip_combining_cluster_interior);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_maps_additional_unicode_scripts);
     RUN_TEST(text_layout_keeps_arabic_common_punctuation_with_neighbor_script);

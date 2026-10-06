@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R657 光标边界字素簇感知（TDD）— `my_text_layout_boundary_left/right` 跳过组合符内部停点：方向感知簇跳变（LTR/RTL 双域）
+
+- **缺口**（探针定性）：光标边界逐码点——"a+U+0301+b" 的 `boundary_right(0)=1`，方向键/点击可落进 "á" 簇内部（`end=3` 全码点停）。探针（临时 fprintf 测试，定性后即删）实证后立项。
+- **方案**（边界 API 后处理，可视化管线零触点）：① 新 `tl_is_extend`（复用生成的组合符表 `my_combining_marks_data.h`——与字体/断行层同一张有界 UAX#29 Extend 子集）与 `tl_logical_cp`（从 `logical_utf8` 按需解码原始逻辑码点，绕开 shaping 就地替换）;② `boundary_left/right` 在既有 canon 走查得到候选后做**簇内部判定**——停点 B 若 `cps[B]` 为组合符则非法，**沿行进方向续走**：视觉左=LTR 递减/RTL 递增、视觉右=LTR 递增/RTL 递减（首轮逻辑单向 ++ 在纯 RTL 跑出"候选=输入"死循环，方向感知化后双域闭合）。既有 canonical/别名边界语义（R-era 单光标哲学）原样保留——本特性只过滤簇内停点。
+- **TDD（红→绿实证）**：test_myui_text_layout +1——四组：基础簇（right 0→2→3/left 3→2→0)、双组合符（0→3)、**前导符无基座**（保自停 0→1→2,UAX#29 GB1 语义）、**希伯来 RTL**(alef+U+05B0+bet:right 3→2→0（簇跳）、left 0→2（逆向簇跳）、left 3=3（逻辑尾=视觉起点钉边）)。**RED 如实红**（首断言 1≠2，与探针互证）;GREEN 两钓皆实：① RTL 单向跳变死循环（分析推导出方向感知，测试同步修正三处 RTL 预期——含一处我自己对既有端点语义的误读：boundary_end 对 RTL 返逻辑起点）;② `end` 变量未用（-Werror)。**137/137**(136+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5；既有边界/命中/双光标测试组全绿未动（canon 语义零扰动）。
+- **边界**:UAX#29 全规则族（ZWJ emoji 序列/区域指示符旗帜/Prepend/SpacingMark）为后续独立小轮——本轮 Extend 子集已覆盖现实世界主导场景（组合变音符/希伯来点数/天城文记号）；删除语义（Backspace 按簇删）沿码点，属消费侧独立议题；`tl_logical_cp` 为按需 O(n) 解码（键程级调用，行有界，无缓存必要）;R611 AMD 基线不动。
+
 ## 本轮更新：R656 导入位置语义 + `@charset`（TDD）— @import 仅顶层前序（规范位置窗口）;`@charset "utf-8";` 首语句 no-op 接受
 
 - **缺口**（导入弧审计钓出，双片）:① 引擎在任何位置接受 @import——规范只允许顶层前序（在样式规则/条件 @-规则之前，@charset/@layer 可先于它）;`button{} @import "x"`、`@media all { @import "x"; }` 全部静默接受（规范=无效）。② 真实样式表最常见的首行 `@charset "utf-8";` 按 unsupported @-rule 拒绝，strict 下整表作废。

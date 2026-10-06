@@ -11,7 +11,43 @@
 
 #include "myc/my_str.h" /* my_strdup */
 #include "myr/my_font.h" /* my_utf8_next */
+#include "myr/generated/my_combining_marks_data.h"
 #include "myr/generated/my_script_extensions_data.h"
+
+/* R657: grapheme cluster Extend attachment for cursor boundaries — the
+ * generated combining-marks table is the engine's bounded UAX#29 Extend
+ * subset (the same table the font and line-break layers consult). */
+static bool tl_is_extend(uint32_t cp) {
+  size_t lo = 0u;
+  size_t hi = sizeof(MY_COMBINING_MARKS) / sizeof(MY_COMBINING_MARKS[0]);
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2u;
+    const my_combining_mark_range_t* range = &MY_COMBINING_MARKS[mid];
+    if (cp < range->first) {
+      hi = mid;
+    } else if (cp > range->last) {
+      lo = mid + 1u;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** @brief Original logical codepoint at a logical index (caller guarantees
+ * index < logical_len). Decodes from logical_utf8 on demand. */
+static uint32_t tl_logical_cp(const my_text_layout_t* l,
+                              size_t logical_index) {
+  const char* p = l->logical_utf8;
+  uint32_t cp = 0u;
+  size_t i = 0u;
+  for (;;) {
+    cp = my_utf8_next(&p);
+    if (i == logical_index || cp == 0u) break;
+    i++;
+  }
+  return cp;
+}
 
 #if defined(MYUI_BIDI)
 #include <SheenBidi/SBAlgorithm.h>
@@ -1900,6 +1936,7 @@ size_t my_text_layout_logical_at_x_ex(
 size_t my_text_layout_boundary_left(const my_text_layout_t* l,
                                     size_t logical_boundary) {
   size_t v;
+  size_t candidate;
   if (l == NULL || l->len == 0) {
     return 0;
   }
@@ -1907,12 +1944,29 @@ size_t my_text_layout_boundary_left(const my_text_layout_t* l,
   if (v == 0) {
     return tl_lb_of_vb(l, 0); /* already at the visual start */
   }
-  return tl_lb_of_vb(l, tl_canon_left(l, v - 1));
+  candidate = tl_lb_of_vb(l, tl_canon_left(l, v - 1));
+  /* R657: a stop inside a grapheme cluster is invalid — a boundary just
+   * before a combining mark belongs to the previous cluster. The skip
+   * walks in the direction of travel (visual left = decreasing logical in
+   * LTR runs, increasing in RTL runs). */
+  if (candidate <= logical_boundary) {
+    while (candidate > 0u && candidate < l->logical_len &&
+           tl_is_extend(tl_logical_cp(l, candidate))) {
+      candidate--;
+    }
+  } else {
+    while (candidate < l->logical_len &&
+           tl_is_extend(tl_logical_cp(l, candidate))) {
+      candidate++;
+    }
+  }
+  return candidate;
 }
 
 size_t my_text_layout_boundary_right(const my_text_layout_t* l,
                                      size_t logical_boundary) {
   size_t v;
+  size_t candidate;
   if (l == NULL || l->len == 0) {
     return 0;
   }
@@ -1920,7 +1974,19 @@ size_t my_text_layout_boundary_right(const my_text_layout_t* l,
   if (v >= l->len) {
     return tl_lb_of_vb(l, l->len); /* already at the visual end */
   }
-  return tl_lb_of_vb(l, tl_canon_right(l, v + 1));
+  candidate = tl_lb_of_vb(l, tl_canon_right(l, v + 1));
+  if (candidate >= logical_boundary) {
+    while (candidate < l->logical_len &&
+           tl_is_extend(tl_logical_cp(l, candidate))) {
+      candidate++;
+    }
+  } else {
+    while (candidate > 0u &&
+           tl_is_extend(tl_logical_cp(l, candidate))) {
+      candidate--;
+    }
+  }
+  return candidate;
 }
 
 size_t my_text_layout_boundary_home(const my_text_layout_t* l) {
