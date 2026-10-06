@@ -4375,6 +4375,101 @@ TEST(css_conditional_media_supports_orientation_and_motion_preferences)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_conditional_media_supports_aspect_ratio)
+{
+  /* R646: (aspect-ratio: a/b), min/max forms, and the bare-integer a/1
+   * shorthand — evaluated against the logical viewport by exact
+   * cross-multiplication (no float). */
+  const char* exact = "@media (aspect-ratio: 16/9) { button { color: red; } }";
+  const char* bare = "@media (aspect-ratio: 2) { button { color: red; } }";
+  const char* at_least =
+      "@media (min-aspect-ratio: 1/1) { button { color: red; } }";
+  const char* at_most =
+      "@media (max-aspect-ratio: 4/3) { button { color: red; } }";
+  const char* malformed[] = {
+      "@media (aspect-ratio: 16/) { button { color: red; } }",
+      "@media (aspect-ratio: x/y) { button { color: red; } }",
+      "@media (aspect-ratio: 0/9) { button { color: red; } }",
+      "@media (aspect-ratio: 16/0) { button { color: red; } }"};
+  my_css_media_context_t wide = {1600u, 900u, true, false, false, 0u};
+  my_css_media_context_t four_three = {1024u, 768u, true, false, false, 0u};
+  my_css_media_context_t tall = {800u, 1000u, true, false, false, 0u};
+  my_css_media_context_t two_one = {1600u, 800u, true, false, false, 0u};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  size_t i;
+
+  sheet = my_css_parse_media_ex(NULL, exact, strlen(exact),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, exact, strlen(exact),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &four_three,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* bare integer means a/1. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, bare, strlen(bare),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &two_one,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, bare, strlen(bare),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* min: viewport ratio >= a/b. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, at_least, strlen(at_least),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, at_least, strlen(at_least),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &tall, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* max: viewport ratio <= a/b; the exact 4/3 viewport matches. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, at_most, strlen(at_most),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &four_three,
+                                &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_media_ex(NULL, at_most, strlen(at_most),
+                                MY_CSS_PARSE_STRICT_AT_RULES, &wide, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* malformed ratios reject in strict mode. */
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_media_ex(NULL, malformed[i],
+                                      strlen(malformed[i]),
+                                      MY_CSS_PARSE_STRICT_AT_RULES, &wide,
+                                      &error) == NULL);
+  }
+}
+
 TEST(css_conditional_media_rejects_oversized_query_and_invalid_units)
 {
   char* oversized = (char*)malloc(MY_CSS_MAX_MEDIA_QUERY_BYTES + 32u);
@@ -5254,6 +5349,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_conditional_media_theme_load_is_transactional);
     RUN_TEST(css_conditional_media_filters_logical_viewport_width);
     RUN_TEST(css_conditional_media_supports_orientation_and_motion_preferences);
+    RUN_TEST(css_conditional_media_supports_aspect_ratio);
     RUN_TEST(css_conditional_media_rejects_oversized_query_and_invalid_units);
     RUN_TEST(css_conditional_media_rejects_missing_and_operator);
     RUN_TEST(css_conditional_media_supports_bounded_range_syntax);

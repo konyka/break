@@ -2182,6 +2182,36 @@ static bool css_media_number_px(css_media_cursor_t* cursor, uint32_t* value) {
   return true;
 }
 
+/* R646: parse a media ratio value — `a/b` with positive integers, or a bare
+ * integer meaning a/1. Components are capped at six digits so the u64
+ * cross-multiplication in the evaluator stays trivially in range. */
+static bool css_media_ratio(const char* text, size_t length, uint32_t* a,
+                            uint32_t* b) {
+  uint32_t parts[2] = {0u, 0u};
+  size_t part = 0u;
+  size_t digits = 0u;
+  size_t i;
+  for (i = 0u; i < length; ++i) {
+    char ch = text[i];
+    if (ch >= '0' && ch <= '9') {
+      if (digits >= 6u) return false;
+      parts[part] = parts[part] * 10u + (uint32_t)(ch - '0');
+      digits++;
+    } else if (ch == '/' && part == 0u && digits > 0u) {
+      part = 1u;
+      digits = 0u;
+    } else {
+      return false;
+    }
+  }
+  if (digits == 0u || parts[0] == 0u) return false;
+  if (part == 0u) parts[1] = 1u;
+  if (parts[1] == 0u) return false;
+  *a = parts[0];
+  *b = parts[1];
+  return true;
+}
+
 typedef enum css_media_relation_t {
   CSS_MEDIA_REL_LT,
   CSS_MEDIA_REL_LE,
@@ -2494,6 +2524,27 @@ static bool css_media_feature(css_media_cursor_t* cursor,
       *matches = media->base.viewport_height_px <= number;
     } else {
       *matches = media->base.viewport_height_px == number;
+    }
+    return true;
+  }
+  /* R646: aspect-ratio compares the viewport ratio against a/b by exact
+   * u64 cross-multiplication (no float). */
+  if (my_str_eq(name, "aspect-ratio") ||
+      my_str_eq(name, "min-aspect-ratio") ||
+      my_str_eq(name, "max-aspect-ratio")) {
+    uint32_t a = 0u;
+    uint32_t b = 0u;
+    uint64_t lhs;
+    uint64_t rhs;
+    if (!css_media_ratio(value, value_length, &a, &b)) return false;
+    lhs = (uint64_t)media->base.viewport_width_px * (uint64_t)b;
+    rhs = (uint64_t)a * (uint64_t)media->base.viewport_height_px;
+    if (my_str_eq(name, "aspect-ratio")) {
+      *matches = lhs == rhs;
+    } else if (my_str_eq(name, "min-aspect-ratio")) {
+      *matches = lhs >= rhs;
+    } else {
+      *matches = lhs <= rhs;
     }
     return true;
   }

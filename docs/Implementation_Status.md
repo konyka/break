@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R646 `@media` aspect-ratio 特性（TDD）— 常用 MQ 面补齐：`(aspect-ratio: a/b)` + min/max + 裸整数简写，u64 交叉乘法精确比较
+
+- **缺口**（媒体查询面调研落账）：引擎 MQ 面已覆盖宽高区间/orientation/prefers-*/hover/pointer/gamut/HDR，唯独最常用的 `aspect-ratio` 族全缺——strict 下 `(aspect-ratio: 16/9)` 按未知特性拒绝（sheet NULL）。
+- **方案**（纯求值器扩展，帧零改动）：① 新助手 `css_media_ratio` 解析比值——`a/b` 正整数对（分量各 ≤6 位防溢出设计）+ 裸整数=a/1 简写，0 分量/畸形拒；② `css_media_feature` 在宽高分支后加 aspect-ratio 族分支（处 media 非 NULL 区，NULL 契约=known=false/matches=false 与宽高档同规约）：视口比 w/h 与 a/b 经 **u64 交叉乘法**（w×b vs a×h）比较，exact=相等、min=≥、max=≤（4/3 视口恰配 (max-aspect-ratio: 4/3) 的边界包含语义钉死）。
+- **TDD（红→绿实证）**：test_myui_css +1——exact 命中/不命中、裸整数 2=2/1 两向、min 两向（宽屏中/竖屏 miss）、max 两向（4/3 边界命中/16:9 miss）、畸形四例（`16/`、`x/y`、`0/9`、`16/0`）strict 拒。**RED 如实红**（strict 未知特性 sheet NULL）;GREEN 一钓：比值解析器把"裸整数默认分母 1"预置在 parts[1]，遇显式 `/9` 被当成十位累成 19——首个断言即钓出，改显式后置赋值后 **158/158**(157+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯媒体求值器改动（新助手+单分支）,theme/渲染零触点。
+- **边界**:aspect-ratio 区间写法 `(aspect-ratio >= 1/1)` 未开（range 解析器只认 width/height 数值域，比值域接入属独立小轮）;`resolution`/`monochrome` 等余下 MQ 特性需媒体上下文扩字段（ABI 面，维持让渡）;R611 AMD 基线不动。
+
 ## 本轮更新：R645 块内非条件 @-规则专属拒签（TDD）— CSS 嵌套弧收尾：块内 @layer/@scope/@container 等从误导性 "expected declaration key" 改 "unsupported nested @-rule"（UNSUPPORTED_FEATURE+AT_RULES）
 
 - **缺口**（R638 落账"其它 @-规则块内维持硬拒"但签名是借用）：`button { @layer x { color: red; } }` 死于 "expected declaration key"(SYNTAX+capability=0)——报错把"规范本就不允许入块的构造"误述为"声明键缺失"，诊断误导宿主；CSS Nesting 规范明确：声明块内只许样式规则与条件组规则（@media/@supports/@container），@layer/@scope 本就不能嵌套——维持拒绝即规范一致，但签名须如实。
