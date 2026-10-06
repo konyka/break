@@ -1176,6 +1176,46 @@ bool my_chart_is_instance(const my_widget_t* widget) {
   return widget != NULL && widget->vtable == &s_chart_vtable;
 }
 
+my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
+                                 const my_chart_snapshot_t* snapshot) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || snapshot == NULL || snapshot->title == NULL ||
+      snapshot->series_count > MY_CHART_MAX_SERIES ||
+      (snapshot->label_count > 0u && snapshot->labels == NULL) ||
+      (snapshot->series_count > 0u && snapshot->series == NULL) ||
+      (snapshot->series_count > 0u && snapshot->series_visible == NULL) ||
+      snapshot->mode < MY_CHART_LINE || snapshot->mode > MY_CHART_BOXPLOT)
+    return MY_RET_INVALID_PARAMS;
+  if (strlen(snapshot->title) >= sizeof(chart->title)) return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < snapshot->label_count; i++)
+    if (snapshot->labels[i] == NULL) return MY_RET_INVALID_PARAMS;
+  for (size_t i = 0u; i < snapshot->series_count; i++) {
+    const my_chart_series_t* series = &snapshot->series[i];
+    if (series->name == NULL || series->y_axis > 1u ||
+        (series->count > 0u && series->values == NULL))
+      return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < series->count; j++)
+      if (!isfinite(series->values[j])) return MY_RET_INVALID_PARAMS;
+  }
+  chart->mode = snapshot->mode;
+  snprintf(chart->title, sizeof(chart->title), "%s", snapshot->title);
+  chart->labels = snapshot->labels;
+  chart->label_count = snapshot->label_count;
+  memcpy(chart->series, snapshot->series,
+         snapshot->series_count * sizeof(*snapshot->series));
+  memcpy(chart->series_visible, snapshot->series_visible,
+         snapshot->series_count * sizeof(*snapshot->series_visible));
+  for (size_t i = snapshot->series_count; i < MY_CHART_MAX_SERIES; i++) {
+    memset(&chart->series[i], 0, sizeof(chart->series[i]));
+    chart->series_visible[i] = false;
+  }
+  chart->series_count = snapshot->series_count;
+  chart->stacked = snapshot->stacked;
+  chart->hover_index = CHART_HOVER_NONE;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
 my_ret_t my_chart_set_title(my_widget_t* widget, const char* title) {
   my_chart_t* chart = chart_cast(widget);
   if (chart == NULL) return MY_RET_INVALID_PARAMS;

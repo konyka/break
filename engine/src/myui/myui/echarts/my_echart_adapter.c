@@ -188,23 +188,25 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
   if (ret != MY_RET_OK) return ret;
   ret = stage_payload(adapter, option, &candidate);
   if (ret != MY_RET_OK) return ret;
-  /* All allocations and conversions are complete. Native setters only assign
-   * already validated borrowed pointers, so this is the commit section. */
-  ((my_chart_t*)adapter->chart)->mode = mode;
-  my_chart_set_title(adapter->chart, candidate->option.title);
-  my_chart_set_labels(adapter->chart,
-                      (const char* const*)candidate->option.x_axis_data,
-                      candidate->option.x_axis_count);
-  my_chart_clear_series(adapter->chart);
+  /* All allocations/conversions are complete; commit is one native state swap. */
+  my_chart_series_t native_series[MY_CHART_MAX_SERIES] = {0};
+  bool visible[MY_CHART_MAX_SERIES] = {false};
   for (size_t i = 0u; i < candidate->option.series_count; i++) {
     const my_echart_series_t* series = &candidate->option.series[i];
-    my_chart_series_t native = {series->name, candidate->values[i],
-                                series->data_count, series->color,
-                                (unsigned char)series->y_axis_index};
-    my_chart_set_series(adapter->chart, i, &native);
-    my_chart_set_series_visible(adapter->chart, i, series->show);
+    native_series[i] = (my_chart_series_t){series->name, candidate->values[i],
+                                           series->data_count, series->color,
+                                           (unsigned char)series->y_axis_index};
+    visible[i] = series->show;
   }
-  my_chart_set_stacked(adapter->chart, stacked);
+  {
+    my_chart_snapshot_t snapshot = {
+        mode, candidate->option.title,
+        (const char* const*)candidate->option.x_axis_data,
+        candidate->option.x_axis_count, native_series, visible,
+        candidate->option.series_count, stacked};
+    ret = my_chart_apply_snapshot(adapter->chart, &snapshot);
+    if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
+  }
   old = adapter->payload;
   adapter->payload = candidate;
   if (old != NULL) payload_free(adapter, old);

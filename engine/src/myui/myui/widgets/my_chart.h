@@ -40,6 +40,18 @@ typedef struct my_chart_mark_point_t {
   const char* label;
 } my_chart_mark_point_t;
 
+/** @brief Borrowed renderer state committed atomically to a chart widget. */
+typedef struct my_chart_snapshot_t {
+  my_chart_mode_t mode;
+  const char* title;
+  const char* const* labels;
+  size_t label_count;
+  const my_chart_series_t* series;
+  const bool* series_visible;
+  size_t series_count;
+  bool stacked;
+} my_chart_snapshot_t;
+
 typedef struct my_chart_t {
   my_widget_t base;
   my_chart_mode_t mode;
@@ -90,7 +102,9 @@ typedef struct my_chart_t {
 } my_chart_t;
 
 my_widget_t* my_chart_create(const my_allocator_t* allocator,
-                             my_chart_mode_t mode);
+                              my_chart_mode_t mode);
+my_ret_t my_chart_apply_snapshot(my_widget_t* chart,
+                                 const my_chart_snapshot_t* snapshot);
 bool my_chart_is_instance(const my_widget_t* widget);
 my_ret_t my_chart_set_title(my_widget_t* chart, const char* title);
 my_ret_t my_chart_set_labels(my_widget_t* chart, const char* const* labels,
