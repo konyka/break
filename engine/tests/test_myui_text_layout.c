@@ -1961,6 +1961,97 @@ TEST(line_break_builtin_dictionary_khmer_compounds_and_callback)
   ASSERT_FALSE(g_allow[7]);
 }
 
+TEST(line_break_builtin_dictionary_supports_burmese_profile)
+{
+  /* `my-Mymr`: bha-sa + myan-ma = 4+6 codepoints; the break lands before
+   * myan-ma only. Unknown words stay unbreakable (conservative contract). */
+  uint32_t burmese_phrase[] = {0x1018u, 0x102Cu, 0x101Eu, 0x102Cu, 0x1019u,
+                               0x103Cu, 0x1014u, 0x103Au, 0x1019u, 0x102Cu};
+  uint32_t unknown[] = {0x1001u, 0x1003u, 0x1005u};
+  bool allow_before[] = {false, false, false, false, false,
+                         false, false, false, false, false};
+  bool unknown_boundaries[] = {false, false, false};
+  my_line_break_dictionary_profile_t burmese = {1u, "my-Mymr"};
+  my_line_break_dictionary_profile_t thai = {1u, "th-Thai"};
+  my_line_break_dictionary_profile_t unsupported = {1u, "en"};
+
+  ASSERT_TRUE(my_line_break_builtin_dictionary_supports(&burmese));
+  ASSERT_TRUE(my_line_break_builtin_dictionary_supports(&thai));
+  ASSERT_FALSE(my_line_break_builtin_dictionary_supports(&unsupported));
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                burmese_phrase, 10u, allow_before, &burmese),
+            MY_RET_OK);
+  ASSERT_FALSE(allow_before[1]);
+  ASSERT_FALSE(allow_before[2]);
+  ASSERT_FALSE(allow_before[3]);
+  ASSERT_TRUE(allow_before[4]);
+  ASSERT_FALSE(allow_before[5]);
+  ASSERT_FALSE(allow_before[6]);
+  ASSERT_FALSE(allow_before[7]);
+  ASSERT_FALSE(allow_before[8]);
+  ASSERT_FALSE(allow_before[9]);
+  /* the Burmese corpus does not invent breaks for Thai-profile queries. */
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                burmese_phrase, 10u, allow_before, &thai),
+            MY_RET_OK);
+  ASSERT_FALSE(allow_before[4]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                unknown, 3u, unknown_boundaries, &burmese),
+            MY_RET_OK);
+  ASSERT_FALSE(unknown_boundaries[1]);
+  ASSERT_FALSE(unknown_boundaries[2]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(
+                burmese_phrase, 10u, allow_before, &unsupported),
+            MY_RET_NOT_SUPPORTED);
+}
+
+TEST(line_break_builtin_dictionary_burmese_compounds_and_callback)
+{
+  /* ko + ne. + hma (3+3+3) breaks at 3 and 6; di + lu (2+2) at 2;
+   * the greeting stays one word. The profile-callback adapter routes the
+   * Burmese profile identically. */
+  uint32_t compound[] = {0x1000u, 0x102Du, 0x102Fu, 0x1014u, 0x1032u,
+                         0x1037u, 0x1019u, 0x103Eu, 0x102Cu};
+  uint32_t di_lu[] = {0x1012u, 0x102Eu, 0x101Cu, 0x1030u};
+  uint32_t greeting[] = {0x1019u, 0x1004u, 0x103Au, 0x1039u, 0x1002u,
+                         0x101Cu, 0x102Cu, 0x1015u, 0x102Bu};
+  bool c_allow[] = {false, false, false, false, false,
+                    false, false, false, false};
+  bool p_allow[] = {false, false, false, false};
+  bool g_allow[] = {false, false, false, false, false,
+                    false, false, false, false};
+  my_line_break_dictionary_profile_t burmese = {1u, "my-Mymr"};
+
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(compound, 9u, c_allow,
+                                                   &burmese),
+            MY_RET_OK);
+  ASSERT_FALSE(c_allow[1]);
+  ASSERT_FALSE(c_allow[2]);
+  ASSERT_TRUE(c_allow[3]);
+  ASSERT_FALSE(c_allow[4]);
+  ASSERT_FALSE(c_allow[5]);
+  ASSERT_TRUE(c_allow[6]);
+  ASSERT_FALSE(c_allow[7]);
+  ASSERT_FALSE(c_allow[8]);
+  ASSERT_EQ(my_line_break_builtin_dictionary_callback(
+                NULL, &burmese, di_lu, 4u, p_allow),
+            MY_RET_OK);
+  ASSERT_FALSE(p_allow[1]);
+  ASSERT_TRUE(p_allow[2]);
+  ASSERT_FALSE(p_allow[3]);
+  ASSERT_EQ(my_line_break_apply_builtin_dictionary(greeting, 9u, g_allow,
+                                                   &burmese),
+            MY_RET_OK);
+  ASSERT_FALSE(g_allow[1]);
+  ASSERT_FALSE(g_allow[2]);
+  ASSERT_FALSE(g_allow[3]);
+  ASSERT_FALSE(g_allow[4]);
+  ASSERT_FALSE(g_allow[5]);
+  ASSERT_FALSE(g_allow[6]);
+  ASSERT_FALSE(g_allow[7]);
+  ASSERT_FALSE(g_allow[8]);
+}
+
 TEST(line_break_profile_callback_receives_locale_without_legacy_abi_change)
 {
   uint32_t thai[] = {0x0E01u, 0x0E02u, 0x0E03u};
@@ -3567,6 +3658,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(line_break_builtin_dictionary_lao_compounds_and_callback);
     RUN_TEST(line_break_builtin_dictionary_supports_khmer_profile);
     RUN_TEST(line_break_builtin_dictionary_khmer_compounds_and_callback);
+    RUN_TEST(line_break_builtin_dictionary_supports_burmese_profile);
+    RUN_TEST(line_break_builtin_dictionary_burmese_compounds_and_callback);
     RUN_TEST(line_break_profile_callback_receives_locale_without_legacy_abi_change);
     RUN_TEST(line_break_profile_callback_budget_and_failure_are_transactional);
     RUN_TEST(paragraph_consumes_profile_aware_dictionary_callback);

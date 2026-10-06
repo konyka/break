@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R644 内建 SA 词典第四个 locale（TDD）— `my-Mymr` profile 落地：缅甸语有界语料断行；profile→语料分派四臂化
+
+- **缺口**（R642/R643 同账"更多 SA locale 可添但需语料来源评审"）：缅甸语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"my-Mymr"})`=false，`apply` 回 NOT_SUPPORTED。
+- **方案**（机制零新增，语料+第四分派臂）：① 缅甸语有界语料 10 词（语言 ဘာသာ/缅族 မြန်မာ/工作 အလုပ်/和 နဲ့/宾格标记 ကို/方位 မှာ/疑问 လား/人 လူ/这 ဒီ/问候 မင်္ဂလာပါ）——码点逐词经 UTF-8 转储+unicodedata 字符名双核验、外部语料佐证（Wiktionary/语法教材词条）；全部落于 UAX#14 SA 区间 0x1000-0x103F。**两坑钉死**：属格助词 ၏=U+104F 单符号但 UAX#14 类属 **AL** 非 SA（0x104C-0x104F 区间），入料必触 apply 全-SA 契约 INVALID_PARAMS——换用宾格标记 ကို；လား 标准拼写为 AA+VISARGA（101C 102C 1038）而非 TALL_AA。② `apply_builtin_dictionary`/`supports` 加 `my-Mymr` 臂，算法零改动。保守契约不变（跨 profile 不发明边界，钉死）。
+- **TDD（红→绿实证）**：test_myui_text_layout +2——① profile 支持面+短语断界（ဘာသာမြန်မာ 10 码点仅词界 4 可断/跨 profile 保守/全 SA 非词不可断/`en` 仍 NOT_SUPPORTED）；② 复合词断界（ကိုနဲ့မှာ 3+3+3 两界/ဒီလူ 2+2 经 callback 适配器同界/问候词 9 码点内部不断）。**RED 如实红 2/2**（supports=false/apply NOT_SUPPORTED）；GREEN 一次过 **136/136**（134+2）。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5。纯语料+分派改动，泰/老/棉路径逐位不动，无构造/渲染触点。
+- **边界**：SA 内建词典四 locale 齐备（th/lo/km/my 覆盖东南亚主力无空格分词文字）；更多 locale（僧伽罗 `si` 等）同机制但边际收益低，暂不立项；完整 ICU 级词典维持史诗外；R611 AMD 基线不动。
+
 ## 本轮更新：R643 内建 SA 词典第三个 locale（TDD）— `km-Khmr` profile 落地：高棉语有界语料断行；profile→语料分派三臂化
 
 - **缺口**（R642 落账"更多 SA locale 同机制可添但需语料来源评审"）：高棉语 profile 不在内建支持集——`my_line_break_builtin_dictionary_supports({1,"km-Khmr"})`=false，`apply` 回 NOT_SUPPORTED。

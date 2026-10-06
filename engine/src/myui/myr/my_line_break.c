@@ -135,6 +135,50 @@ static const my_builtin_sa_word_t MY_BUILTIN_KM_WORDS[] = {
     {MY_BUILTIN_KM_GREETING, sizeof(MY_BUILTIN_KM_GREETING) /
                                   sizeof(MY_BUILTIN_KM_GREETING[0])}};
 
+/* R644: bounded Burmese corpus (version-1 `my-Mymr` profile) — high-frequency
+ * function words plus the greeting: bha-sa/myan-ma/a-lote/ne./ko/hma/la/lu/
+ * di/mingalaba. Unknown words remain unbreakable. The genitive particle
+ * (U+104F) is deliberately excluded: UAX#14 classes it AL, so it would trip
+ * the all-SA input contract. */
+static const uint32_t MY_BUILTIN_MY_LANGUAGE[] = {
+    0x1018u, 0x102Cu, 0x101Eu, 0x102Cu};
+static const uint32_t MY_BUILTIN_MY_BURMESE[] = {
+    0x1019u, 0x103Cu, 0x1014u, 0x103Au, 0x1019u, 0x102Cu};
+static const uint32_t MY_BUILTIN_MY_WORK[] = {
+    0x1021u, 0x101Cu, 0x102Fu, 0x1015u, 0x103Au};
+static const uint32_t MY_BUILTIN_MY_AND[] = {0x1014u, 0x1032u, 0x1037u};
+static const uint32_t MY_BUILTIN_MY_OBJ[] = {0x1000u, 0x102Du, 0x102Fu};
+static const uint32_t MY_BUILTIN_MY_AT[] = {0x1019u, 0x103Eu, 0x102Cu};
+static const uint32_t MY_BUILTIN_MY_QUESTION[] = {
+    0x101Cu, 0x102Cu, 0x1038u};
+static const uint32_t MY_BUILTIN_MY_PERSON[] = {0x101Cu, 0x1030u};
+static const uint32_t MY_BUILTIN_MY_THIS[] = {0x1012u, 0x102Eu};
+static const uint32_t MY_BUILTIN_MY_GREETING[] = {
+    0x1019u, 0x1004u, 0x103Au, 0x1039u, 0x1002u,
+    0x101Cu, 0x102Cu, 0x1015u, 0x102Bu};
+
+static const my_builtin_sa_word_t MY_BUILTIN_MY_WORDS[] = {
+    {MY_BUILTIN_MY_LANGUAGE, sizeof(MY_BUILTIN_MY_LANGUAGE) /
+                                  sizeof(MY_BUILTIN_MY_LANGUAGE[0])},
+    {MY_BUILTIN_MY_BURMESE, sizeof(MY_BUILTIN_MY_BURMESE) /
+                                 sizeof(MY_BUILTIN_MY_BURMESE[0])},
+    {MY_BUILTIN_MY_WORK, sizeof(MY_BUILTIN_MY_WORK) /
+                              sizeof(MY_BUILTIN_MY_WORK[0])},
+    {MY_BUILTIN_MY_AND, sizeof(MY_BUILTIN_MY_AND) /
+                             sizeof(MY_BUILTIN_MY_AND[0])},
+    {MY_BUILTIN_MY_OBJ, sizeof(MY_BUILTIN_MY_OBJ) /
+                             sizeof(MY_BUILTIN_MY_OBJ[0])},
+    {MY_BUILTIN_MY_AT, sizeof(MY_BUILTIN_MY_AT) /
+                            sizeof(MY_BUILTIN_MY_AT[0])},
+    {MY_BUILTIN_MY_QUESTION, sizeof(MY_BUILTIN_MY_QUESTION) /
+                                  sizeof(MY_BUILTIN_MY_QUESTION[0])},
+    {MY_BUILTIN_MY_PERSON, sizeof(MY_BUILTIN_MY_PERSON) /
+                                sizeof(MY_BUILTIN_MY_PERSON[0])},
+    {MY_BUILTIN_MY_THIS, sizeof(MY_BUILTIN_MY_THIS) /
+                              sizeof(MY_BUILTIN_MY_THIS[0])},
+    {MY_BUILTIN_MY_GREETING, sizeof(MY_BUILTIN_MY_GREETING) /
+                                  sizeof(MY_BUILTIN_MY_GREETING[0])}};
+
 my_line_break_class_t my_line_break_class(uint32_t cp) {
   size_t lo = 0, hi = sizeof(MY_LINE_BREAKS) / sizeof(MY_LINE_BREAKS[0]);
   while (lo < hi) {
@@ -377,11 +421,19 @@ static bool my_builtin_dictionary_profile_is_khmer(
          strcmp(profile->locale, "km-Khmr") == 0;
 }
 
+/* R644: fourth built-in profile. */
+static bool my_builtin_dictionary_profile_is_burmese(
+    const my_line_break_dictionary_profile_t* profile) {
+  return profile != NULL && my_line_break_dictionary_profile_valid(profile) &&
+         strcmp(profile->locale, "my-Mymr") == 0;
+}
+
 bool my_line_break_builtin_dictionary_supports(
     const my_line_break_dictionary_profile_t* profile) {
   return my_builtin_dictionary_profile_is_thai(profile) ||
          my_builtin_dictionary_profile_is_lao(profile) ||
-         my_builtin_dictionary_profile_is_khmer(profile);
+         my_builtin_dictionary_profile_is_khmer(profile) ||
+         my_builtin_dictionary_profile_is_burmese(profile);
 }
 
 static bool my_builtin_sa_word_matches(const my_builtin_sa_word_t* word,
@@ -423,6 +475,10 @@ my_ret_t my_line_break_apply_builtin_dictionary(
     words = MY_BUILTIN_KM_WORDS;
     word_count =
         sizeof(MY_BUILTIN_KM_WORDS) / sizeof(MY_BUILTIN_KM_WORDS[0]);
+  } else if (my_builtin_dictionary_profile_is_burmese(profile)) {
+    words = MY_BUILTIN_MY_WORDS;
+    word_count =
+        sizeof(MY_BUILTIN_MY_WORDS) / sizeof(MY_BUILTIN_MY_WORDS[0]);
   } else {
     return MY_RET_NOT_SUPPORTED;
   }
