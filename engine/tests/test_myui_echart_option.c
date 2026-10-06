@@ -9,7 +9,7 @@ TEST(echart_option_copies_owned_data) {
   static const double values[] = {1.0, 2.5};
   static const char* labels[] = {"A", "B"};
   my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 2u, 0xE85D75FFu, 0u, NULL, true, NULL};
-  my_echart_option_input_t input = {"Dashboard", labels, 2u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"Dashboard", labels, 2u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
 
   my_echart_option_init(&option, NULL);
@@ -33,7 +33,7 @@ TEST(echart_option_rejects_invalid_input) {
 TEST(echart_option_copies_component_state) {
   static const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 6u, 0u, 0u, NULL, true, NULL};
-  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
 
   input.legend_hidden = true;
@@ -59,7 +59,7 @@ TEST(echart_option_copies_component_state) {
 TEST(echart_option_rejects_invalid_component_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
-  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
 
   input.range_set = true;
   input.y_min = 5.0;
@@ -79,7 +79,7 @@ TEST(echart_option_rejects_invalid_component_state) {
 TEST(echart_option_copies_visual_map_state) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
-  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
 
   input.visual_map_set = true;
@@ -101,7 +101,7 @@ TEST(echart_option_copies_visual_map_state) {
 TEST(echart_option_rejects_invalid_visual_map) {
   static const double values[] = {1.0};
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
-  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
 
   input.visual_map_set = true;
   input.visual_map_min = 50.0;
@@ -118,7 +118,7 @@ TEST(echart_option_copies_annotations) {
   my_echart_mark_point_input_t points[] = {{0u, 1u, "peak"}, {0u, 2u, NULL}};
   my_echart_mark_line_input_t lines[] = {{42.0, "target", 0xE85D75FFu}};
   my_echart_mark_area_input_t areas[] = {{10.0, 30.0, "band", 0x3A86FF44u}};
-  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
 
   input.mark_points = points;
@@ -147,7 +147,7 @@ TEST(echart_option_rejects_invalid_annotations) {
   my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
   my_echart_mark_line_input_t lines[] = {{NAN, "bad", 0u}};
   my_echart_mark_area_input_t areas[] = {{30.0, 10.0, "bad", 0u}};
-  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+  my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
 
   input.mark_lines = lines;
   input.mark_line_count = 1u;
@@ -166,7 +166,7 @@ TEST(echart_option_copies_tooltip_hidden) {
   my_echart_option_input_t input = {"tt", NULL, 0u, &series, 1u,
                                      false, false, false, 0.0, 0.0, false,
                                      0u, 0u, false, 0.0, 0.0, 0u, 0u,
-                                     NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+                                     NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
   input.tooltip_hidden = true;
   my_echart_option_init(&option, NULL);
@@ -188,7 +188,7 @@ TEST(echart_option_resolves_dataset_dimensions) {
   my_echart_option_input_t input = {"ds", NULL, 0u, both, 2u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
-                                    NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+                                    NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
   my_echart_option_t option;
 
   input.dataset = dims;
@@ -217,7 +217,7 @@ TEST(echart_option_rejects_invalid_dataset) {
   my_echart_option_input_t input = {"ds", NULL, 0u, &missing, 1u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
-                                    NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u};
+                                    NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
 
   input.dataset = dims;
   input.dataset_count = 1u;
@@ -237,6 +237,68 @@ TEST(echart_option_rejects_invalid_dataset) {
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
 }
 
+TEST(echart_option_sorts_dataset_rows) {
+  static const double keys[] = {3.0, 1.0, 2.0};
+  static const double vals[] = {30.0, 10.0, 20.0};
+  my_echart_dimension_input_t dims[2] = {
+      {"k", keys, 3u}, {"v", vals, 3u}};
+  my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
+                                     0u, NULL, true, "v"};
+  my_echart_option_input_t input = {"sort", NULL, 0u, &series, 1u,
+                                    false, false, false, 0.0, 0.0, false, 0u,
+                                    0u, false, 0.0, 0.0, 0u, 0u,
+                                    NULL, 0u, NULL, 0u, NULL, 0u,
+                                    NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
+  my_echart_option_t option;
+
+  input.dataset = dims;
+  input.dataset_count = 2u;
+  input.transform = MY_ECHART_TRANSFORM_SORT_ASC;
+  input.transform_dimension = "k";
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  ASSERT_EQ(option.series[0].data_count, 3u);
+  ASSERT_FLOAT_EQ((float)option.series[0].data[0], 10.0, 1e-6f);
+  ASSERT_FLOAT_EQ((float)option.series[0].data[1], 20.0, 1e-6f);
+  ASSERT_FLOAT_EQ((float)option.series[0].data[2], 30.0, 1e-6f);
+  my_echart_option_free(&option);
+
+  input.transform = MY_ECHART_TRANSFORM_SORT_DESC;
+  series.dataset_dimension = "k";
+  input.series = &series;
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  ASSERT_FLOAT_EQ((float)option.series[0].data[0], 3.0, 1e-6f);
+  ASSERT_FLOAT_EQ((float)option.series[0].data[2], 1.0, 1e-6f);
+  my_echart_option_free(&option);
+}
+
+TEST(echart_option_rejects_invalid_transform) {
+  static const double keys[] = {3.0, 1.0};
+  static const double ragged[] = {9.0};
+  my_echart_dimension_input_t dims[2] = {
+      {"k", keys, 2u}, {"rag", ragged, 1u}};
+  my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
+                                     0u, NULL, true, "k"};
+  my_echart_option_input_t input = {"sort", NULL, 0u, &series, 1u,
+                                    false, false, false, 0.0, 0.0, false, 0u,
+                                    0u, false, 0.0, 0.0, 0u, 0u,
+                                    NULL, 0u, NULL, 0u, NULL, 0u,
+                                    NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL};
+
+  input.dataset = dims;
+  input.dataset_count = 2u;
+  input.transform = MY_ECHART_TRANSFORM_SORT_ASC;
+  input.transform_dimension = "missing";
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
+
+  input.transform_dimension = NULL;
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
+
+  input.transform_dimension = "k";
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_option_copies_owned_data);
   RUN_TEST(echart_option_rejects_invalid_input);
@@ -249,4 +311,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_option_copies_tooltip_hidden);
   RUN_TEST(echart_option_resolves_dataset_dimensions);
   RUN_TEST(echart_option_rejects_invalid_dataset);
+  RUN_TEST(echart_option_sorts_dataset_rows);
+  RUN_TEST(echart_option_rejects_invalid_transform);
 TEST_MAIN_END()

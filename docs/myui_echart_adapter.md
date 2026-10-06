@@ -21,7 +21,11 @@ The supported subset is:
   labels and bounded counts matching the native renderer limits;
 - option-level `dataset` columns with named dimensions: a series may set
   `dataset_dimension` instead of inline `data`, and the named column is
-  resolved and deep-copied at option normalization (encode-by-dimension).
+  resolved and deep-copied at option normalization (encode-by-dimension);
+- dataset `sort` transform (`transform` + `transform_dimension`): rows are
+  reordered by the key dimension (ascending or descending) with every column
+  permuted consistently during resolution; ragged datasets and unknown or
+  missing sort keys are rejected.
 
 Mixed series types, mixed stack names, stacks on non-bar charts, and other
 ECharts series/configuration features are rejected with

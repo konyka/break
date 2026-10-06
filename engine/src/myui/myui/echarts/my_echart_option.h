@@ -22,6 +22,12 @@ typedef enum my_echart_series_type_t {
   MY_ECHART_BOXPLOT
 } my_echart_series_type_t;
 
+typedef enum my_echart_transform_t {
+  MY_ECHART_TRANSFORM_NONE = 0,
+  MY_ECHART_TRANSFORM_SORT_ASC,
+  MY_ECHART_TRANSFORM_SORT_DESC
+} my_echart_transform_t;
+
 typedef struct my_echart_dimension_input_t {
   const char* name;
   const double* values;
@@ -87,6 +93,8 @@ typedef struct my_echart_option_input_t {
   size_t mark_area_count;
   const my_echart_dimension_input_t* dataset;
   size_t dataset_count;
+  my_echart_transform_t transform;
+  const char* transform_dimension;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {

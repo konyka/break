@@ -7,7 +7,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 
 | Area | Supported |
 |---|---|
-| Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) |
+| Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) with row-aligned sort transform |
 | Series | line, bar, scatter, pie, radar, funnel, heatmap, boxplot |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes |
 | Bar | grouped, positive/negative stacked, shared category slots |
@@ -30,8 +30,7 @@ overflow return `MY_RET_NOT_SUPPORTED`.
 ## Not implemented
 
 - JSON/JavaScript option parsing or a browser runtime;
-- dataset transforms and multi-dimensional `encode` beyond named single-column
-  resolution;
+- dataset transforms beyond row-aligned sort and multi-dimensional `encode`;
 - multiple grids and arbitrary axis counts;
 - full tooltip formatter/trigger/position semantics;
 - complete dataZoom/visualMap/brush action payloads and cross-chart linkage;

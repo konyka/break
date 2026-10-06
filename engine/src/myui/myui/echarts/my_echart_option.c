@@ -124,6 +124,23 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
     }
     if (!resolves) return MY_RET_INVALID_PARAMS;
   }
+  if (input->transform != MY_ECHART_TRANSFORM_NONE) {
+    bool key_found = false;
+    size_t key_count = 0u;
+    if (input->transform_dimension == NULL ||
+        input->transform_dimension[0] == '\0')
+      return MY_RET_INVALID_PARAMS;
+    for (size_t i = 0u; i < input->dataset_count; i++) {
+      if (input->dataset[i].count != input->dataset[0].count)
+        return MY_RET_INVALID_PARAMS;
+      if (strcmp(input->transform_dimension, input->dataset[i].name) == 0) {
+        key_found = true;
+        key_count = input->dataset[i].count;
+      }
+    }
+    if (!key_found) return MY_RET_INVALID_PARAMS;
+    if (key_count == 0u) return MY_RET_INVALID_PARAMS;
+  }
   return MY_RET_OK;
 }
 
@@ -131,9 +148,34 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
                                const my_echart_option_input_t* src,
                                const my_allocator_t* allocator) {
   my_echart_option_t candidate;
+  size_t* row_order = NULL;
   if (my_echart_option_validate(src) != MY_RET_OK || dst == NULL)
     return MY_RET_INVALID_PARAMS;
   my_echart_option_init(&candidate, allocator);
+  if (src->transform != MY_ECHART_TRANSFORM_NONE) {
+    const my_echart_dimension_input_t* key = NULL;
+    for (size_t i = 0u; i < src->dataset_count; i++)
+      if (strcmp(src->transform_dimension, src->dataset[i].name) == 0) {
+        key = &src->dataset[i];
+        break;
+      }
+    row_order = (size_t*)my_mem_alloc(allocator, key->count * sizeof(*row_order));
+    if (row_order == NULL) return MY_RET_OOM;
+    for (size_t i = 0u; i < key->count; i++) row_order[i] = i;
+    for (size_t i = 1u; i < key->count; i++) {
+      size_t row = row_order[i];
+      size_t j = i;
+      while (j > 0u) {
+        bool swap = src->transform == MY_ECHART_TRANSFORM_SORT_ASC
+                        ? key->values[row_order[j - 1u]] > key->values[row]
+                        : key->values[row_order[j - 1u]] < key->values[row];
+        if (!swap) break;
+        row_order[j] = row_order[j - 1u];
+        j--;
+      }
+      row_order[j] = row;
+    }
+  }
   candidate.title = copy_string(allocator, src->title != NULL ? src->title : "");
   if (candidate.title == NULL) goto oom;
   candidate.x_axis_count = src->x_axis_count;
@@ -179,7 +221,12 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
         target->data = (double*)my_mem_alloc(allocator,
                                              data_count * sizeof(double));
         if (target->data == NULL) goto oom;
-        memcpy(target->data, data, data_count * sizeof(double));
+        if (row_order != NULL) {
+          for (size_t j = 0u; j < data_count; j++)
+            target->data[j] = data[row_order[j]];
+        } else {
+          memcpy(target->data, data, data_count * sizeof(double));
+        }
       }
     }
   }
@@ -244,9 +291,11 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
   candidate.visual_map_max = src->visual_map_max;
   candidate.visual_map_low_color = src->visual_map_low_color;
   candidate.visual_map_high_color = src->visual_map_high_color;
+  my_mem_free(allocator, row_order);
   *dst = candidate;
   return MY_RET_OK;
 oom:
+  my_mem_free(allocator, row_order);
   my_echart_option_free(&candidate);
   return MY_RET_OOM;
 }
