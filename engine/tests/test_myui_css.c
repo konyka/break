@@ -2091,6 +2091,194 @@ TEST(css_nest_rejects_malformed)
   }
 }
 
+TEST(css_nest_group_subject_merge)
+{
+  /* `.panel { &:hover, &:pressed { color: red; } }` — one nested rule with
+   * two subject-merge selectors (one per arm). */
+  const char* css =
+      ".panel { color: blue; &:hover, &:pressed { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  rule = my_css_rule(sheet, 1u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->style_class, "panel");
+  ASSERT_EQ(my_css_selector(rule, 0u)->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->style_class, "panel");
+  ASSERT_EQ(my_css_selector(rule, 1u)->state, (int32_t)MY_STATE_PRESSED);
+  ASSERT_TRUE(my_css_selector(rule, 0u)->nest_ref == false);
+  ASSERT_TRUE(my_css_selector(rule, 1u)->nest_ref == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  ASSERT_EQ(my_widget_set_style_class(panel, "panel"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_PRESSED,
+                                  "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_group_ancestor_forms)
+{
+  /* `.panel { & > button, & label { color: red; } }` — arms keep their own
+   * parsed edge combinators (direct child vs descendant). */
+  const char* css = ".panel { & > button, & label { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* hit = my_widget_create(NULL, "hit");
+  my_widget_t* mid = my_widget_create(NULL, "mid");
+  my_widget_t* deep = my_widget_create(NULL, "deep");
+  my_widget_t* wrap = my_widget_create(NULL, "wrap");
+  my_widget_t* miss = my_widget_create(NULL, "miss");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  rule = my_css_rule(sheet, 1u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->widget_type, "button");
+  ASSERT_EQ(my_css_selector(rule, 0u)->ancestor_count, 1u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->ancestors[0].style_class,
+                "panel");
+  ASSERT_TRUE(my_css_selector(rule, 0u)->ancestor_direct_path[0] == true);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->widget_type, "label");
+  ASSERT_EQ(my_css_selector(rule, 1u)->ancestor_count, 1u);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->ancestors[0].style_class, "panel");
+  ASSERT_TRUE(my_css_selector(rule, 1u)->ancestor_direct_path[0] == false);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  hit->widget_type = "button";
+  mid->widget_type = "wrap";
+  deep->widget_type = "label";
+  wrap->widget_type = "wrap";
+  miss->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(panel, "panel"), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, hit), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, mid), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(mid, deep), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(wrap, miss), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, hit, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, deep, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, miss, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(miss);
+  my_widget_unref(wrap);
+  my_widget_unref(deep);
+  my_widget_unref(mid);
+  my_widget_unref(hit);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_group_cross_product_with_parent_group)
+{
+  /* `.a, .b { &:hover, &.on { color: red; } }` — arms x parent variants. */
+  const char* css = ".a, .b { &:hover, &.on { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* a = my_widget_create(NULL, "a");
+  my_widget_t* b = my_widget_create(NULL, "b");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  rule = my_css_rule(sheet, 1u);
+  ASSERT_NOT_NULL(rule);
+  /* arm-major order: (&:hover x a,b) then (&.on x a,b). */
+  ASSERT_EQ(my_css_selector_count(rule), 4u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->style_class, "a");
+  ASSERT_EQ(my_css_selector(rule, 0u)->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->style_class, "b");
+  ASSERT_EQ(my_css_selector(rule, 1u)->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_STR_EQ(my_css_selector(rule, 2u)->style_class, "a on");
+  ASSERT_EQ(my_css_selector(rule, 2u)->state, -1);
+  ASSERT_STR_EQ(my_css_selector(rule, 3u)->style_class, "b on");
+  ASSERT_EQ(my_css_selector(rule, 3u)->state, -1);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  a->widget_type = "wrap";
+  b->widget_type = "wrap";
+  ASSERT_EQ(my_widget_set_style_class(a, "a"), MY_RET_OK);
+  ASSERT_EQ(my_widget_set_style_class(b, "b on"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, a, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, a, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  value = my_theme_get_for_widget(theme, b, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  my_widget_unref(b);
+  my_widget_unref(a);
+  my_theme_destroy(theme);
+}
+
+TEST(css_nest_group_rejects_malformed)
+{
+  const char* malformed[] = {
+      "button { &:hover, { color: red; } }",   /* trailing comma: empty arm */
+      "button { &:hover,, &:pressed { color: red; } }", /* double comma */
+      "button { &:hover, .x { color: red; } }",         /* arm without & */
+      "button { &,&,&,&,&,&,&,&,& { color: red; } }"};  /* 9 arms > cap */
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_NESTING);
+  }
+
+  /* a leading comma never reaches the nested-rule parser: the statement
+   * starts with ',' and dies as a declaration-syntax error instead. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, "button { , &:hover { color: red; } }",
+                              strlen("button { , &:hover { color: red; } }"),
+                              MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
+  ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+}
+
 TEST(css_scope_to_clause_supports_universal_limit)
 {
   const char* css = "@scope panel to * { button { color: red; } }";
@@ -3872,6 +4060,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_descendant_and_group);
     RUN_TEST(css_nest_state_merge);
     RUN_TEST(css_nest_rejects_malformed);
+    RUN_TEST(css_nest_group_subject_merge);
+    RUN_TEST(css_nest_group_ancestor_forms);
+    RUN_TEST(css_nest_group_cross_product_with_parent_group);
+    RUN_TEST(css_nest_group_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);
