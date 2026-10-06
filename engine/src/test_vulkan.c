@@ -5104,8 +5104,68 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
         light_system_shutdown(ls);
         free(ls);
     }
+
+    /* R628: pin the captured env cubemap's sun orientation end-to-end.
+     * R558 fixed the host-side direction contract; this is the first
+     * PIXEL-level check of the real capture path, and R624/R625's RGBA16F
+     * cube readback gets its first production consumer. For each axis in
+     * both directions, recapture with the probe sun (a hair off the exact
+     * axis to dodge uv-seam degeneracy) and assert the face the sun points
+     * at is strictly the brightest — a mirrored/negated/permuted capture
+     * fails at least one probe. Runs after the sampling phase so the probes
+     * cannot disturb it. */
+    bool orient_ok = true;
+    if (gen_ok) {
+        static const f32 axis_probe[6][3] = {
+            { 1.0f, 0.02f, 0.02f }, { -1.0f, 0.02f, 0.02f },
+            { 0.02f, 1.0f, 0.02f }, { 0.02f, -1.0f, 0.02f },
+            { 0.02f, 0.02f, 1.0f }, { 0.02f, 0.02f, -1.0f },
+        };
+        static u8 env_rb[128u * 128u * 8u * 6u];
+        for (u32 p6 = 0u; p6 < 6u; p6++) {
+            f32 mean[6] = {0};
+            ibl_capture_env_sky(&ibl, rs->device, axis_probe[p6], scol);
+            if (!rhi_texture_read_pixels(rs->device, ibl.env_map, env_rb,
+                                         sizeof(env_rb))) {
+                LOG_ERROR("FAIL: env cubemap readback refused (probe %u)",
+                          p6);
+                orient_ok = false;
+                break;
+            }
+            for (u32 f = 0; f < 6u; f++) {
+                double acc = 0.0;
+                for (u32 i = 0; i < 128u * 128u; i++) {
+                    usize off = (usize)f * (128u * 128u * 8u) +
+                                (usize)i * 8u;
+                    f32 r = tv_f16_to_f32((u16)(env_rb[off] |
+                                          ((u16)env_rb[off + 1u] << 8)));
+                    f32 g = tv_f16_to_f32((u16)(env_rb[off + 2u] |
+                                          ((u16)env_rb[off + 3u] << 8)));
+                    f32 b = tv_f16_to_f32((u16)(env_rb[off + 4u] |
+                                          ((u16)env_rb[off + 5u] << 8)));
+                    acc += (double)r + (double)g + (double)b;
+                }
+                mean[f] = (f32)(acc / (128.0 * 128.0));
+            }
+            /* Per-axis assertion: the face the sun points at must out-shine
+             * its OPPOSITE face (the pair shares the atmosphere model's
+             * elevation structure, so the Mie forward peak decides). A
+             * mirrored/negated capture flips the pair on that axis. */
+            if (!(mean[p6] > mean[p6 ^ 1u])) {
+                LOG_ERROR("FAIL: env cube sun probe %u: face means "
+                          "(%.4f,%.4f,%.4f,%.4f,%.4f,%.4f) — axis pair "
+                          "not oriented (%.4f !> %.4f)", p6,
+                          (double)mean[0], (double)mean[1],
+                          (double)mean[2], (double)mean[3],
+                          (double)mean[4], (double)mean[5],
+                          (double)mean[p6], (double)mean[p6 ^ 1u]);
+                orient_ok = false;
+                break;
+            }
+        }
+    }
     ibl_destroy(&ibl, rs->device);
-    return gen_ok && sample_ok;
+    return gen_ok && sample_ok && orient_ok;
 }
 
 /* Diagnostic: attribute an asynchronous DEVICE_LOST to the faulting test
