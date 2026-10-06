@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R658 光标边界 UAX#29 规则族扩展（TDD）— GB9 ZWJ 前附/GB11 emoji 链/GB12-13 旗帜对，R657 的簇判定从"组合符单规则"升为完整有界子集
+
+- **缺口**（R657 落账"ZWJ/RI 为后续独立小轮"）：家庭 emoji（👨‍👩‍👧 = 5 码点）光标 4 停、旗帜（🇫🇷 = 2 码点）可拆——ZWJ 不在组合符表、Extended_Pictographic/RI 规则全缺。
+- **方案**（簇判定统一收口，边界 API 零改）：新 `tl_cluster_interior(l, b)` 三规则——① GB9:`cps[b]` 为组合符 **或 ZWJ**(U+200D，前附基座）即内部；② GB12/13:`cps[b]` 为 RI(U+1F1E6-1F1FF）时回数紧邻 RI 游程，奇数=内部（对聚簇、对间断）;③ GB11 有界形：`cps[b]` 为图符（生成的 `my_extended_pictographic_data.h` 新消费方）且 `cps[b-1]==ZWJ` 即内部（链式 emoji 整链一簇；非图符尾随 ZWJ 后正常间断——"a‍ZWJ‍b" = [a+ZWJ][b] 两簇，规范语义钉死）。`boundary_left/right` 四处 `tl_is_extend` 调用点统一替换（方向感知逻辑 R657 原样）。
+- **TDD（红→绿实证）**：test_myui_text_layout +1——四组：家庭链（right 0→5/left 5→0)、双人链（3 码点整簇）、裸 ZWJ 两簇语义、四旗帜（right 0→2→4/left 4→2→0)。**RED 如实红**（首断言 1≠5);GREEN 一钓：测试自身码点计数笔误（把字节感当码点：家庭 5 非 7、双人 3 非 4)，修正后 **138/138**(137+1)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;`test_net_replication` 本轮无 flake;`test_platform_win32_runtime` 双树同败于 "OpenClipboard failed"——文档在案的本机剪贴板 wedge（OS 态，CI 仲裁；单测 3 连跑同签名复现，与本改动零耦合，GL 树剔除该项后 117/117 取证）。
+- **边界**:GB11 完整形要求 ZWJ 前存图符（可有组合符相隔）——有界形只认紧邻（现实 emoji 序列紧邻为主，间接形罕）;GB9c 印梵合字（ZWJ 后辅音续簇）未开（天城文 conjunct 光标语义独立议题）;Prepend/SpacingMark 规则族维持让渡；Backspace 按簇删仍消费侧议题；R611 AMD 基线不动。
+
 ## 本轮更新：R657 光标边界字素簇感知（TDD）— `my_text_layout_boundary_left/right` 跳过组合符内部停点：方向感知簇跳变（LTR/RTL 双域）
 
 - **缺口**（探针定性）：光标边界逐码点——"a+U+0301+b" 的 `boundary_right(0)=1`，方向键/点击可落进 "á" 簇内部（`end=3` 全码点停）。探针（临时 fprintf 测试，定性后即删）实证后立项。

@@ -12,6 +12,7 @@
 #include "myc/my_str.h" /* my_strdup */
 #include "myr/my_font.h" /* my_utf8_next */
 #include "myr/generated/my_combining_marks_data.h"
+#include "myr/generated/my_extended_pictographic_data.h"
 #include "myr/generated/my_script_extensions_data.h"
 
 /* R657: grapheme cluster Extend attachment for cursor boundaries — the
@@ -47,6 +48,49 @@ static uint32_t tl_logical_cp(const my_text_layout_t* l,
     i++;
   }
   return cp;
+}
+
+static bool tl_is_extended_pictographic(uint32_t cp) {
+  size_t lo = 0u;
+  size_t hi = sizeof(MY_EXTENDED_PICTOGRAPHIC) /
+              sizeof(MY_EXTENDED_PICTOGRAPHIC[0]);
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2u;
+    const my_extended_pictographic_range_t* range =
+        &MY_EXTENDED_PICTOGRAPHIC[mid];
+    if (cp < range->first) {
+      hi = mid;
+    } else if (cp > range->last) {
+      lo = mid + 1u;
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+/* R658: is logical boundary b inside a grapheme cluster? Bounded UAX#29:
+ * GB9 (Extend/ZWJ attach forward), GB11 bounded (a pictograph right after
+ * a ZWJ joins the chain), GB12/13 (regional indicators cluster in pairs —
+ * an odd RI run immediately before b makes it interior). */
+static bool tl_cluster_interior(const my_text_layout_t* l, size_t b) {
+  uint32_t cp;
+  if (l == NULL || b == 0u || b >= l->logical_len) return false;
+  cp = tl_logical_cp(l, b);
+  if (tl_is_extend(cp) || cp == 0x200Du) return true;
+  if (cp >= 0x1F1E6u && cp <= 0x1F1FFu) {
+    size_t run = 0u;
+    size_t i = b;
+    while (i > 0u) {
+      uint32_t prev = tl_logical_cp(l, i - 1u);
+      if (prev < 0x1F1E6u || prev > 0x1F1FFu) break;
+      run++;
+      i--;
+    }
+    return (run & 1u) != 0u;
+  }
+  return tl_is_extended_pictographic(cp) &&
+         tl_logical_cp(l, b - 1u) == 0x200Du;
 }
 
 #if defined(MYUI_BIDI)
@@ -1951,12 +1995,12 @@ size_t my_text_layout_boundary_left(const my_text_layout_t* l,
    * LTR runs, increasing in RTL runs). */
   if (candidate <= logical_boundary) {
     while (candidate > 0u && candidate < l->logical_len &&
-           tl_is_extend(tl_logical_cp(l, candidate))) {
+           tl_cluster_interior(l, candidate)) {
       candidate--;
     }
   } else {
     while (candidate < l->logical_len &&
-           tl_is_extend(tl_logical_cp(l, candidate))) {
+           tl_cluster_interior(l, candidate)) {
       candidate++;
     }
   }
@@ -1977,12 +2021,12 @@ size_t my_text_layout_boundary_right(const my_text_layout_t* l,
   candidate = tl_lb_of_vb(l, tl_canon_right(l, v + 1));
   if (candidate >= logical_boundary) {
     while (candidate < l->logical_len &&
-           tl_is_extend(tl_logical_cp(l, candidate))) {
+           tl_cluster_interior(l, candidate)) {
       candidate++;
     }
   } else {
     while (candidate > 0u &&
-           tl_is_extend(tl_logical_cp(l, candidate))) {
+           tl_cluster_interior(l, candidate)) {
       candidate--;
     }
   }

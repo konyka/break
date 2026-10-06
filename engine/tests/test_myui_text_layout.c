@@ -687,6 +687,52 @@ TEST(text_layout_boundaries_skip_combining_cluster_interior)
   my_text_layout_destroy(layout);
 }
 
+TEST(text_layout_boundaries_skip_zwj_and_flag_clusters)
+{
+  /* R658: the rest of the bounded UAX#29 subset — GB9 (ZWJ attaches
+   * forward), GB11 bounded (a pictograph after a ZWJ joins the chain), and
+   * GB12/13 (regional indicators cluster in pairs). */
+  my_text_layout_t* family = my_text_layout_process(
+      NULL, "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9\xE2\x80\x8D"
+            "\xF0\x9F\x91\xA7");
+  my_text_layout_t* couple = my_text_layout_process(
+      NULL, "\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA7");
+  my_text_layout_t* plain_zwj =
+      my_text_layout_process(NULL, "a" "\xE2\x80\x8D" "b");
+  my_text_layout_t* flags = my_text_layout_process(
+      NULL, "\xF0\x9F\x87\xAB\xF0\x9F\x87\xB7\xF0\x9F\x87\xAF\xF0\x9F\x87\xB5");
+
+  ASSERT_NOT_NULL(family);
+  ASSERT_NOT_NULL(couple);
+  ASSERT_NOT_NULL(plain_zwj);
+  ASSERT_NOT_NULL(flags);
+
+  /* man + ZWJ + woman + ZWJ + girl (5 codepoints): one cluster, ends only. */
+  ASSERT_EQ(my_text_layout_boundary_right(family, 0u), 5u);
+  ASSERT_EQ(my_text_layout_boundary_left(family, 5u), 0u);
+
+  /* man + ZWJ + girl (3 codepoints). */
+  ASSERT_EQ(my_text_layout_boundary_right(couple, 0u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(couple, 3u), 0u);
+
+  /* a + ZWJ + b: the ZWJ joins its base, but a non-pictograph after it
+   * starts a new cluster. */
+  ASSERT_EQ(my_text_layout_boundary_right(plain_zwj, 0u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_right(plain_zwj, 2u), 3u);
+  ASSERT_EQ(my_text_layout_boundary_left(plain_zwj, 3u), 2u);
+
+  /* four regional indicators: pairs cluster, break between pairs. */
+  ASSERT_EQ(my_text_layout_boundary_right(flags, 0u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_right(flags, 2u), 4u);
+  ASSERT_EQ(my_text_layout_boundary_left(flags, 4u), 2u);
+  ASSERT_EQ(my_text_layout_boundary_left(flags, 2u), 0u);
+
+  my_text_layout_destroy(flags);
+  my_text_layout_destroy(plain_zwj);
+  my_text_layout_destroy(couple);
+  my_text_layout_destroy(family);
+}
+
 TEST(text_layout_maps_thai_to_thai_script)
 {
   paragraph_test_font_t font = {{&s_paragraph_shape_ex_vtable}, NULL, 0, 0, 0,
@@ -3664,6 +3710,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(text_layout_shape_ex_failure_rolls_back_segment_results);
     RUN_TEST(text_layout_keeps_inherited_marks_with_previous_script);
     RUN_TEST(text_layout_boundaries_skip_combining_cluster_interior);
+    RUN_TEST(text_layout_boundaries_skip_zwj_and_flag_clusters);
     RUN_TEST(text_layout_maps_thai_to_thai_script);
     RUN_TEST(text_layout_maps_additional_unicode_scripts);
     RUN_TEST(text_layout_keeps_arabic_common_punctuation_with_neighbor_script);
