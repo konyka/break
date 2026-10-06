@@ -280,7 +280,11 @@ my_css_sheet_t* my_css_parse(const my_allocator_t* allocator,
  * MY_CSS_MAX_SCOPE_NESTING. Inside @scope rules, a bare `:scope` (R627)
  * references the innermost rooted scope's root: as the whole subject it
  * styles the root itself; as the outermost ancestor compound
- * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root.
+ * (`:scope > x` / `:scope x`) it pins the parsed edge onto the root. One
+ * state qualifier may stack on the subject form (R639: `:scope:hover` —
+ * the state rides the substituted root subject); any other qualification
+ * (type/id/class, a second pseudo, a state on the ancestor form) is
+ * rejected.
  * CSS nesting (R629): inside a rule's declaration block, a statement
  * holding a top-level `&` is a nested rule — desugared at parse time
  * against the already-resolved parent selectors (one variant per parent

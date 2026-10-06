@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R639 CSS `:scope` 态叠加（TDD）— R627 边界"裸 `:scope`"放宽一档：`@scope panel { :scope:hover {} }` 根本身态样式互操作
+
+- **缺口**(R627 落账":scope 必须裸用"):CSS 允许 `:scope:hover` 为 scope 根本身加态样式（"面板悬停时高亮"是根级态的标准写法）——本引擎在 c_selector 即拒（`:scope` 后遇第二个 `:` 硬拒）。
+- **方案**（脱糖延伸，匹配层零改动——实证早先"需匹配层回传"的估判对主体形态不成立）:`:scope` 的拼接结果=根选择器主体，`variant = sel` 复制时**态字段天然随主体保留**——故只需两级放宽：① c_selector 的 scope 伪类分支允许多解析**一个态伪类**(hover/pressed/disabled；再遇 `:`/`.`/`#` 或第二个 scope 仍按 ":scope must be unqualified and outermost" 拒）;② css_rule 的主体校验放行 state 字段（type/id/class/ancestor_count 限定保持拒绝）。**唯一陷阱钉死**：祖先位 scope 标记（`:scope:hover button`）的态在拼槽时会被静默丢弃——fold 循环的 scope_ref 分支显式拒绝态限定祖先标记（报错信息同签名，SCOPE capability)。
+- **TDD（红→绿实证）**:test_myui_css +3——① 根本身态（`:scope:hover` + `:scope` 双规则：解析断言 rule0=panel+HOVER/rule1=panel 无态+主题行为：panel hover 红/normal 蓝/**hover 的子元素不命中**——态只在根上）;② 根列表态随行（`panel, dialog { :scope:pressed }`:2 变体各带 PRESSED+行为）;③ 拒绝四例（祖先标记带态/双态叠加/`:scope:scope`/类限定 `.x:scope`,SYNTAX+SCOPE)。**RED 如实红 2/2 正例**(sheet NULL=c_selector 硬拒；拒绝组前后皆绿=守卫）;GREEN 首轮即过正例，唯 R627 旧误用表含 `:scope:hover` 拒绝例（契约变更：自此合法）——从旧表移除（剩余态误用由新拒绝组覆盖）,**150/150**(147+3)。
+- **回归**：双树非图形 CTest 各 **118/118**、fuzz smoke 5/5;VK 树 test_myui_css 同 150/150。纯解析器改动，theme/桥接/图形零触点。
+- **边界**：主体形态仅态叠加；类/id 限定 `:scope`(`:scope.x`）需 c_selector 伪类后限定语法扩展（独立切片）;`&` 深度 3+、块内 @layer/@scope 维持让渡；R611 AMD 基线不动。
+
 ## 本轮更新：R638 CSS 规则块内嵌套条件组（TDD）— 嵌套弧解析侧最后一片落地：`button { @media … { … } }` / `@supports` 块内形态互操作
 
 - **缺口**(R629 落账"@media/@supports 块内嵌套规则"让渡）:CSS Nesting 规范允许条件组直接写在规则块内（`button { @media (min-width:…) { color: … } }`、嵌套规则自己的块内亦可）——本引擎此前遇 `@` 即按"expected declaration key"硬拒。

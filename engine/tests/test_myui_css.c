@@ -1897,7 +1897,6 @@ TEST(css_scope_scope_pseudo_rejects_misuse)
       ":scope { color: red; }",                         /* outside @scope */
       "@scope to dialog { :scope { color: red; } }",    /* implicit root */
       "@scope panel { a :scope b { color: red; } }",    /* mid-path */
-      "@scope panel { :scope:hover { color: red; } }",  /* state-qualified */
       "@scope panel { x:scope { color: red; } }",       /* type-qualified */
       "@scope :scope { button { color: red; } }",       /* in the root */
       "@scope panel to :scope { button { color: red; } }" /* in a limit */};
@@ -2984,6 +2983,123 @@ TEST(css_nest_conditional_rejects_malformed)
   ASSERT_TRUE(my_css_parse_ex(NULL, unknown, strlen(unknown),
                               MY_CSS_PARSE_STRICT_AT_RULES, &error) == NULL);
   ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+}
+
+TEST(css_scope_subject_state_form_styles_root)
+{
+  /* `@scope panel { :scope:hover { color: red; } :scope { color: blue; } }`
+   * — one state qualifier may stack on `:scope`: the splice substitutes
+   * the root subject and keeps the state, styling the root itself when
+   * hovered. */
+  const char* css =
+      "@scope panel { :scope:hover { color: red; } :scope { color: blue; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_selector_t* sel;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* child = my_widget_create(NULL, "child");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  sel = my_css_selector(my_css_rule(sheet, 0u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "panel");
+  ASSERT_EQ(sel->state, (int32_t)MY_STATE_HOVER);
+  ASSERT_EQ(sel->ancestor_count, 0u);
+  ASSERT_TRUE(sel->scope_ref == false);
+  sel = my_css_selector(my_css_rule(sheet, 1u), 0u);
+  ASSERT_NOT_NULL(sel);
+  ASSERT_STR_EQ(sel->widget_type, "panel");
+  ASSERT_EQ(sel->state, -1);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  child->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(panel, child), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_HOVER, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x0000FFFFu);
+  /* the state sits on the root only — a hovered child matches nothing. */
+  value = my_theme_get_for_widget(theme, child, MY_STATE_HOVER, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(child);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_subject_state_form_root_list)
+{
+  /* `@scope panel, dialog { :scope:pressed { color: red; } }` — the state
+   * qualifier rides along every root variant. */
+  const char* css =
+      "@scope panel, dialog { :scope:pressed { color: red; } }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet = my_css_parse_ex(
+      NULL, css, strlen(css), MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  const my_css_rule_t* rule;
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* panel = my_widget_create(NULL, "panel");
+  my_widget_t* dialog = my_widget_create(NULL, "dialog");
+  const my_value_t* value;
+
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_NOT_NULL(rule);
+  ASSERT_EQ(my_css_selector_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_selector(rule, 0u)->widget_type, "panel");
+  ASSERT_EQ(my_css_selector(rule, 0u)->state, (int32_t)MY_STATE_PRESSED);
+  ASSERT_STR_EQ(my_css_selector(rule, 1u)->widget_type, "dialog");
+  ASSERT_EQ(my_css_selector(rule, 1u)->state, (int32_t)MY_STATE_PRESSED);
+  my_css_sheet_destroy(sheet);
+
+  ASSERT_NOT_NULL(theme);
+  panel->widget_type = "panel";
+  dialog->widget_type = "dialog";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, dialog, MY_STATE_PRESSED,
+                                  "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL, "fg_color");
+  ASSERT_TRUE(value == NULL);
+  my_widget_unref(dialog);
+  my_widget_unref(panel);
+  my_theme_destroy(theme);
+}
+
+TEST(css_scope_subject_state_rejects_malformed)
+{
+  const char* malformed[] = {
+      /* a state on the ANCESTOR scope marker can't be expressed */
+      "@scope panel { :scope:hover button { color: red; } }",
+      /* one state qualifier at most */
+      "@scope panel { :scope:hover:pressed { color: red; } }",
+      /* scope is not a state */
+      "@scope panel { :scope:scope { color: red; } }",
+      /* class-qualified :scope stays out of the subset */
+      "@scope panel { .x:scope { color: red; } }"};
+  my_css_error_t error = {0};
+  size_t i;
+
+  for (i = 0u; i < sizeof(malformed) / sizeof(malformed[0]); ++i) {
+    memset(&error, 0, sizeof(error));
+    ASSERT_TRUE(my_css_parse_ex(NULL, malformed[i], strlen(malformed[i]),
+                                MY_CSS_PARSE_STRICT_AT_RULES,
+                                &error) == NULL);
+    ASSERT_EQ(error.code, MY_CSS_ERROR_SYNTAX);
+    ASSERT_EQ(error.capability, (uint32_t)MY_CSS_FEATURE_SCOPE);
+  }
 }
 
 TEST(css_scope_to_clause_supports_universal_limit)
@@ -4786,6 +4902,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_nest_media_hosts_nested_rules);
     RUN_TEST(css_nest_supports_in_rule);
     RUN_TEST(css_nest_conditional_rejects_malformed);
+    RUN_TEST(css_scope_subject_state_form_styles_root);
+    RUN_TEST(css_scope_subject_state_form_root_list);
+    RUN_TEST(css_scope_subject_state_rejects_malformed);
     RUN_TEST(css_scope_to_clause_supports_universal_limit);
     RUN_TEST(css_scope_universal_limit_excludes_every_ancestor_boundary);
     RUN_TEST(css_scope_to_clause_supports_compound_limit);

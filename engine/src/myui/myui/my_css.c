@@ -359,12 +359,31 @@ static bool c_selector(css_p_t* p, my_css_selector_t* out) {
       out->state = MY_STATE_DISABLED;
     } else if (my_str_eq(pseudo, "scope")) {
       /* R627: parse-time marker — the @scope splice in css_rule validates
-       * and substitutes it. Only the bare form (no state stacking). */
-      if (c_peek(p) == ':') {
-        css_fail(p, ":scope must be unqualified and outermost");
-        return false;
-      }
+       * and substitutes it. R639: one state qualifier may stack
+       * (`:scope:hover`); any further qualification stays rejected. */
       out->scope_ref = true;
+      if (c_peek(p) == ':') {
+        char state_pseudo[16];
+        c_next(p);
+        if (!c_ident(p, state_pseudo, sizeof(state_pseudo))) {
+          css_fail(p, "bad pseudo class");
+          return false;
+        }
+        if (my_str_eq(state_pseudo, "hover")) {
+          out->state = MY_STATE_HOVER;
+        } else if (my_str_eq(state_pseudo, "pressed")) {
+          out->state = MY_STATE_PRESSED;
+        } else if (my_str_eq(state_pseudo, "disabled")) {
+          out->state = MY_STATE_DISABLED;
+        } else {
+          css_fail(p, ":scope must be unqualified and outermost");
+          return false;
+        }
+        if (c_peek(p) == ':' || c_peek(p) == '.' || c_peek(p) == '#') {
+          css_fail(p, ":scope must be unqualified and outermost");
+          return false;
+        }
+      }
     } else {
       css_fail(p, "unsupported pseudo class");
       return false;
@@ -1525,7 +1544,12 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
       size_t source = compound_count - 2u - i;
       if (compounds[source].scope_ref) {
         /* R627: `:scope` ancestor marker — zeroed slot + mask bit; the
-         * scope splice substitutes it with the innermost root. */
+         * scope splice substitutes it with the innermost root. R639: a
+         * state qualifier can't be expressed on an ancestor → reject. */
+        if (compounds[source].state != -1) {
+          css_fail(p, ":scope must be unqualified and outermost");
+          goto fail;
+        }
         memset(&sel.ancestors[i], 0, sizeof(sel.ancestors[i]));
         sel.ancestor_scope_ref_mask |= (u32)1u << i;
         sel.ancestor_direct_path[i] = direct_between[source + 1u];
@@ -1553,7 +1577,9 @@ static my_css_rule_t* css_rule(css_p_t* p, my_css_sheet_t* sheet,
       }
       if (sel.scope_ref && (sel.ancestor_count != 0u ||
                             sel.widget_type[0] != '\0' || sel.id[0] != '\0' ||
-                            sel.style_class[0] != '\0' || sel.state != -1)) {
+                            sel.style_class[0] != '\0')) {
+        /* R639: a state qualifier is the one allowed qualification — it
+         * rides the substituted root subject. */
         css_fail(p, ":scope must be unqualified and outermost");
         goto fail;
       }
