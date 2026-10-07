@@ -13,7 +13,10 @@ cmake --build build --target myui_explorer --parallel 2
 ./build/myui_explorer --platform x11 --backend gl        # x11 + EGL/GLES2
 ./build/myui_explorer --platform wayland --backend soft  # wayland + wl_shm
 ./build/myui_explorer --selftest dir  # headless scripted frames
-./build/myui_explorer --shot out.ppm  # render one frame and exit
+./build/myui_explorer --shot out.ppm   # software-rendered single frame
+./build/myui_explorer --glshot out.ppm # GLES2 single frame (EGL pbuffer +
+                                       # glReadPixels readback; needs no
+                                       # display server)
 ```
 
 `--platform` picks the window system (x11 | wayland) and `--backend` the
