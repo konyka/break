@@ -4035,6 +4035,12 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
         snprintf(r->container_query, sizeof(r->container_query), "%s",
                  query);
         snprintf(r->container_name, sizeof(r->container_name), "%s", name);
+      } else if (r->container_query2[0] == '\0') {
+        /* R675: nested @container — the outer condition joins as the
+         * second conjunct (depth ≥ 3 keeps the innermost two). */
+        snprintf(r->container_query2, sizeof(r->container_query2), "%s",
+                 query);
+        snprintf(r->container_name2, sizeof(r->container_name2), "%s", name);
       }
     }
     return true;
@@ -5080,23 +5086,25 @@ static my_ret_t my_theme_load_css_internal(
             specificity + (d->important ? MY_CSS_IMPORTANT_SPECIFICITY : 0);
         if (important_pass != d->important) continue;
         if (sel->state >= 0) {
-          ret = my_theme_set_ex7(
+          ret = my_theme_set_ex8(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, (my_widget_state_t)sel->state,
               d->key, &d->value, decl_specificity + 100,
-              rule->container_query, rule->container_name);
+              rule->container_query, rule->container_name,
+              rule->container_query2, rule->container_name2);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex7(
+          ret = my_theme_set_ex8(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, MY_STATE_NORMAL, d->key, &d->value,
-              decl_specificity, rule->container_query, rule->container_name);
+              decl_specificity, rule->container_query, rule->container_name,
+              rule->container_query2, rule->container_name2);
         }
         if (ret != MY_RET_OK) {
           break;

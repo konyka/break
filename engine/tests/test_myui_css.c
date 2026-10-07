@@ -1791,6 +1791,160 @@ TEST(css_container_style_queries_resolve_at_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_container_nested_queries_and_at_match_time)
+{
+  /* R675: nested deferred @container is a conjunction — the rule must
+   * carry BOTH conditions (inner pair first, outer pair second) and the
+   * cascade gates on both. R670's "inner stamps first and wins" silently
+   * dropped the outer condition. Bounded slice: depth ≥ 3 keeps the
+   * innermost two conditions (documented approximation). */
+  const char* nested =
+      "panel { container-type: inline-size; }"
+      "@container (min-width: 400px) {"
+      " @container (min-height: 500px) {"
+      "  button { color: #010203; } } }";
+  const char* nested_named =
+      "panel { container-type: inline-size; container-name: card; }"
+      "@container card (min-width: 400px) {"
+      " @container (min-height: 500px) {"
+      "  button { color: #010203; } } }";
+  const char* nested_named_miss =
+      "panel { container-type: inline-size; }"
+      "@container card (min-width: 400px) {"
+      " @container (min-height: 500px) {"
+      "  button { color: #010203; } } }";
+  const char* deep =
+      "panel { container-type: inline-size; }"
+      "@container (min-width: 900px) {"      /* dropped (outermost) */
+      " @container (min-width: 400px) {"     /* kept */
+      "  @container (min-height: 500px) {"   /* kept (innermost) */
+      "   button { color: #010203; } } } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* stamping: the inner condition lands in pair1, the outer in pair2. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  sheet = my_css_parse_with_options(NULL, nested + 38, strlen(nested + 38),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "(min-height: 500px)");
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name, "");
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query2,
+                "(min-width: 400px)");
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name2, "");
+  my_css_sheet_destroy(sheet);
+
+  /* both conditions true: the rule applies. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, nested, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+
+  /* outer false (width 300) + inner true: the conjunction must hold the
+   * rule back — R670's inner-only stamp let it through. */
+  panel->rect.w = 300;
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  /* inner false (height 400) + outer true: held back too. */
+  panel->rect.w = 500;
+  panel->rect.h = 400;
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* named outer + unnamed inner: the name binds to its own condition. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, nested_named,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* ...a nameless container does not satisfy the named outer leg. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, nested_named_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* depth 3: the innermost two conditions are kept, the outermost is
+   * dropped — panel 500x600 fails min-width 900 but the documented
+   * approximation still applies the rule. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, deep, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
 TEST(css_property_rule_registers_custom_properties)
 {
   /* R671: @property slice 1 — the rule parses into the theme registry
@@ -7509,6 +7663,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
     RUN_TEST(css_container_style_queries_resolve_at_match_time);
+    RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);

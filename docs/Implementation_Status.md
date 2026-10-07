@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R675 嵌套 @container AND 语义（TDD）— 双条件对落地：内层条件对 + 外层条件对并列盖戳/入身份/级联双闸（depth ≥ 3 保最内两层，文档化近似）
+
+- **缺口**(R670 落账"嵌套 AND 语义让渡"):deferral 模式下嵌套 @container 内层先戳先赢、外层条件被静默丢弃——`@container (min-width:400px) { @container (min-height:500px) {...} }` 宽 300 时（外层假）规则照样应用，与 CSS 嵌套=合取的语义相悖。
+- **方案**（第二条件对，R670 机械同构扩展）:① rule/entry 各增 `container_query2/container_name2` 定长对（扁平哲学，calloc 默认空）;② **盖戳**：内层先戳 pair1，外层递进 pair2;depth ≥ 3 保**最内两层**（外层更弱者丢弃，文档化近似——三层全存=条目字段爆炸，审慎让渡）;③ entry 身份含双条件对（find-or-add 谓词四参）,ex7→**ex8** 纯增量（ex7 前转空对，与 ex6→ex7 同型）,clone 双对拷贝同步；④ **级联双闸**：双对各自独立走 R670/R673 求值（各自寻各自最近的合格祖先容器，天然支持异名/异种（size+style）混合）,AND 短路；注入上下文模式本就逐层解析期求值（嵌套天然 AND)，零改动。
+- **TDD（红→绿实证）**:test_myui_css +1——盖戳面（内 pair1/外 pair2 四字段断言）、匹配面五景：双真命中/**外假内真拦回**/内假外真拦回/具名外腿绑定/无名容器不应具名外腿/depth-3 弃最外近似钉死。**RED 如实红**（行 1852：宽 300 时 fg_color 仍命中——外层条件被丢）;GREEN 一次过 **180/180**(179+1)。
+- **回归**：双树非图形 CTest 各 **123/123**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5;R670/R673 单层与 style() 组全绿未动（无条件 entry 零扰动）。
+- **边界**:depth ≥ 3 为最内两层近似（真三层合取=条件对数组化，让渡）;@container 与 @media 交叉嵌套维持各自语义（@media 解析期、@container 匹配期，无交互）;声明块内嵌套 @container 仍解析期专属（R670 落账同约）;R611 AMD 基线不动。
+
 ## 本轮更新：R674 CI 存量债清理 — 并行会话 explorer/chart 系列（自 34a02868 起从未绿）八连红修复：跨平台编译守卫、字体探测、-Werror 豁免、栈用后返回真 bug、X11/glesv2 链接
 
 - **缺口**:explorer/chart 系列提交（widgets demo→explorer→GL shot→win32/macos 移植）自引入起 CI 全红：`myui_explorer.c` 的 X11/Wayland/EGL 段无平台守卫（win32/macOS/headless-Linux 一律编译断裂，CMake no-wayland 分支亦链出未定义符号）;`myui_widgets_demo` 硬编码 Fedora 系字体路径（Windows/无 liberation 字体处 text-only 场景 0 像素败）;macOS `.m` 与 wayland-scanner 生成码撞全局 `-Werror -pedantic`;explorer 把 `apply_state` 栈数组借给借用语义的 `my_chart_apply_snapshot`(ASan stack-use-after-return 真 bug);wayland job 链接缺 X11(`ENGINE_ENABLE_WAYLAND=ON` 时引擎自己不找 X11,`X11_LIBRARIES` 空）与 GLESv2(explorer 直调 `glReadPixels`)。

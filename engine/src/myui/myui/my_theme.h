@@ -61,9 +61,13 @@ typedef struct my_theme_entry_t {
   my_style_t style;
   /* R670: deferred @container condition ("" = unconditional). Entries
    * with a condition are skipped by the cascade unless the element's
-   * nearest ancestor query container satisfies it. */
+   * nearest ancestor query container satisfies it. R675: pair2 is the
+   * outer condition of a nested @container (conjunction; depth ≥ 3
+   * keeps the innermost two). */
   char container_query[MY_THEME_MAX_CONTAINER_QUERY_BYTES + 1u];
   char container_name[MY_THEME_NAME_LEN];
+  char container_query2[MY_THEME_MAX_CONTAINER_QUERY_BYTES + 1u];
+  char container_name2[MY_THEME_NAME_LEN];
 } my_theme_entry_t;
 
 /** @brief R671: one registered custom property (@property). `syntax` is
@@ -201,6 +205,24 @@ my_ret_t my_theme_set_ex7(my_theme_t* theme, const char* widget_type,
                           const my_value_t* value, int32_t specificity,
                           const char* container_query,
                           const char* container_name);
+
+/** @brief ex7 plus the outer condition of a nested @container (R675):
+ * the entry applies only when BOTH condition pairs match. Empty strings
+ * = unconditional. */
+my_ret_t my_theme_set_ex8(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_scope_limit_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity,
+                          const char* container_query,
+                          const char* container_name,
+                          const char* container_query2,
+                          const char* container_name2);
 
 struct my_widget_t;
 

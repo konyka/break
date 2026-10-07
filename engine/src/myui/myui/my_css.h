@@ -263,9 +263,13 @@ typedef struct my_css_rule_t {
   /* R670: deferred @container condition ("" = unconditional). The query
    * is the parenthesized query text (a size query, or a style()
    * condition — R673); the name is the optional container name.
-   * Evaluated per element at theme lookup time. */
+   * Evaluated per element at theme lookup time. R675: a nested
+   * @container is a conjunction — pair2 carries the outer condition
+   * (depth ≥ 3 keeps the innermost two, documented). */
   char container_query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
   char container_name[MY_STYLE_KEY_LEN];
+  char container_query2[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+  char container_name2[MY_STYLE_KEY_LEN];
 } my_css_rule_t;
 
 /** @brief Parsed sheet (opaque-ish; use the accessors). */
