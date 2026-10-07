@@ -26,6 +26,17 @@ macOS); gl drives the engine's `my_vgcanvas_gles2` hardware backend on a
 GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
 NSOpenGL (macOS) through the `my_gl_desktop` table.
 
+Architectural note: myui's portability seam is the PAL interface
+(`mypal/my_pal.h`); the reusable mypal target ships only the headless
+dummy port by design, and the real X11/Wayland/Win32/Cocoa ports live in
+the Break engine host (see `docs/myui_integration.md`). This repository
+has no PAL port to consume, so the explorer carries its own per-OS
+windowing glue at the host layer — the same system libraries a PAL port
+would link internally (X11 is already required by the engine top level;
+wayland/egl are pkg-config-gated with an x11-only fallback; gdi32/Cocoa
+apply only on their targets). The natural evolution is to promote these
+runners into mypal ports so every myui host shares them.
+
 Verification status: all four Linux combinations plus `--shot`/`--glshot`
 are verified live on the reference host; the Windows and macOS runners are
 implemented against the documented Win32/WGL and Cocoa/NSOpenGL APIs with
