@@ -4,6 +4,29 @@ This guide shows how to use every supported ECharts feature through the
 MyUI native C engine, with runnable snippets. All snippets are exercised
 end-to-end by the demo program (`engine/tools/echarts_demo.c`).
 
+## Interactive explorer (live, adjustable data)
+
+```sh
+cmake --build build --target myui_explorer --parallel 2
+./build/myui_explorer                 # opens an X11 window (DISPLAY required)
+./build/myui_explorer --selftest dir  # headless scripted frames
+./build/myui_explorer --shot out.ppm  # render one frame and exit
+```
+
+The left pane is a live `my_chart`; the right pane is a real MyUI widget
+panel that drives it in real time:
+
+- 16 type buttons switch the chart mode instantly;
+- the *data scale* slider rescales all series; the *animation* slider
+  scrubs the deterministic animation;
+- checkboxes toggle stacked bars, value labels, and the legend;
+- *Randomize* regenerates the 4x8 dataset; *Zoom +/-* (or the mouse
+  wheel over the chart) narrows the dataZoom window;
+- hover the chart for tooltips and the axis guide; click legend entries
+  to toggle series (built-in chart behavior);
+- keys: `1..9/0` quick mode switch, `R` randomize, `+/-` zoom, `S` dump
+  the current frame to `/tmp/myui_explorer_shot.ppm`.
+
 ## Run the demo
 
 ```sh
