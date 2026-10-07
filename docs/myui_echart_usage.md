@@ -27,15 +27,17 @@ GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
 NSOpenGL (macOS) through the `my_gl_desktop` table.
 
 Architectural note: myui's portability seam is the PAL interface
-(`mypal/my_pal.h`); the reusable mypal target ships only the headless
-dummy port by design, and the real X11/Wayland/Win32/Cocoa ports live in
-the Break engine host (see `docs/myui_integration.md`). This repository
-has no PAL port to consume, so the explorer carries its own per-OS
-windowing glue at the host layer — the same system libraries a PAL port
-would link internally (X11 is already required by the engine top level;
-wayland/egl are pkg-config-gated with an x11-only fallback; gdi32/Cocoa
-apply only on their targets). The natural evolution is to promote these
-runners into mypal ports so every myui host shares them.
+(`mypal/my_pal.h`). Real ports now live in-tree under
+`engine/src/myui/mypal/` — `x11/`, `wayland/`, `win32/`, `cocoa/` —
+selected at build time via `-DMYUI_PAL=x11|wayland|win32|cocoa|dummy`
+(dummy stays the headless default). When the explorer is built with a
+desktop port compiled in, it consumes `my_pal_create()` exclusively
+(`[pal/soft]` / `[pal/gl]` window titles); the legacy direct-glue
+runners remain as the dummy-build fallback. The X11 and Wayland ports
+are live-verified on the reference host (window lifecycle, lcd
+presentation, GL mount, events, main loop: see `test_mypal_x11.c` /
+`test_mypal_wayland.c`); Win32/Cocoa are compile-targeted against the
+frozen contract with no host in CI.
 
 Verification status: all four Linux combinations plus `--shot`/`--glshot`
 are verified live on the reference host; the Windows and macOS runners are

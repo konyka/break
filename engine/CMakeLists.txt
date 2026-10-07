@@ -13,6 +13,10 @@ option(ENGINE_ENABLE_WAYLAND "Enable native Wayland support (Linux only)" OFF)
 option(ENGINE_ENABLE_IPO "Enable interprocedural optimization for Release builds when supported" ON)
 option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match executor" OFF)
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
+# MYUI_PAL option anchor
+set(MYUI_PAL "dummy" CACHE STRING
+    "myui PAL port: dummy | x11 | wayland | win32 | cocoa")
+
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
 option(ENGINE_ANDROID_NATIVE_WINDOW "Compile Android Vulkan support for supplied ANativeWindow handles" OFF)
@@ -468,7 +472,66 @@ if(MYUI_BIDI)
     list(APPEND MYUI_CORE_SOURCES external/SheenBidi/Source/SheenBidi.c)
 endif()
 
+# MYUI_PAL x11 engine integration: compile the PAL dispatcher and the
+# real port into myui_core so in-tree consumers (myui_explorer) can use
+# my_pal_create() with a live desktop port.
+if(MYUI_PAL STREQUAL "x11")
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/x11/my_pal_x11.c)
+elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/win32/my_pal_win32.c)
+elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
+    enable_language(OBJC)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/cocoa/my_pal_cocoa.m)
+elseif(MYUI_PAL STREQUAL "wayland")
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(ENGINE_PAL_WL REQUIRED wayland-client wayland-egl egl)
+    find_program(ENGINE_WAYLAND_SCANNER wayland-scanner REQUIRED)
+    execute_process(
+        COMMAND ${ENGINE_WAYLAND_SCANNER} client-header
+                /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+                ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h)
+    execute_process(
+        COMMAND ${ENGINE_WAYLAND_SCANNER} public-code
+                /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+                ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/wayland/my_pal_wayland.c
+        ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
+endif()
+
 add_library(myui_core STATIC ${MYUI_CORE_SOURCES})
+if(MYUI_PAL STREQUAL "x11")
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_X11=1)
+    target_link_libraries(myui_core PUBLIC ${X11_LIBRARIES} EGL)
+elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/win32/my_pal_win32.c)
+elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
+    enable_language(OBJC)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/cocoa/my_pal_cocoa.m)
+elseif(MYUI_PAL STREQUAL "wayland")
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
+    target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
+        ${ENGINE_PAL_WL_INCLUDE_DIRS})
+    target_link_libraries(myui_core PUBLIC ${ENGINE_PAL_WL_LIBRARIES})
+elseif(MYUI_PAL STREQUAL "win32" AND WIN32)
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_WIN32=1)
+    target_link_libraries(myui_core PUBLIC gdi32 user32 opengl32)
+elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_COCOA=1)
+    target_link_libraries(myui_core PUBLIC "-framework Cocoa"
+        "-framework OpenGL")
+endif()
 target_include_directories(myui_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
@@ -1495,6 +1558,24 @@ if(ENGINE_BUILD_TESTS)
     )
     target_link_libraries(test_break_ui_damage PRIVATE myui_core m)
     add_test(NAME test_break_ui_damage COMMAND test_break_ui_damage)
+
+    if(MYUI_PAL STREQUAL "wayland")
+    add_executable(test_mypal_wayland tests/test_mypal_wayland.c)
+    target_include_directories(test_mypal_wayland PRIVATE
+        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_mypal_wayland PRIVATE myui_core m
+        ${ENGINE_PAL_WL_LIBRARIES} Threads::Threads)
+    add_test(NAME test_mypal_wayland COMMAND test_mypal_wayland)
+endif()
+
+if(MYUI_PAL STREQUAL "x11")
+    add_executable(test_mypal_x11 tests/test_mypal_x11.c)
+    target_include_directories(test_mypal_x11 PRIVATE
+        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_mypal_x11 PRIVATE myui_core m
+        ${X11_LIBRARIES} EGL Threads::Threads)
+    add_test(NAME test_mypal_x11 COMMAND test_mypal_x11)
+endif()
 
     add_executable(test_myui_vggeometry tests/test_myui_vggeometry.c)
     target_include_directories(test_myui_vggeometry PRIVATE

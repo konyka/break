@@ -102,6 +102,7 @@ struct app_t {
   my_font_t* font;
   my_vgcanvas_t* gl_vg;
   char tooltip[96];
+  int closing;
 };
 
 static void dump_ppm(const uint8_t* pixels, const char* path);
@@ -613,20 +614,238 @@ void ex_key(app_t* app, int ch) {
 }
 
 
+#include <EGL/egl.h>
+#include <GLES2/gl2.h>
+
+static int run_glshot(const char* path, const char* font_path) {
+  app_t* app;
+  EGLDisplay display;
+  EGLConfig config;
+  EGLSurface surface;
+  EGLContext context;
+  EGLint count = 0;
+  static const EGLint cfg_attribs[] = {
+      EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
+      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+  static const EGLint pb_attribs[] = {
+      EGL_WIDTH, EX_W, EGL_HEIGHT, EX_H, EGL_NONE};
+  static const EGLint ctx_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
+                                       EGL_NONE};
+  uint8_t* rgba;
+  uint8_t* rgb;
+  my_vgcanvas_t* vg;
+  uint32_t y;
+  display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+  if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
+    printf("glshot: EGL init failed\n");
+    return 1;
+  }
+  if (!eglBindAPI(EGL_OPENGL_ES_API) ||
+      !eglChooseConfig(display, cfg_attribs, &config, 1, &count) || count < 1) {
+    printf("glshot: no pbuffer config\n");
+    return 1;
+  }
+  surface = eglCreatePbufferSurface(display, config, pb_attribs);
+  if (surface == EGL_NO_SURFACE) {
+    printf("glshot: pbuffer creation failed\n");
+    return 1;
+  }
+  context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs);
+  if (context == EGL_NO_CONTEXT ||
+      !eglMakeCurrent(display, surface, surface, context)) {
+    printf("glshot: context failed\n");
+    return 1;
+  }
+  vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
+  if (vg == NULL) {
+    printf("glshot: gles2 vgcanvas failed\n");
+    return 1;
+  }
+  app = app_create(font_path);
+  gl_paint(app, vg);
+  rgba = (uint8_t*)malloc((size_t)EX_W * EX_H * 4u);
+  rgb = (uint8_t*)malloc((size_t)EX_W * EX_H * 3u);
+  if (rgba == NULL || rgb == NULL) return 1;
+  glReadPixels(0, 0, EX_W, EX_H, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+  for (y = 0u; y < EX_H; y++) {
+    uint32_t src = EX_H - 1u - y; /* GL origin is bottom-left */
+    uint32_t x;
+    for (x = 0u; x < EX_W; x++) {
+      const uint8_t* p = rgba + ((size_t)src * EX_W + x) * 4u;
+      uint8_t* q = rgb + ((size_t)y * EX_W + x) * 3u;
+      q[0] = p[0];
+      q[1] = p[1];
+      q[2] = p[2];
+    }
+  }
+  {
+    FILE* f = fopen(path, "wb");
+    if (f == NULL) return 1;
+    (void)fprintf(f, "P6\n%d %d\n255\n", EX_W, EX_H);
+    (void)fwrite(rgb, 1u, (size_t)EX_W * EX_H * 3u, f);
+    (void)fclose(f);
+  }
+  printf("glshot written: %s\n", path);
+  free(rgba);
+  free(rgb);
+  return 0;
+}
+
+#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+#include "mypal/my_pal.h"
+
+typedef struct {
+  app_t* app;
+  my_pal_t* pal;
+  my_pal_window_t* win;
+  my_pal_gl_t* gl;
+  my_lcd_t* lcd;
+  my_vgcanvas_t* soft_vg;
+} pal_session_t;
+
+static pal_session_t g_pal;
+static my_pal_main_loop_t* g_pal_loop;
+
+static my_ret_t pal_handler(void* ctx, my_pal_window_t* window,
+                            const my_event_t* event) {
+  (void)ctx; (void)window;
+  if (event->type == MY_EVENT_POINTER_MOVE ||
+      event->type == MY_EVENT_POINTER_DOWN) {
+    ex_pointer(g_pal.app, event->u.pointer.x, event->u.pointer.y,
+               event->type == MY_EVENT_POINTER_DOWN ? 1 : 0);
+  } else if (event->type == MY_EVENT_POINTER_WHEEL) {
+    ex_wheel(g_pal.app, event->u.pointer.delta > 0 ? 1 : -1);
+  } else if (event->type == MY_EVENT_KEY_DOWN) {
+    ex_key(g_pal.app, (int)event->u.key.key);
+  } else if (event->type == MY_EVENT_QUIT) {
+    g_pal.app->closing = 1;
+    if (g_pal_loop != NULL) my_pal_main_loop_quit(g_pal_loop);
+    return MY_RET_OK;
+  }
+  return MY_RET_OK;
+}
+
+static void pal_paint_frame(void) {
+  if (g_pal.gl != NULL) {
+    ex_frame_gl(g_pal.app);
+    my_pal_gl_swap_buffers(g_pal.gl);
+    return;
+  }
+  if (g_pal.soft_vg != NULL && g_pal.lcd != NULL) {
+    (void)my_vgcanvas_begin_frame(g_pal.soft_vg, NULL);
+    my_vgcanvas_set_fill_color(g_pal.soft_vg,
+                               my_color_from_rgba32(0xF0F2F5FFu));
+    my_vgcanvas_fill_rect(g_pal.soft_vg,
+                          &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
+    my_vgcanvas_set_font(g_pal.soft_vg, g_pal.app->font, 13);
+    place(g_pal.app->panel, 0, 0, EX_W, EX_H);
+    my_widget_paint(g_pal.app->panel, g_pal.soft_vg);
+    g_pal.app->chart->rect.x = CHART_X;
+    g_pal.app->chart->rect.y = CHART_Y;
+    g_pal.app->chart->rect.w = CHART_W;
+    g_pal.app->chart->rect.h = CHART_H;
+    my_widget_paint(g_pal.app->chart, g_pal.soft_vg);
+    (void)my_vgcanvas_end_frame(g_pal.soft_vg);
+    (void)my_lcd_end_frame(g_pal.lcd);
+  }
+}
+
+static my_ret_t pal_timer(void* ctx) {
+  (void)ctx;
+  pal_paint_frame();
+  return MY_RET_OK;
+}
+
+static int run_pal(app_t* app, int gl) {
+  my_pal_t* pal = my_pal_create(NULL);
+  my_pal_window_t* win;
+  if (pal == NULL) {
+    printf("my_pal_create failed\n");
+    return 1;
+  }
+  memset(&g_pal, 0, sizeof(g_pal));
+  g_pal.app = app;
+  g_pal.pal = pal;
+  (void)my_pal_set_event_handler(pal, pal_handler, NULL);
+  win = my_pal_window_create(pal, EX_W, EX_H,
+                             gl ? "MyUI explorer [pal/gl]"
+                                : "MyUI explorer [pal/soft]");
+  if (win == NULL) {
+    my_pal_destroy(pal);
+    return 1;
+  }
+  g_pal.win = win;
+  (void)my_pal_window_show(win);
+  if (gl) {
+    g_pal.gl = my_pal_window_gl_enable(win);
+    if (g_pal.gl != NULL && my_pal_gl_make_current(g_pal.gl) == MY_RET_OK)
+      ex_gl_vg_create(app);
+    if (app->gl_vg == NULL) g_pal.gl = NULL;
+  }
+  if (g_pal.gl == NULL) {
+    g_pal.lcd = my_pal_window_get_lcd(win);
+    g_pal.soft_vg = my_vgcanvas_soft_create(NULL, g_pal.lcd);
+  }
+  g_pal_loop = my_pal_main_loop_create(pal);
+  if (g_pal_loop == NULL) return 1;
+  (void)my_pal_main_loop_add_timer(g_pal_loop, pal_timer, NULL, 16u);
+  while (!app->closing) {
+    if (my_pal_main_loop_run(g_pal_loop) != MY_RET_OK) break;
+  }
+  my_pal_window_destroy(win);
+  my_pal_destroy(pal);
+  return 0;
+}
+#endif
+
+#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+static int run_palshot(const char* path, const char* font_path) {
+  app_t* app = app_create(font_path);
+  my_pal_t* pal = my_pal_create(NULL);
+  my_pal_window_t* win;
+  my_lcd_t* lcd;
+  my_vgcanvas_t* vg;
+  if (pal == NULL) {
+    printf("palshot: my_pal_create failed\n");
+    return 1;
+  }
+  win = my_pal_window_create(pal, EX_W, EX_H, "palshot");
+  if (win == NULL) return 1;
+  (void)my_pal_window_show(win);
+  lcd = my_pal_window_get_lcd(win);
+  vg = my_vgcanvas_soft_create(NULL, lcd);
+  if (vg == NULL || lcd == NULL) return 1;
+  (void)my_vgcanvas_begin_frame(vg, NULL);
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
+  my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
+  my_vgcanvas_set_font(vg, app->font, 13);
+  place(app->panel, 0, 0, EX_W, EX_H);
+  my_widget_paint(app->panel, vg);
+  app->chart->rect.x = CHART_X;
+  app->chart->rect.y = CHART_Y;
+  app->chart->rect.w = CHART_W;
+  app->chart->rect.h = CHART_H;
+  my_widget_paint(app->chart, vg);
+  (void)my_vgcanvas_end_frame(vg);
+  (void)my_lcd_end_frame(lcd);
+  dump_ppm(my_lcd_get_buffer(lcd), path);
+  printf("palshot written: %s\n", path);
+  my_vgcanvas_destroy(vg);
+  my_pal_window_destroy(win);
+  my_pal_destroy(pal);
+  return 0;
+}
+#endif
+
 /* ---------------- window-system / backend runners ---------------- */
 
-/* POSIX runner capability guards: the X11/Wayland/EGL runners build only
- * on Linux-class hosts — the win32/cocoa ports live in ex_platform_*.
- * EX_HAVE_EGL_WL additionally requires the wayland/EGL dev packages (the
- * CMake no-wayland branch is x11+soft only), and every interactive POSIX
- * runner needs X11 dev (EX_EXPLORER_NO_X11 = headless-only build). */
+#if !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(EX_EXPLORER_NO_X11)
 #define EX_HAVE_X11 1
 #if !defined(EX_EXPLORER_NO_WAYLAND)
 #define EX_HAVE_EGL_WL 1
 #endif
 #endif
-
 #if defined(EX_HAVE_X11)
 static void nap(void) {
   struct timespec ts = {0, 8000000L};
@@ -663,7 +882,7 @@ static int run_glshot(const char* path, const char* font_path);
 static int run_wayland_soft(app_t* app, const char* font_path);
 static int run_gl(app_t* app, const char* font_path, int wayland);
 #endif
-#if defined(EX_HAVE_X11)
+#if defined(EX_HAVE_X11) && !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
 static int run_x11_soft(app_t* app, const char* font_path);
 #endif
 
@@ -698,6 +917,10 @@ int main(int argc, char** argv) {
       return 1;
 #endif
     }
+#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+    if (strcmp(argv[i], "--palshot") == 0 && i + 1 < argc)
+      return run_palshot(argv[i + 1], font_path);
+#endif
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       printf("usage: myui_explorer [--platform x11|wayland|win32|cocoa] "
              "[--backend soft|gl] | --selftest <dir> | --shot <file> | "
@@ -710,7 +933,12 @@ int main(int argc, char** argv) {
   {
     app_t* app = app_create(font_path);
     int gl = strcmp(backend, "gl") == 0;
-#if defined(_WIN32)
+#if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
+    if (strcmp(platform, "x11") == 0 || strcmp(platform, "wayland") == 0)
+      return run_pal(app, gl);
+    printf("platform %s not supported in this PAL build\n", platform);
+    return 1;
+#elif defined(_WIN32)
     if (strcmp(platform, "win32") == 0) return ex_run_win32(app, gl);
     printf("platform %s not supported in this build\n", platform);
     return 1;
@@ -745,6 +973,7 @@ int main(int argc, char** argv) {
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
+#if !(defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND))
 static int run_x11_soft(app_t* app, const char* font_path) {
   Display* dpy;
   Window win;
@@ -810,9 +1039,10 @@ static int run_x11_soft(app_t* app, const char* font_path) {
     nap();
   }
 }
+#endif
 
 #endif /* EX_HAVE_X11 */
-
+#if !(defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND))
 /* ---------------- Wayland (shared: input + soft runner) ---------------- */
 #if defined(EX_HAVE_EGL_WL)
 #include <wayland-client.h>
@@ -1337,4 +1567,3 @@ static int run_glshot(const char* path, const char* font_path) {
   free(rgb);
   return 0;
 }
-#endif /* EX_HAVE_EGL_WL */
