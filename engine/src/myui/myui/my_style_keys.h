@@ -15,5 +15,7 @@
 #define MY_STYLE_ROUND_RADIUS "round_radius"
 #define MY_STYLE_FONT_SIZE "font_size"
 #define MY_STYLE_BORDER_WIDTH "border_width"
+#define MY_STYLE_CONTAINER_TYPE "container_type"
+#define MY_STYLE_CONTAINER_NAME "container_name"
 
 #endif /* MY_STYLE_KEYS_H */

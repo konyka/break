@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R669 @container 二期第一片（TDD）— container-type/container-name 成为真实样式属性（新键注册+关键字/名表校验+级联），匹配期容器解析的前置存储半边
+
+- **缺口**(R663 落账"二期=逐元素容器解析，史诗"的第一可切方）：容器属性在引擎无键——`container-type` 经 css_value 碰巧存 STR（键透传未注册、`bogus` 关键字照收）,`container-name: a b` 多名表被尾随垃圾整表硬拒；匹配期容器查找无数据可消费。
+- **方案**（存储半边，R665 同型切片）:① 键注册——`my_style_keys.h` 新增 `MY_STYLE_CONTAINER_TYPE/NAME`("container_type"/"container_name"),KEY_ALIASES 双映射（容器查询侧的未来消费方查内部键）;② 值捕获——两键走 R665 原始捕获（多名表原样存储，`!important` 剥离同约）;③ 校验（CSS 值定义，失格=丢单声明 lenient):container-type ∈ {normal, size, inline-size};container-name=空白分隔 ident 表（空表拒）且 `none` 必须独站；④ 级联/查找全链零改机（specificity/important/theme 键查找同既有）。
+- **TDD（红→绿实证）**:test_myui_css +1——解析面：双键存储/多名表原样/非法 type 丢声明（bogus)/none 混排拒/none 独站收；级联面：类 specificity 胜+theme 键查找。**RED 如实红**（行 1334:"container-type" ≠ "container_type"——键未注册透传）;GREEN 一次过 **175/175**(174+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有声明/级联/容器组全绿未动。
+- **边界**：本片=存储+校验+级联；**匹配期容器解析**（查询条件悬置于 theme entry、查找期祖先链最近容器（type∈{size,inline-size}∧名匹配）+布局尺寸求值）为下一片；具名查询语法放行（`@container sidebar (…)`）与匹配同轮（语法放行无消费不实义）;container-name 不接受 var()（校验期非 ident 即丢，文档化）;custom-ident 保留字（default/and/or/not）未逐一禁（bounded)；容器属性沿不继承（引擎键级联本就逐元素，无继承机制牵涉）;R611 AMD 基线不动。
+
 ## 本轮更新：R668 IME delete-surrounding 簇化（TDD）— R660 落账"IME 协议域沿码点"关闭：双 widget 的 IME 字节跨外扩字素簇界，零长度请求不膨胀
 
 - **缺口**(R660 落账"text_area IME_DELETE_SURROUNDING 沿码点未涉"，调研补正：实为沿**字节**):IME 删围请求 before/after 是光标两侧原始字节数，跨边落簇内即撕簇——"aáb"(á=a+U+0301,3 字节簇）光标 3 处 before=1 删出 "a\xCC""b"（残破 UTF-8)。

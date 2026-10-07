@@ -784,6 +784,52 @@ static bool css_value_mentions_var(const css_p_t* p) {
   return false;
 }
 
+/* R669: container-type takes its keyword set; container-name is a
+ * whitespace-separated ident list with `none` standing alone. */
+static bool css_container_property_value_ok(const char* key,
+                                            const char* text) {
+  if (my_str_eq(key, "container-type")) {
+    return my_str_eq(text, "normal") || my_str_eq(text, "size") ||
+           my_str_eq(text, "inline-size");
+  }
+  /* container-name */
+  {
+    size_t i = 0u;
+    size_t len = strlen(text);
+    unsigned idents = 0u;
+    bool saw_none = false;
+    while (i < len) {
+      char word[32];
+      size_t wl = 0u;
+      while (i < len && (text[i] == ' ' || text[i] == '\t' ||
+                         text[i] == '\r' || text[i] == '\n')) {
+        i++;
+      }
+      if (i >= len) {
+        break;
+      }
+      if (!c_ident_char((unsigned char)text[i])) {
+        return false;
+      }
+      while (i < len && c_ident_char((unsigned char)text[i])) {
+        if (wl + 1u >= sizeof(word)) {
+          return false;
+        }
+        word[wl++] = text[i++];
+      }
+      word[wl] = '\0';
+      if (my_str_eq(word, "none")) {
+        saw_none = true;
+      }
+      idents++;
+    }
+    if (idents == 0u) {
+      return false;
+    }
+    return !saw_none || idents == 1u;
+  }
+}
+
 /* ---------------- key aliases ---------------- */
 
 typedef struct css_alias_t {
@@ -796,6 +842,8 @@ static const css_alias_t KEY_ALIASES[] = {
     {"color", MY_STYLE_FG_COLOR},           {"border-color", MY_STYLE_BORDER_COLOR},
     {"border-width", MY_STYLE_BORDER_WIDTH}, {"border-radius", MY_STYLE_ROUND_RADIUS},
     {"font-size", MY_STYLE_FONT_SIZE},
+    {"container-type", MY_STYLE_CONTAINER_TYPE},
+    {"container-name", MY_STYLE_CONTAINER_NAME},
 };
 
 static void css_key_map(const char* key, char* out, size_t cap) {
@@ -1904,6 +1952,17 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
         /* R666: var() declarations are raw text until lookup-time
          * substitution. */
         value_ok = css_custom_value(p, &d->value, &d->important);
+      } else if (my_str_eq(key, "container-type") ||
+                 my_str_eq(key, "container-name")) {
+        /* R669: container properties capture raw and validate the
+         * keyword/ident-list shape (phase-2 slice 1). */
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !css_container_property_value_ok(key,
+                                             my_value_get_str(&d->value))) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
       } else {
         value_ok = css_value(p, &d->value);
       }

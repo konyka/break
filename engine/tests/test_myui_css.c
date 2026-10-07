@@ -1302,6 +1302,102 @@ TEST(css_var_flows_through_widget_style_accessors)
   my_theme_destroy(theme2);
 }
 
+TEST(css_container_properties_parse_and_cascade)
+{
+  /* R669: @container phase 2 slice 1 — container-type / container-name
+   * are real style properties (new keys container_type/container_name).
+   * container-type validates its keyword set (normal/size/inline-size);
+   * container-name stores the raw ident list (`none` only alone). The
+   * match-time container resolution they feed is a later slice. */
+  const char* css =
+      "panel { container-type: inline-size; container-name: sidebar; }";
+  const char* multi = "panel { container-name: sidebar main; }";
+  const char* bad_type =
+      "panel { container-type: bogus; container-name: x; }";
+  const char* bad_name = "panel { container-name: none sidebar; color: red; }";
+  const char* none_name = "panel { container-name: none; }";
+  const char* cascade =
+      "panel { container-type: inline-size; } .sized { container-type: size; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  const my_css_rule_t* rule;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  const my_value_t* value;
+
+  /* parse + store under the new internal keys. */
+  sheet = my_css_parse_ex(NULL, css, strlen(css),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 2u);
+  ASSERT_STR_EQ(my_css_decl(rule, 0u)->key, "container_type");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 0u)->value),
+                "inline-size");
+  ASSERT_STR_EQ(my_css_decl(rule, 1u)->key, "container_name");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 1u)->value), "sidebar");
+  my_css_sheet_destroy(sheet);
+
+  /* multi-name lists store raw. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, multi, strlen(multi),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(
+      my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+      "sidebar main");
+  my_css_sheet_destroy(sheet);
+
+  /* an unknown container-type keyword drops just the declaration. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_type, strlen(bad_type),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 1u);
+  ASSERT_STR_EQ(my_css_decl(rule, 0u)->key, "container_name");
+  my_css_sheet_destroy(sheet);
+
+  /* `none` must stand alone in container-name. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_name, strlen(bad_name),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 1u);
+  ASSERT_STR_EQ(my_css_decl(rule, 0u)->key, "fg_color");
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, none_name, strlen(none_name),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(
+      my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+      "none");
+  my_css_sheet_destroy(sheet);
+
+  /* cascade + lookup: class specificity wins, theme exposes the keys. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "panel");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "panel";
+  ASSERT_EQ(my_theme_load_css_ex(theme, cascade, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                  "container_type");
+  ASSERT_NOT_NULL(value);
+  ASSERT_STR_EQ(my_value_get_str(value), "inline-size");
+  ASSERT_EQ(my_widget_set_style_class(widget, "sized"), MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL,
+                                  "container_type");
+  ASSERT_NOT_NULL(value);
+  ASSERT_STR_EQ(my_value_get_str(value), "size");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -6785,6 +6881,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_custom_properties_store_raw_token_streams);
     RUN_TEST(css_var_substitution_resolves_at_lookup_time);
     RUN_TEST(css_var_flows_through_widget_style_accessors);
+    RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);
