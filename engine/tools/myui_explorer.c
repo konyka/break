@@ -68,6 +68,9 @@ static const mode_entry_t k_modes[] = {
 
 typedef struct {
   float base[4][8];
+  /* scaled values handed to the chart — the snapshot API borrows the
+   * series value pointers, so they must outlive apply_state's frame. */
+  float scaled[4][8];
   float scale;
   bool stacked;
   bool labels;
@@ -123,13 +126,12 @@ static void apply_state(app_t* app) {
   my_chart_series_t series[4];
   bool visible[4];
   size_t i;
-  float values[4][8];
   for (i = 0u; i < 4u; i++) {
     size_t j;
     for (j = 0u; j < 8u; j++)
-      values[i][j] = app->st.base[i][j] * app->st.scale;
+      app->st.scaled[i][j] = app->st.base[i][j] * app->st.scale;
     series[i].name = k_names[i];
-    series[i].values = values[i];
+    series[i].values = app->st.scaled[i];
     series[i].count = 8u;
     series[i].color = 0u;
     series[i].y_axis = (i == 3u && app->mode == 0u) ? 1u : 0u;
