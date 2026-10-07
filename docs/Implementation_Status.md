@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R664 @import 限定词缓冲区未终止修复（潜伏缺陷，R663 CI 钓出）— bare `layer`/`supports` 词界检查读未初始化栈字节，Linux 确定性 "sheet is NULL"
+
+- **缺口**（R663 落账后 CI 事件）：R663 提交起 5 个 Linux headless job 确定性红（重发复红，非 flake;Windows/macOS/Xvfb/ASan 全绿）——`test_myui_css` 的 `css_anonymous_layers_get_unique_orders` 在 `@import "themed.css" layer;` 严格模式解析拿 NULL。邻居提交同套 job 全绿 → R663 窗口内变量只有测试序/栈布局。
+- **根因**（R652/R653 期潜伏，非 R663 新码）：`css_parse_import_atrule` 的限定词扫描循环填充 `query[]` 后**从不 NUL 终止**，而三段流水线的词界检查 `!c_ident_char(query[qpos+5u])`(bare `layer`)/`!c_ident_char(query[qpos+8u])`(`supports`）恰读 `query[query_length]` ——**未初始化栈字节**。字节恰为标识符字符时 bare `layer` 分支被跳过，"layer" 坠入媒体查询路径 → 未知媒体类型 + 无媒体上下文 → strict 如实拒 → NULL。平台分野完全由栈初值解释：MSVC Debug /RTCs 填 0xCC（非标识符）→ Windows 绿；ASan 布局垃圾侥幸 → 绿；Linux GCC/Clang 无填充、前序测试的 CSS 标识符字节残留 → 确定性红。R663 仅因新增两测试挪了栈垃圾而首次点灯。
+- **方案**（一行根修）：扫描循环后 `query[query_length] = '\0';`（缓冲区 +1 容量在案，循环上界守卫保证不越）——一处终止同时闭合 987/1051 两处词界读；全文件普查 `memcmp`+`c_ident_char` 词界模式无其他同类（2220/2303/2502/3425 均为显式长度有界读）。
+- **TDD（红→绿实证）**：RED=CI 双轮注解（5 Linux job × 2 次运行同点 `test_myui_css.c:5900 sheet is NULL`,CI 取证链：失败重跑摘要+注解器放宽命中断言行）；本地无法如实红——/RTCs 0xCC 覆盖喷洒字节（实锤：喷洒 'A' 后仍过）。新增永备守卫 `css_import_bare_layer_qualifier_is_length_bounded`（栈喷洒 32KB 标识符字节后严格解析 bare-layer 导入，钉规则数/层序）——在无栈填充的构建（Linux/Release）上对回归敏感；GREEN 后 test_myui_css **171/171**(170+1)。
+- **回归**：双树非图形 CTest 各 **118/118**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；导入/层/容器条件组全绿未动。
+- **边界**：守卫测试的 RED 灵敏度依赖构建栈填充策略（MSVC Debug 恒 0xCC 下恒绿，如实记录）;CI 五 Linux job 为最终仲裁（本修复语义即"该字节恒为 NUL"，与垃圾内容解耦）;R611 AMD 基线不动。
+
 ## 本轮更新：R663 `@container` 一期（TDD）— css-conditional 族收官：未命名尺寸查询解析期求值（宿主注入容器上下文，@media 同型）；条件组嵌套全谱（media/supports/container）
 
 - **缺口**（R645/R650 落账"css 条件规则域仅剩 @container"）：容器查询全缺——strict 下 unsupported @-rule 拒、块内嵌套按 R645 签名拒。

@@ -970,6 +970,9 @@ static bool css_parse_import_atrule(css_p_t* p, my_css_sheet_t* sheet,
       }
       query[query_length++] = (char)c_next(p);
     }
+    /* the keyword-boundary checks below read one byte past the qualifier —
+     * terminate so that byte is never uninitialized stack garbage. */
+    query[query_length] = '\0';
     c_next(p); /* ';' */
     {
       /* R652/R653: the qualifier is a three-stage pipeline — an optional

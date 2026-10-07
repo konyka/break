@@ -1346,6 +1346,42 @@ TEST(css_import_layer_qualifier_assigns_layer_order)
                                         &error) == NULL);
 }
 
+static void css_test_stack_spray_ident(void) {
+  /* spray the deep stack with an identifier byte so a keyword-boundary
+   * read past a buffer's logical length misfires deterministically. */
+  volatile char pad[32768];
+  size_t i;
+  for (i = 0u; i < sizeof(pad); ++i) pad[i] = 'A';
+}
+
+TEST(css_import_bare_layer_qualifier_is_length_bounded)
+{
+  /* regression: the @import qualifier scanner never terminated its buffer,
+   * so the bare `layer` keyword check read one byte past the qualifier —
+   * an identifier-looking stack byte there silently turned the layer gate
+   * into a media query and failed strict parses of `@import url layer;`.
+   * (R663 CI: Linux-only "sheet is NULL" in the anonymous-layers test.) */
+  const css_import_entry_t entries[] = {
+      {"themed.css", "label { color: red; }", 21u}, {NULL, NULL, 0u}};
+  const char* imported =
+      "@import \"themed.css\" layer; button { color: blue; }";
+  my_css_parse_options_t options = {0};
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  css_test_stack_spray_ident();
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  options.resolve_import = css_test_resolve_import;
+  options.import_context = (void*)entries;
+  sheet = my_css_parse_with_options(NULL, imported, strlen(imported),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_EQ(my_css_rule(sheet, 0u)->layer_order, 0u);
+  ASSERT_EQ(my_css_rule(sheet, 1u)->layer_order, MY_CSS_UNLAYERED_ORDER);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_scope_applies_rules_only_inside_root)
 {
   const char* css = "@scope panel { button { color: red; } }";
@@ -6377,6 +6413,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_nested_in_rule_blocks);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
+    RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);
     RUN_TEST(css_scope_applies_rules_only_inside_root);
     RUN_TEST(css_scope_accepts_to_clause_and_rejects_malformed_limit);
     RUN_TEST(css_scope_to_clause_accepts_implicit_root);
