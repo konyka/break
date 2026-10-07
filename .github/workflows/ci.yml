@@ -227,10 +227,13 @@ jobs:
         run: |
           set -o pipefail
           # Logs need auth to read: surface the compiler errors as
-          # annotations (macOS precedent below).
+          # annotations (macOS precedent below). Link failures need the
+          # "undefined reference" lines and the failing link target too.
           cmake --build build --parallel 2>&1 | tee /tmp/wayland_build.log || {
-            grep -m 8 -E "error:|fatal error:" /tmp/wayland_build.log \
-              | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/wayland_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -B4 -m 2 "collect2: error" /tmp/wayland_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
             exit 1
           }
 
@@ -283,10 +286,13 @@ jobs:
         run: |
           set -o pipefail
           # Logs need auth to read: surface the compiler errors as
-          # annotations (macOS precedent below).
+          # annotations (macOS precedent below). Link failures need the
+          # "undefined reference" lines and the failing link target too.
           cmake --build build --parallel 2>&1 | tee /tmp/wayland_vk_build.log || {
-            grep -m 8 -E "error:|fatal error:" /tmp/wayland_vk_build.log \
-              | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/wayland_vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -B4 -m 2 "collect2: error" /tmp/wayland_vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
             exit 1
           }
 
