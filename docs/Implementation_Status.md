@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R665 CSS 自定义属性一期（TDD）— `--*` 声明按规范存原始 token 流（var() 替换为二期）；存储/级联/theme 查找全链零改机复用
+
+- **缺口**（css 域普查落账"自定义属性/var() 全缺，文档代码皆无记录"):`--x: 1px solid red` 多 token 值被 css_value 吃掉首 token 后尾随垃圾 → "expected ';' or '}'" 整表硬拒；`--y: var(--x)` 走 lenient 丢弃；自定义属性无从存储，var() 更无从谈起。
+- **方案**（Custom Properties L1 存储半边，一期诚实切片）:① 声明键 `--` 前缀即走新 `css_custom_value`——原始 token 流捕获（引号/转义+()/[]/{} 深度感知，顶层 `;`/`}` 终止，首尾 ws 裁剪）,STR 存储（as-specified);② 尾部顶层 `!important` 剥离置旗（'!' 后 ws 宽容，与 R654 惯例同），其余任何顶层 '!' 令该声明失效（bangs 计数——"a ! b !important" 如实拒，CSS Syntax 消费声明规则同约）;③ 失衡（顶层 `)`/`]` 下溢、吞块至 EOF）分别走 lenient 丢声明/如实整表拒；④ **下游零改动**:css_key_map 本就透传未知键、theme_set_ex6/my_style_set 键通用、级联权重（specificity/order/!important/层）机制天然适用——`var()` 引用按规范以未替换文本存储（二期 computed-value 替换）。
+- **TDD（红→绿实证）**:test_myui_css +1——① 解析面：多 token 原样（"1px solid red")/空值（`--empty:;`→STR "")/引号内 `;` 不终止（`url("a;b.png") 2px`)/var() 未替换文本/important 剥离置旗/`!foo` 丢单声明/失衡整表拒；② theme 面：源序后者胜、类 specificity 胜、!important 权重胜（级联机制零改机的实钉）。**RED 如实红**(sheet NULL，多 token 尾随垃圾硬拒）;GREEN 一次过 **172/172**(171+1)。
+- **回归**：双树非图形 CTest 各 **119/119**（新基线——并行会话 echart JSON 测试入列；在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有声明/级联/条件组全绿未动。
+- **边界**：一期=存储+级联+查找（`my_theme_get_for_widget(..., "--x")` 得原始 STR);**二期=var() 替换**(`color: var(--x, fallback)`——computed-value 期解析、回退链、环检测→IACVT，独立轮）;@supports `(--x: v)` 维持类型化探针如实不支持；键长沿 MY_STYLE_KEY_LEN(32)、每 entry 16 属性上限既有有界哲学不动；`--x: (a;` 类失衡吞块=整表拒（lenient 路径尾部语义，文档化）;R611 AMD 基线不动。
+
 ## 本轮更新：R664 @import 限定词缓冲区未终止修复（潜伏缺陷，R663 CI 钓出）— bare `layer`/`supports` 词界检查读未初始化栈字节，Linux 确定性 "sheet is NULL"
 
 - **缺口**（R663 落账后 CI 事件）：R663 提交起 5 个 Linux headless job 确定性红（重发复红，非 flake;Windows/macOS/Xvfb/ASan 全绿）——`test_myui_css` 的 `css_anonymous_layers_get_unique_orders` 在 `@import "themed.css" layer;` 严格模式解析拿 NULL。邻居提交同套 job 全绿 → R663 窗口内变量只有测试序/栈布局。

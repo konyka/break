@@ -648,6 +648,98 @@ static bool css_value(css_p_t* p, my_value_t* out) {
   return false;
 }
 
+/* R665: custom property (`--*`) value — CSS Custom Properties L1 stores
+ * the raw token stream (ws-trimmed; `var()` stays unresolved text until
+ * the substitution phase). The capture is quote/escape and ()/[]/{} depth
+ * aware; a trailing top-level `!important` sets the flag and is stripped,
+ * any other top-level '!' invalidates the declaration. */
+static bool css_custom_value(css_p_t* p, my_value_t* out, bool* important) {
+  size_t start = p->pos;
+  size_t end;
+  size_t bang = p->pos;
+  unsigned bangs = 0u;
+  char quote = '\0';
+  unsigned depth = 0u;
+  char* buf;
+  for (;;) {
+    int c = c_peek(p);
+    if (c < 0) {
+      return false;
+    }
+    if (quote != '\0') {
+      if (c == '\\' && p->pos + 1u < p->len) {
+        c_next(p);
+        c_next(p);
+        continue;
+      }
+      if (c == quote) {
+        quote = '\0';
+      }
+      c_next(p);
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = (char)c;
+    } else if (c == '(' || c == '[' || c == '{') {
+      depth++;
+    } else if (c == '}' && depth == 0u) {
+      break; /* the block's own close */
+    } else if (c == ')' || c == ']' || c == '}') {
+      if (depth == 0u) {
+        return false; /* underflow: top-level ')' or ']' */
+      }
+      depth--;
+    } else if (c == ';' && depth == 0u) {
+      break;
+    } else if (c == '!' && depth == 0u) {
+      bang = p->pos;
+      bangs++;
+    }
+    c_next(p);
+  }
+  end = p->pos;
+  while (end > start &&
+         (p->s[end - 1u] == ' ' || p->s[end - 1u] == '\t' ||
+          p->s[end - 1u] == '\r' || p->s[end - 1u] == '\n')) {
+    end--;
+  }
+  if (bangs > 0u) {
+    /* only a single trailing `!important` (ws allowed after '!') is
+     * legal; any other top-level '!' invalidates the declaration. */
+    size_t b = bang + 1u;
+    char word[16];
+    size_t wl = 0u;
+    while (b < end && (p->s[b] == ' ' || p->s[b] == '\t' ||
+                       p->s[b] == '\r' || p->s[b] == '\n')) {
+      b++;
+    }
+    while (b < end && c_ident_char((unsigned char)p->s[b]) &&
+           wl + 1u < sizeof(word)) {
+      word[wl++] = p->s[b++];
+    }
+    word[wl] = '\0';
+    if (bangs != 1u || !my_str_eq(word, "important") || b != end) {
+      return false;
+    }
+    *important = true;
+    end = bang;
+    while (end > start &&
+           (p->s[end - 1u] == ' ' || p->s[end - 1u] == '\t' ||
+            p->s[end - 1u] == '\r' || p->s[end - 1u] == '\n')) {
+      end--;
+    }
+  }
+  buf = (char*)my_mem_alloc(p->allocator, end - start + 1u);
+  if (buf == NULL) {
+    return false;
+  }
+  memcpy(buf, p->s + start, end - start);
+  buf[end - start] = '\0';
+  my_value_set_str(out, buf);
+  my_mem_free(p->allocator, buf);
+  return true;
+}
+
 /* ---------------- key aliases ---------------- */
 
 typedef struct css_alias_t {
@@ -1757,23 +1849,34 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
       return false;
     }
     my_value_init(&d->value, p->allocator);
-    if (!css_value(p, &d->value)) {
-      /* lenient: skip to ';' or '}' with a warning */
-      MY_LOGW("my_css: skipping bad value for '%s'", key);
-      my_mem_free(p->allocator, d);
-      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
-        c_next(p);
+    {
+      bool value_ok;
+      if (key[0] == '-' && key[1] == '-') {
+        /* R665: custom property — raw token-stream value (the capture
+         * strips a trailing top-level `!important` itself, so the shared
+         * '!' tail below never triggers for these). */
+        value_ok = css_custom_value(p, &d->value, &d->important);
+      } else {
+        value_ok = css_value(p, &d->value);
       }
-      if (c_peek(p) == ';') {
-        c_next(p);
-        continue;
+      if (!value_ok) {
+        /* lenient: skip to ';' or '}' with a warning */
+        MY_LOGW("my_css: skipping bad value for '%s'", key);
+        my_mem_free(p->allocator, d);
+        while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+          c_next(p);
+        }
+        if (c_peek(p) == ';') {
+          c_next(p);
+          continue;
+        }
+        if (c_peek(p) == '}') {
+          c_next(p);
+          return true;
+        }
+        css_fail(p, "unterminated declaration");
+        return false;
       }
-      if (c_peek(p) == '}') {
-        c_next(p);
-        return true;
-      }
-      css_fail(p, "unterminated declaration");
-      return false;
     }
     c_ws(p);
     /* R654: optional `!important` after the value — lowercase keyword with

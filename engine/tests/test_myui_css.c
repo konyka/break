@@ -931,6 +931,120 @@ TEST(css_container_nested_in_rule_blocks)
   my_theme_destroy(theme);
 }
 
+TEST(css_custom_properties_store_raw_token_streams)
+{
+  /* R665: CSS Custom Properties phase 1 — `--*` declarations capture the
+   * raw token stream (Custom Properties L1 stores values as specified;
+   * var() substitution is a later phase). The capture is quote/depth
+   * aware, strips a trailing top-level `!important`, and the decl flows
+   * through the existing cascade/theme machinery unchanged. */
+  const char* css =
+      "button { --gap: 8px; --border: 1px solid red; --empty:; color: blue; }";
+  const char* quoted =
+      "button { --u: url(\"a;b.png\") 2px; --y: var(--x); }";
+  const char* flagged = "button { --x: 8px !important; }";
+  const char* bad_bang = "button { --x: 8px !foo; color: red; }";
+  const char* unbalanced = "button { --x: (a; color: red; }";
+  const char* cascade =
+      "button { --brand: #369; } button { --brand: #036; }"
+      ".fancy { --brand: #fff; }";
+  const char* important_wins =
+      "button { --x: a !important; } .fancy { --x: b; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  const my_css_rule_t* rule;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  const my_value_t* value;
+
+  /* raw capture: multi-token values survive verbatim (ws-trimmed). */
+  sheet = my_css_parse_ex(NULL, css, strlen(css),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 4u);
+  ASSERT_STR_EQ(my_css_decl(rule, 0u)->key, "--gap");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 0u)->value), "8px");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 1u)->value),
+                "1px solid red");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 2u)->value), "");
+  ASSERT_EQ(my_value_type(&my_css_decl(rule, 3u)->value), MY_VALUE_UINT32);
+  my_css_sheet_destroy(sheet);
+
+  /* ';' inside quotes does not terminate; var() stays unresolved text. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, quoted, strlen(quoted),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 2u);
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 0u)->value),
+                "url(\"a;b.png\") 2px");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 1u)->value), "var(--x)");
+  my_css_sheet_destroy(sheet);
+
+  /* trailing top-level `!important` sets the flag and is stripped. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, flagged, strlen(flagged),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 1u);
+  ASSERT_TRUE(my_css_decl(rule, 0u)->important);
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(rule, 0u)->value), "8px");
+  my_css_sheet_destroy(sheet);
+
+  /* a top-level '!' that is not `!important` invalidates just the decl. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_bang, strlen(bad_bang),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  rule = my_css_rule(sheet, 0u);
+  ASSERT_EQ(my_css_decl_count(rule), 1u);
+  ASSERT_STR_EQ(my_css_decl(rule, 0u)->key, "fg_color");
+  my_css_sheet_destroy(sheet);
+
+  /* unbalanced capture swallows the block — truthful parse failure. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_ex(NULL, unbalanced, strlen(unbalanced),
+                              MY_CSS_PARSE_STRICT_AT_RULES,
+                              &error) == NULL);
+
+  /* theme cascade: later source order wins; class specificity wins. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, cascade, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "--brand");
+  ASSERT_NOT_NULL(value);
+  ASSERT_STR_EQ(my_value_get_str(value), "#036");
+  ASSERT_EQ(my_widget_set_style_class(widget, "fancy"), MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "--brand");
+  ASSERT_NOT_NULL(value);
+  ASSERT_STR_EQ(my_value_get_str(value), "#fff");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* !important weighting applies to custom properties too. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_widget_set_style_class(widget, "fancy"), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, important_wins,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, widget, MY_STATE_NORMAL, "--x");
+  ASSERT_NOT_NULL(value);
+  ASSERT_STR_EQ(my_value_get_str(value), "a");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -6411,6 +6525,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_import_position_and_charset_conformance);
     RUN_TEST(css_container_size_queries_evaluate_at_parse_time);
     RUN_TEST(css_container_nested_in_rule_blocks);
+    RUN_TEST(css_custom_properties_store_raw_token_streams);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);
