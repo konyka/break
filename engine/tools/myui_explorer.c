@@ -1,11 +1,14 @@
-#define _POSIX_C_SOURCE 199309L
+#define _POSIX_C_SOURCE 200809L
 /**
  * @file myui_explorer.c
  * @brief Interactive MyUI explorer: a live chart driven by real MyUI
- *        widgets (buttons, sliders, checkboxes, progress bar, labels).
+ *        widgets, with switchable rendering backends (software / GL) and
+ *        window systems (X11 / Wayland).
  *
- * Run on an X11 display for live interaction, or with --selftest <dir>
- * to render a scripted interaction sequence to PPM frames.
+ * Usage:
+ *   myui_explorer [--platform x11|wayland] [--backend soft|gl]
+ *   myui_explorer --selftest <dir>   # headless scripted frames
+ *   myui_explorer --shot <file.ppm>  # render one frame and exit
  */
 #include "myr/my_color.h"
 #include "myr/my_font.h"
@@ -19,8 +22,6 @@
 #include "myui/widgets/my_slider.h"
 #include "myui/widgets/my_chart.h"
 
-#include <X11/Xlib.h>
-#include <X11/Xutil.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -420,32 +421,29 @@ static void wheel(app_t* app, int32_t delta) {
   apply_state(app);
 }
 
-static void key(app_t* app, KeySym k) {
-  if (k >= XK_1 && k <= XK_9) {
-    size_t idx = (size_t)(k - XK_1);
-    if (idx < MODE_COUNT) {
-      app->mode = idx;
-      apply_state(app);
-    }
+static void key(app_t* app, int k) {
+  if (k >= '1' && k <= '9') {
+    app->mode = (size_t)(k - '1');
+    apply_state(app);
     return;
   }
-  if (k == XK_0) {
+  if (k == '0') {
     app->mode = 9u;
     apply_state(app);
     return;
   }
-  if (k == XK_s || k == XK_S) {
+  if (k == 's' || k == 'S') {
     render_frame(app);
     dump_ppm(my_lcd_mem_get_buffer(app->lcd),
              "/tmp/myui_explorer_shot.ppm");
     return;
   }
-  if (k == XK_r || k == XK_R) {
+  if (k == 'r' || k == 'R') {
     randomize(app);
     apply_state(app);
-  } else if (k == XK_plus || k == XK_equal) {
+  } else if (k == '+' || k == '=') {
     wheel(app, 1);
-  } else if (k == XK_minus) {
+  } else if (k == '-') {
     wheel(app, -1);
   }
 }
@@ -520,89 +518,603 @@ static int run_selftest(const char* dir, const char* font_path) {
   return failures == 0u ? 0 : 1;
 }
 
+/* ---------------- window-system / backend runners ---------------- */
+
+static void nap(void) {
+  struct timespec ts = {0, 8000000L};
+  nanosleep(&ts, NULL);
+}
+
+static int parse_args(int argc, char** argv, const char** platform,
+                      const char** backend) {
+  int i;
+  *platform = "x11";
+  *backend = "soft";
+  for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--platform") == 0 && i + 1 < argc) {
+      *platform = argv[++i];
+    } else if (strcmp(argv[i], "--backend") == 0 && i + 1 < argc) {
+      *backend = argv[++i];
+    }
+  }
+  if (strcmp(*platform, "x11") != 0 && strcmp(*platform, "wayland") != 0) {
+    printf("unknown platform %s (x11|wayland)\n", *platform);
+    return 1;
+  }
+  if (strcmp(*backend, "soft") != 0 && strcmp(*backend, "gl") != 0) {
+    printf("unknown backend %s (soft|gl)\n", *backend);
+    return 1;
+  }
+  return 0;
+}
+
+static int run_x11_soft(app_t* app, const char* font_path);
+static int run_wayland_soft(app_t* app, const char* font_path);
+static int run_gl(app_t* app, const char* font_path, int wayland);
+
 int main(int argc, char** argv) {
   const char* font_path =
       "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf";
-  if (argc > 2 && strcmp(argv[1], "--selftest") == 0)
-    return run_selftest(argv[2], font_path);
-  if (argc > 2 && strcmp(argv[1], "--shot") == 0) {
-    app_t* app = app_create(font_path);
-    render_frame(app);
-    dump_ppm(my_lcd_mem_get_buffer(app->lcd), argv[2]);
-    printf("shot written: %s\n", argv[2]);
-    return 0;
-  }
-  {
-    Display* dpy = XOpenDisplay(NULL);
-    Window win;
-    XImage* image;
-    GC gc;
-    Atom wm_delete;
-    app_t* app;
-    int screen;
-    if (dpy == NULL) {
-      printf("no X display; use --selftest <dir>\n");
-      return 1;
+  const char* platform;
+  const char* backend;
+  int i;
+  for (i = 1; i < argc; i++) {
+    if (strcmp(argv[i], "--selftest") == 0 && i + 1 < argc)
+      return run_selftest(argv[i + 1], font_path);
+    if (strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
+      app_t* app = app_create(font_path);
+      render_frame(app);
+      dump_ppm(my_lcd_mem_get_buffer(app->lcd), argv[i + 1]);
+      printf("shot written: %s\n", argv[i + 1]);
+      return 0;
     }
-    app = app_create(font_path);
-    screen = DefaultScreen(dpy);
+    if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+      printf("usage: myui_explorer [--platform x11|wayland] "
+             "[--backend soft|gl] | --selftest <dir> | --shot <file>\n");
+      return 0;
+    }
+  }
+  if (parse_args(argc, argv, &platform, &backend) != 0) return 1;
+  {
+    app_t* app = app_create(font_path);
+    if (strcmp(backend, "gl") == 0)
+      return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
+    if (strcmp(platform, "wayland") == 0)
+      return run_wayland_soft(app, font_path);
+    return run_x11_soft(app, font_path);
+  }
+}
+
+/* ---------------- X11 + software (XImage blit) ---------------- */
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
+#include <X11/keysym.h>
+
+static int run_x11_soft(app_t* app, const char* font_path) {
+  Display* dpy;
+  Window win;
+  XImage* image = NULL;
+  GC gc;
+  Atom wm_delete;
+  int screen;
+  (void)font_path;
+  dpy = XOpenDisplay(NULL);
+  if (dpy == NULL) {
+    printf("no X display; try --platform wayland or --selftest\n");
+    return 1;
+  }
+  screen = DefaultScreen(dpy);
+  win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H,
+                            0, BlackPixel(dpy, screen), WhitePixel(dpy, screen));
+  XStoreName(dpy, win, "MyUI explorer [x11/soft]");
+  XSelectInput(dpy, win, ExposureMask | PointerMotionMask |
+                             ButtonPressMask | KeyPressMask |
+                             StructureNotifyMask);
+  wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+  XSetWMProtocols(dpy, win, &wm_delete, 1);
+  XMapRaised(dpy, win);
+  gc = XCreateGC(dpy, win, 0, NULL);
+  for (;;) {
+    XEvent ev;
+    int dirty = 1;
+    while (XPending(dpy)) {
+      XNextEvent(dpy, &ev);
+      if (ev.type == Expose) {
+        dirty = 1;
+      } else if (ev.type == ClientMessage &&
+                 (Atom)ev.xclient.data.l[0] == wm_delete) {
+        XCloseDisplay(dpy);
+        return 0;
+      } else if (ev.type == MotionNotify) {
+        pointer(app, ev.xmotion.x, ev.xmotion.y, 0);
+        dirty = 1;
+      } else if (ev.type == ButtonPress) {
+        if (ev.xbutton.button == Button4) wheel(app, 1);
+        else if (ev.xbutton.button == Button5) wheel(app, -1);
+        else if (ev.xbutton.button == Button1)
+          pointer(app, ev.xbutton.x, ev.xbutton.y, 1);
+        dirty = 1;
+      } else if (ev.type == KeyPress) {
+        KeySym k = XLookupKeysym(&ev.xkey, 0);
+        if (k >= XK_space && k <= XK_asciitilde) key(app, (int)k);
+        else if (k == XK_plus) key(app, '+');
+        else if (k == XK_minus) key(app, '-');
+        dirty = 1;
+      }
+    }
+    if (dirty) {
+      const uint8_t* pixels;
+      render_frame(app);
+      pixels = my_lcd_mem_get_buffer(app->lcd);
+      if (image == NULL)
+        image = XCreateImage(dpy, DefaultVisual(dpy, screen), 24, ZPixmap, 0,
+                             (char*)pixels, EX_W, EX_H, 32, EX_W * 4);
+      XPutImage(dpy, win, gc, image, 0, 0, 0, 0, EX_W, EX_H);
+      XFlush(dpy);
+    }
+    nap();
+  }
+}
+
+/* ---------------- Wayland (shared: input + soft runner) ---------------- */
+#include <wayland-client.h>
+#include <wayland-client-protocol.h>
+#include <wayland-egl.h>
+#include <linux/input-event-codes.h>
+#include <sys/mman.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include "xdg-shell-client-protocol.h"
+
+typedef struct {
+  struct wl_display* display;
+  struct wl_registry* registry;
+  struct wl_compositor* compositor;
+  struct wl_shm* shm;
+  struct xdg_wm_base* wm_base;
+  struct wl_seat* seat;
+  struct wl_surface* surface;
+  struct xdg_surface* xdg_surface;
+  struct xdg_toplevel* toplevel;
+  struct wl_buffer* buffer;
+  void* shm_data;
+  int configured;
+  int closed;
+} wl_state_t;
+
+typedef struct {
+  app_t* app;
+  int32_t hot_x;
+  int32_t hot_y;
+} wl_input_t;
+
+static wl_input_t g_wl_input;
+
+static void wl_registry_global(void* data, struct wl_registry* r,
+                               uint32_t name, const char* iface,
+                               uint32_t version) {
+  wl_state_t* wl = data;
+  (void)version;
+  if (strcmp(iface, "wl_compositor") == 0)
+    wl->compositor = wl_registry_bind(r, name, &wl_compositor_interface, 1);
+  else if (strcmp(iface, "wl_shm") == 0)
+    wl->shm = wl_registry_bind(r, name, &wl_shm_interface, 1);
+  else if (strcmp(iface, "xdg_wm_base") == 0)
+    wl->wm_base = wl_registry_bind(r, name, &xdg_wm_base_interface, 1);
+  else if (strcmp(iface, "wl_seat") == 0)
+    wl->seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
+}
+
+static const struct wl_registry_listener wl_registry_listener = {
+    .global = wl_registry_global,
+    .global_remove = NULL};
+
+static void wm_base_ping(void* data, struct xdg_wm_base* base,
+                         uint32_t serial) {
+  (void)data;
+  xdg_wm_base_pong(base, serial);
+}
+static const struct xdg_wm_base_listener wm_base_listener = {
+    .ping = wm_base_ping};
+
+static void xdg_configure(void* data, struct xdg_surface* surf,
+                          uint32_t serial) {
+  wl_state_t* wl = data;
+  (void)surf;
+  xdg_surface_ack_configure(wl->xdg_surface, serial);
+  wl->configured = 1;
+}
+static const struct xdg_surface_listener xdg_surface_listener = {
+    .configure = xdg_configure};
+
+static void toplevel_configure(void* data, struct xdg_toplevel* t,
+                               int32_t width, int32_t height,
+                               struct wl_array* states) {
+  (void)data; (void)t; (void)width; (void)height; (void)states;
+}
+static void toplevel_close(void* data, struct xdg_toplevel* t) {
+  (void)t;
+  ((wl_state_t*)data)->closed = 1;
+}
+static const struct xdg_toplevel_listener toplevel_listener = {
+    .configure = toplevel_configure, .close = toplevel_close};
+
+static void pointer_enter(void* data, struct wl_pointer* p, uint32_t serial,
+                          struct wl_surface* s, wl_fixed_t sx, wl_fixed_t sy) {
+  (void)p; (void)serial; (void)s;
+  g_wl_input.hot_x = wl_fixed_to_int(sx);
+  g_wl_input.hot_y = wl_fixed_to_int(sy);
+  (void)data;
+}
+static void pointer_leave(void* data, struct wl_pointer* p, uint32_t serial,
+                          struct wl_surface* s) {
+  (void)data; (void)p; (void)serial; (void)s;
+}
+static void pointer_motion(void* data, struct wl_pointer* p, uint32_t time,
+                           wl_fixed_t sx, wl_fixed_t sy) {
+  (void)data; (void)p; (void)time;
+  g_wl_input.hot_x = wl_fixed_to_int(sx);
+  g_wl_input.hot_y = wl_fixed_to_int(sy);
+  pointer(g_wl_input.app, g_wl_input.hot_x, g_wl_input.hot_y, 0);
+}
+static void pointer_button(void* data, struct wl_pointer* p, uint32_t serial,
+                           uint32_t time, uint32_t button, uint32_t state) {
+  (void)data; (void)p; (void)serial; (void)time;
+  if (state == WL_POINTER_BUTTON_STATE_PRESSED && button == BTN_LEFT)
+    pointer(g_wl_input.app, g_wl_input.hot_x, g_wl_input.hot_y, 1);
+}
+static void pointer_axis(void* data, struct wl_pointer* p, uint32_t time,
+                         uint32_t axis, wl_fixed_t value) {
+  (void)data; (void)p; (void)time; (void)axis;
+  wheel(g_wl_input.app, wl_fixed_to_int(value) > 0 ? -1 : 1);
+}
+static const struct wl_pointer_listener pointer_listener = {
+    .enter = pointer_enter, .leave = pointer_leave,
+    .motion = pointer_motion, .button = pointer_button,
+    .axis = pointer_axis};
+
+static void keymap(void* data, struct wl_keyboard* k, uint32_t format,
+                   int32_t fd, uint32_t size) {
+  (void)data; (void)k; (void)format; (void)fd; (void)size;
+}
+static void kbd_enter(void* data, struct wl_keyboard* k, uint32_t serial,
+                      struct wl_surface* s, struct wl_array* keys) {
+  (void)data; (void)k; (void)serial; (void)s; (void)keys;
+}
+static void kbd_leave(void* data, struct wl_keyboard* k, uint32_t serial,
+                      struct wl_surface* s) {
+  (void)data; (void)k; (void)serial; (void)s;
+}
+static void key_event(void* data, struct wl_keyboard* k, uint32_t serial,
+                      uint32_t time, uint32_t key_code, uint32_t state) {
+  (void)data; (void)k; (void)serial; (void)time;
+  if (state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+    int ch = 0;
+    if (key_code >= KEY_1 && key_code <= KEY_9)
+      ch = '1' + (int)(key_code - KEY_1);
+    else if (key_code == KEY_0) ch = '0';
+    else if (key_code >= KEY_A && key_code <= KEY_Z)
+      ch = 'a' + (int)(key_code - KEY_A);
+    else if (key_code == KEY_MINUS) ch = '-';
+    else if (key_code == KEY_EQUAL) ch = '=';
+    if (ch != 0) key(g_wl_input.app, ch);
+  }
+}
+static void kbd_modifiers(void* data, struct wl_keyboard* k, uint32_t serial,
+                          uint32_t depressed, uint32_t latched,
+                          uint32_t locked, uint32_t group) {
+  (void)data; (void)k; (void)serial; (void)depressed; (void)latched;
+  (void)locked; (void)group;
+}
+static void kbd_repeat(void* data, struct wl_keyboard* k, int32_t rate,
+                       int32_t delay) {
+  (void)data; (void)k; (void)rate; (void)delay;
+}
+static const struct wl_keyboard_listener keyboard_listener = {
+    .keymap = keymap, .enter = kbd_enter, .leave = kbd_leave,
+    .key = key_event, .modifiers = kbd_modifiers, .repeat_info = kbd_repeat};
+
+static void seat_capabilities(void* data, struct wl_seat* seat,
+                              uint32_t caps) {
+  (void)data;
+  if ((caps & WL_SEAT_CAPABILITY_POINTER) != 0u) {
+    struct wl_pointer* p = wl_seat_get_pointer(seat);
+    wl_pointer_add_listener(p, &pointer_listener, NULL);
+  }
+  if ((caps & WL_SEAT_CAPABILITY_KEYBOARD) != 0u) {
+    struct wl_keyboard* kb = wl_seat_get_keyboard(seat);
+    wl_keyboard_add_listener(kb, &keyboard_listener, NULL);
+  }
+}
+static const struct wl_seat_listener seat_listener = {
+    .capabilities = seat_capabilities};
+
+static void wl_registry_init(wl_state_t* wl) {
+  wl->registry = wl_display_get_registry(wl->display);
+  wl_registry_add_listener(wl->registry, &wl_registry_listener, wl);
+  wl_display_roundtrip(wl->display);
+}
+
+static void wl_common_setup(wl_state_t* wl, app_t* app, const char* title) {
+  xdg_wm_base_add_listener(wl->wm_base, &wm_base_listener, wl);
+  if (wl->seat != NULL) {
+    g_wl_input.app = app;
+    wl_seat_add_listener(wl->seat, &seat_listener, wl);
+  }
+  wl->surface = wl_compositor_create_surface(wl->compositor);
+  wl->xdg_surface = xdg_wm_base_get_xdg_surface(wl->wm_base, wl->surface);
+  xdg_surface_add_listener(wl->xdg_surface, &xdg_surface_listener, wl);
+  wl->toplevel = xdg_surface_get_toplevel(wl->xdg_surface);
+  xdg_toplevel_add_listener(wl->toplevel, &toplevel_listener, wl);
+  xdg_toplevel_set_title(wl->toplevel, title);
+  wl_surface_commit(wl->surface);
+  while (!wl->configured)
+    if (wl_display_dispatch(wl->display) < 0) exit(1);
+}
+
+static int wl_shm_buffer(wl_state_t* wl) {
+  int fd;
+  char name[] = "/tmp/myui-explorer-XXXXXX";
+  size_t size = (size_t)EX_W * EX_H * 4u;
+  struct wl_shm_pool* pool;
+  fd = mkstemp(name);
+  if (fd < 0) return 1;
+  (void)unlink(name);
+  if (ftruncate(fd, (off_t)size) != 0) {
+    close(fd);
+    return 1;
+  }
+  wl->shm_data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+  if (wl->shm_data == MAP_FAILED) {
+    close(fd);
+    return 1;
+  }
+  pool = wl_shm_create_pool(wl->shm, fd, (int32_t)size);
+  wl->buffer = wl_shm_pool_create_buffer(pool, 0, EX_W, EX_H, EX_W * 4,
+                                         WL_SHM_FORMAT_XRGB8888);
+  wl_shm_pool_destroy(pool);
+  close(fd);
+  return 0;
+}
+
+static int run_wayland_soft(app_t* app, const char* font_path) {
+  wl_state_t wl;
+  (void)font_path;
+  memset(&wl, 0, sizeof(wl));
+  wl.display = wl_display_connect(NULL);
+  if (wl.display == NULL) {
+    printf("no wayland compositor; try --platform x11 or --selftest\n");
+    return 1;
+  }
+  wl_registry_init(&wl);
+  if (wl.compositor == NULL || wl.shm == NULL || wl.wm_base == NULL) {
+    printf("wayland globals: compositor=%d shm=%d wm_base=%d\n",
+           wl.compositor != NULL, wl.shm != NULL, wl.wm_base != NULL);
+    return 1;
+  }
+  wl_common_setup(&wl, app, "MyUI explorer [wayland/soft]");
+  if (wl_shm_buffer(&wl) != 0) {
+    printf("wayland shm setup failed\n");
+    return 1;
+  }
+  for (;;) {
+    wl_display_dispatch_pending(wl.display);
+    wl_display_flush(wl.display);
+    if (wl.closed) break;
+    render_frame(app);
+    memcpy(wl.shm_data, my_lcd_mem_get_buffer(app->lcd),
+           (size_t)EX_W * EX_H * 4u);
+    wl_surface_attach(wl.surface, wl.buffer, 0, 0);
+    wl_surface_damage(wl.surface, 0, 0, EX_W, EX_H);
+    wl_surface_commit(wl.surface);
+    nap();
+  }
+  return 0;
+}
+
+/* ---------------- GL backend (EGL on X11 or Wayland) ---------------- */
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#ifndef EGL_PLATFORM_WAYLAND_KHR
+#define EGL_PLATFORM_WAYLAND_KHR 0x31D8
+#endif
+#ifndef EGL_PLATFORM_X11_KHR
+#define EGL_PLATFORM_X11_KHR 0x31D5
+#endif
+#include "myr/my_vgcanvas_gles2.h"
+
+typedef struct {
+  EGLDisplay display;
+  EGLContext context;
+  EGLSurface surface;
+} gl_state_t;
+
+static EGLint const k_gl_attribs[] = {
+    EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
+
+static int gl_context(gl_state_t* gl, void* native_display,
+                      void* native_window, EGLenum platform) {
+  EGLConfig config;
+  EGLint count = 0;
+  gl->display = eglGetPlatformDisplay(platform, native_display, NULL);
+  if (gl->display == EGL_NO_DISPLAY) return 1;
+  if (!eglInitialize(gl->display, NULL, NULL)) return 1;
+  if (!eglBindAPI(EGL_OPENGL_ES_API)) return 1;
+  if (!eglChooseConfig(gl->display, k_gl_attribs, &config, 1, &count) ||
+      count < 1)
+    return 1;
+  gl->surface = eglCreateWindowSurface(gl->display, config,
+                                       (EGLNativeWindowType)native_window,
+                                       NULL);
+  if (gl->surface == EGL_NO_SURFACE)
+    gl->surface = eglCreatePlatformWindowSurface(gl->display, config,
+                                                 native_window, NULL);
+  if (gl->surface == EGL_NO_SURFACE) return 1;
+  {
+    static const EGLint ctx_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
+                                         EGL_NONE};
+    gl->context = eglCreateContext(gl->display, config, EGL_NO_CONTEXT,
+                                   ctx_attribs);
+  }
+  if (gl->context == EGL_NO_CONTEXT) return 1;
+  return eglMakeCurrent(gl->display, gl->surface, gl->surface, gl->context)
+             ? 0
+             : 1;
+}
+
+static void gl_paint(app_t* app, my_vgcanvas_t* vg) {
+  (void)my_vgcanvas_begin_frame(vg, NULL);
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
+  my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
+  my_vgcanvas_set_font(vg, app->font, 13);
+  place(app->panel, 0, 0, EX_W, EX_H);
+  my_widget_paint(app->panel, vg);
+  app->chart->rect.x = CHART_X;
+  app->chart->rect.y = CHART_Y;
+  app->chart->rect.w = CHART_W;
+  app->chart->rect.h = CHART_H;
+  my_widget_paint(app->chart, vg);
+  (void)my_vgcanvas_end_frame(vg);
+}
+
+static int run_gl_x11(app_t* app) {
+  Display* dpy;
+  Window win;
+  Atom wm_delete;
+  int screen;
+  gl_state_t gl;
+  my_vgcanvas_t* vg;
+  EGLConfig config;
+  EGLint count = 0;
+  EGLint visual_id = 0;
+  XVisualInfo vi;
+  XSetWindowAttributes swa;
+  memset(&gl, 0, sizeof(gl));
+  dpy = XOpenDisplay(NULL);
+  if (dpy == NULL) {
+    printf("no X display for GL\n");
+    return 1;
+  }
+  screen = DefaultScreen(dpy);
+  gl.display = eglGetPlatformDisplay(EGL_PLATFORM_X11_KHR, (void*)dpy, NULL);
+  if (gl.display == EGL_NO_DISPLAY || !eglInitialize(gl.display, NULL, NULL) ||
+      !eglBindAPI(EGL_OPENGL_ES_API) ||
+      !eglChooseConfig(gl.display, k_gl_attribs, &config, 1, &count) ||
+      count < 1) {
+    printf("EGL setup failed on X11\n");
+    return 1;
+  }
+  if (eglGetConfigAttrib(gl.display, config, EGL_NATIVE_VISUAL_ID,
+                         &visual_id) &&
+      XMatchVisualInfo(dpy, screen, (int)visual_id, TrueColor, &vi)) {
+    swa.colormap = XCreateColormap(dpy, RootWindow(dpy, screen), vi.visual,
+                                   AllocNone);
+    swa.border_pixel = 0;
+    swa.event_mask = ExposureMask | PointerMotionMask | ButtonPressMask |
+                     KeyPressMask;
+    win = XCreateWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H, 0,
+                        vi.depth, InputOutput, vi.visual,
+                        CWColormap | CWBorderPixel | CWEventMask, &swa);
+  } else {
     win = XCreateSimpleWindow(dpy, RootWindow(dpy, screen), 0, 0, EX_W, EX_H,
                               0, BlackPixel(dpy, screen),
                               WhitePixel(dpy, screen));
-    XStoreName(dpy, win, "MyUI explorer");
     XSelectInput(dpy, win, ExposureMask | PointerMotionMask |
-                               ButtonPressMask | KeyPressMask |
-                               StructureNotifyMask);
-    wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
-    XSetWMProtocols(dpy, win, &wm_delete, 1);
-    XMapRaised(dpy, win);
-    gc = XCreateGC(dpy, win, 0, NULL);
-    image = NULL;
-    for (;;) {
-      XEvent ev;
-      int dirty = 1;
-      while (XPending(dpy)) {
-        XNextEvent(dpy, &ev);
-        if (ev.type == Expose) {
-          dirty = 1;
-        } else if (ev.type == ClientMessage &&
-                   (Atom)ev.xclient.data.l[0] == wm_delete) {
-          XCloseDisplay(dpy);
-          return 0;
-        } else if (ev.type == MotionNotify) {
-          pointer(app, ev.xmotion.x, ev.xmotion.y, 0);
-          dirty = 1;
-        } else if (ev.type == ButtonPress) {
-          if (ev.xbutton.button == Button4) {
-            wheel(app, 1);
-          } else if (ev.xbutton.button == Button5) {
-            wheel(app, -1);
-          } else if (ev.xbutton.button == Button1) {
-            pointer(app, ev.xbutton.x, ev.xbutton.y, 1);
-          }
-          dirty = 1;
-        } else if (ev.type == KeyPress) {
-          KeySym k = XLookupKeysym(&ev.xkey, 0);
-          key(app, k);
-          dirty = 1;
-        }
-      }
-      if (dirty) {
-        const uint8_t* pixels;
-        render_frame(app);
-        pixels = my_lcd_mem_get_buffer(app->lcd);
-        if (image == NULL) {
-          image = XCreateImage(dpy, DefaultVisual(dpy, screen), 24, ZPixmap,
-                               0, (char*)pixels, EX_W, EX_H, 32, EX_W * 4);
-        }
-        XPutImage(dpy, win, gc, image, 0, 0, 0, 0, EX_W, EX_H);
-        XFlush(dpy);
-        dirty = 0;
-      }
-      {
-        struct timespec ts = {0, 8000000L};
-        nanosleep(&ts, NULL);
+                               ButtonPressMask | KeyPressMask);
+  }
+  XStoreName(dpy, win, "MyUI explorer [x11/gl]");
+  wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
+  XSetWMProtocols(dpy, win, &wm_delete, 1);
+  XMapRaised(dpy, win);
+  XFlush(dpy);
+  if (gl_context(&gl, (void*)dpy, (void*)win, EGL_PLATFORM_X11_KHR) != 0) {
+    printf("EGL context failed on X11\n");
+    return 1;
+  }
+  vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
+  if (vg == NULL) {
+    printf("gles2 vgcanvas init failed\n");
+    return 1;
+  }
+  for (;;) {
+    XEvent ev;
+    int dirty = 1;
+    while (XPending(dpy)) {
+      XNextEvent(dpy, &ev);
+      if (ev.type == ClientMessage &&
+          (Atom)ev.xclient.data.l[0] == wm_delete)
+        return 0;
+      if (ev.type == MotionNotify) {
+        pointer(app, ev.xmotion.x, ev.xmotion.y, 0);
+        dirty = 1;
+      } else if (ev.type == ButtonPress) {
+        if (ev.xbutton.button == Button4) wheel(app, 1);
+        else if (ev.xbutton.button == Button5) wheel(app, -1);
+        else if (ev.xbutton.button == Button1)
+          pointer(app, ev.xbutton.x, ev.xbutton.y, 1);
+        dirty = 1;
+      } else if (ev.type == KeyPress) {
+        KeySym k = XLookupKeysym(&ev.xkey, 0);
+        if (k >= XK_space && k <= XK_asciitilde) key(app, (int)k);
+        dirty = 1;
       }
     }
+    if (dirty) {
+      gl_paint(app, vg);
+      eglSwapBuffers(gl.display, gl.surface);
+    }
+    nap();
   }
+}
+
+static int run_gl_wayland(app_t* app) {
+  wl_state_t wl;
+  gl_state_t gl;
+  my_vgcanvas_t* vg;
+  struct wl_egl_window* egl_window;
+  memset(&wl, 0, sizeof(wl));
+  memset(&gl, 0, sizeof(gl));
+  wl.display = wl_display_connect(NULL);
+  if (wl.display == NULL) {
+    printf("no wayland compositor for GL\n");
+    return 1;
+  }
+  wl_registry_init(&wl);
+  if (wl.compositor == NULL || wl.wm_base == NULL || wl.seat == NULL) {
+    printf("wayland globals(gl): compositor=%d wm_base=%d seat=%d\n",
+           wl.compositor != NULL, wl.wm_base != NULL, wl.seat != NULL);
+    return 1;
+  }
+  wl_common_setup(&wl, app, "MyUI explorer [wayland/gl]");
+  egl_window = wl_egl_window_create(wl.surface, EX_W, EX_H);
+  if (egl_window == NULL) {
+    printf("wl_egl_window creation failed\n");
+    return 1;
+  }
+  if (gl_context(&gl, (void*)wl.display, (void*)egl_window,
+                 EGL_PLATFORM_WAYLAND_KHR) != 0) {
+    printf("EGL setup failed on wayland\n");
+    return 1;
+  }
+  vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
+  if (vg == NULL) {
+    printf("gles2 vgcanvas init failed\n");
+    return 1;
+  }
+  for (;;) {
+    wl_display_dispatch_pending(wl.display);
+    wl_display_flush(wl.display);
+    if (wl.closed) break;
+    gl_paint(app, vg);
+    eglSwapBuffers(gl.display, gl.surface);
+    nap();
+  }
+  return 0;
+}
+
+static int run_gl(app_t* app, const char* font_path, int wayland) {
+  (void)font_path;
+  return wayland ? run_gl_wayland(app) : run_gl_x11(app);
 }

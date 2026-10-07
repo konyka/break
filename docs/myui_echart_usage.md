@@ -8,10 +8,21 @@ end-to-end by the demo program (`engine/tools/echarts_demo.c`).
 
 ```sh
 cmake --build build --target myui_explorer --parallel 2
-./build/myui_explorer                 # opens an X11 window (DISPLAY required)
+./build/myui_explorer                                    # x11 + software
+./build/myui_explorer --platform wayland --backend gl    # wayland + GLES2
+./build/myui_explorer --platform x11 --backend gl        # x11 + EGL/GLES2
+./build/myui_explorer --platform wayland --backend soft  # wayland + wl_shm
 ./build/myui_explorer --selftest dir  # headless scripted frames
 ./build/myui_explorer --shot out.ppm  # render one frame and exit
 ```
+
+`--platform` picks the window system (x11 | wayland) and `--backend` the
+rendering path (soft | gl): software renders into a CPU framebuffer
+(XImage blit on X11, a wl_shm buffer pool on Wayland); gl creates an EGL
+window surface with a GLES2 context and drives the engine's
+`my_vgcanvas_gles2` hardware backend directly. All four combinations are
+verified live; the build falls back to x11+soft-only when the Wayland/EGL
+development packages are absent.
 
 The left pane is a live `my_chart`; the right pane is a real MyUI widget
 panel that drives it in real time:

@@ -1121,14 +1121,43 @@ target_include_directories(myui_widgets_demo PRIVATE
 target_link_libraries(myui_widgets_demo PRIVATE myui_core m Threads::Threads)
 add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_BINARY_DIR})
 
-# Interactive explorer: live chart driven by real widgets (X11), with a
+# Interactive explorer: live chart driven by real widgets with switchable
+# backends (software / GL) and window systems (X11 / Wayland), plus a
 # headless --selftest mode that renders a scripted interaction sequence.
-add_executable(myui_explorer tools/myui_explorer.c)
-target_include_directories(myui_explorer PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-)
+find_program(WAYLAND_SCANNER wayland-scanner)
+find_package(PkgConfig QUIET)
+if(PkgConfig_FOUND)
+  pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl)
+endif()
+if(WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
+  set(EX_EXPLORER_PLATFORMS "x11+wayland, soft+gl")
+  execute_process(
+      COMMAND ${WAYLAND_SCANNER} client-header
+              /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h)
+  execute_process(
+      COMMAND ${WAYLAND_SCANNER} public-code
+              /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
+              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
+  set(EX_EXPLORER_SOURCES tools/myui_explorer.c
+      ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
+  set(EX_EXPLORER_DEFS "")
+  set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES} ${X11_LIBRARIES})
+  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS})
+else()
+  set(EX_EXPLORER_PLATFORMS "x11 only, soft only (wayland/EGL dev pkgs missing)")
+  set(EX_EXPLORER_SOURCES tools/myui_explorer.c)
+  set(EX_EXPLORER_DEFS EX_EXPLORER_NO_WAYLAND=1)
+  set(EX_EXPLORER_LIBS ${X11_LIBRARIES})
+  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+endif()
+add_executable(myui_explorer ${EX_EXPLORER_SOURCES})
+target_include_directories(myui_explorer PRIVATE ${EX_EXPLORER_INCLUDES})
+target_compile_definitions(myui_explorer PRIVATE ${EX_EXPLORER_DEFS})
 target_link_libraries(myui_explorer PRIVATE myui_core m Threads::Threads
-    ${X11_LIBRARIES})
+    ${EX_EXPLORER_LIBS})
+message(STATUS "myui_explorer platforms: ${EX_EXPLORER_PLATFORMS}")
 add_test(NAME myui_explorer_selftest COMMAND myui_explorer --selftest
     ${CMAKE_CURRENT_BINARY_DIR})
 

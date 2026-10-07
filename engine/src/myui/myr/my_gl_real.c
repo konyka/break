@@ -6,6 +6,8 @@
  */
 #include "myr/my_gl.h"
 
+#include <stdio.h>
+
 #ifdef MYUI_HAS_GLES2
 
 #include <GLES2/gl2.h>
@@ -43,10 +45,18 @@ static void real_clear(void* ctx) {
 static GLuint compile_one(GLenum type, const char* src) {
   GLuint shader = glCreateShader(type);
   GLint ok = GL_FALSE;
+  GLint len = 0;
   glShaderSource(shader, 1, &src, NULL);
   glCompileShader(shader);
   glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
   if (ok != GL_TRUE) {
+    char log[512];
+    glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &len);
+    glGetShaderInfoLog(shader, sizeof(log) - 1u, &len, log);
+    log[len > 0 ? (size_t)len < sizeof(log) - 1u ? (size_t)len
+                                                 : sizeof(log) - 1u : 0u] = '\0';
+    fprintf(stderr, "my_gl_real: shader compile failed (%s): %s\n",
+            type == GL_VERTEX_SHADER ? "vertex" : "fragment", log);
     glDeleteShader(shader);
     return 0;
   }

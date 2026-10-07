@@ -24,6 +24,7 @@ static const char* VS_SRC =
     "}\n";
 
 static const char* FS_SRC =
+    "precision mediump float;\n"
     "uniform vec4 u_color;\n"
     "void main(void) { gl_FragColor = u_color; }\n";
 
@@ -39,6 +40,7 @@ static const char* VS_TEXT_SRC =
     "}\n";
 
 static const char* FS_IMG_SRC =
+    "precision mediump float;\n"
     "uniform sampler2D u_tex;\n"
     "varying vec2 v_uv;\n"
     "void main(void) { gl_FragColor = texture2D(u_tex, v_uv); }\n";
