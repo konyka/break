@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R681 @container and 条件列表（TDD）— 单预备句内 `and` 合取落地：顶层拆分（括号/引号感知）逐条件校验+匹配期单容器合取（混合列表在最近 size 合格容器上求值,纯 style 列表沿 R673 容器选择）；or/not 混排与中缀连接词维持让渡
+
+- **缺口**(R673 落账"单条件有界——`style(--a: 1) and (...)` 类组合让渡,entry 多条件对=复杂度审慎评估"):单预备句多条件全拒——`style(--accent: red) and (min-width: 400px)` 被 style 单条件形态校验拒（尾随 token）;纯 size 域 and/or/not 经 media 机制现状已支持（调研补正——缺口实为 style() 参与组合）。
+- **方案**(拆分-逐条件-单容器合取,存储零新增——查询文本原样盖戳,无 entry 改动):① **拆分器** `css_container_split_and`——括号/引号感知扫顶层 ` and ` 词界（前后白空间,引擎惯例）,片 trim,≤4 条;**中缀 or/not → 0**（unsplittable 整串回退——纯 size 组合维持 media 机制既有求值,style 开头的混排经旧单条件校验拒）;开头 `not` 留在片内（media 取反语义）;② **校验** `css_container_prelude_valid`——n≥1 逐片（style→style_query_parse,size→features_valid）,n==0 回退旧路径;两个悬置调用点（规则级 R670/声明块 R679）换轨,注入路径 R663 保持 features_valid（style 混排经特性名检查自动拒）;③ **匹配** my_theme_container_matches 重构合一——拆分后**单一祖先循环**：含 size 腿→最近 type+名 合格容器上逐腿求值（style→R677 helper 提取 `css_container_style_cond_matches`,size→eval rect）AND;纯 style→最近名合格祖先逐腿 AND;n==0 整串当单 size 条件（media 机制,现状保持）;R670/R673 单条件路径经合一结构行为等价（helper 提取纯重构）。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R673 契约段（mixed 景 `and`→`or`——R681 放开 and,契约变更文档化）——解析面：混合 and 悬置盖戳全文/纯 style and 悬置/**style 混 or 拒**/**not style 拒**（特性名检查）;匹配面六景：混合双真命中/style 腿假拦回/size 腿假拦回（300px)/纯 style 双真命中/单假拦回。**RED 如实红**（行 2574:sheet NULL——and 组合被单条件校验拒）;GREEN **186/186**(185+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态 platform_runtime 项——干净 HEAD 复现同败）、fuzz smoke 5/5;R670/R673/R675/R679 容器组全绿（合一重构行为等价,R673 契约段更新后过）。
+- **边界**：and 词需白空间分隔（`(a)and(b)` 无空格不识别——与 style( 带空格不识别同约,文档化）;`or`/中缀 `not` 混 style 维持拒（bounded——or 语义需容器选择歧义评估,单列后续）;≤4 条（MY_CSS_MAX_CONTAINER_CONDS,超限整串回退 media 路径）;混合列表的 style 腿在 size 合格容器上求值（非任意祖先——size 腿需要 rect,文档化规范近似）;R611 AMD 基线不动。
+
 ## 本轮更新：R680 @property 单 ident 语法串强制（TDD）— 未知串让渡收窄：合法单 ident（"small"，无 `|`）走字节精确强制（多选一 ident 替代同门），非 ident 未知串（`<transform-function>` 类）维持不强制
 
 - **缺口**(R678 落账"单 ident 语法串维持不强制——单 ident 强制属独立扩编"):`syntax: "small"`（无 `|`、非原语）被当未知语法串全放行——`initial-value: huge` 照注册、级联值 `--size: big` 照样替换,单关键字轨全缺。

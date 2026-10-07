@@ -1971,6 +1971,7 @@ static bool css_stmt_is_nested_rule(const css_p_t* p) {
 #define CSS_NEST_COND_CONTAINER 2
 /* forward: defined with the container at-rule machinery below. */
 static bool css_container_features_valid(const char* query, size_t length);
+static bool css_container_prelude_valid(const char* query, size_t length);
 static void css_rule_stamp_container_condition(my_css_rule_t* r,
                                                const char* query,
                                                const char* name);
@@ -2067,7 +2068,7 @@ static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
        * sibling rule carries the block, stamped with the condition. */
       my_css_rule_t* nr;
       size_t pend_before, si, sn, pi;
-      if (!css_container_features_valid(query, query_length)) {
+      if (!css_container_prelude_valid(query, query_length)) {
         return css_skip_or_reject_atrule_with_capability(
             p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
       }
@@ -3712,6 +3713,112 @@ static bool css_container_query_is_style(const char* query, size_t length) {
   return length - i >= 6u && memcmp(query + i, "style(", 6u) == 0;
 }
 
+/* R681: split an and-only condition list at top-level `and` word
+ * boundaries (paren- and quote-aware). Each slice is trimmed. Returns
+ * the condition count: 1 when no top-level `and` separates conditions,
+ * 0 when a mid-list `or`/`not` connective, an empty slice, unbalanced
+ * parentheses or the cap puts the composition out of scope. A leading
+ * `not` stays part of its slice (the media machinery negates it). */
+#define MY_CSS_MAX_CONTAINER_CONDS 4u
+
+static bool css_container_ws(char c) {
+  return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+static size_t css_container_split_and(const char* query, size_t length,
+                                      const char* conds[],
+                                      size_t cond_lens[],
+                                      size_t max_conds) {
+  size_t count = 0u;
+  size_t start = 0u;
+  size_t i = 0u;
+  char quote = '\0';
+  size_t depth = 0u;
+  while (i < length) {
+    char c = query[i];
+    if (quote != '\0') {
+      if (c == '\\' && i + 1u < length) {
+        i++;
+      } else if (c == quote) {
+        quote = '\0';
+      }
+      i++;
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = c;
+      i++;
+      continue;
+    }
+    if (c == '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (c == ')') {
+      if (depth == 0u) {
+        return 0u;
+      }
+      depth--;
+      i++;
+      continue;
+    }
+    if (depth == 0u && css_container_ws(c) && i + 3u < length &&
+        (memcmp(query + i + 1u, "and", 3u) == 0 ||
+         (i + 2u < length && memcmp(query + i + 1u, "or", 2u) == 0) ||
+         memcmp(query + i + 1u, "not", 3u) == 0)) {
+      /* a top-level connective word: which one? */
+      const char* word = query + i + 1u;
+      size_t word_len = memcmp(word, "and", 3u) == 0 ||
+                                memcmp(word, "not", 3u) == 0
+                            ? 3u
+                            : 2u;
+      size_t after = i + 1u + word_len;
+      if (after >= length || css_container_ws(query[after])) {
+        size_t end;
+        if (word_len != 3u || memcmp(word, "and", 3u) != 0) {
+          return 0u; /* mid-list or/not: out of scope */
+        }
+        end = i;
+        if (count >= max_conds) {
+          return 0u;
+        }
+        while (end > start && css_container_ws(query[end - 1u])) {
+          end--;
+        }
+        if (end == start) {
+          return 0u;
+        }
+        conds[count] = query + start;
+        cond_lens[count] = end - start;
+        count++;
+        i = after;
+        while (i < length && css_container_ws(query[i])) {
+          i++;
+        }
+        start = i;
+        continue;
+      }
+    }
+    i++;
+  }
+  if (quote != '\0' || depth != 0u) {
+    return 0u;
+  }
+  if (count >= max_conds) {
+    return 0u;
+  }
+  while (length > start && css_container_ws(query[length - 1u])) {
+    length--;
+  }
+  if (length == start) {
+    return 0u; /* empty trailing slice (dangling `and`) */
+  }
+  conds[count] = query + start;
+  cond_lens[count] = length - start;
+  return count + 1u;
+}
+
 static bool css_container_style_query_parse(const char* query, size_t length,
                                             char* prop, size_t prop_cap,
                                             const char** value,
@@ -3975,16 +4082,6 @@ static bool css_container_feature_name_ok(const char* name) {
 static bool css_container_features_valid(const char* query, size_t length) {
   size_t i = 0u;
   char quote = '\0';
-  /* R673: a style() query is a different condition kind — validate its
-   * single-condition form instead of the size-feature scan. */
-  if (css_container_query_is_style(query, length)) {
-    char prop[MY_STYLE_KEY_LEN];
-    const char* value;
-    size_t value_length;
-    return css_container_style_query_parse(query, length, prop,
-                                           sizeof(prop), &value,
-                                           &value_length);
-  }
   /* a leading media type (all/screen/only) belongs to @media. */
   while (i < length &&
          (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
@@ -4036,6 +4133,46 @@ static bool css_container_features_valid(const char* query, size_t length) {
         continue;
       }
       if (!css_container_feature_name_ok(name)) return false;
+    }
+  }
+  return true;
+}
+
+/* R681: validate a whole @container prelude — an and-only condition
+ * list validates per condition (each slice is a style() form or a size
+ * feature list). An unsplittable whole string (mid-list or/not)
+ * validates through the legacy paths: a pure-size composition keeps
+ * its media-machinery evaluation, a style() opener still rejects on
+ * its single-condition form. */
+static bool css_container_prelude_valid(const char* query, size_t length) {
+  const char* conds[MY_CSS_MAX_CONTAINER_CONDS];
+  size_t cond_lens[MY_CSS_MAX_CONTAINER_CONDS];
+  size_t n = css_container_split_and(query, length, conds, cond_lens,
+                                     MY_CSS_MAX_CONTAINER_CONDS);
+  size_t ci;
+  if (n == 0u) {
+    if (css_container_query_is_style(query, length)) {
+      char prop[MY_STYLE_KEY_LEN];
+      const char* value;
+      size_t value_length;
+      return css_container_style_query_parse(query, length, prop,
+                                             sizeof(prop), &value,
+                                             &value_length);
+    }
+    return css_container_features_valid(query, length);
+  }
+  for (ci = 0u; ci < n; ci++) {
+    if (css_container_query_is_style(conds[ci], cond_lens[ci])) {
+      char prop[MY_STYLE_KEY_LEN];
+      const char* value;
+      size_t value_length;
+      if (!css_container_style_query_parse(conds[ci], cond_lens[ci], prop,
+                                           sizeof(prop), &value,
+                                           &value_length)) {
+        return false;
+      }
+    } else if (!css_container_features_valid(conds[ci], cond_lens[ci])) {
+      return false;
     }
   }
   return true;
@@ -4332,8 +4469,10 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
     }
   } else {
     /* R670 match-time deferral: the feature shape validates now; the
-     * query itself evaluates per element at theme lookup time. */
-    if (!css_container_features_valid(query, query_length)) {
+     * query itself evaluates per element at theme lookup time. R681:
+     * an and-only condition list (style() mixed with size features)
+     * validates per condition. */
+    if (!css_container_prelude_valid(query, query_length)) {
       return css_skip_or_reject_atrule_with_capability(
           p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
     }
@@ -5763,89 +5902,126 @@ static bool css_container_name_matches(const my_theme_t* theme,
   return false;
 }
 
+/* R673/R677: evaluate one style() condition against a specific
+ * ancestor — the custom property resolves there through the var()
+ * machinery (own cascade → DOM inheritance, registered
+ * inherits/initial honored); a registered property compares computed
+ * values (typed by its syntax primitive), an unregistered property
+ * compares whitespace-normalized raw text. */
+static bool css_container_style_cond_matches(const my_theme_t* theme,
+                                             const my_widget_t* ancestor,
+                                             const char* cond,
+                                             size_t cond_length) {
+  char prop[MY_STYLE_KEY_LEN];
+  char ref[MY_STYLE_KEY_LEN + 8u];
+  const char* want;
+  size_t want_length;
+  char subst[CSS_VAR_MAX_SUBST_BYTES];
+  size_t subst_length = 0u;
+  char visiting[CSS_VAR_MAX_VISITING][MY_STYLE_KEY_LEN];
+  int ref_length;
+  if (!css_container_style_query_parse(cond, cond_length, prop,
+                                       sizeof(prop), &want,
+                                       &want_length)) {
+    return false;
+  }
+  ref_length = snprintf(ref, sizeof(ref), "var(%s)", prop);
+  if (ref_length < 0 || (size_t)ref_length >= sizeof(ref)) {
+    return false;
+  }
+  if (!css_var_substitute(theme, ancestor, MY_STATE_NORMAL, ref,
+                          (size_t)ref_length, subst, sizeof(subst),
+                          &subst_length, visiting, 0u, 0u)) {
+    return false;
+  }
+  {
+    const my_theme_property_def_t* def = css_theme_property_def(theme, prop);
+    if (def != NULL) {
+      return css_container_style_typed_eq(def->syntax, subst, subst_length,
+                                          want, want_length);
+    }
+  }
+  return css_container_style_value_eq(subst, subst_length, want,
+                                      want_length);
+}
+
 bool my_theme_container_matches(const my_theme_t* theme,
                                 const struct my_widget_t* anchor,
                                 const char* container_query,
                                 const char* container_name) {
   const my_widget_t* a = anchor;
   unsigned hops = 0u;
+  const char* conds[MY_CSS_MAX_CONTAINER_CONDS];
+  size_t cond_lens[MY_CSS_MAX_CONTAINER_CONDS];
+  size_t n, ci;
+  bool has_size = false;
   if (theme == NULL || container_query == NULL ||
       container_query[0] == '\0') {
     return false;
   }
-  /* R673: style() condition kind — every ancestor is a candidate query
-   * container (container-type gates size queries only); the name still
-   * filters. The custom property resolves on the nearest qualifying
-   * ancestor through the var() machinery (own cascade → DOM
-   * inheritance, registered inherits/initial honored) and compares as
-   * whitespace-normalized raw text. R677: a registered property
-   * compares computed values instead (typed by its syntax primitive). */
-  if (css_container_query_is_style(container_query,
-                                   strlen(container_query))) {
-    char prop[MY_STYLE_KEY_LEN];
-    char ref[MY_STYLE_KEY_LEN + 8u];
-    const char* want;
-    size_t want_length;
-    if (!css_container_style_query_parse(container_query,
-                                         strlen(container_query), prop,
-                                         sizeof(prop), &want,
-                                         &want_length)) {
-      return false;
+  /* R681: an and-only condition list evaluates as a conjunction on one
+   * query container; a single condition degenerates to the R670/R673
+   * paths (merged here). An unsplittable whole string (pure size
+   * or/not compositions) evaluates through the media machinery as
+   * before. */
+  n = css_container_split_and(container_query, strlen(container_query),
+                              conds, cond_lens, MY_CSS_MAX_CONTAINER_CONDS);
+  if (n == 0u) {
+    conds[0] = container_query;
+    cond_lens[0] = strlen(container_query);
+    n = 1u;
+  }
+  for (ci = 0u; ci < n; ci++) {
+    if (!css_container_query_is_style(conds[ci], cond_lens[ci])) {
+      has_size = true;
+      break;
     }
-    while (a != NULL && hops++ < 16u) {
-      if (container_name == NULL || container_name[0] == '\0' ||
-          css_container_name_matches(theme, a, container_name)) {
-        char subst[CSS_VAR_MAX_SUBST_BYTES];
-        size_t subst_length = 0u;
-        char visiting[CSS_VAR_MAX_VISITING][MY_STYLE_KEY_LEN];
-        int ref_length = snprintf(ref, sizeof(ref), "var(%s)", prop);
-        if (ref_length < 0 || (size_t)ref_length >= sizeof(ref)) {
-          return false;
-        }
-        if (!css_var_substitute(theme, a, MY_STATE_NORMAL, ref,
-                                (size_t)ref_length, subst, sizeof(subst),
-                                &subst_length, visiting, 0u, 0u)) {
-          return false;
-        }
-        /* R677: a registered property compares computed values — the
-         * registered primitive types both sides; an unregistered
-         * property keeps the whitespace-normalized raw-text verdict. */
-        {
-          const my_theme_property_def_t* def =
-              css_theme_property_def(theme, prop);
-          if (def != NULL) {
-            return css_container_style_typed_eq(def->syntax, subst,
-                                                subst_length, want,
-                                                want_length);
+  }
+  /* R673: pure-style lists take every ancestor as a candidate query
+   * container (container-type gates size legs only); a list holding a
+   * size leg resolves on the nearest size-qualified container so the
+   * size legs have a rect to read. The name filters in both shapes;
+   * the nearest qualifying container decides the whole conjunction. */
+  while (a != NULL && hops++ < 16u) {
+    if (has_size) {
+      const my_value_t* type_v = my_theme_get_for_widget(
+          theme, a, MY_STATE_NORMAL, "container_type");
+      const char* type =
+          (type_v != NULL && my_value_type(type_v) == MY_VALUE_STR)
+              ? my_value_get_str(type_v)
+              : NULL;
+      if (type != NULL &&
+          (my_str_eq(type, "size") || my_str_eq(type, "inline-size")) &&
+          (container_name == NULL || container_name[0] == '\0' ||
+           css_container_name_matches(theme, a, container_name))) {
+        uint32_t w = a->rect.w > 0 ? (uint32_t)a->rect.w : 0u;
+        uint32_t h = a->rect.h > 0 ? (uint32_t)a->rect.h : 0u;
+        for (ci = 0u; ci < n; ci++) {
+          bool leg = false;
+          if (css_container_query_is_style(conds[ci], cond_lens[ci])) {
+            leg = css_container_style_cond_matches(theme, a, conds[ci],
+                                                   cond_lens[ci]);
+          } else {
+            bool verdict = false;
+            leg = css_container_eval_size_query(conds[ci], cond_lens[ci],
+                                               w, h, &verdict) &&
+                  verdict;
+          }
+          if (!leg) {
+            return false;
           }
         }
-        return css_container_style_value_eq(subst, subst_length, want,
-                                            want_length);
+        return true;
       }
-      a = a->parent;
-    }
-    return false;
-  }
-  /* nearest ancestor that is a query container for this query: type
-   * size/inline-size, plus the name when the query is named. */
-  while (a != NULL && hops++ < 16u) {
-    const my_value_t* type_v = my_theme_get_for_widget(
-        theme, a, MY_STATE_NORMAL, "container_type");
-    const char* type =
-        (type_v != NULL && my_value_type(type_v) == MY_VALUE_STR)
-            ? my_value_get_str(type_v)
-            : NULL;
-    if (type != NULL &&
-        (my_str_eq(type, "size") || my_str_eq(type, "inline-size")) &&
-        (container_name == NULL || container_name[0] == '\0' ||
-         css_container_name_matches(theme, a, container_name))) {
-      bool matches = false;
-      uint32_t w = a->rect.w > 0 ? (uint32_t)a->rect.w : 0u;
-      uint32_t h = a->rect.h > 0 ? (uint32_t)a->rect.h : 0u;
-      return css_container_eval_size_query(container_query,
-                                           strlen(container_query), w, h,
-                                           &matches) &&
-             matches;
+    } else if (container_name == NULL || container_name[0] == '\0' ||
+               css_container_name_matches(theme, a, container_name)) {
+      for (ci = 0u; ci < n; ci++) {
+        if (!css_container_style_cond_matches(theme, a, conds[ci],
+                                              cond_lens[ci])) {
+          return false;
+        }
+      }
+      return true;
     }
     a = a->parent;
   }

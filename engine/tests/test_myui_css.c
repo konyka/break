@@ -1578,7 +1578,7 @@ TEST(css_container_style_queries_resolve_at_match_time)
   const char* bare =
       "@container style(--accent) { button { color: #010203; } }";
   const char* mixed =
-      "@container style(--accent: red) and (min-width: 400px) {"
+      "@container style(--accent: red) or (min-width: 400px) {"
       " button { color: #010203; } }";
   const char* non_custom =
       "@container style(color: red) { button { color: #010203; } }";
@@ -1634,8 +1634,9 @@ TEST(css_container_style_queries_resolve_at_match_time)
   ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name, "card");
   my_css_sheet_destroy(sheet);
 
-  /* bounded slice: the bare form, and/or mixing, and non-custom
-   * properties all reject in strict mode. */
+  /* bounded slice: the bare form and or-mixing reject in strict mode
+   * (R681 lifted the `and` composition into its own machinery; `or`
+   * stays single-condition-out-of-scope for style() conditions). */
   memset(&error, 0, sizeof(error));
   ASSERT_TRUE(my_css_parse_with_options(NULL, bare, strlen(bare), &options,
                                         &error) == NULL);
@@ -2512,6 +2513,201 @@ TEST(css_property_syntax_lone_ident_enforced)
   my_theme_destroy(theme);
 
   my_value_reset(&out);
+}
+
+TEST(css_container_and_condition_lists_evaluate_at_match_time)
+{
+  /* R681: an and-only condition list in one @container prelude —
+   * `style(--a: v) and (size-feature)` or `style(...) and style(...)`
+   * — validates per condition and evaluates as a conjunction against
+   * one query container (a mixed list resolves on the nearest
+   * size-qualified container; a pure-style list keeps the style path's
+   * container choice). or/not stay rejected (bounded slice). */
+  const char* mixed_deferred =
+      "button { color: #010203; }"
+      "@container style(--accent: red) and (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* pure_style_deferred =
+      "@container style(--a: red) and style(--b: 1)"
+      " { button { color: #010203; } }";
+  const char* or_rejected =
+      "@container style(--a: red) or (min-width: 400px)"
+      " { button { color: #010203; } }";
+  const char* not_style_rejected =
+      "@container not style(--a: red) { button { color: #010203; } }";
+  const char* mixed_hit =
+      "panel { container-type: inline-size; --accent: red; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) and (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* mixed_style_miss =
+      "panel { container-type: inline-size; --accent: blue; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) and (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* mixed_size_miss =
+      "panel { container-type: inline-size; --accent: red; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) and (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* pure_hit =
+      "panel { --a: red; --b: 1; }"
+      "@container style(--a: red) and style(--b: 1)"
+      " { button { color: #010203; } }";
+  const char* pure_miss =
+      "panel { --a: red; --b: 2; }"
+      "@container style(--a: red) and style(--b: 1)"
+      " { button { color: #010203; } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* a mixed and-list defers with the whole conjunction text stamped. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  sheet = my_css_parse_with_options(NULL, mixed_deferred,
+                                    strlen(mixed_deferred), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_STR_EQ(my_css_rule(sheet, 1u)->container_query,
+                "style(--accent: red) and (min-width: 400px)");
+  my_css_sheet_destroy(sheet);
+
+  /* a pure-style and-list defers too. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, pure_style_deferred,
+                                    strlen(pure_style_deferred), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "style(--a: red) and style(--b: 1)");
+  my_css_sheet_destroy(sheet);
+
+  /* a style condition mixed with `or` still rejects (bounded slice:
+   * and-only). */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, or_rejected,
+                                        strlen(or_rejected), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, not_style_rejected,
+                                        strlen(not_style_rejected),
+                                        &options, &error) == NULL);
+
+  /* match time, mixed: both legs true on one container -> hit. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_hit,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x040506FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* the style leg failing kills the conjunction. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_style_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* the size leg failing kills the conjunction. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 300;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_size_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* pure style: both conditions on the nearest ancestor. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, pure_hit,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* one failing style condition kills the conjunction. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, pure_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
 }
 
 TEST(css_container_nested_queries_and_at_match_time)
@@ -8519,6 +8715,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_syntax_multi_choice_alternatives);
     RUN_TEST(css_decl_block_nested_container_defers_to_match_time);
     RUN_TEST(css_property_syntax_lone_ident_enforced);
+    RUN_TEST(css_container_and_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
