@@ -363,14 +363,29 @@ int main(int argc, char** argv) {
       {"13_list_view", scene_list_view},
       {"15_widget_mix", scene_mix}};
   const char* dir = argc > 1 ? argv[1] : ".";
-  g_font = my_font_stb_create(NULL,
+  /* font candidates per platform (same table as myui_explorer): probe in
+   * order — the first font that loads wins; no font = text scenes draw
+   * nothing and the smoke check reports it. */
+  static const char* font_candidates[] = {
+#if defined(_WIN32)
+      "C:\\Windows\\Fonts\\arial.ttf",
+#elif defined(__APPLE__)
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+      "/Library/Fonts/Arial.ttf",
+#else
       "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
-      4096u);
+      "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+#endif
+      NULL};
+  size_t fi;
   size_t failures = 0u;
   size_t i;
   size_t begin = argc > 2 ? (size_t)atoi(argv[2]) : 0u;
   size_t end = argc > 3 ? (size_t)atoi(argv[3])
                      : sizeof(scenes) / sizeof(scenes[0]);
+  for (fi = 0u; g_font == NULL && font_candidates[fi] != NULL; fi++) {
+    g_font = my_font_stb_create(NULL, font_candidates[fi], 4096u);
+  }
   for (i = begin; i < end && i < sizeof(scenes) / sizeof(scenes[0]); i++) {
     g_colored = 0u;
     scenes[i].fn(dir);

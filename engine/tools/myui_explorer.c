@@ -613,10 +613,23 @@ void ex_key(app_t* app, int ch) {
 
 /* ---------------- window-system / backend runners ---------------- */
 
+/* POSIX runner capability guards: the X11/Wayland/EGL runners build only
+ * on Linux-class hosts — the win32/cocoa ports live in ex_platform_*.
+ * EX_HAVE_EGL_WL additionally requires the wayland/EGL dev packages (the
+ * CMake no-wayland branch is x11+soft only). */
+#if !defined(_WIN32) && !defined(__APPLE__)
+#define EX_HAVE_X11 1
+#if !defined(EX_EXPLORER_NO_WAYLAND)
+#define EX_HAVE_EGL_WL 1
+#endif
+#endif
+
+#if defined(EX_HAVE_X11)
 static void nap(void) {
   struct timespec ts = {0, 8000000L};
   nanosleep(&ts, NULL);
 }
+#endif
 
 static int parse_args(int argc, char** argv, const char** platform,
                       const char** backend, const char* default_platform) {
@@ -642,10 +655,14 @@ static int parse_args(int argc, char** argv, const char** platform,
   return 0;
 }
 
+#if defined(EX_HAVE_EGL_WL)
 static int run_glshot(const char* path, const char* font_path);
-static int run_x11_soft(app_t* app, const char* font_path);
 static int run_wayland_soft(app_t* app, const char* font_path);
 static int run_gl(app_t* app, const char* font_path, int wayland);
+#endif
+#if defined(EX_HAVE_X11)
+static int run_x11_soft(app_t* app, const char* font_path);
+#endif
 
 int main(int argc, char** argv) {
   static const char* default_platform =
@@ -670,8 +687,14 @@ int main(int argc, char** argv) {
       printf("shot written: %s\n", argv[i + 1]);
       return 0;
     }
-    if (strcmp(argv[i], "--glshot") == 0 && i + 1 < argc)
+    if (strcmp(argv[i], "--glshot") == 0 && i + 1 < argc) {
+#if defined(EX_HAVE_EGL_WL)
       return run_glshot(argv[i + 1], font_path);
+#else
+      printf("--glshot not supported in this build\n");
+      return 1;
+#endif
+    }
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
       printf("usage: myui_explorer [--platform x11|wayland|win32|cocoa] "
              "[--backend soft|gl] | --selftest <dir> | --shot <file> | "
@@ -693,14 +716,23 @@ int main(int argc, char** argv) {
     printf("platform %s not supported in this build\n", platform);
     return 1;
 #else
+#if defined(EX_HAVE_EGL_WL)
     if (gl) return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
     if (strcmp(platform, "wayland") == 0) return run_wayland_soft(app, font_path);
     return run_x11_soft(app, font_path);
+#else
+    if (gl || strcmp(platform, "wayland") == 0) {
+      printf("platform %s/backend not supported in this build\n", platform);
+      return 1;
+    }
+    return run_x11_soft(app, font_path);
+#endif
 #endif
   }
 }
 
 /* ---------------- X11 + software (XImage blit) ---------------- */
+#if defined(EX_HAVE_X11)
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -771,7 +803,10 @@ static int run_x11_soft(app_t* app, const char* font_path) {
   }
 }
 
+#endif /* EX_HAVE_X11 */
+
 /* ---------------- Wayland (shared: input + soft runner) ---------------- */
+#if defined(EX_HAVE_EGL_WL)
 #include <wayland-client.h>
 #include <wayland-client-protocol.h>
 #include <wayland-egl.h>
@@ -1294,3 +1329,4 @@ static int run_glshot(const char* path, const char* font_path) {
   free(rgb);
   return 0;
 }
+#endif /* EX_HAVE_EGL_WL */
