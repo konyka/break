@@ -55,6 +55,7 @@ typedef struct my_echart_action_t {
 } my_echart_action_t;
 
 typedef uint64_t my_echart_subscription_t;
+typedef struct my_echart_t my_echart_t;
 typedef struct my_echart_event_adapter_t my_echart_event_adapter_t;
 typedef void (*my_echart_event_callback_t)(void*, const my_echart_event_t*);
 typedef void (*my_echart_action_callback_t)(void*, const my_echart_action_t*);
@@ -62,6 +63,9 @@ typedef void (*my_echart_action_callback_t)(void*, const my_echart_action_t*);
 my_echart_event_adapter_t* my_echart_event_adapter_create(
     const my_allocator_t* allocator);
 void my_echart_event_adapter_destroy(my_echart_event_adapter_t* adapter);
+my_ret_t my_echart_event_adapter_attach_model(my_echart_event_adapter_t* adapter,
+                                              my_echart_t* model);
+void my_echart_event_model_destroyed(my_echart_t* model);
 my_echart_subscription_t my_echart_event_on(my_echart_event_adapter_t* adapter,
                                              my_echart_event_type_t type,
                                              my_echart_event_callback_t callback,

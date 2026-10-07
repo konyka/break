@@ -275,6 +275,7 @@ static bool parse_grids(my_echart_json_doc_t* d, my_conf_node_t* n) {
   if (len != 0u && (d->grids == NULL || d->grid_offsets == NULL)) return false;
   for (i = 0u; i < len; ++i) {
     my_conf_node_t* g = child(n, i); if (!grid_value(my_conf_get(g,"left"), &d->grids[i].left) || !grid_value(my_conf_get(g,"top"), &d->grids[i].top) || !grid_value(my_conf_get(g,"width"), &d->grids[i].width) || !grid_value(my_conf_get(g,"height"), &d->grids[i].height)) return false;
+    d->grids[i].axis_count = 2u;
     my_conf_node_t* si = my_conf_get(g, "seriesIndices");
     if (si != NULL && my_conf_type(si) == MY_CONF_ARRAY) {
       size_t* indices;
@@ -291,7 +292,7 @@ static bool parse_grids(my_echart_json_doc_t* d, my_conf_node_t* n) {
       d->grid_index_count += ilen;
       d->grids[i].series_count = ilen;
     }
-    y = my_conf_get(g, "yAxis"); if (y != NULL && number(my_conf_get(y,"min"), &d->grids[i].y_min) && number(my_conf_get(y,"max"), &d->grids[i].y_max)) d->grids[i].range_set=true;
+    y = my_conf_get(g, "yAxis"); if (y != NULL && number(my_conf_get(y,"min"), &d->grids[i].axis_min[0]) && number(my_conf_get(y,"max"), &d->grids[i].axis_max[0])) { d->grids[i].axis_range_set[0] = true; }
   }
   for (i = 0u; i < len; ++i)
     if (d->grids[i].series_count > 0u)

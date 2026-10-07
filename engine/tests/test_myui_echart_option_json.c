@@ -43,7 +43,7 @@ TEST(echart_json_happy_path) {
   ASSERT_EQ(input->grid_count, 1u);
   ASSERT_FLOAT_EQ((float)input->grids[0].left, 0.1f, 1e-6f);
   ASSERT_EQ(input->grids[0].series_count, 2u);
-  ASSERT_TRUE(input->grids[0].range_set);
+  ASSERT_TRUE(input->grids[0].axis_range_set[0]);
   ASSERT_EQ(my_echart_option_validate(input), MY_RET_OK);
   my_echart_option_init(&copy, NULL);
   ASSERT_EQ(my_echart_option_copy(&copy, input, NULL), MY_RET_OK);

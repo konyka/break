@@ -1,4 +1,7 @@
 #include "myui/echarts/my_echart_event.h"
+#include "myui/echarts/my_echart.h"
+
+#include <math.h>
 
 typedef enum subscription_kind_t { SUB_EVENT, SUB_ACTION } subscription_kind_t;
 typedef struct subscription_t {
@@ -20,7 +23,11 @@ struct my_echart_event_adapter_t {
   my_echart_subscription_t next_id;
   unsigned dispatch_depth;
   bool destroyed;
+  my_echart_t* model;
 };
+
+#define MY_ECHART_EVENT_MAX_MODEL_ADAPTERS 32u
+static my_echart_event_adapter_t* s_model_adapters[MY_ECHART_EVENT_MAX_MODEL_ADAPTERS];
 
 static void free_subscriptions(my_echart_event_adapter_t* adapter) {
   subscription_t* current = adapter->subscriptions;
@@ -69,6 +76,8 @@ my_echart_event_adapter_t* my_echart_event_adapter_create(
 void my_echart_event_adapter_destroy(my_echart_event_adapter_t* adapter) {
   if (adapter == NULL || adapter->destroyed) return;
   adapter->destroyed = true;
+  for (size_t i = 0u; i < MY_ECHART_EVENT_MAX_MODEL_ADAPTERS; i++)
+    if (s_model_adapters[i] == adapter) s_model_adapters[i] = NULL;
   if (adapter->dispatch_depth == 0u) {
     free_subscriptions(adapter);
     my_mem_free(adapter->allocator, adapter);
@@ -127,6 +136,32 @@ my_echart_subscription_t my_echart_action_on(my_echart_event_adapter_t* adapter,
                                               my_echart_action_callback_t callback,
                                               void* user_data) {
   return add_action_subscription(adapter, callback, user_data);
+}
+
+my_ret_t my_echart_event_adapter_attach_model(my_echart_event_adapter_t* adapter,
+                                              my_echart_t* model) {
+  size_t i;
+  if (adapter == NULL || adapter->destroyed) return MY_RET_INVALID_PARAMS;
+  adapter->model = model;
+  for (i = 0u; i < MY_ECHART_EVENT_MAX_MODEL_ADAPTERS; i++)
+    if (s_model_adapters[i] == adapter) s_model_adapters[i] = NULL;
+  if (model != NULL) {
+    for (i = 0u; i < MY_ECHART_EVENT_MAX_MODEL_ADAPTERS; i++)
+      if (s_model_adapters[i] == NULL) {
+        s_model_adapters[i] = adapter;
+        break;
+      }
+  }
+  return MY_RET_OK;
+}
+
+void my_echart_event_model_destroyed(my_echart_t* model) {
+  for (size_t i = 0u; i < MY_ECHART_EVENT_MAX_MODEL_ADAPTERS; i++) {
+    if (s_model_adapters[i] != NULL && s_model_adapters[i]->model == model) {
+      s_model_adapters[i]->model = NULL;
+      s_model_adapters[i] = NULL;
+    }
+  }
 }
 
 my_ret_t my_echart_event_off(my_echart_event_adapter_t* adapter,
@@ -210,6 +245,9 @@ my_ret_t my_echart_event_adapter_handle(my_echart_event_adapter_t* adapter,
 my_ret_t my_echart_dispatch_action(my_echart_event_adapter_t* adapter,
                                    const my_echart_action_t* action) {
   subscription_t* current;
+  my_echart_model_action_t model_action;
+  bool apply_model = false;
+  my_ret_t model_result = MY_RET_OK;
   if (adapter == NULL || action == NULL || adapter->destroyed ||
       !is_action_type_valid(action->type))
     return MY_RET_INVALID_PARAMS;
@@ -223,9 +261,41 @@ my_ret_t my_echart_dispatch_action(my_echart_event_adapter_t* adapter,
   }
   adapter->dispatch_depth--;
   if (adapter->dispatch_depth == 0u) collect_inactive(adapter);
+  if (!adapter->destroyed && adapter->model != NULL) {
+    if (action->type == MY_ECHART_ACTION_DATA_ZOOM ||
+        action->type == MY_ECHART_ACTION_BRUSH) {
+      if (isfinite(action->start) && isfinite(action->end) &&
+          action->start >= 0.0 && action->end > action->start &&
+          floor(action->start) == action->start &&
+          floor(action->end) == action->end &&
+          action->end <= (double)SIZE_MAX) {
+        model_action.type = action->type == MY_ECHART_ACTION_DATA_ZOOM
+                                ? MY_ECHART_MODEL_ACTION_DATA_ZOOM
+                                : MY_ECHART_MODEL_ACTION_BRUSH_SELECT;
+        model_action.series_id = NULL;
+        model_action.payload.zoom_start = (size_t)action->start;
+        model_action.payload.zoom_end = (size_t)action->end;
+        model_action.payload.visual_map_min = 0.0;
+        model_action.payload.visual_map_max = 0.0;
+        apply_model = true;
+      }
+    } else if (action->type == MY_ECHART_ACTION_LEGEND_SELECT &&
+               action->name != NULL) {
+      model_action.type = MY_ECHART_MODEL_ACTION_LEGEND_SELECT;
+      model_action.series_id = action->name;
+      model_action.payload.zoom_start = 0u;
+      model_action.payload.zoom_end = 0u;
+      model_action.payload.visual_map_min = 0.0;
+      model_action.payload.visual_map_max = 0.0;
+      apply_model = true;
+    }
+    if (apply_model)
+      model_result = my_echart_model_dispatch_action(adapter->model,
+                                                     &model_action);
+  }
   if (adapter->destroyed && adapter->dispatch_depth == 0u) {
     free_subscriptions(adapter);
     my_mem_free(adapter->allocator, adapter);
   }
-  return MY_RET_OK;
+  return model_result;
 }

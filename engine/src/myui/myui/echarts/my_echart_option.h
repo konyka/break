@@ -10,6 +10,7 @@
 #define MY_ECHART_MAX_MARK_POINTS 8u
 #define MY_ECHART_MAX_MARK_LINES 4u
 #define MY_ECHART_MAX_MARK_AREAS 4u
+#define MY_ECHART_MAX_AXES_PER_GRID 3u
 
 typedef enum my_echart_series_type_t {
   MY_ECHART_LINE = 0,
@@ -93,12 +94,10 @@ typedef struct my_echart_grid_input_t {
   double height;
   const size_t* series_indices;
   size_t series_count;
-  bool range_set;
-  double y_min;
-  double y_max;
-  bool range2_set;
-  double y2_min;
-  double y2_max;
+  bool axis_range_set[MY_ECHART_MAX_AXES_PER_GRID];
+  double axis_min[MY_ECHART_MAX_AXES_PER_GRID];
+  double axis_max[MY_ECHART_MAX_AXES_PER_GRID];
+  size_t axis_count;
   bool link_axis_pointer;
 } my_echart_grid_input_t;
 
@@ -176,12 +175,10 @@ typedef struct my_echart_grid_t {
   double height;
   size_t* series_indices;
   size_t series_count;
-  bool range_set;
-  double y_min;
-  double y_max;
-  bool range2_set;
-  double y2_min;
-  double y2_max;
+  bool axis_range_set[MY_ECHART_MAX_AXES_PER_GRID];
+  double axis_min[MY_ECHART_MAX_AXES_PER_GRID];
+  double axis_max[MY_ECHART_MAX_AXES_PER_GRID];
+  size_t axis_count;
   bool link_axis_pointer;
 } my_echart_grid_t;
 

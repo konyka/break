@@ -71,7 +71,7 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
     if (!valid_string(series->id) || !valid_string(series->name) ||
         series->type < MY_ECHART_LINE || series->type > MY_ECHART_THEME_RIVER ||
         (series->data_count > 0u && series->data == NULL) ||
-        series->y_axis_index > 1u)
+        series->y_axis_index >= MY_ECHART_MAX_AXES_PER_GRID)
       return MY_RET_INVALID_PARAMS;
     for (size_t j = 0u; j < series->data_count; j++)
       if (!isfinite(series->data[j])) return MY_RET_INVALID_PARAMS;
@@ -184,14 +184,18 @@ my_ret_t my_echart_option_validate(const my_echart_option_input_t* input) {
           if (input->grids[k].series_indices[m] == grid->series_indices[j])
             return MY_RET_INVALID_PARAMS;
     }
-    if (grid->range_set &&
-        (!isfinite(grid->y_min) || !isfinite(grid->y_max) ||
-         grid->y_max <= grid->y_min))
+    if (grid->axis_count == 0u ||
+        grid->axis_count > MY_ECHART_MAX_AXES_PER_GRID)
       return MY_RET_INVALID_PARAMS;
-    if (grid->range2_set &&
-        (!isfinite(grid->y2_min) || !isfinite(grid->y2_max) ||
-         grid->y2_max <= grid->y2_min))
-      return MY_RET_INVALID_PARAMS;
+    for (size_t a = 0u; a < grid->axis_count; a++)
+      if (grid->axis_range_set[a] &&
+          (!isfinite(grid->axis_min[a]) || !isfinite(grid->axis_max[a]) ||
+           grid->axis_max[a] <= grid->axis_min[a]))
+        return MY_RET_INVALID_PARAMS;
+    for (size_t j = 0u; j < grid->series_count; j++)
+      if (input->series[grid->series_indices[j]].y_axis_index >=
+          grid->axis_count)
+        return MY_RET_INVALID_PARAMS;
   }
   return MY_RET_OK;
 }
@@ -375,12 +379,13 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
       candidate.grids[i].top = src->grids[i].top;
       candidate.grids[i].width = src->grids[i].width;
       candidate.grids[i].height = src->grids[i].height;
-      candidate.grids[i].range_set = src->grids[i].range_set;
-      candidate.grids[i].y_min = src->grids[i].y_min;
-      candidate.grids[i].y_max = src->grids[i].y_max;
-      candidate.grids[i].range2_set = src->grids[i].range2_set;
-      candidate.grids[i].y2_min = src->grids[i].y2_min;
-    candidate.grids[i].y2_max = src->grids[i].y2_max;
+    memcpy(candidate.grids[i].axis_range_set, src->grids[i].axis_range_set,
+           sizeof(candidate.grids[i].axis_range_set));
+    memcpy(candidate.grids[i].axis_min, src->grids[i].axis_min,
+           sizeof(candidate.grids[i].axis_min));
+    memcpy(candidate.grids[i].axis_max, src->grids[i].axis_max,
+           sizeof(candidate.grids[i].axis_max));
+    candidate.grids[i].axis_count = src->grids[i].axis_count;
     candidate.grids[i].link_axis_pointer = src->grids[i].link_axis_pointer;
       candidate.grids[i].series_count = src->grids[i].series_count;
       if (candidate.grids[i].series_count > 0u) {

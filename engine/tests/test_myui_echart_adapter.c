@@ -238,9 +238,9 @@ TEST(echart_adapter_projects_component_state) {
   ASSERT_NOT_NULL(adapter);
   ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
   ASSERT_FALSE(((my_chart_t*)chart)->show_legend);
-  ASSERT_TRUE(((my_chart_t*)chart)->grid_range_set[0]);
-  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->grid_y_min[0], -2.5f, 1e-6f);
-  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->grid_y_max[0], 7.5f, 1e-6f);
+  ASSERT_TRUE(((my_chart_t*)chart)->grid_axis_range_set[0][0]);
+  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->grid_axis_min[0][0], -2.5f, 1e-6f);
+  ASSERT_FLOAT_EQ(((my_chart_t*)chart)->grid_axis_max[0][0], 7.5f, 1e-6f);
   ASSERT_TRUE(((my_chart_t*)chart)->zoom_set);
   ASSERT_EQ(((my_chart_t*)chart)->zoom_start, 1u);
   ASSERT_EQ(((my_chart_t*)chart)->zoom_end, 4u);
@@ -531,10 +531,14 @@ TEST(echart_adapter_projects_multi_grid) {
       {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL},
       {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
   my_echart_grid_input_t grids[] = {
-      {0.05, 0.05, 0.9, 0.4, grid0_series, 1u, true, 0.0, 10.0, false, 0.0,
-       0.0, true},
-      {0.05, 0.55, 0.9, 0.4, grid1_series, 1u, false, 0.0, 0.0, false, 0.0,
-       0.0, true}};
+      {.left = 0.05, .top = 0.05, .width = 0.9, .height = 0.4,
+       .series_indices = grid0_series, .series_count = 1u,
+       .axis_range_set = {true, false, false}, .axis_min = {0.0, 0.0, 0.0},
+       .axis_max = {10.0, 0.0, 0.0}, .axis_count = 1u,
+       .link_axis_pointer = true},
+      {.left = 0.05, .top = 0.55, .width = 0.9, .height = 0.4,
+       .series_indices = grid1_series, .series_count = 1u,
+       .axis_count = 1u, .link_axis_pointer = true}};
   my_echart_option_input_t input = {"multi", NULL, 0u, series, 2u,
                                    false, false, false, 0.0, 0.0, false, 0u, 0u,
                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,

@@ -38,9 +38,10 @@ typedef struct {
 } my_chart_axis_t;
 ```
 
-`my_chart_t` gains `grids[]`, `grid_count`, and a small axis-slot array
-(`MY_CHART_MAX_AXES = 8`, two per grid). Capacity matches common ECharts
-usage; overflow is rejected up front, never truncated silently.
+`my_chart_t` gains `grids[]`, `grid_count`, and three axis slots per grid
+(`MY_CHART_MAX_AXES_PER_GRID = 3`). Axis 0 is left; additional axes are
+drawn in right-side columns. Capacity matches common ECharts usage; overflow
+is rejected up front, never truncated silently.
 
 ## Backward Compatibility
 
@@ -125,7 +126,9 @@ A dataZoom update, including a clear/reset, and hover changes broadcast to the
 other group members. Chart destruction automatically removes the weak registry
 entry.
 
-## Non-Goals
+## Axis counts
 
-- Arbitrary axis counts beyond the per-grid left/right axes.
+Each grid supports one to three Y axes. Axis 0 labels remain on the left;
+additional axes are rendered on the right in outward-stacked columns, matching
+the ECharts convention.
 - Per-grid dirty-rect invalidation (widget-level invalidation remains).

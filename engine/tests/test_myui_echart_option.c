@@ -370,10 +370,16 @@ TEST(echart_option_copies_multi_grid) {
       {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL},
       {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
   my_echart_grid_input_t grids[] = {
-      {0.05, 0.05, 0.9, 0.4, grid0_series, 1u, true, 0.0, 10.0, false, 0.0,
-       0.0, false},
-      {0.05, 0.55, 0.9, 0.4, grid1_series, 1u, false, 0.0, 0.0, true, 0.0,
-       5.0, false}};
+      {.left = 0.05, .top = 0.05, .width = 0.9, .height = 0.4,
+       .series_indices = grid0_series, .series_count = 1u,
+       .axis_range_set = {true, false, false},
+       .axis_min = {0.0, 0.0, 0.0}, .axis_max = {10.0, 0.0, 0.0},
+       .axis_count = 1u},
+      {.left = 0.05, .top = 0.55, .width = 0.9, .height = 0.4,
+       .series_indices = grid1_series, .series_count = 1u,
+       .axis_range_set = {false, true, false},
+       .axis_min = {0.0, 0.0, 0.0}, .axis_max = {0.0, 5.0, 0.0},
+       .axis_count = 2u}};
   my_echart_option_input_t input = {"multi", NULL, 0u, series, 2u,
                                    false, false, false, 0.0, 0.0, false, 0u, 0u,
                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,
@@ -388,8 +394,8 @@ TEST(echart_option_copies_multi_grid) {
   ASSERT_FLOAT_EQ((float)option.grids[0].left, 0.05f, 1e-6f);
   ASSERT_EQ(option.grids[0].series_count, 1u);
   ASSERT_EQ(option.grids[0].series_indices[0], 0u);
-  ASSERT_TRUE(option.grids[0].range_set);
-  ASSERT_FLOAT_EQ((float)option.grids[1].y2_max, 5.0f, 1e-6f);
+   ASSERT_TRUE(option.grids[0].axis_range_set[0]);
+   ASSERT_FLOAT_EQ((float)option.grids[1].axis_max[1], 5.0f, 1e-6f);
   my_echart_option_free(&option);
 }
 
@@ -412,6 +418,7 @@ TEST(echart_option_rejects_invalid_multi_grid) {
   grids[0].width = 0.9; grids[0].height = 0.4;
   grids[0].series_indices = series_idx;
   grids[0].series_count = 1u;
+  grids[0].axis_count = 1u;
   grids[1] = grids[0];
   grids[1].top = 0.55;
   grids[1].series_indices = series_idx1;
@@ -433,11 +440,11 @@ TEST(echart_option_rejects_invalid_multi_grid) {
   grids[1].series_indices = (const size_t[]){0u};
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
   grids[1].series_indices = series_idx;
-  grids[0].range_set = true;
-  grids[0].y_min = 10.0;
-  grids[0].y_max = 0.0;
+  grids[0].axis_range_set[0] = true;
+  grids[0].axis_min[0] = 10.0;
+  grids[0].axis_max[0] = 0.0;
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
-  grids[0].range_set = false;
+  grids[0].axis_range_set[0] = false;
   input.grid_count = 5u;
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
   input.grid_count = 2u;
@@ -448,7 +455,26 @@ TEST(echart_option_rejects_invalid_multi_grid) {
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
 }
 
+TEST(echart_option_validates_grid_axis_count_and_binding) {
+  static const double values[] = {1.0};
+  static const size_t indices[] = {0u};
+  my_echart_series_input_t series = {
+      "a", "A", MY_ECHART_LINE, values, 1u, 0u, 2u, NULL, true, NULL};
+  my_echart_grid_input_t grid = {0};
+  my_echart_option_input_t input = {0};
+  grid.left = 0.1; grid.top = 0.1; grid.width = 0.8; grid.height = 0.8;
+  grid.series_indices = indices; grid.series_count = 1u; grid.axis_count = 2u;
+  input.title = "axes"; input.series = &series; input.series_count = 1u;
+  input.grids = &grid; input.grid_count = 1u;
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
+  grid.axis_count = 3u;
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_OK);
+  grid.axis_count = 4u;
+  ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
+}
+
 TEST_MAIN_BEGIN()
+  RUN_TEST(echart_option_validates_grid_axis_count_and_binding);
   RUN_TEST(echart_option_copies_owned_data);
   RUN_TEST(echart_option_copies_multi_grid);
   RUN_TEST(echart_option_rejects_invalid_multi_grid);

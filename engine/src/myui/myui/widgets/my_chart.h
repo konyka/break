@@ -12,6 +12,7 @@
 #define MY_CHART_MAX_MARK_LINES 4u
 #define MY_CHART_MAX_MARK_AREAS 4u
 #define MY_CHART_MAX_GRIDS 4u
+#define MY_CHART_MAX_AXES_PER_GRID 3u
 #define MY_CHART_NO_GRID SIZE_MAX
 #define MY_CHART_GROUP_MAX_GROUPS 8u
 #define MY_CHART_GROUP_MAX_CHARTS 8u
@@ -41,7 +42,7 @@ typedef struct my_chart_series_t {
   const float* values;
   size_t count;
   uint32_t color;
-  /** @brief Y axis binding: 0 = left axis, 1 = right axis. */
+  /** @brief Y axis binding: 0 = left axis, higher values are right axes. */
   unsigned char y_axis;
 } my_chart_series_t;
 
@@ -73,12 +74,10 @@ typedef struct my_chart_grid_desc_t {
   float height;
   size_t series_indices[MY_CHART_MAX_SERIES];
   size_t series_count;
-  bool range_set;
-  float y_min;
-  float y_max;
-  bool range2_set;
-  float y2_min;
-  float y2_max;
+  bool axis_range_set[MY_CHART_MAX_AXES_PER_GRID];
+  float axis_min[MY_CHART_MAX_AXES_PER_GRID];
+  float axis_max[MY_CHART_MAX_AXES_PER_GRID];
+  size_t axis_count;
   bool visible;
   bool link_axis_pointer;
 } my_chart_grid_desc_t;
@@ -123,12 +122,10 @@ typedef struct my_chart_t {
   my_chart_series_t series[MY_CHART_MAX_SERIES];
   bool series_visible[MY_CHART_MAX_SERIES];
   size_t series_count;
-  float grid_y_min[MY_CHART_MAX_GRIDS];
-  float grid_y_max[MY_CHART_MAX_GRIDS];
-  bool grid_range_set[MY_CHART_MAX_GRIDS];
-  float grid_y2_min[MY_CHART_MAX_GRIDS];
-  float grid_y2_max[MY_CHART_MAX_GRIDS];
-  bool grid_range2_set[MY_CHART_MAX_GRIDS];
+  bool grid_axis_range_set[MY_CHART_MAX_GRIDS][MY_CHART_MAX_AXES_PER_GRID];
+  float grid_axis_min[MY_CHART_MAX_GRIDS][MY_CHART_MAX_AXES_PER_GRID];
+  float grid_axis_max[MY_CHART_MAX_GRIDS][MY_CHART_MAX_AXES_PER_GRID];
+  size_t grid_axis_count[MY_CHART_MAX_GRIDS];
   float grid_left[MY_CHART_MAX_GRIDS];
   float grid_top[MY_CHART_MAX_GRIDS];
   float grid_width[MY_CHART_MAX_GRIDS];

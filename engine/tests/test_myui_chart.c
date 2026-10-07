@@ -1315,6 +1315,7 @@ TEST(chart_multi_grid_layout_and_assignment) {
 
   ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
   memset(&grid, 0, sizeof(grid));
+  grid.axis_count = 1u;
   grid.left = 0.1f; grid.top = 0.55f; grid.width = 0.8f; grid.height = 0.35f;
   grid.series_indices[0] = 0u;
   grid.series_count = 1u;
@@ -1382,6 +1383,7 @@ TEST(chart_multi_grid_renders_series_in_own_rect) {
   ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
 
   memset(&grid, 0, sizeof(grid));
+  grid.axis_count = 1u;
   grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
   grid.series_indices[0] = 0u;
   grid.series_count = 1u;
@@ -1420,6 +1422,7 @@ TEST(chart_multi_grid_auto_range_isolated) {
   ASSERT_EQ(my_chart_set_series(chart, 1u, &huge), MY_RET_OK);
   ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
   memset(&grid, 0, sizeof(grid));
+  grid.axis_count = 1u;
   grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
   grid.series_indices[0] = 1u;
   grid.series_count = 1u;
@@ -1446,6 +1449,7 @@ TEST(chart_multi_grid_hit_test_resolves_own_grid) {
   ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
   ASSERT_EQ(my_chart_set_grid_count(chart, 2u), MY_RET_OK);
   memset(&grid, 0, sizeof(grid));
+  grid.axis_count = 1u;
   grid.left = 0.05f; grid.top = 0.05f; grid.width = 0.9f; grid.height = 0.4f;
   grid.series_indices[0] = 0u;
   grid.series_count = 1u;
@@ -1463,7 +1467,49 @@ TEST(chart_multi_grid_hit_test_resolves_own_grid) {
   my_widget_unref(chart);
 }
 
+TEST(chart_three_axis_ranges_are_isolated) {
+  static const float a[] = {1.0f, 3.0f};
+  static const float b[] = {100.0f, 300.0f};
+  static const float c[] = {-20.0f, -10.0f};
+  my_chart_series_t series[] = {{"A", a, 2u, 0u, 0u},
+                                {"B", b, 2u, 0u, 0u},
+                                {"C", c, 2u, 0u, 0u}};
+  my_chart_grid_desc_t grid;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  float lo, hi;
+  ASSERT_NOT_NULL(chart);
+  for (size_t i = 0u; i < 3u; i++)
+    ASSERT_EQ(my_chart_set_series(chart, i, &series[i]), MY_RET_OK);
+  memset(&grid, 0, sizeof(grid));
+  grid.left = 0.1f; grid.top = 0.1f; grid.width = 0.8f; grid.height = 0.8f;
+  grid.series_indices[0] = 0u; grid.series_indices[1] = 1u;
+  grid.series_indices[2] = 2u; grid.series_count = 3u; grid.visible = true;
+  grid.axis_count = 3u;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series_axis(chart, 0u, 0u), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series_axis(chart, 1u, 1u), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series_axis(chart, 2u, 2u), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_grid_range(chart, 0u, 1u, &lo, &hi), MY_RET_OK);
+  ASSERT_FLOAT_EQ(lo, 100.0f, 1e-6f); ASSERT_FLOAT_EQ(hi, 300.0f, 1e-6f);
+  ASSERT_EQ(my_chart_get_grid_range(chart, 0u, 2u, &lo, &hi), MY_RET_OK);
+  ASSERT_FLOAT_EQ(lo, -20.0f, 1e-6f); ASSERT_FLOAT_EQ(hi, -10.0f, 1e-6f);
+  grid.axis_range_set[2] = true; grid.axis_min[2] = -50.0f;
+  grid.axis_max[2] = 50.0f;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_grid_range(chart, 0u, 2u, &lo, &hi), MY_RET_OK);
+  ASSERT_FLOAT_EQ(lo, -50.0f, 1e-6f); ASSERT_FLOAT_EQ(hi, 50.0f, 1e-6f);
+  grid.axis_count = 1u;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_series_axis(chart, 2u), 0u);
+  grid.axis_count = 0u;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_INVALID_PARAMS);
+  grid.axis_count = 4u;
+  ASSERT_EQ(my_chart_set_grid(chart, 0u, &grid), MY_RET_INVALID_PARAMS);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
+  RUN_TEST(chart_three_axis_ranges_are_isolated);
   RUN_TEST(chart_rejects_invalid_series_and_range);
   RUN_TEST(chart_formats_fractional_axis_ticks);
   RUN_TEST(chart_hidden_series_excluded_from_auto_range);

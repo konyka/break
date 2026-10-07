@@ -9,7 +9,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 |---|---|
 | Core model | owned typed option, validation, replace/lazy update, id merge with append + capacity rejection, dataset columns resolved by dimension name (encode) with row-aligned sort and filter transforms |
 | Series | all 16 native modes: line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel, treemap, graph, calendar, themeRiver |
-| Cartesian | category labels, grid, fractional ticks, left/right Y axes, up to 4 grids (multi-grid layout, per-grid series assignment, per-grid axis ranges, per-grid hit test) |
+| Cartesian | category labels, grid, fractional ticks, 1-3 Y axes per grid (axis 0 left, additional axes right-offset), up to 4 grids, per-grid series assignment/ranges/hit-test |
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom, linked multi-grid axis pointers, and connected-chart dataZoom groups; adapter-event bridge fills series/data/category indexes via chart hit-test and pie/funnel/radar hover payloads |
 | Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
@@ -17,7 +17,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Animation | externally driven deterministic progress and fake-clock scheduler |
 | MVVM | owned option pointer binding, explicit sync, property notification sync |
 | JSON input | owning parser for the supported option subset: title, axes, series, legend/tooltip, dataZoom, visualMap, and multi-grid layout |
-| Components | legend/tooltip visibility, explicit Y range, category dataZoom window, continuous visualMap config, model-level dataZoom/visualMap/brush actions |
+| Components | legend/tooltip visibility, explicit Y range, category dataZoom window, continuous visualMap config, model-level dataZoom/visualMap/brush actions, event actions auto-drive an attached model |
 
 ## Supported only by the native adapter subset
 
@@ -32,7 +32,6 @@ overflow return `MY_RET_NOT_SUPPORTED`.
 
 - dataset transforms beyond row-aligned sort/filter and multi-dimensional
   `encode`;
-- arbitrary per-grid axis counts beyond independent left/right axes;
 - full tooltip formatter/trigger/position semantics;
 - complete dataZoom/visualMap/brush action payloads beyond the supported model
   subset;

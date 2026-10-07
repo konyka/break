@@ -1,4 +1,5 @@
 #include "myui/echarts/my_echart.h"
+#include "myui/echarts/my_echart_event.h"
 
 #include <math.h>
 #include <string.h>
@@ -22,6 +23,7 @@ my_echart_t* my_echart_create(const my_allocator_t* allocator) {
 
 void my_echart_destroy(my_echart_t* chart) {
   if (chart == NULL) return;
+  my_echart_event_model_destroyed(chart);
   my_echart_option_free(&chart->current);
   my_echart_option_free(&chart->pending);
   my_mem_free(chart->allocator, chart);

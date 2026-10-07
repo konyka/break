@@ -211,9 +211,9 @@ static void chart_range(const my_chart_t* chart, size_t grid, float* y_min,
   float lo = 0.0f;
   float hi = 1.0f;
   bool found = false;
-  if (chart->grid_range_set[grid]) {
-    *y_min = chart->grid_y_min[grid];
-    *y_max = chart->grid_y_max[grid];
+  if (chart->grid_axis_range_set[grid][0u]) {
+    *y_min = chart->grid_axis_min[grid][0u];
+    *y_max = chart->grid_axis_max[grid][0u];
     return;
   }
   if (chart->stacked && chart->mode == MY_CHART_BAR) {
@@ -263,33 +263,36 @@ static void chart_range(const my_chart_t* chart, size_t grid, float* y_min,
 }
 
 static unsigned chart_series_axis(const my_chart_t* chart, size_t index) {
-  return chart->series[index].y_axis == 1u ? 1u : 0u;
+  return chart->series[index].y_axis;
 }
 
 static bool chart_has_secondary(const my_chart_t* chart) {
   for (size_t i = 0u; i < chart->series_count; i++) {
-    if (chart_series_axis(chart, i) == 1u) return true;
+    if (chart_series_axis(chart, i) > 0u) return true;
   }
   return false;
 }
 
-/* Range for one axis (0=left, 1=right). Falls back to the shared/default range
- * when no series is bound to that axis. */
+/* Range for one axis. Falls back to the shared/default range when no series is
+ * bound to that axis. */
 static void chart_axis_range(const my_chart_t* chart, size_t grid,
                              unsigned axis, float* y_min, float* y_max) {
   size_t i;
   float lo = 0.0f;
   float hi = 1.0f;
   bool found = false;
-  if (axis == 1u) {
-    if (chart->grid_range2_set[grid]) {
-      *y_min = chart->grid_y2_min[grid];
-      *y_max = chart->grid_y2_max[grid];
-      return;
-    }
-  } else if (chart->grid_range_set[grid]) {
-    *y_min = chart->grid_y_min[grid];
-    *y_max = chart->grid_y_max[grid];
+  if (axis < MY_CHART_MAX_AXES_PER_GRID &&
+      chart->grid_axis_range_set[grid][axis]) {
+    *y_min = chart->grid_axis_min[grid][axis];
+    *y_max = chart->grid_axis_max[grid][axis];
+    return;
+  }
+  if (axis >= MY_CHART_MAX_AXES_PER_GRID) {
+    axis = 0u;
+  }
+  if (axis == 0u && chart->grid_axis_range_set[grid][0u]) {
+    *y_min = chart->grid_axis_min[grid][0u];
+    *y_max = chart->grid_axis_max[grid][0u];
     return;
   }
   if (chart->stacked && chart->mode == MY_CHART_BAR) {
@@ -428,16 +431,22 @@ static void chart_grid(my_widget_t* widget, my_vgcanvas_t* vg, float x, float y,
     my_vgcanvas_draw_text(vg, chart->axis_title, 5.0f, y - 4.0f);
   }
   if (chart != NULL && chart_has_secondary(chart)) {
-    float y2_min, y2_max;
-    chart_axis_range(chart, chart->paint_grid, 1u, &y2_min, &y2_max);
+    size_t axis_count = chart->grid_axis_count[chart->paint_grid];
     my_vgcanvas_set_font(vg, NULL, 10);
     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x7B8794FFu));
-    for (i = 0; i < grid_lines; i++) {
-      float ratio = (float)i / (float)(grid_lines - 1u);
-      float line_y = y + h * ratio;
-      (void)my_chart_format_tick(y2_max - (y2_max - y2_min) * ratio, text,
-                                 sizeof(text));
-      my_vgcanvas_draw_text(vg, text, x + w + 4.0f, line_y - 5.0f);
+    if (axis_count == 0u) axis_count = 2u;
+    for (size_t axis = 1u; axis < axis_count; axis++) {
+      float y2_min, y2_max;
+      chart_axis_range(chart, chart->paint_grid, (unsigned)axis, &y2_min,
+                       &y2_max);
+      for (i = 0; i < grid_lines; i++) {
+        float ratio = (float)i / (float)(grid_lines - 1u);
+        float line_y = y + h * ratio;
+        (void)my_chart_format_tick(y2_max - (y2_max - y2_min) * ratio, text,
+                                   sizeof(text));
+        my_vgcanvas_draw_text(vg, text, x + w + 4.0f + 34.0f * (float)(axis - 1u),
+                              line_y - 5.0f);
+      }
     }
   }
 }
@@ -1758,11 +1767,14 @@ my_ret_t my_chart_set_grid_count(my_widget_t* widget, size_t count) {
       if (chart->series_grid[i] >= count) chart->series_grid[i] = 0u;
     for (i = count; i < MY_CHART_MAX_GRIDS; i++) {
       chart->grid_explicit[i] = false;
-      chart->grid_range_set[i] = false;
-      chart->grid_range2_set[i] = false;
+      memset(chart->grid_axis_range_set[i], 0,
+             sizeof(chart->grid_axis_range_set[i]));
+      chart->grid_axis_count[i] = 0u;
     }
   }
   chart->grid_count = count;
+  for (i = 0u; i < count; i++)
+    if (chart->grid_axis_count[i] == 0u) chart->grid_axis_count[i] = 2u;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }
@@ -1789,10 +1801,13 @@ my_ret_t my_chart_set_grid(my_widget_t* widget, size_t index,
   for (i = 0u; i < desc->series_count; i++)
     if (desc->series_indices[i] >= MY_CHART_MAX_SERIES)
       return MY_RET_INVALID_PARAMS;
-  if (desc->range_set && !(desc->y_min < desc->y_max))
+  if (desc->axis_count == 0u || desc->axis_count > MY_CHART_MAX_AXES_PER_GRID)
     return MY_RET_INVALID_PARAMS;
-  if (desc->range2_set && !(desc->y2_min < desc->y2_max))
-    return MY_RET_INVALID_PARAMS;
+  for (i = 0u; i < desc->axis_count; i++)
+    if (desc->axis_range_set[i] &&
+        (!(desc->axis_min[i] < desc->axis_max[i]) ||
+         !isfinite(desc->axis_min[i]) || !isfinite(desc->axis_max[i])))
+      return MY_RET_INVALID_PARAMS;
   for (i = 0u; i < MY_CHART_MAX_SERIES; i++)
     if (chart->series_grid[i] == index) chart->series_grid[i] = 0u;
   for (i = 0u; i < desc->series_count; i++)
@@ -1804,12 +1819,15 @@ my_ret_t my_chart_set_grid(my_widget_t* widget, size_t index,
   chart->grid_explicit[index] = true;
   chart->grid_visible[index] = desc->visible;
   chart->grid_link_axis_pointer[index] = desc->link_axis_pointer;
-  chart->grid_range_set[index] = desc->range_set;
-  chart->grid_y_min[index] = desc->y_min;
-  chart->grid_y_max[index] = desc->y_max;
-  chart->grid_range2_set[index] = desc->range2_set;
-  chart->grid_y2_min[index] = desc->y2_min;
-  chart->grid_y2_max[index] = desc->y2_max;
+  chart->grid_axis_count[index] = desc->axis_count;
+  memcpy(chart->grid_axis_range_set[index], desc->axis_range_set,
+         sizeof(desc->axis_range_set));
+  memcpy(chart->grid_axis_min[index], desc->axis_min, sizeof(desc->axis_min));
+  memcpy(chart->grid_axis_max[index], desc->axis_max, sizeof(desc->axis_max));
+  for (i = 0u; i < MY_CHART_MAX_SERIES; i++)
+    if (chart->series_grid[i] == index &&
+        chart->series[i].y_axis >= desc->axis_count)
+      chart->series[i].y_axis = 0u;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }
@@ -1847,7 +1865,9 @@ my_ret_t my_chart_get_grid_rect(const my_widget_t* widget, size_t index,
 my_ret_t my_chart_get_grid_range(const my_widget_t* widget, size_t index,
                                  unsigned axis, float* y_min, float* y_max) {
   const my_chart_t* chart = chart_const_cast(widget);
-  if (chart == NULL || index >= chart->grid_count || axis > 1u ||
+  if (chart == NULL || index >= chart->grid_count ||
+      axis >= (chart->grid_axis_count[index] != 0u ?
+                   chart->grid_axis_count[index] : 1u) ||
       y_min == NULL || y_max == NULL)
     return MY_RET_INVALID_PARAMS;
   chart_axis_range(chart, index, axis, y_min, y_max);
@@ -1883,6 +1903,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
   for (size_t i = 0u; i < MY_CHART_MAX_SERIES; i++) chart->series_visible[i] = true;
   for (size_t g = 0u; g < MY_CHART_MAX_GRIDS; g++) chart->grid_visible[g] = true;
   chart->grid_count = 1u;
+  chart->grid_axis_count[0] = 2u;
   chart->base.widget_type = "chart";
   my_emitter_on(chart->base.emitter, "hover_leave", chart_hover_leave, chart);
   return (my_widget_t*)chart;
@@ -1908,7 +1929,7 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
     if (snapshot->labels[i] == NULL) return MY_RET_INVALID_PARAMS;
   for (size_t i = 0u; i < snapshot->series_count; i++) {
     const my_chart_series_t* series = &snapshot->series[i];
-    if (series->name == NULL || series->y_axis > 1u ||
+    if (series->name == NULL || series->y_axis >= MY_CHART_MAX_AXES_PER_GRID ||
         (series->count > 0u && series->values == NULL))
       return MY_RET_INVALID_PARAMS;
     for (size_t j = 0u; j < series->count; j++)
@@ -1955,9 +1976,9 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->stacked = snapshot->stacked;
   chart->show_legend = snapshot->show_legend;
   chart->tooltip_enabled = snapshot->tooltip_enabled;
-  chart->grid_range_set[0] = snapshot->range_set;
-  chart->grid_y_min[0] = snapshot->y_min;
-  chart->grid_y_max[0] = snapshot->y_max;
+  chart->grid_axis_range_set[0][0] = snapshot->range_set;
+  chart->grid_axis_min[0][0] = snapshot->y_min;
+  chart->grid_axis_max[0][0] = snapshot->y_max;
   chart->zoom_set = snapshot->zoom_set;
   chart->zoom_start = snapshot->zoom_start;
   chart->zoom_end = snapshot->zoom_end;
@@ -2049,7 +2070,9 @@ my_ret_t my_chart_set_series_visible(my_widget_t* widget, size_t index,
 my_ret_t my_chart_set_series_axis(my_widget_t* widget, size_t index,
                                   unsigned axis) {
   my_chart_t* chart = chart_cast(widget);
-  if (chart == NULL || index >= chart->series_count || axis > 1u)
+  if (chart == NULL || index >= chart->series_count ||
+      axis >= (chart->grid_axis_count[chart->series_grid[index]] != 0u ?
+                   chart->grid_axis_count[chart->series_grid[index]] : 1u))
     return MY_RET_INVALID_PARAMS;
   chart->series[index].y_axis = (unsigned char)axis;
   my_widget_invalidate(widget, NULL);
@@ -2071,9 +2094,9 @@ my_ret_t my_chart_set_range(my_widget_t* widget, float y_min, float y_max) {
   my_chart_t* chart = chart_cast(widget);
   if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min)
     return MY_RET_INVALID_PARAMS;
-  chart->grid_y_min[0] = y_min;
-  chart->grid_y_max[0] = y_max;
-  chart->grid_range_set[0] = true;
+  chart->grid_axis_min[0][0] = y_min;
+  chart->grid_axis_max[0][0] = y_max;
+  chart->grid_axis_range_set[0][0] = true;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }
@@ -2083,9 +2106,9 @@ my_ret_t my_chart_set_secondary_range(my_widget_t* widget, float y_min,
   my_chart_t* chart = chart_cast(widget);
   if (chart == NULL || !isfinite(y_min) || !isfinite(y_max) || y_max <= y_min)
     return MY_RET_INVALID_PARAMS;
-  chart->grid_y2_min[0] = y_min;
-  chart->grid_y2_max[0] = y_max;
-  chart->grid_range2_set[0] = true;
+  chart->grid_axis_min[0][1] = y_min;
+  chart->grid_axis_max[0][1] = y_max;
+  chart->grid_axis_range_set[0][1] = true;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
 }

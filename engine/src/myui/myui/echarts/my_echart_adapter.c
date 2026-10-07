@@ -158,14 +158,22 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
     area_inputs[i] = (my_echart_mark_area_input_t){
         source->mark_areas[i].y_min, source->mark_areas[i].y_max,
         source->mark_areas[i].label, source->mark_areas[i].color};
-  for (size_t i = 0u; i < source->grid_count; i++)
-    grid_inputs[i] = (my_echart_grid_input_t){
-        source->grids[i].left, source->grids[i].top, source->grids[i].width,
-        source->grids[i].height, source->grids[i].series_indices,
-        source->grids[i].series_count, source->grids[i].range_set,
-        source->grids[i].y_min, source->grids[i].y_max,
-         source->grids[i].range2_set, source->grids[i].y2_min,
-         source->grids[i].y2_max, source->grids[i].link_axis_pointer};
+  for (size_t i = 0u; i < source->grid_count; i++) {
+    grid_inputs[i].left = source->grids[i].left;
+    grid_inputs[i].top = source->grids[i].top;
+    grid_inputs[i].width = source->grids[i].width;
+    grid_inputs[i].height = source->grids[i].height;
+    grid_inputs[i].series_indices = source->grids[i].series_indices;
+    grid_inputs[i].series_count = source->grids[i].series_count;
+    memcpy(grid_inputs[i].axis_range_set, source->grids[i].axis_range_set,
+           sizeof(grid_inputs[i].axis_range_set));
+    memcpy(grid_inputs[i].axis_min, source->grids[i].axis_min,
+           sizeof(grid_inputs[i].axis_min));
+    memcpy(grid_inputs[i].axis_max, source->grids[i].axis_max,
+           sizeof(grid_inputs[i].axis_max));
+    grid_inputs[i].axis_count = source->grids[i].axis_count;
+    grid_inputs[i].link_axis_pointer = source->grids[i].link_axis_pointer;
+  }
 
   input = (my_echart_option_input_t){
       source->title, (const char* const*)source->x_axis_data,
@@ -306,12 +314,13 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
       memcpy(desc.series_indices, grid->series_indices,
              grid->series_count * sizeof(size_t));
       desc.series_count = grid->series_count;
-      desc.range_set = grid->range_set;
-      desc.y_min = (float)grid->y_min;
-      desc.y_max = (float)grid->y_max;
-      desc.range2_set = grid->range2_set;
-      desc.y2_min = (float)grid->y2_min;
-      desc.y2_max = (float)grid->y2_max;
+       desc.axis_count = grid->axis_count;
+       memcpy(desc.axis_range_set, grid->axis_range_set,
+              sizeof(desc.axis_range_set));
+       for (size_t axis = 0u; axis < MY_CHART_MAX_AXES_PER_GRID; axis++) {
+         desc.axis_min[axis] = (float)grid->axis_min[axis];
+         desc.axis_max[axis] = (float)grid->axis_max[axis];
+       }
       desc.visible = true;
       desc.link_axis_pointer = grid->link_axis_pointer;
       ret = my_chart_set_grid(adapter->chart, i, &desc);
