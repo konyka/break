@@ -13,7 +13,9 @@ typedef struct my_echart_json_doc_t my_echart_json_doc_t;
  * annotations as series-level markPoint {data:[{coord:[categoryIndex,value],name}]},
  * markLine {data:[{yAxis,name,itemStyle:{color}}]}, markArea
  * {data:[{yAxisRange:[min,max],name,itemStyle:{color}}]}, and top-level
- * dataset {source:{dimension:[numeric,...]}}. Transforms are top-level
+ * dataset {source:{dimension:[numeric,...]}} with optional series-level
+ * encode {y:"dimension"} binding (series data then materializes from that
+ * dimension; inline data and encode are exclusive). Transforms are top-level
  * sort {config:{dimension,order:asc|desc}} or filter
  * {config:{dimension,op:eq|ne|gt|ge|lt|le,value}}. Grid descriptors accept
  * axisCount (1..3, default 2) and yAxis either as {min,max}, which sets the

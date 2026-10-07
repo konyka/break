@@ -30,6 +30,7 @@ struct my_echart_json_doc_t {
   my_echart_mark_line_input_t* mark_lines;
   my_echart_mark_area_input_t* mark_areas;
   my_echart_dimension_input_t* dataset;
+  char** encode_names;
   char error[160];
 };
 
@@ -221,12 +222,36 @@ static bool parse_transform(my_echart_json_doc_t* d, my_conf_node_t* n) {
   if(strcmp(type,"filter")!=0){set_error(d,"unknown transform type");return false;} op=my_conf_get_str(n,"config.op",NULL); if(op==NULL){set_error(d,"unknown filter op");return false;} if(strcmp(op,"eq")==0)d->option.filter_op=MY_ECHART_FILTER_EQ;else if(strcmp(op,"ne")==0)d->option.filter_op=MY_ECHART_FILTER_NE;else if(strcmp(op,"gt")==0)d->option.filter_op=MY_ECHART_FILTER_GT;else if(strcmp(op,"ge")==0)d->option.filter_op=MY_ECHART_FILTER_GE;else if(strcmp(op,"lt")==0)d->option.filter_op=MY_ECHART_FILTER_LT;else if(strcmp(op,"le")==0)d->option.filter_op=MY_ECHART_FILTER_LE;else{set_error(d,"unknown filter op");return false;} if(!number(my_conf_get(n,"config.value"),&d->option.filter_value)){set_error(d,"invalid filter value");return false;} d->option.transform=MY_ECHART_TRANSFORM_FILTER; d->option.filter_dimension=d->option.transform_dimension; return true;
 }
 
+static bool resolve_encodes(my_echart_json_doc_t* d) {
+  size_t i, j;
+  if (d->encode_names == NULL) return true;
+  for (i = 0u; d->series != NULL && i < d->option.series_count; ++i) {
+    bool found = false;
+    if (d->encode_names[i] == NULL) continue;
+    if (d->dataset == NULL || d->option.dataset_count == 0u) {
+      set_error(d, "dataset missing for encode");
+      return false;
+    }
+    for (j = 0u; j < d->option.dataset_count; ++j) {
+      if (strcmp(d->encode_names[i], d->dataset[j].name) == 0) {
+        d->series[i].data = d->dataset[j].values;
+        d->series[i].data_count = d->dataset[j].count;
+        found = true;
+        break;
+      }
+    }
+    if (!found) { set_error(d, "encode dimension not found"); return false; }
+  }
+  return true;
+}
+
 static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
   size_t i, j, len, dl;
   if (n == NULL) return true;
   if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); d->series = (my_echart_series_input_t*)alloc0(d, len, sizeof(*d->series));
-  if (len != 0u && d->series == NULL) return false;
+  d->encode_names = (char**)alloc0(d, len, sizeof(*d->encode_names));
+  if (len != 0u && (d->series == NULL || d->encode_names == NULL)) return false;
   for (i = 0u; i < len; ++i) {
     my_conf_node_t* item = child(n, i); const char* s;
     char generated[32];
@@ -243,7 +268,27 @@ static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
     d->series[i].y_axis_index = (unsigned)my_conf_get_int64(item, "yAxisIndex", 0);
     d->series[i].stack = copy_string(d, my_conf_get_str(item, "stack", NULL));
     { double* values = NULL;
-      if (!dimension(d, my_conf_get(item, "data"), &values, &dl)) { set_error(d, "invalid series data"); return false; }
+      const char* encode_dim = my_conf_get_str(item, "encode.y", NULL);
+      my_conf_node_t* data_node = my_conf_get(item, "data");
+      if (data_node != NULL && encode_dim != NULL) {
+        set_error(d, "series data and encode are exclusive");
+        return false;
+      }
+      if (data_node == NULL && encode_dim == NULL) {
+        set_error(d, "invalid series data");
+        return false;
+      }
+      if (data_node != NULL &&
+          !dimension(d, data_node, &values, &dl)) {
+        set_error(d, "invalid series data");
+        return false;
+      }
+      if (encode_dim != NULL) {
+        d->encode_names[i] = copy_string(d, encode_dim);
+        if (d->encode_names[i] == NULL) { set_error(d, "out of memory"); return false; }
+        values = NULL;
+        dl = 0u;
+      }
       d->series[i].data = values; }
     d->series[i].data_count = dl;
     if (!color(d, my_conf_get(item, "color"), &d->series[i].color)) {
@@ -341,6 +386,7 @@ my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len, con
    if(!parse_series(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid series");
    if(!parse_annotations(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid annotations");
    if(!parse_dataset(d,my_conf_get(n,"dataset")) && d->error[0]=='\0') set_error(d,"invalid dataset");
+   if(d->error[0]=='\0' && !resolve_encodes(d) && d->error[0]=='\0') set_error(d,"invalid encode");
    (void)parse_transform(d,my_conf_get(n,"transform"));
   d->option.legend_hidden=!my_conf_get_bool(n,"legend.show",true); d->option.tooltip_hidden=!my_conf_get_bool(n,"tooltip.show",true);
    if(number(my_conf_get(n,"yAxis.min"),&d->option.y_min)&&number(my_conf_get(n,"yAxis.max"),&d->option.y_max)) d->option.range_set=true;
@@ -373,6 +419,7 @@ void my_echart_json_doc_destroy(my_echart_json_doc_t** doc) {
    my_mem_free((*doc)->allocator, (*doc)->mark_lines);
    my_mem_free((*doc)->allocator, (*doc)->mark_areas);
    my_mem_free((*doc)->allocator, (*doc)->dataset);
+  my_mem_free((*doc)->allocator, (*doc)->encode_names);
   my_mem_free((*doc)->allocator, (*doc)->grids);
   my_conf_destroy((*doc)->tree);
   my_mem_free((*doc)->allocator, *doc);

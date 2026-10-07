@@ -1578,6 +1578,31 @@ TEST(chart_three_axis_ranges_are_isolated) {
   my_widget_unref(chart);
 }
 
+TEST(chart_non_cartesian_tooltip_lists_first_series_only) {
+  static const float values[] = {10.0f, 30.0f, 20.0f};
+  static const float other[] = {1.0f, 2.0f, 3.0f};
+  my_chart_series_t first = {"Alpha", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t second = {"Beta", other, 3u, 0x3A86FFFFu, 0u};
+  const my_chart_mode_t modes[] = {MY_CHART_PIE, MY_CHART_FUNNEL,
+                                   MY_CHART_RADAR};
+  char tooltip[64];
+  for (size_t m = 0u; m < 3u; m++) {
+    my_widget_t* chart = my_chart_create(NULL, modes[m]);
+    ASSERT_NOT_NULL(chart);
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &first), MY_RET_OK);
+    ASSERT_EQ(my_chart_set_series(chart, 1u, &second), MY_RET_OK);
+    ASSERT_EQ(my_chart_set_hover_index(chart, 1u), MY_RET_OK);
+    ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)),
+              MY_RET_OK);
+    ASSERT_TRUE(strstr(tooltip, "Alpha: 30.00") != NULL);
+    ASSERT_TRUE(strstr(tooltip, "Beta") == NULL);
+    ASSERT_EQ(my_chart_set_hover_index(chart, SIZE_MAX), MY_RET_OK);
+    ASSERT_EQ(my_chart_get_tooltip(chart, tooltip, sizeof(tooltip)),
+              MY_RET_NOT_SUPPORTED);
+    my_widget_unref(chart);
+  }
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_three_axis_ranges_are_isolated);
   RUN_TEST(chart_rejects_invalid_series_and_range);
@@ -1633,4 +1658,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_multi_grid_renders_series_in_own_rect);
   RUN_TEST(chart_multi_grid_auto_range_isolated);
   RUN_TEST(chart_multi_grid_hit_test_resolves_own_grid);
+  RUN_TEST(chart_non_cartesian_tooltip_lists_first_series_only);
 TEST_MAIN_END()

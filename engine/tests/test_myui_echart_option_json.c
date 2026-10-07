@@ -179,8 +179,76 @@ TEST(echart_json_grid_axis_errors) {
   }
 }
 
+
+TEST(echart_json_series_encode_binds_dataset) {
+  const char* json =
+      "{\"dataset\":{\"source\":{\"sales\":[3,1,2],\"profit\":[9,7,8]}},"
+      "\"transform\":{\"type\":\"sort\",\"config\":{\"dimension\":\"sales\",\"order\":\"desc\"}},"
+      "\"series\":[{\"name\":\"S\",\"type\":\"bar\",\"encode\":{\"y\":\"sales\"}}]}";
+  const char* inline_json =
+      "{\"dataset\":{\"source\":{\"sales\":[3,1,2],\"profit\":[9,7,8]}},"
+      "\"transform\":{\"type\":\"sort\",\"config\":{\"dimension\":\"sales\",\"order\":\"desc\"}},"
+      "\"series\":[{\"name\":\"S\",\"type\":\"bar\",\"data\":[3,1,2]}]}";
+  my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+  my_echart_json_doc_t* inline_doc =
+      my_echart_json_doc_parse(inline_json, strlen(inline_json), NULL);
+  const my_echart_option_input_t* input;
+  my_echart_option_t copy;
+  my_echart_option_t inline_copy;
+
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+  ASSERT_TRUE(inline_doc != NULL);
+  input = my_echart_json_doc_option(doc);
+  ASSERT_TRUE(input != NULL);
+  ASSERT_EQ(input->series_count, 1u);
+  ASSERT_EQ(input->series[0].data_count, 3u);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[0], 3.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[1], 1.0f, 1e-6f);
+  my_echart_option_init(&copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&copy, input, NULL), MY_RET_OK);
+  my_echart_option_init(&inline_copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&inline_copy, my_echart_json_doc_option(inline_doc), NULL), MY_RET_OK);
+  for (size_t i = 0u; i < 3u; i++)
+    ASSERT_FLOAT_EQ((float)copy.series[0].data[i],
+                    (float)inline_copy.series[0].data[i], 1e-6f);
+  ASSERT_FLOAT_EQ((float)copy.series[0].data[0], 3.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)copy.series[0].data[2], 1.0f, 1e-6f);
+  my_echart_option_free(&copy);
+  my_echart_option_free(&inline_copy);
+  my_echart_json_doc_destroy(&doc);
+  my_echart_json_doc_destroy(&inline_doc);
+}
+
+TEST(echart_json_series_encode_errors) {
+  my_echart_json_doc_t* doc;
+  const char* unknown =
+      "{\"dataset\":{\"source\":{\"sales\":[1,2]}},"
+      "\"series\":[{\"type\":\"line\",\"encode\":{\"y\":\"cost\"}}]}";
+  const char* both =
+      "{\"dataset\":{\"source\":{\"sales\":[1,2]}},"
+      "\"series\":[{\"type\":\"line\",\"data\":[1,2],\"encode\":{\"y\":\"sales\"}}]}";
+  const char* no_dataset =
+      "{\"series\":[{\"type\":\"line\",\"encode\":{\"y\":\"sales\"}}]}";
+
+  doc = my_echart_json_doc_parse(unknown, strlen(unknown), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+  doc = my_echart_json_doc_parse(both, strlen(both), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+  doc = my_echart_json_doc_parse(no_dataset, strlen(no_dataset), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_json_happy_path);
+  RUN_TEST(echart_json_series_encode_binds_dataset);
+  RUN_TEST(echart_json_series_encode_errors);
   RUN_TEST(echart_json_errors_and_destroy);
   RUN_TEST(echart_json_annotations_dataset_sort);
   RUN_TEST(echart_json_dataset_filter);

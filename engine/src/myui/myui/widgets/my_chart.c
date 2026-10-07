@@ -2417,6 +2417,25 @@ my_ret_t my_chart_get_tooltip(const my_widget_t* widget, char* buffer,
   if (chart->hover_index == CHART_HOVER_NONE || chart->series_count == 0u)
     return MY_RET_NOT_SUPPORTED;
   buffer[0] = '\0';
+  if (chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
+      chart->mode == MY_CHART_RADAR) {
+    int result;
+    for (i = 0u; i < chart->series_count; i++) {
+      const my_chart_series_t* series = &chart->series[i];
+      if (!chart->series_visible[i] || series->values == NULL ||
+          chart->hover_index >= series->count)
+        continue;
+      result = snprintf(buffer, capacity, "%s: %.2f",
+                        series->name != NULL ? series->name : "Series",
+                        (double)series->values[chart->hover_index]);
+      if (result < 0 || (size_t)result >= capacity) {
+        buffer[capacity - 1u] = '\0';
+        return MY_RET_FAIL;
+      }
+      return MY_RET_OK;
+    }
+    return MY_RET_NOT_SUPPORTED;
+  }
   if (chart->labels != NULL && chart->hover_index < chart->label_count &&
       chart->labels[chart->hover_index] != NULL &&
       chart->labels[chart->hover_index][0] != '\0') {
