@@ -144,7 +144,7 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
     const my_echart_series_t* s = &source->series[i];
     series_inputs[i] = (my_echart_series_input_t){
         s->id, s->name, s->type, s->data, s->data_count, s->color,
-        s->y_axis_index, s->stack, s->show, NULL};
+        s->y_axis_index, s->stack, s->show, NULL, s->label_show};
   }
   for (size_t i = 0u; i < source->mark_point_count; i++)
     point_inputs[i] = (my_echart_mark_point_input_t){
@@ -255,7 +255,8 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
     const my_echart_series_t* series = &candidate->option.series[i];
     native_series[i] = (my_chart_series_t){series->name, candidate->values[i],
                                            series->data_count, series->color,
-                                           (unsigned char)series->y_axis_index};
+                                           (unsigned char)series->y_axis_index,
+                                           series->label_show};
     visible[i] = series->show;
   }
   {

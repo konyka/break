@@ -44,6 +44,8 @@ typedef struct my_chart_series_t {
   uint32_t color;
   /** @brief Y axis binding: 0 = left axis, higher values are right axes. */
   unsigned char y_axis;
+  /** @brief Draw the value as text near each data mark. */
+  bool show_labels;
 } my_chart_series_t;
 
 /** @brief A borrowed annotation anchored to one series category sample. */
@@ -198,6 +200,7 @@ my_ret_t my_chart_set_series(my_widget_t* chart, size_t index,
 my_ret_t my_chart_set_series_visible(my_widget_t* chart, size_t index,
                                      bool visible);
 bool my_chart_get_series_visible(const my_widget_t* chart, size_t index);
+bool my_chart_get_series_labels(const my_widget_t* chart, size_t index);
 my_ret_t my_chart_set_series_axis(my_widget_t* chart, size_t index,
                                   unsigned axis);
 unsigned my_chart_get_series_axis(const my_widget_t* chart, size_t index);

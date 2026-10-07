@@ -293,6 +293,7 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
       target->color = source->color;
       target->y_axis_index = source->y_axis_index;
       target->show = source->show;
+      target->label_show = source->label_show;
       if (target->id == NULL || target->name == NULL ||
           (source->stack != NULL && target->stack == NULL)) goto oom;
       if (data_count > 0u) {

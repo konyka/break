@@ -474,6 +474,19 @@ static void chart_draw_line_series(const my_chart_t* chart, my_vgcanvas_t* vg,
     else my_vgcanvas_line_to(vg, px, py);
   }
   if (started) my_vgcanvas_stroke(vg);
+  if (series->show_labels) {
+    char label[24];
+    my_vgcanvas_set_font(vg, NULL, 10);
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+    for (size_t i = begin; i < begin + count && i < series->count; i++) {
+      float px = chart_category_x(i, begin, count, x, w);
+      float py = my_chart_value_to_y(chart_animated_value(chart, series->values[i]),
+                                     y_min, y_max, y, h);
+      (void)my_chart_format_tick(chart_animated_value(chart, series->values[i]),
+                                 label, sizeof(label));
+      my_vgcanvas_draw_text(vg, label, px - 6.0f, py - 8.0f);
+    }
+  }
 }
 
 static void chart_draw_scatter_series(const my_chart_t* chart,
@@ -496,6 +509,14 @@ static void chart_draw_scatter_series(const my_chart_t* chart,
     my_vgcanvas_fill_rounded_rect(vg,
                                   &(my_rectf_t){px - 4.0f, py - 4.0f, 8.0f, 8.0f},
                                   4.0f);
+    if (series->show_labels) {
+      char label[24];
+      my_vgcanvas_set_font(vg, NULL, 10);
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+      (void)my_chart_format_tick(
+          chart_animated_value(chart, series->values[i]), label, sizeof(label));
+      my_vgcanvas_draw_text(vg, label, px - 6.0f, py - 8.0f);
+    }
   }
 }
 
@@ -1209,6 +1230,16 @@ static void chart_draw_bars(const my_chart_t* chart, my_vgcanvas_t* vg, float x,
         my_vgcanvas_fill_rounded_rect(vg,
                                       &(my_rectf_t){bar_x, top, bar_w, height},
                                       3.0f);
+        if (series->show_labels) {
+          char label[24];
+          my_vgcanvas_set_font(vg, NULL, 10);
+          my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x52606DFFu));
+          (void)my_chart_format_tick(
+              chart_animated_value(chart, series->values[category]), label,
+              sizeof(label));
+          my_vgcanvas_draw_text(vg, label,
+                                bar_x + bar_w * 0.5f - 6.0f, top - 4.0f);
+        }
       }
     }
     return;
@@ -2060,6 +2091,12 @@ my_ret_t my_chart_clear_series(my_widget_t* widget) {
   my_widget_invalidate(widget, NULL);
   my_chart_group_clear_notify(widget);
   return MY_RET_OK;
+}
+
+bool my_chart_get_series_labels(const my_widget_t* widget, size_t index) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || index >= chart->series_count) return false;
+  return chart->series[index].show_labels;
 }
 
 my_ret_t my_chart_set_series_visible(my_widget_t* widget, size_t index,

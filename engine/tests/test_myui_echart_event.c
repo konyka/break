@@ -160,7 +160,7 @@ TEST(echart_event_actions_drive_attached_model) {
   static const double values[] = {1.0, 2.0, 3.0, 4.0};
   my_echart_series_input_t series = {
       "series-a", "Series A", MY_ECHART_LINE, values, 4u, 0u, 0u, NULL,
-      false, NULL};
+      false, NULL, false};
   my_echart_option_input_t input = {
       "bridge", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0,
       false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL,

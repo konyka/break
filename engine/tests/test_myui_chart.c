@@ -36,7 +36,7 @@ static void dump_ppm_if_requested(const uint8_t* pixels, uint32_t width,
 
 TEST(chart_rejects_invalid_series_and_range) {
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
-  my_chart_series_t series = {"Revenue", NULL, 0u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", NULL, 0u, 0xE85D75FFu, 0u, false};
 
   ASSERT_NOT_NULL(chart);
   ASSERT_TRUE(my_chart_is_instance(chart));
@@ -67,8 +67,8 @@ TEST(chart_formats_fractional_axis_ticks) {
 TEST(chart_hidden_series_excluded_from_auto_range) {
   static const float small_values[] = {1.0f, 2.0f};
   static const float huge_values[] = {1.0f, 1000.0f};
-  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u};
-  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u};
+  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   float y_min = 0.0f, y_max = 0.0f;
 
@@ -85,7 +85,7 @@ TEST(chart_hidden_series_excluded_from_auto_range) {
 
 TEST(chart_manages_mark_points) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
-  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
 
   ASSERT_NOT_NULL(chart);
@@ -102,7 +102,7 @@ TEST(chart_manages_mark_points) {
 
 TEST(chart_data_zoom_limits_category_window) {
   static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   size_t start = 99u, end = 99u;
   my_event_t event;
@@ -191,8 +191,8 @@ TEST(chart_axis_configuration) {
 TEST(chart_secondary_axis_binding) {
   static const float price[] = {10.0f, 20.0f};
   static const float volume[] = {1000.0f, 2000.0f};
-  my_chart_series_t price_series = {"Price", price, 2u, 0xE85D75FFu, 0u};
-  my_chart_series_t volume_series = {"Volume", volume, 2u, 0x3A86FFFFu, 0u};
+  my_chart_series_t price_series = {"Price", price, 2u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t volume_series = {"Volume", volume, 2u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   float lo = 0.0f, hi = 0.0f;
 
@@ -217,8 +217,8 @@ TEST(chart_secondary_axis_binding) {
 TEST(chart_series_visibility_controls_tooltip) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f};
-  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u};
-  my_chart_series_t second = {"Orders", second_values, 2u, 0x3A86FFFFu, 0u};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t second = {"Orders", second_values, 2u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[128];
   my_event_t event;
@@ -244,7 +244,7 @@ TEST(chart_series_visibility_controls_tooltip) {
 
 TEST(chart_legend_click_toggles_series_visibility) {
   static const float values[] = {1.0f, 2.0f};
-  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_event_t event;
 
@@ -265,7 +265,7 @@ TEST(chart_legend_click_toggles_series_visibility) {
 
 TEST(chart_hover_emphasis_is_reported) {
   static const float values[] = {10.0f, 30.0f};
-  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", values, 2u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_event_t event;
 
@@ -292,7 +292,7 @@ TEST(chart_supports_stacked_bar_mode) {
 
 TEST(chart_supports_scatter_mode) {
   static const float values[] = {5.0f, 15.0f, 25.0f};
-  my_chart_series_t series = {"Points", values, 3u, 0x2A9D8FFFu, 0u};
+  my_chart_series_t series = {"Points", values, 3u, 0x2A9D8FFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -323,7 +323,7 @@ TEST(chart_supports_scatter_mode) {
 
 TEST(chart_supports_pie_mode) {
   static const float values[] = {25.0f, 35.0f, 40.0f};
-  my_chart_series_t series = {"Share", values, 3u, 0x2A9D8FFFu, 0u};
+  my_chart_series_t series = {"Share", values, 3u, 0x2A9D8FFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_PIE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -361,8 +361,8 @@ TEST(chart_supports_pie_mode) {
 TEST(chart_supports_radar_mode_and_rejects_invalid_data) {
   static const float values[] = {20.0f, 40.0f, 60.0f, 80.0f};
   static const float invalid_values[] = {20.0f, NAN, 60.0f, 80.0f};
-  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u};
-  my_chart_series_t invalid = {"Invalid", invalid_values, 4u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u, false};
+  my_chart_series_t invalid = {"Invalid", invalid_values, 4u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_RADAR);
 
   ASSERT_NOT_NULL(chart);
@@ -373,7 +373,7 @@ TEST(chart_supports_radar_mode_and_rejects_invalid_data) {
 
 TEST(chart_funnel_hover_tracks_bands_and_clears_outside) {
   static const float values[] = {100.0f, 60.0f, 30.0f};
-  my_chart_series_t series = {"Funnel", values, 3u, 0x2A9D8FFFu, 0u};
+  my_chart_series_t series = {"Funnel", values, 3u, 0x2A9D8FFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_FUNNEL);
   my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
 
@@ -394,7 +394,7 @@ TEST(chart_funnel_hover_tracks_bands_and_clears_outside) {
 
 TEST(chart_radar_hover_tracks_spokes_and_clears_outside) {
   static const float values[] = {20.0f, 40.0f, 60.0f, 80.0f};
-  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u};
+  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_RADAR);
   my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
 
@@ -415,7 +415,7 @@ TEST(chart_radar_hover_tracks_spokes_and_clears_outside) {
 
 TEST(chart_supports_funnel_mode) {
   static const float values[] = {100.0f, 70.0f, 40.0f, 20.0f};
-  my_chart_series_t series = {"Funnel", values, 4u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Funnel", values, 4u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_FUNNEL);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -445,8 +445,8 @@ TEST(chart_supports_funnel_mode) {
 TEST(chart_supports_heatmap_mode) {
   static const float first[] = {0.0f, 50.0f, 100.0f};
   static const float second[] = {100.0f, 50.0f, 0.0f};
-  my_chart_series_t a = {"A", first, 3u, 0x3A86FFFFu, 0u};
-  my_chart_series_t b = {"B", second, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t a = {"A", first, 3u, 0x3A86FFFFu, 0u, false};
+  my_chart_series_t b = {"B", second, 3u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_HEATMAP);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -477,7 +477,7 @@ TEST(chart_supports_heatmap_mode) {
 
 TEST(chart_supports_boxplot_mode) {
   static const float five_number[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
-  my_chart_series_t series = {"Stats", five_number, 5u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Stats", five_number, 5u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_BOXPLOT);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -526,7 +526,7 @@ TEST(chart_supports_boxplot_mode) {
 
 TEST(chart_paints_radar_polygon_to_software_canvas) {
   static const float values[] = {20.0f, 40.0f, 60.0f, 80.0f};
-  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u};
+  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_RADAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -569,7 +569,7 @@ TEST(chart_visual_map_configuration) {
 
 TEST(chart_brush_selects_category_window) {
   static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"v", values, 5u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_event_t event;
   size_t start = 0u, end = 0u;
@@ -603,7 +603,7 @@ TEST(chart_brush_selects_category_window) {
 TEST(chart_accessible_description_and_keyboard_navigation) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
-  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char description[256];
   my_event_t event;
@@ -635,7 +635,7 @@ TEST(chart_accessible_description_and_keyboard_navigation) {
 
 TEST(chart_paints_visual_map_legend) {
   static const float values[] = {0.0f, 50.0f, 100.0f};
-  my_chart_series_t series = {"v", values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"v", values, 3u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -677,8 +677,8 @@ TEST(chart_stacked_endpoint_matches_segment_geometry) {
 TEST(chart_stacked_bars_share_category_slot) {
   static const float first_values[] = {10.0f};
   static const float second_values[] = {20.0f};
-  my_chart_series_t first = {"A", first_values, 1u, 0xE85D75FFu, 0u};
-  my_chart_series_t second = {"B", second_values, 1u, 0x3A86FFFFu, 0u};
+  my_chart_series_t first = {"A", first_values, 1u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t second = {"B", second_values, 1u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -724,7 +724,7 @@ TEST(chart_stacked_bars_share_category_slot) {
 TEST(chart_clamps_values_and_formats_hover_tooltip) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
   static const char* labels[] = {"Mon", "Tue", "Wed"};
-  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Revenue", values, 3u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[64];
 
@@ -762,8 +762,8 @@ TEST(chart_clamps_values_and_formats_hover_tooltip) {
 TEST(chart_hover_tooltip_includes_all_series_at_category) {
   static const float first_values[] = {10.0f, 20.0f};
   static const float second_values[] = {4.0f, 8.0f, 12.0f, 16.0f};
-  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u};
-  my_chart_series_t second = {"Orders", second_values, 4u, 0x3A86FFFFu, 0u};
+  my_chart_series_t first = {"Revenue", first_values, 2u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t second = {"Orders", second_values, 4u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   char tooltip[128];
   my_event_t event;
@@ -793,7 +793,7 @@ TEST(chart_hover_tooltip_includes_all_series_at_category) {
 
 TEST(chart_paints_visible_series_to_software_canvas) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -833,8 +833,8 @@ TEST(chart_paints_visible_series_to_software_canvas) {
 TEST(chart_paints_grouped_bar_series_to_software_canvas) {
   static const float primary_values[] = {10.0f, 24.0f, 16.0f};
   static const float secondary_values[] = {18.0f, 12.0f, 28.0f};
-  my_chart_series_t primary = {"Primary", primary_values, 3u, 0xE85D75FFu, 0u};
-  my_chart_series_t secondary = {"Secondary", secondary_values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t primary = {"Primary", primary_values, 3u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t secondary = {"Secondary", secondary_values, 3u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -887,7 +887,7 @@ TEST(chart_paints_grouped_bar_series_to_software_canvas) {
 
 TEST(chart_paints_mark_point_annotation) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -933,8 +933,8 @@ TEST(chart_paints_mark_point_annotation) {
 TEST(chart_line_series_share_category_positions) {
   static const float long_values[] = {10.0f, 20.0f, 30.0f, 40.0f};
   static const float short_values[] = {15.0f, 25.0f};
-  my_chart_series_t long_series = {"Long", long_values, 4u, 0xE85D75FFu, 0u};
-  my_chart_series_t short_series = {"Short", short_values, 2u, 0x3A86FFFFu, 0u};
+  my_chart_series_t long_series = {"Long", long_values, 4u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t short_series = {"Short", short_values, 2u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -976,7 +976,7 @@ TEST(chart_line_series_share_category_positions) {
 
 TEST(chart_renders_at_supported_viewports) {
   static const float values[] = {5.0f, 30.0f, 15.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u, false};
   const uint32_t sizes[][2] = {{120u, 100u}, {320u, 180u}, {640u, 360u}};
   for (size_t viewport = 0u; viewport < 3u; viewport++) {
     my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -1009,7 +1009,7 @@ TEST(chart_renders_at_supported_viewports) {
 
 TEST(chart_paints_mark_area) {
   static const float values[] = {10.0f, 20.0f, 30.0f};
-  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 3u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1044,7 +1044,7 @@ TEST(chart_paints_mark_area) {
 
 TEST(chart_hit_test_is_pure_and_bounded) {
   static const float values[] = {10.0f, 20.0f, 30.0f, 40.0f};
-  my_chart_series_t series = {"v", values, 4u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"v", values, 4u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   ASSERT_NOT_NULL(chart);
   chart->rect.w = 320;
@@ -1064,7 +1064,7 @@ TEST(chart_supports_candlestick_mode) {
   static const float ohlc[] = {10.0f, 15.0f, 8.0f, 12.0f,
                                12.0f, 14.0f, 11.0f, 13.0f,
                                13.0f, 16.0f, 12.5f, 14.5f};
-  my_chart_series_t series = {"Candles", ohlc, 12u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Candles", ohlc, 12u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_CANDLESTICK);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1092,7 +1092,7 @@ TEST(chart_supports_candlestick_mode) {
 
 TEST(chart_supports_gauge_mode) {
   static const float values[] = {30.0f, 70.0f};
-  my_chart_series_t series = {"Gauge", values, 2u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Gauge", values, 2u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_GAUGE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1122,8 +1122,8 @@ TEST(chart_supports_sankey_mode) {
   static const float src[] = {10.0f, 20.0f, 30.0f};
   static const float dst[] = {25.0f, 15.0f, 20.0f};
   my_chart_series_t cols[2] = {
-      {"Source", src, 3u, 0xE85D75FFu, 0u},
-      {"Target", dst, 3u, 0x3A86FFFFu, 0u}};
+      {"Source", src, 3u, 0xE85D75FFu, 0u, false},
+      {"Target", dst, 3u, 0x3A86FFFFu, 0u, false}};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_SANKEY);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1155,9 +1155,9 @@ TEST(chart_supports_parallel_mode) {
   static const float b[] = {2.0f, 4.0f, 1.0f};
   static const float c[] = {3.0f, 2.0f, 2.0f};
   my_chart_series_t axes[3] = {
-      {"A", a, 3u, 0xE85D75FFu, 0u},
-      {"B", b, 3u, 0x3A86FFFFu, 0u},
-      {"C", c, 3u, 0x2A9D8FFFu, 0u}};
+      {"A", a, 3u, 0xE85D75FFu, 0u, false},
+      {"B", b, 3u, 0x3A86FFFFu, 0u, false},
+      {"C", c, 3u, 0x2A9D8FFFu, 0u, false}};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_PARALLEL);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1187,7 +1187,7 @@ TEST(chart_supports_parallel_mode) {
 
 TEST(chart_supports_treemap_mode) {
   static const float values[] = {40.0f, 30.0f, 20.0f, 10.0f};
-  my_chart_series_t series = {"Tree", values, 4u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"Tree", values, 4u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_TREEMAP);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1209,7 +1209,7 @@ TEST(chart_supports_treemap_mode) {
 
 TEST(chart_supports_graph_mode) {
   static const float values[] = {5.0f, 8.0f, 3.0f, 6.0f};
-  my_chart_series_t series = {"Graph", values, 4u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Graph", values, 4u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_GRAPH);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1231,7 +1231,7 @@ TEST(chart_supports_graph_mode) {
 
 TEST(chart_supports_calendar_mode) {
   static const float values[] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14};
-  my_chart_series_t series = {"Cal", values, 14u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Cal", values, 14u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_CALENDAR);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1255,7 +1255,7 @@ TEST(chart_supports_theme_river_mode) {
   static const float a[] = {3.0f, 5.0f, 2.0f, 4.0f};
   static const float b[] = {2.0f, 4.0f, 3.0f, 1.0f};
   my_chart_series_t bands[2] = {
-      {"A", a, 4u, 0xE85D75FFu, 0u}, {"B", b, 4u, 0x3A86FFFFu, 0u}};
+      {"A", a, 4u, 0xE85D75FFu, 0u, false}, {"B", b, 4u, 0x3A86FFFFu, 0u, false}};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_THEME_RIVER);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1296,7 +1296,7 @@ static size_t chart_count_color_in_region(const uint8_t* pixels,
 
 TEST(chart_tooltip_flips_left_at_right_edge) {
   static const float values[] = {5.0f, 30.0f, 15.0f, 25.0f};
-  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1335,7 +1335,7 @@ TEST(chart_tooltip_flips_left_at_right_edge) {
 
 TEST(chart_tooltip_stays_right_in_mid_chart) {
   static const float values[] = {5.0f, 30.0f, 15.0f, 25.0f};
-  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u};
+  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
   my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
@@ -1366,7 +1366,7 @@ TEST(chart_tooltip_stays_right_in_mid_chart) {
 
 TEST(chart_multi_grid_layout_and_assignment) {
   static const float values[] = {1.0f, 2.0f, 3.0f};
-  my_chart_series_t series = {"S", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"S", values, 3u, 0xE85D75FFu, 0u, false};
   my_chart_grid_desc_t grid;
   float x, y, w, h;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -1438,8 +1438,8 @@ TEST(chart_grid_link_flag_validation) {
 TEST(chart_multi_grid_renders_series_in_own_rect) {
   static const float top_values[] = {1.0f, 3.0f, 2.0f};
   static const float bottom_values[] = {2.0f, 1.0f, 3.0f};
-  my_chart_series_t top = {"top", top_values, 3u, 0xFF0000FFu, 0u};
-  my_chart_series_t bottom = {"bottom", bottom_values, 3u, 0x00FF00FFu, 0u};
+  my_chart_series_t top = {"top", top_values, 3u, 0xFF0000FFu, 0u, false};
+  my_chart_series_t bottom = {"bottom", bottom_values, 3u, 0x00FF00FFu, 0u, false};
   my_chart_grid_desc_t grid;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
@@ -1482,8 +1482,8 @@ TEST(chart_multi_grid_renders_series_in_own_rect) {
 TEST(chart_multi_grid_auto_range_isolated) {
   static const float small_values[] = {1.0f, 10.0f};
   static const float huge_values[] = {100.0f, 1000.0f};
-  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u};
-  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u};
+  my_chart_series_t small = {"small", small_values, 2u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t huge = {"huge", huge_values, 2u, 0x3A86FFFFu, 0u, false};
   my_chart_grid_desc_t grid;
   float lo, hi;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -1511,7 +1511,7 @@ TEST(chart_multi_grid_auto_range_isolated) {
 
 TEST(chart_multi_grid_hit_test_resolves_own_grid) {
   static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f};
-  my_chart_series_t series = {"S", values, 5u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"S", values, 5u, 0xE85D75FFu, 0u, false};
   my_chart_grid_desc_t grid;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   ASSERT_NOT_NULL(chart);
@@ -1541,9 +1541,9 @@ TEST(chart_three_axis_ranges_are_isolated) {
   static const float a[] = {1.0f, 3.0f};
   static const float b[] = {100.0f, 300.0f};
   static const float c[] = {-20.0f, -10.0f};
-  my_chart_series_t series[] = {{"A", a, 2u, 0u, 0u},
-                                {"B", b, 2u, 0u, 0u},
-                                {"C", c, 2u, 0u, 0u}};
+  my_chart_series_t series[] = {{"A", a, 2u, 0u, 0u, false},
+                                {"B", b, 2u, 0u, 0u, false},
+                                {"C", c, 2u, 0u, 0u, false}};
   my_chart_grid_desc_t grid;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   float lo, hi;
@@ -1581,8 +1581,8 @@ TEST(chart_three_axis_ranges_are_isolated) {
 TEST(chart_non_cartesian_tooltip_lists_first_series_only) {
   static const float values[] = {10.0f, 30.0f, 20.0f};
   static const float other[] = {1.0f, 2.0f, 3.0f};
-  my_chart_series_t first = {"Alpha", values, 3u, 0xE85D75FFu, 0u};
-  my_chart_series_t second = {"Beta", other, 3u, 0x3A86FFFFu, 0u};
+  my_chart_series_t first = {"Alpha", values, 3u, 0xE85D75FFu, 0u, false};
+  my_chart_series_t second = {"Beta", other, 3u, 0x3A86FFFFu, 0u, false};
   const my_chart_mode_t modes[] = {MY_CHART_PIE, MY_CHART_FUNNEL,
                                    MY_CHART_RADAR};
   char tooltip[64];
@@ -1601,6 +1601,90 @@ TEST(chart_non_cartesian_tooltip_lists_first_series_only) {
               MY_RET_NOT_SUPPORTED);
     my_widget_unref(chart);
   }
+}
+
+static size_t chart_count_nonwhite(const uint8_t* a, const uint8_t* b,
+                                   uint32_t stride) {
+  size_t diff = 0u;
+  for (uint32_t y = 0u; y < 180u; y++) {
+    for (uint32_t x = 0u; x < 320u; x++) {
+      const uint8_t* pa = a + y * stride + x * 4u;
+      const uint8_t* pb = b + y * stride + x * 4u;
+      if (pa[0] != pb[0] || pa[1] != pb[1] || pa[2] != pb[2]) diff++;
+    }
+  }
+  return diff;
+}
+
+TEST(chart_renders_series_value_labels) {
+  static const float values[] = {10.0f, 30.0f, 20.0f};
+  my_chart_series_t labeled = {"Bar", values, 3u, 0x3A86FFFFu, 0u, true};
+  my_chart_series_t plain = {"Bar", values, 3u, 0x3A86FFFFu, 0u, false};
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  uint8_t* pixels;
+  static uint8_t frame_with[320u * 180u * 4u];
+  static uint8_t frame_without[320u * 180u * 4u];
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  {
+    my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
+    ASSERT_NOT_NULL(chart);
+    chart->rect.w = 320;
+    chart->rect.h = 180;
+    ASSERT_EQ(my_chart_set_legend_visible(chart, false), MY_RET_OK);
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &labeled), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+    chart->vtable->on_paint(chart, canvas);
+    ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    memcpy(frame_with, pixels, sizeof(frame_with));
+    ASSERT_TRUE(my_chart_get_series_labels(chart, 0u));
+    my_widget_unref(chart);
+  }
+  {
+    my_widget_t* chart = my_chart_create(NULL, MY_CHART_BAR);
+    ASSERT_NOT_NULL(chart);
+    chart->rect.w = 320;
+    chart->rect.h = 180;
+    ASSERT_EQ(my_chart_set_legend_visible(chart, false), MY_RET_OK);
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &plain), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+    chart->vtable->on_paint(chart, canvas);
+    ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    memcpy(frame_without, pixels, sizeof(frame_without));
+    ASSERT_FALSE(my_chart_get_series_labels(chart, 0u));
+    my_widget_unref(chart);
+  }
+  ASSERT_TRUE(chart_count_nonwhite(frame_with, frame_without,
+                                   my_lcd_mem_get_stride(lcd)) > 10u);
+  {
+    my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+    my_chart_series_t line = {"L", values, 3u, 0xE85D75FFu, 0u, true};
+    my_chart_series_t line_plain = {"L", values, 3u, 0xE85D75FFu, 0u, false};
+    ASSERT_NOT_NULL(chart);
+    chart->rect.w = 320;
+    chart->rect.h = 180;
+    ASSERT_EQ(my_chart_set_legend_visible(chart, false), MY_RET_OK);
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &line), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+    chart->vtable->on_paint(chart, canvas);
+    ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    memcpy(frame_with, pixels, sizeof(frame_with));
+    ASSERT_EQ(my_chart_set_series(chart, 0u, &line_plain), MY_RET_OK);
+    ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+    chart->vtable->on_paint(chart, canvas);
+    ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+    pixels = my_lcd_mem_get_buffer(lcd);
+    memcpy(frame_without, pixels, sizeof(frame_without));
+    ASSERT_TRUE(chart_count_nonwhite(frame_with, frame_without,
+                                     my_lcd_mem_get_stride(lcd)) > 10u);
+    my_widget_unref(chart);
+  }
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
 }
 
 TEST_MAIN_BEGIN()
@@ -1659,4 +1743,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_multi_grid_auto_range_isolated);
   RUN_TEST(chart_multi_grid_hit_test_resolves_own_grid);
   RUN_TEST(chart_non_cartesian_tooltip_lists_first_series_only);
+  RUN_TEST(chart_renders_series_value_labels);
 TEST_MAIN_END()

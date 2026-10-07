@@ -13,10 +13,10 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Bar | grouped, positive/negative stacked, shared category slots |
 | Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom, linked multi-grid axis pointers, and connected-chart dataZoom groups; adapter-event bridge fills series/data/category indexes via chart hit-test and pie/funnel/radar hover payloads |
 | Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
-| Styling | series colors, visualMap interpolation and gradient legend |
+| Styling | series colors, series value labels (label.show on cartesian modes), visualMap interpolation and gradient legend |
 | Animation | externally driven deterministic progress and fake-clock scheduler |
 | MVVM | owned option pointer binding, explicit sync, property notification sync |
-| JSON input | owning parser for the supported option subset: title, axes, series (inline data or dataset encode), legend/tooltip, dataZoom, visualMap, annotations, dataset transforms, and multi-grid layout |
+| JSON input | owning parser for the supported option subset: title, axes, series (inline data, single- or multi-dimension dataset encode, label show), legend/tooltip, dataZoom, visualMap, annotations, dataset transforms, and multi-grid layout |
 | Components | legend/tooltip visibility, explicit Y range, category dataZoom window, continuous visualMap config, model-level dataZoom/visualMap/brush actions, event actions auto-drive an attached model |
 
 ## Supported only by the native adapter subset
@@ -30,8 +30,7 @@ overflow return `MY_RET_NOT_SUPPORTED`.
 
 ## Not implemented
 
-- dataset transforms beyond row-aligned sort/filter and multi-dimensional
-  `encode`;
+- dataset transforms beyond row-aligned sort/filter;
 - full tooltip formatter/trigger/position semantics;
 - complete dataZoom/visualMap/brush action payloads beyond the supported model
   subset;

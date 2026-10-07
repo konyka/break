@@ -33,7 +33,7 @@ static void fa_free(void* ctx, void* ptr) { (void)ctx; free(ptr); }
 static my_echart_option_t make_option(const double* values, size_t count,
                                       const char* title, const char* stack,
                                       my_echart_series_type_t type) {
-  my_echart_series_input_t series = {"series", "Series", type, values, count, 0xE85D75FFu, 0u, stack, true, NULL};
+  my_echart_series_input_t series = {"series", "Series", type, values, count, 0xE85D75FFu, 0u, stack, true, NULL, false};
   my_echart_option_input_t input = {title, NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_echart_option_init(&option, NULL);
@@ -80,8 +80,9 @@ TEST(echart_adapter_rejects_without_mutating) {
 TEST(echart_adapter_rejects_mixed_types_and_float_overflow) {
   const double values[] = {1.0};
   my_echart_series_input_t series[2] = {
-      {"a", "A", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_BAR, values, 1u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_BAR, values, 1u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_option_input_t input = {"bad", NULL, 0u, series, 2u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_echart_option_init(&option, NULL);
@@ -182,7 +183,7 @@ TEST(echart_adapter_projects_all_native_series_types) {
       {MY_ECHART_CALENDAR, calendar_values, 7u, MY_CHART_CALENDAR},
       {MY_ECHART_THEME_RIVER, river_values, 4u, MY_CHART_THEME_RIVER}};
   for (size_t i = 0u; i < sizeof(cases) / sizeof(cases[0]); i++) {
-    my_echart_series_input_t series = {"s", "Series", cases[i].type, cases[i].values, cases[i].count, 0u, 0u, NULL, true, NULL};
+    my_echart_series_input_t series = {"s", "Series", cases[i].type, cases[i].values, cases[i].count, 0u, 0u, NULL, true, NULL, false};
     my_echart_option_input_t input = {"all", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
     my_echart_option_t option;
     my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -202,7 +203,7 @@ TEST(echart_adapter_projects_all_native_series_types) {
 
 TEST(echart_adapter_rejects_boxplot_without_five_samples) {
   static const double short_values[] = {1.0, 2.0};
-  my_echart_series_input_t series = {"s", "Stats", MY_ECHART_BOXPLOT, short_values, 2u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"s", "Stats", MY_ECHART_BOXPLOT, short_values, 2u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"box", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -218,7 +219,7 @@ TEST(echart_adapter_rejects_boxplot_without_five_samples) {
 
 TEST(echart_adapter_projects_component_state) {
   static const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
-  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 6u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 6u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -251,7 +252,7 @@ TEST(echart_adapter_projects_component_state) {
 
 TEST(echart_adapter_projects_visual_map_state) {
   static const double values[] = {1.0, 2.0, 3.0};
-  my_echart_series_input_t series = {"s", "Series", MY_ECHART_SCATTER, values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_SCATTER, values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_SCATTER);
@@ -280,7 +281,7 @@ TEST(echart_adapter_projects_visual_map_state) {
 
 TEST(echart_adapter_projects_annotations) {
   static const double values[] = {1.0, 2.0, 3.0};
-  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_mark_point_input_t points[] = {{0u, 1u, "peak"}};
   my_echart_mark_line_input_t lines[] = {{42.0, "target", 0xE85D75FFu}};
   my_echart_mark_area_input_t areas[] = {{10.0, 30.0, "band", 0x3A86FF44u}};
@@ -317,7 +318,7 @@ TEST(echart_adapter_projects_annotations) {
 
 TEST(echart_adapter_fills_event_indexes_from_chart) {
   static const double values[] = {10.0, 20.0, 30.0, 40.0};
-  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 4u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_LINE, values, 4u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"hit", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -368,7 +369,7 @@ TEST(echart_adapter_fills_event_indexes_from_chart) {
 TEST(echart_adapter_fills_non_cartesian_hover_indexes) {
   static const double pie_values[] = {10.0, 20.0, 30.0};
   my_echart_series_input_t series = {"s", "Series", MY_ECHART_PIE,
-                                     pie_values, 3u, 0u, 0u, NULL, true, NULL};
+                                     pie_values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"pie", NULL, 0u, &series, 1u, false,
                                      false, false, 0.0, 0.0, false, 0u, 0u,
                                      false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL,
@@ -411,7 +412,7 @@ TEST(echart_adapter_fills_non_cartesian_hover_indexes) {
 TEST(echart_adapter_fills_funnel_radar_hover_indexes) {
   static const double values[] = {100.0, 60.0, 30.0};
   my_echart_series_input_t series = {"s", "Series", MY_ECHART_FUNNEL,
-                                     values, 3u, 0u, 0u, NULL, true, NULL};
+                                     values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"chart", NULL, 0u, &series, 1u, false,
                                     false, false, 0.0, 0.0, false, 0u, 0u,
                                     false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL,
@@ -456,7 +457,7 @@ TEST(echart_adapter_fills_funnel_radar_hover_indexes) {
 
 TEST(echart_adapter_sync_model_reprojects_after_action) {
   static const double values[] = {1.0, 2.0};
-  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"sync", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
@@ -491,10 +492,10 @@ TEST(echart_adapter_rejects_malformed_candlestick) {
   static const double odd[] = {10.0, 15.0, 8.0};
   static const double bad_range[] = {10.0, 8.0, 12.0, 11.0};
   my_echart_series_input_t odd_series = {"s", "Candles", MY_ECHART_CANDLESTICK,
-                                         odd, 3u, 0u, 0u, NULL, true, NULL};
+                                         odd, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_series_input_t range_series = {"s", "Candles",
                                            MY_ECHART_CANDLESTICK, bad_range,
-                                           4u, 0u, 0u, NULL, true, NULL};
+                                           4u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"c", NULL, 0u, &odd_series, 1u, false, false,
                                     false, 0.0, 0.0, false, 0u, 0u, false,
                                     0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,
@@ -528,8 +529,9 @@ TEST(echart_adapter_projects_multi_grid) {
   static const size_t grid0_series[] = {0u};
   static const size_t grid1_series[] = {1u};
   my_echart_series_input_t series[] = {
-      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_grid_input_t grids[] = {
       {.left = 0.05, .top = 0.05, .width = 0.9, .height = 0.4,
        .series_indices = grid0_series, .series_count = 1u,
@@ -576,8 +578,35 @@ TEST(echart_adapter_projects_multi_grid) {
   my_echart_option_free(&option);
 }
 
+
+TEST(echart_adapter_projects_series_labels) {
+  static const double values[] = {1.0, 2.0, 3.0};
+  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 3u, 0u,
+                                     0u, NULL, true, NULL, true};
+  my_echart_option_input_t input = {"labels", NULL, 0u, &series, 1u,
+                                   false, false, false, 0.0, 0.0, false, 0u, 0u,
+                                   false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,
+                                   NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE,
+                                   NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_echart_adapter_t* adapter;
+  my_echart_option_t option;
+  ASSERT_NOT_NULL(chart);
+  my_echart_option_init(&option, NULL);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  ASSERT_TRUE(option.series[0].label_show);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_series_labels(chart, 0u));
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+  my_echart_option_free(&option);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
+  RUN_TEST(echart_adapter_projects_series_labels);
   RUN_TEST(echart_adapter_projects_multi_grid);
   RUN_TEST(echart_adapter_rejects_without_mutating);
   RUN_TEST(echart_adapter_rejects_mixed_types_and_float_overflow);

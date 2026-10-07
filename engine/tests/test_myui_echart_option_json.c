@@ -245,10 +245,87 @@ TEST(echart_json_series_encode_errors) {
   my_echart_json_doc_destroy(&doc);
 }
 
+
+TEST(echart_json_multi_dimension_encode_interleaves_rows) {
+  const char* json =
+      "{\"dataset\":{\"source\":{\"open\":[10,20],\"close\":[12,18],"
+      "\"low\":[9,17],\"high\":[15,22]}},"
+      "\"series\":[{\"type\":\"candlestick\",\"encode\":{\"y\":"
+      "[\"open\",\"close\",\"low\",\"high\"]}}]}";
+  const char* inline_json =
+      "{\"series\":[{\"type\":\"candlestick\",\"data\":"
+      "[10,12,9,15,20,18,17,22]}]}";
+  my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+  my_echart_json_doc_t* inline_doc =
+      my_echart_json_doc_parse(inline_json, strlen(inline_json), NULL);
+  const my_echart_option_input_t* input;
+  my_echart_option_t copy;
+  my_echart_option_t inline_copy;
+
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+  input = my_echart_json_doc_option(doc);
+  ASSERT_EQ(input->series[0].data_count, 8u);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[0], 10.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[1], 12.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[4], 20.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->series[0].data[7], 22.0f, 1e-6f);
+  my_echart_option_init(&copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&copy, input, NULL), MY_RET_OK);
+  my_echart_option_init(&inline_copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&inline_copy,
+                                  my_echart_json_doc_option(inline_doc), NULL),
+            MY_RET_OK);
+  for (size_t i = 0u; i < 8u; i++)
+    ASSERT_FLOAT_EQ((float)copy.series[0].data[i],
+                    (float)inline_copy.series[0].data[i], 1e-6f);
+  my_echart_option_free(&copy);
+  my_echart_option_free(&inline_copy);
+  my_echart_json_doc_destroy(&doc);
+  my_echart_json_doc_destroy(&inline_doc);
+}
+
+TEST(echart_json_multi_dimension_encode_errors) {
+  my_echart_json_doc_t* doc;
+  const char* unknown =
+      "{\"dataset\":{\"source\":{\"a\":[1,2],\"b\":[3,4]}},"
+      "\"series\":[{\"type\":\"line\",\"encode\":{\"y\":[\"a\",\"z\"]}}]}";
+  const char* mismatch =
+      "{\"dataset\":{\"source\":{\"a\":[1,2],\"b\":[3]}},"
+      "\"series\":[{\"type\":\"line\",\"encode\":{\"y\":[\"a\",\"b\"]}}]}";
+  const char* single =
+      "{\"dataset\":{\"source\":{\"a\":[1,2]}},"
+      "\"series\":[{\"type\":\"line\",\"encode\":{\"y\":[\"a\"]}}]}";
+  const char* too_many =
+      "{\"dataset\":{\"source\":{\"a\":[1],\"b\":[2],\"c\":[3],\"d\":[4],"
+      "\"e\":[5],\"f\":[6],\"g\":[7],\"h\":[8],\"i\":[9]}},"
+      "\"series\":[{\"type\":\"line\",\"encode\":{\"y\":"
+      "[\"a\",\"b\",\"c\",\"d\",\"e\",\"f\",\"g\",\"h\",\"i\"]}}]}";
+
+  doc = my_echart_json_doc_parse(unknown, strlen(unknown), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+  doc = my_echart_json_doc_parse(mismatch, strlen(mismatch), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+  doc = my_echart_json_doc_parse(single, strlen(single), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+  doc = my_echart_json_doc_parse(too_many, strlen(too_many), NULL);
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+  my_echart_json_doc_destroy(&doc);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_json_happy_path);
   RUN_TEST(echart_json_series_encode_binds_dataset);
   RUN_TEST(echart_json_series_encode_errors);
+  RUN_TEST(echart_json_multi_dimension_encode_interleaves_rows);
+  RUN_TEST(echart_json_multi_dimension_encode_errors);
   RUN_TEST(echart_json_errors_and_destroy);
   RUN_TEST(echart_json_annotations_dataset_sort);
   RUN_TEST(echart_json_dataset_filter);

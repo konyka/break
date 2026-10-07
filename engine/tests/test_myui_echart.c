@@ -8,8 +8,8 @@
 TEST(echart_set_option_replace_and_lazy_update) {
   static const double a[] = {1.0, 2.0};
   static const double b[] = {3.0};
-  my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true, NULL};
-  my_echart_series_input_t sb = {"b", "B", MY_ECHART_BAR, b, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true, NULL, false};
+  my_echart_series_input_t sb = {"b", "B", MY_ECHART_BAR, b, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t first = {"one", NULL, 0u, &sa, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_input_t second = {"two", NULL, 0u, &sb, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_t* chart = my_echart_create(NULL);
@@ -26,7 +26,7 @@ TEST(echart_set_option_replace_and_lazy_update) {
 
 TEST(echart_legend_action_reduces_model_state) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"one", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT, "sales", {0u, 0u, 0.0, 0.0}};
   my_echart_t* chart = my_echart_create(NULL);
@@ -44,8 +44,9 @@ TEST(echart_merge_appends_new_series) {
   static const double a[] = {1.0, 2.0};
   static const double b[] = {3.0};
   my_echart_series_input_t sa[2] = {
-      {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_LINE, b, 1u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, a, 2u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_LINE, b, 1u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_option_input_t first = {"m", NULL, 0u, &sa[0], 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_input_t both = {"m2", NULL, 0u, sa, 2u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_t* chart = my_echart_create(NULL);
@@ -66,13 +67,13 @@ TEST(echart_merge_rejects_capacity_overflow) {
   static const double v[] = {1.0};
   my_echart_series_input_t series[MY_ECHART_MAX_SERIES + 1u];
   my_echart_option_input_t input;
-  my_echart_series_input_t first_series = {"s0", "S0", MY_ECHART_LINE, v, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t first_series = {"s0", "S0", MY_ECHART_LINE, v, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_t* chart;
   char ids[MY_ECHART_MAX_SERIES + 1u][8];
   for (size_t i = 0u; i <= MY_ECHART_MAX_SERIES; i++) {
     snprintf(ids[i], sizeof(ids[i]), "s%zu", i);
     series[i] = (my_echart_series_input_t){ids[i], ids[i], MY_ECHART_LINE, v,
-                                           1u, 0u, 0u, NULL, true, NULL};
+                                           1u, 0u, 0u, NULL, true, NULL, false};
   }
   input = (my_echart_option_input_t){"cap", NULL, 0u, series,
                                      MY_ECHART_MAX_SERIES + 1u, false, false,
@@ -96,7 +97,7 @@ TEST(echart_merge_rejects_capacity_overflow) {
 
 TEST(echart_revision_tracks_committed_mutations) {
   static const double a[] = {1.0};
-  my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t sa = {"a", "A", MY_ECHART_LINE, a, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"r", NULL, 0u, &sa, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT, "a", {0u, 0u, 0.0, 0.0}};
   my_echart_t* chart = my_echart_create(NULL);
@@ -118,8 +119,9 @@ TEST(echart_remove_series_compacts_and_bumps_revision) {
   static const double a[] = {1.0};
   static const double b[] = {2.0};
   my_echart_series_input_t sa[2] = {
-      {"a", "A", MY_ECHART_LINE, a, 1u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_LINE, b, 1u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, a, 1u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_LINE, b, 1u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_option_input_t input = {"rm", NULL, 0u, sa, 2u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_t* chart = my_echart_create(NULL);
   const my_echart_option_t* option;
@@ -141,7 +143,7 @@ TEST(echart_remove_series_compacts_and_bumps_revision) {
 
 TEST(echart_data_zoom_action_reduces_model_state) {
   static const double values[] = {1.0, 2.0, 3.0};
-  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"zoom", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_DATA_ZOOM, NULL, {1u, 3u, 0.0, 0.0}};
   my_echart_t* chart = my_echart_create(NULL);
@@ -192,7 +194,7 @@ TEST(echart_visual_map_and_brush_actions_reduce_model_state) {
 
 TEST(echart_data_zoom_action_syncs_native_chart) {
   static const double values[] = {1.0, 2.0, 3.0};
-  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"sync", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_DATA_ZOOM, NULL, {1u, 3u, 0.0, 0.0}};
   my_echart_t* model = my_echart_create(NULL);

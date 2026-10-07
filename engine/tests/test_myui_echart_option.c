@@ -8,7 +8,7 @@
 TEST(echart_option_copies_owned_data) {
   static const double values[] = {1.0, 2.5};
   static const char* labels[] = {"A", "B"};
-  my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 2u, 0xE85D75FFu, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"sales", "Sales", MY_ECHART_LINE, values, 2u, 0xE85D75FFu, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"Dashboard", labels, 2u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
 
@@ -22,7 +22,7 @@ TEST(echart_option_copies_owned_data) {
 
 TEST(echart_option_rejects_invalid_input) {
   my_echart_option_input_t input = {0};
-  my_echart_series_input_t series = {"id", "name", MY_ECHART_LINE, NULL, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"id", "name", MY_ECHART_LINE, NULL, 1u, 0u, 0u, NULL, true, NULL, false};
   input.series = &series;
   input.series_count = 1u;
   ASSERT_EQ(my_echart_option_validate(&input), MY_RET_INVALID_PARAMS);
@@ -32,7 +32,7 @@ TEST(echart_option_rejects_invalid_input) {
 
 TEST(echart_option_copies_component_state) {
   static const double values[] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 6u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 6u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
 
@@ -58,7 +58,7 @@ TEST(echart_option_copies_component_state) {
 
 TEST(echart_option_rejects_invalid_component_state) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"comp", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
 
   input.range_set = true;
@@ -78,7 +78,7 @@ TEST(echart_option_rejects_invalid_component_state) {
 
 TEST(echart_option_copies_visual_map_state) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
   my_echart_option_t option;
 
@@ -100,7 +100,7 @@ TEST(echart_option_copies_visual_map_state) {
 
 TEST(echart_option_rejects_invalid_visual_map) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"vm", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
 
   input.visual_map_set = true;
@@ -114,7 +114,7 @@ TEST(echart_option_rejects_invalid_visual_map) {
 
 TEST(echart_option_copies_annotations) {
   static const double values[] = {1.0, 2.0, 3.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_mark_point_input_t points[] = {{0u, 1u, "peak"}, {0u, 2u, NULL}};
   my_echart_mark_line_input_t lines[] = {{42.0, "target", 0xE85D75FFu}};
   my_echart_mark_area_input_t areas[] = {{10.0, 30.0, "band", 0x3A86FF44u}};
@@ -144,7 +144,7 @@ TEST(echart_option_copies_annotations) {
 
 TEST(echart_option_rejects_invalid_annotations) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_mark_line_input_t lines[] = {{NAN, "bad", 0u}};
   my_echart_mark_area_input_t areas[] = {{30.0, 10.0, "bad", 0u}};
   my_echart_option_input_t input = {"ann", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
@@ -162,7 +162,7 @@ TEST(echart_option_rejects_invalid_annotations) {
 
 TEST(echart_option_copies_tooltip_hidden) {
   static const double values[] = {1.0};
-  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL};
+  my_echart_series_input_t series = {"z", "Z", MY_ECHART_LINE, values, 1u, 0u, 0u, NULL, true, NULL, false};
   my_echart_option_input_t input = {"tt", NULL, 0u, &series, 1u,
                                      false, false, false, 0.0, 0.0, false,
                                      0u, 0u, false, 0.0, 0.0, 0u, 0u,
@@ -181,9 +181,9 @@ TEST(echart_option_resolves_dataset_dimensions) {
   my_echart_dimension_input_t dims[2] = {
       {"revenue", revenue, 3u}, {"orders", orders, 3u}};
   my_echart_series_input_t by_dim = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                     0u, NULL, true, "orders"};
+                                     0u, NULL, true, "orders", false};
   my_echart_series_input_t inline_data = {"t", "T", MY_ECHART_LINE, revenue,
-                                          3u, 0u, 0u, NULL, true, NULL};
+                                          3u, 0u, 0u, NULL, true, NULL, false};
   my_echart_series_input_t both[2] = {by_dim, inline_data};
   my_echart_option_input_t input = {"ds", NULL, 0u, both, 2u,
                                     false, false, false, 0.0, 0.0, false, 0u,
@@ -207,9 +207,10 @@ TEST(echart_option_rejects_invalid_dataset) {
   static const double revenue[] = {10.0, 20.0};
   my_echart_dimension_input_t dims[1] = {{"revenue", revenue, 2u}};
   my_echart_series_input_t missing = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                      0u, NULL, true, "unknown"};
+                                      0u, NULL, true, "unknown", false};
   my_echart_series_input_t dup_source[1] = {{"s", "S", MY_ECHART_LINE, NULL,
-                                             0u, 0u, 0u, NULL, true, "revenue"}};
+                                             0u, 0u, 0u, NULL, true, "revenue",
+                                             false}};
   my_echart_dimension_input_t dup_dims[2] = {
       {"revenue", revenue, 2u}, {"revenue", revenue, 2u}};
   my_echart_dimension_input_t nan_dims[1] = {
@@ -243,7 +244,7 @@ TEST(echart_option_sorts_dataset_rows) {
   my_echart_dimension_input_t dims[2] = {
       {"k", keys, 3u}, {"v", vals, 3u}};
   my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                     0u, NULL, true, "v"};
+                                     0u, NULL, true, "v", false};
   my_echart_option_input_t input = {"sort", NULL, 0u, &series, 1u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
@@ -279,7 +280,7 @@ TEST(echart_option_rejects_invalid_transform) {
   my_echart_dimension_input_t dims[2] = {
       {"k", keys, 2u}, {"rag", ragged, 1u}};
   my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                     0u, NULL, true, "k"};
+                                     0u, NULL, true, "k", false};
   my_echart_option_input_t input = {"sort", NULL, 0u, &series, 1u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
@@ -305,7 +306,7 @@ TEST(echart_option_filters_dataset_rows) {
   my_echart_dimension_input_t dims[2] = {
       {"k", keys, 4u}, {"v", vals, 4u}};
   my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                     0u, NULL, true, "v"};
+                                     0u, NULL, true, "v", false};
   my_echart_option_input_t input = {"f", NULL, 0u, &series, 1u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
@@ -342,7 +343,7 @@ TEST(echart_option_rejects_invalid_filter) {
   static const double keys[] = {1.0, 2.0};
   my_echart_dimension_input_t dims[1] = {{"k", keys, 2u}};
   my_echart_series_input_t series = {"s", "S", MY_ECHART_LINE, NULL, 0u, 0u,
-                                     0u, NULL, true, "k"};
+                                     0u, NULL, true, "k", false};
   my_echart_option_input_t input = {"f", NULL, 0u, &series, 1u,
                                     false, false, false, 0.0, 0.0, false, 0u,
                                     0u, false, 0.0, 0.0, 0u, 0u,
@@ -367,8 +368,9 @@ TEST(echart_option_copies_multi_grid) {
   static const size_t grid0_series[] = {0u};
   static const size_t grid1_series[] = {1u};
   my_echart_series_input_t series[] = {
-      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_grid_input_t grids[] = {
       {.left = 0.05, .top = 0.05, .width = 0.9, .height = 0.4,
        .series_indices = grid0_series, .series_count = 1u,
@@ -403,8 +405,9 @@ TEST(echart_option_rejects_invalid_multi_grid) {
   static const double values[] = {1.0, 2.0, 3.0};
   static const size_t series_idx[] = {0u};
   my_echart_series_input_t series[] = {
-      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL},
-      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
+      {"a", "A", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL, false},
+      {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL,
+       false}};
   my_echart_grid_input_t grids[4];
   my_echart_option_input_t input = {"multi", NULL, 0u, series, 2u,
                                    false, false, false, 0.0, 0.0, false, 0u, 0u,
@@ -459,7 +462,7 @@ TEST(echart_option_validates_grid_axis_count_and_binding) {
   static const double values[] = {1.0};
   static const size_t indices[] = {0u};
   my_echart_series_input_t series = {
-      "a", "A", MY_ECHART_LINE, values, 1u, 0u, 2u, NULL, true, NULL};
+      "a", "A", MY_ECHART_LINE, values, 1u, 0u, 2u, NULL, true, NULL, false};
   my_echart_grid_input_t grid = {0};
   my_echart_option_input_t input = {0};
   grid.left = 0.1; grid.top = 0.1; grid.width = 0.8; grid.height = 0.8;

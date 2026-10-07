@@ -108,7 +108,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
       series[i] = (my_echart_series_input_t){s->id, s->name, s->type, s->data,
                                              s->data_count, s->color,
                                              s->y_axis_index, s->stack, s->show,
-                                             NULL};
+                                             NULL, s->label_show};
     }
     for (size_t i = 0u; i < chart->current.mark_point_count; i++)
       points[i] = (my_echart_mark_point_input_t){

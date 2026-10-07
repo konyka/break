@@ -30,7 +30,11 @@ struct my_echart_json_doc_t {
   my_echart_mark_line_input_t* mark_lines;
   my_echart_mark_area_input_t* mark_areas;
   my_echart_dimension_input_t* dataset;
-  char** encode_names;
+  char** encode_flat;
+  size_t encode_flat_count;
+  size_t encode_flat_cap;
+  size_t* encode_offsets;
+  size_t* encode_counts;
   char error[160];
 };
 
@@ -222,25 +226,67 @@ static bool parse_transform(my_echart_json_doc_t* d, my_conf_node_t* n) {
   if(strcmp(type,"filter")!=0){set_error(d,"unknown transform type");return false;} op=my_conf_get_str(n,"config.op",NULL); if(op==NULL){set_error(d,"unknown filter op");return false;} if(strcmp(op,"eq")==0)d->option.filter_op=MY_ECHART_FILTER_EQ;else if(strcmp(op,"ne")==0)d->option.filter_op=MY_ECHART_FILTER_NE;else if(strcmp(op,"gt")==0)d->option.filter_op=MY_ECHART_FILTER_GT;else if(strcmp(op,"ge")==0)d->option.filter_op=MY_ECHART_FILTER_GE;else if(strcmp(op,"lt")==0)d->option.filter_op=MY_ECHART_FILTER_LT;else if(strcmp(op,"le")==0)d->option.filter_op=MY_ECHART_FILTER_LE;else{set_error(d,"unknown filter op");return false;} if(!number(my_conf_get(n,"config.value"),&d->option.filter_value)){set_error(d,"invalid filter value");return false;} d->option.transform=MY_ECHART_TRANSFORM_FILTER; d->option.filter_dimension=d->option.transform_dimension; return true;
 }
 
+static bool track_data(my_echart_json_doc_t* d, double* ptr) {
+  if (d->data_count == d->data_cap) {
+    size_t cap = d->data_cap == 0u ? 8u : d->data_cap * 2u;
+    double** p = (double**)my_mem_realloc(d->allocator, d->data,
+                                          cap * sizeof(*p));
+    if (p == NULL) return false;
+    d->data = p;
+    d->data_cap = cap;
+  }
+  d->data[d->data_count++] = ptr;
+  return true;
+}
+
 static bool resolve_encodes(my_echart_json_doc_t* d) {
   size_t i, j;
-  if (d->encode_names == NULL) return true;
+  if (d->encode_counts == NULL) return true;
   for (i = 0u; d->series != NULL && i < d->option.series_count; ++i) {
-    bool found = false;
-    if (d->encode_names[i] == NULL) continue;
+    size_t k = d->encode_counts[i];
+    size_t dims[8];
+    size_t rows;
+    if (k == 0u) continue;
     if (d->dataset == NULL || d->option.dataset_count == 0u) {
       set_error(d, "dataset missing for encode");
       return false;
     }
-    for (j = 0u; j < d->option.dataset_count; ++j) {
-      if (strcmp(d->encode_names[i], d->dataset[j].name) == 0) {
-        d->series[i].data = d->dataset[j].values;
-        d->series[i].data_count = d->dataset[j].count;
-        found = true;
-        break;
+    for (j = 0u; j < k; ++j) {
+      size_t m;
+      bool found = false;
+      for (m = 0u; m < d->option.dataset_count; ++m) {
+        if (strcmp(d->encode_flat[d->encode_offsets[i] + j],
+                   d->dataset[m].name) == 0) {
+          dims[j] = m;
+          found = true;
+          break;
+        }
+      }
+      if (!found) { set_error(d, "encode dimension not found"); return false; }
+    }
+    rows = d->dataset[dims[0]].count;
+    for (j = 0u; j < k; ++j) {
+      if (d->dataset[dims[j]].count != rows) {
+        set_error(d, "encode dimension count mismatch");
+        return false;
       }
     }
-    if (!found) { set_error(d, "encode dimension not found"); return false; }
+    if (k == 1u) {
+      d->series[i].data = d->dataset[dims[0]].values;
+      d->series[i].data_count = rows;
+    } else {
+      double* out = (double*)alloc0(d, rows * k, sizeof(*out));
+      if (out == NULL) { set_error(d, "out of memory"); return false; }
+      if (!track_data(d, out)) { my_mem_free(d->allocator, out);
+                                 set_error(d, "out of memory"); return false; }
+      for (j = 0u; j < rows; ++j) {
+        size_t e;
+        for (e = 0u; e < k; ++e)
+          out[j * k + e] = d->dataset[dims[e]].values[j];
+      }
+      d->series[i].data = out;
+      d->series[i].data_count = rows * k;
+    }
   }
   return true;
 }
@@ -250,8 +296,11 @@ static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
   if (n == NULL) return true;
   if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); d->series = (my_echart_series_input_t*)alloc0(d, len, sizeof(*d->series));
-  d->encode_names = (char**)alloc0(d, len, sizeof(*d->encode_names));
-  if (len != 0u && (d->series == NULL || d->encode_names == NULL)) return false;
+  d->encode_offsets = (size_t*)alloc0(d, len, sizeof(*d->encode_offsets));
+  d->encode_counts = (size_t*)alloc0(d, len, sizeof(*d->encode_counts));
+  if (len != 0u && (d->series == NULL || d->encode_offsets == NULL ||
+                    d->encode_counts == NULL))
+    return false;
   for (i = 0u; i < len; ++i) {
     my_conf_node_t* item = child(n, i); const char* s;
     char generated[32];
@@ -265,16 +314,20 @@ static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
     if (d->series[i].id == NULL) { set_error(d, "out of memory"); return false; }
     if (d->series[i].name == NULL) d->series[i].name = copy_string(d, s);
     d->series[i].show = my_conf_get_bool(item, "show", true);
+    d->series[i].label_show = my_conf_get_bool(item, "label.show", false);
     d->series[i].y_axis_index = (unsigned)my_conf_get_int64(item, "yAxisIndex", 0);
     d->series[i].stack = copy_string(d, my_conf_get_str(item, "stack", NULL));
     { double* values = NULL;
       const char* encode_dim = my_conf_get_str(item, "encode.y", NULL);
+      my_conf_node_t* encode_node = my_conf_get(item, "encode.y");
+      if (encode_node != NULL && my_conf_type(encode_node) != MY_CONF_ARRAY)
+        encode_node = NULL;
       my_conf_node_t* data_node = my_conf_get(item, "data");
-      if (data_node != NULL && encode_dim != NULL) {
+      if (data_node != NULL && (encode_dim != NULL || encode_node != NULL)) {
         set_error(d, "series data and encode are exclusive");
         return false;
       }
-      if (data_node == NULL && encode_dim == NULL) {
+      if (data_node == NULL && encode_dim == NULL && encode_node == NULL) {
         set_error(d, "invalid series data");
         return false;
       }
@@ -283,9 +336,46 @@ static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
         set_error(d, "invalid series data");
         return false;
       }
-      if (encode_dim != NULL) {
-        d->encode_names[i] = copy_string(d, encode_dim);
-        if (d->encode_names[i] == NULL) { set_error(d, "out of memory"); return false; }
+      if (encode_dim != NULL || encode_node != NULL) {
+        size_t k = 1u;
+        d->encode_offsets[i] = d->encode_flat_count;
+        if (encode_node != NULL) {
+          k = my_conf_child_count(encode_node);
+          if (k < 2u || k > 8u) { set_error(d, "invalid encode"); return false; }
+        }
+        if (d->encode_flat_count + k > d->encode_flat_cap) {
+          size_t cap = d->encode_flat_cap == 0u ? 16u
+                           : d->encode_flat_cap;
+          char** p;
+          while (cap < d->encode_flat_count + k) cap *= 2u;
+          p = (char**)my_mem_realloc(d->allocator, d->encode_flat,
+                                     cap * sizeof(*p));
+          if (p == NULL) { set_error(d, "out of memory"); return false; }
+          d->encode_flat = p;
+          d->encode_flat_cap = cap;
+        }
+        if (encode_node != NULL) {
+          for (size_t e = 0u; e < k; ++e) {
+            const char* nm = my_conf_as_str(child(encode_node, e), NULL);
+            if (nm == NULL || nm[0] == '\0') {
+              set_error(d, "invalid encode");
+              return false;
+            }
+            d->encode_flat[d->encode_flat_count + e] = copy_string(d, nm);
+            if (d->encode_flat[d->encode_flat_count + e] == NULL) {
+              set_error(d, "out of memory");
+              return false;
+            }
+          }
+        } else {
+          d->encode_flat[d->encode_flat_count] = copy_string(d, encode_dim);
+          if (d->encode_flat[d->encode_flat_count] == NULL) {
+            set_error(d, "out of memory");
+            return false;
+          }
+        }
+        d->encode_flat_count += k;
+        d->encode_counts[i] = k;
         values = NULL;
         dl = 0u;
       }
@@ -419,7 +509,9 @@ void my_echart_json_doc_destroy(my_echart_json_doc_t** doc) {
    my_mem_free((*doc)->allocator, (*doc)->mark_lines);
    my_mem_free((*doc)->allocator, (*doc)->mark_areas);
    my_mem_free((*doc)->allocator, (*doc)->dataset);
-  my_mem_free((*doc)->allocator, (*doc)->encode_names);
+  my_mem_free((*doc)->allocator, (*doc)->encode_flat);
+  my_mem_free((*doc)->allocator, (*doc)->encode_offsets);
+  my_mem_free((*doc)->allocator, (*doc)->encode_counts);
   my_mem_free((*doc)->allocator, (*doc)->grids);
   my_conf_destroy((*doc)->tree);
   my_mem_free((*doc)->allocator, *doc);

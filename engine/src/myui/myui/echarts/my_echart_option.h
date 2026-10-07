@@ -64,6 +64,7 @@ typedef struct my_echart_series_input_t {
   const char* stack;
   bool show;
   const char* dataset_dimension;
+  bool label_show;
 } my_echart_series_input_t;
 
 typedef struct my_echart_mark_point_input_t {
@@ -147,6 +148,7 @@ typedef struct my_echart_series_t {
   unsigned y_axis_index;
   char* stack;
   bool show;
+  bool label_show;
 } my_echart_series_t;
 
 typedef struct my_echart_mark_point_t {

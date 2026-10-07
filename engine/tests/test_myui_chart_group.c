@@ -3,7 +3,7 @@
 #include "myui/widgets/my_chart.h"
 
 static my_widget_t* create_chart(const float* values, size_t count) {
-  my_chart_series_t series = {"series", values, count, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"series", values, count, 0xE85D75FFu, 0u, false};
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
 
   if (chart == NULL || my_chart_set_series(chart, 0u, &series) != MY_RET_OK) {
@@ -161,7 +161,7 @@ TEST(chart_group_propagates_hover_clear) {
 
 TEST(chart_group_propagates_funnel_hover) {
   static const float values[] = {100.0f, 60.0f, 30.0f};
-  my_chart_series_t series = {"series", values, 3u, 0xE85D75FFu, 0u};
+  my_chart_series_t series = {"series", values, 3u, 0xE85D75FFu, 0u, false};
   my_widget_t* chart_a = my_chart_create(NULL, MY_CHART_FUNNEL);
   my_widget_t* chart_b = my_chart_create(NULL, MY_CHART_FUNNEL);
   my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
