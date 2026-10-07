@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R683 inline-size 容器轴语义（TDD）— inline 轴容器只暴露 inline 维：block 轴 size 腿（height 族/aspect-ratio/orientation）在其上求值为假，size 容器两轴照常；R670"height 照 rect 求值"近似废止
+
+- **缺口**(R670 落账"inline-size 容器的轴语义未细分（height 特性照 rect 求值,文档化近似"):`container-type: inline-size` 容器上 `(min-height: 500px)` 照 rect.h 求值命中——规范上 inline 轴容器不建立 block 维 containment,height 族查询应评估为假（unknown 参与 and 即假）。
+- **方案**(匹配端轴分流,R663 注入路径零改——宿主上下文无 type 概念):① **轴检测** `css_container_query_has_block_axis`——size 腿词边界扫描 height/min-height/max-height/aspect-ratio/orientation（aspect-ratio 与 orientation 依赖两维,同归 block 依赖）;② **匹配分流**——my_theme_container_matches 的 has_size 路径,容器 type==inline-size 且腿含 block 轴 → 腿直接假（不读 rect.h）;size 容器照常双轴;style 腿不受轴影响（style 不经容器维求值）。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R675 测试（panel inline-size→size——其意图是 AND 语义非轴语义;硬偏移 `nested+38` 改 strstr 定位）——五景：block 腿在 inline-size 上假（rect.h=600 满足仍拦）/inline 腿照常命中/**size 容器双轴照常**/aspect-ratio 在 inline-size 上假/混合列表 block 腿拦回（style 真也拦）。**RED 如实红**（行 2974:block 腿照 rect 求值命中——近似实证）;GREEN **188/188**(187+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R670/R679/R681 组全绿（inline-size+min-width 场景不受影响）。
+- **边界**：纯 size `or`/`not` 整串回退路径（media 机制求值）在 inline-size 容器上**保守假**（整串含 block 词即假——unknown 经 or 的规范精确传播需 media 机制感知容器 type,超出本轮,文档化）;注入上下文模式两轴照常（R663 契约,type 概念属匹配层）;orientation 按 block 依赖归档（引擎无 writing-mode,横竖向本由两维派生）;R611 AMD 基线不动。
+
 ## 本轮更新：R682 bare style() 存在性查询（TDD）— `style(--prop)` 裸形态落地：计算值≠初始值判真（未设未注册=无值假/未设注册=回落 initial 等比假/已设=initial 等比假、否则真——R677 typed 比较同门），R673 拒签契约变更为悬置
 
 - **缺口**(R673 落账"bare `style(--prop)`（存在/非初值判定）未涉"):`@container style(--accent)` 被 style 单条件形态校验拒（end==start→false）——"最近的祖先有没有把这个自定义属性设成非初始值"无从表达。

@@ -2922,6 +2922,152 @@ TEST(css_container_bare_style_existence_queries)
   my_theme_destroy(theme);
 }
 
+TEST(css_container_inline_size_axis_semantics)
+{
+  /* R683: an inline-size container only exposes its inline axis —
+   * block-axis size legs (height family, aspect-ratio, orientation)
+   * evaluate to false on it, while a size container exposes both
+   * axes. R670's documented approximation (height legs read rect.h
+   * regardless) changes here. */
+  const char* block_on_inline =
+      "panel { container-type: inline-size; }"
+      "@container (min-height: 500px) { button { color: #010203; } }";
+  const char* inline_on_inline =
+      "panel { container-type: inline-size; }"
+      "@container (min-width: 400px) { button { color: #010203; } }";
+  const char* block_on_size =
+      "panel { container-type: size; }"
+      "@container (min-height: 500px) { button { color: #010203; } }";
+  const char* ratio_on_inline =
+      "panel { container-type: inline-size; }"
+      "@container (aspect-ratio: 4/3) { button { color: #010203; } }";
+  const char* mixed_on_inline =
+      "panel { container-type: inline-size; --accent: red; }"
+      "button { color: red; }"
+      "@container style(--accent: red) and (min-height: 500px)"
+      " { button { color: #010203; } }";
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* a block-axis leg on an inline-size container is false even when
+   * the rect satisfies it. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, block_on_inline,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* the inline axis still works on an inline-size container. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, inline_on_inline,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a size container exposes both axes. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, block_on_size,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* aspect-ratio needs both axes: false on an inline-size container. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 800;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, ratio_on_inline,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a mixed list: the block leg kills the conjunction on an
+   * inline-size container even when the style leg is true. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_on_inline,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -2930,22 +3076,22 @@ TEST(css_container_nested_queries_and_at_match_time)
    * dropped the outer condition. Bounded slice: depth ≥ 3 keeps the
    * innermost two conditions (documented approximation). */
   const char* nested =
-      "panel { container-type: inline-size; }"
+      "panel { container-type: size; }"
       "@container (min-width: 400px) {"
       " @container (min-height: 500px) {"
       "  button { color: #010203; } } }";
   const char* nested_named =
-      "panel { container-type: inline-size; container-name: card; }"
+      "panel { container-type: size; container-name: card; }"
       "@container card (min-width: 400px) {"
       " @container (min-height: 500px) {"
       "  button { color: #010203; } } }";
   const char* nested_named_miss =
-      "panel { container-type: inline-size; }"
+      "panel { container-type: size; }"
       "@container card (min-width: 400px) {"
       " @container (min-height: 500px) {"
       "  button { color: #010203; } } }";
   const char* deep =
-      "panel { container-type: inline-size; }"
+      "panel { container-type: size; }"
       "@container (min-width: 900px) {"      /* dropped (outermost) */
       " @container (min-width: 400px) {"     /* kept */
       "  @container (min-height: 500px) {"   /* kept (innermost) */
@@ -2961,8 +3107,11 @@ TEST(css_container_nested_queries_and_at_match_time)
 
   /* stamping: the inner condition lands in pair1, the outer in pair2. */
   options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
-  sheet = my_css_parse_with_options(NULL, nested + 38, strlen(nested + 38),
-                                    &options, &error);
+  {
+    const char* at = strstr(nested, "@container");
+    sheet = my_css_parse_with_options(NULL, at, strlen(at), &options,
+                                      &error);
+  }
   ASSERT_NOT_NULL(sheet);
   ASSERT_EQ(my_css_rule_count(sheet), 1u);
   ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
@@ -8929,6 +9078,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_syntax_lone_ident_enforced);
     RUN_TEST(css_container_and_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_container_bare_style_existence_queries);
+    RUN_TEST(css_container_inline_size_axis_semantics);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

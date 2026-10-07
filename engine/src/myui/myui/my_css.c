@@ -3713,6 +3713,37 @@ static bool css_container_query_is_style(const char* query, size_t length) {
   return length - i >= 6u && memcmp(query + i, "style(", 6u) == 0;
 }
 
+/* R683: does a size leg depend on the block axis? height-family
+ * features, aspect-ratio and orientation need dimensions an
+ * inline-size container does not establish (word-boundary scan). */
+static bool css_container_query_has_block_axis(const char* cond,
+                                               size_t length) {
+  size_t i = 0u;
+  while (i < length) {
+    char word[24];
+    size_t wl = 0u;
+    while (i < length && !c_ident_char((unsigned char)cond[i])) {
+      i++;
+    }
+    if (i >= length) {
+      break;
+    }
+    while (i < length && c_ident_char((unsigned char)cond[i])) {
+      if (wl + 1u < sizeof(word)) {
+        word[wl++] = cond[i];
+      }
+      i++;
+    }
+    word[wl] = '\0';
+    if (my_str_eq(word, "height") || my_str_eq(word, "min-height") ||
+        my_str_eq(word, "max-height") || my_str_eq(word, "aspect-ratio") ||
+        my_str_eq(word, "orientation")) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /* R681: split an and-only condition list at top-level `and` word
  * boundaries (paren- and quote-aware). Each slice is trimmed. Returns
  * the condition count: 1 when no top-level `and` separates conditions,
@@ -6024,11 +6055,19 @@ bool my_theme_container_matches(const my_theme_t* theme,
            css_container_name_matches(theme, a, container_name))) {
         uint32_t w = a->rect.w > 0 ? (uint32_t)a->rect.w : 0u;
         uint32_t h = a->rect.h > 0 ? (uint32_t)a->rect.h : 0u;
+        /* R683: an inline-size container only exposes its inline axis
+         * — a block-axis size leg evaluates to false on it (the
+         * rect.h read was R670's documented approximation). */
+        bool inline_only = my_str_eq(type, "inline-size");
         for (ci = 0u; ci < n; ci++) {
           bool leg = false;
           if (css_container_query_is_style(conds[ci], cond_lens[ci])) {
             leg = css_container_style_cond_matches(theme, a, conds[ci],
                                                    cond_lens[ci]);
+          } else if (inline_only &&
+                     css_container_query_has_block_axis(conds[ci],
+                                                        cond_lens[ci])) {
+            leg = false;
           } else {
             bool verdict = false;
             leg = css_container_eval_size_query(conds[ci], cond_lens[ci],
