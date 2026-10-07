@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R667 var() 消费侧迁移（TDD）— widget 类型化访问器（get_color/get_int）经 themed-ancestor 链解析 var(),theme token 自此上屏；局部样式字符串维持字面语义
+
+- **缺口**(R666 落账"widget 消费侧迁移为独立轮"):R666 交付了替换 API 但屏幕面仍哑——widget 绘制的唯一消费漏斗 `my_widget_style_get_color/_int` 对 STR 型 var 文本按类型不符直落 fallback,`background-color: var(--brand)` 在屏上=未设置。
+- **方案**（漏斗点换轨，widget 零改动）:① 新内部 `theme_widget_resolve_var`——值为 STR 且含 var( 时，溯 `w->theme` 弱引用链（my_widget_style_get 既有的 themed-ancestor 语义）调 R666 替换 API;② **出处甄别**:my_widget_style_get 局部优先——`local_style` 命中即字面（var 契约=theme-CSS 专属，host 直设字符串不解析，文档化）;③ get_color 收 UINT32、get_int 收 INT32/DOUBLE（与既类型契约逐点同构）,IACVT/不可解析落调用方 fallback;④ 全 widget 族（button/label/window/…）经同一漏斗自然生效，逐 widget 零触点。
+- **TDD（红→绿实证）**:test_myui_css +1——访问器面：色 token 解析（#036→0x003366FF)/长度 token 带回退（var(--w, 3px)→3)/IACVT→调用方 fallback/局部字面不解析/**themed-ancestor 链**(child 无 theme 经 window 解析+自定义属性父链继承双机制同框）。**RED 如实红**（行 1262:fallback 0xDEADBEEF ≠ 0x003366FF——STR 型直落）;GREEN 一次过 **174/174**(173+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有样式/主题/widget 组全绿未动（类型化值零扰动——STR-var 分支只吞原 fallback 场景）。
+- **边界**:my_widget_style_get（泛型取值）维持原始 STR 返回（直接消费方自负解析——类型化访问器是唯一受门消费面）;var() 上屏至此闭环（存储→级联→替换→消费全链有门）;@property 注册型自定义属性（类型化/初始值/动画插值）未涉；R611 AMD 基线不动。
+
 ## 本轮更新：R666 var() 二期（TDD）— computed-value 期替换落地：新 API `my_theme_get_for_widget_var`，回退链/环检测/DOM 继承全谱；解析期 var() 声明不再硬拒
 
 - **缺口**(R665 落账"二期=var() 替换"):`color: var(--brand)` 被 css_value 吃掉 "var" 标识符后 '(' 尾随 → 整表硬拒；自定义属性有存储无消费，var() 语义全缺。

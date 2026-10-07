@@ -1263,11 +1263,55 @@ const my_value_t* my_widget_style_get(my_widget_t* widget,
   return NULL;
 }
 
+/* R667: a theme-cascade string value holding var( text resolves through
+ * my_theme_get_for_widget_var (themed-ancestor chain). Local-style
+ * strings stay literal — the var contract is a theme-CSS feature. */
+static bool theme_widget_resolve_var(my_widget_t* widget,
+                                     my_widget_state_t state, const char* key,
+                                     const my_value_t* v, my_value_t* out) {
+  my_widget_t* w = widget;
+  const my_value_t* local;
+  const char* text;
+  if (widget == NULL || v == NULL || v->type != MY_VALUE_STR) {
+    return false;
+  }
+  text = my_value_get_str(v);
+  if (text == NULL || strstr(text, "var(") == NULL) {
+    return false;
+  }
+  local = widget->local_style != NULL
+              ? my_style_get(widget->local_style, state, key)
+              : NULL;
+  if (local != NULL) {
+    return false;
+  }
+  while (w != NULL && w->theme == NULL) {
+    w = w->parent;
+  }
+  if (w == NULL) {
+    return false;
+  }
+  return my_theme_get_for_widget_var(w->theme, widget, state, key, out);
+}
+
 uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
                                    const char* key, uint32_t fallback) {
   const my_value_t* v = my_widget_style_get(widget, state, key);
-  return v != NULL && v->type == MY_VALUE_UINT32 ? my_value_get_uint32(v)
-                                                 : fallback;
+  if (v != NULL && v->type == MY_VALUE_UINT32) {
+    return my_value_get_uint32(v);
+  }
+  if (v != NULL) {
+    my_value_t resolved;
+    my_value_init(&resolved, ((my_object_t*)widget)->allocator);
+    if (theme_widget_resolve_var(widget, state, key, v, &resolved) &&
+        my_value_type(&resolved) == MY_VALUE_UINT32) {
+      uint32_t result = my_value_get_uint32(&resolved);
+      my_value_reset(&resolved);
+      return result;
+    }
+    my_value_reset(&resolved);
+  }
+  return fallback;
 }
 
 int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
@@ -1281,6 +1325,27 @@ int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
   }
   if (v->type == MY_VALUE_DOUBLE) {
     return (int32_t)my_value_get_double(v);
+  }
+  {
+    my_value_t resolved;
+    my_value_init(&resolved, ((my_object_t*)widget)->allocator);
+    if (theme_widget_resolve_var(widget, state, key, v, &resolved)) {
+      int32_t result = 0;
+      bool ok = true;
+      if (my_value_type(&resolved) == MY_VALUE_INT32) {
+        result = my_value_get_int32(&resolved);
+      } else if (my_value_type(&resolved) == MY_VALUE_DOUBLE) {
+        result = (int32_t)my_value_get_double(&resolved);
+      } else {
+        ok = false;
+      }
+      my_value_reset(&resolved);
+      if (ok) {
+        return result;
+      }
+    } else {
+      my_value_reset(&resolved);
+    }
   }
   return fallback;
 }

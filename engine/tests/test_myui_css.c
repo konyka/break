@@ -1233,6 +1233,75 @@ TEST(css_var_substitution_resolves_at_lookup_time)
   my_value_reset(&out);
 }
 
+TEST(css_var_flows_through_widget_style_accessors)
+{
+  /* R667: consumer migration — my_widget_style_get_color/_int resolve
+   * var() declarations through the themed-ancestor chain, so theme
+   * tokens actually reach the screen. Local-style strings stay literal
+   * (the var contract is a theme-CSS feature). */
+  const char* css =
+      "button { --brand: #036; background-color: var(--brand);"
+      " border-width: var(--w, 3px); color: var(--missing); }";
+  const char* inherited =
+      "window { --brand: #0F1E2D; } button { background-color: var(--brand); }";
+  my_theme_t* theme = my_theme_create(NULL);
+  my_widget_t* widget = my_widget_create(NULL, "button");
+  my_theme_t* theme2;
+  my_widget_t* window;
+  my_widget_t* child;
+  my_value_t local;
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(widget, theme), MY_RET_OK);
+  /* color/length tokens resolve through the typed accessors. */
+  ASSERT_EQ(my_widget_style_get_color(widget, MY_STATE_NORMAL, "bg_color",
+                                      0xDEADBEEFu),
+            0x003366FFu);
+  ASSERT_EQ(my_widget_style_get_int(widget, MY_STATE_NORMAL, "border_width",
+                                    99),
+            3);
+  /* invalid at computed-value time -> the caller's fallback. */
+  ASSERT_EQ(my_widget_style_get_color(widget, MY_STATE_NORMAL, "fg_color",
+                                      0xDEADBEEFu),
+            0xDEADBEEFu);
+  /* local-style strings stay literal — no var resolution off-theme. */
+  my_value_init(&local, NULL);
+  ASSERT_EQ(my_value_set_str(&local, "var(--brand)"), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_set(widget, MY_STATE_NORMAL, "fg_color", &local),
+            MY_RET_OK);
+  my_value_reset(&local);
+  ASSERT_EQ(my_widget_style_get_color(widget, MY_STATE_NORMAL, "fg_color",
+                                      0xDEADBEEFu),
+            0xDEADBEEFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* the themed-ancestor chain: a child without a theme resolves through
+   * the nearest themed ancestor (and inherits the custom property). */
+  theme2 = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  child = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme2);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(child);
+  window->widget_type = "window";
+  child->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, child), MY_RET_OK);
+  my_widget_unref(child);
+  ASSERT_EQ(my_theme_load_css_ex(theme2, inherited,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_apply_theme(window, theme2), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_color(child, MY_STATE_NORMAL, "bg_color",
+                                      0xDEADBEEFu),
+            0x0F1E2DFFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme2);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -6715,6 +6784,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_nested_in_rule_blocks);
     RUN_TEST(css_custom_properties_store_raw_token_streams);
     RUN_TEST(css_var_substitution_resolves_at_lookup_time);
+    RUN_TEST(css_var_flows_through_widget_style_accessors);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);
