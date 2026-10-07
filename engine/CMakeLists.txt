@@ -1127,6 +1127,10 @@ add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_
 if(NOT WIN32 AND NOT APPLE)
 find_program(WAYLAND_SCANNER wayland-scanner)
 find_package(PkgConfig QUIET)
+# The explorer always offers the X11 runner on Linux-class hosts; the
+# engine only searches X11 itself in its x11 platform branch, so look
+# here too (ENGINE_ENABLE_WAYLAND=ON leaves X11_LIBRARIES unset).
+find_package(X11 QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl glesv2)
 endif()
@@ -1146,13 +1150,20 @@ if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
   set(EX_EXPLORER_DEFS "")
   set(EX_EXPLORER_LIBS ${EX_WAYLAND_LIBRARIES} ${X11_LIBRARIES})
   set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS})
+      ${CMAKE_CURRENT_BINARY_DIR} ${EX_WAYLAND_INCLUDE_DIRS}
+      ${X11_INCLUDE_DIR})
 else()
   set(EX_EXPLORER_PLATFORMS "x11 only, soft only (wayland/EGL dev pkgs missing)")
   set(EX_EXPLORER_SOURCES tools/myui_explorer.c)
   set(EX_EXPLORER_DEFS EX_EXPLORER_NO_WAYLAND=1)
   set(EX_EXPLORER_LIBS ${X11_LIBRARIES})
-  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+  set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+      ${X11_INCLUDE_DIR})
+endif()
+if(NOT WIN32 AND NOT APPLE AND NOT X11_FOUND)
+  # Headless-only explorer: selftest/--shot still work, the interactive
+  # runners report "not supported in this build".
+  list(APPEND EX_EXPLORER_DEFS EX_EXPLORER_NO_X11=1)
 endif()
 if(WIN32)
   list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_win32.c)

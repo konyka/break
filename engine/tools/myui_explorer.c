@@ -618,8 +618,9 @@ void ex_key(app_t* app, int ch) {
 /* POSIX runner capability guards: the X11/Wayland/EGL runners build only
  * on Linux-class hosts — the win32/cocoa ports live in ex_platform_*.
  * EX_HAVE_EGL_WL additionally requires the wayland/EGL dev packages (the
- * CMake no-wayland branch is x11+soft only). */
-#if !defined(_WIN32) && !defined(__APPLE__)
+ * CMake no-wayland branch is x11+soft only), and every interactive POSIX
+ * runner needs X11 dev (EX_EXPLORER_NO_X11 = headless-only build). */
+#if !defined(_WIN32) && !defined(__APPLE__) && !defined(EX_EXPLORER_NO_X11)
 #define EX_HAVE_X11 1
 #if !defined(EX_EXPLORER_NO_WAYLAND)
 #define EX_HAVE_EGL_WL 1
@@ -718,7 +719,12 @@ int main(int argc, char** argv) {
     printf("platform %s not supported in this build\n", platform);
     return 1;
 #else
-#if defined(EX_HAVE_EGL_WL)
+#if !defined(EX_HAVE_X11)
+    (void)gl;
+    (void)app;
+    printf("no interactive runner in this build; use --selftest/--shot\n");
+    return 1;
+#elif defined(EX_HAVE_EGL_WL)
     if (gl) return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
     if (strcmp(platform, "wayland") == 0) return run_wayland_soft(app, font_path);
     return run_x11_soft(app, font_path);
