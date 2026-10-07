@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R679 声明块内嵌套 @container 匹配期化（TDD）— 无上下文悬置落地：内层块落入同选择子盖戳兄弟规则（pend 源序），区间盖戳扩展至 pend 面——`&` 脱糖/更深层递归同盖，外层规则级条件经 span 天然补 pair2；条目爆炸评估→规则拆分证伪
+
+- **缺口**(R670 落账"声明块内嵌套 @container 维持解析期专属（逐声明条目爆炸，让渡）",候选评估补正:**爆炸面证伪**——爆炸仅存于"逐声明盖戳进同一规则"设计;规则拆分下内层声明落入独立盖戳规则,条目数线性):`button { color: red; @container (min-width: 400px) { color: blue; } }` 无上下文 strict 整表拒（R663 契约）/compat 跳过——CSS Nesting 的条件组块全缺,声明块级 @container 无法悬置到匹配期。
+- **方案**(兄弟规则拆分,R670/R675 机械同构):① **悬置路径**——css_parse_nested_conditional 的 CONTAINER 分支,p->container==NULL 时:具名捕获（规则级镜像,`not`/`style(` 仍查询语法）/query 读取+尾 trim/features_valid 校验（同规则级）→创建**兄弟规则 nr**（css_rule_new + 选择子值拷贝 tmp 循环,layer_order 继承）,**pend 后**再解析内层块（css_nest_rule 同款源序纪律）→块后对 [pend_before, size) 区间**首空槽盖戳**（新提取 css_rule_stamp_container_condition,规则级循环同用——行为等价重构）;② **复合自然成立**——内层 `&` 语句经 css_nest_rule(p, nr) 脱糖后 pend 于 nr 之后、同区间→同盖戳;更深层递归先戳自己的（内）条件,本层后戳补 pair2——**内层先戳 pair1 约定自动保持**;外层规则级 @container 的 span 盖戳覆盖落表后的 nr（flush 在 span 内）→补 pair2;③ **注入上下文路径零改**——具名照规则级同例拒（名字需匹配层,新增镜像守卫）,style() 维持 R673 拒;media/supports 内联路径不动。
+- **TDD（红→绿实证）**:test_myui_css +1——解析面六景：悬置落双规则（外无戳/内戳 query）/具名存储/**合取戳面**（规则级外层 pair1、声明块内层 pair1+外层 pair2——区间交互钉死）/style() 条件同路悬置/`&` 语句三规则同盖/非法特性 strict 拒;匹配面六景：命中（500px→#010203)/阈下回退外层声明（300px→red)/style() 命中/失配回退/具名命中/无名容器不满足回退。**RED 如实红**（行 2242:sheet NULL——strict 整表拒实证）;GREEN 一次过 **184/184**(183+1)。
+- **回归**：双树非图形 CTest 各 **129/129**、fuzz smoke 5/5;R670/R673/R675 容器组、R638 嵌套条件组（media/supports 内联）、R629/R636 `&` 脱糖组全绿未动（盖戳循环重构为纯提取）。
+- **边界**：R663 注入上下文契约再收窄（无上下文声明块嵌套 @container 由拒改悬置,R670 同型文档化变更）;depth ≥ 3 双条件对上限沿用（第三层条件弃,最内两层保——本层后戳补 pair2 时若已满则弃,同约）;`&` 混合选择子在悬置块内经 nr 的选择子拷贝脱糖（祖先链/具名作用域携带,nr2 不继承 nr 的 @scope 标记——存储选择子本就无标记,R627 纪律）;@media 交叉维持解析期求值（环境量,无匹配期语义）;R611 AMD 基线不动。
+
 ## 本轮更新：R678 @property 多选一 `a | b` 组合子（TDD）— syntax 强制域扩编：`|` 分隔替代集任一命中即收（ident 字节精确/原语复用 R672/R676 闸），未知组件整体不强制（R672 让渡按整组合子适用）
 
 - **缺口**(R672/R676 落账"多选一 `a | b` 未涉——未知串不强制"):`syntax: "small | large | medium"` 被当未知语法串全放行——`initial-value: huge` 照注册、级联值 `--size: big` 照样替换，替代集语义全缺。

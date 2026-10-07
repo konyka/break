@@ -1963,6 +1963,11 @@ static bool css_stmt_is_nested_rule(const css_p_t* p) {
 #define CSS_NEST_COND_MEDIA 0
 #define CSS_NEST_COND_SUPPORTS 1
 #define CSS_NEST_COND_CONTAINER 2
+/* forward: defined with the container at-rule machinery below. */
+static bool css_container_features_valid(const char* query, size_t length);
+static void css_rule_stamp_container_condition(my_css_rule_t* r,
+                                               const char* query,
+                                               const char* name);
 static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
                                          my_css_sheet_t* sheet, u32 depth,
                                          size_t at_depth, int kind) {
@@ -2006,9 +2011,30 @@ static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
           p, (uint32_t)MY_CSS_FEATURE_SUPPORTS);
     }
   } else {
-    /* R663: nested @container — unnamed query, CONTAINER capability. */
+    /* R663: nested @container — CONTAINER capability. R679: without an
+     * injected context the block defers to match time — it lands in a
+     * sibling rule sharing the parent's selectors, stamped with the
+     * condition (an enclosing rule-level @container's span stamp joins
+     * as the second conjunct afterwards). */
     char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+    char name[MY_STYLE_KEY_LEN];
     size_t query_length = 0u;
+    name[0] = '\0';
+    c_ws(p);
+    /* R679: an optional container name precedes the query (mirror of
+     * the rule-level capture; `not`/`style(` stay query syntax). */
+    if (c_peek(p) != '(') {
+      size_t saved = p->pos;
+      char word[MY_STYLE_KEY_LEN];
+      if (c_ident(p, word, sizeof(word)) && !my_str_eq(word, "not") &&
+          !(my_str_eq(word, "style") && c_peek(p) == '(') &&
+          !c_ident_char((unsigned char)c_peek(p))) {
+        snprintf(name, sizeof(name), "%s", word);
+        c_ws(p);
+      } else {
+        p->pos = saved;
+      }
+    }
     if (!css_container_query_opens(p)) {
       return css_skip_or_reject_atrule_with_capability(
           p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
@@ -2021,7 +2047,73 @@ static bool css_parse_nested_conditional(css_p_t* p, my_css_rule_t* r,
       query[query_length++] = (char)c_next(p);
     }
     query[query_length] = '\0';
-    if (c_peek(p) != '{' ||
+    while (query_length > 0u &&
+           (query[query_length - 1u] == ' ' || query[query_length - 1u] == '\t' ||
+            query[query_length - 1u] == '\r' || query[query_length - 1u] == '\n')) {
+      query[--query_length] = '\0';
+    }
+    if (c_peek(p) != '{') {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+    }
+    if (p->container == NULL) {
+      /* R679 match-time deferral: the feature shape validates now; a
+       * sibling rule carries the block, stamped with the condition. */
+      my_css_rule_t* nr;
+      size_t pend_before, si, sn, pi;
+      if (!css_container_features_valid(query, query_length)) {
+        return css_skip_or_reject_atrule_with_capability(
+            p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+      }
+      pend_before =
+          p->nest_pending != NULL ? my_darray_size(p->nest_pending) : 0u;
+      nr = css_rule_new(p->allocator, r->layer_order);
+      if (nr == NULL) {
+        css_fail(p, "oom");
+        return false;
+      }
+      sn = my_darray_size(r->selectors);
+      for (si = 0u; si < sn; si++) {
+        my_css_selector_t tmp =
+            *(const my_css_selector_t*)my_darray_get(r->selectors, si);
+        if (!css_rule_push_selector(p, nr, &tmp)) {
+          css_rule_destroy(p->allocator, nr);
+          return false;
+        }
+      }
+      /* pend before the block parses (source order; the teardown owns
+       * it on any later failure — the css_nest_rule discipline). */
+      if (p->nest_pending == NULL) {
+        p->nest_pending = my_darray_create(p->allocator, 0u);
+        if (p->nest_pending == NULL) {
+          css_rule_destroy(p->allocator, nr);
+          css_fail(p, "oom");
+          return false;
+        }
+      }
+      if (my_darray_push(p->nest_pending, nr) != MY_RET_OK) {
+        css_rule_destroy(p->allocator, nr);
+        css_fail(p, "oom");
+        return false;
+      }
+      c_next(p); /* '{' */
+      if (!css_parse_decl_block(p, nr, sheet, depth, at_depth + 1u)) {
+        return false;
+      }
+      /* stamp the sibling and everything pended during its block (&
+       * desugars, deeper deferred @containers) — first-empty-slot, so
+       * a deeper (inner) condition stamped by its own recursion keeps
+       * pair1 and this one joins as pair2. */
+      for (pi = pend_before; pi < my_darray_size(p->nest_pending); pi++) {
+        css_rule_stamp_container_condition(
+            (my_css_rule_t*)my_darray_get(p->nest_pending, pi), query, name);
+      }
+      return true;
+    }
+    /* R663 parse-time evaluation (host-injected context). Names need
+     * the match layer — a named query still rejects in this mode
+     * (rule-level contract). */
+    if (name[0] != '\0' ||
         !css_container_query_matches(p, query, query_length, &matches)) {
       return css_skip_or_reject_atrule_with_capability(
           p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
@@ -4162,6 +4254,22 @@ static bool css_parse_property_atrule(css_p_t* p, my_css_sheet_t* sheet,
   return true;
 }
 
+/* R670/R675: stamp a rule with a container condition — the first stamp
+ * takes pair1, the second joins as pair2 (a conjunction); a third is
+ * dropped (depth >= 3 keeps the innermost two, documented). The
+ * innermost condition always lands first (inner blocks close first). */
+static void css_rule_stamp_container_condition(my_css_rule_t* r,
+                                               const char* query,
+                                               const char* name) {
+  if (r->container_query[0] == '\0') {
+    snprintf(r->container_query, sizeof(r->container_query), "%s", query);
+    snprintf(r->container_name, sizeof(r->container_name), "%s", name);
+  } else if (r->container_query2[0] == '\0') {
+    snprintf(r->container_query2, sizeof(r->container_query2), "%s", query);
+    snprintf(r->container_name2, sizeof(r->container_name2), "%s", name);
+  }
+}
+
 static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                        size_t at_rule_depth,
                                        uint32_t layer_id) {
@@ -4248,17 +4356,7 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
     after = my_darray_size(sheet->rules);
     for (i = before; i < after; i++) {
       my_css_rule_t* r = (my_css_rule_t*)my_darray_get(sheet->rules, i);
-      if (r->container_query[0] == '\0') {
-        snprintf(r->container_query, sizeof(r->container_query), "%s",
-                 query);
-        snprintf(r->container_name, sizeof(r->container_name), "%s", name);
-      } else if (r->container_query2[0] == '\0') {
-        /* R675: nested @container — the outer condition joins as the
-         * second conjunct (depth ≥ 3 keeps the innermost two). */
-        snprintf(r->container_query2, sizeof(r->container_query2), "%s",
-                 query);
-        snprintf(r->container_name2, sizeof(r->container_name2), "%s", name);
-      }
+      css_rule_stamp_container_condition(r, query, name);
     }
     return true;
   }
