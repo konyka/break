@@ -115,6 +115,10 @@ my_theme_t* my_theme_clone(const my_theme_t* source) {
            sizeof(candidate_entry->scope_limit_root_index));
     memcpy(candidate_entry->specificity, source_entry->specificity,
            sizeof(candidate_entry->specificity));
+    memcpy(candidate_entry->container_query, source_entry->container_query,
+           sizeof(candidate_entry->container_query));
+    memcpy(candidate_entry->container_name, source_entry->container_name,
+           sizeof(candidate_entry->container_name));
     my_style_init(&candidate_entry->style, candidate->allocator);
     for (state = 0; state < MY_STATE_COUNT; state++) {
       size_t prop;
@@ -196,11 +200,13 @@ static my_theme_entry_t* theme_find_entry_scoped(
     const my_theme_ancestor_t* ancestors, size_t ancestor_count,
     const bool* direct_path, const my_theme_scope_limit_t* scope_limits,
     size_t scope_limit_count, const size_t* scope_limit_root_indices,
-    bool create) {
+    const char* container_query, const char* container_name, bool create) {
   size_t i, n = my_darray_size(theme->entries);
   const char* nm = name != NULL ? name : "";
   const char* cl = style_class != NULL ? style_class : "";
   const char* an = ancestor_type != NULL ? ancestor_type : "";
+  const char* cq = container_query != NULL ? container_query : "";
+  const char* cn = container_name != NULL ? container_name : "";
   for (i = 0; i < n; i++) {
     my_theme_entry_t* e = (my_theme_entry_t*)my_darray_get(theme->entries, i);
     if (my_str_eq(e->widget_type, type) && my_str_eq(e->name, nm) &&
@@ -212,7 +218,9 @@ static my_theme_entry_t* theme_find_entry_scoped(
           my_str_eq(e->ancestor_type, an) &&
           e->ancestor_direct == ancestor_direct)) &&
         theme_scope_limits_equal(e, scope_limits, scope_limit_count,
-                                 scope_limit_root_indices)) {
+                                 scope_limit_root_indices) &&
+        my_str_eq(e->container_query, cq) &&
+        my_str_eq(e->container_name, cn)) {
       return e;
     }
   }
@@ -245,6 +253,8 @@ static my_theme_entry_t* theme_find_entry_scoped(
         e->scope_limit_root_index[i] = (u32)scope_limit_root_indices[i];
       }
     }
+    snprintf(e->container_query, sizeof(e->container_query), "%s", cq);
+    snprintf(e->container_name, sizeof(e->container_name), "%s", cn);
     my_style_init(&e->style, theme->allocator);
     if (my_darray_push(theme->entries, e) != MY_RET_OK) {
       my_mem_free(theme->allocator, e);
@@ -261,7 +271,8 @@ static my_theme_entry_t* theme_find_entry_ex(
     const bool* direct_path, bool create) {
   return theme_find_entry_scoped(
       theme, type, name, style_class, ancestor_type, ancestor_direct,
-      ancestors, ancestor_count, direct_path, NULL, 0u, NULL, create);
+      ancestors, ancestor_count, direct_path, NULL, 0u, NULL, "", "",
+      create);
 }
 
 static my_theme_entry_t* theme_find_entry(my_theme_t* theme, const char* type,
@@ -470,6 +481,24 @@ my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
                           const size_t* scope_limit_root_indices,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value, int32_t specificity) {
+  return my_theme_set_ex7(theme, widget_type, name, style_class, ancestors,
+                          ancestor_count, ancestor_direct_path, scope_limits,
+                          scope_limit_count, scope_limit_root_indices, state,
+                          key, value, specificity, "", "");
+}
+
+my_ret_t my_theme_set_ex7(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_scope_limit_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity,
+                          const char* container_query,
+                          const char* container_name) {
   my_theme_entry_t* e;
   my_ret_t ret;
   size_t i;
@@ -485,7 +514,10 @@ my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
        (ancestors == NULL || ancestor_direct_path == NULL)) ||
       strlen(widget_type) >= MY_THEME_TYPE_LEN ||
       (name != NULL && strlen(name) >= MY_THEME_NAME_LEN) ||
-      (style_class != NULL && strlen(style_class) >= MY_THEME_NAME_LEN)) {
+      (style_class != NULL && strlen(style_class) >= MY_THEME_NAME_LEN) ||
+      (container_query != NULL &&
+       strlen(container_query) > MY_THEME_MAX_CONTAINER_QUERY_BYTES) ||
+      (container_name != NULL && strlen(container_name) >= MY_THEME_NAME_LEN)) {
     return MY_RET_INVALID_PARAMS;
   }
   for (i = 0u; i < scope_limit_count; ++i) {
@@ -514,13 +546,13 @@ my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
   e = theme_find_entry_scoped(
       theme, widget_type, name, style_class, NULL, false, ancestors,
       ancestor_count, ancestor_direct_path, scope_limits, scope_limit_count,
-      scope_limit_root_indices, false);
+      scope_limit_root_indices, container_query, container_name, false);
   created = e == NULL;
   if (e == NULL) {
     e = theme_find_entry_scoped(
         theme, widget_type, name, style_class, NULL, false, ancestors,
         ancestor_count, ancestor_direct_path, scope_limits, scope_limit_count,
-        scope_limit_root_indices, true);
+        scope_limit_root_indices, container_query, container_name, true);
   }
   if (e == NULL) return MY_RET_OOM;
   ret = my_style_set(&e->style, state, key, value);
@@ -866,6 +898,30 @@ static int entry_cascade_level(const my_theme_entry_t* entry) {
 
 /** @brief Shared cascade scan. skip_type_wide excludes the level-2
  * (bare type) match — see my_theme_get_part. */
+/* R670: conditional-entry evaluation is re-entrant (a container's own
+ * container_type lookup walks the cascade too); bound the recursion.
+ * Theme lookups are UI-thread by engine design, so a plain counter
+ * suffices. */
+static unsigned theme_container_eval_depth = 0u;
+#define THEME_MAX_CONTAINER_EVAL_DEPTH 8u
+
+static bool theme_entry_container_matches(const my_theme_t* theme,
+                                          const my_widget_t* anchor,
+                                          const my_theme_entry_t* e) {
+  bool result;
+  if (anchor == NULL) {
+    return false; /* conditional styles need a widget-aware lookup */
+  }
+  if (theme_container_eval_depth >= THEME_MAX_CONTAINER_EVAL_DEPTH) {
+    return false;
+  }
+  theme_container_eval_depth++;
+  result = my_theme_container_matches(theme, anchor, e->container_query,
+                                      e->container_name);
+  theme_container_eval_depth--;
+  return result;
+}
+
 static const my_value_t* theme_cascade_ex(const my_theme_t* theme,
                                           const char* type, const char* name,
                                           const char* style_class,
@@ -885,6 +941,10 @@ static const my_value_t* theme_cascade_ex(const my_theme_t* theme,
         (const my_theme_entry_t*)my_darray_get(theme->entries, i);
     int level = entry_cascade_level(e);
     if (skip_type_wide && level == 2) {
+      continue;
+    }
+    if (e->container_query[0] != '\0' &&
+        !theme_entry_container_matches(theme, ancestor_anchor, e)) {
       continue;
     }
     if (entry_matches_ex(e, type, name, style_class, ancestor_anchor, level)) {

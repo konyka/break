@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R670 @container 二期核心（TDD）— 匹配期容器解析落地：查询条件悬置 rule/entry、级联逐元素祖先链求值（type∈{size,inline-size}∧名匹配，容器布局 rect)、具名查询放行；R663 无上下文拒签契约变更为悬置
+
+- **缺口**(R663 落账"二期=逐元素容器解析，史诗本体"):R669 只备了容器属性数据——@container 仍只能解析期求值（宿主注入上下文），无上下文时 strict 整表拒；逐元素"我的祖先容器多大"无从表达，container-type/name 无消费方。
+- **方案**（条件悬置+级联求值，双模式分流）:① **规则/条目带条件**——my_css_rule_t/my_theme_entry_t 各增 `container_query[256]/container_name[32]` 定长对（扁平哲学零自有指针）;② **解析期分流**——注入上下文在=R663 解析期求值原样（具名仍拒：名需匹配层）；无上下文=**悬置**：特性形状照常校验（非尺寸特性拒），块内新规则盖戳条件（内层 @container 先戳先赢，嵌套 AND 语义让渡）,strict/compat 双模式同悬置（**R663 无上下文拒签契约变更，文档化**);③ **entry 身份含条件**——find-or-add 谓词带条件对（同选择器不同条件各成 entry，级联源序 tie-break 天然正确）,ex6→ex7（条件双参）纯增量；④ **级联逐元素求值**——theme_cascade_ex 对带条件 entry 调 `my_theme_container_matches`：从 anchor(get_for_widget 的 widget->parent，恰为祖先链首）向上找最近查询容器（type∈{size,inline-size}；具名须名表词集命中），以容器 **rect.w/h** 合成视口走 R663 求值机械；无 anchor（非 widget 感知查找）=条件 entry 跳过（文档化）;⑤ 重入护栏（容器自身 container_type 查找亦走级联，静态深度计数 ≤8,UI 线程设计同约）;clone 字段拷贝同步。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R663 契约段——悬置解析（双模式盖戳 query/name)、具名存储、匹配面四景：命中（panel 500px≥400 得红）/失阈（300px 消失）/具名命中/无名容器不应具名查询/normal type 非容器。**RED 双点如实红**(R663 更新段 886+新测试 1450 均 sheet NULL——悬置未生）;GREEN 两钓（盖戳尾随空格未裁——`"(min-width: 400px) "`,trim 后全绿）**176/176**(175+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有容器/级联/var 组全绿未动（R663 注入上下文路径逐点保留）。
+- **边界**：声明块内嵌套 @container 维持解析期专属（逐声明条件=条目爆炸，让渡）;inline-size 容器的轴语义未细分（height 特性照实 rect 求值，文档化）;`style()` 容器查询未涉；容器尺寸=查找当时 rect（未布局=0，文档化——无失效重级联机制，宿主布局后需重查）;R611 AMD 基线不动。
+
 ## 本轮更新：R669 @container 二期第一片（TDD）— container-type/container-name 成为真实样式属性（新键注册+关键字/名表校验+级联），匹配期容器解析的前置存储半边
 
 - **缺口**(R663 落账"二期=逐元素容器解析，史诗"的第一可切方）：容器属性在引擎无键——`container-type` 经 css_value 碰巧存 STR（键透传未注册、`bogus` 关键字照收）,`container-name: a b` 多名表被尾随垃圾整表硬拒；匹配期容器查找无数据可消费。

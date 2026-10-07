@@ -260,6 +260,11 @@ typedef struct my_css_rule_t {
   my_darray_t* selectors; /**< my_css_selector_t* */
   my_darray_t* decls;     /**< my_css_decl_t* */
   uint32_t layer_order; /**< UINT32_MAX for unlayered, otherwise declaration rank */
+  /* R670: deferred @container condition ("" = unconditional). The query
+   * is the parenthesized size query text; the name is the optional
+   * container name. Evaluated per element at theme lookup time. */
+  char container_query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
+  char container_name[MY_STYLE_KEY_LEN];
 } my_css_rule_t;
 
 /** @brief Parsed sheet (opaque-ish; use the accessors). */

@@ -3511,29 +3511,41 @@ static bool css_container_query_opens(css_p_t* p) {
   return false;
 }
 
-/* R663: evaluate an @container query against the injected container size —
- * the media machinery with a synthetic viewport (phase 1 is unnamed size
- * queries only; per-element container resolution is a later phase). */
-static bool css_container_query_matches(css_p_t* p, const char* query,
-                                        size_t query_length, bool* matches) {
+/* R670: evaluate a size query against an explicit container size via the
+ * media machinery with a synthetic viewport. Returns false only for a
+ * malformed query; *matches carries the verdict. */
+static bool css_container_eval_size_query(const char* query,
+                                          size_t query_length, uint32_t width,
+                                          uint32_t height, bool* matches) {
   css_p_t probe;
   my_css_media_context_ex_t synthetic;
   bool conditional = false;
+  memset(&probe, 0, sizeof(probe));
+  memset(&synthetic, 0, sizeof(synthetic));
+  synthetic.base.viewport_width_px = width;
+  synthetic.base.viewport_height_px = height;
+  synthetic.base.screen = true;
+  probe.s = query;
+  probe.len = query_length;
+  probe.line = 1;
+  probe.col = 1;
+  probe.media = &synthetic;
+  return css_media_condition(&probe, query, query_length, matches,
+                             &conditional);
+}
+
+/* R663: evaluate an @container query against the injected container size —
+ * the media machinery with a synthetic viewport (phase 1 is unnamed size
+ * queries only; per-element container resolution is R670). */
+static bool css_container_query_matches(css_p_t* p, const char* query,
+                                        size_t query_length, bool* matches) {
   if (p->container == NULL || !css_container_features_valid(query,
                                                             query_length)) {
     return false;
   }
-  memset(&synthetic, 0, sizeof(synthetic));
-  synthetic.base.viewport_width_px = p->container->width_px;
-  synthetic.base.viewport_height_px = p->container->height_px;
-  synthetic.base.screen = true;
-  probe = *p;
-  probe.media = &synthetic;
-  if (!css_media_condition(&probe, query, query_length, matches,
-                           &conditional)) {
-    return false;
-  }
-  return true;
+  return css_container_eval_size_query(query, query_length,
+                                       p->container->width_px,
+                                       p->container->height_px, matches);
 }
 
 static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
@@ -3541,11 +3553,24 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                        uint32_t layer_id) {
   char query[MY_CSS_MAX_MEDIA_QUERY_BYTES + 1u];
   size_t query_length = 0u;
+  char name[MY_STYLE_KEY_LEN];
   bool matches = false;
 
+  name[0] = '\0';
   c_ws(p);
-  /* phase 1 is unnamed only: the query itself must open with '(' or the
-   * negating `not`. */
+  /* R670: an optional container name precedes the query (`not` stays
+   * query syntax, never a name). */
+  if (c_peek(p) != '(') {
+    size_t saved = p->pos;
+    char word[MY_STYLE_KEY_LEN];
+    if (c_ident(p, word, sizeof(word)) && !my_str_eq(word, "not") &&
+        !c_ident_char((unsigned char)c_peek(p))) {
+      snprintf(name, sizeof(name), "%s", word);
+      c_ws(p);
+    } else {
+      p->pos = saved;
+    }
+  }
   if (!css_container_query_opens(p)) {
     return css_skip_or_reject_atrule_with_capability(
         p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
@@ -3558,10 +3583,31 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
     query[query_length++] = (char)c_next(p);
   }
   query[query_length] = '\0';
-  if (c_peek(p) != '{' ||
-      !css_container_query_matches(p, query, query_length, &matches)) {
+  while (query_length > 0u &&
+         (query[query_length - 1u] == ' ' || query[query_length - 1u] == '\t' ||
+          query[query_length - 1u] == '\r' || query[query_length - 1u] == '\n')) {
+    query[--query_length] = '\0';
+  }
+  if (c_peek(p) != '{') {
     return css_skip_or_reject_atrule_with_capability(
         p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+  }
+  if (p->container != NULL) {
+    /* R663 parse-time evaluation (host-injected context). Names need
+     * the match layer — a named query still rejects in this mode. */
+    if (name[0] != '\0' ||
+        !css_container_query_matches(p, query, query_length, &matches)) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+    }
+  } else {
+    /* R670 match-time deferral: the feature shape validates now; the
+     * query itself evaluates per element at theme lookup time. */
+    if (!css_container_features_valid(query, query_length)) {
+      return css_skip_or_reject_atrule_with_capability(
+          p, (uint32_t)MY_CSS_FEATURE_CONTAINER);
+    }
+    matches = true;
   }
   if (at_rule_depth >= MY_CSS_MAX_AT_RULE_NESTING) {
     css_fail(p, "@container nesting depth exceeded");
@@ -3572,7 +3618,28 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
     return !c_failed(p);
   }
   c_next(p);
-  return css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_id);
+  if (p->container != NULL) {
+    return css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_id);
+  }
+  /* deferral: parse the block, then stamp the rules it created with the
+   * condition (an inner @container stamps first and wins). */
+  {
+    size_t before = my_darray_size(sheet->rules);
+    size_t i, after;
+    if (!css_parse_rules(p, sheet, true, at_rule_depth + 1u, layer_id)) {
+      return false;
+    }
+    after = my_darray_size(sheet->rules);
+    for (i = before; i < after; i++) {
+      my_css_rule_t* r = (my_css_rule_t*)my_darray_get(sheet->rules, i);
+      if (r->container_query[0] == '\0') {
+        snprintf(r->container_query, sizeof(r->container_query), "%s",
+                 query);
+        snprintf(r->container_name, sizeof(r->container_name), "%s", name);
+      }
+    }
+    return true;
+  }
 }
 
 /* Media predicates are evaluated once while parsing; theme lookup stays hot. */
@@ -4560,22 +4627,23 @@ static my_ret_t my_theme_load_css_internal(
             specificity + (d->important ? MY_CSS_IMPORTANT_SPECIFICITY : 0);
         if (important_pass != d->important) continue;
         if (sel->state >= 0) {
-          ret = my_theme_set_ex6(
+          ret = my_theme_set_ex7(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, (my_widget_state_t)sel->state,
-              d->key, &d->value, decl_specificity + 100);
+              d->key, &d->value, decl_specificity + 100,
+              rule->container_query, rule->container_name);
         } else {
           /* no pseudo: write ONLY the normal slot — the state->normal
            * fallback covers the rest, so pseudo rules (more specific)
            * always win regardless of source order (CSS specificity) */
-          ret = my_theme_set_ex6(
+          ret = my_theme_set_ex7(
               target, sel->widget_type, sel->id, sel->style_class,
               ancestors, sel->ancestor_count, sel->ancestor_direct_path,
               scope_limits, sel->scope_limit_count,
               scope_limit_root_indices, MY_STATE_NORMAL, d->key, &d->value,
-              decl_specificity);
+              decl_specificity, rule->container_query, rule->container_name);
         }
         if (ret != MY_RET_OK) {
           break;
@@ -4812,6 +4880,79 @@ static bool css_value_copy_typed(const my_value_t* src, my_value_t* out) {
     default:
       return false;
   }
+}
+
+/* R670: does an ancestor's container_name list hold `name` (word-set
+ * membership over the raw ident list)? */
+static bool css_container_name_matches(const my_theme_t* theme,
+                                       const my_widget_t* ancestor,
+                                       const char* name) {
+  const my_value_t* v =
+      my_theme_get_for_widget(theme, ancestor, MY_STATE_NORMAL,
+                              "container_name");
+  const char* list;
+  size_t name_len;
+  if (v == NULL || my_value_type(v) != MY_VALUE_STR) {
+    return false;
+  }
+  list = my_value_get_str(v);
+  if (list == NULL) {
+    return false;
+  }
+  name_len = strlen(name);
+  while (*list != '\0') {
+    const char* start;
+    while (*list == ' ' || *list == '\t' || *list == '\r' ||
+           *list == '\n') {
+      list++;
+    }
+    start = list;
+    while (*list != '\0' && *list != ' ' && *list != '\t' &&
+           *list != '\r' && *list != '\n') {
+      list++;
+    }
+    if ((size_t)(list - start) == name_len &&
+        memcmp(start, name, name_len) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool my_theme_container_matches(const my_theme_t* theme,
+                                const struct my_widget_t* anchor,
+                                const char* container_query,
+                                const char* container_name) {
+  const my_widget_t* a = anchor;
+  unsigned hops = 0u;
+  if (theme == NULL || container_query == NULL ||
+      container_query[0] == '\0') {
+    return false;
+  }
+  /* nearest ancestor that is a query container for this query: type
+   * size/inline-size, plus the name when the query is named. */
+  while (a != NULL && hops++ < 16u) {
+    const my_value_t* type_v = my_theme_get_for_widget(
+        theme, a, MY_STATE_NORMAL, "container_type");
+    const char* type =
+        (type_v != NULL && my_value_type(type_v) == MY_VALUE_STR)
+            ? my_value_get_str(type_v)
+            : NULL;
+    if (type != NULL &&
+        (my_str_eq(type, "size") || my_str_eq(type, "inline-size")) &&
+        (container_name == NULL || container_name[0] == '\0' ||
+         css_container_name_matches(theme, a, container_name))) {
+      bool matches = false;
+      uint32_t w = a->rect.w > 0 ? (uint32_t)a->rect.w : 0u;
+      uint32_t h = a->rect.h > 0 ? (uint32_t)a->rect.h : 0u;
+      return css_container_eval_size_query(container_query,
+                                           strlen(container_query), w, h,
+                                           &matches) &&
+             matches;
+    }
+    a = a->parent;
+  }
+  return false;
 }
 
 bool my_theme_get_for_widget_var(const my_theme_t* theme,

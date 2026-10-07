@@ -21,6 +21,7 @@
 #define MY_THEME_NAME_LEN 32
 #define MY_THEME_MAX_ANCESTORS 4u
 #define MY_THEME_MAX_SCOPE_LIMITS 4u
+#define MY_THEME_MAX_CONTAINER_QUERY_BYTES 255u
 #define MY_THEME_SCOPE_ROOT_IMPLICIT MY_THEME_MAX_ANCESTORS
 #define MY_THEME_MAX_BYTES (4u * 1024u * 1024u)
 
@@ -57,6 +58,11 @@ typedef struct my_theme_entry_t {
   int32_t specificity[MY_STATE_COUNT][MY_STYLE_MAX_PROPS];
   /**< CSS specificity parallel to style.props. */
   my_style_t style;
+  /* R670: deferred @container condition ("" = unconditional). Entries
+   * with a condition are skipped by the cascade unless the element's
+   * nearest ancestor query container satisfies it. */
+  char container_query[MY_THEME_MAX_CONTAINER_QUERY_BYTES + 1u];
+  char container_name[MY_THEME_NAME_LEN];
 } my_theme_entry_t;
 
 /** @brief Theme (style sheet). */
@@ -167,6 +173,22 @@ my_ret_t my_theme_set_ex6(my_theme_t* theme, const char* widget_type,
                           my_widget_state_t state, const char* key,
                           const my_value_t* value, int32_t specificity);
 
+/** @brief ex6 plus the deferred @container condition (R670): entries
+ * are keyed by the condition too — same selector, different condition,
+ * different entry. Empty strings = unconditional. */
+my_ret_t my_theme_set_ex7(my_theme_t* theme, const char* widget_type,
+                          const char* name, const char* style_class,
+                          const my_theme_ancestor_t* ancestors,
+                          size_t ancestor_count,
+                          const bool* ancestor_direct_path,
+                          const my_theme_scope_limit_t* scope_limits,
+                          size_t scope_limit_count,
+                          const size_t* scope_limit_root_indices,
+                          my_widget_state_t state, const char* key,
+                          const my_value_t* value, int32_t specificity,
+                          const char* container_query,
+                          const char* container_name);
+
 struct my_widget_t;
 
 /**
@@ -193,6 +215,16 @@ bool my_theme_get_for_widget_var(const my_theme_t* theme,
                                  const struct my_widget_t* widget,
                                  my_widget_state_t state, const char* key,
                                  my_value_t* out);
+
+/** @brief R670: evaluate a deferred @container condition for an element
+ * — walk from `anchor` upward (inclusive) for the nearest query
+ * container (container-type size/inline-size; when `container_name` is
+ * non-empty it must also carry that name) and evaluate the size query
+ * against its layout rect. Implemented in my_css.c. */
+bool my_theme_container_matches(const my_theme_t* theme,
+                                const struct my_widget_t* anchor,
+                                const char* container_query,
+                                const char* container_name);
 
 /**
  * @brief Virtual-part lookup (M19b): for drawn parts that are not real
