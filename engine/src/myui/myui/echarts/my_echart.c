@@ -1,5 +1,6 @@
 #include "myui/echarts/my_echart.h"
 
+#include <math.h>
 #include <string.h>
 
 struct my_echart_t {
@@ -28,6 +29,18 @@ void my_echart_destroy(my_echart_t* chart) {
 
 static bool same_id(const char* a, const char* b) {
   return a != NULL && b != NULL && strcmp(a, b) == 0;
+}
+
+static bool is_window_action(my_echart_model_action_type_t type) {
+  return type == MY_ECHART_MODEL_ACTION_DATA_ZOOM ||
+         type == MY_ECHART_MODEL_ACTION_BRUSH_SELECT;
+}
+
+static void apply_zoom_window(my_echart_option_t* option, size_t start,
+                              size_t end) {
+  option->zoom_set = true;
+  option->zoom_start = start;
+  option->zoom_end = end;
 }
 
 my_ret_t my_echart_set_option(my_echart_t* chart,
@@ -232,16 +245,43 @@ my_ret_t my_echart_remove_series(my_echart_t* chart, const char* series_id) {
 my_ret_t my_echart_model_dispatch_action(my_echart_t* chart,
                                          const my_echart_model_action_t* action) {
   my_echart_option_t* option;
-  if (chart == NULL || action == NULL || action->series_id == NULL)
+  if (chart == NULL || action == NULL)
     return MY_RET_INVALID_PARAMS;
   option = &chart->current;
+  if (is_window_action(action->type)) {
+    if (action->payload.zoom_end <= action->payload.zoom_start)
+      return MY_RET_INVALID_PARAMS;
+    apply_zoom_window(option, action->payload.zoom_start,
+                      action->payload.zoom_end);
+    chart->revision++;
+    return MY_RET_OK;
+  }
+  if (action->type == MY_ECHART_MODEL_ACTION_DATA_ZOOM_RESET) {
+    option->zoom_set = false;
+    option->zoom_start = 0u;
+    option->zoom_end = 0u;
+    chart->revision++;
+    return MY_RET_OK;
+  }
+  if (action->type == MY_ECHART_MODEL_ACTION_VISUAL_MAP_RANGE) {
+    if (!isfinite(action->payload.visual_map_min) ||
+        !isfinite(action->payload.visual_map_max) ||
+        action->payload.visual_map_max <= action->payload.visual_map_min)
+      return MY_RET_INVALID_PARAMS;
+    option->visual_map_set = true;
+    option->visual_map_min = action->payload.visual_map_min;
+    option->visual_map_max = action->payload.visual_map_max;
+    chart->revision++;
+    return MY_RET_OK;
+  }
+  if (action->series_id == NULL) return MY_RET_INVALID_PARAMS;
   for (size_t i = 0u; i < option->series_count; i++) {
     my_echart_series_t* series = &option->series[i];
     if (strcmp(series->id, action->series_id) != 0) continue;
     if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_SELECT) series->show = true;
     else if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT) series->show = false;
     else if (action->type == MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT) series->show = !series->show;
-    else return MY_RET_NOT_SUPPORTED;
+    else return MY_RET_INVALID_PARAMS;
     chart->revision++;
     return MY_RET_OK;
   }

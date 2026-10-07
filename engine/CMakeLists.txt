@@ -429,9 +429,10 @@ set(MYUI_CORE_SOURCES
     src/myui/myui/widgets/my_edit.c
     src/myui/myui/widgets/my_checkbox.c
     src/myui/myui/widgets/my_slider.c
-    src/myui/myui/widgets/my_progress_bar.c
-    src/myui/myui/widgets/my_chart.c
-    src/myui/myui/widgets/my_list_view.c
+  src/myui/myui/widgets/my_progress_bar.c
+  src/myui/myui/widgets/my_chart.c
+  src/myui/myui/widgets/my_chart_group.c
+  src/myui/myui/widgets/my_list_view.c
     src/myui/myui/widgets/my_image.c
     src/myui/myui/widgets/my_text_area.c
     src/myui/myui/widgets/my_scroll_bar.c
@@ -1442,6 +1443,12 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_chart PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_chart COMMAND test_myui_chart)
+
+    add_executable(test_myui_chart_group tests/test_myui_chart_group.c)
+    target_include_directories(test_myui_chart_group PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_myui_chart_group PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_chart_group COMMAND test_myui_chart_group)
 
     add_executable(test_myui_edit tests/test_myui_edit.c)
     target_include_directories(test_myui_edit PRIVATE ${TEST_INCLUDE_DIRS}

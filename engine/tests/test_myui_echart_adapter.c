@@ -373,7 +373,7 @@ TEST(echart_adapter_sync_model_reprojects_after_action) {
   my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
   my_echart_adapter_t* adapter;
   my_echart_t* model = my_echart_create(NULL);
-  my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT, "a"};
+  my_echart_model_action_t action = {MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT, "a", {0u, 0u, 0.0, 0.0}};
 
   my_echart_option_init(&option, NULL);
   ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);

@@ -120,8 +120,11 @@ the category guide line is also rendered on every visible grid with the same
 flag. The tooltip text remains on the hovered grid. `chart_grid_at()` scans
 visible grids front-to-back and is exposed for host-side use.
 
+Charts can join a fixed-capacity weak group with `my_chart_group_join()`.
+A dataZoom update, including a clear/reset, broadcasts to the other group
+members. Chart destruction automatically removes the weak registry entry.
+
 ## Non-Goals
 
 - Arbitrary axis counts beyond the per-grid left/right axes.
-- Arbitrary axis counts per grid beyond left/right (follow-up).
 - Per-grid dirty-rect invalidation (widget-level invalidation remains).

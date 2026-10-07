@@ -57,6 +57,13 @@ static my_chart_t* chart_cast(my_widget_t* widget) {
   return my_chart_is_instance(widget) ? (my_chart_t*)widget : NULL;
 }
 
+static void chart_destroy_chain(my_object_t* object) {
+  my_widget_t* widget = (my_widget_t*)object;
+  (void)my_chart_group_leave(widget);
+  my_widget_destroy(widget);
+  my_object_destroy(object);
+}
+
 static const my_chart_t* chart_const_cast(const my_widget_t* widget) {
   return my_chart_is_instance(widget) ? (const my_chart_t*)widget : NULL;
 }
@@ -1784,6 +1791,7 @@ my_widget_t* my_chart_create(const my_allocator_t* allocator, my_chart_mode_t mo
     my_mem_free(allocator, chart);
     return NULL;
   }
+  chart->base.base.destroy = chart_destroy_chain;
   chart->mode = mode;
   chart->hover_index = CHART_HOVER_NONE;
   chart->show_legend = true;
@@ -1944,6 +1952,7 @@ my_ret_t my_chart_clear_series(my_widget_t* widget) {
   chart->series_count = 0u;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
+  my_chart_group_clear_notify(widget);
   return MY_RET_OK;
 }
 
@@ -2097,6 +2106,7 @@ my_ret_t my_chart_set_data_zoom(my_widget_t* widget, size_t start,
   chart->zoom_end = end;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
+  my_chart_group_notify(widget, start, end);
   return MY_RET_OK;
 }
 
@@ -2108,6 +2118,7 @@ my_ret_t my_chart_clear_data_zoom(my_widget_t* widget) {
   chart->zoom_end = 0u;
   chart->hover_index = CHART_HOVER_NONE;
   my_widget_invalidate(widget, NULL);
+  my_chart_group_clear_notify(widget);
   return MY_RET_OK;
 }
 

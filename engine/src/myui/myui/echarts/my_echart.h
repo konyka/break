@@ -8,12 +8,23 @@ typedef struct my_echart_t my_echart_t;
 typedef enum my_echart_model_action_type_t {
   MY_ECHART_MODEL_ACTION_LEGEND_SELECT = 0,
   MY_ECHART_MODEL_ACTION_LEGEND_UNSELECT,
-  MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT
+  MY_ECHART_MODEL_ACTION_LEGEND_TOGGLE_SELECT,
+  MY_ECHART_MODEL_ACTION_DATA_ZOOM,
+  MY_ECHART_MODEL_ACTION_DATA_ZOOM_RESET,
+  MY_ECHART_MODEL_ACTION_VISUAL_MAP_RANGE,
+  /** @brief Brush selection maps to the category zoom window in this subset. */
+  MY_ECHART_MODEL_ACTION_BRUSH_SELECT
 } my_echart_model_action_type_t;
 
 typedef struct my_echart_model_action_t {
   my_echart_model_action_type_t type;
   const char* series_id;
+  struct {
+    size_t zoom_start;
+    size_t zoom_end;
+    double visual_map_min;
+    double visual_map_max;
+  } payload;
 } my_echart_model_action_t;
 
 my_echart_t* my_echart_create(const my_allocator_t* allocator);

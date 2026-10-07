@@ -13,6 +13,8 @@
 #define MY_CHART_MAX_MARK_AREAS 4u
 #define MY_CHART_MAX_GRIDS 4u
 #define MY_CHART_NO_GRID SIZE_MAX
+#define MY_CHART_GROUP_MAX_GROUPS 8u
+#define MY_CHART_GROUP_MAX_CHARTS 8u
 
 typedef enum my_chart_mode_t {
   MY_CHART_LINE = 0,
@@ -230,7 +232,23 @@ my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
                                 size_t end);
 my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);
 bool my_chart_get_data_zoom(const my_widget_t* chart, size_t* start,
-                            size_t* end);
+                             size_t* end);
+/**
+ * @brief Join a weak chart group for dataZoom synchronization.
+ *
+ * The fixed registry supports MY_CHART_GROUP_MAX_GROUPS groups with
+ * MY_CHART_GROUP_MAX_CHARTS charts each. Joined charts automatically leave
+ * the registry during destruction.
+ */
+my_ret_t my_chart_group_join(my_widget_t* chart, unsigned group_id);
+/** @brief Leave a chart group explicitly. */
+my_ret_t my_chart_group_leave(my_widget_t* chart);
+/** @brief Return the number of charts joined to group_id. */
+size_t my_chart_group_size(unsigned group_id);
+/** @brief Notify peer charts after a successful dataZoom update. */
+void my_chart_group_notify(my_widget_t* chart, size_t start, size_t end);
+/** @brief Notify peer charts after clearing dataZoom. */
+void my_chart_group_clear_notify(my_widget_t* chart);
 my_ret_t my_chart_set_axis_title(my_widget_t* chart, const char* title);
 my_ret_t my_chart_set_grid_line_count(my_widget_t* chart, u32 count);
 u32 my_chart_get_grid_line_count(const my_widget_t* chart);
