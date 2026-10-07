@@ -229,11 +229,13 @@ bool my_theme_get_for_widget_var(const my_theme_t* theme,
                                  my_widget_state_t state, const char* key,
                                  my_value_t* out);
 
-/** @brief R670: evaluate a deferred @container condition for an element
- * — walk from `anchor` upward (inclusive) for the nearest query
- * container (container-type size/inline-size; when `container_name` is
- * non-empty it must also carry that name) and evaluate the size query
- * against its layout rect. Implemented in my_css.c. */
+/** @brief R670/R673: evaluate a deferred @container condition for an
+ * element — walk from `anchor` upward (inclusive) for the nearest
+ * qualifying ancestor. Size queries require a query container
+ * (container-type size/inline-size) and evaluate against its layout
+ * rect; style() queries accept any ancestor and compare the custom
+ * property value as raw text. When `container_name` is non-empty the
+ * ancestor must also carry that name. Implemented in my_css.c. */
 bool my_theme_container_matches(const my_theme_t* theme,
                                 const struct my_widget_t* anchor,
                                 const char* container_query,

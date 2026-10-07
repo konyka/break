@@ -3475,6 +3475,177 @@ static bool css_media_condition(css_p_t* p, const char* query, size_t length,
   }
 }
 
+/* R673: style() container queries (bounded slice) — the query is exactly
+ * one `style(--prop: value)` condition: no bare form, no and/or/not
+ * mixing, custom properties only, and `var(` in the queried value
+ * rejects (the query side is never substituted). container-type does
+ * not gate style queries; evaluation compares the custom property value
+ * on the nearest qualifying ancestor as whitespace-normalized raw text. */
+static bool css_container_query_is_style(const char* query, size_t length) {
+  size_t i = 0u;
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  return length - i >= 6u && memcmp(query + i, "style(", 6u) == 0;
+}
+
+static bool css_container_style_query_parse(const char* query, size_t length,
+                                            char* prop, size_t prop_cap,
+                                            const char** value,
+                                            size_t* value_length) {
+  size_t i = 0u, start, end, pl = 0u, depth = 1u;
+  char quote = '\0';
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  if (length - i < 6u || memcmp(query + i, "style(", 6u) != 0) {
+    return false;
+  }
+  i += 6u;
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  if (i + 2u >= length || query[i] != '-' || query[i + 1u] != '-' ||
+      !c_ident_char((unsigned char)query[i + 2u])) {
+    return false;
+  }
+  prop[pl++] = query[i++];
+  prop[pl++] = query[i++];
+  while (i < length && c_ident_char((unsigned char)query[i])) {
+    if (pl + 1u >= prop_cap) {
+      return false;
+    }
+    prop[pl++] = query[i++];
+  }
+  prop[pl] = '\0';
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  if (i >= length || query[i] != ':') {
+    return false;
+  }
+  i++;
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  start = i;
+  while (i < length && depth > 0u) {
+    char ch = query[i];
+    if (quote != '\0') {
+      if (ch == '\\' && i + 1u < length) {
+        i++;
+      } else if (ch == quote) {
+        quote = '\0';
+      }
+    } else if (ch == '\'' || ch == '"') {
+      quote = ch;
+    } else if (ch == '(') {
+      depth++;
+    } else if (ch == ')') {
+      depth--;
+      if (depth == 0u) {
+        break;
+      }
+    } else if (ch == 'v' && i + 4u <= length &&
+               memcmp(query + i, "var(", 4u) == 0) {
+      return false;
+    }
+    i++;
+  }
+  if (depth != 0u) {
+    return false; /* unbalanced */
+  }
+  end = i;
+  i++;
+  while (i < length &&
+         (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+          query[i] == '\n')) {
+    i++;
+  }
+  if (i != length) {
+    return false; /* trailing tokens: and/or/not mixing is out of scope */
+  }
+  while (end > start &&
+         (query[end - 1u] == ' ' || query[end - 1u] == '\t' ||
+          query[end - 1u] == '\r' || query[end - 1u] == '\n')) {
+    end--;
+  }
+  if (end == start) {
+    return false; /* the bare form style(--prop) is out of scope */
+  }
+  *value = query + start;
+  *value_length = end - start;
+  return true;
+}
+
+/* whitespace-normalized raw-text equality: both sides are trimmed and
+ * internal whitespace runs collapse to a single space; otherwise the
+ * comparison is byte exact. */
+static int css_container_style_norm_next(const char* s, size_t length,
+                                         size_t* pos) {
+  size_t i = *pos;
+  int c;
+  if (i >= length) {
+    return -1;
+  }
+  if (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+    while (i < length &&
+           (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n')) {
+      i++;
+    }
+    c = ' ';
+  } else {
+    c = (unsigned char)s[i++];
+  }
+  *pos = i;
+  return c;
+}
+
+static bool css_container_style_value_eq(const char* a, size_t a_length,
+                                         const char* b, size_t b_length) {
+  size_t i = 0u, j = 0u;
+  while (a_length > 0u &&
+         (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')) {
+    a++;
+    a_length--;
+  }
+  while (a_length > 0u &&
+         (a[a_length - 1u] == ' ' || a[a_length - 1u] == '\t' ||
+          a[a_length - 1u] == '\r' || a[a_length - 1u] == '\n')) {
+    a_length--;
+  }
+  while (b_length > 0u &&
+         (*b == ' ' || *b == '\t' || *b == '\r' || *b == '\n')) {
+    b++;
+    b_length--;
+  }
+  while (b_length > 0u &&
+         (b[b_length - 1u] == ' ' || b[b_length - 1u] == '\t' ||
+          b[b_length - 1u] == '\r' || b[b_length - 1u] == '\n')) {
+    b_length--;
+  }
+  for (;;) {
+    int ca = css_container_style_norm_next(a, a_length, &i);
+    int cb = css_container_style_norm_next(b, b_length, &j);
+    if (ca != cb) {
+      return false;
+    }
+    if (ca < 0) {
+      return true;
+    }
+  }
+}
+
 /* R663: container query phase-1 validation — every feature name in the
  * query must be a size feature (the media machinery evaluates them against
  * a synthetic viewport built from the container context); media types are
@@ -3489,6 +3660,16 @@ static bool css_container_feature_name_ok(const char* name) {
 static bool css_container_features_valid(const char* query, size_t length) {
   size_t i = 0u;
   char quote = '\0';
+  /* R673: a style() query is a different condition kind — validate its
+   * single-condition form instead of the size-feature scan. */
+  if (css_container_query_is_style(query, length)) {
+    char prop[MY_STYLE_KEY_LEN];
+    const char* value;
+    size_t value_length;
+    return css_container_style_query_parse(query, length, prop,
+                                           sizeof(prop), &value,
+                                           &value_length);
+  }
   /* a leading media type (all/screen/only) belongs to @media. */
   while (i < length &&
          (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
@@ -3553,7 +3734,10 @@ static bool css_container_query_opens(css_p_t* p) {
   char word[8];
   c_ws(p);
   if (c_peek(p) == '(') return true;
-  if (c_ident(p, word, sizeof(word)) && my_str_eq(word, "not") &&
+  /* R673: `style(` also opens a query (a different condition kind). */
+  if (c_ident(p, word, sizeof(word)) &&
+      (my_str_eq(word, "not") ||
+       (my_str_eq(word, "style") && c_peek(p) == '(')) &&
       !c_ident_char((unsigned char)c_peek(p))) {
     p->pos = saved;
     return true;
@@ -3590,8 +3774,11 @@ static bool css_container_eval_size_query(const char* query,
  * queries only; per-element container resolution is R670). */
 static bool css_container_query_matches(css_p_t* p, const char* query,
                                         size_t query_length, bool* matches) {
-  if (p->container == NULL || !css_container_features_valid(query,
-                                                            query_length)) {
+  /* R673: style() queries need the match-time element tree — like named
+   * queries they reject in the host-injected parse-time mode. */
+  if (p->container == NULL ||
+      css_container_query_is_style(query, query_length) ||
+      !css_container_features_valid(query, query_length)) {
     return false;
   }
   return css_container_eval_size_query(query, query_length,
@@ -3769,11 +3956,13 @@ static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
   name[0] = '\0';
   c_ws(p);
   /* R670: an optional container name precedes the query (`not` stays
-   * query syntax, never a name). */
+   * query syntax, never a name). R673: `style(` too — the style()
+   * function is a condition kind, not a name. */
   if (c_peek(p) != '(') {
     size_t saved = p->pos;
     char word[MY_STYLE_KEY_LEN];
     if (c_ident(p, word, sizeof(word)) && !my_str_eq(word, "not") &&
+        !(my_str_eq(word, "style") && c_peek(p) == '(') &&
         !c_ident_char((unsigned char)c_peek(p))) {
       snprintf(name, sizeof(name), "%s", word);
       c_ws(p);
@@ -5253,6 +5442,46 @@ bool my_theme_container_matches(const my_theme_t* theme,
   unsigned hops = 0u;
   if (theme == NULL || container_query == NULL ||
       container_query[0] == '\0') {
+    return false;
+  }
+  /* R673: style() condition kind — every ancestor is a candidate query
+   * container (container-type gates size queries only); the name still
+   * filters. The custom property resolves on the nearest qualifying
+   * ancestor through the var() machinery (own cascade → DOM
+   * inheritance, registered inherits/initial honored) and compares as
+   * whitespace-normalized raw text. */
+  if (css_container_query_is_style(container_query,
+                                   strlen(container_query))) {
+    char prop[MY_STYLE_KEY_LEN];
+    char ref[MY_STYLE_KEY_LEN + 8u];
+    const char* want;
+    size_t want_length;
+    if (!css_container_style_query_parse(container_query,
+                                         strlen(container_query), prop,
+                                         sizeof(prop), &want,
+                                         &want_length)) {
+      return false;
+    }
+    while (a != NULL && hops++ < 16u) {
+      if (container_name == NULL || container_name[0] == '\0' ||
+          css_container_name_matches(theme, a, container_name)) {
+        char subst[CSS_VAR_MAX_SUBST_BYTES];
+        size_t subst_length = 0u;
+        char visiting[CSS_VAR_MAX_VISITING][MY_STYLE_KEY_LEN];
+        int ref_length = snprintf(ref, sizeof(ref), "var(%s)", prop);
+        if (ref_length < 0 || (size_t)ref_length >= sizeof(ref)) {
+          return false;
+        }
+        if (!css_var_substitute(theme, a, MY_STATE_NORMAL, ref,
+                                (size_t)ref_length, subst, sizeof(subst),
+                                &subst_length, visiting, 0u, 0u)) {
+          return false;
+        }
+        return css_container_style_value_eq(subst, subst_length, want,
+                                            want_length);
+      }
+      a = a->parent;
+    }
     return false;
   }
   /* nearest ancestor that is a query container for this query: type

@@ -1560,6 +1560,237 @@ TEST(css_container_queries_resolve_against_ancestor_at_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_container_style_queries_resolve_at_match_time)
+{
+  /* R673: style() container queries — `@container [name]
+   * style(--prop: value)` defers like a size query but evaluates
+   * differently: container-type does not gate style queries (every
+   * ancestor is a candidate; a name still filters), and the verdict is
+   * a whitespace-normalized raw-text comparison of the custom property
+   * value on the nearest qualifying ancestor (inherited through the
+   * DOM chain, var()-resolved). Bounded slice: a single
+   * `style(--prop: value)` condition — no bare form, no and/or/not
+   * mixing, custom properties only. */
+  const char* deferred =
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* named =
+      "@container card style(--accent: red) { button { color: #010203; } }";
+  const char* bare =
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* mixed =
+      "@container style(--accent: red) and (min-width: 400px) {"
+      " button { color: #010203; } }";
+  const char* non_custom =
+      "@container style(color: red) { button { color: #010203; } }";
+  const char* hit =
+      "panel { --accent: red; }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* miss =
+      "panel { --accent: blue; }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* inherited =
+      "window { --accent: red; }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* var_hit =
+      "panel { --brand: red; --accent: var(--brand); }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* named_hit =
+      "panel { container-name: card; --accent: red; }"
+      "@container card style(--accent: red) { button { color: #010203; } }";
+  const char* named_miss =
+      "panel { --accent: red; }"
+      "@container card style(--accent: red) { button { color: #010203; } }";
+  const char* spacious =
+      "panel { --accent: red; }"
+      "@container style(--accent:   red  ) { button { color: #010203; } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* deferral: strict parse without an injected context stamps the
+   * style query on the rule. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  sheet = my_css_parse_with_options(NULL, deferred, strlen(deferred),
+                                    &options, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "style(--accent: red)");
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name, "");
+  my_css_sheet_destroy(sheet);
+
+  /* a named style query stores the name. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, named, strlen(named), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "style(--accent: red)");
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name, "card");
+  my_css_sheet_destroy(sheet);
+
+  /* bounded slice: the bare form, and/or mixing, and non-custom
+   * properties all reject in strict mode. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, bare, strlen(bare), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, mixed, strlen(mixed), &options,
+                                        &error) == NULL);
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, non_custom, strlen(non_custom),
+                                        &options, &error) == NULL);
+
+  /* hit: the nearest ancestor carries the value — no container-type
+   * is required for style queries. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, hit, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a different value does not match. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, miss, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* the custom property inherits: window sets it, the nearest ancestor
+   * (panel) is the container and reads the inherited value. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, inherited,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a var()-laden stored value resolves before the comparison. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, var_hit, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* named: the container must carry the name... */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, named_hit,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* ...a nameless ancestor does not satisfy a named style query. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, named_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* whitespace around the compared value normalizes away. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, spacious,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
 TEST(css_property_rule_registers_custom_properties)
 {
   /* R671: @property slice 1 — the rule parses into the theme registry
@@ -7277,6 +7508,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_var_flows_through_widget_style_accessors);
     RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
+    RUN_TEST(css_container_style_queries_resolve_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);

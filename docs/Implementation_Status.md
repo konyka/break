@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R673 @container style() 查询（TDD）— 样式条件容器查询落地：单条件 `style(--prop: value)` 形态校验/盖戳、匹配期最近祖先求值（container-type 不门控、名表仍过滤）、自定义属性经 var() 机械解析后白空间归一原文比较
+
+- **缺口**(R670 落账"`style()` 容器查询未涉"):`@container style(--accent: red)` 被特性校验器当作尺寸特性名 "style" 硬拒；CSS Contain 3 的样式条件维度全缺——"最近的祖先的某自定义属性等于某值时才应用"无从表达。
+- **方案**(R670 悬置机械直插，条件种类由查询文本前缀派生，结构零新增）:① **解析分流**——`style(` 紧随词首即样式条件（名捕获与 query_opens 双点让 `style(` 不当名/不开口的歧义消除）；校验器对 style( 形态走专属校验：恰单条件 `--prop: value`（引号/括号深度感知扫至匹配闭括号，其后仅许白空间——**裸形态/and/or/not 混排/非自定义属性一律拒**，查询值内 `var(` 拒——查询侧永不替换，文档化）;② **盖戳零改机**——条件文本原样落 rule/entry(`style(...)` 全文），entry 身份/clone/级联闸全沿 R670 文本同构路径；③ **匹配求值**(my_theme_container_matches 内分流）——**container-type 不门控 style 查询**（规范：任意祖先皆候选容器，type 只管 size)，具名仍名表词集过滤；命中最近合格祖先后，其自定义属性值经 **var() 机械整体复用**（合成 `var(--prop)` 走 css_var_substitute：自身级联→DOM 父链继承、@property inherits 闸/initial 值全谱同约，含 var 嵌套解析），与查询值做**白空间归一原文比较**（两侧 trim+内部空白串坍单空格，其余逐字节）;④ 注入上下文模式与具名同例拒（匹配层需求，文档化）;16 跳祖先界与 ≤8 重入护栏同约。
+- **TDD（红→绿实证）**:test_myui_css +1——盖戳面（双模式 query/name 存储）、校验面（裸形态/混排/非自定义属性 strict 三拒）、匹配面七景：命中（无需 container-type)/失值/父链继承命中/存储值 var() 解析命中/具名命中/无名祖先不应具名/查询值白空间归一。**RED 如实红**（行 1620:sheet NULL——"style" 被当尺寸特性名拒）;GREEN 一次过 **179/179**(178+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；尺寸查询路径逐点保留（is_style 前缀分流先于尺寸特性扫描，R670 全组全绿未动）。
+- **边界**：单条件有界（`style(--a: 1) and (...)` 类组合让渡——entry 多条件对=复杂度审慎评估，候选下轮）;bare `style(--prop)`（存在性/非初值判定）未涉；查询值与存储值=原文比较（`<color>` 等价物如 red vs #f00 不判等——注册型计算值比较属立项级）;`style (` 带空格不识别为样式条件（与名捕获歧义同约，文档化）;查询值内引号串中的 `var(` 亦拒（bounded);R611 AMD 基线不动。
+
 ## 本轮更新：R672 @property 二期（TDD）— syntax 强制落地：有界原语集（<color>/<length>/<number>/<integer>/<string>/\*）双点校验——注册期 initial 检（违规则整条 @property 失效）+ computed-value 期值检（失格=guaranteed-invalid→initial/回退）
 
 - **缺口**(R671 落账"二期=syntax 强制")：注册属性的 syntax 字符串存而不查——`--c: 12px` 对 `<color>` 注册照样原样解析，规范"computed-value 期失格"语义全缺；非法 initial 也不令 @property 失效。
