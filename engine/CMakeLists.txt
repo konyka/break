@@ -1104,6 +1104,15 @@ target_include_directories(verify_myui_line_break PRIVATE
 )
 target_link_libraries(verify_myui_line_break PRIVATE myui_core)
 
+# Headless ECharts feature demo: renders every supported feature to PPM.
+add_executable(echarts_demo tools/echarts_demo.c
+    src/myui/myui/echarts/my_echart_mvvm.c)
+target_include_directories(echarts_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+)
+target_link_libraries(echarts_demo PRIVATE myui_core m Threads::Threads)
+add_test(NAME echarts_demo_smoke COMMAND echarts_demo ${CMAKE_CURRENT_BINARY_DIR})
+
 # Strict, bounded verifier for versioned SA dictionary golden corpora.
 add_executable(verify_myui_sa_dictionary tools/verify_myui_sa_dictionary.c)
 target_include_directories(verify_myui_sa_dictionary PRIVATE
