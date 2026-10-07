@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R682 bare style() 存在性查询（TDD）— `style(--prop)` 裸形态落地：计算值≠初始值判真（未设未注册=无值假/未设注册=回落 initial 等比假/已设=initial 等比假、否则真——R677 typed 比较同门），R673 拒签契约变更为悬置
+
+- **缺口**(R673 落账"bare `style(--prop)`（存在/非初值判定）未涉"):`@container style(--accent)` 被 style 单条件形态校验拒（end==start→false）——"最近的祖先有没有把这个自定义属性设成非初始值"无从表达。
+- **方案**(解析器裸形态+匹配端存在性分支,R681 合取路径零改机自然组合):① **解析**——css_container_style_query_parse 增裸形态:prop 后白空间直接遇 `)`（深度 1 闭合）→ value 出参 **NULL/0 标记 bare**,尾随 token 仍拒（`style(--accent %)` 非 ')' 非 ':' 拒）;② **校验**——prelude_valid 的 style 分支经 parse 自然放行（prop 形态已保）;③ **匹配**——css_container_style_cond_matches 增 bare 分支:var() 机械先解（**未设未注册→substitute 失败→假**;未设注册→R671 回落 initial）;def==NULL 或 !has_initial → substitute 成功即已设→**真**（无初始值可比）;否则 typed_eq(subst, initial)——相等→假（R677 类型化比较同门,`#00f` vs `blue` 判等）,不等→真。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R673 契约段（bare 景改 bare_garbage 钉子——R682 放开裸形态,契约变更文档化）——解析面：裸形态悬置盖戳/bare 入 and 列表组合;匹配面八景：已设未注册真/未设未注册假/未设注册（回落 initial）假/已设=initial（typed #00f vs blue）假/已设≠initial 真/and 双真命中/bare 腿假拦回。**RED 如实红**（行 2766:sheet NULL——bare 拒）;GREEN **187/187**(186+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R673/R677/R681 组全绿（R673 契约段更新后过）。
+- **边界**：规范"计算值为空串"与引擎"未设→无值"逐点对齐（无 initial 注册属性未设→假,substitute 失败路径）;未注册属性的 initial 概念不存在——已设即真（文档化）;bare 与 value 形态不可混于单条件（`style(--a) and style(--b: 1)` 各自独立条件,支持）;CI 注记：R680 push 的排队 run 与 R681 run 的 Wayland job 因并发策略被 cancelled（非测试失败,R681 8/9 绿证据在案）——本轮 run 覆盖三轮全部内容;R611 AMD 基线不动。
+
 ## 本轮更新：R681 @container and 条件列表（TDD）— 单预备句内 `and` 合取落地：顶层拆分（括号/引号感知）逐条件校验+匹配期单容器合取（混合列表在最近 size 合格容器上求值,纯 style 列表沿 R673 容器选择）；or/not 混排与中缀连接词维持让渡
 
 - **缺口**(R673 落账"单条件有界——`style(--a: 1) and (...)` 类组合让渡,entry 多条件对=复杂度审慎评估"):单预备句多条件全拒——`style(--accent: red) and (min-width: 400px)` 被 style 单条件形态校验拒（尾随 token）;纯 size 域 and/or/not 经 media 机制现状已支持（调研补正——缺口实为 style() 参与组合）。

@@ -3857,6 +3857,22 @@ static bool css_container_style_query_parse(const char* query, size_t length,
           query[i] == '\n')) {
     i++;
   }
+  /* R682: the bare form `style(--prop)` — the existence check. The
+   * value out-params come back NULL/0. */
+  if (i < length && query[i] == ')' && depth == 1u) {
+    i++;
+    while (i < length &&
+           (query[i] == ' ' || query[i] == '\t' || query[i] == '\r' ||
+            query[i] == '\n')) {
+      i++;
+    }
+    if (i != length) {
+      return false; /* trailing tokens after the bare form */
+    }
+    *value = NULL;
+    *value_length = 0u;
+    return true;
+  }
   if (i >= length || query[i] != ':') {
     return false;
   }
@@ -5936,6 +5952,18 @@ static bool css_container_style_cond_matches(const my_theme_t* theme,
   }
   {
     const my_theme_property_def_t* def = css_theme_property_def(theme, prop);
+    if (want == NULL) {
+      /* R682: the bare form asks whether the computed value differs
+       * from the initial value. An unset property fails the
+       * substitution above; an unset registered one resolves to its
+       * initial and compares equal here. */
+      if (def == NULL || !def->has_initial) {
+        return true; /* any set value is non-initial */
+      }
+      return !css_container_style_typed_eq(def->syntax, subst, subst_length,
+                                           def->initial,
+                                           strlen(def->initial));
+    }
     if (def != NULL) {
       return css_container_style_typed_eq(def->syntax, subst, subst_length,
                                           want, want_length);

@@ -1575,8 +1575,8 @@ TEST(css_container_style_queries_resolve_at_match_time)
       "@container style(--accent: red) { button { color: #010203; } }";
   const char* named =
       "@container card style(--accent: red) { button { color: #010203; } }";
-  const char* bare =
-      "@container style(--accent) { button { color: #010203; } }";
+  const char* bare_garbage =
+      "@container style(--accent %) { button { color: #010203; } }";
   const char* mixed =
       "@container style(--accent: red) or (min-width: 400px) {"
       " button { color: #010203; } }";
@@ -1634,11 +1634,12 @@ TEST(css_container_style_queries_resolve_at_match_time)
   ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_name, "card");
   my_css_sheet_destroy(sheet);
 
-  /* bounded slice: the bare form and or-mixing reject in strict mode
-   * (R681 lifted the `and` composition into its own machinery; `or`
-   * stays single-condition-out-of-scope for style() conditions). */
+  /* bounded slice: or-mixing and non-custom properties reject in
+   * strict mode (R681 lifted `and`, R682 lifted the bare form into
+   * existence checks — malformed bare variants still reject). */
   memset(&error, 0, sizeof(error));
-  ASSERT_TRUE(my_css_parse_with_options(NULL, bare, strlen(bare), &options,
+  ASSERT_TRUE(my_css_parse_with_options(NULL, bare_garbage,
+                                        strlen(bare_garbage), &options,
                                         &error) == NULL);
   memset(&error, 0, sizeof(error));
   ASSERT_TRUE(my_css_parse_with_options(NULL, mixed, strlen(mixed), &options,
@@ -2702,6 +2703,217 @@ TEST(css_container_and_condition_lists_evaluate_at_match_time)
   my_widget_unref(panel);
   my_widget_unref(button);
   ASSERT_EQ(my_theme_load_css_ex(theme, pure_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
+TEST(css_container_bare_style_existence_queries)
+{
+  /* R682: the bare form `style(--prop)` asks whether the property's
+   * computed value differs from its initial value: an unset
+   * unregistered property has no value (false), an unset registered
+   * one computes to its initial (false), a set value equal to the
+   * registered initial is false, and any other set value is true. */
+  const char* bare_deferred =
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* bare_and_value =
+      "@container style(--set) and style(--accent: red)"
+      " { button { color: #010203; } }";
+  const char* set_unregistered =
+      "panel { --accent: red; }"
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* unset_unregistered =
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* unset_registered =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* set_equals_initial =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "panel { --accent: #00f; }"
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* set_differs_initial =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "panel { --accent: red; }"
+      "@container style(--accent) { button { color: #010203; } }";
+  const char* both_legs_true =
+      "panel { --set: 1; --accent: red; }"
+      "@container style(--set) and style(--accent: red)"
+      " { button { color: #010203; } }";
+  const char* one_leg_false =
+      "panel { --accent: red; }"
+      "@container style(--set) and style(--accent: red)"
+      " { button { color: #010203; } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* the bare form defers with its text stamped. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  sheet = my_css_parse_with_options(NULL, bare_deferred,
+                                    strlen(bare_deferred), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query, "style(--accent)");
+  my_css_sheet_destroy(sheet);
+
+  /* the bare form composes in an and-list. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, bare_and_value,
+                                    strlen(bare_and_value), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "style(--set) and style(--accent: red)");
+  my_css_sheet_destroy(sheet);
+
+  /* a set unregistered property is non-initial -> true. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, set_unregistered,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* an unset unregistered property has no value -> false. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, unset_unregistered,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* an unset registered property computes to its initial -> false. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, unset_registered,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a set value equal to the registered initial (typed) -> false. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, set_equals_initial,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a set value differing from the registered initial -> true. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, set_differs_initial,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* and-list: both legs true -> hit. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, both_legs_true,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* and-list: the bare leg false kills the conjunction. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, one_leg_false,
                                  MY_CSS_PARSE_STRICT_AT_RULES),
             MY_RET_OK);
   ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
@@ -8716,6 +8928,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_decl_block_nested_container_defers_to_match_time);
     RUN_TEST(css_property_syntax_lone_ident_enforced);
     RUN_TEST(css_container_and_condition_lists_evaluate_at_match_time);
+    RUN_TEST(css_container_bare_style_existence_queries);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
