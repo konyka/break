@@ -271,6 +271,7 @@ typedef struct my_css_rule_t {
 typedef struct my_css_sheet_t {
   const my_allocator_t* allocator;
   my_darray_t* rules; /**< my_css_rule_t* */
+  my_darray_t* property_defs; /**< my_theme_property_def_t* (R671) */
 } my_css_sheet_t;
 
 /** @brief Parse a CSS subset sheet within MY_CSS_MAX_BYTES. NULL on
@@ -354,6 +355,11 @@ my_css_sheet_t* my_css_parse_with_options(
 void my_css_sheet_destroy(my_css_sheet_t* sheet);
 
 size_t my_css_rule_count(const my_css_sheet_t* sheet);
+
+/** @brief R671: registered custom properties (@property) on the sheet. */
+size_t my_css_property_def_count(const my_css_sheet_t* sheet);
+const my_theme_property_def_t* my_css_property_def(
+    const my_css_sheet_t* sheet, size_t index);
 const my_css_rule_t* my_css_rule(const my_css_sheet_t* sheet, size_t index);
 size_t my_css_selector_count(const my_css_rule_t* rule);
 const my_css_selector_t* my_css_selector(const my_css_rule_t* rule,

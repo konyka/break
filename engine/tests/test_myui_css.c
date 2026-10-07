@@ -1560,6 +1560,114 @@ TEST(css_container_queries_resolve_against_ancestor_at_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_property_rule_registers_custom_properties)
+{
+  /* R671: @property slice 1 — the rule parses into the theme registry
+   * (syntax text stored, inherits flag, optional initial-value raw
+   * text) and the var() resolver honors it: inherits:false stops the
+   * DOM inheritance walk, initial-value fills an unset registered
+   * property. Syntax enforcement itself is a later slice. */
+  const char* defd =
+      "@property --brand { syntax: \"<color>\"; inherits: false;"
+      " initial-value: #036; }";
+  const char* dropped =
+      "@property --x { initial-value: red; } button { color: blue; }";
+  const char* no_inherits =
+      "@property --x { syntax: \"*\"; inherits: false; }"
+      "window { --x: red; } button { color: var(--x, blue); }";
+  const char* yes_inherits =
+      "@property --x { syntax: \"*\"; inherits: true; }"
+      "window { --x: red; } button { color: var(--x, blue); }";
+  const char* initial =
+      "@property --brand { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #036; }"
+      "button { color: var(--brand); }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  const my_theme_property_def_t* def;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* button;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* parse + register: descriptors land on the sheet. */
+  sheet = my_css_parse_ex(NULL, defd, strlen(defd),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  def = my_css_property_def(sheet, 0u);
+  ASSERT_NOT_NULL(def);
+  ASSERT_STR_EQ(def->name, "--brand");
+  ASSERT_STR_EQ(def->syntax, "<color>");
+  ASSERT_TRUE(!def->inherits);
+  ASSERT_TRUE(def->has_initial);
+  ASSERT_STR_EQ(def->initial, "#036");
+  my_css_sheet_destroy(sheet);
+
+  /* missing required descriptors (syntax/inherits) drops just the rule. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, dropped, strlen(dropped),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* inherits:false — the custom property does not cross the DOM edge. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  button = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(button);
+  window->widget_type = "window";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, button), MY_RET_OK);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, no_inherits,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, button, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* inherits:true — the walk proceeds (unregistered behavior). */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, button), MY_RET_OK);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, yes_inherits,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, button, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* initial-value fills an unset registered property. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, initial,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, button, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x003366FFu);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -7045,6 +7153,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_var_flows_through_widget_style_accessors);
     RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
+    RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);

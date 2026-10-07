@@ -3548,6 +3548,158 @@ static bool css_container_query_matches(css_p_t* p, const char* query,
                                        p->container->height_px, matches);
 }
 
+/* R671: @property — register a custom property (top level only; the
+ * descriptors validate at block end: missing syntax/inherits drops the
+ * rule leniently, unknown descriptors are skipped). */
+static bool css_parse_property_atrule(css_p_t* p, my_css_sheet_t* sheet,
+                                      bool nested) {
+  char name[MY_STYLE_KEY_LEN];
+  char syntax[64];
+  char initial[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  bool has_syntax = false;
+  bool has_inherits = false;
+  bool inherits = false;
+  bool has_initial = false;
+  size_t i, n;
+
+  if (nested) {
+    /* bounded: registration is top-level only (the @import position
+     * discipline). */
+    return css_skip_or_reject_atrule(p);
+  }
+  c_ws(p);
+  if (!c_ident(p, name, sizeof(name)) || name[0] != '-' || name[1] != '-') {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_ws(p);
+  if (c_peek(p) != '{') {
+    return css_skip_or_reject_atrule(p);
+  }
+  c_next(p);
+  syntax[0] = '\0';
+  initial[0] = '\0';
+  for (;;) {
+    char key[MY_STYLE_KEY_LEN];
+    c_ws(p);
+    if (c_peek(p) == '}') {
+      c_next(p);
+      break;
+    }
+    if (c_peek(p) < 0) {
+      css_fail(p, "unterminated @property block");
+      return false;
+    }
+    if (!c_ident(p, key, sizeof(key))) {
+      /* lenient: skip to ';' or '}' */
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') {
+        c_next(p);
+      }
+      continue;
+    }
+    c_ws(p);
+    if (c_peek(p) != ':') {
+      while (c_peek(p) >= 0 && c_peek(p) != ';' && c_peek(p) != '}') {
+        c_next(p);
+      }
+      if (c_peek(p) == ';') {
+        c_next(p);
+      }
+      continue;
+    }
+    c_next(p);
+    c_ws(p);
+    if (my_str_eq(key, "syntax")) {
+      my_value_t v;
+      my_value_init(&v, p->allocator);
+      if (css_value(p, &v) && my_value_type(&v) == MY_VALUE_STR &&
+          strlen(my_value_get_str(&v)) < sizeof(syntax)) {
+        snprintf(syntax, sizeof(syntax), "%s", my_value_get_str(&v));
+        has_syntax = true;
+      }
+      my_value_reset(&v);
+    } else if (my_str_eq(key, "inherits")) {
+      char word[8];
+      if (c_ident(p, word, sizeof(word)) &&
+          (my_str_eq(word, "true") || my_str_eq(word, "false"))) {
+        inherits = my_str_eq(word, "true");
+        has_inherits = true;
+      }
+    } else if (my_str_eq(key, "initial-value")) {
+      my_value_t v;
+      bool important = false;
+      my_value_init(&v, p->allocator);
+      if (css_custom_value(p, &v, &important) && !important &&
+          strlen(my_value_get_str(&v)) <=
+              MY_THEME_MAX_PROPERTY_VALUE_BYTES) {
+        snprintf(initial, sizeof(initial), "%s", my_value_get_str(&v));
+        has_initial = true;
+      } else {
+        has_initial = false; /* !important / oversized: descriptor invalid */
+      }
+      my_value_reset(&v);
+    } else {
+      /* unknown descriptor: skip its value raw */
+      my_value_t v;
+      bool important = false;
+      my_value_init(&v, p->allocator);
+      css_custom_value(p, &v, &important);
+      my_value_reset(&v);
+    }
+    c_ws(p);
+    if (c_peek(p) == ';') {
+      c_next(p);
+      continue;
+    }
+    if (c_peek(p) == '}') {
+      continue; /* the loop head consumes it */
+    }
+    if (c_peek(p) < 0) {
+      css_fail(p, "unterminated @property block");
+      return false;
+    }
+  }
+  if (!has_syntax || !has_inherits) {
+    MY_LOGW("my_css: dropping @property %s (syntax/inherits required)",
+            name);
+    return true;
+  }
+  /* last registration wins. */
+  n = my_darray_size(sheet->property_defs);
+  for (i = 0u; i < n; i++) {
+    my_theme_property_def_t* existing =
+        (my_theme_property_def_t*)my_darray_get(sheet->property_defs, i);
+    if (my_str_eq(existing->name, name)) {
+      snprintf(existing->syntax, sizeof(existing->syntax), "%s", syntax);
+      existing->inherits = inherits;
+      existing->has_initial = has_initial;
+      snprintf(existing->initial, sizeof(existing->initial), "%s", initial);
+      return true;
+    }
+  }
+  {
+    my_theme_property_def_t* def = (my_theme_property_def_t*)my_mem_calloc(
+        p->allocator, 1, sizeof(*def));
+    if (def == NULL) {
+      css_fail(p, "oom");
+      return false;
+    }
+    snprintf(def->name, sizeof(def->name), "%s", name);
+    snprintf(def->syntax, sizeof(def->syntax), "%s", syntax);
+    def->inherits = inherits;
+    def->has_initial = has_initial;
+    snprintf(def->initial, sizeof(def->initial), "%s", initial);
+    if (my_darray_push(sheet->property_defs, def) != MY_RET_OK) {
+      my_mem_free(p->allocator, def);
+      css_fail(p, "oom");
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool css_parse_container_atrule(css_p_t* p, my_css_sheet_t* sheet,
                                        size_t at_rule_depth,
                                        uint32_t layer_id) {
@@ -4221,6 +4373,10 @@ static bool css_parse_atrule(css_p_t* p, my_css_sheet_t* sheet,
     if (!nested) p->import_window_closed = true;
     return css_parse_container_atrule(p, sheet, media_depth, layer_id);
   }
+  if (my_str_eq(name, "property")) {
+    if (!nested) p->import_window_closed = true;
+    return css_parse_property_atrule(p, sheet, nested);
+  }
   if (my_str_eq(name, "layer")) {
     return css_parse_layer_atrule(p, sheet, media_depth, layer_id);
   }
@@ -4356,7 +4512,14 @@ my_css_sheet_t* my_css_parse_with_options(
   }
   sheet->allocator = allocator;
   sheet->rules = my_darray_create(allocator, 0);
-  if (sheet->rules == NULL) {
+  sheet->property_defs = my_darray_create(allocator, 0);
+  if (sheet->rules == NULL || sheet->property_defs == NULL) {
+    if (sheet->rules != NULL) {
+      my_darray_destroy(sheet->rules);
+    }
+    if (sheet->property_defs != NULL) {
+      my_darray_destroy(sheet->property_defs);
+    }
     my_mem_free(allocator, sheet);
     return NULL;
   }
@@ -4438,11 +4601,31 @@ void my_css_sheet_destroy(my_css_sheet_t* sheet) {
                      (my_css_rule_t*)my_darray_get(sheet->rules, i));
   }
   my_darray_destroy(sheet->rules);
+  n = my_darray_size(sheet->property_defs);
+  for (i = 0; i < n; i++) {
+    my_mem_free(sheet->allocator,
+                (my_theme_property_def_t*)my_darray_get(sheet->property_defs,
+                                                        i));
+  }
+  my_darray_destroy(sheet->property_defs);
   my_mem_free(sheet->allocator, sheet);
 }
 
 size_t my_css_rule_count(const my_css_sheet_t* sheet) {
   return sheet != NULL ? my_darray_size(sheet->rules) : 0;
+}
+
+size_t my_css_property_def_count(const my_css_sheet_t* sheet) {
+  return sheet != NULL ? my_darray_size(sheet->property_defs) : 0u;
+}
+
+const my_theme_property_def_t* my_css_property_def(
+    const my_css_sheet_t* sheet, size_t index) {
+  if (sheet == NULL || index >= my_darray_size(sheet->property_defs)) {
+    return NULL;
+  }
+  return (const my_theme_property_def_t*)my_darray_get(sheet->property_defs,
+                                                       index);
 }
 
 const my_css_rule_t* my_css_rule(const my_css_sheet_t* sheet, size_t index) {
@@ -4486,6 +4669,29 @@ static bool css_bounded_cstr_len(const char* css, size_t* length) {
     }
   }
   return false;
+}
+
+/* R671: register one @property definition into a theme (last wins). */
+static my_ret_t css_theme_register_property_def(
+    my_theme_t* theme, const my_theme_property_def_t* def) {
+  size_t i, n = my_darray_size(theme->property_defs);
+  for (i = 0u; i < n; i++) {
+    my_theme_property_def_t* existing =
+        (my_theme_property_def_t*)my_darray_get(theme->property_defs, i);
+    if (my_str_eq(existing->name, def->name)) {
+      memcpy(existing, def, sizeof(*existing));
+      return MY_RET_OK;
+    }
+  }
+  {
+    my_theme_property_def_t* copy = (my_theme_property_def_t*)my_mem_alloc(
+        theme->allocator, sizeof(*copy));
+    if (copy == NULL) {
+      return MY_RET_OOM;
+    }
+    memcpy(copy, def, sizeof(*copy));
+    return my_darray_push(theme->property_defs, copy);
+  }
 }
 
 static my_ret_t my_theme_load_css_internal(
@@ -4659,6 +4865,16 @@ static my_ret_t my_theme_load_css_internal(
     }
     if (ret != MY_RET_OK) break;
   }
+  if (ret == MY_RET_OK) {
+    for (di = 0u; di < my_darray_size(sheet->property_defs); di++) {
+      ret = css_theme_register_property_def(
+          candidate, (const my_theme_property_def_t*)my_darray_get(
+                         sheet->property_defs, di));
+      if (ret != MY_RET_OK) {
+        break;
+      }
+    }
+  }
   my_css_sheet_destroy(sheet);
   if (ret != MY_RET_OK) {
     my_theme_destroy(candidate);
@@ -4667,6 +4883,11 @@ static my_ret_t my_theme_load_css_internal(
   old_entries = theme->entries;
   theme->entries = candidate->entries;
   candidate->entries = old_entries;
+  {
+    my_darray_t* old_defs = theme->property_defs;
+    theme->property_defs = candidate->property_defs;
+    candidate->property_defs = old_defs;
+  }
   my_theme_destroy(candidate);
   return ret;
 }
@@ -4675,18 +4896,43 @@ my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
   return my_theme_load_css_with_options(theme, css, NULL);
 }
 
+/* R671: the theme's @property registry (linear scan — the registry is
+ * tiny by design). */
+static const my_theme_property_def_t* css_theme_property_def(
+    const my_theme_t* theme, const char* name) {
+  size_t i, n;
+  if (theme == NULL) {
+    return NULL;
+  }
+  n = my_darray_size(theme->property_defs);
+  for (i = 0u; i < n; i++) {
+    const my_theme_property_def_t* def =
+        (const my_theme_property_def_t*)my_darray_get(theme->property_defs,
+                                                      i);
+    if (my_str_eq(def->name, name)) {
+      return def;
+    }
+  }
+  return NULL;
+}
+
 /* R666: var() lookup-time substitution. A custom property's value is the
  * element's own cascade first, then DOM inheritance (nearest ancestor
- * wins); only raw string values participate (R665 stores them as such). */
+ * wins); only raw string values participate (R665 stores them as such).
+ * R671: a registered inherits:false property stays local. */
 static const my_value_t* css_var_custom_value(const my_theme_t* theme,
                                               const my_widget_t* widget,
                                               my_widget_state_t state,
                                               const char* name) {
   const my_widget_t* w = widget;
+  const my_theme_property_def_t* def = css_theme_property_def(theme, name);
   while (w != NULL) {
     const my_value_t* v = my_theme_get_for_widget(theme, w, state, name);
     if (v != NULL) {
       return my_value_type(v) == MY_VALUE_STR ? v : NULL;
+    }
+    if (def != NULL && !def->inherits) {
+      break;
     }
     w = w->parent;
   }
@@ -4845,6 +5091,20 @@ static bool css_var_substitute(const my_theme_t* theme,
           resolved = css_var_substitute(
               theme, widget, state, cv_text, strlen(cv_text), out, cap,
               out_len, visiting, visiting_count + 1u, depth + 1u);
+        }
+        if (!resolved) {
+          /* R671: an unset registered property falls back to its
+           * initial value (before the var() fallback). */
+          const my_theme_property_def_t* def =
+              css_theme_property_def(theme, name);
+          if (def != NULL && def->has_initial) {
+            snprintf(visiting[visiting_count], MY_STYLE_KEY_LEN, "%s",
+                     name);
+            resolved = css_var_substitute(
+                theme, widget, state, def->initial, strlen(def->initial),
+                out, cap, out_len, visiting, visiting_count + 1u,
+                depth + 1u);
+          }
         }
       }
       if (!resolved && fallback != NULL) {

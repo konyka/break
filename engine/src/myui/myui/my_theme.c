@@ -51,7 +51,14 @@ my_theme_t* my_theme_create(const my_allocator_t* allocator) {
   }
   theme->allocator = allocator;
   theme->entries = my_darray_create(allocator, 0);
-  if (theme->entries == NULL) {
+  theme->property_defs = my_darray_create(allocator, 0);
+  if (theme->entries == NULL || theme->property_defs == NULL) {
+    if (theme->entries != NULL) {
+      my_darray_destroy(theme->entries);
+    }
+    if (theme->property_defs != NULL) {
+      my_darray_destroy(theme->property_defs);
+    }
     my_mem_free(allocator, theme);
     return NULL;
   }
@@ -69,6 +76,13 @@ void my_theme_destroy(my_theme_t* theme) {
     theme_entry_destroy(theme->allocator, e);
   }
   my_darray_destroy(theme->entries);
+  n = my_darray_size(theme->property_defs);
+  for (i = 0; i < n; i++) {
+    my_mem_free(theme->allocator,
+                (my_theme_property_def_t*)my_darray_get(theme->property_defs,
+                                                        i));
+  }
+  my_darray_destroy(theme->property_defs);
   my_mem_free(theme->allocator, theme);
 }
 
@@ -135,6 +149,25 @@ my_theme_t* my_theme_clone(const my_theme_t* source) {
     }
     if (my_darray_push(candidate->entries, candidate_entry) != MY_RET_OK) {
       theme_entry_destroy(candidate->allocator, candidate_entry);
+      my_theme_destroy(candidate);
+      return NULL;
+    }
+  }
+  for (i = 0; i < my_darray_size(source->property_defs); i++) {
+    const my_theme_property_def_t* source_def =
+        (const my_theme_property_def_t*)my_darray_get(source->property_defs,
+                                                      i);
+    my_theme_property_def_t* candidate_def =
+        (my_theme_property_def_t*)my_mem_alloc(candidate->allocator,
+                                               sizeof(*candidate_def));
+    if (candidate_def == NULL) {
+      my_theme_destroy(candidate);
+      return NULL;
+    }
+    memcpy(candidate_def, source_def, sizeof(*candidate_def));
+    if (my_darray_push(candidate->property_defs, candidate_def) !=
+        MY_RET_OK) {
+      my_mem_free(candidate->allocator, candidate_def);
       my_theme_destroy(candidate);
       return NULL;
     }

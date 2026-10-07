@@ -22,6 +22,7 @@
 #define MY_THEME_MAX_ANCESTORS 4u
 #define MY_THEME_MAX_SCOPE_LIMITS 4u
 #define MY_THEME_MAX_CONTAINER_QUERY_BYTES 255u
+#define MY_THEME_MAX_PROPERTY_VALUE_BYTES 255u
 #define MY_THEME_SCOPE_ROOT_IMPLICIT MY_THEME_MAX_ANCESTORS
 #define MY_THEME_MAX_BYTES (4u * 1024u * 1024u)
 
@@ -65,10 +66,22 @@ typedef struct my_theme_entry_t {
   char container_name[MY_THEME_NAME_LEN];
 } my_theme_entry_t;
 
+/** @brief R671: one registered custom property (@property). `syntax` is
+ * the raw syntax string (stored, enforcement is a later slice);
+ * `initial` is the raw initial-value token stream when has_initial. */
+typedef struct my_theme_property_def_t {
+  char name[MY_STYLE_KEY_LEN];
+  char syntax[64];
+  bool inherits;
+  bool has_initial;
+  char initial[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+} my_theme_property_def_t;
+
 /** @brief Theme (style sheet). */
 typedef struct my_theme_t {
   const my_allocator_t* allocator;
   my_darray_t* entries; /**< my_theme_entry_t* */
+  my_darray_t* property_defs; /**< my_theme_property_def_t* (R671) */
 } my_theme_t;
 
 my_theme_t* my_theme_create(const my_allocator_t* allocator);

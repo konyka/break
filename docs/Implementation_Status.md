@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R671 @property 一期（TDD）— 注册型自定义属性落地：@property 解析入 theme 注册表（syntax 存储/inherits 旗标/initial-value 原始文本）,var() 解析器消费 inherits 门与初始值
+
+- **缺口**(R667 落账"@property 注册型自定义属性未涉"):@property 在 strict 下按 unsupported @-rule 整表拒——自定义属性只有未注册语义（全继承、无初始值、无类型轨）,var() 解析无法区配"本地 token"与"主题 token"。
+- **方案**（注册半边+R666 机械直插）:① 类型落 my_theme.h（`my_theme_property_def_t{name,syntax,inherits,has_initial,initial}` 定长扁平——my_css.h 含 my_theme.h 天然共享，无循环）;② 解析：顶层专属（嵌套按 @import 位次纪律拒/跳）——prelude `--ident`，描述符逐条（syntax 必为引号串、inherits 必 true/false、initial-value 走 R665 原始捕获且 !important 令该符失效、未知符原始捕获丢弃）;**块末校验**——syntax/inherits 缺一即整条 lenient 丢弃（规范必选符同约）;同名后注册胜；③ 注册表管线：sheet 持 darray（访问器双 API),theme 持 darray(create/destroy/clone 三件套同步），加载期候选注册+entries/property_defs 双交换（事务语义与 entries 同构）;④ **var() 消费**:`inherits:false` 闸停 DOM 父链走查（自身级联照查）;未设值的注册属性先取 initial（var() 回退之前，规范顺位）——initial 文本递归替换（visiting 环护同约）;syntax 字符串存储不强制（类型检=二期，文档化）。
+- **TDD（红→绿实证）**:test_myui_css +1——解析面：三符落表/缺必选符整条丢（sheet 与旁规则无恙）;theme 面：inherits:false 窗设 --x 钮取回退/inherits:true 走查得红/initial 填未设注册属性得 #036。**RED 如实红**（行 1598 sheet NULL——unsupported @-rule);GREEN 一次过 **177/177**(176+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有 var/级联/容器组全绿未动（未注册语义逐点保留）。
+- **边界**:**二期=syntax 强制**（注册属性 computed-value 期语法检——失格回 initial/guaranteed-invalid，插值动画域未涉）;@property 顶层专属（条件块内注册=媒体求值联动，让渡）;initial 不参与 syntax 校验（二期同检）;R611 AMD 基线不动。
+
 ## 本轮更新：R670 @container 二期核心（TDD）— 匹配期容器解析落地：查询条件悬置 rule/entry、级联逐元素祖先链求值（type∈{size,inline-size}∧名匹配，容器布局 rect)、具名查询放行；R663 无上下文拒签契约变更为悬置
 
 - **缺口**(R663 落账"二期=逐元素容器解析，史诗本体"):R669 只备了容器属性数据——@container 仍只能解析期求值（宿主注入上下文），无上下文时 strict 整表拒；逐元素"我的祖先容器多大"无从表达，container-type/name 无消费方。
