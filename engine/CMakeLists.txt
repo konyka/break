@@ -1160,6 +1160,18 @@ if(WIN32)
 elseif(APPLE)
   list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_macos.m)
   list(APPEND EX_EXPLORER_LIBS "-framework Cocoa" "-framework OpenGL")
+  # Same policy as src/platform/window_cocoa.m: Cocoa/OpenGL headers
+  # (deprecated NSOpenGL included) cannot satisfy -Werror -pedantic, and
+  # the file uses manual reference counting.
+  set_source_files_properties(tools/ex_platform_macos.m PROPERTIES
+      COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-Wno-deprecated-declarations;-fno-objc-arc")
+endif()
+if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
+  # wayland-scanner output is generated code — exempt from -Werror
+  # -pedantic like the other generated/system sources.
+  set_source_files_properties(
+      ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c PROPERTIES
+      COMPILE_OPTIONS "-Wno-error;-Wno-pedantic")
 endif()
 add_executable(myui_explorer ${EX_EXPLORER_SOURCES})
 target_include_directories(myui_explorer PRIVATE ${EX_EXPLORER_INCLUDES})
