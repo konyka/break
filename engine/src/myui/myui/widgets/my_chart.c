@@ -2002,6 +2002,9 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->label_count = snapshot->label_count;
   memcpy(chart->series, snapshot->series,
          snapshot->series_count * sizeof(*snapshot->series));
+  for (size_t i = 0u; i < snapshot->series_count; i++)
+    if (chart->series[i].color == 0u)
+      chart->series[i].color = s_colors[i];
   memcpy(chart->series_visible, snapshot->series_visible,
          snapshot->series_count * sizeof(*snapshot->series_visible));
   for (size_t i = snapshot->series_count; i < MY_CHART_MAX_SERIES; i++) {

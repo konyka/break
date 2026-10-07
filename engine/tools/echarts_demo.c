@@ -355,9 +355,9 @@ static void scene_dataset_transform(const char* dir) {
     printf("FAIL dataset apply\n");
     exit(1);
   }
+  render(c, dir, "25_dataset_sort");
   my_echart_adapter_destroy(adapter);
   my_echart_option_free(&option);
-  render(c, dir, "25_dataset_sort");
 }
 
 static void scene_model_action(const char* dir) {
@@ -392,9 +392,9 @@ static void scene_model_action(const char* dir) {
     printf("FAIL action dispatch\n");
     exit(1);
   }
+  render(c, dir, "26_model_action");
   my_echart_adapter_destroy(adapter);
   my_echart_destroy(model);
-  render(c, dir, "26_model_action");
 }
 
 static void scene_mvvm(const char* dir) {
@@ -506,10 +506,10 @@ static void scene_json_option(const char* dir) {
     printf("FAIL json apply\n");
     exit(1);
   }
+  render(c, dir, "28_json_option");
   my_echart_adapter_destroy(adapter);
   my_echart_option_free(&option);
   my_echart_json_doc_destroy(&doc);
-  render(c, dir, "28_json_option");
 }
 
 static void scene_animation(const char* dir) {
