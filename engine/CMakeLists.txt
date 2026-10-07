@@ -1170,6 +1170,11 @@ message(STATUS "myui_explorer platforms: ${EX_EXPLORER_PLATFORMS}")
 add_test(NAME myui_explorer_selftest COMMAND myui_explorer --selftest
     ${CMAKE_CURRENT_BINARY_DIR})
 
+# The demo/explorer tools are process-lifetime by design (resources held
+# until OS exit); keep LeakSanitizer from reading that as a failure.
+set_tests_properties(myui_widgets_demo_smoke myui_explorer_selftest
+    PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
+
 # Strict, bounded verifier for versioned SA dictionary golden corpora.
 add_executable(verify_myui_sa_dictionary tools/verify_myui_sa_dictionary.c)
 target_include_directories(verify_myui_sa_dictionary PRIVATE

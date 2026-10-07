@@ -32,7 +32,7 @@ jobs:
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
             ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
@@ -75,7 +75,7 @@ jobs:
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
             ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
@@ -120,7 +120,7 @@ jobs:
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
             ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
@@ -152,7 +152,7 @@ jobs:
           if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
             echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
             ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
               echo "::error::$line"
             done
             cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
@@ -223,7 +223,15 @@ jobs:
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          set -o pipefail
+          # Logs need auth to read: surface the compiler errors as
+          # annotations (macOS precedent below).
+          cmake --build build --parallel 2>&1 | tee /tmp/wayland_build.log || {
+            grep -m 8 -E "error:|fatal error:" /tmp/wayland_build.log \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
       - name: Verify Break myui demo
         run: cmake --build build --target dxx_break --parallel
@@ -270,7 +278,15 @@ jobs:
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          set -o pipefail
+          # Logs need auth to read: surface the compiler errors as
+          # annotations (macOS precedent below).
+          cmake --build build --parallel 2>&1 | tee /tmp/wayland_vk_build.log || {
+            grep -m 8 -E "error:|fatal error:" /tmp/wayland_vk_build.log \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
       - name: Verify Break myui demo
         run: cmake --build build --target dxx_break --parallel
@@ -400,7 +416,11 @@ jobs:
           # so all test executables must exist (the dxx_break-only build above
           # leaves ctest with "(Not Run)" entries for every other test).
           cmake --build build --parallel -- VERBOSE=1 2>&1 | tee /tmp/macos_full.log || {
-            grep -m 5 -E "error:|fatal error:|No rule to make target|ld: " /tmp/macos_full.log \
+            # ld warnings match "ld: " and would eat the -m budget, so
+            # compiler errors are surfaced first.
+            grep -m 8 -E "error:|fatal error:" /tmp/macos_full.log \
+              | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 3 -E "No rule to make target|Undefined symbols|ld: (framework|library) " /tmp/macos_full.log \
               | while IFS= read -r line; do echo "::error::${line}"; done
             # Which target owns the failing rhi_vk.c compile? The object path
             # encodes it: CMakeFiles/<target>.dir/...
