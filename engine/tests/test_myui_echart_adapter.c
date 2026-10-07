@@ -443,9 +443,9 @@ TEST(echart_adapter_projects_multi_grid) {
       {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
   my_echart_grid_input_t grids[] = {
       {0.05, 0.05, 0.9, 0.4, grid0_series, 1u, true, 0.0, 10.0, false, 0.0,
-       0.0},
+       0.0, true},
       {0.05, 0.55, 0.9, 0.4, grid1_series, 1u, false, 0.0, 0.0, false, 0.0,
-       0.0}};
+       0.0, true}};
   my_echart_option_input_t input = {"multi", NULL, 0u, series, 2u,
                                    false, false, false, 0.0, 0.0, false, 0u, 0u,
                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,
@@ -462,7 +462,9 @@ TEST(echart_adapter_projects_multi_grid) {
   adapter = my_echart_adapter_create(chart, NULL);
   ASSERT_NOT_NULL(adapter);
   ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
-  ASSERT_EQ((size_t)my_chart_get_grid_count(chart), 2u);
+   ASSERT_EQ((size_t)my_chart_get_grid_count(chart), 2u);
+   ASSERT_TRUE(my_chart_get_grid_link(chart, 0u));
+   ASSERT_TRUE(my_chart_get_grid_link(chart, 1u));
   ASSERT_EQ((size_t)my_chart_get_series_grid(chart, 0u), 0u);
   ASSERT_EQ((size_t)my_chart_get_series_grid(chart, 1u), 1u);
   ASSERT_EQ(my_chart_get_grid_range(chart, 0u, 0u, &lo, &hi), MY_RET_OK);

@@ -443,7 +443,8 @@ set(MYUI_CORE_SOURCES
     src/myui/myui/widgets/my_node_view.c
     src/myui/myui/my_css.c
     src/myui/myui/echarts/my_echart_event.c
-    src/myui/myui/echarts/my_echart_option.c
+     src/myui/myui/echarts/my_echart_option.c
+     src/myui/myui/echarts/my_echart_option_json.c
     src/myui/myui/echarts/my_echart_adapter.c
     src/myui/myui/echarts/my_echart.c
     src/myui/myui/echarts/my_echart_animation.c
@@ -1453,6 +1454,11 @@ if(ENGINE_BUILD_TESTS)
         ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
     target_link_libraries(test_myui_echart_option PRIVATE myui_core m Threads::Threads)
     add_test(NAME test_myui_echart_option COMMAND test_myui_echart_option)
+    add_executable(test_myui_echart_option_json tests/test_myui_echart_option_json.c)
+    target_include_directories(test_myui_echart_option_json PRIVATE
+        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(test_myui_echart_option_json PRIVATE myui_core m Threads::Threads)
+    add_test(NAME test_myui_echart_option_json COMMAND test_myui_echart_option_json)
     add_executable(test_myui_echart tests/test_myui_echart.c)
     target_include_directories(test_myui_echart PRIVATE ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)

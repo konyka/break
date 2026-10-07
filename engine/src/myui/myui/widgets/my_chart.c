@@ -1483,8 +1483,19 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
     }
     hover_x = chart_category_x(chart->hover_index, zoom_begin, zoom_window,
                                hx, hw);
-    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
-    my_vgcanvas_fill_rect(vg, &(my_rectf_t){hover_x, hy, 1.0f, hh});
+     my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933CCu));
+     for (size_t line_grid = 0u; line_grid < chart->grid_count; line_grid++) {
+       float line_x, line_y, line_w, line_h;
+       bool linked = line_grid == hover_grid ||
+                     (chart->grid_link_axis_pointer[hover_grid] &&
+                      chart->grid_link_axis_pointer[line_grid]);
+       if (!linked || !chart_grid_rect(widget, line_grid, &line_x, &line_y,
+                                      &line_w, &line_h))
+         continue;
+       line_x = chart_category_x(chart->hover_index, zoom_begin, zoom_window,
+                                 line_x, line_w);
+       my_vgcanvas_fill_rect(vg, &(my_rectf_t){line_x, line_y, 1.0f, line_h});
+     }
     if (chart->tooltip_enabled &&
         my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
@@ -1705,6 +1716,7 @@ my_ret_t my_chart_set_grid(my_widget_t* widget, size_t index,
   chart->grid_height[index] = desc->height;
   chart->grid_explicit[index] = true;
   chart->grid_visible[index] = desc->visible;
+  chart->grid_link_axis_pointer[index] = desc->link_axis_pointer;
   chart->grid_range_set[index] = desc->range_set;
   chart->grid_y_min[index] = desc->y_min;
   chart->grid_y_max[index] = desc->y_max;
@@ -1713,6 +1725,20 @@ my_ret_t my_chart_set_grid(my_widget_t* widget, size_t index,
   chart->grid_y2_max[index] = desc->y2_max;
   my_widget_invalidate(widget, NULL);
   return MY_RET_OK;
+}
+
+my_ret_t my_chart_set_grid_link(my_widget_t* widget, size_t grid, bool linked) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL || grid >= chart->grid_count) return MY_RET_INVALID_PARAMS;
+  chart->grid_link_axis_pointer[grid] = linked;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_get_grid_link(const my_widget_t* widget, size_t grid) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  if (chart == NULL || grid >= chart->grid_count) return false;
+  return chart->grid_link_axis_pointer[grid];
 }
 
 size_t my_chart_get_series_grid(const my_widget_t* widget, size_t series) {

@@ -371,9 +371,9 @@ TEST(echart_option_copies_multi_grid) {
       {"b", "B", MY_ECHART_LINE, values, 3u, 0u, 0u, NULL, true, NULL}};
   my_echart_grid_input_t grids[] = {
       {0.05, 0.05, 0.9, 0.4, grid0_series, 1u, true, 0.0, 10.0, false, 0.0,
-       0.0},
+       0.0, false},
       {0.05, 0.55, 0.9, 0.4, grid1_series, 1u, false, 0.0, 0.0, true, 0.0,
-       5.0}};
+       5.0, false}};
   my_echart_option_input_t input = {"multi", NULL, 0u, series, 2u,
                                    false, false, false, 0.0, 0.0, false, 0u, 0u,
                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u,

@@ -380,7 +380,8 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
       candidate.grids[i].y_max = src->grids[i].y_max;
       candidate.grids[i].range2_set = src->grids[i].range2_set;
       candidate.grids[i].y2_min = src->grids[i].y2_min;
-      candidate.grids[i].y2_max = src->grids[i].y2_max;
+    candidate.grids[i].y2_max = src->grids[i].y2_max;
+    candidate.grids[i].link_axis_pointer = src->grids[i].link_axis_pointer;
       candidate.grids[i].series_count = src->grids[i].series_count;
       if (candidate.grids[i].series_count > 0u) {
         candidate.grids[i].series_indices = (size_t*)my_mem_alloc(

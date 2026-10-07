@@ -93,6 +93,11 @@ revision-driven `sync_model` re-projection.
 
 ## Interaction
 
+When grids have `link_axis_pointer` enabled, hovering any linked grid draws the
+category guide line at the same index across every visible linked grid. The
+tooltip text remains anchored to the hovered grid; unlinked grids retain their
+independent guide behavior.
+
 - `my_chart_hit_test()` scans visible grids front-to-back (last-declared
   wins on overlap, matching ECharts) and maps to that grid's category axis.
 - dataZoom stays chart-global in this phase (cross-grid linking is the
@@ -109,13 +114,14 @@ revision-driven `sync_model` re-projection.
 
 ## Interaction (as landed)
 
-Hover markers draw on the rect of the grid owning each series; the pointer
-move handler records the hit grid and the tooltip guide line follows it.
-`chart_grid_at()` scans visible grids front-to-back and is exposed for
-host-side use.
+Hover markers draw on the rect of the grid owning each series. The pointer move
+handler records the hit grid; when `link_axis_pointer` is enabled on that grid,
+the category guide line is also rendered on every visible grid with the same
+flag. The tooltip text remains on the hovered grid. `chart_grid_at()` scans
+visible grids front-to-back and is exposed for host-side use.
 
 ## Non-Goals
 
-- `axisPointer.link` cross-grid syncing (follow-up).
+- Arbitrary axis counts beyond the per-grid left/right axes.
 - Arbitrary axis counts per grid beyond left/right (follow-up).
 - Per-grid dirty-rect invalidation (widget-level invalidation remains).

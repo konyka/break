@@ -1307,6 +1307,21 @@ TEST(chart_multi_grid_layout_and_assignment) {
   my_widget_unref(chart);
 }
 
+TEST(chart_grid_link_flag_validation) {
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_chart_set_grid_link(NULL, 0u, true), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_set_grid_link(chart, MY_CHART_MAX_GRIDS, true),
+            MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_chart_get_grid_link(NULL, 0u), false);
+  ASSERT_EQ(my_chart_get_grid_link(chart, MY_CHART_MAX_GRIDS), false);
+  ASSERT_EQ(my_chart_set_grid_link(chart, 0u, true), MY_RET_OK);
+  ASSERT_TRUE(my_chart_get_grid_link(chart, 0u));
+  ASSERT_EQ(my_chart_set_grid_link(chart, 0u, false), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_grid_link(chart, 0u), false);
+  my_widget_unref(chart);
+}
+
 TEST(chart_multi_grid_renders_series_in_own_rect) {
   static const float top_values[] = {1.0f, 3.0f, 2.0f};
   static const float bottom_values[] = {2.0f, 1.0f, 3.0f};
@@ -1452,6 +1467,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_calendar_mode);
   RUN_TEST(chart_supports_theme_river_mode);
   RUN_TEST(chart_multi_grid_layout_and_assignment);
+  RUN_TEST(chart_grid_link_flag_validation);
   RUN_TEST(chart_multi_grid_renders_series_in_own_rect);
   RUN_TEST(chart_multi_grid_auto_range_isolated);
   RUN_TEST(chart_multi_grid_hit_test_resolves_own_grid);

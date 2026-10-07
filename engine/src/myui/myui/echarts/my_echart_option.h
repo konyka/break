@@ -99,6 +99,7 @@ typedef struct my_echart_grid_input_t {
   bool range2_set;
   double y2_min;
   double y2_max;
+  bool link_axis_pointer;
 } my_echart_grid_input_t;
 
 typedef struct my_echart_option_input_t {
@@ -181,6 +182,7 @@ typedef struct my_echart_grid_t {
   bool range2_set;
   double y2_min;
   double y2_max;
+  bool link_axis_pointer;
 } my_echart_grid_t;
 
 typedef struct my_echart_option_t {

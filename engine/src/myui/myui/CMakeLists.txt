@@ -36,6 +36,7 @@ add_library(myui STATIC
   my_css.c
   echarts/my_echart_event.c
   echarts/my_echart_option.c
+  echarts/my_echart_option_json.c
   echarts/my_echart_adapter.c
   echarts/my_echart.c
   echarts/my_echart_animation.c

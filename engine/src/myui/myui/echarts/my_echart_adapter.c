@@ -164,8 +164,8 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
         source->grids[i].height, source->grids[i].series_indices,
         source->grids[i].series_count, source->grids[i].range_set,
         source->grids[i].y_min, source->grids[i].y_max,
-        source->grids[i].range2_set, source->grids[i].y2_min,
-        source->grids[i].y2_max};
+         source->grids[i].range2_set, source->grids[i].y2_min,
+         source->grids[i].y2_max, source->grids[i].link_axis_pointer};
 
   input = (my_echart_option_input_t){
       source->title, (const char* const*)source->x_axis_data,
@@ -313,6 +313,7 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
       desc.y2_min = (float)grid->y2_min;
       desc.y2_max = (float)grid->y2_max;
       desc.visible = true;
+      desc.link_axis_pointer = grid->link_axis_pointer;
       ret = my_chart_set_grid(adapter->chart, i, &desc);
       if (ret != MY_RET_OK) { payload_free(adapter, candidate); return ret; }
     }

@@ -42,8 +42,10 @@ TEST(echart_mvvm_syncs_multi_grid_option) {
       {"a", "A", MY_ECHART_LINE, values, 3, 0, 0, NULL, true, NULL},
       {"b", "B", MY_ECHART_LINE, values, 3, 0, 0, NULL, true, NULL}};
   my_echart_grid_input_t grids[] = {
-      {0.05, 0.05, 0.9, 0.4, g0, 1, false, 0.0, 0.0, false, 0.0, 0.0},
-      {0.05, 0.55, 0.9, 0.4, g1, 1, false, 0.0, 0.0, false, 0.0, 0.0}};
+      {0.05, 0.05, 0.9, 0.4, g0, 1, false, 0.0, 0.0, false, 0.0, 0.0,
+       false},
+      {0.05, 0.55, 0.9, 0.4, g1, 1, false, 0.0, 0.0, false, 0.0, 0.0,
+       false}};
   my_echart_option_input_t in = {"MG", NULL, 0, series, 2, false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, grids, 2u};
   my_echart_option_t o;
   my_view_model_t* vm = my_view_model_dummy_create(NULL);

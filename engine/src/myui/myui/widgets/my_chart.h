@@ -78,6 +78,7 @@ typedef struct my_chart_grid_desc_t {
   float y2_min;
   float y2_max;
   bool visible;
+  bool link_axis_pointer;
 } my_chart_grid_desc_t;
 
 /** @brief Borrowed renderer state committed atomically to a chart widget. */
@@ -132,6 +133,7 @@ typedef struct my_chart_t {
   float grid_height[MY_CHART_MAX_GRIDS];
   bool grid_explicit[MY_CHART_MAX_GRIDS];
   bool grid_visible[MY_CHART_MAX_GRIDS];
+  bool grid_link_axis_pointer[MY_CHART_MAX_GRIDS];
   size_t grid_count;
   unsigned char series_grid[MY_CHART_MAX_SERIES];
   unsigned char paint_grid;
@@ -177,6 +179,8 @@ my_ret_t my_chart_set_grid_count(my_widget_t* chart, size_t count);
 size_t my_chart_get_grid_count(const my_widget_t* chart);
 my_ret_t my_chart_set_grid(my_widget_t* chart, size_t index,
                            const my_chart_grid_desc_t* desc);
+my_ret_t my_chart_set_grid_link(my_widget_t* chart, size_t grid, bool linked);
+bool my_chart_get_grid_link(const my_widget_t* chart, size_t grid);
 size_t my_chart_get_series_grid(const my_widget_t* chart, size_t series);
 my_ret_t my_chart_get_grid_rect(const my_widget_t* chart, size_t index,
                                 float* x, float* y, float* w, float* h);
