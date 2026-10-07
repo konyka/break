@@ -1578,8 +1578,8 @@ TEST(css_container_style_queries_resolve_at_match_time)
   const char* bare_garbage =
       "@container style(--accent %) { button { color: #010203; } }";
   const char* mixed =
-      "@container style(--accent: red) or (min-width: 400px) {"
-      " button { color: #010203; } }";
+      "@container style(--accent: red) or (min-width: 400px) and"
+      " (max-height: 200px) { button { color: #010203; } }";
   const char* non_custom =
       "@container style(color: red) { button { color: #010203; } }";
   const char* hit =
@@ -2532,8 +2532,8 @@ TEST(css_container_and_condition_lists_evaluate_at_match_time)
       "@container style(--a: red) and style(--b: 1)"
       " { button { color: #010203; } }";
   const char* or_rejected =
-      "@container style(--a: red) or (min-width: 400px)"
-      " { button { color: #010203; } }";
+      "@container style(--a: red) or (min-width: 400px) and"
+      " (max-height: 200px) { button { color: #010203; } }";
   const char* not_style_rejected =
       "@container not style(--a: red) { button { color: #010203; } }";
   const char* mixed_hit =
@@ -3064,6 +3064,217 @@ TEST(css_container_inline_size_axis_semantics)
   value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
   ASSERT_NOT_NULL(value);
   ASSERT_EQ(my_value_get_uint32(value), 0xFF0000FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
+TEST(css_container_or_condition_lists_evaluate_at_match_time)
+{
+  /* R684: an or-only condition list in one @container prelude —
+   * `style(--a: v) or (size-feature)` — evaluates as a disjunction on
+   * one query container (the same selection rule as the R681 and-list:
+   * a mixed list resolves on the nearest size-qualified container, a
+   * pure-style list keeps the style path). Unparenthesized and/or
+   * mixing and `not`-leading disjuncts stay rejected (bounded slice);
+   * per-leg axis gating (R683) makes unknown propagation through `or`
+   * spec-exact: a false block-axis leg on an inline-size container no
+   * longer kills a satisfiable inline leg. */
+  const char* mixed_deferred =
+      "button { color: #010203; }"
+      "@container style(--accent: red) or (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* pure_style_deferred =
+      "@container style(--a: red) or style(--b: 1)"
+      " { button { color: #010203; } }";
+  const char* unparenthesized_mix_rejected =
+      "@container (min-width: 1px) and (min-height: 2px) or (width: 3px)"
+      " { button { color: #010203; } }";
+  const char* not_disjunct_rejected =
+      "@container not (min-width: 1px) or (min-height: 2px)"
+      " { button { color: #010203; } }";
+  const char* mixed_size_true =
+      "panel { container-type: inline-size; --accent: blue; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) or (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* mixed_style_true =
+      "panel { container-type: inline-size; --accent: red; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) or (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* mixed_both_false =
+      "panel { container-type: inline-size; --accent: blue; }"
+      "button { color: #010203; }"
+      "@container style(--accent: red) or (min-width: 400px)"
+      " { button { color: #040506; } }";
+  const char* axis_propagation_hit =
+      "panel { container-type: inline-size; }"
+      "button { color: #010203; }"
+      "@container (min-width: 400px) or (min-height: 500px)"
+      " { button { color: #040506; } }";
+  const char* axis_propagation_miss =
+      "panel { container-type: inline-size; }"
+      "button { color: #010203; }"
+      "@container (min-width: 400px) or (min-height: 500px)"
+      " { button { color: #040506; } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* a mixed or-list defers with the whole disjunction text stamped. */
+  options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+  sheet = my_css_parse_with_options(NULL, mixed_deferred,
+                                    strlen(mixed_deferred), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 2u);
+  ASSERT_STR_EQ(my_css_rule(sheet, 1u)->container_query,
+                "style(--accent: red) or (min-width: 400px)");
+  my_css_sheet_destroy(sheet);
+
+  /* a pure-style or-list defers too. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, pure_style_deferred,
+                                    strlen(pure_style_deferred), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_css_rule(sheet, 0u)->container_query,
+                "style(--a: red) or style(--b: 1)");
+  my_css_sheet_destroy(sheet);
+
+  /* unparenthesized and/or mixing still rejects in strict mode. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, unparenthesized_mix_rejected,
+                                        strlen(unparenthesized_mix_rejected),
+                                        &options, &error) == NULL);
+
+  /* a `not`-leading disjunct stays out of scope. */
+  memset(&error, 0, sizeof(error));
+  ASSERT_TRUE(my_css_parse_with_options(NULL, not_disjunct_rejected,
+                                        strlen(not_disjunct_rejected),
+                                        &options, &error) == NULL);
+
+  /* match time: the size leg alone satisfies the disjunction. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_size_true,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x040506FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* the style leg alone satisfies it. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 300;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_style_true,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x040506FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* both legs false: the disjunction misses. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 300;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, mixed_both_false,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* spec-exact unknown propagation: on an inline-size container the
+   * block-axis leg is false, but a true inline leg still satisfies the
+   * disjunction (R683's whole-string conservative gate upgrades to
+   * per-leg gating). */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 500;
+  panel->rect.h = 400;
+  ASSERT_EQ(my_theme_load_css_ex(theme, axis_propagation_hit,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x040506FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* every leg false (inline below threshold, block axis unknown):
+   * miss. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  panel->rect.w = 300;
+  panel->rect.h = 600;
+  ASSERT_EQ(my_theme_load_css_ex(theme, axis_propagation_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
   my_widget_unref(window);
   my_theme_destroy(theme);
 }
@@ -9079,6 +9290,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_and_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_container_bare_style_existence_queries);
     RUN_TEST(css_container_inline_size_axis_semantics);
+    RUN_TEST(css_container_or_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

@@ -3744,22 +3744,25 @@ static bool css_container_query_has_block_axis(const char* cond,
   return false;
 }
 
-/* R681: split an and-only condition list at top-level `and` word
+/* R681/R684: split a same-connective condition list at top-level word
  * boundaries (paren- and quote-aware). Each slice is trimmed. Returns
- * the condition count: 1 when no top-level `and` separates conditions,
- * 0 when a mid-list `or`/`not` connective, an empty slice, unbalanced
- * parentheses or the cap puts the composition out of scope. A leading
- * `not` stays part of its slice (the media machinery negates it). */
+ * the condition count: 1 when no top-level `connective` separates
+ * conditions, 0 when a different mid-list connective (and/or/not), an
+ * empty slice, unbalanced parentheses or the cap puts the composition
+ * out of scope. A leading `not` stays part of its slice (the media
+ * machinery negates it). */
 #define MY_CSS_MAX_CONTAINER_CONDS 4u
 
 static bool css_container_ws(char c) {
   return c == ' ' || c == '\t' || c == '\r' || c == '\n';
 }
 
-static size_t css_container_split_and(const char* query, size_t length,
-                                      const char* conds[],
-                                      size_t cond_lens[],
-                                      size_t max_conds) {
+static size_t css_container_split_connective(const char* query,
+                                             size_t length,
+                                             const char* conds[],
+                                             size_t cond_lens[],
+                                             size_t max_conds,
+                                             bool connective_or) {
   size_t count = 0u;
   size_t start = 0u;
   size_t i = 0u;
@@ -3796,19 +3799,20 @@ static size_t css_container_split_and(const char* query, size_t length,
     }
     if (depth == 0u && css_container_ws(c) && i + 3u < length &&
         (memcmp(query + i + 1u, "and", 3u) == 0 ||
-         (i + 2u < length && memcmp(query + i + 1u, "or", 2u) == 0) ||
-         memcmp(query + i + 1u, "not", 3u) == 0)) {
-      /* a top-level connective word: which one? */
+         memcmp(query + i + 1u, "not", 3u) == 0 ||
+         memcmp(query + i + 1u, "or", 2u) == 0)) {
+      /* a top-level connective word: which one? (a word like `org`
+       * fails the whitespace-after check below and passes through) */
       const char* word = query + i + 1u;
-      size_t word_len = memcmp(word, "and", 3u) == 0 ||
-                                memcmp(word, "not", 3u) == 0
-                            ? 3u
-                            : 2u;
+      bool is_and = memcmp(word, "and", 3u) == 0;
+      bool is_not = !is_and && memcmp(word, "not", 3u) == 0;
+      bool is_or = !is_and && !is_not && memcmp(word, "or", 2u) == 0;
+      size_t word_len = is_or ? 2u : 3u;
       size_t after = i + 1u + word_len;
       if (after >= length || css_container_ws(query[after])) {
         size_t end;
-        if (word_len != 3u || memcmp(word, "and", 3u) != 0) {
-          return 0u; /* mid-list or/not: out of scope */
+        if (is_not || (connective_or != is_or)) {
+          return 0u; /* a different mid-list connective: out of scope */
         }
         end = i;
         if (count >= max_conds) {
@@ -4185,40 +4189,146 @@ static bool css_container_features_valid(const char* query, size_t length) {
   return true;
 }
 
-/* R681: validate a whole @container prelude — an and-only condition
- * list validates per condition (each slice is a style() form or a size
- * feature list). An unsplittable whole string (mid-list or/not)
- * validates through the legacy paths: a pure-size composition keeps
- * its media-machinery evaluation, a style() opener still rejects on
- * its single-condition form. */
+/* R684: how many distinct connective kinds (and/or/not) appear at the
+ * top level? Two or more means unparenthesized mixing (or an infix
+ * `not`) — the prelude is then invalid; a single kind (or none) falls
+ * back to the legacy whole-string paths. */
+static size_t css_container_connective_kinds(const char* query,
+                                             size_t length) {
+  bool saw_and = false;
+  bool saw_or = false;
+  bool saw_not = false;
+  size_t i = 0u;
+  char quote = '\0';
+  size_t depth = 0u;
+  /* a connective sits at a word start: the string head or right after
+   * whitespace. */
+  bool word_start = true;
+  while (i < length) {
+    char c = query[i];
+    if (quote != '\0') {
+      if (c == '\\' && i + 1u < length) {
+        i++;
+      } else if (c == quote) {
+        quote = '\0';
+      }
+      word_start = false;
+      i++;
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = c;
+      word_start = false;
+      i++;
+      continue;
+    }
+    if (c == '(') {
+      depth++;
+      word_start = false;
+      i++;
+      continue;
+    }
+    if (c == ')') {
+      if (depth > 0u) {
+        depth--;
+      }
+      word_start = false;
+      i++;
+      continue;
+    }
+    if (css_container_ws(c)) {
+      word_start = true;
+      i++;
+      continue;
+    }
+    if (word_start && depth == 0u && c == 'a' && i + 3u <= length &&
+        memcmp(query + i, "and", 3u) == 0 &&
+        (i + 3u >= length || css_container_ws(query[i + 3u]))) {
+      saw_and = true;
+    } else if (word_start && depth == 0u && c == 'o' &&
+               i + 2u <= length && memcmp(query + i, "or", 2u) == 0 &&
+               (i + 2u >= length || css_container_ws(query[i + 2u]))) {
+      saw_or = true;
+    } else if (word_start && depth == 0u && c == 'n' &&
+               i + 3u <= length && memcmp(query + i, "not", 3u) == 0 &&
+               (i + 3u >= length || css_container_ws(query[i + 3u]))) {
+      saw_not = true;
+    }
+    word_start = false;
+    i++;
+  }
+  return (size_t)saw_and + (size_t)saw_or + (size_t)saw_not;
+}
+
+/* R681/R684: one condition's own validation — a style() form (with or
+ * without a value) or a size feature list. */
+static bool css_container_cond_valid(const char* cond, size_t length) {
+  if (css_container_query_is_style(cond, length)) {
+    char prop[MY_STYLE_KEY_LEN];
+    const char* value;
+    size_t value_length;
+    return css_container_style_query_parse(cond, length, prop,
+                                           sizeof(prop), &value,
+                                           &value_length);
+  }
+  return css_container_features_valid(cond, length);
+}
+
+/* R684: does a disjunct open with a `not` connective? (out of scope
+ * inside an or-list; fine as a single condition's head). */
+static bool css_container_cond_leads_not(const char* cond, size_t length) {
+  size_t i = 0u;
+  while (i < length && css_container_ws(cond[i])) {
+    i++;
+  }
+  return length - i >= 3u && memcmp(cond + i, "not", 3u) == 0 &&
+         (i + 3u >= length || css_container_ws(cond[i + 3u]));
+}
+
+/* R681/R684: validate a whole @container prelude — a same-connective
+ * condition list (and or or) validates per condition (each slice is a
+ * style() form or a size feature list). An or-list's disjuncts must be
+ * single conditions: no unparenthesized and/or mixing, no `not`
+ * opener. An unsplittable whole string (a leading `not` composition)
+ * validates through the legacy path. */
 static bool css_container_prelude_valid(const char* query, size_t length) {
   const char* conds[MY_CSS_MAX_CONTAINER_CONDS];
   size_t cond_lens[MY_CSS_MAX_CONTAINER_CONDS];
-  size_t n = css_container_split_and(query, length, conds, cond_lens,
-                                     MY_CSS_MAX_CONTAINER_CONDS);
+  size_t n = css_container_split_connective(query, length, conds,
+                                            cond_lens,
+                                            MY_CSS_MAX_CONTAINER_CONDS,
+                                            true);
   size_t ci;
-  if (n == 0u) {
-    if (css_container_query_is_style(query, length)) {
-      char prop[MY_STYLE_KEY_LEN];
-      const char* value;
-      size_t value_length;
-      return css_container_style_query_parse(query, length, prop,
-                                             sizeof(prop), &value,
-                                             &value_length);
-    }
-    return css_container_features_valid(query, length);
-  }
-  for (ci = 0u; ci < n; ci++) {
-    if (css_container_query_is_style(conds[ci], cond_lens[ci])) {
-      char prop[MY_STYLE_KEY_LEN];
-      const char* value;
-      size_t value_length;
-      if (!css_container_style_query_parse(conds[ci], cond_lens[ci], prop,
-                                           sizeof(prop), &value,
-                                           &value_length)) {
+  if (n > 1u) {
+    /* R684: an or-list — every disjunct is a single condition. */
+    for (ci = 0u; ci < n; ci++) {
+      const char* one[MY_CSS_MAX_CONTAINER_CONDS];
+      size_t one_lens[MY_CSS_MAX_CONTAINER_CONDS];
+      if (css_container_cond_leads_not(conds[ci], cond_lens[ci])) {
         return false;
       }
-    } else if (!css_container_features_valid(conds[ci], cond_lens[ci])) {
+      if (css_container_split_connective(conds[ci], cond_lens[ci], one,
+                                         one_lens,
+                                         MY_CSS_MAX_CONTAINER_CONDS,
+                                         false) > 1u) {
+        return false; /* unparenthesized and/or mixing */
+      }
+      if (!css_container_cond_valid(conds[ci], cond_lens[ci])) {
+        return false;
+      }
+    }
+    return true;
+  }
+  n = css_container_split_connective(query, length, conds, cond_lens,
+                                     MY_CSS_MAX_CONTAINER_CONDS, false);
+  if (n == 0u) {
+    if (css_container_connective_kinds(query, length) >= 2u) {
+      return false; /* unparenthesized connective mixing */
+    }
+    return css_container_cond_valid(query, length);
+  }
+  for (ci = 0u; ci < n; ci++) {
+    if (!css_container_cond_valid(conds[ci], cond_lens[ci])) {
       return false;
     }
   }
@@ -6014,21 +6124,33 @@ bool my_theme_container_matches(const my_theme_t* theme,
   size_t cond_lens[MY_CSS_MAX_CONTAINER_CONDS];
   size_t n, ci;
   bool has_size = false;
+  bool is_or = false;
   if (theme == NULL || container_query == NULL ||
       container_query[0] == '\0') {
     return false;
   }
-  /* R681: an and-only condition list evaluates as a conjunction on one
-   * query container; a single condition degenerates to the R670/R673
-   * paths (merged here). An unsplittable whole string (pure size
-   * or/not compositions) evaluates through the media machinery as
-   * before. */
-  n = css_container_split_and(container_query, strlen(container_query),
-                              conds, cond_lens, MY_CSS_MAX_CONTAINER_CONDS);
-  if (n == 0u) {
-    conds[0] = container_query;
-    cond_lens[0] = strlen(container_query);
-    n = 1u;
+  /* R681/R684: a same-connective condition list (and or or) evaluates
+   * on one query container — a conjunction needs every leg, a
+   * disjunction needs any; a single condition degenerates to the
+   * R670/R673 paths (merged here). An unsplittable whole string (a
+   * leading `not` composition) evaluates through the media machinery
+   * as before. */
+  n = css_container_split_connective(container_query,
+                                     strlen(container_query), conds,
+                                     cond_lens, MY_CSS_MAX_CONTAINER_CONDS,
+                                     true);
+  if (n > 1u) {
+    is_or = true;
+  } else {
+    n = css_container_split_connective(container_query,
+                                       strlen(container_query), conds,
+                                       cond_lens,
+                                       MY_CSS_MAX_CONTAINER_CONDS, false);
+    if (n == 0u) {
+      conds[0] = container_query;
+      cond_lens[0] = strlen(container_query);
+      n = 1u;
+    }
   }
   for (ci = 0u; ci < n; ci++) {
     if (!css_container_query_is_style(conds[ci], cond_lens[ci])) {
@@ -6040,7 +6162,7 @@ bool my_theme_container_matches(const my_theme_t* theme,
    * container (container-type gates size legs only); a list holding a
    * size leg resolves on the nearest size-qualified container so the
    * size legs have a rect to read. The name filters in both shapes;
-   * the nearest qualifying container decides the whole conjunction. */
+   * the nearest qualifying container decides the whole list. */
   while (a != NULL && hops++ < 16u) {
     if (has_size) {
       const my_value_t* type_v = my_theme_get_for_widget(
@@ -6057,7 +6179,9 @@ bool my_theme_container_matches(const my_theme_t* theme,
         uint32_t h = a->rect.h > 0 ? (uint32_t)a->rect.h : 0u;
         /* R683: an inline-size container only exposes its inline axis
          * — a block-axis size leg evaluates to false on it (the
-         * rect.h read was R670's documented approximation). */
+         * rect.h read was R670's documented approximation). R684: the
+         * per-leg gate makes unknown propagation through `or`
+         * spec-exact. */
         bool inline_only = my_str_eq(type, "inline-size");
         for (ci = 0u; ci < n; ci++) {
           bool leg = false;
@@ -6071,24 +6195,34 @@ bool my_theme_container_matches(const my_theme_t* theme,
           } else {
             bool verdict = false;
             leg = css_container_eval_size_query(conds[ci], cond_lens[ci],
-                                               w, h, &verdict) &&
+                                                w, h, &verdict) &&
                   verdict;
           }
-          if (!leg) {
+          if (is_or) {
+            if (leg) {
+              return true;
+            }
+          } else if (!leg) {
             return false;
           }
         }
-        return true;
+        return !is_or;
       }
     } else if (container_name == NULL || container_name[0] == '\0' ||
                css_container_name_matches(theme, a, container_name)) {
       for (ci = 0u; ci < n; ci++) {
-        if (!css_container_style_cond_matches(theme, a, conds[ci],
-                                              cond_lens[ci])) {
+        bool leg =
+            css_container_style_cond_matches(theme, a, conds[ci],
+                                             cond_lens[ci]);
+        if (is_or) {
+          if (leg) {
+            return true;
+          }
+        } else if (!leg) {
           return false;
         }
       }
-      return true;
+      return !is_or;
     }
     a = a->parent;
   }

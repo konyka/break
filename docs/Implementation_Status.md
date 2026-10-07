@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R684 @container or 条件列表（TDD）— 同连接词析取落地：or 拆分（拆分器泛化为按连接词切分）逐腿任一命中求值（容器选择与 and 同规）；无括号 and/or 混排拒（顶层连接词种类检测）；R683"unknown 经 or 保守假"升级为逐腿规范精确传播
+
+- **缺口**(R681 落账"or 混排维持拒——or 语义需容器选择歧义评估",再评估**证伪**：规范上 or 不改变容器选择——查询容器仍由 name/最近合格祖先定,析取在该容器上求值,与 and 完全同构):`style(--accent: red) or (min-width: 400px)` 被"中缀异连接词→0"路径回退到整串 legacy——style 开头走单条件形态校验拒;R683 落账的"纯 size or 整串在 inline-size 上保守假"同源（整串 media 路径无逐腿轴门）。
+- **方案**(拆分器泛化+析取求值,存储/盖戳零改):① **拆分器泛化** `css_container_split_connective(query, conds, lens, max, connective_or)`——R681 的 split_and 加参:遇顶层指定连接词切、遇异连接词/中缀 not → 0;词边界判定修正（"org" 类前缀不误配）;② **校验** prelude_valid 先 or 拆分:n>1 → or 模式——每肢须**单条件**（肢内 and 拆分 >1 → 无括号混排拒;肢前导 not 拒——`not` 仅限单条件头,media 取反域）;n≤1 → and 路径;两拆分皆 0 → **顶层连接词种类检测** `css_container_connective_kinds`（≥2 种=无括号混排/中缀 not → 拒,单种/无 → legacy 整串——前导 not 单条件保持 media 取反现状）;③ **匹配** my_theme_container_matches 先 or 拆分（is_or）——容器资格判定与 and 同规（含 size 腿→最近 type+名 合格容器,纯 style→名过滤祖先）,合格容器上**任一肢真即真、全假即假**;逐腿轴门控（R683）自然生效——inline-size 上 block 肢假但 inline 肢真 → or 命中（**规范精确 unknown 传播**,整串保守假废止）。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R673/R681 契约段（or 拒景改 or+and 无括号混排拒钉子——R684 放开 or,契约变更文档化）——解析面四景：混排 or 悬置盖戳全文/纯 style or 悬置/无括号 and/or 混排拒/or 肢前导 not 拒;匹配面五景：size 腿单独满足/style 腿单独满足（300px）/双假不命中（外层声明保）/**轴传播命中**（inline-size+w500+h400:or(min-width,min-height) 命中——R683 保守假升级实证）/全假不命中。**RED 如实红**（行 3134:sheet NULL——or 混排拒）;GREEN **189/189**(188+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R663 注入路径（features_valid 整串+media 求值）零扰动、R670–R683 组全绿。
+- **边界**：or 肢须单条件（`(a) and (b) or (c)` 无括号混排拒——CSS 语法本就要求括号,规范同约）;`not` 仍限单条件头（`not (a) or (b)` 拒——not 对 or 链的分配语义属 media 机制扩展,让渡）;连接词需白空间分隔（与 and 同约）;R683 剩余让渡收窄为：前导 not 单条件整串在 inline-size 上仍保守假（media 整串路径无轴感知,单列）;R611 AMD 基线不动。
+
 ## 本轮更新：R683 inline-size 容器轴语义（TDD）— inline 轴容器只暴露 inline 维：block 轴 size 腿（height 族/aspect-ratio/orientation）在其上求值为假，size 容器两轴照常；R670"height 照 rect 求值"近似废止
 
 - **缺口**(R670 落账"inline-size 容器的轴语义未细分（height 特性照 rect 求值,文档化近似"):`container-type: inline-size` 容器上 `(min-height: 500px)` 照 rect.h 求值命中——规范上 inline 轴容器不建立 block 维 containment,height 族查询应评估为假（unknown 参与 and 即假）。
