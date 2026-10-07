@@ -365,6 +365,49 @@ TEST(echart_adapter_fills_event_indexes_from_chart) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_fills_non_cartesian_hover_indexes) {
+  static const double pie_values[] = {10.0, 20.0, 30.0};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_PIE,
+                                     pie_values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_option_input_t input = {"pie", NULL, 0u, &series, 1u, false,
+                                     false, false, 0.0, 0.0, false, 0u, 0u,
+                                     false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL,
+                                     0u, NULL, 0u, NULL, 0u,
+                                     MY_ECHART_TRANSFORM_NONE, NULL,
+                                     MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+  my_echart_option_t option;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_PIE);
+  my_echart_adapter_t* adapter;
+  my_echart_event_t event;
+  my_event_t native;
+
+  my_echart_option_init(&option, NULL);
+  ASSERT_NOT_NULL(chart);
+  ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+  native = my_event_init(MY_EVENT_POINTER_MOVE);
+  native.u.pointer.x = 220;
+  native.u.pointer.y = 90;
+  native.u.pointer.button = 1u;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.data_index, 1u);
+  ASSERT_EQ(event.category_index, 1u);
+  ASSERT_EQ(event.series_index, 0u);
+  native.u.pointer.x = -5;
+  native.u.pointer.y = -5;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.data_index, MY_ECHART_INDEX_NONE);
+  ASSERT_EQ(event.category_index, MY_ECHART_INDEX_NONE);
+  ASSERT_EQ(event.series_index, MY_ECHART_INDEX_NONE);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+  my_echart_option_free(&option);
+}
+
 TEST(echart_adapter_sync_model_reprojects_after_action) {
   static const double values[] = {1.0, 2.0};
   my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u, 0u, 0u, NULL, true, NULL};
@@ -497,5 +540,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_projects_visual_map_state);
   RUN_TEST(echart_adapter_projects_annotations);
   RUN_TEST(echart_adapter_fills_event_indexes_from_chart);
+  RUN_TEST(echart_adapter_fills_non_cartesian_hover_indexes);
   RUN_TEST(echart_adapter_sync_model_reprojects_after_action);
 TEST_MAIN_END()

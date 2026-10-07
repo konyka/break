@@ -106,10 +106,110 @@ TEST(chart_group_rejects_null_charts) {
   ASSERT_EQ(my_chart_group_leave(NULL), MY_RET_INVALID_PARAMS);
 }
 
+TEST(chart_group_propagates_hover) {
+  static const float values[] = {1, 2, 3};
+  my_widget_t* chart_a = create_chart(values, 3u);
+  my_widget_t* chart_b = create_chart(values, 3u);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart_a);
+  ASSERT_NOT_NULL(chart_b);
+  chart_a->rect.w = 320;
+  chart_a->rect.h = 180;
+  chart_b->rect.w = 320;
+  chart_b->rect.h = 180;
+  ASSERT_EQ(my_chart_group_join(chart_a, 3u), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_join(chart_b, 3u), MY_RET_OK);
+  event.u.pointer.x = 180;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart_a), 1u);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), 1u);
+  ASSERT_EQ(my_chart_group_leave(chart_a), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_leave(chart_b), MY_RET_OK);
+  my_widget_unref(chart_a);
+  my_widget_unref(chart_b);
+}
+
+TEST(chart_group_propagates_hover_clear) {
+  static const float values[] = {1, 2, 3};
+  my_widget_t* chart_a = create_chart(values, 3u);
+  my_widget_t* chart_b = create_chart(values, 3u);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart_a);
+  ASSERT_NOT_NULL(chart_b);
+  chart_a->rect.w = 320;
+  chart_a->rect.h = 180;
+  chart_b->rect.w = 320;
+  chart_b->rect.h = 180;
+  ASSERT_EQ(my_chart_group_join(chart_a, 4u), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_join(chart_b, 4u), MY_RET_OK);
+  event.u.pointer.x = 180;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_OK);
+  event.u.pointer.x = 0;
+  event.u.pointer.y = 0;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart_a), SIZE_MAX);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), SIZE_MAX);
+  ASSERT_EQ(my_chart_group_leave(chart_a), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_leave(chart_b), MY_RET_OK);
+  my_widget_unref(chart_a);
+  my_widget_unref(chart_b);
+}
+
+TEST(chart_group_hover_does_not_affect_ungrouped_chart) {
+  static const float values[] = {1, 2, 3};
+  my_widget_t* chart_a = create_chart(values, 3u);
+  my_widget_t* chart_b = create_chart(values, 3u);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart_a);
+  ASSERT_NOT_NULL(chart_b);
+  chart_a->rect.w = 320;
+  chart_a->rect.h = 180;
+  chart_b->rect.w = 320;
+  chart_b->rect.h = 180;
+  ASSERT_EQ(my_chart_group_join(chart_a, 5u), MY_RET_OK);
+  event.u.pointer.x = 180;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart_a), 1u);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), SIZE_MAX);
+  ASSERT_EQ(my_chart_group_leave(chart_a), MY_RET_OK);
+  my_widget_unref(chart_a);
+  my_widget_unref(chart_b);
+}
+
+TEST(chart_group_clears_shorter_peer_hover) {
+  static const float long_values[] = {1, 2, 3, 4, 5};
+  static const float short_values[] = {1, 2};
+  my_widget_t* chart_a = create_chart(long_values, 5u);
+  my_widget_t* chart_b = create_chart(short_values, 2u);
+
+  ASSERT_NOT_NULL(chart_a);
+  ASSERT_NOT_NULL(chart_b);
+  ASSERT_EQ(my_chart_group_join(chart_a, 6u), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_join(chart_b, 6u), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_hover_index(chart_a, 4u), MY_RET_OK);
+  my_chart_group_hover_notify(chart_a, 4u);
+  ASSERT_EQ(my_chart_get_hover_index(chart_a), 4u);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), SIZE_MAX);
+  ASSERT_EQ(my_chart_group_leave(chart_a), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_leave(chart_b), MY_RET_OK);
+  my_widget_unref(chart_a);
+  my_widget_unref(chart_b);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_group_propagates_data_zoom);
   RUN_TEST(chart_group_leave_stops_data_zoom_propagation);
   RUN_TEST(chart_groups_are_isolated_and_rejoin_moves_membership);
   RUN_TEST(chart_group_rejects_null_charts);
   RUN_TEST(chart_group_auto_leaves_on_destroy);
+  RUN_TEST(chart_group_propagates_hover);
+  RUN_TEST(chart_group_propagates_hover_clear);
+  RUN_TEST(chart_group_hover_does_not_affect_ungrouped_chart);
+  RUN_TEST(chart_group_clears_shorter_peer_hover);
 TEST_MAIN_END()

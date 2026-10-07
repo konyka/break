@@ -249,6 +249,9 @@ size_t my_chart_group_size(unsigned group_id);
 void my_chart_group_notify(my_widget_t* chart, size_t start, size_t end);
 /** @brief Notify peer charts after clearing dataZoom. */
 void my_chart_group_clear_notify(my_widget_t* chart);
+/** @brief Notify peer charts after changing hover category. */
+void my_chart_group_hover_notify(my_widget_t* chart, size_t index);
+my_ret_t my_chart_set_hover_index(my_widget_t* chart, size_t index);
 my_ret_t my_chart_set_axis_title(my_widget_t* chart, const char* title);
 my_ret_t my_chart_set_grid_line_count(my_widget_t* chart, u32 count);
 u32 my_chart_get_grid_line_count(const my_widget_t* chart);

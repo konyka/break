@@ -122,3 +122,20 @@ void my_chart_group_clear_notify(my_widget_t* chart) {
   }
   s_notify_depth--;
 }
+
+void my_chart_group_hover_notify(my_widget_t* chart, size_t index) {
+  my_chart_group_t* group;
+  size_t i;
+
+  if (chart == NULL || s_notify_depth > 0u) return;
+  group = chart_group_for_chart(chart, NULL);
+  if (group == NULL) return;
+  s_notify_depth++;
+  for (i = 0u; i < group->count; i++) {
+    if (group->charts[i] != chart) {
+      if (my_chart_set_hover_index(group->charts[i], index) != MY_RET_OK)
+        (void)my_chart_set_hover_index(group->charts[i], SIZE_MAX);
+    }
+  }
+  s_notify_depth--;
+}

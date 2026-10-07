@@ -48,8 +48,8 @@ static void chart_hover_leave(void* ctx, const char* event, void* data) {
   (void)event;
   (void)data;
   if (chart != NULL && chart->hover_index != CHART_HOVER_NONE) {
-    chart->hover_index = CHART_HOVER_NONE;
-    my_widget_invalidate((my_widget_t*)chart, NULL);
+    (void)my_chart_set_hover_index((my_widget_t*)chart, CHART_HOVER_NONE);
+    my_chart_group_hover_notify((my_widget_t*)chart, CHART_HOVER_NONE);
   }
 }
 
@@ -1598,7 +1598,8 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
     float total = 0.0f;
     float angle;
     if (distance > radius) {
-      chart->hover_index = CHART_HOVER_NONE;
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
       return MY_RET_NOT_SUPPORTED;
     }
     for (size_t s = 0u; s < chart->series_count; s++) {
@@ -1622,8 +1623,8 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       index = i;
     }
     if (chart->hover_index != index) {
-      chart->hover_index = index;
-      my_widget_invalidate(widget, NULL);
+      (void)my_chart_set_hover_index(widget, index);
+      my_chart_group_hover_notify(widget, index);
     }
     return MY_RET_OK;
   }
@@ -1651,6 +1652,7 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       if (chart->hover_index != CHART_HOVER_NONE) {
         chart->hover_index = CHART_HOVER_NONE;
         my_widget_invalidate(widget, NULL);
+        my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
       }
       return MY_RET_NOT_SUPPORTED;
     }
@@ -1661,6 +1663,7 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   if (chart->hover_index != index) {
     chart->hover_index = index;
     my_widget_invalidate(widget, NULL);
+    my_chart_group_hover_notify(widget, index);
   }
   return MY_RET_OK;
 }
@@ -2246,6 +2249,16 @@ size_t my_chart_get_mark_area_count(const my_widget_t* widget) {
 size_t my_chart_get_hover_index(const my_widget_t* widget) {
   const my_chart_t* chart = chart_const_cast(widget);
   return chart != NULL ? chart->hover_index : CHART_HOVER_NONE;
+}
+
+my_ret_t my_chart_set_hover_index(my_widget_t* widget, size_t index) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL ||
+      (index != CHART_HOVER_NONE && index >= chart_category_count(chart)))
+    return MY_RET_INVALID_PARAMS;
+  chart->hover_index = index;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
 }
 
 size_t chart_grid_at(const my_widget_t* widget, int32_t local_x,

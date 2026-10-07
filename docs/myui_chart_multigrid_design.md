@@ -121,8 +121,9 @@ flag. The tooltip text remains on the hovered grid. `chart_grid_at()` scans
 visible grids front-to-back and is exposed for host-side use.
 
 Charts can join a fixed-capacity weak group with `my_chart_group_join()`.
-A dataZoom update, including a clear/reset, broadcasts to the other group
-members. Chart destruction automatically removes the weak registry entry.
+A dataZoom update, including a clear/reset, and hover changes broadcast to the
+other group members. Chart destruction automatically removes the weak registry
+entry.
 
 ## Non-Goals
 
