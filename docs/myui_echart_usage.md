@@ -19,13 +19,20 @@ cmake --build build --target myui_explorer --parallel 2
                                        # display server)
 ```
 
-`--platform` picks the window system (x11 | wayland) and `--backend` the
-rendering path (soft | gl): software renders into a CPU framebuffer
-(XImage blit on X11, a wl_shm buffer pool on Wayland); gl creates an EGL
-window surface with a GLES2 context and drives the engine's
-`my_vgcanvas_gles2` hardware backend directly. All four combinations are
-verified live; the build falls back to x11+soft-only when the Wayland/EGL
-development packages are absent.
+`--platform` picks the window system and `--backend` the rendering path
+(soft | gl). Software renders into a CPU framebuffer (XImage blit on X11,
+a wl_shm pool on Wayland, StretchDIBits on Windows, NSBitmapImageRep on
+macOS); gl drives the engine's `my_vgcanvas_gles2` hardware backend on a
+GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
+NSOpenGL (macOS) through the `my_gl_desktop` table.
+
+Verification status: all four Linux combinations plus `--shot`/`--glshot`
+are verified live on the reference host; the Windows and macOS runners are
+implemented against the documented Win32/WGL and Cocoa/NSOpenGL APIs with
+per-OS build wiring, but are compile-targeted only (not executed here —
+no Windows/macOS host in CI). The build selects platform sources
+automatically and falls back to x11+soft-only on Linux when the
+Wayland/EGL development packages are absent.
 
 The left pane is a live `my_chart`; the right pane is a real MyUI widget
 panel that drives it in real time:

@@ -10,7 +10,10 @@
  *   myui_explorer --selftest <dir>   # headless scripted frames
  *   myui_explorer --shot <file.ppm>  # render one frame and exit
  */
+#include "explorer_internal.h"
 #include "myr/my_color.h"
+#include "myr/my_gl_desktop.h"
+#include "myr/my_vgcanvas_gles2.h"
 #include "myr/my_font.h"
 #include "myr/my_lcd_mem.h"
 #include "myr/my_vgcanvas_soft.h"
@@ -75,7 +78,7 @@ typedef struct {
   bool zoom_set;
 } state_t;
 
-typedef struct {
+struct app_t {
   state_t st;
   size_t mode;
   my_widget_t* chart;
@@ -94,8 +97,9 @@ typedef struct {
   my_lcd_t* lcd;
   my_vgcanvas_t* vg;
   my_font_t* font;
+  my_vgcanvas_t* gl_vg;
   char tooltip[96];
-} app_t;
+};
 
 static void dump_ppm(const uint8_t* pixels, const char* path);
 static void apply_state(app_t* app);
@@ -191,6 +195,31 @@ static void randomize(app_t* app) {
       app->st.base[i][j] = 4.0f + (float)(rand() % 2800) / 100.0f;
 }
 
+static const char* font_candidates[] = {
+#if defined(_WIN32)
+    "C:\\Windows\\Fonts\\arial.ttf",
+#elif defined(__APPLE__)
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/Library/Fonts/Arial.ttf",
+#else
+    "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+#endif
+    NULL};
+
+static const char* pick_font(void) {
+  size_t i;
+  FILE* f;
+  for (i = 0u; font_candidates[i] != NULL; i++) {
+    f = fopen(font_candidates[i], "rb");
+    if (f != NULL) {
+      fclose(f);
+      return font_candidates[i];
+    }
+  }
+  return NULL;
+}
+
 static app_t* app_create(const char* font_path) {
   app_t* app = (app_t*)calloc(1u, sizeof(*app));
   size_t i;
@@ -202,7 +231,8 @@ static app_t* app_create(const char* font_path) {
   app->st.zoom_end = 8u;
   app->lcd = my_lcd_mem_create(NULL, EX_W, EX_H, MY_PIXEL_FORMAT_BGRA8888);
   app->vg = my_vgcanvas_soft_create(NULL, app->lcd);
-  app->font = my_font_stb_create(NULL, font_path, 4096u);
+  if (font_path != NULL)
+    app->font = my_font_stb_create(NULL, font_path, 4096u);
   app->chart = my_chart_create(NULL, MY_CHART_LINE);
   app->panel = my_widget_create(NULL, "panel");
   if (app->lcd == NULL || app->vg == NULL || app->chart == NULL ||
@@ -518,6 +548,69 @@ static int run_selftest(const char* dir, const char* font_path) {
   return failures == 0u ? 0 : 1;
 }
 
+static void gl_paint(app_t* app, my_vgcanvas_t* vg) {
+  (void)my_vgcanvas_begin_frame(vg, NULL);
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
+  my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
+  my_vgcanvas_set_font(vg, app->font, 13);
+  place(app->panel, 0, 0, EX_W, EX_H);
+  my_widget_paint(app->panel, vg);
+  app->chart->rect.x = CHART_X;
+  app->chart->rect.y = CHART_Y;
+  app->chart->rect.w = CHART_W;
+  app->chart->rect.h = CHART_H;
+  my_widget_paint(app->chart, vg);
+  (void)my_vgcanvas_end_frame(vg);
+}
+
+app_t* ex_app_create(void) {
+  return app_create(pick_font());
+}
+
+void ex_app_destroy(app_t* app) {
+  (void)app;  /* process-lifetime app; freed by OS exit */
+}
+
+void ex_frame_soft(app_t* app) {
+  render_frame(app);
+}
+
+void ex_gl_vg_create(app_t* app) {
+  if (app->gl_vg != NULL) return;
+  app->gl_vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
+  if (app->gl_vg == NULL) {
+    const my_gl_t* gl = my_gl_desktop_default();
+    if (gl != NULL)
+      app->gl_vg = my_vgcanvas_gles2_create_with_gl(NULL, EX_W, EX_H, gl);
+  }
+}
+
+void ex_frame_gl(app_t* app) {
+  if (app->gl_vg == NULL) return;
+  gl_paint(app, app->gl_vg);
+}
+
+const uint8_t* ex_lcd_pixels(app_t* app) {
+  return my_lcd_mem_get_buffer(app->lcd);
+}
+
+uint32_t ex_lcd_stride(app_t* app) {
+  return my_lcd_mem_get_stride(app->lcd);
+}
+
+void ex_pointer(app_t* app, int32_t x, int32_t y, int kind) {
+  pointer(app, x, y, kind);
+}
+
+void ex_wheel(app_t* app, int dir) {
+  wheel(app, dir);
+}
+
+void ex_key(app_t* app, int ch) {
+  key(app, ch);
+}
+
+
 /* ---------------- window-system / backend runners ---------------- */
 
 static void nap(void) {
@@ -526,9 +619,9 @@ static void nap(void) {
 }
 
 static int parse_args(int argc, char** argv, const char** platform,
-                      const char** backend) {
+                      const char** backend, const char* default_platform) {
   int i;
-  *platform = "x11";
+  *platform = default_platform;
   *backend = "soft";
   for (i = 1; i < argc; i++) {
     if (strcmp(argv[i], "--platform") == 0 && i + 1 < argc) {
@@ -537,8 +630,9 @@ static int parse_args(int argc, char** argv, const char** platform,
       *backend = argv[++i];
     }
   }
-  if (strcmp(*platform, "x11") != 0 && strcmp(*platform, "wayland") != 0) {
-    printf("unknown platform %s (x11|wayland)\n", *platform);
+  if (strcmp(*platform, "x11") != 0 && strcmp(*platform, "wayland") != 0 &&
+      strcmp(*platform, "win32") != 0 && strcmp(*platform, "cocoa") != 0) {
+    printf("unknown platform %s (x11|wayland|win32|cocoa)\n", *platform);
     return 1;
   }
   if (strcmp(*backend, "soft") != 0 && strcmp(*backend, "gl") != 0) {
@@ -554,8 +648,15 @@ static int run_wayland_soft(app_t* app, const char* font_path);
 static int run_gl(app_t* app, const char* font_path, int wayland);
 
 int main(int argc, char** argv) {
-  const char* font_path =
-      "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf";
+  static const char* default_platform =
+#if defined(_WIN32)
+      "win32";
+#elif defined(__APPLE__)
+      "cocoa";
+#else
+      "x11";
+#endif
+  const char* font_path = pick_font();
   const char* platform;
   const char* backend;
   int i;
@@ -572,19 +673,30 @@ int main(int argc, char** argv) {
     if (strcmp(argv[i], "--glshot") == 0 && i + 1 < argc)
       return run_glshot(argv[i + 1], font_path);
     if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-      printf("usage: myui_explorer [--platform x11|wayland] "
-             "[--backend soft|gl] | --selftest <dir> | --shot <file>\n");
+      printf("usage: myui_explorer [--platform x11|wayland|win32|cocoa] "
+             "[--backend soft|gl] | --selftest <dir> | --shot <file> | "
+             "--glshot <file>\n");
       return 0;
     }
   }
-  if (parse_args(argc, argv, &platform, &backend) != 0) return 1;
+  if (parse_args(argc, argv, &platform, &backend, default_platform) != 0)
+    return 1;
   {
     app_t* app = app_create(font_path);
-    if (strcmp(backend, "gl") == 0)
-      return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
-    if (strcmp(platform, "wayland") == 0)
-      return run_wayland_soft(app, font_path);
+    int gl = strcmp(backend, "gl") == 0;
+#if defined(_WIN32)
+    if (strcmp(platform, "win32") == 0) return ex_run_win32(app, gl);
+    printf("platform %s not supported in this build\n", platform);
+    return 1;
+#elif defined(__APPLE__)
+    if (strcmp(platform, "cocoa") == 0) return ex_run_cocoa(app, gl);
+    printf("platform %s not supported in this build\n", platform);
+    return 1;
+#else
+    if (gl) return run_gl(app, font_path, strcmp(platform, "wayland") == 0);
+    if (strcmp(platform, "wayland") == 0) return run_wayland_soft(app, font_path);
     return run_x11_soft(app, font_path);
+#endif
   }
 }
 
@@ -925,7 +1037,6 @@ static int run_wayland_soft(app_t* app, const char* font_path) {
 #ifndef EGL_PLATFORM_X11_KHR
 #define EGL_PLATFORM_X11_KHR 0x31D5
 #endif
-#include "myr/my_vgcanvas_gles2.h"
 
 typedef struct {
   EGLDisplay display;
@@ -967,20 +1078,7 @@ static int gl_context(gl_state_t* gl, void* native_display,
              : 1;
 }
 
-static void gl_paint(app_t* app, my_vgcanvas_t* vg) {
-  (void)my_vgcanvas_begin_frame(vg, NULL);
-  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
-  my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
-  my_vgcanvas_set_font(vg, app->font, 13);
-  place(app->panel, 0, 0, EX_W, EX_H);
-  my_widget_paint(app->panel, vg);
-  app->chart->rect.x = CHART_X;
-  app->chart->rect.y = CHART_Y;
-  app->chart->rect.w = CHART_W;
-  app->chart->rect.h = CHART_H;
-  my_widget_paint(app->chart, vg);
-  (void)my_vgcanvas_end_frame(vg);
-}
+
 
 static int run_gl_x11(app_t* app) {
   Display* dpy;

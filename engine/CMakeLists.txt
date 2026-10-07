@@ -1124,12 +1124,14 @@ add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_
 # Interactive explorer: live chart driven by real widgets with switchable
 # backends (software / GL) and window systems (X11 / Wayland), plus a
 # headless --selftest mode that renders a scripted interaction sequence.
+if(NOT WIN32 AND NOT APPLE)
 find_program(WAYLAND_SCANNER wayland-scanner)
 find_package(PkgConfig QUIET)
 if(PkgConfig_FOUND)
   pkg_check_modules(EX_WAYLAND QUIET wayland-client wayland-egl egl)
 endif()
-if(WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
+endif()
+if(NOT WIN32 AND NOT APPLE AND WAYLAND_SCANNER AND EX_WAYLAND_FOUND)
   set(EX_EXPLORER_PLATFORMS "x11+wayland, soft+gl")
   execute_process(
       COMMAND ${WAYLAND_SCANNER} client-header
@@ -1151,6 +1153,13 @@ else()
   set(EX_EXPLORER_DEFS EX_EXPLORER_NO_WAYLAND=1)
   set(EX_EXPLORER_LIBS ${X11_LIBRARIES})
   set(EX_EXPLORER_INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+endif()
+if(WIN32)
+  list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_win32.c)
+  list(APPEND EX_EXPLORER_LIBS gdi32 user32 opengl32)
+elseif(APPLE)
+  list(APPEND EX_EXPLORER_SOURCES tools/ex_platform_macos.m)
+  list(APPEND EX_EXPLORER_LIBS "-framework Cocoa" "-framework OpenGL")
 endif()
 add_executable(myui_explorer ${EX_EXPLORER_SOURCES})
 target_include_directories(myui_explorer PRIVATE ${EX_EXPLORER_INCLUDES})
