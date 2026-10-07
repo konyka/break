@@ -1113,6 +1113,14 @@ target_include_directories(echarts_demo PRIVATE
 target_link_libraries(echarts_demo PRIVATE myui_core m Threads::Threads)
 add_test(NAME echarts_demo_smoke COMMAND echarts_demo ${CMAKE_CURRENT_BINARY_DIR})
 
+# Headless core-widget demo: buttons, labels, inputs, sliders, and more.
+add_executable(myui_widgets_demo tools/myui_widgets_demo.c)
+target_include_directories(myui_widgets_demo PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+)
+target_link_libraries(myui_widgets_demo PRIVATE myui_core m Threads::Threads)
+add_test(NAME myui_widgets_demo_smoke COMMAND myui_widgets_demo ${CMAKE_CURRENT_BINARY_DIR})
+
 # Strict, bounded verifier for versioned SA dictionary golden corpora.
 add_executable(verify_myui_sa_dictionary tools/verify_myui_sa_dictionary.c)
 target_include_directories(verify_myui_sa_dictionary PRIVATE

@@ -5,6 +5,7 @@
  *
  * Usage: echarts_demo [output_dir]   (default: .)
  */
+#include "myr/my_font.h"
 #include "myr/my_lcd_mem.h"
 #include "myr/my_vgcanvas_soft.h"
 #include "myui/echarts/my_echart.h"
@@ -24,6 +25,7 @@
 
 typedef void (*scene_fn)(const char* path);
 
+static my_font_t* g_font;
 static size_t g_colored;
 
 static void dump_ppm(const uint8_t* pixels, uint32_t w, uint32_t h,
@@ -566,6 +568,9 @@ int main(int argc, char** argv) {
       {"28_json_option", scene_json_option},
       {"29_animation", scene_animation}};
   const char* dir = argc > 1 ? argv[1] : ".";
+  g_font = my_font_stb_create(NULL,
+      "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
+      4096u);
   size_t failures = 0u;
   size_t i;
   for (i = 0u; i < sizeof(scenes) / sizeof(scenes[0]); i++) {
