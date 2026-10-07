@@ -1791,6 +1791,202 @@ TEST(css_container_style_queries_resolve_at_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_container_style_query_registered_computed_comparison)
+{
+  /* R677: a style() query against a REGISTERED custom property
+   * compares computed values — both sides parse as one full value of
+   * the registered primitive's type and compare typed (color bits,
+   * numeric INT32/DOUBLE cross-type equality, quoted strings compare
+   * by content). An unregistered property keeps the
+   * whitespace-normalized raw-text comparison: red vs #f00 stay
+   * distinct there. */
+  const char* color_hit =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "panel { --accent: #f00; }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  const char* color_miss =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "panel { --accent: #f00; }"
+      "@container style(--accent: blue) { button { color: #010203; } }";
+  const char* number_cross_type =
+      "@property --n { syntax: \"<number>\"; inherits: true;"
+      " initial-value: 0; }"
+      "panel { --n: 1.0; }"
+      "@container style(--n: 1) { button { color: #010203; } }";
+  const char* malformed_query =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: red; }"
+      "panel { --accent: red; }"
+      "@container style(--accent: bogus) { button { color: #010203; } }";
+  const char* string_quote_forms =
+      "@property --s { syntax: \"<string>\"; inherits: true;"
+      " initial-value: \"none\"; }"
+      "panel { --s: 'hi'; }"
+      "@container style(--s: \"hi\") { button { color: #010203; } }";
+  const char* unregistered_raw =
+      "panel { --plain: red; }"
+      "@container style(--plain: #f00) { button { color: #010203; } }";
+  const char* initial_typed =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #f00; }"
+      "@container style(--accent: red) { button { color: #010203; } }";
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* registered <color>: stored #f00 and queried red are the same
+   * computed color. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, color_hit,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a different computed color still misses. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, color_miss,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* registered <number>: 1.0 and 1 compare numerically across
+   * INT32/DOUBLE. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, number_cross_type,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a value that does not parse as the registered type never matches. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, malformed_query,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* registered <string>: single- and double-quoted forms hold the
+   * same computed string. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, string_quote_forms,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* unregistered: raw-text comparison — red vs #f00 stay distinct. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, unregistered_raw,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                      "fg_color") == NULL);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* an unset registered property falls to its initial value, which
+   * participates in the typed comparison (#f00 == red). */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_theme_load_css_ex(theme, initial_typed,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL, "fg_color");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_get_uint32(value), 0x010203FFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -7792,6 +7988,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
     RUN_TEST(css_container_style_queries_resolve_at_match_time);
+    RUN_TEST(css_container_style_query_registered_computed_comparison);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

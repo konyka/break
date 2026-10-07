@@ -3639,7 +3639,7 @@ static bool css_container_style_value_eq(const char* a, size_t a_length,
                                          const char* b, size_t b_length) {
   size_t i = 0u, j = 0u;
   while (a_length > 0u &&
-         (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')) {
+          (*a == ' ' || *a == '\t' || *a == '\r' || *a == '\n')) {
     a++;
     a_length--;
   }
@@ -3668,6 +3668,100 @@ static bool css_container_style_value_eq(const char* a, size_t a_length,
       return true;
     }
   }
+}
+
+/* R677: computed-value equality for a style() query against a
+ * REGISTERED property. Both sides must parse as one full value of the
+ * registered primitive's type and then compare typed: <color> bits,
+ * numeric INT32/DOUBLE cross-type equality, <string> bytes with the
+ * quoted form required on both sides. A side that fails to parse, or a
+ * type mismatch against the primitive, never equals. Syntaxes without
+ * a probeable computed form (<percentage>, `*`, unknown strings) keep
+ * the whitespace-normalized raw-text comparison. */
+static size_t css_container_style_first_nonspace(const char* s,
+                                                 size_t length) {
+  size_t i = 0u;
+  while (i < length && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' ||
+                        s[i] == '\n')) {
+    i++;
+  }
+  return i;
+}
+
+static bool css_container_style_typed_eq(const char* syntax, const char* a,
+                                         size_t a_length, const char* b,
+                                         size_t b_length) {
+  css_p_t pa, pb;
+  my_value_t va, vb;
+  bool ok = false;
+  if (syntax == NULL ||
+      (!my_str_eq(syntax, "<color>") && !my_str_eq(syntax, "<length>") &&
+       !my_str_eq(syntax, "<number>") && !my_str_eq(syntax, "<integer>") &&
+       !my_str_eq(syntax, "<string>"))) {
+    return css_container_style_value_eq(a, a_length, b, b_length);
+  }
+  my_value_init(&va, NULL);
+  my_value_init(&vb, NULL);
+  memset(&pa, 0, sizeof(pa));
+  pa.s = a;
+  pa.len = a_length;
+  pa.line = 1;
+  pa.col = 1;
+  memset(&pb, 0, sizeof(pb));
+  pb.s = b;
+  pb.len = b_length;
+  pb.line = 1;
+  pb.col = 1;
+  c_ws(&pa);
+  c_ws(&pb);
+  if (css_value(&pa, &va) && css_value(&pb, &vb)) {
+    c_ws(&pa);
+    c_ws(&pb);
+    if (c_peek(&pa) < 0 && c_peek(&pb) < 0) {
+      if (my_str_eq(syntax, "<color>")) {
+        ok = my_value_type(&va) == MY_VALUE_UINT32 &&
+             my_value_type(&vb) == MY_VALUE_UINT32 &&
+             my_value_get_uint32(&va) == my_value_get_uint32(&vb);
+      } else if (my_str_eq(syntax, "<integer>")) {
+        ok = my_value_type(&va) == MY_VALUE_INT32 &&
+             my_value_type(&vb) == MY_VALUE_INT32 &&
+             my_value_get_int32(&va) == my_value_get_int32(&vb);
+      } else if (my_str_eq(syntax, "<string>")) {
+        size_t fa = css_container_style_first_nonspace(a, a_length);
+        size_t fb = css_container_style_first_nonspace(b, b_length);
+        const char* sa;
+        const char* sb;
+        ok = my_value_type(&va) == MY_VALUE_STR &&
+             my_value_type(&vb) == MY_VALUE_STR &&
+             (sa = my_value_get_str(&va)) != NULL &&
+             (sb = my_value_get_str(&vb)) != NULL && my_str_eq(sa, sb) &&
+             fa < a_length && fb < b_length &&
+             (a[fa] == '\'' || a[fa] == '"') &&
+             (b[fb] == '\'' || b[fb] == '"');
+      } else { /* <length>/<number>: numeric cross-type equality */
+        double da = 0.0, db = 0.0;
+        bool na = false, nb = false;
+        if (my_value_type(&va) == MY_VALUE_INT32) {
+          da = (double)my_value_get_int32(&va);
+          na = true;
+        } else if (my_value_type(&va) == MY_VALUE_DOUBLE) {
+          da = my_value_get_double(&va);
+          na = true;
+        }
+        if (my_value_type(&vb) == MY_VALUE_INT32) {
+          db = (double)my_value_get_int32(&vb);
+          nb = true;
+        } else if (my_value_type(&vb) == MY_VALUE_DOUBLE) {
+          db = my_value_get_double(&vb);
+          nb = true;
+        }
+        ok = na && nb && da == db;
+      }
+    }
+  }
+  my_value_reset(&va);
+  my_value_reset(&vb);
+  return ok;
 }
 
 /* R663: container query phase-1 validation — every feature name in the
@@ -5481,7 +5575,8 @@ bool my_theme_container_matches(const my_theme_t* theme,
    * filters. The custom property resolves on the nearest qualifying
    * ancestor through the var() machinery (own cascade → DOM
    * inheritance, registered inherits/initial honored) and compares as
-   * whitespace-normalized raw text. */
+   * whitespace-normalized raw text. R677: a registered property
+   * compares computed values instead (typed by its syntax primitive). */
   if (css_container_query_is_style(container_query,
                                    strlen(container_query))) {
     char prop[MY_STYLE_KEY_LEN];
@@ -5508,6 +5603,18 @@ bool my_theme_container_matches(const my_theme_t* theme,
                                 (size_t)ref_length, subst, sizeof(subst),
                                 &subst_length, visiting, 0u, 0u)) {
           return false;
+        }
+        /* R677: a registered property compares computed values — the
+         * registered primitive types both sides; an unregistered
+         * property keeps the whitespace-normalized raw-text verdict. */
+        {
+          const my_theme_property_def_t* def =
+              css_theme_property_def(theme, prop);
+          if (def != NULL) {
+            return css_container_style_typed_eq(def->syntax, subst,
+                                                subst_length, want,
+                                                want_length);
+          }
         }
         return css_container_style_value_eq(subst, subst_length, want,
                                             want_length);
