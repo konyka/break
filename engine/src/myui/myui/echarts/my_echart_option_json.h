@@ -15,7 +15,13 @@ typedef struct my_echart_json_doc_t my_echart_json_doc_t;
  * {data:[{yAxisRange:[min,max],name,itemStyle:{color}}]}, and top-level
  * dataset {source:{dimension:[numeric,...]}}. Transforms are top-level
  * sort {config:{dimension,order:asc|desc}} or filter
- * {config:{dimension,op:eq|ne|gt|ge|lt|le,value}}. */
+ * {config:{dimension,op:eq|ne|gt|ge|lt|le,value}}. Grid descriptors accept
+ * axisCount (1..3, default 2) and yAxis either as {min,max}, which sets the
+ * range for axis 0, or as an array of up to axisCount entries. Array entries
+ * are indexed by axis; an object containing both min and max sets an explicit
+ * range, while null or an object missing either field leaves that axis
+ * automatic. An array longer than axisCount and axisCount outside 1..3 are
+ * semantic errors. */
 my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len,
                                                const my_allocator_t* allocator);
 /** @brief Borrow the owned option view. */

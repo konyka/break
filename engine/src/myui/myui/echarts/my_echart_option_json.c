@@ -276,6 +276,18 @@ static bool parse_grids(my_echart_json_doc_t* d, my_conf_node_t* n) {
   for (i = 0u; i < len; ++i) {
     my_conf_node_t* g = child(n, i); if (!grid_value(my_conf_get(g,"left"), &d->grids[i].left) || !grid_value(my_conf_get(g,"top"), &d->grids[i].top) || !grid_value(my_conf_get(g,"width"), &d->grids[i].width) || !grid_value(my_conf_get(g,"height"), &d->grids[i].height)) return false;
     d->grids[i].axis_count = 2u;
+    {
+      my_conf_node_t* axis_count = my_conf_get(g, "axisCount");
+      size_t parsed_axis_count;
+      if (axis_count != NULL) {
+        if (!size_number(axis_count, &parsed_axis_count) || parsed_axis_count < 1u ||
+            parsed_axis_count > MY_ECHART_MAX_AXES_PER_GRID) {
+          set_error(d, "invalid grid axis count");
+          return false;
+        }
+        d->grids[i].axis_count = parsed_axis_count;
+      }
+    }
     my_conf_node_t* si = my_conf_get(g, "seriesIndices");
     if (si != NULL && my_conf_type(si) == MY_CONF_ARRAY) {
       size_t* indices;
@@ -292,7 +304,27 @@ static bool parse_grids(my_echart_json_doc_t* d, my_conf_node_t* n) {
       d->grid_index_count += ilen;
       d->grids[i].series_count = ilen;
     }
-    y = my_conf_get(g, "yAxis"); if (y != NULL && number(my_conf_get(y,"min"), &d->grids[i].axis_min[0]) && number(my_conf_get(y,"max"), &d->grids[i].axis_max[0])) { d->grids[i].axis_range_set[0] = true; }
+    y = my_conf_get(g, "yAxis");
+    if (y != NULL && my_conf_type(y) == MY_CONF_ARRAY) {
+      ilen = my_conf_child_count(y);
+      if (ilen > d->grids[i].axis_count || ilen > MY_ECHART_MAX_AXES_PER_GRID) {
+        set_error(d, "too many grid axis ranges");
+        return false;
+      }
+      for (j = 0u; j < ilen; ++j) {
+        my_conf_node_t* range = child(y, j);
+        double min_value, max_value;
+        if (range != NULL && my_conf_type(range) == MY_CONF_OBJECT &&
+            number(my_conf_get(range, "min"), &min_value) &&
+            number(my_conf_get(range, "max"), &max_value)) {
+          d->grids[i].axis_min[j] = min_value;
+          d->grids[i].axis_max[j] = max_value;
+          d->grids[i].axis_range_set[j] = true;
+        }
+      }
+    } else if (y != NULL && number(my_conf_get(y,"min"), &d->grids[i].axis_min[0]) && number(my_conf_get(y,"max"), &d->grids[i].axis_max[0])) {
+      d->grids[i].axis_range_set[0] = true;
+    }
   }
   for (i = 0u; i < len; ++i)
     if (d->grids[i].series_count > 0u)

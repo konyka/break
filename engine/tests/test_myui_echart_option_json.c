@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #include "myui/echarts/my_echart_option.h"
 #include "myui/echarts/my_echart_option_json.h"
@@ -43,6 +44,7 @@ TEST(echart_json_happy_path) {
   ASSERT_EQ(input->grid_count, 1u);
   ASSERT_FLOAT_EQ((float)input->grids[0].left, 0.1f, 1e-6f);
   ASSERT_EQ(input->grids[0].series_count, 2u);
+  ASSERT_EQ(input->grids[0].axis_count, 2u);
   ASSERT_TRUE(input->grids[0].axis_range_set[0]);
   ASSERT_EQ(my_echart_option_validate(input), MY_RET_OK);
   my_echart_option_init(&copy, NULL);
@@ -116,10 +118,73 @@ TEST(echart_json_annotation_and_dataset_errors) {
   ASSERT_TRUE(doc != NULL); ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL); my_echart_json_doc_destroy(&doc);
 }
 
+TEST(echart_json_grid_multi_axis) {
+  const char* json =
+      "{\"grid\":[{\"left\":0,\"top\":0,\"width\":1,\"height\":1,"
+      "\"axisCount\":3,\"yAxis\":[{\"min\":-10,\"max\":10},"
+      "{\"min\":1},{\"min\":100,\"max\":200}]}]}";
+  my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+  const my_echart_option_input_t* input;
+  my_echart_option_t copy;
+
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+  input = my_echart_json_doc_option(doc);
+  ASSERT_EQ(input->grid_count, 1u);
+  ASSERT_EQ(input->grids[0].axis_count, 3u);
+  ASSERT_TRUE(input->grids[0].axis_range_set[0]);
+  ASSERT_FLOAT_EQ((float)input->grids[0].axis_min[0], -10.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->grids[0].axis_max[0], 10.0f, 1e-6f);
+  ASSERT_TRUE(!input->grids[0].axis_range_set[1]);
+  ASSERT_TRUE(input->grids[0].axis_range_set[2]);
+  ASSERT_FLOAT_EQ((float)input->grids[0].axis_min[2], 100.0f, 1e-6f);
+  ASSERT_FLOAT_EQ((float)input->grids[0].axis_max[2], 200.0f, 1e-6f);
+  ASSERT_EQ(my_echart_option_validate(input), MY_RET_OK);
+  my_echart_option_init(&copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&copy, input, NULL), MY_RET_OK);
+  ASSERT_EQ(my_echart_option_validate(input), MY_RET_OK);
+  my_echart_option_free(&copy);
+  my_echart_json_doc_destroy(&doc);
+}
+
+TEST(echart_json_grid_axis_errors) {
+  const char* prefix = "{\"grid\":[{\"left\":0,\"top\":0,\"width\":1,\"height\":1,";
+  const char* suffix = "}]}";
+  const char* cases[] = {
+      "\"axisCount\":0",
+      "\"axisCount\":4",
+      "\"axisCount\":2,\"yAxis\":[{\"min\":0,\"max\":1},{\"min\":2,\"max\":3},{\"min\":4,\"max\":5}]"
+  };
+  size_t i;
+  for (i = 0u; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    char json[512];
+    my_echart_json_doc_t* doc;
+    (void)snprintf(json, sizeof(json), "%s%s%s", prefix, cases[i], suffix);
+    doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+    ASSERT_TRUE(doc != NULL);
+    ASSERT_TRUE(my_echart_json_doc_error(doc) != NULL);
+    my_echart_json_doc_destroy(&doc);
+  }
+  {
+    const char* json =
+        "{\"grid\":[{\"left\":0,\"top\":0,\"width\":1,\"height\":1,"
+        "\"axisCount\":2,\"yAxis\":[{\"min\":0,\"max\":1},{\"min\":2}]}]}";
+    my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+    const my_echart_option_input_t* input = my_echart_json_doc_option(doc);
+    ASSERT_TRUE(doc != NULL);
+    ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+    ASSERT_TRUE(input->grids[0].axis_range_set[0]);
+    ASSERT_TRUE(!input->grids[0].axis_range_set[1]);
+    my_echart_json_doc_destroy(&doc);
+  }
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_json_happy_path);
   RUN_TEST(echart_json_errors_and_destroy);
   RUN_TEST(echart_json_annotations_dataset_sort);
   RUN_TEST(echart_json_dataset_filter);
   RUN_TEST(echart_json_annotation_and_dataset_errors);
+  RUN_TEST(echart_json_grid_multi_axis);
+  RUN_TEST(echart_json_grid_axis_errors);
 TEST_MAIN_END()

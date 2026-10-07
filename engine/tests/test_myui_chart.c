@@ -1294,6 +1294,76 @@ static size_t chart_count_color_in_region(const uint8_t* pixels,
   return matched;
 }
 
+TEST(chart_tooltip_flips_left_at_right_edge) {
+  static const float values[] = {5.0f, 30.0f, 15.0f, 25.0f};
+  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+  uint8_t* pixels;
+  size_t total;
+  size_t left;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event.u.pointer.x = 308;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  total = chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd),
+                                      0u, 0u, 320u, 180u, 0x1F2933FFu);
+  left = chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd),
+                                     0u, 0u, 308u, 180u, 0x1F2933FFu);
+  ASSERT_TRUE(total > 100u);
+  ASSERT_TRUE(left > 100u);
+  ASSERT_EQ(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd),
+                                        319u, 0u, 320u, 180u,
+                                        0x1F2933FFu), 0u);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
+TEST(chart_tooltip_stays_right_in_mid_chart) {
+  static const float values[] = {5.0f, 30.0f, 15.0f, 25.0f};
+  my_chart_series_t series = {"Load", values, 4u, 0x3A86FFFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_LINE);
+  my_lcd_t* lcd = my_lcd_mem_create(NULL, 320u, 180u, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t* canvas = my_vgcanvas_soft_create(NULL, lcd);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+  uint8_t* pixels;
+
+  ASSERT_NOT_NULL(chart);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_NOT_NULL(canvas);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event.u.pointer.x = 130;
+  event.u.pointer.y = 80;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  chart->vtable->on_paint(chart, canvas);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  ASSERT_TRUE(chart_count_color_in_region(pixels, my_lcd_mem_get_stride(lcd),
+                                          131u, 0u, 320u, 180u,
+                                          0x1F2933FFu) > 100u);
+  dump_ppm_if_requested(pixels, 320u, 180u, my_lcd_mem_get_stride(lcd));
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+  my_widget_unref(chart);
+}
+
 TEST(chart_multi_grid_layout_and_assignment) {
   static const float values[] = {1.0f, 2.0f, 3.0f};
   my_chart_series_t series = {"S", values, 3u, 0xE85D75FFu, 0u};
@@ -1541,6 +1611,8 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_stacked_bars_share_category_slot);
   RUN_TEST(chart_clamps_values_and_formats_hover_tooltip);
   RUN_TEST(chart_hover_tooltip_includes_all_series_at_category);
+  RUN_TEST(chart_tooltip_flips_left_at_right_edge);
+  RUN_TEST(chart_tooltip_stays_right_in_mid_chart);
   RUN_TEST(chart_paints_visible_series_to_software_canvas);
   RUN_TEST(chart_paints_grouped_bar_series_to_software_canvas);
   RUN_TEST(chart_paints_mark_point_annotation);

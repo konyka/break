@@ -1512,17 +1512,22 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                  line_x, line_w);
        my_vgcanvas_fill_rect(vg, &(my_rectf_t){line_x, line_y, 1.0f, line_h});
      }
-    if (chart->tooltip_enabled &&
-        my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
-      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
-      my_vgcanvas_fill_rounded_rect(vg,
-                                    &(my_rectf_t){hover_x + 6.0f, hy + 6.0f,
-                                                  96.0f, 22.0f},
-                                    4.0f);
-      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
-      my_vgcanvas_set_font(vg, NULL, 10);
-      my_vgcanvas_draw_text(vg, tooltip, hover_x + 10.0f, hy + 11.0f);
-    }
+     if (chart->tooltip_enabled &&
+         my_chart_get_tooltip(widget, tooltip, sizeof(tooltip)) == MY_RET_OK) {
+       float box_x = hover_x + 6.0f;
+       float box_y = hy + 6.0f;
+       if (box_x + 96.0f > (float)widget->rect.w)
+         box_x = hover_x - 6.0f - 96.0f;
+       if (box_y + 22.0f > (float)widget->rect.h)
+         box_y = hy - 6.0f - 22.0f;
+       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x1F2933FFu));
+       my_vgcanvas_fill_rounded_rect(vg,
+                                     &(my_rectf_t){box_x, box_y, 96.0f, 22.0f},
+                                     4.0f);
+       my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xFFFFFFFFu));
+       my_vgcanvas_set_font(vg, NULL, 10);
+       my_vgcanvas_draw_text(vg, tooltip, box_x + 4.0f, box_y + 5.0f);
+     }
     }
   }
   if (chart->show_legend) {
