@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R680 @property 单 ident 语法串强制（TDD）— 未知串让渡收窄：合法单 ident（"small"，无 `|`）走字节精确强制（多选一 ident 替代同门），非 ident 未知串（`<transform-function>` 类）维持不强制
+
+- **缺口**(R678 落账"单 ident 语法串维持不强制——单 ident 强制属独立扩编"):`syntax: "small"`（无 `|`、非原语）被当未知语法串全放行——`initial-value: huge` 照注册、级联值 `--size: big` 照样替换,单关键字轨全缺。
+- **方案**(检查器尾部一刀,R678 ident 助手直用):`css_property_syntax_check` 尾部未知串分支前增判——`css_syntax_ident_ok(syntax)`（非空全 ident 字符）即走 `css_syntax_ident_matches`（trim 后字节精确,与多选一 ident 替代**同一门**——单 ident 即单替代组合子）;`<` 开头的未知原语/含非 ident 字符的串维持不强制（R672 让渡原样,`<transform-function>` 类）。注册期/消费期双闸经同一检查器自动同轨。
+- **TDD（红→绿实证）**:test_myui_css +1——注册面四景：合格 initial 注册/不匹配 initial 整条丢（def 0)/大小写字节精确拒/非 ident 未知串不强制（def 1);消费面两景：过闸 STR 原样透传/失闸→回退红。**RED 如实红**（行 2469:`huge` initial 照注册）;GREEN 一次过 **185/185**(184+1)。
+- **回归**：双树非图形 CTest 各 **128/129**——唯一失败 `test_platform_win32_runtime` 的 `OpenClipboard failed` 为**在案剪贴板 wedge 环境态**（干净 HEAD stash 复现同败,与本轮改动域无关;历轮"剔除外"记载同项）、fuzz smoke 5/5;R672/R676/R678 组全绿未动。
+- **边界**：含数字首字符的串（"12px"）若全 ident 字符亦按 ident 强制（c_ident_char 域,文档化——CSS ident 数字开头非法属语法串校验域,未单列拒）;`#`/`+` 乘数串维持不强制（非纯 ident,同 R678 让渡）;R611 AMD 基线不动。
+
 ## 本轮更新：R679 声明块内嵌套 @container 匹配期化（TDD）— 无上下文悬置落地：内层块落入同选择子盖戳兄弟规则（pend 源序），区间盖戳扩展至 pend 面——`&` 脱糖/更深层递归同盖，外层规则级条件经 span 天然补 pair2；条目爆炸评估→规则拆分证伪
 
 - **缺口**(R670 落账"声明块内嵌套 @container 维持解析期专属（逐声明条目爆炸，让渡）",候选评估补正:**爆炸面证伪**——爆炸仅存于"逐声明盖戳进同一规则"设计;规则拆分下内层声明落入独立盖戳规则,条目数线性):`button { color: red; @container (min-width: 400px) { color: blue; } }` 无上下文 strict 整表拒（R663 契约）/compat 跳过——CSS Nesting 的条件组块全缺,声明块级 @container 无法悬置到匹配期。

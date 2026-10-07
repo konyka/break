@@ -999,6 +999,12 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
     return css_property_syntax_multichoice_check(syntax, text);
   }
   if (!css_syntax_is_primitive(syntax)) {
+    /* R680: a lone ident syntax string ("small") enforces byte-exact
+     * — the same gate as an ident alternative inside a combination.
+     * Anything else stays unenforced (R672 deferral). */
+    if (css_syntax_ident_ok(syntax, strlen(syntax))) {
+      return css_syntax_ident_matches(syntax, text);
+    }
     return true; /* unknown syntax string: unenforced */
   }
   return css_property_syntax_primitive_check(syntax, text);

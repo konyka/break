@@ -2422,6 +2422,98 @@ TEST(css_decl_block_nested_container_defers_to_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_property_syntax_lone_ident_enforced)
+{
+  /* R680: a lone ident syntax string ("small", no '|') enforces
+   * byte-exact — the same gate as an ident alternative inside a
+   * combination. Unknown strings that are not plain idents
+   * (<transform-function>) stay unenforced (R672 deferral). */
+  const char* valid =
+      "@property --size { syntax: \"small\"; inherits: false;"
+      " initial-value: small; } button { color: blue; }";
+  const char* bad_initial =
+      "@property --size { syntax: \"small\"; inherits: false;"
+      " initial-value: huge; } button { color: blue; }";
+  const char* case_mismatch =
+      "@property --size { syntax: \"small\"; inherits: false;"
+      " initial-value: Small; } button { color: blue; }";
+  const char* non_ident_unenforced =
+      "@property --t { syntax: \"<transform-function>\";"
+      " inherits: false; initial-value: junk; } button { color: blue; }";
+  const char* pass =
+      "@property --size { syntax: \"small\"; inherits: true; }"
+      "button { --size: small; color: var(--size, red); }";
+  const char* fail =
+      "@property --size { syntax: \"small\"; inherits: true; }"
+      "button { --size: big; color: var(--size, red); }";
+  my_css_error_t error = {0};
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_value_t out;
+  my_css_sheet_t* sheet;
+
+  my_value_init(&out, NULL);
+
+  /* a conforming initial registers. */
+  sheet = my_css_parse_ex(NULL, valid, strlen(valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* a non-matching initial drops the whole @property. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_initial, strlen(bad_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* byte-exact: Small != small. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, case_mismatch, strlen(case_mismatch),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* a non-ident unknown string stays unenforced. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, non_ident_unenforced,
+                          strlen(non_ident_unenforced),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* computed-value time: the matching value passes raw. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, pass, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_STR);
+  ASSERT_STR_EQ(my_value_get_str(&out), "small");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a non-matching cascaded value is guaranteed-invalid -> fallback. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, fail, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -8426,6 +8518,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_style_query_registered_computed_comparison);
     RUN_TEST(css_property_syntax_multi_choice_alternatives);
     RUN_TEST(css_decl_block_nested_container_defers_to_match_time);
+    RUN_TEST(css_property_syntax_lone_ident_enforced);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
