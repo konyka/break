@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R668 IME delete-surrounding 簇化（TDD）— R660 落账"IME 协议域沿码点"关闭：双 widget 的 IME 字节跨外扩字素簇界，零长度请求不膨胀
+
+- **缺口**(R660 落账"text_area IME_DELETE_SURROUNDING 沿码点未涉"，调研补正：实为沿**字节**):IME 删围请求 before/after 是光标两侧原始字节数，跨边落簇内即撕簇——"aáb"(á=a+U+0301,3 字节簇）光标 3 处 before=1 删出 "a\xCC""b"（残破 UTF-8)。
+- **方案**（消费侧外扩，R658 Backspace 先例同约；协议/生产侧零改动）:① 双 widget 各置 `snap_cluster_left/right`（小静态助手跨模块 duplication 惯例）——先钳续字节（0x80 走查）至码点首，再经 R659 `my_grapheme_boundary_left/right`（严格前/后语义）做就地判定：floor=边界则 off 否则严格左，ceil 对偶——**只扩不缩**;② 吸附只对**非空原始跨**生效（start<end 前置判定先于吸附——零长度请求不会膨胀成簇删）;③ readonly/删除管线/撤销语义全沿既有路径。
+- **TDD（红→绿实证）**:test_myui_edit +2（双 widget 同构）——簇内 before=1/簇内 after=1 撕簇防护、对齐跨字节精确不过删（before=3+after=1 恰整簇+b)、readonly 优先。**RED 双 widget 同型如实红**("a\xCC""b" ≠ "b"——撕簇实证）;GREEN 一次过 **7/7**(5+2)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有编辑/IME 组全绿未动。
+- **边界**:IME 事件协议（before/after=UTF-8 字节）与 PAL 生产侧维持原义——消费侧外扩即语义保全（至少删足请求跨且不撕簇，与 Android deleteSurroundingText 的字符语义在簇域对齐）;IME 组合串（composition）本身的簇感知未涉（平台合成域）;R611 AMD 基线不动。
+
 ## 本轮更新：R667 var() 消费侧迁移（TDD）— widget 类型化访问器（get_color/get_int）经 themed-ancestor 链解析 var(),theme token 自此上屏；局部样式字符串维持字面语义
 
 - **缺口**(R666 落账"widget 消费侧迁移为独立轮"):R666 交付了替换 API 但屏幕面仍哑——widget 绘制的唯一消费漏斗 `my_widget_style_get_color/_int` 对 STR 型 var 文本按类型不符直落 fallback,`background-color: var(--brand)` 在屏上=未设置。

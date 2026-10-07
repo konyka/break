@@ -2221,6 +2221,39 @@ static my_ret_t ta_on_ime_commit(my_text_area_t* ta, const my_event_t* ev) {
   return MY_RET_OK;
 }
 
+/* R668: snap a raw byte offset outward to a grapheme cluster boundary
+ * (same helper shape as my_edit's — the two widgets keep their small
+ * static helpers duplicated by convention). */
+static size_t ta_snap_cluster_left(const char* text, size_t len, size_t off) {
+  size_t l;
+  if (off > len) {
+    off = len;
+  }
+  while (off > 0u && off < len && ((unsigned char)text[off] & 0xC0u) == 0x80u) {
+    off--;
+  }
+  if (off == 0u) {
+    return 0u;
+  }
+  l = my_grapheme_boundary_left(text, len, off);
+  return my_grapheme_boundary_right(text, len, l) == off ? off : l;
+}
+
+static size_t ta_snap_cluster_right(const char* text, size_t len, size_t off) {
+  size_t r;
+  if (off >= len) {
+    return len;
+  }
+  while (off < len && ((unsigned char)text[off] & 0xC0u) == 0x80u) {
+    off++;
+  }
+  if (off >= len) {
+    return len;
+  }
+  r = my_grapheme_boundary_right(text, len, off);
+  return my_grapheme_boundary_left(text, len, r) == off ? off : r;
+}
+
 static my_ret_t ta_on_ime_delete_surrounding(my_text_area_t* ta,
                                               const my_event_t* ev) {
   size_t before = ev->u.ime.before > 0 ? (size_t)ev->u.ime.before : 0;
@@ -2229,6 +2262,10 @@ static my_ret_t ta_on_ime_delete_surrounding(my_text_area_t* ta,
   size_t start = before < cursor ? cursor - before : 0;
   size_t end = after < ta->text_len - cursor ? cursor + after : ta->text_len;
   if (!ta->readonly && start < end) {
+    /* R668: the IME byte span expands outward to cluster boundaries
+     * (the R658 Backspace precedent) — never tear a cluster. */
+    start = ta_snap_cluster_left(ta->text, ta->text_len, start);
+    end = ta_snap_cluster_right(ta->text, ta->text_len, end);
     user_delete_range(ta, start, end);
   }
   return MY_RET_OK;

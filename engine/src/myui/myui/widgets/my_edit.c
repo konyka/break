@@ -663,6 +663,41 @@ static my_ret_t edit_on_ime_commit(my_edit_t* e, const my_event_t* ev) {
   return MY_RET_OK;
 }
 
+/* R668: snap a raw byte offset outward to a grapheme cluster boundary
+ * (the offset may land on a UTF-8 continuation byte or a cluster-
+ * interior codepoint start — both snap out, never in). */
+static size_t edit_snap_cluster_left(const char* text, size_t len,
+                                     size_t off) {
+  size_t l;
+  if (off > len) {
+    off = len;
+  }
+  while (off > 0u && off < len && ((unsigned char)text[off] & 0xC0u) == 0x80u) {
+    off--;
+  }
+  if (off == 0u) {
+    return 0u;
+  }
+  l = my_grapheme_boundary_left(text, len, off);
+  return my_grapheme_boundary_right(text, len, l) == off ? off : l;
+}
+
+static size_t edit_snap_cluster_right(const char* text, size_t len,
+                                      size_t off) {
+  size_t r;
+  if (off >= len) {
+    return len;
+  }
+  while (off < len && ((unsigned char)text[off] & 0xC0u) == 0x80u) {
+    off++;
+  }
+  if (off >= len) {
+    return len;
+  }
+  r = my_grapheme_boundary_right(text, len, off);
+  return my_grapheme_boundary_left(text, len, r) == off ? off : r;
+}
+
 static my_ret_t edit_on_ime_delete_surrounding(my_edit_t* e,
                                                 const my_event_t* ev) {
   size_t before = ev->u.ime.before > 0 ? (size_t)ev->u.ime.before : 0;
@@ -671,6 +706,10 @@ static my_ret_t edit_on_ime_delete_surrounding(my_edit_t* e,
   size_t start = before < e->cursor ? e->cursor - before : 0;
   size_t end = after < length - e->cursor ? e->cursor + after : length;
   if (!e->readonly && start < end) {
+    /* R668: the IME byte span expands outward to cluster boundaries
+     * (the R658 Backspace precedent) — never tear a cluster. */
+    start = edit_snap_cluster_left(e->text, length, start);
+    end = edit_snap_cluster_right(e->text, length, end);
     user_delete_range(e, start, end);
   }
   return MY_RET_OK;
