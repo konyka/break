@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R674 CI 存量债清理 — 并行会话 explorer/chart 系列（自 34a02868 起从未绿）八连红修复：跨平台编译守卫、字体探测、-Werror 豁免、栈用后返回真 bug、X11/glesv2 链接
+
+- **缺口**:explorer/chart 系列提交（widgets demo→explorer→GL shot→win32/macos 移植）自引入起 CI 全红：`myui_explorer.c` 的 X11/Wayland/EGL 段无平台守卫（win32/macOS/headless-Linux 一律编译断裂，CMake no-wayland 分支亦链出未定义符号）;`myui_widgets_demo` 硬编码 Fedora 系字体路径（Windows/无 liberation 字体处 text-only 场景 0 像素败）;macOS `.m` 与 wayland-scanner 生成码撞全局 `-Werror -pedantic`;explorer 把 `apply_state` 栈数组借给借用语义的 `my_chart_apply_snapshot`(ASan stack-use-after-return 真 bug);wayland job 链接缺 X11(`ENGINE_ENABLE_WAYLAND=ON` 时引擎自己不找 X11,`X11_LIBRARIES` 空）与 GLESv2(explorer 直调 `glReadPixels`)。
+- **方案**(逐点最小修，均在案先例同约）:① `.c` 内能力宏 `EX_HAVE_X11`/`EX_HAVE_EGL_WL` 三段隔离 + main 分派诚实降级（无 X11=headless-only 构建，`--selftest/--shot` 照可用）;② demo 字体换 explorer 同款平台候选表探测；③ macOS 端口照 `window_cocoa.m` 先例豁免 `-Wno-error -Wno-pedantic -Wno-deprecated-declarations -fno-objc-arc`，生成码同豁免；④ 缩放数据改存 `app->st.scaled`（借用指针对齐寿命）;⑤ explorer 自管 `find_package(X11)` + pkg 列表补 `glesv2`,CI wayland job 装 `libgles2-mesa-dev`;⑥ 进程寿命设计（资源随 OS 退出）的两个 smoke 测试 `detect_leaks=0` 豁免；⑦ **CI 取证面**:wayland Build/macOS 全量构建步骤 tee 日志吐 `::error::`（含 undefined reference 与链接目标上下文；macOS grep 修掉 `ld: warning` 吃满预算的缺陷），失败重跑 grep 扩谱（LeakSanitizer/ASan/selftest/colored pixels)。
+- **实证**(CI 五轮收敛）:1d60886 守卫+字体→6/9(macOS 仍红、ASan 仍红、wayland 仍红）;7a20b7e 豁免→macOS 绿；注解取证锁定 ASan=栈用后返回（myui_explorer.c:515)/wayland=链接失败；9d9ff59 栈修复+glesv2→7/9(ASan 绿）;94140b5 注解扩谱拿到 `undefined reference to XOpenDisplay` 实证；740e0ce X11 自查找→**9/9 绿**(run 37609282196)。本地双树非图形 CTest 各 **123/123**(并行会话新增 3 测试入列：widgets_demo_smoke/explorer_selftest/echarts_demo_smoke)、fuzz 5/5。
+- **边界**:explorer wayland GL 交互路径在 CI 无显示会话下仅编译覆盖（运行期覆盖=weston headless 组合，未涉）;`EX_EXPLORER_NO_X11` 的 headless-only Linux 分支本地无 CI 挂具（bounded);ubuntu-latest 迁移（2026-10）后字体/包名需复看；R611 AMD 基线不动。
+
 ## 本轮更新：R673 @container style() 查询（TDD）— 样式条件容器查询落地：单条件 `style(--prop: value)` 形态校验/盖戳、匹配期最近祖先求值（container-type 不门控、名表仍过滤）、自定义属性经 var() 机械解析后白空间归一原文比较
 
 - **缺口**(R670 落账"`style()` 容器查询未涉"):`@container style(--accent: red)` 被特性校验器当作尺寸特性名 "style" 硬拒；CSS Contain 3 的样式条件维度全缺——"最近的祖先的某自定义属性等于某值时才应用"无从表达。
