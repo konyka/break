@@ -15,12 +15,11 @@ Renders one 320x180 PPM per scene and self-checks each frame.
 
 ## Fonts in headless scenes
 
-Text rendering requires a loaded font. The soft vgcanvas treats
-`set_font(NULL, size)` as size-only (no default face), so headless hosts
-load one explicitly and pass it to `my_vgcanvas_set_font` before painting
-(the demo loads Liberation Serif from the system font path). Chart-internal
-text (axis ticks, legend, tooltip) still routes through the widget's own
-`set_font(NULL, ...)` calls; injecting a face there is a tracked follow-up.
+Text rendering requires a loaded font. `set_font(NULL, size)` keeps the
+current face and only changes the size, so a headless host loads one face
+per canvas and every widget-internal `set_font(NULL, ...)` call (ticks,
+legend, tooltip, labels) inherits it. Both demos load Liberation Serif from
+the system font path and set it on the canvas right after `begin_frame`.
 
 ## Widgets
 

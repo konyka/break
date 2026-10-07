@@ -58,6 +58,7 @@ static void render(my_widget_t* chart, const char* dir, const char* name) {
   chart->rect.w = 320;
   chart->rect.h = 180;
   if (my_vgcanvas_begin_frame(canvas, NULL) == MY_RET_OK) {
+    my_vgcanvas_set_font(canvas, g_font, 13);
     chart->vtable->on_paint(chart, canvas);
   }
   (void)my_vgcanvas_end_frame(canvas);
@@ -440,6 +441,7 @@ static void scene_mvvm(const char* dir) {
     c->rect.w = 320;
     c->rect.h = 180;
     (void)my_vgcanvas_begin_frame(canvas, NULL);
+    my_vgcanvas_set_font(canvas, g_font, 13);
     c->vtable->on_paint(c, canvas);
     (void)my_vgcanvas_end_frame(canvas);
     pixels = my_lcd_mem_get_buffer(lcd);
@@ -455,6 +457,7 @@ static void scene_mvvm(const char* dir) {
     my_value_set_pointer(&value, &o2);
     (void)my_view_model_set_prop(vm, "option", &value);
     (void)my_vgcanvas_begin_frame(canvas, NULL);
+    my_vgcanvas_set_font(canvas, g_font, 13);
     c->vtable->on_paint(c, canvas);
     (void)my_vgcanvas_end_frame(canvas);
     (void)snprintf(path, sizeof(path), "%s/27_mvvm_second.ppm", dir);
@@ -521,6 +524,7 @@ static void scene_animation(const char* dir) {
     c->rect.w = 320;
     c->rect.h = 180;
     (void)my_vgcanvas_begin_frame(canvas, NULL);
+    my_vgcanvas_set_font(canvas, g_font, 13);
     c->vtable->on_paint(c, canvas);
     (void)my_vgcanvas_end_frame(canvas);
     pixels = my_lcd_mem_get_buffer(lcd);
