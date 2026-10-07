@@ -834,14 +834,18 @@ static bool css_container_property_value_ok(const char* key,
  * <number>/<integer>/<string>/<percentage> and `*` (unknown syntax
  * strings carry no enforcement, documented). The text must parse as one
  * full value of the primitive's type. */
-static bool css_property_syntax_check(const char* syntax, const char* text) {
+static bool css_syntax_is_primitive(const char* s) {
+  return my_str_eq(s, "<color>") || my_str_eq(s, "<length>") ||
+         my_str_eq(s, "<number>") || my_str_eq(s, "<integer>") ||
+         my_str_eq(s, "<string>") || my_str_eq(s, "<percentage>");
+}
+
+static bool css_property_syntax_primitive_check(const char* prim,
+                                                const char* text) {
   css_p_t probe;
   my_value_t v;
   bool ok;
-  if (syntax == NULL || syntax[0] == '\0' || my_str_eq(syntax, "*")) {
-    return true;
-  }
-  if (my_str_eq(syntax, "<percentage>")) {
+  if (my_str_eq(prim, "<percentage>")) {
     /* R676: a number immediately followed by '%' — no intervening
      * whitespace, no other unit. Dedicated scan: the generic css_value
      * probe would swallow a `px` suffix before the '%' check. */
@@ -865,9 +869,9 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
     c_ws(&probe);
     return c_peek(&probe) < 0;
   }
-  if (!my_str_eq(syntax, "<color>") && !my_str_eq(syntax, "<length>") &&
-      !my_str_eq(syntax, "<number>") && !my_str_eq(syntax, "<integer>") &&
-      !my_str_eq(syntax, "<string>")) {
+  if (!my_str_eq(prim, "<color>") && !my_str_eq(prim, "<length>") &&
+      !my_str_eq(prim, "<number>") && !my_str_eq(prim, "<integer>") &&
+      !my_str_eq(prim, "<string>")) {
     return true;
   }
   my_value_init(&v, NULL);
@@ -883,13 +887,13 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
     ok = c_peek(&probe) < 0;
   }
   if (ok) {
-    if (my_str_eq(syntax, "<color>")) {
+    if (my_str_eq(prim, "<color>")) {
       ok = my_value_type(&v) == MY_VALUE_UINT32;
-    } else if (my_str_eq(syntax, "<length>") ||
-               my_str_eq(syntax, "<number>")) {
+    } else if (my_str_eq(prim, "<length>") ||
+               my_str_eq(prim, "<number>")) {
       ok = my_value_type(&v) == MY_VALUE_INT32 ||
            my_value_type(&v) == MY_VALUE_DOUBLE;
-    } else if (my_str_eq(syntax, "<integer>")) {
+    } else if (my_str_eq(prim, "<integer>")) {
       ok = my_value_type(&v) == MY_VALUE_INT32;
     } else { /* <string>: quoted only */
       size_t first = 0u;
@@ -903,6 +907,101 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
   }
   my_value_reset(&v);
   return ok;
+}
+
+/* R678: byte-exact ident alternative — the text trimmed of surrounding
+ * whitespace equals the keyword (engine lowercase-exact convention). */
+static bool css_syntax_ident_matches(const char* ident, const char* text) {
+  const char* start = text;
+  const char* end = text + strlen(text);
+  size_t ident_len = strlen(ident);
+  while (start < end && (*start == ' ' || *start == '\t' ||
+                         *start == '\r' || *start == '\n')) {
+    start++;
+  }
+  while (end > start && (end[-1] == ' ' || end[-1] == '\t' ||
+                         end[-1] == '\r' || end[-1] == '\n')) {
+    end--;
+  }
+  return (size_t)(end - start) == ident_len &&
+         memcmp(start, ident, ident_len) == 0;
+}
+
+static bool css_syntax_ident_ok(const char* s, size_t length) {
+  size_t i;
+  if (length == 0u) {
+    return false;
+  }
+  for (i = 0u; i < length; i++) {
+    if (!c_ident_char((unsigned char)s[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/* R678: `a | b` combinations — the value matches when any trimmed
+ * alternative accepts it. Ident alternatives compare byte-exact;
+ * primitive alternatives reuse the R672/R676 gates. A combination
+ * holding an unrecognized component (unknown primitive, malformed or
+ * empty alternative) stays unenforced: the R672 unknown-string
+ * deferral, applied per whole combination. */
+static bool css_property_syntax_multichoice_check(const char* syntax,
+                                                  const char* text) {
+  char buf[64];
+  char* cursor;
+  snprintf(buf, sizeof(buf), "%s", syntax);
+  cursor = buf;
+  for (;;) {
+    char* bar = strchr(cursor, '|');
+    char* end = bar != NULL ? bar : cursor + strlen(cursor);
+    char* start = cursor;
+    while (start < end && (*start == ' ' || *start == '\t' ||
+                           *start == '\r' || *start == '\n')) {
+      start++;
+    }
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' ||
+                           end[-1] == '\r' || end[-1] == '\n')) {
+      end--;
+    }
+    *end = '\0';
+    if (start == end) {
+      return true; /* empty alternative: unenforced */
+    }
+    if (start[0] == '<') {
+      if (!css_syntax_is_primitive(start)) {
+        return true; /* unknown primitive: unenforced */
+      }
+      if (css_property_syntax_primitive_check(start, text)) {
+        return true;
+      }
+    } else {
+      if (!css_syntax_ident_ok(start, (size_t)(end - start))) {
+        return true; /* malformed alternative: unenforced */
+      }
+      if (css_syntax_ident_matches(start, text)) {
+        return true;
+      }
+    }
+    if (bar == NULL) {
+      break;
+    }
+    cursor = bar + 1;
+  }
+  return false;
+}
+
+static bool css_property_syntax_check(const char* syntax, const char* text) {
+  if (syntax == NULL || syntax[0] == '\0' || my_str_eq(syntax, "*")) {
+    return true;
+  }
+  if (strchr(syntax, '|') != NULL) {
+    return css_property_syntax_multichoice_check(syntax, text);
+  }
+  if (!css_syntax_is_primitive(syntax)) {
+    return true; /* unknown syntax string: unenforced */
+  }
+  return css_property_syntax_primitive_check(syntax, text);
 }
 
 /* ---------------- key aliases ---------------- */

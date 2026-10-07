@@ -1987,6 +1987,199 @@ TEST(css_container_style_query_registered_computed_comparison)
   my_theme_destroy(theme);
 }
 
+TEST(css_property_syntax_multi_choice_alternatives)
+{
+  /* R678: `a | b` syntax combinations — the value matches when any
+   * trimmed alternative accepts it: ident alternatives compare
+   * byte-exact after trimming, primitive alternatives reuse the
+   * R672/R676 gates. A combination holding an unrecognized component
+   * (unknown primitive, empty alternative) stays unenforced — the
+   * R672 unknown-string deferral. */
+  const char* ident_valid =
+      "@property --size { syntax: \"small | large | medium\";"
+      " inherits: false; initial-value: small; } button { color: blue; }";
+  const char* ident_bad_initial =
+      "@property --size { syntax: \"small | large | medium\";"
+      " inherits: false; initial-value: huge; } button { color: blue; }";
+  const char* ident_case =
+      "@property --size { syntax: \"small | large | medium\";"
+      " inherits: false; initial-value: Large; } button { color: blue; }";
+  const char* primitive_valid =
+      "@property --x { syntax: \"<length> | <percentage>\";"
+      " inherits: false; initial-value: 12.5%; } button { color: blue; }";
+  const char* primitive_bad_initial =
+      "@property --x { syntax: \"<length> | <percentage>\";"
+      " inherits: false; initial-value: abc; } button { color: blue; }";
+  const char* tight_spacing =
+      "@property --size { syntax: \"small|large\"; inherits: false;"
+      " initial-value: large; } button { color: blue; }";
+  const char* unknown_alt =
+      "@property --t { syntax: \"<transform-function> | small\";"
+      " inherits: false; initial-value: junk; } button { color: blue; }";
+  const char* empty_alt =
+      "@property --size { syntax: \"small | | large\"; inherits: false;"
+      " initial-value: huge; } button { color: blue; }";
+  const char* ident_pass =
+      "@property --size { syntax: \"small | large\"; inherits: true; }"
+      "button { --size: large; color: var(--size, red); }";
+  const char* ident_fail =
+      "@property --size { syntax: \"small | large\"; inherits: true; }"
+      "button { --size: big; color: var(--size, red); }";
+  const char* primitive_pass =
+      "@property --x { syntax: \"<length> | <percentage>\";"
+      " inherits: true; }"
+      "button { --x: 50%; color: var(--x, red); }";
+  const char* primitive_fail =
+      "@property --x { syntax: \"<length> | <percentage>\";"
+      " inherits: true; }"
+      "button { --x: abc; color: var(--x, red); }";
+  const char* unknown_alt_raw =
+      "@property --t { syntax: \"<transform-function> | small\";"
+      " inherits: true; }"
+      "button { --t: junk2; color: var(--t, red); }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* a conforming ident initial registers. */
+  sheet = my_css_parse_ex(NULL, ident_valid, strlen(ident_valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* an initial matching no alternative drops the whole @property. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, ident_bad_initial,
+                          strlen(ident_bad_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* idents compare byte-exact: Large != large. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, ident_case, strlen(ident_case),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* primitive alternatives accept a conforming initial... */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, primitive_valid, strlen(primitive_valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* ...and drop a non-matching one. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, primitive_bad_initial,
+                          strlen(primitive_bad_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* whitespace around '|' is not required. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, tight_spacing, strlen(tight_spacing),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* an unrecognized alternative leaves the combination unenforced. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, unknown_alt, strlen(unknown_alt),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* an empty alternative is malformed and likewise unenforced. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, empty_alt, strlen(empty_alt),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* computed-value time: a matching ident passes the gate raw — the
+   * substituted STR "large" comes through verbatim. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, ident_pass,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_STR);
+  ASSERT_STR_EQ(my_value_get_str(&out), "large");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a value matching no alternative is guaranteed-invalid -> the
+   * var() fallback applies. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, ident_fail,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* primitives gate the same way at computed-value time. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, primitive_pass,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                           "fg_color", &out));
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, primitive_fail,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* an unenforced combination substitutes raw values through. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, unknown_alt_raw,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_STR);
+  ASSERT_STR_EQ(my_value_get_str(&out), "junk2");
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -7989,6 +8182,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
     RUN_TEST(css_container_style_queries_resolve_at_match_time);
     RUN_TEST(css_container_style_query_registered_computed_comparison);
+    RUN_TEST(css_property_syntax_multi_choice_alternatives);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
