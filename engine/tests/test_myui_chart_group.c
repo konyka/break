@@ -159,6 +159,37 @@ TEST(chart_group_propagates_hover_clear) {
   my_widget_unref(chart_b);
 }
 
+TEST(chart_group_propagates_funnel_hover) {
+  static const float values[] = {100.0f, 60.0f, 30.0f};
+  my_chart_series_t series = {"series", values, 3u, 0xE85D75FFu, 0u};
+  my_widget_t* chart_a = my_chart_create(NULL, MY_CHART_FUNNEL);
+  my_widget_t* chart_b = my_chart_create(NULL, MY_CHART_FUNNEL);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart_a);
+  ASSERT_NOT_NULL(chart_b);
+  chart_a->rect.w = 320;
+  chart_a->rect.h = 180;
+  chart_b->rect.w = 320;
+  chart_b->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart_a, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart_b, 0u, &series), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_join(chart_a, 7u), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_join(chart_b, 7u), MY_RET_OK);
+  event.u.pointer.x = 175;
+  event.u.pointer.y = 92;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), 1u);
+  event.u.pointer.x = 10;
+  event.u.pointer.y = 10;
+  ASSERT_EQ(chart_a->vtable->on_event(chart_a, &event), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart_b), SIZE_MAX);
+  ASSERT_EQ(my_chart_group_leave(chart_a), MY_RET_OK);
+  ASSERT_EQ(my_chart_group_leave(chart_b), MY_RET_OK);
+  my_widget_unref(chart_a);
+  my_widget_unref(chart_b);
+}
+
 TEST(chart_group_hover_does_not_affect_ungrouped_chart) {
   static const float values[] = {1, 2, 3};
   my_widget_t* chart_a = create_chart(values, 3u);
@@ -210,6 +241,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_group_auto_leaves_on_destroy);
   RUN_TEST(chart_group_propagates_hover);
   RUN_TEST(chart_group_propagates_hover_clear);
+  RUN_TEST(chart_group_propagates_funnel_hover);
   RUN_TEST(chart_group_hover_does_not_affect_ungrouped_chart);
   RUN_TEST(chart_group_clears_shorter_peer_hover);
 TEST_MAIN_END()

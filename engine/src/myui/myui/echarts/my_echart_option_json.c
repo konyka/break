@@ -26,6 +26,10 @@ struct my_echart_json_doc_t {
   size_t* grid_indices;
   size_t* grid_offsets;
   size_t grid_index_count;
+  my_echart_mark_point_input_t* mark_points;
+  my_echart_mark_line_input_t* mark_lines;
+  my_echart_mark_area_input_t* mark_areas;
+  my_echart_dimension_input_t* dataset;
   char error[160];
 };
 
@@ -124,25 +128,30 @@ static bool dimension(my_echart_json_doc_t* d, my_conf_node_t* n, double** out,
                       size_t* count) {
   size_t i, len;
   double* a;
-  if (n == NULL || my_conf_type(n) != MY_CONF_ARRAY) return false;
+  if (n == NULL) return false;
+  if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); a = (double*)alloc0(d, len, sizeof(*a));
   if (len != 0u && a == NULL) return false;
-  for (i = 0u; i < len; ++i) if (!number(child(n, i), &a[i])) return false;
-  *out = a; *count = len;
   if (d->data_count == d->data_cap) {
     size_t cap = d->data_cap == 0u ? 8u : d->data_cap * 2u;
-    double** p = (double**)my_mem_realloc(d->allocator, d->data, cap * sizeof(*p));
-    if (p == NULL) return false;
+    double** p = (double**)my_mem_realloc(d->allocator, d->data,
+                                          cap * sizeof(*p));
+    if (p == NULL) { my_mem_free(d->allocator, a); return false; }
     d->data = p;
     d->data_cap = cap;
   }
   d->data[d->data_count++] = a;
+  for (i = 0u; i < len; ++i) {
+    if (!number(child(n, i), &a[i])) return false;
+  }
+  *out = a; *count = len;
   return true;
 }
 
 static bool dimension_strings(my_echart_json_doc_t* d, my_conf_node_t* n) {
   size_t i, len;
-  if (n == NULL || my_conf_type(n) != MY_CONF_ARRAY) return false;
+  if (n == NULL) return true;
+  if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); d->x_axis = (char**)alloc0(d, len, sizeof(*d->x_axis));
   if (len != 0u && d->x_axis == NULL) return false;
   for (i = 0u; i < len; ++i) {
@@ -154,9 +163,68 @@ static bool dimension_strings(my_echart_json_doc_t* d, my_conf_node_t* n) {
   return true;
 }
 
+static bool parse_annotations(my_echart_json_doc_t* d, my_conf_node_t* series) {
+  size_t i, j, len; my_conf_node_t *m, *a, *v; double x;
+  if (series == NULL || my_conf_type(series) != MY_CONF_ARRAY) return true;
+  for (i = 0u; i < my_conf_child_count(series); ++i) {
+    m = my_conf_get(child(series, i), "markPoint.data");
+    if (m != NULL) {
+      if (my_conf_type(m) != MY_CONF_ARRAY) return false;
+      len = my_conf_child_count(m);
+      if (d->option.mark_point_count + len > MY_ECHART_MAX_MARK_POINTS) { set_error(d, "mark point capacity exceeded"); return false; }
+      d->mark_points = (my_echart_mark_point_input_t*)my_mem_realloc(d->allocator, d->mark_points, (d->option.mark_point_count + len) * sizeof(*d->mark_points));
+      if (len != 0u && d->mark_points == NULL) return false;
+      for (j = 0u; j < len; ++j) {
+        a = child(m, j); v = my_conf_get(a, "coord");
+        if (v == NULL || my_conf_type(v) != MY_CONF_ARRAY || my_conf_child_count(v) != 2u || !size_number(child(v, 0u), &d->mark_points[d->option.mark_point_count].category_index)) { set_error(d, "invalid mark point coord"); return false; }
+        d->mark_points[d->option.mark_point_count].series_index = i;
+        d->mark_points[d->option.mark_point_count].label = copy_string(d, my_conf_get_str(a, "name", NULL)); d->option.mark_point_count++;
+      }
+    }
+    m = my_conf_get(child(series, i), "markLine.data");
+    if (m != NULL) {
+      if (my_conf_type(m) != MY_CONF_ARRAY) return false;
+      len = my_conf_child_count(m);
+      if (d->option.mark_line_count + len > MY_ECHART_MAX_MARK_LINES) { set_error(d, "mark line capacity exceeded"); return false; }
+      d->mark_lines = (my_echart_mark_line_input_t*)my_mem_realloc(d->allocator, d->mark_lines, (d->option.mark_line_count + len) * sizeof(*d->mark_lines)); if (len != 0u && d->mark_lines == NULL) return false;
+      for (j = 0u; j < len; ++j) { a=child(m,j); if (!number(my_conf_get(a,"yAxis"), &x)) { set_error(d,"invalid mark line value"); return false; } d->mark_lines[d->option.mark_line_count].value=x; d->mark_lines[d->option.mark_line_count].label=copy_string(d,my_conf_get_str(a,"name",NULL)); d->mark_lines[d->option.mark_line_count].color=0u; v=my_conf_get(a,"itemStyle.color"); if(v!=NULL&&!color(d,v,&d->mark_lines[d->option.mark_line_count].color)){set_error(d,"bad color string");return false;} d->option.mark_line_count++; }
+    }
+    m = my_conf_get(child(series, i), "markArea.data");
+    if (m != NULL) {
+      if (my_conf_type(m) != MY_CONF_ARRAY) return false;
+      len=my_conf_child_count(m);
+      if (d->option.mark_area_count + len > MY_ECHART_MAX_MARK_AREAS) { set_error(d,"mark area capacity exceeded"); return false; }
+      d->mark_areas=(my_echart_mark_area_input_t*)my_mem_realloc(d->allocator,d->mark_areas,(d->option.mark_area_count+len)*sizeof(*d->mark_areas)); if(len!=0u&&d->mark_areas==NULL)return false;
+      for(j=0u;j<len;++j){a=child(m,j);v=my_conf_get(a,"yAxisRange");if(v==NULL||my_conf_type(v)!=MY_CONF_ARRAY||my_conf_child_count(v)!=2u||!number(child(v,0u),&d->mark_areas[d->option.mark_area_count].y_min)||!number(child(v,1u),&d->mark_areas[d->option.mark_area_count].y_max)){set_error(d,"invalid mark area range");return false;}d->mark_areas[d->option.mark_area_count].label=copy_string(d,my_conf_get_str(a,"name",NULL));d->mark_areas[d->option.mark_area_count].color=0u;v=my_conf_get(a,"itemStyle.color");if(v!=NULL&&!color(d,v,&d->mark_areas[d->option.mark_area_count].color)){set_error(d,"bad color string");return false;}d->option.mark_area_count++;}
+    }
+  }
+  d->option.mark_points=d->mark_points; d->option.mark_lines=d->mark_lines; d->option.mark_areas=d->mark_areas; return true;
+}
+
+static bool parse_dataset(my_echart_json_doc_t* d, my_conf_node_t* n) {
+  size_t i, len; my_conf_node_t* v; double* vals;
+  if(n==NULL)return true;
+  n=my_conf_get(n,"source");
+  if(n==NULL||my_conf_type(n)!=MY_CONF_OBJECT)return false;
+  len=my_conf_child_count(n); d->dataset=(my_echart_dimension_input_t*)alloc0(d,len,sizeof(*d->dataset)); if(len!=0u&&d->dataset==NULL)return false;
+  for(i=0u;i<len;++i){v=child(n,i);if(my_conf_key(v)==NULL||my_conf_key(v)[0]=='\0'||!dimension(d,v,&vals,&d->dataset[i].count)){set_error(d,"invalid dataset dimension");return false;}d->dataset[i].name=copy_string(d,my_conf_key(v));d->dataset[i].values=vals;}
+  d->option.dataset=d->dataset; d->option.dataset_count=len; return true;
+}
+
+static bool parse_transform(my_echart_json_doc_t* d, my_conf_node_t* n) {
+  const char* type; const char* order; const char* op;
+  if(n==NULL)return true;
+  type=my_conf_get_str(n,"type",NULL);
+  d->option.transform_dimension=copy_string(d,my_conf_get_str(n,"config.dimension",NULL));
+  if(type==NULL||d->option.transform_dimension==NULL||d->option.transform_dimension[0]=='\0'){set_error(d,"invalid transform");return false;}
+  if(strcmp(type,"sort")==0){order=my_conf_get_str(n,"config.order","asc");if(strcmp(order,"desc")==0)d->option.transform=MY_ECHART_TRANSFORM_SORT_DESC;else if(strcmp(order,"asc")==0)d->option.transform=MY_ECHART_TRANSFORM_SORT_ASC;else{set_error(d,"invalid sort order");return false;}return true;}
+  if(strcmp(type,"filter")!=0){set_error(d,"unknown transform type");return false;} op=my_conf_get_str(n,"config.op",NULL); if(op==NULL){set_error(d,"unknown filter op");return false;} if(strcmp(op,"eq")==0)d->option.filter_op=MY_ECHART_FILTER_EQ;else if(strcmp(op,"ne")==0)d->option.filter_op=MY_ECHART_FILTER_NE;else if(strcmp(op,"gt")==0)d->option.filter_op=MY_ECHART_FILTER_GT;else if(strcmp(op,"ge")==0)d->option.filter_op=MY_ECHART_FILTER_GE;else if(strcmp(op,"lt")==0)d->option.filter_op=MY_ECHART_FILTER_LT;else if(strcmp(op,"le")==0)d->option.filter_op=MY_ECHART_FILTER_LE;else{set_error(d,"unknown filter op");return false;} if(!number(my_conf_get(n,"config.value"),&d->option.filter_value)){set_error(d,"invalid filter value");return false;} d->option.transform=MY_ECHART_TRANSFORM_FILTER; d->option.filter_dimension=d->option.transform_dimension; return true;
+}
+
 static bool parse_series(my_echart_json_doc_t* d, my_conf_node_t* n) {
   size_t i, j, len, dl;
-  if (n == NULL || my_conf_type(n) != MY_CONF_ARRAY) return false;
+  if (n == NULL) return true;
+  if (my_conf_type(n) != MY_CONF_ARRAY) return false;
   len = my_conf_child_count(n); d->series = (my_echart_series_input_t*)alloc0(d, len, sizeof(*d->series));
   if (len != 0u && d->series == NULL) return false;
   for (i = 0u; i < len; ++i) {
@@ -237,9 +305,16 @@ my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len, con
   if(d->tree==NULL){my_mem_free(allocator,d);return NULL;} n=d->tree;
   s=my_conf_get_str(n,"title.text",NULL); d->title=copy_string(d,s); d->option.title=d->title;
   if(!dimension_strings(d,my_conf_get(n,"xAxis.data")) && my_conf_get(n,"xAxis.data")!=NULL) set_error(d,"invalid xAxis data");
-  if(!parse_series(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid series");
+   if(!parse_series(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid series");
+   if(!parse_annotations(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid annotations");
+   if(!parse_dataset(d,my_conf_get(n,"dataset")) && d->error[0]=='\0') set_error(d,"invalid dataset");
+   (void)parse_transform(d,my_conf_get(n,"transform"));
   d->option.legend_hidden=!my_conf_get_bool(n,"legend.show",true); d->option.tooltip_hidden=!my_conf_get_bool(n,"tooltip.show",true);
-  if(number(my_conf_get(n,"yAxis.min"),&d->option.y_min)&&number(my_conf_get(n,"yAxis.max"),&d->option.y_max)) d->option.range_set=true;
+   if(number(my_conf_get(n,"yAxis.min"),&d->option.y_min)&&number(my_conf_get(n,"yAxis.max"),&d->option.y_max)) d->option.range_set=true;
+   if (my_conf_get(n, "visualMap.inRange.color") != NULL && d->error[0] == '\0') {
+     my_conf_node_t* c = my_conf_get(n, "visualMap.inRange.color");
+     if (my_conf_type(c) != MY_CONF_ARRAY || my_conf_child_count(c) < 2u || !color(d, child(c, 0u), &d->option.visual_map_low_color) || !color(d, child(c, my_conf_child_count(c) - 1u), &d->option.visual_map_high_color)) set_error(d, "bad color string");
+   }
   if(size_number(my_conf_get(n,"dataZoom.0.startValue"),&d->option.zoom_start)&&size_number(my_conf_get(n,"dataZoom.0.endValue"),&d->option.zoom_end)) d->option.zoom_set=true;
   if(number(my_conf_get(n,"visualMap.min"),&d->option.visual_map_min)&&number(my_conf_get(n,"visualMap.max"),&d->option.visual_map_max)){my_conf_node_t* c=my_conf_get(n,"visualMap.inRange.color");if(c!=NULL&&my_conf_type(c)==MY_CONF_ARRAY&&my_conf_child_count(c)>=2u&&color(d,child(c,0),&d->option.visual_map_low_color)&&color(d,child(c,my_conf_child_count(c)-1u),&d->option.visual_map_high_color))d->option.visual_map_set=true;else if(c!=NULL)set_error(d,"bad color string");}
   if(!parse_grids(d,my_conf_get(n,"grid"))&&d->error[0]=='\0')set_error(d,"invalid grid");
@@ -260,7 +335,11 @@ void my_echart_json_doc_destroy(my_echart_json_doc_t** doc) {
     my_mem_free((*doc)->allocator, (*doc)->owned_strings[i]);
   my_mem_free((*doc)->allocator, (*doc)->owned_strings);
   my_mem_free((*doc)->allocator, (*doc)->x_axis);
-  my_mem_free((*doc)->allocator, (*doc)->series);
+   my_mem_free((*doc)->allocator, (*doc)->series);
+   my_mem_free((*doc)->allocator, (*doc)->mark_points);
+   my_mem_free((*doc)->allocator, (*doc)->mark_lines);
+   my_mem_free((*doc)->allocator, (*doc)->mark_areas);
+   my_mem_free((*doc)->allocator, (*doc)->dataset);
   my_mem_free((*doc)->allocator, (*doc)->grids);
   my_conf_destroy((*doc)->tree);
   my_mem_free((*doc)->allocator, *doc);

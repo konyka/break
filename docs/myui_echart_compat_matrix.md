@@ -11,7 +11,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Series | all 16 native modes: line, bar, scatter, pie, radar, funnel, heatmap, boxplot, candlestick, gauge, sankey, parallel, treemap, graph, calendar, themeRiver |
 | Cartesian | category labels, grid, fractional ticks, left/right Y axes, up to 4 grids (multi-grid layout, per-grid series assignment, per-grid axis ranges, per-grid hit test) |
 | Bar | grouped, positive/negative stacked, shared category slots |
-| Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom, linked multi-grid axis pointers, and connected-chart dataZoom groups; adapter-event bridge fills series/data/category indexes via chart hit-test and pie hover payloads |
+| Interaction | native MyUI pointer/key events, hover, tooltip, legend selection, brush, dataZoom, linked multi-grid axis pointers, and connected-chart dataZoom groups; adapter-event bridge fills series/data/category indexes via chart hit-test and pie/funnel/radar hover payloads |
 | Annotations | markPoint, markLine, markArea (option-level with owned labels + native renderer) |
 | Styling | series colors, visualMap interpolation and gradient legend |
 | Animation | externally driven deterministic progress and fake-clock scheduler |

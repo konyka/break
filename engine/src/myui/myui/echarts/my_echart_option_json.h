@@ -9,7 +9,13 @@
 
 typedef struct my_echart_json_doc_t my_echart_json_doc_t;
 
-/** @brief Parse an ECharts option, returning NULL for malformed JSON. */
+/** @brief Parse the supported ECharts subset, including title/xAxis/series,
+ * annotations as series-level markPoint {data:[{coord:[categoryIndex,value],name}]},
+ * markLine {data:[{yAxis,name,itemStyle:{color}}]}, markArea
+ * {data:[{yAxisRange:[min,max],name,itemStyle:{color}}]}, and top-level
+ * dataset {source:{dimension:[numeric,...]}}. Transforms are top-level
+ * sort {config:{dimension,order:asc|desc}} or filter
+ * {config:{dimension,op:eq|ne|gt|ge|lt|le,value}}. */
 my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len,
                                                const my_allocator_t* allocator);
 /** @brief Borrow the owned option view. */

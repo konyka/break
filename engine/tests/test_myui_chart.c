@@ -371,6 +371,48 @@ TEST(chart_supports_radar_mode_and_rejects_invalid_data) {
   my_widget_unref(chart);
 }
 
+TEST(chart_funnel_hover_tracks_bands_and_clears_outside) {
+  static const float values[] = {100.0f, 60.0f, 30.0f};
+  my_chart_series_t series = {"Funnel", values, 3u, 0x2A9D8FFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_FUNNEL);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event.u.pointer.x = 175;
+  event.u.pointer.y = 92;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  event.u.pointer.x = 10;
+  event.u.pointer.y = 10;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
+TEST(chart_radar_hover_tracks_spokes_and_clears_outside) {
+  static const float values[] = {20.0f, 40.0f, 60.0f, 80.0f};
+  my_chart_series_t series = {"Radar", values, 4u, 0x2A9D8FFFu, 0u};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_RADAR);
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  event.u.pointer.x = 195;
+  event.u.pointer.y = 92;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  event.u.pointer.x = 300;
+  event.u.pointer.y = 10;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
 TEST(chart_supports_funnel_mode) {
   static const float values[] = {100.0f, 70.0f, 40.0f, 20.0f};
   my_chart_series_t series = {"Funnel", values, 4u, 0xE85D75FFu, 0u};
@@ -1439,6 +1481,8 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_supports_scatter_mode);
   RUN_TEST(chart_supports_pie_mode);
   RUN_TEST(chart_supports_radar_mode_and_rejects_invalid_data);
+  RUN_TEST(chart_funnel_hover_tracks_bands_and_clears_outside);
+  RUN_TEST(chart_radar_hover_tracks_spokes_and_clears_outside);
   RUN_TEST(chart_supports_funnel_mode);
   RUN_TEST(chart_supports_heatmap_mode);
   RUN_TEST(chart_supports_boxplot_mode);

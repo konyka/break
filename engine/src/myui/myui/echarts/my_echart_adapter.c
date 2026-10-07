@@ -381,7 +381,9 @@ my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
     int32_t local_x = native->u.pointer.x;
     int32_t local_y = native->u.pointer.y;
     size_t category;
-    if (native->type == MY_EVENT_POINTER_MOVE && chart->mode == MY_CHART_PIE)
+    if (native->type == MY_EVENT_POINTER_MOVE &&
+        (chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
+         chart->mode == MY_CHART_RADAR))
       (void)adapter->chart->vtable->on_event(adapter->chart, native);
     my_widget_global_to_local(adapter->chart, &local_x, &local_y);
     category = my_chart_hit_test(adapter->chart, local_x, local_y);
@@ -397,7 +399,8 @@ my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
       }
     } else {
       size_t hover = my_chart_get_hover_index(adapter->chart);
-      if (chart->mode == MY_CHART_PIE && hover != MY_ECHART_INDEX_NONE) {
+      if ((chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
+           chart->mode == MY_CHART_RADAR) && hover != MY_ECHART_INDEX_NONE) {
         out->data_index = hover;
         out->category_index = hover;
         for (size_t i = 0u; i < chart->series_count; i++) {

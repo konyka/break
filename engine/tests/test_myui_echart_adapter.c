@@ -408,6 +408,52 @@ TEST(echart_adapter_fills_non_cartesian_hover_indexes) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_fills_funnel_radar_hover_indexes) {
+  static const double values[] = {100.0, 60.0, 30.0};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_FUNNEL,
+                                     values, 3u, 0u, 0u, NULL, true, NULL};
+  my_echart_option_input_t input = {"chart", NULL, 0u, &series, 1u, false,
+                                    false, false, 0.0, 0.0, false, 0u, 0u,
+                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL,
+                                    0u, NULL, 0u, NULL, 0u,
+                                    MY_ECHART_TRANSFORM_NONE, NULL,
+                                    MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+  const my_echart_series_type_t types[] = {MY_ECHART_FUNNEL, MY_ECHART_RADAR};
+  const my_chart_mode_t modes[] = {MY_CHART_FUNNEL, MY_CHART_RADAR};
+  for (size_t i = 0u; i < 2u; i++) {
+    my_echart_option_t option;
+    my_widget_t* chart = my_chart_create(NULL, modes[i]);
+    my_echart_adapter_t* adapter;
+    my_echart_event_t event;
+    my_event_t native = my_event_init(MY_EVENT_POINTER_MOVE);
+    series.type = types[i];
+    my_echart_option_init(&option, NULL);
+    ASSERT_NOT_NULL(chart);
+    chart->rect.w = 320;
+    chart->rect.h = 180;
+    ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+    adapter = my_echart_adapter_create(chart, NULL);
+    ASSERT_NOT_NULL(adapter);
+    ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+    native.u.pointer.x = 195;
+    native.u.pointer.y = 92;
+    native.u.pointer.button = 1u;
+    ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+    ASSERT_EQ(event.data_index, 1u);
+    ASSERT_EQ(event.category_index, 1u);
+    ASSERT_EQ(event.series_index, 0u);
+    native.u.pointer.x = -5;
+    native.u.pointer.y = -5;
+    ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+    ASSERT_EQ(event.data_index, MY_ECHART_INDEX_NONE);
+    ASSERT_EQ(event.category_index, MY_ECHART_INDEX_NONE);
+    ASSERT_EQ(event.series_index, MY_ECHART_INDEX_NONE);
+    my_echart_adapter_destroy(adapter);
+    my_widget_unref(chart);
+    my_echart_option_free(&option);
+  }
+}
+
 TEST(echart_adapter_sync_model_reprojects_after_action) {
   static const double values[] = {1.0, 2.0};
   my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u, 0u, 0u, NULL, true, NULL};
@@ -541,5 +587,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_projects_annotations);
   RUN_TEST(echart_adapter_fills_event_indexes_from_chart);
   RUN_TEST(echart_adapter_fills_non_cartesian_hover_indexes);
+  RUN_TEST(echart_adapter_fills_funnel_radar_hover_indexes);
   RUN_TEST(echart_adapter_sync_model_reprojects_after_action);
 TEST_MAIN_END()

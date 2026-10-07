@@ -1562,7 +1562,8 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   my_widget_global_to_local(widget, &local_x, &local_y);
   if ((event->type == MY_EVENT_POINTER_DOWN || event->type == MY_EVENT_POINTER_MOVE ||
        event->type == MY_EVENT_POINTER_UP) && event->u.pointer.button == 1u &&
-      chart->mode != MY_CHART_PIE && (float)local_x >= x &&
+      chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_FUNNEL &&
+      chart->mode != MY_CHART_RADAR && (float)local_x >= x &&
       (float)local_x <= x + w && (float)local_y >= y &&
       (float)local_y <= y + h) {
     size_t begin, window, category;
@@ -1625,6 +1626,82 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
     if (chart->hover_index != index) {
       (void)my_chart_set_hover_index(widget, index);
       my_chart_group_hover_notify(widget, index);
+    }
+    return MY_RET_OK;
+  }
+  if (chart->mode == MY_CHART_FUNNEL && event->type == MY_EVENT_POINTER_MOVE) {
+    const my_chart_series_t* series = NULL;
+    float max_value = 0.0f;
+    float slot_h;
+    size_t count;
+    size_t band;
+    float value;
+    float next_value;
+    float top_width;
+    float bottom_width;
+    float band_width;
+    float center_x = x + w * 0.5f;
+    if ((float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    for (size_t s = 0u; s < chart->series_count; s++) {
+      if (chart->series_visible[s] && chart->series[s].values != NULL &&
+          chart->series[s].count > 0u) {
+        series = &chart->series[s];
+        break;
+      }
+    }
+    if (series == NULL) return MY_RET_NOT_SUPPORTED;
+    for (size_t i = 0u; i < series->count; i++)
+      if (series->values[i] > max_value) max_value = series->values[i];
+    if (max_value <= 0.0f) return MY_RET_NOT_SUPPORTED;
+    count = series->count;
+    slot_h = h / (float)count;
+    band = (size_t)(((float)local_y - y) / slot_h);
+    if (band >= count) band = count - 1u;
+    value = series->values[band] > 0.0f ? series->values[band] : 0.0f;
+    next_value = band + 1u < count && series->values[band + 1u] > 0.0f
+                     ? series->values[band + 1u] : 0.0f;
+    top_width = w * value / max_value * chart->animation_progress;
+    bottom_width = w * next_value / max_value * chart->animation_progress;
+    band_width = top_width + (bottom_width - top_width) *
+                 (((float)local_y - (y + slot_h * (float)band)) / slot_h);
+    if (fabsf((float)local_x - center_x) > band_width * 0.5f) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    if (chart->hover_index != band) {
+      (void)my_chart_set_hover_index(widget, band);
+      my_chart_group_hover_notify(widget, band);
+    }
+    return MY_RET_OK;
+  }
+  if (chart->mode == MY_CHART_RADAR && event->type == MY_EVENT_POINTER_MOVE) {
+    size_t count = chart_category_count(chart);
+    float cx = x + w * 0.5f;
+    float cy = y + h * 0.5f;
+    float radius = fminf(w, h) * 0.36f;
+    float dx = (float)local_x - cx;
+    float dy = (float)local_y - cy;
+    float distance = sqrtf(dx * dx + dy * dy);
+    float angle;
+    size_t radar_index;
+    if (count < 3u || distance > radius) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    angle = atan2f(dy, dx) + 0.5f * CHART_PI;
+    if (angle < 0.0f) angle += 2.0f * CHART_PI;
+    radar_index = (size_t)lroundf(angle * (float)count /
+                                  (2.0f * CHART_PI)) % count;
+    if (chart->hover_index != radar_index) {
+      (void)my_chart_set_hover_index(widget, radar_index);
+      my_chart_group_hover_notify(widget, radar_index);
     }
     return MY_RET_OK;
   }
