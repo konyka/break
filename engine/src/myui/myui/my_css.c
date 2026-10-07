@@ -830,6 +830,57 @@ static bool css_container_property_value_ok(const char* key,
   }
 }
 
+/* R672: bounded @property syntax primitives — <color>/<length>/
+ * <number>/<integer>/<string> and `*` (unknown syntax strings carry no
+ * enforcement, documented). The text must parse as one full value of
+ * the primitive's type. */
+static bool css_property_syntax_check(const char* syntax, const char* text) {
+  css_p_t probe;
+  my_value_t v;
+  bool ok;
+  if (syntax == NULL || syntax[0] == '\0' || my_str_eq(syntax, "*")) {
+    return true;
+  }
+  if (!my_str_eq(syntax, "<color>") && !my_str_eq(syntax, "<length>") &&
+      !my_str_eq(syntax, "<number>") && !my_str_eq(syntax, "<integer>") &&
+      !my_str_eq(syntax, "<string>")) {
+    return true;
+  }
+  my_value_init(&v, NULL);
+  memset(&probe, 0, sizeof(probe));
+  probe.s = text;
+  probe.len = strlen(text);
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  ok = css_value(&probe, &v);
+  if (ok) {
+    c_ws(&probe);
+    ok = c_peek(&probe) < 0;
+  }
+  if (ok) {
+    if (my_str_eq(syntax, "<color>")) {
+      ok = my_value_type(&v) == MY_VALUE_UINT32;
+    } else if (my_str_eq(syntax, "<length>") ||
+               my_str_eq(syntax, "<number>")) {
+      ok = my_value_type(&v) == MY_VALUE_INT32 ||
+           my_value_type(&v) == MY_VALUE_DOUBLE;
+    } else if (my_str_eq(syntax, "<integer>")) {
+      ok = my_value_type(&v) == MY_VALUE_INT32;
+    } else { /* <string>: quoted only */
+      size_t first = 0u;
+      while (text[first] == ' ' || text[first] == '\t' ||
+             text[first] == '\r' || text[first] == '\n') {
+        first++;
+      }
+      ok = my_value_type(&v) == MY_VALUE_STR &&
+           (text[first] == '"' || text[first] == '\'');
+    }
+  }
+  my_value_reset(&v);
+  return ok;
+}
+
 /* ---------------- key aliases ---------------- */
 
 typedef struct css_alias_t {
@@ -3666,6 +3717,13 @@ static bool css_parse_property_atrule(css_p_t* p, my_css_sheet_t* sheet,
             name);
     return true;
   }
+  /* R672: an invalid initial invalidates the rule — initials that
+   * mention var() defer the check to computed-value time. */
+  if (has_initial && strstr(initial, "var(") == NULL &&
+      !css_property_syntax_check(syntax, initial)) {
+    MY_LOGW("my_css: dropping @property %s (initial fails syntax)", name);
+    return true;
+  }
   /* last registration wins. */
   n = my_darray_size(sheet->property_defs);
   for (i = 0u; i < n; i++) {
@@ -5087,10 +5145,18 @@ static bool css_var_substitute(const my_theme_t* theme,
             css_var_custom_value(theme, widget, state, name);
         if (cv != NULL) {
           const char* cv_text = my_value_get_str(cv);
-          snprintf(visiting[visiting_count], MY_STYLE_KEY_LEN, "%s", name);
-          resolved = css_var_substitute(
-              theme, widget, state, cv_text, strlen(cv_text), out, cap,
-              out_len, visiting, visiting_count + 1u, depth + 1u);
+          const my_theme_property_def_t* def =
+              css_theme_property_def(theme, name);
+          /* R672: a registered property whose value fails its syntax is
+           * guaranteed-invalid — the initial/fallback path takes over. */
+          if (def == NULL ||
+              css_property_syntax_check(def->syntax, cv_text)) {
+            snprintf(visiting[visiting_count], MY_STYLE_KEY_LEN, "%s",
+                     name);
+            resolved = css_var_substitute(
+                theme, widget, state, cv_text, strlen(cv_text), out, cap,
+                out_len, visiting, visiting_count + 1u, depth + 1u);
+          }
         }
         if (!resolved) {
           /* R671: an unset registered property falls back to its

@@ -1668,6 +1668,130 @@ TEST(css_property_rule_registers_custom_properties)
   my_value_reset(&out);
 }
 
+TEST(css_property_syntax_is_enforced_at_computed_value_time)
+{
+  /* R672: @property slice 2 — a registered property's value must parse
+   * as its syntax at computed-value time (bounded primitives:
+   * <color>/<length>/<number>/<integer>/<string> and *). An invalid
+   * value makes the property guaranteed-invalid: the initial value or
+   * the var() fallback applies. An invalid initial (when checkable)
+   * invalidates the @property rule itself. */
+  const char* good_color =
+      "@property --c { syntax: \"<color>\"; inherits: true; }"
+      "button { --c: #036; color: var(--c, red); }";
+  const char* bad_color_initial =
+      "@property --c { syntax: \"<color>\"; inherits: true;"
+      " initial-value: blue; }"
+      "button { --c: 12px; color: var(--c, red); }";
+  const char* bad_color_unset =
+      "@property --c { syntax: \"<color>\"; inherits: true; }"
+      "button { --c: 12px; color: var(--c, red); }";
+  const char* good_length =
+      "@property --w { syntax: \"<length>\"; inherits: true; }"
+      "button { --w: 12px; border-width: var(--w); }";
+  const char* bad_length =
+      "@property --w { syntax: \"<length>\"; inherits: true; }"
+      "button { --w: red; border-width: var(--w); }";
+  const char* bad_initial =
+      "@property --w { syntax: \"<length>\"; inherits: true;"
+      " initial-value: red; } button { color: blue; }";
+  const char* var_initial =
+      "@property --c { syntax: \"<color>\"; inherits: true;"
+      " initial-value: var(--other); } button { color: blue; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* a conforming value passes. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, good_color,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x003366FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* an invalid value falls to the registered initial value. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, bad_color_initial,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* ... and without an initial, to the var() fallback. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, bad_color_unset,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* <length> takes engine numbers; a color word is guaranteed-invalid
+   * (no initial, no fallback -> unset). */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, good_length,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "border_width", &out));
+  ASSERT_EQ(my_value_get_int32(&out), 12);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, bad_length,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                           "border_width", &out));
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* an invalid initial invalidates the @property rule itself. */
+  sheet = my_css_parse_ex(NULL, bad_initial, strlen(bad_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* ... unless the initial mentions var() — validation defers to
+   * computed-value time. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, var_initial, strlen(var_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  my_value_reset(&out);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -7154,6 +7278,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_properties_parse_and_cascade);
     RUN_TEST(css_container_queries_resolve_against_ancestor_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
+    RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);

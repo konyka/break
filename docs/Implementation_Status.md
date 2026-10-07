@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R672 @property 二期（TDD）— syntax 强制落地：有界原语集（<color>/<length>/<number>/<integer>/<string>/\*）双点校验——注册期 initial 检（违规则整条 @property 失效）+ computed-value 期值检（失格=guaranteed-invalid→initial/回退）
+
+- **缺口**(R671 落账"二期=syntax 强制")：注册属性的 syntax 字符串存而不查——`--c: 12px` 对 `<color>` 注册照样原样解析，规范"computed-value 期失格"语义全缺；非法 initial 也不令 @property 失效。
+- **方案**（双点校验，R666 替换环直插）:① `css_property_syntax_check`——有界原语集：探针 css_value 全值门禁（EOF 必需）+类型映射（color→UINT32,length/number→INT32/DOUBLE,integer→INT32,string→引号 STR——具名色 UINT32 收、生造词 STR 拒）;**未知语法串不强制**（文档化诚实让渡，含 `<percentage>`/多选一语法）;② 注册期：initial 不含 var( 时即检——失格整条 @property lenient 丢弃（规范"规则无效"同约；含 var( 者递延 computed-value 期）;③ 消费期（css_var_substitute)：注册属性的级联值先过检再替换——失格即 guaranteed-invalid，顺位落入 initial→var() 回退（规范"属性计算值为 initial"在注册表全局 initial 下逐点等价，含祖先值失格场景）。
+- **TDD（红→绿实证）**:test_myui_css +1——合格色过/失格色值→initial(blue)/失格无 initial→var() 回退（red)/<length> 数值过/色词失格→unset/非法 initial 整条丢（def 0 规则 1)/var( initial 保留递延。**RED 如实红**（行 1733:12px 原样解析 ≠ blue);GREEN 一次过 **178/178**(177+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；未注册语义与 \* 注册逐点保留，R671 全组全绿未动。
+- **边界**：语法原语集有界（`<percentage>`/多选一 `a | b`/组合符/`<transform-function>` 类未涉——未知串不强制即诚实）;<length> 收裸数（引擎长度模型，px 单位轨无）;插值动画（注册型过渡）未涉；R611 AMD 基线不动。
+
 ## 本轮更新：R671 @property 一期（TDD）— 注册型自定义属性落地：@property 解析入 theme 注册表（syntax 存储/inherits 旗标/initial-value 原始文本）,var() 解析器消费 inherits 门与初始值
 
 - **缺口**(R667 落账"@property 注册型自定义属性未涉"):@property 在 strict 下按 unsupported @-rule 整表拒——自定义属性只有未注册语义（全继承、无初始值、无类型轨）,var() 解析无法区配"本地 token"与"主题 token"。
