@@ -2177,6 +2177,135 @@ TEST(css_property_syntax_is_enforced_at_computed_value_time)
   my_value_reset(&out);
 }
 
+TEST(css_property_syntax_percentage_primitive)
+{
+  /* R676: @property syntax primitive <percentage> — a number immediately
+   * followed by '%' (no intervening whitespace, no other unit). The
+   * initial is checked at registration; the cascaded value is gated at
+   * computed-value time (guaranteed-invalid falls to the initial, then
+   * the var() fallback). */
+  const char* good_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: 50%; } button { color: blue; }";
+  const char* decimal_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: 12.5%; } button { color: blue; }";
+  const char* bare_number_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: 50; } button { color: blue; }";
+  const char* px_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: 50px; } button { color: blue; }";
+  const char* spaced_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: 50 %; } button { color: blue; }";
+  const char* word_initial =
+      "@property --p { syntax: \"<percentage>\"; inherits: false;"
+      " initial-value: abc; } button { color: blue; }";
+  const char* good_value =
+      "@property --p { syntax: \"<percentage>\"; inherits: true; }"
+      "button { --p: 50%; color: var(--p, red); }";
+  const char* bad_value =
+      "@property --p { syntax: \"<percentage>\"; inherits: true; }"
+      "button { --p: abc; color: var(--p, red); }";
+  const char* bare_number_value =
+      "@property --p { syntax: \"<percentage>\"; inherits: true; }"
+      "button { --p: 50; color: var(--p, red); }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* conforming initials register. */
+  sheet = my_css_parse_ex(NULL, good_initial, strlen(good_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, decimal_initial, strlen(decimal_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* a bare number, a px length, a spaced percent and a word are not
+   * percentages — the rule is invalidated. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bare_number_initial,
+                          strlen(bare_number_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, px_initial, strlen(px_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, spaced_initial, strlen(spaced_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, word_initial, strlen(word_initial),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* a conforming cascaded value passes the gate and substitutes raw —
+   * "50%" cannot parse as a color, so the declaration drops. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, good_value,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                           "fg_color", &out));
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a word value is guaranteed-invalid -> var() fallback. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, bad_value,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a bare number likewise. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, bare_number_value,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -7666,6 +7795,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
+    RUN_TEST(css_property_syntax_percentage_primitive);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);

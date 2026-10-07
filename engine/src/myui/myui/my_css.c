@@ -831,15 +831,39 @@ static bool css_container_property_value_ok(const char* key,
 }
 
 /* R672: bounded @property syntax primitives — <color>/<length>/
- * <number>/<integer>/<string> and `*` (unknown syntax strings carry no
- * enforcement, documented). The text must parse as one full value of
- * the primitive's type. */
+ * <number>/<integer>/<string>/<percentage> and `*` (unknown syntax
+ * strings carry no enforcement, documented). The text must parse as one
+ * full value of the primitive's type. */
 static bool css_property_syntax_check(const char* syntax, const char* text) {
   css_p_t probe;
   my_value_t v;
   bool ok;
   if (syntax == NULL || syntax[0] == '\0' || my_str_eq(syntax, "*")) {
     return true;
+  }
+  if (my_str_eq(syntax, "<percentage>")) {
+    /* R676: a number immediately followed by '%' — no intervening
+     * whitespace, no other unit. Dedicated scan: the generic css_value
+     * probe would swallow a `px` suffix before the '%' check. */
+    double number;
+    bool integral;
+    memset(&probe, 0, sizeof(probe));
+    probe.s = text;
+    probe.len = strlen(text);
+    probe.line = 1;
+    probe.col = 1;
+    c_ws(&probe);
+    if (!css_number(&probe, &number, &integral)) {
+      return false;
+    }
+    (void)number;
+    (void)integral;
+    if (c_peek(&probe) != '%') {
+      return false;
+    }
+    c_next(&probe);
+    c_ws(&probe);
+    return c_peek(&probe) < 0;
   }
   if (!my_str_eq(syntax, "<color>") && !my_str_eq(syntax, "<length>") &&
       !my_str_eq(syntax, "<number>") && !my_str_eq(syntax, "<integer>") &&

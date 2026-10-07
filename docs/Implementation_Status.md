@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R676 @property `<percentage>` 原语（TDD）— syntax 有界原语集扩编：数字紧随 '%'（无间隔白空间/无其他单位），注册期 initial 检 + computed-value 期值检双点同约
+
+- **缺口**(R672 落账"`<percentage>`/多选一 `a | b` 未涉——未知串不强制"):`syntax: "<percentage>"` 被当未知语法串全放行——`initial-value: abc` 照注册、级联值 `--p: abc` 照样替换上屏，百分比类型轨全缺。
+- **方案**（原语扩编，R672 双点校验零改机）:`css_property_syntax_check` 增 `<percentage>` 专属分支——**专用扫描**（数字经 css_number 后须立即见 '%'，再白空间至 EOF)：不复用 css_value 探针（其会吞 `px` 后缀致 `50px%` 误判收）;CSS 同约——数字与 '%' 间白空间拒（`50 %` 失格）、裸数（`50`)/px 长度（`50px`)/词（`abc`）皆失格、小数（`12.5%`)/带符号数收。已知原语表同步扩编（未知串不强制的诚实让渡不变——多选一组合子仍未涉）。
+- **TDD（红→绿实证）**:test_myui_css +1——注册面六景：合格（50%)/小数（12.5%）注册、裸数/px/带空格/词 initial 整条 @property 失效（def 0 规则 1);computed-value 面三景：合格值过闸原样替换（"50%" 非色→声明丢弃 unset——**过闸实证**：失格场景走回退绝不会 unset)、词值/裸数值 guaranteed-invalid→var() 回退红。**RED 如实红**（行 2243：裸数 initial 照注册 def≠0——未知串放行实证）;GREEN 一次过 **181/181**(180+1)。
+- **回归**：双树非图形 CTest 各 **123/123**（在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5;R672 全组（<color>/<length>/<number>/<integer>/<string>/\*）全绿未动。
+- **边界**：百分比值替换入类型化属性仍按目标属性 grammar 判（`width: var(--p)` 得 "50%" 按引擎长度模型不收——值轨存储/门检已闭环，消费侧百分比长度解析属长度模型扩展，未涉）;多选一 `a | b` 组合子/`<transform-function>` 类仍未涉（未知串不强制同约）;`+50%`/科学记数沿 css_number 全域同约；R611 AMD 基线不动。
+
 ## 本轮更新：R675 嵌套 @container AND 语义（TDD）— 双条件对落地：内层条件对 + 外层条件对并列盖戳/入身份/级联双闸（depth ≥ 3 保最内两层，文档化近似）
 
 - **缺口**(R670 落账"嵌套 AND 语义让渡"):deferral 模式下嵌套 @container 内层先戳先赢、外层条件被静默丢弃——`@container (min-width:400px) { @container (min-height:500px) {...} }` 宽 300 时（外层假）规则照样应用，与 CSS 嵌套=合取的语义相悖。
