@@ -614,6 +614,12 @@ void ex_key(app_t* app, int ch) {
 }
 
 
+#if !defined(_WIN32) && !defined(__APPLE__) && \
+    !defined(EX_EXPLORER_NO_X11) && !defined(EX_EXPLORER_NO_WAYLAND) && \
+    !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
+#define EX_EXPLORER_GLSHOT_OK 1
+#endif
+#if defined(EX_EXPLORER_GLSHOT_OK)
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
@@ -690,6 +696,7 @@ static int run_glshot(const char* path, const char* font_path) {
   free(rgb);
   return 0;
 }
+#endif /* EX_EXPLORER_GLSHOT_OK */
 
 #if defined(MYUI_PAL_X11) || defined(MYUI_PAL_WAYLAND)
 #include "mypal/my_pal.h"
@@ -839,13 +846,15 @@ static int run_palshot(const char* path, const char* font_path) {
 
 /* ---------------- window-system / backend runners ---------------- */
 
-#if !defined(MYUI_PAL_X11) && !defined(MYUI_PAL_WAYLAND)
-#if !defined(_WIN32) && !defined(__APPLE__) && !defined(EX_EXPLORER_NO_X11)
+#if !defined(_WIN32) && !defined(__APPLE__) && \
+    !defined(EX_EXPLORER_NO_X11) && !defined(MYUI_PAL_X11) && \
+    !defined(MYUI_PAL_WAYLAND)
 #define EX_HAVE_X11 1
 #if !defined(EX_EXPLORER_NO_WAYLAND)
 #define EX_HAVE_EGL_WL 1
 #endif
 #endif
+
 #if defined(EX_HAVE_X11)
 static void nap(void) {
   struct timespec ts = {0, 8000000L};
@@ -877,7 +886,7 @@ static int parse_args(int argc, char** argv, const char** platform,
   return 0;
 }
 
-#if defined(EX_HAVE_EGL_WL)
+#if defined(EX_EXPLORER_GLSHOT_OK)
 static int run_glshot(const char* path, const char* font_path);
 static int run_wayland_soft(app_t* app, const char* font_path);
 static int run_gl(app_t* app, const char* font_path, int wayland);
@@ -910,7 +919,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     if (strcmp(argv[i], "--glshot") == 0 && i + 1 < argc) {
-#if defined(EX_HAVE_EGL_WL)
+#if defined(EX_EXPLORER_GLSHOT_OK)
       return run_glshot(argv[i + 1], font_path);
 #else
       printf("--glshot not supported in this build\n");
@@ -1492,78 +1501,5 @@ static int run_gl(app_t* app, const char* font_path, int wayland) {
   (void)font_path;
   return wayland ? run_gl_wayland(app) : run_gl_x11(app);
 }
-
-/* ---------------- GL offscreen shot (EGL pbuffer + readback) ---------------- */
-static int run_glshot(const char* path, const char* font_path) {
-  app_t* app;
-  EGLDisplay display;
-  EGLConfig config;
-  EGLSurface surface;
-  EGLContext context;
-  EGLint count = 0;
-  static const EGLint cfg_attribs[] = {
-      EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
-      EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT, EGL_NONE};
-  static const EGLint pb_attribs[] = {
-      EGL_WIDTH, EX_W, EGL_HEIGHT, EX_H, EGL_NONE};
-  static const EGLint ctx_attribs[] = {EGL_CONTEXT_CLIENT_VERSION, 2,
-                                       EGL_NONE};
-  uint8_t* rgba;
-  uint8_t* rgb;
-  my_vgcanvas_t* vg;
-  uint32_t y;
-  display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-  if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) {
-    printf("glshot: EGL init failed\n");
-    return 1;
-  }
-  if (!eglBindAPI(EGL_OPENGL_ES_API) ||
-      !eglChooseConfig(display, cfg_attribs, &config, 1, &count) || count < 1) {
-    printf("glshot: no pbuffer config\n");
-    return 1;
-  }
-  surface = eglCreatePbufferSurface(display, config, pb_attribs);
-  if (surface == EGL_NO_SURFACE) {
-    printf("glshot: pbuffer creation failed\n");
-    return 1;
-  }
-  context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attribs);
-  if (context == EGL_NO_CONTEXT ||
-      !eglMakeCurrent(display, surface, surface, context)) {
-    printf("glshot: context failed\n");
-    return 1;
-  }
-  vg = my_vgcanvas_gles2_create(NULL, EX_W, EX_H);
-  if (vg == NULL) {
-    printf("glshot: gles2 vgcanvas failed\n");
-    return 1;
-  }
-  app = app_create(font_path);
-  gl_paint(app, vg);
-  rgba = (uint8_t*)malloc((size_t)EX_W * EX_H * 4u);
-  rgb = (uint8_t*)malloc((size_t)EX_W * EX_H * 3u);
-  if (rgba == NULL || rgb == NULL) return 1;
-  glReadPixels(0, 0, EX_W, EX_H, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
-  for (y = 0u; y < EX_H; y++) {
-    uint32_t src = EX_H - 1u - y; /* GL origin is bottom-left */
-    uint32_t x;
-    for (x = 0u; x < EX_W; x++) {
-      const uint8_t* p = rgba + ((size_t)src * EX_W + x) * 4u;
-      uint8_t* q = rgb + ((size_t)y * EX_W + x) * 3u;
-      q[0] = p[0];
-      q[1] = p[1];
-      q[2] = p[2];
-    }
-  }
-  {
-    FILE* f = fopen(path, "wb");
-    if (f == NULL) return 1;
-    (void)fprintf(f, "P6\n%d %d\n255\n", EX_W, EX_H);
-    (void)fwrite(rgb, 1u, (size_t)EX_W * EX_H * 3u, f);
-    (void)fclose(f);
-  }
-  printf("glshot written: %s\n", path);
-  free(rgba);
-  free(rgb);
-  return 0;
-}
+#endif
+#endif
