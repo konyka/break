@@ -181,6 +181,20 @@ const my_value_t* my_theme_get_for_widget(const my_theme_t* theme,
                                           const char* key);
 
 /**
+ * @brief var()-resolving lookup (R666): like my_theme_get_for_widget,
+ * but a declaration whose value mentions var( is substituted against the
+ * element's custom properties (own cascade first, then DOM inheritance),
+ * with fallback chains and cycle detection. Returns false when the
+ * property is absent or invalid at computed-value time (unset); `out`
+ * is invalid at computed-value time (unset); `out` must be initialized
+ * by the caller and is meaningful only when the call returns true.
+ */
+bool my_theme_get_for_widget_var(const my_theme_t* theme,
+                                 const struct my_widget_t* widget,
+                                 my_widget_state_t state, const char* key,
+                                 my_value_t* out);
+
+/**
  * @brief Virtual-part lookup (M19b): for drawn parts that are not real
  * widgets (node headers, sockets, links). `owner` anchors the
  * descendant search INCLUSIVE (CSS `node .header` hits when the owner

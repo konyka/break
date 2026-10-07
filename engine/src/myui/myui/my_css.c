@@ -4,6 +4,7 @@
  * my_css.h / docs/css.md.
  */
 #include "myui/my_css.h"
+#include "myui/my_widget.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -738,6 +739,49 @@ static bool css_custom_value(css_p_t* p, my_value_t* out, bool* important) {
   my_value_set_str(out, buf);
   my_mem_free(p->allocator, buf);
   return true;
+}
+
+/* R666: does the value text ahead mention a var( function token (any
+ * bracket depth, quotes excluded)? Such declarations are stored as raw
+ * text (css_custom_value) for lookup-time substitution instead of the
+ * typed css_value path. Read-only scan; p is untouched. */
+static bool css_value_mentions_var(const css_p_t* p) {
+  size_t i = p->pos;
+  char quote = '\0';
+  unsigned depth = 0u;
+  while (i < p->len) {
+    char c = p->s[i];
+    if (quote != '\0') {
+      if (c == '\\' && i + 1u < p->len) {
+        i += 2u;
+        continue;
+      }
+      if (c == quote) {
+        quote = '\0';
+      }
+      i++;
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = c;
+    } else if (c == '(' || c == '[' || c == '{') {
+      depth++;
+    } else if (c == ')' || c == ']' || c == '}') {
+      if (depth == 0u) {
+        break;
+      }
+      depth--;
+    } else if (c == ';' && depth == 0u) {
+      break;
+    } else if (c == 'v' &&
+               (i == 0u || !c_ident_char((unsigned char)p->s[i - 1u])) &&
+               i + 3u < p->len && p->s[i + 1u] == 'a' &&
+               p->s[i + 2u] == 'r' && p->s[i + 3u] == '(') {
+      return true;
+    }
+    i++;
+  }
+  return false;
 }
 
 /* ---------------- key aliases ---------------- */
@@ -1855,6 +1899,10 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
         /* R665: custom property — raw token-stream value (the capture
          * strips a trailing top-level `!important` itself, so the shared
          * '!' tail below never triggers for these). */
+        value_ok = css_custom_value(p, &d->value, &d->important);
+      } else if (css_value_mentions_var(p)) {
+        /* R666: var() declarations are raw text until lookup-time
+         * substitution. */
         value_ok = css_custom_value(p, &d->value, &d->important);
       } else {
         value_ok = css_value(p, &d->value);
@@ -4498,6 +4546,258 @@ static my_ret_t my_theme_load_css_internal(
 
 my_ret_t my_theme_load_css(my_theme_t* theme, const char* css) {
   return my_theme_load_css_with_options(theme, css, NULL);
+}
+
+/* R666: var() lookup-time substitution. A custom property's value is the
+ * element's own cascade first, then DOM inheritance (nearest ancestor
+ * wins); only raw string values participate (R665 stores them as such). */
+static const my_value_t* css_var_custom_value(const my_theme_t* theme,
+                                              const my_widget_t* widget,
+                                              my_widget_state_t state,
+                                              const char* name) {
+  const my_widget_t* w = widget;
+  while (w != NULL) {
+    const my_value_t* v = my_theme_get_for_widget(theme, w, state, name);
+    if (v != NULL) {
+      return my_value_type(v) == MY_VALUE_STR ? v : NULL;
+    }
+    w = w->parent;
+  }
+  return NULL;
+}
+
+#define CSS_VAR_MAX_DEPTH 8u
+#define CSS_VAR_MAX_VISITING 16u
+#define CSS_VAR_MAX_SUBST_BYTES 1024u
+
+static bool css_var_emit(char* out, size_t cap, size_t* out_len, char c) {
+  if (*out_len + 1u >= cap) {
+    return false;
+  }
+  out[(*out_len)++] = c;
+  return true;
+}
+
+/* Textually substitute var() references in text[0..length) into out.
+ * visiting[] holds the custom-property names currently being expanded
+ * (cycle detection: a re-entrant name is invalid → its fallback applies,
+ * or the whole substitution fails). */
+static bool css_var_substitute(const my_theme_t* theme,
+                               const my_widget_t* widget,
+                               my_widget_state_t state, const char* text,
+                               size_t length, char* out, size_t cap,
+                               size_t* out_len,
+                               char visiting[][MY_STYLE_KEY_LEN],
+                               unsigned visiting_count, unsigned depth) {
+  size_t i = 0u;
+  char quote = '\0';
+  while (i < length) {
+    char c = text[i];
+    if (quote != '\0') {
+      if (!css_var_emit(out, cap, out_len, c)) {
+        return false;
+      }
+      if (c == '\\' && i + 1u < length) {
+        i++;
+        if (!css_var_emit(out, cap, out_len, text[i])) {
+          return false;
+        }
+      } else if (c == quote) {
+        quote = '\0';
+      }
+      i++;
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = c;
+      if (!css_var_emit(out, cap, out_len, c)) {
+        return false;
+      }
+      i++;
+      continue;
+    }
+    if (c == 'v' && (i == 0u || !c_ident_char((unsigned char)text[i - 1u])) &&
+        i + 3u < length && text[i + 1u] == 'a' && text[i + 2u] == 'r' &&
+        text[i + 3u] == '(') {
+      size_t j = i + 4u;
+      char name[MY_STYLE_KEY_LEN];
+      size_t name_len = 0u;
+      const char* fallback = NULL;
+      size_t fallback_len = 0u;
+      unsigned parens;
+      bool cyclic = false;
+      bool resolved = false;
+      unsigned vi;
+      while (j < length &&
+             (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' ||
+              text[j] == '\n')) {
+        j++;
+      }
+      if (j + 1u >= length || text[j] != '-' || text[j + 1u] != '-') {
+        return false; /* malformed var(): a custom property name is due */
+      }
+      while (j < length && c_ident_char((unsigned char)text[j])) {
+        if (name_len + 1u >= sizeof(name)) {
+          return false;
+        }
+        name[name_len++] = text[j++];
+      }
+      name[name_len] = '\0';
+      while (j < length &&
+             (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' ||
+              text[j] == '\n')) {
+        j++;
+      }
+      if (j < length && text[j] == ',') {
+        size_t fb_start;
+        size_t fb_end;
+        char fb_quote = '\0';
+        j++;
+        while (j < length &&
+               (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' ||
+                text[j] == '\n')) {
+          j++;
+        }
+        fb_start = j;
+        parens = 1u;
+        while (j < length) {
+          char fc = text[j];
+          if (fb_quote != '\0') {
+            if (fc == '\\' && j + 1u < length) {
+              j += 2u;
+              continue;
+            }
+            if (fc == fb_quote) {
+              fb_quote = '\0';
+            }
+          } else if (fc == '\'' || fc == '"') {
+            fb_quote = fc;
+          } else if (fc == '(') {
+            parens++;
+          } else if (fc == ')') {
+            parens--;
+            if (parens == 0u) {
+              break;
+            }
+          }
+          j++;
+        }
+        if (parens != 0u) {
+          return false; /* unbalanced fallback */
+        }
+        fb_end = j;
+        while (fb_end > fb_start &&
+               (text[fb_end - 1u] == ' ' || text[fb_end - 1u] == '\t' ||
+                text[fb_end - 1u] == '\r' || text[fb_end - 1u] == '\n')) {
+          fb_end--;
+        }
+        fallback = text + fb_start;
+        fallback_len = fb_end - fb_start;
+      } else if (j >= length || text[j] != ')') {
+        return false; /* malformed var(): ',' or ')' is due */
+      }
+      if (j >= length) {
+        return false;
+      }
+      i = j + 1u; /* past ')' */
+      if (depth >= CSS_VAR_MAX_DEPTH) {
+        return false;
+      }
+      for (vi = 0u; vi < visiting_count; vi++) {
+        if (my_str_eq(visiting[vi], name)) {
+          cyclic = true;
+          break;
+        }
+      }
+      if (!cyclic && visiting_count < CSS_VAR_MAX_VISITING) {
+        const my_value_t* cv =
+            css_var_custom_value(theme, widget, state, name);
+        if (cv != NULL) {
+          const char* cv_text = my_value_get_str(cv);
+          snprintf(visiting[visiting_count], MY_STYLE_KEY_LEN, "%s", name);
+          resolved = css_var_substitute(
+              theme, widget, state, cv_text, strlen(cv_text), out, cap,
+              out_len, visiting, visiting_count + 1u, depth + 1u);
+        }
+      }
+      if (!resolved && fallback != NULL) {
+        resolved = css_var_substitute(theme, widget, state, fallback,
+                                      fallback_len, out, cap, out_len,
+                                      visiting, visiting_count, depth);
+      }
+      if (!resolved) {
+        return false;
+      }
+      continue;
+    }
+    if (!css_var_emit(out, cap, out_len, c)) {
+      return false;
+    }
+    i++;
+  }
+  return quote == '\0';
+}
+
+static bool css_value_copy_typed(const my_value_t* src, my_value_t* out) {
+  switch (my_value_type(src)) {
+    case MY_VALUE_UINT32:
+      return my_value_set_uint32(out, my_value_get_uint32(src)) == MY_RET_OK;
+    case MY_VALUE_INT32:
+      return my_value_set_int32(out, my_value_get_int32(src)) == MY_RET_OK;
+    case MY_VALUE_DOUBLE:
+      return my_value_set_double(out, my_value_get_double(src)) == MY_RET_OK;
+    case MY_VALUE_STR: {
+      const char* s = my_value_get_str(src);
+      return s != NULL && my_value_set_str(out, s) == MY_RET_OK;
+    }
+    default:
+      return false;
+  }
+}
+
+bool my_theme_get_for_widget_var(const my_theme_t* theme,
+                                 const struct my_widget_t* widget,
+                                 my_widget_state_t state, const char* key,
+                                 my_value_t* out) {
+  const my_value_t* v;
+  const char* raw;
+  char subst[CSS_VAR_MAX_SUBST_BYTES];
+  size_t subst_len = 0u;
+  char visiting[CSS_VAR_MAX_VISITING][MY_STYLE_KEY_LEN];
+  css_p_t probe;
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL) {
+    return false;
+  }
+  v = my_theme_get_for_widget(theme, widget, state, key);
+  if (v == NULL) {
+    return false;
+  }
+  if (my_value_type(v) != MY_VALUE_STR) {
+    return css_value_copy_typed(v, out);
+  }
+  raw = my_value_get_str(v);
+  if (raw == NULL) {
+    return false;
+  }
+  if (strstr(raw, "var(") == NULL) {
+    return css_value_copy_typed(v, out);
+  }
+  if (!css_var_substitute(theme, widget, state, raw, strlen(raw), subst,
+                          sizeof(subst), &subst_len, visiting, 0u, 0u)) {
+    return false;
+  }
+  subst[subst_len] = '\0';
+  memset(&probe, 0, sizeof(probe));
+  probe.s = subst;
+  probe.len = subst_len;
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_value(&probe, out)) {
+    return false;
+  }
+  c_ws(&probe);
+  return c_peek(&probe) < 0;
 }
 
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,

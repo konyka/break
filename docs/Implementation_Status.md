@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R666 var() 二期（TDD）— computed-value 期替换落地：新 API `my_theme_get_for_widget_var`，回退链/环检测/DOM 继承全谱；解析期 var() 声明不再硬拒
+
+- **缺口**(R665 落账"二期=var() 替换"):`color: var(--brand)` 被 css_value 吃掉 "var" 标识符后 '(' 尾随 → 整表硬拒；自定义属性有存储无消费，var() 语义全缺。
+- **方案**（规范 computed-value 语义的引擎形）:① **解析期存储**——非自定义键先经 `css_value_mentions_var` 只读预扫（引号/深度感知、词界 var( 任意深度命中——`rgb(var(--r),0,0)` 同型覆盖），命中即走 R665 原始捕获存 STR（零类型化路径回归）;② **替换期**——新 API `my_theme_get_for_widget_var(theme, widget, state, key, out)`：胜出声明为 STR 且含 var( 时走 `css_var_substitute` 文本替换（引号/转义保真、1024B 输出/深度 8/visiting 16 有界）,`--name` 经**自身级联→DOM 父链继承**（就近胜，规范自定义属性继承语义）查找；未中/环（visiting 重入）/超界→回退链（可嵌套）递归替换；终局探针 css_value 类型化+EOF 门禁（尾随垃圾=IACVT);③ **IACVT=unset**——无回退的环/缺失/畸形如实 false（调用方走缺省）;④ 旧 API 零变化（var 声明对 `my_theme_get_for_widget` 仍返回原始 STR——消费方欲解析须迁新 API，文档化边界）。
+- **TDD（红→绿实证）**:test_myui_css +1——解析面（var() 不再硬拒、原样存储）+查找面 11 例：基础/回退命中/定义胜回退/自定义属性互引/回退嵌套/环+回退（#010203)/环无回退=false/缺失无回退=false/**父链继承**(window→button)/数值型（border-width 12px→INT32)/类型直通。**stub-RED 如实红**（行 1082 sheet NULL——var( 整表硬拒）;GREEN 一次过 **173/173**(172+1)。
+- **回归**：双树非图形 CTest 各 **120/120**（新基线——并行会话 chart_group 测试入列；在案剪贴板 wedge 项剔除外）、fuzz smoke 5/5；既有声明/级联/自定义属性组全绿未动。
+- **边界**:var() 大小写沿引擎小写惯例（`VAR(` 不识别，与 rgb()/具名色同约）；自定义属性仅 STR 参与替换（host 直设 int 型 --x=defined-but-unusable→回退）；替换逐查找执行无缓存（热路径注记——主题查找量级小，缓存属过度工程）;**widget 消费侧迁移**（绘制代码从旧 API 换轨新 API）为独立轮——本轮交付 API+语义+门；R611 AMD 基线不动。
+
 ## 本轮更新：R665 CSS 自定义属性一期（TDD）— `--*` 声明按规范存原始 token 流（var() 替换为二期）；存储/级联/theme 查找全链零改机复用
 
 - **缺口**（css 域普查落账"自定义属性/var() 全缺，文档代码皆无记录"):`--x: 1px solid red` 多 token 值被 css_value 吃掉首 token 后尾随垃圾 → "expected ';' or '}'" 整表硬拒；`--y: var(--x)` 走 lenient 丢弃；自定义属性无从存储，var() 更无从谈起。

@@ -1045,6 +1045,194 @@ TEST(css_custom_properties_store_raw_token_streams)
   my_theme_destroy(theme);
 }
 
+TEST(css_var_substitution_resolves_at_lookup_time)
+{
+  /* R666: var() phase 2 — a declaration whose value mentions var( is
+   * stored as raw text (no more sheet-level failure) and resolved at
+   * lookup against the element's custom properties (own cascade first,
+   * then DOM inheritance), with fallback chains and cycle detection
+   * (invalid at computed-value time → the getter reports unset). */
+  const char* basic = "button { --brand: #036; color: var(--brand); }";
+  const char* fallback = "button { color: var(--missing, red); }";
+  const char* defined_wins = "button { --x: blue; color: var(--x, red); }";
+  const char* chained =
+      "button { --a: var(--b); --b: #123456; color: var(--a); }";
+  const char* nested_fallback = "button { color: var(--x, var(--y, green)); }";
+  const char* cyclic =
+      "button { --x: var(--y); --y: var(--x); color: var(--x, #010203); }";
+  const char* cyclic_unset =
+      "button { --x: var(--y); --y: var(--x); color: var(--x); }";
+  const char* missing_unset = "button { color: var(--missing); }";
+  const char* inherited =
+      "window { --brand: #0F1E2D; } button { color: var(--brand); }";
+  const char* numeric = "button { --w: 12px; border-width: var(--w); }";
+  const char* typed = "button { color: red; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_widget_t* window;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* parse level: var() no longer hard-fails the sheet; stored raw. */
+  sheet = my_css_parse_ex(NULL, basic, strlen(basic),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_STR_EQ(
+      my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 1u)->value),
+      "var(--brand)");
+  my_css_sheet_destroy(sheet);
+
+  /* basic substitution. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(widget);
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, basic, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x003366FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* fallback used when the name is missing. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, fallback,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a defined name wins over the fallback. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, defined_wins,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* custom properties may reference other custom properties. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, chained, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x123456FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* fallbacks nest. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, nested_fallback,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x008000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* a cycle invalidates the reference — the fallback applies. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, cyclic, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x010203FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* ... and without a fallback the property is unset. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, cyclic_unset,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                           "fg_color", &out));
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, missing_unset,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                           "fg_color", &out));
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* custom properties inherit down the widget tree. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  widget = my_widget_create(NULL, "button");
+  ASSERT_NOT_NULL(theme);
+  ASSERT_NOT_NULL(window);
+  ASSERT_NOT_NULL(widget);
+  window->widget_type = "window";
+  widget->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, widget), MY_RET_OK);
+  my_widget_unref(widget);
+  ASSERT_EQ(my_theme_load_css_ex(theme, inherited,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0F1E2DFFu);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* numeric substitution through a length-typed property. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, numeric, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "border_width", &out));
+  ASSERT_EQ(my_value_get_int32(&out), 12);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* typed (var-free) values pass through untouched. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, typed, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_import_position_and_charset_conformance)
 {
   /* R656: import-position and @charset conformance — @import is valid only
@@ -6526,6 +6714,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_size_queries_evaluate_at_parse_time);
     RUN_TEST(css_container_nested_in_rule_blocks);
     RUN_TEST(css_custom_properties_store_raw_token_streams);
+    RUN_TEST(css_var_substitution_resolves_at_lookup_time);
     RUN_TEST(css_import_supports_qualifier_gates_resolution);
     RUN_TEST(css_import_layer_qualifier_assigns_layer_order);
     RUN_TEST(css_import_bare_layer_qualifier_is_length_bounded);
