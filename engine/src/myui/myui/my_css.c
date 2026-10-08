@@ -784,6 +784,71 @@ static bool css_value_mentions_var(const css_p_t* p) {
   return false;
 }
 
+/* R688: does the upcoming value mention a percentage (outside
+ * quotes)? Length keys then capture raw — the generic probe rejects
+ * the '%' suffix. */
+static bool css_value_mentions_percent(const css_p_t* p) {
+  size_t i = p->pos;
+  char quote = '\0';
+  unsigned depth = 0u;
+  while (i < p->len) {
+    char c = p->s[i];
+    if (quote != '\0') {
+      if (c == '\\' && i + 1u < p->len) {
+        i += 2u;
+        continue;
+      }
+      if (c == quote) {
+        quote = '\0';
+      }
+      i++;
+      continue;
+    }
+    if (c == '\'' || c == '"') {
+      quote = c;
+    } else if (c == '(' || c == '[' || c == '{') {
+      depth++;
+    } else if (c == ')' || c == ']' || c == '}') {
+      if (depth == 0u) {
+        break;
+      }
+      depth--;
+    } else if (c == ';' && depth == 0u) {
+      break;
+    } else if (c == '%') {
+      return true;
+    }
+    i++;
+  }
+  return false;
+}
+
+/* R688: a percentage length's shape — one trimmed token of
+ * [sign]number'%' (no trailing garbage). */
+static bool css_percent_length_value_ok(const char* text) {
+  css_p_t probe;
+  double number;
+  bool integral;
+  size_t len = strlen(text);
+  memset(&probe, 0, sizeof(probe));
+  probe.s = text;
+  probe.len = len;
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_number(&probe, &number, &integral)) {
+    return false;
+  }
+  (void)number;
+  (void)integral;
+  if (probe.pos >= probe.len || probe.s[probe.pos] != '%') {
+    return false;
+  }
+  probe.pos++;
+  c_ws(&probe);
+  return probe.pos == probe.len;
+}
+
 /* R669: container-type takes its keyword set; container-name is a
  * whitespace-separated ident list with `none` standing alone. */
 static bool css_container_property_value_ok(const char* key,
@@ -2317,6 +2382,18 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
         /* R666: var() declarations are raw text until lookup-time
          * substitution. */
         value_ok = css_custom_value(p, &d->value, &d->important);
+      } else if ((my_str_eq(key, "border-width") ||
+                  my_str_eq(key, "font-size") ||
+                  my_str_eq(key, "border-radius")) &&
+                 css_value_mentions_percent(p)) {
+        /* R688: percentage lengths capture raw (the generic probe
+         * rejects the '%' suffix); the N% shape validates. */
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !css_percent_length_value_ok(my_value_get_str(&d->value))) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
       } else if (my_str_eq(key, "container-type") ||
                  my_str_eq(key, "container-name")) {
         /* R669: container properties capture raw and validate the
@@ -6708,6 +6785,47 @@ my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
                               uint32_t flags) {
   my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};
   return my_theme_load_css_internal(theme, css, &options);
+}
+
+bool my_theme_get_for_widget_var_text(const my_theme_t* theme,
+                                      const struct my_widget_t* widget,
+                                      my_widget_state_t state,
+                                      const char* key, char* out,
+                                      size_t cap) {
+  const my_value_t* v;
+  const char* raw;
+  char subst[CSS_VAR_MAX_SUBST_BYTES];
+  size_t subst_len = 0u;
+  char visiting[CSS_VAR_MAX_VISITING][MY_STYLE_KEY_LEN];
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
+      cap == 0u) {
+    return false;
+  }
+  v = my_theme_get_for_widget(theme, widget, state, key);
+  if (v == NULL) {
+    return false;
+  }
+  if (my_value_type(v) != MY_VALUE_STR) {
+    return css_value_to_text(v, out, cap);
+  }
+  raw = my_value_get_str(v);
+  if (raw == NULL) {
+    return false;
+  }
+  if (strstr(raw, "var(") == NULL) {
+    snprintf(out, cap, "%s", raw);
+    return true;
+  }
+  if (!css_var_substitute(theme, widget, state, raw, strlen(raw), subst,
+                          sizeof(subst), &subst_len, visiting, 0u, 0u)) {
+    return false;
+  }
+  if (subst_len >= cap) {
+    return false;
+  }
+  memcpy(out, subst, subst_len);
+  out[subst_len] = '\0';
+  return true;
 }
 
 my_ret_t my_theme_load_css_media_ex(

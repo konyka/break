@@ -251,6 +251,18 @@ bool my_theme_get_for_widget_var(const my_theme_t* theme,
                                  my_widget_state_t state, const char* key,
                                  my_value_t* out);
 
+/** @brief R688: resolve a theme-cascade property's computed value to
+ * its substituted TEXT — unlike my_theme_get_for_widget_var the result
+ * is not probed into a typed value, so percentage spellings ("50%")
+ * survive. Local-style strings are the caller's literal domain (the
+ * R667 contract). Implemented in my_css.c. Returns false when
+ * unresolved. */
+bool my_theme_get_for_widget_var_text(const my_theme_t* theme,
+                                       const struct my_widget_t* widget,
+                                       my_widget_state_t state,
+                                       const char* key, char* out,
+                                       size_t cap);
+
 /** @brief R670/R673: evaluate a deferred @container condition for an
  * element — walk from `anchor` upward (inclusive) for the nearest
  * qualifying ancestor. Size queries require a query container

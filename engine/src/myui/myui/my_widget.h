@@ -298,6 +298,15 @@ uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
 int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
                                 const char* key, int32_t fallback);
 
+/** @brief R688: resolve a length that may carry a percentage — the
+ * explicit reference_px resolves the '%' spelling (50% of 200 = 100);
+ * bare numbers and px lengths pass through the engine length model
+ * (fractional values round); var() chains resolve first (the R667
+ * funnel). Non-length values and unset keys fall back. */
+int32_t my_widget_style_get_length(my_widget_t* widget,
+                                   my_widget_state_t state, const char* key,
+                                   int32_t reference_px, int32_t fallback);
+
 /** @brief Attach a theme at this widget (weak ref); applies to the
  * subtree at query time (climbs ancestors). Invalidates the subtree. */
 my_ret_t my_widget_apply_theme(my_widget_t* widget, my_theme_t* theme);

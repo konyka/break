@@ -3575,6 +3575,134 @@ TEST(css_transitioning_var_lookup_blends_over_time)
   my_value_reset(&out);
 }
 
+TEST(css_percentage_length_resolution)
+{
+  /* R688 (percentage-length project phase 1): a length lookup with an
+   * explicit reference resolves the '%' spelling — 50% against 200 is
+   * 100. Bare numbers and px lengths pass through (the engine length
+   * model); var() chains resolve first (R667/R685 text track);
+   * anything unresolvable falls back. */
+  const char* percent =
+      "button { border-width: 50%; }";
+  const char* via_var =
+      "@property --p { syntax: \"<percentage>\"; inherits: true;"
+      " initial-value: 50%; }"
+      "button { border-width: var(--p); }";
+  const char* px =
+      "button { border-width: 12px; }";
+  const char* bare =
+      "button { border-width: 12; }";
+  const char* fractional =
+      "button { border-width: 12.5px; }";
+  const char* garbage =
+      "button { border-width: red; }";
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_value_t v;
+
+  my_value_init(&v, NULL);
+
+  /* 50% of 200 is 100. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, percent,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 100);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* a percentage through the var() machinery resolves too. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, via_var,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 100);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* px lengths and bare numbers pass through. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, px, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 12);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, bare, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 12);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* fractional lengths round to the nearest integer. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, fractional,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 13);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* non-length values (red parses as a UINT32 color) and unset keys
+   * fall back. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, garbage,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 7);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 7);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* a typed local override passes through unchanged. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_TRUE(my_value_set_int32(&v, 33) == MY_RET_OK);
+  ASSERT_EQ(my_widget_style_set(button, MY_STATE_NORMAL, "border_width",
+                                &v), MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length(button, MY_STATE_NORMAL,
+                                       "border_width", 200, 7), 33);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  my_value_reset(&v);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9590,6 +9718,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_interpolation_primitives);
     RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
+    RUN_TEST(css_percentage_length_resolution);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

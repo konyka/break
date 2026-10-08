@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R688 百分比长度消费面（TDD，百分比长度立项 phase 1）— `my_widget_style_get_length(widget, state, key, reference_px, fallback)`：显式参考解析 % 拼写（50% of 200=100）/px 与裸数直通/小数四舍五入/var() 链经 R667 漏斗；解析面长度键遇 % 走 raw 捕获（通用探针拒 '%' 后缀的 R676 边界根源关闭）；新文本域 API `my_theme_get_for_widget_var_text`
+
+- **缺口**(R676 落账"消费侧百分比长度解析属长度模型扩展,未涉",两层根源):① 解析面——`border-width: 50%` 走通用 css_value 探针,% 后缀当尾随垃圾**整声明丢弃**;② 消费面——typed 访问器无参考系概念,"50%" 无从折算。
+- **方案**(两面三 API,参考系显式参数化——父链自动推导属 phase 2):① **解析面**——长度键族（border-width/font-size/border-radius）值含 %（引号外探针预扫 `css_value_mentions_percent`,mentions_var 同型）→ raw 捕获+`css_percent_length_value_ok` 形态校验（恰一 [±]number% token,R676 扫描同约）,失格丢单声明 lenient;非 % 值走通用探针**零扰动**（12px/12/red 行为不变）;② **文本域 API** `my_theme_get_for_widget_var_text`——get_for_widget_var 的不探针化变体（typed→文本/css_var_substitute 文本出）,"50%" 存活;③ **消费面** `my_widget_style_get_length`——style_get 胜出值:INT32 直通/DOUBLE 四舍五入/UINT32 拒（色值非长度）/STR→（含 var 且非 local→themed-ancestor 链 var_text 解析,R667 local-字面契约保持）→`[±]num[px|%]` 解析（% → num*ref/100）→四舍五入出。
+- **TDD（红→绿实证）**:test_myui_css +1——九景：50% of 200=100/var() 链传百分比（@property `<percentage>` 注册）/12px 直通/12 裸数直通/12.5px→13/red（UINT32）→fallback/未设→fallback/typed local 直通。**RED 如实红**（行 3613:get_length≠100——无解析面放行+无消费面折算）;GREEN **193/193**(192+1)——期间修正测试两处（第一景漏 apply_theme、API 名笔误）。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;既有长度消费（get_int/get_color）与声明解析组全绿未动（非 % 值路径零扰动）。
+- **边界**：**phase 2=参考系自动推导**（width/height 键→父 rect、font-size→父计算字号的 widget 结构域接线,显式 reference 供宿主/测试先行）;负参考与负百分比数值域直通（钳制归宿主）;`%` 预扫引号外（引号串中 % 不触发 raw 轨）;长度键族有界三键（其余键的 % 语义未挂,逐键扩展）;round 半值向上（+0.5 截断,与 12.5→13 钉死）;R611 AMD 基线不动。
+
 ## 本轮更新：R687 过渡查询 API（TDD，插值动画立项 phase 3 引擎侧）— `my_theme_get_for_widget_var_transitioning(theme, widget, state, key, from_text, elapsed_ms, out)`：宿主供旧值文本+流逝毫秒，引擎解析 transition 配置/终值（既有 var 机械）→R685 原语按时长合成（钳制超时）；快照与时钟归宿主（引擎管值合成,宿主管时间——边界即此）
 
 - **缺口**(R686 落账"phase 3=过渡生命周期——per-widget 起始值快照/时钟推进/查询期合成,widget 域帧回调接入"):R685 原语+R686 存储之后无消费面——值变化的检测（快照）与时间推进（每帧重评估）在 myui 拉取式主题层无原位（无失效通知/无时钟钩子）。

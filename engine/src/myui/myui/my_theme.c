@@ -1455,8 +1455,7 @@ uint32_t my_widget_style_get_color(my_widget_t* widget, my_widget_state_t state,
 }
 
 int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
-                                const char* key, int32_t fallback) {
-  const my_value_t* v = my_widget_style_get(widget, state, key);
+                                const char* key, int32_t fallback) {  const my_value_t* v = my_widget_style_get(widget, state, key);
   if (v == NULL) {
     return fallback;
   }
@@ -1488,6 +1487,88 @@ int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
     }
   }
   return fallback;
+}
+
+/* R688: parse one length text — [sign]number with an optional '%' or
+ * 'px' suffix. Returns false on any other shape. */
+static bool theme_length_text(const char* text, double* number,
+                              bool* percent) {
+  const char* s = text;
+  size_t len = strlen(text);
+  size_t end = len;
+  char* endp = NULL;
+  while (end > 0u && (s[end - 1u] == ' ' || s[end - 1u] == '\t' ||
+                      s[end - 1u] == '\r' || s[end - 1u] == '\n')) {
+    end--;
+  }
+  {
+    char buf[64];
+    size_t copy = end < sizeof(buf) - 1u ? end : sizeof(buf) - 1u;
+    memcpy(buf, s, copy);
+    buf[copy] = '\0';
+    *percent = false;
+    if (copy > 0u && buf[copy - 1u] == '%') {
+      *percent = true;
+      buf[copy - 1u] = '\0';
+    } else if (copy > 2u && buf[copy - 2u] == 'p' && buf[copy - 1u] == 'x') {
+      buf[copy - 2u] = '\0';
+    }
+    *number = strtod(buf, &endp);
+    return endp != NULL && *endp == '\0' && endp != buf;
+  }
+}
+
+int32_t my_widget_style_get_length(my_widget_t* widget,
+                                   my_widget_state_t state, const char* key,
+                                   int32_t reference_px, int32_t fallback) {
+  const my_value_t* v = my_widget_style_get(widget, state, key);
+  const char* text;
+  double number = 0.0;
+  bool percent = false;
+  char resolved[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  if (v == NULL) {
+    return fallback;
+  }
+  if (v->type == MY_VALUE_INT32) {
+    return my_value_get_int32(v);
+  }
+  if (v->type == MY_VALUE_DOUBLE) {
+    return (int32_t)(my_value_get_double(v) + 0.5);
+  }
+  if (v->type != MY_VALUE_STR) {
+    return fallback; /* a UINT32 color is not a length */
+  }
+  text = my_value_get_str(v);
+  if (text == NULL) {
+    return fallback;
+  }
+  if (strstr(text, "var(") != NULL) {
+    /* the R667 funnel: theme-cascade var() resolves on the
+     * themed-ancestor chain (local literals stay literal). */
+    const my_value_t* local =
+        widget->local_style != NULL
+            ? my_style_get(widget->local_style, state, key)
+            : NULL;
+    if (local == NULL) {
+      my_widget_t* w = widget;
+      while (w != NULL && w->theme == NULL) {
+        w = w->parent;
+      }
+      if (w == NULL || !my_theme_get_for_widget_var_text(
+                           w->theme, widget, state, key, resolved,
+                           sizeof(resolved))) {
+        return fallback;
+      }
+      text = resolved;
+    }
+  }
+  if (!theme_length_text(text, &number, &percent)) {
+    return fallback;
+  }
+  if (percent) {
+    number = number * (double)reference_px / 100.0;
+  }
+  return (int32_t)(number + 0.5);
 }
 
 static void invalidate_tree(my_widget_t* widget) {
