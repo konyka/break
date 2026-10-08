@@ -943,7 +943,7 @@ typedef struct {
   double delay_ms;
   double x1, y1, x2, y2; /* the easing curve; (0,0,1,1) is linear */
   int steps_count;       /* R699: >0 = the steps(n) easing (bezier ignored) */
-  bool steps_jump_start;
+  int steps_pos;         /* R702: 0=end 1=start 2=none 3=both */
 } css_transition_spec_t;
 
 /* parse one time token ("100ms"/"0.2s") into milliseconds. */
@@ -987,9 +987,9 @@ static bool css_transition_time_token(const char* token, size_t len,
 static bool css_transition_easing_token(const char* token, size_t len,
                                         double* x1, double* y1, double* x2,
                                         double* y2, int* steps_count,
-                                        bool* steps_jump_start) {
+                                        int* steps_pos) {
   *steps_count = 0;
-  *steps_jump_start = false;
+  *steps_pos = 0;
   if (len > 6u && memcmp(token, "steps(", 6u) == 0 &&
       token[len - 1u] == ')') {
     css_p_t probe;
@@ -1025,9 +1025,19 @@ static bool css_transition_easing_token(const char* token, size_t len,
         }
         word[wl] = '\0';
       }
-      if (my_str_eq(word, "jump-start")) {
-        *steps_jump_start = true;
-      } else if (!my_str_eq(word, "jump-end")) {
+      if (my_str_eq(word, "jump-start") || my_str_eq(word, "start")) {
+        *steps_pos = 1;
+      } else if (my_str_eq(word, "jump-end") ||
+                 my_str_eq(word, "end")) {
+        *steps_pos = 0;
+      } else if (my_str_eq(word, "jump-none")) {
+        *steps_pos = 2;
+        if (*steps_count < 2) {
+          return false; /* jump-none needs n >= 2 */
+        }
+      } else if (my_str_eq(word, "jump-both")) {
+        *steps_pos = 3;
+      } else {
         return false;
       }
       c_ws(&probe);
@@ -1181,7 +1191,7 @@ static bool css_transition_group_parse(const char* text, size_t len,
     } else if (!css_transition_easing_token(tokens[2], token_lens[2],
                                             &spec->x1, &spec->y1, &spec->x2,
                                             &spec->y2, &spec->steps_count,
-                                            &spec->steps_jump_start)) {
+                                            &spec->steps_pos)) {
       return false;
     }
     if (count == 4u) {
@@ -7234,17 +7244,26 @@ bool my_theme_get_for_widget_var_transitioning(
     t = 1.0;
   }
   if (spec.steps_count > 0) {
-    /* R699: the discrete staircase — jump-end holds floor(p*n)/n
-     * (p=1 reaches 1), jump-start jumps to ceil(p*n)/n. */
+    /* R699/R702: the discrete staircase — jump-end holds
+     * floor(p*n)/n (p=1 reaches 1), jump-start jumps to
+     * (floor(p*n)+1)/n (y(0)=1/n), jump-none maps floor(p*n)/(n-1)
+     * (no jump at either end, n>=2), jump-both maps
+     * (floor(p*n)+1)/(n+1) (jumps at both ends). */
     double n = (double)spec.steps_count;
     double step;
-    if (spec.steps_jump_start) {
-      /* the first jump happens at the start: y(0) = 1/n. */
+    if (spec.steps_pos == 2) {
+      step = t >= 1.0 ? n - 1.0 : floor(t * n);
+      t = step / (n - 1.0);
+    } else if (spec.steps_pos == 3) {
+      step = t >= 1.0 ? n + 1.0 : floor(t * n) + 1.0;
+      t = step / (n + 1.0);
+    } else if (spec.steps_pos == 1) {
       step = t >= 1.0 ? n : floor(t * n) + 1.0;
+      t = step / n;
     } else {
       step = t >= 1.0 ? n : floor(t * n);
+      t = step / n;
     }
-    t = step / n;
   } else {
     t = css_transition_bezier_y(spec.x1, spec.y1, spec.x2, spec.y2, t);
   }

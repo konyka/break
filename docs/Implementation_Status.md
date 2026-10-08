@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R702 steps 全位置形态（TDD）— `jump-none`（n 阶 n−1 位,两端不跳,n≥2 强制）/`jump-both`（n+1 位,两端都跳）+ **start/end 旧拼写别名**（jump-start/jump-end 的 legacy 等价词）——steps() 四位置+双拼写全谱,spec 字段 bool→枚举化
+
+- **缺口**(R701 边界"jump-none/jump-both 未涉——注记"):steps() 的规范四位置仅两形态落地,旧拼写 start/end 不识别。
+- **方案**:① **spec 枚举化** `steps_jump_start` bool → `steps_pos` int（0=end/1=start/2=none/3=both）;② **解析词表**——jump-none（n<2 拒:无位置序列）、jump-both、start（=jump-start 别名）、end（=jump-end 别名）;③ **求值**——none: floor(p·n)/(n−1)（p=1→终值,无端点跳变）;both: (floor(p·n)+1)/(n+1)（y(0)=1/(n+1),p=1→1）。
+- **TDD（红→绿实证）**:test_myui_css +1——解析四景（none/both/legacy 收,none×n=1 丢）;求值三景:none n=2 半程仍 from/终程终值、**both n=4 elapsed 0 已离起点未达终**（不等对偶）、legacy start n=4 elapsed 0=25% 混色（别名等价实证）。**RED 如实红**（行 4601:jump-none 形态拒）;GREEN **202/202**(201+1)。
+- **回归**：双树非图形 CTest 各 **128/128**、fuzz smoke 5/5;R699/R691 组全绿（枚举化行为等价:0/1 位与原 bool 分支同式）。
+- **边界**：steps() 位置全集闭环（四位置+双拼写——规范 easing-functions 域的 steps 部分完备;`frames()` 别名属 animation 域,transition 不涉）;R611 AMD 基线不动。
+
 ## 本轮更新：R701 TSan 首个实弹战果——Chase-Lev push 的检测器盲区修复 + 注记级缺口三连清（R698 draw_text 无字体 fallback 绘制/R699 steps easing/R700 em·rem 单位）
 
 - **TSan 战果**（R697 工具链投资的首次实弹回报）:`test_ecs_system` 报 3-4 条 data race——`task.c:303/306 execute_task`（fn/ctx 读+completed 写 vs 主线程 `task_alloc` 的 memset）+`ecs_system.c:33 ecs_job_run`（job 池字段读）——**完整调用栈取证**（写者 memset@alloc,读者 worker_entry→execute_task）;逐路径静态审计（global 队列 mutex+release/acquire、Chase-Lev push/steal、task_wait 全分支）后锁定根因:**deque_push 的 `atomic_thread_fence(release)+relaxed store(bottom)` 组合是 race 检测器的经典建模盲区**（fence↔acquire 跨变量配对需保守近似;steal 路径的 buffer 可见性依赖此链）——改写为**显式 `release store(bottom)`**（C11 语义严格等价:release 的 releasing 序覆盖前置 buffer 写;真实内存序 x86/ARM 行为不变,仅检测器可分析）。**5 连跑零 WARNING+TSan 全套 121/121 零 race**（此前 1 flaky 复跑消）。

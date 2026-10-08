@@ -4556,6 +4556,135 @@ TEST(css_em_rem_length_units)
   my_theme_destroy(theme);
 }
 
+TEST(css_transition_steps_full_positions)
+{
+  /* R702: the remaining steps() positions — jump-none (n stages,
+   * n-1 positions, no jump at either end; n>=2 required) and
+   * jump-both (n+1 positions, jumps at both ends) — plus the legacy
+   * start/end spellings as aliases of jump-start/jump-end. */
+  const char* none_ok =
+      "button { transition: --a 200ms steps(4, jump-none); color: red; }";
+  const char* both_ok =
+      "button { transition: --a 200ms steps(4, jump-both); color: red; }";
+  const char* legacy_start =
+      "button { transition: --a 200ms steps(4, start); color: red; }";
+  const char* none_n1 =
+      "button { transition: --a 200ms steps(1, jump-none); color: red; }";
+  const char* none_css =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms steps(2, jump-none);"
+      " --accent: #0000ffff; }";
+  const char* both_css =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms steps(4, jump-both);"
+      " --accent: #0000ffff; }";
+  const char* legacy_css =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms steps(4, start);"
+      " --accent: #0000ffff; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* parse: the new positions and the legacy aliases store;
+   * jump-none with n=1 drops. */
+  sheet = my_css_parse_ex(NULL, none_ok, strlen(none_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, both_ok, strlen(both_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, legacy_start, strlen(legacy_start),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, none_n1, strlen(none_n1),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* jump-none, n=2: p=0.375 -> floor(0.75)/1 = 0 (still the from
+   * value); p=1 -> 2/2? no: floor(2)/(2-1) = 2/1 -> clamped to the
+   * end value. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, none_css,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 75.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu); /* step 0 */
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 200.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu); /* the end */
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* jump-both, n=4: p=0 (elapsed 0) already jumps to 1/(n+1)=0.2. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, both_css,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 0.0,
+      &out));
+  {
+    uint32_t v = my_value_get_uint32(&out);
+    ASSERT_TRUE(v != 0xFF0000FFu); /* jumped past the start */
+    ASSERT_TRUE(v != 0x0000FFFFu); /* not the end either */
+  }
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* the legacy `start` spelling behaves as jump-start (elapsed 0 =
+   * the 25% blend of n=4). */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, legacy_css,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 0.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xBF0040FFu); /* 25% blend */
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -10576,6 +10705,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_syntax_list_multipliers);
     RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_transition_steps_easing);
+    RUN_TEST(css_transition_steps_full_positions);
     RUN_TEST(css_em_rem_length_units);
     RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
     RUN_TEST(css_font_size_recursion_and_conditional_property);
