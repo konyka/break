@@ -1274,11 +1274,15 @@ static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     /* R698: the 8px-cell drawing fallback — the twin of the measure
      * fallback (seg_width's strlen*8 estimate). One visible block per
      * codepoint: text presence always means pixels, even on font-less
-     * minimal environments. */
+     * minimal environments. R707: variation selectors skip (matching
+     * soft_draw_cp) — no cell, no pen advance. */
     const char* q = text;
     float cx = x;
     while (*q != '\0') {
-      (void)my_utf8_next(&q);
+      uint32_t cp = my_utf8_next(&q);
+      if (my_font_is_variation_selector(cp)) {
+        continue;
+      }
       soft_fill_rect(
           vg, &(my_rectf_t){cx, y, 6.0f, 8.0f});
       cx += 8.0f;

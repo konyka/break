@@ -360,6 +360,108 @@ TEST(soft_draw_text_falls_back_to_cells_without_a_font)
   my_lcd_destroy(lcd);
 }
 
+TEST(soft_draw_text_cell_fallback_edges)
+{
+  /* R707: the fontless cell fallback's edge contract — an empty
+   * string draws nothing but still returns OK; a multi-byte codepoint
+   * ("é", two UTF-8 bytes) is ONE cell (per codepoint, not per byte);
+   * a variation selector draws nothing (matching soft_draw_cp's skip
+   * — an emoji+VS16 sequence renders exactly one cell). */
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 64, 32, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t *canvas;
+  const uint8_t *pixels;
+  size_t i;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+
+  /* empty string: OK, zero content pixels. */
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 64.0f, 32.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "", 4.0f, 4.0f), MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  {
+    size_t colored = 0u;
+    for (i = 0u; i < 64u * 32u; i++) {
+      const uint8_t *px = pixels + i * 4u;
+      if (px[0] != 0xFFu || px[1] != 0xFFu || px[2] != 0xFFu) {
+        colored++;
+      }
+    }
+    ASSERT_EQ(colored, 0u);
+  }
+
+  /* one multi-byte codepoint: exactly one 6x8 cell (48px), never two
+   * (a per-byte bug would paint 96px). */
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 64.0f, 32.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "\xC3\xA9", 4.0f, 4.0f),
+            MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  {
+    size_t colored = 0u;
+    for (i = 0u; i < 64u * 32u; i++) {
+      const uint8_t *px = pixels + i * 4u;
+      if (px[0] != 0xFFu || px[1] != 0xFFu || px[2] != 0xFFu) {
+        colored++;
+      }
+    }
+    ASSERT_TRUE(colored > 0u);
+    ASSERT_TRUE(colored <= 70u); /* one 6x8 cell (48px) + AA slop */
+  }
+
+  /* a lone variation selector draws nothing. */
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 64.0f, 32.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "\xEF\xB8\x8F", 4.0f, 4.0f),
+            MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  {
+    size_t colored = 0u;
+    for (i = 0u; i < 64u * 32u; i++) {
+      const uint8_t *px = pixels + i * 4u;
+      if (px[0] != 0xFFu || px[1] != 0xFFu || px[2] != 0xFFu) {
+        colored++;
+      }
+    }
+    ASSERT_EQ(colored, 0u);
+  }
+
+  /* base + VS16: exactly one cell (the base; the selector adds none). */
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 64.0f, 32.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "e\xEF\xB8\x8F", 4.0f, 4.0f),
+            MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  {
+    size_t colored = 0u;
+    for (i = 0u; i < 64u * 32u; i++) {
+      const uint8_t *px = pixels + i * 4u;
+      if (px[0] != 0xFFu || px[1] != 0xFFu || px[2] != 0xFFu) {
+        colored++;
+      }
+    }
+    ASSERT_TRUE(colored > 0u);
+    ASSERT_TRUE(colored <= 70u); /* still a single cell */
+  }
+
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(vgcanvas_rejects_invalid_stroke_styles)
 {
   my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
@@ -1614,6 +1716,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lcd_public_api_rejects_missing_backend_slots);
     RUN_TEST(vgcanvas_rejects_nonfinite_state_values);
     RUN_TEST(soft_draw_text_falls_back_to_cells_without_a_font);
+    RUN_TEST(soft_draw_text_cell_fallback_edges);
     RUN_TEST(font_format_probing_and_backend_matrix);
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);

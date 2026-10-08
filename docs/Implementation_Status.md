@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R707 补完——cell fallback 边角 + 变体选择符跳过（TDD）— 空串 OK 零像素/多字节码点恰一 cell（per-codepoint 非 per-byte）/变体选择符零 cell（与 `soft_draw_cp` 的 VS 跳过语义一致——**RED 钓出 fallback 缺 VS 跳过的真 bug**）
+
+- **缺口**(todo 续审:R707 的"空串/多字节 cell"在上一轮只做了短文件 probe 未做完):R698 的 cell fallback 分支不跳变体选择符——emoji+VS16 序列画多余 cell（有字体路径 `soft_draw_cp` 有 `my_font_is_variation_selector` 跳过,fallback 无——不一致）。
+- **方案**:fallback 循环加 VS 跳过（`my_utf8_next` 得 cp → `my_font_is_variation_selector(cp)` → `continue` 不画不推进笔位——与 `soft_draw_cp` 完全同构）。
+- **TDD**:test_myui_vgcanvas_backend +1——四景:空串 OK 零像素/"é"（两字节一码点）恰一 cell ≤70px（per-byte bug 会画 96px）/裸 VS16 零 cell（**RED 如实**:行 437 colored≠0——VS 画了 cell 实证）/"e"+VS16 恰一 cell。GREEN **40/40**(39+1)。
+- **回归**：双树非图形各 **128/128**、fuzz 5/5、**WSL TSan 40/40**。
+- **边界**：cell 数目观测走像素计数（6×8=48px+AA slop ≤70 阈值）;VS 跳过不推进笔位（`soft_draw_cp` 同约——VS 是附加修饰非独立簇）;R611 AMD 基线不动。
+
 ## 本轮更新：R705-R707 场景查漏补缺（TDD,覆盖审计轮）— 新 API 的 NULL/退化矩阵（interpolate 五参 NULL/NaN·负·超界 t 钳制、list NULL·空·越界、var_text/transitioning/step/get_length NULL 族、probe 短文件）;transition_step 边界（duration 0 即跳、settled 槽稳定不重启、**真·9 键槽满溢出跳变**、负时钟 t 钳 0）;**审计战果：var_text 缺 initial 回落**（未设但注册的键返回 false,与 get_for_widget_var 的 R671 语义不一致——九键场景钓出,补经完整 var 机械的 initial 回落）
 
 - **缺口**(用户指令"测试所有场景查漏补缺"):R685-R703 新公共 API 的退化面与组合边角无系统覆盖;审计发现 var_text 的 initial 回落缺失（真 bug）。
