@@ -3390,7 +3390,7 @@ TEST(css_transition_declaration_storage)
   const char* bad_unit =
       "button { transition: --accent 200px; color: red; }";
   const char* bad_easing =
-      "button { transition: --accent 200ms ease-in; color: red; }";
+      "button { transition: --accent 200ms bogus; color: red; }";
   const char* multi_group =
       "button { transition: --a 1ms, --b 2ms; color: red; }";
   my_css_error_t error = {0};
@@ -3464,7 +3464,9 @@ TEST(css_transition_declaration_storage)
   sheet = my_css_parse_ex(NULL, multi_group, strlen(multi_group),
                           MY_CSS_PARSE_STRICT_AT_RULES, &error);
   ASSERT_NOT_NULL(sheet);
-  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  /* R691 lifted comma groups: the multi-group declaration stores. */
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
   my_css_sheet_destroy(sheet);
 
   /* the stored value cascades like any themed key. */
@@ -3968,6 +3970,170 @@ TEST(css_property_syntax_list_multipliers)
                                           "blue red", 0.5, item,
                                           sizeof(item)));
   ASSERT_STR_EQ(item, "red blue");
+
+  my_value_reset(&out);
+}
+
+TEST(css_transition_full_parameters)
+{
+  /* R691: the full transition grammar per group — `--name <duration>
+   * [easing] [delay]` with the ease/ease-in/ease-out/ease-in-out
+   * keywords and cubic-bezier(x1,y1,x2,y2) (x in [0,1]), comma groups
+   * for parallel property transitions, and the transitioning lookup
+   * honoring delay (elapsed < delay holds the from value) and the
+   * easing curve (a non-linear midpoint differs from the linear one). */
+  const char* ease_ok =
+      "button { transition: --accent 200ms ease; color: red; }";
+  const char* full_ok =
+      "button { transition: --accent 200ms ease-in-out 100ms;"
+      " color: red; }";
+  const char* bezier_ok =
+      "button { transition: --accent 200ms"
+      " cubic-bezier(0.25, 0.1, 0.25, 1.0); color: red; }";
+  const char* groups_ok =
+      "button { transition: --a 100ms, --b 200ms ease; color: red; }";
+  const char* bad_easing =
+      "button { transition: --accent 200ms bogus; color: red; }";
+  const char* bad_extra =
+      "button { transition: --accent 200ms linear 100ms extra;"
+      " color: red; }";
+  const char* bad_bezier_x =
+      "button { transition: --accent 200ms"
+      " cubic-bezier(-0.25, 0.1, 0.25, 1.0); color: red; }";
+  const char* delayed =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms linear 100ms;"
+      " --accent: #0000ffff; }";
+  const char* eased =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms ease;"
+      " --accent: #0000ffff; }";
+  const char* two_groups =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --a 100ms, --accent 400ms linear;"
+      " --accent: #0000ffff; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* parse: each grammar form stores raw. */
+  sheet = my_css_parse_ex(NULL, ease_ok, strlen(ease_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, full_ok, strlen(full_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bezier_ok, strlen(bezier_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, groups_ok, strlen(groups_ok),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  /* unknown easings, extra tokens and out-of-range bezier x drop the
+   * declaration. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_easing, strlen(bad_easing),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_extra, strlen(bad_extra),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_bezier_x, strlen(bad_bezier_x),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* the delay holds the from value until it elapses. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, delayed,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 50.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_value_reset(&out);
+  /* past the delay the span advances: (150-100)/200 = 0.25 -> the
+   * quarter blend of the channel. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 150.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xBF0040FFu);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* a non-linear easing shifts the midpoint off the linear blend. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, eased,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 100.0,
+      &out));
+  {
+    uint32_t eased_mid = my_value_get_uint32(&out);
+    ASSERT_TRUE(eased_mid != 0x800080FFu); /* not the linear midpoint */
+    ASSERT_TRUE(eased_mid != 0xFF0000FFu); /* not the start */
+    ASSERT_TRUE(eased_mid != 0x0000FFFFu); /* not the end */
+  }
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* comma groups: the matching group's duration applies (400ms span,
+   * so 200ms is halfway). */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, two_groups,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 200.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
 
   my_value_reset(&out);
 }
@@ -9990,6 +10156,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_percentage_length_resolution);
     RUN_TEST(css_percentage_length_auto_reference);
     RUN_TEST(css_property_syntax_list_multipliers);
+    RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

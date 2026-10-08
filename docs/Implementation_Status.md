@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R691 transition 全参数（TDD，开放项清零计划轮 1/6）— easing 全集（linear/ease/ease-in/ease-out/ease-in-out/**cubic-bezier(x,y,x,y)** 二分求解,x∈[0,1]）+ delay 时长段 + 逗号多组（≤4 组并行）——R685/686/687 三处边界一次关闭；linear 的 bezier 恒等表示与半值防抖舍入两处数值细节落定
+
+- **缺口**(R686/R687 落账"easing 恒 linear/逗号多组拒/delay 未涉"):transition 仅 `--name <dur> [linear]` 单组——CSS 过渡的标准时间函数/延迟/多属性并行全缺。
+- **方案**(解析+求值两面):① **校验器重写**——逗号分组（括号感知,≤4 组）,组内**括号感知 tokenizer**（cubic-bezier(…) 内空格逗号不碎）:token0 名/token1 时长/[token2 easing 或时长=delay]/[token3 时长=delay];easing 集：五关键字（规范 bezier 参数）+ cubic-bezier 四数解析（x∈[0,1] 硬校验,y 无界）;token 超限/非法拒;② **spec 结构** `css_transition_spec_t{name,duration,delay,x1,y1,x2,y2}`——easing 统一为 bezier 控制点,**linear=（1/3,1/3,2/3,2/3）恒等表示**（(0,0,1,1) 是 smoothstep 陷阱,数值验证钉死）;③ **求值**——elapsed<delay→t=0（hold from）;t=(elapsed−delay)/duration→**bezier 二分求解**（x(t)=progress,x 单调保证收敛,48 轮）→y(t)→clamp→R685 原语;④ **半值防抖**——色通道舍入 +0.5+1e-9（bezier 浮点漂移不得翻转精确 .5 边界——0x800080FF 中点断言的稳定性修复）。
+- **TDD（红→绿实证）**:test_myui_css +1 并更新 R686 两契约（ease-in 拒→bogus 拒、多组拒→收）——解析面七景：ease/全参/bezier/多组收,bogus/超 token/bezier 负 x 丢单声明;求值面三景：**delay hold**（elapsed 50<delay 100→from）+过 delay 四分之一程/bezier ease 中点≠linear 中点≠双端（三不等钉死非线性）/多组按匹配组时长（400ms 半程中点）。**RED 双点如实红**（多组收+ease 形态收均被旧校验拒）;GREEN **196/196**(195+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R685-R687 组全绿（数值防抖修复同步加固 R685 中点断言）。
+- **边界**：steps(n,jump) 阶梯 easing 未涉（离散域,R685 discrete 语义已覆盖消费需求——单列注记非缺口）;delay 仅组内末位时长（CSS 双时长歧义位序同约解析:第二时长恒 delay）;bezier 二分 48 轮（精度 2⁻⁴⁸,浮点终值经防抖舍入稳定）;R611 AMD 基线不动。
+
 ## 本轮评估：IME composition 簇感知（立项 4 勘察收官）— 数据完整性经勘察已被间接覆盖（提交原子/插入点=已对齐光标），残余为 preedit 光标显示精度级（需真实 IME 交互测试基建），零代码落档
 
 - **勘察面**（window_win32.c 的 WM_IME_COMPOSITION 管线）:① **GCS_RESULTSTR 提交**——整串原子入列（win_queue_utf16→PLATFORM_TEXT_COMMIT）,无部分切分,不撕簇 ✓;② **插入点**——preedit/commit 落编辑缓冲于光标位,而光标移动自 R657-R660 起簇对齐（箭头/Backspace/词跳全走 my_grapheme_boundary）,插入点天然在簇边界 ✓;③ **GCS_CURSORPOS**——IMM32 的 UTF-16 unit 偏移经 `platform_utf16_units_to_codepoints` 转码点位送 PREEDIT——码点偏移可落簇内,但仅影响 preedit 下划线的**渲染位置**（消费方按码点绘）,无文本撕损。

@@ -895,95 +895,251 @@ static bool css_container_property_value_ok(const char* key,
   }
 }
 
-/* R686: the transition declaration's bounded shape — `--name <ms|s>
- * [linear]` — exactly two or three whitespace-separated tokens; the
- * duration is a number with an ms/s unit; `linear` is the only easing
- * in scope. One group only (comma lists drop the declaration). */
-static bool css_transition_value_ok(const char* text) {
-  size_t i = 0u;
-  size_t len = strlen(text);
-  char tokens[3][MY_STYLE_KEY_LEN];
-  size_t token_lens[3];
-  size_t count = 0u;
-  while (i < len) {
-    size_t start;
-    while (i < len && (text[i] == ' ' || text[i] == '\t' ||
-                       text[i] == '\r' || text[i] == '\n')) {
-      i++;
-    }
-    if (i >= len) {
-      break;
-    }
-    start = i;
-    while (i < len && text[i] != ' ' && text[i] != '\t' &&
-           text[i] != '\r' && text[i] != '\n' && text[i] != ',') {
-      i++;
-    }
-    if (i < len && text[i] == ',') {
-      return false; /* comma groups are out of scope */
-    }
-    if (count >= 3u) {
-      return false;
-    }
-    token_lens[count] = i - start;
-    if (token_lens[count] >= sizeof(tokens[0])) {
-      return false;
-    }
-    memcpy(tokens[count], text + start, token_lens[count]);
-    tokens[count][token_lens[count]] = '\0';
-    count++;
-  }
-  if (count != 2u && count != 3u) {
+/* R686/R691: the transition declaration's bounded grammar, per
+ * comma group — `--name <duration> [easing] [delay]` where easing is
+ * linear/ease/ease-in/ease-out/ease-in-out or
+ * cubic-bezier(x1,y1,x2,y2) (x in [0,1]), and a bare second time is
+ * the delay. Bounded to four groups. */
+#define MY_CSS_MAX_TRANSITION_GROUPS 4u
+
+typedef struct {
+  char name[MY_STYLE_KEY_LEN];
+  double duration_ms;
+  double delay_ms;
+  double x1, y1, x2, y2; /* the easing curve; (0,0,1,1) is linear */
+} css_transition_spec_t;
+
+/* parse one time token ("100ms"/"0.2s") into milliseconds. */
+static bool css_transition_time_token(const char* token, size_t len,
+                                      double* ms) {
+  css_p_t probe;
+  double number;
+  bool integral;
+  char unit[8];
+  size_t ul = 0u;
+  memset(&probe, 0, sizeof(probe));
+  probe.s = token;
+  probe.len = len;
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_number(&probe, &number, &integral)) {
     return false;
   }
-  /* token 0: a custom property name. */
-  if (tokens[0][0] != '-' || tokens[0][1] != '-' ||
-      tokens[0][2] == '\0' || !c_ident_char((unsigned char)tokens[0][2])) {
+  while (probe.pos < probe.len && ul + 1u < sizeof(unit)) {
+    unit[ul++] = probe.s[probe.pos++];
+  }
+  unit[ul] = '\0';
+  if (probe.pos != probe.len) {
+    return false;
+  }
+  if (my_str_eq(unit, "ms")) {
+    *ms = number;
+    return true;
+  }
+  if (my_str_eq(unit, "s")) {
+    *ms = number * 1000.0;
+    return true;
+  }
+  return false;
+}
+
+/* parse one easing token — a keyword or cubic-bezier(x1,y1,x2,y2)
+ * with x in [0,1]. */
+static bool css_transition_easing_token(const char* token, size_t len,
+                                        double* x1, double* y1, double* x2,
+                                        double* y2) {
+  if (len >= 2u && token[0] == '-' && token[1] == '-') {
+    return false; /* a property name is not an easing */
+  }
+  if (len == 6u && memcmp(token, "linear", 6u) == 0) {
+    /* identity: x(t) == y(t) == t for these control points. */
+    *x1 = 1.0 / 3.0; *y1 = 1.0 / 3.0;
+    *x2 = 2.0 / 3.0; *y2 = 2.0 / 3.0;
+    return true;
+  }
+  if (len == 4u && memcmp(token, "ease", 4u) == 0) {
+    *x1 = 0.25; *y1 = 0.1; *x2 = 0.25; *y2 = 1.0;
+    return true;
+  }
+  if (len == 7u && memcmp(token, "ease-in", 7u) == 0) {
+    *x1 = 0.42; *y1 = 0.0; *x2 = 1.0; *y2 = 1.0;
+    return true;
+  }
+  if (len == 8u && memcmp(token, "ease-out", 8u) == 0) {
+    *x1 = 0.0; *y1 = 0.0; *x2 = 0.58; *y2 = 1.0;
+    return true;
+  }
+  if (len == 11u && memcmp(token, "ease-in-out", 11u) == 0) {
+    *x1 = 0.42; *y1 = 0.0; *x2 = 0.58; *y2 = 1.0;
+    return true;
+  }
+  if (len > 14u && memcmp(token, "cubic-bezier(", 13u) == 0 &&
+      token[len - 1u] == ')') {
+    css_p_t probe;
+    double v[4];
+    int i;
+    memset(&probe, 0, sizeof(probe));
+    probe.s = token + 13u;
+    probe.len = len - 14u;
+    probe.line = 1;
+    probe.col = 1;
+    for (i = 0; i < 4; i++) {
+      bool integral;
+      c_ws(&probe);
+      if (!css_number(&probe, &v[i], &integral)) {
+        return false;
+      }
+      c_ws(&probe);
+      if (i < 3) {
+        if (probe.pos >= probe.len || probe.s[probe.pos] != ',') {
+          return false;
+        }
+        probe.pos++;
+      }
+    }
+    c_ws(&probe);
+    if (probe.pos != probe.len) {
+      return false;
+    }
+    if (v[0] < 0.0 || v[0] > 1.0 || v[2] < 0.0 || v[2] > 1.0) {
+      return false; /* x coordinates must stay in [0,1] */
+    }
+    *x1 = v[0]; *y1 = v[1]; *x2 = v[2]; *y2 = v[3];
+    return true;
+  }
+  return false;
+}
+
+/* parse one comma group into a spec (paren-aware tokens). */
+static bool css_transition_group_parse(const char* text, size_t len,
+                                       css_transition_spec_t* spec) {
+  const char* tokens[5];
+  size_t token_lens[5];
+  size_t count = 0u;
+  size_t i = 0u;
+  size_t depth = 0u;
+  size_t start = 0u;
+  memset(spec, 0, sizeof(*spec));
+  /* default easing: linear (identity control points). */
+  spec->x1 = 1.0 / 3.0;
+  spec->y1 = 1.0 / 3.0;
+  spec->x2 = 2.0 / 3.0;
+  spec->y2 = 2.0 / 3.0;
+  while (i <= len) {
+    char c = i < len ? text[i] : ',';
+    if (depth == 0u && (c == ' ' || c == '\t' || c == '\r' ||
+                        c == '\n' || c == ',' || i == len)) {
+      size_t end = i;
+      while (end > start &&
+             (text[end - 1u] == ' ' || text[end - 1u] == '\t' ||
+              text[end - 1u] == '\r' || text[end - 1u] == '\n')) {
+        end--;
+      }
+      if (end > start) {
+        if (count >= 5u) {
+          return false;
+        }
+        tokens[count] = text + start;
+        token_lens[count] = end - start;
+        count++;
+      }
+      if (c == ',' || i == len) {
+        break;
+      }
+      start = i + 1u;
+    } else if (c == '(') {
+      depth++;
+    } else if (c == ')') {
+      if (depth == 0u) {
+        return false;
+      }
+      depth--;
+    }
+    i++;
+  }
+  if (depth != 0u || count < 2u || count > 4u) {
+    return false;
+  }
+  /* token 0: the custom property name. */
+  if (token_lens[0] < 3u || tokens[0][0] != '-' || tokens[0][1] != '-' ||
+      !c_ident_char((unsigned char)tokens[0][2])) {
     return false;
   }
   {
     size_t n;
-    for (n = 2u; tokens[0][n] != '\0'; n++) {
+    if (token_lens[0] >= sizeof(spec->name)) {
+      return false;
+    }
+    for (n = 2u; n < token_lens[0]; n++) {
       if (!c_ident_char((unsigned char)tokens[0][n])) {
         return false;
       }
     }
+    memcpy(spec->name, tokens[0], token_lens[0]);
+    spec->name[token_lens[0]] = '\0';
   }
-  /* token 1: a duration — a number with an ms/s unit. */
-  {
-    css_p_t probe;
-    double number;
-    bool integral;
-    char unit[8];
-    size_t ul = 0u;
-    memset(&probe, 0, sizeof(probe));
-    probe.s = tokens[1];
-    probe.len = token_lens[1];
-    probe.line = 1;
-    probe.col = 1;
-    c_ws(&probe);
-    if (!css_number(&probe, &number, &integral)) {
-      return false;
-    }
-    (void)number;
-    (void)integral;
-    while (probe.pos < probe.len &&
-           ul + 1u < sizeof(unit)) {
-      unit[ul++] = probe.s[probe.pos++];
-    }
-    unit[ul] = '\0';
-    if (ul == 0u || (!my_str_eq(unit, "ms") && !my_str_eq(unit, "s"))) {
-      return false;
-    }
-    if (probe.pos != probe.len) {
-      return false; /* trailing garbage inside the token */
-    }
-  }
-  /* token 2 (optional): exactly `linear`. */
-  if (count == 3u && !my_str_eq(tokens[2], "linear")) {
+  /* token 1: the duration. */
+  if (!css_transition_time_token(tokens[1], token_lens[1],
+                                 &spec->duration_ms)) {
     return false;
   }
+  /* tokens 2/3: an easing and/or the delay (two bare times mean
+   * duration then delay). */
+  if (count >= 3u) {
+    double ms;
+    if (css_transition_time_token(tokens[2], token_lens[2], &ms)) {
+      if (count == 4u) {
+        return false; /* a delay where an easing/eof is due */
+      }
+      spec->delay_ms = ms;
+    } else if (!css_transition_easing_token(tokens[2], token_lens[2],
+                                            &spec->x1, &spec->y1, &spec->x2,
+                                            &spec->y2)) {
+      return false;
+    }
+    if (count == 4u) {
+      if (!css_transition_time_token(tokens[3], token_lens[3],
+                                     &spec->delay_ms)) {
+        return false;
+      }
+    }
+  }
   return true;
+}
+
+static bool css_transition_value_ok(const char* text) {
+  size_t len = strlen(text);
+  size_t i = 0u;
+  size_t depth = 0u;
+  size_t groups = 0u;
+  size_t start = 0u;
+  while (i <= len) {
+    char c = i < len ? text[i] : ',';
+    if (depth == 0u && (c == ',' || i == len)) {
+      css_transition_spec_t spec;
+      if (!css_transition_group_parse(text + start, i - start, &spec)) {
+        return false;
+      }
+      groups++;
+      if (groups > MY_CSS_MAX_TRANSITION_GROUPS) {
+        return false;
+      }
+      if (i == len) {
+        break;
+      }
+      start = i + 1u;
+    } else if (c == '(') {
+      depth++;
+    } else if (c == ')') {
+      if (depth == 0u) {
+        return false;
+      }
+      depth--;
+    }
+    i++;
+  }
+  return groups > 0u;
 }
 
 /* R672: bounded @property syntax primitives — <color>/<length>/
@@ -5913,11 +6069,17 @@ bool my_css_property_interpolate(const char* syntax, const char* from,
     for (i = 0; i < 4; i++) {
       uint32_t ca = (a >> (24u - 8u * (uint32_t)i)) & 0xFFu;
       uint32_t cb = (b >> (24u - 8u * (uint32_t)i)) & 0xFFu;
-      channels[i] = (uint32_t)((double)ca +
-                               ((double)cb - (double)ca) * t + 0.5);
-      if (channels[i] > 255u) {
-        channels[i] = 255u;
+      double channel = (double)ca + ((double)cb - (double)ca) * t;
+      /* half-up with a nudge: the bezier curve's floating-point drift
+       * must not flip an exact .5 boundary. */
+      long long rounded = (long long)(channel + 0.5 + 1e-9);
+      if (rounded < 0) {
+        rounded = 0;
       }
+      if (rounded > 255) {
+        rounded = 255;
+      }
+      channels[i] = (uint32_t)rounded;
     }
     snprintf(out, cap, "#%02x%02x%02x%02x", channels[0], channels[1],
              channels[2], channels[3]);
@@ -6762,74 +6924,62 @@ bool my_theme_get_for_widget_var(const my_theme_t* theme,
   return c_peek(&probe) < 0;
 }
 
-/* R687: does the stored transition text target `key`, and with what
- * duration in milliseconds? (mirrors css_transition_value_ok's token
- * grammar; ms stays, s multiplies by 1000). */
+/* R687/R691: does a stored transition text (comma groups) hold a
+ * group targeting `key`? Fills the spec (duration/delay/easing). */
 static bool css_transition_targets(const char* text, const char* key,
-                                   double* duration_ms) {
-  char tokens[3][MY_STYLE_KEY_LEN];
-  size_t token_lens[3];
-  size_t count = 0u;
-  size_t i = 0u;
+                                   css_transition_spec_t* spec) {
   size_t len = strlen(text);
-  css_p_t probe;
-  double number;
-  bool integral;
-  char unit[8];
-  size_t ul = 0u;
-  while (i < len) {
-    size_t start;
-    while (i < len && css_container_ws(text[i])) {
-      i++;
+  size_t i = 0u;
+  size_t depth = 0u;
+  size_t start = 0u;
+  while (i <= len) {
+    char c = i < len ? text[i] : ',';
+    if (depth == 0u && (c == ',' || i == len)) {
+      css_transition_spec_t group;
+      if (css_transition_group_parse(text + start, i - start, &group) &&
+          my_str_eq(group.name, key)) {
+        *spec = group;
+        return true;
+      }
+      if (i == len) {
+        break;
+      }
+      start = i + 1u;
+    } else if (c == '(') {
+      depth++;
+    } else if (c == ')') {
+      if (depth == 0u) {
+        return false;
+      }
+      depth--;
     }
-    if (i >= len) {
-      break;
+    i++;
+  }
+  return false;
+}
+
+/* R691: the cubic-bezier easing curve — solve t for x(t)=progress by
+ * bisection (x monotone for x1,x2 in [0,1]), then y(t). */
+static double css_transition_bezier_y(double x1, double y1, double x2,
+                                      double y2, double progress) {
+  double lo = 0.0;
+  double hi = 1.0;
+  double t = progress;
+  int i;
+  for (i = 0; i < 48; i++) {
+    double u = 1.0 - t;
+    double xt = 3.0 * u * u * t * x1 + 3.0 * u * t * t * x2 + t * t * t;
+    if (xt < progress) {
+      lo = t;
+    } else {
+      hi = t;
     }
-    start = i;
-    while (i < len && !css_container_ws(text[i])) {
-      i++;
-    }
-    if (count >= 3u) {
-      return false;
-    }
-    token_lens[count] = i - start;
-    if (token_lens[count] >= sizeof(tokens[0])) {
-      return false;
-    }
-    memcpy(tokens[count], text + start, token_lens[count]);
-    tokens[count][token_lens[count]] = '\0';
-    count++;
+    t = (lo + hi) * 0.5;
   }
-  if (count != 2u && count != 3u) {
-    return false;
+  {
+    double u = 1.0 - t;
+    return 3.0 * u * u * t * y1 + 3.0 * u * t * t * y2 + t * t * t;
   }
-  if (!my_str_eq(tokens[0], key)) {
-    return false;
-  }
-  memset(&probe, 0, sizeof(probe));
-  probe.s = tokens[1];
-  probe.len = token_lens[1];
-  probe.line = 1;
-  probe.col = 1;
-  c_ws(&probe);
-  if (!css_number(&probe, &number, &integral)) {
-    return false;
-  }
-  while (probe.pos < probe.len && ul + 1u < sizeof(unit)) {
-    unit[ul++] = probe.s[probe.pos++];
-  }
-  unit[ul] = '\0';
-  if (probe.pos != probe.len) {
-    return false;
-  }
-  if (my_str_eq(unit, "ms")) {
-    *duration_ms = number;
-  } else if (my_str_eq(unit, "s")) {
-    *duration_ms = number * 1000.0;
-  } else {
-    return false;
-  }
-  return true;
 }
 
 /* R687: render a typed value back to interpolation-domain text. */
@@ -6864,7 +7014,7 @@ bool my_theme_get_for_widget_var_transitioning(
     double elapsed_ms, my_value_t* out) {
   const my_value_t* tv;
   const my_theme_property_def_t* def;
-  double duration_ms = 0.0;
+  css_transition_spec_t spec;
   double t;
   char to_text[CSS_VAR_MAX_SUBST_BYTES];
   char blended[CSS_VAR_MAX_SUBST_BYTES];
@@ -6878,7 +7028,7 @@ bool my_theme_get_for_widget_var_transitioning(
   if (tv == NULL || my_value_type(tv) != MY_VALUE_STR) {
     return false;
   }
-  if (!css_transition_targets(my_value_get_str(tv), key, &duration_ms)) {
+  if (!css_transition_targets(my_value_get_str(tv), key, &spec)) {
     return false;
   }
   /* the target needs an interpolation track (a registered property). */
@@ -6893,7 +7043,22 @@ bool my_theme_get_for_widget_var_transitioning(
   if (!css_value_to_text(out, to_text, sizeof(to_text))) {
     return false;
   }
-  t = duration_ms > 0.0 ? elapsed_ms / duration_ms : 1.0;
+  /* R691: the delay holds the from value; the span then advances
+   * through the easing curve. */
+  if (elapsed_ms < spec.delay_ms) {
+    t = 0.0;
+  } else if (spec.duration_ms > 0.0) {
+    t = (elapsed_ms - spec.delay_ms) / spec.duration_ms;
+  } else {
+    t = 1.0;
+  }
+  if (!(t >= 0.0)) {
+    t = 0.0;
+  }
+  if (t > 1.0) {
+    t = 1.0;
+  }
+  t = css_transition_bezier_y(spec.x1, spec.y1, spec.x2, spec.y2, t);
   if (!(t >= 0.0)) {
     t = 0.0;
   }
