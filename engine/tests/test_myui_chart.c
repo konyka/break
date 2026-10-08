@@ -1687,6 +1687,65 @@ TEST(chart_renders_series_value_labels) {
   my_lcd_destroy(lcd);
 }
 
+
+TEST(chart_treemap_graph_calendar_hover_hit) {
+  static const float tvals[] = {60.0f, 30.0f, 10.0f};
+  static const float gvals[] = {5.0f, 8.0f, 3.0f, 6.00f};
+  static const float cvals[] = {1.0f, 2.0f, 3.0f, 4.0f, 5.0f, 6.0f, 7.0f, 8.0f};
+  my_event_t ev;
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_TREEMAP);
+  my_chart_series_t s = {"S", tvals, 3u, 0u, 0u, false};
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &s), MY_RET_OK);
+  ev = my_event_init(MY_EVENT_POINTER_MOVE);
+  ev.u.pointer.button = 1u;
+  ev.u.pointer.x = 52;
+  ev.u.pointer.y = 90;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 0u);
+  ASSERT_EQ(my_chart_set_series_visible(chart, 0u, false), MY_RET_OK);
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+
+  chart = my_chart_create(NULL, MY_CHART_GRAPH);
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &(my_chart_series_t){"G", gvals, 4u, 0u, 0u, false}), MY_RET_OK);
+  ev.u.pointer.x = 218; ev.u.pointer.y = 92;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 0u);
+  ASSERT_EQ(my_chart_set_series_visible(chart, 0u, false), MY_RET_OK);
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  ev.u.pointer.x = 10; ev.u.pointer.y = 10;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+
+  chart = my_chart_create(NULL, MY_CHART_CALENDAR);
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320; chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &(my_chart_series_t){"C", cvals, 8u, 0u, 0u, false}), MY_RET_OK);
+  ev.u.pointer.x = 52; ev.u.pointer.y = 40;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 0u);
+  ev.u.pointer.x = 52; ev.u.pointer.y = 100;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 7u);
+  ASSERT_EQ(my_chart_set_series_visible(chart, 0u, false), MY_RET_OK);
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  ev.u.pointer.x = 315; ev.u.pointer.y = 170;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  ev.u.pointer.x = 2; ev.u.pointer.y = 175;
+  ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(chart_three_axis_ranges_are_isolated);
   RUN_TEST(chart_rejects_invalid_series_and_range);
@@ -1744,4 +1803,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_multi_grid_hit_test_resolves_own_grid);
   RUN_TEST(chart_non_cartesian_tooltip_lists_first_series_only);
   RUN_TEST(chart_renders_series_value_labels);
+  RUN_TEST(chart_treemap_graph_calendar_hover_hit);
 TEST_MAIN_END()

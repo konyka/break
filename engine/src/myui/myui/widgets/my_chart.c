@@ -53,6 +53,12 @@ static void chart_hover_leave(void* ctx, const char* event, void* data) {
   }
 }
 
+static my_ret_t chart_clear_hover(my_widget_t* widget) {
+  (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+  my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+  return MY_RET_NOT_SUPPORTED;
+}
+
 static my_chart_t* chart_cast(my_widget_t* widget) {
   return my_chart_is_instance(widget) ? (my_chart_t*)widget : NULL;
 }
@@ -1709,7 +1715,9 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   if ((event->type == MY_EVENT_POINTER_DOWN || event->type == MY_EVENT_POINTER_MOVE ||
        event->type == MY_EVENT_POINTER_UP) && event->u.pointer.button == 1u &&
       chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_FUNNEL &&
-      chart->mode != MY_CHART_RADAR && (float)local_x >= x &&
+       chart->mode != MY_CHART_RADAR && chart->mode != MY_CHART_TREEMAP &&
+       chart->mode != MY_CHART_GRAPH && chart->mode != MY_CHART_CALENDAR &&
+       (float)local_x >= x &&
       (float)local_x <= x + w && (float)local_y >= y &&
       (float)local_y <= y + h) {
     size_t begin, window, category;
@@ -1774,6 +1782,148 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       my_chart_group_hover_notify(widget, index);
     }
     return MY_RET_OK;
+  }
+  if (chart->mode == MY_CHART_TREEMAP && event->type == MY_EVENT_POINTER_MOVE) {
+    const my_chart_series_t* series = NULL;
+    float total = 0.0f;
+    size_t positive = 0u;
+    float rx, ry, rw, rh;
+    if ((float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    for (size_t s0 = 0u; s0 < chart->series_count; s0++) {
+      if (chart->series_visible[s0] && chart->series[s0].values != NULL &&
+          chart->series[s0].count > 0u) {
+        series = &chart->series[s0];
+        break;
+      }
+    }
+    if (series == NULL) return chart_clear_hover(widget);
+    for (size_t i = 0u; i < series->count; i++)
+      if (series->values[i] > 0.0f) {
+        total += series->values[i];
+        positive++;
+      }
+    if (total <= 0.0f || positive == 0u) return chart_clear_hover(widget);
+    rx = x; ry = y; rw = w; rh = h;
+    for (size_t i = 0u; i < series->count && positive > 0u; i++) {
+      float share;
+      float rect_w, rect_h;
+      if (series->values[i] <= 0.0f) continue;
+      share = series->values[i] / total;
+      if (rw >= rh) {
+        rect_w = rw * share;
+        rect_h = rh;
+      } else {
+        rect_h = rh * share;
+        rect_w = rw;
+      }
+      if ((float)local_x >= rx && (float)local_x < rx + rect_w &&
+          (float)local_y >= ry && (float)local_y < ry + rect_h) {
+        if (chart->hover_index != i) {
+          (void)my_chart_set_hover_index(widget, i);
+          my_chart_group_hover_notify(widget, i);
+        }
+        return MY_RET_OK;
+      }
+      if (rw >= rh) {
+        rx += rect_w;
+        rw -= rect_w;
+      } else {
+        ry += rect_h;
+        rh -= rect_h;
+      }
+      positive--;
+    }
+    (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+    my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+    return MY_RET_NOT_SUPPORTED;
+  }
+  if (chart->mode == MY_CHART_GRAPH && event->type == MY_EVENT_POINTER_MOVE) {
+    const my_chart_series_t* series = NULL;
+    float max_weight = 0.0f;
+    float cx, cy, radius;
+    size_t best = CHART_HOVER_NONE;
+    float best_dist = 0.0f;
+    for (size_t s0 = 0u; s0 < chart->series_count; s0++) {
+      if (chart->series_visible[s0] && chart->series[s0].values != NULL &&
+          chart->series[s0].count >= 2u) {
+        series = &chart->series[s0];
+        break;
+      }
+    }
+    if (series == NULL) return chart_clear_hover(widget);
+    for (size_t i = 0u; i < series->count; i++)
+      if (series->values[i] > max_weight) max_weight = series->values[i];
+    if (max_weight <= 0.0f) return chart_clear_hover(widget);
+    cx = x + w * 0.5f;
+    cy = y + h * 0.5f;
+    radius = fminf(w, h) * 0.35f;
+    for (size_t i = 0u; i < series->count; i++) {
+      float a = 2.0f * CHART_PI * (float)i / (float)series->count;
+      float node_r = 6.0f + (series->values[i] / max_weight) * 10.0f;
+      float nx = cx + cosf(a) * radius;
+      float ny = cy + sinf(a) * radius;
+      float dx = (float)local_x - nx;
+      float dy = (float)local_y - ny;
+      float dist = sqrtf(dx * dx + dy * dy);
+      if (dist <= node_r && (best == CHART_HOVER_NONE ||
+                             dist < best_dist)) {
+        best = i;
+        best_dist = dist;
+      }
+    }
+    if (best == CHART_HOVER_NONE) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    if (chart->hover_index != best) {
+      (void)my_chart_set_hover_index(widget, best);
+      my_chart_group_hover_notify(widget, best);
+    }
+    return MY_RET_OK;
+  }
+  if (chart->mode == MY_CHART_CALENDAR && event->type == MY_EVENT_POINTER_MOVE) {
+    const my_chart_series_t* series = NULL;
+    if ((float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h) {
+      (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+      my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+      return MY_RET_NOT_SUPPORTED;
+    }
+    for (size_t s0 = 0u; s0 < chart->series_count; s0++) {
+      if (chart->series_visible[s0] && chart->series[s0].values != NULL &&
+          chart->series[s0].count > 0u) {
+        series = &chart->series[s0];
+        break;
+      }
+    }
+    if (series == NULL) return chart_clear_hover(widget);
+    {
+      size_t weeks = (series->count + 6u) / 7u;
+      float cell_w = w / 7.0f;
+      float cell_h = h / (float)weeks;
+      size_t day = (size_t)(((float)local_x - x) / cell_w);
+      size_t week = (size_t)(((float)local_y - y) / cell_h);
+      size_t index;
+      if (day > 6u) day = 6u;
+      if (week >= weeks) week = weeks - 1u;
+      index = week * 7u + day;
+      if (index >= series->count) {
+        (void)my_chart_set_hover_index(widget, CHART_HOVER_NONE);
+        my_chart_group_hover_notify(widget, CHART_HOVER_NONE);
+        return MY_RET_NOT_SUPPORTED;
+      }
+      if (chart->hover_index != index) {
+        (void)my_chart_set_hover_index(widget, index);
+        my_chart_group_hover_notify(widget, index);
+      }
+      return MY_RET_OK;
+    }
   }
   if (chart->mode == MY_CHART_FUNNEL && event->type == MY_EVENT_POINTER_MOVE) {
     const my_chart_series_t* series = NULL;
