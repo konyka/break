@@ -266,6 +266,8 @@ static const char* font_candidates[] = {
 #else
     "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
 #endif
     NULL};
 

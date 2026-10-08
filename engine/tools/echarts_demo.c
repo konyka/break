@@ -572,9 +572,20 @@ int main(int argc, char** argv) {
       {"28_json_option", scene_json_option},
       {"29_animation", scene_animation}};
   const char* dir = argc > 1 ? argv[1] : ".";
-  g_font = my_font_stb_create(NULL,
-      "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
-      4096u);
+  {
+    static const char* font_candidates[] = {
+        "/usr/share/fonts/liberation-serif-fonts/"
+        "LiberationSerif-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+        NULL};
+    size_t fi;
+    for (fi = 0u; font_candidates[fi] != NULL; fi++) {
+      g_font = my_font_stb_create(NULL, font_candidates[fi], 4096u);
+      if (g_font != NULL) break;
+    }
+  }
   size_t failures = 0u;
   size_t i;
   for (i = 0u; i < sizeof(scenes) / sizeof(scenes[0]); i++) {
