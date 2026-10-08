@@ -1271,7 +1271,19 @@ static my_ret_t soft_draw_text(my_vgcanvas_t* vg, const char* text, float x,
     return MY_RET_INVALID_PARAMS;
   }
   if (s->state.font == NULL || s->state.font_size <= 0) {
-    return MY_RET_NOT_SUPPORTED;
+    /* R698: the 8px-cell drawing fallback — the twin of the measure
+     * fallback (seg_width's strlen*8 estimate). One visible block per
+     * codepoint: text presence always means pixels, even on font-less
+     * minimal environments. */
+    const char* q = text;
+    float cx = x;
+    while (*q != '\0') {
+      (void)my_utf8_next(&q);
+      soft_fill_rect(
+          vg, &(my_rectf_t){cx, y, 6.0f, 8.0f});
+      cx += 8.0f;
+    }
+    return MY_RET_OK;
   }
   ascent = my_font_ascent(s->state.font, soft_dev_font_size(s));
   pen_x = SOFT_SX(s, x);

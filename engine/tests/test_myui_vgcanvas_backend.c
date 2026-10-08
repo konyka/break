@@ -166,6 +166,40 @@ TEST(vgcanvas_rejects_nonfinite_state_values)
   my_lcd_destroy(lcd);
 }
 
+TEST(soft_draw_text_falls_back_to_cells_without_a_font)
+{
+  /* R698: with no font set (a minimal environment where every font
+   * candidate failed), draw_text still renders — one visible 8px cell
+   * per codepoint, the drawing twin of the 8px-cell measure fallback
+   * (seg_width). Text presence always means pixels. */
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 32, 16, MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t *canvas;
+  const uint8_t *pixels;
+  size_t i;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 32.0f, 16.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  /* no set_font: the state has no font. */
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "AB", 0.0f, 2.0f), MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (i = 0u; i < 32u * 16u * 4u; i += 4u) {
+    if (pixels[i] != 0xFFu || pixels[i + 1u] != 0xFFu ||
+        pixels[i + 2u] != 0xFFu) {
+      colored++;
+    }
+  }
+  ASSERT_TRUE(colored > 0u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(vgcanvas_rejects_invalid_stroke_styles)
 {
   my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
@@ -1419,6 +1453,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vgcanvas_public_api_reports_missing_backend_slots);
     RUN_TEST(lcd_public_api_rejects_missing_backend_slots);
     RUN_TEST(vgcanvas_rejects_nonfinite_state_values);
+    RUN_TEST(soft_draw_text_falls_back_to_cells_without_a_font);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);
     RUN_TEST(vgcanvas_rejects_nonfinite_geometry_values);
     RUN_TEST(vgcanvas_set_font_rejects_invalid_size_without_state_change);
