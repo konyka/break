@@ -1,5 +1,10 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮评估：IME composition 簇感知（立项 4 勘察收官）— 数据完整性经勘察已被间接覆盖（提交原子/插入点=已对齐光标），残余为 preedit 光标显示精度级（需真实 IME 交互测试基建），零代码落档
+
+- **勘察面**（window_win32.c 的 WM_IME_COMPOSITION 管线）:① **GCS_RESULTSTR 提交**——整串原子入列（win_queue_utf16→PLATFORM_TEXT_COMMIT）,无部分切分,不撕簇 ✓;② **插入点**——preedit/commit 落编辑缓冲于光标位,而光标移动自 R657-R660 起簇对齐（箭头/Backspace/词跳全走 my_grapheme_boundary）,插入点天然在簇边界 ✓;③ **GCS_CURSORPOS**——IMM32 的 UTF-16 unit 偏移经 `platform_utf16_units_to_codepoints` 转码点位送 PREEDIT——码点偏移可落簇内,但仅影响 preedit 下划线的**渲染位置**（消费方按码点绘）,无文本撕损。
+- **结论**:R668 落账"composition 簇感知未涉（平台合成域）"的实害经勘察为**显示精度级,非数据完整性级**——数据面已被 R657-R660/R668 的光标/删除簇感知间接闭环。preedit 光标簇对齐渲染属平台显示域,自动验证需真实 IME 输入会话（本地/CI 无 IME 交互基建）——**不做无验证面的代码**,零代码落档,单列后续（若真实 IME 会话基建就位再评）。
+
 ## 本轮更新：R690 syntax 乘数列表（TDD，列表值立项引擎侧）— `<X>+`（空格分隔）/`<X>#`（逗号分隔）逐项过闸落地（组件须已知原语或单 ident,未知组件整组不强制）；列表居文本域（引擎文本轨哲学——my_value_t 零改动）；消费原语 `my_css_list_count/at`
 
 - **缺口**(R678/R680 落账"`#`/`+` 乘数未涉——非纯 ident 非原语→整组不强制"):`syntax: "<color>+"` 被当未知串全放行——`initial-value: red bogus` 照注册、级联列表值失项无从校验;my_value_t 无列表类型的值模型空白。
