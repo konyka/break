@@ -83,8 +83,11 @@ static bool deque_push(WorkStealDeque *dq, Task *task) {
 
     atomic_store_explicit(&dq->buffer[b & (i64)(dq->capacity - 1)], task,
                           memory_order_relaxed);
-    atomic_thread_fence(memory_order_release);
-    atomic_store_explicit(&dq->bottom, b + 1, memory_order_relaxed);
+    /* R701: an explicit release store (was: release fence + relaxed
+     * store) — semantically identical, but analyzer-visible: fence-
+     * plus-relaxed combinations are a classic blind spot of race
+     * detectors modeling. */
+    atomic_store_explicit(&dq->bottom, b + 1, memory_order_release);
     return true;
 }
 

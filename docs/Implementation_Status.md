@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R701 TSan 首个实弹战果——Chase-Lev push 的检测器盲区修复 + 注记级缺口三连清（R698 draw_text 无字体 fallback 绘制/R699 steps easing/R700 em·rem 单位）
+
+- **TSan 战果**（R697 工具链投资的首次实弹回报）:`test_ecs_system` 报 3-4 条 data race——`task.c:303/306 execute_task`（fn/ctx 读+completed 写 vs 主线程 `task_alloc` 的 memset）+`ecs_system.c:33 ecs_job_run`（job 池字段读）——**完整调用栈取证**（写者 memset@alloc,读者 worker_entry→execute_task）;逐路径静态审计（global 队列 mutex+release/acquire、Chase-Lev push/steal、task_wait 全分支）后锁定根因:**deque_push 的 `atomic_thread_fence(release)+relaxed store(bottom)` 组合是 race 检测器的经典建模盲区**（fence↔acquire 跨变量配对需保守近似;steal 路径的 buffer 可见性依赖此链）——改写为**显式 `release store(bottom)`**（C11 语义严格等价:release 的 releasing 序覆盖前置 buffer 写;真实内存序 x86/ARM 行为不变,仅检测器可分析）。**5 连跑零 WARNING+TSan 全套 121/121 零 race**（此前 1 flaky 复跑消）。
+- **R698（渲染健壮性注记关闭）**:`soft_draw_text` 无字体时静默 `NOT_SUPPORTED`——与 `seg_width` 的 8px-cell measure fallback 不对称（最小环境 rich_label 0 像素的直接机制）。补**对偶绘制 fallback**:每码点 6×8 可见块/8px 推进,文本存在即有像素。test_myui_vgcanvas_backend +1（soft canvas 无 font 断言 OK+非白像素>0）。
+- **R699（easing 全集补完）**:`steps(n[, jump-start|jump-end])`——阶梯离散函数不可由 bezier 表示,spec 加 `steps_count/steps_jump_start` 字段+解析（N∈[1,99] 整数/位置词校验）+求值（jump-end=floor(p·n)/n（p=1→1）、jump-start=floor(p·n)+1（y(0)=1/n,首阶开始即跳——**ceil 实现的 off-by-one 修正**））。test_myui_css +1——解析四景+求值三景（25% 混色对偶观测）。
+- **R700（em/rem 单位）**:长度文本后缀 `em`（元素自身计算字号,经 R693 递归 auto）/`rem`（树根计算字号,中间层无关）——解析面:预扫扩数字+em/rem 词界（`css_number` 对 "1.5e…" 科学记数试探整体回滚的坑→校验器改 `strtod` 最长前缀）;消费面:unit 枚举+%分支同族（参考≤0 回落 fallback）,**rem 分支置于 em 前**（"2rem" 尾部亦拼 "em"——后缀优先级修正）。test_myui_css +1——解析两景+求值三景（1.5em×32=48/2rem×根 16=32/无参考回落）。
+- **验证**:WSL——TSan 全套 121/121 零 race+ecs 6/6;Windows——双树各 128/128、task/ecs 专项 4/4、fuzz 5/5;test_myui_css **201/201**、vgcanvas **37/37**。提交链:`bf6c100`（R698）/`507fbde`（R699）/`9f99383`（R700）/本轮 R701。
+- **边界**:`steps` 的 jump-none/jump-both 变体未涉（CSS 边缘形态,R685 discrete 已覆盖主需求——注记）;em 的"元素自身字号含 % 递归"经 R693 机械（depth≤16）;TSan 修复是**语义等价改写**非行为修复（真实序不变——修复的是可分析性）;R611 AMD 基线不动。
+
 ## 本轮更新：R697 本地 Linux 工具链 + TSan 收口（开放项清零计划终轮）— WSL Ubuntu-24.04 就位（云镜像 rootfs 导入——Medium-IL 会话下 winget/choco/MSI 全受限的绕行路径）;TSan 实跑 **121 测试零 race 报告**（ASLR entropy workaround）;CI 新增 `linux-gcc-tsan` job;"TSan 工具链不支持"残留关闭;demo Linux 字体候选表补 DejaVu/Noto（最小环境健壮性——WSL 失败链的根因修复）
 
 - **缺口**(R696 落账"TSan=clang on Windows 无 runtime——外部事实注记"):本地无 Linux 域使 TSan 验证面缺失;用户指令"安装依赖工具链"补齐。
