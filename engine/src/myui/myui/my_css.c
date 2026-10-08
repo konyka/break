@@ -7388,7 +7388,32 @@ bool my_theme_get_for_widget_var_text(const my_theme_t* theme,
   }
   v = my_theme_get_for_widget(theme, widget, state, key);
   if (v == NULL) {
-    return false;
+    /* R705: an unset registered property falls back to its initial
+     * value (the R671/R687 semantics — var_text used to miss this and
+     * disagree with my_theme_get_for_widget_var). The initial text
+     * resolves through the full var machinery (it may itself use
+     * var()). */
+    const my_theme_property_def_t* def = css_theme_property_def(theme, key);
+    char ref[MY_STYLE_KEY_LEN + 8u];
+    int ref_length;
+    if (def == NULL || !def->has_initial) {
+      return false;
+    }
+    ref_length = snprintf(ref, sizeof(ref), "var(%s)", key);
+    if (ref_length < 0 || (size_t)ref_length >= sizeof(ref)) {
+      return false;
+    }
+    if (!css_var_substitute(theme, widget, state, ref,
+                            (size_t)ref_length, subst, sizeof(subst),
+                            &subst_len, visiting, 0u, 0u)) {
+      return false;
+    }
+    if (subst_len >= cap) {
+      return false;
+    }
+    memcpy(out, subst, subst_len);
+    out[subst_len] = '\0';
+    return true;
   }
   if (my_value_type(v) != MY_VALUE_STR) {
     return css_value_to_text(v, out, cap);

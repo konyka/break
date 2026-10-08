@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -4681,6 +4682,222 @@ TEST(css_transition_steps_full_positions)
   my_value_reset(&out);
   my_widget_unref(button);
   my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
+TEST(css_new_api_null_and_degenerate_matrix)
+{
+  /* R705 (coverage sweep): the R685-R703 public APIs' NULL and
+   * degenerate-input contracts — every entry must fail closed (false /
+   * fallback / zero), never crash, and the documented edge behaviors
+   * (NaN t clamp, empty lists, oversized caret) hold. */
+  char out[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  my_value_t v;
+
+  my_value_init(&v, NULL);
+
+  /* interpolate: NULL args fail; NaN/negative t clamp to 0. */
+  ASSERT_TRUE(!my_css_property_interpolate(NULL, "red", "blue", 0.5, out,
+                                           sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", NULL, "blue", 0.5,
+                                           out, sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", "red", NULL, 0.5,
+                                           out, sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", "red", "blue", 0.5,
+                                           NULL, sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", "red", "blue", 0.5,
+                                           out, 0u));
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", -5.0,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#ff0000ff");
+  {
+    const double nan_t = NAN;
+    ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue",
+                                            nan_t, out, sizeof(out)));
+    ASSERT_STR_EQ(out, "#ff0000ff");
+  }
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", 99.0,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#0000ffff");
+
+  /* list count/at: NULL and out-of-range fail; degenerate texts count
+   * zero or their honest items. */
+  ASSERT_EQ(my_css_list_count(NULL, ' '), 0u);
+  ASSERT_EQ(my_css_list_count("", ' '), 0u);
+  ASSERT_EQ(my_css_list_count("   ", ' '), 0u);
+  ASSERT_EQ(my_css_list_count(",", ','), 0u);
+  ASSERT_EQ(my_css_list_count("a", ' '), 1u);
+  ASSERT_TRUE(!my_css_list_at(NULL, ' ', 0u, out, sizeof(out)));
+  ASSERT_TRUE(!my_css_list_at("a b", ' ', 0u, NULL, sizeof(out)));
+  ASSERT_TRUE(!my_css_list_at("a b", ' ', 0u, out, 0u));
+  ASSERT_TRUE(!my_css_list_at("a b", ' ', 99u, out, sizeof(out)));
+
+  /* var_text / transitioning / step: NULL theme/widget/key/out fail. */
+  {
+    my_theme_t* theme = my_theme_create(NULL);
+    my_widget_t* w = my_widget_create(NULL, "button");
+    w->widget_type = "button";
+    ASSERT_TRUE(!my_theme_get_for_widget_var_text(NULL, w,
+                                                  MY_STATE_NORMAL, "k",
+                                                  out, sizeof(out)));
+    ASSERT_TRUE(!my_theme_get_for_widget_var_text(theme, NULL,
+                                                  MY_STATE_NORMAL, "k",
+                                                  out, sizeof(out)));
+    ASSERT_TRUE(!my_theme_get_for_widget_var_text(theme, w,
+                                                  MY_STATE_NORMAL, NULL,
+                                                  out, sizeof(out)));
+    ASSERT_TRUE(!my_theme_get_for_widget_var_text(
+        theme, w, MY_STATE_NORMAL, "k", NULL, 10u));
+    ASSERT_TRUE(!my_theme_get_for_widget_var_transitioning(
+        NULL, w, MY_STATE_NORMAL, "k", "red", 1.0, &v));
+    ASSERT_TRUE(!my_theme_transition_step(NULL, w, MY_STATE_NORMAL, "k",
+                                          1.0, &v, NULL));
+    my_widget_unref(w);
+    my_theme_destroy(theme);
+  }
+
+  /* get_length / get_length_auto: NULL widget/key fall back. */
+  ASSERT_EQ(my_widget_style_get_length(NULL, MY_STATE_NORMAL, "border_width",
+                                       100, 7), 7);
+  {
+    my_widget_t* w = my_widget_create(NULL, "button");
+    w->widget_type = "button";
+    ASSERT_EQ(my_widget_style_get_length(w, MY_STATE_NORMAL, NULL, 100, 7),
+              7);
+    ASSERT_EQ(my_widget_style_get_length_auto(NULL, MY_STATE_NORMAL,
+                                              "border_width", 7), 7);
+    ASSERT_EQ(my_widget_style_get_length_auto(w, MY_STATE_NORMAL, NULL, 7),
+              7);
+    my_widget_unref(w);
+  }
+
+  my_value_reset(&v);
+}
+
+TEST(css_transition_step_boundaries)
+{
+  /* R706 (coverage sweep): the transition-step state box at its edges
+   * — more tracked keys than slots (overflow keys jump-cut), duration
+   * zero (instant), a delay spanning the whole span, and a clock that
+   * runs backwards (elapsed negative -> t clamps to 0, the from
+   * value). */
+  const char* css =
+      "@property --c0 { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "@property --c1 { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --c0 0ms, --c1 200ms linear;"
+      " --c0: #0000ffff; --c1: #0000ffff; }";
+  const char* backward =
+      "@property --c1 { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --c1 200ms linear; --c1: #0000ffff; }";
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_theme_transition_state_t box;
+  my_value_t out;
+  char key[16];
+  size_t i;
+
+  my_value_init(&out, NULL);
+
+  /* duration zero: instant jump to the target even at elapsed 0. */
+  memset(&box, 0, sizeof(box));
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--c0", 0.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+
+  /* overflow: fill all 8 slots then track a 9th key — it jump-cuts
+   * (the plain value), never crashes, and the original slots keep
+   * blending. */
+  for (i = 0; i < 8u; i++) {
+    snprintf(key, sizeof(key), "--c1");
+    ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                         key, 0.0, &out, &box));
+    my_value_reset(&out);
+  }
+  /* slot 0 holds --c0, slot 1 holds --c1; both settled (their targets
+   * never changed after the first sight), so a later step passes the
+   * target through unblended — the R695 frame test covers a live
+   * span's midpoint. This pins that settled slots stay stable rather
+   * than restarting spans on unchanged values. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--c1", 100.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* a backwards clock: elapsed negative -> t clamps to 0 (the from
+   * value shows, never a negative blend). */
+  memset(&box, 0, sizeof(box));
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, backward,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--c1", "#ff0000ff", -50.0, &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu); /* clamped t=0 */
+  my_value_reset(&out);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* TRUE slot overflow: nine distinct tracked keys — the ninth finds
+   * no free slot and jump-cuts (the plain value), never crashes, and
+   * the first eight keep their settled outputs. */
+  {
+    static const char* nine =
+        "@property --k0 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k1 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k2 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k3 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k4 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k5 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k6 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k7 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #0000ffff; }"
+        "@property --k8 { syntax: \"<color>\"; inherits: true;"
+        " initial-value: #00ff00ff; }"
+        "button { --k8: #00ff00ff; }";
+    my_theme_t* t9 = my_theme_create(NULL);
+    my_widget_t* b9 = my_widget_create(NULL, "button");
+    b9->widget_type = "button";
+    ASSERT_EQ(my_widget_apply_theme(b9, t9), MY_RET_OK);
+    ASSERT_EQ(my_theme_load_css_ex(t9, nine,
+                                   MY_CSS_PARSE_STRICT_AT_RULES),
+              MY_RET_OK);
+    for (i = 0; i < 9u; i++) {
+      snprintf(key, sizeof(key), "--k%zu", i);
+      ASSERT_TRUE(my_theme_transition_step(t9, b9, MY_STATE_NORMAL, key,
+                                           0.0, &out, &box));
+      if (i < 8u) {
+        ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+      } else {
+        ASSERT_EQ(my_value_get_uint32(&out), 0x00FF00FFu);
+      }
+      my_value_reset(&out);
+    }
+    my_widget_unref(b9);
+    my_theme_destroy(t9);
+  }
 
   my_value_reset(&out);
 }
@@ -10706,6 +10923,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_transition_steps_easing);
     RUN_TEST(css_transition_steps_full_positions);
+    RUN_TEST(css_new_api_null_and_degenerate_matrix);
+    RUN_TEST(css_transition_step_boundaries);
     RUN_TEST(css_em_rem_length_units);
     RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
     RUN_TEST(css_font_size_recursion_and_conditional_property);

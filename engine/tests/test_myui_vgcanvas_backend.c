@@ -214,6 +214,15 @@ TEST(font_format_probing_and_backend_matrix)
                 "unknown");
   remove(path);
 
+  /* a file shorter than the 4-byte tag reads as unknown. */
+  snprintf(path, sizeof(path), "%s/probe_short.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("OT", 1, 2, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_UNKNOWN);
+  remove(path);
+
   ASSERT_EQ(my_font_probe_format("no/such/file.ttf"),
             MY_FONT_FORMAT_UNKNOWN);
   ASSERT_EQ(my_font_probe_format(NULL), MY_FONT_FORMAT_UNKNOWN);

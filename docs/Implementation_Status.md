@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R705-R707 场景查漏补缺（TDD,覆盖审计轮）— 新 API 的 NULL/退化矩阵（interpolate 五参 NULL/NaN·负·超界 t 钳制、list NULL·空·越界、var_text/transitioning/step/get_length NULL 族、probe 短文件）;transition_step 边界（duration 0 即跳、settled 槽稳定不重启、**真·9 键槽满溢出跳变**、负时钟 t 钳 0）;**审计战果：var_text 缺 initial 回落**（未设但注册的键返回 false,与 get_for_widget_var 的 R671 语义不一致——九键场景钓出,补经完整 var 机械的 initial 回落）
+
+- **缺口**(用户指令"测试所有场景查漏补缺"):R685-R703 新公共 API 的退化面与组合边角无系统覆盖;审计发现 var_text 的 initial 回落缺失（真 bug）。
+- **方案**:① **R705 矩阵**——五 API 的 NULL 参数全拒/NaN·负 t 钳 0/超界 t 钳 1/list 空白·纯分隔符计 0/越界 at false/probe <4 字节 UNKNOWN;② **R706 边界**——duration 0ms 即时跳（elapsed 0 即终值）、settled 槽稳定（目标未变不重启 span——语义钉死）、**9 键 8 槽溢出**（第 9 键 jump-cut 直出值,前 8 槽保持）、负 elapsed→t 钳 0（from 值显）;③ **R705 修复**——`my_theme_get_for_widget_var_text` 对 v==NULL 且注册 has_initial 的键,经 `var(key)` 完整 substitute 回落 initial（initial 自身可含 var,visiting 环护同约）——与 R687/step 链的一致性闭环。
+- **TDD**:test_myui_css +2——矩阵 ~30 断言零崩溃;边界四景含九键溢出（**RED 钓出真 bug**:step false——var_text 无回落实证）→修复后 **204/204**(202+2)。vgcanvas probe 短文件 +1 景 **39/39**。
+- **回归**：双树非图形各 **128/128**、fuzz 5/5、**WSL TSan 121/121 零 race**。
+- **边界**：transition_step 的 settled 槽**永不老化**（无 LRU——8 槽固定,溢出即跳变,宿主大需求自扩,文档化）;矩阵以 fail-closed 为契约（不崩+假值/回落）;R611 AMD 基线不动。
+
 ## 本轮更新：R703/R704 矢量字体格式探测 + 全 API 抗锯齿契约（TDD）— `my_font_probe_format/backend_supports/format_name` 公共 API（sfnt/CFF/TTC/WOFF/WOFF2 头探测+后端能力矩阵——stb 域 TrueType 轮廓,FT 域 CFF/web 容器,诚实可查询）;soft 渲染 **AA 像素契约测试**（覆盖边缘中间值存在——1bit/NEAREST 退化即红,双平台实测钉死）
 
 - **缺口**(用户需求"矢量字体文件支持+全平台 API 抗锯齿"):勘察定界——**矢量渲染现状已达标**（TTF/OTF-TTF 轮廓 stb ✓、CFF/WOFF 经 chain 的 FreeType-first fallback ✓、三条渲染 API 的字形路径全 AA:soft 逐像素 8bit alpha 混合/desktop GL+GLES2 GL_LUMINANCE 8bit+GL_LINEAR/VK R8_UNORM+glyph 专用 LINEAR sampler——码内契约注释在案）;真缺=**格式不可探测**（宿主无法先验判断文件能否加载,stb-only 构建对 CFF 静默 NULL）与**AA 无验证面**（NEAREST/1bit 退化无人看守）。
