@@ -76,6 +76,7 @@ typedef struct {
   bool labels;
   bool legend;
   float anim;
+  bool playing;
   size_t zoom_start;
   size_t zoom_end;
   bool zoom_set;
@@ -92,6 +93,7 @@ struct app_t {
   my_widget_t* labels_box;
   my_widget_t* legend_box;
   my_widget_t* random_button;
+  my_widget_t* play_button;
   my_widget_t* zoom_in;
   my_widget_t* zoom_out;
   my_widget_t* progress;
@@ -168,8 +170,16 @@ static void apply_state(app_t* app) {
   }
 }
 
+static void advance_animation(app_t* app) {
+  if (!app->st.playing) return;
+  app->st.anim += 0.02f;
+  if (app->st.anim >= 1.0f) app->st.anim = 0.0f;
+  apply_state(app);
+}
+
 static void render_frame(app_t* app) {
   const uint8_t* pixels;
+  advance_animation(app);
   (void)my_vgcanvas_begin_frame(app->vg, NULL);
   my_vgcanvas_set_fill_color(app->vg, my_color_from_rgba32(0xF0F2F5FFu));
   my_vgcanvas_fill_rect(app->vg, &(my_rectf_t){0, 0, (float)EX_W,
@@ -271,11 +281,13 @@ static app_t* app_create(const char* font_path) {
   place(app->legend_box, PANEL_X + 8, PANEL_Y + 258, 130, 22);
   (void)my_checkbox_set_checked(app->legend_box, true);
   app->random_button = my_button_create(NULL, "Randomize (R)");
-  place(app->random_button, PANEL_X + 8, PANEL_Y + 292, 130, 30);
+  place(app->random_button, PANEL_X + 8, PANEL_Y + 292, 90, 30);
+  app->play_button = my_button_create(NULL, "Play");
+  place(app->play_button, PANEL_X + 102, PANEL_Y + 292, 64, 30);
   app->zoom_in = my_button_create(NULL, "Zoom +");
-  place(app->zoom_in, PANEL_X + 150, PANEL_Y + 292, 64, 30);
+  place(app->zoom_in, PANEL_X + 170, PANEL_Y + 292, 64, 30);
   app->zoom_out = my_button_create(NULL, "Zoom -");
-  place(app->zoom_out, PANEL_X + 224, PANEL_Y + 292, 64, 30);
+  place(app->zoom_out, PANEL_X + 238, PANEL_Y + 292, 58, 30);
   app->progress = my_progress_bar_create(NULL);
   place(app->progress, PANEL_X + 8, PANEL_Y + 336, 280, 18);
   app->status = my_label_create(NULL, "line");
@@ -286,6 +298,7 @@ static app_t* app_create(const char* font_path) {
   (void)my_widget_add_child(app->panel, app->labels_box);
   (void)my_widget_add_child(app->panel, app->legend_box);
   (void)my_widget_add_child(app->panel, app->random_button);
+  (void)my_widget_add_child(app->panel, app->play_button);
   (void)my_widget_add_child(app->panel, app->zoom_in);
   (void)my_widget_add_child(app->panel, app->zoom_out);
   (void)my_widget_add_child(app->panel, app->progress);
@@ -296,10 +309,11 @@ static app_t* app_create(const char* font_path) {
 
 static my_widget_t* hit(app_t* app, int32_t x, int32_t y) {
   size_t i;
-  my_widget_t* widgets[16 + 9];
+  my_widget_t* widgets[16 + 10];
   size_t count = 0u;
   for (i = 0u; i < MODE_COUNT; i++) widgets[count++] = app->mode_buttons[i];
   widgets[count++] = app->random_button;
+  widgets[count++] = app->play_button;
   widgets[count++] = app->zoom_in;
   widgets[count++] = app->zoom_out;
   for (i = 0u; i < count; i++) {
@@ -322,6 +336,12 @@ static void on_widget_click(app_t* app, my_widget_t* w) {
   }
   if (w == app->random_button) {
     randomize(app);
+    apply_state(app);
+  } else if (w == app->play_button) {
+    app->st.playing = !app->st.playing;
+    if (app->st.playing && app->st.anim >= 1.0f) app->st.anim = 0.0f;
+    (void)my_button_set_text(app->play_button,
+                             app->st.playing ? "Pause" : "Play");
     apply_state(app);
   } else if (w == app->zoom_in) {
     if (!app->st.zoom_set) {
@@ -474,6 +494,8 @@ static void key(app_t* app, int k) {
   if (k == 'r' || k == 'R') {
     randomize(app);
     apply_state(app);
+  } else if (k == 'p' || k == 'P') {
+    on_widget_click(app, app->play_button);
   } else if (k == '+' || k == '=') {
     wheel(app, 1);
   } else if (k == '-') {
@@ -508,13 +530,22 @@ static size_t count_colored(app_t* app) {
   return n;
 }
 
+static size_t count_pixel_diff(const uint8_t* a, const uint8_t* b) {
+  size_t i;
+  size_t n = 0u;
+  for (i = 0u; i < (size_t)EX_W * EX_H * 4u; i++)
+    if (a[i] != b[i]) n++;
+  return n;
+}
+
 static int run_selftest(const char* dir, const char* font_path) {
   app_t* app = app_create(font_path);
   char path[512];
   size_t failures = 0u;
-  static const char* steps[6] = {"01_line", "02_mode_bar", "03_scale",
-                                 "04_stacked", "05_random_hover",
-                                 "06_zoom"};
+  static const char* steps[7] = {"01_line", "02_mode_bar", "03_scale",
+                                 "04_stacked", "05_random_hover", "06_zoom",
+                                 "07_animation_play"};
+  uint8_t* animation_frame;
   render_frame(app);
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[0]);
   dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
@@ -543,6 +574,27 @@ static int run_selftest(const char* dir, const char* font_path) {
   render_frame(app);
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[5]);
   dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
+  on_widget_click(app, app->play_button);
+  render_frame(app);
+  (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[6]);
+  dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
+  animation_frame = (uint8_t*)malloc((size_t)EX_W * EX_H * 4u);
+  if (animation_frame == NULL) {
+    printf("FAIL selftest animation allocation\n");
+    failures++;
+  } else {
+    memcpy(animation_frame, my_lcd_mem_get_buffer(app->lcd),
+           (size_t)EX_W * EX_H * 4u);
+    render_frame(app);
+    (void)snprintf(path, sizeof(path), "%s/%s2.ppm", dir, steps[6]);
+    dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
+    if (count_pixel_diff(animation_frame, my_lcd_mem_get_buffer(app->lcd)) ==
+        0u) {
+      printf("FAIL selftest animation did not advance\n");
+      failures++;
+    }
+    free(animation_frame);
+  }
   if (count_colored(app) < 400u) {
     printf("FAIL selftest frame too empty\n");
     failures++;
@@ -552,6 +604,7 @@ static int run_selftest(const char* dir, const char* font_path) {
 }
 
 static void gl_paint(app_t* app, my_vgcanvas_t* vg) {
+  advance_animation(app);
   (void)my_vgcanvas_begin_frame(vg, NULL);
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
   my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
@@ -739,6 +792,7 @@ static void pal_paint_frame(void) {
     return;
   }
   if (g_pal.soft_vg != NULL && g_pal.lcd != NULL) {
+    advance_animation(g_pal.app);
     (void)my_vgcanvas_begin_frame(g_pal.soft_vg, NULL);
     my_vgcanvas_set_fill_color(g_pal.soft_vg,
                                my_color_from_rgba32(0xF0F2F5FFu));
@@ -822,6 +876,7 @@ static int run_palshot(const char* path, const char* font_path) {
   lcd = my_pal_window_get_lcd(win);
   vg = my_vgcanvas_soft_create(NULL, lcd);
   if (vg == NULL || lcd == NULL) return 1;
+  advance_animation(app);
   (void)my_vgcanvas_begin_frame(vg, NULL);
   my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xF0F2F5FFu));
   my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)EX_W, (float)EX_H});
@@ -1036,6 +1091,7 @@ static int run_x11_soft(app_t* app, const char* font_path) {
       }
     }
     if (dirty) {
+      advance_animation(app);
       const uint8_t* pixels;
       render_frame(app);
       pixels = my_lcd_mem_get_buffer(app->lcd);

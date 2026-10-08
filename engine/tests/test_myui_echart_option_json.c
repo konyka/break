@@ -72,6 +72,48 @@ TEST(echart_json_errors_and_destroy) {
   my_echart_json_doc_destroy(NULL);
 }
 
+TEST(echart_json_interaction_forms) {
+  const char* json =
+      "{\"title\":{\"text\":\"Main\",\"subtext\":\"Subtitle\"},"
+      "\"legend\":{\"selected\":{\"Alpha\":false,\"Beta\":true}},"
+      "\"dataZoom\":[{\"start\":20,\"end\":80}],"
+      "\"series\":[{\"name\":\"Alpha\",\"data\":[1,2,3]},"
+      "{\"name\":\"Beta\",\"data\":[4,5,6,7,8]}]}";
+  my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+  const my_echart_option_input_t* input;
+  my_echart_json_doc_t* error_doc;
+
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+  input = my_echart_json_doc_option(doc);
+  ASSERT_TRUE(strcmp(input->title, "Main — Subtitle") == 0);
+  ASSERT_TRUE(input->zoom_set);
+  ASSERT_EQ(input->zoom_start, 1u);
+  ASSERT_EQ(input->zoom_end, 4u);
+  ASSERT_TRUE(!input->series[0].show);
+  ASSERT_TRUE(input->series[1].show);
+  my_echart_json_doc_destroy(&doc);
+
+  error_doc = my_echart_json_doc_parse(
+      "{\"dataZoom\":[{\"start\":20,\"end\":80,\"startValue\":1,\"endValue\":2}],\"series\":[{\"data\":[1]}]}",
+      strlen("{\"dataZoom\":[{\"start\":20,\"end\":80,\"startValue\":1,\"endValue\":2}],\"series\":[{\"data\":[1]}]}"), NULL);
+  ASSERT_TRUE(error_doc != NULL);
+  ASSERT_TRUE(strcmp(my_echart_json_doc_error(error_doc), "conflicting dataZoom form") == 0);
+  my_echart_json_doc_destroy(&error_doc);
+  error_doc = my_echart_json_doc_parse(
+      "{\"dataZoom\":[{\"start\":80,\"end\":20}],\"series\":[{\"data\":[1]}]}",
+      strlen("{\"dataZoom\":[{\"start\":80,\"end\":20}],\"series\":[{\"data\":[1]}]}"), NULL);
+  ASSERT_TRUE(error_doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(error_doc) != NULL);
+  my_echart_json_doc_destroy(&error_doc);
+  error_doc = my_echart_json_doc_parse(
+      "{\"legend\":{\"selected\":{\"Missing\":false}},\"series\":[{\"name\":\"Alpha\",\"data\":[1]}]}",
+      strlen("{\"legend\":{\"selected\":{\"Missing\":false}},\"series\":[{\"name\":\"Alpha\",\"data\":[1]}]}"), NULL);
+  ASSERT_TRUE(error_doc != NULL);
+  ASSERT_TRUE(strcmp(my_echart_json_doc_error(error_doc), "legend selected unknown series") == 0);
+  my_echart_json_doc_destroy(&error_doc);
+}
+
 TEST(echart_json_annotations_dataset_sort) {
   const char* json = "{\"series\":[{\"type\":\"line\",\"data\":[],\"markPoint\":{\"data\":[{\"coord\":[1,9],\"name\":\"peak\"}]},\"markLine\":{\"data\":[{\"yAxis\":42,\"name\":\"avg\",\"itemStyle\":{\"color\":\"#FF0000\"}}]},\"markArea\":{\"data\":[{\"yAxisRange\":[10,20],\"name\":\"band\",\"itemStyle\":{\"color\":\"#00FF0080\"}}]}}],\"dataset\":{\"source\":{\"sales\":[1,2,3],\"profit\":[4,5,6]}},\"transform\":{\"type\":\"sort\",\"config\":{\"dimension\":\"sales\",\"order\":\"desc\"}}}";
   my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
@@ -371,4 +413,5 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_json_annotation_and_dataset_errors);
   RUN_TEST(echart_json_grid_multi_axis);
   RUN_TEST(echart_json_grid_axis_errors);
+  RUN_TEST(echart_json_interaction_forms);
 TEST_MAIN_END()

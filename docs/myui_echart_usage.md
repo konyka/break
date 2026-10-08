@@ -19,6 +19,11 @@ cmake --build build --target myui_explorer --parallel 2
                                        # display server)
 ```
 
+JSON interaction forms include `dataZoom` percentage `{start,end}` (mapped
+against the maximum series length), `legend.selected` per-series visibility,
+and `title.subtext` subtitle joining. Conflicting forms and unknown legend
+names are rejected with semantic parser errors.
+
 `--platform` picks the window system and `--backend` the rendering path
 (soft | gl). Software renders into a CPU framebuffer (XImage blit on X11,
 a wl_shm pool on Wayland, StretchDIBits on Windows, NSBitmapImageRep on
@@ -64,8 +69,10 @@ panel that drives it in real time:
   wheel over the chart) narrows the dataZoom window;
 - hover the chart for tooltips and the axis guide; click legend entries
   to toggle series (built-in chart behavior);
-- keys: `1..9/0` quick mode switch, `R` randomize, `+/-` zoom, `S` dump
-  the current frame to `/tmp/myui_explorer_shot.ppm`.
+- keys: `1..9/0` quick mode switch, `R` randomize, `+/-` zoom, `P` play/pause
+  animation, `S` dump the current frame to `/tmp/myui_explorer_shot.ppm`;
+- the Play/Pause control advances animation progress automatically by a
+  deterministic timer step; the selftest compares two autoplay frames.
 
 ## Run the demo
 

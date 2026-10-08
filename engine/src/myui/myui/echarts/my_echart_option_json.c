@@ -87,6 +87,79 @@ static bool size_number(my_conf_node_t* n, size_t* out) {
   return (double)*out == v;
 }
 
+static void parse_title(my_echart_json_doc_t* d, my_conf_node_t* n) {
+  const char* text = my_conf_get_str(n, "title.text", NULL);
+  const char* subtext = my_conf_get_str(n, "title.subtext", NULL);
+  size_t a = text == NULL ? 0u : strlen(text);
+  size_t b = subtext == NULL ? 0u : strlen(subtext);
+  char* joined;
+  int written;
+  if (text == NULL && subtext == NULL) return;
+  if (text == NULL) { d->title = copy_string(d, subtext); d->option.title = d->title; return; }
+  if (subtext == NULL) { d->title = copy_string(d, text); d->option.title = d->title; return; }
+  joined = (char*)alloc0(d, a + b + 6u, 1u);
+  if (joined == NULL) { set_error(d, "out of memory"); return; }
+  written = snprintf(joined, a + b + 6u, "%s \xE2\x80\x94 %s", text, subtext);
+  if (written < 0 || (size_t)written >= a + b + 6u) { my_mem_free(d->allocator, joined); set_error(d, "out of memory"); return; }
+  d->title = copy_string(d, joined);
+  my_mem_free(d->allocator, joined);
+  d->option.title = d->title;
+}
+
+static void parse_legend_selected(my_echart_json_doc_t* d, my_conf_node_t* n) {
+  my_conf_node_t* selected = my_conf_get(n, "legend.selected");
+  size_t i, j;
+  if (selected == NULL) return;
+  if (my_conf_type(selected) != MY_CONF_OBJECT) { set_error(d, "legend selected unknown series"); return; }
+  for (i = 0u; i < my_conf_child_count(selected); ++i) {
+    const char* key = my_conf_key(child(selected, i));
+    bool found = false;
+    for (j = 0u; j < d->option.series_count; ++j) {
+      if (key != NULL && strcmp(key, d->series[j].name) == 0) {
+        d->series[j].show = my_conf_as_bool(child(selected, i), true);
+        found = true;
+        break;
+      }
+    }
+    if (!found) { set_error(d, "legend selected unknown series"); return; }
+  }
+}
+
+static void parse_zoom(my_echart_json_doc_t* d, my_conf_node_t* n) {
+  my_conf_node_t* zoom = my_conf_get(n, "dataZoom.0");
+  my_conf_node_t* start_node;
+  my_conf_node_t* end_node;
+  double start, end;
+  size_t i, count = 0u;
+  if (zoom == NULL || my_conf_type(zoom) != MY_CONF_OBJECT) return;
+  start_node = my_conf_get(zoom, "start");
+  end_node = my_conf_get(zoom, "end");
+  if (start_node != NULL || end_node != NULL) {
+    if (my_conf_get(zoom, "startValue") != NULL || my_conf_get(zoom, "endValue") != NULL) {
+      set_error(d, "conflicting dataZoom form");
+      return;
+    }
+    if (!number(start_node, &start) || !number(end_node, &end) ||
+        start < 0.0 || start >= end || end > 100.0) {
+      set_error(d, "invalid dataZoom percentage range");
+      return;
+    }
+    for (i = 0u; i < d->option.series_count; ++i)
+      if (d->series[i].data_count > count) count = d->series[i].data_count;
+    if (count == 0u) { set_error(d, "invalid dataZoom percentage range"); return; }
+    d->option.zoom_start = (size_t)floor(start * (double)count / 100.0);
+    d->option.zoom_end = (size_t)ceil(end * (double)count / 100.0);
+    if (d->option.zoom_end <= d->option.zoom_start) {
+      set_error(d, "invalid dataZoom percentage range");
+      return;
+    }
+    d->option.zoom_set = true;
+  } else if (size_number(my_conf_get(zoom, "startValue"), &d->option.zoom_start) &&
+             size_number(my_conf_get(zoom, "endValue"), &d->option.zoom_end)) {
+    d->option.zoom_set = true;
+  }
+}
+
 static bool color(my_echart_json_doc_t* d, my_conf_node_t* n, uint32_t* out) {
   const char* s;
   size_t i, len;
@@ -468,17 +541,18 @@ static bool parse_grids(my_echart_json_doc_t* d, my_conf_node_t* n) {
 }
 
 my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len, const my_allocator_t* allocator) {
-  my_echart_json_doc_t* d; my_conf_error_t err; my_conf_node_t* n; const char* s;
+  my_echart_json_doc_t* d; my_conf_error_t err; my_conf_node_t* n;
   d=(my_echart_json_doc_t*)my_mem_calloc(allocator,1u,sizeof(*d)); if(d==NULL) return NULL; d->allocator=allocator; d->tree=my_conf_parse_json(allocator,json,len,&err);
   if(d->tree==NULL){my_mem_free(allocator,d);return NULL;} n=d->tree;
-  s=my_conf_get_str(n,"title.text",NULL); d->title=copy_string(d,s); d->option.title=d->title;
+  parse_title(d, n);
   if(!dimension_strings(d,my_conf_get(n,"xAxis.data")) && my_conf_get(n,"xAxis.data")!=NULL) set_error(d,"invalid xAxis data");
    if(!parse_series(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid series");
    if(!parse_annotations(d,my_conf_get(n,"series")) && d->error[0]=='\0') set_error(d,"invalid annotations");
    if(!parse_dataset(d,my_conf_get(n,"dataset")) && d->error[0]=='\0') set_error(d,"invalid dataset");
    if(d->error[0]=='\0' && !resolve_encodes(d) && d->error[0]=='\0') set_error(d,"invalid encode");
    (void)parse_transform(d,my_conf_get(n,"transform"));
-  d->option.legend_hidden=!my_conf_get_bool(n,"legend.show",true); d->option.tooltip_hidden=!my_conf_get_bool(n,"tooltip.show",true);
+   d->option.legend_hidden=!my_conf_get_bool(n,"legend.show",true); d->option.tooltip_hidden=!my_conf_get_bool(n,"tooltip.show",true);
+   parse_legend_selected(d, n);
   {
     my_conf_node_t* radar = my_conf_get(n, "radar.indicator");
     if (radar != NULL && my_conf_type(radar) == MY_CONF_ARRAY &&
@@ -536,7 +610,7 @@ my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len, con
      my_conf_node_t* c = my_conf_get(n, "visualMap.inRange.color");
      if (my_conf_type(c) != MY_CONF_ARRAY || my_conf_child_count(c) < 2u || !color(d, child(c, 0u), &d->option.visual_map_low_color) || !color(d, child(c, my_conf_child_count(c) - 1u), &d->option.visual_map_high_color)) set_error(d, "bad color string");
    }
-  if(size_number(my_conf_get(n,"dataZoom.0.startValue"),&d->option.zoom_start)&&size_number(my_conf_get(n,"dataZoom.0.endValue"),&d->option.zoom_end)) d->option.zoom_set=true;
+   parse_zoom(d, n);
   if(number(my_conf_get(n,"visualMap.min"),&d->option.visual_map_min)&&number(my_conf_get(n,"visualMap.max"),&d->option.visual_map_max)){my_conf_node_t* c=my_conf_get(n,"visualMap.inRange.color");if(c!=NULL&&my_conf_type(c)==MY_CONF_ARRAY&&my_conf_child_count(c)>=2u&&color(d,child(c,0),&d->option.visual_map_low_color)&&color(d,child(c,my_conf_child_count(c)-1u),&d->option.visual_map_high_color))d->option.visual_map_set=true;else if(c!=NULL)set_error(d,"bad color string");}
   if(!parse_grids(d,my_conf_get(n,"grid"))&&d->error[0]=='\0')set_error(d,"invalid grid");
   return d;

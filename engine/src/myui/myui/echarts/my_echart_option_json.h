@@ -9,7 +9,9 @@
 
 typedef struct my_echart_json_doc_t my_echart_json_doc_t;
 
-/** @brief Parse the supported ECharts subset, including title/xAxis/series,
+/** @brief Parse the supported ECharts subset, including title {text,subtext},
+ * xAxis/series, legend.selected visibility, and dataZoom percentage
+ * {start,end} or value {startValue,endValue} forms,
  * annotations as series-level markPoint {data:[{coord:[categoryIndex,value],name}]},
  * markLine {data:[{yAxis,name,itemStyle:{color}}]}, markArea
  * {data:[{yAxisRange:[min,max],name,itemStyle:{color}}]}, and top-level
