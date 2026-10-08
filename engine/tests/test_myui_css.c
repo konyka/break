@@ -4471,6 +4471,91 @@ TEST(css_transition_steps_easing)
   my_value_reset(&out);
 }
 
+TEST(css_em_rem_length_units)
+{
+  /* R700: em/rem length units — em resolves against the element's own
+   * computed font size (recursive through percentages), rem against
+   * the tree root's font size (intermediate layers do not matter). A
+   * missing reference falls back. */
+  const char* em_css =
+      "button { font-size: 32; border-width: 1.5em; }";
+  const char* rem_css =
+      "window { font-size: 16; }"
+      "button { border-width: 2rem; }";
+  const char* em_no_ref =
+      "button { border-width: 1em; }";
+  const char* bad_unit =
+      "button { border-width: 1.5ex; }";
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* button;
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+
+  /* parse: em/rem store raw; unknown units drop the declaration. */
+  sheet = my_css_parse_ex(NULL, em_css, strlen(em_css),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_unit, strlen(bad_unit),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* 1.5em of the own font size 32 = 48. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, em_css,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(button, MY_STATE_NORMAL,
+                                            "border_width", 7), 48);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* 2rem of the ROOT font size 16 = 32 (panel's absence of a font
+   * size does not matter). */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  button = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, button), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(button);
+  ASSERT_EQ(my_widget_apply_theme(window, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, rem_css,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(button, MY_STATE_NORMAL,
+                                            "border_width", 7), 32);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* no reference at all: fall back. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, em_no_ref,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(button, MY_STATE_NORMAL,
+                                            "border_width", 7), 7);
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -10491,6 +10576,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_syntax_list_multipliers);
     RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_transition_steps_easing);
+    RUN_TEST(css_em_rem_length_units);
     RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
     RUN_TEST(css_font_size_recursion_and_conditional_property);
     RUN_TEST(css_transition_step_drives_spans);

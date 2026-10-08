@@ -1489,10 +1489,18 @@ int32_t my_widget_style_get_int(my_widget_t* widget, my_widget_state_t state,
   return fallback;
 }
 
-/* R688: parse one length text — [sign]number with an optional '%' or
- * 'px' suffix. Returns false on any other shape. */
+/* R688/R700: parse one length text — [sign]number with an optional
+ * unit suffix. Returns false on any other shape; *unit carries
+ * 0 = bare/px, 1 = percent, 2 = em, 3 = rem. */
+typedef enum {
+  THEME_LEN_PX = 0,
+  THEME_LEN_PERCENT,
+  THEME_LEN_EM,
+  THEME_LEN_REM,
+} theme_len_unit_t;
+
 static bool theme_length_text(const char* text, double* number,
-                              bool* percent) {
+                              theme_len_unit_t* unit) {
   const char* s = text;
   size_t len = strlen(text);
   size_t end = len;
@@ -1506,11 +1514,21 @@ static bool theme_length_text(const char* text, double* number,
     size_t copy = end < sizeof(buf) - 1u ? end : sizeof(buf) - 1u;
     memcpy(buf, s, copy);
     buf[copy] = '\0';
-    *percent = false;
+    *unit = THEME_LEN_PX;
     if (copy > 0u && buf[copy - 1u] == '%') {
-      *percent = true;
+      *unit = THEME_LEN_PERCENT;
       buf[copy - 1u] = '\0';
-    } else if (copy > 2u && buf[copy - 2u] == 'p' && buf[copy - 1u] == 'x') {
+    } else if (copy > 2u && buf[copy - 2u] == 'p' &&
+               buf[copy - 1u] == 'x') {
+      buf[copy - 2u] = '\0';
+    } else if (copy > 3u && buf[copy - 3u] == 'r' &&
+               buf[copy - 2u] == 'e' && buf[copy - 1u] == 'm') {
+      /* R700: rem BEFORE em — the tail of "2rem" also spells "em". */
+      *unit = THEME_LEN_REM;
+      buf[copy - 3u] = '\0';
+    } else if (copy > 2u && buf[copy - 2u] == 'e' &&
+               buf[copy - 1u] == 'm') {
+      *unit = THEME_LEN_EM;
       buf[copy - 2u] = '\0';
     }
     *number = strtod(buf, &endp);
@@ -1518,13 +1536,28 @@ static bool theme_length_text(const char* text, double* number,
   }
 }
 
-int32_t my_widget_style_get_length(my_widget_t* widget,
-                                   my_widget_state_t state, const char* key,
-                                   int32_t reference_px, int32_t fallback) {
+static int32_t theme_widget_get_length_impl(my_widget_t* widget,
+                                            my_widget_state_t state,
+                                            const char* key,
+                                            int32_t reference_px,
+                                            int32_t fallback,
+                                            unsigned depth);
+static int32_t theme_widget_get_length_auto_depth(my_widget_t* widget,
+                                                  my_widget_state_t state,
+                                                  const char* key,
+                                                  int32_t fallback,
+                                                  unsigned depth);
+
+static int32_t theme_widget_get_length_impl(my_widget_t* widget,
+                                            my_widget_state_t state,
+                                            const char* key,
+                                            int32_t reference_px,
+                                            int32_t fallback,
+                                            unsigned depth) {
   const my_value_t* v = my_widget_style_get(widget, state, key);
   const char* text;
   double number = 0.0;
-  bool percent = false;
+  theme_len_unit_t unit = THEME_LEN_PX;
   char resolved[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
   if (v == NULL) {
     return fallback;
@@ -1562,16 +1595,47 @@ int32_t my_widget_style_get_length(my_widget_t* widget,
       text = resolved;
     }
   }
-  if (!theme_length_text(text, &number, &percent)) {
+  if (!theme_length_text(text, &number, &unit)) {
     return fallback;
   }
-  if (percent) {
+  if (unit == THEME_LEN_PERCENT) {
     if (reference_px <= 0) {
       return fallback; /* no containing block: unresolvable */
     }
     number = number * (double)reference_px / 100.0;
+  } else if (unit == THEME_LEN_EM) {
+    /* R700: the element's own computed font size. */
+    int32_t fs = depth < 16u
+                     ? theme_widget_get_length_auto_depth(
+                           widget, state, "font_size", 0, depth + 1u)
+                     : 0;
+    if (fs <= 0) {
+      return fallback;
+    }
+    number = number * (double)fs;
+  } else if (unit == THEME_LEN_REM) {
+    /* R700: the tree root's computed font size. */
+    my_widget_t* root = widget;
+    int32_t fs;
+    while (root->parent != NULL) {
+      root = root->parent;
+    }
+    fs = depth < 16u ? theme_widget_get_length_auto_depth(
+                           root, state, "font_size", 0, depth + 1u)
+                     : 0;
+    if (fs <= 0) {
+      return fallback;
+    }
+    number = number * (double)fs;
   }
   return (int32_t)(number + 0.5);
+}
+
+int32_t my_widget_style_get_length(my_widget_t* widget,
+                                   my_widget_state_t state, const char* key,
+                                   int32_t reference_px, int32_t fallback) {
+  return theme_widget_get_length_impl(widget, state, key, reference_px,
+                                      fallback, 0u);
 }
 
 /* R693: the auto-reference length lookup with a depth bound — the

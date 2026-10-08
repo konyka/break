@@ -784,9 +784,9 @@ static bool css_value_mentions_var(const css_p_t* p) {
   return false;
 }
 
-/* R688: does the upcoming value mention a percentage (outside
- * quotes)? Length keys then capture raw — the generic probe rejects
- * the '%' suffix. */
+/* R688/R700: does the upcoming value mention a relative length unit —
+ * a '%' or a number directly followed by em/rem (word-bounded)? Length
+ * keys then capture raw — the generic probe rejects these suffixes. */
 static bool css_value_mentions_percent(const css_p_t* p) {
   size_t i = p->pos;
   char quote = '\0';
@@ -817,18 +817,33 @@ static bool css_value_mentions_percent(const css_p_t* p) {
       break;
     } else if (c == '%') {
       return true;
+    } else if (c >= '0' && c <= '9') {
+      /* R700: a number followed by em/rem (then not an ident char). */
+      if (i + 2u < p->len && p->s[i + 1u] == 'e' &&
+          p->s[i + 2u] == 'm' &&
+          (i + 3u >= p->len ||
+           !c_ident_char((unsigned char)p->s[i + 3u]))) {
+        return true;
+      }
+      if (i + 3u < p->len && p->s[i + 1u] == 'r' &&
+          p->s[i + 2u] == 'e' && p->s[i + 3u] == 'm' &&
+          (i + 4u >= p->len ||
+           !c_ident_char((unsigned char)p->s[i + 4u]))) {
+        return true;
+      }
     }
     i++;
   }
   return false;
 }
 
-/* R688: a percentage length's shape — one trimmed token of
- * [sign]number'%' (no trailing garbage). */
+/* R688/R700: a relative length's shape — one trimmed token of
+ * [sign]number with a '%', 'em' or 'rem' suffix (no trailing
+ * garbage). */
 static bool css_percent_length_value_ok(const char* text) {
   css_p_t probe;
+  char* endp = NULL;
   double number;
-  bool integral;
   size_t len = strlen(text);
   memset(&probe, 0, sizeof(probe));
   probe.s = text;
@@ -836,15 +851,35 @@ static bool css_percent_length_value_ok(const char* text) {
   probe.line = 1;
   probe.col = 1;
   c_ws(&probe);
-  if (!css_number(&probe, &number, &integral)) {
-    return false;
-  }
+  /* R700: strtod, not css_number — the latter probes "1.5e…" as a
+   * scientific-notation prefix and rolls the WHOLE number back when
+   * the exponent has no digits (exactly the "1.5em" shape). strtod
+   * takes the longest valid prefix ("1.5"), leaving the suffix. */
+  number = strtod(probe.s + probe.pos, &endp);
   (void)number;
-  (void)integral;
-  if (probe.pos >= probe.len || probe.s[probe.pos] != '%') {
+  if (endp == NULL || endp == probe.s + probe.pos) {
     return false;
   }
-  probe.pos++;
+  probe.pos = (size_t)(endp - probe.s);
+  if (probe.pos >= probe.len) {
+    return false;
+  }
+  if (probe.s[probe.pos] == '%') {
+    probe.pos++;
+  } else if (probe.len - probe.pos >= 2u &&
+             probe.s[probe.pos] == 'e' && probe.s[probe.pos + 1u] == 'm' &&
+             (probe.pos + 2u >= probe.len ||
+              !c_ident_char((unsigned char)probe.s[probe.pos + 2u]))) {
+    probe.pos += 2u;
+  } else if (probe.len - probe.pos >= 3u && probe.s[probe.pos] == 'r' &&
+             probe.s[probe.pos + 1u] == 'e' &&
+             probe.s[probe.pos + 2u] == 'm' &&
+             (probe.pos + 3u >= probe.len ||
+              !c_ident_char((unsigned char)probe.s[probe.pos + 3u]))) {
+    probe.pos += 3u;
+  } else {
+    return false;
+  }
   c_ws(&probe);
   return probe.pos == probe.len;
 }
