@@ -1763,6 +1763,7 @@ TEST(chart_treemap_graph_calendar_hover_hit) {
   ev.u.pointer.x = 52; ev.u.pointer.y = 100;
   ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_OK);
   ASSERT_EQ(my_chart_get_hover_index(chart), 7u);
+  ASSERT_EQ(my_chart_hit_test(chart, 52, 100), 7u);
   ASSERT_EQ(my_chart_set_series_visible(chart, 0u, false), MY_RET_OK);
   ASSERT_EQ(chart->vtable->on_event(chart, &ev), MY_RET_NOT_SUPPORTED);
   ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);

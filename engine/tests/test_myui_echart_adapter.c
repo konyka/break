@@ -631,10 +631,36 @@ TEST(echart_adapter_fills_heatmap_row_and_column_indexes) {
   my_widget_unref(chart);
 }
 
+TEST(echart_adapter_fills_calendar_cell_indexes) {
+  static const float values[] = {1.0f, 2.0f, 3.0f, 4.0f,
+                                 5.0f, 6.0f, 7.0f, 8.0f};
+  my_chart_series_t series = {"calendar", values, 8u, 0x3A86FFFFu, 0u, false};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_CALENDAR);
+  my_echart_adapter_t* adapter;
+  my_echart_event_t event;
+  my_event_t native = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &series), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  native.u.pointer.x = 52;
+  native.u.pointer.y = 100;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.category_index, 7u);
+  ASSERT_EQ(event.data_index, 7u);
+  ASSERT_EQ(event.series_index, 0u);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
   RUN_TEST(echart_adapter_projects_series_labels);
   RUN_TEST(echart_adapter_fills_heatmap_row_and_column_indexes);
+  RUN_TEST(echart_adapter_fills_calendar_cell_indexes);
   RUN_TEST(echart_adapter_projects_multi_grid);
   RUN_TEST(echart_adapter_rejects_without_mutating);
   RUN_TEST(echart_adapter_rejects_mixed_types_and_float_overflow);

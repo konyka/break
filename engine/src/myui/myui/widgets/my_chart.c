@@ -2725,6 +2725,32 @@ size_t my_chart_hit_test(const my_widget_t* widget, int32_t local_x,
   if (!chart_grid_rect(widget, grid, &x, &y, &w, &h))
     return CHART_HOVER_NONE;
   category_count = chart_category_count(chart);
+  if (chart->mode == MY_CHART_CALENDAR) {
+    const my_chart_series_t* series = NULL;
+    size_t weeks;
+    if ((float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h)
+      return CHART_HOVER_NONE;
+    for (size_t i = 0u; i < chart->series_count; i++) {
+      if (chart->series_visible[i] && chart->series[i].values != NULL &&
+          chart->series[i].count > 0u) {
+        series = &chart->series[i];
+        break;
+      }
+    }
+    if (series == NULL) return CHART_HOVER_NONE;
+    weeks = (series->count + 6u) / 7u;
+    {
+      size_t day = (size_t)(((float)local_x - x) / (w / 7.0f));
+      size_t week = (size_t)(((float)local_y - y) /
+                             (h / (float)weeks));
+      size_t index;
+      if (day >= 7u) day = 6u;
+      if (week >= weeks) week = weeks - 1u;
+      index = week * 7u + day;
+      return index < series->count ? index : CHART_HOVER_NONE;
+    }
+  }
   if (chart->mode == MY_CHART_HEATMAP) {
     if (category_count == 0u || (float)local_x < x || (float)local_x > x + w ||
         (float)local_y < y || (float)local_y > y + h)
