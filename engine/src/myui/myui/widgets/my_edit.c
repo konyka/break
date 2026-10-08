@@ -634,6 +634,9 @@ static void edit_after_edit(my_edit_t* e) {
   edit_update_ime_spot(e);
 }
 
+/* R694: defined after the cluster helpers below. */
+static int32_t edit_snap_caret_cp(const char* text, int32_t caret_cp);
+
 static my_ret_t edit_on_ime_preedit(my_edit_t* e, const my_event_t* ev) {
   char* copy = my_strdup(e->allocator, ev->u.ime.text != NULL
                                              ? ev->u.ime.text
@@ -646,7 +649,7 @@ static my_ret_t edit_on_ime_preedit(my_edit_t* e, const my_event_t* ev) {
   if (e->ime_preedit == NULL) {
     my_mem_free(e->allocator, copy);
   }
-  e->ime_caret = ev->u.ime.cursor;
+  e->ime_caret = edit_snap_caret_cp(e->ime_preedit, ev->u.ime.cursor);
   my_widget_invalidate((my_widget_t*)e, NULL);
   return MY_RET_OK;
 }
@@ -696,6 +699,27 @@ static size_t edit_snap_cluster_right(const char* text, size_t len,
   }
   r = my_grapheme_boundary_right(text, len, off);
   return my_grapheme_boundary_left(text, len, r) == off ? off : r;
+}
+
+/* R694: snap the composing caret (a codepoint offset into the preedit
+ * text) to a grapheme cluster boundary — a caret landing on a
+ * combining mark would render mid-cluster; the left boundary keeps
+ * the visual position aligned with the arrow-key semantics. */
+static int32_t edit_snap_caret_cp(const char* text, int32_t caret_cp) {
+  size_t byte_off;
+  size_t i;
+  int32_t cp = 0;
+  if (text == NULL || caret_cp <= 0) {
+    return caret_cp;
+  }
+  byte_off = edit_byte_of_cp(text, (size_t)caret_cp);
+  byte_off = edit_snap_cluster_left(text, strlen(text), byte_off);
+  for (i = 0u; i < byte_off; i++) {
+    if (((unsigned char)text[i] & 0xC0u) != 0x80u) {
+      cp++;
+    }
+  }
+  return cp;
 }
 
 static my_ret_t edit_on_ime_delete_surrounding(my_edit_t* e,

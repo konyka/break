@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R694 preedit 光标簇吸附（TDD，开放项清零计划轮 4/6）— 组合光标（preedit 内码点偏移）入档即吸附簇边界（簇内组合符→簇左界,视觉位与箭头键语义对齐;已对齐保持字节精确）——双 widget 同构（my_edit/text_area 各置 snap_caret_cp,事件可合成自动验证,立项 4"显示精度残余"无 IME 基建关闭
+
+- **缺口**(立项 4 勘察落账"preedit 光标码点偏移仅影响渲染位置——需真实 IME 交互基建,单列"):勘察结论重审——渲染位置由 `ime_caret`（码点偏移）经 byte_of_cp→text_px 决定,簇内偏移画中簇;修在**入档语义层**（事件合成即可测）无需真实 IME——"需交互基建"的判断只对平台侧修复成立,消费侧修复不受限。
+- **方案**(双 widget 同构,R658/R668 snap 先例第四型):① **吸附 helper** `edit_snap_caret_cp`/`ta_snap_caret_cp`——码点→字节（逐码点首推进,停在目标码点首字节——ta 版循环语义修正:计数达位即停,非计数后越位）→ R668 snap_cluster_left（外扩语义:簇内→簇左界,边界保持）→ 字节→码点（非续字节计数）回转;② **入档接线**——on_ime_preedit 存储 ime_caret 时吸附（NULL 文本/负值直通;0 直通——无光标绘制）;③ 绘制层零改（ime_caret 语义升级为"吸附后码点偏移",下游 byte_of_cp/text_px 自动受益）。
+- **TDD（红→绿实证）**:test_myui_edit +2（双 widget 同构）——三景：**簇内吸附**（preedit "a"+combining+"b" caret=1 落组合符→吸附 0——两簇 [a+acute]/b 的簇内实证）/边界保持（caret=2 落 'b' 簇界→原样）/零直通。**RED 双 widget 如实红**（ime_caret 原样存储=1≠0）;GREEN **9/9**(7+2)——期间修正测试场景构造一处（组合 preedit 的码点位次重数）与 ta 版循环语义一处。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R668 删除吸附组全绿未动（同 helper 家族,左吸附路径复用）。
+- **边界**：吸附方向恒左（簇左界——与 LEFT 箭头语义一致;右吸附对偶无绘制需求,未挂）;caret 超界（>preedit 码点数）停在文本尾再吸附（钳制语义自然覆盖）;平台侧 GCS_CURSORPOS 的 unit→码点转换维持（window_win32.c 零改——转换正确,簇对齐归消费侧）;R611 AMD 基线不动。
+
 ## 本轮更新：R693 font-size 递归参考 + 条件块 @property 注册（TDD，开放项清零计划轮 3/6）— 百分比字号沿祖先链有界递归展开（depth≤16,父链无环保证终止——一层近似废止）;嵌套 @property 注册放行（@media 解析期门控自然联动,其余嵌套块无条件注册——注册表不受级联门控）
 
 - **缺口**(R689 落账"parent 字号若为 % 则不递归展开,一层近似"+R671 落账"@property 顶层专属（条件块内注册,让渡）"):两层链 `window 32 → panel 50% → label 50%` 的 label 参考取 panel 的 STR 原文（get_int 0 域）→一层塌陷;`@media (...) { @property ... }` strict 整表拒。

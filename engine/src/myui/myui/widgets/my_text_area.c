@@ -2192,6 +2192,11 @@ static void ta_set_ime_enabled(my_text_area_t* ta, bool enabled) {
 
 /* ---------------- IME events (M13a) ---------------- */
 
+/* R694: snap the composing caret (a codepoint offset into the preedit
+ * text) to a grapheme cluster boundary (defined after the cluster
+ * helpers below). */
+static int32_t ta_snap_caret_cp(const char* text, int32_t caret_cp);
+
 static my_ret_t ta_on_ime_preedit(my_text_area_t* ta, const my_event_t* ev) {
   char* copy = my_strdup(ta->allocator, ev->u.ime.text != NULL
                                               ? ev->u.ime.text
@@ -2204,7 +2209,7 @@ static my_ret_t ta_on_ime_preedit(my_text_area_t* ta, const my_event_t* ev) {
   if (ta->ime_preedit == NULL) {
     my_mem_free(ta->allocator, copy);
   }
-  ta->ime_caret = ev->u.ime.cursor;
+  ta->ime_caret = ta_snap_caret_cp(ta->ime_preedit, ev->u.ime.cursor);
   my_widget_invalidate((my_widget_t*)ta, NULL);
   return MY_RET_OK;
 }
@@ -2224,8 +2229,7 @@ static my_ret_t ta_on_ime_commit(my_text_area_t* ta, const my_event_t* ev) {
 /* R668: snap a raw byte offset outward to a grapheme cluster boundary
  * (same helper shape as my_edit's — the two widgets keep their small
  * static helpers duplicated by convention). */
-static size_t ta_snap_cluster_left(const char* text, size_t len, size_t off) {
-  size_t l;
+static size_t ta_snap_cluster_left(const char* text, size_t len, size_t off) {  size_t l;
   if (off > len) {
     off = len;
   }
@@ -2252,6 +2256,35 @@ static size_t ta_snap_cluster_right(const char* text, size_t len, size_t off) {
   }
   r = my_grapheme_boundary_right(text, len, off);
   return my_grapheme_boundary_left(text, len, r) == off ? off : r;
+}
+
+/* R694: snap the composing caret (a codepoint offset into the preedit
+ * text) to a grapheme cluster boundary — the twin of my_edit's helper
+ * (codepoint to byte by walking, snap, byte back to codepoint). */
+static int32_t ta_snap_caret_cp(const char* text, int32_t caret_cp) {
+  size_t byte_off = 0u;
+  size_t counted = 0u;
+  size_t i;
+  int32_t cp = 0;
+  if (text == NULL || caret_cp <= 0) {
+    return caret_cp;
+  }
+  while (text[byte_off] != '\0') {
+    if (((unsigned char)text[byte_off] & 0xC0u) != 0x80u) {
+      if (counted == (size_t)caret_cp) {
+        break; /* stop AT the caret codepoint's lead byte */
+      }
+      counted++;
+    }
+    byte_off++;
+  }
+  byte_off = ta_snap_cluster_left(text, strlen(text), byte_off);
+  for (i = 0u; i < byte_off; i++) {
+    if (((unsigned char)text[i] & 0xC0u) != 0x80u) {
+      cp++;
+    }
+  }
+  return cp;
 }
 
 static my_ret_t ta_on_ime_delete_surrounding(my_text_area_t* ta,

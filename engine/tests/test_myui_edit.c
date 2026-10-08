@@ -339,6 +339,64 @@ TEST(ime_delete_surrounding_snaps_to_grapheme_clusters)
   my_widget_unref(widget);
 }
 
+TEST(ime_preedit_caret_snaps_to_grapheme_clusters)
+{
+  /* R694: the composing caret (a codepoint offset into the preedit
+   * text) snaps to a grapheme cluster boundary on arrival — a caret
+   * landing on a combining mark renders mid-cluster otherwise. An
+   * already-aligned caret stays byte-exact. */
+  my_widget_t* widget = my_edit_create(NULL);
+  my_edit_t* edit = (my_edit_t*)widget;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(widget);
+  edit->focused = true;
+
+  /* preedit "a" + combining-acute + "b" (two clusters: [a+acute], b):
+   * caret codepoint 1 sits on the combining mark — it snaps to the
+   * cluster start (codepoint 0). */
+  event = my_event_init(MY_EVENT_IME_PREEDIT);
+  event.u.ime.text = "a" "\xCC\x81" "b";
+  event.u.ime.cursor = 1;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->ime_caret, 0);
+
+  /* an aligned caret (2, right past the cluster onto 'b') stays. */
+  event.u.ime.cursor = 2;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->ime_caret, 2);
+
+  /* zero stays zero (no caret shown before the preedit). */
+  event.u.ime.cursor = 0;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(edit->ime_caret, 0);
+
+  my_widget_unref(widget);
+}
+
+TEST(text_area_ime_preedit_caret_snaps_to_grapheme_clusters)
+{
+  /* R694: the same snap on the text_area (the twin widget). */
+  my_widget_t* widget = my_text_area_create(NULL);
+  my_text_area_t* ta = (my_text_area_t*)widget;
+  my_event_t event;
+
+  ASSERT_NOT_NULL(widget);
+  ta->focused = true;
+
+  event = my_event_init(MY_EVENT_IME_PREEDIT);
+  event.u.ime.text = "a" "\xCC\x81" "b";
+  event.u.ime.cursor = 1;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(ta->ime_caret, 0);
+
+  event.u.ime.cursor = 2;
+  ASSERT_EQ(widget->vtable->on_event(widget, &event), MY_RET_OK);
+  ASSERT_EQ(ta->ime_caret, 2);
+
+  my_widget_unref(widget);
+}
+
 TEST(text_area_ime_delete_surrounding_snaps_to_grapheme_clusters)
 {
   /* the same contract for the multi-line widget. */
@@ -392,5 +450,7 @@ RUN_TEST(text_area_arrows_skip_clusters_without_layout);
 RUN_TEST(edit_ctrl_arrows_and_backspace_jump_words);
 RUN_TEST(text_area_ctrl_arrows_and_backspace_jump_words);
 RUN_TEST(ime_delete_surrounding_snaps_to_grapheme_clusters);
+RUN_TEST(ime_preedit_caret_snaps_to_grapheme_clusters);
+RUN_TEST(text_area_ime_preedit_caret_snaps_to_grapheme_clusters);
 RUN_TEST(text_area_ime_delete_surrounding_snaps_to_grapheme_clusters);
 TEST_MAIN_END()
