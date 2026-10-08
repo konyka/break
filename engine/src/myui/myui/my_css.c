@@ -990,6 +990,7 @@ static bool css_transition_value_ok(const char* text) {
  * <number>/<integer>/<string>/<percentage> and `*` (unknown syntax
  * strings carry no enforcement, documented). The text must parse as one
  * full value of the primitive's type. */
+static bool css_container_ws(char c);
 static bool css_syntax_is_primitive(const char* s) {
   return my_str_eq(s, "<color>") || my_str_eq(s, "<length>") ||
          my_str_eq(s, "<number>") || my_str_eq(s, "<integer>") ||
@@ -1148,11 +1149,68 @@ static bool css_property_syntax_multichoice_check(const char* syntax,
 }
 
 static bool css_property_syntax_check(const char* syntax, const char* text) {
+  size_t slen;
   if (syntax == NULL || syntax[0] == '\0' || my_str_eq(syntax, "*")) {
     return true;
   }
   if (strchr(syntax, '|') != NULL) {
     return css_property_syntax_multichoice_check(syntax, text);
+  }
+  /* R690: a `+` (space-separated) or `#` (comma-separated) multiplier
+   * — every item must satisfy the component gate (a known primitive
+   * or a lone ident; anything else stays unenforced). */
+  slen = strlen(syntax);
+  if (slen >= 2u && (syntax[slen - 1u] == '+' || syntax[slen - 1u] == '#')) {
+    char component[64];
+    char sep = syntax[slen - 1u] == '+' ? ' ' : ',';
+    size_t clen = slen - 1u;
+    size_t n, i;
+    if (clen >= sizeof(component)) {
+      return true; /* unenforced */
+    }
+    memcpy(component, syntax, clen);
+    component[clen] = '\0';
+    if (!css_syntax_is_primitive(component) &&
+        !css_syntax_ident_ok(component, clen)) {
+      return true; /* unknown component: unenforced */
+    }
+    if (sep != ' ') {
+      /* leading/trailing separators are malformed lists (a trailing
+       * comma stays rejected — the spec-lenient form is a documented
+       * deferral). */
+      size_t tlen = strlen(text);
+      size_t first = 0u;
+      size_t last = tlen;
+      while (first < tlen && css_container_ws(text[first])) {
+        first++;
+      }
+      while (last > first && css_container_ws(text[last - 1u])) {
+        last--;
+      }
+      if (first >= last || text[first] == sep || text[last - 1u] == sep) {
+        return false;
+      }
+    }
+    n = my_css_list_count(text, sep);
+    if (n == 0u) {
+      return false; /* at least one item */
+    }
+    for (i = 0u; i < n; i++) {
+      char item[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+      bool ok;
+      if (!my_css_list_at(text, sep, i, item, sizeof(item))) {
+        return false;
+      }
+      if (css_syntax_is_primitive(component)) {
+        ok = css_property_syntax_primitive_check(component, item);
+      } else {
+        ok = css_syntax_ident_matches(component, item);
+      }
+      if (!ok) {
+        return false;
+      }
+    }
+    return true;
   }
   if (!css_syntax_is_primitive(syntax)) {
     /* R680: a lone ident syntax string ("small") enforces byte-exact
@@ -5734,6 +5792,85 @@ static void css_interpolate_format(char* out, size_t cap, double value,
   } else {
     snprintf(out, cap, "%.12g%s", value, suffix);
   }
+}
+
+/* R690: iterate a list text — separator ' ' collapses whitespace
+ * runs, other separators split on the single character. Each item is
+ * trimmed; empty items never surface. */
+static size_t css_list_iter(const char* text, char separator,
+                            size_t index, const char** out_start,
+                            size_t* out_len) {
+  size_t len = strlen(text);
+  size_t i = 0u;
+  size_t count = 0u;
+  while (i < len) {
+    size_t start, end;
+    if (separator == ' ') {
+      while (i < len && css_container_ws(text[i])) {
+        i++;
+      }
+      if (i >= len) {
+        break;
+      }
+      start = i;
+      while (i < len && !css_container_ws(text[i])) {
+        i++;
+      }
+    } else {
+      while (i < len && (text[i] == separator || css_container_ws(text[i]))) {
+        i++;
+      }
+      if (i >= len) {
+        break;
+      }
+      start = i;
+      while (i < len && text[i] != separator && !css_container_ws(text[i])) {
+        i++;
+      }
+    }
+    end = i;
+    while (end > start && css_container_ws(text[end - 1u])) {
+      end--;
+    }
+    if (end == start) {
+      continue;
+    }
+    if (out_start != NULL && count == index) {
+      *out_start = text + start;
+      *out_len = end - start;
+      return count + 1u;
+    }
+    count++;
+  }
+  if (out_start != NULL) {
+    return 0u; /* index out of range */
+  }
+  return count;
+}
+
+size_t my_css_list_count(const char* text, char separator) {
+  if (text == NULL) {
+    return 0u;
+  }
+  return css_list_iter(text, separator, 0u, NULL, NULL);
+}
+
+bool my_css_list_at(const char* text, char separator, size_t index,
+                    char* out, size_t cap) {
+  const char* start = NULL;
+  size_t length = 0u;
+  if (text == NULL || out == NULL || cap == 0u) {
+    return false;
+  }
+  if (css_list_iter(text, separator, index, &start, &length) == 0u) {
+    return false;
+  }
+  if (length >= cap) {
+    return false;
+  }
+  memcpy(out, start, length);
+  out[length] = '\0';
+  return true;
 }
 
 bool my_css_property_interpolate(const char* syntax, const char* from,

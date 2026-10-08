@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R690 syntax 乘数列表（TDD，列表值立项引擎侧）— `<X>+`（空格分隔）/`<X>#`（逗号分隔）逐项过闸落地（组件须已知原语或单 ident,未知组件整组不强制）；列表居文本域（引擎文本轨哲学——my_value_t 零改动）；消费原语 `my_css_list_count/at`
+
+- **缺口**(R678/R680 落账"`#`/`+` 乘数未涉——非纯 ident 非原语→整组不强制"):`syntax: "<color>+"` 被当未知串全放行——`initial-value: red bogus` 照注册、级联列表值失项无从校验;my_value_t 无列表类型的值模型空白。
+- **方案**(文本域路线,值模型零改动):① **校验扩编** `css_property_syntax_check` 乘数分支（多选一之后）——尾缀 `+`/`#` 剥离得组件:已知原语（primitive_check 逐项）或单 ident（ident_matches 逐项字节精确）;未知组件（`<transform-function>+`）整组不强制（R672 让渡同约）;`#` 列表**首/尾分隔符拒**（trim 后首尾字符==sep→false——尾逗号规范宽松形让渡,文档化）;≥1 项（空列表拒）;② **消费原语** `my_css_list_count(text, sep)`/`my_css_list_at(text, sep, i, out, cap)`——' ' 分隔符白空间串坍缩、其他 sep 单字符切分+白空间 trim,空项不浮出,越界 false;③ 注册期/消费期双闸经同一检查器自动同轨（R672 同型）。
+- **TDD（红→绿实证）**:test_myui_css +1——注册面七景：`<color>+` 合法/失项拒/`<length>#` 合法/**尾逗号拒**/`small+` 合法/失项拒/空列表拒;消费面三景：过闸列表 var_text 原样（**多项值非单值可探——文本域断言**,R688 var_text API 首个内部消费）/失闸→var() 回退红/count-at 原语八断言（空格坍缩/逗号 trim/越界/单元素）/插值离散钉死。**RED 如实红**（行 3889:尾逗号照注册——乘数不强制实证;前序链接红:count/at 未定义）;GREEN **195/195**(194+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R672-R680 单值域组全绿未动（乘数分支仅尾缀触发,无乘数路径零扰动）。
+- **边界**：混合乘数（`a | <length>+` 多选一内带乘数替代）维持整组不强制（R678 多选一分支未扩,文档化）;`<string>+` 逐项引号形（primitive_check 同约）;列表值经 get_for_widget_var 的单值探针 false（多项非单值——消费走 var_text+list 原语,文本域契约文档化）;style() 对乘数语法维持原文比较（R677 未知串让渡同约）;列表插值离散（R685 未知串路径）;my_value_t 列表类型（typed 列表 ABI）维持不立项（文本域已闭环消费面）;R611 AMD 基线不动。
+
 ## 本轮更新：R689 百分比长度参考自动推导（TDD，百分比长度立项 phase 2）— `my_widget_style_get_length_auto`：font-size %→父计算字号（themed-ancestor 链）、其余长度键 %→父 rect.w（containing-block inline-size 近似）；参考缺失（无父/父字号未设→参考≤0）百分比回落 fallback（诚实边界——px 值不受影响）
 
 - **缺口**(R688 落账"phase 2=参考系自动推导——width/height 键→父 rect、font-size→父计算字号的 widget 结构域接线"):显式 reference 参数化后,调用方仍需自晓参考语义——引擎侧无自动推导,消费便利缺。

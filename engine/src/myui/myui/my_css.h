@@ -374,6 +374,17 @@ bool my_css_property_interpolate(const char* syntax, const char* from,
                                  const char* to, double t, char* out,
                                  size_t cap);
 
+/** @brief R690: count the items of a list text split on `separator`
+ * (whitespace runs collapse for ' ', single characters otherwise);
+ * runs of separators produce no empty items, an empty/blank text has
+ * zero items. */
+size_t my_css_list_count(const char* text, char separator);
+
+/** @brief R690: copy item `index` (0-based) of the list text into out
+ * (trimmed); false when the index is out of range. */
+bool my_css_list_at(const char* text, char separator, size_t index,
+                    char* out, size_t cap);
+
 /** @brief R687: time-stamped var lookup for a transitioning custom
  * property — the host supplies the previous computed value text and
  * the elapsed milliseconds; the engine resolves the widget's

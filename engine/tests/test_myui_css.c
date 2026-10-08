@@ -3814,6 +3814,164 @@ TEST(css_percentage_length_auto_reference)
   my_theme_destroy(theme);
 }
 
+TEST(css_property_syntax_list_multipliers)
+{
+  /* R690 (list-value project): `+` (space-separated) and `#`
+   * (comma-separated) syntax multipliers — every item must satisfy
+   * the component gate (primitive or lone ident); at least one item.
+   * The list lives as text (the engine text track — no value-model
+   * change); the count/at consumption primitives index it. */
+  const char* color_plus_valid =
+      "@property --cs { syntax: \"<color>+\"; inherits: false;"
+      " initial-value: red blue; } button { color: blue; }";
+  const char* color_plus_bad =
+      "@property --cs { syntax: \"<color>+\"; inherits: false;"
+      " initial-value: red bogus; } button { color: blue; }";
+  const char* length_hash_valid =
+      "@property --ls { syntax: \"<length>#\"; inherits: false;"
+      " initial-value: 10px, 20px; } button { color: blue; }";
+  const char* length_hash_trailing =
+      "@property --ls { syntax: \"<length>#\"; inherits: false;"
+      " initial-value: 10px,; } button { color: blue; }";
+  const char* ident_plus_valid =
+      "@property --ss { syntax: \"small+\"; inherits: false;"
+      " initial-value: small small; } button { color: blue; }";
+  const char* ident_plus_bad =
+      "@property --ss { syntax: \"small+\"; inherits: false;"
+      " initial-value: small big; } button { color: blue; }";
+  const char* empty_list =
+      "@property --cs { syntax: \"<color>+\"; inherits: false;"
+      " initial-value: ; } button { color: blue; }";
+  const char* pass_gate =
+      "@property --cs { syntax: \"<color>+\"; inherits: true; }"
+      "button { --cs: red blue; color: var(--cs, red); }";
+  const char* fail_gate =
+      "@property --cs { syntax: \"<color>+\"; inherits: true; }"
+      "button { --cs: red bogus; color: var(--cs, red); }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* widget;
+  my_value_t out;
+  char item[64];
+
+  my_value_init(&out, NULL);
+
+  /* every-item gates at registration. */
+  sheet = my_css_parse_ex(NULL, color_plus_valid,
+                          strlen(color_plus_valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, color_plus_bad, strlen(color_plus_bad),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* comma lists validate per item; a trailing comma is malformed. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, length_hash_valid,
+                          strlen(length_hash_valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, length_hash_trailing,
+                          strlen(length_hash_trailing),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* ident components take the multiplier too (byte-exact per item). */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, ident_plus_valid,
+                          strlen(ident_plus_valid),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, ident_plus_bad, strlen(ident_plus_bad),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* an empty list fails (at least one item). */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, empty_list, strlen(empty_list),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+  my_css_sheet_destroy(sheet);
+
+  /* computed-value time: a conforming list substitutes raw (the text
+   * domain — a multi-item value is not a single probeable value); a
+   * non-conforming one falls to the var() fallback. */
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, pass_gate,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  {
+    char text[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+    ASSERT_TRUE(my_theme_get_for_widget_var_text(
+        theme, widget, MY_STATE_NORMAL, "fg_color", text, sizeof(text)));
+    ASSERT_STR_EQ(text, "red blue");
+  }
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  theme = my_theme_create(NULL);
+  widget = my_widget_create(NULL, "button");
+  widget->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, fail_gate,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var(theme, widget, MY_STATE_NORMAL,
+                                          "fg_color", &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_value_reset(&out);
+  my_widget_unref(widget);
+  my_theme_destroy(theme);
+
+  /* the count/at primitives index a list text. */
+  ASSERT_EQ(my_css_list_count("red blue  green", ' '), 3u);
+  ASSERT_EQ(my_css_list_count("10px,20px, 30px", ','), 3u);
+  ASSERT_EQ(my_css_list_count("single", ' '), 1u);
+  ASSERT_TRUE(my_css_list_at("red blue  green", ' ', 0u, item,
+                             sizeof(item)));
+  ASSERT_STR_EQ(item, "red");
+  ASSERT_TRUE(my_css_list_at("red blue  green", ' ', 1u, item,
+                             sizeof(item)));
+  ASSERT_STR_EQ(item, "blue");
+  ASSERT_TRUE(my_css_list_at("red blue  green", ' ', 2u, item,
+                             sizeof(item)));
+  ASSERT_STR_EQ(item, "green");
+  ASSERT_TRUE(!my_css_list_at("red blue", ' ', 2u, item, sizeof(item)));
+  ASSERT_TRUE(my_css_list_at("10px,20px, 30px", ',', 1u, item,
+                             sizeof(item)));
+  ASSERT_STR_EQ(item, "20px");
+
+  /* interpolation stays discrete for list syntaxes (the unknown-string
+   * path). */
+  ASSERT_TRUE(my_css_property_interpolate("<color>+", "red blue",
+                                          "blue red", 0.5, item,
+                                          sizeof(item)));
+  ASSERT_STR_EQ(item, "red blue");
+
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9831,6 +9989,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_percentage_length_resolution);
     RUN_TEST(css_percentage_length_auto_reference);
+    RUN_TEST(css_property_syntax_list_multipliers);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
