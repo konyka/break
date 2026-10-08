@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R697 本地 Linux 工具链 + TSan 收口（开放项清零计划终轮）— WSL Ubuntu-24.04 就位（云镜像 rootfs 导入——Medium-IL 会话下 winget/choco/MSI 全受限的绕行路径）;TSan 实跑 **121 测试零 race 报告**（ASLR entropy workaround）;CI 新增 `linux-gcc-tsan` job;"TSan 工具链不支持"残留关闭;demo Linux 字体候选表补 DejaVu/Noto（最小环境健壮性——WSL 失败链的根因修复）
+
+- **缺口**(R696 落账"TSan=clang on Windows 无 runtime——外部事实注记"):本地无 Linux 域使 TSan 验证面缺失;用户指令"安装依赖工具链"补齐。
+- **方案与过程**:① **工具链安装**——winget（CDN 拒）/choco（NuGet 锁+lib 目录 Medium-IL 写拒）/GitHub release MSI（release CDN 超时）三路受限——**根因=当前 shell Medium 完整级+网络白名单**;绕行:Ubuntu 云镜像 rootfs（cloud-images.ubuntu.com 可达）340MB 下载+`wsl --import`（HKCU 注册,无需提升）→ **GCC 13.3/Clang 18.1/CMake 3.28/Ninja+X11/GL/freetype/noto 全套**（apt 域通）;② **TSan 实跑**——`ENGINE_USE_TSAN=ON` 全树构建,首跑 `unexpected memory mapping` FATAL（TSan×32-bit ASLR entropy 的知名内核不兼容）→ `sysctl vm.mmap_rnd_bits=28` 修复 → **121 测试仅 widgets_demo 失败,且非 TSan 同败**→ 三步定性（xvfb 无关/HOME 无关/**fonts-liberation 缺失**——GitHub runner 预装而云镜像最小系统无）→ 装字体后全场景绿——**TSan 验证面零 race 闭环**;③ **CI TSan job**——linux-gcc-tsan（ubuntu-24.04+sysctl workaround+headless 套件,诊断化 grep 带 ThreadSanitizer 谱系）;④ **候选表修复**——demo 的 Linux 字体候选补 DejaVu/Noto 路径（runner 之外的 Linux 环境健壮）。
+- **验证**:WSL——plain/TSan 双树构建,TSan 121 测试零 race+环境修复后 demo 全场景;CI——本轮 run 看 linux-gcc-tsan 首跑（诊断化就位）。
+- **边界**:WSL /tmp 会话清空（构建产物须落 ext4 家目录/工作区）;gh CLI 安装仍受限（Medium-IL+CDN 墙——gh 的真正堵点本是无 API token,匿名 API+annotations 已覆盖诊断需求,R696 工具链不动）;rich_label 0 像素在无字体最小环境的 fallback 行为（NULL font 不画文本）——候选表修复后不再触达,draw_text 的 fallback 绘制域未涉（单列注记非缺口）;R611 AMD 基线不动。
+
 ## 本轮补记：ASan 动态库根治 + CI 红诊断定性（开放项清零计划附轮）— CMake 的 ASan DLL staging 扩至 **flag 注入路径**（原仅 ENGINE_USE_ASAN 选项路——`CMAKE_C_FLAGS` 带 `-fsanitize=address` 的构建同样自动 copy clang_rt DLL 至 build 根,Windows 加载器查找序首位）;sanitizer job 失败诊断化（全量 log head 进 step summary+扩谱 grep 上 `::error::` annotations——匿名 API 可读）;53d6f43 的 Linux ASan job 红**定性偶发环境态**（Test 步 15 秒即红+零关键词匹配,与断言失败形态不符;45dd0fd 同代码 10/10 全绿+本地 ASan/UBSan 124/124 实证）
 
 - **缺口**:用户侧本地 ASan 构建持续报 DLL 缺失（`clang_rt.asan_dynamic-x86_64.dll`,exit 0xC0000135）——R630 的 DLL staging 只挂 `ENGINE_USE_ASAN` 选项分支,`-DCMAKE_C_FLAGS="-fsanitize=..."` 注入式构建（本地调试树/UBSan 组合树的常见形态）绕过分支零 copy;LLVM Windows ASan **强制动态链**（实验证:`-fms-runtime-lib=static`/`-static-libasan` 均不改变 DLL 依赖——静态 CRT 不连带静态 ASan）,copy 是唯一解。

@@ -171,6 +171,47 @@ jobs:
             fuzz_decode_image fuzz_vfs_pak
           ctest --test-dir build -L fuzz --output-on-failure
 
+  linux-gcc-tsan:
+    name: Linux + GCC (TSan, headless)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
+            libfreetype6-dev fonts-noto-cjk
+
+      - name: Lower the ASLR entropy for TSan
+        # R697: TSan cannot map its shadow on kernels with 32-bit
+        # mmap randomization ("unexpected memory mapping") — the
+        # upstream workaround is vm.mmap_rnd_bits=28.
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_TSAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest.log 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo '## TSan suite failures (full log head)' >> "$GITHUB_STEP_SUMMARY"
+            head -120 /tmp/ctest.log >> "$GITHUB_STEP_SUMMARY"
+            grep -E 'FAIL|Failed|FAILED|Not Run|ThreadSanitizer|WARNING: ThreadSanitizer|SUMMARY: ThreadSanitizer|Timeout|Segmentation|abort|Aborted' /tmp/ctest.log | head -60 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
+
   linux-graphics-smoke:
     name: Linux + Xvfb/software graphics smoke
     runs-on: ubuntu-24.04

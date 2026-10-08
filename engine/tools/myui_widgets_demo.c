@@ -375,6 +375,10 @@ int main(int argc, char** argv) {
 #else
       "/usr/share/fonts/liberation-serif-fonts/LiberationSerif-Regular.ttf",
       "/usr/share/fonts/truetype/liberation/LiberationSerif-Regular.ttf",
+      /* R697: minimal cloud/WSL images ship DejaVu or Noto instead of
+       * the GitHub-runner-preinstalled Liberation set. */
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
 #endif
       NULL};
   size_t fi;
