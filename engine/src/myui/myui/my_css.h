@@ -361,6 +361,19 @@ void my_css_sheet_destroy(my_css_sheet_t* sheet);
 
 size_t my_css_rule_count(const my_css_sheet_t* sheet);
 
+/** @brief R685: interpolate two values of a registered property's
+ * syntax at progress t (0.0 = from, 1.0 = to), writing the result
+ * text into out. Color primitives blend per channel (straight alpha,
+ * sRGB linear — premultiplied blending is a documented deferral),
+ * number/length/percentage primitives blend numerically (the output
+ * adopts the `to` side's unit spelling), integer/string and ident
+ * combinations are discrete (from until t >= 1, to at t = 1). Returns
+ * false when either side fails to parse as the primitive — callers
+ * then jump-cut. */
+bool my_css_property_interpolate(const char* syntax, const char* from,
+                                 const char* to, double t, char* out,
+                                 size_t cap);
+
 /** @brief R671: registered custom properties (@property) on the sheet. */
 size_t my_css_property_def_count(const my_css_sheet_t* sheet);
 const my_theme_property_def_t* my_css_property_def(

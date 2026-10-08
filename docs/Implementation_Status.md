@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R685 注册属性插值原语（TDD，插值动画立项 phase 1）— 纯函数 `my_css_property_interpolate(syntax, from, to, t, out, cap)`：色逐通道线性（#rrggbbaa 输出）/数值域线性（承 to 侧单位拼写）/离散原语 t≥1 跳变；过渡域的公共地基
+
+- **缺口**(R672/R667 落账"插值动画域未涉",勘误轮立项分级——phase 1=插值原语,phase 2=transition 声明解析,phase 3=过渡生命周期 widget 时钟接线):注册属性的值域自 R672 起有类型轨道,但"两个值按进度混合"的原语全缺——后续任何过渡机制（transition 解析/生命周期/失效重绘）都以此 为地基。
+- **方案**(纯函数零系统接线,文本进文本出与 var() 替换的文本轨同约):① **`<color>`**——双侧 css_value 探针 UINT32 解析（失格 false=调用方跳变）,四通道（RGBA）线性+0.5 舍入钳幅,输出 `#rrggbbaa` 小写 hex;straight alpha sRGB 线性（**premultiplied 让渡**,文档化）;② **`<number>/<length>`**——css_number 取数值+尾缀拼写（trim）,线性后承 **to 侧后缀**（`10`→`20px` 出 `15px`——引擎长度模型 px 单位轨同约）;number 后缀须空（携带单位→false）;整数值无小数点格式化（`%.12g`/整数分支）;③ **`<percentage>`**——R676 同型数字紧随 `%` 双侧校验,线性输出 `N%`;④ **离散原语**——`<integer>/<string>`/单 ident/多选一/未知串/`*`:t<1 出 from、t≥1 出 to（规范离散插值语义,双侧不验值——可插值域才验）;⑤ t 钳制 [0,1]（NaN 归 0）。
+- **TDD（红→绿实证）**:test_myui_css +1——十六景：色中点/双端点/**alpha 通道**（#ffffffff→#ffffff00@0.5=#ffffff80)/number 中点/length 承单位/裸数从侧/percentage 中点/integer 离散三态（0.5/0.999/1.0)/string 离散/多选一离散/单 ident 离散/双侧失格 false×3。**RED 链接红**（API 未定义——新公共 API 的合法红形态,R662 stub-RED 同约）;GREEN 一次过 **190/190**(189+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R672-R680 值域组全绿未动（纯新增函数,零既有路径扰动）。
+- **边界**：premultiplied alpha 混合让渡（straight 同约,半透明叠加域属消费侧）;色输出钉 hex 小写（消费侧探针全形态可读,格式选择不影响语义——测试钉格式属行为契约）;`<length>` 单位混拼承 to 侧（from px/to 裸数出裸数——引擎无单位换算,数值域同约）;t 超界钳制（负数/NaN 归 0）;easing 函数（linear 之外）未涉（phase 2 域）;R611 AMD 基线不动。
+
 ## 本轮勘误：候选清单终审复核 — 三项"开放项"系过时落账引用（实已在后续轮关闭），两项"剩余让渡"经规范核对无需代码；CSS 线切片真空确认
 
 - **勘误背景**：R683 后终审曾将 `@import layer()/supports()` 限定、text_area 方向键簇感知列为"归档非候选（无调用方/基建依赖）"——复核发现两处引用的是 R6xx 早期落账，**后续轮已关闭**：导入修饰族三级管线（layer(name)/裸 layer/supports()/media query）为 R651-R655 交付；text_area 无 layout 箭头簇感知为 R660 交付（字节域字素 API，硬换行行跨语义零变）。

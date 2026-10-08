@@ -5489,6 +5489,179 @@ size_t my_css_property_def_count(const my_css_sheet_t* sheet) {
   return sheet != NULL ? my_darray_size(sheet->property_defs) : 0u;
 }
 
+/* R685: parse one full color value (UINT32) out of text. */
+static bool css_interpolate_color(const char* text, uint32_t* out_value) {
+  css_p_t probe;
+  my_value_t v;
+  bool ok;
+  my_value_init(&v, NULL);
+  memset(&probe, 0, sizeof(probe));
+  probe.s = text;
+  probe.len = strlen(text);
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  ok = css_value(&probe, &v);
+  if (ok) {
+    c_ws(&probe);
+    ok = c_peek(&probe) < 0;
+  }
+  if (ok) {
+    ok = my_value_type(&v) == MY_VALUE_UINT32;
+    if (ok) {
+      *out_value = my_value_get_uint32(&v);
+    }
+  }
+  my_value_reset(&v);
+  return ok;
+}
+
+/* R685: parse a numeric prefix plus its trailing unit spelling (the
+ * remainder after the number, trimmed — "" / "px"). Returns false
+ * when no number leads the text. */
+static bool css_interpolate_number(const char* text, double* out_value,
+                                   const char** out_suffix) {
+  css_p_t probe;
+  double number;
+  bool integral;
+  const char* s = text;
+  size_t length = strlen(text);
+  size_t end;
+  memset(&probe, 0, sizeof(probe));
+  probe.s = text;
+  probe.len = length;
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_number(&probe, &number, &integral)) {
+    return false;
+  }
+  *out_value = number;
+  end = (size_t)(probe.s + probe.pos - s);
+  while (end < length &&
+         (s[end] == ' ' || s[end] == '\t' || s[end] == '\r' ||
+          s[end] == '\n')) {
+    end++;
+  }
+  *out_suffix = s + end;
+  return true;
+}
+
+/* R685: format an interpolation result — integral values print
+ * without a decimal point. */
+static void css_interpolate_format(char* out, size_t cap, double value,
+                                   const char* suffix) {
+  if (value == (double)(long long)value) {
+    snprintf(out, cap, "%lld%s", (long long)value, suffix);
+  } else {
+    snprintf(out, cap, "%.12g%s", value, suffix);
+  }
+}
+
+bool my_css_property_interpolate(const char* syntax, const char* from,
+                                 const char* to, double t, char* out,
+                                 size_t cap) {
+  const char* from_text = from;
+  const char* to_text = to;
+  size_t from_len, to_len;
+  if (syntax == NULL || from == NULL || to == NULL || out == NULL ||
+      cap == 0u) {
+    return false;
+  }
+  if (!(t >= 0.0)) {
+    t = 0.0; /* NaN and negatives clamp to the start */
+  }
+  if (t > 1.0) {
+    t = 1.0;
+  }
+  from_len = strlen(from);
+  to_len = strlen(to);
+  while (from_len > 0u && css_container_ws(*from_text)) {
+    from_text++;
+    from_len--;
+  }
+  while (to_len > 0u && css_container_ws(*to_text)) {
+    to_text++;
+    to_len--;
+  }
+  (void)from_len;
+  (void)to_len;
+
+  if (my_str_eq(syntax, "<color>")) {
+    uint32_t a, b;
+    uint32_t channels[4];
+    int i;
+    if (!css_interpolate_color(from_text, &a) ||
+        !css_interpolate_color(to_text, &b)) {
+      return false;
+    }
+    for (i = 0; i < 4; i++) {
+      uint32_t ca = (a >> (24u - 8u * (uint32_t)i)) & 0xFFu;
+      uint32_t cb = (b >> (24u - 8u * (uint32_t)i)) & 0xFFu;
+      channels[i] = (uint32_t)((double)ca +
+                               ((double)cb - (double)ca) * t + 0.5);
+      if (channels[i] > 255u) {
+        channels[i] = 255u;
+      }
+    }
+    snprintf(out, cap, "#%02x%02x%02x%02x", channels[0], channels[1],
+             channels[2], channels[3]);
+    return true;
+  }
+  if (my_str_eq(syntax, "<number>") || my_str_eq(syntax, "<length>")) {
+    double fa, fb;
+    const char* fs;
+    const char* bs;
+    bool from_ok = css_interpolate_number(from_text, &fa, &fs);
+    bool to_ok = css_interpolate_number(to_text, &fb, &bs);
+    size_t fs_len, bs_len;
+    if (!from_ok || !to_ok) {
+      return false;
+    }
+    fs_len = strlen(fs);
+    bs_len = strlen(bs);
+    while (fs_len > 0u && css_container_ws(fs[fs_len - 1u])) {
+      fs_len--;
+    }
+    while (bs_len > 0u && css_container_ws(bs[bs_len - 1u])) {
+      bs_len--;
+    }
+    if ((my_str_eq(syntax, "<number>") && (fs_len != 0u || bs_len != 0u))) {
+      return false; /* numbers carry no unit */
+    }
+    {
+      char suffix[16];
+      size_t copy = bs_len < sizeof(suffix) - 1u ? bs_len : sizeof(suffix) - 1u;
+      memcpy(suffix, bs, copy);
+      suffix[copy] = '\0';
+      css_interpolate_format(out, cap, fa + (fb - fa) * t, suffix);
+    }
+    return true;
+  }
+  if (my_str_eq(syntax, "<percentage>")) {
+    double fa, fb;
+    const char* fs;
+    const char* bs;
+    if (!css_interpolate_number(from_text, &fa, &fs) ||
+        !css_interpolate_number(to_text, &fb, &bs)) {
+      return false;
+    }
+    if (fs[0] != '%' || fs[1] != '\0' || bs[0] != '%' || bs[1] != '\0') {
+      return false; /* both sides must be plain percentages */
+    }
+    css_interpolate_format(out, cap, fa + (fb - fa) * t, "%");
+    return true;
+  }
+  /* discrete primitives: integer/string, ident syntaxes (lone or
+   * multi-choice), unknown strings — from until t >= 1, then to. */
+  if (t >= 1.0) {
+    snprintf(out, cap, "%s", to_text);
+  } else {
+    snprintf(out, cap, "%s", from_text);
+  }
+  return true;
+}
+
 const my_theme_property_def_t* my_css_property_def(
     const my_css_sheet_t* sheet, size_t index) {
   if (sheet == NULL || index >= my_darray_size(sheet->property_defs)) {

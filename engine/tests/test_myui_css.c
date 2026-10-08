@@ -3279,6 +3279,97 @@ TEST(css_container_or_condition_lists_evaluate_at_match_time)
   my_theme_destroy(theme);
 }
 
+TEST(css_property_interpolation_primitives)
+{
+  /* R685: the interpolation primitive for registered properties —
+   * colors blend per channel (output as #rrggbbaa, straight alpha,
+   * sRGB linear — premultiplied blending is a documented deferral),
+   * numbers/lengths/percentages blend numerically (adopting the `to`
+   * side's unit spelling), and discrete primitives (integer/string,
+   * ident combinations) jump at t >= 1. An unparseable side returns
+   * false (the caller jump-cuts). */
+  char out[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+
+  /* <color>: red -> blue at the midpoint is #800080ff. */
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#800080ff");
+
+  /* the endpoints reproduce the sides. */
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", 0.0,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#ff0000ff");
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", 1.0,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#0000ffff");
+
+  /* alpha blends too: fully opaque -> transparent. */
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "#ffffffff",
+                                          "#ffffff00", 0.5, out,
+                                          sizeof(out)));
+  ASSERT_STR_EQ(out, "#ffffff80");
+
+  /* <number>: 1 -> 3 at 0.5 is 2. */
+  ASSERT_TRUE(my_css_property_interpolate("<number>", "1", "3", 0.5, out,
+                                          sizeof(out)));
+  ASSERT_STR_EQ(out, "2");
+
+  /* <length>: 10px -> 20px at 0.25 is 12.5px. */
+  ASSERT_TRUE(my_css_property_interpolate("<length>", "10px", "20px", 0.25,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "12.5px");
+
+  /* a bare-number from-side blends into the to-side spelling. */
+  ASSERT_TRUE(my_css_property_interpolate("<length>", "10", "20px", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "15px");
+
+  /* <percentage>: 50% -> 60% at 0.5 is 55%. */
+  ASSERT_TRUE(my_css_property_interpolate("<percentage>", "50%", "60%", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "55%");
+
+  /* <integer> is discrete: from until t >= 1. */
+  ASSERT_TRUE(my_css_property_interpolate("<integer>", "1", "5", 0.5, out,
+                                          sizeof(out)));
+  ASSERT_STR_EQ(out, "1");
+  ASSERT_TRUE(my_css_property_interpolate("<integer>", "1", "5", 0.999,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "1");
+  ASSERT_TRUE(my_css_property_interpolate("<integer>", "1", "5", 1.0, out,
+                                          sizeof(out)));
+  ASSERT_STR_EQ(out, "5");
+
+  /* <string> is discrete too. */
+  ASSERT_TRUE(my_css_property_interpolate("<string>", "\"a\"", "\"b\"", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "\"a\"");
+  ASSERT_TRUE(my_css_property_interpolate("<string>", "\"a\"", "\"b\"", 1.0,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "\"b\"");
+
+  /* ident combinations (multi-choice) are discrete. */
+  ASSERT_TRUE(my_css_property_interpolate("small | large", "small", "large",
+                                          0.9, out, sizeof(out)));
+  ASSERT_STR_EQ(out, "small");
+  ASSERT_TRUE(my_css_property_interpolate("small | large", "small", "large",
+                                          1.0, out, sizeof(out)));
+  ASSERT_STR_EQ(out, "large");
+
+  /* a lone ident syntax is discrete as well. */
+  ASSERT_TRUE(my_css_property_interpolate("small", "small", "large", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "small");
+
+  /* an unparseable side returns false. */
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", "bogus", "blue", 0.5,
+                                           out, sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<color>", "red", "bogus", 0.5,
+                                           out, sizeof(out)));
+  ASSERT_TRUE(!my_css_property_interpolate("<number>", "abc", "3", 0.5, out,
+                                           sizeof(out)));
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9291,6 +9382,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_bare_style_existence_queries);
     RUN_TEST(css_container_inline_size_axis_semantics);
     RUN_TEST(css_container_or_condition_lists_evaluate_at_match_time);
+    RUN_TEST(css_property_interpolation_primitives);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);
