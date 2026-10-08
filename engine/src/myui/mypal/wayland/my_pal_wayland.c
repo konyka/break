@@ -447,6 +447,7 @@ static void wgl_destroy_owned(wl_window_t* w) {
                  EGL_NO_CONTEXT);
   eglDestroyContext(w->gl->display, w->gl->context);
   eglDestroySurface(w->gl->display, w->gl->surface);
+  eglTerminate(w->gl->display);
   wl_egl_window_destroy(w->gl->egl_window);
   my_mem_free(w->pal->allocator, w->gl);
   w->gl = NULL;

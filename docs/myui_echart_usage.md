@@ -39,13 +39,19 @@ presentation, GL mount, events, main loop: see `test_mypal_x11.c` /
 `test_mypal_wayland.c`); Win32/Cocoa are compile-targeted against the
 frozen contract with no host in CI.
 
-Verification status: all four Linux combinations plus `--shot`/`--glshot`
-are verified live on the reference host; the Windows and macOS runners are
-implemented against the documented Win32/WGL and Cocoa/NSOpenGL APIs with
-per-OS build wiring, but are compile-targeted only (not executed here —
-no Windows/macOS host in CI). The build selects platform sources
-automatically and falls back to x11+soft-only on Linux when the
-Wayland/EGL development packages are absent.
+Verification status: all four Linux combinations plus `--shot`/
+`--glshot`/`--palshot` are verified live on the reference host; the PAL
+ports themselves are covered by `test_mypal_x11.c` / `test_mypal_wayland.c`
+(window lifecycle, lcd presentation, GL mount incl. eglTerminate teardown,
+events, main loop; the X11 suite is also leak-sanitizer clean). The
+Windows and macOS runners are implemented against the documented
+Win32/WGL and Cocoa/NSOpenGL APIs with per-OS build wiring, but are
+compile-targeted only (not executed here — no Windows/macOS host in
+CI). The build selects platform sources automatically and falls back to
+x11+soft-only on Linux when the Wayland/EGL development packages are
+absent. Note: the engine's default ctest run excludes the `fuzz`-labeled
+smoke tests (`-LE "graphics|fuzz"`); they are built and run by the
+sanitizer CI job.
 
 The left pane is a live `my_chart`; the right pane is a real MyUI widget
 panel that drives it in real time:

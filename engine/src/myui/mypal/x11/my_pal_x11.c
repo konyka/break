@@ -166,6 +166,7 @@ static uint32_t xlcd_stride(my_lcd_t* lcd) {
 static void xlcd_destroy(my_lcd_t* lcd) {
   x11_lcd_t* x = (x11_lcd_t*)lcd;
   if (x->image != NULL) XFree((char*)x->image);
+  if (x->gc != NULL) XFreeGC(x->pal->display, x->gc);
   my_lcd_destroy(x->mem);
   my_mem_free(x->pal->allocator, x);
 }
@@ -255,6 +256,7 @@ static void xgl_destroy_owned(x11_window_t* w) {
                  EGL_NO_CONTEXT);
   eglDestroyContext(w->gl->display, w->gl->context);
   eglDestroySurface(w->gl->display, w->gl->surface);
+  eglTerminate(w->gl->display);
   my_mem_free(w->pal->allocator, w->gl);
   w->gl = NULL;
 }
