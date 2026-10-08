@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮补记：ASan 动态库根治 + CI 红诊断定性（开放项清零计划附轮）— CMake 的 ASan DLL staging 扩至 **flag 注入路径**（原仅 ENGINE_USE_ASAN 选项路——`CMAKE_C_FLAGS` 带 `-fsanitize=address` 的构建同样自动 copy clang_rt DLL 至 build 根,Windows 加载器查找序首位）;sanitizer job 失败诊断化（全量 log head 进 step summary+扩谱 grep 上 `::error::` annotations——匿名 API 可读）;53d6f43 的 Linux ASan job 红**定性偶发环境态**（Test 步 15 秒即红+零关键词匹配,与断言失败形态不符;45dd0fd 同代码 10/10 全绿+本地 ASan/UBSan 124/124 实证）
+
+- **缺口**:用户侧本地 ASan 构建持续报 DLL 缺失（`clang_rt.asan_dynamic-x86_64.dll`,exit 0xC0000135）——R630 的 DLL staging 只挂 `ENGINE_USE_ASAN` 选项分支,`-DCMAKE_C_FLAGS="-fsanitize=..."` 注入式构建（本地调试树/UBSan 组合树的常见形态）绕过分支零 copy;LLVM Windows ASan **强制动态链**（实验证:`-fms-runtime-lib=static`/`-static-libasan` 均不改变 DLL 依赖——静态 CRT 不连带静态 ASan）,copy 是唯一解。
+- **方案**:① staging 条件改双路——`(ENGINE_USE_ASAN OR CMAKE_C_FLAGS MATCHES "fsanitize=address")`,copy 逻辑原样（resource-dir 定位+arch 分流+build 根落位,一次 configure 覆盖全树 exe）;② 诊断化——linux-gcc-sanitizers 的 Test 步骤失败时 head -120 全量 log 进 step summary+扩谱 grep（SUMMARY: AddressSanitizer/runtime error/Timeout/Segmentation/abort 等）逐行 `::error::`（annotations 公开 API 可读——本次定位即受益于该通道的步骤级状态/注解读取）;③ **定性**——53d6f43 红 job（Test 15 秒即红+rerun grep 零匹配+断言失败应跑完全套件的形态矛盾）判偶发环境态;45dd0fd 同源代码 10/10（含 Windows ASan job/GL f16）+本地 build-ubsan（ASan+UBSan flag 注入,DLL 自动落位后）124/124 零 runtime error——健康实证闭环。
+- **验证**:本地——build-ubsan 重新 configure 后 `ASan runtime DLL staged` 日志+exe 直跑 199/199（css）与全套 124/124;CI——45dd0fd run **10/10 全绿**（9 旧 job+windows-clang-asan 新 job;GL job 含 f16 cube 往返首跑通过）。
+- **边界**:staging 仅 Clang/Windows/非 MSVC 域（GCC 原生静态 ASan 无 DLL）;偶发环境态无再现（同代码绿）——若再现,诊断化输出将携带失败细节（工具就位）;R611 AMD 基线不动。
+
 ## 本轮更新：R696 基建四项收口（TDD，开放项清零计划轮 6/6）— Windows Clang **ASan CI job** 新增（DLL copy 解法+本地 124/124 预验证）;GL f16 cube 往返测试挂上 X11 RHI 运行时挂具（R624/R625 字节契约的 GL 面实证）;ubuntu 迁移/weston headless/TSan 三项经审计**事实关闭**（过时落账勘误）
 
 - **缺口**(历轮落账基建四项:MSVC ASan"DLL 问题未涉"/GL f16 cube"需图形测试基建"/ubuntu-latest 迁移"2026-10 复看"/explorer wayland"运行期未涉")。
