@@ -320,8 +320,47 @@ TEST(echart_json_multi_dimension_encode_errors) {
   my_echart_json_doc_destroy(&doc);
 }
 
+
+TEST(echart_json_radar_indicators_gauge_and_palette) {
+  const char* json =
+      "{\"color\":[\"#123456\",\"#654321\"],"
+      "\"radar\":{\"indicator\":[{\"name\":\"Sales\",\"max\":100},"
+      "{\"name\":\"Cost\",\"max\":50},{\"name\":\"Margin\"}]},"
+      "\"series\":[{\"name\":\"KPI\",\"type\":\"radar\",\"data\":[10,20,30]}]}";
+  const char* gauge_json =
+      "{\"series\":[{\"name\":\"Load\",\"type\":\"gauge\","
+      "\"min\":0,\"max\":200,\"data\":[120]}]}";
+  my_echart_json_doc_t* doc = my_echart_json_doc_parse(json, strlen(json), NULL);
+  my_echart_json_doc_t* gauge_doc =
+      my_echart_json_doc_parse(gauge_json, strlen(gauge_json), NULL);
+  const my_echart_option_input_t* input;
+  my_echart_option_t copy;
+
+  ASSERT_TRUE(doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(doc) == NULL);
+  input = my_echart_json_doc_option(doc);
+  ASSERT_EQ(input->x_axis_count, 3u);
+  ASSERT_TRUE(strcmp(input->x_axis_data[0], "Sales") == 0);
+  ASSERT_TRUE(strcmp(input->x_axis_data[2], "Margin") == 0);
+  ASSERT_EQ(input->series[0].color, 0x123456FFu);
+  ASSERT_TRUE(gauge_doc != NULL);
+  ASSERT_TRUE(my_echart_json_doc_error(gauge_doc) == NULL);
+  {
+    const my_echart_option_input_t* gi = my_echart_json_doc_option(gauge_doc);
+    ASSERT_TRUE(gi->range_set);
+    ASSERT_FLOAT_EQ((float)gi->y_min, 0.0f, 1e-6f);
+    ASSERT_FLOAT_EQ((float)gi->y_max, 200.0f, 1e-6f);
+  }
+  my_echart_option_init(&copy, NULL);
+  ASSERT_EQ(my_echart_option_copy(&copy, input, NULL), MY_RET_OK);
+  my_echart_option_free(&copy);
+  my_echart_json_doc_destroy(&doc);
+  my_echart_json_doc_destroy(&gauge_doc);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_json_happy_path);
+  RUN_TEST(echart_json_radar_indicators_gauge_and_palette);
   RUN_TEST(echart_json_series_encode_binds_dataset);
   RUN_TEST(echart_json_series_encode_errors);
   RUN_TEST(echart_json_multi_dimension_encode_interleaves_rows);

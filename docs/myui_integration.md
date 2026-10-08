@@ -1379,8 +1379,16 @@ engine/
 目录；`MYUI_SOURCE_DIR` 和 `MYUI_ENGINE_SOURCE_DIR` 均由模块位置推导，不依赖调用方的
 `${CMAKE_SOURCE_DIR}` 布局，也不会把顶层工程误当成头文件根。
 可复用入口按 `myc -> myr -> mypal -> myui -> mymvvm -> mymvvm_myui` 顺序加入。
-其中 `mypal` 默认提供无窗口系统的 dummy port，真实 X11/Wayland/Win32/Cocoa port
-仍由 engine 宿主目标选择，避免把平台库带入 headless 或嵌入式构建。配置回归
+其中 `mypal` 默认提供无窗口系统的 dummy port；真实 X11 / Wayland / Win32 /
+Cocoa port 现已随树提供（`mypal/x11`、`mypal/wayland`、`mypal/win32`、
+`mypal/cocoa`），由 CMake 选项 `MYUI_PAL=x11|wayland|win32|cocoa|dummy`
+选择编入，平台库只在对应分支链接（默认 dummy 构建保持零平台依赖）。
+X11 与 Wayland port 在参考主机上经 `test_mypal_x11.c` /
+`test_mypal_wayland.c` 真机验证且 ASan 无泄漏；Win32/Cocoa 为
+compile-targeted。各 port 实现冻结的 `my_pal.h` 契约：窗口生命周期、
+`get_lcd` 呈现语义（XImage / wl_shm / DIB / NSBitmapImageRep）、
+`gl_enable` GL mount（EGL ES2 或 WGL/NSOpenGL + 桌面表回退）、
+事件到 `my_event_t` 的翻译、以及 `run/quit/post_event/timer` 主循环。配置回归
 `test_myr_dependency_config` 会检查五个模块的路径契约和 PAL target；隔离顶层构建已
 在关闭字体、YAML、BiDi 和图像可选项时完成 `87/87` 编译。
 

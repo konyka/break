@@ -13,6 +13,9 @@ typedef struct my_echart_json_doc_t my_echart_json_doc_t;
  * annotations as series-level markPoint {data:[{coord:[categoryIndex,value],name}]},
  * markLine {data:[{yAxis,name,itemStyle:{color}}]}, markArea
  * {data:[{yAxisRange:[min,max],name,itemStyle:{color}}]}, and top-level
+ * radar indicator {name,max} arrays (spoke names become the category
+ * axis), series-level gauge min/max (maps to the explicit Y range), and
+ * a top-level color palette cycled onto unstyled series.
  * dataset {source:{dimension:[numeric,...]}} with optional series-level
  * encode {y:"dimension"} or {y:["d0","d1",...]} binding (series data then
  * materializes from those dataset dimensions, row-interleaved for the array

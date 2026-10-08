@@ -479,6 +479,58 @@ my_echart_json_doc_t* my_echart_json_doc_parse(const char* json, size_t len, con
    if(d->error[0]=='\0' && !resolve_encodes(d) && d->error[0]=='\0') set_error(d,"invalid encode");
    (void)parse_transform(d,my_conf_get(n,"transform"));
   d->option.legend_hidden=!my_conf_get_bool(n,"legend.show",true); d->option.tooltip_hidden=!my_conf_get_bool(n,"tooltip.show",true);
+  {
+    my_conf_node_t* radar = my_conf_get(n, "radar.indicator");
+    if (radar != NULL && my_conf_type(radar) == MY_CONF_ARRAY &&
+        d->x_axis == NULL) {
+      size_t k;
+      d->option.x_axis_count = 0u;
+      for (k = 0u; k < my_conf_child_count(radar); ++k) {
+        const char* nm = my_conf_get_str(child(radar, k), "name", NULL);
+        if (nm == NULL || nm[0] == '\0') {
+          set_error(d, "invalid radar indicator");
+          break;
+        }
+      }
+      if (d->error[0] == '\0') {
+        d->x_axis = (char**)alloc0(d, my_conf_child_count(radar),
+                                   sizeof(*d->x_axis));
+        if (d->x_axis == NULL) { set_error(d, "out of memory"); }
+        else {
+          for (k = 0u; k < my_conf_child_count(radar); ++k) {
+            d->x_axis[k] = copy_string(
+                d, my_conf_get_str(child(radar, k), "name", NULL));
+            if (d->x_axis[k] == NULL) { set_error(d, "out of memory"); break; }
+          }
+          if (d->error[0] == '\0') {
+            d->option.x_axis_data = (const char* const*)d->x_axis;
+            d->option.x_axis_count = my_conf_child_count(radar);
+          }
+        }
+      }
+    }
+    {
+      my_conf_node_t* gauge_min = my_conf_get(n, "series.0.min");
+      my_conf_node_t* gauge_max = my_conf_get(n, "series.0.max");
+      if (gauge_min != NULL && gauge_max != NULL &&
+          number(gauge_min, &d->option.y_min) &&
+          number(gauge_max, &d->option.y_max))
+        d->option.range_set = true;
+    }
+    {
+      my_conf_node_t* palette = my_conf_get(n, "color");
+      size_t k;
+      if (palette != NULL && my_conf_type(palette) == MY_CONF_ARRAY &&
+          my_conf_child_count(palette) > 0u) {
+        for (k = 0u; k < d->option.series_count; ++k) {
+          my_conf_node_t* pick =
+              child(palette, k % my_conf_child_count(palette));
+          if (d->series[k].color == 0u && !color(d, pick, &d->series[k].color))
+            { set_error(d, "bad color string"); break; }
+        }
+      }
+    }
+  }
    if(number(my_conf_get(n,"yAxis.min"),&d->option.y_min)&&number(my_conf_get(n,"yAxis.max"),&d->option.y_max)) d->option.range_set=true;
    if (my_conf_get(n, "visualMap.inRange.color") != NULL && d->error[0] == '\0') {
      my_conf_node_t* c = my_conf_get(n, "visualMap.inRange.color");
