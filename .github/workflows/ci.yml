@@ -423,7 +423,18 @@ jobs:
       - name: Test (headless suite under ASan)
         env:
           ASAN_OPTIONS: detect_leaks=0
-        run: ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
 
   macos-vulkan:
     name: macOS Cocoa + MoltenVK (Clang)
