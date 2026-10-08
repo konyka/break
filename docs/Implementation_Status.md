@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R692 premultiplied 色插值 + 多选一乘数替代（TDD，开放项清零计划轮 2/6）— 默认色混合换轨 premultiplied 域（CSS 默认——RGB 乘 alpha 混合后除回),straight 变体 API `my_css_property_interpolate_straight` 并存;多选一替代片接 R690 乘数（`small | <color>+` 逐替代任一命中）
+
+- **缺口**(R685 落账"premultiplied 让渡"+R690 落账"多选一内带乘数替代维持不强制"):straight alpha 在半透明→透明混色时 RGB 灰阶塌陷（规范 premultiplied 域才保色）;`syntax: "small | <color>+"` 中乘数替代仍全放行。
+- **方案**(值域两件):① **impl 参数化**——interpolate 重构为 `css_property_interpolate_impl(..., premultiplied)`,公共 API 双出口（default=premul CSS 默认/`_straight` 变体）;premul 数学问——双侧 RGB·A/255 预乘→线性混→除回混后 A（A=0 → 0）,防抖舍入同约;不透明端点两域**逐字节等价**（A=255 预乘恒等——既有 R685 测试零扰动实证）;② **乘数 helper 提取**——R690 单乘数内联逻辑提 `css_list_multiplier_check(component, sep, text)`（首尾分隔符拒/≥1 项/逐项原语或 ident 闸）,单乘数分支与多选一分支共享;③ **多选一乘数**——替代片 trim 后剥末尾 `+`/`#`：组件已知（原语/ident）→ helper 逐项检,失配**继续尝试后续替代**（任一命中即收——乘数替代失败不终结循环）;未知组件（带或不带后缀）维持整组不强制。
+- **TDD（红→绿实证）**:test_myui_css +1——premul 三景：**半透明灰→透明白 @0.5 两域对偶**（premul #80808040 保灰阶/straight #c0c0c040 塌陷——干净可观测分野）/不透明端点两域同值×2;多选一乘数四景：ident 替代收/色列表收/失项列表拒/未知原语乘数不强制。**RED 链接红**（straight API 未定义）+多选一乘数照放行;GREEN **197/197**(196+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R685 既有色景全绿（不透明端点两域等价的设计保证）、R678/R690 组全绿（乘数 helper 提取行为等价）。
+- **边界**：transitioning 查询链走 default（premul,CSS 规范默认）;straight 变体供宿主显式选择;`lab()/oklab()` 色域混合未涉（引擎色模型 RGBA8 域,色彩管理属立项）;R611 AMD 基线不动。
+
 ## 本轮更新：R691 transition 全参数（TDD，开放项清零计划轮 1/6）— easing 全集（linear/ease/ease-in/ease-out/ease-in-out/**cubic-bezier(x,y,x,y)** 二分求解,x∈[0,1]）+ delay 时长段 + 逗号多组（≤4 组并行）——R685/686/687 三处边界一次关闭；linear 的 bezier 恒等表示与半值防抖舍入两处数值细节落定
 
 - **缺口**(R686/R687 落账"easing 恒 linear/逗号多组拒/delay 未涉"):transition 仅 `--name <dur> [linear]` 单组——CSS 过渡的标准时间函数/延迟/多属性并行全缺。

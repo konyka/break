@@ -4138,6 +4138,80 @@ TEST(css_transition_full_parameters)
   my_value_reset(&out);
 }
 
+TEST(css_premultiplied_blend_and_multichoice_multipliers)
+{
+  /* R692 (open-item sweep 2/6): the color blend defaults to the
+   * premultiplied domain (the CSS default) with a straight-alpha
+   * variant API; multi-choice alternatives take the R690 list
+   * multipliers per alternative. */
+  char out[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+
+  /* premultiplied: a half-transparent grey towards fully transparent
+   * white keeps the grey's RGB (premul math), while the straight
+   * variant averages the channels. */
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "#80808080",
+                                          "#ffffff00", 0.5, out,
+                                          sizeof(out)));
+  ASSERT_STR_EQ(out, "#80808040");
+  ASSERT_TRUE(my_css_property_interpolate_straight("<color>", "#80808080",
+                                                   "#ffffff00", 0.5, out,
+                                                   sizeof(out)));
+  ASSERT_STR_EQ(out, "#c0c0c040");
+
+  /* opaque endpoints agree across both domains. */
+  ASSERT_TRUE(my_css_property_interpolate("<color>", "red", "blue", 0.5,
+                                          out, sizeof(out)));
+  ASSERT_STR_EQ(out, "#800080ff");
+  ASSERT_TRUE(my_css_property_interpolate_straight("<color>", "red",
+                                                   "blue", 0.5, out,
+                                                   sizeof(out)));
+  ASSERT_STR_EQ(out, "#800080ff");
+
+  /* multi-choice with a multiplier alternative: ident or list-of. */
+  {
+    const char* ident =
+        "@property --m { syntax: \"small | <color>+\"; inherits: false;"
+        " initial-value: small; } button { color: blue; }";
+    const char* list_ok =
+        "@property --m { syntax: \"small | <color>+\"; inherits: false;"
+        " initial-value: red blue; } button { color: blue; }";
+    const char* list_bad =
+        "@property --m { syntax: \"small | <color>+\"; inherits: false;"
+        " initial-value: red bogus; } button { color: blue; }";
+    const char* unknown_still =
+        "@property --m { syntax: \"small | <transform-function>+\";"
+        " inherits: false; initial-value: junk; } button { color: blue; }";
+    my_css_error_t error = {0};
+    my_css_sheet_t* sheet;
+    sheet = my_css_parse_ex(NULL, ident, strlen(ident),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+    my_css_sheet_destroy(sheet);
+
+    memset(&error, 0, sizeof(error));
+    sheet = my_css_parse_ex(NULL, list_ok, strlen(list_ok),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+    my_css_sheet_destroy(sheet);
+
+    memset(&error, 0, sizeof(error));
+    sheet = my_css_parse_ex(NULL, list_bad, strlen(list_bad),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+    my_css_sheet_destroy(sheet);
+
+    memset(&error, 0, sizeof(error));
+    sheet = my_css_parse_ex(NULL, unknown_still, strlen(unknown_still),
+                            MY_CSS_PARSE_STRICT_AT_RULES, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+    my_css_sheet_destroy(sheet);
+  }
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -10157,6 +10231,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_percentage_length_auto_reference);
     RUN_TEST(css_property_syntax_list_multipliers);
     RUN_TEST(css_transition_full_parameters);
+    RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

@@ -374,6 +374,14 @@ bool my_css_property_interpolate(const char* syntax, const char* from,
                                  const char* to, double t, char* out,
                                  size_t cap);
 
+/** @brief R692: the straight-alpha interpolation variant — color
+ * channels blend without premultiplication (the default API blends
+ * in the premultiplied domain per the CSS default). */
+bool my_css_property_interpolate_straight(const char* syntax,
+                                          const char* from,
+                                          const char* to, double t,
+                                          char* out, size_t cap);
+
 /** @brief R690: count the items of a list text split on `separator`
  * (whitespace runs collapse for ' ', single characters otherwise);
  * runs of separators produce no empty items, an empty/blank text has

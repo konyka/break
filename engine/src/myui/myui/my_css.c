@@ -1259,6 +1259,49 @@ static bool css_syntax_ident_ok(const char* s, size_t length) {
  * holding an unrecognized component (unknown primitive, malformed or
  * empty alternative) stays unenforced: the R672 unknown-string
  * deferral, applied per whole combination. */
+/* R690/R692: a list component (`+`/`#` multiplier) — every item must
+ * satisfy the component gate (the caller strips the suffix and passes
+ * the separator). Leading/trailing separators reject; at least one
+ * item. */
+static bool css_list_multiplier_check(const char* component, char sep,
+                                      const char* text) {
+  size_t n, i;
+  if (sep != ' ') {
+    size_t tlen = strlen(text);
+    size_t first = 0u;
+    size_t last = tlen;
+    while (first < tlen && css_container_ws(text[first])) {
+      first++;
+    }
+    while (last > first && css_container_ws(text[last - 1u])) {
+      last--;
+    }
+    if (first >= last || text[first] == sep || text[last - 1u] == sep) {
+      return false;
+    }
+  }
+  n = my_css_list_count(text, sep);
+  if (n == 0u) {
+    return false; /* at least one item */
+  }
+  for (i = 0u; i < n; i++) {
+    char item[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+    bool ok;
+    if (!my_css_list_at(text, sep, i, item, sizeof(item))) {
+      return false;
+    }
+    if (css_syntax_is_primitive(component)) {
+      ok = css_property_syntax_primitive_check(component, item);
+    } else {
+      ok = css_syntax_ident_matches(component, item);
+    }
+    if (!ok) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static bool css_property_syntax_multichoice_check(const char* syntax,
                                                   const char* text) {
   char buf[64];
@@ -1269,6 +1312,7 @@ static bool css_property_syntax_multichoice_check(const char* syntax,
     char* bar = strchr(cursor, '|');
     char* end = bar != NULL ? bar : cursor + strlen(cursor);
     char* start = cursor;
+    char sep = 0;
     while (start < end && (*start == ' ' || *start == '\t' ||
                            *start == '\r' || *start == '\n')) {
       start++;
@@ -1276,6 +1320,16 @@ static bool css_property_syntax_multichoice_check(const char* syntax,
     while (end > start && (end[-1] == ' ' || end[-1] == '\t' ||
                            end[-1] == '\r' || end[-1] == '\n')) {
       end--;
+    }
+    /* R692: a `+`/`#` multiplier suffix on the alternative. */
+    if (end - start >= 2u &&
+        (end[-1] == '+' || end[-1] == '#')) {
+      sep = end[-1] == '+' ? ' ' : ',';
+      end--;
+      while (end > start && (end[-1] == ' ' || end[-1] == '\t' ||
+                             end[-1] == '\r' || end[-1] == '\n')) {
+        end--;
+      }
     }
     *end = '\0';
     if (start == end) {
@@ -1285,14 +1339,22 @@ static bool css_property_syntax_multichoice_check(const char* syntax,
       if (!css_syntax_is_primitive(start)) {
         return true; /* unknown primitive: unenforced */
       }
-      if (css_property_syntax_primitive_check(start, text)) {
+      if (sep != 0) {
+        if (css_list_multiplier_check(start, sep, text)) {
+          return true;
+        }
+      } else if (css_property_syntax_primitive_check(start, text)) {
         return true;
       }
     } else {
       if (!css_syntax_ident_ok(start, (size_t)(end - start))) {
         return true; /* malformed alternative: unenforced */
       }
-      if (css_syntax_ident_matches(start, text)) {
+      if (sep != 0) {
+        if (css_list_multiplier_check(start, sep, text)) {
+          return true;
+        }
+      } else if (css_syntax_ident_matches(start, text)) {
         return true;
       }
     }
@@ -1320,7 +1382,6 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
     char component[64];
     char sep = syntax[slen - 1u] == '+' ? ' ' : ',';
     size_t clen = slen - 1u;
-    size_t n, i;
     if (clen >= sizeof(component)) {
       return true; /* unenforced */
     }
@@ -1330,43 +1391,7 @@ static bool css_property_syntax_check(const char* syntax, const char* text) {
         !css_syntax_ident_ok(component, clen)) {
       return true; /* unknown component: unenforced */
     }
-    if (sep != ' ') {
-      /* leading/trailing separators are malformed lists (a trailing
-       * comma stays rejected — the spec-lenient form is a documented
-       * deferral). */
-      size_t tlen = strlen(text);
-      size_t first = 0u;
-      size_t last = tlen;
-      while (first < tlen && css_container_ws(text[first])) {
-        first++;
-      }
-      while (last > first && css_container_ws(text[last - 1u])) {
-        last--;
-      }
-      if (first >= last || text[first] == sep || text[last - 1u] == sep) {
-        return false;
-      }
-    }
-    n = my_css_list_count(text, sep);
-    if (n == 0u) {
-      return false; /* at least one item */
-    }
-    for (i = 0u; i < n; i++) {
-      char item[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
-      bool ok;
-      if (!my_css_list_at(text, sep, i, item, sizeof(item))) {
-        return false;
-      }
-      if (css_syntax_is_primitive(component)) {
-        ok = css_property_syntax_primitive_check(component, item);
-      } else {
-        ok = css_syntax_ident_matches(component, item);
-      }
-      if (!ok) {
-        return false;
-      }
-    }
-    return true;
+    return css_list_multiplier_check(component, sep, text);
   }
   if (!css_syntax_is_primitive(syntax)) {
     /* R680: a lone ident syntax string ("small") enforces byte-exact
@@ -6029,9 +6054,35 @@ bool my_css_list_at(const char* text, char separator, size_t index,
   return true;
 }
 
+/* R692: the shared interpolation core — `premultiplied` selects the
+ * color domain (the CSS default blends premultiplied; the straight
+ * variant keeps raw channels). */
+static bool css_property_interpolate_impl(const char* syntax,
+                                          const char* from,
+                                          const char* to, double t,
+                                          char* out, size_t cap,
+                                          bool premultiplied);
+
+bool my_css_property_interpolate_straight(const char* syntax,
+                                          const char* from,
+                                          const char* to, double t,
+                                          char* out, size_t cap) {
+  return css_property_interpolate_impl(syntax, from, to, t, out, cap,
+                                        false);
+}
+
 bool my_css_property_interpolate(const char* syntax, const char* from,
                                  const char* to, double t, char* out,
                                  size_t cap) {
+  return css_property_interpolate_impl(syntax, from, to, t, out, cap,
+                                        true);
+}
+
+static bool css_property_interpolate_impl(const char* syntax,
+                                          const char* from,
+                                          const char* to, double t,
+                                          char* out, size_t cap,
+                                          bool premultiplied) {
   const char* from_text = from;
   const char* to_text = to;
   size_t from_len, to_len;
@@ -6065,6 +6116,44 @@ bool my_css_property_interpolate(const char* syntax, const char* from,
     if (!css_interpolate_color(from_text, &a) ||
         !css_interpolate_color(to_text, &b)) {
       return false;
+    }
+    if (premultiplied) {
+      /* R692: blend in the premultiplied domain (the CSS default) —
+       * RGB channels weight by their alpha, and the result divides
+       * back by the blended alpha. */
+      double af = (double)((a >> 0u) & 0xFFu);
+      double at = (double)((b >> 0u) & 0xFFu);
+      double alpha = af + (at - af) * t;
+      for (i = 0; i < 3; i++) {
+        double cf = (double)((a >> (24u - 8u * (uint32_t)i)) & 0xFFu);
+        double cb2 = (double)((b >> (24u - 8u * (uint32_t)i)) & 0xFFu);
+        double pf = cf * af / 255.0;
+        double pt = cb2 * at / 255.0;
+        double blended = pf + (pt - pf) * t;
+        double channel =
+            alpha > 0.0 ? blended * 255.0 / alpha : 0.0;
+        long long rounded = (long long)(channel + 0.5 + 1e-9);
+        if (rounded < 0) {
+          rounded = 0;
+        }
+        if (rounded > 255) {
+          rounded = 255;
+        }
+        channels[i] = (uint32_t)rounded;
+      }
+      {
+        long long rounded = (long long)(alpha + 0.5 + 1e-9);
+        if (rounded < 0) {
+          rounded = 0;
+        }
+        if (rounded > 255) {
+          rounded = 255;
+        }
+        channels[3] = (uint32_t)rounded;
+      }
+      snprintf(out, cap, "#%02x%02x%02x%02x", channels[0], channels[1],
+               channels[2], channels[3]);
+      return true;
     }
     for (i = 0; i < 4; i++) {
       uint32_t ca = (a >> (24u - 8u * (uint32_t)i)) & 0xFFu;
