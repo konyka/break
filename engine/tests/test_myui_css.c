@@ -4212,6 +4212,96 @@ TEST(css_premultiplied_blend_and_multichoice_multipliers)
   }
 }
 
+TEST(css_font_size_recursion_and_conditional_property)
+{
+  /* R693 (open-item sweep 3/6): font-size percentage references
+   * resolve recursively through the ancestor chain (a parent whose
+   * own font size is a percentage resolves against its parent,
+   * bounded depth); @property registers inside conditional blocks —
+   * @media gates at parse time (matching blocks register, non-matching
+   * skip whole), nested blocks register unconditionally (the registry
+   * is not cascade-gated). */
+  const char* recursive =
+      "window { font-size: 32; }"
+      "panel { font-size: 50%; }"
+      "label { font-size: 50%; }";
+  const char* media_hit =
+      "@media (min-width: 1px) { @property --m { syntax: \"<color>\";"
+      " inherits: false; initial-value: red; } }";
+  const char* media_miss =
+      "@media (min-width: 9999px) { @property --m { syntax: \"<color>\";"
+      " inherits: false; initial-value: red; } }";
+  const char* nested_container =
+      "@container (min-width: 400px) { @property --c { syntax:"
+      " \"<color>\"; inherits: false; initial-value: blue; } }";
+  my_css_error_t error = {0};
+  my_css_parse_options_t options = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* label;
+  const my_value_t* value;
+
+  /* two chained 50% steps: 32 -> 16 -> 8. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  label = my_widget_create(NULL, "label");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  label->widget_type = "label";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, label), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(label);
+  ASSERT_EQ(my_widget_apply_theme(window, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, recursive,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, panel, MY_STATE_NORMAL,
+                                  "font_size");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_type(value), MY_VALUE_STR);
+  ASSERT_EQ(my_widget_style_get_length_auto(label, MY_STATE_NORMAL,
+                                            "font_size", 7), 8);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a matching @media block registers the @property (the conditional
+   * query needs an injected media context). */
+  {
+    my_css_media_context_ex_t media = {{800u, 600u, true, false, false, 0u},
+                                       0u};
+    options.flags = MY_CSS_PARSE_STRICT_AT_RULES;
+    options.media = &media;
+    sheet = my_css_parse_with_options(NULL, media_hit, strlen(media_hit),
+                                      &options, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+    my_css_sheet_destroy(sheet);
+
+    /* a non-matching @media block skips whole (parse-time gating). */
+    memset(&error, 0, sizeof(error));
+    sheet = my_css_parse_with_options(NULL, media_miss,
+                                      strlen(media_miss), &options, &error);
+    ASSERT_NOT_NULL(sheet);
+    ASSERT_EQ(my_css_property_def_count(sheet), 0u);
+    my_css_sheet_destroy(sheet);
+    options.media = NULL;
+  }
+
+  /* nested blocks register unconditionally (the registry is not
+   * cascade-gated). */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_with_options(NULL, nested_container,
+                                    strlen(nested_container), &options,
+                                    &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_property_def_count(sheet), 1u);
+  my_css_sheet_destroy(sheet);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -10232,6 +10322,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_property_syntax_list_multipliers);
     RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
+    RUN_TEST(css_font_size_recursion_and_conditional_property);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R693 font-size 递归参考 + 条件块 @property 注册（TDD，开放项清零计划轮 3/6）— 百分比字号沿祖先链有界递归展开（depth≤16,父链无环保证终止——一层近似废止）;嵌套 @property 注册放行（@media 解析期门控自然联动,其余嵌套块无条件注册——注册表不受级联门控）
+
+- **缺口**(R689 落账"parent 字号若为 % 则不递归展开,一层近似"+R671 落账"@property 顶层专属（条件块内注册,让渡）"):两层链 `window 32 → panel 50% → label 50%` 的 label 参考取 panel 的 STR 原文（get_int 0 域）→一层塌陷;`@media (...) { @property ... }` strict 整表拒。
+- **方案**(两件):① **递归 auto**——get_length_auto 内部化 `theme_widget_get_length_auto_depth(..., depth)`:font_size 参考改为对 parent 递归调自身（parent 的 % 在其父参考下折算,typed 直通,depth>16 停→fallback 0——widget 树 parent 链无环,深度界为栈保险）;② **嵌套注册**——css_parse_property_atrule 移除 nested 拒（(void)nested）:@media 块本身解析期已门控（匹配才进块,不匹配 skip whole——注册随媒体,媒体联动语义成立）;@container 等其余嵌套块内**无条件注册**（注册表操作非级联声明,规范近似文档化）。
+- **TDD（红→绿实证）**:test_myui_css +1——四景：**双层 50% 链**（32→16→8,panel 值 STR "50%" 原文断言+label 终值 8——递归实证）/匹配 @media 注册（注入 media 上下文 800×600）/不匹配 @media 整块跳过 def 0（媒体联动实证）/@container 悬置块内无条件注册。**RED 如实红**（行 4267:label 得一层近似值≠8）;GREEN **198/198**(197+1)——期间修正测试一处（@media 条件查询需注入 media 上下文,R651 契约）。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R689 组全绿（递归仅在 font_size 参考域,border/radius 参考零扰动）。
+- **边界**：递归深度 16（widget 树深上限近似,超深回 fallback——布局域树深远低于界）;@container 块内注册无条件（容器条件对注册表的门控属级联-注册交互的规范灰区,引擎取"注册表不受级联门控"——与 @layer 内注册同约）;rem/em 单位未涉（引擎长度模型 px+%,相对单位属字号模型扩展）;R611 AMD 基线不动。
+
 ## 本轮更新：R692 premultiplied 色插值 + 多选一乘数替代（TDD，开放项清零计划轮 2/6）— 默认色混合换轨 premultiplied 域（CSS 默认——RGB 乘 alpha 混合后除回),straight 变体 API `my_css_property_interpolate_straight` 并存;多选一替代片接 R690 乘数（`small | <color>+` 逐替代任一命中）
 
 - **缺口**(R685 落账"premultiplied 让渡"+R690 落账"多选一内带乘数替代维持不强制"):straight alpha 在半透明→透明混色时 RGB 灰阶塌陷（规范 premultiplied 域才保色）;`syntax: "small | <color>+"` 中乘数替代仍全放行。

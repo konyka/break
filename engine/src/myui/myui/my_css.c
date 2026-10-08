@@ -4826,11 +4826,11 @@ static bool css_parse_property_atrule(css_p_t* p, my_css_sheet_t* sheet,
   bool has_initial = false;
   size_t i, n;
 
-  if (nested) {
-    /* bounded: registration is top-level only (the @import position
-     * discipline). */
-    return css_skip_or_reject_atrule(p);
-  }
+  /* R693: nested @property registers too — @media blocks gate at
+   * parse time (a non-matching block skips whole, so the registration
+   * follows the media), and other nested blocks register
+   * unconditionally (the registry is not cascade-gated). */
+  (void)nested;
   c_ws(p);
   if (!c_ident(p, name, sizeof(name)) || name[0] != '-' || name[1] != '-') {
     return css_skip_or_reject_atrule(p);

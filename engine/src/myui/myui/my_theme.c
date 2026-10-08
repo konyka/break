@@ -1574,17 +1574,39 @@ int32_t my_widget_style_get_length(my_widget_t* widget,
   return (int32_t)(number + 0.5);
 }
 
+/* R693: the auto-reference length lookup with a depth bound — the
+ * font-size reference recurses up the ancestor chain (a parent whose
+ * own font size is a percentage resolves against its parent). */
+static int32_t theme_widget_get_length_auto_depth(my_widget_t* widget,
+                                                  my_widget_state_t state,
+                                                  const char* key,
+                                                  int32_t fallback,
+                                                  unsigned depth);
+
 int32_t my_widget_style_get_length_auto(my_widget_t* widget,
                                         my_widget_state_t state,
                                         const char* key, int32_t fallback) {
+  /* R693: bounded-depth dispatch (the recursive font-size reference
+   * chain resolves through the ancestors). */
+  return theme_widget_get_length_auto_depth(widget, state, key, fallback,
+                                            0u);
+}
+
+static int32_t theme_widget_get_length_auto_depth(my_widget_t* widget,
+                                                  my_widget_state_t state,
+                                                  const char* key,
+                                                  int32_t fallback,
+                                                  unsigned depth) {
   int32_t reference;
-  if (widget == NULL || key == NULL) {
+  if (widget == NULL || key == NULL || depth > 16u) {
     return fallback;
   }
   if (my_str_eq(key, "font_size")) {
     reference =
         widget->parent != NULL
-            ? my_widget_style_get_int(widget->parent, state, "font_size", 0)
+            ? theme_widget_get_length_auto_depth(widget->parent, state,
+                                                 "font_size", 0,
+                                                 depth + 1u)
             : 0;
   } else {
     /* border widths / radii: the containing block's inline size. */
