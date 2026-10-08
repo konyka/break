@@ -140,25 +140,28 @@ if(ENGINE_USE_ASAN)
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
     endif()
-    # R630: Windows Clang ASan binaries need clang_rt.asan_dynamic-<arch>.dll
-    # beside them — the toolchain dir is never on PATH, so ASan builds only
-    # ever compiled (never ran) without this copy. One configure-time copy to
-    # the build root covers every test/fuzz exe in the tree.
-    if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
-        execute_process(COMMAND ${CMAKE_C_COMPILER} -print-resource-dir
-            OUTPUT_VARIABLE _asan_resource_dir OUTPUT_STRIP_TRAILING_WHITESPACE)
-        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-            set(_asan_arch "x86_64")
-        else()
-            set(_asan_arch "i386")
-        endif()
-        set(_asan_dll "${_asan_resource_dir}/lib/windows/clang_rt.asan_dynamic-${_asan_arch}.dll")
-        if(EXISTS "${_asan_dll}")
-            file(COPY "${_asan_dll}" DESTINATION "${CMAKE_BINARY_DIR}")
-            message(STATUS "ASan runtime DLL staged: ${_asan_dll}")
-        else()
-            message(WARNING "ASan runtime DLL not found at ${_asan_dll} — ASan test binaries will not launch")
-        endif()
+endif()
+# R630/R696: Windows Clang ASan binaries need clang_rt.asan_dynamic-<arch>.dll
+# beside them — the toolchain dir is never on PATH, so ASan builds only
+# ever compiled (never ran) without this copy. One configure-time copy to
+# the build root covers every test/fuzz exe in the tree. R696: triggers on
+# the ENGINE_USE_ASAN option OR a raw -fsanitize=address in CMAKE_C_FLAGS
+# (flag-injected sanitizer builds hit the same DLL requirement).
+if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC
+   AND (ENGINE_USE_ASAN OR CMAKE_C_FLAGS MATCHES "fsanitize=address"))
+    execute_process(COMMAND ${CMAKE_C_COMPILER} -print-resource-dir
+        OUTPUT_VARIABLE _asan_resource_dir OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_asan_arch "x86_64")
+    else()
+        set(_asan_arch "i386")
+    endif()
+    set(_asan_dll "${_asan_resource_dir}/lib/windows/clang_rt.asan_dynamic-${_asan_arch}.dll")
+    if(EXISTS "${_asan_dll}")
+        file(COPY "${_asan_dll}" DESTINATION "${CMAKE_BINARY_DIR}")
+        message(STATUS "ASan runtime DLL staged: ${_asan_dll}")
+    else()
+        message(WARNING "ASan runtime DLL not found at ${_asan_dll} — ASan test binaries will not launch")
     endif()
 endif()
 if(ENGINE_USE_UBSAN)

@@ -149,13 +149,16 @@ jobs:
 
       - name: Test (headless suite)
         run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
-            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+          set +e
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest.log 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            echo '## Headless suite failures (full log head)' >> "$GITHUB_STEP_SUMMARY"
+            head -120 /tmp/ctest.log >> "$GITHUB_STEP_SUMMARY"
+            grep -E 'FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted' /tmp/ctest.log | head -60 | while IFS= read -r line; do
               echo "::error::$line"
             done
-            cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
