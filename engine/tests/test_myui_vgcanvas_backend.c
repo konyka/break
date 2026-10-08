@@ -296,6 +296,9 @@ TEST(soft_text_rendering_is_antialiased)
   ASSERT_TRUE(blended >= 8u);
   my_vgcanvas_destroy(canvas);
   my_lcd_destroy(lcd);
+  my_font_destroy(font); /* R703: the loaded face owns ~450KB of
+                            glyph/file data — the Linux CI's
+                            LeakSanitizer pins this release. */
 }
 
 TEST(vgcanvas_rejects_nonfinite_state_values)
