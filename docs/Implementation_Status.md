@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R687 过渡查询 API（TDD，插值动画立项 phase 3 引擎侧）— `my_theme_get_for_widget_var_transitioning(theme, widget, state, key, from_text, elapsed_ms, out)`：宿主供旧值文本+流逝毫秒，引擎解析 transition 配置/终值（既有 var 机械）→R685 原语按时长合成（钳制超时）；快照与时钟归宿主（引擎管值合成,宿主管时间——边界即此）
+
+- **缺口**(R686 落账"phase 3=过渡生命周期——per-widget 起始值快照/时钟推进/查询期合成,widget 域帧回调接入"):R685 原语+R686 存储之后无消费面——值变化的检测（快照）与时间推进（每帧重评估）在 myui 拉取式主题层无原位（无失效通知/无时钟钩子）。
+- **方案**(引擎/宿主边界切分,零新状态机):① **API**——宿主持旧计算值文本与起始时刻（它有真实时间源与旧值缓存）,调 `..._var_transitioning(..., from_text, elapsed_ms, out)`;② **解析链**——widget 的 transition 声明（`css_transition_targets`:token 名匹配 key+时长换算 ms/s→ms）→ 注册表插值轨（def!=NULL）→ 终值经 **my_theme_get_for_widget_var 既有机械**（var 链/initial/guaranteed-invalid 全谱复用）→ typed 回文本（`css_value_to_text`:UINT32→#hex/数值/STR）;③ **合成**——t=clamp(elapsed/duration)（duration≤0→t=1 即时跳变）→ R685 原语 → 合成文本探针化 typed 出（get_for_widget_var 尾探针同型）;原语失格（双侧不可插值）→ 直落终值（跳变语义）;④ **无配置/未注册/键不匹配→false**（调用方回退普通查询——引擎诚实边界,离散跳变是宿主决策）。
+- **TDD（红→绿实证）**:test_myui_css +1——七景：elapsed 0=from/100ms=逐通道中点/200ms=终值/500ms=钳制终值/**键不匹配 false**/无 transition 声明 false/未注册目标 false。**RED 链接红**（API 未定义）;GREEN 一次过 **192/191→192/192**(191+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R685/R686 组全绿未动。
+- **边界**：**宿主域**（快照旧值/时钟起点/重绘调度/多属性并行编排）不在引擎——拉取式主题无失效机制,宿主每帧调本 API 即得动画（引擎侧闭环,插值动画立项交付）;easing 恒 linear（R686 同约,非线性 easing 属后续评估）;from_text 为宿主责任（未验形——原语失格自然跳变终值,安全降级）;typed→文本→原语→探针的往返转换在过渡查询路径（非热路径,量级可忽略）;R611 AMD 基线不动。
+
 ## 本轮更新：R686 transition 声明存储（TDD，插值动画立项 phase 2）— `transition: --name <ms|s> [linear]` 落地存储半边：新键注册+raw 捕获+有界形态校验（R669 容器属性同型切片），生命周期（phase 3）未涉
 
 - **缺口**(R685 立项分级 phase 2=R685 落账"transition 声明解析"):`transition: --accent 200ms` 走通用 css_value 探针——多 token 尾随垃圾,**整声明 lenient 丢弃**——过渡配置无从进入引擎。

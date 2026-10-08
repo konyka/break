@@ -6548,6 +6548,162 @@ bool my_theme_get_for_widget_var(const my_theme_t* theme,
   return c_peek(&probe) < 0;
 }
 
+/* R687: does the stored transition text target `key`, and with what
+ * duration in milliseconds? (mirrors css_transition_value_ok's token
+ * grammar; ms stays, s multiplies by 1000). */
+static bool css_transition_targets(const char* text, const char* key,
+                                   double* duration_ms) {
+  char tokens[3][MY_STYLE_KEY_LEN];
+  size_t token_lens[3];
+  size_t count = 0u;
+  size_t i = 0u;
+  size_t len = strlen(text);
+  css_p_t probe;
+  double number;
+  bool integral;
+  char unit[8];
+  size_t ul = 0u;
+  while (i < len) {
+    size_t start;
+    while (i < len && css_container_ws(text[i])) {
+      i++;
+    }
+    if (i >= len) {
+      break;
+    }
+    start = i;
+    while (i < len && !css_container_ws(text[i])) {
+      i++;
+    }
+    if (count >= 3u) {
+      return false;
+    }
+    token_lens[count] = i - start;
+    if (token_lens[count] >= sizeof(tokens[0])) {
+      return false;
+    }
+    memcpy(tokens[count], text + start, token_lens[count]);
+    tokens[count][token_lens[count]] = '\0';
+    count++;
+  }
+  if (count != 2u && count != 3u) {
+    return false;
+  }
+  if (!my_str_eq(tokens[0], key)) {
+    return false;
+  }
+  memset(&probe, 0, sizeof(probe));
+  probe.s = tokens[1];
+  probe.len = token_lens[1];
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_number(&probe, &number, &integral)) {
+    return false;
+  }
+  while (probe.pos < probe.len && ul + 1u < sizeof(unit)) {
+    unit[ul++] = probe.s[probe.pos++];
+  }
+  unit[ul] = '\0';
+  if (probe.pos != probe.len) {
+    return false;
+  }
+  if (my_str_eq(unit, "ms")) {
+    *duration_ms = number;
+  } else if (my_str_eq(unit, "s")) {
+    *duration_ms = number * 1000.0;
+  } else {
+    return false;
+  }
+  return true;
+}
+
+/* R687: render a typed value back to interpolation-domain text. */
+static bool css_value_to_text(const my_value_t* v, char* buf, size_t cap) {
+  switch (my_value_type(v)) {
+    case MY_VALUE_UINT32:
+      snprintf(buf, cap, "#%08x", my_value_get_uint32(v));
+      return true;
+    case MY_VALUE_INT32:
+      snprintf(buf, cap, "%d", my_value_get_int32(v));
+      return true;
+    case MY_VALUE_DOUBLE: {
+      double d = my_value_get_double(v);
+      if (d == (double)(long long)d) {
+        snprintf(buf, cap, "%lld", (long long)d);
+      } else {
+        snprintf(buf, cap, "%.12g", d);
+      }
+      return true;
+    }
+    case MY_VALUE_STR:
+      snprintf(buf, cap, "%s", my_value_get_str(v));
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool my_theme_get_for_widget_var_transitioning(
+    const my_theme_t* theme, const struct my_widget_t* widget,
+    my_widget_state_t state, const char* key, const char* from_text,
+    double elapsed_ms, my_value_t* out) {
+  const my_value_t* tv;
+  const my_theme_property_def_t* def;
+  double duration_ms = 0.0;
+  double t;
+  char to_text[CSS_VAR_MAX_SUBST_BYTES];
+  char blended[CSS_VAR_MAX_SUBST_BYTES];
+  css_p_t probe;
+  if (theme == NULL || widget == NULL || key == NULL ||
+      from_text == NULL || out == NULL) {
+    return false;
+  }
+  /* the widget's transition configuration must target this key. */
+  tv = my_theme_get_for_widget(theme, widget, state, "transition");
+  if (tv == NULL || my_value_type(tv) != MY_VALUE_STR) {
+    return false;
+  }
+  if (!css_transition_targets(my_value_get_str(tv), key, &duration_ms)) {
+    return false;
+  }
+  /* the target needs an interpolation track (a registered property). */
+  def = css_theme_property_def(theme, key);
+  if (def == NULL) {
+    return false;
+  }
+  /* resolve the target value through the ordinary var machinery. */
+  if (!my_theme_get_for_widget_var(theme, widget, state, key, out)) {
+    return false;
+  }
+  if (!css_value_to_text(out, to_text, sizeof(to_text))) {
+    return false;
+  }
+  t = duration_ms > 0.0 ? elapsed_ms / duration_ms : 1.0;
+  if (!(t >= 0.0)) {
+    t = 0.0;
+  }
+  if (t > 1.0) {
+    t = 1.0;
+  }
+  if (!my_css_property_interpolate(def->syntax, from_text, to_text, t,
+                                   blended, sizeof(blended))) {
+    /* uninterpolable sides: jump straight to the target. */
+    snprintf(blended, sizeof(blended), "%s", to_text);
+  }
+  memset(&probe, 0, sizeof(probe));
+  probe.s = blended;
+  probe.len = strlen(blended);
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_value(&probe, out)) {
+    return false;
+  }
+  c_ws(&probe);
+  return c_peek(&probe) < 0;
+}
+
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
                               uint32_t flags) {
   my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};

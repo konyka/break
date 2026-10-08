@@ -3482,6 +3482,99 @@ TEST(css_transition_declaration_storage)
   my_theme_destroy(theme);
 }
 
+TEST(css_transitioning_var_lookup_blends_over_time)
+{
+  /* R687 (interpolation project phase 3, engine side): a time-stamped
+   * var lookup — the host supplies the previous computed value text
+   * and the elapsed milliseconds; the engine resolves the property's
+   * transition configuration (duration), the target value, and blends
+   * through the R685 primitive. Clamps past the duration; returns
+   * false when the property has no transition configured or no
+   * interpolation track (the caller falls back to a plain lookup). */
+  const char* css =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: red; }"
+      "button { transition: --accent 200ms; --accent: #0000ffff; }";
+  const char* no_transition =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: red; }"
+      "button { --accent: #0000ffff; }";
+  const char* unregistered =
+      "button { transition: --plain 200ms; --plain: blue; }";
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+
+  /* elapsed 0 -> the from value. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, css, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 0.0, &out));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_UINT32);
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_value_reset(&out);
+
+  /* halfway -> the per-channel midpoint. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 100.0,
+      &out));
+  ASSERT_EQ(my_value_type(&out), MY_VALUE_UINT32);
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+
+  /* at the duration -> the target; past it -> clamped target. */
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 200.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+  ASSERT_TRUE(my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 500.0,
+      &out));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+
+  /* a different key than the transitioned one does not blend. */
+  ASSERT_TRUE(!my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--other", "#ff0000ff", 100.0,
+      &out));
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* no transition declaration -> false (plain lookup is the
+   * caller's fallback). */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, no_transition,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--accent", "#ff0000ff", 100.0,
+      &out));
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  /* an unregistered target has no interpolation track -> false. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, unregistered,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(!my_theme_get_for_widget_var_transitioning(
+      theme, button, MY_STATE_NORMAL, "--plain", "red", 100.0, &out));
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9496,6 +9589,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_or_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_property_interpolation_primitives);
     RUN_TEST(css_transition_declaration_storage);
+    RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

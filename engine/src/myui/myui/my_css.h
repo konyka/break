@@ -374,6 +374,20 @@ bool my_css_property_interpolate(const char* syntax, const char* from,
                                  const char* to, double t, char* out,
                                  size_t cap);
 
+/** @brief R687: time-stamped var lookup for a transitioning custom
+ * property — the host supplies the previous computed value text and
+ * the elapsed milliseconds; the engine resolves the widget's
+ * `transition: <property> <duration>` configuration and the target
+ * value, then blends through my_css_property_interpolate (clamped
+ * past the duration). Returns false when the key has no transition
+ * configured or no interpolation track (unregistered / discrete) —
+ * the caller falls back to my_theme_get_for_widget_var. Snapshotting
+ * the start value and clocking elapsed time are host-side duties. */
+bool my_theme_get_for_widget_var_transitioning(
+    const my_theme_t* theme, const struct my_widget_t* widget,
+    my_widget_state_t state, const char* key, const char* from_text,
+    double elapsed_ms, my_value_t* out);
+
 /** @brief R671: registered custom properties (@property) on the sheet. */
 size_t my_css_property_def_count(const my_css_sheet_t* sheet);
 const my_theme_property_def_t* my_css_property_def(
