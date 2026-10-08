@@ -3703,6 +3703,117 @@ TEST(css_percentage_length_resolution)
   my_value_reset(&v);
 }
 
+TEST(css_percentage_length_auto_reference)
+{
+  /* R689 (percentage-length project phase 2): the auto-reference
+   * lookup derives the reference from the widget tree — font-size
+   * percentages resolve against the parent's computed font size,
+   * other length keys against the parent's rect width (the
+   * containing-block inline-size approximation). A missing
+   * reference (no parent / unset font size) falls back. */
+  const char* border_pct =
+      "button { border-width: 50%; }";
+  const char* font_pct =
+      "label { font-size: 50%; }";
+  const char* parent_font =
+      "panel { font-size: 32; }";
+  my_theme_t* theme;
+  my_widget_t* window;
+  my_widget_t* panel;
+  my_widget_t* child;
+
+  /* border-width: 50% against the parent's rect.w of 200 = 100. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  child = my_widget_create(NULL, "button");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  child->widget_type = "button";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, child), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(child);
+  ASSERT_EQ(my_widget_apply_theme(window, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, border_pct,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  panel->rect.w = 200;
+  ASSERT_EQ(my_widget_style_get_length_auto(child, MY_STATE_NORMAL,
+                                            "border_width", 7), 100);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* font-size: 50% against the parent's computed font size of 32 =
+   * 16 (the themed-ancestor chain resolves the parent's value). */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  child = my_widget_create(NULL, "label");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  child->widget_type = "label";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, child), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(child);
+  ASSERT_EQ(my_widget_apply_theme(window, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, parent_font,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  {
+    my_css_error_t err2 = {0};
+    my_css_sheet_t* sheet = my_css_parse_ex(NULL, font_pct,
+                                            strlen(font_pct),
+                                            MY_CSS_PARSE_STRICT_AT_RULES,
+                                            &err2);
+    ASSERT_NOT_NULL(sheet);
+    my_css_sheet_destroy(sheet);
+  }
+  ASSERT_EQ(my_theme_load_css_ex(theme, font_pct,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(child, MY_STATE_NORMAL,
+                                            "font_size", 7), 16);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+
+  /* a parentless widget has no reference: the percentage falls back
+   * (px values would still pass). */
+  theme = my_theme_create(NULL);
+  child = my_widget_create(NULL, "button");
+  child->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(child, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, border_pct,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(child, MY_STATE_NORMAL,
+                                            "border_width", 7), 7);
+  my_widget_unref(child);
+  my_theme_destroy(theme);
+
+  /* an unset parent font size also falls back. */
+  theme = my_theme_create(NULL);
+  window = my_widget_create(NULL, "window");
+  panel = my_widget_create(NULL, "panel");
+  child = my_widget_create(NULL, "label");
+  window->widget_type = "window";
+  panel->widget_type = "panel";
+  child->widget_type = "label";
+  ASSERT_EQ(my_widget_add_child(window, panel), MY_RET_OK);
+  ASSERT_EQ(my_widget_add_child(panel, child), MY_RET_OK);
+  my_widget_unref(panel);
+  my_widget_unref(child);
+  ASSERT_EQ(my_widget_apply_theme(window, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, font_pct,
+                                 MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_EQ(my_widget_style_get_length_auto(child, MY_STATE_NORMAL,
+                                            "font_size", 7), 7);
+  my_widget_unref(window);
+  my_theme_destroy(theme);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9719,6 +9830,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_transitioning_var_lookup_blends_over_time);
     RUN_TEST(css_percentage_length_resolution);
+    RUN_TEST(css_percentage_length_auto_reference);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

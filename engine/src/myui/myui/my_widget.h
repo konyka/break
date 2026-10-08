@@ -307,6 +307,17 @@ int32_t my_widget_style_get_length(my_widget_t* widget,
                                    my_widget_state_t state, const char* key,
                                    int32_t reference_px, int32_t fallback);
 
+/** @brief R689: the auto-reference length lookup — font-size
+ * percentages resolve against the parent's computed font size (the
+ * themed-ancestor chain), other length keys against the parent's
+ * rect.w (the containing-block inline-size approximation). A missing
+ * reference (parentless widget / unset parent font size) makes the
+ * percentage fall back; non-percentage values behave like
+ * my_widget_style_get_length. */
+int32_t my_widget_style_get_length_auto(my_widget_t* widget,
+                                        my_widget_state_t state,
+                                        const char* key, int32_t fallback);
+
 /** @brief Attach a theme at this widget (weak ref); applies to the
  * subtree at query time (climbs ancestors). Invalidates the subtree. */
 my_ret_t my_widget_apply_theme(my_widget_t* widget, my_theme_t* theme);

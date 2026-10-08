@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R689 百分比长度参考自动推导（TDD，百分比长度立项 phase 2）— `my_widget_style_get_length_auto`：font-size %→父计算字号（themed-ancestor 链）、其余长度键 %→父 rect.w（containing-block inline-size 近似）；参考缺失（无父/父字号未设→参考≤0）百分比回落 fallback（诚实边界——px 值不受影响）
+
+- **缺口**(R688 落账"phase 2=参考系自动推导——width/height 键→父 rect、font-size→父计算字号的 widget 结构域接线"):显式 reference 参数化后,调用方仍需自晓参考语义——引擎侧无自动推导,消费便利缺。
+- **方案**(推导规则两支+缺失回落):① **font_size**——`my_widget_style_get_int(parent, state, "font_size", 0)`（themed-ancestor 链自然继承,父链全无字号→0）;② **其余长度键**（border_width/round_radius）——`parent->rect.w`（CSS containing block inline-size 的引擎近似——引擎布局模型父 rect 即含块）;③ **缺失语义**——get_length 增"percent && reference≤0 → fallback"（无含块=不可解析;px/裸数不经参考零扰动）;auto 变体纯推导薄层（组合 get_int/rect 读取+get_length）。
+- **TDD（红→绿实证）**:test_myui_css +1——四景：border 50%×父 rect.w 200=100/font 50%×父字号 32=16（panel 声明经 themed-ancestor 于 label 生效——**继承链实证**）/**无父回落** 7/**父字号未设回落** 7。**RED 链接红**（API 未定义）+回落行为新增;GREEN **194/194**(193+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R688 九景全绿（显式 reference 路径零扰动——仅增参考≤0 的百分比回落分支,既有景 reference=200 不触）。
+- **边界**：font-size 参考取 parent 的**计算字号**（get_int typed 域——parent 字号若为 % 则不递归展开,一层近似,文档化）;border/radius 相对 rect.w（inline 轴近似——引擎无 writing-mode,block 轴含块不可区分,同 R683 orientation 归档逻辑）;root widget（无父）百分比恒 fallback（初始含块概念未涉）;百分比长度立项**引擎侧闭环**（phase 1 显式+phase 2 自动推导,宿主可任选）;R611 AMD 基线不动。
+
 ## 本轮更新：R688 百分比长度消费面（TDD，百分比长度立项 phase 1）— `my_widget_style_get_length(widget, state, key, reference_px, fallback)`：显式参考解析 % 拼写（50% of 200=100）/px 与裸数直通/小数四舍五入/var() 链经 R667 漏斗；解析面长度键遇 % 走 raw 捕获（通用探针拒 '%' 后缀的 R676 边界根源关闭）；新文本域 API `my_theme_get_for_widget_var_text`
 
 - **缺口**(R676 落账"消费侧百分比长度解析属长度模型扩展,未涉",两层根源):① 解析面——`border-width: 50%` 走通用 css_value 探针,% 后缀当尾随垃圾**整声明丢弃**;② 消费面——typed 访问器无参考系概念,"50%" 无从折算。

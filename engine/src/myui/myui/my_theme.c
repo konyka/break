@@ -1566,9 +1566,34 @@ int32_t my_widget_style_get_length(my_widget_t* widget,
     return fallback;
   }
   if (percent) {
+    if (reference_px <= 0) {
+      return fallback; /* no containing block: unresolvable */
+    }
     number = number * (double)reference_px / 100.0;
   }
   return (int32_t)(number + 0.5);
+}
+
+int32_t my_widget_style_get_length_auto(my_widget_t* widget,
+                                        my_widget_state_t state,
+                                        const char* key, int32_t fallback) {
+  int32_t reference;
+  if (widget == NULL || key == NULL) {
+    return fallback;
+  }
+  if (my_str_eq(key, "font_size")) {
+    reference =
+        widget->parent != NULL
+            ? my_widget_style_get_int(widget->parent, state, "font_size", 0)
+            : 0;
+  } else {
+    /* border widths / radii: the containing block's inline size. */
+    reference =
+        widget->parent != NULL && widget->parent->rect.w > 0
+            ? (int32_t)widget->parent->rect.w
+            : 0;
+  }
+  return my_widget_style_get_length(widget, state, key, reference, fallback);
 }
 
 static void invalidate_tree(my_widget_t* widget) {
