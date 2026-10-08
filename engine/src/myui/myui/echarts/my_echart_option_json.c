@@ -129,9 +129,13 @@ static void parse_zoom(my_echart_json_doc_t* d, my_conf_node_t* n) {
   my_conf_node_t* zoom = my_conf_get(n, "dataZoom.0");
   my_conf_node_t* start_node;
   my_conf_node_t* end_node;
+  my_conf_node_t* type_node;
   double start, end;
   size_t i, count = 0u;
   if (zoom == NULL || my_conf_type(zoom) != MY_CONF_OBJECT) return;
+  type_node = my_conf_get(zoom, "type");
+  d->option.zoom_slider = type_node != NULL &&
+      strcmp(my_conf_as_str(type_node, "inside"), "slider") == 0;
   start_node = my_conf_get(zoom, "start");
   end_node = my_conf_get(zoom, "end");
   if (start_node != NULL || end_node != NULL) {

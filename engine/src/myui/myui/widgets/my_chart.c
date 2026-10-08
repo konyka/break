@@ -123,6 +123,66 @@ static void chart_zoom_range(const my_chart_t* chart, size_t* begin,
   *count = e - b;
 }
 
+static bool chart_has_slider_mode(my_chart_mode_t mode) {
+  return mode == MY_CHART_LINE || mode == MY_CHART_BAR ||
+         mode == MY_CHART_SCATTER || mode == MY_CHART_BOXPLOT ||
+         mode == MY_CHART_CANDLESTICK || mode == MY_CHART_HEATMAP;
+}
+
+static void chart_range(const my_chart_t* chart, size_t grid, float* y_min,
+                        float* y_max);
+
+static bool chart_slider_rect(const my_chart_t* chart, float x, float y, float w,
+                              float h, float* sx, float* sy, float* sw,
+                              float* sh) {
+  if (chart == NULL || !chart->zoom_set || !chart->zoom_slider ||
+      !chart_has_slider_mode(chart->mode)) return false;
+  *sx = x;
+  *sy = y + h + 18.0f;
+  *sw = w;
+  *sh = 14.0f;
+  return true;
+}
+
+static void chart_draw_slider(const my_chart_t* chart, my_vgcanvas_t* vg,
+                              float x, float y, float w, float h) {
+  size_t total = chart_category_count(chart);
+  size_t begin, window, i;
+  const my_chart_series_t* series = NULL;
+  float min_value = 0.0f, max_value = 1.0f;
+  if (!chart_slider_rect(chart, x, y, w, h, &x, &y, &w, &h) || total == 0u)
+    return;
+  for (i = 0u; i < chart->series_count; i++) {
+    if (chart->series_visible[i] && chart->series[i].count > 0u) {
+      series = &chart->series[i];
+      break;
+    }
+  }
+  if (series == NULL) return;
+  chart_range(chart, 0u, &min_value, &max_value);
+  chart_zoom_range(chart, &begin, &window);
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0xE6EAF0FFu));
+  my_vgcanvas_fill_rect(vg, &(my_rectf_t){x, y, w, h});
+  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x9AA5B1FFu));
+  for (i = 0u; i < total && i < series->count; i++) {
+    float bh = (series->values[i] - min_value) /
+               (max_value - min_value) * (h - 2.0f);
+    float bx = x + w * (float)i / (float)total;
+    if (bh < 1.0f) bh = 1.0f;
+    if (bh > h - 2.0f) bh = h - 2.0f;
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){bx, y + h - bh, w / (float)total + 1.0f, bh});
+  }
+  {
+    float hx = x + w * (float)begin / (float)total;
+    float hw = w * (float)window / (float)total;
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(0x3A86FF33u));
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){hx, y, hw, h});
+    my_vgcanvas_set_stroke_color(vg, my_color_from_rgba32(0x3A86FFFFu));
+    my_vgcanvas_set_line_width(vg, 1.0f);
+    my_vgcanvas_stroke_rect(vg, &(my_rectf_t){hx, y, hw, h});
+  }
+}
+
 static bool chart_category_in_window(size_t category, size_t begin,
                                      size_t count) {
   return category >= begin && category < begin + count;
@@ -1468,6 +1528,7 @@ static void chart_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
         }
       }
     }
+    chart_draw_slider(chart, vg, x, y, w, h);
     chart->paint_grid = 0u;
     if (!chart_grid_rect(widget, 0u, &x, &y, &w, &h)) return;
     chart_range(chart, 0u, &y_min, &y_max);
@@ -1605,6 +1666,46 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
   local_x = event->u.pointer.x;
   local_y = event->u.pointer.y;
   my_widget_global_to_local(widget, &local_x, &local_y);
+  {
+    float sx, sy, sw, sh;
+    if (event->u.pointer.button == 1u &&
+        chart_slider_rect(chart, x, y, w, h, &sx, &sy, &sw, &sh)) {
+      size_t begin, window, total = chart_category_count(chart);
+      bool in_band = (float)local_x >= sx && (float)local_x <= sx + sw &&
+                     (float)local_y >= sy && (float)local_y <= sy + sh;
+      if (event->type == MY_EVENT_POINTER_DOWN && in_band && total > 0u) {
+        chart_zoom_range(chart, &begin, &window);
+        chart->slider_dragging = true;
+        chart->slider_grab_dx = local_x -
+            (int32_t)lroundf(sx + sw * (float)begin / (float)total);
+        chart->brush_active = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_OK;
+      }
+      if (chart->slider_dragging && event->type == MY_EVENT_POINTER_MOVE &&
+          total > 0u) {
+        size_t max_start, next;
+        chart_zoom_range(chart, &begin, &window);
+        max_start = total > window ? total - window : 0u;
+        {
+          float next_pixels = ((float)local_x - (float)chart->slider_grab_dx - sx) /
+                              (sw / (float)total);
+          next = next_pixels <= 0.0f ? 0u : (size_t)lroundf(next_pixels);
+        }
+        if (next > max_start) next = max_start;
+        chart->zoom_start = next;
+        chart->zoom_end = next + window;
+        my_chart_group_notify(widget, chart->zoom_start, chart->zoom_end);
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_OK;
+      }
+      if (chart->slider_dragging && event->type == MY_EVENT_POINTER_UP) {
+        chart->slider_dragging = false;
+        my_widget_invalidate(widget, NULL);
+        return MY_RET_OK;
+      }
+    }
+  }
   if ((event->type == MY_EVENT_POINTER_DOWN || event->type == MY_EVENT_POINTER_MOVE ||
        event->type == MY_EVENT_POINTER_UP) && event->u.pointer.button == 1u &&
       chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_FUNNEL &&
@@ -2021,6 +2122,8 @@ my_ret_t my_chart_apply_snapshot(my_widget_t* widget,
   chart->zoom_set = snapshot->zoom_set;
   chart->zoom_start = snapshot->zoom_start;
   chart->zoom_end = snapshot->zoom_end;
+  chart->zoom_slider = snapshot->zoom_slider;
+  chart->slider_dragging = false;
   chart->visual_map_set = snapshot->visual_map_set;
   chart->visual_map_min = snapshot->visual_map_min;
   chart->visual_map_max = snapshot->visual_map_max;
@@ -2277,6 +2380,19 @@ bool my_chart_get_data_zoom(const my_widget_t* widget, size_t* start,
   if (start != NULL) *start = chart->zoom_start;
   if (end != NULL) *end = chart->zoom_end;
   return true;
+}
+
+my_ret_t my_chart_set_zoom_slider(my_widget_t* widget, bool enabled) {
+  my_chart_t* chart = chart_cast(widget);
+  if (chart == NULL) return MY_RET_INVALID_PARAMS;
+  chart->zoom_slider = enabled;
+  my_widget_invalidate(widget, NULL);
+  return MY_RET_OK;
+}
+
+bool my_chart_get_zoom_slider(const my_widget_t* widget) {
+  const my_chart_t* chart = chart_const_cast(widget);
+  return chart != NULL && chart->zoom_slider;
 }
 
 my_ret_t my_chart_set_axis_title(my_widget_t* widget, const char* title) {

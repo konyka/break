@@ -76,7 +76,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
         input->visual_map_set ? input->visual_map_high_color
                               : chart->current.visual_map_high_color,
                                       NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u,
-                                      MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+                                       MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u, false};
     my_echart_series_input_t* series = (my_echart_series_input_t*)
         my_mem_calloc(chart->allocator, chart->current.series_count,
                       sizeof(*series));
@@ -171,7 +171,7 @@ my_ret_t my_echart_set_option(my_echart_t* chart,
                                       input->visual_map_low_color,
                                       input->visual_map_high_color,
         NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u,
-        MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+        MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u, false};
       my_echart_option_t temp;
       my_echart_option_init(&temp, chart->allocator);
       if (my_echart_option_copy(&temp, &one, chart->allocator) != MY_RET_OK) {

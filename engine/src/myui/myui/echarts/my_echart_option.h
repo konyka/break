@@ -136,6 +136,7 @@ typedef struct my_echart_option_input_t {
   double filter_value;
   const my_echart_grid_input_t* grids;
   size_t grid_count;
+  bool zoom_slider;
 } my_echart_option_input_t;
 
 typedef struct my_echart_series_t {
@@ -212,6 +213,7 @@ typedef struct my_echart_option_t {
   size_t mark_area_count;
   my_echart_grid_t* grids;
   size_t grid_count;
+  bool zoom_slider;
 } my_echart_option_t;
 
 void my_echart_option_init(my_echart_option_t* option,

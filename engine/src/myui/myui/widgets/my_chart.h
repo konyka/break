@@ -102,6 +102,7 @@ typedef struct my_chart_snapshot_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  bool zoom_slider;
   bool visual_map_set;
   float visual_map_min;
   float visual_map_max;
@@ -154,6 +155,9 @@ typedef struct my_chart_t {
   bool zoom_set;
   size_t zoom_start;
   size_t zoom_end;
+  bool zoom_slider;
+  bool slider_dragging;
+  int32_t slider_grab_dx;
   char axis_title[48];
   u32 grid_line_count;
   size_t hover_index;
@@ -233,6 +237,8 @@ my_ret_t my_chart_set_data_zoom(my_widget_t* chart, size_t start,
 my_ret_t my_chart_clear_data_zoom(my_widget_t* chart);
 bool my_chart_get_data_zoom(const my_widget_t* chart, size_t* start,
                              size_t* end);
+my_ret_t my_chart_set_zoom_slider(my_widget_t* chart, bool enabled);
+bool my_chart_get_zoom_slider(const my_widget_t* chart);
 /**
  * @brief Join a weak chart group for dataZoom synchronization.
  *

@@ -365,6 +365,7 @@ my_ret_t my_echart_option_copy(my_echart_option_t* dst,
   candidate.zoom_set = src->zoom_set;
   candidate.zoom_start = src->zoom_start;
   candidate.zoom_end = src->zoom_end;
+  candidate.zoom_slider = src->zoom_slider;
   candidate.visual_map_set = src->visual_map_set;
   candidate.visual_map_min = src->visual_map_min;
   candidate.visual_map_max = src->visual_map_max;

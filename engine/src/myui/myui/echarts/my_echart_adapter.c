@@ -180,13 +180,13 @@ static my_ret_t stage_payload(my_echart_adapter_t* adapter,
       source->x_axis_count, series_inputs, source->series_count,
       source->legend_hidden, source->tooltip_hidden, source->range_set,
       source->y_min, source->y_max,
-      source->zoom_set, source->zoom_start, source->zoom_end,
+       source->zoom_set, source->zoom_start, source->zoom_end,
       source->visual_map_set, source->visual_map_min, source->visual_map_max,
       source->visual_map_low_color, source->visual_map_high_color,
       point_inputs, source->mark_point_count, line_inputs,
       source->mark_line_count, area_inputs, source->mark_area_count,
       NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL,
-      0.0, grid_inputs, source->grid_count};
+       0.0, grid_inputs, source->grid_count, source->zoom_slider};
   ret = my_echart_option_copy(&candidate->option, &input, adapter->allocator);
   if (ret == MY_RET_OK) {
     for (size_t i = 0u; i < candidate->option.series_count; i++) {
@@ -289,7 +289,7 @@ my_ret_t my_echart_adapter_apply(my_echart_adapter_t* adapter,
         candidate->option.range_set, (float)candidate->option.y_min,
         (float)candidate->option.y_max,
         candidate->option.zoom_set, candidate->option.zoom_start,
-        candidate->option.zoom_end,
+         candidate->option.zoom_end, candidate->option.zoom_slider,
         candidate->option.visual_map_set, (float)candidate->option.visual_map_min,
         (float)candidate->option.visual_map_max,
         candidate->option.visual_map_low_color,
