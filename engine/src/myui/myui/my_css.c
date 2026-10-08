@@ -7172,6 +7172,81 @@ bool my_theme_get_for_widget_var_transitioning(
   return c_peek(&probe) < 0;
 }
 
+/* R695: probe one full value text into a typed out (the
+ * get_for_widget_var tail shape). */
+static bool css_probe_full_value(const char* text, my_value_t* out) {
+  css_p_t probe;
+  memset(&probe, 0, sizeof(probe));
+  probe.s = text;
+  probe.len = strlen(text);
+  probe.line = 1;
+  probe.col = 1;
+  c_ws(&probe);
+  if (!css_value(&probe, out)) {
+    return false;
+  }
+  c_ws(&probe);
+  return c_peek(&probe) < 0;
+}
+
+bool my_theme_transition_step(const my_theme_t* theme,
+                              const struct my_widget_t* widget,
+                              my_widget_state_t state, const char* key,
+                              double now_ms, my_value_t* out,
+                              my_theme_transition_state_t* state_box) {
+  char current[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  my_theme_transition_slot_t* slot = NULL;
+  size_t i;
+  if (theme == NULL || widget == NULL || key == NULL || out == NULL ||
+      state_box == NULL) {
+    return false;
+  }
+  if (!my_theme_get_for_widget_var_text(theme, widget, state, key,
+                                        current, sizeof(current))) {
+    return false; /* no value: nothing to transition */
+  }
+  for (i = 0u; i < MY_THEME_TRANSITION_TRACKED; i++) {
+    if (state_box->slots[i].active &&
+        my_str_eq(state_box->slots[i].key, key)) {
+      slot = &state_box->slots[i];
+      break;
+    }
+  }
+  if (slot == NULL) {
+    for (i = 0u; i < MY_THEME_TRANSITION_TRACKED; i++) {
+      if (!state_box->slots[i].active) {
+        slot = &state_box->slots[i];
+        break;
+      }
+    }
+  }
+  if (slot == NULL) {
+    /* every slot busy and this key unseen: fall back to the plain
+     * typed lookup (the box is host-sized; overflow keys jump-cut) */
+    return css_probe_full_value(current, out);
+  }
+  if (!slot->active || !my_str_eq(slot->to, current)) {
+    /* a new span: the previous target becomes the from value; a
+     * first sight starts already settled (from == to). */
+    snprintf(slot->from, sizeof(slot->from), "%s",
+             slot->active ? slot->to : current);
+    snprintf(slot->to, sizeof(slot->to), "%s", current);
+    snprintf(slot->key, sizeof(slot->key), "%s", key);
+    slot->start_ms = now_ms;
+    slot->active = true;
+  }
+  if (my_str_eq(slot->from, slot->to)) {
+    return css_probe_full_value(current, out);
+  }
+  if (my_theme_get_for_widget_var_transitioning(
+          theme, widget, state, key, slot->from, now_ms - slot->start_ms,
+          out)) {
+    return true;
+  }
+  /* no transition configuration / no interpolation track: jump-cut */
+  return css_probe_full_value(current, out);
+}
+
 my_ret_t my_theme_load_css_ex(my_theme_t* theme, const char* css,
                               uint32_t flags) {
   my_css_parse_options_t options = {flags, NULL, NULL, NULL, NULL};

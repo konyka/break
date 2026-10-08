@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R695 宿主过渡驱动助手（TDD，开放项清零计划轮 5/6）— `my_theme_transition_step(theme, widget, state, key, now_ms, out, state_box)`：每帧一步的状态盒（≤8 槽 key/from/to/start）——目标变即重启 span（旧目标为 from）,首见即定居（from==to 直出）,经 R687 transitioning 合成——"宿主域快照/时钟"工具化,宿主每帧一调即得动画
+
+- **缺口**(R687 落账"宿主域（快照旧值/时钟起点/重绘调度/多属性并行编排）不在引擎——拉取式主题无失效机制"):宿主直接用 R687 API 需自管每键快照与时钟——编排样板代码每宿主重复,引擎侧可工具化（状态盒+检测+重启+合成一步完成）。
+- **方案**(状态盒纯数据+step 纯函数,无内部时钟——now_ms 由宿主传):① **状态盒** `my_theme_transition_state_t`（≤8 槽 `{key,from,to,start_ms,active}`,memset(0) 复位）;② **step 语义**——var_text 取当前目标文本;槽匹配（active+key）或分配;**目标变即重启**（from=旧 to,to=新,start=本帧 now——变化帧显示 from,span 从此刻起）;**首见定居**（from=to=current,直出）;from==to/槽满溢出/无 transition 配置/无插值轨 → **文本探针化直出**（`css_probe_full_value`——get_for_widget_var 尾形态提取,STR 文本到 typed 的统一出口——copy_typed 对 STR 原样传递的坑以探针出口修复）;否则 transitioning(from, now-start) 合成。
+- **TDD（红→绿实证）**:test_myui_css +1——五帧景：首见直出红/**重载变值帧 from 显红**（span 重启语义——变化帧 elapsed=0）/半程中点紫/超程终值蓝/稳定帧直出蓝。**RED 如实红**（首帧 UINT32 垃圾——STR 未探针化实证）;GREEN **199/199**(198+1)。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;R687 组全绿（step 是 transitioning 的编排层,合成路径零改）。
+- **边界**：重绘调度仍归宿主（step 只出值,何时重绘宿主帧循环决定）;8 槽有界（溢出键跳变直出——盒为 per-widget 宿主栈物,扩容宿主自定）;每帧每键一次 var_text+合成（拉取式成本模型,非热路径）;多 widget 各持一盒（盒不进 widget 结构——引擎零侵入,宿主持有）;时钟单调性归宿主（now_ms 回跳→elapsed 负→t=0 钳制,R687 同约）;R611 AMD 基线不动。
+
 ## 本轮更新：R694 preedit 光标簇吸附（TDD，开放项清零计划轮 4/6）— 组合光标（preedit 内码点偏移）入档即吸附簇边界（簇内组合符→簇左界,视觉位与箭头键语义对齐;已对齐保持字节精确）——双 widget 同构（my_edit/text_area 各置 snap_caret_cp,事件可合成自动验证,立项 4"显示精度残余"无 IME 基建关闭
 
 - **缺口**(立项 4 勘察落账"preedit 光标码点偏移仅影响渲染位置——需真实 IME 交互基建,单列"):勘察结论重审——渲染位置由 `ime_caret`（码点偏移）经 byte_of_cp→text_px 决定,簇内偏移画中簇;修在**入档语义层**（事件合成即可测）无需真实 IME——"需交互基建"的判断只对平台侧修复成立,消费侧修复不受限。

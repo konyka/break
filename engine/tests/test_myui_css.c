@@ -4302,6 +4302,74 @@ TEST(css_font_size_recursion_and_conditional_property)
   my_css_sheet_destroy(sheet);
 }
 
+TEST(css_transition_step_drives_spans)
+{
+  /* R695 (open-item sweep 5/6): the host-side transition driver — a
+   * per-widget state box holding from/to/start; each step compares
+   * the current target, restarts the span on change, and blends
+   * through the transitioning lookup. Value changes arrive here as
+   * theme reloads (the cascade override). */
+  const char* v1 =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms linear; --accent: #ff0000ff; }";
+  const char* v2 =
+      "@property --accent { syntax: \"<color>\"; inherits: true;"
+      " initial-value: #ff0000ff; }"
+      "button { transition: --accent 200ms linear; --accent: #0000ffff; }";
+  my_theme_t* theme;
+  my_widget_t* button;
+  my_theme_transition_state_t box;
+  my_value_t out;
+
+  my_value_init(&out, NULL);
+  memset(&box, 0, sizeof(box));
+
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_widget_apply_theme(button, theme), MY_RET_OK);
+  ASSERT_EQ(my_theme_load_css_ex(theme, v1, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+
+  /* frame 1: first sight — the value passes through unblended. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--accent", 0.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_value_reset(&out);
+
+  /* frame 2: the target changed (reload) — the span restarts at this
+   * frame's clock; the from value shows first. */
+  ASSERT_EQ(my_theme_load_css_ex(theme, v2, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--accent", 100.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0xFF0000FFu);
+  my_value_reset(&out);
+
+  /* frame 2b: halfway through the restarted span blends. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--accent", 200.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x800080FFu);
+  my_value_reset(&out);
+
+  /* frame 3: past the duration — the target value. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--accent", 400.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+
+  /* frame 4: a stable value passes through without restarting. */
+  ASSERT_TRUE(my_theme_transition_step(theme, button, MY_STATE_NORMAL,
+                                       "--accent", 500.0, &out, &box));
+  ASSERT_EQ(my_value_get_uint32(&out), 0x0000FFFFu);
+  my_value_reset(&out);
+
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+  my_value_reset(&out);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -10323,6 +10391,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_transition_full_parameters);
     RUN_TEST(css_premultiplied_blend_and_multichoice_multipliers);
     RUN_TEST(css_font_size_recursion_and_conditional_property);
+    RUN_TEST(css_transition_step_drives_spans);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

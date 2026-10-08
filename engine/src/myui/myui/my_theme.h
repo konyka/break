@@ -263,6 +263,35 @@ bool my_theme_get_for_widget_var_text(const my_theme_t* theme,
                                        const char* key, char* out,
                                        size_t cap);
 
+/** @brief R695: host-side transition driver state — one slot per
+ * tracked key (from/to value texts and the span start on the host's
+ * monotonic clock). Reset with memset(0). */
+#define MY_THEME_TRANSITION_TRACKED 8u
+
+typedef struct {
+  char key[MY_STYLE_KEY_LEN];
+  char from[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  char to[MY_THEME_MAX_PROPERTY_VALUE_BYTES + 1u];
+  double start_ms;
+  bool active;
+} my_theme_transition_slot_t;
+
+typedef struct {
+  my_theme_transition_slot_t slots[MY_THEME_TRANSITION_TRACKED];
+} my_theme_transition_state_t;
+
+/** @brief R695: step one transitioning key — compares the current
+ * target (through the var machinery), restarts the span when it
+ * changed (the previous target becomes the from value), and blends
+ * through my_theme_get_for_widget_var_transitioning. A first sight or
+ * a stable value passes through unblended. Returns false when the
+ * key has no value at all. Implemented in my_css.c. */
+bool my_theme_transition_step(const my_theme_t* theme,
+                              const struct my_widget_t* widget,
+                              my_widget_state_t state, const char* key,
+                              double now_ms, my_value_t* out,
+                              my_theme_transition_state_t* state_box);
+
 /** @brief R670/R673: evaluate a deferred @container condition for an
  * element — walk from `anchor` upward (inclusive) for the nearest
  * qualifying ancestor. Size queries require a query container
