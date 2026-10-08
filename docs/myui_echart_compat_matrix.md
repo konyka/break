@@ -17,7 +17,7 @@ versioned by capability, not presented as browser/JavaScript ECharts parity.
 | Animation | externally driven deterministic progress and fake-clock scheduler |
 | MVVM | owned option pointer binding, explicit sync, property notification sync |
 | JSON input | owning parser for the supported option subset: title, axes, series (inline data, single- or multi-dimension dataset encode, label show), legend/tooltip, dataZoom, visualMap, annotations, dataset transforms, and multi-grid layout |
-| Components | legend/tooltip visibility, explicit Y range, category dataZoom window, continuous visualMap config, model-level dataZoom/visualMap/brush actions, event actions auto-drive an attached model |
+| Components | legend/tooltip visibility, explicit Y range, category dataZoom window with slider rendering/drag, continuous visualMap config, model-level dataZoom/visualMap/brush actions, event actions auto-drive an attached model |
 
 ## Supported only by the native adapter subset
 

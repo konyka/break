@@ -191,6 +191,16 @@ my_chart_set_data_zoom(chart, 1u, 3u);   /* categories [1,3) */
 my_chart_clear_data_zoom(chart);
 ```
 
+JSON can request the visual slider component with `type: "slider"`:
+
+```json
+"dataZoom": [{"type":"slider", "start":20, "end":80}]
+```
+
+The chart renders a compact category overview and highlighted window below
+the axis. Dragging that band pans the active window; `type: "inside"` keeps
+the same zoom semantics without the visual band.
+
 ### visualMap
 
 ```c

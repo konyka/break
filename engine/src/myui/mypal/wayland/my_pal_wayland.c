@@ -196,6 +196,15 @@ static void keymap(void* data, struct wl_keyboard* k, uint32_t format,
   (void)data; (void)k; (void)format; (void)fd; (void)size;
 }
 
+static void kbd_enter(void* data, struct wl_keyboard* k, uint32_t serial,
+                      struct wl_surface* surface, struct wl_array* keys) {
+  (void)data; (void)k; (void)serial; (void)surface; (void)keys;
+}
+static void kbd_leave(void* data, struct wl_keyboard* k, uint32_t serial,
+                      struct wl_surface* surface) {
+  (void)data; (void)k; (void)serial; (void)surface;
+}
+
 static void key_event(void* data, struct wl_keyboard* k, uint32_t serial,
                       uint32_t time, uint32_t key_code, uint32_t state) {
   wl_pal_t* pal = data;
@@ -232,7 +241,7 @@ static void kbd_repeat(void* data, struct wl_keyboard* k, int32_t rate,
 }
 
 static const struct wl_keyboard_listener keyboard_listener = {
-    .keymap = keymap, .enter = NULL, .leave = NULL, .key = key_event,
+    .keymap = keymap, .enter = kbd_enter, .leave = kbd_leave, .key = key_event,
     .modifiers = kbd_modifiers, .repeat_info = kbd_repeat};
 
 static void seat_capabilities(void* data, struct wl_seat* seat,

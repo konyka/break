@@ -165,7 +165,7 @@ TEST(echart_event_actions_drive_attached_model) {
       "bridge", NULL, 0u, &series, 1u, false, false, false, 0.0, 0.0,
       false, 0u, 0u, false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL, 0u, NULL,
       0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ,
-      NULL, 0.0, NULL, 0u};
+      NULL, 0.0, NULL, 0u, false};
   my_echart_event_adapter_t* adapter = my_echart_event_adapter_create(NULL);
   my_echart_t* model = my_echart_create(NULL);
   event_log_t log = {0};

@@ -24,6 +24,8 @@
 #include "myui/widgets/my_progress_bar.h"
 #include "myui/widgets/my_slider.h"
 #include "myui/widgets/my_chart.h"
+#include "myui/echarts/my_echart_adapter.h"
+#include "myui/echarts/my_echart_option_json.h"
 
 
 #include <stdio.h>
@@ -96,6 +98,9 @@ struct app_t {
   my_widget_t* play_button;
   my_widget_t* zoom_in;
   my_widget_t* zoom_out;
+  my_widget_t* json_button;
+  my_echart_adapter_t* adapter;
+  int json_preset;
   my_widget_t* progress;
   my_widget_t* status;
   my_widget_t* panel;
@@ -106,6 +111,13 @@ struct app_t {
   char tooltip[96];
   int closing;
 };
+
+static const char* k_json_presets[4] = {
+    "{\"title\":{\"text\":\"JSON bar\"},\"xAxis\":{\"data\":[\"A\",\"B\",\"C\"]},\"dataZoom\":[{\"start\":0,\"end\":67}],\"series\":[{\"name\":\"Sales\",\"type\":\"bar\",\"data\":[12,28,19],\"label\":{\"show\":true},\"itemStyle\":{\"color\":\"#D95F02\"}}]}",
+    "{\"title\":{\"text\":\"JSON radar\"},\"radar\":{\"indicator\":[{\"name\":\"Speed\",\"max\":100},{\"name\":\"Power\",\"max\":100},{\"name\":\"Range\",\"max\":100}]},\"series\":[{\"name\":\"Car\",\"type\":\"radar\",\"data\":[80,65,90]}]}",
+    "{\"title\":{\"text\":\"JSON sorted line\"},\"dataset\":{\"source\":{\"value\":[12,31,20]}},\"transform\":{\"type\":\"sort\",\"config\":{\"dimension\":\"value\",\"order\":\"asc\"}},\"series\":[{\"name\":\"Trend\",\"type\":\"line\",\"encode\":{\"y\":\"value\"}}]}",
+    "{\"title\":{\"text\":\"JSON pie\"},\"legend\":{\"show\":false},\"series\":[{\"name\":\"Share\",\"type\":\"pie\",\"data\":[25,35,40],\"label\":{\"show\":true}}]}"};
+static const char* k_json_names[4] = {"bar", "radar", "line sort", "pie"};
 
 static void dump_ppm(const uint8_t* pixels, const char* path);
 static void apply_state(app_t* app);
@@ -122,6 +134,7 @@ static void place(my_widget_t* w, int32_t x, int32_t y, int32_t cw,
 }
 
 static void apply_state(app_t* app) {
+  if (app->json_preset >= 0) return;
   static const char* k_names[4] = {"Alpha", "Beta", "Gamma", "Delta"};
   static const char* k_cats[8] = {"Jan", "Feb", "Mar", "Apr",
                                   "May", "Jun", "Jul", "Aug"};
@@ -166,6 +179,42 @@ static void apply_state(app_t* app) {
     (void)snprintf(line, sizeof(line), "%s  scale %.2f  anim %.0f%%",
                    k_modes[app->mode].name, (double)app->st.scale,
                    (double)(app->st.anim * 100.0f));
+    (void)my_label_set_text(app->status, line);
+  }
+}
+
+static void apply_json_preset(app_t* app) {
+  my_echart_json_doc_t* doc;
+  my_echart_option_t option;
+  const my_echart_option_input_t* input;
+  const char* error;
+  if (app->adapter == NULL) {
+    app->adapter = my_echart_adapter_create(app->chart, NULL);
+    if (app->adapter == NULL) {
+      fprintf(stderr, "JSON adapter creation failed\n");
+      return;
+    }
+  }
+  doc = my_echart_json_doc_parse(k_json_presets[app->json_preset],
+                                 strlen(k_json_presets[app->json_preset]), NULL);
+  error = doc == NULL ? "out of memory" : my_echart_json_doc_error(doc);
+  if (error != NULL) {
+    fprintf(stderr, "JSON preset %d: %s\n", app->json_preset, error);
+    my_echart_json_doc_destroy(&doc);
+    return;
+  }
+  input = my_echart_json_doc_option(doc);
+  my_echart_option_init(&option, NULL);
+  if (my_echart_option_copy(&option, input, NULL) != MY_RET_OK ||
+      my_echart_adapter_apply(app->adapter, &option) != MY_RET_OK) {
+    fprintf(stderr, "JSON preset %d apply failed\n", app->json_preset);
+  }
+  my_echart_option_free(&option);
+  my_echart_json_doc_destroy(&doc);
+  {
+    char line[128];
+    (void)snprintf(line, sizeof(line), "json preset %d: %s", app->json_preset + 1,
+                   k_json_names[app->json_preset]);
     (void)my_label_set_text(app->status, line);
   }
 }
@@ -242,6 +291,7 @@ static app_t* app_create(const char* font_path) {
   app->st.legend = true;
   app->st.anim = 1.0f;
   app->st.zoom_end = 8u;
+  app->json_preset = -1;
   app->lcd = my_lcd_mem_create(NULL, EX_W, EX_H, MY_PIXEL_FORMAT_BGRA8888);
   app->vg = my_vgcanvas_soft_create(NULL, app->lcd);
   if (font_path != NULL)
@@ -281,13 +331,15 @@ static app_t* app_create(const char* font_path) {
   place(app->legend_box, PANEL_X + 8, PANEL_Y + 258, 130, 22);
   (void)my_checkbox_set_checked(app->legend_box, true);
   app->random_button = my_button_create(NULL, "Randomize (R)");
-  place(app->random_button, PANEL_X + 8, PANEL_Y + 292, 90, 30);
+  place(app->random_button, PANEL_X + 8, PANEL_Y + 292, 72, 30);
   app->play_button = my_button_create(NULL, "Play");
-  place(app->play_button, PANEL_X + 102, PANEL_Y + 292, 64, 30);
+  place(app->play_button, PANEL_X + 84, PANEL_Y + 292, 48, 30);
   app->zoom_in = my_button_create(NULL, "Zoom +");
-  place(app->zoom_in, PANEL_X + 170, PANEL_Y + 292, 64, 30);
+  place(app->zoom_in, PANEL_X + 136, PANEL_Y + 292, 48, 30);
   app->zoom_out = my_button_create(NULL, "Zoom -");
-  place(app->zoom_out, PANEL_X + 238, PANEL_Y + 292, 58, 30);
+  place(app->zoom_out, PANEL_X + 188, PANEL_Y + 292, 48, 30);
+  app->json_button = my_button_create(NULL, "JSON");
+  place(app->json_button, PANEL_X + 240, PANEL_Y + 292, 56, 30);
   app->progress = my_progress_bar_create(NULL);
   place(app->progress, PANEL_X + 8, PANEL_Y + 336, 280, 18);
   app->status = my_label_create(NULL, "line");
@@ -301,6 +353,7 @@ static app_t* app_create(const char* font_path) {
   (void)my_widget_add_child(app->panel, app->play_button);
   (void)my_widget_add_child(app->panel, app->zoom_in);
   (void)my_widget_add_child(app->panel, app->zoom_out);
+  (void)my_widget_add_child(app->panel, app->json_button);
   (void)my_widget_add_child(app->panel, app->progress);
   (void)my_widget_add_child(app->panel, app->status);
   apply_state(app);
@@ -316,6 +369,7 @@ static my_widget_t* hit(app_t* app, int32_t x, int32_t y) {
   widgets[count++] = app->play_button;
   widgets[count++] = app->zoom_in;
   widgets[count++] = app->zoom_out;
+  widgets[count++] = app->json_button;
   for (i = 0u; i < count; i++) {
     my_widget_t* w = widgets[i];
     if (x >= w->rect.x && x < w->rect.x + w->rect.w && y >= w->rect.y &&
@@ -330,13 +384,23 @@ static void on_widget_click(app_t* app, my_widget_t* w) {
   for (i = 0u; i < MODE_COUNT; i++) {
     if (w == app->mode_buttons[i]) {
       app->mode = i;
+      app->json_preset = -1;
       apply_state(app);
       return;
     }
   }
   if (w == app->random_button) {
     randomize(app);
+    app->json_preset = -1;
     apply_state(app);
+  } else if (w == app->json_button) {
+    app->json_preset = (app->json_preset + 1) % 5;
+    if (app->json_preset < 0 || app->json_preset == 4)
+      app->json_preset = -1;
+    if (app->json_preset >= 0)
+      apply_json_preset(app);
+    else
+      apply_state(app);
   } else if (w == app->play_button) {
     app->st.playing = !app->st.playing;
     if (app->st.playing && app->st.anim >= 1.0f) app->st.anim = 0.0f;
@@ -477,11 +541,13 @@ static void wheel(app_t* app, int32_t delta) {
 static void key(app_t* app, int k) {
   if (k >= '1' && k <= '9') {
     app->mode = (size_t)(k - '1');
+    app->json_preset = -1;
     apply_state(app);
     return;
   }
   if (k == '0') {
     app->mode = 9u;
+    app->json_preset = -1;
     apply_state(app);
     return;
   }
@@ -493,7 +559,10 @@ static void key(app_t* app, int k) {
   }
   if (k == 'r' || k == 'R') {
     randomize(app);
+    app->json_preset = -1;
     apply_state(app);
+  } else if (k == 'j' || k == 'J') {
+    on_widget_click(app, app->json_button);
   } else if (k == 'p' || k == 'P') {
     on_widget_click(app, app->play_button);
   } else if (k == '+' || k == '=') {
@@ -542,10 +611,12 @@ static int run_selftest(const char* dir, const char* font_path) {
   app_t* app = app_create(font_path);
   char path[512];
   size_t failures = 0u;
-  static const char* steps[7] = {"01_line", "02_mode_bar", "03_scale",
-                                 "04_stacked", "05_random_hover", "06_zoom",
-                                 "07_animation_play"};
+  static const char* steps[8] = {"01_line", "02_mode_bar", "03_scale",
+                                  "04_stacked", "05_random_hover", "06_zoom",
+                                  "07_animation_play", "08_json_preset"};
   uint8_t* animation_frame;
+  uint8_t* json_frame;
+  size_t json_colored;
   render_frame(app);
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[0]);
   dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
@@ -594,6 +665,29 @@ static int run_selftest(const char* dir, const char* font_path) {
       failures++;
     }
     free(animation_frame);
+  }
+  on_widget_click(app, app->json_button);
+  render_frame(app);
+  (void)snprintf(path, sizeof(path), "%s/%s0.ppm", dir, steps[7]);
+  dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
+  json_colored = count_colored(app);
+  json_frame = (uint8_t*)malloc((size_t)EX_W * EX_H * 4u);
+  if (json_frame == NULL) {
+    printf("FAIL selftest JSON allocation\n");
+    failures++;
+  } else {
+    memcpy(json_frame, my_lcd_mem_get_buffer(app->lcd),
+           (size_t)EX_W * EX_H * 4u);
+    on_widget_click(app, app->json_button);
+    render_frame(app);
+    (void)snprintf(path, sizeof(path), "%s/%s1.ppm", dir, steps[7]);
+    dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
+    if (json_colored == 0u || count_colored(app) == 0u ||
+        count_pixel_diff(json_frame, my_lcd_mem_get_buffer(app->lcd)) == 0u) {
+      printf("FAIL selftest JSON presets\n");
+      failures++;
+    }
+    free(json_frame);
   }
   if (count_colored(app) < 400u) {
     printf("FAIL selftest frame too empty\n");

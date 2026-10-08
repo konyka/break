@@ -341,7 +341,7 @@ static void scene_dataset_transform(const char* dir) {
       false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u,
       NULL, 0u, NULL, 0u, NULL, 0u, dims, 2u,
       MY_ECHART_TRANSFORM_SORT_DESC, "key", MY_ECHART_FILTER_EQ, NULL, 0.0,
-      NULL, 0u};
+      NULL, 0u, false};
   my_echart_option_t option;
   my_widget_t* c = my_chart_create(NULL, MY_CHART_BAR);
   my_echart_adapter_t* adapter;
@@ -368,7 +368,7 @@ static void scene_model_action(const char* dir) {
       false, false, false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u,
       NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u,
       MY_ECHART_TRANSFORM_NONE, NULL, MY_ECHART_FILTER_EQ, NULL, 0.0,
-      NULL, 0u};
+      NULL, 0u, false};
   my_echart_model_action_t action;
   my_echart_t* model = my_echart_create(NULL);
   my_widget_t* c = my_chart_create(NULL, MY_CHART_LINE);
@@ -405,7 +405,7 @@ static void scene_mvvm(const char* dir) {
   my_echart_option_input_t in = {"MVVM", NULL, 0u, &s, 1u, false, false,
       false, 0.0, 0.0, false, 0u, 0u, false, 0.0, 0.0, 0u, 0u,
       NULL, 0u, NULL, 0u, NULL, 0u, NULL, 0u, MY_ECHART_TRANSFORM_NONE,
-      NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u};
+      NULL, MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u, false};
   my_echart_option_t o1;
   my_echart_option_t o2;
   my_view_model_t* vm = my_view_model_dummy_create(NULL);
