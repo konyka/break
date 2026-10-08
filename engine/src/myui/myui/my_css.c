@@ -907,6 +907,8 @@ typedef struct {
   double duration_ms;
   double delay_ms;
   double x1, y1, x2, y2; /* the easing curve; (0,0,1,1) is linear */
+  int steps_count;       /* R699: >0 = the steps(n) easing (bezier ignored) */
+  bool steps_jump_start;
 } css_transition_spec_t;
 
 /* parse one time token ("100ms"/"0.2s") into milliseconds. */
@@ -944,11 +946,59 @@ static bool css_transition_time_token(const char* token, size_t len,
   return false;
 }
 
-/* parse one easing token — a keyword or cubic-bezier(x1,y1,x2,y2)
- * with x in [0,1]. */
+/* parse one easing token — a keyword, cubic-bezier(x1,y1,x2,y2) with
+ * x in [0,1], or steps(n[, jump-start|jump-end]) (R699; the steps
+ * out-params carry n and the position, 0 = not a steps easing). */
 static bool css_transition_easing_token(const char* token, size_t len,
                                         double* x1, double* y1, double* x2,
-                                        double* y2) {
+                                        double* y2, int* steps_count,
+                                        bool* steps_jump_start) {
+  *steps_count = 0;
+  *steps_jump_start = false;
+  if (len > 6u && memcmp(token, "steps(", 6u) == 0 &&
+      token[len - 1u] == ')') {
+    css_p_t probe;
+    double n;
+    bool integral;
+    char word[16];
+    memset(&probe, 0, sizeof(probe));
+    probe.s = token + 6u;
+    probe.len = len - 7u;
+    probe.line = 1;
+    probe.col = 1;
+    c_ws(&probe);
+    if (!css_number(&probe, &n, &integral) || !integral || n < 1.0 ||
+        n > 99.0) {
+      return false;
+    }
+    *steps_count = (int)n;
+    c_ws(&probe);
+    if (probe.pos < probe.len) {
+      if (probe.s[probe.pos] != ',') {
+        return false;
+      }
+      probe.pos++;
+      c_ws(&probe);
+      {
+        size_t wl = 0u;
+        while (probe.pos < probe.len &&
+               c_ident_char((unsigned char)probe.s[probe.pos])) {
+          if (wl + 1u >= sizeof(word)) {
+            return false;
+          }
+          word[wl++] = probe.s[probe.pos++];
+        }
+        word[wl] = '\0';
+      }
+      if (my_str_eq(word, "jump-start")) {
+        *steps_jump_start = true;
+      } else if (!my_str_eq(word, "jump-end")) {
+        return false;
+      }
+      c_ws(&probe);
+    }
+    return probe.pos == probe.len;
+  }
   if (len >= 2u && token[0] == '-' && token[1] == '-') {
     return false; /* a property name is not an easing */
   }
@@ -1095,7 +1145,8 @@ static bool css_transition_group_parse(const char* text, size_t len,
       spec->delay_ms = ms;
     } else if (!css_transition_easing_token(tokens[2], token_lens[2],
                                             &spec->x1, &spec->y1, &spec->x2,
-                                            &spec->y2)) {
+                                            &spec->y2, &spec->steps_count,
+                                            &spec->steps_jump_start)) {
       return false;
     }
     if (count == 4u) {
@@ -7147,7 +7198,21 @@ bool my_theme_get_for_widget_var_transitioning(
   if (t > 1.0) {
     t = 1.0;
   }
-  t = css_transition_bezier_y(spec.x1, spec.y1, spec.x2, spec.y2, t);
+  if (spec.steps_count > 0) {
+    /* R699: the discrete staircase — jump-end holds floor(p*n)/n
+     * (p=1 reaches 1), jump-start jumps to ceil(p*n)/n. */
+    double n = (double)spec.steps_count;
+    double step;
+    if (spec.steps_jump_start) {
+      /* the first jump happens at the start: y(0) = 1/n. */
+      step = t >= 1.0 ? n : floor(t * n) + 1.0;
+    } else {
+      step = t >= 1.0 ? n : floor(t * n);
+    }
+    t = step / n;
+  } else {
+    t = css_transition_bezier_y(spec.x1, spec.y1, spec.x2, spec.y2, t);
+  }
   if (!(t >= 0.0)) {
     t = 0.0;
   }
