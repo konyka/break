@@ -1421,3 +1421,82 @@ my_font_t* my_font_create_chain(const my_allocator_t* allocator,
   my_mem_free(allocator, sources);
   return font;
 }
+
+/* ---------------- R703: vector-font format probing ---------------- */
+
+my_font_format_t my_font_probe_format(const char* path) {
+  FILE* file;
+  uint8_t head[4];
+  if (path == NULL) {
+    return MY_FONT_FORMAT_UNKNOWN;
+  }
+  file = fopen(path, "rb");
+  if (file == NULL) {
+    return MY_FONT_FORMAT_UNKNOWN;
+  }
+  if (fread(head, 1, sizeof(head), file) != sizeof(head)) {
+    fclose(file);
+    return MY_FONT_FORMAT_UNKNOWN;
+  }
+  fclose(file);
+  if (head[0] == 0x00 && head[1] == 0x01 && head[2] == 0x00 &&
+      head[3] == 0x00) {
+    return MY_FONT_FORMAT_TTF;
+  }
+  if (memcmp(head, "OTTO", 4) == 0) {
+    return MY_FONT_FORMAT_OTF_CFF;
+  }
+  if (memcmp(head, "ttcf", 4) == 0) {
+    return MY_FONT_FORMAT_TTC;
+  }
+  if (memcmp(head, "wOFF", 4) == 0) {
+    return MY_FONT_FORMAT_WOFF;
+  }
+  if (memcmp(head, "wOF2", 4) == 0) {
+    return MY_FONT_FORMAT_WOFF2;
+  }
+  /* 'true' (Apple) and 'ttcf' member faces carry TrueType outlines. */
+  if (memcmp(head, "true", 4) == 0) {
+    return MY_FONT_FORMAT_TTF;
+  }
+  return MY_FONT_FORMAT_UNKNOWN;
+}
+
+bool my_font_backend_supports(my_font_format_t format) {
+  switch (format) {
+    case MY_FONT_FORMAT_TTF:
+    case MY_FONT_FORMAT_TTC:
+      /* the stb backend parses TrueType-outline sfnt everywhere. */
+      return true;
+    case MY_FONT_FORMAT_OTF_CFF:
+    case MY_FONT_FORMAT_WOFF:
+    case MY_FONT_FORMAT_WOFF2:
+      /* CFF outlines and the web-font containers need FreeType (its
+       * bundled inflate even unwraps WOFF; WOFF2 needs the brotli
+       * build flag). A stb-only build fails these honestly. */
+#if defined(MYUI_FONT_FREETYPE)
+      return format != MY_FONT_FORMAT_WOFF2;
+#else
+      return false;
+#endif
+    default:
+      return false;
+  }
+}
+
+const char* my_font_format_name(my_font_format_t format) {
+  switch (format) {
+    case MY_FONT_FORMAT_TTF:
+      return "ttf";
+    case MY_FONT_FORMAT_OTF_CFF:
+      return "otf-cff";
+    case MY_FONT_FORMAT_TTC:
+      return "ttc";
+    case MY_FONT_FORMAT_WOFF:
+      return "woff";
+    case MY_FONT_FORMAT_WOFF2:
+      return "woff2";
+    default:
+      return "unknown";
+  }
+}

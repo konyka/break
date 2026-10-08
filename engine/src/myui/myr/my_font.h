@@ -311,6 +311,33 @@ my_font_t* my_font_create_chain_ex(const my_allocator_t* allocator,
  */
 uint32_t my_utf8_next(const char** s);
 
+/* ---------------- R703: vector-font format probing ---------------- */
+
+/** @brief The vector-font container flavor found in a file header. */
+typedef enum {
+  MY_FONT_FORMAT_UNKNOWN = 0,
+  MY_FONT_FORMAT_TTF,     /**< sfnt with TrueType outlines (0x00010000) */
+  MY_FONT_FORMAT_OTF_CFF, /**< sfnt with CFF outlines ('OTTO') */
+  MY_FONT_FORMAT_TTC,     /**< TrueType/OpenType Collection ('ttcf') */
+  MY_FONT_FORMAT_WOFF,    /**< Web Open Font Format 1 ('wOFF', zlib) */
+  MY_FONT_FORMAT_WOFF2,   /**< Web Open Font Format 2 ('wOF2', brotli) */
+} my_font_format_t;
+
+/** @brief Probe a font file's container format from its header (no
+ * backend needed). Returns MY_FONT_FORMAT_UNKNOWN when unreadable. */
+my_font_format_t my_font_probe_format(const char* path);
+
+/** @brief Can the ACTIVE build load this format? The stb backend
+ * covers TrueType-outline sfnt (and TTC faces); CFF-outline and
+ * web-font containers need the FreeType backend — a build without
+ * MYUI_FONT_FREETYPE returns false for those so hosts can report the
+ * limitation instead of a silent NULL. */
+bool my_font_backend_supports(my_font_format_t format);
+
+/** @brief A stable lowercase name for diagnostics ("ttf", "otf-cff",
+ * "ttc", "woff", "woff2", "unknown"). */
+const char* my_font_format_name(my_font_format_t format);
+
 /** @brief Whether cp is a Unicode variation selector, not a standalone glyph. */
 static inline bool my_font_is_variation_selector(uint32_t cp) {
   return (cp >= 0xFE00u && cp <= 0xFE0Fu) ||

@@ -150,6 +150,154 @@ TEST(lcd_public_api_rejects_missing_backend_slots)
   my_lcd_destroy(&lcd);
 }
 
+TEST(font_format_probing_and_backend_matrix)
+{
+  /* R703: the vector-font format probe reads the container header —
+   * sfnt (TrueType outlines), CFF-outline OpenType, collections and
+   * the web-font wrappers are distinguishable; the backend matrix
+   * reports what the ACTIVE build can load (stb covers TrueType
+   * outlines; CFF/web containers need FreeType). */
+  char path[256];
+  const char* tmp = getenv("TEMP") ? getenv("TEMP") : "/tmp";
+  FILE* f;
+
+  snprintf(path, sizeof(path), "%s/probe_ttf.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("\x00\x01\x00\x00", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_TTF);
+  ASSERT_STR_EQ(my_font_format_name(my_font_probe_format(path)), "ttf");
+  remove(path);
+
+  snprintf(path, sizeof(path), "%s/probe_otto.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("OTTO", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_OTF_CFF);
+  ASSERT_STR_EQ(my_font_format_name(my_font_probe_format(path)),
+                "otf-cff");
+  remove(path);
+
+  snprintf(path, sizeof(path), "%s/probe_ttcf.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("ttcf", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_TTC);
+  remove(path);
+
+  snprintf(path, sizeof(path), "%s/probe_woff.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("wOFF", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_WOFF);
+  remove(path);
+
+  snprintf(path, sizeof(path), "%s/probe_wof2.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("wOF2", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_WOFF2);
+  remove(path);
+
+  snprintf(path, sizeof(path), "%s/probe_garb.bin", tmp);
+  f = fopen(path, "wb");
+  ASSERT_NOT_NULL(f);
+  fwrite("XXXX", 1, 4, f);
+  fclose(f);
+  ASSERT_EQ(my_font_probe_format(path), MY_FONT_FORMAT_UNKNOWN);
+  ASSERT_STR_EQ(my_font_format_name(my_font_probe_format(path)),
+                "unknown");
+  remove(path);
+
+  ASSERT_EQ(my_font_probe_format("no/such/file.ttf"),
+            MY_FONT_FORMAT_UNKNOWN);
+  ASSERT_EQ(my_font_probe_format(NULL), MY_FONT_FORMAT_UNKNOWN);
+
+  /* the backend matrix: TrueType outlines load everywhere; CFF and
+   * web containers only with the FreeType backend (WOFF2 additionally
+   * needs its brotli flag — never promised). */
+  ASSERT_TRUE(my_font_backend_supports(MY_FONT_FORMAT_TTF));
+  ASSERT_TRUE(my_font_backend_supports(MY_FONT_FORMAT_TTC));
+#if defined(MYUI_FONT_FREETYPE)
+  ASSERT_TRUE(my_font_backend_supports(MY_FONT_FORMAT_OTF_CFF));
+  ASSERT_TRUE(my_font_backend_supports(MY_FONT_FORMAT_WOFF));
+#else
+  ASSERT_TRUE(!my_font_backend_supports(MY_FONT_FORMAT_OTF_CFF));
+  ASSERT_TRUE(!my_font_backend_supports(MY_FONT_FORMAT_WOFF));
+#endif
+  ASSERT_TRUE(!my_font_backend_supports(MY_FONT_FORMAT_WOFF2));
+  ASSERT_TRUE(!my_font_backend_supports(MY_FONT_FORMAT_UNKNOWN));
+}
+
+TEST(soft_text_rendering_is_antialiased)
+{
+  /* R704: the antialiasing contract — a rendered glyph's coverage
+   * edge must produce intermediate blend pixels (neither the pure
+   * background nor the pure fill). A 1-bit or NEAREST regression
+   * turns every pixel binary and fails this. Skips (passes with a
+   * note) on hosts without any probe-able font file. */
+  static const char* candidates[] = {
+      "C:\\Windows\\Fonts\\arial.ttf",
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+      "/System/Library/Fonts/Supplemental/Arial.ttf",
+  };
+  my_lcd_t *lcd;
+  my_vgcanvas_t *canvas;
+  my_font_t *font = NULL;
+  size_t i;
+  const uint8_t *pixels;
+  size_t blended = 0u, total;
+
+  for (i = 0u; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+    if (my_font_probe_format(candidates[i]) == MY_FONT_FORMAT_TTF) {
+      font = my_font_stb_create(NULL, candidates[i], 512u);
+      if (font != NULL) {
+        break;
+      }
+    }
+  }
+  if (font == NULL) {
+    printf("  (no probe-able font on this host — AA contract not "
+           "exercised)\n");
+    return;
+  }
+
+  lcd = my_lcd_mem_create(NULL, 128, 96, MY_PIXEL_FORMAT_BGRA8888);
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 128.0f, 96.0f});
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0x000000FFu));
+  my_vgcanvas_set_font(canvas, font, 48);
+  ASSERT_EQ(my_vgcanvas_draw_text(canvas, "A&", 8.0f, 10.0f), MY_RET_OK);
+  my_vgcanvas_end_frame(canvas);
+
+  pixels = my_lcd_mem_get_buffer(lcd);
+  total = 128u * 96u;
+  for (i = 0u; i < total; i++) {
+    const uint8_t *px = pixels + i * 4u;
+    if (px[0] != 0xFFu && px[0] != 0x00u) {
+      blended++; /* a gray level between background and glyph fill */
+    }
+  }
+  /* a curved glyph at 48px must have a soft coverage edge: at least a
+   * handful of intermediate pixels (empirically hundreds; the floor
+   * keeps the contract robust to rasterizer changes). */
+  ASSERT_TRUE(blended >= 8u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(vgcanvas_rejects_nonfinite_state_values)
 {
   my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
@@ -1454,6 +1602,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lcd_public_api_rejects_missing_backend_slots);
     RUN_TEST(vgcanvas_rejects_nonfinite_state_values);
     RUN_TEST(soft_draw_text_falls_back_to_cells_without_a_font);
+    RUN_TEST(font_format_probing_and_backend_matrix);
+    RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);
     RUN_TEST(vgcanvas_rejects_nonfinite_geometry_values);
     RUN_TEST(vgcanvas_set_font_rejects_invalid_size_without_state_change);

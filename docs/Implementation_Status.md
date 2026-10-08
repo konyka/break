@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R703/R704 矢量字体格式探测 + 全 API 抗锯齿契约（TDD）— `my_font_probe_format/backend_supports/format_name` 公共 API（sfnt/CFF/TTC/WOFF/WOFF2 头探测+后端能力矩阵——stb 域 TrueType 轮廓,FT 域 CFF/web 容器,诚实可查询）;soft 渲染 **AA 像素契约测试**（覆盖边缘中间值存在——1bit/NEAREST 退化即红,双平台实测钉死）
+
+- **缺口**(用户需求"矢量字体文件支持+全平台 API 抗锯齿"):勘察定界——**矢量渲染现状已达标**（TTF/OTF-TTF 轮廓 stb ✓、CFF/WOFF 经 chain 的 FreeType-first fallback ✓、三条渲染 API 的字形路径全 AA:soft 逐像素 8bit alpha 混合/desktop GL+GLES2 GL_LUMINANCE 8bit+GL_LINEAR/VK R8_UNORM+glyph 专用 LINEAR sampler——码内契约注释在案）;真缺=**格式不可探测**（宿主无法先验判断文件能否加载,stb-only 构建对 CFF 静默 NULL）与**AA 无验证面**（NEAREST/1bit 退化无人看守）。
+- **方案**:① **探测 API**（my_font.c,零后端依赖）——头 4 字节 tag 判 `0x00010000`/`OTTO`/`ttcf`/`wOFF`/`wOF2`/`true`（Apple 变体）→ 六格式枚举;② **能力矩阵** `my_font_backend_supports`——TTF/TTC 恒真（stb 域）;CFF/WOFF 按 `MYUI_FONT_FREETYPE` 编译分支（FT 自带 inflate 解 WOFF）;WOFF2 恒假（brotli 编译旗标不承诺——诚实）;③ **AA 契约测试**——soft canvas+真字体（跨平台六候选探测,无字体环境注明跳过）48px 曲线字形（"A&"）→ **中间 alpha 像素计数 ≥8**（背景白/前景黑之外的灰阶=覆盖边缘软过渡;经验值数百,8 为稳健下限）。
+- **TDD**:test_myui_vgcanvas_backend +2——探测七景（六合成头+缺文件/NULL）+矩阵断言（宏自适应）+命名稳定;AA 契约（**双平台实测**:Windows arial 与 WSL Liberation 均真字体真断言）。**39/39**（37+2）。
+- **回归**：双树非图形各 **128/128**;GL/VK 的 AA 面（LUMINANCE/R8+LINEAR 采样配置）由码内注释契约+graphics CI 截图既有覆盖看守（运行时参数断言需 GL 上下文挂具,单列注记）。
+- **边界**：WOFF 解包在 stb-only 构建不可行（引擎无 zlib——FT 域天然覆盖,矩阵诚实报）;WOFF2 需 FT 的 brotli 旗标（不承诺,恒假）;探测只认容器 tag（损坏文件按后端加载失败路径,不重复校验）;AA 契约的 GL/VK 运行时断言未挂（测试基建单列——soft 面为可自动验证面先行）;R611 AMD 基线不动。
+
 ## 本轮更新：R702 steps 全位置形态（TDD）— `jump-none`（n 阶 n−1 位,两端不跳,n≥2 强制）/`jump-both`（n+1 位,两端都跳）+ **start/end 旧拼写别名**（jump-start/jump-end 的 legacy 等价词）——steps() 四位置+双拼写全谱,spec 字段 bool→枚举化
 
 - **缺口**(R701 边界"jump-none/jump-both 未涉——注记"):steps() 的规范四位置仅两形态落地,旧拼写 start/end 不识别。
