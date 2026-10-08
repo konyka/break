@@ -17,5 +17,6 @@
 #define MY_STYLE_BORDER_WIDTH "border_width"
 #define MY_STYLE_CONTAINER_TYPE "container_type"
 #define MY_STYLE_CONTAINER_NAME "container_name"
+#define MY_STYLE_TRANSITION "transition"
 
 #endif /* MY_STYLE_KEYS_H */

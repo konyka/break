@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R686 transition 声明存储（TDD，插值动画立项 phase 2）— `transition: --name <ms|s> [linear]` 落地存储半边：新键注册+raw 捕获+有界形态校验（R669 容器属性同型切片），生命周期（phase 3）未涉
+
+- **缺口**(R685 立项分级 phase 2=R685 落账"transition 声明解析"):`transition: --accent 200ms` 走通用 css_value 探针——多 token 尾随垃圾,**整声明 lenient 丢弃**——过渡配置无从进入引擎。
+- **方案**(R669 容器属性同型四点接入):① 键注册——my_style_keys.h 增 `MY_STYLE_TRANSITION`("transition"),KEY_ALIASES 映射;② 声明分支——transition 走 raw 捕获（css_custom_value,`!important` 剥离同约）;③ **有界形态校验** `css_transition_value_ok`——恰 2-3 个空白分隔 token:token0 须 `--` 开头自定义属性名（**不查注册表**——解析期 sheet→theme 时机不保证;消费期未注册目标自然离散降级）、token1 须数字+`ms`/`s` 单位（css_number 探针+单位恰 ms/s+token 内无尾随垃圾）、token2（可选）恰 `linear`;**逗号多组拒**（有界单组）;④ 失格丢单声明 lenient（同 container-type 先例）。级联/查找全链零改机（键透传）。
+- **TDD（红→绿实证）**:test_myui_css +1——存储面三景：ms 形态/s 形态/显式 linear 原样 STR;校验面五景：非自定义属性名/无时长/px 单位/非法 easing/逗号多组各丢单声明（余声明无恙）;级联面：theme 键查找得 STR。**RED 如实红**（行 3407:decl_count≠2——通用探针丢弃实证）;GREEN **191/191**(190+1)——期间修正一处测试断言（color 键经 KEY_ALIASES 映射为 fg_color,断言应取内部键）。
+- **回归**：双树非图形 CTest 各 **128/129**（剔除在案剪贴板 wedge 环境态项）、fuzz smoke 5/5;既有声明/级联组全绿未动。
+- **边界**：**phase 3=过渡生命周期**（per-widget 起始值快照/时钟推进/查询期经 R685 原语合成——widget 域帧回调接入,单列）;easing 仅 linear（ease/ease-in/cubic-bezier 域属 phase 3 评估）;delay 第三时间段未涉（有界 2-3 token）;逗号多组拒（多属性并行过渡属后续扩编）;transition 作用于非注册属性的目标在消费期离散跳变（值域无插值轨,R685 同约）;R611 AMD 基线不动。
+
 ## 本轮更新：R685 注册属性插值原语（TDD，插值动画立项 phase 1）— 纯函数 `my_css_property_interpolate(syntax, from, to, t, out, cap)`：色逐通道线性（#rrggbbaa 输出）/数值域线性（承 to 侧单位拼写）/离散原语 t≥1 跳变；过渡域的公共地基
 
 - **缺口**(R672/R667 落账"插值动画域未涉",勘误轮立项分级——phase 1=插值原语,phase 2=transition 声明解析,phase 3=过渡生命周期 widget 时钟接线):注册属性的值域自 R672 起有类型轨道,但"两个值按进度混合"的原语全缺——后续任何过渡机制（transition 解析/生命周期/失效重绘）都以此 为地基。

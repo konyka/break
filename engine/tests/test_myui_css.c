@@ -3370,6 +3370,118 @@ TEST(css_property_interpolation_primitives)
                                            sizeof(out)));
 }
 
+TEST(css_transition_declaration_storage)
+{
+  /* R686: the transition declaration (interpolation project phase 2)
+   * parses into raw storage: a custom-property name, a duration
+   * (ms/s), an optional `linear` easing — bounded to one group,
+   * linear only, custom properties only. Consumption (the transition
+   * lifecycle) is phase 3. */
+  const char* hit =
+      "button { transition: --accent 200ms; color: red; }";
+  const char* seconds =
+      "button { transition: --accent 0.2s; color: red; }";
+  const char* linear =
+      "button { transition: --accent 200ms linear; color: red; }";
+  const char* not_custom =
+      "button { transition: color 200ms; color: red; }";
+  const char* no_duration =
+      "button { transition: --accent; color: red; }";
+  const char* bad_unit =
+      "button { transition: --accent 200px; color: red; }";
+  const char* bad_easing =
+      "button { transition: --accent 200ms ease-in; color: red; }";
+  const char* multi_group =
+      "button { transition: --a 1ms, --b 2ms; color: red; }";
+  my_css_error_t error = {0};
+  my_css_sheet_t* sheet;
+  my_theme_t* theme;
+  my_widget_t* button;
+  const my_value_t* value;
+
+  /* a conforming declaration stores raw text. */
+  sheet = my_css_parse_ex(NULL, hit, strlen(hit),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 2u);
+  ASSERT_STR_EQ(my_css_decl(my_css_rule(sheet, 0u), 0u)->key, "transition");
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+                "--accent 200ms");
+  my_css_sheet_destroy(sheet);
+
+  /* seconds spellings store as-is. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, seconds, strlen(seconds),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+                "--accent 0.2s");
+  my_css_sheet_destroy(sheet);
+
+  /* an explicit `linear` easing is fine. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, linear, strlen(linear),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_STR_EQ(my_value_get_str(&my_css_decl(my_css_rule(sheet, 0u), 0u)->value),
+                "--accent 200ms linear");
+  my_css_sheet_destroy(sheet);
+
+  /* non-custom property names, missing durations, bad units, bad
+   * easings and comma groups all drop just the declaration. */
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, not_custom, strlen(not_custom),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_rule_count(sheet), 1u);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  ASSERT_STR_EQ(my_css_decl(my_css_rule(sheet, 0u), 0u)->key, "fg_color");
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, no_duration, strlen(no_duration),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_unit, strlen(bad_unit),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, bad_easing, strlen(bad_easing),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  memset(&error, 0, sizeof(error));
+  sheet = my_css_parse_ex(NULL, multi_group, strlen(multi_group),
+                          MY_CSS_PARSE_STRICT_AT_RULES, &error);
+  ASSERT_NOT_NULL(sheet);
+  ASSERT_EQ(my_css_decl_count(my_css_rule(sheet, 0u)), 1u);
+  my_css_sheet_destroy(sheet);
+
+  /* the stored value cascades like any themed key. */
+  theme = my_theme_create(NULL);
+  button = my_widget_create(NULL, "button");
+  button->widget_type = "button";
+  ASSERT_EQ(my_theme_load_css_ex(theme, hit, MY_CSS_PARSE_STRICT_AT_RULES),
+            MY_RET_OK);
+  value = my_theme_get_for_widget(theme, button, MY_STATE_NORMAL,
+                                  "transition");
+  ASSERT_NOT_NULL(value);
+  ASSERT_EQ(my_value_type(value), MY_VALUE_STR);
+  ASSERT_STR_EQ(my_value_get_str(value), "--accent 200ms");
+  my_widget_unref(button);
+  my_theme_destroy(theme);
+}
+
 TEST(css_container_nested_queries_and_at_match_time)
 {
   /* R675: nested deferred @container is a conjunction — the rule must
@@ -9383,6 +9495,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(css_container_inline_size_axis_semantics);
     RUN_TEST(css_container_or_condition_lists_evaluate_at_match_time);
     RUN_TEST(css_property_interpolation_primitives);
+    RUN_TEST(css_transition_declaration_storage);
     RUN_TEST(css_container_nested_queries_and_at_match_time);
     RUN_TEST(css_property_rule_registers_custom_properties);
     RUN_TEST(css_property_syntax_is_enforced_at_computed_value_time);

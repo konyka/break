@@ -830,6 +830,97 @@ static bool css_container_property_value_ok(const char* key,
   }
 }
 
+/* R686: the transition declaration's bounded shape — `--name <ms|s>
+ * [linear]` — exactly two or three whitespace-separated tokens; the
+ * duration is a number with an ms/s unit; `linear` is the only easing
+ * in scope. One group only (comma lists drop the declaration). */
+static bool css_transition_value_ok(const char* text) {
+  size_t i = 0u;
+  size_t len = strlen(text);
+  char tokens[3][MY_STYLE_KEY_LEN];
+  size_t token_lens[3];
+  size_t count = 0u;
+  while (i < len) {
+    size_t start;
+    while (i < len && (text[i] == ' ' || text[i] == '\t' ||
+                       text[i] == '\r' || text[i] == '\n')) {
+      i++;
+    }
+    if (i >= len) {
+      break;
+    }
+    start = i;
+    while (i < len && text[i] != ' ' && text[i] != '\t' &&
+           text[i] != '\r' && text[i] != '\n' && text[i] != ',') {
+      i++;
+    }
+    if (i < len && text[i] == ',') {
+      return false; /* comma groups are out of scope */
+    }
+    if (count >= 3u) {
+      return false;
+    }
+    token_lens[count] = i - start;
+    if (token_lens[count] >= sizeof(tokens[0])) {
+      return false;
+    }
+    memcpy(tokens[count], text + start, token_lens[count]);
+    tokens[count][token_lens[count]] = '\0';
+    count++;
+  }
+  if (count != 2u && count != 3u) {
+    return false;
+  }
+  /* token 0: a custom property name. */
+  if (tokens[0][0] != '-' || tokens[0][1] != '-' ||
+      tokens[0][2] == '\0' || !c_ident_char((unsigned char)tokens[0][2])) {
+    return false;
+  }
+  {
+    size_t n;
+    for (n = 2u; tokens[0][n] != '\0'; n++) {
+      if (!c_ident_char((unsigned char)tokens[0][n])) {
+        return false;
+      }
+    }
+  }
+  /* token 1: a duration — a number with an ms/s unit. */
+  {
+    css_p_t probe;
+    double number;
+    bool integral;
+    char unit[8];
+    size_t ul = 0u;
+    memset(&probe, 0, sizeof(probe));
+    probe.s = tokens[1];
+    probe.len = token_lens[1];
+    probe.line = 1;
+    probe.col = 1;
+    c_ws(&probe);
+    if (!css_number(&probe, &number, &integral)) {
+      return false;
+    }
+    (void)number;
+    (void)integral;
+    while (probe.pos < probe.len &&
+           ul + 1u < sizeof(unit)) {
+      unit[ul++] = probe.s[probe.pos++];
+    }
+    unit[ul] = '\0';
+    if (ul == 0u || (!my_str_eq(unit, "ms") && !my_str_eq(unit, "s"))) {
+      return false;
+    }
+    if (probe.pos != probe.len) {
+      return false; /* trailing garbage inside the token */
+    }
+  }
+  /* token 2 (optional): exactly `linear`. */
+  if (count == 3u && !my_str_eq(tokens[2], "linear")) {
+    return false;
+  }
+  return true;
+}
+
 /* R672: bounded @property syntax primitives — <color>/<length>/
  * <number>/<integer>/<string>/<percentage> and `*` (unknown syntax
  * strings carry no enforcement, documented). The text must parse as one
@@ -1024,6 +1115,7 @@ static const css_alias_t KEY_ALIASES[] = {
     {"font-size", MY_STYLE_FONT_SIZE},
     {"container-type", MY_STYLE_CONTAINER_TYPE},
     {"container-name", MY_STYLE_CONTAINER_NAME},
+    {"transition", MY_STYLE_TRANSITION},
 };
 
 static void css_key_map(const char* key, char* out, size_t cap) {
@@ -2233,6 +2325,15 @@ static bool css_parse_decl_block(css_p_t* p, my_css_rule_t* r,
         if (value_ok &&
             !css_container_property_value_ok(key,
                                              my_value_get_str(&d->value))) {
+          my_value_reset(&d->value);
+          value_ok = false;
+        }
+      } else if (my_str_eq(key, "transition")) {
+        /* R686: the transition captures raw and validates its bounded
+         * `--name <duration> [linear]` shape (lifecycle is phase 3). */
+        value_ok = css_custom_value(p, &d->value, &d->important);
+        if (value_ok &&
+            !css_transition_value_ok(my_value_get_str(&d->value))) {
           my_value_reset(&d->value);
           value_ok = false;
         }
