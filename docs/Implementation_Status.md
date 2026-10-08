@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R696 基建四项收口（TDD，开放项清零计划轮 6/6）— Windows Clang **ASan CI job** 新增（DLL copy 解法+本地 124/124 预验证）;GL f16 cube 往返测试挂上 X11 RHI 运行时挂具（R624/R625 字节契约的 GL 面实证）;ubuntu 迁移/weston headless/TSan 三项经审计**事实关闭**（过时落账勘误）
+
+- **缺口**(历轮落账基建四项:MSVC ASan"DLL 问题未涉"/GL f16 cube"需图形测试基建"/ubuntu-latest 迁移"2026-10 复看"/explorer wayland"运行期未涉")。
+- **方案与审计**:① **Windows ASan job**（ci.yml 新增 `windows-clang-asan`）——clang `-fsanitize=address -fno-omit-frame-pointer` 构建+`clang -print-resource-dir` 定位 `clang_rt.asan*.dll` copy 到 build 目录（加载器 DLL 发现问题的标准解）+`ASAN_OPTIONS=detect_leaks=0`（进程寿命设计同 wayland job 先例）跑 headless 套件——**本地全链预验证 124/124**（含 Windows 下剪贴板项亦过）;② **GL f16 cube 测试**——`test_rhi_x11_runtime` 增第二 TEST:4×4 RGBA16F 六面（face index 编码 R 通道 f16 位模式）create 原生上传→`rhi_texture_read_pixels` face-major 回读→逐面 **memcmp 字节精确**比对（R624/R625 契约 GL 面首次 CI 看守,挂具复用既有 GLX 运行时测试——"基建不存在"落账过时）;③ **审计关闭**——ubuntu 迁移：ci.yml 已显式 ubuntu-24.04+latest（现指 24.04）并存,550+ runs 持续绿含字体/包名（R674 后并行会话已迁移完成,落账未回写）;weston headless：wayland job 已起 `weston --backend=headless-backend.so` 跑 explorer/selftest（运行期覆盖在案）;TSan：clang Windows 线程 sanitizer 为工具链不支持域（非引擎开放项,外部事实注记）。
+- **验证**：本地——ASan 树 124/124、gate 树 199/199、双树 128/128（剔在案剪贴板 wedge）、fuzz 5/5;CI——新 job 与 f16 测试由本轮 run 看守（GL job/新 ASan job 全绿为收口证据）。
+- **边界**：ASan job 为 Clang（MSVC /fsanitize 与 clang 同 DLL 族,LLVM 工具链即覆盖"Windows ASan"需求——命名如实）;f16 测试对 GL 实现不支持 RGBA16F 的环境显式红（GL 3.0+ core 特性,CI mesa/llvmpipe 满足——不支持应暴露非静默 skip）;TSan 关闭理由为外部工具链事实（clang on Windows 无 TSan runtime）——非可做项;R611 AMD 基线不动。
+
 ## 本轮更新：R695 宿主过渡驱动助手（TDD，开放项清零计划轮 5/6）— `my_theme_transition_step(theme, widget, state, key, now_ms, out, state_box)`：每帧一步的状态盒（≤8 槽 key/from/to/start）——目标变即重启 span（旧目标为 from）,首见即定居（from==to 直出）,经 R687 transitioning 合成——"宿主域快照/时钟"工具化,宿主每帧一调即得动画
 
 - **缺口**(R687 落账"宿主域（快照旧值/时钟起点/重绘调度/多属性并行编排）不在引擎——拉取式主题无失效机制"):宿主直接用 R687 API 需自管每键快照与时钟——编排样板代码每宿主重复,引擎侧可工具化（状态盒+检测+重启+合成一步完成）。

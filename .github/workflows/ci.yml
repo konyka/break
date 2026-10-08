@@ -349,6 +349,38 @@ jobs:
       - name: Test (headless suite)
         run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
 
+  windows-clang-asan:
+    name: Windows + Clang ASan (headless)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        # R696: AddressSanitizer on Windows/clang — the runtime ships as
+        # clang_rt.asan DLLs that the loader must find; the test step
+        # copies them next to the executables after building.
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+
+      - name: Build
+        run: cmake --build build-asan --parallel
+
+      - name: Copy the ASan runtime DLLs next to the tests
+        shell: pwsh
+        run: |
+          $clangDir = & clang -print-resource-dir
+          $src = Join-Path $clangDir 'lib\windows'
+          if (-not (Test-Path $src)) { Write-Error "no ASan runtime at $src"; exit 1 }
+          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
+            ForEach-Object { Copy-Item $_.FullName -Destination build-asan }
+          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
+            ForEach-Object { $_.Name }
+
+      - name: Test (headless suite under ASan)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+        run: ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure
+
   macos-vulkan:
     name: macOS Cocoa + MoltenVK (Clang)
     runs-on: macos-14
