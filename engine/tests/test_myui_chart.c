@@ -475,6 +475,35 @@ TEST(chart_supports_heatmap_mode) {
   my_widget_unref(chart);
 }
 
+TEST(chart_heatmap_hover_tracks_cells_and_clears) {
+  static const float first[] = {0.0f, 50.0f, 100.0f};
+  static const float second[] = {100.0f, 50.0f, 0.0f};
+  my_chart_series_t a = {"A", first, 3u, 0x3A86FFFFu, 0u, false};
+  my_chart_series_t b = {"B", second, 3u, 0xE85D75FFu, 0u, false};
+  my_event_t event = my_event_init(MY_EVENT_POINTER_MOVE);
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_HEATMAP);
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &a), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &b), MY_RET_OK);
+  event.u.pointer.button = 1u;
+  event.u.pointer.x = 150;
+  event.u.pointer.y = 100;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  ASSERT_EQ(my_chart_hit_test(chart, 150, 100), 1u);
+  ASSERT_EQ(my_chart_set_series_visible(chart, 0u, false), MY_RET_OK);
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_OK);
+  ASSERT_EQ(my_chart_get_hover_index(chart), 1u);
+  event.u.pointer.x = 5;
+  event.u.pointer.y = 5;
+  ASSERT_EQ(chart->vtable->on_event(chart, &event), MY_RET_NOT_SUPPORTED);
+  ASSERT_EQ(my_chart_get_hover_index(chart), SIZE_MAX);
+  my_widget_unref(chart);
+}
+
 TEST(chart_supports_boxplot_mode) {
   static const float five_number[] = {10.0f, 20.0f, 30.0f, 40.0f, 50.0f};
   my_chart_series_t series = {"Stats", five_number, 5u, 0xE85D75FFu, 0u, false};
@@ -1769,6 +1798,7 @@ TEST_MAIN_BEGIN()
   RUN_TEST(chart_radar_hover_tracks_spokes_and_clears_outside);
   RUN_TEST(chart_supports_funnel_mode);
   RUN_TEST(chart_supports_heatmap_mode);
+  RUN_TEST(chart_heatmap_hover_tracks_cells_and_clears);
   RUN_TEST(chart_supports_boxplot_mode);
   RUN_TEST(chart_paints_radar_polygon_to_software_canvas);
   RUN_TEST(chart_visual_map_configuration);

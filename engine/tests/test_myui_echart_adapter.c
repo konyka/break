@@ -604,9 +604,37 @@ TEST(echart_adapter_projects_series_labels) {
   my_echart_option_free(&option);
 }
 
+TEST(echart_adapter_fills_heatmap_row_and_column_indexes) {
+  static const float first[] = {0.0f, 50.0f, 100.0f};
+  static const float second[] = {100.0f, 50.0f, 0.0f};
+  my_chart_series_t a = {"A", first, 3u, 0x3A86FFFFu, 0u, false};
+  my_chart_series_t b = {"B", second, 3u, 0xE85D75FFu, 0u, false};
+  my_widget_t* chart = my_chart_create(NULL, MY_CHART_HEATMAP);
+  my_echart_adapter_t* adapter;
+  my_echart_event_t event;
+  my_event_t native = my_event_init(MY_EVENT_POINTER_MOVE);
+
+  ASSERT_NOT_NULL(chart);
+  chart->rect.w = 320;
+  chart->rect.h = 180;
+  ASSERT_EQ(my_chart_set_series(chart, 0u, &a), MY_RET_OK);
+  ASSERT_EQ(my_chart_set_series(chart, 1u, &b), MY_RET_OK);
+  adapter = my_echart_adapter_create(chart, NULL);
+  ASSERT_NOT_NULL(adapter);
+  native.u.pointer.x = 150;
+  native.u.pointer.y = 100;
+  ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+  ASSERT_EQ(event.category_index, 1u);
+  ASSERT_EQ(event.data_index, 1u);
+  ASSERT_EQ(event.series_index, 1u);
+  my_echart_adapter_destroy(adapter);
+  my_widget_unref(chart);
+}
+
 TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_converts_and_retains_values);
   RUN_TEST(echart_adapter_projects_series_labels);
+  RUN_TEST(echart_adapter_fills_heatmap_row_and_column_indexes);
   RUN_TEST(echart_adapter_projects_multi_grid);
   RUN_TEST(echart_adapter_rejects_without_mutating);
   RUN_TEST(echart_adapter_rejects_mixed_types_and_float_overflow);

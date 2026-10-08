@@ -393,20 +393,48 @@ my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
     size_t category;
     if (native->type == MY_EVENT_POINTER_MOVE &&
         (chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
-         chart->mode == MY_CHART_RADAR))
+         chart->mode == MY_CHART_RADAR || chart->mode == MY_CHART_HEATMAP))
       (void)adapter->chart->vtable->on_event(adapter->chart, native);
     my_widget_global_to_local(adapter->chart, &local_x, &local_y);
     category = my_chart_hit_test(adapter->chart, local_x, local_y);
-    if (category != MY_ECHART_INDEX_NONE) {
-      out->category_index = category;
-      out->data_index = category;
-      for (size_t i = 0u; i < chart->series_count; i++) {
-        if (chart->series_visible[i] && chart->series[i].values != NULL &&
-            category < chart->series[i].count) {
-          out->series_index = i;
-          break;
+      if (category != MY_ECHART_INDEX_NONE) {
+        out->category_index = category;
+        out->data_index = category;
+        if (chart->mode == MY_CHART_HEATMAP) {
+          float gx, gy, gw, gh;
+          size_t rows = 0u;
+          size_t row = 0u;
+          if (my_chart_get_grid_rect(adapter->chart, 0u, &gx, &gy, &gw, &gh) ==
+                  MY_RET_OK &&
+              local_y >= (int32_t)gy && local_y <= (int32_t)(gy + gh)) {
+            for (size_t i = 0u; i < chart->series_count; i++)
+              if (chart->series_visible[i] && chart->series_grid[i] == 0u &&
+                  chart->series[i].values != NULL && chart->series[i].count > 0u)
+                rows++;
+            if (rows > 0u) {
+              row = (size_t)(((float)local_y - gy) / (gh / (float)rows));
+              if (row >= rows) row = rows - 1u;
+            }
+          }
+          for (size_t i = 0u; i < chart->series_count; i++) {
+            if (!chart->series_visible[i] || chart->series_grid[i] != 0u ||
+                chart->series[i].values == NULL || category >= chart->series[i].count)
+              continue;
+            if (row == 0u) {
+              out->series_index = i;
+              break;
+            }
+            row--;
+          }
+        } else {
+          for (size_t i = 0u; i < chart->series_count; i++) {
+            if (chart->series_visible[i] && chart->series[i].values != NULL &&
+                category < chart->series[i].count) {
+              out->series_index = i;
+              break;
+            }
+          }
         }
-      }
     } else {
       size_t hover = my_chart_get_hover_index(adapter->chart);
       if ((chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||

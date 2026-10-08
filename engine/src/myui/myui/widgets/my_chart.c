@@ -1717,6 +1717,7 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       chart->mode != MY_CHART_PIE && chart->mode != MY_CHART_FUNNEL &&
        chart->mode != MY_CHART_RADAR && chart->mode != MY_CHART_TREEMAP &&
        chart->mode != MY_CHART_GRAPH && chart->mode != MY_CHART_CALENDAR &&
+       chart->mode != MY_CHART_HEATMAP &&
        (float)local_x >= x &&
       (float)local_x <= x + w && (float)local_y >= y &&
       (float)local_y <= y + h) {
@@ -1921,6 +1922,31 @@ static my_ret_t chart_on_event(my_widget_t* widget, const my_event_t* event) {
       if (chart->hover_index != index) {
         (void)my_chart_set_hover_index(widget, index);
         my_chart_group_hover_notify(widget, index);
+      }
+      return MY_RET_OK;
+    }
+  }
+  if (chart->mode == MY_CHART_HEATMAP && event->type == MY_EVENT_POINTER_MOVE) {
+    size_t columns = chart_category_count(chart);
+    size_t rows = 0u;
+    if ((float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h) {
+      return chart_clear_hover(widget);
+    }
+    for (size_t s = 0u; s < chart->series_count; s++) {
+      if (chart->series_visible[s] && chart->series_grid[s] == 0u &&
+          chart->series[s].values != NULL && chart->series[s].count > 0u)
+        rows++;
+    }
+    if (columns == 0u || rows == 0u) return chart_clear_hover(widget);
+    {
+      size_t column = (size_t)(((float)local_x - x) / (w / (float)columns));
+      size_t row = (size_t)(((float)local_y - y) / (h / (float)rows));
+      if (column >= columns) column = columns - 1u;
+      if (row >= rows) row = rows - 1u;
+      if (chart->hover_index != column) {
+        (void)my_chart_set_hover_index(widget, column);
+        my_chart_group_hover_notify(widget, column);
       }
       return MY_RET_OK;
     }
@@ -2699,6 +2725,16 @@ size_t my_chart_hit_test(const my_widget_t* widget, int32_t local_x,
   if (!chart_grid_rect(widget, grid, &x, &y, &w, &h))
     return CHART_HOVER_NONE;
   category_count = chart_category_count(chart);
+  if (chart->mode == MY_CHART_HEATMAP) {
+    if (category_count == 0u || (float)local_x < x || (float)local_x > x + w ||
+        (float)local_y < y || (float)local_y > y + h)
+      return CHART_HOVER_NONE;
+    {
+      size_t column = (size_t)(((float)local_x - x) /
+                               (w / (float)category_count));
+      return column < category_count ? column : category_count - 1u;
+    }
+  }
   chart_zoom_range(chart, &begin, &window);
   if (window == 0u || category_count == 0u) return CHART_HOVER_NONE;
   {
