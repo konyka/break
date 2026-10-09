@@ -31,6 +31,10 @@ Vulkan/RHI 使用实际支持的 MSAA 样本数。字形纹理使用 8-bit 覆�
 应通过 `my_vgcanvas_get_capabilities()` 和 `my_vgcanvas_set_antialias_level()` 选择
 能力，不应为单个 widget 暴露后端专属开关。
 
+EGL 的 `EGL_SAMPLE_BUFFERS` 和 `EGL_SAMPLES` 是 `EGLConfig` 属性；PAL 会从实际选中的
+config 查询它们，而不是从 EGL context 查询。这样上层 GLES2 canvas 能准确区分已协商的
+多重采样表面和单采样回退。
+
 该契约描述的是字形/几何抗锯齿，不等同于全帧 TAA 或 FXAA；后处理 AA 仍由渲染器单独
 管理。Win32 旧 WGL 像素格式路径无法在窗口创建后安全重选 multisample 格式，因此会
 诚实报告不可用，不能把它误认为已启用 MSAA。

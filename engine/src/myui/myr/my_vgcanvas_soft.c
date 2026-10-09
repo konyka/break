@@ -9,7 +9,8 @@
  *  - Stroke: bounded segment geometry with butt/round/square caps and
  *    miter/round/bevel joins; AA uses a single coverage union where enabled.
  *  - Rounded rect: 3 body rects + 4 scanline-filled quarter circles.
- *  - No anti-aliasing, no alpha blending (documented in my_vgcanvas.h).
+ *  - Coverage anti-aliasing and alpha blending are enabled by default and
+ *    controlled through the public AA capability level.
  */
 #include "myr/my_vgcanvas_soft.h"
 

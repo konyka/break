@@ -64,6 +64,7 @@ typedef struct x11_gl_t {
   my_pal_gl_t base;
   x11_window_t* owner;
   EGLDisplay display;
+  EGLConfig config;
   EGLSurface surface;
   EGLContext context;
 } x11_gl_t;
@@ -294,9 +295,13 @@ static my_ret_t xgl_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
 
 static bool xgl_multisample(my_pal_gl_t* gl) {
   x11_gl_t* g = (x11_gl_t*)gl;
+  EGLint buffers = 0;
   EGLint samples = 0;
-  (void)eglQueryContext(g->display, g->context, EGL_SAMPLES, &samples);
-  return samples > 0;
+  if (!eglGetConfigAttrib(g->display, g->config, EGL_SAMPLE_BUFFERS,
+                          &buffers) ||
+      !eglGetConfigAttrib(g->display, g->config, EGL_SAMPLES, &samples))
+    return false;
+  return buffers > 0 && samples > 1;
 }
 
 static void xgl_destroy(my_pal_gl_t* gl) {
@@ -366,6 +371,7 @@ static my_pal_gl_t* xwin_gl_enable(my_pal_window_t* win) {
   w->gl->base.vtable = &s_xgl_vtable;
   w->gl->owner = w;
   w->gl->display = display;
+  w->gl->config = config;
   w->gl->surface = eglCreateWindowSurface(display, config,
                                           (EGLNativeWindowType)w->window,
                                           NULL);

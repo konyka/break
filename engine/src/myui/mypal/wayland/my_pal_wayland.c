@@ -80,6 +80,7 @@ typedef struct wl_gl_t {
   my_pal_gl_t base;
   wl_window_t* owner;
   EGLDisplay display;
+  EGLConfig config;
   EGLSurface surface;
   EGLContext context;
   struct wl_egl_window* egl_window;
@@ -502,9 +503,13 @@ static my_ret_t wgl_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
 
 static bool wgl_multisample(my_pal_gl_t* gl) {
   wl_gl_t* g = (wl_gl_t*)gl;
+  EGLint buffers = 0;
   EGLint samples = 0;
-  (void)eglQueryContext(g->display, g->context, EGL_SAMPLES, &samples);
-  return samples > 0;
+  if (!eglGetConfigAttrib(g->display, g->config, EGL_SAMPLE_BUFFERS,
+                          &buffers) ||
+      !eglGetConfigAttrib(g->display, g->config, EGL_SAMPLES, &samples))
+    return false;
+  return buffers > 0 && samples > 1;
 }
 
 static void wgl_destroy(my_pal_gl_t* gl) {
@@ -542,6 +547,7 @@ static my_pal_gl_t* wwin_gl_enable(my_pal_window_t* win) {
   w->gl->base.vtable = &s_wgl_vtable;
   w->gl->owner = w;
   w->gl->display = display;
+  w->gl->config = config;
   w->gl->egl_window = wl_egl_window_create(w->surface, w->width, w->height);
   w->gl->surface = eglCreatePlatformWindowSurface(
       display, config, (void*)w->gl->egl_window, NULL);

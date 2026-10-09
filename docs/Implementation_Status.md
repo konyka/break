@@ -25,7 +25,8 @@
 - 软件 canvas 的 8-bit 覆盖率抗锯齿继续默认启用，AA level 只接受 0..2；非法 level
   返回 `MY_RET_INVALID_PARAMS`，不会静默钳制或改变活动状态。
 - X11/Wayland EGL 窗口配置优先请求 4x multisample，驱动或 EGL 实现不提供时回退到
-  单采样配置；GLES2/桌面 GL 仍通过实际上下文能力报告 surface MSAA。
+  单采样配置；PAL 从实际选中的 EGLConfig 查询 sample buffers/count，GLES2/桌面 GL
+  因而能准确报告 surface MSAA。
 - Vulkan 与 Break RHI 继续使用实际 color/depth sample capability 和资源事务；窗口
   默认、复杂 MRT/shadow 的限制保持显式，未将它们误报为全帧抗锯齿。
 - `test_myui_vgcanvas_backend` 覆盖软件 AA 像素契约、能力位、非法输入和质量事务；
