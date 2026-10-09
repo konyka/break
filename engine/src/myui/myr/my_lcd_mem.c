@@ -48,26 +48,6 @@ static my_ret_t lcd_mem_end_frame(my_lcd_t* lcd) {
 
 /* ---------------- pixel writers (format specialization) ---------------- */
 
-static inline void write_rgb888(uint8_t* dst, my_color_t c) {
-  dst[0] = c.r;
-  dst[1] = c.g;
-  dst[2] = c.b;
-}
-
-static inline void write_argb8888(uint8_t* dst, my_color_t c) {
-  dst[0] = c.a;
-  dst[1] = c.r;
-  dst[2] = c.g;
-  dst[3] = c.b;
-}
-
-static inline void write_bgra8888(uint8_t* dst, my_color_t c) {
-  dst[0] = c.b;
-  dst[1] = c.g;
-  dst[2] = c.r;
-  dst[3] = c.a;
-}
-
 static inline bool mono_is_on(my_color_t c) {
   /* ITU-R BT.601 luma threshold */
   return (uint32_t)c.r * 299 + (uint32_t)c.g * 587 + (uint32_t)c.b * 114 >=
@@ -84,23 +64,26 @@ static void fill_row_rgb565(uint8_t* row, uint32_t n, my_color_t c) {
 }
 
 static void fill_row_rgb888(uint8_t* row, uint32_t n, my_color_t c) {
+  uint8_t px[3] = {c.r, c.g, c.b};
   uint32_t i;
   for (i = 0; i < n; i++) {
-    write_rgb888(row + (size_t)i * 3, c);
+    memcpy(row + (size_t)i * 3, px, 3);
   }
 }
 
 static void fill_row_argb8888(uint8_t* row, uint32_t n, my_color_t c) {
+  uint8_t px[4] = {c.a, c.r, c.g, c.b};
   uint32_t i;
   for (i = 0; i < n; i++) {
-    write_argb8888(row + (size_t)i * 4, c);
+    memcpy(row + (size_t)i * 4, px, 4);
   }
 }
 
 static void fill_row_bgra8888(uint8_t* row, uint32_t n, my_color_t c) {
+  uint8_t px[4] = {c.b, c.g, c.r, c.a};
   uint32_t i;
   for (i = 0; i < n; i++) {
-    write_bgra8888(row + (size_t)i * 4, c);
+    memcpy(row + (size_t)i * 4, px, 4);
   }
 }
 
@@ -318,57 +301,89 @@ static my_ret_t lcd_mem_blend_span(my_lcd_t* lcd, int32_t x, int32_t y,
   if (n <= 0) {
     return MY_RET_OK;
   }
-  for (i = 0; i < n; i++) {
-    uint8_t a = alpha[i];
-    uint8_t* p;
-    if (a == 0) {
-      continue;
-    }
-    p = m->buffer + (size_t)y * m->stride;
+  /* R712: the format dispatch and row base hoist out of the pixel loop -
+   * same blend_ch arithmetic in the same order, so the written bytes are
+   * unchanged. */
+  {
+    uint8_t* row = m->buffer + (size_t)y * m->stride;
     switch (m->format) {
       case MY_PIXEL_FORMAT_RGB565: {
         uint16_t v;
         uint8_t dr, dg, db;
         uint16_t o;
-        memcpy(&v, p + (size_t)(x + i) * 2, 2);
-        dr = (uint8_t)((v >> 11) << 3);
-        dg = (uint8_t)(((v >> 5) & 0x3F) << 2);
-        db = (uint8_t)((v & 0x1F) << 3);
-        o = (uint16_t)(((blend_ch(color.r, dr, a) >> 3) << 11) |
-                       ((blend_ch(color.g, dg, a) >> 2) << 5) |
-                       (blend_ch(color.b, db, a) >> 3));
-        memcpy(p + (size_t)(x + i) * 2, &o, 2);
+        for (i = 0; i < n; i++) {
+          uint8_t a = alpha[i];
+          if (a == 0) {
+            continue;
+          }
+          memcpy(&v, row + (size_t)(x + i) * 2, 2);
+          dr = (uint8_t)((v >> 11) << 3);
+          dg = (uint8_t)(((v >> 5) & 0x3F) << 2);
+          db = (uint8_t)((v & 0x1F) << 3);
+          o = (uint16_t)(((blend_ch(color.r, dr, a) >> 3) << 11) |
+                         ((blend_ch(color.g, dg, a) >> 2) << 5) |
+                         ((blend_ch(color.b, db, a) >> 3)));
+          memcpy(row + (size_t)(x + i) * 2, &o, 2);
+        }
         break;
       }
-      case MY_PIXEL_FORMAT_RGB888:
-        p += (size_t)(x + i) * 3;
-        p[0] = blend_ch(color.r, p[0], a);
-        p[1] = blend_ch(color.g, p[1], a);
-        p[2] = blend_ch(color.b, p[2], a);
+      case MY_PIXEL_FORMAT_RGB888: {
+        uint8_t* p = row + (size_t)x * 3;
+        for (i = 0; i < n; i++, p += 3) {
+          uint8_t a = alpha[i];
+          if (a == 0) {
+            continue;
+          }
+          p[0] = blend_ch(color.r, p[0], a);
+          p[1] = blend_ch(color.g, p[1], a);
+          p[2] = blend_ch(color.b, p[2], a);
+        }
         break;
-      case MY_PIXEL_FORMAT_ARGB8888:
-        p += (size_t)(x + i) * 4;
-        p[1] = blend_ch(color.r, p[1], a);
-        p[2] = blend_ch(color.g, p[2], a);
-        p[3] = blend_ch(color.b, p[3], a);
+      }
+      case MY_PIXEL_FORMAT_ARGB8888: {
+        uint8_t* p = row + (size_t)x * 4;
+        for (i = 0; i < n; i++, p += 4) {
+          uint8_t a = alpha[i];
+          if (a == 0) {
+            continue;
+          }
+          p[1] = blend_ch(color.r, p[1], a);
+          p[2] = blend_ch(color.g, p[2], a);
+          p[3] = blend_ch(color.b, p[3], a);
+        }
         break;
-      case MY_PIXEL_FORMAT_BGRA8888:
-        p += (size_t)(x + i) * 4;
-        p[0] = blend_ch(color.b, p[0], a);
-        p[1] = blend_ch(color.g, p[1], a);
-        p[2] = blend_ch(color.r, p[2], a);
+      }
+      case MY_PIXEL_FORMAT_BGRA8888: {
+        uint8_t* p = row + (size_t)x * 4;
+        for (i = 0; i < n; i++, p += 4) {
+          uint8_t a = alpha[i];
+          if (a == 0) {
+            continue;
+          }
+          p[0] = blend_ch(color.b, p[0], a);
+          p[1] = blend_ch(color.g, p[1], a);
+          p[2] = blend_ch(color.r, p[2], a);
+        }
         break;
-      case MY_PIXEL_FORMAT_MONO:
-        if (a >= 128) {
-          bool on = mono_is_on(color);
-          uint8_t mask = (uint8_t)(0x80u >> ((uint32_t)(x + i) % 8u));
-          if (on) {
-            p[(uint32_t)(x + i) / 8u] |= mask;
-          } else {
-            p[(uint32_t)(x + i) / 8u] &= (uint8_t)~mask;
+      }
+      case MY_PIXEL_FORMAT_MONO: {
+        for (i = 0; i < n; i++) {
+          uint8_t a = alpha[i];
+          if (a < 128) {
+            continue;
+          }
+          {
+            bool on = mono_is_on(color);
+            uint8_t mask = (uint8_t)(0x80u >> ((uint32_t)(x + i) % 8u));
+            if (on) {
+              row[(uint32_t)(x + i) / 8u] |= mask;
+            } else {
+              row[(uint32_t)(x + i) / 8u] &= (uint8_t)~mask;
+            }
           }
         }
         break;
+      }
       default:
         return MY_RET_NOT_SUPPORTED;
     }

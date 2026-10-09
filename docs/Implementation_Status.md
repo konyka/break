@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R712 LCD 内存后端填充/混合内循环收紧 — `lcd_mem_blend_span` 的每像素 `switch(format)`+行基址重算外提为每格式紧循环;`fill_row_rgb888/argb/bgra8888` 改一次构造像素模式+紧凑写循环（定长 `memcpy` 免对齐 UB,编译器降为单 mov）;删除失去调用者的 `write_*` helper——微基准 fill_rect **-48%**（0.36→0.19ms）/fill(aa0) **-33%**（0.69→0.46ms）/fill(aa2) -6%,stroke/text 持平;5 个确定性场景（含 aa1 挂起修复场景）**字节级一致**
+
+- **缺口**(R709 轮 gprof 复盘):collect 降至 13.5% 后,热点转移到 emit_row 22.4%/write_bgra8888 21.5%/aa_add 16.5%——blend 循环每像素做格式分派,fill 循环每像素函数调用写字节。
+- **方案**:① blend_span 每格式独立循环（RGB565/RGB888/ARGB/BGRA/MONO 五路,算术与顺序不变）;② fill_row 三格式模式化;③ `write_rgb888/argb/bgra8888` 无引用删除。
+- **验证**：stash 前后库对 5 场景 PPM `cmp` 字节一致;全量 headless **123/123**（含 selftest 确定性 CTest）。
+- **边界**:仅内存 LCD 软件路径（GL/Vulkan 纹理上传不受影响）;RGB565 blend 循环保留逐像素 memcpy 读写（2 字节对齐安全）;R611 AMD 基线不动。
+
 ## 本轮更新：R711 explorer selftest 确定性收口 — `randomize()` 拆出 `randomize_seeded(seed)`,交互路径保留挂钟播种、selftest 钉死种子（init=1/step5=2,动画本就固定步进）,两次运行 **10 帧逐一 md5 相同**;新增 `myui_explorer_selftest_deterministic` CTest（CMake 脚本双跑+逐帧 MD5 比对,钉死回归——时间播种复萌即红）
 
 - **缺口**(R709/R710 轮遗留):selftest 以 `srand(time(NULL))` 生成数据,两次运行校验和不同,无法充当像素回归基线。
