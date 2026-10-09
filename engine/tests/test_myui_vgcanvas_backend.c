@@ -203,6 +203,36 @@ TEST(lcd_blend_span_produces_expected_output)
   my_lcd_destroy(lcd);
 }
 
+TEST(lcd_translucent_fill_rect_produces_expected_output)
+{
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 16, 4, MY_PIXEL_FORMAT_BGRA8888);
+  const uint8_t *pixels;
+  int y, x;
+
+  ASSERT_NOT_NULL(lcd);
+  my_lcd_fill_rect(lcd, &(my_rect_t){0, 0, 16, 4},
+                   (my_color_t){0xFF, 0xFF, 0xFF, 0xFF});
+  ASSERT_EQ(my_lcd_fill_rect(lcd, &(my_rect_t){2, 1, 10, 2},
+                             (my_color_t){0x20, 0x80, 0xE0, 128}),
+            MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (y = 0; y < 4; y++) {
+    for (x = 0; x < 16; x++) {
+      const uint8_t *px = pixels + (size_t)(y * 16 + x) * 4;
+      if (y >= 1 && y < 3 && x >= 2 && x < 12) {
+        ASSERT_EQ(px[0], 0xEFu);
+        ASSERT_EQ(px[1], 0xBFu);
+        ASSERT_EQ(px[2], 0x8Fu);
+      } else {
+        ASSERT_EQ(px[0], 0xFFu);
+        ASSERT_EQ(px[1], 0xFFu);
+        ASSERT_EQ(px[2], 0xFFu);
+      }
+    }
+  }
+  my_lcd_destroy(lcd);
+}
+
 TEST(font_format_probing_and_backend_matrix)
 {
   /* R703: the vector-font format probe reads the container header —
@@ -1821,7 +1851,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(soft_draw_text_cell_fallback_edges);
   RUN_TEST(soft_aa1_stroke_completes_on_overlapping_joints);
     RUN_TEST(lcd_blend_division_by_255_approximation_is_exact);
-    RUN_TEST(lcd_blend_span_produces_expected_output);
+  RUN_TEST(lcd_blend_span_produces_expected_output);
+  RUN_TEST(lcd_translucent_fill_rect_produces_expected_output);
     RUN_TEST(font_format_probing_and_backend_matrix);
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);

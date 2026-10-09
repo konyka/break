@@ -7,6 +7,12 @@
 - **验证**：双树非图形 CTest 各 **129/129**、fuzz **5/5**，GLES2/GL 图形路径由 CI graphics jobs 编译与运行看守。R710 的 GPU-only 改动无本地显示依赖，运行时验证委托现有 Xvfb/Wayland graphics matrix。
 - **边界**：这是缓存亲和优化，不改变字形位图、AA、采样过滤或文字布局；LRU 仅在两个候选槽内近似，不引入全局 LRU；R611 AMD 基线不动。
 
+## 本轮更新：R714 半透明 fill_row 格式分派外提 — `blend_row` 每像素 `bpp/8` + `switch(format)` 改为每格式紧循环（RGB565/RGB888/ARGB/BGRA/MONO）,保持 `blend_ch` 顺序与字节写入;固定 800×600 半透明 fill 基准 **4.03→2.93ms（-27%）**;新增 BGRA 半透明 `fill_rect` 字节 oracle;123/123
+
+- **缺口**(R712 后热点审计):`lcd_mem_blend_span` 已完成格式外提,但 `lcd_mem_fill_rect` 的半透明路径仍经 `blend_row` 每像素分派,大面积半透明面重复约 2M 次查询/switch。
+- **验证**:stash 前后固定场景 PPM 5/5 字节一致;`test_myui_vgcanvas_backend` translucent fill oracle + 全量 headless 123/123。
+- **边界**:仅内存 LCD 半透明 fill 路径;MONO 阈值语义保留;R611 AMD 基线不动。
+
 ## 本轮更新：R711 blend_ch 移位近似（TDD,渲染性能终片）— `(x + (x>>8) + 1) >> 8` 替代整除 `/255`（在 `x ∈ [0, 255²]` 全域**精确等价**截断除法,65026 值枚举测试钉死）;已知 alpha 梯度行输出精确匹配测试（与 R712 的循环外提形成双保险——近似公式×外提重构的联合正确性面）
 
 - **缺口**(R712 的 blend_span 外提遗留):blend_ch 仍用整除 `/ 255`——编译器部分目标产 multiply-high 序列（快）,部分产 div 指令（慢 20-40 cycle）;R712 已做格式分派外提,但算术核心的除法是最后一块。

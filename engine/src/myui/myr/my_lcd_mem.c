@@ -245,11 +245,12 @@ static void blend_row(my_lcd_mem_t* m, uint8_t* row, int32_t x0, uint32_t n,
                       my_color_t c) {
   uint32_t i;
   uint8_t a = c.a;
-  for (i = 0; i < n; i++) {
-    uint8_t* p = row + (size_t)(x0 + (int32_t)i) *
-                       (my_pixel_format_bpp(m->format) / 8u);
-    switch (m->format) {
-      case MY_PIXEL_FORMAT_RGB565: {
+  /* R714: translucent fill rows use the same format-hoisted structure as
+   * blend_span; bpp lookup and switch no longer repeat per pixel. */
+  switch (m->format) {
+    case MY_PIXEL_FORMAT_RGB565: {
+      uint8_t* p = row + (size_t)x0 * 2u;
+      for (i = 0; i < n; i++, p += 2) {
         uint16_t v, o;
         uint8_t dr, dg, db;
         memcpy(&v, p, 2);
@@ -260,26 +261,51 @@ static void blend_row(my_lcd_mem_t* m, uint8_t* row, int32_t x0, uint32_t n,
                        ((blend_ch(c.g, dg, a) >> 2) << 5) |
                        (blend_ch(c.b, db, a) >> 3));
         memcpy(p, &o, 2);
-        break;
       }
-      case MY_PIXEL_FORMAT_RGB888:
+      break;
+    }
+    case MY_PIXEL_FORMAT_RGB888: {
+      uint8_t* p = row + (size_t)x0 * 3u;
+      for (i = 0; i < n; i++, p += 3) {
         p[0] = blend_ch(c.r, p[0], a);
         p[1] = blend_ch(c.g, p[1], a);
         p[2] = blend_ch(c.b, p[2], a);
-        break;
-      case MY_PIXEL_FORMAT_ARGB8888:
+      }
+      break;
+    }
+    case MY_PIXEL_FORMAT_ARGB8888: {
+      uint8_t* p = row + (size_t)x0 * 4u;
+      for (i = 0; i < n; i++, p += 4) {
         p[1] = blend_ch(c.r, p[1], a);
         p[2] = blend_ch(c.g, p[2], a);
         p[3] = blend_ch(c.b, p[3], a);
-        break;
-      case MY_PIXEL_FORMAT_BGRA8888:
+      }
+      break;
+    }
+    case MY_PIXEL_FORMAT_BGRA8888: {
+      uint8_t* p = row + (size_t)x0 * 4u;
+      for (i = 0; i < n; i++, p += 4) {
         p[0] = blend_ch(c.b, p[0], a);
         p[1] = blend_ch(c.g, p[1], a);
         p[2] = blend_ch(c.r, p[2], a);
-        break;
-      default:
-        break;
+      }
+      break;
     }
+    case MY_PIXEL_FORMAT_MONO:
+      for (i = 0; i < n; i++) {
+        if (a >= 128) {
+          bool on = mono_is_on(c);
+          uint8_t mask = (uint8_t)(0x80u >> ((uint32_t)(x0 + (int32_t)i) % 8u));
+          if (on) {
+            row[(uint32_t)(x0 + (int32_t)i) / 8u] |= mask;
+          } else {
+            row[(uint32_t)(x0 + (int32_t)i) / 8u] &= (uint8_t)~mask;
+          }
+        }
+      }
+      break;
+    default:
+      break;
   }
 }
 
