@@ -150,6 +150,59 @@ TEST(lcd_public_api_rejects_missing_backend_slots)
   my_lcd_destroy(&lcd);
 }
 
+TEST(lcd_blend_division_by_255_approximation_is_exact)
+{
+  /* R711: the shift-based division-by-255 approximation
+   *   (x + (x >> 8) + 1) >> 8
+   * must equal x / 255 for every product the blender can produce
+   * (0 <= x <= 255*255 = 65025). */
+  uint32_t x;
+  for (x = 0u; x <= 255u * 255u; x++) {
+    uint32_t expected = x / 255u;
+    uint32_t actual = (x + (x >> 8) + 1u) >> 8;
+    ASSERT_EQ(actual, expected);
+  }
+}
+
+TEST(lcd_blend_span_produces_expected_output)
+{
+  /* R711: a known pattern of alphas blends to the expected colors —
+   * guards against the blend_ch shift approximation or the R712
+   * loop-invariant hoist accidentally changing output bytes. */
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 16, 4, MY_PIXEL_FORMAT_BGRA8888);
+  my_color_t c = {0x00, 0x00, 0xFF, 0xFF}; /* blue */
+  const uint8_t alpha_row[16] = {0,   64,  128, 192, 255, 255, 255,
+                                 192, 128, 64,  0,   0,   0,   0,  0, 0};
+  const uint8_t *pixels;
+  int y, x;
+
+  ASSERT_NOT_NULL(lcd);
+  my_lcd_fill_rect(lcd, &(my_rect_t){0, 0, 16, 4},
+                   (my_color_t){0xFF, 0xFF, 0xFF, 0xFF});
+  ASSERT_EQ(my_lcd_blend_span(lcd, 0, 1, alpha_row, 16, c), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+
+  for (y = 0; y < 4; y++) {
+    for (x = 0; x < 16; x++) {
+      const uint8_t *px = pixels + (size_t)(y * 16 + x) * 4;
+      if (y == 1) {
+        uint8_t a = alpha_row[x];
+        uint32_t exp_r = (0x00 * a + 0xFF * (255u - a)) / 255u;
+        uint32_t exp_g = (0x00 * a + 0xFF * (255u - a)) / 255u;
+        uint32_t exp_b = (0xFF * a + 0xFF * (255u - a)) / 255u;
+        ASSERT_EQ(px[2], (uint8_t)exp_r); /* R in BGRA byte 2 */
+        ASSERT_EQ(px[1], (uint8_t)exp_g); /* G in byte 1 */
+        ASSERT_EQ(px[0], (uint8_t)exp_b); /* B in byte 0 */
+      } else {
+        ASSERT_EQ(px[0], 0xFFu);
+        ASSERT_EQ(px[1], 0xFFu);
+        ASSERT_EQ(px[2], 0xFFu);
+      }
+    }
+  }
+  my_lcd_destroy(lcd);
+}
+
 TEST(font_format_probing_and_backend_matrix)
 {
   /* R703: the vector-font format probe reads the container header —
@@ -1767,6 +1820,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(soft_draw_text_falls_back_to_cells_without_a_font);
     RUN_TEST(soft_draw_text_cell_fallback_edges);
   RUN_TEST(soft_aa1_stroke_completes_on_overlapping_joints);
+    RUN_TEST(lcd_blend_division_by_255_approximation_is_exact);
+    RUN_TEST(lcd_blend_span_produces_expected_output);
     RUN_TEST(font_format_probing_and_backend_matrix);
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);

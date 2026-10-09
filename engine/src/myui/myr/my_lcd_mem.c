@@ -232,8 +232,12 @@ static my_ret_t lcd_mem_draw_pixels(my_lcd_t* lcd, const void* pixels, int32_t x
 /* ---------------- blend (src-over) ---------------- */
 
 static inline uint8_t blend_ch(uint8_t src, uint8_t dst, uint8_t a) {
-  /* out = (src*a + dst*(255-a)) / 255, truncating division */
-  return (uint8_t)(((uint32_t)src * a + (uint32_t)dst * (255u - a)) / 255u);
+  /* R711: exact truncating division by 255 via shifts — the product
+   * (src*a + dst*(255-a)) never exceeds 255*255, where the shift-add
+   * identity (x + (x>>8) + 1) >> 8 == x / 255 holds exactly (pinned
+   * by the R711 approximation test enumerating all 65026 values). */
+  uint32_t x = (uint32_t)src * a + (uint32_t)dst * (255u - a);
+  return (uint8_t)((x + (x >> 8) + 1u) >> 8);
 }
 
 /** @brief Blend one row of n pixels of the given format with src-over. */
