@@ -462,6 +462,52 @@ TEST(soft_draw_text_cell_fallback_edges)
   my_lcd_destroy(lcd);
 }
 
+TEST(soft_aa1_stroke_completes_on_overlapping_joints)
+{
+  /* R710: AA level 1 halves the max coverage (4) while aa_add still
+   * saturates at 8; two overlapping stroke quads at a joint pushed cov
+   * past maxcov and emit_row's advance conditions all failed — an
+   * infinite loop. This exact scene (fractional translate aligns the
+   * joint overlap) must terminate and paint. */
+  my_lcd_t *lcd = my_lcd_mem_create(NULL, 320, 240,
+                                    MY_PIXEL_FORMAT_BGRA8888);
+  my_vgcanvas_t *canvas;
+  const uint8_t *pixels;
+  size_t i;
+  size_t colored = 0u;
+
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 1), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_translate(canvas, 0.25f, 0.75f), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  my_vgcanvas_set_fill_color(canvas, my_color_from_rgba32(0xFFFFFFFFu));
+  my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 320.0f, 240.0f});
+  my_vgcanvas_set_stroke_color(canvas, my_color_from_rgba32(0x000000FFu));
+  ASSERT_EQ(my_vgcanvas_set_line_width(canvas, 3.0f), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_path(canvas), MY_RET_OK);
+  for (i = 0; i <= 40; i++) {
+    float x = 15.0f + (float)i * 7.0f;
+    float y = 210.0f + sinf((float)i * 0.31f) * 25.0f;
+    ASSERT_EQ(i == 0 ? my_vgcanvas_move_to(canvas, x, y)
+                     : my_vgcanvas_line_to(canvas, x, y),
+              MY_RET_OK);
+  }
+  ASSERT_EQ(my_vgcanvas_stroke(canvas), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  for (i = 0u; i < 320u * 240u; i++) {
+    const uint8_t *px = pixels + i * 4u;
+    if (px[0] != 0xFFu || px[1] != 0xFFu || px[2] != 0xFFu) {
+      colored++;
+    }
+  }
+  ASSERT_TRUE(colored > 500u);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(vgcanvas_rejects_invalid_stroke_styles)
 {
   my_lcd_t *lcd = my_lcd_mem_create(NULL, 8, 8, MY_PIXEL_FORMAT_RGB888);
@@ -1720,6 +1766,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vgcanvas_rejects_nonfinite_state_values);
     RUN_TEST(soft_draw_text_falls_back_to_cells_without_a_font);
     RUN_TEST(soft_draw_text_cell_fallback_edges);
+  RUN_TEST(soft_aa1_stroke_completes_on_overlapping_joints);
     RUN_TEST(font_format_probing_and_backend_matrix);
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);

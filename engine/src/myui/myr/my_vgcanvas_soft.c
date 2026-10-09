@@ -221,9 +221,9 @@ static void emit_row(my_vgcanvas_soft_t* s, aa_rowbuf_t* rb, int32_t y,
       i++;
       continue;
     }
-    if ((int)rb->cov[i] == maxcov) {
+    if ((int)rb->cov[i] >= maxcov) {
       int32_t start = i;
-      while (i < width && (int)rb->cov[i] == maxcov) {
+      while (i < width && (int)rb->cov[i] >= maxcov) {
         i++;
       }
       soft_fill_device_rect(s, my_rect_init(base_x + start, y, i - start, 1),

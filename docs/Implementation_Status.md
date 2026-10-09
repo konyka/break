@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R710 AA level-1 stroke 死循环修复 + R709 软栅格扫描线性能优化 — `emit_row` 全覆盖分支改 `>=`（`aa_add` 钳 8 而 level-1 maxcov=4,重叠接头 cov 越限时三分支均不推进 → 死循环;aa2 因 8==maxcov 从未触发——**既有 bug,与优化无关,确定性最小场景钓出**）;`fill_polys` 双 half 缓冲只收集一次/线性求界、设备空间点表每点一次变换、stroke 四边形按 y 桶跳过——微基准 stroke **-59%**（4.10→1.68ms）/fill(aa2) **-18%**（2.50→2.05ms）,4 个确定性场景（aa0/1/2×scale1/1.5/2+平移）**字节级一致**
+
+- **缺口**(用户指令"优化性能和显示效果"):gprof 定位 `collect_intersections` 占 42.8%（每边每行重复 SOFT_SX/SOFT_SY 变换）;隔离性能验证时发现 explorer selftest **非确定性**（动画时序/随机场景,两次运行校验和不同）——像素回归验证必须用固定场景 harness,不能依赖 selftest。
+- **方案**:① `emit_row` 饱和语义 `>= maxcov`（对 aa2 零改变,level-1 修复 fill/stroke 两处潜在触发）;② fill AA 行循环重组——两 half 各自缓冲只收集一次,第一遍线性 min/max 求界（旧版双重 collect+qsort）,y 范围与收集共用 dpts;③ `collect_intersections_dev`——所有路径点预变换一次,删除每边每行变换;④ stroke 每个 quad 预计算设备 y 范围,行循环跳过不可能相交的 quad（数学证明:交点仅存在于 [qymin,qymax)）;⑤ join 轮廓 y 桶按 `cs[i].count` 遍历（修正初版 v<4 越读相邻轮廓首点——方向安全但跳过率损失）。
+- **验证**:`test_myui_vgcanvas_backend` +1（aa1+小数平移+重叠接头场景,修复前无限挂起,现 41/41）;微基准 500 迭代×3 稳定;HEAD 库 vs 优化库 4 场景 PPM `cmp` 字节一致;全量 headless **122/122**;X11 构建通过。
+- **边界**:优化仅软件栅格 fill/stroke 扫描线主路径（fill_rect/文本不受影响,基准持平）;`aa_add` 硬编码 8 钳制保留（emit_row 饱和分支已消化越限值,改钳制值会动 aa2 输出）;selftest 非确定性为独立遗留（种子/固定时钟属后续独立轮）;R611 AMD 基线不动。
+
 ## 本轮更新：R708 rich_label 单元格估算与绘制回退对齐 — `my_rich_label_content_width`/`seg_width` 的无字体 8px 估算从 `strlen（UTF-8 字节数）×8` 改为"每非变体选择符码点一格 ×8"（与 R698 绘制回退、R707 VS 跳过互为孪生）;TDD 红→绿（`é` 8px、`①+VS16` 8px、混合粗体 25px）;修正 `my_vgcanvas_soft.c` R698 注释中过时的 `strlen*8` 交叉引用;`my_rich_label.h` 公共契约同步注明码点口径
 
 - **缺口**(用户指令"继续优化"):R707 修绘制侧 VS 跳过时未同步测量侧——rich_label 无字体场景 `é`/`①︎` 测量宽（字节×8）与绘制推进（码点×8）不一致,后续段落错位。
