@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R708 rich_label 单元格估算与绘制回退对齐 — `my_rich_label_content_width`/`seg_width` 的无字体 8px 估算从 `strlen（UTF-8 字节数）×8` 改为"每非变体选择符码点一格 ×8"（与 R698 绘制回退、R707 VS 跳过互为孪生）;TDD 红→绿（`é` 8px、`①+VS16` 8px、混合粗体 25px）;修正 `my_vgcanvas_soft.c` R698 注释中过时的 `strlen*8` 交叉引用;`my_rich_label.h` 公共契约同步注明码点口径
+
+- **缺口**(用户指令"继续优化"):R707 修绘制侧 VS 跳过时未同步测量侧——rich_label 无字体场景 `é`/`①︎` 测量宽（字节×8）与绘制推进（码点×8）不一致,后续段落错位。
+- **方案**:① 共享 `rich_cell_width()`（非 VS 码点计数×8）;② `seg_width` 回退与 `content_width` 双点切换;③ 软光栅 R698 注释交叉引用更正;④ 头文件契约注明"每非 VS 码点一格"。
+- **验证**:test_myui_window_manager +1（红：5466 行 `é`≠8;绿：229/229）;受影响回归（window_manager/vgcanvas_backend/font/chart/echart 系列）全绿。
+- **边界**:估算仍为布局提示（真实绘制以 vgcanvas 字体测量为准）;字节口径的历史行为除 ASCII 外本就与绘制不一致,本次统一到码点口径属行为修正（契约文档同步）。
+
 ## 本轮更新：R707 补完——cell fallback 边角 + 变体选择符跳过（TDD）— 空串 OK 零像素/多字节码点恰一 cell（per-codepoint 非 per-byte）/变体选择符零 cell（与 `soft_draw_cp` 的 VS 跳过语义一致——**RED 钓出 fallback 缺 VS 跳过的真 bug**）
 
 - **缺口**(todo 续审:R707 的"空串/多字节 cell"在上一轮只做了短文件 probe 未做完):R698 的 cell fallback 分支不跳变体选择符——emoji+VS16 序列画多余 cell（有字体路径 `soft_draw_cp` 有 `my_font_is_variation_selector` 跳过,fallback 无——不一致）。

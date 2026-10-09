@@ -8,6 +8,7 @@
 
 #include "myc/my_darray.h"
 #include "myc/my_str.h"
+#include "myr/my_font.h"
 
 typedef struct rich_seg_t {
   char* text;     /**< owned */
@@ -26,6 +27,22 @@ bool my_rich_label_is_instance(const my_widget_t* widget) {
   return widget != NULL && widget->vtable == &s_rich_label_vtable;
 }
 
+/** @brief 8px-cell width: one cell per non-VS codepoint — the measure
+ * twin of the fontless paint fallback (R698/R707). */
+static int32_t rich_cell_width(const char* text) {
+  const char* p = text;
+  int32_t cells = 0;
+  if (p == NULL) {
+    return 0;
+  }
+  while (*p != '\0') {
+    if (!my_font_is_variation_selector(my_utf8_next(&p))) {
+      cells++;
+    }
+  }
+  return cells * 8;
+}
+
 /** @brief Segment width: vg font measure, 8px-cell fallback. */
 static int32_t seg_width(my_vgcanvas_t* vg, const rich_seg_t* s, int32_t* out_h) {
   int32_t tw = 0, th = 0;
@@ -39,7 +56,7 @@ static int32_t seg_width(my_vgcanvas_t* vg, const rich_seg_t* s, int32_t* out_h)
   if (out_h != NULL) {
     *out_h = 8;
   }
-  return (int32_t)strlen(s->text) * 8;
+  return rich_cell_width(s->text);
 }
 
 static void rich_label_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
@@ -155,7 +172,7 @@ int32_t my_rich_label_content_width(my_widget_t* label) {
   n = my_darray_size(rl->segs);
   for (i = 0; i < n; i++) {
     rich_seg_t* s = (rich_seg_t*)my_darray_get(rl->segs, i);
-    w += (int32_t)strlen(s->text) * 8 + (s->bold ? 1 : 0);
+    w += rich_cell_width(s->text) + (s->bold ? 1 : 0);
   }
   return w;
 }

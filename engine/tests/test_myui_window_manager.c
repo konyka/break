@@ -5452,6 +5452,32 @@ TEST(scroll_containers_keep_linked_scroll_bar_alive)
   my_widget_unref(text_area);
 }
 
+TEST(rich_label_content_width_counts_codepoint_cells)
+{
+  /* The 8px-cell estimate must be the twin of the fontless paint
+   * fallback (R698/R707): one cell per non-VS codepoint, never per
+   * UTF-8 byte. */
+  my_widget_t* label = my_rich_label_create(NULL);
+
+  ASSERT_NOT_NULL(label);
+  ASSERT_EQ(my_rich_label_add_segment(label, "\xC3\xA9", 0xFF0000FFu,
+                                      false),
+            MY_RET_OK);
+  ASSERT_EQ(my_rich_label_content_width(label), 8);
+  my_rich_label_clear(label);
+  ASSERT_EQ(my_rich_label_add_segment(
+                label, "\xE2\x91\xA0\xEF\xB8\x8F", 0xFF0000FFu, false),
+            MY_RET_OK);
+  ASSERT_EQ(my_rich_label_content_width(label), 8);
+  my_rich_label_clear(label);
+  ASSERT_EQ(my_rich_label_add_segment(label, "AB", 0xFF0000FFu, false),
+            MY_RET_OK);
+  ASSERT_EQ(my_rich_label_add_segment(label, "C", 0xFF0000FFu, true),
+            MY_RET_OK);
+  ASSERT_EQ(my_rich_label_content_width(label), 25);
+  my_widget_unref(label);
+}
+
 TEST(widget_specific_setters_reject_plain_widget)
 {
   my_widget_t* plain = my_widget_create(NULL, "plain");
@@ -8737,7 +8763,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(scroll_containers_unlink_scroll_bar_before_destroy);
     RUN_TEST(scroll_containers_reject_non_scroll_bar_without_rebinding);
     RUN_TEST(scroll_containers_keep_linked_scroll_bar_alive);
-    RUN_TEST(widget_specific_setters_reject_plain_widget);
+    RUN_TEST(rich_label_content_width_counts_codepoint_cells);
+  RUN_TEST(widget_specific_setters_reject_plain_widget);
     RUN_TEST(image_cache_is_loader_scoped_and_respects_loader_ownership);
     RUN_TEST(image_loader_with_invalid_vtable_or_data_fails_safely);
     RUN_TEST(image_loader_lease_releases_once_when_widget_and_cache_drop_references);

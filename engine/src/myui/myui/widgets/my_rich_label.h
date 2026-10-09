@@ -31,8 +31,9 @@ void my_rich_label_clear(my_widget_t* label);
 
 /**
  * @brief Estimated content width in pixels using the built-in 8px cell
- * metrics (bold segments count +1). For layout hints only — the actual
- * paint measures with the vgcanvas font when one is set.
+ * metrics — one cell per non-variation-selector codepoint (bold
+ * segments count +1). For layout hints only — the actual paint
+ * measures with the vgcanvas font when one is set.
  */
 int32_t my_rich_label_content_width(my_widget_t* label);
 
