@@ -680,8 +680,17 @@ static my_ret_t vk_adapter_get_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
 }
 
 static bool vk_adapter_has_multisample(my_pal_gl_t* gl) {
-  (void)gl;
-  return true; /* the backend prefers MSAA4 with single-sample fallback */
+  vk_present_adapter_t* adapter = (vk_present_adapter_t*)gl;
+  my_vgcanvas_capabilities_t caps;
+  if (adapter == NULL || adapter->vg == NULL) {
+    return false;
+  }
+  if (my_vgcanvas_get_capabilities(adapter->vg, &caps) != MY_RET_OK) {
+    return false;
+  }
+  /* The device sample capability is the availability contract; the windowed
+   * canvas may still run single-sample by default (see vk_create_targets). */
+  return (caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u;
 }
 
 static void vk_adapter_destroy(my_pal_gl_t* gl) {
