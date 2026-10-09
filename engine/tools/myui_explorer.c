@@ -249,12 +249,16 @@ static void render_frame(app_t* app) {
   (void)pixels;
 }
 
-static void randomize(app_t* app) {
+static void randomize_seeded(app_t* app, unsigned seed) {
   size_t i, j;
-  srand((unsigned)time(NULL));
+  srand(seed);
   for (i = 0u; i < 4u; i++)
     for (j = 0u; j < 8u; j++)
       app->st.base[i][j] = 4.0f + (float)(rand() % 2800) / 100.0f;
+}
+
+static void randomize(app_t* app) {
+  randomize_seeded(app, (unsigned)time(NULL));
 }
 
 static const char* font_candidates[] = {
@@ -619,6 +623,11 @@ static int run_selftest(const char* dir, const char* font_path) {
   uint8_t* animation_frame;
   uint8_t* json_frame;
   size_t json_colored;
+  /* R711: pin the data seed so every selftest run renders byte-identical
+   * frames (app_create randomizes from wall-clock time for interactive
+   * use; regression baselines need determinism). */
+  randomize_seeded(app, 1u);
+  apply_state(app);
   render_frame(app);
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[0]);
   dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
@@ -636,7 +645,7 @@ static int run_selftest(const char* dir, const char* font_path) {
   render_frame(app);
   (void)snprintf(path, sizeof(path), "%s/%s.ppm", dir, steps[3]);
   dump_ppm(my_lcd_mem_get_buffer(app->lcd), path);
-  randomize(app);
+  randomize_seeded(app, 2u);
   apply_state(app);
   pointer(app, 320, 200, 0);
   render_frame(app);

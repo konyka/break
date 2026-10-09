@@ -79,7 +79,10 @@ panel that drives it in real time:
 - keys: `1..9/0` quick mode switch, `R` randomize, `+/-` zoom, `P` play/pause
   animation, `S` dump the current frame to `/tmp/myui_explorer_shot.ppm`;
 - the Play/Pause control advances animation progress automatically by a
-  deterministic timer step; the selftest compares two autoplay frames.
+  deterministic timer step; the selftest compares two autoplay frames;
+- `--selftest` pins its data seed, so repeated runs render byte-identical
+  frames on the same platform and libc — CI guards this with
+  `myui_explorer_selftest_deterministic` (double run + per-frame MD5).
 
 ## Run the demo
 

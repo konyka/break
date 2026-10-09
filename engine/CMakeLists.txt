@@ -1258,10 +1258,17 @@ target_link_libraries(myui_explorer PRIVATE myui_core m Threads::Threads
 message(STATUS "myui_explorer platforms: ${EX_EXPLORER_PLATFORMS}")
 add_test(NAME myui_explorer_selftest COMMAND myui_explorer --selftest
     ${CMAKE_CURRENT_BINARY_DIR})
+add_test(NAME myui_explorer_selftest_deterministic
+    COMMAND ${CMAKE_COMMAND}
+        -DEXPLORER=$<TARGET_FILE:myui_explorer>
+        -DRUN_A=${CMAKE_CURRENT_BINARY_DIR}/explorer-det-a
+        -DRUN_B=${CMAKE_CURRENT_BINARY_DIR}/explorer-det-b
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/explorer_determinism_check.cmake)
 
 # The demo/explorer tools are process-lifetime by design (resources held
 # until OS exit); keep LeakSanitizer from reading that as a failure.
 set_tests_properties(myui_widgets_demo_smoke myui_explorer_selftest
+    myui_explorer_selftest_deterministic
     PROPERTIES ENVIRONMENT "ASAN_OPTIONS=detect_leaks=0")
 
 # Strict, bounded verifier for versioned SA dictionary golden corpora.

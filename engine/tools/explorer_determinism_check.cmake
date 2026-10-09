@@ -1,0 +1,31 @@
+# R711: the explorer selftest must render byte-identical frames on every
+# run (pinned data seed); a time-seeded regression reintroduces run-to-run
+# drift and silently invalidates every pixel baseline.
+file(REMOVE_RECURSE "${RUN_A}" "${RUN_B}")
+file(MAKE_DIRECTORY "${RUN_A}" "${RUN_B}")
+execute_process(COMMAND "${EXPLORER}" --selftest "${RUN_A}"
+                RESULT_VARIABLE ra TIMEOUT 120)
+execute_process(COMMAND "${EXPLORER}" --selftest "${RUN_B}"
+                RESULT_VARIABLE rb TIMEOUT 120)
+if(NOT ra EQUAL 0 OR NOT rb EQUAL 0)
+  message(FATAL_ERROR "explorer selftest exited nonzero (${ra}/${rb})")
+endif()
+file(GLOB FRAMES_A "${RUN_A}/*.ppm")
+file(GLOB FRAMES_B "${RUN_B}/*.ppm")
+list(LENGTH FRAMES_A count_a)
+list(LENGTH FRAMES_B count_b)
+if(NOT count_a EQUAL count_b)
+  message(FATAL_ERROR "frame count differs: ${count_a} vs ${count_b}")
+endif()
+if(count_a EQUAL 0)
+  message(FATAL_ERROR "no frames written")
+endif()
+foreach(frame IN LISTS FRAMES_A)
+  get_filename_component(name "${frame}" NAME)
+  file(MD5 "${frame}" hash_a)
+  file(MD5 "${RUN_B}/${name}" hash_b)
+  if(NOT hash_a STREQUAL hash_b)
+    message(FATAL_ERROR "nondeterministic frame: ${name}")
+  endif()
+endforeach()
+message(STATUS "explorer selftest deterministic across ${count_a} frames")

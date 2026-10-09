@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R711 explorer selftest 确定性收口 — `randomize()` 拆出 `randomize_seeded(seed)`,交互路径保留挂钟播种、selftest 钉死种子（init=1/step5=2,动画本就固定步进）,两次运行 **10 帧逐一 md5 相同**;新增 `myui_explorer_selftest_deterministic` CTest（CMake 脚本双跑+逐帧 MD5 比对,钉死回归——时间播种复萌即红）
+
+- **缺口**(R709/R710 轮遗留):selftest 以 `srand(time(NULL))` 生成数据,两次运行校验和不同,无法充当像素回归基线。
+- **方案**:① `randomize_seeded(app,seed)` 显式种子,`randomize(app)` 包装挂钟（交互 UX 不变）;② `run_selftest` 在 app_create 后立即 `randomize_seeded(app,1)+apply_state`,第 5 步（Randomize 按钮）改种子 2;③ `tools/explorer_determinism_check.cmake` 双跑自检注册为 CTest（继承 ASAN leak 豁免）。
+- **验证**：双跑 10 帧 md5 逐一相同;新 CTest 通过;全量 headless **123/123**。
+- **边界**：逐字节一致是**同机同 libc** 语义（rand() 实现跨平台不同,跨平台仅语义一致非字节一致——像素基线按平台各自钉）;字体缺失主机的 fontless 回退帧同样确定性;`--shot/--glshot` 交互路径不在此约束内。
+
 ## 本轮更新：R710 AA level-1 stroke 死循环修复 + R709 软栅格扫描线性能优化 — `emit_row` 全覆盖分支改 `>=`（`aa_add` 钳 8 而 level-1 maxcov=4,重叠接头 cov 越限时三分支均不推进 → 死循环;aa2 因 8==maxcov 从未触发——**既有 bug,与优化无关,确定性最小场景钓出**）;`fill_polys` 双 half 缓冲只收集一次/线性求界、设备空间点表每点一次变换、stroke 四边形按 y 桶跳过——微基准 stroke **-59%**（4.10→1.68ms）/fill(aa2) **-18%**（2.50→2.05ms）,4 个确定性场景（aa0/1/2×scale1/1.5/2+平移）**字节级一致**
 
 - **缺口**(用户指令"优化性能和显示效果"):gprof 定位 `collect_intersections` 占 42.8%（每边每行重复 SOFT_SX/SOFT_SY 变换）;隔离性能验证时发现 explorer selftest **非确定性**（动画时序/随机场景,两次运行校验和不同）——像素回归验证必须用固定场景 harness,不能依赖 selftest。
