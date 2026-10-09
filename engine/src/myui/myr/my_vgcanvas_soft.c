@@ -196,9 +196,15 @@ static void span_accum(uint8_t* cov, int32_t base_x,
   if (lpix >= x0 && lpix < x1) {
     aa_add(cov, lpix - x0, cov_left(fxl));
   }
-  for (p = lpix + 1; p <= rpix - 1; p++) {
-    if (p >= x0 && p < x1) {
-      aa_add(cov, p - x0, 4);
+  /* R713: clamp the interior loop to the buffer once — no per-pixel
+   * bounds test; the saturating +4 is aa_add(idx, 4) inlined. */
+  {
+    int32_t inner0 = lpix + 1 > x0 ? lpix + 1 : x0;
+    int32_t inner1 = rpix - 1 < x1 - 1 ? rpix - 1 : x1 - 1;
+    for (p = inner0; p <= inner1; p++) {
+      int32_t idx = p - x0;
+      int v = cov[idx] + 4;
+      cov[idx] = (uint8_t)(v > 8 ? 8 : v);
     }
   }
   if (fxr > 0.0f && rpix >= x0 && rpix < x1) {
