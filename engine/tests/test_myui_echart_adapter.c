@@ -455,6 +455,47 @@ TEST(echart_adapter_fills_funnel_radar_hover_indexes) {
   }
 }
 
+TEST(echart_adapter_fills_treemap_graph_hover_indexes) {
+  static const double values[] = {60.0, 30.0, 10.0, 5.0};
+  my_echart_series_input_t series = {"s", "Series", MY_ECHART_TREEMAP,
+                                     values, 4u, 0u, 0u, NULL, true, NULL, false};
+  my_echart_option_input_t input = {"chart", NULL, 0u, &series, 1u, false,
+                                    false, false, 0.0, 0.0, false, 0u, 0u,
+                                    false, 0.0, 0.0, 0u, 0u, NULL, 0u, NULL,
+                                    0u, NULL, 0u, NULL, 0u,
+                                    MY_ECHART_TRANSFORM_NONE, NULL,
+                                    MY_ECHART_FILTER_EQ, NULL, 0.0, NULL, 0u, false};
+  const my_echart_series_type_t types[] = {MY_ECHART_TREEMAP, MY_ECHART_GRAPH};
+  const my_chart_mode_t modes[] = {MY_CHART_TREEMAP, MY_CHART_GRAPH};
+  const int32_t xs[] = {52, 218};
+  const int32_t ys[] = {90, 92};
+  for (size_t i = 0u; i < 2u; i++) {
+    my_echart_option_t option;
+    my_widget_t* chart = my_chart_create(NULL, modes[i]);
+    my_echart_adapter_t* adapter;
+    my_echart_event_t event;
+    my_event_t native = my_event_init(MY_EVENT_POINTER_MOVE);
+    series.type = types[i];
+    my_echart_option_init(&option, NULL);
+    ASSERT_NOT_NULL(chart);
+    chart->rect.w = 320;
+    chart->rect.h = 180;
+    ASSERT_EQ(my_echart_option_copy(&option, &input, NULL), MY_RET_OK);
+    adapter = my_echart_adapter_create(chart, NULL);
+    ASSERT_NOT_NULL(adapter);
+    ASSERT_EQ(my_echart_adapter_apply(adapter, &option), MY_RET_OK);
+    native.u.pointer.x = xs[i];
+    native.u.pointer.y = ys[i];
+    ASSERT_EQ(my_echart_adapter_event(adapter, &native, &event), MY_RET_OK);
+    ASSERT_EQ(event.data_index, 0u);
+    ASSERT_EQ(event.category_index, 0u);
+    ASSERT_EQ(event.series_index, 0u);
+    my_echart_adapter_destroy(adapter);
+    my_widget_unref(chart);
+    my_echart_option_free(&option);
+  }
+}
+
 TEST(echart_adapter_sync_model_reprojects_after_action) {
   static const double values[] = {1.0, 2.0};
   my_echart_series_input_t series = {"a", "A", MY_ECHART_LINE, values, 2u, 0u, 0u, NULL, true, NULL, false};
@@ -675,5 +716,6 @@ TEST_MAIN_BEGIN()
   RUN_TEST(echart_adapter_fills_event_indexes_from_chart);
   RUN_TEST(echart_adapter_fills_non_cartesian_hover_indexes);
   RUN_TEST(echart_adapter_fills_funnel_radar_hover_indexes);
+  RUN_TEST(echart_adapter_fills_treemap_graph_hover_indexes);
   RUN_TEST(echart_adapter_sync_model_reprojects_after_action);
 TEST_MAIN_END()

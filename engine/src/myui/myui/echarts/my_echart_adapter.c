@@ -394,11 +394,16 @@ my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
     if (native->type == MY_EVENT_POINTER_MOVE &&
         (chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
          chart->mode == MY_CHART_RADAR || chart->mode == MY_CHART_HEATMAP ||
-         chart->mode == MY_CHART_CALENDAR))
+         chart->mode == MY_CHART_CALENDAR || chart->mode == MY_CHART_TREEMAP ||
+         chart->mode == MY_CHART_GRAPH))
       (void)adapter->chart->vtable->on_event(adapter->chart, native);
     my_widget_global_to_local(adapter->chart, &local_x, &local_y);
     category = my_chart_hit_test(adapter->chart, local_x, local_y);
-      if (category != MY_ECHART_INDEX_NONE) {
+    if (chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
+        chart->mode == MY_CHART_RADAR || chart->mode == MY_CHART_TREEMAP ||
+        chart->mode == MY_CHART_GRAPH)
+      category = MY_ECHART_INDEX_NONE;
+    if (category != MY_ECHART_INDEX_NONE) {
         out->category_index = category;
         out->data_index = category;
         if (chart->mode == MY_CHART_HEATMAP) {
@@ -439,7 +444,8 @@ my_ret_t my_echart_adapter_event(my_echart_adapter_t* adapter,
     } else {
       size_t hover = my_chart_get_hover_index(adapter->chart);
       if ((chart->mode == MY_CHART_PIE || chart->mode == MY_CHART_FUNNEL ||
-           chart->mode == MY_CHART_RADAR) && hover != MY_ECHART_INDEX_NONE) {
+           chart->mode == MY_CHART_RADAR || chart->mode == MY_CHART_TREEMAP ||
+           chart->mode == MY_CHART_GRAPH) && hover != MY_ECHART_INDEX_NONE) {
         out->data_index = hover;
         out->category_index = hover;
         for (size_t i = 0u; i < chart->series_count; i++) {
