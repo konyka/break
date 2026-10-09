@@ -1569,6 +1569,8 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_mypal_wayland PRIVATE myui_core m
         ${ENGINE_PAL_WL_LIBRARIES} Threads::Threads)
     add_test(NAME test_mypal_wayland COMMAND test_mypal_wayland)
+    set_tests_properties(test_mypal_wayland PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 endif()
 
 if(MYUI_PAL STREQUAL "x11")
@@ -1578,6 +1580,8 @@ if(MYUI_PAL STREQUAL "x11")
     target_link_libraries(test_mypal_x11 PRIVATE myui_core m
         ${X11_LIBRARIES} EGL Threads::Threads)
     add_test(NAME test_mypal_x11 COMMAND test_mypal_x11)
+    set_tests_properties(test_mypal_x11 PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
 endif()
 
     add_executable(test_myui_vggeometry tests/test_myui_vggeometry.c)

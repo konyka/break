@@ -27,8 +27,9 @@
 - X11/Wayland EGL 窗口配置优先请求 4x multisample，驱动或 EGL 实现不提供时回退到
   单采样配置；PAL 从实际选中的 EGLConfig 查询 sample buffers/count，GLES2/桌面 GL
   因而能准确报告 surface MSAA。
-- Vulkan present 适配器的 `has_multisample` 槽位不再无条件返回 true，改为转发 canvas
-  实际能力位（设备 sample 能力）；窗口路径默认单采样的策略保持不变。
+- Vulkan present 适配器的 `has_multisample` 槽位返回 canvas 当前激活的采样等级；窗口
+  路径默认单采样或设置 `MYUI_VK_NOMSAA=1` 时报告 false，显式启用有效 MSAA 后才报告
+  true。设备可支持的等级仍由 canvas capabilities 单独表示。
 - Vulkan 与 Break RHI 继续使用实际 color/depth sample capability 和资源事务；窗口
   默认、复杂 MRT/shadow 的限制保持显式，未将它们误报为全帧抗锯齿。
 - `test_myui_vgcanvas_backend` 覆盖软件 AA 像素契约、能力位、非法输入和质量事务；

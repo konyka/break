@@ -35,6 +35,11 @@ EGL 的 `EGL_SAMPLE_BUFFERS` 和 `EGL_SAMPLES` 是 `EGLConfig` 属性；PAL 会�
 config 查询它们，而不是从 EGL context 查询。这样上层 GLES2 canvas 能准确区分已协商的
 多重采样表面和单采样回退。
 
+X11/Wayland PAL runtime tests report the negotiated result through
+`my_pal_gl_has_multisample()`. Both `true` (4x-or-better config) and `false`
+(valid single-sample fallback) are supported outcomes; CI must not require a
+specific GPU sample count.
+
 该契约描述的是字形/几何抗锯齿，不等同于全帧 TAA 或 FXAA；后处理 AA 仍由渲染器单独
 管理。Win32 旧 WGL 像素格式路径无法在窗口创建后安全重选 multisample 格式，因此会
 诚实报告不可用，不能把它误认为已启用 MSAA。

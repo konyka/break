@@ -688,9 +688,7 @@ static bool vk_adapter_has_multisample(my_pal_gl_t* gl) {
   if (my_vgcanvas_get_capabilities(adapter->vg, &caps) != MY_RET_OK) {
     return false;
   }
-  /* The device sample capability is the availability contract; the windowed
-   * canvas may still run single-sample by default (see vk_create_targets). */
-  return (caps.antialias_levels & MY_VGCANVAS_AA_LEVEL_BIT(2)) != 0u;
+  return caps.active_antialias_level > 0u;
 }
 
 static void vk_adapter_destroy(my_pal_gl_t* gl) {

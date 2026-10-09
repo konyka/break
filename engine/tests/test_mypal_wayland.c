@@ -75,6 +75,8 @@ TEST(mypal_wayland_gl_enable) {
     ASSERT_EQ(my_pal_gl_get_size(gl, &w, &h), MY_RET_OK);
     ASSERT_EQ(w, 256);
     ASSERT_EQ(h, 128);
+    printf("Wayland EGL multisample negotiated: %s\n",
+           my_pal_gl_has_multisample(gl) ? "yes" : "no (fallback)");
     ASSERT_EQ(my_pal_gl_swap_buffers(gl), MY_RET_OK);
     ASSERT_TRUE(my_pal_window_gl_enable(win) == gl);
   } else {
