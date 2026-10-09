@@ -79,6 +79,7 @@ typedef struct gles_tex_entry_t {
   bool key_is_glyph_id;
   int32_t size;
   uint32_t texture; /**< 0 = empty */
+  uint64_t last_used;
 } gles_tex_entry_t;
 
 /** @brief Image texture cache entry: keyed by (ptr, w, h); the caller must
@@ -105,6 +106,7 @@ typedef struct my_vgcanvas_gles2_t {
   bool msaa;             /**< GL_MULTISAMPLE requested (M11c) */
   bool multisample_available;
   gles_tex_entry_t tex_cache[GLES_TEX_CACHE_SIZE];
+  uint64_t tex_cache_tick;
   gles_img_tex_entry_t img_tex_cache[GLES_IMG_TEX_CACHE_SIZE];
   uint64_t img_tex_tick;
   gles_state_t state;
@@ -459,6 +461,38 @@ static int32_t gles_dev_font_size(const my_vgcanvas_gles2_t* s) {
   return d > 0 ? d : 1;
 }
 
+/* R710: two adjacent candidate slots reduce glyph-cache thrashing while
+ * keeping the fixed-size cache and its allocation-free contract. */
+static bool gles_tex_key_matches(const gles_tex_entry_t* e, my_font_t* font,
+                                 uint32_t key, bool key_is_glyph_id,
+                                 int32_t size) {
+  return e->texture != 0 && e->font == font &&
+         e->key_is_glyph_id == key_is_glyph_id && e->codepoint == key &&
+         e->size == size;
+}
+
+static uint32_t gles_tex_slot(my_vgcanvas_gles2_t* s, my_font_t* font,
+                              uint32_t key, bool key_is_glyph_id,
+                              int32_t size) {
+  uint32_t primary = (key ^ (uint32_t)size) % GLES_TEX_CACHE_SIZE;
+  uint32_t secondary = (primary + 1u) % GLES_TEX_CACHE_SIZE;
+  gles_tex_entry_t* a = &s->tex_cache[primary];
+  gles_tex_entry_t* b = &s->tex_cache[secondary];
+  if (gles_tex_key_matches(a, font, key, key_is_glyph_id, size)) {
+    return primary;
+  }
+  if (gles_tex_key_matches(b, font, key, key_is_glyph_id, size)) {
+    return secondary;
+  }
+  if (a->texture == 0) {
+    return primary;
+  }
+  if (b->texture == 0) {
+    return secondary;
+  }
+  return a->last_used <= b->last_used ? primary : secondary;
+}
+
 /** @brief Draw one codepoint at pen_x and advance it (gles text body). */
 static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
                          float top, int32_t ascent) {
@@ -474,12 +508,10 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
     return;
   }
   /* direct-mapped texture cache: evict on slot collision */
-  slot = (cp ^ (uint32_t)gles_dev_font_size(s)) % GLES_TEX_CACHE_SIZE;
-  if (s->tex_cache[slot].texture == 0 ||
-      s->tex_cache[slot].font != s->state.font ||
-      s->tex_cache[slot].key_is_glyph_id ||
-      s->tex_cache[slot].codepoint != cp ||
-      s->tex_cache[slot].size != gles_dev_font_size(s)) {
+  slot = gles_tex_slot(s, s->state.font, cp, false,
+                       gles_dev_font_size(s));
+  if (!gles_tex_key_matches(&s->tex_cache[slot], s->state.font, cp, false,
+                            gles_dev_font_size(s))) {
     if (s->tex_cache[slot].texture != 0) {
       s->gl.delete_texture(s->gl.ctx, s->tex_cache[slot].texture);
     }
@@ -490,6 +522,7 @@ static void gles_draw_cp(my_vgcanvas_gles2_t* s, uint32_t cp, float* pen_x,
     s->tex_cache[slot].key_is_glyph_id = false;
     s->tex_cache[slot].size = gles_dev_font_size(s);
   }
+  s->tex_cache[slot].last_used = ++s->tex_cache_tick;
   gx = *pen_x + (float)g.bearing_x;
   gy = top + (float)(ascent - g.bearing_y);
   /* quad: 2 triangles, interleaved xy+uv */
@@ -525,13 +558,10 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
     my_font_glyph_release(&g);
     return;
   }
-  slot = (shaped->glyph_id ^ (uint32_t)gles_dev_font_size(s)) %
-         GLES_TEX_CACHE_SIZE;
-  if (s->tex_cache[slot].texture == 0 ||
-      s->tex_cache[slot].font != font ||
-      !s->tex_cache[slot].key_is_glyph_id ||
-      s->tex_cache[slot].codepoint != shaped->glyph_id ||
-      s->tex_cache[slot].size != gles_dev_font_size(s)) {
+  slot = gles_tex_slot(s, font, shaped->glyph_id, true,
+                       gles_dev_font_size(s));
+  if (!gles_tex_key_matches(&s->tex_cache[slot], font, shaped->glyph_id,
+                            true, gles_dev_font_size(s))) {
     if (s->tex_cache[slot].texture != 0) {
       s->gl.delete_texture(s->gl.ctx, s->tex_cache[slot].texture);
     }
@@ -542,6 +572,7 @@ static void gles_draw_shaped_glyph(my_vgcanvas_gles2_t* s,
     s->tex_cache[slot].key_is_glyph_id = true;
     s->tex_cache[slot].size = gles_dev_font_size(s);
   }
+  s->tex_cache[slot].last_used = ++s->tex_cache_tick;
   gx = *pen_x + (float)shaped->offset_x_26_6 / 64.0f + (float)g.bearing_x;
   gy = top + (float)(ascent - g.bearing_y) -
        (float)shaped->offset_y_26_6 / 64.0f;

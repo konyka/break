@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
+
+- **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。
+- **方案**：`gles_tex_slot()` 先查 primary，再查 `(primary+1)%64`；无条件命中优先，空槽次之，双槽满按 `last_used` 选旧项；`gles_tex_key_matches()` 统一普通 glyph（codepoint）和 shaped glyph（glyph_id）键语义；draw 后递增 cache tick。容量、生命周期、GL API、纹理采样契约不变，缓存仍是固定数组/零分配。
+- **验证**：双树非图形 CTest 各 **129/129**、fuzz **5/5**，GLES2/GL 图形路径由 CI graphics jobs 编译与运行看守。R710 的 GPU-only 改动无本地显示依赖，运行时验证委托现有 Xvfb/Wayland graphics matrix。
+- **边界**：这是缓存亲和优化，不改变字形位图、AA、采样过滤或文字布局；LRU 仅在两个候选槽内近似，不引入全局 LRU；R611 AMD 基线不动。
+
 ## 本轮更新：R711 blend_ch 移位近似（TDD,渲染性能终片）— `(x + (x>>8) + 1) >> 8` 替代整除 `/255`（在 `x ∈ [0, 255²]` 全域**精确等价**截断除法,65026 值枚举测试钉死）;已知 alpha 梯度行输出精确匹配测试（与 R712 的循环外提形成双保险——近似公式×外提重构的联合正确性面）
 
 - **缺口**(R712 的 blend_span 外提遗留):blend_ch 仍用整除 `/ 255`——编译器部分目标产 multiply-high 序列（快）,部分产 div 指令（慢 20-40 cycle）;R712 已做格式分派外提,但算术核心的除法是最后一块。
