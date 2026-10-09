@@ -212,6 +212,10 @@ static void emit_row(my_vgcanvas_soft_t* s, aa_rowbuf_t* rb, int32_t y,
                      my_color_t color) {
   int32_t i = 0;
   int32_t first = -1, last = -1;
+  /* R710: coverage saturates at "full" — use >= so an over-accumulated
+   * cov (aa_add clamps at 8, but maxcov is 4 at AA level 1) takes the
+   * opaque branch instead of falling through every advance condition
+   * and spinning forever (level-1 overlapping stroke joints hung here). */
   while (i < width) {
     if (rb->cov[i] == 0) {
       i++;
@@ -249,12 +253,14 @@ static void emit_row(my_vgcanvas_soft_t* s, aa_rowbuf_t* rb, int32_t y,
   }
 }
 
-/** @brief Collect even-odd scanline intersections at yc (device space). */
-static size_t collect_intersections(my_vgcanvas_soft_t* s,
-                                    const path_point_t* pts,
-                                    const contour_t* contours,
-                                    size_t ncontours, float yc, float* xs,
-                                    size_t cap, bool close_open) {
+/* R709: scanline intersection collector over pre-transformed device-space
+ * points — one SOFT_SX/SOFT_SY per point, not per edge per row; the
+ * arithmetic is otherwise identical to the old per-edge transform, so
+ * scanline output is unchanged. */
+static size_t collect_intersections_dev(const path_point_t* dpts,
+                                        const contour_t* contours,
+                                        size_t ncontours, float yc, float* xs,
+                                        size_t cap, bool close_open) {
   size_t nxs = 0, ci, i;
   for (ci = 0; ci < ncontours; ci++) {
     const contour_t* c = &contours[ci];
@@ -267,10 +273,10 @@ static size_t collect_intersections(my_vgcanvas_soft_t* s,
         }
         j = 0;
       }
-      x0 = SOFT_SX(s, pts[c->start + i].x);
-      y0 = SOFT_SY(s, pts[c->start + i].y);
-      x1 = SOFT_SX(s, pts[c->start + j].x);
-      y1 = SOFT_SY(s, pts[c->start + j].y);
+      x0 = dpts[c->start + i].x;
+      y0 = dpts[c->start + i].y;
+      x1 = dpts[c->start + j].x;
+      y1 = dpts[c->start + j].y;
       if ((y0 <= yc) != (y1 <= yc) && nxs < cap) {
         xs[nxs++] = x0 + (yc - y0) * (x1 - x0) / (y1 - y0);
       }
@@ -288,21 +294,36 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
                            size_t ncontours, my_color_t color) {
   const my_rect_t* clip = &s->state.clip;
   float* xs;
+  path_point_t* dpts;
   size_t xs_cap;
+  size_t pi;
   int32_t y;
   if (npts < 2 || ncontours == 0 || clip->w <= 0 || clip->h <= 0) {
     return MY_RET_OK;
   }
   xs_cap = npts;
-  xs = (float*)my_mem_alloc(s->allocator, xs_cap * sizeof(float));
-  if (xs == NULL) {
+  /* R709: two half-row buffers — collect each half's intersections once,
+   * reuse them for the span pass (the old code re-collected and
+   * re-sorted every half row a second time). */
+  xs = (float*)my_mem_alloc(s->allocator, xs_cap * 2u * sizeof(float));
+  /* R709: device-space points — one transform per point instead of one
+   * per edge per scanline (fill_polys does not mutate the transform). */
+  dpts = (path_point_t*)my_mem_alloc(s->allocator, npts * sizeof(*dpts));
+  if (xs == NULL || dpts == NULL) {
+    my_mem_free(s->allocator, xs);
+    my_mem_free(s->allocator, dpts);
     return MY_RET_OOM;
+  }
+  for (pi = 0; pi < npts; pi++) {
+    dpts[pi].x = SOFT_SX(s, pts[pi].x);
+    dpts[pi].y = SOFT_SY(s, pts[pi].y);
   }
   if (s->antialias_level <= 0) {
     /* hard edges: pixel-center rule */
     for (y = clip->y; y < clip->y + clip->h; y++) {
-      size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                         (float)y + 0.5f, xs, xs_cap, true);
+      size_t nxs = collect_intersections_dev(dpts, contours, ncontours,
+                                             (float)y + 0.5f, xs, xs_cap,
+                                             true);
       size_t k;
       qsort(xs, nxs, sizeof(float), float_cmp);
       for (k = 0; k + 1 < nxs; k += 2) {
@@ -322,6 +343,7 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
     rb.cov = (uint8_t*)my_mem_alloc(s->allocator, (size_t)clip->w * 2);
     if (rb.cov == NULL) {
       my_mem_free(s->allocator, xs);
+      my_mem_free(s->allocator, dpts);
       return MY_RET_OOM;
     }
     rb.alpha = rb.cov + clip->w;
@@ -329,11 +351,10 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       /* limit the scan to the polygon's y range (clipped); the range
        * must be in DEVICE space like collect_intersections (M23: it used
        * y+ty without the scale, emptying the fill at scale != 1) */
-      float ymin = SOFT_SY(s, pts[0].y), ymax = ymin;
-      size_t pi;
+      float ymin = dpts[0].y, ymax = ymin;
       int32_t row0, row1;
       for (pi = 1; pi < npts; pi++) {
-        float py = SOFT_SY(s, pts[pi].y);
+        float py = dpts[pi].y;
         if (py < ymin) {
           ymin = py;
         }
@@ -348,19 +369,22 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       float row_min = 0.0f, row_max = 0.0f;
       int32_t bx0, bw;
       int hh;
+      size_t nxs2[2] = {0u, 0u};
       row_min = (float)(clip->x + clip->w);
       row_max = (float)clip->x;
       for (hh = 0; hh < halves; hh++) {
-        size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                           (float)y + offs[hh], xs, xs_cap,
-                                           true);
-        if (nxs > 0) {
-          qsort(xs, nxs, sizeof(float), float_cmp);
-          if (xs[0] < row_min) {
-            row_min = xs[0];
+        float* hx = xs + (size_t)hh * xs_cap;
+        size_t nxs = collect_intersections_dev(dpts, contours, ncontours,
+                                               (float)y + offs[hh], hx,
+                                               xs_cap, true);
+        size_t q;
+        nxs2[hh] = nxs;
+        for (q = 0; q < nxs; q++) {
+          if (hx[q] < row_min) {
+            row_min = hx[q];
           }
-          if (xs[nxs - 1] > row_max) {
-            row_max = xs[nxs - 1];
+          if (hx[q] > row_max) {
+            row_max = hx[q];
           }
         }
       }
@@ -380,13 +404,15 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
       }
       memset(rb.cov, 0, (size_t)bw);
       for (hh = 0; hh < halves; hh++) {
-        size_t nxs = collect_intersections(s, pts, contours, ncontours,
-                                           (float)y + offs[hh], xs, xs_cap,
-                                           true);
+        float* hx = xs + (size_t)hh * xs_cap;
+        size_t nxs = nxs2[hh];
         size_t k;
-        qsort(xs, nxs, sizeof(float), float_cmp);
+        if (nxs == 0u) {
+          continue;
+        }
+        qsort(hx, nxs, sizeof(float), float_cmp);
         for (k = 0; k + 1 < nxs; k += 2) {
-          span_accum(rb.cov, bx0, bw, xs[k], xs[k + 1]);
+          span_accum(rb.cov, bx0, bw, hx[k], hx[k + 1]);
         }
       }
       emit_row(s, &rb, y, bx0, bw, 4 * halves, color);
@@ -395,6 +421,7 @@ static my_ret_t fill_polys(my_vgcanvas_soft_t* s, const path_point_t* pts,
     my_mem_free(s->allocator, rb.cov);
   }
   my_mem_free(s->allocator, xs);
+  my_mem_free(s->allocator, dpts);
   return MY_RET_OK;
 }
 
@@ -776,8 +803,11 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
   const my_rect_t* clip = &s->state.clip;
   size_t nquads = 0, ndisks = 0, ci, i;
   path_point_t* pts = NULL;
+  path_point_t* dpts = NULL;
   contour_t* cs = NULL;
   stroke_disk_t* disks = NULL;
+  float* qymin = NULL;
+  float* qymax = NULL;
   size_t np = 0, nq = 0, nd = 0;
   int halves = s->antialias_level >= 2 ? 2 : 1;
   static const float OFF1[1] = {0.5f};
@@ -815,7 +845,12 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
                                        (ndisks > 0 ? ndisks : 1) *
                                            sizeof(stroke_disk_t));
   rb.cov = (uint8_t*)my_mem_alloc(s->allocator, (size_t)clip->w * 2);
-  if (pts == NULL || cs == NULL || disks == NULL || rb.cov == NULL) {
+  qymin = (float*)my_mem_alloc(s->allocator,
+                               (nquads > 0 ? nquads : 1) * sizeof(float));
+  qymax = (float*)my_mem_alloc(s->allocator,
+                               (nquads > 0 ? nquads : 1) * sizeof(float));
+  if (pts == NULL || cs == NULL || disks == NULL || rb.cov == NULL ||
+      qymin == NULL || qymax == NULL) {
     goto done;
   }
   rb.alpha = rb.cov + clip->w;
@@ -926,17 +961,47 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
     }
   }
 
+  /* R709: device-space points — one transform per stroke point; the row
+   * loop then needs no per-edge SOFT_SX/SOFT_SY (the stroke build above
+   * has finished, so the transform cannot change mid-scan). */
+  dpts = (path_point_t*)my_mem_alloc(s->allocator,
+                                     (np > 0 ? np : 1) * sizeof(*dpts));
+  if (dpts == NULL) {
+    goto done;
+  }
+  for (i = 0; i < np; i++) {
+    dpts[i].x = SOFT_SX(s, pts[i].x);
+    dpts[i].y = SOFT_SY(s, pts[i].y);
+  }
+
   /* row range: quads (device) and disks, intersected with the clip */
   ymin = (float)(clip->y + clip->h);
   ymax = (float)clip->y;
   for (i = 0; i < np; i++) {
-    float py = SOFT_SY(s, pts[i].y);
-    if (py < ymin) {
-      ymin = py;
+    if (dpts[i].y < ymin) {
+      ymin = dpts[i].y;
     }
-    if (py > ymax) {
-      ymax = py;
+    if (dpts[i].y > ymax) {
+      ymax = dpts[i].y;
     }
+  }
+  /* R709: per-quad device y ranges — a quad can only contribute crossings
+   * for yc in [qymin, qymax); skipping outside that range is output-
+   * identical and avoids the per-row walk of every quad. */
+  for (i = 0; i < nq; i++) {
+    size_t v;
+    float lo = 0.0f, hi = 0.0f;
+    for (v = 0; v < cs[i].count; v++) {
+      float py = dpts[cs[i].start + v].y;
+      if (v == 0u || py < lo) {
+        lo = py;
+      }
+      if (v == 0u || py > hi) {
+        hi = py;
+      }
+    }
+    qymin[i] = lo;
+    qymax[i] = hi;
   }
   for (i = 0; i < nd; i++) {
     float y0 = (float)(disks[i].cy - disks[i].r);
@@ -955,12 +1020,17 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
     int hh;
     memset(rb.cov, 0, (size_t)clip->w);
     for (hh = 0; hh < halves; hh++) {
+      float yc = (float)y + offs[hh];
       /* quads: even-odd WITHIN each contour (convex -> one span) */
       for (i = 0; i < nq; i++) {
         float xs[4];
-        size_t nxs = collect_intersections(s, pts, &cs[i], 1,
-                                           (float)y + offs[hh], xs, 4,
-                                           false);
+        size_t nxs;
+        if (yc < qymin[i] || yc >= qymax[i]) {
+          continue;
+        }
+        nxs = collect_intersections_dev(dpts, &cs[i], 1,
+                                         yc, xs, 4,
+                                         false);
         if (nxs > 1) {
           size_t k;
           qsort(xs, nxs, sizeof(float), float_cmp);
@@ -986,8 +1056,11 @@ static my_ret_t soft_stroke_union(my_vgcanvas_soft_t* s, float half,
 
 done:
   my_mem_free(s->allocator, pts);
+  my_mem_free(s->allocator, dpts);
   my_mem_free(s->allocator, cs);
   my_mem_free(s->allocator, disks);
+  my_mem_free(s->allocator, qymin);
+  my_mem_free(s->allocator, qymax);
   my_mem_free(s->allocator, rb.cov);
   return ret;
 }
