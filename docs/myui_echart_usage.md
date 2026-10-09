@@ -31,6 +31,13 @@ macOS); gl drives the engine's `my_vgcanvas_gles2` hardware backend on a
 GLES2/EGL context (Linux) or a desktop-GL context via WGL (Windows) /
 NSOpenGL (macOS) through the `my_gl_desktop` table.
 
+The `soft` path uses 8-bit glyph/geometry coverage AA. The `gl` path uses the
+GLES2 or desktop-GL canvas and linear glyph sampling; when the window surface
+negotiates multisampling, geometry MSAA is enabled as reported by the canvas
+capabilities. `--glshot` verifies the GL rendering path, but is not a Vulkan
+runtime assertion. Full-frame TAA/FXAA is a separate renderer feature, not a
+replacement for glyph coverage AA.
+
 Architectural note: myui's portability seam is the PAL interface
 (`mypal/my_pal.h`). Real ports now live in-tree under
 `engine/src/myui/mypal/` — `x11/`, `wayland/`, `win32/`, `cocoa/` —

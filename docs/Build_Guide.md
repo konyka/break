@@ -102,6 +102,11 @@ cmake --build build-myui --target dxx_break break_myui myui_core dxx_core -j
 cmake -B build-myui-vk -DENGINE_BUILD_TESTS=OFF -DENGINE_VULKAN=ON
 cmake --build build-myui-vk --target dxx_break break_myui -j
 
+# Headless AA contract
+cmake -B build-myui-aa -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
+cmake --build build-myui-aa --target test_myui_vgcanvas_backend -j
+ctest --test-dir build-myui-aa -R '^test_myui_vgcanvas_backend$' --output-on-failure
+
 # Headless myui 测试
 cmake -B build-myui-tests -DENGINE_BUILD_TESTS=ON -DENGINE_VULKAN=OFF
 cmake --build build-myui-tests \
@@ -140,6 +145,11 @@ Noto Sans CJK）不可用。
 | `MYUI_UI_YAML` / `MYUI_BIDI` / `MYUI_HARFBUZZ` | ON | YAML、BiDi、可选 OpenType shaping |
 | `MYUI_GLES2` / `MYUI_GL_DESKTOP` | ON | 可复用 myui GLES2、桌面 OpenGL 后端 |
 | `MYUI_VULKAN` | OFF | 可复用 myui Vulkan 后端 |
+
+软件后端默认使用 8-bit 覆盖率抗锯齿；X11/Wayland EGL 配置优先请求 4x MSAA，驱动不
+支持时回退到单采样。GLES2/桌面 GL 的实际能力由上下文报告，Vulkan/RHI 的能力由实际
+color/depth sample count 报告。上述命令验证软件像素覆盖率和能力契约；GL/VK 窗口及
+复杂 MRT/shadow 路径仍需对应运行时设备，不能由 headless 测试代替。
 
 关闭的可选后端不会执行对应依赖探测。TSAN 是本地配置选项，不是当前 CI gate。
 

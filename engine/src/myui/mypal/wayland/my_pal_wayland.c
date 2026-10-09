@@ -515,6 +515,9 @@ static const my_pal_gl_vtable_t s_wgl_vtable = {
     wgl_make_current, wgl_swap, wgl_size, wgl_multisample, wgl_destroy};
 
 static my_pal_gl_t* wwin_gl_enable(my_pal_window_t* win) {
+  static const EGLint cfg_attribs_msaa[] = {
+      EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE,
+      EGL_OPENGL_ES2_BIT, EGL_SAMPLE_BUFFERS, 1, EGL_SAMPLES, 4, EGL_NONE};
   static const EGLint cfg_attribs[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
                                        EGL_RENDERABLE_TYPE,
                                        EGL_OPENGL_ES2_BIT, EGL_NONE};
@@ -529,7 +532,10 @@ static my_pal_gl_t* wwin_gl_enable(my_pal_window_t* win) {
                                   (void*)w->pal->display, NULL);
   if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL) ||
       !eglBindAPI(EGL_OPENGL_ES_API) ||
-      !eglChooseConfig(display, cfg_attribs, &config, 1, &count) || count < 1)
+       ((!eglChooseConfig(display, cfg_attribs_msaa, &config, 1, &count) ||
+         count < 1) &&
+        (!eglChooseConfig(display, cfg_attribs, &config, 1, &count) ||
+         count < 1)))
     return NULL;
   w->gl = (wl_gl_t*)my_mem_calloc(w->pal->allocator, 1u, sizeof(*w->gl));
   if (w->gl == NULL) return NULL;

@@ -19,6 +19,18 @@
 ## 本轮更新：R703/R704 矢量字体格式探测 + 全 API 抗锯齿契约（TDD）— `my_font_probe_format/backend_supports/format_name` 公共 API（sfnt/CFF/TTC/WOFF/WOFF2 头探测+后端能力矩阵——stb 域 TrueType 轮廓,FT 域 CFF/web 容器,诚实可查询）;soft 渲染 **AA 像素契约测试**（覆盖边缘中间值存在——1bit/NEAREST 退化即红,双平台实测钉死）
 
 - **缺口**(用户需求"矢量字体文件支持+全平台 API 抗锯齿"):勘察定界——**矢量渲染现状已达标**（TTF/OTF-TTF 轮廓 stb ✓、CFF/WOFF 经 chain 的 FreeType-first fallback ✓、三条渲染 API 的字形路径全 AA:soft 逐像素 8bit alpha 混合/desktop GL+GLES2 GL_LUMINANCE 8bit+GL_LINEAR/VK R8_UNORM+glyph 专用 LINEAR sampler——码内契约注释在案）;真缺=**格式不可探测**（宿主无法先验判断文件能否加载,stb-only 构建对 CFF 静默 NULL）与**AA 无验证面**（NEAREST/1bit 退化无人看守）。
+
+## 本轮补记：跨后端抗锯齿协商与验证
+
+- 软件 canvas 的 8-bit 覆盖率抗锯齿继续默认启用，AA level 只接受 0..2；非法 level
+  返回 `MY_RET_INVALID_PARAMS`，不会静默钳制或改变活动状态。
+- X11/Wayland EGL 窗口配置优先请求 4x multisample，驱动或 EGL 实现不提供时回退到
+  单采样配置；GLES2/桌面 GL 仍通过实际上下文能力报告 surface MSAA。
+- Vulkan 与 Break RHI 继续使用实际 color/depth sample capability 和资源事务；窗口
+  默认、复杂 MRT/shadow 的限制保持显式，未将它们误报为全帧抗锯齿。
+- `test_myui_vgcanvas_backend` 覆盖软件 AA 像素契约、能力位、非法输入和质量事务；
+  GL/Vulkan 窗口级断言必须在对应运行时设备上执行。字形/几何 AA 与 TAA/FXAA 后处理
+  是不同层次，不能互相替代。
 - **方案**:① **探测 API**（my_font.c,零后端依赖）——头 4 字节 tag 判 `0x00010000`/`OTTO`/`ttcf`/`wOFF`/`wOF2`/`true`（Apple 变体）→ 六格式枚举;② **能力矩阵** `my_font_backend_supports`——TTF/TTC 恒真（stb 域）;CFF/WOFF 按 `MYUI_FONT_FREETYPE` 编译分支（FT 自带 inflate 解 WOFF）;WOFF2 恒假（brotli 编译旗标不承诺——诚实）;③ **AA 契约测试**——soft canvas+真字体（跨平台六候选探测,无字体环境注明跳过）48px 曲线字形（"A&"）→ **中间 alpha 像素计数 ≥8**（背景白/前景黑之外的灰阶=覆盖边缘软过渡;经验值数百,8 为稳健下限）。
 - **TDD**:test_myui_vgcanvas_backend +2——探测七景（六合成头+缺文件/NULL）+矩阵断言（宏自适应）+命名稳定;AA 契约（**双平台实测**:Windows arial 与 WSL Liberation 均真字体真断言）。**39/39**（37+2）。
 - **回归**：双树非图形各 **128/128**;GL/VK 的 AA 面（LUMINANCE/R8+LINEAR 采样配置）由码内注释契约+graphics CI 截图既有覆盖看守（运行时参数断言需 GL 上下文挂具,单列注记）。

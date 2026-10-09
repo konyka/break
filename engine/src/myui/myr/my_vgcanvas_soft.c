@@ -1940,17 +1940,12 @@ void my_vgcanvas_soft_set_antialias_level(my_vgcanvas_t* vg, int level) {
 }
 
 static my_ret_t soft_set_antialias_level_vtable(my_vgcanvas_t* vg,
-                                                int level) {
+                                                 int level) {
   my_vgcanvas_soft_t* s = (my_vgcanvas_soft_t*)vg;
   if (s == NULL) {
     return MY_RET_INVALID_PARAMS;
   }
-  if (level < 0) {
-    level = 0;
-  }
-  if (level > 2) {
-    level = 2;
-  }
+  if (level < 0 || level > 2) return MY_RET_INVALID_PARAMS;
   s->antialias_level = level;
   s->base.capabilities.active_antialias_level = (uint8_t)level;
   return MY_RET_OK;

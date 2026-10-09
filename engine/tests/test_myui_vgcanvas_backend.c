@@ -1103,6 +1103,9 @@ TEST(vgcanvas_capabilities_are_explicit)
   ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
   ASSERT_EQ(caps.active_antialias_level, 0u);
   ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, 3), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_set_antialias_level(canvas, -1), MY_RET_INVALID_PARAMS);
+  ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, &caps), MY_RET_OK);
+  ASSERT_EQ(caps.active_antialias_level, 0u);
   ASSERT_EQ(my_vgcanvas_get_capabilities(canvas, NULL), MY_RET_INVALID_PARAMS);
 
   my_vgcanvas_destroy(canvas);

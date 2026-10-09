@@ -23,6 +23,18 @@ API 的安全 stub；软件后端因此可在无图形开发包的 headless 环�
 默认关闭，只有显式开启才查找 Vulkan；Break 工程设置 `ENGINE_VULKAN=ON` 或 macOS
 平台时会自动启用 myui Vulkan 能力。
 
+## 字体与几何抗锯齿契约
+
+软件、GLES2、桌面 OpenGL、Vulkan 和 Break RHI 路径都提供抗锯齿能力查询；软件后端
+使用覆盖率栅格化，GL/EGL 窗口优先协商 4x multisample（不可用时安全回退到单采样），
+Vulkan/RHI 使用实际支持的 MSAA 样本数。字形纹理使用 8-bit 覆盖率和线性采样。应用
+应通过 `my_vgcanvas_get_capabilities()` 和 `my_vgcanvas_set_antialias_level()` 选择
+能力，不应为单个 widget 暴露后端专属开关。
+
+该契约描述的是字形/几何抗锯齿，不等同于全帧 TAA 或 FXAA；后处理 AA 仍由渲染器单独
+管理。Win32 旧 WGL 像素格式路径无法在窗口创建后安全重选 multisample 格式，因此会
+诚实报告不可用，不能把它误认为已启用 MSAA。
+
 Vulkan GLSL 源文件位于 `engine/src/myui/myr/vulkan_shaders`，已提交的 `.inc` 是构建
 输入，不依赖宿主仓库根目录。安装 `glslangValidator` 后，可在启用 `MYUI_VULKAN` 的
 构建中执行 `cmake --build <build-dir> --target vulkan_shaders_regen`；生成器使用

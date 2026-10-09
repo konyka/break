@@ -307,6 +307,9 @@ static const my_pal_gl_vtable_t s_xgl_vtable = {
     xgl_make_current, xgl_swap, xgl_size, xgl_multisample, xgl_destroy};
 
 static my_pal_gl_t* xwin_gl_enable(my_pal_window_t* win) {
+  static const EGLint cfg_attribs_msaa[] = {
+      EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE,
+      EGL_OPENGL_ES2_BIT, EGL_SAMPLE_BUFFERS, 1, EGL_SAMPLES, 4, EGL_NONE};
   static const EGLint cfg_attribs[] = {EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
                                        EGL_RENDERABLE_TYPE,
                                        EGL_OPENGL_ES2_BIT, EGL_NONE};
@@ -323,7 +326,10 @@ static my_pal_gl_t* xwin_gl_enable(my_pal_window_t* win) {
                                   (void*)w->pal->display, NULL);
   if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL) ||
       !eglBindAPI(EGL_OPENGL_ES_API) ||
-      !eglChooseConfig(display, cfg_attribs, &config, 1, &count) || count < 1)
+       ((!eglChooseConfig(display, cfg_attribs_msaa, &config, 1, &count) ||
+         count < 1) &&
+        (!eglChooseConfig(display, cfg_attribs, &config, 1, &count) ||
+         count < 1)))
     return NULL;
   if (eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID,
                          &visual_id) &&
