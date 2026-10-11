@@ -41,6 +41,11 @@ the existing raster/TSR fallback and does not claim ray-tracing or DLSS support.
   shutdown. Headless contract test covers the missing-runtime path. On the
   RTX 4060 the probe reports DLSS supported on the adapter (all plugins pass
   NVIDIA signature verification).
+- The accepted cross-platform architecture is now explicit: Vulkan is the
+  only backend allowed to select RT/DLSS; OpenGL remains direct/TSR/raster
+  fallback and never loads NVIDIA runtime DLLs. Vulkan RT has reached the
+  isolated RTX pixel milestone; Vulkan DLSS is still detection/initialization
+  only, not frame evaluation.
 - Added focused GL and Vulkan RHI tests and retained explicit fallback behavior.
 
 ## Verified Results

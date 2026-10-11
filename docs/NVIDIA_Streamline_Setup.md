@@ -27,7 +27,11 @@ corresponding NVIDIA license and signature information.
 - Streamline source is available locally for API and integration work.
 - The current RHI exposes OpenGL and Vulkan, but does not yet expose the native
   Vulkan handles and resource-state transitions required by Streamline.
-- DLSS is therefore not enabled by this checkout yet.
+- DLSS runtime detection is enabled on Windows/NVIDIA builds, but DLSS image
+  evaluation is not enabled yet. The current integration verifies the official
+  runtime, initializes Streamline manually, passes native Vulkan handles, and
+  queries adapter support; resource tagging and `slEvaluateFeature` remain a
+  separate implementation slice.
 - Until the Vulkan interop layer and an approved Streamline release package are
   available, the engine must select direct or TSR fallback.
 
