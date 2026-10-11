@@ -230,6 +230,7 @@ add_library(engine STATIC
     src/rhi/rhi_present_history.c
     src/renderer/camera.c
     src/renderer/cull.c
+    src/renderer/render_features.c
     src/renderer/skybox.c
     src/renderer/particles.c
     src/renderer/terrain.c
@@ -1789,6 +1790,24 @@ endif()
     endif()
     add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
 
+    add_executable(test_rhi_native tests/test_rhi_native.c
+        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+    target_include_directories(test_rhi_native PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_native PRIVATE ENGINE_RHI_TEST=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_rhi_native PRIVATE glad opengl32)
+    else()
+        target_link_libraries(test_rhi_native PRIVATE m)
+    endif()
+    add_test(NAME test_rhi_native COMMAND test_rhi_native)
+
     add_executable(test_myui_layout tests/test_myui_layout.c)
     target_include_directories(test_myui_layout PRIVATE
         ${TEST_INCLUDE_DIRS}
@@ -2198,6 +2217,12 @@ endif()
     target_include_directories(test_shader_io PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_shader_io PRIVATE m)
     add_test(NAME test_shader_io COMMAND test_shader_io)
+
+    add_executable(test_render_features tests/test_render_features.c
+        src/renderer/render_features.c)
+    target_include_directories(test_render_features PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_render_features PRIVATE m)
+    add_test(NAME test_render_features COMMAND test_render_features)
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under

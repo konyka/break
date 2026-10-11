@@ -126,6 +126,58 @@ TEST(resource_handles_are_scoped_to_their_device)
     rhi_test_device_destroy(second);
 }
 
+TEST(acceleration_structure_descriptor_validation)
+{
+    RHIAccelerationStructureDesc desc = {
+        RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL, 1024u};
+
+    ASSERT_FALSE(rhi_acceleration_structure_desc_validate(NULL));
+    desc.storage_size = 0u;
+    ASSERT_FALSE(rhi_acceleration_structure_desc_validate(&desc));
+    desc.storage_size = 1024u;
+    desc.type = (RHIAccelerationStructureType)99;
+    ASSERT_FALSE(rhi_acceleration_structure_desc_validate(&desc));
+    desc.type = RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL;
+    ASSERT_TRUE(rhi_acceleration_structure_desc_validate(&desc));
+    desc.type = RHI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+    ASSERT_TRUE(rhi_acceleration_structure_desc_validate(&desc));
+}
+
+TEST(acceleration_structure_gl_fallback_is_safe)
+{
+    RHIDevice *first = rhi_test_device_create();
+    RHIDevice *second = rhi_test_device_create();
+    RHIAccelerationStructureDesc desc = {
+        RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL, 1024u};
+
+    ASSERT_NEQ(first, NULL);
+    ASSERT_NEQ(second, NULL);
+    ASSERT_FALSE(rhi_handle_valid(rhi_acceleration_structure_create(first, &desc)));
+    ASSERT_FALSE(rhi_handle_valid(rhi_acceleration_structure_create(NULL, &desc)));
+    rhi_acceleration_structure_destroy(first, RHI_HANDLE_NULL);
+    rhi_acceleration_structure_destroy(second, RHI_HANDLE_NULL);
+    rhi_test_device_destroy(first);
+    rhi_test_device_destroy(second);
+}
+
+TEST(one_triangle_blas_descriptor_validation)
+{
+    RHIBLASOneTriangleDesc desc = {0};
+
+    ASSERT_FALSE(rhi_blas_one_triangle_desc_validate(NULL));
+    ASSERT_FALSE(rhi_blas_one_triangle_desc_validate(&desc));
+    desc.vertex_buffer = (RHIBuffer){1u, 1u};
+    desc.vertex_count = 3u;
+    desc.vertex_stride = 12u;
+    desc.vertex_format = RHI_VERTEX_FORMAT_R32G32B32_SFLOAT;
+    desc.index_buffer = (RHIBuffer){2u, 1u};
+    desc.index_count = 3u;
+    desc.indexed = true;
+    ASSERT_TRUE(rhi_blas_one_triangle_desc_validate(&desc));
+    desc.index_count = 2u;
+    ASSERT_FALSE(rhi_blas_one_triangle_desc_validate(&desc));
+}
+
 TEST(command_handles_are_scoped_to_their_device)
 {
     RHIDevice *first = rhi_test_device_create();
@@ -859,6 +911,9 @@ TEST(present_damage_history_overflow_forces_full)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(resource_handles_are_scoped_to_their_device);
+    RUN_TEST(acceleration_structure_descriptor_validation);
+    RUN_TEST(acceleration_structure_gl_fallback_is_safe);
+    RUN_TEST(one_triangle_blas_descriptor_validation);
     RUN_TEST(command_handles_are_scoped_to_their_device);
     RUN_TEST(current_device_state_is_thread_local);
     RUN_TEST(gl_state_cache_is_invalidated_when_device_changes);
