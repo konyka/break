@@ -21,6 +21,7 @@ typedef enum {
     RHI_RES_CUBEMAP,
     RHI_RES_MRT_FBO,
     RHI_RES_CUBEMAP_DEPTH_FBO,
+    RHI_RES_ACCELERATION_STRUCTURE,
 } RHIResourceType;
 
 typedef struct {
@@ -169,7 +170,8 @@ bool rhi_buffer_desc_validate(const RHIBufferDesc *desc) {
     const RHIBufferUsage known_usage = (RHIBufferUsage)(
         RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX |
         RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL |
-        RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT);
+        RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT |
+        RHI_BUFFER_USAGE_AS_BUILD_INPUT | RHI_BUFFER_USAGE_DEVICE_ADDRESS);
     return desc != NULL && desc->size != 0u &&
            (desc->usage & known_usage) != 0 &&
            (desc->usage & (RHIBufferUsage)~known_usage) == 0;
@@ -238,6 +240,58 @@ bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     if (dev == NULL || out == NULL) return false;
     *out = dev->capabilities;
     return true;
+}
+
+bool rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
+    if (dev == NULL || out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    return rhi_backend_get_native_device(dev, out);
+}
+
+bool rhi_acceleration_structure_desc_validate(
+    const RHIAccelerationStructureDesc *desc) {
+    return desc != NULL &&
+           (desc->type == RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL ||
+            desc->type == RHI_ACCELERATION_STRUCTURE_TOP_LEVEL) &&
+           desc->storage_size != 0u &&
+           desc->storage_size <= (usize)RHI_MAX_SCREENSHOT_BYTES * 16u;
+}
+
+bool rhi_blas_one_triangle_desc_validate(
+    const RHIBLASOneTriangleDesc *desc) {
+    if (desc == NULL || !rhi_handle_valid(desc->vertex_buffer) ||
+        desc->vertex_count != 3u || desc->vertex_stride < 12u ||
+        desc->vertex_format != RHI_VERTEX_FORMAT_R32G32B32_SFLOAT ||
+        !desc->indexed || !rhi_handle_valid(desc->index_buffer) ||
+        desc->index_count != 3u) {
+        return false;
+    }
+    return true;
+}
+
+bool rhi_cmd_build_blas_one_triangle(
+    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas,
+    const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer,
+    usize scratch_offset) {
+    if (cmd == NULL || dev == NULL || !rhi_handle_valid(blas) ||
+        !rhi_handle_valid(scratch_buffer) ||
+        !rhi_blas_one_triangle_desc_validate(desc)) return false;
+    return rhi_backend_cmd_build_blas_one_triangle(
+        cmd, dev, blas, desc, scratch_buffer, scratch_offset);
+}
+
+RHIAccelerationStructure rhi_acceleration_structure_create(
+    RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
+    if (dev == NULL || !rhi_acceleration_structure_desc_validate(desc)) {
+        return RHI_HANDLE_NULL;
+    }
+    return rhi_backend_acceleration_structure_create(dev, desc);
+}
+
+void rhi_acceleration_structure_destroy(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    if (dev == NULL || !rhi_handle_valid(structure)) return;
+    rhi_backend_acceleration_structure_destroy(dev, structure);
 }
 
 bool rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,

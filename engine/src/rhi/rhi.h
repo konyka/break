@@ -25,6 +25,7 @@ typedef RHIHandle RHIPipeline;
 typedef RHIHandle RHITexture;
 typedef RHIHandle RHIFramebuffer;
 typedef RHIHandle RHIRenderPass;
+typedef RHIHandle RHIAccelerationStructure;
 
 #define RHI_HANDLE_NULL ((RHIHandle){0, 0})
 #define rhi_handle_valid(h) ((h).generation != 0)
@@ -34,6 +35,56 @@ typedef enum {
     RHI_BACKEND_OPENGL,
     RHI_BACKEND_VULKAN,
 } RHIBackend;
+
+typedef enum {
+    RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL,
+    RHI_ACCELERATION_STRUCTURE_TOP_LEVEL,
+} RHIAccelerationStructureType;
+
+typedef struct {
+    RHIAccelerationStructureType type;
+    usize storage_size;
+} RHIAccelerationStructureDesc;
+
+typedef struct {
+    RHIBuffer vertex_buffer;
+    usize vertex_offset;
+    u32 vertex_count;
+    u32 vertex_stride;
+    u32 vertex_format;
+    RHIBuffer index_buffer;
+    usize index_offset;
+    u32 index_count;
+    bool indexed;
+} RHIBLASOneTriangleDesc;
+
+#define RHI_VERTEX_FORMAT_R32G32B32_SFLOAT 1u
+
+typedef struct {
+    usize acceleration_structure_size;
+    usize build_scratch_size;
+} RHIAccelerationStructureBuildSizes;
+
+typedef enum {
+    RHI_NATIVE_HANDLE_NONE = 0,
+    RHI_NATIVE_HANDLE_VULKAN = 1,
+} RHINativeHandleType;
+
+typedef enum {
+    RHI_FEATURE_RAY_TRACING_PIPELINE = 1u << 0,
+    RHI_FEATURE_RAY_QUERY = 1u << 1,
+    RHI_FEATURE_ACCELERATION_STRUCTURE = 1u << 2,
+} RHIFeatureBits;
+
+typedef struct {
+    RHINativeHandleType type;
+    void *instance;
+    void *physical_device;
+    void *device;
+    void *graphics_queue;
+    u32 graphics_queue_family;
+    u32 feature_bits;
+} RHINativeDevice;
 
 /* Capability bit for a power-of-two color sample count. */
 static inline u32 rhi_sample_count_bit(u32 count) {
@@ -57,6 +108,7 @@ typedef struct {
     bool       present_target_preserved;
     bool       present_damage_supported;
     bool       present_buffer_age_supported;
+    u32        feature_bits;
 } RHICapabilities;
 
 typedef enum {
@@ -76,6 +128,8 @@ typedef enum {
     RHI_BUFFER_USAGE_TEXEL    = 1 << 3,
     RHI_BUFFER_USAGE_STORAGE  = 1 << 4,
     RHI_BUFFER_USAGE_INDIRECT = 1 << 5,
+    RHI_BUFFER_USAGE_AS_BUILD_INPUT = 1 << 6,
+    RHI_BUFFER_USAGE_DEVICE_ADDRESS = 1 << 7,
 } RHIBufferUsage;
 
 typedef enum {
@@ -192,6 +246,33 @@ typedef struct RHIDevice RHIDevice;
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
+bool       rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
+bool       rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
+bool       rhi_backend_cmd_build_blas_one_triangle(
+               RHICmdBuffer *cmd, RHIDevice *dev,
+               RHIAccelerationStructure blas,
+               const RHIBLASOneTriangleDesc *desc,
+               RHIBuffer scratch_buffer, usize scratch_offset);
+bool       rhi_cmd_build_blas_one_triangle(
+               RHICmdBuffer *cmd, RHIDevice *dev,
+               RHIAccelerationStructure blas,
+               const RHIBLASOneTriangleDesc *desc,
+               RHIBuffer scratch_buffer, usize scratch_offset);
+bool       rhi_acceleration_structure_desc_validate(
+               const RHIAccelerationStructureDesc *desc);
+bool       rhi_blas_one_triangle_desc_validate(
+               const RHIBLASOneTriangleDesc *desc);
+bool       rhi_blas_one_triangle_get_build_sizes(
+               RHIDevice *dev, const RHIBLASOneTriangleDesc *desc,
+               RHIAccelerationStructureBuildSizes *out_sizes);
+RHIAccelerationStructure rhi_acceleration_structure_create(
+               RHIDevice *dev, const RHIAccelerationStructureDesc *desc);
+void       rhi_acceleration_structure_destroy(
+               RHIDevice *dev, RHIAccelerationStructure structure);
+RHIAccelerationStructure rhi_backend_acceleration_structure_create(
+               RHIDevice *dev, const RHIAccelerationStructureDesc *desc);
+void       rhi_backend_acceleration_structure_destroy(
+               RHIDevice *dev, RHIAccelerationStructure structure);
 bool       rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                        u32 width, u32 height);
 /* Convert top-left drawable damage to the bottom-left convention used by

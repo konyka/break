@@ -291,6 +291,17 @@ typedef struct {
 } VKUniformRing;
 
 typedef struct {
+    VkAccelerationStructureKHR handle;
+    VkBuffer storage_buffer;
+    VkDeviceMemory storage_memory;
+    VkDeviceSize storage_size;
+} VKAccelerationStructureData;
+
+static PFN_vkGetAccelerationStructureBuildSizesKHR g_vk_get_as_build_sizes;
+static PFN_vkGetBufferDeviceAddress g_vk_get_buffer_device_address;
+static PFN_vkCmdBuildAccelerationStructuresKHR g_vk_cmd_build_as;
+
+typedef struct {
     VkInstance       instance;
     VkDebugUtilsMessengerEXT debug_messenger; /* R438: VK_NULL_HANDLE unless debug build w/ ext */
     VkPhysicalDevice         physical;
@@ -299,6 +310,9 @@ typedef struct {
     bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_multi_draw_indirect;  /* drawCount>1 in one indirect call */
+    bool             feat_ray_tracing_pipeline;
+    bool             feat_ray_query;
+    bool             feat_acceleration_structure;
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
     bool             feat_uab_sampled_image;    /* descriptorBindingSampledImageUpdateAfterBind usable */
     bool             validation_layer_present;  /* R635: VK_LAYER_KHRONOS_validation loaded */
@@ -440,6 +454,20 @@ typedef struct {
     bool vsync;
 } VKBackend;
 
+static bool vk_blas_buffer_address(VKBackend *vk, RHIDevice *dev,
+                                   RHIBuffer buffer, usize offset,
+                                   VkDeviceAddress *out_address) {
+    VKBufferData *data;
+    VkBufferDeviceAddressInfo info = {0};
+    if (vk == NULL || dev == NULL || out_address == NULL) return false;
+    data = (VKBufferData *)rhi_get_resource_typed(dev, buffer, RHI_RES_BUFFER);
+    if (data == NULL || g_vk_get_buffer_device_address == NULL) return false;
+    info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    info.buffer = data->buffer;
+    *out_address = g_vk_get_buffer_device_address(vk->device, &info) + offset;
+    return *out_address != 0;
+}
+
 static void vk_rebind_uniform_buffers(VKBackend *vk);
 
 /* ---- Helpers ---- */
@@ -524,6 +552,50 @@ static VKBackend *vk_cmd_backend(RHICmdBuffer *cmd) {
     return vk != NULL && vk->frame_started && (void *)cmd == (void *)vk
                ? vk
                : NULL;
+}
+
+static bool vk_device_extension_present(VkPhysicalDevice physical,
+                                        const char *extension_name) {
+    u32 count = 0u;
+    VkExtensionProperties *extensions;
+    bool found = false;
+
+    if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS ||
+        count == 0u) {
+        return false;
+    }
+    extensions = calloc(count, sizeof(*extensions));
+    if (extensions == NULL) return false;
+    if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, extensions) == VK_SUCCESS) {
+        for (u32 i = 0u; i < count; ++i) {
+            if (strcmp(extensions[i].extensionName, extension_name) == 0) {
+                found = true;
+                break;
+            }
+        }
+    }
+    free(extensions);
+    return found;
+}
+
+bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
+    const VKBackend *vk;
+    if (dev == NULL || out == NULL) return false;
+    vk = (const VKBackend *)dev->backend_data;
+    if (vk == NULL || vk->instance == VK_NULL_HANDLE ||
+        vk->physical == VK_NULL_HANDLE || vk->device == VK_NULL_HANDLE ||
+        vk->graphics_queue == VK_NULL_HANDLE) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
+    out->type = RHI_NATIVE_HANDLE_VULKAN;
+    out->instance = (void *)(uintptr_t)vk->instance;
+    out->physical_device = (void *)(uintptr_t)vk->physical;
+    out->device = (void *)(uintptr_t)vk->device;
+    out->graphics_queue = (void *)(uintptr_t)vk->graphics_queue;
+    out->graphics_queue_family = vk->graphics_family;
+    out->feature_bits = dev->capabilities.feature_bits;
+    return true;
 }
 
 #ifdef ENGINE_RHI_TEST
@@ -1710,6 +1782,14 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.color_resolve_supported =
         (dev->capabilities.color_sample_counts & ~rhi_sample_count_bit(1u)) != 0u;
     dev->capabilities.depth_resolve_supported = vk->feat_depth_stencil_resolve;
+    /* Record extension availability first. Capability bits are published only
+     * after the matching device features have been enabled successfully. */
+    vk->feat_ray_tracing_pipeline =
+        vk_device_extension_present(vk->physical, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        vk_device_extension_present(vk->physical, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
+    vk->feat_ray_query =
+        vk_device_extension_present(vk->physical, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    dev->capabilities.feature_bits = 0u;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
              vk->device_props.limits.maxPushConstantsSize,
@@ -1763,11 +1843,21 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     supported_vk11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     VkPhysicalDeviceVulkan12Features supported_vk12 = {0};
     supported_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR supported_accel = {0};
+    supported_accel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR supported_rt_pipeline = {0};
+    supported_rt_pipeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    VkPhysicalDeviceRayQueryFeaturesKHR supported_ray_query = {0};
+    supported_ray_query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
     supported_vk11.pNext = &supported_vk12;
+    supported_vk12.pNext = &supported_accel;
+    supported_accel.pNext = &supported_rt_pipeline;
+    supported_rt_pipeline.pNext = &supported_ray_query;
     VkPhysicalDeviceFeatures2 supported_features2 = {0};
     supported_features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     supported_features2.pNext = &supported_vk11;
     vkGetPhysicalDeviceFeatures2(vk->physical, &supported_features2);
+    dev->capabilities.feature_bits = 0u;
 
     VkPhysicalDeviceFeatures enabled_features = {0};
     if (supported_features2.features.fillModeNonSolid) {
@@ -1825,7 +1915,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->feat_uab_sampled_image = true;
     }
 
-    const char *dev_extensions[4];
+    const char *dev_extensions[8];
     u32 dev_extension_count = 0u;
     if (!vk_device_extension_available(vk->physical, VK_KHR_SWAPCHAIN_EXTENSION_NAME)) {
         LOG_FATAL("VK: required device extension unavailable: %s",
@@ -1834,6 +1924,25 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
     dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
+    bool as_extensions = supported_vk12.bufferDeviceAddress &&
+        vk_device_extension_available(
+        vk->physical, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
+        vk_device_extension_available(vk->physical,
+                                      VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    if (as_extensions) {
+        enabled_vk12.bufferDeviceAddress = VK_TRUE;
+        dev_extensions[dev_extension_count++] = VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME;
+        dev_extensions[dev_extension_count++] = VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME;
+    }
+    bool rt_pipeline_extensions = vk->feat_ray_tracing_pipeline && as_extensions &&
+        vk_device_extension_available(vk->physical,
+                                      VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+    if (rt_pipeline_extensions) {
+        dev_extensions[dev_extension_count++] = VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME;
+        dev_extensions[dev_extension_count++] = VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME;
+    }
+    if (vk->feat_ray_query && as_extensions)
+        dev_extensions[dev_extension_count++] = VK_KHR_RAY_QUERY_EXTENSION_NAME;
 #if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
     /* Mandatory on MoltenVK: a portability driver must have its subset
      * extension enabled whenever the device advertises it. */
@@ -1875,6 +1984,27 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             free(props);
         }
     }
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR enabled_accel = {0};
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabled_rt_pipeline = {0};
+    VkPhysicalDeviceRayQueryFeaturesKHR enabled_ray_query = {0};
+    bool enable_rt_pipeline = rt_pipeline_extensions &&
+                              supported_accel.accelerationStructure &&
+                              supported_rt_pipeline.rayTracingPipeline;
+    bool enable_ray_query = as_extensions && vk->feat_ray_query &&
+                            supported_accel.accelerationStructure &&
+                            supported_ray_query.rayQuery;
+    enabled_accel.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+    enabled_rt_pipeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
+    enabled_ray_query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
+    if (as_extensions) {
+        enabled_accel.accelerationStructure = VK_TRUE;
+        enabled_accel.pNext = &enabled_rt_pipeline;
+        enabled_rt_pipeline.rayTracingPipeline = enable_rt_pipeline ? VK_TRUE : VK_FALSE;
+        enabled_rt_pipeline.pNext = enable_ray_query ? &enabled_ray_query : NULL;
+        enabled_ray_query.rayQuery = enable_ray_query ? VK_TRUE : VK_FALSE;
+        enabled_vk12.pNext = &enabled_accel;
+    }
+
     VkDeviceCreateInfo dci = {0};
     dci.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     dci.pNext = &enabled_vk11; /* R441: 1.1 chain head (-> 1.2 features) */
@@ -1890,8 +2020,29 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         return false;
     }
 
+    if (enable_rt_pipeline) {
+        dev->capabilities.feature_bits |= RHI_FEATURE_RAY_TRACING_PIPELINE;
+    }
+    if (enable_ray_query) {
+        dev->capabilities.feature_bits |= RHI_FEATURE_RAY_QUERY;
+    }
+    vk->feat_acceleration_structure = as_extensions &&
+        supported_accel.accelerationStructure &&
+        enabled_accel.accelerationStructure == VK_TRUE;
+    if (vk->feat_acceleration_structure) {
+        dev->capabilities.feature_bits |= RHI_FEATURE_ACCELERATION_STRUCTURE;
+    }
+
     vkGetDeviceQueue(vk->device, vk->graphics_family, 0, &vk->graphics_queue);
     vkGetDeviceQueue(vk->device, vk->present_family, 0, &vk->present_queue);
+    g_vk_get_buffer_device_address =
+        (PFN_vkGetBufferDeviceAddress)vkGetDeviceProcAddr(
+            vk->device, "vkGetBufferDeviceAddress");
+    g_vk_get_as_build_sizes =
+        (PFN_vkGetAccelerationStructureBuildSizesKHR)vkGetDeviceProcAddr(
+            vk->device, "vkGetAccelerationStructureBuildSizesKHR");
+    g_vk_cmd_build_as = (PFN_vkCmdBuildAccelerationStructuresKHR)
+        vkGetDeviceProcAddr(vk->device, "vkCmdBuildAccelerationStructuresKHR");
 
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: fail init instead of running with a NULL swapchain. */
@@ -2481,6 +2632,23 @@ void rhi_device_destroy(RHIDevice *dev) {
                 if (cd->render_pass) vkDestroyRenderPass(vk->device, cd->render_pass, NULL);
                 if (cd->render_pass_load) vkDestroyRenderPass(vk->device, cd->render_pass_load, NULL);
                 free(cd);
+            }
+            break;
+        }
+        case RHI_RES_ACCELERATION_STRUCTURE: {
+            VKAccelerationStructureData *ad =
+                (VKAccelerationStructureData *)dev->slots[i].ptr;
+            if (ad) {
+                PFN_vkDestroyAccelerationStructureKHR destroy_as =
+                    (PFN_vkDestroyAccelerationStructureKHR)vkGetDeviceProcAddr(
+                        vk->device, "vkDestroyAccelerationStructureKHR");
+                if (destroy_as && ad->handle != VK_NULL_HANDLE)
+                    destroy_as(vk->device, ad->handle, NULL);
+                if (ad->storage_buffer != VK_NULL_HANDLE)
+                    vkDestroyBuffer(vk->device, ad->storage_buffer, NULL);
+                if (ad->storage_memory != VK_NULL_HANDLE)
+                    vkFreeMemory(vk->device, ad->storage_memory, NULL);
+                free(ad);
             }
             break;
         }
@@ -4196,6 +4364,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     if (desc->usage & RHI_BUFFER_USAGE_UNIFORM)      ci.usage |= VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     if (desc->usage & RHI_BUFFER_USAGE_STORAGE) {    ci.usage |= VK_BUFFER_USAGE_STORAGE_BUFFER_BIT; ci.usage |= VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT; /* R87-1: enable GPU-side copy */ }
     if (desc->usage & RHI_BUFFER_USAGE_INDIRECT)     ci.usage |= VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+    if (desc->usage & RHI_BUFFER_USAGE_AS_BUILD_INPUT)
+        ci.usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    if (desc->usage & RHI_BUFFER_USAGE_DEVICE_ADDRESS)
+        ci.usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     if (is_texel)                                     ci.usage |= VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
     /* rhi_cmd_update_buffer records vkCmdUpdateBuffer for temporal UBOs and
      * GPU light texel buffers; Vulkan requires every such target to include
@@ -4227,6 +4399,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     vkGetBufferMemoryRequirements(vk->device, buf, &mem_req);
 
     VkMemoryAllocateInfo ai = {0};
+    VkMemoryAllocateFlagsInfo address_flags = {0};
     ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     ai.allocationSize = mem_req.size;
 
@@ -4239,6 +4412,12 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         device_local = false;
         props = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         ai.memoryTypeIndex = vk_find_memory(vk, mem_req.memoryTypeBits, props);
+    }
+
+    if ((desc->usage & RHI_BUFFER_USAGE_DEVICE_ADDRESS) != 0u) {
+        address_flags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        address_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        ai.pNext = &address_flags;
     }
 
     VkDeviceMemory mem;
@@ -4309,6 +4488,214 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     vkFreeMemory(vk->device, bd->memory, NULL);
     free(bd);
     rhi_free_slot(dev, buf);
+}
+
+RHIAccelerationStructure rhi_backend_acceleration_structure_create(
+    RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
+    VKBackend *vk;
+    VKAccelerationStructureData *ad;
+    VkBufferCreateInfo buffer_info = {0};
+    VkMemoryRequirements memory_requirements;
+    VkMemoryAllocateInfo allocate_info = {0};
+    VkAccelerationStructureCreateInfoKHR as_info = {0};
+    PFN_vkCreateAccelerationStructureKHR create_as;
+    VkAccelerationStructureTypeKHR as_type;
+    u32 slot;
+
+    if (dev == NULL || desc == NULL ||
+        (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u) {
+        return RHI_HANDLE_NULL;
+    }
+    vk = vk_backend(dev);
+    if (vk == NULL || !rhi_acceleration_structure_desc_validate(desc)) {
+        return RHI_HANDLE_NULL;
+    }
+    create_as = (PFN_vkCreateAccelerationStructureKHR)vkGetDeviceProcAddr(
+        vk->device, "vkCreateAccelerationStructureKHR");
+    if (create_as == NULL) return RHI_HANDLE_NULL;
+
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = (VkDeviceSize)desc->storage_size;
+    buffer_info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    VkBuffer storage_buffer = VK_NULL_HANDLE;
+    if (vkCreateBuffer(vk->device, &buffer_info, NULL, &storage_buffer) != VK_SUCCESS)
+        return RHI_HANDLE_NULL;
+
+    vkGetBufferMemoryRequirements(vk->device, storage_buffer, &memory_requirements);
+    allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocate_info.allocationSize = memory_requirements.size;
+    allocate_info.memoryTypeIndex = vk_find_memory(
+        vk, memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VkDeviceMemory storage_memory = VK_NULL_HANDLE;
+    if (allocate_info.memoryTypeIndex == UINT32_MAX ||
+        vk_allocate_memory(vk, &allocate_info, &storage_memory) != VK_SUCCESS) {
+        vkDestroyBuffer(vk->device, storage_buffer, NULL);
+        return RHI_HANDLE_NULL;
+    }
+    if (vkBindBufferMemory(vk->device, storage_buffer, storage_memory, 0) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, storage_memory, NULL);
+        vkDestroyBuffer(vk->device, storage_buffer, NULL);
+        return RHI_HANDLE_NULL;
+    }
+
+    as_type = desc->type == RHI_ACCELERATION_STRUCTURE_TOP_LEVEL
+        ? VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR
+        : VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    as_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    as_info.buffer = storage_buffer;
+    as_info.size = (VkDeviceSize)desc->storage_size;
+    as_info.type = as_type;
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    if (create_as(vk->device, &as_info, NULL, &handle) != VK_SUCCESS) {
+        vkFreeMemory(vk->device, storage_memory, NULL);
+        vkDestroyBuffer(vk->device, storage_buffer, NULL);
+        return RHI_HANDLE_NULL;
+    }
+
+    ad = calloc(1, sizeof(*ad));
+    if (ad == NULL) {
+        PFN_vkDestroyAccelerationStructureKHR destroy_as =
+            (PFN_vkDestroyAccelerationStructureKHR)vkGetDeviceProcAddr(
+                vk->device, "vkDestroyAccelerationStructureKHR");
+        if (destroy_as) destroy_as(vk->device, handle, NULL);
+        vkFreeMemory(vk->device, storage_memory, NULL);
+        vkDestroyBuffer(vk->device, storage_buffer, NULL);
+        return RHI_HANDLE_NULL;
+    }
+    slot = rhi_alloc_slot(dev);
+    ad->handle = handle;
+    ad->storage_buffer = storage_buffer;
+    ad->storage_memory = storage_memory;
+    ad->storage_size = desc->storage_size;
+    dev->slots[slot].ptr = ad;
+    dev->slots[slot].type = RHI_RES_ACCELERATION_STRUCTURE;
+    return rhi_make_handle(slot, dev->slots[slot].generation);
+}
+
+void rhi_backend_acceleration_structure_destroy(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    VKBackend *vk;
+    VKAccelerationStructureData *ad;
+    PFN_vkDestroyAccelerationStructureKHR destroy_as;
+    if (dev == NULL) return;
+    vk = vk_backend(dev);
+    ad = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        dev, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (vk == NULL || ad == NULL) return;
+    vk_wait_frames(vk);
+    destroy_as = (PFN_vkDestroyAccelerationStructureKHR)vkGetDeviceProcAddr(
+        vk->device, "vkDestroyAccelerationStructureKHR");
+    if (destroy_as && ad->handle != VK_NULL_HANDLE)
+        destroy_as(vk->device, ad->handle, NULL);
+    vkDestroyBuffer(vk->device, ad->storage_buffer, NULL);
+    vkFreeMemory(vk->device, ad->storage_memory, NULL);
+    free(ad);
+    rhi_free_slot(dev, structure);
+}
+
+bool rhi_blas_one_triangle_get_build_sizes(
+    RHIDevice *dev, const RHIBLASOneTriangleDesc *desc,
+    RHIAccelerationStructureBuildSizes *out_sizes) {
+    VKBackend *vk;
+    VkDeviceAddress vertex_address;
+    VkDeviceAddress index_address;
+    VkAccelerationStructureGeometryTrianglesDataKHR triangles = {0};
+    VkAccelerationStructureGeometryKHR geometry = {0};
+    VkAccelerationStructureBuildGeometryInfoKHR build = {0};
+    VkAccelerationStructureBuildSizesInfoKHR sizes = {0};
+    u32 primitive_count = 1u;
+
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || out_sizes == NULL ||
+        (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u ||
+        !rhi_blas_one_triangle_desc_validate(desc)) return false;
+    vk = vk_backend(dev);
+    if (vk == NULL || g_vk_get_as_build_sizes == NULL ||
+        !vk_blas_buffer_address(vk, dev, desc->vertex_buffer,
+                                desc->vertex_offset, &vertex_address) ||
+        !vk_blas_buffer_address(vk, dev, desc->index_buffer,
+                                desc->index_offset, &index_address)) return false;
+
+    triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    triangles.vertexData.deviceAddress = vertex_address;
+    triangles.vertexStride = desc->vertex_stride;
+    triangles.maxVertex = desc->vertex_count - 1u;
+    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    triangles.indexData.deviceAddress = index_address;
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geometry.geometry.triangles = triangles;
+    geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.geometryCount = 1u;
+    build.pGeometries = &geometry;
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_vk_get_as_build_sizes(vk->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                            &build, &primitive_count, &sizes);
+    out_sizes->acceleration_structure_size = (usize)sizes.accelerationStructureSize;
+    out_sizes->build_scratch_size = (usize)sizes.buildScratchSize;
+    return out_sizes->acceleration_structure_size != 0u &&
+           out_sizes->build_scratch_size != 0u;
+}
+
+bool rhi_backend_cmd_build_blas_one_triangle(
+    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas,
+    const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer,
+    usize scratch_offset) {
+    VKBackend *vk;
+    VKAccelerationStructureData *as_data;
+    VKBufferData *scratch;
+    VkDeviceAddress vertex_address, index_address, scratch_address;
+    VkAccelerationStructureGeometryTrianglesDataKHR triangles = {0};
+    VkAccelerationStructureGeometryKHR geometry = {0};
+    VkAccelerationStructureBuildGeometryInfoKHR build = {0};
+    VkAccelerationStructureBuildRangeInfoKHR range = {0};
+    const VkAccelerationStructureBuildRangeInfoKHR *ranges[1] = {&range};
+
+    if (cmd == NULL || dev == NULL || g_vk_cmd_build_as == NULL ||
+        (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u ||
+        !rhi_blas_one_triangle_desc_validate(desc)) return false;
+    vk = vk_cmd_backend(cmd);
+    as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        dev, blas, RHI_RES_ACCELERATION_STRUCTURE);
+    scratch = (VKBufferData *)rhi_get_resource_typed(
+        dev, scratch_buffer, RHI_RES_BUFFER);
+    if (vk == NULL || as_data == NULL || scratch == NULL ||
+        !vk_blas_buffer_address(vk, dev, desc->vertex_buffer,
+                                desc->vertex_offset, &vertex_address) ||
+        !vk_blas_buffer_address(vk, dev, desc->index_buffer,
+                                desc->index_offset, &index_address) ||
+        !vk_blas_buffer_address(vk, dev, scratch_buffer,
+                                scratch_offset, &scratch_address)) return false;
+
+    vk_suspend_pass_for_compute(vk);
+
+    triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    triangles.vertexData.deviceAddress = vertex_address;
+    triangles.vertexStride = desc->vertex_stride;
+    triangles.maxVertex = desc->vertex_count - 1u;
+    triangles.indexType = VK_INDEX_TYPE_UINT32;
+    triangles.indexData.deviceAddress = index_address;
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geometry.geometry.triangles = triangles;
+    geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    build.dstAccelerationStructure = as_data->handle;
+    build.geometryCount = 1u;
+    build.pGeometries = &geometry;
+    build.scratchData.deviceAddress = scratch_address;
+    range.primitiveCount = 1u;
+    g_vk_cmd_build_as(vk->cmd_buffers[vk->current_frame], 1u, &build, ranges);
+    return true;
 }
 
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {

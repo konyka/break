@@ -5,10 +5,48 @@
 #include <glad.h>
 #include <limits.h>
 #include <string.h>
+#include <rhi/rhi.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool gl_extension_has(const char *extensions, const char *name);
 #endif
+
+bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
+    (void)dev;
+    if (out != NULL) memset(out, 0, sizeof(*out));
+    return false;
+}
+
+RHIAccelerationStructure rhi_backend_acceleration_structure_create(
+    RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
+    (void)dev;
+    (void)desc;
+    return RHI_HANDLE_NULL;
+}
+
+void rhi_backend_acceleration_structure_destroy(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    (void)dev;
+    (void)structure;
+}
+
+bool rhi_blas_one_triangle_get_build_sizes(
+    RHIDevice *dev, const RHIBLASOneTriangleDesc *desc,
+    RHIAccelerationStructureBuildSizes *out_sizes) {
+    (void)dev;
+    (void)desc;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    return false;
+}
+
+bool rhi_backend_cmd_build_blas_one_triangle(
+    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas,
+    const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer,
+    usize scratch_offset) {
+    (void)cmd; (void)dev; (void)blas; (void)desc;
+    (void)scratch_buffer; (void)scratch_offset;
+    return false;
+}
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <GL/gl.h>
