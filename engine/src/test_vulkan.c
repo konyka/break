@@ -2,6 +2,7 @@
 #include <rhi/rhi.h>
 #include <renderer/camera.h>
 #include <renderer/skybox.h>
+#include <renderer/sl_dlss.h>
 #include <renderer/terrain.h>
 #include <renderer/lighting.h>
 #include <renderer/point_shadow.h> /* R588: TEST 7d point shadow gate */
@@ -541,20 +542,30 @@ static bool test_acceleration_structure_lifecycle(RHIDevice *device) {
 }
 
 static bool test_one_triangle_blas_sizes(RHIDevice *device) {
+    static const f32 tri_verts[9] = {
+        0.0f, 1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f,
+        1.0f, -1.0f, 0.0f,
+    };
+    static const u32 tri_indices[3] = {0u, 1u, 2u};
     RHIBufferDesc vertex_desc = {
         RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_AS_BUILD_INPUT |
             RHI_BUFFER_USAGE_DEVICE_ADDRESS,
-        36u, NULL};
+        sizeof(tri_verts), tri_verts};
     RHIBufferDesc index_desc = {
         RHI_BUFFER_USAGE_INDEX | RHI_BUFFER_USAGE_AS_BUILD_INPUT |
             RHI_BUFFER_USAGE_DEVICE_ADDRESS,
-        12u, NULL};
+        sizeof(tri_indices), tri_indices};
     RHIBLASOneTriangleDesc triangle = {0};
     RHIAccelerationStructureBuildSizes sizes = {0};
+    RHIAccelerationStructureBuildSizes tlas_sizes = {0};
     RHIBuffer vertices;
     RHIBuffer indices;
     RHIBuffer scratch = RHI_HANDLE_NULL;
+    RHIBuffer instance_buffer = RHI_HANDLE_NULL;
+    RHIBuffer tlas_scratch = RHI_HANDLE_NULL;
     RHIAccelerationStructure blas = RHI_HANDLE_NULL;
+    RHIAccelerationStructure tlas = RHI_HANDLE_NULL;
     RHICapabilities capabilities = {0};
     bool ok;
 
@@ -585,20 +596,58 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
             sizes.build_scratch_size, NULL};
         blas = rhi_acceleration_structure_create(device, &as_desc);
         scratch = rhi_buffer_create(device, &scratch_desc);
-        RHICmdBuffer *cmd = rhi_frame_begin(device);
-        ok = rhi_handle_valid(blas) && rhi_handle_valid(scratch) && cmd != NULL &&
-             rhi_cmd_build_blas_one_triangle(cmd, device, blas, &triangle,
-                                             scratch, 0u);
-        if (cmd != NULL) {
-            rhi_frame_end(device);
-            rhi_present(device);
-        }
-        if (ok) LOG_INFO("PASS: one-triangle BLAS build recorded");
+        ok = rhi_handle_valid(blas) && rhi_handle_valid(scratch) &&
+             rhi_build_blas_one_triangle(device, blas, &triangle, scratch, 0u);
+        bool tlas_ok = false;
+        if (ok) LOG_INFO("PASS: geometry-backed one-triangle BLAS build recorded");
         else LOG_ERROR("FAIL: one-triangle BLAS build recording");
+        if (ok) {
+            u64 blas_address =
+                rhi_acceleration_structure_get_device_address(device, blas);
+            unsigned char instance_record[RHI_TLAS_INSTANCE_SIZE];
+            RHITLASInstanceDesc instance = {0};
+            instance.transform[0] = 1.0f;
+            instance.transform[5] = 1.0f;
+            instance.transform[10] = 1.0f;
+            instance.instance_mask = 0xFFu;
+            RHIBufferDesc instance_desc = {
+                RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_AS_BUILD_INPUT |
+                    RHI_BUFFER_USAGE_DEVICE_ADDRESS,
+                RHI_TLAS_INSTANCE_SIZE, instance_record};
+            if (blas_address != 0u &&
+                rhi_tlas_instance_encode(instance_record, sizeof(instance_record),
+                                         blas_address, &instance)) {
+                instance_buffer = rhi_buffer_create(device, &instance_desc);
+                if (rhi_handle_valid(instance_buffer) &&
+                    rhi_tlas_one_instance_get_build_sizes(
+                        device, instance_buffer, &tlas_sizes)) {
+                    RHIAccelerationStructureDesc tlas_desc = {
+                        RHI_ACCELERATION_STRUCTURE_TOP_LEVEL,
+                        tlas_sizes.acceleration_structure_size};
+                    RHIBufferDesc tlas_scratch_desc = {
+                        RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_DEVICE_ADDRESS,
+                        tlas_sizes.build_scratch_size, NULL};
+                    tlas = rhi_acceleration_structure_create(device, &tlas_desc);
+                    tlas_scratch = rhi_buffer_create(device, &tlas_scratch_desc);
+                    tlas_ok = rhi_handle_valid(tlas) &&
+                              rhi_handle_valid(tlas_scratch) &&
+                              rhi_build_tlas_one_instance(
+                                  device, tlas, instance_buffer,
+                                  tlas_scratch, 0u);
+                }
+            }
+            if (tlas_ok) LOG_INFO("PASS: one-instance TLAS build recorded");
+            else LOG_ERROR("FAIL: one-instance TLAS build recording");
+        }
+        ok = ok && tlas_ok;
     } else {
         LOG_ERROR("FAIL: one-triangle BLAS size query");
     }
+    /* One-shot builds waited for queue idle, so teardown is race-free. */
+    if (rhi_handle_valid(tlas)) rhi_acceleration_structure_destroy(device, tlas);
+    if (rhi_handle_valid(tlas_scratch)) rhi_buffer_destroy(device, tlas_scratch);
     if (rhi_handle_valid(blas)) rhi_acceleration_structure_destroy(device, blas);
+    if (rhi_handle_valid(instance_buffer)) rhi_buffer_destroy(device, instance_buffer);
     if (rhi_handle_valid(scratch)) rhi_buffer_destroy(device, scratch);
     if (rhi_handle_valid(indices)) rhi_buffer_destroy(device, indices);
     if (rhi_handle_valid(vertices)) rhi_buffer_destroy(device, vertices);
@@ -5325,6 +5374,17 @@ int main(int argc, char **argv) {
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =
         test_one_triangle_blas_sizes(render.device);
+    {
+        RHINativeDevice native = {0};
+        SLDlssProbeResult probe = SL_DLSS_UNAVAILABLE;
+        if (rhi_device_get_native_device(render.device, &native) &&
+            sl_dlss_probe(&native, &probe) && probe == SL_DLSS_SUPPORTED) {
+            LOG_INFO("PASS: streamline DLSS runtime supported on adapter");
+        } else {
+            LOG_INFO("SKIP: streamline DLSS probe (%s)",
+                     sl_dlss_probe_result_text(probe));
+        }
+    }
 
     /* Test: Buffer creation + upload */
     f32 tri_verts[] = {
