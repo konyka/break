@@ -57,16 +57,26 @@ On the available Vulkan device, the smoke test currently reports:
 
 ## Cross-Platform Validation Matrix
 
-| Platform | Toolchain | GPU / Driver | Config | Focused tests | test_vulkan | AS path |
-|---|---|---|---|---|---|---|
-| Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query (464/308), build recording |
-| Linux (Fedora 44) | GCC 16.2 | Intel UHD (ANV) | GL + Vulkan | 4/4 pass | all passed, validation 0 | skip (no RT extensions) — fail-closed verified |
-| Linux (Fedora 44) | GCC 16.2 | NVIDIA RTX A5000 Mobile (NVK/nouveau) | Vulkan | — | device created, early checks pass | skip (no RT extensions under NVK) — fail-closed verified on RTX hardware |
-| macOS 26.7 (Apple M2) | Apple clang 21 | Apple M2 (MoltenVK) | Vulkan | 4/4 pass | all passed, validation 0, clean shutdown | skip (no RT extensions) — fail-closed verified |
+| Platform | Toolchain | GPU / Driver | Display | Config | Focused tests | test_vulkan | AS path |
+|---|---|---|---|---|---|---|---|
+| Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | Win32 | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query, build |
+| Windows | MSVC 19.51 | NVIDIA RTX 4060 (proprietary) | Win32 | Vulkan | 4/4 pass | AS + TLAS pass (2560/1920), DLSS probe supported, gate 0 | full BLAS + TLAS builds; DLSS runtime detected |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (ANV) | native Wayland | GL + Vulkan | 4/4 pass each | all passed, gate 0 | skip (no RT extensions) — fail-closed verified |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | NVIDIA RTX A5000 (NVK/nouveau) | native Wayland | Vulkan | 4/4 pass | all passed, gate 0 | skip (no RT extensions under NVK) — fail-closed verified on RTX hardware |
+| macOS 26.7 (Apple M2) | Apple clang 21 | Apple M2 (MoltenVK) | Cocoa | Vulkan | 4/4 pass | all passed, gate 0, clean shutdown | skip (no RT extensions) — fail-closed verified |
+
+Linux display note: the Fedora desktop is a native GNOME Wayland session; the
+Wayland rows above run `ENGINE_ENABLE_WAYLAND=ON` against
+`window_wayland.c` + `VK_USE_PLATFORM_WAYLAND_KHR` directly on
+`wayland-0` (no Xwayland). Earlier exploratory runs on the same host went
+through the Xwayland compatibility layer (`DISPLAY=:0` + the mutter Xwayland
+authority) and produced the same pass/fail-closed results; the matrix records
+the native-path runs. `test_sl_dlss` runs only on Windows; on Linux the DLSS
+probe correctly reports unavailable.
 
 The Linux and macOS runs used the local Vulkan SDKs already present on those
-machines; the Fedora graphics runs attached to the existing Xwayland session.
-No credentials or machine account details are stored in this repository.
+machines. No credentials or machine account details are stored in this
+repository.
 
 A CMake linking fix surfaced by this sweep: `test_rhi_native` previously linked
 platform graphics libraries only on Windows; it now mirrors the full platform
