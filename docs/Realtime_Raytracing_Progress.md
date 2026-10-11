@@ -39,11 +39,31 @@ On the available Vulkan device, the smoke test currently reports:
 - one-triangle BLAS build recording: pass;
 - Vulkan validation messages: `0`.
 
+## Cross-Platform Validation Matrix
+
+| Platform | Toolchain | GPU / Driver | Config | Focused tests | test_vulkan | AS path |
+|---|---|---|---|---|---|---|
+| Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query (464/308), build recording |
+| Linux (Fedora 44) | GCC 16.2 | Intel UHD (ANV) | GL + Vulkan | 4/4 pass | all passed, validation 0 | skip (no RT extensions) — fail-closed verified |
+| Linux (Fedora 44) | GCC 16.2 | NVIDIA RTX A5000 Mobile (NVK/nouveau) | Vulkan | — | device created, early checks pass | skip (no RT extensions under NVK) — fail-closed verified on RTX hardware |
+| macOS 26.7 (Apple M2) | Apple clang 21 | Apple M2 (MoltenVK) | Vulkan | 4/4 pass | all passed, validation 0, clean shutdown | skip (no RT extensions) — fail-closed verified |
+
+The Linux and macOS runs used the local Vulkan SDKs already present on those
+machines; the Fedora graphics runs attached to the existing Xwayland session.
+No credentials or machine account details are stored in this repository.
+
+A CMake linking fix surfaced by this sweep: `test_rhi_native` previously linked
+platform graphics libraries only on Windows; it now mirrors the full platform
+link matrix used by `test_rhi_capabilities` (GL/GLX/Wayland EGL, Vulkan, macOS
+frameworks).
+
 ## Known Limitations
 
 - The current Vulkan test selects the AMD Radeon integrated GPU. NVIDIA RTX
   hardware has been enumerated on the host but has not yet been selected for a
-  dedicated RT/DLSS run.
+  dedicated RT/DLSS run. On Linux, the RTX A5000 currently runs the NVK/nouveau
+  stack, which exposes no RT extensions; a proprietary-driver Linux run and a
+  Windows RTX-selected run remain outstanding.
 - The current implementation stops before TLAS construction, shader binding
   tables, ray-tracing pipeline creation, ray dispatch, traversal shaders, and
   image-quality validation of ray-traced output.
@@ -51,9 +71,11 @@ On the available Vulkan device, the smoke test currently reports:
   Streamline/DLSS release binaries must be obtained from NVIDIA's official
   release distribution, kept external to the source repository, signature
   checked, and packaged only under approved license terms.
-- Full `test_vulkan` still reports pre-existing failures in MSAA depth
-  roundtrip and Vulkan golden-image drift. These are not caused by the new AS
-  path; the new validation gate remains at zero.
+- Full `test_vulkan` still reports pre-existing failures on the Windows/AMD
+  configuration in MSAA depth roundtrip and Vulkan golden-image drift. The same
+  suite passes end-to-end (goldens included) on Linux/ANV and macOS/MoltenVK,
+  which localizes those regressions to the Windows/AMD path; the new validation
+  gate remains at zero everywhere.
 - No performance claim is made yet. Real RTX performance, VRAM, frame time,
   and image-quality budgets require a selected NVIDIA adapter and repeatable
   benchmark scenes.
@@ -62,8 +84,10 @@ On the available Vulkan device, the smoke test currently reports:
 
 1. Add triangle data upload and completion-safe resource lifetime for the BLAS
    build smoke path.
-2. Select the NVIDIA RTX 4060 adapter explicitly and rerun Vulkan validation on
-   the discrete GPU and hybrid-display configuration.
+2. Select the NVIDIA RTX 4060 adapter explicitly on Windows and rerun Vulkan
+   validation on the discrete GPU and hybrid-display configuration; separately,
+   arrange a proprietary-driver Linux run on the RTX A5000 (NVK cannot expose
+   RT extensions).
 3. Add a minimal TLAS/instance contract only after the BLAS path is stable.
 4. Add Vulkan ray-tracing pipeline, shader groups, SBT, and one traversal scene.
 5. Integrate official Streamline Vulkan interop and optional DLSS Super
