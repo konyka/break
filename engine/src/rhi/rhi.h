@@ -65,6 +65,18 @@ typedef struct {
     usize build_scratch_size;
 } RHIAccelerationStructureBuildSizes;
 
+/* Serialized VkAccelerationStructureInstanceKHR-compatible record (64 bytes,
+ * array-of-structs layout): transform row-major 3x4, packed custom index/mask,
+ * packed SBT offset/flags, then the BLAS device address. */
+#define RHI_TLAS_INSTANCE_SIZE 64u
+typedef struct {
+    f32 transform[12];
+    u32 instance_custom_index;
+    u8  instance_mask;
+    u32 sbt_record_offset;
+    u32 instance_flags;
+} RHITLASInstanceDesc;
+
 typedef enum {
     RHI_NATIVE_HANDLE_NONE = 0,
     RHI_NATIVE_HANDLE_VULKAN = 1,
@@ -253,11 +265,39 @@ bool       rhi_backend_cmd_build_blas_one_triangle(
                RHIAccelerationStructure blas,
                const RHIBLASOneTriangleDesc *desc,
                RHIBuffer scratch_buffer, usize scratch_offset);
-bool       rhi_cmd_build_blas_one_triangle(
+u64        rhi_backend_acceleration_structure_get_device_address(
+               RHIDevice *dev, RHIAccelerationStructure structure);
+bool       rhi_backend_tlas_one_instance_get_build_sizes(
+               RHIDevice *dev, RHIBuffer instance_buffer,
+               RHIAccelerationStructureBuildSizes *out_sizes);
+bool       rhi_backend_cmd_build_tlas_one_instance(
                RHICmdBuffer *cmd, RHIDevice *dev,
-               RHIAccelerationStructure blas,
+               RHIAccelerationStructure tlas, RHIBuffer instance_buffer,
+               RHIBuffer scratch_buffer, usize scratch_offset);
+/* One-shot build submission (like texture staging): records into a private
+ * command buffer, submits, and waits for the queue to idle. Must not be called
+ * between rhi_frame_begin and rhi_frame_end. On return the acceleration
+ * structure is safe to use and all inputs are safe to destroy. */
+bool       rhi_build_blas_one_triangle(
+               RHIDevice *dev, RHIAccelerationStructure blas,
                const RHIBLASOneTriangleDesc *desc,
                RHIBuffer scratch_buffer, usize scratch_offset);
+/* TLAS one-instance path: encode the instance record, query TLAS sizes, and
+ * record the build. The instance buffer must be STORAGE|DEVICE_ADDRESS and at
+ * least RHI_TLAS_INSTANCE_SIZE bytes. */
+bool       rhi_tlas_instance_encode(
+               void *dst, usize dst_size,
+               u64 blas_device_address,
+               const RHITLASInstanceDesc *desc);
+u64        rhi_acceleration_structure_get_device_address(
+               RHIDevice *dev, RHIAccelerationStructure structure);
+bool       rhi_tlas_one_instance_get_build_sizes(
+               RHIDevice *dev, RHIBuffer instance_buffer,
+               RHIAccelerationStructureBuildSizes *out_sizes);
+bool       rhi_build_tlas_one_instance(
+               RHIDevice *dev, RHIAccelerationStructure tlas,
+               RHIBuffer instance_buffer, RHIBuffer scratch_buffer,
+               usize scratch_offset);
 bool       rhi_acceleration_structure_desc_validate(
                const RHIAccelerationStructureDesc *desc);
 bool       rhi_blas_one_triangle_desc_validate(

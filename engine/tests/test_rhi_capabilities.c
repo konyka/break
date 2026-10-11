@@ -178,6 +178,52 @@ TEST(one_triangle_blas_descriptor_validation)
     ASSERT_FALSE(rhi_blas_one_triangle_desc_validate(&desc));
 }
 
+TEST(tlas_instance_encoding_is_stable_and_rejects_bad_input)
+{
+    unsigned char record[RHI_TLAS_INSTANCE_SIZE];
+    RHITLASInstanceDesc desc = {0};
+    u32 packed0, packed1;
+    u64 address = 0x1122334455667788ull;
+
+    desc.transform[0] = 1.0f;
+    desc.transform[5] = 1.0f;
+    desc.transform[10] = 1.0f;
+    desc.instance_custom_index = 7u;
+    desc.instance_mask = 0xFFu;
+    desc.sbt_record_offset = 0u;
+    desc.instance_flags = 0u;
+
+    ASSERT_FALSE(rhi_tlas_instance_encode(NULL, sizeof(record), address, &desc));
+    ASSERT_FALSE(rhi_tlas_instance_encode(record, RHI_TLAS_INSTANCE_SIZE - 1u,
+                                          address, &desc));
+    ASSERT_FALSE(rhi_tlas_instance_encode(record, sizeof(record), 0u, &desc));
+    ASSERT_FALSE(rhi_tlas_instance_encode(record, sizeof(record), address, NULL));
+    ASSERT_TRUE(rhi_tlas_instance_encode(record, sizeof(record), address, &desc));
+    ASSERT_FLOAT_EQ(*(f32 *)(void *)record, 1.0f, 0.0f);
+    memcpy(&packed0, record + 48, sizeof(packed0));
+    memcpy(&packed1, record + 52, sizeof(packed1));
+    ASSERT_EQ(packed0, 0xFF000007u);
+    ASSERT_EQ(packed1, 0u);
+    ASSERT_EQ(*(u64 *)(void *)(record + 56), address);
+}
+
+TEST(tlas_fallbacks_fail_closed)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIAccelerationStructureBuildSizes sizes = {1u, 1u};
+    RHIBuffer instance = {1u, 1u};
+
+    ASSERT_NEQ(device, NULL);
+    ASSERT_EQ(rhi_acceleration_structure_get_device_address(device, instance), 0u);
+    ASSERT_EQ(rhi_acceleration_structure_get_device_address(NULL, instance), 0u);
+    ASSERT_FALSE(rhi_tlas_one_instance_get_build_sizes(device, instance, &sizes));
+    ASSERT_EQ(sizes.acceleration_structure_size, 0u);
+    ASSERT_EQ(sizes.build_scratch_size, 0u);
+    ASSERT_FALSE(rhi_tlas_one_instance_get_build_sizes(NULL, instance, &sizes));
+    ASSERT_FALSE(rhi_tlas_one_instance_get_build_sizes(device, RHI_HANDLE_NULL, &sizes));
+    rhi_test_device_destroy(device);
+}
+
 TEST(command_handles_are_scoped_to_their_device)
 {
     RHIDevice *first = rhi_test_device_create();
@@ -914,6 +960,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(acceleration_structure_descriptor_validation);
     RUN_TEST(acceleration_structure_gl_fallback_is_safe);
     RUN_TEST(one_triangle_blas_descriptor_validation);
+    RUN_TEST(tlas_instance_encoding_is_stable_and_rejects_bad_input);
+    RUN_TEST(tlas_fallbacks_fail_closed);
     RUN_TEST(command_handles_are_scoped_to_their_device);
     RUN_TEST(current_device_state_is_thread_local);
     RUN_TEST(gl_state_cache_is_invalidated_when_device_changes);

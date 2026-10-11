@@ -48,6 +48,29 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     return false;
 }
 
+u64 rhi_backend_acceleration_structure_get_device_address(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    (void)dev; (void)structure;
+    return 0u;
+}
+
+bool rhi_backend_tlas_one_instance_get_build_sizes(
+    RHIDevice *dev, RHIBuffer instance_buffer,
+    RHIAccelerationStructureBuildSizes *out_sizes) {
+    (void)dev; (void)instance_buffer;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    return false;
+}
+
+bool rhi_backend_cmd_build_tlas_one_instance(
+    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas,
+    RHIBuffer instance_buffer, RHIBuffer scratch_buffer,
+    usize scratch_offset) {
+    (void)cmd; (void)dev; (void)tlas; (void)instance_buffer;
+    (void)scratch_buffer; (void)scratch_offset;
+    return false;
+}
+
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <GL/gl.h>
     /* WGL extension function types */

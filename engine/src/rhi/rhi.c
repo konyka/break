@@ -269,15 +269,60 @@ bool rhi_blas_one_triangle_desc_validate(
     return true;
 }
 
-bool rhi_cmd_build_blas_one_triangle(
-    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas,
+bool rhi_build_blas_one_triangle(
+    RHIDevice *dev, RHIAccelerationStructure blas,
     const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer,
     usize scratch_offset) {
-    if (cmd == NULL || dev == NULL || !rhi_handle_valid(blas) ||
+    if (dev == NULL || !rhi_handle_valid(blas) ||
         !rhi_handle_valid(scratch_buffer) ||
         !rhi_blas_one_triangle_desc_validate(desc)) return false;
-    return rhi_backend_cmd_build_blas_one_triangle(
-        cmd, dev, blas, desc, scratch_buffer, scratch_offset);
+    return rhi_backend_cmd_build_blas_one_triangle(NULL, dev, blas, desc,
+                                                   scratch_buffer, scratch_offset);
+}
+
+bool rhi_tlas_instance_encode(void *dst, usize dst_size,
+                              u64 blas_device_address,
+                              const RHITLASInstanceDesc *desc) {
+    u32 packed0, packed1;
+    if (dst == NULL || dst_size < RHI_TLAS_INSTANCE_SIZE || desc == NULL ||
+        blas_device_address == 0u) return false;
+    packed0 = (desc->instance_custom_index & 0x00FFFFFFu) |
+              ((u32)desc->instance_mask << 24);
+    packed1 = (desc->sbt_record_offset & 0x00FFFFFFu) |
+              ((desc->instance_flags & 0xFFu) << 24);
+    memset(dst, 0, RHI_TLAS_INSTANCE_SIZE);
+    memcpy((u8 *)dst, desc->transform, sizeof(desc->transform));
+    memcpy((u8 *)dst + 48, &packed0, sizeof(packed0));
+    memcpy((u8 *)dst + 52, &packed1, sizeof(packed1));
+    memcpy((u8 *)dst + 56, &blas_device_address, sizeof(blas_device_address));
+    return true;
+}
+
+u64 rhi_acceleration_structure_get_device_address(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    if (dev == NULL || !rhi_handle_valid(structure)) return 0u;
+    return rhi_backend_acceleration_structure_get_device_address(
+        dev, structure);
+}
+
+bool rhi_tlas_one_instance_get_build_sizes(
+    RHIDevice *dev, RHIBuffer instance_buffer,
+    RHIAccelerationStructureBuildSizes *out_sizes) {
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || out_sizes == NULL || !rhi_handle_valid(instance_buffer))
+        return false;
+    return rhi_backend_tlas_one_instance_get_build_sizes(
+        dev, instance_buffer, out_sizes);
+}
+
+bool rhi_build_tlas_one_instance(
+    RHIDevice *dev, RHIAccelerationStructure tlas, RHIBuffer instance_buffer,
+    RHIBuffer scratch_buffer, usize scratch_offset) {
+    if (dev == NULL || !rhi_handle_valid(tlas) ||
+        !rhi_handle_valid(instance_buffer) ||
+        !rhi_handle_valid(scratch_buffer)) return false;
+    return rhi_backend_cmd_build_tlas_one_instance(
+        NULL, dev, tlas, instance_buffer, scratch_buffer, scratch_offset);
 }
 
 RHIAccelerationStructure rhi_acceleration_structure_create(
