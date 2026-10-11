@@ -1,0 +1,253 @@
+#include <renderer/sl_dlss.h>
+#include <core/types.h>
+
+#ifdef _WIN32
+
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <stdio.h>
+#include <string.h>
+
+/* ---- ABI mirrors of the official Streamline 2.14.1 C++ headers ----
+ *
+ * The public sl.h headers are C++; this engine is C11, so the structures
+ * passed across the sl.interposer.dll boundary are mirrored here exactly.
+ * The layout contract is sl_struct.h's BaseStructure:
+ *   { BaseStructure *next; StructType guid(16B); size_t version; }
+ * followed by the declared members in declaration order with natural
+ * alignment. static_asserts below pin the sizes this code was verified
+ * against (x64, sl 2.14.1). */
+
+typedef struct {
+    u32 data1;
+    u16 data2;
+    u16 data3;
+    u8  data4[8];
+} SLStructType;
+
+typedef struct {
+    void        *next;
+    SLStructType struct_type;
+    usize        struct_version;
+} SLBaseStructure;
+
+/* sl::Feature: kFeatureDLSS = 0 */
+static const u32 SL_FEATURE_DLSS = 0u;
+
+/* sl::LogLevel { eOff, eDefault, eVerbose } */
+static const u32 SL_LOG_LEVEL_DEFAULT = 1u;
+
+/* sl::EngineType { eCustom=0 } / sl::RenderAPI { eD3D11, eD3D12, eVulkan } */
+static const u32 SL_ENGINE_CUSTOM = 0u;
+static const u32 SL_RENDER_API_VULKAN = 2u;
+
+/* sl::PreferenceFlags::eDisableCLStateTracking | eAllowOTA */
+static const u64 SL_PREF_FLAGS_DEFAULT = (1u << 0) | (1u << 3);
+
+/* kSDKVersion = (2<<48)|(14<<32)|(1<<16)|0xfedc */
+#define SL_SDK_VERSION_2_14_1 (((u64)2 << 48) | ((u64)14 << 32) | ((u64)1 << 16) | (u64)0xfedc)
+
+/* {1CA10965-BF8E-432B-8DA1-6716D879FB14}, kStructVersion1 */
+typedef struct {
+    SLBaseStructure base;
+    u8   show_console;               /* +32 */
+    u8   _pad0[3];
+    u32  log_level;                  /* +36 */
+    const wchar_t **paths_to_plugins; /* +40 */
+    u32  num_paths_to_plugins;       /* +48 */
+    u8   _pad1[4];
+    const wchar_t *path_to_logs_and_data; /* +56 */
+    void *allocate_callback;         /* +64 */
+    void *release_callback;          /* +72 */
+    void *log_message_callback;      /* +80 */
+    u64  flags;                      /* +88 */
+    const u32 *features_to_load;     /* +96 */
+    u32  num_features_to_load;       /* +104 */
+    u8   _pad2[4];
+    u32  application_id;             /* +112 */
+    u8   _pad3[4];
+    u32  engine;                     /* +120 */
+    u8   _pad4[4];
+    const char *engine_version;      /* +128 */
+    const char *project_id;          /* +136 */
+    u32  render_api;                 /* +144 */
+    u8   _pad5[4];
+} SLPreferences;
+
+/* {0677315F-A746-4492-9F42-CB6142C9C3D4}, kStructVersion1 */
+typedef struct {
+    SLBaseStructure base;
+    u8   *device_luid;               /* +32 */
+    u32   device_luid_size;          /* +40 */
+    u8    _pad[4];
+    void *vk_physical_device;        /* +48 */
+} SLAdapterInfo;
+
+_Static_assert(sizeof(SLBaseStructure) == 32, "sl base layout");
+_Static_assert(sizeof(SLPreferences) == 152, "sl preferences layout 2.14.1");
+_Static_assert(sizeof(SLAdapterInfo) == 56, "sl adapter info layout 2.14.1");
+
+/* sl::Result codes this module classifies. */
+#define SL_RESULT_OK 0
+#define SL_RESULT_DRIVER_OUT_OF_DATE 2
+#define SL_RESULT_OS_OUT_OF_DATE 3
+#define SL_RESULT_NO_SUPPORTED_ADAPTER 6
+#define SL_RESULT_ADAPTER_NOT_SUPPORTED 7
+#define SL_RESULT_NGX_FAILED 16
+
+typedef int (WINAPI *PFN_sl_init)(const SLPreferences *, u64);
+typedef int (WINAPI *PFN_sl_shutdown)(void);
+typedef int (WINAPI *PFN_sl_is_feature_supported)(u32, const SLAdapterInfo *);
+
+static HMODULE g_sl_module;
+static PFN_sl_shutdown g_sl_shutdown_fn;
+static bool g_initialized;
+
+static const SLStructType kPrefGuid = {
+    0x1ca10965u, 0xbf8eu, 0x432bu,
+    { 0x8d, 0xa1, 0x67, 0x16, 0xd8, 0x79, 0xfb, 0x14 }
+};
+static const SLStructType kAdapterGuid = {
+    0x0677315fu, 0xa746u, 0x4492u,
+    { 0x9f, 0x42, 0xcb, 0x61, 0x42, 0xc9, 0xc3, 0xd4 }
+};
+
+static HMODULE sl_load_interposer(void) {
+    static const wchar_t *candidates[] = {
+        L"../third_party/streamline-bin/v2.14.1/bin/x64/sl.interposer.dll",
+        L"third_party/streamline-bin/v2.14.1/bin/x64/sl.interposer.dll",
+        L"sl.interposer.dll",
+    };
+    wchar_t env_path[512];
+    usize i;
+
+    /* Explicit override wins first: $BREAK_SL_DIR\sl.interposer.dll */
+    if (GetEnvironmentVariableW(L"BREAK_SL_DIR", env_path,
+                                (DWORD)(sizeof(env_path) / sizeof(wchar_t))) > 0 &&
+        env_path[0] != L'\0') {
+        wchar_t full[1024];
+        int written = _snwprintf_s(full, (rsize_t)(sizeof(full) / sizeof(wchar_t)),
+                                   _TRUNCATE, L"%s\\sl.interposer.dll", env_path);
+        if (written > 0) {
+            HMODULE m = LoadLibraryExW(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+            if (m != NULL) return m;
+        }
+    }
+    for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        HMODULE m = LoadLibraryExW(candidates[i], NULL,
+                                   LOAD_WITH_ALTERED_SEARCH_PATH);
+        if (m != NULL) return m;
+    }
+    return NULL;
+}
+
+const char *sl_dlss_probe_result_text(SLDlssProbeResult result) {
+    switch (result) {
+    case SL_DLSS_SUPPORTED: return "supported";
+    case SL_DLSS_MISSING_RUNTIME: return "sl.interposer.dll not found";
+    case SL_DLSS_INIT_FAILED: return "slInit failed";
+    case SL_DLSS_FEATURE_UNSUPPORTED:
+        return "dlss unsupported on this adapter/driver/os";
+    case SL_DLSS_INTERNAL_ERROR: return "internal loader error";
+    case SL_DLSS_UNAVAILABLE:
+    default: return "unavailable";
+    }
+}
+
+bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
+    PFN_sl_init init_fn;
+    PFN_sl_is_feature_supported supported_fn;
+    SLPreferences prefs;
+    SLAdapterInfo adapter;
+    u32 feature = SL_FEATURE_DLSS;
+    int rc;
+
+    if (out_result != NULL) *out_result = SL_DLSS_UNAVAILABLE;
+    if (g_initialized) {
+        if (out_result != NULL) *out_result = SL_DLSS_SUPPORTED;
+        return true;
+    }
+    if (g_sl_module == NULL) g_sl_module = sl_load_interposer();
+    if (g_sl_module == NULL) {
+        if (out_result != NULL) *out_result = SL_DLSS_MISSING_RUNTIME;
+        return false;
+    }
+    init_fn = (PFN_sl_init)(void *)GetProcAddress(g_sl_module, "slInit");
+    g_sl_shutdown_fn = (PFN_sl_shutdown)(void *)GetProcAddress(g_sl_module, "slShutdown");
+    supported_fn = (PFN_sl_is_feature_supported)(void *)GetProcAddress(
+        g_sl_module, "slIsFeatureSupported");
+    if (init_fn == NULL || g_sl_shutdown_fn == NULL || supported_fn == NULL) {
+        if (out_result != NULL) *out_result = SL_DLSS_MISSING_RUNTIME;
+        return false;
+    }
+
+    memset(&prefs, 0, sizeof(prefs));
+    prefs.base.next = NULL;
+    prefs.base.struct_type = kPrefGuid;
+    prefs.base.struct_version = 1u;
+    prefs.show_console = false;
+    prefs.log_level = SL_LOG_LEVEL_DEFAULT;
+    prefs.path_to_logs_and_data = NULL;
+    prefs.flags = SL_PREF_FLAGS_DEFAULT;
+    prefs.features_to_load = &feature;
+    prefs.num_features_to_load = 1u;
+    prefs.engine = SL_ENGINE_CUSTOM;
+    prefs.engine_version = "break";
+    prefs.render_api = SL_RENDER_API_VULKAN;
+
+    rc = init_fn(&prefs, SL_SDK_VERSION_2_14_1);
+    if (rc != SL_RESULT_OK) {
+        g_sl_shutdown_fn = NULL;
+        if (out_result != NULL) *out_result = SL_DLSS_INIT_FAILED;
+        return false;
+    }
+    g_initialized = true;
+
+    memset(&adapter, 0, sizeof(adapter));
+    adapter.base.next = NULL;
+    adapter.base.struct_type = kAdapterGuid;
+    adapter.base.struct_version = 1u;
+    if (native != NULL && native->type == RHI_NATIVE_HANDLE_VULKAN)
+        adapter.vk_physical_device = native->physical_device;
+
+    rc = supported_fn(SL_FEATURE_DLSS, &adapter);
+    if (rc == SL_RESULT_OK) {
+        if (out_result != NULL) *out_result = SL_DLSS_SUPPORTED;
+        return true;
+    }
+    if (rc == SL_RESULT_DRIVER_OUT_OF_DATE || rc == SL_RESULT_OS_OUT_OF_DATE ||
+        rc == SL_RESULT_NO_SUPPORTED_ADAPTER || rc == SL_RESULT_ADAPTER_NOT_SUPPORTED) {
+        if (out_result != NULL) *out_result = SL_DLSS_FEATURE_UNSUPPORTED;
+        return false;
+    }
+    if (out_result != NULL) *out_result = SL_DLSS_INTERNAL_ERROR;
+    return false;
+}
+
+void sl_dlss_shutdown(void) {
+    if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
+    g_initialized = false;
+    g_sl_shutdown_fn = NULL;
+    if (g_sl_module != NULL) {
+        FreeLibrary(g_sl_module);
+        g_sl_module = NULL;
+    }
+}
+
+#else /* !_WIN32 */
+
+const char *sl_dlss_probe_result_text(SLDlssProbeResult result) {
+    (void)result;
+    return "unavailable (non-windows build)";
+}
+
+bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
+    (void)native;
+    if (out_result != NULL) *out_result = SL_DLSS_UNAVAILABLE;
+    return false;
+}
+
+void sl_dlss_shutdown(void) {
+}
+
+#endif

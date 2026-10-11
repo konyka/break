@@ -231,6 +231,7 @@ add_library(engine STATIC
     src/renderer/camera.c
     src/renderer/cull.c
     src/renderer/render_features.c
+    src/renderer/sl_dlss.c
     src/renderer/skybox.c
     src/renderer/particles.c
     src/renderer/terrain.c
@@ -2254,6 +2255,12 @@ endif()
     target_include_directories(test_render_features PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_render_features PRIVATE m)
     add_test(NAME test_render_features COMMAND test_render_features)
+
+    if(WIN32)
+        add_executable(test_sl_dlss tests/test_sl_dlss.c src/renderer/sl_dlss.c)
+        target_include_directories(test_sl_dlss PRIVATE ${TEST_INCLUDE_DIRS})
+        add_test(NAME test_sl_dlss COMMAND test_sl_dlss)
+    endif()
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under
