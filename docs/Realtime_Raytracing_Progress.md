@@ -115,6 +115,11 @@ frameworks).
    after reboot, but the device-side AS build still produces an untraversable
    structure; the ray-query probe returns no committed hit before the driver
    enters the known DEVICE_LOST path.
+- The RT probe now uses the correct `rayPayloadInEXT` qualifier for miss and
+  closest-hit stages (the previous `rayPayloadEXT` declaration was invalid for
+  those receiving stages). `BREAK_RT_ONLY=1` provides a short, isolated RT
+  lifecycle/teardown mode for future driver experiments without running the
+  full graphics suite.
 - RTX 4060 capability probing confirms all three required device features:
   `RHI_FEATURE_ACCELERATION_STRUCTURE=1`,
   `RHI_FEATURE_RAY_TRACING_PIPELINE=1`, and `RHI_FEATURE_RAY_QUERY=1`.

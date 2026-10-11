@@ -36,13 +36,13 @@ static const char k_raygen_glsl[] =
 static const char k_miss_glsl[] =
     "#version 460\n"
     "#extension GL_EXT_ray_tracing : require\n"
-    "layout(location = 0) rayPayloadEXT vec3 u_payload;\n"
+    "layout(location = 0) rayPayloadInEXT vec3 u_payload;\n"
     "void main() { u_payload = vec3(0.0, 0.0, 1.0); }\n";
 
 static const char k_closest_hit_glsl[] =
     "#version 460\n"
     "#extension GL_EXT_ray_tracing : require\n"
-    "layout(location = 0) rayPayloadEXT vec3 u_payload;\n"
+    "layout(location = 0) rayPayloadInEXT vec3 u_payload;\n"
     "void main() { u_payload = vec3(0.0, 1.0, 0.0); }\n";
 
 typedef struct {

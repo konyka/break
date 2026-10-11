@@ -740,8 +740,16 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
             }
             if (tlas_ok) {
                 LOG_INFO("PASS: one-instance TLAS build recorded");
-                if (!test_ray_query_pixel(device, tlas))
-                    LOG_WARN("RAY QUERY: no committed triangle hit");
+                /* Ray-query is an opt-in diagnostic while device-side AS
+                 * validity is under investigation. An invalid AS can take a
+                 * vendor driver into DEVICE_LOST; never poison the normal
+                 * Vulkan regression suite with this probe. */
+                if (getenv("BREAK_RAY_QUERY") != NULL) {
+                    if (!test_ray_query_pixel(device, tlas))
+                        LOG_WARN("RAY QUERY: no committed triangle hit");
+                } else {
+                    LOG_INFO("SKIP: ray query probe (set BREAK_RAY_QUERY=1)");
+                }
                 /* Opt-in investigation tool (BREAK_RT_TRACE=1): traces one
                  * ray through the TLAS. BLAS direct tracing is a spec
                  * violation (AS descriptor requires TOP_LEVEL or GENERIC). */
@@ -755,8 +763,11 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
                             pixel[2] < 50u) {
                             LOG_INFO("PASS: one-bounce ray trace hit "
                                      "(first ray-traced pixel)");
+                        } else {
+                            tlas_ok = false;
                         }
                     } else {
+                        tlas_ok = false;
                         LOG_WARN("TRACE tlas probe failed (%s)",
                                  rt_trace_last_error());
                     }
@@ -5502,6 +5513,18 @@ int main(int argc, char **argv) {
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =
         test_one_triangle_blas_sizes(render.device);
+    if (getenv("BREAK_RT_ONLY") != NULL) {
+        bool passed = acceleration_structure_pass && blas_size_query_pass;
+        test_render_shutdown(&render);
+#ifdef ENGINE_VULKAN
+        u32 messages = rhi_vk_validation_message_count();
+        LOG_INFO("RT validation messages (including teardown): %u", messages);
+        passed = passed && messages == 0u;
+#endif
+        engine_shutdown(&engine);
+        LOG_INFO("RT-only result: %s", passed ? "PASS" : "FAIL");
+        return passed ? 0 : 1;
+    }
     {
         RHINativeDevice native = {0};
         SLDlssProbeResult probe = SL_DLSS_UNAVAILABLE;
