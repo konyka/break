@@ -1801,8 +1801,39 @@ endif()
     elseif(ENGINE_PLATFORM STREQUAL "macos")
         target_compile_definitions(test_rhi_native PRIVATE ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
     endif()
-    if(ENGINE_PLATFORM STREQUAL "windows")
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_include_directories(test_rhi_native PRIVATE
+            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        if(ENGINE_ENABLE_WAYLAND)
+            target_compile_definitions(test_rhi_native PRIVATE
+                ENGINE_PLATFORM_WAYLAND=1)
+        endif()
+        if(ENGINE_VULKAN)
+            target_compile_definitions(test_rhi_native PRIVATE ENGINE_VULKAN=1)
+        endif()
+        if(ENGINE_ENABLE_WAYLAND)
+            if(ENGINE_VULKAN)
+                target_link_libraries(test_rhi_native PRIVATE
+                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
+                    ${SHADERC_LIB} dl pthread)
+            else()
+                target_link_libraries(test_rhi_native PRIVATE
+                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+            endif()
+        elseif(ENGINE_VULKAN)
+            target_link_libraries(test_rhi_native PRIVATE
+                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
+                ${SHADERC_LIB} dl pthread)
+        else()
+            target_link_libraries(test_rhi_native PRIVATE
+                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
+        endif()
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_rhi_native PRIVATE glad opengl32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_link_libraries(test_rhi_native PRIVATE
+            Vulkan::Vulkan ${SHADERC_LIB}
+            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     else()
         target_link_libraries(test_rhi_native PRIVATE m)
     endif()
