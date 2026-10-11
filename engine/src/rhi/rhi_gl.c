@@ -30,6 +30,13 @@ void rhi_backend_acceleration_structure_destroy(
     (void)structure;
 }
 
+void rhi_cmd_bind_acceleration_structure(
+    RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
+    (void)cmd;
+    (void)structure;
+    (void)binding;
+}
+
 bool rhi_blas_one_triangle_get_build_sizes(
     RHIDevice *dev, const RHIBLASOneTriangleDesc *desc,
     RHIAccelerationStructureBuildSizes *out_sizes) {

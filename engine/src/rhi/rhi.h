@@ -669,6 +669,12 @@ void               rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w,
 RHIShader   rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len);
 void        rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z);
 void        rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding);
+/* Bind one acceleration structure to a compute pipeline's dedicated ray-query
+ * descriptor binding. The binding must be declared by the pipeline contract;
+ * unsupported backends fail closed. */
+void        rhi_cmd_bind_acceleration_structure(
+                RHICmdBuffer *cmd, RHIAccelerationStructure structure,
+                u32 binding);
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd);
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only);
 /* Bind a cubemap face's mip level as a storage image for compute write

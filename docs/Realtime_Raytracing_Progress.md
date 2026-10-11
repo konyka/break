@@ -134,6 +134,11 @@ frameworks).
   is not a sudo credential on that host, so the driver install and reboot
   need either a sudo-capable credential or an on-host manual
   `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` + reboot.
+- Latest Fedora check confirms the same state: `nouveau` is loaded, neither
+  `akmod-nvidia` nor `kmod-nvidia` is installed, and the SSH account has no
+  non-interactive sudo permission. No remote system change was attempted; a
+  root-capable on-host installation remains required for proprietary-driver
+  RT validation.
 - Full `test_vulkan` still reports pre-existing failures on the Windows/AMD
   configuration in MSAA depth roundtrip and Vulkan golden-image drift. The same
   suite passes end-to-end (goldens included) on Linux/ANV and macOS/MoltenVK,
