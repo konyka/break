@@ -542,6 +542,14 @@ static bool test_acceleration_structure_lifecycle(RHIDevice *device) {
     return true;
 }
 
+static const char *rt_pixel_classify(const u8 p[4]) {
+    if (p[1] > 200u && p[0] < 50u && p[2] < 50u) return "HIT(green)";
+    if (p[2] > 200u && p[0] < 50u && p[1] < 50u) return "MISS(blue)";
+    if (p[0] == 0u && p[1] == 0u && p[2] == 0u && p[3] == 255u)
+        return "UNWRITTEN(black)";
+    return "UNEXPECTED";
+}
+
 static bool test_one_triangle_blas_sizes(RHIDevice *device) {
     static const f32 tri_verts[9] = {
         0.0f, 1.0f, 0.0f,
@@ -577,6 +585,26 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
     }
     vertices = rhi_buffer_create(device, &vertex_desc);
     indices = rhi_buffer_create(device, &index_desc);
+    /* DIAG: verify the upload path actually placed the geometry data at the
+     * device buffer — a silently empty BLAS build would otherwise surface
+     * only as a ray-trace miss. */
+    if (rhi_handle_valid(vertices) && rhi_handle_valid(indices)) {
+        f32 read_verts[9] = {0};
+        u32 read_indices[3] = {0};
+        bool verts_ok = rhi_buffer_read(device, vertices, read_verts, 0,
+                                        sizeof(read_verts));
+        bool idx_ok = rhi_buffer_read(device, indices, read_indices, 0,
+                                      sizeof(read_indices));
+        bool verts_match = verts_ok &&
+            memcmp(read_verts, tri_verts, sizeof(tri_verts)) == 0;
+        bool idx_match = idx_ok &&
+            memcmp(read_indices, tri_indices, sizeof(tri_indices)) == 0;
+        LOG_INFO("DIAG buffer data: verts=%s idx=%s (v0={%g,%g,%g})",
+                 verts_match ? "OK" : (verts_ok ? "MISMATCH" : "READFAIL"),
+                 idx_match ? "OK" : (idx_ok ? "MISMATCH" : "READFAIL"),
+                 (double)read_verts[0], (double)read_verts[1],
+                 (double)read_verts[2]);
+    }
     triangle.vertex_buffer = vertices;
     triangle.vertex_count = 3u;
     triangle.vertex_stride = 12u;
@@ -640,26 +668,33 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
             if (tlas_ok) {
                 u8 pixel[4] = {0};
                 LOG_INFO("PASS: one-instance TLAS build recorded");
-                /* Opt-in investigation tool: traceRayEXT dispatch of miss/hit
-                 * shaders is not yet reliable on this driver (can destabilize
-                 * the device), so the probe only runs when explicitly enabled
-                 * via BREAK_RT_TRACE=1. See the progress document. */
+                /* Opt-in investigation tool (BREAK_RT_TRACE=1): traces one
+                 * ray against the BLAS directly and against the TLAS to
+                 * bisect acceleration-structure validity. BLAS HIT + TLAS
+                 * MISS points at the instance/TLAS build path; BLAS MISS
+                 * points at geometry upload/build. */
                 if (getenv("BREAK_RT_TRACE") != NULL) {
+                    u8 blas_pixel[4] = {0};
+                    if (rt_trace_probe_blas(device, blas, blas_pixel)) {
+                        LOG_INFO("TRACE blas -> {%u,%u,%u,%u} %s",
+                                 blas_pixel[0], blas_pixel[1],
+                                 blas_pixel[2], blas_pixel[3],
+                                 rt_pixel_classify(blas_pixel));
+                    } else {
+                        LOG_WARN("TRACE blas probe failed (%s)",
+                                 rt_trace_last_error());
+                    }
                     if (rt_trace_probe(device, tlas, pixel)) {
-                        bool hit = pixel[1] > 200u && pixel[0] < 50u &&
-                                   pixel[2] < 50u;
-                        if (hit) {
+                        LOG_INFO("TRACE tlas -> {%u,%u,%u,%u} %s",
+                                 pixel[0], pixel[1], pixel[2], pixel[3],
+                                 rt_pixel_classify(pixel));
+                        if (pixel[1] > 200u && pixel[0] < 50u &&
+                            pixel[2] < 50u) {
                             LOG_INFO("PASS: one-bounce ray trace hit "
-                                     "{%u,%u,%u,%u} (first ray-traced pixel)",
-                                     pixel[0], pixel[1], pixel[2], pixel[3]);
-                        } else {
-                            LOG_WARN("trace payload not written "
-                                     "{%u,%u,%u,%u} (%s) - under investigation",
-                                     pixel[0], pixel[1], pixel[2], pixel[3],
-                                     rt_trace_last_error());
+                                     "(first ray-traced pixel)");
                         }
                     } else {
-                        LOG_WARN("rt_trace_probe failed (%s)",
+                        LOG_WARN("TRACE tlas probe failed (%s)",
                                  rt_trace_last_error());
                     }
                 } else {
@@ -5407,12 +5442,19 @@ int main(int argc, char **argv) {
     {
         RHINativeDevice native = {0};
         SLDlssProbeResult probe = SL_DLSS_UNAVAILABLE;
-        if (rhi_device_get_native_device(render.device, &native) &&
-            sl_dlss_probe(&native, &probe) && probe == SL_DLSS_SUPPORTED) {
-            LOG_INFO("PASS: streamline DLSS runtime supported on adapter");
+        /* Opt-in: slInit installs Streamline's interposer hooks into this
+         * process (automatic hooking), which can interfere with raw Vulkan
+         * usage in the same suite. Only run when explicitly requested. */
+        if (getenv("BREAK_DLSS_PROBE") != NULL) {
+            if (rhi_device_get_native_device(render.device, &native) &&
+                sl_dlss_probe(&native, &probe) && probe == SL_DLSS_SUPPORTED) {
+                LOG_INFO("PASS: streamline DLSS runtime supported on adapter");
+            } else {
+                LOG_INFO("SKIP: streamline DLSS probe (%s)",
+                         sl_dlss_probe_result_text(probe));
+            }
         } else {
-            LOG_INFO("SKIP: streamline DLSS probe (%s)",
-                     sl_dlss_probe_result_text(probe));
+            LOG_INFO("SKIP: streamline DLSS probe (set BREAK_DLSS_PROBE=1)");
         }
     }
 

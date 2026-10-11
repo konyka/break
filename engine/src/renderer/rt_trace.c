@@ -178,8 +178,8 @@ static bool rt_compile_stage(VkDevice device, const char *source,
     return ok;
 }
 
-bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
-                    u8 out_pixel[4]) {
+static bool rt_trace_probe_impl(RHIDevice *dev, RHIAccelerationStructure as,
+                                u8 out_pixel[4]) {
     RHINativeDevice native;
     RHICapabilities caps;
     RTTraceObjects o;
@@ -192,7 +192,7 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
     PFN_vkCreateRayTracingPipelinesKHR create_rt_pipelines;
     PFN_vkCmdTraceRaysKHR trace_rays;
     PFN_vkGetBufferDeviceAddress get_addr;
-    void *tlas_handle = NULL;
+    void *as_handle = NULL;
     VkCommandBuffer cmd = VK_NULL_HANDLE;
     VkDeviceSize handle_size, group_stride, slot, sbt_size, sbt_address = 0;
     bool result = false;
@@ -216,9 +216,9 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
         rt_fail("native vulkan device unavailable");
         return false;
     }
-    if (!rhi_acceleration_structure_get_vk_handle(dev, tlas, &tlas_handle) ||
-        tlas_handle == NULL) {
-        rt_fail("native tlas handle unavailable");
+    if (!rhi_acceleration_structure_get_vk_handle(dev, as, &as_handle) ||
+        as_handle == NULL) {
+        rt_fail("native acceleration structure handle unavailable");
         return false;
     }
 
@@ -389,8 +389,8 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
     }
 
     {
-        VkAccelerationStructureKHR tlas_vk =
-            (VkAccelerationStructureKHR)(uintptr_t)tlas_handle;
+        VkAccelerationStructureKHR as_vk =
+            (VkAccelerationStructureKHR)(uintptr_t)as_handle;
         VkWriteDescriptorSetAccelerationStructureKHR accel_write;
         VkDescriptorImageInfo image_info;
         VkWriteDescriptorSet writes[2];
@@ -398,7 +398,7 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
         accel_write.sType =
             VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
         accel_write.accelerationStructureCount = 1u;
-        accel_write.pAccelerationStructures = &tlas_vk;
+        accel_write.pAccelerationStructures = &as_vk;
         memset(&image_info, 0, sizeof(image_info));
         image_info.imageView = o.image_view;
         image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -668,6 +668,16 @@ cleanup:
     return result;
 }
 
+bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
+                    u8 out_pixel[4]) {
+    return rt_trace_probe_impl(dev, tlas, out_pixel);
+}
+
+bool rt_trace_probe_blas(RHIDevice *dev, RHIAccelerationStructure blas,
+                         u8 out_pixel[4]) {
+    return rt_trace_probe_impl(dev, blas, out_pixel);
+}
+
 #else /* !ENGINE_VULKAN */
 
 const char *rt_trace_last_error(void) {
@@ -678,6 +688,14 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
                     u8 out_pixel[4]) {
     (void)dev;
     (void)tlas;
+    if (out_pixel != NULL) memset(out_pixel, 0, 4);
+    return false;
+}
+
+bool rt_trace_probe_blas(RHIDevice *dev, RHIAccelerationStructure blas,
+                         u8 out_pixel[4]) {
+    (void)dev;
+    (void)blas;
     if (out_pixel != NULL) memset(out_pixel, 0, 4);
     return false;
 }

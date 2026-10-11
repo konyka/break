@@ -21,4 +21,9 @@
  */
 bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
                     u8 out_pixel[4]);
+/* Same one-bounce trace but against a bottom-level acceleration structure
+ * directly (legal for traceRayEXT) — used to bisect BLAS vs TLAS validity:
+ * BLAS hit + TLAS miss points at the instance/TLAS build path. */
+bool rt_trace_probe_blas(RHIDevice *dev, RHIAccelerationStructure blas,
+                         u8 out_pixel[4]);
 const char *rt_trace_last_error(void);

@@ -300,6 +300,8 @@ typedef struct {
 static PFN_vkGetAccelerationStructureBuildSizesKHR g_vk_get_as_build_sizes;
 static PFN_vkGetBufferDeviceAddress g_vk_get_buffer_device_address;
 static PFN_vkCmdBuildAccelerationStructuresKHR g_vk_cmd_build_as;
+static PFN_vkBuildAccelerationStructuresKHR g_vk_build_as_host;
+static bool g_vk_host_as_supported;
 static PFN_vkGetAccelerationStructureDeviceAddressKHR g_vk_get_as_address;
 
 typedef struct {
@@ -2058,8 +2060,26 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             vk->device, "vkGetAccelerationStructureBuildSizesKHR");
     g_vk_cmd_build_as = (PFN_vkCmdBuildAccelerationStructuresKHR)
         vkGetDeviceProcAddr(vk->device, "vkCmdBuildAccelerationStructuresKHR");
+    g_vk_build_as_host = (PFN_vkBuildAccelerationStructuresKHR)
+        vkGetDeviceProcAddr(vk->device, "vkBuildAccelerationStructuresKHR");
     g_vk_get_as_address = (PFN_vkGetAccelerationStructureDeviceAddressKHR)
         vkGetDeviceProcAddr(vk->device, "vkGetAccelerationStructureDeviceAddressKHR");
+    /* Host-side AS builds require accelerationStructureHostCommands; calling
+     * vkBuildAccelerationStructuresKHR without it is a spec violation that
+     * crashes some drivers (observed: AMD Windows integrated GPU). */
+    {
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR as_features;
+        VkPhysicalDeviceFeatures2 features2;
+        memset(&as_features, 0, sizeof(as_features));
+        as_features.sType =
+            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
+        memset(&features2, 0, sizeof(features2));
+        features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+        features2.pNext = &as_features;
+        vkGetPhysicalDeviceFeatures2(vk->physical, &features2);
+        g_vk_host_as_supported =
+            as_features.accelerationStructureHostCommands == VK_TRUE;
+    }
 
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: fail init instead of running with a NULL swapchain. */
@@ -4415,13 +4435,18 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
      *  - static VERTEX/INDEX meshes
      *  - GPU-only STORAGE (±INDIRECT, ±TEXEL) buffers (e.g. particle SSBOs,
      *    light_grid TEXEL|STORAGE). UNIFORM and dynamic VERTEX/INDEX stay HV.
-     * R192-B: TEXEL no longer excludes gpu_storage (grid is CS-write/FS-read). */
+     * R192-B: TEXEL no longer excludes gpu_storage (grid is CS-write/FS-read).
+     * RT: AS build inputs also go DEVICE_LOCAL via staging upload — drivers
+     * are inconsistent reading HOST_VISIBLE device-address buffers during
+     * vkCmdBuildAccelerationStructuresKHR (observed: AMD RADV/Windows builds
+     * an empty BLAS from HV inputs; trace returns miss). */
     bool mesh_only = (desc->usage & (RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) != 0
         && (desc->usage & ~(RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
     bool gpu_storage = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0
         && (desc->usage & (RHI_BUFFER_USAGE_UNIFORM
                            | RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
-    bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage);
+    bool as_input = (desc->usage & RHI_BUFFER_USAGE_AS_BUILD_INPUT) != 0;
+    bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage || as_input);
     if (device_local)
         ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT; /* R186: SRC for readback */
 
@@ -4698,12 +4723,8 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     VkAccelerationStructureBuildGeometryInfoKHR build = {0};
     VkAccelerationStructureBuildRangeInfoKHR range = {0};
     const VkAccelerationStructureBuildRangeInfoKHR *ranges[1] = {&range};
-    VkCommandBufferAllocateInfo alloc_info = {0};
-    VkCommandBufferBeginInfo begin_info = {0};
-    VkSubmitInfo submit = {0};
-    VkCommandBuffer one_shot;
 
-    if (dev == NULL || g_vk_cmd_build_as == NULL ||
+    if (dev == NULL || g_vk_build_as_host == NULL ||
         (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u ||
         !rhi_blas_one_triangle_desc_validate(desc)) return false;
     vk = vk_backend(dev);
@@ -4719,19 +4740,6 @@ bool rhi_backend_cmd_build_blas_one_triangle(
                                 desc->index_offset, &index_address) ||
         !vk_blas_buffer_address(vk, dev, scratch_buffer,
                                 scratch_offset, &scratch_address)) return false;
-
-    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = vk->cmd_pool;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1u;
-    if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
-        return false;
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
-    }
 
     triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
     triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -4753,22 +4761,58 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     build.pGeometries = &geometry;
     build.scratchData.deviceAddress = scratch_address;
     range.primitiveCount = 1u;
-    g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
-
-    if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
+    LOG_INFO("RT BLAS BUILD(host): vaddr=0x%llx iaddr=0x%llx saddr=0x%llx as=0x%llx",
+             (unsigned long long)vertex_address,
+             (unsigned long long)index_address,
+             (unsigned long long)scratch_address,
+             (unsigned long long)(uintptr_t)as_data->handle);
+    if (g_vk_build_as_host != NULL && g_vk_host_as_supported) {
+        VkResult build_result = g_vk_build_as_host(
+            vk->device, VK_NULL_HANDLE, 1u, &build, ranges);
+        if (build_result == VK_SUCCESS) {
+            LOG_INFO("RT BLAS built via host path");
+            return true;
+        }
+        LOG_WARN("RT BLAS host build result=%d, falling back to device", (int)build_result);
     }
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1u;
-    submit.pCommandBuffers = &one_shot;
-    if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
-        vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+    /* Device-side fallback: one-shot submit with minimal flags. */
+    if (g_vk_cmd_build_as != NULL) {
+        VkCommandBufferAllocateInfo alloc_info = {0};
+        VkCommandBufferBeginInfo begin_info = {0};
+        VkSubmitInfo submit = {0};
+        VkCommandBuffer one_shot;
+        build.flags = 0; /* minimal: drop PREFER_FAST_TRACE for widest compat */
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = vk->cmd_pool;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 1u;
+        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+            return false;
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
+        g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
+        if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1u;
+        submit.pCommandBuffers = &one_shot;
+        if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
+        LOG_INFO("RT BLAS built via device fallback path");
+        return true;
     }
-    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-    return true;
+    LOG_WARN("RT BLAS build unavailable (no host or device path)");
+    return false;
 }
 
 u64 rhi_backend_acceleration_structure_get_device_address(
@@ -4855,13 +4899,9 @@ bool rhi_backend_cmd_build_tlas_one_instance(
     VkAccelerationStructureBuildGeometryInfoKHR build = {0};
     VkAccelerationStructureBuildRangeInfoKHR range = {0};
     const VkAccelerationStructureBuildRangeInfoKHR *ranges[1] = {&range};
-    VkCommandBufferAllocateInfo alloc_info = {0};
-    VkCommandBufferBeginInfo begin_info = {0};
-    VkSubmitInfo submit = {0};
-    VkCommandBuffer one_shot;
 
     if (cmd == NULL && dev == NULL) return false;
-    if (dev == NULL || g_vk_cmd_build_as == NULL ||
+    if (dev == NULL || g_vk_build_as_host == NULL ||
         (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u)
         return false;
     vk = vk_backend(dev);
@@ -4876,19 +4916,6 @@ bool rhi_backend_cmd_build_tlas_one_instance(
                                 &instance_address) ||
         !vk_blas_buffer_address(vk, dev, scratch_buffer,
                                 scratch_offset, &scratch_address)) return false;
-
-    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    alloc_info.commandPool = vk->cmd_pool;
-    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    alloc_info.commandBufferCount = 1u;
-    if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
-        return false;
-    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
-    }
 
     geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
     geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
@@ -4905,22 +4932,52 @@ bool rhi_backend_cmd_build_tlas_one_instance(
     build.pGeometries = &geometry;
     build.scratchData.deviceAddress = scratch_address;
     range.primitiveCount = 1u;
-    g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
-
-    if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
+    if (g_vk_build_as_host != NULL && g_vk_host_as_supported) {
+        VkResult build_result = g_vk_build_as_host(
+            vk->device, VK_NULL_HANDLE, 1u, &build, ranges);
+        if (build_result == VK_SUCCESS) {
+            LOG_INFO("RT TLAS built via host path");
+            return true;
+        }
+        LOG_WARN("RT TLAS host build result=%d, falling back to device", (int)build_result);
     }
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1u;
-    submit.pCommandBuffers = &one_shot;
-    if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
-        vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+    if (g_vk_cmd_build_as != NULL) {
+        VkCommandBufferAllocateInfo alloc_info = {0};
+        VkCommandBufferBeginInfo begin_info = {0};
+        VkSubmitInfo submit = {0};
+        VkCommandBuffer one_shot;
+        build.flags = 0;
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = vk->cmd_pool;
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 1u;
+        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+            return false;
+        begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
+        g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
+        if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1u;
+        submit.pCommandBuffers = &one_shot;
+        if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            return false;
+        }
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-        return false;
+        LOG_INFO("RT TLAS built via device fallback path");
+        return true;
     }
-    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
-    return true;
+    LOG_WARN("RT TLAS build unavailable (no host or device path)");
+    return false;
 }
 
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
