@@ -300,6 +300,7 @@ typedef struct {
 static PFN_vkGetAccelerationStructureBuildSizesKHR g_vk_get_as_build_sizes;
 static PFN_vkGetBufferDeviceAddress g_vk_get_buffer_device_address;
 static PFN_vkCmdBuildAccelerationStructuresKHR g_vk_cmd_build_as;
+static PFN_vkGetAccelerationStructureDeviceAddressKHR g_vk_get_as_address;
 
 typedef struct {
     VkInstance       instance;
@@ -1731,6 +1732,20 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             vk->physical = gpus[parsed];
         }
     }
+    if (vk->physical == VK_NULL_HANDLE) {
+        /* Prefer a discrete GPU: hybrid laptops otherwise pin the integrated
+         * device (observed: AMD iGPU chosen ahead of the RTX dGPU), which
+         * silently skips RT/DLSS-capable hardware. */
+        for (u32 i = 0; i < gpu_count; i++) {
+            VkPhysicalDeviceProperties probe = {0};
+            vkGetPhysicalDeviceProperties(gpus[i], &probe);
+            if (probe.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
+                vk_physical_device_suitable(gpus[i], vk->surface)) {
+                vk->physical = gpus[i];
+                break;
+            }
+        }
+    }
     if (vk->physical == VK_NULL_HANDLE)
     for (u32 i = 0; i < gpu_count; i++) {
         if (vk_physical_device_suitable(gpus[i], vk->surface)) {
@@ -2043,6 +2058,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             vk->device, "vkGetAccelerationStructureBuildSizesKHR");
     g_vk_cmd_build_as = (PFN_vkCmdBuildAccelerationStructuresKHR)
         vkGetDeviceProcAddr(vk->device, "vkCmdBuildAccelerationStructuresKHR");
+    g_vk_get_as_address = (PFN_vkGetAccelerationStructureDeviceAddressKHR)
+        vkGetDeviceProcAddr(vk->device, "vkGetAccelerationStructureDeviceAddressKHR");
 
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: fail init instead of running with a NULL swapchain. */
@@ -2503,6 +2520,25 @@ void rhi_device_destroy(RHIDevice *dev) {
     }
     if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in device_destroy");
+
+    /* The queue is idle, but each per-frame command buffer still RETAINS its
+     * recorded resource bindings until reset, and this validation layer only
+     * clears the pending state after an explicit fence wait (queue-idle alone
+     * is insufficient). The NVIDIA layer (unlike AMD/Mesa) then rejects
+     * destroying pipeline/buffer objects those command buffers still
+     * reference, so wait each frame fence and reset every command buffer
+     * before the slot-cleanup loop below frees those objects. Fences are
+     * created signaled, and the device is already idle, so each wait returns
+     * immediately. */
+    for (u32 i = 0; i < vk->cmd_buffer_count && i < VK_MAX_FRAMES; i++) {
+        if (vk->fences[i] != VK_NULL_HANDLE &&
+            vkWaitForFences(vk->device, 1u, &vk->fences[i], VK_TRUE,
+                            UINT64_MAX) != VK_SUCCESS) {
+            LOG_WARN("VK: fence wait failed in device_destroy (frame %u)", i);
+        }
+        if (vk->cmd_buffers[i] != VK_NULL_HANDLE)
+            vkResetCommandBuffer(vk->cmd_buffers[i], 0);
+    }
 
     for (u32 i = 0; i < RHI_MAX_RESOURCES; i++) {
         if (!dev->slots[i].alive) continue;
@@ -4516,7 +4552,8 @@ RHIAccelerationStructure rhi_backend_acceleration_structure_create(
 
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_info.size = (VkDeviceSize)desc->storage_size;
-    buffer_info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR;
+    buffer_info.usage = VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     VkBuffer storage_buffer = VK_NULL_HANDLE;
     if (vkCreateBuffer(vk->device, &buffer_info, NULL, &storage_buffer) != VK_SUCCESS)
@@ -4525,6 +4562,12 @@ RHIAccelerationStructure rhi_backend_acceleration_structure_create(
     vkGetBufferMemoryRequirements(vk->device, storage_buffer, &memory_requirements);
     allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocate_info.allocationSize = memory_requirements.size;
+    {
+        VkMemoryAllocateFlagsInfo as_address_flags = {0};
+        as_address_flags.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO;
+        as_address_flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
+        allocate_info.pNext = &as_address_flags;
+    }
     allocate_info.memoryTypeIndex = vk_find_memory(
         vk, memory_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
     VkDeviceMemory storage_memory = VK_NULL_HANDLE;
@@ -4655,16 +4698,21 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     VkAccelerationStructureBuildGeometryInfoKHR build = {0};
     VkAccelerationStructureBuildRangeInfoKHR range = {0};
     const VkAccelerationStructureBuildRangeInfoKHR *ranges[1] = {&range};
+    VkCommandBufferAllocateInfo alloc_info = {0};
+    VkCommandBufferBeginInfo begin_info = {0};
+    VkSubmitInfo submit = {0};
+    VkCommandBuffer one_shot;
 
-    if (cmd == NULL || dev == NULL || g_vk_cmd_build_as == NULL ||
+    if (dev == NULL || g_vk_cmd_build_as == NULL ||
         (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u ||
         !rhi_blas_one_triangle_desc_validate(desc)) return false;
-    vk = vk_cmd_backend(cmd);
+    vk = vk_backend(dev);
+    if (vk == NULL || vk->frame_started || cmd != NULL) return false;
     as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
         dev, blas, RHI_RES_ACCELERATION_STRUCTURE);
     scratch = (VKBufferData *)rhi_get_resource_typed(
         dev, scratch_buffer, RHI_RES_BUFFER);
-    if (vk == NULL || as_data == NULL || scratch == NULL ||
+    if (as_data == NULL || scratch == NULL ||
         !vk_blas_buffer_address(vk, dev, desc->vertex_buffer,
                                 desc->vertex_offset, &vertex_address) ||
         !vk_blas_buffer_address(vk, dev, desc->index_buffer,
@@ -4672,7 +4720,18 @@ bool rhi_backend_cmd_build_blas_one_triangle(
         !vk_blas_buffer_address(vk, dev, scratch_buffer,
                                 scratch_offset, &scratch_address)) return false;
 
-    vk_suspend_pass_for_compute(vk);
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = vk->cmd_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1u;
+    if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+        return false;
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
 
     triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
     triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -4694,7 +4753,159 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     build.pGeometries = &geometry;
     build.scratchData.deviceAddress = scratch_address;
     range.primitiveCount = 1u;
-    g_vk_cmd_build_as(vk->cmd_buffers[vk->current_frame], 1u, &build, ranges);
+    g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
+
+    if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1u;
+    submit.pCommandBuffers = &one_shot;
+    if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+        vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
+    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+    return true;
+}
+
+u64 rhi_backend_acceleration_structure_get_device_address(
+    RHIDevice *dev, RHIAccelerationStructure structure) {
+    VKBackend *vk;
+    VKAccelerationStructureData *as_data;
+    VkAccelerationStructureDeviceAddressInfoKHR info = {0};
+    if (dev == NULL || g_vk_get_as_address == NULL) return 0u;
+    vk = vk_backend(dev);
+    as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        dev, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (vk == NULL || as_data == NULL || as_data->handle == VK_NULL_HANDLE)
+        return 0u;
+    info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    info.accelerationStructure = as_data->handle;
+    return (u64)g_vk_get_as_address(vk->device, &info);
+}
+
+bool rhi_backend_tlas_one_instance_get_build_sizes(
+    RHIDevice *dev, RHIBuffer instance_buffer,
+    RHIAccelerationStructureBuildSizes *out_sizes) {
+    VKBackend *vk;
+    VKBufferData *instance_data;
+    VkDeviceAddress instance_address;
+    VkAccelerationStructureGeometryKHR geometry = {0};
+    VkAccelerationStructureBuildGeometryInfoKHR build = {0};
+    VkAccelerationStructureBuildSizesInfoKHR sizes = {0};
+    u32 primitive_count = 1u;
+
+    if (dev == NULL || g_vk_get_as_build_sizes == NULL ||
+        (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u)
+        return false;
+    vk = vk_backend(dev);
+    instance_data = (VKBufferData *)rhi_get_resource_typed(
+        dev, instance_buffer, RHI_RES_BUFFER);
+    if (vk == NULL || instance_data == NULL ||
+        instance_data->size < RHI_TLAS_INSTANCE_SIZE ||
+        !vk_blas_buffer_address(vk, dev, instance_buffer, 0u,
+                                &instance_address)) return false;
+
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometry.geometry.instances.arrayOfPointers = VK_FALSE;
+    geometry.geometry.instances.data.deviceAddress = instance_address;
+    build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.geometryCount = 1u;
+    build.pGeometries = &geometry;
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    g_vk_get_as_build_sizes(vk->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                            &build, &primitive_count, &sizes);
+    out_sizes->acceleration_structure_size = (usize)sizes.accelerationStructureSize;
+    out_sizes->build_scratch_size = (usize)sizes.buildScratchSize;
+    return out_sizes->acceleration_structure_size != 0u &&
+           out_sizes->build_scratch_size != 0u;
+}
+
+bool rhi_backend_cmd_build_tlas_one_instance(
+    RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas,
+    RHIBuffer instance_buffer, RHIBuffer scratch_buffer,
+    usize scratch_offset) {
+    VKBackend *vk;
+    VKAccelerationStructureData *as_data;
+    VKBufferData *instance_data;
+    VkDeviceAddress instance_address, scratch_address;
+    VkAccelerationStructureGeometryKHR geometry = {0};
+    VkAccelerationStructureBuildGeometryInfoKHR build = {0};
+    VkAccelerationStructureBuildRangeInfoKHR range = {0};
+    const VkAccelerationStructureBuildRangeInfoKHR *ranges[1] = {&range};
+    VkCommandBufferAllocateInfo alloc_info = {0};
+    VkCommandBufferBeginInfo begin_info = {0};
+    VkSubmitInfo submit = {0};
+    VkCommandBuffer one_shot;
+
+    if (cmd == NULL && dev == NULL) return false;
+    if (dev == NULL || g_vk_cmd_build_as == NULL ||
+        (dev->capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u)
+        return false;
+    vk = vk_backend(dev);
+    if (vk == NULL || vk->frame_started || cmd != NULL) return false;
+    as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        dev, tlas, RHI_RES_ACCELERATION_STRUCTURE);
+    instance_data = (VKBufferData *)rhi_get_resource_typed(
+        dev, instance_buffer, RHI_RES_BUFFER);
+    if (as_data == NULL || instance_data == NULL ||
+        instance_data->size < RHI_TLAS_INSTANCE_SIZE ||
+        !vk_blas_buffer_address(vk, dev, instance_buffer, 0u,
+                                &instance_address) ||
+        !vk_blas_buffer_address(vk, dev, scratch_buffer,
+                                scratch_offset, &scratch_address)) return false;
+
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    alloc_info.commandPool = vk->cmd_pool;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1u;
+    if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+        return false;
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
+
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+    geometry.geometry.instances.sType =
+        VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+    geometry.geometry.instances.arrayOfPointers = VK_FALSE;
+    geometry.geometry.instances.data.deviceAddress = instance_address;
+    build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    build.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+    build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    build.dstAccelerationStructure = as_data->handle;
+    build.geometryCount = 1u;
+    build.pGeometries = &geometry;
+    build.scratchData.deviceAddress = scratch_address;
+    range.primitiveCount = 1u;
+    g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
+
+    if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1u;
+    submit.pCommandBuffers = &one_shot;
+    if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+        vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        return false;
+    }
+    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
     return true;
 }
 
