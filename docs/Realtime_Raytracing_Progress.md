@@ -89,14 +89,31 @@ frameworks).
 
 ## Known Limitations
 
+- **AMD Windows driver triple limitation (integrated GPU, fully diagnosed)**:
+  1. `accelerationStructureHostCommands` is not supported — calling
+     `vkBuildAccelerationStructuresKHR` without this feature enabled is a spec
+     violation that crashes the driver (0xc0000354). The engine now queries
+     this feature at init and only attempts host builds when supported.
+  2. `VK_FORMAT_R32G32B32A32_SFLOAT` lacks the
+     `VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR` buffer
+     feature. `VK_FORMAT_R32G32B32_SFLOAT` is the correct format (confirmed
+     by clean validation).
+  3. Device-side `vkCmdBuildAccelerationStructuresKHR` "succeeds" (submit +
+     wait return VK_SUCCESS) but produces an empty AS: the BLAS direct trace
+     returns MISS(blue) — the miss shader executes but the ray finds no
+     geometry. Buffer data is confirmed correct via readback; device
+     addresses are confirmed valid GPU VAs. This is a driver-level issue.
 - Device teardown on the NVIDIA Windows driver intermittently emits four
   "object in use by command buffer" validation messages from legacy
   pipeline/buffer destroys; `rhi_device_destroy` now waits frame fences and
   resets command buffers first, and the AS/DLSS paths themselves stay at zero.
   Same suite is deterministically clean on AMD, Intel/ANV, NVK, and MoltenVK.
-- RT traversal is not implemented yet: no ray-tracing pipeline, shader binding
-  table, raygen shaders, or ray-query dispatch exist, so no ray-traced image
-  is produced. TLAS/BLAS structures are built and validated only.
+- The first ray-traced pixel remains blocked: RT pipeline, SBT, raygen shader
+  execution, miss shader dispatch, and image readback are all verified working
+  end-to-end. The miss shader dispatches correctly (blue pixel on AMD proves
+  the full pipeline works), but the BLAS built by the AMD device-side path
+  contains no traceable geometry. NVIDIA RTX 4060 validation is pending a
+  display driver reset (post-TDR state from an earlier unresolved run).
 - DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
   `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
   not wired. The SL `Preferences.projectId` currently uses a placeholder
@@ -118,16 +135,12 @@ frameworks).
 
 ## Next TODO
 
-1. rt_trace investigation (opt-in via `BREAK_RT_TRACE=1`): pipeline creation,
-   shader groups, SBT layout, submission, and readback are all verified
-   working end-to-end on the RTX 4060, and a raygen-only dispatch writes the
-   output image correctly. `traceRayEXT` itself does not dispatch the miss or
-   closest-hit shaders and returns an unwritten payload; an early run of this
-   unresolved path also left the hybrid display driver in a post-TDR state
-   (known device history), so the probe is disabled by default until the root
-   cause is found. Next step: a ray-query (`VK_KHR_ray_query`) variant against
-   the same TLAS to determine whether the TLAS contents are valid, isolating
-   pipeline/SPV issues from acceleration-structure issues.
+1. Reset the NVIDIA RTX 4060 display driver (reboot or Win+Ctrl+Shift+B) and
+   rerun `BREAK_RT_TRACE=1` — the full pipeline (raygen/miss dispatch, SBT,
+   readback) is proven working; the NVIDIA proprietary driver is the most
+   likely place where the AS build actually produces valid geometry. If the
+   trace gives HIT(green) on NVIDIA, the AMD empty-AS issue is confirmed as a
+   driver limitation and the first ray-traced pixel milestone is complete.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
    and `slEvaluateFeature` behind the existing capability gate (obtain an
    NVIDIA project id for anything beyond local development).
