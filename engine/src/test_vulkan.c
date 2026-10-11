@@ -526,10 +526,6 @@ static bool test_acceleration_structure_lifecycle(RHIDevice *device) {
         LOG_INFO("SKIP: acceleration structure lifecycle unsupported");
         return true;
     }
-    LOG_INFO("RT capabilities: AS=%d pipeline=%d rayQuery=%d",
-             (capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) != 0u,
-             (capabilities.feature_bits & RHI_FEATURE_RAY_TRACING_PIPELINE) != 0u,
-             (capabilities.feature_bits & RHI_FEATURE_RAY_QUERY) != 0u);
     bottom = rhi_acceleration_structure_create(device, &bottom_desc);
     top = rhi_acceleration_structure_create(device, &top_desc);
     if (!rhi_handle_valid(bottom) || !rhi_handle_valid(top)) {
@@ -552,6 +548,76 @@ static const char *rt_pixel_classify(const u8 p[4]) {
     if (p[0] == 0u && p[1] == 0u && p[2] == 0u && p[3] == 255u)
         return "UNWRITTEN(black)";
     return "UNEXPECTED";
+}
+
+static bool test_ray_query_pixel(RHIDevice *device,
+                                  RHIAccelerationStructure tlas) {
+    static const char shader[] =
+        "#version 460\n"
+        "#extension GL_EXT_ray_query : require\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(set = 4, binding = 0) uniform accelerationStructureEXT u_tlas;\n"
+        "layout(std430, binding = 0) buffer Output { uint rgba; };\n"
+        "void main() {\n"
+        "  rayQueryEXT q;\n"
+        "  rayQueryInitializeEXT(q, u_tlas, gl_RayFlagsOpaqueEXT, 0xff,\n"
+        "                         vec3(0,0,1), 0.05, vec3(0,0,-1), 16.0);\n"
+        "  while (rayQueryProceedEXT(q)) {}\n"
+        "  uint hit = rayQueryGetIntersectionTypeEXT(q, true) ==\n"
+        "             gl_RayQueryCommittedIntersectionTriangleEXT ? 0xFF00FF00u\n"
+        "             : 0xFF0000FFu;\n"
+        "  rgba = hit;\n"
+        "}\n";
+    RHICapabilities caps = {0};
+    RHIShader cs = RHI_HANDLE_NULL;
+    RHIPipeline pipeline = RHI_HANDLE_NULL;
+    RHIBuffer output = RHI_HANDLE_NULL;
+    RHIBufferDesc output_desc = {RHI_BUFFER_USAGE_STORAGE, sizeof(u32), NULL};
+    RHIPipelineDesc pipeline_desc = {0};
+    usize shader_len = sizeof(shader) - 1u;
+    bool ok = false;
+
+    if (!rhi_device_get_capabilities(device, &caps) ||
+        (caps.feature_bits & RHI_FEATURE_RAY_QUERY) == 0u) {
+        LOG_INFO("SKIP: ray query unsupported");
+        return true;
+    }
+    cs = rhi_shader_create_compute(device, shader, shader_len);
+    pipeline_desc.is_compute = true;
+    pipeline_desc.frag = cs;
+    pipeline = rhi_pipeline_create(device, &pipeline_desc);
+    output = rhi_buffer_create(device, &output_desc);
+    if (rhi_handle_valid(cs) && rhi_handle_valid(pipeline) &&
+        rhi_handle_valid(output)) {
+        RHICmdBuffer *cmd = rhi_frame_begin(device);
+        if (cmd != NULL) {
+            rhi_cmd_end_render_pass(cmd);
+            rhi_cmd_bind_pipeline(cmd, pipeline);
+            rhi_cmd_bind_acceleration_structure(cmd, tlas, 0u);
+            rhi_cmd_bind_storage_buffer(cmd, output, 0u);
+            rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+            rhi_cmd_memory_barrier(cmd);
+            rhi_frame_end(device);
+            rhi_present(device);
+            /* Drain the submitted compute frame before host readback. */
+            cmd = rhi_frame_begin(device);
+            if (cmd != NULL) {
+                rhi_frame_end(device);
+                rhi_present(device);
+            }
+            u32 *mapped = (u32 *)rhi_buffer_map(device, output);
+            if (mapped != NULL) {
+                ok = (*mapped == 0xFF00FF00u);
+                LOG_INFO("RAY QUERY: rgba=0x%08x (%s)", *mapped,
+                         ok ? "HIT" : "MISS/INVALID");
+                rhi_buffer_unmap(device, output);
+            }
+        }
+    }
+    if (rhi_handle_valid(output)) rhi_buffer_destroy(device, output);
+    if (rhi_handle_valid(pipeline)) rhi_pipeline_destroy(device, pipeline);
+    if (rhi_handle_valid(cs)) rhi_shader_destroy(device, cs);
+    return ok;
 }
 
 static bool test_one_triangle_blas_sizes(RHIDevice *device) {
@@ -674,6 +740,8 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
             }
             if (tlas_ok) {
                 LOG_INFO("PASS: one-instance TLAS build recorded");
+                if (!test_ray_query_pixel(device, tlas))
+                    LOG_WARN("RAY QUERY: no committed triangle hit");
                 /* Opt-in investigation tool (BREAK_RT_TRACE=1): traces one
                  * ray through the TLAS. BLAS direct tracing is a spec
                  * violation (AS descriptor requires TOP_LEVEL or GENERIC). */

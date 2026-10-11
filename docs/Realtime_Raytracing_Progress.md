@@ -116,9 +116,12 @@ frameworks).
 - RTX 4060 capability probing confirms all three required device features:
   `RHI_FEATURE_ACCELERATION_STRUCTURE=1`,
   `RHI_FEATURE_RAY_TRACING_PIPELINE=1`, and `RHI_FEATURE_RAY_QUERY=1`.
-  The validation gate remains zero. The next diagnostic is a compute
-  `rayQueryEXT` probe; the current RHI has no generic descriptor/compute
-  one-shot API for that probe, so it is a separate slice.
+  The validation gate remains zero. A compute `rayQueryEXT` probe is now wired
+  through the existing compute RHI: dedicated set-4 AS binding, AS descriptor
+  pool capacity, shader compilation, dispatch, and host readback. It executes
+  and reads `0x00000000` (no committed intersection) before the NVIDIA device
+  enters its known DEVICE_LOST state, consistent with the device-side AS build
+  producing an untraversable structure.
 - DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
   `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
   not wired. The SL `Preferences.projectId` currently uses a placeholder
@@ -150,11 +153,9 @@ frameworks).
    `accelerationStructureHostCommands` support (dual-path falls to device
    build), and the device-side build submits/completes without error but
    produces an AS the hardware cannot traverse. Capability probing confirms
-   `RHI_FEATURE_RAY_QUERY=1` on RTX. The next slice is a compute
-   `VK_KHR_ray_query` probe; this requires a dedicated RHI descriptor binding
-   for an acceleration-structure descriptor because the existing compute RHI
-   only exposes storage-buffer/image descriptor sets. It bypasses the RT
-   pipeline entirely,
+   `RHI_FEATURE_RAY_QUERY=1` on RTX. The compute probe is implemented and
+   bypasses the RT pipeline entirely; the remaining blocker is AS validity,
+   not descriptor or dispatch plumbing,
    (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
    (c) test on a discrete non-hybrid NVIDIA system.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging

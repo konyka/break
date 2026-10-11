@@ -143,6 +143,7 @@ typedef struct {
      * combining textures/texel/storage (clustered-instanced) places the
      * storage set later; VK_INVALID_SET = no storage set. */
     u8                storage_set;
+    u8                ray_query_set;
     /* Render-pass-format variant support (graphics only). A pipeline must be
      * render-pass-compatible with whatever FBO it is drawn into; since the same
      * logical pipeline (e.g. a post-fx blit) can be bound across targets of
@@ -378,6 +379,7 @@ typedef struct {
     VkDescriptorSetLayout    storage_image_layout;
     VkDescriptorSetLayout    sampler_mip_layout;
     VkDescriptorSetLayout    ubo_layout;
+    VkDescriptorSetLayout    ray_query_layout;
 
 #ifdef ENGINE_PLATFORM_WINDOWS
     HINSTANCE hinstance;
@@ -2311,6 +2313,31 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         }
     }
 
+    /* Dedicated ray-query set: binding 0 is TLAS, binding 1 is a storage
+     * image. It is appended to compute layouts so existing compute shaders
+     * retain their set indices. */
+    {
+        VkDescriptorSetLayoutBinding rqb[2] = {0};
+        VkDescriptorSetLayoutCreateInfo rqli = {0};
+        rqb[0].binding = 0u;
+        rqb[0].descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        rqb[0].descriptorCount = 1u;
+        rqb[0].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        rqb[1].binding = 1u;
+        rqb[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        rqb[1].descriptorCount = 1u;
+        rqb[1].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        rqli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        rqli.bindingCount = 2u;
+        rqli.pBindings = rqb;
+        if (vkCreateDescriptorSetLayout(vk->device, &rqli, NULL,
+                                        &vk->ray_query_layout) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to create ray query layout");
+            vk_init_cleanup(dev, vk);
+            return false;
+        }
+    }
+
     {
         VkDescriptorSetLayoutBinding ub[4];
         memset(ub, 0, sizeof(ub));
@@ -2333,7 +2360,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     }
 
     {
-        VkDescriptorPoolSize pool_sizes[5] = {0};
+        VkDescriptorPoolSize pool_sizes[6] = {0};
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[0].descriptorCount = 1024;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
@@ -2344,6 +2371,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         pool_sizes[3].descriptorCount = 256;
         pool_sizes[4].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[4].descriptorCount = 256;
+        pool_sizes[5].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+        pool_sizes[5].descriptorCount = 256;
 
         VkDescriptorPoolCreateInfo dpi = {0};
         dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2354,7 +2383,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (vk->feat_uab_sampled_image && vk->feat_partially_bound)
             dpi.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         dpi.maxSets = 4096;
-        dpi.poolSizeCount = 5;
+        dpi.poolSizeCount = 6;
         dpi.pPoolSizes = pool_sizes;
         for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
             if (vkCreateDescriptorPool(vk->device, &dpi, NULL, &vk->desc_pools[i]) != VK_SUCCESS) {
@@ -2462,6 +2491,7 @@ static void vk_shutdown(RHIDevice *dev) {
         if (vk->storage_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_layout, NULL);
         if (vk->storage_vtx_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_vtx_layout, NULL);
         if (vk->storage_image_layout) vkDestroyDescriptorSetLayout(vk->device, vk->storage_image_layout, NULL);
+        if (vk->ray_query_layout) vkDestroyDescriptorSetLayout(vk->device, vk->ray_query_layout, NULL);
         if (vk->sampler_mip_layout) vkDestroyDescriptorSetLayout(vk->device, vk->sampler_mip_layout, NULL);
         if (vk->ubo_layout) vkDestroyDescriptorSetLayout(vk->device, vk->ubo_layout, NULL);
         vk_cleanup_swapchain(vk);
@@ -4006,7 +4036,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         stage.module = cs_data->module;
         stage.pName = "main";
 
-        VkDescriptorSetLayout set_layouts[4];
+        VkDescriptorSetLayout set_layouts[5];
         u32 set_count = 0;
         u32 storage_image_set = VK_INVALID_SET;
         u32 sampler_mip_set = VK_INVALID_SET;
@@ -4021,7 +4051,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         sampler_mip_set = set_count;
         set_layouts[set_count++] = vk->sampler_mip_layout;
         ubo_set = set_count;
-        set_layouts[set_count++] = vk->ubo_layout;
+         set_layouts[set_count++] = vk->ubo_layout;
+        u32 ray_query_set = set_count;
+        set_layouts[set_count++] = vk->ray_query_layout;
 
         VkPushConstantRange push_range = {0};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -4065,6 +4097,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         pd->storage_image_set = (u8)storage_image_set;
         pd->sampler_mip_set = (u8)sampler_mip_set;
         pd->ubo_set = (u8)ubo_set;
+        pd->ray_query_set = (u8)ray_query_set;
         dev->slots[idx].ptr = pd;
         dev->slots[idx].type = RHI_RES_PIPELINE;
         return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -6425,6 +6458,55 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
             bp, cpd->layout,
             first_set, 1, &ds, 0, NULL);
     }
+}
+
+void rhi_cmd_bind_acceleration_structure(
+    RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
+    VKBackend *vk;
+    VKPipelineData *cpd;
+    VKAccelerationStructureData *as_data;
+    VkWriteDescriptorSetAccelerationStructureKHR as_write = {0};
+    VkWriteDescriptorSet write = {0};
+    VkAccelerationStructureKHR handle;
+    VkDescriptorSetLayout layout;
+    VkDescriptorSet set;
+    VkDescriptorSetAllocateInfo allocate = {0};
+
+    if (cmd == NULL || binding >= 4u) return;
+    vk = vk_cmd_backend(cmd);
+    if (vk == NULL || vk->current_pipeline_data == NULL) return;
+    cpd = vk->current_pipeline_data;
+    if (!cpd->is_compute) return;
+    as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        g_current_device, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (as_data == NULL) return;
+
+    /* Allocate a small dedicated set so ray-query shaders do not depend on the
+     * legacy storage-buffer/image set layout. The compute pipeline must expose
+     * an acceleration-structure binding at this set's binding index. */
+    layout = vk->ray_query_layout;
+    if (layout == VK_NULL_HANDLE) return;
+    allocate.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocate.descriptorPool = vk->desc_pools[vk->current_frame];
+    allocate.descriptorSetCount = 1u;
+    allocate.pSetLayouts = &layout;
+    if (vkAllocateDescriptorSets(vk->device, &allocate, &set) != VK_SUCCESS)
+        return;
+    handle = as_data->handle;
+    as_write.sType =
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR;
+    as_write.accelerationStructureCount = 1u;
+    as_write.pAccelerationStructures = &handle;
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.descriptorCount = 1u;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+    write.pNext = &as_write;
+    vkUpdateDescriptorSets(vk->device, 1u, &write, 0u, NULL);
+    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+                            VK_PIPELINE_BIND_POINT_COMPUTE, cpd->layout,
+                            cpd->ray_query_set, 1u, &set, 0u, NULL);
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
