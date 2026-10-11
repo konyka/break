@@ -10,17 +10,33 @@ the existing raster/TSR fallback and does not claim ray-tracing or DLSS support.
 - Confirmed the repository's RHI boundary: OpenGL and Vulkan backends, C11,
   CMake/CTest, and an existing TSR path.
 - Obtained official NVIDIA Streamline source locally at
-  `third_party/streamline` (v2.14.1). The source is ignored and is not bundled
-  into the public repository.
+  `third_party/streamline` (v2.14.1) plus the official release runtime at
+  `third_party/streamline-bin/v2.14.1` (selective extraction, gitignored).
+  Neither is bundled into the public repository.
 - Added capability-driven render path selection for raster, TSR, and optional
   DLSS without selecting DLSS unless all vendor/runtime/API prerequisites exist.
 - Added Vulkan native-device interop for Streamline integration boundaries.
+- Vulkan device selection now prefers discrete GPUs (hybrid laptops no longer
+  pin the integrated adapter); `RE_VK_DEVICE_INDEX` still overrides explicitly.
 - Added Vulkan acceleration-structure capability detection and an opaque,
   generation-safe BLAS/TLAS resource lifecycle.
-- Added addressable AS-input buffer usage and a one-triangle BLAS build-size
+- Added addressable AS-input buffer usage and one-triangle BLAS build-size
   query.
-- Added a one-triangle BLAS build recording path using the existing frame command
-  buffer, with render-pass suspension and validation-gated smoke coverage.
+- Builds are one-shot submissions (private command buffer + queue wait), so
+  acceleration structures are complete and inputs safely destroyable on
+  return; AS storage buffers carry device-address usage and memory flags.
+- Added a TLAS one-instance path: stable 64-byte instance record encoding
+  (pure, headless-tested), BLAS device-address query, TLAS size query, and
+  one-shot TLAS build.
+- Verified on the RTX 4060 Laptop GPU: BLAS sizes (AS=2560, scratch=1920),
+  geometry-backed BLAS build, and one-instance TLAS build all pass with the
+  validation gate at zero.
+- Integrated a C-mirrored Streamline 2.14.1 loader (`sl_dlss`): dynamic
+  `sl.interposer.dll` load, `slInit` with a DLSS feature request, adapter-
+  scoped `slIsFeatureSupported`, classified fail-closed reasons, and safe
+  shutdown. Headless contract test covers the missing-runtime path. On the
+  RTX 4060 the probe reports DLSS supported on the adapter (all plugins pass
+  NVIDIA signature verification).
 - Added focused GL and Vulkan RHI tests and retained explicit fallback behavior.
 
 ## Verified Results
@@ -59,43 +75,48 @@ frameworks).
 
 ## Known Limitations
 
-- The current Vulkan test selects the AMD Radeon integrated GPU. NVIDIA RTX
-  hardware has been enumerated on the host but has not yet been selected for a
-  dedicated RT/DLSS run. On Linux, the RTX A5000 currently runs the NVK/nouveau
-  stack, which exposes no RT extensions; a proprietary-driver Linux run and a
-  Windows RTX-selected run remain outstanding.
-- The current implementation stops before TLAS construction, shader binding
-  tables, ray-tracing pipeline creation, ray dispatch, traversal shaders, and
-  image-quality validation of ray-traced output.
-- DLSS is not integrated yet. `nvngx_dlss.dll` is not present on the host.
-  Streamline/DLSS release binaries must be obtained from NVIDIA's official
-  release distribution, kept external to the source repository, signature
-  checked, and packaged only under approved license terms.
+- Device teardown on the NVIDIA Windows driver intermittently emits four
+  "object in use by command buffer" validation messages from legacy
+  pipeline/buffer destroys; `rhi_device_destroy` now waits frame fences and
+  resets command buffers first, and the AS/DLSS paths themselves stay at zero.
+  Same suite is deterministically clean on AMD, Intel/ANV, NVK, and MoltenVK.
+- RT traversal is not implemented yet: no ray-tracing pipeline, shader binding
+  table, raygen shaders, or ray-query dispatch exist, so no ray-traced image
+  is produced. TLAS/BLAS structures are built and validated only.
+- DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
+  `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
+  not wired. The SL `Preferences.projectId` currently uses a placeholder
+  engine identifier; an NVIDIA-issued project/application id is required
+  before shipping (see the DLSS license's notification requirement).
+- Linux RTX A5000 still runs NVK/nouveau. Secure Boot is disabled and the
+  `akmod-nvidia` install path is prepared, but the provided login credential
+  is not a sudo credential on that host, so the driver install and reboot
+  need either a sudo-capable credential or an on-host manual
+  `dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda` + reboot.
 - Full `test_vulkan` still reports pre-existing failures on the Windows/AMD
   configuration in MSAA depth roundtrip and Vulkan golden-image drift. The same
   suite passes end-to-end (goldens included) on Linux/ANV and macOS/MoltenVK,
   which localizes those regressions to the Windows/AMD path; the new validation
-  gate remains at zero everywhere.
+  gate remains at zero everywhere the teardown issue above does not fire.
 - No performance claim is made yet. Real RTX performance, VRAM, frame time,
   and image-quality budgets require a selected NVIDIA adapter and repeatable
   benchmark scenes.
 
 ## Next TODO
 
-1. Add triangle data upload and completion-safe resource lifetime for the BLAS
-   build smoke path.
-2. Select the NVIDIA RTX 4060 adapter explicitly on Windows and rerun Vulkan
-   validation on the discrete GPU and hybrid-display configuration; separately,
-   arrange a proprietary-driver Linux run on the RTX A5000 (NVK cannot expose
-   RT extensions).
-3. Add a minimal TLAS/instance contract only after the BLAS path is stable.
-4. Add Vulkan ray-tracing pipeline, shader groups, SBT, and one traversal scene.
-5. Integrate official Streamline Vulkan interop and optional DLSS Super
-   Resolution behind capability/runtime checks.
-6. Add deterministic RT-on/RT-off image captures and GPU timestamp/VRAM reports.
-7. Revisit the existing MSAA depth and golden-image regressions separately; do
-   not weaken those tests to make the RT feature pass.
-8. Do not submit or push vendor DLLs, local SDK trees, build directories, probe
+1. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
+   and `slEvaluateFeature` behind the existing capability gate (obtain an
+   NVIDIA project id for anything beyond local development).
+2. Add the Vulkan ray-tracing pipeline, shader groups, SBT, one raygen
+   traversal scene consuming the built TLAS, and RT-on/RT-off image captures.
+3. Install the NVIDIA proprietary driver on the Fedora host (needs a sudo
+   credential or on-host action), reboot, and rerun the RT suite on the
+   RTX A5000.
+4. Add GPU timestamp/VRAM reporting for the RT and DLSS paths.
+5. Revisit the intermittent NVIDIA teardown validation messages and the
+   Windows/AMD MSAA depth + golden-image regressions separately; do not weaken
+   those tests to make the RT feature pass.
+6. Do not submit or push vendor DLLs, local SDK trees, build directories, probe
    files, or generated profiles.
 
 ## Dependency Policy
