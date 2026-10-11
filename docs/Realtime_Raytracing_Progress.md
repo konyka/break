@@ -113,6 +113,12 @@ frameworks).
   the full pipeline works), but the BLAS built by the AMD device-side path
   contains no traceable geometry. NVIDIA RTX 4060 validation is pending a
   display driver reset (post-TDR state from an earlier unresolved run).
+- RTX 4060 capability probing confirms all three required device features:
+  `RHI_FEATURE_ACCELERATION_STRUCTURE=1`,
+  `RHI_FEATURE_RAY_TRACING_PIPELINE=1`, and `RHI_FEATURE_RAY_QUERY=1`.
+  The validation gate remains zero. The next diagnostic is a compute
+  `rayQueryEXT` probe; the current RHI has no generic descriptor/compute
+  one-shot API for that probe, so it is a separate slice.
 - DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
   `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
   not wired. The SL `Preferences.projectId` currently uses a placeholder
@@ -143,8 +149,9 @@ frameworks).
    a structurally invalid BVH: both AMD and NVIDIA neither report
    `accelerationStructureHostCommands` support (dual-path falls to device
    build), and the device-side build submits/completes without error but
-   produces an AS the hardware cannot traverse. Next steps: (a) try a
-   `VK_KHR_ray_query` approach which bypasses the RT pipeline entirely,
+   produces an AS the hardware cannot traverse. Next steps: (a) implement a
+   compute `VK_KHR_ray_query` probe through a dedicated RHI one-shot
+   descriptor/dispatch slice which bypasses the RT pipeline entirely,
    (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
    (c) test on a discrete non-hybrid NVIDIA system.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging

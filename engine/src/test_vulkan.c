@@ -526,6 +526,10 @@ static bool test_acceleration_structure_lifecycle(RHIDevice *device) {
         LOG_INFO("SKIP: acceleration structure lifecycle unsupported");
         return true;
     }
+    LOG_INFO("RT capabilities: AS=%d pipeline=%d rayQuery=%d",
+             (capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) != 0u,
+             (capabilities.feature_bits & RHI_FEATURE_RAY_TRACING_PIPELINE) != 0u,
+             (capabilities.feature_bits & RHI_FEATURE_RAY_QUERY) != 0u);
     bottom = rhi_acceleration_structure_create(device, &bottom_desc);
     top = rhi_acceleration_structure_create(device, &top_desc);
     if (!rhi_handle_valid(bottom) || !rhi_handle_valid(top)) {
