@@ -2015,6 +2015,11 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     enabled_ray_query.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR;
     if (as_extensions) {
         enabled_accel.accelerationStructure = VK_TRUE;
+        /* Enable host-side AS build commands when supported — without this,
+         * vkBuildAccelerationStructuresKHR is a spec violation that silently
+         * falls back to device builds or crashes drivers (observed: AMD). */
+        enabled_accel.accelerationStructureHostCommands =
+            supported_accel.accelerationStructureHostCommands ? VK_TRUE : VK_FALSE;
         enabled_accel.pNext = &enabled_rt_pipeline;
         enabled_rt_pipeline.rayTracingPipeline = enable_rt_pipeline ? VK_TRUE : VK_FALSE;
         enabled_rt_pipeline.pNext = enable_ray_query ? &enabled_ray_query : NULL;
@@ -2079,6 +2084,9 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vkGetPhysicalDeviceFeatures2(vk->physical, &features2);
         g_vk_host_as_supported =
             as_features.accelerationStructureHostCommands == VK_TRUE;
+        LOG_INFO("VK: AS host commands %s (accelerationStructure=%d)",
+                 g_vk_host_as_supported ? "supported" : "NOT supported",
+                 (int)as_features.accelerationStructure);
     }
 
     if (!vk_create_swapchain(vk, w, h)) {
@@ -4446,7 +4454,17 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         && (desc->usage & (RHI_BUFFER_USAGE_UNIFORM
                            | RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX)) == 0;
     bool as_input = (desc->usage & RHI_BUFFER_USAGE_AS_BUILD_INPUT) != 0;
-    bool device_local = desc->initial_data != NULL && (mesh_only || gpu_storage || as_input);
+    /* AS scratch: STORAGE|DEVICE_ADDRESS with no V/I/U and no initial data.
+     * The GPU writes to scratch during device-side AS builds — HOST_VISIBLE
+     * scratch has been observed to corrupt driver state on NVIDIA WDDM
+     * (DEVICE_LOST after a "successful" build). Force DEVICE_LOCAL. */
+    bool as_scratch = (desc->usage & RHI_BUFFER_USAGE_DEVICE_ADDRESS) != 0 &&
+                      (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0 &&
+                      (desc->usage & (RHI_BUFFER_USAGE_VERTEX |
+                                      RHI_BUFFER_USAGE_INDEX |
+                                      RHI_BUFFER_USAGE_UNIFORM)) == 0;
+    bool device_local = (desc->initial_data != NULL &&
+                         (mesh_only || gpu_storage || as_input)) || as_scratch;
     if (device_local)
         ci.usage |= VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT; /* R186: SRC for readback */
 

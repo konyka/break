@@ -551,6 +551,12 @@ static const char *rt_pixel_classify(const u8 p[4]) {
 }
 
 static bool test_one_triangle_blas_sizes(RHIDevice *device) {
+    /* DIAG: gate the entire AS smoke behind BREAK_AS_SMOKE to isolate
+     * device-side build corruption from the main render loop. */
+    if (getenv("BREAK_SKIP_AS") != NULL) {
+        LOG_INFO("SKIP: AS smoke test (BREAK_SKIP_AS set)");
+        return true;
+    }
     static const f32 tri_verts[9] = {
         0.0f, 1.0f, 0.0f,
         -1.0f, -1.0f, 0.0f,
@@ -666,24 +672,12 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
                 }
             }
             if (tlas_ok) {
-                u8 pixel[4] = {0};
                 LOG_INFO("PASS: one-instance TLAS build recorded");
                 /* Opt-in investigation tool (BREAK_RT_TRACE=1): traces one
-                 * ray against the BLAS directly and against the TLAS to
-                 * bisect acceleration-structure validity. BLAS HIT + TLAS
-                 * MISS points at the instance/TLAS build path; BLAS MISS
-                 * points at geometry upload/build. */
+                 * ray through the TLAS. BLAS direct tracing is a spec
+                 * violation (AS descriptor requires TOP_LEVEL or GENERIC). */
                 if (getenv("BREAK_RT_TRACE") != NULL) {
-                    u8 blas_pixel[4] = {0};
-                    if (rt_trace_probe_blas(device, blas, blas_pixel)) {
-                        LOG_INFO("TRACE blas -> {%u,%u,%u,%u} %s",
-                                 blas_pixel[0], blas_pixel[1],
-                                 blas_pixel[2], blas_pixel[3],
-                                 rt_pixel_classify(blas_pixel));
-                    } else {
-                        LOG_WARN("TRACE blas probe failed (%s)",
-                                 rt_trace_last_error());
-                    }
+                    u8 pixel[4] = {0};
                     if (rt_trace_probe(device, tlas, pixel)) {
                         LOG_INFO("TRACE tlas -> {%u,%u,%u,%u} %s",
                                  pixel[0], pixel[1], pixel[2], pixel[3],
