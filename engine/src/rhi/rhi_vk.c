@@ -4793,28 +4793,40 @@ bool rhi_backend_cmd_build_blas_one_triangle(
         }
         LOG_WARN("RT BLAS host build result=%d, falling back to device", (int)build_result);
     }
-    /* Device-side fallback: one-shot submit with minimal flags. */
+    /* Device-side fallback: one-shot submit. Keep PREFER_FAST_TRACE —
+     * some drivers (NVIDIA WDDM) may produce invalid AS without it.
+     * Use a dedicated command pool to avoid any interaction with the
+     * engine's per-frame command buffers. */
     if (g_vk_cmd_build_as != NULL) {
+        VkCommandPool as_pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo pool_ci = {0};
         VkCommandBufferAllocateInfo alloc_info = {0};
         VkCommandBufferBeginInfo begin_info = {0};
         VkSubmitInfo submit = {0};
         VkCommandBuffer one_shot;
-        build.flags = 0; /* minimal: drop PREFER_FAST_TRACE for widest compat */
+        pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_ci.queueFamilyIndex = vk->graphics_family;
+        if (vkCreateCommandPool(vk->device, &pool_ci, NULL, &as_pool) != VK_SUCCESS)
+            return false;
         alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        alloc_info.commandPool = vk->cmd_pool;
+        alloc_info.commandPool = as_pool;
         alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         alloc_info.commandBufferCount = 1u;
-        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS) {
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
+        }
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
         g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
         if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -4822,10 +4834,12 @@ bool rhi_backend_cmd_build_blas_one_triangle(
         submit.pCommandBuffers = &one_shot;
         if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
             vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+        vkDestroyCommandPool(vk->device, as_pool, NULL);
         LOG_INFO("RT BLAS built via device fallback path");
         return true;
     }
@@ -4960,26 +4974,35 @@ bool rhi_backend_cmd_build_tlas_one_instance(
         LOG_WARN("RT TLAS host build result=%d, falling back to device", (int)build_result);
     }
     if (g_vk_cmd_build_as != NULL) {
+        VkCommandPool as_pool = VK_NULL_HANDLE;
+        VkCommandPoolCreateInfo pool_ci = {0};
         VkCommandBufferAllocateInfo alloc_info = {0};
         VkCommandBufferBeginInfo begin_info = {0};
         VkSubmitInfo submit = {0};
         VkCommandBuffer one_shot;
-        build.flags = 0;
+        pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+        pool_ci.queueFamilyIndex = vk->graphics_family;
+        if (vkCreateCommandPool(vk->device, &pool_ci, NULL, &as_pool) != VK_SUCCESS)
+            return false;
         alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        alloc_info.commandPool = vk->cmd_pool;
+        alloc_info.commandPool = as_pool;
         alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         alloc_info.commandBufferCount = 1u;
-        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS)
+        if (vkAllocateCommandBuffers(vk->device, &alloc_info, &one_shot) != VK_SUCCESS) {
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
+        }
         begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
         begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         if (vkBeginCommandBuffer(one_shot, &begin_info) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
         g_vk_cmd_build_as(one_shot, 1u, &build, ranges);
         if (vkEndCommandBuffer(one_shot) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -4987,10 +5010,12 @@ bool rhi_backend_cmd_build_tlas_one_instance(
         submit.pCommandBuffers = &one_shot;
         if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
             vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
-            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+            vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+            vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
         }
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1u, &one_shot);
+        vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
+        vkDestroyCommandPool(vk->device, as_pool, NULL);
         LOG_INFO("RT TLAS built via device fallback path");
         return true;
     }
