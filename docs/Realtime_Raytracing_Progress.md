@@ -98,10 +98,10 @@ frameworks).
      feature. `VK_FORMAT_R32G32B32_SFLOAT` is the correct format (confirmed
      by clean validation).
   3. Device-side `vkCmdBuildAccelerationStructuresKHR` "succeeds" (submit +
-     wait return VK_SUCCESS) but produces an empty AS: the BLAS direct trace
-     returns MISS(blue) — the miss shader executes but the ray finds no
-     geometry. Buffer data is confirmed correct via readback; device
-     addresses are confirmed valid GPU VAs. This is a driver-level issue.
+     wait return VK_SUCCESS) but produces an AS the hardware cannot traverse.
+     Buffer data is confirmed correct via readback; device addresses are valid
+     GPU VAs; build-size queries and validation are clean. Direct BLAS tracing
+     is not a legal diagnostic (VUID 03579), so only TLAS tracing is retained.
 - Device teardown on the NVIDIA Windows driver intermittently emits four
   "object in use by command buffer" validation messages from legacy
   pipeline/buffer destroys; `rhi_device_destroy` now waits frame fences and
@@ -111,8 +111,10 @@ frameworks).
   execution, miss shader dispatch, and image readback are all verified working
   end-to-end. The miss shader dispatches correctly (blue pixel on AMD proves
   the full pipeline works), but the BLAS built by the AMD device-side path
-  contains no traceable geometry. NVIDIA RTX 4060 validation is pending a
-  display driver reset (post-TDR state from an earlier unresolved run).
+   contains no traceable geometry. NVIDIA RTX 4060 validation is now healthy
+   after reboot, but the device-side AS build still produces an untraversable
+   structure; the ray-query probe returns no committed hit before the driver
+   enters the known DEVICE_LOST path.
 - RTX 4060 capability probing confirms all three required device features:
   `RHI_FEATURE_ACCELERATION_STRUCTURE=1`,
   `RHI_FEATURE_RAY_TRACING_PIPELINE=1`, and `RHI_FEATURE_RAY_QUERY=1`.

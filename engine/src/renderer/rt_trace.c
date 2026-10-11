@@ -674,11 +674,6 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
     return rt_trace_probe_impl(dev, tlas, out_pixel);
 }
 
-bool rt_trace_probe_blas(RHIDevice *dev, RHIAccelerationStructure blas,
-                         u8 out_pixel[4]) {
-    return rt_trace_probe_impl(dev, blas, out_pixel);
-}
-
 #else /* !ENGINE_VULKAN */
 
 const char *rt_trace_last_error(void) {
@@ -689,14 +684,6 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
                     u8 out_pixel[4]) {
     (void)dev;
     (void)tlas;
-    if (out_pixel != NULL) memset(out_pixel, 0, 4);
-    return false;
-}
-
-bool rt_trace_probe_blas(RHIDevice *dev, RHIAccelerationStructure blas,
-                         u8 out_pixel[4]) {
-    (void)dev;
-    (void)blas;
     if (out_pixel != NULL) memset(out_pixel, 0, 4);
     return false;
 }
