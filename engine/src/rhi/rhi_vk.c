@@ -6460,6 +6460,22 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     }
 }
 
+bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
+    const VKBackend *vk;
+    if (dev == NULL || out == NULL) return false;
+    vk = (const VKBackend *)dev->backend_data;
+    if (vk == NULL) return false;
+    out->backend = RHI_BACKEND_VULKAN;
+    strncpy(out->device_name, vk->device_props.deviceName,
+            sizeof(out->device_name) - 1u);
+    out->vendor_id = vk->device_props.vendorID;
+    out->device_id = vk->device_props.deviceID;
+    out->api_version = vk->device_props.apiVersion;
+    out->driver_version = vk->device_props.driverVersion;
+    out->feature_bits = dev->capabilities.feature_bits;
+    return true;
+}
+
 void rhi_cmd_bind_acceleration_structure(
     RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
     VKBackend *vk;

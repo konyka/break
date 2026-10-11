@@ -123,6 +123,17 @@ typedef struct {
     u32        feature_bits;
 } RHICapabilities;
 
+#define RHI_DEVICE_NAME_MAX 256u
+typedef struct {
+    RHIBackend backend;
+    char device_name[RHI_DEVICE_NAME_MAX];
+    u32 vendor_id;
+    u32 device_id;
+    u32 api_version;
+    u32 driver_version;
+    u32 feature_bits;
+} RHIDeviceInfo;
+
 typedef enum {
     RHI_FORMAT_R8G8B8A8_UNORM,
     RHI_FORMAT_B8G8R8A8_UNORM,
@@ -258,8 +269,10 @@ typedef struct RHIDevice RHIDevice;
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
+bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
+bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(
                RHICmdBuffer *cmd, RHIDevice *dev,
                RHIAccelerationStructure blas,

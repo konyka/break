@@ -129,6 +129,11 @@ frameworks).
   and reads `0x00000000` (no committed intersection) before the NVIDIA device
   enters its known DEVICE_LOST state, consistent with the device-side AS build
   producing an untraversable structure.
+- The Vulkan device audit now reports a stable runtime matrix in the graphics
+  suite: on the current RTX host, `NVIDIA GeForce RTX 4060 Laptop GPU`, vendor
+  `0x10de`, device `0x28a0`, Vulkan API `1.4.351`, driver `0x9a4a8000`, and
+  AS/RTP/RQ feature bits all enabled. This is runtime-reported data, not a
+  hard-coded device table.
 - DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
   `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
   not wired. The SL `Preferences.projectId` currently uses a placeholder

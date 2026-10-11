@@ -242,6 +242,15 @@ bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     return true;
 }
 
+bool rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out) {
+    if (dev == NULL || out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    out->backend = dev->capabilities.backend;
+    out->feature_bits = dev->capabilities.feature_bits;
+    if (dev->backend_data == NULL) return true;
+    return rhi_backend_get_device_info(dev, out);
+}
+
 bool rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     if (dev == NULL || out == NULL) return false;
     memset(out, 0, sizeof(*out));

@@ -5509,6 +5509,20 @@ int main(int argc, char **argv) {
         engine_shutdown(&engine);
         return 1;
     }
+    {
+        RHIDeviceInfo info = {0};
+        if (rhi_device_get_info(render.device, &info)) {
+            LOG_INFO("Vulkan device audit: %s vendor=0x%04x device=0x%04x "
+                     "api=%u.%u.%u driver=0x%08x AS=%d RTP=%d RQ=%d",
+                     info.device_name, info.vendor_id, info.device_id,
+                     (info.api_version >> 22) & 0x7fu,
+                     (info.api_version >> 12) & 0x3ffu,
+                     info.api_version & 0xfffu, info.driver_version,
+                     (info.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) != 0u,
+                     (info.feature_bits & RHI_FEATURE_RAY_TRACING_PIPELINE) != 0u,
+                     (info.feature_bits & RHI_FEATURE_RAY_QUERY) != 0u);
+        }
+    }
     bool acceleration_structure_pass =
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =

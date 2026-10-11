@@ -5,6 +5,7 @@
 #include <glad.h>
 #include <limits.h>
 #include <string.h>
+#include <stdio.h>
 #include <rhi/rhi.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
@@ -28,6 +29,13 @@ void rhi_backend_acceleration_structure_destroy(
     RHIDevice *dev, RHIAccelerationStructure structure) {
     (void)dev;
     (void)structure;
+}
+
+bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
+    (void)dev;
+    if (out == NULL) return false;
+    snprintf(out->device_name, sizeof(out->device_name), "OpenGL backend");
+    return true;
 }
 
 void rhi_cmd_bind_acceleration_structure(
