@@ -4779,11 +4779,6 @@ bool rhi_backend_cmd_build_blas_one_triangle(
     build.pGeometries = &geometry;
     build.scratchData.deviceAddress = scratch_address;
     range.primitiveCount = 1u;
-    LOG_INFO("RT BLAS BUILD(host): vaddr=0x%llx iaddr=0x%llx saddr=0x%llx as=0x%llx",
-             (unsigned long long)vertex_address,
-             (unsigned long long)index_address,
-             (unsigned long long)scratch_address,
-             (unsigned long long)(uintptr_t)as_data->handle);
     if (g_vk_build_as_host != NULL && g_vk_host_as_supported) {
         VkResult build_result = g_vk_build_as_host(
             vk->device, VK_NULL_HANDLE, 1u, &build, ranges);

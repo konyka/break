@@ -89,11 +89,10 @@ frameworks).
 
 ## Known Limitations
 
-- **AMD Windows driver triple limitation (integrated GPU, fully diagnosed)**:
-  1. `accelerationStructureHostCommands` is not supported — calling
-     `vkBuildAccelerationStructuresKHR` without this feature enabled is a spec
-     violation that crashes the driver (0xc0000354). The engine now queries
-     this feature at init and only attempts host builds when supported.
+- **AMD Windows driver limitations (integrated GPU, fully diagnosed)**:
+  1. `accelerationStructureHostCommands` is not supported. The engine queries
+     this feature at init and only attempts host builds when supported;
+     otherwise it falls back to device builds.
   2. `VK_FORMAT_R32G32B32A32_SFLOAT` lacks the
      `VK_FORMAT_FEATURE_ACCELERATION_STRUCTURE_VERTEX_BUFFER_BIT_KHR` buffer
      feature. `VK_FORMAT_R32G32B32_SFLOAT` is the correct format (confirmed

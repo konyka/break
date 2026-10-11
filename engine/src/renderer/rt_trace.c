@@ -152,8 +152,6 @@ static bool rt_compile_stage(VkDevice device, const char *source,
     } else {
         spirv = shaderc_result_get_bytes(result);
         spirv_len = shaderc_result_get_length(result);
-        LOG_INFO("RT shader %s: %zu bytes SPIR-V (kind=%d)",
-                 name, spirv_len, (int)kind);
         memset(&mi, 0, sizeof(mi));
         mi.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
         mi.codeSize = spirv_len;
@@ -240,21 +238,6 @@ static bool rt_trace_probe_impl(RHIDevice *dev, RHIAccelerationStructure as,
     props2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     props2.pNext = &rt_props;
     vkGetPhysicalDeviceProperties2(physical, &props2);
-    {
-        /* DIAG: scratch alignment requirement */
-        VkPhysicalDeviceAccelerationStructurePropertiesKHR as_props;
-        VkPhysicalDeviceProperties2 props2b;
-        memset(&as_props, 0, sizeof(as_props));
-        as_props.sType =
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_PROPERTIES_KHR;
-        memset(&props2b, 0, sizeof(props2b));
-        props2b.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
-        props2b.pNext = &as_props;
-        vkGetPhysicalDeviceProperties2(physical, &props2b);
-        LOG_INFO("RT props: scratchAlign=%llu maxGeometryCount=%llu",
-                 (unsigned long long)as_props.minAccelerationStructureScratchOffsetAlignment,
-                 (unsigned long long)as_props.maxGeometryCount);
-    }
     get_handles = (PFN_vkGetRayTracingShaderGroupHandlesKHR)vkGetDeviceProcAddr(
         o.device, "vkGetRayTracingShaderGroupHandlesKHR");
     create_rt_pipelines = (PFN_vkCreateRayTracingPipelinesKHR)
@@ -525,30 +508,6 @@ static bool rt_trace_probe_impl(RHIDevice *dev, RHIAccelerationStructure as,
                    (size_t)handle_size);
         }
         vkUnmapMemory(o.device, o.sbt_memory);
-        /* DIAG: verify SBT handles are non-zero */
-        {
-            u8 verify[256];
-            memset(verify, 0, sizeof(verify));
-            if (vkMapMemory(o.device, o.sbt_memory, 0, VK_WHOLE_SIZE, 0,
-                            (void **)&mapped) == VK_SUCCESS) {
-                memcpy(verify, mapped, (size_t)(slot * 3 > 256 ? 256 : slot * 3));
-                vkUnmapMemory(o.device, o.sbt_memory);
-                u32 nonzero = 0;
-                for (u32 i = 0; i < 3u; i++) {
-                    bool group_nonzero = false;
-                    for (u32 j = 0; j < (u32)handle_size; j++) {
-                        if (verify[(u32)slot * i + j] != 0) {
-                            group_nonzero = true;
-                            break;
-                        }
-                    }
-                    if (group_nonzero) nonzero++;
-                }
-                LOG_INFO("RT SBT verify: %u/3 groups non-zero (slot=%llu hsize=%llu)",
-                         nonzero, (unsigned long long)slot,
-                         (unsigned long long)handle_size);
-            }
-        }
         memset(&addr_info, 0, sizeof(addr_info));
         addr_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
         addr_info.buffer = o.sbt_buffer;
