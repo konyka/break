@@ -31,6 +31,10 @@ the existing raster/TSR fallback and does not claim ray-tracing or DLSS support.
 - Verified on the RTX 4060 Laptop GPU: BLAS sizes (AS=2560, scratch=1920),
   geometry-backed BLAS build, and one-instance TLAS build all pass with the
   validation gate at zero.
+- Added an opt-in ray-tracing trace probe (`rt_trace`, gated behind
+  `BREAK_RT_TRACE=1`): full ray-tracing pipeline, SBT, and one-pixel readback
+  machinery with verified raygen execution; see the TODO list for the open
+  `traceRayEXT` dispatch investigation.
 - Integrated a C-mirrored Streamline 2.14.1 loader (`sl_dlss`): dynamic
   `sl.interposer.dll` load, `slInit` with a DLSS feature request, adapter-
   scoped `slIsFeatureSupported`, classified fail-closed reasons, and safe
@@ -114,15 +118,24 @@ frameworks).
 
 ## Next TODO
 
-1. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
+1. rt_trace investigation (opt-in via `BREAK_RT_TRACE=1`): pipeline creation,
+   shader groups, SBT layout, submission, and readback are all verified
+   working end-to-end on the RTX 4060, and a raygen-only dispatch writes the
+   output image correctly. `traceRayEXT` itself does not dispatch the miss or
+   closest-hit shaders and returns an unwritten payload; an early run of this
+   unresolved path also left the hybrid display driver in a post-TDR state
+   (known device history), so the probe is disabled by default until the root
+   cause is found. Next step: a ray-query (`VK_KHR_ray_query`) variant against
+   the same TLAS to determine whether the TLAS contents are valid, isolating
+   pipeline/SPV issues from acceleration-structure issues.
+2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
    and `slEvaluateFeature` behind the existing capability gate (obtain an
    NVIDIA project id for anything beyond local development).
-2. Add the Vulkan ray-tracing pipeline, shader groups, SBT, one raygen
-   traversal scene consuming the built TLAS, and RT-on/RT-off image captures.
-3. Install the NVIDIA proprietary driver on the Fedora host (needs a sudo
+3. Add RT-on/RT-off image captures and GPU timestamp/VRAM reporting once the
+   trace path is resolved.
+4. Install the NVIDIA proprietary driver on the Fedora host (needs a sudo
    credential or on-host action), reboot, and rerun the RT suite on the
    RTX A5000.
-4. Add GPU timestamp/VRAM reporting for the RT and DLSS paths.
 5. Revisit the intermittent NVIDIA teardown validation messages and the
    Windows/AMD MSAA depth + golden-image regressions separately; do not weaken
    those tests to make the RT feature pass.
