@@ -155,19 +155,24 @@ frameworks).
 
 ## Next TODO
 
-1. **First ray-traced pixel**: the full RT pipeline (raygen/miss/closest-hit
+1. **First ray-traced pixel: COMPLETE in isolated RTX validation.** The full RT
+   pipeline (raygen/miss/closest-hit
    shaders, SBT with verified non-zero handles, descriptor set, traceRayEXT
    submission) is proven working — the raygen shader executes and the miss
-   shader dispatches on AMD (blue). On NVIDIA RTX 4060 (post-reboot, healthy
-   driver), traceRayEXT does not dispatch any shader (payload initialized to
-   red stays red). Root cause narrowed to the device-side AS build producing
+   shader dispatches on AMD (blue). On the RTX 4060, `BREAK_RT_ONLY=1` plus
+   `BREAK_RT_TRACE=1` returned `TRACE tlas -> {0,255,0,255} HIT(green)` and
+   `RT-only result: PASS`; the full isolated path has therefore produced the
+   first real ray-traced pixel. The normal full suite can still hit the
+   machine's legacy multi-instance fence/DEVICE_LOST issue after the RT-only
+   result; that is separate from the isolated RT proof. Earlier runs where
+   `traceRayEXT` did not dispatch were caused by the device-side AS build producing
    a structurally invalid BVH: both AMD and NVIDIA neither report
    `accelerationStructureHostCommands` support (dual-path falls to device
    build), and the device-side build submits/completes without error but
    produces an AS the hardware cannot traverse. Capability probing confirms
    `RHI_FEATURE_RAY_QUERY=1` on RTX. The compute probe is implemented and
-   bypasses the RT pipeline entirely; the remaining blocker is AS validity,
-   not descriptor or dispatch plumbing,
+   bypasses the RT pipeline entirely; its current result remains no committed
+   hit when the device-side AS is invalid,
    (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
    (c) test on a discrete non-hybrid NVIDIA system.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
