@@ -231,6 +231,7 @@ add_library(engine STATIC
     src/renderer/camera.c
     src/renderer/cull.c
     src/renderer/render_features.c
+    src/renderer/rt_trace.c
     src/renderer/sl_dlss.c
     src/renderer/skybox.c
     src/renderer/particles.c
@@ -2261,6 +2262,29 @@ endif()
         target_include_directories(test_sl_dlss PRIVATE ${TEST_INCLUDE_DIRS})
         add_test(NAME test_sl_dlss COMMAND test_sl_dlss)
     endif()
+
+    add_executable(test_rt_trace tests/test_rt_trace.c src/renderer/rt_trace.c
+        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+    target_include_directories(test_rt_trace PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rt_trace PRIVATE ENGINE_RHI_TEST=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
+    if(ENGINE_VULKAN)
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_VULKAN=1)
+        if(SHADERC_LIB AND SHADERC_INCLUDE_DIR)
+            target_include_directories(test_rt_trace PRIVATE ${SHADERC_INCLUDE_DIR})
+            target_link_libraries(test_rt_trace PRIVATE ${Vulkan_LIBRARIES} ${SHADERC_LIB})
+        else()
+            target_link_libraries(test_rt_trace PRIVATE ${Vulkan_LIBRARIES})
+        endif()
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_rt_trace PRIVATE glad opengl32)
+    endif()
+    add_test(NAME test_rt_trace COMMAND test_rt_trace)
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under

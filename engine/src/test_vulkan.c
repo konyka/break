@@ -3,6 +3,7 @@
 #include <renderer/camera.h>
 #include <renderer/skybox.h>
 #include <renderer/sl_dlss.h>
+#include <renderer/rt_trace.h>
 #include <renderer/terrain.h>
 #include <renderer/lighting.h>
 #include <renderer/point_shadow.h> /* R588: TEST 7d point shadow gate */
@@ -636,8 +637,37 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
                                   tlas_scratch, 0u);
                 }
             }
-            if (tlas_ok) LOG_INFO("PASS: one-instance TLAS build recorded");
-            else LOG_ERROR("FAIL: one-instance TLAS build recording");
+            if (tlas_ok) {
+                u8 pixel[4] = {0};
+                LOG_INFO("PASS: one-instance TLAS build recorded");
+                /* Opt-in investigation tool: traceRayEXT dispatch of miss/hit
+                 * shaders is not yet reliable on this driver (can destabilize
+                 * the device), so the probe only runs when explicitly enabled
+                 * via BREAK_RT_TRACE=1. See the progress document. */
+                if (getenv("BREAK_RT_TRACE") != NULL) {
+                    if (rt_trace_probe(device, tlas, pixel)) {
+                        bool hit = pixel[1] > 200u && pixel[0] < 50u &&
+                                   pixel[2] < 50u;
+                        if (hit) {
+                            LOG_INFO("PASS: one-bounce ray trace hit "
+                                     "{%u,%u,%u,%u} (first ray-traced pixel)",
+                                     pixel[0], pixel[1], pixel[2], pixel[3]);
+                        } else {
+                            LOG_WARN("trace payload not written "
+                                     "{%u,%u,%u,%u} (%s) - under investigation",
+                                     pixel[0], pixel[1], pixel[2], pixel[3],
+                                     rt_trace_last_error());
+                        }
+                    } else {
+                        LOG_WARN("rt_trace_probe failed (%s)",
+                                 rt_trace_last_error());
+                    }
+                } else {
+                    LOG_INFO("SKIP: rt trace probe (set BREAK_RT_TRACE=1)");
+                }
+            } else {
+                LOG_ERROR("FAIL: one-instance TLAS build recording");
+            }
         }
         ok = ok && tlas_ok;
     } else {

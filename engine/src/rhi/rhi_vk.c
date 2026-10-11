@@ -4787,6 +4787,20 @@ u64 rhi_backend_acceleration_structure_get_device_address(
     return (u64)g_vk_get_as_address(vk->device, &info);
 }
 
+bool rhi_backend_acceleration_structure_get_vk_handle(
+    RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
+    VKAccelerationStructureData *as_data;
+    if (dev == NULL || out_handle == NULL) return false;
+    as_data = (VKAccelerationStructureData *)rhi_get_resource_typed(
+        dev, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (as_data == NULL || as_data->handle == VK_NULL_HANDLE) {
+        *out_handle = NULL;
+        return false;
+    }
+    *out_handle = (void *)(uintptr_t)as_data->handle;
+    return true;
+}
+
 bool rhi_backend_tlas_one_instance_get_build_sizes(
     RHIDevice *dev, RHIBuffer instance_buffer,
     RHIAccelerationStructureBuildSizes *out_sizes) {

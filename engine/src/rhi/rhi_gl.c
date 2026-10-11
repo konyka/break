@@ -71,6 +71,13 @@ bool rhi_backend_cmd_build_tlas_one_instance(
     return false;
 }
 
+bool rhi_backend_acceleration_structure_get_vk_handle(
+    RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
+    (void)dev; (void)structure;
+    if (out_handle != NULL) *out_handle = NULL;
+    return false;
+}
+
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <GL/gl.h>
     /* WGL extension function types */

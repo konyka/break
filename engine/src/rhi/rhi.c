@@ -325,6 +325,15 @@ bool rhi_build_tlas_one_instance(
         NULL, dev, tlas, instance_buffer, scratch_buffer, scratch_offset);
 }
 
+bool rhi_acceleration_structure_get_vk_handle(
+    RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
+    if (dev == NULL || !rhi_handle_valid(structure) || out_handle == NULL)
+        return false;
+    *out_handle = NULL;
+    return rhi_backend_acceleration_structure_get_vk_handle(
+        dev, structure, out_handle);
+}
+
 RHIAccelerationStructure rhi_acceleration_structure_create(
     RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
     if (dev == NULL || !rhi_acceleration_structure_desc_validate(desc)) {
