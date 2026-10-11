@@ -1,0 +1,4 @@
+# NVIDIA Streamline source and release artifacts are fetched locally.
+# Streamline/DLSS binaries have separate distribution terms and must not be
+# committed with the engine source tree.
+streamline/
