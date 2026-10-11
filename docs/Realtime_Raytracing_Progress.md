@@ -135,10 +135,14 @@ frameworks).
   AS/RTP/RQ feature bits all enabled. This is runtime-reported data, not a
   hard-coded device table.
 - DLSS is detection-only: `slInit`/`slIsFeatureSupported` report support, but
-  `slSetVulkanInfo`, resource tagging, and `slEvaluateFeature` upscaling are
-  not wired. The SL `Preferences.projectId` currently uses a placeholder
-  engine identifier; an NVIDIA-issued project/application id is required
-  before shipping (see the DLSS license's notification requirement).
+   `slSetVulkanInfo` currently returns an internal loader error when called in
+   the full raw-Vulkan test process; resource tagging and `slEvaluateFeature`
+   are not wired. The probe is opt-in (`BREAK_DLSS_PROBE=1`) because Streamline
+   can create additional Vulkan/plugin state. A standalone Streamline probe
+   process is the next safe integration step. The SL `Preferences.projectId`
+   currently uses a placeholder engine identifier; an NVIDIA-issued
+   project/application id is required before shipping (see the DLSS license's
+   notification requirement).
 - Linux RTX A5000 still runs NVK/nouveau. Secure Boot is disabled and the
   `akmod-nvidia` install path is prepared, but the provided login credential
   is not a sudo credential on that host, so the driver install and reboot

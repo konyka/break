@@ -43,6 +43,8 @@ static const u32 SL_RENDER_API_VULKAN = 2u;
 
 /* sl::PreferenceFlags::eDisableCLStateTracking | eAllowOTA */
 static const u64 SL_PREF_FLAGS_DEFAULT = (1u << 0) | (1u << 3);
+/* PreferenceFlags::eUseManualHooking. */
+static const u64 SL_PREF_FLAG_MANUAL_HOOKING = (1u << 2);
 
 /* kSDKVersion = (2<<48)|(14<<32)|(1<<16)|0xfedc */
 #define SL_SDK_VERSION_2_14_1 (((u64)2 << 48) | ((u64)14 << 32) | ((u64)1 << 16) | (u64)0xfedc)
@@ -83,6 +85,27 @@ typedef struct {
     void *vk_physical_device;        /* +48 */
 } SLAdapterInfo;
 
+/* Streamline 2.14.1 sl::VulkanInfo, kStructVersion3. */
+typedef struct {
+    SLBaseStructure base;
+    void *device;
+    void *instance;
+    void *physical_device;
+    u32 compute_queue_index;
+    u32 compute_queue_family;
+    u32 graphics_queue_index;
+    u32 graphics_queue_family;
+    u32 optical_flow_queue_index;
+    u32 optical_flow_queue_family;
+    u8 use_native_optical_flow_mode;
+    u8 _pad0[3];
+    u32 compute_queue_create_flags;
+    u32 graphics_queue_create_flags;
+    u32 optical_flow_queue_create_flags;
+} SLVulkanInfo;
+
+_Static_assert(sizeof(SLVulkanInfo) == 96, "sl VulkanInfo layout 2.14.1");
+
 _Static_assert(sizeof(SLBaseStructure) == 32, "sl base layout");
 _Static_assert(sizeof(SLPreferences) == 152, "sl preferences layout 2.14.1");
 _Static_assert(sizeof(SLAdapterInfo) == 56, "sl adapter info layout 2.14.1");
@@ -98,6 +121,7 @@ _Static_assert(sizeof(SLAdapterInfo) == 56, "sl adapter info layout 2.14.1");
 typedef int (WINAPI *PFN_sl_init)(const SLPreferences *, u64);
 typedef int (WINAPI *PFN_sl_shutdown)(void);
 typedef int (WINAPI *PFN_sl_is_feature_supported)(u32, const SLAdapterInfo *);
+typedef int (WINAPI *PFN_sl_set_vulkan_info)(const SLVulkanInfo *);
 
 static HMODULE g_sl_module;
 static PFN_sl_shutdown g_sl_shutdown_fn;
@@ -110,6 +134,10 @@ static const SLStructType kPrefGuid = {
 static const SLStructType kAdapterGuid = {
     0x0677315fu, 0xa746u, 0x4492u,
     { 0x9f, 0x42, 0xcb, 0x61, 0x42, 0xc9, 0xc3, 0xd4 }
+};
+static const SLStructType kVulkanInfoGuid = {
+    0x0eed6fd5u, 0x82cdu, 0x43a9u,
+    { 0xbd, 0xb5, 0x47, 0xa5, 0xba, 0x2f, 0x45, 0xd6 }
 };
 
 static HMODULE sl_load_interposer(void) {
@@ -157,6 +185,7 @@ const char *sl_dlss_probe_result_text(SLDlssProbeResult result) {
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
     PFN_sl_init init_fn;
     PFN_sl_is_feature_supported supported_fn;
+    PFN_sl_set_vulkan_info set_vk_fn;
     SLPreferences prefs;
     SLAdapterInfo adapter;
     u32 feature = SL_FEATURE_DLSS;
@@ -176,7 +205,10 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
     g_sl_shutdown_fn = (PFN_sl_shutdown)(void *)GetProcAddress(g_sl_module, "slShutdown");
     supported_fn = (PFN_sl_is_feature_supported)(void *)GetProcAddress(
         g_sl_module, "slIsFeatureSupported");
-    if (init_fn == NULL || g_sl_shutdown_fn == NULL || supported_fn == NULL) {
+    set_vk_fn = (PFN_sl_set_vulkan_info)(void *)GetProcAddress(
+        g_sl_module, "slSetVulkanInfo");
+    if (init_fn == NULL || g_sl_shutdown_fn == NULL ||
+        supported_fn == NULL || set_vk_fn == NULL) {
         if (out_result != NULL) *out_result = SL_DLSS_MISSING_RUNTIME;
         return false;
     }
@@ -188,7 +220,9 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
     prefs.show_console = false;
     prefs.log_level = SL_LOG_LEVEL_DEFAULT;
     prefs.path_to_logs_and_data = NULL;
-    prefs.flags = SL_PREF_FLAGS_DEFAULT;
+    /* Manual hooking is mandatory here: this engine owns vkCreateInstance /
+     * vkCreateDevice and passes the native handles explicitly below. */
+    prefs.flags = SL_PREF_FLAGS_DEFAULT | SL_PREF_FLAG_MANUAL_HOOKING;
     prefs.features_to_load = &feature;
     prefs.num_features_to_load = 1u;
     prefs.engine = SL_ENGINE_CUSTOM;
@@ -202,6 +236,28 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
         return false;
     }
     g_initialized = true;
+
+    if (native == NULL || native->type != RHI_NATIVE_HANDLE_VULKAN) {
+        if (out_result != NULL) *out_result = SL_DLSS_INIT_FAILED;
+        return false;
+    }
+    {
+        SLVulkanInfo vk_info;
+        int set_result;
+        memset(&vk_info, 0, sizeof(vk_info));
+        vk_info.base.struct_type = kVulkanInfoGuid;
+        vk_info.base.struct_version = 3u;
+        vk_info.device = native->device;
+        vk_info.instance = native->instance;
+        vk_info.physical_device = native->physical_device;
+        vk_info.graphics_queue_family = native->graphics_queue_family;
+        vk_info.graphics_queue_index = 0u;
+        set_result = set_vk_fn(&vk_info);
+        if (set_result != SL_RESULT_OK) {
+            if (out_result != NULL) *out_result = SL_DLSS_INIT_FAILED;
+            return false;
+        }
+    }
 
     memset(&adapter, 0, sizeof(adapter));
     adapter.base.next = NULL;
