@@ -149,9 +149,12 @@ frameworks).
    a structurally invalid BVH: both AMD and NVIDIA neither report
    `accelerationStructureHostCommands` support (dual-path falls to device
    build), and the device-side build submits/completes without error but
-   produces an AS the hardware cannot traverse. Next steps: (a) implement a
-   compute `VK_KHR_ray_query` probe through a dedicated RHI one-shot
-   descriptor/dispatch slice which bypasses the RT pipeline entirely,
+   produces an AS the hardware cannot traverse. Capability probing confirms
+   `RHI_FEATURE_RAY_QUERY=1` on RTX. The next slice is a compute
+   `VK_KHR_ray_query` probe; this requires a dedicated RHI descriptor binding
+   for an acceleration-structure descriptor because the existing compute RHI
+   only exposes storage-buffer/image descriptor sets. It bypasses the RT
+   pipeline entirely,
    (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
    (c) test on a discrete non-hybrid NVIDIA system.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging

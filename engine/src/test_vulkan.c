@@ -595,7 +595,7 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
     }
     vertices = rhi_buffer_create(device, &vertex_desc);
     indices = rhi_buffer_create(device, &index_desc);
-    /* DIAG: verify the upload path actually placed the geometry data at the
+    /* Verify the upload path actually placed the geometry data at the
      * device buffer — a silently empty BLAS build would otherwise surface
      * only as a ray-trace miss. */
     if (rhi_handle_valid(vertices) && rhi_handle_valid(indices)) {
@@ -609,11 +609,8 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
             memcmp(read_verts, tri_verts, sizeof(tri_verts)) == 0;
         bool idx_match = idx_ok &&
             memcmp(read_indices, tri_indices, sizeof(tri_indices)) == 0;
-        LOG_INFO("DIAG buffer data: verts=%s idx=%s (v0={%g,%g,%g})",
-                 verts_match ? "OK" : (verts_ok ? "MISMATCH" : "READFAIL"),
-                 idx_match ? "OK" : (idx_ok ? "MISMATCH" : "READFAIL"),
-                 (double)read_verts[0], (double)read_verts[1],
-                 (double)read_verts[2]);
+        if (!verts_match || !idx_match)
+            LOG_WARN("RT geometry upload readback mismatch");
     }
     triangle.vertex_buffer = vertices;
     triangle.vertex_count = 3u;
