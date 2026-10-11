@@ -510,6 +510,101 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     return true;
 }
 
+static bool test_acceleration_structure_lifecycle(RHIDevice *device) {
+    RHICapabilities capabilities = {0};
+    RHIAccelerationStructureDesc bottom_desc = {
+        RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL, 4096u};
+    RHIAccelerationStructureDesc top_desc = {
+        RHI_ACCELERATION_STRUCTURE_TOP_LEVEL, 4096u};
+    RHIAccelerationStructure bottom;
+    RHIAccelerationStructure top;
+
+    if (!rhi_device_get_capabilities(device, &capabilities) ||
+        (capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u) {
+        LOG_INFO("SKIP: acceleration structure lifecycle unsupported");
+        return true;
+    }
+    bottom = rhi_acceleration_structure_create(device, &bottom_desc);
+    top = rhi_acceleration_structure_create(device, &top_desc);
+    if (!rhi_handle_valid(bottom) || !rhi_handle_valid(top)) {
+        if (rhi_handle_valid(bottom))
+            rhi_acceleration_structure_destroy(device, bottom);
+        if (rhi_handle_valid(top))
+            rhi_acceleration_structure_destroy(device, top);
+        LOG_ERROR("FAIL: acceleration structure lifecycle create");
+        return false;
+    }
+    rhi_acceleration_structure_destroy(device, top);
+    rhi_acceleration_structure_destroy(device, bottom);
+    LOG_INFO("PASS: unbuilt BLAS/TLAS lifecycle");
+    return true;
+}
+
+static bool test_one_triangle_blas_sizes(RHIDevice *device) {
+    RHIBufferDesc vertex_desc = {
+        RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_AS_BUILD_INPUT |
+            RHI_BUFFER_USAGE_DEVICE_ADDRESS,
+        36u, NULL};
+    RHIBufferDesc index_desc = {
+        RHI_BUFFER_USAGE_INDEX | RHI_BUFFER_USAGE_AS_BUILD_INPUT |
+            RHI_BUFFER_USAGE_DEVICE_ADDRESS,
+        12u, NULL};
+    RHIBLASOneTriangleDesc triangle = {0};
+    RHIAccelerationStructureBuildSizes sizes = {0};
+    RHIBuffer vertices;
+    RHIBuffer indices;
+    RHIBuffer scratch = RHI_HANDLE_NULL;
+    RHIAccelerationStructure blas = RHI_HANDLE_NULL;
+    RHICapabilities capabilities = {0};
+    bool ok;
+
+    if (!rhi_device_get_capabilities(device, &capabilities) ||
+        (capabilities.feature_bits & RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u) {
+        LOG_INFO("SKIP: one-triangle BLAS size query unsupported");
+        return true;
+    }
+    vertices = rhi_buffer_create(device, &vertex_desc);
+    indices = rhi_buffer_create(device, &index_desc);
+    triangle.vertex_buffer = vertices;
+    triangle.vertex_count = 3u;
+    triangle.vertex_stride = 12u;
+    triangle.vertex_format = RHI_VERTEX_FORMAT_R32G32B32_SFLOAT;
+    triangle.index_buffer = indices;
+    triangle.index_count = 3u;
+    triangle.indexed = true;
+    ok = rhi_handle_valid(vertices) && rhi_handle_valid(indices) &&
+         rhi_blas_one_triangle_get_build_sizes(device, &triangle, &sizes);
+    if (ok) {
+        LOG_INFO("PASS: one-triangle BLAS sizes (AS=%zu scratch=%zu)",
+                 sizes.acceleration_structure_size, sizes.build_scratch_size);
+        RHIAccelerationStructureDesc as_desc = {
+            RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL,
+            sizes.acceleration_structure_size};
+        RHIBufferDesc scratch_desc = {
+            RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_DEVICE_ADDRESS,
+            sizes.build_scratch_size, NULL};
+        blas = rhi_acceleration_structure_create(device, &as_desc);
+        scratch = rhi_buffer_create(device, &scratch_desc);
+        RHICmdBuffer *cmd = rhi_frame_begin(device);
+        ok = rhi_handle_valid(blas) && rhi_handle_valid(scratch) && cmd != NULL &&
+             rhi_cmd_build_blas_one_triangle(cmd, device, blas, &triangle,
+                                             scratch, 0u);
+        if (cmd != NULL) {
+            rhi_frame_end(device);
+            rhi_present(device);
+        }
+        if (ok) LOG_INFO("PASS: one-triangle BLAS build recorded");
+        else LOG_ERROR("FAIL: one-triangle BLAS build recording");
+    } else {
+        LOG_ERROR("FAIL: one-triangle BLAS size query");
+    }
+    if (rhi_handle_valid(blas)) rhi_acceleration_structure_destroy(device, blas);
+    if (rhi_handle_valid(scratch)) rhi_buffer_destroy(device, scratch);
+    if (rhi_handle_valid(indices)) rhi_buffer_destroy(device, indices);
+    if (rhi_handle_valid(vertices)) rhi_buffer_destroy(device, vertices);
+    return ok;
+}
+
 static void test_render_shutdown(TestRenderState *rs) {
     if (rhi_handle_valid(rs->test_tex))  rhi_texture_destroy(rs->device, rs->test_tex);
     if (rhi_handle_valid(rs->sampler))   rhi_sampler_destroy(rs->device, rs->sampler);
@@ -5226,6 +5321,10 @@ int main(int argc, char **argv) {
         engine_shutdown(&engine);
         return 1;
     }
+    bool acceleration_structure_pass =
+        test_acceleration_structure_lifecycle(render.device);
+    bool blas_size_query_pass =
+        test_one_triangle_blas_sizes(render.device);
 
     /* Test: Buffer creation + upload */
     f32 tri_verts[] = {
@@ -6469,7 +6568,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&
