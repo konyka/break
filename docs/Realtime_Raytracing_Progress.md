@@ -135,12 +135,19 @@ frameworks).
 
 ## Next TODO
 
-1. Reset the NVIDIA RTX 4060 display driver (reboot or Win+Ctrl+Shift+B) and
-   rerun `BREAK_RT_TRACE=1` — the full pipeline (raygen/miss dispatch, SBT,
-   readback) is proven working; the NVIDIA proprietary driver is the most
-   likely place where the AS build actually produces valid geometry. If the
-   trace gives HIT(green) on NVIDIA, the AMD empty-AS issue is confirmed as a
-   driver limitation and the first ray-traced pixel milestone is complete.
+1. **First ray-traced pixel**: the full RT pipeline (raygen/miss/closest-hit
+   shaders, SBT with verified non-zero handles, descriptor set, traceRayEXT
+   submission) is proven working — the raygen shader executes and the miss
+   shader dispatches on AMD (blue). On NVIDIA RTX 4060 (post-reboot, healthy
+   driver), traceRayEXT does not dispatch any shader (payload initialized to
+   red stays red). Root cause narrowed to the device-side AS build producing
+   a structurally invalid BVH: both AMD and NVIDIA neither report
+   `accelerationStructureHostCommands` support (dual-path falls to device
+   build), and the device-side build submits/completes without error but
+   produces an AS the hardware cannot traverse. Next steps: (a) try a
+   `VK_KHR_ray_query` approach which bypasses the RT pipeline entirely,
+   (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
+   (c) test on a discrete non-hybrid NVIDIA system.
 2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
    and `slEvaluateFeature` behind the existing capability gate (obtain an
    NVIDIA project id for anything beyond local development).
