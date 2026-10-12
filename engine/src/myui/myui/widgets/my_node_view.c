@@ -1028,7 +1028,7 @@ static void nv_overlay_paint(my_widget_t* ov, my_vgcanvas_t* vg) {
   }
   /* rubber band (canvas rect -> screen) */
   if (v->banding && v->band_moved) {
-    float sx0, sy0, sx1, sy1;
+    float sx0 = 0.0f, sy0 = 0.0f, sx1 = 0.0f, sy1 = 0.0f;
     uint32_t border = my_widget_part_color(w, "node_view", "rubber_band",
                                            MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
                                            0x4090E0FFu);
@@ -1240,7 +1240,7 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
   switch (event->type) {
     case MY_EVENT_POINTER_DOWN: {
       int32_t lx = event->u.pointer.x, ly = event->u.pointer.y;
-      float cx, cy;
+      float cx = 0.0f, cy = 0.0f;
       my_widget_t* node = NULL;
       size_t slot = 0;
       my_widget_global_to_local(widget, &lx, &ly);
@@ -1362,7 +1362,7 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
     }
     case MY_EVENT_POINTER_MOVE: {
       int32_t lx = event->u.pointer.x, ly = event->u.pointer.y;
-      float cx, cy;
+      float cx = 0.0f, cy = 0.0f;
       my_widget_global_to_local(widget, &lx, &ly);
       my_node_view_screen_to_canvas(widget, lx, ly, &cx, &cy);
       if (v->child_grab != NULL) {
@@ -1430,7 +1430,7 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
       if (v->child_grab != NULL) {
         /* M23c: release the embedded-widget grab */
         int32_t lx = event->u.pointer.x, ly = event->u.pointer.y;
-        float cx, cy;
+        float cx = 0.0f, cy = 0.0f;
         my_widget_global_to_local(widget, &lx, &ly);
         my_node_view_screen_to_canvas(widget, lx, ly, &cx, &cy);
         nv_deliver_canvas(widget, v->child_grab, event, cx, cy);
@@ -1445,7 +1445,7 @@ static my_ret_t nv_event(my_widget_t* widget, const my_event_t* event) {
                                v->preview.magnet_slot);
         } else {
           int32_t lx = event->u.pointer.x, ly = event->u.pointer.y;
-          float cx, cy;
+          float cx = 0.0f, cy = 0.0f;
           my_widget_t* node = NULL;
           size_t slot = 0;
           my_widget_global_to_local(widget, &lx, &ly);

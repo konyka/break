@@ -5768,6 +5768,9 @@ TEST(widget_specific_queries_reject_plain_widget)
   my_node_view_screen_to_canvas(plain, 1, 2, &cx, &cy);
   ASSERT_FLOAT_EQ(cx, 17.0f, 0.0001f);
   ASSERT_FLOAT_EQ(cy, 19.0f, 0.0001f);
+  my_node_view_canvas_to_screen(plain, 3.0f, 5.0f, &cx, &cy);
+  ASSERT_FLOAT_EQ(cx, 17.0f, 0.0001f);
+  ASSERT_FLOAT_EQ(cy, 19.0f, 0.0001f);
   ASSERT_EQ(my_node_view_selected_count(plain), 0u);
   ASSERT_EQ(my_node_view_selected_at(plain, 0), NULL);
 
