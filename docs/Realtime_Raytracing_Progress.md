@@ -223,3 +223,6 @@ frameworks).
 
 - Added a fail-closed DLSS ResourceTag contract validator for Vulkan native texture metadata and the four required SR resource classes. Actual Streamline calls still need a small C++ ABI bridge for FrameToken/ViewportHandle and renderer-owned color/depth/motion-vector/output resources; no placeholder tags are emitted.
 
+
+- Added an opaque C++ adapter boundary for future DLSS evaluation: the C11 renderer validates ResourceTag descriptors but never fabricates Streamline FrameToken/ViewportHandle virtual objects. Without an official SDK-backed adapter, evaluation fails closed; OpenGL remains independent.
+

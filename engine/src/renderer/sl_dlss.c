@@ -127,6 +127,8 @@ static HMODULE g_sl_module;
 static PFN_sl_shutdown g_sl_shutdown_fn;
 static bool g_initialized;
 static bool g_api_ready;
+static SLDlssCppAdapter g_cpp_adapter;
+static bool g_cpp_adapter_set;
 
 static void sl_dlss_abort_init(void) {
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
@@ -208,6 +210,29 @@ bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc) {
            desc->type == SL_TAG_MOTION_VECTORS ||
            desc->type == SL_TAG_SCALING_INPUT_COLOR ||
            desc->type == SL_TAG_SCALING_OUTPUT_COLOR;
+}
+
+bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
+    if (adapter == NULL || adapter->set_tags_and_evaluate == NULL) {
+        memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
+        g_cpp_adapter_set = false;
+        return false;
+    }
+    g_cpp_adapter = *adapter;
+    g_cpp_adapter_set = true;
+    return true;
+}
+
+bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
+                           u32 tag_count, u32 output_width,
+                           u32 output_height) {
+    if (!g_cpp_adapter_set || tags == NULL || tag_count == 0u ||
+        output_width == 0u || output_height == 0u) return false;
+    for (u32 i = 0u; i < tag_count; ++i) {
+        if (!sl_dlss_resource_tag_desc_validate(&tags[i])) return false;
+    }
+    return g_cpp_adapter.set_tags_and_evaluate(
+        g_cpp_adapter.context, tags, tag_count, output_width, output_height);
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {

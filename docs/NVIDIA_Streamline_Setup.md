@@ -53,6 +53,14 @@ FrameToken/ViewportHandle ABI (or a small C++ bridge), real color/depth/
 motion-vector/output textures, and verified layout transitions. No placeholder
 Vulkan resource structs are passed to Streamline.
 
+The final C++ ABI boundary is explicit in the source: an optional
+`SLDlssCppAdapter` callback owns the official Streamline `FrameToken`,
+`ViewportHandle`, `ResourceTag`, `slSetTagForFrame`, and `slEvaluateFeature`
+objects. The C11 engine only validates native Vulkan resources and calls that
+opaque adapter. Without an adapter, `sl_dlss_evaluate_tags` fails closed. This
+avoids fabricating C++ virtual-object layouts in the C renderer and keeps
+portable/OpenGL builds independent of the NVIDIA SDK.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device
