@@ -46,10 +46,12 @@ layout, format, extent, and lifecycle for color/depth/motion-vector resources.
 The RHI now exposes a narrow read-only `rhi_texture_get_native_info` API on
 Vulkan (image, memory, view, layout, format, extent, mip count and layers);
 OpenGL fails closed. The next implementation slice can use this data to build
-the Streamline `Resource`/`ResourceTag` mirrors, but must still require real
-color/depth/motion-vector/output textures and verified layout transitions before
-`slSetTagForFrame` or `slEvaluateFeature` is called. No placeholder Vulkan
-resource structs are passed to Streamline.
+the Streamline `Resource`/`ResourceTag` mirrors. A C-side resource-tag contract
+validator now rejects placeholders and non-Vulkan resources. Actual
+`slSetTagForFrame`/`slEvaluateFeature` calls still require the official C++
+FrameToken/ViewportHandle ABI (or a small C++ bridge), real color/depth/
+motion-vector/output textures, and verified layout transitions. No placeholder
+Vulkan resource structs are passed to Streamline.
 
 ## Official Integration Constraints
 

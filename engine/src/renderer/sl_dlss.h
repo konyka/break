@@ -17,6 +17,25 @@ typedef enum {
     SL_DLSS_API_READY,
 } SLDlssApiStatus;
 
+typedef enum {
+    SL_TAG_DEPTH = 0,
+    SL_TAG_MOTION_VECTORS = 1,
+    SL_TAG_SCALING_INPUT_COLOR = 3,
+    SL_TAG_SCALING_OUTPUT_COLOR = 4,
+} SLDlssBufferType;
+
+typedef enum {
+    SL_TAG_ONLY_VALID_NOW = 0,
+    SL_TAG_VALID_UNTIL_PRESENT = 1,
+    SL_TAG_VALID_UNTIL_EVALUATE = 2,
+} SLDlssResourceLifecycle;
+
+typedef struct {
+    const RHITextureNativeInfo *texture;
+    SLDlssBufferType type;
+    SLDlssResourceLifecycle lifecycle;
+} SLDlssResourceTagDesc;
+
 const char *sl_dlss_probe_result_text(SLDlssProbeResult result);
 
 /*
@@ -36,3 +55,4 @@ const char *sl_dlss_probe_result_text(SLDlssProbeResult result);
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result);
 void sl_dlss_shutdown(void);
 SLDlssApiStatus sl_dlss_api_status(void);
+bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc);

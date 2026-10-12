@@ -48,8 +48,25 @@ TEST(failed_initialization_is_retryable)
     ASSERT_TRUE(SET_SL_DIR(NULL));
 }
 
+TEST(resource_tag_contract_rejects_non_vulkan_placeholders)
+{
+    RHITextureNativeInfo info = {0};
+    SLDlssResourceTagDesc tag = {&info, SL_TAG_SCALING_INPUT_COLOR,
+                                 SL_TAG_VALID_UNTIL_EVALUATE};
+    ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
+    info.type = RHI_NATIVE_HANDLE_VULKAN;
+    info.image = (void *)(uintptr_t)1u;
+    info.view = (void *)(uintptr_t)1u;
+    info.width = 1u;
+    info.height = 1u;
+    ASSERT_TRUE(sl_dlss_resource_tag_desc_validate(&tag));
+    tag.type = (SLDlssBufferType)99;
+    ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(missing_runtime_fails_closed);
     RUN_TEST(null_result_pointer_is_safe);
     RUN_TEST(failed_initialization_is_retryable);
+    RUN_TEST(resource_tag_contract_rejects_non_vulkan_placeholders);
 TEST_MAIN_END()

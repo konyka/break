@@ -198,6 +198,18 @@ SLDlssApiStatus sl_dlss_api_status(void) {
     return g_api_ready ? SL_DLSS_API_READY : SL_DLSS_API_UNAVAILABLE;
 }
 
+bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc) {
+    if (desc == NULL || desc->texture == NULL ||
+        desc->texture->type != RHI_NATIVE_HANDLE_VULKAN ||
+        desc->texture->image == NULL || desc->texture->view == NULL ||
+        desc->texture->width == 0u || desc->texture->height == 0u)
+        return false;
+    return desc->type == SL_TAG_DEPTH ||
+           desc->type == SL_TAG_MOTION_VECTORS ||
+           desc->type == SL_TAG_SCALING_INPUT_COLOR ||
+           desc->type == SL_TAG_SCALING_OUTPUT_COLOR;
+}
+
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
     PFN_sl_init init_fn;
     PFN_sl_is_feature_supported supported_fn;

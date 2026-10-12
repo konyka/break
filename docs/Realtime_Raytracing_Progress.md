@@ -220,3 +220,6 @@ frameworks).
 
 - Native texture interop is now available as a read-only Vulkan audit (image, memory, view, layout, format, extent, mip count and layers); OpenGL fails closed. This enables the next ResourceTag slice but DLSS evaluation still requires real renderer color/depth/motion-vector/output resources and verified layout transitions.
 
+
+- Added a fail-closed DLSS ResourceTag contract validator for Vulkan native texture metadata and the four required SR resource classes. Actual Streamline calls still need a small C++ ABI bridge for FrameToken/ViewportHandle and renderer-owned color/depth/motion-vector/output resources; no placeholder tags are emitted.
+
