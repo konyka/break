@@ -86,6 +86,11 @@ descriptor layouts, pool entries, and compute pipeline sets when the required
 feature/extension is not enabled; RT/DLSS probes remain explicitly skipped
 when those capabilities are absent.
 
+DLSS tag evaluation also fails closed unless both an RHI device and a recording
+native command buffer are supplied. The Windows-only Streamline contract test
+covers null, non-recording, and missing-native-handle inputs; Linux correctly
+builds no proprietary DLSS runtime test.
+
 | Platform | Toolchain | GPU / Driver | Display | Config | Focused tests | test_vulkan | AS path |
 |---|---|---|---|---|---|---|---|
 | Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | Win32 | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query, build |

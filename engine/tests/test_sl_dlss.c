@@ -168,6 +168,34 @@ TEST(command_buffer_evaluation_requires_recording_native_handle)
     sl_dlss_set_cpp_adapter(NULL);
 }
 
+TEST(command_buffer_evaluation_rejects_missing_rhi_context)
+{
+    RHITextureNativeInfo info = {0};
+    SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
+                                 SL_TAG_VALID_UNTIL_PRESENT};
+    SLDlssCppAdapter adapter = {test_adapter_callback, NULL};
+    info.type = RHI_NATIVE_HANDLE_VULKAN;
+    info.image = (void *)(uintptr_t)1u;
+    info.memory = (void *)(uintptr_t)1u;
+    info.view = (void *)(uintptr_t)1u;
+    info.native_format = 37u;
+    info.width = 1u;
+    info.height = 1u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
+    g_adapter_calls = 0;
+    ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        NULL, NULL, &tag, 1u, 1u, 1u));
+    ASSERT_EQ(g_adapter_calls, 0);
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        (const RHIDevice *)(uintptr_t)1u, NULL, &tag, 1u, 1u, 1u));
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        NULL, (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 1u, 1u));
+    ASSERT_EQ(g_adapter_calls, 0);
+    sl_dlss_set_cpp_adapter(NULL);
+}
+
 TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata)
 {
     RHITextureNativeInfo info = {0};
@@ -197,4 +225,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cpp_adapter_forwards_validated_tags);
     RUN_TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata);
     RUN_TEST(command_buffer_evaluation_requires_recording_native_handle);
+    RUN_TEST(command_buffer_evaluation_rejects_missing_rhi_context);
 TEST_MAIN_END()

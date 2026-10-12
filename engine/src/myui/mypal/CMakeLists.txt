@@ -10,14 +10,32 @@ if(MYUI_PAL STREQUAL "wayland")
   find_package(PkgConfig REQUIRED)
   pkg_check_modules(MYUI_PAL_WL REQUIRED wayland-client wayland-egl egl)
   find_program(WAYLAND_SCANNER_EXE wayland-scanner REQUIRED)
+  find_file(WAYLAND_XDG_SHELL_XML xdg-shell.xml
+      PATHS
+          "${CMAKE_SYSROOT}/usr/share/wayland-protocols/stable/xdg-shell"
+          /usr/share/wayland-protocols/stable/xdg-shell
+          /usr/local/share/wayland-protocols/stable/xdg-shell
+      NO_DEFAULT_PATH)
+  if(NOT WAYLAND_XDG_SHELL_XML)
+    message(FATAL_ERROR
+        "Could not find xdg-shell.xml; set CMAKE_SYSROOT or install wayland-protocols")
+  endif()
   execute_process(
       COMMAND ${WAYLAND_SCANNER_EXE} client-header
-              /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
-              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h)
+              ${WAYLAND_XDG_SHELL_XML}
+              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-client-protocol.h
+      RESULT_VARIABLE WAYLAND_HEADER_RESULT)
+  if(NOT WAYLAND_HEADER_RESULT EQUAL 0)
+    message(FATAL_ERROR "wayland-scanner client-header failed")
+  endif()
   execute_process(
       COMMAND ${WAYLAND_SCANNER_EXE} public-code
-              /usr/share/wayland-protocols/stable/xdg-shell/xdg-shell.xml
-              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
+              ${WAYLAND_XDG_SHELL_XML}
+              ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c
+      RESULT_VARIABLE WAYLAND_CODE_RESULT)
+  if(NOT WAYLAND_CODE_RESULT EQUAL 0)
+    message(FATAL_ERROR "wayland-scanner public-code failed")
+  endif()
   set(MYUI_PAL_SOURCES wayland/my_pal_wayland.c
       ${CMAKE_CURRENT_BINARY_DIR}/xdg-shell-protocol.c)
   set(MYUI_PAL_DEFINES MYUI_PAL_WAYLAND=1)

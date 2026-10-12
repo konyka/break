@@ -49,6 +49,12 @@ Vulkan GLSL 源文件位于 `engine/src/myui/myr/vulkan_shaders`，已提交的 
 构建中执行 `cmake --build <build-dir> --target vulkan_shaders_regen`；生成器使用
 模块自身的 CMake 脚本，不读取或写入 `${CMAKE_SOURCE_DIR}` 外部路径。
 
+Wayland builds locate `xdg-shell.xml` through the active sysroot and standard
+Wayland protocol directories; both `wayland-scanner` invocations are checked
+and fail during configure if generation fails. This keeps native and
+cross-compilation failures explicit instead of producing a later missing-header
+or stale-protocol error.
+
 Vulkan canvas 只消费 PAL 创建好的 opaque surface handle，不在 `myr` 内定义
 `VK_USE_PLATFORM_XLIB_KHR` 或 `VK_USE_PLATFORM_WAYLAND_KHR`，因此不会把 X11/Wayland
 头文件泄漏到 Windows、macOS 或其他交叉编译目标。各平台 PAL/宿主负责选择并创建对应

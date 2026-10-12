@@ -258,12 +258,11 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
     void *native_command_buffer = NULL;
     if (!g_cpp_adapter_set || tags == NULL || tag_count == 0u ||
         output_width == 0u || output_height == 0u) return false;
-    if (dev != NULL || cmd != NULL) {
-        if (!rhi_cmd_buffer_get_native_info(dev, cmd, &command_info) ||
-            !command_info.recording || command_info.command_buffer == NULL)
-            return false;
-        native_command_buffer = command_info.command_buffer;
-    }
+    if (dev == NULL || cmd == NULL ||
+        !rhi_cmd_buffer_get_native_info(dev, cmd, &command_info) ||
+        !command_info.recording || command_info.command_buffer == NULL)
+        return false;
+    native_command_buffer = command_info.command_buffer;
     for (u32 i = 0u; i < tag_count; ++i) {
         if (!sl_dlss_resource_tag_desc_validate(&tags[i])) return false;
     }
