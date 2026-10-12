@@ -1944,6 +1944,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     }
     dev_extensions[dev_extension_count++] = VK_KHR_SWAPCHAIN_EXTENSION_NAME;
     bool as_extensions = supported_vk12.bufferDeviceAddress &&
+        supported_accel.accelerationStructure &&
         vk_device_extension_available(
         vk->physical, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
         vk_device_extension_available(vk->physical,
@@ -2314,9 +2315,9 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     }
 
     /* Dedicated ray-query set: binding 0 is TLAS, binding 1 is a storage
-     * image. It is appended to compute layouts so existing compute shaders
-     * retain their set indices. */
-    {
+     * image. It is appended only when acceleration-structure support is
+     * enabled; unsupported devices must never see the AS descriptor type. */
+    if (as_extensions) {
         VkDescriptorSetLayoutBinding rqb[2] = {0};
         VkDescriptorSetLayoutCreateInfo rqli = {0};
         rqb[0].binding = 0u;
@@ -2361,6 +2362,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
 
     {
         VkDescriptorPoolSize pool_sizes[6] = {0};
+        u32 pool_size_count = 5u;
         pool_sizes[0].type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         pool_sizes[0].descriptorCount = 1024;
         pool_sizes[1].type = VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER;
@@ -2371,8 +2373,11 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         pool_sizes[3].descriptorCount = 256;
         pool_sizes[4].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         pool_sizes[4].descriptorCount = 256;
-        pool_sizes[5].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
-        pool_sizes[5].descriptorCount = 256;
+        if (as_extensions) {
+            pool_sizes[5].type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
+            pool_sizes[5].descriptorCount = 256;
+            pool_size_count = 6u;
+        }
 
         VkDescriptorPoolCreateInfo dpi = {0};
         dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -2383,7 +2388,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (vk->feat_uab_sampled_image && vk->feat_partially_bound)
             dpi.flags |= VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         dpi.maxSets = 4096;
-        dpi.poolSizeCount = 6;
+        dpi.poolSizeCount = pool_size_count;
         dpi.pPoolSizes = pool_sizes;
         for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
             if (vkCreateDescriptorPool(vk->device, &dpi, NULL, &vk->desc_pools[i]) != VK_SUCCESS) {
@@ -4052,8 +4057,11 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         set_layouts[set_count++] = vk->sampler_mip_layout;
         ubo_set = set_count;
          set_layouts[set_count++] = vk->ubo_layout;
-        u32 ray_query_set = set_count;
-        set_layouts[set_count++] = vk->ray_query_layout;
+         u32 ray_query_set = VK_INVALID_SET;
+         if (vk->ray_query_layout != VK_NULL_HANDLE) {
+             ray_query_set = set_count;
+             set_layouts[set_count++] = vk->ray_query_layout;
+         }
 
         VkPushConstantRange push_range = {0};
         push_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;

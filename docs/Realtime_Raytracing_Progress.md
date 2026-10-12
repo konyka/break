@@ -82,6 +82,12 @@ OpenGL. The same rebuild exposed GCC 16's `-Werror=stringop-truncation` in the s
 serializer; the bounded copy is now explicit and covered by a 63-byte URI
 regression test.
 
+The fresh Vulkan run also exercised the no-acceleration-structure path on the
+NVK device. RHI now omits acceleration-structure descriptor layouts, pool
+entries, and compute pipeline sets when the required feature/extension is not
+enabled; the runtime therefore fails closed without validation-layer errors
+while RT/DLSS probes remain explicitly skipped.
+
 | Platform | Toolchain | GPU / Driver | Display | Config | Focused tests | test_vulkan | AS path |
 |---|---|---|---|---|---|---|---|
 | Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | Win32 | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query, build |
