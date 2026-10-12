@@ -914,3 +914,7 @@ MegaBuffer
 | `engine/src/rhi/` | 4 文件 | 渲染硬件接口抽象层 |
 | `engine/src/core/` | 11 文件 | 引擎核心框架 |
 | `engine/src/math/` | 2 文件 | 数学库 |
+
+## Interactive Camera Latency
+
+Vulkan swapchain creation prefers MAILBOX when supported so rapid mouse camera motion replaces stale queued frames instead of accumulating FIFO latency. If MAILBOX is unavailable, the implementation falls back to FIFO; disabling vsync may select IMMEDIATE. The renderer does not force triple buffering, which avoids adding avoidable input-to-photon delay.

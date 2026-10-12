@@ -1097,15 +1097,6 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
 
     u32 img_count = caps.minImageCount + 1;
     if (caps.maxImageCount > 0 && img_count > caps.maxImageCount) img_count = caps.maxImageCount;
-    /* R577: prefer triple buffering where legal — on hybrid laptops the
-     * cross-GPU present copy (dGPU renders, iGPU displays) adds per-present
-     * latency, and two images starve the acquire path into timeout-cadence
-     * stalls. */
-    if (caps.minImageCount > 0u && caps.minImageCount + 1u < 3u) {
-        img_count = 3u;
-        if (caps.maxImageCount > 0 && img_count > caps.maxImageCount) img_count = caps.maxImageCount;
-    }
-
     VkSwapchainCreateInfoKHR sci = {0};
     u32 queue_families[2] = { vk->graphics_family, vk->present_family };
     sci.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
@@ -1149,7 +1140,17 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
             free(modes);
             return false;
         }
-        if (!vk->vsync) {
+        /* Prefer mailbox for interactive camera input while vsync is enabled:
+         * it replaces stale queued frames without tearing. When vsync is off,
+         * prefer immediate for the lowest input-to-photon latency. */
+        if (vk->vsync) {
+            for (u32 i = 0; i < mode_count; i++) {
+                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
+                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+                    break;
+                }
+            }
+        } else {
             for (u32 i = 0; i < mode_count; i++) {
                 if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
                     present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
