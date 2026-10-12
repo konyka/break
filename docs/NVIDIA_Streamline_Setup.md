@@ -61,6 +61,10 @@ opaque adapter. Without an adapter, `sl_dlss_evaluate_tags` fails closed. This
 avoids fabricating C++ virtual-object layouts in the C renderer and keeps
 portable/OpenGL builds independent of the NVIDIA SDK.
 
+No in-tree C++ adapter is shipped in this C11 repository. A product build must
+provide that adapter from an SDK-licensed C++ integration target before DLSS
+evaluation can be enabled.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device

@@ -67,6 +67,20 @@ TEST(resource_tag_contract_rejects_non_vulkan_placeholders)
 TEST(cpp_adapter_is_required_before_evaluation)
 {
     RHITextureNativeInfo info = {0};
+    SLDlssResourceTagDesc tag = {&info, SL_TAG_SCALING_INPUT_COLOR,
+                                 SL_TAG_VALID_UNTIL_EVALUATE};
+    info.type = RHI_NATIVE_HANDLE_VULKAN;
+    info.image = (void *)(uintptr_t)1u;
+    info.view = (void *)(uintptr_t)1u;
+    info.width = 1u;
+    info.height = 1u;
+    sl_dlss_set_cpp_adapter(NULL);
+    ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 1u, 1u));
+}
+
+TEST(cpp_adapter_is_required_before_evaluation)
+{
+    RHITextureNativeInfo info = {0};
     SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
                                  SL_TAG_VALID_UNTIL_EVALUATE};
     info.type = RHI_NATIVE_HANDLE_VULKAN;
@@ -83,5 +97,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(null_result_pointer_is_safe);
     RUN_TEST(failed_initialization_is_retryable);
     RUN_TEST(resource_tag_contract_rejects_non_vulkan_placeholders);
+    RUN_TEST(cpp_adapter_is_required_before_evaluation);
     RUN_TEST(cpp_adapter_is_required_before_evaluation);
 TEST_MAIN_END()
