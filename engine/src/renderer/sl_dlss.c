@@ -1,6 +1,10 @@
 #include <renderer/sl_dlss.h>
 #include <core/types.h>
 
+#ifdef ENGINE_STREAMLINE_CPP_ADAPTER
+#include <renderer/sl_dlss_streamline_adapter.h>
+#endif
+
 #ifdef _WIN32
 
 #define WIN32_LEAN_AND_MEAN
@@ -129,8 +133,6 @@ static bool g_initialized;
 static bool g_api_ready;
 static SLDlssCppAdapter g_cpp_adapter;
 static bool g_cpp_adapter_set;
-static SLDlssCppAdapter g_cpp_adapter;
-static bool g_cpp_adapter_set;
 
 static void sl_dlss_abort_init(void) {
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
@@ -205,36 +207,14 @@ SLDlssApiStatus sl_dlss_api_status(void) {
 bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc) {
     if (desc == NULL || desc->texture == NULL ||
         desc->texture->type != RHI_NATIVE_HANDLE_VULKAN ||
-        desc->texture->image == NULL || desc->texture->view == NULL ||
+        desc->texture->image == NULL || desc->texture->memory == NULL ||
+        desc->texture->view == NULL ||
         desc->texture->width == 0u || desc->texture->height == 0u)
         return false;
     return desc->type == SL_TAG_DEPTH ||
            desc->type == SL_TAG_MOTION_VECTORS ||
            desc->type == SL_TAG_SCALING_INPUT_COLOR ||
            desc->type == SL_TAG_SCALING_OUTPUT_COLOR;
-}
-
-bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
-    if (adapter == NULL || adapter->set_tags_and_evaluate == NULL) {
-        memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
-        g_cpp_adapter_set = false;
-        return false;
-    }
-    g_cpp_adapter = *adapter;
-    g_cpp_adapter_set = true;
-    return true;
-}
-
-bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
-                           u32 tag_count, u32 output_width,
-                           u32 output_height) {
-    if (!g_cpp_adapter_set || tags == NULL || tag_count == 0u ||
-        output_width == 0u || output_height == 0u) return false;
-    for (u32 i = 0u; i < tag_count; ++i) {
-        if (!sl_dlss_resource_tag_desc_validate(&tags[i])) return false;
-    }
-    return g_cpp_adapter.set_tags_and_evaluate(
-        g_cpp_adapter.context, tags, tag_count, output_width, output_height);
 }
 
 bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
@@ -348,6 +328,15 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
 
     rc = supported_fn(SL_FEATURE_DLSS, &adapter);
     if (rc == SL_RESULT_OK) {
+#ifdef ENGINE_STREAMLINE_CPP_ADAPTER
+        {
+            SLDlssCppAdapter cpp_adapter;
+            memset(&cpp_adapter, 0, sizeof(cpp_adapter));
+            if (sl_dlss_streamline_adapter_create((void *)g_sl_module,
+                                                   &cpp_adapter))
+                sl_dlss_set_cpp_adapter(&cpp_adapter);
+        }
+#endif
         g_api_ready = true;
         if (out_result != NULL) *out_result = SL_DLSS_SUPPORTED;
         return true;
@@ -392,6 +381,21 @@ void sl_dlss_shutdown(void) {
 
 SLDlssApiStatus sl_dlss_api_status(void) {
     return SL_DLSS_API_UNAVAILABLE;
+}
+
+bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
+    (void)adapter;
+    return false;
+}
+
+bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
+                           u32 tag_count, u32 output_width,
+                           u32 output_height) {
+    (void)tags;
+    (void)tag_count;
+    (void)output_width;
+    (void)output_height;
+    return false;
 }
 
 #endif

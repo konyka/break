@@ -31,6 +31,8 @@ option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
+set(STREAMLINE_ROOT "" CACHE PATH
+    "Optional Streamline SDK root; enables the Windows C++ DLSS adapter")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     set(ENGINE_PLATFORM "android")
@@ -296,6 +298,20 @@ src/renderer/lens_effects.c
     src/scene/scene_state.c
     src/engine.c
 )
+
+if(WIN32 AND STREAMLINE_ROOT)
+    enable_language(CXX)
+    add_library(sl_dlss_streamline_adapter STATIC
+        src/renderer/sl_dlss_streamline_adapter.cpp)
+    target_include_directories(sl_dlss_streamline_adapter PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${STREAMLINE_ROOT}/include)
+    target_compile_features(sl_dlss_streamline_adapter PRIVATE cxx_std_14)
+    target_compile_definitions(sl_dlss_streamline_adapter PRIVATE
+        WIN32_LEAN_AND_MEAN NOMINMAX)
+    target_compile_definitions(engine PRIVATE ENGINE_STREAMLINE_CPP_ADAPTER=1)
+    target_link_libraries(engine PRIVATE sl_dlss_streamline_adapter)
+endif()
 if(SHADERC_INCLUDE_DIR)
     # Unconditional-when-found: the include is harmless where shaderc is
     # absent, and guarding it on platform/Vulkan conditions left macOS CI

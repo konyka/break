@@ -225,4 +225,11 @@ frameworks).
 
 
 - Added an opaque C++ adapter boundary for future DLSS evaluation: the C11 renderer validates ResourceTag descriptors but never fabricates Streamline FrameToken/ViewportHandle virtual objects. Without an official SDK-backed adapter, evaluation fails closed; OpenGL remains independent.
+- Added an optional Windows `STREAMLINE_ROOT` CMake target that compiles the
+  SDK-backed C++ adapter and registers it only after the C loader validates the
+  runtime and DLSS support. The adapter resolves `slGetNewFrameToken`,
+  `slSetTagForFrame`, `slDLSSSetOptions`, and `slEvaluateFeature` from the
+  loaded interposer; default builds do not include the SDK or NVIDIA binaries.
+  It rejects tags requiring an unprovided command buffer, so real renderer
+  resource-state transitions remain a prerequisite for enabling evaluation.
 

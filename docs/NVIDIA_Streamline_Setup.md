@@ -65,6 +65,12 @@ No in-tree C++ adapter is shipped in this C11 repository. A product build must
 provide that adapter from an SDK-licensed C++ integration target before DLSS
 evaluation can be enabled.
 
+When configured with `-DSTREAMLINE_ROOT=<sdk-root>` on Windows, the CMake build
+creates `sl_dlss_streamline_adapter` and registers it after the C loader has
+successfully initialized and validated DLSS. The adapter resolves the official
+Streamline entry points from the already-loaded interposer; it does not link
+against or copy NVIDIA runtime binaries.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device

@@ -74,21 +74,3 @@ bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter);
 bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
                            u32 tag_count, u32 output_width,
                            u32 output_height);
-
-/* Optional C++ Streamline adapter hook. The adapter owns the official
- * FrameToken/ViewportHandle/ResourceTag ABI and returns false when its SDK is
- * absent or when the renderer has not supplied complete native resources.
- * The C11 engine never fabricates those C++ objects. */
-typedef struct {
-    bool (*set_tags_and_evaluate)(void *adapter_context,
-                                  const SLDlssResourceTagDesc *tags,
-                                  u32 tag_count,
-                                  u32 output_width,
-                                  u32 output_height);
-    void *context;
-} SLDlssCppAdapter;
-
-bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter);
-bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
-                           u32 tag_count, u32 output_width,
-                           u32 output_height);
