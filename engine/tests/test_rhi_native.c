@@ -24,7 +24,21 @@ TEST(test_device_does_not_expose_fake_vulkan_handles)
     rhi_test_device_destroy(device);
 }
 
+TEST(test_headless_command_buffer_does_not_expose_fake_vulkan_handle)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHICmdBufferNativeInfo info;
+    memset(&info, 0xA5, sizeof(info));
+    ASSERT_NEQ(device, NULL);
+    ASSERT_FALSE(rhi_cmd_buffer_get_native_info(
+        device, (const RHICmdBuffer *)(uintptr_t)1u, &info));
+    ASSERT_EQ(info.type, RHI_NATIVE_HANDLE_NONE);
+    ASSERT_FALSE(info.recording);
+    rhi_test_device_destroy(device);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(null_native_device_is_rejected);
     RUN_TEST(test_device_does_not_expose_fake_vulkan_handles);
+    RUN_TEST(test_headless_command_buffer_does_not_expose_fake_vulkan_handle);
 TEST_MAIN_END()

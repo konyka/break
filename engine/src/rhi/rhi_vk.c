@@ -6460,6 +6460,23 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     }
 }
 
+bool rhi_backend_cmd_buffer_get_native_info(
+    const RHIDevice *dev, const RHICmdBuffer *cmd,
+    RHICmdBufferNativeInfo *out) {
+    const VKBackend *vk;
+    if (dev == NULL || cmd == NULL || out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    vk = (const VKBackend *)dev->backend_data;
+    if (vk == NULL || !vk->frame_started ||
+        cmd != (const RHICmdBuffer *)vk ||
+        vk->cmd_buffers[vk->current_frame] == VK_NULL_HANDLE)
+        return false;
+    out->type = RHI_NATIVE_HANDLE_VULKAN;
+    out->command_buffer = (void *)(uintptr_t)vk->cmd_buffers[vk->current_frame];
+    out->recording = true;
+    return true;
+}
+
 static RHIFormat rhi_format_from_vk(VkFormat fmt) {
     switch (fmt) {
     case VK_FORMAT_R8G8B8A8_UNORM: return RHI_FORMAT_R8G8B8A8_UNORM;

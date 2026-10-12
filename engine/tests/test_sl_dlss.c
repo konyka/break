@@ -2,6 +2,16 @@
 
 #include <renderer/sl_dlss.h>
 
+/* The loader unit target is intentionally independent of the full RHI. */
+bool rhi_cmd_buffer_get_native_info(const RHIDevice *dev,
+                                    const RHICmdBuffer *cmd,
+                                    RHICmdBufferNativeInfo *out) {
+    (void)dev;
+    (void)cmd;
+    if (out != NULL) memset(out, 0, sizeof(*out));
+    return false;
+}
+
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -15,8 +25,10 @@ static int g_adapter_calls;
 static bool test_adapter_callback(void *context,
                                   const SLDlssResourceTagDesc *tags,
                                   u32 tag_count, u32 output_width,
-                                  u32 output_height) {
+                                  u32 output_height,
+                                  void *native_command_buffer) {
     (void)context;
+    if (native_command_buffer != NULL) return false;
     if (tags == NULL || tag_count != 1u || output_width != 2u ||
         output_height != 2u)
         return false;
@@ -125,6 +137,28 @@ TEST(cpp_adapter_forwards_validated_tags)
     sl_dlss_set_cpp_adapter(NULL);
 }
 
+TEST(command_buffer_evaluation_requires_recording_native_handle)
+{
+    RHITextureNativeInfo info = {0};
+    SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
+                                 SL_TAG_VALID_UNTIL_PRESENT};
+    SLDlssCppAdapter adapter = {test_adapter_callback, NULL};
+    info.type = RHI_NATIVE_HANDLE_VULKAN;
+    info.image = (void *)(uintptr_t)1u;
+    info.memory = (void *)(uintptr_t)1u;
+    info.view = (void *)(uintptr_t)1u;
+    info.native_format = 37u;
+    info.width = 1u;
+    info.height = 1u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
+    ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        (const RHIDevice *)(uintptr_t)1u,
+        (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 1u, 1u));
+    sl_dlss_set_cpp_adapter(NULL);
+}
+
 TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata)
 {
     RHITextureNativeInfo info = {0};
@@ -153,4 +187,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(cpp_adapter_is_required_before_evaluation);
     RUN_TEST(cpp_adapter_forwards_validated_tags);
     RUN_TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata);
+    RUN_TEST(command_buffer_evaluation_requires_recording_native_handle);
 TEST_MAIN_END()

@@ -258,6 +258,14 @@ bool rhi_texture_get_native_info(const RHIDevice *dev, RHITexture texture,
     return rhi_backend_texture_get_native_info(dev, texture, out);
 }
 
+bool rhi_cmd_buffer_get_native_info(const RHIDevice *dev,
+                                    const RHICmdBuffer *cmd,
+                                    RHICmdBufferNativeInfo *out) {
+    if (dev == NULL || cmd == NULL || out == NULL) return false;
+    memset(out, 0, sizeof(*out));
+    return rhi_backend_cmd_buffer_get_native_info(dev, cmd, out);
+}
+
 bool rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     if (dev == NULL || out == NULL) return false;
     memset(out, 0, sizeof(*out));

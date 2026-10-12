@@ -14,12 +14,14 @@
 namespace {
 
 bool evaluate(void *context, const SLDlssResourceTagDesc *descs,
-              u32 count, u32 width, u32 height) {
+              u32 count, u32 width, u32 height,
+              void *native_command_buffer) {
     (void)context;
     (void)descs;
     (void)count;
     (void)width;
     (void)height;
+    (void)native_command_buffer;
     /* The adapter becomes executable only after the RHI exposes the recording
      * VkCommandBuffer and a state-restore hook. */
     return false;

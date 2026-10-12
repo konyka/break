@@ -66,7 +66,8 @@ typedef struct {
                                   const SLDlssResourceTagDesc *tags,
                                   u32 tag_count,
                                   u32 output_width,
-                                  u32 output_height);
+                                  u32 output_height,
+                                  void *native_command_buffer);
     void *context;
 } SLDlssCppAdapter;
 
@@ -74,3 +75,7 @@ bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter);
 bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
                            u32 tag_count, u32 output_width,
                            u32 output_height);
+bool sl_dlss_evaluate_tags_with_command_buffer(
+    const RHIDevice *dev, const RHICmdBuffer *cmd,
+    const SLDlssResourceTagDesc *tags, u32 tag_count,
+    u32 output_width, u32 output_height);

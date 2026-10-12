@@ -275,6 +275,12 @@ typedef RHIHandle RHICubemap;
 /* ---- Command Buffer (opaque) ---- */
 typedef struct RHICmdBuffer RHICmdBuffer;
 
+typedef struct {
+    RHINativeHandleType type;
+    void *command_buffer;
+    bool recording;
+} RHICmdBufferNativeInfo;
+
 /* ---- Device (opaque) ---- */
 typedef struct RHIDevice RHIDevice;
 
@@ -287,12 +293,18 @@ bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_texture_get_native_info(
                const RHIDevice *dev, RHITexture texture,
                RHITextureNativeInfo *out);
+bool       rhi_cmd_buffer_get_native_info(
+               const RHIDevice *dev, const RHICmdBuffer *cmd,
+               RHICmdBufferNativeInfo *out);
 bool       rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_texture_get_native_info(
                const RHIDevice *dev, RHITexture texture,
                RHITextureNativeInfo *out);
+bool       rhi_backend_cmd_buffer_get_native_info(
+               const RHIDevice *dev, const RHICmdBuffer *cmd,
+               RHICmdBufferNativeInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(
                RHICmdBuffer *cmd, RHIDevice *dev,
                RHIAccelerationStructure blas,

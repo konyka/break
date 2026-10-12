@@ -241,13 +241,30 @@ bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
 bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
                            u32 tag_count, u32 output_width,
                            u32 output_height) {
+    return sl_dlss_evaluate_tags_with_command_buffer(
+        NULL, NULL, tags, tag_count, output_width, output_height);
+}
+
+bool sl_dlss_evaluate_tags_with_command_buffer(
+    const RHIDevice *dev, const RHICmdBuffer *cmd,
+    const SLDlssResourceTagDesc *tags, u32 tag_count,
+    u32 output_width, u32 output_height) {
+    RHICmdBufferNativeInfo command_info;
+    void *native_command_buffer = NULL;
     if (!g_cpp_adapter_set || tags == NULL || tag_count == 0u ||
         output_width == 0u || output_height == 0u) return false;
+    if (dev != NULL || cmd != NULL) {
+        if (!rhi_cmd_buffer_get_native_info(dev, cmd, &command_info) ||
+            !command_info.recording || command_info.command_buffer == NULL)
+            return false;
+        native_command_buffer = command_info.command_buffer;
+    }
     for (u32 i = 0u; i < tag_count; ++i) {
         if (!sl_dlss_resource_tag_desc_validate(&tags[i])) return false;
     }
     return g_cpp_adapter.set_tags_and_evaluate(
-        g_cpp_adapter.context, tags, tag_count, output_width, output_height);
+        g_cpp_adapter.context, tags, tag_count, output_width, output_height,
+        native_command_buffer);
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
@@ -406,6 +423,15 @@ bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
     (void)tag_count;
     (void)output_width;
     (void)output_height;
+    return false;
+}
+
+bool sl_dlss_evaluate_tags_with_command_buffer(
+    const RHIDevice *dev, const RHICmdBuffer *cmd,
+    const SLDlssResourceTagDesc *tags, u32 tag_count,
+    u32 output_width, u32 output_height) {
+    (void)dev; (void)cmd; (void)tags; (void)tag_count;
+    (void)output_width; (void)output_height;
     return false;
 }
 

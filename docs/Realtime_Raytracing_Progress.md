@@ -235,7 +235,9 @@ frameworks).
 - The SDK adapter now fails closed until the RHI exposes the recording Vulkan
   command buffer and command-state restoration hook required by Streamline
   manual hooking; it never submits `slSetTagForFrame` or `slEvaluateFeature`
-  with a null command buffer.
+  with a null command buffer. A read-only RHI native command-buffer query and
+  `sl_dlss_evaluate_tags_with_command_buffer` now enforce the first half of
+  that contract; state restoration remains intentionally unimplemented.
 
 
 - Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.

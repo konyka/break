@@ -45,6 +45,13 @@ bool rhi_backend_texture_get_native_info(
     return false;
 }
 
+bool rhi_backend_cmd_buffer_get_native_info(
+    const RHIDevice *dev, const RHICmdBuffer *cmd, RHICmdBufferNativeInfo *out) {
+    (void)dev; (void)cmd;
+    if (out != NULL) memset(out, 0, sizeof(*out));
+    return false;
+}
+
 void rhi_cmd_bind_acceleration_structure(
     RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
     (void)cmd;
