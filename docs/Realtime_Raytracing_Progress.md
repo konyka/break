@@ -66,26 +66,42 @@ On the available Vulkan device, the smoke test currently reports:
 
 ## Cross-Platform Validation Matrix
 
+The historical rows below record validation performed on the listed machines;
+they are not evidence from every checkout or developer workstation. On
+2026-10-12, a fresh validation of the Linux validation branch based on
+checkout `a4205a3` was performed on Fedora
+44 with GCC 16.2, direct Mesa Intel UHD OpenGL 4.6 on `DISPLAY=:0`, and X11
+available inside a Wayland desktop. The host also has an RTX A5000 PCI device,
+but `nvidia-smi` is unavailable and Vulkan loader enumeration fails with
+`ERROR_OUT_OF_HOST_MEMORY`; NVIDIA/RTX, Vulkan graphics, RT, and DLSS runtime
+results are therefore not claimed for this run.
+
+That fresh Linux OpenGL build exposed a missing link set in `test_rt_trace`;
+the target now links native GL/X11 dependencies when its unity RHI selects
+OpenGL. The same rebuild exposed GCC 16's `-Werror=stringop-truncation` in the scene
+serializer; the bounded copy is now explicit and covered by a 63-byte URI
+regression test.
+
 | Platform | Toolchain | GPU / Driver | Display | Config | Focused tests | test_vulkan | AS path |
 |---|---|---|---|---|---|---|---|
 | Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | Win32 | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query, build |
 | Windows | MSVC 19.51 | NVIDIA RTX 4060 (proprietary) | Win32 | Vulkan | 4/4 pass | AS + TLAS pass (2560/1920), DLSS probe supported, gate 0 | full BLAS + TLAS builds; DLSS runtime detected |
-| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (ANV) | native Wayland | GL + Vulkan | 4/4 pass each | all passed, gate 0 | skip (no RT extensions) — fail-closed verified |
-| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | NVIDIA RTX A5000 (NVK/nouveau) | native Wayland | Vulkan | 4/4 pass | all passed, gate 0 | skip (no RT extensions under NVK) — fail-closed verified on RTX hardware |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa) | X11 `:0` under Wayland | GL | 10/10 pass, fresh build | not run | native X11/PAL + RHI; RT probe fail-closed |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa), RTX A5000 on nouveau | Wayland session; X11 `:0` available | Vulkan headless contracts | 7/7 pass, fresh build | not run | no Vulkan graphics claim: loader enumeration failed with `ERROR_OUT_OF_HOST_MEMORY`; RT probe fail-closed |
 | macOS 26.7 (Apple M2) | Apple clang 21 | Apple M2 (MoltenVK) | Cocoa | Vulkan | 4/4 pass | all passed, gate 0, clean shutdown | skip (no RT extensions) — fail-closed verified |
 
-Linux display note: the Fedora desktop is a native GNOME Wayland session; the
-Wayland rows above run `ENGINE_ENABLE_WAYLAND=ON` against
-`window_wayland.c` + `VK_USE_PLATFORM_WAYLAND_KHR` directly on
-`wayland-0` (no Xwayland). Earlier exploratory runs on the same host went
-through the Xwayland compatibility layer (`DISPLAY=:0` + the mutter Xwayland
-authority) and produced the same pass/fail-closed results; the matrix records
-the native-path runs. `test_sl_dlss` runs only on Windows; on Linux the DLSS
-probe correctly reports unavailable.
+Linux display note: this checkout was validated in a native GNOME Wayland
+session with X11 `:0` available. The fresh native PAL/RHI run used
+`ENGINE_ENABLE_WAYLAND=OFF`, `MYUI_PAL=x11`, and Mesa Intel OpenGL; it is not
+evidence for the Wayland Vulkan surface path. `test_sl_dlss` is registered only
+on Windows, so no Linux DLSS runtime result is claimed. The host's RTX A5000
+uses nouveau, `nvidia-smi` is unavailable, and Vulkan loader enumeration failed;
+Windows proprietary NVIDIA/RTX and DLSS rows remain historical evidence only.
 
-The Linux and macOS runs used the local Vulkan SDKs already present on those
-machines. No credentials or machine account details are stored in this
-repository.
+This fresh Linux run used the locally installed Vulkan headers/loader and
+shader compiler to build the Vulkan contract targets, but did not produce a
+Vulkan graphics runtime result. No credentials or machine account details are
+stored in this repository.
 
 A CMake linking fix surfaced by this sweep: `test_rhi_native` previously linked
 platform graphics libraries only on Windows; it now mirrors the full platform
@@ -241,4 +257,3 @@ frameworks).
 
 
 - Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.
-
