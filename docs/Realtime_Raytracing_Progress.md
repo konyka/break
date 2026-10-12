@@ -233,3 +233,6 @@ frameworks).
   It rejects tags requiring an unprovided command buffer, so real renderer
   resource-state transitions remain a prerequisite for enabling evaluation.
 
+
+- Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.
+

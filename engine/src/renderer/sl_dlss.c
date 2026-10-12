@@ -134,7 +134,13 @@ static bool g_api_ready;
 static SLDlssCppAdapter g_cpp_adapter;
 static bool g_cpp_adapter_set;
 
+static void sl_dlss_clear_cpp_adapter(void) {
+    memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
+    g_cpp_adapter_set = false;
+}
+
 static void sl_dlss_abort_init(void) {
+    sl_dlss_clear_cpp_adapter();
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
     g_initialized = false;
     g_api_ready = false;
@@ -353,6 +359,7 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
 }
 
 void sl_dlss_shutdown(void) {
+    sl_dlss_clear_cpp_adapter();
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
     g_initialized = false;
     g_api_ready = false;

@@ -6502,6 +6502,7 @@ bool rhi_backend_texture_get_native_info(
     out->view = (void *)(uintptr_t)td->view;
     out->image_layout = (u32)td->cur_layout;
     out->format = rhi_format_from_vk(td->format);
+    out->native_format = (u32)td->format;
     out->width = td->width;
     out->height = td->height;
     out->mip_levels = td->mip_levels;

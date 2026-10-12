@@ -151,6 +151,7 @@ typedef struct {
     void *view;
     u32 image_layout;
     RHIFormat format;
+    u32 native_format;
     u32 width;
     u32 height;
     u32 mip_levels;

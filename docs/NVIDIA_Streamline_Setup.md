@@ -44,7 +44,8 @@ Actual DLSS evaluation is intentionally not claimed yet. Streamline Vulkan
 tagging requires the native `VkImage`, `VkDeviceMemory`, `VkImageView`, image
 layout, format, extent, and lifecycle for color/depth/motion-vector resources.
 The RHI now exposes a narrow read-only `rhi_texture_get_native_info` API on
-Vulkan (image, memory, view, layout, format, extent, mip count and layers);
+Vulkan (image, memory, view, Vulkan image layout, abstract format, native
+Vulkan format, extent, mip count and layers);
 OpenGL fails closed. The next implementation slice can use this data to build
 the Streamline `Resource`/`ResourceTag` mirrors. A C-side resource-tag contract
 validator now rejects placeholders and non-Vulkan resources. Actual
@@ -70,6 +71,10 @@ creates `sl_dlss_streamline_adapter` and registers it after the C loader has
 successfully initialized and validated DLSS. The adapter resolves the official
 Streamline entry points from the already-loaded interposer; it does not link
 against or copy NVIDIA runtime binaries.
+
+The adapter registration is cleared whenever Streamline initialization is
+aborted or `sl_dlss_shutdown` runs, so no callback can retain an unloaded
+interposer module.
 
 ## Official Integration Constraints
 

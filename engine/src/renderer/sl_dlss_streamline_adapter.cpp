@@ -54,9 +54,13 @@ bool evaluate(void *context, const SLDlssResourceTagDesc *descs,
                                texture->image_layout);
         resources.back().width = texture->width;
         resources.back().height = texture->height;
-        resources.back().nativeFormat = static_cast<uint32_t>(texture->format);
+        resources.back().nativeFormat = texture->native_format;
         resources.back().mipLevels = texture->mip_levels;
         resources.back().arrayLayers = texture->array_layers;
+        resources.back().flags = 0u;
+        resources.back().usage = 0u;
+        resources.back().internalFlags = sl::Resource::eNone;
+        resources.back().reserved = 0u;
         tags.emplace_back(&resources.back(),
                           static_cast<sl::BufferType>(descs[i].type),
                           static_cast<sl::ResourceLifecycle>(descs[i].lifecycle));
