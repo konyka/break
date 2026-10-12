@@ -284,3 +284,5 @@ frameworks).
 - Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.
 
 - Diagnosed interactive camera latency on Vulkan: the swapchain previously forced triple buffering while using FIFO, allowing stale frames to queue behind rapid mouse camera updates. The swapchain now prefers MAILBOX when available (vsync without stale-frame buildup), falls back to FIFO, and no longer forces an extra image count. Immediate remains the explicit no-vsync fallback.
+
+- The frame limiter now sleeps before the platform event pump, so mouse camera input is sampled immediately before simulation/rendering rather than before a limiter sleep. This removes an avoidable target-frame delay from the input path while preserving full-frame delta_time accounting.

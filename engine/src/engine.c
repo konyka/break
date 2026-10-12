@@ -60,24 +60,12 @@ void engine_shutdown(Engine *e) {
 
 bool engine_frame(Engine *e) {
     if (e == NULL || e->platform == NULL) return false;
-    PlatformEventResult result = platform_poll(e->platform);
-    if (result == PLATFORM_EVENT_QUIT) {
-        return false;
-    }
-
-    InputState *input = platform_input(e->platform);
-    if (input_key_pressed(input, 256)) {
-        LOG_INFO("ESC pressed, exiting...");
-        return false;
-    }
-
     u64 now_us = time_microseconds();
 
-    /* R420: sleep BEFORE touching last_frame_us. The old code stamped
-     * last_frame_us at frame start and recomputed delta_time after the sleep,
-     * so the game-visible delta_time was only the sleep duration (excluding
-     * frame work) and fps_accum summed pre-sleep deltas, over-reporting fps.
-     * delta_time is now the full frame period (work + sleep), computed once. */
+    /* Sleep before polling input so a mouse event arriving during the limiter
+     * is consumed immediately before simulation/rendering instead of waiting
+     * behind another target frame. last_frame_us still advances below, after
+     * the sleep and event pump, so delta_time remains the full frame period. */
     if (isfinite(e->target_fps) && e->target_fps > 0.0) {
         f64 target_us = 1e6 / e->target_fps;
         f64 elapsed_us = (f64)(now_us - e->last_frame_us);
@@ -89,6 +77,19 @@ bool engine_frame(Engine *e) {
             now_us = time_microseconds();
         }
     }
+
+    PlatformEventResult result = platform_poll(e->platform);
+    if (result == PLATFORM_EVENT_QUIT) {
+        return false;
+    }
+
+    InputState *input = platform_input(e->platform);
+    if (input_key_pressed(input, 256)) {
+        LOG_INFO("ESC pressed, exiting...");
+        return false;
+    }
+
+    now_us = time_microseconds();
 
     e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
     /* R147: Clamp delta_time to prevent physics tunneling / animation jumps

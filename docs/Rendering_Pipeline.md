@@ -918,3 +918,5 @@ MegaBuffer
 ## Interactive Camera Latency
 
 Vulkan swapchain creation prefers MAILBOX when supported so rapid mouse camera motion replaces stale queued frames instead of accumulating FIFO latency. If MAILBOX is unavailable, the implementation falls back to FIFO; disabling vsync may select IMMEDIATE. The renderer does not force triple buffering, which avoids adding avoidable input-to-photon delay.
+
+The frame limiter also sleeps before polling platform events. This keeps mouse camera input close to the simulation/render boundary instead of sampling it and then waiting through the limiter interval.
