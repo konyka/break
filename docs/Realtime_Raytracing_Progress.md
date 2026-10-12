@@ -66,6 +66,14 @@ On the available Vulkan device, the smoke test currently reports:
 
 ## Cross-Platform Validation Matrix
 
+On 2026-10-13, checkout `be6d645` was revalidated on the same Linux host:
+the fresh/incremental OpenGL build passed 129/129 non-fuzz CTest cases,
+including the `headless;platform_contract` group and X11 runtime tests; the
+Vulkan build passed `test_rhi_capabilities`, `test_rt_trace`, and `test_vulkan`
+with a zero validation gate; and the native X11 and Wayland PAL smoke tests
+passed. No source defect was reproduced in this pass. Windows/Cocoa runtime
+and proprietary NVIDIA DLSS remain outside this host's evidence.
+
 The historical rows below record validation performed on the listed machines;
 they are not evidence from every checkout or developer workstation. On
 2026-10-12, a fresh validation of checkout `a073106` was performed on Fedora
