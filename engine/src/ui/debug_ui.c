@@ -136,7 +136,8 @@ void debug_ui_render(DebugUI *ui, RHICmdBuffer *cmd, u32 logical_w,
     (void)my_vgcanvas_end_frame(vg);
     return;
   }
-  y = 4.0f;
+  /* Keep detailed diagnostics below the always-visible FPS badge. */
+  y = 46.0f;
   for (i = 0; i < ui->line_count; i++) {
     (void)my_vgcanvas_draw_text(vg, ui->lines[i], 4.0f, y);
     y += 20.0f;

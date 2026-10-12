@@ -927,3 +927,4 @@ runtime captures can confirm whether MAILBOX, IMMEDIATE, or FIFO was selected.
 The debug overlay also displays a continuously visible anti-aliased FPS badge
 in a rounded rectangle at the top-left. The badge includes the measured FPS
 and current frame time; the detailed debug text can still be toggled separately.
+Detailed diagnostics begin below the badge to avoid visual overlap.
