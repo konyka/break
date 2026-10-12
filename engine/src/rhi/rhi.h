@@ -144,6 +144,19 @@ typedef enum {
     RHI_FORMAT_UNDEFINED,
 } RHIFormat;
 
+typedef struct {
+    RHINativeHandleType type;
+    void *image;
+    void *memory;
+    void *view;
+    u32 image_layout;
+    RHIFormat format;
+    u32 width;
+    u32 height;
+    u32 mip_levels;
+    u32 array_layers;
+} RHITextureNativeInfo;
+
 typedef enum {
     RHI_BUFFER_USAGE_VERTEX   = 1 << 0,
     RHI_BUFFER_USAGE_INDEX    = 1 << 1,
@@ -270,9 +283,15 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
 void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
+bool       rhi_texture_get_native_info(
+               const RHIDevice *dev, RHITexture texture,
+               RHITextureNativeInfo *out);
 bool       rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
+bool       rhi_backend_texture_get_native_info(
+               const RHIDevice *dev, RHITexture texture,
+               RHITextureNativeInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(
                RHICmdBuffer *cmd, RHIDevice *dev,
                RHIAccelerationStructure blas,

@@ -217,3 +217,6 @@ frameworks).
 - Portable builds must continue to work without NVIDIA runtime files.
 - Unsupported hardware or missing runtime must fall back to TSR/native/raster
   rendering with an explicit diagnostic reason.
+
+- Native texture interop is now available as a read-only Vulkan audit (image, memory, view, layout, format, extent, mip count and layers); OpenGL fails closed. This enables the next ResourceTag slice but DLSS evaluation still requires real renderer color/depth/motion-vector/output resources and verified layout transitions.
+

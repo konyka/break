@@ -236,6 +236,19 @@ TEST(device_info_defaults_are_safe)
     rhi_test_device_destroy(device);
 }
 
+TEST(texture_native_info_fails_closed_for_headless_device)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHITextureNativeInfo info;
+    memset(&info, 0xA5, sizeof(info));
+    ASSERT_NEQ(device, NULL);
+    ASSERT_FALSE(rhi_texture_get_native_info(device,
+                                             (RHITexture){1u, 1u}, &info));
+    ASSERT_EQ(info.type, RHI_NATIVE_HANDLE_NONE);
+    ASSERT_FALSE(rhi_texture_get_native_info(NULL, RHI_HANDLE_NULL, &info));
+    rhi_test_device_destroy(device);
+}
+
 TEST(command_handles_are_scoped_to_their_device)
 {
     RHIDevice *first = rhi_test_device_create();
@@ -975,6 +988,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(tlas_instance_encoding_is_stable_and_rejects_bad_input);
     RUN_TEST(tlas_fallbacks_fail_closed);
     RUN_TEST(device_info_defaults_are_safe);
+    RUN_TEST(texture_native_info_fails_closed_for_headless_device);
     RUN_TEST(command_handles_are_scoped_to_their_device);
     RUN_TEST(current_device_state_is_thread_local);
     RUN_TEST(gl_state_cache_is_invalidated_when_device_changes);

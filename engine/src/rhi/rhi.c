@@ -251,6 +251,13 @@ bool rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     return rhi_backend_get_device_info(dev, out);
 }
 
+bool rhi_texture_get_native_info(const RHIDevice *dev, RHITexture texture,
+                                 RHITextureNativeInfo *out) {
+    if (dev == NULL || out == NULL || !rhi_handle_valid(texture)) return false;
+    memset(out, 0, sizeof(*out));
+    return rhi_backend_texture_get_native_info(dev, texture, out);
+}
+
 bool rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     if (dev == NULL || out == NULL) return false;
     memset(out, 0, sizeof(*out));

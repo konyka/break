@@ -43,10 +43,13 @@ later probe can retry; OpenGL/non-Windows paths remain fail-closed.
 Actual DLSS evaluation is intentionally not claimed yet. Streamline Vulkan
 tagging requires the native `VkImage`, `VkDeviceMemory`, `VkImageView`, image
 layout, format, extent, and lifecycle for color/depth/motion-vector resources.
-The current public RHI does not expose those native texture views/states, so
-the next implementation slice must add a narrow read-only native-texture
-interop API and tests before `slSetTagForFrame` or `slEvaluateFeature` is
-called. No placeholder Vulkan resource structs are passed to Streamline.
+The RHI now exposes a narrow read-only `rhi_texture_get_native_info` API on
+Vulkan (image, memory, view, layout, format, extent, mip count and layers);
+OpenGL fails closed. The next implementation slice can use this data to build
+the Streamline `Resource`/`ResourceTag` mirrors, but must still require real
+color/depth/motion-vector/output textures and verified layout transitions before
+`slSetTagForFrame` or `slEvaluateFeature` is called. No placeholder Vulkan
+resource structs are passed to Streamline.
 
 ## Official Integration Constraints
 

@@ -6460,6 +6460,18 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     }
 }
 
+static RHIFormat rhi_format_from_vk(VkFormat fmt) {
+    switch (fmt) {
+    case VK_FORMAT_R8G8B8A8_UNORM: return RHI_FORMAT_R8G8B8A8_UNORM;
+    case VK_FORMAT_B8G8R8A8_UNORM: return RHI_FORMAT_B8G8R8A8_UNORM;
+    case VK_FORMAT_R16G16B16A16_SFLOAT: return RHI_FORMAT_R16G16B16A16_SFLOAT;
+    case VK_FORMAT_R16G16_SFLOAT: return RHI_FORMAT_R16G16_SFLOAT;
+    case VK_FORMAT_R32_SFLOAT: return RHI_FORMAT_R32_FLOAT;
+    case VK_FORMAT_D32_SFLOAT: return RHI_FORMAT_D32_FLOAT;
+    default: return RHI_FORMAT_UNDEFINED;
+    }
+}
+
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     const VKBackend *vk;
     if (dev == NULL || out == NULL) return false;
@@ -6473,6 +6485,27 @@ bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
     out->api_version = vk->device_props.apiVersion;
     out->driver_version = vk->device_props.driverVersion;
     out->feature_bits = dev->capabilities.feature_bits;
+    return true;
+}
+
+bool rhi_backend_texture_get_native_info(
+    const RHIDevice *dev, RHITexture texture, RHITextureNativeInfo *out) {
+    const VKTextureData *td;
+    if (dev == NULL || out == NULL) return false;
+    td = (const VKTextureData *)rhi_get_resource_typed(
+        (RHIDevice *)dev, texture, RHI_RES_TEXTURE);
+    if (td == NULL || td->image == VK_NULL_HANDLE || td->view == VK_NULL_HANDLE)
+        return false;
+    out->type = RHI_NATIVE_HANDLE_VULKAN;
+    out->image = (void *)(uintptr_t)td->image;
+    out->memory = (void *)(uintptr_t)td->memory;
+    out->view = (void *)(uintptr_t)td->view;
+    out->image_layout = (u32)td->cur_layout;
+    out->format = rhi_format_from_vk(td->format);
+    out->width = td->width;
+    out->height = td->height;
+    out->mip_levels = td->mip_levels;
+    out->array_layers = td->layers == 0u ? 1u : td->layers;
     return true;
 }
 
