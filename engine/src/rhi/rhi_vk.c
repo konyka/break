@@ -1161,6 +1161,11 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         free(modes);
     }
     sci.presentMode = present_mode;
+    LOG_INFO("VK: swapchain present mode=%s images=%u vsync=%s",
+             present_mode == VK_PRESENT_MODE_MAILBOX_KHR ? "MAILBOX" :
+             present_mode == VK_PRESENT_MODE_IMMEDIATE_KHR ? "IMMEDIATE" :
+             "FIFO",
+             img_count, vk->vsync ? "on" : "off");
     sci.clipped = VK_TRUE;
     sci.oldSwapchain = VK_NULL_HANDLE;
 
