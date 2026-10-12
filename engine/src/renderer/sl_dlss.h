@@ -12,6 +12,11 @@ typedef enum {
     SL_DLSS_INTERNAL_ERROR,
 } SLDlssProbeResult;
 
+typedef enum {
+    SL_DLSS_API_UNAVAILABLE = 0,
+    SL_DLSS_API_READY,
+} SLDlssApiStatus;
+
 const char *sl_dlss_probe_result_text(SLDlssProbeResult result);
 
 /*
@@ -30,3 +35,4 @@ const char *sl_dlss_probe_result_text(SLDlssProbeResult result);
  */
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result);
 void sl_dlss_shutdown(void);
+SLDlssApiStatus sl_dlss_api_status(void);

@@ -22,10 +22,12 @@ TEST(missing_runtime_fails_closed)
     ASSERT_TRUE(SET_SL_DIR("Z:/definitely/missing/sl"));
     ASSERT_FALSE(sl_dlss_probe(NULL, &result));
     ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
+    ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
     ASSERT_FALSE(sl_dlss_probe(&native, &result));
     ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
     ASSERT_TRUE(SET_SL_DIR(NULL));
     sl_dlss_shutdown();
+    ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
 }
 
 TEST(null_result_pointer_is_safe)

@@ -40,6 +40,14 @@ and graphics queue family through `slSetVulkanInfo` using Streamline's manual
 hooking mode. Failed initialization is classified and fully torn down so a
 later probe can retry; OpenGL/non-Windows paths remain fail-closed.
 
+Actual DLSS evaluation is intentionally not claimed yet. Streamline Vulkan
+tagging requires the native `VkImage`, `VkDeviceMemory`, `VkImageView`, image
+layout, format, extent, and lifecycle for color/depth/motion-vector resources.
+The current public RHI does not expose those native texture views/states, so
+the next implementation slice must add a narrow read-only native-texture
+interop API and tests before `slSetTagForFrame` or `slEvaluateFeature` is
+called. No placeholder Vulkan resource structs are passed to Streamline.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device

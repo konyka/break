@@ -126,10 +126,12 @@ typedef int (WINAPI *PFN_sl_set_vulkan_info)(const SLVulkanInfo *);
 static HMODULE g_sl_module;
 static PFN_sl_shutdown g_sl_shutdown_fn;
 static bool g_initialized;
+static bool g_api_ready;
 
 static void sl_dlss_abort_init(void) {
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
     g_initialized = false;
+    g_api_ready = false;
     g_sl_shutdown_fn = NULL;
     if (g_sl_module != NULL) {
         FreeLibrary(g_sl_module);
@@ -190,6 +192,10 @@ const char *sl_dlss_probe_result_text(SLDlssProbeResult result) {
     case SL_DLSS_UNAVAILABLE:
     default: return "unavailable";
     }
+}
+
+SLDlssApiStatus sl_dlss_api_status(void) {
+    return g_api_ready ? SL_DLSS_API_READY : SL_DLSS_API_UNAVAILABLE;
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
@@ -280,6 +286,7 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
 
     rc = supported_fn(SL_FEATURE_DLSS, &adapter);
     if (rc == SL_RESULT_OK) {
+        g_api_ready = true;
         if (out_result != NULL) *out_result = SL_DLSS_SUPPORTED;
         return true;
     }
@@ -297,6 +304,7 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
 void sl_dlss_shutdown(void) {
     if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
     g_initialized = false;
+    g_api_ready = false;
     g_sl_shutdown_fn = NULL;
     if (g_sl_module != NULL) {
         FreeLibrary(g_sl_module);
@@ -318,6 +326,10 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
 }
 
 void sl_dlss_shutdown(void) {
+}
+
+SLDlssApiStatus sl_dlss_api_status(void) {
+    return SL_DLSS_API_UNAVAILABLE;
 }
 
 #endif

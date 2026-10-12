@@ -147,7 +147,13 @@ frameworks).
    process is the next safe integration step. The SL `Preferences.projectId`
    currently uses a placeholder engine identifier; an NVIDIA-issued
    project/application id is required before shipping (see the DLSS license's
-   notification requirement).
+  notification requirement).
+- The DLSS API loader now exposes an explicit ready/unavailable status and
+  fully resets it on failed initialization. Actual resource tagging remains
+  intentionally deferred: the RHI must first expose native Vulkan image/view,
+  memory, layout, format, extent, and lifecycle information for color, depth,
+  motion-vector, and output resources. Passing incomplete placeholders to
+  Streamline is not accepted as DLSS support.
 - Linux RTX A5000 still runs NVK/nouveau. Secure Boot is disabled and the
   `akmod-nvidia` install path is prepared, but the provided login credential
   is not a sudo credential on that host, so the driver install and reboot
