@@ -2299,6 +2299,15 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_rt_trace PRIVATE glad opengl32)
+    elseif(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_VULKAN)
+        # rhi.c includes the OpenGL unity backend in non-Vulkan tests.
+        # Link the native GL/X11 dependencies used by the other RHI tests.
+        set(TEST_RT_TRACE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
+        if(X11_Xi_FOUND)
+            list(APPEND TEST_RT_TRACE_X11_LIBS ${X11_Xi_LIB})
+        endif()
+        target_link_libraries(test_rt_trace PRIVATE
+            glad ${TEST_RT_TRACE_X11_LIBS} GL dl pthread)
     endif()
     add_test(NAME test_rt_trace COMMAND test_rt_trace)
 
