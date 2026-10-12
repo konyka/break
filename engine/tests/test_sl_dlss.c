@@ -6,10 +6,13 @@
 bool rhi_cmd_buffer_get_native_info(const RHIDevice *dev,
                                     const RHICmdBuffer *cmd,
                                     RHICmdBufferNativeInfo *out) {
-    (void)dev;
-    (void)cmd;
     if (out != NULL) memset(out, 0, sizeof(*out));
-    return false;
+    if ((uintptr_t)dev != 1u || (uintptr_t)cmd != 1u || out == NULL)
+        return false;
+    out->type = RHI_NATIVE_HANDLE_VULKAN;
+    out->command_buffer = (void *)(uintptr_t)1u;
+    out->recording = true;
+    return true;
 }
 
 #ifdef _WIN32
@@ -28,7 +31,7 @@ static bool test_adapter_callback(void *context,
                                   u32 output_height,
                                   void *native_command_buffer) {
     (void)context;
-    if (native_command_buffer != NULL) return false;
+    if (native_command_buffer == NULL) return false;
     if (tags == NULL || tag_count != 1u || output_width != 2u ||
         output_height != 2u)
         return false;
@@ -129,10 +132,16 @@ TEST(cpp_adapter_forwards_validated_tags)
     info.array_layers = 1u;
     g_adapter_calls = 0;
     ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
-    ASSERT_TRUE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
+    ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
+    ASSERT_EQ(g_adapter_calls, 0);
+    ASSERT_TRUE(sl_dlss_evaluate_tags_with_command_buffer(
+        (const RHIDevice *)(uintptr_t)1u,
+        (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 1);
     info.view = NULL;
-    ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        (const RHIDevice *)(uintptr_t)1u,
+        (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 1);
     sl_dlss_set_cpp_adapter(NULL);
 }

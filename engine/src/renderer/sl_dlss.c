@@ -241,8 +241,13 @@ bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
 bool sl_dlss_evaluate_tags(const SLDlssResourceTagDesc *tags,
                            u32 tag_count, u32 output_width,
                            u32 output_height) {
-    return sl_dlss_evaluate_tags_with_command_buffer(
-        NULL, NULL, tags, tag_count, output_width, output_height);
+    (void)tags;
+    (void)tag_count;
+    (void)output_width;
+    (void)output_height;
+    /* Streamline manual hooking cannot safely evaluate without the recording
+     * command buffer. Callers must use the explicit RHI-aware entry point. */
+    return false;
 }
 
 bool sl_dlss_evaluate_tags_with_command_buffer(
