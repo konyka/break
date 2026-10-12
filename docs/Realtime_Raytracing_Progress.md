@@ -68,12 +68,10 @@ On the available Vulkan device, the smoke test currently reports:
 
 The historical rows below record validation performed on the listed machines;
 they are not evidence from every checkout or developer workstation. On
-2026-10-12, a fresh validation of the Linux validation branch based on
-checkout `a4205a3` was performed on Fedora
+2026-10-12, a fresh validation of checkout `a073106` was performed on Fedora
 44 with GCC 16.2, direct Mesa Intel UHD OpenGL 4.6 on `DISPLAY=:0`, and X11
 available inside a Wayland desktop. The host also has an RTX A5000 PCI device,
-but `nvidia-smi` is unavailable and Vulkan loader enumeration fails with
-`ERROR_OUT_OF_HOST_MEMORY`; NVIDIA/RTX, Vulkan graphics, RT, and DLSS runtime
+but `nvidia-smi` is unavailable; proprietary NVIDIA/RTX and DLSS runtime
 results are therefore not claimed for this run.
 
 That fresh Linux OpenGL build exposed a missing link set in `test_rt_trace`;
@@ -82,18 +80,18 @@ OpenGL. The same rebuild exposed GCC 16's `-Werror=stringop-truncation` in the s
 serializer; the bounded copy is now explicit and covered by a 63-byte URI
 regression test.
 
-The fresh Vulkan run also exercised the no-acceleration-structure path on the
-NVK device. RHI now omits acceleration-structure descriptor layouts, pool
-entries, and compute pipeline sets when the required feature/extension is not
-enabled; the runtime therefore fails closed without validation-layer errors
-while RT/DLSS probes remain explicitly skipped.
+The fresh Vulkan run passed `test_vulkan` with its in-process validation gate
+at zero. On the available NVK path, RHI omits acceleration-structure
+descriptor layouts, pool entries, and compute pipeline sets when the required
+feature/extension is not enabled; RT/DLSS probes remain explicitly skipped
+when those capabilities are absent.
 
 | Platform | Toolchain | GPU / Driver | Display | Config | Focused tests | test_vulkan | AS path |
 |---|---|---|---|---|---|---|---|
 | Windows | MSVC 19.51 | AMD Radeon iGPU (Vulkan) | Win32 | GL + Vulkan | 4/4 pass | AS smoke pass, validation 0; pre-existing MSAA/golden failures | supported: lifecycle, size query, build |
 | Windows | MSVC 19.51 | NVIDIA RTX 4060 (proprietary) | Win32 | Vulkan | 4/4 pass | AS + TLAS pass (2560/1920), DLSS probe supported, gate 0 | full BLAS + TLAS builds; DLSS runtime detected |
-| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa) | X11 `:0` under Wayland | GL | 10/10 pass, fresh build | not run | native X11/PAL + RHI; RT probe fail-closed |
-| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa), RTX A5000 on nouveau | Wayland session; X11 `:0` available | Vulkan headless contracts | 7/7 pass, fresh build | not run | no Vulkan graphics claim: loader enumeration failed with `ERROR_OUT_OF_HOST_MEMORY`; RT probe fail-closed |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa) | X11 `:0` under Wayland | GL | fresh build; X11/PAL and GLX runtime pass | pass; validation gate 0 | native X11/PAL + RHI; RT probe fail-closed |
+| Linux (Fedora 44, GNOME Wayland) | GCC 16.2 | Intel UHD (i915/Mesa), RTX A5000 on nouveau | Wayland session; X11 `:0` available | Vulkan | focused contracts pass, fresh build | pass; validation gate 0 | AS/RT/DLSS capability gates fail closed when unsupported; no proprietary NVIDIA/DLSS claim |
 | macOS 26.7 (Apple M2) | Apple clang 21 | Apple M2 (MoltenVK) | Cocoa | Vulkan | 4/4 pass | all passed, gate 0, clean shutdown | skip (no RT extensions) — fail-closed verified |
 
 Linux display note: this checkout was validated in a native GNOME Wayland
@@ -105,9 +103,10 @@ uses nouveau, `nvidia-smi` is unavailable, and Vulkan loader enumeration failed;
 Windows proprietary NVIDIA/RTX and DLSS rows remain historical evidence only.
 
 This fresh Linux run used the locally installed Vulkan headers/loader and
-shader compiler to build the Vulkan contract targets, but did not produce a
-Vulkan graphics runtime result. No credentials or machine account details are
-stored in this repository.
+shader compiler to build and execute the Vulkan graphics smoke test. The
+available host does not provide a proprietary NVIDIA runtime, so this result
+does not validate Windows RTX ray-tracing or DLSS evaluation. No credentials or
+machine account details are stored in this repository.
 
 A CMake linking fix surfaced by this sweep: `test_rhi_native` previously linked
 platform graphics libraries only on Windows; it now mirrors the full platform
