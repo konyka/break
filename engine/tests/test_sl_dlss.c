@@ -72,8 +72,11 @@ TEST(resource_tag_contract_rejects_non_vulkan_placeholders)
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
     info.view = (void *)(uintptr_t)1u;
+    info.native_format = 37u;
     info.width = 1u;
     info.height = 1u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
     ASSERT_TRUE(sl_dlss_resource_tag_desc_validate(&tag));
     tag.type = (SLDlssBufferType)99;
     ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
@@ -88,8 +91,11 @@ TEST(cpp_adapter_is_required_before_evaluation)
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
     info.view = (void *)(uintptr_t)1u;
+    info.native_format = 37u;
     info.width = 1u;
     info.height = 1u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
     sl_dlss_set_cpp_adapter(NULL);
     ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 1u, 1u));
 }
@@ -104,8 +110,11 @@ TEST(cpp_adapter_forwards_validated_tags)
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
     info.view = (void *)(uintptr_t)1u;
+    info.native_format = 37u;
     info.width = 2u;
     info.height = 2u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
     g_adapter_calls = 0;
     ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
     ASSERT_TRUE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
@@ -116,6 +125,26 @@ TEST(cpp_adapter_forwards_validated_tags)
     sl_dlss_set_cpp_adapter(NULL);
 }
 
+TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata)
+{
+    RHITextureNativeInfo info = {0};
+    SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
+                                 SL_TAG_VALID_UNTIL_PRESENT};
+    info.type = RHI_NATIVE_HANDLE_VULKAN;
+    info.image = (void *)(uintptr_t)1u;
+    info.memory = (void *)(uintptr_t)1u;
+    info.view = (void *)(uintptr_t)1u;
+    info.width = 1u;
+    info.height = 1u;
+    info.mip_levels = 1u;
+    info.array_layers = 1u;
+    ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
+    info.native_format = 37u;
+    ASSERT_TRUE(sl_dlss_resource_tag_desc_validate(&tag));
+    info.array_layers = 0u;
+    ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(missing_runtime_fails_closed);
     RUN_TEST(null_result_pointer_is_safe);
@@ -123,4 +152,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(resource_tag_contract_rejects_non_vulkan_placeholders);
     RUN_TEST(cpp_adapter_is_required_before_evaluation);
     RUN_TEST(cpp_adapter_forwards_validated_tags);
+    RUN_TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata);
 TEST_MAIN_END()

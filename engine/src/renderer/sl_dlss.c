@@ -215,7 +215,11 @@ bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc) {
         desc->texture->type != RHI_NATIVE_HANDLE_VULKAN ||
         desc->texture->image == NULL || desc->texture->memory == NULL ||
         desc->texture->view == NULL ||
-        desc->texture->width == 0u || desc->texture->height == 0u)
+        desc->texture->width == 0u || desc->texture->height == 0u ||
+        desc->texture->native_format == 0u ||
+        desc->texture->mip_levels == 0u ||
+        desc->texture->array_layers == 0u ||
+        desc->texture->image_layout == 0xffffffffu)
         return false;
     return desc->type == SL_TAG_DEPTH ||
            desc->type == SL_TAG_MOTION_VECTORS ||

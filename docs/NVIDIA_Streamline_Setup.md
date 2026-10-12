@@ -76,6 +76,10 @@ The adapter registration is cleared whenever Streamline initialization is
 aborted or `sl_dlss_shutdown` runs, so no callback can retain an unloaded
 interposer module.
 
+The C11 validator also requires a defined image layout, non-zero native Vulkan
+format, mip count, and array-layer count before a descriptor can reach the
+adapter.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device

@@ -46,7 +46,6 @@ bool evaluate(void *context, const SLDlssResourceTagDesc *descs,
     for (u32 i = 0u; i < count; ++i) {
         const RHITextureNativeInfo *texture = descs[i].texture;
         if (!sl_dlss_resource_tag_desc_validate(&descs[i]) ||
-            texture->image_layout == 0xffffffffu ||
             descs[i].lifecycle == SL_TAG_VALID_UNTIL_EVALUATE)
             return false;
         resources.emplace_back(sl::ResourceType::eTex2d, texture->image,
