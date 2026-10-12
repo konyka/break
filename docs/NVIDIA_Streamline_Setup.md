@@ -35,6 +35,11 @@ corresponding NVIDIA license and signature information.
 - Until the Vulkan interop layer and an approved Streamline release package are
   available, the engine must select direct or TSR fallback.
 
+The current loader now passes the native Vulkan instance/device/physical-device
+and graphics queue family through `slSetVulkanInfo` using Streamline's manual
+hooking mode. Failed initialization is classified and fully torn down so a
+later probe can retry; OpenGL/non-Windows paths remain fail-closed.
+
 ## Official Integration Constraints
 
 Streamline requires initialization before graphics API use, Vulkan device

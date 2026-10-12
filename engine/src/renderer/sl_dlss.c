@@ -127,6 +127,16 @@ static HMODULE g_sl_module;
 static PFN_sl_shutdown g_sl_shutdown_fn;
 static bool g_initialized;
 
+static void sl_dlss_abort_init(void) {
+    if (g_initialized && g_sl_shutdown_fn != NULL) g_sl_shutdown_fn();
+    g_initialized = false;
+    g_sl_shutdown_fn = NULL;
+    if (g_sl_module != NULL) {
+        FreeLibrary(g_sl_module);
+        g_sl_module = NULL;
+    }
+}
+
 static const SLStructType kPrefGuid = {
     0x1ca10965u, 0xbf8eu, 0x432bu,
     { 0x8d, 0xa1, 0x67, 0x16, 0xd8, 0x79, 0xfb, 0x14 }
@@ -238,6 +248,7 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
     g_initialized = true;
 
     if (native == NULL || native->type != RHI_NATIVE_HANDLE_VULKAN) {
+        sl_dlss_abort_init();
         if (out_result != NULL) *out_result = SL_DLSS_INIT_FAILED;
         return false;
     }
@@ -254,6 +265,7 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
         vk_info.graphics_queue_index = 0u;
         set_result = set_vk_fn(&vk_info);
         if (set_result != SL_RESULT_OK) {
+            sl_dlss_abort_init();
             if (out_result != NULL) *out_result = SL_DLSS_INIT_FAILED;
             return false;
         }
@@ -273,9 +285,11 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
     }
     if (rc == SL_RESULT_DRIVER_OUT_OF_DATE || rc == SL_RESULT_OS_OUT_OF_DATE ||
         rc == SL_RESULT_NO_SUPPORTED_ADAPTER || rc == SL_RESULT_ADAPTER_NOT_SUPPORTED) {
+        sl_dlss_abort_init();
         if (out_result != NULL) *out_result = SL_DLSS_FEATURE_UNSUPPORTED;
         return false;
     }
+    sl_dlss_abort_init();
     if (out_result != NULL) *out_result = SL_DLSS_INTERNAL_ERROR;
     return false;
 }

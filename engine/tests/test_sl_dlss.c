@@ -36,7 +36,18 @@ TEST(null_result_pointer_is_safe)
     sl_dlss_shutdown();
 }
 
+TEST(failed_initialization_is_retryable)
+{
+    SLDlssProbeResult result = SL_DLSS_SUPPORTED;
+    ASSERT_TRUE(SET_SL_DIR("Z:/definitely/missing/sl"));
+    ASSERT_FALSE(sl_dlss_probe(NULL, &result));
+    ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
+    sl_dlss_shutdown();
+    ASSERT_TRUE(SET_SL_DIR(NULL));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(missing_runtime_fails_closed);
     RUN_TEST(null_result_pointer_is_safe);
+    RUN_TEST(failed_initialization_is_retryable);
 TEST_MAIN_END()
