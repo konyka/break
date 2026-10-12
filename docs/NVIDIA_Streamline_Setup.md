@@ -83,6 +83,11 @@ before forwarding an evaluation request.
 The legacy `sl_dlss_evaluate_tags` entry point is now deliberately disabled;
 it never forwards a request without an explicit recording command buffer.
 
+The adapter contract now also requires command-state callbacks: capture before
+Streamline tagging/evaluation and restore afterward. Evaluation is considered
+failed if either the Streamline callback or restoration callback fails, while
+restoration is still attempted after a failed evaluation callback.
+
 The current adapter target is still intentionally non-executable for Vulkan:
 manual hooking also requires host command-state restoration, and the current
 RHI does not expose that hook safely. The SDK adapter therefore returns false

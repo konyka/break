@@ -264,8 +264,13 @@ frameworks).
   command buffer and command-state restoration hook required by Streamline
   manual hooking; it never submits `slSetTagForFrame` or `slEvaluateFeature`
   with a null command buffer. A read-only RHI native command-buffer query and
-  `sl_dlss_evaluate_tags_with_command_buffer` now enforce the first half of
-  that contract; state restoration remains intentionally unimplemented.
+  `sl_dlss_evaluate_tags_with_command_buffer` now enforce the native-handle
+  half of that contract; the production Vulkan restore implementation remains
+  intentionally unimplemented.
+- The opaque DLSS adapter contract now requires capture/evaluate/restore
+  callbacks and reports failure if restoration fails. The SDK adapter remains
+  disabled until the Vulkan backend can implement those callbacks against its
+  real command-state cache.
 
 
 - Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.

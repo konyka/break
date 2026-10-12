@@ -34,6 +34,8 @@ extern "C" bool sl_dlss_streamline_adapter_create(void *module,
     (void)module;
     if (out != nullptr) {
         out->set_tags_and_evaluate = nullptr;
+        out->capture_command_state = nullptr;
+        out->restore_command_state = nullptr;
         out->context = nullptr;
     }
     /* Do not register an inert callback. The native command-buffer contract is

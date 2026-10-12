@@ -24,6 +24,22 @@ bool rhi_cmd_buffer_get_native_info(const RHIDevice *dev,
 #endif
 
 static int g_adapter_calls;
+static int g_capture_calls;
+static int g_restore_calls;
+
+static bool test_capture_state(void *context, void *native_command_buffer) {
+    (void)context;
+    if (native_command_buffer == NULL) return false;
+    g_capture_calls++;
+    return true;
+}
+
+static bool test_restore_state(void *context, void *native_command_buffer) {
+    (void)context;
+    if (native_command_buffer == NULL) return false;
+    g_restore_calls++;
+    return true;
+}
 
 static bool test_adapter_callback(void *context,
                                   const SLDlssResourceTagDesc *tags,
@@ -120,7 +136,8 @@ TEST(cpp_adapter_forwards_validated_tags)
     RHITextureNativeInfo info = {0};
     SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
                                  SL_TAG_VALID_UNTIL_PRESENT};
-    SLDlssCppAdapter adapter = {test_adapter_callback, NULL};
+    SLDlssCppAdapter adapter = {test_capture_state, test_adapter_callback,
+                                test_restore_state, NULL};
     info.type = RHI_NATIVE_HANDLE_VULKAN;
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
@@ -131,6 +148,8 @@ TEST(cpp_adapter_forwards_validated_tags)
     info.mip_levels = 1u;
     info.array_layers = 1u;
     g_adapter_calls = 0;
+    g_capture_calls = 0;
+    g_restore_calls = 0;
     ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
     ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 0);
@@ -138,6 +157,8 @@ TEST(cpp_adapter_forwards_validated_tags)
         (const RHIDevice *)(uintptr_t)1u,
         (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 1);
+    ASSERT_EQ(g_capture_calls, 1);
+    ASSERT_EQ(g_restore_calls, 1);
     info.view = NULL;
     ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
         (const RHIDevice *)(uintptr_t)1u,
@@ -151,7 +172,8 @@ TEST(command_buffer_evaluation_requires_recording_native_handle)
     RHITextureNativeInfo info = {0};
     SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
                                  SL_TAG_VALID_UNTIL_PRESENT};
-    SLDlssCppAdapter adapter = {test_adapter_callback, NULL};
+    SLDlssCppAdapter adapter = {test_capture_state, test_adapter_callback,
+                                test_restore_state, NULL};
     info.type = RHI_NATIVE_HANDLE_VULKAN;
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
@@ -173,7 +195,8 @@ TEST(command_buffer_evaluation_rejects_missing_rhi_context)
     RHITextureNativeInfo info = {0};
     SLDlssResourceTagDesc tag = {&info, SL_TAG_DEPTH,
                                  SL_TAG_VALID_UNTIL_PRESENT};
-    SLDlssCppAdapter adapter = {test_adapter_callback, NULL};
+    SLDlssCppAdapter adapter = {test_capture_state, test_adapter_callback,
+                                test_restore_state, NULL};
     info.type = RHI_NATIVE_HANDLE_VULKAN;
     info.image = (void *)(uintptr_t)1u;
     info.memory = (void *)(uintptr_t)1u;
@@ -184,10 +207,14 @@ TEST(command_buffer_evaluation_rejects_missing_rhi_context)
     info.mip_levels = 1u;
     info.array_layers = 1u;
     g_adapter_calls = 0;
+    g_capture_calls = 0;
+    g_restore_calls = 0;
     ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
     ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
         NULL, NULL, &tag, 1u, 1u, 1u));
     ASSERT_EQ(g_adapter_calls, 0);
+    ASSERT_EQ(g_capture_calls, 0);
+    ASSERT_EQ(g_restore_calls, 0);
     ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
         (const RHIDevice *)(uintptr_t)1u, NULL, &tag, 1u, 1u, 1u));
     ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(

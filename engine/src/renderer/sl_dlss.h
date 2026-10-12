@@ -62,11 +62,15 @@ bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc);
  * absent or when the renderer has not supplied complete native resources.
  * The C11 engine never fabricates those C++ objects. */
 typedef struct {
+    bool (*capture_command_state)(void *adapter_context,
+                                  void *native_command_buffer);
     bool (*set_tags_and_evaluate)(void *adapter_context,
                                   const SLDlssResourceTagDesc *tags,
                                   u32 tag_count,
                                   u32 output_width,
                                   u32 output_height,
+                                  void *native_command_buffer);
+    bool (*restore_command_state)(void *adapter_context,
                                   void *native_command_buffer);
     void *context;
 } SLDlssCppAdapter;

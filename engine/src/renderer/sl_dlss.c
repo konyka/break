@@ -228,7 +228,9 @@ bool sl_dlss_resource_tag_desc_validate(const SLDlssResourceTagDesc *desc) {
 }
 
 bool sl_dlss_set_cpp_adapter(const SLDlssCppAdapter *adapter) {
-    if (adapter == NULL || adapter->set_tags_and_evaluate == NULL) {
+    if (adapter == NULL || adapter->capture_command_state == NULL ||
+        adapter->set_tags_and_evaluate == NULL ||
+        adapter->restore_command_state == NULL) {
         memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
         g_cpp_adapter_set = false;
         return false;
@@ -266,9 +268,15 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
     for (u32 i = 0u; i < tag_count; ++i) {
         if (!sl_dlss_resource_tag_desc_validate(&tags[i])) return false;
     }
-    return g_cpp_adapter.set_tags_and_evaluate(
+    if (!g_cpp_adapter.capture_command_state(
+            g_cpp_adapter.context, native_command_buffer))
+        return false;
+    bool evaluated = g_cpp_adapter.set_tags_and_evaluate(
         g_cpp_adapter.context, tags, tag_count, output_width, output_height,
         native_command_buffer);
+    bool restored = g_cpp_adapter.restore_command_state(
+        g_cpp_adapter.context, native_command_buffer);
+    return evaluated && restored;
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
