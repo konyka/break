@@ -923,3 +923,7 @@ The frame limiter also sleeps before polling platform events. This keeps mouse c
 
 Vulkan logs the selected present mode and swapchain image count at creation, so
 runtime captures can confirm whether MAILBOX, IMMEDIATE, or FIFO was selected.
+
+The debug overlay also displays a continuously visible anti-aliased FPS badge
+in a rounded rectangle at the top-left. The badge includes the measured FPS
+and current frame time; the detailed debug text can still be toggled separately.

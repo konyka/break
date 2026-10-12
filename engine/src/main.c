@@ -5201,6 +5201,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         bool underwater = water.enabled && camera.position.e[1] < water.water_y;
         debug_ui_begin(&ui);
+        debug_ui_set_fps(&ui, (f32)engine.fps,
+                         (f32)(engine.delta_time * 1000.0));
         fps_history[fps_history_idx % 64] = (f32)engine.delta_time * 1000.0f;
         fps_history_idx++;
 

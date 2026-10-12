@@ -14,13 +14,16 @@ typedef struct DebugUI {
     RHIDevice *device;
     void *font;
     void *vg;
-    u32 vg_width;
-    u32 vg_height;
+  u32 vg_width;
+  u32 vg_height;
+  f32 fps_value;
+  f32 frame_ms;
 } DebugUI;
 
 void debug_ui_init(DebugUI *ui);
 void debug_ui_init_renderer(DebugUI *ui, RHIDevice *dev);
 void debug_ui_begin(DebugUI *ui);
+void debug_ui_set_fps(DebugUI *ui, f32 fps, f32 frame_ms);
 void debug_ui_text(DebugUI *ui, const char *fmt, ...);
 void debug_ui_end(DebugUI *ui);
 void debug_ui_sticky_begin(DebugUI *ui, bool refresh);

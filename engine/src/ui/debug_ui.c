@@ -28,6 +28,12 @@ void debug_ui_begin(DebugUI *ui) {
   ui->line_count = 0;
 }
 
+void debug_ui_set_fps(DebugUI *ui, f32 fps, f32 frame_ms) {
+  if (ui == NULL) return;
+  ui->fps_value = fps;
+  ui->frame_ms = frame_ms;
+}
+
 void debug_ui_text(DebugUI *ui, const char *fmt, ...) {
   va_list args;
   if (ui == NULL || !ui->visible || ui->line_count >= DEBUG_UI_MAX_LINES) return;
@@ -100,7 +106,7 @@ void debug_ui_render(DebugUI *ui, RHICmdBuffer *cmd, u32 logical_w,
                      u32 logical_h, u32 drawable_w, u32 drawable_h) {
   u32 i;
   f32 y;
-  if (ui == NULL || !ui->visible || ui->line_count == 0 || cmd == NULL) return;
+  if (ui == NULL || cmd == NULL) return;
   if (logical_w == 0 || logical_h == 0 || drawable_w == 0 || drawable_h == 0)
     return;
   ensure_renderer(ui, drawable_w, drawable_h);
@@ -115,6 +121,21 @@ void debug_ui_render(DebugUI *ui, RHICmdBuffer *cmd, u32 logical_w,
   (void)my_vgcanvas_set_scale(vg, (f32)drawable_w / (f32)logical_w);
   if (my_vgcanvas_begin_frame(vg, NULL) != MY_RET_OK) return;
   my_vgcanvas_set_fill_color(vg, my_color_rgba(255, 255, 255, 255));
+  {
+    char fps_text[48];
+    my_rectf_t panel = {4.0f, 4.0f, 156.0f, 34.0f};
+    (void)snprintf(fps_text, sizeof(fps_text), "FPS %.0f  %.1fms",
+                   ui->fps_value, ui->frame_ms);
+    /* The vector backend anti-aliases this rounded fill and the text glyphs. */
+    my_vgcanvas_set_fill_color(vg, my_color_rgba(12, 18, 28, 220));
+    (void)my_vgcanvas_fill_rounded_rect(vg, &panel, 8.0f);
+    my_vgcanvas_set_fill_color(vg, my_color_rgba(245, 248, 255, 255));
+    (void)my_vgcanvas_draw_text(vg, fps_text, 12.0f, 10.0f);
+  }
+  if (!ui->visible || ui->line_count == 0) {
+    (void)my_vgcanvas_end_frame(vg);
+    return;
+  }
   y = 4.0f;
   for (i = 0; i < ui->line_count; i++) {
     (void)my_vgcanvas_draw_text(vg, ui->lines[i], 4.0f, y);

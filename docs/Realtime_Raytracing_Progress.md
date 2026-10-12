@@ -289,3 +289,6 @@ frameworks).
 - Vulkan now logs the selected present mode, image count, and VSync state at
   swapchain creation to make input-latency validation observable on target
   hardware.
+- Added a continuously visible anti-aliased FPS/frame-time badge to the
+  top-left debug overlay. It uses the existing vector canvas rounded-fill path
+  and remains visible when the detailed debug text is toggled off.
