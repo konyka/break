@@ -25,15 +25,17 @@ corresponding NVIDIA license and signature information.
 ## Current Scope
 
 - Streamline source is available locally for API and integration work.
-- The current RHI exposes OpenGL and Vulkan, but does not yet expose the native
-  Vulkan handles and resource-state transitions required by Streamline.
+- The current RHI exposes OpenGL and Vulkan, including read-only native Vulkan
+  device, texture, and recording command-buffer queries. Renderer-owned
+  resource-state transitions and post-evaluation command-state restoration are
+  not yet exposed as a complete Streamline contract.
 - DLSS runtime detection is enabled on Windows/NVIDIA builds, but DLSS image
   evaluation is not enabled yet. The current integration verifies the official
   runtime, initializes Streamline manually, passes native Vulkan handles, and
-  queries adapter support; resource tagging and `slEvaluateFeature` remain a
-  separate implementation slice.
-- Until the Vulkan interop layer and an approved Streamline release package are
-  available, the engine must select direct or TSR fallback.
+  queries adapter support; resource tagging and `slEvaluateFeature` remain
+  blocked by the missing command-state restoration contract.
+- Until the command-state contract and an approved Streamline release package
+  are available, the engine must select direct or TSR fallback.
 
 The current loader now passes the native Vulkan instance/device/physical-device
 and graphics queue family through `slSetVulkanInfo` using Streamline's manual

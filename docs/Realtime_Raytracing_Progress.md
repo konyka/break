@@ -221,9 +221,11 @@ frameworks).
    hit when the device-side AS is invalid,
    (b) update the NVIDIA driver (616.56 may have a WDDM AS build bug),
    (c) test on a discrete non-hybrid NVIDIA system.
-2. Wire `slSetVulkanInfo` from `RHINativeDevice`, then DLSS resource tagging
-   and `slEvaluateFeature` behind the existing capability gate (obtain an
-   NVIDIA project id for anything beyond local development).
+2. Connect the validated native texture and recording command-buffer queries to
+   renderer-owned DLSS color/depth/motion-vector/output resources, then add
+   command-state capture/restore around `slSetTagForFrame` and
+   `slEvaluateFeature` behind the existing capability gate (obtain an NVIDIA
+   project id for anything beyond local development).
 3. Add RT-on/RT-off image captures and GPU timestamp/VRAM reporting once the
    trace path is resolved.
 4. Install the NVIDIA proprietary driver on the Fedora host (needs a sudo
