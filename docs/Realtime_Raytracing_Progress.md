@@ -232,6 +232,10 @@ frameworks).
   loaded interposer; default builds do not include the SDK or NVIDIA binaries.
   It rejects tags requiring an unprovided command buffer, so real renderer
   resource-state transitions remain a prerequisite for enabling evaluation.
+- The SDK adapter now fails closed until the RHI exposes the recording Vulkan
+  command buffer and command-state restoration hook required by Streamline
+  manual hooking; it never submits `slSetTagForFrame` or `slEvaluateFeature`
+  with a null command buffer.
 
 
 - Native texture interop now also reports the native Vulkan format separately from the abstract RHI format, allowing Streamline Resource construction to preserve the Vulkan ABI value.

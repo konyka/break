@@ -72,6 +72,17 @@ successfully initialized and validated DLSS. The adapter resolves the official
 Streamline entry points from the already-loaded interposer; it does not link
 against or copy NVIDIA runtime binaries.
 
+The current adapter target is intentionally non-executable for Vulkan: manual
+hooking requires the exact recording `VkCommandBuffer` for both tagging and
+evaluation, plus host command-state restoration. The current RHI callback does
+not expose either safely, so the SDK adapter returns false rather than passing
+null command buffers. DLSS therefore remains on TSR/native fallback until that
+RHI command-buffer contract is implemented.
+
+Because the command-buffer contract is missing, adapter creation also returns
+false and the C loader does not register an inert callback as if DLSS execution
+were available. The target currently serves as an SDK/ABI compile gate.
+
 The adapter registration is cleared whenever Streamline initialization is
 aborted or `sl_dlss_shutdown` runs, so no callback can retain an unloaded
 interposer module.
