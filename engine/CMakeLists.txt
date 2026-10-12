@@ -1825,6 +1825,8 @@ endif()
         target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
     endif()
     add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
+    set_tests_properties(test_rhi_capabilities PROPERTIES
+        LABELS "headless;platform_contract")
 
     add_executable(test_rhi_native tests/test_rhi_native.c
         src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
@@ -1874,6 +1876,8 @@ endif()
         target_link_libraries(test_rhi_native PRIVATE m)
     endif()
     add_test(NAME test_rhi_native COMMAND test_rhi_native)
+    set_tests_properties(test_rhi_native PROPERTIES
+        LABELS "headless;platform_contract")
 
     add_executable(test_myui_layout tests/test_myui_layout.c)
     target_include_directories(test_myui_layout PRIVATE
@@ -2284,12 +2288,16 @@ endif()
     target_include_directories(test_shader_io PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_shader_io PRIVATE m)
     add_test(NAME test_shader_io COMMAND test_shader_io)
+    set_tests_properties(test_shader_io PROPERTIES
+        LABELS "headless;platform_contract")
 
     add_executable(test_render_features tests/test_render_features.c
         src/renderer/render_features.c)
     target_include_directories(test_render_features PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_render_features PRIVATE m)
     add_test(NAME test_render_features COMMAND test_render_features)
+    set_tests_properties(test_render_features PROPERTIES
+        LABELS "headless;platform_contract")
 
     if(WIN32)
         add_executable(test_sl_dlss tests/test_sl_dlss.c src/renderer/sl_dlss.c)
@@ -2328,6 +2336,8 @@ endif()
             glad ${TEST_RT_TRACE_X11_LIBS} GL dl pthread)
     endif()
     add_test(NAME test_rt_trace COMMAND test_rt_trace)
+    set_tests_properties(test_rt_trace PROPERTIES
+        LABELS "headless;platform_contract")
 
     # R387: mutation fuzzer for the BSCN/JSON loaders. Not registered as a test
     # (it is long-running and randomized); build it and run by hand under
