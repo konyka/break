@@ -485,8 +485,10 @@ static bool emit_resources_chunk(const Scene *s, bool include, ByteBuf *out) {
          * textures keep the empty path (= "unknown"). */
         for (u32 k = 0; k < s->texture_source_count; k++) {
             if (s->texture_sources[k].handle_index == tex_handles[i]) {
-                strncpy(r.path, s->texture_sources[k].uri, sizeof(r.path) - 1);
-                r.path[sizeof(r.path) - 1] = '\0';
+                size_t path_len = strlen(s->texture_sources[k].uri);
+                if (path_len >= sizeof(r.path)) path_len = sizeof(r.path) - 1u;
+                memcpy(r.path, s->texture_sources[k].uri, path_len);
+                r.path[path_len] = '\0';
                 break;
             }
         }

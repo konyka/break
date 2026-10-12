@@ -2012,7 +2012,8 @@ TEST(resources_texture_source_path_roundtrip)
     src.texture_sources = (SceneTextureSource *)calloc(1, sizeof(SceneTextureSource));
     ASSERT_NOT_NULL(src.texture_sources);
     src.texture_sources[0].handle_index = 11u;
-    strcpy(src.texture_sources[0].uri, "textures/wood.png");
+    memset(src.texture_sources[0].uri, 'x', sizeof(src.texture_sources[0].uri) - 1u);
+    src.texture_sources[0].uri[sizeof(src.texture_sources[0].uri) - 1u] = '\0';
 
     SerializeOptions opts = { .include_resources = true, .pretty_json = false };
     ASSERT_TRUE(scene_save_binary(w, &src, path, &opts));
@@ -2028,7 +2029,10 @@ TEST(resources_texture_source_path_roundtrip)
         SceneResource *r = &dst.resources[i];
         if (r->type == BSCN_RES_TEXTURE && r->ref_index == 11u) {
             found_tex11 = true;
-            ASSERT_TRUE(strcmp(r->path, "textures/wood.png") == 0);
+            ASSERT_EQ(strlen(r->path), sizeof(r->path) - 1u);
+            ASSERT_TRUE(r->path[sizeof(r->path) - 1u] == '\0');
+            for (u32 k = 0; k < sizeof(r->path) - 1u; k++)
+                ASSERT_EQ(r->path[k], 'x');
         } else if (r->type == BSCN_RES_TEXTURE && r->ref_index == 33u) {
             found_tex33 = true;
             ASSERT_TRUE(r->path[0] == '\0'); /* untracked -> unknown */
