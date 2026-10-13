@@ -37,8 +37,26 @@ TEST(test_headless_command_buffer_does_not_expose_fake_vulkan_handle)
     rhi_test_device_destroy(device);
 }
 
+TEST(test_headless_native_proxy_outputs_are_zeroed)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIDeviceInfo device_info;
+    RHITextureNativeInfo texture_info;
+
+    ASSERT_NEQ(device, NULL);
+    memset(&device_info, 0xA5, sizeof(device_info));
+    memset(&texture_info, 0xA5, sizeof(texture_info));
+    ASSERT_TRUE(rhi_device_get_info(device, &device_info));
+    ASSERT_EQ(device_info.feature_bits, 0u);
+    ASSERT_FALSE(rhi_texture_get_native_info(
+        device, (RHITexture){1u, 1u}, &texture_info));
+    ASSERT_EQ(texture_info.type, RHI_NATIVE_HANDLE_NONE);
+    rhi_test_device_destroy(device);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(null_native_device_is_rejected);
     RUN_TEST(test_device_does_not_expose_fake_vulkan_handles);
     RUN_TEST(test_headless_command_buffer_does_not_expose_fake_vulkan_handle);
+    RUN_TEST(test_headless_native_proxy_outputs_are_zeroed);
 TEST_MAIN_END()
