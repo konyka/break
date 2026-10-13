@@ -251,6 +251,7 @@ add_library(engine STATIC
     src/platform/filewatch_backend.c
     src/math/math.c
     src/rhi/rhi.c
+    src/rhi/rhi_ownership.c
     src/rhi/rhi_present_history.c
     src/renderer/camera.c
     src/renderer/cull.c
@@ -1796,7 +1797,8 @@ endif()
     endif()
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
-        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+        src/rhi/rhi.c src/rhi/rhi_ownership.c
+        src/rhi/rhi_present_history.c src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -1854,7 +1856,8 @@ endif()
         LABELS "headless;platform_contract")
 
     add_executable(test_rhi_native tests/test_rhi_native.c
-        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+        src/rhi/rhi.c src/rhi/rhi_ownership.c
+        src/rhi/rhi_present_history.c src/core/log.c)
     target_include_directories(test_rhi_native PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rhi_native PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -2023,6 +2026,7 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DRHI_INTERNAL_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_backend_internal.h
             -DRHI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.c
+            -DRHI_OWNERSHIP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_ownership.c
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)

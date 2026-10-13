@@ -10,11 +10,17 @@ endif()
 if(NOT DEFINED RHI_VK_SOURCE)
     message(FATAL_ERROR "RHI_VK_SOURCE is required")
 endif()
+if(NOT DEFINED RHI_OWNERSHIP_SOURCE)
+    message(FATAL_ERROR "RHI_OWNERSHIP_SOURCE is required")
+endif()
 
 file(READ "${RHI_INTERNAL_HEADER}" internal_text)
 file(READ "${RHI_SOURCE}" rhi_text)
 file(READ "${RHI_GL_SOURCE}" gl_text)
 file(READ "${RHI_VK_SOURCE}" vk_text)
+if(NOT EXISTS "${RHI_OWNERSHIP_SOURCE}")
+    message(FATAL_ERROR "RHI ownership source is missing: ${RHI_OWNERSHIP_SOURCE}")
+endif()
 
 foreach(required_text
         "RHIResourceType"

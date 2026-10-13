@@ -48,6 +48,8 @@ struct RHIDevice {
 };
 
 extern _Thread_local RHIDevice *g_current_device;
+extern _Thread_local RHIDevice *g_rhi_frame_device;
+extern _Thread_local bool g_rhi_frame_owner_preclaimed;
 
 void rhi_init_freelist(RHIDevice *dev);
 u32 rhi_alloc_slot(RHIDevice *dev);
@@ -56,6 +58,7 @@ void *rhi_get_resource_typed(RHIDevice *dev, RHIHandle handle, u32 type);
 void rhi_free_slot(RHIDevice *dev, RHIHandle handle);
 bool rhi_drawable_dimensions_valid(u32 width, u32 height);
 bool rhi_frame_owner_begin_backend(RHIDevice *dev);
+bool rhi_frame_owner_try_acquire(RHIDevice *dev);
 bool rhi_frame_owner_begin_destroy(RHIDevice *dev);
 bool rhi_frame_owner_is_current(const RHIDevice *dev);
 void rhi_frame_owner_release(RHIDevice *dev);
