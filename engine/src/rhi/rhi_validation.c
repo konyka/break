@@ -125,3 +125,44 @@ bool rhi_tlas_instance_encode(void *dst, usize dst_size,
     memcpy((u8 *)dst + 56, &blas_device_address, sizeof(blas_device_address));
     return true;
 }
+
+bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
+                                     const RHIOffscreenFBODesc *desc) {
+    if (!caps || !desc || desc->width == 0u || desc->height == 0u ||
+        desc->width > RHI_MAX_DRAWABLE_DIMENSION ||
+        desc->height > RHI_MAX_DRAWABLE_DIMENSION) return false;
+    if (desc->color_format < RHI_FORMAT_R8G8B8A8_UNORM ||
+        desc->color_format > RHI_FORMAT_R32_FLOAT ||
+        desc->color_format == RHI_FORMAT_UNDEFINED ||
+        desc->color_format == RHI_FORMAT_D32_FLOAT) return false;
+
+    u32 samples = desc->sample_count == 0u ? 1u : desc->sample_count;
+    u32 sample_bit = rhi_sample_count_bit(samples);
+    if (sample_bit == 0u || (caps->color_sample_counts & sample_bit) == 0u ||
+        (caps->depth_sample_counts & sample_bit) == 0u)
+        return false;
+    if (samples > 1u && (!caps->color_resolve_supported ||
+                         !caps->depth_resolve_supported))
+        return false;
+    return true;
+}
+
+bool rhi_mrt_desc_validate(u32 width, u32 height,
+                           const RHIFormat *formats, u32 attachment_count) {
+    if (width == 0u || height == 0u ||
+        width > RHI_MAX_DRAWABLE_DIMENSION ||
+        height > RHI_MAX_DRAWABLE_DIMENSION ||
+        formats == NULL || attachment_count == 0u ||
+        attachment_count > RHI_MRT_MAX_ATTACHMENTS) {
+        return false;
+    }
+    for (u32 i = 0u; i < attachment_count; ++i) {
+        if (formats[i] < RHI_FORMAT_R8G8B8A8_UNORM ||
+            formats[i] > RHI_FORMAT_R32_FLOAT ||
+            formats[i] == RHI_FORMAT_UNDEFINED ||
+            formats[i] == RHI_FORMAT_D32_FLOAT) {
+            return false;
+        }
+    }
+    return true;
+}
