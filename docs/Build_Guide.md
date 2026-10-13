@@ -499,6 +499,11 @@ API 只是迁移计划元数据，不能替代 Metal/D3D12 的实际编译、nat
 `ENGINE_RHI_BACKEND_EFFECTIVE` 和 `ENGINE_RHI_BACKEND_*` 编译宏只描述当前已经实现的
 OpenGL/Vulkan 构建选择；它们不会因为平台 target metadata 自动切换到未实现的 Metal/D3D12。
 
+Windows D3D12 contract-first gate（2026-10-13）已确认 Windows SDK 10.0.26100
+头文件/库和 Vulkan SDK 内的 `dxc.exe` 可见，但当前环境没有独立的 `cl`/PIX PATH 证据，
+也没有完成 D3D12 native-surface/GPU-runtime/Debug Layer 验证。因此 D3D12 仍不可选择，
+状态为 `target metadata + dependency/runtime gate blocked`，不是已实现 backend。
+
 Phase 2 的显式选择器为：
 
 ```bash

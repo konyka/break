@@ -251,6 +251,10 @@ HarmonyOS 在 native surface 存在前保持 unavailable/unsupported。证据状
 递进，状态不会因编译成功自动升级。`target_graphics_api` 只是迁移目标元数据，
 不表示对应 Metal/D3D12 RHI 已实现；实际能力仍由真实 backend build/runtime gate 决定。
 
+Windows D3D12 当前处于 contract-first 阶段：SDK headers/libs 与 `dxc.exe` 可见，但
+尚无仓库内 D3D12 RHI、native surface、Debug Layer、PIX 或 GPU-runtime 证据；OpenGL
+和 Vulkan 继续保持现有实现与回滚基线。
+
 Profiler 的 `profiler_export_provenance_sidecar()` 写入独立 JSON sidecar，记录
 platform、window system、backend、native baseline、GPU、build、validation、
 resolution 与 frame count；`profiler_export_chrome_trace()` 和既有 trace 格式不变。
