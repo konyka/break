@@ -271,6 +271,11 @@ backend files are still unity-included in this phase; moving them into separate
 translation units is intentionally deferred until the remaining private helper
 surface has its own tests.
 
+The `test_rhi_backend_internal_contract` CMake test now requires `rhi.c`,
+`rhi_gl.c`, and `rhi_vk.c` to include the private contract explicitly. This
+prevents the current unity build from hiding transitive declarations before the
+implementations move into separate translation units.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
