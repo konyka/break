@@ -290,6 +290,11 @@ resource-slot/generation ownership, backend dispatch proxies, acceleration
 structure forwarding, frame-damage state, and test-only glue remain coupled
 contracts. They are not moved speculatively into a backend file.
 
+Public native proxy queries are now explicitly fail-closed in headless tests:
+outputs are zeroed before backend dispatch, invalid devices/resources return
+false, and no fake native handle is exposed. The Vulkan-specific opaque AS
+handle query remains intentionally separate from future Metal/D3D12 contracts.
+
 Texture, buffer, and cubemap descriptor validation now shares the same pure
 validation translation unit. Backend implementations continue to receive the
 same public validation results without inheriting API-specific state.

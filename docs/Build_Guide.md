@@ -522,6 +522,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 测试目标显式链接并保持相同行为。
 资源槽/生成器、backend dispatch、加速结构代理和 frame-damage state 暂不拆出；这些
 区域仍依赖公共设备布局或后端生命周期，必须先有独立 contract test 才能迁移。
+公共 native proxy 的 headless contract 会先清零输出并在无效设备/资源时 fail-closed；
+Vulkan 专用的 opaque AS handle 不作为 Metal/D3D12 的通用接口。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
