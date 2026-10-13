@@ -5,10 +5,6 @@
 #include <stdatomic.h>
 #include <string.h>
 
-/* Generation values are process-wide, not device-local. This prevents an
- * index/generation pair from accidentally resolving in a second device. */
-static atomic_uint g_rhi_generation_seed = 1u;
-
 _Thread_local RHIDevice *g_current_device = NULL;
 static void rhi_frame_damage_clear(RHIDevice *dev) {
     dev->frame_damage_count = 0u;
@@ -29,46 +25,6 @@ bool rhi_drawable_dimensions_valid(u32 width, u32 height) {
     return width != 0u && height != 0u &&
            width <= RHI_MAX_DRAWABLE_DIMENSION &&
            height <= RHI_MAX_DRAWABLE_DIMENSION;
-}
-
-/* Build the initial free-list after calloc.  Both GL and VK backends
- * call this once right after allocating the device. */
-void rhi_init_freelist(RHIDevice *dev) {
-    dev->free_head  = 0;
-    dev->free_count = RHI_MAX_RESOURCES;
-    for (u32 i = 0; i < RHI_MAX_RESOURCES - 1; i++)
-        dev->slots[i].ptr = (void *)(uintptr_t)(i + 1);
-    dev->slots[RHI_MAX_RESOURCES - 1].ptr = (void *)(uintptr_t)UINT32_MAX;
-}
-
-u32 rhi_alloc_slot(RHIDevice *dev) {
-    if (dev->free_count == 0) {
-        LOG_FATAL("RHI resource pool exhausted");
-        /* R157: Abort instead of returning 0 — returning 0 causes callers to
-         * overwrite slot 0's existing resource, corrupting the free list and
-         * causing use-after-free when the old resource is destroyed. */
-        abort();
-    }
-    u32 idx = dev->free_head;
-    dev->free_head = (u32)(uintptr_t)dev->slots[idx].ptr;
-    dev->free_count--;
-    dev->slots[idx].alive = true;
-    dev->slots[idx].generation =
-        atomic_fetch_add_explicit(&g_rhi_generation_seed, 1u,
-                                  memory_order_relaxed);
-    if (dev->slots[idx].generation == 0u) {
-        dev->slots[idx].generation =
-            atomic_fetch_add_explicit(&g_rhi_generation_seed, 1u,
-                                      memory_order_relaxed);
-        if (dev->slots[idx].generation == 0u)
-            dev->slots[idx].generation = 1u;
-    }
-    dev->next_slot = idx;
-    return idx;
-}
-
-RHIHandle rhi_make_handle(u32 index, u32 gen) {
-    return (RHIHandle){index, gen};
 }
 
 bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
@@ -236,24 +192,6 @@ void *rhi_get_resource(RHIDevice *dev, RHIHandle h) {
     RHIResourceSlot *s = &dev->slots[h.index];
     if (s->generation != h.generation || !s->alive) return NULL;
     return s->ptr;
-}
-
-void *rhi_get_resource_typed(RHIDevice *dev, RHIHandle h, u32 type) {
-    if (dev == NULL || h.generation == 0u || h.index >= RHI_MAX_RESOURCES) return NULL;
-    RHIResourceSlot *s = &dev->slots[h.index];
-    if (s->generation != h.generation || !s->alive || (u32)s->type != type) return NULL;
-    return s->ptr;
-}
-
-void rhi_free_slot(RHIDevice *dev, RHIHandle h) {
-    if (dev == NULL || h.generation == 0u || h.index >= RHI_MAX_RESOURCES) return;
-    RHIResourceSlot *s = &dev->slots[h.index];
-    if (s->generation == h.generation && s->alive) {
-        s->alive = false;
-        s->ptr = (void *)(uintptr_t)dev->free_head;
-        dev->free_head = h.index;
-        dev->free_count++;
-    }
 }
 
 #ifdef ENGINE_RHI_TEST
