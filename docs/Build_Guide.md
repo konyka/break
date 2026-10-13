@@ -494,6 +494,17 @@ RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_statu
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经可用。
 
+Phase 2 的显式选择器为：
+
+```bash
+cmake -S engine -B build-rhi-gl -DENGINE_RHI_BACKEND=opengl
+cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
+```
+
+`ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 只控制已有 OpenGL/Vulkan
+实现的构建选择，不声称 Metal 或 D3D12 已实现；`test_rhi_backend_selection` 会锁定
+允许值和后续拆分前的行为边界。
+
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
 | Linux | X11 | OpenGL | GCC | 通过 |

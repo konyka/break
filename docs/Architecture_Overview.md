@@ -258,6 +258,12 @@ RHI 现在提供 backend-neutral 的 `RHI_DEVICE_STATUS_UNKNOWN`、`READY`、`LO
 状态查询。该合同只统一设备健康状态，不表示 Metal 或 D3D12 已实现；原生后端
 仍必须分别通过其 native-surface、GPU-runtime 和 validation gate 后才能标记可用。
 
+Phase 2 adds the explicit CMake selector `ENGINE_RHI_BACKEND=auto|opengl|vulkan`.
+`auto` preserves the current policy, while `opengl` and `vulkan` make the existing
+backend choice auditable in configure receipts. This is an ownership boundary only;
+the current implementations remain unity-included until a later no-behavior-change
+source split is proven.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
