@@ -31,6 +31,9 @@ option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
+set(ENGINE_RHI_BACKEND "auto" CACHE STRING
+    "RHI backend selection: auto | opengl | vulkan")
+set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan)
 set(STREAMLINE_ROOT "" CACHE PATH
     "Optional Streamline SDK root; enables the Windows C++ DLSS adapter")
 
@@ -124,6 +127,17 @@ option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
+if(NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
+   NOT ENGINE_RHI_BACKEND STREQUAL "opengl" AND
+   NOT ENGINE_RHI_BACKEND STREQUAL "vulkan")
+    message(FATAL_ERROR
+        "ENGINE_RHI_BACKEND must be auto, opengl, or vulkan")
+endif()
+if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
+    set(ENGINE_VULKAN ON CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
+elseif(ENGINE_RHI_BACKEND STREQUAL "opengl")
+    set(ENGINE_VULKAN OFF CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
+endif()
 if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
     find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
     if(NOT ENGINE_ANDROID_NATIVE_WINDOW OR NOT ANDROID_NATIVE_WINDOW_INCLUDE_DIR)
@@ -1989,6 +2003,11 @@ endif()
             -DMYPAL_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/mypal/CMakeLists.txt
             -DMYR_VULKAN_C=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/my_vgcanvas_vulkan.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
+    add_test(NAME test_rhi_backend_selection
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     add_test(NAME test_myui_subproject_config
         COMMAND ${CMAKE_COMMAND}
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
