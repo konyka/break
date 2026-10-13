@@ -290,6 +290,11 @@ resource-slot/generation ownership, backend dispatch proxies, acceleration
 structure forwarding, frame-damage state, and test-only glue remain coupled
 contracts. They are not moved speculatively into a backend file.
 
+Acceleration-structure descriptor and BLAS input validation is pure and now
+lives in `rhi_validation.c`. Build-size queries, device addresses, build
+submission, creation/destruction, and opaque Vulkan handle forwarding remain
+backend dispatch contracts; they are not presented as Metal/D3D12 APIs.
+
 Public native proxy queries are now explicitly fail-closed in headless tests:
 outputs are zeroed before backend dispatch, invalid devices/resources return
 false, and no fake native handle is exposed. The Vulkan-specific opaque AS
