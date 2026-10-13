@@ -33,7 +33,7 @@ static bool rhi_frame_owner_try_acquire(RHIDevice *dev) {
     return true;
 }
 
-static bool rhi_frame_owner_begin_destroy(RHIDevice *dev) {
+bool rhi_frame_owner_begin_destroy(RHIDevice *dev) {
     uintptr_t expected = 0u;
     if (dev == NULL || g_rhi_frame_device == dev) return false;
     return atomic_compare_exchange_strong_explicit(
@@ -41,7 +41,7 @@ static bool rhi_frame_owner_begin_destroy(RHIDevice *dev) {
         memory_order_acquire, memory_order_relaxed);
 }
 
-static bool rhi_device_control_try_acquire(RHIDevice *dev) {
+bool rhi_device_control_try_acquire(RHIDevice *dev) {
     uintptr_t expected = 0u;
     if (dev == NULL) return false;
     return atomic_compare_exchange_strong_explicit(
@@ -49,7 +49,7 @@ static bool rhi_device_control_try_acquire(RHIDevice *dev) {
         memory_order_acquire, memory_order_relaxed);
 }
 
-static void rhi_device_control_release(RHIDevice *dev) {
+void rhi_device_control_release(RHIDevice *dev) {
     uintptr_t expected = RHI_FRAME_OWNER_CONTROLLING;
     if (dev == NULL) return;
     (void)atomic_compare_exchange_strong_explicit(
@@ -57,13 +57,13 @@ static void rhi_device_control_release(RHIDevice *dev) {
         memory_order_relaxed);
 }
 
-static bool rhi_frame_owner_is_current(const RHIDevice *dev) {
+bool rhi_frame_owner_is_current(const RHIDevice *dev) {
     return dev != NULL && g_rhi_frame_device == dev &&
            atomic_load_explicit(&dev->frame_owner, memory_order_acquire) ==
                rhi_thread_owner_token();
 }
 
-static void rhi_frame_owner_release(RHIDevice *dev) {
+void rhi_frame_owner_release(RHIDevice *dev) {
     uintptr_t expected;
     if (dev == NULL) return;
     expected = rhi_thread_owner_token();
@@ -82,7 +82,7 @@ static void rhi_frame_damage_clear(RHIDevice *dev) {
     dev->frame_partial_active = false;
 }
 
-static bool rhi_frame_owner_begin_backend(RHIDevice *dev) {
+bool rhi_frame_owner_begin_backend(RHIDevice *dev) {
     if (g_rhi_frame_owner_preclaimed) {
         g_rhi_frame_owner_preclaimed = false;
         return rhi_frame_owner_is_current(dev);

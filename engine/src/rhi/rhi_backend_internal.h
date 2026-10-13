@@ -55,5 +55,11 @@ RHIHandle rhi_make_handle(u32 index, u32 generation);
 void *rhi_get_resource_typed(RHIDevice *dev, RHIHandle handle, u32 type);
 void rhi_free_slot(RHIDevice *dev, RHIHandle handle);
 bool rhi_drawable_dimensions_valid(u32 width, u32 height);
+bool rhi_frame_owner_begin_backend(RHIDevice *dev);
+bool rhi_frame_owner_begin_destroy(RHIDevice *dev);
+bool rhi_frame_owner_is_current(const RHIDevice *dev);
+void rhi_frame_owner_release(RHIDevice *dev);
+bool rhi_device_control_try_acquire(RHIDevice *dev);
+void rhi_device_control_release(RHIDevice *dev);
 
 #endif

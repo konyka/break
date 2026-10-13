@@ -23,7 +23,13 @@ foreach(required_text
         "g_current_device"
         "rhi_alloc_slot"
         "rhi_get_resource_typed"
-        "rhi_free_slot")
+        "rhi_free_slot"
+        "rhi_frame_owner_begin_backend"
+        "rhi_frame_owner_begin_destroy"
+        "rhi_frame_owner_is_current"
+        "rhi_frame_owner_release"
+        "rhi_device_control_try_acquire"
+        "rhi_device_control_release")
     string(FIND "${internal_text}" "${required_text}" offset)
     if(offset EQUAL -1)
         message(FATAL_ERROR "backend internal contract missing: ${required_text}")
