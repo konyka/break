@@ -434,6 +434,30 @@ TEST(profiler_export_chrome_trace)
     ASSERT_NOT_NULL(strstr(buf, "gpu_test"));
 }
 
+TEST(profiler_export_provenance_sidecar)
+{
+    ProfilerProvenance provenance = {
+        "Linux", "X11", "Vulkan", "OpenGL", "GPU \"A\"", "Debug",
+        "validation\nready", "1920x1080", 42
+    };
+    char path[64]; test_tmp(path, sizeof path, "profiler_test_provenance.json");
+    ASSERT_TRUE(profiler_export_provenance_sidecar(path, &provenance));
+
+    FILE *fp = fopen(path, "rb");
+    ASSERT_NOT_NULL(fp);
+    char buf[1024] = {0};
+    size_t n = fread(buf, 1, sizeof(buf) - 1u, fp);
+    fclose(fp);
+    remove(path);
+    ASSERT_TRUE(n > 0u);
+    ASSERT_NOT_NULL(strstr(buf, "\"platform\":\"Linux\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"native_baseline\":\"OpenGL\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"gpu\":\"GPU \\\"A\\\"\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"validation\":\"validation\\nready\""));
+    ASSERT_NOT_NULL(strstr(buf, "\"frame_count\":42"));
+    ASSERT_TRUE(strstr(buf, "traceEvents") == NULL);
+}
+
 TEST(profiler_export_chrome_meta)
 {
     profiler_reset();
@@ -653,6 +677,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_begin_without_end);
     RUN_TEST(profiler_push_null_name);
     RUN_TEST(profiler_export_chrome_trace);
+    RUN_TEST(profiler_export_provenance_sidecar);
     RUN_TEST(profiler_export_chrome_meta);
     RUN_TEST(profiler_export_reports_close_failure);
     /* R434: per-thread sampling */

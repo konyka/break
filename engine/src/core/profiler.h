@@ -89,5 +89,20 @@ bool profiler_export_chrome_trace(const char *path,
                                   const ProfilerMetaInstant *meta,
                                   u32 meta_count);
 
+typedef struct {
+    const char *platform;
+    const char *window_system;
+    const char *backend;
+    const char *native_baseline;
+    const char *gpu;
+    const char *build;
+    const char *validation;
+    const char *resolution;
+    u32         frame_count;
+} ProfilerProvenance;
+
+bool profiler_export_provenance_sidecar(const char *path,
+                                        const ProfilerProvenance *provenance);
+
 /* Enable/disable */
 void profiler_set_enabled(bool enabled);

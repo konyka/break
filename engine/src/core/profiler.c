@@ -2,7 +2,6 @@
 #include <platform/time.h>
 #include <stdatomic.h>
 #include <stdio.h>
-#include <string.h>
 
 Profiler g_profiler = {0};
 
@@ -286,6 +285,55 @@ bool profiler_export_chrome_trace(const char *path,
     }
 
     fprintf(f, "\n]}\n");
+    bool write_ok = !ferror(f);
+    if (fclose(f) != 0) write_ok = false;
+    return write_ok;
+}
+
+static void profiler_json_escape_value(const char *value, char *out, usize out_sz) {
+    usize j = 0;
+    if (!out || out_sz == 0) return;
+    if (!value) value = "";
+    for (usize i = 0; value[i] != '\0' && j + 2 < out_sz; i++) {
+        unsigned char c = (unsigned char)value[i];
+        if (c == '"' || c == '\\') {
+            out[j++] = '\\';
+            out[j++] = (char)c;
+        } else if (c == '\n' || c == '\r' || c == '\t') {
+            out[j++] = '\\';
+            out[j++] = (c == '\n') ? 'n' : (c == '\r') ? 'r' : 't';
+        } else if (c < 0x20u) {
+            if (j + 6 >= out_sz) break;
+            snprintf(out + j, out_sz - j, "\\u%04x", c);
+            j += 6;
+        } else {
+            out[j++] = (char)c;
+        }
+    }
+    out[j] = '\0';
+}
+
+bool profiler_export_provenance_sidecar(const char *path,
+                                        const ProfilerProvenance *provenance) {
+    if (!path || !provenance) return false;
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    const char *values[] = {
+        provenance->platform, provenance->window_system, provenance->backend,
+        provenance->native_baseline, provenance->gpu, provenance->build,
+        provenance->validation, provenance->resolution
+    };
+    char escaped[8][256];
+    for (usize i = 0; i < 8; i++)
+        profiler_json_escape_value(values[i], escaped[i], sizeof escaped[i]);
+    fprintf(f,
+        "{\"platform\":\"%s\",\"window_system\":\"%s\","
+        "\"backend\":\"%s\",\"native_baseline\":\"%s\","
+        "\"gpu\":\"%s\",\"build\":\"%s\","
+        "\"validation\":\"%s\",\"resolution\":\"%s\","
+        "\"frame_count\":%u}\n",
+        escaped[0], escaped[1], escaped[2], escaped[3], escaped[4],
+        escaped[5], escaped[6], escaped[7], provenance->frame_count);
     bool write_ok = !ferror(f);
     if (fclose(f) != 0) write_ok = false;
     return write_ok;
