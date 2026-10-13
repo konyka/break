@@ -21,12 +21,6 @@ static bool rhi_cmd_matches_device(RHIDevice *dev, RHICmdBuffer *cmd,
 }
 #endif
 
-bool rhi_drawable_dimensions_valid(u32 width, u32 height) {
-    return width != 0u && height != 0u &&
-           width <= RHI_MAX_DRAWABLE_DIMENSION &&
-           height <= RHI_MAX_DRAWABLE_DIMENSION;
-}
-
 bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     if (dev == NULL || out == NULL) return false;
     *out = dev->capabilities;

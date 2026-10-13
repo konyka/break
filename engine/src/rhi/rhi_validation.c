@@ -2,6 +2,12 @@
 
 #include <string.h>
 
+bool rhi_drawable_dimensions_valid(u32 width, u32 height) {
+    return width != 0u && height != 0u &&
+           width <= RHI_MAX_DRAWABLE_DIMENSION &&
+           height <= RHI_MAX_DRAWABLE_DIMENSION;
+}
+
 bool rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
                                  u32 width, u32 height) {
     u32 i;
