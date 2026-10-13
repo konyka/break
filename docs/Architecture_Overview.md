@@ -243,12 +243,13 @@ graph TB
 ## 9. 平台支持
 
 平台兼容描述符在 `engine/src/platform/platform_compat.h` 中分别记录 native
-graphics baseline、Vulkan support level 与 support evidence。Linux/Windows 保留
+graphics baseline、target graphics API、Vulkan support level 与 support evidence。Linux/Windows 保留
 OpenGL 作为 native performance baseline；macOS 保留 Metal 作为 baseline，Vulkan
 路径明确是 MoltenVK。iOS/Android 只有宿主注入的 Vulkan compile/integration 边界，
 HarmonyOS 在 native surface 存在前保持 unavailable/unsupported。证据状态按
 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`
-递进，状态不会因编译成功自动升级。
+递进，状态不会因编译成功自动升级。`target_graphics_api` 只是迁移目标元数据，
+不表示对应 Metal/D3D12 RHI 已实现；实际能力仍由真实 backend build/runtime gate 决定。
 
 Profiler 的 `profiler_export_provenance_sidecar()` 写入独立 JSON sidecar，记录
 platform、window system、backend、native baseline、GPU、build、validation、

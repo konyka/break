@@ -493,6 +493,9 @@ MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经可用。
+平台兼容描述符还区分当前 native graphics baseline 与未来 `target_graphics_api`；目标
+API 只是迁移计划元数据，不能替代 Metal/D3D12 的实际编译、native-surface 或 GPU-runtime
+证据。
 
 Phase 2 的显式选择器为：
 
