@@ -510,6 +510,9 @@ Windows SDK 将 DXGI headers 放在 `Include/<version>/shared`，而 D3D12 heade
 仓库新增 `test_d3d12_dependency_gate`：Windows 上会分类 SDK headers/libs 与 DXC 是否齐全，
 非 Windows 或依赖不完整返回 `UNAVAILABLE`（CTest skip），不会把依赖可见误报为 native
 device/surface/GPU-runtime 支持。
+`test_d3d12_shader_compile_gate` 进一步用最小 `vs_6_0` HLSL 通过 DXC 生成 DXIL；
+这是 compile-only shader toolchain 证据，不接入 RHI、不创建 D3D12 device/surface，也不代表
+Windows D3D12 GPU-runtime 已实现。
 
 Phase 2 的显式选择器为：
 

@@ -255,6 +255,10 @@ Windows D3D12 当前处于 contract-first 阶段：SDK headers/libs 与 `dxc.exe
 尚无仓库内 D3D12 RHI、native surface、Debug Layer、PIX 或 GPU-runtime 证据；OpenGL
 和 Vulkan 继续保持现有实现与回滚基线。
 
+The Windows D3D12 shader gate compiles a minimal `vs_6_0` HLSL input to DXIL in
+the build directory only. It proves the compiler toolchain, not a D3D12 device,
+surface, command queue, validation layer, or GPU runtime.
+
 Profiler 的 `profiler_export_provenance_sidecar()` 写入独立 JSON sidecar，记录
 platform、window system、backend、native baseline、GPU、build、validation、
 resolution 与 frame count；`profiler_export_chrome_trace()` 和既有 trace 格式不变。

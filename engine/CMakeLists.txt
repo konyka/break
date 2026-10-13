@@ -2038,6 +2038,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_dependency_gate.cmake)
     set_tests_properties(test_d3d12_dependency_gate PROPERTIES
         SKIP_RETURN_CODE 77 LABELS "platform_contract")
+    add_test(NAME test_d3d12_shader_compile_gate
+        COMMAND ${CMAKE_COMMAND}
+            -DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_shader_compile_gate.cmake)
+    set_tests_properties(test_d3d12_shader_compile_gate PROPERTIES
+        SKIP_RETURN_CODE 77 LABELS "platform_contract")
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_INTERNAL_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_backend_internal.h
