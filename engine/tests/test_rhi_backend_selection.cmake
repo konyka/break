@@ -24,8 +24,3 @@ foreach(forbidden_backend "metal" "d3d12")
         message(FATAL_ERROR "unimplemented backend selector admitted: ${forbidden_backend}")
     endif()
 endforeach()
-
-if(cmake_text MATCHES "ENGINE_RHI_BACKEND.*metal" OR
-   cmake_text MATCHES "ENGINE_RHI_BACKEND.*d3d12")
-    message(FATAL_ERROR "RHI selector must not claim unimplemented native backends")
-endif()
