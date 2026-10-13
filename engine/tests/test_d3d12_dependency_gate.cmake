@@ -8,7 +8,7 @@ find_path(D3D12_INCLUDE_DIR d3d12.h
     PATH_SUFFIXES um)
 find_path(DXGI_INCLUDE_DIR NAMES dxgi.h dxgi1_4.h dxgi1_6.h
     PATHS "$ENV{WindowsSdkDir}/Include"
-    PATH_SUFFIXES um)
+    PATH_SUFFIXES shared um)
 find_library(D3D12_LIBRARY NAMES d3d12)
 find_library(DXGI_LIBRARY NAMES dxgi)
 find_program(DXC_EXECUTABLE NAMES dxc dxc.exe)
