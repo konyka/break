@@ -503,7 +503,9 @@ cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
 
 `ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 只控制已有 OpenGL/Vulkan
 实现的构建选择，不声称 Metal 或 D3D12 已实现；`test_rhi_backend_selection` 会锁定
-允许值和后续拆分前的行为边界。
+允许值和后续拆分前的行为边界。配置阶段还会输出 effective backend，并定义
+`ENGINE_RHI_BACKEND_OPENGL=1` 或 `ENGINE_RHI_BACKEND_VULKAN=1` 编译宏，供后续
+backend target 拆分和发布 receipt 使用。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
