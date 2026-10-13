@@ -285,6 +285,10 @@ The pure TLAS instance encoder now lives in `rhi_validation.c`; this is only a
 source split with headless link coverage, not a new backend or ray-tracing
 capability.
 
+Texture, buffer, and cubemap descriptor validation now shares the same pure
+validation translation unit. Backend implementations continue to receive the
+same public validation results without inheriting API-specific state.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |

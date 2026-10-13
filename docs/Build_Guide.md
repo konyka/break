@@ -518,6 +518,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 显式链接；这保证测试构建不会依赖 unity inclusion 的隐式符号。
 当前纯 CPU TLAS instance encoder 已迁移到 `rhi_validation.c`，engine、`test_rt_trace`
 和独立 headless contract test 均显式链接；这只是 source split，不新增 backend 或 RT 能力。
+纹理、buffer、cubemap descriptor validator 也已迁移到该纯验证单元，OpenGL/Vulkan
+测试目标显式链接并保持相同行为。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
