@@ -276,6 +276,11 @@ The `test_rhi_backend_internal_contract` CMake test now requires `rhi.c`,
 prevents the current unity build from hiding transitive declarations before the
 implementations move into separate translation units.
 
+Frame-owner and device-control helpers are now part of that private contract as
+well. Both current backends use the same ownership semantics, while the
+implementation remains in `rhi.c` until a separate translation-unit build gate
+is available.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
