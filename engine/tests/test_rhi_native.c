@@ -54,9 +54,22 @@ TEST(test_headless_native_proxy_outputs_are_zeroed)
     rhi_test_device_destroy(device);
 }
 
+TEST(test_headless_vulkan_acceleration_handle_fails_closed)
+{
+    RHIDevice *device = rhi_test_device_create();
+    void *handle = (void *)(uintptr_t)1u;
+
+    ASSERT_NEQ(device, NULL);
+    ASSERT_FALSE(rhi_acceleration_structure_get_vk_handle(
+        device, (RHIAccelerationStructure){1u, 1u}, &handle));
+    ASSERT_EQ(handle, NULL);
+    rhi_test_device_destroy(device);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(null_native_device_is_rejected);
     RUN_TEST(test_device_does_not_expose_fake_vulkan_handles);
     RUN_TEST(test_headless_command_buffer_does_not_expose_fake_vulkan_handle);
     RUN_TEST(test_headless_native_proxy_outputs_are_zeroed);
+    RUN_TEST(test_headless_vulkan_acceleration_handle_fails_closed);
 TEST_MAIN_END()

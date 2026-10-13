@@ -126,6 +126,24 @@ bool rhi_tlas_instance_encode(void *dst, usize dst_size,
     return true;
 }
 
+bool rhi_acceleration_structure_desc_validate(
+    const RHIAccelerationStructureDesc *desc) {
+    return desc != NULL &&
+           (desc->type == RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL ||
+            desc->type == RHI_ACCELERATION_STRUCTURE_TOP_LEVEL) &&
+           desc->storage_size != 0u &&
+           desc->storage_size <= (usize)RHI_MAX_SCREENSHOT_BYTES * 16u;
+}
+
+bool rhi_blas_one_triangle_desc_validate(
+    const RHIBLASOneTriangleDesc *desc) {
+    return desc != NULL && rhi_handle_valid(desc->vertex_buffer) &&
+           desc->vertex_count == 3u && desc->vertex_stride >= 12u &&
+           desc->vertex_format == RHI_VERTEX_FORMAT_R32G32B32_SFLOAT &&
+           desc->indexed && rhi_handle_valid(desc->index_buffer) &&
+           desc->index_count == 3u;
+}
+
 bool rhi_offscreen_fbo_desc_validate(const RHICapabilities *caps,
                                      const RHIOffscreenFBODesc *desc) {
     if (!caps || !desc || desc->width == 0u || desc->height == 0u ||

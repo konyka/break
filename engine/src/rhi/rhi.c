@@ -113,27 +113,6 @@ bool rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     return rhi_backend_get_native_device(dev, out);
 }
 
-bool rhi_acceleration_structure_desc_validate(
-    const RHIAccelerationStructureDesc *desc) {
-    return desc != NULL &&
-           (desc->type == RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL ||
-            desc->type == RHI_ACCELERATION_STRUCTURE_TOP_LEVEL) &&
-           desc->storage_size != 0u &&
-           desc->storage_size <= (usize)RHI_MAX_SCREENSHOT_BYTES * 16u;
-}
-
-bool rhi_blas_one_triangle_desc_validate(
-    const RHIBLASOneTriangleDesc *desc) {
-    if (desc == NULL || !rhi_handle_valid(desc->vertex_buffer) ||
-        desc->vertex_count != 3u || desc->vertex_stride < 12u ||
-        desc->vertex_format != RHI_VERTEX_FORMAT_R32G32B32_SFLOAT ||
-        !desc->indexed || !rhi_handle_valid(desc->index_buffer) ||
-        desc->index_count != 3u) {
-        return false;
-    }
-    return true;
-}
-
 bool rhi_build_blas_one_triangle(
     RHIDevice *dev, RHIAccelerationStructure blas,
     const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer,
