@@ -252,6 +252,7 @@ add_library(engine STATIC
     src/math/math.c
     src/rhi/rhi.c
     src/rhi/rhi_ownership.c
+    src/rhi/rhi_validation.c
     src/rhi/rhi_present_history.c
     src/renderer/camera.c
     src/renderer/cull.c
@@ -1798,7 +1799,7 @@ endif()
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         src/rhi/rhi.c src/rhi/rhi_ownership.c
-        src/rhi/rhi_present_history.c src/core/log.c)
+        src/rhi/rhi_validation.c src/rhi/rhi_present_history.c src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -1857,7 +1858,7 @@ endif()
 
     add_executable(test_rhi_native tests/test_rhi_native.c
         src/rhi/rhi.c src/rhi/rhi_ownership.c
-        src/rhi/rhi_present_history.c src/core/log.c)
+        src/rhi/rhi_validation.c src/rhi/rhi_present_history.c src/core/log.c)
     target_include_directories(test_rhi_native PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rhi_native PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -1905,6 +1906,15 @@ endif()
     endif()
     add_test(NAME test_rhi_native COMMAND test_rhi_native)
     set_tests_properties(test_rhi_native PROPERTIES
+        LABELS "headless;platform_contract")
+
+    add_executable(test_rhi_tlas_instance_encode
+        tests/test_rhi_tlas_instance_encode.c src/rhi/rhi_validation.c)
+    target_include_directories(test_rhi_tlas_instance_encode PRIVATE
+        ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_rhi_tlas_instance_encode
+        COMMAND test_rhi_tlas_instance_encode)
+    set_tests_properties(test_rhi_tlas_instance_encode PROPERTIES
         LABELS "headless;platform_contract")
 
     add_executable(test_myui_layout tests/test_myui_layout.c)
@@ -2347,7 +2357,8 @@ endif()
     endif()
 
     add_executable(test_rt_trace tests/test_rt_trace.c src/renderer/rt_trace.c
-        src/rhi/rhi.c src/rhi/rhi_present_history.c src/core/log.c)
+        src/rhi/rhi.c src/rhi/rhi_ownership.c src/rhi/rhi_validation.c
+        src/rhi/rhi_present_history.c src/core/log.c)
     target_include_directories(test_rt_trace PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rt_trace PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
