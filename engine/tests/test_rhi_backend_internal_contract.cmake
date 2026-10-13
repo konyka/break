@@ -19,11 +19,15 @@ endif()
 if(NOT DEFINED RHI_RESOURCES_SOURCE)
     message(FATAL_ERROR "RHI_RESOURCES_SOURCE is required")
 endif()
+if(NOT DEFINED ENGINE_CMAKE)
+    message(FATAL_ERROR "ENGINE_CMAKE is required")
+endif()
 
 file(READ "${RHI_INTERNAL_HEADER}" internal_text)
 file(READ "${RHI_SOURCE}" rhi_text)
 file(READ "${RHI_GL_SOURCE}" gl_text)
 file(READ "${RHI_VK_SOURCE}" vk_text)
+file(READ "${ENGINE_CMAKE}" engine_cmake_text)
 if(NOT EXISTS "${RHI_OWNERSHIP_SOURCE}")
     message(FATAL_ERROR "RHI ownership source is missing: ${RHI_OWNERSHIP_SOURCE}")
 endif()
@@ -33,6 +37,16 @@ endif()
 if(NOT EXISTS "${RHI_RESOURCES_SOURCE}")
     message(FATAL_ERROR "RHI resources source is missing: ${RHI_RESOURCES_SOURCE}")
 endif()
+
+foreach(required_text
+        "src/rhi/rhi_ownership.c"
+        "src/rhi/rhi_validation.c"
+        "src/rhi/rhi_resources.c")
+    string(FIND "${engine_cmake_text}" "${required_text}" target_offset)
+    if(target_offset EQUAL -1)
+        message(FATAL_ERROR "engine CMake source ownership missing: ${required_text}")
+    endif()
+endforeach()
 
 foreach(required_text
         "RHIResourceType"
