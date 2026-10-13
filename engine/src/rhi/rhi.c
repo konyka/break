@@ -41,6 +41,7 @@ struct RHIDevice {
     u32              free_head;   /* UINT32_MAX = empty */
     u32              free_count;
     RHICapabilities  capabilities;
+    RHIDeviceStatus  status;
     RHIPresentRect   frame_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
     u32              frame_damage_count;
     RHIPresentRect   frame_current_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
@@ -240,6 +241,12 @@ bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
     if (dev == NULL || out == NULL) return false;
     *out = dev->capabilities;
     return true;
+}
+
+RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev) {
+    if (dev == NULL) return RHI_DEVICE_STATUS_UNKNOWN;
+    if (dev->status == RHI_DEVICE_STATUS_LOST) return RHI_DEVICE_STATUS_LOST;
+    return dev->backend_data != NULL ? RHI_DEVICE_STATUS_READY : dev->status;
 }
 
 bool rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out) {
@@ -596,7 +603,10 @@ void rhi_test_device_control_release(RHIDevice *dev) {
 
 RHIDevice *rhi_test_device_create(void) {
     RHIDevice *dev = (RHIDevice *)calloc(1, sizeof(*dev));
-    if (dev != NULL) rhi_init_freelist(dev);
+    if (dev != NULL) {
+        rhi_init_freelist(dev);
+        dev->status = RHI_DEVICE_STATUS_READY;
+    }
     return dev;
 }
 

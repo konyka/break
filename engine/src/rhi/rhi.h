@@ -284,11 +284,18 @@ typedef struct {
 /* ---- Device (opaque) ---- */
 typedef struct RHIDevice RHIDevice;
 
+typedef enum {
+    RHI_DEVICE_STATUS_UNKNOWN = 0,
+    RHI_DEVICE_STATUS_READY,
+    RHI_DEVICE_STATUS_LOST,
+} RHIDeviceStatus;
+
 /* ---- Device API ---- */
 /* `w` and `h` are physical drawable pixels, never logical UI points. */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
+RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_texture_get_native_info(
                const RHIDevice *dev, RHITexture texture,

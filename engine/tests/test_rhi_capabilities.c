@@ -424,6 +424,16 @@ TEST(capability_query_rejects_invalid_arguments)
     ASSERT_FALSE(rhi_device_get_capabilities(NULL, &caps));
 }
 
+TEST(device_status_is_explicit_and_null_safe)
+{
+    RHIDevice *device = rhi_test_device_create();
+
+    ASSERT_EQ(rhi_device_get_status(NULL), RHI_DEVICE_STATUS_UNKNOWN);
+    ASSERT_NEQ(device, NULL);
+    ASSERT_EQ(rhi_device_get_status(device), RHI_DEVICE_STATUS_READY);
+    rhi_test_device_destroy(device);
+}
+
 TEST(frame_lifecycle_rejects_null_device)
 {
     ASSERT_EQ(rhi_frame_begin(NULL), NULL);
@@ -999,6 +1009,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(frame_owner_blocks_device_controls);
     RUN_TEST(sample_count_bits_are_portable_and_bounded);
     RUN_TEST(capability_query_rejects_invalid_arguments);
+    RUN_TEST(device_status_is_explicit_and_null_safe);
     RUN_TEST(frame_lifecycle_rejects_null_device);
     RUN_TEST(device_controls_reject_null_device);
     RUN_TEST(device_resize_rejects_zero_dimensions);
