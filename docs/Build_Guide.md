@@ -526,6 +526,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 Vulkan 专用的 opaque AS handle 不作为 Metal/D3D12 的通用接口。
 AS descriptor/BLAS input validation 已进入纯 validation 单元；AS build、device address、
 creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边界。
+资源槽初始化、generation 分配、typed lookup 与 free-list recycling 已迁移到
+`rhi_resources.c`，engine、RHI tests 和 `test_rt_trace` 都显式链接该源文件。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
