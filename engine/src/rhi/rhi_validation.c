@@ -2,6 +2,61 @@
 
 #include <string.h>
 
+bool rhi_present_damage_validate(const RHIPresentRect *rects, u32 count,
+                                 u32 width, u32 height) {
+    u32 i;
+    if (count > RHI_MAX_PRESENT_DAMAGE_RECTS || width == 0u || height == 0u ||
+        (count != 0u && rects == NULL)) {
+        return false;
+    }
+    for (i = 0; i < count; ++i) {
+        const RHIPresentRect *rect = &rects[i];
+        if (rect->x < 0 || rect->y < 0 || rect->w == 0u || rect->h == 0u ||
+            (u64)rect->x + rect->w > width ||
+            (u64)rect->y + rect->h > height) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool rhi_present_damage_to_bottom_left(const RHIPresentRect *rects, u32 count,
+                                       u32 width, u32 height,
+                                       RHIPresentRect *out, u32 capacity) {
+    u32 i;
+
+    if (count > capacity || (count != 0u && out == NULL) ||
+        !rhi_present_damage_validate(rects, count, width, height)) {
+        return false;
+    }
+    for (i = 0u; i < count; ++i) {
+        RHIPresentRect rect = rects[i];
+        rect.y = (i32)(height - ((u32)rect.y + rect.h));
+        out[i] = rect;
+    }
+    return true;
+}
+
+bool rhi_screenshot_region_validate(u32 x, u32 y, u32 w, u32 h,
+                                    u32 width, u32 height,
+                                    usize dst_bytes) {
+    usize required;
+    usize max_size = (usize)-1;
+    if (width == 0u || height == 0u || w == 0u || h == 0u ||
+        x >= width || y >= height || w > width - x || h > height - y) {
+        return false;
+    }
+    if ((usize)w > max_size / 4u) {
+        return false;
+    }
+    required = (usize)w * 4u;
+    if ((usize)h > max_size / required) {
+        return false;
+    }
+    required *= (usize)h;
+    return required <= (usize)RHI_MAX_SCREENSHOT_BYTES && dst_bytes >= required;
+}
+
 bool rhi_texture_desc_validate(const RHITextureDesc *desc) {
     u32 max_extent;
     u32 max_mips = 1u;
