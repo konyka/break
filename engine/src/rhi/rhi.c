@@ -1,55 +1,13 @@
 #include <rhi/rhi.h>
+#include <rhi/rhi_backend_internal.h>
 #include <core/log.h>
 #include <stdlib.h>
 #include <stdatomic.h>
 #include <string.h>
 
-#define RHI_MAX_RESOURCES 4096
-
 /* Generation values are process-wide, not device-local. This prevents an
  * index/generation pair from accidentally resolving in a second device. */
 static atomic_uint g_rhi_generation_seed = 1u;
-
-typedef enum {
-    RHI_RES_NONE,
-    RHI_RES_SHADER,
-    RHI_RES_PIPELINE,
-    RHI_RES_BUFFER,
-    RHI_RES_TEXTURE,
-    RHI_RES_SAMPLER,
-    RHI_RES_FRAMEBUFFER,
-    RHI_RES_CUBEMAP,
-    RHI_RES_MRT_FBO,
-    RHI_RES_CUBEMAP_DEPTH_FBO,
-    RHI_RES_ACCELERATION_STRUCTURE,
-} RHIResourceType;
-
-typedef struct {
-    void            *ptr;
-    u32              generation;
-    bool             alive;
-    RHIResourceType  type;
-} RHIResourceSlot;
-
-struct RHIDevice {
-    RHIResourceSlot  slots[RHI_MAX_RESOURCES];
-    u32              next_slot;
-    void            *backend_data;
-    u32              width;
-    u32              height;
-    /* Free-list for O(1) slot allocation (Round 18) */
-    u32              free_head;   /* UINT32_MAX = empty */
-    u32              free_count;
-    RHICapabilities  capabilities;
-    RHIDeviceStatus  status;
-    RHIPresentRect   frame_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
-    u32              frame_damage_count;
-    RHIPresentRect   frame_current_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
-    u32              frame_current_damage_count;
-    bool             frame_damage_requested;
-    bool             frame_partial_active;
-    atomic_uintptr_t frame_owner;
-};
 
 _Thread_local RHIDevice *g_current_device = NULL;
 static _Thread_local unsigned char g_rhi_thread_token;
@@ -140,7 +98,7 @@ static bool rhi_cmd_matches_device(RHIDevice *dev, RHICmdBuffer *cmd,
 }
 #endif
 
-static bool rhi_drawable_dimensions_valid(u32 width, u32 height) {
+bool rhi_drawable_dimensions_valid(u32 width, u32 height) {
     return width != 0u && height != 0u &&
            width <= RHI_MAX_DRAWABLE_DIMENSION &&
            height <= RHI_MAX_DRAWABLE_DIMENSION;

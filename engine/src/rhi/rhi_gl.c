@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <rhi/rhi.h>
+#include <rhi/rhi_backend_internal.h>
 
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 static bool gl_extension_has(const char *extensions, const char *name);

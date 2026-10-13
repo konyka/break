@@ -17,6 +17,7 @@
     #error "Vulkan surface support requires a supported platform surface backend"
 #endif
 #include <vulkan/vulkan.h>
+#include <rhi/rhi_backend_internal.h>
 #if defined(ENGINE_PLATFORM_LINUX)
 #include <X11/Xlib.h>
 #endif
