@@ -138,6 +138,14 @@ if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
 elseif(ENGINE_RHI_BACKEND STREQUAL "opengl")
     set(ENGINE_VULKAN OFF CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 endif()
+if(ENGINE_VULKAN)
+    set(ENGINE_RHI_BACKEND_EFFECTIVE "vulkan" CACHE INTERNAL
+        "Resolved RHI backend for this build")
+else()
+    set(ENGINE_RHI_BACKEND_EFFECTIVE "opengl" CACHE INTERNAL
+        "Resolved RHI backend for this build")
+endif()
+message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
 if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
     find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
     if(NOT ENGINE_ANDROID_NATIVE_WINDOW OR NOT ANDROID_NATIVE_WINDOW_INCLUDE_DIR)
@@ -312,6 +320,9 @@ src/renderer/lens_effects.c
     src/scene/scene_state.c
     src/engine.c
 )
+string(TOUPPER "${ENGINE_RHI_BACKEND_EFFECTIVE}" ENGINE_RHI_BACKEND_EFFECTIVE_UPPER)
+target_compile_definitions(engine PUBLIC
+    ENGINE_RHI_BACKEND_${ENGINE_RHI_BACKEND_EFFECTIVE_UPPER}=1)
 
 if(WIN32 AND STREAMLINE_ROOT)
     enable_language(CXX)
