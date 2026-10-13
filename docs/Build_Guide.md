@@ -496,6 +496,8 @@ Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经
 平台兼容描述符还区分当前 native graphics baseline 与未来 `target_graphics_api`；目标
 API 只是迁移计划元数据，不能替代 Metal/D3D12 的实际编译、native-surface 或 GPU-runtime
 证据。
+`ENGINE_RHI_BACKEND_EFFECTIVE` 和 `ENGINE_RHI_BACKEND_*` 编译宏只描述当前已经实现的
+OpenGL/Vulkan 构建选择；它们不会因为平台 target metadata 自动切换到未实现的 Metal/D3D12。
 
 Phase 2 的显式选择器为：
 
