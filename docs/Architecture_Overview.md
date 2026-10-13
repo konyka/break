@@ -254,6 +254,10 @@ Profiler 的 `profiler_export_provenance_sidecar()` 写入独立 JSON sidecar，
 platform、window system、backend、native baseline、GPU、build、validation、
 resolution 与 frame count；`profiler_export_chrome_trace()` 和既有 trace 格式不变。
 
+RHI 现在提供 backend-neutral 的 `RHI_DEVICE_STATUS_UNKNOWN`、`READY`、`LOST`
+状态查询。该合同只统一设备健康状态，不表示 Metal 或 D3D12 已实现；原生后端
+仍必须分别通过其 native-surface、GPU-runtime 和 validation gate 后才能标记可用。
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |

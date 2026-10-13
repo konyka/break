@@ -490,6 +490,10 @@ MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建
 通过——Cocoa runtime 契约 `3/3`、无头套件 `127/127`、`graphics`/`fuzz` 标记 `6/6`
 （`test_vulkan` 进程内验证门在真实 GPU 上经 MoltenVK 通过）。
 
+RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
+没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
+Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经可用。
+
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
 | Linux | X11 | OpenGL | GCC | 通过 |
