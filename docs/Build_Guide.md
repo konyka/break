@@ -507,6 +507,10 @@ cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
 `ENGINE_RHI_BACKEND_OPENGL=1` 或 `ENGINE_RHI_BACKEND_VULKAN=1` 编译宏，供后续
 backend target 拆分和发布 receipt 使用。
 
+Phase 2 的 source-split 前置层位于私有头文件
+`engine/src/rhi/rhi_backend_internal.h`，只集中共享设备布局、资源槽和后端 helper
+声明；当前仍采用 unity inclusion，以保证拆分前没有运行时行为变化。
+
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
 | Linux | X11 | OpenGL | GCC | 通过 |

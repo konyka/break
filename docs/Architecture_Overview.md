@@ -264,6 +264,13 @@ backend choice auditable in configure receipts. This is an ownership boundary on
 the current implementations remain unity-included until a later no-behavior-change
 source split is proven.
 
+The first source-split preparation now centralizes the shared `RHIDevice` layout,
+resource-slot types, current-device TLS declaration, and backend-facing resource
+helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. The
+backend files are still unity-included in this phase; moving them into separate
+translation units is intentionally deferred until the remaining private helper
+surface has its own tests.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
