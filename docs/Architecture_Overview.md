@@ -281,6 +281,10 @@ well. Both current backends use the same ownership semantics, and the first
 helper group now lives in `rhi_ownership.c`; larger backend moves remain gated
 by separate translation-unit builds.
 
+The pure TLAS instance encoder now lives in `rhi_validation.c`; this is only a
+source split with headless link coverage, not a new backend or ray-tracing
+capability.
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |

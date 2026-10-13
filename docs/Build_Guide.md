@@ -516,6 +516,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 独立 translation-unit build gate 前引入行为变化。
 当前第一批 ownership helper 已迁移到 `rhi_ownership.c`，并由 RHI headless 测试目标
 显式链接；这保证测试构建不会依赖 unity inclusion 的隐式符号。
+当前纯 CPU TLAS instance encoder 已迁移到 `rhi_validation.c`，engine、`test_rt_trace`
+和独立 headless contract test 均显式链接；这只是 source split，不新增 backend 或 RT 能力。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
