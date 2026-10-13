@@ -524,6 +524,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 区域仍依赖公共设备布局或后端生命周期，必须先有独立 contract test 才能迁移。
 公共 native proxy 的 headless contract 会先清零输出并在无效设备/资源时 fail-closed；
 Vulkan 专用的 opaque AS handle 不作为 Metal/D3D12 的通用接口。
+`rhi.c` 中的 device/info/native proxy 只负责统一参数清理与 fail-closed 转发；AS build、
+creation/destruction 和 Vulkan handle wrapper 暂不拆出，直到有独立 backend contract。
 AS descriptor/BLAS input validation 已进入纯 validation 单元；AS build、device address、
 creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边界。
 资源槽初始化、generation 分配、typed lookup 与 free-list recycling 已迁移到

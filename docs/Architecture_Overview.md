@@ -310,6 +310,10 @@ outputs are zeroed before backend dispatch, invalid devices/resources return
 false, and no fake native handle is exposed. The Vulkan-specific opaque AS
 handle query remains intentionally separate from future Metal/D3D12 contracts.
 
+The remaining public wrappers in `rhi.c` are split by responsibility: device/info
+and native-handle queries are backend-neutral forwarding contracts, while AS build,
+creation/destruction, and Vulkan-handle wrappers remain coupled to backend dispatch.
+
 Texture, buffer, and cubemap descriptor validation now shares the same pure
 validation translation unit. Backend implementations continue to receive the
 same public validation results without inheriting API-specific state.
