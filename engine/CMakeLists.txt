@@ -2313,6 +2313,12 @@ endif()
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_LINUX=1)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        # macOS builds the engine with ENGINE_VULKAN=1 unconditionally (Cocoa
+        # + MoltenVK); mirror that here so rhi.c pulls in the Vulkan unity
+        # backend instead of the GLX OpenGL one.
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
+        target_include_directories(test_rt_trace PRIVATE ${SHADERC_INCLUDE_DIR})
     endif()
     if(ENGINE_VULKAN)
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_VULKAN=1)
@@ -2325,6 +2331,10 @@ endif()
     endif()
     if(ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_rt_trace PRIVATE glad opengl32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_link_libraries(test_rt_trace PRIVATE
+            Vulkan::Vulkan ${SHADERC_LIB}
+            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     elseif(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_VULKAN)
         # rhi.c includes the OpenGL unity backend in non-Vulkan tests.
         # Link the native GL/X11 dependencies used by the other RHI tests.
