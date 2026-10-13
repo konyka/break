@@ -2037,6 +2037,7 @@ endif()
             -DRHI_INTERNAL_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_backend_internal.h
             -DRHI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.c
             -DRHI_OWNERSHIP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_ownership.c
+            -DRHI_VALIDATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_validation.c
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
