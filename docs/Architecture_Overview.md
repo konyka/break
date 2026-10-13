@@ -300,6 +300,10 @@ recycling now live in `rhi_resources.c`. The public `rhi.c` layer retains only
 resource API forwarding and test glue; backend code consumes the private resource
 contract explicitly.
 
+The internal CMake contract also verifies that every direct RHI consumer lists
+`rhi_ownership.c`, `rhi_validation.c`, and `rhi_resources.c` explicitly. This
+prevents source-split regressions from being hidden by the current unity owner.
+
 Frame-damage state remains in `rhi.c` because both current backends mutate its
 partial-present fields during begin/end/present. Existing owner-busy and damage
 publication tests are the contract; moving this state requires a dedicated WSI

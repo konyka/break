@@ -530,6 +530,8 @@ AS descriptor/BLAS input validation 已进入纯 validation 单元；AS build、
 creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边界。
 资源槽初始化、generation 分配、typed lookup 与 free-list recycling 已迁移到
 `rhi_resources.c`，engine、RHI tests 和 `test_rt_trace` 都显式链接该源文件。
+所有直接消费 `rhi.c` 的 target 都必须显式列出 ownership、validation、resources
+三个拆分源文件；`test_rhi_backend_internal_contract` 会锁定该构建图规则。
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
