@@ -503,6 +503,8 @@ Windows D3D12 contract-first gate（2026-10-13）已确认 Windows SDK 10.0.2610
 头文件/库和 Vulkan SDK 内的 `dxc.exe` 可见，但当前环境没有独立的 `cl`/PIX PATH 证据，
 也没有完成 D3D12 native-surface/GPU-runtime/Debug Layer 验证。因此 D3D12 仍不可选择，
 状态为 `target metadata + dependency/runtime gate blocked`，不是已实现 backend。
+精确依赖审计还要求 `d3d12.h`、任一 `dxgi*.h`、`d3d12.lib`、`dxgi.lib` 和 DXC；
+当前主机缺少 `dxgi.h/dxgi1_4.h/dxgi1_6.h`，因此 gate 为 `UNAVAILABLE`。
 仓库新增 `test_d3d12_dependency_gate`：Windows 上会分类 SDK headers/libs 与 DXC 是否齐全，
 非 Windows 或依赖不完整返回 `UNAVAILABLE`（CTest skip），不会把依赖可见误报为 native
 device/surface/GPU-runtime 支持。
