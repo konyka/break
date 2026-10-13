@@ -242,6 +242,18 @@ graph TB
 
 ## 9. 平台支持
 
+平台兼容描述符在 `engine/src/platform/platform_compat.h` 中分别记录 native
+graphics baseline、Vulkan support level 与 support evidence。Linux/Windows 保留
+OpenGL 作为 native performance baseline；macOS 保留 Metal 作为 baseline，Vulkan
+路径明确是 MoltenVK。iOS/Android 只有宿主注入的 Vulkan compile/integration 边界，
+HarmonyOS 在 native surface 存在前保持 unavailable/unsupported。证据状态按
+`compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`
+递进，状态不会因编译成功自动升级。
+
+Profiler 的 `profiler_export_provenance_sidecar()` 写入独立 JSON sidecar，记录
+platform、window system、backend、native baseline、GPU、build、validation、
+resolution 与 frame count；`profiler_export_chrome_trace()` 和既有 trace 格式不变。
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
@@ -249,7 +261,7 @@ graph TB
 | **Linux** | Wayland | OpenGL 4.x (EGL) | `build-verify-wl-gl/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Linux** | Wayland | Vulkan 1.x | `build-verify-wl-vk/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Windows** | Win32 | OpenGL (WGL) / Vulkan (Win32 Surface) | `build-win/` | ✅ 已实现 |
-| **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ✅ 平台 smoke/headless CI；不声明 Metal 后端 |
+| **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ⚠️ 远程 ARM64 AppleClang 可用；缺少 `shaderc_shared`/MoltenVK，未宣称 runtime；不声明 Metal 后端 |
 | **iOS** | — | — | iOS toolchain | ⚠️ CMake 平台识别与 kqueue 路径；无仓库 runtime/CI 证据 |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ 编译路径；无仓库 runtime/CI 证据 |
 | **OHOS** | — | — | OHOS toolchain | ⚠️ CMake 平台识别与 epoll 路径；无仓库 runtime/CI 证据 |

@@ -30,10 +30,11 @@
 - DirectX 11 SDK (可选，用于 platform 演示)
 
 ### 1.4 macOS、iOS、Android 与 OHOS
-- macOS 由 CMake 识别为 `macos`，当前 Cocoa 平台路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。这不是 Metal 后端声明。
+- 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
+- macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
-- Android 由 CMake 识别为 `android`，使用 epoll。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这只描述 supplied `ANativeWindow` 编译路径，不代表完整 Android runtime 支持。
-- OHOS 由 CMake 识别为 `harmonyos`，使用 epoll；仓库没有声明 OHOS runtime 或 CI 覆盖。
+- Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
+- iOS/Android 的平台契约测试只证明编译路径与宿主注入边界；HarmonyOS 的 Vulkan 状态为 unavailable/unsupported，直到存在 native surface 实现。
 
 ## 2. 构建配置
 
@@ -51,6 +52,14 @@ cmake --build build-gl
 cd engine
 cmake -B build-vk -DENGINE_VULKAN=ON
 cmake --build build-vk
+```
+
+平台契约与 profiler provenance sidecar 可用以下命令验证（不会修改
+`profile_trace.json`）：
+
+```bash
+cmake --build build-vk --target test_platform_compat test_platform_compat_macos test_profiler
+ctest --test-dir build-vk -R 'test_platform_compat|test_profiler' --output-on-failure
 ```
 
 Windows 备注（2026-09-01 起可本机验证）：Vulkan SDK 可无头解包到
@@ -469,11 +478,19 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 
 ### 2.8 完整构建矩阵
 
+验证等级约定：`compiled` 只表示配置和编译成功；`headless` 表示无窗口契约测试通过；
+`native-surface` 表示创建了目标平台原生 surface；`GPU-runtime` 表示真实 GPU 图形测试；
+`benchmark-comparable` 只有在同一场景、分辨率、帧数、构建类型和 validation 状态一致时才成立。
+远程复核（2026-10-13）使用 SSH 环境变量完成且未记录凭据：Fedora 44 x86_64 的 OpenGL
+契约与 Vulkan 配置/编译均通过，Vulkan 契约测试 `6/6` 通过，但该主机没有 `xvfb-run`，
+因此没有宣称 graphics runtime；macOS 26.7.1 ARM64 的 AppleClang 可用，但远程环境缺少
+`shaderc_shared` 与 MoltenVK，CMake 按设计 fail-closed，状态保持为依赖阻塞而非代码通过。
+
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
 | Linux | X11 | OpenGL | GCC | 通过 |
 | Linux | X11 | OpenGL | Clang | 通过 |
-| Linux | X11 | Vulkan | GCC | 通过 |
+| Linux | X11 | Vulkan | GCC | compiled + headless 契约通过；远程 Fedora 无 `xvfb-run`，GPU runtime 未测 |
 | Linux | X11 | Vulkan | Clang | 通过 |
 | Linux | Wayland | OpenGL | GCC | 通过 |
 | Linux | Wayland | OpenGL | Clang | 待 CI 验证 |
@@ -485,7 +502,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 原生 Vulkan/AS/DLSS 验证已记录于 `docs/Realtime_Raytracing_Progress.md` |
 | Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-9 已验证（TEST 9 unified cull/Hi-Z 全断言通过）；TEST 10 起 grouped compact 类 compute 在 NVIDIA 混合 GPU 驱动上 DEVICE_LOST 待 GPU 捕获 |
-| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | **CI 全绿（2026-09-29 首次）**：全量构建 + dxx_break + Cocoa runtime + headless 套件；GPU-less runner 上链接 MoltenVK 的两个测试按 `BREAK_MYUI_SKIP_VK_SENSITIVE` 显式 SKIP（MoltenVK NSException），本机有 GPU 时全量执行 |
+| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | 远程 ARM64 可用 AppleClang；缺少 `shaderc_shared`/MoltenVK，当前为依赖阻塞，未宣称 runtime |
 | iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
 | Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
 | OHOS/HarmonyOS | 宿主注入 | — | OHOS 工具链 | 网络 epoll 路径；无原生 surface/CI 验证 |
