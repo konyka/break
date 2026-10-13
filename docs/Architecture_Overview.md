@@ -285,6 +285,11 @@ The pure TLAS instance encoder now lives in `rhi_validation.c`; this is only a
 source split with headless link coverage, not a new backend or ray-tracing
 capability.
 
+The remaining `rhi.c` code is intentionally classified before further movement:
+resource-slot/generation ownership, backend dispatch proxies, acceleration
+structure forwarding, frame-damage state, and test-only glue remain coupled
+contracts. They are not moved speculatively into a backend file.
+
 Texture, buffer, and cubemap descriptor validation now shares the same pure
 validation translation unit. Backend implementations continue to receive the
 same public validation results without inheriting API-specific state.

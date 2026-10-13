@@ -520,6 +520,8 @@ frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.
 和独立 headless contract test 均显式链接；这只是 source split，不新增 backend 或 RT 能力。
 纹理、buffer、cubemap descriptor validator 也已迁移到该纯验证单元，OpenGL/Vulkan
 测试目标显式链接并保持相同行为。
+资源槽/生成器、backend dispatch、加速结构代理和 frame-damage state 暂不拆出；这些
+区域仍依赖公共设备布局或后端生命周期，必须先有独立 contract test 才能迁移。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
