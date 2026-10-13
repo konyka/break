@@ -514,6 +514,8 @@ Phase 2 的 source-split 前置层位于私有头文件
 都显式依赖该私有合同，防止后续拆分依赖 unity 编译的隐式声明。
 frame owner 与 device control helper 也属于该合同；实现暂留在 `rhi.c`，避免在没有
 独立 translation-unit build gate 前引入行为变化。
+当前第一批 ownership helper 已迁移到 `rhi_ownership.c`，并由 RHI headless 测试目标
+显式链接；这保证测试构建不会依赖 unity inclusion 的隐式符号。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|

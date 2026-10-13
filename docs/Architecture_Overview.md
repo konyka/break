@@ -277,9 +277,9 @@ prevents the current unity build from hiding transitive declarations before the
 implementations move into separate translation units.
 
 Frame-owner and device-control helpers are now part of that private contract as
-well. Both current backends use the same ownership semantics, while the
-implementation remains in `rhi.c` until a separate translation-unit build gate
-is available.
+well. Both current backends use the same ownership semantics, and the first
+helper group now lives in `rhi_ownership.c`; larger backend moves remain gated
+by separate translation-unit builds.
 
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
