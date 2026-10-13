@@ -300,6 +300,11 @@ recycling now live in `rhi_resources.c`. The public `rhi.c` layer retains only
 resource API forwarding and test glue; backend code consumes the private resource
 contract explicitly.
 
+Frame-damage state remains in `rhi.c` because both current backends mutate its
+partial-present fields during begin/end/present. Existing owner-busy and damage
+publication tests are the contract; moving this state requires a dedicated WSI
+lifecycle split rather than a helper-only extraction.
+
 Public native proxy queries are now explicitly fail-closed in headless tests:
 outputs are zeroed before backend dispatch, invalid devices/resources return
 false, and no fake native handle is exposed. The Vulkan-specific opaque AS
