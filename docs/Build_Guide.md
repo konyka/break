@@ -485,6 +485,10 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 契约与 Vulkan 配置/编译均通过，Vulkan 契约测试 `6/6` 通过，但该主机没有 `xvfb-run`，
 因此没有宣称 graphics runtime；macOS 26.7.1 ARM64 的 AppleClang 可用，但远程环境缺少
 `shaderc_shared` 与 MoltenVK，CMake 按设计 fail-closed，状态保持为依赖阻塞而非代码通过。
+本机复核（2026-10-13）：macOS 26.7.1 ARM64（Apple M2，AppleClang 21，VulkanSDK 1.4.357，
+MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建通过，CTest `133/133`
+通过——Cocoa runtime 契约 `3/3`、无头套件 `127/127`、`graphics`/`fuzz` 标记 `6/6`
+（`test_vulkan` 进程内验证门在真实 GPU 上经 MoltenVK 通过）。
 
 | 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
 |------|---------|---------|--------|---------|
@@ -502,7 +506,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 | Windows | Win32 | Vulkan | MinGW | 待验证 |
 | Windows | Win32 | Vulkan | MSVC | 原生 Vulkan/AS/DLSS 验证已记录于 `docs/Realtime_Raytracing_Progress.md` |
 | Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-9 已验证（TEST 9 unified cull/Hi-Z 全断言通过）；TEST 10 起 grouped compact 类 compute 在 NVIDIA 混合 GPU 驱动上 DEVICE_LOST 待 GPU 捕获 |
-| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | 远程 ARM64 可用 AppleClang；缺少 `shaderc_shared`/MoltenVK，当前为依赖阻塞，未宣称 runtime |
+| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | 本机（macOS 26.7.1，Apple M2，MoltenVK 1.4.357）全量构建 + CTest `133/133` 通过（含 Cocoa runtime 契约与 `test_vulkan` GPU 验证门，2026-10-13）；远程 ARM64 SSH 目标机缺 `shaderc_shared`/MoltenVK 仍为依赖阻塞 |
 | iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
 | Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
 | OHOS/HarmonyOS | 宿主注入 | — | OHOS 工具链 | 网络 epoll 路径；无原生 surface/CI 验证 |

@@ -261,7 +261,7 @@ resolution 与 frame count；`profiler_export_chrome_trace()` 和既有 trace �
 | **Linux** | Wayland | OpenGL 4.x (EGL) | `build-verify-wl-gl/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Linux** | Wayland | Vulkan 1.x | `build-verify-wl-vk/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Windows** | Win32 | OpenGL (WGL) / Vulkan (Win32 Surface) | `build-win/` | ✅ 已实现 |
-| **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ⚠️ 远程 ARM64 AppleClang 可用；缺少 `shaderc_shared`/MoltenVK，未宣称 runtime；不声明 Metal 后端 |
+| **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ✅ 本机（macOS 26.7.1，Apple M2，MoltenVK 1.4.357）全量构建 + CTest `133/133` 通过（2026-10-13）；远程 SSH 目标机缺 `shaderc_shared`/MoltenVK 为依赖阻塞；不声明 Metal 后端 |
 | **iOS** | — | — | iOS toolchain | ⚠️ CMake 平台识别与 kqueue 路径；无仓库 runtime/CI 证据 |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ 编译路径；无仓库 runtime/CI 证据 |
 | **OHOS** | — | — | OHOS toolchain | ⚠️ CMake 平台识别与 epoll 路径；无仓库 runtime/CI 证据 |
