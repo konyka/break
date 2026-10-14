@@ -1,6 +1,7 @@
 #ifdef ENGINE_PLATFORM_WAYLAND
 
 #include <platform/platform.h>
+#include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <core/log.h>
@@ -2031,9 +2032,16 @@ void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
 }
 
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {
-    u32 scale = p != NULL ? p->content_scale_120 : 120u;
-    if (w) *w = p != NULL ? wl_out_drawable_dimension(p->width, scale) : 0;
-    if (h) *h = p != NULL ? wl_out_drawable_dimension(p->height, scale) : 0;
+    if (p == NULL) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        return;
+    }
+    u32 dw, dh;
+    platform_size_wayland(p->width, p->height, p->content_scale_120,
+                          NULL, NULL, &dw, &dh);
+    if (w) *w = dw;
+    if (h) *h = dh;
 }
 
 f32 platform_get_dpi(Platform *p) {

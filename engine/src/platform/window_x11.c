@@ -1,4 +1,5 @@
 #include <platform/platform.h>
+#include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/monitor_selection.h>
@@ -1181,9 +1182,16 @@ void platform_get_size(Platform *p, u32 *w, u32 *h) {
 }
 
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
-    u32 scale = p != NULL && p->scale_factor > 0 ? (u32)p->scale_factor : 1u;
-    if (w) *w = p != NULL ? (p->width + scale - 1u) / scale : 0;
-    if (h) *h = p != NULL ? (p->height + scale - 1u) / scale : 0;
+    if (p == NULL) {
+        if (w) *w = 0;
+        if (h) *h = 0;
+        return;
+    }
+    u32 lw, lh;
+    platform_size_x11(p->width, p->height, (u32)p->scale_factor,
+                      &lw, &lh, NULL, NULL);
+    if (w) *w = lw;
+    if (h) *h = lh;
 }
 
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {

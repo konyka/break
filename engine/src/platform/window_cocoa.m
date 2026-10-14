@@ -12,6 +12,7 @@
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <platform/platform.h>
+#include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <core/log.h>
@@ -343,11 +344,13 @@ static void cocoa_update_drawable_size(Platform *p) {
     size = p->view != nil ? p->view.bounds.size : p->window.contentView.bounds.size;
     scale = [p->window backingScaleFactor];
     if (scale <= 0.0) scale = 1.0;
-    p->width = (u32)ceil(size.width);
-    p->height = (u32)ceil(size.height);
+    u32 lw, lh, dw, dh;
+    platform_size_cocoa((u32)ceil(size.width), (u32)ceil(size.height),
+                        (f32)scale, &lw, &lh, &dw, &dh);
+    p->width = lw;
+    p->height = lh;
     p->layer.contentsScale = scale;
-    p->layer.drawableSize = CGSizeMake(ceil(size.width * scale),
-                                       ceil(size.height * scale));
+    p->layer.drawableSize = CGSizeMake((CGFloat)dw, (CGFloat)dh);
 }
 
 @implementation BreakWindowDelegate

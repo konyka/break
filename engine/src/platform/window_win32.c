@@ -24,6 +24,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #define BREAK_DISPLAYCONFIG_DEVICE_INFO_GET_ADVANCED_COLOR_INFO_2 15
 
 #include <platform/platform.h>
+#include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <core/types.h>
@@ -703,9 +704,11 @@ void platform_get_logical_size(Platform *p, u32 *w, u32 *h) {
         if (h) *h = 0;
         return;
     }
-    f32 scale = platform_get_content_scale(p);
-    if (w) *w = (u32)((f32)p->width / scale + 0.5f);
-    if (h) *h = (u32)((f32)p->height / scale + 0.5f);
+    u32 lw, lh;
+    platform_size_win32(p->width, p->height, platform_get_content_scale(p),
+                        &lw, &lh, NULL, NULL);
+    if (w) *w = lw;
+    if (h) *h = lh;
 }
 
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) {

@@ -2788,4 +2788,26 @@ endif()
     target_include_directories(test_monitor_selection PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_monitor_selection PRIVATE m)
     add_test(NAME test_monitor_selection COMMAND test_monitor_selection)
+
+    # Plan B Task 2: logical-vs-drawable size semantics are locked into the
+    # header-only platform_size.h helpers; the unit test runs headless and the
+    # cmake contract test pins the four window backends to consume them.
+    add_executable(test_platform_size_semantics
+        tests/test_platform_size_semantics.c)
+    target_include_directories(test_platform_size_semantics PRIVATE
+        ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_size_semantics PRIVATE m)
+    add_test(NAME test_platform_size_semantics
+        COMMAND test_platform_size_semantics)
+
+    add_test(NAME test_platform_size_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DSIZE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_size.h
+            -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
+            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
+            -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
+            -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_size_contract.cmake)
+    set_tests_properties(test_platform_size_contract PROPERTIES
+        LABELS "platform_contract")
 endif()
