@@ -1952,6 +1952,54 @@ endif()
     set_tests_properties(test_rhi_capabilities PROPERTIES
         LABELS "headless;platform_contract")
 
+    add_executable(test_rhi_fault_injection tests/test_rhi_fault_injection.c
+        ${RHI_CORE_SOURCES} src/core/log.c)
+    target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_RHI_TEST=1)
+    target_include_directories(test_rhi_fault_injection PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_VULKAN=1)
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_include_directories(test_rhi_fault_injection PRIVATE
+            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        if(ENGINE_ENABLE_WAYLAND)
+            target_compile_definitions(test_rhi_fault_injection PRIVATE
+                ENGINE_PLATFORM_WAYLAND=1)
+        endif()
+        if(ENGINE_VULKAN)
+            target_compile_definitions(test_rhi_fault_injection PRIVATE ENGINE_VULKAN=1)
+        endif()
+    endif()
+    target_link_libraries(test_rhi_fault_injection PRIVATE engine_rhi_headless m)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_rhi_fault_injection PRIVATE
+            -ffunction-sections -fdata-sections)
+    endif()
+    if(NOT APPLE)
+        # macOS ld has no --gc-sections; dead-code stripping is the default.
+        target_link_options(test_rhi_fault_injection PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME test_rhi_fault_injection COMMAND test_rhi_fault_injection)
+    set_tests_properties(test_rhi_fault_injection PROPERTIES
+        LABELS "headless;platform_contract")
+
+    if(ENGINE_VULKAN)
+        add_executable(test_rhi_vk_alloc_fault tests/test_rhi_vk_alloc_fault.c)
+        target_include_directories(test_rhi_vk_alloc_fault PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_rhi_vk_alloc_fault PRIVATE engine m)
+        # rhi_vk.c（含 rhi_device_create 与 rhi_vk_set_alloc_failure_for_test）
+        # 编在 engine_rhi_vulkan；test_vulkan 同先例。
+        engine_link_rhi_backend(test_rhi_vk_alloc_fault)
+        add_test(NAME test_rhi_vk_alloc_fault COMMAND test_rhi_vk_alloc_fault)
+        set_tests_properties(test_rhi_vk_alloc_fault PROPERTIES
+            LABELS graphics SKIP_RETURN_CODE 77 TIMEOUT 60)
+    endif()
+
     add_executable(test_rhi_wsi_attach tests/test_rhi_wsi_attach.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_RHI_TEST=1)

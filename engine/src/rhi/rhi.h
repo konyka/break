@@ -820,3 +820,9 @@ void         rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t);
 void         rhi_gpu_timer_begin(RHIGPUTimer *t);
 void         rhi_gpu_timer_end(RHIGPUTimer *t);
 f64          rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t);
+
+/* 测试专用分配故障注入（恒编译、默认关闭；与 rhi_vk_validation_* 同先例——
+ * 符号只由 VK 后端定义，调用点必须 #ifdef ENGINE_VULKAN）。开启后
+ * vk_allocate_memory 不调用 vkAllocateMemory，直接返回
+ * VK_ERROR_OUT_OF_HOST_MEMORY。 */
+void rhi_vk_set_alloc_failure_for_test(bool enable);

@@ -2,6 +2,7 @@
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_vk_probe.h>
+#include <rhi/rhi_result_map.h>
 #include <platform/platform_vk_surface.h>
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 /* vk_shutdown keeps the ANativeWindow_release half of the reference pair
@@ -15,6 +16,10 @@
 #include <stdio.h>
 #include <errno.h>
 #include <stdatomic.h>
+
+_Static_assert(VK_ERROR_DEVICE_LOST == -4, "vk result constant drift");
+_Static_assert(VK_ERROR_OUT_OF_DATE_KHR == -1000001004, "vk result constant drift");
+_Static_assert(VK_ERROR_SURFACE_LOST_KHR == -1000000000, "vk result constant drift");
 
 /* Probe-header constant pinning: any drift between rhi_vk_probe.h and the
  * Vulkan/RHI enums fails here at compile time instead of on a GPU. */
@@ -499,10 +504,7 @@ static void vk_note_result(VKBackend *vk, VkResult r) {
 }
 
 static RHIResult vk_lifecycle_result(VkResult result) {
-    if (result == VK_ERROR_DEVICE_LOST) return RHI_RESULT_DEVICE_LOST;
-    if (result == VK_ERROR_OUT_OF_DATE_KHR) return RHI_RESULT_OUT_OF_DATE;
-    if (result == VK_ERROR_SURFACE_LOST_KHR) return RHI_RESULT_SURFACE_LOST;
-    return RHI_RESULT_SYNC_FAILED;
+    return rhi_vk_result_to_lifecycle((i32)result);
 }
 
 /* R578: bounded fence wait. Healthy frames signal within milliseconds; the
@@ -692,8 +694,14 @@ static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags 
     return UINT32_MAX;
 }
 
+static bool g_vk_test_alloc_failure = false;
+void rhi_vk_set_alloc_failure_for_test(bool enable) {
+    g_vk_test_alloc_failure = enable;
+}
+
 static VkResult vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
                                    VkDeviceMemory *out_memory) {
+    if (g_vk_test_alloc_failure) return VK_ERROR_OUT_OF_HOST_MEMORY;
     if (!vk || !info || !out_memory || info->memoryTypeIndex == UINT32_MAX)
         return VK_ERROR_INITIALIZATION_FAILED;
     return vkAllocateMemory(vk->device, info, NULL, out_memory);
