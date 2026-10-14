@@ -406,6 +406,50 @@ else()
     target_compile_options(glad PRIVATE /wd4055 /wd4152)
 endif()
 
+# --- RHI backend libraries (multi-backend spec §4.8) ---
+# Each backend compiles as its own static library exporting the same rhi_*
+# symbol set; an executable links engine plus exactly one backend library via
+# engine_link_rhi_backend(). EXCLUDE_FROM_ALL keeps the non-selected backend
+# out of the default build (nothing references it). engine_rhi_headless is
+# always built: the direct-source RHI contract tests link it unconditionally.
+add_library(engine_rhi_opengl STATIC EXCLUDE_FROM_ALL src/rhi/rhi_gl.c)
+target_include_directories(engine_rhi_opengl PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+target_link_libraries(engine_rhi_opengl PUBLIC engine PRIVATE glad)
+
+add_library(engine_rhi_headless STATIC src/rhi/rhi_headless.c)
+target_include_directories(engine_rhi_headless PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+# ENGINE_RHI_TEST arms the rhi_test_gl_cache_* hooks consumed by the
+# direct-source RHI contract tests that link this library.
+target_compile_definitions(engine_rhi_headless PRIVATE ENGINE_RHI_TEST=1)
+
+if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    add_library(engine_rhi_vulkan STATIC EXCLUDE_FROM_ALL src/rhi/rhi_vk.c)
+    target_include_directories(engine_rhi_vulkan PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+    if(SHADERC_INCLUDE_DIR)
+        target_include_directories(engine_rhi_vulkan PRIVATE ${SHADERC_INCLUDE_DIR})
+    endif()
+    target_compile_definitions(engine_rhi_vulkan PRIVATE ENGINE_VULKAN=1)
+    target_link_libraries(engine_rhi_vulkan PUBLIC engine
+        PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
+endif()
+
+# Link exactly one RHI backend into a consumer executable. Headless
+# contract tests do NOT call this helper; they link engine_rhi_headless.
+function(engine_link_rhi_backend target)
+    if(ENGINE_PLATFORM STREQUAL "macos" OR
+       ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
+        target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
+    elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
+        target_link_libraries(${target} PRIVATE engine_rhi_opengl)
+    else()
+        message(FATAL_ERROR
+            "engine_link_rhi_backend: no backend library for ENGINE_RHI_BACKEND_EFFECTIVE=${ENGINE_RHI_BACKEND_EFFECTIVE}")
+    endif()
+endfunction()
+
 # Vendored Lua 5.4 (external/lua). Built as a single translation unit via
 # onelua.c with MAKE_LIB; third-party code so warnings are silenced (it cannot
 # satisfy the engine's -Werror -pedantic).
@@ -790,6 +834,7 @@ target_include_directories(dxx_break PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
+engine_link_rhi_backend(dxx_break)
 
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -983,23 +1028,23 @@ if(ENGINE_PLATFORM STREQUAL "linux")
         find_package(Vulkan REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
         if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
+            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
         else()
             set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
             if(X11_Xi_FOUND)
                 list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
             endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} ${Vulkan_LIBRARIES} ${SHADERC_LIB} dl pthread)
+            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
         endif()
     else()
         if(ENGINE_ENABLE_WAYLAND)
-            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+            target_link_libraries(engine PRIVATE ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
         else()
             set(ENGINE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
             if(X11_Xi_FOUND)
                 list(APPEND ENGINE_X11_LIBS ${X11_Xi_LIB})
             endif()
-            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} GL dl pthread)
+            target_link_libraries(engine PRIVATE ${ENGINE_X11_LIBS} dl pthread)
         endif()
     endif()
 
@@ -1013,10 +1058,8 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     if(ENGINE_VULKAN)
         find_package(Vulkan REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
-        target_link_libraries(engine PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
-    else()
-        target_link_libraries(engine PRIVATE opengl32 gdi32)
     endif()
+    target_link_libraries(engine PRIVATE gdi32)
 
     target_link_libraries(engine PRIVATE user32 kernel32 shell32 imm32 advapi32)
     # XInput (gamepad) is loaded dynamically at runtime — no import lib needed.
@@ -1043,8 +1086,6 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         COMPILE_OPTIONS "-Wno-error;-Wno-pedantic")
 
     target_link_libraries(engine PRIVATE
-        Vulkan::Vulkan
-        ${SHADERC_LIB}
         "-framework Cocoa"
         "-framework QuartzCore"
         "-framework Metal"
@@ -1077,9 +1118,43 @@ elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
         find_package(Vulkan REQUIRED)
         find_library(SHADERC_LIB NAMES shaderc_shared shaderc REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
-        target_link_libraries(engine PRIVATE Vulkan::Vulkan ${SHADERC_LIB} dl)
+        target_link_libraries(engine PRIVATE dl)
         if(ENGINE_PLATFORM STREQUAL "android")
             target_link_libraries(engine PRIVATE android)
+        endif()
+    endif()
+endif()
+
+# Backend-side platform libraries (moved off engine, which no longer
+# compiles any backend source).
+if(ENGINE_PLATFORM STREQUAL "linux")
+    if(ENGINE_ENABLE_WAYLAND)
+        target_link_libraries(engine_rhi_opengl PRIVATE
+            ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+        if(TARGET engine_rhi_vulkan)
+            target_link_libraries(engine_rhi_vulkan PRIVATE
+                ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} dl pthread)
+        endif()
+    else()
+        target_link_libraries(engine_rhi_opengl PRIVATE
+            ${ENGINE_X11_LIBS} GL dl pthread)
+        if(TARGET engine_rhi_vulkan)
+            target_link_libraries(engine_rhi_vulkan PRIVATE
+                ${ENGINE_X11_LIBS} dl pthread)
+        endif()
+    endif()
+elseif(ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(engine_rhi_opengl PRIVATE opengl32)
+elseif(ENGINE_PLATFORM STREQUAL "macos")
+    target_link_libraries(engine_rhi_vulkan PRIVATE
+        "-framework Cocoa" "-framework QuartzCore" "-framework Metal"
+        "-framework IOKit")
+elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
+       ENGINE_PLATFORM STREQUAL "harmonyos")
+    if(TARGET engine_rhi_vulkan)
+        target_link_libraries(engine_rhi_vulkan PRIVATE dl)
+        if(ENGINE_PLATFORM STREQUAL "android")
+            target_link_libraries(engine_rhi_vulkan PRIVATE android)
         endif()
     endif()
 endif()
@@ -1087,6 +1162,7 @@ endif()
 # Executable
 add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
+engine_link_rhi_backend(engine_demo)
 # main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
 # against the Linux default 8 MB stack; the MSVC-family linker default
 # reserve is 1 MB, which faults during the prologue stack probe on
@@ -1114,6 +1190,7 @@ if(ENGINE_BUILD_TESTS)
         target_compile_options(test_vulkan PRIVATE /wd4702)
     endif()
     target_link_libraries(test_vulkan PRIVATE engine m)
+    engine_link_rhi_backend(test_vulkan)
 endif()
 
 add_executable(packer tools/packer.c)
@@ -1571,11 +1648,13 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_engine_lifecycle tests/test_engine_lifecycle.c)
     target_include_directories(test_engine_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_engine_lifecycle PRIVATE engine m)
+    engine_link_rhi_backend(test_engine_lifecycle)
     add_test(NAME test_engine_lifecycle COMMAND test_engine_lifecycle)
 
     add_executable(test_platform_null_safety tests/test_platform_null_safety.c)
     target_include_directories(test_platform_null_safety PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_null_safety PRIVATE engine m)
+    engine_link_rhi_backend(test_platform_null_safety)
     add_test(NAME test_platform_null_safety COMMAND test_platform_null_safety)
 
     # Header-only WSI lifecycle contract; intentionally headless and engine-free.
@@ -1592,6 +1671,7 @@ if(ENGINE_BUILD_TESTS)
             target_compile_definitions(test_platform_x11_runtime PRIVATE ENGINE_X11_XINPUT2=1)
         endif()
         target_link_libraries(test_platform_x11_runtime PRIVATE engine m)
+        engine_link_rhi_backend(test_platform_x11_runtime)
         add_test(NAME test_platform_x11_runtime COMMAND test_platform_x11_runtime)
         set_tests_properties(test_platform_x11_runtime PROPERTIES
             LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
@@ -1599,6 +1679,7 @@ if(ENGINE_BUILD_TESTS)
             add_executable(test_rhi_x11_runtime tests/test_rhi_x11_runtime.c)
             target_include_directories(test_rhi_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
             target_link_libraries(test_rhi_x11_runtime PRIVATE engine m)
+            engine_link_rhi_backend(test_rhi_x11_runtime)
             add_test(NAME test_rhi_x11_runtime COMMAND test_rhi_x11_runtime)
             set_tests_properties(test_rhi_x11_runtime PROPERTIES
                 LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
@@ -1611,6 +1692,7 @@ if(ENGINE_BUILD_TESTS)
             ${TEST_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
         target_link_libraries(test_platform_wayland_runtime PRIVATE engine m
             ${WAYLAND_LIBRARIES})
+        engine_link_rhi_backend(test_platform_wayland_runtime)
         add_test(NAME test_platform_wayland_runtime
             COMMAND test_platform_wayland_runtime)
         set_tests_properties(test_platform_wayland_runtime PROPERTIES
@@ -1621,6 +1703,7 @@ if(ENGINE_BUILD_TESTS)
     add_executable(test_platform_win32_runtime tests/test_platform_win32_runtime.c)
     target_include_directories(test_platform_win32_runtime PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_win32_runtime PRIVATE engine m)
+    engine_link_rhi_backend(test_platform_win32_runtime)
     if(CMAKE_C_COMPILER_ID MATCHES "Clang")
         target_compile_options(test_platform_win32_runtime PRIVATE
             -Wno-missing-field-initializers)
@@ -1633,6 +1716,7 @@ if(ENGINE_BUILD_TESTS)
         add_executable(test_platform_cocoa_runtime tests/test_platform_cocoa_runtime.c)
         target_include_directories(test_platform_cocoa_runtime PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m)
+        engine_link_rhi_backend(test_platform_cocoa_runtime)
         add_test(NAME test_platform_cocoa_runtime COMMAND test_platform_cocoa_runtime)
         set_tests_properties(test_platform_cocoa_runtime PROPERTIES LABELS platform_runtime)
     endif()
@@ -1645,6 +1729,7 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     )
     target_link_libraries(test_imgui_compat PRIVATE myui_core engine m)
+    engine_link_rhi_backend(test_imgui_compat)
     add_test(NAME test_imgui_compat COMMAND test_imgui_compat)
 
     add_executable(test_break_ui_damage tests/test_break_ui_damage.c
@@ -1705,6 +1790,7 @@ endif()
     )
     target_link_libraries(test_myui_break_pal PRIVATE myui_core engine m
         Threads::Threads)
+    engine_link_rhi_backend(test_myui_break_pal)
     add_test(NAME test_myui_break_pal COMMAND test_myui_break_pal)
 
     add_executable(test_myui_font tests/test_myui_font.c)
@@ -1843,30 +1929,8 @@ endif()
         if(ENGINE_VULKAN)
             target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_VULKAN=1)
         endif()
-        if(ENGINE_ENABLE_WAYLAND)
-            if(ENGINE_VULKAN)
-                target_link_libraries(test_rhi_capabilities PRIVATE
-                    ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
-                    ${SHADERC_LIB} dl pthread)
-            else()
-                target_link_libraries(test_rhi_capabilities PRIVATE
-                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-            endif()
-        elseif(ENGINE_VULKAN)
-            target_link_libraries(test_rhi_capabilities PRIVATE
-                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
-                ${SHADERC_LIB} dl pthread)
-        else()
-            target_link_libraries(test_rhi_capabilities PRIVATE
-                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
-        endif()
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_link_libraries(test_rhi_capabilities PRIVATE glad opengl32)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
-        target_link_libraries(test_rhi_capabilities PRIVATE
-            Vulkan::Vulkan ${SHADERC_LIB}
-            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     endif()
+    target_link_libraries(test_rhi_capabilities PRIVATE engine_rhi_headless m)
     if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
         target_compile_options(test_rhi_capabilities PRIVATE
             -ffunction-sections -fdata-sections)
@@ -1901,30 +1965,8 @@ endif()
         if(ENGINE_VULKAN)
             target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_VULKAN=1)
         endif()
-        if(ENGINE_ENABLE_WAYLAND)
-            if(ENGINE_VULKAN)
-                target_link_libraries(test_rhi_error_contract PRIVATE
-                    ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
-                    ${SHADERC_LIB} dl pthread)
-            else()
-                target_link_libraries(test_rhi_error_contract PRIVATE
-                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-            endif()
-        elseif(ENGINE_VULKAN)
-            target_link_libraries(test_rhi_error_contract PRIVATE
-                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
-                ${SHADERC_LIB} dl pthread)
-        else()
-            target_link_libraries(test_rhi_error_contract PRIVATE
-                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
-        endif()
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_link_libraries(test_rhi_error_contract PRIVATE glad opengl32)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
-        target_link_libraries(test_rhi_error_contract PRIVATE
-            Vulkan::Vulkan ${SHADERC_LIB}
-            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     endif()
+    target_link_libraries(test_rhi_error_contract PRIVATE engine_rhi_headless m)
     add_test(NAME test_rhi_error_contract COMMAND test_rhi_error_contract)
     set_tests_properties(test_rhi_error_contract PROPERTIES
         LABELS "headless;platform_contract")
@@ -1957,31 +1999,8 @@ endif()
             target_compile_definitions(test_rhi_frame_lifecycle_contract
                 PRIVATE ENGINE_VULKAN=1)
         endif()
-        if(ENGINE_ENABLE_WAYLAND)
-            if(ENGINE_VULKAN)
-                target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-                    ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
-                    ${SHADERC_LIB} dl pthread)
-            else()
-                target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-            endif()
-        elseif(ENGINE_VULKAN)
-            target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
-                ${SHADERC_LIB} dl pthread)
-        else()
-            target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
-        endif()
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-            glad opengl32)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
-        target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE
-            Vulkan::Vulkan ${SHADERC_LIB}
-            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
     endif()
+    target_link_libraries(test_rhi_frame_lifecycle_contract PRIVATE engine_rhi_headless m)
     add_test(NAME test_rhi_frame_lifecycle_contract
         COMMAND test_rhi_frame_lifecycle_contract)
     set_tests_properties(test_rhi_frame_lifecycle_contract PROPERTIES
@@ -2007,32 +2026,8 @@ endif()
         if(ENGINE_VULKAN)
             target_compile_definitions(test_rhi_native PRIVATE ENGINE_VULKAN=1)
         endif()
-        if(ENGINE_ENABLE_WAYLAND)
-            if(ENGINE_VULKAN)
-                target_link_libraries(test_rhi_native PRIVATE
-                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
-                    ${SHADERC_LIB} dl pthread)
-            else()
-                target_link_libraries(test_rhi_native PRIVATE
-                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
-            endif()
-        elseif(ENGINE_VULKAN)
-            target_link_libraries(test_rhi_native PRIVATE
-                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
-                ${SHADERC_LIB} dl pthread)
-        else()
-            target_link_libraries(test_rhi_native PRIVATE
-                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
-        endif()
-    elseif(ENGINE_PLATFORM STREQUAL "windows")
-        target_link_libraries(test_rhi_native PRIVATE glad opengl32)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
-        target_link_libraries(test_rhi_native PRIVATE
-            Vulkan::Vulkan ${SHADERC_LIB}
-            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
-    else()
-        target_link_libraries(test_rhi_native PRIVATE m)
     endif()
+    target_link_libraries(test_rhi_native PRIVATE engine_rhi_headless m)
     add_test(NAME test_rhi_native COMMAND test_rhi_native)
     set_tests_properties(test_rhi_native PROPERTIES
         LABELS "headless;platform_contract")
@@ -2227,6 +2222,7 @@ endif()
              -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
+            -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
     add_test(NAME test_myui_subproject_config
         COMMAND ${CMAKE_COMMAND}
@@ -2554,37 +2550,9 @@ endif()
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     elseif(ENGINE_PLATFORM STREQUAL "macos")
-        # macOS builds the engine with ENGINE_VULKAN=1 unconditionally (Cocoa
-        # + MoltenVK); mirror that here so rhi.c pulls in the Vulkan unity
-        # backend instead of the GLX OpenGL one.
-        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
-        target_include_directories(test_rt_trace PRIVATE ${SHADERC_INCLUDE_DIR})
+        target_compile_definitions(test_rt_trace PRIVATE ENGINE_PLATFORM_MACOS=1)
     endif()
-    if(ENGINE_VULKAN)
-        target_compile_definitions(test_rt_trace PRIVATE ENGINE_VULKAN=1)
-        if(SHADERC_LIB AND SHADERC_INCLUDE_DIR)
-            target_include_directories(test_rt_trace PRIVATE ${SHADERC_INCLUDE_DIR})
-            target_link_libraries(test_rt_trace PRIVATE ${Vulkan_LIBRARIES} ${SHADERC_LIB})
-        else()
-            target_link_libraries(test_rt_trace PRIVATE ${Vulkan_LIBRARIES})
-        endif()
-    endif()
-    if(ENGINE_PLATFORM STREQUAL "windows")
-        target_link_libraries(test_rt_trace PRIVATE glad opengl32)
-    elseif(ENGINE_PLATFORM STREQUAL "macos")
-        target_link_libraries(test_rt_trace PRIVATE
-            Vulkan::Vulkan ${SHADERC_LIB}
-            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
-    elseif(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_VULKAN)
-        # rhi.c includes the OpenGL unity backend in non-Vulkan tests.
-        # Link the native GL/X11 dependencies used by the other RHI tests.
-        set(TEST_RT_TRACE_X11_LIBS ${X11_LIBRARIES} ${X11_Xrandr_LIB})
-        if(X11_Xi_FOUND)
-            list(APPEND TEST_RT_TRACE_X11_LIBS ${X11_Xi_LIB})
-        endif()
-        target_link_libraries(test_rt_trace PRIVATE
-            glad ${TEST_RT_TRACE_X11_LIBS} GL dl pthread)
-    endif()
+    target_link_libraries(test_rt_trace PRIVATE engine_rhi_headless m)
     add_test(NAME test_rt_trace COMMAND test_rt_trace)
     set_tests_properties(test_rt_trace PROPERTIES
         LABELS "headless;platform_contract")

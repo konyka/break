@@ -10,6 +10,9 @@ endif()
 if(NOT DEFINED RHI_VK_SOURCE)
     message(FATAL_ERROR "RHI_VK_SOURCE is required")
 endif()
+if(NOT DEFINED RHI_HEADLESS_SOURCE)
+    message(FATAL_ERROR "RHI_HEADLESS_SOURCE is required")
+endif()
 if(NOT DEFINED RHI_OWNERSHIP_SOURCE)
     message(FATAL_ERROR "RHI_OWNERSHIP_SOURCE is required")
 endif()
@@ -81,16 +84,23 @@ if(DEFINED RHI_OMIT_TARGET)
             "${engine_cmake_text}")
     endif()
 endif()
-if(NOT EXISTS "${RHI_OWNERSHIP_SOURCE}")
-    message(FATAL_ERROR "RHI ownership source is missing: ${RHI_OWNERSHIP_SOURCE}")
-endif()
-if(NOT EXISTS "${RHI_VALIDATION_SOURCE}")
-    message(FATAL_ERROR "RHI validation source is missing: ${RHI_VALIDATION_SOURCE}")
-endif()
-if(NOT EXISTS "${RHI_RESOURCES_SOURCE}")
-    message(FATAL_ERROR "RHI resources source is missing: ${RHI_RESOURCES_SOURCE}")
-endif()
+foreach(required_source_path
+        "${RHI_INTERNAL_HEADER}"
+        "${RHI_SOURCE}"
+        "${RHI_GL_SOURCE}"
+        "${RHI_VK_SOURCE}"
+        "${RHI_HEADLESS_SOURCE}"
+        "${RHI_OWNERSHIP_SOURCE}"
+        "${RHI_VALIDATION_SOURCE}"
+        "${RHI_RESOURCES_SOURCE}"
+        "${RHI_PRESENT_HISTORY_SOURCE}"
+        "${RHI_RT_TRACE_SOURCE}")
+    if(NOT EXISTS "${required_source_path}")
+        message(FATAL_ERROR "RHI source contract input is missing: ${required_source_path}")
+    endif()
+endforeach()
 
+# RHI core ownership: the five core sources stay in RHI_CORE_SOURCES.
 extract_cmake_command("${engine_cmake_text}" "set(RHI_CORE_SOURCES" rhi_core_sources_block)
 if(NOT rhi_core_sources_block)
     message(FATAL_ERROR "RHI core source ownership block is missing")
@@ -111,21 +121,71 @@ foreach(required_source
     endif()
 endforeach()
 
-foreach(required_source_path
-        "${RHI_INTERNAL_HEADER}"
-        "${RHI_SOURCE}"
-        "${RHI_GL_SOURCE}"
-        "${RHI_VK_SOURCE}"
-        "${RHI_OWNERSHIP_SOURCE}"
-        "${RHI_VALIDATION_SOURCE}"
-        "${RHI_RESOURCES_SOURCE}"
-        "${RHI_PRESENT_HISTORY_SOURCE}"
-        "${RHI_RT_TRACE_SOURCE}")
-    if(NOT EXISTS "${required_source_path}")
-        message(FATAL_ERROR "RHI source contract input is missing: ${required_source_path}")
+# rhi.c must no longer unity-include a backend.
+foreach(unity_token "#include <rhi/rhi_vk.c>" "#include <rhi/rhi_gl.c>")
+    string(FIND "${rhi_text}" "${unity_token}" unity_offset)
+    if(NOT unity_offset EQUAL -1)
+        message(FATAL_ERROR "rhi.c must not unity-include a backend: ${unity_token}")
     endif()
 endforeach()
 
+# engine owns the core aggregate and no backend source.
+extract_cmake_command("${engine_cmake_text}" "add_library(engine STATIC" engine_block)
+if(NOT engine_block)
+    message(FATAL_ERROR "engine source ownership target is missing")
+endif()
+string(FIND "${engine_block}" "RHI_CORE_SOURCES" engine_core_sources_offset)
+if(engine_core_sources_offset EQUAL -1)
+    message(FATAL_ERROR "engine must consume the complete RHI_CORE_SOURCES aggregate")
+endif()
+string(FIND "${engine_block}" "src/renderer/rt_trace.c" engine_rt_trace_offset)
+if(engine_rt_trace_offset EQUAL -1)
+    message(FATAL_ERROR "engine source ownership missing: src/renderer/rt_trace.c")
+endif()
+foreach(backend_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c")
+    string(FIND "${engine_block}" "${backend_source}" engine_backend_offset)
+    if(NOT engine_backend_offset EQUAL -1)
+        message(FATAL_ERROR "engine must not own a backend source: ${backend_source}")
+    endif()
+endforeach()
+
+# Each backend library owns exactly its own backend source.
+foreach(backend_spec
+        "engine_rhi_opengl|src/rhi/rhi_gl.c"
+        "engine_rhi_vulkan|src/rhi/rhi_vk.c"
+        "engine_rhi_headless|src/rhi/rhi_headless.c")
+    string(REPLACE "|" ";" backend_parts "${backend_spec}")
+    list(GET backend_parts 0 backend_target)
+    list(GET backend_parts 1 backend_source)
+    extract_cmake_command("${engine_cmake_text}"
+        "add_library(${backend_target} STATIC" backend_block)
+    if(NOT backend_block)
+        message(FATAL_ERROR "RHI backend library is missing: ${backend_target}")
+    endif()
+    string(FIND "${backend_block}" "${backend_source}" own_offset)
+    if(own_offset EQUAL -1)
+        message(FATAL_ERROR
+            "RHI backend library does not own its source: ${backend_target} ${backend_source}")
+    endif()
+    foreach(other_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c")
+        if(NOT other_source STREQUAL backend_source)
+            string(FIND "${backend_block}" "${other_source}" other_offset)
+            if(NOT other_offset EQUAL -1)
+                message(FATAL_ERROR
+                    "RHI backend library owns a foreign backend source: ${backend_target} ${other_source}")
+            endif()
+        endif()
+    endforeach()
+endforeach()
+
+# The selection helper must exist.
+string(FIND "${engine_cmake_text}" "function(engine_link_rhi_backend" helper_offset)
+if(helper_offset EQUAL -1)
+    message(FATAL_ERROR "engine_link_rhi_backend helper is missing")
+endif()
+
+# Source-owning consumers keep their ownership; test_rhi_tlas_instance_encode
+# must not pull the whole aggregate.
 foreach(consumer_spec
         "engine|add_library(engine STATIC|RHI_CORE_SOURCES|src/core/log.c"
         "test_rhi_capabilities|add_executable(test_rhi_capabilities|RHI_CORE_SOURCES|tests/test_rhi_capabilities.c"
@@ -156,47 +216,78 @@ foreach(consumer_spec
     endif()
 endforeach()
 
+# Direct RHI contract tests link exactly the headless backend and never the
+# engine library (the word "engine" alone must not appear as a link item).
 foreach(direct_rhi_target
         "test_rhi_capabilities"
         "test_rhi_native"
-        "test_rt_trace")
+        "test_rt_trace"
+        "test_rhi_error_contract"
+        "test_rhi_frame_lifecycle_contract")
     extract_cmake_command("${engine_cmake_text}"
         "target_link_libraries(${direct_rhi_target}" direct_link_block)
     if(NOT direct_link_block)
         message(FATAL_ERROR
             "direct RHI test link ownership is missing: ${direct_rhi_target}")
     endif()
-    string(FIND "${direct_link_block}" "engine" direct_engine_link_offset)
-    if(NOT direct_engine_link_offset EQUAL -1)
+    string(FIND "${direct_link_block}" "engine_rhi_headless" headless_offset)
+    if(headless_offset EQUAL -1)
+        message(FATAL_ERROR
+            "direct RHI test must link engine_rhi_headless: ${direct_rhi_target}")
+    endif()
+    if(direct_link_block MATCHES "(^|[ \t\r\n(])engine([ \t\r\n)])")
         message(FATAL_ERROR
             "direct RHI test must link its owned sources, not engine: ${direct_rhi_target}")
     endif()
 endforeach()
 
-extract_cmake_command("${engine_cmake_text}" "add_library(engine STATIC" engine_block)
-if(NOT engine_block)
-    message(FATAL_ERROR "engine source ownership target is missing")
-endif()
-foreach(required_engine_text
-        "src/renderer/rt_trace.c"
-        "src/rhi/rhi_gl.c"
-        "src/rhi/rhi_vk.c")
-    string(FIND "${engine_block}" "${required_engine_text}" engine_source_offset)
-    if(required_engine_text STREQUAL "src/rhi/rhi_gl.c" OR
-       required_engine_text STREQUAL "src/rhi/rhi_vk.c")
-        if(NOT engine_source_offset EQUAL -1)
-            message(FATAL_ERROR
-                "backend source must remain owned by rhi.c unity inclusion: ${required_engine_text}")
-        endif()
-    elseif(engine_source_offset EQUAL -1)
-        message(FATAL_ERROR "engine source ownership missing: ${required_engine_text}")
+# Every executable that links engine must select exactly one backend through
+# the helper; no target link block may name two backend libraries.
+foreach(rhi_consumer_target
+        "engine_demo"
+        "dxx_break"
+        "test_vulkan"
+        "test_engine_lifecycle"
+        "test_platform_null_safety"
+        "test_imgui_compat"
+        "test_myui_break_pal"
+        "test_platform_x11_runtime"
+        "test_rhi_x11_runtime"
+        "test_platform_wayland_runtime"
+        "test_platform_win32_runtime"
+        "test_platform_cocoa_runtime")
+    string(FIND "${engine_cmake_text}"
+        "engine_link_rhi_backend(${rhi_consumer_target})" helper_call_offset)
+    if(helper_call_offset EQUAL -1)
+        message(FATAL_ERROR
+            "engine consumer must select a backend via the helper: ${rhi_consumer_target}")
     endif()
 endforeach()
-string(FIND "${engine_block}" "RHI_CORE_SOURCES" engine_core_sources_offset)
-if(engine_core_sources_offset EQUAL -1)
-    message(FATAL_ERROR "engine must consume the complete RHI_CORE_SOURCES aggregate")
-endif()
+foreach(linked_target
+        "engine_demo" "dxx_break" "test_vulkan" "test_engine_lifecycle"
+        "test_platform_null_safety" "test_imgui_compat" "test_myui_break_pal"
+        "test_platform_x11_runtime" "test_rhi_x11_runtime"
+        "test_platform_wayland_runtime" "test_platform_win32_runtime"
+        "test_platform_cocoa_runtime" "test_rhi_capabilities" "test_rhi_native"
+        "test_rt_trace" "test_rhi_error_contract" "test_rhi_frame_lifecycle_contract")
+    extract_cmake_command("${engine_cmake_text}"
+        "target_link_libraries(${linked_target}" link_block)
+    if(link_block)
+        set(backend_link_count 0)
+        foreach(backend_lib engine_rhi_opengl engine_rhi_vulkan engine_rhi_headless)
+            string(FIND "${link_block}" "${backend_lib}" backend_lib_offset)
+            if(NOT backend_lib_offset EQUAL -1)
+                math(EXPR backend_link_count "${backend_link_count} + 1")
+            endif()
+        endforeach()
+        if(backend_link_count GREATER 1)
+            message(FATAL_ERROR
+                "target links more than one RHI backend library: ${linked_target}")
+        endif()
+    endif()
+endforeach()
 
+# Future backends stay out of the build graph until plans C/D.
 foreach(future_backend_token
         "rhi_metal.c" "ENGINE_RHI_BACKEND_METAL"
         "ENGINE_RHI_BACKEND_D3D12")
@@ -207,6 +298,7 @@ foreach(future_backend_token
     endif()
 endforeach()
 
+# Backend internal contract surface (unchanged).
 foreach(required_text
         "RHIResourceType"
         "RHIResourceSlot"
@@ -235,7 +327,6 @@ string(FIND "${vk_text}" "rhi_backend_internal.h" vk_include_offset)
 if(vk_include_offset EQUAL -1)
     message(FATAL_ERROR "Vulkan backend must include the private internal contract")
 endif()
-
 string(FIND "${rhi_text}" "rhi_backend_internal.h" rhi_include_offset)
 if(rhi_include_offset EQUAL -1)
     message(FATAL_ERROR "rhi.c must include the private internal contract explicitly")

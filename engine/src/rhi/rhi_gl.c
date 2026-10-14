@@ -6,6 +6,8 @@
 #include <limits.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <core/log.h>
 #include <rhi/rhi.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_backend_internal.h>
