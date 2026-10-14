@@ -126,6 +126,11 @@ ctest --test-dir build --output-on-failure
 
 - [Clustered Lighting 设计](./Phase5B_ClusteredLighting.md) — 光源聚类方案设计
 - [myui 集成与 Break RHI 后端](./myui_integration.md) — myui/duanxianxia 平台桥、RHI vgcanvas 与 GL/VK 验证
+- [RHI 后端证据台账](./rhi_backend_evidence.md) — 证据等级定义、收据字段与当前各平台×后端等级
+- [Vulkan 支持矩阵](./vulkan_support_matrix.md) — 各平台 Vulkan 形态的证据等级与收据
+- [Metal / D3D12 特性矩阵](./rhi_metal_d3d12_feature_matrix.md) — 规划态后端的特性面落地状态
+- [RHI 回滚与 Device-Loss Runbook](./rhi_rollback_runbook.md) — 回滚触发条件与设备丢失处置
+- [RHI Benchmark Receipt Schema](./rhi_benchmark_receipt_schema.md) — 证据等级升级的 JSON 收据 schema
 
 ## 目录结构
 
