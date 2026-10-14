@@ -251,6 +251,7 @@ add_library(engine STATIC
     src/platform/input.c
     src/platform/platform_config.c
     src/platform/platform_display_media.c
+    src/platform/platform_vk_surface.c
     src/platform/platform_text.c
     src/platform/time.c
     src/platform/filewatch.c
@@ -2227,6 +2228,44 @@ endif()
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
+    add_test(NAME test_platform_vk_surface_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
+            -DVK_SURFACE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_vk_surface.c
+            -DVK_SURFACE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_vk_surface.h
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_vk_surface_contract.cmake)
+    set_tests_properties(test_platform_vk_surface_contract PROPERTIES
+        LABELS "platform_contract")
+    if(TARGET Vulkan::Vulkan)
+        add_executable(test_platform_vk_surface_abi
+            tests/test_platform_vk_surface_abi.c)
+        target_include_directories(test_platform_vk_surface_abi PRIVATE
+            ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_platform_vk_surface_abi PRIVATE Vulkan::Vulkan)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                ENGINE_PLATFORM_LINUX=1)
+            target_include_directories(test_platform_vk_surface_abi PRIVATE
+                ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS})
+            if(ENGINE_ENABLE_WAYLAND)
+                target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                    ENGINE_PLATFORM_WAYLAND=1)
+                target_link_libraries(test_platform_vk_surface_abi PRIVATE
+                    ${WAYLAND_LIBRARIES})
+            endif()
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                ENGINE_PLATFORM_WINDOWS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                ENGINE_PLATFORM_MACOS=1)
+        endif()
+        add_test(NAME test_platform_vk_surface_abi
+            COMMAND test_platform_vk_surface_abi)
+        set_tests_properties(test_platform_vk_surface_abi PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
     add_test(NAME test_myui_subproject_config
         COMMAND ${CMAKE_COMMAND}
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt

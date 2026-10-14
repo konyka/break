@@ -1,26 +1,11 @@
-#ifdef ENGINE_PLATFORM_WINDOWS
-    #define VK_USE_PLATFORM_WIN32_KHR
-    #include <windows.h>
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    #define VK_USE_PLATFORM_METAL_EXT
-#elif defined(ENGINE_PLATFORM_WAYLAND)
-    #define VK_USE_PLATFORM_WAYLAND_KHR
-    #include <wayland-client.h>
-#elif defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
-    #define VK_USE_PLATFORM_ANDROID_KHR
-    #include <android/native_window.h>
-#elif defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_HARMONYOS)
-    #error "Vulkan surface support requires a supplied native surface implementation"
-#elif defined(ENGINE_PLATFORM_LINUX)
-    #define VK_USE_PLATFORM_XLIB_KHR
-#else
-    #error "Vulkan surface support requires a supported platform surface backend"
-#endif
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>
-#if defined(ENGINE_PLATFORM_LINUX)
-#include <X11/Xlib.h>
+#include <platform/platform_vk_surface.h>
+#if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
+/* vk_shutdown keeps the ANativeWindow_release half of the reference pair
+ * (the acquire moved into platform_vk_surface.c); this header declares it. */
+#include <android/native_window.h>
 #endif
 #include <shaderc/shaderc.h>
 #include <core/log.h>
@@ -383,19 +368,8 @@ typedef struct {
     VkDescriptorSetLayout    ubo_layout;
     VkDescriptorSetLayout    ray_query_layout;
 
-#ifdef ENGINE_PLATFORM_WINDOWS
-    HINSTANCE hinstance;
-    HWND      hwnd;
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    void *metal_layer;   /* CAMetalLayer* from the Cocoa window */
-#elif defined(ENGINE_PLATFORM_WAYLAND)
-    struct wl_display *wl_display;
-    struct wl_surface *wl_surface;
-#elif defined(ENGINE_PLATFORM_ANDROID)
+#if defined(ENGINE_PLATFORM_ANDROID)
     struct ANativeWindow *native_window;
-#elif defined(ENGINE_PLATFORM_LINUX)
-    Display *display;
-    Window   window;
 #endif
 
     VkPipeline current_pipeline;
@@ -1471,21 +1445,12 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     if (!vk) return false;
     dev->backend_data = vk;
 
-#ifdef ENGINE_PLATFORM_WINDOWS
-    vk->hinstance = (HINSTANCE)display_native;
-    vk->hwnd = (HWND)window_native;
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    (void)display_native;
-    vk->metal_layer = window_native;   /* CAMetalLayer* */
-#elif defined(ENGINE_PLATFORM_WAYLAND)
-    vk->wl_display = (struct wl_display *)display_native;
-    vk->wl_surface = (struct wl_surface *)window_native;
-#elif defined(ENGINE_PLATFORM_ANDROID)
+#if defined(ENGINE_PLATFORM_ANDROID)
+    /* platform_vk_surface.c acquires this window on surface-creation success;
+     * the field stays so vk_shutdown's release keeps the pair balanced. */
     vk->native_window = (struct ANativeWindow *)window_native;
-    ANativeWindow_acquire(vk->native_window);
-#elif defined(ENGINE_PLATFORM_LINUX)
-    vk->display = (Display *)display_native;
-    vk->window = (Window)(uintptr_t)window_native;
+#else
+    (void)window_native; (void)display_native;
 #endif
     /* R430: swap_format is chosen from the surface's supported formats in
      * vk_create_swapchain (after surface + physical device exist). */
@@ -1501,21 +1466,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     const char *layers[] = { "VK_LAYER_KHRONOS_validation" };
     const bool validation_on = vk_validation_enabled();
     const char *extensions[8];
-    u32 ext_count = 0;
-    extensions[ext_count++] = VK_KHR_SURFACE_EXTENSION_NAME;
-#ifdef ENGINE_PLATFORM_WINDOWS
-    extensions[ext_count++] = VK_KHR_WIN32_SURFACE_EXTENSION_NAME;
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    extensions[ext_count++] = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
-    extensions[ext_count++] = VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME;
-    extensions[ext_count++] = VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME;
-#elif defined(ENGINE_PLATFORM_WAYLAND)
-    extensions[ext_count++] = VK_KHR_WAYLAND_SURFACE_EXTENSION_NAME;
-#elif defined(ENGINE_PLATFORM_ANDROID)
-    extensions[ext_count++] = VK_KHR_ANDROID_SURFACE_EXTENSION_NAME;
-#elif defined(ENGINE_PLATFORM_LINUX)
-    extensions[ext_count++] = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
-#endif
+    u32 ext_count = platform_vk_required_instance_extensions(
+        NULL, extensions, (u32)(sizeof(extensions) / sizeof(extensions[0])));
     for (u32 i = 0; i < ext_count; i++) {
         if (!vk_instance_extension_available(extensions[i])) {
             LOG_FATAL("VK: required instance extension unavailable: %s", extensions[i]);
@@ -1590,10 +1542,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     ici.ppEnabledExtensionNames = extensions;
     if (validation_features.sType != 0)
         ici.pNext = &validation_features;
-#if defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    /* MoltenVK is a portability driver — must opt in to enumeration. */
-    ici.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
-#endif
+    ici.flags |= platform_vk_instance_create_flags(NULL);
     if (validation_on) {
         u32 layer_count = 0;
         vkEnumerateInstanceLayerProperties(&layer_count, NULL);
@@ -1654,62 +1603,25 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         }
     }
 
-#ifdef ENGINE_PLATFORM_WINDOWS
-    VkWin32SurfaceCreateInfoKHR sci = {0};
-    sci.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR;
-    sci.hinstance = vk->hinstance;
-    sci.hwnd = vk->hwnd;
-    if (vkCreateWin32SurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
-        LOG_ERROR("Failed to create Win32 Vulkan surface");
-        vk_init_cleanup(dev, vk);
-        return false;
-    }
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(ENGINE_PLATFORM_IOS)
-    VkMetalSurfaceCreateInfoEXT sci = {0};
-    sci.sType = VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT;
-    sci.pLayer = vk->metal_layer;   /* CAMetalLayer* supplied by the Cocoa window */
     {
-        PFN_vkCreateMetalSurfaceEXT create_metal =
-            (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(
-                vk->instance, "vkCreateMetalSurfaceEXT");
-        if (!create_metal ||
-            create_metal(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
-            LOG_ERROR("Failed to create Metal (MoltenVK) Vulkan surface");
+        /* vkGetInstanceProcAddr 是函数指针，API 参数是 void * —— 用 memcpy
+         * 桥接（-Wpedantic 不允许直接强转）。 */
+        PFN_vkGetInstanceProcAddr gpa_fn = vkGetInstanceProcAddr;
+        void *gpa;
+        u64 surface_bits = 0u;
+        u64 surface_result;
+        memcpy(&gpa, &gpa_fn, sizeof(gpa));
+        surface_result = platform_vk_create_surface_handles(
+            window_native, display_native, (void *)vk->instance, gpa,
+            &surface_bits);
+        if (surface_result != PLATFORM_VK_SURFACE_OK) {
+            LOG_ERROR("Failed to create Vulkan surface via PAL (error %llu)",
+                      (unsigned long long)surface_result);
             vk_init_cleanup(dev, vk);
             return false;
         }
+        vk->surface = (VkSurfaceKHR)surface_bits;
     }
-#elif defined(ENGINE_PLATFORM_WAYLAND)
-    VkWaylandSurfaceCreateInfoKHR sci = {0};
-    sci.sType = VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR;
-    sci.display = vk->wl_display;
-    sci.surface = vk->wl_surface;
-    if (vkCreateWaylandSurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
-        LOG_ERROR("Failed to create Wayland Vulkan surface");
-        vk_init_cleanup(dev, vk);
-        return false;
-    }
-#elif defined(ENGINE_PLATFORM_ANDROID)
-    VkAndroidSurfaceCreateInfoKHR sci = {0};
-    sci.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
-    sci.window = vk->native_window;
-    if (!vk->native_window || vkCreateAndroidSurfaceKHR(vk->instance, &sci, NULL,
-                                                         &vk->surface) != VK_SUCCESS) {
-        LOG_ERROR("Failed to create Android Vulkan surface from ANativeWindow");
-        vk_init_cleanup(dev, vk);
-        return false;
-    }
-#elif defined(ENGINE_PLATFORM_LINUX)
-    VkXlibSurfaceCreateInfoKHR sci = {0};
-    sci.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
-    sci.dpy = vk->display;
-    sci.window = vk->window;
-    if (vkCreateXlibSurfaceKHR(vk->instance, &sci, NULL, &vk->surface) != VK_SUCCESS) {
-        LOG_ERROR("Failed to create Xlib Vulkan surface");
-        vk_init_cleanup(dev, vk);
-        return false;
-    }
-#endif
 
     u32 gpu_count = 0;
     if (vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL) != VK_SUCCESS) {
