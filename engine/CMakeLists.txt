@@ -1879,6 +1879,56 @@ endif()
     set_tests_properties(test_rhi_capabilities PROPERTIES
         LABELS "headless;platform_contract")
 
+    add_executable(test_rhi_error_contract tests/test_rhi_error_contract.c
+        ${RHI_CORE_SOURCES} src/core/log.c)
+    target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_RHI_TEST=1)
+    target_include_directories(test_rhi_error_contract PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_VULKAN=1)
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_include_directories(test_rhi_error_contract PRIVATE
+            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        if(ENGINE_ENABLE_WAYLAND)
+            target_compile_definitions(test_rhi_error_contract PRIVATE
+                ENGINE_PLATFORM_WAYLAND=1)
+        endif()
+        if(ENGINE_VULKAN)
+            target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_VULKAN=1)
+        endif()
+        if(ENGINE_ENABLE_WAYLAND)
+            if(ENGINE_VULKAN)
+                target_link_libraries(test_rhi_error_contract PRIVATE
+                    ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} ${Vulkan_LIBRARIES}
+                    ${SHADERC_LIB} dl pthread)
+            else()
+                target_link_libraries(test_rhi_error_contract PRIVATE
+                    glad ${WAYLAND_LIBRARIES} ${XKB_LIBRARIES} GL EGL dl pthread)
+            endif()
+        elseif(ENGINE_VULKAN)
+            target_link_libraries(test_rhi_error_contract PRIVATE
+                ${X11_LIBRARIES} ${X11_Xrandr_LIB} ${Vulkan_LIBRARIES}
+                ${SHADERC_LIB} dl pthread)
+        else()
+            target_link_libraries(test_rhi_error_contract PRIVATE
+                glad ${X11_LIBRARIES} ${X11_Xrandr_LIB} GL dl pthread)
+        endif()
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_rhi_error_contract PRIVATE glad opengl32)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_link_libraries(test_rhi_error_contract PRIVATE
+            Vulkan::Vulkan ${SHADERC_LIB}
+            "-framework Cocoa" "-framework QuartzCore" "-framework Metal")
+    endif()
+    add_test(NAME test_rhi_error_contract COMMAND test_rhi_error_contract)
+    set_tests_properties(test_rhi_error_contract PROPERTIES
+        LABELS "headless;platform_contract")
+
     add_executable(test_rhi_native tests/test_rhi_native.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_include_directories(test_rhi_native PRIVATE ${TEST_INCLUDE_DIRS})
