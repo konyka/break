@@ -2597,6 +2597,18 @@ endif()
              WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics)
 
+    # rhi_swapchain_bench: swapchain frame benchmark producing a benchmark
+    # receipt JSON (docs/rhi_benchmark_receipt_schema.md). SKIP_RETURN_CODE 77
+    # marks runners without a display/GPU as skipped instead of failed.
+    add_executable(rhi_swapchain_bench tools/rhi_swapchain_bench.c)
+    target_include_directories(rhi_swapchain_bench PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(rhi_swapchain_bench PRIVATE engine m)
+    engine_link_rhi_backend(rhi_swapchain_bench)
+    add_test(NAME rhi_swapchain_bench
+        COMMAND rhi_swapchain_bench ${CMAKE_CURRENT_BINARY_DIR}/rhi_receipt_local.json)
+    set_tests_properties(rhi_swapchain_bench PROPERTIES
+        LABELS "graphics;benchmark" SKIP_RETURN_CODE 77 TIMEOUT 120)
+
     # test_physics: needs physics.c + bvh.c + math.c + log.c
     add_executable(test_physics tests/test_physics.c
         src/physics/physics.c src/physics/bvh.c src/math/math.c src/core/log.c)

@@ -568,3 +568,59 @@ jobs:
             fi
             exit 1
           }
+
+  steam-deck-vulkan-benchmark:
+    name: Steam Deck / Linux real-GPU Vulkan benchmark
+    # 真 GPU 自托管 lane：用仓库变量 ENABLE_GPU_LANES=1 显式开启；
+    # GitHub-hosted 运行器上没有 self-hosted 标签可接单，不加 if 会永久 pending。
+    if: vars.ENABLE_GPU_LANES == '1'
+    runs-on: [self-hosted, linux, gpu-vulkan]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build libx11-dev libxrandr-dev \
+            libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Graphics suite (GPU-runtime evidence)
+        run: ctest --test-dir build -L graphics --output-on-failure
+
+      - name: Benchmark receipt
+        env:
+          RECEIPT_RUNNER: ${{ runner.name }}
+          RECEIPT_OS_VERSION: ${{ runner.os }}
+          RECEIPT_BUILD_CONFIG: RelWithDebInfo
+          GIT_COMMIT: ${{ github.sha }}
+        run: |
+          # RECEIPT_TIMESTAMP 不能写在 env: 块——那里不会求值 $(...)。
+          export RECEIPT_TIMESTAMP="$(date -u +%FT%TZ)"
+          set +e
+          ./build/rhi_swapchain_bench build/rhi_receipt_steam_deck.json
+          rc=$?
+          set -e
+          # 环境缺显示/GPU 时 bench 以 77 退出：记为 unavailable 证据，不算通过。
+          if [ $rc -eq 77 ]; then
+            echo "::warning::bench skipped (no display/GPU on this runner) — no receipt produced"
+            exit 0
+          fi
+          test $rc -eq 0
+          cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
+            -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
+
+      - name: Upload receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rhi-benchmark-receipt
+          path: build/rhi_receipt_steam_deck.json
+          if-no-files-found: ignore
