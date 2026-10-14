@@ -1,5 +1,6 @@
 #pragma once
 #include <core/types.h>
+#include <platform/platform_wsi.h>
 
 /* ---- Handle: index + generation for safe resource reference ---- */
 typedef struct { u32 index; u32 generation; } RHIHandle;
@@ -334,6 +335,10 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
                                 RHIResult *out_result);
 void       rhi_device_destroy(RHIDevice *dev);
 RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
+/* 把平台层 WSI 状态对象挂到设备（非拥有指针，Platform 拥有存储）。
+ * 挂上后 rhi_device_destroy_ex 在 WSI DESTROYING 状态返回 RHI_RESULT_BUSY
+ * 并拒绝销毁；wsi == NULL 解除挂载。 */
+void       rhi_device_attach_wsi(RHIDevice *dev, PlatformWsiSurface *wsi);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);

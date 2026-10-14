@@ -430,6 +430,7 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
 
     rs->device = rhi_device_create(TV_BACKEND, window, display, w, h);
     if (!rs->device) { LOG_ERROR("FAIL: device create"); return false; }
+    rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
     rhi_set_vsync(rs->device, false);
     LOG_INFO("PASS: RHI device created (backend=%d)", (int)TV_BACKEND);
 
@@ -798,7 +799,11 @@ static void test_render_shutdown(TestRenderState *rs) {
     if (rhi_handle_valid(rs->test_tex))  rhi_texture_destroy(rs->device, rs->test_tex);
     if (rhi_handle_valid(rs->sampler))   rhi_sampler_destroy(rs->device, rs->sampler);
     if (rhi_handle_valid(rs->pipeline))  rhi_pipeline_destroy(rs->device, rs->pipeline);
-    rhi_device_destroy(rs->device);
+    {
+        RHIResult destroy_result = rhi_device_destroy_ex(rs->device);
+        if (destroy_result != RHI_RESULT_OK)
+            LOG_ERROR("rhi_device_destroy_ex: %d", (int)destroy_result);
+    }
 }
 
 /* R557: Execute the RT1 motion-vector path on both graphics backends. This is

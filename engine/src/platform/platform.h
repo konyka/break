@@ -1,6 +1,7 @@
 #pragma once
 #include <core/types.h>
 #include <platform/input.h>
+#include <platform/platform_wsi.h>
 
 typedef struct Platform Platform;
 
@@ -143,3 +144,18 @@ u64                 platform_get_media_generation(Platform *p);
 /* Multi-monitor */
 u32                 platform_get_monitor_count(Platform *p);
 bool                platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out);
+
+/* ---- WSI surface 状态机（platform_wsi.h）---- */
+/* 当前 WSI 状态快照；p 或 out 为 NULL 返回 false。 */
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out);
+/* 设备级 WSI 状态对象的非拥有指针（挂到 RHIDevice 用，见 rhi_device_attach_wsi；
+ * Platform 拥有存储，生命周期长于任何 RHIDevice 使用窗口）。 */
+PlatformWsiSurface *platform_wsi_surface(Platform *p);
+/* 移动宿主回调（iOS/Android 的 host-injection 入口，window_mobile.c 真实实现；
+ * 桌面后端是 no-op——桌面没有 OS 级 suspend/resume/surface-lost 事件，相应语义
+ * 由 resize 与 DESTROYING 覆盖）。 */
+void platform_mobile_notify_suspend(Platform *p);
+void platform_mobile_notify_resume(Platform *p);
+void platform_mobile_notify_surface_lost(Platform *p);
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height);

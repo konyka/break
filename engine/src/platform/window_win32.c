@@ -61,6 +61,7 @@ struct Platform {
     u64         media_generation;
     PlatformMediaContext media_context;
     bool        media_context_valid;
+    PlatformWsiSurface wsi;
 };
 
 typedef struct {
@@ -301,8 +302,21 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return 0;
 
     case WM_SIZE:
+        if (wParam == SIZE_MINIMIZED) {
+            (void)platform_wsi_surface_suspend(&p->wsi);
+            return 0;
+        }
         p->width  = (u32)LOWORD(lParam);
         p->height = (u32)HIWORD(lParam);
+        if (p->wsi.state == PLATFORM_WSI_SUSPENDED)
+            (void)platform_wsi_surface_resume(&p->wsi);
+        {
+            u32 lw, lh, dw, dh;
+            platform_size_win32(p->width, p->height,
+                                platform_get_content_scale(p),
+                                &lw, &lh, &dw, &dh);
+            (void)platform_wsi_surface_resize(&p->wsi, lw, lh, dw, dh);
+        }
         return 0;
 
     case WM_SETCURSOR:
@@ -496,6 +510,13 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->hinstance = GetModuleHandleW(NULL);
     p->width  = cfg->width;
     p->height = cfg->height;
+    {
+        u32 lw, lh, dw, dh;
+        platform_size_win32(p->width, p->height,
+                            platform_get_content_scale(p),
+                            &lw, &lh, &dw, &dh);
+        (void)platform_wsi_surface_init(&p->wsi, true, lw, lh, dw, dh);
+    }
     p->mouse_visible = true;  /* R427: cursor starts visible */
     p->cursor = PLATFORM_CURSOR_ARROW;
 
@@ -583,6 +604,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
 void platform_destroy(Platform *p) {
     if (!p) return;
+    (void)platform_wsi_surface_destroy(&p->wsi);
     gamepad_shutdown();
     platform_text_queue_destroy(&p->text_queue);
     if (p->hdc) ReleaseDC(p->hwnd, p->hdc);
@@ -590,6 +612,26 @@ void platform_destroy(Platform *p) {
     UnregisterClassW(L"BreakEngine", p->hinstance);
     free(p);
     LOG_INFO("Platform destroyed");
+}
+
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out) {
+    if (p == NULL || out == NULL) return false;
+    *out = p->wsi;
+    return true;
+}
+
+PlatformWsiSurface *platform_wsi_surface(Platform *p) {
+    return p != NULL ? &p->wsi : NULL;
+}
+
+/* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
+ * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+void platform_mobile_notify_suspend(Platform *p) { (void)p; }
+void platform_mobile_notify_resume(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height) {
+    (void)p; (void)native_window; (void)width; (void)height;
 }
 
 PlatformEventResult platform_poll(Platform *p) {

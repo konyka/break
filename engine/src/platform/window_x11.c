@@ -79,6 +79,7 @@ struct Platform {
     u64         media_generation;
     PlatformMediaContext media_context;
     bool        media_context_valid;
+    PlatformWsiSurface wsi;
 #ifdef ENGINE_X11_XINPUT2
     int         xinput_opcode;
 #endif
@@ -823,6 +824,13 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
     p->width  = cfg->width;
     p->height = cfg->height;
+    {
+        u32 lw, lh, dw, dh;
+        platform_size_x11(p->width, p->height,
+                          (u32)(p->scale_factor > 0 ? p->scale_factor : 1),
+                          &lw, &lh, &dw, &dh);
+        (void)platform_wsi_surface_init(&p->wsi, true, lw, lh, dw, dh);
+    }
 
     p->window = XCreateSimpleWindow(
         p->display, RootWindow(p->display, screen),
@@ -901,6 +909,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
 void platform_destroy(Platform *p) {
     if (!p) return;
+    (void)platform_wsi_surface_destroy(&p->wsi);
     gamepad_shutdown();
     if (p->display) {
         if (p->xic) XDestroyIC(p->xic);
@@ -919,6 +928,26 @@ void platform_destroy(Platform *p) {
     }
     free(p);
     LOG_INFO("Platform destroyed");
+}
+
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out) {
+    if (p == NULL || out == NULL) return false;
+    *out = p->wsi;
+    return true;
+}
+
+PlatformWsiSurface *platform_wsi_surface(Platform *p) {
+    return p != NULL ? &p->wsi : NULL;
+}
+
+/* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
+ * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+void platform_mobile_notify_suspend(Platform *p) { (void)p; }
+void platform_mobile_notify_resume(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height) {
+    (void)p; (void)native_window; (void)width; (void)height;
 }
 
 static void x11_collect_text(Platform *p, XKeyEvent *key) {
@@ -1096,6 +1125,13 @@ PlatformEventResult platform_poll(Platform *p) {
             p->width  = (u32)ev.xconfigure.width;
             p->height = (u32)ev.xconfigure.height;
             x11_update_active_monitor(p);
+            {
+                u32 lw, lh, dw, dh;
+                platform_size_x11(p->width, p->height,
+                                  (u32)(p->scale_factor > 0 ? p->scale_factor : 1),
+                                  &lw, &lh, &dw, &dh);
+                (void)platform_wsi_surface_resize(&p->wsi, lw, lh, dw, dh);
+            }
             break;
 
         case FocusOut:

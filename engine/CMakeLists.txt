@@ -1944,6 +1944,41 @@ endif()
     set_tests_properties(test_rhi_capabilities PROPERTIES
         LABELS "headless;platform_contract")
 
+    add_executable(test_rhi_wsi_attach tests/test_rhi_wsi_attach.c
+        ${RHI_CORE_SOURCES} src/core/log.c)
+    target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_RHI_TEST=1)
+    target_include_directories(test_rhi_wsi_attach PRIVATE ${TEST_INCLUDE_DIRS})
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_LINUX=1)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    elseif(ENGINE_PLATFORM STREQUAL "macos")
+        target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_PLATFORM_MACOS=1)
+        target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_VULKAN=1)
+    endif()
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_include_directories(test_rhi_wsi_attach PRIVATE
+            ${X11_INCLUDE_DIRS} ${WAYLAND_INCLUDE_DIRS} ${XKB_INCLUDE_DIRS})
+        if(ENGINE_ENABLE_WAYLAND)
+            target_compile_definitions(test_rhi_wsi_attach PRIVATE
+                ENGINE_PLATFORM_WAYLAND=1)
+        endif()
+        if(ENGINE_VULKAN)
+            target_compile_definitions(test_rhi_wsi_attach PRIVATE ENGINE_VULKAN=1)
+        endif()
+    endif()
+    target_link_libraries(test_rhi_wsi_attach PRIVATE engine_rhi_headless m)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_rhi_wsi_attach PRIVATE
+            -ffunction-sections -fdata-sections)
+    endif()
+    if(NOT APPLE)
+        target_link_options(test_rhi_wsi_attach PRIVATE -Wl,--gc-sections)
+    endif()
+    add_test(NAME test_rhi_wsi_attach COMMAND test_rhi_wsi_attach)
+    set_tests_properties(test_rhi_wsi_attach PROPERTIES
+        LABELS "headless;platform_contract")
+
     add_executable(test_rhi_error_contract tests/test_rhi_error_contract.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_error_contract PRIVATE ENGINE_RHI_TEST=1)
@@ -2236,6 +2271,21 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_vk_surface_contract.cmake)
     set_tests_properties(test_platform_vk_surface_contract PROPERTIES
+        LABELS "platform_contract")
+    add_test(NAME test_platform_wsi_wiring_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DPLATFORM_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform.h
+            -DWSI_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform_wsi.h
+            -DWIN32_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_win32.c
+            -DX11_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_x11.c
+            -DWAYLAND_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_wayland.c
+            -DCOCOA_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_cocoa.m
+            -DMOBILE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/window_mobile.c
+            -DRHI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.c
+            -DRHI_INTERNAL_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_backend_internal.h
+            -DMAIN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/main.c
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_wsi_wiring_contract.cmake)
+    set_tests_properties(test_platform_wsi_wiring_contract PROPERTIES
         LABELS "platform_contract")
     if(TARGET Vulkan::Vulkan)
         add_executable(test_platform_vk_surface_abi

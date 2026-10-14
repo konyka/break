@@ -72,8 +72,18 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
 RHIResult rhi_device_destroy_ex(RHIDevice *dev) {
     if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
     if (!rhi_frame_owner_preclaim_destroy(dev)) return RHI_RESULT_BUSY;
+    /* WSI DESTROYING 门控：窗口已进入销毁流程的 surface 上不再拆设备；
+     * 调用方必须先完成 RHI 销毁再进入 platform_destroy。 */
+    if (dev->wsi != NULL && !platform_wsi_rhi_teardown_allowed(dev->wsi)) {
+        rhi_frame_owner_clear_preclaims(dev);
+        return RHI_RESULT_BUSY;
+    }
     rhi_device_destroy(dev);
     return RHI_RESULT_OK;
+}
+
+void rhi_device_attach_wsi(RHIDevice *dev, PlatformWsiSurface *wsi) {
+    if (dev != NULL) dev->wsi = wsi;
 }
 
 RHIResult rhi_device_resize_ex(RHIDevice *dev, u32 w, u32 h) {

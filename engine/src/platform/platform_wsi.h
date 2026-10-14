@@ -300,4 +300,21 @@ PLATFORM_WSI_INLINE PlatformWsiResult platform_wsi_surface_destroy(
     return PLATFORM_WSI_OK;
 }
 
+/* 帧是否允许进入 RHI：仅 CREATED/RESIZED。SUSPENDED/LOST/DESTROYING/UNAVAILABLE
+ * 一律拒绝——应用层据此跳过渲染，而不是让后端在死 surface 上空转。 */
+PLATFORM_WSI_INLINE bool platform_wsi_frame_allowed(const PlatformWsiSurface *surface)
+{
+    return surface != NULL &&
+           (surface->state == PLATFORM_WSI_CREATED ||
+            surface->state == PLATFORM_WSI_RESIZED);
+}
+
+/* RHI 销毁门控：进入 DESTROYING 后拒绝销毁。销毁顺序契约：
+ * rhi_device_destroy_ex 必须先于 platform_destroy（后者把状态推入
+ * DESTROYING）。 */
+PLATFORM_WSI_INLINE bool platform_wsi_rhi_teardown_allowed(const PlatformWsiSurface *surface)
+{
+    return surface != NULL && surface->state != PLATFORM_WSI_DESTROYING;
+}
+
 #undef PLATFORM_WSI_INLINE

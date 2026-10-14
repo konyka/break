@@ -359,6 +359,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
 #endif
         window, display, w, h);
     if (!rs->device) return false;
+    rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
 
     usize vs_len = 0, fs_len = 0;
 #ifdef ENGINE_VULKAN
@@ -1028,7 +1029,11 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->arr_pipeline); /* R441 */
     for (u32 i = 0; i < 2u; i++)
         if (rhi_handle_valid(rs->temporal_buf[i])) rhi_buffer_destroy(rs->device, rs->temporal_buf[i]);
-    rhi_device_destroy(rs->device);
+    {
+        RHIResult destroy_result = rhi_device_destroy_ex(rs->device);
+        if (destroy_result != RHI_RESULT_OK)
+            LOG_ERROR("rhi_device_destroy_ex: %d", (int)destroy_result);
+    }
     rs->device = NULL;
 }
 
@@ -4343,6 +4348,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         bool need_rebuild = false;
         if (w != frame_w || h != frame_h) {
+            PlatformWsiSurface wsi_snapshot;
+            if (platform_wsi_surface_query(engine.platform, &wsi_snapshot) &&
+                wsi_snapshot.state == PLATFORM_WSI_RESIZED) {
+                w = wsi_snapshot.drawable_width;
+                h = wsi_snapshot.drawable_height;
+            }
             rhi_device_resize(render.device, w, h);
             camera.aspect = (f32)w / (f32)(h > 0 ? h : 1); /* R142: guard h==0 */
             need_rebuild = true;
@@ -6048,6 +6059,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
         }
 
+        PlatformWsiSurface wsi_snapshot;
+        if (platform_wsi_surface_query(engine.platform, &wsi_snapshot) &&
+            !platform_wsi_frame_allowed(&wsi_snapshot)) {
+            platform_poll(engine.platform);
+            continue; /* SUSPENDED/LOST/DESTROYING：跳过本帧渲染 */
+        }
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
         if (!cmd) {
             /* R578: device lost (or fatal frame error) — exit gracefully

@@ -46,6 +46,7 @@ struct RHIDevice {
     bool frame_damage_requested;
     bool frame_partial_active;
     atomic_uintptr_t frame_owner;
+    PlatformWsiSurface *wsi;
 };
 
 extern _Thread_local RHIDevice *g_current_device;

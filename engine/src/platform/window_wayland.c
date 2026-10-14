@@ -182,6 +182,7 @@ struct Platform {
     u64 media_generation;
     PlatformMediaContext media_context;
     bool media_context_valid;
+    PlatformWsiSurface wsi;
 };
 
 /* Forward decls for relative-pointer wiring. */
@@ -849,6 +850,12 @@ static void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *tl,
         p->width = (u32)w;
         p->height = (u32)h;
         wayland_update_surface_scale(p);
+        {
+            u32 lw, lh, dw, dh;
+            platform_size_wayland(p->width, p->height, p->content_scale_120,
+                                  &lw, &lh, &dw, &dh);
+            (void)platform_wsi_surface_resize(&p->wsi, lw, lh, dw, dh);
+        }
     }
 }
 
@@ -1832,6 +1839,12 @@ Platform *platform_create(const PlatformConfig *cfg) {
         wayland_create_fail(p);
         return NULL;
     }
+    {
+        u32 lw, lh, dw, dh;
+        platform_size_wayland(cfg->width, cfg->height, p->content_scale_120,
+                              &lw, &lh, &dw, &dh);
+        (void)platform_wsi_surface_init(&p->wsi, true, lw, lh, dw, dh);
+    }
 
     /* Commit surface and wait for initial configure */
     wl_surface_commit(p->surface);
@@ -1860,6 +1873,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
 void platform_destroy(Platform *p) {
     if (!p) return;
+    (void)platform_wsi_surface_destroy(&p->wsi);
 
     gamepad_shutdown();
 
@@ -1922,6 +1936,26 @@ void platform_destroy(Platform *p) {
 
     free(p);
     LOG_INFO("Platform destroyed (Wayland)");
+}
+
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out) {
+    if (p == NULL || out == NULL) return false;
+    *out = p->wsi;
+    return true;
+}
+
+PlatformWsiSurface *platform_wsi_surface(Platform *p) {
+    return p != NULL ? &p->wsi : NULL;
+}
+
+/* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
+ * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+void platform_mobile_notify_suspend(Platform *p) { (void)p; }
+void platform_mobile_notify_resume(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height) {
+    (void)p; (void)native_window; (void)width; (void)height;
 }
 
 PlatformEventResult platform_poll(Platform *p) {

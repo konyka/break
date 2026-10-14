@@ -116,10 +116,41 @@ TEST(win32_wsi_contract_orders_present_and_retires_resized_buffers)
     ASSERT_EQ(swapchain.drawable_height, 450u);
 }
 
+TEST(wsi_frame_allowed_only_when_created_or_resized)
+{
+    PlatformWsiSurface surface;
+    ASSERT_EQ(platform_wsi_surface_init(&surface, true, 100u, 100u, 100u, 100u),
+              PLATFORM_WSI_OK);
+    ASSERT_TRUE(platform_wsi_frame_allowed(&surface));
+    ASSERT_EQ(platform_wsi_surface_resize(&surface, 200u, 200u, 200u, 200u),
+              PLATFORM_WSI_OK);
+    ASSERT_TRUE(platform_wsi_frame_allowed(&surface));
+    ASSERT_EQ(platform_wsi_surface_suspend(&surface), PLATFORM_WSI_OK);
+    ASSERT_FALSE(platform_wsi_frame_allowed(&surface));
+    ASSERT_EQ(platform_wsi_surface_resume(&surface), PLATFORM_WSI_OK);
+    ASSERT_TRUE(platform_wsi_frame_allowed(&surface));
+    ASSERT_EQ(platform_wsi_surface_lose(&surface), PLATFORM_WSI_OK);
+    ASSERT_FALSE(platform_wsi_frame_allowed(&surface));
+    ASSERT_FALSE(platform_wsi_frame_allowed(NULL));
+}
+
+TEST(wsi_teardown_rejected_while_destroying)
+{
+    PlatformWsiSurface surface;
+    ASSERT_EQ(platform_wsi_surface_init(&surface, true, 100u, 100u, 100u, 100u),
+              PLATFORM_WSI_OK);
+    ASSERT_TRUE(platform_wsi_rhi_teardown_allowed(&surface));
+    ASSERT_EQ(platform_wsi_surface_destroy(&surface), PLATFORM_WSI_OK);
+    ASSERT_FALSE(platform_wsi_rhi_teardown_allowed(&surface));
+    ASSERT_FALSE(platform_wsi_rhi_teardown_allowed(NULL));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(wsi_lifecycle_accepts_legal_surface_transitions);
     RUN_TEST(wsi_lifecycle_rejects_unavailable_and_invalid_transitions);
     RUN_TEST(wsi_lifecycle_compiles_for_named_backend);
     RUN_TEST(win32_wsi_contract_requires_direct_flip_discard_and_tearing_support);
     RUN_TEST(win32_wsi_contract_orders_present_and_retires_resized_buffers);
+    RUN_TEST(wsi_frame_allowed_only_when_created_or_resized);
+    RUN_TEST(wsi_teardown_rejected_while_destroying);
 TEST_MAIN_END()

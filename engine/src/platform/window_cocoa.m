@@ -42,6 +42,7 @@ struct Platform {
     i32         ime_spot_y;
     NSUInteger  marked_length;
     u64         media_generation;
+    PlatformWsiSurface wsi;
 };
 
 /* ---- Key mapping (Carbon virtual key codes) ---- */
@@ -351,6 +352,11 @@ static void cocoa_update_drawable_size(Platform *p) {
     p->height = lh;
     p->layer.contentsScale = scale;
     p->layer.drawableSize = CGSizeMake((CGFloat)dw, (CGFloat)dh);
+    {
+        u32 rlw = 0, rlh = 0, rdw = 0, rdh = 0;
+        platform_size_cocoa(p->width, p->height, (f32)scale, &rlw, &rlh, &rdw, &rdh);
+        (void)platform_wsi_surface_resize(&p->wsi, rlw, rlh, rdw, rdh);
+    }
 }
 
 @implementation BreakWindowDelegate
@@ -417,6 +423,14 @@ Platform *platform_create(const PlatformConfig *cfg) {
         [p->window setContentView:p->view];
         [p->window makeFirstResponder:p->view];
         cocoa_update_drawable_size(p);
+        {
+            CGFloat init_scale = [p->window backingScaleFactor];
+            u32 lw, lh, dw, dh;
+            if (init_scale <= 0.0) init_scale = 1.0;
+            platform_size_cocoa(p->width, p->height, (f32)init_scale,
+                                &lw, &lh, &dw, &dh);
+            (void)platform_wsi_surface_init(&p->wsi, true, lw, lh, dw, dh);
+        }
 
         BreakWindowDelegate *del = [[BreakWindowDelegate alloc] init];
         del.platform = p;
@@ -436,12 +450,33 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
 void platform_destroy(Platform *p) {
     if (!p) return;
+    (void)platform_wsi_surface_destroy(&p->wsi);
     @autoreleasepool {
         if (p->window) [p->window close];
     }
     platform_text_queue_destroy(&p->text_queue);
     free(p);
     LOG_INFO("Platform destroyed (Cocoa)");
+}
+
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out) {
+    if (p == NULL || out == NULL) return false;
+    *out = p->wsi;
+    return true;
+}
+
+PlatformWsiSurface *platform_wsi_surface(Platform *p) {
+    return p != NULL ? &p->wsi : NULL;
+}
+
+/* Desktop no-ops: 桌面没有 OS 级 suspend/resume/surface-lost 事件（语义说明
+ * 见 platform.h）；相应语义由 resize 与 DESTROYING 覆盖。 */
+void platform_mobile_notify_suspend(Platform *p) { (void)p; }
+void platform_mobile_notify_resume(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height) {
+    (void)p; (void)native_window; (void)width; (void)height;
 }
 
 PlatformEventResult platform_poll(Platform *p) {

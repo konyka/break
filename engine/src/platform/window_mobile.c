@@ -14,6 +14,7 @@ struct Platform {
     bool ime_enabled;
     u64 media_generation;
     PlatformMediaContext media;
+    PlatformWsiSurface wsi;
 };
 
 Platform *platform_create(const PlatformConfig *cfg)
@@ -29,6 +30,8 @@ Platform *platform_create(const PlatformConfig *cfg)
     p->native_display = cfg->native_display;
     p->width = cfg->width;
     p->height = cfg->height;
+    (void)platform_wsi_surface_init(&p->wsi, true, cfg->width, cfg->height,
+                                    cfg->width, cfg->height);
     p->media_generation = 1u;
     p->media.screen = true;
     p->media.capabilities = PLATFORM_MEDIA_CAP_POINTER_COARSE |
@@ -41,7 +44,42 @@ Platform *platform_create(const PlatformConfig *cfg)
     return p;
 }
 
-void platform_destroy(Platform *p) { free(p); }
+void platform_destroy(Platform *p) {
+    if (!p) return;
+    (void)platform_wsi_surface_destroy(&p->wsi);
+    free(p);
+}
+
+bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out) {
+    if (p == NULL || out == NULL) return false;
+    *out = p->wsi;
+    return true;
+}
+
+PlatformWsiSurface *platform_wsi_surface(Platform *p) {
+    return p != NULL ? &p->wsi : NULL;
+}
+
+void platform_mobile_notify_suspend(Platform *p) {
+    if (p) (void)platform_wsi_surface_suspend(&p->wsi);
+}
+void platform_mobile_notify_resume(Platform *p) {
+    if (p) (void)platform_wsi_surface_resume(&p->wsi);
+}
+void platform_mobile_notify_surface_lost(Platform *p) {
+    if (p) (void)platform_wsi_surface_lose(&p->wsi);
+}
+void platform_mobile_notify_surface_recreated(Platform *p, void *native_window,
+                                              u32 width, u32 height) {
+    if (!p || native_window == NULL) return;
+    p->native_window = native_window;
+    p->width = width;
+    p->height = height;
+    /* 状态机没有 LOST->CREATED 迁移（platform_wsi.h:280-291）；Android 语义上
+     * surfaceCreated 产出的是全新 surface，走 init 全量重置回 CREATED。
+     * Vulkan 侧此时必须整体重建设备（VK_ERROR_SURFACE_LOST 路径）。 */
+    (void)platform_wsi_surface_init(&p->wsi, true, width, height, width, height);
+}
 PlatformEventResult platform_poll(Platform *p) {
     if (!p) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
