@@ -6,6 +6,10 @@
 #include <string.h>
 
 _Thread_local RHIDevice *g_current_device = NULL;
+#ifdef ENGINE_RHI_TEST
+static _Thread_local RHIDevice *g_test_lifecycle_device;
+static _Thread_local RHIResult g_test_lifecycle_result = RHI_RESULT_OK;
+#endif
 static void rhi_frame_damage_clear(RHIDevice *dev) {
     dev->frame_damage_count = 0u;
     dev->frame_current_damage_count = 0u;
@@ -31,6 +35,127 @@ RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev) {
     if (dev == NULL) return RHI_DEVICE_STATUS_UNKNOWN;
     if (dev->status == RHI_DEVICE_STATUS_LOST) return RHI_DEVICE_STATUS_LOST;
     return dev->backend_data != NULL ? RHI_DEVICE_STATUS_READY : dev->status;
+}
+
+static RHIResult rhi_result_for_device(const RHIDevice *dev) {
+    if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
+    if (dev->status == RHI_DEVICE_STATUS_LOST) return RHI_RESULT_DEVICE_LOST;
+#ifdef ENGINE_RHI_TEST
+    if (g_test_lifecycle_device == dev && g_test_lifecycle_result != RHI_RESULT_OK)
+        return g_test_lifecycle_result;
+#endif
+    return RHI_RESULT_OK;
+}
+
+RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
+                                void *display_native, u32 w, u32 h,
+                                RHIResult *out_result) {
+    if (out_result != NULL) *out_result = RHI_RESULT_OK;
+    if (backend != RHI_BACKEND_OPENGL && backend != RHI_BACKEND_VULKAN) {
+        if (out_result != NULL) *out_result = RHI_RESULT_UNSUPPORTED;
+        return NULL;
+    }
+    if (!rhi_drawable_dimensions_valid(w, h)) {
+        if (out_result != NULL) *out_result = RHI_RESULT_INVALID_ARGUMENT;
+        return NULL;
+    }
+    if (window_native == NULL || display_native == NULL) {
+        if (out_result != NULL) *out_result = RHI_RESULT_UNAVAILABLE;
+        return NULL;
+    }
+    RHIDevice *dev = rhi_device_create(backend, window_native, display_native, w, h);
+    if (dev == NULL && out_result != NULL) *out_result = RHI_RESULT_ERROR;
+    return dev;
+}
+
+RHIResult rhi_device_destroy_ex(RHIDevice *dev) {
+    if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
+    if (!rhi_frame_owner_preclaim_destroy(dev)) return RHI_RESULT_BUSY;
+    rhi_device_destroy(dev);
+    return RHI_RESULT_OK;
+}
+
+RHIResult rhi_device_resize_ex(RHIDevice *dev, u32 w, u32 h) {
+    if (dev == NULL || !rhi_drawable_dimensions_valid(w, h))
+        return RHI_RESULT_INVALID_ARGUMENT;
+    RHIResult forced = rhi_result_for_device(dev);
+    if (forced != RHI_RESULT_OK) return forced;
+    if (!rhi_device_control_preclaim(dev)) return RHI_RESULT_BUSY;
+    if (dev->backend_data == NULL) {
+        rhi_device_control_release(dev);
+        return RHI_RESULT_UNAVAILABLE;
+    }
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    rhi_device_resize(dev, w, h);
+    rhi_device_control_release(dev);
+    return dev->lifecycle_result;
+}
+
+RHICmdBuffer *rhi_frame_begin_ex(RHIDevice *dev, RHIResult *out_result) {
+    if (out_result != NULL) *out_result = RHI_RESULT_OK;
+    if (dev == NULL) {
+        if (out_result != NULL) *out_result = RHI_RESULT_INVALID_ARGUMENT;
+        return NULL;
+    }
+    RHIResult forced = rhi_result_for_device(dev);
+    if (forced != RHI_RESULT_OK) {
+        if (out_result != NULL) *out_result = forced;
+        return NULL;
+    }
+    if (dev->backend_data == NULL) {
+        if (out_result != NULL) *out_result = RHI_RESULT_UNAVAILABLE;
+        return NULL;
+    }
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (cmd == NULL && out_result != NULL)
+        *out_result = dev->lifecycle_result != RHI_RESULT_OK ?
+            dev->lifecycle_result : RHI_RESULT_UNAVAILABLE;
+    return cmd;
+}
+
+RHICmdBuffer *rhi_frame_acquire_ex(RHIDevice *dev, RHIResult *out_result) {
+    return rhi_frame_begin_ex(dev, out_result);
+}
+
+RHIResult rhi_frame_end_ex(RHIDevice *dev) {
+    if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
+    RHIResult forced = rhi_result_for_device(dev);
+    if (forced != RHI_RESULT_OK) return forced;
+    if (dev->backend_data == NULL) return RHI_RESULT_UNAVAILABLE;
+    if (!rhi_frame_owner_is_current(dev)) return RHI_RESULT_BUSY;
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    rhi_frame_end(dev);
+    return dev->lifecycle_result;
+}
+
+RHIResult rhi_frame_submit_ex(RHIDevice *dev) {
+    return rhi_frame_end_ex(dev);
+}
+
+RHIResult rhi_present_ex(RHIDevice *dev) {
+    if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
+    RHIResult forced = rhi_result_for_device(dev);
+    if (forced != RHI_RESULT_OK) return forced;
+    if (dev->backend_data == NULL) return RHI_RESULT_UNAVAILABLE;
+    if (!rhi_frame_owner_is_current(dev)) return RHI_RESULT_BUSY;
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    rhi_present(dev);
+    return dev->lifecycle_result;
+}
+
+RHIResult rhi_device_idle_ex(RHIDevice *dev) {
+    if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
+    RHIResult forced = rhi_result_for_device(dev);
+    if (forced != RHI_RESULT_OK) return forced;
+    if (dev->backend_data == NULL) return RHI_RESULT_UNAVAILABLE;
+    if (rhi_device_lost(dev)) return RHI_RESULT_DEVICE_LOST;
+    if (!rhi_device_idle(dev)) return RHI_RESULT_SYNC_FAILED;
+    return rhi_device_lost(dev) ? RHI_RESULT_DEVICE_LOST : RHI_RESULT_OK;
+}
+
+RHIResult rhi_device_drain_ex(RHIDevice *dev) {
+    return rhi_device_idle_ex(dev);
 }
 
 bool rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out) {
@@ -131,6 +256,8 @@ RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
     if (dev == NULL) {
         return NULL;
     }
+    if (rhi_result_for_device(dev) != RHI_RESULT_OK || dev->backend_data == NULL)
+        return NULL;
     if (!rhi_present_damage_validate(rects, count, dev->width, dev->height)) {
         if (!rhi_frame_owner_try_acquire(dev)) return NULL;
         rhi_frame_damage_clear(dev);
@@ -237,11 +364,25 @@ RHIDevice *rhi_test_device_create(void) {
     if (dev != NULL) {
         rhi_init_freelist(dev);
         dev->status = RHI_DEVICE_STATUS_READY;
+        dev->lifecycle_result = RHI_RESULT_OK;
     }
     return dev;
 }
 
+void rhi_test_set_lifecycle_result(RHIDevice *dev, RHIResult result) {
+    g_test_lifecycle_device = dev;
+    g_test_lifecycle_result = result;
+}
+
+void rhi_test_set_device_status(RHIDevice *dev, RHIDeviceStatus status) {
+    if (dev != NULL) dev->status = status;
+}
+
 void rhi_test_device_destroy(RHIDevice *dev) {
+    if (g_test_lifecycle_device == dev) {
+        g_test_lifecycle_device = NULL;
+        g_test_lifecycle_result = RHI_RESULT_OK;
+    }
     free(dev);
 }
 
@@ -259,6 +400,10 @@ void rhi_test_resource_destroy(RHIDevice *dev, RHIHandle handle) {
     rhi_free_slot(dev, handle);
 }
 #endif
+
+void rhi_device_set_lifecycle_result(RHIDevice *dev, RHIResult result) {
+    if (dev != NULL) dev->lifecycle_result = result;
+}
 
 #ifdef ENGINE_VULKAN
 /* The Vulkan backend is included as a unity translation unit.  Keep this

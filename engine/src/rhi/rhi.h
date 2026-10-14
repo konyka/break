@@ -187,6 +187,48 @@ typedef enum {
  * unaffected. */
 #define RHI_MRT_MAX_ATTACHMENTS 5
 
+typedef enum {
+    RHI_SHADER_RESOURCE_SAMPLER,
+    RHI_SHADER_RESOURCE_UNIFORM,
+    RHI_SHADER_RESOURCE_STORAGE,
+    RHI_SHADER_RESOURCE_PUSH_CONSTANT,
+    RHI_SHADER_RESOURCE_IMAGE,
+} RHIShaderResourceKind;
+
+static inline bool rhi_shader_resource_kind_is_buffer(RHIShaderResourceKind kind) {
+    return kind == RHI_SHADER_RESOURCE_UNIFORM || kind == RHI_SHADER_RESOURCE_STORAGE;
+}
+
+static inline bool rhi_shader_resource_kind_is_push(RHIShaderResourceKind kind) {
+    return kind == RHI_SHADER_RESOURCE_PUSH_CONSTANT;
+}
+
+static inline bool rhi_format_is_color(RHIFormat format) {
+    return format == RHI_FORMAT_R8G8B8A8_UNORM || format == RHI_FORMAT_B8G8R8A8_UNORM ||
+           format == RHI_FORMAT_R16G16B16A16_SFLOAT || format == RHI_FORMAT_R16G16_SFLOAT ||
+           format == RHI_FORMAT_R32_FLOAT;
+}
+
+static inline bool rhi_mrt_formats_valid(const RHIFormat *formats, u32 count) {
+    if (formats == NULL || count == 0u || count > RHI_MRT_MAX_ATTACHMENTS) return false;
+    for (u32 i = 0u; i < count; ++i)
+        if (!rhi_format_is_color(formats[i])) return false;
+    return true;
+}
+
+typedef struct {
+    u32 index_count;
+    u32 instance_count;
+    u32 first_index;
+    i32 vertex_offset;
+    u32 first_instance;
+} RHIIndexedIndirectCommand;
+
+static inline bool rhi_indirect_abi_valid(u32 stride, u32 draw_count) {
+    return stride >= (u32)sizeof(RHIIndexedIndirectCommand) &&
+           (stride % 4u) == 0u && draw_count != 0u;
+}
+
 typedef struct {
     RHIBufferUsage usage;
     usize          size;
@@ -290,10 +332,30 @@ typedef enum {
     RHI_DEVICE_STATUS_LOST,
 } RHIDeviceStatus;
 
+/* Outcome of a lifecycle operation.  Existing pointer/bool/void entrypoints
+ * remain source-compatible; the *_ex entrypoints expose the reason instead of
+ * collapsing every failure to NULL, false, or no-op. */
+typedef enum {
+    RHI_RESULT_OK = 0,
+    RHI_RESULT_ERROR = -1,
+    RHI_RESULT_INVALID_ARGUMENT = -2,
+    RHI_RESULT_UNAVAILABLE = -3,
+    RHI_RESULT_UNSUPPORTED = -4,
+    RHI_RESULT_BUSY = -5,
+    RHI_RESULT_OUT_OF_DATE = -6,
+    RHI_RESULT_SURFACE_LOST = -7,
+    RHI_RESULT_DEVICE_LOST = -8,
+    RHI_RESULT_SYNC_FAILED = -9,
+} RHIResult;
+
 /* ---- Device API ---- */
 /* `w` and `h` are physical drawable pixels, never logical UI points. */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h);
+RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
+                                void *display_native, u32 w, u32 h,
+                                RHIResult *out_result);
 void       rhi_device_destroy(RHIDevice *dev);
+RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
@@ -387,14 +449,20 @@ bool       rhi_screenshot_region_validate(u32 x, u32 y, u32 w, u32 h,
                                           usize dst_bytes);
 /* Resize the default framebuffer/swapchain in physical drawable pixels. */
 void       rhi_device_resize(RHIDevice *dev, u32 w, u32 h);
+RHIResult  rhi_device_resize_ex(RHIDevice *dev, u32 w, u32 h);
 
 /* ---- Frame lifecycle ---- */
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev);
+RHICmdBuffer *rhi_frame_begin_ex(RHIDevice *dev, RHIResult *out_result);
+RHICmdBuffer *rhi_frame_acquire_ex(RHIDevice *dev, RHIResult *out_result);
 RHICmdBuffer *rhi_frame_begin_damage(RHIDevice *dev,
                                      const RHIPresentRect *rects, u32 count,
                                      bool *out_partial);
 void          rhi_frame_end(RHIDevice *dev);
+RHIResult     rhi_frame_end_ex(RHIDevice *dev);
+RHIResult     rhi_frame_submit_ex(RHIDevice *dev);
 void          rhi_present(RHIDevice *dev);
+RHIResult     rhi_present_ex(RHIDevice *dev);
 bool          rhi_frame_get_damage(const RHIDevice *dev,
                                    RHIPresentRect *rects, u32 capacity,
                                    u32 *out_count);
@@ -780,6 +848,8 @@ void rhi_vk_validation_set_enabled(bool enabled);
  * check (no equivalent loss concept). Returns false only on a lost/failed
  * device or null arguments. */
 bool rhi_device_idle(RHIDevice *dev);
+RHIResult rhi_device_idle_ex(RHIDevice *dev);
+RHIResult rhi_device_drain_ex(RHIDevice *dev);
 
 /* R578: sticky device-lost latch. Vulkan: set on the first observed
  * VK_ERROR_DEVICE_LOST (or a fence unsignaled for 20 s); all blocking
@@ -787,6 +857,11 @@ bool rhi_device_idle(RHIDevice *dev);
  * post-TDR device (WDDM resets can leave fences permanently unsignaled).
  * GL: no asynchronous loss concept yet 閳?currently always false. */
 bool rhi_device_lost(RHIDevice *dev);
+
+#ifdef ENGINE_RHI_TEST
+void rhi_test_set_lifecycle_result(RHIDevice *dev, RHIResult result);
+void rhi_test_set_device_status(RHIDevice *dev, RHIDeviceStatus status);
+#endif
 
 typedef struct RHIGPUTimer RHIGPUTimer;
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev);

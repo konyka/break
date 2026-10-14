@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <core/shader_io.h>
+#include <rhi/rhi.h>
 #include <stdio.h>
 
 static bool read_shader_source(const char *name, char *buf, usize cap)
@@ -333,7 +334,7 @@ TEST(vulkan_swapchain_rebuild_recreates_render_pass_before_attachments)
 {
     static char src[524288];
     ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
-    const char *recreate = strstr(src, "static void vk_recreate_swapchain");
+    const char *recreate = strstr(src, "static RHIResult vk_recreate_swapchain");
     ASSERT_NOT_NULL(recreate);
     ASSERT_NOT_NULL(strstr(recreate, "vk_create_render_pass(vk)"));
     ASSERT_NOT_NULL(strstr(recreate, "!vk_create_depth(vk)"));
@@ -391,6 +392,257 @@ TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed)
     ASSERT_NOT_NULL(strstr(src, "requested GPU is not suitable"));
     ASSERT_NOT_NULL(strstr(src, "no suitable Vulkan GPU found"));
     ASSERT_TRUE(strstr(src, "falling back to the first device") == NULL);
+}
+
+TEST(shader_abi_reflection_is_deterministic_and_backend_neutral)
+{
+    const char src[] =
+        "layout(std430, set = 1, binding = 2) readonly buffer Draws { uint data[]; };\n"
+        "layout(push_constant) uniform PushConstants { vec4 value; };\n"
+        "layout(set = 0, binding = 4) uniform sampler2D u_color;\n"
+        "layout(std140, binding = 0) uniform Frame { mat4 vp; };\n";
+    ShaderIOBinding a[4];
+    ShaderIOBinding b[4];
+    usize na = shader_reflect_bindings(src, sizeof(src) - 1u, a, 4u);
+    usize nb = shader_reflect_bindings(src, sizeof(src) - 1u, b, 4u);
+    ASSERT_EQ(na, (usize)4);
+    ASSERT_EQ(nb, na);
+    ASSERT_EQ(memcmp(a, b, sizeof(a)), 0);
+    ASSERT_STR_EQ(a[0].name, "Frame");
+    ASSERT_EQ(a[0].set, 0u);
+    ASSERT_EQ(a[0].binding, 0u);
+    ASSERT_EQ(a[0].layout, SHADER_IO_LAYOUT_STD140);
+    ASSERT_STR_EQ(a[1].name, "PushConstants");
+    ASSERT_EQ(a[1].kind, SHADER_IO_RESOURCE_PUSH_CONSTANT);
+    ASSERT_STR_EQ(a[2].name, "u_color");
+    ASSERT_EQ(a[2].kind, SHADER_IO_RESOURCE_SAMPLER);
+    ASSERT_EQ(a[3].kind, SHADER_IO_RESOURCE_STORAGE);
+    ASSERT_EQ(a[3].set, 1u);
+    ASSERT_EQ(a[3].binding, 2u);
+}
+
+TEST(shader_abi_reflection_capacity_and_gl_defaults)
+{
+    const char src[] = "uniform sampler2D tex;\n"
+                       "layout(binding = 3) buffer Storage { uint x[]; };\n";
+    ShaderIOBinding bindings[2];
+    ASSERT_EQ(shader_reflect_bindings(src, sizeof(src) - 1u, bindings, 2u), (usize)2);
+    ASSERT_EQ(bindings[0].set, 0u);
+    ASSERT_EQ(bindings[0].binding, 0u);
+    ASSERT_EQ(bindings[0].kind, SHADER_IO_RESOURCE_SAMPLER);
+    ASSERT_EQ(shader_reflect_bindings(src, sizeof(src) - 1u, bindings, 1u), (usize)0);
+}
+
+TEST(shader_abi_reflection_rejects_malformed_boundaries)
+{
+    const char source[] =
+        "// layout(binding = 9) uniform sampler2D ignored;\n"
+        "#define GENERATED 1\n"
+        "layout(binding = nope) uniform sampler2D bad_binding;\n"
+        "layout(location = 2) uniform sampler2D bad_layout;\n"
+        "uniform mysteryType bad_format;\n"
+        "layout(binding = 4) uniform sampler2D valid;\n";
+    ShaderIOBinding bindings[2];
+    usize count = shader_reflect_bindings(source, sizeof(source) - 1u,
+                                          bindings, 2u);
+    ASSERT_EQ(count, (usize)1);
+    ASSERT_STR_EQ(bindings[0].name, "valid");
+    ASSERT_EQ(bindings[0].binding, 4u);
+}
+
+TEST(shader_abi_reflection_rejects_unknown_layout_and_duplicate_bindings)
+{
+    const char malformed[] =
+        "layout(binding = 1, made_up = 2) uniform sampler2D unknown_layout;\n"
+        "layout(set = 0, binding = 3) uniform sampler2D first;\n"
+        "layout(set = 0, binding = 3) buffer Conflict { uint value; };\n";
+    ShaderIOBinding bindings[4];
+    ASSERT_EQ(shader_reflect_bindings(malformed, sizeof(malformed) - 1u,
+                                      bindings, 4u), (usize)0);
+}
+
+TEST(shader_abi_reflection_rejects_unsupported_resource_kind)
+{
+    const char malformed[] =
+        "layout(binding = 1) uniform atomic_uint counters;\n"
+        "layout(binding = 2) uniform sampler2D valid;\n";
+    ShaderIOBinding bindings[2];
+    ASSERT_EQ(shader_reflect_bindings(malformed, sizeof(malformed) - 1u,
+                                      bindings, 2u), (usize)1);
+    ASSERT_STR_EQ(bindings[0].name, "valid");
+}
+
+TEST(shader_abi_reflection_rejects_duplicates_beyond_output_capacity)
+{
+    const char malformed[] =
+        "layout(binding = 1) uniform sampler2D first;\n"
+        "layout(binding = 2) uniform sampler2D second;\n"
+        "layout(binding = 1) uniform sampler2D duplicate;\n";
+    ShaderIOBinding binding;
+    ASSERT_EQ(shader_reflect_bindings(malformed, sizeof(malformed) - 1u,
+                                      &binding, 1u), (usize)0);
+}
+
+TEST(shader_abi_reflection_requires_exact_supported_types)
+{
+    const char source[] =
+        "layout(binding = 1) uniform sampler2DShadow rejected;\n"
+        "layout(binding = 2) uniform sampler2D accepted;\n";
+    ShaderIOBinding bindings[2];
+    ASSERT_EQ(shader_reflect_bindings(source, sizeof(source) - 1u,
+                                      bindings, 2u), (usize)1);
+    ASSERT_STR_EQ(bindings[0].name, "accepted");
+}
+
+TEST(shader_abi_reflection_classifies_images)
+{
+    const char source[] = "layout(binding = 5) uniform image2D output_image;\n";
+    ShaderIOBinding binding[1];
+    ASSERT_EQ(shader_reflect_bindings(source, sizeof(source) - 1u,
+                                      binding, 1u), (usize)1);
+    ASSERT_EQ(binding[0].kind, SHADER_IO_RESOURCE_IMAGE);
+    ASSERT_STR_EQ(binding[0].format, "image2D");
+}
+
+TEST(shader_abi_reflection_accepts_non_nul_input_and_hashes_canonically)
+{
+    const char first[] = "layout(binding = 2) uniform sampler2D b;\n"
+                         "layout(binding = 1) uniform sampler2D a;\n";
+    const char second[] = "layout(binding = 1) uniform sampler2D a;\n"
+                          "layout(binding = 2) uniform sampler2D b;\n";
+    ShaderIOBinding a[2];
+    ShaderIOBinding b[2];
+    ShaderIOBinding c[2];
+    ASSERT_EQ(shader_reflect_bindings(first, sizeof(first) - 1u, a, 2u), (usize)2);
+    ASSERT_EQ(shader_reflect_bindings(second, sizeof(second) - 1u, b, 2u), (usize)2);
+    ASSERT_EQ(shader_reflect_bindings("layout(binding = 7) uniform sampler2D x;TRAIL",
+                                     strlen("layout(binding = 7) uniform sampler2D x;"),
+                                     c, 2u), (usize)1);
+    ASSERT_EQ(shader_reflect_bindings_hash(a, 2u), shader_reflect_bindings_hash(b, 2u));
+    ASSERT_NEQ(shader_reflect_bindings_hash(a, 2u), (u64)0);
+}
+
+TEST(shader_abi_hash_ignores_struct_padding)
+{
+    ShaderIOBinding a;
+    ShaderIOBinding b;
+    memset(&a, 0x11, sizeof(a));
+    memset(&b, 0xee, sizeof(b));
+    snprintf(a.name, sizeof(a.name), "resource");
+    snprintf(b.name, sizeof(b.name), "resource");
+    snprintf(a.format, sizeof(a.format), "sampler2D");
+    snprintf(b.format, sizeof(b.format), "sampler2D");
+    a.kind = b.kind = SHADER_IO_RESOURCE_SAMPLER;
+    a.layout = b.layout = SHADER_IO_LAYOUT_DEFAULT;
+    a.set = b.set = 2u;
+    a.binding = b.binding = 7u;
+    a.location = b.location = 13u;
+    ASSERT_EQ(shader_reflect_bindings_hash(&a, 1u),
+              shader_reflect_bindings_hash(&b, 1u));
+}
+
+TEST(shader_abi_reflection_rejects_extreme_lengths_and_missing_names)
+{
+    const char malformed[] =
+        "layout(notbinding = 2) uniform sampler2D spoofed;\n"
+        "layout(binding = 2) uniform sampler2D ;\n"
+        "layout(push_constant) uniform { vec4 value; };\n";
+    ShaderIOBinding bindings[2];
+    ASSERT_EQ(shader_reflect_bindings(malformed, sizeof(malformed) - 1u,
+                                      bindings, 2u), (usize)0);
+    ASSERT_EQ(shader_reflect_bindings(malformed, (usize)-1, NULL, 0u), (usize)0);
+    ASSERT_EQ(shader_reflect_bindings("x", (usize)-1, bindings, 2u), (usize)0);
+    ASSERT_EQ(shader_reflect_bindings_hash(NULL, (usize)-1), (u64)0);
+}
+
+TEST(shader_abi_hash_handles_non_nul_fixed_fields)
+{
+    ShaderIOBinding a;
+    ShaderIOBinding b;
+    memset(&a, 'A', sizeof(a));
+    memset(&b, 'A', sizeof(b));
+    a.kind = b.kind = SHADER_IO_RESOURCE_SAMPLER;
+    a.layout = b.layout = SHADER_IO_LAYOUT_DEFAULT;
+    a.set = b.set = 1u;
+    a.binding = b.binding = 3u;
+    a.location = b.location = 5u;
+    ASSERT_EQ(shader_reflect_bindings_hash(&a, 1u),
+              shader_reflect_bindings_hash(&b, 1u));
+    b.format[SHADER_IO_FORMAT_MAX - 1u] = 'B';
+    ASSERT_NEQ(shader_reflect_bindings_hash(&a, 1u),
+               shader_reflect_bindings_hash(&b, 1u));
+}
+
+TEST(shader_abi_hash_total_order_covers_all_hashed_fields)
+{
+    ShaderIOBinding first;
+    ShaderIOBinding second;
+    memset(&first, 0, sizeof(first));
+    memset(&second, 0, sizeof(second));
+    snprintf(first.name, sizeof(first.name), "same");
+    snprintf(second.name, sizeof(second.name), "same");
+    snprintf(first.format, sizeof(first.format), "float");
+    snprintf(second.format, sizeof(second.format), "vec4");
+    first.kind = second.kind = SHADER_IO_RESOURCE_UNIFORM;
+    first.set = second.set = 1u;
+    first.binding = second.binding = 2u;
+    first.layout = SHADER_IO_LAYOUT_STD140;
+    second.layout = SHADER_IO_LAYOUT_STD430;
+    first.location = 3u;
+    second.location = 4u;
+    ASSERT_NEQ(shader_reflect_bindings_hash(&first, 1u),
+               shader_reflect_bindings_hash(&second, 1u));
+    ASSERT_EQ(shader_reflect_bindings_hash((ShaderIOBinding[]){ first, second }, 2u),
+              shader_reflect_bindings_hash((ShaderIOBinding[]){ second, first }, 2u));
+}
+
+TEST(shader_abi_reflection_partial_input_skips_malformed_declarations)
+{
+    const char source[] =
+        "layout(binding = nope) uniform sampler2D malformed;\n"
+        "layout(binding = 6) uniform sampler2D valid;\n";
+    ShaderIOBinding binding[1];
+    ASSERT_EQ(shader_reflect_bindings(source, sizeof(source) - 1u,
+                                      binding, 1u), (usize)1);
+    ASSERT_STR_EQ(binding[0].name, "valid");
+}
+
+TEST(shader_abi_rhi_formats_mrt_resources_and_indirect)
+{
+    const RHIFormat formats[] = { RHI_FORMAT_R8G8B8A8_UNORM,
+                                  RHI_FORMAT_R16G16_SFLOAT };
+    ASSERT_TRUE(rhi_format_is_color(RHI_FORMAT_R32_FLOAT));
+    ASSERT_FALSE(rhi_format_is_color(RHI_FORMAT_D32_FLOAT));
+    ASSERT_FALSE(rhi_format_is_color(RHI_FORMAT_UNDEFINED));
+    ASSERT_FALSE(rhi_format_is_color((RHIFormat)99));
+    ASSERT_TRUE(rhi_mrt_formats_valid(formats, 2u));
+    ASSERT_FALSE(rhi_mrt_formats_valid(formats, 0u));
+    ASSERT_TRUE(rhi_mrt_formats_valid(
+        (const RHIFormat[]){ RHI_FORMAT_R8G8B8A8_UNORM,
+                             RHI_FORMAT_B8G8R8A8_UNORM,
+                             RHI_FORMAT_R16G16B16A16_SFLOAT,
+                             RHI_FORMAT_R16G16_SFLOAT,
+                             RHI_FORMAT_R32_FLOAT }, 5u));
+    ASSERT_FALSE(rhi_mrt_formats_valid(
+        (const RHIFormat[]){ RHI_FORMAT_R8G8B8A8_UNORM,
+                             RHI_FORMAT_B8G8R8A8_UNORM,
+                             RHI_FORMAT_R16G16B16A16_SFLOAT,
+                             RHI_FORMAT_R16G16_SFLOAT,
+                             RHI_FORMAT_R32_FLOAT,
+                             RHI_FORMAT_R8G8B8A8_UNORM }, 6u));
+    ASSERT_FALSE(rhi_mrt_formats_valid((const RHIFormat[]){ RHI_FORMAT_D32_FLOAT }, 1u));
+    ASSERT_FALSE(rhi_mrt_formats_valid((const RHIFormat[]){ (RHIFormat)99 }, 1u));
+    ASSERT_FALSE(rhi_mrt_formats_valid(NULL, 1u));
+    ASSERT_TRUE(rhi_shader_resource_kind_is_buffer(RHI_SHADER_RESOURCE_UNIFORM));
+    ASSERT_TRUE(rhi_shader_resource_kind_is_buffer(RHI_SHADER_RESOURCE_STORAGE));
+    ASSERT_TRUE(rhi_shader_resource_kind_is_push(RHI_SHADER_RESOURCE_PUSH_CONSTANT));
+    ASSERT_FALSE(rhi_shader_resource_kind_is_push(RHI_SHADER_RESOURCE_UNIFORM));
+    ASSERT_EQ(sizeof(RHIIndexedIndirectCommand), (usize)20);
+    ASSERT_TRUE(rhi_indirect_abi_valid(20u, 1u));
+    ASSERT_TRUE(rhi_indirect_abi_valid(32u, 2u));
+    ASSERT_FALSE(rhi_indirect_abi_valid(16u, 1u));
+    ASSERT_FALSE(rhi_indirect_abi_valid(21u, 1u));
+    ASSERT_FALSE(rhi_indirect_abi_valid(20u, 0u));
 }
 
 TEST(ui_command_dispatch_context_is_internal)
@@ -911,6 +1163,21 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vulkan_memory_allocation_rejects_invalid_type);
     RUN_TEST(vulkan_extension_and_device_enumeration_fail_closed);
     RUN_TEST(vulkan_physical_device_selection_is_suitable_and_fail_closed);
+    RUN_TEST(shader_abi_reflection_is_deterministic_and_backend_neutral);
+    RUN_TEST(shader_abi_reflection_capacity_and_gl_defaults);
+    RUN_TEST(shader_abi_reflection_rejects_malformed_boundaries);
+    RUN_TEST(shader_abi_reflection_rejects_unknown_layout_and_duplicate_bindings);
+    RUN_TEST(shader_abi_reflection_rejects_unsupported_resource_kind);
+    RUN_TEST(shader_abi_reflection_rejects_duplicates_beyond_output_capacity);
+    RUN_TEST(shader_abi_reflection_requires_exact_supported_types);
+    RUN_TEST(shader_abi_reflection_classifies_images);
+    RUN_TEST(shader_abi_reflection_accepts_non_nul_input_and_hashes_canonically);
+    RUN_TEST(shader_abi_hash_ignores_struct_padding);
+    RUN_TEST(shader_abi_reflection_rejects_extreme_lengths_and_missing_names);
+    RUN_TEST(shader_abi_hash_handles_non_nul_fixed_fields);
+    RUN_TEST(shader_abi_hash_total_order_covers_all_hashed_fields);
+    RUN_TEST(shader_abi_reflection_partial_input_skips_malformed_declarations);
+    RUN_TEST(shader_abi_rhi_formats_mrt_resources_and_indirect);
     RUN_TEST(ui_command_dispatch_context_is_internal);
     RUN_TEST(vulkan_deferred_mip_upload_is_backend_owned);
     RUN_TEST(motion_blur_prefers_per_object_velocity_texture);

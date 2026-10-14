@@ -501,6 +501,13 @@ static void vk_note_result(VKBackend *vk, VkResult r) {
     }
 }
 
+static RHIResult vk_lifecycle_result(VkResult result) {
+    if (result == VK_ERROR_DEVICE_LOST) return RHI_RESULT_DEVICE_LOST;
+    if (result == VK_ERROR_OUT_OF_DATE_KHR) return RHI_RESULT_OUT_OF_DATE;
+    if (result == VK_ERROR_SURFACE_LOST_KHR) return RHI_RESULT_SURFACE_LOST;
+    return RHI_RESULT_SYNC_FAILED;
+}
+
 /* R578: bounded fence wait. Healthy frames signal within milliseconds; the
  * 10 s bound plus a single retry tolerates extreme load, and a second
  * timeout means the GPU is gone (TDR detection itself takes 2-8 s), so the
@@ -1410,9 +1417,12 @@ static void vk_cleanup_swapchain(VKBackend *vk) {
     if (vk->swapchain) { vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL); vk->swapchain = VK_NULL_HANDLE; }
 }
 
-static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+static RHIResult vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
+    VkResult idle_result = vkDeviceWaitIdle(vk->device);
+    if (idle_result != VK_SUCCESS) {
         LOG_WARN("VK: vkDeviceWaitIdle failed in recreate_swapchain");
+        return vk_lifecycle_result(idle_result);
+    }
     vk_cleanup_swapchain(vk);
     if (vk->render_pass_load != VK_NULL_HANDLE) {
         vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
@@ -1424,13 +1434,13 @@ static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
     }
     if (!vk_create_swapchain(vk, w, h)) {
         /* R430: cannot recover mid-run; do not continue with NULL swapchain. */
-        LOG_FATAL("VK: swapchain recreation failed");
+        LOG_ERROR("VK: swapchain recreation failed");
         vk_cleanup_swapchain(vk);
-        return;
+        return RHI_RESULT_UNAVAILABLE;
     }
     if (!vk_create_render_pass(vk) || !vk_create_depth(vk) ||
         !vk_create_framebuffers(vk)) {
-        LOG_FATAL("VK: swapchain attachment recreation failed");
+        LOG_ERROR("VK: swapchain attachment recreation failed");
         vk_cleanup_swapchain(vk);
         if (vk->render_pass_load != VK_NULL_HANDLE) {
             vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
@@ -1440,7 +1450,9 @@ static void vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
             vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
             vk->render_pass = VK_NULL_HANDLE;
         }
+        return RHI_RESULT_UNAVAILABLE;
     }
+    return RHI_RESULT_OK;
 }
 
 /* ---- Init/Shutdown ---- */
@@ -2778,16 +2790,21 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
         rhi_device_control_release(dev);
         return;
     }
-    vk_recreate_swapchain(vk, w, h);
-    dev->width = w;
-    dev->height = h;
+    rhi_device_set_lifecycle_result(dev, vk_recreate_swapchain(vk, w, h));
+    if (dev->lifecycle_result == RHI_RESULT_OK) {
+        dev->width = w;
+        dev->height = h;
+    }
     rhi_device_control_release(dev);
 }
 
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
-    if (!vk) return NULL;
+    if (!vk) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return NULL;
+    }
     if (!rhi_frame_owner_begin_backend(dev)) return NULL;
     g_current_device = dev;
     dev->frame_partial_active = false;
@@ -2797,25 +2814,31 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     vk_mip_upload_reclaim(vk);
 
     if (vk->device_lost) { /* R578: latched loss — quiet fail-fast, no spam */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
         return NULL;
     }
     VkResult fence_res = vk_wait_fence(vk, vk->fences[vk->current_frame]);
     if (fence_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(fence_res));
         LOG_FATAL("VK: vkWaitForFences failed in frame_begin (res=%d)", (int)fence_res);
         vk_dump_device_fault(vk, "frame_begin");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
         return NULL;
     }
-    if (vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]) != VK_SUCCESS) {
+    VkResult reset_fence_res = vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]);
+    if (reset_fence_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(reset_fence_res));
         LOG_FATAL("VK: vkResetFences failed in frame_begin");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
         return NULL;
     }
-    if (vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0) != VK_SUCCESS) {
+    VkResult reset_pool_res = vkResetDescriptorPool(vk->device, vk->desc_pools[vk->current_frame], 0);
+    if (reset_pool_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(reset_pool_res));
         LOG_FATAL("VK: vkResetDescriptorPool failed in frame_begin");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
@@ -2825,10 +2848,17 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VkResult res = vkAcquireNextImageKHR(vk->device, vk->swapchain, UINT64_MAX,
         vk->image_semaphores[vk->current_frame], VK_NULL_HANDLE, &vk->image_index);
     if (res == VK_ERROR_OUT_OF_DATE_KHR) {
-        vk_recreate_swapchain(vk, dev->width, dev->height);
+        RHIResult recreate_result = vk_recreate_swapchain(vk, dev->width, dev->height);
+        if (recreate_result != RHI_RESULT_OK) {
+            rhi_device_set_lifecycle_result(dev, recreate_result);
+            vk->frame_started = false;
+            rhi_frame_owner_release(dev);
+            return NULL;
+        }
         res = vkAcquireNextImageKHR(vk->device, vk->swapchain, UINT64_MAX,
             vk->image_semaphores[vk->current_frame], VK_NULL_HANDLE, &vk->image_index);
         if (res != VK_SUCCESS && res != VK_SUBOPTIMAL_KHR) {
+            rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(res));
             vk->frame_started = false;
             rhi_frame_owner_release(dev);
             return NULL;
@@ -2839,6 +2869,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
          * record commands with a stale image_index, potentially using an invalid
          * framebuffer and causing a cascade of GPU errors. */
         LOG_ERROR("VK: vkAcquireNextImageKHR failed (res=%d)", (int)res);
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(res));
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
         return NULL;
@@ -2851,12 +2882,15 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
      * vk->framebuffers[vk->image_index] dereferences NULL. */
     if (!vk->framebuffers) {
         LOG_ERROR("VK: framebuffers not available in frame_begin");
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
         return NULL;
     }
 
-    if (vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0) != VK_SUCCESS) {
+    VkResult reset_cmd_res = vkResetCommandBuffer(vk->cmd_buffers[vk->current_frame], 0);
+    if (reset_cmd_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(reset_cmd_res));
         LOG_FATAL("VK: vkResetCommandBuffer failed in frame_begin");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
@@ -2869,7 +2903,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     VkCommandBufferBeginInfo bi = {0};
     bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi) != VK_SUCCESS) {
+    VkResult begin_res = vkBeginCommandBuffer(vk->cmd_buffers[vk->current_frame], &bi);
+    if (begin_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(begin_res));
         LOG_FATAL("VK: vkBeginCommandBuffer failed in frame_begin");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
@@ -3184,8 +3220,14 @@ void rhi_frame_end(RHIDevice *dev) {
     if (dev == NULL) return;
     if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
-    if (!vk) return;
-    if (!vk->frame_started) return;
+    if (!vk) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
+    if (!vk->frame_started) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
 
     /* If a compute dispatch left a pass suspended with no following draw,
      * resume it so it ends with the correct finalLayout transition. */
@@ -3194,7 +3236,12 @@ void rhi_frame_end(RHIDevice *dev) {
         vkCmdEndRenderPass(vk->cmd_buffers[vk->current_frame]);
         vk->render_pass_active = false;
     }
-    if (vkEndCommandBuffer(vk->cmd_buffers[vk->current_frame]) != VK_SUCCESS) {
+    VkResult end_res = vkEndCommandBuffer(vk->cmd_buffers[vk->current_frame]);
+    if (end_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev,
+                                        end_res == VK_ERROR_DEVICE_LOST ?
+                                        RHI_RESULT_DEVICE_LOST :
+                                        RHI_RESULT_SYNC_FAILED);
         LOG_FATAL("VK: vkEndCommandBuffer failed in frame_end");
         vk->frame_started = false;
         rhi_frame_owner_release(dev);
@@ -3216,6 +3263,10 @@ void rhi_frame_end(RHIDevice *dev) {
     VkResult submit_res = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
     vk_note_result(vk, submit_res); /* R578 */
     if (submit_res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev,
+                                        submit_res == VK_ERROR_DEVICE_LOST ?
+                                        RHI_RESULT_DEVICE_LOST :
+                                        RHI_RESULT_SYNC_FAILED);
         LOG_FATAL("VK: vkQueueSubmit failed in frame_end (res=%d)", (int)submit_res);
         vk_dump_device_fault(vk, "frame_end");
         vk->frame_started = false;
@@ -3223,6 +3274,7 @@ void rhi_frame_end(RHIDevice *dev) {
         rhi_frame_owner_release(dev);
         return;
     }
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
     vk->frame_started = false;
     vk->frame_submitted = true;
 }
@@ -3231,8 +3283,12 @@ void rhi_present(RHIDevice *dev) {
     if (dev == NULL) return;
     if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
     VKBackend *vk = vk_backend(dev);
-    if (!vk) return;
+    if (!vk) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
     if (vk->device_lost) { /* R578: acquire/present can block on a dead device */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
         dev->frame_damage_requested = false;
         dev->frame_damage_count = 0u;
         dev->frame_current_damage_count = 0u;
@@ -3241,6 +3297,7 @@ void rhi_present(RHIDevice *dev) {
         return;
     }
     if (!vk->frame_submitted) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
         dev->frame_damage_requested = false;
         dev->frame_damage_count = 0u;
         dev->frame_current_damage_count = 0u;
@@ -3258,8 +3315,19 @@ void rhi_present(RHIDevice *dev) {
     pi.pImageIndices = &vk->image_index;
 
     VkResult res = vkQueuePresentKHR(vk->present_queue, &pi);
+    if (res == VK_ERROR_DEVICE_LOST) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+    } else if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_OUT_OF_DATE);
+    } else if (res != VK_SUCCESS) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_ERROR);
+    } else {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    }
     if (res == VK_ERROR_OUT_OF_DATE_KHR || res == VK_SUBOPTIMAL_KHR) {
-        vk_recreate_swapchain(vk, dev->width, dev->height);
+        RHIResult recreate_result = vk_recreate_swapchain(vk, dev->width, dev->height);
+        if (recreate_result != RHI_RESULT_OK)
+            rhi_device_set_lifecycle_result(dev, recreate_result);
     }
 
     vk->current_frame = (vk->current_frame + 1) % VK_MAX_FRAMES;

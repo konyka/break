@@ -24,6 +24,8 @@ extern void rhi_test_frame_owner_release(RHIDevice *dev);
 extern bool rhi_test_frame_owner_begin_destroy(RHIDevice *dev);
 extern bool rhi_test_device_control_try_acquire(RHIDevice *dev);
 extern void rhi_test_device_control_release(RHIDevice *dev);
+extern void rhi_test_set_lifecycle_result(RHIDevice *dev, RHIResult result);
+extern void rhi_test_set_device_status(RHIDevice *dev, RHIDeviceStatus status);
 
 typedef struct rhi_thread_isolation_context_t {
     RHIDevice *device;
@@ -431,6 +433,127 @@ TEST(device_status_is_explicit_and_null_safe)
     ASSERT_EQ(rhi_device_get_status(NULL), RHI_DEVICE_STATUS_UNKNOWN);
     ASSERT_NEQ(device, NULL);
     ASSERT_EQ(rhi_device_get_status(device), RHI_DEVICE_STATUS_READY);
+    rhi_test_device_destroy(device);
+}
+
+TEST(lifecycle_results_distinguish_invalid_unavailable_and_unsupported)
+{
+    RHIResult result = RHI_RESULT_OK;
+    RHIDevice *device = rhi_test_device_create();
+
+    ASSERT_EQ(rhi_device_create_ex((RHIBackend)99, NULL, NULL, 64u, 64u,
+                                   &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+    ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_OPENGL, NULL, NULL, 64u, 64u,
+                                   &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(rhi_device_resize_ex(NULL, 64u, 64u), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_NEQ(device, NULL);
+    rhi_test_device_destroy(device);
+}
+
+TEST(lifecycle_results_fail_closed_for_lost_and_out_of_date)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIDevice *other = rhi_test_device_create();
+    RHIResult result = RHI_RESULT_OK;
+
+    ASSERT_NEQ(device, NULL);
+    ASSERT_NEQ(other, NULL);
+    rhi_test_set_device_status(device, RHI_DEVICE_STATUS_LOST);
+    ASSERT_EQ(rhi_frame_begin_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_device_idle_ex(device), RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_device_resize_ex(device, 64u, 64u), RHI_RESULT_DEVICE_LOST);
+    rhi_test_set_device_status(device, RHI_DEVICE_STATUS_READY);
+    rhi_test_set_lifecycle_result(device, RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_frame_begin_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_device_idle_ex(device), RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_frame_begin_ex(other, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
+    rhi_test_device_destroy(device);
+    rhi_test_device_destroy(other);
+}
+
+TEST(lifecycle_results_cover_busy_sync_and_frame_sequence)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIDevice *other = rhi_test_device_create();
+    RHIResult result = RHI_RESULT_OK;
+
+    ASSERT_NEQ(device, NULL);
+    ASSERT_NEQ(other, NULL);
+    ASSERT_EQ(rhi_frame_end_ex(NULL), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_EQ(rhi_present_ex(NULL), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_EQ(rhi_device_idle_ex(NULL), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_TRUE(rhi_test_frame_owner_try_acquire(device));
+    ASSERT_EQ(rhi_device_resize_ex(device, 64u, 64u), RHI_RESULT_BUSY);
+    ASSERT_EQ(rhi_frame_begin_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(rhi_frame_end_ex(device), RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(rhi_present_ex(device), RHI_RESULT_UNAVAILABLE);
+    rhi_test_frame_owner_release(device);
+    rhi_test_set_lifecycle_result(device, RHI_RESULT_SYNC_FAILED);
+    ASSERT_EQ(rhi_device_idle_ex(device), RHI_RESULT_SYNC_FAILED);
+    ASSERT_EQ(rhi_frame_end_ex(device), RHI_RESULT_SYNC_FAILED);
+    ASSERT_EQ(rhi_present_ex(device), RHI_RESULT_SYNC_FAILED);
+    rhi_test_set_lifecycle_result(device, RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_resize_ex(device, 64u, 64u), RHI_RESULT_UNAVAILABLE);
+    ASSERT_TRUE(rhi_test_device_control_try_acquire(device));
+    rhi_test_device_control_release(device);
+    ASSERT_TRUE(rhi_test_frame_owner_try_acquire(device));
+    rhi_test_frame_owner_release(device);
+    ASSERT_EQ(rhi_device_idle_ex(other), RHI_RESULT_UNAVAILABLE);
+    ASSERT_TRUE(rhi_test_frame_owner_try_acquire(device));
+    ASSERT_EQ(rhi_device_destroy_ex(device), RHI_RESULT_BUSY);
+    ASSERT_TRUE(rhi_test_frame_owner_is_current(device));
+    rhi_test_frame_owner_release(device);
+    ASSERT_EQ(rhi_device_destroy_ex(device), RHI_RESULT_OK);
+    rhi_test_device_destroy(other);
+}
+
+TEST(lifecycle_aliases_cover_acquire_submit_and_drain)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIResult result = RHI_RESULT_OK;
+
+    ASSERT_NEQ(device, NULL);
+    ASSERT_EQ(rhi_frame_acquire_ex(NULL, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_EQ(rhi_frame_submit_ex(NULL), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_EQ(rhi_device_drain_ex(NULL), RHI_RESULT_INVALID_ARGUMENT);
+    ASSERT_EQ(rhi_frame_acquire_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(rhi_frame_submit_ex(device), RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(rhi_device_drain_ex(device), RHI_RESULT_UNAVAILABLE);
+    rhi_test_set_device_status(device, RHI_DEVICE_STATUS_LOST);
+    ASSERT_EQ(rhi_frame_acquire_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_frame_submit_ex(device), RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_device_drain_ex(device), RHI_RESULT_DEVICE_LOST);
+    rhi_test_set_device_status(device, RHI_DEVICE_STATUS_READY);
+    rhi_test_set_lifecycle_result(device, RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_frame_acquire_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_frame_submit_ex(device), RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_device_drain_ex(device), RHI_RESULT_OUT_OF_DATE);
+    rhi_test_device_destroy(device);
+}
+
+TEST(frame_begin_damage_honors_lifecycle_failures)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHIPresentRect rect = {0, 0, 4u, 4u};
+    RHIResult result = RHI_RESULT_OK;
+
+    ASSERT_NEQ(device, NULL);
+    rhi_test_set_dimensions(device, 16u, 16u);
+    ASSERT_EQ(rhi_frame_begin_damage(device, &rect, 1u, NULL), NULL);
+    rhi_test_set_lifecycle_result(device, RHI_RESULT_OUT_OF_DATE);
+    ASSERT_EQ(rhi_frame_begin_damage(device, &rect, 1u, NULL), NULL);
+    ASSERT_EQ(rhi_frame_begin_ex(device, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_OUT_OF_DATE);
     rhi_test_device_destroy(device);
 }
 
@@ -1010,6 +1133,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(sample_count_bits_are_portable_and_bounded);
     RUN_TEST(capability_query_rejects_invalid_arguments);
     RUN_TEST(device_status_is_explicit_and_null_safe);
+    RUN_TEST(lifecycle_results_distinguish_invalid_unavailable_and_unsupported);
+    RUN_TEST(lifecycle_results_fail_closed_for_lost_and_out_of_date);
+    RUN_TEST(lifecycle_results_cover_busy_sync_and_frame_sequence);
+    RUN_TEST(lifecycle_aliases_cover_acquire_submit_and_drain);
+    RUN_TEST(frame_begin_damage_honors_lifecycle_failures);
     RUN_TEST(frame_lifecycle_rejects_null_device);
     RUN_TEST(device_controls_reject_null_device);
     RUN_TEST(device_resize_rejects_zero_dimensions);

@@ -38,6 +38,7 @@ struct RHIDevice {
     u32 free_count;
     RHICapabilities capabilities;
     RHIDeviceStatus status;
+    RHIResult lifecycle_result;
     RHIPresentRect frame_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
     u32 frame_damage_count;
     RHIPresentRect frame_current_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
@@ -60,9 +61,13 @@ bool rhi_drawable_dimensions_valid(u32 width, u32 height);
 bool rhi_frame_owner_begin_backend(RHIDevice *dev);
 bool rhi_frame_owner_try_acquire(RHIDevice *dev);
 bool rhi_frame_owner_begin_destroy(RHIDevice *dev);
+bool rhi_frame_owner_preclaim_destroy(RHIDevice *dev);
 bool rhi_frame_owner_is_current(const RHIDevice *dev);
 void rhi_frame_owner_release(RHIDevice *dev);
 bool rhi_device_control_try_acquire(RHIDevice *dev);
+bool rhi_device_control_preclaim(RHIDevice *dev);
 void rhi_device_control_release(RHIDevice *dev);
+void rhi_frame_owner_clear_preclaims(RHIDevice *dev);
+void rhi_device_set_lifecycle_result(RHIDevice *dev, RHIResult result);
 
 #endif

@@ -754,11 +754,15 @@ bool rhi_device_idle(RHIDevice *dev) {
      * The drain is bounded — a persistent GL_CONTEXT_LOST never clears and
      * would otherwise spin forever. */
     if (!dev) return false;
+    GLenum error = GL_NO_ERROR;
+    bool had_error = false;
     glFinish();
     for (int i = 0; i < 32; i++) {
-        if (glGetError() == GL_NO_ERROR) break;
+        error = glGetError();
+        if (error == GL_NO_ERROR) break;
+        had_error = true;
     }
-    return true;
+    return !had_error && error == GL_NO_ERROR;
 }
 
 static void gl_shutdown(RHIDevice *dev) {
@@ -1021,6 +1025,7 @@ static bool gl_present(RHIDevice *dev) {
     return swapped == EGL_TRUE;
 #else
     bool used_damage = false;
+    (void)glGetError();
     if (dev->frame_partial_active && gl->swap_buffers_with_damage != NULL) {
         int damage[4u * RHI_MAX_PRESENT_DAMAGE_RECTS];
         RHIPresentRect native_damage[RHI_MAX_PRESENT_DAMAGE_RECTS];
@@ -1042,6 +1047,11 @@ static bool gl_present(RHIDevice *dev) {
         used_damage = true;
     } else {
         glXSwapBuffers(gl->display, gl->window);
+    }
+    if (glGetError() != GL_NO_ERROR) {
+        if (gl->damage_history_valid)
+            (void)rhi_present_damage_history_reset(&gl->damage_history);
+        return false;
     }
     if (gl->damage_history_valid) {
         RHIPresentRect committed = {0, 0, dev->width, dev->height};
@@ -1371,6 +1381,7 @@ void rhi_frame_end(RHIDevice *dev) {
     if (dev == NULL || !rhi_frame_owner_is_current(dev) ||
         g_current_device != dev || !g_gl_frame_active) return;
     gl_frame_end(dev);
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
     g_gl_frame_active = false;
 }
 
@@ -1378,7 +1389,9 @@ void rhi_present(RHIDevice *dev) {
     if (dev == NULL || !rhi_frame_owner_is_current(dev) ||
         g_current_device != dev) return;
     g_gl_frame_active = false;
-    (void)gl_present(dev);
+    rhi_device_set_lifecycle_result(dev,
+                                    gl_present(dev) ? RHI_RESULT_OK :
+                                    RHI_RESULT_ERROR);
     dev->frame_damage_requested = false;
     dev->frame_damage_count = 0u;
     dev->frame_current_damage_count = 0u;
