@@ -269,9 +269,10 @@ RHI 现在提供 backend-neutral 的 `RHI_DEVICE_STATUS_UNKNOWN`、`READY`、`LO
 
 Phase 2 adds the explicit CMake selector `ENGINE_RHI_BACKEND=auto|opengl|vulkan`.
 `auto` preserves the current policy, while `opengl` and `vulkan` make the existing
-backend choice auditable in configure receipts. This is an ownership boundary only;
-the current implementations remain unity-included until a later no-behavior-change
-source split is proven.
+backend choice auditable in configure receipts. The no-behavior-change source
+split has since landed: the backend files now build as the separate static
+libraries `engine_rhi_opengl`, `engine_rhi_vulkan`, and `engine_rhi_headless`,
+and `engine_link_rhi_backend(<target>)` links exactly one of them (见下方分层图).
 
 ### RHI 分层（2026-10-14 起）
 
@@ -287,15 +288,16 @@ source split is proven.
 
 The first source-split preparation now centralizes the shared `RHIDevice` layout,
 resource-slot types, current-device TLS declaration, and backend-facing resource
-helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. The
-backend files are still unity-included in this phase; moving them into separate
-translation units is intentionally deferred until the remaining private helper
-surface has its own tests.
+helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. That
+split is now complete: each backend compiles in its own translation unit inside
+its static library (`engine_rhi_opengl` / `engine_rhi_vulkan` /
+`engine_rhi_headless`), with `rhi_backend_internal.h` as the shared private
+contract.
 
 The `test_rhi_backend_internal_contract` CMake test now requires `rhi.c`,
 `rhi_gl.c`, and `rhi_vk.c` to include the private contract explicitly. This
-prevents the current unity build from hiding transitive declarations before the
-implementations move into separate translation units.
+keeps each backend's separate translation unit from relying on transitive
+declarations.
 
 Frame-owner and device-control helpers are now part of that private contract as
 well. Both current backends use the same ownership semantics, and the first
