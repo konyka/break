@@ -173,7 +173,8 @@ static HMODULE sl_load_interposer(void) {
     wchar_t env_path[512];
     usize i;
 
-    /* Explicit override wins first: $BREAK_SL_DIR\sl.interposer.dll */
+    /* Explicit override wins and is exclusive: a bad BREAK_SL_DIR path must
+       fail closed instead of silently falling back to the bundled candidates. */
     if (GetEnvironmentVariableW(L"BREAK_SL_DIR", env_path,
                                 (DWORD)(sizeof(env_path) / sizeof(wchar_t))) > 0 &&
         env_path[0] != L'\0') {
@@ -184,6 +185,7 @@ static HMODULE sl_load_interposer(void) {
             HMODULE m = LoadLibraryExW(full, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
             if (m != NULL) return m;
         }
+        return NULL;
     }
     for (i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
         HMODULE m = LoadLibraryExW(candidates[i], NULL,
