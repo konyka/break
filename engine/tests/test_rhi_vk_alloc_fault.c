@@ -1,7 +1,6 @@
 /* 真 GPU 分配故障注入：rhi_vk_set_alloc_failure_for_test 使
  * vk_allocate_memory 直接失败。无 Vulkan 构建或无可建窗口/GPU 的环境
  * return 77（注册处 SKIP_RETURN_CODE 77 → CTest 记为跳过而非通过）。 */
-#include "test_framework.h"
 #include "engine.h"
 #include "rhi/rhi.h"
 #include "platform/platform.h"
