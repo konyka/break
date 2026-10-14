@@ -273,6 +273,18 @@ backend choice auditable in configure receipts. This is an ownership boundary on
 the current implementations remain unity-included until a later no-behavior-change
 source split is proven.
 
+### RHI 分层（2026-10-14 起）
+
+```
+应用 / renderer（rhi.h 公共 API，后端中性）
+  └─ engine（RHI_CORE_SOURCES：rhi.c 调度/校验 + ownership + validation + resources + present_history）
+       └─ 恰好一个后端静态库：engine_rhi_opengl | engine_rhi_vulkan | engine_rhi_headless
+            └─ 平台图形栈（GL/EGL、Vulkan+shaderc、或 fail-closed stub）
+```
+
+- 编译期单后端、直接符号链接（无 vtable 分发）；`engine_link_rhi_backend(<target>)` 按 `ENGINE_RHI_BACKEND_EFFECTIVE` 选择。
+- Vulkan 形状的 native interop（`RHINativeDevice` 等）在 `engine/src/rhi/rhi_native_vulkan.h`，`rhi.h` 保持后端中性。
+
 The first source-split preparation now centralizes the shared `RHIDevice` layout,
 resource-slot types, current-device TLS declaration, and backend-facing resource
 helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. The

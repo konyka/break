@@ -1,5 +1,16 @@
 name: CI
 
+# RHI 证据 lane 分类约定（spec: docs/superpowers/specs/2026-10-14-multi-backend-rhi-design.md §8.2）：
+#   headless       — 无 GPU/无显示；label "headless"/"platform_contract"；任何 runner 可跑
+#   native-surface — 真实窗口系统 surface，无 GPU 断言；环境缺失用 SKIP_RETURN_CODE 77
+#   GPU-runtime    — 真实或软渲染 GPU 运行；label "graphics"/"platform_runtime"
+#   validation     — Vulkan validation layer 消息计数 gate（test_vulkan 路径）
+#   benchmark      — 产出 docs/rhi_benchmark_receipt_schema.md 收据 artifact
+#   Proton         — 仅兼容验证，不计入 Windows D3D12 证据
+# 现有 lane 归类：gl/vk = headless + GPU-runtime（软渲染）；wayland-* = native-surface；
+# windows-clang = GPU-runtime；macos-vulkan = GPU-runtime（MoltenVK，非原生 Metal 证据）。
+# 本计划不新增 GPU lane；后续新增 lane 必须在本注释声明证据类别并产出收据 artifact。
+
 on:
   push:
     branches: [master]

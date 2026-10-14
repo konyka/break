@@ -54,6 +54,13 @@ cmake -B build-vk -DENGINE_VULKAN=ON
 cmake --build build-vk
 ```
 
+## RHI 后端链接模型
+
+- `engine` 静态库只含 `RHI_CORE_SOURCES`（rhi.c 调度/校验、ownership、validation、resources、present_history），不再编译任何后端源。
+- 后端各自为独立静态库：`engine_rhi_opengl`（`src/rhi/rhi_gl.c` + glad + 平台 GL 库）、`engine_rhi_vulkan`（`src/rhi/rhi_vk.c`，链接 `Vulkan::Vulkan` + shaderc）、`engine_rhi_headless`（`src/rhi/rhi_headless.c`，全入口 fail-closed，仅供契约/headless 测试链接，永不构成 GPU 证据）。
+- 需要 RHI 的可执行 target 在其 `target_link_libraries` 之后调用 `engine_link_rhi_backend(<target>)`；headless 测试不调用该 helper，直接链接 `engine_rhi_headless`。
+- 后端选择语义不变：`ENGINE_RHI_BACKEND=auto|opengl|vulkan` 与 `ENGINE_VULKAN` 兼容层；`metal`/`d3d12` 在计划 C/D 落地前仍被选择器拒绝（FATAL_ERROR）。
+
 平台契约与 profiler provenance sidecar 可用以下命令验证（不会修改
 `profile_trace.json`）：
 

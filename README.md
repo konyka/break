@@ -29,6 +29,10 @@ Release builds enable IPO/LTO for the `engine` static library when the active
 toolchain supports it. The Linux Clang CI configuration selects `lld`; disable
 IPO with `-DENGINE_ENABLE_IPO=OFF` when the platform linker does not support it.
 
+### RHI 后端（迁移期）
+
+RHI 后端编译为独立静态库（`engine_rhi_opengl` / `engine_rhi_vulkan` / `engine_rhi_headless`），最终可执行文件链接 `engine` + 恰好一个后端库（`engine_link_rhi_backend(<target>)`）。后端选择：`-DENGINE_RHI_BACKEND=auto|opengl|vulkan`（`ENGINE_VULKAN` option 兼容保留）。证据基线与等级见 `docs/rhi_backend_evidence.md`。
+
 ## Documentation
 
 - Build and platform matrix: `docs/Build_Guide.md`
