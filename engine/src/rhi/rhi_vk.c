@@ -1,6 +1,7 @@
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>
+#include <rhi/rhi_vk_probe.h>
 #include <platform/platform_vk_surface.h>
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 /* vk_shutdown keeps the ANativeWindow_release half of the reference pair
@@ -14,6 +15,27 @@
 #include <stdio.h>
 #include <errno.h>
 #include <stdatomic.h>
+
+/* Probe-header constant pinning: any drift between rhi_vk_probe.h and the
+ * Vulkan/RHI enums fails here at compile time instead of on a GPU. */
+_Static_assert(VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU == (int)VK_PROBE_DEVICE_TYPE_DISCRETE, "vk probe constant drift");
+_Static_assert(VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU == (int)VK_PROBE_DEVICE_TYPE_INTEGRATED, "vk probe constant drift");
+_Static_assert(VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU == (int)VK_PROBE_DEVICE_TYPE_VIRTUAL, "vk probe constant drift");
+_Static_assert(VK_PHYSICAL_DEVICE_TYPE_CPU == (int)VK_PROBE_DEVICE_TYPE_CPU, "vk probe constant drift");
+_Static_assert(VK_PHYSICAL_DEVICE_TYPE_OTHER == (int)VK_PROBE_DEVICE_TYPE_OTHER, "vk probe constant drift");
+_Static_assert(VK_QUEUE_GRAPHICS_BIT == (int)VK_PROBE_QUEUE_GRAPHICS_BIT, "vk probe constant drift");
+_Static_assert(VK_PRESENT_MODE_IMMEDIATE_KHR == (int)VK_PROBE_PRESENT_MODE_IMMEDIATE, "vk probe constant drift");
+_Static_assert(VK_PRESENT_MODE_MAILBOX_KHR == (int)VK_PROBE_PRESENT_MODE_MAILBOX, "vk probe constant drift");
+_Static_assert(VK_PRESENT_MODE_FIFO_KHR == (int)VK_PROBE_PRESENT_MODE_FIFO, "vk probe constant drift");
+_Static_assert(VK_PRESENT_MODE_FIFO_RELAXED_KHR == (int)VK_PROBE_PRESENT_MODE_FIFO_RELAXED, "vk probe constant drift");
+_Static_assert(VK_FORMAT_B8G8R8A8_SRGB == (int)VK_PROBE_FORMAT_B8G8R8A8_SRGB, "vk probe constant drift");
+_Static_assert(VK_FORMAT_R8G8B8A8_SRGB == (int)VK_PROBE_FORMAT_R8G8B8A8_SRGB, "vk probe constant drift");
+_Static_assert(VK_FORMAT_B8G8R8A8_UNORM == (int)VK_PROBE_FORMAT_B8G8R8A8_UNORM, "vk probe constant drift");
+_Static_assert(VK_FORMAT_UNDEFINED == (int)VK_PROBE_FORMAT_UNDEFINED, "vk probe constant drift");
+_Static_assert(VK_COLOR_SPACE_SRGB_NONLINEAR_KHR == (int)VK_PROBE_COLORSPACE_SRGB_NONLINEAR, "vk probe constant drift");
+_Static_assert(RHI_FEATURE_RAY_TRACING_PIPELINE == VK_PROBE_FEATURE_RAY_TRACING_PIPELINE, "vk probe constant drift");
+_Static_assert(RHI_FEATURE_RAY_QUERY == VK_PROBE_FEATURE_RAY_QUERY, "vk probe constant drift");
+_Static_assert(RHI_FEATURE_ACCELERATION_STRUCTURE == VK_PROBE_FEATURE_ACCELERATION_STRUCTURE, "vk probe constant drift");
 
 #define VK_MAX_FRAMES 2
 #define VK_MAX_UNIFORMS 64
@@ -1041,32 +1063,27 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
             free(formats);
             return false;
         }
-        VkFormat chosen = VK_FORMAT_UNDEFINED;
-        if (fmt_count == 1u && formats[0].format == VK_FORMAT_UNDEFINED) {
-            chosen = VK_FORMAT_B8G8R8A8_SRGB; /* "any format" sentinel */
-            swap_colorspace = formats[0].colorSpace;
-        } else {
-            for (u32 i = 0; i < fmt_count; i++) {
-                if (formats[i].format == VK_FORMAT_B8G8R8A8_SRGB) {
-                    chosen = formats[i].format;
-                    swap_colorspace = formats[i].colorSpace;
-                    break;
-                }
-            }
-            if (chosen == VK_FORMAT_UNDEFINED && fmt_count > 0u) {
-                chosen = formats[0].format;
-                swap_colorspace = formats[0].colorSpace;
-                LOG_WARN("VK: B8G8R8A8_SRGB unsupported, falling back to surface format %d", (int)chosen);
-            }
+        VkProbeSurfaceFormat *probe_formats = calloc(fmt_count, sizeof(*probe_formats));
+        if (!probe_formats) { LOG_FATAL("VK: OOM surface format probe"); free(formats); return false; }
+        for (u32 i = 0; i < fmt_count; i++) {
+            probe_formats[i].format = (u32)formats[i].format;
+            probe_formats[i].color_space = (u32)formats[i].colorSpace;
         }
+        VkProbeSurfaceFormat picked = { 0u, 0u };
+        bool format_ok = vk_probe_choose_surface_format(probe_formats, fmt_count, &picked);
+        free(probe_formats);
         free(formats);
-        if (chosen == VK_FORMAT_UNDEFINED) {
+        if (!format_ok) {
             LOG_FATAL("VK: surface reports no formats");
             return false;
         }
-        vk->swap_format = chosen;
+        if (picked.format != (u32)VK_FORMAT_B8G8R8A8_SRGB) {
+            LOG_WARN("VK: B8G8R8A8_SRGB unsupported, falling back to surface format %d", (int)picked.format);
+        }
+        vk->swap_format = (VkFormat)picked.format;
+        swap_colorspace = (VkColorSpaceKHR)picked.color_space;
         /* Screenshot readback swizzles BGRA->RGBA; RGBA-order formats need none. */
-        vk->swap_bgra = (chosen == VK_FORMAT_B8G8R8A8_SRGB || chosen == VK_FORMAT_B8G8R8A8_UNORM);
+        vk->swap_bgra = (vk->swap_format == VK_FORMAT_B8G8R8A8_SRGB || vk->swap_format == VK_FORMAT_B8G8R8A8_UNORM);
     }
 
     VkExtent2D extent;
@@ -1125,22 +1142,14 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         }
         /* Prefer mailbox for interactive camera input while vsync is enabled:
          * it replaces stale queued frames without tearing. When vsync is off,
-         * prefer immediate for the lowest input-to-photon latency. */
-        if (vk->vsync) {
-            for (u32 i = 0; i < mode_count; i++) {
-                if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR) {
-                    present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-                    break;
-                }
-            }
-        } else {
-            for (u32 i = 0; i < mode_count; i++) {
-                if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR) {
-                    present_mode = VK_PRESENT_MODE_IMMEDIATE_KHR;
-                    break;
-                }
-            }
-        }
+         * prefer immediate for the lowest input-to-photon latency. The full
+         * fallback ordering lives in rhi_vk_probe.h. */
+        u32 *probe_modes = calloc(mode_count, sizeof(*probe_modes));
+        if (!probe_modes) { LOG_FATAL("VK: OOM present mode probe"); free(modes); return false; }
+        for (u32 i = 0; i < mode_count; i++)
+            probe_modes[i] = (u32)modes[i];
+        present_mode = (VkPresentModeKHR)vk_probe_choose_present_mode(probe_modes, mode_count, vk->vsync);
+        free(probe_modes);
         free(modes);
     }
     sci.presentMode = present_mode;
@@ -1669,25 +1678,23 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         }
     }
     if (vk->physical == VK_NULL_HANDLE) {
-        /* Prefer a discrete GPU: hybrid laptops otherwise pin the integrated
-         * device (observed: AMD iGPU chosen ahead of the RTX dGPU), which
-         * silently skips RT/DLSS-capable hardware. */
+        /* Adapter scoring lives in rhi_vk_probe.h (discrete > integrated >
+         * virtual > software > other; api_version then index tie-break).
+         * Suitability (R574/R576) is precomputed per candidate so an adapter
+         * that would fail later never wins the score. */
+        VkProbeAdapterInfo *probes = calloc(gpu_count, sizeof(*probes));
+        if (!probes) { LOG_FATAL("VK: OOM adapter probe list"); free(gpus); vk_init_cleanup(dev, vk); return false; }
         for (u32 i = 0; i < gpu_count; i++) {
-            VkPhysicalDeviceProperties probe = {0};
-            vkGetPhysicalDeviceProperties(gpus[i], &probe);
-            if (probe.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
-                vk_physical_device_suitable(gpus[i], vk->surface)) {
-                vk->physical = gpus[i];
-                break;
-            }
+            VkPhysicalDeviceProperties props = {0};
+            vkGetPhysicalDeviceProperties(gpus[i], &props);
+            probes[i].device_type = (u32)props.deviceType;
+            probes[i].api_version = props.apiVersion;
+            probes[i].suitable = vk_physical_device_suitable(gpus[i], vk->surface);
         }
-    }
-    if (vk->physical == VK_NULL_HANDLE)
-    for (u32 i = 0; i < gpu_count; i++) {
-        if (vk_physical_device_suitable(gpus[i], vk->surface)) {
-            vk->physical = gpus[i];
-            break;
-        }
+        i32 picked = vk_probe_select_adapter(probes, gpu_count);
+        free(probes);
+        if (picked >= 0)
+            vk->physical = gpus[picked];
     }
     if (vk->physical == VK_NULL_HANDLE) {
         LOG_FATAL("VK: no suitable Vulkan GPU found");
@@ -1740,6 +1747,17 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_device_extension_present(vk->physical, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
     vk->feat_ray_query =
         vk_device_extension_present(vk->physical, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+    /* 迁移期只探测不消费：dynamic rendering / synchronization2。 */
+    dev->capabilities.dynamic_rendering_supported =
+        VK_API_VERSION_MAJOR(vk->device_props.apiVersion) > 1u ||
+        (VK_API_VERSION_MAJOR(vk->device_props.apiVersion) == 1u &&
+         VK_API_VERSION_MINOR(vk->device_props.apiVersion) >= 3u) ||
+        vk_device_extension_present(vk->physical, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+    dev->capabilities.synchronization2_supported =
+        VK_API_VERSION_MAJOR(vk->device_props.apiVersion) > 1u ||
+        (VK_API_VERSION_MAJOR(vk->device_props.apiVersion) == 1u &&
+         VK_API_VERSION_MINOR(vk->device_props.apiVersion) >= 3u) ||
+        vk_device_extension_present(vk->physical, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
     dev->capabilities.feature_bits = 0u;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
@@ -1751,28 +1769,43 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     VkQueueFamilyProperties *queues = calloc(queue_count, sizeof(VkQueueFamilyProperties));
     if (!queues) { LOG_FATAL("VK: OOM queue list"); vk_init_cleanup(dev, vk); return false; }
     vkGetPhysicalDeviceQueueFamilyProperties(vk->physical, &queue_count, queues);
-    vk->graphics_family = UINT32_MAX;
-    vk->present_family = UINT32_MAX;
+    u32 *family_flags = calloc(queue_count, sizeof(*family_flags));
+    bool *family_present = calloc(queue_count, sizeof(*family_present));
+    if (!family_flags || !family_present) {
+        LOG_FATAL("VK: OOM queue probe arrays");
+        free(family_flags);
+        free(family_present);
+        free(queues);
+        vk_init_cleanup(dev, vk);
+        return false;
+    }
     for (u32 i = 0; i < queue_count; i++) {
-        if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT && vk->graphics_family == UINT32_MAX)
-            vk->graphics_family = i;
+        family_flags[i] = (u32)queues[i].queueFlags;
         VkBool32 present = VK_FALSE;
         if (vkGetPhysicalDeviceSurfaceSupportKHR(vk->physical, i, vk->surface,
                                                   &present) != VK_SUCCESS) {
+            free(family_flags);
+            free(family_present);
             free(queues);
             LOG_FATAL("Vulkan: surface support query failed");
             vk_init_cleanup(dev, vk);
             return false;
         }
-        if (present && vk->present_family == UINT32_MAX)
-            vk->present_family = i;
+        family_present[i] = present == VK_TRUE;
     }
     free(queues);
-    if (vk->graphics_family == UINT32_MAX || vk->present_family == UINT32_MAX) {
+    /* Combined graphics+present family first (EXCLUSIVE swapchain sharing);
+     * selection rules live in rhi_vk_probe.h. */
+    if (!vk_probe_choose_queue_families(family_flags, family_present, queue_count,
+                                        &vk->graphics_family, &vk->present_family)) {
+        free(family_flags);
+        free(family_present);
         LOG_FATAL("Vulkan: no suitable queue family");
         vk_init_cleanup(dev, vk);
         return false;
     }
+    free(family_flags);
+    free(family_present);
 
     f32 queue_priority = 1.0f;
     VkDeviceQueueCreateInfo queue_infos[2] = {0};

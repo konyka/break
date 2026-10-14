@@ -1665,6 +1665,14 @@ if(ENGINE_BUILD_TESTS)
     set_tests_properties(test_platform_wsi_lifecycle PROPERTIES
         LABELS "headless;platform_contract")
 
+    # Header-only Vulkan probe/negotiation pure functions (rhi_vk_probe.h);
+    # intentionally headless and engine-free.
+    add_executable(test_rhi_vk_probe tests/test_rhi_vk_probe.c)
+    target_include_directories(test_rhi_vk_probe PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_rhi_vk_probe COMMAND test_rhi_vk_probe)
+    set_tests_properties(test_rhi_vk_probe PROPERTIES
+        LABELS "headless;platform_contract")
+
     if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
         add_executable(test_platform_x11_runtime tests/test_platform_x11_runtime.c)
         target_include_directories(test_platform_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})

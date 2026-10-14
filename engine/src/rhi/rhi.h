@@ -120,6 +120,11 @@ typedef struct {
     bool       present_damage_supported;
     bool       present_buffer_age_supported;
     u32        feature_bits;
+    /* 迁移期新增（源码兼容追加，无 struct_size——调用方按完整结构编译）：
+     * VK_KHR_dynamic_rendering / VK_KHR_synchronization2（或 API>=1.3 核心）
+     * 的探测结果；只探测不消费，消费接入在后续计划。 */
+    bool       dynamic_rendering_supported;
+    bool       synchronization2_supported;
 } RHICapabilities;
 
 #define RHI_DEVICE_NAME_MAX 256u

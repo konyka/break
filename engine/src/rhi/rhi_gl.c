@@ -672,6 +672,9 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.present_target_preserved = false;
     dev->capabilities.present_damage_supported = false;
     dev->capabilities.present_buffer_age_supported = false;
+    /* GL has no dynamic-rendering / synchronization2 concept. */
+    dev->capabilities.dynamic_rendering_supported = false;
+    dev->capabilities.synchronization2_supported = false;
 #ifdef ENGINE_PLATFORM_WAYLAND
     {
         const char *extensions = eglQueryString(gl->egl_display, EGL_EXTENSIONS);
