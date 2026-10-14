@@ -286,6 +286,24 @@ and `engine_link_rhi_backend(<target>)` links exactly one of them (见下方分�
 - 编译期单后端、直接符号链接（无 vtable 分发）；`engine_link_rhi_backend(<target>)` 按 `ENGINE_RHI_BACKEND_EFFECTIVE` 选择。
 - Vulkan 形状的 native interop（`RHINativeDevice` 等）在 `engine/src/rhi/rhi_native_vulkan.h`，`rhi.h` 保持后端中性。
 
+计划 B（2026-10-15）在 RHI 之下补出 WSI 适配层：
+
+```
+rhi_vk.c（vk_init / present / 销毁门控）
+  ├─ platform_vk_surface.h（PAL Vulkan surface 适配：platform_vk_create_surface{,_handles}）
+  │    └─ 分层规则：platform 层不包含 <vulkan/vulkan.h>——VkInstance 以 void* 传入、
+  │       VkSurfaceKHR 以 u64 传出；create-info ABI 由 platform_vk_surface_vkabi.h
+  │       + test_platform_vk_surface_abi 钉死
+  └─ platform_wsi.h（WSI 状态机：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING）
+       └─ window_*.c 事件源推进状态（Win32/X11/Wayland/Cocoa/Android 五后端）
+            └─ rhi_device_attach_wsi() 挂载到设备；platform_wsi_frame_allowed()
+               门控帧进入 RHI（仅 CREATED/RESIZED 放行）；销毁顺序契约：
+               rhi_device_destroy_ex 必须先于 platform_destroy（DESTROYING 后拒绝销毁）
+```
+
+尺寸语义（logical 与 drawable 谁是输入，各平台方向不同）由 `engine/src/platform/platform_size.h` 单点定义，`window_*.c` 只准调用。
+
+
 The first source-split preparation now centralizes the shared `RHIDevice` layout,
 resource-slot types, current-device TLS declaration, and backend-facing resource
 helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. That
