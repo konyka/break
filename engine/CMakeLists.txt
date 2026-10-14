@@ -2328,6 +2328,14 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_vk_surface_contract.cmake)
     set_tests_properties(test_platform_vk_surface_contract PROPERTIES
         LABELS "platform_contract")
+    add_test(NAME test_vulkan_isolation_gates
+        COMMAND ${CMAKE_COMMAND}
+            -DTEST_VULKAN_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/test_vulkan.c
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DCI_WORKFLOW=${CMAKE_CURRENT_SOURCE_DIR}/../.github/workflows/ci.yml
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_vulkan_isolation_gates.cmake)
+    set_tests_properties(test_vulkan_isolation_gates PROPERTIES
+        LABELS "platform_contract")
     add_test(NAME test_platform_wsi_wiring_contract
         COMMAND ${CMAKE_COMMAND}
             -DPLATFORM_H=${CMAKE_CURRENT_SOURCE_DIR}/src/platform/platform.h

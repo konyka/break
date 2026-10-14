@@ -17,3 +17,10 @@
 - Shader 路径：GLSL → SPIR-V，运行时 shaderc（target env Vulkan 1.2 / SPIR-V 1.5），见规格 §4.7。
 - 软渲染（lavapipe/llvmpipe）收据必须在台账行内注明「软渲染」，不得与硬件 GPU 收据混用。
 - 已知 NVIDIA 616.56 混合 GPU 异常只登记在规格 §7，不进入本表。
+
+## 已知风险：NVIDIA 616.56 混合 GPU
+
+与规格 §7 风险登记一致，固定两条规则：
+
+1. 该机器上的 `VK_ERROR_DEVICE_LOST` 与 Hi-Z {1,1} 异常**不作为源码修复依据**，必须在健康设备上独立复现后才可立项修复。
+2. `TV_ONLY_PSHADOW`/`TV_ONLY_GBUFFER` 隔离门（`engine/src/test_vulkan.c:5600-5642`）**永久保留**，不得删除或并入 CI；由 `test_vulkan_isolation_gates` 契约测试钉死。
