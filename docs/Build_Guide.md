@@ -510,9 +510,21 @@ Windows SDK 将 DXGI headers 放在 `Include/<version>/shared`，而 D3D12 heade
 仓库新增 `test_d3d12_dependency_gate`：Windows 上会分类 SDK headers/libs 与 DXC 是否齐全，
 非 Windows 或依赖不完整返回 `UNAVAILABLE`（CTest skip），不会把依赖可见误报为 native
 device/surface/GPU-runtime 支持。
-`test_d3d12_shader_compile_gate` 进一步用最小 `vs_6_0` HLSL 通过 DXC 生成 DXIL；
+`test_d3d12_shader_compile_gate` 进一步用 DXC 的 `vs_6_0` CLI contract 验证 shader ABI：
+有效 HLSL 必须返回成功状态并生成非空 DXIL，包含文件必须可解析；无效 HLSL 和缺失 include
+必须返回失败状态、保留诊断且不接受 output blob。gate 同时记录 DXC `--version` identity、
+profile、include search path 和 valid/invalid/missing-include 结果，并在每次运行后删除临时
+HLSL、include 和 DXIL。仓库没有提交生成的 DXIL，也没有 DXC import library，因此该 gate
+验证 CLI 可观察到的 `IDxcCompiler3`/`IDxcResult` 等价结果边界，而不实现 COM backend。
+成功证据中的 `include_dir=` 会打印本次运行实际使用的临时 include 目录字面路径；这不是
+独立的 COM `IDxcCompiler3`/`IDxcResult` 验证。
 这是 compile-only shader toolchain 证据，不接入 RHI、不创建 D3D12 device/surface，也不代表
-Windows D3D12 GPU-runtime 已实现。
+Windows D3D12 GPU-runtime 已实现。Focused command:
+
+```powershell
+cmake -DCMAKE_CURRENT_BINARY_DIR=E:/work/break/.tmp/task3-green `
+  -P E:/work/break/engine/tests/test_d3d12_shader_compile_gate.cmake
+```
 
 Phase 2 的显式选择器为：
 

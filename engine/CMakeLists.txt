@@ -235,6 +235,12 @@ if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
 endif()
 
 # Engine library
+set(RHI_CORE_SOURCES
+    src/rhi/rhi.c
+    src/rhi/rhi_ownership.c
+    src/rhi/rhi_validation.c
+    src/rhi/rhi_resources.c
+    src/rhi/rhi_present_history.c)
 add_library(engine STATIC
     src/core/log.c
     src/core/shader_io.c
@@ -250,11 +256,7 @@ add_library(engine STATIC
     src/platform/filewatch.c
     src/platform/filewatch_backend.c
     src/math/math.c
-    src/rhi/rhi.c
-    src/rhi/rhi_ownership.c
-    src/rhi/rhi_validation.c
-    src/rhi/rhi_resources.c
-    src/rhi/rhi_present_history.c
+    ${RHI_CORE_SOURCES}
     src/renderer/camera.c
     src/renderer/cull.c
     src/renderer/render_features.c
@@ -377,6 +379,20 @@ if(ENGINE_BUILD_TESTS)
             PRIVATE SIMULATE_${_compat_name}=1)
         add_test(NAME test_platform_compat_${_compat_lower}
             COMMAND test_platform_compat_${_compat_lower})
+    endforeach()
+
+    foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
+        string(TOLOWER "${_wsi_name}" _wsi_lower)
+        add_executable(test_platform_wsi_lifecycle_${_wsi_lower}
+            tests/test_platform_wsi_lifecycle.c)
+        target_include_directories(test_platform_wsi_lifecycle_${_wsi_lower}
+            PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(NOT _wsi_name STREQUAL "X11")
+            target_compile_definitions(test_platform_wsi_lifecycle_${_wsi_lower}
+                PRIVATE SIMULATE_${_wsi_name}=1)
+        endif()
+        add_test(NAME test_platform_wsi_lifecycle_${_wsi_lower}
+            COMMAND test_platform_wsi_lifecycle_${_wsi_lower})
     endforeach()
 endif()
 
@@ -1562,6 +1578,13 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_platform_null_safety PRIVATE engine m)
     add_test(NAME test_platform_null_safety COMMAND test_platform_null_safety)
 
+    # Header-only WSI lifecycle contract; intentionally headless and engine-free.
+    add_executable(test_platform_wsi_lifecycle tests/test_platform_wsi_lifecycle.c)
+    target_include_directories(test_platform_wsi_lifecycle PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_wsi_lifecycle COMMAND test_platform_wsi_lifecycle)
+    set_tests_properties(test_platform_wsi_lifecycle PROPERTIES
+        LABELS "headless;platform_contract")
+
     if(ENGINE_PLATFORM STREQUAL "linux" AND NOT ENGINE_ENABLE_WAYLAND)
         add_executable(test_platform_x11_runtime tests/test_platform_x11_runtime.c)
         target_include_directories(test_platform_x11_runtime PRIVATE ${TEST_INCLUDE_DIRS})
@@ -1799,8 +1822,7 @@ endif()
     endif()
 
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
-        src/rhi/rhi.c src/rhi/rhi_ownership.c src/rhi/rhi_resources.c
-        src/rhi/rhi_validation.c src/rhi/rhi_present_history.c src/core/log.c)
+        ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)
     target_include_directories(test_rhi_capabilities PRIVATE ${TEST_INCLUDE_DIRS})
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -1858,8 +1880,7 @@ endif()
         LABELS "headless;platform_contract")
 
     add_executable(test_rhi_native tests/test_rhi_native.c
-        src/rhi/rhi.c src/rhi/rhi_ownership.c src/rhi/rhi_resources.c
-        src/rhi/rhi_validation.c src/rhi/rhi_present_history.c src/core/log.c)
+        ${RHI_CORE_SOURCES} src/core/log.c)
     target_include_directories(test_rhi_native PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rhi_native PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -2032,6 +2053,7 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     add_test(NAME test_d3d12_dependency_gate
         COMMAND ${CMAKE_COMMAND}
@@ -2044,14 +2066,44 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_shader_compile_gate.cmake)
     set_tests_properties(test_d3d12_shader_compile_gate PROPERTIES
         SKIP_RETURN_CODE 77 LABELS "platform_contract")
+    add_executable(test_d3d12_lifetime_hresult_contract
+        tests/test_d3d12_lifetime_hresult_contract.c)
+    target_include_directories(test_d3d12_lifetime_hresult_contract PRIVATE
+        ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_d3d12_lifetime_hresult_contract
+        COMMAND test_d3d12_lifetime_hresult_contract)
+    set_tests_properties(test_d3d12_lifetime_hresult_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    if(WIN32)
+        add_executable(test_d3d12_native_failure
+            tests/test_d3d12_native_failure.c src/rhi/rhi_d3d12.c)
+        target_include_directories(test_d3d12_native_failure PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_native_failure PRIVATE d3d12 dxgi dxguid)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+                set(_d3d12_sdk_quiet "/clang:-Wno-nonportable-include-path;/clang:-Wno-ignored-pragma-intrinsic;/clang:-Wno-pragma-pack;/clang:-Wno-unknown-pragmas;/clang:-Wno-microsoft-anon-tag")
+            else()
+                # clang in GNU mode does not accept /clang: pass-through options.
+                set(_d3d12_sdk_quiet "-Wno-nonportable-include-path;-Wno-ignored-pragma-intrinsic;-Wno-pragma-pack;-Wno-unknown-pragmas;-Wno-microsoft-anon-tag")
+            endif()
+            set_source_files_properties(tests/test_d3d12_native_failure.c src/rhi/rhi_d3d12.c PROPERTIES
+                COMPILE_OPTIONS "${_d3d12_sdk_quiet}")
+        endif()
+        add_test(NAME test_d3d12_native_failure COMMAND test_d3d12_native_failure)
+        set_tests_properties(test_d3d12_native_failure PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_INTERNAL_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_backend_internal.h
             -DRHI_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.c
             -DRHI_OWNERSHIP_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_ownership.c
-            -DRHI_VALIDATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_validation.c
-            -DRHI_RESOURCES_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_resources.c
-            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+             -DRHI_VALIDATION_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_validation.c
+             -DRHI_RESOURCES_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_resources.c
+             -DRHI_PRESENT_HISTORY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_present_history.c
+             -DRHI_RT_TRACE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/rt_trace.c
+             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
@@ -2059,7 +2111,8 @@ endif()
         COMMAND ${CMAKE_COMMAND}
             -DMYUI_ROOT_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myui_subproject_config.cmake)
-    find_program(MYUI_GLSLANG_VALIDATOR glslangValidator)
+    # Vulkan SDK >= 1.4.321 renamed glslangValidator to glslang; accept both.
+    find_program(MYUI_GLSLANG_VALIDATOR NAMES glslangValidator glslang)
     if(MYUI_GLSLANG_VALIDATOR)
         add_test(NAME test_myui_vulkan_shader_generator
             COMMAND ${CMAKE_COMMAND}
@@ -2372,9 +2425,7 @@ endif()
     endif()
 
     add_executable(test_rt_trace tests/test_rt_trace.c src/renderer/rt_trace.c
-        src/rhi/rhi.c src/rhi/rhi_ownership.c src/rhi/rhi_validation.c
-        src/rhi/rhi_resources.c
-        src/rhi/rhi_present_history.c src/core/log.c)
+        ${RHI_CORE_SOURCES} src/core/log.c)
     target_include_directories(test_rt_trace PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rt_trace PRIVATE ENGINE_RHI_TEST=1)
     if(ENGINE_PLATFORM STREQUAL "linux")
