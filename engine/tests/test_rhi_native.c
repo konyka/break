@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include <rhi/rhi.h>
+#include <rhi/rhi_native_vulkan.h>
 
 extern RHIDevice *rhi_test_device_create(void);
 extern void rhi_test_device_destroy(RHIDevice *dev);

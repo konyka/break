@@ -1,5 +1,6 @@
 #include <engine.h>
 #include <rhi/rhi.h>
+#include <rhi/rhi_native_vulkan.h>
 #include <renderer/camera.h>
 #include <renderer/cull.h>
 #include <renderer/csm.h>

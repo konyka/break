@@ -4,6 +4,7 @@
 
 #include "core/platform_thread.h"
 #include "rhi/rhi.h"
+#include <rhi/rhi_native_vulkan.h>
 #include "rhi/rhi_present_history.h"
 
 extern RHIDevice *rhi_test_device_create(void);

@@ -1,4 +1,5 @@
 ﻿#include <renderer/rt_trace.h>
+#include <rhi/rhi_native_vulkan.h>
 #include <core/types.h>
 #include <core/log.h>
 #include <string.h>

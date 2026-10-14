@@ -1,6 +1,7 @@
 #pragma once
 
 #include <rhi/rhi.h>
+#include <rhi/rhi_native_vulkan.h>
 
 /* Probe result for the optional NVIDIA Streamline DLSS runtime. */
 typedef enum {

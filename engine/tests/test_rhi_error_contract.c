@@ -114,6 +114,18 @@ TEST(busy_while_frame_or_control_in_flight)
      * NULL 时是安全的空操作）；不再调用 rhi_test_device_destroy。 */
 }
 
+TEST(declared_metal_and_d3d12_backends_fail_closed)
+{
+    RHIResult result = RHI_RESULT_OK;
+
+    ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_METAL, (void *)1, (void *)1,
+                                   64u, 64u, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+    ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, (void *)1,
+                                   64u, 64u, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(init_failure_maps_to_error_family);
     RUN_TEST(surface_unavailable_maps_fail_closed);
@@ -121,4 +133,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(out_of_date_surfaces_via_lifecycle_result);
     RUN_TEST(sync_failure_maps_to_sync_failed);
     RUN_TEST(busy_while_frame_or_control_in_flight);
+    RUN_TEST(declared_metal_and_d3d12_backends_fail_closed);
 TEST_MAIN_END()

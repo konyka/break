@@ -2169,6 +2169,13 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_evidence_register.cmake)
     set_tests_properties(test_rhi_evidence_register PROPERTIES
         LABELS "platform_contract")
+    add_test(NAME test_rhi_header_neutral
+        COMMAND ${CMAKE_COMMAND}
+            -DRHI_PUBLIC_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.h
+            -DRHI_VULKAN_NATIVE_HEADER=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_native_vulkan.h
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_header_neutral.cmake)
+    set_tests_properties(test_rhi_header_neutral PROPERTIES
+        LABELS "platform_contract")
     add_test(NAME test_d3d12_dependency_gate
         COMMAND ${CMAKE_COMMAND}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_dependency_gate.cmake)

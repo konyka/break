@@ -1,4 +1,5 @@
 #include <renderer/sl_dlss.h>
+#include <rhi/rhi_native_vulkan.h>
 #include <core/types.h>
 
 #ifdef ENGINE_STREAMLINE_CPP_ADAPTER

@@ -34,6 +34,11 @@ typedef RHIHandle RHIAccelerationStructure;
 typedef enum {
     RHI_BACKEND_OPENGL,
     RHI_BACKEND_VULKAN,
+    /* Declared for selector/ABI stability; rhi_device_create_ex fails closed
+     * with RHI_RESULT_UNSUPPORTED until the Metal/D3D12 backends land
+     * (plans C/D). */
+    RHI_BACKEND_METAL,
+    RHI_BACKEND_D3D12,
 } RHIBackend;
 
 typedef enum {
@@ -65,8 +70,9 @@ typedef struct {
     usize build_scratch_size;
 } RHIAccelerationStructureBuildSizes;
 
-/* Serialized VkAccelerationStructureInstanceKHR-compatible record (64 bytes,
- * array-of-structs layout): transform row-major 3x4, packed custom index/mask,
+/* Serialized TLAS instance record (64 bytes, array-of-structs layout,
+ * compatible with the Vulkan acceleration-structure instance ABI):
+ * transform row-major 3x4, packed custom index/mask,
  * packed SBT offset/flags, then the BLAS device address. */
 #define RHI_TLAS_INSTANCE_SIZE 64u
 typedef struct {
@@ -80,6 +86,8 @@ typedef struct {
 typedef enum {
     RHI_NATIVE_HANDLE_NONE = 0,
     RHI_NATIVE_HANDLE_VULKAN = 1,
+    RHI_NATIVE_HANDLE_METAL = 2,
+    RHI_NATIVE_HANDLE_D3D12 = 3,
 } RHINativeHandleType;
 
 typedef enum {
@@ -87,16 +95,6 @@ typedef enum {
     RHI_FEATURE_RAY_QUERY = 1u << 1,
     RHI_FEATURE_ACCELERATION_STRUCTURE = 1u << 2,
 } RHIFeatureBits;
-
-typedef struct {
-    RHINativeHandleType type;
-    void *instance;
-    void *physical_device;
-    void *device;
-    void *graphics_queue;
-    u32 graphics_queue_family;
-    u32 feature_bits;
-} RHINativeDevice;
 
 /* Capability bit for a power-of-two color sample count. */
 static inline u32 rhi_sample_count_bit(u32 count) {
@@ -143,20 +141,6 @@ typedef enum {
     RHI_FORMAT_D32_FLOAT,
     RHI_FORMAT_UNDEFINED,
 } RHIFormat;
-
-typedef struct {
-    RHINativeHandleType type;
-    void *image;
-    void *memory;
-    void *view;
-    u32 image_layout;
-    RHIFormat format;
-    u32 native_format;
-    u32 width;
-    u32 height;
-    u32 mip_levels;
-    u32 array_layers;
-} RHITextureNativeInfo;
 
 typedef enum {
     RHI_BUFFER_USAGE_VERTEX   = 1 << 0,
@@ -317,12 +301,6 @@ typedef RHIHandle RHICubemap;
 /* ---- Command Buffer (opaque) ---- */
 typedef struct RHICmdBuffer RHICmdBuffer;
 
-typedef struct {
-    RHINativeHandleType type;
-    void *command_buffer;
-    bool recording;
-} RHICmdBufferNativeInfo;
-
 /* ---- Device (opaque) ---- */
 typedef struct RHIDevice RHIDevice;
 
@@ -359,21 +337,7 @@ RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
-bool       rhi_texture_get_native_info(
-               const RHIDevice *dev, RHITexture texture,
-               RHITextureNativeInfo *out);
-bool       rhi_cmd_buffer_get_native_info(
-               const RHIDevice *dev, const RHICmdBuffer *cmd,
-               RHICmdBufferNativeInfo *out);
-bool       rhi_device_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
-bool       rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out);
 bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
-bool       rhi_backend_texture_get_native_info(
-               const RHIDevice *dev, RHITexture texture,
-               RHITextureNativeInfo *out);
-bool       rhi_backend_cmd_buffer_get_native_info(
-               const RHIDevice *dev, const RHICmdBuffer *cmd,
-               RHICmdBufferNativeInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(
                RHICmdBuffer *cmd, RHIDevice *dev,
                RHIAccelerationStructure blas,
@@ -388,9 +352,6 @@ bool       rhi_backend_cmd_build_tlas_one_instance(
                RHICmdBuffer *cmd, RHIDevice *dev,
                RHIAccelerationStructure tlas, RHIBuffer instance_buffer,
                RHIBuffer scratch_buffer, usize scratch_offset);
-bool       rhi_backend_acceleration_structure_get_vk_handle(
-               RHIDevice *dev, RHIAccelerationStructure structure,
-               void **out_handle);
 /* One-shot build submission (like texture staging): records into a private
  * command buffer, submits, and waits for the queue to idle. Must not be called
  * between rhi_frame_begin and rhi_frame_end. On return the acceleration
@@ -415,11 +376,6 @@ bool       rhi_build_tlas_one_instance(
                RHIDevice *dev, RHIAccelerationStructure tlas,
                RHIBuffer instance_buffer, RHIBuffer scratch_buffer,
                usize scratch_offset);
-/* Opaque native acceleration-structure handle (VkAccelerationStructureKHR on
- * Vulkan). Fails closed on OpenGL or invalid handles. */
-bool       rhi_acceleration_structure_get_vk_handle(
-               RHIDevice *dev, RHIAccelerationStructure structure,
-               void **out_handle);
 bool       rhi_acceleration_structure_desc_validate(
                const RHIAccelerationStructureDesc *desc);
 bool       rhi_blas_one_triangle_desc_validate(
@@ -571,7 +527,7 @@ void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v);
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v);
 /* R444: Push-constant upload, semantics aligned with
- * vkCmdPushConstants(offset, size): [offset, offset+size) must fit inside the
+ * push-constant range semantics (offset, size): [offset, offset+size) must fit inside the
  * bound pipeline's declared push range (compute 128B / graphics clamped
  * range); an out-of-range write is dropped with a warning instead of being
  * silently truncated at flush. GL has no push-constant equivalent, so this is
@@ -655,7 +611,7 @@ void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize si
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size);
 /* R186: Host readback 閳?works for HOST_VISIBLE and DEVICE_LOCAL (staging). */
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size);
-/* R171: Recorded GPU clear (vkCmdFillBuffer / glClearBufferSubData). Host
+/* R171: Recorded GPU clear (recorded GPU buffer fill / glClearBufferSubData). Host
  * memcpy updates are NOT ordered between dispatches in the same Vulkan CB. */
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);
 /* R183: Record a host閳墱PU buffer write into the command buffer (ordered vs
@@ -824,21 +780,6 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
  * in-flight frame is not visible to it. */
 bool        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
                            u8 *pixels, usize pixel_bytes);
-
-/* R438: Vulkan validation-message gate (defined only by the VK backend).
- * When enabled, the backend requests the validation layer, registers a
- * debug messenger and counts severity>=warning messages in-process so the
- * integration suite can hard-gate on zero. R550-E: enablement is explicit 閳?
- * on by default in Debug builds and whenever the TU is compiled with
- * ENGINE_VK_VALIDATION; otherwise an embedder can opt in via
- * rhi_vk_validation_set_enabled(true) before device creation (test_vulkan
- * does). The gate is inactive when the messenger could not be created
- * (missing layer/extension) 閳?callers should then skip the assert. The
- * counters link and stay inert (0 / no-op) when the gate was never enabled. */
-u32  rhi_vk_validation_message_count(void);
-void rhi_vk_validation_message_count_reset(void);
-bool rhi_vk_validation_gate_active(void);
-void rhi_vk_validation_set_enabled(bool enabled);
 
 /* Diagnostic probe: waits for full device idle and reports whether the
  * device is still alive. DEVICE_LOST from a faulting earlier submission

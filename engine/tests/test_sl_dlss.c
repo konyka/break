@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include <renderer/sl_dlss.h>
+#include <rhi/rhi_native_vulkan.h>
 
 /* The loader unit target is intentionally independent of the full RHI. */
 bool rhi_cmd_buffer_get_native_info(const RHIDevice *dev,
