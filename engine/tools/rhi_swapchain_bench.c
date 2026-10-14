@@ -84,7 +84,7 @@ int main(int argc, char **argv) {
         "  \"command\": \"rhi_swapchain_bench\",\n"
         "  \"metrics\": { \"fps_avg\": %.2f, \"fps_p1\": %.2f,\n"
         "    \"frame_ms_avg\": %.4f, \"frame_ms_p99\": %.4f },\n"
-        "  \"evidence_level\": \"gpu-runtime\",\n"
+        "  \"evidence_level\": \"GPU_RUNTIME\",\n"
         "  \"runner\": \"%s\"\n"
         "}\n",
         env_or("RECEIPT_TIMESTAMP", "unknown"),

@@ -52,3 +52,12 @@
   "runner": "github-actions/ubuntu-latest (job: vk)"
 }
 ```
+
+## 已知对齐项（计划 F 字段级校验落地前必须处理）
+
+以下 receipt ↔ schema 偏差经 Task 7 评审确认，均为计划 F 的设计决策项：
+
+1. `driver_version`：bench 输出 RHI 层 `u32` 原始编码值（如 NVIDIA `"2588573696"`），schema 期望人读字符串——正确修法是设计决策（vendor 解码 vs schema 放宽），归计划 F；
+2. `platform`：无 `linux-x11`/`linux-wayland` 细分（x11/wayland 是运行期属性，bench 只有编译期宏）——归计划 F；
+3. `build_config`：CI 传 `RelWithDebInfo` 超出 schema 枚举（Debug/Release）——归计划 F；
+4. `command`：bench 硬编码 `"rhi_swapchain_bench"` 非完整命令行——归计划 F。
