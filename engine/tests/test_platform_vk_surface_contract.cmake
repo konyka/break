@@ -62,3 +62,24 @@ string(FIND "${engine_cmake_text}" "src/platform/platform_vk_surface.c" cmake_of
 if(cmake_offset EQUAL -1)
     message(FATAL_ERROR "engine target does not compile src/platform/platform_vk_surface.c")
 endif()
+
+# Android 引用配对：vk->native_window 只能在 PAL 创建成功之后赋值。
+# PAL 在成功路径 acquire（失败路径自行回滚），vk_shutdown 以字段非 NULL 为
+# release 条件——若赋值早于 platform_vk_create_surface_handles 调用，任何
+# 前置失败路径都会让 release 无配对地多执行一次（净下溢）。
+set(android_assign_token "vk->native_window = (struct ANativeWindow *)window_native;")
+string(FIND "${vk_text}" "${android_assign_token}" android_assign_offset)
+if(android_assign_offset EQUAL -1)
+    message(FATAL_ERROR
+        "rhi_vk.c must retain the Android native_window assignment for the shutdown release")
+endif()
+string(FIND "${vk_text}" "${android_assign_token}" android_assign_second
+    REVERSE)
+if(NOT android_assign_second EQUAL android_assign_offset)
+    message(FATAL_ERROR
+        "rhi_vk.c must assign vk->native_window exactly once")
+endif()
+if(android_assign_offset LESS pal_call_offset)
+    message(FATAL_ERROR
+        "rhi_vk.c must assign vk->native_window only after platform_vk_create_surface_handles succeeds")
+endif()

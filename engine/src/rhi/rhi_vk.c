@@ -1445,13 +1445,6 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     if (!vk) return false;
     dev->backend_data = vk;
 
-#if defined(ENGINE_PLATFORM_ANDROID)
-    /* platform_vk_surface.c acquires this window on surface-creation success;
-     * the field stays so vk_shutdown's release keeps the pair balanced. */
-    vk->native_window = (struct ANativeWindow *)window_native;
-#else
-    (void)window_native; (void)display_native;
-#endif
     /* R430: swap_format is chosen from the surface's supported formats in
      * vk_create_swapchain (after surface + physical device exist). */
 
@@ -1621,6 +1614,13 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
             return false;
         }
         vk->surface = (VkSurfaceKHR)surface_bits;
+#if defined(ENGINE_PLATFORM_ANDROID)
+        /* The PAL acquired this window inside platform_vk_create_surface_handles
+         * (success path only, with its own rollback on failure). Assign only on
+         * success so every vk_init failure path leaves the field NULL and
+         * vk_shutdown's guard skips the release — acquire/release stay paired. */
+        vk->native_window = (struct ANativeWindow *)window_native;
+#endif
     }
 
     u32 gpu_count = 0;
