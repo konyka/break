@@ -2055,6 +2055,13 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
+    add_test(NAME test_rhi_evidence_register
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -DEVIDENCE_DOC=${CMAKE_CURRENT_SOURCE_DIR}/../docs/rhi_backend_evidence.md
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_evidence_register.cmake)
+    set_tests_properties(test_rhi_evidence_register PROPERTIES
+        LABELS "platform_contract")
     add_test(NAME test_d3d12_dependency_gate
         COMMAND ${CMAKE_COMMAND}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_dependency_gate.cmake)
