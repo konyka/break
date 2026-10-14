@@ -529,8 +529,8 @@ HLSL、include 和 DXIL。仓库没有提交生成的 DXIL，也没有 DXC impor
 Windows D3D12 GPU-runtime 已实现。Focused command:
 
 ```powershell
-cmake -DCMAKE_CURRENT_BINARY_DIR=E:/work/break/.tmp/task3-green `
-  -P E:/work/break/engine/tests/test_d3d12_shader_compile_gate.cmake
+cmake -DCMAKE_CURRENT_BINARY_DIR=<build-dir> `
+  -P <repo-root>/engine/tests/test_d3d12_shader_compile_gate.cmake
 ```
 
 Phase 2 的显式选择器为：

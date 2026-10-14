@@ -1182,7 +1182,7 @@ if(ENGINE_BUILD_TESTS)
     # Vulkan test executable
     add_executable(test_vulkan src/test_vulkan.c)
     # R550-E: keep the VK validation gate live for the integration test in every
-    # build type. rhi_vk.c is compiled into the engine static lib, so the define
+    # build type. rhi_vk.c is compiled into engine_rhi_vulkan, so the define
     # cannot reach the backend from here; instead it arms the explicit
     # rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
     target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
@@ -2157,10 +2157,13 @@ endif()
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
+    option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
+        "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register
         COMMAND ${CMAKE_COMMAND}
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
             -DEVIDENCE_DOC=${CMAKE_CURRENT_SOURCE_DIR}/../docs/rhi_backend_evidence.md
+            -DRHI_EVIDENCE_REQUIRE_LOCAL_FROZEN=${RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_evidence_register.cmake)
     set_tests_properties(test_rhi_evidence_register PROPERTIES
         LABELS "platform_contract")
