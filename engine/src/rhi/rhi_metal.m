@@ -28,8 +28,16 @@
  * Clear/Load, R618 shadow + cubemap-depth face clears, and R619
  * caller-owned FBO clear colors. Shaders ride the interim MSL-source path
  * (newLibraryWithSource:, entry convention vs_main/fs_main/cs_main) until
- * Task 10 lands the manifest loader; is_compute pipelines fail closed
- * until Task 9.
+ * Task 10 lands the manifest loader.
+ * Task 9 state: compute (MTLComputePipelineState + dispatch on a lazily
+ * opened compute encoder; storage/image binds; memoryBarrierWithScope:),
+ * blit-family cmd ops (fill/update/copy via a transient blit encoder),
+ * rhi_screenshot (bounded drain + blit from the drawable, which is now
+ * retained until present; the layer is switched to framebufferOnly=NO at
+ * device create so readback is legal), indirect draws (native
+ * indirectBuffer: loops; the _count variant is fail-closed — no Metal
+ * equivalent), and the GPU timer (MTLCounterSampleBuffer timestamps with a
+ * supportsCounterSampling: gate and a warn-once degraded mode).
  * Every other entry point logs and fails closed until its family is filled
  * in by the later plan-C tasks. */
 #import <Metal/Metal.h>
@@ -44,6 +52,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <mach/mach_time.h>   /* gpu timer tick -> ns conversion */
 
 struct RHICmdBuffer;
 
@@ -272,6 +281,15 @@ struct RHICmdBuffer {
     RHIHandle pass_target;        /* fb handle of the bound target */
     u32 pass_w, pass_h;
     u32 pass_face;                /* cubemap depth face */
+    RHIBuffer index_buffer;       /* recorded; applied at (indexed) draw time */
+    usize index_offset;
+    bool index_u32;
+    /* Task 9 gpu timer: stage-boundary counter sampling is render-encoder-
+     * only on Apple GPUs, so begin/end called between passes pend here and
+     * land on the next pass open in the same frame. */
+    RHIGPUTimer *pending_timers[8];
+    u32 pending_indices[8];
+    u32 pending_count;
 };
 
 /* Encoder lifecycle rule (docs/rhi_metal_notes.md): at most one encoder is
@@ -293,6 +311,21 @@ static void metal_end_render_encoder(RHICmdBuffer *cmd) {
     cmd->pass_kind = METAL_PASS_NONE;
     cmd->pass_target = RHI_HANDLE_NULL;
     cmd->bound_pipeline = RHI_HANDLE_NULL;
+}
+
+/* Task 9: the compute encoder obeys the same one-encoder rule. */
+static void metal_end_compute_encoder(RHICmdBuffer *cmd) {
+    if (cmd->compute_encoder != nil) {
+        [cmd->compute_encoder endEncoding];
+        [cmd->compute_encoder release];
+        cmd->compute_encoder = nil;
+    }
+    cmd->bound_pipeline = RHI_HANDLE_NULL;
+}
+
+static void metal_end_encoders(RHICmdBuffer *cmd) {
+    metal_end_render_encoder(cmd);
+    metal_end_compute_encoder(cmd);
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
@@ -359,6 +392,11 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
         return NULL;
     }
     layer.device = device;
+    /* framebufferOnly=YES (the default) forbids blit readback of drawable
+     * textures, which rhi_screenshot (rhi.h:815-826) requires between
+     * acquire and present. VK/D3D12 swapchains carry TRANSFER_SRC/COPY_SRC
+     * by contract; Metal must opt out here. */
+    layer.framebufferOnly = NO;
     mb->device = device;
     mb->queue = queue;
     mb->layer = layer;               /* not owned */
@@ -416,7 +454,7 @@ void rhi_device_destroy(RHIDevice *dev) {
                 mb->drawable = nil;
             }
             if (mb->frame_cmd != NULL) {
-                metal_end_render_encoder(mb->frame_cmd);
+                metal_end_encoders(mb->frame_cmd);
                 [mb->frame_cmd->cmd release];   /* nil between frames; no-op then */
                 free(mb->frame_cmd);
                 mb->frame_cmd = NULL;
@@ -597,6 +635,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->pass_kind = METAL_PASS_NONE;
     cmd->pass_target = RHI_HANDLE_NULL;
     cmd->bound_pipeline = RHI_HANDLE_NULL;
+    cmd->pending_count = 0;   /* gpu timer samples never cross frames */
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -621,7 +660,7 @@ void rhi_frame_end(RHIDevice *dev) {
         return;
     }
     RHICmdBuffer *cmd = mb->frame_cmd;
-    if (cmd != NULL) metal_end_render_encoder(cmd);
+    if (cmd != NULL) metal_end_encoders(cmd);
     id<MTLCommandBuffer> mtl_cmd = cmd != NULL ? cmd->cmd : nil;
     RHIResult result = RHI_RESULT_OK;
     if (mtl_cmd == nil || mb->drawable == nil || mb->frame_event == nil) {
@@ -637,10 +676,9 @@ void rhi_frame_end(RHIDevice *dev) {
         [mtl_cmd encodeSignalEvent:mb->frame_event value:mb->frame_counter];
         result = metal_commit(dev, mtl_cmd);
     }
-    if (mb->drawable != nil) {
-        [mb->drawable release];   /* Metal retains it for the scheduled present */
-        mb->drawable = nil;
-    }
+    /* The drawable stays retained until rhi_present: rhi_screenshot between
+     * frame_end and present reads it (rhi.h:815-826 / R577), and Metal keeps
+     * it alive for the scheduled present regardless. */
     if (cmd != NULL) {
         [cmd->cmd release];       /* our retain; the queue keeps it alive */
         cmd->cmd = nil;
@@ -676,6 +714,13 @@ void rhi_present(RHIDevice *dev) {
     mb->frame_submitted = false;
     rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
 out_release:
+    /* The frame's drawable is released at present (retained since acquire so
+     * a pre-present rhi_screenshot can read it). Runs on every path —
+     * present is mandatory after frame_end (the owner stays held). */
+    if (mb->drawable != nil) {
+        [mb->drawable release];
+        mb->drawable = nil;
+    }
     dev->frame_damage_requested = false;
     dev->frame_damage_count = 0u;
     dev->frame_current_damage_count = 0u;
@@ -1269,13 +1314,16 @@ static id<MTLDepthStencilState> metal_depth_state_always_off(MetalBackend *mb) {
 }
 
 typedef struct {
-    id<MTLRenderPipelineState> pipeline;
-    id<MTLDepthStencilState> depth_state; /* always non-nil; R445 maps to the
-                                           * Always+write-off cached state */
+    id<MTLRenderPipelineState> pipeline;   /* graphics; nil when is_compute */
+    id<MTLComputePipelineState> compute;   /* Task 9; nil unless is_compute */
+    id<MTLDepthStencilState> depth_state; /* always non-nil for graphics;
+                                           * R445 maps to the Always+write-off
+                                           * cached state */
     RHIPipelineDesc desc;      /* retained copy, shader handles nulled (VK
                                 * build_desc parity; the push-block layout
                                 * flags are consumed by Task 11's binder) */
     u32 vertex_stride;         /* resolved; 0 when no_vertex_input */
+    bool is_compute;
     bool point_list;           /* R168-C: draw uses MTLPrimitiveTypePoint */
     bool mrt_pipeline;         /* binds only into its MRT-format passes */
     /* Rasterizer state is encoder state in Metal (unlike VK's PSO), so the
@@ -1297,9 +1345,36 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     mb = (MetalBackend *)dev->backend_data;
     if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
     if (desc->is_compute) {
-        /* Task 9 family: MTLComputePipelineState branch. Fail closed. */
-        LOG_ERROR("rhi_metal: compute pipelines land in Task 9");
-        return RHI_HANDLE_NULL;
+        /* Task 9: VK convention — the compute shader rides desc->frag. */
+        MetalShader *cs = (MetalShader *)rhi_get_resource_typed(
+            dev, desc->frag, RHI_RES_SHADER);
+        MetalPipeline *cp;
+        if (cs == NULL) return RHI_HANDLE_NULL;
+        cp = (MetalPipeline *)calloc(1u, sizeof(*cp));
+        if (cp == NULL) return RHI_HANDLE_NULL;
+        @autoreleasepool {
+            NSError *err = nil;
+            /* newComputePipelineStateWithFunction: returns +1 (new* rule). */
+            cp->compute = [mb->device
+                newComputePipelineStateWithFunction:cs->function error:&err];
+            if (cp->compute == nil) {
+                LOG_ERROR("rhi_metal: newComputePipelineState failed: %s",
+                          err != nil ? [[err localizedDescription] UTF8String]
+                                     : "(no error info)");
+                free(cp);
+                return RHI_HANDLE_NULL;
+            }
+        }
+        cp->desc = *desc;
+        cp->desc.vert = RHI_HANDLE_NULL;
+        cp->desc.frag = RHI_HANDLE_NULL;
+        cp->is_compute = true;
+        {
+            u32 cidx = rhi_alloc_slot(dev);
+            dev->slots[cidx].ptr = cp;
+            dev->slots[cidx].type = RHI_RES_PIPELINE;
+            return rhi_make_handle(cidx, dev->slots[cidx].generation);
+        }
     }
     vs = (MetalShader *)rhi_get_resource_typed(dev, desc->vert, RHI_RES_SHADER);
     if (vs == NULL) return RHI_HANDLE_NULL;
@@ -1443,6 +1518,7 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     if (pp == NULL) return;
     if (mb != NULL) metal_retire_drain(dev, mb);
     [pp->pipeline release];
+    [pp->compute release];
     free(pp);
     rhi_free_slot(dev, pipe);
 }
@@ -1788,10 +1864,14 @@ static bool metal_ensure_screen_depth(RHIDevice *dev, MetalBackend *mb) {
 /* End any open encoder, open `pass`, and pin viewport+scissor to the full
  * target extent (VK bind-parity: every bind sets a non-flipped full-size
  * viewport/scissor). The pass descriptor is consumed synchronously. */
+/* Task 9: pending gpu-timer samples land on the freshly opened encoder.
+ * Defined with the timer family (needs the complete RHIGPUTimer). */
+static void metal_drain_pending_timer_samples(RHICmdBuffer *cmd);
+
 static void metal_open_render_pass(RHICmdBuffer *cmd,
                                    MTLRenderPassDescriptor *pass,
                                    u32 w, u32 h) {
-    metal_end_render_encoder(cmd);
+    metal_end_encoders(cmd);   /* one-encoder rule: compute closes too */
     cmd->render_encoder =
         [[cmd->cmd renderCommandEncoderWithDescriptor:pass] retain];
     if (cmd->render_encoder == nil) {
@@ -1805,6 +1885,7 @@ static void metal_open_render_pass(RHICmdBuffer *cmd,
         [cmd->render_encoder setViewport:vp];
         [cmd->render_encoder setScissorRect:sc];
     }
+    metal_drain_pending_timer_samples(cmd);
 }
 
 /* Screen (drawable) pass. clear_pending decides color Load vs Clear with
@@ -1870,12 +1951,35 @@ void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
     metal_end_render_encoder(cmd);
 }
 
+/* Task 9: lazily open the frame's compute encoder (one-encoder rule: an
+ * open render pass closes first). Returns nil (logged) outside a frame. */
+static id<MTLComputeCommandEncoder> metal_ensure_compute_encoder(RHICmdBuffer *cmd) {
+    if (cmd->compute_encoder != nil) return cmd->compute_encoder;
+    if (cmd->cmd == nil) {
+        LOG_ERROR("rhi_metal: compute encoder requested outside a live frame");
+        return nil;
+    }
+    metal_end_render_encoder(cmd);
+    /* computeCommandEncoder is autoreleased; retain to the frame end. */
+    cmd->compute_encoder = [[cmd->cmd computeCommandEncoder] retain];
+    if (cmd->compute_encoder == nil)
+        LOG_ERROR("rhi_metal: computeCommandEncoder failed");
+    return cmd->compute_encoder;
+}
+
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     MetalPipeline *pp;
     if (cmd == NULL || cmd->backend == NULL) return;
     pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device, pipe,
                                                  RHI_RES_PIPELINE);
     if (pp == NULL) return;
+    if (pp->is_compute) {
+        id<MTLComputeCommandEncoder> enc = metal_ensure_compute_encoder(cmd);
+        if (enc == nil) return;
+        [enc setComputePipelineState:pp->compute];
+        cmd->bound_pipeline = pipe;
+        return;
+    }
     if (!cmd->render_pass_open || cmd->render_encoder == nil) {
         LOG_ERROR("rhi_metal: bind_pipeline without an open render pass");
         return;
@@ -1903,11 +2007,15 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) 
 }
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_index_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)offset;
-    (void)is_u32;
+    MetalBuffer *bb;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL) return;
+    /* Recorded, not encoded: Metal applies the index buffer at draw time. */
+    cmd->index_buffer = buf;
+    cmd->index_offset = offset;
+    cmd->index_u32 = is_u32;
 }
 
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h, f32 min_depth, f32 max_depth) {
@@ -1947,37 +2055,70 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
     (void)h;
 }
 
-void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
+/* Shared draw guards: open render pass + bound graphics pipeline; returns
+ * the payload (NULL after logging on failure). */
+static MetalPipeline *metal_draw_ready(RHICmdBuffer *cmd, const char *what) {
     MetalPipeline *pp;
-    if (cmd == NULL || cmd->render_encoder == nil) return;
-    if (vertex_count == 0u || instance_count == 0u) return;   /* VK no-op parity */
+    if (cmd == NULL || cmd->render_encoder == nil || !cmd->render_pass_open) {
+        LOG_ERROR("rhi_metal: %s without an open render pass", what);
+        return NULL;
+    }
     pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
                                                  cmd->bound_pipeline,
                                                  RHI_RES_PIPELINE);
-    if (pp == NULL) {
-        LOG_ERROR("rhi_metal: draw without a bound pipeline");
-        return;
+    if (pp == NULL || pp->is_compute) {
+        LOG_ERROR("rhi_metal: %s without a bound graphics pipeline", what);
+        return NULL;
     }
-    [cmd->render_encoder drawPrimitives:(pp->point_list ? MTLPrimitiveTypePoint
-                                                        : MTLPrimitiveTypeTriangle)
+    return pp;
+}
+
+static MTLPrimitiveType metal_pipeline_prim(const MetalPipeline *pp) {
+    return pp->point_list ? MTLPrimitiveTypePoint : MTLPrimitiveTypeTriangle;
+}
+
+void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
+    MetalPipeline *pp;
+    if (vertex_count == 0u || instance_count == 0u) return;   /* VK no-op parity */
+    pp = metal_draw_ready(cmd, "draw");
+    if (pp == NULL) return;
+    [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
                             vertexStart:0u
                             vertexCount:(NSUInteger)vertex_count
                           instanceCount:(NSUInteger)instance_count];
 }
 
 void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count, u32 first_vertex) {
-    LOG_ERROR("rhi_metal: rhi_cmd_draw_base not implemented");
-    (void)cmd;
-    (void)vertex_count;
-    (void)instance_count;
-    (void)first_vertex;
+    MetalPipeline *pp;
+    if (vertex_count == 0u || instance_count == 0u) return;
+    pp = metal_draw_ready(cmd, "draw_base");
+    if (pp == NULL) return;
+    [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
+                            vertexStart:(NSUInteger)first_vertex
+                            vertexCount:(NSUInteger)vertex_count
+                          instanceCount:(NSUInteger)instance_count];
 }
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {
-    LOG_ERROR("rhi_metal: rhi_cmd_draw_indexed not implemented");
-    (void)cmd;
-    (void)index_count;
-    (void)instance_count;
+    MetalPipeline *pp;
+    MetalBuffer *ib;
+    if (index_count == 0u || instance_count == 0u) return;
+    pp = metal_draw_ready(cmd, "draw_indexed");
+    if (pp == NULL) return;
+    ib = (MetalBuffer *)rhi_get_resource_typed(g_current_device,
+                                               cmd->index_buffer,
+                                               RHI_RES_BUFFER);
+    if (ib == NULL) {
+        LOG_ERROR("rhi_metal: draw_indexed without a bound index buffer");
+        return;
+    }
+    [cmd->render_encoder drawIndexedPrimitives:metal_pipeline_prim(pp)
+                                    indexCount:(NSUInteger)index_count
+                                     indexType:(cmd->index_u32 ? MTLIndexTypeUInt32
+                                                               : MTLIndexTypeUInt16)
+                                   indexBuffer:ib->buffer
+                             indexBufferOffset:(NSUInteger)cmd->index_offset
+                                 instanceCount:(NSUInteger)instance_count];
 }
 
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset) {
@@ -1989,26 +2130,88 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
     (void)vertex_offset;
 }
 
+/* Indirect arg ABIs are layout-identical between VK and Metal:
+ * non-indexed {vertexCount, instanceCount, vertexStart, baseInstance} = 16B;
+ * indexed {indexCount, instanceCount, firstIndex, vertexOffset(i32),
+ * firstInstance} = 20B. Metal has no multi-draw indirect with a count
+ * bound, so draw_count>1 loops single-command indirect draws. */
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
-    LOG_ERROR("rhi_metal: rhi_cmd_draw_indirect not implemented");
-    (void)dev;
-    (void)cmd_buf;
-    (void)offset;
-    (void)draw_count;
-    (void)stride;
+    MetalBackend *mb;
+    RHICmdBuffer *cmd;
+    MetalPipeline *pp;
+    MetalBuffer *ab;
+    u32 i;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL) return;
+    cmd = mb->frame_cmd;
+    if (draw_count == 0u || stride < 16u || (stride % 4u) != 0u) {
+        LOG_ERROR("rhi_metal: draw_indirect bad args (count %u stride %u)",
+                  (unsigned)draw_count, (unsigned)stride);
+        return;
+    }
+    ab = (MetalBuffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
+    pp = cmd != NULL ? metal_draw_ready(cmd, "draw_indirect") : NULL;
+    if (ab == NULL || pp == NULL) return;
+    if ((usize)offset + (usize)(draw_count - 1u) * stride + 16u > ab->size) {
+        LOG_ERROR("rhi_metal: draw_indirect range overruns the arg buffer");
+        return;
+    }
+    for (i = 0u; i < draw_count; ++i) {
+        [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
+                             indirectBuffer:ab->buffer
+                       indirectBufferOffset:(NSUInteger)(offset + i * stride)];
+    }
 }
 
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
-    LOG_ERROR("rhi_metal: rhi_cmd_draw_indexed_indirect not implemented");
-    (void)dev;
-    (void)cmd_buf;
-    (void)offset;
-    (void)draw_count;
-    (void)stride;
+    MetalBackend *mb;
+    RHICmdBuffer *cmd;
+    MetalPipeline *pp;
+    MetalBuffer *ab;
+    MetalBuffer *ib;
+    u32 i;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL) return;
+    cmd = mb->frame_cmd;
+    if (draw_count == 0u || stride < 20u || (stride % 4u) != 0u) {
+        LOG_ERROR("rhi_metal: draw_indexed_indirect bad args (count %u stride %u)",
+                  (unsigned)draw_count, (unsigned)stride);
+        return;
+    }
+    ab = (MetalBuffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
+    pp = cmd != NULL ? metal_draw_ready(cmd, "draw_indexed_indirect") : NULL;
+    ib = cmd != NULL
+        ? (MetalBuffer *)rhi_get_resource_typed(dev, cmd->index_buffer,
+                                                RHI_RES_BUFFER)
+        : NULL;
+    if (ab == NULL || pp == NULL || ib == NULL) {
+        if (ib == NULL)
+            LOG_ERROR("rhi_metal: draw_indexed_indirect without an index buffer");
+        return;
+    }
+    if ((usize)offset + (usize)(draw_count - 1u) * stride + 20u > ab->size) {
+        LOG_ERROR("rhi_metal: draw_indexed_indirect range overruns the arg buffer");
+        return;
+    }
+    for (i = 0u; i < draw_count; ++i) {
+        [cmd->render_encoder
+            drawIndexedPrimitives:metal_pipeline_prim(pp)
+                        indexType:(cmd->index_u32 ? MTLIndexTypeUInt32
+                                                  : MTLIndexTypeUInt16)
+                      indexBuffer:ib->buffer
+                indexBufferOffset:(NSUInteger)cmd->index_offset
+                   indirectBuffer:ab->buffer
+             indirectBufferOffset:(NSUInteger)(offset + i * stride)];
+    }
 }
 
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset, RHIBuffer count_buf, u32 count_offset, u32 max_draws, u32 stride) {
-    LOG_ERROR("rhi_metal: rhi_cmd_draw_indexed_indirect_count not implemented");
+    /* Fail closed: Metal has no draw-indirect-with-count equivalent
+     * (MTLIndirectCommandBuffer is a separate encoding model, out of plan
+     * scope). Recorded in docs/rhi_metal_d3d12_feature_matrix.md. */
+    LOG_ERROR("rhi_metal: rhi_cmd_draw_indexed_indirect_count has no Metal equivalent");
     (void)dev;
     (void)cmd_buf;
     (void)cmd_offset;
@@ -2611,22 +2814,86 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usi
     }
 }
 
+/* Task 9 blit interlude: close the current encoder (one-encoder rule;
+ * callers re-bind their target afterwards — VK's suspend/resume equivalent
+ * is a later-bind with Load), open a transient blit encoder on the frame's
+ * command buffer. Returns nil outside a live frame. */
+static id<MTLBlitCommandEncoder> metal_blit_interlude(RHICmdBuffer *cmd,
+                                                      const char *what) {
+    if (!metal_cmd_in_frame(cmd, what)) return nil;
+    metal_end_encoders(cmd);
+    return [cmd->cmd blitCommandEncoder];   /* autoreleased; ends in place */
+}
+
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
-    LOG_ERROR("rhi_metal: rhi_cmd_fill_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)offset;
-    (void)size;
-    (void)value;
+    MetalBuffer *bb;
+    id<MTLBlitCommandEncoder> blit;
+    if (cmd == NULL || cmd->backend == NULL || size == 0u) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL || offset >= bb->size) return;
+    if (size > bb->size - offset) size = bb->size - offset;   /* R425 clamp */
+    if (size == 0u) return;
+    /* VK parity (vkCmdFillBuffer): the pattern is a u32 word and offset/size
+     * are 4-byte aligned. Metal's fillBuffer takes a BYTE pattern, so only
+     * byte-uniform words are expressible (all engine callers use 0). */
+    if (((offset | size) & 3u) != 0u) {
+        LOG_ERROR("rhi_metal: fill_buffer requires 4-byte aligned offset/size");
+        return;
+    }
+    if ((value >> 8 & 0xFFu) != (value & 0xFFu) ||
+        (value >> 16 & 0xFFu) != (value & 0xFFu) ||
+        (value >> 24) != (value & 0xFFu)) {
+        LOG_ERROR("rhi_metal: fill_buffer pattern 0x%08X is not byte-uniform",
+                  (unsigned)value);
+        return;
+    }
+    blit = metal_blit_interlude(cmd, "fill_buffer");
+    if (blit == nil) return;
+    [blit fillBuffer:bb->buffer
+               range:NSMakeRange((NSUInteger)offset, (NSUInteger)size)
+               value:(u8)(value & 0xFFu)];
+    [blit endEncoding];
 }
 
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, const void *data, usize size) {
-    LOG_ERROR("rhi_metal: rhi_cmd_update_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)offset;
-    (void)data;
-    (void)size;
+    MetalBackend *mb;
+    MetalBuffer *bb;
+    id<MTLBlitCommandEncoder> blit;
+    if (cmd == NULL || cmd->backend == NULL || data == NULL || size == 0u)
+        return;
+    mb = cmd->backend;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL || offset >= bb->size) return;
+    if (size > bb->size - offset) size = bb->size - offset;   /* R425 clamp */
+    if (size == 0u) return;
+    /* VK parity (vkCmdUpdateBuffer limits): 4-byte align, <= 65536. */
+    if (size > 65536u || ((offset | size) & 3u) != 0u) {
+        LOG_ERROR("rhi_metal: update_buffer requires 4-byte align and size<=65536");
+        return;
+    }
+    blit = metal_blit_interlude(cmd, "update_buffer");
+    if (blit == nil) return;
+    @autoreleasepool {
+        /* Transient shared staging; the command buffer retains it until
+         * execution. newBufferWithBytes: returns +1 (new* rule). */
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithBytes:data
+                                    length:(NSUInteger)size
+                                   options:MTLResourceStorageModeShared];
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: update_buffer staging allocation failed");
+            return;
+        }
+        [blit copyFromBuffer:staging
+                sourceOffset:0u
+                    toBuffer:bb->buffer
+           destinationOffset:(NSUInteger)offset
+                        size:(NSUInteger)size];
+        [blit endEncoding];
+        [staging release];
+    }
 }
 
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
@@ -2650,11 +2917,27 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
 }
 
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
-    LOG_ERROR("rhi_metal: rhi_cmd_copy_buffer not implemented");
-    (void)cmd;
-    (void)src;
-    (void)dst;
-    (void)size;
+    MetalBuffer *sb;
+    MetalBuffer *db;
+    id<MTLBlitCommandEncoder> blit;
+    if (cmd == NULL || cmd->backend == NULL || size == 0u) return;
+    sb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, src,
+                                               RHI_RES_BUFFER);
+    db = (MetalBuffer *)rhi_get_resource_typed(g_current_device, dst,
+                                               RHI_RES_BUFFER);
+    if (sb == NULL || db == NULL) return;
+    /* R425: clamp against both buffer sizes. */
+    if (size > sb->size) size = sb->size;
+    if (size > db->size) size = db->size;
+    if (size == 0u) return;
+    blit = metal_blit_interlude(cmd, "copy_buffer");
+    if (blit == nil) return;
+    [blit copyFromBuffer:sb->buffer
+            sourceOffset:0u
+                toBuffer:db->buffer
+       destinationOffset:0u
+                    size:(NSUInteger)size];
+    [blit endEncoding];
 }
 
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler) {
@@ -3271,18 +3554,40 @@ static void metal_depth_target_clear_reopen(RHICmdBuffer *cmd, u8 kind,
 }
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
-    LOG_ERROR("rhi_metal: rhi_cmd_dispatch not implemented");
-    (void)cmd;
-    (void)x;
-    (void)y;
-    (void)z;
+    MetalPipeline *pp;
+    id<MTLComputeCommandEncoder> enc;
+    NSUInteger max_tg, tg;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    if (x == 0u || y == 0u || z == 0u) return;
+    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
+                                                 cmd->bound_pipeline,
+                                                 RHI_RES_PIPELINE);
+    if (pp == NULL || !pp->is_compute) {
+        LOG_ERROR("rhi_metal: dispatch without a bound compute pipeline");
+        return;
+    }
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) return;
+    /* Brief rule: threadgroup = min(pipeline maxTotal, the 64 (8x8)
+     * convention). Dispatch counts are in GROUPS (VK parity), so callers
+     * divide by the group size themselves. */
+    max_tg = pp->compute.maxTotalThreadsPerThreadgroup;
+    tg = max_tg < 64u ? max_tg : 64u;
+    [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)x, (NSUInteger)y,
+                                          (NSUInteger)z)
+        threadsPerThreadgroup:MTLSizeMake(tg, 1u, 1u)];
 }
 
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_storage_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)binding;
+    MetalBuffer *bb;
+    id<MTLComputeCommandEncoder> enc;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL) return;
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) return;
+    [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)binding];
 }
 
 void rhi_cmd_bind_acceleration_structure( RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
@@ -3293,27 +3598,70 @@ void rhi_cmd_bind_acceleration_structure( RHICmdBuffer *cmd, RHIAccelerationStru
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_memory_barrier not implemented");
-    (void)cmd;
+    if (cmd == NULL) return;
+    /* Metal auto-tracks hazards across encoder boundaries; the explicit
+     * barrier only matters between dispatches on ONE compute encoder
+     * (VK's in-command-buffer pipeline barrier analogue). */
+    if (cmd->compute_encoder != nil) {
+        [cmd->compute_encoder
+            memoryBarrierWithScope:MTLBarrierScopeBuffers |
+                                   MTLBarrierScopeTextures];
+    }
 }
 
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_image_texture not implemented");
-    (void)cmd;
-    (void)tex;
-    (void)unit;
-    (void)mip_level;
-    (void)write_only;
+    MetalTexture *td;
+    id<MTLComputeCommandEncoder> enc;
+    id<MTLTexture> view;
+    (void)write_only;   /* Metal has no per-binding access mode; usage covers it */
+    if (cmd == NULL || cmd->backend == NULL) return;
+    td = (MetalTexture *)rhi_get_resource_typed(g_current_device, tex,
+                                                RHI_RES_TEXTURE);
+    if (td == NULL || mip_level >= td->mip_levels) return;
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) return;
+    view = td->texture;
+    if (mip_level > 0u) {
+        /* newTextureViewWithPixelFormat: returns +1 (new* rule). */
+        view = [td->texture
+            newTextureViewWithPixelFormat:td->texture.pixelFormat
+                              textureType:MTLTextureType2D
+                                   levels:NSMakeRange((NSUInteger)mip_level, 1u)
+                                   slices:NSMakeRange(0u, 1u)];
+        if (view == nil) {
+            LOG_ERROR("rhi_metal: mip %u texture view failed",
+                      (unsigned)mip_level);
+            return;
+        }
+    }
+    [enc setTexture:view atIndex:(NSUInteger)unit];
+    if (view != td->texture) [view release];
 }
 
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_image_cubemap_face not implemented");
-    (void)cmd;
-    (void)cm;
-    (void)face;
-    (void)mip;
-    (void)unit;
+    MetalTexture *cd;
+    id<MTLComputeCommandEncoder> enc;
+    id<MTLTexture> view;
     (void)write_only;
+    if (cmd == NULL || cmd->backend == NULL || face >= 6u) return;
+    cd = (MetalTexture *)rhi_get_resource_typed(g_current_device, cm,
+                                                RHI_RES_CUBEMAP);
+    if (cd == NULL || mip >= cd->mip_levels) return;
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) return;
+    /* A single cube face binds as a 2D view of slice `face`, level `mip`.
+     * newTextureViewWithPixelFormat: returns +1 (new* rule). */
+    view = [cd->texture
+        newTextureViewWithPixelFormat:cd->texture.pixelFormat
+                          textureType:MTLTextureType2D
+                               levels:NSMakeRange((NSUInteger)mip, 1u)
+                               slices:NSMakeRange((NSUInteger)face, 1u)];
+    if (view == nil) {
+        LOG_ERROR("rhi_metal: cube face %u view failed", (unsigned)face);
+        return;
+    }
+    [enc setTexture:view atIndex:(NSUInteger)unit];
+    [view release];
 }
 
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
@@ -3348,43 +3696,269 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
 }
 
 bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usize pixel_bytes) {
-    LOG_ERROR("rhi_metal: rhi_screenshot not implemented");
-    (void)dev;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
-    (void)pixels;
-    (void)pixel_bytes;
-    return false;
+    MetalBackend *mb;
+    bool ok = false;
+    if (dev == NULL || pixels == NULL) return false;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return false;
+    /* R577 parity: legal only between acquire and present. The drawable is
+     * retained from frame_begin to present, so a post-frame_end /
+     * pre-present call (the engine's capture point, main.c) still has it. */
+    if ((!mb->frame_started && !mb->frame_submitted) || mb->drawable == nil) {
+        LOG_ERROR("rhi_metal: rhi_screenshot outside an acquired frame is "
+                  "illegal (no drawable) — call between frame_begin and present");
+        return false;
+    }
+    if (!rhi_screenshot_region_validate(x, y, w, h, dev->width, dev->height,
+                                        pixel_bytes)) {
+        return false;
+    }
+    /* Bounded drain (never a bare waitUntilCompleted — Task 4 rule).
+     * Rendering recorded into the still-uncommitted in-flight frame is not
+     * visible, same as VK's device-wide wait. */
+    if (metal_drain(dev, mb) != RHI_RESULT_OK) return false;
+    @autoreleasepool {
+        const usize row_bytes = (usize)w * 4u;
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithLength:(NSUInteger)(row_bytes * h)
+                                    options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd;
+        id<MTLBlitCommandEncoder> blit;
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: screenshot staging allocation failed");
+            return false;
+        }
+        cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: screenshot command buffer failed");
+            return false;
+        }
+        blit = [cmd blitCommandEncoder];
+        /* Native byte order (BGRA8 swapchain -> B,G,R,A), same as VK's raw
+         * vkCmdCopyImageToBuffer of its BGRA image. */
+        [blit copyFromTexture:mb->drawable.texture
+                  sourceSlice:0u
+                  sourceLevel:0u
+                 sourceOrigin:MTLOriginMake((NSUInteger)x, (NSUInteger)y, 0u)
+                   sourceSize:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1u)
+                     toBuffer:staging
+            destinationOffset:0u
+       destinationBytesPerRow:(NSUInteger)row_bytes
+     destinationBytesPerImage:(NSUInteger)(row_bytes * h)];
+        [blit endEncoding];
+        if (metal_commit_wait(dev, mb, cmd) != RHI_RESULT_OK) return false;
+        memcpy(pixels, staging.contents, row_bytes * h);
+        ok = true;
+    }
+    return ok;
+}
+
+/* ---- Task 9: GPU timer (MTLCounterSampleBuffer timestamps) ----
+ * Apple GPUs (observed G14/M2) support only
+ * MTLCounterSamplingPointAtStageBoundary — sampling is legal on RENDER
+ * encoders only (compute/blit assert at runtime). begin/end called while
+ * no render pass is open pend on the cmd buffer and land at the next pass
+ * open of the same frame (metal_drain_pending_timer_samples). */
+struct RHIGPUTimer {
+    RHIDevice *owner;
+    id<MTLCounterSampleBuffer> csb;   /* two timestamp samples; nil if unsupported */
+    u64 pending_frame_value;          /* frame_event value that completes the samples */
+    u32 sampled_mask;                 /* bit0/bit1: index 0/1 actually recorded */
+    bool supported;
+    bool result_ready;
+    bool warned;                      /* warn-once degraded mode */
+};
+
+static void metal_gpu_timer_sample(RHIGPUTimer *t, NSUInteger index);
+
+/* Drains pended begin/end samples onto the just-opened render encoder
+ * (called from metal_open_render_pass). */
+static void metal_drain_pending_timer_samples(RHICmdBuffer *cmd) {
+    u32 i;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    for (i = 0u; i < cmd->pending_count; ++i) {
+        RHIGPUTimer *t = cmd->pending_timers[i];
+        MetalBackend *mb;
+        if (t == NULL || t->csb == nil) continue;
+        [cmd->render_encoder sampleCountersInBuffer:t->csb
+                                      atSampleIndex:(NSUInteger)cmd->pending_indices[i]
+                                        withBarrier:YES];
+        t->sampled_mask |= 1u << cmd->pending_indices[i];
+        /* The sample lands in the CURRENT frame — retarget the completion
+         * gate so a sample pended across a frame boundary cannot be read
+         * early from stale counter data. */
+        mb = g_current_device != NULL
+            ? (MetalBackend *)g_current_device->backend_data : NULL;
+        if (mb != NULL) t->pending_frame_value = mb->frame_counter;
+    }
+    cmd->pending_count = 0u;
 }
 
 RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_gpu_timer_create not implemented");
-    (void)dev;
-    return NULL;
+    MetalBackend *mb;
+    RHIGPUTimer *t;
+    if (dev == NULL) return NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL) return NULL;
+    t = (RHIGPUTimer *)calloc(1u, sizeof(*t));
+    if (t == NULL) return NULL;
+    t->owner = dev;
+    /* macOS 10.15+; not every device/family supports stage-boundary
+     * timestamp sampling — degrade to a warn-once zero timer instead of
+     * failing device creation paths.
+     *
+     * Metal 4 runtime caveat (observed on this plan's M2 host, macOS 26 /
+     * SDK 26.5): supportsCounterSampling:AtStageBoundary returns YES on
+     * Apple-family GPUs, but sampleCountersInBuffer: on ANY encoder type
+     * (render/compute/blit) aborts the process with "not supported on this
+     * device" — an uncatchable hard assert, not an NSException (probed with
+     * @try/@catch). There is no safe runtime probe, so Apple-family GPUs on
+     * macOS 26+ are statically gated to the degraded path. The Metal 4
+     * replacement (MTL4CounterHeap) is out of this plan's scope. */
+    {
+        bool agx_metal4 = false;
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
+        if (@available(macOS 26.0, *)) {
+            agx_metal4 = [mb->device supportsFamily:MTLGPUFamilyApple1];
+        }
+#endif
+        if (agx_metal4 ||
+            ![mb->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
+            t->supported = false;
+            return t;
+        }
+    }
+    t->supported = true;
+    @autoreleasepool {
+        NSArray<id<MTLCounterSet>> *sets = mb->device.counterSets;
+        id<MTLCounterSet> timestamps = nil;
+        MTLCounterSampleBufferDescriptor *d;
+        NSError *err = nil;
+        for (id<MTLCounterSet> set in sets) {
+            if ([set.name isEqualToString:MTLCommonCounterSetTimestamp]) {
+                timestamps = set;
+                break;
+            }
+        }
+        if (timestamps == nil) {
+            LOG_WARN("rhi_metal: timestamp counter set missing; gpu timer degraded");
+            t->supported = false;
+            return t;
+        }
+        d = [[MTLCounterSampleBufferDescriptor alloc] init];
+        /* Newer SDKs (26+) expose a single counterSet (the counterSets
+         * array property is gone). One timestamp set is all we sample. */
+        d.counterSet = timestamps;
+        d.sampleCount = 2u;
+        d.storageMode = MTLStorageModeShared;
+        /* newCounterSampleBufferWithDescriptor: returns +1 (new* rule). */
+        t->csb = [mb->device newCounterSampleBufferWithDescriptor:d
+                                                            error:&err];
+        [d release];
+        if (t->csb == nil) {
+            LOG_WARN("rhi_metal: counter sample buffer failed (%s); timer degraded",
+                     err != nil ? [[err localizedDescription] UTF8String]
+                                : "(no error info)");
+            t->supported = false;
+        }
+    }
+    return t;
 }
 
 void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
-    LOG_ERROR("rhi_metal: rhi_gpu_timer_destroy not implemented");
-    (void)dev;
-    (void)t;
+    if (t == NULL) return;
+    if (dev != NULL && dev == t->owner) {
+        MetalBackend *mb = (MetalBackend *)dev->backend_data;
+        if (mb != NULL) metal_retire_drain(dev, mb);
+    }
+    [t->csb release];
+    free(t);
+}
+
+/* Sample into the open render encoder; otherwise pend on the cmd buffer
+ * (applied at the next pass open this frame — stage-boundary sampling is
+ * render-encoder-only on Apple GPUs; compute/blit encoders assert). */
+static void metal_gpu_timer_sample(RHIGPUTimer *t, NSUInteger index) {
+    MetalBackend *mb;
+    RHICmdBuffer *cmd;
+    if (!t->supported || t->csb == nil) return;
+    if (g_current_device != t->owner) return;
+    mb = (MetalBackend *)t->owner->backend_data;
+    cmd = mb != NULL ? mb->frame_cmd : NULL;
+    if (cmd == NULL || cmd->cmd == nil) {
+        LOG_ERROR("rhi_metal: gpu timer sample outside a live frame");
+        return;
+    }
+    if (cmd->render_encoder != nil) {
+        [cmd->render_encoder sampleCountersInBuffer:t->csb
+                                      atSampleIndex:index
+                                        withBarrier:YES];
+        t->sampled_mask |= 1u << index;
+        return;
+    }
+    if (cmd->pending_count < 8u) {
+        cmd->pending_timers[cmd->pending_count] = t;
+        cmd->pending_indices[cmd->pending_count] = (u32)index;
+        cmd->pending_count++;
+    } else {
+        LOG_WARN("rhi_metal: gpu timer pending-sample list full; sample dropped");
+    }
 }
 
 void rhi_gpu_timer_begin(RHIGPUTimer *t) {
-    LOG_ERROR("rhi_metal: rhi_gpu_timer_begin not implemented");
-    (void)t;
+    if (t == NULL) return;
+    t->sampled_mask = 0u;
+    t->result_ready = false;
+    metal_gpu_timer_sample(t, 0u);
 }
 
 void rhi_gpu_timer_end(RHIGPUTimer *t) {
-    LOG_ERROR("rhi_metal: rhi_gpu_timer_end not implemented");
-    (void)t;
+    MetalBackend *mb;
+    if (t == NULL) return;
+    metal_gpu_timer_sample(t, 1u);
+    if (!t->supported || g_current_device != t->owner) return;
+    mb = (MetalBackend *)t->owner->backend_data;
+    if (mb == NULL) return;
+    /* The samples complete when the recording frame's signal lands. */
+    t->pending_frame_value = mb->frame_counter;
+    t->result_ready = true;
 }
 
 f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
-    LOG_ERROR("rhi_metal: rhi_gpu_timer_elapsed_ms not implemented");
-    (void)t;
-    return 0.0;
+    MetalBackend *mb;
+    u64 ts[2] = { 0u, 0u };
+    NSData *data;
+    mach_timebase_info_data_t tb;
+    if (t == NULL) return 0.0;
+    if (!t->supported || t->csb == nil) {
+        if (!t->warned) {
+            LOG_WARN("rhi_metal: gpu timer unsupported on this device; elapsed_ms is 0");
+            t->warned = true;
+        }
+        return 0.0;
+    }
+    /* Both samples must have actually landed (a begin/end pended past
+     * frame_end leaves the mask incomplete). */
+    if (!t->result_ready || t->sampled_mask != 3u || g_current_device != t->owner)
+        return 0.0;
+    mb = (MetalBackend *)t->owner->backend_data;
+    if (mb == NULL) return 0.0;
+    /* Poll availability (VK R430 parity: never wait on a not-yet-completed
+     * frame's samples). */
+    if (mb->frame_event == nil ||
+        mb->frame_event.signaledValue < t->pending_frame_value) {
+        return 0.0;
+    }
+    @autoreleasepool {
+        data = [t->csb resolveCounterRange:NSMakeRange(0u, 2u)];   /* autoreleased */
+    }
+    if (data == nil || data.length < sizeof(ts)) return 0.0;
+    memcpy(ts, data.bytes, sizeof(ts));
+    if (ts[1] < ts[0]) return 0.0;
+    /* Counter timestamps are mach absolute time ticks. */
+    (void)mach_timebase_info(&tb);
+    if (tb.denom == 0u) return 0.0;
+    return (f64)(ts[1] - ts[0]) * (f64)tb.numer / (f64)tb.denom / 1.0e6;
 }
 
 /* ---- ENGINE_RHI_TEST hooks ---- */

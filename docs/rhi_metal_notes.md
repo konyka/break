@@ -268,3 +268,60 @@ metallib 加载落地后改为从 `MetalBackend.library` 解析函数，本路�
   screen_w/h，而 `metal_ensure_screen_depth` 的深度纹理尺寸取
   dev->width/height——viewport 参数可与 dev 尺寸短暂不一致（调用者传
   逻辑尺寸），深度纹理永远跟 drawable 实际尺寸；两者语义不同属预期。
+
+## Task 9：compute / blit / screenshot / indirect / gpu timer
+
+### compute
+
+- `rhi_pipeline_create` 的 `is_compute` 分支：compute shader 句柄走
+  `desc->frag`（VK 约定），`newComputePipelineStateWithFunction:`，payload
+  `compute` + `is_compute`；深度/顶点状态不适用。
+- encoder 生命周期扩展：同一 cmd 同时最多一个 encoder 的规则覆盖 compute
+  ——`metal_open_render_pass` 先关 compute encoder；`metal_ensure_compute_encoder`
+  先关 render encoder；`frame_end`/destroy 走 `metal_end_encoders` 两者并关。
+- `rhi_cmd_dispatch`：`dispatchThreadgroups:threadsPerThreadgroup:`，threadgroup
+  = min(pipeline `maxTotalThreadsPerThreadgroup`, 64)（8x8 惯例的 1D 形式）；
+  dispatch 计数单位是**组**（VK parity，调用者自己除以组尺寸）。
+- `rhi_cmd_bind_storage_buffer` → `setBuffer:offset:0 atIndex:`；
+  `rhi_cmd_bind_image_texture`/`_cubemap_face` → `setTexture:atIndex:`，mip/face
+  经 `newTextureViewWithPixelFormat:textureType:levels:slices:`（2D 视图，new*
+  +1 即用即 release）；`rhi_cmd_memory_barrier` → 仅 compute encoder 内
+  `memoryBarrierWithScope:Buffers|Textures`（跨 encoder hazard Metal 自动跟踪）。
+
+### blit 命令族（fill/update/copy）
+
+`metal_blit_interlude`：先关现有 encoder，在帧 command buffer 上开临时 blit
+encoder，编码后即 endEncoding（对象 autoreleased）。`fill_buffer` 保持 VK 的
+u32-word/4 字节对齐契约，但 Metal `fillBuffer:range:value:` 只接受**字节**
+pattern——非字节齐值的 u32 fail-closed（引擎调用方全部填 0）；offset+size 按
+R425 钳制。`update_buffer` 保持 VK 65536B/4B 对齐上限，经临时 shared staging
+buffer（command buffer retain 至执行）。`copy_buffer` 双侧钳制。
+**已知边界**：blit/compute 插入段结束后不自动恢复原 render pass（VK 的
+suspend/resume 语义）——调用方需以 bind_load 重绑；自动 resume 决策归 Task 11。
+
+### screenshot（rhi.h:815-826 / R577）
+
+acquire→present 窗口语义在 Metal 的等价实现：drawable 自 acquire retain 到
+**present**（frame_end 不再提前释放），`rhi_screenshot` 先经 `metal_drain`
+有界 drain（绝不裸 waitUntilCompleted），再 blit drawable texture → shared
+staging → `metal_commit_wait`。present 后 drawable==nil → false + LOG。
+region 走共享 `rhi_screenshot_region_validate`。字节序 = drawable 原生 BGRA
+（VK 裸拷贝 BGRA swapchain 同）。前提：`layer.framebufferOnly=NO`（device
+create 时置位；默认 YES 禁止 blit 读回）。
+
+### indirect
+
+`draw_indirect`/`draw_indexed_indirect`：arg record ABI 与 VK 位级一致
+（16B/20B 五字段），Metal 原生 `indirectBuffer:` 单条命令按 draw_count 循环
+（Metal 无多 draw indirect buffer 批量入口）。index buffer 经
+`rhi_cmd_bind_index_buffer` 记录（cmd 簿记，draw 时应用）；`draw_indexed`/
+`draw_base` 顺带接线（同族最小面）。`_count` 变体 fail-closed（见矩阵决策记录）。
+
+### gpu timer
+
+见矩阵「Metal 决策记录（计划 C Task 9）」。支持的主机上：stage-boundary 采样
+仅 render encoder 合法 → pass 外的 begin/end 挂进 `cmd->pending_timers[]`，
+本帧下一个 pass 开口时补采样（`metal_drain_pending_timer_samples`，并重定向
+完成门槛到实际落点帧）；`sampled_mask` 双 bit 防止读到未落地样本；
+`elapsed_ms` 轮询 frame_event signaledValue（VK R430 不等待 parity），mach
+timebase 换算 ms。

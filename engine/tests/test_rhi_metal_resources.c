@@ -785,6 +785,243 @@ TEST(pass_switch_invalidates_bound_pipeline) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* ---- Task 9: compute / blit fill / screenshot / indirect / gpu timer ---- */
+
+static const char *k_msl_cs_write_index =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "kernel void cs_main(device uint *out [[buffer(0)]],\n"
+    "                  uint tid [[thread_position_in_grid]]) {\n"
+    "    if (tid < 256u) out[tid] = tid;\n"
+    "}\n";
+
+TEST(compute_dispatch_writes_indices) {
+    /* Compute contract: storage buffer (private storage) starts zeroed,
+     * one dispatch of a tid->out[tid] kernel, host readback asserts the
+     * full 0..N-1 sequence. The 256-group dispatch over-covers on any
+     * threadgroup size; the kernel guards tid < 256. */
+    RHIShader cs = rhi_shader_create_compute(g_dev, k_msl_cs_write_index,
+                                             (usize)strlen(k_msl_cs_write_index));
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer buf;
+    RHICmdBuffer *cmd;
+    u32 out[256];
+    u32 i;
+    ASSERT_FALSE(handle_is_null(cs));
+    memset(&desc, 0, sizeof(desc));
+    desc.is_compute = true;
+    desc.frag = cs;   /* VK convention: compute shader rides the frag slot */
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = sizeof(out);
+    buf = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(buf));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_storage_buffer(cmd, buf, 0u);
+    rhi_cmd_dispatch(cmd, 256u, 1u, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_cmd_dispatch(cmd, 256u, 1u, 1u);   /* idempotent second dispatch */
+    end_frame();
+    memset(out, 0xFF, sizeof(out));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    for (i = 0u; i < 256u; ++i) ASSERT_EQ(out[i], i);
+    rhi_buffer_destroy(g_dev, buf);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, cs);
+}
+
+TEST(fill_buffer_pattern_and_clamp_readback) {
+    /* rhi_cmd_fill_buffer fills the u32 pattern (VK vkCmdFillBuffer
+     * parity); 0xABABABAB is byte-uniform. Offset+size clamp against the
+     * buffer (R425) instead of overrunning. */
+    RHIBufferDesc bdesc;
+    RHIBuffer buf;
+    RHICmdBuffer *cmd;
+    u8 out[256];
+    u32 i;
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = sizeof(out);
+    buf = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(buf));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_fill_buffer(cmd, buf, 0u, sizeof(out), 0xABABABABu);
+    end_frame();
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    for (i = 0u; i < sizeof(out); ++i) ASSERT_EQ((u32)out[i], 0xABu);
+    /* Clamped tail fill: [200, 256) -> 0xCD, head stays 0xAB. */
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_fill_buffer(cmd, buf, 200u, 200u, 0xCDCDCDCDu);
+    end_frame();
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    for (i = 0u; i < 200u; ++i) ASSERT_EQ((u32)out[i], 0xABu);
+    for (i = 200u; i < 256u; ++i) ASSERT_EQ((u32)out[i], 0xCDu);
+    rhi_buffer_destroy(g_dev, buf);
+}
+
+TEST(screenshot_clear_color_and_post_present_refused) {
+    /* rhi.h:815-826 / R577: screenshot is legal from frame_begin until
+     * present; here it runs post-frame_end pre-present and must carry the
+     * just-committed frame's pixels. The drawable is BGRA8, so readback
+     * byte order is B,G,R,A (native, same as VK's raw copy). Post-present
+     * calls are refused (false + log). */
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *c;
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_begin_render_pass(cmd);
+    rhi_cmd_clear_color(cmd, 0.1f, 0.2f, 0.3f, 1.0f);
+    rhi_cmd_end_render_pass(cmd);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
+    c = px + ((usize)32u * 64u + 32u) * 4u;
+    ASSERT_TRUE(c[0] >= 75u && c[0] <= 78u);    /* B = 0.3 */
+    ASSERT_TRUE(c[1] >= 50u && c[1] <= 52u);    /* G = 0.2 */
+    ASSERT_TRUE(c[2] >= 24u && c[2] <= 27u);    /* R = 0.1 */
+    ASSERT_EQ((u32)c[3], 255u);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_FALSE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
+}
+
+TEST(draw_indirect_executes_arg_buffer) {
+    /* Non-indexed indirect: the 16-byte arg record {vertexCount,
+     * instanceCount, vertexStart, baseInstance} is ABI-identical in VK
+     * (VkDrawIndirectCommand) and Metal (MTLDrawPrimitivesIndirectArguments). */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer args;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    u32 record[4] = { 3u, 1u, 0u, 0u };
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_INDIRECT;
+    bdesc.size = sizeof(record);
+    bdesc.initial_data = record;
+    args = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(args));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw_indirect(g_dev, args, 0u, 1u, (u32)sizeof(record));
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, args);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(draw_indexed_indirect_executes_arg_buffer) {
+    /* Indexed indirect: the 20-byte record {indexCount, instanceCount,
+     * firstIndex, vertexOffset, firstInstance} matches
+     * MTLDrawIndexedPrimitivesIndirectArguments; the index buffer rides
+     * rhi_cmd_bind_index_buffer (U16 here). */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer args, ibuf;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    u32 record[5] = { 3u, 1u, 0u, 0u, 0u };
+    u16 indices[3] = { 0u, 1u, 2u };
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_INDIRECT;
+    bdesc.size = sizeof(record);
+    bdesc.initial_data = record;
+    args = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(args));
+    bdesc.usage = RHI_BUFFER_USAGE_INDEX;
+    bdesc.size = sizeof(indices);
+    bdesc.initial_data = indices;
+    ibuf = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(ibuf));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_index_buffer(cmd, ibuf, 0u, false);
+    rhi_cmd_draw_indexed_indirect(g_dev, args, 0u, 1u, (u32)sizeof(record));
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, args);
+    rhi_buffer_destroy(g_dev, ibuf);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(gpu_timer_roundtrip_smoke) {
+    /* MTLCounterSampleBuffer timestamp pair around a clear-only pass.
+     * Hardware-dependent value: assert create succeeds and the elapsed
+     * query is non-negative and non-crashing after a bounded idle. */
+    RHIGPUTimer *t;
+    RHICmdBuffer *cmd;
+    f64 ms;
+    t = rhi_gpu_timer_create(g_dev);
+    ASSERT_NOT_NULL(t);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_gpu_timer_begin(t);
+    rhi_cmd_begin_render_pass(cmd);
+    rhi_cmd_clear_color(cmd, 0.2f, 0.2f, 0.2f, 1.0f);
+    rhi_cmd_end_render_pass(cmd);
+    rhi_gpu_timer_end(t);
+    end_frame();
+    ASSERT_TRUE(rhi_device_idle(g_dev));
+    ms = rhi_gpu_timer_elapsed_ms(t);
+    ASSERT_TRUE(ms >= 0.0);
+    rhi_gpu_timer_destroy(g_dev, t);
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -824,6 +1061,12 @@ int main(void) {
     RUN_TEST(mrt_clear_color_after_bind_targets_mrt);
     RUN_TEST(r445_pipeline_overrides_sticky_depth_state);
     RUN_TEST(pass_switch_invalidates_bound_pipeline);
+    RUN_TEST(compute_dispatch_writes_indices);
+    RUN_TEST(fill_buffer_pattern_and_clamp_readback);
+    RUN_TEST(screenshot_clear_color_and_post_present_refused);
+    RUN_TEST(draw_indirect_executes_arg_buffer);
+    RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
+    RUN_TEST(gpu_timer_roundtrip_smoke);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);
