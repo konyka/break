@@ -4,8 +4,12 @@
  * window_cocoa.m precedent.
  *
  * Task 3 state: device create/destroy, capabilities and device info are
- * implemented (plus the format-mapping layer in rhi/rhi_metal_format.h);
- * every other entry point logs and fails closed until its family is filled
+ * implemented (plus the format-mapping layer in rhi/rhi_metal_format.h).
+ * Task 4 state: the sticky device-lost latch is wired — every commit goes
+ * through metal_commit (addCompletedHandler status check), and idle/destroy
+ * drain through a bounded (20 s) MTLSharedEvent wait because
+ * waitUntilCompleted has no timeout and hangs forever on a wedged GPU.
+ * Every other entry point logs and fails closed until its family is filled
  * in by the later plan-C tasks. */
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -27,6 +31,7 @@ typedef struct {
     id<MTLSharedEvent> frame_event;
     u64 frame_counter;            /* monotonically increasing; slot = counter % 2 */
     u64 slot_signaled[2];         /* per-slot completed frame value */
+    u64 drain_counter;            /* MTLSharedEvent values for bounded drain waits */
     id<CAMetalDrawable> drawable; /* current acquired drawable, nil between frames */
     bool device_lost_latch;       /* sticky; mirrors rhi_vk.c device-lost semantics */
     bool suspended;               /* iOS host-driven pause: acquire returns BUSY */
@@ -85,6 +90,98 @@ _Static_assert(MTLPixelFormatRGBA16Float != MTLPixelFormatDepth32Float, "overlap
 _Static_assert(MTLPixelFormatRG16Float != MTLPixelFormatR32Float, "overlap");
 _Static_assert(MTLPixelFormatRG16Float != MTLPixelFormatDepth32Float, "overlap");
 _Static_assert(MTLPixelFormatR32Float != MTLPixelFormatDepth32Float, "overlap");
+
+/* ---- Task 4: device-lost detection ----
+ * Metal has no public device-lost notification API, so loss is observed at
+ * (1) every commit's addCompletedHandler status check and (2) the bounded
+ * drain wait below. Once latched, all blocking waits fail fast so callers
+ * wind down (VK R578 / rhi.h:854-858 parity; sticky per spec §4.2). */
+#define RHI_METAL_DRAIN_TIMEOUT_MS 20000ull   /* aligns the VK 20 s rule */
+
+static void metal_note_device_lost(RHIDevice *dev, MetalBackend *mb, const char *where) {
+    if (!mb->device_lost_latch) {
+        mb->device_lost_latch = true;
+        LOG_ERROR("rhi_metal: device lost (%s) — latched; blocking waits now fail fast",
+                  where);
+    }
+    dev->status = RHI_DEVICE_STATUS_LOST;
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+}
+
+/* Latch on MTLCommandBufferStatusError. MTLCommandBufferErrorDeviceRemoved
+ * only surfaces on macOS 13+; older releases report a generic error code —
+ * both latch (fail-closed). */
+static void metal_check_cmd_error(RHIDevice *dev, MetalBackend *mb,
+                                  id<MTLCommandBuffer> cmd, const char *where) {
+    if (cmd.status != MTLCommandBufferStatusError) return;
+    NSError *err = cmd.error;
+    long code = err != nil ? (long)err.code : -1L;
+    if (code == (long)MTLCommandBufferErrorDeviceRemoved) {
+        LOG_ERROR("rhi_metal: command buffer at %s failed with "
+                  "MTLCommandBufferErrorDeviceRemoved", where);
+    } else {
+        LOG_ERROR("rhi_metal: command buffer at %s failed (error code %ld)",
+                  where, code);
+    }
+    metal_note_device_lost(dev, mb, where);
+}
+
+/* Single commit funnel: every submitted command buffer carries a
+ * completedHandler so an asynchronously-reported GPU fault latches the
+ * device lost. Fail-fast when already latched. */
+static RHIResult metal_commit(RHIDevice *dev, id<MTLCommandBuffer> cmd) {
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> finished) {
+        @autoreleasepool {
+            metal_check_cmd_error(dev, mb, finished, "completion");
+        }
+    }];
+    [cmd commit];
+    return RHI_RESULT_OK;
+}
+
+/* Bounded queue drain. waitUntilCompleted has no timeout and hangs forever
+ * on a wedged GPU (Task 3 review handoff), so the wait goes through a
+ * MTLSharedEvent with a 20 s bound — the VK fence-unsignaled rule
+ * (rhi.h:854-858), matching rhi_d3d12_drain_gpu's 20 s fence timeout. On
+ * timeout the device is latched lost and the first report is SYNC_FAILED;
+ * the wrapper upgrades to DEVICE_LOST on subsequent calls via the latch. */
+static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
+    if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    if (mb->queue == nil) return RHI_RESULT_OK;
+    if (mb->frame_event == nil) {
+        mb->frame_event = [mb->device newSharedEvent];
+        if (mb->frame_event == nil) {
+            LOG_ERROR("rhi_metal: newSharedEvent failed");
+            return RHI_RESULT_SYNC_FAILED;
+        }
+    }
+    id<MTLCommandBuffer> drain = [mb->queue commandBuffer];
+    if (drain == nil) {
+        LOG_ERROR("rhi_metal: drain command buffer allocation failed");
+        return RHI_RESULT_SYNC_FAILED;
+    }
+    u64 value = ++mb->drain_counter;
+    [drain encodeSignalEvent:mb->frame_event value:value];
+    RHIResult commit_result = metal_commit(dev, drain);
+    if (commit_result != RHI_RESULT_OK) return commit_result;
+    if (![mb->frame_event waitUntilSignaledValue:value
+                                       timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
+        LOG_ERROR("rhi_metal: shared event unsignaled after %llu ms — "
+                  "treating device as lost",
+                  (unsigned long long)RHI_METAL_DRAIN_TIMEOUT_MS);
+        metal_note_device_lost(dev, mb, "shared-event timeout");
+        return RHI_RESULT_SYNC_FAILED;
+    }
+    metal_check_cmd_error(dev, mb, drain, "drain");
+    if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    /* The buffer already completed (event signaled), so this returns at
+     * once; it also quiesces the completion handler before teardown can
+     * free the backend the handler captures. */
+    [drain waitUntilCompleted];
+    return RHI_RESULT_OK;
+}
 
 struct RHICmdBuffer {
     MetalBackend *backend;
@@ -203,24 +300,19 @@ void rhi_device_destroy(RHIDevice *dev) {
     if (dev == NULL) return;
     MetalBackend *mb = (MetalBackend *)dev->backend_data;
     if (mb != NULL) {
-        /* Drain before releasing any Obj-C handle: committing an empty
-         * command buffer and waiting covers all previously scheduled work on
-         * this queue (frame submission lands in Task 4, so nothing can be in
-         * flight yet, but the drain is the stable teardown contract — cf.
-         * rhi_d3d12_drain_gpu). */
+        /* Drain before releasing any Obj-C handle. The drain is bounded
+         * (20 s shared-event wait, Task 4): a wedged GPU must not hang
+         * teardown — on timeout the device is latched lost and teardown
+         * proceeds. */
         @autoreleasepool {
-            if (mb->queue != nil) {
-                id<MTLCommandBuffer> drain = [mb->queue commandBuffer];
-                [drain commit];
-                [drain waitUntilCompleted];
-            }
+            (void)metal_drain(dev, mb);
         }
-        if (mb->drawable != nil) {   /* nil between frames; retained at acquire (Task 4) */
+        if (mb->drawable != nil) {   /* nil between frames; retained at acquire (Task 5) */
             [mb->drawable release];
             mb->drawable = nil;
         }
         [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
-        [mb->frame_event release];   /* nil until Task 4 */
+        [mb->frame_event release];   /* created lazily by metal_drain */
         [mb->queue release];
         [mb->device release];
         free(mb);
@@ -266,14 +358,34 @@ u32 rhi_frame_index(RHIDevice *dev) {
 }
 
 bool rhi_device_idle(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_device_idle not implemented");
-    (void)dev;
-    return false;
+    MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
+    if (mb == NULL) return false;
+    /* Latched loss (or an injected LOST status): fail fast instead of
+     * blocking on a dead device; the wrapper maps this to DEVICE_LOST. */
+    if (mb->device_lost_latch || dev->status == RHI_DEVICE_STATUS_LOST)
+        return false;
+    /* Diagnostic probe parity with VK (rhi_vk.c rhi_device_idle): a full
+     * drain makes an asynchronously-reported loss observable at the probe
+     * site. Bounded — never hangs on a wedged GPU. */
+    bool idle_ok;
+    @autoreleasepool {
+        idle_ok = metal_drain(dev, mb) == RHI_RESULT_OK;
+    }
+    return idle_ok;
 }
 
 bool rhi_device_lost(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_device_lost not implemented");
-    (void)dev;
+    if (dev == NULL) return false;
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    /* dev->status covers the ENGINE_RHI_TEST injection path; the latch
+     * covers Metal-observed loss. Either is sticky (spec §4.2). */
+    if (dev->status == RHI_DEVICE_STATUS_LOST) return true;
+    if (mb != NULL && mb->device_lost_latch) {
+        /* Sync the wrapper-visible status so the _ex wrappers fail fast
+         * (rhi_d3d12.c rhi_device_lost parity). */
+        dev->status = RHI_DEVICE_STATUS_LOST;
+        return true;
+    }
     return false;
 }
 

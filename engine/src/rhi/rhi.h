@@ -35,8 +35,9 @@ typedef RHIHandle RHIAccelerationStructure;
 typedef enum {
     RHI_BACKEND_OPENGL,
     RHI_BACKEND_VULKAN,
-    /* Declared for selector/ABI stability; rhi_device_create_ex fails closed
-     * with RHI_RESULT_UNSUPPORTED until the Metal backend lands (plan C). */
+    /* Plan C: native Metal backend (engine_rhi_metal) on Apple platforms.
+     * Device family landed in Task 3 (create/caps/info), sticky device-lost
+     * latch in Task 4. */
     RHI_BACKEND_METAL,
     /* Plan D: selectable on WIN32 via engine_rhi_d3d12; real device
      * creation landed in Task 3 (adapter scoring, queues, fence pacing,
