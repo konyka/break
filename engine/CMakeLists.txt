@@ -227,7 +227,8 @@ endif()
 # R433: shaderc ships no CMake package config on several Linux distributions;
 # locate either the shared runtime name or the distro's libshaderc development
 # name instead of linking a bare name (which fails with an unhelpful -l error).
-if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
+   NOT ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
     find_library(SHADERC_LIB NAMES shaderc_shared shaderc)
     find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h)
     if(NOT SHADERC_LIB)
@@ -440,7 +441,24 @@ target_include_directories(engine_rhi_headless PRIVATE
 # direct-source RHI contract tests that link this library.
 target_compile_definitions(engine_rhi_headless PRIVATE ENGINE_RHI_TEST=1)
 
-if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+    enable_language(OBJC)
+    add_library(engine_rhi_metal STATIC src/rhi/rhi_metal.m)
+    target_include_directories(engine_rhi_metal PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+    target_compile_definitions(engine_rhi_metal PRIVATE ENGINE_RHI_BACKEND_METAL=1)
+    # 系统框架头无法满足 -Werror -pedantic；手动引用计数（见 rhi_metal.m 头注）。
+    set_source_files_properties(src/rhi/rhi_metal.m PROPERTIES
+        COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
+    target_link_libraries(engine_rhi_metal PRIVATE
+        "-framework Metal" "-framework QuartzCore" "-framework Foundation")
+    if(ENGINE_PLATFORM STREQUAL "macos")
+        target_link_libraries(engine_rhi_metal PRIVATE "-framework Cocoa")
+    endif()
+endif()
+
+if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
+   NOT ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
     add_library(engine_rhi_vulkan STATIC EXCLUDE_FROM_ALL src/rhi/rhi_vk.c)
     target_include_directories(engine_rhi_vulkan PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
@@ -455,7 +473,9 @@ endif()
 # Link exactly one RHI backend into a consumer executable. Headless
 # contract tests do NOT call this helper; they link engine_rhi_headless.
 function(engine_link_rhi_backend target)
-    if(ENGINE_PLATFORM STREQUAL "macos" OR
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+        target_link_libraries(${target} PRIVATE engine_rhi_metal)
+    elseif(ENGINE_PLATFORM STREQUAL "macos" OR
        ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
@@ -782,7 +802,8 @@ elseif(MYUI_GL_DESKTOP AND WIN32)
 endif()
 
 set(MYUI_VULKAN_ENABLED ${MYUI_VULKAN})
-if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
+   NOT ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
     set(MYUI_VULKAN_ENABLED ON)
 endif()
 if(MYUI_VULKAN_ENABLED)
@@ -1083,11 +1104,18 @@ elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(engine PRIVATE ws2_32 mswsock)
 
 elseif(ENGINE_PLATFORM STREQUAL "macos")
-    # macOS reuses the Vulkan backend via MoltenVK; the window is a Cocoa
-    # NSWindow whose content layer is a CAMetalLayer (Objective-C source).
+    # The window is a Cocoa NSWindow whose content layer is a CAMetalLayer
+    # (Objective-C source), regardless of the selected RHI backend.
     enable_language(OBJC)
-    find_package(Vulkan REQUIRED)
-    target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+        # Native Metal backend: no MoltenVK — neither the Vulkan SDK nor
+        # shaderc is required, and ENGINE_VULKAN stays off.
+        target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_MACOS=1)
+    else()
+        # macOS reuses the Vulkan backend via MoltenVK.
+        find_package(Vulkan REQUIRED)
+        target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_MACOS=1 ENGINE_VULKAN=1)
+    endif()
     target_sources(engine PRIVATE src/platform/window_cocoa.m)
 
     # Cocoa/QuartzCore headers cannot satisfy the engine's -Werror -pedantic.
@@ -1162,9 +1190,11 @@ if(ENGINE_PLATFORM STREQUAL "linux")
 elseif(ENGINE_PLATFORM STREQUAL "windows")
     target_link_libraries(engine_rhi_opengl PRIVATE opengl32)
 elseif(ENGINE_PLATFORM STREQUAL "macos")
-    target_link_libraries(engine_rhi_vulkan PRIVATE
-        "-framework Cocoa" "-framework QuartzCore" "-framework Metal"
-        "-framework IOKit")
+    if(TARGET engine_rhi_vulkan)
+        target_link_libraries(engine_rhi_vulkan PRIVATE
+            "-framework Cocoa" "-framework QuartzCore" "-framework Metal"
+            "-framework IOKit")
+    endif()
 elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
        ENGINE_PLATFORM STREQUAL "harmonyos")
     if(TARGET engine_rhi_vulkan)
@@ -2334,6 +2364,11 @@ endif()
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
+    add_test(NAME test_rhi_metal_ownership
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_metal_ownership.cmake)
+    set_tests_properties(test_rhi_metal_ownership PROPERTIES LABELS "headless;platform_contract")
     add_test(NAME test_platform_vk_surface_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c

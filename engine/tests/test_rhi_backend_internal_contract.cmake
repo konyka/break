@@ -144,7 +144,8 @@ string(FIND "${engine_block}" "src/renderer/rt_trace.c" engine_rt_trace_offset)
 if(engine_rt_trace_offset EQUAL -1)
     message(FATAL_ERROR "engine source ownership missing: src/renderer/rt_trace.c")
 endif()
-foreach(backend_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c")
+foreach(backend_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c"
+        "src/rhi/rhi_metal.m")
     string(FIND "${engine_block}" "${backend_source}" engine_backend_offset)
     if(NOT engine_backend_offset EQUAL -1)
         message(FATAL_ERROR "engine must not own a backend source: ${backend_source}")
@@ -155,7 +156,8 @@ endforeach()
 foreach(backend_spec
         "engine_rhi_opengl|src/rhi/rhi_gl.c"
         "engine_rhi_vulkan|src/rhi/rhi_vk.c"
-        "engine_rhi_headless|src/rhi/rhi_headless.c")
+        "engine_rhi_headless|src/rhi/rhi_headless.c"
+        "engine_rhi_metal|src/rhi/rhi_metal.m")
     string(REPLACE "|" ";" backend_parts "${backend_spec}")
     list(GET backend_parts 0 backend_target)
     list(GET backend_parts 1 backend_source)
@@ -169,7 +171,8 @@ foreach(backend_spec
         message(FATAL_ERROR
             "RHI backend library does not own its source: ${backend_target} ${backend_source}")
     endif()
-    foreach(other_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c")
+    foreach(other_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c"
+            "src/rhi/rhi_metal.m")
         if(NOT other_source STREQUAL backend_source)
             string(FIND "${backend_block}" "${other_source}" other_offset)
             if(NOT other_offset EQUAL -1)
@@ -276,7 +279,8 @@ foreach(linked_target
         "target_link_libraries(${linked_target}" link_block)
     if(link_block)
         set(backend_link_count 0)
-        foreach(backend_lib engine_rhi_opengl engine_rhi_vulkan engine_rhi_headless)
+        foreach(backend_lib engine_rhi_opengl engine_rhi_vulkan engine_rhi_headless
+                engine_rhi_metal)
             string(FIND "${link_block}" "${backend_lib}" backend_lib_offset)
             if(NOT backend_lib_offset EQUAL -1)
                 math(EXPR backend_link_count "${backend_link_count} + 1")
@@ -289,9 +293,9 @@ foreach(linked_target
     endif()
 endforeach()
 
-# Future backends stay out of the build graph until plans C/D.
+# Unlanded backends stay out of the build graph until their plan lands.
+# Metal (plan C) is admitted; D3D12 remains future work (plan D).
 foreach(future_backend_token
-        "rhi_metal.c" "ENGINE_RHI_BACKEND_METAL"
         "ENGINE_RHI_BACKEND_D3D12")
     string(FIND "${engine_cmake_text}" "${future_backend_token}" future_backend_offset)
     if(NOT future_backend_offset EQUAL -1)
