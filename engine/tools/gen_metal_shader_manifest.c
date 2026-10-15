@@ -1,27 +1,21 @@
 /* Plan C Task 10: manifest generator for the offline Metal shader pipeline.
  *
  * Reads <manifest.lines> (rows: "<glsl_basename> <msl_entry>") produced by
- * compile_metal_shaders.sh, hashes each original GLSL file with FNV-1a 64
- * (the same function the Metal backend applies to the renderer's in-memory
- * source text at rhi_shader_create time), and embeds each generated MSL
- * file as a C string (the runtime fallback when engine.metallib is
- * missing; a release build can compile the output with
- * RHI_METAL_SHADER_NO_EMBEDDED_MSL to drop the text).
+ * compile_metal_shaders.sh, hashes each original GLSL file with
+ * rhi_metal_fnv1a64 (rhi_metal_format.h — the SINGLE definition shared by
+ * this generator, the Metal runtime, and the contract tests, so the hash
+ * contract cannot drift), and embeds each generated MSL file as a C string
+ * (the runtime fallback when engine.metallib is missing; a release build
+ * can compile the output with RHI_METAL_SHADER_NO_EMBEDDED_MSL to drop the
+ * text).
  *
  * Usage: gen_metal_shader_manifest <shader_dir> <msl_dir> <manifest.lines> <out.c>
  */
+#include <rhi/rhi_metal_format.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static unsigned long long fnv1a64(const unsigned char *p, size_t len) {
-    unsigned long long h = 0xcbf29ce484222325ull;
-    while (len-- > 0u) {
-        h ^= (unsigned long long)*p++;
-        h *= 0x100000001b3ull;
-    }
-    return h;
-}
 
 static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
@@ -108,7 +102,7 @@ int main(int argc, char **argv) {
         char base[256], entry[256], path[1024];
         size_t len = 0u;
         char *src;
-        unsigned long long h;
+        u64 h;
         if (sscanf(line, "%255s %255s", base, entry) != 2) continue;
         if (snprintf(path, sizeof(path), "%s/%s", argv[1], base) >=
             (int)sizeof(path)) {
@@ -122,9 +116,40 @@ int main(int argc, char **argv) {
             fclose(lf); fclose(out);
             return 1;
         }
-        h = fnv1a64((const unsigned char *)src, len);
+        h = rhi_metal_fnv1a64(src, len);
         free(src);
-        fprintf(out, "    { 0x%016llxull, \"%s\" },\n", h, entry);
+        /* M3: duplicate hashes are benign only when the files are
+         * byte-identical (two such pairs exist in the corpus today); warn
+         * loudly so a future non-equivalent collision cannot pass silently. */
+        {
+            static char (*seen_names)[256];
+            static u64 *seen;
+            static unsigned seen_count;
+            unsigned k;
+            for (k = 0u; k < seen_count; ++k) {
+                if (seen[k] == h) {
+                    fprintf(stderr,
+                            "gen_metal_shader_manifest: WARNING duplicate hash "
+                            "0x%016llx: %s vs %s (ok only if byte-identical)\n",
+                            (unsigned long long)h, seen_names[k], entry);
+                }
+            }
+            seen = (u64 *)realloc(seen, (seen_count + 1u) * sizeof(*seen));
+            seen_names = (char (*)[256])realloc(seen_names,
+                                                (seen_count + 1u) *
+                                                    sizeof(*seen_names));
+            if (seen == NULL || seen_names == NULL) {
+                fprintf(stderr, "gen_metal_shader_manifest: out of memory\n");
+                fclose(lf); fclose(out);
+                return 1;
+            }
+            seen[seen_count] = h;
+            snprintf(seen_names[seen_count], sizeof(seen_names[0]), "%s",
+                     entry);
+            ++seen_count;
+        }
+        fprintf(out, "    { 0x%016llxull, \"%s\" },\n",
+                (unsigned long long)h, entry);
         ++count;
     }
     fputs("};\n\n"

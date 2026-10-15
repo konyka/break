@@ -3,6 +3,7 @@
 # CMake wiring, and the shared FNV/manifest types all exist with the pinned
 # contract tokens. Run:
 #   cmake -DREPO_ROOT=<repo> -P engine/tests/test_metal_shader_pipeline.cmake
+cmake_policy(SET CMP0054 NEW)
 if(NOT DEFINED REPO_ROOT)
     message(FATAL_ERROR "REPO_ROOT is required")
 endif()
@@ -35,16 +36,19 @@ expect_file_contains("${script}" "metallib")
 # Resource remap: binding flattening must be explicit, never silent.
 expect_file_contains("${script}" "--msl-decoration-binding")
 
-# 2. Manifest generator: FNV-1a 64 + static table output.
+# 2. Manifest generator: shares the header's FNV-1a 64 (no private copy)
+# and emits the static table.
 set(gen "${REPO_ROOT}/engine/tools/gen_metal_shader_manifest.c")
-expect_file_contains("${gen}" "0xcbf29ce484222325")
-expect_file_contains("${gen}" "0x100000001b3")
+expect_file_contains("${gen}" "rhi/rhi_metal_format.h")
+expect_file_contains("${gen}" "rhi_metal_fnv1a64")
 expect_file_contains("${gen}" "rhi_metal_shader_manifest")
 
-# 3. Shared types in the format header.
+# 3. Shared types + the single FNV definition in the format header.
 set(hdr "${REPO_ROOT}/engine/src/rhi/rhi_metal_format.h")
 expect_file_contains("${hdr}" "RHIMetalShaderManifestEntry")
 expect_file_contains("${hdr}" "rhi_metal_fnv1a64")
+expect_file_contains("${hdr}" "0xcbf29ce484222325")
+expect_file_contains("${hdr}" "0x100000001b3")
 
 # 4. CMake wiring: tools locked, custom command, target chain, manifest
 # compiled into the backend library, metallib copied beside consumers.

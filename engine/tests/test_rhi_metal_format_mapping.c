@@ -45,8 +45,10 @@ TEST(fnv1a64_known_vectors) {
 #ifdef ENGINE_METAL_SHADER_MSL_DIR
 /* GLSL <-> MSL reflection consistency for three representative shaders
  * (UBO at set 1 / set-0 sampler2D + set-1 samplerBuffer collision case /
- * compute with storage image + push constants). Contract: MSL index =
- * GLSL set*16+binding; push constants sit at [[buffer(30)]]. spirv-cross
+ * compute with storage image + push constants). Contract (per namespace):
+ * combined samplers drive texture+sampler at set*4+binding; samplerBuffer /
+ * image textures at set*16+binding; uniform/storage blocks at set*8+binding;
+ * push constants sit at [[buffer(29)]]. spirv-cross
  * strips resources the shader never references, so the set check is
  * "every observed MSL index is explainable by a GLSL binding" plus
  * name-anchored spot checks on resources proven live. */
@@ -146,7 +148,7 @@ static void check_one_shader(const char *glsl_name, const char *msl_name) {
         /* The flattening contract (compile_metal_shaders.sh): combined
          * samplers drive texture+sampler at set*4+binding; samplerBuffer /
          * image textures use set*16+binding; uniform/storage blocks use
-         * set*8+binding; push constants sit at buffer(30). */
+         * set*8+binding; push constants sit at buffer(29). */
         const ShaderIOBinding *bd = &bindings[i];
         u32 flat4 = bd->set * 4u + bd->binding;
         u32 flat8 = bd->set * 8u + bd->binding;

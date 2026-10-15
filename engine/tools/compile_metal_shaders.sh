@@ -55,6 +55,12 @@ flatten_glsl() {
             if (mult > 0 && match(line, /binding[ \t]*=[ \t]*[0-9]+/)) {
                 seg = substr(line, RSTART, RLENGTH)
                 b = seg; gsub(/[^0-9]/, "", b); nb = s * mult + b
+                if (mult == 8 && nb > 28) {
+                    # M5: 29 is the push-constant slot, 30/31 belong to the
+                    # toolchain — a future set3 binding>=5 must fail loudly.
+                    print "flatten: buffer index " nb " out of range in " FILENAME > "/dev/stderr"
+                    exit 1
+                }
                 sub(/[0-9]+/, nb, seg)
                 line = substr(line, 1, RSTART - 1) seg substr(line, RSTART + RLENGTH)
             }
