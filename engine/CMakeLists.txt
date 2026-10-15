@@ -358,6 +358,13 @@ if(SHADERC_INCLUDE_DIR)
     # even though the header and cache value were verified present.
     target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
 endif()
+if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
+    # rt_trace.c compiles <vulkan/vulkan.h> into the engine target under
+    # ENGINE_VULKAN; brew's vulkan-headers keg is not on the default
+    # macOS search path (Linux gets /usr/include via libvulkan-dev), so
+    # the include dir must reach the engine target explicitly.
+    target_include_directories(engine PRIVATE ${Vulkan_INCLUDE_DIRS})
+endif()
 
 include(CTest)
 if(ENGINE_BUILD_TESTS)
