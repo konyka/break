@@ -51,6 +51,7 @@ typedef enum {
 
 typedef struct {
     RHIAccelerationStructureType type;
+    /* storage_size=0 = 后端延迟定尺寸（backend 内部决定） */
     usize storage_size;
 } RHIAccelerationStructureDesc;
 
