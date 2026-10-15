@@ -7,6 +7,14 @@
 #include <string.h>
 
 _Thread_local RHIDevice *g_current_device = NULL;
+/* Pre-seeded to ERROR before each backend rhi_device_create call; the
+ * backend may downgrade to UNAVAILABLE via rhi_backend_note_create_result
+ * (e.g. D3D12 with no hardware adapter). */
+static _Thread_local RHIResult g_backend_create_result = RHI_RESULT_ERROR;
+
+void rhi_backend_note_create_result(RHIResult result) {
+    g_backend_create_result = result;
+}
 #ifdef ENGINE_RHI_TEST
 static _Thread_local RHIDevice *g_test_lifecycle_device;
 static _Thread_local RHIResult g_test_lifecycle_result = RHI_RESULT_OK;
@@ -53,11 +61,21 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
                                 RHIResult *out_result) {
     if (out_result != NULL) *out_result = RHI_RESULT_OK;
     if (backend == RHI_BACKEND_D3D12) {
-        /* Plan D Task 2 skeleton: d3d12 is selectable on WIN32 but device
-         * creation lands in Task 3; fail closed as UNAVAILABLE (not
-         * UNSUPPORTED) so callers can distinguish "not yet" from "never". */
-        if (out_result != NULL) *out_result = RHI_RESULT_UNAVAILABLE;
-        return NULL;
+        /* Plan D Task 3: pass through to engine_rhi_d3d12. D3D12 needs a
+         * native HWND (window_native); display_native is unused on Win32.
+         * Argument faults are INVALID_ARGUMENT; once the backend runs,
+         * adapter-absent maps to UNAVAILABLE and any other init failure to
+         * ERROR (reported via rhi_backend_note_create_result). */
+        RHIDevice *dev;
+        if (!rhi_drawable_dimensions_valid(w, h) || window_native == NULL) {
+            if (out_result != NULL) *out_result = RHI_RESULT_INVALID_ARGUMENT;
+            return NULL;
+        }
+        g_backend_create_result = RHI_RESULT_ERROR;
+        dev = rhi_device_create(backend, window_native, display_native, w, h);
+        if (dev == NULL && out_result != NULL)
+            *out_result = g_backend_create_result;
+        return dev;
     }
     if (backend != RHI_BACKEND_OPENGL && backend != RHI_BACKEND_VULKAN) {
         if (out_result != NULL) *out_result = RHI_RESULT_UNSUPPORTED;

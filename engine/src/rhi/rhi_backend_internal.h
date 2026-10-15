@@ -71,4 +71,11 @@ void rhi_device_control_release(RHIDevice *dev);
 void rhi_frame_owner_clear_preclaims(RHIDevice *dev);
 void rhi_device_set_lifecycle_result(RHIDevice *dev, RHIResult result);
 
+/* Backend-reported create failure family: a backend calls this before
+ * returning NULL from rhi_device_create so rhi_device_create_ex can map
+ * adapter-absent (UNAVAILABLE) vs generic init failure (ERROR) without a
+ * cross-library ABI change. rhi.c pre-seeds ERROR before each call, so a
+ * silent backend still fails closed as ERROR. */
+void rhi_backend_note_create_result(RHIResult result);
+
 #endif

@@ -39,4 +39,24 @@ if(EXISTS "${_dll}")
         message(FATAL_ERROR "D3D12AgilitySDK.dll hash mismatch: ${_actual}")
     endif()
 endif()
-message(STATUS "D3D12 SDK lock: winsdk=${_winsdk} agility=${_agility} hashes=ok")
+# Task 3 handoff gate: the Agility SDK export baked into the backend must
+# equal the locked package version (agility=1.<SDK>.<rev> -> SDK version
+# <SDK>). Without this, D3D12SDKVersion could drift from the hash-locked
+# D3D12Core.dll and silently bind a different runtime.
+if(NOT _agility MATCHES "^1\\.([0-9]+)\\.[0-9]+$")
+    message(FATAL_ERROR "agility pin unparsable: '${_agility}'")
+endif()
+set(_expected_sdk_version "${CMAKE_MATCH_1}")
+set(_backend_src "${CMAKE_CURRENT_LIST_DIR}/../src/rhi/rhi_d3d12.c")
+file(READ "${_backend_src}" _backend_text)
+if(NOT _backend_text MATCHES "D3D12SDKVersion = ([0-9]+)u")
+    message(FATAL_ERROR "D3D12SDKVersion export missing in ${_backend_src}")
+endif()
+if(NOT CMAKE_MATCH_1 STREQUAL _expected_sdk_version)
+    message(FATAL_ERROR
+        "D3D12SDKVersion drift: export=${CMAKE_MATCH_1} lock=${_expected_sdk_version}")
+endif()
+if(NOT _backend_text MATCHES "D3D12SDKPath")
+    message(FATAL_ERROR "D3D12SDKPath export missing in ${_backend_src}")
+endif()
+message(STATUS "D3D12 SDK lock: winsdk=${_winsdk} agility=${_agility} sdk_version=${_expected_sdk_version} hashes=ok")

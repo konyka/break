@@ -4,6 +4,11 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 #include <d3d12.h>
+
+/* Route d3d12.dll to the side-by-side Agility SDK deployed next to the
+ * executable (Task 1 lock: version 1.616.0 -> SDK version 616). */
+__declspec(dllexport) const UINT D3D12SDKVersion = 616u;
+__declspec(dllexport) const char *D3D12SDKPath = ".\\";
 #endif
 
 #include <rhi/rhi_d3d12.h>
@@ -12,10 +17,15 @@
 
 #include <rhi/rhi.h>
 #include <rhi/rhi_native_vulkan.h>
+#include <rhi/rhi_backend_internal.h>
+#include <core/log.h>
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
+
+#define RHI_D3D12_FENCE_TIMEOUT_MS 20000u
 
 static void rhi_d3d12_release(IUnknown **object) {
     if (*object != NULL) {
@@ -44,9 +54,16 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
         rhi_d3d12_release((IUnknown **)&context->command_lists[i]);
         rhi_d3d12_release((IUnknown **)&context->allocators[i]);
     }
-    rhi_d3d12_release((IUnknown **)&context->queue);
+    rhi_d3d12_release((IUnknown **)&context->copy_queue);
+    rhi_d3d12_release((IUnknown **)&context->compute_queue);
+    rhi_d3d12_release((IUnknown **)&context->direct_queue);
     rhi_d3d12_release((IUnknown **)&context->device);
     rhi_d3d12_release((IUnknown **)&context->adapter);
+    rhi_d3d12_release((IUnknown **)&context->factory);
+    context->frame_fence[0] = 0u;
+    context->frame_fence[1] = 0u;
+    context->frame_parity = 0u;
+    context->acquire_in_flight = 0u;
     context->rtv_increment = 0u;
     context->dsv_increment = 0u;
     context->cbv_srv_uav_increment = 0u;
@@ -54,38 +71,129 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
     context->completed_fence = 0u;
     context->descriptor_retire_fence = 0u;
     context->descriptor_live = 0u;
+    context->device_lost = 0u;
+    context->removed_reason = S_OK;
+    context->dred_enabled = 0u;
 }
 
-static HRESULT rhi_d3d12_select_adapter(RHI_D3D12Context *context) {
-    IDXGIFactory6 *factory = NULL;
-    IDXGIAdapter1 *candidate = NULL;
-    DXGI_ADAPTER_DESC1 description;
-    HRESULT hr;
+/* Adapter enumeration with scoring: high-performance preference, software
+ * adapters skipped, WARP only under an explicit env var so production never
+ * silently degrades. Picks the hardware adapter with the most dedicated
+ * VRAM that can actually create a FL12 device. */
+static HRESULT rhi_d3d12_pick_adapter(IDXGIFactory6 *factory, IDXGIAdapter1 **out) {
+    IDXGIAdapter1 *best = NULL;
+    SIZE_T best_memory = 0;
     UINT index = 0u;
-
-    hr = CreateDXGIFactory1(&IID_IDXGIFactory6, (void **)&factory);
-    if (FAILED(hr)) return hr;
+    if (getenv("ENGINE_D3D12_WARP") != NULL) {
+        IDXGIAdapter *warp = NULL;
+        HRESULT hr = IDXGIFactory4_EnumWarpAdapter(factory, &IID_IDXGIAdapter, (void **)&warp);
+        if (SUCCEEDED(hr)) { *out = (IDXGIAdapter1 *)warp; return S_OK; }
+        return hr;
+    }
     for (;;) {
-        hr = IDXGIFactory6_EnumAdapterByGpuPreference(
+        IDXGIAdapter1 *candidate = NULL;
+        DXGI_ADAPTER_DESC1 desc;
+        HRESULT hr = IDXGIFactory6_EnumAdapterByGpuPreference(
             factory, index++, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
             &IID_IDXGIAdapter1, (void **)&candidate);
         if (hr == DXGI_ERROR_NOT_FOUND) break;
         if (FAILED(hr)) break;
-        hr = IDXGIAdapter1_GetDesc1(candidate, &description);
-        if (SUCCEEDED(hr) && (description.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0u) {
-            hr = D3D12CreateDevice((IUnknown *)candidate, D3D_FEATURE_LEVEL_11_0,
-                                   &IID_ID3D12Device, NULL);
-            if (SUCCEEDED(hr)) {
-                context->adapter = candidate;
-                candidate = NULL;
-                break;
-            }
+        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(candidate, &desc)) &&
+            (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) == 0u &&
+            SUCCEEDED(D3D12CreateDevice((IUnknown *)candidate, D3D_FEATURE_LEVEL_12_0,
+                                        &IID_ID3D12Device, NULL)) &&
+            (best == NULL || desc.DedicatedVideoMemory > best_memory)) {
+            if (best != NULL) IDXGIAdapter1_Release(best);
+            best = candidate; best_memory = desc.DedicatedVideoMemory; candidate = NULL;
         }
-        rhi_d3d12_release((IUnknown **)&candidate);
+        if (candidate != NULL) IDXGIAdapter1_Release(candidate);
     }
-    rhi_d3d12_release((IUnknown **)&candidate);
-    rhi_d3d12_release((IUnknown **)&factory);
-    return context->adapter != NULL ? S_OK : (FAILED(hr) ? hr : DXGI_ERROR_NOT_FOUND);
+    if (best == NULL) return DXGI_ERROR_NOT_FOUND;
+    *out = best;
+    return S_OK;
+}
+
+static HRESULT rhi_d3d12_select_adapter(RHI_D3D12Context *context) {
+    /* CreateDXGIFactory2 with flags=0; the debug flag is Task 8's knob. */
+    HRESULT hr = CreateDXGIFactory2(0u, &IID_IDXGIFactory6,
+                                    (void **)&context->factory);
+    if (FAILED(hr)) return hr;
+    return rhi_d3d12_pick_adapter(context->factory, &context->adapter);
+}
+
+/* DRED 1.x: force-enable auto breadcrumbs + page faults before device
+ * creation so a later device removal has postmortem data to dump. */
+static void rhi_d3d12_dred_enable(RHI_D3D12Context *context) {
+    ID3D12DeviceRemovedExtendedDataSettings *settings = NULL;
+    if (FAILED(D3D12GetDebugInterface(
+            &IID_ID3D12DeviceRemovedExtendedDataSettings, (void **)&settings)))
+        return;
+    ID3D12DeviceRemovedExtendedDataSettings_SetAutoBreadcrumbsEnablement(
+        settings, D3D12_DRED_ENABLEMENT_FORCED_ON);
+    ID3D12DeviceRemovedExtendedDataSettings_SetPageFaultEnablement(
+        settings, D3D12_DRED_ENABLEMENT_FORCED_ON);
+    ID3D12DeviceRemovedExtendedDataSettings_Release(settings);
+    context->dred_enabled = 1u;
+}
+
+static void rhi_d3d12_dred_dump(RHI_D3D12Context *ctx) {
+    ID3D12DeviceRemovedExtendedData1 *dred = NULL;
+    D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs;
+    if (!ctx->dred_enabled) return;
+    if (FAILED(ID3D12Device_QueryInterface(ctx->device,
+            &IID_ID3D12DeviceRemovedExtendedData1, (void **)&dred))) return;
+    if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_GetAutoBreadcrumbsOutput1(dred, &crumbs))) {
+        const D3D12_AUTO_BREADCRUMB_NODE1 *node = crumbs.pHeadAutoBreadcrumbNode;
+        while (node != NULL) {
+            LOG_ERROR("DRED node: cmdlist=%S last_op=%u",
+                      node->pCommandListDebugNameW ? node->pCommandListDebugNameW : L"(unnamed)",
+                      (unsigned)(node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u));
+            node = node->pNext;
+        }
+    }
+    ID3D12DeviceRemovedExtendedData1_Release(dred);
+}
+
+static RHIResult rhi_d3d12_note_device_lost(RHI_D3D12Context *ctx) {
+    if (!ctx->device_lost) {
+        ctx->removed_reason = ID3D12Device_GetDeviceRemovedReason(ctx->device);
+        LOG_ERROR("D3D12 device removed: 0x%08lx", (unsigned long)ctx->removed_reason);
+        rhi_d3d12_dred_dump(ctx);
+        ctx->device_lost = 1u;
+    }
+    return RHI_RESULT_DEVICE_LOST;
+}
+
+static RHIResult rhi_d3d12_wait_frame_slot(RHI_D3D12Context *ctx, UINT slot) {
+    UINT64 target;
+    HRESULT hr;
+    if (ctx->device_lost) return RHI_RESULT_DEVICE_LOST;
+    target = ctx->frame_fence[slot];
+    if (target == 0u || ID3D12Fence_GetCompletedValue(ctx->fence) >= target)
+        return RHI_RESULT_OK;
+    hr = ID3D12Fence_SetEventOnCompletion(ctx->fence, target, ctx->fence_event);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) return rhi_d3d12_note_device_lost(ctx);
+    if (FAILED(hr)) return RHI_RESULT_SYNC_FAILED;
+    if (WaitForSingleObject(ctx->fence_event, RHI_D3D12_FENCE_TIMEOUT_MS) != WAIT_OBJECT_0) {
+        /* A fence unsignaled for 20 s mirrors the VK sticky-loss rule
+         * (rhi.h:854-858): latch lost so callers wind down. */
+        return rhi_d3d12_note_device_lost(ctx);
+    }
+    ctx->completed_fence = target;
+    return RHI_RESULT_OK;
+}
+
+/* Task 7 consumes this via capabilities.feature_bits; the DXR probe itself
+ * lives here so device creation already reports an honest feature set. */
+static u32 rhi_d3d12_probe_feature_bits(const RHI_D3D12Context *ctx) {
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5;
+    ZeroMemory(&options5, sizeof(options5));
+    if (SUCCEEDED(ID3D12Device_CheckFeatureSupport(
+            ctx->device, D3D12_FEATURE_D3D12_OPTIONS5, &options5,
+            (UINT)sizeof(options5))) &&
+        options5.RaytracingTier != D3D12_RAYTRACING_TIER_NOT_SUPPORTED)
+        return RHI_FEATURE_ACCELERATION_STRUCTURE;
+    return 0u;
 }
 
 HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
@@ -107,8 +215,16 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
         hr = E_FAIL;
         goto fail;
     }
-    hr = D3D12CreateDevice((IUnknown *)context->adapter, D3D_FEATURE_LEVEL_11_0,
+    rhi_d3d12_dred_enable(context);
+    hr = D3D12CreateDevice((IUnknown *)context->adapter, D3D_FEATURE_LEVEL_12_0,
                            &IID_ID3D12Device, (void **)&context->device);
+    if (FAILED(hr)) {
+        /* FL12 probe passed during scoring; a 12_0 failure here is
+         * unexpected, but keep the 11_0 fallback for parity with the
+         * original probe path. */
+        hr = D3D12CreateDevice((IUnknown *)context->adapter, D3D_FEATURE_LEVEL_11_0,
+                               &IID_ID3D12Device, (void **)&context->device);
+    }
     if (FAILED(hr)) goto fail;
     ZeroMemory(&queue_desc, sizeof(queue_desc));
     queue_desc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
@@ -118,7 +234,17 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
     }
     hr = ID3D12Device_CreateCommandQueue(context->device, &queue_desc,
                                          &IID_ID3D12CommandQueue,
-                                         (void **)&context->queue);
+                                         (void **)&context->direct_queue);
+    if (FAILED(hr)) goto fail;
+    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+    hr = ID3D12Device_CreateCommandQueue(context->device, &queue_desc,
+                                         &IID_ID3D12CommandQueue,
+                                         (void **)&context->compute_queue);
+    if (FAILED(hr)) goto fail;
+    queue_desc.Type = D3D12_COMMAND_LIST_TYPE_COPY;
+    hr = ID3D12Device_CreateCommandQueue(context->device, &queue_desc,
+                                         &IID_ID3D12CommandQueue,
+                                         (void **)&context->copy_queue);
     if (FAILED(hr)) goto fail;
     for (i = 0u; i < 2u; ++i) {
         if (rhi_d3d12_should_fail(context, RHI_D3D12_FAIL_ALLOCATOR)) {
@@ -228,7 +354,7 @@ HRESULT rhi_d3d12_descriptor_retire(RHI_D3D12Context *context) {
         return E_INVALIDARG;
     if (context->next_fence == UINT64_MAX) return E_FAIL;
     context->descriptor_retire_fence = context->next_fence++;
-    return ID3D12CommandQueue_Signal(context->queue, context->fence,
+    return ID3D12CommandQueue_Signal(context->direct_queue, context->fence,
                                      context->descriptor_retire_fence);
 }
 
@@ -292,52 +418,159 @@ HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
     ID3D12CommandList *lists[1];
     HRESULT hr;
     UINT64 value;
-    if (context == NULL || context->queue == NULL || context->fence == NULL ||
+    if (context == NULL || context->direct_queue == NULL || context->fence == NULL ||
         out_fence == NULL || allocator_index >= 2u) return E_INVALIDARG;
     hr = ID3D12GraphicsCommandList_Close(context->command_lists[allocator_index]);
     if (FAILED(hr)) return hr;
     lists[0] = (ID3D12CommandList *)context->command_lists[allocator_index];
-    ID3D12CommandQueue_ExecuteCommandLists(context->queue, 1u, lists);
+    ID3D12CommandQueue_ExecuteCommandLists(context->direct_queue, 1u, lists);
     value = context->next_fence++;
-    hr = ID3D12CommandQueue_Signal(context->queue, context->fence, value);
+    hr = ID3D12CommandQueue_Signal(context->direct_queue, context->fence, value);
     if (FAILED(hr)) return hr;
     *out_fence = value;
     return S_OK;
 }
 
-/* ---- engine_rhi_d3d12 fail-closed skeleton (plan D Task 2) ----
- * Same discipline as engine_rhi_headless: every rhi_* entry point refuses
- * work until Task 3 lands the real device/swapchain implementation on top of
- * the rhi_d3d12_* primitives above. The dispatcher-level _ex wrappers live in
- * rhi.c (engine) and are NOT redefined here; rhi_device_create_ex gates
- * RHI_BACKEND_D3D12 to NULL + RHI_RESULT_UNAVAILABLE before reaching us. */
+/* ---- engine_rhi_d3d12 device lifecycle (plan D Task 3) ----
+ * Real device/queue/fence init on top of the rhi_d3d12_* primitives above.
+ * The dispatcher-level _ex wrappers live in rhi.c (engine) and pass
+ * RHI_BACKEND_D3D12 straight through to rhi_device_create here; create
+ * failures are classified via rhi_backend_note_create_result (spec §4.2).
+ * Swapchain/present and frame submission land in Task 4; until then
+ * frame_begin stays NULL and frame pacing only services idle/drain. */
 
 /* ---- device lifecycle ---- */
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
                              void *display_native, u32 w, u32 h) {
-    (void)backend; (void)window_native; (void)display_native; (void)w; (void)h;
-    return NULL;
+    RHI_D3D12Context *ctx;
+    RHIDevice *dev;
+    HRESULT hr;
+    (void)display_native;
+    if (backend != RHI_BACKEND_D3D12 || window_native == NULL ||
+        !rhi_drawable_dimensions_valid(w, h)) {
+        rhi_backend_note_create_result(RHI_RESULT_INVALID_ARGUMENT);
+        return NULL;
+    }
+    ctx = (RHI_D3D12Context *)calloc(1u, sizeof(*ctx));
+    if (ctx == NULL) {
+        rhi_backend_note_create_result(RHI_RESULT_ERROR);
+        return NULL;
+    }
+    hr = rhi_d3d12_context_create(ctx, RHI_D3D12_FAIL_NONE);
+    if (FAILED(hr)) {
+        /* No hardware adapter -> UNAVAILABLE; anything else is a genuine
+         * init failure -> ERROR (spec §4.2). Never fabricate success. */
+        rhi_backend_note_create_result(hr == DXGI_ERROR_NOT_FOUND ?
+                                       RHI_RESULT_UNAVAILABLE : RHI_RESULT_ERROR);
+        free(ctx);
+        return NULL;
+    }
+    dev = (RHIDevice *)calloc(1u, sizeof(*dev));
+    if (dev == NULL) {
+        rhi_d3d12_context_destroy(ctx);
+        free(ctx);
+        rhi_backend_note_create_result(RHI_RESULT_ERROR);
+        return NULL;
+    }
+    rhi_init_freelist(dev);
+    dev->backend_data = ctx;
+    dev->width = w;
+    dev->height = h;
+    dev->status = RHI_DEVICE_STATUS_READY;
+    dev->capabilities.backend = RHI_BACKEND_D3D12;
+    dev->capabilities.color_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.depth_sample_counts = rhi_sample_count_bit(1u);
+    dev->capabilities.surface_sample_count = 1u;
+    dev->capabilities.color_resolve_supported = true;
+    dev->capabilities.scissor_supported = true;
+    dev->capabilities.present_damage_supported = true;
+    dev->capabilities.present_buffer_age_supported = true;
+    dev->capabilities.feature_bits = rhi_d3d12_probe_feature_bits(ctx);
+    g_current_device = dev;
+    return dev;
 }
-void rhi_device_destroy(RHIDevice *dev) { (void)dev; }
+void rhi_device_destroy(RHIDevice *dev) {
+    RHI_D3D12Context *ctx;
+    if (dev == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx != NULL) {
+        rhi_d3d12_context_destroy(ctx);
+        free(ctx);
+        dev->backend_data = NULL;
+    }
+    if (g_current_device == dev) g_current_device = NULL;
+    free(dev);
+}
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
-    (void)dev; (void)w; (void)h;
+    /* Swapchain resize lands in Task 4; track the drawable size only. */
+    if (dev == NULL) return;
+    dev->width = w;
+    dev->height = h;
 }
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) { (void)dev; return NULL; }
 void rhi_frame_end(RHIDevice *dev) { (void)dev; }
 void rhi_present(RHIDevice *dev) { (void)dev; }
 void rhi_set_vsync(RHIDevice *dev, bool enabled) { (void)dev; (void)enabled; }
-u32 rhi_frame_index(RHIDevice *dev) { (void)dev; return 0u; }
-bool rhi_device_idle(RHIDevice *dev) { (void)dev; return false; }
-/* Fail closed: a live device handle on the skeleton backend is a bug;
- * reporting lost forces callers to wind down instead of spinning. */
-bool rhi_device_lost(RHIDevice *dev) { (void)dev; return true; }
+u32 rhi_frame_index(RHIDevice *dev) {
+    RHI_D3D12Context *ctx =
+        dev != NULL ? (RHI_D3D12Context *)dev->backend_data : NULL;
+    return ctx != NULL ? (ctx->frame_parity & 1u) : 0u;
+}
+bool rhi_device_idle(RHIDevice *dev) {
+    RHI_D3D12Context *ctx =
+        dev != NULL ? (RHI_D3D12Context *)dev->backend_data : NULL;
+    UINT slot;
+    if (ctx == NULL || ctx->device_lost) return false;
+    for (slot = 0u; slot < 2u; ++slot) {
+        if (rhi_d3d12_wait_frame_slot(ctx, slot) != RHI_RESULT_OK)
+            return false;
+    }
+    return !ctx->device_lost;
+}
+/* Sticky latch (spec §4.2, VK parity): once observed, device loss is
+ * permanent and also latches dev->status so the _ex wrappers fail fast. */
+bool rhi_device_lost(RHIDevice *dev) {
+    RHI_D3D12Context *ctx =
+        dev != NULL ? (RHI_D3D12Context *)dev->backend_data : NULL;
+    if (ctx == NULL) return true;
+    if (!ctx->device_lost && ctx->device != NULL &&
+        ID3D12Device_GetDeviceRemovedReason(ctx->device) != S_OK)
+        (void)rhi_d3d12_note_device_lost(ctx);
+    if (ctx->device_lost) dev->status = RHI_DEVICE_STATUS_LOST;
+    return ctx->device_lost != 0u;
+}
 
 /* ---- backend native interop (declared in rhi_native_vulkan.h) ---- */
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
-    (void)dev; (void)out; return false;
+    RHI_D3D12Context *ctx;
+    if (dev == NULL || out == NULL || dev->backend_data == NULL) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    out->type = RHI_NATIVE_HANDLE_D3D12;
+    out->instance = ctx->factory;
+    out->physical_device = ctx->adapter;
+    out->device = ctx->device;
+    out->graphics_queue = ctx->direct_queue;
+    out->graphics_queue_family = 0u;
+    out->feature_bits = dev->capabilities.feature_bits;
+    return true;
 }
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
-    (void)dev; (void)out; return false;
+    RHI_D3D12Context *ctx;
+    DXGI_ADAPTER_DESC1 desc;
+    int len;
+    if (dev == NULL || out == NULL || dev->backend_data == NULL) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (FAILED(IDXGIAdapter1_GetDesc1(ctx->adapter, &desc))) return false;
+    /* Fail closed when the adapter name cannot be represented in UTF-8;
+     * an empty device_name would break the contract asserted by
+     * test_d3d12_device_contract. */
+    len = WideCharToMultiByte(CP_UTF8, 0u, desc.Description, -1,
+                              out->device_name, (int)sizeof(out->device_name),
+                              NULL, NULL);
+    if (len <= 0) return false;
+    out->vendor_id = (u32)desc.VendorId;
+    out->device_id = (u32)desc.DeviceId;
+    return true;
 }
 bool rhi_backend_texture_get_native_info(const RHIDevice *dev,
                                          RHITexture texture,

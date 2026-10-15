@@ -38,9 +38,9 @@ typedef enum {
     /* Declared for selector/ABI stability; rhi_device_create_ex fails closed
      * with RHI_RESULT_UNSUPPORTED until the Metal backend lands (plan C). */
     RHI_BACKEND_METAL,
-    /* Plan D: selectable on WIN32 via engine_rhi_d3d12; rhi_device_create_ex
-     * fails closed with RHI_RESULT_UNAVAILABLE until Task 3 lands device
-     * creation. */
+    /* Plan D: selectable on WIN32 via engine_rhi_d3d12; real device
+     * creation landed in Task 3 (adapter scoring, queues, fence pacing,
+     * sticky device-lost latch, DRED). */
     RHI_BACKEND_D3D12,
 } RHIBackend;
 

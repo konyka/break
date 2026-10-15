@@ -5,8 +5,10 @@ int main(void) { return 77; }
 #include <rhi/rhi_d3d12.h>
 
 static int context_is_empty(const RHI_D3D12Context *context) {
-    return context->adapter == NULL && context->device == NULL &&
-           context->queue == NULL && context->allocators[0] == NULL &&
+    return context->factory == NULL && context->adapter == NULL &&
+           context->device == NULL && context->direct_queue == NULL &&
+           context->compute_queue == NULL && context->copy_queue == NULL &&
+           context->allocators[0] == NULL &&
            context->allocators[1] == NULL && context->command_lists[0] == NULL &&
            context->command_lists[1] == NULL && context->rtv_heap == NULL &&
            context->dsv_heap == NULL && context->cbv_srv_uav_heap == NULL &&

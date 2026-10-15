@@ -121,11 +121,17 @@ TEST(declared_metal_and_d3d12_backends_fail_closed)
     ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_METAL, (void *)1, (void *)1,
                                    64u, 64u, &result), NULL);
     ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+    /* Plan D Task 3: d3d12 passes argument validation through to the
+     * backend. A NULL HWND is INVALID_ARGUMENT (spec §4.2); with a
+     * non-NULL HWND the request reaches the linked backend — this test
+     * links engine_rhi_headless, which fails closed, so creation returns
+     * NULL + RHI_RESULT_ERROR (the backend declined; no fake success). */
+    ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_D3D12, NULL, (void *)1,
+                                   64u, 64u, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_INVALID_ARGUMENT);
     ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, (void *)1,
                                    64u, 64u, &result), NULL);
-    /* Plan D Task 2: d3d12 is a selectable backend whose skeleton device
-     * creation is fail-closed UNAVAILABLE until Task 3 lands real creation. */
-    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
+    ASSERT_EQ(result, RHI_RESULT_ERROR);
 }
 
 TEST_MAIN_BEGIN()

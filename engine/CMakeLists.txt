@@ -479,9 +479,9 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
         PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
 endif()
 
-# Native D3D12 backend (plan D): Windows-only static library, fail-closed
-# skeleton until Task 3 lands real device creation. Not EXCLUDE_FROM_ALL —
-# the library only exists when d3d12 is the effective backend.
+# Native D3D12 backend (plan D): Windows-only static library with real
+# device/queue/fence init (Task 3). Not EXCLUDE_FROM_ALL — the library
+# only exists when d3d12 is the effective backend.
 if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
     add_library(engine_rhi_d3d12 STATIC src/rhi/rhi_d3d12.c)
     target_include_directories(engine_rhi_d3d12 PRIVATE
@@ -2397,6 +2397,19 @@ endif()
         add_test(NAME test_d3d12_native_failure COMMAND test_d3d12_native_failure)
         set_tests_properties(test_d3d12_native_failure PROPERTIES
             LABELS "headless;platform_contract")
+        # Task 3: real-device contract. Exit 77 on hosts without a D3D12
+        # adapter (CI), so SKIP_RETURN_CODE keeps those lanes green; on a
+        # GPU host the assertions run against a live device (GPU_RUNTIME).
+        add_executable(test_d3d12_device_contract
+            tests/test_d3d12_device_contract.c)
+        target_include_directories(test_d3d12_device_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_device_contract PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_device_contract
+            COMMAND test_d3d12_device_contract)
+        set_tests_properties(test_d3d12_device_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
