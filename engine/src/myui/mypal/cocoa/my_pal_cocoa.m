@@ -5,6 +5,10 @@
  *        my_pal.h contract. NULL slots: clipboard, gl_enable_api,
  *        vk_create_surface, set_cursor, ime, move, begin_move.
  */
+/* macOS 26 SDK: NSOpenGL deprecations in AppKit's NSOpenGL.h are gated on
+ * this semantic macro (not a warning flag); the GL path here is a legacy PAL
+ * port that stays until a Metal/headless replacement exists. */
+#define GL_SILENCE_DEPRECATION
 #import <Cocoa/Cocoa.h>
 #import <OpenGL/OpenGL.h>
 #include "mypal/cocoa/my_pal_cocoa.h"
@@ -553,7 +557,7 @@ static my_pal_main_loop_t* cpal_loop_create(my_pal_t* pal) {
   l->base.vtable = &s_cloop_vtable;
   l->pal = p;
   l->allocator = p->allocator;
-  atomic_flag_clear_explicit(&l->lock);
+  atomic_flag_clear_explicit(&l->lock, memory_order_release);
   l->timers = my_timer_manager_create(p->allocator, cloop_timer_now, l);
   if (l->timers == NULL) {
     my_mem_free(p->allocator, l);
