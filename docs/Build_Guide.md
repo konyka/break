@@ -54,12 +54,19 @@ cmake -B build-vk -DENGINE_VULKAN=ON
 cmake --build build-vk
 ```
 
+#### D3D12 后端（Windows）
+```bash
+cd engine
+cmake -B build-d3d12 -DENGINE_RHI_BACKEND=d3d12
+cmake --build build-d3d12
+```
+
 ## RHI 后端链接模型
 
 - `engine` 静态库只含 `RHI_CORE_SOURCES`（rhi.c 调度/校验、ownership、validation、resources、present_history），不再编译任何后端源。
-- 后端各自为独立静态库：`engine_rhi_opengl`（`src/rhi/rhi_gl.c` + glad + 平台 GL 库）、`engine_rhi_vulkan`（`src/rhi/rhi_vk.c`，链接 `Vulkan::Vulkan` + shaderc）、`engine_rhi_headless`（`src/rhi/rhi_headless.c`，全入口 fail-closed，仅供契约/headless 测试链接，永不构成 GPU 证据）。
+- 后端各自为独立静态库：`engine_rhi_opengl`（`src/rhi/rhi_gl.c` + glad + 平台 GL 库）、`engine_rhi_vulkan`（`src/rhi/rhi_vk.c`，链接 `Vulkan::Vulkan` + shaderc）、`engine_rhi_d3d12`（`src/rhi/rhi_d3d12.c` + `rhi_d3d12.h`，仅 Windows，链接 d3d12/dxgi/dxguid，Agility redist 由 POST_BUILD 部署）、`engine_rhi_headless`（`src/rhi/rhi_headless.c`，全入口 fail-closed，仅供契约/headless 测试链接，永不构成 GPU 证据）。
 - 需要 RHI 的可执行 target 在其 `target_link_libraries` 之后调用 `engine_link_rhi_backend(<target>)`；headless 测试不调用该 helper，直接链接 `engine_rhi_headless`。
-- 后端选择语义不变：`ENGINE_RHI_BACKEND=auto|opengl|vulkan` 与 `ENGINE_VULKAN` 兼容层；`metal`/`d3d12` 在计划 C/D 落地前仍被选择器拒绝（FATAL_ERROR）。
+- 后端选择：`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12` 与 `ENGINE_VULKAN` 兼容层；`d3d12` 仅 Windows 可选（计划 D 已落地，见下方「Windows D3D12 后端（计划 D）」节），`metal` 在计划 C 落地前仍被拒绝（非 Apple 平台 FATAL_ERROR）。
 
 ## WSI / Vulkan surface 分层（2026-10-15 起）
 
@@ -516,16 +523,17 @@ Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经
 API 只是迁移计划元数据，不能替代 Metal/D3D12 的实际编译、native-surface 或 GPU-runtime
 证据。
 `ENGINE_RHI_BACKEND_EFFECTIVE` 和 `ENGINE_RHI_BACKEND_*` 编译宏只描述当前已经实现的
-OpenGL/Vulkan 构建选择；它们不会因为平台 target metadata 自动切换到未实现的 Metal/D3D12。
+OpenGL/Vulkan/D3D12（仅 Windows）构建选择；它们不会因为平台 target metadata 自动切换到未实现的 Metal。
 
 Windows D3D12 contract-first gate（2026-10-13）已确认 Windows SDK 10.0.26100
 头文件/库和 Vulkan SDK 内的 `dxc.exe` 可见，但当前环境没有独立的 `cl`/PIX PATH 证据，
-也没有完成 D3D12 native-surface/GPU-runtime/Debug Layer 验证。因此 D3D12 仍不可选择，
-状态为 `target metadata + dependency/runtime gate blocked`，不是已实现 backend。
+也没有完成 D3D12 native-surface/GPU-runtime/Debug Layer 验证。该时点 D3D12 仍不可选择
+（`target metadata + dependency/runtime gate blocked`）；计划 D（2026-10-15）起 D3D12 已落地为
+可选后端，见下方「Windows D3D12 后端（计划 D）」节。
 精确依赖审计要求 `d3d12.h`、任一 `dxgi*.h`、`d3d12.lib`、`dxgi.lib` 和 DXC；
 Windows SDK 将 DXGI headers 放在 `Include/<version>/shared`，而 D3D12 headers 放在
-`Include/<version>/um`，gate 会分别搜索这两个目录。当前主机的 SDK/DXC compile
-依赖可见，但 native surface、Debug Layer、PIX 和 GPU-runtime 仍未验证。
+`Include/<version>/um`，gate 会分别搜索这两个目录。该时点主机的 SDK/DXC compile
+依赖可见，native surface、Debug Layer、PIX 和 GPU-runtime 尚未验证（计划 D 已补齐，见下节）。
 仓库新增 `test_d3d12_dependency_gate`：Windows 上会分类 SDK headers/libs 与 DXC 是否齐全，
 非 Windows 或依赖不完整返回 `UNAVAILABLE`（CTest skip），不会把依赖可见误报为 native
 device/surface/GPU-runtime 支持。
@@ -545,6 +553,35 @@ cmake -DCMAKE_CURRENT_BINARY_DIR=<build-dir> `
   -P <repo-root>/engine/tests/test_d3d12_shader_compile_gate.cmake
 ```
 
+### Windows D3D12 后端（计划 D，2026-10-15 起）
+
+Windows 上 D3D12 已是可选 RHI 后端（GPU_RUNTIME 级证据；收据见
+`docs/rhi_backend_evidence.md`，特性面见 `docs/rhi_metal_d3d12_feature_matrix.md`）：
+
+```bash
+cmake -S engine -B build-d3d12 -DENGINE_RHI_BACKEND=d3d12 -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-d3d12
+ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
+```
+
+- 依赖锁定（`engine/external/d3d12/agility_sdk_lock.txt`，由 `test_d3d12_sdk_lock`
+  做哈希校验）：Windows SDK 10.0.26100.0、Agility SDK
+  （Microsoft.Direct3D.D3D12）1.616.0、dxc 优先 vendored
+  `engine/external/VulkanSDK/Bin/dxc.exe`（CI 用 Windows SDK 自带 dxc）。
+- Agility SDK 获取：`cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`（NuGet
+  下载 + 锁文件 SHA512 校验）；构建系统把 `D3D12Core.dll` / `d3d12SDKLayers.dll`
+  POST_BUILD 部署到构建目录（exe 旁 `D3D12SDKPath` 生效），缺失即 configure 期
+  FATAL_ERROR 并指向该 fetch 脚本。
+- `ENGINE_D3D12_DEBUG`：Debug 默认 ON、Release 默认 OFF（显式
+  `-DENGINE_D3D12_DEBUG=OFF` 可覆盖）；ON 时启用 D3D12 debug layer +
+  GPU-based validation，DRED（auto breadcrumbs + page fault）全配置强制。
+  PIX 捕获与 device-lost（DRED）排查见 `docs/rhi_rollback_runbook.md` 的
+  D3D12/PIX 节。
+- shader 路径：手写 HLSL 旁挂（`engine/shaders/*_hlsl.{vert,frag}`）构建期经 dxc
+  编译为 DXIL（SM 6.0），产物在构建目录 `shaders_d3d12/`，不入库。
+- 证据纪律：Proton（Wine/vkd3d-proton）兼容 lane
+  （`.github/workflows/proton-d3d12.yml`）只作兼容参考，不计入 Windows 原生证据等级。
+
 Phase 2 的显式选择器为：
 
 ```bash
@@ -552,10 +589,10 @@ cmake -S engine -B build-rhi-gl -DENGINE_RHI_BACKEND=opengl
 cmake -S engine -B build-rhi-vk -DENGINE_RHI_BACKEND=vulkan
 ```
 
-`ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 只控制已有 OpenGL/Vulkan
-实现的构建选择，不声称 Metal 或 D3D12 已实现；`test_rhi_backend_selection` 会锁定
+`ENGINE_RHI_BACKEND=auto` 保持历史默认行为。当前 selector 控制已有 OpenGL/Vulkan/D3D12（仅 Windows）
+实现的构建选择，不声称 Metal 已实现；`test_rhi_backend_selection` 会锁定
 允许值和后续拆分前的行为边界。配置阶段还会输出 effective backend，并定义
-`ENGINE_RHI_BACKEND_OPENGL=1` 或 `ENGINE_RHI_BACKEND_VULKAN=1` 编译宏，供后续
+`ENGINE_RHI_BACKEND_OPENGL=1` / `ENGINE_RHI_BACKEND_VULKAN=1` / `ENGINE_RHI_BACKEND_D3D12=1` 编译宏，供后续
 backend target 拆分和发布 receipt 使用。
 
 Phase 2 的 source-split 前置层位于私有头文件

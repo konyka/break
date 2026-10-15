@@ -251,9 +251,12 @@ HarmonyOS 在 native surface 存在前保持 unavailable/unsupported。证据状
 递进，状态不会因编译成功自动升级。`target_graphics_api` 只是迁移目标元数据，
 不表示对应 Metal/D3D12 RHI 已实现；实际能力仍由真实 backend build/runtime gate 决定。
 
-Windows D3D12 当前处于 contract-first 阶段：SDK headers/libs 与 `dxc.exe` 可见，但
-尚无仓库内 D3D12 RHI、native surface、Debug Layer、PIX 或 GPU-runtime 证据；OpenGL
-和 Vulkan 继续保持现有实现与回滚基线。
+Windows D3D12 已经过 contract-first 阶段并落地为可选后端（计划 D，2026-10-15）：
+真实设备、flip-model swapchain、资源/PSO、HLSL→DXIL shader 路径、DXR BLAS/TLAS
+（tier < 1.0 fail-closed）、debug layer + GBV + DRED 全部实现，本机 RTX 4060 Laptop
+真 GPU 契约测试 6/6 绿（GPU_RUNTIME；收据见 `docs/rhi_backend_evidence.md`），PIX
+捕获 runbook 见 `docs/rhi_rollback_runbook.md`。OpenGL 和 Vulkan 继续保持现有实现与
+回滚基线。
 
 The Windows D3D12 shader gate compiles a minimal `vs_6_0` HLSL input to DXIL in
 the build directory only. It proves the compiler toolchain, not a D3D12 device,
@@ -267,11 +270,13 @@ RHI 现在提供 backend-neutral 的 `RHI_DEVICE_STATUS_UNKNOWN`、`READY`、`LO
 状态查询。该合同只统一设备健康状态，不表示 Metal 或 D3D12 已实现；原生后端
 仍必须分别通过其 native-surface、GPU-runtime 和 validation gate 后才能标记可用。
 
-Phase 2 adds the explicit CMake selector `ENGINE_RHI_BACKEND=auto|opengl|vulkan`.
-`auto` preserves the current policy, while `opengl` and `vulkan` make the existing
-backend choice auditable in configure receipts. The no-behavior-change source
-split has since landed: the backend files now build as the separate static
-libraries `engine_rhi_opengl`, `engine_rhi_vulkan`, and `engine_rhi_headless`,
+Phase 2 adds the explicit CMake selector
+`ENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12`.
+`auto` preserves the current policy, while `opengl`, `vulkan`, and `d3d12`
+（仅 Windows）make the existing backend choice auditable in configure receipts.
+The no-behavior-change source split has since landed: the backend files now
+build as the separate static libraries `engine_rhi_opengl`, `engine_rhi_vulkan`,
+`engine_rhi_d3d12`（仅 Windows）, and `engine_rhi_headless`,
 and `engine_link_rhi_backend(<target>)` links exactly one of them (见下方分层图).
 
 ### RHI 分层（2026-10-14 起）
@@ -279,8 +284,8 @@ and `engine_link_rhi_backend(<target>)` links exactly one of them (见下方分�
 ```
 应用 / renderer（rhi.h 公共 API，后端中性）
   └─ engine（RHI_CORE_SOURCES：rhi.c 调度/校验 + ownership + validation + resources + present_history）
-       └─ 恰好一个后端静态库：engine_rhi_opengl | engine_rhi_vulkan | engine_rhi_headless
-            └─ 平台图形栈（GL/EGL、Vulkan+shaderc、或 fail-closed stub）
+       └─ 恰好一个后端静态库：engine_rhi_opengl | engine_rhi_vulkan | engine_rhi_d3d12 | engine_rhi_headless
+            └─ 平台图形栈（GL/EGL、Vulkan+shaderc、D3D12+DXGI+Agility SDK（仅 Windows）、或 fail-closed stub）
 ```
 
 - 编译期单后端、直接符号链接（无 vtable 分发）；`engine_link_rhi_backend(<target>)` 按 `ENGINE_RHI_BACKEND_EFFECTIVE` 选择。
@@ -309,8 +314,8 @@ resource-slot types, current-device TLS declaration, and backend-facing resource
 helpers in the private `engine/src/rhi/rhi_backend_internal.h` contract. That
 split is now complete: each backend compiles in its own translation unit inside
 its static library (`engine_rhi_opengl` / `engine_rhi_vulkan` /
-`engine_rhi_headless`), with `rhi_backend_internal.h` as the shared private
-contract.
+`engine_rhi_d3d12` / `engine_rhi_headless`), with `rhi_backend_internal.h`
+as the shared private contract.
 
 The `test_rhi_backend_internal_contract` CMake test now requires `rhi.c`,
 `rhi_gl.c`, and `rhi_vk.c` to include the private contract explicitly. This
@@ -370,6 +375,7 @@ same public validation results without inheriting API-specific state.
 | **Linux** | Wayland | OpenGL 4.x (EGL) | `build-verify-wl-gl/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Linux** | Wayland | Vulkan 1.x | `build-verify-wl-vk/` | ✅ 配置/headless 已验证；compositor 依赖环境 |
 | **Windows** | Win32 | OpenGL (WGL) / Vulkan (Win32 Surface) | `build-win/` | ✅ 已实现 |
+| **Windows** | Win32 | D3D12（原生，Agility SDK 1.616.0 + Windows SDK 10.0.26100.0） | `build-d3d12*/`（`-DENGINE_RHI_BACKEND=d3d12`） | ✅ GPU_RUNTIME 本机已验证（RTX 4060 Laptop，契约 6/6 绿，2026-10-15；收据见 `docs/rhi_backend_evidence.md`） |
 | **macOS** | Cocoa | Vulkan via MoltenVK | macOS CI 配置 | ✅ 本机（macOS 26.7.1，Apple M2，MoltenVK 1.4.357）全量构建 + CTest `133/133` 通过（2026-10-13）；远程 SSH 目标机缺 `shaderc_shared`/MoltenVK 为依赖阻塞；不声明 Metal 后端 |
 | **iOS** | — | — | iOS toolchain | ⚠️ CMake 平台识别与 kqueue 路径；无仓库 runtime/CI 证据 |
 | **Android** | — | Vulkan（需 `ENGINE_ANDROID_NATIVE_WINDOW=ON` 和 NDK `android/native_window.h`） | Android toolchain | ⚠️ 编译路径；无仓库 runtime/CI 证据 |

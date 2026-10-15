@@ -4,16 +4,16 @@
 
 | 特性面 | Metal（计划 C） | D3D12（计划 D） |
 |---|---|---|
-| 设备创建 / 销毁 | PLANNED（MTLDevice/MTLCommandQueue） | GPU_RUNTIME（计划 D Task 3：adapter 打分、三队列、fence 双槽 pacing、sticky device-lost latch、DRED；Task 4 补 destroy 前强制 drain） |
-| Surface / swapchain | PLANNED（`platform_surface_native()` 返回 CAMetalLayer） | GPU_RUNTIME（计划 D Task 4：HWND → flip-model swapchain，3 back buffers，resize/drain/present 接线；契约测试的哨兵 HWND 仅在显式 opt-in（`BREAK_D3D12_TEST_FALLBACK_HWND=1`）下走设备持有的隐藏 fallback 窗口，生产语义 fail-closed 报 INVALID_ARGUMENT） |
-| Render pass / pipeline contract | PLANNED（消费 `RHIPipelineDesc` capability contract 字段） | PLANNED |
-| Push constants / 绑定模型 | PLANNED（`rhi_cmd_push_constants` → setBytes 映射） | PLANNED（root constants） |
-| Compute / storage | PLANNED | PLANNED |
-| 加速结构（BLAS/TLAS） | PLANNED（`rhi_acceleration_structure_get_vk_handle` 不适用；后端内转换，公开 ABI 不变） | PLANNED（同上） |
+| 设备创建 / 销毁 | PLANNED（MTLDevice/MTLCommandQueue） | GPU_RUNTIME（计划 D Task 3：adapter 打分、direct+compute+copy 三队列、fence 双槽 pacing、sticky device-lost latch、DRED；Task 4 补 destroy 前强制 drain；Task 8 升级为全队列 fence drain，覆盖 in-flight Present——debug layer 实抓 OBJECT_DELETED_WHILE_STILL_IN_USE 的修复） |
+| Surface / swapchain | PLANNED（`platform_surface_native()` 返回 CAMetalLayer） | GPU_RUNTIME（计划 D Task 4：HWND → flip-model swapchain，3 back buffers，resize/drain/present 接线；vsync 经 `rhi_set_vsync` → Present1 SyncInterval（`DXGI_PRESENT_ALLOW_TEARING` 仅 vsync=0 路径）；契约测试的哨兵 HWND 仅在显式 opt-in（`BREAK_D3D12_TEST_FALLBACK_HWND=1`）下走设备持有的隐藏 fallback 窗口，生产语义 fail-closed 报 INVALID_ARGUMENT） |
+| Render pass / pipeline contract | PLANNED（消费 `RHIPipelineDesc` capability contract 字段） | GPU_RUNTIME（计划 D Task 5：graphics/compute PSO 全字段映射（fill/cull/depth func+write mask/blend/RTV formats/DSV D32/sample count/topology/输入布局）；MRT ≤5 经 `rhi_mrt_formats_valid` 校验；indirect 三族 `ExecuteIndirect`（stride 必须等于 command signature 步长，不符 WARN 拒绝）；`test_d3d12_pipeline_contract` 真 GPU 绿） |
+| Push constants / 绑定模型 | PLANNED（`rhi_cmd_push_constants` → setBytes 映射） | GPU_RUNTIME（root 32BIT_CONSTANTS 占 b0，128B compute / 256B graphics，按 64-DWORD 根签名预算钳制，越界 push 走丢弃语义（VK 对齐）；Task 6 补 256B uniform staging + 按 DWORD 对齐 dirty 区间 flush） |
+| Compute / storage | PLANNED | GPU_RUNTIME（compute dispatch；STORAGE→UAV 表 / IMAGE→SRV 表绑定；`rhi_cmd_memory_barrier` → 全 UAV barrier） |
+| 加速结构（BLAS/TLAS） | PLANNED（`rhi_acceleration_structure_get_vk_handle` 不适用；后端内转换，公开 ABI 不变） | GPU_RUNTIME（计划 D Task 7：ID3D12Device5/ID3D12GraphicsCommandList4 DXR BLAS/TLAS；OPTIONS5.RaytracingTier < 1.0 一律 fail-closed；`storage_size=0` = 后端延迟定尺寸（prebuild 查询）；TLAS 实例记录与 VK ABI 位级一致（`_Static_assert` 钉死）；公开 ABI 不变） |
 | Present damage / buffer age | PLANNED | HEADLESS（计划 D Task 4：RHIPresentRect→dirty rects 已接线（top-left 原点同约定，x/y/w/h → left/top/right/bottom 角点换算），但本机 FLIP_DISCARD/FLIP_SEQUENTIAL 下 dirty-rect Present1 均被运行时以 DXGI_ERROR_INVALID_CALL 拒绝 → 自动回落 full-surface present；damage 仅为优化，不回传失败） |
-| 验证 gate | PLANNED（Metal validation layer） | PLANNED（DRED + debug layer） |
-| Shader 路径 | MSL：`metal-shaderconverter` 或手写 MSL + `xcrun metal` → `.metallib`（构建期） | HLSL → DXIL：dxc（沿用 `test_d3d12_shader_compile_gate` 的 dxc 定位），SDK 版本锁定在计划 F |
-| 当前证据等级 | NONE | GPU_RUNTIME（本机 RTX 4060 Laptop：`test_d3d12_device_contract` + `test_d3d12_swapchain_contract` 绿，2026-10-15，收据见 `.superpowers/sdd/2026-10-14-rhi-plan-d-d3d12/task-4-report.md`） |
+| 验证 gate | PLANNED（Metal validation layer） | GPU_RUNTIME（计划 D Task 8：`ENGINE_D3D12_DEBUG`（Debug 默认 ON，可显式覆盖）启用 debug layer + GPU-based validation；DRED（auto breadcrumbs + page fault）全配置强制；PIX 捕获 runbook 见 `docs/rhi_rollback_runbook.md`） |
+| Shader 路径 | MSL：`metal-shaderconverter` 或手写 MSL + `xcrun metal` → `.metallib`（构建期） | HLSL → DXIL 已落地（GPU_RUNTIME）：手写 HLSL 旁挂（`engine/shaders/*_hlsl.{vert,frag}`，blit/myui 管线，sibling 断言禁静默跳过）+ 构建期 dxc 编译 DXIL SM 6.0（vendored `external/VulkanSDK/Bin/dxc.exe` 优先，CI 用 Windows SDK 自带 dxc）；HLSL 文本反射 → root 绑定 / uniform 偏移表 |
+| 当前证据等级 | NONE | GPU_RUNTIME（本机 RTX 4060 Laptop，2026-10-15：device/swapchain/pipeline/shader/dxr 契约 + WARP floor（gpu=WARP）6/6 绿；收据见 `docs/rhi_backend_evidence.md` 计划 D 收据追加） |
 
 ## D3D12 决策记录（计划 D Task 4）
 

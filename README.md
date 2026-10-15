@@ -31,7 +31,12 @@ IPO with `-DENGINE_ENABLE_IPO=OFF` when the platform linker does not support it.
 
 ### RHI 后端（迁移期）
 
-RHI 后端编译为独立静态库（`engine_rhi_opengl` / `engine_rhi_vulkan` / `engine_rhi_headless`），最终可执行文件链接 `engine` + 恰好一个后端库（`engine_link_rhi_backend(<target>)`）。后端选择：`-DENGINE_RHI_BACKEND=auto|opengl|vulkan`（`ENGINE_VULKAN` option 兼容保留）。证据基线与等级见 `docs/rhi_backend_evidence.md`。
+RHI 后端编译为独立静态库（`engine_rhi_opengl` / `engine_rhi_vulkan` / `engine_rhi_d3d12` / `engine_rhi_headless`），最终可执行文件链接 `engine` + 恰好一个后端库（`engine_link_rhi_backend(<target>)`）。后端选择：`-DENGINE_RHI_BACKEND=auto|opengl|vulkan|d3d12`（`ENGINE_VULKAN` option 兼容保留；`d3d12` 仅 Windows 可选）。证据基线与等级见 `docs/rhi_backend_evidence.md`。
+
+| 平台 | 可用后端 |
+|---|---|
+| Linux / Windows / Steam | OpenGL、Vulkan |
+| Windows / Steam Windows | 原生 D3D12（GPU_RUNTIME 已验证，构建：`-DENGINE_RHI_BACKEND=d3d12`，依赖与收据见 `docs/Build_Guide.md` 与 `docs/rhi_backend_evidence.md`） |
 
 ## Documentation
 
