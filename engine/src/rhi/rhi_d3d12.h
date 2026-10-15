@@ -208,6 +208,13 @@ D3D12_GPU_DESCRIPTOR_HANDLE rhi_d3d12_descriptor_gpu(
  * flight. Used as the retire fence for descriptor/resource give-back. */
 UINT64 rhi_d3d12_retire_fence(const RHI_D3D12Context *context);
 
+/* ExecuteIndirect argument gate. Indexed draws follow the shared ABI rule
+ * (rhi.h:227-230) AND the command-signature stride (fixed at creation to
+ * sizeof(RHIIndexedIndirectCommand)); non-indexed draws use 16-byte
+ * D3D12_DRAW_ARGUMENTS strides and must NOT pass through the indexed ABI
+ * rule (VK parity: vkCmdDrawIndirect applies no such check). */
+UINT rhi_d3d12_indirect_args_valid(UINT indexed, UINT stride, UINT draw_count);
+
 /* Task 4: flip-model swapchain. create binds the swapchain to `hwnd` (or to
  * a device-owned hidden fallback window when `hwnd` is not a real window,
  * which only contract tests do) and creates one RTV per back buffer in

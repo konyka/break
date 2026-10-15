@@ -2434,6 +2434,18 @@ endif()
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
         target_link_libraries(test_d3d12_pipeline_contract PRIVATE
             engine_rhi_d3d12 d3d12 dxgi dxguid)
+        if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+            # The test includes rhi_d3d12.h (Windows SDK headers) for the
+            # descriptor-allocator regression probes — same exemption set
+            # as test_d3d12_native_failure.
+            if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+                set(_d3d12_sdk_quiet "/clang:-Wno-nonportable-include-path;/clang:-Wno-ignored-pragma-intrinsic;/clang:-Wno-pragma-pack;/clang:-Wno-unknown-pragmas;/clang:-Wno-microsoft-anon-tag")
+            else()
+                set(_d3d12_sdk_quiet "-Wno-nonportable-include-path;-Wno-ignored-pragma-intrinsic;-Wno-pragma-pack;-Wno-unknown-pragmas;-Wno-microsoft-anon-tag")
+            endif()
+            set_source_files_properties(tests/test_d3d12_pipeline_contract.c PROPERTIES
+                COMPILE_OPTIONS "${_d3d12_sdk_quiet}")
+        endif()
         add_test(NAME test_d3d12_pipeline_contract
             COMMAND test_d3d12_pipeline_contract)
         set_tests_properties(test_d3d12_pipeline_contract PROPERTIES

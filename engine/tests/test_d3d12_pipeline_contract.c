@@ -1,5 +1,9 @@
 #include <rhi/rhi.h>
 #include "test_framework.h"
+#if defined(_WIN32)
+#include <rhi/rhi_d3d12.h>
+#include <rhi/rhi_backend_internal.h>
+#endif
 /* GPU resource roundtrip; main skips 77 when no adapter. */
 static RHIDevice *g_dev;
 
@@ -42,6 +46,55 @@ TEST(indirect_abi_rule_shared) {
     ASSERT_FALSE(rhi_indirect_abi_valid(8u, 0u));
 }
 
+#if defined(_WIN32)
+/* Review fix 1 regression: a partial RTV-slot take failure during swapchain
+ * creation must return the taken slots to the free-list exactly once (the
+ * old code gave them back manually AND via rhi_d3d12_swapchain_destroy,
+ * doubling entries and aliasing later takers). */
+TEST(swapchain_rtv_take_failure_returns_slots_once) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)g_dev->backend_data;
+    RHI_D3D12DescriptorAlloc *alloc = &ctx->rtv_alloc;
+    UINT taken[RHI_D3D12_RTV_CAPACITY];
+    UINT count = 0u;
+    UINT i;
+    UINT j;
+    RHI_D3D12Swapchain sc2;
+    HRESULT hr;
+    /* Hermetic opt-in (CTest also injects this via ENVIRONMENT). */
+    _putenv("BREAK_D3D12_TEST_FALLBACK_HWND=1");
+    /* Leave exactly 2 free slots: a 3-back-buffer swapchain must fail on
+     * the third take, after slots 0 and 1 were taken. */
+    while (alloc->free_count > 2u) {
+        UINT slot = rhi_d3d12_descriptor_take(ctx, alloc);
+        ASSERT_TRUE(slot != UINT_MAX);
+        taken[count++] = slot;
+    }
+    hr = rhi_d3d12_swapchain_create(ctx, &sc2, (HWND)(void *)1, 8u, 8u);
+    ASSERT_TRUE(FAILED(hr));
+    /* Exactly the 2 pre-failure free slots remain: no double give-back. */
+    ASSERT_EQ(alloc->free_count, 2u);
+    while (count > 0u)
+        rhi_d3d12_descriptor_give_back(alloc, taken[--count], 0u);
+    /* The live swapchain keeps its 3 slots; everything else is back. */
+    ASSERT_EQ(alloc->free_count, alloc->capacity - RHI_D3D12_BACKBUFFER_COUNT);
+    for (i = 0u; i < alloc->free_count; ++i)
+        for (j = i + 1u; j < alloc->free_count; ++j)
+            ASSERT_TRUE(alloc->free_slots[i] != alloc->free_slots[j]);
+}
+
+/* Review fix 2 regression: the indexed ABI rule must not gate non-indexed
+ * indirect draws; 16-byte D3D12_DRAW_ARGUMENTS strides are valid there. */
+TEST(indirect_stride_gate_per_topology) {
+    ASSERT_TRUE(rhi_d3d12_indirect_args_valid(0u, 16u, 1u));
+    ASSERT_FALSE(rhi_d3d12_indirect_args_valid(0u, 20u, 1u));
+    ASSERT_FALSE(rhi_d3d12_indirect_args_valid(0u, 16u, 0u));
+    ASSERT_FALSE(rhi_d3d12_indirect_args_valid(0u, 8u, 1u));
+    ASSERT_TRUE(rhi_d3d12_indirect_args_valid(1u, 20u, 1u));
+    ASSERT_FALSE(rhi_d3d12_indirect_args_valid(1u, 24u, 1u));
+    ASSERT_FALSE(rhi_d3d12_indirect_args_valid(1u, 8u, 0u));
+}
+#endif
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -51,6 +104,8 @@ int main(void) {
     RUN_TEST(buffer_write_read_roundtrip);
     RUN_TEST(texture_create_readback_roundtrip);
     RUN_TEST(indirect_abi_rule_shared);
+    RUN_TEST(swapchain_rtv_take_failure_returns_slots_once);
+    RUN_TEST(indirect_stride_gate_per_topology);
     if (rhi_device_drain_ex(g_dev) != RHI_RESULT_OK) g_test_fail++;
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

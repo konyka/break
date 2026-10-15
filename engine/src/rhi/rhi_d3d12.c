@@ -99,14 +99,23 @@ void rhi_d3d12_descriptor_alloc_destroy(RHI_D3D12DescriptorAlloc *alloc) {
 
 UINT rhi_d3d12_descriptor_take(RHI_D3D12Context *ctx,
                                RHI_D3D12DescriptorAlloc *alloc) {
-    while (alloc->free_count > 0u) {
-        UINT slot = alloc->free_slots[alloc->free_count - 1u];
-        if (alloc->slot_fence[slot] != 0u &&
-            ID3D12Fence_GetCompletedValue(ctx->fence) < alloc->slot_fence[slot])
-            break; /* youngest free slot still GPU-busy; look no deeper */
-        alloc->free_count--;
-        alloc->slot_fence[slot] = 0u;
-        return slot;
+    UINT64 completed;
+    UINT i;
+    /* Scan the whole free stack (bottom = oldest retire) for a slot whose
+     * retire fence has completed. A GPU-busy youngest entry must not mask
+     * deeper completed slots (review fix: the old top-only check produced
+     * false exhaustion under churn, most acute on the 16-slot DSV heap).
+     * Still fail-closed: returns UINT_MAX only when every free slot is
+     * genuinely in flight. */
+    completed = ID3D12Fence_GetCompletedValue(ctx->fence);
+    for (i = 0u; i < alloc->free_count; ++i) {
+        UINT slot = alloc->free_slots[i];
+        if (alloc->slot_fence[slot] == 0u || completed >= alloc->slot_fence[slot]) {
+            alloc->free_slots[i] = alloc->free_slots[alloc->free_count - 1u];
+            alloc->free_count--;
+            alloc->slot_fence[slot] = 0u;
+            return slot;
+        }
     }
     return UINT_MAX;
 }
@@ -817,9 +826,9 @@ HRESULT rhi_d3d12_swapchain_create(RHI_D3D12Context *context,
     for (i = 0u; i < RHI_D3D12_BACKBUFFER_COUNT; ++i) {
         out->rtv_slots[i] = rhi_d3d12_descriptor_take(context, &context->rtv_alloc);
         if (out->rtv_slots[i] == UINT_MAX) {
-            while (i-- > 0u)
-                rhi_d3d12_descriptor_give_back(&context->rtv_alloc,
-                                               out->rtv_slots[i], 0u);
+            /* Partial take: destroy owns the give-back (it skips UINT_MAX
+             * entries and resets each returned slot to UINT_MAX), so the
+             * slots land in the free-list exactly once. */
             rhi_d3d12_swapchain_destroy(context, out);
             return E_OUTOFMEMORY;
         }
@@ -2493,6 +2502,13 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
         instance_count, first_index, vertex_offset, 0u);
 }
+UINT rhi_d3d12_indirect_args_valid(UINT indexed, UINT stride, UINT draw_count) {
+    if (indexed)
+        return rhi_indirect_abi_valid(stride, draw_count) &&
+               stride == (UINT)sizeof(RHIIndexedIndirectCommand);
+    return draw_count != 0u && stride == (UINT)sizeof(D3D12_DRAW_ARGUMENTS);
+}
+
 static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
                                        UINT64 offset, UINT draw_count,
                                        UINT stride, RHIBuffer count_buf,
@@ -2504,40 +2520,37 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
     RHI_D3D12Buffer *counter = NULL;
     if (dev == NULL) return;
     ctx = (RHI_D3D12Context *)dev->backend_data;
-    if (ctx == NULL || !rhi_indirect_abi_valid(stride, draw_count)) return;
+    if (ctx == NULL) return;
+    /* The indexed ABI rule applies to indexed draws only; gating non-indexed
+     * draws on it silently dead-ended every 16-byte-stride call. Rejections
+     * are loud (fail closed, never a silent drop). */
+    if (!rhi_d3d12_indirect_args_valid(indexed, stride, draw_count)) {
+        LOG_WARN("D3D12: %s indirect args rejected (stride %u, count %u)",
+                 indexed != 0u ? "indexed" : "non-indexed", stride, draw_count);
+        return;
+    }
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
     args = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
-    if (args == NULL) return;
+    if (args == NULL) {
+        LOG_WARN("D3D12: indirect draw with invalid argument buffer");
+        return;
+    }
     if (rhi_handle_valid(count_buf)) {
         counter = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, count_buf,
                                                             RHI_RES_BUFFER);
-        if (counter == NULL) return;
+        if (counter == NULL) {
+            LOG_WARN("D3D12: indirect draw with invalid count buffer");
+            return;
+        }
     }
     /* ExecuteIndirect requires the argument stride to equal the command
-     * signature stride; refuse mismatches instead of reinterpreting. */
-    if (indexed) {
-        if (stride != (UINT)sizeof(RHIIndexedIndirectCommand)) {
-            LOG_WARN("D3D12: indexed indirect stride %u != ABI stride %u",
-                     stride, (UINT)sizeof(RHIIndexedIndirectCommand));
-            return;
-        }
-        ID3D12GraphicsCommandList_ExecuteIndirect(list,
-            ctx->draw_indexed_signature,
-            counter != NULL ? max_draws : draw_count,
-            args->resource, offset,
-            counter != NULL ? counter->resource : NULL, count_offset);
-    } else {
-        if (stride != (UINT)sizeof(D3D12_DRAW_ARGUMENTS)) {
-            LOG_WARN("D3D12: indirect stride %u != %u", stride,
-                     (UINT)sizeof(D3D12_DRAW_ARGUMENTS));
-            return;
-        }
-        ID3D12GraphicsCommandList_ExecuteIndirect(list, ctx->draw_signature,
-            counter != NULL ? max_draws : draw_count,
-            args->resource, offset,
-            counter != NULL ? counter->resource : NULL, count_offset);
-    }
+     * signature stride; the gate above already enforced exactly that. */
+    ID3D12GraphicsCommandList_ExecuteIndirect(list,
+        indexed ? ctx->draw_indexed_signature : ctx->draw_signature,
+        counter != NULL ? max_draws : draw_count,
+        args->resource, offset,
+        counter != NULL ? counter->resource : NULL, count_offset);
 }
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                            u32 draw_count, u32 stride) {
