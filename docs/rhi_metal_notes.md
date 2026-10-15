@@ -45,15 +45,19 @@ RGBA16F=8、R32F=4、D32=4（D32 按 f32 每 texel 4 字节）。
 两槽 frame pacing：`rhi_metal_frame_slot(counter) = counter % 2`；
 `rhi_metal_slot_wait_value(counter) = counter >= 2 ? counter - 2 : 0`
 （wait(0) 在未 signal 时立即成立，前两帧不等待）。消费在 Task 5（帧生命周期）；
-Task 4 的 bounded drain 单独用 `drain_counter` 递增的 shared-event 值。
+Task 4 的 bounded drain 单独用 `drain_event` + `drain_counter` 递增的
+shared-event 值（Task 5 起 frame/drain 两个事件分离：单一事件的 signaledValue
+单调递增，共用会让 drain signal 提前满足帧等待）。
 
 ### 生命周期
 
-`rhi_device_destroy`：先 drain（Task 4 起为 bounded drain：空 command buffer +
-`encodeSignalEvent:` + `MTLSharedEvent waitUntilSignaledValue:timeoutMS:` 20s，
-覆盖队列上全部已调度工作，对齐 `rhi_d3d12_drain_gpu` 语义），再 release 全部
-Obj-C 句柄（drawable / library / frame_event / queue / device）。`layer` 不归 RHI
-拥有，不 release。
+`rhi_device_destroy`：先经实现内 idle drain（Task 5 起 = 帧 signal 等待 +
+Task 4 bounded queue drain：空 command buffer + `encodeSignalEvent:` +
+`MTLSharedEvent waitUntilSignaledValue:timeoutMS:` 20s，覆盖队列上全部已调度
+工作，对齐 `rhi_d3d12_drain_gpu` 语义），再经 `metal_quiesce_handlers`
+（`pending_handlers` 原子计数轮询，20s 上限）quiesce 所有 completion handler，
+最后 release 全部 Obj-C 句柄（drawable / frame_cmd / library / frame_event /
+drain_event / queue / device）。`layer` 不归 RHI 拥有，不 release。
 
 ## Task 4：device-lost 闩锁（sticky latch）
 
@@ -74,13 +78,59 @@ ENGINE_RHI_TEST 注入路径）。
 |---|---|---|
 | `MTLCreateSystemDefaultDevice()` nil | create | `RHI_RESULT_ERROR`（平台缺失在 selector 已 `UNAVAILABLE` fail-closed） |
 | `window_native` 不是 CAMetalLayer | create | `RHI_RESULT_INVALID_ARGUMENT` |
-| `nextDrawable` 重试超时（1s 截止） | acquire（Task 5） | `lifecycle_result = RHI_RESULT_OUT_OF_DATE`，后续 frame 调用 fail-fast |
-| layer nil / drawable texture nil | acquire（Task 5） | `RHI_RESULT_SURFACE_LOST` |
+| `nextDrawable` 重试超时（1s 截止，1ms 退避） | acquire（Task 5 已接线） | `lifecycle_result = RHI_RESULT_OUT_OF_DATE`，后续 frame 调用 fail-fast |
+| layer nil / drawable texture nil | acquire（Task 5 已接线） | `RHI_RESULT_SURFACE_LOST` |
 | command buffer `status == MTLCommandBufferStatusError` | completedHandler / `rhi_device_idle` / frame_end | sticky latch → `RHI_RESULT_DEVICE_LOST`；`error.code == MTLCommandBufferErrorDeviceRemoved`（macOS 13+，低版本按通用 error 同样 latch） |
-| `MTLSharedEvent` 等待超时（20s，对齐 rhi.h:855 的 VK 20s 语义） | drain（Task 4）/ acquire（Task 5） | 首报 `RHI_RESULT_SYNC_FAILED`；超时后置 device-lost 闩锁，后续调用经闩锁报 `RHI_RESULT_DEVICE_LOST`（对齐 VK 的 fence-unsignaled→lost 语义，rhi.h:854-858） |
-| 挂起中 acquire（iOS host 暂停） | acquire（Task 5） | `RHI_RESULT_BUSY` |
+| `MTLSharedEvent` 等待超时（20s，对齐 rhi.h:855 的 VK 20s 语义） | drain（Task 4）/ acquire 帧 pacing / idle 帧等待（Task 5 已接线） | 首报 `RHI_RESULT_SYNC_FAILED`；超时后置 device-lost 闩锁，后续调用经闩锁报 `RHI_RESULT_DEVICE_LOST`（对齐 VK 的 fence-unsignaled→lost 语义，rhi.h:854-858） |
+| 挂起中 acquire（iOS host 暂停） | acquire（`mb->suspended`，Task 14 接线 setter） | `RHI_RESULT_BUSY` |
 | ray tracing API 在 `[device supportsRaytracing]==NO` | RT 族 | `RHI_RESULT_UNSUPPORTED` |
 
-Task 4 落地行：create 两行（Task 3 已有）、command buffer 完成状态、drain 超时；
-acquire/frame_end 行随 Phase 3 帧生命周期接线（`metal_commit` 已为其预留统一
-commit 入口）。
+## Task 5：drawable acquire/present/resize + 帧状态机映射
+
+规格 §4.3 帧生命周期到 Metal 的逐项映射（由 `test_rhi_metal_frame_lifecycle`
+固定，graphics lane，真机验证）：
+
+| 规格 §4.3 阶段 | RHI 入口 | Metal 实现 |
+|---|---|---|
+| acquire | `rhi_frame_acquire_ex` → `rhi_frame_begin` | (1) 双槽 pacing：`slot = frame_counter % 2`；`frame_counter >= 2` 时 `[frame_event waitUntilSignaledValue:frame_counter-2 timeoutMS:20000]`，超时 → SYNC_FAILED + 闩锁；(2) `[layer nextDrawable]` 重试循环（1s 截止、1ms 退避，期间 pump 一个 `@autoreleasepool`），nil 超时 → `lifecycle_result=OUT_OF_DATE` + fail-fast；(3) drawable 尺寸校验：`layer.drawableSize` ≠ dev 宽高 → 采用 layer 实际尺寸并更新 dev（windowDidResize → cocoa_update_drawable_size 已维护 layer 尺寸） |
+| begin | 同上（acquire 内完成） | `[queue commandBuffer]`；retain 进 `RHICmdBuffer`；render encoder 延迟到首个 `rhi_cmd_begin_render_pass` 用当前 drawable texture 建 `MTLRenderPassDescriptor` |
+| submit | `rhi_frame_end_ex`/`rhi_frame_submit_ex` → `rhi_frame_end` | endEncoding（若开）→ `[cmd presentDrawable:drawable]` → `[cmd encodeSignalEvent:frame_event value:frame_counter]` → `metal_commit`（挂 completedHandler）→ 释放 drawable 引用。**present 在 commit 前 attach 是 Metal 硬约束**，故 Metal 后端把 present 语义并入 frame_end |
+| present | `rhi_present_ex` → `rhi_present` | 簿记 no-op：`frame_counter++`、清 damage 状态；帧 owner 校验已由 rhi.c 保证「present 只能在成功 submit 之后」 |
+| resize | `rhi_device_resize_ex` → `rhi_device_resize` | 更新 `dev->width/height`；**不**写 `layer.drawableSize`（所有权在 window 层）；下次 acquire 自动采用新尺寸（对齐「swapchain 自动重建」语义） |
+| drain | `rhi_device_drain_ex` → `rhi_device_idle` | 等待最后一次提交的 signal：`frame_counter >= 1` 时 `waitUntilSignaledValue:frame_counter-1 timeoutMS:20000`（0 帧时立即成功）；超时 → SYNC_FAILED + 闩锁。之后仍跑 Task 4 的 `metal_drain`（drain_event 有界 drain）：覆盖非帧提交与 frame 0 的退化 signal（值 0 == 初始 signaledValue），并保持诊断探针语义 |
+| destroy | `rhi_device_destroy_ex` → `rhi_device_destroy` | 强制 drain（实现内 idle，§4.3「destroy 前必须 drain」）→ `metal_quiesce_handlers` → release |
+
+`rhi_frame_index` 返回 `(u32)(frame_counter % 2)`（rhi.h:470-471 双槽语义，
+经钉死的 `rhi_metal_frame_slot` helper）；`rhi_set_vsync(false)` →
+`layer.displaySyncEnabled = NO`（macOS 10.13+，respondsToSelector 门控），
+true → YES。
+
+### clear / render pass 语义（Task 5 最小集）
+
+clear 用 render pass 的 `loadAction=MTLLoadActionClear` + `clearColor` 实现：
+drawable 内容未定义，故每帧首 pass 即清（默认不透明黑，`rhi_cmd_clear_color`
+覆盖）；pass 中再调 clear 时 endEncoding 当前 encoder（已录工作留在 command
+buffer）并以新颜色重建 encoder。`rhi_cmd_begin_render_pass` 在无帧/无 drawable
+时 fail-closed 记日志。像素级断言归 Task 9（screenshot）。
+
+### completion handler 生命周期（Task 4 评审移交闭环）
+
+`metal_commit` 的 completedHandler 捕获裸 `dev`/`mb`。Task 5 起帧提交复用
+`metal_commit`，destroy 的 drain 只 quiesce 自己的 drain buffer，帧 buffer 的
+handler 可能在 `free(mb)` 后触发（UAF）。机制：`MetalBackend.pending_handlers`
+原子计数——`metal_commit` 在 commit 前 +1，handler 末尾 -1；destroy 在 drain 后
+`metal_quiesce_handlers` 有界轮询（1ms 退避、20s 上限）至归零再释放。handler
+只在 buffer 完成时触发，drain 成功后该轮询只等 handler 队列派发延迟；wedge GPU
+上 buffer 永不完成、handler 永不触发，超时路径因此也不会遗留活 handler
+（teardown 保持有界）。结构证据：`test_rhi_metal_frame_lifecycle` 三帧循环后
+destroy 无崩溃；`test_rhi_metal_device_contract` 的 idle/drain 用例同路径。
+
+### 帧 pacing 与 drain 的事件分离
+
+frame 提交 signal `frame_event`（值 = `frame_counter`）；Task 4 drain 改为 signal
+独立的 `drain_event`（值 = `++drain_counter`）。单一 MTLSharedEvent 的
+signaledValue 单调递增，共用会让 drain 的计数值提前满足帧 pacing 等待——
+两计数器两事件的分离是正确性要求（Task 4 移交：保持该分离）。已知退化：
+`frame_counter == 2` 的 pacing 等待值为 0（== 初始 signaledValue，立即成立，
+由 `test_rhi_metal_format_mapping` 钉死）；该窗口由 CAMetalLayer 自身的
+drawable 数量背压覆盖。

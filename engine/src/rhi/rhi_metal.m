@@ -9,6 +9,11 @@
  * through metal_commit (addCompletedHandler status check), and idle/destroy
  * drain through a bounded (20 s) MTLSharedEvent wait because
  * waitUntilCompleted has no timeout and hangs forever on a wedged GPU.
+ * Task 5 state: the frame family is wired — drawable acquire with a bounded
+ * nextDrawable retry, two-slot MTLSharedEvent pacing, present folded into
+ * frame_end (present-before-commit is a Metal hard constraint), resize as
+ * dev-dimension bookkeeping, and clear-only render passes. Teardown quiesces
+ * pending completion handlers before free(mb) (Task 4 review handoff).
  * Every other entry point logs and fails closed until its family is filled
  * in by the later plan-C tasks. */
 #import <Metal/Metal.h>
@@ -22,17 +27,24 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+
+struct RHICmdBuffer;
 
 typedef struct {
     id<MTLDevice> device;
     id<MTLCommandQueue> queue;
     CAMetalLayer *layer;          /* not owned; owned by the platform layer */
     id<MTLLibrary> library;       /* offline-compiled shader library (Task 10) */
-    id<MTLSharedEvent> frame_event;
-    u64 frame_counter;            /* monotonically increasing; slot = counter % 2 */
-    u64 slot_signaled[2];         /* per-slot completed frame value */
+    id<MTLSharedEvent> frame_event; /* frame pacing signals (frame_counter values) */
+    id<MTLSharedEvent> drain_event; /* Task 4 bounded drain (drain_counter values) */
+    u64 frame_counter;            /* frames presented; slot = counter % 2 */
     u64 drain_counter;            /* MTLSharedEvent values for bounded drain waits */
     id<CAMetalDrawable> drawable; /* current acquired drawable, nil between frames */
+    struct RHICmdBuffer *frame_cmd; /* cached per-frame recording state */
+    _Atomic u32 pending_handlers; /* commits whose completion handler has not run */
+    bool frame_started;           /* acquire done, submit not yet */
+    bool frame_submitted;         /* submit done, present not yet */
     bool device_lost_latch;       /* sticky; mirrors rhi_vk.c device-lost semantics */
     bool suspended;               /* iOS host-driven pause: acquire returns BUSY */
     RHIFormat swapchain_format;   /* from the layer's pixelFormat */
@@ -128,17 +140,42 @@ static void metal_check_cmd_error(RHIDevice *dev, MetalBackend *mb,
 
 /* Single commit funnel: every submitted command buffer carries a
  * completedHandler so an asynchronously-reported GPU fault latches the
- * device lost. Fail-fast when already latched. */
+ * device lost. Fail-fast when already latched. The handler captures dev/mb
+ * raw, so pending_handlers tracks handlers in flight and destroy quiesces
+ * them before free(mb) (Task 4 review handoff: a late handler firing after
+ * teardown is a UAF). */
 static RHIResult metal_commit(RHIDevice *dev, id<MTLCommandBuffer> cmd) {
     MetalBackend *mb = (MetalBackend *)dev->backend_data;
     if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    atomic_fetch_add_explicit(&mb->pending_handlers, 1u, memory_order_acq_rel);
     [cmd addCompletedHandler:^(id<MTLCommandBuffer> finished) {
         @autoreleasepool {
             metal_check_cmd_error(dev, mb, finished, "completion");
         }
+        atomic_fetch_sub_explicit(&mb->pending_handlers, 1u, memory_order_acq_rel);
     }];
     [cmd commit];
     return RHI_RESULT_OK;
+}
+
+/* Bounded wait until every committed buffer's completion handler has run.
+ * Handlers fire only when their buffer completes, so after a successful
+ * drain this only waits out handler-queue dispatch latency; on a wedged GPU
+ * the buffers never complete and the handlers never fire, so a timeout here
+ * cannot strand a live handler either (teardown stays bounded). */
+static void metal_quiesce_handlers(MetalBackend *mb) {
+    u64 waited_ms = 0u;
+    while (atomic_load_explicit(&mb->pending_handlers, memory_order_acquire) != 0u) {
+        if (waited_ms >= RHI_METAL_DRAIN_TIMEOUT_MS) {
+            LOG_ERROR("rhi_metal: %u completion handlers still pending at teardown",
+                      (unsigned)atomic_load_explicit(&mb->pending_handlers,
+                                                     memory_order_acquire));
+            return;
+        }
+        /* 1ms backoff: nanosleep stays C11-friendly in this Obj-C TU. */
+        { struct timespec ts = { 0, 1000000L }; nanosleep(&ts, NULL); }
+        waited_ms += 1u;
+    }
 }
 
 /* Bounded queue drain. waitUntilCompleted has no timeout and hangs forever
@@ -146,13 +183,17 @@ static RHIResult metal_commit(RHIDevice *dev, id<MTLCommandBuffer> cmd) {
  * MTLSharedEvent with a 20 s bound — the VK fence-unsignaled rule
  * (rhi.h:854-858), matching rhi_d3d12_drain_gpu's 20 s fence timeout. On
  * timeout the device is latched lost and the first report is SYNC_FAILED;
- * the wrapper upgrades to DEVICE_LOST on subsequent calls via the latch. */
+ * the wrapper upgrades to DEVICE_LOST on subsequent calls via the latch.
+ * The drain signals drain_event with drain_counter values, deliberately
+ * separate from frame_event/frame_counter (Task 5 pacing): one event's
+ * signaledValue is monotonic, so sharing it would let drain signals satisfy
+ * frame waits early. */
 static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
     if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
     if (mb->queue == nil) return RHI_RESULT_OK;
-    if (mb->frame_event == nil) {
-        mb->frame_event = [mb->device newSharedEvent];
-        if (mb->frame_event == nil) {
+    if (mb->drain_event == nil) {
+        mb->drain_event = [mb->device newSharedEvent];
+        if (mb->drain_event == nil) {
             LOG_ERROR("rhi_metal: newSharedEvent failed");
             return RHI_RESULT_SYNC_FAILED;
         }
@@ -163,11 +204,11 @@ static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
         return RHI_RESULT_SYNC_FAILED;
     }
     u64 value = ++mb->drain_counter;
-    [drain encodeSignalEvent:mb->frame_event value:value];
+    [drain encodeSignalEvent:mb->drain_event value:value];
     RHIResult commit_result = metal_commit(dev, drain);
     if (commit_result != RHI_RESULT_OK) return commit_result;
-    if (![mb->frame_event waitUntilSignaledValue:value
-                                       timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
+    if (![mb->drain_event waitUntilSignaledValue:value
+                                     timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
         LOG_ERROR("rhi_metal: shared event unsignaled after %llu ms — "
                   "treating device as lost",
                   (unsigned long long)RHI_METAL_DRAIN_TIMEOUT_MS);
@@ -191,6 +232,8 @@ struct RHICmdBuffer {
     id<MTLBlitCommandEncoder> blit_encoder;
     u8 push_staging[RHI_METAL_MAX_PUSH_BYTES];
     RHIPipeline bound_pipeline;
+    f32 clear_color[4];           /* pending/next clear color (MTLClearColor) */
+    bool clear_pending;           /* next render pass opens with LoadActionClear */
     bool render_pass_open;
 };
 
@@ -300,21 +343,36 @@ void rhi_device_destroy(RHIDevice *dev) {
     if (dev == NULL) return;
     MetalBackend *mb = (MetalBackend *)dev->backend_data;
     if (mb != NULL) {
-        /* Drain before releasing any Obj-C handle. The drain is bounded
-         * (20 s shared-event wait, Task 4): a wedged GPU must not hang
-         * teardown — on timeout the device is latched lost and teardown
-         * proceeds. */
+        /* §4.3: destroy drains first — via the implementation-internal idle
+         * (bounded frame-signal wait + Task 4 bounded queue drain). A wedged
+         * GPU must not hang teardown: on timeout the device is latched lost
+         * and teardown proceeds. */
+        (void)rhi_device_idle(dev);
+        /* Task 4 review handoff: frame commits reuse metal_commit, whose
+         * completion handlers capture dev/mb raw; free(mb) while a handler
+         * is pending is a UAF. Quiesce them (bounded) before releasing. */
+        metal_quiesce_handlers(mb);
         @autoreleasepool {
-            (void)metal_drain(dev, mb);
+            if (mb->drawable != nil) {   /* nil between frames; retained at acquire */
+                [mb->drawable release];
+                mb->drawable = nil;
+            }
+            if (mb->frame_cmd != NULL) {
+                if (mb->frame_cmd->render_encoder != nil) {
+                    [mb->frame_cmd->render_encoder endEncoding];
+                    [mb->frame_cmd->render_encoder release];
+                    mb->frame_cmd->render_encoder = nil;
+                }
+                [mb->frame_cmd->cmd release];   /* nil between frames; no-op then */
+                free(mb->frame_cmd);
+                mb->frame_cmd = NULL;
+            }
+            [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
+            [mb->frame_event release];   /* created lazily by rhi_frame_begin */
+            [mb->drain_event release];   /* created lazily by metal_drain */
+            [mb->queue release];
+            [mb->device release];
         }
-        if (mb->drawable != nil) {   /* nil between frames; retained at acquire (Task 5) */
-            [mb->drawable release];
-            mb->drawable = nil;
-        }
-        [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
-        [mb->frame_event release];   /* created lazily by metal_drain */
-        [mb->queue release];
-        [mb->device release];
         free(mb);
         dev->backend_data = NULL;
     }
@@ -323,38 +381,265 @@ void rhi_device_destroy(RHIDevice *dev) {
 }
 
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
-    LOG_ERROR("rhi_metal: rhi_device_resize not implemented");
-    (void)dev;
-    (void)w;
-    (void)h;
+    MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
+    if (mb == NULL) {
+        if (dev != NULL) rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
+    /* Only the RHI-side dimensions are updated; layer.drawableSize is owned
+     * by the window layer (window_cocoa.m cocoa_update_drawable_size). The
+     * next acquire adopts the layer's actual size — the "swapchain auto
+     * rebuild" semantic needs no explicit teardown here. */
+    dev->width = w;
+    dev->height = h;
+}
+
+/* nextDrawable with a bounded retry: a nil drawable means the layer's
+ * drawable pool is exhausted (all in flight), so back off 1 ms and retry up
+ * to a 1 s deadline. nil past the deadline maps to OUT_OF_DATE (fail-fast);
+ * a latched device maps to DEVICE_LOST. Returns a retained drawable. */
+static id<CAMetalDrawable> metal_acquire_drawable(MetalBackend *mtl, RHIDevice *dev) {
+    const u64 deadline_ms = 1000u;
+    u64 waited_ms = 0u;
+    for (;;) {
+        @autoreleasepool {
+            id<CAMetalDrawable> d = [mtl->layer nextDrawable];
+            if (d != nil) return [d retain];
+        }
+        if (mtl->device_lost_latch) {
+            rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+            return nil;
+        }
+        if (waited_ms >= deadline_ms) {
+            rhi_device_set_lifecycle_result(dev, RHI_RESULT_OUT_OF_DATE);
+            return nil;
+        }
+        /* 1ms backoff: usleep via nanosleep to stay C11-friendly in Obj-C TU. */
+        struct timespec ts = { 0, 1000000L };
+        nanosleep(&ts, NULL);
+        waited_ms += 1u;
+    }
+}
+
+static bool metal_ensure_frame_event(RHIDevice *dev, MetalBackend *mb) {
+    if (mb->frame_event != nil) return true;
+    mb->frame_event = [mb->device newSharedEvent];
+    if (mb->frame_event == nil) {
+        LOG_ERROR("rhi_metal: newSharedEvent failed");
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_SYNC_FAILED);
+        return false;
+    }
+    return true;
 }
 
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_frame_begin not implemented");
-    (void)dev;
-    return NULL;
+    if (dev == NULL) return NULL;
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return NULL;
+    }
+    /* spec §4.3: one in-flight acquire->submit pair max. */
+    if (mb->frame_started || !rhi_frame_owner_begin_backend(dev)) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_BUSY);
+        return NULL;
+    }
+    g_current_device = dev;
+    dev->frame_partial_active = false;
+    if (mb->device_lost_latch) { /* sticky latch: quiet fail-fast, no spam */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    if (mb->suspended) {   /* iOS host-driven pause (Task 14 wires the setter) */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_BUSY);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    if (mb->layer == nil) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_SURFACE_LOST);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    /* commandBuffer and friends are autoreleased; the C caller may have no
+     * pool in place (rhi_frame_begin is a plain C entry point), so scope one
+     * here. The drawable and cmd buffer are retained and survive the drain. */
+    @autoreleasepool {
+    if (!metal_ensure_frame_event(dev, mb)) {
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    /* Two-slot pacing: the slot being acquired was last used by frame
+     * frame_counter-2; wait for its completion signal (bounded, 20 s —
+     * same VK fence rule as metal_drain). wait_value 0 is trivially
+     * satisfied (initial signaledValue is 0), so the first reuse after
+     * frame 0 does not block; CAMetalLayer's own drawable backpressure
+     * covers that window (pinned by test_rhi_metal_format_mapping). */
+    if (mb->frame_counter >= 2u &&
+        ![mb->frame_event waitUntilSignaledValue:
+              rhi_metal_slot_wait_value(mb->frame_counter)
+                                       timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
+        LOG_ERROR("rhi_metal: frame pacing event unsignaled after %llu ms",
+                  (unsigned long long)RHI_METAL_DRAIN_TIMEOUT_MS);
+        metal_note_device_lost(dev, mb, "frame pacing timeout");
+        /* First report is SYNC_FAILED; the latch upgrades later calls. */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_SYNC_FAILED);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    mb->drawable = metal_acquire_drawable(mb, dev);   /* sets lifecycle on failure */
+    if (mb->drawable == nil) {
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    if (mb->drawable.texture == nil) {
+        [mb->drawable release];
+        mb->drawable = nil;
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_SURFACE_LOST);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    /* Drawable-size adoption: the window layer owns drawableSize
+     * (windowDidResize -> cocoa_update_drawable_size), so a stale dev
+     * dimension picks up the layer's actual size here instead of any
+     * explicit swapchain rebuild. An invalid (e.g. minimized 0x0) layer
+     * size is not adopted; the acquire retry above already bounded it. */
+    {
+        CGSize layer_size = mb->layer.drawableSize;
+        u32 lw = (u32)(layer_size.width + 0.5);
+        u32 lh = (u32)(layer_size.height + 0.5);
+        if (rhi_drawable_dimensions_valid(lw, lh) &&
+            (lw != dev->width || lh != dev->height)) {
+            dev->width = lw;
+            dev->height = lh;
+        }
+    }
+    id<MTLCommandBuffer> mtl_cmd = [mb->queue commandBuffer];
+    if (mtl_cmd == nil) {
+        LOG_ERROR("rhi_metal: command buffer allocation failed");
+        [mb->drawable release];
+        mb->drawable = nil;
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_ERROR);
+        rhi_frame_owner_release(dev);
+        return NULL;
+    }
+    if (mb->frame_cmd == NULL) {
+        mb->frame_cmd = (RHICmdBuffer *)calloc(1u, sizeof(*mb->frame_cmd));
+        if (mb->frame_cmd == NULL) {
+            [mb->drawable release];
+            mb->drawable = nil;
+            rhi_device_set_lifecycle_result(dev, RHI_RESULT_ERROR);
+            rhi_frame_owner_release(dev);
+            return NULL;
+        }
+        mb->frame_cmd->backend = mb;
+    }
+    RHICmdBuffer *cmd = mb->frame_cmd;
+    cmd->cmd = [mtl_cmd retain];   /* autoreleased by the queue; we hold it to frame_end */
+    cmd->render_encoder = nil;
+    cmd->render_pass_open = false;
+    /* A fresh drawable's contents are undefined, so the first pass of every
+     * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
+    cmd->clear_color[0] = 0.0f;
+    cmd->clear_color[1] = 0.0f;
+    cmd->clear_color[2] = 0.0f;
+    cmd->clear_color[3] = 1.0f;
+    cmd->clear_pending = true;
+    mb->frame_started = true;
+    mb->frame_submitted = false;
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+    return cmd;
+    }   /* @autoreleasepool */
 }
 
 void rhi_frame_end(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_frame_end not implemented");
-    (void)dev;
+    if (dev == NULL) return;
+    if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
+    @autoreleasepool {
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || !mb->frame_started) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
+    RHICmdBuffer *cmd = mb->frame_cmd;
+    if (cmd != NULL && cmd->render_encoder != nil) {
+        [cmd->render_encoder endEncoding];
+        [cmd->render_encoder release];
+        cmd->render_encoder = nil;
+        cmd->render_pass_open = false;
+    }
+    id<MTLCommandBuffer> mtl_cmd = cmd != NULL ? cmd->cmd : nil;
+    RHIResult result = RHI_RESULT_OK;
+    if (mtl_cmd == nil || mb->drawable == nil || mb->frame_event == nil) {
+        /* Unreachable on the healthy path (frame_started implies all three);
+         * fail closed instead of committing a present-less buffer. */
+        LOG_ERROR("rhi_metal: frame_end without a live command buffer/drawable");
+        result = RHI_RESULT_ERROR;
+    } else {
+        /* presentDrawable must be attached before commit (Metal hard
+         * constraint), so the Metal backend folds present semantics into
+         * frame_end; rhi_present is bookkeeping only. */
+        [mtl_cmd presentDrawable:mb->drawable];
+        [mtl_cmd encodeSignalEvent:mb->frame_event value:mb->frame_counter];
+        result = metal_commit(dev, mtl_cmd);
+    }
+    if (mb->drawable != nil) {
+        [mb->drawable release];   /* Metal retains it for the scheduled present */
+        mb->drawable = nil;
+    }
+    if (cmd != NULL) {
+        [cmd->cmd release];       /* our retain; the queue keeps it alive */
+        cmd->cmd = nil;
+    }
+    mb->frame_started = false;
+    mb->frame_submitted = (result == RHI_RESULT_OK);
+    rhi_device_set_lifecycle_result(dev, result);
+    /* The frame owner stays held until rhi_present (D3D12 parity). */
+    }   /* @autoreleasepool */
 }
 
 void rhi_present(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_present not implemented");
-    (void)dev;
+    if (dev == NULL) return;
+    if (!rhi_frame_owner_is_current(dev) || g_current_device != dev) return;
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_UNAVAILABLE);
+        return;
+    }
+    if (mb->device_lost_latch) {
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
+        goto out_release;
+    }
+    if (!mb->frame_submitted) {
+        /* spec §4.3: present only after a successful submit. */
+        rhi_device_set_lifecycle_result(dev, RHI_RESULT_ERROR);
+        goto out_release;
+    }
+    /* presentDrawable was attached pre-commit in rhi_frame_end (Metal hard
+     * constraint); present is bookkeeping only — advance the pacing counter
+     * and clear the damage state. */
+    mb->frame_counter++;
+    mb->frame_submitted = false;
+    rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
+out_release:
+    dev->frame_damage_requested = false;
+    dev->frame_damage_count = 0u;
+    dev->frame_current_damage_count = 0u;
+    dev->frame_partial_active = false;
+    rhi_frame_owner_release(dev);
 }
 
 void rhi_set_vsync(RHIDevice *dev, bool enabled) {
-    LOG_ERROR("rhi_metal: rhi_set_vsync not implemented");
-    (void)dev;
-    (void)enabled;
+    MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
+    if (mb == NULL || mb->layer == nil) return;
+    /* displaySyncEnabled is macOS 10.13+; guard for older SDKs/hosts. */
+    if ([mb->layer respondsToSelector:@selector(setDisplaySyncEnabled:)])
+        mb->layer.displaySyncEnabled = enabled ? YES : NO;
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_frame_index not implemented");
-    (void)dev;
-    return 0u;
+    MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
+    return mb != NULL ? rhi_metal_frame_slot(mb->frame_counter) : 0u;
 }
 
 bool rhi_device_idle(RHIDevice *dev) {
@@ -364,8 +649,21 @@ bool rhi_device_idle(RHIDevice *dev) {
      * blocking on a dead device; the wrapper maps this to DEVICE_LOST. */
     if (mb->device_lost_latch || dev->status == RHI_DEVICE_STATUS_LOST)
         return false;
-    /* Diagnostic probe parity with VK (rhi_vk.c rhi_device_idle): a full
-     * drain makes an asynchronously-reported loss observable at the probe
+    /* §4.3 drain row: wait for the last submitted frame's signal
+     * (0 frames -> immediate success). Bounded 20 s; a timeout latches the
+     * device lost and the wrapper reports SYNC_FAILED first. */
+    if (mb->frame_counter >= 1u && mb->frame_event != nil &&
+        ![mb->frame_event waitUntilSignaledValue:mb->frame_counter - 1u
+                                      timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
+        LOG_ERROR("rhi_metal: last frame unsignaled after %llu ms",
+                  (unsigned long long)RHI_METAL_DRAIN_TIMEOUT_MS);
+        metal_note_device_lost(dev, mb, "frame drain timeout");
+        return false;
+    }
+    /* Diagnostic probe parity with VK (rhi_vk.c rhi_device_idle): the
+     * Task 4 queue-wide bounded drain stays — it covers non-frame commits
+     * and the degenerate frame-0 signal (value 0 == initial signaledValue),
+     * and makes an asynchronously-reported loss observable at the probe
      * site. Bounded — never hangs on a wedged GPU. */
     bool idle_ok;
     @autoreleasepool {
@@ -640,13 +938,51 @@ void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
 }
 
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_begin_render_pass not implemented");
-    (void)cmd;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    MetalBackend *mb = cmd->backend;
+    if (cmd->render_pass_open) {
+        LOG_ERROR("rhi_metal: render pass already open");
+        return;
+    }
+    if (cmd->cmd == nil || mb->drawable == nil) {
+        /* Fail closed: no frame in flight (or no drawable) — nothing to
+         * encode into. */
+        LOG_ERROR("rhi_metal: begin_render_pass outside a live frame");
+        return;
+    }
+    /* Descriptor/encoder factory methods are autoreleased; scope a pool for
+     * C callers. The encoder itself is retained and survives the drain. */
+    @autoreleasepool {
+    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = mb->drawable.texture;
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    if (cmd->clear_pending) {
+        pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+        pass.colorAttachments[0].clearColor =
+            MTLClearColorMake((double)cmd->clear_color[0],
+                              (double)cmd->clear_color[1],
+                              (double)cmd->clear_color[2],
+                              (double)cmd->clear_color[3]);
+        cmd->clear_pending = false;
+    } else {
+        pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+    }
+    cmd->render_encoder =
+        [[cmd->cmd renderCommandEncoderWithDescriptor:pass] retain];
+    if (cmd->render_encoder == nil) {
+        LOG_ERROR("rhi_metal: renderCommandEncoderWithDescriptor failed");
+        return;
+    }
+    cmd->render_pass_open = true;
+    }   /* @autoreleasepool */
 }
 
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_end_render_pass not implemented");
-    (void)cmd;
+    if (cmd == NULL || !cmd->render_pass_open) return;
+    [cmd->render_encoder endEncoding];
+    [cmd->render_encoder release];
+    cmd->render_encoder = nil;
+    cmd->render_pass_open = false;
 }
 
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
@@ -769,12 +1105,26 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
 }
 
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
-    LOG_ERROR("rhi_metal: rhi_cmd_clear_color not implemented");
-    (void)cmd;
-    (void)r;
-    (void)g;
-    (void)b;
-    (void)a;
+    if (cmd == NULL) return;
+    cmd->clear_color[0] = r;
+    cmd->clear_color[1] = g;
+    cmd->clear_color[2] = b;
+    cmd->clear_color[3] = a;
+    if (!cmd->render_pass_open) {
+        /* Outside a pass: the next begin_render_pass opens with
+         * loadAction=Clear and this color. */
+        cmd->clear_pending = true;
+        return;
+    }
+    /* Inside a pass: Metal clears are render-pass load actions, so flush the
+     * current encoder (its recorded work stays in the command buffer) and
+     * reopen with loadAction=Clear + the new color. */
+    [cmd->render_encoder endEncoding];
+    [cmd->render_encoder release];
+    cmd->render_encoder = nil;
+    cmd->render_pass_open = false;
+    cmd->clear_pending = true;
+    rhi_cmd_begin_render_pass(cmd);
 }
 
 void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f32 g, f32 b, f32 a) {
