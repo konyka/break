@@ -1,4 +1,4 @@
-# Metal / D3D12 特性矩阵（规划态）
+# Metal / D3D12 特性矩阵（Metal 规划态 / D3D12 已落地 GPU_RUNTIME）
 
 两个后端的公开入口均为现有 `rhi_*` 符号集（`engine/src/rhi/rhi.h`）；本表跟踪各特性面在后端内的落地状态。状态枚举：NONE（无代码）/ PLANNED（已排期）/ HEADLESS / NATIVE_SURFACE / GPU_RUNTIME / BENCHMARK_COMPARABLE。
 
