@@ -154,3 +154,85 @@ host-injection 模型保证：宿主在 background 期间**自律不调用**任�
 API（window_mobile.c 是纯注入壳，无事件上报钩子，本计划不给它加）。后端
 的 suspended 检查只是宿主误调时的防御性兜底，不构成完整的
 pause/resume 生命周期实现；iOS 模拟器 lifecycle lane 归 Task 14。
+
+## Task 8：pipeline 字段映射 + FBO/MRT/shadow bind 契约（R616-R619）
+
+### encoder 生命周期规则
+
+**同一 cmd buffer 同时最多一个 encoder open。** 切换 render target 或
+encoder 类型时先 `endEncoding` 当前 encoder（已录工作留在 command
+buffer 里），再以新 `MTLRenderPassDescriptor` 开下一个——Metal 没有
+GL 的 "bind framebuffer" 概念，FBO 切换 == 换 pass descriptor 重建
+encoder。统一入口：`metal_end_render_encoder` /
+`metal_open_render_pass`（后者顺带把 viewport/scissor 钉到目标全尺寸，
+对齐 VK bind 路径的 non-flipped viewport + full scissor）。unbind 族
+（offscreen/MRT/shadow/cubemap-depth）= endEncoding + 重开屏幕 pass
+（`metal_screen_unbind`：color 用 `loadAction=Clear` + `cmd->clear_color`
+——VK unbind 以烘焙色清屏的等价形态，颜色所有权在
+`rhi_cmd_clear_color`；depth 恒清 1.0）。
+
+### RHIPipelineDesc → MTLRenderPipelineDescriptor 逐项映射
+
+| 字段 | Metal 映射 |
+|---|---|
+| `vert`/`frag` | slot payload 取 `id<MTLFunction>` → `vertexFunction`/`fragmentFunction`；`is_shadow_depth` 允许 frag 为 null handle（fragmentFunction=nil，depth-only pass） |
+| `vertex_stride`+`font_vertex`/`skinned_vertex`/`is_shadow_depth`/`no_vertex_input` | `MTLVertexDescriptor`，布局表逐字段移植自 rhi_vk.c `vk_build_graphics_pipeline`（font 32B float2+float2+float4；skinned 64B float3×2+float2+uint4+float4；shadow 仅 float3@0；stride==12 仅 float3@0；默认 float3+float3+float2），全 bufferIndex 0、PerVertex |
+| `depth_compare_lequal`/`depth_write_disable` | 缓存的 `MTLDepthStencilState`（Less/LessEqual × write on/off 四态，`MetalBackend.depth_states[4]` 懒建）。**R445**：write_disable 且非 lequal → payload `depth_state=nil`，bind 时不设 depth state == 深度测试全关 |
+| `disable_culling`/`wireframe`/winding | Metal 的 cull/fill/winding 是 **encoder 状态**（非 PSO），payload 记录、bind 时 `setCullMode:`/`setTriangleFillMode:`/`setFrontFacingWinding:Clockwise`（VK frontFace 对齐） |
+| `alpha_blend`/`alpha_blend_color_only` | attachment blendingEnabled + srcAlpha/oneMinusSrcAlpha Add（rgb/alpha 同式）；color_only 且 >1 attachment 时 RT1 关混合（Metal 恒有 independent blend，无 VK 的 feature 门） |
+| `point_list` | payload 记录，`rhi_cmd_draw` 用 `MTLPrimitiveTypePoint`（R168-C） |
+| `color_format` | 默认（`R8G8B8A8_UNORM==0`）= swapchain 格式（macOS 为 BGRA8）；否则经格式映射层。**Metal 无 VK 的 render-pass variant 机制**：pipeline 绑定单格式，跨格式复用需按 format 建多条 pipeline（已知边界，引擎集成归 Task 11） |
+| `sample_count` | `rasterSampleCount`（0→1），超 capabilities 位集 fail-closed |
+| `mrt_attachment_count`/`mrt_formats` | 逐 attachment 设 pixelFormat（≤5，共享 `rhi_mrt_formats_valid` 门）；`depthAttachmentPixelFormat=Depth32Float`（所有 RHI pass 都带 D32 深度，屏幕 pass 自 Task 8 起也带——见下） |
+| `terrain_layout`/`water_layout`/`combined_aa_layout`/`combined_color_layout`/`uses_textures`/`uses_texel_buffer`/`uses_storage` | 存入 payload `desc` 拷贝（VK build_desc 同形），绑定表/偏移消费归 Task 11 |
+| `is_compute` | fail-closed 记日志（Task 9 家族） |
+
+### 屏幕 pass 深度附件
+
+VK swapchain pass 带 D32 深度附件；Metal 屏幕 pass 自 Task 5 起只有
+color。Task 8 的 pipeline 一律声明 `depthAttachmentPixelFormat=D32Float`，
+Metal 校验要求 pass 与 PSO 格式一致，故 `MetalBackend` 增
+`screen_depth`（drawable 尺寸的私有 D32 texture，尺寸漂移时懒重建；
+旧 texture 由在飞帧的 encoder retain，release 不悬垂）。屏幕 pass
+depth 恒 `Clear 1.0 / Store`（VK parity）。
+
+### FBO 族（R616/R617/R618/R619）
+
+Metal 无 framebuffer 对象：`RHIOffscreenFBO`/`RHIMRTFBO`/
+`RHIShadowMap`/`RHICubemapDepthFBO` = texture 句柄组 + 小 payload
+（offscreen 带 R619 clear_color 与 MSAA texture；MRT 带 attachment
+计数与格式表）。bind = 现场组 `MTLRenderPassDescriptor`：
+
+- `rhi_offscreen_fbo_bind`：color `Clear`（per-FBO clear color，默认
+  {0.05,0.05,0.1,1.0}）+ depth `Clear 1.0`；`bind_load`：全 `Load`。
+  由 `fbo_bind_clears_default_and_bind_load_preserves` 像素级钉死
+  （含 ±1 unorm 舍入容差）。
+- `rhi_mrt_fbo_bind`：每 attachment `Clear (0,0,0,0)` + depth `Clear 1.0`；
+  `bind_load` 全 `Load`。`mrt_two_attachments_distinct_colors` 钉双色
+  分别落位；`mrt_five_attachments_create_and_clear` 钉 5 上限 + 6 拒绝。
+- `rhi_cmd_bind_shadow_map` / `rhi_cubemap_depth_fbo_bind_face`：
+  depth-only pass `Clear 1.0`（无 load 孪生，R618）；cubemap 经
+  `depthAttachment.slice` 选面。D32 读回全 1.0f 钉死。
+- MSAA FBO：`MTLTextureType2DMultisample` color/depth +
+  `storeAction=MultisampleResolve` 到单样 resolve texture 的完整支路
+  已实现（`color_resolve_supported==true` 的消费点），但经公开 API
+  **当前不可达**：共享校验器 `rhi_offscreen_fbo_desc_validate` 要求
+  color+depth resolve 双支持，而 Task 3 把 `depth_resolve_supported`
+  fail-closed 为 false——`offscreen_fbo_msaa_desc_fails_closed` 钉死
+  该门（VK 同形门）。
+
+### shader 过渡路径（Task 8 内嵌桩 → Task 10 切换）
+
+`rhi_shader_create{,_compute}` 走 `newLibraryWithSource:` 运行时编译，
+entry 约定 `vs_main`/`fs_main`/`cs_main`；payload 同时 retain
+library + function（function 不得长于 library）。Task 10 的 manifest/
+metallib 加载落地后改为从 `MetalBackend.library` 解析函数，本路径只
+保留为测试桩。
+
+### 顺手项（Task 8 内闭环）
+
+- `device_lost_latch` → `_Atomic bool`（completion handler 在任意队列
+  写、API 线程读；`metal_note_device_lost` 改 `atomic_exchange` 只记
+  首次日志）。Task 4/5 评审遗留 minor。
+- frame_end/device_destroy/clear_color 的 encoder 收尾统一走
+  `metal_end_render_encoder`。

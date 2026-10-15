@@ -9,7 +9,14 @@
  * and 2D texture arrays (R441 layer upload). Runs on macOS with
  * ENGINE_RHI_BACKEND_METAL; everywhere else it exits 77 (SKIP). The
  * CAMetalLayer is created offscreen, same pattern as
- * test_rhi_metal_frame_lifecycle. */
+ * test_rhi_metal_frame_lifecycle.
+ *
+ * Task 8 appends the pipeline/FBO family: RHIPipelineDesc field mapping
+ * (vertex layouts, depth/cull/blend state, color_format/MRT attachment
+ * formats), the R616/R617 bind/bind_load clear-vs-preserve contract, the
+ * R618 shadow depth clear, and the R619 caller-owned clear color. Shaders
+ * ride the interim MSL-source path (newLibraryWithSource:, entry
+ * convention vs_main/fs_main) until Task 10 lands the manifest loader. */
 #if defined(ENGINE_RHI_BACKEND_METAL) && defined(ENGINE_PLATFORM_MACOS)
 
 /* CAMetalLayer creation needs Objective-C; metal_test_layer.m wraps it so
@@ -319,6 +326,335 @@ TEST(cubemap_invalid_desc_rejected) {
     ASSERT_TRUE(handle_is_null(rhi_cubemap_create(g_dev, &desc)));
 }
 
+/* ---- Task 8: pipeline / FBO / MRT / shadow contracts ----
+ * Minimal inline MSL (interim Task 8 stub path; Task 10 switches shader
+ * loading to the manifest/metallib pipeline). Entry-name convention for
+ * the interim path: vertex = vs_main, fragment = fs_main. */
+static const char *k_msl_vs_passthrough =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "vertex float4 vs_main(uint vid [[vertex_id]]) {\n"
+    "    float2 p[3] = { float2(-1.0, -1.0), float2(3.0, -1.0),\n"
+    "                    float2(-1.0, 3.0) };\n"
+    "    return float4(p[vid], 0.5, 1.0);\n"
+    "}\n";
+
+static const char *k_msl_fs_red =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "fragment float4 fs_main() { return float4(1.0, 0.0, 0.0, 1.0); }\n";
+
+static const char *k_msl_fs_mrt =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct MRTOut { float4 c0 [[color(0)]]; float4 c1 [[color(1)]]; };\n"
+    "fragment MRTOut fs_main() {\n"
+    "    MRTOut o;\n"
+    "    o.c0 = float4(1.0, 0.0, 0.0, 1.0);\n"
+    "    o.c1 = float4(0.0, 1.0, 0.0, 1.0);\n"
+    "    return o;\n"
+    "}\n";
+
+static RHIShader make_shader(const char *msl, bool is_fragment) {
+    /* Null-handle on failure; the caller asserts non-null. */
+    return rhi_shader_create(g_dev, msl, (usize)strlen(msl), is_fragment);
+}
+
+/* Frame wrapper pair (rhi_frame_acquire_ex/end_ex/present_ex), same
+ * pattern as test_rhi_metal_frame_lifecycle. begin_frame returns NULL on
+ * failure; the caller asserts non-null. */
+static RHICmdBuffer *begin_frame(void) {
+    RHIResult r = RHI_RESULT_OK;
+    RHICmdBuffer *cmd = rhi_frame_acquire_ex(g_dev, &r);
+    if (cmd == NULL || r != RHI_RESULT_OK) return NULL;
+    return cmd;
+}
+
+static void end_frame(void) {
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+}
+
+/* Exact-match pixel for colors built from 0.0/1.0 only (unorm-exact). */
+static void assert_center_px(const u8 *px, u32 w, u32 h,
+                             u8 e0, u8 e1, u8 e2, u8 e3) {
+    const u8 *c = px + ((usize)(h / 2u) * w + (usize)(w / 2u)) * 4u;
+    ASSERT_EQ((u32)c[0], (u32)e0);
+    ASSERT_EQ((u32)c[1], (u32)e1);
+    ASSERT_EQ((u32)c[2], (u32)e2);
+    ASSERT_EQ((u32)c[3], (u32)e3);
+}
+
+TEST(pipeline_offscreen_fbo_draw_readback) {
+    /* RHIPipelineDesc mapping smoke test: default color_format (0 ==
+     * swapchain, BGRA8) + no_vertex_input + depth defaults, drawn into a
+     * default (BGRA8) offscreen FBO. The fullscreen red triangle covers
+     * the center pixel; BGRA8 readback is native byte order B,G,R,A. */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    ASSERT_FALSE(handle_is_null(fbo.depth_tex));
+    ASSERT_EQ(fbo.width, 64u);
+    ASSERT_EQ(fbo.height, 64u);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    ASSERT_FALSE(rhi_handle_valid(fbo.fb));
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(fbo_bind_clears_default_and_bind_load_preserves) {
+    /* R617/R619: bind clears to the per-FBO clear color (default
+     * {0.05, 0.05, 0.1, 1.0} in BGRA bytes ~= {26, 13, 13, 255});
+     * set_clear_color replaces it; bind_load preserves prior content. */
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *c;
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);   /* clear only, no draw */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    c = px + ((usize)32u * 64u + 32u) * 4u;
+    /* 0.1*255=25.5 and 0.05*255=12.75: GPU unorm rounding, allow +-1. */
+    ASSERT_TRUE(c[0] >= 25u && c[0] <= 27u);   /* B = 0.1  */
+    ASSERT_TRUE(c[1] >= 12u && c[1] <= 14u);   /* G = 0.05 */
+    ASSERT_TRUE(c[2] >= 12u && c[2] <= 14u);   /* R = 0.05 */
+    ASSERT_EQ((u32)c[3], 255u);                /* A = 1.0  */
+    /* R619: caller-owned clear color replaces the default. */
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 1.0f, 0.0f, 0.0f, 1.0f);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    /* R617 dual: bind_load preserves — a load pass with no draw leaves the
+     * previous frame's pixels untouched. */
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind_load(cmd, &fbo);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
+TEST(mrt_two_attachments_distinct_colors) {
+    /* R616: mrt bind clears every attachment to (0,0,0,0); the MRT
+     * pipeline's fragment outputs land in their own attachments (RGBA8
+     * here, so readback order is R,G,B,A). */
+    RHIFormat formats[2] = { RHI_FORMAT_R8G8B8A8_UNORM,
+                             RHI_FORMAT_R8G8B8A8_UNORM };
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_mrt, true);
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIMRTFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.mrt_attachment_count = 2u;
+    desc.mrt_formats[0] = formats[0];
+    desc.mrt_formats[1] = formats[1];
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_mrt_fbo_create(g_dev, 64u, 64u, formats, 2u);
+    ASSERT_FALSE(handle_is_null(fbo.fb));
+    ASSERT_EQ(fbo.attachment_count, 2u);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px,
+                                        sizeof(px)));
+    assert_center_px(px, 64u, 64u, 255u, 0u, 0u, 255u);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], px,
+                                        sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 255u, 0u, 255u);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    ASSERT_FALSE(rhi_handle_valid(fbo.fb));
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(mrt_five_attachments_create_and_clear) {
+    /* RHI_MRT_MAX_ATTACHMENTS == 5: the maximum-size MRT FBO creates and
+     * its bind clears all five attachments to (0,0,0,0). Six attachments
+     * fail closed at the shared validator. */
+    RHIFormat formats[6];
+    RHIMRTFBO fbo;
+    RHIMRTFBO bad;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    u32 i;
+    for (i = 0u; i < 6u; ++i) formats[i] = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo = rhi_mrt_fbo_create(g_dev, 64u, 64u, formats, 5u);
+    ASSERT_FALSE(handle_is_null(fbo.fb));
+    ASSERT_EQ(fbo.attachment_count, 5u);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_mrt_fbo_bind(cmd, &fbo);   /* clear only, no draw */
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0xFFu, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[4], px,
+                                        sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 0u, 0u);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    bad = rhi_mrt_fbo_create(g_dev, 64u, 64u, formats, 6u);
+    ASSERT_TRUE(handle_is_null(bad.fb));
+}
+
+TEST(shadow_map_bind_clears_depth_to_one) {
+    /* R618: binding a shadow map clears its depth to 1.0 (depth-only
+     * pass, loadAction=Clear, clearDepth=1.0) — readback is the R602
+     * D32 f32 contract, every texel exactly 1.0f. */
+    RHIShadowMap sm;
+    RHICmdBuffer *cmd;
+    f32 depth[64u * 64u];
+    u32 i;
+    sm = rhi_shadow_map_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(sm.depth_tex));
+    ASSERT_EQ(sm.width, 64u);
+    ASSERT_EQ(sm.height, 64u);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_shadow_map(cmd, &sm);
+    rhi_cmd_unbind_shadow_map(cmd, 64u, 64u);
+    end_frame();
+    memset(depth, 0, sizeof(depth));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, sm.depth_tex, depth,
+                                        sizeof(depth)));
+    for (i = 0u; i < 64u * 64u; ++i) {
+        ASSERT_TRUE(depth[i] == 1.0f);
+    }
+    rhi_shadow_map_destroy(g_dev, &sm);
+    ASSERT_FALSE(rhi_handle_valid(sm.fbo));
+}
+
+TEST(shadow_depth_pipeline_vertex_only_shader) {
+    /* is_shadow_depth: the fragment shader handle may be null — the
+     * Metal descriptor takes vertexFunction only (fragmentFunction=nil,
+     * no color attachments, depthAttachmentPixelFormat=D32). */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    ASSERT_FALSE(handle_is_null(vs));
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    /* desc.frag stays RHI_HANDLE_NULL. */
+    desc.is_shadow_depth = true;
+    desc.vertex_stride = 32u;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+}
+
+TEST(pipeline_invalid_shader_handle_rejected) {
+    /* Fail closed: a garbage shader handle never produces a pipeline. */
+    RHIPipelineDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.vert.index = 0x7FFFu;
+    desc.vert.generation = 0x7FFFu;
+    desc.frag = desc.vert;
+    ASSERT_TRUE(handle_is_null(rhi_pipeline_create(g_dev, &desc)));
+}
+
+TEST(offscreen_fbo_msaa_desc_fails_closed) {
+    /* depth_resolve_supported == false (Task 3 fail-closed), so the
+     * shared validator rejects sample_count > 1 on this backend even
+     * though color_resolve_supported == true. 1x via create_desc works
+     * and round-trips through the same code path. */
+    RHIOffscreenFBODesc desc;
+    RHIOffscreenFBO fbo;
+    RHIOffscreenFBO ok;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = 64u;
+    desc.height = 64u;
+    desc.color_format = RHI_FORMAT_B8G8R8A8_UNORM;
+    desc.sample_count = 2u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &desc);
+    ASSERT_TRUE(handle_is_null(fbo.fb));
+    desc.sample_count = 1u;
+    ok = rhi_offscreen_fbo_create_desc(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(ok.fb));
+    ASSERT_EQ(ok.sample_count, 1u);
+    rhi_offscreen_fbo_destroy(g_dev, &ok);
+}
+
+TEST(cubemap_depth_fbo_bind_face_clears) {
+    /* R618 sibling: binding cubemap depth face 2 clears that face to
+     * 1.0f. Readback via the cubemap face-major contract (R624 layout:
+     * six faces of size*size f32). */
+    RHICubemapDepthFBO fbo;
+    RHICmdBuffer *cmd;
+    f32 depth[6u * 16u * 16u];
+    u32 i;
+    fbo = rhi_cubemap_depth_fbo_create(g_dev, 16u);
+    ASSERT_FALSE(handle_is_null(fbo.depth_tex));
+    ASSERT_EQ(fbo.size, 16u);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cubemap_depth_fbo_bind_face(cmd, &fbo, 2u);
+    rhi_cubemap_depth_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(depth, 0, sizeof(depth));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.depth_tex, depth,
+                                        sizeof(depth)));
+    /* Face 2 cleared; other faces undefined — assert face 2 only. */
+    for (i = 2u * 16u * 16u; i < 3u * 16u * 16u; ++i) {
+        ASSERT_TRUE(depth[i] == 1.0f);
+    }
+    rhi_cubemap_depth_fbo_destroy(g_dev, &fbo);
+    ASSERT_FALSE(rhi_handle_valid(fbo.fb));
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -346,6 +682,15 @@ int main(void) {
     RUN_TEST(sampler_create_destroy_generation_advances);
     RUN_TEST(cubemap_six_faces_face_major_roundtrip);
     RUN_TEST(cubemap_invalid_desc_rejected);
+    RUN_TEST(pipeline_offscreen_fbo_draw_readback);
+    RUN_TEST(fbo_bind_clears_default_and_bind_load_preserves);
+    RUN_TEST(mrt_two_attachments_distinct_colors);
+    RUN_TEST(mrt_five_attachments_create_and_clear);
+    RUN_TEST(shadow_map_bind_clears_depth_to_one);
+    RUN_TEST(shadow_depth_pipeline_vertex_only_shader);
+    RUN_TEST(pipeline_invalid_shader_handle_rejected);
+    RUN_TEST(offscreen_fbo_msaa_desc_fails_closed);
+    RUN_TEST(cubemap_depth_fbo_bind_face_clears);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);
