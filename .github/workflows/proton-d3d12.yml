@@ -14,15 +14,23 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
       - name: Install Wine + vkd3d-proton
+        # vkd3d-proton is not in the Ubuntu archive (apt exit 100); install
+        # wine64 from apt and the pinned upstream vkd3d-proton release
+        # tarball instead.
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y wine64 vkd3d-proton 2>/dev/null || \
-            sudo apt-get install -y wine64 libvkd3d-proton1
+          sudo apt-get install -y wine64 zstd
+          curl -sSL -o /tmp/vkd3d-proton.tar.zst \
+            https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.0.1/vkd3d-proton-3.0.1.tar.zst
+          tar -C /tmp --zstd -xf /tmp/vkd3d-proton.tar.zst
       - name: Run d3d12 contract suite under Proton/vkd3d
         run: |
           # Compatibility evidence only — never counted toward the
           # Windows-native D3D12 evidence levels (spec §2.1 risk register).
+          # vkd3d-proton implements D3D12 as d3d12.dll/d3d12core.dll on
+          # Vulkan; place the 64-bit build next to the contract executables.
+          cp /tmp/vkd3d-proton-3.0.1/x64/d3d12.dll /tmp/vkd3d-proton-3.0.1/x64/d3d12core.dll .
           wine64 test_d3d12_device_contract.exe; echo "device_contract=$?"
           wine64 test_d3d12_pipeline_contract.exe; echo "pipeline_contract=$?"
       - name: Record compat receipt
