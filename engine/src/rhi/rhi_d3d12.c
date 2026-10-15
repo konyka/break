@@ -1334,46 +1334,427 @@ bool rhi_backend_cmd_buffer_get_native_info(const RHIDevice *dev,
                                             RHICmdBufferNativeInfo *out) {
     (void)dev; (void)cmd; (void)out; return false;
 }
+/* ---- Task 7: DXR acceleration structures (fail-closed below tier 1.0) ----
+ * AS storage is a committed buffer that never leaves
+ * D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, on a heap flagged
+ * ALLOW_ONLY_RT_ACCELERATION_STRUCTURE_BUFFERS. Every DXR entry gates on
+ * RHI_FEATURE_ACCELERATION_STRUCTURE (probed at device create from
+ * D3D12_OPTIONS5.RaytracingTier) plus the ID3D12Device5 /
+ * ID3D12GraphicsCommandList4 interfaces; anything missing fails closed
+ * (invalid handle / false / 0). One-shot builds record into the upload
+ * list and fence-wait, matching the rhi.h:394-397 contract. */
+typedef struct RHI_D3D12AccelerationStructure {
+    RHI_D3D12Resource storage; /* state stays RAYTRACING_ACCELERATION_STRUCTURE */
+    UINT64 size;
+    UINT type;                 /* RHIAccelerationStructureType */
+} RHI_D3D12AccelerationStructure;
+
+/* spec §4.4: the public TLAS instance record (rhi_tlas_instance_encode,
+ * VK acceleration-structure instance ABI) is bit-identical to
+ * D3D12_RAYTRACING_INSTANCE_DESC — row-major 3x4 transform at byte 0,
+ * packed custom-index/mask at 48, packed SBT-offset/flags at 52, BLAS
+ * device address at 56, 64 bytes total — and the flag values line up 1:1
+ * (cull-disable/CCW/opaque/non-opaque = 1/2/4/8 in both APIs). The backend
+ * therefore consumes the encoded record directly; these asserts pin the
+ * layout contract so an SDK or ABI drift fails at compile time instead of
+ * silently mistranslating instances. */
+_Static_assert(sizeof(D3D12_RAYTRACING_INSTANCE_DESC) == RHI_TLAS_INSTANCE_SIZE,
+               "TLAS instance record must stay 64 bytes (VK ABI)");
+_Static_assert(offsetof(D3D12_RAYTRACING_INSTANCE_DESC, Transform) == 0u,
+               "TLAS record transform offset");
+_Static_assert(offsetof(D3D12_RAYTRACING_INSTANCE_DESC, AccelerationStructure) == 56u,
+               "TLAS record BLAS address offset");
+_Static_assert(D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_CULL_DISABLE == 0x1u &&
+               D3D12_RAYTRACING_INSTANCE_FLAG_TRIANGLE_FRONT_COUNTERCLOCKWISE == 0x2u &&
+               D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_OPAQUE == 0x4u &&
+               D3D12_RAYTRACING_INSTANCE_FLAG_FORCE_NON_OPAQUE == 0x8u,
+               "TLAS record flag values must match the VK ABI");
+
+static ID3D12GraphicsCommandList *rhi_d3d12_cmd_list(RHI_D3D12Context *ctx);
+
+static UINT rhi_d3d12_dxr_supported(const RHIDevice *dev) {
+    const RHI_D3D12Context *ctx;
+    if (dev == NULL) return 0u;
+    ctx = (const RHI_D3D12Context *)dev->backend_data;
+    return ctx != NULL && !ctx->device_lost &&
+           (dev->capabilities.feature_bits &
+            RHI_FEATURE_ACCELERATION_STRUCTURE) != 0u;
+}
+
+static ID3D12Device5 *rhi_d3d12_device5(RHI_D3D12Context *ctx) {
+    ID3D12Device5 *device5 = NULL;
+    if (ctx == NULL || ctx->device == NULL) return NULL;
+    if (FAILED(ID3D12Device_QueryInterface(ctx->device, &IID_ID3D12Device5,
+                                           (void **)&device5)))
+        return NULL;
+    return device5;
+}
+
+static ID3D12GraphicsCommandList4 *rhi_d3d12_cmdlist4(
+    ID3D12GraphicsCommandList *list) {
+    ID3D12GraphicsCommandList4 *list4 = NULL;
+    if (list == NULL) return NULL;
+    if (FAILED(ID3D12GraphicsCommandList_QueryInterface(
+            list, &IID_ID3D12GraphicsCommandList4, (void **)&list4)))
+        return NULL;
+    return list4;
+}
+
+/* AS storage: committed buffer, permanently in
+ * D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE. Heap flags
+ * stay NONE: heap-tier flags (the ALLOW_ONLY/DENY family) are illegal for
+ * CreateCommittedResource (the runtime sets them automatically;
+ * E_INVALIDARG otherwise), and the AS-only alias
+ * D3D12_HEAP_FLAG_ALLOW_ONLY_RT_ACCELERATION_STRUCTURE_BUFFERS
+ * postdates the pinned Agility 1.616 headers (Task 1 lock). */
+static HRESULT rhi_d3d12_as_create_storage(RHI_D3D12Context *ctx, UINT64 size,
+                                           RHI_D3D12Resource *out) {
+    D3D12_HEAP_PROPERTIES heap;
+    D3D12_RESOURCE_DESC desc;
+    HRESULT hr;
+    ZeroMemory(&heap, sizeof(heap));
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    ZeroMemory(&desc, sizeof(desc));
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = size;
+    desc.Height = 1u;
+    desc.DepthOrArraySize = 1u;
+    desc.MipLevels = 1u;
+    desc.SampleDesc.Count = 1u;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    hr = ID3D12Device_CreateCommittedResource(
+        ctx->device, &heap, D3D12_HEAP_FLAG_NONE,
+        &desc, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, NULL,
+        &IID_ID3D12Resource, (void **)&out->resource);
+    if (SUCCEEDED(hr)) out->state = D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE;
+    return hr;
+}
+
+static D3D12_GPU_VIRTUAL_ADDRESS rhi_d3d12_buffer_gpuva(RHIDevice *dev,
+        RHIBuffer buffer, UINT64 *out_size) {
+    RHI_D3D12Buffer *bd;
+    if (dev == NULL) return 0u;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buffer,
+                                                   RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return 0u;
+    if (out_size != NULL) *out_size = bd->size;
+    return ID3D12Resource_GetGPUVirtualAddress(bd->resource);
+}
+
+/* One-triangle BLAS inputs. R32G32B32_FLOAT maps
+ * RHI_VERTEX_FORMAT_R32G32B32_SFLOAT; the desc carries no index format, so
+ * R32_UINT follows the VK implementation (rhi_vk.c VK_INDEX_TYPE_UINT32).
+ * Addresses are unused by the prebuild query (deferred sizing passes 0). */
+static void rhi_d3d12_blas_inputs(const RHIBLASOneTriangleDesc *desc,
+        D3D12_GPU_VIRTUAL_ADDRESS vertex_address,
+        D3D12_GPU_VIRTUAL_ADDRESS index_address,
+        D3D12_RAYTRACING_GEOMETRY_DESC *out_geometry,
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *out_inputs) {
+    ZeroMemory(out_geometry, sizeof(*out_geometry));
+    out_geometry->Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
+    out_geometry->Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
+    out_geometry->Triangles.VertexFormat = DXGI_FORMAT_R32G32B32_FLOAT;
+    out_geometry->Triangles.VertexCount = desc->vertex_count;
+    out_geometry->Triangles.VertexBuffer.StartAddress =
+        vertex_address + (UINT64)desc->vertex_offset;
+    out_geometry->Triangles.VertexBuffer.StrideInBytes = desc->vertex_stride;
+    out_geometry->Triangles.IndexFormat = DXGI_FORMAT_R32_UINT;
+    out_geometry->Triangles.IndexCount = desc->index_count;
+    out_geometry->Triangles.IndexBuffer =
+        index_address + (UINT64)desc->index_offset;
+    ZeroMemory(out_inputs, sizeof(*out_inputs));
+    out_inputs->Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+    out_inputs->Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    out_inputs->NumDescs = 1u;
+    out_inputs->DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    out_inputs->pGeometryDescs = out_geometry;
+}
+
+static void rhi_d3d12_tlas_inputs(D3D12_GPU_VIRTUAL_ADDRESS instance_address,
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *out_inputs) {
+    ZeroMemory(out_inputs, sizeof(*out_inputs));
+    out_inputs->Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+    out_inputs->Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_NONE;
+    out_inputs->NumDescs = 1u;
+    out_inputs->DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+    out_inputs->InstanceDescs = instance_address;
+}
+
+static bool rhi_d3d12_as_prebuild(ID3D12Device5 *device5,
+        const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *inputs,
+        RHIAccelerationStructureBuildSizes *out_sizes) {
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info;
+    if (device5 == NULL || inputs == NULL || out_sizes == NULL) return false;
+    ZeroMemory(&info, sizeof(info));
+    ID3D12Device5_GetRaytracingAccelerationStructurePrebuildInfo(
+        device5, inputs, &info);
+    out_sizes->acceleration_structure_size =
+        (usize)info.ResultDataMaxSizeInBytes;
+    out_sizes->build_scratch_size = (usize)info.ScratchDataSizeInBytes;
+    return info.ResultDataMaxSizeInBytes != 0u &&
+           info.ScratchDataSizeInBytes != 0u;
+}
+
+/* Record BuildRaytracingAccelerationStructure plus the UAV barrier that
+ * orders the build (a UAV write) against later reads. */
+static void rhi_d3d12_as_build_record(ID3D12GraphicsCommandList4 *list4,
+        const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *inputs,
+        D3D12_GPU_VIRTUAL_ADDRESS dest, D3D12_GPU_VIRTUAL_ADDRESS scratch,
+        ID3D12Resource *dest_resource) {
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build;
+    D3D12_RESOURCE_BARRIER barrier;
+    ZeroMemory(&build, sizeof(build));
+    build.DestAccelerationStructureData = dest;
+    build.Inputs = *inputs;
+    build.ScratchAccelerationStructureData = scratch;
+    ID3D12GraphicsCommandList4_BuildRaytracingAccelerationStructure(
+        list4, &build, 0u, NULL);
+    ZeroMemory(&barrier, sizeof(barrier));
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+    barrier.UAV.pResource = dest_resource;
+    ID3D12GraphicsCommandList4_ResourceBarrier(list4, 1u, &barrier);
+}
+
+/* cmd == NULL selects the one-shot contract (rhi.h:394-397): record into
+ * the upload list, submit on the direct queue, fence-wait; on return the
+ * AS is usable and the inputs are safe to destroy. A live frame cmd
+ * records into the current frame list instead. */
+static bool rhi_d3d12_as_build_submit(RHI_D3D12Context *ctx,
+        RHICmdBuffer *cmd,
+        const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS *inputs,
+        D3D12_GPU_VIRTUAL_ADDRESS dest, D3D12_GPU_VIRTUAL_ADDRESS scratch,
+        ID3D12Resource *dest_resource) {
+    ID3D12GraphicsCommandList4 *list4;
+    if (cmd == NULL) {
+        if (FAILED(rhi_d3d12_oneshot_begin(ctx))) return false;
+        list4 = rhi_d3d12_cmdlist4(ctx->upload_list);
+        if (list4 == NULL) return false;
+        rhi_d3d12_as_build_record(list4, inputs, dest, scratch, dest_resource);
+        ID3D12GraphicsCommandList4_Release(list4);
+        return rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK;
+    }
+    list4 = rhi_d3d12_cmdlist4(rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd));
+    if (list4 == NULL) return false;
+    rhi_d3d12_as_build_record(list4, inputs, dest, scratch, dest_resource);
+    ID3D12GraphicsCommandList4_Release(list4);
+    return true;
+}
+
 bool rhi_backend_cmd_build_blas_one_triangle(
     RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas,
     const RHIBLASOneTriangleDesc *desc,
     RHIBuffer scratch_buffer, usize scratch_offset) {
-    (void)cmd; (void)dev; (void)blas; (void)desc;
-    (void)scratch_buffer; (void)scratch_offset;
-    return false;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12AccelerationStructure *ad;
+    ID3D12Device5 *device5;
+    D3D12_RAYTRACING_GEOMETRY_DESC geometry;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+    RHIAccelerationStructureBuildSizes sizes;
+    D3D12_GPU_VIRTUAL_ADDRESS vertex_address, index_address, scratch_address;
+    UINT64 scratch_size = 0u;
+    bool fits;
+    if (dev == NULL || desc == NULL ||
+        !rhi_blas_one_triangle_desc_validate(desc)) return false;
+    if (!rhi_d3d12_dxr_supported(dev)) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    ad = (RHI_D3D12AccelerationStructure *)rhi_get_resource_typed(
+        dev, blas, RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL || ad->type != RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL)
+        return false;
+    vertex_address = rhi_d3d12_buffer_gpuva(dev, desc->vertex_buffer, NULL);
+    index_address = rhi_d3d12_buffer_gpuva(dev, desc->index_buffer, NULL);
+    scratch_address = rhi_d3d12_buffer_gpuva(dev, scratch_buffer, &scratch_size);
+    if (vertex_address == 0u || index_address == 0u ||
+        scratch_address == 0u || scratch_offset >= (usize)scratch_size ||
+        (scratch_offset % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0u)
+        return false;
+    device5 = rhi_d3d12_device5(ctx);
+    if (device5 == NULL) return false;
+    rhi_d3d12_blas_inputs(desc, vertex_address, index_address,
+                          &geometry, &inputs);
+    fits = rhi_d3d12_as_prebuild(device5, &inputs, &sizes) &&
+           sizes.acceleration_structure_size <= (usize)ad->size &&
+           sizes.build_scratch_size <= (usize)scratch_size - scratch_offset;
+    ID3D12Device5_Release(device5);
+    if (!fits) return false;
+    return rhi_d3d12_as_build_submit(ctx, cmd, &inputs,
+        ID3D12Resource_GetGPUVirtualAddress(ad->storage.resource),
+        scratch_address + (UINT64)scratch_offset, ad->storage.resource);
 }
+
 u64 rhi_backend_acceleration_structure_get_device_address(
     RHIDevice *dev, RHIAccelerationStructure structure) {
-    (void)dev; (void)structure; return 0u;
+    RHI_D3D12AccelerationStructure *ad;
+    if (!rhi_d3d12_dxr_supported(dev)) return 0u;
+    ad = (RHI_D3D12AccelerationStructure *)rhi_get_resource_typed(
+        dev, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL || ad->storage.resource == NULL) return 0u;
+    return (u64)ID3D12Resource_GetGPUVirtualAddress(ad->storage.resource);
 }
+
 bool rhi_backend_tlas_one_instance_get_build_sizes(
     RHIDevice *dev, RHIBuffer instance_buffer,
     RHIAccelerationStructureBuildSizes *out_sizes) {
-    (void)dev; (void)instance_buffer; (void)out_sizes; return false;
+    RHI_D3D12Context *ctx;
+    ID3D12Device5 *device5;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+    D3D12_GPU_VIRTUAL_ADDRESS instance_address;
+    UINT64 instance_size = 0u;
+    bool ok;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || out_sizes == NULL) return false;
+    if (!rhi_d3d12_dxr_supported(dev)) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    instance_address = rhi_d3d12_buffer_gpuva(dev, instance_buffer,
+                                              &instance_size);
+    if (instance_address == 0u || instance_size < RHI_TLAS_INSTANCE_SIZE ||
+        (instance_address % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT) != 0u)
+        return false;
+    device5 = rhi_d3d12_device5(ctx);
+    if (device5 == NULL) return false;
+    rhi_d3d12_tlas_inputs(instance_address, &inputs);
+    ok = rhi_d3d12_as_prebuild(device5, &inputs, out_sizes);
+    ID3D12Device5_Release(device5);
+    return ok;
 }
+
 bool rhi_backend_cmd_build_tlas_one_instance(
     RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas,
     RHIBuffer instance_buffer, RHIBuffer scratch_buffer, usize scratch_offset) {
-    (void)cmd; (void)dev; (void)tlas; (void)instance_buffer;
-    (void)scratch_buffer; (void)scratch_offset;
-    return false;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12AccelerationStructure *ad;
+    ID3D12Device5 *device5;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+    RHIAccelerationStructureBuildSizes sizes;
+    D3D12_GPU_VIRTUAL_ADDRESS instance_address, scratch_address;
+    UINT64 instance_size = 0u, scratch_size = 0u;
+    bool fits;
+    if (dev == NULL) return false;
+    if (!rhi_d3d12_dxr_supported(dev)) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    ad = (RHI_D3D12AccelerationStructure *)rhi_get_resource_typed(
+        dev, tlas, RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL || ad->type != RHI_ACCELERATION_STRUCTURE_TOP_LEVEL)
+        return false;
+    instance_address = rhi_d3d12_buffer_gpuva(dev, instance_buffer,
+                                              &instance_size);
+    scratch_address = rhi_d3d12_buffer_gpuva(dev, scratch_buffer, &scratch_size);
+    if (instance_address == 0u || scratch_address == 0u ||
+        instance_size < RHI_TLAS_INSTANCE_SIZE ||
+        scratch_offset >= (usize)scratch_size ||
+        (instance_address % D3D12_RAYTRACING_INSTANCE_DESCS_BYTE_ALIGNMENT) != 0u ||
+        (scratch_offset % D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT) != 0u)
+        return false;
+    device5 = rhi_d3d12_device5(ctx);
+    if (device5 == NULL) return false;
+    rhi_d3d12_tlas_inputs(instance_address, &inputs);
+    fits = rhi_d3d12_as_prebuild(device5, &inputs, &sizes) &&
+           sizes.acceleration_structure_size <= (usize)ad->size &&
+           sizes.build_scratch_size <= (usize)scratch_size - scratch_offset;
+    ID3D12Device5_Release(device5);
+    if (!fits) return false;
+    return rhi_d3d12_as_build_submit(ctx, cmd, &inputs,
+        ID3D12Resource_GetGPUVirtualAddress(ad->storage.resource),
+        scratch_address + (UINT64)scratch_offset, ad->storage.resource);
 }
+
 bool rhi_backend_acceleration_structure_get_vk_handle(
     RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
+    /* The VK escape hatch is fail-closed on the D3D12 backend. */
     (void)dev; (void)structure; (void)out_handle; return false;
 }
 bool rhi_blas_one_triangle_get_build_sizes(
     RHIDevice *dev, const RHIBLASOneTriangleDesc *desc,
     RHIAccelerationStructureBuildSizes *out_sizes) {
-    (void)dev; (void)desc; (void)out_sizes; return false;
+    RHI_D3D12Context *ctx;
+    ID3D12Device5 *device5;
+    D3D12_RAYTRACING_GEOMETRY_DESC geometry;
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+    D3D12_GPU_VIRTUAL_ADDRESS vertex_address, index_address;
+    bool ok;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || desc == NULL || out_sizes == NULL ||
+        !rhi_blas_one_triangle_desc_validate(desc)) return false;
+    if (!rhi_d3d12_dxr_supported(dev)) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    vertex_address = rhi_d3d12_buffer_gpuva(dev, desc->vertex_buffer, NULL);
+    index_address = rhi_d3d12_buffer_gpuva(dev, desc->index_buffer, NULL);
+    if (vertex_address == 0u || index_address == 0u) return false;
+    device5 = rhi_d3d12_device5(ctx);
+    if (device5 == NULL) return false;
+    rhi_d3d12_blas_inputs(desc, vertex_address, index_address,
+                          &geometry, &inputs);
+    ok = rhi_d3d12_as_prebuild(device5, &inputs, out_sizes);
+    ID3D12Device5_Release(device5);
+    return ok;
 }
 RHIAccelerationStructure rhi_backend_acceleration_structure_create(
     RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
-    (void)dev; (void)desc; return RHI_HANDLE_NULL;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12AccelerationStructure *ad;
+    UINT64 size;
+    u32 idx;
+    if (desc == NULL ||
+        (desc->type != RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL &&
+         desc->type != RHI_ACCELERATION_STRUCTURE_TOP_LEVEL))
+        return RHI_HANDLE_NULL;
+    if (!rhi_d3d12_dxr_supported(dev)) return RHI_HANDLE_NULL;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    size = (UINT64)desc->storage_size;
+    if (size == 0u) {
+        /* Deferred sizing (rhi.c front door passes 0 through): take the
+         * prebuild query's result size for the smallest buildable shape —
+         * one-triangle BLAS / one-instance TLAS. */
+        ID3D12Device5 *device5 = rhi_d3d12_device5(ctx);
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS inputs;
+        RHIAccelerationStructureBuildSizes sizes;
+        if (device5 == NULL) return RHI_HANDLE_NULL;
+        if (desc->type == RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL) {
+            D3D12_RAYTRACING_GEOMETRY_DESC geometry;
+            RHIBLASOneTriangleDesc one;
+            ZeroMemory(&one, sizeof(one));
+            one.vertex_count = 3u;
+            one.vertex_stride = 12u;
+            one.vertex_format = RHI_VERTEX_FORMAT_R32G32B32_SFLOAT;
+            one.index_count = 3u;
+            one.indexed = true;
+            rhi_d3d12_blas_inputs(&one, 0u, 0u, &geometry, &inputs);
+        } else {
+            rhi_d3d12_tlas_inputs(0u, &inputs);
+        }
+        if (!rhi_d3d12_as_prebuild(device5, &inputs, &sizes)) {
+            ID3D12Device5_Release(device5);
+            return RHI_HANDLE_NULL;
+        }
+        ID3D12Device5_Release(device5);
+        size = (UINT64)sizes.acceleration_structure_size;
+    } else if (!rhi_acceleration_structure_desc_validate(desc)) {
+        return RHI_HANDLE_NULL;
+    }
+    ad = (RHI_D3D12AccelerationStructure *)calloc(1u, sizeof(*ad));
+    if (ad == NULL) return RHI_HANDLE_NULL;
+    if (FAILED(rhi_d3d12_as_create_storage(ctx, size, &ad->storage))) {
+        free(ad);
+        return RHI_HANDLE_NULL;
+    }
+    ad->size = size;
+    ad->type = (UINT)desc->type;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = ad;
+    dev->slots[idx].type = RHI_RES_ACCELERATION_STRUCTURE;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 void rhi_backend_acceleration_structure_destroy(
     RHIDevice *dev, RHIAccelerationStructure structure) {
-    (void)dev; (void)structure;
+    RHI_D3D12AccelerationStructure *ad;
+    if (dev == NULL) return;
+    ad = (RHI_D3D12AccelerationStructure *)rhi_get_resource_typed(
+        dev, structure, RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL) return;
+    rhi_d3d12_release((IUnknown **)&ad->storage.resource);
+    free(ad);
+    rhi_free_slot(dev, structure);
 }
 
 u32 rhi_vk_validation_message_count(void) { return 0u; }

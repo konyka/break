@@ -2525,6 +2525,22 @@ endif()
         set_tests_properties(test_d3d12_shader_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
+        # Task 7: DXR contract -- AS create is fail-closed below
+        # raytracing tier 1.0 (fail-closed half runs, then SKIP 77); on a
+        # DXR adapter the BLAS create + device-address path runs against
+        # the live device (GPU_RUNTIME). Same SKIP 77 policy and
+        # fallback-window opt-in as the Task 3-6 contracts.
+        add_executable(test_d3d12_dxr_contract
+            tests/test_d3d12_dxr_contract.c)
+        target_include_directories(test_d3d12_dxr_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_dxr_contract PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_dxr_contract
+            COMMAND test_d3d12_dxr_contract)
+        set_tests_properties(test_d3d12_dxr_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}

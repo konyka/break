@@ -273,7 +273,16 @@ bool rhi_acceleration_structure_get_vk_handle(
 
 RHIAccelerationStructure rhi_acceleration_structure_create(
     RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
-    if (dev == NULL || !rhi_acceleration_structure_desc_validate(desc)) {
+    /* storage_size 0 defers sizing to the backend's prebuild query
+     * (spec §4.4; the D3D12 DXR backend implements it as "size
+     * comes from the prebuild query"). The strict validator still
+     * owns every non-zero size; backends without the deferred path
+     * fail closed on 0 themselves (VK re-validates in its create). */
+    if (dev == NULL || desc == NULL ||
+        (desc->type != RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL &&
+         desc->type != RHI_ACCELERATION_STRUCTURE_TOP_LEVEL) ||
+        (desc->storage_size != 0u &&
+         !rhi_acceleration_structure_desc_validate(desc))) {
         return RHI_HANDLE_NULL;
     }
     return rhi_backend_acceleration_structure_create(dev, desc);
