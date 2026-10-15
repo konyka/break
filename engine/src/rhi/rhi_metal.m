@@ -59,7 +59,7 @@ typedef struct {
     id<CAMetalDrawable> drawable; /* current acquired drawable, nil between frames */
     struct RHICmdBuffer *frame_cmd; /* cached per-frame recording state */
     _Atomic u32 pending_handlers; /* commits whose completion handler has not run */
-    id<MTLDepthStencilState> depth_states[4]; /* Task 8 cache: [lequal?2:0]|[write_off?1:0] */
+    id<MTLDepthStencilState> depth_states[5]; /* Task 8 cache: [lequal?2:0]|[write_off?1:0], [4]=Always+write off (R445) */
     id<MTLTexture> screen_depth;  /* drawable-sized D32 for the screen pass */
     u32 screen_depth_w, screen_depth_h;
     bool frame_started;           /* acquire done, submit not yet */
@@ -245,6 +245,18 @@ static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
     return RHI_RESULT_OK;
 }
 
+/* Current render-pass target (review fix C1): rhi_cmd_clear_color inside a
+ * pass reopens a Clear pass on the SAME target (VK vkCmdClearAttachments
+ * in-place parity) instead of hijacking to the screen pass. */
+enum {
+    METAL_PASS_NONE = 0,
+    METAL_PASS_SCREEN,
+    METAL_PASS_OFFSCREEN,
+    METAL_PASS_MRT,
+    METAL_PASS_SHADOW,
+    METAL_PASS_CUBE_DEPTH,
+};
+
 struct RHICmdBuffer {
     MetalBackend *backend;
     id<MTLCommandBuffer> cmd;
@@ -256,18 +268,31 @@ struct RHICmdBuffer {
     f32 clear_color[4];           /* pending/next clear color (MTLClearColor) */
     bool clear_pending;           /* next render pass opens with LoadActionClear */
     bool render_pass_open;
+    u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
+    RHIHandle pass_target;        /* fb handle of the bound target */
+    u32 pass_w, pass_h;
+    u32 pass_face;                /* cubemap depth face */
 };
 
 /* Encoder lifecycle rule (docs/rhi_metal_notes.md): at most one encoder is
  * open per command buffer at a time; switching target or encoder type ends
- * the current one first. The recorded work stays in the command buffer. */
+ * the current one first. The recorded work stays in the command buffer.
+ * Closing a pass drops ALL encoder state (render pipeline, depth state,
+ * viewport), so the bound-pipeline bookkeeping is invalidated here —
+ * callers must re-bind after any pass switch (VK unbind_shadow_map's
+ * current_pipeline = NULL parity; review fix I1: a stale handle replayed
+ * into a fresh encoder draws without a render pipeline state and trips
+ * Metal validation). */
 static void metal_end_render_encoder(RHICmdBuffer *cmd) {
     if (cmd->render_encoder != nil) {
         [cmd->render_encoder endEncoding];
         [cmd->render_encoder release];
         cmd->render_encoder = nil;
-        cmd->render_pass_open = false;
     }
+    cmd->render_pass_open = false;
+    cmd->pass_kind = METAL_PASS_NONE;
+    cmd->pass_target = RHI_HANDLE_NULL;
+    cmd->bound_pipeline = RHI_HANDLE_NULL;
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
@@ -399,7 +424,7 @@ void rhi_device_destroy(RHIDevice *dev) {
             [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
             [mb->frame_event release];   /* created lazily by rhi_frame_begin */
             [mb->drain_event release];   /* created lazily by metal_drain */
-            for (u32 i = 0u; i < 4u; ++i) [mb->depth_states[i] release];
+            for (u32 i = 0u; i < 5u; ++i) [mb->depth_states[i] release];
             [mb->screen_depth release];
             [mb->queue release];
             [mb->device release];
@@ -569,6 +594,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->cmd = [mtl_cmd retain];   /* autoreleased by the queue; we hold it to frame_end */
     cmd->render_encoder = nil;
     cmd->render_pass_open = false;
+    cmd->pass_kind = METAL_PASS_NONE;
+    cmd->pass_target = RHI_HANDLE_NULL;
+    cmd->bound_pipeline = RHI_HANDLE_NULL;
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -1100,8 +1128,9 @@ static RHIShader metal_shader_create(RHIDevice *dev, const char *source,
             free(sd);
             return RHI_HANDLE_NULL;
         }
-        sd->library = [lib retain];
-        sd->function = [fn retain];
+        /* new* methods return +1 under MRC — hold directly, no extra retain. */
+        sd->library = lib;
+        sd->function = fn;
     }
     sd->is_fragment = is_fragment;
     idx = rhi_alloc_slot(dev);
@@ -1199,9 +1228,11 @@ static u32 metal_vertex_descriptor_for(const RHIPipelineDesc *desc,
 }
 
 /* Depth-stencil state cache (backend-owned; pipelines hold weak refs — all
- * pipelines are destroyed before the device releases the cache). R445 is
- * expressed by NOT selecting a state at all (nil => depth test fully off),
- * so only the testing combinations live here. */
+ * pipelines are destroyed before the device releases the cache). R445
+ * ("no depth test") is a real MTLCompareFunctionAlways + write-off state,
+ * NOT a nil state: the depth-stencil state is sticky encoder state, so a
+ * nil payload would leave a previous pipeline's state in force on a reused
+ * encoder (review fix C2). */
 static id<MTLDepthStencilState> metal_depth_state(MetalBackend *mb,
                                                   bool lequal,
                                                   bool write_disable) {
@@ -1213,7 +1244,7 @@ static id<MTLDepthStencilState> metal_depth_state(MetalBackend *mb,
                                         : MTLCompareFunctionLess;
         d.depthWriteEnabled = write_disable ? NO : YES;
         mb->depth_states[idx] =
-            [[mb->device newDepthStencilStateWithDescriptor:d] retain];
+            [mb->device newDepthStencilStateWithDescriptor:d];   /* +1, cache-owned */
         [d release];
     }
     if (mb->depth_states[idx] == nil)
@@ -1221,9 +1252,26 @@ static id<MTLDepthStencilState> metal_depth_state(MetalBackend *mb,
     return mb->depth_states[idx];
 }
 
+/* R445 state: depth test fully off (Always + no write). */
+static id<MTLDepthStencilState> metal_depth_state_always_off(MetalBackend *mb) {
+    if (mb->depth_states[4] != nil) return mb->depth_states[4];
+    @autoreleasepool {
+        MTLDepthStencilDescriptor *d = [[MTLDepthStencilDescriptor alloc] init];
+        d.depthCompareFunction = MTLCompareFunctionAlways;
+        d.depthWriteEnabled = NO;
+        mb->depth_states[4] =
+            [mb->device newDepthStencilStateWithDescriptor:d];   /* +1, cache-owned */
+        [d release];
+    }
+    if (mb->depth_states[4] == nil)
+        LOG_ERROR("rhi_metal: newDepthStencilStateWithDescriptor failed");
+    return mb->depth_states[4];
+}
+
 typedef struct {
     id<MTLRenderPipelineState> pipeline;
-    id<MTLDepthStencilState> depth_state; /* nil: R445 depth test fully off */
+    id<MTLDepthStencilState> depth_state; /* always non-nil; R445 maps to the
+                                           * Always+write-off cached state */
     RHIPipelineDesc desc;      /* retained copy, shader handles nulled (VK
                                 * build_desc parity; the push-block layout
                                 * flags are consumed by Task 11's binder) */
@@ -1341,8 +1389,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
          * STATE, not an absent attachment format. */
         pd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         pd.rasterSampleCount = (NSUInteger)samples;
-        pp->pipeline = [[mb->device newRenderPipelineStateWithDescriptor:pd
-                                                                  error:&err] retain];
+        /* newRenderPipelineStateWithDescriptor: returns +1 (new* rule). */
+        pp->pipeline = [mb->device newRenderPipelineStateWithDescriptor:pd
+                                                                 error:&err];
         if (pp->pipeline == nil) {
             LOG_ERROR("rhi_metal: newRenderPipelineState failed: %s",
                       err != nil ? [[err localizedDescription] UTF8String]
@@ -1358,16 +1407,19 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         free(pp);
         return RHI_HANDLE_NULL;
     }
-    /* R445: write_disable without lequal => no depth test at all (nil state;
-     * the encoder never sets one). Otherwise select the cached state. */
-    if (!(desc->depth_write_disable && !desc->depth_compare_lequal)) {
+    /* R445: write_disable without lequal => depth test fully off, expressed
+     * as the cached Always+write-off state (bind sets it unconditionally —
+     * a skipped set would leave a previous pipeline's state in force). */
+    if (desc->depth_write_disable && !desc->depth_compare_lequal) {
+        pp->depth_state = metal_depth_state_always_off(mb);
+    } else {
         pp->depth_state = metal_depth_state(mb, desc->depth_compare_lequal,
                                             desc->depth_write_disable);
-        if (pp->depth_state == nil) {
-            [pp->pipeline release];
-            free(pp);
-            return RHI_HANDLE_NULL;
-        }
+    }
+    if (pp->depth_state == nil) {
+        [pp->pipeline release];
+        free(pp);
+        return RHI_HANDLE_NULL;
     }
     pp->desc = *desc;
     pp->desc.vert = RHI_HANDLE_NULL;
@@ -1717,8 +1769,9 @@ static bool metal_ensure_screen_depth(RHIDevice *dev, MetalBackend *mb) {
         d.usage = metal_texture_usage_for(RHI_FORMAT_D32_FLOAT);
         d.storageMode = MTLStorageModePrivate;
         /* An in-flight frame's encoder retains the old texture, so dropping
-         * our reference here cannot dangle the GPU. */
-        id<MTLTexture> tex = [[mb->device newTextureWithDescriptor:d] retain];
+         * our reference here cannot dangle the GPU. newTextureWithDescriptor:
+         * returns +1 (new* rule) — hold directly. */
+        id<MTLTexture> tex = [mb->device newTextureWithDescriptor:d];
         if (tex == nil) {
             LOG_ERROR("rhi_metal: screen depth allocation failed (%ux%u)",
                       (unsigned)dev->width, (unsigned)dev->height);
@@ -1755,9 +1808,11 @@ static void metal_open_render_pass(RHICmdBuffer *cmd,
 }
 
 /* Screen (drawable) pass. clear_pending decides color Load vs Clear with
- * cmd->clear_color; depth always clears to 1.0 (VK swapchain-pass parity).
- * Call inside an autorelease pool. */
-static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h) {
+ * cmd->clear_color; depth clears to 1.0 unless depth_load (the
+ * clear_color reopen path preserves depth — VK vkCmdClearAttachments
+ * clears color only). Call inside an autorelease pool. */
+static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h,
+                                   bool depth_load) {
     MetalBackend *mb = cmd->backend;
     RHIDevice *dev = g_current_device;
     MTLRenderPassDescriptor *pass;
@@ -1777,10 +1832,16 @@ static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h) {
         pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
     }
     pass.depthAttachment.texture = mb->screen_depth;
-    pass.depthAttachment.loadAction = MTLLoadActionClear;
+    pass.depthAttachment.loadAction =
+        depth_load ? MTLLoadActionLoad : MTLLoadActionClear;
     pass.depthAttachment.clearDepth = 1.0;
     pass.depthAttachment.storeAction = MTLStoreActionStore;
     metal_open_render_pass(cmd, pass, w, h);
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = METAL_PASS_SCREEN;
+        cmd->pass_w = w;
+        cmd->pass_h = h;
+    }
 }
 
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
@@ -1800,7 +1861,7 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
      * C callers. The encoder itself is retained and survives the drain. */
     @autoreleasepool {
         metal_open_screen_pass(cmd, g_current_device->width,
-                               g_current_device->height);
+                               g_current_device->height, false);
     }
 }
 
@@ -1820,9 +1881,10 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
         return;
     }
     [cmd->render_encoder setRenderPipelineState:pp->pipeline];
-    /* R445: nil depth_state => never set one => depth test fully off. */
-    if (pp->depth_state != nil)
-        [cmd->render_encoder setDepthStencilState:pp->depth_state];
+    /* Unconditional: the depth-stencil state is sticky encoder state, so
+     * skipping the set for a depth-off pipeline would leave a stale state
+     * in force (review fix C2). pp->depth_state is always non-nil. */
+    [cmd->render_encoder setDepthStencilState:pp->depth_state];
     /* Metal rasterizer state lives on the encoder, not the PSO (VK PSO
      * parity): winding is always Clockwise (VK frontFace parity). */
     [cmd->render_encoder setFrontFacingWinding:MTLWindingClockwise];
@@ -1956,7 +2018,20 @@ void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 
     (void)stride;
 }
 
+/* In-pass clear_color reopen helpers (review fix C1), defined with their
+ * payload types in the FBO/MRT/shadow sections below. */
+static void metal_offscreen_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                         u32 w, u32 h, const f32 *rgba);
+static void metal_mrt_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                   u32 w, u32 h, const f32 *rgba);
+static void metal_depth_target_clear_reopen(RHICmdBuffer *cmd, u8 kind,
+                                            RHIHandle fb, u32 w, u32 h,
+                                            u32 face);
+
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
+    u8 kind;
+    RHIHandle target;
+    u32 w, h, face;
     if (cmd == NULL) return;
     cmd->clear_color[0] = r;
     cmd->clear_color[1] = g;
@@ -1968,12 +2043,50 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
         cmd->clear_pending = true;
         return;
     }
-    /* Inside a pass: Metal clears are render-pass load actions, so flush the
-     * current encoder (its recorded work stays in the command buffer) and
-     * reopen with loadAction=Clear + the new color. */
+    /* Inside a pass (review fix C1): Metal clears are render-pass load
+     * actions, so flush the current encoder (its recorded work stays in the
+     * command buffer) and reopen a Clear pass on the SAME target — VK's
+     * vkCmdClearAttachments clears the current target in place
+     * (rhi_vk.c:7063-7081); the engine's only in-pass sequence is bind ->
+     * clear_color immediately (main.c:6506-6507), where a reopen with Clear
+     * is equivalent. Depth is preserved (Load), matching VK clearing color
+     * attachment 0 only. */
+    kind = cmd->pass_kind;
+    target = cmd->pass_target;
+    w = cmd->pass_w;
+    h = cmd->pass_h;
+    face = cmd->pass_face;
     metal_end_render_encoder(cmd);
-    cmd->clear_pending = true;
-    rhi_cmd_begin_render_pass(cmd);
+    @autoreleasepool {
+        switch (kind) {
+        case METAL_PASS_SCREEN:
+            cmd->clear_pending = true;
+            metal_open_screen_pass(cmd, w, h, true /* depth Load */);
+            break;
+        case METAL_PASS_OFFSCREEN:
+            metal_offscreen_clear_reopen(cmd, target, w, h, cmd->clear_color);
+            break;
+        case METAL_PASS_MRT:
+            metal_mrt_clear_reopen(cmd, target, w, h, cmd->clear_color);
+            break;
+        case METAL_PASS_SHADOW:
+        case METAL_PASS_CUBE_DEPTH:
+            /* Depth-only target: a color clear does not apply (VK would be
+             * an invalid attachment index); reopen the depth clear. */
+            metal_depth_target_clear_reopen(cmd, kind, target, w, h, face);
+            break;
+        default:
+            /* No recorded target (unreachable on healthy paths): fail closed
+             * onto the screen pass so later draws still have a target. */
+            LOG_ERROR("rhi_metal: clear_color in a pass of unknown target");
+            cmd->clear_pending = true;
+            if (cmd->cmd != nil && cmd->backend != NULL &&
+                cmd->backend->drawable != nil) {
+                metal_open_screen_pass(cmd, w, h, false);
+            }
+            break;
+        }
+    }
 }
 
 void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f32 g, f32 b, f32 a) {
@@ -2124,7 +2237,8 @@ static MetalTexture *metal_render_target_tex_alloc(MetalBackend *mb,
             d.usage = metal_texture_usage_for(fmt);
         }
         d.storageMode = MTLStorageModePrivate;
-        td->texture = [[mb->device newTextureWithDescriptor:d] retain];
+        /* newTextureWithDescriptor: returns +1 (new* rule) — hold directly. */
+        td->texture = [mb->device newTextureWithDescriptor:d];
     }
     if (td->texture == nil) {
         LOG_ERROR("rhi_metal: render-target texture allocation failed (%ux%u fmt %d)",
@@ -2184,14 +2298,19 @@ static void metal_screen_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     if (cmd->cmd == nil || mb->drawable == nil) return;
     cmd->clear_pending = true;   /* VK unbind always re-clears the screen */
     @autoreleasepool {
-        metal_open_screen_pass(cmd, screen_w, screen_h);
+        metal_open_screen_pass(cmd, screen_w, screen_h, false);
     }
 }
+
+typedef struct {
+    RHITexture depth_tex;   /* reopen path (in-pass clear_color, C1) */
+} MetalShadowData;
 
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     RHIShadowMap sm = {0};
     MetalBackend *mb;
     MetalTexture *depth;
+    MetalShadowData *sd;
     u32 idx;
     if (dev == NULL || !rhi_drawable_dimensions_valid(width, height))
         return sm;
@@ -2199,32 +2318,33 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     if (mb == NULL || mb->device_lost_latch) return sm;
     depth = metal_render_target_tex_alloc(mb, width, height,
                                           RHI_FORMAT_D32_FLOAT, false, 1u);
-    if (depth == NULL) return sm;
+    sd = (MetalShadowData *)calloc(1u, sizeof(*sd));
+    if (depth == NULL || sd == NULL) {
+        if (depth != NULL) { [depth->texture release]; free(depth); }
+        free(sd);
+        return sm;
+    }
     sm.depth_tex = metal_fbo_texture_slot(dev, depth, RHI_RES_TEXTURE);
     sm.width = width;
     sm.height = height;
-    /* No backend state beyond the texture; the slot payload is a marker. */
+    sd->depth_tex = sm.depth_tex;
     idx = rhi_alloc_slot(dev);
-    dev->slots[idx].ptr = calloc(1u, 1u);
+    dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
-    if (dev->slots[idx].ptr == NULL) {
-        metal_fbo_texture_slot_free(dev, sm.depth_tex, RHI_RES_TEXTURE);
-        rhi_free_slot(dev, rhi_make_handle(idx, dev->slots[idx].generation));
-        return (RHIShadowMap){0};
-    }
     sm.fbo = rhi_make_handle(idx, dev->slots[idx].generation);
     return sm;
 }
 
 void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     MetalBackend *mb;
-    void *marker;
+    MetalShadowData *sd;
     if (dev == NULL || sm == NULL) return;
     mb = (MetalBackend *)dev->backend_data;
-    marker = rhi_get_resource_typed(dev, sm->fbo, RHI_RES_FRAMEBUFFER);
-    if (marker == NULL) return;
+    sd = (MetalShadowData *)rhi_get_resource_typed(dev, sm->fbo,
+                                                   RHI_RES_FRAMEBUFFER);
+    if (sd == NULL) return;
     if (mb != NULL) metal_retire_drain(dev, mb);
-    free(marker);
+    free(sd);
     rhi_free_slot(dev, sm->fbo);
     metal_fbo_texture_slot_free(dev, sm->depth_tex, RHI_RES_TEXTURE);
     memset(sm, 0, sizeof(*sm));
@@ -2253,6 +2373,12 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
                                                    RHI_RES_TEXTURE);
     if (depth == NULL) return;
     metal_depth_only_pass(cmd, depth->texture, 0u, sm->width, sm->height);
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = METAL_PASS_SHADOW;
+        cmd->pass_target = sm->fbo;
+        cmd->pass_w = sm->width;
+        cmd->pass_h = sm->height;
+    }
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
@@ -2592,6 +2718,8 @@ typedef struct {
     f32 clear_color[4];       /* R619 caller-owned bind clear (attachment 0) */
     u32 sample_count;
     RHIFormat color_format;
+    RHITexture color_tex;     /* wrapped single-sample textures (reopen path) */
+    RHITexture depth_tex;
     /* MSAA machinery (brief Produces): multisample color/depth attachments
      * resolving into the wrapped single-sample textures via
      * storeAction=MultisampleResolve. Currently unreachable through the
@@ -2679,6 +2807,8 @@ static RHIOffscreenFBO metal_offscreen_fbo_create(RHIDevice *dev, u32 width,
     fbo.width = width;
     fbo.height = height;
     fbo.sample_count = samples;
+    fd->color_tex = fbo.color_tex;
+    fd->depth_tex = fbo.depth_tex;
     idx = rhi_alloc_slot(dev);
     dev->slots[idx].ptr = fd;
     dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
@@ -2729,6 +2859,55 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     memset(fbo, 0, sizeof(*fbo));
 }
 
+/* Shared offscreen-FBO pass builder. color_load: Load vs Clear with
+ * clear_rgba; depth_load: preserve depth (the in-pass clear_color reopen —
+ * VK vkCmdClearAttachments clears color attachment 0 only) vs Clear 1.0
+ * (R617 bind). */
+static void metal_offscreen_pass_open(RHICmdBuffer *cmd, MetalFBOData *fd,
+                                      MetalTexture *color, MetalTexture *depth,
+                                      RHIHandle fb, u32 w, u32 h,
+                                      bool color_load, const f32 *clear_rgba,
+                                      bool depth_load) {
+    @autoreleasepool {
+        const bool msaa = fd->sample_count > 1u;
+        MTLRenderPassDescriptor *pass =
+            [MTLRenderPassDescriptor renderPassDescriptor];
+        pass.colorAttachments[0].texture =
+            msaa ? fd->msaa_color->texture : color->texture;
+        pass.colorAttachments[0].storeAction =
+            msaa ? MTLStoreActionMultisampleResolve : MTLStoreActionStore;
+        if (msaa) pass.colorAttachments[0].resolveTexture = color->texture;
+        pass.depthAttachment.texture =
+            msaa ? fd->msaa_depth->texture : depth->texture;
+        pass.depthAttachment.storeAction =
+            msaa ? MTLStoreActionMultisampleResolve : MTLStoreActionStore;
+        if (msaa) pass.depthAttachment.resolveTexture = depth->texture;
+        if (color_load) {
+            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        } else {
+            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+            pass.colorAttachments[0].clearColor =
+                MTLClearColorMake((double)clear_rgba[0],
+                                  (double)clear_rgba[1],
+                                  (double)clear_rgba[2],
+                                  (double)clear_rgba[3]);
+        }
+        if (depth_load) {
+            pass.depthAttachment.loadAction = MTLLoadActionLoad;
+        } else {
+            pass.depthAttachment.loadAction = MTLLoadActionClear;
+            pass.depthAttachment.clearDepth = 1.0;
+        }
+        metal_open_render_pass(cmd, pass, w, h);
+    }
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = METAL_PASS_OFFSCREEN;
+        cmd->pass_target = fb;
+        cmd->pass_w = w;
+        cmd->pass_h = h;
+    }
+}
+
 /* R617: bind == fresh target. color clears to the per-FBO clear color
  * (R619), depth to 1.0; bind_load == resume (loadAction=Load, no clears). */
 static void metal_offscreen_fbo_bind_impl(RHICmdBuffer *cmd,
@@ -2750,35 +2929,32 @@ static void metal_offscreen_fbo_bind_impl(RHICmdBuffer *cmd,
                                                    fbo->depth_tex,
                                                    RHI_RES_TEXTURE);
     if (fd == NULL || color == NULL || depth == NULL) return;
-    @autoreleasepool {
-        const bool msaa = fd->sample_count > 1u;
-        MTLRenderPassDescriptor *pass =
-            [MTLRenderPassDescriptor renderPassDescriptor];
-        pass.colorAttachments[0].texture =
-            msaa ? fd->msaa_color->texture : color->texture;
-        pass.colorAttachments[0].storeAction =
-            msaa ? MTLStoreActionMultisampleResolve : MTLStoreActionStore;
-        if (msaa) pass.colorAttachments[0].resolveTexture = color->texture;
-        pass.depthAttachment.texture =
-            msaa ? fd->msaa_depth->texture : depth->texture;
-        pass.depthAttachment.storeAction =
-            msaa ? MTLStoreActionMultisampleResolve : MTLStoreActionStore;
-        if (msaa) pass.depthAttachment.resolveTexture = depth->texture;
-        if (load) {
-            pass.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            pass.depthAttachment.loadAction = MTLLoadActionLoad;
-        } else {
-            pass.colorAttachments[0].loadAction = MTLLoadActionClear;
-            pass.colorAttachments[0].clearColor =
-                MTLClearColorMake((double)fd->clear_color[0],
-                                  (double)fd->clear_color[1],
-                                  (double)fd->clear_color[2],
-                                  (double)fd->clear_color[3]);
-            pass.depthAttachment.loadAction = MTLLoadActionClear;
-            pass.depthAttachment.clearDepth = 1.0;
-        }
-        metal_open_render_pass(cmd, pass, fbo->width, fbo->height);
+    metal_offscreen_pass_open(cmd, fd, color, depth, fbo->fb, fbo->width,
+                              fbo->height, load, fd->clear_color, load);
+}
+
+/* C1: in-pass clear_color reopen on the same offscreen target — attachment
+ * 0 Clear with the CALLER's color (overrides the R619 per-FBO color for
+ * this pass), depth preserved. */
+static void metal_offscreen_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                         u32 w, u32 h, const f32 *rgba) {
+    MetalFBOData *fd = (MetalFBOData *)rhi_get_resource_typed(
+        g_current_device, fb, RHI_RES_FRAMEBUFFER);
+    MetalTexture *color;
+    MetalTexture *depth;
+    if (fd == NULL) {
+        LOG_ERROR("rhi_metal: clear_color reopen on a stale offscreen FBO");
+        return;
     }
+    color = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+                                                   fd->color_tex,
+                                                   RHI_RES_TEXTURE);
+    depth = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+                                                   fd->depth_tex,
+                                                   RHI_RES_TEXTURE);
+    if (color == NULL || depth == NULL) return;
+    metal_offscreen_pass_open(cmd, fd, color, depth, fb, w, h,
+                              false, rgba, true);
 }
 
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
@@ -2809,6 +2985,8 @@ void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo, f32
 typedef struct {
     u32 attachment_count;
     RHIFormat formats[RHI_MRT_MAX_ATTACHMENTS];
+    RHITexture color_tex[RHI_MRT_MAX_ATTACHMENTS];   /* reopen path */
+    RHITexture depth_tex;
 } MetalMRTFBOData;
 
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height, const RHIFormat *formats, u32 attachment_count) {
@@ -2839,6 +3017,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height, const RHIFor
         }
         md->formats[i] = formats[i];
         fbo.color_tex[i] = metal_fbo_texture_slot(dev, ct, RHI_RES_TEXTURE);
+        md->color_tex[i] = fbo.color_tex[i];
     }
     {
         MetalTexture *depth = metal_render_target_tex_alloc(
@@ -2851,6 +3030,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height, const RHIFor
             return fbo;
         }
         fbo.depth_tex = metal_fbo_texture_slot(dev, depth, RHI_RES_TEXTURE);
+        md->depth_tex = fbo.depth_tex;
     }
     fbo.attachment_count = attachment_count;
     fbo.width = width;
@@ -2883,6 +3063,56 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     memset(fbo, 0, sizeof(*fbo));
 }
 
+/* Shared MRT pass builder. mode: 0 = R616 bind (all attachments Clear
+ * (0,0,0,0), depth Clear 1.0); 1 = bind_load (all Load); 2 = C1 in-pass
+ * clear_color reopen (attachment 0 Clear with clear_rgba, others + depth
+ * Load — VK vkCmdClearAttachments clears color attachment 0 only). */
+static void metal_mrt_pass_open(RHICmdBuffer *cmd, MetalMRTFBOData *md,
+                                RHIHandle fb, u32 w, u32 h, u32 mode,
+                                const f32 *clear_rgba) {
+    @autoreleasepool {
+        MTLRenderPassDescriptor *pass =
+            [MTLRenderPassDescriptor renderPassDescriptor];
+        u32 i;
+        for (i = 0u; i < md->attachment_count; ++i) {
+            MetalTexture *ct = (MetalTexture *)rhi_get_resource_typed(
+                g_current_device, md->color_tex[i], RHI_RES_TEXTURE);
+            if (ct == NULL) return;
+            pass.colorAttachments[i].texture = ct->texture;
+            pass.colorAttachments[i].storeAction = MTLStoreActionStore;
+            if (mode == 1u || (mode == 2u && i != 0u)) {
+                pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
+            } else {
+                pass.colorAttachments[i].loadAction = MTLLoadActionClear;
+                pass.colorAttachments[i].clearColor =
+                    (mode == 2u)
+                        ? MTLClearColorMake((double)clear_rgba[0],
+                                            (double)clear_rgba[1],
+                                            (double)clear_rgba[2],
+                                            (double)clear_rgba[3])
+                        : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+            }
+        }
+        {
+            MetalTexture *depth = (MetalTexture *)rhi_get_resource_typed(
+                g_current_device, md->depth_tex, RHI_RES_TEXTURE);
+            if (depth == NULL) return;
+            pass.depthAttachment.texture = depth->texture;
+        }
+        pass.depthAttachment.storeAction = MTLStoreActionStore;
+        pass.depthAttachment.loadAction =
+            mode == 0u ? MTLLoadActionClear : MTLLoadActionLoad;
+        pass.depthAttachment.clearDepth = 1.0;
+        metal_open_render_pass(cmd, pass, w, h);
+    }
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = METAL_PASS_MRT;
+        cmd->pass_target = fb;
+        cmd->pass_w = w;
+        cmd->pass_h = h;
+    }
+}
+
 /* R616: bind clears every color attachment to (0,0,0,0) and depth to 1.0;
  * bind_load preserves all attachments. */
 static void metal_mrt_fbo_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
@@ -2895,34 +3125,20 @@ static void metal_mrt_fbo_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
     md = (MetalMRTFBOData *)rhi_get_resource_typed(g_current_device, fbo->fb,
                                                    RHI_RES_MRT_FBO);
     if (md == NULL) return;
-    @autoreleasepool {
-        MTLRenderPassDescriptor *pass =
-            [MTLRenderPassDescriptor renderPassDescriptor];
-        u32 i;
-        for (i = 0u; i < md->attachment_count; ++i) {
-            MetalTexture *ct = (MetalTexture *)rhi_get_resource_typed(
-                g_current_device, fbo->color_tex[i], RHI_RES_TEXTURE);
-            if (ct == NULL) return;
-            pass.colorAttachments[i].texture = ct->texture;
-            pass.colorAttachments[i].storeAction = MTLStoreActionStore;
-            pass.colorAttachments[i].loadAction =
-                load ? MTLLoadActionLoad : MTLLoadActionClear;
-            if (!load)
-                pass.colorAttachments[i].clearColor =
-                    MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
-        }
-        {
-            MetalTexture *depth = (MetalTexture *)rhi_get_resource_typed(
-                g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
-            if (depth == NULL) return;
-            pass.depthAttachment.texture = depth->texture;
-        }
-        pass.depthAttachment.storeAction = MTLStoreActionStore;
-        pass.depthAttachment.loadAction =
-            load ? MTLLoadActionLoad : MTLLoadActionClear;
-        pass.depthAttachment.clearDepth = 1.0;
-        metal_open_render_pass(cmd, pass, fbo->width, fbo->height);
+    metal_mrt_pass_open(cmd, md, fbo->fb, fbo->width, fbo->height,
+                        load ? 1u : 0u, NULL);
+}
+
+/* C1: in-pass clear_color reopen on the same MRT target. */
+static void metal_mrt_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                   u32 w, u32 h, const f32 *rgba) {
+    MetalMRTFBOData *md = (MetalMRTFBOData *)rhi_get_resource_typed(
+        g_current_device, fb, RHI_RES_MRT_FBO);
+    if (md == NULL) {
+        LOG_ERROR("rhi_metal: clear_color reopen on a stale MRT FBO");
+        return;
     }
+    metal_mrt_pass_open(cmd, md, fb, w, h, 2u, rgba);
 }
 
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
@@ -2939,6 +3155,7 @@ void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 
 typedef struct {
     u32 size;
+    RHITexture depth_tex;   /* reopen path (in-pass clear_color, C1) */
 } MetalCubemapDepthFBOData;
 
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
@@ -2963,6 +3180,7 @@ RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     }
     cd->size = size;
     fbo.depth_tex = metal_fbo_texture_slot(dev, depth, RHI_RES_CUBEMAP);
+    cd->depth_tex = fbo.depth_tex;
     fbo.size = size;
     idx = rhi_alloc_slot(dev);
     dev->slots[idx].ptr = cd;
@@ -3002,10 +3220,54 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     if (cd == NULL || depth == NULL) return;
     metal_depth_only_pass(cmd, depth->texture, (NSUInteger)face, fbo->size,
                           fbo->size);
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = METAL_PASS_CUBE_DEPTH;
+        cmd->pass_target = fbo->fb;
+        cmd->pass_w = fbo->size;
+        cmd->pass_h = fbo->size;
+        cmd->pass_face = face;
+    }
 }
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     metal_screen_unbind(cmd, screen_w, screen_h);
+}
+
+/* C1: in-pass clear_color on a depth-only target — a color clear does not
+ * apply (VK would index a nonexistent color attachment), so reopen the
+ * depth clear (R618 bind == fresh parity). */
+static void metal_depth_target_clear_reopen(RHICmdBuffer *cmd, u8 kind,
+                                            RHIHandle fb, u32 w, u32 h,
+                                            u32 face) {
+    MetalTexture *depth = NULL;
+    NSUInteger slice = 0u;
+    if (kind == METAL_PASS_SHADOW) {
+        MetalShadowData *sd = (MetalShadowData *)rhi_get_resource_typed(
+            g_current_device, fb, RHI_RES_FRAMEBUFFER);
+        if (sd != NULL)
+            depth = (MetalTexture *)rhi_get_resource_typed(
+                g_current_device, sd->depth_tex, RHI_RES_TEXTURE);
+    } else {
+        MetalCubemapDepthFBOData *cd =
+            (MetalCubemapDepthFBOData *)rhi_get_resource_typed(
+                g_current_device, fb, RHI_RES_CUBEMAP_DEPTH_FBO);
+        if (cd != NULL)
+            depth = (MetalTexture *)rhi_get_resource_typed(
+                g_current_device, cd->depth_tex, RHI_RES_CUBEMAP);
+        slice = (NSUInteger)face;
+    }
+    if (depth == NULL) {
+        LOG_ERROR("rhi_metal: clear_color reopen on a stale depth target");
+        return;
+    }
+    metal_depth_only_pass(cmd, depth->texture, slice, w, h);
+    if (cmd->render_pass_open) {
+        cmd->pass_kind = kind;
+        cmd->pass_target = fb;
+        cmd->pass_w = w;
+        cmd->pass_h = h;
+        cmd->pass_face = face;
+    }
 }
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {

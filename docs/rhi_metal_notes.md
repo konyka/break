@@ -177,7 +177,7 @@ encoder。统一入口：`metal_end_render_encoder` /
 |---|---|
 | `vert`/`frag` | slot payload 取 `id<MTLFunction>` → `vertexFunction`/`fragmentFunction`；`is_shadow_depth` 允许 frag 为 null handle（fragmentFunction=nil，depth-only pass） |
 | `vertex_stride`+`font_vertex`/`skinned_vertex`/`is_shadow_depth`/`no_vertex_input` | `MTLVertexDescriptor`，布局表逐字段移植自 rhi_vk.c `vk_build_graphics_pipeline`（font 32B float2+float2+float4；skinned 64B float3×2+float2+uint4+float4；shadow 仅 float3@0；stride==12 仅 float3@0；默认 float3+float3+float2），全 bufferIndex 0、PerVertex |
-| `depth_compare_lequal`/`depth_write_disable` | 缓存的 `MTLDepthStencilState`（Less/LessEqual × write on/off 四态，`MetalBackend.depth_states[4]` 懒建）。**R445**：write_disable 且非 lequal → payload `depth_state=nil`，bind 时不设 depth state == 深度测试全关 |
+| `depth_compare_lequal`/`depth_write_disable` | 缓存的 `MTLDepthStencilState`（Less/LessEqual × write on/off 四态 + 第五态 Always+write off，`MetalBackend.depth_states[5]` 懒建）。**R445**：write_disable 且非 lequal → 第五态（深度测试全关）。**bind 时无条件 `setDepthStencilState:`**——depth state 是 encoder 粘滞状态，跳过设置会让前一条 pipeline 的 state 残留生效（评审修复 C2；回归 `r445_pipeline_overrides_sticky_depth_state`） |
 | `disable_culling`/`wireframe`/winding | Metal 的 cull/fill/winding 是 **encoder 状态**（非 PSO），payload 记录、bind 时 `setCullMode:`/`setTriangleFillMode:`/`setFrontFacingWinding:Clockwise`（VK frontFace 对齐） |
 | `alpha_blend`/`alpha_blend_color_only` | attachment blendingEnabled + srcAlpha/oneMinusSrcAlpha Add（rgb/alpha 同式）；color_only 且 >1 attachment 时 RT1 关混合（Metal 恒有 independent blend，无 VK 的 feature 门） |
 | `point_list` | payload 记录，`rhi_cmd_draw` 用 `MTLPrimitiveTypePoint`（R168-C） |
@@ -236,3 +236,35 @@ metallib 加载落地后改为从 `MetalBackend.library` 解析函数，本路�
   首次日志）。Task 4/5 评审遗留 minor。
 - frame_end/device_destroy/clear_color 的 encoder 收尾统一走
   `metal_end_render_encoder`。
+
+### 评审修复轮（C1/C2/I1/I2 + M1/M2 记录）
+
+- **C1（pass 内 clear_color 劫持屏幕 pass）**：`RHICmdBuffer` 记录当前 pass
+  目标（`pass_kind`/`pass_target`/`pass_w,h`/`pass_face`，各 bind 路径与
+  屏幕 pass 开口处设置，`metal_end_render_encoder` 复位）。pass 内
+  `rhi_cmd_clear_color` 重开**同一目标**的 pass 对齐 VK
+  `vkCmdClearAttachments` 语义：color attachment 0 Clear = 调用者颜色
+  （offscreen 覆盖 R619 per-FBO 色；MRT 其余 attachment Load 保留），
+  **depth Load**（VK 清 color 不动 depth）；depth-only 目标（shadow/cube
+  face）重开 depth Clear 1.0；屏幕目标 depth Load。回归
+  `mrt_clear_color_after_bind_targets_mrt`（bind→clear_color→读回 att0 蓝、
+  att1 保留）。
+- **C2**：见上表 R445 行。
+- **I1（pass 切换后 bound_pipeline 滞留）**：`metal_end_render_encoder`
+  一并复位 `bound_pipeline = RHI_HANDLE_NULL`（VK unbind_shadow_map 的
+  `current_pipeline = NULL` parity）；draw 对空句柄走既有 fail-closed
+  日志分支。回归 `pass_switch_invalidates_bound_pipeline`（修复前真机
+  SIGSEGV exit=139——encoder 无 PSO 直接 drawPrimitives；修复后日志 +
+  `rhi_device_idle` 存活断言通过）。
+- **I2（MRC new* +1 再 retain 泄漏）**：去掉本 Task 新增的 5 处多余
+  retain（shader library/function、depth state cache、render PSO、
+  screen_depth、render-target texture alloc），释放点不变。注：Task 7
+  资源族（buffer/texture/sampler create）存在同形模式，超出本次修复
+  范围，列为后续清理候选。
+- **M1（记录）**：unbind 重开屏幕 pass 的清屏色用 `cmd->clear_color`
+  （`rhi_cmd_clear_color` 拥有权），VK 烘焙 {0.2,0.25,0.35,1.0}；
+  rhi.h 未规定该值，引擎每帧显式 set，差异无可观测影响。
+- **M2（记录）**：`metal_screen_unbind` 的 viewport 用 caller 的
+  screen_w/h，而 `metal_ensure_screen_depth` 的深度纹理尺寸取
+  dev->width/height——viewport 参数可与 dev 尺寸短暂不一致（调用者传
+  逻辑尺寸），深度纹理永远跟 drawable 实际尺寸；两者语义不同属预期。

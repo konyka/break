@@ -355,6 +355,11 @@ static const char *k_msl_fs_mrt =
     "    return o;\n"
     "}\n";
 
+static const char *k_msl_fs_green =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "fragment float4 fs_main() { return float4(0.0, 1.0, 0.0, 1.0); }\n";
+
 static RHIShader make_shader(const char *msl, bool is_fragment) {
     /* Null-handle on failure; the caller asserts non-null. */
     return rhi_shader_create(g_dev, msl, (usize)strlen(msl), is_fragment);
@@ -655,6 +660,131 @@ TEST(cubemap_depth_fbo_bind_face_clears) {
     ASSERT_FALSE(rhi_handle_valid(fbo.fb));
 }
 
+/* ---- Task 8 review fix-round regressions (C1/C2/I1) ---- */
+
+TEST(mrt_clear_color_after_bind_targets_mrt) {
+    /* C1 regression: the engine's real sequence (main.c:6506-6507) is
+     * rhi_mrt_fbo_bind immediately followed by rhi_cmd_clear_color. VK
+     * semantics: vkCmdClearAttachments clears color attachment 0 of the
+     * CURRENT target in place (rhi_vk.c:7063-7081) — depth and the other
+     * attachments keep their content. The buggy Metal path hijacked the
+     * clear into the screen pass, leaving attachment 0 at the bind-time
+     * (0,0,0,0). */
+    RHIFormat formats[2] = { RHI_FORMAT_R8G8B8A8_UNORM,
+                             RHI_FORMAT_R8G8B8A8_UNORM };
+    RHIMRTFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    fbo = rhi_mrt_fbo_create(g_dev, 64u, 64u, formats, 2u);
+    ASSERT_FALSE(handle_is_null(fbo.fb));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_mrt_fbo_bind(cmd, &fbo);                        /* both -> (0,0,0,0) */
+    rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 1.0f, 1.0f);   /* att0 -> blue */
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px,
+                                        sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);  /* RGBA8: blue */
+    memset(px, 0xFFu, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], px,
+                                        sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 0u, 0u);      /* untouched */
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+}
+
+TEST(r445_pipeline_overrides_sticky_depth_state) {
+    /* C2 regression: the depth-stencil state is sticky encoder state.
+     * Same encoder: bind a depth-tested pipeline (Less + write on) and
+     * draw a z=0.5 red triangle (depth becomes 0.5), then bind an R445
+     * pipeline (depth_write_disable && !depth_compare_lequal => depth
+     * test fully off) and draw green. Green must win. The buggy Metal
+     * path gave the R445 pipeline a nil depth state and skipped
+     * setDepthStencilState: at bind, so the stale Less state discarded
+     * every green fragment (0.5 < 0.5 fails). */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs_red = make_shader(k_msl_fs_red, true);
+    RHIShader fs_green = make_shader(k_msl_fs_green, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe_depth, pipe_r445;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs_red));
+    ASSERT_FALSE(handle_is_null(fs_green));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs_red;
+    desc.no_vertex_input = true;
+    /* defaults: depth test on, write on, compare Less */
+    pipe_depth = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe_depth));
+    desc.frag = fs_green;
+    desc.depth_write_disable = true;   /* R445: && !lequal => test off */
+    pipe_r445 = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe_r445));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe_depth);
+    rhi_cmd_draw(cmd, 3u, 1u);         /* red, depth 0.5 written */
+    rhi_cmd_bind_pipeline(cmd, pipe_r445);
+    rhi_cmd_draw(cmd, 3u, 1u);         /* green must override */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 255u, 0u, 255u);  /* BGRA green */
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe_depth);
+    rhi_pipeline_destroy(g_dev, pipe_r445);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs_red);
+    rhi_shader_destroy(g_dev, fs_green);
+}
+
+TEST(pass_switch_invalidates_bound_pipeline) {
+    /* I1 regression: a pass switch drops all encoder state; the stale
+     * bound_pipeline handle must not be replayed into the fresh encoder.
+     * Fail closed (log + no draw) and the device must survive (no
+     * device-lost latch from a Metal validation error). */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);   /* screen pass reopened */
+    rhi_cmd_draw(cmd, 3u, 1u);   /* no rebind: must fail closed, not crash */
+    end_frame();
+    /* A Metal validation failure would latch the device lost via the
+     * completion handler; the bounded idle probe must still pass. */
+    ASSERT_TRUE(rhi_device_idle(g_dev));
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -691,6 +821,9 @@ int main(void) {
     RUN_TEST(pipeline_invalid_shader_handle_rejected);
     RUN_TEST(offscreen_fbo_msaa_desc_fails_closed);
     RUN_TEST(cubemap_depth_fbo_bind_face_clears);
+    RUN_TEST(mrt_clear_color_after_bind_targets_mrt);
+    RUN_TEST(r445_pipeline_overrides_sticky_depth_state);
+    RUN_TEST(pass_switch_invalidates_bound_pipeline);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);
