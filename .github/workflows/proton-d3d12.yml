@@ -1,0 +1,35 @@
+name: proton-d3d12
+on:
+  workflow_run:
+    workflows: [windows-d3d12]
+    types: [completed]
+jobs:
+  proton-compat:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-d3d12-artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+      - name: Install Wine + vkd3d-proton
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y wine64 vkd3d-proton 2>/dev/null || \
+            sudo apt-get install -y wine64 libvkd3d-proton1
+      - name: Run d3d12 contract suite under Proton/vkd3d
+        run: |
+          # Compatibility evidence only — never counted toward the
+          # Windows-native D3D12 evidence levels (spec §2.1 risk register).
+          wine64 test_d3d12_device_contract.exe; echo "device_contract=$?"
+          wine64 test_d3d12_pipeline_contract.exe; echo "pipeline_contract=$?"
+      - name: Record compat receipt
+        run: |
+          echo '{"schema_version":1,"lane":"proton-d3d12","note":"compat verification only; not Windows-native evidence"}' \
+            > proton-d3d12-receipt.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: proton-d3d12-receipt
+          path: proton-d3d12-receipt.json

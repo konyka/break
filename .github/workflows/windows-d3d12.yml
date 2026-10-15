@@ -85,3 +85,15 @@ jobs:
       # step stays green without upgrading the evidence level.
       - name: Real GPU runtime (placeholder)
         run: ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
+
+      # Consumed by the proton-d3d12 compatibility lane (workflow_run
+      # trigger): contract executables + Agility redist + precompiled DXIL.
+      - name: Upload build artifact (proton-d3d12 lane input)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-d3d12-artifact
+          path: |
+            build-d3d12/test_d3d12_*.exe
+            build-d3d12/D3D12Core.dll
+            build-d3d12/d3d12SDKLayers.dll
+            build-d3d12/shaders_d3d12/*.dxil
