@@ -15,6 +15,11 @@
 void *metal_test_layer_create(u32 w, u32 h);
 void metal_test_layer_destroy(void *layer);
 
+/* Plan C Task 6: iOS host-pause defense hook. Private export of rhi_metal.m
+ * under ENGINE_RHI_TEST (no public header; production iOS hosts
+ * self-discipline and never call frame APIs while backgrounded). */
+void rhi_test_metal_set_suspended(RHIDevice *dev, bool suspended);
+
 static RHIDevice *g_dev;
 static void *g_layer;
 static RHIResult g_create_result = RHI_RESULT_OK;
@@ -80,6 +85,20 @@ TEST(resize_then_next_acquire_succeeds) {
     run_clear_frame(g_dev);
 }
 
+TEST(suspended_acquire_is_busy_resize_and_recover) {
+    /* Task 6: defensive BUSY while the iOS host pause flag is set. */
+    RHIResult r = RHI_RESULT_OK;
+    rhi_test_metal_set_suspended(g_dev, true);
+    /* A host that (wrongly) calls acquire while paused gets BUSY. */
+    ASSERT_TRUE(rhi_frame_acquire_ex(g_dev, &r) == NULL);
+    ASSERT_EQ(r, RHI_RESULT_BUSY);
+    /* resize does not go through acquire: still succeeds while suspended. */
+    ASSERT_EQ(rhi_device_resize_ex(g_dev, 320u, 240u), RHI_RESULT_OK);
+    rhi_test_metal_set_suspended(g_dev, false);
+    /* Flag cleared: BUSY is not sticky, acquire works again. */
+    run_clear_frame(g_dev);
+}
+
 TEST(vsync_toggle_and_drain_after_frames) {
     rhi_set_vsync(g_dev, false);
     rhi_set_vsync(g_dev, true);
@@ -107,6 +126,7 @@ int main(void) {
     RUN_TEST(second_acquire_while_frame_in_flight_is_busy);
     RUN_TEST(present_without_acquire_is_busy);
     RUN_TEST(resize_then_next_acquire_succeeds);
+    RUN_TEST(suspended_acquire_is_busy_resize_and_recover);
     RUN_TEST(vsync_toggle_and_drain_after_frames);
     /* destroy with all frames presented must drain + release cleanly
      * (crash here = teardown ordering bug, e.g. a late completion handler). */
