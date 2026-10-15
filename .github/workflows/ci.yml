@@ -422,6 +422,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # test_rhi_backend_selection sub-configures ENGINE_RHI_BACKEND=d3d12,
+      # which fail-closes without the pinned Agility redist
+      # (engine/CMakeLists.txt) and needs dxc for the HLSL->DXIL step.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
       - name: Configure
         # GL backends stay at defaults: the desktop GL backend is WGL-loaded
         # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
@@ -464,6 +478,18 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
 
       - name: Configure
         # R696: AddressSanitizer on Windows/clang — the runtime ships as
