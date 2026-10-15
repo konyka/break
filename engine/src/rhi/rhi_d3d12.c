@@ -23,6 +23,7 @@ __declspec(dllexport) const char *D3D12SDKPath = ".\\";
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -1553,9 +1554,30 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     rhi_free_slot(dev, buf);
 }
 
-/* ---- shaders: source retention + reflection inputs; DXIL compilation is
- * Task 6 (blob stays NULL here, and rhi_pipeline_create fails closed on a
- * blob-less shader rather than fabricating a pipeline). ---- */
+/* ---- shaders (Task 6) ----
+ * rhi_shader_create{,_compute} take the sidecar FILE NAME (len == 0): the
+ * HLSL source is read from engine/shaders (RHI_D3D12_SHADER_SOURCE_DIR) for
+ * text reflection and the uniform-marker table, and the precompiled DXIL
+ * blob from the build tree (RHI_D3D12_SHADER_DXIL_DIR, produced by the
+ * build-time dxc step in CMakeLists.txt). A missing/invalid DXIL — the
+ * precompile was skipped or failed — refuses the shader: fail closed,
+ * never a blob-less module (rhi_pipeline_create rejects blob-less shaders).
+ * len != 0 keeps the legacy inline-source mode (source retained, blob
+ * NULL), which stays fail-closed at pipeline creation. */
+#ifndef RHI_D3D12_SHADER_SOURCE_DIR
+#error "RHI_D3D12_SHADER_SOURCE_DIR must be set (engine/shaders)"
+#endif
+#ifndef RHI_D3D12_SHADER_DXIL_DIR
+#error "RHI_D3D12_SHADER_DXIL_DIR must be set (build-tree shaders_d3d12)"
+#endif
+
+#define RHI_D3D12_MAX_UNIFORM_LOCS 16u
+
+typedef struct RHI_D3D12UniformLoc {
+    char name[SHADER_IO_NAME_MAX];
+    UINT offset;                /* byte offset into the root constants */
+} RHI_D3D12UniformLoc;
+
 typedef struct RHI_D3D12Shader {
     char *source;
     usize source_len;
@@ -1572,24 +1594,79 @@ typedef struct RHI_D3D12Pipeline {
     UINT push_size;             /* declared root-constant bytes (clamped) */
     UINT vertex_stride;         /* effective input-layout stride */
     D3D12_PRIMITIVE_TOPOLOGY topology;
+    UINT uniform_count;
+    RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
     RHIPipelineDesc desc;
 } RHI_D3D12Pipeline;
+
+/* Bare file names only: no separators, drive letters, or traversal — the
+ * shader directories are fixed by the build system. */
+static int rhi_d3d12_shader_name_valid(const char *name) {
+    const char *p;
+    if (name == NULL || name[0] == '\0') return 0;
+    for (p = name; *p != '\0'; ++p) {
+        if (*p == '/' || *p == '\\' || *p == ':') return 0;
+        if (*p == '.' && p[1] == '.') return 0;
+    }
+    return 1;
+}
+
+static int rhi_d3d12_shader_load(RHI_D3D12Shader *sd, const char *name) {
+    char path[1024];
+    usize dxil_len = 0u;
+    (void)snprintf(path, sizeof(path), "%s/%s", RHI_D3D12_SHADER_SOURCE_DIR,
+                   name);
+    path[sizeof(path) - 1u] = '\0';
+    sd->source = shader_read_file(path, &sd->source_len);
+    if (sd->source == NULL) {
+        LOG_WARN("D3D12: HLSL source %s not readable — refusing shader", path);
+        return 0;
+    }
+    (void)snprintf(path, sizeof(path), "%s/%s.dxil", RHI_D3D12_SHADER_DXIL_DIR,
+                   name);
+    path[sizeof(path) - 1u] = '\0';
+    sd->blob = shader_read_file(path, &dxil_len);
+    sd->blob_size = dxil_len;
+    if (sd->blob == NULL || dxil_len < 20u ||
+        memcmp(sd->blob, "DXBC", 4u) != 0) {
+        LOG_WARN("D3D12: precompiled DXIL for %s missing or invalid — "
+                 "refusing shader (build-time dxc step must succeed first)",
+                 name);
+        free(sd->blob);
+        free(sd->source);
+        sd->blob = NULL;
+        sd->source = NULL;
+        sd->blob_size = 0u;
+        sd->source_len = 0u;
+        return 0;
+    }
+    return 1;
+}
 
 static RHIShader rhi_d3d12_shader_alloc(RHIDevice *dev, const char *source,
                                         usize len, UINT is_fragment) {
     RHI_D3D12Shader *sd;
     u32 idx;
-    if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
+    if (dev == NULL || source == NULL) return RHI_HANDLE_NULL;
     sd = (RHI_D3D12Shader *)calloc(1u, sizeof(*sd));
     if (sd == NULL) return RHI_HANDLE_NULL;
-    sd->source = (char *)malloc(len + 1u);
-    if (sd->source == NULL) {
-        free(sd);
-        return RHI_HANDLE_NULL;
+    if (len == 0u) {
+        /* Filename mode: sidecar name -> HLSL source + precompiled DXIL. */
+        if (!rhi_d3d12_shader_name_valid(source) ||
+            !rhi_d3d12_shader_load(sd, source)) {
+            free(sd);
+            return RHI_HANDLE_NULL;
+        }
+    } else {
+        sd->source = (char *)malloc(len + 1u);
+        if (sd->source == NULL) {
+            free(sd);
+            return RHI_HANDLE_NULL;
+        }
+        memcpy(sd->source, source, len);
+        sd->source[len] = '\0';
+        sd->source_len = len;
     }
-    memcpy(sd->source, source, len);
-    sd->source[len] = '\0';
-    sd->source_len = len;
     sd->is_fragment = is_fragment;
     idx = rhi_alloc_slot(dev);
     dev->slots[idx].ptr = sd;
@@ -1614,6 +1691,159 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     free(sd->blob);
     free(sd);
     rhi_free_slot(dev, shader);
+}
+
+/* ---- Task 6: line-oriented HLSL reflection for the hand-authored sidecars
+ * ----
+ * The shared shader_io parser speaks GLSL layout() syntax; the sidecars are
+ * HLSL, so bindings come from this scanner. Recognized declarations (one
+ * per line):
+ *   ConstantBuffer<T> name : register(b0[, spaceN]) -> push-constant block.
+ *       b0 is RESERVED for the 32BIT_CONSTANTS root param (Task 5 review
+ *       handoff): a CBV at b0 would collide with the constants register and
+ *       fail root-signature serialization.
+ *   ConstantBuffer<T> name : register(bN)  (N > 0)   -> CBV table
+ *   Texture2D name : register(tN)                    -> SRV + static sampler
+ *       (sidecar convention: SamplerState sN pairs with Texture2D tN; the
+ *       SamplerState line itself is skipped, the builder emits the static
+ *       sampler for the SAMPLER-kind binding)
+ *   StructuredBuffer<T> name : register(tN)          -> SRV
+ *   RWStructuredBuffer<T> / RWByteAddressBuffer /
+ *   RWTexture2D<T> name : register(uN)               -> UAV
+ * Uniform-name side channel (rhi_pipeline_get_uniform_location):
+ *   // rhi:uniform <name> <byte_offset>
+ * Everything else is ignored; an unrecognized resource declaration simply
+ * never reaches the root signature, which fails closed at PSO creation. */
+static const char *rhi_d3d12_hlsl_find(const char *src, const char *end,
+                                       const char *needle) {
+    usize n = strlen(needle);
+    while (src < end && (usize)(end - src) >= n) {
+        if (memcmp(src, needle, n) == 0) return src;
+        ++src;
+    }
+    return NULL;
+}
+
+static int rhi_d3d12_hlsl_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
+                                    ShaderIOBinding *out, usize capacity) {
+    const char *line = src;
+    const char *end = src + len;
+    usize count = 0u;
+    while (line < end) {
+        const char *nl = memchr(line, '\n', (size_t)(end - line));
+        const char *line_end = nl != NULL ? nl : end;
+        const char *p = line;
+        const char *reg;
+        ShaderIOBinding *b;
+        ShaderIOResourceKind kind;
+        ShaderIOLayout layout = SHADER_IO_LAYOUT_DEFAULT;
+        char klass;
+        UINT regnum = 0u;
+        int has_digit = 0;
+        while (p < line_end && (*p == ' ' || *p == '\t' || *p == '\r')) ++p;
+        if (p >= line_end || (p + 1 < line_end && p[0] == '/' && p[1] == '/')) {
+            line = nl != NULL ? nl + 1 : end;
+            continue;
+        }
+        reg = rhi_d3d12_hlsl_find(p, line_end, "register(");
+        if (reg == NULL) {
+            line = nl != NULL ? nl + 1 : end;
+            continue;
+        }
+        reg += 9u;
+        if (reg >= line_end) { line = nl != NULL ? nl + 1 : end; continue; }
+        klass = *reg++;
+        while (reg < line_end && *reg >= '0' && *reg <= '9') {
+            regnum = regnum * 10u + (UINT)(*reg - '0');
+            has_digit = 1;
+            ++reg;
+        }
+        if (!has_digit || (klass != 'b' && klass != 't' && klass != 'u')) {
+            line = nl != NULL ? nl + 1 : end;
+            continue;
+        }
+        if (rhi_d3d12_hlsl_find(p, line_end, "RWStructuredBuffer") != NULL ||
+            rhi_d3d12_hlsl_find(p, line_end, "RWByteAddressBuffer") != NULL ||
+            rhi_d3d12_hlsl_find(p, line_end, "RWTexture") != NULL) {
+            kind = SHADER_IO_RESOURCE_STORAGE;
+        } else if (rhi_d3d12_hlsl_find(p, line_end, "ConstantBuffer") != NULL) {
+            if (regnum == 0u) {
+                kind = SHADER_IO_RESOURCE_PUSH_CONSTANT; /* b0 = root constants */
+                layout = SHADER_IO_LAYOUT_PUSH_CONSTANT;
+            } else {
+                kind = SHADER_IO_RESOURCE_UNIFORM;
+            }
+        } else if (rhi_d3d12_hlsl_find(p, line_end, "Texture") != NULL) {
+            kind = SHADER_IO_RESOURCE_SAMPLER; /* SRV range + static sampler */
+        } else if (rhi_d3d12_hlsl_find(p, line_end, "StructuredBuffer") != NULL ||
+                   rhi_d3d12_hlsl_find(p, line_end, "ByteAddressBuffer") != NULL) {
+            kind = SHADER_IO_RESOURCE_IMAGE;   /* read-only SRV */
+        } else {
+            line = nl != NULL ? nl + 1 : end; /* SamplerState & co: skipped */
+            continue;
+        }
+        if (count >= capacity) {
+            LOG_WARN("D3D12: HLSL reflection overflow (%u bindings max)",
+                     (unsigned)capacity);
+            return 0u; /* fail closed: a partial root signature is worse */
+        }
+        b = &out[count++];
+        memset(b, 0, sizeof(*b));
+        b->kind = kind;
+        b->layout = layout;
+        b->set = 0u;
+        b->binding = regnum;
+        line = nl != NULL ? nl + 1 : end;
+    }
+    return count;
+}
+
+/* Parse `// rhi:uniform <name> <offset>` markers from one HLSL source into
+ * the pipeline's name -> byte-offset table. Duplicate names keep the first
+ * offset (VS/PS markers for the same block must agree). */
+static void rhi_d3d12_uniform_markers(const char *src, usize len,
+                                      RHI_D3D12UniformLoc *table,
+                                      UINT *count) {
+    const char *p = src;
+    const char *end = src + len;
+    while (p < end) {
+        const char *mark = rhi_d3d12_hlsl_find(p, end, "rhi:uniform");
+        char name[SHADER_IO_NAME_MAX];
+        usize n = 0u;
+        UINT offset = 0u;
+        UINT i;
+        int has_digit = 0;
+        if (mark == NULL) return;
+        p = mark + strlen("rhi:uniform");
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        while (p < end && rhi_d3d12_hlsl_ident_char(*p)) {
+            if (n + 1u < sizeof(name)) name[n++] = *p;
+            ++p;
+        }
+        name[n] = '\0';
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        while (p < end && *p >= '0' && *p <= '9') {
+            offset = offset * 10u + (UINT)(*p - '0');
+            has_digit = 1;
+            ++p;
+        }
+        if (n == 0u || !has_digit) continue;
+        for (i = 0u; i < *count; ++i)
+            if (strcmp(table[i].name, name) == 0) break;
+        if (i < *count) continue; /* first declaration wins */
+        if (*count >= RHI_D3D12_MAX_UNIFORM_LOCS) {
+            LOG_WARN("D3D12: uniform marker table full; %s not recorded", name);
+            continue;
+        }
+        memcpy(table[*count].name, name, n + 1u);
+        table[*count].offset = offset;
+        (*count)++;
+    }
 }
 
 /* ---- root signature generation (Task 5) ---- */
@@ -1924,16 +2154,18 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         RHI_D3D12Shader *cs = (RHI_D3D12Shader *)rhi_get_resource_typed(
             dev, desc->frag, RHI_RES_SHADER); /* VK parity: CS rides .frag */
         if (cs == NULL || cs->blob == NULL) {
-            LOG_WARN("D3D12: pipeline needs a compiled CS blob (Task 6)");
+            LOG_WARN("D3D12: pipeline needs a compiled CS blob");
             return RHI_HANDLE_NULL;
         }
-        binding_count = shader_reflect_bindings(cs->source, cs->source_len,
-                                                bindings, 16u);
+        binding_count = rhi_d3d12_reflect_hlsl(cs->source, cs->source_len,
+                                               bindings, 16u);
         if (!rhi_d3d12_root_sig_from_bindings(&builder, bindings,
                                               binding_count))
             return RHI_HANDLE_NULL;
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        rhi_d3d12_uniform_markers(cs->source, cs->source_len, pd->uniforms,
+                                  &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 1u,
             &pd->push_param_index, &pd->push_size);
         if (pd->root_sig != NULL) {
@@ -1954,16 +2186,16 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         RHI_D3D12Shader *ps = (RHI_D3D12Shader *)rhi_get_resource_typed(
             dev, desc->frag, RHI_RES_SHADER);
         if (vs == NULL || ps == NULL || vs->blob == NULL || ps->blob == NULL) {
-            LOG_WARN("D3D12: pipeline needs compiled VS/PS blobs (Task 6)");
+            LOG_WARN("D3D12: pipeline needs compiled VS/PS blobs");
             return RHI_HANDLE_NULL;
         }
-        binding_count = shader_reflect_bindings(vs->source, vs->source_len,
-                                                bindings, 16u);
+        binding_count = rhi_d3d12_reflect_hlsl(vs->source, vs->source_len,
+                                               bindings, 16u);
         if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
                                              D3D12_SHADER_VISIBILITY_VERTEX))
             return RHI_HANDLE_NULL;
-        binding_count = shader_reflect_bindings(ps->source, ps->source_len,
-                                                bindings, 16u);
+        binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
+                                               bindings, 16u);
         if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
                                              D3D12_SHADER_VISIBILITY_PIXEL))
             return RHI_HANDLE_NULL;
@@ -1973,6 +2205,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         ps_code.BytecodeLength = ps->blob_size;
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        rhi_d3d12_uniform_markers(vs->source, vs->source_len, pd->uniforms,
+                                  &pd->uniform_count);
+        rhi_d3d12_uniform_markers(ps->source, ps->source_len, pd->uniforms,
+                                  &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 0u,
             &pd->push_param_index, &pd->push_size);
         if (pd->root_sig != NULL)
@@ -2355,6 +2591,40 @@ static ID3D12GraphicsCommandList *rhi_d3d12_cmd_list(RHI_D3D12Context *ctx) {
     return ctx->command_lists[ctx->frame_parity & 1u];
 }
 
+/* Task 6: flush the legacy set_uniform_* staging buffer as root constants
+ * before the next draw/dispatch (VK flush-at-draw parity, rhi.h:586-595).
+ * Root-constant writes are 4-byte granular, so the dirty byte range widens
+ * to DWORD alignment; every staged write was already validated against the
+ * pipeline's declared (clamped) push range via rhi_push_helper_range_ok. */
+static void rhi_d3d12_flush_uniform_staging(RHI_D3D12Context *ctx) {
+    RHI_D3D12Pipeline *pd;
+    ID3D12GraphicsCommandList *list;
+    UINT lo;
+    UINT hi;
+    if (ctx == NULL || ctx->uniform_dirty_lo >= ctx->uniform_dirty_hi) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL || pd->push_param_index == UINT_MAX) {
+        ctx->uniform_dirty_lo = 0u;
+        ctx->uniform_dirty_hi = 0u;
+        return;
+    }
+    lo = ctx->uniform_dirty_lo & ~3u;
+    hi = (ctx->uniform_dirty_hi + 3u) & ~3u;
+    if (hi > pd->push_size) hi = pd->push_size;
+    ctx->uniform_dirty_lo = 0u;
+    ctx->uniform_dirty_hi = 0u;
+    if (hi <= lo) return;
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRoot32BitConstants(list,
+            pd->push_param_index, (hi - lo) / 4u, ctx->uniform_staging + lo,
+            lo / 4u);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRoot32BitConstants(list,
+            pd->push_param_index, (hi - lo) / 4u, ctx->uniform_staging + lo,
+            lo / 4u);
+}
+
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) { (void)cmd; }
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) { (void)cmd; }
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
@@ -2474,6 +2744,7 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             0u, 0u);
 }
@@ -2482,6 +2753,7 @@ void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             first_vertex, 0u);
 }
@@ -2490,6 +2762,7 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
                                                    instance_count, 0u, 0, 0u);
 }
@@ -2499,6 +2772,7 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
         instance_count, first_index, vertex_offset, 0u);
 }
@@ -2531,6 +2805,7 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
     }
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging(ctx);
     args = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (args == NULL) {
         LOG_WARN("D3D12: indirect draw with invalid argument buffer");
@@ -2603,25 +2878,53 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
     (void)cmd; (void)buf; (void)binding;
 }
+/* Legacy per-uniform setters write the 256B push staging buffer; the dirty
+ * range flushes as root constants before the next draw/dispatch (VK parity).
+ * R552-B: validation is against the pipeline's declared push range, not the
+ * staging size — out-of-range writes drop with a warning, never truncate. */
+static void rhi_d3d12_stage_uniform(RHICmdBuffer *cmd, i32 location,
+                                    const void *data, u32 size) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    RHI_D3D12Pipeline *pd;
+    if (ctx == NULL || data == NULL) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    if (pd == NULL || pd->push_param_index == UINT_MAX) return;
+    if (!rhi_push_helper_range_ok(location, size, pd->push_size)) {
+        LOG_WARN("D3D12: set_uniform at %d+%u outside declared %u — write "
+                 "dropped", location, size, pd->push_size);
+        return;
+    }
+    memcpy(ctx->uniform_staging + location, data, size);
+    if ((UINT)location < ctx->uniform_dirty_lo)
+        ctx->uniform_dirty_lo = (UINT)location;
+    if ((UINT)location + size > ctx->uniform_dirty_hi)
+        ctx->uniform_dirty_hi = (UINT)location + size;
+}
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
-    (void)cmd; (void)location; (void)m;
+    rhi_d3d12_stage_uniform(cmd, location, m, 64u);
 }
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y,
                               f32 z) {
-    (void)cmd; (void)location; (void)x; (void)y; (void)z;
+    f32 v[3];
+    v[0] = x; v[1] = y; v[2] = z;
+    rhi_d3d12_stage_uniform(cmd, location, v, 12u);
 }
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
-    (void)cmd; (void)location; (void)x; (void)y;
+    f32 v[2];
+    v[0] = x; v[1] = y;
+    rhi_d3d12_stage_uniform(cmd, location, v, 8u);
 }
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y,
                               f32 z, f32 w) {
-    (void)cmd; (void)location; (void)x; (void)y; (void)z; (void)w;
+    f32 v[4];
+    v[0] = x; v[1] = y; v[2] = z; v[3] = w;
+    rhi_d3d12_stage_uniform(cmd, location, v, 16u);
 }
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
-    (void)cmd; (void)location; (void)v;
+    rhi_d3d12_stage_uniform(cmd, location, &v, 4u);
 }
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
-    (void)cmd; (void)location; (void)v;
+    rhi_d3d12_stage_uniform(cmd, location, &v, 4u);
 }
 void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data,
                             u32 size) {
@@ -2655,7 +2958,18 @@ void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location,
 }
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe,
                                       const char *name) {
-    (void)dev; (void)pipe; (void)name; return -1;
+    RHI_D3D12Pipeline *pd;
+    UINT i;
+    if (dev == NULL || name == NULL) return -1;
+    pd = (RHI_D3D12Pipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (pd == NULL) return -1;
+    /* Name -> byte offset into the root constants (VK push-constant
+     * convention, spec §4.4); the table is built from the sidecar's
+     * `// rhi:uniform <name> <offset>` markers at pipeline creation. */
+    for (i = 0u; i < pd->uniform_count; ++i)
+        if (strcmp(pd->uniforms[i].name, name) == 0)
+            return (i32)pd->uniforms[i].offset;
+    return -1;
 }
 
 /* ---- shadow map / cubemap / FBO ---- */
@@ -2986,6 +3300,7 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_Dispatch(list, x, y, z);
 }
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,

@@ -120,6 +120,12 @@ typedef struct RHI_D3D12Context {
     RHI_D3D12CreateFailure injected_failure;
     RHI_D3D12Swapchain swapchain;       /* Task 4; valid iff swapchain_ready */
     UINT swapchain_ready;
+    /* Task 6: legacy rhi_cmd_set_uniform_* staging — push-constant scratch
+     * flushed as root constants before the next draw/dispatch (VK parity,
+     * rhi.h:586-595). Byte range [lo, hi) is dirty; lo>hi = clean. */
+    UINT8 uniform_staging[256];
+    UINT uniform_dirty_lo;
+    UINT uniform_dirty_hi;
 } RHI_D3D12Context;
 
 typedef struct RHI_D3D12Resource {

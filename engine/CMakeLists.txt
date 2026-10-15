@@ -499,6 +499,64 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         set_source_files_properties(src/rhi/rhi_d3d12.c PROPERTIES
             COMPILE_OPTIONS "${_d3d12_sdk_quiet}")
     endif()
+
+    # Task 6: build-time HLSL -> DXIL compilation with the vendored dxc
+    # (Task 1 lock; same vendored-first lookup as
+    # tests/test_d3d12_shader_compile_gate.cmake). Decision record: HLSL
+    # sources are HAND-AUTHORED sidecars next to the GLSL pipelines
+    # (shaders/*_hlsl.{vert,frag,comp}), not GLSL translations. The D3D12
+    # renderer pipeline list below is asserted against the sidecars — a
+    # referenced pipeline without its *_hlsl.* twin fails the build with an
+    # explicit list (no silent skip); pipelines are migrated incrementally.
+    set(ENGINE_DXC "${CMAKE_CURRENT_SOURCE_DIR}/external/VulkanSDK/Bin/dxc.exe")
+    if(NOT EXISTS "${ENGINE_DXC}")
+        find_program(ENGINE_DXC NAMES dxc dxc.exe REQUIRED)
+    endif()
+    set(ENGINE_D3D12_HLSL_PIPELINES blit myui)
+    set(_d3d12_missing_sidecars "")
+    foreach(_pipe IN LISTS ENGINE_D3D12_HLSL_PIPELINES)
+        foreach(_stage vert frag)
+            if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${_pipe}_hlsl.${_stage}")
+                string(APPEND _d3d12_missing_sidecars
+                    "\n  shaders/${_pipe}_hlsl.${_stage} (renderer pipeline '${_pipe}')")
+            endif()
+        endforeach()
+    endforeach()
+    if(_d3d12_missing_sidecars)
+        message(FATAL_ERROR
+            "D3D12 HLSL sidecar assertion failed — every renderer-referenced pipeline must have a hand-authored *_hlsl.* twin (no silent skip):${_d3d12_missing_sidecars}")
+    endif()
+    file(GLOB ENGINE_D3D12_HLSL CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_hlsl.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_hlsl.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_hlsl.comp)
+    set(ENGINE_D3D12_DXIL "")
+    foreach(_hlsl IN LISTS ENGINE_D3D12_HLSL)
+        get_filename_component(_name "${_hlsl}" NAME)
+        if(_hlsl MATCHES "\\.vert$")
+            set(_profile vs_6_0)
+        elseif(_hlsl MATCHES "\\.frag$")
+            set(_profile ps_6_0)
+        else()
+            set(_profile cs_6_0)
+        endif()
+        set(_dxil "${CMAKE_CURRENT_BINARY_DIR}/shaders_d3d12/${_name}.dxil")
+        add_custom_command(
+            OUTPUT "${_dxil}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders_d3d12"
+            COMMAND "${ENGINE_DXC}" -T ${_profile} -E main -Fo "${_dxil}" "${_hlsl}"
+            DEPENDS "${_hlsl}"
+            COMMENT "dxc ${_profile}: ${_name}")
+        list(APPEND ENGINE_D3D12_DXIL "${_dxil}")
+    endforeach()
+    add_custom_target(engine_shaders_d3d12 ALL DEPENDS ${ENGINE_D3D12_DXIL})
+    add_dependencies(engine_rhi_d3d12 engine_shaders_d3d12)
+    # Runtime lookup: HLSL source (text reflection + uniform markers) from
+    # the source tree, precompiled DXIL from the build tree. A missing DXIL
+    # (precompile skipped/failed) makes rhi_shader_create refuse the shader.
+    target_compile_definitions(engine_rhi_d3d12 PRIVATE
+        RHI_D3D12_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+        RHI_D3D12_SHADER_DXIL_DIR="${CMAKE_CURRENT_BINARY_DIR}/shaders_d3d12")
 endif()
 
 # Link exactly one RHI backend into a consumer executable. Headless
@@ -2449,6 +2507,22 @@ endif()
         add_test(NAME test_d3d12_pipeline_contract
             COMMAND test_d3d12_pipeline_contract)
         set_tests_properties(test_d3d12_pipeline_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
+        # Task 6: shader pipeline contract — hand-authored HLSL sidecars,
+        # build-time dxc DXIL, root-constant push mapping with the
+        # VK-parity byte-offset uniform location. Same SKIP 77 policy as
+        # the Task 3/4/5 contracts (real device required, GPU_RUNTIME).
+        add_executable(test_d3d12_shader_contract
+            tests/test_d3d12_shader_contract.c)
+        target_include_directories(test_d3d12_shader_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_shader_contract PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_dependencies(test_d3d12_shader_contract engine_shaders_d3d12)
+        add_test(NAME test_d3d12_shader_contract
+            COMMAND test_d3d12_shader_contract)
+        set_tests_properties(test_d3d12_shader_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
