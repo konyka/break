@@ -52,6 +52,13 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
                                 void *display_native, u32 w, u32 h,
                                 RHIResult *out_result) {
     if (out_result != NULL) *out_result = RHI_RESULT_OK;
+    if (backend == RHI_BACKEND_D3D12) {
+        /* Plan D Task 2 skeleton: d3d12 is selectable on WIN32 but device
+         * creation lands in Task 3; fail closed as UNAVAILABLE (not
+         * UNSUPPORTED) so callers can distinguish "not yet" from "never". */
+        if (out_result != NULL) *out_result = RHI_RESULT_UNAVAILABLE;
+        return NULL;
+    }
     if (backend != RHI_BACKEND_OPENGL && backend != RHI_BACKEND_VULKAN) {
         if (out_result != NULL) *out_result = RHI_RESULT_UNSUPPORTED;
         return NULL;

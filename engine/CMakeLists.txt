@@ -32,8 +32,8 @@ option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when ava
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
-    "RHI backend selection: auto | opengl | vulkan | metal")
-set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal)
+    "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
+set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
 set(STREAMLINE_ROOT "" CACHE PATH
     "Optional Streamline SDK root; enables the Windows C++ DLSS adapter")
 
@@ -130,9 +130,10 @@ option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
 if(NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "opengl" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "vulkan" AND
-   NOT ENGINE_RHI_BACKEND STREQUAL "metal")
+   NOT ENGINE_RHI_BACKEND STREQUAL "metal" AND
+   NOT ENGINE_RHI_BACKEND STREQUAL "d3d12")
     message(FATAL_ERROR
-        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal")
+        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, metal, or d3d12")
 endif()
 if(ENGINE_RHI_BACKEND STREQUAL "metal" AND NOT APPLE)
     message(FATAL_ERROR
@@ -142,10 +143,18 @@ if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
     set(ENGINE_VULKAN ON CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 elseif(ENGINE_RHI_BACKEND STREQUAL "opengl")
     set(ENGINE_VULKAN OFF CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
+elseif(ENGINE_RHI_BACKEND STREQUAL "d3d12")
+    if(NOT WIN32)
+        message(FATAL_ERROR
+            "ENGINE_RHI_BACKEND=d3d12 is UNAVAILABLE on this platform (Windows only)")
+    endif()
+    set(ENGINE_VULKAN OFF CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 endif()
 if(ENGINE_RHI_BACKEND STREQUAL "metal")
     set(_rhi_backend_effective "metal")
     # metal 不改写 ENGINE_VULKAN（保持 OFF），兼容层语义仅服务 gl/vk。
+elseif(ENGINE_RHI_BACKEND STREQUAL "d3d12" AND WIN32)
+    set(_rhi_backend_effective "d3d12")
 elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
 else()
@@ -470,11 +479,35 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
         PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
 endif()
 
+# Native D3D12 backend (plan D): Windows-only static library, fail-closed
+# skeleton until Task 3 lands real device creation. Not EXCLUDE_FROM_ALL —
+# the library only exists when d3d12 is the effective backend.
+if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
+    add_library(engine_rhi_d3d12 STATIC src/rhi/rhi_d3d12.c)
+    target_include_directories(engine_rhi_d3d12 PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(engine_rhi_d3d12 PRIVATE ENGINE_RHI_BACKEND_D3D12=1)
+    target_link_libraries(engine_rhi_d3d12 PUBLIC engine PRIVATE d3d12 dxgi dxguid)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # Same Windows-SDK-header exemption set as the legacy test registration.
+        if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+            set(_d3d12_sdk_quiet "/clang:-Wno-nonportable-include-path;/clang:-Wno-ignored-pragma-intrinsic;/clang:-Wno-pragma-pack;/clang:-Wno-unknown-pragmas;/clang:-Wno-microsoft-anon-tag")
+        else()
+            # clang in GNU mode does not accept /clang: pass-through options.
+            set(_d3d12_sdk_quiet "-Wno-nonportable-include-path;-Wno-ignored-pragma-intrinsic;-Wno-pragma-pack;-Wno-unknown-pragmas;-Wno-microsoft-anon-tag")
+        endif()
+        set_source_files_properties(src/rhi/rhi_d3d12.c PROPERTIES
+            COMPILE_OPTIONS "${_d3d12_sdk_quiet}")
+    endif()
+endif()
+
 # Link exactly one RHI backend into a consumer executable. Headless
 # contract tests do NOT call this helper; they link engine_rhi_headless.
 function(engine_link_rhi_backend target)
     if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         target_link_libraries(${target} PRIVATE engine_rhi_metal)
+    elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
+        target_link_libraries(${target} PRIVATE engine_rhi_d3d12)
     elseif(ENGINE_PLATFORM STREQUAL "macos" OR
        ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
@@ -2344,12 +2377,13 @@ endif()
         COMMAND test_d3d12_lifetime_hresult_contract)
     set_tests_properties(test_d3d12_lifetime_hresult_contract PROPERTIES
         LABELS "headless;platform_contract")
-    if(WIN32)
+    if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         add_executable(test_d3d12_native_failure
-            tests/test_d3d12_native_failure.c src/rhi/rhi_d3d12.c)
+            tests/test_d3d12_native_failure.c)
         target_include_directories(test_d3d12_native_failure PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_link_libraries(test_d3d12_native_failure PRIVATE d3d12 dxgi dxguid)
+        target_link_libraries(test_d3d12_native_failure PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
         if(CMAKE_C_COMPILER_ID MATCHES "Clang")
             if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
                 set(_d3d12_sdk_quiet "/clang:-Wno-nonportable-include-path;/clang:-Wno-ignored-pragma-intrinsic;/clang:-Wno-pragma-pack;/clang:-Wno-unknown-pragmas;/clang:-Wno-microsoft-anon-tag")
@@ -2357,7 +2391,7 @@ endif()
                 # clang in GNU mode does not accept /clang: pass-through options.
                 set(_d3d12_sdk_quiet "-Wno-nonportable-include-path;-Wno-ignored-pragma-intrinsic;-Wno-pragma-pack;-Wno-unknown-pragmas;-Wno-microsoft-anon-tag")
             endif()
-            set_source_files_properties(tests/test_d3d12_native_failure.c src/rhi/rhi_d3d12.c PROPERTIES
+            set_source_files_properties(tests/test_d3d12_native_failure.c PROPERTIES
                 COMPILE_OPTIONS "${_d3d12_sdk_quiet}")
         endif()
         add_test(NAME test_d3d12_native_failure COMMAND test_d3d12_native_failure)

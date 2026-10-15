@@ -145,7 +145,7 @@ if(engine_rt_trace_offset EQUAL -1)
     message(FATAL_ERROR "engine source ownership missing: src/renderer/rt_trace.c")
 endif()
 foreach(backend_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c"
-        "src/rhi/rhi_metal.m")
+        "src/rhi/rhi_metal.m" "src/rhi/rhi_d3d12.c")
     string(FIND "${engine_block}" "${backend_source}" engine_backend_offset)
     if(NOT engine_backend_offset EQUAL -1)
         message(FATAL_ERROR "engine must not own a backend source: ${backend_source}")
@@ -157,7 +157,8 @@ foreach(backend_spec
         "engine_rhi_opengl|src/rhi/rhi_gl.c"
         "engine_rhi_vulkan|src/rhi/rhi_vk.c"
         "engine_rhi_headless|src/rhi/rhi_headless.c"
-        "engine_rhi_metal|src/rhi/rhi_metal.m")
+        "engine_rhi_metal|src/rhi/rhi_metal.m"
+        "engine_rhi_d3d12|src/rhi/rhi_d3d12.c")
     string(REPLACE "|" ";" backend_parts "${backend_spec}")
     list(GET backend_parts 0 backend_target)
     list(GET backend_parts 1 backend_source)
@@ -172,7 +173,7 @@ foreach(backend_spec
             "RHI backend library does not own its source: ${backend_target} ${backend_source}")
     endif()
     foreach(other_source "src/rhi/rhi_gl.c" "src/rhi/rhi_vk.c" "src/rhi/rhi_headless.c"
-            "src/rhi/rhi_metal.m")
+            "src/rhi/rhi_metal.m" "src/rhi/rhi_d3d12.c")
         if(NOT other_source STREQUAL backend_source)
             string(FIND "${backend_block}" "${other_source}" other_offset)
             if(NOT other_offset EQUAL -1)
@@ -280,7 +281,7 @@ foreach(linked_target
     if(link_block)
         set(backend_link_count 0)
         foreach(backend_lib engine_rhi_opengl engine_rhi_vulkan engine_rhi_headless
-                engine_rhi_metal)
+                engine_rhi_metal engine_rhi_d3d12)
             string(FIND "${link_block}" "${backend_lib}" backend_lib_offset)
             if(NOT backend_lib_offset EQUAL -1)
                 math(EXPR backend_link_count "${backend_link_count} + 1")
@@ -293,16 +294,8 @@ foreach(linked_target
     endif()
 endforeach()
 
-# Unlanded backends stay out of the build graph until their plan lands.
-# Metal (plan C) is admitted; D3D12 remains future work (plan D).
-foreach(future_backend_token
-        "ENGINE_RHI_BACKEND_D3D12")
-    string(FIND "${engine_cmake_text}" "${future_backend_token}" future_backend_offset)
-    if(NOT future_backend_offset EQUAL -1)
-        message(FATAL_ERROR
-            "future backend is represented in current source ownership graph: ${future_backend_token}")
-    endif()
-endforeach()
+# Plan D admitted d3d12: engine_rhi_d3d12 is a real backend library (covered by
+# the ownership loops above), so no backend remains banned from the graph.
 
 # Backend internal contract surface (unchanged).
 foreach(required_text

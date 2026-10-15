@@ -45,24 +45,20 @@ endforeach()
 file(READ "${ENGINE_CMAKE}" cmake_text)
 foreach(required_text
         "set(ENGINE_RHI_BACKEND \"auto\" CACHE STRING"
-        "set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal)"
+        "set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)"
         "set(ENGINE_RHI_BACKEND_EFFECTIVE"
         "RHI backend: requested="
-        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal"
+        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, metal, or d3d12"
         "metal backend is UNAVAILABLE on this platform"
+        "ENGINE_RHI_BACKEND=d3d12 is UNAVAILABLE on this platform"
         "ENGINE_RHI_BACKEND STREQUAL \"vulkan\""
         "ENGINE_RHI_BACKEND STREQUAL \"opengl\""
         "ENGINE_RHI_BACKEND STREQUAL \"metal\""
+        "ENGINE_RHI_BACKEND STREQUAL \"d3d12\""
         "set(ENGINE_RHI_BACKEND_EFFECTIVE \"\${_rhi_backend_effective}\" CACHE INTERNAL")
     string(FIND "${cmake_text}" "${required_text}" offset)
     if(offset EQUAL -1)
         message(FATAL_ERROR "RHI backend selection contract missing: ${required_text}")
-    endif()
-endforeach()
-
-foreach(forbidden_backend "d3d12")
-    if(cmake_text MATCHES "ENGINE_RHI_BACKEND[ \t]*STREQUAL[ \t]*\"${forbidden_backend}\"")
-        message(FATAL_ERROR "unimplemented backend selector admitted: ${forbidden_backend}")
     endif()
 endforeach()
 
@@ -113,17 +109,23 @@ else()
     endif()
 endif()
 
-execute_process(
-    COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/d3d12"
-        ${configure_overrides}
-        -DENGINE_RHI_BACKEND=d3d12 -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
-    RESULT_VARIABLE d3d12_result
-    OUTPUT_VARIABLE d3d12_output
-    ERROR_VARIABLE d3d12_error)
-if(d3d12_result EQUAL 0)
-    message(FATAL_ERROR "unimplemented backend selector unexpectedly configured: d3d12")
-endif()
-if(NOT "${d3d12_output}${d3d12_error}" MATCHES
-       "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal")
-    message(FATAL_ERROR "d3d12 selector failed for an unexpected reason")
+# d3d12 is selectable on Windows hosts only; elsewhere it must fail closed
+# with an UNAVAILABLE message (no silent fallback to another backend).
+if(WIN32)
+    assert_configure_success("d3d12" "d3d12")
+else()
+    execute_process(
+        COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/d3d12"
+            ${configure_overrides}
+            -DENGINE_RHI_BACKEND=d3d12 -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
+        RESULT_VARIABLE d3d12_result
+        OUTPUT_VARIABLE d3d12_output
+        ERROR_VARIABLE d3d12_error)
+    if(d3d12_result EQUAL 0)
+        message(FATAL_ERROR "d3d12 selector unexpectedly configured on non-WIN32 platform")
+    endif()
+    if(NOT "${d3d12_output}${d3d12_error}" MATCHES
+           "d3d12 is UNAVAILABLE on this platform")
+        message(FATAL_ERROR "d3d12 selector failed for an unexpected reason")
+    endif()
 endif()

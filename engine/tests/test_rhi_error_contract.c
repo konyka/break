@@ -123,7 +123,9 @@ TEST(declared_metal_and_d3d12_backends_fail_closed)
     ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
     ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, (void *)1,
                                    64u, 64u, &result), NULL);
-    ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+    /* Plan D Task 2: d3d12 is a selectable backend whose skeleton device
+     * creation is fail-closed UNAVAILABLE until Task 3 lands real creation. */
+    ASSERT_EQ(result, RHI_RESULT_UNAVAILABLE);
 }
 
 TEST_MAIN_BEGIN()
