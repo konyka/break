@@ -29,9 +29,34 @@ typedef enum RHI_D3D12CreateFailure {
  * buffer count. */
 #define RHI_D3D12_BACKBUFFER_COUNT 3u
 
+/* Task 5 decision record: descriptor heap capacities. The shader-visible
+ * CBV/SRV/UAV heap aligns with the RHI slot-table model (RHI_MAX_RESOURCES
+ * 4096, rhi_backend_internal.h:8) so any live resource can hold a view;
+ * RTV/DSV/sampler heaps track the FBO budget. The sampler heap stays far
+ * below the D3D12 shader-visible sampler hard cap (2048). */
+#define RHI_D3D12_CBV_SRV_UAV_CAPACITY 4096u
+#define RHI_D3D12_RTV_CAPACITY 64u
+#define RHI_D3D12_DSV_CAPACITY 16u
+#define RHI_D3D12_SAMPLER_CAPACITY 64u
+
+/* Free-list descriptor allocator over one heap; slots retire through the
+ * context fence (the descriptor_retire_fence pattern generalised per slot).
+ * Task 7 (DXR) reuses this for SBT / AS-view descriptors. The heap object
+ * is owned by the context; the allocator owns only the slot bookkeeping. */
+typedef struct RHI_D3D12DescriptorAlloc {
+    ID3D12DescriptorHeap *heap;
+    UINT increment;
+    UINT capacity;
+    UINT *free_slots;      /* stack of slot indices */
+    UINT free_count;
+    UINT64 *slot_fence;    /* per-slot retire fence; 0 = not in flight */
+} RHI_D3D12DescriptorAlloc;
+
 typedef struct RHI_D3D12Swapchain {
     IDXGISwapChain4 *swapchain;
     ID3D12Resource *backbuffers[RHI_D3D12_BACKBUFFER_COUNT];
+    UINT rtv_slots[RHI_D3D12_BACKBUFFER_COUNT]; /* rtv_alloc slots, owned
+                                                 * for the swapchain lifetime */
     HWND hwnd;
     UINT width;
     UINT height;
@@ -58,6 +83,16 @@ typedef struct RHI_D3D12Context {
     ID3D12DescriptorHeap *rtv_heap;
     ID3D12DescriptorHeap *dsv_heap;
     ID3D12DescriptorHeap *cbv_srv_uav_heap;
+    ID3D12DescriptorHeap *sampler_heap;         /* shader-visible, Task 5 */
+    ID3D12CommandAllocator *upload_allocator;   /* one-shot staging uploads */
+    ID3D12GraphicsCommandList *upload_list;     /* (rhi.h:394-397 semantics) */
+    ID3D12CommandSignature *draw_signature;     /* ExecuteIndirect, stride 16 */
+    ID3D12CommandSignature *draw_indexed_signature; /* stride 20, gated by
+                                                     * rhi_indirect_abi_valid */
+    RHI_D3D12DescriptorAlloc rtv_alloc;
+    RHI_D3D12DescriptorAlloc dsv_alloc;
+    RHI_D3D12DescriptorAlloc cbv_srv_uav_alloc;
+    RHI_D3D12DescriptorAlloc sampler_alloc;
     ID3D12Fence *fence;
     HANDLE fence_event;
     UINT64 frame_fence[2];              /* last submitted fence per slot */
@@ -68,6 +103,13 @@ typedef struct RHI_D3D12Context {
     UINT rtv_increment;
     UINT dsv_increment;
     UINT cbv_srv_uav_increment;
+    UINT sampler_increment;
+    D3D12_CPU_DESCRIPTOR_HANDLE bound_rtvs[5]; /* RHI_MRT_MAX_ATTACHMENTS */
+    UINT bound_rtv_count;
+    D3D12_CPU_DESCRIPTOR_HANDLE bound_dsv;
+    UINT bound_dsv_valid;
+    void *bound_pipeline;       /* RHI_D3D12Pipeline*, .c-internal */
+    UINT bound_pipeline_compute;
     UINT64 next_fence;
     UINT64 completed_fence;
     UINT64 descriptor_retire_fence;
@@ -86,6 +128,50 @@ typedef struct RHI_D3D12Resource {
     UINT64 retire_fence;
 } RHI_D3D12Resource;
 
+/* Task 5: slot-table payloads for the public RHI handle API. Every buffer
+ * is a committed resource (decision record: RHI resources are small and the
+ * driver/OS own heap placement; placed resources wait for a real memory
+ * pressure receipt). DEFAULT-heap buffers carry upload staging;
+ * UPLOAD-heap buffers are persistently mappable. */
+typedef struct RHI_D3D12Buffer {
+    ID3D12Resource *resource;
+    UINT64 size;
+    UINT usage;                 /* RHIBufferUsage bits */
+    D3D12_RESOURCE_STATES state;
+    UINT device_local;          /* DEFAULT heap; 0 = UPLOAD heap */
+    void *mapped;               /* non-NULL while rhi_buffer_map is open */
+} RHI_D3D12Buffer;
+
+typedef struct RHI_D3D12Texture {
+    ID3D12Resource *resource;
+    DXGI_FORMAT dxgi_format;
+    UINT rhi_format;            /* RHIFormat */
+    UINT width;
+    UINT height;
+    UINT mip_levels;
+    D3D12_RESOURCE_STATES state;
+} RHI_D3D12Texture;
+
+typedef struct RHI_D3D12Sampler {
+    UINT slot;                  /* sampler_alloc slot */
+} RHI_D3D12Sampler;
+
+/* Root signature builder: one pass over reflected ShaderIOBindings
+ * (core/shader_io.h) plus the pipeline's push-constant contract.
+ * PUSH_CONSTANT folds into a single 32BIT_CONSTANTS param (index 0 when
+ * present, 128B compute / 256B graphics, matching the VK declared ranges);
+ * UNIFORM -> CBV table, STORAGE -> UAV table, SAMPLER -> SRV table + static
+ * sampler, IMAGE -> SRV table; descriptor registers follow the binding. */
+typedef struct RHI_D3D12RootSigBuilder {
+    D3D12_ROOT_PARAMETER1 params[16];
+    D3D12_DESCRIPTOR_RANGE1 ranges[16];
+    D3D12_STATIC_SAMPLER_DESC samplers[8];
+    UINT param_count;
+    UINT range_count;
+    UINT sampler_count;
+    UINT push_constant_size;   /* bytes; 0 = none */
+} RHI_D3D12RootSigBuilder;
+
 HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
                                  RHI_D3D12CreateFailure injected_failure);
 void rhi_d3d12_context_destroy(RHI_D3D12Context *context);
@@ -101,6 +187,26 @@ HRESULT rhi_d3d12_resource_transition(RHI_D3D12Context *context,
                                       D3D12_RESOURCE_STATES next_state);
 HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
                          UINT64 *out_fence);
+
+/* Task 5 descriptor allocator API (Task 7 DXR reuses these). init fills the
+ * free-list over an already-created heap (non-owning); take pops the
+ * youngest free slot unless its retire fence is still GPU-busy; give_back
+ * pushes a slot with the fence value after which reuse is safe. */
+HRESULT rhi_d3d12_descriptor_alloc_init(RHI_D3D12DescriptorAlloc *alloc,
+                                        ID3D12DescriptorHeap *heap,
+                                        UINT increment, UINT capacity);
+void rhi_d3d12_descriptor_alloc_destroy(RHI_D3D12DescriptorAlloc *alloc);
+UINT rhi_d3d12_descriptor_take(RHI_D3D12Context *context,
+                               RHI_D3D12DescriptorAlloc *alloc);
+void rhi_d3d12_descriptor_give_back(RHI_D3D12DescriptorAlloc *alloc,
+                                    UINT slot, UINT64 retire_fence);
+D3D12_CPU_DESCRIPTOR_HANDLE rhi_d3d12_descriptor_cpu(
+    const RHI_D3D12DescriptorAlloc *alloc, UINT slot);
+D3D12_GPU_DESCRIPTOR_HANDLE rhi_d3d12_descriptor_gpu(
+    const RHI_D3D12DescriptorAlloc *alloc, UINT slot);
+/* Last fence value submitted on the direct queue; 0 when nothing is in
+ * flight. Used as the retire fence for descriptor/resource give-back. */
+UINT64 rhi_d3d12_retire_fence(const RHI_D3D12Context *context);
 
 /* Task 4: flip-model swapchain. create binds the swapchain to `hwnd` (or to
  * a device-owned hidden fallback window when `hwnd` is not a real window,

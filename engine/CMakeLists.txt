@@ -2422,6 +2422,23 @@ endif()
             COMMAND test_d3d12_swapchain_contract)
         set_tests_properties(test_d3d12_swapchain_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+        # Task 5: committed-resource roundtrips (buffer staging upload +
+        # readback, texture upload + readback) and the shared indirect ABI
+        # rule on a live device. Same SKIP 77 policy as the Task 3/4
+        # contracts. The sentinel HWND needs the test-only fallback-window
+        # opt-in (Task 4 review gate), injected via ENVIRONMENT here so the
+        # test source itself stays hermetic.
+        add_executable(test_d3d12_pipeline_contract
+            tests/test_d3d12_pipeline_contract.c)
+        target_include_directories(test_d3d12_pipeline_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_pipeline_contract PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_pipeline_contract
+            COMMAND test_d3d12_pipeline_contract)
+        set_tests_properties(test_d3d12_pipeline_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
