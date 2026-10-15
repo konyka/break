@@ -2457,8 +2457,13 @@ endif()
     add_test(NAME test_d3d12_dependency_gate
         COMMAND ${CMAKE_COMMAND}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_dependency_gate.cmake)
+    # SKIP_REGULAR_EXPRESSION covers cmake < 3.29 hosts (no cmake_language
+    # EXIT): the script's FATAL_ERROR fallback exits 1 but still prints the
+    # UNAVAILABLE line, which ctest maps to SKIP. On cmake >= 3.29 the
+    # SKIP_RETURN_CODE 77 path handles every skip site.
     set_tests_properties(test_d3d12_dependency_gate PROPERTIES
-        SKIP_RETURN_CODE 77 LABELS "platform_contract")
+        SKIP_RETURN_CODE 77 SKIP_REGULAR_EXPRESSION "UNAVAILABLE"
+        LABELS "platform_contract")
     add_test(NAME test_d3d12_shader_compile_gate
         COMMAND ${CMAKE_COMMAND}
             -DCMAKE_CURRENT_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}

@@ -4,7 +4,14 @@ endif()
 
 if(NOT WIN32)
     message(STATUS "D3D12 dependency gate: UNAVAILABLE (non-Windows host)")
-    cmake_language(EXIT 77)
+    if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.29)
+        cmake_language(EXIT 77)
+    endif()
+    # cmake_language(EXIT) was added in CMake 3.29; older script-mode cmake
+    # cannot exit with code 77. Fail with FATAL_ERROR instead — the STATUS
+    # line above matches the test's SKIP_REGULAR_EXPRESSION, so ctest still
+    # reports SKIP rather than FAIL.
+    message(FATAL_ERROR "D3D12 dependency gate: UNAVAILABLE (cmake < 3.29 cannot exit 77)")
 endif()
 
 set(_sdk_root "$ENV{WindowsSdkDir}")
