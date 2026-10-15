@@ -1,0 +1,87 @@
+name: windows-d3d12
+
+# RHI 证据 lane 分类（spec §8.2，同 ci.yml 头部约定）：
+#   本 lane = headless/platform_contract 全套 + GPU-runtime 下限
+#   （ENGINE_D3D12_WARP=1 强制 WARP 软光栅；收据按 gpu=WARP 标注，
+#   不把证据等级提升超过 GPU-runtime）。
+#   真 GPU 依赖 self-hosted windows-gpu runner（占位门控）：hosted runner
+#   无适配器时 d3d12 契约测试按 SKIP_RETURN_CODE 77 跳过，不计入证据。
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  d3d12:
+    name: Windows + D3D12 (Debug layer, WARP floor)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Verify SDK lock
+        run: cmake -P engine/tests/test_d3d12_sdk_lock.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        # engine/CMakeLists.txt looks for the vendored dxc first
+        # (engine/external/VulkanSDK/Bin/dxc.exe, local-only via
+        # .git/info/exclude), then falls back to find_program. The runner's
+        # Windows SDK ships dxc.exe but its bin dir is not on PATH.
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+          Write-Output "dxc: $($dxc.FullName)"
+
+      - name: Configure (Ninja + clang)
+        # Debug defaults ENGINE_D3D12_DEBUG=ON: debug layer + GPU-based
+        # validation compiled in, DRED forced on (all configs).
+        run: cmake -S engine -B build-d3d12 -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=clang -DENGINE_RHI_BACKEND=d3d12
+
+      - name: Build
+        run: cmake --build build-d3d12 --parallel
+
+      - name: Headless + contract tests
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build-d3d12 -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # CMake script gates (e.g. the d3d12 shader compile gate) put the
+            # diagnosis in the lines after "CMake Error at" — surface those.
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest-headless.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: WARP GPU-runtime floor
+        run: ctest --test-dir build-d3d12 -R test_d3d12_warp_runtime --output-on-failure
+
+      - name: Agility deployment check
+        # The locked Agility redist must land next to the executables
+        # (D3D12SDKPath="."), and the backend export must survive the link.
+        shell: bash
+        run: |
+          test -f build-d3d12/D3D12Core.dll || { echo "::error::D3D12Core.dll not deployed next to executables"; exit 1; }
+          test -f build-d3d12/d3d12SDKLayers.dll || { echo "::error::d3d12SDKLayers.dll not deployed (debug layer requires it)"; exit 1; }
+          llvm-readobj --coff-exports build-d3d12/test_d3d12_warp_runtime.exe | grep -q "Name: D3D12SDKVersion" || { echo "::error::D3D12SDKVersion export missing from d3d12 executables"; exit 1; }
+
+      # Real-GPU runner placeholder: a self-hosted windows-gpu runner
+      # registers label `gpu`; on GPU-less hosted runners the d3d12 contract
+      # tests exit 77 and CTest reports them as skipped (exit 0), so this
+      # step stays green without upgrading the evidence level.
+      - name: Real GPU runtime (placeholder)
+        run: ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure

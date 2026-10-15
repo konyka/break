@@ -34,6 +34,18 @@ option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
+# Task 8: D3D12 debug layer + GPU-based validation switch. Default ON for
+# Debug builds so a fresh -DCMAKE_BUILD_TYPE=Debug configure gets validation;
+# the cached value sticks afterwards, so -DENGINE_D3D12_DEBUG=OFF overrides
+# explicitly. Release defaults OFF (zero debug-layer overhead).
+if(WIN32 AND CMAKE_BUILD_TYPE STREQUAL "Debug" AND NOT DEFINED ENGINE_D3D12_DEBUG)
+    set(_engine_d3d12_debug_default ON)
+else()
+    set(_engine_d3d12_debug_default OFF)
+endif()
+option(ENGINE_D3D12_DEBUG
+    "D3D12 debug layer + GPU-based validation (default ON in Debug)"
+    ${_engine_d3d12_debug_default})
 set(STREAMLINE_ROOT "" CACHE PATH
     "Optional Streamline SDK root; enables the Windows C++ DLSS adapter")
 
@@ -488,6 +500,28 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(engine_rhi_d3d12 PRIVATE ENGINE_RHI_BACKEND_D3D12=1)
     target_link_libraries(engine_rhi_d3d12 PUBLIC engine PRIVATE d3d12 dxgi dxguid)
+    if(ENGINE_D3D12_DEBUG)
+        target_compile_definitions(engine_rhi_d3d12 PRIVATE ENGINE_D3D12_DEBUG=1)
+    endif()
+    # Task 8: deploy the locked Agility SDK runtime next to every d3d12
+    # executable. D3D12SDKPath=".\" (rhi_d3d12.c) makes d3d12.dll bind
+    # D3D12Core.dll from the executable directory, and the debug layer
+    # (ENGINE_D3D12_DEBUG) additionally needs d3d12SDKLayers.dll from the
+    # same pinned package. Executables (tests included) land in
+    # ${CMAKE_BINARY_DIR}, so a single copy covers all consumers.
+    set(ENGINE_D3D12_AGILITY_BIN
+        "${CMAKE_CURRENT_SOURCE_DIR}/external/d3d12/agility/build/native/bin/x64")
+    foreach(_d3d12_redist D3D12Core.dll d3d12SDKLayers.dll)
+        if(NOT EXISTS "${ENGINE_D3D12_AGILITY_BIN}/${_d3d12_redist}")
+            message(FATAL_ERROR
+                "${_d3d12_redist} missing; run cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake")
+        endif()
+    endforeach()
+    add_custom_command(TARGET engine_rhi_d3d12 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ENGINE_D3D12_AGILITY_BIN}/D3D12Core.dll" "${CMAKE_BINARY_DIR}/D3D12Core.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${ENGINE_D3D12_AGILITY_BIN}/d3d12SDKLayers.dll" "${CMAKE_BINARY_DIR}/d3d12SDKLayers.dll")
     if(CMAKE_C_COMPILER_ID MATCHES "Clang")
         # Same Windows-SDK-header exemption set as the legacy test registration.
         if(CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
@@ -2541,6 +2575,25 @@ endif()
         set_tests_properties(test_d3d12_dxr_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "BREAK_D3D12_TEST_FALLBACK_HWND=1")
+        # Task 8: WARP-forced runtime floor for the windows-d3d12 lane.
+        # ENGINE_D3D12_WARP=1 forces the WARP adapter so GPU-less runners
+        # get a deterministic software GPU-runtime floor; the test asserts
+        # the device identity honestly reports WARP (Microsoft Basic Render
+        # Driver) instead of masquerading as hardware. The sentinel HWND
+        # needs the test-only fallback-window opt-in, same as the Task 3-7
+        # contracts. WARP receipts are recorded with gpu=WARP and never
+        # upgrade the evidence level past GPU-runtime.
+        add_executable(test_d3d12_warp_runtime
+            tests/test_d3d12_warp_runtime.c)
+        target_include_directories(test_d3d12_warp_runtime PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_warp_runtime PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_warp_runtime
+            COMMAND test_d3d12_warp_runtime)
+        set_tests_properties(test_d3d12_warp_runtime PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}

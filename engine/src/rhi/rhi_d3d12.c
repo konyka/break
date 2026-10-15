@@ -238,8 +238,15 @@ static HRESULT rhi_d3d12_pick_adapter(IDXGIFactory6 *factory, IDXGIAdapter1 **ou
 }
 
 static HRESULT rhi_d3d12_select_adapter(RHI_D3D12Context *context) {
-    /* CreateDXGIFactory2 with flags=0; the debug flag is Task 8's knob. */
-    HRESULT hr = CreateDXGIFactory2(0u, &IID_IDXGIFactory6,
+    /* Task 8: ENGINE_D3D12_DEBUG builds pair the debug layer (enabled in
+     * rhi_d3d12_context_create before this runs) with the debug DXGI
+     * factory; release builds keep flags=0 (zero debug overhead). */
+#if defined(ENGINE_D3D12_DEBUG)
+    const UINT factory_flags = DXGI_CREATE_FACTORY_DEBUG;
+#else
+    const UINT factory_flags = 0u;
+#endif
+    HRESULT hr = CreateDXGIFactory2(factory_flags, &IID_IDXGIFactory6,
                                     (void **)&context->factory);
     if (FAILED(hr)) return hr;
     return rhi_d3d12_pick_adapter(context->factory, &context->adapter);
@@ -307,6 +314,32 @@ static RHIResult rhi_d3d12_wait_frame_slot(RHI_D3D12Context *ctx, UINT slot) {
     return RHI_RESULT_OK;
 }
 
+/* Present packets are queued AFTER the frame's submit signal, so the frame
+ * slots alone do not cover them: a drain for resize/destroy must order
+ * behind everything already enqueued (frames, uploads, presents), or back
+ * buffers can be final-released while the GPU/compositor still references
+ * them (debug-layer CORRUPTION: EXECUTION ERROR #921). Enqueue a fresh
+ * signal and wait it. */
+static RHIResult rhi_d3d12_drain_gpu(RHI_D3D12Context *ctx) {
+    UINT64 value;
+    HRESULT hr;
+    if (ctx->device_lost) return RHI_RESULT_DEVICE_LOST;
+    if (ctx->direct_queue == NULL || ctx->fence == NULL ||
+        ctx->fence_event == NULL || ctx->next_fence == UINT64_MAX)
+        return RHI_RESULT_OK;
+    value = ctx->next_fence++;
+    hr = ID3D12CommandQueue_Signal(ctx->direct_queue, ctx->fence, value);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) return rhi_d3d12_note_device_lost(ctx);
+    if (FAILED(hr)) return RHI_RESULT_SYNC_FAILED;
+    hr = ID3D12Fence_SetEventOnCompletion(ctx->fence, value, ctx->fence_event);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) return rhi_d3d12_note_device_lost(ctx);
+    if (FAILED(hr)) return RHI_RESULT_SYNC_FAILED;
+    if (WaitForSingleObject(ctx->fence_event, RHI_D3D12_FENCE_TIMEOUT_MS) != WAIT_OBJECT_0)
+        return rhi_d3d12_note_device_lost(ctx);
+    ctx->completed_fence = value;
+    return RHI_RESULT_OK;
+}
+
 /* Task 7 consumes this via capabilities.feature_bits; the DXR probe itself
  * lives here so device creation already reports an honest feature set. */
 static u32 rhi_d3d12_probe_feature_bits(const RHI_D3D12Context *ctx) {
@@ -329,6 +362,28 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
     if (context == NULL) return E_INVALIDARG;
     ZeroMemory(context, sizeof(*context));
     context->injected_failure = injected_failure;
+#if defined(ENGINE_D3D12_DEBUG)
+    /* Task 8: debug layer + GPU-based validation, enabled before the DXGI
+     * factory and the device are created (both latch debug state at
+     * creation time). DRED is already forced on unconditionally by
+     * rhi_d3d12_dred_enable below; debug configs add the layers on top.
+     * The layers come from d3d12SDKLayers.dll (Agility redist deployed next
+     * to the exe); without it D3D12GetDebugInterface fails and we log
+     * instead of faking validation. */
+    {
+        ID3D12Debug1 *debug = NULL;
+        if (SUCCEEDED(D3D12GetDebugInterface(&IID_ID3D12Debug1, (void **)&debug))) {
+            ID3D12Debug1_EnableDebugLayer(debug);
+            ID3D12Debug1_SetEnableGPUBasedValidation(debug, TRUE);
+            ID3D12Debug1_Release(debug);
+            LOG_INFO("D3D12: debug layer + GPU-based validation enabled "
+                     "(ENGINE_D3D12_DEBUG)");
+        } else {
+            LOG_WARN("D3D12: ENGINE_D3D12_DEBUG is set but the debug layer is "
+                     "unavailable (deploy d3d12SDKLayers.dll next to the exe)");
+        }
+    }
+#endif
     if (rhi_d3d12_should_fail(context, RHI_D3D12_FAIL_ADAPTER)) {
         hr = E_FAIL;
         goto fail;
@@ -1050,18 +1105,16 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
 }
 void rhi_device_destroy(RHIDevice *dev) {
     RHI_D3D12Context *ctx;
-    UINT slot;
     if (dev == NULL) return;
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx != NULL) {
         /* Task 3 review handoff + spec §4.3: forced drain before release —
          * freeing queues/fences/back buffers while GPU work is in flight
-         * races the teardown. A latched-lost device skips the waits (fences
-         * may never signal post-TDR). */
-        if (!ctx->device_lost) {
-            for (slot = 0u; slot < 2u; ++slot)
-                (void)rhi_d3d12_wait_frame_slot(ctx, slot);
-        }
+         * races the teardown. The drain covers queued presents too
+         * (rhi_d3d12_drain_gpu), not just frame submit fences; a
+         * latched-lost device skips the waits (fences may never signal
+         * post-TDR). */
+        (void)rhi_d3d12_drain_gpu(ctx);
         if (ctx->swapchain_ready) {
             rhi_d3d12_swapchain_destroy(ctx, &ctx->swapchain);
             ctx->swapchain_ready = 0u;
@@ -1076,7 +1129,7 @@ void rhi_device_destroy(RHIDevice *dev) {
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
     RHI_D3D12Context *ctx;
     HRESULT hr;
-    UINT slot;
+    RHIResult wr;
     if (!rhi_drawable_dimensions_valid(w, h) ||
         !rhi_device_control_try_acquire(dev)) return;
     ctx = (RHI_D3D12Context *)dev->backend_data;
@@ -1090,14 +1143,14 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
         rhi_device_control_release(dev);
         return;
     }
-    /* spec §4.3: drain before touching swapchain buffers. */
-    for (slot = 0u; slot < 2u; ++slot) {
-        RHIResult wr = rhi_d3d12_wait_frame_slot(ctx, slot);
-        if (wr != RHI_RESULT_OK) {
-            rhi_device_set_lifecycle_result(dev, wr);
-            rhi_device_control_release(dev);
-            return;
-        }
+    /* spec §4.3: drain before touching swapchain buffers; the drain must
+     * also cover queued presents (rhi_d3d12_drain_gpu), not just the frame
+     * submit fences. */
+    wr = rhi_d3d12_drain_gpu(ctx);
+    if (wr != RHI_RESULT_OK) {
+        rhi_device_set_lifecycle_result(dev, wr);
+        rhi_device_control_release(dev);
+        return;
     }
     hr = rhi_d3d12_swapchain_resize(ctx, &ctx->swapchain, w, h);
     if (FAILED(hr)) {
