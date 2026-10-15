@@ -41,6 +41,27 @@ TEST(resize_roundtrip_keeps_ready) {
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
+    RHIDevice *neg;
+    /* Hermetic: ignore any outer environment. */
+    _putenv("BREAK_D3D12_TEST_FALLBACK_HWND=");
+    /* Negative path (production semantics): without the explicit opt-in, a
+     * non-NULL window_native that is not a real HWND must fail closed with
+     * INVALID_ARGUMENT — never a silent hidden fallback window. */
+    neg = rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, NULL, 320, 240, &r);
+    if (neg != NULL) {
+        printf("FAIL: bogus HWND accepted without BREAK_D3D12_TEST_FALLBACK_HWND=1\n");
+        rhi_device_destroy(neg);
+        return 1;
+    }
+    if (r == RHI_RESULT_UNAVAILABLE || r == RHI_RESULT_ERROR)
+        return 77; /* no adapter / init failure: same skip policy as below */
+    if (r != RHI_RESULT_INVALID_ARGUMENT) {
+        printf("FAIL: bogus HWND refusal mapped to %d, expected INVALID_ARGUMENT\n",
+               (int)r);
+        return 1;
+    }
+    /* Opt in to the test-only fallback window, then run the lifecycle suite. */
+    _putenv("BREAK_D3D12_TEST_FALLBACK_HWND=1");
     g_dev = rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, NULL, 320, 240, &r);
     if (g_dev == NULL) return 77;
     printf("=== Running Tests ===\n");

@@ -5,7 +5,7 @@
 | 特性面 | Metal（计划 C） | D3D12（计划 D） |
 |---|---|---|
 | 设备创建 / 销毁 | PLANNED（MTLDevice/MTLCommandQueue） | GPU_RUNTIME（计划 D Task 3：adapter 打分、三队列、fence 双槽 pacing、sticky device-lost latch、DRED；Task 4 补 destroy 前强制 drain） |
-| Surface / swapchain | PLANNED（`platform_surface_native()` 返回 CAMetalLayer） | GPU_RUNTIME（计划 D Task 4：HWND → flip-model swapchain，3 back buffers，resize/drain/present 接线；契约测试的哨兵 HWND 走设备持有的隐藏 fallback 窗口） |
+| Surface / swapchain | PLANNED（`platform_surface_native()` 返回 CAMetalLayer） | GPU_RUNTIME（计划 D Task 4：HWND → flip-model swapchain，3 back buffers，resize/drain/present 接线；契约测试的哨兵 HWND 仅在显式 opt-in（`BREAK_D3D12_TEST_FALLBACK_HWND=1`）下走设备持有的隐藏 fallback 窗口，生产语义 fail-closed 报 INVALID_ARGUMENT） |
 | Render pass / pipeline contract | PLANNED（消费 `RHIPipelineDesc` capability contract 字段） | PLANNED |
 | Push constants / 绑定模型 | PLANNED（`rhi_cmd_push_constants` → setBytes 映射） | PLANNED（root constants） |
 | Compute / storage | PLANNED | PLANNED |

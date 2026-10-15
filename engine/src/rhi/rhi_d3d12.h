@@ -41,8 +41,9 @@ typedef struct RHI_D3D12Swapchain {
     UINT flags;                 /* creation-time DXGI_SWAP_CHAIN_FLAG_*;
                                  * ResizeBuffers must restate them */
     HWND owned_hwnd;            /* fallback window owned by the device when the
-                                 * caller's HWND is not a real window (tests);
-                                 * NULL in production */
+                                 * caller's HWND is not a real window; only
+                                 * reachable with BREAK_D3D12_TEST_FALLBACK_HWND=1
+                                 * (contract tests); NULL in production */
 } RHI_D3D12Swapchain;
 
 typedef struct RHI_D3D12Context {

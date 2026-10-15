@@ -30,6 +30,9 @@ TEST(caps_and_info_are_d3d12) {
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
+    /* The sentinel HWND below needs the explicit test-only fallback-window
+     * opt-in (review fix: the fallback is fail-closed by default). */
+    _putenv("BREAK_D3D12_TEST_FALLBACK_HWND=1");
     g_dev = rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, NULL, 640, 480, &r);
     if (g_dev == NULL) {
         /* A real adapter may not exist on CI hosts; accept a clean

@@ -471,10 +471,13 @@ static UINT rhi_d3d12_swapchain_flags(IDXGIFactory6 *factory) {
 }
 
 /* Contract tests hand a sentinel HWND ((HWND)1) which DXGI refuses with
- * E_ACCESSDENIED; the engine owns the window, so fall back to a hidden
- * device-owned window to keep the frame lifecycle exercised against a real
- * swapchain. Production always passes a real platform HWND
- * (platform_window_native) and never takes this path. */
+ * E_ACCESSDENIED; a device-owned hidden fallback window keeps the frame
+ * lifecycle exercised against a real swapchain for those tests. The fallback
+ * is EXPLICIT OPT-IN ONLY: it requires BREAK_D3D12_TEST_FALLBACK_HWND=1 in
+ * the environment (same convention as ENGINE_D3D12_WARP above — env-gated
+ * so production can never silently degrade). A non-NULL window_native that
+ * is not a real window is otherwise an argument fault: fail closed with a
+ * clear error instead of rendering to an invisible window. */
 static HWND rhi_d3d12_fallback_window_create(UINT width, UINT height) {
     WNDCLASSW wc;
     ZeroMemory(&wc, sizeof(wc));
@@ -501,11 +504,20 @@ HRESULT rhi_d3d12_swapchain_create(RHI_D3D12Context *context,
         return E_INVALIDARG;
     ZeroMemory(out, sizeof(*out));
     if (!IsWindow(target)) {
+        const char *opt_in = getenv("BREAK_D3D12_TEST_FALLBACK_HWND");
+        if (opt_in == NULL || strcmp(opt_in, "1") != 0) {
+            LOG_ERROR("D3D12: window_native %p is not a real HWND; refusing "
+                      "device creation (BREAK_D3D12_TEST_FALLBACK_HWND=1 opts "
+                      "into the test-only hidden fallback window)",
+                      (void *)hwnd);
+            return E_INVALIDARG;
+        }
         target = rhi_d3d12_fallback_window_create(width, height);
         if (target == NULL) return E_FAIL;
         out->owned_hwnd = target;
         LOG_WARN("D3D12: window_native is not a real HWND (%p); using a "
-                 "device-owned hidden fallback window", (void *)hwnd);
+                 "device-owned hidden fallback window (opt-in)",
+                 (void *)hwnd);
     }
     ZeroMemory(&desc, sizeof(desc));
     desc.Width = width;
@@ -703,7 +715,11 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     if (FAILED(hr)) {
         LOG_ERROR("D3D12 swapchain creation failed: 0x%08lx",
                   (unsigned long)hr);
-        rhi_backend_note_create_result(RHI_RESULT_ERROR);
+        /* A bogus non-NULL HWND is an argument fault (E_INVALIDARG from the
+         * fallback gate); everything else is a genuine init failure. */
+        rhi_backend_note_create_result(hr == E_INVALIDARG ?
+                                       RHI_RESULT_INVALID_ARGUMENT :
+                                       RHI_RESULT_ERROR);
         rhi_d3d12_context_destroy(ctx);
         free(ctx);
         return NULL;
