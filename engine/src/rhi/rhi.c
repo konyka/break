@@ -77,6 +77,24 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
             *out_result = g_backend_create_result;
         return dev;
     }
+    if (backend == RHI_BACKEND_METAL) {
+        /* Plan C Task 3: pass through to engine_rhi_metal. window_native is
+         * the CAMetalLayer * (window_cocoa.m platform_window_native; iOS
+         * injects via PlatformConfig.native_window); display_native is
+         * unused on Apple platforms. Argument faults are INVALID_ARGUMENT;
+         * once the backend runs, a nil system device maps to ERROR via the
+         * pre-seeded g_backend_create_result (spec §4.2). */
+        RHIDevice *dev;
+        if (!rhi_drawable_dimensions_valid(w, h) || window_native == NULL) {
+            if (out_result != NULL) *out_result = RHI_RESULT_INVALID_ARGUMENT;
+            return NULL;
+        }
+        g_backend_create_result = RHI_RESULT_ERROR;
+        dev = rhi_device_create(backend, window_native, display_native, w, h);
+        if (dev == NULL && out_result != NULL)
+            *out_result = g_backend_create_result;
+        return dev;
+    }
     if (backend != RHI_BACKEND_OPENGL && backend != RHI_BACKEND_VULKAN) {
         if (out_result != NULL) *out_result = RHI_RESULT_UNSUPPORTED;
         return NULL;

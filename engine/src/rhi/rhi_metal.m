@@ -3,17 +3,19 @@
  * Obj-C handles live in C structs (backend_data / slot table), matching the
  * window_cocoa.m precedent.
  *
- * Skeleton stage: rhi_device_create returns NULL (the rhi_device_create_ex
- * wrapper in rhi.c maps that to RHI_RESULT_ERROR); every other entry point
- * logs and fails closed until its family is filled in by the later plan-C
- * tasks. */
+ * Task 3 state: device create/destroy, capabilities and device info are
+ * implemented (plus the format-mapping layer in rhi/rhi_metal_format.h);
+ * every other entry point logs and fails closed until its family is filled
+ * in by the later plan-C tasks. */
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
 
 #include <rhi/rhi.h>
 #include <rhi/rhi_backend_internal.h>
+#include <rhi/rhi_metal_format.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <core/log.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,6 +36,56 @@ typedef struct {
 
 #define RHI_METAL_MAX_PUSH_BYTES 256u
 
+/* Pin the platform-free C11 ordinals to the real MTLPixelFormat values.
+ * This TU is the only place Metal headers are visible, so a header drift or
+ * an ordinal collision breaks the macOS compile here, never silently. */
+static MTLPixelFormat rhi_metal_pixel_format(RHIMetalFormat f) {
+    switch (f) {
+        case RHI_METAL_FORMAT_RGBA8_UNORM:   return MTLPixelFormatRGBA8Unorm;
+        case RHI_METAL_FORMAT_BGRA8_UNORM:   return MTLPixelFormatBGRA8Unorm;
+        case RHI_METAL_FORMAT_RGBA16_FLOAT:  return MTLPixelFormatRGBA16Float;
+        case RHI_METAL_FORMAT_RG16_FLOAT:    return MTLPixelFormatRG16Float;
+        case RHI_METAL_FORMAT_R32_FLOAT:     return MTLPixelFormatR32Float;
+        case RHI_METAL_FORMAT_DEPTH32_FLOAT: return MTLPixelFormatDepth32Float;
+        default:
+            LOG_ERROR("rhi_metal: unmapped RHIMetalFormat %d", (int)f);
+            return MTLPixelFormatInvalid;
+    }
+}
+
+/* Reverse direction for swapchain_format: window_cocoa.m sets the layer's
+ * pixelFormat (BGRA8Unorm) before the RHI device exists, so create derives
+ * the RHI format from the layer instead of imposing one. */
+static RHIFormat rhi_metal_rhi_format_from_pixel_format(MTLPixelFormat f) {
+    switch (f) {
+        case MTLPixelFormatRGBA8Unorm:   return RHI_FORMAT_R8G8B8A8_UNORM;
+        case MTLPixelFormatBGRA8Unorm:   return RHI_FORMAT_B8G8R8A8_UNORM;
+        case MTLPixelFormatRGBA16Float:  return RHI_FORMAT_R16G16B16A16_SFLOAT;
+        case MTLPixelFormatRG16Float:    return RHI_FORMAT_R16G16_SFLOAT;
+        case MTLPixelFormatR32Float:     return RHI_FORMAT_R32_FLOAT;
+        case MTLPixelFormatDepth32Float: return RHI_FORMAT_D32_FLOAT;
+        default:                         return RHI_FORMAT_UNDEFINED;
+    }
+}
+
+_Static_assert((NSUInteger)MTLPixelFormatInvalid == (NSUInteger)RHI_METAL_FORMAT_INVALID,
+               "RHI_METAL_FORMAT_INVALID must equal MTLPixelFormatInvalid");
+_Static_assert(MTLPixelFormatRGBA8Unorm != MTLPixelFormatBGRA8Unorm, "overlap");
+_Static_assert(MTLPixelFormatRGBA8Unorm != MTLPixelFormatRGBA16Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA8Unorm != MTLPixelFormatRG16Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA8Unorm != MTLPixelFormatR32Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA8Unorm != MTLPixelFormatDepth32Float, "overlap");
+_Static_assert(MTLPixelFormatBGRA8Unorm != MTLPixelFormatRGBA16Float, "overlap");
+_Static_assert(MTLPixelFormatBGRA8Unorm != MTLPixelFormatRG16Float, "overlap");
+_Static_assert(MTLPixelFormatBGRA8Unorm != MTLPixelFormatR32Float, "overlap");
+_Static_assert(MTLPixelFormatBGRA8Unorm != MTLPixelFormatDepth32Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA16Float != MTLPixelFormatRG16Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA16Float != MTLPixelFormatR32Float, "overlap");
+_Static_assert(MTLPixelFormatRGBA16Float != MTLPixelFormatDepth32Float, "overlap");
+_Static_assert(MTLPixelFormatRG16Float != MTLPixelFormatR32Float, "overlap");
+_Static_assert(MTLPixelFormatRG16Float != MTLPixelFormatDepth32Float, "overlap");
+_Static_assert(MTLPixelFormatR32Float != MTLPixelFormatDepth32Float, "overlap");
+
 struct RHICmdBuffer {
     MetalBackend *backend;
     id<MTLCommandBuffer> cmd;
@@ -46,18 +98,136 @@ struct RHICmdBuffer {
 };
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
-    LOG_ERROR("rhi_metal: rhi_device_create not implemented");
-    (void)backend;
-    (void)window_native;
     (void)display_native;
-    (void)w;
-    (void)h;
-    return NULL;
+    if (backend != RHI_BACKEND_METAL || window_native == NULL ||
+        !rhi_drawable_dimensions_valid(w, h)) {
+        rhi_backend_note_create_result(RHI_RESULT_INVALID_ARGUMENT);
+        return NULL;
+    }
+    CAMetalLayer *layer = (CAMetalLayer *)window_native;
+    id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+    if (device == nil) {
+        /* Runtime fallback: the selector already fails closed on non-Metal
+         * platforms, so nil here means a genuine init failure -> ERROR via
+         * the wrapper's pre-seeded g_backend_create_result. Never fabricate
+         * a device. */
+        LOG_ERROR("rhi_metal: MTLCreateSystemDefaultDevice returned nil");
+        return NULL;
+    }
+    id<MTLCommandQueue> queue = [device newCommandQueue];
+    if (queue == nil) {
+        LOG_ERROR("rhi_metal: newCommandQueue failed");
+        [device release];
+        return NULL;
+    }
+    RHIFormat swapchain_format = rhi_metal_rhi_format_from_pixel_format(layer.pixelFormat);
+    if (swapchain_format == RHI_FORMAT_UNDEFINED ||
+        rhi_metal_pixel_format(rhi_metal_format_from_rhi(swapchain_format)) !=
+            layer.pixelFormat) {
+        /* The layer's pixel format is outside the RHI format set (or the
+         * mapping layer disagrees with itself) — fail closed. */
+        LOG_ERROR("rhi_metal: unsupported swapchain pixel format %lu",
+                  (unsigned long)layer.pixelFormat);
+        [queue release];
+        [device release];
+        return NULL;
+    }
+    u32 color_counts = 0u, depth_counts = 0u;
+    {
+        static const NSUInteger sample_probes[4] = { 1u, 2u, 4u, 8u };
+        for (u32 i = 0u; i < 4u; ++i) {
+            if ([device supportsTextureSampleCount:sample_probes[i]]) {
+                color_counts |= rhi_sample_count_bit((u32)sample_probes[i]);
+                depth_counts |= rhi_sample_count_bit((u32)sample_probes[i]);
+            }
+        }
+    }
+    if ((color_counts & rhi_sample_count_bit(1u)) == 0u ||
+        (depth_counts & rhi_sample_count_bit(1u)) == 0u) {
+        /* Metal guarantees 1x everywhere; a device reporting otherwise is
+         * broken — fail closed instead of fabricating capability bits. */
+        LOG_ERROR("rhi_metal: device does not support 1x sampling");
+        [queue release];
+        [device release];
+        return NULL;
+    }
+    MetalBackend *mb = (MetalBackend *)calloc(1u, sizeof(*mb));
+    RHIDevice *dev = (RHIDevice *)calloc(1u, sizeof(*dev));
+    if (mb == NULL || dev == NULL) {
+        free(mb);
+        free(dev);
+        [queue release];
+        [device release];
+        return NULL;
+    }
+    layer.device = device;
+    mb->device = device;
+    mb->queue = queue;
+    mb->layer = layer;               /* not owned */
+    mb->swapchain_format = swapchain_format;
+    mb->max_push_bytes = RHI_METAL_MAX_PUSH_BYTES;
+    rhi_init_freelist(dev);
+    dev->backend_data = mb;
+    dev->width = w;
+    dev->height = h;
+    dev->capabilities.backend = RHI_BACKEND_METAL;
+    dev->capabilities.color_sample_counts = color_counts;
+    dev->capabilities.depth_sample_counts = depth_counts;
+    /* CAMetalLayer drawables cannot be multisampled; MSAA is only possible
+     * via an offscreen resolve (storeActionMultisampleResolve), so the
+     * surface itself reports 1x. */
+    dev->capabilities.surface_sample_count = 1u;
+    dev->capabilities.color_resolve_supported = true;
+    /* fail-closed: custom depth resolve is out of scope for this plan. */
+    dev->capabilities.depth_resolve_supported = false;
+    dev->capabilities.scissor_supported = true;      /* setScissorRect: */
+    /* drawable contents are not preserved and CAMetalLayer has no damage or
+     * buffer-age mechanism. */
+    dev->capabilities.present_target_preserved = false;
+    dev->capabilities.present_damage_supported = false;
+    dev->capabilities.present_buffer_age_supported = false;
+    if ([device respondsToSelector:@selector(supportsRaytracing)] &&
+        device.supportsRaytracing) {
+        dev->capabilities.feature_bits =
+            RHI_FEATURE_ACCELERATION_STRUCTURE | RHI_FEATURE_RAY_QUERY;
+    }
+    /* RHI_FEATURE_RAY_TRACING_PIPELINE is never set: Metal's
+     * intersection-function model has no raygen-pipeline equivalent
+     * (fail-closed). */
+    dev->status = RHI_DEVICE_STATUS_READY;
+    g_current_device = dev;
+    return dev;
 }
 
 void rhi_device_destroy(RHIDevice *dev) {
-    LOG_ERROR("rhi_metal: rhi_device_destroy not implemented");
-    (void)dev;
+    if (dev == NULL) return;
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb != NULL) {
+        /* Drain before releasing any Obj-C handle: committing an empty
+         * command buffer and waiting covers all previously scheduled work on
+         * this queue (frame submission lands in Task 4, so nothing can be in
+         * flight yet, but the drain is the stable teardown contract — cf.
+         * rhi_d3d12_drain_gpu). */
+        @autoreleasepool {
+            if (mb->queue != nil) {
+                id<MTLCommandBuffer> drain = [mb->queue commandBuffer];
+                [drain commit];
+                [drain waitUntilCompleted];
+            }
+        }
+        if (mb->drawable != nil) {   /* nil between frames; retained at acquire (Task 4) */
+            [mb->drawable release];
+            mb->drawable = nil;
+        }
+        [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
+        [mb->frame_event release];   /* nil until Task 4 */
+        [mb->queue release];
+        [mb->device release];
+        free(mb);
+        dev->backend_data = NULL;
+    }
+    if (g_current_device == dev) g_current_device = NULL;
+    free(dev);
 }
 
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
@@ -115,10 +285,22 @@ bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
 }
 
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
-    LOG_ERROR("rhi_metal: rhi_backend_get_device_info not implemented");
-    (void)dev;
-    (void)out;
-    return false;
+    if (dev == NULL || out == NULL) return false;
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device == nil) return false;
+    /* backend/feature_bits are pre-filled by the rhi_device_get_info wrapper
+     * from dev->capabilities; this fills the hardware identity. */
+    @autoreleasepool {
+        const char *name = [mb->device.name UTF8String];
+        if (name != NULL) {
+            snprintf(out->device_name, sizeof(out->device_name), "%s", name);
+        }
+    }
+    out->vendor_id = [mb->device supportsFamily:MTLGPUFamilyApple1] ? 0x106Bu : 0u;
+    out->device_id = 0u;
+    out->api_version = (3u << 22);   /* Metal 3 baseline (macOS 14 / Xcode 15) */
+    out->driver_version = 0u;
+    return true;
 }
 
 bool rhi_backend_texture_get_native_info( const RHIDevice *dev, RHITexture texture, RHITextureNativeInfo *out) {

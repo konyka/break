@@ -2623,6 +2623,42 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_metal_ownership.cmake)
     set_tests_properties(test_rhi_metal_ownership PROPERTIES LABELS "headless;platform_contract")
+    # Plan C Task 3: Metal pixel-format mapping layer — pure C11, platform-free
+    # header; runs on any host (the ordinal->MTLPixelFormat pinning lives in
+    # rhi_metal.m via _Static_assert and is compile-checked on macOS only).
+    add_executable(test_rhi_metal_format_mapping
+        tests/test_rhi_metal_format_mapping.c)
+    target_include_directories(test_rhi_metal_format_mapping PRIVATE
+        ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_rhi_metal_format_mapping
+        COMMAND test_rhi_metal_format_mapping)
+    set_tests_properties(test_rhi_metal_format_mapping PROPERTIES
+        LABELS "headless;platform_contract")
+    # Plan C Task 3: real-device contract on a live Metal device. The
+    # CAMetalLayer is created offscreen (no window); exit 77 = SKIP when
+    # Metal is unavailable (GPU-less runner) or the build is not macOS+metal.
+    if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+        add_executable(test_rhi_metal_device_contract
+            tests/test_rhi_metal_device_contract.c tests/metal_test_layer.m)
+        target_include_directories(test_rhi_metal_device_contract PRIVATE
+            ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_rhi_metal_device_contract PRIVATE
+            ENGINE_RHI_BACKEND_METAL=1)
+        if(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_rhi_metal_device_contract PRIVATE
+                ENGINE_PLATFORM_MACOS=1)
+        endif()
+        # Manual reference counting, same policy as src/platform/window_cocoa.m.
+        set_source_files_properties(tests/metal_test_layer.m PROPERTIES
+            COMPILE_OPTIONS "-fno-objc-arc")
+        target_link_libraries(test_rhi_metal_device_contract PRIVATE
+            engine m "-framework QuartzCore" "-framework Metal")
+        engine_link_rhi_backend(test_rhi_metal_device_contract)
+        add_test(NAME test_rhi_metal_device_contract
+            COMMAND test_rhi_metal_device_contract)
+        set_tests_properties(test_rhi_metal_device_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+    endif()
     add_test(NAME test_platform_vk_surface_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c

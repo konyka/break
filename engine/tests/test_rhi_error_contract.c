@@ -118,9 +118,18 @@ TEST(declared_metal_and_d3d12_backends_fail_closed)
 {
     RHIResult result = RHI_RESULT_OK;
 
+    /* Plan C Task 3: metal passes argument validation through to the
+     * backend, same shape as d3d12 below. A NULL CAMetalLayer is
+     * INVALID_ARGUMENT (spec §4.2); with a non-NULL layer the request
+     * reaches the linked backend — this test links engine_rhi_headless,
+     * which fails closed, so creation returns NULL + RHI_RESULT_ERROR
+     * (the backend declined; no fake success). */
+    ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_METAL, NULL, (void *)1,
+                                   64u, 64u, &result), NULL);
+    ASSERT_EQ(result, RHI_RESULT_INVALID_ARGUMENT);
     ASSERT_EQ(rhi_device_create_ex(RHI_BACKEND_METAL, (void *)1, (void *)1,
                                    64u, 64u, &result), NULL);
-    ASSERT_EQ(result, RHI_RESULT_UNSUPPORTED);
+    ASSERT_EQ(result, RHI_RESULT_ERROR);
     /* Plan D Task 3: d3d12 passes argument validation through to the
      * backend. A NULL HWND is INVALID_ARGUMENT (spec §4.2); with a
      * non-NULL HWND the request reaches the linked backend — this test
