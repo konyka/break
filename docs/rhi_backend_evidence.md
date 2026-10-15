@@ -13,13 +13,13 @@
 | Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `vk` / `linux-graphics-smoke` lane | CI run：`vk` job 最近 green run |
 | Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl` / `wayland-vk`（weston headless） | CI run：`wayland-*` job 最近 green run |
 | Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `windows-clang` | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录） |
-| Windows × D3D12 | GPU_RUNTIME（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加） |
+| Windows × D3D12 | GPU_RUNTIME（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加）；CI：windows-d3d12 lane 绿 run https://github.com/konyka/break/actions/runs/38703749329 （@65d01ec，WARP floor），ci.yml 全 lane 绿 run https://github.com/konyka/break/actions/runs/38703749404 |
 | macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `macos-vulkan`（133/133 CTest, 2026-10-13） | CI run：`macos-vulkan` job，2026-10-13 |
 | macOS/iOS × 原生 Metal | NONE | 无代码 | — |
 | Android × Vulkan | COMPILED（host-injected ANativeWindow） | `engine/src/rhi/rhi_vk.c:1482-1700` | 源码审查记录（2026-10-14 冻结） |
 | iOS × Vulkan(MoltenVK) | COMPILED（host-injected CAMetalLayer） | `engine/src/platform/platform_compat.h:86-95` | 源码审查记录（2026-10-14 冻结） |
 | OHOS | NONE（UNAVAILABLE，fail-closed） | `engine/src/platform/platform_compat.h:111-120`；`engine/CMakeLists.txt:1073-1075` FATAL_ERROR | 契约测试 `test_platform_compat_harmonyos` |
-| Proton (Wine/vkd3d) × D3D12 | compat-verified（兼容验证，不计入 Windows 原生证据） | lane: proton-d3d12 | —（lane 未实跑；收据为 CI artifact proton-d3d12-receipt） |
+| Proton (Wine/vkd3d) × D3D12 | compat-verified（兼容验证，不计入 Windows 原生证据） | lane: proton-d3d12 | lane 实跑绿 run https://github.com/konyka/break/actions/runs/38703986572 （@65d01ec；契约退出码记录于 lane 日志与 CI artifact proton-d3d12-receipt） |
 
 ## 变更规则
 
