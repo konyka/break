@@ -400,6 +400,25 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
     mb->device = device;
     mb->queue = queue;
     mb->layer = layer;               /* not owned */
+    /* Task 10: the offline-compiled shader library lives beside the
+     * executable (engine_link_rhi_backend copies it per consumer). A missing
+     * metallib degrades to per-shader embedded-MSL compilation at shader
+     * create (LOG_WARN path), never to silence. */
+    @autoreleasepool {
+        NSString *exe = [[NSBundle mainBundle] executablePath];
+        NSString *dir = [exe stringByDeletingLastPathComponent];
+        NSString *lib_path =
+            [dir stringByAppendingPathComponent:@"engine.metallib"];
+        NSError *err = nil;
+        /* newLibraryWithFile: returns +1 (new* rule). */
+        mb->library = [device newLibraryWithFile:lib_path error:&err];
+        if (mb->library == nil) {
+            LOG_WARN("rhi_metal: engine.metallib unavailable (%s) — embedded "
+                     "MSL fallback active",
+                     err != nil ? [[err localizedDescription] UTF8String]
+                                : "not beside the executable");
+        }
+    }
     mb->swapchain_format = swapchain_format;
     mb->max_push_bytes = RHI_METAL_MAX_PUSH_BYTES;
     rhi_init_freelist(dev);
@@ -459,7 +478,7 @@ void rhi_device_destroy(RHIDevice *dev) {
                 free(mb->frame_cmd);
                 mb->frame_cmd = NULL;
             }
-            [mb->library release];       /* nil until Task 10; releasing nil is a no-op */
+            [mb->library release];       /* nil when the metallib is missing (embedded fallback) */
             [mb->frame_event release];   /* created lazily by rhi_frame_begin */
             [mb->drain_event release];   /* created lazily by metal_drain */
             for (u32 i = 0u; i < 5u; ++i) [mb->depth_states[i] release];
@@ -1123,21 +1142,26 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     rhi_free_slot(dev, buf);
 }
 
-/* ---- Task 8: shader + pipeline family ----
- * Interim shader path (Task 8 brief): MSL source compiled at runtime via
- * newLibraryWithSource:, entry-point convention vs_main / fs_main /
- * cs_main. Task 10 replaces the loader with the offline-compiled metallib
- * manifest (MetalBackend.library); this create path then resolves
- * functions from that library instead of compiling source. */
+/* ---- Task 8/10: shader + pipeline family ----
+ * Production path (Task 10): the renderer hands rhi_shader_create the GLSL
+ * source text; the backend hashes it (rhi_metal_fnv1a64) and resolves the
+ * offline-converted MSL function from the build-time manifest —
+ * engine.metallib when it loaded at device create, else the manifest's
+ * embedded MSL text compiled per shader (LOG_WARN). A hash miss fails
+ * closed (LOG_ERROR + null handle): no runtime GLSL/MSL guessing in
+ * production. The ENGINE_RHI_TEST hook below keeps the Task 8/9 contract
+ * tests' inline-MSL sources working (same precedent as
+ * rhi_test_metal_set_suspended). */
 typedef struct {
     id<MTLLibrary> library;   /* retained: the function must not outlive it */
     id<MTLFunction> function;
     bool is_fragment;
 } MetalShader;
 
-static RHIShader metal_shader_create(RHIDevice *dev, const char *source,
-                                     usize len, const char *entry,
-                                     bool is_fragment) {
+/* MSL-source compile (test seam + embedded-MSL fallback). */
+static RHIShader metal_shader_create_source(RHIDevice *dev, const char *source,
+                                            usize len, const char *entry,
+                                            bool is_fragment) {
     MetalBackend *mb;
     MetalShader *sd;
     u32 idx;
@@ -1186,14 +1210,89 @@ static RHIShader metal_shader_create(RHIDevice *dev, const char *source,
     return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
+/* Manifest path: hash the incoming GLSL text and resolve the offline MSL
+ * function. Returns RHI_HANDLE_NULL on a miss (fail closed). */
+static RHIShader metal_shader_manifest_create(RHIDevice *dev,
+                                              const char *source, usize len,
+                                              bool is_fragment) {
+    MetalBackend *mb;
+    MetalShader *sd;
+    u64 hash;
+    usize i;
+    u32 slot;
+    if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    hash = rhi_metal_fnv1a64(source, len);
+    for (i = 0u; i < rhi_metal_shader_manifest_count; ++i) {
+        if (rhi_metal_shader_manifest[i].source_hash == hash) break;
+    }
+    if (i == rhi_metal_shader_manifest_count) {
+        LOG_ERROR("rhi_metal: shader source hash 0x%016llx not in the offline "
+                  "manifest — fail closed (no runtime GLSL compile)",
+                  (unsigned long long)hash);
+        return RHI_HANDLE_NULL;
+    }
+    sd = (MetalShader *)calloc(1u, sizeof(*sd));
+    if (sd == NULL) return RHI_HANDLE_NULL;
+    @autoreleasepool {
+        const char *entry = rhi_metal_shader_manifest[i].msl_function;
+        id<MTLFunction> fn = nil;
+        if (mb->library != nil) {
+            /* newFunctionWithName: returns +1 (new* rule). */
+            fn = [mb->library
+                newFunctionWithName:[NSString stringWithUTF8String:entry]];
+            if (fn != nil) {
+                sd->library = [mb->library retain];
+                sd->function = fn;
+            }
+        } else {
+#ifndef RHI_METAL_SHADER_NO_EMBEDDED_MSL
+            /* metallib missing: compile this shader's embedded MSL text. */
+            static bool warned_embedded = false;
+            if (!warned_embedded) {
+                LOG_WARN("rhi_metal: compiling embedded MSL (metallib missing)");
+                warned_embedded = true;
+            }
+            /* Reuse the source-compile machinery against the embedded text. */
+            {
+                RHIShader tmp = metal_shader_create_source(
+                    dev, rhi_metal_shader_msl[i],
+                    (usize)strlen(rhi_metal_shader_msl[i]), entry, is_fragment);
+                if (rhi_handle_valid(tmp)) {
+                    MetalShader *inner = (MetalShader *)rhi_get_resource_typed(
+                        dev, tmp, RHI_RES_SHADER);
+                    /* Move the payload out of the temp slot. */
+                    sd->library = inner->library;
+                    sd->function = inner->function;
+                    free(inner);
+                    rhi_free_slot(dev, tmp);
+                }
+            }
+#else
+            LOG_ERROR("rhi_metal: engine.metallib missing and embedded MSL "
+                      "compiled out (RHI_METAL_SHADER_NO_EMBEDDED_MSL)");
+#endif
+        }
+        if (sd->function == nil) {
+            LOG_ERROR("rhi_metal: manifest entry '%s' did not resolve", entry);
+            free(sd);
+            return RHI_HANDLE_NULL;
+        }
+    }
+    sd->is_fragment = is_fragment;
+    slot = rhi_alloc_slot(dev);
+    dev->slots[slot].ptr = sd;
+    dev->slots[slot].type = RHI_RES_SHADER;
+    return rhi_make_handle(slot, dev->slots[slot].generation);
+}
+
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
-    return metal_shader_create(dev, source, len,
-                               is_fragment ? "fs_main" : "vs_main",
-                               is_fragment);
+    return metal_shader_manifest_create(dev, source, len, is_fragment);
 }
 
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
-    return metal_shader_create(dev, source, len, "cs_main", false);
+    return metal_shader_manifest_create(dev, source, len, false);
 }
 
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
@@ -4028,5 +4127,16 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
 void rhi_test_metal_set_suspended(RHIDevice *dev, bool suspended) {
     MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
     if (mb != NULL) mb->suspended = suspended;
+}
+
+/* Task 10: the production shader path is manifest-only (fail closed on a
+ * hash miss); the Task 8/9 contract tests drive pipelines with inline MSL
+ * sources, which compile through this hook (the pre-Task-10 interim path).
+ * Entry-point convention stays vs_main / fs_main / cs_main. */
+RHIShader rhi_test_metal_shader_create_source(RHIDevice *dev,
+                                              const char *source, usize len,
+                                              const char *entry,
+                                              bool is_fragment) {
+    return metal_shader_create_source(dev, source, len, entry, is_fragment);
 }
 #endif

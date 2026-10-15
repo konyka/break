@@ -479,6 +479,62 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     if(ENGINE_PLATFORM STREQUAL "macos")
         target_link_libraries(engine_rhi_metal PRIVATE "-framework Cocoa")
     endif()
+
+    # Plan C Task 10: offline GLSL -> SPIR-V -> MSL -> metallib shader
+    # pipeline. Tools are locked at configure time (HINTS cover the brew
+    # prefix); a missing tool is an honest FATAL_ERROR, never a silent
+    # fallback to runtime compilation.
+    find_program(ENGINE_METAL_GLSLC glslc
+        HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
+    find_program(ENGINE_METAL_SPIRV_CROSS spirv-cross
+        HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
+    find_program(ENGINE_METAL_XCRUN xcrun REQUIRED)
+    add_executable(gen_metal_shader_manifest
+        tools/gen_metal_shader_manifest.c)
+    target_include_directories(gen_metal_shader_manifest PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+    set(METAL_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders)
+    file(GLOB METAL_SHADER_INPUTS CONFIGURE_DEPENDS
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp)
+    get_filename_component(ENGINE_METAL_GLSLC_DIR
+        ${ENGINE_METAL_GLSLC} DIRECTORY)
+    get_filename_component(ENGINE_METAL_SPIRV_CROSS_DIR
+        ${ENGINE_METAL_SPIRV_CROSS} DIRECTORY)
+    # xcode-select points at CommandLineTools on this host; xcrun metal
+    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
+    # back to the standard Xcode path.
+    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
+        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
+    endif()
+    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
+        set(ENGINE_METAL_DEVELOPER_DIR
+            "/Applications/Xcode.app/Contents/Developer")
+    endif()
+    add_custom_command(
+        OUTPUT ${METAL_SHADER_OUT_DIR}/engine.metallib
+               ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
+        COMMAND ${CMAKE_COMMAND} -E env
+            "PATH=${ENGINE_METAL_GLSLC_DIR}:${ENGINE_METAL_SPIRV_CROSS_DIR}:$ENV{PATH}"
+            "DEVELOPER_DIR=${ENGINE_METAL_DEVELOPER_DIR}"
+            sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_shaders.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR} macosx
+        COMMAND gen_metal_shader_manifest
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR}/msl
+            ${METAL_SHADER_OUT_DIR}/manifest.lines
+            ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_shaders.sh
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_metal_shader_manifest.c
+            ${METAL_SHADER_INPUTS}
+        COMMENT "GLSL -> SPIR-V -> MSL -> engine.metallib + manifest"
+        VERBATIM)
+    add_custom_target(engine_metal_shaders DEPENDS
+        ${METAL_SHADER_OUT_DIR}/engine.metallib
+        ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c)
+    add_dependencies(engine_rhi_metal engine_metal_shaders)
+    target_sources(engine_rhi_metal PRIVATE
+        ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c)
 endif()
 
 if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
@@ -605,6 +661,15 @@ endif()
 function(engine_link_rhi_backend target)
     if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         target_link_libraries(${target} PRIVATE engine_rhi_metal)
+        if(APPLE)
+            # Task 10: engine.metallib must sit beside the executable
+            # (rhi_device_create loads it relative to the main bundle).
+            add_dependencies(${target} engine_metal_shaders)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${METAL_SHADER_OUT_DIR}/engine.metallib
+                    $<TARGET_FILE_DIR:${target}>/engine.metallib)
+        endif()
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         target_link_libraries(${target} PRIVATE engine_rhi_d3d12)
     elseif(ENGINE_PLATFORM STREQUAL "macos" OR
@@ -2630,9 +2695,20 @@ endif()
     # header; runs on any host (the ordinal->MTLPixelFormat pinning lives in
     # rhi_metal.m via _Static_assert and is compile-checked on macOS only).
     add_executable(test_rhi_metal_format_mapping
-        tests/test_rhi_metal_format_mapping.c)
+        tests/test_rhi_metal_format_mapping.c
+        src/core/shader_io.c src/core/log.c)
     target_include_directories(test_rhi_metal_format_mapping PRIVATE
         ${TEST_INCLUDE_DIRS})
+    # Task 10: FNV hash vectors run everywhere; the GLSL<->MSL
+    # reflection consistency cases read the engine/shaders sources
+    # plus the pipeline-generated MSL (metal build only).
+    target_compile_definitions(test_rhi_metal_format_mapping PRIVATE
+        ENGINE_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
+    if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+        target_compile_definitions(test_rhi_metal_format_mapping PRIVATE
+            ENGINE_METAL_SHADER_MSL_DIR="${METAL_SHADER_OUT_DIR}/msl")
+        add_dependencies(test_rhi_metal_format_mapping engine_metal_shaders)
+    endif()
     add_test(NAME test_rhi_metal_format_mapping
         COMMAND test_rhi_metal_format_mapping)
     set_tests_properties(test_rhi_metal_format_mapping PROPERTIES
@@ -2691,9 +2767,13 @@ endif()
         # device, same offscreen-layer and direct-RHI_CORE_SOURCES pattern.
         add_executable(test_rhi_metal_resources
             tests/test_rhi_metal_resources.c tests/metal_test_layer.m
-            ${RHI_CORE_SOURCES} src/core/log.c)
+            ${RHI_CORE_SOURCES} src/core/log.c src/core/shader_io.c)
         target_include_directories(test_rhi_metal_resources PRIVATE
             ${TEST_INCLUDE_DIRS})
+        # Task 10: the manifest end-to-end case reads real GLSL from
+        # the source tree.
+        target_compile_definitions(test_rhi_metal_resources PRIVATE
+            ENGINE_SHADER_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/shaders")
         target_compile_definitions(test_rhi_metal_resources PRIVATE
             ENGINE_RHI_BACKEND_METAL=1 ENGINE_RHI_TEST=1)
         if(ENGINE_PLATFORM STREQUAL "macos")
@@ -2716,6 +2796,14 @@ endif()
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_vk_surface_contract.cmake)
     set_tests_properties(test_platform_vk_surface_contract PROPERTIES
+        LABELS "platform_contract")
+    # Plan C Task 10: offline Metal shader pipeline contract (text-level,
+    # platform-free; the real pipeline run is macOS-only).
+    add_test(NAME test_metal_shader_pipeline
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_metal_shader_pipeline.cmake)
+    set_tests_properties(test_metal_shader_pipeline PROPERTIES
         LABELS "platform_contract")
     add_test(NAME test_vulkan_isolation_gates
         COMMAND ${CMAKE_COMMAND}

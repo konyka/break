@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <rhi/rhi.h>
+#include <core/shader_io.h>   /* Task 10: shader_read_file (manifest e2e) */
 
 /* Plan C Task 7: resource family contract for the native Metal backend —
  * buffers (shared storage mode for UNIFORM/initial-data, private staging
@@ -360,9 +361,21 @@ static const char *k_msl_fs_green =
     "using namespace metal;\n"
     "fragment float4 fs_main() { return float4(0.0, 1.0, 0.0, 1.0); }\n";
 
+/* Task 10: the production shader path is manifest-only; the inline-MSL
+ * sources in this suite compile through the ENGINE_RHI_TEST hook (the
+ * pre-Task-10 interim path). Entry convention: vs_main/fs_main/cs_main. */
+RHIShader rhi_test_metal_shader_create_source(RHIDevice *dev,
+                                              const char *source, usize len,
+                                              const char *entry,
+                                              bool is_fragment);
+
 static RHIShader make_shader(const char *msl, bool is_fragment) {
     /* Null-handle on failure; the caller asserts non-null. */
-    return rhi_shader_create(g_dev, msl, (usize)strlen(msl), is_fragment);
+    return rhi_test_metal_shader_create_source(g_dev, msl,
+                                               (usize)strlen(msl),
+                                               is_fragment ? "fs_main"
+                                                           : "vs_main",
+                                               is_fragment);
 }
 
 /* Frame wrapper pair (rhi_frame_acquire_ex/end_ex/present_ex), same
@@ -800,8 +813,9 @@ TEST(compute_dispatch_writes_indices) {
      * one dispatch of a tid->out[tid] kernel, host readback asserts the
      * full 0..N-1 sequence. The 256-group dispatch over-covers on any
      * threadgroup size; the kernel guards tid < 256. */
-    RHIShader cs = rhi_shader_create_compute(g_dev, k_msl_cs_write_index,
-                                             (usize)strlen(k_msl_cs_write_index));
+    RHIShader cs = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_cs_write_index, (usize)strlen(k_msl_cs_write_index),
+        "cs_main", false);
     RHIPipelineDesc desc;
     RHIPipeline pipe;
     RHIBufferDesc bdesc;
@@ -1044,6 +1058,47 @@ TEST(gpu_timer_destroy_with_pending_sample_is_safe) {
     ASSERT_TRUE(rhi_device_idle(g_dev));
 }
 
+/* ---- Task 10: offline manifest end-to-end ---- */
+
+TEST(manifest_real_shader_resolves) {
+    /* The production path: hash the GLSL text of real engine shaders and
+     * resolve the offline-converted function (engine.metallib beside the
+     * executable, or the manifest's embedded MSL fallback). A hash miss
+     * must fail closed (no runtime GLSL compile). */
+    char path[1024];
+    usize len = 0u;
+    char *src;
+    RHIShader sh;
+    snprintf(path, sizeof(path), "%s/post_vk.vert", ENGINE_SHADER_SOURCE_DIR);
+    src = shader_read_file(path, &len);
+    ASSERT_NOT_NULL(src);
+    sh = rhi_shader_create(g_dev, src, len, false);
+    ASSERT_FALSE(handle_is_null(sh));
+    free(src);
+    rhi_shader_destroy(g_dev, sh);
+    snprintf(path, sizeof(path), "%s/blinn_phong_vk.frag",
+             ENGINE_SHADER_SOURCE_DIR);
+    src = shader_read_file(path, &len);
+    ASSERT_NOT_NULL(src);
+    sh = rhi_shader_create(g_dev, src, len, true);
+    ASSERT_FALSE(handle_is_null(sh));
+    free(src);
+    rhi_shader_destroy(g_dev, sh);
+    snprintf(path, sizeof(path), "%s/cull.comp", ENGINE_SHADER_SOURCE_DIR);
+    src = shader_read_file(path, &len);
+    ASSERT_NOT_NULL(src);
+    sh = rhi_shader_create_compute(g_dev, src, len);
+    ASSERT_FALSE(handle_is_null(sh));
+    free(src);
+    rhi_shader_destroy(g_dev, sh);
+    /* Miss: a valid GLSL text that no engine shader matches. */
+    {
+        static const char *bogus = "#version 450\nvoid main() { }\n";
+        ASSERT_TRUE(handle_is_null(
+            rhi_shader_create(g_dev, bogus, (usize)strlen(bogus), false)));
+    }
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -1090,6 +1145,7 @@ int main(void) {
     RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
     RUN_TEST(gpu_timer_roundtrip_smoke);
     RUN_TEST(gpu_timer_destroy_with_pending_sample_is_safe);
+    RUN_TEST(manifest_real_shader_resolves);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);

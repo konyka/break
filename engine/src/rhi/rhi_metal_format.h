@@ -46,3 +46,35 @@ static inline u32 rhi_metal_frame_slot(u64 frame_counter) {
 static inline u64 rhi_metal_slot_wait_value(u64 frame_counter) {
     return frame_counter >= 2u ? frame_counter - 2u : 0u;
 }
+
+/* ---- Task 10: offline shader manifest ----
+ * The Metal backend's rhi_shader_create receives the renderer's GLSL source
+ * text; the build-time pipeline (tools/compile_metal_shaders.sh +
+ * tools/gen_metal_shader_manifest.c) converts every engine/shaders *_vk
+ * (and shared *.comp) file to MSL/metallib and emits a manifest keyed by
+ * the FNV-1a 64 hash of the ORIGINAL GLSL bytes. This inline is the single
+ * definition shared by the generator and the runtime so the hash contract
+ * cannot drift. */
+static inline u64 rhi_metal_fnv1a64(const void *data, usize len) {
+    const u8 *p = (const u8 *)data;
+    u64 h = 0xcbf29ce484222325ull;   /* FNV-1a 64 offset basis */
+    while (len-- > 0u) {
+        h ^= (u64)*p++;
+        h *= 0x100000001b3ull;       /* FNV-1a 64 prime */
+    }
+    return h;
+}
+
+typedef struct {
+    u64 source_hash;          /* rhi_metal_fnv1a64 of the GLSL source bytes */
+    const char *msl_function; /* entry point inside engine.metallib */
+} RHIMetalShaderManifestEntry;
+
+/* Generated (build tree): rhi_metal_shader_manifest.c */
+extern const RHIMetalShaderManifestEntry rhi_metal_shader_manifest[];
+extern const usize rhi_metal_shader_manifest_count;
+/* Embedded MSL fallback texts (parallel array, same order); compiled out
+ * when RHI_METAL_SHADER_NO_EMBEDDED_MSL is defined. */
+#ifndef RHI_METAL_SHADER_NO_EMBEDDED_MSL
+extern const char *const rhi_metal_shader_msl[];
+#endif
