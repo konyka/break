@@ -631,10 +631,12 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     RHICmdBuffer *cmd = mb->frame_cmd;
     cmd->cmd = [mtl_cmd retain];   /* autoreleased by the queue; we hold it to frame_end */
     cmd->render_encoder = nil;
+    cmd->compute_encoder = nil;    /* defensive: ended at frame_end, never cross-frame */
     cmd->render_pass_open = false;
     cmd->pass_kind = METAL_PASS_NONE;
     cmd->pass_target = RHI_HANDLE_NULL;
     cmd->bound_pipeline = RHI_HANDLE_NULL;
+    cmd->index_buffer = RHI_HANDLE_NULL;
     cmd->pending_count = 0;   /* gpu timer samples never cross frames */
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
@@ -2135,6 +2137,12 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
  * indexed {indexCount, instanceCount, firstIndex, vertexOffset(i32),
  * firstInstance} = 20B. Metal has no multi-draw indirect with a count
  * bound, so draw_count>1 loops single-command indirect draws. */
+_Static_assert(sizeof(MTLDrawPrimitivesIndirectArguments) == 16u,
+               "draw indirect arg ABI drift");
+_Static_assert(sizeof(MTLDrawIndexedPrimitivesIndirectArguments) == 20u,
+               "indexed indirect arg ABI drift");
+_Static_assert(sizeof(RHIIndexedIndirectCommand) == 20u,
+               "RHI indexed indirect ABI must match the Metal record");
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
     MetalBackend *mb;
     RHICmdBuffer *cmd;
@@ -2145,9 +2153,10 @@ void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 dr
     mb = (MetalBackend *)dev->backend_data;
     if (mb == NULL) return;
     cmd = mb->frame_cmd;
-    if (draw_count == 0u || stride < 16u || (stride % 4u) != 0u) {
-        LOG_ERROR("rhi_metal: draw_indirect bad args (count %u stride %u)",
-                  (unsigned)draw_count, (unsigned)stride);
+    if (draw_count == 0u || stride < 16u || (stride % 4u) != 0u ||
+        (offset & 3u) != 0u) {
+        LOG_ERROR("rhi_metal: draw_indirect bad args (count %u stride %u offset %u)",
+                  (unsigned)draw_count, (unsigned)stride, (unsigned)offset);
         return;
     }
     ab = (MetalBuffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
@@ -2175,9 +2184,10 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
     mb = (MetalBackend *)dev->backend_data;
     if (mb == NULL) return;
     cmd = mb->frame_cmd;
-    if (draw_count == 0u || stride < 20u || (stride % 4u) != 0u) {
-        LOG_ERROR("rhi_metal: draw_indexed_indirect bad args (count %u stride %u)",
-                  (unsigned)draw_count, (unsigned)stride);
+    if (draw_count == 0u || stride < 20u || (stride % 4u) != 0u ||
+        (offset & 3u) != 0u) {
+        LOG_ERROR("rhi_metal: draw_indexed_indirect bad args (count %u stride %u offset %u)",
+                  (unsigned)draw_count, (unsigned)stride, (unsigned)offset);
         return;
     }
     ab = (MetalBuffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
@@ -3606,6 +3616,14 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
         [cmd->compute_encoder
             memoryBarrierWithScope:MTLBarrierScopeBuffers |
                                    MTLBarrierScopeTextures];
+    } else if (cmd->render_encoder != nil) {
+        /* Review note M5: a barrier requested mid-render-pass is silently
+         * dropped (Metal tracks render-pass hazards itself) — say so once. */
+        static bool warned_render_barrier = false;
+        if (!warned_render_barrier) {
+            LOG_WARN("rhi_metal: memory_barrier inside a render pass is a no-op");
+            warned_render_barrier = true;
+        }
     }
 }
 
@@ -3719,6 +3737,8 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
     if (metal_drain(dev, mb) != RHI_RESULT_OK) return false;
     @autoreleasepool {
         const usize row_bytes = (usize)w * 4u;
+        /* newBufferWithLength: returns +1 (new* rule) — released on every
+         * pool exit below (review fix I1). */
         id<MTLBuffer> staging =
             [mb->device newBufferWithLength:(NSUInteger)(row_bytes * h)
                                     options:MTLResourceStorageModeShared];
@@ -3731,6 +3751,7 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
         cmd = [mb->queue commandBuffer];
         if (cmd == nil) {
             LOG_ERROR("rhi_metal: screenshot command buffer failed");
+            [staging release];
             return false;
         }
         blit = [cmd blitCommandEncoder];
@@ -3746,8 +3767,12 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
        destinationBytesPerRow:(NSUInteger)row_bytes
      destinationBytesPerImage:(NSUInteger)(row_bytes * h)];
         [blit endEncoding];
-        if (metal_commit_wait(dev, mb, cmd) != RHI_RESULT_OK) return false;
+        if (metal_commit_wait(dev, mb, cmd) != RHI_RESULT_OK) {
+            [staging release];
+            return false;
+        }
         memcpy(pixels, staging.contents, row_bytes * h);
+        [staging release];
         ok = true;
     }
     return ok;
@@ -3812,17 +3837,22 @@ RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
      * Apple-family GPUs, but sampleCountersInBuffer: on ANY encoder type
      * (render/compute/blit) aborts the process with "not supported on this
      * device" — an uncatchable hard assert, not an NSException (probed with
-     * @try/@catch). There is no safe runtime probe, so Apple-family GPUs on
-     * macOS 26+ are statically gated to the degraded path. The Metal 4
-     * replacement (MTL4CounterHeap) is out of this plan's scope. */
+     * @try/@catch). There is no safe runtime probe, so the Metal 4 runtime
+     * (macOS 26+) is statically gated to the degraded path on every GPU
+     * family. The Metal 4 replacement (MTL4CounterHeap) is out of this
+     * plan's scope. */
     {
-        bool agx_metal4 = false;
+        /* Review fix I3: the failure mode is an uncatchable abort, so gate
+         * conservatively on the runtime alone — every GPU family on the
+         * Metal 4 runtime (macOS 26+) takes the degraded path. The SDK macro
+         * only guards compile-time symbol availability. */
+        bool metal4_runtime = false;
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 260000
         if (@available(macOS 26.0, *)) {
-            agx_metal4 = [mb->device supportsFamily:MTLGPUFamilyApple1];
+            metal4_runtime = true;
         }
 #endif
-        if (agx_metal4 ||
+        if (metal4_runtime ||
             ![mb->device supportsCounterSampling:MTLCounterSamplingPointAtStageBoundary]) {
             t->supported = false;
             return t;
@@ -3869,7 +3899,31 @@ void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
     if (t == NULL) return;
     if (dev != NULL && dev == t->owner) {
         MetalBackend *mb = (MetalBackend *)dev->backend_data;
-        if (mb != NULL) metal_retire_drain(dev, mb);
+        if (mb != NULL) {
+            /* Review fix I2: sweep pended samples pointing at this timer —
+             * the pending list holds raw pointers and the drain at the next
+             * pass open would otherwise dereference freed memory. */
+            RHICmdBuffer *cmd = mb->frame_cmd;
+            if (cmd != NULL) {
+                u32 i = 0u;
+                while (i < cmd->pending_count) {
+                    if (cmd->pending_timers[i] == t) {
+                        cmd->pending_count--;
+                        memmove(&cmd->pending_timers[i],
+                                &cmd->pending_timers[i + 1u],
+                                (cmd->pending_count - i) *
+                                    sizeof(cmd->pending_timers[0]));
+                        memmove(&cmd->pending_indices[i],
+                                &cmd->pending_indices[i + 1u],
+                                (cmd->pending_count - i) *
+                                    sizeof(cmd->pending_indices[0]));
+                    } else {
+                        ++i;
+                    }
+                }
+            }
+            metal_retire_drain(dev, mb);
+        }
     }
     [t->csb release];
     free(t);
@@ -3877,11 +3931,12 @@ void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
 
 /* Sample into the open render encoder; otherwise pend on the cmd buffer
  * (applied at the next pass open this frame — stage-boundary sampling is
- * render-encoder-only on Apple GPUs; compute/blit encoders assert). */
+ * render-encoder-only on Apple GPUs; compute/blit encoders assert).
+ * Degraded timers (csb == nil) still pend: the drain skips them, and the
+ * destroy sweep (review fix I2) is exercised uniformly on every host. */
 static void metal_gpu_timer_sample(RHIGPUTimer *t, NSUInteger index) {
     MetalBackend *mb;
     RHICmdBuffer *cmd;
-    if (!t->supported || t->csb == nil) return;
     if (g_current_device != t->owner) return;
     mb = (MetalBackend *)t->owner->backend_data;
     cmd = mb != NULL ? mb->frame_cmd : NULL;
@@ -3889,7 +3944,7 @@ static void metal_gpu_timer_sample(RHIGPUTimer *t, NSUInteger index) {
         LOG_ERROR("rhi_metal: gpu timer sample outside a live frame");
         return;
     }
-    if (cmd->render_encoder != nil) {
+    if (t->csb != nil && cmd->render_encoder != nil) {
         [cmd->render_encoder sampleCountersInBuffer:t->csb
                                       atSampleIndex:index
                                         withBarrier:YES];
@@ -3950,10 +4005,13 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
         return 0.0;
     }
     @autoreleasepool {
-        data = [t->csb resolveCounterRange:NSMakeRange(0u, 2u)];   /* autoreleased */
+        /* resolveCounterRange: returns an AUTORELEASED NSData — dereference
+         * strictly inside the pool (review fix C1: the previous code used
+         * data.bytes after the pool drained = UAF). */
+        data = [t->csb resolveCounterRange:NSMakeRange(0u, 2u)];
+        if (data == nil || data.length < sizeof(ts)) return 0.0;
+        memcpy(ts, data.bytes, sizeof(ts));
     }
-    if (data == nil || data.length < sizeof(ts)) return 0.0;
-    memcpy(ts, data.bytes, sizeof(ts));
     if (ts[1] < ts[0]) return 0.0;
     /* Counter timestamps are mach absolute time ticks. */
     (void)mach_timebase_info(&tb);

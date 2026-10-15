@@ -324,4 +324,13 @@ create 时置位；默认 YES 禁止 blit 读回）。
 本帧下一个 pass 开口时补采样（`metal_drain_pending_timer_samples`，并重定向
 完成门槛到实际落点帧）；`sampled_mask` 双 bit 防止读到未落地样本；
 `elapsed_ms` 轮询 frame_event signaledValue（VK R430 不等待 parity），mach
-timebase 换算 ms。
+timebase 换算 ms。**挂起表是裸指针**：`rhi_gpu_timer_destroy` 扫描
+`frame_cmd->pending_timers[]` 摘除自身（评审修复 I2，回归
+`gpu_timer_destroy_with_pending_sample_is_safe`）；降级主机（csb==nil）同样
+挂起/摘除，路径在所有主机一致可测。
+
+### screenshot 调用时序（评审记录 M6）
+
+契约合法窗口是 acquire→present 全程，但 **mid-frame（frame_end 前）调用读到
+的是上一个提交帧的像素**（录制中未提交的工作不可见，VK `vkDeviceWaitIdle`
+同语义）；引擎只应在 frame_end 后 / present 前调用（main.c 既有截图点）。

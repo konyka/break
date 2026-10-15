@@ -33,10 +33,12 @@
   `supportsCounterSampling:AtStageBoundary` 返回 YES，但
   `sampleCountersInBuffer:atSampleIndex:withBarrier:` 在 render/compute/blit 三种
   encoder 上全部硬断言 "not supported on this device"（不可 @try 捕获，直接 abort；
-  探针程序实证）。无安全运行时探测手段 → Apple-family GPU + macOS 26+ 静态门控为
-  降级模式（`elapsed_ms` 恒 0 + LOG_WARN 一次）。Metal 4 替代路径
+  探针程序实证）。无安全运行时探测手段 → **macOS 26+（Metal 4 运行时）静态门控
+  为降级模式，不区分 GPU 家族**（失败模式是不可捕获 abort，门控从宽；
+  评审修复 I3）。`elapsed_ms` 恒 0 + LOG_WARN 一次。Metal 4 替代路径
   （MTL4CounterHeap）不在本计划范围。在支持的旧系统上：stage-boundary 采样仅
-  render encoder 合法 → pass 外的 begin/end 挂起到本帧下一个 pass 开口采样。
+  render encoder 合法 → pass 外的 begin/end 挂起到本帧下一个 pass 开口采样
+  （裸指针挂起表由 `rhi_gpu_timer_destroy` 扫描摘除，评审修复 I2）。
 - **indirect `_count`**：Metal 无 draw-indirect-with-count 等价
   （MTLIndirectCommandBuffer 是独立编码模型，出计划范围）→ fail-closed no-op +
   LOG_ERROR，能力位不声明。

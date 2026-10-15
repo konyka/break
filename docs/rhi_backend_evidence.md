@@ -15,7 +15,7 @@
 | Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `windows-clang` | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录） |
 | Windows × D3D12 | GPU_RUNTIME（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加）；CI：windows-d3d12 lane 绿 run https://github.com/konyka/break/actions/runs/38703749329 （@65d01ec，WARP floor），ci.yml 全 lane 绿 run https://github.com/konyka/break/actions/runs/38703749404 |
 | macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `macos-vulkan`（133/133 CTest, 2026-10-13） | CI run：`macos-vulkan` job，2026-10-13 |
-| macOS/iOS × 原生 Metal | NONE | 无代码 | — |
+| macOS/iOS × 原生 Metal | GPU_RUNTIME（macOS；iOS 未覆盖） | `engine/src/rhi/rhi_metal.m`：计划 C Task 1-9（设备/能力、drawable 生命周期、资源族、pipeline/FBO/MRT/shadow 契约、compute/blit/screenshot/indirect/timer） | 见下方「收据追加（计划 C：Metal）」 |
 | Android × Vulkan | COMPILED（host-injected ANativeWindow） | `engine/src/rhi/rhi_vk.c:1482-1700` | 源码审查记录（2026-10-14 冻结） |
 | iOS × Vulkan(MoltenVK) | COMPILED（host-injected CAMetalLayer） | `engine/src/platform/platform_compat.h:86-95` | 源码审查记录（2026-10-14 冻结） |
 | OHOS | NONE（UNAVAILABLE，fail-closed） | `engine/src/platform/platform_compat.h:111-120`；`engine/CMakeLists.txt:1073-1075` FATAL_ERROR | 契约测试 `test_platform_compat_harmonyos` |
@@ -59,3 +59,11 @@
 |---|---|---|---|---|
 | 2026-10-15 | 本机（Windows） | NVIDIA GeForce RTX 4060 Laptop GPU / 驱动 32.0.16.1742（Agility SDK 1.616.0，Windows SDK 10.0.26100.0） | `ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12 --output-on-failure` | 6/6 PASS：device/swapchain/pipeline/shader/dxr 契约 + `test_d3d12_warp_runtime`（`gpu=WARP`，证据下限标注）——真 GPU 全栈帧生命周期 → Windows × D3D12 维持 GPU_RUNTIME；BENCHMARK_COMPARABLE 不可标（无 benchmark receipt schema 收据） |
 | 2026-10-15 | 本机（Windows） | 同上 | `ctest --test-dir build-d3d12-debug --output-on-failure`（全量 171 项） | 165/171 PASS；失败仅 `test_vulkan`（本机已知环境性失败，规格 §7 登记，与 D3D12 无关）与 `fuzz_*_smoke`×5 "Not Run"（EXCLUDE_FROM_ALL 目标本树未构建，先于计划 D 存在）；`rhi_swapchain_bench` Skipped（既存） |
+
+## 收据追加（计划 C：原生 Metal，2026-10-15）
+
+| 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-15 | 远程 Mac mini（LAN） | Apple M2（G14）/ macOS 26.7.1（25G241），Xcode SDK 26.5，Metal 4 运行时 | `ctest --test-dir ~/break/build-metal -R test_rhi_metal --output-on-failure`（@4d087f36 及修复轮） | 5/5 PASS：`test_rhi_metal_ownership` / `format_mapping` / `device_contract` / `frame_lifecycle` / `resources`（31/31 用例：buffer/texture/sampler/cubemap R587-R602/R624 字节契约、pipeline 字段映射、FBO/MRT/shadow R616-R619、compute dispatch、fill/update/copy blit、screenshot、indirect draw、gpu timer 降级）→ macOS × 原生 Metal 升 GPU_RUNTIME；iOS 未覆盖（无设备） |
+| 2026-10-15 | 同上 | 同上 | `cd ~/break/build-metal && caffeinate -i ctest`（全量 165 项，@4d087f36） | 164/165 PASS；唯一失败 `test_vulkan` 为前置基线（干净 a3f2dc94 重建后同挂，test_vulkan.c:432 device create，metal 配置既存问题，与计划 C 无关） |
+| 2026-10-15 | 同上 | 同上 | GPU timer 能力探针（独立小程序，`supportsCounterSampling:` 五点查询 + 实际 `sampleCountersInBuffer:` 编码） | stage=1 其余=0，但三种 encoder 实际采样均硬断言 abort（Metal 4 运行时禁用 legacy counter sampling，查询谎报）→ timer 按需求书降级条款处理（macOS 26+ 静态门控，warn-once 恒 0），不构成计时证据 |

@@ -1022,6 +1022,28 @@ TEST(gpu_timer_roundtrip_smoke) {
     rhi_gpu_timer_destroy(g_dev, t);
 }
 
+TEST(gpu_timer_destroy_with_pending_sample_is_safe) {
+    /* I2 regression: a begin called between passes pends a raw timer
+     * pointer on the cmd buffer; destroying the timer before the next pass
+     * open must sweep the pending entry, or the drain dereferences freed
+     * memory (UAF). On this degraded host the sample pends without a csb,
+     * which exercises the identical list path. */
+    RHIGPUTimer *t;
+    RHICmdBuffer *cmd;
+    t = rhi_gpu_timer_create(g_dev);
+    ASSERT_NOT_NULL(t);
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_gpu_timer_begin(t);            /* no pass open: sample pends */
+    rhi_gpu_timer_destroy(g_dev, t);   /* must sweep the pending entry */
+    /* Do not touch t past this point. */
+    rhi_cmd_begin_render_pass(cmd);    /* drain must not deref the freed timer */
+    rhi_cmd_clear_color(cmd, 0.1f, 0.1f, 0.1f, 1.0f);
+    rhi_cmd_end_render_pass(cmd);
+    end_frame();
+    ASSERT_TRUE(rhi_device_idle(g_dev));
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -1067,6 +1089,7 @@ int main(void) {
     RUN_TEST(draw_indirect_executes_arg_buffer);
     RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
     RUN_TEST(gpu_timer_roundtrip_smoke);
+    RUN_TEST(gpu_timer_destroy_with_pending_sample_is_safe);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);
