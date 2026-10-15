@@ -29,21 +29,22 @@ endif()
 file(READ "${ENGINE_CMAKE}" cmake_text)
 foreach(required_text
         "set(ENGINE_RHI_BACKEND \"auto\" CACHE STRING"
-        "set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan)"
+        "set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal)"
         "set(ENGINE_RHI_BACKEND_EFFECTIVE"
         "RHI backend: requested="
-        "ENGINE_RHI_BACKEND must be auto, opengl, or vulkan"
+        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal"
+        "metal backend is UNAVAILABLE on this platform"
         "ENGINE_RHI_BACKEND STREQUAL \"vulkan\""
         "ENGINE_RHI_BACKEND STREQUAL \"opengl\""
-        "set(ENGINE_RHI_BACKEND_EFFECTIVE \"vulkan\" CACHE INTERNAL"
-        "set(ENGINE_RHI_BACKEND_EFFECTIVE \"opengl\" CACHE INTERNAL")
+        "ENGINE_RHI_BACKEND STREQUAL \"metal\""
+        "set(ENGINE_RHI_BACKEND_EFFECTIVE \"\${_rhi_backend_effective}\" CACHE INTERNAL")
     string(FIND "${cmake_text}" "${required_text}" offset)
     if(offset EQUAL -1)
         message(FATAL_ERROR "RHI backend selection contract missing: ${required_text}")
     endif()
 endforeach()
 
-foreach(forbidden_backend "metal" "d3d12")
+foreach(forbidden_backend "d3d12")
     if(cmake_text MATCHES "ENGINE_RHI_BACKEND[ \t]*STREQUAL[ \t]*\"${forbidden_backend}\"")
         message(FATAL_ERROR "unimplemented backend selector admitted: ${forbidden_backend}")
     endif()
@@ -75,19 +76,25 @@ endfunction()
 assert_configure_success("auto" "opengl")
 assert_configure_success("opengl" "opengl")
 
-execute_process(
-    COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/metal"
-        ${configure_overrides}
-        -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
-    RESULT_VARIABLE metal_result
-    OUTPUT_VARIABLE metal_output
-    ERROR_VARIABLE metal_error)
-if(metal_result EQUAL 0)
-    message(FATAL_ERROR "unimplemented backend selector unexpectedly configured: metal")
-endif()
-if(NOT "${metal_output}${metal_error}" MATCHES
-       "ENGINE_RHI_BACKEND must be auto, opengl, or vulkan")
-    message(FATAL_ERROR "metal selector failed for an unexpected reason")
+# metal: APPLE 平台必须配置成功且 EFFECTIVE=metal；其他平台必须 FATAL_ERROR
+# 且消息恰含 UNAVAILABLE（fail-closed，不得静默回退到其他后端）。
+if(APPLE)
+    assert_configure_success("metal" "metal")
+else()
+    execute_process(
+        COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${TEST_BINARY_DIR}/metal"
+            ${configure_overrides}
+            -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
+        RESULT_VARIABLE metal_result
+        OUTPUT_VARIABLE metal_output
+        ERROR_VARIABLE metal_error)
+    if(metal_result EQUAL 0)
+        message(FATAL_ERROR "metal selector unexpectedly configured on non-APPLE platform")
+    endif()
+    if(NOT "${metal_output}${metal_error}" MATCHES
+           "metal backend is UNAVAILABLE on this platform")
+        message(FATAL_ERROR "metal selector failed for an unexpected reason")
+    endif()
 endif()
 
 execute_process(
@@ -101,6 +108,6 @@ if(d3d12_result EQUAL 0)
     message(FATAL_ERROR "unimplemented backend selector unexpectedly configured: d3d12")
 endif()
 if(NOT "${d3d12_output}${d3d12_error}" MATCHES
-       "ENGINE_RHI_BACKEND must be auto, opengl, or vulkan")
+       "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal")
     message(FATAL_ERROR "d3d12 selector failed for an unexpected reason")
 endif()

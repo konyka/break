@@ -32,8 +32,8 @@ option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when ava
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
-    "RHI backend selection: auto | opengl | vulkan")
-set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan)
+    "RHI backend selection: auto | opengl | vulkan | metal")
+set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal)
 set(STREAMLINE_ROOT "" CACHE PATH
     "Optional Streamline SDK root; enables the Windows C++ DLSS adapter")
 
@@ -129,22 +129,30 @@ option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
 if(NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "opengl" AND
-   NOT ENGINE_RHI_BACKEND STREQUAL "vulkan")
+   NOT ENGINE_RHI_BACKEND STREQUAL "vulkan" AND
+   NOT ENGINE_RHI_BACKEND STREQUAL "metal")
     message(FATAL_ERROR
-        "ENGINE_RHI_BACKEND must be auto, opengl, or vulkan")
+        "ENGINE_RHI_BACKEND must be auto, opengl, vulkan, or metal")
+endif()
+if(ENGINE_RHI_BACKEND STREQUAL "metal" AND NOT APPLE)
+    message(FATAL_ERROR
+        "metal backend is UNAVAILABLE on this platform (native Metal requires macOS/iOS)")
 endif()
 if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
     set(ENGINE_VULKAN ON CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 elseif(ENGINE_RHI_BACKEND STREQUAL "opengl")
     set(ENGINE_VULKAN OFF CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
 endif()
-if(ENGINE_VULKAN)
-    set(ENGINE_RHI_BACKEND_EFFECTIVE "vulkan" CACHE INTERNAL
-        "Resolved RHI backend for this build")
+if(ENGINE_RHI_BACKEND STREQUAL "metal")
+    set(_rhi_backend_effective "metal")
+    # metal 不改写 ENGINE_VULKAN（保持 OFF），兼容层语义仅服务 gl/vk。
+elseif(ENGINE_VULKAN)
+    set(_rhi_backend_effective "vulkan")
 else()
-    set(ENGINE_RHI_BACKEND_EFFECTIVE "opengl" CACHE INTERNAL
-        "Resolved RHI backend for this build")
+    set(_rhi_backend_effective "opengl")
 endif()
+set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
+    "Resolved RHI backend for this build" FORCE)
 message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
 if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
     find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
