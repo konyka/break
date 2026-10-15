@@ -1,10 +1,12 @@
 #include "test_framework.h"
 #include <rhi/rhi.h>
 
-/* Plan C Task 3: real-device contract for the native Metal backend. Runs on
- * macOS with ENGINE_RHI_BACKEND_METAL; everywhere else it exits 77 (SKIP).
+/* Plan C Task 3/4: real-device contract for the native Metal backend. Runs
+ * on macOS with ENGINE_RHI_BACKEND_METAL; everywhere else it exits 77 (SKIP).
  * The CAMetalLayer is created offscreen (explicit drawableSize, no window —
- * CAMetalLayer can acquire drawables without being attached to a view). */
+ * CAMetalLayer can acquire drawables without being attached to a view).
+ * ENGINE_RHI_TEST arms the rhi_test_set_device_status injection hook (the
+ * target compiles RHI_CORE_SOURCES directly, so the hook is defined). */
 #if defined(ENGINE_RHI_BACKEND_METAL) && defined(ENGINE_PLATFORM_MACOS)
 
 /* CAMetalLayer creation needs Objective-C; metal_test_layer.m wraps it so
@@ -67,6 +69,36 @@ TEST(device_info_reports_hardware) {
     ASSERT_EQ(info.feature_bits & RHI_FEATURE_RAY_TRACING_PIPELINE, 0u);
 }
 
+TEST(healthy_device_is_not_lost_and_idle_ok) {
+    ASSERT_FALSE(rhi_device_lost(g_dev));
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_drain_ex(g_dev), RHI_RESULT_OK);
+    /* The idle/drain path commits a legal empty command buffer carrying a
+     * completedHandler; a healthy completion must not latch the device. */
+    ASSERT_FALSE(rhi_device_lost(g_dev));
+    ASSERT_EQ(rhi_device_get_status(g_dev), RHI_DEVICE_STATUS_READY);
+}
+
+TEST(injected_device_loss_fails_fast_at_wrapper) {
+    /* ENGINE_RHI_TEST injection pins the wrapper contract (rhi.c
+     * rhi_result_for_device): a LOST status makes every frame/blocking call
+     * fail fast with RHI_RESULT_DEVICE_LOST, backend-independent. */
+    rhi_test_set_device_status(g_dev, RHI_DEVICE_STATUS_LOST);
+    RHIResult r = RHI_RESULT_OK;
+    RHICmdBuffer *cmd = rhi_frame_acquire_ex(g_dev, &r);
+    ASSERT_TRUE(cmd == NULL);
+    ASSERT_EQ(r, RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_DEVICE_LOST);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_DEVICE_LOST);
+    ASSERT_TRUE(rhi_device_lost(g_dev));
+    ASSERT_EQ(rhi_device_get_status(g_dev), RHI_DEVICE_STATUS_LOST);
+    /* Clear the injection: the backend latch itself was never set, so the
+     * healthy device keeps working (injection is wrapper-level only). */
+    rhi_test_set_device_status(g_dev, RHI_DEVICE_STATUS_READY);
+    ASSERT_FALSE(rhi_device_lost(g_dev));
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -86,6 +118,8 @@ int main(void) {
     RUN_TEST(null_layer_is_invalid_argument);
     RUN_TEST(capabilities_match_metal_contract);
     RUN_TEST(device_info_reports_hardware);
+    RUN_TEST(healthy_device_is_not_lost_and_idle_ok);
+    RUN_TEST(injected_device_loss_fails_fast_at_wrapper);
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

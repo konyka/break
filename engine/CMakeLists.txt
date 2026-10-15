@@ -2637,13 +2637,17 @@ endif()
     # Plan C Task 3: real-device contract on a live Metal device. The
     # CAMetalLayer is created offscreen (no window); exit 77 = SKIP when
     # Metal is unavailable (GPU-less runner) or the build is not macOS+metal.
+    # Task 4: RHI_CORE_SOURCES are compiled directly into the test (same
+    # pattern as the headless RHI contract tests) so ENGINE_RHI_TEST arms the
+    # rhi_test_set_device_status injection hook without relinking engine.
     if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         add_executable(test_rhi_metal_device_contract
-            tests/test_rhi_metal_device_contract.c tests/metal_test_layer.m)
+            tests/test_rhi_metal_device_contract.c tests/metal_test_layer.m
+            ${RHI_CORE_SOURCES} src/core/log.c)
         target_include_directories(test_rhi_metal_device_contract PRIVATE
             ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_rhi_metal_device_contract PRIVATE
-            ENGINE_RHI_BACKEND_METAL=1)
+            ENGINE_RHI_BACKEND_METAL=1 ENGINE_RHI_TEST=1)
         if(ENGINE_PLATFORM STREQUAL "macos")
             target_compile_definitions(test_rhi_metal_device_contract PRIVATE
                 ENGINE_PLATFORM_MACOS=1)
@@ -2652,7 +2656,7 @@ endif()
         set_source_files_properties(tests/metal_test_layer.m PROPERTIES
             COMPILE_OPTIONS "-fno-objc-arc")
         target_link_libraries(test_rhi_metal_device_contract PRIVATE
-            engine m "-framework QuartzCore" "-framework Metal")
+            m "-framework QuartzCore" "-framework Metal")
         engine_link_rhi_backend(test_rhi_metal_device_contract)
         add_test(NAME test_rhi_metal_device_contract
             COMMAND test_rhi_metal_device_contract)
