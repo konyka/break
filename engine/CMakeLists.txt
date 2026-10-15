@@ -2322,6 +2322,9 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_header_neutral.cmake)
     set_tests_properties(test_rhi_header_neutral PROPERTIES
         LABELS "platform_contract")
+    add_test(NAME test_d3d12_sdk_lock
+        COMMAND ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_sdk_lock.cmake)
+    set_tests_properties(test_d3d12_sdk_lock PROPERTIES LABELS "headless;platform_contract")
     add_test(NAME test_d3d12_dependency_gate
         COMMAND ${CMAKE_COMMAND}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_d3d12_dependency_gate.cmake)

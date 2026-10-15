@@ -27,6 +27,17 @@ if(NOT _sdk_root OR NOT _sdk_version)
     if(_sdk_version_count GREATER 0)
         list(GET _sdk_versions 0 _sdk_version)
     endif()
+    # Plan D: prefer the pinned SDK when it is installed alongside newer ones.
+    list(FIND _sdk_versions "10.0.26100.0" _pinned_idx)
+    if(NOT _pinned_idx EQUAL -1)
+        set(_sdk_version "10.0.26100.0")
+    endif()
+endif()
+# Plan D: SDK version pin. A machine with a different Windows SDK is
+# UNAVAILABLE for the d3d12 lane, never silently re-pinned.
+if(NOT _sdk_version STREQUAL "10.0.26100.0")
+    message(STATUS "D3D12 dependency gate: UNAVAILABLE (Windows SDK '${_sdk_version}' != pinned 10.0.26100.0)")
+    cmake_language(EXIT 77)
 endif()
 set(_sdk_include "${_sdk_root}/Include/${_sdk_version}")
 set(_sdk_lib "${_sdk_root}/Lib/${_sdk_version}")
