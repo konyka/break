@@ -544,6 +544,10 @@ if(WIN32 AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
     # explicit list (no silent skip); pipelines are migrated incrementally.
     set(ENGINE_DXC "${CMAKE_CURRENT_SOURCE_DIR}/external/VulkanSDK/Bin/dxc.exe")
     if(NOT EXISTS "${ENGINE_DXC}")
+        # find_program is a no-op when the output variable is already set to a
+        # non-NOTFOUND value; clear the vendored default first or the search
+        # silently keeps a nonexistent path (CI: vendored dxc is local-only).
+        unset(ENGINE_DXC)
         find_program(ENGINE_DXC NAMES dxc dxc.exe REQUIRED)
     endif()
     set(ENGINE_D3D12_HLSL_PIPELINES blit myui)
