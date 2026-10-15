@@ -12,7 +12,10 @@ else()
 endif()
 if(NOT DXC_EXECUTABLE)
     message(STATUS "D3D12 shader compile gate: UNAVAILABLE (DXC not found)")
-    return(77)
+    # cmake -P 顶层 return(77) 在 CMP0140 OLD 下只告警不中止（参数被忽略），
+    # 执行会穿透到下面的 FATAL_ERROR；cmake_language(EXIT) 才真正以 77 退出，
+    # 让 ctest 的 SKIP_RETURN_CODE 生效。
+    cmake_language(EXIT 77)
 endif()
 
 if(NOT DEFINED CMAKE_CURRENT_BINARY_DIR)
