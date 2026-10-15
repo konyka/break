@@ -6,8 +6,8 @@
 |---|---|---|---|
 | Linux X11 | 原生 Vulkan | GPU_RUNTIME（lavapipe/llvmpipe 软渲染） | CI `vk` / `linux-graphics-smoke` lane |
 | Linux Wayland | 原生 Vulkan | NATIVE_SURFACE | CI `wayland-vk`（weston headless） |
-| Windows | 原生 Vulkan | GPU_RUNTIME | 本机 `build-win-vk/` + CI `windows-clang` |
-| macOS | MoltenVK | GPU_RUNTIME | CI `macos-vulkan`（133/133 CTest, 2026-10-13）；**不计入原生 Metal 证据** |
+| Windows | 原生 Vulkan | GPU_RUNTIME | 本机 `build-win-vk/` + CI `windows-clang`（显式 `ENGINE_VULKAN=ON`） |
+| macOS | MoltenVK | GPU_RUNTIME | CI `macos-vulkan`（显式 `ENGINE_VULKAN=ON`，133/133 CTest, 2026-10-13）；**不计入原生 Metal 证据** |
 | iOS | MoltenVK（host-injected CAMetalLayer） | COMPILED | `engine/src/platform/platform_compat.h:86-95`；模拟器不计 GPU_RUNTIME |
 | Android | 原生 Vulkan（host-injected ANativeWindow） | COMPILED | `engine/src/rhi/rhi_vk.c:1482-1700` |
 | OHOS (HarmonyOS) | — | NONE（UNAVAILABLE，fail-closed） | `engine/CMakeLists.txt` harmonyos FATAL_ERROR |
@@ -35,3 +35,8 @@
 | Linux X11（CI `vk` / `linux-graphics-smoke`，lavapipe 软渲染） | 本次无收据 | 本次无收据 | 本次无收据 | 探测逻辑存在（`test_rhi_vk_probe` 全绿，COMPILED 级）+ 运行值待 CI 日志 | 同左 | 同左 | 本机无 Linux 编译环境；需 CI 日志两行 |
 | Linux Wayland（CI `wayland-vk`，weston headless） | 本次无收据 | 本次无收据 | 本次无收据 | 同上 | 同上 | 同上 | 同上 |
 | macOS MoltenVK（CI `macos-vulkan`） | 本次无收据 | 本次无收据 | 本次无收据 | 同上 | 同上 | 同上 | 同上 |
+
+Metal native note: a GPU-wedge timeout can leave a submitted command buffer's
+completion handler pending while teardown releases the Metal backend. This
+requires a native macOS timeout test before claiming the timeout path safe;
+Linux builds intentionally do not claim that coverage.

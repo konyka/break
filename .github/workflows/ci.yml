@@ -440,7 +440,7 @@ jobs:
         # GL backends stay at defaults: the desktop GL backend is WGL-loaded
         # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
         # GLES2 SDK (configure-time discovery in engine/CMakeLists.txt).
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug
+         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -556,6 +556,7 @@ jobs:
           SHADERC_LIB="$(brew --prefix shaderc)/lib/libshaderc_shared.dylib"
           SHADERC_INCLUDE_DIR="$(brew --prefix shaderc)/include"
           cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug \
+            -DENGINE_VULKAN=ON \
             -DCMAKE_C_FLAGS="-I$SHADERC_INCLUDE_DIR" \
             -DVulkan_LIBRARY="$VULKAN_LIB" \
             -DVulkan_INCLUDE_DIR="$VULKAN_HEADERS/include" \
