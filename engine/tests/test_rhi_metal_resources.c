@@ -175,6 +175,34 @@ TEST(texture_undefined_format_rejected) {
     ASSERT_TRUE(handle_is_null(rhi_texture_create(g_dev, &desc)));
 }
 
+TEST(texture_d32_depth_create_upload_readback) {
+    /* R602: D32 readback is 4B f32 per texel, tightly packed. Regression
+     * pin (review fix): depth formats must not request
+     * MTLTextureUsageShaderWrite — Metal's Texture Descriptor Validation
+     * rejects that combination at newTextureWithDescriptor:. */
+    RHITextureDesc desc;
+    f32 depth[4u * 4u];
+    u8 out[4u * 4u * 4u];
+    u32 i;
+    RHITexture tex;
+    u32 w = 0u, h = 0u;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = 4u;
+    desc.height = 4u;
+    desc.format = RHI_FORMAT_D32_FLOAT;
+    for (i = 0u; i < 16u; ++i) depth[i] = (f32)i / 16.0f;
+    desc.data = depth;
+    tex = rhi_texture_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(tex));
+    ASSERT_TRUE(rhi_texture_get_size(g_dev, tex, &w, &h));
+    ASSERT_EQ(w, 4u);
+    ASSERT_EQ(h, 4u);
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, tex, out, sizeof(out)));
+    ASSERT_TRUE(memcmp(out, depth, sizeof(depth)) == 0);
+    rhi_texture_destroy(g_dev, tex);
+}
+
 TEST(texture_upload_mip_then_read_mip0) {
     /* Mip-chain texture: upload_mip targets a sub-level; mip 0 readback
      * still returns the create-time texels. */
@@ -312,6 +340,7 @@ int main(void) {
     RUN_TEST(texture_rgba8_upload_readback);
     RUN_TEST(texture_read_pixels_small_buffer_fails);
     RUN_TEST(texture_undefined_format_rejected);
+    RUN_TEST(texture_d32_depth_create_upload_readback);
     RUN_TEST(texture_upload_mip_then_read_mip0);
     RUN_TEST(texture_array_layer_upload_and_size);
     RUN_TEST(sampler_create_destroy_generation_advances);

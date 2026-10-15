@@ -910,6 +910,20 @@ static u32 metal_texture_bpp(RHIFormat f) {
     return rhi_metal_format_bytes_per_pixel(rhi_metal_format_from_rhi(f));
 }
 
+/* Texture usage bits. Color formats get the one-step triple (read +
+ * render-target + shader-write) so no later consumer hits a
+ * usage-deficient texture. Depth/stencil formats must NOT request
+ * MTLTextureUsageShaderWrite — Metal does not support shader writes to
+ * depth/stencil pixel formats (Texture Descriptor Validation may reject
+ * the combination; observed permissive on M2/Metal 4, kept restrictive
+ * here for older hosts and Metal validation runs). */
+static MTLTextureUsage metal_texture_usage_for(RHIFormat f) {
+    if (f == RHI_FORMAT_D32_FLOAT)
+        return MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget;
+    return MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget |
+           MTLTextureUsageShaderWrite;
+}
+
 /* Upload one tightly-packed 2D region (native-format bytes, R593) into
  * (mip, slice) of a private texture via a shared staging buffer + blit —
  * the VK staging-upload analogue (rhi_vk.c vk_texture_sync_submit). */
@@ -1076,10 +1090,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
                                         height:(NSUInteger)desc->height
                                      mipmapped:(mips > 1u)];
         d.mipmapLevelCount = (NSUInteger)mips;
-        /* One-step usage (read + render-target + shader-write) so no later
-         * consumer hits a usage-deficient texture (Task 7 brief). */
-        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget |
-                  MTLTextureUsageShaderWrite;
+        d.usage = metal_texture_usage_for(desc->format);
         d.storageMode = MTLStorageModePrivate;   /* uploads: blit staging */
         td->texture = [[mb->device newTextureWithDescriptor:d] retain];
     }
@@ -1714,8 +1725,10 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
                                             size:(NSUInteger)desc->size
                                        mipmapped:(mips > 1u)];
         d.mipmapLevelCount = (NSUInteger)mips;
-        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget |
-                  MTLTextureUsageShaderWrite;
+        /* Cubemap formats are color-only per rhi_cubemap_desc_validate, but
+         * route through the same helper so the depth restriction cannot be
+         * bypassed by a future desc change. */
+        d.usage = metal_texture_usage_for(desc->format);
         d.storageMode = MTLStorageModePrivate;
         cd->texture = [[mb->device newTextureWithDescriptor:d] retain];
     }
