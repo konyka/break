@@ -93,6 +93,46 @@ TEST(indirect_stride_gate_per_topology) {
     ASSERT_FALSE(rhi_d3d12_indirect_args_valid(1u, 24u, 1u));
     ASSERT_FALSE(rhi_d3d12_indirect_args_valid(1u, 8u, 0u));
 }
+
+/* Review fix 3 regression: a GPU-busy youngest free slot must not mask
+ * deeper completed slots (the old top-only check falsely exhausted the
+ * heap). Uses the 16-slot DSV allocator, idle in this test. */
+TEST(descriptor_take_scans_past_busy_top) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)g_dev->backend_data;
+    RHI_D3D12DescriptorAlloc *alloc = &ctx->dsv_alloc;
+    UINT held[RHI_D3D12_DSV_CAPACITY];
+    UINT count = 0u;
+    UINT a;
+    UINT b;
+    UINT c;
+    /* Drain the allocator so the free-stack contents are fully known. */
+    while (alloc->free_count > 0u) {
+        UINT slot = rhi_d3d12_descriptor_take(ctx, alloc);
+        ASSERT_TRUE(slot != UINT_MAX);
+        held[count++] = slot;
+    }
+    c = held[--count];
+    b = held[--count];
+    a = held[--count];
+    /* Free stack = [c(completed), b(busy), a(busy)] bottom-to-top: the busy
+     * youngest entry must not mask the completed c underneath. */
+    rhi_d3d12_descriptor_give_back(alloc, c, 0u);
+    rhi_d3d12_descriptor_give_back(alloc, b, ~(UINT64)0u);
+    rhi_d3d12_descriptor_give_back(alloc, a, ~(UINT64)0u);
+    ASSERT_EQ(rhi_d3d12_descriptor_take(ctx, alloc), c);
+    /* Everything left is genuinely in flight: fail closed. */
+    ASSERT_EQ(rhi_d3d12_descriptor_take(ctx, alloc), UINT_MAX);
+    /* a and b were never taken (the fail-closed take left them on the free
+     * stack): clear their retire fences in place. Only the actually-held c
+     * is handed back — giving a/b back again would duplicate stack entries
+     * and push free_count past capacity (heap overflow). */
+    alloc->slot_fence[a] = 0u;
+    alloc->slot_fence[b] = 0u;
+    rhi_d3d12_descriptor_give_back(alloc, c, 0u);
+    while (count > 0u)
+        rhi_d3d12_descriptor_give_back(alloc, held[--count], 0u);
+    ASSERT_EQ(alloc->free_count, alloc->capacity);
+}
 #endif
 
 int main(void) {
@@ -106,6 +146,7 @@ int main(void) {
     RUN_TEST(indirect_abi_rule_shared);
     RUN_TEST(swapchain_rtv_take_failure_returns_slots_once);
     RUN_TEST(indirect_stride_gate_per_topology);
+    RUN_TEST(descriptor_take_scans_past_busy_top);
     if (rhi_device_drain_ex(g_dev) != RHI_RESULT_OK) g_test_fail++;
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
