@@ -1,3 +1,5 @@
+cmake_policy(SET CMP0054 NEW)
+
 if(NOT DEFINED RHI_INTERNAL_HEADER)
     message(FATAL_ERROR "RHI_INTERNAL_HEADER is required")
 endif()
