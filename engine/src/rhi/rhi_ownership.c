@@ -90,6 +90,14 @@ void rhi_device_control_release(RHIDevice *dev) {
 }
 
 void rhi_frame_owner_clear_preclaims(RHIDevice *dev) {
+    uintptr_t expected;
+    /* destroy 预声明已把 frame_owner 推到 DESTROYING：回滚必须连同原子
+     * 状态一起复位，否则被门控拒绝的销毁会让设备永久卡在 DESTROYING，
+     * 之后的 destroy_ex 永远 BUSY。 */
+    expected = RHI_FRAME_OWNER_DESTROYING;
+    (void)atomic_compare_exchange_strong_explicit(
+        &dev->frame_owner, &expected, 0u, memory_order_acq_rel,
+        memory_order_relaxed);
     if (g_rhi_destroy_owner_device == dev) {
         g_rhi_destroy_owner_preclaimed = false;
         g_rhi_destroy_owner_device = NULL;
