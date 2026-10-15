@@ -2662,6 +2662,27 @@ endif()
             COMMAND test_rhi_metal_device_contract)
         set_tests_properties(test_rhi_metal_device_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+        # Plan C Task 5: frame lifecycle contract (acquire/present/resize,
+        # two-slot pacing index sequence) on a live Metal device, same
+        # offscreen-layer and direct-RHI_CORE_SOURCES pattern as above.
+        add_executable(test_rhi_metal_frame_lifecycle
+            tests/test_rhi_metal_frame_lifecycle.c tests/metal_test_layer.m
+            ${RHI_CORE_SOURCES} src/core/log.c)
+        target_include_directories(test_rhi_metal_frame_lifecycle PRIVATE
+            ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_rhi_metal_frame_lifecycle PRIVATE
+            ENGINE_RHI_BACKEND_METAL=1 ENGINE_RHI_TEST=1)
+        if(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_rhi_metal_frame_lifecycle PRIVATE
+                ENGINE_PLATFORM_MACOS=1)
+        endif()
+        target_link_libraries(test_rhi_metal_frame_lifecycle PRIVATE
+            m "-framework QuartzCore" "-framework Metal")
+        engine_link_rhi_backend(test_rhi_metal_frame_lifecycle)
+        add_test(NAME test_rhi_metal_frame_lifecycle
+            COMMAND test_rhi_metal_frame_lifecycle)
+        set_tests_properties(test_rhi_metal_frame_lifecycle PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
     add_test(NAME test_platform_vk_surface_contract
         COMMAND ${CMAKE_COMMAND}
