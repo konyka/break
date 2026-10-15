@@ -14,6 +14,12 @@
  * frame_end (present-before-commit is a Metal hard constraint), resize as
  * dev-dimension bookkeeping, and clear-only render passes. Teardown quiesces
  * pending completion handlers before free(mb) (Task 4 review handoff).
+ * Task 7 state: the resource family is wired — buffers (shared storage for
+ * UNIFORM/initial-data, private + blit staging for pure-GPU usages),
+ * textures/arrays/cubemaps (private storage, staging uploads, blit readback
+ * through a shared buffer with the R587-R602/R624 byte contracts), and
+ * samplers. All one-shot submits wait bounded through drain_event
+ * (metal_commit_wait), never a bare waitUntilCompleted.
  * Every other entry point logs and fails closed until its family is filled
  * in by the later plan-C tasks. */
 #import <Metal/Metal.h>
@@ -814,17 +820,198 @@ void rhi_vk_validation_set_enabled(bool enabled) {
     (void)enabled;
 }
 
+/* ---- Task 7: resource family ----
+ * Obj-C objects live in slot-table payloads whose lifetimes are managed by
+ * rhi_alloc_slot/rhi_free_slot; destroy releases the MTL object, frees the
+ * payload, and frees the slot. In-flight safety: Metal command buffers
+ * retain every resource encoded into them, so a release can never dangle
+ * the GPU — destroy additionally drains (bounded, Task 4 rule) when commits
+ * are still in flight, matching the D3D12 retire-fence semantics. */
+typedef struct {
+    id<MTLBuffer> buffer;
+    usize size;
+    RHIBufferUsage usage;
+    bool shared_mode;   /* MTLResourceStorageModeShared (host-visible) */
+} MetalBuffer;
+
+typedef struct {
+    id<MTLTexture> texture;
+    RHIFormat format;
+    u32 width;
+    u32 height;
+    u32 mip_levels;
+    u32 layers;         /* 1 = 2D, 6 = cube, N = 2D array */
+    bool is_cube;
+} MetalTexture;
+
+typedef struct {
+    id<MTLSamplerState> sampler;
+} MetalSampler;
+
+/* Storage-mode rule (Task 7 brief): shared when the host ever touches the
+ * bytes (initial_data != NULL or UNIFORM usage), private only for pure-GPU
+ * usages (STORAGE/INDIRECT/AS_BUILD_INPUT/DEVICE_ADDRESS) with no initial
+ * data — the committed/placed decision analogue of rhi_d3d12.c. */
+static bool metal_buffer_wants_private(const RHIBufferDesc *desc) {
+    const RHIBufferUsage gpu_only = (RHIBufferUsage)(
+        RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT |
+        RHI_BUFFER_USAGE_AS_BUILD_INPUT | RHI_BUFFER_USAGE_DEVICE_ADDRESS);
+    const RHIBufferUsage host_side = (RHIBufferUsage)(
+        RHI_BUFFER_USAGE_VERTEX | RHI_BUFFER_USAGE_INDEX |
+        RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL);
+    if (desc->initial_data != NULL) return false;
+    return (desc->usage & gpu_only) != 0 && (desc->usage & host_side) == 0;
+}
+
+/* Bounded one-shot submit for the resource family (staging uploads and
+ * readbacks). waitUntilCompleted has no timeout and hangs forever on a
+ * wedged GPU (Task 3 handoff), so the wait goes through drain_event like
+ * metal_drain; on timeout the device is latched lost. The trailing
+ * waitUntilCompleted returns at once (the event already signaled) and
+ * quiesces the completion handler before the caller's autoreleasepool
+ * drains the staging buffer. */
+static RHIResult metal_commit_wait(RHIDevice *dev, MetalBackend *mb,
+                                   id<MTLCommandBuffer> cmd) {
+    u64 value;
+    RHIResult result;
+    if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    if (mb->drain_event == nil) {
+        mb->drain_event = [mb->device newSharedEvent];
+        if (mb->drain_event == nil) {
+            LOG_ERROR("rhi_metal: newSharedEvent failed");
+            return RHI_RESULT_SYNC_FAILED;
+        }
+    }
+    value = ++mb->drain_counter;
+    [cmd encodeSignalEvent:mb->drain_event value:value];
+    result = metal_commit(dev, cmd);
+    if (result != RHI_RESULT_OK) return result;
+    if (![mb->drain_event waitUntilSignaledValue:value
+                                     timeoutMS:RHI_METAL_DRAIN_TIMEOUT_MS]) {
+        LOG_ERROR("rhi_metal: resource submit unsignaled after %llu ms",
+                  (unsigned long long)RHI_METAL_DRAIN_TIMEOUT_MS);
+        metal_note_device_lost(dev, mb, "resource submit timeout");
+        return RHI_RESULT_SYNC_FAILED;
+    }
+    metal_check_cmd_error(dev, mb, cmd, "resource submit");
+    if (mb->device_lost_latch) return RHI_RESULT_DEVICE_LOST;
+    [cmd waitUntilCompleted];
+    return RHI_RESULT_OK;
+}
+
+/* Destroy-time in-flight safety (Task 5 retire parity): drain (bounded)
+ * only when commits are actually in flight. */
+static void metal_retire_drain(RHIDevice *dev, MetalBackend *mb) {
+    if (atomic_load_explicit(&mb->pending_handlers, memory_order_acquire) != 0u)
+        (void)metal_drain(dev, mb);
+}
+
+static u32 metal_texture_bpp(RHIFormat f) {
+    return rhi_metal_format_bytes_per_pixel(rhi_metal_format_from_rhi(f));
+}
+
+/* Upload one tightly-packed 2D region (native-format bytes, R593) into
+ * (mip, slice) of a private texture via a shared staging buffer + blit —
+ * the VK staging-upload analogue (rhi_vk.c vk_texture_sync_submit). */
+static bool metal_texture_upload_region(RHIDevice *dev, MetalBackend *mb,
+                                        MetalTexture *td, u32 mip, u32 slice,
+                                        u32 w, u32 h, const void *data,
+                                        usize data_size) {
+    u32 bpp = metal_texture_bpp(td->format);
+    usize row_bytes;
+    bool ok = false;
+    if (bpp == 0u || w == 0u || h == 0u) return false;
+    row_bytes = (usize)w * bpp;
+    if (data == NULL || data_size < row_bytes * (usize)h) {
+        LOG_ERROR("rhi_metal: texture upload size %llu too small for %ux%u (bpp %u)",
+                  (unsigned long long)data_size, (unsigned)w, (unsigned)h,
+                  (unsigned)bpp);
+        return false;
+    }
+    @autoreleasepool {
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithBytes:data
+                                   length:(NSUInteger)(row_bytes * (usize)h)
+                                  options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd;
+        id<MTLBlitCommandEncoder> blit;
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: upload staging allocation failed");
+            return false;
+        }
+        cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: upload command buffer allocation failed");
+            return false;
+        }
+        blit = [cmd blitCommandEncoder];
+        [blit copyFromBuffer:staging
+                sourceOffset:0u
+           sourceBytesPerRow:(NSUInteger)row_bytes
+         sourceBytesPerImage:(NSUInteger)(row_bytes * (usize)h)
+                  sourceSize:MTLSizeMake((NSUInteger)w, (NSUInteger)h, 1u)
+                   toTexture:td->texture
+            destinationSlice:(NSUInteger)slice
+            destinationLevel:(NSUInteger)mip
+           destinationOrigin:MTLOriginMake(0.0, 0.0, 0.0)];
+        [blit endEncoding];
+        ok = metal_commit_wait(dev, mb, cmd) == RHI_RESULT_OK;
+    }
+    return ok;
+}
+
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
-    LOG_ERROR("rhi_metal: rhi_buffer_create not implemented");
-    (void)dev;
-    (void)desc;
-    return RHI_HANDLE_NULL;
+    MetalBackend *mb;
+    MetalBuffer *bb;
+    bool private_mode;
+    u32 idx;
+    if (dev == NULL || !rhi_buffer_desc_validate(desc)) return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    private_mode = metal_buffer_wants_private(desc);
+    bb = (MetalBuffer *)calloc(1u, sizeof(*bb));
+    if (bb == NULL) return RHI_HANDLE_NULL;
+    /* Factory methods are autoreleased; retain to survive the pool drain. */
+    @autoreleasepool {
+        MTLResourceOptions opts = private_mode
+            ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared;
+        if (desc->initial_data != NULL) {
+            /* initial_data implies shared mode by the rule above:
+             * newBufferWithBytes: uploads at create. */
+            bb->buffer = [[mb->device newBufferWithBytes:desc->initial_data
+                                                 length:(NSUInteger)desc->size
+                                                options:opts] retain];
+        } else {
+            bb->buffer = [[mb->device newBufferWithLength:(NSUInteger)desc->size
+                                                  options:opts] retain];
+        }
+    }
+    if (bb->buffer == nil) {
+        LOG_ERROR("rhi_metal: buffer allocation failed (%llu bytes)",
+                  (unsigned long long)desc->size);
+        free(bb);
+        return RHI_HANDLE_NULL;
+    }
+    bb->size = desc->size;
+    bb->usage = desc->usage;
+    bb->shared_mode = !private_mode;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = bb;
+    dev->slots[idx].type = RHI_RES_BUFFER;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
 void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
-    LOG_ERROR("rhi_metal: rhi_buffer_destroy not implemented");
-    (void)dev;
-    (void)buf;
+    MetalBackend *mb;
+    MetalBuffer *bb;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    bb = (MetalBuffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bb == NULL) return;
+    if (mb != NULL) metal_retire_drain(dev, mb);
+    [bb->buffer release];
+    free(bb);
+    rhi_free_slot(dev, buf);
 }
 
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
@@ -864,77 +1051,312 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
 }
 
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
-    LOG_ERROR("rhi_metal: rhi_texture_create not implemented");
-    (void)dev;
-    (void)desc;
-    return RHI_HANDLE_NULL;
+    MetalBackend *mb;
+    MetalTexture *td;
+    RHIMetalFormat mf;
+    u32 mips;
+    u32 idx;
+    if (dev == NULL || !rhi_texture_desc_validate(desc)) return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    mf = rhi_metal_format_from_rhi(desc->format);
+    if (mf == RHI_METAL_FORMAT_INVALID) {
+        /* Double-guard behind the shared validator: fail closed. */
+        LOG_ERROR("rhi_metal: texture format %d has no Metal mapping",
+                  (int)desc->format);
+        return RHI_HANDLE_NULL;
+    }
+    mips = desc->mip_levels == 0u ? 1u : desc->mip_levels;
+    td = (MetalTexture *)calloc(1u, sizeof(*td));
+    if (td == NULL) return RHI_HANDLE_NULL;
+    @autoreleasepool {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:rhi_metal_pixel_format(mf)
+                                         width:(NSUInteger)desc->width
+                                        height:(NSUInteger)desc->height
+                                     mipmapped:(mips > 1u)];
+        d.mipmapLevelCount = (NSUInteger)mips;
+        /* One-step usage (read + render-target + shader-write) so no later
+         * consumer hits a usage-deficient texture (Task 7 brief). */
+        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget |
+                  MTLTextureUsageShaderWrite;
+        d.storageMode = MTLStorageModePrivate;   /* uploads: blit staging */
+        td->texture = [[mb->device newTextureWithDescriptor:d] retain];
+    }
+    if (td->texture == nil) {
+        LOG_ERROR("rhi_metal: texture allocation failed (%ux%u fmt %d)",
+                  (unsigned)desc->width, (unsigned)desc->height,
+                  (int)desc->format);
+        free(td);
+        return RHI_HANDLE_NULL;
+    }
+    td->format = desc->format;
+    td->width = desc->width;
+    td->height = desc->height;
+    td->mip_levels = mips;
+    td->layers = 1u;
+    td->is_cube = false;
+    if (desc->data != NULL) {
+        /* R593: mip 0 texels in the format's native layout, tightly packed. */
+        usize bytes = (usize)desc->width * desc->height *
+                      metal_texture_bpp(desc->format);
+        if (!metal_texture_upload_region(dev, mb, td, 0u, 0u, desc->width,
+                                         desc->height, desc->data, bytes)) {
+            [td->texture release];
+            free(td);
+            return RHI_HANDLE_NULL;
+        }
+    }
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = td;
+    dev->slots[idx].type = RHI_RES_TEXTURE;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
-    LOG_ERROR("rhi_metal: rhi_texture_destroy not implemented");
-    (void)dev;
-    (void)tex;
+    MetalBackend *mb;
+    MetalTexture *td;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL) return;
+    if (mb != NULL) metal_retire_drain(dev, mb);
+    [td->texture release];
+    free(td);
+    rhi_free_slot(dev, tex);
 }
 
 RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height, u32 layers, RHIFormat fmt) {
-    LOG_ERROR("rhi_metal: rhi_texture_array_create not implemented");
-    (void)dev;
-    (void)width;
-    (void)height;
-    (void)layers;
-    (void)fmt;
-    return RHI_HANDLE_NULL;
+    MetalBackend *mb;
+    MetalTexture *td;
+    RHIMetalFormat mf;
+    u32 idx;
+    if (dev == NULL || width == 0u || height == 0u || layers == 0u ||
+        width > RHI_MAX_DRAWABLE_DIMENSION ||
+        height > RHI_MAX_DRAWABLE_DIMENSION ||
+        layers > RHI_MAX_TEXTURE_ARRAY_LAYERS) {
+        return RHI_HANDLE_NULL;
+    }
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    /* R441: 8-bit RGBA formats only (VK parity). */
+    if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
+        LOG_ERROR("rhi_metal: texture array only supports RGBA8/BGRA8");
+        return RHI_HANDLE_NULL;
+    }
+    mf = rhi_metal_format_from_rhi(fmt);   /* guaranteed valid by the check above */
+    td = (MetalTexture *)calloc(1u, sizeof(*td));
+    if (td == NULL) return RHI_HANDLE_NULL;
+    @autoreleasepool {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor
+            texture2DDescriptorWithPixelFormat:rhi_metal_pixel_format(mf)
+                                         width:(NSUInteger)width
+                                        height:(NSUInteger)height
+                                     mipmapped:NO];
+        d.textureType = MTLTextureType2DArray;
+        d.arrayLength = (NSUInteger)layers;
+        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+        d.storageMode = MTLStorageModePrivate;
+        td->texture = [[mb->device newTextureWithDescriptor:d] retain];
+    }
+    if (td->texture == nil) {
+        LOG_ERROR("rhi_metal: texture array allocation failed (%ux%u x%u)",
+                  (unsigned)width, (unsigned)height, (unsigned)layers);
+        free(td);
+        return RHI_HANDLE_NULL;
+    }
+    td->format = fmt;
+    td->width = width;
+    td->height = height;
+    td->mip_levels = 1u;
+    td->layers = layers;
+    td->is_cube = false;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = td;
+    dev->slots[idx].type = RHI_RES_TEXTURE;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
 void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex, u32 layer, const void *rgba8, usize size) {
-    LOG_ERROR("rhi_metal: rhi_texture_array_upload_layer not implemented");
-    (void)dev;
-    (void)tex;
-    (void)layer;
-    (void)rgba8;
-    (void)size;
+    MetalBackend *mb;
+    MetalTexture *td;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return;
+    td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL || td->layers <= 1u || rgba8 == NULL) return;
+    /* R441 host-OOB guard class (R417 parity): the copy reads w*h*4 bytes. */
+    if (layer >= td->layers) return;
+    if (size < (usize)td->width * td->height * 4u) return;
+    (void)metal_texture_upload_region(dev, mb, td, 0u, layer, td->width,
+                                      td->height, rgba8, size);
 }
 
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
-    LOG_ERROR("rhi_metal: rhi_texture_get_size not implemented");
-    (void)dev;
-    (void)tex;
-    (void)out_w;
-    (void)out_h;
-    return false;
+    MetalTexture *td;
+    if (dev == NULL || out_w == NULL || out_h == NULL) return false;
+    td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL) {
+        /* R631: cubemap handles report the face extent (GL/VK parity). */
+        td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (td == NULL) return false;
+    }
+    *out_w = td->width;
+    *out_h = td->height;
+    return true;
 }
 
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
-    LOG_ERROR("rhi_metal: rhi_texture_read_pixels not implemented");
-    (void)dev;
-    (void)tex;
-    (void)dst_rgba8;
-    (void)size;
-    return false;
+    MetalBackend *mb;
+    MetalTexture *td;
+    u32 bpp;
+    u32 slices;
+    usize face_bytes;
+    usize stride;
+    bool ok = false;
+    if (dev == NULL || dst_rgba8 == NULL) return false;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return false;
+    td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL) {
+        /* R624: color cubemap readback — six faces face-major (+X,-X,+Y,
+         * -Y,+Z,-Z = Metal cube slice order), mip 0, native bytes per
+         * format (R587-R602). */
+        td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_CUBEMAP);
+        if (td == NULL) return false;
+    }
+    bpp = metal_texture_bpp(td->format);
+    if (bpp == 0u) return false;
+    slices = td->is_cube ? 6u : 1u;
+    face_bytes = (usize)td->width * td->height * bpp;
+    if (size < face_bytes * slices) return false;   /* host-OOB guard */
+    /* 256-aligned per-slice staging offsets satisfy the macOS blit
+     * destinationOffset alignment for every format/slice count. */
+    stride = (face_bytes + 255u) & ~(usize)255u;
+    @autoreleasepool {
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithLength:(NSUInteger)(stride * slices)
+                                    options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd;
+        id<MTLBlitCommandEncoder> blit;
+        u32 s;
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: readback staging allocation failed");
+            return false;
+        }
+        cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: readback command buffer allocation failed");
+            return false;
+        }
+        blit = [cmd blitCommandEncoder];
+        for (s = 0u; s < slices; ++s) {
+            [blit copyFromTexture:td->texture
+                      sourceSlice:(NSUInteger)s
+                      sourceLevel:0u
+                     sourceOrigin:MTLOriginMake(0.0, 0.0, 0.0)
+                       sourceSize:MTLSizeMake((NSUInteger)td->width,
+                                              (NSUInteger)td->height, 1u)
+                         toBuffer:staging
+                destinationOffset:(NSUInteger)(stride * s)
+           destinationBytesPerRow:(NSUInteger)((usize)td->width * bpp)
+          destinationBytesPerImage:(NSUInteger)face_bytes];
+        }
+        [blit endEncoding];
+        if (metal_commit_wait(dev, mb, cmd) != RHI_RESULT_OK) return false;
+        {
+            const u8 *src = (const u8 *)staging.contents;
+            u8 *dst = (u8 *)dst_rgba8;
+            for (s = 0u; s < slices; ++s)
+                memcpy(dst + face_bytes * s, src + stride * s,
+                       (size_t)face_bytes);
+        }
+        ok = true;
+    }
+    return ok;
 }
 
 void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level, u32 width, u32 height, const void *data, usize size) {
-    LOG_ERROR("rhi_metal: rhi_texture_upload_mip not implemented");
-    (void)dev;
-    (void)tex;
-    (void)mip_level;
-    (void)width;
-    (void)height;
-    (void)data;
-    (void)size;
+    MetalBackend *mb;
+    MetalTexture *td;
+    u32 mip_w;
+    u32 mip_h;
+    u32 bpp;
+    if (dev == NULL || data == NULL || size == 0u) return;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return;
+    td = (MetalTexture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL || mip_level >= td->mip_levels) return;
+    /* R417 parity with VK: the dims must match the actual mip extent and
+     * size must cover w*h*bpp bytes (RGBA8 mip streaming is 4B/px). */
+    mip_w = td->width >> mip_level;
+    if (mip_w == 0u) mip_w = 1u;
+    mip_h = td->height >> mip_level;
+    if (mip_h == 0u) mip_h = 1u;
+    if (width != mip_w || height != mip_h) return;
+    bpp = metal_texture_bpp(td->format);
+    if (bpp == 0u || size < (usize)width * height * bpp) return;
+    (void)metal_texture_upload_region(dev, mb, td, mip_level, 0u, width,
+                                      height, data, size);
 }
 
 RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
-    LOG_ERROR("rhi_metal: rhi_sampler_create not implemented");
-    (void)dev;
-    (void)desc;
-    return RHI_HANDLE_NULL;
+    MetalBackend *mb;
+    MetalSampler *smp;
+    u32 idx;
+    if (dev == NULL || desc == NULL) return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    /* Enum-range fail-closed: garbage filter/wrap values never reach Metal. */
+    if (desc->min_filter > RHI_FILTER_LINEAR ||
+        desc->mag_filter > RHI_FILTER_LINEAR ||
+        desc->wrap_u > RHI_WRAP_CLAMP_TO_EDGE ||
+        desc->wrap_v > RHI_WRAP_CLAMP_TO_EDGE ||
+        desc->wrap_w > RHI_WRAP_CLAMP_TO_EDGE) {
+        LOG_ERROR("rhi_metal: sampler desc out of range");
+        return RHI_HANDLE_NULL;
+    }
+    smp = (MetalSampler *)calloc(1u, sizeof(*smp));
+    if (smp == NULL) return RHI_HANDLE_NULL;
+    @autoreleasepool {
+        MTLSamplerDescriptor *sd = [MTLSamplerDescriptor new];   /* +1, released below */
+        sd.minFilter = desc->min_filter == RHI_FILTER_LINEAR
+            ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        sd.magFilter = desc->mag_filter == RHI_FILTER_LINEAR
+            ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
+        sd.mipFilter = desc->min_filter == RHI_FILTER_LINEAR
+            ? MTLSamplerMipFilterLinear : MTLSamplerMipFilterNearest;
+        sd.sAddressMode = desc->wrap_u == RHI_WRAP_REPEAT
+            ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+        sd.tAddressMode = desc->wrap_v == RHI_WRAP_REPEAT
+            ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+        sd.rAddressMode = desc->wrap_w == RHI_WRAP_REPEAT
+            ? MTLSamplerAddressModeRepeat : MTLSamplerAddressModeClampToEdge;
+        smp->sampler = [[mb->device newSamplerStateWithDescriptor:sd] retain];
+        [sd release];
+    }
+    if (smp->sampler == nil) {
+        LOG_ERROR("rhi_metal: newSamplerStateWithDescriptor failed");
+        free(smp);
+        return RHI_HANDLE_NULL;
+    }
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = smp;
+    dev->slots[idx].type = RHI_RES_SAMPLER;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
 void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
-    LOG_ERROR("rhi_metal: rhi_sampler_destroy not implemented");
-    (void)dev;
-    (void)sampler;
+    MetalBackend *mb;
+    MetalSampler *smp;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    smp = (MetalSampler *)rhi_get_resource_typed(dev, sampler, RHI_RES_SAMPLER);
+    if (smp == NULL) return;
+    if (mb != NULL) metal_retire_drain(dev, mb);
+    [smp->sampler release];
+    free(smp);
+    rhi_free_slot(dev, sampler);
 }
 
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
@@ -1264,26 +1686,92 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
 }
 
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
-    LOG_ERROR("rhi_metal: rhi_cubemap_create not implemented");
-    (void)dev;
-    (void)desc;
-    return RHI_HANDLE_NULL;
+    MetalBackend *mb;
+    MetalTexture *cd;
+    RHIMetalFormat mf;
+    u32 mips;
+    u32 idx;
+    u32 bpp;
+    usize face_bytes;
+    u32 f;
+    if (dev == NULL || !rhi_cubemap_desc_validate(desc)) return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    mf = rhi_metal_format_from_rhi(desc->format);
+    if (mf == RHI_METAL_FORMAT_INVALID) {
+        LOG_ERROR("rhi_metal: cubemap format %d has no Metal mapping",
+                  (int)desc->format);
+        return RHI_HANDLE_NULL;
+    }
+    mips = desc->mip_levels == 0u ? 1u : desc->mip_levels;
+    bpp = metal_texture_bpp(desc->format);
+    face_bytes = (usize)desc->size * desc->size * bpp;
+    cd = (MetalTexture *)calloc(1u, sizeof(*cd));
+    if (cd == NULL) return RHI_HANDLE_NULL;
+    @autoreleasepool {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor
+            textureCubeDescriptorWithPixelFormat:rhi_metal_pixel_format(mf)
+                                            size:(NSUInteger)desc->size
+                                       mipmapped:(mips > 1u)];
+        d.mipmapLevelCount = (NSUInteger)mips;
+        d.usage = MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget |
+                  MTLTextureUsageShaderWrite;
+        d.storageMode = MTLStorageModePrivate;
+        cd->texture = [[mb->device newTextureWithDescriptor:d] retain];
+    }
+    if (cd->texture == nil) {
+        LOG_ERROR("rhi_metal: cubemap allocation failed (size %u fmt %d)",
+                  (unsigned)desc->size, (int)desc->format);
+        free(cd);
+        return RHI_HANDLE_NULL;
+    }
+    cd->format = desc->format;
+    cd->width = desc->size;
+    cd->height = desc->size;
+    cd->mip_levels = mips;
+    cd->layers = 6u;
+    cd->is_cube = true;
+    /* R624/R625: mip 0 per face in native bytes; Metal cube slices are in
+     * the same +X,-X,+Y,-Y,+Z,-Z order as the face-major contract, so the
+     * upload is a straight per-slice blit. */
+    for (f = 0u; f < 6u; ++f) {
+        if (desc->faces[f] == NULL) continue;
+        if (!metal_texture_upload_region(dev, mb, cd, 0u, f, desc->size,
+                                         desc->size, desc->faces[f],
+                                         face_bytes)) {
+            [cd->texture release];
+            free(cd);
+            return RHI_HANDLE_NULL;
+        }
+    }
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = cd;
+    dev->slots[idx].type = RHI_RES_CUBEMAP;
+    return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
-    LOG_ERROR("rhi_metal: rhi_cubemap_destroy not implemented");
-    (void)dev;
-    (void)cm;
+    MetalBackend *mb;
+    MetalTexture *cd;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    cd = (MetalTexture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (cd == NULL) return;
+    if (mb != NULL) metal_retire_drain(dev, mb);
+    [cd->texture release];
+    free(cd);
+    rhi_free_slot(dev, cm);
 }
 
 void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
-    LOG_ERROR("rhi_metal: rhi_cubemap_transition_to_read not implemented");
+    /* Metal has no layout transitions; hazard tracking makes a
+     * storage-written texture readable without an explicit barrier. */
     (void)dev;
     (void)cm;
 }
 
 void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
-    LOG_ERROR("rhi_metal: rhi_texture_transition_to_read not implemented");
+    /* No-op, same rationale as rhi_cubemap_transition_to_read. */
     (void)dev;
     (void)tex;
 }
@@ -1326,30 +1814,94 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
 }
 
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
-    LOG_ERROR("rhi_metal: rhi_buffer_update not implemented");
-    (void)dev;
-    (void)buf;
-    (void)data;
-    (void)size;
+    rhi_buffer_update_region(dev, buf, 0u, data, size);
 }
 
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
-    LOG_ERROR("rhi_metal: rhi_buffer_update_region not implemented");
-    (void)dev;
-    (void)buf;
-    (void)offset;
-    (void)data;
-    (void)size;
+    MetalBackend *mb;
+    MetalBuffer *bb;
+    if (dev == NULL || data == NULL || size == 0u) return;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bb == NULL || offset >= bb->size) return;
+    if (size > bb->size - offset) size = bb->size - offset;
+    if (bb->shared_mode) {
+        /* Shared storage is coherent and persistently mapped: direct copy. */
+        memcpy((u8 *)bb->buffer.contents + offset, data, (size_t)size);
+        return;
+    }
+    /* Private storage: blit staging through a transient shared buffer,
+     * VK staging-upload parity (rhi_vk.c:8909-8975 semantics), with the
+     * bounded submit wait. */
+    @autoreleasepool {
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithBytes:data
+                                   length:(NSUInteger)size
+                                  options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd;
+        id<MTLBlitCommandEncoder> blit;
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: buffer update staging allocation failed");
+            return;
+        }
+        cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: buffer update command buffer failed");
+            return;
+        }
+        blit = [cmd blitCommandEncoder];
+        [blit copyFromBuffer:staging
+                sourceOffset:0u
+                    toBuffer:bb->buffer
+           destinationOffset:(NSUInteger)offset
+                        size:(NSUInteger)size];
+        [blit endEncoding];
+        (void)metal_commit_wait(dev, mb, cmd);
+    }
 }
 
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size) {
-    LOG_ERROR("rhi_metal: rhi_buffer_read not implemented");
-    (void)dev;
-    (void)buf;
-    (void)dst;
-    (void)offset;
-    (void)size;
-    return false;
+    MetalBackend *mb;
+    MetalBuffer *bb;
+    if (dev == NULL || dst == NULL || size == 0u) return false;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return false;
+    bb = (MetalBuffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bb == NULL || offset >= bb->size) return false;
+    if (size > bb->size - offset) size = bb->size - offset;
+    if (bb->shared_mode) {
+        memcpy(dst, (const u8 *)bb->buffer.contents + offset, (size_t)size);
+        return true;
+    }
+    /* Private storage: blit back to a shared staging buffer, bounded wait,
+     * then host copy. */
+    @autoreleasepool {
+        id<MTLBuffer> staging =
+            [mb->device newBufferWithLength:(NSUInteger)size
+                                    options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> cmd;
+        id<MTLBlitCommandEncoder> blit;
+        if (staging == nil) {
+            LOG_ERROR("rhi_metal: buffer readback staging allocation failed");
+            return false;
+        }
+        cmd = [mb->queue commandBuffer];
+        if (cmd == nil) {
+            LOG_ERROR("rhi_metal: buffer readback command buffer failed");
+            return false;
+        }
+        blit = [cmd blitCommandEncoder];
+        [blit copyFromBuffer:bb->buffer
+                sourceOffset:(NSUInteger)offset
+                    toBuffer:staging
+           destinationOffset:0u
+                        size:(NSUInteger)size];
+        [blit endEncoding];
+        if (metal_commit_wait(dev, mb, cmd) != RHI_RESULT_OK) return false;
+        memcpy(dst, staging.contents, (size_t)size);
+        return true;
+    }
 }
 
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
@@ -1371,14 +1923,21 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, const
 }
 
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
-    LOG_ERROR("rhi_metal: rhi_buffer_map not implemented");
-    (void)dev;
-    (void)buf;
-    return NULL;
+    MetalBuffer *bb;
+    if (dev == NULL) return NULL;
+    bb = (MetalBuffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bb == NULL) return NULL;
+    if (!bb->shared_mode) {
+        /* Fail-closed (VK R186 parity): private storage has no host
+         * mapping — use rhi_buffer_read. */
+        LOG_ERROR("rhi_metal: rhi_buffer_map on private buffer; use rhi_buffer_read");
+        return NULL;
+    }
+    return bb->buffer.contents;
 }
 
 void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
-    LOG_ERROR("rhi_metal: rhi_buffer_unmap not implemented");
+    /* Shared storage is persistently mapped; nothing to do. */
     (void)dev;
     (void)buf;
 }
