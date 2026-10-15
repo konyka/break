@@ -66,6 +66,12 @@ On the available Vulkan device, the smoke test currently reports:
 
 ## Cross-Platform Validation Matrix
 
+The interactive `test_vulkan` window now presents a deterministic startup
+frame immediately after the basic scene resources are ready, before the long
+synchronous validation suite begins. This prevents a visible black/default
+surface for roughly the duration of the pre-loop tests; the later rotatable
+camera loop and validation ordering are unchanged.
+
 On 2026-10-13, checkout `be6d645` was revalidated on the same Linux host:
 the fresh/incremental OpenGL build passed 129/129 non-fuzz CTest cases,
 including the `headless;platform_contract` group and X11 runtime tests; the

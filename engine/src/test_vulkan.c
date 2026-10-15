@@ -5589,6 +5589,49 @@ int main(int argc, char **argv) {
     if (!rhi_handle_valid(ibo)) { LOG_ERROR("FAIL: index buffer"); }
     else { LOG_INFO("PASS: Index buffer created"); }
 
+    /* Present a useful first frame before the long synchronous validation
+     * suite. The window is already visible, so leaving it untouched here
+     * exposes the platform clear color as a misleading startup black frame. */
+    {
+        u32 fw = 0, fh = 0;
+        platform_get_drawable_size(engine.platform, &fw, &fh);
+        Camera startup_camera = {0};
+        Mat4 startup_model = mat4_identity();
+        camera_init(&startup_camera, 1.047f,
+                    (f32)fw / (f32)(fh > 0 ? fh : 1), 0.1f, 100.0f);
+        RHICmdBuffer *startup_cmd = rhi_frame_begin(render.device);
+        if (startup_cmd != NULL) {
+            Mat4 view = camera_view(&startup_camera);
+            Mat4 proj = camera_projection(&startup_camera);
+            rhi_cmd_clear_color(startup_cmd, 0.1f, 0.1f, 0.15f, 1.0f);
+            rhi_cmd_bind_pipeline(startup_cmd, render.pipeline);
+            rhi_cmd_set_uniform_mat4(startup_cmd, render.loc_model,
+                                     &startup_model.e[0][0]);
+            rhi_cmd_set_uniform_mat4(startup_cmd, render.loc_view,
+                                     &view.e[0][0]);
+            rhi_cmd_set_uniform_mat4(startup_cmd, render.loc_proj,
+                                     &proj.e[0][0]);
+            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_light_dir,
+                                     0.5f, -0.8f, 0.3f);
+            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_light_color,
+                                     1.0f, 0.95f, 0.9f);
+            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_ambient,
+                                     0.35f, 0.35f, 0.40f);
+            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_camera_pos,
+                                     startup_camera.position.e[0],
+                                     startup_camera.position.e[1],
+                                     startup_camera.position.e[2]);
+            rhi_cmd_bind_vertex_buffer(startup_cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(startup_cmd, ibo, 0, true);
+            rhi_cmd_bind_texture(startup_cmd, render.test_tex,
+                                 render.sampler, 0);
+            rhi_cmd_draw_indexed(startup_cmd, 3, 1);
+            rhi_frame_end(render.device);
+            rhi_present(render.device);
+            LOG_INFO("Startup frame presented before validation suite");
+        }
+    }
+
     /* R579-C: TV_MR_DEBUG runs the MR-echo diagnostic FIRST (~3 s, before
      * the local R577 TDR window at 14-20 s) and exits. */
     if (getenv("TV_MR_DEBUG")) {
