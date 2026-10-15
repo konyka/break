@@ -2686,6 +2686,27 @@ endif()
             COMMAND test_rhi_metal_frame_lifecycle)
         set_tests_properties(test_rhi_metal_frame_lifecycle PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+        # Plan C Task 7: resource contract (buffers/textures/samplers/
+        # cubemaps/arrays, R587-R602 + R624 byte contracts) on a live Metal
+        # device, same offscreen-layer and direct-RHI_CORE_SOURCES pattern.
+        add_executable(test_rhi_metal_resources
+            tests/test_rhi_metal_resources.c tests/metal_test_layer.m
+            ${RHI_CORE_SOURCES} src/core/log.c)
+        target_include_directories(test_rhi_metal_resources PRIVATE
+            ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_rhi_metal_resources PRIVATE
+            ENGINE_RHI_BACKEND_METAL=1 ENGINE_RHI_TEST=1)
+        if(ENGINE_PLATFORM STREQUAL "macos")
+            target_compile_definitions(test_rhi_metal_resources PRIVATE
+                ENGINE_PLATFORM_MACOS=1)
+        endif()
+        target_link_libraries(test_rhi_metal_resources PRIVATE
+            m "-framework QuartzCore" "-framework Metal")
+        engine_link_rhi_backend(test_rhi_metal_resources)
+        add_test(NAME test_rhi_metal_resources
+            COMMAND test_rhi_metal_resources)
+        set_tests_properties(test_rhi_metal_resources PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
     add_test(NAME test_platform_vk_surface_contract
         COMMAND ${CMAKE_COMMAND}
