@@ -319,8 +319,25 @@ jobs:
             sleep 0.1
           done
           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
-          ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
+          set +e
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
+          rc_headless=$?
+          ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
+          rc_runtime=$?
+          set -e
+          # Logs need auth to read: surface failing test names and FAIL
+          # lines as annotations (sanitizer-lane pattern), plus the weston
+          # log tail so headless-backend startup issues stay visible.
+          if [ $rc_headless -ne 0 ] || [ $rc_runtime -ne 0 ]; then
+            for f in /tmp/ctest-wayland.log /tmp/ctest-wayland-runtime.log; do
+              grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|abort|Aborted|CMake Error' "$f" | head -30 | while IFS= read -r line; do
+                echo "::error::$line"
+              done
+            done
+            echo "::error::wayland test step failed (headless rc=$rc_headless, runtime rc=$rc_runtime); weston log tail:"
+            tail -20 /tmp/weston-break.log | while IFS= read -r line; do echo "::error::weston ${line}"; done
+            exit 1
+          fi
 
   wayland-vk:
     name: Linux Wayland + Vulkan (GCC)
@@ -378,8 +395,25 @@ jobs:
             sleep 0.1
           done
            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
-           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure
+           set +e
+           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
+           rc_headless=$?
+           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
+           rc_runtime=$?
+           set -e
+           # Logs need auth to read: surface failing test names and FAIL
+           # lines as annotations (sanitizer-lane pattern), plus the weston
+           # log tail so headless-backend startup issues stay visible.
+           if [ $rc_headless -ne 0 ] || [ $rc_runtime -ne 0 ]; then
+             for f in /tmp/ctest-wayland.log /tmp/ctest-wayland-runtime.log; do
+               grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|abort|Aborted|CMake Error' "$f" | head -30 | while IFS= read -r line; do
+                 echo "::error::$line"
+               done
+             done
+             echo "::error::wayland test step failed (headless rc=$rc_headless, runtime rc=$rc_runtime); weston log tail:"
+             tail -20 /tmp/weston-break.log | while IFS= read -r line; do echo "::error::weston ${line}"; done
+             exit 1
+           fi
 
   windows-clang:
     name: Windows + Clang (headless)
@@ -406,7 +440,23 @@ jobs:
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
 
       - name: Test (headless suite)
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # CMake script gates (e.g. the d3d12 shader compile gate) put the
+            # diagnosis in the lines after "CMake Error at" — surface those.
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest-headless.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
 
   windows-clang-asan:
     name: Windows + Clang ASan (headless)
@@ -447,6 +497,11 @@ jobs:
           if [ $rc -ne 0 ]; then
             grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer|CMake Error' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
               echo "::error::$line"
+            done
+            # CMake script gates (e.g. the d3d12 shader compile gate) put the
+            # diagnosis in the lines after "CMake Error at" — surface those.
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
             done
             exit 1
           fi
