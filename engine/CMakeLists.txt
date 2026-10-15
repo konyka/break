@@ -2288,12 +2288,22 @@ endif()
             -DMYPAL_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/mypal/CMakeLists.txt
             -DMYR_VULKAN_C=${CMAKE_CURRENT_SOURCE_DIR}/src/myui/myr/my_vgcanvas_vulkan.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_myr_dependency_config.cmake)
+    # macOS 上 engine configure 恒要求 shaderc+Vulkan（molten-vk 无
+    # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
+    # configure；其他平台这些变量未定义/为空时不传。
+    set(_rhi_selector_toolchain_defs)
+    foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+        if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
+            list(APPEND _rhi_selector_toolchain_defs "-D${_rhi_def}=${${_rhi_def}}")
+        endif()
+    endforeach()
     add_test(NAME test_rhi_backend_selection
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
             -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DTEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}/rhi-selector-contract
             -DENGINE_ENABLE_WAYLAND=${ENGINE_ENABLE_WAYLAND}
+            ${_rhi_selector_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)

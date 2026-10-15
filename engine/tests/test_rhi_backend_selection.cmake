@@ -32,6 +32,15 @@ endif()
 if(DEFINED ENGINE_ENABLE_WAYLAND)
     list(APPEND configure_overrides "-DENGINE_ENABLE_WAYLAND:BOOL=${ENGINE_ENABLE_WAYLAND}")
 endif()
+# macOS configures REQUIRE shaderc + a Vulkan library even for the GL
+# selector paths (ENGINE_PLATFORM STREQUAL "macos" branch), and brew's
+# MoltenVK keg ships libMoltenVK.dylib with no libvulkan.dylib, so
+# discovery fails without the explicit paths the outer lane resolved.
+foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+    if(DEFINED ${cache_var} AND NOT "${${cache_var}}" STREQUAL "")
+        list(APPEND configure_overrides "-D${cache_var}=${${cache_var}}")
+    endif()
+endforeach()
 
 file(READ "${ENGINE_CMAKE}" cmake_text)
 foreach(required_text
