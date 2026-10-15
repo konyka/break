@@ -1685,3 +1685,15 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
     (void)t;
     return 0.0;
 }
+
+/* ---- ENGINE_RHI_TEST hooks ---- */
+#ifdef ENGINE_RHI_TEST
+/* Task 6: arms the suspended-acquire BUSY defense for
+ * test_rhi_metal_frame_lifecycle. Private export (no public header);
+ * production iOS hosts self-discipline — they make no frame API calls while
+ * backgrounded — so there is intentionally no production setter. */
+void rhi_test_metal_set_suspended(RHIDevice *dev, bool suspended) {
+    MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
+    if (mb != NULL) mb->suspended = suspended;
+}
+#endif

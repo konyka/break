@@ -468,6 +468,9 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     target_include_directories(engine_rhi_metal PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
     target_compile_definitions(engine_rhi_metal PRIVATE ENGINE_RHI_BACKEND_METAL=1)
+    # ENGINE_RHI_TEST arms the rhi_test_metal_set_suspended hook consumed by
+    # test_rhi_metal_frame_lifecycle (same precedent as engine_rhi_headless).
+    target_compile_definitions(engine_rhi_metal PRIVATE ENGINE_RHI_TEST=1)
     # 系统框架头无法满足 -Werror -pedantic；手动引用计数（见 rhi_metal.m 头注）。
     set_source_files_properties(src/rhi/rhi_metal.m PROPERTIES
         COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")

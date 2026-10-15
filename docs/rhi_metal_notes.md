@@ -82,7 +82,7 @@ ENGINE_RHI_TEST 注入路径）。
 | layer nil / drawable texture nil | acquire（Task 5 已接线） | `RHI_RESULT_SURFACE_LOST` |
 | command buffer `status == MTLCommandBufferStatusError` | completedHandler / `rhi_device_idle` / frame_end | sticky latch → `RHI_RESULT_DEVICE_LOST`；`error.code == MTLCommandBufferErrorDeviceRemoved`（macOS 13+，低版本按通用 error 同样 latch） |
 | `MTLSharedEvent` 等待超时（20s，对齐 rhi.h:855 的 VK 20s 语义） | drain（Task 4）/ acquire 帧 pacing / idle 帧等待（Task 5 已接线） | 首报 `RHI_RESULT_SYNC_FAILED`；超时后置 device-lost 闩锁，后续调用经闩锁报 `RHI_RESULT_DEVICE_LOST`（对齐 VK 的 fence-unsignaled→lost 语义，rhi.h:854-858） |
-| 挂起中 acquire（iOS host 暂停） | acquire（`mb->suspended`，Task 14 接线 setter） | `RHI_RESULT_BUSY` |
+| 挂起中 acquire（iOS host 暂停） | acquire（`mb->suspended`，Task 6 接线） | `RHI_RESULT_BUSY` |
 | ray tracing API 在 `[device supportsRaytracing]==NO` | RT 族 | `RHI_RESULT_UNSUPPORTED` |
 
 ## Task 5：drawable acquire/present/resize + 帧状态机映射
@@ -134,3 +134,23 @@ signaledValue 单调递增，共用会让 drain 的计数值提前满足帧 paci
 `frame_counter == 2` 的 pacing 等待值为 0（== 初始 signaledValue，立即成立，
 由 `test_rhi_metal_format_mapping` 钉死）；该窗口由 CAMetalLayer 自身的
 drawable 数量背压覆盖。
+
+## Task 6：suspended-acquire BUSY（iOS host 暂停防御）
+
+`rhi_frame_begin` 入口检查 `mb->suspended`，置位时
+`rhi_device_set_lifecycle_result(dev, RHI_RESULT_BUSY)` + 释放帧 owner +
+返回 NULL（wrapper `rhi_frame_acquire_ex` 把 lifecycle_result 透传给
+`out_result`）。BUSY 非粘性：清标志后 acquire 正常；`rhi_device_resize`
+不走 acquire，挂起期间仍可调用。由 `test_rhi_metal_frame_lifecycle` 的
+`suspended_acquire_is_busy_resize_and_recover` 用例固定。
+
+### 已知边界
+
+`suspended` 标志**没有生产 setter**：唯一的置位入口是 `ENGINE_RHI_TEST`
+钩子 `rhi_test_metal_set_suspended`（`rhi_metal.m` 私有导出，测试目标经
+`engine_rhi_metal` 库级 `ENGINE_RHI_TEST=1` 编译置位，先例同
+`engine_rhi_headless`）。生产路径的 iOS 暂停语义由 window_mobile.c 的
+host-injection 模型保证：宿主在 background 期间**自律不调用**任何 frame
+API（window_mobile.c 是纯注入壳，无事件上报钩子，本计划不给它加）。后端
+的 suspended 检查只是宿主误调时的防御性兜底，不构成完整的
+pause/resume 生命周期实现；iOS 模拟器 lifecycle lane 归 Task 14。
