@@ -615,6 +615,10 @@ jobs:
           # a local macOS machine with a GPU runs them in full.
           export BREAK_MYUI_SKIP_VK_SENSITIVE=1
           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure 2>&1 | tee /tmp/macos_headless.log || {
+            # Surface which tests failed first — the vgcanvas tail below is
+            # only a supplementary dump, not a failure identifier.
+            grep -E "\(Failed\)|\(Timeout\)|\(Not Run\)|FAIL:|CMake Error" /tmp/macos_headless.log | head -30 \
+              | while IFS= read -r line; do echo "::error::${line}"; done
             t=test_myui_vgcanvas_backend
             if [ -x "build/$t" ]; then
               echo "::error::final output lines $t (unfiltered tail):"
