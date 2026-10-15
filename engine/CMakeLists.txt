@@ -2410,6 +2410,18 @@ endif()
             COMMAND test_d3d12_device_contract)
         set_tests_properties(test_d3d12_device_contract PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+        # Task 4: swapchain + frame-lifecycle contract on a live device.
+        # Same SKIP 77 policy as the Task 3 device contract.
+        add_executable(test_d3d12_swapchain_contract
+            tests/test_d3d12_swapchain_contract.c)
+        target_include_directories(test_d3d12_swapchain_contract PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_swapchain_contract PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_swapchain_contract
+            COMMAND test_d3d12_swapchain_contract)
+        set_tests_properties(test_d3d12_swapchain_contract PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}
