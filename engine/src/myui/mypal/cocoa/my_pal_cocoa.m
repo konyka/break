@@ -113,7 +113,7 @@ static uint64_t cocoa_now_ms(void) {
                             hasAlpha:YES
                             isPlanar:NO
                       colorSpaceName:NSDeviceRGBColorSpace
-                         bitmapFormat:NSAlphaFirstBitmapFormat
+                         bitmapFormat:NSBitmapFormatAlphaFirst
                           bytesPerRow:(int)my_lcd_get_stride(owner->lcd->mem)
                              bitsPerPixel:32];
     memcpy([rep bitmapData], my_lcd_get_buffer(owner->lcd->mem),
@@ -293,13 +293,18 @@ static my_ret_t cgl_make_current(my_pal_gl_t* gl) {
 }
 
 static my_ret_t cgl_swap(my_pal_gl_t* gl) {
-  [((cocoa_gl_t*)gl)->ctx flush];
+  [((cocoa_gl_t*)gl)->ctx flushBuffer];
   return MY_RET_OK;
 }
 
 static my_ret_t cgl_size(my_pal_gl_t* gl, int32_t* w, int32_t* h) {
   cocoa_gl_t* g = (cocoa_gl_t*)gl;
+  /* NSOpenGLContext.view has no non-deprecated replacement (the whole GL
+   * path is legacy); silence is scoped to this expression, not the file. */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   NSRect r = [[g->ctx view] bounds];
+#pragma clang diagnostic pop
   if (w != NULL) *w = (int32_t)r.size.width;
   if (h != NULL) *h = (int32_t)r.size.height;
   return MY_RET_OK;
@@ -339,7 +344,10 @@ static my_pal_gl_t* cwin_gl_enable(my_pal_window_t* win) {
     w->gl = NULL;
     return NULL;
   }
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   [w->gl->ctx setView:[w->window contentView]];
+#pragma clang diagnostic pop
   [w->gl->ctx makeCurrentContext];
   return &w->gl->base;
 }
