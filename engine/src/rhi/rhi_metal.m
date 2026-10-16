@@ -71,6 +71,11 @@ typedef struct {
     id<MTLDepthStencilState> depth_states[5]; /* Task 8 cache: [lequal?2:0]|[write_off?1:0], [4]=Always+write off (R445) */
     id<MTLTexture> screen_depth;  /* drawable-sized D32 for the screen pass */
     u32 screen_depth_w, screen_depth_h;
+    /* Task 12: device-address (gpuResourceID) -> MetalAS payload registry
+     * for the TLAS instance conversion's linear lookup. */
+    struct MetalAS **as_registry;
+    u32 as_count;
+    u32 as_cap;
     bool frame_started;           /* acquire done, submit not yet */
     bool frame_submitted;         /* submit done, present not yet */
     _Atomic bool device_lost_latch; /* sticky; mirrors rhi_vk.c device-lost semantics */
@@ -499,6 +504,7 @@ void rhi_device_destroy(RHIDevice *dev) {
             [mb->drain_event release];   /* created lazily by metal_drain */
             for (u32 i = 0u; i < 5u; ++i) [mb->depth_states[i] release];
             [mb->screen_depth release];
+            free(mb->as_registry);
             [mb->queue release];
             [mb->device release];
         }
@@ -870,72 +876,6 @@ bool rhi_backend_cmd_buffer_get_native_info( const RHIDevice *dev, const RHICmdB
     return false;
 }
 
-bool rhi_backend_cmd_build_blas_one_triangle( RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas, const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer, usize scratch_offset) {
-    LOG_ERROR("rhi_metal: rhi_backend_cmd_build_blas_one_triangle not implemented");
-    (void)cmd;
-    (void)dev;
-    (void)blas;
-    (void)desc;
-    (void)scratch_buffer;
-    (void)scratch_offset;
-    return false;
-}
-
-u64 rhi_backend_acceleration_structure_get_device_address( RHIDevice *dev, RHIAccelerationStructure structure) {
-    LOG_ERROR("rhi_metal: rhi_backend_acceleration_structure_get_device_address not implemented");
-    (void)dev;
-    (void)structure;
-    return 0u;
-}
-
-bool rhi_backend_tlas_one_instance_get_build_sizes( RHIDevice *dev, RHIBuffer instance_buffer, RHIAccelerationStructureBuildSizes *out_sizes) {
-    LOG_ERROR("rhi_metal: rhi_backend_tlas_one_instance_get_build_sizes not implemented");
-    (void)dev;
-    (void)instance_buffer;
-    (void)out_sizes;
-    return false;
-}
-
-bool rhi_backend_cmd_build_tlas_one_instance( RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas, RHIBuffer instance_buffer, RHIBuffer scratch_buffer, usize scratch_offset) {
-    LOG_ERROR("rhi_metal: rhi_backend_cmd_build_tlas_one_instance not implemented");
-    (void)cmd;
-    (void)dev;
-    (void)tlas;
-    (void)instance_buffer;
-    (void)scratch_buffer;
-    (void)scratch_offset;
-    return false;
-}
-
-bool rhi_backend_acceleration_structure_get_vk_handle( RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
-    LOG_ERROR("rhi_metal: rhi_backend_acceleration_structure_get_vk_handle not implemented");
-    (void)dev;
-    (void)structure;
-    (void)out_handle;
-    return false;
-}
-
-bool rhi_blas_one_triangle_get_build_sizes( RHIDevice *dev, const RHIBLASOneTriangleDesc *desc, RHIAccelerationStructureBuildSizes *out_sizes) {
-    LOG_ERROR("rhi_metal: rhi_blas_one_triangle_get_build_sizes not implemented");
-    (void)dev;
-    (void)desc;
-    (void)out_sizes;
-    return false;
-}
-
-RHIAccelerationStructure rhi_backend_acceleration_structure_create( RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
-    LOG_ERROR("rhi_metal: rhi_backend_acceleration_structure_create not implemented");
-    (void)dev;
-    (void)desc;
-    return RHI_HANDLE_NULL;
-}
-
-void rhi_backend_acceleration_structure_destroy( RHIDevice *dev, RHIAccelerationStructure structure) {
-    LOG_ERROR("rhi_metal: rhi_backend_acceleration_structure_destroy not implemented");
-    (void)dev;
-    (void)structure;
-}
-
 u32 rhi_vk_validation_message_count(void) {
     LOG_ERROR("rhi_metal: rhi_vk_validation_message_count not implemented");
     return 0u;
@@ -1105,6 +1045,413 @@ static bool metal_texture_upload_region(RHIDevice *dev, MetalBackend *mb,
            destinationOrigin:MTLOriginMake(0.0, 0.0, 0.0)];
         [blit endEncoding];
         ok = metal_commit_wait(dev, mb, cmd) == RHI_RESULT_OK;
+    }
+    return ok;
+}
+
+/* ---- Task 12: acceleration structures ----
+ * MTLAccelerationStructure mapping with fail-closed gates. Availability is
+ * the Task 3 capability bit (supportsRaytracing at device create) AND
+ * macOS 13+ (the triangle-descriptor vertexFormat and gpuResourceID are
+ * 13+); either missing -> every entry point fails closed (NULL / false /
+ * no-op + log), and the *_ex wrappers surface RHI_RESULT_UNSUPPORTED
+ * through the existing capability contract. RHI_FEATURE_RAY_TRACING_PIPELINE
+ * is never set (Task 3: Metal's intersection-function model has no
+ * raygen-pipeline equivalent); ray query rides
+ * setAccelerationStructure:atBufferIndex: on the compute path. */
+
+/* Forward: the Task 7 payload type this family consumes. */
+
+static bool metal_rt_available(const RHIDevice *dev) {
+    if ((dev->capabilities.feature_bits &
+         RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u) return false;
+#if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && \
+    __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
+    if (@available(macOS 13.0, *)) return true;
+    return false;
+#else
+    return true;
+#endif
+}
+
+typedef struct MetalAS {
+    id<MTLAccelerationStructure> structure;   /* +1 owned (newAccelerationStructureWithSize:) */
+} MetalAS;
+
+static bool metal_as_registry_add(MetalBackend *mb, MetalAS *ad) {
+    if (mb->as_count == mb->as_cap) {
+        u32 ncap = mb->as_cap == 0u ? 8u : mb->as_cap * 2u;
+        MetalAS **nr =
+            (MetalAS **)realloc(mb->as_registry, ncap * sizeof(*nr));
+        if (nr == NULL) return false;
+        mb->as_registry = nr;
+        mb->as_cap = ncap;
+    }
+    mb->as_registry[mb->as_count++] = ad;
+    return true;
+}
+
+static void metal_as_registry_remove(MetalBackend *mb, MetalAS *ad) {
+    u32 i;
+    for (i = 0u; i < mb->as_count; ++i) {
+        if (mb->as_registry[i] == ad) {
+            mb->as_registry[i] = mb->as_registry[mb->as_count - 1u];
+            mb->as_count--;
+            return;
+        }
+    }
+}
+
+RHIAccelerationStructure rhi_backend_acceleration_structure_create( RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
+    MetalBackend *mb;
+    MetalAS *ad;
+    u32 slot;
+    if (dev == NULL || desc == NULL || !metal_rt_available(dev))
+        return RHI_HANDLE_NULL;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
+    if (desc->storage_size == 0u) {
+        /* The engine flow always sizes via the prebuild query; a zero size
+         * has no Metal meaning — fail closed instead of a zero-byte AS. */
+        LOG_ERROR("rhi_metal: AS create with storage_size 0 (query build sizes first)");
+        return RHI_HANDLE_NULL;
+    }
+    ad = (MetalAS *)calloc(1u, sizeof(*ad));
+    if (ad == NULL) return RHI_HANDLE_NULL;
+    if (!metal_as_registry_add(mb, ad)) {
+        free(ad);
+        return RHI_HANDLE_NULL;
+    }
+    @autoreleasepool {
+        /* newAccelerationStructureWithSize: returns +1 (new* rule). */
+        ad->structure = [mb->device
+            newAccelerationStructureWithSize:(NSUInteger)desc->storage_size];
+    }
+    if (ad->structure == nil) {
+        LOG_ERROR("rhi_metal: newAccelerationStructureWithSize failed (%llu bytes)",
+                  (unsigned long long)desc->storage_size);
+        metal_as_registry_remove(mb, ad);
+        free(ad);
+        return RHI_HANDLE_NULL;
+    }
+    slot = rhi_alloc_slot(dev);
+    dev->slots[slot].ptr = ad;
+    dev->slots[slot].type = RHI_RES_ACCELERATION_STRUCTURE;
+    return rhi_make_handle(slot, dev->slots[slot].generation);
+}
+
+void rhi_backend_acceleration_structure_destroy( RHIDevice *dev, RHIAccelerationStructure structure) {
+    MetalBackend *mb;
+    MetalAS *ad;
+    if (dev == NULL) return;
+    mb = (MetalBackend *)dev->backend_data;
+    ad = (MetalAS *)rhi_get_resource_typed(dev, structure,
+                                           RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL) return;
+    if (mb != NULL) {
+        metal_retire_drain(dev, mb);
+        metal_as_registry_remove(mb, ad);
+    }
+    [ad->structure release];
+    free(ad);
+    rhi_free_slot(dev, structure);
+}
+
+u64 rhi_backend_acceleration_structure_get_device_address( RHIDevice *dev, RHIAccelerationStructure structure) {
+    MetalAS *ad;
+    if (dev == NULL) return 0u;
+    ad = (MetalAS *)rhi_get_resource_typed(dev, structure,
+                                           RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL) return 0u;
+    /* Metal 4 made MTLResourceID an opaque struct (no u64 conversion), so
+     * the "device address" exposed to the VK-ABI instance records is a
+     * synthetic value: the payload pointer. It is unique, nonzero, stable
+     * for the payload's life, and round-trips through the registry lookup
+     * in metal_as_convert_tlas_record — the only consumer. */
+    return (u64)(uintptr_t)ad;
+}
+
+bool rhi_backend_acceleration_structure_get_vk_handle( RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
+    /* Not Vulkan: there is no VkAccelerationStructureKHR to expose. */
+    if (out_handle != NULL) *out_handle = NULL;
+    (void)dev;
+    (void)structure;
+    return false;
+}
+
+/* Shared triangle-geometry descriptor (vertex/index buffers ride the RHI
+ * buffers' MTLBuffer directly — no copy). Autoreleased. */
+static MTLAccelerationStructureTriangleGeometryDescriptor *
+metal_as_triangle_desc(const RHIBLASOneTriangleDesc *desc,
+                       MetalBuffer *vb, MetalBuffer *ib) {
+    MTLAccelerationStructureTriangleGeometryDescriptor *tri =
+        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    tri.vertexBuffer = vb->buffer;
+    tri.vertexBufferOffset = (NSUInteger)desc->vertex_offset;
+    tri.vertexStride = (NSUInteger)desc->vertex_stride;
+    tri.vertexFormat = MTLAttributeFormatFloat3;   /* R32G32B32_SFLOAT */
+    tri.indexBuffer = ib->buffer;
+    tri.indexBufferOffset = (NSUInteger)desc->index_offset;
+    tri.indexType = MTLIndexTypeUInt32;
+    tri.triangleCount = 1u;
+    return tri;
+}
+
+bool rhi_blas_one_triangle_get_build_sizes( RHIDevice *dev, const RHIBLASOneTriangleDesc *desc, RHIAccelerationStructureBuildSizes *out_sizes) {
+    MetalBackend *mb;
+    MetalBuffer *vb, *ib;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || out_sizes == NULL || !metal_rt_available(dev) ||
+        !rhi_blas_one_triangle_desc_validate(desc)) {
+        return false;
+    }
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return false;
+    vb = (MetalBuffer *)rhi_get_resource_typed(dev, desc->vertex_buffer,
+                                               RHI_RES_BUFFER);
+    ib = (MetalBuffer *)rhi_get_resource_typed(dev, desc->index_buffer,
+                                               RHI_RES_BUFFER);
+    if (vb == NULL || ib == NULL) return false;
+    @autoreleasepool {
+        MTLAccelerationStructureTriangleGeometryDescriptor *tri =
+            metal_as_triangle_desc(desc, vb, ib);
+        MTLPrimitiveAccelerationStructureDescriptor *pd =
+            [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        MTLAccelerationStructureSizes sizes;
+        pd.geometryDescriptors = @[ tri ];
+        sizes = [mb->device accelerationStructureSizesWithDescriptor:pd];
+        out_sizes->acceleration_structure_size =
+            (usize)sizes.accelerationStructureSize;
+        out_sizes->build_scratch_size = (usize)sizes.buildScratchBufferSize;
+    }
+    return out_sizes->acceleration_structure_size != 0u &&
+           out_sizes->build_scratch_size != 0u;
+}
+
+bool rhi_backend_cmd_build_blas_one_triangle( RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas, const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer, usize scratch_offset) {
+    MetalBackend *mb;
+    MetalAS *ad;
+    MetalBuffer *scratch, *vb, *ib;
+    bool ok = false;
+    if (dev == NULL || !metal_rt_available(dev) ||
+        !rhi_blas_one_triangle_desc_validate(desc)) {
+        return false;
+    }
+    mb = (MetalBackend *)dev->backend_data;
+    /* VK parity: one-shot build outside a frame (cmd must be NULL). */
+    if (mb == NULL || cmd != NULL || mb->frame_started) return false;
+    ad = (MetalAS *)rhi_get_resource_typed(dev, blas,
+                                           RHI_RES_ACCELERATION_STRUCTURE);
+    scratch = (MetalBuffer *)rhi_get_resource_typed(dev, scratch_buffer,
+                                                    RHI_RES_BUFFER);
+    vb = (MetalBuffer *)rhi_get_resource_typed(dev, desc->vertex_buffer,
+                                               RHI_RES_BUFFER);
+    ib = (MetalBuffer *)rhi_get_resource_typed(dev, desc->index_buffer,
+                                               RHI_RES_BUFFER);
+    if (ad == NULL || scratch == NULL || vb == NULL || ib == NULL)
+        return false;
+    @autoreleasepool {
+        MTLAccelerationStructureTriangleGeometryDescriptor *tri =
+            metal_as_triangle_desc(desc, vb, ib);
+        MTLPrimitiveAccelerationStructureDescriptor *pd =
+            [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+        id<MTLCommandBuffer> cb;
+        id<MTLAccelerationStructureCommandEncoder> enc;
+        pd.geometryDescriptors = @[ tri ];
+        cb = [mb->queue commandBuffer];
+        if (cb == nil) {
+            LOG_ERROR("rhi_metal: BLAS build command buffer failed");
+            return false;
+        }
+        /* accelerationStructureCommandEncoder is autoreleased. */
+        enc = [cb accelerationStructureCommandEncoder];
+        if (enc == nil) {
+            LOG_ERROR("rhi_metal: AS command encoder failed");
+            return false;
+        }
+        [enc buildAccelerationStructure:ad->structure
+                             descriptor:pd
+                          scratchBuffer:scratch->buffer
+                    scratchBufferOffset:(NSUInteger)scratch_offset];
+        [enc endEncoding];
+        ok = metal_commit_wait(dev, mb, cb) == RHI_RESULT_OK;
+    }
+    return ok;
+}
+
+/* Read `size` bytes at `offset` of a MetalBuffer (shared -> direct copy;
+ * private -> blit staging via rhi_buffer_read). `handle` is only needed for
+ * the readback path. */
+static bool metal_as_buffer_read(RHIDevice *dev, RHIBuffer handle,
+                                 MetalBuffer *bb, usize offset, void *dst,
+                                 usize size) {
+    if (offset > bb->size || size > bb->size - offset) return false;
+    if (bb->shared_mode) {
+        memcpy(dst, (const u8 *)bb->buffer.contents + offset, (size_t)size);
+        return true;
+    }
+    return rhi_buffer_read(dev, handle, dst, offset, size);
+}
+
+/* VK-ABI 64B instance record -> MTLAccelerationStructureUserIDInstanceDescriptor
+ * (+ the BLAS object for instancedAccelerationStructures).
+ * Unpack: bytes 0-47 transform row-major 3x4 (transposed into MTL's
+ * column-major 4x3), bytes 48-51 packed0 = custom_index low24 | mask<<24,
+ * bytes 52-55 packed1 = sbt_offset low24 | flags<<24, bytes 56-63 u64 BLAS
+ * device address (registry linear lookup; unknown address -> fail closed). */
+static bool metal_as_convert_tlas_record(RHIDevice *dev, const u8 *rec,
+                                         MTLAccelerationStructureUserIDInstanceDescriptor *out,
+                                         id<MTLAccelerationStructure> *out_blas) {
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    f32 transform[12];
+    u32 packed0, packed1, flags;
+    u64 blas_addr;
+    u32 i;
+    static bool warned_flags;
+    memcpy(transform, rec, sizeof(transform));
+    memcpy(&packed0, rec + 48, sizeof(packed0));
+    memcpy(&packed1, rec + 52, sizeof(packed1));
+    memcpy(&blas_addr, rec + 56, sizeof(blas_addr));
+    for (i = 0u; i < mb->as_count; ++i) {
+        MetalAS *ad = mb->as_registry[i];
+        /* The record's "BLAS device address" is the synthetic payload
+         * pointer minted by get_device_address. */
+        if ((u64)(uintptr_t)ad == blas_addr) {
+            /* VK row-major 3x4 -> MTLPackedFloat4x3 (four float3 columns):
+             * column j = (t[j], t[j+4], t[j+8]). */
+            out->transformationMatrix.columns[0] =
+                MTLPackedFloat3Make(transform[0], transform[4], transform[8]);
+            out->transformationMatrix.columns[1] =
+                MTLPackedFloat3Make(transform[1], transform[5], transform[9]);
+            out->transformationMatrix.columns[2] =
+                MTLPackedFloat3Make(transform[2], transform[6], transform[10]);
+            out->transformationMatrix.columns[3] =
+                MTLPackedFloat3Make(transform[3], transform[7], transform[11]);
+            out->options = 0u;
+            out->mask = (packed0 >> 24) & 0xFFu;
+            out->intersectionFunctionTableOffset = packed1 & 0x00FFFFFFu;
+            out->accelerationStructureIndex = 0u;   /* single-instance array */
+            out->userID = packed0 & 0x00FFFFFFu;
+            flags = (packed1 >> 24) & 0xFFu;
+            if (flags != 0u && !warned_flags) {
+                LOG_WARN("rhi_metal: TLAS instance flags %#x not mapped in v1",
+                         (unsigned)flags);
+                warned_flags = true;
+            }
+            *out_blas = ad->structure;
+            return true;
+        }
+    }
+    LOG_ERROR("rhi_metal: TLAS instance references unknown BLAS address 0x%llx",
+              (unsigned long long)blas_addr);
+    return false;
+}
+
+/* Shared TLAS descriptor for the one-instance path: converts record 0 of
+ * the caller's VK-ABI instance buffer into a staging buffer holding one
+ * MTLAccelerationStructureUserIDInstanceDescriptor. The staging buffer is
+ * +1 (newBufferWithBytes:) — the CALLER releases it after the sizes query /
+ * build wait. Returns nil on failure (logged). */
+static MTLInstanceAccelerationStructureDescriptor *
+metal_as_tlas_desc(RHIDevice *dev, RHIBuffer instance_buffer,
+                   id<MTLBuffer> *out_staging) {
+    MetalBackend *mb = (MetalBackend *)dev->backend_data;
+    MetalBuffer *inst;
+    MTLInstanceAccelerationStructureDescriptor *idesc;
+    u8 rec[RHI_TLAS_INSTANCE_SIZE];
+    MTLAccelerationStructureUserIDInstanceDescriptor conv;
+    id<MTLAccelerationStructure> blas = nil;
+    *out_staging = nil;
+    inst = (MetalBuffer *)rhi_get_resource_typed(dev, instance_buffer,
+                                                 RHI_RES_BUFFER);
+    if (inst == NULL || inst->size < RHI_TLAS_INSTANCE_SIZE) return nil;
+    memset(&conv, 0, sizeof(conv));
+    if (!metal_as_buffer_read(dev, instance_buffer, inst, 0u, rec,
+                              sizeof(rec)) ||
+        !metal_as_convert_tlas_record(dev, rec, &conv, &blas)) {
+        return nil;
+    }
+    *out_staging =
+        [mb->device newBufferWithBytes:&conv
+                                length:sizeof(conv)
+                               options:MTLResourceStorageModeShared];
+    if (*out_staging == nil) {
+        LOG_ERROR("rhi_metal: TLAS instance staging allocation failed");
+        return nil;
+    }
+    idesc = [MTLInstanceAccelerationStructureDescriptor descriptor];
+    idesc.instanceDescriptorBuffer = *out_staging;
+    idesc.instanceDescriptorBufferOffset = 0u;
+    idesc.instanceCount = 1u;
+    idesc.instanceDescriptorType =
+        MTLAccelerationStructureInstanceDescriptorTypeUserID;
+    idesc.instancedAccelerationStructures = @[ blas ];
+    return idesc;
+}
+
+bool rhi_backend_tlas_one_instance_get_build_sizes( RHIDevice *dev, RHIBuffer instance_buffer, RHIAccelerationStructureBuildSizes *out_sizes) {
+    MetalBackend *mb;
+    if (out_sizes != NULL) memset(out_sizes, 0, sizeof(*out_sizes));
+    if (dev == NULL || out_sizes == NULL || !metal_rt_available(dev))
+        return false;
+    mb = (MetalBackend *)dev->backend_data;
+    if (mb == NULL || mb->device_lost_latch) return false;
+    @autoreleasepool {
+        id<MTLBuffer> staging = nil;
+        MTLInstanceAccelerationStructureDescriptor *idesc;
+        MTLAccelerationStructureSizes sizes;
+        idesc = metal_as_tlas_desc(dev, instance_buffer, &staging);
+        if (idesc == nil) return false;
+        sizes = [mb->device accelerationStructureSizesWithDescriptor:idesc];
+        out_sizes->acceleration_structure_size =
+            (usize)sizes.accelerationStructureSize;
+        out_sizes->build_scratch_size = (usize)sizes.buildScratchBufferSize;
+        [staging release];
+    }
+    return out_sizes->acceleration_structure_size != 0u &&
+           out_sizes->build_scratch_size != 0u;
+}
+
+bool rhi_backend_cmd_build_tlas_one_instance( RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas, RHIBuffer instance_buffer, RHIBuffer scratch_buffer, usize scratch_offset) {
+    MetalBackend *mb;
+    MetalAS *ad;
+    MetalBuffer *scratch;
+    bool ok = false;
+    if (dev == NULL || !metal_rt_available(dev)) return false;
+    mb = (MetalBackend *)dev->backend_data;
+    /* VK parity: one-shot build outside a frame (cmd must be NULL). */
+    if (mb == NULL || cmd != NULL || mb->frame_started) return false;
+    ad = (MetalAS *)rhi_get_resource_typed(dev, tlas,
+                                           RHI_RES_ACCELERATION_STRUCTURE);
+    scratch = (MetalBuffer *)rhi_get_resource_typed(dev, scratch_buffer,
+                                                    RHI_RES_BUFFER);
+    if (ad == NULL || scratch == NULL) return false;
+    @autoreleasepool {
+        id<MTLBuffer> staging = nil;
+        MTLInstanceAccelerationStructureDescriptor *idesc;
+        id<MTLCommandBuffer> cb;
+        id<MTLAccelerationStructureCommandEncoder> enc;
+        idesc = metal_as_tlas_desc(dev, instance_buffer, &staging);
+        if (idesc == nil) return false;
+        cb = [mb->queue commandBuffer];
+        if (cb == nil) {
+            LOG_ERROR("rhi_metal: TLAS build command buffer failed");
+            [staging release];
+            return false;
+        }
+        enc = [cb accelerationStructureCommandEncoder];
+        if (enc == nil) {
+            LOG_ERROR("rhi_metal: AS command encoder failed");
+            [staging release];
+            return false;
+        }
+        [enc buildAccelerationStructure:ad->structure
+                             descriptor:idesc
+                          scratchBuffer:scratch->buffer
+                    scratchBufferOffset:(NSUInteger)scratch_offset];
+        [enc endEncoding];
+        ok = metal_commit_wait(dev, mb, cb) == RHI_RESULT_OK;
+        [staging release];
     }
     return ok;
 }
@@ -4223,10 +4570,32 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 }
 
 void rhi_cmd_bind_acceleration_structure( RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_acceleration_structure not implemented");
-    (void)cmd;
-    (void)structure;
-    (void)binding;
+    MetalAS *ad;
+    id<MTLComputeCommandEncoder> enc;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    ad = (MetalAS *)rhi_get_resource_typed(g_current_device, structure,
+                                           RHI_RES_ACCELERATION_STRUCTURE);
+    if (ad == NULL) {
+        LOG_ERROR("rhi_metal: bind_acceleration_structure on an invalid handle");
+        return;
+    }
+    /* M4 index allocation (docs/rhi_metal_notes.md): index 28 is the
+     * ray-query acceleration-structure slot — clear of the flattened
+     * resources (0..24), push constants (29) and the toolchain's
+     * spvBufferSizeConstants (30). The RHI binding argument is 0 in the
+     * engine's only call pattern; anything else is rejected loudly. */
+    if (binding != 0u) {
+        LOG_ERROR("rhi_metal: bind_acceleration_structure binding %u unsupported (v1)",
+                  (unsigned)binding);
+        return;
+    }
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) return;
+    if (![enc respondsToSelector:@selector(setAccelerationStructure:atBufferIndex:)]) {
+        LOG_ERROR("rhi_metal: setAccelerationStructure unavailable on this host");
+        return;
+    }
+    [enc setAccelerationStructure:ad->structure atBufferIndex:28u];
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {

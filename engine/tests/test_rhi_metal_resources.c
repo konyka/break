@@ -1,5 +1,6 @@
 #include "test_framework.h"
 #include <rhi/rhi.h>
+#include <rhi/rhi_backend_internal.h>   /* Task 12: feature-bit forced branch */
 #include <core/shader_io.h>   /* Task 10: shader_read_file (manifest e2e) */
 
 /* Plan C Task 7: resource family contract for the native Metal backend —
@@ -2314,6 +2315,151 @@ TEST(uniform_buffer_binds_and_replays_after_pass_switch) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* ---- Task 12: acceleration structures ---- */
+
+static RHIBuffer make_data_buffer(RHIBufferUsage usage, const void *data,
+                                  usize size) {
+    RHIBufferDesc d;
+    memset(&d, 0, sizeof(d));
+    d.usage = usage;
+    d.size = size;
+    d.initial_data = data;
+    return rhi_buffer_create(g_dev, &d);
+}
+
+TEST(acceleration_structure_lifecycle_and_tlas) {
+    /* RT-capable path (M2: supportsRaytracing == YES): BLAS one-triangle
+     * create + build + nonzero device address; one-instance TLAS sizes +
+     * build through the VK-ABI record conversion. The fail-closed twin is
+     * the next test (forced feature-bit clear). */
+    static const f32 verts[9] = {
+        0.0f, 0.0f, 0.0f,
+        1.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f
+    };
+    static const u32 indices[3] = { 0u, 1u, 2u };
+    RHIBuffer vb, ib, scratch, inst, tscratch;
+    RHIBLASOneTriangleDesc d;
+    RHIAccelerationStructureBuildSizes sizes;
+    RHIAccelerationStructure blas, tlas;
+    RHIAccelerationStructureDesc adesc;
+    u64 addr;
+    RHITLASInstanceDesc idesc;
+    u8 rec[RHI_TLAS_INSTANCE_SIZE];
+    RHICmdBuffer *cmd;
+    if ((g_dev->capabilities.feature_bits &
+         RHI_FEATURE_ACCELERATION_STRUCTURE) == 0u) {
+        /* This host cannot take the RT path; the fail-closed twin covers
+         * the other branch. */
+        return;
+    }
+    vb = make_data_buffer(RHI_BUFFER_USAGE_STORAGE, verts, sizeof(verts));
+    ib = make_data_buffer(RHI_BUFFER_USAGE_STORAGE, indices,
+                          sizeof(indices));
+    ASSERT_FALSE(handle_is_null(vb));
+    ASSERT_FALSE(handle_is_null(ib));
+    memset(&d, 0, sizeof(d));
+    d.vertex_buffer = vb;
+    d.vertex_offset = 0u;
+    d.vertex_count = 3u;
+    d.vertex_stride = 12u;
+    d.vertex_format = RHI_VERTEX_FORMAT_R32G32B32_SFLOAT;
+    d.index_buffer = ib;
+    d.index_offset = 0u;
+    d.index_count = 3u;
+    d.indexed = true;
+    memset(&sizes, 0, sizeof(sizes));
+    ASSERT_TRUE(rhi_blas_one_triangle_get_build_sizes(g_dev, &d, &sizes));
+    ASSERT_TRUE(sizes.acceleration_structure_size > 0u);
+    ASSERT_TRUE(sizes.build_scratch_size > 0u);
+    memset(&adesc, 0, sizeof(adesc));
+    adesc.type = RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL;
+    adesc.storage_size = sizes.acceleration_structure_size;
+    blas = rhi_acceleration_structure_create(g_dev, &adesc);
+    ASSERT_FALSE(handle_is_null(blas));
+    scratch = make_data_buffer(RHI_BUFFER_USAGE_STORAGE, NULL,
+                               sizes.build_scratch_size);
+    ASSERT_FALSE(handle_is_null(scratch));
+    ASSERT_TRUE(rhi_build_blas_one_triangle(g_dev, blas, &d, scratch, 0u));
+    addr = rhi_acceleration_structure_get_device_address(g_dev, blas);
+    ASSERT_TRUE(addr != 0u);
+    /* TLAS one instance (identity transform). */
+    memset(&idesc, 0, sizeof(idesc));
+    idesc.transform[0] = 1.0f;
+    idesc.transform[5] = 1.0f;
+    idesc.transform[10] = 1.0f;
+    idesc.instance_mask = 0xFFu;
+    ASSERT_TRUE(rhi_tlas_instance_encode(rec, sizeof(rec), addr, &idesc));
+    inst = make_data_buffer(
+        (RHIBufferUsage)(RHI_BUFFER_USAGE_STORAGE |
+                         RHI_BUFFER_USAGE_DEVICE_ADDRESS),
+        rec, sizeof(rec));
+    ASSERT_FALSE(handle_is_null(inst));
+    memset(&sizes, 0, sizeof(sizes));
+    ASSERT_TRUE(rhi_tlas_one_instance_get_build_sizes(g_dev, inst, &sizes));
+    ASSERT_TRUE(sizes.acceleration_structure_size > 0u);
+    adesc.type = RHI_ACCELERATION_STRUCTURE_TOP_LEVEL;
+    adesc.storage_size = sizes.acceleration_structure_size;
+    tlas = rhi_acceleration_structure_create(g_dev, &adesc);
+    ASSERT_FALSE(handle_is_null(tlas));
+    tscratch = make_data_buffer(RHI_BUFFER_USAGE_STORAGE, NULL,
+                                sizes.build_scratch_size);
+    ASSERT_FALSE(handle_is_null(tscratch));
+    ASSERT_TRUE(rhi_build_tlas_one_instance(g_dev, tlas, inst, tscratch, 0u));
+    /* Bind on the compute path: legal call, no crash. */
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_acceleration_structure(cmd, tlas, 0u);
+    end_frame();
+    ASSERT_TRUE(rhi_device_idle(g_dev));
+    rhi_acceleration_structure_destroy(g_dev, tlas);
+    rhi_acceleration_structure_destroy(g_dev, blas);
+    rhi_buffer_destroy(g_dev, vb);
+    rhi_buffer_destroy(g_dev, ib);
+    rhi_buffer_destroy(g_dev, scratch);
+    rhi_buffer_destroy(g_dev, inst);
+    rhi_buffer_destroy(g_dev, tscratch);
+}
+
+TEST(acceleration_structure_fail_closed_when_feature_cleared) {
+    /* Forced-branch simulation of a supportsRaytracing==NO host (the only
+     * RT-capable machine in this plan is the M2): every RT entry point must
+     * fail closed without crashing. */
+    u32 saved = g_dev->capabilities.feature_bits;
+    RHIAccelerationStructureDesc adesc;
+    RHIAccelerationStructureBuildSizes sizes;
+    RHIBuffer inst;
+    g_dev->capabilities.feature_bits &=
+        ~(RHI_FEATURE_ACCELERATION_STRUCTURE | RHI_FEATURE_RAY_QUERY);
+    memset(&adesc, 0, sizeof(adesc));
+    adesc.type = RHI_ACCELERATION_STRUCTURE_BOTTOM_LEVEL;
+    adesc.storage_size = 256u;
+    ASSERT_TRUE(handle_is_null(
+        rhi_acceleration_structure_create(g_dev, &adesc)));
+    memset(&sizes, 0, sizeof(sizes));
+    inst = make_data_buffer(
+        (RHIBufferUsage)(RHI_BUFFER_USAGE_STORAGE |
+                         RHI_BUFFER_USAGE_DEVICE_ADDRESS),
+        NULL, (usize)RHI_TLAS_INSTANCE_SIZE);
+    ASSERT_FALSE(handle_is_null(inst));
+    ASSERT_FALSE(rhi_tlas_one_instance_get_build_sizes(g_dev, inst, &sizes));
+    ASSERT_TRUE(sizes.acceleration_structure_size == 0u);
+    /* Bind must be a no-op (LOG_ERROR) even with a garbage handle — and
+     * must not crash. */
+    {
+        RHICmdBuffer *cmd = begin_frame();
+        RHIAccelerationStructure bogus;
+        ASSERT_NOT_NULL(cmd);
+        bogus.index = 0x7FFFu;
+        bogus.generation = 0x7FFFu;
+        rhi_cmd_bind_acceleration_structure(cmd, bogus, 0u);
+        end_frame();
+    }
+    ASSERT_TRUE(rhi_device_idle(g_dev));
+    rhi_buffer_destroy(g_dev, inst);
+    g_dev->capabilities.feature_bits = saved;
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -2366,6 +2512,8 @@ int main(void) {
     RUN_TEST(set_uniform_mat4_column0_as_color);
     RUN_TEST(push_replays_across_blit_interlude);
     RUN_TEST(uniform_buffer_binds_and_replays_after_pass_switch);
+    RUN_TEST(acceleration_structure_lifecycle_and_tlas);
+    RUN_TEST(acceleration_structure_fail_closed_when_feature_cleared);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);

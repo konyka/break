@@ -334,3 +334,34 @@ timebase 换算 ms。**挂起表是裸指针**：`rhi_gpu_timer_destroy` 扫描
 契约合法窗口是 acquire→present 全程，但 **mid-frame（frame_end 前）调用读到
 的是上一个提交帧的像素**（录制中未提交的工作不可见，VK `vkDeviceWaitIdle`
 同语义）；引擎只应在 frame_end 后 / present 前调用（main.c 既有截图点）。
+
+## Task 12：加速结构（MTLAccelerationStructure）+ MSL buffer 索引分配表
+
+RT 能力门 = Task 3 capability bit（supportsRaytracing）+ macOS 13+（triangle
+descriptor 的 vertexFormat 为 13+ API）——任一缺失全入口 fail-closed
+（NULL/false/no-op+LOG，`*_ex` 经既有能力契约暴露 UNSUPPORTED）。
+`RHI_FEATURE_RAY_TRACING_PIPELINE` 永不置位。BLAS build 复用 RHI buffer 的
+MTLBuffer（zero-copy）；TLAS 走 VK-ABI 64B record →
+`MTLAccelerationStructureUserIDInstanceDescriptor` 转换（转置/解包逐项见
+rhi_metal.m `metal_as_convert_tlas_record` 注释），BLAS 数组经
+`instancedAccelerationStructures` 提供、索引 0。
+
+**"device address" 选型**：Metal 4 把 `MTLResourceID` 改为不透明 struct
+（无 u64 转换），故 `get_device_address` 返回**合成地址 = payload 指针**，
+转换侧经 `MetalBackend.as_registry` 线性查找回 payload——自洽闭环，
+记录在 `metal_as_convert_tlas_record` 注释。
+
+### MSL buffer 索引分配表（跨 Task 10-12 的全局契约）
+
+| 索引 | 用途 | 来源 |
+|---|---|---|
+| 0 | 顶点 buffer（`MTLVertexDescriptor.layouts[0].bufferIndex`，`rhi_cmd_bind_vertex_buffer` 仍为 Task 13 stub——接入时不得改动 flattened 资源索引方案，顶点流语义独立） | Task 8 |
+| 0..24 | flattened shader 资源（uniform/buffer block：`set*8+binding`，实测语料最大 24；`nb>28` flatten 护栏） | Task 10 |
+| 25..27 | 预留增长（未分配） | — |
+| 28 | ray-query 加速结构（`setAccelerationStructure:atBufferIndex:`） | Task 12 |
+| 29 | push constants（`setVertex/Fragment/Bytes:`） | Task 10/11 |
+| 30 | `spvBufferSizeConstants`（spirv-cross 为 SSBO `.length()` 自动保留） | 工具链 |
+
+纹理索引：`set*16+binding`（image/samplerBuffer）与 combined sampler 的
+`set*4+binding`（sampler 同值）；sampler 上限 15。索引越界/重复由 metal
+编译器诚实失败 + reflection 一致性测试抽查。
