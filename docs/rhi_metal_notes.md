@@ -356,7 +356,7 @@ rhi_metal.m `metal_as_convert_tlas_record` 注释），BLAS 数组经
 | 索引 | 用途 | 来源 |
 |---|---|---|
 | 0 | 顶点 buffer（`MTLVertexDescriptor.layouts[0].bufferIndex`，`rhi_cmd_bind_vertex_buffer` 仍为 Task 13 stub——接入时不得改动 flattened 资源索引方案，顶点流语义独立） | Task 8 |
-| 0..24 | flattened shader 资源（uniform/buffer block：`set*8+binding`，实测语料最大 24；`nb>28` flatten 护栏） | Task 10 |
+| 0..24 | flattened shader 资源（uniform/buffer block：`set*8+binding`，实测语料最大 24；flatten 护栏 `nb>27` fail-closed） | Task 10/12 |
 | 25..27 | 预留增长（未分配） | — |
 | 28 | ray-query 加速结构（`setAccelerationStructure:atBufferIndex:`） | Task 12 |
 | 29 | push constants（`setVertex/Fragment/Bytes:`） | Task 10/11 |
@@ -365,3 +365,12 @@ rhi_metal.m `metal_as_convert_tlas_record` 注释），BLAS 数组经
 纹理索引：`set*16+binding`（image/samplerBuffer）与 combined sampler 的
 `set*4+binding`（sampler 同值）；sampler 上限 15。索引越界/重复由 metal
 编译器诚实失败 + reflection 一致性测试抽查。
+
+### 已知边界（Task 12 评审 M3）
+
+`rhi_cmd_bind_acceleration_structure` 只做 slot 解析、不查
+`metal_rt_available`：无 RT 能力的主机上 `create` 已 fail-closed，合法 AS
+句柄根本不存在，故 bind 的能力门在真实主机不可达（bogus handle 走
+LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27`）
+共同保证 shader 资源永不落到 AS 槽。
+

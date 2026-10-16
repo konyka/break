@@ -1068,10 +1068,11 @@ static bool metal_rt_available(const RHIDevice *dev) {
 #if defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && \
     __MAC_OS_X_VERSION_MAX_ALLOWED >= 130000
     if (@available(macOS 13.0, *)) return true;
-    return false;
-#else
-    return true;
 #endif
+    /* SDK without macOS 13 API markers cannot build the 13+ entry points
+     * this family needs — fail closed (review fix M2: never a
+     * misleading "available" fallback). */
+    return false;
 }
 
 typedef struct MetalAS {
@@ -5030,5 +5031,20 @@ RHIShader rhi_test_metal_shader_create_source(RHIDevice *dev,
                                               const char *entry,
                                               bool is_fragment) {
     return metal_shader_create_source(dev, source, len, entry, is_fragment);
+}
+
+/* Task 12 review (M1): exposes the VK-ABI -> MTL TLAS record conversion
+ * for component-level assertions (identity transforms are
+ * transpose-invisible). Copies the converted 68-byte descriptor out. */
+bool rhi_test_metal_convert_tlas_record(RHIDevice *dev, const u8 *rec,
+                                        u8 *out68) {
+    MTLAccelerationStructureUserIDInstanceDescriptor conv;
+    id<MTLAccelerationStructure> blas = nil;
+    _Static_assert(sizeof(conv) == 68u, "UserID instance descriptor layout");
+    if (dev == NULL || rec == NULL || out68 == NULL) return false;
+    memset(&conv, 0, sizeof(conv));
+    if (!metal_as_convert_tlas_record(dev, rec, &conv, &blas)) return false;
+    memcpy(out68, &conv, sizeof(conv));
+    return true;
 }
 #endif

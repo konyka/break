@@ -55,9 +55,11 @@ flatten_glsl() {
             if (mult > 0 && match(line, /binding[ \t]*=[ \t]*[0-9]+/)) {
                 seg = substr(line, RSTART, RLENGTH)
                 b = seg; gsub(/[^0-9]/, "", b); nb = s * mult + b
-                if (mult == 8 && nb > 28) {
-                    # M5: 29 is the push-constant slot, 30/31 belong to the
-                    # toolchain — a future set3 binding>=5 must fail loudly.
+                if (mult == 8 && nb > 27) {
+                    # M5/I1: 28 is the ray-query acceleration-structure slot
+                    # (setAccelerationStructure:atBufferIndex:28, Task 12),
+                    # 29 push constants, 30/31 belong to the toolchain —
+                    # a future set3 binding>=4 must fail loudly, not collide.
                     print "flatten: buffer index " nb " out of range in " FILENAME > "/dev/stderr"
                     exit 1
                 }
