@@ -1767,6 +1767,21 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
          VK_API_VERSION_MINOR(vk->device_props.apiVersion) >= 3u) ||
         vk_device_extension_present(vk->physical, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
     dev->capabilities.feature_bits = 0u;
+    /* 计划 E capability contract（test_vulkan tv_test_capability_contract 消费）。 */
+    dev->capabilities.push_constants_supported = true;
+    dev->capabilities.max_push_constant_size =
+        (u32)vk->device_props.limits.maxPushConstantsSize;
+    if (dev->capabilities.max_push_constant_size < 128u) {
+        /* 下限钳制告警：Vulkan 规范保证 >=128；低于下限按不支持处理，不伪装。 */
+        LOG_WARN("VK: maxPushConstantsSize %u below the 128-byte floor",
+                 dev->capabilities.max_push_constant_size);
+        dev->capabilities.max_push_constant_size = 0u;
+        dev->capabilities.push_constants_supported = false;
+    }
+    dev->capabilities.hiz_supported = true;
+    dev->capabilities.compute_supported = true;
+    dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
     LOG_INFO("Vulkan GPU: %s (push constants: %u bytes, UBO alignment: %lu)",
              vk->device_props.deviceName,
              vk->device_props.limits.maxPushConstantsSize,
@@ -2519,6 +2534,13 @@ static u32 rhi_format_bpp(RHIFormat fmt) {
     case RHI_FORMAT_R16G16_SFLOAT: return 4;
     default:                             return 4;
     }
+}
+
+/* 计划 E Task 2：编译期单后端入口——VK 实现转发到自身后端。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
+                                      u32 w, u32 h) {
+    return rhi_device_create(RHI_BACKEND_VULKAN, window_native, display_native,
+                             w, h);
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {

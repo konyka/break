@@ -742,6 +742,15 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
         dev->capabilities.color_resolve_supported = max_samples >= 2;
         dev->capabilities.depth_resolve_supported = max_samples >= 2;
     }
+    /* 计划 E capability contract：GL 无 push-constant 概念（uniform 名反射，
+     * proj 走单独 rhi_cmd_set_uniform_mat4）；GL 4.3 compute 已是 gpucull/ibl
+     * 路径的事实依赖，Hi-Z/间接绘制同样按可用上报。 */
+    dev->capabilities.push_constants_supported = false;
+    dev->capabilities.max_push_constant_size = 0u;
+    dev->capabilities.hiz_supported = true;
+    dev->capabilities.compute_supported = true;
+    dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL;
 
     dev->backend_data = gl;
     dev->width  = w;
@@ -1240,6 +1249,13 @@ static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
     glClear(GL_COLOR_BUFFER_BIT);
 }
 
+
+/* 计划 E Task 2：编译期单后端入口——GL 实现转发到自身后端。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
+                                      u32 w, u32 h) {
+    return rhi_device_create(RHI_BACKEND_OPENGL, window_native, display_native,
+                             w, h);
+}
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     if (backend != RHI_BACKEND_OPENGL || !rhi_drawable_dimensions_valid(w, h)) {

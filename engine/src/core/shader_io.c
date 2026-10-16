@@ -424,3 +424,21 @@ char *shader_inject_define(const char *src, usize len, const char *name, usize *
     if (out_len) *out_len = total;
     return out;
 }
+
+const char *shader_variant_suffix(RHIShaderVariant v) {
+    return v == RHI_SHADER_VARIANT_GLSL_VK ? "_vk" : "";
+}
+
+char *shader_variant_path(const char *base_path, RHIShaderVariant v,
+                          char *out, usize cap) {
+    if (!base_path || !out) return NULL;
+    const char *dot = strrchr(base_path, '.');
+    const char *suffix = shader_variant_suffix(v);
+    usize stem = dot ? (usize)(dot - base_path) : strlen(base_path);
+    usize need = stem + strlen(suffix) + strlen(dot ? dot : "") + 1u;
+    if (need > cap) return NULL;
+    memcpy(out, base_path, stem);
+    strcpy(out + stem, suffix);
+    if (dot) strcpy(out + stem + strlen(suffix), dot);
+    return out;
+}

@@ -1039,6 +1039,14 @@ static RHIResult rhi_d3d12_present(RHI_D3D12Context *ctx, RHI_D3D12Swapchain *sc
  * failures are classified via rhi_backend_note_create_result (spec §4.2). */
 
 /* ---- device lifecycle ---- */
+/* 计划 E Task 2：编译期单后端入口——D3D12 lane 的 demo 路径尚未迁移
+ * （caps/shader_variant 契约未落地），fail-closed 返回 NULL，与迁移前
+ * main.c 请求 OPENGL 被 D3D12 后端拒绝的行为一致。 */
+RHIDevice *rhi_device_create_compiled(void *window_native,
+                                      void *display_native, u32 w, u32 h) {
+    (void)window_native; (void)display_native; (void)w; (void)h;
+    return NULL;
+}
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
                              void *display_native, u32 w, u32 h) {
     RHI_D3D12Context *ctx;

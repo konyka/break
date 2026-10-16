@@ -874,7 +874,10 @@ TEST(forward_clustered_instanced_variant_wiring)
     static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_inst_pipeline"));
-    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_inst_vk.vert"));
+    /* 计划 E Task 2：路径由 caps.shader_variant 驱动（shader_variant_path），
+     * 契约改为断言基底路径 + 变体选择调用，而非硬编码 _vk 文件名。 */
+    ASSERT_NOT_NULL(strstr(src, "shader_variant_path(\"shaders/pbr_clustered_inst.vert\""));
+    ASSERT_NOT_NULL(strstr(src, "caps.shader_variant"));
     /* instance_buf gains STORAGE usage so the same dual-slot buffer binds
      * as the variant's vertex SSBO (blinn path keeps the texel view). */
     ASSERT_NOT_NULL(strstr(src, "RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE"));
@@ -914,7 +917,8 @@ TEST(forward_clustered_skinned_variant_wiring)
     static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_skin_pipeline"));
-    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_skin_vk.vert"));
+    /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
+    ASSERT_NOT_NULL(strstr(src, "shader_variant_path(\"shaders/pbr_clustered_skin.vert\""));
     ASSERT_NOT_NULL(strstr(src, "rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot"));
 
     /* Joint buffer gains STORAGE usage for the vertex SSBO bind. */
@@ -953,7 +957,8 @@ TEST(forward_clustered_array_variant_wiring)
     static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_arr_pipeline"));
-    ASSERT_NOT_NULL(strstr(src, "pbr_clustered_arr_vk.vert"));
+    /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
+    ASSERT_NOT_NULL(strstr(src, "shader_variant_path(\"shaders/pbr_clustered_arr.vert\""));
     /* factor region update into the shared frame UBO (offsets 192+) */
     ASSERT_NOT_NULL(strstr(src, "rhi_buffer_update_region"));
     /* the five arrays bound through the shared IBL helper */
@@ -1142,6 +1147,22 @@ TEST(pbr_factor_gate_restored_real_assertion)
     ASSERT_NOT_NULL(strstr(src, "rhi_cmd_set_uniform_i32(cmd, l_pc,   1)"));
 }
 
+TEST(variant_path_appends_suffix_before_extension)
+{
+    char out[128];
+    ASSERT_TRUE(shader_variant_path("shaders/blinn_phong.vert",
+                                    RHI_SHADER_VARIANT_GLSL_VK,
+                                    out, sizeof(out)) != NULL);
+    ASSERT_TRUE(strcmp(out, "shaders/blinn_phong_vk.vert") == 0);
+    ASSERT_TRUE(shader_variant_path("shaders/blinn_phong.vert",
+                                    RHI_SHADER_VARIANT_GLSL,
+                                    out, sizeof(out)) != NULL);
+    ASSERT_TRUE(strcmp(out, "shaders/blinn_phong.vert") == 0);
+    ASSERT_TRUE(shader_variant_path("shaders/blinn_phong.vert",
+                                    RHI_SHADER_VARIANT_GLSL_VK, out, 8u) == NULL);
+    ASSERT_TRUE(strcmp(shader_variant_suffix(RHI_SHADER_VARIANT_GLSL_VK), "_vk") == 0);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -1194,4 +1215,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_default_on_after_bench);
     RUN_TEST(forward_clustered_occlusion_strength_wiring);
     RUN_TEST(pbr_factor_gate_restored_real_assertion);
+    RUN_TEST(variant_path_appends_suffix_before_extension);
 TEST_MAIN_END()

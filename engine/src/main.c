@@ -233,6 +233,8 @@ typedef struct {
 
 typedef struct {
     RHIDevice    *device;
+    /* 计划 E Task 2：render_init 填充的后端能力快照（F3 proj 统一、F4 hotreload）。 */
+    RHICapabilities caps;
     RHIPipeline   pipeline;
     RHIPipeline   clustered_pipeline;
     RHIPipeline   instanced_pipeline;
@@ -342,35 +344,25 @@ static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
 }
 
 static bool render_init(RenderState *rs, Platform *platform) {
-#if defined(ENGINE_VULKAN) || defined(ENGINE_RHI_BACKEND_METAL)
     void *window = platform_surface_native(platform);
-#else
-    void *window = platform_window_native(platform);
-#endif
+    if (!window) window = platform_window_native(platform);
     void *display = platform_display_native(platform);
     u32 w, h;
     platform_get_drawable_size(platform, &w, &h);
-
-    rs->device = rhi_device_create(
-#if defined(ENGINE_RHI_BACKEND_METAL)
-        RHI_BACKEND_METAL,
-#elif defined(ENGINE_VULKAN)
-        RHI_BACKEND_VULKAN,
-#else
-        RHI_BACKEND_OPENGL,
-#endif
-        window, display, w, h);
+    rs->device = rhi_device_create_compiled(window, display, w, h);
     if (!rs->device) return false;
     rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
+    RHICapabilities caps = {0};
+    if (!rhi_device_get_capabilities(rs->device, &caps)) goto fail;
+    rs->caps = caps;
 
+    char vs_path[128], fs_path[128];
+    if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+        goto fail;
     usize vs_len = 0, fs_len = 0;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    char *vs_src = shader_read_file("shaders/blinn_phong_vk.vert", &vs_len);
-    char *fs_src = shader_read_file("shaders/blinn_phong_vk.frag", &fs_len);
-#else
-    char *vs_src = shader_read_file("shaders/blinn_phong.vert", &vs_len);
-    char *fs_src = shader_read_file("shaders/blinn_phong.frag", &fs_len);
-#endif
+    char *vs_src = shader_read_file(vs_path, &vs_len);
+    char *fs_src = shader_read_file(fs_path, &fs_len);
     if (!vs_src || !fs_src) {
         LOG_FATAL("Failed to load shaders");
         free(vs_src);
@@ -414,13 +406,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
      * forwards gl_BaseInstance(ARB) as the array layer. */
     {
         usize avl = 0, afl = 0;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        char *avs = shader_read_file("shaders/blinn_phong_arr_vk.vert", &avl);
-        char *afs = shader_read_file("shaders/blinn_phong_arr_vk.frag", &afl);
-#else
-        char *avs = shader_read_file("shaders/blinn_phong_arr.vert", &avl);
-        char *afs = shader_read_file("shaders/blinn_phong_arr.frag", &afl);
-#endif
+        char avs_path[128] = {0}, afs_path[128] = {0};
+        shader_variant_path("shaders/blinn_phong_arr.vert", (RHIShaderVariant)caps.shader_variant, avs_path, sizeof(avs_path));
+        shader_variant_path("shaders/blinn_phong_arr.frag", (RHIShaderVariant)caps.shader_variant, afs_path, sizeof(afs_path));
+        char *avs = avs_path[0] ? shader_read_file(avs_path, &avl) : NULL;
+        char *afs = afs_path[0] ? shader_read_file(afs_path, &afl) : NULL;
         if (avs && afs) {
             usize avm_len = 0, afm_len = 0;
             char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
@@ -468,19 +458,17 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize cvl = 0, cfl = 0, civl = 0, csvl = 0, cavl = 0;
         char *cv = NULL, *cf = NULL, *civ = NULL, *csv = NULL, *cav = NULL;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
-        cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
-        civ = shader_read_file("shaders/pbr_clustered_inst_vk.vert", &civl);
-        csv = shader_read_file("shaders/pbr_clustered_skin_vk.vert", &csvl);
-        cav = shader_read_file("shaders/pbr_clustered_arr_vk.vert", &cavl);
-#else
-        cv = shader_read_file("shaders/pbr_clustered.vert", &cvl);
-        cf = shader_read_file("shaders/pbr_clustered.frag", &cfl);
-        civ = shader_read_file("shaders/pbr_clustered_inst.vert", &civl);
-        csv = shader_read_file("shaders/pbr_clustered_skin.vert", &csvl);
-        cav = shader_read_file("shaders/pbr_clustered_arr.vert", &cavl);
-#endif
+        char cvp[128] = {0}, cfp[128] = {0}, civp[128] = {0}, csvp[128] = {0}, cavp[128] = {0};
+        shader_variant_path("shaders/pbr_clustered.vert", (RHIShaderVariant)caps.shader_variant, cvp, sizeof(cvp));
+        shader_variant_path("shaders/pbr_clustered.frag", (RHIShaderVariant)caps.shader_variant, cfp, sizeof(cfp));
+        shader_variant_path("shaders/pbr_clustered_inst.vert", (RHIShaderVariant)caps.shader_variant, civp, sizeof(civp));
+        shader_variant_path("shaders/pbr_clustered_skin.vert", (RHIShaderVariant)caps.shader_variant, csvp, sizeof(csvp));
+        shader_variant_path("shaders/pbr_clustered_arr.vert", (RHIShaderVariant)caps.shader_variant, cavp, sizeof(cavp));
+        cv  = cvp[0]  ? shader_read_file(cvp, &cvl) : NULL;
+        cf  = cfp[0]  ? shader_read_file(cfp, &cfl) : NULL;
+        civ = civp[0] ? shader_read_file(civp, &civl) : NULL;
+        csv = csvp[0] ? shader_read_file(csvp, &csvl) : NULL;
+        cav = cavp[0] ? shader_read_file(cavp, &cavl) : NULL;
         if (cv && cf) {
             /* Enable the split-sum IBL path and point-light shadows for the
              * clustered forward shader. The HAS_POINT_SHADOW path declares
@@ -686,13 +674,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize ivl = 0, ifl = 0;
         char *iv = NULL, *ifl_src = NULL;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        iv = shader_read_file("shaders/instanced_vk.vert", &ivl);
-        ifl_src = shader_read_file("shaders/instanced_vk.frag", &ifl);
-#else
-        iv = shader_read_file("shaders/instanced.vert", &ivl);
-        ifl_src = shader_read_file("shaders/instanced.frag", &ifl);
-#endif
+        char ivp[128] = {0}, ifp[128] = {0};
+        shader_variant_path("shaders/instanced.vert", (RHIShaderVariant)caps.shader_variant, ivp, sizeof(ivp));
+        shader_variant_path("shaders/instanced.frag", (RHIShaderVariant)caps.shader_variant, ifp, sizeof(ifp));
+        iv = ivp[0] ? shader_read_file(ivp, &ivl) : NULL;
+        ifl_src = ifp[0] ? shader_read_file(ifp, &ifl) : NULL;
         if (iv && ifl_src) {
             usize ivm_len = 0, ifm_len = 0;
             char *ivm = shader_inject_define(iv, ivl, "FORWARD_MRT", &ivm_len);
@@ -744,13 +730,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize svl = 0, sfl = 0;
         char *sv = NULL, *sf = NULL;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        sv = shader_read_file("shaders/skinned_vk.vert", &svl);
-        sf = shader_read_file("shaders/skinned_vk.frag", &sfl);
-#else
-        sv = shader_read_file("shaders/skinned.vert", &svl);
-        sf = shader_read_file("shaders/skinned.frag", &sfl);
-#endif
+        char svp[128] = {0}, sfp[128] = {0};
+        shader_variant_path("shaders/skinned.vert", (RHIShaderVariant)caps.shader_variant, svp, sizeof(svp));
+        shader_variant_path("shaders/skinned.frag", (RHIShaderVariant)caps.shader_variant, sfp, sizeof(sfp));
+        sv = svp[0] ? shader_read_file(svp, &svl) : NULL;
+        sf = sfp[0] ? shader_read_file(sfp, &sfl) : NULL;
         if (sv && sf) {
             usize svm_len = 0, sfm_len = 0;
             char *svm = shader_inject_define(sv, svl, "FORWARD_MRT", &svm_len);
@@ -1161,9 +1145,8 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
         rhi_buffer_update(rs->device, rs->clustered_proj_ubo, ubo_data, sizeof(ubo_data));
         rhi_cmd_bind_uniform_buffer(cmd, rs->clustered_proj_ubo, 0u);
     }
-#ifndef ENGINE_VULKAN
-    rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_proj, &proj->e[0][0]);
-#endif
+    if (!rs->caps.push_constants_supported)
+        rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_proj, &proj->e[0][0]);
     rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_camera_pos, cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
     rhi_cmd_set_uniform_vec3(cmd, L->cl_loc_ambient, ambient->e[0], ambient->e[1], ambient->e[2]);
     rhi_cmd_set_uniform_f32(cmd, L->cl_loc_screen_w, (f32)screen_w);
@@ -2763,13 +2746,12 @@ int main(int argc, char **argv) {
     bool imui_sec_quality = true;
 
     HotReloadPipeline hotreload = {0};
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    hotreload_pipeline_init(&hotreload, render.device,
-                             "shaders/blinn_phong_vk.vert", "shaders/blinn_phong_vk.frag", NULL);
-#else
-    hotreload_pipeline_init(&hotreload, render.device,
-                             "shaders/blinn_phong.vert", "shaders/blinn_phong.frag", NULL);
-#endif
+    {
+        char hvs_path[128], hfs_path[128];
+        if (shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)render.caps.shader_variant, hvs_path, sizeof(hvs_path)) &&
+            shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)render.caps.shader_variant, hfs_path, sizeof(hfs_path)))
+            hotreload_pipeline_init(&hotreload, render.device, hvs_path, hfs_path, NULL);
+    }
 
     HotReloadTexture hotreload_tex = {0};
     bool hotreload_tex_ready = false;
@@ -8886,7 +8868,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     /* R440: surface VK validation messages observed during this demo run so
      * manual/scripted runs (BREAK_FRAMES=...) can eyeball the count. Not an
      * exit-code gate — the demo is an interactive program. */
-#ifdef ENGINE_VULKAN
+    /* RHI-ESCAPE: VK validation 计数仅存在于 VK 后端（rhi_native_vulkan.h）；
+     * 非 VK 编译单元裁剪该诊断行。 */
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
     LOG_INFO("VK validation messages this run: %u", rhi_vk_validation_message_count());
 #endif
     render_shutdown(&render);

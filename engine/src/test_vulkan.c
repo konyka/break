@@ -5387,6 +5387,41 @@ static void tv_probe_device(RHIDevice *dev, const char *after) {
     }
 }
 
+/* 计划 E Task 2：graphics lane capability 契约——后端必须在 caps 里如实
+ * 填报 push-constant / 变体 / 计算族能力（填错回 Step 3 修后端，不改测试）。 */
+static bool tv_test_capability_contract(RHIDevice *dev) {
+    RHICapabilities caps = {0};
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_ERROR("FAIL: capability query");
+        return false;
+    }
+    if (caps.backend == RHI_BACKEND_VULKAN) {
+        bool pass = caps.push_constants_supported &&
+                    caps.max_push_constant_size >= 128u &&
+                    caps.shader_variant == (u32)RHI_SHADER_VARIANT_GLSL_VK &&
+                    caps.compute_supported && caps.indirect_draw_supported &&
+                    caps.hiz_supported;
+        LOG_INFO("%s: capability contract (VK push=%d max=%u variant=%u "
+                 "compute=%d indirect=%d hiz=%d)",
+                 pass ? "PASS" : "FAIL", (int)caps.push_constants_supported,
+                 caps.max_push_constant_size, caps.shader_variant,
+                 (int)caps.compute_supported,
+                 (int)caps.indirect_draw_supported, (int)caps.hiz_supported);
+        return pass;
+    }
+    if (caps.backend == RHI_BACKEND_OPENGL) {
+        bool pass = !caps.push_constants_supported &&
+                    caps.max_push_constant_size == 0u &&
+                    caps.shader_variant == (u32)RHI_SHADER_VARIANT_GLSL;
+        LOG_INFO("%s: capability contract (GL push=0 max=0 variant=GLSL)",
+                 pass ? "PASS" : "FAIL");
+        return pass;
+    }
+    LOG_ERROR("FAIL: capability contract (unknown backend=%d)",
+              (int)caps.backend);
+    return false;
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     log_set_level(LOG_DEBUG);
@@ -5426,6 +5461,7 @@ int main(int argc, char **argv) {
                      (info.feature_bits & RHI_FEATURE_RAY_QUERY) != 0u);
         }
     }
+    bool capability_pass = tv_test_capability_contract(render.device);
     bool acceleration_structure_pass =
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =
@@ -5731,7 +5767,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -6746,7 +6782,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

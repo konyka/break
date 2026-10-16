@@ -1114,6 +1114,28 @@ TEST(present_damage_history_overflow_forces_full)
     ASSERT_EQ(output_count, 1u);
 }
 
+TEST(plan_e_capability_fields_default_closed_on_stub)
+{
+    RHIDevice *device = rhi_test_device_create();
+    RHICapabilities caps;
+    memset(&caps, 0xA5, sizeof(caps));
+    ASSERT_NEQ(device, NULL);
+    ASSERT_TRUE(rhi_device_get_capabilities(device, &caps));
+    ASSERT_FALSE(caps.push_constants_supported);
+    ASSERT_EQ(caps.max_push_constant_size, 0u);
+    ASSERT_FALSE(caps.hiz_supported);
+    ASSERT_FALSE(caps.compute_supported);
+    ASSERT_FALSE(caps.indirect_draw_supported);
+    ASSERT_EQ(caps.shader_variant, (u32)RHI_SHADER_VARIANT_GLSL);
+    rhi_test_device_destroy(device);
+}
+
+TEST(create_compiled_rejects_null_handles_and_zero_dims)
+{
+    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, 64u, 64u), NULL);
+    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, 0u, 64u), NULL);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(resource_handles_are_scoped_to_their_device);
     RUN_TEST(acceleration_structure_descriptor_validation);
@@ -1168,4 +1190,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(present_damage_history_merges_age_without_reusing_old_damage);
     RUN_TEST(present_damage_history_rejects_age_gap_and_preserves_state);
     RUN_TEST(present_damage_history_overflow_forces_full);
+    RUN_TEST(plan_e_capability_fields_default_closed_on_stub);
+    RUN_TEST(create_compiled_rejects_null_handles_and_zero_dims);
 TEST_MAIN_END()

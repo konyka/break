@@ -101,6 +101,12 @@ typedef enum {
     RHI_FEATURE_ACCELERATION_STRUCTURE = 1u << 2,
 } RHIFeatureBits;
 
+/* 计划 E：后端 shader 源变体（RHICapabilities.shader_variant 的取值域）。 */
+typedef enum {
+    RHI_SHADER_VARIANT_GLSL    = 0, /* desktop GL 源（无后缀） */
+    RHI_SHADER_VARIANT_GLSL_VK = 1, /* Vulkan 布局 GLSL（*_vk 后缀，push-constant 块） */
+} RHIShaderVariant;
+
 /* Capability bit for a power-of-two color sample count. */
 static inline u32 rhi_sample_count_bit(u32 count) {
     u32 bit = 0u;
@@ -129,6 +135,13 @@ typedef struct {
      * 的探测结果；只探测不消费，消费接入在后续计划。 */
     bool       dynamic_rendering_supported;
     bool       synchronization2_supported;
+    /* 计划 E 新增（headless 契约：test_rhi_capabilities） */
+    bool       push_constants_supported; /* VK=true，GL=false */
+    u32        max_push_constant_size;   /* 字节；不支持为 0；VK=设备 limit（>=128） */
+    bool       hiz_supported;            /* Hi-Z occlusion 金字塔路径 */
+    bool       compute_supported;        /* rhi_cmd_dispatch 路径 */
+    bool       indirect_draw_supported;  /* rhi_cmd_draw_*_indirect 族 */
+    u32        shader_variant;           /* RHIShaderVariant */
 } RHICapabilities;
 
 #define RHI_DEVICE_NAME_MAX 256u
@@ -342,6 +355,10 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
 RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
                                 void *display_native, u32 w, u32 h,
                                 RHIResult *out_result);
+/* 编译期单后端的设备创建入口（Post-计划 A：enum 参数退役为内部细节，
+ * 由各后端实现转发到自己的 rhi_device_create；headless fail-closed）。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
+                                      u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 /* 把平台层 WSI 状态对象挂到设备（非拥有指针，Platform 拥有存储）。
