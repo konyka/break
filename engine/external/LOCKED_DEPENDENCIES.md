@@ -33,6 +33,8 @@
 - shaderc 的 `find_library(SHADERC_LIB ...)` 曾不读 `VULKAN_SDK` 环境变量，已由
   commit 2af8cce3 修复（`engine/CMakeLists.txt` 中 `HINTS "$ENV{VULKAN_SDK}/Lib"`）。
 - macOS 侧另有 pin（不在本机可校验范围）：glslc shaderc v2026.4（sha256 73f9f514…）、
-  spirv-cross 1.4.363.0（sha256 242d2c69…）、cmake 3.28.6、ninja 1.12.1，证据见
-  `.superpowers/sdd/2026-10-14-rhi-plan-c-metal/task-10-report.md`；spirv-cross 为
+  spirv-cross 1.4.363.0（sha256 242d2c69…）、cmake 3.28.6（sha256 e992f382…）、
+  ninja 1.12.1（sha256 89a28744…），证据见计划 C
+  `.superpowers/sdd/2026-10-14-rhi-plan-c-metal/task-10-report.md`（glslc/spirv-cross）
+  与同目录 `progress.md`（cmake/ninja 完整 sha256）；spirv-cross 为
   Metal 工具链内部组件，未单列为 JSON 条目。
