@@ -58,6 +58,11 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+    taa->bind_resolve = rhi_pipeline_bindings_create(dev, taa->resolve_pipe);
+    if (!taa->bind_resolve)
+        LOG_WARN("TAA: bindings create failed; uniform locations resolve -1");
+
     taa->history_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
     taa->history_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
@@ -78,17 +83,17 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    taa->loc_curr_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_curr_tex");
-    taa->loc_hist_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_hist_tex");
-    taa->loc_depth_tex = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_depth");
-    taa->loc_curr_vp = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_curr_vp");
-    taa->loc_prev_vp = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_prev_vp");
-    taa->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_inv_proj");
-    taa->loc_screen_w = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_sw");
-    taa->loc_screen_h = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_sh");
-    taa->loc_blend = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_blend");
-    taa->loc_first_frame = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_first_frame");
-    taa->loc_use_velocity = rhi_pipeline_get_uniform_location(dev, taa->resolve_pipe, "u_taa_use_velocity");
+    taa->loc_curr_tex = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_curr_tex");
+    taa->loc_hist_tex = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_hist_tex");
+    taa->loc_depth_tex = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_depth");
+    taa->loc_curr_vp = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_curr_vp");
+    taa->loc_prev_vp = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_prev_vp");
+    taa->loc_inv_proj = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_inv_proj");
+    taa->loc_screen_w = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_sw");
+    taa->loc_screen_h = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_sh");
+    taa->loc_blend = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_blend");
+    taa->loc_first_frame = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_first_frame");
+    taa->loc_use_velocity = rhi_pipeline_bindings_resolve(taa->bind_resolve, "u_taa_use_velocity");
 
     taa->ready = true;
     LOG_INFO("TAA: initialized (%ux%u)", width, height);
@@ -97,6 +102,8 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
 
 void taa_shutdown(TAASystem *taa) {
     if (!taa->device) return;
+    if (taa->bind_resolve) rhi_pipeline_bindings_destroy(taa->device, taa->bind_resolve);
+    taa->bind_resolve = NULL;
     for (int i = 0; i < 2; i++) {
         if (rhi_handle_valid(taa->history_fbo[i].fb))
             rhi_offscreen_fbo_destroy(taa->device, &taa->history_fbo[i]);

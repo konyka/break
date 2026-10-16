@@ -6,6 +6,9 @@ typedef struct {
     RHIDevice       *device;
     RHIPipeline      tm_pipe;
     RHIPipeline      lum_pipe;
+    /* 计划 E Task 5 T1：反射物化表，loc_* 缓存的查询来源。 */
+    RHIPipelineBindings *bind_tm;
+    RHIPipelineBindings *bind_lum;
     RHISampler       sampler;
     RHIOffscreenFBO  lum_fbo[2];
     i32              lum_idx;

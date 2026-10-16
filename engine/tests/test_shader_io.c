@@ -79,6 +79,14 @@ static const char *shader_io_tmp_path(void)
 }
 #define TMP_SHADER shader_io_tmp_path()
 
+static const ShaderIOPushMember *push_member_by_name(
+    const ShaderIOPushMember *members, usize n, const char *name)
+{
+    for (usize i = 0u; i < n; i++)
+        if (strcmp(members[i].name, name) == 0) return &members[i];
+    return NULL;
+}
+
 TEST(shader_read_rejects_oversized_file)
 {
     FILE *f = fopen(TMP_SHADER, "wb");
@@ -751,20 +759,26 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
 
     /* A texel-buffer skinned G-Buffer still uses the ordinary 256B
      * model/view/proj/previous-MVP block; it must not enter clustered's
-     * u_proj=-1 mapping. */
-    const char *layout = strstr(vk_src, "if (pd && pd->skinned_gbuffer_layout)");
-    const char *clustered = strstr(vk_src, "bool clustered =");
-    ASSERT_NOT_NULL(layout);
-    ASSERT_NOT_NULL(clustered);
-    ASSERT_TRUE(layout < clustered);
-    const char *layout_end = strstr(layout, "/* Terrain:");
-    ASSERT_NOT_NULL(layout_end);
-    ASSERT_TRUE(strstr(layout, "u_model") < layout_end);
-    ASSERT_TRUE(strstr(layout, "u_view") < layout_end);
-    ASSERT_TRUE(strstr(layout, "u_proj") < layout_end);
-    ASSERT_TRUE(strstr(layout, "u_prev_mvp") < layout_end);
-    ASSERT_NOT_NULL(strstr(layout, "return 128;") );
-    ASSERT_NOT_NULL(strstr(layout, "return 192;") );
+     * u_proj=-1 mapping. Plan E Task 5 Stage C-2 batch 6 deleted the
+     * hand-written offset tables (reflection is the authority), so the
+     * contract re-anchors: the skinned_gbuffer_layout classification flag
+     * must still be set at pipeline create, and the shader's own push
+     * block must carry the four members at 0/64/128/192 — the 5a gate
+     * table pins the same rows (vk_push_tables_match_reflection). */
+    const char *flag = strstr(vk_src, "pd->skinned_gbuffer_layout =");
+    ASSERT_NOT_NULL(flag);
+    ASSERT_NOT_NULL(strstr(vk_src, "!desc->uses_storage"));
+
+    char sh[16384];
+    ASSERT_TRUE(read_shader_source("gbuffer_skinned_vk.vert", sh, sizeof(sh)));
+    ShaderIOPushMember members[8];
+    usize n = shader_reflect_push_constants(sh, strlen(sh), members, 8u);
+    ASSERT_TRUE(n >= 4u);
+    const ShaderIOPushMember *m;
+    m = push_member_by_name(members, n, "u_model");    ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 0u);
+    m = push_member_by_name(members, n, "u_view");     ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 64u);
+    m = push_member_by_name(members, n, "u_proj");     ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 128u);
+    m = push_member_by_name(members, n, "u_prev_mvp"); ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 192u);
 
     static char main_src[524288];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
@@ -1118,9 +1132,19 @@ TEST(forward_clustered_occlusion_strength_wiring)
     ASSERT_NOT_NULL(strstr(fsh, "228"));
     ASSERT_NOT_NULL(strstr(fsh, "CL_OCC_STRENGTH (pc.u_occlusion_strength)"));
 
-    /* VK push-offset map entry in the clustered uniform table. */
-    ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", src, sizeof(src)));
-    ASSERT_NOT_NULL(strstr(src, "\"u_occlusion_strength\""));
+    /* Plan E Task 5 Stage C-2 batch 6: the hand-written VK push-offset map
+     * was deleted (reflection is the authority; the 5a gate table pins
+     * u_occlusion_strength@228). Re-anchor the "has a resolvable VK slot"
+     * contract on reflection itself. */
+    {
+        ShaderIOPushMember members[32];
+        usize n = shader_reflect_push_constants(fsh, strlen(fsh), members, 32u);
+        const ShaderIOPushMember *m = push_member_by_name(members, n,
+                                                           "u_occlusion_strength");
+        ASSERT_NOT_NULL(m);
+        ASSERT_EQ(m->offset, 228u);
+        ASSERT_EQ(m->size, 4u);
+    }
 }
 
 /* R599: TEST 7b restored as a REAL, both-backend gate. Two latent defects
@@ -1214,14 +1238,6 @@ typedef struct {
     u32 offset;          /* rhi_vk.c 表偏移 */
     u32 size;            /* 期望字节数；0 = 不核对（别名条目） */
 } VKPushRow;
-
-static const ShaderIOPushMember *push_member_by_name(
-    const ShaderIOPushMember *members, usize n, const char *name)
-{
-    for (usize i = 0u; i < n; i++)
-        if (strcmp(members[i].name, name) == 0) return &members[i];
-    return NULL;
-}
 
 TEST(vk_push_tables_match_reflection)
 {

@@ -80,6 +80,15 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forwa
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_time/
+     * u_camera_pos/u_water_color/u_shadow_bias/u_water_y 是 legacy
+     * swizzle 名，经 rhi_vk.c vk_push_alias_rows 映射进 water_vk 的
+     * vec4 打包成员（u_camera_time/u_color_bias/u_watery）；
+     * u_model 在 VK 上本就 -1。 */
+    w->bind_pipeline = rhi_pipeline_bindings_create(dev, w->pipeline);
+    if (!w->bind_pipeline)
+        LOG_WARN("Water: bindings create failed; uniform locations resolve -1");
+
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
         .mag_filter = RHI_FILTER_LINEAR,
@@ -95,15 +104,15 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forwa
         return false;
     }
 
-    w->loc_view = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_view");
-    w->loc_proj = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_proj");
-    w->loc_time = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_time");
-    w->loc_camera_pos = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_camera_pos");
-    w->loc_water_color = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_water_color");
-w->loc_light_vp = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_light_vp");
-w->loc_shadow_bias = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_shadow_bias");
-w->loc_water_y = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_water_y");
-w->loc_model = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_model");
+    w->loc_view = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_view");
+    w->loc_proj = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_proj");
+    w->loc_time = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_time");
+    w->loc_camera_pos = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_camera_pos");
+    w->loc_water_color = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_water_color");
+    w->loc_light_vp = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_light_vp");
+    w->loc_shadow_bias = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_shadow_bias");
+    w->loc_water_y = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_water_y");
+    w->loc_model = rhi_pipeline_bindings_resolve(w->bind_pipeline, "u_model");
 
     f32 hs = size * 0.5f;
     f32 verts[] = {
@@ -133,6 +142,8 @@ w->loc_model = rhi_pipeline_get_uniform_location(dev, w->pipeline, "u_model");
 
 void water_shutdown(WaterPlane *w) {
     if (!w->device) return;
+    if (w->bind_pipeline) rhi_pipeline_bindings_destroy(w->device, w->bind_pipeline);
+    w->bind_pipeline = NULL;
     if (rhi_handle_valid(w->ibo))      rhi_buffer_destroy(w->device, w->ibo);
     if (rhi_handle_valid(w->vbo))      rhi_buffer_destroy(w->device, w->vbo);
     if (rhi_handle_valid(w->sampler))  rhi_sampler_destroy(w->device, w->sampler);

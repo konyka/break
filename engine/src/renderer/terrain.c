@@ -219,19 +219,28 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
 
     if (!rhi_handle_valid(t->pipeline)) { terrain_shutdown(t); return false; } /* R244: free heightmap block */
 
-    t->loc_model       = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_model");
-    t->loc_view        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_view");
-    t->loc_proj        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_proj");
-    t->loc_light_dir   = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_light_dir");
-    t->loc_light_color = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_light_color");
-    t->loc_ambient     = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_ambient");
-    t->loc_camera_pos  = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_camera_pos");
-    t->loc_albedo      = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_albedo");
-t->loc_shadow_bias = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_shadow_bias");
-t->loc_light_vp    = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_light_vp");
-t->loc_water_y     = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_water_y");
-t->loc_time        = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_time");
-    t->loc_fog_strength = rhi_pipeline_get_uniform_location(dev, t->pipeline, "u_fog_strength");
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_light_dir/
+     * u_shadow_bias/u_light_color/u_water_y/u_ambient/u_time 是 legacy
+     * swizzle 名，经 rhi_vk.c vk_push_alias_rows 映射进 terrain_vk 的
+     * vec4 打包成员（u_light_dir_bias/u_light_color_watery/
+     * u_ambient_time）；u_model/u_albedo 在 VK 上本就 -1。 */
+    t->bind_pipeline = rhi_pipeline_bindings_create(dev, t->pipeline);
+    if (!t->bind_pipeline)
+        LOG_WARN("Terrain: bindings create failed; uniform locations resolve -1");
+
+    t->loc_model       = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_model");
+    t->loc_view        = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_view");
+    t->loc_proj        = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_proj");
+    t->loc_light_dir   = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_light_dir");
+    t->loc_light_color = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_light_color");
+    t->loc_ambient     = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_ambient");
+    t->loc_camera_pos  = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_camera_pos");
+    t->loc_albedo      = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_albedo");
+    t->loc_shadow_bias = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_shadow_bias");
+    t->loc_light_vp    = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_light_vp");
+    t->loc_water_y     = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_water_y");
+    t->loc_time        = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_time");
+    t->loc_fog_strength = rhi_pipeline_bindings_resolve(t->bind_pipeline, "u_fog_strength");
 
     u32 vert_count = grid_size * grid_size;
     u32 idx_count = (grid_size - 1) * (grid_size - 1) * 6;
@@ -332,6 +341,8 @@ void terrain_shutdown(Terrain *t) {
     free(t->_flatten_indices); t->_flatten_indices = NULL; t->_flatten_dists = NULL; /* single alloc */
     t->_flatten_cap = 0;
     if (t->device) {
+        if (t->bind_pipeline) rhi_pipeline_bindings_destroy(t->device, t->bind_pipeline);
+        t->bind_pipeline = NULL;
         if (rhi_handle_valid(t->ibo))      rhi_buffer_destroy(t->device, t->ibo);
         if (rhi_handle_valid(t->vbo))      rhi_buffer_destroy(t->device, t->vbo);
         if (rhi_handle_valid(t->pipeline)) rhi_pipeline_destroy(t->device, t->pipeline);

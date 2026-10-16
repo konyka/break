@@ -6,6 +6,8 @@
 typedef struct {
     RHIDevice  *device;
     RHIPipeline pipeline;
+    /* 计划 E Task 5 T1：反射物化表，loc_* 缓存的查询来源。 */
+    RHIPipelineBindings *bind_pipeline;
     RHIBuffer   vbo;
     RHIBuffer   ibo;
     f32         water_y;

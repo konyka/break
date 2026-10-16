@@ -7390,6 +7390,45 @@ static const VKPushAliasRow vk_push_alias_rows[] = {
     { "push.dt",   "dt",   0u },
     { "push.view", "view", 0u },
     { "push.proj", "proj", 64u },
+    /* Stage C-2 batch 6 (terrain): terrain_vk packs light dir+bias into
+     * u_light_dir_bias, color+water_y into u_light_color_watery, ambient+
+     * time into u_ambient_time. The vert carries a real u_camera_pos member
+     * so the member row wins there; the frag's member is u_cam_pos (alias
+     * row below). Legacy terrain_layout branch served
+     * 192/204/208/220/224/236(/240 via the vert member). */
+    { "u_light_dir",   "u_light_dir_bias",      0u },
+    { "u_shadow_bias", "u_light_dir_bias",     12u },
+    { "u_light_color", "u_light_color_watery",  0u },
+    { "u_water_y",     "u_light_color_watery", 12u },
+    { "u_ambient",     "u_ambient_time",        0u },
+    { "u_time",        "u_ambient_time",       12u },
+    { "u_camera_pos",  "u_cam_pos",             0u },
+    /* Stage C-2 batch 6 (water): water_vk packs camera pos+time into
+     * u_camera_time and color+bias into u_color_bias; water_y rides the
+     * u_watery vec4. Legacy water_layout branch served 192/204/208/220/224. */
+    { "u_camera_pos",  "u_camera_time",   0u },
+    { "u_time",        "u_camera_time",  12u },
+    { "u_water_color", "u_color_bias",    0u },
+    { "u_shadow_bias", "u_color_bias",   12u },
+    { "u_water_y",     "u_watery",        0u },
+    /* Stage C-2 batch 6 (table-deletion survival): gpucull.c and
+     * occlusion_cull.c keep querying the legacy is_compute names until
+     * batches 7-8 migrate them. The compute shaders' members carry those
+     * offsets exactly (cross-checked by test_shader_io's
+     * vk_compute_push_tables_match_reflection gate: cull.comp vp@0/
+     * obj_count@64, unified_cull.comp +68/+72/+76/+80, occlusion_cull.comp
+     * view_proj@0/object_count@64/hi_z@68/72, hi_z_generate output_size@0). */
+    { "u_cull_vp",          "vp",           0u },
+    { "u_cull_count",       "obj_count",    0u },
+    { "u_cull_hi_z_width",  "hi_z_width",   0u },
+    { "u_cull_hi_z_height", "hi_z_height",  0u },
+    { "u_cull_use_hi_z",    "use_hi_z",     0u },
+    { "u_cull_write_draws", "write_draws",  0u },
+    { "pc_view_proj",       "view_proj",    0u },
+    { "pc_object_count",    "object_count", 0u },
+    { "pc_hi_z_width",      "hi_z_width",   0u },
+    { "pc_hi_z_height",     "hi_z_height",  0u },
+    { "pc_output_size",     "output_size",  0u },
 };
 
 static u32 vk_push_alias_row_count(void) {
@@ -7467,400 +7506,28 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
 
     /* Plan E Task 5: the merged push-member reflection (cached at shader
-     * create, cross-checked against this file's tables by test_shader_io's
-     * vk_push_tables_match_reflection gate) is the offset authority. Names the
-     * shaders do not declare — block-instance aliases like "push.dt", packed
-     * vec4 swizzle aliases (terrain/water), samplers — fall through to the
-     * legacy classification tables below, which stay until the call-site
-     * migration retires them (batch 6); that keeps every current caller
-     * byte-identical. */
+     * create) is the offset authority. Stage C-2 batch 6 deleted the
+     * hand-written push-offset classification tables that used to follow
+     * this loop: test_shader_io's vk_push_tables_match_reflection +
+     * vk_compute_push_tables_match_reflection gates cross-checked
+     * reflection against those tables (graphics + compute) before the
+     * deletion, and their embedded expected-value tables stay as the
+     * pinned historical record reflection must keep matching. Names the
+     * shaders do not declare as members resolve through the shared alias
+     * rows (block-instance aliases like "push.dt", packed vec4 swizzle
+     * aliases -- see vk_push_alias_rows), which also keep the still-legacy
+     * batch 7-9 callers (gpucull / occlusion_cull compute names) on their
+     * exact legacy offsets; everything else returns -1. Render-pass/layout
+     * classification itself is untouched -- it lives in
+     * rhi_pipeline_create (the *_layout flags and push-range build), not
+     * here. */
     if (pd) {
         for (u32 i = 0u; i < pd->push_member_count; ++i) {
             if (strcmp(name, pd->push_members[i].name) == 0)
                 return (i32)pd->push_members[i].offset;
         }
     }
-
-    /* R560: skinned G-Buffer vertex stage — same 256B push block as
-     * gbuffer_vk.vert: u_model@0 u_view@64 u_proj@128 u_prev_mvp@192.
-     * Handled before the clustered classification so u_proj does not resolve
-     * to -1 (a texel-buffer pipeline would otherwise be taken as clustered). */
-    if (pd && pd->skinned_gbuffer_layout) {
-        if (strcmp(name, "u_model") == 0)      return 0;
-        if (strcmp(name, "u_view") == 0)       return 64;
-        if (strcmp(name, "u_proj") == 0)       return 128;
-        if (strcmp(name, "u_prev_mvp") == 0)   return 192;
-        return -1;
-    }
-
-    bool clustered = pd && pd->uses_texel_buffer && !pd->is_instanced;
-    bool non_clustered_tbo = pd && pd->uses_texel_buffer && pd->is_instanced;
-
-    /* Terrain: model is identity (dropped). Push block (<=256B):
-     *   u_view@0 u_proj@64 u_light_vp@128
-     *   u_light_dir@192 u_shadow_bias@204  (packed vec4)
-     *   u_light_color@208 u_water_y@220    (packed vec4)
-     *   u_ambient@224 u_time@236           (packed vec4)
-     *   u_camera_pos@240                   (vec4) */
-    if (pd && pd->terrain_layout) {
-        if (strcmp(name, "u_view") == 0)        return 0;
-        if (strcmp(name, "u_proj") == 0)        return 64;
-        if (strcmp(name, "u_light_vp") == 0)    return 128;
-        if (strcmp(name, "u_light_dir") == 0)   return 192;
-        if (strcmp(name, "u_shadow_bias") == 0) return 204;
-        if (strcmp(name, "u_light_color") == 0) return 208;
-        if (strcmp(name, "u_water_y") == 0)     return 220;
-        if (strcmp(name, "u_ambient") == 0)     return 224;
-        if (strcmp(name, "u_time") == 0)        return 236;
-        if (strcmp(name, "u_camera_pos") == 0)  return 240;
-        return -1; /* u_model, u_albedo (sampler) not push constants */
-    }
-    /* Water: no model. Push block (<=256B):
-     *   u_view@0 u_proj@64 u_light_vp@128
-     *   u_camera_pos@192 u_time@204    (packed vec4)
-     *   u_water_color@208 u_shadow_bias@220 (packed vec4)
-     *   u_water_y@224                  (vec4) */
-    if (pd && pd->water_layout) {
-        if (strcmp(name, "u_view") == 0)         return 0;
-        if (strcmp(name, "u_proj") == 0)         return 64;
-        if (strcmp(name, "u_light_vp") == 0)     return 128;
-        if (strcmp(name, "u_camera_pos") == 0)   return 192;
-        if (strcmp(name, "u_time") == 0)         return 204;
-        if (strcmp(name, "u_water_color") == 0)  return 208;
-        if (strcmp(name, "u_shadow_bias") == 0)  return 220;
-        if (strcmp(name, "u_water_y") == 0)      return 224;
-        return -1;
-    }
-    /* R202-B: shadow depth pipelines (CSM depth_only + point_shadow_depth). */
-    if (pd && pd->build_desc.is_shadow_depth) {
-        if (strcmp(name, "u_model") == 0)      return 0;
-        if (strcmp(name, "u_light_vp") == 0)   return 64;  /* CSM */
-        if (strcmp(name, "u_mvp") == 0)        return 64;  /* point light */
-        if (strcmp(name, "u_light_pos") == 0)  return 128;
-        if (strcmp(name, "u_far_plane") == 0)  return 144;
-        return -1;
-    }
-    /* Combined TAA+FXAA (combined_taa_fxaa_vk.frag). Push block (<=256B):
-     *   u_taa_curr_vp@0 u_taa_prev_vp@64 u_taa_inv_proj@128
-     *   u_screen_w@192 u_screen_h@196 u_taa_blend@200
-     *   u_taa_first_frame@204 u_fxaa_threshold@208 u_taa_use_velocity@212 */
-    if (pd && pd->combined_aa_layout) {
-        if (strcmp(name, "u_taa_curr_vp") == 0)     return 0;
-        if (strcmp(name, "u_taa_prev_vp") == 0)     return 64;
-        if (strcmp(name, "u_taa_inv_proj") == 0)    return 128;
-        if (strcmp(name, "u_screen_w") == 0)        return 192;
-        if (strcmp(name, "u_screen_h") == 0)        return 196;
-        if (strcmp(name, "u_taa_blend") == 0)       return 200;
-        if (strcmp(name, "u_taa_first_frame") == 0) return 204;
-        if (strcmp(name, "u_fxaa_threshold") == 0)  return 208;
-        if (strcmp(name, "u_taa_use_velocity") == 0) return 212;
-        return -1; /* samplers (curr/hist/depth/velocity) are not push constants */
-    }
-    /* Combined tonemap+colorgrade+cinematic (combined_color_vk.frag):
-     *   u_tm_exposure@0 u_tm_gamma@4 u_tm_mode@8
-     *   u_cg_saturation@12 u_cg_contrast@16 u_cg_brightness@20
-     *   u_cg_temperature@24 u_cg_tint@28
-     *   u_cine_aberration@32 u_cine_vignette@36 u_cine_grain@40 u_cine_time@44
-     *   u_screen_w@48 u_screen_h@52 */
-    if (pd && pd->combined_color_layout) {
-        if (strcmp(name, "u_tm_exposure") == 0)    return 0;
-        if (strcmp(name, "u_tm_gamma") == 0)       return 4;
-        if (strcmp(name, "u_tm_mode") == 0)        return 8;
-        if (strcmp(name, "u_cg_saturation") == 0)  return 12;
-        if (strcmp(name, "u_cg_contrast") == 0)    return 16;
-        if (strcmp(name, "u_cg_brightness") == 0)  return 20;
-        if (strcmp(name, "u_cg_temperature") == 0) return 24;
-        if (strcmp(name, "u_cg_tint") == 0)        return 28;
-        if (strcmp(name, "u_cine_aberration") == 0) return 32;
-        if (strcmp(name, "u_cine_vignette") == 0)  return 36;
-        if (strcmp(name, "u_cine_grain") == 0)     return 40;
-        if (strcmp(name, "u_cine_time") == 0)      return 44;
-        if (strcmp(name, "u_screen_w") == 0)       return 48;
-        if (strcmp(name, "u_screen_h") == 0)       return 52;
-        return -1;
-    }
-
-    if (non_clustered_tbo) {
-        if (strcmp(name, "u_view") == 0)        return 0;
-        if (strcmp(name, "u_proj") == 0)        return 64;
-        if (strcmp(name, "u_light_dir") == 0)   return 128;
-        if (strcmp(name, "u_light_color") == 0) return 144;
-        if (strcmp(name, "u_ambient") == 0)     return 160;
-        if (strcmp(name, "u_camera_pos") == 0)  return 176;
-        return -1;
-    }
-    if (pd && pd->is_compute) {
-        if (strcmp(name, "push.dt") == 0)           return 0;
-        if (strcmp(name, "push.view") == 0)         return 0;
-        if (strcmp(name, "push.proj") == 0)         return 64;
-        /* IBL compute shaders (irradiance & prefilter share push layout):
-         *   u_roughness@0  u_face@4  u_face_size/u_mip_size@8 */
-        if (strcmp(name, "u_roughness") == 0)       return 0;
-        if (strcmp(name, "u_face") == 0)            return 4;
-        if (strcmp(name, "u_face_size") == 0)       return 8;
-        if (strcmp(name, "u_mip_size") == 0)        return 8;
-        /* sky_to_cube.comp: shares u_face@4 / u_face_size@8 above, plus the
-         * sun vectors at aligned offsets 16 and 32. */
-        if (strcmp(name, "u_sun_dir") == 0)         return 16;
-        if (strcmp(name, "u_sun_color") == 0)       return 32;
-        /* cluster_cull.comp: mat4 vp@0, vec4 params0@64, vec4 params1@80. */
-        if (strcmp(name, "u_cc_vp") == 0)           return 0;
-        if (strcmp(name, "u_cc_params0") == 0)      return 64;
-        if (strcmp(name, "u_cc_params1") == 0)      return 80;
-        /* GPU culling (cull.comp / unified_cull.comp): mat4 vp@0, uint count@64 */
-        if (strcmp(name, "u_cull_vp") == 0)         return 0;
-        if (strcmp(name, "u_cull_count") == 0)      return 64;
-        if (strcmp(name, "u_cull_hi_z_width") == 0)  return 68;
-        if (strcmp(name, "u_cull_hi_z_height") == 0) return 72;
-        if (strcmp(name, "u_cull_use_hi_z") == 0)    return 76;
-        if (strcmp(name, "u_cull_write_draws") == 0) return 80;
-        /* Occlusion culling (occlusion_cull.comp): mat4 view_proj@0, uint object_count@64, float hi_z_width@68, float hi_z_height@72 */
-        if (strcmp(name, "pc_view_proj") == 0)       return 0;
-        if (strcmp(name, "pc_object_count") == 0)    return 64;
-        if (strcmp(name, "pc_hi_z_width") == 0)      return 68;
-        if (strcmp(name, "pc_hi_z_height") == 0)     return 72;
-        /* Hi-Z generation (hi_z_generate.comp): vec2 output_size@0 */
-        if (strcmp(name, "pc_output_size") == 0)     return 0;
-        /* Draw compaction (compact_draws.comp): uint total_draws@0 */
-        if (strcmp(name, "total_draws") == 0)       return 0;
-        return -1;
-    }
-    if (pd && pd->uses_storage) {
-        if (strcmp(name, "push.view") == 0)         return 0;
-        if (strcmp(name, "push.proj") == 0)         return 64;
-        return -1;
-    }
-    /* R203-A: gbuffer_vk.vert packs prev@192; camera_velocity_vk packs prev@128.
-     * An unconditional 192 made the late return 128 dead and broke forward_velocity. */
-    if (strcmp(name, "u_prev_mvp") == 0)
-        return 192;
-    if (strcmp(name, "u_prev_vp") == 0)
-        return (pd && pd->no_vertex_input) ? 128 : 192;
-    if (strcmp(name, "u_model") == 0)       return 0;
-    if (strcmp(name, "u_view") == 0)        return 64;
-    /* The clustered fragment shader drops the unused u_proj slot and reuses the
-     * freed 64 bytes for camera/ambient/fog/shadow params (see clustered map). */
-    if (strcmp(name, "u_proj") == 0)        return clustered ? -1 : 128;
-    /* R203-B: generic u_light_vp@64 aliased u_view. Real users are covered by
-     * terrain/water/is_shadow_depth layouts above — do not map here. */
-    if (strcmp(name, "u_vol_inv_proj") == 0)     return 0;
-    if (strcmp(name, "u_vol_view") == 0)         return 64;
-    if (strcmp(name, "u_vol_ldx") == 0)          return 128;
-    if (strcmp(name, "u_vol_ldy") == 0)          return 132;
-    if (strcmp(name, "u_vol_ldz") == 0)          return 136;
-    if (strcmp(name, "u_vol_lcx") == 0)          return 140;
-    if (strcmp(name, "u_vol_lcy") == 0)          return 144;
-    if (strcmp(name, "u_vol_lcz") == 0)          return 148;
-    if (strcmp(name, "u_vol_density") == 0)      return 152;
-    if (strcmp(name, "u_vol_fog_r") == 0)        return 156;
-    if (strcmp(name, "u_vol_fog_g") == 0)        return 160;
-    if (strcmp(name, "u_vol_fog_b") == 0)        return 164;
-    if (strcmp(name, "u_vol_sw") == 0)           return 168;
-    if (strcmp(name, "u_vol_sh") == 0)           return 172;
-    if (strcmp(name, "u_vol_inv_view") == 0)    return 176; /* R224-B */
-    if (strcmp(name, "u_lf_light_x") == 0)          return 0;
-    if (strcmp(name, "u_lf_light_y") == 0)          return 4;
-    if (strcmp(name, "u_lf_intensity") == 0)        return 8;
-    if (strcmp(name, "u_lf_sw") == 0)               return 12;
-    if (strcmp(name, "u_lf_sh") == 0)               return 16;
-    if (strcmp(name, "u_lf_lc_r") == 0)             return 20;
-    if (strcmp(name, "u_lf_lc_g") == 0)             return 24;
-    if (strcmp(name, "u_lf_lc_b") == 0)             return 28;
-    if (strcmp(name, "u_sun_dir") == 0)              return 128;
-    if (strcmp(name, "u_sun_color") == 0)            return 144;
-    if (strcmp(name, "u_ssgi_inv_proj") == 0)       return 0;
-    if (strcmp(name, "u_ssgi_proj") == 0)           return 64;
-    if (strcmp(name, "u_ssgi_radius") == 0)         return 128;
-    if (strcmp(name, "u_ssgi_intensity") == 0)      return 132;
-    if (strcmp(name, "u_ssgi_sw") == 0)             return 136;
-    if (strcmp(name, "u_ssgi_sh") == 0)             return 140;
-    if (strcmp(name, "u_fxaa_sw") == 0)            return 0;
-    if (strcmp(name, "u_fxaa_sh") == 0)            return 4;
-    /* R204-B: standalone tonemap_vk.frag layout (combined_color uses early map).
-     * Old mega-tonemap offsets (aberration@8 etc.) conflicted with screen_w/mode. */
-    if (strcmp(name, "u_tm_exposure") == 0)       return 0;
-    if (strcmp(name, "u_tm_gamma") == 0)           return 4;
-    if (strcmp(name, "u_tm_screen_w") == 0)         return 8;
-    if (strcmp(name, "u_tm_screen_h") == 0)         return 12;
-    if (strcmp(name, "u_cine_aberration") == 0)    return 0;
-    if (strcmp(name, "u_cine_vignette") == 0)    return 4;
-    if (strcmp(name, "u_cine_grain") == 0)       return 8;
-    if (strcmp(name, "u_cine_time") == 0)        return 12;
-    if (strcmp(name, "u_cine_sw") == 0)          return 16;
-    if (strcmp(name, "u_cine_sh") == 0)          return 20;
-    if (strcmp(name, "u_dof_focus") == 0)       return 0;
-    if (strcmp(name, "u_dof_range") == 0)       return 4;
-    if (strcmp(name, "u_dof_near") == 0)        return 8;
-    if (strcmp(name, "u_dof_far") == 0)         return 12;
-    if (strcmp(name, "u_dof_sw") == 0)          return 16;
-    if (strcmp(name, "u_dof_sh") == 0)          return 20;
-    if (strcmp(name, "u_ssr_proj") == 0)        return 0;
-    if (strcmp(name, "u_ssr_inv_proj") == 0)    return 64;
-    if (strcmp(name, "u_ssr_view") == 0)        return 128;
-    if (strcmp(name, "u_ssr_sw") == 0)          return 192;
-    if (strcmp(name, "u_ssr_sh") == 0)          return 196;
-    if (strcmp(name, "u_ssr_max_steps") == 0)   return 200;
-    if (strcmp(name, "u_ssr_stride") == 0)      return 204;
-    if (strcmp(name, "u_ssr_thickness") == 0)   return 208;
-    if (strcmp(name, "u_taa_curr_vp") == 0)     return 0;
-    if (strcmp(name, "u_taa_prev_vp") == 0)     return 64;
-    if (strcmp(name, "u_taa_inv_proj") == 0)    return 128;
-    if (strcmp(name, "u_taa_sw") == 0)          return 192;
-    if (strcmp(name, "u_taa_sh") == 0)          return 196;
-    if (strcmp(name, "u_taa_blend") == 0)       return 200;
-    if (strcmp(name, "u_taa_first_frame") == 0) return 204;
-    if (strcmp(name, "u_taa_use_velocity") == 0) return 208;
-    if (strcmp(name, "u_ssao_proj") == 0)       return 0;
-    if (strcmp(name, "u_ssao_inv_proj") == 0)   return 64;
-    if (strcmp(name, "u_ssao_sw") == 0)         return 128;
-    if (strcmp(name, "u_ssao_sh") == 0)         return 132;
-    if (strcmp(name, "u_ssao_radius") == 0)     return 136;
-    if (strcmp(name, "u_ssao_bias") == 0)       return 140;
-    /* Debug visualization overlay (debug_viz_vk.frag). */
-    if (strcmp(name, "u_dv_mode") == 0)         return 0;
-    if (strcmp(name, "u_dv_near") == 0)         return 4;
-    if (strcmp(name, "u_dv_far") == 0)          return 8;
-    if (strcmp(name, "u_dv_split0") == 0)       return 12;
-    if (strcmp(name, "u_dv_split1") == 0)       return 16;
-    if (strcmp(name, "u_dv_split2") == 0)       return 20;
-    if (strcmp(name, "u_dv_split3") == 0)       return 24;
-    /* Lens effects (lens_effects_vk.frag): chromatic aberration + vignette + grain. */
-    if (strcmp(name, "u_ca_strength") == 0)        return 0;
-    if (strcmp(name, "u_vignette_strength") == 0)  return 4;
-    if (strcmp(name, "u_vignette_softness") == 0)  return 8;
-    if (strcmp(name, "u_grain_strength") == 0)     return 12;
-    /* Sharpen (sharpen_vk.frag): CAS-style strength + screen size. */
-    if (strcmp(name, "u_sharp_strength") == 0)     return 0;
-    if (strcmp(name, "u_sharp_sw") == 0)           return 4;
-    if (strcmp(name, "u_sharp_sh") == 0)           return 8;
-    /* Upscale TSR (upscale_vk.frag). R197-A: locations were missing — all loc_*
-     * returned -1 so push constants never reached the shader. */
-    if (strcmp(name, "u_ups_rw") == 0)             return 0;
-    if (strcmp(name, "u_ups_rh") == 0)             return 4;
-    if (strcmp(name, "u_ups_dw") == 0)             return 8;
-    if (strcmp(name, "u_ups_dh") == 0)             return 12;
-    if (strcmp(name, "u_ups_sharp") == 0)          return 16;
-    if (strcmp(name, "u_ups_copy_only") == 0)      return 20;
-    if (strcmp(name, "u_ups_first_frame") == 0)    return 24;
-    if (strcmp(name, "u_ups_inv_proj") == 0)       return 32;
-    if (strcmp(name, "u_ups_prev_vp") == 0)        return 96;
-    /* R198-A: luminance_vk.frag auto-exposure — missing map froze adaptation. */
-    if (strcmp(name, "u_lum_w") == 0)              return 0;
-    if (strcmp(name, "u_lum_h") == 0)              return 4;
-    if (strcmp(name, "u_lum_speed") == 0)          return 8;
-    if (strcmp(name, "u_lum_dt") == 0)             return 12;
-    /* R198-B: god_rays_vk.frag — missing map zeroed sun/intensity. */
-    if (strcmp(name, "u_gr_sun_x") == 0)           return 0;
-    if (strcmp(name, "u_gr_sun_y") == 0)           return 4;
-    if (strcmp(name, "u_gr_intensity") == 0)       return 8;
-    if (strcmp(name, "u_gr_decay") == 0)           return 12;
-    if (strcmp(name, "u_gr_sw") == 0)              return 16;
-    if (strcmp(name, "u_gr_sh") == 0)              return 20;
-    /* R199-A: motion_blur_vk.frag — missing map zeroed strength/proj. */
-    if (strcmp(name, "u_mb_strength") == 0)        return 0;
-    if (strcmp(name, "u_mb_sw") == 0)              return 4;
-    if (strcmp(name, "u_mb_sh") == 0)              return 8;
-    if (strcmp(name, "u_mb_inv_proj") == 0)        return 12;
-    if (strcmp(name, "u_mb_prev_vp") == 0)         return 76;
-    if (strcmp(name, "u_mb_use_velocity") == 0)    return 140;
-    /* R199-B: contact_shadow_vk.frag — missing map zeroed light/proj. */
-    if (strcmp(name, "u_cs_light_x") == 0)         return 0;
-    if (strcmp(name, "u_cs_light_y") == 0)         return 4;
-    if (strcmp(name, "u_cs_light_z") == 0)         return 8;
-    if (strcmp(name, "u_cs_inv_proj") == 0)        return 12;
-    if (strcmp(name, "u_cs_sw") == 0)              return 76;
-    if (strcmp(name, "u_cs_sh") == 0)              return 80;
-    /* R200-A: color_grade_vk.frag standalone — combined_color_layout uses different offsets. */
-    if (strcmp(name, "u_cg_saturation") == 0)      return 0;
-    if (strcmp(name, "u_cg_contrast") == 0)        return 4;
-    if (strcmp(name, "u_cg_brightness") == 0)      return 8;
-    if (strcmp(name, "u_cg_temperature") == 0)     return 12;
-    if (strcmp(name, "u_cg_tint") == 0)            return 16;
-    /* R200-B: bloom extract/blur/composite — missing map killed bloom + SSGI blur. */
-    if (strcmp(name, "u_threshold") == 0)          return 0;
-    if (strcmp(name, "u_direction") == 0)          return 0; /* vec2 */
-    if (strcmp(name, "u_bloom_strength") == 0)     return 0;
-    /* R201-A: sss_vk / sss_vertical_vk — missing map → sw/sh=0 divide-by-zero. */
-    if (strcmp(name, "u_sss_strength") == 0)       return 0;
-    if (strcmp(name, "u_sss_sw") == 0)             return 4;
-    if (strcmp(name, "u_sss_sh") == 0)             return 8;
-    if (strcmp(name, "u_sss_max_dist") == 0)       return 12;
-    if (strcmp(name, "u_sssv_strength") == 0)      return 0;
-    if (strcmp(name, "u_sssv_sw") == 0)            return 4;
-    if (strcmp(name, "u_sssv_sh") == 0)            return 8;
-    if (strcmp(name, "u_sssv_max_dist") == 0)      return 12;
-    /* R201-B: fxaa_vk.frag standalone threshold (combined_aa uses offset 208). */
-    if (strcmp(name, "u_fxaa_threshold") == 0)     return 8;
-    /* Standalone tonemap_vk.frag mode (combined_color uses offset 8). */
-    if (strcmp(name, "u_tm_mode") == 0)            return 16;
-    if (strcmp(name, "u_view") == 0)        return 64;
-    if (strcmp(name, "u_proj") == 0)        return 128;
-    if (clustered) {
-        /* Layout matches pbr_clustered_vk.frag's push block (u_proj removed). */
-        /* R579-E: the model-matrix write must resolve or draws render with
-         * stale push garbage (the R579-B/C/E "zero fragments" final root
-         * cause). R586: the vert now declares only u_model@0/u_view@64 at
-         * these same offsets and reads proj from the aux UBO — the
-         * contradictory u_proj@128 vert layout is retired. */
-        if (strcmp(name, "u_model") == 0)      return 0;
-        if (strcmp(name, "u_camera_pos") == 0)  return 128;
-        if (strcmp(name, "u_fog_near") == 0)    return 140;
-        if (strcmp(name, "u_ambient") == 0)     return 144;
-        if (strcmp(name, "u_fog_far") == 0)     return 156;
-        if (strcmp(name, "u_screen_w") == 0)    return 160;
-        if (strcmp(name, "u_screen_h") == 0)    return 164;
-        if (strcmp(name, "u_near") == 0)        return 168;
-        if (strcmp(name, "u_far") == 0)         return 172;
-        if (strcmp(name, "u_point_count") == 0) return 176;
-        if (strcmp(name, "u_dir_count") == 0)   return 180;
-        if (strcmp(name, "u_shadow_bias") == 0) return 184;
-        if (strcmp(name, "u_fog_color") == 0)   return 192;
-        if (strcmp(name, "u_underwater") == 0)  return 204;
-        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 208;
-        if (strcmp(name, "u_pom_enabled") == 0) return 224;
-        if (strcmp(name, "u_occlusion_strength") == 0) return 228; /* R598 */
-        if (strcmp(name, "u_mr_factor") == 0)  return 232; /* R579 */
-        if (strcmp(name, "u_emissive_factor") == 0) return 240; /* R586 */
-    } else if (pd && pd->no_vertex_input && pd->uses_texel_buffer && !pd->is_compute) {
-        /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
-        if (strcmp(name, "u_inv_vp") == 0)       return 0;
-        if (strcmp(name, "u_view") == 0)         return 64;
-        if (strcmp(name, "u_camera_pos") == 0)   return 128;
-        if (strcmp(name, "u_screen_w") == 0)      return 144;
-        if (strcmp(name, "u_screen_h") == 0)      return 148;
-        if (strcmp(name, "u_near") == 0)          return 160;
-        if (strcmp(name, "u_far") == 0)           return 164;
-        if (strcmp(name, "u_shadow_bias") == 0)   return 168;
-        if (strcmp(name, "u_point_count") == 0)   return 176;
-        if (strcmp(name, "u_dir_count") == 0)     return 180;
-        /* vec4 member — std430 aligns 16 (SPIR-V Offset 192; the pre-R588
-         * float[4] sat at 184). */
-        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 192;
-    } else if (pd && pd->no_vertex_input && !pd->uses_texel_buffer && !pd->is_compute) {
-        /* Other full-screen post passes (tonemap, fxaa, etc.). */
-        if (strcmp(name, "u_inv_vp") == 0)     return 0;
-        if (strcmp(name, "u_camera_pos") == 0) return 64;
-        if (strcmp(name, "u_screen_w") == 0)    return 80;
-        if (strcmp(name, "u_screen_h") == 0)    return 84;
-        /* R445: the skybox is also a no_vertex_input fullscreen pipeline and
-         * lands in this branch — its push block (skybox_vk.vert/.frag) is
-         * u_inv_proj@0 u_view@64 u_sun_dir@128 u_sun_color@144. u_inv_proj
-         * resolved below (shared return 0); without these, u_view/sun stayed
-         * at -1 and the VK sky sampled uninitialized push-constant garbage
-         * (static, sun-preset-immune haze). */
-        if (strcmp(name, "u_view") == 0)       return 64;
-        if (strcmp(name, "u_sun_dir") == 0)    return 128;
-        if (strcmp(name, "u_sun_color") == 0)  return 144;
-    } else {
-        if (strcmp(name, "u_light_dir") == 0)   return 192;
-        if (strcmp(name, "u_light_color") == 0) return 208;
-        if (strcmp(name, "u_ambient") == 0)     return 224;
-        if (strcmp(name, "u_camera_pos") == 0)  return 240;
-    }
-    if (strcmp(name, "u_albedo") == 0)      return -1;
-    if (strcmp(name, "u_inv_proj") == 0)    return 0;
-    if (strcmp(name, "u_curr_vp") == 0)     return 64;
-    return -1;
+    return vk_push_alias_offset(pd, name);
 }
 
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,

@@ -71,6 +71,16 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表（lum 可选）。 */
+    tm->bind_tm = rhi_pipeline_bindings_create(dev, tm->tm_pipe);
+    if (!tm->bind_tm)
+        LOG_WARN("Tonemap: bindings create failed; uniform locations resolve -1");
+    if (rhi_handle_valid(tm->lum_pipe)) {
+        tm->bind_lum = rhi_pipeline_bindings_create(dev, tm->lum_pipe);
+        if (!tm->bind_lum)
+            LOG_WARN("Tonemap: luminance bindings create failed; locations resolve -1");
+    }
+
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
         .mag_filter = RHI_FILTER_LINEAR,
@@ -80,20 +90,20 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
     };
     tm->sampler = rhi_sampler_create(dev, &sdesc);
 
-    tm->loc_exposure   = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_exposure");
-    tm->loc_gamma      = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_gamma");
-    tm->loc_mode       = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_mode");
-    tm->loc_tm_lum      = rhi_pipeline_get_uniform_location(dev, tm->tm_pipe, "u_tm_lum");
+    tm->loc_exposure   = rhi_pipeline_bindings_resolve(tm->bind_tm, "u_tm_exposure");
+    tm->loc_gamma      = rhi_pipeline_bindings_resolve(tm->bind_tm, "u_tm_gamma");
+    tm->loc_mode       = rhi_pipeline_bindings_resolve(tm->bind_tm, "u_tm_mode");
+    tm->loc_tm_lum      = rhi_pipeline_bindings_resolve(tm->bind_tm, "u_tm_lum");
 
     if (rhi_handle_valid(tm->lum_pipe)) {
         tm->lum_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, 1, 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
         tm->lum_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, 1, 1, RHI_FORMAT_R16G16B16A16_SFLOAT);
-        tm->loc_lum_w     = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_w");
-        tm->loc_lum_h     = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_h");
-        tm->loc_lum_speed = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_speed");
-        tm->loc_lum_dt    = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_dt");
-        tm->loc_lum_tex   = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_hdr");
-        tm->loc_lum_prev  = rhi_pipeline_get_uniform_location(dev, tm->lum_pipe, "u_lum_prev");
+        tm->loc_lum_w     = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_w");
+        tm->loc_lum_h     = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_h");
+        tm->loc_lum_speed = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_speed");
+        tm->loc_lum_dt    = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_dt");
+        tm->loc_lum_tex   = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_hdr");
+        tm->loc_lum_prev  = rhi_pipeline_bindings_resolve(tm->bind_lum, "u_lum_prev");
     }
 
     /* R349: align R348 — sampler required; lum FBOs required when lum_pipe exists. */
@@ -112,6 +122,11 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
 
 void tonemap_shutdown(TonemapSystem *tm) {
     if (!tm->device) return;
+    /* 计划 E Task 5 T4：反射表销毁（NULL 安全）。 */
+    if (tm->bind_tm)  rhi_pipeline_bindings_destroy(tm->device, tm->bind_tm);
+    if (tm->bind_lum) rhi_pipeline_bindings_destroy(tm->device, tm->bind_lum);
+    tm->bind_tm = NULL;
+    tm->bind_lum = NULL;
     if (rhi_handle_valid(tm->lum_fbo[0].fb)) rhi_offscreen_fbo_destroy(tm->device, &tm->lum_fbo[0]);
     if (rhi_handle_valid(tm->lum_fbo[1].fb)) rhi_offscreen_fbo_destroy(tm->device, &tm->lum_fbo[1]);
     if (rhi_handle_valid(tm->sampler))     rhi_sampler_destroy(tm->device, tm->sampler);
