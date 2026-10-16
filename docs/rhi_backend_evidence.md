@@ -167,3 +167,19 @@
 6. 本台账含计划 E 完成度 + Hi-Z 仅登记未改码：**达成**（本节）。
 7. 全部 commit push 到 `origin master`：**达成（集成轮，2026-10-17）**——首次 push 被拒（non-fast-forward：远端在 `59c62a0d` 后有并行提交 `dd524121`，与本计划链在 `engine/src/test_vulkan.c` 内容冲突，超出 Task 9 docs-only 范围，当时登记 BLOCKED、未 force、未 rebase）。专项集成轮以 merge commit `86d159b8`（Merge: 59587ea5 + dd524121）消解：保留计划 E 全部迁移（bindings 契约 phase 等）+ 保留 owner 启动插桩（`startup_t0` 参数穿线、`PHASE:` 四行计时、startup clear-present 块，backend-neutral），合并后双 lane 复验：VK/GL 三 target 零警告构建；VK test_vulkan 35 行签名与合并前逐字相同（PHASE 行为预期新增输出，golden MAE 28.75/13.54 逐位不变、VALIDATION GATE 0；Hi-Z {0,0} §7 偶发当日再现 1/1）；GL test_vulkan ALL PASSED（goldens MAE=0.00，PHASE 行在 GL 亦输出）；headless 18/18；token gate OK（5 白名单，scan root 不含 test_vulkan.c）。随本收据 commit 一并 push；CI lanes 回执待 push 后补记。
 
+### CI lanes 回执（计划 E 链头 `ad503290`，2026-10-17 收割）
+
+| workflow / lane | conclusion | 备注 |
+|---|---|---|
+| `windows-d3d12.yml`（Windows + D3D12, WARP） | **success** | run 38942885689 |
+| `proton-d3d12.yml` | **success** | run 38943215170 |
+| `ci.yml` — Linux X11 + OpenGL (GCC) | **success** | **计划 E GL 验证收据**：Xvfb 真 GL lane 绿（Task 3 C-BUF map 修复与 Task 4 C-TEX 三 phase 的「待 CI」项就此落账） |
+| `ci.yml` — Linux Wayland + OpenGL (GCC) | **success** | GL + Wayland lane 绿（Task 2 双句柄修订的 Wayland 类型安全收据） |
+| `ci.yml` — Windows + Clang ASan (headless) / Linux GCC ASan+UBSan / TSan / Clang-LLD Release / macOS native Metal / iOS build-only | **success** | headless/ sanitizer/ Metal 编译面全绿（8/14 lane 绿） |
+| `ci.yml` — Windows + Clang (headless) | failure | **先在**（基线 `dd524121` 同 lane 已红，Configure 步失败；失败集合与本计划前完全一致，见下） |
+| `ci.yml` — Linux X11 + Vulkan (GCC) / Wayland + Vulkan (GCC) / Xvfb smoke | failure | **先在**：gcc `-Werror=missing-braces` 于 `engine/tests/test_rhi_push_offset_dump.c:238`（`{0}` 嵌套聚合初始化；文件仅计划 C `59004e31` 触及，计划 E 未改）——基线同集合已红 |
+| `ci.yml` — macOS Cocoa + MoltenVK (Clang) | failure | **先在**（`test_rhi_backend_selection` 失败 + GPU-less host MoltenVK skip；基线同 lane 已红） |
+| `ci.yml` — Steam Deck real-GPU benchmark | cancelled | self-hosted runner 不可用（基线为 skipped，同类） |
+
+失败归因方法：`ad503290` 的失败 lane 集合与计划 E **前**基线 `dd524121`（CI run 38885775051 的 check-runs）逐 lane 比对——5 个失败 lane 名单完全相同，**计划 E 零新增回归、零 lane 退化**；两个 GL lane（CI golden 权威所在）为 success。上述先在失败不在计划 E 范围（分属计划 C 遗留 gcc 警告、macOS backend_selection、Windows CI Configure），登记为独立后续项，不随本计划修。DoD 第 3/5 项的「CI lanes 收据待补」就此落账。
+
