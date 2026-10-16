@@ -1644,6 +1644,141 @@ TEST(vk_push_tables_match_reflection)
     }
 }
 
+/* 计划 E Task 5 Stage C-2 前置：把 5a 的 push 反射交叉对照 gate 扩展到
+ * compute shader。期望值逐项转录自 rhi_vk.c `rhi_pipeline_get_uniform_location`
+ * 的 is_compute 段（gpucull/hi-z/indirect 等 .comp 消费者的现行表）——
+ * 转录纪律与 5a 相同：反射必须等于表；发现真实 mismatch 先停线报告，不许
+ * 改表、不许改 shader。批次 7-9 将把 compute offset 变成 bindings API 的
+ * 承重路径，静态 gate 必须先行（5b review finding）。
+ *
+ * 两类条目（同 5a）：
+ *  - 直接条目（vk_name == member）：offset 严格相等，size 按类型核对。
+ *  - 别名条目（vk_name != member）：rhi_vk.c 查询名指向真实成员（cull.comp
+ *    的成员就叫 vp/obj_count，表名 u_cull_vp/u_cull_count；occlusion_cull/
+ *    hi_z_generate 同理），断言表 offset 落在成员 [offset, offset+size) 内。
+ * 反向覆盖：除 particle_update.comp 外（见下），每个 gate 文件的非 pad 成员
+ * 必须被至少一条条目命中。particle_update.comp 豁免：host 用硬编码 std430
+ * 模板整块写 80 字节 push（particles.c push_data[]），除 push.dt 外没有
+ * 逐成员 legacy 查询，emit 参数成员不在表内是设计现状而非漏项。
+ * push.view/push.proj 不是 compute 条目——它们走 graphics uses_storage 段
+ * （particle.vert 的 push 块），归批次 5 的 alias 行证明。 */
+TEST(vk_compute_push_tables_match_reflection)
+{
+    static const VKPushRow rows[] = {
+        /* cluster_cull.comp（直接条目） */
+        { "cluster_cull.comp", "u_cc_vp", "u_cc_vp", 0u, 64u },
+        { "cluster_cull.comp", "u_cc_params0", "u_cc_params0", 64u, 16u },
+        { "cluster_cull.comp", "u_cc_params1", "u_cc_params1", 80u, 16u },
+        /* compact_draws.comp（直接条目；成员名即 total_draws） */
+        { "compact_draws.comp", "total_draws", "total_draws", 0u, 4u },
+        /* irradiance_env.comp（直接条目） */
+        { "irradiance_env.comp", "u_roughness", "u_roughness", 0u, 4u },
+        { "irradiance_env.comp", "u_face", "u_face", 4u, 4u },
+        { "irradiance_env.comp", "u_face_size", "u_face_size", 8u, 4u },
+        /* prefilter_env.comp（直接条目；u_mip_size 与 u_face_size 同槽@8） */
+        { "prefilter_env.comp", "u_roughness", "u_roughness", 0u, 4u },
+        { "prefilter_env.comp", "u_face", "u_face", 4u, 4u },
+        { "prefilter_env.comp", "u_mip_size", "u_mip_size", 8u, 4u },
+        /* sky_to_cube.comp（直接条目；sun 向量在 16 对齐槽） */
+        { "sky_to_cube.comp", "u_roughness", "u_roughness", 0u, 4u },
+        { "sky_to_cube.comp", "u_face", "u_face", 4u, 4u },
+        { "sky_to_cube.comp", "u_face_size", "u_face_size", 8u, 4u },
+        { "sky_to_cube.comp", "u_sun_dir", "u_sun_dir", 16u, 12u },
+        { "sky_to_cube.comp", "u_sun_color", "u_sun_color", 32u, 12u },
+        /* cull.comp（别名条目：成员名 vp/obj_count） */
+        { "cull.comp", "u_cull_vp", "vp", 0u, 0u },
+        { "cull.comp", "u_cull_count", "obj_count", 64u, 0u },
+        /* unified_cull.comp（别名条目：成员名 vp/obj_count/hi_z_width 等） */
+        { "unified_cull.comp", "u_cull_vp", "vp", 0u, 0u },
+        { "unified_cull.comp", "u_cull_count", "obj_count", 64u, 0u },
+        { "unified_cull.comp", "u_cull_hi_z_width", "hi_z_width", 68u, 0u },
+        { "unified_cull.comp", "u_cull_hi_z_height", "hi_z_height", 72u, 0u },
+        { "unified_cull.comp", "u_cull_use_hi_z", "use_hi_z", 76u, 0u },
+        { "unified_cull.comp", "u_cull_write_draws", "write_draws", 80u, 0u },
+        /* occlusion_cull.comp（别名条目：成员名 view_proj/object_count/
+         * hi_z_width/hi_z_height） */
+        { "occlusion_cull.comp", "pc_view_proj", "view_proj", 0u, 0u },
+        { "occlusion_cull.comp", "pc_object_count", "object_count", 64u, 0u },
+        { "occlusion_cull.comp", "pc_hi_z_width", "hi_z_width", 68u, 0u },
+        { "occlusion_cull.comp", "pc_hi_z_height", "hi_z_height", 72u, 0u },
+        /* hi_z_generate.comp（别名条目：成员名 output_size，vec4） */
+        { "hi_z_generate.comp", "pc_output_size", "output_size", 0u, 0u },
+        /* particle_update.comp（别名条目：块实例名 push.dt → 成员 dt@0） */
+        { "particle_update.comp", "push.dt", "dt", 0u, 0u },
+    };
+    static char src[32768];
+    ShaderIOPushMember members[32];
+    char current[64] = "";
+    usize n = 0u;
+    usize row_count = sizeof(rows) / sizeof(rows[0]);
+
+    for (usize i = 0u; i < row_count; i++) {
+        const VKPushRow *r = &rows[i];
+        const ShaderIOPushMember *m;
+        if (strcmp(current, r->file) != 0) {
+            ASSERT_TRUE(read_shader_source(r->file, src, sizeof(src)));
+            n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+            snprintf(current, sizeof(current), "%s", r->file);
+            ASSERT_TRUE(n > 0u);
+        }
+        m = push_member_by_name(members, n, r->member);
+        if (m == NULL) {
+            printf("  FAIL: %s: member '%s' (vk name '%s') not reflected\n",
+                   r->file, r->member, r->vk_name);
+        }
+        ASSERT_TRUE(m != NULL);
+        if (strcmp(r->vk_name, r->member) == 0) {
+            if (m->offset != r->offset) {
+                printf("  FAIL: %s: %s reflected @%u, rhi_vk.c table @%u\n",
+                       r->file, r->vk_name, m->offset, r->offset);
+            }
+            ASSERT_EQ(m->offset, r->offset);
+            if (r->size != 0u && m->size != r->size) {
+                printf("  FAIL: %s: %s reflected size %u, expected %u\n",
+                       r->file, r->vk_name, m->size, r->size);
+            }
+            ASSERT_TRUE(r->size == 0u || m->size == r->size);
+        } else {
+            if (r->offset < m->offset || r->offset >= m->offset + m->size) {
+                printf("  FAIL: %s: alias '%s'@%u outside member '%s'"
+                       " [%u, %u)\n", r->file, r->vk_name, r->offset,
+                       r->member, m->offset, m->offset + m->size);
+            }
+            ASSERT_TRUE(r->offset >= m->offset);
+            ASSERT_TRUE(r->offset < m->offset + m->size);
+        }
+    }
+
+    /* 反向覆盖（particle_update.comp 豁免 + pad 成员跳过，见上）。 */
+    current[0] = '\0';
+    for (usize i = 0u; i < row_count; i++) {
+        if (strcmp(current, rows[i].file) == 0) continue;
+        snprintf(current, sizeof(current), "%s", rows[i].file);
+        if (strcmp(current, "particle_update.comp") == 0) continue;
+        ASSERT_TRUE(read_shader_source(current, src, sizeof(src)));
+        n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+        ASSERT_TRUE(n > 0u);
+        for (usize j = 0u; j < n; j++) {
+            bool covered = false;
+            if (strncmp(members[j].name, "_pad", 4u) == 0 ||
+                strncmp(members[j].name, "u_pad", 5u) == 0 ||
+                strncmp(members[j].name, "pad", 3u) == 0) continue;
+            for (usize k = 0u; k < row_count && !covered; k++) {
+                if (strcmp(rows[k].file, current) != 0) continue;
+                if (strcmp(rows[k].member, members[j].name) != 0) continue;
+                covered = rows[k].offset >= members[j].offset &&
+                          rows[k].offset < members[j].offset + members[j].size;
+            }
+            if (!covered) {
+                printf("  FAIL: %s: member '%s'@%u not covered by any"
+                       " rhi_vk.c compute table row\n",
+                       current, members[j].name, members[j].offset);
+            }
+            ASSERT_TRUE(covered);
+        }
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -1700,4 +1835,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(push_constants_follow_std430_offsets);
     RUN_TEST(push_constants_absent_returns_zero_and_handles_null);
     RUN_TEST(vk_push_tables_match_reflection);
+    RUN_TEST(vk_compute_push_tables_match_reflection);
 TEST_MAIN_END()
