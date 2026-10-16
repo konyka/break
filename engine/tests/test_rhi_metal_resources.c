@@ -2180,6 +2180,140 @@ TEST(set_uniform_mat4_column0_as_color) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+TEST(push_replays_across_blit_interlude) {
+    /* I1 regression: setBytes is ENCODER state. A blit interlude
+     * (fill_buffer) closes the encoder; the resumed pass's next draw must
+     * re-bind buffer(29) or the fragment reads never-set garbage (black).
+     * VK's push constants are command-buffer state and survive. */
+    static const char *k_msl_fs_mat =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct Push { float4x4 m; };\n"
+        "fragment float4 fs_main(constant Push& pc [[buffer(29)]]) {\n"
+        "    return float4(pc.m[0].xyz, 1.0);\n"
+        "}\n";
+    f32 m[16];
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_fs_mat, (usize)strlen(k_msl_fs_mat), "fs_main", true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHIBufferDesc bdesc;
+    RHIBuffer scratch;
+    RHICmdBuffer *cmd;
+    u32 i;
+    u8 px[64u * 64u * 4u];
+    const u8 *c;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = 64u;
+    scratch = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(scratch));
+    for (i = 0u; i < 16u; ++i) m[i] = 0.0f;
+    m[0] = 1.0f;
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, 0, m);
+    rhi_cmd_draw(cmd, 3u, 1u);                      /* flush binds buffer(29) */
+    rhi_cmd_fill_buffer(cmd, scratch, 0u, 64u, 0u); /* blit interlude: ends encoder */
+    rhi_offscreen_fbo_bind_load(cmd, &fbo);         /* resume with Load */
+    rhi_cmd_bind_pipeline(cmd, pipe);               /* rebind pipeline state */
+    rhi_cmd_draw(cmd, 3u, 1u);                      /* must re-bind buffer(29) */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    c = px + ((usize)32u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)c[2], 255u);   /* still red — buffer(29) replayed */
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, scratch);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(uniform_buffer_binds_and_replays_after_pass_switch) {
+    /* I2 regression: VK-defers the UBO descriptor to draw time; Metal must
+     * replay set*Buffer after an encoder rebuild. uses_textures pipeline ->
+     * ubo_set 1 -> MSL buffer index 8. */
+    static const char *k_msl_fs_ubo =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct Factors { float4 c; };\n"
+        "fragment float4 fs_main(constant Factors& f [[buffer(8)]]) {\n"
+        "    return f.c;\n"
+        "}\n";
+    f32 red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_fs_ubo, (usize)strlen(k_msl_fs_ubo), "fs_main", true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHIBufferDesc bdesc;
+    RHIBuffer ubo, scratch;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *c;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.uses_textures = true;   /* ubo_set = 1 -> index 8 */
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_UNIFORM;
+    bdesc.size = sizeof(red);
+    bdesc.initial_data = red;
+    ubo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(ubo));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.initial_data = NULL;
+    bdesc.size = 64u;
+    scratch = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(scratch));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_uniform_buffer(cmd, ubo, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);                       /* flush binds the UBO */
+    rhi_cmd_fill_buffer(cmd, scratch, 0u, 64u, 0u);  /* encoder rebuild */
+    rhi_offscreen_fbo_bind_load(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);                       /* must re-bind the UBO */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    c = px + ((usize)32u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)c[2], 255u);   /* still red — UBO replayed */
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_buffer_destroy(g_dev, scratch);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 int main(void) {
     g_layer = metal_test_layer_create(64u, 64u);
     if (g_layer == NULL) return 77;
@@ -2230,6 +2364,8 @@ int main(void) {
     RUN_TEST(push_offsets_match_vk_golden);
     RUN_TEST(push_constants_out_of_range_dropped);
     RUN_TEST(set_uniform_mat4_column0_as_color);
+    RUN_TEST(push_replays_across_blit_interlude);
+    RUN_TEST(uniform_buffer_binds_and_replays_after_pass_switch);
     /* destroy after all resources are freed must drain + release cleanly. */
     rhi_device_destroy(g_dev);
     metal_test_layer_destroy(g_layer);

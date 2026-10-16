@@ -140,7 +140,7 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     char *vs_src = NULL;
     char *fs_src = NULL;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     vs_src = shader_read_file("shaders/terrain_vk.vert", &vs_len);
     fs_src = shader_read_file("shaders/terrain_vk.frag", &fs_len);
 #else
@@ -170,7 +170,7 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         usize bl_vs_len = 0, bl_fs_len = 0;
         char *bl_vs = NULL;
         char *bl_fs = NULL;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         bl_vs = shader_read_file("shaders/blinn_phong_vk.vert", &bl_vs_len);
         bl_fs = shader_read_file("shaders/blinn_phong_vk.frag", &bl_fs_len);
 #else

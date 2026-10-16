@@ -412,7 +412,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
      * forwards gl_BaseInstance(ARB) as the array layer. */
     {
         usize avl = 0, afl = 0;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         char *avs = shader_read_file("shaders/blinn_phong_arr_vk.vert", &avl);
         char *afs = shader_read_file("shaders/blinn_phong_arr_vk.frag", &afl);
 #else
@@ -466,7 +466,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize cvl = 0, cfl = 0, civl = 0, csvl = 0, cavl = 0;
         char *cv = NULL, *cf = NULL, *civ = NULL, *csv = NULL, *cav = NULL;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         cv = shader_read_file("shaders/pbr_clustered_vk.vert", &cvl);
         cf = shader_read_file("shaders/pbr_clustered_vk.frag", &cfl);
         civ = shader_read_file("shaders/pbr_clustered_inst_vk.vert", &civl);
@@ -684,7 +684,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize ivl = 0, ifl = 0;
         char *iv = NULL, *ifl_src = NULL;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         iv = shader_read_file("shaders/instanced_vk.vert", &ivl);
         ifl_src = shader_read_file("shaders/instanced_vk.frag", &ifl);
 #else
@@ -742,7 +742,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     {
         usize svl = 0, sfl = 0;
         char *sv = NULL, *sf = NULL;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         sv = shader_read_file("shaders/skinned_vk.vert", &svl);
         sf = shader_read_file("shaders/skinned_vk.frag", &sfl);
 #else

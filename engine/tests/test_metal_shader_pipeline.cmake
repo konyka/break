@@ -43,6 +43,29 @@ expect_file_contains("${script}" "HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT")
 expect_file_contains("${script}" "CLUSTERED_ARR")
 expect_file_contains("${script}" "variants/")
 
+# M3: every define name injected at runtime (main.c + renderer call sites)
+# must be enumerated by the VARIANTS table — a new call site without a
+# variant row fails this contract.
+foreach(src_file
+        "${REPO_ROOT}/engine/src/main.c"
+        "${REPO_ROOT}/engine/src/renderer/particles.c"
+        "${REPO_ROOT}/engine/src/renderer/skybox.c"
+        "${REPO_ROOT}/engine/src/renderer/terrain.c"
+        "${REPO_ROOT}/engine/src/renderer/water.c")
+    if(NOT EXISTS "${src_file}")
+        message(WARNING "MISSING inject-call-site source: ${src_file}")
+        math(EXPR failures "${failures} + 1")
+        continue()
+    endif()
+    file(READ "${src_file}" src_text)
+    string(REGEX MATCHALL "shader_inject_define\\([^\"]*\"[A-Z_]+\"" inject_hits "${src_text}")
+    foreach(hit ${inject_hits})
+        string(REGEX MATCH "\"[A-Z_]+\"$" def_tok "${hit}")
+        string(REGEX REPLACE "\"" "" def_tok "${def_tok}")
+        expect_file_contains("${script}" "${def_tok}")
+    endforeach()
+endforeach()
+
 # 2. Manifest generator: shares the header's FNV-1a 64 (no private copy)
 # and emits the static table.
 set(gen "${REPO_ROOT}/engine/tools/gen_metal_shader_manifest.c")

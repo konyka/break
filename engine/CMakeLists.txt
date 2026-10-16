@@ -379,6 +379,16 @@ if(SHADERC_INCLUDE_DIR)
     # without the -I for rhi_vk.c (fatal 'shaderc/shaderc.h' not found)
     # even though the header and cache value were verified present.
     target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
+
+# Plan C Task 11 (review fix C1): the Metal lane must read the *_vk
+# shader corpus (its offline manifest is keyed on those bytes). This
+# PUBLIC define switches the main.c / renderer shader-file #ifdefs;
+# it is deliberately NOT set for Vulkan/OpenGL lanes (behavior there
+# is unchanged) and the GL corpus never enters the Metal manifest
+# (its binding model is incompatible).
+if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
+    target_compile_definitions(engine PUBLIC ENGINE_SHADER_CORPUS_VK=1)
+endif()
 endif()
 if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
     # rt_trace.c compiles <vulkan/vulkan.h> into the engine target under

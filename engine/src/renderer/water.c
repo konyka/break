@@ -24,7 +24,7 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forwa
     usize vs_len = 0, fs_len = 0;
     char *vs_src = NULL, *fs_src = NULL;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     vs_src = shader_read_file("shaders/water_vk.vert", &vs_len);
     fs_src = shader_read_file("shaders/water_vk.frag", &fs_len);
 #else

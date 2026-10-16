@@ -13,7 +13,7 @@ bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt) {
     sb->ready = false;
 
     usize vs_len = 0, fs_len = 0;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     char *vs_src = shader_read_file("shaders/skybox_vk.vert", &vs_len);
     char *fs_src = shader_read_file("shaders/skybox_vk.frag", &fs_len);
 #else

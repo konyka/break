@@ -278,6 +278,10 @@ struct RHICmdBuffer {
     bool clear_pending;           /* next render pass opens with LoadActionClear */
     bool render_pass_open;
     bool push_dirty;              /* staging holds bytes not yet flushed */
+    bool push_staged;             /* staging written at least once this frame */
+    RHIBuffer bound_ubo;          /* deferred UBO bind (VK bound_ubo parity) */
+    u32 bound_ubo_binding;
+    bool ubo_dirty;               /* UBO replay needed at next draw/dispatch */
     u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
     RHIHandle pass_target;        /* fb handle of the bound target */
     u32 pass_w, pass_h;
@@ -312,6 +316,12 @@ static void metal_end_render_encoder(RHICmdBuffer *cmd) {
     cmd->pass_kind = METAL_PASS_NONE;
     cmd->pass_target = RHI_HANDLE_NULL;
     cmd->bound_pipeline = RHI_HANDLE_NULL;
+    /* setBytes/setBuffer are ENCODER state (unlike VK's command-buffer
+     * state): closing the encoder drops them, so anything staged/bound this
+     * frame must be replayed at the next draw (review fixes I1/I2). The
+     * staging bytes live on the cmd — replay is a zero-copy setBytes. */
+    if (cmd->push_staged) cmd->push_dirty = true;
+    if (rhi_handle_valid(cmd->bound_ubo)) cmd->ubo_dirty = true;
 }
 
 /* Task 9: the compute encoder obeys the same one-encoder rule. */
@@ -322,6 +332,8 @@ static void metal_end_compute_encoder(RHICmdBuffer *cmd) {
         cmd->compute_encoder = nil;
     }
     cmd->bound_pipeline = RHI_HANDLE_NULL;
+    if (cmd->push_staged) cmd->push_dirty = true;
+    if (rhi_handle_valid(cmd->bound_ubo)) cmd->ubo_dirty = true;
 }
 
 static void metal_end_encoders(RHICmdBuffer *cmd) {
@@ -662,6 +674,10 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->index_buffer = RHI_HANDLE_NULL;
     cmd->pending_count = 0;   /* gpu timer samples never cross frames */
     cmd->push_dirty = false;
+    cmd->push_staged = false;
+    cmd->bound_ubo = RHI_HANDLE_NULL;
+    cmd->bound_ubo_binding = 0u;
+    cmd->ubo_dirty = false;
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -2439,47 +2455,17 @@ void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISa
 }
 
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
-    MetalPipeline *pp;
-    MetalBuffer *bb;
-    u32 set, index;
     if (cmd == NULL || cmd->backend == NULL) return;
-    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
-                                                 cmd->bound_pipeline,
-                                                 RHI_RES_PIPELINE);
-    if (pp == NULL) return;
-    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
-                                               RHI_RES_BUFFER);
-    if (bb == NULL) return;
-    /* VK layout position of the aux UBO set (rhi_vk.c pipeline create):
-     * graphics = (uses_textures + uses_texel_buffer + uses_storage), so the
-     * shader's declared set matches its pipeline class; compute = 3.
-     * MSL index = set*8+binding (Task 10 flattening contract). */
-    if (pp->is_compute) {
-        id<MTLComputeCommandEncoder> enc;
-        set = 3u;
-        index = set * 8u + binding;
-        enc = metal_ensure_compute_encoder(cmd);
-        if (enc == nil) return;
-        [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)index];
+    /* VK parity (rhi_vk.c:8064-8074 records vk->bound_ubo only): defer the
+     * actual set*Buffer to draw/dispatch time — encoder state does not
+     * survive pass switches (blit interlude / clear_color reopen), so an
+     * immediate write could be lost (review fix I2). The replay index is
+     * computed at flush from the bound pipeline (metal_flush_push). */
+    if (rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER) == NULL)
         return;
-    }
-    set = (pp->desc.uses_textures ? 1u : 0u) +
-          (pp->desc.uses_texel_buffer ? 1u : 0u) +
-          (pp->desc.uses_storage ? 1u : 0u);
-    index = set * 8u + binding;
-    if (cmd->render_encoder == nil) {
-        LOG_ERROR("rhi_metal: bind_uniform_buffer without an open render pass");
-        return;
-    }
-    /* The flattened index is stage-agnostic; bind both stages so the UBO
-     * resolves wherever the shader declares it (VK single-descriptor-set
-     * parity). */
-    [cmd->render_encoder setVertexBuffer:bb->buffer
-                                  offset:0u
-                                 atIndex:(NSUInteger)index];
-    [cmd->render_encoder setFragmentBuffer:bb->buffer
-                                    offset:0u
-                                   atIndex:(NSUInteger)index];
+    cmd->bound_ubo = buf;
+    cmd->bound_ubo_binding = binding;
+    cmd->ubo_dirty = true;
 }
 
 /* ---- Task 11: push-constant staging ----
@@ -2491,23 +2477,63 @@ static u32 metal_push_range_for(const MetalPipeline *pp) {
     return pp->is_compute ? 128u : RHI_METAL_MAX_PUSH_BYTES;
 }
 
-static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp) {
-    if (!cmd->push_dirty) return;
+/* Replays the deferred UBO bind (I2). Index formula (VK pipeline-layout
+ * position parity, rhi_vk.c pipeline create): graphics ubo_set =
+ * (uses_textures + uses_texel_buffer + uses_storage), compute = 3; MSL
+ * index = set*8+binding (Task 10 flattening contract). */
+static void metal_flush_ubo(RHICmdBuffer *cmd, const MetalPipeline *pp) {
+    MetalBuffer *bb;
+    u32 set, index;
+    if (!cmd->ubo_dirty || !rhi_handle_valid(cmd->bound_ubo)) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device,
+                                               cmd->bound_ubo,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL) { cmd->ubo_dirty = false; return; }
     if (pp->is_compute) {
+        set = 3u;
+        index = set * 8u + cmd->bound_ubo_binding;
         if (cmd->compute_encoder != nil) {
-            [cmd->compute_encoder setBytes:cmd->push_staging
-                                    length:128u
-                                   atIndex:29u];
+            [cmd->compute_encoder setBuffer:bb->buffer
+                                     offset:0u
+                                    atIndex:(NSUInteger)index];
         }
     } else if (cmd->render_encoder != nil) {
-        [cmd->render_encoder setVertexBytes:cmd->push_staging
-                                     length:RHI_METAL_MAX_PUSH_BYTES
-                                    atIndex:29u];
-        [cmd->render_encoder setFragmentBytes:cmd->push_staging
-                                       length:RHI_METAL_MAX_PUSH_BYTES
-                                      atIndex:29u];
+        set = (pp->desc.uses_textures ? 1u : 0u) +
+              (pp->desc.uses_texel_buffer ? 1u : 0u) +
+              (pp->desc.uses_storage ? 1u : 0u);
+        index = set * 8u + cmd->bound_ubo_binding;
+        /* The flattened index is stage-agnostic; bind both stages so the
+         * UBO resolves wherever the shader declares it (VK
+         * single-descriptor-set parity). */
+        [cmd->render_encoder setVertexBuffer:bb->buffer
+                                      offset:0u
+                                     atIndex:(NSUInteger)index];
+        [cmd->render_encoder setFragmentBuffer:bb->buffer
+                                        offset:0u
+                                       atIndex:(NSUInteger)index];
     }
-    cmd->push_dirty = false;
+    cmd->ubo_dirty = false;
+}
+
+static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp) {
+    if (cmd->push_dirty) {
+        if (pp->is_compute) {
+            if (cmd->compute_encoder != nil) {
+                [cmd->compute_encoder setBytes:cmd->push_staging
+                                        length:128u
+                                       atIndex:29u];
+            }
+        } else if (cmd->render_encoder != nil) {
+            [cmd->render_encoder setVertexBytes:cmd->push_staging
+                                         length:RHI_METAL_MAX_PUSH_BYTES
+                                        atIndex:29u];
+            [cmd->render_encoder setFragmentBytes:cmd->push_staging
+                                           length:RHI_METAL_MAX_PUSH_BYTES
+                                          atIndex:29u];
+        }
+        cmd->push_dirty = false;
+    }
+    metal_flush_ubo(cmd, pp);
 }
 
 /* Stage a small uniform write (set_uniform_* helpers): negative locations
@@ -2531,6 +2557,7 @@ static void metal_push_stage(RHICmdBuffer *cmd, i32 location,
     }
     memcpy(cmd->push_staging + location, data, (size_t)size);
     cmd->push_dirty = true;
+    cmd->push_staged = true;
 }
 
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
@@ -2583,6 +2610,7 @@ void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32
     }
     memcpy(cmd->push_staging + offset, data, (size_t)size);
     cmd->push_dirty = true;
+    cmd->push_staged = true;
 }
 
 /* R179/R444: deprecated alias of rhi_cmd_push_constants (location == byte offset). */
@@ -2988,7 +3016,14 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     MetalPipeline *pp;
     if (dev == NULL || name == NULL) return -1;
     pp = (MetalPipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
-    if (pp == NULL) return -1;
+    if (pp == NULL) {
+        /* Divergence note (review M1): VK falls through to its generic
+         * tables when the handle does not resolve (pd==NULL returns table
+         * offsets); Metal fails closed with -1. Callers passing an invalid
+         * pipeline are already broken either way — behavior intentionally
+         * unchanged. */
+        return -1;
+    }
     return metal_uniform_location(&pp->desc, name);
 }
 
