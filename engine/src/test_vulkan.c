@@ -131,6 +131,8 @@ static u16 tv_f32_to_f16(f32 f) {
 typedef struct {
     RHIDevice    *device;
     RHIPipeline   pipeline;
+    /* 计划 E Task 5 T1：blinn 管线的 reflection 物化表（loc_* 来源切换）。 */
+    RHIPipelineBindings *bind;
     RHISampler    sampler;
     RHITexture    test_tex;
     i32 loc_model, loc_view, loc_proj;
@@ -452,17 +454,22 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     }
     LOG_INFO("PASS: Pipeline created");
 
-    rs->loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_model");
-    rs->loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_view");
-    rs->loc_proj        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_proj");
-    rs->loc_light_dir   = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_light_dir");
-    rs->loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_light_color");
-    rs->loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_ambient");
-    rs->loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_camera_pos");
+    rs->bind = rhi_pipeline_bindings_create(rs->device, rs->pipeline);
+    if (!rs->bind)
+        LOG_WARN("bindings create failed; uniform locations resolve -1");
+
+    rs->loc_model       = rhi_pipeline_bindings_resolve(rs->bind, "u_model");
+    rs->loc_view        = rhi_pipeline_bindings_resolve(rs->bind, "u_view");
+    rs->loc_proj        = rhi_pipeline_bindings_resolve(rs->bind, "u_proj");
+    rs->loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind, "u_light_dir");
+    rs->loc_light_color = rhi_pipeline_bindings_resolve(rs->bind, "u_light_color");
+    rs->loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind, "u_ambient");
+    rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind, "u_camera_pos");
 
     if (rs->loc_model < 0 || rs->loc_view < 0 || rs->loc_proj < 0) {
         LOG_ERROR("FAIL: uniform locations invalid (model=%d view=%d proj=%d)", rs->loc_model, rs->loc_view, rs->loc_proj);
         /* R425: destroy pipeline + device on the way out. */
+        if (rs->bind) rhi_pipeline_bindings_destroy(rs->device, rs->bind);
         rhi_pipeline_destroy(rs->device, rs->pipeline);
         rs->pipeline = RHI_HANDLE_NULL;
         rhi_device_destroy(rs->device);
@@ -776,6 +783,7 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
 static void test_render_shutdown(TestRenderState *rs) {
     if (rhi_handle_valid(rs->test_tex))  rhi_texture_destroy(rs->device, rs->test_tex);
     if (rhi_handle_valid(rs->sampler))   rhi_sampler_destroy(rs->device, rs->sampler);
+    if (rs->bind) rhi_pipeline_bindings_destroy(rs->device, rs->bind); /* T4 */
     if (rhi_handle_valid(rs->pipeline))  rhi_pipeline_destroy(rs->device, rs->pipeline);
     {
         RHIResult destroy_result = rhi_device_destroy_ex(rs->device);
@@ -3031,26 +3039,30 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
     /* ---- A/B factor gate (echo variant under TV_MR_DEBUG) ---- */
     bool pass = false;
     RHIOffscreenFBO scene = {0};
+    RHIPipelineBindings *bind = NULL;
     if (ls && rhi_handle_valid(pipe) && rhi_handle_valid(mr_tex) && iw > 0u && ih > 0u) {
         scene = rhi_offscreen_fbo_create_fmt(
             rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
         Mat4 model = mat4_identity(), view = mat4_identity(), proj = mat4_identity();
     /* R579-E: identity (NO Y-flip — frontFace=CLOCKWISE makes the flipped
      * variant back-facing and culled). */
-        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
-        i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
-        i32 l_fog_n = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
-        i32 l_fog_f = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
-        i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
-        i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
-        i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
-        i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
-        i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
-        i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
-        i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
-        i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor"); /* R599 */
+        bind = rhi_pipeline_bindings_create(rs->device, pipe);
+        if (!bind)
+            LOG_WARN("pbr-factor bindings create failed; locations resolve -1");
+        i32 l_model = rhi_pipeline_bindings_resolve(bind, "u_model");
+        i32 l_view  = rhi_pipeline_bindings_resolve(bind, "u_view");
+        i32 l_proj  = rhi_pipeline_bindings_resolve(bind, "u_proj");
+        i32 l_cam   = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
+        i32 l_fog_n = rhi_pipeline_bindings_resolve(bind, "u_fog_near");
+        i32 l_fog_f = rhi_pipeline_bindings_resolve(bind, "u_fog_far");
+        i32 l_sw    = rhi_pipeline_bindings_resolve(bind, "u_screen_w");
+        i32 l_sh    = rhi_pipeline_bindings_resolve(bind, "u_screen_h");
+        i32 l_near  = rhi_pipeline_bindings_resolve(bind, "u_near");
+        i32 l_far   = rhi_pipeline_bindings_resolve(bind, "u_far");
+        i32 l_pc    = rhi_pipeline_bindings_resolve(bind, "u_point_count");
+        i32 l_dc    = rhi_pipeline_bindings_resolve(bind, "u_dir_count");
+        i32 l_mr    = rhi_pipeline_bindings_resolve(bind, "u_mr_factor");
+        i32 l_ef    = rhi_pipeline_bindings_resolve(bind, "u_emissive_factor"); /* R599 */
         /* R599: RGBA16F native readback is 8B/px on BOTH backends since R587
          * — the GL 4B/px stride here was an R587-era leftover that made the
          * readback itself fail (ierr), masking the diagnostic's answer. */
@@ -3179,6 +3191,7 @@ static bool tv_test_pbr_factor(const TestRenderState *rs, RHIBuffer vbo,
         light_system_shutdown(ls);
         free(ls);
     }
+    if (bind) rhi_pipeline_bindings_destroy(rs->device, bind);
     if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(rs->device, pipe);
     ibl_destroy(&ibl, rs->device);
     return pass;
@@ -3334,24 +3347,27 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
                   (int)rhi_handle_valid(pipe), (int)(ls != NULL),
                   (int)rhi_handle_valid(scene.fb));
 
-    i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-    i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-    i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
-    i32 l_fogn  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
-    i32 l_fogf  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
-    i32 l_fogc  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
-    i32 l_uw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
-    i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
-    i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
-    i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
-    i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
-    i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
-    i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
-    i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
-    i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
-    i32 l_occstr = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_occlusion_strength"); /* R598 */
+    RHIPipelineBindings *bind = rhi_pipeline_bindings_create(rs->device, pipe);
+    if (!bind)
+        LOG_WARN("clustered-real bindings create failed; locations resolve -1");
+    i32 l_model = rhi_pipeline_bindings_resolve(bind, "u_model");
+    i32 l_view  = rhi_pipeline_bindings_resolve(bind, "u_view");
+    i32 l_cam   = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
+    i32 l_fogn  = rhi_pipeline_bindings_resolve(bind, "u_fog_near");
+    i32 l_fogf  = rhi_pipeline_bindings_resolve(bind, "u_fog_far");
+    i32 l_fogc  = rhi_pipeline_bindings_resolve(bind, "u_fog_color");
+    i32 l_uw    = rhi_pipeline_bindings_resolve(bind, "u_underwater");
+    i32 l_sw    = rhi_pipeline_bindings_resolve(bind, "u_screen_w");
+    i32 l_sh    = rhi_pipeline_bindings_resolve(bind, "u_screen_h");
+    i32 l_near  = rhi_pipeline_bindings_resolve(bind, "u_near");
+    i32 l_far   = rhi_pipeline_bindings_resolve(bind, "u_far");
+    i32 l_pc    = rhi_pipeline_bindings_resolve(bind, "u_point_count");
+    i32 l_dc    = rhi_pipeline_bindings_resolve(bind, "u_dir_count");
+    i32 l_mr    = rhi_pipeline_bindings_resolve(bind, "u_mr_factor");
+    i32 l_ef    = rhi_pipeline_bindings_resolve(bind, "u_emissive_factor");
+    i32 l_occstr = rhi_pipeline_bindings_resolve(bind, "u_occlusion_strength"); /* R598 */
 #ifndef ENGINE_VULKAN
-    i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+    i32 l_proj  = rhi_pipeline_bindings_resolve(bind, "u_proj");
 #endif
 
     /* phase: 0=A red, 1=B black, 2=C1 white occ, 3=C2 gray occ,
@@ -3491,6 +3507,7 @@ static bool tv_test_pbr_clustered_real(const TestRenderState *rs, RHIBuffer vbo,
     if (rhi_handle_valid(em_white))   rhi_texture_destroy(rs->device, em_white);
     if (rhi_handle_valid(alb_white))  rhi_texture_destroy(rs->device, alb_white);
     if (rhi_handle_valid(alb_black))  rhi_texture_destroy(rs->device, alb_black);
+    if (bind)                         rhi_pipeline_bindings_destroy(rs->device, bind);
     if (rhi_handle_valid(pipe))       rhi_pipeline_destroy(rs->device, pipe);
     return pass;
 }

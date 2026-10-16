@@ -3174,6 +3174,9 @@ int main(int argc, char **argv) {
     if (!motion_history_init(&entity_motion_history, ECS_MAX_ENTITIES))
         LOG_WARN("Entity motion history allocation failed; instance velocity starts at zero");
     RHIPipeline last_hr_pipeline = RHI_HANDLE_NULL;
+    /* 计划 E Task 5 T1/T2：hotreload 管线的 bindings 表——管线句柄变化时
+     * 重建（与 last_hr_pipeline 同一判据），shutdown 一并销毁。 */
+    RHIPipelineBindings *hr_bind = NULL;
 
     const f32 render_scale_options[] = { 0.3f, 0.5f, 0.75f, 1.0f };
     i32 render_scale_idx = 1;
@@ -4819,14 +4822,18 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (hotreload.pipeline.index != last_hr_pipeline.index ||
                 hotreload.pipeline.generation != last_hr_pipeline.generation) {
                 /* Pipeline changed — re-query uniform locations */
-                render.loc_model       = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_model");
-                render.loc_view        = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_view");
-                render.loc_proj        = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_proj");
-                render.loc_light_dir   = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_light_dir");
-                render.loc_light_color = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_light_color");
-                render.loc_ambient     = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_ambient");
-                render.loc_camera_pos  = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_camera_pos");
-                render.loc_albedo      = rhi_pipeline_get_uniform_location(render.device, active_pipeline, "u_albedo");
+                if (hr_bind) rhi_pipeline_bindings_destroy(render.device, hr_bind);
+                hr_bind = rhi_pipeline_bindings_create(render.device, active_pipeline);
+                if (!hr_bind)
+                    LOG_WARN("hotreload bindings create failed; locations resolve -1");
+                render.loc_model       = rhi_pipeline_bindings_resolve(hr_bind, "u_model");
+                render.loc_view        = rhi_pipeline_bindings_resolve(hr_bind, "u_view");
+                render.loc_proj        = rhi_pipeline_bindings_resolve(hr_bind, "u_proj");
+                render.loc_light_dir   = rhi_pipeline_bindings_resolve(hr_bind, "u_light_dir");
+                render.loc_light_color = rhi_pipeline_bindings_resolve(hr_bind, "u_light_color");
+                render.loc_ambient     = rhi_pipeline_bindings_resolve(hr_bind, "u_ambient");
+                render.loc_camera_pos  = rhi_pipeline_bindings_resolve(hr_bind, "u_camera_pos");
+                render.loc_albedo      = rhi_pipeline_bindings_resolve(hr_bind, "u_albedo");
                 last_hr_pipeline = hotreload.pipeline;
             }
         }
@@ -8876,6 +8883,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     terrain_shutdown(&terrain);
     water_shutdown(&water);
     LOG_INFO("  terrain done");
+    if (hr_bind) rhi_pipeline_bindings_destroy(render.device, hr_bind); /* T4 */
     hotreload_pipeline_shutdown(&hotreload);
     if (hotreload_tex_ready) hotreload_texture_shutdown(&hotreload_tex);
     if (netrep_enabled) {
