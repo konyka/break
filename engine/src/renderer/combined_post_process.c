@@ -68,14 +68,17 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     memset(caa, 0, sizeof(*caa));
     caa->device = dev;
 
-    /* Try loading combined TAA+FXAA shader */
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    caa->combined_pipe = cpp_create_pipe(dev,
-        "shaders/post_vk.vert", "shaders/combined_taa_fxaa_vk.frag", true, false);
-#else
-    caa->combined_pipe = cpp_create_pipe(dev,
-        "shaders/post.vert", "shaders/combined_taa_fxaa.frag", true, false);
-#endif
+    /* Try loading combined TAA+FXAA shader.
+     * 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/combined_taa_fxaa.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("CombinedAA: capability query or shader variant path failed");
+    } else {
+        caa->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, true, false);
+    }
 
     if (rhi_handle_valid(caa->combined_pipe)) {
         caa->use_combined = true;
@@ -254,14 +257,17 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
     memset(cc, 0, sizeof(*cc));
     cc->device = dev;
 
-    /* Try loading combined tonemap+colorgrade+cinematic shader */
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    cc->combined_pipe = cpp_create_pipe(dev,
-        "shaders/post_vk.vert", "shaders/combined_color_vk.frag", false, true);
-#else
-    cc->combined_pipe = cpp_create_pipe(dev,
-        "shaders/post.vert", "shaders/combined_color.frag", false, true);
-#endif
+    /* Try loading combined tonemap+colorgrade+cinematic shader.
+     * 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/combined_color.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("CombinedColor: capability query or shader variant path failed");
+    } else {
+        cc->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, false, true);
+    }
 
     if (rhi_handle_valid(cc->combined_pipe)) {
         cc->use_combined = true;

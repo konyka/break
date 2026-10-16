@@ -47,11 +47,16 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    s->pipe = sh_create_pipe(dev, "shaders/post_vk.vert", "shaders/sharpen_vk.frag");
-#else
-    s->pipe = sh_create_pipe(dev, "shaders/post.vert", "shaders/sharpen.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/sharpen.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("Sharpen: capability query or shader variant path failed");
+        return false;
+    }
+    s->pipe = sh_create_pipe(dev, vs_path, fs_path);
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("Sharpen: pipeline creation failed");

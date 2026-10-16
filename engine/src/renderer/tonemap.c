@@ -56,13 +56,18 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
     tm->auto_exposure = true;
     tm->lum_idx      = 0;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    tm->tm_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/tonemap_vk.frag");
-    tm->lum_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/luminance_vk.frag");
-#else
-    tm->tm_pipe = tm_create_pipe(dev, "shaders/post.vert", "shaders/tonemap.frag");
-    tm->lum_pipe = tm_create_pipe(dev, "shaders/post.vert", "shaders/luminance.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], tm_path[96], lum_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/tonemap.frag", (RHIShaderVariant)caps.shader_variant, tm_path, sizeof(tm_path)) ||
+        !shader_variant_path("shaders/luminance.frag", (RHIShaderVariant)caps.shader_variant, lum_path, sizeof(lum_path))) {
+        LOG_WARN("Tonemap: capability query or shader variant path failed");
+        return false;
+    }
+    tm->tm_pipe = tm_create_pipe(dev, vs_path, tm_path);
+    tm->lum_pipe = tm_create_pipe(dev, vs_path, lum_path);
 
     if (!rhi_handle_valid(tm->tm_pipe)) {
         LOG_WARN("Tonemap: pipeline creation failed");

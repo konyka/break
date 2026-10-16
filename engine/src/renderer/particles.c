@@ -9,6 +9,10 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     memset(ps, 0, sizeof(*ps));
     ps->device = dev;
     ps->initialized = false;
+    /* 计划 E Task 6：缓存能力契约（shader_variant 驱动 push 块 vs loose
+     * uniform 的名字解析与写入分支）。 */
+    if (!rhi_device_get_capabilities(dev, &ps->caps))
+        memset(&ps->caps, 0, sizeof(ps->caps));
 
     ps->emit_pos[0] = 0.0f; ps->emit_pos[1] = 2.0f; ps->emit_pos[2] = 0.0f;
     ps->gravity = 9.8f;
@@ -243,13 +247,16 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     ps->_loc_lifetime_min  = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_lifetime_min");
     ps->_loc_lifetime_range= rhi_pipeline_bindings_resolve(ps->bind_compute, "u_lifetime_range");
     ps->_loc_emit_budget   = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_budget");
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "push.view");
-    ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "push.proj");
-#else
-    ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "u_view");
-    ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "u_proj");
-#endif
+    /* particle.vert 在两后端同名：VK 布局把 view/proj 放 push 块（成员
+     * 前缀 push.），GL 布局是 loose uniform —— 计划 E Task 6：由
+     * caps.shader_variant 契约选择解析名。 */
+    if ((RHIShaderVariant)ps->caps.shader_variant == RHI_SHADER_VARIANT_GLSL_VK) {
+        ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "push.view");
+        ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "push.proj");
+    } else {
+        ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "u_view");
+        ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "u_proj");
+    }
 
     LOG_INFO("Particle system initialized (%u particles, compute-driven%s)",
              PARTICLES_MAX, ps->cull_ready ? ", GPU cull" : "");
@@ -299,41 +306,43 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
     rhi_cmd_bind_storage_buffer(cmd, ps->spawn_buf, 1);
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    if (ps->_loc_push_dt >= 0) {
-        /* R179: Build full 80-byte Push from live ps->* (not stale template),
-         * and upload in one blob — mat4 helper only copies 64 bytes.
-         * R444: first-class rhi_cmd_push_constants (was the uniform-bytes alias). */
-        f32 push_data[20];
-        memset(push_data, 0, sizeof(push_data));
-        push_data[0]  = dt;
-        push_data[1]  = ps->emit_rate;
-        push_data[2]  = (f32)budget;
-        push_data[4]  = ps->emit_pos[0];
-        push_data[5]  = ps->emit_pos[1];
-        push_data[6]  = ps->emit_pos[2];
-        push_data[7]  = ps->gravity;
-        push_data[8]  = ps->emit_vel_min[0];
-        push_data[9]  = ps->emit_vel_min[1];
-        push_data[10] = ps->emit_vel_min[2];
-        push_data[12] = ps->emit_vel_max[0];
-        push_data[13] = ps->emit_vel_max[1];
-        push_data[14] = ps->emit_vel_max[2];
-        push_data[15] = ps->lifetime_min;
-        push_data[19] = ps->lifetime_range;
-        rhi_cmd_push_constants(cmd, (u32)ps->_loc_push_dt, push_data, (u32)sizeof(push_data));
+    /* particle_update.comp 的 VK 布局消费单个 80 字节 push 块，GL 布局是
+     * loose uniform —— 计划 E Task 6：由 caps.shader_variant 契约选择。 */
+    if ((RHIShaderVariant)ps->caps.shader_variant == RHI_SHADER_VARIANT_GLSL_VK) {
+        if (ps->_loc_push_dt >= 0) {
+            /* R179: Build full 80-byte Push from live ps->* (not stale template),
+             * and upload in one blob — mat4 helper only copies 64 bytes.
+             * R444: first-class rhi_cmd_push_constants (was the uniform-bytes alias). */
+            f32 push_data[20];
+            memset(push_data, 0, sizeof(push_data));
+            push_data[0]  = dt;
+            push_data[1]  = ps->emit_rate;
+            push_data[2]  = (f32)budget;
+            push_data[4]  = ps->emit_pos[0];
+            push_data[5]  = ps->emit_pos[1];
+            push_data[6]  = ps->emit_pos[2];
+            push_data[7]  = ps->gravity;
+            push_data[8]  = ps->emit_vel_min[0];
+            push_data[9]  = ps->emit_vel_min[1];
+            push_data[10] = ps->emit_vel_min[2];
+            push_data[12] = ps->emit_vel_max[0];
+            push_data[13] = ps->emit_vel_max[1];
+            push_data[14] = ps->emit_vel_max[2];
+            push_data[15] = ps->lifetime_min;
+            push_data[19] = ps->lifetime_range;
+            rhi_cmd_push_constants(cmd, (u32)ps->_loc_push_dt, push_data, (u32)sizeof(push_data));
+        }
+    } else {
+        if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);
+        if (ps->_loc_emit_rate >= 0)     rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_rate, ps->emit_rate);
+        if (ps->_loc_emit_budget >= 0)   rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_budget, (f32)budget);
+        if (ps->_loc_emit_pos >= 0)      rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_pos, ps->emit_pos[0], ps->emit_pos[1], ps->emit_pos[2]);
+        if (ps->_loc_gravity >= 0)       rhi_cmd_set_uniform_f32(cmd, ps->_loc_gravity, ps->gravity);
+        if (ps->_loc_emit_vel_min >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_min, ps->emit_vel_min[0], ps->emit_vel_min[1], ps->emit_vel_min[2]);
+        if (ps->_loc_emit_vel_max >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_max, ps->emit_vel_max[0], ps->emit_vel_max[1], ps->emit_vel_max[2]);
+        if (ps->_loc_lifetime_min >= 0)  rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_min, ps->lifetime_min);
+        if (ps->_loc_lifetime_range >= 0) rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_range, ps->lifetime_range);
     }
-#else
-    if (ps->_loc_dt >= 0)            rhi_cmd_set_uniform_f32(cmd, ps->_loc_dt, dt);
-    if (ps->_loc_emit_rate >= 0)     rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_rate, ps->emit_rate);
-    if (ps->_loc_emit_budget >= 0)   rhi_cmd_set_uniform_f32(cmd, ps->_loc_emit_budget, (f32)budget);
-    if (ps->_loc_emit_pos >= 0)      rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_pos, ps->emit_pos[0], ps->emit_pos[1], ps->emit_pos[2]);
-    if (ps->_loc_gravity >= 0)       rhi_cmd_set_uniform_f32(cmd, ps->_loc_gravity, ps->gravity);
-    if (ps->_loc_emit_vel_min >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_min, ps->emit_vel_min[0], ps->emit_vel_min[1], ps->emit_vel_min[2]);
-    if (ps->_loc_emit_vel_max >= 0)  rhi_cmd_set_uniform_vec3(cmd, ps->_loc_emit_vel_max, ps->emit_vel_max[0], ps->emit_vel_max[1], ps->emit_vel_max[2]);
-    if (ps->_loc_lifetime_min >= 0)  rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_min, ps->lifetime_min);
-    if (ps->_loc_lifetime_range >= 0) rhi_cmd_set_uniform_f32(cmd, ps->_loc_lifetime_range, ps->lifetime_range);
-#endif
 
     rhi_cmd_dispatch(cmd, PARTICLES_MAX / 256, 1, 1);
     rhi_cmd_memory_barrier(cmd);

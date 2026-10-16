@@ -203,6 +203,12 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         return;
     }
 
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps))
+        memset(&caps, 0, sizeof(caps));
+
     /* Allocate G-Buffer attachments. */
     defrd_alloc_targets(sys, dev, width, height);
 
@@ -224,25 +230,21 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         gbuf_desc.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
         gbuf_desc.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        sys->gbuffer_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_vk.vert", "shaders/gbuffer_vk.frag", &gbuf_desc);
-#else
-        sys->gbuffer_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer.vert", "shaders/gbuffer.frag", &gbuf_desc);
-#endif
+        if (shader_variant_path("shaders/gbuffer.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) &&
+            shader_variant_path("shaders/gbuffer.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+            sys->gbuffer_pipeline = defrd_compile_pipeline(
+                dev, vs_path, fs_path, &gbuf_desc);
+        else
+            LOG_WARN("deferred: gbuffer shader variant path failed");
 
         /* R442: texture-array variant for the material-indirect single-
          * execute mega draw (same MRT render-pass compat via mrt_formats).
          * Optional: a missing/failed shader leaves the handle invalid and the
          * caller keeps the per-group path — not fatal for deferred_init. */
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_arr_vk.vert", "shaders/gbuffer_arr_vk.frag", &gbuf_desc);
-#else
-        sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_arr.vert", "shaders/gbuffer_arr.frag", &gbuf_desc);
-#endif
+        if (shader_variant_path("shaders/gbuffer_arr.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) &&
+            shader_variant_path("shaders/gbuffer_arr.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+            sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
+                dev, vs_path, fs_path, &gbuf_desc);
         if (!rhi_handle_valid(sys->gbuffer_arr_pipeline))
             LOG_WARN("deferred: gbuffer_arr pipeline unavailable -- array path disabled");
 
@@ -254,13 +256,11 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         skinned_desc.vertex_stride      = 16u * sizeof(f32); /* pos3+normal3+uv2+joints4+weights4 = 16 floats = 64B */
         skinned_desc.skinned_vertex     = true;
         skinned_desc.uses_texel_buffer  = true;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_skinned_vk.vert", "shaders/gbuffer_skinned_vk.frag", &skinned_desc);
-#else
-        sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
-            dev, "shaders/gbuffer_skinned.vert", "shaders/gbuffer.frag", &skinned_desc);
-#endif
+        /* VK lane reuses the base gbuffer.frag here (both pre-change
+         * branches load it unsuffixed) — only the vertex stage varies. */
+        if (shader_variant_path("shaders/gbuffer_skinned.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)))
+            sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
+                dev, vs_path, "shaders/gbuffer.frag", &skinned_desc);
         if (!rhi_handle_valid(sys->gbuffer_skinned_pipeline))
             LOG_WARN("deferred: gbuffer_skinned pipeline unavailable -- skinned geometry skipped");
     }
@@ -275,15 +275,12 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         light_desc.depth_write_disable = true;
         light_desc.disable_culling    = true;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        sys->lighting_pipeline = defrd_compile_pipeline(
-            dev, "shaders/deferred_light_vk.vert", "shaders/deferred_light_vk.frag",
-            &light_desc);
-#else
-        sys->lighting_pipeline = defrd_compile_pipeline(
-            dev, "shaders/deferred_light.vert", "shaders/deferred_light.frag",
-            &light_desc);
-#endif
+        if (shader_variant_path("shaders/deferred_light.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) &&
+            shader_variant_path("shaders/deferred_light.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+            sys->lighting_pipeline = defrd_compile_pipeline(
+                dev, vs_path, fs_path, &light_desc);
+        else
+            LOG_WARN("deferred: lighting shader variant path failed");
     }
 
     /* Sampler used to bind G-Buffer textures during the lighting pass. */
@@ -586,15 +583,14 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
                             RHITexture ssao_tex) {
     if (!sys || !dev || !sys->initialized) return;
 
-#ifdef ENGINE_VULKAN
-    /* R560: the G-Buffer MRT pass ends with the shared depth in
-     * DEPTH_STENCIL_READ_ONLY_OPTIMAL (the MRT FBO's finalLayout), while the
-     * IBL descriptor below declares every image SHADER_READ_ONLY_OPTIMAL.
-     * Vulkan validates the descriptor layout against the tracked layout even
-     * though both are read-only, so re-issue one idempotent transition before
-     * binding the textures. GL has no layout tracking and this is a no-op. */
+    /* R560: the G-Buffer MRT pass ends with the shared depth in a read-only
+     * layout, while the IBL descriptors below declare every image
+     * shader-readable. Backends that track image layouts validate the
+     * descriptor layout against the tracked layout even though both are
+     * read-only, so re-issue one idempotent transition before binding the
+     * textures; layout-less backends make this a no-op
+     * (rhi_cmd_transition_depth_to_read). */
     rhi_cmd_transition_depth_to_read(cmd, sys->gbuf_depth);
-#endif
 
     rhi_cmd_bind_pipeline(cmd, sys->lighting_pipeline);
 

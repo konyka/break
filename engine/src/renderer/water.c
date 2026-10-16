@@ -24,13 +24,17 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forwa
     usize vs_len = 0, fs_len = 0;
     char *vs_src = NULL, *fs_src = NULL;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    vs_src = shader_read_file("shaders/water_vk.vert", &vs_len);
-    fs_src = shader_read_file("shaders/water_vk.frag", &fs_len);
-#else
-    vs_src = shader_read_file("shaders/water.vert", &vs_len);
-    fs_src = shader_read_file("shaders/water.frag", &fs_len);
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/water.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/water.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("Water: capability query or shader variant path failed");
+        return false;
+    }
+    vs_src = shader_read_file(vs_path, &vs_len);
+    fs_src = shader_read_file(fs_path, &fs_len);
 
     if (!vs_src || !fs_src) {
         LOG_WARN("Water shaders not found");

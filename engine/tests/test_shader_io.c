@@ -738,8 +738,9 @@ TEST(deferred_skinned_gbuffer_contract)
 
     ASSERT_TRUE(read_engine_source("renderer/deferred.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "gbuffer_skinned_pipeline"));
-    ASSERT_NOT_NULL(strstr(src, "shaders/gbuffer_skinned_vk.vert"));
-    ASSERT_NOT_NULL(strstr(src, "shaders/gbuffer_skinned.vert"));
+    /* 计划 E Task 6 F2 迁移后基名经 shader_variant_path 派生 _vk 变体；
+     * 断言改为钉住新接线（基名 + caps.shader_variant 驱动）。 */
+    ASSERT_NOT_NULL(strstr(src, "shader_variant_path(\"shaders/gbuffer_skinned.vert\""));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
 
@@ -1713,6 +1714,102 @@ TEST(vk_push_tables_match_reflection)
                        m->offset + (u32)delta, pin[i].legacy);
             }
             ASSERT_EQ(m->offset + (u32)delta, pin[i].legacy);
+        }
+    }
+
+    /* 计划 E Task 6 Step 1：RHIPipelineDesc 布局布尔 ↔ 契约 shader ↔
+     * 反射布局三方闭环。5c-2a 删除 rhi_vk.c 手写布局表后，四个 *_layout
+     * 字段在 rhi_vk.c 只被复制进 pipeline desc（write-only——原读者即被删
+     * 的表）；本段是它们成文的真实消费证明：每个字段命名一个 shader
+     * 家族的 push 布局契约，断言 (1) renderer 源码经 shader_variant_path
+     * 加载该家族基名并设置字段（字段→shader），(2) 该家族每个 _vk 文件
+     * 的非 pad 反射成员都被本 gate 的期望 offset 表行精确覆盖——直接条目
+     * offset 严格相等（shader→反射布局）。 */
+    {
+        static const struct {
+            const char *field;    /* RHIPipelineDesc 字段名 */
+            const char *producer; /* 设置字段的 renderer 源（相对 engine/src） */
+            const char *wiring;   /* 源码字段赋值片段 */
+            const char *base;     /* shader_variant_path 基名 */
+            const char *files[2]; /* 布局契约 _vk 文件（NULL 结尾） */
+        } layouts[] = {
+            { "terrain_layout", "renderer/terrain.c",
+              ".terrain_layout", "shaders/terrain.vert",
+              { "terrain_vk.vert", "terrain_vk.frag" } },
+            { "water_layout", "renderer/water.c",
+              ".water_layout", "shaders/water.vert",
+              { "water_vk.vert", "water_vk.frag" } },
+            { "combined_aa_layout", "renderer/combined_post_process.c",
+              ".combined_aa_layout", "shaders/combined_taa_fxaa.frag",
+              { "combined_taa_fxaa_vk.frag", NULL } },
+            { "combined_color_layout", "renderer/combined_post_process.c",
+              ".combined_color_layout", "shaders/combined_color.frag",
+              { "combined_color_vk.frag", NULL } },
+        };
+        static char producer_src[65536];
+        char base_needle[96];
+        for (usize li = 0u; li < sizeof(layouts) / sizeof(layouts[0]); li++) {
+            usize file_rows = 0u;
+            ASSERT_TRUE(read_engine_source(layouts[li].producer, producer_src,
+                                           sizeof(producer_src)));
+            if (strstr(producer_src, layouts[li].wiring) == NULL) {
+                printf("  FAIL: %s does not set %s\n",
+                       layouts[li].producer, layouts[li].field);
+            }
+            ASSERT_NOT_NULL(strstr(producer_src, layouts[li].wiring));
+            snprintf(base_needle, sizeof(base_needle),
+                     "shader_variant_path(\"%s\"", layouts[li].base);
+            if (strstr(producer_src, base_needle) == NULL) {
+                printf("  FAIL: %s does not load %s via shader_variant_path\n",
+                       layouts[li].producer, layouts[li].base);
+            }
+            ASSERT_NOT_NULL(strstr(producer_src, base_needle));
+            for (usize fi = 0u; fi < 2u && layouts[li].files[fi] != NULL; fi++) {
+                usize non_pad = 0u;
+                ASSERT_TRUE(read_shader_source(layouts[li].files[fi], src,
+                                               sizeof(src)));
+                n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+                ASSERT_TRUE(n > 0u);
+                for (usize j = 0u; j < n; j++) {
+                    bool covered = false;
+                    if (strncmp(members[j].name, "_pad", 4u) == 0) continue;
+                    non_pad++;
+                    for (usize k = 0u; k < row_count && !covered; k++) {
+                        if (strcmp(rows[k].file, layouts[li].files[fi]) != 0) continue;
+                        if (strcmp(rows[k].member, members[j].name) != 0) continue;
+                        covered = rows[k].offset >= members[j].offset &&
+                                  rows[k].offset < members[j].offset + members[j].size;
+                        if (covered && strcmp(rows[k].vk_name, rows[k].member) == 0 &&
+                            rows[k].offset != members[j].offset) {
+                            printf("  FAIL: %s: direct row %s@%u != reflected @%u\n",
+                                   layouts[li].files[fi], rows[k].vk_name,
+                                   rows[k].offset, members[j].offset);
+                        }
+                        ASSERT_TRUE(!covered ||
+                                    strcmp(rows[k].vk_name, rows[k].member) != 0 ||
+                                    rows[k].offset == members[j].offset);
+                    }
+                    if (!covered) {
+                        printf("  FAIL: layout %s: %s member '%s'@%u"
+                               " not covered by expectation rows\n",
+                               layouts[li].field, layouts[li].files[fi],
+                               members[j].name, members[j].offset);
+                    }
+                    ASSERT_TRUE(covered);
+                }
+                for (usize k = 0u; k < row_count; k++) {
+                    if (strcmp(rows[k].file, layouts[li].files[fi]) == 0) file_rows++;
+                }
+                if (non_pad == 0u) {
+                    printf("  FAIL: layout %s: %s reflected no non-pad members\n",
+                           layouts[li].field, layouts[li].files[fi]);
+                }
+                ASSERT_TRUE(non_pad > 0u);
+            }
+            if (file_rows == 0u) {
+                printf("  FAIL: layout %s: no expectation rows\n", layouts[li].field);
+            }
+            ASSERT_TRUE(file_rows > 0u);
         }
     }
 }

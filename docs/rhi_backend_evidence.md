@@ -110,3 +110,8 @@
 |---|---|---|---|---|
 | 2026-10-16 | 本机（Windows） | NVIDIA GeForce RTX 4060 Laptop / api=1.4.351 driver=0x9a4a8000 | `ctest --test-dir build-vk -R '^test_vulkan$' --output-on-failure`（日志 `.superpowers/sdd/2026-10-14-rhi-plan-e-renderer-abi/evidence/task4_post_test_vulkan.txt`） | VK 本机 LIVE：C-TEX-1（含 RGBA8/UNDEFINED 两缺口 phase）/C-TEX-2/C-TEX-3 全 `PASSED ✓`，VALIDATION GATE 0 messages，**零后端修复**（契约钉死收敛；VK `rhi_texture_upload_mip` 的 mip extent/对齐与 GL `glTexSubImage2D` level 目标两处已知风险点经 oracle 验证本就正确，仅 GL 侧留 CI 复核）；RESULT 签名与 Task 3 基线完全一致（唯一差异 = 新增两行 PASS；GOLDEN×2 MAE=28.75/13.54 逐位不变，前置本机漂移，权威在 CI）；已知 §7 Hi-Z {0,0} 偶发今日率升高（含本 diff 6/9 vs 无 diff 对照 3/5，A/B 无显著差 → 机器/驱动当日状态，非本 diff 回归；失败签名与既往相同，复跑后绿） |
 | 待 CI | GitHub Actions | CI `gl` lane（Xvfb 真 GL） | 同 repo push 后 gl lane `test_vulkan` | GL lane 验证项（本机无可运行 GL，不伪造）：三 phase 均为双后端共享代码路径（仅 shader 源 `#ifdef ENGINE_VULKAN` set= 差异，照 hi_z_generate.comp 头部约定）；重点复核 GL `rhi_texture_upload_mip` 的 `glTexSubImage2D` level 目标与单 mip `glTextureView` 采样路径（本机仅代码审查：level/extent/size 校验与 `GL_TEXTURE_2D` level 目标正确） |
+
+
+## 风险登记（计划 E Task 6：Hi-Z，2026-10-16）
+
+- Hi-Z {1,1} / VK_ERROR_DEVICE_LOST（NVIDIA 616.56 混合 GPU）——未在健康设备复现，按 spec §7 不作为源码修复依据；`TV_ONLY_PSHADOW`/`TV_ONLY_GBUFFER` 隔离 gate 保留。

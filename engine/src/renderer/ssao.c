@@ -47,13 +47,18 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     ssao->radius = 0.5f;
     ssao->bias = 0.025f;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    ssao->ssao_pipe = ssao_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssao_vk.frag");
-    ssao->blur_pipe = ssao_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssao_blur_vk.frag");
-#else
-    ssao->ssao_pipe = ssao_create_pipe(dev, "shaders/post.vert", "shaders/ssao.frag");
-    ssao->blur_pipe = ssao_create_pipe(dev, "shaders/post.vert", "shaders/ssao_blur.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96], blur_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/ssao.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)) ||
+        !shader_variant_path("shaders/ssao_blur.frag", (RHIShaderVariant)caps.shader_variant, blur_path, sizeof(blur_path))) {
+        LOG_WARN("SSAO: capability query or shader variant path failed");
+        return false;
+    }
+    ssao->ssao_pipe = ssao_create_pipe(dev, vs_path, fs_path);
+    ssao->blur_pipe = ssao_create_pipe(dev, vs_path, blur_path);
 
     if (!rhi_handle_valid(ssao->ssao_pipe) || !rhi_handle_valid(ssao->blur_pipe)) {
         LOG_WARN("SSAO: pipeline creation failed");

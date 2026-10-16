@@ -47,11 +47,16 @@ bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    s->pipe = dv_create_pipe(dev, "shaders/post_vk.vert", "shaders/debug_viz_vk.frag");
-#else
-    s->pipe = dv_create_pipe(dev, "shaders/post.vert", "shaders/debug_viz.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/debug_viz.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("DebugViz: capability query or shader variant path failed");
+        return false;
+    }
+    s->pipe = dv_create_pipe(dev, vs_path, fs_path);
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("DebugViz: pipeline creation failed");

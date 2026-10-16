@@ -59,6 +59,9 @@ typedef struct {
 
     /* Pre-built push constant template (Round 18) — only [0] (dt) changes per frame */
     f32 _push_template[20];
+    /* 计划 E Task 6：init 时缓存的设备能力契约（shader_variant 驱动
+     * per-frame 的 push 块 vs loose uniform 写入分支）。 */
+    RHICapabilities caps;
 } ParticleSystem;
 
 bool  particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt);

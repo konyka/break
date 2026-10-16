@@ -48,23 +48,32 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     pp->bloom_strength = 0.15f; /* R446: default tuned down -- the composite chain only became visible in R445, 0.4 haze-washed the whole frame */
     pp->threshold = 1.0f;
 
-    pp->extract_pipe = pp_create_pipe(dev,
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        "shaders/post_vk.vert", "shaders/bloom_extract_vk.frag");
-#else
-        "shaders/post.vert", "shaders/bloom_extract.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path))) {
+        LOG_WARN("PostProcess: capability query or shader variant path failed");
+        return false;
+    }
+
+    if (!shader_variant_path("shaders/bloom_extract.frag", (RHIShaderVariant)caps.shader_variant,
+                             fs_path, sizeof(fs_path))) {
+        LOG_WARN("PostProcess: shader variant path failed");
+        return false;
+    }
+    pp->extract_pipe = pp_create_pipe(dev, vs_path, fs_path);
     if (!rhi_handle_valid(pp->extract_pipe)) {
         LOG_WARN("PostProcess: extract pipeline failed");
         return false;
     }
 
-    pp->blur_pipe = pp_create_pipe(dev,
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        "shaders/post_vk.vert", "shaders/bloom_blur_vk.frag");
-#else
-        "shaders/post.vert", "shaders/bloom_blur.frag");
-#endif
+    if (!shader_variant_path("shaders/bloom_blur.frag", (RHIShaderVariant)caps.shader_variant,
+                             fs_path, sizeof(fs_path))) {
+        LOG_WARN("PostProcess: shader variant path failed");
+        return false;
+    }
+    pp->blur_pipe = pp_create_pipe(dev, vs_path, fs_path);
     if (!rhi_handle_valid(pp->blur_pipe)) {
         LOG_WARN("PostProcess: blur pipeline failed");
         /* R354: extract_pipe already live — mirror FBO failure shutdown. */
@@ -72,24 +81,24 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    pp->tex_pipe = pp_create_pipe(dev,
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        "shaders/post_vk.vert", "shaders/post_tex_vk.frag");
-#else
-        "shaders/post.vert", "shaders/post_tex.frag");
-#endif
+    if (!shader_variant_path("shaders/post_tex.frag", (RHIShaderVariant)caps.shader_variant,
+                             fs_path, sizeof(fs_path))) {
+        LOG_WARN("PostProcess: shader variant path failed");
+        return false;
+    }
+    pp->tex_pipe = pp_create_pipe(dev, vs_path, fs_path);
     if (!rhi_handle_valid(pp->tex_pipe)) {
         LOG_WARN("PostProcess: tex pipeline failed");
         post_process_shutdown(pp);
         return false;
     }
 
-    pp->composite_pipe = pp_create_pipe(dev,
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        "shaders/post_vk.vert", "shaders/bloom_composite_vk.frag");
-#else
-        "shaders/post.vert", "shaders/bloom_composite.frag");
-#endif
+    if (!shader_variant_path("shaders/bloom_composite.frag", (RHIShaderVariant)caps.shader_variant,
+                             fs_path, sizeof(fs_path))) {
+        LOG_WARN("PostProcess: shader variant path failed");
+        return false;
+    }
+    pp->composite_pipe = pp_create_pipe(dev, vs_path, fs_path);
     if (!rhi_handle_valid(pp->composite_pipe)) {
         LOG_WARN("PostProcess: composite pipeline failed");
         post_process_shutdown(pp);

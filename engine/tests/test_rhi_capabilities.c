@@ -1163,6 +1163,27 @@ TEST(pipeline_bindings_fail_closed_on_stub_and_null)
     rhi_pipeline_bindings_destroy(NULL, NULL); /* 无崩溃 */
 }
 
+/* 计划 E Task 6 Step 1：RHIPipelineDesc pipeline-contract 字段的
+ * headless 默认值契约。布局布尔默认 false（0 = 不声明专用 push 布局），
+ * color_format 默认 R8G8B8A8_UNORM（== 0，swapchain pass），MRT 计数
+ * 默认 0（单目标）。字段的真实消费证明在 test_shader_io.c 的
+ * pipeline_layout 闭环 gate（test_shader_io.c
+ * vk_push_tables_match_reflection 尾段）。 */
+TEST(pipeline_desc_contract_fields_have_defined_defaults)
+{
+    RHIPipelineDesc desc;
+    memset(&desc, 0, sizeof(desc));
+    ASSERT_EQ((int)desc.color_format, (int)RHI_FORMAT_R8G8B8A8_UNORM); /* 0 = swapchain pass */
+    ASSERT_EQ(desc.mrt_attachment_count, 0u);
+    ASSERT_FALSE(desc.terrain_layout);
+    ASSERT_FALSE(desc.water_layout);
+    ASSERT_FALSE(desc.combined_aa_layout);
+    ASSERT_FALSE(desc.combined_color_layout);
+    ASSERT_FALSE(rhi_handle_valid(rhi_pipeline_create(NULL, &desc)));
+    /* MRT 校验保持既有规则（与 rhi_mrt_formats_valid 一致）。 */
+    ASSERT_FALSE(rhi_mrt_formats_valid(NULL, 0u));
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(resource_handles_are_scoped_to_their_device);
     RUN_TEST(acceleration_structure_descriptor_validation);
@@ -1221,4 +1242,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(plan_e_capability_fields_default_closed_on_stub);
     RUN_TEST(create_compiled_rejects_null_handles_and_zero_dims);
     RUN_TEST(pipeline_bindings_fail_closed_on_stub_and_null);
+    RUN_TEST(pipeline_desc_contract_fields_have_defined_defaults);
 TEST_MAIN_END()

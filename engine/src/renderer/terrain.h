@@ -30,6 +30,9 @@ typedef struct {
     i32        *_flatten_indices;
     f32        *_flatten_dists;
     u32         _flatten_cap;
+    /* 计划 E Task 6：init 时缓存的设备能力契约（shader_variant 驱动
+     * per-frame 的 fog 打包写入分支）。 */
+    RHICapabilities caps;
 } Terrain;
 
 bool  terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 height_scale,

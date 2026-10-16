@@ -126,16 +126,18 @@ void point_shadow_init(PointShadowSystem *sys, RHIDevice *dev, u32 resolution) {
         sys->cubemap_fbos[i] = rhi_cubemap_depth_fbo_create(dev, sys->resolution);
     }
 
-    /* Depth-only pipeline: linear distance is written by the fragment shader. */
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    sys->depth_pipeline = ps_create_pipeline(dev,
-        "shaders/point_shadow_depth_vk.vert",
-        "shaders/point_shadow_depth_vk.frag");
-#else
-    sys->depth_pipeline = ps_create_pipeline(dev,
-        "shaders/point_shadow_depth.vert",
-        "shaders/point_shadow_depth.frag");
-#endif
+    /* Depth-only pipeline: linear distance is written by the fragment shader.
+     * 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/point_shadow_depth.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/point_shadow_depth.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        sys->loc_model = sys->loc_mvp = sys->loc_light_pos = sys->loc_far_plane = -1;
+        LOG_WARN("PointShadow: capability query or shader variant path failed");
+    } else {
+        sys->depth_pipeline = ps_create_pipeline(dev, vs_path, fs_path);
+    }
 
     if (rhi_handle_valid(sys->depth_pipeline)) {
         /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_model/u_mvp/

@@ -51,11 +51,16 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
     lf->device = dev;
     lf->intensity = 0.5f;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    lf->lf_pipe = lf_create_pipe(dev, "shaders/post_vk.vert", "shaders/lens_flare_vk.frag");
-#else
-    lf->lf_pipe = lf_create_pipe(dev, "shaders/post.vert", "shaders/lens_flare.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/lens_flare.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("LensFlare: capability query or shader variant path failed");
+        return false;
+    }
+    lf->lf_pipe = lf_create_pipe(dev, vs_path, fs_path);
 
     if (!rhi_handle_valid(lf->lf_pipe)) {
         LOG_WARN("LensFlare: pipeline creation failed");

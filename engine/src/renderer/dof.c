@@ -47,11 +47,16 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     dof->focus_dist = -1.0f;
     dof->focus_range = 5.0f;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    dof->dof_pipe = dof_create_pipe(dev, "shaders/post_vk.vert", "shaders/dof_vk.frag");
-#else
-    dof->dof_pipe = dof_create_pipe(dev, "shaders/post.vert", "shaders/dof.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/dof.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("DOF: capability query or shader variant path failed");
+        return false;
+    }
+    dof->dof_pipe = dof_create_pipe(dev, vs_path, fs_path);
 
     if (!rhi_handle_valid(dof->dof_pipe)) {
         LOG_WARN("DOF: pipeline creation failed");

@@ -264,26 +264,38 @@ typedef struct {
     bool is_shadow_depth;
     bool wireframe;
     bool point_list;             /* R168-C: POINT_LIST topology (particles) */
-    /* Dedicated Vulkan push-constant layouts (see rhi_pipeline_get_uniform_location).
-     * Ignored by the GL backend, which reflects uniform names directly. */
-    bool terrain_layout;
-    bool water_layout;
-    bool combined_aa_layout;     /* combined_taa_fxaa_vk.frag push block */
-    bool combined_color_layout;  /* combined_color_vk.frag push block */
+    /* 计划 E Task 6：pipeline 声明其 push 块布局契约；后端据此建立绑定
+     * （VK 真实消费：rhi_vk.c vk_push_alias_rows 的打包别名行服务于这些
+     * 布局家族；GL 忽略——按 uniform 名直接反射，无布局概念）。
+     * 5c-2a 删除 rhi_vk.c 手写布局表后这些字段暂无运行时读者（原读者
+     * 即被删的表）；其成文的真实消费是 test_shader_io.c
+     * vk_push_tables_match_reflection 尾段的「字段 → shader → 反射布局」
+     * 三方闭环断言；默认 false 由 test_rhi_capabilities.c
+     * pipeline_desc_contract_fields_have_defined_defaults 钉死。 */
+    bool terrain_layout;         /* terrain_vk.vert/.frag 的 push 布局契约 */
+    bool water_layout;           /* water_vk.vert/.frag 的 push 布局契约 */
+    bool combined_aa_layout;     /* combined_taa_fxaa_vk.frag 的 push 布局契约 */
+    bool combined_color_layout;  /* combined_color_vk.frag 的 push 布局契约 */
     /* Color attachment format of the render target this pipeline draws into.
-     * Used by the Vulkan backend for render-pass compatibility: a pipeline must
-     * be created against a render pass whose color format matches the FBO it is
-     * bound in. The default value (RHI_FORMAT_R8G8B8A8_UNORM == 0) selects the
-     * swapchain pass; set RHI_FORMAT_R16G16B16A16_SFLOAT for the HDR scene FBO.
-     * Ignored by the GL backend. */
+     * 契约：pipeline 声明其绘制目标的颜色格式，后端据此保证
+     * render-pass 兼容——pipeline 必须对着与所绑 FBO 颜色格式一致的
+     * pass 构建（VK 真实消费；GL 忽略——帧缓冲格式由 FBO 绑定决定，
+     * 无 render-pass 兼容约束）。The default value
+     * (RHI_FORMAT_R8G8B8A8_UNORM == 0) selects the swapchain pass; set
+     * RHI_FORMAT_R16G16B16A16_SFLOAT for the HDR scene FBO. 默认值契约由
+     * test_rhi_capabilities.c pipeline_desc_contract_fields_have_defined_defaults
+     * 钉死。 */
     RHIFormat color_format;
     /* Graphics attachment sample count. Zero means the legacy 1x target. */
     u32       sample_count;
-    /* R440: MRT (G-buffer) target description. When mrt_attachment_count > 1 the
-     * Vulkan backend builds the pipeline against a render pass with these color
-     * attachment formats (+ D32F depth), render-pass-compatible with the pass
-     * rhi_mrt_fbo_create builds for the same formats 閳?so every fragment output
-     * the shader writes has a real attachment. Ignored by the GL backend. */
+    /* R440: MRT (G-buffer) target description. 契约：当
+     * mrt_attachment_count > 1 时 pipeline 声明其绘制进一个带这些颜色
+     * 附件格式（+ D32F depth）的多附件渲染目标，与 rhi_mrt_fbo_create
+     * 对同格式构建的 pass render-pass 兼容——shader 写出的每个 fragment
+     * 输出都有真实附件（VK 真实消费：据此选 render pass；GL 忽略）。
+     * 默认 0/空由 test_rhi_capabilities.c
+     * pipeline_desc_contract_fields_have_defined_defaults +
+     * rhi_mrt_formats_valid 既有校验钉死。 */
     u32       mrt_attachment_count;
     RHIFormat mrt_formats[RHI_MRT_MAX_ATTACHMENTS];
 } RHIPipelineDesc;

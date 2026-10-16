@@ -45,11 +45,16 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
     memset(sys, 0, sizeof(*sys));
     sys->device = dev;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    sys->pipe = fv_create_pipe(dev, "shaders/post_vk.vert", "shaders/camera_velocity_vk.frag");
-#else
-    sys->pipe = fv_create_pipe(dev, "shaders/post.vert", "shaders/camera_velocity.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/camera_velocity.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("ForwardVelocity: capability query or shader variant path failed");
+        return false;
+    }
+    sys->pipe = fv_create_pipe(dev, vs_path, fs_path);
     if (!rhi_handle_valid(sys->pipe)) {
         LOG_WARN("ForwardVelocity: pipeline creation failed");
         return false;

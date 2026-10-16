@@ -75,6 +75,17 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
     memset(sys, 0, sizeof(*sys));
     sys->device = dev;
 
+    /* 计划 E Task 6：Hi-Z 能力契约。后端须声明 caps.hiz_supported 才启用
+     * GPU 剔除路径；不支持（或查询失败，fail-closed）→ init 失败，main.c
+     * 保持 CPU 视锥剔除回退（vis_task_fn 族）。本文件原无编译期后端
+     * 分支——该查询是其能力化成文形式（hi_z_generate.comp /
+     * occlusion_cull.comp 两后端同源）。 */
+    RHICapabilities caps;
+    if (!rhi_device_get_capabilities(dev, &caps) || !caps.hiz_supported) {
+        LOG_WARN("OcclusionCull: device does not report Hi-Z support");
+        return false;
+    }
+
     /* Calculate Hi-Z dimensions (half resolution is typical) */
     sys->hi_z_width  = width / 2;
     sys->hi_z_height = height / 2;

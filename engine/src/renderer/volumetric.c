@@ -52,11 +52,16 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
     vol->fog_color[1] = 0.55f;
     vol->fog_color[2] = 0.6f;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    vol->vol_pipe = vol_create_pipe(dev, "shaders/post_vk.vert", "shaders/volumetric_vk.frag");
-#else
-    vol->vol_pipe = vol_create_pipe(dev, "shaders/post.vert", "shaders/volumetric.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/volumetric.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("Volumetric: capability query or shader variant path failed");
+        return false;
+    }
+    vol->vol_pipe = vol_create_pipe(dev, vs_path, fs_path);
 
     if (!rhi_handle_valid(vol->vol_pipe)) {
         LOG_WARN("Volumetric: pipeline creation failed");

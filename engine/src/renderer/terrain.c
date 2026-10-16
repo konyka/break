@@ -2,9 +2,6 @@
 #include <core/log.h>
 #include <math/math.h>
 #include <core/shader_io.h>
-#if !defined(ENGINE_VULKAN) && !defined(ENGINE_SHADER_CORPUS_VK)
-#include <glad.h>
-#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,6 +111,10 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     t->device = dev;
     t->grid_size = grid_size;
     t->scale = scale;
+    /* 计划 E Task 6：缓存能力契约（shader_variant 驱动 shader 源选择与
+     * per-frame 的 fog 打包写入分支）。 */
+    if (!rhi_device_get_capabilities(dev, &t->caps))
+        memset(&t->caps, 0, sizeof(t->caps));
     t->inv_scale = (scale > 0.0f) ? 1.0f / scale : 0.0f;
     t->inv_nm1 = (f32)(grid_size - 1);
     t->height_scale = height_scale;
@@ -139,14 +140,15 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
     usize vs_len = 0, fs_len = 0;
     char *vs_src = NULL;
     char *fs_src = NULL;
-
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    vs_src = shader_read_file("shaders/terrain_vk.vert", &vs_len);
-    fs_src = shader_read_file("shaders/terrain_vk.frag", &fs_len);
-#else
-    vs_src = shader_read_file("shaders/terrain.vert", &vs_len);
-    fs_src = shader_read_file("shaders/terrain.frag", &fs_len);
-#endif
+    char vs_path[96], fs_path[96];
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    if (!shader_variant_path("shaders/terrain.vert", (RHIShaderVariant)t->caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/terrain.frag", (RHIShaderVariant)t->caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("Terrain: shader variant path failed — using blinn_phong");
+    } else {
+        vs_src = shader_read_file(vs_path, &vs_len);
+        fs_src = shader_read_file(fs_path, &fs_len);
+    }
 
     if (!vs_src || !fs_src) {
         free(vs_src); free(fs_src);
@@ -170,13 +172,12 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         usize bl_vs_len = 0, bl_fs_len = 0;
         char *bl_vs = NULL;
         char *bl_fs = NULL;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        bl_vs = shader_read_file("shaders/blinn_phong_vk.vert", &bl_vs_len);
-        bl_fs = shader_read_file("shaders/blinn_phong_vk.frag", &bl_fs_len);
-#else
-        bl_vs = shader_read_file("shaders/blinn_phong.vert", &bl_vs_len);
-        bl_fs = shader_read_file("shaders/blinn_phong.frag", &bl_fs_len);
-#endif
+        char bl_vs_path[96], bl_fs_path[96];
+        if (shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)t->caps.shader_variant, bl_vs_path, sizeof(bl_vs_path)) &&
+            shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)t->caps.shader_variant, bl_fs_path, sizeof(bl_fs_path))) {
+            bl_vs = shader_read_file(bl_vs_path, &bl_vs_len);
+            bl_fs = shader_read_file(bl_fs_path, &bl_fs_len);
+        }
         vs = rhi_shader_create(dev, bl_vs, bl_vs_len, false);
         fs = rhi_shader_create(dev, bl_fs, bl_fs_len, true);
         free(bl_vs); free(bl_fs);
@@ -380,15 +381,17 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     }
     if (t->loc_light_color >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_light_color, 1.0f, 0.95f, 0.9f);
     if (t->loc_ambient >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
-    /* R225-B: VK packs fog_strength in u_camera_pos.w; GL uses u_fog_strength. */
     if (camera_pos) {
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        rhi_cmd_set_uniform_vec4(cmd, t->loc_camera_pos,
-                                 camera_pos[0], camera_pos[1], camera_pos[2], fog_strength);
-#else
-        rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos,
-                                 camera_pos[0], camera_pos[1], camera_pos[2]);
-#endif
+        /* R225-B: the VK-layout terrain shader packs fog_strength in
+         * u_camera_pos.w; the GL-layout shader uses a separate u_fog_strength.
+         * 计划 E Task 6：布局差异由 caps.shader_variant 契约表达。 */
+        if ((RHIShaderVariant)t->caps.shader_variant == RHI_SHADER_VARIANT_GLSL_VK) {
+            rhi_cmd_set_uniform_vec4(cmd, t->loc_camera_pos,
+                                     camera_pos[0], camera_pos[1], camera_pos[2], fog_strength);
+        } else {
+            rhi_cmd_set_uniform_vec3(cmd, t->loc_camera_pos,
+                                     camera_pos[0], camera_pos[1], camera_pos[2]);
+        }
     }
     if (t->loc_fog_strength >= 0) rhi_cmd_set_uniform_f32(cmd, t->loc_fog_strength, fog_strength);
     if (t->loc_albedo >= 0) rhi_cmd_set_uniform_i32(cmd, t->loc_albedo, 0);

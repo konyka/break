@@ -47,13 +47,18 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    s->h_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vk.frag");
-    s->v_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vertical_vk.frag");
-#else
-    s->h_pipe = sss_create_pipe(dev, "shaders/post.vert", "shaders/sss.frag");
-    s->v_pipe = sss_create_pipe(dev, "shaders/post.vert", "shaders/sss_vertical.frag");
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], h_path[96], v_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/sss.frag", (RHIShaderVariant)caps.shader_variant, h_path, sizeof(h_path)) ||
+        !shader_variant_path("shaders/sss_vertical.frag", (RHIShaderVariant)caps.shader_variant, v_path, sizeof(v_path))) {
+        LOG_WARN("SSS: capability query or shader variant path failed");
+        return false;
+    }
+    s->h_pipe = sss_create_pipe(dev, vs_path, h_path);
+    s->v_pipe = sss_create_pipe(dev, vs_path, v_path);
 
     if (!rhi_handle_valid(s->h_pipe) || !rhi_handle_valid(s->v_pipe)) {
         LOG_WARN("SSS: pipeline creation failed");

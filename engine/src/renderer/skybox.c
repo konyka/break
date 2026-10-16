@@ -13,13 +13,17 @@ bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt) {
     sb->ready = false;
 
     usize vs_len = 0, fs_len = 0;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    char *vs_src = shader_read_file("shaders/skybox_vk.vert", &vs_len);
-    char *fs_src = shader_read_file("shaders/skybox_vk.frag", &fs_len);
-#else
-    char *vs_src = shader_read_file("shaders/skybox.vert", &vs_len);
-    char *fs_src = shader_read_file("shaders/skybox.frag", &fs_len);
-#endif
+    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+    RHICapabilities caps;
+    char vs_path[96], fs_path[96];
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !shader_variant_path("shaders/skybox.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+        !shader_variant_path("shaders/skybox.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+        LOG_WARN("Skybox: capability query or shader variant path failed");
+        return false;
+    }
+    char *vs_src = shader_read_file(vs_path, &vs_len);
+    char *fs_src = shader_read_file(fs_path, &fs_len);
     if (!vs_src || !fs_src) {
         LOG_WARN("Skybox shaders not found");
         free(vs_src);
