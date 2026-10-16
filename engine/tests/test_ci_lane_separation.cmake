@@ -59,6 +59,11 @@ endif()
 
 # 3. Evidence register: native-Metal rows exist and carry no MoltenVK
 # receipt (the register must not contain a row with both tokens).
+# Baseline-comparison phrasing is legitimate: BENCHMARK_COMPARABLE is
+# DEFINED against the same-host MoltenVK baseline (fps ratio >= 90%), so
+# the threshold arithmetic must be allowed on a native-Metal row. Scrub
+# those exact comparison tokens before the both-tokens scan; a row that
+# actually credits a MoltenVK run as Metal evidence still matches.
 string(FIND "${ev}" "macOS × 原生 Metal" ev_metal_row)
 if(ev_metal_row EQUAL -1)
     contract_fail("evidence register missing 'macOS × 原生 Metal' row")
@@ -70,7 +75,11 @@ endif()
 if(ev_ios_row EQUAL -1)
     contract_fail("evidence register missing iOS native Metal row")
 endif()
-string(REGEX MATCHALL "[^\n]*原生 Metal[^\n]*MoltenVK[^\n]*" bad_rows "${ev}")
+set(ev_scrubbed "${ev}")
+foreach(baseline_token "同机 MoltenVK 基线" "MoltenVK 基线" "MoltenVK fps_avg")
+    string(REPLACE "${baseline_token}" "" ev_scrubbed "${ev_scrubbed}")
+endforeach()
+string(REGEX MATCHALL "[^\n]*原生 Metal[^\n]*MoltenVK[^\n]*" bad_rows "${ev_scrubbed}")
 list(LENGTH bad_rows bad_count)
 if(NOT bad_count EQUAL 0)
     contract_fail("evidence register attaches MoltenVK receipt to a native-Metal row")

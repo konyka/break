@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-10-16T09:27:00Z",
+  "platform": "macos",
+  "os_version": "macOS 26.7.1 (25G241)",
+  "backend": "vulkan-moltenvk",
+  "gpu": "Apple M2 (G14)",
+  "driver_version": "MoltenVK (brew, Vulkan API 1.4.0, portability) via vulkan-loader 1.4.363 / Metal 4 runtime",
+  "cpu": "8-core Apple M2 (4P+4E)",
+  "ram": "8 GiB",
+  "build_commit": "bc1e5481a214ab504e3c2f16f1403708bd77e665",
+  "build_config": "Release",
+  "command": "BREAK_BENCH_STATS=600 caffeinate -i ./build-rel-vk/engine_demo --frames 600 (cwd=engine, 1280x720, vsync off, same default scene as the metal run)",
+  "metrics": {
+    "fps_avg": 49.57,
+    "fps_p1": 41.66,
+    "frame_ms_avg": 20.172,
+    "frame_ms_p99": 24.006
+  },
+  "evidence_level": "GPU_RUNTIME",
+  "runner": "LAN Mac mini (M2), ssh batch, otherwise idle GPU; MoltenVK baseline for the macOS x native Metal BENCHMARK_COMPARABLE verdict"
+}

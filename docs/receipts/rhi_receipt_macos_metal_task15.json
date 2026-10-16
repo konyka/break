@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-10-16T09:27:00Z",
+  "platform": "macos",
+  "os_version": "macOS 26.7.1 (25G241)",
+  "backend": "metal",
+  "gpu": "Apple M2 (G14)",
+  "driver_version": "Metal 4 runtime (macOS 26.7.1; Xcode SDK 26.5)",
+  "cpu": "8-core Apple M2 (4P+4E)",
+  "ram": "8 GiB",
+  "build_commit": "bc1e5481a214ab504e3c2f16f1403708bd77e665",
+  "build_config": "Release",
+  "command": "BREAK_BENCH_STATS=600 caffeinate -i ./build-rel-metal/engine_demo --frames 600 (cwd=engine, 1280x720, vsync off, same default scene as the MoltenVK baseline run)",
+  "metrics": {
+    "fps_avg": 50.05,
+    "fps_p1": 41.96,
+    "frame_ms_avg": 19.981,
+    "frame_ms_p99": 23.833
+  },
+  "evidence_level": "BENCHMARK_COMPARABLE",
+  "runner": "LAN Mac mini (M2), ssh batch, otherwise idle GPU; baseline: docs/receipts/rhi_receipt_macos_moltenvk_task15.json (fps_avg ratio 50.05/49.57 = 1.010 >= 0.90)"
+}

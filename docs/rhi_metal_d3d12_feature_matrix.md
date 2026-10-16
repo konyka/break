@@ -15,7 +15,7 @@
 | Present damage / buffer age | 不支持（CAMetalLayer 无 damage/buffer-age 机制，capability 恒 false——fail-closed 非降级） | HEADLESS（计划 D Task 4：RHIPresentRect→dirty rects 已接线（top-left 原点同约定，x/y/w/h → left/top/right/bottom 角点换算），但本机 FLIP_DISCARD/FLIP_SEQUENTIAL 下 dirty-rect Present1 均被运行时以 DXGI_ERROR_INVALID_CALL 拒绝 → 自动回落 full-surface present；damage 仅为优化，不回传失败） |
 | 验证 gate | GPU_RUNTIME（`METAL_DEVICE_WRAPPER_TYPE=1` 全量 smoke 例行——Task 11 起证明是 encoder-state 缺陷唯一可靠观测） | GPU_RUNTIME（计划 D Task 8：`ENGINE_D3D12_DEBUG`（Debug 默认 ON，可显式覆盖）启用 debug layer + GPU-based validation；DRED（auto breadcrumbs + page fault）全配置强制；PIX 捕获 runbook 见 `docs/rhi_rollback_runbook.md`） |
 | Shader 路径 | GPU_RUNTIME（计划 C Task 10：GLSL→SPIR-V(glslc)→MSL(spirv-cross)→`xcrun metal`→`engine.metallib` + FNV manifest（109 条目含 21 运行时 define 变体）；**不用 metal-shaderconverter**（Apple 闭源不可 pin）） | HLSL → DXIL 已落地（GPU_RUNTIME）：手写 HLSL 旁挂（`engine/shaders/*_hlsl.{vert,frag}`，blit/myui 管线，sibling 断言禁静默跳过）+ 构建期 dxc 编译 DXIL SM 6.0（vendored `external/VulkanSDK/Bin/dxc.exe` 优先，CI 用 Windows SDK 自带 dxc）；HLSL 文本反射 → root 绑定 / uniform 偏移表 |
-| 当前证据等级 | GPU_RUNTIME（M2 真机收据）+ COMPILED（CI macos-metal lane 首跑） | GPU_RUNTIME（本机 RTX 4060 Laptop，2026-10-15：device/swapchain/pipeline/shader/dxr 契约 + WARP floor（gpu=WARP）6/6 绿；收据见 `docs/rhi_backend_evidence.md` 计划 D 收据追加） |
+| 当前证据等级 | BENCHMARK_COMPARABLE（M2 真机，2026-10-16：metal fps_avg = 同机 MoltenVK 基线 101% ≥ 90% 阈值；收据 `docs/receipts/rhi_receipt_macos_metal_task15.json`）+ GPU_RUNTIME（M2 真机收据）+ COMPILED（CI macos-metal lane） | GPU_RUNTIME（本机 RTX 4060 Laptop，2026-10-15：device/swapchain/pipeline/shader/dxr 契约 + WARP floor（gpu=WARP）6/6 绿；收据见 `docs/rhi_backend_evidence.md` 计划 D 收据追加） |
 
 ## D3D12 决策记录（计划 D Task 4）
 

@@ -376,31 +376,49 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
 共同保证 shader 资源永不落到 AS 槽。
 
 
-## Task 14 移交清单（归 Task 15）
+## Task 14 移交清单（Task 15 处置完毕，2026-10-16）
 
-1. **spvBufferSizeConstants（P0）**：spirv-cross 为 SSBO `.length()` 生成的
-   buffer-size 常数表（index 25，particle_update/particle_cull/particle.vert±MRT）
-   无绑定路径——validation 下 dispatch 硬断言；非 validation 下粒子模拟跳过
-   （冻结）。破局思路（评审）：MetalBuffer 自持字节数，stride 可经 SPIR-V
-   反射在 pipeline 创建时求得，RHI 侧可能无需扩 manifest。
-2. **rhi_cmd_bind_material_textures**：terrain 唯一贴图通道（terrain.c:388-394），
-   Metal 下地形/阴影贴图实际不生效（非"日志噪声"，排期提升）。
-3. **defrd_inject_define**：与 shader_inject_define 字节等价仅在 #version-首行
-   成立——Task 15 删除前者复用后者。
-4. **indirect_count 阴影**：`rhi_cmd_draw_indexed_indirect_count` 无 Metal 等价，
-   unified shadow compaction 的绘制阶段整段 no-op（CSM/点影深度图当前不完整；
-   Task 15 评估 MTLIndirectCommandBuffer 或 CPU count 读取回退）。
-5. **y-flip 未验证**：Metal 禁止负高 viewport，NDC +Y 朝上——画面朝向未做
-   像素级取证（Task 15 截图核验）。
-6. **binder stub 面**：material_textures*/texel_buffers/shadow_viewport/
-   transition_depth_to_read/set_depth_*/set_cull_face/clear_color_attachment 等。
+1. **spvBufferSizeConstants（P0，已修）**：MetalShader/MetalPipeline 在 shader
+   创建时从 MSL 文本解析 buffer-size 常数表（alias→signature buffer(N) 映射）；
+   cmd 记录 storage 绑定（generation 校验句柄），dispatch 重放绑定（I2 同规则）
+   并经 setBytes 把各 SSBO 字节数喂到 buffer(25)；graphics 管线带 bsc 声明时
+   vertex stage 重放 SSBO + setVertexBytes。缺绑定 fail-closed。TDD：
+   `buffer_size_constants_fed_to_kernel` 红（readback 无写入）→绿；M2 上
+   42/42（含 METAL_DEVICE_WRAPPER_TYPE=1）。（commit 74cb7723）
+2. **rhi_cmd_bind_material_textures（已修，低成本）**：VK 9 槽契约照搬
+   （albedo/shadow/mr/normal/emissive/ssao + IBL 槽 albedo 兜底，单一 combined
+   sampler），terrain 贴图通道生效（commit f7bf5c7c）。**_ibl 变体未修**：
+   14 参数含 cubemap + 点影数组语义，排期见第 6 项。
+3. **defrd_inject_define（已删）**：复用 `shader_inject_define`（#version 扫描版），
+   消除首行切分的字节等价脆弱点（commit 74cb7723）。
+4. **indirect_count 阴影（维持 fail-closed，留缺口）**：
+   `rhi_cmd_draw_indexed_indirect_count` 无 Metal 等价，MTLIndirectCommandBuffer
+   是另一套编码模型、软件 count 展开需回读（引入同步点）——成本均超本计划
+   余量。如实登记：CSM/点影 unified shadow compaction 绘制阶段在 Metal 下
+   no-op（LOG_ERROR），CSM/点影深度图为引擎功能缺口。
+5. **y-flip（已取证 + 修 readback）**：present 朝向正确（GL 约定：NDC +Y 朝上、
+   正视口；VK 走负视口高度故其 readback 天然 bottom-up）。`rhi_screenshot`
+   曾以 top-down 交付违反 GL bottom-up 契约（main.c BMP 写出依赖之），
+   已在后端翻转行序（commit bc1e5481）；修复后 Metal 与 MoltenVK 的
+   BREAK_SCREENSHOT 截图朝向一致（逐像素 + 目视）。注意
+   `rhi_texture_read_pixels` 仍是 top-down（测试用中心像素，方向无关）——
+   若未来有引擎消费方依赖 bottom-up 需另评。
+6. **binder stub 面（部分修，部分留）**：已修 `bind_textures_multi`（postfx
+   TAA/SSR/DoF 等 sampler 绑定，commit f7bf5c7c）与 `bind_material_textures`。
+   遗留（LOG_ERROR fail-loud，不构成崩溃）：`bind_material_textures_ibl`
+   （PBR 贴图路径——Metal demo 当前以 fallback 贴图渲染）、
+   `bind_texel_buffers`（clustered 光照数据）、`set_shadow_viewport`、
+   `transition_depth_to_read`、`clear_color_attachment`/`clear_depth`（命令级，
+   已有 pass 级等价物兜底）、`set_depth_func_*`/`set_cull_face`（encoder 态）。
+   engine_demo 在 METAL_DEVICE_WRAPPER_TYPE=1 下 --frames 10 退出 0（附
+   pixelFormat 变体缓存：postfx 管线声明 BGRA8 却绘入 R16F FBO 的引擎级
+   UB——VK/D3D12 驱动容忍、Metal validation 拒绝——后端按 open pass 实际
+   color0 重建管线态，见 f7bf5c7c）。
 7. **M4（iOS 量程）**：texture flatten 公式上界 34（set2b2）超 iOS [[texture]]
    上限 31——iOS lane 启用渲染前需复评乘数（当前 iOS 仅 build-only 证据）。
 8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
    时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释），
    `xcrun metal` SDK 切 `iphoneos`。
-9. **iOS lifecycle 缺口（评审 I-2 降级登记）**：需求书原要求 ios lane 含
-   「模拟器启动一个最小 harness」的 lifecycle 证据；交付判定补 simctl
-   boot+install(+launch) 对无 iOS harness 的裸 CMake .app 成本高且证据价值
-   有限，lane/台账/注释三处标注已降级为「compile only」。Task 15 评估最小
-   simctl 步骤（boot+install 可不 launch）或确认维持 compile-only 定位。
+9. **iOS lifecycle 缺口（维持登记，不修）**：ios lane 三处标注为「compile
+   only」；Task 15 评估结论维持——无 iOS harness 的裸 CMake .app 的 simctl
+   boot+install 证据价值边际，后续若要 lifecycle 收据需先做最小 iOS harness。
