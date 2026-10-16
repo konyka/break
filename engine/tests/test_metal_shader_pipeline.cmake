@@ -25,7 +25,8 @@ function(expect_file_contains path token)
     endif()
 endfunction()
 
-# 1. Pipeline script: GLSL -> SPIR-V -> MSL -> air -> metallib.
+# 1. Pipeline script: GLSL -> SPIR-V -> MSL -> air -> metallib, with the
+# Task 11 runtime define-injection variant enumeration.
 set(script "${REPO_ROOT}/engine/tools/compile_metal_shaders.sh")
 expect_file_contains("${script}" "glslc --target-env=vulkan1.2")
 expect_file_contains("${script}" "spirv-cross")
@@ -35,6 +36,12 @@ expect_file_contains("${script}" "xcrun -sdk")
 expect_file_contains("${script}" "metallib")
 # Resource remap: binding flattening must be explicit, never silent.
 expect_file_contains("${script}" "--msl-decoration-binding")
+# Task 11: runtime define variants (shader_inject_define call sites).
+expect_file_contains("${script}" "inject_defines")
+expect_file_contains("${script}" "FORWARD_MRT")
+expect_file_contains("${script}" "HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT")
+expect_file_contains("${script}" "CLUSTERED_ARR")
+expect_file_contains("${script}" "variants/")
 
 # 2. Manifest generator: shares the header's FNV-1a 64 (no private copy)
 # and emits the static table.

@@ -93,11 +93,74 @@ fixup_push() {
     mv "$_msl.fixed" "$_msl"
 }
 
+# Task 11: runtime define-injection variants. The engine injects defines
+# into shader texts at runtime (core/shader_io.c shader_inject_define:
+# insert "#define NAME 1\n" immediately after the first #version line;
+# chained injections re-insert at the same head, so the final order is the
+# REVERSE of the call order). rhi_shader_create hashes the INJECTED text,
+# so the offline pipeline must compile each variant and the manifest key
+# must be the hash of byte-identical injected text. This awk port replicates
+# the injection byte-for-byte (all corpus shaders start with #version and
+# end with a newline, so the no-trailing-newline lead case never fires).
+inject_defines() {
+    _src="$1"; _dst="$2"; _defs="$3"   # defs: comma-separated, call order
+    awk -v defs="$_defs" '
+        BEGIN { n = split(defs, d, ","); injected = 0 }
+        {
+            if (!injected && $0 ~ /^[ \t]*#version[ \t]/) {
+                print
+                for (i = n; i >= 1; --i) print "#define " d[i] " 1"
+                injected = 1
+                next
+            }
+            print
+        }
+        END {
+            if (!injected) {
+                print "inject_defines: no #version line in source" > "/dev/stderr"
+                exit 1
+            }
+        }
+    ' "$_src" > "$_dst"
+}
+
+# Actual define combinations triggered by engine call sites (grep
+# shader_inject_define engine/src/main.c engine/src/renderer/*.c — the
+# contract test pins this list). Row: <file> <comma-separated defines in
+# call order>. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
+# FORWARD_MRT (main.c:491-498), and the texture-array path appends
+# CLUSTERED_ARR (main.c:535).
+VARIANTS='
+blinn_phong_vk.vert FORWARD_MRT
+blinn_phong_vk.frag FORWARD_MRT
+blinn_phong_arr_vk.vert FORWARD_MRT
+blinn_phong_arr_vk.frag FORWARD_MRT
+pbr_clustered_vk.vert FORWARD_MRT
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR
+pbr_clustered_inst_vk.vert FORWARD_MRT
+pbr_clustered_skin_vk.vert FORWARD_MRT
+pbr_clustered_arr_vk.vert FORWARD_MRT
+instanced_vk.vert FORWARD_MRT
+instanced_vk.frag FORWARD_MRT
+skinned_vk.vert FORWARD_MRT
+skinned_vk.frag FORWARD_MRT
+skybox_vk.frag FORWARD_MRT
+terrain_vk.vert FORWARD_MRT
+terrain_vk.frag FORWARD_MRT
+water_vk.vert FORWARD_MRT
+water_vk.frag FORWARD_MRT
+particle.vert FORWARD_MRT
+particle.frag FORWARD_MRT
+'
+
 process_one() {
     _src="$1"; _stage="$2"; _model="$3"   # e.g. vert/vertex
     base=$(basename "$_src")              # e.g. blinn_phong_vk.vert
     case "$base" in
         *_vk.*) name=${base%_vk.*} ;;     # blinn_phong
+        *.vert) name=${base%.vert} ;;     # particle (shared source)
+        *.frag) name=${base%.frag} ;;
         *.comp) name=${base%.comp} ;;     # cull
     esac
     entry="${name}_${_stage}"
@@ -122,6 +185,57 @@ for src in "$SHADER_DIR"/*.comp; do
     [ -e "$src" ] || continue
     case "$src" in *_gl.comp) continue ;; esac
     process_one "$src" comp kernel
+done
+# Shared-source graphics shaders used by the Vulkan path without a _vk
+# variant (particles), so the Metal pipeline needs them too (Task 11).
+for src in particle.vert particle.frag; do
+    [ -e "$SHADER_DIR/$src" ] || continue
+    case "$src" in
+        *.vert) p_stage=vert; p_model=vertex ;;
+        *.frag) p_stage=frag; p_model=fragment ;;
+    esac
+    process_one "$SHADER_DIR/$src" "$p_stage" "$p_model"
+done
+
+# Task 11: runtime define-injection variants. Variant texts live in
+# $OUT_DIR/variants (gen_metal_shader_manifest hashes them from there).
+mkdir -p "$OUT_DIR/variants"
+echo "$VARIANTS" | while read -r vfile vdefs; do
+    [ -n "$vfile" ] || continue
+    [ -f "$SHADER_DIR/$vfile" ] || {
+        echo "variant source missing: $vfile" >&2
+        exit 1
+    }
+    vbase=$(basename "$vfile")
+    case "$vbase" in
+        *_vk.*) vname=${vbase%_vk.*} ;;
+        *.vert) vname=${vbase%.vert} ;;
+        *.frag) vname=${vbase%.frag} ;;
+        *.comp) vname=${vbase%.comp} ;;
+    esac
+    case "$vbase" in
+        *.vert) vstage=vert ;;
+        *.frag) vstage=frag ;;
+        *.comp) vstage=comp ;;
+    esac
+    vsuffix=$(printf '%s' "$vdefs" | tr 'A-Z,' 'a-z_')
+    ventry="${vname}_${vstage}__${vsuffix}"
+    vtext="$OUT_DIR/variants/$vbase.$vsuffix"
+    inject_defines "$SHADER_DIR/$vbase" "$vtext" "$vdefs"
+    flatten_glsl "$vtext" "$OUT_DIR/tmp/$vbase.$vsuffix.flat" \
+        "$OUT_DIR/tmp/$vbase.$vsuffix.push"
+    vpush_type=$(cat "$OUT_DIR/tmp/$vbase.$vsuffix.push")
+    glslc --target-env=vulkan1.2 -fshader-stage="$vstage" \
+        "$OUT_DIR/tmp/$vbase.$vsuffix.flat" -o "$OUT_DIR/spv/$vbase.$vsuffix.spv"
+    spirv-cross "$OUT_DIR/spv/$vbase.$vsuffix.spv" --msl --msl-version 20300 \
+        --msl-decoration-binding \
+        --rename-entry-point main "$ventry" "$vstage" \
+        --output "$OUT_DIR/msl/$ventry.metal"
+    fixup_push "$OUT_DIR/msl/$ventry.metal" "$vpush_type"
+    xcrun -sdk "$SDK" metal -c "$OUT_DIR/msl/$ventry.metal" \
+        -o "$OUT_DIR/air/$ventry.air"
+    printf 'variants/%s %s\n' "$vbase.$vsuffix" "$ventry" \
+        >> "$OUT_DIR/manifest.lines"
 done
 xcrun -sdk "$SDK" metallib "$OUT_DIR"/air/*.air -o "$OUT_DIR/engine.metallib"
 echo "metal shader pipeline: $(wc -l < "$OUT_DIR/manifest.lines" | tr -d ' ') shaders -> $OUT_DIR/engine.metallib"

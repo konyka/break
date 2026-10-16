@@ -277,6 +277,7 @@ struct RHICmdBuffer {
     f32 clear_color[4];           /* pending/next clear color (MTLClearColor) */
     bool clear_pending;           /* next render pass opens with LoadActionClear */
     bool render_pass_open;
+    bool push_dirty;              /* staging holds bytes not yet flushed */
     u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
     RHIHandle pass_target;        /* fb handle of the bound target */
     u32 pass_w, pass_h;
@@ -410,8 +411,11 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
         NSString *lib_path =
             [dir stringByAppendingPathComponent:@"engine.metallib"];
         NSError *err = nil;
-        /* newLibraryWithFile: returns +1 (new* rule). */
-        mb->library = [device newLibraryWithFile:lib_path error:&err];
+        /* newLibraryWithFile: returns +1 (new* rule); deprecated since
+         * macOS 13 in favor of the URL form. */
+        mb->library = [device
+            newLibraryWithURL:[NSURL fileURLWithPath:lib_path]
+                        error:&err];
         if (mb->library == nil) {
             LOG_WARN("rhi_metal: engine.metallib unavailable (%s) — embedded "
                      "MSL fallback active",
@@ -657,6 +661,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->bound_pipeline = RHI_HANDLE_NULL;
     cmd->index_buffer = RHI_HANDLE_NULL;
     cmd->pending_count = 0;   /* gpu timer samples never cross frames */
+    cmd->push_dirty = false;
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -2158,6 +2163,8 @@ void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) 
 
 /* Shared draw guards: open render pass + bound graphics pipeline; returns
  * the payload (NULL after logging on failure). */
+static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp);
+
 static MetalPipeline *metal_draw_ready(RHICmdBuffer *cmd, const char *what) {
     MetalPipeline *pp;
     if (cmd == NULL || cmd->render_encoder == nil || !cmd->render_pass_open) {
@@ -2183,6 +2190,7 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     if (vertex_count == 0u || instance_count == 0u) return;   /* VK no-op parity */
     pp = metal_draw_ready(cmd, "draw");
     if (pp == NULL) return;
+    metal_flush_push(cmd, pp);
     [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
                             vertexStart:0u
                             vertexCount:(NSUInteger)vertex_count
@@ -2194,6 +2202,7 @@ void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count, 
     if (vertex_count == 0u || instance_count == 0u) return;
     pp = metal_draw_ready(cmd, "draw_base");
     if (pp == NULL) return;
+    metal_flush_push(cmd, pp);
     [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
                             vertexStart:(NSUInteger)first_vertex
                             vertexCount:(NSUInteger)vertex_count
@@ -2213,6 +2222,7 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
         LOG_ERROR("rhi_metal: draw_indexed without a bound index buffer");
         return;
     }
+    metal_flush_push(cmd, pp);
     [cmd->render_encoder drawIndexedPrimitives:metal_pipeline_prim(pp)
                                     indexCount:(NSUInteger)index_count
                                      indexType:(cmd->index_u32 ? MTLIndexTypeUInt32
@@ -2265,6 +2275,7 @@ void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 dr
         LOG_ERROR("rhi_metal: draw_indirect range overruns the arg buffer");
         return;
     }
+    metal_flush_push(cmd, pp);
     for (i = 0u; i < draw_count; ++i) {
         [cmd->render_encoder drawPrimitives:metal_pipeline_prim(pp)
                              indirectBuffer:ab->buffer
@@ -2304,6 +2315,7 @@ void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset
         LOG_ERROR("rhi_metal: draw_indexed_indirect range overruns the arg buffer");
         return;
     }
+    metal_flush_push(cmd, pp);
     for (i = 0u; i < draw_count; ++i) {
         [cmd->render_encoder
             drawIndexedPrimitives:metal_pipeline_prim(pp)
@@ -2427,82 +2439,557 @@ void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISa
 }
 
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_uniform_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)binding;
+    MetalPipeline *pp;
+    MetalBuffer *bb;
+    u32 set, index;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
+                                                 cmd->bound_pipeline,
+                                                 RHI_RES_PIPELINE);
+    if (pp == NULL) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL) return;
+    /* VK layout position of the aux UBO set (rhi_vk.c pipeline create):
+     * graphics = (uses_textures + uses_texel_buffer + uses_storage), so the
+     * shader's declared set matches its pipeline class; compute = 3.
+     * MSL index = set*8+binding (Task 10 flattening contract). */
+    if (pp->is_compute) {
+        id<MTLComputeCommandEncoder> enc;
+        set = 3u;
+        index = set * 8u + binding;
+        enc = metal_ensure_compute_encoder(cmd);
+        if (enc == nil) return;
+        [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)index];
+        return;
+    }
+    set = (pp->desc.uses_textures ? 1u : 0u) +
+          (pp->desc.uses_texel_buffer ? 1u : 0u) +
+          (pp->desc.uses_storage ? 1u : 0u);
+    index = set * 8u + binding;
+    if (cmd->render_encoder == nil) {
+        LOG_ERROR("rhi_metal: bind_uniform_buffer without an open render pass");
+        return;
+    }
+    /* The flattened index is stage-agnostic; bind both stages so the UBO
+     * resolves wherever the shader declares it (VK single-descriptor-set
+     * parity). */
+    [cmd->render_encoder setVertexBuffer:bb->buffer
+                                  offset:0u
+                                 atIndex:(NSUInteger)index];
+    [cmd->render_encoder setFragmentBuffer:bb->buffer
+                                    offset:0u
+                                   atIndex:(NSUInteger)index];
+}
+
+/* ---- Task 11: push-constant staging ----
+ * 256B per-cmd staging (RHI_METAL_MAX_PUSH_BYTES; VK's 128B compute range
+ * is preserved). Writes validate against the bound pipeline's range and
+ * drop with LOG_WARN on overflow (rhi.h:573-580); the flush happens at
+ * draw/dispatch via set*Bytes:atIndex:29 (the Task 10 reserved push slot). */
+static u32 metal_push_range_for(const MetalPipeline *pp) {
+    return pp->is_compute ? 128u : RHI_METAL_MAX_PUSH_BYTES;
+}
+
+static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp) {
+    if (!cmd->push_dirty) return;
+    if (pp->is_compute) {
+        if (cmd->compute_encoder != nil) {
+            [cmd->compute_encoder setBytes:cmd->push_staging
+                                    length:128u
+                                   atIndex:29u];
+        }
+    } else if (cmd->render_encoder != nil) {
+        [cmd->render_encoder setVertexBytes:cmd->push_staging
+                                     length:RHI_METAL_MAX_PUSH_BYTES
+                                    atIndex:29u];
+        [cmd->render_encoder setFragmentBytes:cmd->push_staging
+                                       length:RHI_METAL_MAX_PUSH_BYTES
+                                      atIndex:29u];
+    }
+    cmd->push_dirty = false;
+}
+
+/* Stage a small uniform write (set_uniform_* helpers): negative locations
+ * drop silently (unknown name at the call site), range overflow drops with
+ * LOG_WARN — the VK VK_PUSH_HELPER_CHECK semantics. */
+static void metal_push_stage(RHICmdBuffer *cmd, i32 location,
+                             const void *data, u32 size) {
+    MetalPipeline *pp;
+    u32 range;
+    if (cmd == NULL || cmd->backend == NULL || data == NULL || location < 0)
+        return;
+    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
+                                                 cmd->bound_pipeline,
+                                                 RHI_RES_PIPELINE);
+    if (pp == NULL) return;
+    range = metal_push_range_for(pp);
+    if (!rhi_push_helper_range_ok(location, size, range)) {
+        LOG_WARN("rhi_metal: set_uniform offset %d+%u exceeds push range %u — dropped",
+                 location, (unsigned)size, (unsigned)range);
+        return;
+    }
+    memcpy(cmd->push_staging + location, data, (size_t)size);
+    cmd->push_dirty = true;
 }
 
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_mat4 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)m;
+    metal_push_stage(cmd, location, m, 64u);
 }
 
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_vec3 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)x;
-    (void)y;
-    (void)z;
+    f32 v[3];
+    v[0] = x; v[1] = y; v[2] = z;
+    metal_push_stage(cmd, location, v, 12u);
 }
 
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_vec2 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)x;
-    (void)y;
+    f32 v[2];
+    v[0] = x; v[1] = y;
+    metal_push_stage(cmd, location, v, 8u);
 }
 
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_vec4 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)x;
-    (void)y;
-    (void)z;
-    (void)w;
+    f32 v[4];
+    v[0] = x; v[1] = y; v[2] = z; v[3] = w;
+    metal_push_stage(cmd, location, v, 16u);
 }
 
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_f32 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)v;
+    metal_push_stage(cmd, location, &v, 4u);
 }
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_i32 not implemented");
-    (void)cmd;
-    (void)location;
-    (void)v;
+    metal_push_stage(cmd, location, &v, 4u);
 }
 
+/* R444: Push-constant upload, semantics aligned with vkCmdPushConstants
+ * (offset, size): validated against the bound pipeline's declared range;
+ * out-of-range writes drop with a warning instead of truncating at flush. */
 void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size) {
-    LOG_ERROR("rhi_metal: rhi_cmd_push_constants not implemented");
-    (void)cmd;
-    (void)offset;
-    (void)data;
-    (void)size;
+    MetalPipeline *pp;
+    u32 range;
+    if (cmd == NULL || cmd->backend == NULL || data == NULL || size == 0u)
+        return;
+    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
+                                                 cmd->bound_pipeline,
+                                                 RHI_RES_PIPELINE);
+    if (pp == NULL) return;
+    range = metal_push_range_for(pp);
+    if (!rhi_push_range_fits(offset, size, range)) {
+        LOG_WARN("rhi_metal: push constants [%u, +%u) exceed declared range %u — dropped",
+                 (unsigned)offset, (unsigned)size, (unsigned)range);
+        return;
+    }
+    memcpy(cmd->push_staging + offset, data, (size_t)size);
+    cmd->push_dirty = true;
 }
 
+/* R179/R444: deprecated alias of rhi_cmd_push_constants (location == byte offset). */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_uniform_bytes not implemented");
-    (void)cmd;
-    (void)location;
-    (void)data;
-    (void)size;
+    if (location < 0) return;
+    rhi_cmd_push_constants(cmd, (u32)location, data, size);
+}
+
+/* ---- Task 11: VK-identical push-constant byte offsets ----
+ * This cascade is a mechanical, line-by-line port of rhi_vk.c
+ * rhi_pipeline_get_uniform_location's table body (pd->X flags mapped to the
+ * retained RHIPipelineDesc fields). The two backends MUST return identical
+ * offsets for identical descs — the test_rhi_push_offset_dump golden block
+ * (VK backend) is diffed byte-empty against the Metal results in
+ * test_rhi_metal_resources. Any edit to the VK tables requires the same
+ * edit here plus a golden regen. */
+static i32 metal_uniform_location(const RHIPipelineDesc *desc, const char *name) {
+    /* R591 rule (vk pipeline create): the clustered-skinned variant rides
+     * the clustered uniform table, not the G-Buffer table. */
+    bool skinned_gbuffer = desc->skinned_vertex && desc->uses_texel_buffer &&
+                           !desc->is_instanced && !desc->uses_storage;
+    /* R560: skinned G-Buffer vertex stage — same 256B push block as
+     * gbuffer_vk.vert: u_model@0 u_view@64 u_proj@128 u_prev_mvp@192.
+     * Handled before the clustered classification so u_proj does not resolve
+     * to -1 (a texel-buffer pipeline would otherwise be taken as clustered). */
+    if (skinned_gbuffer) {
+        if (strcmp(name, "u_model") == 0)      return 0;
+        if (strcmp(name, "u_view") == 0)       return 64;
+        if (strcmp(name, "u_proj") == 0)       return 128;
+        if (strcmp(name, "u_prev_mvp") == 0)   return 192;
+        return -1;
+    }
+
+    bool clustered = desc->uses_texel_buffer && !desc->is_instanced;
+    bool non_clustered_tbo = desc->uses_texel_buffer && desc->is_instanced;
+
+    /* Terrain: model is identity (dropped). Push block (<=256B):
+     *   u_view@0 u_proj@64 u_light_vp@128
+     *   u_light_dir@192 u_shadow_bias@204  (packed vec4)
+     *   u_light_color@208 u_water_y@220    (packed vec4)
+     *   u_ambient@224 u_time@236           (packed vec4)
+     *   u_camera_pos@240                   (vec4) */
+    if (desc->terrain_layout) {
+        if (strcmp(name, "u_view") == 0)        return 0;
+        if (strcmp(name, "u_proj") == 0)        return 64;
+        if (strcmp(name, "u_light_vp") == 0)    return 128;
+        if (strcmp(name, "u_light_dir") == 0)   return 192;
+        if (strcmp(name, "u_shadow_bias") == 0) return 204;
+        if (strcmp(name, "u_light_color") == 0) return 208;
+        if (strcmp(name, "u_water_y") == 0)     return 220;
+        if (strcmp(name, "u_ambient") == 0)     return 224;
+        if (strcmp(name, "u_time") == 0)        return 236;
+        if (strcmp(name, "u_camera_pos") == 0)  return 240;
+        return -1; /* u_model, u_albedo (sampler) not push constants */
+    }
+    /* Water: no model. Push block (<=256B):
+     *   u_view@0 u_proj@64 u_light_vp@128
+     *   u_camera_pos@192 u_time@204    (packed vec4)
+     *   u_water_color@208 u_shadow_bias@220 (packed vec4)
+     *   u_water_y@224                  (vec4) */
+    if (desc->water_layout) {
+        if (strcmp(name, "u_view") == 0)         return 0;
+        if (strcmp(name, "u_proj") == 0)         return 64;
+        if (strcmp(name, "u_light_vp") == 0)     return 128;
+        if (strcmp(name, "u_camera_pos") == 0)   return 192;
+        if (strcmp(name, "u_time") == 0)         return 204;
+        if (strcmp(name, "u_water_color") == 0)  return 208;
+        if (strcmp(name, "u_shadow_bias") == 0)  return 220;
+        if (strcmp(name, "u_water_y") == 0)      return 224;
+        return -1;
+    }
+    /* R202-B: shadow depth pipelines (CSM depth_only + point_shadow_depth). */
+    if (desc->is_shadow_depth) {
+        if (strcmp(name, "u_model") == 0)      return 0;
+        if (strcmp(name, "u_light_vp") == 0)   return 64;  /* CSM */
+        if (strcmp(name, "u_mvp") == 0)        return 64;  /* point light */
+        if (strcmp(name, "u_light_pos") == 0)  return 128;
+        if (strcmp(name, "u_far_plane") == 0)  return 144;
+        return -1;
+    }
+    /* Combined TAA+FXAA (combined_taa_fxaa_vk.frag). Push block (<=256B):
+     *   u_taa_curr_vp@0 u_taa_prev_vp@64 u_taa_inv_proj@128
+     *   u_screen_w@192 u_screen_h@196 u_taa_blend@200
+     *   u_taa_first_frame@204 u_fxaa_threshold@208 u_taa_use_velocity@212 */
+    if (desc->combined_aa_layout) {
+        if (strcmp(name, "u_taa_curr_vp") == 0)     return 0;
+        if (strcmp(name, "u_taa_prev_vp") == 0)     return 64;
+        if (strcmp(name, "u_taa_inv_proj") == 0)    return 128;
+        if (strcmp(name, "u_screen_w") == 0)        return 192;
+        if (strcmp(name, "u_screen_h") == 0)        return 196;
+        if (strcmp(name, "u_taa_blend") == 0)       return 200;
+        if (strcmp(name, "u_taa_first_frame") == 0) return 204;
+        if (strcmp(name, "u_fxaa_threshold") == 0)  return 208;
+        if (strcmp(name, "u_taa_use_velocity") == 0) return 212;
+        return -1; /* samplers (curr/hist/depth/velocity) are not push constants */
+    }
+    /* Combined tonemap+colorgrade+cinematic (combined_color_vk.frag):
+     *   u_tm_exposure@0 u_tm_gamma@4 u_tm_mode@8
+     *   u_cg_saturation@12 u_cg_contrast@16 u_cg_brightness@20
+     *   u_cg_temperature@24 u_cg_tint@28
+     *   u_cine_aberration@32 u_cine_vignette@36 u_cine_grain@40 u_cine_time@44
+     *   u_screen_w@48 u_screen_h@52 */
+    if (desc->combined_color_layout) {
+        if (strcmp(name, "u_tm_exposure") == 0)    return 0;
+        if (strcmp(name, "u_tm_gamma") == 0)       return 4;
+        if (strcmp(name, "u_tm_mode") == 0)        return 8;
+        if (strcmp(name, "u_cg_saturation") == 0)  return 12;
+        if (strcmp(name, "u_cg_contrast") == 0)    return 16;
+        if (strcmp(name, "u_cg_brightness") == 0)  return 20;
+        if (strcmp(name, "u_cg_temperature") == 0) return 24;
+        if (strcmp(name, "u_cg_tint") == 0)        return 28;
+        if (strcmp(name, "u_cine_aberration") == 0) return 32;
+        if (strcmp(name, "u_cine_vignette") == 0)  return 36;
+        if (strcmp(name, "u_cine_grain") == 0)     return 40;
+        if (strcmp(name, "u_cine_time") == 0)      return 44;
+        if (strcmp(name, "u_screen_w") == 0)       return 48;
+        if (strcmp(name, "u_screen_h") == 0)       return 52;
+        return -1;
+    }
+
+    if (non_clustered_tbo) {
+        if (strcmp(name, "u_view") == 0)        return 0;
+        if (strcmp(name, "u_proj") == 0)        return 64;
+        if (strcmp(name, "u_light_dir") == 0)   return 128;
+        if (strcmp(name, "u_light_color") == 0) return 144;
+        if (strcmp(name, "u_ambient") == 0)     return 160;
+        if (strcmp(name, "u_camera_pos") == 0)  return 176;
+        return -1;
+    }
+    if (desc->is_compute) {
+        if (strcmp(name, "push.dt") == 0)           return 0;
+        if (strcmp(name, "push.view") == 0)         return 0;
+        if (strcmp(name, "push.proj") == 0)         return 64;
+        /* IBL compute shaders (irradiance & prefilter share push layout):
+         *   u_roughness@0  u_face@4  u_face_size/u_mip_size@8 */
+        if (strcmp(name, "u_roughness") == 0)       return 0;
+        if (strcmp(name, "u_face") == 0)            return 4;
+        if (strcmp(name, "u_face_size") == 0)       return 8;
+        if (strcmp(name, "u_mip_size") == 0)        return 8;
+        /* sky_to_cube.comp: shares u_face@4 / u_face_size@8 above, plus the
+         * sun vectors at aligned offsets 16 and 32. */
+        if (strcmp(name, "u_sun_dir") == 0)         return 16;
+        if (strcmp(name, "u_sun_color") == 0)       return 32;
+        /* cluster_cull.comp: mat4 vp@0, vec4 params0@64, vec4 params1@80. */
+        if (strcmp(name, "u_cc_vp") == 0)           return 0;
+        if (strcmp(name, "u_cc_params0") == 0)      return 64;
+        if (strcmp(name, "u_cc_params1") == 0)      return 80;
+        /* GPU culling (cull.comp / unified_cull.comp): mat4 vp@0, uint count@64 */
+        if (strcmp(name, "u_cull_vp") == 0)         return 0;
+        if (strcmp(name, "u_cull_count") == 0)      return 64;
+        if (strcmp(name, "u_cull_hi_z_width") == 0)  return 68;
+        if (strcmp(name, "u_cull_hi_z_height") == 0) return 72;
+        if (strcmp(name, "u_cull_use_hi_z") == 0)    return 76;
+        if (strcmp(name, "u_cull_write_draws") == 0) return 80;
+        /* Occlusion culling (occlusion_cull.comp): mat4 view_proj@0, uint object_count@64, float hi_z_width@68, float hi_z_height@72 */
+        if (strcmp(name, "pc_view_proj") == 0)       return 0;
+        if (strcmp(name, "pc_object_count") == 0)    return 64;
+        if (strcmp(name, "pc_hi_z_width") == 0)      return 68;
+        if (strcmp(name, "pc_hi_z_height") == 0)     return 72;
+        /* Hi-Z generation (hi_z_generate.comp): vec2 output_size@0 */
+        if (strcmp(name, "pc_output_size") == 0)     return 0;
+        /* Draw compaction (compact_draws.comp): uint total_draws@0 */
+        if (strcmp(name, "total_draws") == 0)       return 0;
+        return -1;
+    }
+    if (desc->uses_storage) {
+        if (strcmp(name, "push.view") == 0)         return 0;
+        if (strcmp(name, "push.proj") == 0)         return 64;
+        return -1;
+    }
+    /* R203-A: gbuffer_vk.vert packs prev@192; camera_velocity_vk packs prev@128.
+     * An unconditional 192 made the late return 128 dead and broke forward_velocity. */
+    if (strcmp(name, "u_prev_mvp") == 0)
+        return 192;
+    if (strcmp(name, "u_prev_vp") == 0)
+        return (desc->no_vertex_input) ? 128 : 192;
+    if (strcmp(name, "u_model") == 0)       return 0;
+    if (strcmp(name, "u_view") == 0)        return 64;
+    /* The clustered fragment shader drops the unused u_proj slot and reuses the
+     * freed 64 bytes for camera/ambient/fog/shadow params (see clustered map). */
+    if (strcmp(name, "u_proj") == 0)        return clustered ? -1 : 128;
+    /* R203-B: generic u_light_vp@64 aliased u_view. Real users are covered by
+     * terrain/water/is_shadow_depth layouts above — do not map here. */
+    if (strcmp(name, "u_vol_inv_proj") == 0)     return 0;
+    if (strcmp(name, "u_vol_view") == 0)         return 64;
+    if (strcmp(name, "u_vol_ldx") == 0)          return 128;
+    if (strcmp(name, "u_vol_ldy") == 0)          return 132;
+    if (strcmp(name, "u_vol_ldz") == 0)          return 136;
+    if (strcmp(name, "u_vol_lcx") == 0)          return 140;
+    if (strcmp(name, "u_vol_lcy") == 0)          return 144;
+    if (strcmp(name, "u_vol_lcz") == 0)          return 148;
+    if (strcmp(name, "u_vol_density") == 0)      return 152;
+    if (strcmp(name, "u_vol_fog_r") == 0)        return 156;
+    if (strcmp(name, "u_vol_fog_g") == 0)        return 160;
+    if (strcmp(name, "u_vol_fog_b") == 0)        return 164;
+    if (strcmp(name, "u_vol_sw") == 0)           return 168;
+    if (strcmp(name, "u_vol_sh") == 0)           return 172;
+    if (strcmp(name, "u_vol_inv_view") == 0)    return 176; /* R224-B */
+    if (strcmp(name, "u_lf_light_x") == 0)          return 0;
+    if (strcmp(name, "u_lf_light_y") == 0)          return 4;
+    if (strcmp(name, "u_lf_intensity") == 0)        return 8;
+    if (strcmp(name, "u_lf_sw") == 0)               return 12;
+    if (strcmp(name, "u_lf_sh") == 0)               return 16;
+    if (strcmp(name, "u_lf_lc_r") == 0)             return 20;
+    if (strcmp(name, "u_lf_lc_g") == 0)             return 24;
+    if (strcmp(name, "u_lf_lc_b") == 0)             return 28;
+    if (strcmp(name, "u_sun_dir") == 0)              return 128;
+    if (strcmp(name, "u_sun_color") == 0)            return 144;
+    if (strcmp(name, "u_ssgi_inv_proj") == 0)       return 0;
+    if (strcmp(name, "u_ssgi_proj") == 0)           return 64;
+    if (strcmp(name, "u_ssgi_radius") == 0)         return 128;
+    if (strcmp(name, "u_ssgi_intensity") == 0)      return 132;
+    if (strcmp(name, "u_ssgi_sw") == 0)             return 136;
+    if (strcmp(name, "u_ssgi_sh") == 0)             return 140;
+    if (strcmp(name, "u_fxaa_sw") == 0)            return 0;
+    if (strcmp(name, "u_fxaa_sh") == 0)            return 4;
+    /* R204-B: standalone tonemap_vk.frag layout (combined_color uses early map).
+     * Old mega-tonemap offsets (aberration@8 etc.) conflicted with screen_w/mode. */
+    if (strcmp(name, "u_tm_exposure") == 0)       return 0;
+    if (strcmp(name, "u_tm_gamma") == 0)           return 4;
+    if (strcmp(name, "u_tm_screen_w") == 0)         return 8;
+    if (strcmp(name, "u_tm_screen_h") == 0)         return 12;
+    if (strcmp(name, "u_cine_aberration") == 0)    return 0;
+    if (strcmp(name, "u_cine_vignette") == 0)    return 4;
+    if (strcmp(name, "u_cine_grain") == 0)       return 8;
+    if (strcmp(name, "u_cine_time") == 0)        return 12;
+    if (strcmp(name, "u_cine_sw") == 0)          return 16;
+    if (strcmp(name, "u_cine_sh") == 0)          return 20;
+    if (strcmp(name, "u_dof_focus") == 0)       return 0;
+    if (strcmp(name, "u_dof_range") == 0)       return 4;
+    if (strcmp(name, "u_dof_near") == 0)        return 8;
+    if (strcmp(name, "u_dof_far") == 0)         return 12;
+    if (strcmp(name, "u_dof_sw") == 0)          return 16;
+    if (strcmp(name, "u_dof_sh") == 0)          return 20;
+    if (strcmp(name, "u_ssr_proj") == 0)        return 0;
+    if (strcmp(name, "u_ssr_inv_proj") == 0)    return 64;
+    if (strcmp(name, "u_ssr_view") == 0)        return 128;
+    if (strcmp(name, "u_ssr_sw") == 0)          return 192;
+    if (strcmp(name, "u_ssr_sh") == 0)          return 196;
+    if (strcmp(name, "u_ssr_max_steps") == 0)   return 200;
+    if (strcmp(name, "u_ssr_stride") == 0)      return 204;
+    if (strcmp(name, "u_ssr_thickness") == 0)   return 208;
+    if (strcmp(name, "u_taa_curr_vp") == 0)     return 0;
+    if (strcmp(name, "u_taa_prev_vp") == 0)     return 64;
+    if (strcmp(name, "u_taa_inv_proj") == 0)    return 128;
+    if (strcmp(name, "u_taa_sw") == 0)          return 192;
+    if (strcmp(name, "u_taa_sh") == 0)          return 196;
+    if (strcmp(name, "u_taa_blend") == 0)       return 200;
+    if (strcmp(name, "u_taa_first_frame") == 0) return 204;
+    if (strcmp(name, "u_taa_use_velocity") == 0) return 208;
+    if (strcmp(name, "u_ssao_proj") == 0)       return 0;
+    if (strcmp(name, "u_ssao_inv_proj") == 0)   return 64;
+    if (strcmp(name, "u_ssao_sw") == 0)         return 128;
+    if (strcmp(name, "u_ssao_sh") == 0)         return 132;
+    if (strcmp(name, "u_ssao_radius") == 0)     return 136;
+    if (strcmp(name, "u_ssao_bias") == 0)       return 140;
+    /* Debug visualization overlay (debug_viz_vk.frag). */
+    if (strcmp(name, "u_dv_mode") == 0)         return 0;
+    if (strcmp(name, "u_dv_near") == 0)         return 4;
+    if (strcmp(name, "u_dv_far") == 0)          return 8;
+    if (strcmp(name, "u_dv_split0") == 0)       return 12;
+    if (strcmp(name, "u_dv_split1") == 0)       return 16;
+    if (strcmp(name, "u_dv_split2") == 0)       return 20;
+    if (strcmp(name, "u_dv_split3") == 0)       return 24;
+    /* Lens effects (lens_effects_vk.frag): chromatic aberration + vignette + grain. */
+    if (strcmp(name, "u_ca_strength") == 0)        return 0;
+    if (strcmp(name, "u_vignette_strength") == 0)  return 4;
+    if (strcmp(name, "u_vignette_softness") == 0)  return 8;
+    if (strcmp(name, "u_grain_strength") == 0)     return 12;
+    /* Sharpen (sharpen_vk.frag): CAS-style strength + screen size. */
+    if (strcmp(name, "u_sharp_strength") == 0)     return 0;
+    if (strcmp(name, "u_sharp_sw") == 0)           return 4;
+    if (strcmp(name, "u_sharp_sh") == 0)           return 8;
+    /* Upscale TSR (upscale_vk.frag). R197-A: locations were missing — all loc_*
+     * returned -1 so push constants never reached the shader. */
+    if (strcmp(name, "u_ups_rw") == 0)             return 0;
+    if (strcmp(name, "u_ups_rh") == 0)             return 4;
+    if (strcmp(name, "u_ups_dw") == 0)             return 8;
+    if (strcmp(name, "u_ups_dh") == 0)             return 12;
+    if (strcmp(name, "u_ups_sharp") == 0)          return 16;
+    if (strcmp(name, "u_ups_copy_only") == 0)      return 20;
+    if (strcmp(name, "u_ups_first_frame") == 0)    return 24;
+    if (strcmp(name, "u_ups_inv_proj") == 0)       return 32;
+    if (strcmp(name, "u_ups_prev_vp") == 0)        return 96;
+    /* R198-A: luminance_vk.frag auto-exposure — missing map froze adaptation. */
+    if (strcmp(name, "u_lum_w") == 0)              return 0;
+    if (strcmp(name, "u_lum_h") == 0)              return 4;
+    if (strcmp(name, "u_lum_speed") == 0)          return 8;
+    if (strcmp(name, "u_lum_dt") == 0)             return 12;
+    /* R198-B: god_rays_vk.frag — missing map zeroed sun/intensity. */
+    if (strcmp(name, "u_gr_sun_x") == 0)           return 0;
+    if (strcmp(name, "u_gr_sun_y") == 0)           return 4;
+    if (strcmp(name, "u_gr_intensity") == 0)       return 8;
+    if (strcmp(name, "u_gr_decay") == 0)           return 12;
+    if (strcmp(name, "u_gr_sw") == 0)              return 16;
+    if (strcmp(name, "u_gr_sh") == 0)              return 20;
+    /* R199-A: motion_blur_vk.frag — missing map zeroed strength/proj. */
+    if (strcmp(name, "u_mb_strength") == 0)        return 0;
+    if (strcmp(name, "u_mb_sw") == 0)              return 4;
+    if (strcmp(name, "u_mb_sh") == 0)              return 8;
+    if (strcmp(name, "u_mb_inv_proj") == 0)        return 12;
+    if (strcmp(name, "u_mb_prev_vp") == 0)         return 76;
+    if (strcmp(name, "u_mb_use_velocity") == 0)    return 140;
+    /* R199-B: contact_shadow_vk.frag — missing map zeroed light/proj. */
+    if (strcmp(name, "u_cs_light_x") == 0)         return 0;
+    if (strcmp(name, "u_cs_light_y") == 0)         return 4;
+    if (strcmp(name, "u_cs_light_z") == 0)         return 8;
+    if (strcmp(name, "u_cs_inv_proj") == 0)        return 12;
+    if (strcmp(name, "u_cs_sw") == 0)              return 76;
+    if (strcmp(name, "u_cs_sh") == 0)              return 80;
+    /* R200-A: color_grade_vk.frag standalone — combined_color_layout uses different offsets. */
+    if (strcmp(name, "u_cg_saturation") == 0)      return 0;
+    if (strcmp(name, "u_cg_contrast") == 0)        return 4;
+    if (strcmp(name, "u_cg_brightness") == 0)      return 8;
+    if (strcmp(name, "u_cg_temperature") == 0)     return 12;
+    if (strcmp(name, "u_cg_tint") == 0)            return 16;
+    /* R200-B: bloom extract/blur/composite — missing map killed bloom + SSGI blur. */
+    if (strcmp(name, "u_threshold") == 0)          return 0;
+    if (strcmp(name, "u_direction") == 0)          return 0; /* vec2 */
+    if (strcmp(name, "u_bloom_strength") == 0)     return 0;
+    /* R201-A: sss_vk / sss_vertical_vk — missing map → sw/sh=0 divide-by-zero. */
+    if (strcmp(name, "u_sss_strength") == 0)       return 0;
+    if (strcmp(name, "u_sss_sw") == 0)             return 4;
+    if (strcmp(name, "u_sss_sh") == 0)             return 8;
+    if (strcmp(name, "u_sss_max_dist") == 0)       return 12;
+    if (strcmp(name, "u_sssv_strength") == 0)      return 0;
+    if (strcmp(name, "u_sssv_sw") == 0)            return 4;
+    if (strcmp(name, "u_sssv_sh") == 0)            return 8;
+    if (strcmp(name, "u_sssv_max_dist") == 0)      return 12;
+    /* R201-B: fxaa_vk.frag standalone threshold (combined_aa uses offset 208). */
+    if (strcmp(name, "u_fxaa_threshold") == 0)     return 8;
+    /* Standalone tonemap_vk.frag mode (combined_color uses offset 8). */
+    if (strcmp(name, "u_tm_mode") == 0)            return 16;
+    if (strcmp(name, "u_view") == 0)        return 64;
+    if (strcmp(name, "u_proj") == 0)        return 128;
+    if (clustered) {
+        /* Layout matches pbr_clustered_vk.frag's push block (u_proj removed). */
+        /* R579-E: the model-matrix write must resolve or draws render with
+         * stale push garbage (the R579-B/C/E "zero fragments" final root
+         * cause). R586: the vert now declares only u_model@0/u_view@64 at
+         * these same offsets and reads proj from the aux UBO — the
+         * contradictory u_proj@128 vert layout is retired. */
+        if (strcmp(name, "u_model") == 0)      return 0;
+        if (strcmp(name, "u_camera_pos") == 0)  return 128;
+        if (strcmp(name, "u_fog_near") == 0)    return 140;
+        if (strcmp(name, "u_ambient") == 0)     return 144;
+        if (strcmp(name, "u_fog_far") == 0)     return 156;
+        if (strcmp(name, "u_screen_w") == 0)    return 160;
+        if (strcmp(name, "u_screen_h") == 0)    return 164;
+        if (strcmp(name, "u_near") == 0)        return 168;
+        if (strcmp(name, "u_far") == 0)         return 172;
+        if (strcmp(name, "u_point_count") == 0) return 176;
+        if (strcmp(name, "u_dir_count") == 0)   return 180;
+        if (strcmp(name, "u_shadow_bias") == 0) return 184;
+        if (strcmp(name, "u_fog_color") == 0)   return 192;
+        if (strcmp(name, "u_underwater") == 0)  return 204;
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 208;
+        if (strcmp(name, "u_pom_enabled") == 0) return 224;
+        if (strcmp(name, "u_occlusion_strength") == 0) return 228; /* R598 */
+        if (strcmp(name, "u_mr_factor") == 0)  return 232; /* R579 */
+        if (strcmp(name, "u_emissive_factor") == 0) return 240; /* R586 */
+    } else if (desc->no_vertex_input && desc->uses_texel_buffer && !desc->is_compute) {
+        /* deferred_light_vk: clustered lighting + IBL full-screen pass. */
+        if (strcmp(name, "u_inv_vp") == 0)       return 0;
+        if (strcmp(name, "u_view") == 0)         return 64;
+        if (strcmp(name, "u_camera_pos") == 0)   return 128;
+        if (strcmp(name, "u_screen_w") == 0)      return 144;
+        if (strcmp(name, "u_screen_h") == 0)      return 148;
+        if (strcmp(name, "u_near") == 0)          return 160;
+        if (strcmp(name, "u_far") == 0)           return 164;
+        if (strcmp(name, "u_shadow_bias") == 0)   return 168;
+        if (strcmp(name, "u_point_count") == 0)   return 176;
+        if (strcmp(name, "u_dir_count") == 0)     return 180;
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 184;
+    } else if (desc->no_vertex_input && !desc->uses_texel_buffer && !desc->is_compute) {
+        /* Other full-screen post passes (tonemap, fxaa, etc.). */
+        if (strcmp(name, "u_inv_vp") == 0)     return 0;
+        if (strcmp(name, "u_camera_pos") == 0) return 64;
+        if (strcmp(name, "u_screen_w") == 0)    return 80;
+        if (strcmp(name, "u_screen_h") == 0)    return 84;
+        /* R445: the skybox is also a no_vertex_input fullscreen pipeline and
+         * lands in this branch — its push block (skybox_vk.vert/.frag) is
+         * u_inv_proj@0 u_view@64 u_sun_dir@128 u_sun_color@144. u_inv_proj
+         * resolved below (shared return 0); without these, u_view/sun stayed
+         * at -1 and the VK sky sampled uninitialized push-constant garbage
+         * (static, sun-preset-immune haze). */
+        if (strcmp(name, "u_view") == 0)       return 64;
+        if (strcmp(name, "u_sun_dir") == 0)    return 128;
+        if (strcmp(name, "u_sun_color") == 0)  return 144;
+    } else {
+        if (strcmp(name, "u_light_dir") == 0)   return 192;
+        if (strcmp(name, "u_light_color") == 0) return 208;
+        if (strcmp(name, "u_ambient") == 0)     return 224;
+        if (strcmp(name, "u_camera_pos") == 0)  return 240;
+    }
+    if (strcmp(name, "u_albedo") == 0)      return -1;
+    if (strcmp(name, "u_inv_proj") == 0)    return 0;
+    if (strcmp(name, "u_curr_vp") == 0)     return 64;
+    return -1;
 }
 
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
-    LOG_ERROR("rhi_metal: rhi_pipeline_get_uniform_location not implemented");
-    (void)dev;
-    (void)pipe;
-    (void)name;
-    return -1;
+    MetalPipeline *pp;
+    if (dev == NULL || name == NULL) return -1;
+    pp = (MetalPipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (pp == NULL) return -1;
+    return metal_uniform_location(&pp->desc, name);
 }
 
 /* ---- Task 8: render-target payloads and FBO family ----
@@ -3682,6 +4169,7 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
      * divide by the group size themselves. */
     max_tg = pp->compute.maxTotalThreadsPerThreadgroup;
     tg = max_tg < 64u ? max_tg : 64u;
+    metal_flush_push(cmd, pp);
     [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)x, (NSUInteger)y,
                                           (NSUInteger)z)
         threadsPerThreadgroup:MTLSizeMake(tg, 1u, 1u)];

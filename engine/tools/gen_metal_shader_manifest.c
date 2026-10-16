@@ -9,7 +9,11 @@
  * can compile the output with RHI_METAL_SHADER_NO_EMBEDDED_MSL to drop the
  * text).
  *
- * Usage: gen_metal_shader_manifest <shader_dir> <msl_dir> <manifest.lines> <out.c>
+ * Usage: gen_metal_shader_manifest <shader_dir> <out_dir> <msl_dir> <manifest.lines> <out.c>
+ *
+ * Row resolution (Task 11 variants): a row path containing '/' (e.g.
+ * variants/font_vk.vert.forward_mrt) resolves under <out_dir>; a bare
+ * basename resolves under <shader_dir>.
  */
 #include <rhi/rhi_metal_format.h>
 
@@ -68,20 +72,20 @@ int main(int argc, char **argv) {
     FILE *lf;
     FILE *out;
     unsigned count = 0u;
-    if (argc != 5) {
+    if (argc != 6) {
         fprintf(stderr,
-                "usage: gen_metal_shader_manifest <shader_dir> <msl_dir> "
-                "<manifest.lines> <out.c>\n");
+                "usage: gen_metal_shader_manifest <shader_dir> <out_dir> "
+                "<msl_dir> <manifest.lines> <out.c>\n");
         return 2;
     }
-    lf = fopen(argv[3], "rb");
+    lf = fopen(argv[4], "rb");
     if (lf == NULL) {
-        fprintf(stderr, "gen_metal_shader_manifest: cannot open %s\n", argv[3]);
+        fprintf(stderr, "gen_metal_shader_manifest: cannot open %s\n", argv[4]);
         return 1;
     }
-    out = fopen(argv[4], "wb");
+    out = fopen(argv[5], "wb");
     if (out == NULL) {
-        fprintf(stderr, "gen_metal_shader_manifest: cannot write %s\n", argv[4]);
+        fprintf(stderr, "gen_metal_shader_manifest: cannot write %s\n", argv[5]);
         fclose(lf);
         return 1;
     }
@@ -104,7 +108,10 @@ int main(int argc, char **argv) {
         char *src;
         u64 h;
         if (sscanf(line, "%255s %255s", base, entry) != 2) continue;
-        if (snprintf(path, sizeof(path), "%s/%s", argv[1], base) >=
+        /* Variant rows carry a directory prefix (variants/...) and resolve
+         * under <out_dir>; bare basenames resolve under <shader_dir>. */
+        if (snprintf(path, sizeof(path), "%s/%s",
+                     strchr(base, '/') != NULL ? argv[2] : argv[1], base) >=
             (int)sizeof(path)) {
             fprintf(stderr, "path too long: %s\n", base);
             fclose(lf); fclose(out);
@@ -166,7 +173,7 @@ int main(int argc, char **argv) {
         size_t len = 0u;
         char *msl;
         if (sscanf(line, "%255s %255s", base, entry) != 2) continue;
-        if (snprintf(path, sizeof(path), "%s/%s.metal", argv[2], entry) >=
+        if (snprintf(path, sizeof(path), "%s/%s.metal", argv[3], entry) >=
             (int)sizeof(path)) {
             fprintf(stderr, "path too long: %s\n", entry);
             fclose(lf); fclose(out);

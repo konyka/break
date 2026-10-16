@@ -497,6 +497,8 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     file(GLOB METAL_SHADER_INPUTS CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp)
     get_filename_component(ENGINE_METAL_GLSLC_DIR
         ${ENGINE_METAL_GLSLC} DIRECTORY)
@@ -521,7 +523,8 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
             sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_shaders.sh
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR} macosx
         COMMAND gen_metal_shader_manifest
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR}/msl
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR}
+            ${METAL_SHADER_OUT_DIR}/msl
             ${METAL_SHADER_OUT_DIR}/manifest.lines
             ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
         DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_shaders.sh
@@ -2239,6 +2242,18 @@ endif()
         engine_link_rhi_backend(test_rhi_vk_alloc_fault)
         add_test(NAME test_rhi_vk_alloc_fault COMMAND test_rhi_vk_alloc_fault)
         set_tests_properties(test_rhi_vk_alloc_fault PROPERTIES
+            LABELS graphics SKIP_RETURN_CODE 77 TIMEOUT 60)
+        # Plan C Task 11: golden dump of VK push-constant uniform byte
+        # offsets (pasted into test_rhi_metal_resources.c).
+        add_executable(test_rhi_push_offset_dump
+            tests/test_rhi_push_offset_dump.c)
+        target_include_directories(test_rhi_push_offset_dump PRIVATE
+            ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_rhi_push_offset_dump PRIVATE engine m)
+        engine_link_rhi_backend(test_rhi_push_offset_dump)
+        add_test(NAME test_rhi_push_offset_dump
+            COMMAND test_rhi_push_offset_dump)
+        set_tests_properties(test_rhi_push_offset_dump PROPERTIES
             LABELS graphics SKIP_RETURN_CODE 77 TIMEOUT 60)
     endif()
 
