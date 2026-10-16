@@ -136,7 +136,7 @@
 | 6 pipeline/MRT/depth/shadow/Hi-Z 契约迁移（41 分支 / 28 .c + 2 .h） | 7b20e937 / 3b387e72 | 双 lane 签名（RESULT+VALIDATION GATE+VK VALIDATION） | VK+GL | 修复 skinned gbuffer 变体选择（`gbuffer_skinned_vk.frag`，VALIDATION GATE 2→0）；Hi-Z {1,1} 异常仅登记未改码（见上方风险登记） |
 | 7 compute/indirect/HDR/RT/UI 收敛 + 4 处 RHI-ESCAPE fence | 8fff58d5 | 双 lane 签名 35/35 IDENTICAL | VK+GL | rt_trace 按 RAY_TRACING_PIPELINE\|ACCELERATION_STRUCTURE 门控（偏差已核准）；sl_dlss 非 VK 单位 fail-closed |
 | 8 token 审计 gate | e37d9df1 | `ctest -R test_renderer_backend_token_gate`（RED 证明先行）+ 全量矩阵 | VK+GL+MSVC(d3d12)+headless | gate 绿（5 白名单命中）；矩阵 VK 170/172、GL 168/169（均仅登记的环境性失败）、headless 18/18×2、MSVC headless 18/18（engine_demo 被先在的 myui_core C4090 阻塞，非本计划引入） |
-| 9 文档与 push | （本 commit） | 全绿复核：`ctest --test-dir build-vk --output-on-failure` + `-R '^test_vulkan$'`（签名纪律 RESULT+VALIDATION GATE+VK VALIDATION） | VK | 全量 170/172（= Task 8 矩阵：golden 漂移基线 + OpenClipboard，均登记）；test_vulkan 35 行签名 vs Task 8 参考仅 1 行差 = UNIFIED GPU CULL（`Hi-Z vis flags {0,0}, want {1,0}`——注册 §7 环境性偶发，当日 2/2，Task 8 后无源码变更）；goldens MAE 28.75/13.54 逐位不变；VALIDATION GATE 0；`git push origin master` 本 Task 执行 |
+| 9 文档与 push | （本 commit） | 全绿复核：`ctest --test-dir build-vk --output-on-failure` + `-R '^test_vulkan$'`（签名纪律 RESULT+VALIDATION GATE+VK VALIDATION） | VK | 全量 170/172（= Task 8 矩阵：golden 漂移基线 + OpenClipboard，均登记）；test_vulkan 35 行签名 vs Task 8 参考仅 1 行差 = UNIFIED GPU CULL（`Hi-Z vis flags {0,0}, want {1,0}`——注册 §7 环境性偶发，当日 2/2，Task 8 后无源码变更）；goldens MAE 28.75/13.54 逐位不变；VALIDATION GATE 0；push **BLOCKED**（见 DoD 第 7 项） |
 
 ### Token 审计终态
 
@@ -163,5 +163,5 @@
 4. `RHICapabilities` 新 6 字段各后端真实消费 + 契约测试：**达成**（`test_rhi_capabilities` 56/56）。
 5. ctest 全 label 绿 + `-Werror` 零警告：**部分**——本机 VK 170/172、GL 168/169（两项登记的环境性失败：golden 漂移基线 + OpenClipboard 争用）、MSVC headless 18/18（myui_core C4090 先在）；Linux/macOS CI 收据**待补**。
 6. 本台账含计划 E 完成度 + Hi-Z 仅登记未改码：**达成**（本节）。
-7. 全部 commit push 到 `origin master`：本 Task 执行 push；CI 回执以后续小 commit 补记。
+7. 全部 commit push 到 `origin master`：**BLOCKED**——push 已执行但被拒（non-fast-forward）：远端在 `59c62a0d` 之后有并行提交 `dd524121`（test_vulkan 启动相位插桩），与本计划 26 个本地 commit 在 `engine/src/test_vulkan.c` 内容冲突；合并需源码级冲突消解 + 重跑验证矩阵，超出本任务 docs-only 范围（未 force、未 rebase——rebase 会改写本表引用的全部计划 E commit SHA）。待集成决策后补推，CI 回执随后补记。
 
