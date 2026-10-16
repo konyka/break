@@ -183,3 +183,16 @@
 
 失败归因方法：`ad503290` 的失败 lane 集合与计划 E **前**基线 `dd524121`（CI run 38885775051 的 check-runs）逐 lane 比对——5 个失败 lane 名单完全相同，**计划 E 零新增回归、零 lane 退化**；两个 GL lane（CI golden 权威所在）为 success。上述先在失败不在计划 E 范围（分属计划 C 遗留 gcc 警告、macOS backend_selection、Windows CI Configure），登记为独立后续项，不随本计划修。DoD 第 3/5 项的「CI lanes 收据待补」就此落账。
 
+
+## 计划 F 前置确认（2026-10-17，gate commit 06b88c76）
+
+按 `docs/superpowers/plans/2026-10-14-rhi-plan-f-release-deps-opengl-removal.md` Task 0 逐项核查：
+
+- 计划 A（证据冻结 + 构建拆分）：**达成**——台账存在；`engine_rhi_vulkan`/`engine_rhi_opengl`/`engine_link_rhi_backend` 均在 engine/CMakeLists.txt（合计 23 处命中）。
+- 计划 B（WSI 抽离 + Vulkan-first）：**达成**——`platform_vk_surface.h` 存在，`rhi_vk.c:1641,1652` 调用 `platform_vk_create_surface_handles`。**计划文档偏差**：Task 0 的 grep 写的是 `platform_create_vulkan_surface`，实际函数名为 `platform_vk_create_surface(_handles)`——实质（rhi_vk 经 PAL 创建 surface）满足，仅命名与计划假设不同。
+- 计划 C（原生 Metal）：**部分达成**——macOS × Metal = BENCHMARK_COMPARABLE（超 GPU_RUNTIME 要求，M2 收据 + benchmark 收据齐全）；**iOS × Metal = COMPILED（compile only），无真机 → GPU_RUNTIME UNAVAILABLE**（无 iOS 设备，与 OHOS UNAVAILABLE 同类诚实标记，不可伪造）。
+- 计划 D（原生 D3D12）：**部分达成**——Windows × D3D12 = GPU_RUNTIME（真 GPU 全栈收据 + CI lane）；**BENCHMARK_COMPARABLE 未达成**（无 benchmark receipt schema 收据，本机可补齐——已立项，见下）。
+- 计划 E（renderer/shader ABI 迁移）：**达成**——main.c 的 `rhi_pipeline_get_uniform_location` 调用点 = 0；renderer/ 的 `#ifdef ENGINE_VULKAN` = 0；DoD 七项见上方计划 E 完成度节。
+- 基线 headless 套件：**161 通过 / 0 失败**（build-gate, clang, Debug, commit 06b88c76，`ctest -LE "graphics|fuzz"`）；build-vk 同口径 162 通过 / 0 失败。
+
+**闸门结论**：计划 F Task 1-5、7-10 放行（不依赖 iOS 真机与 D3D12 benchmark）；**Task 6（OpenGL 删除）保持 BLOCKED**，解锁条件 = ① iOS × Metal GPU_RUNTIME 真机收据（当前无设备，UNAVAILABLE）② Windows × D3D12 BENCHMARK_COMPARABLE 收据（补齐中）③ 规格 OpenGL 删除条件全清单复核。另：CI 主 workflow 5 个先在失败 lane（计划 E 收尾登记的独立后续项）正在专项修复。
