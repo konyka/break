@@ -2705,6 +2705,13 @@ static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *phys
              scene->mesh_count, scene->material_count, scene->node_count);
 }
 
+
+/* BREAK_BENCH_STATS qsort comparator (plan C Task 15). */
+static int bench_stats_cmp_f32(const void *a, const void *b) {
+    f32 x = *(const f32 *)a, y = *(const f32 *)b;
+    return (x > y) - (x < y);
+}
+
 int main(int argc, char **argv) {
     log_set_level(LOG_DEBUG);
 
@@ -3358,6 +3365,13 @@ f32 shadow_bias = 0.002f;
 bool tod_cycle = false;
 f32 tod_speed = 0.3f;
 i32 bench_frames = 0;
+/* BREAK_BENCH_STATS=N: record per-frame ms (cap 4096) and print
+ * fps_avg/fps_p1/frame_ms_avg/frame_ms_p99 at shutdown (rhi benchmark
+ * receipt schema, plan C Task 15); also disables vsync so the numbers
+ * measure throughput rather than display pacing. */
+static f32 bench_stats_ms[4096];
+static u32 bench_stats_count = 0u;
+static u32 bench_stats_target = 0u;
 f64 bench_start = 0;
 i32 bench_result_show = 0;
 /* R433: also save the actual f32 values + preset indices so restore is exact. */
@@ -3896,6 +3910,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     for (int ai = 1; ai + 1 < argc; ++ai)
         if (strcmp(argv[ai], "--frames") == 0)
             auto_exit_frames = atoll(argv[ai + 1]);
+    { const char *e = getenv("BREAK_BENCH_STATS");
+      if (e) bench_stats_target = (u32)atoll(e); }
+    if (bench_stats_target > 0u) {
+        vsync_on = false;
+        rhi_set_vsync(render.device, false);
+    }
     /* R445: BREAK_SCREENSHOT=N saves one screenshot after frame N completes
      * (same readback path as F12). A bare/0 value falls back to the
      * BREAK_FRAMES exit frame. Independent of and composable with
@@ -4001,6 +4021,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
     while (engine_frame(&engine)) {
         arena_free_all(&frame_arena);
+        if (bench_stats_target > 0u && bench_stats_count < 4096u)
+            bench_stats_ms[bench_stats_count++] =
+                (f32)(engine.delta_time * 1000.0);
         if (auto_exit_frames > 0 && (i64)engine.frame_count >= auto_exit_frames) break;
         profiler_begin_frame();
 
@@ -8709,6 +8732,34 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         profiler_pop();
 
         profiler_end_frame();
+    }
+
+    if (bench_stats_target > 0u && bench_stats_count > 0u) {
+        double bs_sum = 0.0, bs_avg, bs_p99 = 0.0;
+        f32 *bs_sorted;
+        u32 bs_i;
+        usize bs_p99_idx;
+        for (bs_i = 0u; bs_i < bench_stats_count; ++bs_i)
+            bs_sum += bench_stats_ms[bs_i];
+        bs_avg = bs_sum / (double)bench_stats_count;
+        bs_sorted = (f32 *)malloc(bench_stats_count * sizeof(f32));
+        if (bs_sorted != NULL) {
+            memcpy(bs_sorted, bench_stats_ms,
+                   bench_stats_count * sizeof(f32));
+            qsort(bs_sorted, bench_stats_count, sizeof(f32),
+                  bench_stats_cmp_f32);
+            bs_p99_idx = (usize)(bench_stats_count * 99u / 100u);
+            if (bs_p99_idx >= bench_stats_count)
+                bs_p99_idx = bench_stats_count - 1u;
+            bs_p99 = bs_sorted[bs_p99_idx];
+            free(bs_sorted);
+        }
+        LOG_INFO("BENCH_STATS frames=%u fps_avg=%.2f fps_p1=%.2f "
+                 "frame_ms_avg=%.3f frame_ms_p99=%.3f",
+                 (unsigned)bench_stats_count,
+                 bs_avg > 0.0 ? 1000.0 / bs_avg : 0.0,
+                 bs_p99 > 0.0 ? 1000.0 / bs_p99 : 0.0,
+                 bs_avg, bs_p99);
     }
 
     LOG_INFO("Shutting down...");
