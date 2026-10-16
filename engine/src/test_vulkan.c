@@ -25,13 +25,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
-#ifdef _WIN32
-#include <direct.h>
-#define tv_mkdir(p) _mkdir(p)
-#else
-#include <sys/stat.h>
-#define tv_mkdir(p) mkdir(p, 0755)
-#endif
+#include "../tests/rhi_oracle.h"
 
 /* Insert `#define <name> 1` right after the first (`#version`) line. */
 static char *tv_inject_define(const char *src, usize len, const char *name, usize *out_len) {
@@ -92,12 +86,10 @@ static u16 tv_f32_to_f16(f32 f) {
 }
 
 /* ---- Golden image regression helpers ------------------------------------
- * The presented frame is read back via rhi_screenshot, box-downsampled to a
- * tiny grid (robust against single-pixel driver noise) and compared against a
- * committed reference PPM with a mean-absolute-error tolerance. Set the env var
- * GOLDEN_UPDATE=1 to regenerate the reference. */
-#define GOLDEN_GW 20
-#define GOLDEN_GH 15
+ * The oracle implementation (downsample / PPM IO / compare / GOLDEN_UPDATE=1
+ * regenerate / reject_blank) lives in engine/tests/rhi_oracle.c, extracted
+ * verbatim-behavior from this file; golden_compare_buffer below is a thin
+ * wrapper kept to minimize churn in this file. */
 #ifdef ENGINE_VULKAN
 #define GOLDEN_PATH "tests/golden/test_vulkan_vk.ppm"
 #define GOLDEN_CAM_PATH "tests/golden/test_vulkan_vk_cam.ppm"
@@ -135,63 +127,6 @@ static u16 tv_f32_to_f16(f32 f) {
 #define TV_SUITE_NAME     "OpenGL Backend Test Suite"
 #define TV_WINDOW_TITLE   "OpenGL Test"
 #endif
-
-static void golden_downsample(const u8 *rgba, u32 w, u32 h, u8 *grid /* GW*GH*3 */) {
-    for (u32 gy = 0; gy < GOLDEN_GH; gy++) {
-        for (u32 gx = 0; gx < GOLDEN_GW; gx++) {
-            u32 x0 = gx * w / GOLDEN_GW, x1 = (gx + 1) * w / GOLDEN_GW;
-            u32 y0 = gy * h / GOLDEN_GH, y1 = (gy + 1) * h / GOLDEN_GH;
-            u64 r = 0, g = 0, b = 0, n = 0;
-            for (u32 yy = y0; yy < y1; yy++) {
-                for (u32 xx = x0; xx < x1; xx++) {
-                    const u8 *p = &rgba[((usize)yy * w + xx) * 4u];
-                    r += p[0]; g += p[1]; b += p[2]; n++;
-                }
-            }
-            if (n == 0) n = 1;
-            u8 *o = &grid[((usize)gy * GOLDEN_GW + gx) * 3u];
-            o[0] = (u8)(r / n); o[1] = (u8)(g / n); o[2] = (u8)(b / n);
-        }
-    }
-}
-
-static bool golden_write_ppm(const char *path, const u8 *grid) {
-    tv_mkdir("tests");
-    tv_mkdir("tests/golden");
-    FILE *f = fopen(path, "wb");
-    if (!f) return false;
-    fprintf(f, "P6\n%d %d\n255\n", GOLDEN_GW, GOLDEN_GH);
-    usize gbytes = (usize)GOLDEN_GW * GOLDEN_GH * 3;
-    bool ok = fwrite(grid, 1, gbytes, f) == gbytes;
-    fclose(f);
-    if (!ok) return false;
-    return true;
-}
-
-/* Returns 0 = compared (fills mae/maxd), 1 = format/size mismatch, -1 = absent. */
-static int golden_compare_ppm(const char *path, const u8 *grid, f64 *out_mae, u32 *out_max) {
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    int gw = 0, gh = 0, mx = 0;
-    if (fscanf(f, "P6 %d %d %d", &gw, &gh, &mx) != 3 || gw != GOLDEN_GW || gh != GOLDEN_GH) {
-        fclose(f); return 1;
-    }
-    fgetc(f); /* consume the single whitespace after maxval */
-    u8 ref[GOLDEN_GW * GOLDEN_GH * 3];
-    usize rd = fread(ref, 1, sizeof(ref), f);
-    fclose(f);
-    if (rd != sizeof(ref)) return 1;
-    f64 sum = 0; u32 maxd = 0;
-    for (usize i = 0; i < sizeof(ref); i++) {
-        int d = (int)grid[i] - (int)ref[i];
-        if (d < 0) d = -d;
-        sum += (f64)d;
-        if ((u32)d > maxd) maxd = (u32)d;
-    }
-    if (out_mae) *out_mae = sum / (f64)sizeof(ref);
-    if (out_max) *out_max = maxd;
-    return 0;
-}
 
 typedef struct {
     RHIDevice    *device;
@@ -261,50 +196,12 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
 }
 
 /* Capture the presented frame, downsample, and compare against (or, with
- * GOLDEN_UPDATE=1, write) the reference PPM at `path`.
- * `reject_blank`: fail when the captured grid is a single flat color —
- * a blank reference/compare is layout-insensitive and silently useless
- * (R438: the camera golden was blank for exactly this reason). */
+ * GOLDEN_UPDATE=1, write) the reference PPM at `path` — implementation in
+ * engine/tests/rhi_oracle.c (rhi_oracle_compare_frame); this wrapper is kept
+ * to minimize churn in the call sites below. */
 static bool golden_compare_buffer(const u8 *shot, const char *path, u32 w, u32 h,
                                   bool reject_blank) {
-    bool golden_pass = false;
-    {
-        u8 grid[GOLDEN_GW * GOLDEN_GH * 3];
-        golden_downsample(shot, w, h, grid);
-
-        if (reject_blank) {
-            bool varied = false;
-            for (usize i = 3; i < sizeof(grid) && !varied; i += 3)
-                if (grid[i] != grid[0] || grid[i+1] != grid[1] || grid[i+2] != grid[2])
-                    varied = true;
-            if (!varied) {
-                LOG_ERROR("GOLDEN: %s captured a single flat color — blank image "
-                          "cannot detect layout regressions", path);
-                return false;
-            }
-        }
-
-        bool update = (getenv("GOLDEN_UPDATE") != NULL);
-        f64 mae = 0.0;
-        u32 maxd = 0;
-        int cmp = update ? -1 : golden_compare_ppm(path, grid, &mae, &maxd);
-        if (cmp == -1) {
-            if (golden_write_ppm(path, grid)) {
-                LOG_WARN("GOLDEN: wrote reference %s (%dx%d) — rerun to compare",
-                         path, GOLDEN_GW, GOLDEN_GH);
-                golden_pass = true;
-            } else {
-                LOG_ERROR("GOLDEN: failed to write reference %s", path);
-            }
-        } else if (cmp == 0) {
-            golden_pass = (mae <= 8.0 && maxd <= 56);
-            LOG_INFO("GOLDEN: %s MAE=%.2f max=%u (tol MAE<=8.0 max<=56) -> %s",
-                     path, mae, maxd, golden_pass ? "OK" : "DRIFT");
-        } else {
-            LOG_ERROR("GOLDEN: format/size mismatch in %s", path);
-        }
-    }
-    return golden_pass;
+    return rhi_oracle_compare_frame(shot, w, h, path, reject_blank);
 }
 
 static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vbo, RHIBuffer ibo,

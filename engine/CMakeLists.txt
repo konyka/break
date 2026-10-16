@@ -1478,7 +1478,7 @@ endif()
 
 if(ENGINE_BUILD_TESTS)
     # Vulkan test executable
-    add_executable(test_vulkan src/test_vulkan.c)
+    add_executable(test_vulkan src/test_vulkan.c tests/rhi_oracle.c)
     # R550-E: keep the VK validation gate live for the integration test in every
     # build type. rhi_vk.c is compiled into engine_rhi_vulkan, so the define
     # cannot reach the backend from here; instead it arms the explicit
@@ -2248,6 +2248,14 @@ endif()
     add_test(NAME test_rhi_capabilities COMMAND test_rhi_capabilities)
     set_tests_properties(test_rhi_capabilities PROPERTIES
         LABELS "headless;platform_contract")
+
+    add_executable(test_rhi_oracle tests/test_rhi_oracle.c tests/rhi_oracle.c
+        src/core/log.c)
+    target_include_directories(test_rhi_oracle PRIVATE ${TEST_INCLUDE_DIRS})
+    # rhi_oracle_capture_presented references rhi_screenshot; the headless
+    # backend resolves it (same pattern as the RHI contract tests above).
+    target_link_libraries(test_rhi_oracle PRIVATE engine_rhi_headless m)
+    add_test(NAME test_rhi_oracle COMMAND test_rhi_oracle)
 
     add_executable(test_rhi_fault_injection tests/test_rhi_fault_injection.c
         ${RHI_CORE_SOURCES} src/core/log.c)
