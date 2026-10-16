@@ -62,6 +62,12 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_lf_* 是
+     * lens_flare(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    lf->bind_pipe = rhi_pipeline_bindings_create(dev, lf->lf_pipe);
+    if (!lf->bind_pipe)
+        LOG_WARN("LensFlare: bindings create failed; uniform locations resolve -1");
+
     /* R550-A: full-res FBO — the pass now self-composites the frame-chain
      * color (god_rays idiom), so the output must not lose scene detail.
      * Pass stays opt-in (lf_enabled default off), so no default cost. */
@@ -85,14 +91,14 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
         return false;
     }
 
-    lf->loc_light_x  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_light_x");
-    lf->loc_light_y  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_light_y");
-    lf->loc_intensity = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_intensity");
-    lf->loc_screen_w  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_sw");
-    lf->loc_screen_h  = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_sh");
-    lf->loc_lc_r      = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_lc_r");
-    lf->loc_lc_g      = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_lc_g");
-    lf->loc_lc_b      = rhi_pipeline_get_uniform_location(dev, lf->lf_pipe, "u_lf_lc_b");
+    lf->loc_light_x  = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_light_x");
+    lf->loc_light_y  = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_light_y");
+    lf->loc_intensity = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_intensity");
+    lf->loc_screen_w  = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_sw");
+    lf->loc_screen_h  = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_sh");
+    lf->loc_lc_r      = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_lc_r");
+    lf->loc_lc_g      = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_lc_g");
+    lf->loc_lc_b      = rhi_pipeline_bindings_resolve(lf->bind_pipe, "u_lf_lc_b");
 
     lf->ready = true;
     LOG_INFO("LensFlare: initialized (%ux%u, intensity=%.2f)", pw, ph, lf->intensity);
@@ -101,6 +107,7 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
 
 void lens_flare_shutdown(LensFlareSystem *lf) {
     if (!lf->device) return;
+    if (lf->bind_pipe) { rhi_pipeline_bindings_destroy(lf->device, lf->bind_pipe); lf->bind_pipe = NULL; }
     if (rhi_handle_valid(lf->lf_fbo.fb))  rhi_offscreen_fbo_destroy(lf->device, &lf->lf_fbo);
     if (rhi_handle_valid(lf->sampler))    rhi_sampler_destroy(lf->device, lf->sampler);
     if (rhi_handle_valid(lf->lf_pipe))    rhi_pipeline_destroy(lf->device, lf->lf_pipe);

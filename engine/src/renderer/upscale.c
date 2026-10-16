@@ -60,6 +60,12 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_ups_* 是
+     * upscale(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    s->bind_pipe = rhi_pipeline_bindings_create(dev, s->pipe);
+    if (!s->bind_pipe)
+        LOG_WARN("Upscale: bindings create failed; uniform locations resolve -1");
+
     s->fbo = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history[0] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history[1] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
@@ -83,15 +89,15 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
         return false;
     }
 
-    s->loc_rw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_rw");
-    s->loc_rh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_rh");
-    s->loc_dw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dw");
-    s->loc_dh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_dh");
-    s->loc_sharp     = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_sharp");
-    s->loc_copy_only = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_copy_only");
-    s->loc_first_frame = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_first_frame");
-    s->loc_inv_proj  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_inv_proj");
-    s->loc_prev_vp   = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ups_prev_vp");
+    s->loc_rw       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_rw");
+    s->loc_rh       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_rh");
+    s->loc_dw       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_dw");
+    s->loc_dh       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_dh");
+    s->loc_sharp     = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_sharp");
+    s->loc_copy_only = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_copy_only");
+    s->loc_first_frame = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_first_frame");
+    s->loc_inv_proj  = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_inv_proj");
+    s->loc_prev_vp   = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ups_prev_vp");
 
     s->ready = true;
     LOG_INFO("Upscale: TSR initialized (%ux%u → %ux%u)", render_w, render_h, display_w, display_h);
@@ -100,6 +106,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
 
 void upscale_shutdown(UpscaleSystem *s) {
     if (!s->dev) return;
+    if (s->bind_pipe) { rhi_pipeline_bindings_destroy(s->dev, s->bind_pipe); s->bind_pipe = NULL; }
     if (rhi_handle_valid(s->fbo.fb))         rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->history[0].fb))   rhi_offscreen_fbo_destroy(s->dev, &s->history[0]);
     if (rhi_handle_valid(s->history[1].fb))   rhi_offscreen_fbo_destroy(s->dev, &s->history[1]);

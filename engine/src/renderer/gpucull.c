@@ -46,6 +46,13 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_cull_vp/
+     * u_cull_count 在 GL 分支是 cull.comp 的 loose uniform（直接命中）；
+     * VK 分支经 vk_push_alias_rows 映射到 push 成员 vp/obj_count。 */
+    gc->bind_cull = rhi_pipeline_bindings_create(dev, gc->cull_pipe);
+    if (!gc->bind_cull)
+        LOG_WARN("GPUCull: bindings create failed; uniform locations resolve -1");
+
     /* R190-B: object data is upload-once (unified) / rare (legacy staging);
      * zero-init → DEVICE_LOCAL so CS does not read HOST_VISIBLE every frame. */
     usize obj_bytes = GPUCULL_MAX_OBJECTS * sizeof(f32) * 4;
@@ -103,8 +110,8 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     gc->ready = true;
 
     /* Cache uniform locations for legacy pipeline */
-    gc->_loc_cull_vp    = rhi_pipeline_get_uniform_location(dev, gc->cull_pipe, "u_cull_vp");
-    gc->_loc_cull_count = rhi_pipeline_get_uniform_location(dev, gc->cull_pipe, "u_cull_count");
+    gc->_loc_cull_vp    = rhi_pipeline_bindings_resolve(gc->bind_cull, "u_cull_vp");
+    gc->_loc_cull_count = rhi_pipeline_bindings_resolve(gc->bind_cull, "u_cull_count");
 
     /* Pre-allocate persistent pack + zero buffer (single alloc: _pack_buf + _zero_buf) */
     gc->_pack_buf_cap = GPUCULL_MAX_OBJECTS * 4;
@@ -127,7 +134,11 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
 
 void gpucull_shutdown(GPUCullSystem *gc) {
     if (!gc->device) return;
-    
+
+    /* 计划 E Task 5 T4：反射物化表先于管线销毁。 */
+    if (gc->bind_cull)    { rhi_pipeline_bindings_destroy(gc->device, gc->bind_cull);    gc->bind_cull = NULL; }
+    if (gc->bind_unified) { rhi_pipeline_bindings_destroy(gc->device, gc->bind_unified); gc->bind_unified = NULL; }
+
     /* Free persistent staging buffers (single alloc: _pack_buf + _zero_buf) */
     if (gc->_pack_buf)  { free(gc->_pack_buf);  gc->_pack_buf  = NULL; gc->_pack_buf_cap  = 0; gc->_zero_buf = NULL; gc->_zero_buf_cap = 0; }
     if (gc->_zero_draws) { free(gc->_zero_draws); gc->_zero_draws = NULL; }
@@ -446,13 +457,21 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
 
     gc->unified_ready = true;
 
+    /* 计划 E Task 5 T2：此处物化而非管线创建后立刻——上方 soft-fail 路径
+     * 会内联销毁 unified_cull_pipe，提前创建会泄漏。u_cull_* 在 GL 分支是
+     * unified_cull.comp 的 loose uniform（直接命中）；VK 分支经
+     * vk_push_alias_rows 映射到 push 成员 vp/obj_count/hi_z_* 等。 */
+    gc->bind_unified = rhi_pipeline_bindings_create(dev, gc->unified_cull_pipe);
+    if (!gc->bind_unified)
+        LOG_WARN("UnifiedCull: bindings create failed; uniform locations resolve -1");
+
     /* Cache uniform locations for unified pipeline */
-    gc->_loc_uni_vp    = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_vp");
-    gc->_loc_uni_count = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_count");
-    gc->_loc_uni_hz_w  = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_hi_z_width");
-    gc->_loc_uni_hz_h  = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_hi_z_height");
-    gc->_loc_uni_use   = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_use_hi_z");
-    gc->_loc_uni_write = rhi_pipeline_get_uniform_location(dev, gc->unified_cull_pipe, "u_cull_write_draws");
+    gc->_loc_uni_vp    = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_vp");
+    gc->_loc_uni_count = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_count");
+    gc->_loc_uni_hz_w  = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_hi_z_width");
+    gc->_loc_uni_hz_h  = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_hi_z_height");
+    gc->_loc_uni_use   = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_use_hi_z");
+    gc->_loc_uni_write = rhi_pipeline_bindings_resolve(gc->bind_unified, "u_cull_write_draws");
 
     /* Zero the pre-allocated zero buffer (part of _pack_buf block) */
     memset(gc->_zero_buf, 0, gc->_zero_buf_cap * sizeof(u32));

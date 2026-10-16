@@ -62,6 +62,13 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_sss_ 与 u_sssv_
+     * 前缀分别是 sss(_vk).frag / sss_vertical(_vk).frag 的真实成员名，无别名行。 */
+    s->bind_h = rhi_pipeline_bindings_create(dev, s->h_pipe);
+    s->bind_v = rhi_pipeline_bindings_create(dev, s->v_pipe);
+    if (!s->bind_h || !s->bind_v)
+        LOG_WARN("SSS: bindings create failed; uniform locations resolve -1");
+
     s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
     s->blur_fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
@@ -82,15 +89,15 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
-    s->loc_strength  = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_strength");
-    s->loc_sw        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sw");
-    s->loc_sh        = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_sh");
-    s->loc_max_dist  = rhi_pipeline_get_uniform_location(dev, s->h_pipe, "u_sss_max_dist");
+    s->loc_strength  = rhi_pipeline_bindings_resolve(s->bind_h, "u_sss_strength");
+    s->loc_sw        = rhi_pipeline_bindings_resolve(s->bind_h, "u_sss_sw");
+    s->loc_sh        = rhi_pipeline_bindings_resolve(s->bind_h, "u_sss_sh");
+    s->loc_max_dist  = rhi_pipeline_bindings_resolve(s->bind_h, "u_sss_max_dist");
 
-    s->v_loc_strength = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_strength");
-    s->v_loc_sw       = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_sw");
-    s->v_loc_sh       = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_sh");
-    s->v_loc_max_dist = rhi_pipeline_get_uniform_location(dev, s->v_pipe, "u_sssv_max_dist");
+    s->v_loc_strength = rhi_pipeline_bindings_resolve(s->bind_v, "u_sssv_strength");
+    s->v_loc_sw       = rhi_pipeline_bindings_resolve(s->bind_v, "u_sssv_sw");
+    s->v_loc_sh       = rhi_pipeline_bindings_resolve(s->bind_v, "u_sssv_sh");
+    s->v_loc_max_dist = rhi_pipeline_bindings_resolve(s->bind_v, "u_sssv_max_dist");
 
     s->ready = true;
     LOG_INFO("SSS: initialized (%ux%u)", w, h);
@@ -99,6 +106,8 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
 void sss_shutdown(SSSSystem *s) {
     if (!s->dev) return;
+    if (s->bind_h) { rhi_pipeline_bindings_destroy(s->dev, s->bind_h); s->bind_h = NULL; }
+    if (s->bind_v) { rhi_pipeline_bindings_destroy(s->dev, s->bind_v); s->bind_v = NULL; }
     if (rhi_handle_valid(s->fbo.fb))      rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->blur_fbo.fb)) rhi_offscreen_fbo_destroy(s->dev, &s->blur_fbo);
     if (rhi_handle_valid(s->sampler))     rhi_sampler_destroy(s->dev, s->sampler);

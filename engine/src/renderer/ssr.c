@@ -56,6 +56,12 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_ssr_* 是
+     * ssr(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    ssr->bind_pipe = rhi_pipeline_bindings_create(dev, ssr->ssr_pipe);
+    if (!ssr->bind_pipe)
+        LOG_WARN("SSR: bindings create failed; uniform locations resolve -1");
+
     /* R550-A: full-res FBO — the pass now self-composites the frame-chain
      * color (god_rays idiom), so the output must not lose scene detail.
      * Pass stays opt-in (ssr_enabled default off), so no default cost. */
@@ -78,14 +84,14 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    ssr->loc_proj       = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_proj");
-    ssr->loc_inv_proj   = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_inv_proj");
-    ssr->loc_view       = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_view");
-    ssr->loc_screen_w   = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_sw");
-    ssr->loc_screen_h   = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_sh");
-    ssr->loc_max_steps  = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_max_steps");
-    ssr->loc_stride     = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_stride");
-    ssr->loc_thickness  = rhi_pipeline_get_uniform_location(dev, ssr->ssr_pipe, "u_ssr_thickness");
+    ssr->loc_proj       = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_proj");
+    ssr->loc_inv_proj   = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_inv_proj");
+    ssr->loc_view       = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_view");
+    ssr->loc_screen_w   = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_sw");
+    ssr->loc_screen_h   = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_sh");
+    ssr->loc_max_steps  = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_max_steps");
+    ssr->loc_stride     = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_stride");
+    ssr->loc_thickness  = rhi_pipeline_bindings_resolve(ssr->bind_pipe, "u_ssr_thickness");
 
     ssr->ready = true;
     LOG_INFO("SSR: initialized (%ux%u)", pw, ph);
@@ -94,6 +100,7 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
 
 void ssr_shutdown(SSRSystem *ssr) {
     if (!ssr->device) return;
+    if (ssr->bind_pipe) { rhi_pipeline_bindings_destroy(ssr->device, ssr->bind_pipe); ssr->bind_pipe = NULL; }
     if (rhi_handle_valid(ssr->ssr_fbo.fb)) rhi_offscreen_fbo_destroy(ssr->device, &ssr->ssr_fbo);
     if (rhi_handle_valid(ssr->sampler)) rhi_sampler_destroy(ssr->device, ssr->sampler);
     if (rhi_handle_valid(ssr->ssr_pipe)) rhi_pipeline_destroy(ssr->device, ssr->ssr_pipe);
