@@ -256,11 +256,18 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         skinned_desc.vertex_stride      = 16u * sizeof(f32); /* pos3+normal3+uv2+joints4+weights4 = 16 floats = 64B */
         skinned_desc.skinned_vertex     = true;
         skinned_desc.uses_texel_buffer  = true;
-        /* VK lane reuses the base gbuffer.frag here (both pre-change
-         * branches load it unsuffixed) — only the vertex stage varies. */
+        /* 计划 E Task 6 review fix：frag 不是 base+后缀变体对——
+         * gbuffer_skinned_vk.frag 是独立文件（其 GbufFactors UBO 需要
+         * Set 2 以匹配 skinned pipeline layout；gbuffer.frag 是 GL 变体，
+         * 无 set= 限定符，Set 0 与纹理冲突）。文件名自带约定，按
+         * caps.shader_variant 选择，不再叠 shader_variant_path；vert 侧
+         * 仍走 shader_variant_path 基名派生。 */
+        const char *skinned_fs = (caps.shader_variant == (u32)RHI_SHADER_VARIANT_GLSL_VK)
+                              ? "shaders/gbuffer_skinned_vk.frag"
+                              : "shaders/gbuffer.frag";
         if (shader_variant_path("shaders/gbuffer_skinned.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)))
             sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
-                dev, vs_path, "shaders/gbuffer.frag", &skinned_desc);
+                dev, vs_path, skinned_fs, &skinned_desc);
         if (!rhi_handle_valid(sys->gbuffer_skinned_pipeline))
             LOG_WARN("deferred: gbuffer_skinned pipeline unavailable -- skinned geometry skipped");
     }

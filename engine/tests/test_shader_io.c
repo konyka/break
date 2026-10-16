@@ -741,6 +741,13 @@ TEST(deferred_skinned_gbuffer_contract)
     /* 计划 E Task 6 F2 迁移后基名经 shader_variant_path 派生 _vk 变体；
      * 断言改为钉住新接线（基名 + caps.shader_variant 驱动）。 */
     ASSERT_NOT_NULL(strstr(src, "shader_variant_path(\"shaders/gbuffer_skinned.vert\""));
+    /* Task 6 review fix：skinned frag 不是 base+后缀变体对（VK 用独立文件
+     * gbuffer_skinned_vk.frag——GbufFactors UBO 需 Set 2；GL 用 gbuffer.frag）。
+     * 钉住按 caps.shader_variant 三元选择的赋值形状。 */
+    ASSERT_NOT_NULL(strstr(src,
+        "const char *skinned_fs = (caps.shader_variant == (u32)RHI_SHADER_VARIANT_GLSL_VK)"));
+    ASSERT_NOT_NULL(strstr(src, "? \"shaders/gbuffer_skinned_vk.frag\""));
+    ASSERT_NOT_NULL(strstr(src, ": \"shaders/gbuffer.frag\";"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
 
