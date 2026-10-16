@@ -117,44 +117,53 @@ static void defrd_release_targets(DeferredSystem *sys, RHIDevice *dev) {
 }
 
 static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表（G-Buffer 与
+     * lighting 分开建表）。 */
+    sys->bind_gbuffer = rhi_pipeline_bindings_create(dev, sys->gbuffer_pipeline);
+    if (rhi_handle_valid(sys->gbuffer_skinned_pipeline))
+        sys->bind_gbuffer_skinned = rhi_pipeline_bindings_create(dev, sys->gbuffer_skinned_pipeline);
+    if (rhi_handle_valid(sys->gbuffer_arr_pipeline))
+        sys->bind_gbuffer_arr = rhi_pipeline_bindings_create(dev, sys->gbuffer_arr_pipeline);
+    sys->bind_lighting = rhi_pipeline_bindings_create(dev, sys->lighting_pipeline);
+    if (!sys->bind_gbuffer || !sys->bind_lighting)
+        LOG_WARN("deferred: bindings create failed; uniform locations resolve -1");
+
     /* G-Buffer pass pipeline uniforms. */
-    RHIPipeline gp = sys->gbuffer_pipeline;
-    sys->_loc_gbuf_model = rhi_pipeline_get_uniform_location(dev, gp, "u_model");
-    sys->_loc_gbuf_view  = rhi_pipeline_get_uniform_location(dev, gp, "u_view");
-    sys->_loc_gbuf_proj  = rhi_pipeline_get_uniform_location(dev, gp, "u_proj");
-    sys->_loc_gbuf_prev_mvp = rhi_pipeline_get_uniform_location(dev, gp, "u_prev_mvp");
+    sys->_loc_gbuf_model = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_model");
+    sys->_loc_gbuf_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_view");
+    sys->_loc_gbuf_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_proj");
+    sys->_loc_gbuf_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_prev_mvp");
 
     /* R560: skinned-variant G-Buffer pass pipeline uniforms. */
     if (rhi_handle_valid(sys->gbuffer_skinned_pipeline)) {
-        RHIPipeline kp = sys->gbuffer_skinned_pipeline;
-        sys->_loc_gbuf_skinned_model = rhi_pipeline_get_uniform_location(dev, kp, "u_model");
-        sys->_loc_gbuf_skinned_view  = rhi_pipeline_get_uniform_location(dev, kp, "u_view");
-        sys->_loc_gbuf_skinned_proj  = rhi_pipeline_get_uniform_location(dev, kp, "u_proj");
-        sys->_loc_gbuf_skinned_prev_mvp = rhi_pipeline_get_uniform_location(dev, kp, "u_prev_mvp");
+        sys->_loc_gbuf_skinned_model = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_model");
+        sys->_loc_gbuf_skinned_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_view");
+        sys->_loc_gbuf_skinned_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_proj");
+        sys->_loc_gbuf_skinned_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_prev_mvp");
     }
 
     /* R442: array-variant G-Buffer pass pipeline uniforms. */
     if (rhi_handle_valid(sys->gbuffer_arr_pipeline)) {
-        RHIPipeline ap = sys->gbuffer_arr_pipeline;
-        sys->_loc_gbuf_arr_model = rhi_pipeline_get_uniform_location(dev, ap, "u_model");
-        sys->_loc_gbuf_arr_view  = rhi_pipeline_get_uniform_location(dev, ap, "u_view");
-        sys->_loc_gbuf_arr_proj  = rhi_pipeline_get_uniform_location(dev, ap, "u_proj");
-        sys->_loc_gbuf_arr_prev_mvp = rhi_pipeline_get_uniform_location(dev, ap, "u_prev_mvp");
+        sys->_loc_gbuf_arr_model = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_model");
+        sys->_loc_gbuf_arr_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_view");
+        sys->_loc_gbuf_arr_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_proj");
+        sys->_loc_gbuf_arr_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_prev_mvp");
     }
 
-    /* Lighting pass pipeline uniforms. */
-    RHIPipeline p = sys->lighting_pipeline;
-    sys->_loc_inv_vp       = rhi_pipeline_get_uniform_location(dev, p, "u_inv_vp");
-    sys->_loc_view         = rhi_pipeline_get_uniform_location(dev, p, "u_view");
-    sys->_loc_camera_pos   = rhi_pipeline_get_uniform_location(dev, p, "u_camera_pos");
-    sys->_loc_screen_w     = rhi_pipeline_get_uniform_location(dev, p, "u_screen_w");
-    sys->_loc_screen_h     = rhi_pipeline_get_uniform_location(dev, p, "u_screen_h");
-    sys->_loc_near         = rhi_pipeline_get_uniform_location(dev, p, "u_near");
-    sys->_loc_far          = rhi_pipeline_get_uniform_location(dev, p, "u_far");
-    sys->_loc_shadow_bias  = rhi_pipeline_get_uniform_location(dev, p, "u_shadow_bias");
-    sys->_loc_point_count  = rhi_pipeline_get_uniform_location(dev, p, "u_point_count");
-    sys->_loc_dir_count    = rhi_pipeline_get_uniform_location(dev, p, "u_dir_count");
-    sys->_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(dev, p, "u_point_shadow_far_planes");
+    /* Lighting pass pipeline uniforms. The screen/clip names are legacy
+     * aliases into deferred_light_vk.frag's packed u_screen_params /
+     * u_clip_params members (see rhi_vk.c vk_push_alias_rows). */
+    sys->_loc_inv_vp       = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_inv_vp");
+    sys->_loc_view         = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_view");
+    sys->_loc_camera_pos   = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_camera_pos");
+    sys->_loc_screen_w     = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_screen_w");
+    sys->_loc_screen_h     = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_screen_h");
+    sys->_loc_near         = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_near");
+    sys->_loc_far          = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_far");
+    sys->_loc_shadow_bias  = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_shadow_bias");
+    sys->_loc_point_count  = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_point_count");
+    sys->_loc_dir_count    = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_dir_count");
+    sys->_loc_point_shadow_far_planes = rhi_pipeline_bindings_resolve(sys->bind_lighting, "u_point_shadow_far_planes");
 }
 
 /* ----------------------------------------------------------------------------
@@ -373,6 +382,24 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
 
 void deferred_destroy(DeferredSystem *sys, RHIDevice *dev) {
     if (!sys || !dev) return;
+
+    /* 计划 E Task 5 T4：反射表销毁（NULL 安全）。 */
+    if (sys->bind_gbuffer) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_gbuffer);
+        sys->bind_gbuffer = NULL;
+    }
+    if (sys->bind_gbuffer_skinned) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_gbuffer_skinned);
+        sys->bind_gbuffer_skinned = NULL;
+    }
+    if (sys->bind_lighting) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_lighting);
+        sys->bind_lighting = NULL;
+    }
+    if (sys->bind_gbuffer_arr) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_gbuffer_arr);
+        sys->bind_gbuffer_arr = NULL;
+    }
 
     if (rhi_handle_valid(sys->_gbuf_sampler)) {
         rhi_sampler_destroy(dev, sys->_gbuf_sampler);

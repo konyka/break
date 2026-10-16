@@ -79,6 +79,10 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
 
     if (rhi_handle_valid(caa->combined_pipe)) {
         caa->use_combined = true;
+        /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+        caa->bind_combined = rhi_pipeline_bindings_create(dev, caa->combined_pipe);
+        if (!caa->bind_combined)
+            LOG_WARN("CombinedAA: bindings create failed; uniform locations resolve -1");
         caa->sampler = cpp_create_sampler(dev);
         caa->history_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, width, height,
             RHI_FORMAT_R16G16B16A16_SFLOAT);
@@ -88,18 +92,18 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         caa->first_frame = true;
 
         /* Cache uniform locations */
-        caa->loc_curr_tex      = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_curr_tex");
-        caa->loc_hist_tex      = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_hist_tex");
-        caa->loc_depth_tex     = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_depth");
-        caa->loc_curr_vp       = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_curr_vp");
-        caa->loc_prev_vp       = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_prev_vp");
-        caa->loc_inv_proj      = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_inv_proj");
-        caa->loc_screen_w      = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_screen_w");
-        caa->loc_screen_h      = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_screen_h");
-        caa->loc_taa_blend     = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_blend");
-        caa->loc_taa_first_frame = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_first_frame");
-        caa->loc_fxaa_threshold = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_fxaa_threshold");
-        caa->loc_use_velocity   = rhi_pipeline_get_uniform_location(dev, caa->combined_pipe, "u_taa_use_velocity");
+        caa->loc_curr_tex      = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_curr_tex");
+        caa->loc_hist_tex      = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_hist_tex");
+        caa->loc_depth_tex     = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_depth");
+        caa->loc_curr_vp       = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_curr_vp");
+        caa->loc_prev_vp       = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_prev_vp");
+        caa->loc_inv_proj      = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_inv_proj");
+        caa->loc_screen_w      = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_screen_w");
+        caa->loc_screen_h      = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_screen_h");
+        caa->loc_taa_blend     = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_blend");
+        caa->loc_taa_first_frame = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_first_frame");
+        caa->loc_fxaa_threshold = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_fxaa_threshold");
+        caa->loc_use_velocity   = rhi_pipeline_bindings_resolve(caa->bind_combined, "u_taa_use_velocity");
 
         /* R349: align R348 — reject empty history FBO/sampler on default AA path. */
         if (!rhi_handle_valid(caa->history_fbo[0].fb) || !rhi_handle_valid(caa->history_fbo[1].fb) ||
@@ -143,6 +147,8 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
 void combined_aa_shutdown(CombinedAA *caa) {
     if (!caa->device) return;
     if (caa->use_combined) {
+        if (caa->bind_combined) rhi_pipeline_bindings_destroy(caa->device, caa->bind_combined);
+        caa->bind_combined = NULL;
         if (rhi_handle_valid(caa->combined_pipe)) rhi_pipeline_destroy(caa->device, caa->combined_pipe);
         for (int i = 0; i < 2; i++) {
             if (rhi_handle_valid(caa->history_fbo[i].fb))
@@ -259,25 +265,29 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
 
     if (rhi_handle_valid(cc->combined_pipe)) {
         cc->use_combined = true;
+        /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+        cc->bind_combined = rhi_pipeline_bindings_create(dev, cc->combined_pipe);
+        if (!cc->bind_combined)
+            LOG_WARN("CombinedColor: bindings create failed; uniform locations resolve -1");
         cc->sampler = cpp_create_sampler(dev);
         cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
             RHI_FORMAT_R16G16B16A16_SFLOAT);
 
         /* Cache all uniform locations */
-        cc->loc_exposure    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_tm_exposure");
-        cc->loc_gamma       = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_tm_gamma");
-        cc->loc_mode        = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_tm_mode");
-        cc->loc_saturation  = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cg_saturation");
-        cc->loc_contrast    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cg_contrast");
-        cc->loc_brightness  = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cg_brightness");
-        cc->loc_temperature = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cg_temperature");
-        cc->loc_tint        = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cg_tint");
-        cc->loc_aberration  = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cine_aberration");
-        cc->loc_vignette    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cine_vignette");
-        cc->loc_grain       = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cine_grain");
-        cc->loc_time        = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_cine_time");
-        cc->loc_screen_w    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_screen_w");
-        cc->loc_screen_h    = rhi_pipeline_get_uniform_location(dev, cc->combined_pipe, "u_screen_h");
+        cc->loc_exposure    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_tm_exposure");
+        cc->loc_gamma       = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_tm_gamma");
+        cc->loc_mode        = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_tm_mode");
+        cc->loc_saturation  = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cg_saturation");
+        cc->loc_contrast    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cg_contrast");
+        cc->loc_brightness  = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cg_brightness");
+        cc->loc_temperature = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cg_temperature");
+        cc->loc_tint        = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cg_tint");
+        cc->loc_aberration  = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cine_aberration");
+        cc->loc_vignette    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cine_vignette");
+        cc->loc_grain       = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cine_grain");
+        cc->loc_time        = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_cine_time");
+        cc->loc_screen_w    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_screen_w");
+        cc->loc_screen_h    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_screen_h");
 
         /* R349: align R348 — reject empty output FBO/sampler on default color path. */
         if (!rhi_handle_valid(cc->output_fbo.fb) || !rhi_handle_valid(cc->sampler)) {
@@ -321,6 +331,8 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
 void combined_color_shutdown(CombinedColor *cc) {
     if (!cc->device) return;
     if (cc->use_combined) {
+        if (cc->bind_combined) rhi_pipeline_bindings_destroy(cc->device, cc->bind_combined);
+        cc->bind_combined = NULL;
         if (rhi_handle_valid(cc->combined_pipe))
             rhi_pipeline_destroy(cc->device, cc->combined_pipe);
     } else {

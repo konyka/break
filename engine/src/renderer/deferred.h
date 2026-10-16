@@ -62,6 +62,12 @@ typedef struct {
      * that path (the caller falls back to the per-group loop). */
     RHIPipeline gbuffer_arr_pipeline;
 
+    /* 计划 E Task 5 T1：每管线一份反射物化表，_loc_* 缓存的查询来源。 */
+    RHIPipelineBindings *bind_gbuffer;
+    RHIPipelineBindings *bind_gbuffer_skinned;
+    RHIPipelineBindings *bind_lighting;
+    RHIPipelineBindings *bind_gbuffer_arr;
+
     u32  width;
     u32  height;
     bool initialized;

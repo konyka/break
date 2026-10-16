@@ -22,6 +22,8 @@ typedef struct {
     RHIDevice       *device;
     /* Combined pipeline: TAA resolve -> FXAA in one render pass */
     RHIPipeline      combined_pipe;
+    /* 计划 E Task 5 T1：反射物化表，loc_* 缓存的查询来源。 */
+    RHIPipelineBindings *bind_combined;
     RHISampler       sampler;
     /* R421: output_fbo removed — dead since R417 dropped the fallback
      * allocation; nothing references it (CombinedColor keeps its own). */
@@ -63,6 +65,8 @@ typedef struct {
     RHIDevice       *device;
     /* Combined pipeline: tonemap -> color grade -> cinematic in one pass */
     RHIPipeline      combined_pipe;
+    /* 计划 E Task 5 T1：反射物化表，loc_* 缓存的查询来源。 */
+    RHIPipelineBindings *bind_combined;
     RHISampler       sampler;
     RHIOffscreenFBO  output_fbo;
     /* Uniform locations */

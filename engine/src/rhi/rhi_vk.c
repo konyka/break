@@ -7353,6 +7353,58 @@ struct RHIPipelineBindings {
     bool reflect_failed;
 };
 
+/* Plan E Task 5 Stage C-2: alias rows for query names the shaders do not
+ * declare as push members. The legacy chain answered these from its
+ * classification tables; reflection only carries true member names, so the
+ * alias resolves to the aliased member's reflected slot plus a swizzle
+ * delta. A row fires only when the pipeline declares the member AND no
+ * member row already carries the alias name (real members win — e.g.
+ * u_shadow_bias is a member of pbr_clustered_vk.frag but the
+ * u_clip_params.y alias on deferred_light_vk.frag). Provenance:
+ *   - u_prev_vp (Stage C-1): legacy generic tail mapped it onto the gbuffer
+ *     family's u_prev_mvp slot (192); camera_velocity_vk.frag declares it
+ *     as a real member (128) so the member row wins there.
+ *   - deferred rows (Stage C-2 batch 4): deferred_light_vk.frag packs
+ *     screen params into u_screen_params.xy and clip params into
+ *     u_clip_params.xyz; the legacy no_vertex_input+texel branch served
+ *     144/148/160/164/168, exactly member slot + delta. */
+typedef struct {
+    const char *alias;
+    const char *member;
+    u32         delta; /* byte offset of the aliased channel inside the member */
+} VKPushAliasRow;
+
+static const VKPushAliasRow vk_push_alias_rows[] = {
+    { "u_prev_vp",     "u_prev_mvp",      0u },
+    { "u_screen_w",    "u_screen_params", 0u },
+    { "u_screen_h",    "u_screen_params", 4u },
+    { "u_near",        "u_clip_params",   0u },
+    { "u_far",         "u_clip_params",   4u },
+    { "u_shadow_bias", "u_clip_params",   8u },
+};
+
+static u32 vk_push_alias_row_count(void) {
+    return (u32)(sizeof(vk_push_alias_rows) / sizeof(vk_push_alias_rows[0]));
+}
+
+static i32 vk_push_alias_offset(const VKPipelineData *pd, const char *name) {
+    if (!pd) return -1;
+    for (u32 r = 0u; r < vk_push_alias_row_count(); ++r) {
+        const VKPushAliasRow *row = &vk_push_alias_rows[r];
+        if (strcmp(name, row->alias) != 0) continue;
+        i32 slot = -1;
+        bool alias_is_member = false;
+        for (u32 i = 0u; i < pd->push_member_count; ++i) {
+            if (strcmp(pd->push_members[i].name, row->member) == 0)
+                slot = (i32)pd->push_members[i].offset;
+            else if (strcmp(pd->push_members[i].name, name) == 0)
+                alias_is_member = true;
+        }
+        if (slot >= 0 && !alias_is_member) return slot + (i32)row->delta;
+    }
+    return -1;
+}
+
 RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
     if (dev == NULL || !rhi_handle_valid(pipe)) return NULL;
     VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
@@ -7365,25 +7417,22 @@ RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pi
         e->name[sizeof(e->name) - 1u] = '\0';
         e->slot = (i32)pd->push_members[i].offset;
     }
-    /* Plan E Task 5 Stage C-1 disclosed alias row: the legacy chain's generic
-     * tail mapped the alias name "u_prev_vp" onto the gbuffer family's
-     * u_prev_mvp slot (192 on vertex-input pipelines) even though reflection
-     * only carries true member names. tv_test_deferred_gbuffer_array queries
-     * that alias name, so materialize alias -> aliased member's reflected
-     * slot to keep resolve byte-identical to the legacy chain (proven by the
-     * still-green parity phase + golden signature). camera_velocity_vk.frag
-     * declares u_prev_vp as a real member — member rows win, no alias. */
-    for (u32 i = 0u; i < b->count; ++i) {
-        if (strcmp(b->entries[i].name, "u_prev_mvp") != 0) continue;
-        bool alias_present = false;
-        for (u32 j = 0u; j < b->count; ++j)
-            if (strcmp(b->entries[j].name, "u_prev_vp") == 0) { alias_present = true; break; }
-        if (!alias_present && b->count < VK_PUSH_MERGE_MAX) {
-            VKBindingEntry *e = &b->entries[b->count++];
-            memcpy(e->name, "u_prev_vp", sizeof("u_prev_vp"));
-            e->slot = b->entries[i].slot;
-        }
-        break;
+    /* Alias rows only when no member row exists (see vk_push_alias_rows).
+     * Keeps resolve byte-identical to the legacy chain for every caller
+     * that still queries the legacy alias name, proven by the parity phase
+     * + golden signature. */
+    for (u32 r = 0u; r < vk_push_alias_row_count(); ++r) {
+        const VKPushAliasRow *row = &vk_push_alias_rows[r];
+        bool present = false;
+        for (u32 i = 0u; i < b->count; ++i)
+            if (strcmp(b->entries[i].name, row->alias) == 0) { present = true; break; }
+        if (present || b->count >= VK_PUSH_MERGE_MAX) continue;
+        i32 slot = vk_push_alias_offset(pd, row->alias);
+        if (slot < 0) continue;
+        VKBindingEntry *e = &b->entries[b->count++];
+        memcpy(e->name, row->alias, strlen(row->alias) + 1u);
+        e->name[sizeof(e->name) - 1u] = '\0';
+        e->slot = slot;
     }
     b->reflect_failed = pd->push_reflect_failed;
     if (b->reflect_failed)
