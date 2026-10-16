@@ -37,7 +37,8 @@ RHI 后端编译为独立静态库（`engine_rhi_opengl` / `engine_rhi_vulkan` /
 |---|---|
 | Linux / Windows / Steam | OpenGL、Vulkan |
 | Windows / Steam Windows | 原生 D3D12（GPU_RUNTIME 已验证，构建：`-DENGINE_RHI_BACKEND=d3d12`，依赖与收据见 `docs/Build_Guide.md` 与 `docs/rhi_backend_evidence.md`） |
-| macOS | 原生 Metal（GPU_RUNTIME，M2 真机收据；CI `macos-metal` lane）、Vulkan（MoltenVK 基线） |
+| macOS | 原生 Metal（BENCHMARK_COMPARABLE，M2 真机收据：600 帧 50.05 fps vs MoltenVK 49.57，比值 1.010；CI `macos-metal` lane）、Vulkan（MoltenVK 基线） |
+| iOS | 原生 Metal（COMPILED，CI `ios-metal-build` lane，compile only，无真机收据） |
 
 ## Documentation
 
