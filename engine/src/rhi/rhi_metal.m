@@ -3658,7 +3658,9 @@ static i32 metal_uniform_location(const RHIPipelineDesc *desc, const char *name)
         if (strcmp(name, "u_shadow_bias") == 0)   return 168;
         if (strcmp(name, "u_point_count") == 0)   return 176;
         if (strcmp(name, "u_dir_count") == 0)     return 180;
-        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 184;
+        /* vec4 member — std430 aligns 16 (SPIR-V Offset 192; the pre-R588
+         * float[4] sat at 184). Mirrors the rhi_vk.c table fix. */
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 192;
     } else if (desc->no_vertex_input && !desc->uses_texel_buffer && !desc->is_compute) {
         /* Other full-screen post passes (tonemap, fxaa, etc.). */
         if (strcmp(name, "u_inv_vp") == 0)     return 0;

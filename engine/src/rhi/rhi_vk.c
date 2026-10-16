@@ -7624,7 +7624,9 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
         if (strcmp(name, "u_shadow_bias") == 0)   return 168;
         if (strcmp(name, "u_point_count") == 0)   return 176;
         if (strcmp(name, "u_dir_count") == 0)     return 180;
-        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 184;
+        /* vec4 member — std430 aligns 16 (SPIR-V Offset 192; the pre-R588
+         * float[4] sat at 184). */
+        if (strcmp(name, "u_point_shadow_far_planes") == 0) return 192;
     } else if (pd && pd->no_vertex_input && !pd->uses_texel_buffer && !pd->is_compute) {
         /* Other full-screen post passes (tonemap, fxaa, etc.). */
         if (strcmp(name, "u_inv_vp") == 0)     return 0;
