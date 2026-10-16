@@ -10,11 +10,11 @@
 | 平台 × 后端 | 当前等级 | 依据 | 收据 |
 |---|---|---|---|
 | Linux X11 × OpenGL | GPU_RUNTIME | CI `gl` lane（Xvfb + 真 GL） | CI run：GitHub Actions `gl` job，2026-10-14 前最近一次 green run |
-| Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `vk` / `linux-graphics-smoke` lane | CI run：`vk` job 最近 green run |
-| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl` / `wayland-vk`（weston headless） | CI run：`wayland-*` job 最近 green run |
-| Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `windows-clang` | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录） |
+| Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `vk` / `linux-graphics-smoke` lane | CI run：https://github.com/konyka/break/actions/runs/38979612930 （@89f2d444，2026-10-17，`vk`/`linux-graphics-smoke` 均绿；修复后首个 green run 38979472503 @2af8cce3） |
+| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl` / `wayland-vk`（weston headless） | CI run：https://github.com/konyka/break/actions/runs/38979612930 （@89f2d444，2026-10-17，`wayland-gl`/`wayland-vk` 均绿） |
+| Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `windows-clang` | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录）；CI：`windows-clang` 绿 run https://github.com/konyka/break/actions/runs/38979612930 （@89f2d444，2026-10-17，pinned Vulkan SDK 1.4.321.0 静默安装后 Configure/Build/headless 全绿） |
 | Windows × D3D12 | BENCHMARK_COMPARABLE（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链 + benchmark 收据：d3d12 fps_avg = 同机 Vulkan 基线 122% ≥ 90% 阈值） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加）；CI：windows-d3d12 lane 绿 run https://github.com/konyka/break/actions/runs/38703749329 （@65d01ec，WARP floor），ci.yml 全 lane 绿 run https://github.com/konyka/break/actions/runs/38703749404 ；benchmark（2026-10-17）：`docs/receipts/rhi_receipt_windows_d3d12_planf.json` + 基线 `docs/receipts/rhi_receipt_windows_vulkan_planf.json`（rhi_swapchain_bench 同场景 640×480 600 帧 vsync off，fps_avg 2174.19 vs 1779.58，ratio 1.222 ≥ 0.90；判定细节见尾部「收据追加（计划 F 前置：D3D12 benchmark）」） |
-| macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `macos-vulkan`（133/133 CTest, 2026-10-13） | CI run：`macos-vulkan` job，2026-10-13 |
+| macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `macos-vulkan`（133/133 CTest, 2026-10-13） | CI run：`macos-vulkan` job 绿 run https://github.com/konyka/break/actions/runs/38979612930 （@89f2d444，2026-10-17；brew 补 spirv-cross 后 headless 套件全绿） |
 | macOS/iOS × 原生 Metal | BENCHMARK_COMPARABLE（macOS：metal fps_avg = 同机 MoltenVK 基线 101% ≥ 90% 阈值）；iOS 保持 COMPILED（模拟器 compile only，无真机收据） | `engine/src/rhi/rhi_metal.m`：计划 C Task 1-9（设备/能力、drawable 生命周期、资源族、pipeline/FBO/MRT/shadow 契约、compute/blit/screenshot/indirect/timer）+ Task 15 修复轮（spvBufferSizeConstants 喂表、UBO 逐绘制重放、postfx 纹理绑定、pixelFormat 变体、screenshot 行序） | 见下方「收据追加（计划 C：Metal）」与「收据追加（计划 C Task 15）」 |
 | Android × Vulkan | COMPILED（host-injected ANativeWindow） | `engine/src/rhi/rhi_vk.c:1482-1700` | 源码审查记录（2026-10-14 冻结） |
 | iOS × Vulkan(MoltenVK) | COMPILED（host-injected CAMetalLayer） | `engine/src/platform/platform_compat.h:86-95` | 源码审查记录（2026-10-14 冻结） |
@@ -181,7 +181,7 @@
 | `ci.yml` — macOS Cocoa + MoltenVK (Clang) | failure | **先在**（`test_rhi_backend_selection` 失败 + GPU-less host MoltenVK skip；基线同 lane 已红） |
 | `ci.yml` — Steam Deck real-GPU benchmark | cancelled | self-hosted runner 不可用（基线为 skipped，同类） |
 
-失败归因方法：`ad503290` 的失败 lane 集合与计划 E **前**基线 `dd524121`（CI run 38885775051 的 check-runs）逐 lane 比对——5 个失败 lane 名单完全相同，**计划 E 零新增回归、零 lane 退化**；两个 GL lane（CI golden 权威所在）为 success。上述先在失败不在计划 E 范围（分属计划 C 遗留 gcc 警告、macOS backend_selection、Windows CI Configure），登记为独立后续项，不随本计划修。DoD 第 3/5 项的「CI lanes 收据待补」就此落账。
+失败归因方法：`ad503290` 的失败 lane 集合与计划 E **前**基线 `dd524121`（CI run 38885775051 的 check-runs）逐 lane 比对——5 个失败 lane 名单完全相同，**计划 E 零新增回归、零 lane 退化**；两个 GL lane（CI golden 权威所在）为 success。上述先在失败不在计划 E 范围（分属计划 C 遗留 gcc 警告、macOS backend_selection、Windows CI Configure），登记为独立后续项，不随本计划修。（2026-10-17 已专项修复：5 lane 全绿，green run https://github.com/konyka/break/actions/runs/38979612930 ，根因与修法见 .superpowers/sdd/ci-repair/plan-e-era-ci-repair-report.md）DoD 第 3/5 项的「CI lanes 收据待补」就此落账。
 
 
 ## 计划 F 前置确认（2026-10-17，gate commit 06b88c76）

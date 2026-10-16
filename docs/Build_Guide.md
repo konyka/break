@@ -99,6 +99,14 @@ Windows 备注（2026-09-01 起可本机验证）：Vulkan SDK 可无头解包�
 （`ctest -R ^test_vulkan$`，工作目录须为 engine/ 源码根）即带进程内验证门：
 任何验证警告/错误都会判负。
 
+2026-10-17 起 `SHADERC_LIB`/`SHADERC_INCLUDE_DIR` 的自动发现也读取
+`VULKAN_SDK` 环境变量（`$VULKAN_SDK/Lib`、`$VULKAN_SDK/Include`，与
+`find_package(Vulkan)` 行为对齐），Windows 上不再需要显式传
+`-DSHADERC_LIB=...`。CI `windows-clang` lane 用
+`engine/tools/fetch_vulkan_sdk_windows.cmake` 静默安装固定版本的
+LunarG SDK（1.4.321.0，SHA256 钉死，模式同
+`fetch_d3d12_agility_sdk.cmake`）；升版本时版本号与哈希一起改。
+
 设备选择：默认取第一块"caps 可查且可呈现"的 GPU（带兜底的回退到
 gpus[0] + 回退 caps，见 rhi_vk.c R574/R575）；要强制指定某块卡（例如本机
 AMD 核显的 caps 查询有驱动缺陷、需在 AMD 上验证），设
