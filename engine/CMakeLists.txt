@@ -53,7 +53,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Android")
     set(ENGINE_PLATFORM "android")
 elseif(CMAKE_SYSTEM_NAME STREQUAL "OHOS")
     set(ENGINE_PLATFORM "harmonyos")
-elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR CMAKE_SYSTEM_NAME STREQUAL "iOS")
     if(APPLE)
         if(CMAKE_OSX_SYSROOT MATCHES "iphone")
             set(ENGINE_PLATFORM "ios")
@@ -731,6 +731,10 @@ endfunction()
 # satisfy the engine's -Werror -pedantic).
 add_library(lua STATIC external/lua/onelua.c)
 target_compile_definitions(lua PRIVATE MAKE_LIB)
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    # iOS has no system(); loslib.c gates it behind LUA_USE_IOS.
+    target_compile_definitions(lua PRIVATE LUA_USE_IOS)
+endif()
 target_include_directories(lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 if(MSVC)
     target_compile_options(lua PRIVATE /w)
@@ -1382,6 +1386,15 @@ elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
     target_sources(engine PRIVATE src/platform/window_mobile.c)
     if(ENGINE_PLATFORM STREQUAL "ios")
         target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_IOS=1)
+        # miniaudio's iOS path (MA_APPLE_MOBILE) includes AVFoundation,
+        # which is Objective-C-only; compile audio.c as ObjC on iOS.
+        enable_language(OBJC)
+        set_source_files_properties(src/audio/audio.c PROPERTIES
+            LANGUAGE OBJC
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
+        target_link_libraries(engine PRIVATE
+            "-framework AVFoundation" "-framework AudioToolbox"
+            "-framework CoreAudio" "-framework CoreFoundation")
     elseif(ENGINE_PLATFORM STREQUAL "android")
         target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_ANDROID=1)
         if(ENGINE_ANDROID_NATIVE_WINDOW)
@@ -1391,14 +1404,13 @@ elseif(ENGINE_PLATFORM STREQUAL "ios" OR ENGINE_PLATFORM STREQUAL "android" OR
     else()
         target_compile_definitions(engine PUBLIC ENGINE_PLATFORM_HARMONYOS=1)
     endif()
-    if(NOT ENGINE_VULKAN)
+    if(ENGINE_PLATFORM STREQUAL "harmonyos")
         message(FATAL_ERROR
-            "Graphics support on ${ENGINE_PLATFORM} requires ENGINE_VULKAN=ON and a native surface host")
-    else()
-        if(ENGINE_PLATFORM STREQUAL "harmonyos")
-            message(FATAL_ERROR
-                "ENGINE_VULKAN on ${ENGINE_PLATFORM} requires a supplied native surface implementation; none is present")
-        endif()
+            "ENGINE_VULKAN on ${ENGINE_PLATFORM} requires a supplied native surface implementation; none is present")
+    elseif(NOT ENGINE_VULKAN AND NOT (APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
+        message(FATAL_ERROR
+            "Graphics support on ${ENGINE_PLATFORM} requires ENGINE_VULKAN=ON and a native surface host (native Metal is also accepted)")
+    elseif(ENGINE_VULKAN)
         find_package(Vulkan REQUIRED)
         find_library(SHADERC_LIB NAMES shaderc_shared shaderc REQUIRED)
         target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)

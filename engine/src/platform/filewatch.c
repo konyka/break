@@ -267,7 +267,7 @@ void filewatch_destroy(FileWatch *fw) {
     free(fw);
 }
 
-#elif defined(ENGINE_PLATFORM_MACOS) || defined(__APPLE__)
+#elif defined(ENGINE_PLATFORM_MACOS)
 #include <sys/event.h>
 #include <sys/stat.h>
 #include <dirent.h>

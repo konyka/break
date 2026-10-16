@@ -654,7 +654,7 @@ static bool stb_validate_cff_private_data(
     uint64_t subrs_offset = (uint64_t)dict->private_offset +
                             (uint64_t)private_dict.subrs;
     if (subrs_offset >= (uint64_t)length ||
-        !stb_validate_cff_charstring_index(data, length, (size_t)subrs_offset,
+        !stb_validate_cff_charstring_index(data, length, (uint32_t)subrs_offset,
                                             NULL, false, false)) {
       return false;
     }
@@ -919,7 +919,8 @@ static bool stb_validate_cff(const uint8_t* data, size_t length,
       !stb_validate_cff_index(data, length, next, &next, NULL))
     return false;
   global_subr_offset = next;
-  if (!stb_validate_cff_charstring_index(data, length, global_subr_offset,
+  if (!stb_validate_cff_charstring_index(data, length,
+                                         (uint32_t)global_subr_offset,
                                          NULL, false, false))
     return false;
   if (!stb_parse_cff_dict(top_object, top_object_length, true, &top_dict)) {

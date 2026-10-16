@@ -156,13 +156,14 @@ static void metal_note_device_lost(RHIDevice *dev, MetalBackend *mb, const char 
 }
 
 /* Latch on MTLCommandBufferStatusError. MTLCommandBufferErrorDeviceRemoved
- * only surfaces on macOS 13+; older releases report a generic error code —
- * both latch (fail-closed). */
+ * only surfaces on macOS 13+ (and is macOS-only in the SDK); older releases
+ * and iOS report a generic error code — both latch (fail-closed). */
 static void metal_check_cmd_error(RHIDevice *dev, MetalBackend *mb,
                                   id<MTLCommandBuffer> cmd, const char *where) {
     if (cmd.status != MTLCommandBufferStatusError) return;
     NSError *err = cmd.error;
     long code = err != nil ? (long)err.code : -1L;
+#if TARGET_OS_OSX
     if (code == (long)MTLCommandBufferErrorDeviceRemoved) {
         LOG_ERROR("rhi_metal: command buffer at %s failed with "
                   "MTLCommandBufferErrorDeviceRemoved", where);
@@ -170,6 +171,7 @@ static void metal_check_cmd_error(RHIDevice *dev, MetalBackend *mb,
         LOG_ERROR("rhi_metal: command buffer at %s failed (error code %ld)",
                   where, code);
     }
+#endif
     metal_note_device_lost(dev, mb, where);
 }
 
@@ -807,9 +809,14 @@ out_release:
 void rhi_set_vsync(RHIDevice *dev, bool enabled) {
     MetalBackend *mb = dev != NULL ? (MetalBackend *)dev->backend_data : NULL;
     if (mb == NULL || mb->layer == nil) return;
+#if TARGET_OS_OSX
     /* displaySyncEnabled is macOS 10.13+; guard for older SDKs/hosts. */
     if ([mb->layer respondsToSelector:@selector(setDisplaySyncEnabled:)])
         mb->layer.displaySyncEnabled = enabled ? YES : NO;
+#else
+    /* iOS has no displaySyncEnabled; present is always display-synced. */
+    (void)enabled;
+#endif
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {

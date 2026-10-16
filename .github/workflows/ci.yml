@@ -658,7 +658,7 @@ jobs:
   macos-metal:
     name: macOS native Metal (Clang)
     runs-on: macos-14
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -678,7 +678,7 @@ jobs:
         run: test -s build/metal_shaders/engine.metallib && xcrun metal-nm build/metal_shaders/engine.metallib | head -5
 
       - name: Headless + contract tests
-        run: ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+        run: ctest --test-dir build -LE "graphics|fuzz" --parallel 4 --output-on-failure
 
       - name: Metal device contract (GPU when available)
         run: ctest --test-dir build -L graphics --output-on-failure || true   # 77 skip not fatal; GPU runners count as receipts
@@ -687,7 +687,7 @@ jobs:
     # Simulator evidence = compile/lifecycle only (marking 1 of 3: lane comment)
     name: iOS native Metal build-only (Simulator evidence = compile/lifecycle only)
     runs-on: macos-14
-    timeout-minutes: 25
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
 
@@ -701,7 +701,7 @@ jobs:
         run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
 
       - name: Build (iOS Simulator destination)
-        run: xcodebuild -project build-ios/break.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
+        run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
 
       - name: Verify artifact
         run: find build-ios -name 'engine.metallib' -o -name 'engine_demo.app' | head -5
