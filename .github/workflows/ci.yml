@@ -79,7 +79,18 @@ jobs:
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          set -o pipefail
+          # Logs need auth to read: surface the compiler errors as
+          # annotations (wayland lane pattern). Link failures need the
+          # "undefined reference" lines and the failing link target too.
+          cmake --build build --parallel 2>&1 | tee /tmp/vk_build.log || {
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -B4 -m 2 "collect2: error" /tmp/vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
+            exit 1
+          }
 
       - name: Test (headless suite)
         run: |
@@ -246,7 +257,18 @@ jobs:
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
 
       - name: Build
-        run: cmake --build build --parallel
+        run: |
+          set -o pipefail
+          # Logs need auth to read: surface the compiler errors as
+          # annotations (wayland lane pattern). Link failures need the
+          # "undefined reference" lines and the failing link target too.
+          cmake --build build --parallel 2>&1 | tee /tmp/smoke_build.log || {
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/smoke_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -B4 -m 2 "collect2: error" /tmp/smoke_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
+            exit 1
+          }
 
       - name: Test graphics smoke
         run: |
@@ -436,6 +458,13 @@ jobs:
           if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
           Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
 
+      # ENGINE_VULKAN=ON needs the Vulkan SDK (loader import lib + shaderc);
+      # windows-latest ships none. Pinned version+hash, fail-closed
+      # (engine/tools/fetch_vulkan_sdk_windows.cmake); exports VULKAN_SDK and
+      # the shaderc DLL dir for the build/test steps.
+      - name: Fetch and install Vulkan SDK (pinned)
+        run: cmake -P engine/tools/fetch_vulkan_sdk_windows.cmake
+
       - name: Configure
         # GL backends stay at defaults: the desktop GL backend is WGL-loaded
         # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
@@ -540,7 +569,11 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: brew install molten-vk vulkan-headers shaderc freetype
+        # spirv-cross: test_rhi_backend_selection (headless suite) asserts the
+        # metal selector configures successfully on APPLE; that nested
+        # configure fail-closes on the missing MSL toolchain
+        # (find_program spirv-cross REQUIRED in engine/CMakeLists.txt).
+        run: brew install molten-vk vulkan-headers shaderc spirv-cross freetype
 
       - name: Configure
         run: |

@@ -236,7 +236,11 @@ int main(void) {
     return 77;
 #else
     static const DumpCfg cfgs[] = {
-        { "default", {0} },
+        /* All-default desc. Written as a designated init of the first member:
+         * elided "{0}" trips GCC -Werror=missing-braces (RHIPipelineDesc's
+         * first member vert is itself an aggregate), while a braced "{{
+         * 0 }}" trips Clang -Werror=missing-field-initializers. */
+        { "default", { .vert = { 0u, 0u } } },
         { "terrain", { .terrain_layout = true } },
         { "water", { .water_layout = true } },
         { "combined_aa", { .combined_aa_layout = true } },
