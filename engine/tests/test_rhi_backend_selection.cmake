@@ -41,6 +41,19 @@ foreach(cache_var Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_
         list(APPEND configure_overrides "-D${cache_var}=${${cache_var}}")
     endif()
 endforeach()
+# A MoltenVK-free metal lane has no Vulkan SDK anywhere, yet the nested
+# auto/opengl macOS configures hit find_package(Vulkan REQUIRED) in the
+# non-metal branch. The contract under test here is selector *resolution*
+# (EFFECTIVE value + fail-closed behavior), not Vulkan discovery — real
+# discovery is covered where the outer lane resolved genuine paths above.
+# Cached vars short-circuit FindVulkan's search; the paths must merely
+# EXIST (generate-time validation of the Vulkan::Vulkan imported target)
+# and are never compiled against or linked in the nested configure.
+if(APPLE AND (NOT DEFINED Vulkan_LIBRARY OR "${Vulkan_LIBRARY}" STREQUAL ""))
+    list(APPEND configure_overrides
+        "-DVulkan_LIBRARY=${ENGINE_SOURCE_DIR}/CMakeLists.txt"
+        "-DVulkan_INCLUDE_DIR=${ENGINE_SOURCE_DIR}/external")
+endif()
 
 file(READ "${ENGINE_CMAKE}" cmake_text)
 foreach(required_text
