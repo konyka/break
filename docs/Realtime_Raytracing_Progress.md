@@ -66,11 +66,37 @@ On the available Vulkan device, the smoke test currently reports:
 
 ## Cross-Platform Validation Matrix
 
-The interactive `test_vulkan` window now presents a deterministic startup
-frame immediately after the basic scene resources are ready, before the long
-synchronous validation suite begins. This prevents a visible black/default
-surface for roughly the duration of the pre-loop tests; the later rotatable
-camera loop and validation ordering are unchanged.
+### Startup phase diagnostics (`test_vulkan`)
+
+`test_vulkan` logs `PHASE:` lines with per-phase and cumulative startup
+timing: `engine_init`, `startup_clear_present` (emitted from inside
+`test_render_init` immediately after `rhi_device_create` + WSI attach),
+`render_init`, and `rt_probes`. Capture the full output with
+`ctest --test-dir build-vk -R '^test_vulkan$' -V`.
+
+Reading the lines:
+
+- A clear-only frame is presented at the earliest physically possible
+  moment — the instant the RHI device and swapchain exist, before shader
+  compilation and before any staging upload. The visible startup window is
+  therefore bounded by `rhi_device_create` (instance/driver/validation-layer
+  setup), not by the later validation suite.
+- The timings are phase boundaries (monotonic host clock), not GPU frame
+  times. On a NVK/nouveau host with the validation gate enabled,
+  `rhi_device_create` dominates (~3.3 s); the clear present itself is
+  sub-millisecond.
+- If the `startup_clear_present` line is absent, inspect `begin_failed=`,
+  surface/swapchain creation, or an init failure — a missing line is a
+  diagnostic signal, not a silent pass.
+- Eliminating the remaining black window requires deferring platform window
+  mapping until after device creation (a platform API change tracked as
+  follow-up); the validation gate and driver enumeration cost are inherent
+  to this build configuration.
+
+The interactive `test_vulkan` window also presents a full startup frame
+(clear + test triangle) after the vertex/index buffers are ready, before the
+long synchronous validation suite begins. The later rotatable camera loop
+and validation ordering are unchanged.
 
 On 2026-10-13, checkout `be6d645` was revalidated on the same Linux host:
 the fresh/incremental OpenGL build passed 129/129 non-fuzz CTest cases,

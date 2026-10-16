@@ -21,6 +21,7 @@
 #include <physics/physics.h>
 #include <core/log.h>
 #include <core/shader_io.h>
+#include <platform/time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -314,7 +315,8 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
     return golden_pass;
 }
 
-static bool test_render_init(TestRenderState *rs, Platform *platform) {
+static bool test_render_init(TestRenderState *rs, Platform *platform,
+                             u64 startup_t0) {
     void *window;
     void *display = platform_display_native(platform);
     u32 w, h;
@@ -330,6 +332,23 @@ static bool test_render_init(TestRenderState *rs, Platform *platform) {
     rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
     rhi_set_vsync(rs->device, false);
     LOG_INFO("PASS: RHI device created (backend=%d)", (int)TV_BACKEND);
+    {
+        u64 clear_t0 = time_microseconds();
+        RHIResult begin_result = RHI_RESULT_OK;
+        RHICmdBuffer *clear_cmd = rhi_frame_begin_ex(rs->device, &begin_result);
+        if (clear_cmd == NULL) {
+            LOG_ERROR("PHASE: startup_clear_present begin_failed=%d", begin_result);
+        } else {
+            rhi_cmd_clear_color(clear_cmd, 0.1f, 0.1f, 0.15f, 1.0f);
+            RHIResult end_result = rhi_frame_end_ex(rs->device);
+            RHIResult present_result = end_result == RHI_RESULT_OK
+                ? rhi_present_ex(rs->device) : end_result;
+            LOG_INFO("PHASE: startup_clear_present elapsed_ms=%.3f total_ms=%.3f begin=%d end=%d present=%d",
+                     (double)(time_microseconds() - clear_t0) / 1000.0,
+                     (double)(time_microseconds() - startup_t0) / 1000.0,
+                     begin_result, end_result, present_result);
+        }
+    }
 
     usize vs_len = 0, fs_len = 0;
     char *vs_src = shader_read_file(TV_VS_BLINN, &vs_len);
@@ -5404,14 +5423,23 @@ int main(int argc, char **argv) {
 
     EngineConfig cfg = { .width = 800, .height = 600, .title = TV_WINDOW_TITLE, .target_fps = 60.0 };
     Engine engine = {0};
+    u64 startup_t0 = time_microseconds();
+    u64 startup_prev = startup_t0;
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
+    LOG_INFO("PHASE: engine_init elapsed_ms=%.3f total_ms=%.3f",
+             (double)(time_microseconds() - startup_prev) / 1000.0,
+             (double)(time_microseconds() - startup_t0) / 1000.0);
 
     TestRenderState render = {0};
-    if (!test_render_init(&render, engine.platform)) {
+    if (!test_render_init(&render, engine.platform, startup_t0)) {
         LOG_FATAL("Render init failed");
         engine_shutdown(&engine);
         return 1;
     }
+    LOG_INFO("PHASE: render_init elapsed_ms=%.3f total_ms=%.3f",
+             (double)(time_microseconds() - startup_prev) / 1000.0,
+             (double)(time_microseconds() - startup_t0) / 1000.0);
+    startup_prev = time_microseconds();
     {
         RHIDeviceInfo info = {0};
         if (rhi_device_get_info(render.device, &info)) {
@@ -5430,6 +5458,9 @@ int main(int argc, char **argv) {
         test_acceleration_structure_lifecycle(render.device);
     bool blas_size_query_pass =
         test_one_triangle_blas_sizes(render.device);
+    LOG_INFO("PHASE: rt_probes elapsed_ms=%.3f total_ms=%.3f",
+             (double)(time_microseconds() - startup_prev) / 1000.0,
+             (double)(time_microseconds() - startup_t0) / 1000.0);
     if (getenv("BREAK_RT_ONLY") != NULL) {
         bool passed = acceleration_structure_pass && blas_size_query_pass;
         test_render_shutdown(&render);
