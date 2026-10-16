@@ -3703,6 +3703,23 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     return metal_uniform_location(&pp->desc, name);
 }
 
+/* Plan E Task 5: reflection-driven bindings — fail-closed link stubs
+ * (create NULL / resolve -1 / destroy no-op), mirroring rhi_headless.c.
+ * main.c/test_vulkan.c call sites link against these until the Metal
+ * reflection materialization lands; the table walk above stays the
+ * legacy API's authority in the meantime. */
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
+    (void)dev; (void)pipe; return NULL;
+}
+
+void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
+    (void)dev; (void)b;
+}
+
+i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
+    (void)b; (void)name; return -1;
+}
+
 /* ---- Task 8: render-target payloads and FBO family ----
  * Metal has no framebuffer object: the FBO structs group texture handles
  * and a small backend payload (clear color / MSAA textures); bind builds a

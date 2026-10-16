@@ -236,9 +236,15 @@ typedef struct {
     /* 计划 E Task 2：render_init 填充的后端能力快照（F3 proj 统一、F4 hotreload）。 */
     RHICapabilities caps;
     RHIPipeline   pipeline;
+    /* 计划 E Task 5 T1：每管线一份 reflection 物化表，替代零散的旧版
+     * uniform-location 查询（loc_* 缓存保留，来源切换）。 */
+    RHIPipelineBindings *bind_pipeline;
     RHIPipeline   clustered_pipeline;
+    RHIPipelineBindings *bind_clustered;
     RHIPipeline   instanced_pipeline;
+    RHIPipelineBindings *bind_instanced;
     RHIPipeline   skinned_pipeline;
+    RHIPipelineBindings *bind_skinned;
     RHIPipeline   wire_pipeline;
     RHIPipeline   wire_instanced_pipeline;
     RHIPipeline   wire_skinned_pipeline;
@@ -246,6 +252,7 @@ typedef struct {
      * once for the single-execute material-indirect mega draw. An invalid
      * handle disables that path (falls back to the R437 per-group loop). */
     RHIPipeline   arr_pipeline;
+    RHIPipelineBindings *bind_arr;
     i32 arr_loc_model, arr_loc_view, arr_loc_proj;
     i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient, arr_loc_camera_pos;
     RHIBuffer     instance_buf[2]; /* R183: dual-slot vs in-flight instanced VS */
@@ -258,6 +265,7 @@ typedef struct {
     RHITexture    terrain_tex;
     RHIShadowMap  shadow_map;   /* 2048x2048 CSM atlas: 4 cascades in 2x2 quadrants */
     RHIPipeline   depth_pipeline;
+    RHIPipelineBindings *bind_depth;
     Mat4          cascade_vp[4];
     f32           cascade_splits[5];
     f32           cascade_scale[4];
@@ -276,14 +284,17 @@ typedef struct {
      * prefix (contract markers + R589 comments stay accurate). */
     ClusteredLocs cl, cli;
     RHIPipeline   clustered_inst_pipeline;
+    RHIPipelineBindings *bind_clustered_inst;
     /* R591: skinned variant (joints ride a vertex SSBO; skinned_vertex +
      * uses_storage, rhi_vk classification narrowed to the clustered table). */
     ClusteredLocs csk;
     RHIPipeline   clustered_skin_pipeline;
+    RHIPipelineBindings *bind_clustered_skin;
     /* R592: texture-array variant (CLUSTERED_ARR frag branch; per-layer
      * factor tables ride the frame UBO's factor region at offsets 192+). */
     ClusteredLocs car;
     RHIPipeline   clustered_arr_pipeline;
+    RHIPipelineBindings *bind_clustered_arr;
     /* R589: shared clustered frame UBO {prev_vp, prev_model, proj} — VK set
      * index differs per variant (static: set=2, instanced: set=3), but the
      * bind call resolves the pipeline's own ubo_set. */
@@ -304,29 +315,30 @@ static void render_shutdown(RenderState *rs);
 
 /* R590: query the full clustered uniform-location set for one pipeline
  * variant (static cl / instanced cli — identical names, per-pipeline values
- * on GL; identical push offsets on VK). */
-static void clustered_query_locs(RenderState *rs, RHIPipeline pipe, ClusteredLocs *L) {
-    L->cl_loc_model       = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-    L->cl_loc_view        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-    L->cl_loc_proj        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
-    L->cl_loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
-    L->cl_loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_ambient");
-    L->cl_loc_screen_w    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
-    L->cl_loc_screen_h    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
-    L->cl_loc_near        = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
-    L->cl_loc_far         = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
-    L->cl_loc_point_count = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
-    L->cl_loc_dir_count   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
-    L->cl_loc_shadow_bias = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_shadow_bias");
-    L->cl_loc_fog_color   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
-    L->cl_loc_fog_near    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
-    L->cl_loc_fog_far     = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
-    L->cl_loc_underwater  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
-    L->cl_loc_point_shadow_far_planes = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_shadow_far_planes");
-    L->cl_loc_pom_enabled = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_pom_enabled");
-    L->cl_loc_mr_factor   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
-    L->cl_loc_occ_strength = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_occlusion_strength"); /* R598 */
-    L->cl_loc_emissive_factor = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
+ * on GL; identical push offsets on VK). Plan E Task 5 T3: locations resolve
+ * through the pipeline's RHIPipelineBindings table. */
+static void clustered_query_locs(ClusteredLocs *L, const RHIPipelineBindings *b) {
+    L->cl_loc_model       = rhi_pipeline_bindings_resolve(b, "u_model");
+    L->cl_loc_view        = rhi_pipeline_bindings_resolve(b, "u_view");
+    L->cl_loc_proj        = rhi_pipeline_bindings_resolve(b, "u_proj");
+    L->cl_loc_camera_pos  = rhi_pipeline_bindings_resolve(b, "u_camera_pos");
+    L->cl_loc_ambient     = rhi_pipeline_bindings_resolve(b, "u_ambient");
+    L->cl_loc_screen_w    = rhi_pipeline_bindings_resolve(b, "u_screen_w");
+    L->cl_loc_screen_h    = rhi_pipeline_bindings_resolve(b, "u_screen_h");
+    L->cl_loc_near        = rhi_pipeline_bindings_resolve(b, "u_near");
+    L->cl_loc_far         = rhi_pipeline_bindings_resolve(b, "u_far");
+    L->cl_loc_point_count = rhi_pipeline_bindings_resolve(b, "u_point_count");
+    L->cl_loc_dir_count   = rhi_pipeline_bindings_resolve(b, "u_dir_count");
+    L->cl_loc_shadow_bias = rhi_pipeline_bindings_resolve(b, "u_shadow_bias");
+    L->cl_loc_fog_color   = rhi_pipeline_bindings_resolve(b, "u_fog_color");
+    L->cl_loc_fog_near    = rhi_pipeline_bindings_resolve(b, "u_fog_near");
+    L->cl_loc_fog_far     = rhi_pipeline_bindings_resolve(b, "u_fog_far");
+    L->cl_loc_underwater  = rhi_pipeline_bindings_resolve(b, "u_underwater");
+    L->cl_loc_point_shadow_far_planes = rhi_pipeline_bindings_resolve(b, "u_point_shadow_far_planes");
+    L->cl_loc_pom_enabled = rhi_pipeline_bindings_resolve(b, "u_pom_enabled");
+    L->cl_loc_mr_factor   = rhi_pipeline_bindings_resolve(b, "u_mr_factor");
+    L->cl_loc_occ_strength = rhi_pipeline_bindings_resolve(b, "u_occlusion_strength"); /* R598 */
+    L->cl_loc_emissive_factor = rhi_pipeline_bindings_resolve(b, "u_emissive_factor");
 }
 
 static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
@@ -401,6 +413,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rhi_shader_destroy(rs->device, fs);
 
     if (!rhi_handle_valid(rs->pipeline)) goto fail;
+    rs->bind_pipeline = rhi_pipeline_bindings_create(rs->device, rs->pipeline);
+    if (!rs->bind_pipeline)
+        LOG_WARN("blinn bindings create failed; uniform locations resolve -1");
 
     /* R441: material texture-array forward variant. Same uniforms/push layout
      * as blinn_phong, but u_albedo is a sampler2DArray and the vertex stage
@@ -437,23 +452,26 @@ static bool render_init(RenderState *rs, Platform *platform) {
         free(afs);
     }
     if (rhi_handle_valid(rs->arr_pipeline)) {
-        rs->arr_loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_model");
-        rs->arr_loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_view");
-        rs->arr_loc_proj        = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_proj");
-        rs->arr_loc_light_dir   = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_light_dir");
-        rs->arr_loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_light_color");
-        rs->arr_loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_ambient");
-        rs->arr_loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->arr_pipeline, "u_camera_pos");
+        rs->bind_arr = rhi_pipeline_bindings_create(rs->device, rs->arr_pipeline);
+        if (!rs->bind_arr)
+            LOG_WARN("MatIndirect: array bindings create failed; locations resolve -1");
+        rs->arr_loc_model       = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_model");
+        rs->arr_loc_view        = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_view");
+        rs->arr_loc_proj        = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_proj");
+        rs->arr_loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_dir");
+        rs->arr_loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_color");
+        rs->arr_loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_ambient");
+        rs->arr_loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_camera_pos");
     }
 
-    rs->loc_model       = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_model");
-    rs->loc_view        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_view");
-    rs->loc_proj        = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_proj");
-    rs->loc_light_dir   = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_light_dir");
-    rs->loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_light_color");
-    rs->loc_ambient     = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_ambient");
-    rs->loc_camera_pos  = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_camera_pos");
-    rs->loc_albedo      = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, "u_albedo");
+    rs->loc_model       = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_model");
+    rs->loc_view        = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_view");
+    rs->loc_proj        = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_proj");
+    rs->loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_light_dir");
+    rs->loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_light_color");
+    rs->loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_ambient");
+    rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_camera_pos");
+    rs->loc_albedo      = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_albedo");
 
     /* Clustered lighting pipelines (static + R590 instanced + R591 skinned + R592 array) */
     {
@@ -574,7 +592,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
         } else { free(cv); free(cf); free(civ); free(csv); free(cav); }
     }
     if (rhi_handle_valid(rs->clustered_pipeline)) {
-        clustered_query_locs(rs, rs->clustered_pipeline, &rs->cl);
+        rs->bind_clustered = rhi_pipeline_bindings_create(rs->device, rs->clustered_pipeline);
+        if (!rs->bind_clustered)
+            LOG_WARN("clustered bindings create failed; locations resolve -1");
+        clustered_query_locs(&rs->cl, rs->bind_clustered);
         {
             /* R589: clustered frame UBO {prev_vp, prev_model, proj} — the RHI
              * binds one UBO descriptor set per call, so proj (VK) and the
@@ -590,12 +611,24 @@ static bool render_init(RenderState *rs, Platform *platform) {
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
     }
-    if (rhi_handle_valid(rs->clustered_inst_pipeline))
-        clustered_query_locs(rs, rs->clustered_inst_pipeline, &rs->cli);
-    if (rhi_handle_valid(rs->clustered_skin_pipeline))
-        clustered_query_locs(rs, rs->clustered_skin_pipeline, &rs->csk);
-    if (rhi_handle_valid(rs->clustered_arr_pipeline))
-        clustered_query_locs(rs, rs->clustered_arr_pipeline, &rs->car);
+    if (rhi_handle_valid(rs->clustered_inst_pipeline)) {
+        rs->bind_clustered_inst = rhi_pipeline_bindings_create(rs->device, rs->clustered_inst_pipeline);
+        if (!rs->bind_clustered_inst)
+            LOG_WARN("clustered-inst bindings create failed; locations resolve -1");
+        clustered_query_locs(&rs->cli, rs->bind_clustered_inst);
+    }
+    if (rhi_handle_valid(rs->clustered_skin_pipeline)) {
+        rs->bind_clustered_skin = rhi_pipeline_bindings_create(rs->device, rs->clustered_skin_pipeline);
+        if (!rs->bind_clustered_skin)
+            LOG_WARN("clustered-skin bindings create failed; locations resolve -1");
+        clustered_query_locs(&rs->csk, rs->bind_clustered_skin);
+    }
+    if (rhi_handle_valid(rs->clustered_arr_pipeline)) {
+        rs->bind_clustered_arr = rhi_pipeline_bindings_create(rs->device, rs->clustered_arr_pipeline);
+        if (!rs->bind_clustered_arr)
+            LOG_WARN("clustered-arr bindings create failed; locations resolve -1");
+        clustered_query_locs(&rs->car, rs->bind_clustered_arr);
+    }
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -664,8 +697,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     .is_shadow_depth = true,
                 };
                 rs->depth_pipeline = rhi_pipeline_create(rs->device, &dpd);
-                rs->depth_loc_model = rhi_pipeline_get_uniform_location(rs->device, rs->depth_pipeline, "u_model");
-                rs->depth_loc_lvp   = rhi_pipeline_get_uniform_location(rs->device, rs->depth_pipeline, "u_light_vp");
+                rs->bind_depth = rhi_pipeline_bindings_create(rs->device, rs->depth_pipeline);
+                if (!rs->bind_depth)
+                    LOG_WARN("depth bindings create failed; locations resolve -1");
+                rs->depth_loc_model = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_model");
+                rs->depth_loc_lvp   = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_light_vp");
                 rhi_shader_destroy(rs->device, dvs);
                 rhi_shader_destroy(rs->device, dfs);
             }
@@ -709,12 +745,15 @@ static bool render_init(RenderState *rs, Platform *platform) {
         } else { free(iv); free(ifl_src); }
     }
     if (rhi_handle_valid(rs->instanced_pipeline)) {
-        rs->inst_loc_view       = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_view");
-        rs->inst_loc_proj       = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_proj");
-        rs->inst_loc_light_dir  = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_light_dir");
-        rs->inst_loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_light_color");
-        rs->inst_loc_ambient    = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_ambient");
-        rs->inst_loc_camera_pos = rhi_pipeline_get_uniform_location(rs->device, rs->instanced_pipeline, "u_camera_pos");
+        rs->bind_instanced = rhi_pipeline_bindings_create(rs->device, rs->instanced_pipeline);
+        if (!rs->bind_instanced)
+            LOG_WARN("instanced bindings create failed; locations resolve -1");
+        rs->inst_loc_view       = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_view");
+        rs->inst_loc_proj       = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_proj");
+        rs->inst_loc_light_dir  = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_light_dir");
+        rs->inst_loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_light_color");
+        rs->inst_loc_ambient    = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_ambient");
+        rs->inst_loc_camera_pos = rhi_pipeline_bindings_resolve(rs->bind_instanced, "u_camera_pos");
     }
 
     {
@@ -766,12 +805,15 @@ static bool render_init(RenderState *rs, Platform *platform) {
         } else { free(sv); free(sf); }
     }
     if (rhi_handle_valid(rs->skinned_pipeline)) {
-        rs->sk_loc_view       = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_view");
-        rs->sk_loc_proj       = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_proj");
-        rs->sk_loc_light_dir  = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_light_dir");
-        rs->sk_loc_light_color = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_light_color");
-        rs->sk_loc_ambient    = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_ambient");
-        rs->sk_loc_camera_pos = rhi_pipeline_get_uniform_location(rs->device, rs->skinned_pipeline, "u_camera_pos");
+        rs->bind_skinned = rhi_pipeline_bindings_create(rs->device, rs->skinned_pipeline);
+        if (!rs->bind_skinned)
+            LOG_WARN("skinned bindings create failed; locations resolve -1");
+        rs->sk_loc_view       = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_view");
+        rs->sk_loc_proj       = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_proj");
+        rs->sk_loc_light_dir  = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_light_dir");
+        rs->sk_loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_light_color");
+        rs->sk_loc_ambient    = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_ambient");
+        rs->sk_loc_camera_pos = rhi_pipeline_bindings_resolve(rs->bind_skinned, "u_camera_pos");
     }
 
     RHIBufferDesc temporal_desc = {
@@ -989,6 +1031,16 @@ static void render_shutdown(RenderState *rs) {
     ibl_destroy(&rs->ibl, rs->device);
     deferred_destroy(&rs->deferred, rs->device);
     rhi_shadow_map_destroy(rs->device, &rs->shadow_map);
+    /* 计划 E Task 5 T4: destroy each pipeline's bindings table (NULL-safe). */
+    if (rs->bind_depth)         rhi_pipeline_bindings_destroy(rs->device, rs->bind_depth);
+    if (rs->bind_skinned)       rhi_pipeline_bindings_destroy(rs->device, rs->bind_skinned);
+    if (rs->bind_instanced)     rhi_pipeline_bindings_destroy(rs->device, rs->bind_instanced);
+    if (rs->bind_clustered)     rhi_pipeline_bindings_destroy(rs->device, rs->bind_clustered);
+    if (rs->bind_clustered_inst) rhi_pipeline_bindings_destroy(rs->device, rs->bind_clustered_inst);
+    if (rs->bind_clustered_skin) rhi_pipeline_bindings_destroy(rs->device, rs->bind_clustered_skin);
+    if (rs->bind_clustered_arr) rhi_pipeline_bindings_destroy(rs->device, rs->bind_clustered_arr);
+    if (rs->bind_arr)           rhi_pipeline_bindings_destroy(rs->device, rs->bind_arr);
+    if (rs->bind_pipeline)      rhi_pipeline_bindings_destroy(rs->device, rs->bind_pipeline);
     if (rhi_handle_valid(rs->depth_pipeline)) rhi_pipeline_destroy(rs->device, rs->depth_pipeline);
     if (rhi_handle_valid(rs->skinned_pipeline)) rhi_pipeline_destroy(rs->device, rs->skinned_pipeline);
     if (rhi_handle_valid(rs->wire_skinned_pipeline)) rhi_pipeline_destroy(rs->device, rs->wire_skinned_pipeline);
