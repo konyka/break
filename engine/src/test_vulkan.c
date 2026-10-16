@@ -913,6 +913,43 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
     }
     if (rhi_handle_valid(bgra)) rhi_texture_destroy(dev, bgra);
 
+    /* Plan E C-TEX-1: the two format-matrix gaps. R8G8B8A8_UNORM with a
+     * non-trivial byte order — {10,20,30,40} must come back in the same
+     * R,G,B,A order (the other RGBA8 fixtures in the suite are uniform-byte
+     * fills, which cannot observe a channel swap) — and RHI_FORMAT_UNDEFINED
+     * must be rejected at create on BOTH backends (shared
+     * rhi_texture_desc_validate), closing the 7-enum matrix: 6 real formats
+     * round-trip native bytes, the 7th refuses to exist. */
+    const u8 rgba8_src[4] = {10u, 20u, 30u, 40u}; /* R=10 G=20 B=30 A=40 */
+    RHITextureDesc rgba8_desc = {
+        .width = 1, .height = 1, .format = RHI_FORMAT_R8G8B8A8_UNORM,
+        .mip_levels = 1, .data = rgba8_src,
+    };
+    RHITexture rgba8 = rhi_texture_create(dev, &rgba8_desc);
+    u8 rgba8_rb[4] = {0xFFu, 0xFFu, 0xFFu, 0xFFu};
+    if (!rhi_handle_valid(rgba8)) {
+        LOG_ERROR("FAIL: RGBA8 roundtrip texture create failed");
+        pass = false;
+    } else if (!rhi_texture_read_pixels(dev, rgba8, rgba8_rb, sizeof(rgba8_rb))) {
+        LOG_ERROR("FAIL: RGBA8 roundtrip readback failed");
+        pass = false;
+    } else if (memcmp(rgba8_rb, rgba8_src, sizeof(rgba8_src)) != 0) {
+        LOG_ERROR("FAIL: RGBA8 roundtrip mismatch "
+                  "(got {%u,%u,%u,%u}, want {10,20,30,40} RGBA order)",
+                  rgba8_rb[0], rgba8_rb[1], rgba8_rb[2], rgba8_rb[3]);
+        pass = false;
+    }
+    if (rhi_handle_valid(rgba8)) rhi_texture_destroy(dev, rgba8);
+
+    RHITextureDesc und_desc = {
+        .width = 2, .height = 2, .format = RHI_FORMAT_UNDEFINED,
+        .mip_levels = 1, .data = NULL,
+    };
+    if (rhi_handle_valid(rhi_texture_create(dev, &und_desc))) {
+        LOG_ERROR("FAIL: UNDEFINED format texture create must be rejected");
+        pass = false;
+    }
+
     /* R602: D32_FLOAT 2x1 — the LAST undefined readback format joins the
      * native-byte semantics (4B/px f32 depth). GL pre-R602 issued
      * glGetTexImage(GL_RGBA) on a depth texture (GL error, dst untouched);
@@ -2505,6 +2542,259 @@ static bool tv_test_cmd_update_buffer_ordering(const TestRenderState *rs) {
     if (rhi_handle_valid(cs))   rhi_shader_destroy(dev, cs);
     if (rhi_handle_valid(flag)) rhi_buffer_destroy(dev, flag);
     if (rhi_handle_valid(data)) rhi_buffer_destroy(dev, data);
+    return pass;
+}
+
+/* Plan E C-TEX-2: mip upload oracle. rhi_texture_upload_mip writes mip 2 of
+ * an 8x8 RGBA8 4-level texture; rhi_cmd_bind_texture_mip binds the single-mip
+ * view and a compute textureLod(...,0.0) must read back the uploaded bytes
+ * (UNORM round trip, ±1). Set/binding conventions follow
+ * engine/shaders/hi_z_generate.comp's header: VK sampler_mip = set 2, SSBO
+ * defaults to set 0; GL has no set= qualifier. */
+static bool tv_test_mip_upload_oracle(const TestRenderState *rs) {
+#ifdef ENGINE_VULKAN
+    static const char cs_src[] =
+        "#version 460\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(set = 2, binding = 0) uniform sampler2D u_tex;\n"
+        "layout(std430, binding = 0) buffer Out { uvec4 px; } o;\n"
+        "void main() { o.px = uvec4(textureLod(u_tex, vec2(0.5), 0.0) * 255.0 + 0.5); }\n";
+    const u32 ssbo_binding = 0u;
+#else
+    static const char cs_src[] =
+        "#version 430\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(binding = 0) uniform sampler2D u_tex;\n"
+        "layout(std430, binding = 1) buffer Out { uvec4 px; } o;\n"
+        "void main() { o.px = uvec4(textureLod(u_tex, vec2(0.5), 0.0) * 255.0 + 0.5); }\n";
+    const u32 ssbo_binding = 1u;
+#endif
+    RHIDevice *dev = rs->device;
+    /* 8x8 RGBA8、4 级 mip；mip2（2x2）经 upload_mip 写入 {10,200,30,255}。 */
+    RHITextureDesc td = { .width = 8u, .height = 8u,
+                          .format = RHI_FORMAT_R8G8B8A8_UNORM,
+                          .mip_levels = 4u, .data = NULL };
+    RHITexture tex = rhi_texture_create(dev, &td);
+    static const u8 mip2[2 * 2 * 4] = {
+        10u, 200u, 30u, 255u, 10u, 200u, 30u, 255u,
+        10u, 200u, 30u, 255u, 10u, 200u, 30u, 255u };
+    /* Wiring note vs the brief: initial_data must cover the full 16B desc
+     * size (both backends memcpy/upload desc->size bytes), so the 4B scalar
+     * init is widened to a zeroed quad. */
+    u32 out_init[4] = { 0u, 0u, 0u, 0u };
+    RHIBufferDesc od = { RHI_BUFFER_USAGE_STORAGE, 16u, out_init };
+    RHIBuffer out_buf = rhi_buffer_create(dev, &od);
+    RHIShader cs = rhi_shader_create_compute(dev, cs_src, sizeof(cs_src) - 1u);
+    RHIPipelineDesc pd = {0};
+    pd.is_compute = true;
+    pd.frag = cs;
+    pd.uses_textures = true;
+    RHIPipeline pipe = rhi_pipeline_create(dev, &pd);
+    RHISamplerDesc sd = { RHI_FILTER_NEAREST, RHI_FILTER_NEAREST,
+                          RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE,
+                          RHI_WRAP_CLAMP_TO_EDGE };
+    RHISampler samp = rhi_sampler_create(dev, &sd);
+    bool pass = rhi_handle_valid(tex) && rhi_handle_valid(out_buf) &&
+                rhi_handle_valid(cs) && rhi_handle_valid(pipe) &&
+                rhi_handle_valid(samp);
+    if (pass) {
+        rhi_texture_upload_mip(dev, tex, 2u, 2u, 2u, mip2, sizeof(mip2));
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) { pass = false; }
+        else {
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            /* bind_texture_mip 绑定单 mip 视图，textureLod(...,0.0) 即 mip2。 */
+            rhi_cmd_bind_texture_mip(cmd, tex, samp, 0u, 2u);
+            rhi_cmd_bind_storage_buffer(cmd, out_buf, ssbo_binding);
+            rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            cmd = rhi_frame_begin(dev);       /* drain 惯例 */
+            if (cmd) { rhi_frame_end(dev); rhi_present(dev); }
+            u32 got[4] = { 0xFFFFFFFFu, 0u, 0u, 0u };
+            if (!rhi_buffer_read(dev, out_buf, got, 0u, sizeof(got))) {
+                LOG_ERROR("FAIL: C-TEX-2 readback"); pass = false;
+            } else {
+                static const u32 want[4] = { 10u, 200u, 30u, 255u };
+                for (u32 c = 0; c < 4u; c++) {
+                    u32 d = got[c] > want[c] ? got[c] - want[c] : want[c] - got[c];
+                    if (d > 1u) { /* UNORM 往返 ±1 容差 */
+                        LOG_ERROR("FAIL: C-TEX-2 mip2 ch%u got %u want %u",
+                                  c, got[c], want[c]);
+                        pass = false;
+                    }
+                }
+            }
+        }
+    }
+    if (rhi_handle_valid(samp))    rhi_sampler_destroy(dev, samp);
+    if (rhi_handle_valid(pipe))    rhi_pipeline_destroy(dev, pipe);
+    if (rhi_handle_valid(cs))      rhi_shader_destroy(dev, cs);
+    if (rhi_handle_valid(out_buf)) rhi_buffer_destroy(dev, out_buf);
+    if (rhi_handle_valid(tex))     rhi_texture_destroy(dev, tex);
+    return pass;
+}
+
+/* Plan E C-TEX-3: sampler filter/wrap contract. A 2x2 RGBA8 texture with
+ * four distinct texels is magnified by a fullscreen quad whose UVs
+ * extrapolate past the [0,1] edges (quad-corner UVs span [-0.25,1.25], so
+ * the 4x4 target's corner pixel centers land at UV ±(-0.0625,1.0625)).
+ * NEAREST+CLAMP_TO_EDGE must freeze the edge texels at the corners (no
+ * wrap); the REPEAT control run must show the wrapped texel there. Readback
+ * follows the R442 NDC->row convention (VK top-down vs GL bottom-up readback
+ * origins cancel), so the same corner expectations hold on both backends.
+ * RGBA8 offscreen target keeps the readback byte order native (R587/R601). */
+static bool tv_test_sampler_contract(const TestRenderState *rs, u32 screen_w,
+                                     u32 screen_h) {
+    /* Shared source: GLSL 450 core accepts layout(binding=) on both backends
+     * (VK compiles to SPIR-V, GL >= 4.2 has it core). Graphics samplers live
+     * in set 0 / unit 0 (blinn_phong convention). */
+    static const char vs_src[] =
+        "#version 450 core\n"
+        "layout(location = 0) in vec3 aPos;\n"
+        "layout(location = 1) in vec3 aNormal;\n"
+        "layout(location = 2) in vec2 aUV;\n"
+        "layout(location = 0) out vec2 vUV;\n"
+        "void main() { vUV = aUV; gl_Position = vec4(aPos, 1.0); }\n";
+    static const char fs_src[] =
+        "#version 450 core\n"
+        "layout(location = 0) in vec2 vUV;\n"
+        "layout(binding = 0) uniform sampler2D u_tex;\n"
+        "layout(location = 0) out vec4 FragColor;\n"
+        "void main() { FragColor = texture(u_tex, vUV); }\n";
+    RHIDevice *dev = rs->device;
+
+    /* Four distinct texels: (0,0) red, (1,0) green, (0,1) blue, (1,1)
+     * yellow. Every channel pattern is unique, so a wrong texel is always
+     * observable. */
+    static const u8 tex4[2 * 2 * 4] = {
+        255u,   0u,   0u, 255u,    0u, 255u,   0u, 255u,
+          0u,   0u, 255u, 255u,  255u, 255u,   0u, 255u,
+    };
+    RHITextureDesc tdesc = {
+        .width = 2, .height = 2, .format = RHI_FORMAT_R8G8B8A8_UNORM,
+        .mip_levels = 1, .data = tex4,
+    };
+    RHITexture tex = rhi_texture_create(dev, &tdesc);
+
+    /* Quad (pos3+nrm3+uv2, 32B stride, suite layout). u = 0.75*x + 0.5:
+     * pixel centers x = ±0.75/±0.25 sample u = -0.0625/0.3125/0.6875/1.0625
+     * — the outer columns sit past both texture edges. */
+    static const f32 quad[4 * 8] = {
+        -1.0f, -1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  -0.25f, -0.25f,
+         1.0f, -1.0f, 0.0f,  0.0f, 0.0f, 1.0f,   1.25f, -0.25f,
+         1.0f,  1.0f, 0.0f,  0.0f, 0.0f, 1.0f,   1.25f,  1.25f,
+        -1.0f,  1.0f, 0.0f,  0.0f, 0.0f, 1.0f,  -0.25f,  1.25f,
+    };
+    static const u32 quad_ix[6] = { 0u, 1u, 2u, 0u, 2u, 3u };
+    RHIBufferDesc vbd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                          .size = sizeof(quad), .initial_data = quad };
+    RHIBufferDesc ibd = { .usage = RHI_BUFFER_USAGE_INDEX,
+                          .size = sizeof(quad_ix), .initial_data = quad_ix };
+    RHIBuffer vbo = rhi_buffer_create(dev, &vbd);
+    RHIBuffer ibo = rhi_buffer_create(dev, &ibd);
+
+    RHIShader vs = rhi_shader_create(dev, vs_src, sizeof(vs_src) - 1u, false);
+    RHIShader fs = rhi_shader_create(dev, fs_src, sizeof(fs_src) - 1u, true);
+    RHIPipeline pipe = RHI_HANDLE_NULL;
+    if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+        RHIPipelineDesc pdesc = { .vert = vs, .frag = fs,
+                                  .uses_textures = true,
+                                  .disable_culling = true };
+        pipe = rhi_pipeline_create(dev, &pdesc);
+    }
+
+    RHISamplerDesc nd_clamp = { RHI_FILTER_NEAREST, RHI_FILTER_NEAREST,
+                                RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE,
+                                RHI_WRAP_CLAMP_TO_EDGE };
+    RHISamplerDesc nd_repeat = { RHI_FILTER_NEAREST, RHI_FILTER_NEAREST,
+                                 RHI_WRAP_REPEAT, RHI_WRAP_REPEAT,
+                                 RHI_WRAP_REPEAT };
+    RHISampler samp_clamp = rhi_sampler_create(dev, &nd_clamp);
+    RHISampler samp_repeat = rhi_sampler_create(dev, &nd_repeat);
+
+    RHIOffscreenFBO fbo = rhi_offscreen_fbo_create_fmt(dev, 4, 4,
+                                                       RHI_FORMAT_R8G8B8A8_UNORM);
+
+    bool pass = rhi_handle_valid(tex) && rhi_handle_valid(vbo) &&
+                rhi_handle_valid(ibo) && rhi_handle_valid(pipe) &&
+                rhi_handle_valid(samp_clamp) && rhi_handle_valid(samp_repeat) &&
+                rhi_handle_valid(fbo.fb);
+    if (!pass) {
+        LOG_ERROR("FAIL: C-TEX-3 setup (tex=%d vbo=%d ibo=%d pipe=%d samp=%d/%d "
+                  "fbo=%d)", (int)rhi_handle_valid(tex),
+                  (int)rhi_handle_valid(vbo), (int)rhi_handle_valid(ibo),
+                  (int)rhi_handle_valid(pipe),
+                  (int)rhi_handle_valid(samp_clamp),
+                  (int)rhi_handle_valid(samp_repeat),
+                  (int)rhi_handle_valid(fbo.fb));
+    } else {
+        /* Corner pixel centers in UV space: (-0.0625,-0.0625) top-left,
+         * (1.0625,-0.0625) top-right, (-0.0625,1.0625) bottom-left,
+         * (1.0625,1.0625) bottom-right. CLAMP keeps the edge texel; REPEAT
+         * wraps both axes (u -> u±1 flips the texel column AND row). */
+        static const u8 want_clamp[4][4] = {
+            { 255u,   0u,   0u, 255u }, /* (0,0) texel(0,0) red   */
+            {   0u, 255u,   0u, 255u }, /* (3,0) texel(1,0) green */
+            {   0u,   0u, 255u, 255u }, /* (0,3) texel(0,1) blue  */
+            { 255u, 255u,   0u, 255u }, /* (3,3) texel(1,1) yellow*/
+        };
+        static const u8 want_repeat[4][4] = {
+            { 255u, 255u,   0u, 255u }, /* (0,0) texel(1,1) yellow (wrapped) */
+            {   0u,   0u, 255u, 255u }, /* (3,0) texel(0,1) blue   (wrapped) */
+            {   0u, 255u,   0u, 255u }, /* (0,3) texel(1,0) green  (wrapped) */
+            { 255u,   0u,   0u, 255u }, /* (3,3) texel(0,0) red    (wrapped) */
+        };
+        static const u32 corner_px[4] = { 0u, 3u, 12u, 15u }; /* (0,0)(3,0)(0,3)(3,3) */
+        const RHISampler samps[2] = { samp_clamp, samp_repeat };
+        const char *const mode_names[2] = { "CLAMP", "REPEAT" };
+
+        for (u32 mode = 0u; mode < 2u && pass; mode++) {
+            const u8 (*want)[4] = (mode == 0u) ? want_clamp : want_repeat;
+            RHICmdBuffer *cmd = rhi_frame_begin(dev);
+            if (!cmd) { pass = false; break; }
+            rhi_offscreen_fbo_bind(cmd, &fbo);
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_bind_texture(cmd, tex, samps[mode], 0u);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+            rhi_cmd_draw_indexed(cmd, 6u, 1u);
+            rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            u8 rb[4 * 4 * 4];
+            memset(rb, 0xAB, sizeof(rb));
+            if (!rhi_texture_read_pixels(dev, fbo.color_tex, rb, sizeof(rb))) {
+                LOG_ERROR("FAIL: C-TEX-3 %s readback", mode_names[mode]);
+                pass = false;
+                break;
+            }
+            for (u32 k = 0; k < 4u; k++) {
+                const u8 *px = rb + corner_px[k] * 4u;
+                for (u32 c = 0; c < 4u; c++) {
+                    u32 d = px[c] > want[k][c] ? px[c] - want[k][c]
+                                               : want[k][c] - px[c];
+                    if (d > 1u) {
+                        LOG_ERROR("FAIL: C-TEX-3 %s corner %u ch%u got %u, "
+                                  "want %u (px {%u,%u,%u,%u})",
+                                  mode_names[mode], k, c, px[c], want[k][c],
+                                  px[0], px[1], px[2], px[3]);
+                        pass = false;
+                    }
+                }
+            }
+        }
+    }
+
+    if (rhi_handle_valid(fbo.fb))      rhi_offscreen_fbo_destroy(dev, &fbo);
+    if (rhi_handle_valid(samp_repeat)) rhi_sampler_destroy(dev, samp_repeat);
+    if (rhi_handle_valid(samp_clamp))  rhi_sampler_destroy(dev, samp_clamp);
+    if (rhi_handle_valid(pipe))        rhi_pipeline_destroy(dev, pipe);
+    if (rhi_handle_valid(fs))          rhi_shader_destroy(dev, fs);
+    if (rhi_handle_valid(vs))          rhi_shader_destroy(dev, vs);
+    if (rhi_handle_valid(ibo))         rhi_buffer_destroy(dev, ibo);
+    if (rhi_handle_valid(vbo))         rhi_buffer_destroy(dev, vbo);
+    if (rhi_handle_valid(tex))         rhi_texture_destroy(dev, tex);
     return pass;
 }
 
@@ -5757,6 +6047,23 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: NATIVE-BYTE ROUNDTRIP TEST %s",
              f16rt_pass ? "PASSED ✓" : "FAILED");
 
+    /* Plan E Task 4: texture/sampler/format contract phases — grouped with
+     * the format/readback family above (same shared pre-backend-split path
+     * convention as the Task 3 buffer contracts below). */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: MIP UPLOAD ORACLE (C-TEX-2)");
+    LOG_INFO("============================================");
+    bool mipup_pass = tv_test_mip_upload_oracle(&render);
+    LOG_INFO("RESULT: MIP UPLOAD ORACLE TEST %s",
+             mipup_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: SAMPLER FILTER/WRAP CONTRACT (C-TEX-3)");
+    LOG_INFO("============================================");
+    bool sampc_pass = tv_test_sampler_contract(&render, motion_w, motion_h);
+    LOG_INFO("RESULT: SAMPLER CONTRACT TEST %s",
+             sampc_pass ? "PASSED ✓" : "FAILED");
+
     LOG_INFO("============================================");
     LOG_INFO("TEST: TEXTURE REBIND (BSCN MANIFEST -> GPU)");
     LOG_INFO("============================================");
@@ -5899,7 +6206,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -6914,7 +7221,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

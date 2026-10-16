@@ -469,6 +469,12 @@ RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, boo
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
 void        rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe);
+/* Plan E C-TEX-1: the 7-enum RHIFormat matrix is closed. The 6 real formats
+ * round-trip native bytes through .data upload + rhi_texture_read_pixels
+ * (byte table at the readback entry below; RGBA8 is 4B/px R,G,B,A order);
+ * RHI_FORMAT_UNDEFINED is REJECTED here on both backends (shared
+ * rhi_texture_desc_validate) — it never silently falls back to another
+ * format. Pinned by the texture format-matrix oracle (test_vulkan). */
 RHITexture  rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc);
 void        rhi_texture_destroy(RHIDevice *dev, RHITexture tex);
 /* R441: 2D texture array (single mip, RGBA8/BGRA8) for the material-indirect
@@ -505,13 +511,32 @@ void        rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex,
  * there; the copy restores SHADER_READ_ONLY 閳?non-destructive), face
  * contents undefined until written. RGBA16F cube faces upload natively at
  * create (R625: f16 bytes, GL_HALF_FLOAT on GL / 8B staging on VK 閳?
- * pre-R625 they were silently dropped on BOTH backends). */
+ * pre-R625 they were silently dropped on BOTH backends).
+ * Plan E C-TEX-1: this byte table is the readback half of the closed
+ * 7-format matrix — every real format round-trips its native bytes on both
+ * backends for exact-representable values (RGBA8 included, 4B/px R,G,B,A
+ * order); RHI_FORMAT_UNDEFINED has no readback semantics because
+ * rhi_texture_create rejects it. */
 bool        rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h);
 bool        rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size);
 /* Upload RGBA8 pixel data into a single mip level of an existing texture.
- * Used by the mipmap streaming system to push individual levels to the GPU. */
+ * Used by the mipmap streaming system to push individual levels to the GPU.
+ * Plan E C-TEX-2: the uploaded bytes ARE the texels a shader samples after
+ * rhi_cmd_bind_texture_mip(tex, ..., level) — the bound single-mip view
+ * makes textureLod(..., 0.0) read exactly this level's content on both
+ * backends (VK: per-mip VkImageView; GL: single-mip glTextureView). The
+ * level extent must equal width>>level / height>>level (floored at 1) and
+ * size must cover w*h*4, or the upload is dropped (R417). Pinned by the
+ * mip upload oracle (test_vulkan): upload -> bind_texture_mip -> compute
+ * sample == uploaded bytes (+-1 UNORM round trip). */
 void        rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
                                    u32 width, u32 height, const void *data, usize size);
+/* Plan E C-TEX-3: sampler filter/wrap behavior is identical across
+ * backends — NEAREST magnification selects the nearest texel (no blend),
+ * CLAMP_TO_EDGE freezes the edge texel for UVs outside [0,1], REPEAT wraps
+ * them (edge-extrapolated UVs resolve to different texels per mode). GL
+ * maps the min filter to a MIPMAP enum (R194-A) so textureLod honors the
+ * requested level. Pinned by the sampler contract oracle (test_vulkan). */
 RHISampler  rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc);
 void        rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler);
 
