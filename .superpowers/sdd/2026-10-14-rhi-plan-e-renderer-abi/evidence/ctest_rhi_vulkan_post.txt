@@ -1,0 +1,59 @@
+Test project E:/work/break/build-vk
+      Start  49: test_rhi_vk_probe
+ 1/21 Test  #49: test_rhi_vk_probe ....................   Passed    0.03 sec
+      Start  72: test_rhi_capabilities
+ 2/21 Test  #72: test_rhi_capabilities ................   Passed    0.03 sec
+      Start  73: test_rhi_oracle
+ 3/21 Test  #73: test_rhi_oracle ......................   Passed    0.01 sec
+      Start  74: test_rhi_fault_injection
+ 4/21 Test  #74: test_rhi_fault_injection .............   Passed    0.03 sec
+      Start  75: test_rhi_vk_alloc_fault
+ 5/21 Test  #75: test_rhi_vk_alloc_fault ..............   Passed    0.73 sec
+      Start  76: test_rhi_push_offset_dump
+ 6/21 Test  #76: test_rhi_push_offset_dump ............   Passed    0.82 sec
+      Start  77: test_rhi_wsi_attach
+ 7/21 Test  #77: test_rhi_wsi_attach ..................   Passed    0.03 sec
+      Start  78: test_rhi_error_contract
+ 8/21 Test  #78: test_rhi_error_contract ..............   Passed    0.03 sec
+      Start  79: test_rhi_frame_lifecycle_contract
+ 9/21 Test  #79: test_rhi_frame_lifecycle_contract ....   Passed    0.03 sec
+      Start  80: test_rhi_native
+10/21 Test  #80: test_rhi_native ......................   Passed    0.03 sec
+      Start  81: test_rhi_tlas_instance_encode
+11/21 Test  #81: test_rhi_tlas_instance_encode ........   Passed    0.03 sec
+      Start  98: test_rhi_backend_selection
+12/21 Test  #98: test_rhi_backend_selection ...........   Passed    4.59 sec
+      Start  99: test_rhi_evidence_register
+13/21 Test  #99: test_rhi_evidence_register ...........   Passed    0.02 sec
+      Start 100: test_rhi_header_neutral
+14/21 Test #100: test_rhi_header_neutral ..............   Passed    0.02 sec
+      Start 105: test_rhi_backend_internal_contract
+15/21 Test #105: test_rhi_backend_internal_contract ...   Passed    0.33 sec
+      Start 106: test_rhi_metal_ownership
+16/21 Test #106: test_rhi_metal_ownership .............   Passed    0.25 sec
+      Start 107: test_rhi_metal_format_mapping
+17/21 Test #107: test_rhi_metal_format_mapping ........   Passed    0.03 sec
+      Start 111: test_vulkan_isolation_gates
+18/21 Test #111: test_vulkan_isolation_gates ..........   Passed    0.02 sec
+      Start 115: test_myui_vulkan_shader_generator
+19/21 Test #115: test_myui_vulkan_shader_generator ....   Passed    0.64 sec
+      Start 135: test_vulkan
+20/21 Test #135: test_vulkan ..........................***Failed   27.55 sec
+      Start 136: rhi_swapchain_bench
+21/21 Test #136: rhi_swapchain_bench ..................   Passed    1.46 sec
+
+95% tests passed, 1 tests failed out of 21
+
+Label Time Summary:
+benchmark            =   1.46 sec*proc (1 test)
+graphics             =  30.56 sec*proc (4 tests)
+headless             =   0.51 sec*proc (10 tests)
+platform_contract    =   0.56 sec*proc (13 tests)
+
+Total Test time (real) =  36.70 sec
+
+The following tests FAILED:
+	135 - test_vulkan (Failed)                              graphics
+Errors while running CTest
+Output from these tests are in: E:/work/break/build-vk/Testing/Temporary/LastTest.log
+Use "--rerun-failed --output-on-failure" to re-run the failed cases verbosely.
