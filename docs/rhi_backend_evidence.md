@@ -115,3 +115,53 @@
 ## 风险登记（计划 E Task 6：Hi-Z，2026-10-16）
 
 - Hi-Z {1,1} / VK_ERROR_DEVICE_LOST（NVIDIA 616.56 混合 GPU）——未在健康设备复现，按 spec §7 不作为源码修复依据；`TV_ONLY_PSHADOW`/`TV_ONLY_GBUFFER` 隔离 gate 保留。
+
+## 收据追加（计划 E：renderer/shader ABI 迁移完成度，2026-10-16）
+
+上位计划：`docs/superpowers/plans/2026-10-14-rhi-plan-e-renderer-abi.md`。范围：main.c / renderer / ui / myui 的编译期后端分支收敛到 capability contract；412 个 legacy uniform 逐名查询调用点全部迁移 `RHIPipelineBindings`（反射驱动）；VK 手写 push offset 表删除。本机验证 lane：VK = `build-vk`（NVIDIA RTX 4060 Laptop，api=1.4.351）+ GL = `build-gl`（WGL，`ENGINE_VULKAN=OFF`，Task 5b 起确认为本机可跑 lane）每批双跑；CI lanes（gl/vk/wayland/macos）收据待 push 后补记（小 commit 追加，见 DoD 第 7 项）。
+
+### 各 Task 收据
+
+| Task | Commits | 验证 | Lane | 结果 |
+|---|---|---|---|---|
+| 1 rhi_oracle 抽取 | 9407c222 / 97b61a07 / 59c62a0d | RED/GREEN（断言注入失败即红）；golden-log parity；基线捕获 | VK | oracle 与 test_vulkan 内联实现 golden 日志逐行 parity；本机基线 MAE 28.75/13.54（金样 2026-06 提交，golden 权威在 CI） |
+| 2 capability contract：frame/present/resize + main.c 分支替换 | b5034d74 / 49084768 | 零警告构建（`-Werror`）；`ctest -R test_vulkan` 签名比对 | VK | 绿；**计划修订**：`rhi_device_create_compiled` 同时接收 window_native + surface_native（Wayland `wl_surface*` / `wl_egl_window*` 类型分离；VK←surface、GL←window），计划文件已附日期注记 |
+| 3 buffer 契约 C-BUF-1..4 | f3159136 | `ctest -R '^test_vulkan$\|test_rhi_capabilities'` | VK（GL 待 CI） | 双 phase PASSED；capabilities 56/56；R90-1 update-after-bind 修复后本机 3/3 不再触发历史 §7 DEVICE_LOST（详见上文 Task 3 收据行） |
+| 4 texture/mip/sampler 契约 C-TEX-1..3 | 0c0fd671 | `ctest -R '^test_vulkan$'` | VK（GL 待 CI） | 全 phase PASSED、VALIDATION GATE 0、零后端修复；签名与 Task 3 基线一致（详见上文 Task 4 收据行） |
+| 5a std430 push 反射 | 4238f535 / f73fd27b | 反射×VK 表交叉对照 gate（graphics，54 文件） | 静态 gate | 生产 bug 修复：deferred 点光 far-plane 偏移 184→192（见下「生产 bug」#1） |
+| 5b RHIPipelineBindings API | 023b7ef3 | legacy parity gate + golden | VK+GL | API 绿；本机 GL lane 就绪（goldens MAE=0.00）——「本机无 GL」前提自本 Task 修正 |
+| 5c-1 批次 1-3：main.c(58) + test_vulkan(87) | 3d1efa57 / 3b66e588 / 20cc8c2f | 每批双 lane golden 签名 | VK+GL | VK 签名逐批稳定（MAE 28.75/13.54 不变）；GL goldens 0.00 |
+| 5c-2a 批次 4-6：renderer(139) + .comp gate + 手写表删除 | 8360a236 / fe9965f0 / 3d395b95 / 74fdcf7b / 6aad11f6 | 每批双 lane；.comp 交叉对照 gate；particle alias 算术 pin | VK+GL | 评审捕获并修复 push.proj alias delta 64→0（见「生产 bug」#2）；VK 手写 push 表删除后签名不变 |
+| 5c-2b 批次 7-9：renderer(128/24 文件) + 全库审计 | 1b550670 / 92d73a01 / 8a64ddf0 | 每批双 lane；engine-wide grep 审计 | VK+GL | legacy 查询调用点 = 0（残留仅声明/实现/注释，见下） |
+| 6 pipeline/MRT/depth/shadow/Hi-Z 契约迁移（41 分支 / 28 .c + 2 .h） | 7b20e937 / 3b387e72 | 双 lane 签名（RESULT+VALIDATION GATE+VK VALIDATION） | VK+GL | 修复 skinned gbuffer 变体选择（`gbuffer_skinned_vk.frag`，VALIDATION GATE 2→0）；Hi-Z {1,1} 异常仅登记未改码（见上方风险登记） |
+| 7 compute/indirect/HDR/RT/UI 收敛 + 4 处 RHI-ESCAPE fence | 8fff58d5 | 双 lane 签名 35/35 IDENTICAL | VK+GL | rt_trace 按 RAY_TRACING_PIPELINE\|ACCELERATION_STRUCTURE 门控（偏差已核准）；sl_dlss 非 VK 单位 fail-closed |
+| 8 token 审计 gate | e37d9df1 | `ctest -R test_renderer_backend_token_gate`（RED 证明先行）+ 全量矩阵 | VK+GL+MSVC(d3d12)+headless | gate 绿（5 白名单命中）；矩阵 VK 170/172、GL 168/169（均仅登记的环境性失败）、headless 18/18×2、MSVC headless 18/18（engine_demo 被先在的 myui_core C4090 阻塞，非本计划引入） |
+| 9 文档与 push | （本 commit） | 全绿复核：`ctest --test-dir build-vk --output-on-failure` + `-R '^test_vulkan$'`（签名纪律 RESULT+VALIDATION GATE+VK VALIDATION） | VK | 全量 170/172（= Task 8 矩阵：golden 漂移基线 + OpenClipboard，均登记）；test_vulkan 35 行签名 vs Task 8 参考仅 1 行差 = UNIFIED GPU CULL（`Hi-Z vis flags {0,0}, want {1,0}`——注册 §7 环境性偶发，当日 2/2，Task 8 后无源码变更）；goldens MAE 28.75/13.54 逐位不变；VALIDATION GATE 0；`git push origin master` 本 Task 执行 |
+
+### Token 审计终态
+
+`engine/src/main.c`、`engine/src/renderer/`、`engine/src/ui/`、`engine/src/myui/`（含 myr）中 `ENGINE_VULKAN` / `ENGINE_RHI_BACKEND_*` 命中 = **5 处白名单 RHI-ESCAPE**：`main.c:8933`（F5 VK validation 计数器）、`renderer/rt_trace.c:11`（native handle 桥接）、`renderer/sl_dlss.c:33/269/304`（DLSS native 块 ×3）。gate = `test_renderer_backend_token_gate`（headless label；命中行或上一行携带 `RHI-ESCAPE` 注释才放行；RED 证明已归档）。`rhi_pipeline_get_uniform_location` 残留 = rhi.h 声明 + 5 处后端实现（GL/VK/Metal/D3D12/headless）+ 5 处注释，**调用点 0**；随计划 F 删除。
+
+### 生产 bug（计划 E 期间发现并修复）
+
+1. deferred 点光 far-plane push 偏移 184→192（vec4 std430；R588 起陈旧表项使 C 侧写入距 shader 读取偏 8B；4238f535，含 rhi_metal.m 镜像表同步）。
+2. push.proj alias delta 64→0（alias 算术 64+64=128 与 legacy 64 不符——静默 VK 粒子损坏，所有既有 gate 不可见；6aad11f6，particle 家族算术 pin 进反射 gate）。
+3. R90-1 storage-set update-after-bind 规范违规（重绑累积集；修复后本机 3/3 不再触发历史 §7 DEVICE_LOST，回滚对照必复现；f3159136）——§7 的 DEVICE_LOST 裁定据此改读为「潜在违规在该 NVIDIA consume-at-record 驱动下的暴露」；Hi-Z {1,1}/{0,0} 偶发维持环境性判定（复述自上方 Task 6 风险登记）。
+
+### 环境事实（结果判读依据）
+
+- 本机 VK golden 漂移基线 MAE 28.75/13.54（tol 8/56；金样 2026-06，CI 为 golden 权威）——计划 E 判据 = MAE 签名逐批逐字稳定，而非本机 pass；本机 GL（WGL）goldens MAE=0.00。
+- `test_platform_win32_runtime` 剪贴板子测试失败 = OpenClipboard 争用（agent 宿主持有剪贴板），复跑同结果，非回归。
+- MSVC：myui_core C4090/C4132 等先在 `-Werror` 警告阻塞 engine_demo（先于计划 E）；headless label 18/18 绿。
+- Hi-Z {1,1}/{0,0} 偶发维持 spec §7 环境性登记（上方 Task 6 风险登记行）。
+
+### DoD 状态（计划 E 七项，如实）
+
+1. token 白名单 gate 强制：**达成**（gate live，白名单 5 处，e37d9df1）。
+2. legacy uniform 调用点 = 0 + 反射权威 + VK 手写表删除：**达成**。
+3. 每批 golden/readback oracle（VK 本机 + GL lane）：**本机达成**（每批双 lane）；CI lanes 收据**待补**。
+4. `RHICapabilities` 新 6 字段各后端真实消费 + 契约测试：**达成**（`test_rhi_capabilities` 56/56）。
+5. ctest 全 label 绿 + `-Werror` 零警告：**部分**——本机 VK 170/172、GL 168/169（两项登记的环境性失败：golden 漂移基线 + OpenClipboard 争用）、MSVC headless 18/18（myui_core C4090 先在）；Linux/macOS CI 收据**待补**。
+6. 本台账含计划 E 完成度 + Hi-Z 仅登记未改码：**达成**（本节）。
+7. 全部 commit push 到 `origin master`：本 Task 执行 push；CI 回执以后续小 commit 补记。
+

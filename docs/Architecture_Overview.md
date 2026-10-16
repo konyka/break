@@ -368,6 +368,42 @@ Texture, buffer, and cubemap descriptor validation now shares the same pure
 validation translation unit. Backend implementations continue to receive the
 same public validation results without inheriting API-specific state.
 
+### 计划 E：capability contract 与反射绑定（2026-10-16）
+
+**Capability contract**——renderer / ui / myui / main.c 的后端差异判断一律改为运行时消费
+`RHICapabilities`（`engine/src/rhi/rhi.h`，`rhi_device_get_capabilities` 查询），禁止新增
+`ENGINE_VULKAN` / `ENGINE_RHI_BACKEND_*` 编译期分支（白名单逃生舱除外，见下）。字段总表：
+
+| 字段 | 语义 |
+|---|---|
+| `backend` / `feature_bits` | 后端枚举；特性位（ray-tracing pipeline / ray query / acceleration structure） |
+| `color_sample_counts` / `depth_sample_counts` / `surface_sample_count` | 采样计数位掩码（`rhi_sample_count_bit`） |
+| `color_resolve_supported` / `depth_resolve_supported` / `scissor_supported` | MSAA resolve 与 scissor 支持 |
+| `present_target_preserved` / `present_damage_supported` / `present_buffer_age_supported` | present 保留 / damage / buffer-age 语义 |
+| `dynamic_rendering_supported` / `synchronization2_supported` | VK_KHR 扩展探测（迁移期追加，只探测） |
+| `push_constants_supported` / `max_push_constant_size` | **计划 E 新增**：push 常量支持位与字节上限（VK=true/设备 limit≥128，GL=false/0） |
+| `hiz_supported` / `compute_supported` / `indirect_draw_supported` | **计划 E 新增**：Hi-Z 金字塔 / `rhi_cmd_dispatch` / indirect draw 族 |
+| `shader_variant` | **计划 E 新增**：`RHI_SHADER_VARIANT_GLSL`（desktop 源）/ `RHI_SHADER_VARIANT_GLSL_VK`（`*_vk` 后缀 push-constant 块源）；`shader_variant_path()` 负责换源 |
+
+新增 6 字段在每个后端（GL/VK/headless）有真实消费，并由 `test_rhi_capabilities` 契约测试钉死。
+
+**Shader 绑定与反射权威**——`shader_reflect_push_constants()`（`engine/src/core/shader_io.h`）
+按 std430 规则解析 GLSL `layout(push_constant)` 块，是 uniform/push 布局的唯一权威源；VK 后端在
+shader/pipeline create 时缓存反射结果，GL 走 `glGetActiveUniform`，slot 值全后端同源。每管线一次
+`rhi_pipeline_bindings_create()` 物化 name→slot 表（VK=push 字节偏移 / GL=location），取值用
+`rhi_pipeline_bindings_resolve()`（成员不存在返回 -1；反射 fail-closed 时不伪造槽位）。计划 E 已将
+412 个 legacy 逐名查询调用点全部迁移并删除 VK 手写 push offset 表；旧 API
+`rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 = rhi.h 声明 + 各后端实现 + 注释，调用点 0），
+随计划 F 的 OpenGL 退役删除。反射布局与实际 VK 布局的一致性由 `test_shader_io` 的
+反射×push 表交叉对照 gate 钉死（graphics + compute）。
+
+**`RHI-ESCAPE` 逃生舱**——确实无法用 capability contract 表达的后端原生差异（native handle 桥接、
+VK 专属扩展计数器等）必须收进白名单块：命中行本身或其上一行携带 `RHI-ESCAPE` 注释。当前白名单
+5 处：`engine/src/main.c:8933`（F5 VK validation 消息计数器）、`engine/src/renderer/rt_trace.c:11`
+（VK native handle 桥接）、`engine/src/renderer/sl_dlss.c:33/269/304`（DLSS native 块 ×3）。
+gate = `test_renderer_backend_token_gate`（headless label，扫描 main.c / renderer / ui / myui/myr
+中的后端 token；白名单外命中即红）。新增逃生舱必须同步登记进该白名单。
+
 | 平台 | 窗口系统 | 图形 API | 构建配置 | 状态 |
 |------|----------|----------|----------|------|
 | **Linux** | X11 | OpenGL 4.x | `build-verify-x11-gl/` | ✅ CI/runtime 已验证 |
