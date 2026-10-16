@@ -58,6 +58,12 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_dof_* 是
+     * dof(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    dof->bind_pipe = rhi_pipeline_bindings_create(dev, dof->dof_pipe);
+    if (!dof->bind_pipe)
+        LOG_WARN("DOF: bindings create failed; uniform locations resolve -1");
+
     /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
     u32 pw = width / 2, ph = height / 2;
     if (pw < 1) pw = 1;
@@ -80,12 +86,12 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    dof->loc_focus_dist = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_focus");
-    dof->loc_focus_range = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_range");
-    dof->loc_near = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_near");
-    dof->loc_far = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_far");
-    dof->loc_screen_w = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_sw");
-    dof->loc_screen_h = rhi_pipeline_get_uniform_location(dev, dof->dof_pipe, "u_dof_sh");
+    dof->loc_focus_dist = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_focus");
+    dof->loc_focus_range = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_range");
+    dof->loc_near = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_near");
+    dof->loc_far = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_far");
+    dof->loc_screen_w = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_sw");
+    dof->loc_screen_h = rhi_pipeline_bindings_resolve(dof->bind_pipe, "u_dof_sh");
 
     dof->ready = true;
     LOG_INFO("DOF: initialized (%ux%u, focus=%.1f range=%.1f)", pw, ph, dof->focus_dist, dof->focus_range);
@@ -94,6 +100,7 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
 
 void dof_shutdown(DOFSystem *dof) {
     if (!dof->device) return;
+    if (dof->bind_pipe) { rhi_pipeline_bindings_destroy(dof->device, dof->bind_pipe); dof->bind_pipe = NULL; }
     if (rhi_handle_valid(dof->dof_fbo.fb)) rhi_offscreen_fbo_destroy(dof->device, &dof->dof_fbo);
     if (rhi_handle_valid(dof->sampler)) rhi_sampler_destroy(dof->device, dof->sampler);
     if (rhi_handle_valid(dof->dof_pipe)) rhi_pipeline_destroy(dof->device, dof->dof_pipe);

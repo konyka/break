@@ -62,6 +62,12 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_ssao_* 是
+     * ssao(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    ssao->bind_pipe = rhi_pipeline_bindings_create(dev, ssao->ssao_pipe);
+    if (!ssao->bind_pipe)
+        LOG_WARN("SSAO: bindings create failed; uniform locations resolve -1");
+
     /* R347: main clamps render size to ≥1; width/2 can still be 0 → VK extent 0. */
     u32 pw = width / 2, ph = height / 2;
     if (pw < 1) pw = 1;
@@ -86,12 +92,12 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    ssao->loc_proj = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_proj");
-    ssao->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_inv_proj");
-    ssao->loc_screen_w = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_sw");
-    ssao->loc_screen_h = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_sh");
-    ssao->loc_radius = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_radius");
-    ssao->loc_bias = rhi_pipeline_get_uniform_location(dev, ssao->ssao_pipe, "u_ssao_bias");
+    ssao->loc_proj = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_proj");
+    ssao->loc_inv_proj = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_inv_proj");
+    ssao->loc_screen_w = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_sw");
+    ssao->loc_screen_h = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_sh");
+    ssao->loc_radius = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_radius");
+    ssao->loc_bias = rhi_pipeline_bindings_resolve(ssao->bind_pipe, "u_ssao_bias");
 
     ssao->ready = true;
     LOG_INFO("SSAO: initialized (%ux%u, radius=%.2f)", pw, ph, ssao->radius);
@@ -100,6 +106,7 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
 
 void ssao_shutdown(SSAOSystem *ssao) {
     if (!ssao->device) return;
+    if (ssao->bind_pipe) { rhi_pipeline_bindings_destroy(ssao->device, ssao->bind_pipe); ssao->bind_pipe = NULL; }
     if (rhi_handle_valid(ssao->blur_fbo.fb)) rhi_offscreen_fbo_destroy(ssao->device, &ssao->blur_fbo);
     if (rhi_handle_valid(ssao->ssao_fbo.fb)) rhi_offscreen_fbo_destroy(ssao->device, &ssao->ssao_fbo);
     if (rhi_handle_valid(ssao->sampler)) rhi_sampler_destroy(ssao->device, ssao->sampler);

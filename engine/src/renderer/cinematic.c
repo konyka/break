@@ -59,6 +59,12 @@ bool cinematic_init(CinematicSystem *cine, RHIDevice *dev) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_cine_* 是
+     * cinematic(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    cine->bind_pipe = rhi_pipeline_bindings_create(dev, cine->cine_pipe);
+    if (!cine->bind_pipe)
+        LOG_WARN("Cinematic: bindings create failed; uniform locations resolve -1");
+
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
         .mag_filter = RHI_FILTER_LINEAR,
@@ -75,12 +81,12 @@ bool cinematic_init(CinematicSystem *cine, RHIDevice *dev) {
         return false;
     }
 
-    cine->loc_aberration = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_aberration");
-    cine->loc_vignette   = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_vignette");
-    cine->loc_grain      = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_grain");
-    cine->loc_time       = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_time");
-    cine->loc_screen_w   = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_sw");
-    cine->loc_screen_h   = rhi_pipeline_get_uniform_location(dev, cine->cine_pipe, "u_cine_sh");
+    cine->loc_aberration = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_aberration");
+    cine->loc_vignette   = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_vignette");
+    cine->loc_grain      = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_grain");
+    cine->loc_time       = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_time");
+    cine->loc_screen_w   = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_sw");
+    cine->loc_screen_h   = rhi_pipeline_bindings_resolve(cine->bind_pipe, "u_cine_sh");
 
     cine->ready = true;
     LOG_INFO("Cinematic: initialized (aberration=%.4f vignette=%.2f grain=%.3f)",
@@ -90,6 +96,7 @@ bool cinematic_init(CinematicSystem *cine, RHIDevice *dev) {
 
 void cinematic_shutdown(CinematicSystem *cine) {
     if (!cine->device) return;
+    if (cine->bind_pipe) { rhi_pipeline_bindings_destroy(cine->device, cine->bind_pipe); cine->bind_pipe = NULL; }
     if (rhi_handle_valid(cine->sampler)) rhi_sampler_destroy(cine->device, cine->sampler);
     if (rhi_handle_valid(cine->cine_pipe)) rhi_pipeline_destroy(cine->device, cine->cine_pipe);
     cine->ready = false;

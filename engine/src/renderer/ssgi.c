@@ -73,6 +73,13 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_ssgi_* 与
+     * u_direction 是 ssgi(_vk).frag / ssgi_blur(_vk).frag 的真实成员名，无别名行。 */
+    ssgi->bind_pipe = rhi_pipeline_bindings_create(dev, ssgi->ssgi_pipe);
+    ssgi->bind_blur = rhi_pipeline_bindings_create(dev, ssgi->ssgi_blur_pipe);
+    if (!ssgi->bind_pipe || !ssgi->bind_blur)
+        LOG_WARN("SSGI: bindings create failed; uniform locations resolve -1");
+
     ssgi->ssgi_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
     /* R550-A: the blur stage is the compositor — its output becomes the
      * frame-chain color, so it must be full-res (input GI stays half-res;
@@ -96,18 +103,18 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    ssgi->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_inv_proj");
-    ssgi->loc_proj     = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_proj");
-    ssgi->loc_radius   = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_radius");
-    ssgi->loc_intensity= rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_intensity");
-    ssgi->loc_screen_w = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_sw");
-    ssgi->loc_screen_h = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_pipe, "u_ssgi_sh");
+    ssgi->loc_inv_proj = rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_inv_proj");
+    ssgi->loc_proj     = rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_proj");
+    ssgi->loc_radius   = rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_radius");
+    ssgi->loc_intensity= rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_intensity");
+    ssgi->loc_screen_w = rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_sw");
+    ssgi->loc_screen_h = rhi_pipeline_bindings_resolve(ssgi->bind_pipe, "u_ssgi_sh");
 
     /* R113-1: Query the blur direction uniform location from the pipeline
      * instead of hardcoding 0.  In GL the linker assigns locations and they
      * are not guaranteed to be 0 — the hardcoded value was overwriting the
      * wrong uniform, corrupting the SSGI blur pass. */
-    ssgi->loc_blur_dir_x = rhi_pipeline_get_uniform_location(dev, ssgi->ssgi_blur_pipe, "u_direction");
+    ssgi->loc_blur_dir_x = rhi_pipeline_bindings_resolve(ssgi->bind_blur, "u_direction");
     ssgi->loc_blur_dir_y = -1;  /* unused — kept for ABI compatibility */
 
     ssgi->ready = true;
@@ -117,6 +124,8 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
 
 void ssgi_shutdown(SSGISystem *ssgi) {
     if (!ssgi->device) return;
+    if (ssgi->bind_pipe) { rhi_pipeline_bindings_destroy(ssgi->device, ssgi->bind_pipe); ssgi->bind_pipe = NULL; }
+    if (ssgi->bind_blur) { rhi_pipeline_bindings_destroy(ssgi->device, ssgi->bind_blur); ssgi->bind_blur = NULL; }
     if (rhi_handle_valid(ssgi->ssgi_fbo.fb))      rhi_offscreen_fbo_destroy(ssgi->device, &ssgi->ssgi_fbo);
     if (rhi_handle_valid(ssgi->ssgi_blur_fbo.fb))  rhi_offscreen_fbo_destroy(ssgi->device, &ssgi->ssgi_blur_fbo);
     if (rhi_handle_valid(ssgi->sampler))           rhi_sampler_destroy(ssgi->device, ssgi->sampler);
