@@ -29,25 +29,6 @@
  * Small helpers
  * -------------------------------------------------------------------------- */
 
-static char *defrd_inject_define(const char *src, usize len, const char *name, usize *out_len) {
-    if (!src || !name) return NULL;
-    const char *nl = memchr(src, '\n', len);
-    usize head = nl ? (usize)(nl - src) + 1u : len;
-    int def_raw = snprintf(NULL, 0, "#define %s 1\n", name);
-    if (def_raw < 0) return NULL;
-    usize def_len = (usize)def_raw;
-    char *out = (char *)malloc(len + def_len + 1u);
-    if (!out) return NULL;
-    memcpy(out, src, head);
-    int n = snprintf(out + head, def_len + 1u, "#define %s 1\n", name);
-    if (n < 0) { free(out); return NULL; }
-    memcpy(out + head + (usize)n, src + head, len - head);
-    out[head + (usize)n + (len - head)] = '\0';
-    if (out_len) *out_len = head + (usize)n + (len - head);
-    return out;
-}
-
-
 static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
                                           const char *vert_path,
                                           const char *frag_path,
@@ -67,7 +48,7 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
     free(vs_src);
 
     usize fs_use_len = fs_len;
-    char *fs_use = defrd_inject_define(fs_src, fs_len, "HAS_IBL", &fs_use_len);
+    char *fs_use = shader_inject_define(fs_src, fs_len, "HAS_IBL", &fs_use_len);
     if (!fs_use) fs_use = fs_src;
     RHIShader fs = rhi_shader_create(dev, fs_use, fs_use_len, true);
     if (fs_use != fs_src) free(fs_use);

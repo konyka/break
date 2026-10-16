@@ -851,6 +851,58 @@ TEST(compute_dispatch_writes_indices) {
     rhi_shader_destroy(g_dev, cs);
 }
 
+TEST(buffer_size_constants_fed_to_kernel) {
+    /* spirv-cross emits `constant uint* spvBufferSizeConstants
+     * [[buffer(25)]]` for runtime-array SSBOs (`.length()`), one uint BYTE
+     * SIZE per SSBO (the MSL divides by the element stride itself). The
+     * backend must feed that table from the bound buffers' byte sizes at
+     * dispatch — unbound, Metal validation hard-fails the dispatch and the
+     * kernel reads garbage (P0: particle_update/cull/vert all declare it). */
+    static const char *k_msl_cs_bsc =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct BscParticle { float4 a; float4 b; float4 c; float4 d; };\n"
+        "kernel void cs_main(constant uint* spvBufferSizeConstants [[buffer(25)]],\n"
+        "                    device BscParticle *particles [[buffer(0)]],\n"
+        "                    uint tid [[thread_position_in_grid]]) {\n"
+        "    constant uint& particlesBufferSize = spvBufferSizeConstants[0];\n"
+        "    uint count = particlesBufferSize / 64u;\n"
+        "    if (tid < count) particles[tid].a.x = 1.0f;\n"
+        "}\n";
+    RHIShader cs = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_cs_bsc, (usize)strlen(k_msl_cs_bsc), "cs_main", false);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer buf;
+    RHICmdBuffer *cmd;
+    f32 out[16u * 16u];   /* 16 particles x 64B (16 floats each) */
+    u32 i;
+    ASSERT_FALSE(handle_is_null(cs));
+    memset(&desc, 0, sizeof(desc));
+    desc.is_compute = true;
+    desc.frag = cs;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = 16u * 64u;
+    buf = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(buf));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_storage_buffer(cmd, buf, 0u);
+    rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+    end_frame();
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    for (i = 0u; i < 16u; ++i)
+        ASSERT_TRUE(out[i * 16u] == 1.0f);   /* stride 64B = 16 floats */
+    rhi_buffer_destroy(g_dev, buf);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, cs);
+}
+
 TEST(fill_buffer_pattern_and_clamp_readback) {
     /* rhi_cmd_fill_buffer fills the u32 pattern (VK vkCmdFillBuffer
      * parity); 0xABABABAB is byte-uniform. Offset+size clamp against the
@@ -2615,6 +2667,7 @@ int main(void) {
     RUN_TEST(r445_pipeline_overrides_sticky_depth_state);
     RUN_TEST(pass_switch_invalidates_bound_pipeline);
     RUN_TEST(compute_dispatch_writes_indices);
+    RUN_TEST(buffer_size_constants_fed_to_kernel);
     RUN_TEST(fill_buffer_pattern_and_clamp_readback);
     RUN_TEST(screenshot_clear_color_and_post_present_refused);
     RUN_TEST(draw_indirect_executes_arg_buffer);

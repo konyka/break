@@ -85,6 +85,9 @@ typedef struct {
 } MetalBackend;
 
 #define RHI_METAL_MAX_PUSH_BYTES 256u
+/* spvBufferSizeConstants table cap (one uint byte size per runtime-array
+ * SSBO; the widest engine shader today uses a single entry). */
+#define RHI_METAL_BSC_MAX 4u
 
 /* Pin the platform-free C11 ordinals to the real MTLPixelFormat values.
  * This TU is the only place Metal headers are visible, so a header drift or
@@ -297,6 +300,12 @@ struct RHICmdBuffer {
     RHIBuffer bound_ubo;          /* deferred UBO bind (VK bound_ubo parity) */
     u32 bound_ubo_binding;
     bool ubo_dirty;               /* UBO replay needed at next draw/dispatch */
+    /* Recorded storage-buffer binds (handles, generation-checked at replay).
+     * Encoder state does not survive pass switches (I2 rule), so dispatch
+     * replays these, and pipelines with spvBufferSizeConstants also replay
+     * them on the vertex stage before the size table is fed. */
+    RHIBuffer bound_storage[25];
+    u32 bound_storage_mask;
     /* Suspended render pass (VK suspend/resume parity): a compute or blit
      * interlude records the open target here; the next graphics call
      * resumes it with loadAction=Load (metal_resume_render_pass_if_needed). */
@@ -705,6 +714,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->bound_ubo = RHI_HANDLE_NULL;
     cmd->bound_ubo_binding = 0u;
     cmd->ubo_dirty = false;
+    cmd->bound_storage_mask = 0u;
     cmd->suspended_kind = METAL_PASS_NONE;
     cmd->suspended_target = RHI_HANDLE_NULL;
     cmd->suspended_w = cmd->suspended_h = cmd->suspended_face = 0u;
@@ -1560,7 +1570,76 @@ typedef struct {
     id<MTLLibrary> library;   /* retained: the function must not outlive it */
     id<MTLFunction> function;
     bool is_fragment;
+    /* spirv-cross emits `constant uint* spvBufferSizeConstants
+     * [[buffer(25)]]` for runtime-array SSBOs (`.length()`), one uint BYTE
+     * SIZE per such SSBO (the MSL divides by the element stride itself).
+     * bsc_buffer_index[i] is the metal buffer argument index whose bound
+     * buffer's byte size feeds entry i; parsed from the MSL text at shader
+     * create (metal_parse_buffer_size_constants). */
+    u8 bsc_count;
+    u8 bsc_buffer_index[RHI_METAL_BSC_MAX];
 } MetalShader;
+
+#define RHI_METAL_BSC_ARG_INDEX 25u
+
+/* Maps `constant uint& _61BufferSize = spvBufferSizeConstants[i];` aliases
+ * back to the entry signature's `... _61 [[buffer(N)]] ...` declaration.
+ * Text-local and fail-quiet (a shader without the pattern gets count 0);
+ * an unmappable alias is a loud no-op so validation still catches it. */
+static void metal_parse_buffer_size_constants(MetalShader *sd,
+                                              const char *msl) {
+    const char *p = msl;
+    sd->bsc_count = 0u;
+    if (msl == NULL) return;
+    while ((p = strstr(p, " = spvBufferSizeConstants[")) != NULL) {
+        static const char k_marker[] = " = spvBufferSizeConstants[";
+        const char *alias_end = p;
+        const char *alias_begin;
+        const char *sig;
+        char alias[96];
+        char needle[128];
+        usize alias_len;
+        u32 table_index;
+        u32 arg_index;
+        p += sizeof(k_marker) - 1u;
+        table_index = (u32)atoi(p);
+        alias_begin = alias_end;
+        while (alias_begin > msl && alias_begin[-1] != ' ' &&
+               alias_begin[-1] != '\t' && alias_begin[-1] != '\n' &&
+               alias_begin[-1] != '&')
+            --alias_begin;
+        alias_len = (usize)(alias_end - alias_begin);
+        if (alias_len == 0u || alias_len >= sizeof(alias)) continue;
+        memcpy(alias, alias_begin, alias_len);
+        alias[alias_len] = '\0';
+        /* spirv-cross names the alias <var>BufferSize; the signature
+         * declares `<type>& <var> [[buffer(N)]]`. */
+        if (alias_len > 10u && strcmp(alias + alias_len - 10u, "BufferSize") == 0)
+            alias[alias_len - 10u] = '\0';
+        snprintf(needle, sizeof(needle), "%s [[buffer(", alias);
+        sig = strstr(msl, needle);
+        if (sig == NULL) {
+            LOG_ERROR("rhi_metal: spvBufferSizeConstants alias '%s' has no "
+                      "buffer() declaration", alias);
+            continue;
+        }
+        arg_index = (u32)atoi(sig + strlen(needle));
+        if (table_index >= RHI_METAL_BSC_MAX) {
+            LOG_ERROR("rhi_metal: spvBufferSizeConstants[%u] exceeds table "
+                      "cap %u", (unsigned)table_index,
+                      (unsigned)RHI_METAL_BSC_MAX);
+            continue;
+        }
+        if (arg_index > 24u) {
+            LOG_ERROR("rhi_metal: buffer-size constant source index %u out of "
+                      "range", (unsigned)arg_index);
+            continue;
+        }
+        sd->bsc_buffer_index[table_index] = (u8)arg_index;
+        if (table_index + 1u > sd->bsc_count)
+            sd->bsc_count = (u8)(table_index + 1u);
+    }
+}
 
 /* MSL-source compile (test seam + embedded-MSL fallback). */
 static RHIShader metal_shader_create_source(RHIDevice *dev, const char *source,
@@ -1606,6 +1685,17 @@ static RHIShader metal_shader_create_source(RHIDevice *dev, const char *source,
         /* new* methods return +1 under MRC — hold directly, no extra retain. */
         sd->library = lib;
         sd->function = fn;
+    }
+    {
+        /* The caller's source is length-delimited, not necessarily
+         * NUL-terminated — parse a private copy. */
+        char *copy = (char *)malloc(len + 1u);
+        if (copy != NULL) {
+            memcpy(copy, source, len);
+            copy[len] = '\0';
+            metal_parse_buffer_size_constants(sd, copy);
+            free(copy);
+        }
     }
     sd->is_fragment = is_fragment;
     idx = rhi_alloc_slot(dev);
@@ -1684,6 +1774,12 @@ static RHIShader metal_shader_manifest_create(RHIDevice *dev,
             return RHI_HANDLE_NULL;
         }
     }
+#ifndef RHI_METAL_SHADER_NO_EMBEDDED_MSL
+    /* The embedded MSL text is the same bytes the metallib was compiled
+     * from, so the buffer-size-constant layout parses identically either
+     * way. (NO_EMBEDDED builds have no text to parse: bsc_count stays 0.) */
+    metal_parse_buffer_size_constants(sd, rhi_metal_shader_msl[i]);
+#endif
     sd->is_fragment = is_fragment;
     slot = rhi_alloc_slot(dev);
     dev->slots[slot].ptr = sd;
@@ -1835,6 +1931,10 @@ typedef struct {
      * desc's cull/fill choices are recorded here and applied at bind. */
     bool cull_none;            /* no_vertex_input || disable_culling */
     bool wireframe;            /* setTriangleFillMode: Lines */
+    /* Copied from the source shader(s) at create (compute: desc->frag;
+     * graphics: desc->vert) — see MetalShader. */
+    u8 bsc_count;
+    u8 bsc_buffer_index[RHI_METAL_BSC_MAX];
 } MetalPipeline;
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
@@ -1874,6 +1974,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         cp->desc.vert = RHI_HANDLE_NULL;
         cp->desc.frag = RHI_HANDLE_NULL;
         cp->is_compute = true;
+        cp->bsc_count = cs->bsc_count;
+        memcpy(cp->bsc_buffer_index, cs->bsc_buffer_index,
+               sizeof(cp->bsc_buffer_index));
         {
             u32 cidx = rhi_alloc_slot(dev);
             dev->slots[cidx].ptr = cp;
@@ -2008,6 +2111,9 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pp->mrt_pipeline = desc->mrt_attachment_count > 1u;
     pp->cull_none = desc->no_vertex_input || desc->disable_culling;
     pp->wireframe = desc->wireframe;
+    pp->bsc_count = vs->bsc_count;
+    memcpy(pp->bsc_buffer_index, vs->bsc_buffer_index,
+           sizeof(pp->bsc_buffer_index));
     idx = rhi_alloc_slot(dev);
     dev->slots[idx].ptr = pp;
     dev->slots[idx].type = RHI_RES_PIPELINE;
@@ -2928,6 +3034,81 @@ static void metal_flush_ubo(RHICmdBuffer *cmd, const MetalPipeline *pp) {
     cmd->ubo_dirty = false;
 }
 
+/* Replays recorded storage binds lost to pass switches (I2 rule) and feeds
+ * the spvBufferSizeConstants table at buffer(25) from the bound buffers'
+ * byte sizes. Compute: every dispatch. Graphics: only pipelines whose
+ * shader declares the table (vertex stage). Fail-closed: a missing or
+ * stale binding logs and returns false so the caller can skip the draw or
+ * dispatch. */
+static bool metal_flush_storage_and_bsc(RHICmdBuffer *cmd,
+                                        const MetalPipeline *pp) {
+    u32 sizes[RHI_METAL_BSC_MAX];
+    u32 i;
+    bool need_bsc = pp->bsc_count > 0u;
+    if (pp->is_compute) {
+        u32 idx;
+        if (cmd->compute_encoder == nil) return true;
+        for (idx = 0u; idx < 25u; ++idx) {
+            MetalBuffer *bb;
+            if ((cmd->bound_storage_mask & (1u << idx)) == 0u) continue;
+            bb = (MetalBuffer *)rhi_get_resource_typed(
+                g_current_device, cmd->bound_storage[idx], RHI_RES_BUFFER);
+            if (bb == NULL) continue;
+            [cmd->compute_encoder setBuffer:bb->buffer
+                                     offset:0u
+                                    atIndex:(NSUInteger)idx];
+        }
+    } else if (need_bsc && cmd->render_encoder != nil) {
+        u32 idx;
+        for (idx = 0u; idx < 25u; ++idx) {
+            MetalBuffer *bb;
+            if ((cmd->bound_storage_mask & (1u << idx)) == 0u) continue;
+            bb = (MetalBuffer *)rhi_get_resource_typed(
+                g_current_device, cmd->bound_storage[idx], RHI_RES_BUFFER);
+            if (bb == NULL) continue;
+            [cmd->render_encoder setVertexBuffer:bb->buffer
+                                          offset:0u
+                                         atIndex:(NSUInteger)idx];
+        }
+    }
+    if (!need_bsc) return true;
+    for (i = 0u; i < pp->bsc_count; ++i) {
+        u32 idx = pp->bsc_buffer_index[i];
+        MetalBuffer *bb;
+        if ((cmd->bound_storage_mask & (1u << idx)) == 0u) {
+            LOG_ERROR("rhi_metal: buffer-size constant %u needs a storage "
+                      "buffer at index %u — none bound (fail-closed)",
+                      (unsigned)i, idx);
+            return false;
+        }
+        bb = (MetalBuffer *)rhi_get_resource_typed(
+            g_current_device, cmd->bound_storage[idx], RHI_RES_BUFFER);
+        if (bb == NULL) {
+            LOG_ERROR("rhi_metal: buffer-size constant %u: stale storage "
+                      "buffer at index %u", (unsigned)i, idx);
+            return false;
+        }
+        if (bb->size > 0xFFFFFFFFull) {
+            LOG_ERROR("rhi_metal: buffer-size constant %u: buffer exceeds "
+                      "uint32 byte size", (unsigned)i);
+            return false;
+        }
+        sizes[i] = (u32)bb->size;
+    }
+    if (pp->is_compute) {
+        if (cmd->compute_encoder == nil) return false;
+        [cmd->compute_encoder setBytes:sizes
+                                length:pp->bsc_count * sizeof(u32)
+                               atIndex:RHI_METAL_BSC_ARG_INDEX];
+    } else {
+        if (cmd->render_encoder == nil) return false;
+        [cmd->render_encoder setVertexBytes:sizes
+                                     length:pp->bsc_count * sizeof(u32)
+                                    atIndex:RHI_METAL_BSC_ARG_INDEX];
+    }
+    return true;
+}
+
 static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp) {
     if (cmd->push_dirty) {
         if (pp->is_compute) {
@@ -2947,6 +3128,7 @@ static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp) {
         cmd->push_dirty = false;
     }
     metal_flush_ubo(cmd, pp);
+    (void)metal_flush_storage_and_bsc(cmd, pp);
 }
 
 /* Stage a small uniform write (set_uniform_* helpers): negative locations
@@ -4745,6 +4927,10 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     max_tg = pp->compute.maxTotalThreadsPerThreadgroup;
     tg = max_tg < 64u ? max_tg : 64u;
     metal_flush_push(cmd, pp);
+    if (!metal_flush_storage_and_bsc(cmd, pp)) {
+        LOG_ERROR("rhi_metal: dispatch skipped (buffer-size constants unmet)");
+        return;
+    }
     [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)x, (NSUInteger)y,
                                           (NSUInteger)z)
         threadsPerThreadgroup:MTLSizeMake(tg, 1u, 1u)];
@@ -4757,6 +4943,16 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
                                                RHI_RES_BUFFER);
     if (bb == NULL) return;
+    if (binding >= 25u) {
+        LOG_ERROR("rhi_metal: storage binding %u collides with reserved "
+                  "argument slots (25=bsc, 28=AS, 29=push)",
+                  (unsigned)binding);
+        return;
+    }
+    /* Recorded for dispatch/draw replay (encoder state does not survive
+     * pass switches) and for the buffer-size-constant table. */
+    cmd->bound_storage[binding] = buf;
+    cmd->bound_storage_mask |= 1u << binding;
     enc = metal_ensure_compute_encoder(cmd);
     if (enc == nil) return;
     [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)binding];
@@ -4774,8 +4970,8 @@ void rhi_cmd_bind_acceleration_structure( RHICmdBuffer *cmd, RHIAccelerationStru
     }
     /* M4 index allocation (docs/rhi_metal_notes.md): index 28 is the
      * ray-query acceleration-structure slot — clear of the flattened
-     * resources (0..24), push constants (29) and the toolchain's
-     * spvBufferSizeConstants (30). The RHI binding argument is 0 in the
+     * resources (0..24), spvBufferSizeConstants (25) and push constants
+     * (29). The RHI binding argument is 0 in the
      * engine's only call pattern; anything else is rejected loudly. */
     if (binding != 0u) {
         LOG_ERROR("rhi_metal: bind_acceleration_structure binding %u unsupported (v1)",
