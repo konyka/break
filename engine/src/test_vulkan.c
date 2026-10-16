@@ -316,17 +316,19 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
     return golden_pass;
 }
 
-/* 计划 E Task 5 Step 8：RHIPipelineBindings <-> 旧 API parity gate（blinn 管线）。
- * Pin 1（真正的契约）：名字表逐项断言 rhi_pipeline_bindings_resolve ==
- * rhi_pipeline_get_uniform_location —— 含真实成员、u_albedo 采样器（VK 端
- * 恒 -1）与 __nonexistent__（双端 -1）。Pin 2：用 bindings 解析出的位置渲染
- * golden 场景（rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）——resolve
- * 相等已保证画面逐字节不变，oracle 结论（本机为已登记的 drift 基线，
- * CI 为权威）只作记录，不并入断言，也不放宽 oracle 本身。 */
+/* 计划 E Task 5 Stage C 批次 3：原「bindings == 旧 API」parity gate 在本文件
+ * 全量迁移后失去旧 API 参照（调用点清零；旧 API 由 Task 8 随退役删除）。
+ * 改为 pinned 契约：VK 端逐名断言 std430 反射偏移（与 5a gate 转录表一致：
+ * blinn push 块 u_model@0 u_view@64 u_proj@128 u_light_dir@192 u_light_color@208
+ * u_ambient@224 u_camera_pos@240；u_albedo 采样器恒 -1）；GL 端断言活动名
+ * 可解析（!= -1）、缺席名 __nonexistent__ 恒 -1（GL location 值由驱动分配，
+ * 不 pin 数值）。Pin 2 保留：用 bindings 解析出的位置渲染 golden 场景
+ * （rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）；oracle 结论（本机为
+ * 已登记的 drift 基线，CI 为权威）只作记录，不并入断言。 */
 static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
                                     u32 w, u32 h) {
     LOG_INFO("============================================");
-    LOG_INFO("TEST: RHIPipelineBindings PARITY (reflection vs legacy)");
+    LOG_INFO("TEST: RHIPipelineBindings CONTRACT (pinned reflection offsets)");
     LOG_INFO("============================================");
 
     RHIPipelineBindings *bind = rhi_pipeline_bindings_create(rs->device, rs->pipeline);
@@ -339,17 +341,28 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
         "u_model", "u_view", "u_proj", "u_light_dir", "u_light_color",
         "u_ambient", "u_camera_pos", "u_albedo", "__nonexistent__",
     };
+#ifdef ENGINE_VULKAN
+    static const i32 expected[] = {0, 64, 128, 192, 208, 224, 240, -1, -1};
+#endif
     bool parity = true;
     for (usize i = 0u; i < sizeof(names) / sizeof(names[0]); ++i) {
-        i32 legacy = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, names[i]);
         i32 reflected = rhi_pipeline_bindings_resolve(bind, names[i]);
-        if (legacy != reflected) {
+        bool ok;
+#ifdef ENGINE_VULKAN
+        ok = (reflected == expected[i]);
+#else
+        /* GL: 真实成员与采样器必须可解析；缺席名必须 -1（u_albedo 在
+         * GL 是活动 sampler，VK 端不是 push 成员 — 两端语义各自 pin）。 */
+        ok = (strcmp(names[i], "__nonexistent__") == 0) ? (reflected == -1)
+                                                        : (reflected != -1);
+#endif
+        if (!ok) {
             parity = false;
-            LOG_ERROR("FAIL: '%s' legacy=%d bindings=%d", names[i], legacy, reflected);
+            LOG_ERROR("FAIL: '%s' bindings=%d", names[i], reflected);
         }
     }
     if (parity) {
-        LOG_INFO("PASS: bindings resolve == legacy for all %zu names (incl. __nonexistent__)",
+        LOG_INFO("PASS: bindings resolve matches pinned contract for all %zu names",
                  sizeof(names) / sizeof(names[0]));
     }
 
@@ -389,7 +402,7 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
     }
     bool golden_sig = captured && rhi_oracle_compare_frame(shot, w, h, GOLDEN_PATH, false);
     free(shot);
-    LOG_INFO("RESULT: BINDINGS PARITY TEST %s (golden signature via bindings: %s — "
+    LOG_INFO("RESULT: BINDINGS CONTRACT TEST %s (golden signature via bindings: %s — "
              "local standing drift baseline applies, CI is authority)",
              parity ? "PASSED ✓" : "FAILED", golden_sig ? "OK" : "DRIFT");
 
@@ -3747,26 +3760,29 @@ static bool tv_test_point_shadow_gate(const TestRenderState *rs, u32 iw, u32 ih)
         LOG_ERROR("FAIL: point-shadow setup (pipe=%d ps.ready=%d active=%u)",
                   (int)rhi_handle_valid(pipe), (int)ps.ready, ps.active_count);
 
-    i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-    i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-    i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_camera_pos");
-    i32 l_fogn  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_near");
-    i32 l_fogf  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_far");
-    i32 l_fogc  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_fog_color");
-    i32 l_uw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_underwater");
-    i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_w");
-    i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_screen_h");
-    i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_near");
-    i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_far");
-    i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_count");
-    i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_dir_count");
-    i32 l_mr    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_mr_factor");
-    i32 l_ef    = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_emissive_factor");
-    i32 l_pom   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_pom_enabled");
-    i32 l_bias  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_shadow_bias");
-    i32 l_psf   = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_point_shadow_far_planes");
+    RHIPipelineBindings *bind = rhi_pipeline_bindings_create(rs->device, pipe);
+    if (!bind)
+        LOG_WARN("point-shadow bindings create failed; locations resolve -1");
+    i32 l_model = rhi_pipeline_bindings_resolve(bind, "u_model");
+    i32 l_view  = rhi_pipeline_bindings_resolve(bind, "u_view");
+    i32 l_cam   = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
+    i32 l_fogn  = rhi_pipeline_bindings_resolve(bind, "u_fog_near");
+    i32 l_fogf  = rhi_pipeline_bindings_resolve(bind, "u_fog_far");
+    i32 l_fogc  = rhi_pipeline_bindings_resolve(bind, "u_fog_color");
+    i32 l_uw    = rhi_pipeline_bindings_resolve(bind, "u_underwater");
+    i32 l_sw    = rhi_pipeline_bindings_resolve(bind, "u_screen_w");
+    i32 l_sh    = rhi_pipeline_bindings_resolve(bind, "u_screen_h");
+    i32 l_near  = rhi_pipeline_bindings_resolve(bind, "u_near");
+    i32 l_far   = rhi_pipeline_bindings_resolve(bind, "u_far");
+    i32 l_pc    = rhi_pipeline_bindings_resolve(bind, "u_point_count");
+    i32 l_dc    = rhi_pipeline_bindings_resolve(bind, "u_dir_count");
+    i32 l_mr    = rhi_pipeline_bindings_resolve(bind, "u_mr_factor");
+    i32 l_ef    = rhi_pipeline_bindings_resolve(bind, "u_emissive_factor");
+    i32 l_pom   = rhi_pipeline_bindings_resolve(bind, "u_pom_enabled");
+    i32 l_bias  = rhi_pipeline_bindings_resolve(bind, "u_shadow_bias");
+    i32 l_psf   = rhi_pipeline_bindings_resolve(bind, "u_point_shadow_far_planes");
 #ifndef ENGINE_VULKAN
-    i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
+    i32 l_proj  = rhi_pipeline_bindings_resolve(bind, "u_proj");
 #endif
 
     RHITexture null_pt_tex = RHI_HANDLE_NULL;
@@ -3909,6 +3925,7 @@ static bool tv_test_point_shadow_gate(const TestRenderState *rs, u32 iw, u32 ih)
     if (rhi_handle_valid(occ_white))  rhi_texture_destroy(rs->device, occ_white);
     if (rhi_handle_valid(em_white))   rhi_texture_destroy(rs->device, em_white);
     if (rhi_handle_valid(alb_white))  rhi_texture_destroy(rs->device, alb_white);
+    if (bind)                         rhi_pipeline_bindings_destroy(rs->device, bind);
     if (rhi_handle_valid(pipe))       rhi_pipeline_destroy(rs->device, pipe);
     if (rhi_handle_valid(q_ibo))      rhi_buffer_destroy(rs->device, q_ibo);
     if (rhi_handle_valid(occ_ibo))    rhi_buffer_destroy(rs->device, occ_ibo);
@@ -4166,14 +4183,18 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     u32 exec_count = 0xFFFFFFFFu, frames_ok = 0;
     u8 *shot = NULL;
     bool captured = false;
+    RHIPipelineBindings *arr_bind = NULL;
     if (setup_ok) {
-        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_model");
-        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_view");
-        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_proj");
-        i32 l_ldir  = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_light_dir");
-        i32 l_lcol  = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_light_color");
-        i32 l_amb   = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_ambient");
-        i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, arr_pipe, "u_camera_pos");
+        arr_bind = rhi_pipeline_bindings_create(rs->device, arr_pipe);
+        if (!arr_bind)
+            LOG_WARN("material-array bindings create failed; locations resolve -1");
+        i32 l_model = rhi_pipeline_bindings_resolve(arr_bind, "u_model");
+        i32 l_view  = rhi_pipeline_bindings_resolve(arr_bind, "u_view");
+        i32 l_proj  = rhi_pipeline_bindings_resolve(arr_bind, "u_proj");
+        i32 l_ldir  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_dir");
+        i32 l_lcol  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_color");
+        i32 l_amb   = rhi_pipeline_bindings_resolve(arr_bind, "u_ambient");
+        i32 l_cam   = rhi_pipeline_bindings_resolve(arr_bind, "u_camera_pos");
         Mat4 idm = mat4_identity();
         const u32 vis[4] = { 1u, 1u, 0u, 1u }; /* blue quad culled */
 
@@ -4294,6 +4315,7 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
                  "1 execute/frame, quadrant pixels + two-tone upsample verified)");
 
     if (ids_ok) indirect_draw_destroy(&ids, rs->device);
+    if (arr_bind) rhi_pipeline_bindings_destroy(rs->device, arr_bind);
     if (rhi_handle_valid(arr_pipe)) rhi_pipeline_destroy(rs->device, arr_pipe);
     if (rhi_handle_valid(arr_tex))  rhi_texture_destroy(rs->device, arr_tex);
     if (rhi_handle_valid(arr_ibo))  rhi_buffer_destroy(rs->device, arr_ibo);
@@ -4577,11 +4599,17 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
     }
 
     u32 exec_count = 0xFFFFFFFFu, frames_ok = 0;
+    RHIPipelineBindings *gb_bind = NULL;
     if (setup_ok) {
-        i32 l_model   = rhi_pipeline_get_uniform_location(rs->device, gb_pipe, "u_model");
-        i32 l_view    = rhi_pipeline_get_uniform_location(rs->device, gb_pipe, "u_view");
-        i32 l_proj    = rhi_pipeline_get_uniform_location(rs->device, gb_pipe, "u_proj");
-        i32 l_prev_vp = rhi_pipeline_get_uniform_location(rs->device, gb_pipe, "u_prev_vp");
+        /* "u_prev_vp" 是 legacy 链对 gbuffer 家族 u_prev_mvp@192 的别名
+         * （rhi_vk 别名行物化；GL 端两代 API 同为 -1）。 */
+        gb_bind = rhi_pipeline_bindings_create(rs->device, gb_pipe);
+        if (!gb_bind)
+            LOG_WARN("deferred-array bindings create failed; locations resolve -1");
+        i32 l_model   = rhi_pipeline_bindings_resolve(gb_bind, "u_model");
+        i32 l_view    = rhi_pipeline_bindings_resolve(gb_bind, "u_view");
+        i32 l_proj    = rhi_pipeline_bindings_resolve(gb_bind, "u_proj");
+        i32 l_prev_vp = rhi_pipeline_bindings_resolve(gb_bind, "u_prev_vp");
         Mat4 idm = mat4_identity();
         const u32 vis[4] = { 1u, 1u, 0u, 1u }; /* blue quad culled */
 
@@ -4730,6 +4758,7 @@ static bool tv_test_deferred_gbuffer_array(const TestRenderState *rs) {
                  "RT2 roughness/occlusion/flag & RT4 HDR emissive layer differences verified)");
 
     if (gids_ok) indirect_draw_destroy(&gids, rs->device);
+    if (gb_bind)                     rhi_pipeline_bindings_destroy(rs->device, gb_bind);
     if (rhi_handle_valid(gb_pipe))    rhi_pipeline_destroy(rs->device, gb_pipe);
     if (rhi_handle_valid(gb_alb_arr)) rhi_texture_destroy(rs->device, gb_alb_arr);
     if (rhi_handle_valid(gb_mr_arr))  rhi_texture_destroy(rs->device, gb_mr_arr);
@@ -4906,11 +4935,15 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
                   (int)rhi_handle_valid(ubo));
 
     u32 frames_ok = 0;
+    RHIPipelineBindings *bind = NULL;
     if (setup_ok) {
-        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
-        i32 l_prev  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_prev_mvp");
+        bind = rhi_pipeline_bindings_create(rs->device, pipe);
+        if (!bind)
+            LOG_WARN("gbuffer-factor bindings create failed; locations resolve -1");
+        i32 l_model = rhi_pipeline_bindings_resolve(bind, "u_model");
+        i32 l_view  = rhi_pipeline_bindings_resolve(bind, "u_view");
+        i32 l_proj  = rhi_pipeline_bindings_resolve(bind, "u_proj");
+        i32 l_prev  = rhi_pipeline_bindings_resolve(bind, "u_prev_mvp");
         Mat4 idm = mat4_identity();
         /* {factors vec4, emissive vec4} per draw (R580/R581/R582; R584:
          * right-side emissive b=8.0 pushes tex.b 0.196 to 1.569 — HDR). */
@@ -5026,6 +5059,7 @@ static bool tv_test_deferred_gbuffer_factor(const TestRenderState *rs) {
         LOG_INFO("PASS: deferred gbuffer factor channel (per-draw UBO rebind, "
                  "RT0 alpha & RT2.r/g/b & RT4.rgb track glTF factors, albedo untouched)");
 
+    if (bind)                     rhi_pipeline_bindings_destroy(rs->device, bind);
     if (rhi_handle_valid(pipe))    rhi_pipeline_destroy(rs->device, pipe);
     if (rhi_handle_valid(tex_alb)) rhi_texture_destroy(rs->device, tex_alb);
     if (rhi_handle_valid(tex_mr))  rhi_texture_destroy(rs->device, tex_mr);
@@ -5156,11 +5190,15 @@ static bool tv_test_deferred_gbuffer_normalmap(const TestRenderState *rs) {
      * matches the present-mapped readback convention of TEST 12b). */
     f32 oct[2][2] = { {0.0f, 0.0f}, {0.0f, 0.0f} };
     u32 phases_ok = 0;
+    RHIPipelineBindings *bind = NULL;
     if (setup_ok) {
-        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_model");
-        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_view");
-        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_proj");
-        i32 l_prev  = rhi_pipeline_get_uniform_location(rs->device, pipe, "u_prev_mvp");
+        bind = rhi_pipeline_bindings_create(rs->device, pipe);
+        if (!bind)
+            LOG_WARN("gbuffer-normalmap bindings create failed; locations resolve -1");
+        i32 l_model = rhi_pipeline_bindings_resolve(bind, "u_model");
+        i32 l_view  = rhi_pipeline_bindings_resolve(bind, "u_view");
+        i32 l_proj  = rhi_pipeline_bindings_resolve(bind, "u_proj");
+        i32 l_prev  = rhi_pipeline_bindings_resolve(bind, "u_prev_mvp");
         Mat4 idm = mat4_identity();
         const RHITexture phase_nrm[2] = { tex_nflat, tex_ntilt };
         const usize rt1_bytes = (usize)GBW * GBH * 8u; /* RGBA16F native */
@@ -5222,6 +5260,7 @@ static bool tv_test_deferred_gbuffer_normalmap(const TestRenderState *rs) {
                  "(RT1 oct (%.3f,%.3f) -> (%.3f,%.3f), slot-3 map drives derivative TBN)",
                  oct[0][0], oct[0][1], oct[1][0], oct[1][1]);
 
+    if (bind)                     rhi_pipeline_bindings_destroy(rs->device, bind);
     if (rhi_handle_valid(pipe))      rhi_pipeline_destroy(rs->device, pipe);
     if (rhi_handle_valid(tex_alb))   rhi_texture_destroy(rs->device, tex_alb);
     if (rhi_handle_valid(tex_nflat)) rhi_texture_destroy(rs->device, tex_nflat);
@@ -5716,6 +5755,7 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
 
     bool sample_ok = false;
     RHIOffscreenFBO scene = {0};
+    RHIPipelineBindings *cl_bind = NULL;
     if (ls && gen_ok && rhi_handle_valid(cl_pipe) && iw > 0u && ih > 0u) {
         scene = rhi_offscreen_fbo_create_fmt(
             rs->device, iw, ih, RHI_FORMAT_R16G16B16A16_SFLOAT);
@@ -5726,17 +5766,20 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
         Mat4 model = mat4_identity();
         Mat4 view  = mat4_identity();
         Mat4 proj  = mat4_identity();
-        i32 l_model = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_model");
-        i32 l_view  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_view");
-        i32 l_proj  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_proj");
-        i32 l_cam   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_camera_pos");
-        i32 l_amb   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_ambient");
-        i32 l_sw    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_screen_w");
-        i32 l_sh    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_screen_h");
-        i32 l_near  = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_near");
-        i32 l_far   = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_far");
-        i32 l_pc    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_point_count");
-        i32 l_dc    = rhi_pipeline_get_uniform_location(rs->device, cl_pipe, "u_dir_count");
+        cl_bind = rhi_pipeline_bindings_create(rs->device, cl_pipe);
+        if (!cl_bind)
+            LOG_WARN("ibl bindings create failed; locations resolve -1");
+        i32 l_model = rhi_pipeline_bindings_resolve(cl_bind, "u_model");
+        i32 l_view  = rhi_pipeline_bindings_resolve(cl_bind, "u_view");
+        i32 l_proj  = rhi_pipeline_bindings_resolve(cl_bind, "u_proj");
+        i32 l_cam   = rhi_pipeline_bindings_resolve(cl_bind, "u_camera_pos");
+        i32 l_amb   = rhi_pipeline_bindings_resolve(cl_bind, "u_ambient");
+        i32 l_sw    = rhi_pipeline_bindings_resolve(cl_bind, "u_screen_w");
+        i32 l_sh    = rhi_pipeline_bindings_resolve(cl_bind, "u_screen_h");
+        i32 l_near  = rhi_pipeline_bindings_resolve(cl_bind, "u_near");
+        i32 l_far   = rhi_pipeline_bindings_resolve(cl_bind, "u_far");
+        i32 l_pc    = rhi_pipeline_bindings_resolve(cl_bind, "u_point_count");
+        i32 l_dc    = rhi_pipeline_bindings_resolve(cl_bind, "u_dir_count");
 
         u32 ierr = scene_ok ? 0u : 1u;
         for (u32 f = 0; scene_ok && f < 8u; f++) {
@@ -5808,6 +5851,7 @@ static bool tv_test_ibl(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
     }
 
     if (rhi_handle_valid(scene.fb)) rhi_offscreen_fbo_destroy(rs->device, &scene);
+    if (cl_bind) rhi_pipeline_bindings_destroy(rs->device, cl_bind);
     if (rhi_handle_valid(cl_pipe)) rhi_pipeline_destroy(rs->device, cl_pipe);
     if (ls) {
         light_system_shutdown(ls);

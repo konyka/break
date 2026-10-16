@@ -7365,6 +7365,26 @@ RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pi
         e->name[sizeof(e->name) - 1u] = '\0';
         e->slot = (i32)pd->push_members[i].offset;
     }
+    /* Plan E Task 5 Stage C-1 disclosed alias row: the legacy chain's generic
+     * tail mapped the alias name "u_prev_vp" onto the gbuffer family's
+     * u_prev_mvp slot (192 on vertex-input pipelines) even though reflection
+     * only carries true member names. tv_test_deferred_gbuffer_array queries
+     * that alias name, so materialize alias -> aliased member's reflected
+     * slot to keep resolve byte-identical to the legacy chain (proven by the
+     * still-green parity phase + golden signature). camera_velocity_vk.frag
+     * declares u_prev_vp as a real member — member rows win, no alias. */
+    for (u32 i = 0u; i < b->count; ++i) {
+        if (strcmp(b->entries[i].name, "u_prev_mvp") != 0) continue;
+        bool alias_present = false;
+        for (u32 j = 0u; j < b->count; ++j)
+            if (strcmp(b->entries[j].name, "u_prev_vp") == 0) { alias_present = true; break; }
+        if (!alias_present && b->count < VK_PUSH_MERGE_MAX) {
+            VKBindingEntry *e = &b->entries[b->count++];
+            memcpy(e->name, "u_prev_vp", sizeof("u_prev_vp"));
+            e->slot = b->entries[i].slot;
+        }
+        break;
+    }
     b->reflect_failed = pd->push_reflect_failed;
     if (b->reflect_failed)
         LOG_WARN("VK: RHIPipelineBindings reflection failed closed — resolve "
