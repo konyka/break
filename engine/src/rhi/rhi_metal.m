@@ -266,6 +266,9 @@ static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
  * lives with the pass family below. */
 static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h,
                                    bool depth_load);
+/* VK suspend/resume parity (Task 13 review round): resumes a pass
+ * suspended by a compute/blit interlude with loadAction=Load. */
+static void metal_resume_render_pass_if_needed(RHICmdBuffer *cmd);
 
 enum {
     METAL_PASS_NONE = 0,
@@ -292,6 +295,12 @@ struct RHICmdBuffer {
     RHIBuffer bound_ubo;          /* deferred UBO bind (VK bound_ubo parity) */
     u32 bound_ubo_binding;
     bool ubo_dirty;               /* UBO replay needed at next draw/dispatch */
+    /* Suspended render pass (VK suspend/resume parity): a compute or blit
+     * interlude records the open target here; the next graphics call
+     * resumes it with loadAction=Load (metal_resume_render_pass_if_needed). */
+    u8 suspended_kind;            /* METAL_PASS_* or METAL_PASS_NONE */
+    RHIHandle suspended_target;
+    u32 suspended_w, suspended_h, suspended_face;
     u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
     RHIHandle pass_target;        /* fb handle of the bound target */
     u32 pass_w, pass_h;
@@ -675,9 +684,14 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         mb->frame_cmd->backend = mb;
     }
     RHICmdBuffer *cmd = mb->frame_cmd;
+    /* An abandoned in-flight encoder (an init path that opened compute/blit
+     * work without a frame_end) must be ENDED, not just dropped — nil-ing a
+     * live encoder leaves Metal reporting "already encoding" on the next
+     * encoder creation on the reused frame cmd (found in Task 13 IBL rebake). */
+    metal_end_encoders(cmd);
     cmd->cmd = [mtl_cmd retain];   /* autoreleased by the queue; we hold it to frame_end */
     cmd->render_encoder = nil;
-    cmd->compute_encoder = nil;    /* defensive: ended at frame_end, never cross-frame */
+    cmd->compute_encoder = nil;
     cmd->render_pass_open = false;
     cmd->pass_kind = METAL_PASS_NONE;
     cmd->pass_target = RHI_HANDLE_NULL;
@@ -689,6 +703,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->bound_ubo = RHI_HANDLE_NULL;
     cmd->bound_ubo_binding = 0u;
     cmd->ubo_dirty = false;
+    cmd->suspended_kind = METAL_PASS_NONE;
+    cmd->suspended_target = RHI_HANDLE_NULL;
+    cmd->suspended_w = cmd->suspended_h = cmd->suspended_face = 0u;
     /* A fresh drawable's contents are undefined, so the first pass of every
      * frame clears (default opaque black; rhi_cmd_clear_color overrides). */
     cmd->clear_color[0] = 0.0f;
@@ -2353,6 +2370,7 @@ static void metal_open_render_pass(RHICmdBuffer *cmd,
                                    MTLRenderPassDescriptor *pass,
                                    u32 w, u32 h) {
     metal_end_encoders(cmd);   /* one-encoder rule: compute closes too */
+    cmd->suspended_kind = METAL_PASS_NONE;   /* a fresh pass replaces any suspension */
     cmd->render_encoder =
         [[cmd->cmd renderCommandEncoderWithDescriptor:pass] retain];
     if (cmd->render_encoder == nil) {
@@ -2433,12 +2451,20 @@ void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
 }
 
 /* Task 9: lazily open the frame's compute encoder (one-encoder rule: an
- * open render pass closes first). Returns nil (logged) outside a frame. */
+ * open render pass closes first — and is recorded as suspended so the next
+ * graphics call resumes it, VK vk_suspend_pass_for_compute parity). */
 static id<MTLComputeCommandEncoder> metal_ensure_compute_encoder(RHICmdBuffer *cmd) {
     if (cmd->compute_encoder != nil) return cmd->compute_encoder;
     if (cmd->cmd == nil) {
         LOG_ERROR("rhi_metal: compute encoder requested outside a live frame");
         return nil;
+    }
+    if (cmd->render_pass_open && cmd->suspended_kind == METAL_PASS_NONE) {
+        cmd->suspended_kind = cmd->pass_kind;
+        cmd->suspended_target = cmd->pass_target;
+        cmd->suspended_w = cmd->pass_w;
+        cmd->suspended_h = cmd->pass_h;
+        cmd->suspended_face = cmd->pass_face;
     }
     metal_end_render_encoder(cmd);
     /* computeCommandEncoder is autoreleased; retain to the frame end. */
@@ -2461,8 +2487,10 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
         cmd->bound_pipeline = pipe;
         return;
     }
+    metal_resume_render_pass_if_needed(cmd);
     if (!cmd->render_pass_open || cmd->render_encoder == nil) {
-        LOG_ERROR("rhi_metal: bind_pipeline without an open render pass");
+        LOG_ERROR("rhi_metal: bind_pipeline without an open render pass (suspended=%d)",
+                  (int)cmd->suspended_kind);
         return;
     }
     [cmd->render_encoder setRenderPipelineState:pp->pipeline];
@@ -2551,6 +2579,7 @@ static void metal_flush_push(RHICmdBuffer *cmd, const MetalPipeline *pp);
 
 static MetalPipeline *metal_draw_ready(RHICmdBuffer *cmd, const char *what) {
     MetalPipeline *pp;
+    metal_resume_render_pass_if_needed(cmd);
     if (cmd == NULL || cmd->render_encoder == nil || !cmd->render_pass_open) {
         LOG_ERROR("rhi_metal: %s without an open render pass", what);
         return NULL;
@@ -3561,19 +3590,27 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     memset(sm, 0, sizeof(*sm));
 }
 
-/* Depth-only pass (R618: every bind clears depth to 1.0; no load twin). */
-static void metal_depth_only_pass(RHICmdBuffer *cmd, id<MTLTexture> depth_tex,
-                                  NSUInteger slice, u32 w, u32 h) {
+/* Depth-only pass (R618: every bind clears depth to 1.0; no load twin).
+ * load=true opens the RESUME variant (loadAction=Load — VK suspend/resume
+ * parity for compute/blit interludes). */
+static void metal_depth_only_pass_ex(RHICmdBuffer *cmd, id<MTLTexture> depth_tex,
+                                     NSUInteger slice, u32 w, u32 h, bool load) {
     @autoreleasepool {
         MTLRenderPassDescriptor *pass =
             [MTLRenderPassDescriptor renderPassDescriptor];
         pass.depthAttachment.texture = depth_tex;
         pass.depthAttachment.slice = slice;
-        pass.depthAttachment.loadAction = MTLLoadActionClear;
+        pass.depthAttachment.loadAction =
+            load ? MTLLoadActionLoad : MTLLoadActionClear;
         pass.depthAttachment.clearDepth = 1.0;
         pass.depthAttachment.storeAction = MTLStoreActionStore;
         metal_open_render_pass(cmd, pass, w, h);
     }
+}
+
+static void metal_depth_only_pass(RHICmdBuffer *cmd, id<MTLTexture> depth_tex,
+                                  NSUInteger slice, u32 w, u32 h) {
+    metal_depth_only_pass_ex(cmd, depth_tex, slice, w, h, false);
 }
 
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
@@ -3582,13 +3619,19 @@ void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
     depth = (MetalTexture *)rhi_get_resource_typed(g_current_device,
                                                    sm->depth_tex,
                                                    RHI_RES_TEXTURE);
-    if (depth == NULL) return;
+    if (depth == NULL) {
+        /* Never silent: a failed bind leaves the caller drawing into a
+         * never-opened pass (found via Task 13 consumer smoke). */
+        LOG_ERROR("rhi_metal: bind_shadow_map: depth_tex does not resolve");
+        return;
+    }
     metal_depth_only_pass(cmd, depth->texture, 0u, sm->width, sm->height);
     if (cmd->render_pass_open) {
         cmd->pass_kind = METAL_PASS_SHADOW;
         cmd->pass_target = sm->fbo;
         cmd->pass_w = sm->width;
         cmd->pass_h = sm->height;
+    } else {
     }
 }
 
@@ -3829,6 +3872,13 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usi
 static id<MTLBlitCommandEncoder> metal_blit_interlude(RHICmdBuffer *cmd,
                                                       const char *what) {
     if (!metal_cmd_in_frame(cmd, what)) return nil;
+    if (cmd->render_pass_open && cmd->suspended_kind == METAL_PASS_NONE) {
+        cmd->suspended_kind = cmd->pass_kind;
+        cmd->suspended_target = cmd->pass_target;
+        cmd->suspended_w = cmd->pass_w;
+        cmd->suspended_h = cmd->pass_h;
+        cmd->suspended_face = cmd->pass_face;
+    }
     metal_end_encoders(cmd);
     return [cmd->cmd blitCommandEncoder];   /* autoreleased; ends in place */
 }
@@ -4508,7 +4558,10 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
     depth = (MetalTexture *)rhi_get_resource_typed(g_current_device,
                                                    fbo->depth_tex,
                                                    RHI_RES_CUBEMAP);
-    if (cd == NULL || depth == NULL) return;
+    if (cd == NULL || depth == NULL) {
+        LOG_ERROR("rhi_metal: cubemap_depth_fbo_bind_face: target does not resolve");
+        return;
+    }
     metal_depth_only_pass(cmd, depth->texture, (NSUInteger)face, fbo->size,
                           fbo->size);
     if (cmd->render_pass_open) {
@@ -4522,6 +4575,109 @@ void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo,
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     metal_screen_unbind(cmd, screen_w, screen_h);
+}
+
+/* VK vk_resume_pass_if_needed parity: a compute/blit interlude suspends the
+ * open render target (metal_ensure_compute_encoder / metal_blit_interlude);
+ * the next graphics call resumes it with loadAction=Load — color and depth
+ * content preserved. The suspension record is consumed (or dropped when the
+ * target no longer resolves). */
+static void metal_resume_render_pass_if_needed(RHICmdBuffer *cmd) {
+    u8 kind;
+    RHIHandle target;
+    u32 w, h, face;
+    if (cmd == NULL) return;
+    if (cmd->render_pass_open ||
+        cmd->suspended_kind == METAL_PASS_NONE) {
+        return;
+    }
+    if (cmd->cmd == nil) {
+        cmd->suspended_kind = METAL_PASS_NONE;
+        return;
+    }
+    kind = cmd->suspended_kind;
+    target = cmd->suspended_target;
+    w = cmd->suspended_w;
+    h = cmd->suspended_h;
+    face = cmd->suspended_face;
+    cmd->suspended_kind = METAL_PASS_NONE;
+    switch (kind) {
+    case METAL_PASS_SCREEN:
+        @autoreleasepool {
+            metal_open_screen_pass(cmd, w, h, true /* depth Load */);
+        }
+        break;
+    case METAL_PASS_OFFSCREEN: {
+        MetalFBOData *fd = (MetalFBOData *)rhi_get_resource_typed(
+            g_current_device, target, RHI_RES_FRAMEBUFFER);
+        MetalTexture *color;
+        MetalTexture *depth;
+        if (fd == NULL) break;
+        color = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, fd->color_tex, RHI_RES_TEXTURE);
+        depth = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, fd->depth_tex, RHI_RES_TEXTURE);
+        if (color == NULL || depth == NULL) break;
+        metal_offscreen_pass_open(cmd, fd, color, depth, target, w, h,
+                                  true /* color Load */, fd->clear_color,
+                                  true /* depth Load */);
+        break;
+    }
+    case METAL_PASS_MRT: {
+        MetalMRTFBOData *md = (MetalMRTFBOData *)rhi_get_resource_typed(
+            g_current_device, target, RHI_RES_MRT_FBO);
+        if (md == NULL) break;
+        metal_mrt_pass_open(cmd, md, target, w, h, 1u /* bind_load */, NULL);
+        break;
+    }
+    case METAL_PASS_SHADOW: {
+        MetalShadowData *sd = (MetalShadowData *)rhi_get_resource_typed(
+            g_current_device, target, RHI_RES_FRAMEBUFFER);
+        MetalTexture *depth;
+        if (sd == NULL) {
+            LOG_ERROR("rhi_metal: resume shadow: payload resolve failed (gen %u idx %u)",
+                      (unsigned)target.generation, (unsigned)target.index);
+            break;
+        }
+        depth = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, sd->depth_tex, RHI_RES_TEXTURE);
+        if (depth == NULL) {
+            LOG_ERROR("rhi_metal: resume shadow: depth resolve failed");
+            break;
+        }
+        metal_depth_only_pass_ex(cmd, depth->texture, 0u, w, h,
+                                 true /* resume: Load */);
+        if (cmd->render_pass_open) {
+            cmd->pass_kind = METAL_PASS_SHADOW;
+            cmd->pass_target = target;
+            cmd->pass_w = w;
+            cmd->pass_h = h;
+        }
+        break;
+    }
+    case METAL_PASS_CUBE_DEPTH: {
+        MetalCubemapDepthFBOData *cd =
+            (MetalCubemapDepthFBOData *)rhi_get_resource_typed(
+                g_current_device, target, RHI_RES_CUBEMAP_DEPTH_FBO);
+        MetalTexture *depth;
+        if (cd == NULL) break;
+        depth = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, cd->depth_tex, RHI_RES_CUBEMAP);
+        if (depth == NULL) break;
+        metal_depth_only_pass_ex(cmd, depth->texture, (NSUInteger)face, w, h,
+                                 true /* resume: Load */);
+        if (cmd->render_pass_open) {
+            cmd->pass_kind = METAL_PASS_CUBE_DEPTH;
+            cmd->pass_target = target;
+            cmd->pass_w = w;
+            cmd->pass_h = h;
+            cmd->pass_face = face;
+        }
+        break;
+    }
+    default:
+        break;
+    }
 }
 
 /* C1: in-pass clear_color on a depth-only target — a color clear does not

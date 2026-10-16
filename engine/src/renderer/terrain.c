@@ -2,7 +2,7 @@
 #include <core/log.h>
 #include <math/math.h>
 #include <core/shader_io.h>
-#ifndef ENGINE_VULKAN
+#if !defined(ENGINE_VULKAN) && !defined(ENGINE_SHADER_CORPUS_VK)
 #include <glad.h>
 #endif
 #include <stdio.h>
@@ -371,7 +371,7 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
     if (t->loc_ambient >= 0) rhi_cmd_set_uniform_vec3(cmd, t->loc_ambient, 0.35f, 0.35f, 0.40f);
     /* R225-B: VK packs fog_strength in u_camera_pos.w; GL uses u_fog_strength. */
     if (camera_pos) {
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         rhi_cmd_set_uniform_vec4(cmd, t->loc_camera_pos,
                                  camera_pos[0], camera_pos[1], camera_pos[2], fog_strength);
 #else

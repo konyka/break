@@ -230,7 +230,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     ps->_loc_lifetime_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_min");
     ps->_loc_lifetime_range= rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_range");
     ps->_loc_emit_budget   = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_budget");
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.view");
     ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.proj");
 #else
@@ -281,7 +281,7 @@ void particles_compute(ParticleSystem *ps, RHICmdBuffer *cmd, f32 dt) {
     rhi_cmd_bind_storage_buffer(cmd, ps->particle_ssbo, 0);
     rhi_cmd_bind_storage_buffer(cmd, ps->spawn_buf, 1);
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     if (ps->_loc_push_dt >= 0) {
         /* R179: Build full 80-byte Push from live ps->* (not stale template),
          * and upload in one blob — mat4 helper only copies 64 bytes.
