@@ -896,3 +896,33 @@ ctest --test-dir build-win-clang -LE graphics --output-on-failure
 
 结果：Clang 非图形测试 `40/40` 通过；该记录不提供本轮 MSVC 证据，也不改变 WGL/Vulkan/GPU/present
 仍待验证的边界。
+
+## Metal 后端构建（计划 C，macOS / iOS）
+
+依赖：Xcode 15.4+（`xcrun metal` 组件；macOS 26 需
+`xcodebuild -downloadComponent MetalToolchain`）、`brew install shaderc spirv-cross`
+（glslc + SPIRV-Cross，pin 版本见 `docs/rhi_backend_evidence.md` 计划 C 收据）。
+
+```bash
+# macOS（本机构建 + 测试）
+cmake -S engine -B build-metal -G Ninja -DCMAKE_BUILD_TYPE=Debug \
+    -DENGINE_RHI_BACKEND=metal -DMYUI_PAL=cocoa
+cmake --build build-metal --parallel
+ctest --test-dir build-metal -R test_rhi_metal --output-on-failure
+./build-metal/engine_demo --frames 3          # consumer smoke（退出码 0）
+
+# iOS（build-only；模拟器证据 = compile/lifecycle only）
+cmake -S engine -B build-ios -G Xcode \
+    -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+xcodebuild -project build-ios/break.xcodeproj -scheme engine_demo \
+    -destination 'generic/platform=iOS Simulator' build
+```
+
+说明：
+- 离线 shader 管线（GLSL→SPIR-V→MSL→metallib + FNV manifest）在构建期运行，
+  产物 `metal_shaders/engine.metallib` 拷到各 consumer 旁；`xcode-select` 指向
+  CommandLineTools 时 `DEVELOPER_DIR` 由 CMake 自动烘焙为标准 Xcode 路径。
+- iOS 交叉编译时 manifest 生成器自动切换为宿主编译（`gen_metal_shader_manifest_host`，
+  见 `engine/CMakeLists.txt` M6 注释）；`xcrun metal` 目标 SDK 切 `iphoneos`。
+- `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
+  取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。

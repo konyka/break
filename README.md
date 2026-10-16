@@ -37,6 +37,7 @@ RHI 后端编译为独立静态库（`engine_rhi_opengl` / `engine_rhi_vulkan` /
 |---|---|
 | Linux / Windows / Steam | OpenGL、Vulkan |
 | Windows / Steam Windows | 原生 D3D12（GPU_RUNTIME 已验证，构建：`-DENGINE_RHI_BACKEND=d3d12`，依赖与收据见 `docs/Build_Guide.md` 与 `docs/rhi_backend_evidence.md`） |
+| macOS | 原生 Metal（GPU_RUNTIME，M2 真机收据；CI `macos-metal` lane）、Vulkan（MoltenVK 基线） |
 
 ## Documentation
 

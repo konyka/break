@@ -499,10 +499,37 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     find_program(ENGINE_METAL_SPIRV_CROSS spirv-cross
         HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
     find_program(ENGINE_METAL_XCRUN xcrun REQUIRED)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(METAL_SHADER_SDK iphoneos)
+    else()
+        set(METAL_SHADER_SDK macosx)
+    endif()
     add_executable(gen_metal_shader_manifest
         tools/gen_metal_shader_manifest.c)
     target_include_directories(gen_metal_shader_manifest PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+
+    # M6 handoff (Task 14): the generator above targets the BUILD
+    # platform, so an iOS cross-compile cannot run it on the macOS host.
+    # Cross-compiling (iOS): host-compile a copy with the system
+    # compiler at configure time and use it in the custom command.
+    # Native (macOS): use the target as before.
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        set(METAL_SHADER_GEN
+            ${CMAKE_CURRENT_BINARY_DIR}/gen_metal_shader_manifest_host)
+        execute_process(
+            COMMAND cc -O1 -std=c11
+                -I${CMAKE_CURRENT_SOURCE_DIR}/src
+                -I${CMAKE_CURRENT_SOURCE_DIR}/external
+                ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_metal_shader_manifest.c
+                -o ${METAL_SHADER_GEN}
+            RESULT_VARIABLE metal_gen_host_rc)
+        if(NOT metal_gen_host_rc EQUAL 0)
+            message(FATAL_ERROR "host gen_metal_shader_manifest build failed")
+        endif()
+    else()
+        set(METAL_SHADER_GEN gen_metal_shader_manifest)
+    endif()
     set(METAL_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/metal_shaders)
     file(GLOB METAL_SHADER_INPUTS CONFIGURE_DEPENDS
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.vert
@@ -533,8 +560,9 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
             "PATH=${ENGINE_METAL_GLSLC_DIR}:${ENGINE_METAL_SPIRV_CROSS_DIR}:$ENV{PATH}"
             "DEVELOPER_DIR=${ENGINE_METAL_DEVELOPER_DIR}"
             sh ${CMAKE_CURRENT_SOURCE_DIR}/tools/compile_metal_shaders.sh
-            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR} macosx
-        COMMAND gen_metal_shader_manifest
+            ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR}
+            ${METAL_SHADER_SDK}
+        COMMAND ${METAL_SHADER_GEN}
             ${CMAKE_CURRENT_SOURCE_DIR}/shaders ${METAL_SHADER_OUT_DIR}
             ${METAL_SHADER_OUT_DIR}/msl
             ${METAL_SHADER_OUT_DIR}/manifest.lines
@@ -2837,6 +2865,14 @@ endif()
         LABELS "platform_contract")
     # Plan C Task 10: offline Metal shader pipeline contract (text-level,
     # platform-free; the real pipeline run is macOS-only).
+    # Plan C Task 14: CI lane separation contract (text-level).
+    add_test(NAME test_ci_lane_separation
+        COMMAND ${CMAKE_COMMAND}
+            -DCI_YML=${CMAKE_CURRENT_SOURCE_DIR}/../.github/workflows/ci.yml
+            -DEVIDENCE_MD=${CMAKE_CURRENT_SOURCE_DIR}/../docs/rhi_backend_evidence.md
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_lane_separation.cmake)
+    set_tests_properties(test_ci_lane_separation PROPERTIES
+        LABELS "platform_contract")
     add_test(NAME test_metal_shader_pipeline
         COMMAND ${CMAKE_COMMAND}
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..

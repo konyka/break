@@ -374,3 +374,27 @@ rhi_metal.m `metal_as_convert_tlas_record` 注释），BLAS 数组经
 LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27`）
 共同保证 shader 资源永不落到 AS 槽。
 
+
+## Task 14 移交清单（归 Task 15）
+
+1. **spvBufferSizeConstants（P0）**：spirv-cross 为 SSBO `.length()` 生成的
+   buffer-size 常数表（index 25，particle_update/particle_cull/particle.vert±MRT）
+   无绑定路径——validation 下 dispatch 硬断言；非 validation 下粒子模拟跳过
+   （冻结）。破局思路（评审）：MetalBuffer 自持字节数，stride 可经 SPIR-V
+   反射在 pipeline 创建时求得，RHI 侧可能无需扩 manifest。
+2. **rhi_cmd_bind_material_textures**：terrain 唯一贴图通道（terrain.c:388-394），
+   Metal 下地形/阴影贴图实际不生效（非"日志噪声"，排期提升）。
+3. **defrd_inject_define**：与 shader_inject_define 字节等价仅在 #version-首行
+   成立——Task 15 删除前者复用后者。
+4. **indirect_count 阴影**：`rhi_cmd_draw_indexed_indirect_count` 无 Metal 等价，
+   unified shadow compaction 的绘制阶段整段 no-op（CSM/点影深度图当前不完整；
+   Task 15 评估 MTLIndirectCommandBuffer 或 CPU count 读取回退）。
+5. **y-flip 未验证**：Metal 禁止负高 viewport，NDC +Y 朝上——画面朝向未做
+   像素级取证（Task 15 截图核验）。
+6. **binder stub 面**：material_textures*/texel_buffers/shadow_viewport/
+   transition_depth_to_read/set_depth_*/set_cull_face/clear_color_attachment 等。
+7. **M4（iOS 量程）**：texture flatten 公式上界 34（set2b2）超 iOS [[texture]]
+   上限 31——iOS lane 启用渲染前需复评乘数（当前 iOS 仅 build-only 证据）。
+8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
+   时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释），
+   `xcrun metal` SDK 切 `iphoneos`。
