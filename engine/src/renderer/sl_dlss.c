@@ -13,6 +13,24 @@
 #include <stdio.h>
 #include <string.h>
 
+/* Streamline 关闭入口类型与全局 loader 状态：下方 VK 逃生舱与后端无关的
+ * shutdown/api_status 路径共用；非 VK 编译单元里恒为 NULL/false。 */
+typedef int (WINAPI *PFN_sl_shutdown)(void);
+
+static HMODULE g_sl_module;
+static PFN_sl_shutdown g_sl_shutdown_fn;
+static bool g_initialized;
+static bool g_api_ready;
+static SLDlssCppAdapter g_cpp_adapter;
+static bool g_cpp_adapter_set;
+
+static void sl_dlss_clear_cpp_adapter(void) {
+    memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
+    g_cpp_adapter_set = false;
+}
+
+/* RHI-ESCAPE: Streamline interposer 只接受 Vulkan 原生句柄（slSetVulkanInfo）；ABI 镜像、loader 与 abort 路径仅 VK 后端编译，其他后端裁剪。 */
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
 /* ---- ABI mirrors of the official Streamline 2.14.1 C++ headers ----
  *
  * The public sl.h headers are C++; this engine is C11, so the structures
@@ -124,21 +142,8 @@ _Static_assert(sizeof(SLAdapterInfo) == 56, "sl adapter info layout 2.14.1");
 #define SL_RESULT_NGX_FAILED 16
 
 typedef int (WINAPI *PFN_sl_init)(const SLPreferences *, u64);
-typedef int (WINAPI *PFN_sl_shutdown)(void);
 typedef int (WINAPI *PFN_sl_is_feature_supported)(u32, const SLAdapterInfo *);
 typedef int (WINAPI *PFN_sl_set_vulkan_info)(const SLVulkanInfo *);
-
-static HMODULE g_sl_module;
-static PFN_sl_shutdown g_sl_shutdown_fn;
-static bool g_initialized;
-static bool g_api_ready;
-static SLDlssCppAdapter g_cpp_adapter;
-static bool g_cpp_adapter_set;
-
-static void sl_dlss_clear_cpp_adapter(void) {
-    memset(&g_cpp_adapter, 0, sizeof(g_cpp_adapter));
-    g_cpp_adapter_set = false;
-}
 
 static void sl_dlss_abort_init(void) {
     sl_dlss_clear_cpp_adapter();
@@ -195,6 +200,7 @@ static HMODULE sl_load_interposer(void) {
     }
     return NULL;
 }
+#endif
 
 const char *sl_dlss_probe_result_text(SLDlssProbeResult result) {
     switch (result) {
@@ -259,6 +265,8 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
     const RHIDevice *dev, const RHICmdBuffer *cmd,
     const SLDlssResourceTagDesc *tags, u32 tag_count,
     u32 output_width, u32 output_height) {
+    /* RHI-ESCAPE: Streamline 回调消费 native（Vk）command buffer（rhi_cmd_buffer_get_native_info），仅 VK 后端可达；其他后端 fail-closed。 */
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
     RHICmdBufferNativeInfo command_info;
     void *native_command_buffer = NULL;
     if (!g_cpp_adapter_set || tags == NULL || tag_count == 0u ||
@@ -280,9 +288,20 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
     bool restored = g_cpp_adapter.restore_command_state(
         g_cpp_adapter.context, native_command_buffer);
     return evaluated && restored;
+#else
+    (void)dev;
+    (void)cmd;
+    (void)tags;
+    (void)tag_count;
+    (void)output_width;
+    (void)output_height;
+    return false;
+#endif
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
+    /* RHI-ESCAPE: probe 走 sl.interposer 的 Vulkan 句柄路径（slSetVulkanInfo），仅 VK 后端编译；其他后端 fail-closed（g_cpp_adapter 不经 loader 初始化）。 */
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
     PFN_sl_init init_fn;
     PFN_sl_is_feature_supported supported_fn;
     PFN_sl_set_vulkan_info set_vk_fn;
@@ -392,6 +411,11 @@ bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result)
     sl_dlss_abort_init();
     if (out_result != NULL) *out_result = SL_DLSS_INTERNAL_ERROR;
     return false;
+#else
+    (void)native;
+    if (out_result != NULL) *out_result = SL_DLSS_UNAVAILABLE;
+    return false;
+#endif
 }
 
 void sl_dlss_shutdown(void) {

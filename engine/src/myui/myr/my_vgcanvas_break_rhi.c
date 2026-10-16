@@ -1048,7 +1048,8 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   my_vgcanvas_break_rhi_t *c;
   RHITextureDesc tex_desc;
   RHISamplerDesc samp_desc;
-  const char *font_vert, *font_frag, *image_vert, *image_frag;
+  RHICapabilities caps;
+  char font_vert[96], font_frag[96], image_vert[96], image_frag[96];
   size_t i;
   if (device == NULL || !my_vgcanvas_break_rhi_size_valid(width, height)) {
     return NULL;
@@ -1080,17 +1081,15 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   c->state.clip = my_rect_init(0, 0, (int32_t)width, (int32_t)height);
   my_vggeometry_init(&c->geo, allocator);
 
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-  font_vert = "shaders/font_vk.vert";
-  font_frag = "shaders/font_vk.frag";
-  image_vert = "shaders/ui_img_vk.vert";
-  image_frag = "shaders/ui_img_vk.frag";
-#else
-  font_vert = "shaders/font.vert";
-  font_frag = "shaders/font.frag";
-  image_vert = "shaders/ui_img.vert";
-  image_frag = "shaders/ui_img.frag";
-#endif
+  /* 计划 E Task 7 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+  if (!rhi_device_get_capabilities(device, &caps) ||
+      !shader_variant_path("shaders/font.vert", (RHIShaderVariant)caps.shader_variant, font_vert, sizeof(font_vert)) ||
+      !shader_variant_path("shaders/font.frag", (RHIShaderVariant)caps.shader_variant, font_frag, sizeof(font_frag)) ||
+      !shader_variant_path("shaders/ui_img.vert", (RHIShaderVariant)caps.shader_variant, image_vert, sizeof(image_vert)) ||
+      !shader_variant_path("shaders/ui_img.frag", (RHIShaderVariant)caps.shader_variant, image_frag, sizeof(image_frag))) {
+    rhi_destroy((my_vgcanvas_t *)c);
+    return NULL;
+  }
   c->font_pipeline = create_pipeline(device, font_vert, font_frag);
   c->image_pipeline = create_pipeline(device, image_vert, image_frag);
   if (!rhi_handle_valid(c->font_pipeline) ||

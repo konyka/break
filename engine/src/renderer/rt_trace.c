@@ -1,11 +1,15 @@
 ﻿#include <renderer/rt_trace.h>
-#include <rhi/rhi_native_vulkan.h>
 #include <core/types.h>
 #include <core/log.h>
 #include <string.h>
 #include <stdio.h>
 
-#ifdef ENGINE_VULKAN
+/* RT probe 全路径消费 rhi_native_vulkan.h 的原生句柄获取（VkAccelerationStructureKHR）、
+ * shaderc 编译与 vkCmdTraceRaysKHR 提交；feature-bit 契约（RAY_TRACING_PIPELINE /
+ * ACCELERATION_STRUCTURE）在 probe_impl 内由 caps 查询裁决。 */
+/* RHI-ESCAPE: RT probe 仅 VK 后端编译；其他后端 fail-closed（probe false + 静态错误文案）。 */
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
+#include <rhi/rhi_native_vulkan.h>
 
 #include <vulkan/vulkan.h>
 #include <shaderc/shaderc.h>
@@ -675,8 +679,7 @@ bool rt_trace_probe(RHIDevice *dev, RHIAccelerationStructure tlas,
     return rt_trace_probe_impl(dev, tlas, out_pixel);
 }
 
-#else /* !ENGINE_VULKAN */
-
+#else
 const char *rt_trace_last_error(void) {
     return "ray tracing probe unavailable (non-vulkan build)";
 }

@@ -11,6 +11,12 @@
 #include <sl_core_types.h>
 #include <sl_dlss.h>
 
+/* 计划 E Task 7 断言（不改构建逻辑）：本翻译单元由 engine/CMakeLists.txt 的
+ * `if(WIN32 AND STREAMLINE_ROOT)` 门控编入 engine 目标；其可执行路径消费
+ * VkCommandBuffer 原生句柄，只在 Vulkan 后端宏（见 sl_dlss.c 的 RHI-ESCAPE
+ * 配对）编译的 engine 里可达。GL/D3D12 lane 下该库链接但保持惰性
+ * （loader 编译期 fail-closed，不会装配回调）。 */
+
 namespace {
 
 bool evaluate(void *context, const SLDlssResourceTagDesc *descs,

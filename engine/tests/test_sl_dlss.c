@@ -65,12 +65,15 @@ TEST(missing_runtime_fails_closed)
     SLDlssProbeResult result = SL_DLSS_SUPPORTED;
     RHINativeDevice native = {0};
 
+    /* 计划 E Task 7 逃生舱契约：非 VK 编译单元（本测试目标不带后端宏）
+     * 上 loader 整体编译期裁剪——显式 BREAK_SL_DIR 指向缺失目录也不改变
+     * fail-closed 结果（false + SL_DLSS_UNAVAILABLE），不触碰 interposer。 */
     ASSERT_TRUE(SET_SL_DIR("Z:/definitely/missing/sl"));
     ASSERT_FALSE(sl_dlss_probe(NULL, &result));
-    ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
     ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
     ASSERT_FALSE(sl_dlss_probe(&native, &result));
-    ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
     ASSERT_TRUE(SET_SL_DIR(NULL));
     sl_dlss_shutdown();
     ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
@@ -89,8 +92,11 @@ TEST(failed_initialization_is_retryable)
     SLDlssProbeResult result = SL_DLSS_SUPPORTED;
     ASSERT_TRUE(SET_SL_DIR("Z:/definitely/missing/sl"));
     ASSERT_FALSE(sl_dlss_probe(NULL, &result));
-    ASSERT_EQ(result, SL_DLSS_MISSING_RUNTIME);
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
     sl_dlss_shutdown();
+    /* 逃生舱外重复 probe 仍 fail-closed（幂等，无残留状态）。 */
+    ASSERT_FALSE(sl_dlss_probe(NULL, &result));
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
     ASSERT_TRUE(SET_SL_DIR(NULL));
 }
 
@@ -154,6 +160,8 @@ TEST(cpp_adapter_forwards_validated_tags)
     ASSERT_TRUE(sl_dlss_set_cpp_adapter(&adapter));
     ASSERT_FALSE(sl_dlss_evaluate_tags(&tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 0);
+#if defined(ENGINE_RHI_BACKEND_VULKAN)
+    /* 逃生舱内（VK 编译单元）：validated tags 经 native command buffer 转发。 */
     ASSERT_TRUE(sl_dlss_evaluate_tags_with_command_buffer(
         (const RHIDevice *)(uintptr_t)1u,
         (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
@@ -165,6 +173,13 @@ TEST(cpp_adapter_forwards_validated_tags)
         (const RHIDevice *)(uintptr_t)1u,
         (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
     ASSERT_EQ(g_adapter_calls, 1);
+#else
+    /* 逃生舱外（非 VK 编译单元）：native command buffer 获取 fail-closed。 */
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        (const RHIDevice *)(uintptr_t)1u,
+        (const RHICmdBuffer *)(uintptr_t)1u, &tag, 1u, 2u, 2u));
+    ASSERT_EQ(g_adapter_calls, 0);
+#endif
     sl_dlss_set_cpp_adapter(NULL);
 }
 
@@ -244,8 +259,31 @@ TEST(resource_tag_contract_rejects_incomplete_vulkan_metadata)
     ASSERT_FALSE(sl_dlss_resource_tag_desc_validate(&tag));
 }
 
-TEST_MAIN_BEGIN()
-    RUN_TEST(missing_runtime_fails_closed);
+/* 计划 E Task 7 逃生舱契约：非 VK 编译单元上 sl_dlss_probe 编译期
+ * fail-closed（false + SL_DLSS_UNAVAILABLE），全部公开入口对 NULL
+ * device 不崩溃、api_status 恒 UNAVAILABLE。VK 编译单元的真实 probe /
+ * 评估路径由 test_vulkan 覆盖。 */
+TEST(escape_hatch_fails_closed_without_vulkan_backend)
+{
+    SLDlssProbeResult result = SL_DLSS_SUPPORTED;
+    RHINativeDevice native = {0};
+
+    ASSERT_FALSE(sl_dlss_probe(NULL, &result));
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
+    ASSERT_FALSE(sl_dlss_probe(&native, &result));
+    ASSERT_EQ(result, SL_DLSS_UNAVAILABLE);
+    ASSERT_FALSE(sl_dlss_probe(NULL, NULL));
+    ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
+    ASSERT_FALSE(sl_dlss_set_cpp_adapter(NULL));
+    ASSERT_FALSE(sl_dlss_evaluate_tags(NULL, 0u, 0u, 0u));
+    ASSERT_FALSE(sl_dlss_evaluate_tags_with_command_buffer(
+        NULL, NULL, NULL, 0u, 0u, 0u));
+    sl_dlss_shutdown();
+    ASSERT_EQ(sl_dlss_api_status(), SL_DLSS_API_UNAVAILABLE);
+}
+
+TEST_MAIN_BEGIN()    RUN_TEST(missing_runtime_fails_closed);
+    RUN_TEST(escape_hatch_fails_closed_without_vulkan_backend);
     RUN_TEST(null_result_pointer_is_safe);
     RUN_TEST(failed_initialization_is_retryable);
     RUN_TEST(resource_tag_contract_rejects_non_vulkan_placeholders);

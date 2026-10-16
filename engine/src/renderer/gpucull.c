@@ -20,6 +20,11 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     gc->device = dev;
     gc->unified_ready = false;
 
+    /* 计划 E Task 7：缓存能力契约（shader_variant 驱动 unified_cull 的
+     * Hi-Z compute 纹理绑定单元选择）。 */
+    if (!rhi_device_get_capabilities(dev, &gc->caps))
+        memset(&gc->caps, 0, sizeof(gc->caps));
+
     usize cs_len = 0;
     char *cs_src = shader_read_file("shaders/cull.comp", &cs_len);
     if (!cs_src) {
@@ -556,12 +561,11 @@ void gpucull_dispatch_unified(GPUCullSystem *gc, RHICmdBuffer *cmd,
                  && rhi_handle_valid(gc->hi_z_sampler);
     RHITexture hi_z_bind = use_hi_z ? hi_z_texture : gc->hi_z_fallback;
     if (rhi_handle_valid(hi_z_bind)) {
-        /* R231-A: VK set2 binding0 → unit 0; GL unified_cull.comp layout(binding=4). */
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-        rhi_cmd_bind_texture_compute(cmd, hi_z_bind, gc->hi_z_sampler, 0);
-#else
-        rhi_cmd_bind_texture_compute(cmd, hi_z_bind, gc->hi_z_sampler, 4);
-#endif
+        /* R231-A: VK set2 binding0 → unit 0; GL unified_cull.comp layout(binding=4).
+         * 计划 E Task 7：绑定单元由 caps.shader_variant 契约选择。 */
+        u32 hi_z_unit = ((RHIShaderVariant)gc->caps.shader_variant ==
+                         RHI_SHADER_VARIANT_GLSL_VK) ? 0u : 4u;
+        rhi_cmd_bind_texture_compute(cmd, hi_z_bind, gc->hi_z_sampler, hi_z_unit);
     }
 
     i32 loc_vp = gc->_loc_uni_vp;

@@ -26,6 +26,22 @@ TEST(rt_trace_probe_fails_closed_on_stub_devices)
     rhi_test_device_destroy(device);
 }
 
+/* 计划 E Task 7 逃生舱契约：非 VK 编译单元（本测试目标不带后端宏）上
+ * rt_trace_probe 对 NULL device / NULL tlas fail-closed——返回 false、
+ * out_pixel 清零、last_error 非 NULL 且非空。VK 编译单元的真实 RT probe
+ * 由 test_vulkan 覆盖。 */
+TEST(rt_trace_probe_null_args_fail_closed_with_error)
+{
+    u8 pixel[4] = {9, 9, 9, 9};
+
+    ASSERT_FALSE(rt_trace_probe(NULL, RHI_HANDLE_NULL, pixel));
+    ASSERT_EQ(pixel[0], 0u);
+    ASSERT_FALSE(rt_trace_probe(NULL, RHI_HANDLE_NULL, NULL));
+    ASSERT_TRUE(rt_trace_last_error() != NULL);
+    ASSERT_TRUE(strlen(rt_trace_last_error()) > 0);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(rt_trace_probe_fails_closed_on_stub_devices);
+    RUN_TEST(rt_trace_probe_null_args_fail_closed_with_error);
 TEST_MAIN_END()

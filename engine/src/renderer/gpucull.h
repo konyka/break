@@ -47,6 +47,10 @@ typedef struct {
     bool            vis_flags_staging_valid[2]; /* R172: per-slot completed GPU copy */
     u32             vis_flags_staged_count[2];  /* R430: entries staged per slot */
 
+    /* 计划 E Task 7：缓存能力契约（shader_variant 驱动 unified_cull 的
+     * Hi-Z compute 纹理绑定单元选择）。 */
+    RHICapabilities caps;
+
     /* 计划 E Task 5 T1：反射物化表，_loc_cull_ 与 _loc_uni_ 缓存的查询来源。 */
     RHIPipelineBindings *bind_cull;
     RHIPipelineBindings *bind_unified;

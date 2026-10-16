@@ -88,15 +88,16 @@ static RHIPipeline break_ui_create_composite_pipeline(RHIDevice *device) {
   RHIShader fragment_shader;
   RHIPipeline pipeline;
   RHIPipelineDesc desc;
-#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-  vertex_source = break_ui_read_shader("shaders/post_vk.vert", &vertex_len);
-  fragment_source =
-      break_ui_read_shader("shaders/post_tex_vk.frag", &fragment_len);
-#else
-  vertex_source = break_ui_read_shader("shaders/post.vert", &vertex_len);
-  fragment_source =
-      break_ui_read_shader("shaders/post_tex.frag", &fragment_len);
-#endif
+  RHICapabilities caps;
+  char vs_path[96], fs_path[96];
+  /* 计划 E Task 7 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+  if (!rhi_device_get_capabilities(device, &caps) ||
+      !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+      !shader_variant_path("shaders/post_tex.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+    return RHI_HANDLE_NULL;
+  }
+  vertex_source = break_ui_read_shader(vs_path, &vertex_len);
+  fragment_source = break_ui_read_shader(fs_path, &fragment_len);
   if (vertex_source == NULL || fragment_source == NULL) {
     free(vertex_source);
     free(fragment_source);
