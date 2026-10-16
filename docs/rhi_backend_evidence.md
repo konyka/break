@@ -96,6 +96,8 @@
 
 契约内容（规范文本固化于 `engine/src/rhi/rhi.h`，双后端测试钉死于 test_vulkan 的 BUFFER STAGING CONTRACT / CMD UPDATE BUFFER ORDERING 两个 phase）：C-BUF-1 initial_data 字节精确回读（HOST_VISIBLE 与 DEVICE_LOCAL+staging 同语义）；C-BUF-2 `rhi_buffer_update_region` 只动 `[off,off+size)`、offset/size 无需调用方对齐、越界钳制；C-BUF-3 同 CB 内 `rhi_cmd_update_buffer` 对后续 dispatch/draw 有序；C-BUF-4 map 写入 unmap 后对 device 与 `rhi_buffer_read` 可见。
 
+> 注：本台账引用的 `.superpowers/sdd/.../evidence/*.txt` 日志文件为执行机本地路径（`.git/info/exclude` 排除），原始日志未随库提交——以 git 历史 receipts/docs 为准。
+
 | 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |
 |---|---|---|---|---|
 | 2026-10-16 | 本机（Windows） | NVIDIA GeForce RTX 4060 Laptop / api=1.4.351 driver=0x9a4a8000 | `ctest --test-dir build-vk -R '^test_vulkan$\|test_rhi_capabilities' --output-on-failure`（日志 `.superpowers/sdd/2026-10-14-rhi-plan-e-renderer-abi/evidence/task3_post_test_vulkan.txt`） | VK 本机 LIVE（phase 位于 run order 中 SCENE RESTORE 之后、历史 device-lost 窗口 TEST 7b 之前）：C-BUF-1/2/4 与 C-BUF-3 两 phase 均 `PASSED ✓`；`test_rhi_capabilities` 56/56（含新增 `buffer_region_rejects_overflow_and_null`）。附带发现：修复 C-BUF-3 暴露的 `rhi_cmd_bind_storage_buffer` R90-1 update-after-bind 违规（重绑累积集）后，本机 3/3 次 run 不再于 TEST 7b 触发历史性 `VK_ERROR_DEVICE_LOST`（回滚对照：无修复必复现）——规格 §7 的「环境性」lost 实为该潜在违规在此驱动消费模型下的表现；GOLDEN×2 仍 DRIFT（本机史上首次活设备到达 golden，金样 2026-06 提交，golden 权威在 CI）；UNIFIED GPU CULL 偶发 Hi-Z {0,0}（已知 §7 异常，3/4 run 绿） |
@@ -160,7 +162,7 @@
 1. token 白名单 gate 强制：**达成**（gate live，白名单 5 处，e37d9df1）。
 2. legacy uniform 调用点 = 0 + 反射权威 + VK 手写表删除：**达成**。
 3. 每批 golden/readback oracle（VK 本机 + GL lane）：**本机达成**（每批双 lane）；CI lanes 收据**待补**。
-4. `RHICapabilities` 新 6 字段各后端真实消费 + 契约测试：**达成**（`test_rhi_capabilities` 56/56）。
+4. `RHICapabilities` 新 6 字段各后端真实消费 + 契约测试：**达成**（`test_rhi_capabilities` 56/56；compute/indirect_draw 的 renderer 侧消费点 = `engine/src/renderer/gpucull.c:31` 与 `engine/src/renderer/indirect_draw.c:63` 的 fail-closed init guard，最终评审修复轮补齐）。
 5. ctest 全 label 绿 + `-Werror` 零警告：**部分**——本机 VK 170/172、GL 168/169（两项登记的环境性失败：golden 漂移基线 + OpenClipboard 争用）、MSVC headless 18/18（myui_core C4090 先在）；Linux/macOS CI 收据**待补**。
 6. 本台账含计划 E 完成度 + Hi-Z 仅登记未改码：**达成**（本节）。
 7. 全部 commit push 到 `origin master`：**达成（集成轮，2026-10-17）**——首次 push 被拒（non-fast-forward：远端在 `59c62a0d` 后有并行提交 `dd524121`，与本计划链在 `engine/src/test_vulkan.c` 内容冲突，超出 Task 9 docs-only 范围，当时登记 BLOCKED、未 force、未 rebase）。专项集成轮以 merge commit `86d159b8`（Merge: 59587ea5 + dd524121）消解：保留计划 E 全部迁移（bindings 契约 phase 等）+ 保留 owner 启动插桩（`startup_t0` 参数穿线、`PHASE:` 四行计时、startup clear-present 块，backend-neutral），合并后双 lane 复验：VK/GL 三 target 零警告构建；VK test_vulkan 35 行签名与合并前逐字相同（PHASE 行为预期新增输出，golden MAE 28.75/13.54 逐位不变、VALIDATION GATE 0；Hi-Z {0,0} §7 偶发当日再现 1/1）；GL test_vulkan ALL PASSED（goldens MAE=0.00，PHASE 行在 GL 亦输出）；headless 18/18；token gate OK（5 白名单，scan root 不含 test_vulkan.c）。随本收据 commit 一并 push；CI lanes 回执待 push 后补记。

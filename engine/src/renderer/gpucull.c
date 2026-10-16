@@ -25,6 +25,14 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     if (!rhi_device_get_capabilities(dev, &gc->caps))
         memset(&gc->caps, 0, sizeof(gc->caps));
 
+    /* 计划 E DoD-4：compute 契约真实消费——后端不报告 compute 时
+     * fail-closed，跳过管线创建（与下方 shader/pipeline 失败同一退化
+     * 路径；VK/GL 均报告 true，此 guard 为 no-op）。 */
+    if (!gc->caps.compute_supported) {
+        LOG_WARN("GPUCull: backend reports no compute support; cull disabled");
+        return false;
+    }
+
     usize cs_len = 0;
     char *cs_src = shader_read_file("shaders/cull.comp", &cs_len);
     if (!cs_src) {

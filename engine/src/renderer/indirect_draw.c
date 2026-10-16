@@ -55,6 +55,16 @@ bool indirect_draw_init_grouped(IndirectDrawSystem *sys, RHIDevice *dev,
      * (grouped) upload refines the CPU-side intervals. */
     sys->group_cpu_cap[0] = max_draws;
 
+    /* 计划 E DoD-4：indirect draw 契约真实消费——后端不报告 indirect draw
+     * 时 fail-closed，不创建 buffer/管线（与下方 buffer/pipeline 失败同一
+     * 退化路径；VK/GL 均报告 true，此 guard 为 no-op）。 */
+    RHICapabilities caps;
+    if (!rhi_device_get_capabilities(dev, &caps)) memset(&caps, 0, sizeof(caps));
+    if (!caps.indirect_draw_supported) {
+        LOG_WARN("IndirectDraw: backend reports no indirect draw support; system disabled");
+        return false;
+    }
+
     /* All draw commands - storage buffer (CPU-uploaded once). R186: DEVICE_LOCAL. */
     usize all_bytes = (usize)max_draws * sizeof(DrawIndexedIndirectCmd);
     void *all_zero = calloc(1, all_bytes);

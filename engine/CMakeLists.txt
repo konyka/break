@@ -381,12 +381,14 @@ if(SHADERC_INCLUDE_DIR)
     target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
 endif()
 
-# Plan C Task 11 (review fix C1): the Metal lane must read the *_vk
-# shader corpus (its offline manifest is keyed on those bytes). This
-# PUBLIC define switches the main.c / renderer shader-file #ifdefs;
-# it is deliberately NOT set for Vulkan/OpenGL lanes (behavior there
-# is unchanged) and the GL corpus never enters the Metal manifest
-# (its binding model is incompatible).
+# Plan C Task 11 legacy: this PUBLIC define used to switch the main.c /
+# renderer shader-file #ifdefs so the Metal lane read the *_vk corpus
+# (its offline manifest is keyed on those bytes). Plan E deleted every
+# consumer — it is now a no-op retained only for build-compat. Shader
+# selection follows caps.shader_variant instead (rhi_metal.m leaves it
+# zeroed → GLSL paths; harmless today only because Metal's
+# rhi_device_create_compiled is a fail-closed stub — a Metal revival
+# must set shader_variant rather than rely on this knob).
 if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     target_compile_definitions(engine PUBLIC ENGINE_SHADER_CORPUS_VK=1)
 endif()
