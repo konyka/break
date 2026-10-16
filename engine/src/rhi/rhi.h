@@ -607,7 +607,21 @@ static inline bool rhi_push_helper_range_ok(i32 location, u32 size, u32 range_si
 /* R179/R444: Deprecated alias of rhi_cmd_push_constants (location == byte
  * offset). Kept for compatibility; new code should call rhi_cmd_push_constants. */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
+/* DEPRECATED（计划 E）：新代码用 rhi_pipeline_bindings_create/resolve。
+ * 保留至全部调用点迁移完成（Task 8 grep gate 清零），随后随 OpenGL 退役删除。 */
 i32  rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name);
+
+/* ---- Plan E Task 5: reflection-driven pipeline bindings ---- */
+typedef struct RHIPipelineBindings RHIPipelineBindings; /* 不透明 */
+/* 每管线一次：后端在 shader/pipeline create 时已缓存反射结果，这里物化为
+ * name->slot 表。slot 语义 = 后端绑定槽（VK push 字节偏移 / GL location /
+ * 未来 Metal|D3D12 绑定索引），值由 reflection 推导、全后端同源。
+ * VK 名字来自 std430 push 反射；反射 fail-closed（宏/非字面量数组长度等）
+ * 时 resolve 返回 -1（create 时 LOG_WARN），不伪造槽位。 */
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe);
+void  rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b);
+/* 成员不存在返回 -1（与旧 API 一致）。 */
+i32   rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name);
 
 /* ---- Framebuffer (depth-only for shadow pass) ---- */
 typedef struct {

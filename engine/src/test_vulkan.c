@@ -314,6 +314,87 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
     return golden_pass;
 }
 
+/* 计划 E Task 5 Step 8：RHIPipelineBindings <-> 旧 API parity gate（blinn 管线）。
+ * Pin 1（真正的契约）：名字表逐项断言 rhi_pipeline_bindings_resolve ==
+ * rhi_pipeline_get_uniform_location —— 含真实成员、u_albedo 采样器（VK 端
+ * 恒 -1）与 __nonexistent__（双端 -1）。Pin 2：用 bindings 解析出的位置渲染
+ * golden 场景（rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）——resolve
+ * 相等已保证画面逐字节不变，oracle 结论（本机为已登记的 drift 基线，
+ * CI 为权威）只作记录，不并入断言，也不放宽 oracle 本身。 */
+static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
+                                    u32 w, u32 h) {
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: RHIPipelineBindings PARITY (reflection vs legacy)");
+    LOG_INFO("============================================");
+
+    RHIPipelineBindings *bind = rhi_pipeline_bindings_create(rs->device, rs->pipeline);
+    if (!bind) {
+        LOG_ERROR("FAIL: rhi_pipeline_bindings_create returned NULL");
+        return false;
+    }
+
+    static const char *const names[] = {
+        "u_model", "u_view", "u_proj", "u_light_dir", "u_light_color",
+        "u_ambient", "u_camera_pos", "u_albedo", "__nonexistent__",
+    };
+    bool parity = true;
+    for (usize i = 0u; i < sizeof(names) / sizeof(names[0]); ++i) {
+        i32 legacy = rhi_pipeline_get_uniform_location(rs->device, rs->pipeline, names[i]);
+        i32 reflected = rhi_pipeline_bindings_resolve(bind, names[i]);
+        if (legacy != reflected) {
+            parity = false;
+            LOG_ERROR("FAIL: '%s' legacy=%d bindings=%d", names[i], legacy, reflected);
+        }
+    }
+    if (parity) {
+        LOG_INFO("PASS: bindings resolve == legacy for all %zu names (incl. __nonexistent__)",
+                 sizeof(names) / sizeof(names[0]));
+    }
+
+    /* Golden scenario driven entirely by bindings-resolved locations — same
+     * uniforms/values as tv_run_golden_regression, so the frame is identical
+     * by the pin above and must land on the same golden signature. */
+    Mat4 gid = mat4_identity();
+    i32 loc_model      = rhi_pipeline_bindings_resolve(bind, "u_model");
+    i32 loc_view       = rhi_pipeline_bindings_resolve(bind, "u_view");
+    i32 loc_proj       = rhi_pipeline_bindings_resolve(bind, "u_proj");
+    i32 loc_light_dir  = rhi_pipeline_bindings_resolve(bind, "u_light_dir");
+    i32 loc_light_color = rhi_pipeline_bindings_resolve(bind, "u_light_color");
+    i32 loc_ambient    = rhi_pipeline_bindings_resolve(bind, "u_ambient");
+    i32 loc_camera_pos = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
+    u8 *shot = (u8 *)malloc((usize)w * h * 4u);
+    bool captured = false;
+    for (u32 f = 0; f < 3; f++) {
+        RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
+        if (!cmd) continue;
+        rhi_cmd_clear_color(cmd, 0.10f, 0.10f, 0.15f, 1.0f);
+        rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+        rhi_cmd_set_uniform_mat4(cmd, loc_model, &gid.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, loc_view, &gid.e[0][0]);
+        rhi_cmd_set_uniform_mat4(cmd, loc_proj, &gid.e[0][0]);
+        rhi_cmd_set_uniform_vec3(cmd, loc_light_dir, 0.5f, -0.8f, 0.3f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_light_color, 1.0f, 0.95f, 0.9f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_ambient, 0.35f, 0.35f, 0.40f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_camera_pos, 0, 0, 5);
+        rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+        rhi_cmd_draw_indexed(cmd, 3, 1);
+        rhi_frame_end(rs->device);
+        if (f == 2u && shot)
+            captured = rhi_screenshot(rs->device, 0, 0, w, h, shot, (usize)w * h * 4u);
+        rhi_present(rs->device);
+    }
+    bool golden_sig = captured && rhi_oracle_compare_frame(shot, w, h, GOLDEN_PATH, false);
+    free(shot);
+    LOG_INFO("RESULT: BINDINGS PARITY TEST %s (golden signature via bindings: %s — "
+             "local standing drift baseline applies, CI is authority)",
+             parity ? "PASSED ✓" : "FAILED", golden_sig ? "OK" : "DRIFT");
+
+    rhi_pipeline_bindings_destroy(rs->device, bind);
+    return parity;
+}
+
 static bool test_render_init(TestRenderState *rs, Platform *platform) {
     void *window;
     void *display = platform_display_native(platform);
@@ -6123,6 +6204,9 @@ int main(int argc, char **argv) {
         bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw, gh);
         golden_pass = golden_pass && golden_cam_pass;
 
+        /* 计划 E Task 5：bindings parity gate（golden 场景区）。 */
+        bool bindings_parity_pass = tv_test_bindings_parity(&render, vbo, ibo, gw, gh);
+
         LOG_INFO("============================================");
         LOG_INFO("TEST 7: IMAGE-BASED LIGHTING (REAL CUBEMAP)");
         LOG_INFO("============================================");
@@ -6206,7 +6290,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -7203,6 +7287,9 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool golden_cam_pass = tv_run_golden_camera_regression(&render, vbo, ibo, gw2, gh2);
     golden_pass = golden_pass && golden_cam_pass;
 
+    /* 计划 E Task 5：bindings parity gate（golden 场景区）。 */
+    bool bindings_parity_pass = tv_test_bindings_parity(&render, vbo, ibo, gw2, gh2);
+
     /* R438: hard gate — any validation warning/error during the suite fails
      * it. Skipped when the debug messenger is inactive (no layer/ext). */
     bool validation_pass = true;
@@ -7224,7 +7311,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&
+idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

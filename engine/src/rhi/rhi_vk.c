@@ -11,6 +11,7 @@
 #endif
 #include <shaderc/shaderc.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -110,7 +111,16 @@ typedef struct {
      * handle is usually destroyed right after pipeline creation). */
     u32   *spirv;
     usize  spirv_size;  /* bytes */
+    /* Plan E Task 5: std430 push-constant reflection cached at create time —
+     * the source does not have to outlive the shader. A 256B block of 4B
+     * scalars bounds the member count at 64. */
+    ShaderIOPushMember push_members[64];
+    u32    push_member_count;
+    bool   push_reflect_failed; /* source has a push block but reflection returned 0 */
 } VKShaderData;
+
+/* Plan E Task 5: merged vert+frag member tables fit in twice the per-shader cap. */
+#define VK_PUSH_MERGE_MAX 128u
 
 #define VK_INVALID_SET 0xFFu
 #define VK_MAX_MIP_VIEWS 16u
@@ -128,6 +138,12 @@ typedef struct {
     u32               uniform_offsets[VK_MAX_UNIFORMS];
     u32               uniform_sizes[VK_MAX_UNIFORMS];
     u32               uniform_count;
+    /* Plan E Task 5: merged vert/frag push-member reflection — the offset
+     * authority for rhi_pipeline_get_uniform_location and the source table
+     * rhi_pipeline_bindings_create materializes. */
+    ShaderIOPushMember push_members[VK_PUSH_MERGE_MAX];
+    u32               push_member_count;
+    bool              push_reflect_failed;
     bool              uses_texel_buffer;
     bool              is_instanced;
     bool              is_compute;
@@ -3342,6 +3358,37 @@ void rhi_set_vsync(RHIDevice *dev, bool enabled) {
     rhi_device_control_release(dev);
 }
 
+/* Plan E Task 5 — bounded substring search for source that need not be
+ * NUL-terminated. */
+static bool vk_source_contains(const char *src, usize len, const char *needle) {
+    usize n = strlen(needle);
+    if (!src || len < n) return false;
+    for (usize i = 0u; i + n <= len; i++)
+        if (memcmp(src + i, needle, n) == 0) return true;
+    return false;
+}
+
+/* Cache the std430 push-constant reflection of a freshly compiled shader. The
+ * reflector fails closed (0 members) on macro/non-literal array sizes or
+ * unsupported members — flag that so RHIPipelineBindings fails closed with a
+ * warning instead of fabricating offsets; the legacy table below keeps
+ * serving rhi_pipeline_get_uniform_location for such shaders. */
+static void vk_reflect_push_cache(VKShaderData *sd, const char *source, usize len) {
+    usize n = shader_reflect_push_constants(source, len, sd->push_members,
+                                            sizeof(sd->push_members) /
+                                            sizeof(sd->push_members[0]));
+    if (n > 0u) {
+        sd->push_member_count = (u32)n;
+        return;
+    }
+    if (vk_source_contains(source, len, "push_constant")) {
+        sd->push_reflect_failed = true;
+        LOG_WARN("VK: push-constant reflection failed closed (macro/non-literal "
+                 "array size or unsupported member) — bindings resolve will "
+                 "return -1; the legacy uniform table keeps serving this shader");
+    }
+}
+
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
     if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
@@ -3355,6 +3402,7 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
     sd->module = mod;
     sd->spirv = spirv;
     sd->spirv_size = spirv_size;
+    vk_reflect_push_cache(sd, source, len);
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -3404,6 +3452,7 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
     if (!sd) { vkDestroyShaderModule(vk->device, mod, NULL); return RHI_HANDLE_NULL; }
     u32 idx = rhi_alloc_slot(dev);
     sd->module = mod;
+    vk_reflect_push_cache(sd, source, len);
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -4064,6 +4113,26 @@ static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkForma
     return var;
 }
 
+/* Plan E Task 5: merge a stage's reflected push members into the pipeline's
+ * table. Vert and frag declare the SAME push block, so duplicates keep the
+ * first (vert) entry; a shader that failed closed contributes nothing — its
+ * names stay on the legacy table and bindings resolve -1. Overflow beyond
+ * VK_PUSH_MERGE_MAX drops late members the same fail-closed way. */
+static void vk_pipeline_merge_push(VKPipelineData *pd, const VKShaderData *sd) {
+    if (!sd) return;
+    if (sd->push_reflect_failed) pd->push_reflect_failed = true;
+    for (u32 i = 0u; i < sd->push_member_count; ++i) {
+        const ShaderIOPushMember *m = &sd->push_members[i];
+        bool dup = false;
+        for (u32 j = 0u; j < pd->push_member_count; ++j) {
+            if (strcmp(pd->push_members[j].name, m->name) == 0) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (pd->push_member_count >= VK_PUSH_MERGE_MAX) return;
+        pd->push_members[pd->push_member_count++] = *m;
+    }
+}
+
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     if (!dev || !desc) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
@@ -4160,6 +4229,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         pd->sampler_mip_set = (u8)sampler_mip_set;
         pd->ubo_set = (u8)ubo_set;
         pd->ray_query_set = (u8)ray_query_set;
+        vk_pipeline_merge_push(pd, cs_data);
         dev->slots[idx].ptr = pd;
         dev->slots[idx].type = RHI_RES_PIPELINE;
         return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -4267,6 +4337,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->sampler_mip_set = (u8)VK_INVALID_SET;
     pd->ubo_set = (u8)graphics_ubo_set;
     pd->storage_set = (u8)graphics_storage_set; /* R590 */
+    vk_pipeline_merge_push(pd, vs_data);
+    vk_pipeline_merge_push(pd, fs_data);
     /* Variant support: depth-only shadow pipelines never need color variants
      * (marked UNDEFINED); color pipelines retain their SPIR-V + desc so a
      * render-pass-format variant can be built lazily at bind time. */
@@ -7268,9 +7340,68 @@ void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     vk->push_dirty = true;
 }
 
+/* ---- Plan E Task 5: RHIPipelineBindings (reflection-driven) ---- */
+
+typedef struct {
+    char name[SHADER_IO_NAME_MAX];
+    i32  slot; /* std430 push byte offset == legacy API's location */
+} VKBindingEntry;
+
+struct RHIPipelineBindings {
+    VKBindingEntry entries[VK_PUSH_MERGE_MAX];
+    u32  count;
+    bool reflect_failed;
+};
+
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
+    if (dev == NULL || !rhi_handle_valid(pipe)) return NULL;
+    VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (!pd) return NULL;
+    RHIPipelineBindings *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+    for (u32 i = 0u; i < pd->push_member_count && b->count < VK_PUSH_MERGE_MAX; ++i) {
+        VKBindingEntry *e = &b->entries[b->count++];
+        memcpy(e->name, pd->push_members[i].name, sizeof(e->name));
+        e->name[sizeof(e->name) - 1u] = '\0';
+        e->slot = (i32)pd->push_members[i].offset;
+    }
+    b->reflect_failed = pd->push_reflect_failed;
+    if (b->reflect_failed)
+        LOG_WARN("VK: RHIPipelineBindings reflection failed closed — resolve "
+                 "returns -1 for every name (no fabricated offsets)");
+    return b;
+}
+
+void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
+    (void)dev;
+    free(b);
+}
+
+i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
+    if (!b || !name) return -1;
+    for (u32 i = 0u; i < b->count; ++i)
+        if (strcmp(b->entries[i].name, name) == 0) return b->entries[i].slot;
+    return -1;
+}
+
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
     if (dev == NULL || name == NULL) return -1;
     VKPipelineData *pd = (VKPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+
+    /* Plan E Task 5: the merged push-member reflection (cached at shader
+     * create, cross-checked against this file's tables by test_shader_io's
+     * vk_push_tables_match_reflection gate) is the offset authority. Names the
+     * shaders do not declare — block-instance aliases like "push.dt", packed
+     * vec4 swizzle aliases (terrain/water), samplers — fall through to the
+     * legacy classification tables below, which stay until the call-site
+     * migration retires them (batch 6); that keeps every current caller
+     * byte-identical. */
+    if (pd) {
+        for (u32 i = 0u; i < pd->push_member_count; ++i) {
+            if (strcmp(name, pd->push_members[i].name) == 0)
+                return (i32)pd->push_members[i].offset;
+        }
+    }
 
     /* R560: skinned G-Buffer vertex stage — same 256B push block as
      * gbuffer_vk.vert: u_model@0 u_view@64 u_proj@128 u_prev_mvp@192.

@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 #include <rhi/rhi.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_backend_internal.h>
@@ -169,6 +170,11 @@ typedef struct {
 #endif
 } GLBackend;
 
+/* Plan E Task 5: reflection-driven bindings — per-stage push-member name
+ * cache and the pipeline-level merge cap. */
+#define GL_PUSH_NAME_MAX 64u
+#define GL_REFLECT_NAME_MAX 128u
+
 typedef struct {
     GLuint gl_vao;
     GLuint gl_vbo;
@@ -183,6 +189,13 @@ typedef struct {
     bool   depth_write_disable;  /* R232-A: parity with VK depthWriteEnable */
     bool   depth_compare_lequal; /* R232-B: parity with VK compareOp */
     bool   disable_culling;      /* R235-A: parity with VK cullMode NONE */
+    /* Plan E Task 5: push-member names reflected from the stage sources and
+     * merged here (shaders may be destroyed after pipeline create). GL has no
+     * push constants, so rhi_pipeline_bindings_create resolves these — plus
+     * every program-active uniform/sampler/UBO name — through the linked
+     * program, matching the legacy glGetUniformLocation path exactly. */
+    char   reflect_names[GL_REFLECT_NAME_MAX][SHADER_IO_NAME_MAX];
+    u32    reflect_name_count;
 } GLPipelineData;
 
 typedef struct {
@@ -194,6 +207,11 @@ typedef struct {
 
 typedef struct {
     GLuint gl_shader;
+    /* Plan E Task 5: std430 push-member names reflected at create time
+     * (mirrors the VK shader's reflection cache; GL itself resolves every
+     * name through the linked program). */
+    char   push_names[GL_PUSH_NAME_MAX][SHADER_IO_NAME_MAX];
+    u32    push_name_count;
 } GLShaderData;
 
 typedef struct {
@@ -1449,6 +1467,25 @@ static GLuint gl_compile_shader(const char *source, usize len, GLenum type) {
     return sh;
 }
 
+/* Plan E Task 5: cache the std430 push-member names reflected from the stage
+ * source. GL compiles the desktop branch (loose uniforms), so these mostly
+ * resolve -1 through the program — they ride along for name parity with the
+ * VK table; the program introspection in rhi_pipeline_bindings_create
+ * supplies every GL-active name. */
+static void gl_reflect_push_names(GLShaderData *sd, const char *source, usize len) {
+    ShaderIOPushMember members[GL_PUSH_NAME_MAX];
+    usize n = shader_reflect_push_constants(source, len, members, GL_PUSH_NAME_MAX);
+    for (usize i = 0u; i < n && sd->push_name_count < GL_PUSH_NAME_MAX; ++i) {
+        bool dup = false;
+        for (u32 j = 0u; j < sd->push_name_count; ++j)
+            if (strcmp(sd->push_names[j], members[i].name) == 0) { dup = true; break; }
+        if (dup) continue;
+        memcpy(sd->push_names[sd->push_name_count], members[i].name, SHADER_IO_NAME_MAX);
+        sd->push_names[sd->push_name_count][SHADER_IO_NAME_MAX - 1u] = '\0';
+        sd->push_name_count++;
+    }
+}
+
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
     if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     GLenum type = is_fragment ? GL_FRAGMENT_SHADER : GL_VERTEX_SHADER;
@@ -1459,6 +1496,7 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
     if (!sd) { glDeleteShader(gl_sh); return RHI_HANDLE_NULL; }
     u32 idx = rhi_alloc_slot(dev);
     sd->gl_shader = gl_sh;
+    gl_reflect_push_names(sd, source, len);
     dev->slots[idx].ptr  = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1480,9 +1518,27 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
     if (!sd) { glDeleteShader(gl_sh); return RHI_HANDLE_NULL; }
     u32 idx = rhi_alloc_slot(dev);
     sd->gl_shader = gl_sh;
+    gl_reflect_push_names(sd, source, len);
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+/* Plan E Task 5: merge a stage's reflected push-member names into the
+ * pipeline (deduped; overflow drops late names fail-closed — they resolve -1,
+ * never a fabricated slot). */
+static void gl_pipeline_merge_reflect_names(GLPipelineData *pd, const GLShaderData *sd) {
+    if (!sd) return;
+    for (u32 i = 0u; i < sd->push_name_count; ++i) {
+        bool dup = false;
+        for (u32 j = 0u; j < pd->reflect_name_count; ++j)
+            if (strcmp(pd->reflect_names[j], sd->push_names[i]) == 0) { dup = true; break; }
+        if (dup) continue;
+        if (pd->reflect_name_count >= GL_REFLECT_NAME_MAX) return;
+        memcpy(pd->reflect_names[pd->reflect_name_count], sd->push_names[i],
+               SHADER_IO_NAME_MAX);
+        pd->reflect_name_count++;
+    }
 }
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
@@ -1509,6 +1565,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         if (!pd) { glDeleteProgram(program); return RHI_HANDLE_NULL; }
         u32 idx = rhi_alloc_slot(dev);
         pd->gl_program = program;
+        gl_pipeline_merge_reflect_names(pd, cs);
         dev->slots[idx].ptr = pd;
         dev->slots[idx].type = RHI_RES_PIPELINE;
         return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -1607,6 +1664,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     pd->depth_compare_lequal = desc->depth_compare_lequal;
     /* Match VK: no_vertex_input also forces cullMode NONE. */
     pd->disable_culling      = desc->disable_culling || desc->no_vertex_input;
+    gl_pipeline_merge_reflect_names(pd, vs);
+    gl_pipeline_merge_reflect_names(pd, fs);
     dev->slots[idx].ptr  = pd;
     dev->slots[idx].type = RHI_RES_PIPELINE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -2455,6 +2514,95 @@ void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
     if (gl_cmd_device_ready(cmd) && location >= 0) glUniform1i(location, v);
+}
+
+/* ---- Plan E Task 5: RHIPipelineBindings (reflection + program query) ----
+ * GL resolves every name through the linked program, so the table is built
+ * from (a) the stage-source push-member names reflected at shader create and
+ * (b) the program's active uniforms/samplers and uniform-block names — each
+ * entry's slot is the same glGetUniformLocation value the legacy API returns,
+ * giving resolve == legacy full-name parity. Source-level shader_reflect_bindings
+ * is NOT used here: it enforces the VK set/binding ABI and rejects desktop-GL
+ * sources that declare several samplers without layout qualifiers. */
+
+#define GL_BINDINGS_NAME_MAX 256u
+
+struct RHIPipelineBindings {
+    char names[GL_BINDINGS_NAME_MAX][SHADER_IO_NAME_MAX];
+    i32  slots[GL_BINDINGS_NAME_MAX];
+    u32  count;
+};
+
+static void gl_bindings_put(struct RHIPipelineBindings *b, GLuint program, const char *name) {
+    usize len;
+    if (!b || !name || (len = strlen(name)) == 0u) return;
+    if (len >= SHADER_IO_NAME_MAX) return; /* unresolvable by the 64B name contract */
+    for (u32 i = 0u; i < b->count; ++i)
+        if (strcmp(b->names[i], name) == 0) return;
+    if (b->count >= GL_BINDINGS_NAME_MAX) {
+        LOG_WARN("GL: RHIPipelineBindings name table full (%u) — '%s' and later "
+                 "names resolve -1", b->count, name);
+        return;
+    }
+    memcpy(b->names[b->count], name, len + 1u);
+    b->slots[b->count] = (i32)glGetUniformLocation(program, name);
+    b->count++;
+}
+
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
+    if (dev == NULL || !rhi_handle_valid(pipe)) return NULL;
+    GLPipelineData *pd = (GLPipelineData *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (!pd) return NULL;
+    RHIPipelineBindings *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+
+    /* (a) reflected push-member names from the stage sources. */
+    for (u32 i = 0u; i < pd->reflect_name_count; ++i)
+        gl_bindings_put(b, pd->gl_program, pd->reflect_names[i]);
+
+    /* (b) every program-active uniform (incl. samplers) and uniform block.
+     * Arrays enumerate as "name[0]" — also register the base name, which is
+     * what glGetUniformLocation resolves for the array itself. */
+    GLint active = 0;
+    glGetProgramiv(pd->gl_program, GL_ACTIVE_UNIFORMS, &active);
+    for (GLint i = 0; i < active; i++) {
+        GLchar uname[SHADER_IO_NAME_MAX];
+        GLsizei written = 0;
+        GLint arr_size = 0;
+        GLenum utype = 0;
+        glGetActiveUniform(pd->gl_program, (GLuint)i, sizeof(uname), &written,
+                           &arr_size, &utype, uname);
+        if (written <= 0) continue;
+        gl_bindings_put(b, pd->gl_program, uname);
+        if (written >= 3 && strcmp(uname + written - 3, "[0]") == 0) {
+            uname[written - 3] = '\0';
+            gl_bindings_put(b, pd->gl_program, uname);
+        }
+    }
+    GLint blocks = 0;
+    glGetProgramiv(pd->gl_program, GL_ACTIVE_UNIFORM_BLOCKS, &blocks);
+    for (GLint i = 0; i < blocks; i++) {
+        GLchar bname[SHADER_IO_NAME_MAX];
+        GLsizei written = 0;
+        glGetActiveUniformBlockName(pd->gl_program, (GLuint)i, sizeof(bname),
+                                    &written, bname);
+        if (written <= 0) continue;
+        gl_bindings_put(b, pd->gl_program, bname);
+    }
+    return b;
+}
+
+void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
+    (void)dev;
+    free(b);
+}
+
+i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
+    const struct RHIPipelineBindings *gl = b;
+    if (!gl || !name) return -1;
+    for (u32 i = 0u; i < gl->count; ++i)
+        if (strcmp(gl->names[i], name) == 0) return gl->slots[i];
+    return -1;
 }
 
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {

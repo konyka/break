@@ -273,6 +273,20 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe,
     (void)dev; (void)pipe; (void)name; return -1;
 }
 
+/* Plan E Task 5: reflection-driven bindings — headless fail-closed stubs
+ * (create NULL / resolve -1 / destroy no-op), mirroring the legacy stub above. */
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
+    (void)dev; (void)pipe; return NULL;
+}
+
+void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
+    (void)dev; (void)b;
+}
+
+i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
+    (void)b; (void)name; return -1;
+}
+
 /* ---- shadow map / cubemap / FBO ---- */
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     RHIShadowMap out;
