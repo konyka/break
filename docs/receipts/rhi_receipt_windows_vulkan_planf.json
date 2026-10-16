@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-10-16T23:02:00Z",
+  "platform": "windows",
+  "os_version": "Windows 11 Pro (10.0.26200)",
+  "backend": "vulkan",
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "driver_version": "617.42",
+  "cpu": "AMD Ryzen 9 7945HX (16C/32T)",
+  "ram": "16 GiB",
+  "build_commit": "1ff1a03e6fb7f6b53bf02288812ce153dc149501",
+  "build_config": "Debug",
+  "command": "ninja -C build-vk rhi_swapchain_bench && ./build-vk/rhi_swapchain_bench.exe receipt.json (640x480 clear-color + present, 600 frames, vsync off; Debug build with VK validation messenger default-on)",
+  "metrics": {
+    "fps_avg": 1779.58,
+    "fps_p1": 389.17,
+    "frame_ms_avg": 0.5619,
+    "frame_ms_p99": 2.5696
+  },
+  "evidence_level": "GPU_RUNTIME",
+  "runner": "local workstation (Windows 11, RTX 4060 Laptop hybrid GPU, otherwise idle); Vulkan baseline for the D3D12 plan-F benchmark receipt. Median of 6 runs 1766.5 fps (1420.10..1841.10); this run is the median-side representative used as the 90%-threshold denominator. Full engine demo scene not used: engine_demo on D3D12 is fail-closed at rhi_device_create_compiled (plan E Task 2; HLSL allowlist blit;myui cannot cover the full renderer shader set), so the comparable workload is the rhi_swapchain_bench harness on both backends."
+}

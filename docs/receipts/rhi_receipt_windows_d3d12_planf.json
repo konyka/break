@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "timestamp": "2026-10-16T23:02:00Z",
+  "platform": "windows",
+  "os_version": "Windows 11 Pro (10.0.26200)",
+  "backend": "d3d12",
+  "gpu": "NVIDIA GeForce RTX 4060 Laptop GPU",
+  "driver_version": "617.42",
+  "cpu": "AMD Ryzen 9 7945HX (16C/32T)",
+  "ram": "16 GiB",
+  "build_commit": "1ff1a03e6fb7f6b53bf02288812ce153dc149501",
+  "build_config": "Debug",
+  "command": "cmake -S engine -B build-d3d12-bench -G Ninja -DCMAKE_BUILD_TYPE=Debug -DENGINE_RHI_BACKEND=d3d12 -DENGINE_D3D12_DEBUG=OFF && ninja -C build-d3d12-bench rhi_swapchain_bench && ./build-d3d12-bench/rhi_swapchain_bench.exe receipt.json (640x480 clear-color + present, 600 frames, vsync off; D3D12 debug layer/GBV disabled via ENGINE_D3D12_DEBUG=OFF)",
+  "metrics": {
+    "fps_avg": 2174.19,
+    "fps_p1": 467.79,
+    "frame_ms_avg": 0.4599,
+    "frame_ms_p99": 2.1377
+  },
+  "evidence_level": "BENCHMARK_COMPARABLE",
+  "runner": "local workstation (Windows 11, RTX 4060 Laptop hybrid GPU, otherwise idle); baseline: docs/receipts/rhi_receipt_windows_vulkan_planf.json (fps_avg ratio 2174.19/1779.58 = 1.222 >= 0.90). Median of 4 runs 2179.0 fps (2168.26..2342.66); this run is the conservative median-side representative. With the Debug-default D3D12 debug layer + GPU-based validation enabled (build-d3d12-debug) the same bench measures 1379.88..1454.38 fps (ratio ~0.80), so the threshold judgment uses the non-instrumented build, matching how the Vulkan baseline runs without GBV-class overhead. Full engine demo scene not runnable on D3D12: rhi_device_create_compiled is fail-closed (plan E Task 2) and the HLSL allowlist (blit;myui) cannot cover the renderer shader set; the comparable workload is the rhi_swapchain_bench harness on both backends."
+}

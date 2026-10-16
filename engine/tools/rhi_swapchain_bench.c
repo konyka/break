@@ -38,7 +38,11 @@ int main(int argc, char **argv) {
     platform = platform_create(&cfg);
     if (platform == NULL) return 77;
     platform_get_drawable_size(platform, &w, &h);
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_RHI_BACKEND_D3D12)
+    /* D3D12 consumes window_native (real HWND; rhi_d3d12.c refuses proxies). */
+    dev = rhi_device_create(RHI_BACKEND_D3D12, platform_window_native(platform),
+                            platform_display_native(platform), w, h);
+#elif defined(ENGINE_VULKAN)
     dev = rhi_device_create(RHI_BACKEND_VULKAN, platform_surface_native(platform),
                             platform_display_native(platform), w, h);
 #else
@@ -98,7 +102,9 @@ int main(int argc, char **argv) {
         "unknown",
 #endif
         env_or("RECEIPT_OS_VERSION", "unknown"),
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_RHI_BACKEND_D3D12)
+        "d3d12",
+#elif defined(ENGINE_VULKAN)
         "vulkan",
 #else
         "opengl",
