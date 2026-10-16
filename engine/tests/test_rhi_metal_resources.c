@@ -2367,6 +2367,86 @@ TEST(uniform_buffer_binds_and_replays_after_pass_switch) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+TEST(uniform_buffer_replays_with_pipeline_ubi_set_of_each_draw) {
+    /* VK-parity gap (terrain crash): the UBO bind is recorded once per frame,
+     * but the MSL buffer index depends on the BOUND PIPELINE's ubo_set
+     * (uses_textures+uses_texel_buffer+uses_storage). A first draw with
+     * ubo_set=0 consumed the dirty flag at index 0, so a later draw whose
+     * pipeline needs index 8 drew with buffer(8) unbound — Metal validation
+     * aborts (terrain_vert__forward_mrt 'missing Buffer binding at index 8').
+     * The flush must re-apply the recorded UBO at EVERY draw, computed from
+     * that draw's pipeline. */
+    static const char *k_msl_fs_const =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "fragment float4 fs_main() { return float4(0.0, 1.0, 0.0, 1.0); }\n";
+    static const char *k_msl_fs_ubo8 =
+        "#include <metal_stdlib>\n"
+        "using namespace metal;\n"
+        "struct Factors { float4 c; };\n"
+        "fragment float4 fs_main(constant Factors& f [[buffer(8)]]) {\n"
+        "    return f.c;\n"
+        "}\n";
+    f32 red[4] = { 1.0f, 0.0f, 0.0f, 1.0f };
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs_a = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_fs_const, (usize)strlen(k_msl_fs_const), "fs_main", true);
+    RHIShader fs_b = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_fs_ubo8, (usize)strlen(k_msl_fs_ubo8), "fs_main", true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe_a, pipe_b;
+    RHIOffscreenFBO fbo;
+    RHIBufferDesc bdesc;
+    RHIBuffer ubo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *c;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs_a));
+    ASSERT_FALSE(handle_is_null(fs_b));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs_a;
+    desc.no_vertex_input = true;   /* ubo_set = 0 -> index 0 */
+    desc.depth_compare_lequal = true;
+    desc.depth_write_disable = true;   /* offscreen FBO: no depth race A vs B */
+    pipe_a = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe_a));
+    desc.frag = fs_b;
+    desc.uses_textures = true;     /* ubo_set = 1 -> index 8 */
+    pipe_b = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe_b));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_UNIFORM;
+    bdesc.size = sizeof(red);
+    bdesc.initial_data = red;
+    ubo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(ubo));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_uniform_buffer(cmd, ubo, 0u);   /* recorded once, up front */
+    rhi_cmd_bind_pipeline(cmd, pipe_a);
+    rhi_cmd_draw(cmd, 3u, 1u);   /* consumes the dirty flag at index 0 */
+    rhi_cmd_bind_pipeline(cmd, pipe_b);
+    rhi_cmd_draw(cmd, 3u, 1u);   /* must still bind the UBO at index 8 */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    c = px + ((usize)32u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)c[2], 255u);   /* red from the UBO, not garbage */
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_pipeline_destroy(g_dev, pipe_a);
+    rhi_pipeline_destroy(g_dev, pipe_b);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs_a);
+    rhi_shader_destroy(g_dev, fs_b);
+}
+
 /* ---- Task 12: acceleration structures ---- */
 
 static RHIBuffer make_data_buffer(RHIBufferUsage usage, const void *data,
@@ -2680,6 +2760,7 @@ int main(void) {
     RUN_TEST(set_uniform_mat4_column0_as_color);
     RUN_TEST(push_replays_across_blit_interlude);
     RUN_TEST(uniform_buffer_binds_and_replays_after_pass_switch);
+    RUN_TEST(uniform_buffer_replays_with_pipeline_ubi_set_of_each_draw);
     RUN_TEST(acceleration_structure_lifecycle_and_tlas);
     RUN_TEST(tlas_record_conversion_component_exact);
     RUN_TEST(acceleration_structure_fail_closed_when_feature_cleared);

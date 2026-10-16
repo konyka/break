@@ -299,7 +299,6 @@ struct RHICmdBuffer {
     bool push_staged;             /* staging written at least once this frame */
     RHIBuffer bound_ubo;          /* deferred UBO bind (VK bound_ubo parity) */
     u32 bound_ubo_binding;
-    bool ubo_dirty;               /* UBO replay needed at next draw/dispatch */
     /* Recorded storage-buffer binds (handles, generation-checked at replay).
      * Encoder state does not survive pass switches (I2 rule), so dispatch
      * replays these, and pipelines with spvBufferSizeConstants also replay
@@ -314,6 +313,7 @@ struct RHICmdBuffer {
     u32 suspended_w, suspended_h, suspended_face;
     u8 pass_kind;                 /* METAL_PASS_* while render_pass_open */
     RHIHandle pass_target;        /* fb handle of the bound target */
+    MTLPixelFormat pass_color_format; /* color0 of the open pass (Invalid if none) */
     u32 pass_w, pass_h;
     u32 pass_face;                /* cubemap depth face */
     RHIBuffer index_buffer;       /* recorded; applied at (indexed) draw time */
@@ -349,9 +349,9 @@ static void metal_end_render_encoder(RHICmdBuffer *cmd) {
     /* setBytes/setBuffer are ENCODER state (unlike VK's command-buffer
      * state): closing the encoder drops them, so anything staged/bound this
      * frame must be replayed at the next draw (review fixes I1/I2). The
-     * staging bytes live on the cmd — replay is a zero-copy setBytes. */
+     * staging bytes live on the cmd — replay is a zero-copy setBytes. The
+     * recorded UBO/storage binds are replayed unconditionally at flush. */
     if (cmd->push_staged) cmd->push_dirty = true;
-    if (rhi_handle_valid(cmd->bound_ubo)) cmd->ubo_dirty = true;
 }
 
 /* Task 9: the compute encoder obeys the same one-encoder rule. */
@@ -363,7 +363,6 @@ static void metal_end_compute_encoder(RHICmdBuffer *cmd) {
     }
     cmd->bound_pipeline = RHI_HANDLE_NULL;
     if (cmd->push_staged) cmd->push_dirty = true;
-    if (rhi_handle_valid(cmd->bound_ubo)) cmd->ubo_dirty = true;
 }
 
 static void metal_end_encoders(RHICmdBuffer *cmd) {
@@ -713,7 +712,6 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->push_staged = false;
     cmd->bound_ubo = RHI_HANDLE_NULL;
     cmd->bound_ubo_binding = 0u;
-    cmd->ubo_dirty = false;
     cmd->bound_storage_mask = 0u;
     cmd->suspended_kind = METAL_PASS_NONE;
     cmd->suspended_target = RHI_HANDLE_NULL;
@@ -1931,6 +1929,21 @@ typedef struct {
      * desc's cull/fill choices are recorded here and applied at bind. */
     bool cull_none;            /* no_vertex_input || disable_culling */
     bool wireframe;            /* setTriangleFillMode: Lines */
+    /* Task 15: bind-time color0 pixelFormat variants. The engine's postfx
+     * pipelines historically leave desc->color_format at 0 (BGRA8) and rely
+     * on driver leniency when bound into R16G16B16A16_SFLOAT FBO passes
+     * (VK build: color_format 0 resolves to the swap format — UB by the
+     * render-pass compatibility rules, tolerated everywhere). Metal
+     * validation refuses, so the backend rebuilds the state with the
+     * pass's actual color0 format (small cache; single-attachment only —
+     * MRT formats are declared explicitly and stay strict). */
+    MTLRenderPipelineDescriptor *proto;  /* nil for MRT/depth-only/compute */
+    MTLPixelFormat declared_color_fmt;
+    struct {
+        MTLPixelFormat fmt;
+        id<MTLRenderPipelineState> state;
+    } variants[4];
+    u32 variant_count;
     /* Copied from the source shader(s) at create (compute: desc->frag;
      * graphics: desc->vert) — see MetalShader. */
     u8 bsc_count;
@@ -2083,6 +2096,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             free(pp);
             return RHI_HANDLE_NULL;
         }
+        if (color_count == 1u) {
+            pp->proto = [pd copy];   /* +1; bind-time variant template */
+            pp->declared_color_fmt = pd.colorAttachments[0].pixelFormat;
+        }
         [pd release];
         ok = true;
     }
@@ -2130,6 +2147,12 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     if (mb != NULL) metal_retire_drain(dev, mb);
     [pp->pipeline release];
     [pp->compute release];
+    [pp->proto release];
+    {
+        u32 vi;
+        for (vi = 0u; vi < pp->variant_count; ++vi)
+            [pp->variants[vi].state release];
+    }
     free(pp);
     rhi_free_slot(dev, pipe);
 }
@@ -2491,6 +2514,9 @@ static void metal_open_render_pass(RHICmdBuffer *cmd,
         return;
     }
     cmd->render_pass_open = true;
+    cmd->pass_color_format = pass.colorAttachments[0].texture != nil
+        ? pass.colorAttachments[0].texture.pixelFormat
+        : MTLPixelFormatInvalid;
     {
         MTLViewport vp = { 0.0, 0.0, (double)w, (double)h, 0.0, 1.0 };
         MTLScissorRect sc = { 0u, 0u, w, h };
@@ -2587,6 +2613,44 @@ static id<MTLComputeCommandEncoder> metal_ensure_compute_encoder(RHICmdBuffer *c
     return cmd->compute_encoder;
 }
 
+/* Returns the render pipeline state matching the open pass's color0
+ * format, building and caching a variant from pp->proto when the engine
+ * pipeline was declared against a different format (see MetalPipeline). */
+static id<MTLRenderPipelineState> metal_pipeline_state_for_pass(
+    MetalPipeline *pp, MetalBackend *mb, MTLPixelFormat pass_fmt) {
+    u32 vi;
+    MTLRenderPipelineDescriptor *vd;
+    id<MTLRenderPipelineState> st;
+    NSError *err = nil;
+    if (pp->proto == nil || pass_fmt == MTLPixelFormatInvalid ||
+        pass_fmt == pp->declared_color_fmt)
+        return pp->pipeline;
+    for (vi = 0u; vi < pp->variant_count; ++vi) {
+        if (pp->variants[vi].fmt == pass_fmt)
+            return pp->variants[vi].state;
+    }
+    if (pp->variant_count >= 4u) {
+        LOG_ERROR("rhi_metal: pixelFormat variant cache full (declared %lu, pass %lu)",
+                  (unsigned long)pp->declared_color_fmt, (unsigned long)pass_fmt);
+        return pp->pipeline;
+    }
+    vd = [pp->proto copy];   /* +1, released below */
+    vd.colorAttachments[0].pixelFormat = pass_fmt;
+    /* newRenderPipelineStateWithDescriptor: returns +1 (new* rule). */
+    st = [mb->device newRenderPipelineStateWithDescriptor:vd error:&err];
+    [vd release];
+    if (st == nil) {
+        LOG_ERROR("rhi_metal: pixelFormat variant build failed: %s",
+                  err != nil ? [[err localizedDescription] UTF8String]
+                             : "(no error info)");
+        return pp->pipeline;
+    }
+    pp->variants[pp->variant_count].fmt = pass_fmt;
+    pp->variants[pp->variant_count].state = st;
+    pp->variant_count++;
+    return st;
+}
+
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     MetalPipeline *pp;
     if (cmd == NULL || cmd->backend == NULL) return;
@@ -2606,7 +2670,8 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
                   (int)cmd->suspended_kind);
         return;
     }
-    [cmd->render_encoder setRenderPipelineState:pp->pipeline];
+    [cmd->render_encoder setRenderPipelineState:
+        metal_pipeline_state_for_pass(pp, cmd->backend, cmd->pass_color_format)];
     /* Unconditional: the depth-stencil state is sticky encoder state, so
      * skipping the set for a depth-off pipeline would leave a stale state
      * in force (review fix C2). pp->depth_state is always non-nil. */
@@ -2979,12 +3044,16 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
      * actual set*Buffer to draw/dispatch time — encoder state does not
      * survive pass switches (blit interlude / clear_color reopen), so an
      * immediate write could be lost (review fix I2). The replay index is
-     * computed at flush from the bound pipeline (metal_flush_push). */
+     * computed at flush from the bound pipeline (metal_flush_push). VK
+     * descriptor sets additionally stay bound across pipelines with
+     * compatible layouts, so the flush re-applies the recorded UBO at EVERY
+     * draw/dispatch (computed from THAT pipeline's ubo_set) rather than
+     * only when a dirty flag survived — a first draw with a different
+     * ubo_set must not consume the bind (terrain crash, Task 15). */
     if (rhi_get_resource_typed(g_current_device, buf, RHI_RES_BUFFER) == NULL)
         return;
     cmd->bound_ubo = buf;
     cmd->bound_ubo_binding = binding;
-    cmd->ubo_dirty = true;
 }
 
 /* ---- Task 11: push-constant staging ----
@@ -3003,11 +3072,11 @@ static u32 metal_push_range_for(const MetalPipeline *pp) {
 static void metal_flush_ubo(RHICmdBuffer *cmd, const MetalPipeline *pp) {
     MetalBuffer *bb;
     u32 set, index;
-    if (!cmd->ubo_dirty || !rhi_handle_valid(cmd->bound_ubo)) return;
+    if (!rhi_handle_valid(cmd->bound_ubo)) return;
     bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device,
                                                cmd->bound_ubo,
                                                RHI_RES_BUFFER);
-    if (bb == NULL) { cmd->ubo_dirty = false; return; }
+    if (bb == NULL) return;
     if (pp->is_compute) {
         set = 3u;
         index = set * 8u + cmd->bound_ubo_binding;
@@ -3031,7 +3100,6 @@ static void metal_flush_ubo(RHICmdBuffer *cmd, const MetalPipeline *pp) {
                                         offset:0u
                                        atIndex:(NSUInteger)index];
     }
-    cmd->ubo_dirty = false;
 }
 
 /* Replays recorded storage binds lost to pass switches (I2 rule) and feeds
@@ -4188,15 +4256,52 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize 
 }
 
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_material_textures not implemented");
-    (void)cmd;
-    (void)albedo;
-    (void)mr;
-    (void)normal;
-    (void)emissive;
-    (void)shadow;
-    (void)ssao;
-    (void)sampler;
+    MetalTexture *td_alb;
+    MetalTexture *td_mr;
+    MetalTexture *td_nrm;
+    MetalTexture *td_em;
+    MetalTexture *td_shadow;
+    MetalTexture *td_ssao;
+    MetalSampler *sd;
+    id<MTLTexture> views[9];
+    u32 i;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    td_alb = (MetalTexture *)rhi_get_resource_typed(g_current_device, albedo,
+                                                    RHI_RES_TEXTURE);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (td_alb == NULL || sd == NULL) return;
+    td_mr = (MetalTexture *)rhi_get_resource_typed(g_current_device, mr,
+                                                   RHI_RES_TEXTURE);
+    td_nrm = (MetalTexture *)rhi_get_resource_typed(g_current_device, normal,
+                                                    RHI_RES_TEXTURE);
+    td_em = (MetalTexture *)rhi_get_resource_typed(g_current_device, emissive,
+                                                   RHI_RES_TEXTURE);
+    td_shadow = (MetalTexture *)rhi_get_resource_typed(g_current_device, shadow,
+                                                       RHI_RES_TEXTURE);
+    td_ssao = (MetalTexture *)rhi_get_resource_typed(g_current_device, ssao,
+                                                     RHI_RES_TEXTURE);
+    /* VK slot contract (rhi_vk.c:7651-7666): 0=albedo, 1=shadow (explicit;
+     * Metal has no legacy global shadow view to fall back to), 2=mr,
+     * 3=normal, 4=emissive, 5=ssao, 6-8=IBL slots (albedo fallback);
+     * missing slots bind albedo so the flattened texture(unit) indices the
+     * Task 10 contract generates stay populated. Combined-sampler parity:
+     * one sampler state across all nine. */
+    views[0] = td_alb->texture;
+    views[1] = td_shadow != NULL ? td_shadow->texture : td_alb->texture;
+    views[2] = td_mr != NULL ? td_mr->texture : td_alb->texture;
+    views[3] = td_nrm != NULL ? td_nrm->texture : td_alb->texture;
+    views[4] = td_em != NULL ? td_em->texture : td_alb->texture;
+    views[5] = td_ssao != NULL ? td_ssao->texture : td_alb->texture;
+    views[6] = td_alb->texture;
+    views[7] = td_alb->texture;
+    views[8] = td_alb->texture;
+    for (i = 0u; i < 9u; ++i) {
+        [cmd->render_encoder setFragmentTexture:views[i]
+                                        atIndex:(NSUInteger)i];
+        [cmd->render_encoder setFragmentSamplerState:sd->sampler
+                                             atIndex:(NSUInteger)i];
+    }
 }
 
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
@@ -4237,11 +4342,28 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd, RHITexture albedo_me
 }
 
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures, int count, RHISampler sampler) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_textures_multi not implemented");
-    (void)cmd;
-    (void)textures;
-    (void)count;
-    (void)sampler;
+    MetalSampler *sd;
+    int i;
+    /* VK contract (rhi_vk.c:7976+): textures[0..count-1] land on consecutive
+     * bindings 0..count-1 with ONE combined sampler (postfx passes: TAA x4,
+     * ssr/dof/lens_flare/contact_shadow x2, motion_blur x3). A null texture
+     * leaves its slot unbound (VK binds NULL_HANDLE; sampling it is the
+     * caller's bug and Metal validation says so loudly). */
+    if (cmd == NULL || cmd->render_encoder == nil || textures == NULL ||
+        count <= 0 || count > 6)
+        return;
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (sd == NULL) return;
+    for (i = 0; i < count; ++i) {
+        MetalTexture *td = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, textures[i], RHI_RES_TEXTURE);
+        if (td == NULL) continue;
+        [cmd->render_encoder setFragmentTexture:td->texture
+                                        atIndex:(NSUInteger)i];
+        [cmd->render_encoder setFragmentSamplerState:sd->sampler
+                                             atIndex:(NSUInteger)i];
+    }
 }
 
 typedef struct {
