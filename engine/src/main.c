@@ -8929,8 +8929,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     /* R440: surface VK validation messages observed during this demo run so
      * manual/scripted runs (BREAK_FRAMES=...) can eyeball the count. Not an
      * exit-code gate — the demo is an interactive program. */
-    /* RHI-ESCAPE: VK validation 计数仅存在于 VK 后端（rhi_native_vulkan.h）；
-     * 非 VK 编译单元裁剪该诊断行。 */
+    /* RHI-ESCAPE: VK validation 计数仅存在于 VK 后端（rhi_native_vulkan.h）；非 VK 编译单元裁剪该诊断行。 */
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     LOG_INFO("VK validation messages this run: %u", rhi_vk_validation_message_count());
 #endif

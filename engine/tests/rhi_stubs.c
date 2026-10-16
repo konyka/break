@@ -68,6 +68,13 @@ RHIPipeline rhi_pipeline_create(RHIDevice *d, const RHIPipelineDesc *desc) { (vo
 void       rhi_pipeline_destroy(RHIDevice *d, RHIPipeline p)          { (void)d; (void)p; }
 i32        rhi_pipeline_get_uniform_location(RHIDevice *d, RHIPipeline p, const char *n) { (void)d; (void)p; (void)n; return -1; }
 
+/* Plan E Task 5: reflection-driven bindings — fail-closed like the legacy
+ * uniform-location stub above (create -> NULL, resolve -> -1). */
+bool       rhi_device_get_capabilities(const RHIDevice *d, RHICapabilities *out) { (void)d; if (out) memset(out, 0, sizeof(*out)); return false; }
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *d, RHIPipeline p) { (void)d; (void)p; return NULL; }
+void       rhi_pipeline_bindings_destroy(RHIDevice *d, RHIPipelineBindings *b) { (void)d; (void)b; }
+i32        rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *n) { (void)b; (void)n; return -1; }
+
 RHITexture rhi_texture_create(RHIDevice *d, const RHITextureDesc *desc) { (void)d; (void)desc; return stub_texture; }
 void       rhi_texture_destroy(RHIDevice *d, RHITexture t)              { (void)d; (void)t; }
 

@@ -2761,6 +2761,10 @@ endif()
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_internal_contract.cmake)
+    add_test(NAME test_renderer_backend_token_gate
+        COMMAND ${CMAKE_COMMAND} -DENGINE_SRC=${CMAKE_CURRENT_SOURCE_DIR}/src
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_renderer_backend_token_gate.cmake)
+    set_tests_properties(test_renderer_backend_token_gate PROPERTIES LABELS headless)
     add_test(NAME test_rhi_metal_ownership
         COMMAND ${CMAKE_COMMAND}
             -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt

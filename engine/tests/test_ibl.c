@@ -93,6 +93,15 @@ void rhi_pipeline_destroy(RHIDevice *d, RHIPipeline p) { (void)d; (void)p; }
 i32  rhi_pipeline_get_uniform_location(RHIDevice *d, RHIPipeline p, const char *n) {
     (void)d; (void)p; (void)n; return 0; /* valid: exercise the set_uniform paths */
 }
+/* Plan E Task 5 bindings equivalent of the stub above (opaque handle). */
+static unsigned char dummy_bindings_storage[8];
+RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *d, RHIPipeline p) {
+    (void)d; (void)p; return (RHIPipelineBindings *)dummy_bindings_storage;
+}
+void rhi_pipeline_bindings_destroy(RHIDevice *d, RHIPipelineBindings *b) { (void)d; (void)b; }
+i32  rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *n) {
+    (void)b; (void)n; return 0; /* valid: exercise the set_uniform paths */
+}
 
 RHITexture rhi_texture_create(RHIDevice *d, const RHITextureDesc *desc) {
     (void)d; (void)desc; return fake_handle();

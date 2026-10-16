@@ -29,7 +29,7 @@ static void sl_dlss_clear_cpp_adapter(void) {
     g_cpp_adapter_set = false;
 }
 
-/* RHI-ESCAPE: Streamline interposer 只接受 Vulkan 原生句柄（slSetVulkanInfo）；ABI 镜像、loader 与 abort 路径仅 VK 后端编译，其他后端裁剪。 */
+/* RHI-ESCAPE: Streamline interposer accepts Vulkan native handles only (slSetVulkanInfo); ABI mirrors, loader and abort paths compile on the VK backend only, other backends prune them. */
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
 /* ---- ABI mirrors of the official Streamline 2.14.1 C++ headers ----
  *
@@ -265,7 +265,7 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
     const RHIDevice *dev, const RHICmdBuffer *cmd,
     const SLDlssResourceTagDesc *tags, u32 tag_count,
     u32 output_width, u32 output_height) {
-    /* RHI-ESCAPE: Streamline 回调消费 native（Vk）command buffer（rhi_cmd_buffer_get_native_info），仅 VK 后端可达；其他后端 fail-closed。 */
+    /* RHI-ESCAPE: Streamline callbacks consume the native (Vk) command buffer (rhi_cmd_buffer_get_native_info), reachable on the VK backend only; other backends fail closed. */
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     RHICmdBufferNativeInfo command_info;
     void *native_command_buffer = NULL;
@@ -300,7 +300,7 @@ bool sl_dlss_evaluate_tags_with_command_buffer(
 }
 
 bool sl_dlss_probe(const RHINativeDevice *native, SLDlssProbeResult *out_result) {
-    /* RHI-ESCAPE: probe 走 sl.interposer 的 Vulkan 句柄路径（slSetVulkanInfo），仅 VK 后端编译；其他后端 fail-closed（g_cpp_adapter 不经 loader 初始化）。 */
+    /* RHI-ESCAPE: probe goes through the sl.interposer Vulkan handle path (slSetVulkanInfo), compiled on the VK backend only; other backends fail closed (g_cpp_adapter skips loader init). */
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     PFN_sl_init init_fn;
     PFN_sl_is_feature_supported supported_fn;
