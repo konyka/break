@@ -678,7 +678,20 @@ jobs:
         run: test -s build/metal_shaders/engine.metallib && xcrun metal-nm build/metal_shaders/engine.metallib | head -5
 
       - name: Headless + contract tests
-        run: ctest --test-dir build -LE "graphics|fuzz" --parallel 4 --output-on-failure
+        # On failure, mirror the failing tests into workflow annotations:
+        # this repo's log download needs elevated token rights, annotations
+        # stay readable through the checks API.
+        run: |
+          ctest --test-dir build -LE "graphics|fuzz" --parallel 4 --output-on-failure || {
+            rc=$?
+            if [ -f build/Testing/Temporary/LastTestsFailed.log ]; then
+              head -10 build/Testing/Temporary/LastTestsFailed.log | while IFS= read -r t; do echo "::error::ctest failed: $t"; done
+            else
+              echo "::error::ctest exited $rc with no LastTestsFailed.log (no tests found?)"
+              tail -5 build/Testing/Temporary/LastTest.log 2>/dev/null | while IFS= read -r l; do echo "::notice::$l"; done
+            fi
+            exit $rc
+          }
 
       - name: Metal device contract (GPU when available)
         run: ctest --test-dir build -L graphics --output-on-failure || true   # 77 skip not fatal; GPU runners count as receipts
