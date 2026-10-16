@@ -153,7 +153,8 @@ drawable 数量背压覆盖。
 host-injection 模型保证：宿主在 background 期间**自律不调用**任何 frame
 API（window_mobile.c 是纯注入壳，无事件上报钩子，本计划不给它加）。后端
 的 suspended 检查只是宿主误调时的防御性兜底，不构成完整的
-pause/resume 生命周期实现；iOS 模拟器 lifecycle lane 归 Task 14。
+pause/resume 生命周期实现；iOS 模拟器 lifecycle 证据归 Task 15（Task 14
+评审 I-2：ios lane 降级为 compile only，见文末移交清单第 9 项）。
 
 ## Task 8：pipeline 字段映射 + FBO/MRT/shadow bind 契约（R616-R619）
 
@@ -398,3 +399,8 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
 8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
    时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释），
    `xcrun metal` SDK 切 `iphoneos`。
+9. **iOS lifecycle 缺口（评审 I-2 降级登记）**：需求书原要求 ios lane 含
+   「模拟器启动一个最小 harness」的 lifecycle 证据；交付判定补 simctl
+   boot+install(+launch) 对无 iOS harness 的裸 CMake .app 成本高且证据价值
+   有限，lane/台账/注释三处标注已降级为「compile only」。Task 15 评估最小
+   simctl 步骤（boot+install 可不 launch）或确认维持 compile-only 定位。

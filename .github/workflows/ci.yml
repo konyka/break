@@ -697,8 +697,8 @@ jobs:
         run: ctest --test-dir build -L graphics --output-on-failure || true   # 77 skip not fatal; GPU runners count as receipts
 
   ios-metal-build:
-    # Simulator evidence = compile/lifecycle only (marking 1 of 3: lane comment)
-    name: iOS native Metal build-only (Simulator evidence = compile/lifecycle only)
+    # Simulator evidence = compile only (marking 1 of 3: lane comment)
+    name: iOS native Metal build-only (Simulator evidence = compile only)
     runs-on: macos-14
     timeout-minutes: 45
     steps:
@@ -717,7 +717,10 @@ jobs:
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
 
       - name: Verify artifact
-        run: find build-ios -name 'engine.metallib' -o -name 'engine_demo.app' | head -5
+        run: |
+          test -s build-ios/metal_shaders/engine.metallib
+          test -d build-ios/Debug-iphonesimulator/engine_demo.app
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
 
   steam-deck-vulkan-benchmark:
     name: Steam Deck / Linux real-GPU Vulkan benchmark

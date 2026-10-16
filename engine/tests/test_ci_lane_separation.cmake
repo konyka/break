@@ -38,6 +38,8 @@ if(pos_ios EQUAL -1)
 endif()
 
 # 2. The macos-metal block must not mention MoltenVK (case-insensitive).
+# Negated mentions are legitimate commentary (e.g. "MoltenVK-free") and are
+# scrubbed before the scan so future honest comments are not flagged.
 if(NOT pos_metal EQUAL -1)
     string(SUBSTRING "${ci}" ${pos_metal} -1 metal_tail)
     string(REGEX MATCH "\n  [a-z0-9_-]+:\n" next_job "${metal_tail}")
@@ -48,6 +50,7 @@ if(NOT pos_metal EQUAL -1)
         set(metal_block "${metal_tail}")
     endif()
     string(TOLOWER "${metal_block}" metal_lower)
+    string(REPLACE "moltenvk-free" "" metal_lower "${metal_lower}")
     string(FIND "${metal_lower}" "molten" molten_pos)
     if(NOT molten_pos EQUAL -1)
         contract_fail("macos-metal lane mentions MoltenVK")
@@ -73,17 +76,38 @@ if(NOT bad_count EQUAL 0)
     contract_fail("evidence register attaches MoltenVK receipt to a native-Metal row")
 endif()
 
-# 4. iOS simulator honesty: the lane and the register must both mark the
-# simulator evidence as compile/lifecycle only.
+# 4. iOS simulator honesty: the ios-metal-build lane block (anchored, not a
+# whole-file search) and the evidence register must both mark the simulator
+# evidence as compile only — the lane has no lifecycle harness (gap owned by
+# Task 15), so the stronger "compile/lifecycle only" wording must NOT appear.
 string(TOLOWER "${ci}" ci_lower)
-string(FIND "${ci_lower}" "compile/lifecycle only" lane_mark_pos)
-if(lane_mark_pos EQUAL -1)
-    contract_fail("ios lane missing 'compile/lifecycle only' marking")
+string(FIND "${ci_lower}" "ios-metal-build:" pos_ios_lower)
+if(NOT pos_ios_lower EQUAL -1)
+    string(SUBSTRING "${ci_lower}" ${pos_ios_lower} -1 ios_tail)
+    string(REGEX MATCH "\n  [a-z0-9_-]+:\n" ios_next_job "${ios_tail}")
+    string(FIND "${ios_tail}" "${ios_next_job}" ios_next_pos)
+    if(ios_next_pos GREATER -1)
+        string(SUBSTRING "${ios_tail}" 0 ${ios_next_pos} ios_block)
+    else()
+        set(ios_block "${ios_tail}")
+    endif()
+    string(FIND "${ios_block}" "compile only" lane_mark_pos)
+    if(lane_mark_pos EQUAL -1)
+        contract_fail("ios lane missing 'compile only' marking")
+    endif()
+    string(FIND "${ios_block}" "compile/lifecycle only" lane_overclaim_pos)
+    if(NOT lane_overclaim_pos EQUAL -1)
+        contract_fail("ios lane overclaims 'compile/lifecycle only' (no lifecycle harness)")
+    endif()
 endif()
 string(TOLOWER "${ev}" ev_lower)
-string(FIND "${ev_lower}" "compile/lifecycle only" ev_mark_pos)
+string(FIND "${ev_lower}" "compile only" ev_mark_pos)
 if(ev_mark_pos EQUAL -1)
-    contract_fail("evidence register missing 'compile/lifecycle only' marking")
+    contract_fail("evidence register missing 'compile only' marking")
+endif()
+string(FIND "${ev_lower}" "compile/lifecycle only" ev_overclaim_pos)
+if(NOT ev_overclaim_pos EQUAL -1)
+    contract_fail("evidence register overclaims 'compile/lifecycle only' (no lifecycle harness)")
 endif()
 
 if(failures GREATER 0)

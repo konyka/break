@@ -2875,8 +2875,6 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_vk_surface_contract.cmake)
     set_tests_properties(test_platform_vk_surface_contract PROPERTIES
         LABELS "platform_contract")
-    # Plan C Task 10: offline Metal shader pipeline contract (text-level,
-    # platform-free; the real pipeline run is macOS-only).
     # Plan C Task 14: CI lane separation contract (text-level).
     add_test(NAME test_ci_lane_separation
         COMMAND ${CMAKE_COMMAND}
@@ -2885,6 +2883,8 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_ci_lane_separation.cmake)
     set_tests_properties(test_ci_lane_separation PROPERTIES
         LABELS "platform_contract")
+    # Plan C Task 10: offline Metal shader pipeline contract (text-level,
+    # platform-free; the real pipeline run is macOS-only).
     add_test(NAME test_metal_shader_pipeline
         COMMAND ${CMAKE_COMMAND}
             -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..

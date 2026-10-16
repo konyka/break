@@ -911,10 +911,10 @@ cmake --build build-metal --parallel
 ctest --test-dir build-metal -R test_rhi_metal --output-on-failure
 ./build-metal/engine_demo --frames 3          # consumer smoke（退出码 0）
 
-# iOS（build-only；模拟器证据 = compile/lifecycle only）
+# iOS（build-only；模拟器证据 = compile only）
 cmake -S engine -B build-ios -G Xcode \
     -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
-xcodebuild -project build-ios/break.xcodeproj -scheme engine_demo \
+xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
     -destination 'generic/platform=iOS Simulator' build
 ```
 

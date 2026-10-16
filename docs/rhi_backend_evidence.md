@@ -73,9 +73,9 @@
 | 平台 × 后端 | 等级 | 依据 |
 |---|---|---|
 | macOS × 原生 Metal | COMPILED（CI lane 首跑） | CI `macos-metal` lane（macos-14，brew shaderc+spirv-cross，metallib 产物断言 + headless/契约测试）run 链接见下；**与既有 M2 GPU_RUNTIME 收据并列**（证据来源机器不同：M2 真机为 GPU_RUNTIME，macos-14 runner 仅编译+契约面） |
-| iOS × 原生 Metal | COMPILED（**模拟器证据 = compile/lifecycle only，不构成 GPU-runtime 证据**） | CI `ios-metal-build` lane（Xcode -G + iOS Simulator destination build-only + metallib/app 产物断言）；模拟器无可信 GPU-runtime 通道 |
+| iOS × 原生 Metal | COMPILED（**模拟器证据 = compile only，不构成 GPU-runtime 证据**） | CI `ios-metal-build` lane（Xcode -G + iOS Simulator destination build-only + 产物断言 `test -s` metallib×2 / `test -d` .app，零匹配即失败）；模拟器无可信 GPU-runtime 通道；**lifecycle（simctl boot/install/launch harness）缺口归 Task 15** |
 
 | 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |
 |---|---|---|---|---|
 | 2026-10-16 | GitHub macos-14 runner | （runner GPU 未保证；契约/headless 面） | CI `macos-metal` lane（[run 38863391632](https://github.com/konyka/break/actions/runs/38863391632)，@40e11bab） | **SUCCESS**：metallib 产物断言过、headless+契约 ctest（-LE "graphics\|fuzz"）全绿；首跑红→绿迭代 3 轮（run 38855415643 ctest exit 8、38861481273 同），根因 `test_rhi_backend_selection` 嵌套 auto/opengl configure 在无 Vulkan 主机遇 find_package(Vulkan REQUIRED)，以存在性占位 cache 变量修复（契约对象是 selector 解析而非 Vulkan 发现） |
-| 2026-10-16 | GitHub macos-14 runner | 不适用（模拟器 compile/lifecycle only） | CI `ios-metal-build` lane（[run 38863391632](https://github.com/konyka/break/actions/runs/38863391632)，@40e11bab；首个绿为 @87fead51 的 [run 38861481273](https://github.com/konyka/break/actions/runs/38861481273)） | **SUCCESS**：Xcode -G iOS Simulator destination 全量构建 + `engine.metallib`/`engine_demo.app` 产物断言过；iOS 工具分离处置：manifest 生成器宿主编译 + iphoneos SDK（CMakeLists M6 注释） |
+| 2026-10-16 | GitHub macos-14 runner | 不适用（模拟器 compile only） | CI `ios-metal-build` lane（[run 38863391632](https://github.com/konyka/break/actions/runs/38863391632)，@40e11bab；首个绿为 @87fead51 的 [run 38861481273](https://github.com/konyka/break/actions/runs/38861481273)） | **SUCCESS**：Xcode -G iOS Simulator destination 全量构建过；iOS 工具分离处置：manifest 生成器宿主编译 + iphoneos SDK（CMakeLists M6 注释）。注：首绿时 Verify 步骤为 `find \| head` 弱断言，评审 I-1 后改为 `test -s`/`test -d` 硬断言（见后续 run） |
