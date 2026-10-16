@@ -39,6 +39,11 @@ typedef struct {
     RHIPipeline brdf_lut_pipeline;
     RHIPipeline irradiance_pipeline;
     RHIPipeline prefilter_pipeline;
+    /* 计划 E Task 5 T1：反射物化表（懒建管线的查询来源；brdf_lut 管线
+     * 无 uniform 查询，不需要表）。 */
+    RHIPipelineBindings *bind_sky_capture;
+    RHIPipelineBindings *bind_irradiance;
+    RHIPipelineBindings *bind_prefilter;
 
     /* Runtime rebake state. Work is deliberately split into one dispatch per
      * frame so Vulkan FIFO swapchains never exhaust their image pool. The

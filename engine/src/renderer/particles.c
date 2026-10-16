@@ -44,6 +44,11 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+    ps->bind_compute = rhi_pipeline_bindings_create(dev, ps->compute_pipeline);
+    if (!ps->bind_compute)
+        LOG_WARN("Particle: compute bindings create failed; uniform locations resolve -1");
+
     /* ---- GPU alive-particle cull (Round 12) ---- */
     usize cull_len = 0;
     char *cull_src = shader_read_file("shaders/particle_cull.comp", &cull_len);
@@ -121,6 +126,10 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
         particles_shutdown(ps);
         return false;
     }
+
+    ps->bind_render = rhi_pipeline_bindings_create(dev, ps->render_pipeline);
+    if (!ps->bind_render)
+        LOG_WARN("Particle: render bindings create failed; uniform locations resolve -1");
 
     /* ---- Particle SSBO (R184: DEVICE_LOCAL via zeroed initial_data) ---- */
     usize particle_bytes = PARTICLES_MAX * sizeof(GPUParticle);
@@ -219,23 +228,27 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     ps->_push_template[15] = ps->lifetime_min;
     ps->_push_template[19] = ps->lifetime_range;
 
-    /* Cache all uniform locations (compute + render pipelines) */
-    ps->_loc_push_dt       = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "push.dt");
-    ps->_loc_dt            = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_dt");
-    ps->_loc_emit_rate     = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_rate");
-    ps->_loc_emit_pos      = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_pos");
-    ps->_loc_gravity       = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_gravity");
-    ps->_loc_emit_vel_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_vel_min");
-    ps->_loc_emit_vel_max  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_vel_max");
-    ps->_loc_lifetime_min  = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_min");
-    ps->_loc_lifetime_range= rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_lifetime_range");
-    ps->_loc_emit_budget   = rhi_pipeline_get_uniform_location(dev, ps->compute_pipeline, "u_emit_budget");
+    /* Cache all uniform locations (compute + render pipelines). The u_dt /
+     * u_emit_* names are GL loose uniforms — they resolve -1 through the
+     * VK bindings table exactly like the legacy chain did. push.dt /
+     * push.view / push.proj are block-instance aliases (rhi_vk.c
+     * vk_push_alias_rows: particle_update.comp dt, particle.vert view/proj). */
+    ps->_loc_push_dt       = rhi_pipeline_bindings_resolve(ps->bind_compute, "push.dt");
+    ps->_loc_dt            = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_dt");
+    ps->_loc_emit_rate     = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_rate");
+    ps->_loc_emit_pos      = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_pos");
+    ps->_loc_gravity       = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_gravity");
+    ps->_loc_emit_vel_min  = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_vel_min");
+    ps->_loc_emit_vel_max  = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_vel_max");
+    ps->_loc_lifetime_min  = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_lifetime_min");
+    ps->_loc_lifetime_range= rhi_pipeline_bindings_resolve(ps->bind_compute, "u_lifetime_range");
+    ps->_loc_emit_budget   = rhi_pipeline_bindings_resolve(ps->bind_compute, "u_emit_budget");
 #if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
-    ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.view");
-    ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "push.proj");
+    ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "push.view");
+    ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "push.proj");
 #else
-    ps->_loc_view = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "u_view");
-    ps->_loc_proj = rhi_pipeline_get_uniform_location(dev, ps->render_pipeline, "u_proj");
+    ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "u_view");
+    ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "u_proj");
 #endif
 
     LOG_INFO("Particle system initialized (%u particles, compute-driven%s)",
@@ -245,6 +258,11 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
 
 void particles_shutdown(ParticleSystem *ps) {
     if (!ps->device) return;
+    /* 计划 E Task 5 T4：反射表销毁（NULL 安全）。 */
+    if (ps->bind_compute) rhi_pipeline_bindings_destroy(ps->device, ps->bind_compute);
+    if (ps->bind_render)  rhi_pipeline_bindings_destroy(ps->device, ps->bind_render);
+    ps->bind_compute = NULL;
+    ps->bind_render  = NULL;
     if (rhi_handle_valid(ps->particle_tex))       rhi_texture_destroy(ps->device, ps->particle_tex);
     if (rhi_handle_valid(ps->sampler))             rhi_sampler_destroy(ps->device, ps->sampler);
     if (rhi_handle_valid(ps->cull_buf))            rhi_buffer_destroy(ps->device, ps->cull_buf);

@@ -85,21 +85,26 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
         return false;
     }
 
-    vol->loc_inv_proj     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_inv_proj");
-    vol->loc_view         = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_view");
-    vol->loc_inv_view     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_inv_view");
-    vol->loc_ldx          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldx");
-    vol->loc_ldy          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldy");
-    vol->loc_ldz          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_ldz");
-    vol->loc_lcx          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_lcx");
-    vol->loc_lcy          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_lcy");
-    vol->loc_lcz          = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_lcz");
-    vol->loc_fog_density  = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_density");
-    vol->loc_fog_color_r  = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_fog_r");
-    vol->loc_fog_color_g  = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_fog_g");
-    vol->loc_fog_color_b  = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_fog_b");
-    vol->loc_screen_w     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_sw");
-    vol->loc_screen_h     = rhi_pipeline_get_uniform_location(dev, vol->vol_pipe, "u_vol_sh");
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+    vol->bind_pipe = rhi_pipeline_bindings_create(dev, vol->vol_pipe);
+    if (!vol->bind_pipe)
+        LOG_WARN("Volumetric: bindings create failed; uniform locations resolve -1");
+
+    vol->loc_inv_proj     = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_inv_proj");
+    vol->loc_view         = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_view");
+    vol->loc_inv_view     = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_inv_view");
+    vol->loc_ldx          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_ldx");
+    vol->loc_ldy          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_ldy");
+    vol->loc_ldz          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_ldz");
+    vol->loc_lcx          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_lcx");
+    vol->loc_lcy          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_lcy");
+    vol->loc_lcz          = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_lcz");
+    vol->loc_fog_density  = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_density");
+    vol->loc_fog_color_r  = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_fog_r");
+    vol->loc_fog_color_g  = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_fog_g");
+    vol->loc_fog_color_b  = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_fog_b");
+    vol->loc_screen_w     = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_sw");
+    vol->loc_screen_h     = rhi_pipeline_bindings_resolve(vol->bind_pipe, "u_vol_sh");
 
     vol->ready = true;
     LOG_INFO("Volumetric: initialized (%ux%u, density=%.4f)", pw, ph, vol->fog_density);
@@ -108,6 +113,8 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
 
 void volumetric_shutdown(VolumetricSystem *vol) {
     if (!vol->device) return;
+    if (vol->bind_pipe) rhi_pipeline_bindings_destroy(vol->device, vol->bind_pipe);
+    vol->bind_pipe = NULL;
     if (rhi_handle_valid(vol->vol_fbo.fb)) rhi_offscreen_fbo_destroy(vol->device, &vol->vol_fbo);
     if (rhi_handle_valid(vol->sampler)) rhi_sampler_destroy(vol->device, vol->sampler);
     if (rhi_handle_valid(vol->vol_pipe)) rhi_pipeline_destroy(vol->device, vol->vol_pipe);

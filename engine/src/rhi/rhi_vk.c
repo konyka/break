@@ -7381,6 +7381,15 @@ static const VKPushAliasRow vk_push_alias_rows[] = {
     { "u_near",        "u_clip_params",   0u },
     { "u_far",         "u_clip_params",   4u },
     { "u_shadow_bias", "u_clip_params",   8u },
+    /* Stage C-2 batch 5 (particles): block-instance names "push.<member>"
+     * against particle_update.comp's dt and particle.vert's view/proj push
+     * blocks — the legacy is_compute/uses_storage branches served
+     * push.dt@0, push.view@0, push.proj@64. GL declares plain loose
+     * uniforms (u_view/u_proj/u_dt), so the alias names resolve -1 there
+     * exactly like the legacy glGetUniformLocation did. */
+    { "push.dt",   "dt",   0u },
+    { "push.view", "view", 0u },
+    { "push.proj", "proj", 64u },
 };
 
 static u32 vk_push_alias_row_count(void) {

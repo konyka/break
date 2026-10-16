@@ -21,6 +21,9 @@ typedef struct {
     RHIPipeline  compute_pipeline;
     RHIPipeline  cull_pipeline;
     RHIPipeline  render_pipeline;
+    /* 计划 E Task 5 T1：反射物化表（cull 管线无 uniform 查询，不需要表）。 */
+    RHIPipelineBindings *bind_compute;
+    RHIPipelineBindings *bind_render;
     RHIBuffer    particle_ssbo;
     RHIBuffer    cull_buf;       /* draw_count + alive particle indices */
     RHIBuffer    spawn_buf;      /* R174: uint claimed for emit budget */

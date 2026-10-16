@@ -29,7 +29,8 @@
 /* ===== Helpers ============================================================ */
 
 
-static RHIPipeline ibl_load_compute(RHIDevice *dev, const char *path) {
+static RHIPipeline ibl_load_compute(RHIDevice *dev, const char *path,
+                                    RHIPipelineBindings **bind_out) {
     usize len = 0;
     char *src = shader_read_file(path, &len);
     if (!src) {
@@ -51,6 +52,13 @@ static RHIPipeline ibl_load_compute(RHIDevice *dev, const char *path) {
     rhi_shader_destroy(dev, cs);
     if (!rhi_handle_valid(pipe)) {
         LOG_WARN("IBL: compute pipeline create failed: %s", path);
+        return RHI_HANDLE_NULL;
+    }
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。 */
+    if (bind_out) {
+        *bind_out = rhi_pipeline_bindings_create(dev, pipe);
+        if (!*bind_out)
+            LOG_WARN("IBL: bindings create failed (%s); uniforms resolve -1", path);
     }
     return pipe;
 }
@@ -69,11 +77,14 @@ static RHICubemap ibl_create_hdr_cube(RHIDevice *dev, u32 size, u32 mips) {
 
 static bool ibl_ensure_rebake_pipelines(IBLSystem *sys, RHIDevice *dev) {
     if (!rhi_handle_valid(sys->sky_capture_pipeline))
-        sys->sky_capture_pipeline = ibl_load_compute(dev, "shaders/sky_to_cube.comp");
+        sys->sky_capture_pipeline =
+            ibl_load_compute(dev, "shaders/sky_to_cube.comp", &sys->bind_sky_capture);
     if (!rhi_handle_valid(sys->irradiance_pipeline))
-        sys->irradiance_pipeline = ibl_load_compute(dev, "shaders/irradiance_env.comp");
+        sys->irradiance_pipeline =
+            ibl_load_compute(dev, "shaders/irradiance_env.comp", &sys->bind_irradiance);
     if (!rhi_handle_valid(sys->prefilter_pipeline))
-        sys->prefilter_pipeline = ibl_load_compute(dev, "shaders/prefilter_env.comp");
+        sys->prefilter_pipeline =
+            ibl_load_compute(dev, "shaders/prefilter_env.comp", &sys->bind_prefilter);
     return rhi_handle_valid(sys->sky_capture_pipeline) &&
            rhi_handle_valid(sys->irradiance_pipeline) &&
            rhi_handle_valid(sys->prefilter_pipeline);
@@ -82,10 +93,10 @@ static bool ibl_ensure_rebake_pipelines(IBLSystem *sys, RHIDevice *dev) {
 static bool ibl_rebake_dispatch_sky(IBLSystem *sys, RHIDevice *dev) {
     RHICmdBuffer *cmd = rhi_frame_begin(dev);
     if (!cmd) return false;
-    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face");
-    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face_size");
-    i32 loc_sdir = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_dir");
-    i32 loc_scol = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_color");
+    i32 loc_face = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_face");
+    i32 loc_size = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_face_size");
+    i32 loc_sdir = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_sun_dir");
+    i32 loc_scol = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_sun_color");
     const u32 groups = (IBL_ENV_SIZE + 15u) / 16u;
     rhi_cmd_bind_pipeline(cmd, sys->sky_capture_pipeline);
     rhi_cmd_bind_image_cubemap_face(cmd, sys->env_map, sys->rebake_face, 0u, 0u, true);
@@ -103,8 +114,8 @@ static bool ibl_rebake_dispatch_sky(IBLSystem *sys, RHIDevice *dev) {
 static bool ibl_rebake_dispatch_irradiance(IBLSystem *sys, RHIDevice *dev) {
     RHICmdBuffer *cmd = rhi_frame_begin(dev);
     if (!cmd) return false;
-    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face");
-    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face_size");
+    i32 loc_face = rhi_pipeline_bindings_resolve(sys->bind_irradiance, "u_face");
+    i32 loc_size = rhi_pipeline_bindings_resolve(sys->bind_irradiance, "u_face_size");
     rhi_cmd_bind_pipeline(cmd, sys->irradiance_pipeline);
     rhi_cmd_bind_image_cubemap_face(cmd, sys->rebake_irradiance, sys->rebake_face, 0u, 0u, true);
     rhi_cmd_bind_cubemap_sampler(cmd, sys->env_map, sys->cubemap_sampler, 1u);
@@ -123,9 +134,9 @@ static bool ibl_rebake_dispatch_prefilter(IBLSystem *sys, RHIDevice *dev) {
     u32 mip_size = IBL_PREFILTER_SIZE >> sys->rebake_mip;
     if (mip_size == 0u) mip_size = 1u;
     u32 groups = (mip_size + 15u) / 16u;
-    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_face");
-    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_mip_size");
-    i32 loc_roughness = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_roughness");
+    i32 loc_face = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_face");
+    i32 loc_size = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_mip_size");
+    i32 loc_roughness = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_roughness");
     rhi_cmd_bind_pipeline(cmd, sys->prefilter_pipeline);
     rhi_cmd_bind_image_cubemap_face(cmd, sys->rebake_prefilter, sys->rebake_face, sys->rebake_mip, 0u, true);
     rhi_cmd_bind_cubemap_sampler(cmd, sys->env_map, sys->cubemap_sampler, 1u);
@@ -206,6 +217,20 @@ void ibl_init(IBLSystem *sys, RHIDevice *dev) {
 void ibl_destroy(IBLSystem *sys, RHIDevice *dev) {
     if (!sys || !dev) return;
 
+    /* 计划 E Task 5 T4：反射表销毁（NULL 安全）。 */
+    if (sys->bind_sky_capture) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_sky_capture);
+        sys->bind_sky_capture = NULL;
+    }
+    if (sys->bind_irradiance) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_irradiance);
+        sys->bind_irradiance = NULL;
+    }
+    if (sys->bind_prefilter) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_prefilter);
+        sys->bind_prefilter = NULL;
+    }
+
     if (rhi_handle_valid(sys->sky_capture_pipeline)) {
         rhi_pipeline_destroy(dev, sys->sky_capture_pipeline);
         sys->sky_capture_pipeline = RHI_HANDLE_NULL;
@@ -262,7 +287,8 @@ void ibl_capture_env_sky(IBLSystem *sys, RHIDevice *dev,
     if (!sys || !dev || !rhi_handle_valid(sys->env_map)) return;
 
     if (!rhi_handle_valid(sys->sky_capture_pipeline)) {
-        sys->sky_capture_pipeline = ibl_load_compute(dev, "shaders/sky_to_cube.comp");
+        sys->sky_capture_pipeline =
+            ibl_load_compute(dev, "shaders/sky_to_cube.comp", &sys->bind_sky_capture);
     }
     if (!rhi_handle_valid(sys->sky_capture_pipeline)) {
         LOG_WARN("IBL: sky capture pipeline unavailable; env map left black");
@@ -274,10 +300,10 @@ void ibl_capture_env_sky(IBLSystem *sys, RHIDevice *dev,
     if (sun_dir)   { dir[0] = sun_dir[0]; dir[1] = sun_dir[1]; dir[2] = sun_dir[2]; }
     if (sun_color) { color[0] = sun_color[0]; color[1] = sun_color[1]; color[2] = sun_color[2]; }
 
-    i32 loc_face = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face");
-    i32 loc_size = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_face_size");
-    i32 loc_sdir = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_dir");
-    i32 loc_scol = rhi_pipeline_get_uniform_location(dev, sys->sky_capture_pipeline, "u_sun_color");
+    i32 loc_face = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_face");
+    i32 loc_size = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_face_size");
+    i32 loc_sdir = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_sun_dir");
+    i32 loc_scol = rhi_pipeline_bindings_resolve(sys->bind_sky_capture, "u_sun_color");
 
     const u32 groups = (IBL_ENV_SIZE + 15u) / 16u;
     for (u32 face = 0u; face < 6u; ++face) {
@@ -313,14 +339,16 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
      * this avoids creating (and validating) unused pipelines on the common
      * "BRDF-only" path. */
     if (!rhi_handle_valid(sys->brdf_lut_pipeline)) {
-        sys->brdf_lut_pipeline = ibl_load_compute(dev, "shaders/brdf_lut.comp");
+        sys->brdf_lut_pipeline = ibl_load_compute(dev, "shaders/brdf_lut.comp", NULL);
     }
     if (rhi_handle_valid(env_map)) {
         if (!rhi_handle_valid(sys->irradiance_pipeline)) {
-            sys->irradiance_pipeline = ibl_load_compute(dev, "shaders/irradiance_env.comp");
+            sys->irradiance_pipeline =
+                ibl_load_compute(dev, "shaders/irradiance_env.comp", &sys->bind_irradiance);
         }
         if (!rhi_handle_valid(sys->prefilter_pipeline)) {
-            sys->prefilter_pipeline = ibl_load_compute(dev, "shaders/prefilter_env.comp");
+            sys->prefilter_pipeline =
+                ibl_load_compute(dev, "shaders/prefilter_env.comp", &sys->bind_prefilter);
         }
     }
 
@@ -355,13 +383,13 @@ void ibl_generate(IBLSystem *sys, RHIDevice *dev, RHICubemap env_map) {
     i32 loc_face_irr  = -1, loc_face_size  = -1;
     i32 loc_face_pref  = -1, loc_mip_size   = -1, loc_roughness = -1;
     if (rhi_handle_valid(sys->irradiance_pipeline)) {
-        loc_face_irr  = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face");
-        loc_face_size = rhi_pipeline_get_uniform_location(dev, sys->irradiance_pipeline, "u_face_size");
+        loc_face_irr  = rhi_pipeline_bindings_resolve(sys->bind_irradiance, "u_face");
+        loc_face_size = rhi_pipeline_bindings_resolve(sys->bind_irradiance, "u_face_size");
     }
     if (rhi_handle_valid(sys->prefilter_pipeline)) {
-        loc_face_pref  = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_face");
-        loc_mip_size   = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_mip_size");
-        loc_roughness  = rhi_pipeline_get_uniform_location(dev, sys->prefilter_pipeline, "u_roughness");
+        loc_face_pref  = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_face");
+        loc_mip_size   = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_mip_size");
+        loc_roughness  = rhi_pipeline_bindings_resolve(sys->bind_prefilter, "u_roughness");
     }
 
     /* ---- Pass 2: irradiance convolution ---------------------------------
