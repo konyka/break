@@ -1163,6 +1163,487 @@ TEST(variant_path_appends_suffix_before_extension)
     ASSERT_TRUE(strcmp(shader_variant_suffix(RHI_SHADER_VARIANT_GLSL_VK), "_vk") == 0);
 }
 
+TEST(push_constants_follow_std430_offsets)
+{
+    static const char src[] =
+        "#version 460\n"
+        "layout(push_constant) uniform Push {\n"
+        "    mat4 u_model;\n"     /* 0,   64 */
+        "    mat4 u_view;\n"      /* 64,  64 */
+        "    mat4 u_proj;\n"      /* 128, 64 */
+        "    vec3 u_light_dir;\n" /* 192, 12 */
+        "    float u_shadow_bias;\n" /* 204, 4（vec3 尾部打包，std430） */
+        "} pc;\n";
+    ShaderIOPushMember members[8];
+    usize n = shader_reflect_push_constants(src, sizeof(src) - 1u, members, 8u);
+    ASSERT_EQ(n, 5u);
+    ASSERT_TRUE(strcmp(members[0].name, "u_model") == 0);
+    ASSERT_EQ(members[0].offset, 0u);   ASSERT_EQ(members[0].size, 64u);
+    ASSERT_EQ(members[1].offset, 64u);
+    ASSERT_EQ(members[2].offset, 128u);
+    ASSERT_TRUE(strcmp(members[3].name, "u_light_dir") == 0);
+    ASSERT_EQ(members[3].offset, 192u);
+    ASSERT_EQ(members[4].offset, 204u); ASSERT_EQ(members[4].size, 4u);
+}
+
+TEST(push_constants_absent_returns_zero_and_handles_null)
+{
+    ASSERT_EQ(shader_reflect_push_constants("#version 460\nvoid main(){}", 26u,
+                                            NULL, 0u), 0u);
+    ASSERT_EQ(shader_reflect_push_constants(NULL, 0u, NULL, 0u), 0u);
+}
+
+/* 计划 E Task 5 Step 5：std430 反射 vs rhi_vk.c 手写 push 表交叉对照 gate。
+ * 期望值逐项转录自 rhi_vk.c `rhi_pipeline_get_uniform_location`（:7271-7652）
+ * 的现状硬编码表 —— 反射结果必须等于当前生产行为；任何偏差都是反射器的
+ * bug，不许改表、不许改 shader。
+ *
+ * 两类条目：
+ *  - 直接条目（vk_name == member）：rhi_vk.c 名字即 shader 成员名，offset
+ *    必须严格相等，size 按成员类型核对。
+ *  - 打包别名（vk_name != member）：rhi_vk.c 名字是 vec4 打包成员的
+ *    swizzle 宏（如 terrain 的 u_shadow_bias = u_light_dir_bias.w），断言
+ *    表 offset 落在该成员 [offset, offset+size) 内 —— 生产路径正是往这
+ *    个字节区间写 4 字节。
+ * 反向覆盖：每个被 gate 文件的非 _pad 成员都必须被至少一条直接/别名条目
+ * 命中，防止反射器对表未映射的成员算错而 gate 漏检。 */
+typedef struct {
+    const char *file;
+    const char *vk_name; /* rhi_vk.c 表中的查询名 */
+    const char *member;  /* shader 实际成员名（别名时指向 vec4 打包成员） */
+    u32 offset;          /* rhi_vk.c 表偏移 */
+    u32 size;            /* 期望字节数；0 = 不核对（别名条目） */
+} VKPushRow;
+
+static const ShaderIOPushMember *push_member_by_name(
+    const ShaderIOPushMember *members, usize n, const char *name)
+{
+    for (usize i = 0u; i < n; i++)
+        if (strcmp(members[i].name, name) == 0) return &members[i];
+    return NULL;
+}
+
+TEST(vk_push_tables_match_reflection)
+{
+    static const VKPushRow rows[] = {
+        /* blinn 家族（默认 forward 段：u_model@0 u_view@64 u_proj@128 +
+         * else 段 u_light_dir@192 u_light_color@208 u_ambient@224
+         * u_camera_pos@240） */
+        { "blinn_phong_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "blinn_phong_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "blinn_phong_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        { "blinn_phong_vk.vert", "u_light_dir", "u_light_dir", 192u, 12u },
+        { "blinn_phong_vk.vert", "u_light_color", "u_light_color", 208u, 12u },
+        { "blinn_phong_vk.vert", "u_ambient", "u_ambient", 224u, 12u },
+        { "blinn_phong_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 12u },
+        { "blinn_phong_vk.frag", "u_model", "u_model", 0u, 64u },
+        { "blinn_phong_vk.frag", "u_view", "u_view", 64u, 64u },
+        { "blinn_phong_vk.frag", "u_proj", "u_proj", 128u, 64u },
+        { "blinn_phong_vk.frag", "u_light_dir", "u_light_dir", 192u, 12u },
+        { "blinn_phong_vk.frag", "u_light_color", "u_light_color", 208u, 12u },
+        { "blinn_phong_vk.frag", "u_ambient", "u_ambient", 224u, 12u },
+        { "blinn_phong_vk.frag", "u_camera_pos", "u_camera_pos", 240u, 12u },
+        { "blinn_phong_arr_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "blinn_phong_arr_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "blinn_phong_arr_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        { "blinn_phong_arr_vk.vert", "u_light_dir", "u_light_dir", 192u, 12u },
+        { "blinn_phong_arr_vk.vert", "u_light_color", "u_light_color", 208u, 12u },
+        { "blinn_phong_arr_vk.vert", "u_ambient", "u_ambient", 224u, 12u },
+        { "blinn_phong_arr_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 12u },
+        { "blinn_phong_arr_vk.frag", "u_model", "u_model", 0u, 64u },
+        { "blinn_phong_arr_vk.frag", "u_view", "u_view", 64u, 64u },
+        { "blinn_phong_arr_vk.frag", "u_proj", "u_proj", 128u, 64u },
+        { "blinn_phong_arr_vk.frag", "u_light_dir", "u_light_dir", 192u, 12u },
+        { "blinn_phong_arr_vk.frag", "u_light_color", "u_light_color", 208u, 12u },
+        { "blinn_phong_arr_vk.frag", "u_ambient", "u_ambient", 224u, 12u },
+        { "blinn_phong_arr_vk.frag", "u_camera_pos", "u_camera_pos", 240u, 12u },
+        /* gbuffer 家族（共享段 + skinned_gbuffer 段，两段同值） */
+        { "gbuffer_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "gbuffer_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "gbuffer_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        { "gbuffer_vk.vert", "u_prev_mvp", "u_prev_mvp", 192u, 64u },
+        { "gbuffer_arr_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "gbuffer_arr_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "gbuffer_arr_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        { "gbuffer_arr_vk.vert", "u_prev_mvp", "u_prev_mvp", 192u, 64u },
+        { "gbuffer_skinned_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "gbuffer_skinned_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "gbuffer_skinned_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        { "gbuffer_skinned_vk.vert", "u_prev_mvp", "u_prev_mvp", 192u, 64u },
+        /* pbr_probe_vk.vert（默认段） */
+        { "pbr_probe_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "pbr_probe_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "pbr_probe_vk.vert", "u_proj", "u_proj", 128u, 64u },
+        /* instanced/skinned forward（non_clustered_tbo 段） */
+        { "instanced_vk.vert", "u_view", "u_view", 0u, 64u },
+        { "instanced_vk.vert", "u_proj", "u_proj", 64u, 64u },
+        { "instanced_vk.vert", "u_light_dir", "u_light_dir", 128u, 12u },
+        { "instanced_vk.vert", "u_light_color", "u_light_color", 144u, 12u },
+        { "instanced_vk.vert", "u_ambient", "u_ambient", 160u, 12u },
+        { "instanced_vk.vert", "u_camera_pos", "u_camera_pos", 176u, 12u },
+        { "instanced_vk.frag", "u_view", "u_view", 0u, 64u },
+        { "instanced_vk.frag", "u_proj", "u_proj", 64u, 64u },
+        { "instanced_vk.frag", "u_light_dir", "u_light_dir", 128u, 12u },
+        { "instanced_vk.frag", "u_light_color", "u_light_color", 144u, 12u },
+        { "instanced_vk.frag", "u_ambient", "u_ambient", 160u, 12u },
+        { "instanced_vk.frag", "u_camera_pos", "u_camera_pos", 176u, 12u },
+        { "skinned_vk.vert", "u_view", "u_view", 0u, 64u },
+        { "skinned_vk.vert", "u_proj", "u_proj", 64u, 64u },
+        { "skinned_vk.vert", "u_light_dir", "u_light_dir", 128u, 12u },
+        { "skinned_vk.vert", "u_light_color", "u_light_color", 144u, 12u },
+        { "skinned_vk.vert", "u_ambient", "u_ambient", 160u, 12u },
+        { "skinned_vk.vert", "u_camera_pos", "u_camera_pos", 176u, 12u },
+        { "skinned_vk.frag", "u_view", "u_view", 0u, 64u },
+        { "skinned_vk.frag", "u_proj", "u_proj", 64u, 64u },
+        { "skinned_vk.frag", "u_light_dir", "u_light_dir", 128u, 12u },
+        { "skinned_vk.frag", "u_light_color", "u_light_color", 144u, 12u },
+        { "skinned_vk.frag", "u_ambient", "u_ambient", 160u, 12u },
+        { "skinned_vk.frag", "u_camera_pos", "u_camera_pos", 176u, 12u },
+        /* clustered 家族 vert（clustered 段只映射 u_model@0 + 共享 u_view@64） */
+        { "pbr_clustered_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "pbr_clustered_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "pbr_clustered_inst_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "pbr_clustered_inst_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "pbr_clustered_skin_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "pbr_clustered_skin_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "pbr_clustered_arr_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "pbr_clustered_arr_vk.vert", "u_view", "u_view", 64u, 64u },
+        /* pbr_clustered_vk.frag（共享段 + clustered 段） */
+        { "pbr_clustered_vk.frag", "u_model", "u_model", 0u, 64u },
+        { "pbr_clustered_vk.frag", "u_view", "u_view", 64u, 64u },
+        { "pbr_clustered_vk.frag", "u_camera_pos", "u_camera_pos", 128u, 12u },
+        { "pbr_clustered_vk.frag", "u_fog_near", "u_fog_near", 140u, 4u },
+        { "pbr_clustered_vk.frag", "u_ambient", "u_ambient", 144u, 12u },
+        { "pbr_clustered_vk.frag", "u_fog_far", "u_fog_far", 156u, 4u },
+        { "pbr_clustered_vk.frag", "u_screen_w", "u_screen_w", 160u, 4u },
+        { "pbr_clustered_vk.frag", "u_screen_h", "u_screen_h", 164u, 4u },
+        { "pbr_clustered_vk.frag", "u_near", "u_near", 168u, 4u },
+        { "pbr_clustered_vk.frag", "u_far", "u_far", 172u, 4u },
+        { "pbr_clustered_vk.frag", "u_point_count", "u_point_count", 176u, 4u },
+        { "pbr_clustered_vk.frag", "u_dir_count", "u_dir_count", 180u, 4u },
+        { "pbr_clustered_vk.frag", "u_shadow_bias", "u_shadow_bias", 184u, 4u },
+        { "pbr_clustered_vk.frag", "u_fog_color", "u_fog_color", 192u, 12u },
+        { "pbr_clustered_vk.frag", "u_underwater", "u_underwater", 204u, 4u },
+        { "pbr_clustered_vk.frag", "u_point_shadow_far_planes",
+          "u_point_shadow_far_planes", 208u, 16u },
+        { "pbr_clustered_vk.frag", "u_pom_enabled", "u_pom_enabled", 224u, 4u },
+        { "pbr_clustered_vk.frag", "u_occlusion_strength",
+          "u_occlusion_strength", 228u, 4u },
+        { "pbr_clustered_vk.frag", "u_mr_factor", "u_mr_factor", 232u, 8u },
+        { "pbr_clustered_vk.frag", "u_emissive_factor",
+          "u_emissive_factor", 240u, 12u },
+        /* terrain（terrain 段；vec4 打包成员 + swizzle 宏别名） */
+        { "terrain_vk.vert", "u_view", "u_view", 0u, 64u },
+        { "terrain_vk.vert", "u_proj", "u_proj", 64u, 64u },
+        { "terrain_vk.vert", "u_light_vp", "u_light_vp", 128u, 64u },
+        { "terrain_vk.vert", "u_light_dir", "u_light_dir_bias", 192u, 0u },
+        { "terrain_vk.vert", "u_shadow_bias", "u_light_dir_bias", 204u, 0u },
+        { "terrain_vk.vert", "u_light_color", "u_light_color_watery", 208u, 0u },
+        { "terrain_vk.vert", "u_water_y", "u_light_color_watery", 220u, 0u },
+        { "terrain_vk.vert", "u_ambient", "u_ambient_time", 224u, 0u },
+        { "terrain_vk.vert", "u_time", "u_ambient_time", 236u, 0u },
+        { "terrain_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 16u },
+        { "terrain_vk.frag", "u_view", "u_view", 0u, 64u },
+        { "terrain_vk.frag", "u_proj", "u_proj", 64u, 64u },
+        { "terrain_vk.frag", "u_light_vp", "u_light_vp", 128u, 64u },
+        { "terrain_vk.frag", "u_light_dir", "u_light_dir_bias", 192u, 0u },
+        { "terrain_vk.frag", "u_shadow_bias", "u_light_dir_bias", 204u, 0u },
+        { "terrain_vk.frag", "u_light_color", "u_light_color_watery", 208u, 0u },
+        { "terrain_vk.frag", "u_water_y", "u_light_color_watery", 220u, 0u },
+        { "terrain_vk.frag", "u_ambient", "u_ambient_time", 224u, 0u },
+        { "terrain_vk.frag", "u_time", "u_ambient_time", 236u, 0u },
+        { "terrain_vk.frag", "u_camera_pos", "u_cam_pos", 240u, 0u },
+        /* water（water 段；同为 vec4 打包别名） */
+        { "water_vk.vert", "u_view", "u_view", 0u, 64u },
+        { "water_vk.vert", "u_proj", "u_proj", 64u, 64u },
+        { "water_vk.vert", "u_light_vp", "u_light_vp", 128u, 64u },
+        { "water_vk.vert", "u_camera_pos", "u_camera_time", 192u, 0u },
+        { "water_vk.vert", "u_time", "u_camera_time", 204u, 0u },
+        { "water_vk.vert", "u_water_color", "u_color_bias", 208u, 0u },
+        { "water_vk.vert", "u_shadow_bias", "u_color_bias", 220u, 0u },
+        { "water_vk.vert", "u_water_y", "u_watery", 224u, 0u },
+        { "water_vk.frag", "u_view", "u_view", 0u, 64u },
+        { "water_vk.frag", "u_proj", "u_proj", 64u, 64u },
+        { "water_vk.frag", "u_light_vp", "u_light_vp", 128u, 64u },
+        { "water_vk.frag", "u_camera_pos", "u_camera_time", 192u, 0u },
+        { "water_vk.frag", "u_time", "u_camera_time", 204u, 0u },
+        { "water_vk.frag", "u_water_color", "u_color_bias", 208u, 0u },
+        { "water_vk.frag", "u_shadow_bias", "u_color_bias", 220u, 0u },
+        { "water_vk.frag", "u_water_y", "u_watery", 224u, 0u },
+        /* shadow depth（is_shadow_depth 段；point light 变体） */
+        { "point_shadow_depth_vk.vert", "u_model", "u_model", 0u, 64u },
+        { "point_shadow_depth_vk.vert", "u_mvp", "u_mvp", 64u, 64u },
+        { "point_shadow_depth_vk.vert", "u_light_pos", "u_light_pos", 128u, 16u },
+        { "point_shadow_depth_vk.vert", "u_far_plane", "u_far_plane", 144u, 16u },
+        { "point_shadow_depth_vk.frag", "u_model", "u_model", 0u, 64u },
+        { "point_shadow_depth_vk.frag", "u_mvp", "u_mvp", 64u, 64u },
+        { "point_shadow_depth_vk.frag", "u_light_pos", "u_light_pos", 128u, 16u },
+        { "point_shadow_depth_vk.frag", "u_far_plane", "u_far_plane", 144u, 16u },
+        /* combined TAA+FXAA（combined_aa 段） */
+        { "combined_taa_fxaa_vk.frag", "u_taa_curr_vp", "u_taa_curr_vp", 0u, 64u },
+        { "combined_taa_fxaa_vk.frag", "u_taa_prev_vp", "u_taa_prev_vp", 64u, 64u },
+        { "combined_taa_fxaa_vk.frag", "u_taa_inv_proj", "u_taa_inv_proj", 128u, 64u },
+        { "combined_taa_fxaa_vk.frag", "u_screen_w", "u_screen_w", 192u, 4u },
+        { "combined_taa_fxaa_vk.frag", "u_screen_h", "u_screen_h", 196u, 4u },
+        { "combined_taa_fxaa_vk.frag", "u_taa_blend", "u_taa_blend", 200u, 4u },
+        { "combined_taa_fxaa_vk.frag", "u_taa_first_frame",
+          "u_taa_first_frame", 204u, 4u },
+        { "combined_taa_fxaa_vk.frag", "u_fxaa_threshold",
+          "u_fxaa_threshold", 208u, 4u },
+        { "combined_taa_fxaa_vk.frag", "u_taa_use_velocity",
+          "u_taa_use_velocity", 212u, 4u },
+        /* combined tonemap+colorgrade+cinematic（combined_color 段） */
+        { "combined_color_vk.frag", "u_tm_exposure", "u_tm_exposure", 0u, 4u },
+        { "combined_color_vk.frag", "u_tm_gamma", "u_tm_gamma", 4u, 4u },
+        { "combined_color_vk.frag", "u_tm_mode", "u_tm_mode", 8u, 4u },
+        { "combined_color_vk.frag", "u_cg_saturation", "u_cg_saturation", 12u, 4u },
+        { "combined_color_vk.frag", "u_cg_contrast", "u_cg_contrast", 16u, 4u },
+        { "combined_color_vk.frag", "u_cg_brightness", "u_cg_brightness", 20u, 4u },
+        { "combined_color_vk.frag", "u_cg_temperature", "u_cg_temperature", 24u, 4u },
+        { "combined_color_vk.frag", "u_cg_tint", "u_cg_tint", 28u, 4u },
+        { "combined_color_vk.frag", "u_cine_aberration", "u_cine_aberration", 32u, 4u },
+        { "combined_color_vk.frag", "u_cine_vignette", "u_cine_vignette", 36u, 4u },
+        { "combined_color_vk.frag", "u_cine_grain", "u_cine_grain", 40u, 4u },
+        { "combined_color_vk.frag", "u_cine_time", "u_cine_time", 44u, 4u },
+        { "combined_color_vk.frag", "u_screen_w", "u_screen_w", 48u, 4u },
+        { "combined_color_vk.frag", "u_screen_h", "u_screen_h", 52u, 4u },
+        /* deferred lighting（no_vertex_input+texel 段；vec4 打包别名） */
+        { "deferred_light_vk.frag", "u_inv_vp", "u_inv_vp", 0u, 64u },
+        { "deferred_light_vk.frag", "u_view", "u_view", 64u, 64u },
+        { "deferred_light_vk.frag", "u_camera_pos", "u_camera_pos", 128u, 16u },
+        { "deferred_light_vk.frag", "u_screen_w", "u_screen_params", 144u, 0u },
+        { "deferred_light_vk.frag", "u_screen_h", "u_screen_params", 148u, 0u },
+        { "deferred_light_vk.frag", "u_near", "u_clip_params", 160u, 0u },
+        { "deferred_light_vk.frag", "u_far", "u_clip_params", 164u, 0u },
+        { "deferred_light_vk.frag", "u_shadow_bias", "u_clip_params", 168u, 0u },
+        { "deferred_light_vk.frag", "u_point_count", "u_point_count", 176u, 4u },
+        { "deferred_light_vk.frag", "u_dir_count", "u_dir_count", 180u, 4u },
+        { "deferred_light_vk.frag", "u_point_shadow_far_planes",
+          "u_point_shadow_far_planes", 192u, 16u },
+        /* skybox（no_vertex_input 非 texel 段 + 末尾共享 u_inv_proj@0） */
+        { "skybox_vk.vert", "u_inv_proj", "u_inv_proj", 0u, 64u },
+        { "skybox_vk.vert", "u_view", "u_view", 64u, 64u },
+        { "skybox_vk.frag", "u_inv_proj", "u_inv_proj", 0u, 64u },
+        { "skybox_vk.frag", "u_view", "u_view", 64u, 64u },
+        { "skybox_vk.frag", "u_sun_dir", "u_sun_dir", 128u, 12u },
+        { "skybox_vk.frag", "u_sun_color", "u_sun_color", 144u, 12u },
+        /* camera velocity（no_vertex_input：u_prev_vp@128 per R203-A；
+         * 成员 0 是 u_inv_proj —— 表的 u_inv_vp@0 与 u_inv_proj@0 同指它） */
+        { "camera_velocity_vk.frag", "u_inv_vp", "u_inv_proj", 0u, 0u },
+        { "camera_velocity_vk.frag", "u_inv_proj", "u_inv_proj", 0u, 64u },
+        { "camera_velocity_vk.frag", "u_curr_vp", "u_curr_vp", 64u, 64u },
+        { "camera_velocity_vk.frag", "u_prev_vp", "u_prev_vp", 128u, 64u },
+        /* 共享段的独立 post pass（每文件一段） */
+        { "volumetric_vk.frag", "u_vol_inv_proj", "u_vol_inv_proj", 0u, 64u },
+        { "volumetric_vk.frag", "u_vol_view", "u_vol_view", 64u, 64u },
+        { "volumetric_vk.frag", "u_vol_ldx", "u_vol_ldx", 128u, 4u },
+        { "volumetric_vk.frag", "u_vol_ldy", "u_vol_ldy", 132u, 4u },
+        { "volumetric_vk.frag", "u_vol_ldz", "u_vol_ldz", 136u, 4u },
+        { "volumetric_vk.frag", "u_vol_lcx", "u_vol_lcx", 140u, 4u },
+        { "volumetric_vk.frag", "u_vol_lcy", "u_vol_lcy", 144u, 4u },
+        { "volumetric_vk.frag", "u_vol_lcz", "u_vol_lcz", 148u, 4u },
+        { "volumetric_vk.frag", "u_vol_density", "u_vol_density", 152u, 4u },
+        { "volumetric_vk.frag", "u_vol_fog_r", "u_vol_fog_r", 156u, 4u },
+        { "volumetric_vk.frag", "u_vol_fog_g", "u_vol_fog_g", 160u, 4u },
+        { "volumetric_vk.frag", "u_vol_fog_b", "u_vol_fog_b", 164u, 4u },
+        { "volumetric_vk.frag", "u_vol_sw", "u_vol_sw", 168u, 4u },
+        { "volumetric_vk.frag", "u_vol_sh", "u_vol_sh", 172u, 4u },
+        { "volumetric_vk.frag", "u_vol_inv_view", "u_vol_inv_view", 176u, 64u },
+        { "lens_flare_vk.frag", "u_lf_light_x", "u_lf_light_x", 0u, 4u },
+        { "lens_flare_vk.frag", "u_lf_light_y", "u_lf_light_y", 4u, 4u },
+        { "lens_flare_vk.frag", "u_lf_intensity", "u_lf_intensity", 8u, 4u },
+        { "lens_flare_vk.frag", "u_lf_sw", "u_lf_sw", 12u, 4u },
+        { "lens_flare_vk.frag", "u_lf_sh", "u_lf_sh", 16u, 4u },
+        { "lens_flare_vk.frag", "u_lf_lc_r", "u_lf_lc_r", 20u, 4u },
+        { "lens_flare_vk.frag", "u_lf_lc_g", "u_lf_lc_g", 24u, 4u },
+        { "lens_flare_vk.frag", "u_lf_lc_b", "u_lf_lc_b", 28u, 4u },
+        { "ssgi_vk.frag", "u_ssgi_inv_proj", "u_ssgi_inv_proj", 0u, 64u },
+        { "ssgi_vk.frag", "u_ssgi_proj", "u_ssgi_proj", 64u, 64u },
+        { "ssgi_vk.frag", "u_ssgi_radius", "u_ssgi_radius", 128u, 4u },
+        { "ssgi_vk.frag", "u_ssgi_intensity", "u_ssgi_intensity", 132u, 4u },
+        { "ssgi_vk.frag", "u_ssgi_sw", "u_ssgi_sw", 136u, 4u },
+        { "ssgi_vk.frag", "u_ssgi_sh", "u_ssgi_sh", 140u, 4u },
+        { "fxaa_vk.frag", "u_fxaa_sw", "u_fxaa_sw", 0u, 4u },
+        { "fxaa_vk.frag", "u_fxaa_sh", "u_fxaa_sh", 4u, 4u },
+        { "fxaa_vk.frag", "u_fxaa_threshold", "u_fxaa_threshold", 8u, 4u },
+        { "tonemap_vk.frag", "u_tm_exposure", "u_tm_exposure", 0u, 4u },
+        { "tonemap_vk.frag", "u_tm_gamma", "u_tm_gamma", 4u, 4u },
+        { "tonemap_vk.frag", "u_tm_screen_w", "u_tm_screen_w", 8u, 4u },
+        { "tonemap_vk.frag", "u_tm_screen_h", "u_tm_screen_h", 12u, 4u },
+        { "tonemap_vk.frag", "u_tm_mode", "u_tm_mode", 16u, 4u },
+        { "cinematic_vk.frag", "u_cine_aberration", "u_cine_aberration", 0u, 4u },
+        { "cinematic_vk.frag", "u_cine_vignette", "u_cine_vignette", 4u, 4u },
+        { "cinematic_vk.frag", "u_cine_grain", "u_cine_grain", 8u, 4u },
+        { "cinematic_vk.frag", "u_cine_time", "u_cine_time", 12u, 4u },
+        { "cinematic_vk.frag", "u_cine_sw", "u_cine_sw", 16u, 4u },
+        { "cinematic_vk.frag", "u_cine_sh", "u_cine_sh", 20u, 4u },
+        { "color_grade_vk.frag", "u_cg_saturation", "u_cg_saturation", 0u, 4u },
+        { "color_grade_vk.frag", "u_cg_contrast", "u_cg_contrast", 4u, 4u },
+        { "color_grade_vk.frag", "u_cg_brightness", "u_cg_brightness", 8u, 4u },
+        { "color_grade_vk.frag", "u_cg_temperature", "u_cg_temperature", 12u, 4u },
+        { "color_grade_vk.frag", "u_cg_tint", "u_cg_tint", 16u, 4u },
+        { "dof_vk.frag", "u_dof_focus", "u_dof_focus", 0u, 4u },
+        { "dof_vk.frag", "u_dof_range", "u_dof_range", 4u, 4u },
+        { "dof_vk.frag", "u_dof_near", "u_dof_near", 8u, 4u },
+        { "dof_vk.frag", "u_dof_far", "u_dof_far", 12u, 4u },
+        { "dof_vk.frag", "u_dof_sw", "u_dof_sw", 16u, 4u },
+        { "dof_vk.frag", "u_dof_sh", "u_dof_sh", 20u, 4u },
+        { "ssr_vk.frag", "u_ssr_proj", "u_ssr_proj", 0u, 64u },
+        { "ssr_vk.frag", "u_ssr_inv_proj", "u_ssr_inv_proj", 64u, 64u },
+        { "ssr_vk.frag", "u_ssr_view", "u_ssr_view", 128u, 64u },
+        { "ssr_vk.frag", "u_ssr_sw", "u_ssr_sw", 192u, 4u },
+        { "ssr_vk.frag", "u_ssr_sh", "u_ssr_sh", 196u, 4u },
+        { "ssr_vk.frag", "u_ssr_max_steps", "u_ssr_max_steps", 200u, 4u },
+        { "ssr_vk.frag", "u_ssr_stride", "u_ssr_stride", 204u, 4u },
+        { "ssr_vk.frag", "u_ssr_thickness", "u_ssr_thickness", 208u, 4u },
+        { "taa_vk.frag", "u_taa_curr_vp", "u_taa_curr_vp", 0u, 64u },
+        { "taa_vk.frag", "u_taa_prev_vp", "u_taa_prev_vp", 64u, 64u },
+        { "taa_vk.frag", "u_taa_inv_proj", "u_taa_inv_proj", 128u, 64u },
+        { "taa_vk.frag", "u_taa_sw", "u_taa_sw", 192u, 4u },
+        { "taa_vk.frag", "u_taa_sh", "u_taa_sh", 196u, 4u },
+        { "taa_vk.frag", "u_taa_blend", "u_taa_blend", 200u, 4u },
+        { "taa_vk.frag", "u_taa_first_frame", "u_taa_first_frame", 204u, 4u },
+        { "taa_vk.frag", "u_taa_use_velocity", "u_taa_use_velocity", 208u, 4u },
+        { "ssao_vk.frag", "u_ssao_proj", "u_ssao_proj", 0u, 64u },
+        { "ssao_vk.frag", "u_ssao_inv_proj", "u_ssao_inv_proj", 64u, 64u },
+        { "ssao_vk.frag", "u_ssao_sw", "u_ssao_sw", 128u, 4u },
+        { "ssao_vk.frag", "u_ssao_sh", "u_ssao_sh", 132u, 4u },
+        { "ssao_vk.frag", "u_ssao_radius", "u_ssao_radius", 136u, 4u },
+        { "ssao_vk.frag", "u_ssao_bias", "u_ssao_bias", 140u, 4u },
+        { "debug_viz_vk.frag", "u_dv_mode", "u_dv_mode", 0u, 4u },
+        { "debug_viz_vk.frag", "u_dv_near", "u_dv_near", 4u, 4u },
+        { "debug_viz_vk.frag", "u_dv_far", "u_dv_far", 8u, 4u },
+        { "debug_viz_vk.frag", "u_dv_split0", "u_dv_split0", 12u, 4u },
+        { "debug_viz_vk.frag", "u_dv_split1", "u_dv_split1", 16u, 4u },
+        { "debug_viz_vk.frag", "u_dv_split2", "u_dv_split2", 20u, 4u },
+        { "debug_viz_vk.frag", "u_dv_split3", "u_dv_split3", 24u, 4u },
+        { "lens_effects_vk.frag", "u_ca_strength", "u_ca_strength", 0u, 4u },
+        { "lens_effects_vk.frag", "u_vignette_strength",
+          "u_vignette_strength", 4u, 4u },
+        { "lens_effects_vk.frag", "u_vignette_softness",
+          "u_vignette_softness", 8u, 4u },
+        { "lens_effects_vk.frag", "u_grain_strength",
+          "u_grain_strength", 12u, 4u },
+        { "sharpen_vk.frag", "u_sharp_strength", "u_sharp_strength", 0u, 4u },
+        { "sharpen_vk.frag", "u_sharp_sw", "u_sharp_sw", 4u, 4u },
+        { "sharpen_vk.frag", "u_sharp_sh", "u_sharp_sh", 8u, 4u },
+        { "upscale_vk.frag", "u_ups_rw", "u_ups_rw", 0u, 4u },
+        { "upscale_vk.frag", "u_ups_rh", "u_ups_rh", 4u, 4u },
+        { "upscale_vk.frag", "u_ups_dw", "u_ups_dw", 8u, 4u },
+        { "upscale_vk.frag", "u_ups_dh", "u_ups_dh", 12u, 4u },
+        { "upscale_vk.frag", "u_ups_sharp", "u_ups_sharp", 16u, 4u },
+        { "upscale_vk.frag", "u_ups_copy_only", "u_ups_copy_only", 20u, 4u },
+        { "upscale_vk.frag", "u_ups_first_frame", "u_ups_first_frame", 24u, 4u },
+        { "upscale_vk.frag", "u_ups_inv_proj", "u_ups_inv_proj", 32u, 64u },
+        { "upscale_vk.frag", "u_ups_prev_vp", "u_ups_prev_vp", 96u, 64u },
+        { "luminance_vk.frag", "u_lum_w", "u_lum_w", 0u, 4u },
+        { "luminance_vk.frag", "u_lum_h", "u_lum_h", 4u, 4u },
+        { "luminance_vk.frag", "u_lum_speed", "u_lum_speed", 8u, 4u },
+        { "luminance_vk.frag", "u_lum_dt", "u_lum_dt", 12u, 4u },
+        { "god_rays_vk.frag", "u_gr_sun_x", "u_gr_sun_x", 0u, 4u },
+        { "god_rays_vk.frag", "u_gr_sun_y", "u_gr_sun_y", 4u, 4u },
+        { "god_rays_vk.frag", "u_gr_intensity", "u_gr_intensity", 8u, 4u },
+        { "god_rays_vk.frag", "u_gr_decay", "u_gr_decay", 12u, 4u },
+        { "god_rays_vk.frag", "u_gr_sw", "u_gr_sw", 16u, 4u },
+        { "god_rays_vk.frag", "u_gr_sh", "u_gr_sh", 20u, 4u },
+        /* 数组成员（stride 4 的 float[16] — 显式 offset 转录） */
+        { "motion_blur_vk.frag", "u_mb_strength", "u_mb_strength", 0u, 4u },
+        { "motion_blur_vk.frag", "u_mb_sw", "u_mb_sw", 4u, 4u },
+        { "motion_blur_vk.frag", "u_mb_sh", "u_mb_sh", 8u, 4u },
+        { "motion_blur_vk.frag", "u_mb_inv_proj", "u_mb_inv_proj", 12u, 64u },
+        { "motion_blur_vk.frag", "u_mb_prev_vp", "u_mb_prev_vp", 76u, 64u },
+        { "motion_blur_vk.frag", "u_mb_use_velocity", "u_mb_use_velocity", 140u, 4u },
+        { "contact_shadow_vk.frag", "u_cs_light_x", "u_cs_light_x", 0u, 4u },
+        { "contact_shadow_vk.frag", "u_cs_light_y", "u_cs_light_y", 4u, 4u },
+        { "contact_shadow_vk.frag", "u_cs_light_z", "u_cs_light_z", 8u, 4u },
+        { "contact_shadow_vk.frag", "u_cs_inv_proj", "u_cs_inv_proj", 12u, 64u },
+        { "contact_shadow_vk.frag", "u_cs_sw", "u_cs_sw", 76u, 4u },
+        { "contact_shadow_vk.frag", "u_cs_sh", "u_cs_sh", 80u, 4u },
+        { "bloom_extract_vk.frag", "u_threshold", "u_threshold", 0u, 4u },
+        { "bloom_blur_vk.frag", "u_direction", "u_direction", 0u, 8u },
+        { "bloom_composite_vk.frag", "u_bloom_strength", "u_bloom_strength", 0u, 4u },
+        { "ssgi_blur_vk.frag", "u_direction", "u_direction", 0u, 8u },
+        { "sss_vk.frag", "u_sss_strength", "u_sss_strength", 0u, 4u },
+        { "sss_vk.frag", "u_sss_sw", "u_sss_sw", 4u, 4u },
+        { "sss_vk.frag", "u_sss_sh", "u_sss_sh", 8u, 4u },
+        { "sss_vk.frag", "u_sss_max_dist", "u_sss_max_dist", 12u, 4u },
+        { "sss_vertical_vk.frag", "u_sssv_strength", "u_sssv_strength", 0u, 4u },
+        { "sss_vertical_vk.frag", "u_sssv_sw", "u_sssv_sw", 4u, 4u },
+        { "sss_vertical_vk.frag", "u_sssv_sh", "u_sssv_sh", 8u, 4u },
+        { "sss_vertical_vk.frag", "u_sssv_max_dist", "u_sssv_max_dist", 12u, 4u },
+    };
+    static char src[32768];
+    ShaderIOPushMember members[32];
+    char current[64] = "";
+    usize n = 0u;
+    usize row_count = sizeof(rows) / sizeof(rows[0]);
+
+    /* 正向：每条表项必须命中反射结果（直接条目 offset 严格相等；别名
+     * 条目 offset 落在成员范围内）。 */
+    for (usize i = 0u; i < row_count; i++) {
+        const VKPushRow *r = &rows[i];
+        const ShaderIOPushMember *m;
+        if (strcmp(current, r->file) != 0) {
+            ASSERT_TRUE(read_shader_source(r->file, src, sizeof(src)));
+            n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+            snprintf(current, sizeof(current), "%s", r->file);
+            ASSERT_TRUE(n > 0u);
+        }
+        m = push_member_by_name(members, n, r->member);
+        if (m == NULL) {
+            printf("  FAIL: %s: member '%s' (vk name '%s') not reflected\n",
+                   r->file, r->member, r->vk_name);
+        }
+        ASSERT_TRUE(m != NULL);
+        if (strcmp(r->vk_name, r->member) == 0) {
+            if (m->offset != r->offset) {
+                printf("  FAIL: %s: %s reflected @%u, rhi_vk.c table @%u\n",
+                       r->file, r->vk_name, m->offset, r->offset);
+            }
+            ASSERT_EQ(m->offset, r->offset);
+            if (r->size != 0u && m->size != r->size) {
+                printf("  FAIL: %s: %s reflected size %u, expected %u\n",
+                       r->file, r->vk_name, m->size, r->size);
+            }
+            ASSERT_TRUE(r->size == 0u || m->size == r->size);
+        } else {
+            if (r->offset < m->offset || r->offset >= m->offset + m->size) {
+                printf("  FAIL: %s: alias '%s'@%u outside member '%s'"
+                       " [%u, %u)\n", r->file, r->vk_name, r->offset,
+                       r->member, m->offset, m->offset + m->size);
+            }
+            ASSERT_TRUE(r->offset >= m->offset);
+            ASSERT_TRUE(r->offset < m->offset + m->size);
+        }
+    }
+
+    /* 反向：每个 gate 文件的非 _pad 成员必须被至少一条表项覆盖。 */
+    current[0] = '\0';
+    for (usize i = 0u; i < row_count; i++) {
+        if (strcmp(current, rows[i].file) == 0) continue;
+        snprintf(current, sizeof(current), "%s", rows[i].file);
+        ASSERT_TRUE(read_shader_source(current, src, sizeof(src)));
+        n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+        ASSERT_TRUE(n > 0u);
+        for (usize j = 0u; j < n; j++) {
+            bool covered = false;
+            if (strncmp(members[j].name, "_pad", 4u) == 0) continue;
+            for (usize k = 0u; k < row_count && !covered; k++) {
+                if (strcmp(rows[k].file, current) != 0) continue;
+                if (strcmp(rows[k].member, members[j].name) != 0) continue;
+                covered = rows[k].offset >= members[j].offset &&
+                          rows[k].offset < members[j].offset + members[j].size;
+            }
+            if (!covered) {
+                printf("  FAIL: %s: member '%s'@%u not covered by any"
+                       " rhi_vk.c table row\n",
+                       current, members[j].name, members[j].offset);
+            }
+            ASSERT_TRUE(covered);
+        }
+    }
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shader_read_rejects_oversized_file);
     RUN_TEST(upscale_shaders_guard_first_temporal_frame);
@@ -1216,4 +1697,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(forward_clustered_occlusion_strength_wiring);
     RUN_TEST(pbr_factor_gate_restored_real_assertion);
     RUN_TEST(variant_path_appends_suffix_before_extension);
+    RUN_TEST(push_constants_follow_std430_offsets);
+    RUN_TEST(push_constants_absent_returns_zero_and_handles_null);
+    RUN_TEST(vk_push_tables_match_reflection);
 TEST_MAIN_END()

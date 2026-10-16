@@ -352,6 +352,175 @@ usize shader_reflect_bindings(const char *src, usize len,
     return count;
 }
 
+/* std430 base sizes/alignments: scalar 4, vec2 8, vec3 12/16, vec4 16,
+ * mat3/mat4 16 (column-major vec4 columns). */
+static bool shader_std430_type_size_align(const char *type, u32 *size, u32 *align) {
+    static const struct { const char *name; u32 size; u32 align; } types[] = {
+        { "float", 4u, 4u },  { "int", 4u, 4u },   { "uint", 4u, 4u },
+        { "vec2", 8u, 8u },   { "vec3", 12u, 16u }, { "vec4", 16u, 16u },
+        { "mat3", 48u, 16u }, { "mat4", 64u, 16u },
+    };
+    for (usize i = 0u; i < sizeof(types) / sizeof(types[0]); ++i) {
+        if (strcmp(type, types[i].name) == 0) {
+            *size = types[i].size;
+            *align = types[i].align;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Blanks // and / ** / comments (newlines preserved) so member parsing cannot
+ * trip on semicolons or type-like words inside them — real shader headers
+ * carry multi-line block comments inside the push block. */
+static char *shader_strip_comments(const char *src, usize len) {
+    char *out = malloc(len + 1u);
+    usize i = 0u, o = 0u;
+    if (!out) return NULL;
+    while (i < len) {
+        if (src[i] == '/' && i + 1u < len && src[i + 1u] == '*') {
+            usize j = i + 2u;
+            usize stop;
+            while (j < len && !(src[j] == '*' && j + 1u < len && src[j + 1u] == '/')) j++;
+            stop = j < len ? j + 2u : len;
+            for (usize k = i; k < stop; k++)
+                out[o++] = src[k] == '\n' ? '\n' : ' ';
+            i = stop;
+        } else if (src[i] == '/' && i + 1u < len && src[i + 1u] == '/') {
+            while (i < len && src[i] != '\n') {
+                out[o++] = ' ';
+                i++;
+            }
+        } else {
+            out[o++] = src[i++];
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
+usize shader_reflect_push_constants(const char *src, usize len,
+                                    ShaderIOPushMember *out, usize capacity) {
+    char *clean;
+    const char *end, *scan, *brace = NULL, *body, *body_end, *p;
+    usize count = 0u;
+    u32 cursor = 0u;
+    if (!src || (capacity != 0u && !out) || len > (usize)PTRDIFF_MAX) return 0u;
+    if (capacity > (usize)-1 / sizeof(*out)) return 0u;
+    clean = shader_strip_comments(src, len);
+    if (!clean) return 0u;
+    end = clean + len;
+
+    /* Locate `layout(... push_constant ...) uniform [Block] {` — the word
+     * must belong to a uniform block (a ';' before the '{' means it does
+     * not), and extra qualifiers ride along inside the same parens. */
+    scan = clean;
+    while (scan < end) {
+        const char *pc = shader_find_word(clean, scan, end, "push_constant");
+        const char *b = pc ? shader_char(pc, end, '{') : NULL;
+        const char *semi = pc ? shader_char(pc, end, ';') : NULL;
+        if (!pc) break;
+        if (b && (!semi || b < semi) &&
+            shader_find_word(clean, pc, b, "uniform") != NULL) {
+            brace = b;
+            break;
+        }
+        scan = pc + 13u;
+    }
+    if (!brace) {
+        free(clean);
+        return 0u;
+    }
+    body = brace + 1;
+    body_end = shader_char(body, end, '}');
+    if (!body_end) {
+        free(clean);
+        return 0u;
+    }
+
+    p = body;
+    while (p < body_end) {
+        char type[SHADER_IO_FORMAT_MAX];
+        char name[SHADER_IO_NAME_MAX];
+        const char *q;
+        u32 explicit_offset = UINT32_MAX;
+        u32 size, align, total, offset;
+        p = shader_skip_space(p, body_end);
+        if (p >= body_end) break;
+        /* Optional member qualifier: layout(offset = N). Explicit offsets are
+         * used as declared (no std430 alignment rounding), per GLSL. */
+        if (shader_word_at(clean, p, body_end, "layout")) {
+            const char *open = shader_char(p, body_end, '(');
+            const char *close = open ? shader_char(open, body_end, ')') : NULL;
+            if (!open || !close) {
+                free(clean);
+                return 0u;
+            }
+            explicit_offset = shader_layout_value(p, close, "offset", UINT32_MAX);
+            p = shader_skip_space(close + 1, body_end);
+        }
+        q = shader_identifier(p, body_end, type, sizeof(type));
+        if (type[0] == '\0' || !shader_std430_type_size_align(type, &size, &align)) {
+            free(clean);
+            return 0u;
+        }
+        p = shader_skip_space(q, body_end);
+        q = shader_identifier(p, body_end, name, sizeof(name));
+        if (name[0] == '\0') {
+            free(clean);
+            return 0u;
+        }
+        p = shader_skip_space(q, body_end);
+        total = size;
+        if (p < body_end && *p == '[') {
+            const char *rb = shader_char(p, body_end, ']');
+            u64 elements = 0u;
+            bool has_digit = false;
+            const char *d = p + 1;
+            while (d < (rb ? rb : body_end) && *d >= '0' && *d <= '9') {
+                has_digit = true;
+                elements = elements * 10u + (u64)(*d - '0');
+                if (elements > 0xffffffffu) break;
+                d++;
+            }
+            /* std430 array stride: element size rounded up to element base
+             * alignment (scalars 4, vec2 8, vec3/vec4/mat 16+). */
+            u32 stride = ((size + align - 1u) / align) * align;
+            if (!rb || !has_digit || elements == 0u ||
+                elements > 0xffffffffu / stride) {
+                free(clean);
+                return 0u;
+            }
+            total = (u32)elements * stride;
+            p = shader_skip_space(rb + 1, body_end);
+        }
+        if (p >= body_end || *p != ';') {
+            free(clean);
+            return 0u;
+        }
+        p++;
+        offset = explicit_offset != UINT32_MAX
+               ? explicit_offset
+               : ((cursor + align - 1u) / align) * align;
+        if (offset > 0xffffffffu - total) {
+            free(clean);
+            return 0u;
+        }
+        if (count < capacity) {
+            ShaderIOPushMember *member = &out[count];
+            memset(member, 0, sizeof(*member));
+            memcpy(member->name, name, shader_field_length(name, sizeof(name)));
+            member->offset = offset;
+            member->size = total;
+        }
+        count++;
+        cursor = offset + total;
+    }
+    free(clean);
+    if (count > capacity) return 0u;
+    return count;
+}
+
 char *shader_read_file(const char *path, usize *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;

@@ -48,3 +48,14 @@ const char *shader_variant_suffix(RHIShaderVariant v); /* "" 或 "_vk" */
 /* "shaders/foo.vert" + GLSL_VK -> 写出 "shaders/foo_vk.vert"；越界返回 NULL。 */
 char *shader_variant_path(const char *base_path, RHIShaderVariant v,
                           char *out, usize cap);
+
+/* 计划 E Task 5：std430 push-constant 反射。 */
+typedef struct {
+    char name[SHADER_IO_NAME_MAX]; /* 成员名，如 "u_view" */
+    u32  offset;                   /* std430 字节偏移 */
+    u32  size;                     /* 字节数 */
+} ShaderIOPushMember;
+/* 解析 GLSL 源码中的 layout(push_constant) uniform 块，按 std430 规则计算
+ * 每个成员 offset/size。返回成员数；无 push 块返回 0。 */
+usize shader_reflect_push_constants(const char *src, usize len,
+                                    ShaderIOPushMember *out, usize capacity);
