@@ -2591,6 +2591,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_locked_dependencies.cmake)
     set_tests_properties(test_locked_dependencies PROPERTIES
         LABELS "headless;platform_contract")
+    add_test(NAME test_clean_room_build_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_clean_room_build_contract.cmake)
+    set_tests_properties(test_clean_room_build_contract PROPERTIES
+        LABELS "headless;platform_contract")
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register

@@ -117,6 +117,33 @@ jobs:
            export VK_ICD_FILENAMES="$vk_icd"
           ctest --test-dir build -L graphics --output-on-failure
 
+  clean-room:
+    # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；
+    # 本计划新增 lane，不产出 GPU 收据 artifact）。
+    name: Clean-room build (locked deps, fresh export)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
+      # cmake 3.28.3 / libvulkan-dev 1.3.275.0-1build1 / libshaderc-dev 2023.8-1build1。
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers
+
+      - name: Clean-room configure/build/test
+        run: |
+          # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
+          # /usr/bin/cmake；前置 /usr/bin 让 cmake=3.28.* 钉版真实生效。
+          export PATH="/usr/bin:$PATH"
+          cmake --version | head -1
+          bash engine/tools/clean_room_build.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/clean-room" --backend vulkan
+
   linux-clang-release:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
@@ -483,6 +510,11 @@ jobs:
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
 
       - name: Test (headless suite)
+        env:
+          # Vendored VulkanSDK artifacts are gitignored and absent on CI
+          # checkouts; this lane provisions the pinned LunarG SDK instead
+          # (engine/tools/fetch_vulkan_sdk_windows.cmake).
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
         shell: bash
         run: |
           set +e
@@ -543,6 +575,9 @@ jobs:
       - name: Test (headless suite under ASan)
         env:
           ASAN_OPTIONS: detect_leaks=0
+          # Vendored VulkanSDK artifacts are gitignored and absent on CI
+          # checkouts (lane builds the ASan matrix without the SDK).
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
         shell: bash
         run: |
           set +e
