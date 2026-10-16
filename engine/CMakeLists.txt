@@ -2584,6 +2584,13 @@ endif()
             -DENGINE_ENABLE_WAYLAND=${ENGINE_ENABLE_WAYLAND}
             ${_rhi_selector_toolchain_defs}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_backend_selection.cmake)
+    add_test(NAME test_locked_dependencies
+        COMMAND ${CMAKE_COMMAND}
+            -DLOCK_JSON=${CMAKE_CURRENT_SOURCE_DIR}/external/locked_dependencies.json
+            -DEXTERNAL_DIR=${CMAKE_CURRENT_SOURCE_DIR}/external
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_locked_dependencies.cmake)
+    set_tests_properties(test_locked_dependencies PROPERTIES
+        LABELS "headless;platform_contract")
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register

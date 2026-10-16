@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "locked_at": "2026-10-14",
+  "dependencies": [
+    {
+      "name": "cmake",
+      "version": ">=3.25,<4.0 (CI pins ubuntu-24.04 apt cmake=3.28.*)",
+      "purpose": "build-only",
+      "source": "ubuntu-24.04 apt cmake=3.28.*; 本地 gate 允许更高 3.x",
+      "sha256": "n/a-apt-pinned-version-floor-and-ci-pin",
+      "verify_path": "",
+      "platforms": ["linux", "windows", "macos"]
+    },
+    {
+      "name": "clang",
+      "version": ">=17.0",
+      "purpose": "build-only",
+      "source": "system toolchain (engine/toolchain-clang-linux.cmake, toolchain-clang-win.cmake); CI: ubuntu-24.04 apt clang-18",
+      "sha256": "n/a-system-toolchain-version-floor-only",
+      "verify_path": "",
+      "platforms": ["linux", "windows"]
+    },
+    {
+      "name": "gcc",
+      "version": ">=12.0",
+      "purpose": "build-only",
+      "source": "system toolchain; CI: ubuntu-24.04 apt gcc-13",
+      "sha256": "n/a-system-toolchain-version-floor-only",
+      "verify_path": "",
+      "platforms": ["linux"]
+    },
+    {
+      "name": "msvc",
+      "version": ">=19.38 (VS 2022 17.8); gate generator: Visual Studio 18 2026",
+      "purpose": "build-only",
+      "source": "system toolchain (engine/toolchain-msvc.cmake)",
+      "sha256": "n/a-system-toolchain-version-floor-only",
+      "verify_path": "",
+      "platforms": ["windows"]
+    },
+    {
+      "name": "vulkan-sdk",
+      "version": "1.4.357.0",
+      "purpose": "build-only",
+      "source": "vendored engine/external/VulkanSDK (headless unpack of lunarg SDK 1.4.357.0); Linux CI pins identical tarball",
+      "sha256": "02caa31b8665a79f327cbfe97286fd7d0017c0b1f9b39eb78687b7a509de52b3",
+      "verify_path": "VulkanSDK/Lib/vulkan-1.lib",
+      "platforms": ["windows", "linux"]
+    },
+    {
+      "name": "shaderc",
+      "version": "sdk-1.4.357.0-bundled",
+      "purpose": "runtime-shipped",
+      "source": "vendored engine/external/VulkanSDK/Lib/shaderc_shared.lib (+ Bin/shaderc_shared.dll 258c9ccc80c31c20904c64a80af964504bdb29c1475aa21b15eb540d5c93c860); runtime target env Vulkan 1.2 / SPIR-V 1.5 (rhi_vk.c)",
+      "sha256": "697a51fe3193f41bf1cd71d462aca037102b88f1f1d114f36db27d58ae771ebb",
+      "verify_path": "VulkanSDK/Lib/shaderc_shared.lib",
+      "platforms": ["windows", "linux", "macos", "android"]
+    },
+    {
+      "name": "vulkan-validation-layers",
+      "version": "sdk-1.4.357.0-bundled (VK_LAYER_KHRONOS_validation)",
+      "purpose": "test-only",
+      "source": "vendored engine/external/VulkanSDK/Bin/VkLayer_khronos_validation.json",
+      "sha256": "20d3ef44fe96aa41fceefab2308892f9d4b346d23eebfe8b5e1690715f23f472",
+      "verify_path": "VulkanSDK/Bin/VkLayer_khronos_validation.json",
+      "platforms": ["windows", "linux"]
+    },
+    {
+      "name": "android-ndk",
+      "version": "27.2.12479018 (r27c)",
+      "purpose": "build-only",
+      "source": "https://dl.google.com/android/repository/android-ndk-r27c-windows.zip",
+      "sha256": "27e49f11e0cee5800983d8af8f4acd5bf09987aa6f790d4439dda9f3643d2494",
+      "verify_path": "",
+      "platforms": ["android"]
+    },
+    {
+      "name": "xcode",
+      "version": ">=15.4 (macOS 14 SDK minimum)",
+      "purpose": "system-provided",
+      "source": "Apple Xcode; CI runner macos-14 image (pinned image label, not a floating label)",
+      "sha256": "n/a-apple-developer-tools-version-floor-only",
+      "verify_path": "",
+      "platforms": ["macos", "ios"]
+    },
+    {
+      "name": "windows-sdk",
+      "version": "10.0.26100.0",
+      "purpose": "system-provided",
+      "source": "Microsoft Windows SDK 10.0.26100.0 (VS Installer component)",
+      "sha256": "n/a-microsoft-installer-version-floor-only",
+      "verify_path": "",
+      "platforms": ["windows"]
+    },
+    {
+      "name": "d3d12-agility-sdk",
+      "version": "1.616.0",
+      "purpose": "runtime-shipped",
+      "source": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.616.0 (nupkg sha256 here; engine/external/d3d12/agility_sdk_lock.txt additionally pins nupkg + D3D12Core.dll SHA512)",
+      "sha256": "2c7b31f0e41192673ace986506c65b7cc7520610cfe5f30216152905e67ff5ba",
+      "verify_path": "",
+      "platforms": ["windows"]
+    },
+    {
+      "name": "dxc",
+      "version": "1.9.0.5399 (sdk-1.4.357.0-bundled)",
+      "purpose": "build-only",
+      "source": "vendored engine/external/VulkanSDK/Bin/dxc.exe; 定位逻辑沿用 engine/tests/test_d3d12_shader_compile_gate.cmake",
+      "sha256": "b05bc2ba3355fda065f1b39fa3b1aa6d87689a84a290e5f201c5b6efcce6cab8",
+      "verify_path": "VulkanSDK/Bin/dxc.exe",
+      "platforms": ["windows"]
+    },
+    {
+      "name": "glslang",
+      "version": "16.4.0 (sdk-1.4.357.0-bundled; 提供 glslangValidator 等价能力)",
+      "purpose": "build-only",
+      "source": "vendored engine/external/VulkanSDK/Bin/glslang.exe; myui 离线 shader 生成 (engine/CMakeLists.txt find_program glslangValidator) 在 CI 上改用此钉版二进制",
+      "sha256": "2f4825516c1e00ab923d4d6736ec4b536caddd8a15b41b0692ead207064ebb73",
+      "verify_path": "VulkanSDK/Bin/glslang.exe",
+      "platforms": ["windows", "linux"]
+    }
+  ]
+}
