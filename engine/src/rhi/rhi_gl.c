@@ -2769,8 +2769,12 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     if (!bd) return NULL;
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     /* R79-3: Removed trailing unbind — next glBindBuffer/glBindBufferBase
-     * will overwrite the generic binding point. Same pattern as R77-2. */
-    void *ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bd->size, GL_MAP_READ_BIT);
+     * will overwrite the generic binding point. Same pattern as R77-2.
+     * C-BUF-4: READ|WRITE — the contract makes map writes visible after
+     * unmap; a READ-only mapping makes the write spec-UB. No INVALIDATE
+     * flags: unwritten bytes keep their contents (C-BUF-2 neighbors). */
+    void *ptr = glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bd->size,
+                                 GL_MAP_READ_BIT | GL_MAP_WRITE_BIT);
     return ptr;
 }
 

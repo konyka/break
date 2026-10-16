@@ -2394,6 +2394,120 @@ static bool tv_test_scene_restore(RHIDevice *dev) {
     return pass;
 }
 
+/* Plan E C-BUF-1/2/4: cross-backend buffer staging/readback behavior contract.
+ * The STORAGE+initial_data buffer is DEVICE_LOCAL+staging on VK and a plain GL
+ * buffer — the same test body covers both memory classes. */
+static bool tv_test_buffer_staging_contract(const TestRenderState *rs) {
+    RHIDevice *dev = rs->device;
+    bool pass = true;
+    /* C-BUF-1: initial_data 字节精确回读（64B，含非 4 对齐尾部由 C-BUF-2 覆盖） */
+    u8 src[64];
+    for (u32 i = 0; i < 64u; i++) src[i] = (u8)(i * 3u + 1u);
+    RHIBufferDesc bd = { RHI_BUFFER_USAGE_STORAGE, sizeof(src), src };
+    RHIBuffer buf = rhi_buffer_create(dev, &bd);
+    u8 rb[64];
+    memset(rb, 0xAB, sizeof(rb));
+    if (!rhi_handle_valid(buf) || !rhi_buffer_read(dev, buf, rb, 0u, sizeof(rb)) ||
+        memcmp(rb, src, sizeof(src)) != 0) {
+        LOG_ERROR("FAIL: C-BUF-1 initial_data roundtrip");
+        pass = false;
+    }
+    /* C-BUF-2: region update 只动 [off, off+size)，含非对齐 offset 20/size 7 */
+    if (pass) {
+        u8 patch[7] = { 9u, 8u, 7u, 6u, 5u, 4u, 3u };
+        rhi_buffer_update_region(dev, buf, 20u, patch, sizeof(patch));
+        memset(rb, 0xAB, sizeof(rb));
+        if (!rhi_buffer_read(dev, buf, rb, 0u, sizeof(rb))) {
+            LOG_ERROR("FAIL: C-BUF-2 readback"); pass = false;
+        } else {
+            u8 want[64];
+            memcpy(want, src, sizeof(want));
+            memcpy(want + 20u, patch, sizeof(patch));
+            if (memcmp(rb, want, sizeof(want)) != 0) {
+                LOG_ERROR("FAIL: C-BUF-2 region isolation (off=20 size=7)");
+                pass = false;
+            }
+        }
+    }
+    /* C-BUF-4: map 写入 unmap 后 read 可见 */
+    if (pass) {
+        u8 *m = (u8 *)rhi_buffer_map(dev, buf);
+        if (!m) { LOG_ERROR("FAIL: C-BUF-4 map"); pass = false; }
+        else {
+            m[0] = 0xEEu;
+            rhi_buffer_unmap(dev, buf);
+            u8 one = 0u;
+            if (!rhi_buffer_read(dev, buf, &one, 0u, 1u) || one != 0xEEu) {
+                LOG_ERROR("FAIL: C-BUF-4 map/unmap visibility (got %u)", (u32)one);
+                pass = false;
+            }
+        }
+    }
+    if (rhi_handle_valid(buf)) rhi_buffer_destroy(dev, buf);
+    return pass;
+}
+
+/* Plan E C-BUF-3: rhi_cmd_update_buffer writes are ordered before later
+ * dispatches in the SAME command buffer (R183). */
+static bool tv_test_cmd_update_buffer_ordering(const TestRenderState *rs) {
+#ifdef ENGINE_VULKAN
+    static const char cs_src[] =
+        "#version 460\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std430, binding = 0) buffer Data { uint v; } d;\n"
+        "layout(std430, binding = 1) buffer Flag { uint f; } g;\n"
+        "void main() { g.f = (d.v == 0x5Au) ? 1u : 0u; }\n";
+#else
+    static const char cs_src[] =
+        "#version 430\n"
+        "layout(local_size_x = 1) in;\n"
+        "layout(std430, binding = 0) buffer Data { uint v; } d;\n"
+        "layout(std430, binding = 1) buffer Flag { uint f; } g;\n"
+        "void main() { g.f = (d.v == 0x5Au) ? 1u : 0u; }\n";
+#endif
+    RHIDevice *dev = rs->device;
+    u32 zero = 0u;
+    RHIBufferDesc dd = { RHI_BUFFER_USAGE_STORAGE, 4u, &zero };
+    RHIBufferDesc fd = { RHI_BUFFER_USAGE_STORAGE, 4u, &zero };
+    RHIBuffer data = rhi_buffer_create(dev, &dd);
+    RHIBuffer flag = rhi_buffer_create(dev, &fd);
+    RHIShader cs = rhi_shader_create_compute(dev, cs_src, sizeof(cs_src) - 1u);
+    RHIPipelineDesc pd = {0};
+    pd.is_compute = true;
+    pd.frag = cs;
+    RHIPipeline pipe = rhi_pipeline_create(dev, &pd);
+    bool pass = rhi_handle_valid(data) && rhi_handle_valid(flag) &&
+                rhi_handle_valid(cs) && rhi_handle_valid(pipe);
+    if (pass) {
+        RHICmdBuffer *cmd = rhi_frame_begin(dev);
+        if (!cmd) { pass = false; }
+        else {
+            u32 val = 0x5Au;
+            /* C-BUF-3: 同 CB 内 update → dispatch 必须读到新值。 */
+            rhi_cmd_update_buffer(cmd, data, 0u, &val, sizeof(val));
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_bind_storage_buffer(cmd, data, 0u);
+            rhi_cmd_bind_storage_buffer(cmd, flag, 1u);
+            rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+            rhi_frame_end(dev);
+            rhi_present(dev);
+            /* 与 test_ray_query_pixel 相同的 drain 惯例：再空跑一帧后读。 */
+            cmd = rhi_frame_begin(dev);
+            if (cmd) { rhi_frame_end(dev); rhi_present(dev); }
+            u32 got = 0xFFFFFFFFu;
+            if (!rhi_buffer_read(dev, flag, &got, 0u, sizeof(got)) || got != 1u) {
+                LOG_ERROR("FAIL: C-BUF-3 update not ordered before dispatch (flag=%u)", got);
+                pass = false;
+            }
+        }
+    }
+    if (rhi_handle_valid(pipe)) rhi_pipeline_destroy(dev, pipe);
+    if (rhi_handle_valid(cs))   rhi_shader_destroy(dev, cs);
+    if (rhi_handle_valid(flag)) rhi_buffer_destroy(dev, flag);
+    if (rhi_handle_valid(data)) rhi_buffer_destroy(dev, data);
+    return pass;
+}
+
 /* ========================================================================
  * R442: backend-neutral bodies of TEST 10/11/12. They were VK-only inline
  * blocks; the GL backend now has every RHI piece they need (texture arrays,
@@ -5671,6 +5785,24 @@ int main(int argc, char **argv) {
     LOG_INFO("RESULT: SCENE RESTORE TEST %s",
              restore_pass ? "PASSED ✓" : "FAILED");
 
+    /* Plan E Task 3: buffer staging/readback contract phases — placed after
+     * the readback family, on the shared (pre-backend-split) run path so both
+     * backends execute them. VK: runs before the known hybrid-GPU device-lost
+     * window (TEST 7b), i.e. on the live device. */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: BUFFER STAGING/READBACK CONTRACT (C-BUF-1/2/4)");
+    LOG_INFO("============================================");
+    bool bufstaging_pass = tv_test_buffer_staging_contract(&render);
+    LOG_INFO("RESULT: BUFFER STAGING CONTRACT TEST %s",
+             bufstaging_pass ? "PASSED ✓" : "FAILED");
+
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: CMD UPDATE BUFFER ORDERING (C-BUF-3)");
+    LOG_INFO("============================================");
+    bool buforder_pass = tv_test_cmd_update_buffer_ordering(&render);
+    LOG_INFO("RESULT: CMD UPDATE BUFFER ORDERING TEST %s",
+             buforder_pass ? "PASSED ✓" : "FAILED");
+
 #ifndef ENGINE_VULKAN
     /* OpenGL CTest: golden-image regression, real IBL, and the material-
      * indirect pixel gates. The expensive backend-specific stress body stays
@@ -5767,7 +5899,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -6782,7 +6914,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     }
 #endif
 
-    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
+    bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass &&

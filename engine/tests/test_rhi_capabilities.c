@@ -643,6 +643,24 @@ TEST(command_entrypoints_are_safe_without_current_device)
     rhi_mrt_fbo_unbind(NULL, 1u, 1u);
 }
 
+/* Plan E C-BUF-2/4: the buffer region/readback entry points fail closed on a
+ * null device and on overflowing offset/size — no crash, read returns false
+ * (same discipline as command_entrypoints_are_safe_without_current_device). */
+TEST(buffer_region_rejects_overflow_and_null)
+{
+    u8 bytes[8] = {0};
+
+    rhi_buffer_update(NULL, RHI_HANDLE_NULL, bytes, sizeof(bytes));
+    rhi_buffer_update_region(NULL, RHI_HANDLE_NULL, 0u, bytes, sizeof(bytes));
+    /* offset+size wrapping past SIZE_MAX must stay on the clamp/reject path. */
+    rhi_buffer_update_region(NULL, RHI_HANDLE_NULL, (usize)-1, bytes, (usize)-1);
+    ASSERT_FALSE(rhi_buffer_read(NULL, RHI_HANDLE_NULL, bytes, 0u, sizeof(bytes)));
+    ASSERT_FALSE(rhi_buffer_read(NULL, RHI_HANDLE_NULL, bytes, (usize)-1, (usize)-1));
+    ASSERT_EQ(rhi_buffer_map(NULL, RHI_HANDLE_NULL), NULL);
+    rhi_buffer_unmap(NULL, RHI_HANDLE_NULL);
+    rhi_cmd_update_buffer(NULL, RHI_HANDLE_NULL, 0u, bytes, sizeof(bytes));
+}
+
 TEST(device_creation_rejects_invalid_backend_dimensions_and_handles)
 {
     ASSERT_EQ(rhi_device_create((RHIBackend)99, NULL, NULL, 640u, 480u), NULL);
@@ -1165,6 +1183,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(device_controls_reject_null_device);
     RUN_TEST(device_resize_rejects_zero_dimensions);
     RUN_TEST(command_entrypoints_are_safe_without_current_device);
+    RUN_TEST(buffer_region_rejects_overflow_and_null);
     RUN_TEST(device_creation_rejects_invalid_backend_dimensions_and_handles);
     RUN_TEST(resource_api_rejects_null_and_malformed_inputs);
     RUN_TEST(resource_descriptors_reject_zero_and_unsupported_values);

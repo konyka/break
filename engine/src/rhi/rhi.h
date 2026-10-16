@@ -640,15 +640,33 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled);
 
 /* ---- Texel buffer ---- */
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1);
+/* Plan E C-BUF contracts (normative; pinned by test_vulkan's BUFFER STAGING
+ * CONTRACT and CMD UPDATE BUFFER ORDERING phases on both backends):
+ *   C-BUF-1  A buffer created with initial_data reads those bytes back
+ *            byte-exactly via rhi_buffer_read — HOST_VISIBLE and
+ *            DEVICE_LOCAL(+staging) have the same semantics.
+ *   C-BUF-2  rhi_buffer_update_region writes only [offset, offset+size);
+ *            every other byte keeps its prior content. offset/size need NO
+ *            caller alignment (backends absorb any non-coherent-atom
+ *            alignment internally) and are bounds-checked — out-of-range
+ *            regions are clamped/rejected, never UB.
+ *   C-BUF-3  rhi_cmd_update_buffer is ordered against every LATER dispatch/
+ *            draw recorded in the SAME command buffer (R183): the shader
+ *            reads the updated bytes.
+ *   C-BUF-4  Writes through the pointer returned by rhi_buffer_map become
+ *            visible to the device and to rhi_buffer_read after
+ *            rhi_buffer_unmap. Maps are read/write; unwritten bytes keep
+ *            their content (no invalidate). DEVICE_LOCAL buffers map through
+ *            a staging shadow (download on map, upload on unmap). */
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size);
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size);
-/* R186: Host readback 閳?works for HOST_VISIBLE and DEVICE_LOCAL (staging). */
+/* R186: Host readback 閳?works for HOST_VISIBLE and DEVICE_LOCAL (staging). C-BUF-1/2. */
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size);
 /* R171: Recorded GPU clear (recorded GPU buffer fill / glClearBufferSubData). Host
  * memcpy updates are NOT ordered between dispatches in the same Vulkan CB. */
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value);
 /* R183: Record a host閳墱PU buffer write into the command buffer (ordered vs
- * later dispatches). Prefer over rhi_buffer_update when the same buffer is
+ * later dispatches — C-BUF-3). Prefer over rhi_buffer_update when the same buffer is
  * rewritten multiple times in one CB (e.g. CSM cascade visibility). */
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                            const void *data, usize size);
@@ -798,6 +816,10 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
  * texture is already in a shader-read layout (no transition barrier). */
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit);
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex);
+/* C-BUF-4: read/write mapping. Writes through the pointer are visible to the
+ * device and to rhi_buffer_read after rhi_buffer_unmap; unwritten bytes keep
+ * their content (no invalidate). DEVICE_LOCAL buffers map through a staging
+ * shadow (VK). */
 void*       rhi_buffer_map(RHIDevice *dev, RHIBuffer buf);
 void        rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf);
 void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size);

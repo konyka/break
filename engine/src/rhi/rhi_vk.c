@@ -188,6 +188,7 @@ typedef struct {
     bool           is_texel;
     u8            *mapped;
     bool           device_local; /* R181: no persistent map; updates via staging */
+    u8            *map_shadow;  /* C-BUF-4: host shadow while a DEVICE_LOCAL buffer is mapped */
 } VKBufferData;
 
 typedef struct {
@@ -4656,6 +4657,7 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     if (!bd) return;
     vk_wait_frames(vk);
     if (bd->mapped) vkUnmapMemory(vk->device, bd->memory);
+    free(bd->map_shadow); /* C-BUF-4: abandoned mid-map shadow */
     if (bd->texel_view != VK_NULL_HANDLE) vkDestroyBufferView(vk->device, bd->texel_view, NULL);
     vkDestroyBuffer(vk->device, bd->buffer, NULL);
     vkFreeMemory(vk->device, bd->memory, NULL);
@@ -6475,9 +6477,7 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
 
     /* Accumulate all of this pipeline's storage-buffer binds into one set so
      * a shader reading bindings 0..7 sees every buffer (allocated lazily on the
-     * first bind after rhi_cmd_bind_pipeline). Updating an as-yet-unused set
-     * before the dispatch/draw consumes it is valid. */
-    bool need_bind = !vk->storage_set_valid;  /* R90-1: only bind once per pipeline */
+     * first bind after rhi_cmd_bind_pipeline). */
     if (!vk->storage_set_valid) {
         VkDescriptorSetAllocateInfo dsai = {0};
         dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -6504,21 +6504,27 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
     write.pBufferInfo = &buf_info;
 
     vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
-    /* R90-1: Skip redundant vkCmdBindDescriptorSets — the set is already bound
-     * from the first storage-buffer bind after pipeline bind. Subsequent
-     * vkUpdateDescriptorSets calls are visible to the GPU without re-binding. */
-    if (need_bind) {
-        VkPipelineBindPoint bp = cpd->is_compute ?
-            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-        /* R590: graphics pipelines place the storage set at their OWN index
-         * (textures/texel shift it past 0); compute keeps the historical 0
-         * (compute layouts wire storage first). */
-        u32 first_set = cpd->is_compute ? 0u :
-            (cpd->storage_set != (u8)VK_INVALID_SET ? (u32)cpd->storage_set : 0u);
-        vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
-            bp, cpd->layout,
-            first_set, 1, &ds, 0, NULL);
-    }
+    /* C-BUF-3 fix: re-bind the set on EVERY storage bind. R90-1 used to skip
+     * the re-bind after the first one and rely on the host having updated
+     * the already-bound set — but the spec lets drivers consume descriptor
+     * contents at vkCmdBindDescriptorSets host-execution time ("may be
+     * consumed during host execution of the command, or during shader
+     * execution... or in between"), so a later-binding write can be invisible
+     * to the dispatch. Observed on the local NVIDIA driver: the second
+     * rhi_cmd_bind_storage_buffer's buffer was never written by the shader
+     * (C-BUF-3 phase). Re-binding snapshots the accumulated set contents at
+     * a point after every update recorded so far, which is correct on both
+     * consumption models. */
+    VkPipelineBindPoint bp = cpd->is_compute ?
+        VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+    /* R590: graphics pipelines place the storage set at their OWN index
+     * (textures/texel shift it past 0); compute keeps the historical 0
+     * (compute layouts wire storage first). */
+    u32 first_set = cpd->is_compute ? 0u :
+        (cpd->storage_set != (u8)VK_INVALID_SET ? (u32)cpd->storage_set : 0u);
+    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+        bp, cpd->layout,
+        first_set, 1, &ds, 0, NULL);
 }
 
 bool rhi_backend_cmd_buffer_get_native_info(
@@ -8938,10 +8944,21 @@ void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return NULL;
     if (bd->mapped) return bd->mapped;
-    /* R186: DEVICE_LOCAL cannot be persistently mapped — use rhi_buffer_read. */
+    /* C-BUF-4: DEVICE_LOCAL maps through a host shadow — downloaded on map,
+     * uploaded back on unmap — so map writes are device/read-visible after
+     * unmap on BOTH backends (GL maps are ordinary writable buffer maps).
+     * Previously this refused with NULL, diverging from GL. */
     if (bd->device_local) {
-        LOG_WARN("VK: rhi_buffer_map on DEVICE_LOCAL buffer; use rhi_buffer_read");
-        return NULL;
+        if (bd->map_shadow) return bd->map_shadow; /* nested map */
+        bd->map_shadow = malloc(bd->size);
+        if (!bd->map_shadow) return NULL;
+        if (!vk_buffer_staging_download(vk, bd->buffer, 0, bd->map_shadow, bd->size)) {
+            free(bd->map_shadow);
+            bd->map_shadow = NULL;
+            LOG_WARN("VK: staging download failed in buffer_map");
+            return NULL;
+        }
+        return bd->map_shadow;
     }
     void *mapped = NULL;
     if (vkMapMemory(vk->device, bd->memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) {
@@ -8956,7 +8973,17 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     VKBackend *vk = vk_backend(dev);
     VKBufferData *bd = (VKBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return;
-    if (bd->mapped || bd->device_local) return; /* persistent / no map */
+    if (bd->mapped) return; /* persistent mapping */
+    /* C-BUF-4: publish the shadow's writes back to the DEVICE_LOCAL buffer. */
+    if (bd->device_local) {
+        if (bd->map_shadow) {
+            if (!vk_buffer_staging_upload(vk, bd->buffer, 0, bd->map_shadow, bd->size))
+                LOG_WARN("VK: staging upload failed in buffer_unmap");
+            free(bd->map_shadow);
+            bd->map_shadow = NULL;
+        }
+        return;
+    }
     vkUnmapMemory(vk->device, bd->memory);
 }
 

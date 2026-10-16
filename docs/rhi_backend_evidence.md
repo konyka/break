@@ -91,3 +91,13 @@
 | 2026-10-16 | 同上 | — | 阈值判定 | metal fps_avg / MoltenVK fps_avg = 50.05/49.57 = **1.010 ≥ 0.90** → macOS × 原生 Metal 升 **BENCHMARK_COMPARABLE**（阈值：不低于同机 MoltenVK 基线 90%，需求书 Task 15 Step 3）；iOS 无真机，保持 COMPILED |
 | 2026-10-16 | GitHub macos-14 runner | （契约/headless 面） | CI `macos-metal` lane（[run 38863992025](https://github.com/konyka/break/actions/runs/38863992025)，@f58546f6；修复轮后 [run 38866904726](https://github.com/konyka/break/actions/runs/38866904726)，@39431d91） | SUCCESS：编译 + metallib 断言 + headless/契约 ctest 全绿（与本机 GPU_RUNTIME/BENCHMARK_COMPARABLE 收据并列；runner 不构成 GPU-runtime 证据） |
 | 2026-10-16 | 同上（y-flip 取证） | 同上 | `BREAK_SCREENSHOT=5 ./build-rel-{metal,vk}/engine_demo --frames 8` → BMP 逐像素比对 + 目视 | Metal present 朝向正确（GL 约定：NDC +Y 朝上、正视口高度；VK 走负视口高度故其 readback 天然 bottom-up）；发现并修复 `rhi_screenshot` 行序违契（Metal blit 为 top-down，RHI 契约为 GL bottom-up——main.c BMP 写出依赖该契约），修复后 Metal 截图与 MoltenVK 截图朝向一致（调试文本正立可读） |
+
+## 收据追加（计划 E Task 3：buffer 契约 C-BUF-1..4，2026-10-16）
+
+契约内容（规范文本固化于 `engine/src/rhi/rhi.h`，双后端测试钉死于 test_vulkan 的 BUFFER STAGING CONTRACT / CMD UPDATE BUFFER ORDERING 两个 phase）：C-BUF-1 initial_data 字节精确回读（HOST_VISIBLE 与 DEVICE_LOCAL+staging 同语义）；C-BUF-2 `rhi_buffer_update_region` 只动 `[off,off+size)`、offset/size 无需调用方对齐、越界钳制；C-BUF-3 同 CB 内 `rhi_cmd_update_buffer` 对后续 dispatch/draw 有序；C-BUF-4 map 写入 unmap 后对 device 与 `rhi_buffer_read` 可见。
+
+| 日期 | 机器 | GPU / 驱动 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-16 | 本机（Windows） | NVIDIA GeForce RTX 4060 Laptop / api=1.4.351 driver=0x9a4a8000 | `ctest --test-dir build-vk -R '^test_vulkan$\|test_rhi_capabilities' --output-on-failure`（日志 `.superpowers/sdd/2026-10-14-rhi-plan-e-renderer-abi/evidence/task3_post_test_vulkan.txt`） | VK 本机 LIVE（phase 位于 run order 中 SCENE RESTORE 之后、历史 device-lost 窗口 TEST 7b 之前）：C-BUF-1/2/4 与 C-BUF-3 两 phase 均 `PASSED ✓`；`test_rhi_capabilities` 56/56（含新增 `buffer_region_rejects_overflow_and_null`）。附带发现：修复 C-BUF-3 暴露的 `rhi_cmd_bind_storage_buffer` R90-1 update-after-bind 违规（重绑累积集）后，本机 3/3 次 run 不再于 TEST 7b 触发历史性 `VK_ERROR_DEVICE_LOST`（回滚对照：无修复必复现）——规格 §7 的「环境性」lost 实为该潜在违规在此驱动消费模型下的表现；GOLDEN×2 仍 DRIFT（本机史上首次活设备到达 golden，金样 2026-06 提交，golden 权威在 CI）；UNIFIED GPU CULL 偶发 Hi-Z {0,0}（已知 §7 异常，3/4 run 绿） |
+| 待 CI | GitHub Actions | CI `gl` lane（Xvfb 真 GL） | 同 repo push 后 gl lane `test_vulkan` | GL lane 验证项（本机无可运行 GL，不伪造）：共享双后端 phase + `rhi_gl.c` map 补 `GL_MAP_WRITE_BIT`（C-BUF-4 规范符合性修复，仅扩权限不改内容语义） |
+
