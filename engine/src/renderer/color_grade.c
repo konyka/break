@@ -47,7 +47,7 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = cg_create_pipe(dev, "shaders/post_vk.vert", "shaders/color_grade_vk.frag");
 #else
     s->pipe = cg_create_pipe(dev, "shaders/post.vert", "shaders/color_grade.frag");

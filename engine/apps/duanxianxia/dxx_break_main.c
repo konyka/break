@@ -100,13 +100,18 @@ int main(void) {
   platform_get_logical_size(platform, &w, &h);
   platform_get_drawable_size(platform, &drawable_w, &drawable_h);
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_RHI_BACKEND_METAL)
+  backend = RHI_BACKEND_METAL;
+#elif defined(ENGINE_VULKAN)
   backend = RHI_BACKEND_VULKAN;
+#else
+  backend = RHI_BACKEND_OPENGL;
+#endif
+#if defined(ENGINE_VULKAN) || defined(ENGINE_RHI_BACKEND_METAL)
   device = rhi_device_create(backend, platform_surface_native(platform),
                              platform_display_native(platform), drawable_w,
                              drawable_h);
 #else
-  backend = RHI_BACKEND_OPENGL;
   device = rhi_device_create(backend, platform_window_native(platform),
                              platform_display_native(platform), drawable_w,
                              drawable_h);

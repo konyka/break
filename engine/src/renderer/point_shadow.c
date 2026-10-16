@@ -127,7 +127,7 @@ void point_shadow_init(PointShadowSystem *sys, RHIDevice *dev, u32 resolution) {
     }
 
     /* Depth-only pipeline: linear distance is written by the fragment shader. */
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     sys->depth_pipeline = ps_create_pipeline(dev,
         "shaders/point_shadow_depth_vk.vert",
         "shaders/point_shadow_depth_vk.frag");

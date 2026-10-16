@@ -56,7 +56,7 @@ bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height) {
     if (pw < 1) pw = 1;
     if (ph < 1) ph = 1;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     ssgi->ssgi_pipe = ssgi_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssgi_vk.frag", false);
     /* R550-A: dedicated final-stage shader — bloom_blur is shared with bloom
      * and cannot gain a chain-color sampler; ssgi_blur self-composites. */

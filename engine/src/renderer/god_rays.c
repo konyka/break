@@ -47,7 +47,7 @@ bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = gr_create_pipe(dev, "shaders/post_vk.vert", "shaders/god_rays_vk.frag");
 #else
     s->pipe = gr_create_pipe(dev, "shaders/post.vert", "shaders/god_rays.frag");

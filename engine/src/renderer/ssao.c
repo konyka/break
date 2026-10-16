@@ -47,7 +47,7 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     ssao->radius = 0.5f;
     ssao->bias = 0.025f;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     ssao->ssao_pipe = ssao_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssao_vk.frag");
     ssao->blur_pipe = ssao_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssao_blur_vk.frag");
 #else

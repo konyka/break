@@ -47,7 +47,7 @@ bool contact_shadow_init(ContactShadowSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = cs_create_pipe(dev, "shaders/post_vk.vert", "shaders/contact_shadow_vk.frag");
 #else
     s->pipe = cs_create_pipe(dev, "shaders/post.vert", "shaders/contact_shadow.frag");

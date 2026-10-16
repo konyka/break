@@ -47,7 +47,7 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     dof->focus_dist = -1.0f;
     dof->focus_range = 5.0f;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     dof->dof_pipe = dof_create_pipe(dev, "shaders/post_vk.vert", "shaders/dof_vk.frag");
 #else
     dof->dof_pipe = dof_create_pipe(dev, "shaders/post.vert", "shaders/dof.frag");

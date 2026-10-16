@@ -379,6 +379,7 @@ if(SHADERC_INCLUDE_DIR)
     # without the -I for rhi_vk.c (fatal 'shaderc/shaderc.h' not found)
     # even though the header and cache value were verified present.
     target_include_directories(engine PRIVATE ${SHADERC_INCLUDE_DIR})
+endif()
 
 # Plan C Task 11 (review fix C1): the Metal lane must read the *_vk
 # shader corpus (its offline manifest is keyed on those bytes). This
@@ -388,7 +389,6 @@ if(SHADERC_INCLUDE_DIR)
 # (its binding model is incompatible).
 if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     target_compile_definitions(engine PUBLIC ENGINE_SHADER_CORPUS_VK=1)
-endif()
 endif()
 if(ENGINE_VULKAN OR ENGINE_PLATFORM STREQUAL "macos")
     # rt_trace.c compiles <vulkan/vulkan.h> into the engine target under
@@ -509,6 +509,8 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*_vk.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.vert
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/particle.frag
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/depth_only.vert
+        ${CMAKE_CURRENT_SOURCE_DIR}/shaders/depth_only.frag
         ${CMAKE_CURRENT_SOURCE_DIR}/shaders/*.comp)
     get_filename_component(ENGINE_METAL_GLSLC_DIR
         ${ENGINE_METAL_GLSLC} DIRECTORY)
@@ -2811,6 +2813,17 @@ endif()
         add_test(NAME test_rhi_metal_resources
             COMMAND test_rhi_metal_resources)
         set_tests_properties(test_rhi_metal_resources PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
+        # Plan C Task 13: consumer smoke (dxx_break/engine_demo/myui)
+        # under the metal backend. engine_demo needs a window service;
+        # SKIP_RETURN_CODE 77 covers SSH/CI runners without one.
+        add_test(NAME test_macos_metal_consumer_smoke
+            COMMAND ${CMAKE_COMMAND}
+                -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}
+                -DSOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DMETAL_LANE=1
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_macos_metal_consumer_smoke.cmake)
+        set_tests_properties(test_macos_metal_consumer_smoke PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime")
     endif()
     add_test(NAME test_platform_vk_surface_contract

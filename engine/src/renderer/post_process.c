@@ -49,7 +49,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     pp->threshold = 1.0f;
 
     pp->extract_pipe = pp_create_pipe(dev,
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         "shaders/post_vk.vert", "shaders/bloom_extract_vk.frag");
 #else
         "shaders/post.vert", "shaders/bloom_extract.frag");
@@ -60,7 +60,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     }
 
     pp->blur_pipe = pp_create_pipe(dev,
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         "shaders/post_vk.vert", "shaders/bloom_blur_vk.frag");
 #else
         "shaders/post.vert", "shaders/bloom_blur.frag");
@@ -73,7 +73,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     }
 
     pp->tex_pipe = pp_create_pipe(dev,
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         "shaders/post_vk.vert", "shaders/post_tex_vk.frag");
 #else
         "shaders/post.vert", "shaders/post_tex.frag");
@@ -85,7 +85,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     }
 
     pp->composite_pipe = pp_create_pipe(dev,
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         "shaders/post_vk.vert", "shaders/bloom_composite_vk.frag");
 #else
         "shaders/post.vert", "shaders/bloom_composite.frag");

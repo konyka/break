@@ -45,7 +45,7 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
     memset(ssr, 0, sizeof(*ssr));
     ssr->device = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     ssr->ssr_pipe = ssr_create_pipe(dev, "shaders/post_vk.vert", "shaders/ssr_vk.frag");
 #else
     ssr->ssr_pipe = ssr_create_pipe(dev, "shaders/post.vert", "shaders/ssr.frag");

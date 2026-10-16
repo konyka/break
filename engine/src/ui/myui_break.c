@@ -88,7 +88,7 @@ static RHIPipeline break_ui_create_composite_pipeline(RHIDevice *device) {
   RHIShader fragment_shader;
   RHIPipeline pipeline;
   RHIPipelineDesc desc;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
   vertex_source = break_ui_read_shader("shaders/post_vk.vert", &vertex_len);
   fragment_source =
       break_ui_read_shader("shaders/post_tex_vk.frag", &fragment_len);

@@ -1080,7 +1080,7 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
   c->state.clip = my_rect_init(0, 0, (int32_t)width, (int32_t)height);
   my_vggeometry_init(&c->geo, allocator);
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
   font_vert = "shaders/font_vk.vert";
   font_frag = "shaders/font_vk.frag";
   image_vert = "shaders/ui_img_vk.vert";

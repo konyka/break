@@ -47,7 +47,7 @@ bool motion_blur_init(MotionBlurSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = mb_create_pipe(dev, "shaders/post_vk.vert", "shaders/motion_blur_vk.frag");
 #else
     s->pipe = mb_create_pipe(dev, "shaders/post.vert", "shaders/motion_blur.frag");

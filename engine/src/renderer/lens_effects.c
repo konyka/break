@@ -47,7 +47,7 @@ bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = le_create_pipe(dev, "shaders/post_vk.vert", "shaders/lens_effects_vk.frag");
 #else
     s->pipe = le_create_pipe(dev, "shaders/post.vert", "shaders/lens_effects.frag");

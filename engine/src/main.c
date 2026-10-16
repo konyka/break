@@ -342,7 +342,7 @@ static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
 }
 
 static bool render_init(RenderState *rs, Platform *platform) {
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_RHI_BACKEND_METAL)
     void *window = platform_surface_native(platform);
 #else
     void *window = platform_window_native(platform);
@@ -352,7 +352,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
     platform_get_drawable_size(platform, &w, &h);
 
     rs->device = rhi_device_create(
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_RHI_BACKEND_METAL)
+        RHI_BACKEND_METAL,
+#elif defined(ENGINE_VULKAN)
         RHI_BACKEND_VULKAN,
 #else
         RHI_BACKEND_OPENGL,
@@ -362,7 +364,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
 
     usize vs_len = 0, fs_len = 0;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     char *vs_src = shader_read_file("shaders/blinn_phong_vk.vert", &vs_len);
     char *fs_src = shader_read_file("shaders/blinn_phong_vk.frag", &fs_len);
 #else
@@ -2754,7 +2756,7 @@ int main(int argc, char **argv) {
     bool imui_sec_quality = true;
 
     HotReloadPipeline hotreload = {0};
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     hotreload_pipeline_init(&hotreload, render.device,
                              "shaders/blinn_phong_vk.vert", "shaders/blinn_phong_vk.frag", NULL);
 #else
@@ -2893,7 +2895,13 @@ int main(int argc, char **argv) {
     }
 
     Scene scene = {0};
-    const char *model_path = (argc > 1) ? argv[1] : "assets/test.glb";
+    /* Model path: first non-flag argv (skipping --frames N and its value),
+     * preserving the legacy argv[1] behavior. */
+    const char *model_path = "assets/test.glb";
+    for (int ai = 1; ai < argc; ++ai) {
+        if (strcmp(argv[ai], "--frames") == 0) { ++ai; continue; }
+        if (argv[ai][0] != '-') { model_path = argv[ai]; break; }
+    }
     if (!asset_load_gltf(&asset, model_path, &scene)) {
         LOG_WARN("No model loaded (%s)", model_path);
     }
@@ -3883,6 +3891,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
      *   BREAK_CAM_SPIN=deg  scripted per-frame camera yaw increment (R446) */
     i64 auto_exit_frames = 0;
     { const char *e = getenv("BREAK_FRAMES");    if (e) auto_exit_frames = atoll(e); }
+    /* Task 13: --frames N argv early-exit (consumer smoke on CI/SSH hosts;
+     * last of BREAK_FRAMES/--frames wins). */
+    for (int ai = 1; ai + 1 < argc; ++ai)
+        if (strcmp(argv[ai], "--frames") == 0)
+            auto_exit_frames = atoll(argv[ai + 1]);
     /* R445: BREAK_SCREENSHOT=N saves one screenshot after frame N completes
      * (same readback path as F12). A bare/0 value falls back to the
      * BREAK_FRAMES exit frame. Independent of and composable with

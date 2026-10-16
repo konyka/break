@@ -131,7 +131,9 @@ inject_defines() {
 # contract test pins this list). Row: <file> <comma-separated defines in
 # call order>. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
 # FORWARD_MRT (main.c:491-498), and the texture-array path appends
-# CLUSTERED_ARR (main.c:535).
+# CLUSTERED_ARR (main.c:535). The deferred renderer injects HAS_IBL into
+# every fragment stage (deferred.c defrd_inject_define — byte-identical to
+# shader_inject_define on these #version-first files).
 VARIANTS='
 blinn_phong_vk.vert FORWARD_MRT
 blinn_phong_vk.frag FORWARD_MRT
@@ -154,6 +156,10 @@ water_vk.vert FORWARD_MRT
 water_vk.frag FORWARD_MRT
 particle.vert FORWARD_MRT
 particle.frag FORWARD_MRT
+deferred_light_vk.frag HAS_IBL
+gbuffer_vk.frag HAS_IBL
+gbuffer_arr_vk.frag HAS_IBL
+gbuffer_skinned_vk.frag HAS_IBL
 '
 
 process_one() {
@@ -189,8 +195,9 @@ for src in "$SHADER_DIR"/*.comp; do
     process_one "$src" comp kernel
 done
 # Shared-source graphics shaders used by the Vulkan path without a _vk
-# variant (particles), so the Metal pipeline needs them too (Task 11).
-for src in particle.vert particle.frag; do
+# variant (particles, CSM depth pass), so the Metal pipeline needs them too
+# (Task 11/13).
+for src in particle.vert particle.frag depth_only.vert depth_only.frag; do
     [ -e "$SHADER_DIR/$src" ] || continue
     case "$src" in
         *.vert) p_stage=vert; p_model=vertex ;;

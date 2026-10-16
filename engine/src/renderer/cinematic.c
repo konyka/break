@@ -48,7 +48,7 @@ bool cinematic_init(CinematicSystem *cine, RHIDevice *dev) {
     cine->vignette = 0.4f;
     cine->grain = 0.03f;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     cine->cine_pipe = cine_create_pipe(dev, "shaders/post_vk.vert", "shaders/cinematic_vk.frag");
 #else
     cine->cine_pipe = cine_create_pipe(dev, "shaders/post.vert", "shaders/cinematic.frag");

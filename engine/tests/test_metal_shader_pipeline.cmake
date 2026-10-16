@@ -48,6 +48,7 @@ expect_file_contains("${script}" "variants/")
 # variant row fails this contract.
 foreach(src_file
         "${REPO_ROOT}/engine/src/main.c"
+        "${REPO_ROOT}/engine/src/renderer/deferred.c"
         "${REPO_ROOT}/engine/src/renderer/particles.c"
         "${REPO_ROOT}/engine/src/renderer/skybox.c"
         "${REPO_ROOT}/engine/src/renderer/terrain.c"
@@ -58,7 +59,7 @@ foreach(src_file
         continue()
     endif()
     file(READ "${src_file}" src_text)
-    string(REGEX MATCHALL "shader_inject_define\\([^\"]*\"[A-Z_]+\"" inject_hits "${src_text}")
+    string(REGEX MATCHALL "(shader|defrd)_inject_define\\([^\"]*\"[A-Z_]+\"" inject_hits "${src_text}")
     foreach(hit ${inject_hits})
         string(REGEX MATCH "\"[A-Z_]+\"$" def_tok "${hit}")
         string(REGEX REPLACE "\"" "" def_tok "${def_tok}")

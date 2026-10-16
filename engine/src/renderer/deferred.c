@@ -234,7 +234,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         gbuf_desc.mrt_formats[3] = RHI_FORMAT_R16G16B16A16_SFLOAT;
         gbuf_desc.mrt_formats[4] = RHI_FORMAT_R16G16B16A16_SFLOAT;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         sys->gbuffer_pipeline = defrd_compile_pipeline(
             dev, "shaders/gbuffer_vk.vert", "shaders/gbuffer_vk.frag", &gbuf_desc);
 #else
@@ -246,7 +246,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
          * execute mega draw (same MRT render-pass compat via mrt_formats).
          * Optional: a missing/failed shader leaves the handle invalid and the
          * caller keeps the per-group path — not fatal for deferred_init. */
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         sys->gbuffer_arr_pipeline = defrd_compile_pipeline(
             dev, "shaders/gbuffer_arr_vk.vert", "shaders/gbuffer_arr_vk.frag", &gbuf_desc);
 #else
@@ -264,7 +264,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         skinned_desc.vertex_stride      = 16u * sizeof(f32); /* pos3+normal3+uv2+joints4+weights4 = 16 floats = 64B */
         skinned_desc.skinned_vertex     = true;
         skinned_desc.uses_texel_buffer  = true;
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         sys->gbuffer_skinned_pipeline = defrd_compile_pipeline(
             dev, "shaders/gbuffer_skinned_vk.vert", "shaders/gbuffer_skinned_vk.frag", &skinned_desc);
 #else
@@ -285,7 +285,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
         light_desc.depth_write_disable = true;
         light_desc.disable_culling    = true;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
         sys->lighting_pipeline = defrd_compile_pipeline(
             dev, "shaders/deferred_light_vk.vert", "shaders/deferred_light_vk.frag",
             &light_desc);

@@ -52,7 +52,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
     vol->fog_color[1] = 0.55f;
     vol->fog_color[2] = 0.6f;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     vol->vol_pipe = vol_create_pipe(dev, "shaders/post_vk.vert", "shaders/volumetric_vk.frag");
 #else
     vol->vol_pipe = vol_create_pipe(dev, "shaders/post.vert", "shaders/volumetric.frag");

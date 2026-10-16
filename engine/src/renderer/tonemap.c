@@ -56,7 +56,7 @@ bool tonemap_init(TonemapSystem *tm, RHIDevice *dev) {
     tm->auto_exposure = true;
     tm->lum_idx      = 0;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     tm->tm_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/tonemap_vk.frag");
     tm->lum_pipe = tm_create_pipe(dev, "shaders/post_vk.vert", "shaders/luminance_vk.frag");
 #else

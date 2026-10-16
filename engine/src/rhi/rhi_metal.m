@@ -262,6 +262,11 @@ static RHIResult metal_drain(RHIDevice *dev, MetalBackend *mb) {
 /* Current render-pass target (review fix C1): rhi_cmd_clear_color inside a
  * pass reopens a Clear pass on the SAME target (VK vkCmdClearAttachments
  * in-place parity) instead of hijacking to the screen pass. */
+/* frame_begin auto-opens the screen pass (Task 13, VK parity); the helper
+ * lives with the pass family below. */
+static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h,
+                                   bool depth_load);
+
 enum {
     METAL_PASS_NONE = 0,
     METAL_PASS_SCREEN,
@@ -693,6 +698,12 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     cmd->clear_pending = true;
     mb->frame_started = true;
     mb->frame_submitted = false;
+    /* VK parity (rhi_vk.c frame_begin opens the swapchain pass inline):
+     * the engine never calls begin_render_pass explicitly — main.c and myui
+     * draw to the screen straight after acquire, so the screen pass must be
+     * open here (clear with cmd->clear_color; C1 same-target reopen covers
+     * a later rhi_cmd_clear_color). */
+    metal_open_screen_pass(cmd, dev->width, dev->height, false);
     rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
     return cmd;
     }   /* @autoreleasepool */
@@ -2398,10 +2409,10 @@ static void metal_open_screen_pass(RHICmdBuffer *cmd, u32 w, u32 h,
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
     if (cmd == NULL || cmd->backend == NULL) return;
     MetalBackend *mb = cmd->backend;
-    if (cmd->render_pass_open) {
-        LOG_ERROR("rhi_metal: render pass already open");
-        return;
-    }
+    /* VK parity (rhi_vk.c:6166): already-open is a silent no-op — since
+     * Task 13 frame_begin auto-opens the screen pass, explicit
+     * begin_render_pass callers just continue on the open pass. */
+    if (cmd->render_pass_open) return;
     if (cmd->cmd == nil || mb->drawable == nil) {
         /* Fail closed: no frame in flight (or no drawable) — nothing to
          * encode into. */
@@ -2470,10 +2481,16 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
 }
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_vertex_buffer not implemented");
-    (void)cmd;
-    (void)buf;
-    (void)offset;
+    MetalBuffer *bb;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
+                                               RHI_RES_BUFFER);
+    if (bb == NULL) return;
+    /* The Task 8 vertex-layout table binds every attribute to
+     * layouts[0].bufferIndex 0 (VK single-binding parity). */
+    [cmd->render_encoder setVertexBuffer:bb->buffer
+                                  offset:(NSUInteger)offset
+                                 atIndex:0u];
 }
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
@@ -2499,21 +2516,24 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h, f32 min
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_scissor not implemented");
-    (void)cmd;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    /* Metal scissor is unsigned and clipped to the render target; negative
+     * origins clamp (VK allows signed offsets). */
+    MTLScissorRect sc = {
+        (NSUInteger)(x < 0 ? 0 : x),
+        (NSUInteger)(y < 0 ? 0 : y),
+        (NSUInteger)w,
+        (NSUInteger)h
+    };
+    [cmd->render_encoder setScissorRect:sc];
 }
 
 void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_scissor_top_left not implemented");
-    (void)cmd;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    /* Top-left origin, matching Metal's scissor convention directly. */
+    MTLScissorRect sc = { (NSUInteger)x, (NSUInteger)y,
+                          (NSUInteger)w, (NSUInteger)h };
+    [cmd->render_encoder setScissorRect:sc];
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
@@ -2788,11 +2808,20 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f3
 }
 
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_texture not implemented");
-    (void)cmd;
-    (void)tex;
-    (void)sampler;
-    (void)unit;
+    MetalTexture *td;
+    MetalSampler *sd;
+    if (cmd == NULL || cmd->render_encoder == nil) return;
+    td = (MetalTexture *)rhi_get_resource_typed(g_current_device, tex,
+                                                RHI_RES_TEXTURE);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (td == NULL || sd == NULL) return;
+    /* Graphics material set = set 0; combined samplers flatten to
+     * texture(unit)+sampler(unit) (Task 10 contract). */
+    [cmd->render_encoder setFragmentTexture:td->texture
+                                    atIndex:(NSUInteger)unit];
+    [cmd->render_encoder setFragmentSamplerState:sd->sampler
+                                         atIndex:(NSUInteger)unit];
 }
 
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISampler sampler) {
@@ -4674,29 +4703,82 @@ void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face,
     [view release];
 }
 
+/* Compute sampler_mip set binding (IBL capture / Hi-Z paths). VK compute
+ * layout parity: sampler_mip is set 2, and `unit` is the binding within it;
+ * the Task 10 flattening maps combined samplers to set*4+binding, so the
+ * MSL texture/sampler index = 2*4+unit = 8+unit (u_env_map (2,1) -> 9,
+ * pinned by Metal validation). */
+static void metal_compute_bind_tex_smp(RHICmdBuffer *cmd, id<MTLTexture> tex,
+                                       id<MTLSamplerState> smp, u32 unit) {
+    id<MTLComputeCommandEncoder> enc = metal_ensure_compute_encoder(cmd);
+    u32 index;
+    if (enc == nil) return;
+    index = 8u + unit;
+    if (tex != nil) [enc setTexture:tex atIndex:(NSUInteger)index];
+    if (smp != nil) [enc setSamplerState:smp atIndex:(NSUInteger)index];
+}
+
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_cubemap_sampler not implemented");
-    (void)cmd;
-    (void)cm;
-    (void)sampler;
-    (void)unit;
+    MetalTexture *cd;
+    MetalSampler *sd;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    cd = (MetalTexture *)rhi_get_resource_typed(g_current_device, cm,
+                                                RHI_RES_CUBEMAP);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (cd == NULL || sd == NULL) return;
+    metal_compute_bind_tex_smp(cmd, cd->texture, sd->sampler, unit);
+}
+
+/* Bind a full 2D texture (mip 0) + sampler for a compute pipeline's
+ * sampler_mip set (same index contract as bind_cubemap_sampler). */
+void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
+    MetalTexture *td;
+    MetalSampler *sd;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    td = (MetalTexture *)rhi_get_resource_typed(g_current_device, tex,
+                                                RHI_RES_TEXTURE);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (td == NULL || sd == NULL) return;
+    metal_compute_bind_tex_smp(cmd, td->texture, sd->sampler, unit);
 }
 
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_texture_mip not implemented");
-    (void)cmd;
-    (void)tex;
-    (void)sampler;
-    (void)unit;
-    (void)mip_level;
-}
-
-void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_texture_compute not implemented");
-    (void)cmd;
-    (void)tex;
-    (void)sampler;
-    (void)unit;
+    MetalTexture *td;
+    MetalSampler *sd;
+    id<MTLComputeCommandEncoder> enc;
+    id<MTLTexture> view;
+    u32 index;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    td = (MetalTexture *)rhi_get_resource_typed(g_current_device, tex,
+                                                RHI_RES_TEXTURE);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (td == NULL || sd == NULL || mip_level >= td->mip_levels) return;
+    view = td->texture;
+    if (mip_level > 0u) {
+        /* newTextureViewWithPixelFormat: returns +1 (new* rule). */
+        view = [td->texture
+            newTextureViewWithPixelFormat:td->texture.pixelFormat
+                              textureType:MTLTextureType2D
+                                   levels:NSMakeRange((NSUInteger)mip_level, 1u)
+                                   slices:NSMakeRange(0u, 1u)];
+        if (view == nil) {
+            LOG_ERROR("rhi_metal: mip %u texture view failed",
+                      (unsigned)mip_level);
+            return;
+        }
+    }
+    enc = metal_ensure_compute_encoder(cmd);
+    if (enc == nil) {
+        if (view != td->texture) [view release];
+        return;
+    }
+    index = 8u + unit;   /* see metal_compute_bind_tex_smp */
+    [enc setTexture:view atIndex:(NSUInteger)index];
+    [enc setSamplerState:sd->sampler atIndex:(NSUInteger)index];
+    if (view != td->texture) [view release];
 }
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {

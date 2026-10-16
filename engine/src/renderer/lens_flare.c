@@ -51,7 +51,7 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
     lf->device = dev;
     lf->intensity = 0.5f;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     lf->lf_pipe = lf_create_pipe(dev, "shaders/post_vk.vert", "shaders/lens_flare_vk.frag");
 #else
     lf->lf_pipe = lf_create_pipe(dev, "shaders/post.vert", "shaders/lens_flare.frag");

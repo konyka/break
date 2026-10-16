@@ -47,7 +47,7 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = sh_create_pipe(dev, "shaders/post_vk.vert", "shaders/sharpen_vk.frag");
 #else
     s->pipe = sh_create_pipe(dev, "shaders/post.vert", "shaders/sharpen.frag");

@@ -45,7 +45,7 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     if (!fxaa || !dev) return false;
     fxaa->device = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     fxaa->fxaa_pipe = fxaa_create_pipe(dev, "shaders/post_vk.vert", "shaders/fxaa_vk.frag");
 #else
     fxaa->fxaa_pipe = fxaa_create_pipe(dev, "shaders/post.vert", "shaders/fxaa.frag");

@@ -45,7 +45,7 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
     memset(sys, 0, sizeof(*sys));
     sys->device = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     sys->pipe = fv_create_pipe(dev, "shaders/post_vk.vert", "shaders/camera_velocity_vk.frag");
 #else
     sys->pipe = fv_create_pipe(dev, "shaders/post.vert", "shaders/camera_velocity.frag");

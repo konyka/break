@@ -69,7 +69,7 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     caa->device = dev;
 
     /* Try loading combined TAA+FXAA shader */
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     caa->combined_pipe = cpp_create_pipe(dev,
         "shaders/post_vk.vert", "shaders/combined_taa_fxaa_vk.frag", true, false);
 #else
@@ -249,7 +249,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
     cc->device = dev;
 
     /* Try loading combined tonemap+colorgrade+cinematic shader */
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     cc->combined_pipe = cpp_create_pipe(dev,
         "shaders/post_vk.vert", "shaders/combined_color_vk.frag", false, true);
 #else

@@ -49,7 +49,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->pipe = ups_create_pipe(dev, "shaders/post_vk.vert", "shaders/upscale_vk.frag");
 #else
     s->pipe = ups_create_pipe(dev, "shaders/post.vert", "shaders/upscale.frag");

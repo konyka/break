@@ -47,7 +47,7 @@ bool sss_init(SSSSystem *s, RHIDevice *dev, u32 w, u32 h) {
     memset(s, 0, sizeof(*s));
     s->dev = dev;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     s->h_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vk.frag");
     s->v_pipe = sss_create_pipe(dev, "shaders/post_vk.vert", "shaders/sss_vertical_vk.frag");
 #else

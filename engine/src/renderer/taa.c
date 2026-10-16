@@ -47,7 +47,7 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
     taa->history_idx = 0;
     taa->first_frame = true;
 
-#ifdef ENGINE_VULKAN
+#if defined(ENGINE_VULKAN) || defined(ENGINE_SHADER_CORPUS_VK)
     taa->resolve_pipe = taa_create_pipe(dev, "shaders/post_vk.vert", "shaders/taa_vk.frag");
 #else
     taa->resolve_pipe = taa_create_pipe(dev, "shaders/post.vert", "shaders/taa.frag");
