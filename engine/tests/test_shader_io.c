@@ -1587,6 +1587,14 @@ TEST(vk_push_tables_match_reflection)
         { "sss_vertical_vk.frag", "u_sssv_sw", "u_sssv_sw", 4u, 4u },
         { "sss_vertical_vk.frag", "u_sssv_sh", "u_sssv_sh", 8u, 4u },
         { "sss_vertical_vk.frag", "u_sssv_max_dist", "u_sssv_max_dist", 12u, 4u },
+        /* particle.vert（particles render 的 uses_storage graphics 管线；
+         * 块实例别名 push.view/push.proj，legacy uses_storage 段 0/64。
+         * C-2A review 修复 pin：alias 的 delta 是「成员内」偏移 —— 曾把
+         * push.proj 的 legacy 绝对偏移 64 误写进 delta（64+64=128 腐蚀
+         * VK 粒子投影写入），下方 alias 算术 pin 钉死 member+delta ==
+         * legacy 值。 */
+        { "particle.vert", "push.view", "view", 0u, 0u },
+        { "particle.vert", "push.proj", "proj", 64u, 0u },
     };
     static char src[32768];
     ShaderIOPushMember members[32];
@@ -1656,6 +1664,55 @@ TEST(vk_push_tables_match_reflection)
                        current, members[j].name, members[j].offset);
             }
             ASSERT_TRUE(covered);
+        }
+    }
+
+    /* C-2A review pin：块实例别名的「运行时算术」。上面的行只证明 legacy
+     * 值落在反射成员范围内；bindings/legacy 实际输出的是 rhi_vk.c
+     * vk_push_alias_rows 的 成员反射偏移 + delta。这里静态读出该表每个
+     * particle 家族行的 delta 字面量，断言 反射成员偏移 + delta == legacy
+     * 值 —— 最初的 push.proj delta 64u（64+64=128≠64）正是缺这一层 pin
+     * 才漏过所有 gate。行内解析容忍表对齐空格（成员名回读校验防误配）。 */
+    {
+        static const struct {
+            const char *alias;
+            const char *file;
+            const char *member;
+            u32 legacy;
+        } pin[] = {
+            { "push.dt",   "particle_update.comp", "dt",   0u },
+            { "push.view", "particle.vert",        "view", 0u },
+            { "push.proj", "particle.vert",        "proj", 64u },
+        };
+        static char vk_src[524288];
+        ASSERT_TRUE(read_engine_source("rhi/rhi_vk.c", vk_src, sizeof(vk_src)));
+        for (usize i = 0u; i < sizeof(pin) / sizeof(pin[0]); i++) {
+            ASSERT_TRUE(read_shader_source(pin[i].file, src, sizeof(src)));
+            n = shader_reflect_push_constants(src, strlen(src), members, 32u);
+            const ShaderIOPushMember *m = push_member_by_name(members, n,
+                                                               pin[i].member);
+            ASSERT_NOT_NULL(m);
+            char needle[96];
+            snprintf(needle, sizeof(needle), "{ \"%s\",", pin[i].alias);
+            const char *row = strstr(vk_src, needle);
+            char row_member[64] = {0};
+            unsigned delta = 0u;
+            if (row == NULL ||
+                sscanf(row + strlen(needle), " \"%63[^\"]\" , %u",
+                       row_member, &delta) != 2 ||
+                strcmp(row_member, pin[i].member) != 0) {
+                printf("  FAIL: alias row '%s' -> '%s' not found/parseable in"
+                       " rhi_vk.c vk_push_alias_rows\n", pin[i].alias,
+                       pin[i].member);
+            }
+            ASSERT_NOT_NULL(row);
+            ASSERT_TRUE(strcmp(row_member, pin[i].member) == 0);
+            if (m->offset + (u32)delta != pin[i].legacy) {
+                printf("  FAIL: alias %s: member@%u + delta %u = %u,"
+                       " legacy %u\n", pin[i].alias, m->offset, delta,
+                       m->offset + (u32)delta, pin[i].legacy);
+            }
+            ASSERT_EQ(m->offset + (u32)delta, pin[i].legacy);
         }
     }
 }

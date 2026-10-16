@@ -7389,7 +7389,11 @@ static const VKPushAliasRow vk_push_alias_rows[] = {
      * exactly like the legacy glGetUniformLocation did. */
     { "push.dt",   "dt",   0u },
     { "push.view", "view", 0u },
-    { "push.proj", "proj", 64u },
+    /* delta is the byte offset INSIDE the member: particle.vert's block is
+     * view@0/proj@64 (std430 mats), so the alias slot is member offset + 0.
+     * The initial 64u delta double-counted the member offset (64+64=128)
+     * and corrupted the VK particle projection write. */
+    { "push.proj", "proj", 0u },
     /* Stage C-2 batch 6 (terrain): terrain_vk packs light dir+bias into
      * u_light_dir_bias, color+water_y into u_light_color_watery, ambient+
      * time into u_ambient_time. The vert carries a real u_camera_pos member
