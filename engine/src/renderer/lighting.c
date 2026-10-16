@@ -117,6 +117,7 @@ void light_system_init(LightSystem *ls, RHIDevice *dev) {
 
 void light_system_shutdown(LightSystem *ls) {
     if (!ls->device) return;
+    if (ls->bind_cluster_cull) { rhi_pipeline_bindings_destroy(ls->device, ls->bind_cluster_cull); ls->bind_cluster_cull = NULL; }
     if (rhi_handle_valid(ls->cluster_cull_pipeline)) rhi_pipeline_destroy(ls->device, ls->cluster_cull_pipeline);
     if (rhi_handle_valid(ls->light_grid_buf[0])) rhi_buffer_destroy(ls->device, ls->light_grid_buf[0]);
     if (rhi_handle_valid(ls->light_grid_buf[1])) rhi_buffer_destroy(ls->device, ls->light_grid_buf[1]);
@@ -371,9 +372,16 @@ bool light_system_init_gpu_cull(LightSystem *ls) {
         return false;
     }
 
-    ls->cc_loc_vp      = rhi_pipeline_get_uniform_location(ls->device, ls->cluster_cull_pipeline, "u_cc_vp");
-    ls->cc_loc_params0 = rhi_pipeline_get_uniform_location(ls->device, ls->cluster_cull_pipeline, "u_cc_params0");
-    ls->cc_loc_params1 = rhi_pipeline_get_uniform_location(ls->device, ls->cluster_cull_pipeline, "u_cc_params1");
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_cc_vp/
+     * u_cc_params0/u_cc_params1 是 cluster_cull.comp 的 push 成员名
+     * （GL 分支同名 loose uniform），直接命中，无别名行。 */
+    ls->bind_cluster_cull = rhi_pipeline_bindings_create(ls->device, ls->cluster_cull_pipeline);
+    if (!ls->bind_cluster_cull)
+        LOG_WARN("Lighting: bindings create failed; uniform locations resolve -1");
+
+    ls->cc_loc_vp      = rhi_pipeline_bindings_resolve(ls->bind_cluster_cull, "u_cc_vp");
+    ls->cc_loc_params0 = rhi_pipeline_bindings_resolve(ls->bind_cluster_cull, "u_cc_params0");
+    ls->cc_loc_params1 = rhi_pipeline_bindings_resolve(ls->bind_cluster_cull, "u_cc_params1");
     ls->gpu_cull = true;
     LOG_INFO("Lighting: GPU cluster binning enabled");
     return true;

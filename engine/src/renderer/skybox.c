@@ -59,10 +59,17 @@ bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt) {
         return false;
     }
 
-    sb->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_inv_proj");
-    sb->loc_view = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_view");
-    sb->loc_sun_dir = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_sun_dir");
-    sb->loc_sun_color = rhi_pipeline_get_uniform_location(dev, sb->pipeline, "u_sun_color");
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_inv_proj/u_view
+     * 在 skybox_vk.vert 与 skybox_vk.frag 的 push 块里偏移一致（0/64），
+     * u_sun_dir/u_sun_color 是 frag 成员；两后端同名同源，无别名行。 */
+    sb->bind_pipeline = rhi_pipeline_bindings_create(dev, sb->pipeline);
+    if (!sb->bind_pipeline)
+        LOG_WARN("Skybox: bindings create failed; uniform locations resolve -1");
+
+    sb->loc_inv_proj = rhi_pipeline_bindings_resolve(sb->bind_pipeline, "u_inv_proj");
+    sb->loc_view = rhi_pipeline_bindings_resolve(sb->bind_pipeline, "u_view");
+    sb->loc_sun_dir = rhi_pipeline_bindings_resolve(sb->bind_pipeline, "u_sun_dir");
+    sb->loc_sun_color = rhi_pipeline_bindings_resolve(sb->bind_pipeline, "u_sun_color");
 
     sb->ready = true;
     return true;
@@ -70,6 +77,7 @@ bool skybox_init(Skybox *sb, RHIDevice *dev, bool forward_mrt) {
 
 void skybox_shutdown(Skybox *sb) {
     if (!sb->device) return;
+    if (sb->bind_pipeline) { rhi_pipeline_bindings_destroy(sb->device, sb->bind_pipeline); sb->bind_pipeline = NULL; }
     if (rhi_handle_valid(sb->pipeline)) rhi_pipeline_destroy(sb->device, sb->pipeline);
     sb->ready = false;
 }

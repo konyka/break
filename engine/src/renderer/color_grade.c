@@ -58,6 +58,12 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_cg_ 前缀名是
+     * color_grade(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    s->bind_pipe = rhi_pipeline_bindings_create(dev, s->pipe);
+    if (!s->bind_pipe)
+        LOG_WARN("ColorGrade: bindings create failed; uniform locations resolve -1");
+
     s->fbo = rhi_offscreen_fbo_create(dev, w, h);
 
     RHISamplerDesc sdesc = {
@@ -76,11 +82,11 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
-    s->loc_saturation  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_saturation");
-    s->loc_contrast    = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_contrast");
-    s->loc_brightness  = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_brightness");
-    s->loc_temperature = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_temperature");
-    s->loc_tint        = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_cg_tint");
+    s->loc_saturation  = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_cg_saturation");
+    s->loc_contrast    = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_cg_contrast");
+    s->loc_brightness  = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_cg_brightness");
+    s->loc_temperature = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_cg_temperature");
+    s->loc_tint        = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_cg_tint");
 
     s->ready = true;
     LOG_INFO("ColorGrade: initialized (%ux%u)", w, h);
@@ -89,6 +95,7 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
 void color_grade_shutdown(ColorGradeSystem *s) {
     if (!s->dev) return;
+    if (s->bind_pipe) { rhi_pipeline_bindings_destroy(s->dev, s->bind_pipe); s->bind_pipe = NULL; }
     if (rhi_handle_valid(s->fbo.fb))   rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->sampler))  rhi_sampler_destroy(s->dev, s->sampler);
     if (rhi_handle_valid(s->pipe))     rhi_pipeline_destroy(s->dev, s->pipe);

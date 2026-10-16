@@ -8,6 +8,11 @@ typedef struct {
     RHIPipeline      blur_pipe;
     RHIPipeline      composite_pipe;
     RHIPipeline      tex_pipe;
+    /* 计划 E Task 5 T1：反射物化表，loc_ 系列缓存的查询来源（tex_pipe
+     * 无 loc 缓存，不需要表）。 */
+    RHIPipelineBindings *bind_extract;
+    RHIPipelineBindings *bind_blur;
+    RHIPipelineBindings *bind_composite;
     RHISampler       sampler;
     RHIOffscreenFBO  fbo_ping;
     RHIOffscreenFBO  fbo_pong;

@@ -138,10 +138,15 @@ void point_shadow_init(PointShadowSystem *sys, RHIDevice *dev, u32 resolution) {
 #endif
 
     if (rhi_handle_valid(sys->depth_pipeline)) {
-        sys->loc_model      = rhi_pipeline_get_uniform_location(dev, sys->depth_pipeline, "u_model");
-        sys->loc_mvp        = rhi_pipeline_get_uniform_location(dev, sys->depth_pipeline, "u_mvp");
-        sys->loc_light_pos  = rhi_pipeline_get_uniform_location(dev, sys->depth_pipeline, "u_light_pos");
-        sys->loc_far_plane  = rhi_pipeline_get_uniform_location(dev, sys->depth_pipeline, "u_far_plane");
+        /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_model/u_mvp/
+         * u_light_pos/u_far_plane 是 point_shadow_depth_vk.vert 的真实成员名。 */
+        sys->bind_pipeline = rhi_pipeline_bindings_create(dev, sys->depth_pipeline);
+        if (!sys->bind_pipeline)
+            LOG_WARN("PointShadow: bindings create failed; uniform locations resolve -1");
+        sys->loc_model      = rhi_pipeline_bindings_resolve(sys->bind_pipeline, "u_model");
+        sys->loc_mvp        = rhi_pipeline_bindings_resolve(sys->bind_pipeline, "u_mvp");
+        sys->loc_light_pos  = rhi_pipeline_bindings_resolve(sys->bind_pipeline, "u_light_pos");
+        sys->loc_far_plane  = rhi_pipeline_bindings_resolve(sys->bind_pipeline, "u_far_plane");
     } else {
         sys->loc_model = sys->loc_mvp = sys->loc_light_pos = sys->loc_far_plane = -1;
         LOG_WARN("PointShadow: depth pipeline creation failed (shaders missing?)");
@@ -179,6 +184,9 @@ void point_shadow_init(PointShadowSystem *sys, RHIDevice *dev, u32 resolution) {
 
 void point_shadow_destroy(PointShadowSystem *sys, RHIDevice *dev) {
     if (!sys || !dev) return;
+
+    /* 计划 E Task 5 T4：反射物化表先于管线销毁（memset 随后清零指针）。 */
+    if (sys->bind_pipeline) { rhi_pipeline_bindings_destroy(dev, sys->bind_pipeline); sys->bind_pipeline = NULL; }
 
     for (u32 i = 0u; i < POINT_SHADOW_MAX_LIGHTS; ++i) {
         if (rhi_handle_valid(sys->cubemap_fbos[i].fb)) {

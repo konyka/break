@@ -58,6 +58,12 @@ bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_ca_strength 等
+     * 是 lens_effects(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    s->bind_pipe = rhi_pipeline_bindings_create(dev, s->pipe);
+    if (!s->bind_pipe)
+        LOG_WARN("LensEffects: bindings create failed; uniform locations resolve -1");
+
     s->fbo = rhi_offscreen_fbo_create(dev, w, h);
 
     RHISamplerDesc sdesc = {
@@ -76,10 +82,10 @@ bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
-    s->loc_ca_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_ca_strength");
-    s->loc_vignette_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_vignette_strength");
-    s->loc_vignette_softness = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_vignette_softness");
-    s->loc_grain_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_grain_strength");
+    s->loc_ca_strength = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_ca_strength");
+    s->loc_vignette_strength = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_vignette_strength");
+    s->loc_vignette_softness = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_vignette_softness");
+    s->loc_grain_strength = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_grain_strength");
 
     s->ready = true;
     return true;
@@ -87,6 +93,7 @@ bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
 void lens_effects_shutdown(LensEffectsSystem *s) {
     if (!s || !s->dev) return;
+    if (s->bind_pipe) { rhi_pipeline_bindings_destroy(s->dev, s->bind_pipe); s->bind_pipe = NULL; }
     if (rhi_handle_valid(s->pipe)) rhi_pipeline_destroy(s->dev, s->pipe);
     if (rhi_handle_valid(s->fbo.fb)) rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->sampler)) rhi_sampler_destroy(s->dev, s->sampler);

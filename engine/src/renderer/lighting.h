@@ -38,6 +38,8 @@ typedef struct {
 
     /* GPU cluster binning (replaces light_system_cull when available). */
     RHIPipeline    cluster_cull_pipeline;
+    /* 计划 E Task 5 T1：反射物化表，cc_loc_ 系列缓存的查询来源。 */
+    RHIPipelineBindings *bind_cluster_cull;
     bool           gpu_cull;
     i32            cc_loc_vp;
     i32            cc_loc_params0;

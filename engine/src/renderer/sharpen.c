@@ -58,6 +58,12 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_sharp_ 前缀名是
+     * sharpen(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    s->bind_pipe = rhi_pipeline_bindings_create(dev, s->pipe);
+    if (!s->bind_pipe)
+        LOG_WARN("Sharpen: bindings create failed; uniform locations resolve -1");
+
     s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
@@ -76,9 +82,9 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
         return false;
     }
 
-    s->loc_strength = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_strength");
-    s->loc_sw       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_sw");
-    s->loc_sh       = rhi_pipeline_get_uniform_location(dev, s->pipe, "u_sharp_sh");
+    s->loc_strength = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_sharp_strength");
+    s->loc_sw       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_sharp_sw");
+    s->loc_sh       = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_sharp_sh");
 
     s->ready = true;
     LOG_INFO("Sharpen: initialized (%ux%u)", w, h);
@@ -87,6 +93,7 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
 void sharpen_shutdown(SharpenSystem *s) {
     if (!s->dev) return;
+    if (s->bind_pipe) { rhi_pipeline_bindings_destroy(s->dev, s->bind_pipe); s->bind_pipe = NULL; }
     if (rhi_handle_valid(s->fbo.fb))   rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->sampler))  rhi_sampler_destroy(s->dev, s->sampler);
     if (rhi_handle_valid(s->pipe))     rhi_pipeline_destroy(s->dev, s->pipe);

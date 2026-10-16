@@ -55,6 +55,16 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。本管线是
+     * no_vertex_input 族：camera_velocity(_vk).frag 把 u_inv_proj/
+     * u_curr_vp/u_prev_vp 全部声明为真实 push 成员（u_prev_vp@128），
+     * 成员行优先于 rhi_vk.c 的 u_prev_vp→u_prev_mvp 别名行，resolve
+     * 与 legacy no_vertex_input 行为（128）一致；别名行只作用于声明
+     * u_prev_mvp 的 gbuffer 顶点输入族（legacy 192）。 */
+    sys->bind_pipe = rhi_pipeline_bindings_create(dev, sys->pipe);
+    if (!sys->bind_pipe)
+        LOG_WARN("ForwardVelocity: bindings create failed; uniform locations resolve -1");
+
     sys->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
@@ -73,9 +83,9 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
         return false;
     }
 
-    sys->loc_inv_proj = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_inv_proj");
-    sys->loc_curr_vp  = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_curr_vp");
-    sys->loc_prev_vp  = rhi_pipeline_get_uniform_location(dev, sys->pipe, "u_prev_vp");
+    sys->loc_inv_proj = rhi_pipeline_bindings_resolve(sys->bind_pipe, "u_inv_proj");
+    sys->loc_curr_vp  = rhi_pipeline_bindings_resolve(sys->bind_pipe, "u_curr_vp");
+    sys->loc_prev_vp  = rhi_pipeline_bindings_resolve(sys->bind_pipe, "u_prev_vp");
 
     sys->ready = true;
     LOG_INFO("ForwardVelocity: initialized (%ux%u)", w, h);
@@ -84,6 +94,7 @@ bool forward_velocity_init(ForwardVelocitySystem *sys, RHIDevice *dev, u32 w, u3
 
 void forward_velocity_shutdown(ForwardVelocitySystem *sys) {
     if (!sys || !sys->device) return;
+    if (sys->bind_pipe) { rhi_pipeline_bindings_destroy(sys->device, sys->bind_pipe); sys->bind_pipe = NULL; }
     if (rhi_handle_valid(sys->fbo.fb)) rhi_offscreen_fbo_destroy(sys->device, &sys->fbo);
     if (rhi_handle_valid(sys->sampler)) rhi_sampler_destroy(sys->device, sys->sampler);
     if (rhi_handle_valid(sys->pipe)) rhi_pipeline_destroy(sys->device, sys->pipe);

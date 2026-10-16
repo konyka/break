@@ -163,8 +163,15 @@ bool indirect_draw_init_grouped(IndirectDrawSystem *sys, RHIDevice *dev,
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。total_draws 是
+     * compact_draws.comp 的 push 成员名（GL 分支 compact_draws_gl.comp
+     * 同名 loose uniform），直接命中，无别名行。 */
+    sys->bind_compact = rhi_pipeline_bindings_create(dev, sys->compact_pipeline);
+    if (!sys->bind_compact)
+        LOG_WARN("IndirectDraw: bindings create failed; uniform locations resolve -1");
+
     sys->ready = true;
-    sys->_loc_total_draws = rhi_pipeline_get_uniform_location(dev, sys->compact_pipeline, "total_draws");
+    sys->_loc_total_draws = rhi_pipeline_bindings_resolve(sys->bind_compact, "total_draws");
     LOG_INFO("IndirectDraw: initialized (max %u draws, %u groups)", max_draws, group_count);
     return true;
 }
@@ -176,6 +183,11 @@ bool indirect_draw_init(IndirectDrawSystem *sys, RHIDevice *dev, u32 max_draws) 
 
 void indirect_draw_destroy(IndirectDrawSystem *sys, RHIDevice *dev) {
     if (!sys || !dev) return;
+    /* 计划 E Task 5 T4：反射物化表先于管线销毁。 */
+    if (sys->bind_compact) {
+        rhi_pipeline_bindings_destroy(dev, sys->bind_compact);
+        sys->bind_compact = NULL;
+    }
     if (rhi_handle_valid(sys->compact_pipeline)) {
         rhi_pipeline_destroy(dev, sys->compact_pipeline);
         sys->compact_pipeline = RHI_HANDLE_NULL;

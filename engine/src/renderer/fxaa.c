@@ -56,6 +56,12 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。u_fxaa_ 前缀名是
+     * fxaa(_vk).frag 的真实成员名，两后端同源，无别名行。 */
+    fxaa->bind_pipe = rhi_pipeline_bindings_create(dev, fxaa->fxaa_pipe);
+    if (!fxaa->bind_pipe)
+        LOG_WARN("FXAA: bindings create failed; uniform locations resolve -1");
+
     fxaa->fxaa_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
 
     RHISamplerDesc sdesc = {
@@ -74,9 +80,9 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    fxaa->loc_screen_w = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sw");
-    fxaa->loc_screen_h = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_sh");
-    fxaa->loc_threshold = rhi_pipeline_get_uniform_location(dev, fxaa->fxaa_pipe, "u_fxaa_threshold");
+    fxaa->loc_screen_w = rhi_pipeline_bindings_resolve(fxaa->bind_pipe, "u_fxaa_sw");
+    fxaa->loc_screen_h = rhi_pipeline_bindings_resolve(fxaa->bind_pipe, "u_fxaa_sh");
+    fxaa->loc_threshold = rhi_pipeline_bindings_resolve(fxaa->bind_pipe, "u_fxaa_threshold");
     fxaa->threshold = 0.0312f;
 
     fxaa->ready = true;
@@ -86,6 +92,7 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
 
 void fxaa_shutdown(FXAASystem *fxaa) {
     if (!fxaa->device) return;
+    if (fxaa->bind_pipe) { rhi_pipeline_bindings_destroy(fxaa->device, fxaa->bind_pipe); fxaa->bind_pipe = NULL; }
     if (rhi_handle_valid(fxaa->fxaa_fbo.fb)) rhi_offscreen_fbo_destroy(fxaa->device, &fxaa->fxaa_fbo);
     if (rhi_handle_valid(fxaa->sampler))     rhi_sampler_destroy(fxaa->device, fxaa->sampler);
     if (rhi_handle_valid(fxaa->fxaa_pipe))   rhi_pipeline_destroy(fxaa->device, fxaa->fxaa_pipe);

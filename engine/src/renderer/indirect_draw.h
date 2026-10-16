@@ -45,6 +45,8 @@ typedef struct {
     RHIBuffer   draw_count_buf;     /* STORAGE | INDIRECT: atomic counter */
     RHIBuffer   visibility_buf[2];  /* R182: dual-slot host upload vs in-flight GPU read */
     RHIPipeline compact_pipeline;   /* compute pipeline running compact_draws.comp */
+    /* 计划 E Task 5 T1：反射物化表，_loc_total_draws 的查询来源。 */
+    RHIPipelineBindings *bind_compact;
     u32         max_draws;
     u32         current_draw_count; /* CPU-side count of entries uploaded this frame */
     bool        ready;

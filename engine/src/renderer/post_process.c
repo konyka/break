@@ -126,9 +126,18 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         return false;
     }
 
-    pp->loc_bloom_strength = rhi_pipeline_get_uniform_location(dev, pp->composite_pipe, "u_bloom_strength");
-    pp->loc_threshold = rhi_pipeline_get_uniform_location(dev, pp->extract_pipe, "u_threshold");
-    pp->loc_direction = rhi_pipeline_get_uniform_location(dev, pp->blur_pipe, "u_direction");
+    /* 计划 E Task 5 T2：三张被查询管线的反射物化表。u_bloom_strength/
+     * u_threshold/u_direction 分别是 bloom_composite、bloom_extract、
+     * bloom_blur 系 shader 的真实成员名，两后端同源，无别名行。 */
+    pp->bind_composite = rhi_pipeline_bindings_create(dev, pp->composite_pipe);
+    pp->bind_extract   = rhi_pipeline_bindings_create(dev, pp->extract_pipe);
+    pp->bind_blur      = rhi_pipeline_bindings_create(dev, pp->blur_pipe);
+    if (!pp->bind_composite || !pp->bind_extract || !pp->bind_blur)
+        LOG_WARN("PostProcess: bindings create failed; uniform locations resolve -1");
+
+    pp->loc_bloom_strength = rhi_pipeline_bindings_resolve(pp->bind_composite, "u_bloom_strength");
+    pp->loc_threshold = rhi_pipeline_bindings_resolve(pp->bind_extract, "u_threshold");
+    pp->loc_direction = rhi_pipeline_bindings_resolve(pp->bind_blur, "u_direction");
 
     LOG_INFO("PostProcess: bloom initialized (%ux%u)", pw, ph);
     pp->ready = true;
@@ -137,6 +146,10 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 
 void post_process_shutdown(PostProcess *pp) {
     if (!pp->device) return;
+    /* 计划 E Task 5 T4：反射物化表先于管线销毁（memset 随后清零指针）。 */
+    if (pp->bind_composite) { rhi_pipeline_bindings_destroy(pp->device, pp->bind_composite); pp->bind_composite = NULL; }
+    if (pp->bind_extract)   { rhi_pipeline_bindings_destroy(pp->device, pp->bind_extract);   pp->bind_extract = NULL; }
+    if (pp->bind_blur)      { rhi_pipeline_bindings_destroy(pp->device, pp->bind_blur);      pp->bind_blur = NULL; }
     if (rhi_handle_valid(pp->fbo_ping.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_ping);
     if (rhi_handle_valid(pp->fbo_pong.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_pong);
     if (rhi_handle_valid(pp->fbo_composite.fb)) rhi_offscreen_fbo_destroy(pp->device, &pp->fbo_composite);

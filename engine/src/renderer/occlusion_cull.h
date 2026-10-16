@@ -27,6 +27,9 @@ typedef struct {
     /* Compute pipelines */
     RHIPipeline hi_z_pipeline;
     RHIPipeline cull_pipeline;
+    /* 计划 E Task 5 T1：反射物化表，_loc_ 系列缓存的查询来源。 */
+    RHIPipelineBindings *bind_hi_z;
+    RHIPipelineBindings *bind_cull;
 
     /* Sampler for Hi-Z reads */
     RHISampler  hi_z_sampler;

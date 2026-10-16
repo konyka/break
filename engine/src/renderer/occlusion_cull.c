@@ -167,12 +167,21 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
         return false;
     }
 
+    /* 计划 E Task 5 T2：管线创建成功后立刻物化反射表。pc_ 前缀名在 GL
+     * 分支是 occlusion_cull.comp / hi_z_generate.comp 的 loose uniform
+     * （直接命中）；VK 分支经 vk_push_alias_rows 映射到 push 成员
+     * view_proj / object_count / hi_z_width / hi_z_height / output_size。 */
+    sys->bind_hi_z = rhi_pipeline_bindings_create(dev, sys->hi_z_pipeline);
+    sys->bind_cull = rhi_pipeline_bindings_create(dev, sys->cull_pipeline);
+    if (!sys->bind_hi_z || !sys->bind_cull)
+        LOG_WARN("OcclusionCull: bindings create failed; uniform locations resolve -1");
+
     /* Cache uniform locations once at init (avoids per-frame glGetUniformLocation). */
-    sys->_loc_hi_z_output_size  = rhi_pipeline_get_uniform_location(dev, sys->hi_z_pipeline, "pc_output_size");
-    sys->_loc_cull_view_proj    = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_view_proj");
-    sys->_loc_cull_object_count = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_object_count");
-    sys->_loc_cull_hi_z_width   = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_hi_z_width");
-    sys->_loc_cull_hi_z_height  = rhi_pipeline_get_uniform_location(dev, sys->cull_pipeline, "pc_hi_z_height");
+    sys->_loc_hi_z_output_size  = rhi_pipeline_bindings_resolve(sys->bind_hi_z, "pc_output_size");
+    sys->_loc_cull_view_proj    = rhi_pipeline_bindings_resolve(sys->bind_cull, "pc_view_proj");
+    sys->_loc_cull_object_count = rhi_pipeline_bindings_resolve(sys->bind_cull, "pc_object_count");
+    sys->_loc_cull_hi_z_width   = rhi_pipeline_bindings_resolve(sys->bind_cull, "pc_hi_z_width");
+    sys->_loc_cull_hi_z_height  = rhi_pipeline_bindings_resolve(sys->bind_cull, "pc_hi_z_height");
 
     /* Allocate CPU readback buffer */
     sys->visibility_readback = calloc(OCCLUSION_MAX_OBJECTS, sizeof(u32));
@@ -204,6 +213,10 @@ bool occlusion_cull_init(OcclusionCullSystem *sys, RHIDevice *dev, u32 width, u3
  * ======================================================================== */
 void occlusion_cull_shutdown(OcclusionCullSystem *sys) {
     if (!sys->device) return;
+
+    /* 计划 E Task 5 T4：反射物化表先于管线销毁（memset 随后清零指针）。 */
+    if (sys->bind_hi_z) { rhi_pipeline_bindings_destroy(sys->device, sys->bind_hi_z); sys->bind_hi_z = NULL; }
+    if (sys->bind_cull) { rhi_pipeline_bindings_destroy(sys->device, sys->bind_cull); sys->bind_cull = NULL; }
 
     if (rhi_handle_valid(sys->hi_z_texture))
         rhi_texture_destroy(sys->device, sys->hi_z_texture);

@@ -23,6 +23,8 @@ typedef struct {
      * RHICubemapDepthFBO which the RHI now exposes. */
     RHICubemapDepthFBO cubemap_fbos[POINT_SHADOW_MAX_LIGHTS];
     RHIPipeline  depth_pipeline;
+    /* 计划 E Task 5 T1：反射物化表，loc_ 系列缓存的查询来源。 */
+    RHIPipelineBindings *bind_pipeline;
     RHISampler   sampler;
 
     /* Configuration / state */
