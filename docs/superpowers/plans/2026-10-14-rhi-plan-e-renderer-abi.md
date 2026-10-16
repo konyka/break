@@ -251,8 +251,10 @@ typedef struct {
 } RHICapabilities;
 
 /* 编译期单后端的设备创建入口（Post-计划 A：enum 参数退役为内部细节） */
-RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
-                                      u32 w, u32 h);
+/* 2026-10-16 修订:双句柄——VK/Metal 取 surface_native(Wayland 上为
+ * wl_surface*),GL 取 window_native(Wayland 上为 wl_egl_window*)。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
+                                      void *display_native, u32 w, u32 h);
 
 /* shader_io.h */
 const char *shader_variant_suffix(RHIShaderVariant v); /* "" 或 "_vk" */
@@ -351,13 +353,15 @@ Expected: 全 PASS，零警告。
 
 规则 F1（设备创建，main.c:343-359）：`render_init` 改为
 
+<!-- 2026-10-16 修订:Wayland 上 surface/window getter 返回不同类型(wl_surface* vs wl_egl_window*),单句柄+回退链会造成 GL-on-Wayland 指针类型混淆;改为双句柄,各后端自选。 -->
 ```c
-    void *window = platform_surface_native(platform);
-    if (!window) window = platform_window_native(platform);
+    void *window_native = platform_window_native(platform);
+    void *surface_native = platform_surface_native(platform);
     void *display = platform_display_native(platform);
     u32 w, h;
     platform_get_drawable_size(platform, &w, &h);
-    rs->device = rhi_device_create_compiled(window, display, w, h);
+    rs->device = rhi_device_create_compiled(window_native, surface_native,
+                                            display, w, h);
     if (!rs->device) return false;
     RHICapabilities caps = {0};
     if (!rhi_device_get_capabilities(rs->device, &caps)) goto fail;

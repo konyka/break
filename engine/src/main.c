@@ -344,12 +344,13 @@ static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
 }
 
 static bool render_init(RenderState *rs, Platform *platform) {
-    void *window = platform_surface_native(platform);
-    if (!window) window = platform_window_native(platform);
+    void *window_native = platform_window_native(platform);
+    void *surface_native = platform_surface_native(platform);
     void *display = platform_display_native(platform);
     u32 w, h;
     platform_get_drawable_size(platform, &w, &h);
-    rs->device = rhi_device_create_compiled(window, display, w, h);
+    rs->device = rhi_device_create_compiled(window_native, surface_native,
+                                            display, w, h);
     if (!rs->device) return false;
     rhi_device_attach_wsi(rs->device, platform_wsi_surface(platform));
     RHICapabilities caps = {0};

@@ -2536,11 +2536,13 @@ static u32 rhi_format_bpp(RHIFormat fmt) {
     }
 }
 
-/* 计划 E Task 2：编译期单后端入口——VK 实现转发到自身后端。 */
-RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
-                                      u32 w, u32 h) {
-    return rhi_device_create(RHI_BACKEND_VULKAN, window_native, display_native,
-                             w, h);
+/* 计划 E Task 2：编译期单后端入口——VK 实现转发到自身后端。
+ * 双句柄约定（rhi.h）：VK 消费 surface_native（Wayland 上为 wl_surface*）。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
+                                      void *display_native, u32 w, u32 h) {
+    (void)window_native;
+    return rhi_device_create(RHI_BACKEND_VULKAN, surface_native,
+                             display_native, w, h);
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {

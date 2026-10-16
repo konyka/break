@@ -371,10 +371,13 @@ static void metal_end_encoders(RHICmdBuffer *cmd) {
 }
 
 RHIDevice *rhi_device_create_compiled(void *window_native,
+                                      void *surface_native,
                                       void *display_native, u32 w, u32 h) {
     /* 计划 E Task 2：编译期单后端入口——Metal lane 的 caps/shader_variant
-     * 契约未落地（_vk corpus 映射待后续计划），fail-closed 返回 NULL。 */
-    (void)window_native; (void)display_native; (void)w; (void)h;
+     * 契约未落地（_vk corpus 映射待后续计划），fail-closed 返回 NULL。
+     * 双句柄（rhi.h）均不消费。 */
+    (void)window_native; (void)surface_native; (void)display_native;
+    (void)w; (void)h;
     return NULL;
 }
 

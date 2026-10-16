@@ -355,10 +355,12 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
 RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
                                 void *display_native, u32 w, u32 h,
                                 RHIResult *out_result);
-/* 编译期单后端的设备创建入口（Post-计划 A：enum 参数退役为内部细节，
- * 由各后端实现转发到自己的 rhi_device_create；headless fail-closed）。 */
-RHIDevice *rhi_device_create_compiled(void *window_native, void *display_native,
-                                      u32 w, u32 h);
+/* 编译期单后端的设备创建入口(Post-计划 A:enum 参数退役为内部细节)。
+ * 双句柄:各编译后端按自身消费类型选取——VK/Metal 取 surface_native
+ * (Wayland 上为 wl_surface*),GL 取 window_native(Wayland 上为
+ * wl_egl_window*);其余平台两 getter 返回相同句柄。 */
+RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
+                                      void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);
 RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 /* 把平台层 WSI 状态对象挂到设备（非拥有指针，Platform 拥有存储）。

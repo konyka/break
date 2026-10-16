@@ -13,10 +13,13 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     (void)backend; (void)window_native; (void)display_native; (void)w; (void)h;
     return NULL;
 }
-/* 计划 E Task 2：编译期单后端入口——headless fail-closed（契约测试期望 NULL）。 */
+/* 计划 E Task 2：编译期单后端入口——headless fail-closed（契约测试期望 NULL）。
+ * 双句柄（rhi.h）：headless 不消费任何句柄。 */
 RHIDevice *rhi_device_create_compiled(void *window_native,
+                                      void *surface_native,
                                       void *display_native, u32 w, u32 h) {
-    (void)window_native; (void)display_native; (void)w; (void)h;
+    (void)window_native; (void)surface_native; (void)display_native;
+    (void)w; (void)h;
     return NULL;
 }
 void rhi_device_destroy(RHIDevice *dev) { (void)dev; }

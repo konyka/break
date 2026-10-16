@@ -1132,8 +1132,8 @@ TEST(plan_e_capability_fields_default_closed_on_stub)
 
 TEST(create_compiled_rejects_null_handles_and_zero_dims)
 {
-    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, 64u, 64u), NULL);
-    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, 0u, 64u), NULL);
+    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, NULL, 64u, 64u), NULL);
+    ASSERT_EQ(rhi_device_create_compiled(NULL, NULL, NULL, 0u, 64u), NULL);
 }
 
 TEST_MAIN_BEGIN()
