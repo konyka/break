@@ -248,10 +248,15 @@ endif()
 # R433: shaderc ships no CMake package config on several Linux distributions;
 # locate either the shared runtime name or the distro's libshaderc development
 # name instead of linking a bare name (which fails with an unhelpful -l error).
+# Windows CI installs the pinned LunarG SDK (engine/tools/fetch_vulkan_sdk_windows.cmake);
+# its layout is not on the default search path, so honor VULKAN_SDK like
+# FindVulkan does.
 if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
    NOT ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal"))
-    find_library(SHADERC_LIB NAMES shaderc_shared shaderc)
-    find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h)
+    find_library(SHADERC_LIB NAMES shaderc_shared shaderc
+        HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h
+        HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
     if(NOT SHADERC_LIB)
         message(FATAL_ERROR
             "shaderc_shared not found — install shaderc (e.g. libshaderc-dev / shaderc) "
@@ -3181,6 +3186,11 @@ endif()
     target_include_directories(rhi_swapchain_bench PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(rhi_swapchain_bench PRIVATE engine m)
     engine_link_rhi_backend(rhi_swapchain_bench)
+    # D3D12 lane: the backend macro is PRIVATE to engine_rhi_d3d12, so the
+    # bench tool needs its own copy to pick the d3d12 create branch.
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
+        target_compile_definitions(rhi_swapchain_bench PRIVATE ENGINE_RHI_BACKEND_D3D12=1)
+    endif()
     add_test(NAME rhi_swapchain_bench
         COMMAND rhi_swapchain_bench ${CMAKE_CURRENT_BINARY_DIR}/rhi_receipt_local.json)
     set_tests_properties(rhi_swapchain_bench PROPERTIES
