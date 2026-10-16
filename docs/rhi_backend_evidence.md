@@ -163,5 +163,5 @@
 4. `RHICapabilities` 新 6 字段各后端真实消费 + 契约测试：**达成**（`test_rhi_capabilities` 56/56）。
 5. ctest 全 label 绿 + `-Werror` 零警告：**部分**——本机 VK 170/172、GL 168/169（两项登记的环境性失败：golden 漂移基线 + OpenClipboard 争用）、MSVC headless 18/18（myui_core C4090 先在）；Linux/macOS CI 收据**待补**。
 6. 本台账含计划 E 完成度 + Hi-Z 仅登记未改码：**达成**（本节）。
-7. 全部 commit push 到 `origin master`：**BLOCKED**——push 已执行但被拒（non-fast-forward）：远端在 `59c62a0d` 之后有并行提交 `dd524121`（test_vulkan 启动相位插桩），与本计划 24 个本地 commit（22 个计划 E 源码 + 2 个 docs）在 `engine/src/test_vulkan.c` 内容冲突；合并需源码级冲突消解 + 重跑验证矩阵，超出本任务 docs-only 范围（未 force、未 rebase——rebase 会改写本表引用的全部计划 E commit SHA）。待集成决策后补推，CI 回执随后补记。
+7. 全部 commit push 到 `origin master`：**BLOCKED**——push 已执行但被拒（non-fast-forward）：远端在 `59c62a0d` 之后有并行提交 `dd524121`（test_vulkan 启动相位插桩），与本计划本地链（22 个计划 E 源码 commit + 本任务及其更正的 docs commit）在 `engine/src/test_vulkan.c` 内容冲突；合并需源码级冲突消解 + 重跑验证矩阵，超出本任务 docs-only 范围（未 force、未 rebase——rebase 会改写本表引用的全部计划 E commit SHA）。待集成决策后补推，CI 回执随后补记。
 
