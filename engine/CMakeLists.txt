@@ -2238,6 +2238,12 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_rollout_config_contract.cmake)
     set_tests_properties(test_rhi_rollout_config_contract PROPERTIES
         LABELS "headless;platform_contract")
+    add_test(NAME test_rhi_rollback_runbook_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRUNBOOK=${CMAKE_CURRENT_SOURCE_DIR}/../docs/rhi_rollback_runbook.md
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_rollback_runbook_contract.cmake)
+    set_tests_properties(test_rhi_rollback_runbook_contract PROPERTIES
+        LABELS "headless;platform_contract")
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)

@@ -1,0 +1,35 @@
+name: Rollback drill
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to roll back to (e.g. v1.4.2)"
+        required: true
+        type: string
+
+jobs:
+  rollback-verify:
+    name: Build previous tag (rollback rehearsal)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+      - name: Verify tag signature exists
+        run: git tag -v "${{ inputs.tag }}"
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libfreetype6-dev fonts-noto-cjk
+      - name: Configure / build / headless test
+        run: |
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
+      - name: Report
+        run: echo "rollback drill OK for tag ${{ inputs.tag }}" >> "$GITHUB_STEP_SUMMARY"
