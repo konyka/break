@@ -550,6 +550,13 @@ MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建
 通过（D3D12 依赖门按平台跳过），Metal 设备、帧生命周期、资源和 consumer smoke
 均通过。编译期 Metal 入口直接创建 `CAMetalLayer` 对应的 Metal 设备，并将
 `shader_variant` 固定为 Vulkan-layout GLSL，以匹配离线 MSL manifest。
+同日 @579928c 后续复核：`test_vulkan` 只在 `ENGINE_RHI_BACKEND_EFFECTIVE` 为
+`vulkan`/`opengl` 时注册（metal/d3d12 构建下它会请求被后端按设计拒绝的 OpenGL，
+曾以既存基线失败污染 `-L graphics` 收据），`rhi_swapchain_bench` 新增 Metal 分支
+（收据 `backend=metal`）。本机（Apple M2）Metal 构建（含手动构建的 5 个 fuzz 目标）
+CTest `178/178`、MoltenVK 默认构建 `176/176`，D3D12 依赖门均为平台跳过；Metal
+`-L graphics` 为 `5/5`，`rhi_swapchain_bench` 约 120 fps（vsync 未关闭的合成 harness，
+非 benchmark-comparable 证据）。
 
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、

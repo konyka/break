@@ -244,3 +244,10 @@
 - 版本：`project(PureCEngine VERSION 1.9.0)`（兼容期）；**v2.0.0 保留给 OpenGL 删除 release**。
 - Task 6 解锁条件（重申）：① iOS × Metal GPU_RUNTIME 真机收据（无设备，UNAVAILABLE）② 规格 §6 十一条删除条件全清单复核（Android/Linux/Steam Vulkan、macOS/iOS Metal、Windows D3D12 认证；renderer/UI 无 GL 依赖；无生产 consumer；头文件/GLAD/GL 库/GL shader 路径/GL runtime 测试从 release target 消失；禁用 GL 后 clean-room 成功；consumer link/startup；migration notice；可回滚版本；产品负责人书面确认）——届时 gate 脚本逐条可执行化（计划 F Task 6 brief）。
 - 签名 tag 与 GitHub Release：**由 maintainer 执行**（本机无 GPG 私钥，rollback-drill 的 `git tag -v` 需签名 tag 存在；runbook §5.1 已记录流程）。
+
+## 收据追加（macOS 本机复核，2026-10-17）
+
+| 日期 | 机器 | GPU/驱动 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-17 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal | `cmake -S engine -B engine/build-macos-current -DENGINE_RHI_BACKEND=metal -DCMAKE_BUILD_TYPE=Debug && cmake --build engine/build-macos-current && ctest --test-dir engine/build-macos-current -j4`（@579928cc + 本次修复） | 178/178 通过（`test_d3d12_dependency_gate` 平台跳过）；`-L graphics` 5 项全绿（`test_rhi_metal_device_contract/frame_lifecycle/resources`、`test_macos_metal_consumer_smoke`、`rhi_swapchain_bench`）。修复：① `test_vulkan` 仅在 effective backend 为 vulkan/opengl 时注册（此前在 metal/d3d12 构建下请求被拒的 OpenGL，即上方登记的既存基线失败；D3D12 构建同样不再注册）② `rhi_swapchain_bench` 新增 Metal 分支（此前走 GL 分支返回 77 跳过），收据 backend=metal、fps_avg≈120（受 vsync 限制，合成 harness，不作 benchmark-comparable 证据） |
+| 2026-10-17 | 同上 | Apple M2 / MoltenVK | `cmake -S engine -B engine/build-macos && cmake --build engine/build-macos && ctest --test-dir engine/build-macos -j4` | 176/176 通过（D3D12 门平台跳过），`test_vulkan` 与 `rhi_swapchain_bench` 均通过 |
