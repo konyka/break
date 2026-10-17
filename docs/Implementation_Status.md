@@ -75,6 +75,15 @@
 - **纹理绑定仍未通过（已回滚，不留在树里）**：按同一套路重做 `rhi_cmd_bind_texture`（含管线侧 register→根描述符表索引映射），myui 纹理用例仍**零片元**（回读等于 FBO 清屏色），而探针与 push constants 两条用例均通过——差异只在 myui 额外声明了 `register(s0)`。过程中发现并修正了映射键的一个真实缺陷：**t0 与 s0 的 register 同为 0，sampler 条目会覆盖 image 条目**（sampler 走静态采样器，本不该进映射），修正后仍非本因。因未取得像素证据，该实现连同用例一并回滚，测试套件保持全绿。
 - **下一步线索**：myui 与 probe_vb 的差异只剩 `font_vertex` 输入布局与 `register(s0)` 静态采样器两项；且"绑定到未写入的描述符表"在 WARP 上可能直接丢绘制而非输出黑色。建议下一次用只含 `t0`（不含 `s0`）的临时 sidecar 做二分。
 
+## 本轮更新：R716 — **D3D12 HLSL 反射根因修复**：`register(sN, ...)` 被静默丢弃 + `Texture2D` 被误判为 SAMPLER（blit/myui 管线此前只是"侥幸"能创建）
+
+- **缺口（潜伏级）**：`rhi_d3d12_reflect_hlsl` 有两处缺陷。其一：寄存器类别只接受 `'b'/'t'/'u'`，**`'s'` 被静默 `continue` 丢弃**——sidecar 里每一行 `register(s0, space0)` 都从未进入反射。其二：分类顺序把 `"Texture"` 排在 `"SamplerState"` 之前，导致 `Texture2D` 被判成 SAMPLER。
+- **为什么此前没暴露**：两个缺陷叠加出一个"巧合能跑"的结果——`Texture2D` 被误判为 SAMPLER 后生成的 **SRV 范围覆盖了 t0、静态采样器覆盖了 s0**，恰好凑齐着色器的两项需求，PSO 因此能创建。代价是纹理永远拿不到正确的 SRV 语义（`bind_texture` 无表可绑），且真正的 `SamplerState` 从未被反射。
+- **修复**：①寄存器类别接受 `'s'`；②`SamplerState` 先判 → SAMPLER，`Texture*` → IMAGE（SRV 范围）；③SAMPLER 只产出**静态采样器**、不再建描述符范围（否则与 t0 的 SRV 范围同寄存器重叠，D3D12 拒绝该根签名）。结果：blit/myui 的根签名语义正确地变为 `constants + SRV@t0 表 + 静态采样器@s0`。
+- **验证**：`test_d3d12_shader_contract` 两个用例（blit 管线创建 + bindings 解析）修复前/后对比——修复中间态会因根签名重叠/未绑定而失败，修复后均通过；D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
+- **定位方法（可复用）**：反复试探无效后，改用**逐字段打印根签名**做精确 diff，立刻看到 `count=1` 且唯一绑定 `name=` 为空——由此定位到反射器漏行，而不是猜测分类顺序。GBV info queue 转储用于区分"根签名序列化失败"与"PSO 创建失败"。
+- **遗留**：`rhi_cmd_bind_texture` 仍未验证通过——管线已能正确创建，接入绑定后回读为 `0 0 0 0`（绘制产生了片元，但采样返回 0），说明 SRV 描述符写入或纹理初始数据上传仍有问题。该实现因未取得像素证据而未提交。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

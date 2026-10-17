@@ -2215,7 +2215,13 @@ static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
             has_digit = 1;
             ++reg;
         }
-        if (!has_digit || (klass != 'b' && klass != 't' && klass != 'u')) {
+        /* 's' (sampler) was missing here: every register(sN, ...) line was
+         * dropped silently, so no SamplerState ever reached the root
+         * signature. The sidecars only worked because Texture2D was
+         * misclassified as SAMPLER and the static sampler it produced
+         * happened to cover s0 as well. */
+        if (!has_digit || (klass != 'b' && klass != 't' && klass != 'u' &&
+                         klass != 's')) {
             line = nl != NULL ? nl + 1 : end;
             continue;
         }
@@ -2230,8 +2236,11 @@ static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
             } else {
                 kind = SHADER_IO_RESOURCE_UNIFORM;
             }
+        } else if (rhi_d3d12_hlsl_find(p, line_end, "SamplerState") != NULL) {
+            kind = SHADER_IO_RESOURCE_SAMPLER; /* static sampler */
         } else if (rhi_d3d12_hlsl_find(p, line_end, "Texture") != NULL) {
-            kind = SHADER_IO_RESOURCE_SAMPLER; /* SRV range + static sampler */
+            /* A Texture2D is an SRV resource, not a sampler. */
+            kind = SHADER_IO_RESOURCE_IMAGE;   /* SRV range */
         } else if (rhi_d3d12_hlsl_find(p, line_end, "StructuredBuffer") != NULL ||
                    rhi_d3d12_hlsl_find(p, line_end, "ByteAddressBuffer") != NULL) {
             kind = SHADER_IO_RESOURCE_IMAGE;   /* read-only SRV */
@@ -2322,6 +2331,23 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
             range_type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
             break;
         case SHADER_IO_RESOURCE_SAMPLER:
+            /* A SamplerState resolves through a static sampler, not a
+             * descriptor table; emitting both overlaps at register 0. */
+            {
+                D3D12_STATIC_SAMPLER_DESC *sampler;
+                if (b->sampler_count >= 8u) return 0;
+                sampler = &b->samplers[b->sampler_count++];
+                ZeroMemory(sampler, sizeof(*sampler));
+                sampler->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+                sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->MaxLOD = D3D12_FLOAT32_MAX;
+                sampler->ShaderRegister = bind->binding;
+                sampler->RegisterSpace = 0u;
+                sampler->ShaderVisibility = visibility;
+            }
+            continue;
         case SHADER_IO_RESOURCE_IMAGE:
             range_type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
             break;
@@ -2346,20 +2372,6 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         param->DescriptorTable.NumDescriptorRanges = 1u;
         param->DescriptorTable.pDescriptorRanges = range;
         param->ShaderVisibility = visibility;
-        if (bind->kind == SHADER_IO_RESOURCE_SAMPLER) {
-            D3D12_STATIC_SAMPLER_DESC *sampler;
-            if (b->sampler_count >= 8u) return 0;
-            sampler = &b->samplers[b->sampler_count++];
-            ZeroMemory(sampler, sizeof(*sampler));
-            sampler->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-            sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-            sampler->MaxLOD = D3D12_FLOAT32_MAX;
-            sampler->ShaderRegister = base_register;
-            sampler->RegisterSpace = 0u;
-            sampler->ShaderVisibility = visibility;
-        }
     }
     return 1;
 }
