@@ -3262,9 +3262,17 @@ endif()
 
     # test_vulkan: full backend integration + golden-image regression (VK + GL).
     # Runs from the source dir so it can find shaders/ and committed golden images.
-    add_test(NAME test_vulkan COMMAND test_vulkan
-             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics)
+    # Only registered where it exercises the compiled backend: on metal/d3d12
+    # builds it would request the OpenGL backend, which those backends reject
+    # by design, and the guaranteed failure would turn the graphics-label rc
+    # into an UNAVAILABLE evidence receipt. Those backends have their own
+    # graphics contracts (test_rhi_metal_*, test_d3d12_*).
+    if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR
+       ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
+        add_test(NAME test_vulkan COMMAND test_vulkan
+                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+        set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics)
+    endif()
 
     # rhi_swapchain_bench: swapchain frame benchmark producing a benchmark
     # receipt JSON (docs/rhi_benchmark_receipt_schema.md). SKIP_RETURN_CODE 77
