@@ -66,6 +66,15 @@
 - **新增资产**：`engine/shaders/probe_hlsl.{vert,frag}`——刻意无绑定、无 uniform 的最小光栅探针；CMake 的 `*_hlsl.*` glob 会自动 dxc 出 DXIL，无需改构建脚本。
 - **后续**：viewport 通了之后，push constants 与纹理绑定仍待验证（上一轮为此写的纹理用例已被回滚，因为它当时红）。建议下一步用同一个 probe 套路逐项加回：先 push constants（identity 变换 + 顶点缓冲），再加 SRV/描述符表。
 
+## 本轮更新：R715 八记 — push constants + 顶点输入链路经像素验证（D3D12）— `probe_vb_hlsl` 探针把"顶点缓冲 + 根常量变换"从光栅化问题里单独隔离出来并证明可用
+
+- **目的**：viewport 修好后按计划逐项加回。push constants 是最容易被"顶点全塌缩"掩盖的一环，先单独验证。
+- **探针**：`probe_vb_hlsl.{vert,frag}`——只声明 `register(b0)` 的 `ConstantBuffer`（`// rhi:uniform u_transform 0`）+ POSITION-only 顶点输入，**无纹理、无描述符表**。四边形直接以 NDC 书写，因此**只有 `u_transform` 真的送达着色器才会光栅化**；常量丢失或为零会让顶点塌缩到原点、三角形退化。
+- **验证**：`push_constants_transform_reaches_the_shader` 断言 8x8 FBO 中出现绿色像素且四角保持清屏色（证明 viewport 把 NDC 映射到整个目标而非边角）。**反向验证**：把 identity 换成全零矩阵后测试转红（零片元），恢复后转绿——排除空转。
+- **回归**：D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
+- **纹理绑定仍未通过（已回滚，不留在树里）**：按同一套路重做 `rhi_cmd_bind_texture`（含管线侧 register→根描述符表索引映射），myui 纹理用例仍**零片元**（回读等于 FBO 清屏色），而探针与 push constants 两条用例均通过——差异只在 myui 额外声明了 `register(s0)`。过程中发现并修正了映射键的一个真实缺陷：**t0 与 s0 的 register 同为 0，sampler 条目会覆盖 image 条目**（sampler 走静态采样器，本不该进映射），修正后仍非本因。因未取得像素证据，该实现连同用例一并回滚，测试套件保持全绿。
+- **下一步线索**：myui 与 probe_vb 的差异只剩 `font_vertex` 输入布局与 `register(s0)` 静态采样器两项；且"绑定到未写入的描述符表"在 WARP 上可能直接丢绘制而非输出黑色。建议下一次用只含 `t0`（不含 `s0`）的临时 sidecar 做二分。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

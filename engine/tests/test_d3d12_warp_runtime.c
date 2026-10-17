@@ -117,6 +117,84 @@ TEST(probe_triangle_rasterises_into_offscreen_fbo) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* Push constants + POSITION-only vertex input, no texture involved. The
+ * quad is authored in NDC, so it can only rasterise if u_transform really
+ * reached the shader - a dropped or zeroed root constant would collapse
+ * every vertex onto the origin. A central square also proves the viewport
+ * maps NDC onto the whole target rather than a corner sliver. */
+TEST(push_constants_transform_reaches_the_shader) {
+    static const float quad[6 * 3] = {
+        -0.5f, -0.5f, 0.0f,  0.5f, -0.5f, 0.0f,  0.5f, 0.5f, 0.0f,
+        -0.5f, -0.5f, 0.0f,  0.5f, 0.5f, 0.0f, -0.5f, 0.5f, 0.0f
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int i;
+    int green_px = 0;
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;   /* POSITION only */
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    i32 loc = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_transform");
+    ASSERT_TRUE(loc >= 0);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(quad);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, (u32)loc, identity, sizeof(identity));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4)
+        if (px[i + 1] > 200) green_px++;
+    /* Central half (NDC -0.5..0.5 over an 8px target) and not the corners. */
+    ASSERT_TRUE(green_px > 0 && green_px < 64);
+    ASSERT_TRUE(px[0 + 1] < 60);            /* corner 0 stays clear */
+    ASSERT_TRUE(px[((7 * 8) + 7) * 4 + 1] < 60); /* opposite corner too */
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -126,6 +204,7 @@ int main(void) {
     RUN_TEST(warp_device_identity_is_honest);
     RUN_TEST(offscreen_fbo_clear_round_trips_pixels);
     RUN_TEST(probe_triangle_rasterises_into_offscreen_fbo);
+    RUN_TEST(push_constants_transform_reaches_the_shader);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
