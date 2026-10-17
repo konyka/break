@@ -1129,8 +1129,10 @@ jobs:
           # Release IPO 把 LLVM bitcode 写入 libengine.a，默认 GNU ld 链不动
           # （toolchain-clang-linux.cmake 记载的同一坑）；本 lane 无裸 clang/lld，
           # 按 -18 后缀接线等价物。
+          # CMAKE_AR/RANLIB 必须绝对路径：裸名字会被当相对路径解析到
+          # workspace（/bin/sh: workspace/llvm-ar-18: not found）。
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
-            -DCMAKE_AR=llvm-ar-18 -DCMAKE_RANLIB=llvm-ranlib-18 \
+            -DCMAKE_AR=/usr/bin/llvm-ar-18 -DCMAKE_RANLIB=/usr/bin/llvm-ranlib-18 \
             -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-18" \
             -DCMAKE_BUILD_TYPE=Release -DENGINE_VULKAN=ON
           set -o pipefail
