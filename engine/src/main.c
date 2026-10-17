@@ -130,25 +130,11 @@ static void demo_save_screenshot(RHIDevice *dev, u32 w, u32 h) {
         free(pixels);
         return;
     }
-    /* R445: GL glReadPixels returns BOTTOM-UP rows while save_bmp expects
-     * top-down input. Flip in place — this also corrects the F12 capture.
-     * R446: the VK readback is bottom-up too on X11/Intel (BREAK_SCREENSHOT
-     * captures came out vertically flipped), so the flip now runs on both
-     * backends. */
-    {
-        usize row = (usize)w * 4u;
-        u8 *tmp = (u8 *)malloc(row);
-        if (tmp) {
-            for (u32 y = 0; y < h / 2u; y++) {
-                u8 *ra = pixels + (usize)y * row;
-                u8 *rb = pixels + (usize)(h - 1u - y) * row;
-                memcpy(tmp, ra, row);
-                memcpy(ra, rb, row);
-                memcpy(rb, tmp, row);
-            }
-            free(tmp);
-        }
-    }
+    /* No row flip here: rhi_screenshot hands back top-down rows on every
+     * backend (see the contract in rhi.h) and save_bmp already emits BMP
+     * rows bottom-up. The extra in-place flip this used to do cancelled
+     * save_bmp's own, which mirrored every capture — and hid the mirrored
+     * debug UI, since the UI is part of the same frame. */
     /* R446: swap R/B on both backends — rhi_screenshot delivers RGBA byte
      * order (GL glReadPixels GL_RGBA; VK explicitly swizzles BGRA->RGBA per
      * the R425 contract) while 24-bit BMP stores B,G,R. Every GL and VK

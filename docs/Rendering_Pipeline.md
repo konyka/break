@@ -928,3 +928,20 @@ The debug overlay also displays a continuously visible anti-aliased FPS badge
 in a rounded rectangle at the top-left. The badge includes the measured FPS
 and current frame time; the detailed debug text can still be toggled separately.
 Detailed diagnostics begin below the badge to avoid visual overlap.
+
+The overlay canvas owns its coordinate orientation. It has a top-left origin,
+so before issuing its draws it binds the full target through
+`rhi_cmd_set_viewport`, which is the RHI's bottom-left-origin variant and maps
+NDC +Y to the top on every backend. Without this the canvas would inherit
+whatever viewport the 3D and post-processing chain last installed — the
+non-flipped variant that `rhi_frame_begin` and `rhi_offscreen_fbo_unbind`
+bind, and which places NDC +Y at the bottom on Vulkan and D3D12. That mirrors
+the whole overlay vertically: the top-left badge renders at the bottom-left
+with upside-down glyphs. The same canvas backs the ImUI panel and every BreakUI
+window, so they shared the defect.
+
+Screen captures follow one contract across backends: `rhi_screenshot` takes a
+top-left-origin rect and returns rows top-down on every backend. Vulkan gets
+this from its swapchain copy; GL reverses `glReadPixels`' bottom-up rows to
+match. Writers that need BMP's bottom-up row order do their own flip, so
+captures and the live window agree.

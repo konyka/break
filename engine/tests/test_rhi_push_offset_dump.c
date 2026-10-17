@@ -254,7 +254,7 @@ int main(void) {
         { "no_vertex_input", { .no_vertex_input = true } },
         { "nvi_tbo", { .no_vertex_input = true, .uses_texel_buffer = true } },
     };
-    PlatformConfig cfg = { 320u, 240u, "push-offset-dump", NULL, NULL };
+    PlatformConfig cfg = { 320u, 240u, "push-offset-dump", NULL, NULL, false };
     Platform *platform = platform_create(&cfg);
     RHIDevice *dev;
     u32 w = 0u, h = 0u, ci;

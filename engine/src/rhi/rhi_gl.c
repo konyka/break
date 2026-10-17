@@ -3465,8 +3465,27 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
      * buffers; GL left every 4th byte of w*h*4 buffers unwritten). */
     while (glGetError() != GL_NO_ERROR) {
     }
-    glReadPixels((GLint)x, (GLint)y, (GLint)w, (GLint)h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-    return glGetError() == GL_NO_ERROR;
+    /* Contract (see rhi.h): the rect is top-left origin and rows come back
+     * top-down, matching the Vulkan copy path. glReadPixels is bottom-left
+     * and bottom-up, so read the mirrored rect and reverse the row order. */
+    {
+        usize row = (usize)w * 4u;
+        u8 *scratch = (u8 *)malloc(row * (usize)h);
+        bool ok;
+        u32 row_i;
+        if (scratch == NULL) return false;
+        glReadPixels((GLint)x, (GLint)(dev->height - y - h), (GLint)w, (GLint)h,
+                     GL_RGBA, GL_UNSIGNED_BYTE, scratch);
+        ok = glGetError() == GL_NO_ERROR;
+        if (ok) {
+            for (row_i = 0; row_i < h; row_i++) {
+                memcpy(pixels + (usize)row_i * row,
+                       scratch + (usize)(h - 1u - row_i) * row, row);
+            }
+        }
+        free(scratch);
+        return ok;
+    }
 }
 
 struct RHIGPUTimer {

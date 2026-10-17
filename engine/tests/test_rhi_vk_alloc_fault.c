@@ -10,7 +10,7 @@ int main(void) {
 #ifndef ENGINE_VULKAN
     return 77;
 #else
-    PlatformConfig cfg = { 640u, 480u, "rhi-alloc-fault", NULL, NULL };
+    PlatformConfig cfg = { 640u, 480u, "rhi-alloc-fault", NULL, NULL, false };
     Platform *platform = platform_create(&cfg);
     RHIDevice *dev;
     RHITextureDesc desc = { 256u, 256u, RHI_FORMAT_R8G8B8A8_UNORM, 1u, NULL };

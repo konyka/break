@@ -681,6 +681,15 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
   if (c->cmd == NULL || (c->solid_count == 0 && c->image_count == 0)) {
     return MY_RET_OK;
   }
+  /* The canvas has a top-left origin, so its NDC (see ndc_xy) must put +Y at
+   * the top of the target. The viewport the 3D/post chain leaves behind
+   * (rhi_frame_begin and rhi_offscreen_fbo_unbind install the non-flipped
+   * variant) maps +Y to the bottom on Vulkan/D3D12 and mirrors the whole UI.
+   * rhi_cmd_set_viewport is the RHI's bottom-left-origin viewport and maps +Y
+   * to the top on every backend, so the canvas states its own orientation
+   * instead of inheriting ambient state from whichever pass ran last. */
+  rhi_cmd_set_viewport(c->cmd, 0.0f, 0.0f, (f32)c->width, (f32)c->height, 0.0f,
+                       1.0f);
   if (c->atlas_dirty) {
     rhi_texture_upload_mip(c->device, c->atlas_texture, 0,
                            BREAK_RHI_ATLAS_SIZE, BREAK_RHI_ATLAS_SIZE,

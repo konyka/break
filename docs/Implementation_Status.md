@@ -1,5 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：R715 debug UI 垂直镜像根因修复 — BreakUI 画布补齐自身 viewport（FPS 徽章曾落在左下角且文字上下颠倒）+ `rhi_screenshot` 行序契约统一为双后端自上而下（此前截图二次翻转，长期掩盖了该 UI bug）+ Windows/Clang 构建失败修复（`EngineConfig`/`PlatformConfig` 新增尾部字段后 4 处位置初始化触发 `-Werror=missing-field-initializers`）；无头 CTest 176/176
+
+- **缺口（用户报告）**：Windows 上 demo 的帧率徽章显示在窗口**左下角**，且文字上下颠倒。根因不在 `debug_ui.c`——徽章一直画在逻辑坐标 (4,4)/(12,10)，代码是对的；问题出在绘制时的 viewport。
+- **根因**：`my_vgcanvas_break_rhi.c` 的 `ndc_xy()` 按左上原点发出 NDC（`y=0 → ny=+1`），但画布**从不设置 viewport**，于是继承 3D/后处理链最后留下的那个。`rhi_frame_begin` 与 `rhi_offscreen_fbo_unbind` 装的是**非翻转**变体（VK `rhi_vk.c` `VkViewport{0,0,w,h}` 正高度），在 Vulkan/D3D12 上把 NDC +Y 映射到**底部**，整个 UI 上下镜像。`rhi_cmd_set_viewport` 才是 RHI 的规范变体（负高度），四个后端一致把 +Y 映射到顶部。
+- **修复 1**：画布在 `rhi_end_frame` 提交 draw 之前调用 `rhi_cmd_set_viewport(cmd, 0, 0, width, height, 0, 1)`，显式声明自身朝向，不再依赖环境状态。同时修复共用该画布的 ImUI 面板与全部 BreakUI 窗口（它们有同样缺陷）。
+- **修复 2（掩盖该 bug 的元凶）**：`save_bmp` 本身已按 BMP 规范自底向上写行，而 `demo_save_screenshot` 又把回读原地翻转了一次，两次抵消 → **所有历史 BMP 截图相对帧缓冲都是镜像的**，所以历次"截图证据"看起来一直正常。并且 `rhi_screenshot` 两个后端行序相反（VK 直接 memcpy 自上而下；GL `glReadPixels` 自下而上）。现统一为单一契约（top-left 原点矩形 + 自上而下行序，GL 侧反转发回），并删掉多余翻转，截图与真实屏幕一致。
+- **修复 3（Windows/Clang 构建）**：远程提交 `417e2e2f` 等给 `EngineConfig`、`PlatformConfig` 增加尾部 `bool hide_window_until_first_frame`，`test_engine_lifecycle.c`/`test_rhi_push_offset_dump.c`/`test_rhi_vk_alloc_fault.c`/`rhi_swapchain_bench.c` 的位置初始化未跟进，在 Clang `-Werror=missing-field-initializers` 下编译失败（GCC 无此默认诊断，故只在 Clang/Windows 暴露）。补齐尾部初始化。
+- **验证（Windows 11 / RTX 4060 / Vulkan）**：**实证方法**——引擎自带截图因上述二次翻转不可信，故改用 PowerShell `CopyFromScreen` 独立抓取真实屏幕像素。①修复前：逻辑顶部画的绿色探针条落在屏幕**底部**（y≈892-910），逻辑底部的红条落在顶部；窗口底部可见倒置的 `FPS …` 徽章。②修复后：徽章回到左上角、文字方向正确，诊断行依次向下可读。③引擎 `BREAK_SCREENSHOT` 截图同样回到左上角且与屏幕一致。④完整 `ninja` 构建零错误零警告；`ctest -LE graphics` **176/176 通过**；`rhi_swapchain_bench` 通过。
+- **golden 漂移说明（非本次引入）**：`ctest -L graphics` 的 `test_vulkan` 报 GOLDEN DRIFT（MAE=28.75 / 13.54）。已用 `git stash` 回退到未改动代码复测，得到**完全相同**的 MAE——属 Windows/NVIDIA 与参考图生成机（Linux Intel Mesa）的既有差异；`rhi_oracle` 不含任何行序补偿逻辑，且 Vulkan 回读本就自上而下，故本轮行序契约统一对 golden 输入字节零影响。
+- **遗留**：`build-gl`（compat-override 路径）在本机环境下 debug UI 完全不渲染、GL 截图链路亦不可验证，GL 侧 `rhi_screenshot` 行序归一化仅经静态审查，未获运行时证据；D3D12 后端 `rhi_device_create_compiled` 仍是返回 NULL 的桩、FBO 函数多为 no-op，无法端到端运行，其 UI 修复效果依赖 VK 同构代码路径。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

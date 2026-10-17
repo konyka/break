@@ -884,7 +884,11 @@ void        rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
  * Post-present calls are a Vulkan spec violation (the image is owned by the
  * presentation engine again) and are refused (false + error log). The readback
  * carries the previously presented frame's pixels: rendering recorded into the
- * in-flight frame is not visible to it. */
+ * in-flight frame is not visible to it.
+ * Row order: the rect (x, y) is top-left origin and rows are returned
+ * top-down on every backend. Vulkan gets this from the swapchain copy path;
+ * GL reverses glReadPixels' bottom-up rows to match. Callers must not flip
+ * again — a BMP writer that wants bottom-up rows does its own flip. */
 bool        rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
                            u8 *pixels, usize pixel_bytes);
 

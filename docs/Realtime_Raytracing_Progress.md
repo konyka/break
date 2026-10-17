@@ -375,6 +375,25 @@ frameworks).
 - Added a continuously visible anti-aliased FPS/frame-time badge to the
   top-left debug overlay. It uses the existing vector canvas rounded-fill path
   and remains visible when the detailed debug text is toggled off.
+- Fixed the debug UI rendering vertically mirrored on Vulkan/D3D12: the FPS
+  badge appeared at the bottom-left with upside-down text. The BreakUI vector
+  canvas emitted top-left-origin NDC but never set a viewport, so it inherited
+  whichever one the 3D/post chain last installed — the non-flipped variant,
+  which puts NDC +Y at the bottom on Vulkan/D3D12 and mirrors the entire UI.
+  The canvas now sets `rhi_cmd_set_viewport` (the RHI's bottom-left-origin
+  variant, +Y at the top on every backend) before issuing its draws. It also
+  fixes the ImUI panel and every BreakUI window, which shared the canvas.
+- Fixed the screenshot path that had been hiding that UI bug: `save_bmp`
+  already emits BMP rows bottom-up and `demo_save_screenshot` flipped the
+  readback a second time, so every saved capture was mirrored relative to the
+  framebuffer. `rhi_screenshot` also delivered opposite row orders per backend
+  (top-down on Vulkan, bottom-up from `glReadPixels`). It now has one
+  documented top-down contract on both backends, and the redundant flip is
+  gone — screenshots finally match what is on screen.
+- Fixed a Windows/Clang build break introduced by the hidden-window commits:
+  `EngineConfig` and `PlatformConfig` gained a trailing `hide_window_until_first_frame`
+  field, and positional initializers in four test/bench files tripped
+  `-Werror=missing-field-initializers`.
 
 - **R447 — mouse-move stutter root-caused and fixed: vsync default was never
   applied, and the CPU limiter double-throttled against it.** Symptom: visible
