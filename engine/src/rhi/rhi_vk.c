@@ -358,6 +358,11 @@ typedef struct {
     bool             feat_acceleration_structure;
     bool             feat_partially_bound;      /* descriptorBindingPartiallyBound usable */
     bool             feat_uab_sampled_image;    /* descriptorBindingSampledImageUpdateAfterBind usable */
+    bool             ext_acceleration_structure;
+    bool             ext_ray_tracing_pipeline;
+    bool             ext_ray_query;
+    bool             ext_dynamic_rendering;
+    bool             ext_synchronization2;
     bool             validation_layer_present;  /* R635: VK_LAYER_KHRONOS_validation loaded */
     bool             feat_depth_stencil_resolve;
     bool             has_device_fault; /* R576: VK_EXT_device_fault enabled */
@@ -591,31 +596,39 @@ static VKBackend *vk_cmd_backend(RHICmdBuffer *cmd) {
                : NULL;
 }
 
-static bool vk_device_extension_present(VkPhysicalDevice physical,
-                                         const char *extension_name) {
-    if (physical == VK_NULL_HANDLE || extension_name == NULL) return false;
+/* Device extension properties are immutable for the selected physical device.
+ * Cache the optional capabilities needed during initialization in one query. */
+static bool vk_cache_device_extensions(VKBackend *vk) {
+    u32 count = 0u;
+    if (!vk || vk->physical == VK_NULL_HANDLE ||
+        vkEnumerateDeviceExtensionProperties(vk->physical, NULL, &count, NULL) != VK_SUCCESS)
+        return false;
+    VkExtensionProperties *extensions = calloc(count ? count : 1u, sizeof(*extensions));
+    if (!extensions) return false;
     for (u32 attempt = 0u; attempt < 3u; ++attempt) {
-        u32 count = 0u;
-        if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS ||
-            count == 0u) return false;
-        VkExtensionProperties *extensions = calloc(count, sizeof(*extensions));
-        if (extensions == NULL) return false;
         u32 reported = count;
         VkResult result = vkEnumerateDeviceExtensionProperties(
-            physical, NULL, &reported, extensions);
+            vk->physical, NULL, &reported, extensions);
         if (result == VK_SUCCESS) {
             for (u32 i = 0u; i < reported; ++i) {
-                if (strcmp(extensions[i].extensionName, extension_name) == 0) {
-                    free(extensions);
-                    return true;
-                }
+                const char *name = extensions[i].extensionName;
+                if (strcmp(name, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) == 0)
+                    vk->ext_acceleration_structure = true;
+                else if (strcmp(name, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME) == 0)
+                    vk->ext_ray_tracing_pipeline = true;
+                else if (strcmp(name, VK_KHR_RAY_QUERY_EXTENSION_NAME) == 0)
+                    vk->ext_ray_query = true;
+                else if (strcmp(name, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME) == 0)
+                    vk->ext_dynamic_rendering = true;
+                else if (strcmp(name, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME) == 0)
+                    vk->ext_synchronization2 = true;
             }
             free(extensions);
-            return false;
+            return true;
         }
-        free(extensions);
-        if (result != VK_INCOMPLETE) return false;
+        if (result != VK_INCOMPLETE) break;
     }
+    free(extensions);
     return false;
 }
 
@@ -1807,22 +1820,21 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.depth_resolve_supported = vk->feat_depth_stencil_resolve;
     /* Record extension availability first. Capability bits are published only
      * after the matching device features have been enabled successfully. */
+    (void)vk_cache_device_extensions(vk);
     vk->feat_ray_tracing_pipeline =
-        vk_device_extension_present(vk->physical, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME) &&
-        vk_device_extension_present(vk->physical, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
-    vk->feat_ray_query =
-        vk_device_extension_present(vk->physical, VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        vk->ext_acceleration_structure && vk->ext_ray_tracing_pipeline;
+    vk->feat_ray_query = vk->ext_ray_query;
     /* 迁移期只探测不消费：dynamic rendering / synchronization2。 */
     dev->capabilities.dynamic_rendering_supported =
         VK_API_VERSION_MAJOR(vk->device_props.apiVersion) > 1u ||
         (VK_API_VERSION_MAJOR(vk->device_props.apiVersion) == 1u &&
          VK_API_VERSION_MINOR(vk->device_props.apiVersion) >= 3u) ||
-        vk_device_extension_present(vk->physical, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
+         vk->ext_dynamic_rendering;
     dev->capabilities.synchronization2_supported =
         VK_API_VERSION_MAJOR(vk->device_props.apiVersion) > 1u ||
         (VK_API_VERSION_MAJOR(vk->device_props.apiVersion) == 1u &&
          VK_API_VERSION_MINOR(vk->device_props.apiVersion) >= 3u) ||
-        vk_device_extension_present(vk->physical, VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);
+         vk->ext_synchronization2;
     dev->capabilities.feature_bits = 0u;
     /* 计划 E capability contract（test_vulkan tv_test_capability_contract 消费）。 */
     dev->capabilities.push_constants_supported = true;
