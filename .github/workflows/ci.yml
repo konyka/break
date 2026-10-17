@@ -374,7 +374,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake ninja-build libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            build-essential cmake ninja-build libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
              libegl1-mesa-dev libgles2-mesa-dev \
              libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
             libfreetype6-dev fonts-noto-cjk weston
@@ -791,8 +791,11 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
+          lvl=GPU_RUNTIME
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -R x11_runtime (Xvfb + LIBGL_ALWAYS_SOFTWARE)" -DBUILD_CONFIG=Debug \
             -DGPU="mesa software rasterizer (LIBGL_ALWAYS_SOFTWARE=1)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -819,7 +822,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libgl1-mesa-dev libgl1-mesa-dri \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
 
       - name: Configure
@@ -875,8 +878,11 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
+          lvl=GPU_RUNTIME
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -L graphics (lavapipe ICD, Xvfb)" -DBUILD_CONFIG=Debug \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -934,16 +940,28 @@ jobs:
         continue-on-error: true
         run: |
           set +e
-          ctest --test-dir build -L graphics --output-on-failure
+          out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
           rc=$?
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
           exit $rc   # 77 skip not fatal; GPU runners count as receipts
 
       - name: Emit evidence receipt
         if: always()
         run: |
-          if [ "${{ steps.metal_graphics.outputs.rc }}" = "0" ]; then lvl=GPU_RUNTIME; else lvl=HEADLESS; fi
-          echo "metal graphics rc=${{ steps.metal_graphics.outputs.rc }} -> evidence_level=$lvl"
+          # GPU_RUNTIME only when the graphics suite actually ran and passed
+          # (rc=0, zero Skipped, at least one Passed); a hosted no-Metal-session
+          # mass SKIP degrades honestly to HEADLESS; a failed lane claims nothing.
+          rc="${{ steps.metal_graphics.outputs.rc }}"; skipped="${{ steps.metal_graphics.outputs.skipped }}"; passed="${{ steps.metal_graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE
+          elif [ "$rc" = "0" ] && [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then lvl=GPU_RUNTIME
+          else lvl=HEADLESS; fi
+          echo "job=${{ job.status }} metal graphics rc=$rc skipped=$skipped passed=$passed -> evidence_level=$lvl"
           cmake -DOUT=receipt.json -DPLATFORM=macos -DBACKEND=metal \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -L graphics (metal device contract)" -DBUILD_CONFIG=Debug \
@@ -995,17 +1013,26 @@ jobs:
           ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
         run: |
           set +e
-          ctest --test-dir build -L graphics --output-on-failure
+          out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
           rc=$?
+          printf '%s\n' "$out"
+          skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
+          passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          echo "skipped=$skipped" >> "$GITHUB_OUTPUT"
+          echo "passed=$passed" >> "$GITHUB_OUTPUT"
           exit $rc
 
       - name: Emit evidence receipt
         if: always()
         shell: bash
         run: |
-          if [ "${{ steps.d3d12_graphics.outputs.rc }}" = "0" ]; then lvl=GPU_RUNTIME; else lvl=UNAVAILABLE; fi
-          echo "d3d12 graphics rc=${{ steps.d3d12_graphics.outputs.rc }} -> evidence_level=$lvl"
+          rc="${{ steps.d3d12_graphics.outputs.rc }}"; skipped="${{ steps.d3d12_graphics.outputs.skipped }}"; passed="${{ steps.d3d12_graphics.outputs.passed }}"
+          : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE
+          elif [ "$rc" = "0" ] && [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then lvl=GPU_RUNTIME
+          else lvl=UNAVAILABLE; fi
+          echo "job=${{ job.status }} d3d12 graphics rc=$rc skipped=$skipped passed=$passed -> evidence_level=$lvl"
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=d3d12 \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -L graphics (ENGINE_RHI_BACKEND=d3d12)" -DBUILD_CONFIG=Release \
@@ -1031,7 +1058,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
             vulkan-validationlayers
 
@@ -1062,8 +1089,11 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          # GPU_RUNTIME 仅在整 lane 成功时声明；失败 lane 的收据如实降级 UNAVAILABLE。
+          lvl=GPU_RUNTIME
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -L graphics (VK_LAYER_KHRONOS_validation, lavapipe ICD)" -DBUILD_CONFIG=Debug \
             -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -1088,7 +1118,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
             vulkan-validationlayers
 
@@ -1157,7 +1187,7 @@ jobs:
           # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* libfreetype6-dev fonts-noto-cjk
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev fonts-noto-cjk
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
@@ -1281,7 +1311,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
           rc=$?
           set -e
