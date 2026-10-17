@@ -41,6 +41,14 @@
 - **告警根因（已修复，零告警）**：调试层报的 "Before state (0x0 COMMON|PRESENT) ... does not match with the state (0x800 COPY_SOURCE) specified in preceding ResourceBarrier" 是一条**逐字吻合的实锤**——截图代码里存在两条重复的 `PRESENT -> COPY_SOURCE` 屏障：第二条声明 before=PRESENT 时，调试层已被第一条置为 COPY_SOURCE。定位方法（可复用）：挂 `ID3D12InfoQueue` 全文转储（DEBUG 构建下调试层只写 debugger 输出，控制台看不到），再用"删掉回程屏障后 `Present()` 反过来抱怨 back buffer 停在 COPY_SOURCE"证明状态确实被恢复、告警并非无害噪声，最后按偏移数出重复屏障并删除。删除后 `ID3D12InfoQueue` 仅剩 GBV 启动信息，回读断言依旧通过。
 - **顺带收敛**：截图命令列表由"每次调用新建 allocator + list"改为复用代码库既有的 `rhi_d3d12_oneshot_begin/flush` + `ctx->upload_list`（与纹理上传、`rhi_texture_read_pixels` 同一机制），去掉每次截图的 COM 创建样板，执行+信号+等待由 oneshot_flush 统一承担。
 
+## 本轮更新：R715 五记 — D3D12 离屏 FBO 落地（create/bind/bind_load/unbind/destroy/set_clear_color 原为桩）+ `test_d3d12_warp_runtime` 新增像素级用例
+
+- **缺口**：`rhi_offscreen_fbo_*` 六个入口在 D3D12 上全是返回空结构的桩。渲染器的场景 FBO 依赖它们，因此 D3D12 无法渲染任何离屏内容——这是 demo 侧继 pipeline 之后的下一道墙。
+- **实现**：颜色/深度纹理直接复用 `rhi_texture_create`（它已按格式加好 `ALLOW_RENDER_TARGET` / `ALLOW_DEPTH_STENCIL`），FBO 只持有 rtv_alloc / dsv_alloc 的描述符槽位，销毁时经 fence-retire 归还。状态转换声明 `td->state`（CPU 侧跟踪态），与纹理上传/回读 one-shot 同一套约定。`bind` 按 R617/R619 可移植契约清成调用方自持颜色（默认 {0.05,0.05,0.1,1.0}）+ 深度 1.0，`bind_load` 保留内容；`unbind` 恢复交换链 RTV 并重设全屏 viewport/scissor（R230 同语义），否则后处理会继续画在刚解绑的 FBO 上。
+- **刻意不做**：MSAA（`sample_count > 1`）需要 sample-count RTV 与 resolve 目标，未接线，故**创建时 fail-closed 返回空 FBO**，而不是悄悄给一个单采样目标。
+- **验证**：`test_d3d12_warp_runtime`（WARP 强制软件光栅，像素确定）新增 `offscreen_fbo_clear_round_trips_pixels`：8x8 FBO 清成 0.25/0.5/0.75/1.0，经 `rhi_texture_read_pixels` 回读，断言首像素为 64/128/191/255（±2 容差覆盖 f32→unorm 取整）**且全部 64 个像素一致**。**反向验证**：把期望 R 改成 10 后测试转红，恢复后转绿——排除空转。回归：D3D12 零错误零警告、专项 **12/12**（全套 184 项中 179 通过，5 项 `fuzz_*_smoke` 为 `EXCLUDE_FROM_ALL` 有意门控）；GL **175/175**；VK **176/176**。
+- **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_pipeline_bindings_*`（命名 uniform 解析）、`rhi_cmd_bind_texture` 仍是桩，`rhi_cmd_begin/end_render_pass` 仍是 no-op。**顺序约束**：这些补齐后，才轮到按 CMake `ENGINE_D3D12_HLSL_PIPELINES` 的增量约定补渲染管线 sidecar。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

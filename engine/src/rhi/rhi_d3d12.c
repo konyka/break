@@ -3685,42 +3685,192 @@ void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures,
 }
 
 /* ---- offscreen / MRT / depth-cube FBO ---- */
-RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width,
-                                         u32 height) {
-    RHIOffscreenFBO out;
-    (void)dev; (void)width; (void)height;
-    memset(&out, 0, sizeof(out));
-    return out;
-}
-RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width,
-                                             u32 height, RHIFormat color_fmt) {
-    RHIOffscreenFBO out;
-    (void)dev; (void)width; (void)height; (void)color_fmt;
-    memset(&out, 0, sizeof(out));
-    return out;
-}
 RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
                                               const RHIOffscreenFBODesc *desc) {
     RHIOffscreenFBO out;
-    (void)dev; (void)desc;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12FBO *fd;
+    RHI_D3D12Texture *color, *depth;
+    RHITextureDesc tex_desc;
+    UINT64 retire;
+    u32 samples;
+    UINT idx;
+    if (dev == NULL || desc == NULL) { memset(&out, 0, sizeof(out)); return out; }
+    memset(&out, 0, sizeof(out));
+    if (!rhi_offscreen_fbo_desc_validate(&dev->capabilities, desc)) return out;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL) return out;
+    samples = desc->sample_count == 0u ? 1u : desc->sample_count;
+    /* MSAA needs a sample-count RTV plus a resolve target; not wired yet.
+     * Fail closed rather than silently handing back a single-sample FBO. */
+    if (samples > 1u) return out;
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = desc->width;
+    tex_desc.height = desc->height;
+    tex_desc.mip_levels = 1u;
+    tex_desc.format = desc->color_format;
+    out.color_tex = rhi_texture_create(dev, &tex_desc);
+    if (!rhi_handle_valid(out.color_tex)) return out;
+    tex_desc.format = RHI_FORMAT_D32_FLOAT;
+    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    if (!rhi_handle_valid(out.depth_tex)) {
+        rhi_texture_destroy(dev, out.color_tex);
+        memset(&out, 0, sizeof(out));
+        return out;
+    }
+    color = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, out.color_tex, RHI_RES_TEXTURE);
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, out.depth_tex, RHI_RES_TEXTURE);
+    fd = (RHI_D3D12FBO *)calloc(1u, sizeof(*fd));
+    if (fd == NULL) goto fail;
+    fd->rtv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->rtv_alloc);
+    fd->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+    if (fd->rtv_slot == UINT_MAX || fd->dsv_slot == UINT_MAX) {
+        retire = rhi_d3d12_retire_fence(ctx);
+        if (fd->rtv_slot != UINT_MAX)
+            rhi_d3d12_descriptor_give_back(&ctx->rtv_alloc, fd->rtv_slot, retire);
+        if (fd->dsv_slot != UINT_MAX)
+            rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc, fd->dsv_slot, retire);
+        free(fd);
+        goto fail;
+    }
+    ID3D12Device_CreateRenderTargetView(ctx->device, color->resource, NULL,
+        rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, fd->rtv_slot));
+    ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
+        rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot));
+    /* R617/R619 portable contract: the bind clear color is caller-owned and
+     * defaults to {0.05, 0.05, 0.1, 1.0}; depth always clears to 1.0. */
+    fd->clear_color[0] = 0.05f; fd->clear_color[1] = 0.05f;
+    fd->clear_color[2] = 0.1f;  fd->clear_color[3] = 1.0f;
+    fd->width = desc->width;
+    fd->height = desc->height;
+    fd->sample_count = samples;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = fd;
+    dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
+    out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
+    out.width = desc->width;
+    out.height = desc->height;
+    out.sample_count = samples;
+    return out;
+fail:
+    rhi_texture_destroy(dev, out.color_tex);
+    rhi_texture_destroy(dev, out.depth_tex);
     memset(&out, 0, sizeof(out));
     return out;
 }
+RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width,
+                                         u32 height) {
+    return rhi_offscreen_fbo_create_fmt(dev, width, height,
+                                        RHI_FORMAT_R8G8B8A8_UNORM);
+}
+RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width,
+                                             u32 height, RHIFormat color_fmt) {
+    RHIOffscreenFBODesc desc;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = width;
+    desc.height = height;
+    desc.color_format = color_fmt;
+    desc.sample_count = 1u;
+    return rhi_offscreen_fbo_create_desc(dev, &desc);
+}
 void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
-    (void)dev; (void)fbo;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12FBO *fd;
+    UINT64 retire;
+    if (dev == NULL || fbo == NULL) return;
+    fd = (RHI_D3D12FBO *)rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
+    if (fd == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx != NULL) {
+        retire = rhi_d3d12_retire_fence(ctx);
+        if (fd->rtv_slot != UINT_MAX)
+            rhi_d3d12_descriptor_give_back(&ctx->rtv_alloc, fd->rtv_slot, retire);
+        if (fd->dsv_slot != UINT_MAX)
+            rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc, fd->dsv_slot, retire);
+    }
+    free(fd);
+    rhi_free_slot(dev, fbo->fb);
+    if (rhi_handle_valid(fbo->color_tex)) rhi_texture_destroy(dev, fbo->color_tex);
+    if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
+    memset(fbo, 0, sizeof(*fbo));
+}
+static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
+                                    bool load) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12FBO *fd;
+    RHI_D3D12Texture *color, *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv, dsv;
+    if (ctx == NULL || g_current_device == NULL || fbo == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return; /* no frame in flight: drop, GL/VK parity */
+    fd = (RHI_D3D12FBO *)rhi_get_resource_typed(g_current_device, fbo->fb,
+                                                RHI_RES_FRAMEBUFFER);
+    if (fd == NULL) return;
+    color = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, fbo->color_tex, RHI_RES_TEXTURE);
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
+    if (color == NULL || depth == NULL) return;
+    /* Transitions declare the CPU-tracked state (td->state), the same rule
+     * the texture upload / readback one-shots follow. */
+    rhi_d3d12_transition(list, color->resource, color->state,
+                         D3D12_RESOURCE_STATE_RENDER_TARGET);
+    color->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    rhi_d3d12_transition(list, depth->resource, depth->state,
+                         D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    rtv = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, fd->rtv_slot);
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, TRUE, &dsv);
+    ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_count = 1u;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    if (!load) {
+        ID3D12GraphicsCommandList_ClearRenderTargetView(list, rtv, fd->clear_color, 0u, NULL);
+        ID3D12GraphicsCommandList_ClearDepthStencilView(list, dsv,
+            D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
+    }
 }
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    (void)cmd; (void)fbo;
+    rhi_d3d12_fbo_bind_impl(cmd, fbo, false);
 }
 void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    (void)cmd; (void)fbo;
+    rhi_d3d12_fbo_bind_impl(cmd, fbo, true);
 }
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+    D3D12_VIEWPORT vp;
+    D3D12_RECT sc;
+    if (ctx == NULL || g_current_device == NULL || !ctx->swapchain_ready) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    /* R230 parity: restore the swapchain target with a full-target
+     * viewport/scissor, otherwise post-fx draws would keep targeting the
+     * offscreen FBO that unbind just left bound. */
+    rtv = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc,
+                                   ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
+    ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_count = 1u;
+    ctx->bound_dsv_valid = 0u;
+    vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+    vp.Width = (f32)screen_w; vp.Height = (f32)screen_h;
+    vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    sc.left = 0; sc.top = 0; sc.right = (LONG)screen_w; sc.bottom = (LONG)screen_h;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &sc);
 }
 void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo,
                                        f32 r, f32 g, f32 b, f32 a) {
-    (void)dev; (void)fbo; (void)r; (void)g; (void)b; (void)a;
+    RHI_D3D12FBO *fd;
+    if (dev == NULL || fbo == NULL) return;
+    fd = (RHI_D3D12FBO *)rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
+    if (fd == NULL) return;
+    fd->clear_color[0] = r; fd->clear_color[1] = g;
+    fd->clear_color[2] = b; fd->clear_color[3] = a;
 }
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
                              const RHIFormat *formats, u32 attachment_count) {

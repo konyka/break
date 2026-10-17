@@ -162,6 +162,18 @@ typedef struct RHI_D3D12Sampler {
     UINT slot;                  /* sampler_alloc slot */
 } RHI_D3D12Sampler;
 
+/* Offscreen FBO: the color/depth textures are ordinary RHI_RES_TEXTURE
+ * resources (rhi_texture_create already adds ALLOW_RENDER_TARGET /
+ * ALLOW_DEPTH_STENCIL); the descriptor slots stay owned for the FBO
+ * lifetime and are returned through the fence-retire path on destroy. */
+typedef struct RHI_D3D12FBO {
+    UINT rtv_slot;              /* rtv_alloc slot */
+    UINT dsv_slot;              /* dsv_alloc slot */
+    UINT width, height;
+    UINT sample_count;
+    float clear_color[4];       /* caller-owned bind clear (R619) */
+} RHI_D3D12FBO;
+
 /* Root signature builder: one pass over reflected ShaderIOBindings
  * (core/shader_io.h) plus the pipeline's push-constant contract.
  * PUSH_CONSTANT folds into a single 32BIT_CONSTANTS param (index 0 when
