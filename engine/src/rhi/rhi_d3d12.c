@@ -859,6 +859,8 @@ HRESULT rhi_d3d12_swapchain_create(RHI_D3D12Context *context,
     desc.Height = height;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
     desc.SampleDesc.Count = 1u;
+    /* Flip-model back buffers are created by DXGI with COPY_SRC already,
+     * so rhi_screenshot can CopyTextureRegion from the current one. */
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = RHI_D3D12_BACKBUFFER_COUNT;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -3814,11 +3816,158 @@ void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd,
 }
 
 /* ---- screenshot ---- */
+/* Swapchain readback, mirroring the Vulkan path: a one-shot copy from the
+ * acquired back buffer into a READBACK staging buffer, submitted and waited
+ * on the same queue. Contract (rhi.h): the rect is top-left origin and rows
+ * come back top-down. The swap chain is B8G8R8A8, so BGRA is swizzled to
+ * RGBA on the way out — the same correction the VK BGRA path makes. */
 bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
                     usize pixel_bytes) {
-    (void)dev; (void)x; (void)y; (void)w; (void)h; (void)pixels;
-    (void)pixel_bytes;
-    return false;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Swapchain *sc;
+    ID3D12Resource *backbuffer;
+    ID3D12Resource *staging = NULL;
+    ID3D12CommandAllocator *alloc = NULL;
+    ID3D12GraphicsCommandList *list = NULL;
+    D3D12_TEXTURE_COPY_LOCATION dst_loc;
+    D3D12_TEXTURE_COPY_LOCATION src_loc;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    D3D12_BOX box;
+    D3D12_RANGE read_range;
+    UINT row_pitch;
+    usize row_bytes;
+    const u8 *src;
+    u32 row_i;
+    HRESULT hr;
+
+    if (dev == NULL || pixels == NULL) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return false;
+    sc = &ctx->swapchain;
+    if (!ctx->swapchain_ready || sc->swapchain == NULL) return false;
+    if (!rhi_screenshot_region_validate(x, y, w, h, sc->width, sc->height,
+                                        pixel_bytes)) {
+        return false;
+    }
+    /* Legal only while a swapchain image is acquired: post-present the
+     * compositor owns the back buffer (same rule and reason as the VK
+     * backend). Refuse loudly rather than read an undefined image. */
+    if (!ctx->frame_started && !ctx->frame_submitted) {
+        LOG_ERROR("D3D12: rhi_screenshot outside an acquired frame is illegal "
+                  "(back buffer not owned) — call between frame_begin and present");
+        return false;
+    }
+
+    row_bytes = (usize)w * 4u;
+    /* CopyTextureRegion requires the placed-footprint RowPitch to be a
+     * multiple of D3D12_TEXTURE_DATA_PITCH_ALIGNMENT (256); a 4-px row is
+     * 16 bytes, so the staging copy would be rejected outright. */
+    row_pitch = ((UINT)row_bytes + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1u)
+                / D3D12_TEXTURE_DATA_PITCH_ALIGNMENT
+                * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
+    if (sc->current_index >= RHI_D3D12_BACKBUFFER_COUNT) return false;
+    backbuffer = sc->backbuffers[sc->current_index];
+    if (backbuffer == NULL) return false;
+
+    /* Drain first: the copy must see this frame's rendering, and any
+     * present packet queued after frame_end may still reference the image. */
+    if (rhi_d3d12_drain_gpu(ctx) != RHI_RESULT_OK) {
+        LOG_ERROR("D3D12: screenshot pre-copy GPU drain failed");
+        return false;
+    }
+
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK,
+                                      (UINT64)row_pitch * (UINT64)h);
+    if (staging == NULL) {
+        LOG_ERROR("D3D12: screenshot staging buffer alloc failed");
+        return false;
+    }
+
+    hr = ID3D12Device_CreateCommandAllocator(ctx->device,
+        D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
+        (void **)&alloc);
+    if (FAILED(hr)) {
+        LOG_ERROR("D3D12: screenshot command allocator failed 0x%08lx",
+                  (unsigned long)hr);
+        goto cleanup;
+    }
+    hr = ID3D12Device_CreateCommandList(ctx->device, 0u,
+        D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, NULL,
+        &IID_ID3D12GraphicsCommandList, (void **)&list);
+    if (FAILED(hr)) { LOG_ERROR("D3D12: screenshot cmdlist failed"); goto cleanup; }
+
+    ZeroMemory(&dst_loc, sizeof(dst_loc));
+    dst_loc.pResource = staging;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    ZeroMemory(&footprint, sizeof(footprint));
+    footprint.Offset = 0u;
+    footprint.Footprint.Format = sc->format;
+    footprint.Footprint.Width = w;
+    footprint.Footprint.Height = h;
+    footprint.Footprint.Depth = 1u;
+    footprint.Footprint.RowPitch = row_pitch;
+    dst_loc.PlacedFootprint = footprint;
+    ZeroMemory(&src_loc, sizeof(src_loc));
+    src_loc.pResource = backbuffer;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src_loc.SubresourceIndex = 0u;
+
+    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_PRESENT,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE);
+    /* pSrcBox must name the region explicitly: NULL would mean the whole
+     * source subresource (the full 640x480), which cannot fit the 4x4
+     * placed footprint and fails Close with E_INVALIDARG. */
+    box.left = x; box.top = y; box.right = x + w; box.bottom = y + h;
+    /* front/back select the depth slice; leaving them equal makes an
+     * empty box and the copy silently does nothing. */
+    box.front = 0; box.back = 1;
+    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_PRESENT,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE);
+    /* agility-signature variant: pDst is a copy location (subresource
+     * index is implied); DstX/Y/Z are offsets inside that footprint. */
+    ID3D12GraphicsCommandList_CopyTextureRegion(list, &dst_loc, 0u, 0u, 0u,
+                                                &src_loc, &box);
+    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                         D3D12_RESOURCE_STATE_PRESENT);
+    hr = ID3D12GraphicsCommandList_Close(list);
+    if (FAILED(hr)) { LOG_ERROR("D3D12: screenshot close failed"); goto cleanup; }
+
+    {
+        ID3D12CommandList *cmd_lists[1];
+        cmd_lists[0] = (ID3D12CommandList *)list;
+        ID3D12CommandQueue_ExecuteCommandLists(ctx->direct_queue, 1u, cmd_lists);
+    }
+    /* Wait on the queue itself: the copy is the last thing enqueued, so a
+     * fresh signal ordered behind it is a full drain for this readback. */
+    if (rhi_d3d12_drain_gpu(ctx) != RHI_RESULT_OK) {
+        hr = E_FAIL;  /* stale S_OK must not report a copy that never landed */
+        goto cleanup;
+    }
+
+    ZeroMemory(&read_range, sizeof(read_range));
+    hr = ID3D12Resource_Map(staging, 0u, &read_range, (void **)&src);
+    if (FAILED(hr)) { LOG_ERROR("D3D12: screenshot map failed"); goto cleanup; }
+    for (row_i = 0u; row_i < h; ++row_i) {
+        const u8 *row = src + (usize)row_i * (usize)row_pitch;
+        u8 *dst = pixels + (usize)row_i * row_bytes;
+        usize i;
+        for (i = 0u; i < row_bytes; i += 4u) {
+            dst[i + 0u] = row[i + 2u]; /* R <- B */
+            dst[i + 1u] = row[i + 1u]; /* G <- G */
+            dst[i + 2u] = row[i + 0u]; /* B <- R */
+            dst[i + 3u] = row[i + 3u]; /* A <- A */
+        }
+    }
+    ID3D12Resource_Unmap(staging, 0u, NULL);
+
+cleanup:
+    if (!SUCCEEDED(hr))
+        LOG_ERROR("D3D12: screenshot failed, hr=0x%08lx (x=%u y=%u w=%u h=%u backbuffer_index=%u)",
+                  (unsigned long)hr, x, y, w, h, sc->current_index);
+    rhi_d3d12_release((IUnknown **)&list);
+    rhi_d3d12_release((IUnknown **)&alloc);
+    rhi_d3d12_release((IUnknown **)&staging);
+    return SUCCEEDED(hr);
 }
 
 /* ---- GPU timer ---- */

@@ -31,6 +31,15 @@
 - **后续可行切分**（未实施，需独立立项）：①先实现 FBO/render-pass 与 `rhi_pipeline_bindings_*`；②再按 CMake `ENGINE_D3D12_HLSL_PIPELINES` 的既定增量迁移约定，逐个补管线 sidecar。顺序不可颠倒。
 - **验证（Windows 11 / RTX 4060）**：D3D12 构建零错误零警告；专项 **12/12**；全套 184 项中 179 通过，5 项 `fuzz_*_smoke` 为 "Not Run"——经查证是 `EXCLUDE_FROM_ALL` 的**有意门控**（`engine/CMakeLists.txt:3466` 注释："build explicitly and run by hand under ASan/UBSan"），这 5 个目标在 ninja 中根本不存在，且不引用 `rhi_device_create_compiled`，与本次改动无关。同轮复核 GL 175/175、VK 176/176 不受影响。
 
+## 本轮更新：R715 四记 — D3D12 `rhi_screenshot` 回读通路落地（此前是返回 false 的桩，全后端唯一缺失的像素验证能力）；bench 首帧清屏色回读断言使 D3D12 首次具备像素级证据
+
+- **缺口**：D3D12 是唯一没有像素回读的后端——`rhi_screenshot` / `rhi_texture_read_pixels` / `rhi_texture_get_size` 全为桩。其后果不只是缺功能，而是**该后端上任何渲染改动都无法验证**：拿不到像素就只能盲写。这也是 R715 三记里"暂不补 `blinn_phong` sidecar"的根本原因。
+- **实现**：按 Vulkan 同构路径补齐——从已获取的 back buffer 一次性 `CopyTextureRegion` 到 READBACK staging buffer，同队列提交并等待；BGRA→RGBA 交换；遵循 rhi.h 的 top-left 原点 + 自上而下行序契约。帧外调用（present 之后 compositor 接管 back buffer）响亮拒绝，规则与理由同 VK。
+- **两个必须踩对的 D3D12 细节**（均由调试层原文定位，非猜测）：①placed footprint 的 `RowPitch` 必须按 `D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`(256) 对齐，4 像素行只有 16 字节，不对齐会被直接拒绝；②`pSrcBox` 不能传 `NULL`（`NULL` 表示复制**整个**源子资源，与小 footprint 尺寸不符），且 `D3D12_BOX` 的 `front`/`back` 必须显式置 0/1，否则是空盒子、静默不拷贝。
+- **验证**：`rhi_swapchain_bench` 新增 `BREAK_BENCH_READBACK=1`，首帧 `frame_end` 后、`present` 前回读 4x4 并断言清屏色。D3D12 back buffer 契约为非 sRGB 的 `B8G8R8A8_UNORM`，故 0.1/0.2/0.3/1.0 必须回读为 RGBA 26/51/76/255（±2 容差覆盖 f32→unorm 取整）。实测 **`clear color verified (25 51 76 255)`**——这条断言同时反证了 D3D12 的清屏路径本身是好的（此前无法证明）。不带该开关时 bench 行为不变。
+- **回归**：D3D12 构建零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
+- **遗留**：调试层仍报一条 severity=1 告警——屏障的 before 状态与调试层跟踪的 COPY_SOURCE 不符。因回读已由像素验证正确、且为告警而非错误，未继续深挖其跨命令列表的状态跟踪细节；后续若该后端引入更复杂的多 pass 路径，应回头用同一条 info queue 诊断复查。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

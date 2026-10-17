@@ -63,6 +63,44 @@ int main(int argc, char **argv) {
         if (cmd == NULL) { rhi_device_destroy(dev); platform_destroy(platform); return 1; }
         rhi_cmd_clear_color(cmd, 0.1f, 0.2f, 0.3f, 1.0f);
         rhi_frame_end(dev);
+#if defined(ENGINE_RHI_BACKEND_D3D12)
+        /* Pixel proof for the swapchain readback path: rhi_screenshot was
+         * a stub here, so nothing this backend drew could be verified. The
+         * clear color is known and the D3D12 back buffer is contractually
+         * B8G8R8A8_UNORM (non-sRGB), so 0.1/0.2/0.3/1.0 must come back as
+         * RGBA bytes 26/51/76/255 (+/-2 for the f32->unorm rounding). */
+        if (i == 0u && getenv("BREAK_BENCH_READBACK") != NULL) {
+            unsigned char px[4u * 4u * 4u];
+            const int expect[4] = { 26, 51, 76, 255 };
+            int mismatch = 0;
+            unsigned k;
+            int c;
+            memset(px, 0, sizeof(px));
+            if (!rhi_screenshot(dev, 0u, 0u, 4u, 4u, px, sizeof(px))) {
+                fprintf(stderr, "readback: rhi_screenshot failed\n");
+                rhi_device_destroy(dev); platform_destroy(platform);
+                return 1;
+            }
+            for (k = 0u; k < 16u && !mismatch; ++k) {
+                const unsigned char *p = px + (size_t)k * 4u;
+                for (c = 0; c < 4; ++c) {
+                    int diff = (int)p[c] - expect[c];
+                    if (diff < 0) diff = -diff;
+                    if (diff > 2) mismatch = 1;
+                }
+            }
+            if (mismatch) {
+                fprintf(stderr, "readback: clear color MISMATCH, first px "
+                        "= %u %u %u %u (expect %d %d %d %d)\n",
+                        px[0], px[1], px[2], px[3],
+                        expect[0], expect[1], expect[2], expect[3]);
+                rhi_device_destroy(dev); platform_destroy(platform);
+                return 1;
+            }
+            fprintf(stderr, "readback: clear color verified (%u %u %u %u)\n",
+                    px[0], px[1], px[2], px[3]);
+        }
+#endif
         rhi_present(dev);
         frame_ms[i] = now_ms() - t0;
     }
