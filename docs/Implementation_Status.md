@@ -9,7 +9,7 @@
 - **修复 3（Windows/Clang 构建）**：远程提交 `417e2e2f` 等给 `EngineConfig`、`PlatformConfig` 增加尾部 `bool hide_window_until_first_frame`，`test_engine_lifecycle.c`/`test_rhi_push_offset_dump.c`/`test_rhi_vk_alloc_fault.c`/`rhi_swapchain_bench.c` 的位置初始化未跟进，在 Clang `-Werror=missing-field-initializers` 下编译失败（GCC 无此默认诊断，故只在 Clang/Windows 暴露）。补齐尾部初始化。
 - **验证（Windows 11 / RTX 4060 / Vulkan）**：**实证方法**——引擎自带截图因上述二次翻转不可信，故改用 PowerShell `CopyFromScreen` 独立抓取真实屏幕像素。①修复前：逻辑顶部画的绿色探针条落在屏幕**底部**（y≈892-910），逻辑底部的红条落在顶部；窗口底部可见倒置的 `FPS …` 徽章。②修复后：徽章回到左上角、文字方向正确，诊断行依次向下可读。③引擎 `BREAK_SCREENSHOT` 截图同样回到左上角且与屏幕一致。④完整 `ninja` 构建零错误零警告；`ctest -LE graphics` **176/176 通过**；`rhi_swapchain_bench` 通过。
 - **golden 漂移说明（非本次引入）**：`ctest -L graphics` 的 `test_vulkan` 报 GOLDEN DRIFT（MAE=28.75 / 13.54）。已用 `git stash` 回退到未改动代码复测，得到**完全相同**的 MAE——属 Windows/NVIDIA 与参考图生成机（Linux Intel Mesa）的既有差异；`rhi_oracle` 不含任何行序补偿逻辑，且 Vulkan 回读本就自上而下，故本轮行序契约统一对 golden 输入字节零影响。
-- **遗留**：GL 后端另一处独立缺陷已在本轮后续修复（见 R715 续记）。D3D12 后端 `rhi_device_create_compiled` 仍为返回 NULL 的桩：全文件 210 个函数中 67 个是空桩（含 `rhi_shader_create`、render pass 起止、全部 FBO bind/unbind、纹理/立方图/SSBO 绑定），仓库无任何 HLSL 源，`RHIShaderVariant` 枚举仅 GLSL 与 GLSL_VK 两值——端到端跑通等于重写整个后端，不在本轮范围，且**刻意不做**"让 device 创建成功"的假修复：那会把一个早失败、可诊断的状态换成后续静默无操作绑定，显著降低可诊断性。
+- **遗留**：GL 后端另一处独立缺陷已在本轮后续修复（见 R715 续记）。D3D12 后端的准确状态见 R715 三记——本条此前对 D3D12 的描述（"仓库无任何 HLSL 源""`rhi_shader_create` 是空桩""刻意不做 device 创建修复"）**经实跑证伪，已在该条目更正**。
 
 ## 本轮更新：R715 续记 — GL 后端 debug UI 完全不渲染根因（`rhi_frame_index` 未掩码导致 VBO 环形缓冲越界，读到空句柄、零片元且不报错）；双后端无头 CTest GL 175/175 + VK 176/176
 
@@ -20,6 +20,16 @@
 - **验证（Windows 11 / RTX 4060 / GL 4.5 Core）**：修复前 `BREAK_SCREENSHOT` 截图中 UI 完全缺席；修复后 FPS 徽章出现在左上角、文字方向正确、诊断行依次向下可读。GL 构建零错误零警告、`ctest -LE graphics` **175/175 通过**；VK 同步复测 UI 未受影响（VK 侧 `current_frame` 本就模 2，`& 1` 为恒等）、`ctest -LE graphics` **176/176 通过**。
 - **GL 截图行序归一化获运行时证据**：徽章按构造绘制于逻辑左上角，修复后截图中它出现在**顶部**，证明 `rhi_screenshot` 返回的确为自上而下——R715 中 GL 侧的反转发回正确。
 - **遗留**：GL 实时窗口的跨进程抓屏在本机不可用（窗口被浏览器遮挡、且移动/改尺寸会打断重绘），故 GL 侧"截图与屏幕一致"未能做同 VK 那样的独立抓屏交叉验证，仅由截图内部坐标系自洽佐证。
+
+## 本轮更新：R715 三记 — **更正**此前对 D3D12 的错误判断，并补齐 `rhi_device_create_compiled`（编译期单后端入口桩 → 与 GL/VK 同构的委托）；D3D12 demo 现可创建设备与交换链，失败点精确前移到缺失的 HLSL sidecar。D3D12 专项 12/12
+
+- **先更正**：R715 首记对 D3D12 的描述是错的，本轮实跑证伪。错在三点：①"仓库无任何 HLSL 源"——实际存在手写 sidecar（`shaders/blit_hlsl.{vert,frag}`、`shaders/myui_hlsl.{vert,frag}`），CMake 有 build-time dxc 步骤（`engine/CMakeLists.txt:656-716`，`vs_6_0/ps_6_0/cs_6_0` 三 profile → `shaders_d3d12/*.dxil`），且有 sidecar 缺失即 `FATAL_ERROR` 的构建期契约；②"`rhi_shader_create` 是空桩"——它是实现好的，按 sidecar 文件名读 HLSL 源做文本反射 + 读预编译 DXIL，缺 DXIL 时 fail closed；③"刻意不做 device 创建修复"——该判断基于错误的完成度评估，实跑证明做了之后**不降反升**可诊断性。
+- **D3D12 真实完成度**：D3D12 专项测试 **12/12 全绿**，含 `test_d3d12_warp_runtime`（WARP 软件光栅真实执行）、`test_d3d12_device/swapchain/pipeline/shader/dxr/lifetime_hresult/native_failure` 契约测试，以及创建真实 D3D12 交换链的 `rhi_swapchain_bench`。root signature 生成是**完整实现**的（`D3D12SerializeVersionedRootSignature` + 描述符表 + 32BIT_CONSTANTS 根常量，由 HLSL sidecar 的 `register()` 反射驱动）；`rhi_cmd_push_constants` 亦已实现。所以 GL/VK 的 `blit`/`myui` 无需显式绑定即可工作。
+- **修复**：`rhi_device_create_compiled` 原为 fail-closed 桩（返回 NULL），理由是"caps/shader_variant 契约未落地"——该契约已落地。改为与 GL(`rhi_gl.c:1273`)/VK(`rhi_vk.c:2564`) 同构的委托：`rhi_device_create(RHI_BACKEND_D3D12, window_native, display_native, w, h)`（D3D12 交换链吃 HWND，不消费 surface 句柄）。
+- **效果（实跑，非推断）**：修复前 `engine_demo` 在 device 创建阶段即 `Render init failed`、无任何诊断信息；修复后 D3D12 成功创建设备 + debug layer + 交换链（日志可见），随后**响亮地**失败在 `D3D12: pipeline needs compiled VS/PS blobs`——demo 的首个管线 `blinn_phong` 尚无 HLSL sidecar。注意此处**仍是响亮失败而非静默无输出**，因为没有 blob 时 `rhi_pipeline_create` 直接拒绝。
+- **为何到此为止（刻意不越界）**：给 `blinn_phong` 补 sidecar 会让它拿到 blob、建出管线，随即撞上仍为桩的 `rhi_pipeline_bindings_create`（name→binding 解析）与 `rhi_offscreen_fbo_bind/unbind`、`rhi_cmd_begin/end_render_pass` ——**那会把响亮失败变成静默无输出的黑屏**，正是上一轮明确拒绝的反模式。故增量边界停在"device 可创建、失败点精确可指认"。
+- **后续可行切分**（未实施，需独立立项）：①先实现 FBO/render-pass 与 `rhi_pipeline_bindings_*`；②再按 CMake `ENGINE_D3D12_HLSL_PIPELINES` 的既定增量迁移约定，逐个补管线 sidecar。顺序不可颠倒。
+- **验证（Windows 11 / RTX 4060）**：D3D12 构建零错误零警告；专项 **12/12**；全套 184 项中 179 通过，5 项 `fuzz_*_smoke` 为 "Not Run"——经查证是 `EXCLUDE_FROM_ALL` 的**有意门控**（`engine/CMakeLists.txt:3466` 注释："build explicitly and run by hand under ASan/UBSan"），这 5 个目标在 ninja 中根本不存在，且不引用 `rhi_device_create_compiled`，与本次改动无关。同轮复核 GL 175/175、VK 176/176 不受影响。
 
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 

@@ -404,6 +404,14 @@ frameworks).
   `EngineConfig` and `PlatformConfig` gained a trailing `hide_window_until_first_frame`
   field, and positional initializers in four test/bench files tripped
   `-Werror=missing-field-initializers`.
+- D3D12: `rhi_device_create_compiled` now delegates to `rhi_device_create`
+  instead of failing closed, matching the GL and Vulkan backends. The demo
+  reaches device and swapchain creation and then fails loudly at pipeline
+  creation, naming the missing piece (`blinn_phong` has no HLSL sidecar yet);
+  previously it failed at device creation with no diagnostic at all. The
+  remaining gap — offscreen FBO binds, render passes, and
+  `rhi_pipeline_bindings_*` — is still stubbed, so renderer pipelines must
+  not gain sidecars until that lands.
 
 - **R447 — mouse-move stutter root-caused and fixed: vsync default was never
   applied, and the CPU limiter double-throttled against it.** Symptom: visible

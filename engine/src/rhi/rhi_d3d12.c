@@ -1039,15 +1039,17 @@ static RHIResult rhi_d3d12_present(RHI_D3D12Context *ctx, RHI_D3D12Swapchain *sc
  * failures are classified via rhi_backend_note_create_result (spec §4.2). */
 
 /* ---- device lifecycle ---- */
-/* 计划 E Task 2：编译期单后端入口——D3D12 lane 的 demo 路径尚未迁移
- * （caps/shader_variant 契约未落地），fail-closed 返回 NULL，与迁移前
- * main.c 请求 OPENGL 被 D3D12 后端拒绝的行为一致。双句柄（rhi.h）均不消费。 */
+/* 编译期单后端入口，与 GL/VK 后端同构：委托给下面的运行时入口。原先这里
+ * fail-closed 返回 NULL，理由是「caps/shader_variant 契约未落地」；该契约
+ * 现已落地（device/pipeline/shader/swapchain 契约测试与 WARP 运行时测试全
+ * 绿），继续留桩只会让 engine_demo 在 device 创建阶段早失败。 */
 RHIDevice *rhi_device_create_compiled(void *window_native,
                                       void *surface_native,
                                       void *display_native, u32 w, u32 h) {
-    (void)window_native; (void)surface_native; (void)display_native;
-    (void)w; (void)h;
-    return NULL;
+    /* D3D12 交换链吃 HWND（rhi.h 的 window_native），不消费 surface 句柄。 */
+    (void)surface_native;
+    return rhi_device_create(RHI_BACKEND_D3D12, window_native, display_native, w,
+                             h);
 }
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
                              void *display_native, u32 w, u32 h) {

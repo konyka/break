@@ -208,7 +208,7 @@
 
 **场景与降级如实登记**：
 
-1. benchmark 场景 = `rhi_swapchain_bench` 握手帧循环（clear-color + present），**非** engine_demo 全渲染场景。原因：计划 E Task 2 起 D3D12 的 `rhi_device_create_compiled` 对 demo 路径 fail-closed 返回 NULL（`engine/src/rhi/rhi_d3d12.c:1045`，caps/shader_variant 契约未落地 + HLSL allowlist 仅 blit;myui，无法覆盖 renderer 全 shader 集），`engine_demo --frames 10` 在 D3D12 构建下 rc=1「Render init failed」——与 OpenGL 删除闸门的消费者面差距如实保留，归计划 F 后续 demo 迁移项。为支持本收据，`rhi_swapchain_bench` 增加 D3D12 设备创建分支（`engine/tools/rhi_swapchain_bench.c`，`ENGINE_RHI_BACKEND_D3D12` 宏经 `engine/CMakeLists.txt` bench 目标定义注入）。
+1. benchmark 场景 = `rhi_swapchain_bench` 握手帧循环（clear-color + present），**非** engine_demo 全渲染场景。原因：HLSL allowlist 仅 blit;myui，无法覆盖 renderer 全 shader 集。`rhi_device_create_compiled` 原为 fail-closed 桩（`engine/src/rhi/rhi_d3d12.c:1045`），`engine_demo --frames 10` 在 D3D12 构建下 rc=1「Render init failed」且无任何诊断信息。**现该桩已改为与 GL/VK 同构的委托**（caps/shader_variant 契约已落地），demo 可创建设备与交换链，随后在首个管线处**响亮失败**：`D3D12: pipeline needs compiled VS/PS blobs` —— `blinn_phong` 尚无 HLSL sidecar。后续缺口是 FBO/render-pass 与 `rhi_pipeline_bindings_*` 仍为桩；须先补这些再补管线 sidecar，否则会把响亮失败变成静默黑屏。与 OpenGL 删除闸门的消费者面差距如实保留，归计划 F 后续 demo 迁移项。为支持本收据，`rhi_swapchain_bench` 增加 D3D12 设备创建分支（`engine/tools/rhi_swapchain_bench.c`，`ENGINE_RHI_BACKEND_D3D12` 宏经 `engine/CMakeLists.txt` bench 目标定义注入）。
 2. 判定用 D3D12 构建关闭了 debug layer/GBV（`ENGINE_D3D12_DEBUG=OFF`）：Debug 默认开的 GBV 是插桩开销而非后端吞吐，同 bench 在 `build-d3d12-debug`（GBV 开）实测 fps_avg 1379.88/1454.38/1438.94（比值约 0.80）；Vulkan 基线无 GBV 类开销，故非插桩对非插桩才是同口径。GBV 开数值如实留存于此。
 3. 本机混合 GPU 环境性波动（VK 6 次分布 1420–1841）已用多次取中位缓解；未观察到 D3D12 device-lost/DRED。
 
