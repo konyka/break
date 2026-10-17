@@ -62,6 +62,9 @@ typedef struct vk_global_t {
 
 static vk_global_t g_vk;
 static atomic_flag g_vk_lifecycle_lock = ATOMIC_FLAG_INIT;
+static VkExtensionProperties g_vk_instance_extensions[64];
+static uint32_t g_vk_instance_extension_count;
+static bool g_vk_instance_extensions_loaded;
 
 static void vk_lifecycle_lock(void) {
   while (atomic_flag_test_and_set_explicit(&g_vk_lifecycle_lock,
@@ -74,25 +77,27 @@ static void vk_lifecycle_unlock(void) {
 }
 
 static bool vk_ext_present(const char* name) {
-  uint32_t n = 0, i;
-  VkExtensionProperties props[64];
-  bool found = false;
-  if (vkEnumerateInstanceExtensionProperties(NULL, &n, NULL) != VK_SUCCESS) {
-    return false;
-  }
-  if (n > 64) {
-    n = 64;
-  }
-  if (vkEnumerateInstanceExtensionProperties(NULL, &n, props) !=
-      VK_SUCCESS) {
-    return false;
-  }
-  for (i = 0; i < n; i++) {
-    if (strcmp(props[i].extensionName, name) == 0) {
-      found = true;
+  uint32_t i;
+  if (name == NULL) return false;
+  if (!g_vk_instance_extensions_loaded) {
+    for (uint32_t attempt = 0; attempt < 3u; ++attempt) {
+      uint32_t n = 64u;
+      VkResult result = vkEnumerateInstanceExtensionProperties(
+          NULL, &n, g_vk_instance_extensions);
+      if (result == VK_SUCCESS) {
+        g_vk_instance_extension_count = n < 64u ? n : 64u;
+        g_vk_instance_extensions_loaded = true;
+        break;
+      }
+      if (result != VK_INCOMPLETE) return false;
     }
+    if (!g_vk_instance_extensions_loaded) return false;
   }
-  return found;
+  for (i = 0; i < g_vk_instance_extension_count; i++) {
+    if (strcmp(g_vk_instance_extensions[i].extensionName, name) == 0)
+      return true;
+  }
+  return false;
 }
 
 static bool vk_device_ext_present(VkPhysicalDevice pdev, const char* name) {

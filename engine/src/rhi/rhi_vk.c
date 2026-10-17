@@ -592,27 +592,31 @@ static VKBackend *vk_cmd_backend(RHICmdBuffer *cmd) {
 }
 
 static bool vk_device_extension_present(VkPhysicalDevice physical,
-                                        const char *extension_name) {
-    u32 count = 0u;
-    VkExtensionProperties *extensions;
-    bool found = false;
-
-    if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS ||
-        count == 0u) {
-        return false;
-    }
-    extensions = calloc(count, sizeof(*extensions));
-    if (extensions == NULL) return false;
-    if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, extensions) == VK_SUCCESS) {
-        for (u32 i = 0u; i < count; ++i) {
-            if (strcmp(extensions[i].extensionName, extension_name) == 0) {
-                found = true;
-                break;
+                                         const char *extension_name) {
+    if (physical == VK_NULL_HANDLE || extension_name == NULL) return false;
+    for (u32 attempt = 0u; attempt < 3u; ++attempt) {
+        u32 count = 0u;
+        if (vkEnumerateDeviceExtensionProperties(physical, NULL, &count, NULL) != VK_SUCCESS ||
+            count == 0u) return false;
+        VkExtensionProperties *extensions = calloc(count, sizeof(*extensions));
+        if (extensions == NULL) return false;
+        u32 reported = count;
+        VkResult result = vkEnumerateDeviceExtensionProperties(
+            physical, NULL, &reported, extensions);
+        if (result == VK_SUCCESS) {
+            for (u32 i = 0u; i < reported; ++i) {
+                if (strcmp(extensions[i].extensionName, extension_name) == 0) {
+                    free(extensions);
+                    return true;
+                }
             }
+            free(extensions);
+            return false;
         }
+        free(extensions);
+        if (result != VK_INCOMPLETE) return false;
     }
-    free(extensions);
-    return found;
+    return false;
 }
 
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
@@ -1239,6 +1243,8 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
         LOG_FATAL("VK: vkGetSwapchainImagesKHR image query failed");
         free(vk->swap_images);
         vk->swap_images = NULL;
+        free(vk->swap_views);
+        vk->swap_views = NULL;
         vk->swap_count = 0u;
         return false;
     }
