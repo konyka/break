@@ -130,11 +130,20 @@ jobs:
       # cmake 3.28.3 / libvulkan-dev 1.3.275.0-1build1 / libshaderc-dev 2023.8-1build1。
       - name: Install pinned toolchain
         run: |
+          set +e
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            tail -40 /tmp/apt-install.log | while IFS= read -r line; do echo "::error::$line"; done
+            echo '## apt pin diagnosis' >> "$GITHUB_STEP_SUMMARY"
+            apt-cache policy cmake libvulkan-dev libshaderc-dev clang-18 lld-18 >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+            exit $rc
+          fi
 
       - name: Clean-room configure/build/test
         run: |

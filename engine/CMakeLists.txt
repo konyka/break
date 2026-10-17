@@ -275,7 +275,8 @@ set(RHI_CORE_SOURCES
     src/rhi/rhi_ownership.c
     src/rhi/rhi_validation.c
     src/rhi/rhi_resources.c
-    src/rhi/rhi_present_history.c)
+    src/rhi/rhi_present_history.c
+    src/rhi/rhi_rollout.c)
 add_library(engine STATIC
     src/core/log.c
     src/core/shader_io.c
@@ -364,6 +365,12 @@ src/renderer/lens_effects.c
 string(TOUPPER "${ENGINE_RHI_BACKEND_EFFECTIVE}" ENGINE_RHI_BACKEND_EFFECTIVE_UPPER)
 target_compile_definitions(engine PUBLIC
     ENGINE_RHI_BACKEND_${ENGINE_RHI_BACKEND_EFFECTIVE_UPPER}=1)
+# Rollout config: bake config_version into the build; schema enforced by
+# test_rhi_rollout_config_contract.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json" ENGINE_ROLLOUT_JSON)
+string(JSON ENGINE_ROLLOUT_CFGVER GET "${ENGINE_ROLLOUT_JSON}" config_version)
+target_compile_definitions(engine PUBLIC
+    ENGINE_RHI_ROLLOUT_CONFIG_VERSION=${ENGINE_ROLLOUT_CFGVER})
 
 if(WIN32 AND STREAMLINE_ROOT)
     enable_language(CXX)
@@ -2220,6 +2227,17 @@ endif()
             LABELS graphics)
     endif()
 
+    add_executable(test_rhi_rollout_log tests/test_rhi_rollout_log.c
+        src/rhi/rhi_rollout.c src/core/log.c)
+    target_include_directories(test_rhi_rollout_log PRIVATE ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_rhi_rollout_log COMMAND test_rhi_rollout_log)
+    set_tests_properties(test_rhi_rollout_log PROPERTIES LABELS "headless;platform_contract")
+    add_test(NAME test_rhi_rollout_config_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DROLLOUT_JSON=${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_rollout_config_contract.cmake)
+    set_tests_properties(test_rhi_rollout_config_contract PROPERTIES
+        LABELS "headless;platform_contract")
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)

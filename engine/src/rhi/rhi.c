@@ -6,6 +6,19 @@
 #include <stdatomic.h>
 #include <string.h>
 
+#include "rhi/rhi_rollout.h"
+
+static void rhi_rollout_emit_backend_selected(void) {
+    RHIRolloutEvent ev = {
+        .event = "backend_selected",
+        .backend = rhi_rollout_compiled_backend(),
+        .reason = rhi_rollout_compiled_reason(),
+        .config_version = ENGINE_RHI_ROLLOUT_CONFIG_VERSION,
+        .result = "OK",
+    };
+    rhi_rollout_emit(&ev);
+}
+
 _Thread_local RHIDevice *g_current_device = NULL;
 /* Pre-seeded to ERROR before each backend rhi_device_create call; the
  * backend may downgrade to UNAVAILABLE via rhi_backend_note_create_result
@@ -75,6 +88,7 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
         dev = rhi_device_create(backend, window_native, display_native, w, h);
         if (dev == NULL && out_result != NULL)
             *out_result = g_backend_create_result;
+        if (dev != NULL) rhi_rollout_emit_backend_selected();
         return dev;
     }
     if (backend == RHI_BACKEND_METAL) {
@@ -93,6 +107,7 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
         dev = rhi_device_create(backend, window_native, display_native, w, h);
         if (dev == NULL && out_result != NULL)
             *out_result = g_backend_create_result;
+        if (dev != NULL) rhi_rollout_emit_backend_selected();
         return dev;
     }
     if (backend != RHI_BACKEND_OPENGL && backend != RHI_BACKEND_VULKAN) {
@@ -109,6 +124,7 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
     }
     RHIDevice *dev = rhi_device_create(backend, window_native, display_native, w, h);
     if (dev == NULL && out_result != NULL) *out_result = RHI_RESULT_ERROR;
+    if (dev != NULL) rhi_rollout_emit_backend_selected();
     return dev;
 }
 
@@ -190,11 +206,24 @@ RHIResult rhi_frame_submit_ex(RHIDevice *dev) {
 RHIResult rhi_present_ex(RHIDevice *dev) {
     if (dev == NULL) return RHI_RESULT_INVALID_ARGUMENT;
     RHIResult forced = rhi_result_for_device(dev);
-    if (forced != RHI_RESULT_OK) return forced;
+    if (forced != RHI_RESULT_OK) {
+        RHIRolloutEvent ev = { "present_failure", NULL, "none",
+            ENGINE_RHI_ROLLOUT_CONFIG_VERSION, rhi_result_name(forced) };
+        ev.backend = rhi_rollout_compiled_backend();
+        rhi_rollout_emit(&ev);
+        return forced;
+    }
     if (dev->backend_data == NULL) return RHI_RESULT_UNAVAILABLE;
     if (!rhi_frame_owner_is_current(dev)) return RHI_RESULT_BUSY;
     rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
     rhi_present(dev);
+    if (dev->lifecycle_result != RHI_RESULT_OK) {
+        RHIRolloutEvent ev = { "present_failure", NULL, "none",
+            ENGINE_RHI_ROLLOUT_CONFIG_VERSION,
+            rhi_result_name(dev->lifecycle_result) };
+        ev.backend = rhi_rollout_compiled_backend();
+        rhi_rollout_emit(&ev);
+    }
     return dev->lifecycle_result;
 }
 
@@ -465,5 +494,11 @@ void rhi_test_resource_destroy(RHIDevice *dev, RHIHandle handle) {
 #endif
 
 void rhi_device_set_lifecycle_result(RHIDevice *dev, RHIResult result) {
+    if (result == RHI_RESULT_DEVICE_LOST) {
+        RHIRolloutEvent ev = { "device_lost", NULL, "none",
+            ENGINE_RHI_ROLLOUT_CONFIG_VERSION, "DEVICE_LOST" };
+        ev.backend = rhi_rollout_compiled_backend();
+        rhi_rollout_emit(&ev);
+    }
     if (dev != NULL) dev->lifecycle_result = result;
 }

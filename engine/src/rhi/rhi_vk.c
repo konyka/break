@@ -3,6 +3,7 @@
 #include <rhi/rhi_native_vulkan.h>
 #include <rhi/rhi_vk_probe.h>
 #include <rhi/rhi_result_map.h>
+#include "rhi/rhi_rollout.h"
 #include <platform/platform_vk_surface.h>
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 /* vk_shutdown keeps the ANativeWindow_release half of the reference pair
@@ -1006,6 +1007,11 @@ static VkShaderModule vk_compile_glsl(VKBackend *vk, const char *source, usize l
 
     shaderc_compilation_status status = shaderc_result_get_compilation_status(result);
     if (status != shaderc_compilation_status_success) {
+        {
+            RHIRolloutEvent ev = { "shader_failure", "vulkan", "none",
+                ENGINE_RHI_ROLLOUT_CONFIG_VERSION, "ERROR" };
+            rhi_rollout_emit(&ev);
+        }
         LOG_FATAL("Vulkan shader compile error: %s", shaderc_result_get_error_message(result));
         shaderc_result_release(result);
         shaderc_compile_options_release(opts);
@@ -3429,6 +3435,11 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
         vk->shaderc_compiler, source, len, shaderc_compute_shader, "compute.glsl", "main", opts);
     shaderc_compilation_status status = shaderc_result_get_compilation_status(result);
     if (status != shaderc_compilation_status_success) {
+        {
+            RHIRolloutEvent ev = { "shader_failure", "vulkan", "none",
+                ENGINE_RHI_ROLLOUT_CONFIG_VERSION, "ERROR" };
+            rhi_rollout_emit(&ev);
+        }
         LOG_FATAL("Vulkan compute shader compile error: %s", shaderc_result_get_error_message(result));
         shaderc_result_release(result);
         shaderc_compile_options_release(opts);
