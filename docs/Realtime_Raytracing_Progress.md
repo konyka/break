@@ -72,7 +72,7 @@ On the available Vulkan device, the smoke test currently reports:
 timing: `engine_init`, `startup_clear_present` (emitted from inside
 `test_render_init` immediately after `rhi_device_create` + WSI attach),
 `render_init`, and `rt_probes`. Capture the full output with
-`ctest --test-dir build-vk -R '^test_vulkan$' -V`.
+`ctest --test-dir <build-dir> -R '^test_vulkan$' -V`.
 
 Reading the lines:
 
@@ -92,7 +92,7 @@ Reading the lines:
   surface/swapchain creation, or an init failure — a missing line is a
   diagnostic signal, not a silent pass.
 - For a validation-layer startup diagnostic, run
-  `BREAK_VK_VALIDATION=1 ctest --test-dir build-vk -R '^test_vulkan$' -V`.
+  `BREAK_VK_VALIDATION=1 ctest --test-dir <build-dir> -R '^test_vulkan$' -V`.
   The validation-layer enumeration cost is intentionally isolated to that
   diagnostic path rather than the normal interactive render startup.
 - `test_vulkan` requests a hidden window at platform creation and shows it
@@ -112,7 +112,12 @@ Reading the lines:
   The path is machine-specific and is intentionally not set by the engine.
   The loader's `VK_LOADER_DRIVERS_SELECT='*nouveau*'` filter is another valid
   diagnostic option, but `VK_DRIVER_FILES` avoids discovering unrelated ICD
-  manifests.
+manifests.
+
+The MyUI Vulkan canvas also caches the process-wide instance-extension
+enumeration, so requesting several optional WSI extensions no longer repeats
+the loader query for every name. This is a small CPU/allocation optimization;
+the RHI and MyUI Vulkan instances remain separate ownership domains.
 
 The interactive `test_vulkan` window also presents a full startup frame
 (clear + test triangle) after the vertex/index buffers are ready, before the

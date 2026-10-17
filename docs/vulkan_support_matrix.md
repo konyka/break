@@ -5,7 +5,7 @@
 ## 最低版本与已用扩展（实际实现，`engine/src/rhi/rhi_vk.c`）
 
 - **最低 Vulkan 版本 = 1.2**：instance `apiVersion = VK_API_VERSION_1_2`（rhi_vk.c vk_init）；shaderc 运行时编译 target env `vulkan 1.2` / SPIR-V 1.5（`shaderc_compile_options_set_target_env`），两端对齐。
-- **实例扩展**：`VK_KHR_surface` + 平台 WSI 扩展（由 `platform_vk_required_instance_extensions` 按平台提供：X11=`VK_KHR_xcb_surface`、Wayland=`VK_KHR_wayland_surface`、Windows=`VK_KHR_win32_surface`、macOS(MoltenVK)=`VK_EXT_metal_surface`、Android=`VK_KHR_android_surface`）；可选 `VK_EXT_debug_utils`（存在才启用，R438 validation 消息计数）；`VK_EXT_validation_features` 仅在 `BREAK_VK_SYNC_VALIDATION=1` 时请求（同步验证）。
+ - **实例扩展**：`VK_KHR_surface` + 平台 WSI 扩展（由 `platform_vk_required_instance_extensions` 按平台提供：X11=`VK_KHR_xlib_surface`、Wayland=`VK_KHR_wayland_surface`、Windows=`VK_KHR_win32_surface`、macOS(MoltenVK)=`VK_EXT_metal_surface`、Android=`VK_KHR_android_surface`）；可选 `VK_EXT_debug_utils`（存在才启用，R438 validation 消息计数）；`VK_EXT_validation_features` 仅在 `BREAK_VK_SYNC_VALIDATION=1` 时请求（同步验证）。
 - **设备扩展**：`VK_KHR_swapchain`（必需，缺失 FATAL）；ray-tracing 组（可选，探测 feature_bits 后启用）：`VK_KHR_acceleration_structure`、`VK_KHR_ray_tracing_pipeline`、`VK_KHR_ray_query`、`VK_KHR_deferred_host_operations`、`VK_KHR_pipeline_library`；`VK_KHR_portability_subset`（设备报告即强制启用，缺失且需要时报 FATAL）；`VK_EXT_device_fault`（可选，R576 vendor fault forensics）。
 - **只探测不消费**（capability 迁移期字段，`dynamic_rendering_supported` / `synchronization2_supported`）：`VK_KHR_dynamic_rendering`、`VK_KHR_synchronization2`。
 
