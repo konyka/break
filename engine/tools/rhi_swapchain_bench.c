@@ -110,6 +110,8 @@ int main(int argc, char **argv) {
         "d3d12",
 #elif defined(ENGINE_RHI_BACKEND_METAL)
         "metal",
+#elif defined(ENGINE_VULKAN) && defined(ENGINE_PLATFORM_MACOS)
+        "vulkan-moltenvk",
 #elif defined(ENGINE_VULKAN)
         "vulkan",
 #else
