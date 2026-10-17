@@ -443,6 +443,7 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
                      (double)(time_microseconds() - clear_t0) / 1000.0,
                      (double)(time_microseconds() - startup_t0) / 1000.0,
                      begin_result, end_result, present_result);
+            platform_window_show(platform);
         }
     }
 
@@ -5996,10 +5997,16 @@ int main(int argc, char **argv) {
     LOG_INFO("============================================");
 
 #if defined(ENGINE_VULKAN) && defined(ENGINE_VK_VALIDATION)
-    /* R550-E: opt this process into the VK validation gate in every build
-     * type (the engine library default keeps Release demos messenger-free;
-     * CMake defines ENGINE_VK_VALIDATION on this target unconditionally). */
-    rhi_vk_validation_set_enabled(true);
+    /* Keep validation available for CI, but do not make interactive startup
+     * wait for driver validation-layer enumeration by default. */
+    const char *validation_env = getenv("BREAK_VK_VALIDATION");
+    bool validation_on = validation_env != NULL &&
+                         (strcmp(validation_env, "1") == 0 ||
+                          strcmp(validation_env, "true") == 0 ||
+                          strcmp(validation_env, "on") == 0);
+    rhi_vk_validation_set_enabled(validation_on);
+    LOG_INFO("Vulkan validation: %s (BREAK_VK_VALIDATION enables it)",
+             validation_on ? "on" : "off");
 #endif
 
     f64 test_fps = 0.0;
@@ -6020,6 +6027,7 @@ int main(int argc, char **argv) {
     u64 startup_t0 = time_microseconds();
     u64 startup_prev = startup_t0;
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
+    platform_window_hide(engine.platform);
     LOG_INFO("PHASE: engine_init elapsed_ms=%.3f total_ms=%.3f",
              (double)(time_microseconds() - startup_prev) / 1000.0,
              (double)(time_microseconds() - startup_t0) / 1000.0);

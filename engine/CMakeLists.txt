@@ -1495,10 +1495,9 @@ endif()
 if(ENGINE_BUILD_TESTS)
     # Vulkan test executable
     add_executable(test_vulkan src/test_vulkan.c tests/rhi_oracle.c)
-    # R550-E: keep the VK validation gate live for the integration test in every
-    # build type. rhi_vk.c is compiled into engine_rhi_vulkan, so the define
-    # cannot reach the backend from here; instead it arms the explicit
-    # rhi_vk_validation_set_enabled(true) call at the top of test_vulkan's main.
+    # R550-E: keep the VK validation gate available to the integration test.
+    # The test opts in through BREAK_VK_VALIDATION so interactive startup does
+    # not pay the validation-layer enumeration cost by default.
     target_compile_definitions(test_vulkan PRIVATE ENGINE_VK_VALIDATION=1)
     if(MSVC)
         target_compile_options(test_vulkan PRIVATE /wd4702)
@@ -3270,7 +3269,8 @@ endif()
        ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
         add_test(NAME test_vulkan COMMAND test_vulkan
                  WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-        set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics)
+         set_tests_properties(test_vulkan PROPERTIES TIMEOUT 180 LABELS graphics
+                              ENVIRONMENT "BREAK_VK_VALIDATION=1")
     endif()
 
     # rhi_swapchain_bench: swapchain frame benchmark producing a benchmark
