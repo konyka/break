@@ -1128,7 +1128,12 @@ jobs:
           cmake --version | head -1
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
             -DCMAKE_BUILD_TYPE=Release -DENGINE_VULKAN=ON
-          cmake --build build --parallel
+          set -o pipefail
+          cmake --build build --parallel 2>&1 | tee /tmp/bench_build.log || {
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/bench_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            exit 1
+          }
 
       - name: Run benchmark
         run: |
