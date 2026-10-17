@@ -4,7 +4,7 @@
 [![Rollback drill](https://github.com/konyka/break/actions/workflows/rollback-drill.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/rollback-drill.yml)
 
 CI lanes: headless (linux clang/gcc±sanitizers, windows clang±asan) /
-native-surface (wayland, win32, cocoa) / GPU-runtime (linux vk lavapipe, macOS Metal, Windows D3D12) /
+native-surface (wayland, win32, cocoa) / GPU-runtime (linux vk lavapipe, macOS Metal, Windows D3D12 — self-hosted gated, hosted WARP floor 在 windows-d3d12.yml workflow) /
 validation (KHRONOS_validation + D3D12 debug) / benchmark (receipt artifacts) / proton (参考，周跑)。
 证据收据: 每个 lane 上传 `evidence-receipt-*` artifact，schema 见 docs/rhi_benchmark_receipt_schema.md。
 

@@ -1,12 +1,7 @@
 # test_evidence_receipt_schema.cmake — validate a receipt against the schema.
-# -DRECEIPT=<abs path> ; 自验证模式: -DSELFTEST=1（生成样例再校验）
-if(SELFTEST)
-    set(tmp "${CMAKE_CURRENT_BINARY_DIR}/selftest_receipt.json")
-    if(NOT EXISTS "${tmp}")
-        message(FATAL_ERROR "SELFTEST receipt not generated: ${tmp} (receipt generator missing)")
-    endif()
-    set(RECEIPT "${tmp}")
-endif()
+# -DRECEIPT=<abs path>（样例自检由 engine/CMakeLists.txt 的
+# test_evidence_receipt_schema 注册项承担：configure 期生成 sample_receipt.json
+# 后以本脚本校验；无独立 SELFTEST 模式）。
 if(NOT DEFINED RECEIPT)
     message(FATAL_ERROR "RECEIPT is required")
 endif()
@@ -14,6 +9,13 @@ file(READ "${RECEIPT}" json)
 foreach(f schema_version timestamp platform backend build_commit command evidence_level runner)
     string(JSON v ERROR_VARIABLE e GET "${json}" ${f})
     if(NOT "${e}" STREQUAL "NOTFOUND" OR "${v}" STREQUAL "" OR "${v}" MATCHES "NOTFOUND")
+        message(FATAL_ERROR "receipt field missing/empty: ${f}")
+    endif()
+endforeach()
+# 环境字段非空（I3）：生成器对未提供值落 "unknown"，空串即生成/收割缺陷。
+foreach(f build_config os_version gpu driver_version cpu ram)
+    string(JSON v ERROR_VARIABLE e GET "${json}" ${f})
+    if(NOT "${e}" STREQUAL "NOTFOUND" OR "${v}" STREQUAL "")
         message(FATAL_ERROR "receipt field missing/empty: ${f}")
     endif()
 endforeach()

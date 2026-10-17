@@ -59,8 +59,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz" -DBUILD_CONFIG=Release \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -119,8 +121,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -LE graphics|fuzz + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -180,8 +184,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -LE graphics|fuzz -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -268,8 +274,10 @@ jobs:
         if: always()
         shell: bash
         run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -348,8 +356,10 @@ jobs:
         if: always()
         shell: bash
         run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz (ASan)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -442,8 +452,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=NATIVE_SURFACE
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -R test_platform_wayland_runtime (weston headless backend)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -536,8 +548,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=NATIVE_SURFACE
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
-            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -R test_platform_wayland_runtime (weston headless backend, GL)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -584,8 +598,10 @@ jobs:
         if: always()
         shell: bash
         run: |
+          lvl=NATIVE_SURFACE
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=vulkan \
-            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -R test_platform_win32_runtime (win32 runtime trio)" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -729,8 +745,10 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
+          lvl=NATIVE_SURFACE
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
           cmake -DOUT=receipt.json -DPLATFORM=macos -DBACKEND=vulkan-moltenvk \
-            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -R test_platform_cocoa_runtime" -DBUILD_CONFIG=Debug \
             -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
@@ -943,6 +961,9 @@ jobs:
           out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
           rc=$?
           printf '%s\n' "$out"
+          # '   Passed' 只锚定逐测试结果行（N/M Test #x: ...   Passed），
+          # 不会误计小写 'tests passed' 汇总行；'***Skipped' 是
+          # SKIP_RETURN_CODE 的 ctest 标记（不影响 rc）。
           skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
           passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -953,18 +974,20 @@ jobs:
       - name: Emit evidence receipt
         if: always()
         run: |
-          # GPU_RUNTIME only when the graphics suite actually ran and passed
-          # (rc=0, zero Skipped, at least one Passed); a hosted no-Metal-session
-          # mass SKIP degrades honestly to HEADLESS; a failed lane claims nothing.
+          # 降级阶梯（M1）：GPU_RUNTIME=graphics 真实跑过且全过（rc=0、零
+          # Skipped、≥1 Passed）；rc!=0（跑了且有失败）=UNAVAILABLE；rc=0 但
+          # 全 skip（hosted 无 Metal 会话）=HEADLESS——command 字段如实区分。
           rc="${{ steps.metal_graphics.outputs.rc }}"; skipped="${{ steps.metal_graphics.outputs.skipped }}"; passed="${{ steps.metal_graphics.outputs.passed }}"
           : "${rc:=1}"; : "${skipped:=1}"; : "${passed:=0}"
-          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE
-          elif [ "$rc" = "0" ] && [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then lvl=GPU_RUNTIME
-          else lvl=HEADLESS; fi
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; cmd="ctest -L graphics (lane failed before graphics)"
+          elif [ "$rc" != "0" ]; then lvl=UNAVAILABLE; cmd="ctest -L graphics (metal device contract failed)"
+          elif [ "$skipped" = "0" ] && [ "$passed" -gt 0 ]; then lvl=GPU_RUNTIME; cmd="ctest -L graphics (metal device contract)"
+          elif [ "$skipped" -gt 0 ]; then lvl=HEADLESS; cmd="ctest -L graphics (metal device contract; all skipped, no GPU session)"
+          else lvl=UNAVAILABLE; cmd="ctest -L graphics (no tests matched)"; fi
           echo "job=${{ job.status }} metal graphics rc=$rc skipped=$skipped passed=$passed -> evidence_level=$lvl"
           cmake -DOUT=receipt.json -DPLATFORM=macos -DBACKEND=metal \
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
-            -DCOMMAND_STR="ctest -L graphics (metal device contract)" -DBUILD_CONFIG=Debug \
+            -DCOMMAND_STR="$cmd" -DBUILD_CONFIG=Debug \
             -DGPU="$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 Chipset | cut -d: -f2 | sed 's/^ *//' || echo unknown)" \
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
@@ -1016,6 +1039,9 @@ jobs:
           out="$(ctest --test-dir build -L graphics --output-on-failure 2>&1)"
           rc=$?
           printf '%s\n' "$out"
+          # '   Passed' 只锚定逐测试结果行（N/M Test #x: ...   Passed），
+          # 不会误计小写 'tests passed' 汇总行；'***Skipped' 是
+          # SKIP_RETURN_CODE 的 ctest 标记（不影响 rc）。
           skipped=$(printf '%s\n' "$out" | grep -c '\*\*\*Skipped' || true)
           passed=$(printf '%s\n' "$out" | grep -c '   Passed' || true)
           echo "rc=$rc" >> "$GITHUB_OUTPUT"
@@ -1037,6 +1063,31 @@ jobs:
             -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="ctest -L graphics (ENGINE_RHI_BACKEND=d3d12)" -DBUILD_CONFIG=Release \
             -DGPU=unknown -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-gpu-runtime-windows-d3d12
+          path: receipt.json
+
+  lane-gpu-runtime-windows-d3d12-unavailable:
+    # brief :165：hosted 无 GPU 接单时如实出 UNAVAILABLE 收据。真机 lane 由
+    # ENABLE_GPU_LANES 门控；变量未置值时由本常开孪生 job 出「不可得」收据
+    #（<1 min，ubuntu 即可——只跑 cmake 脚本）；artifact 名与真机 lane 互斥共用。
+    if: vars.ENABLE_GPU_LANES != '1'
+    name: "lane: GPU-runtime (windows d3d12, unavailable receipt)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Emit UNAVAILABLE receipt
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=d3d12 \
+            -DEVIDENCE_LEVEL=UNAVAILABLE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="no self-hosted windows GPU runner accepted (ENABLE_GPU_LANES unset; hosted WARP floor in windows-d3d12.yml)" \
+            -DBUILD_CONFIG=Release \
+            -DGPU=none -DDRIVER_VERSION=none -DCPU=none -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
       - uses: actions/upload-artifact@v4
@@ -1119,8 +1170,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             clang-18 lld-18 llvm-18-tools cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
-            vulkan-validationlayers
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
 
       - name: Configure / build
         run: |
@@ -1167,8 +1217,8 @@ jobs:
             -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
             -DCOMMAND_STR="rhi_swapchain_bench metrics.json (lavapipe software ICD, 600 frames)" \
             -DBUILD_CONFIG=Release \
-            -DGPU="$(python3 -c "import json;print(json.load(open('metrics.json'))['gpu'])")" \
-            -DDRIVER_VERSION="$(python3 -c "import json;print(json.load(open('metrics.json'))['driver_version'])")" \
+            -DGPU="$(python3 -c "import json;print(json.load(open('metrics.json'))['gpu'] or 'unknown')")" \
+            -DDRIVER_VERSION="$(python3 -c "import json;print(json.load(open('metrics.json'))['driver_version'] or 'unknown')")" \
             -DCPU="$(uname -m)" -DRAM=unknown \
             -DFPS_AVG=$(m fps_avg) \
             -DFPS_P1=$(m fps_p1) \
@@ -1233,13 +1283,32 @@ jobs:
             -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
           cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
             -P engine/tests/test_evidence_receipt_schema.cmake
+          # BENCHMARK_COMPARABLE 归本真机 lane：bench 自产收据硬编码
+          # GPU_RUNTIME（rhi_swapchain_bench.c），故用生成器按同一实测重建
+          # 台账收据（I1）；gpu/driver 空值回落 unknown（M2）。
+          j() { python3 -c "import json;print(json.load(open('build/rhi_receipt_steam_deck.json'))$1 or 'unknown')"; }
+          jm() { python3 -c "import json;print(json.load(open('build/rhi_receipt_steam_deck.json'))['metrics']['$1'])"; }
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=BENCHMARK_COMPARABLE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="rhi_swapchain_bench (real GPU, 600 frames)" -DBUILD_CONFIG=RelWithDebInfo \
+            -DGPU="$(j "['gpu']")" \
+            -DDRIVER_VERSION="$(j "['driver_version']")" \
+            -DCPU="$(uname -m)" -DRAM=unknown \
+            -DFPS_AVG=$(jm fps_avg) \
+            -DFPS_P1=$(jm fps_p1) \
+            -DFRAME_MS_AVG=$(jm frame_ms_avg) \
+            -DFRAME_MS_P99=$(jm frame_ms_p99) \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
 
       - name: Upload receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: evidence-receipt-benchmark-steam-deck
-          path: build/rhi_receipt_steam_deck.json
+          path: |
+            receipt.json
+            build/rhi_receipt_steam_deck.json
           if-no-files-found: ignore
 
   # ---- lane: proton（兼容验证，不计入 Windows D3D12 证据；schedule + 手动触发）----

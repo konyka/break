@@ -2,6 +2,8 @@
 # 必填 -D: OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR
 # 可选 -D: GPU DRIVER_VERSION CPU RAM BUILD_COMMIT BUILD_CONFIG
 #        FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99（benchmark lane 必填）
+# 未提供的描述性字段落 "unknown"（os_version 取 RUNNER_OS，缺省 unknown），
+# 保证字段级校验（test_evidence_receipt_schema.cmake）全字段非空。
 foreach(v OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR)
     if(NOT DEFINED ${v})
         message(FATAL_ERROR "${v} is required")
@@ -17,6 +19,15 @@ if(NOT DEFINED BUILD_COMMIT)
         set(BUILD_COMMIT "local")
     endif()
 endif()
+set(os_version "$ENV{RUNNER_OS}")
+if(NOT os_version)
+    set(os_version "unknown")
+endif()
+foreach(v GPU DRIVER_VERSION CPU RAM)
+    if(NOT DEFINED ${v} OR "${${v}}" STREQUAL "")
+        set(${v} "unknown")
+    endif()
+endforeach()
 if(EVIDENCE_LEVEL STREQUAL "BENCHMARK_COMPARABLE")
     foreach(m FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99)
         if(NOT DEFINED ${m})
@@ -37,5 +48,5 @@ else()
     set(metrics "")
 endif()
 file(WRITE "${OUT}"
-"{\n  \"schema_version\": 1,\n  \"timestamp\": \"${ts}\",\n  \"platform\": \"${PLATFORM}\",\n  \"os_version\": \"$ENV{RUNNER_OS}\",\n  \"backend\": \"${BACKEND}\",\n  \"gpu\": \"${GPU}\",\n  \"driver_version\": \"${DRIVER_VERSION}\",\n  \"cpu\": \"${CPU}\",\n  \"ram\": \"${RAM}\",\n  \"build_commit\": \"${BUILD_COMMIT}\",\n  \"build_config\": \"${BUILD_CONFIG}\",\n  \"command\": \"${COMMAND_STR}\",\n  ${metrics}\n  \"evidence_level\": \"${EVIDENCE_LEVEL}\",\n  \"runner\": \"${RUNNER}\"\n}\n")
+"{\n  \"schema_version\": 1,\n  \"timestamp\": \"${ts}\",\n  \"platform\": \"${PLATFORM}\",\n  \"os_version\": \"${os_version}\",\n  \"backend\": \"${BACKEND}\",\n  \"gpu\": \"${GPU}\",\n  \"driver_version\": \"${DRIVER_VERSION}\",\n  \"cpu\": \"${CPU}\",\n  \"ram\": \"${RAM}\",\n  \"build_commit\": \"${BUILD_COMMIT}\",\n  \"build_config\": \"${BUILD_CONFIG}\",\n  \"command\": \"${COMMAND_STR}\",\n  ${metrics}\n  \"evidence_level\": \"${EVIDENCE_LEVEL}\",\n  \"runner\": \"${RUNNER}\"\n}\n")
 message(STATUS "receipt written: ${OUT}")
