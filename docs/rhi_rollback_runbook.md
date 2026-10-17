@@ -36,3 +36,11 @@
 
 - rollout 配置当前为 `sha256-payload` 完整性哈希（非真实性签名）；`ed25519-sha256` 随发布签名密钥启用。
 - release tag 使用 maintainer GPG key 签名；发布包附 `SHA256SUMS`。
+
+### §5.1 semver 规则（Task 9，2026-10-17）
+
+- **major = 破坏性变更**：本计划的 OpenGL 删除 = v1.x → **v2.0.0**，版号保留给删除 release（Task 6 闸门 BLOCKED；删除前最后一个 commit 才是 v1 末版位置，届时由 maintainer 在该 commit 上补打 v1 末版签名 tag）。
+- **minor = 新后端/新能力**；**patch = 修复**。
+- **版本唯一来源** = `engine/CMakeLists.txt` 的 `project(PureCEngine VERSION x.y.z)`（当前 1.9.0，兼容期）；tag 名 `v<x.y.z>` 必须与之严格相等，由契约测试 `test_release_package_contract` 比对（HEAD 无 tag 时跳过）。
+- **tag 由 maintainer 在发布时创建**（`git tag -s`），不随开发 commit 自动打；验签（`git tag -v`）与 clean checkout 构建演练由 `rollback-drill.yml` 承担（§4.3）。
+- 离线发布包：`engine/tools/package_release.sh <repo> <build> <out> <version>`（tarball + `MANIFEST` + `SHA256SUMS` + tarball.sha256；缺失平台产物 = UNAVAILABLE，MANIFEST 如实反映）。

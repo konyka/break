@@ -1,5 +1,9 @@
 cmake_minimum_required(VERSION 3.20)
-project(PureCEngine LANGUAGES C)
+# VERSION 语义（Task 9 semver 规则，docs/rhi_rollback_runbook.md §5）：
+#   major = 破坏性变更（如 OpenGL 删除→v2.0.0，保留给删除 release；Task 6 闸门 BLOCKED）；
+#   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
+#   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
+project(PureCEngine VERSION 1.9.0 LANGUAGES C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -2661,6 +2665,13 @@ endif()
         message(WARNING "sample receipt generation failed (rc=${_receipt_sample_rc}); "
                 "test_evidence_receipt_schema not registered")
     endif()
+    add_test(NAME test_release_package_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKAGER=${CMAKE_CURRENT_SOURCE_DIR}/tools/package_release.sh
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_package_contract.cmake)
+    set_tests_properties(test_release_package_contract PROPERTIES
+        LABELS "headless;platform_contract;release_gate")
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register
