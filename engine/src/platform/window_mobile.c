@@ -96,6 +96,8 @@ InputState *platform_input(Platform *p) { return p ? &p->input : NULL; }
 void *platform_window_native(Platform *p) { return p ? p->native_window : NULL; }
 void *platform_display_native(Platform *p) { return p ? p->native_display : NULL; }
 void *platform_surface_native(Platform *p) { return p ? p->native_window : NULL; }
+void platform_window_show(Platform *p) { (void)p; }
+void platform_window_hide(Platform *p) { (void)p; }
 
 static void mobile_size(Platform *p, u32 *w, u32 *h) {
     if (w) *w = p ? p->width : 0u;

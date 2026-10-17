@@ -1163,6 +1163,17 @@ bool platform_clipboard_set_text(Platform *p, const char *utf8) {
     return true;
 }
 
+void platform_window_show(Platform *p) {
+    if (p == NULL || p->hwnd == NULL) return;
+    ShowWindow(p->hwnd, SW_SHOW);
+    UpdateWindow(p->hwnd);
+}
+
+void platform_window_hide(Platform *p) {
+    if (p == NULL || p->hwnd == NULL) return;
+    ShowWindow(p->hwnd, SW_HIDE);
+}
+
 bool platform_clipboard_get_text(Platform *p, char *out, usize out_size) {
     HANDLE handle;
     const wchar_t *wide;

@@ -54,6 +54,8 @@ typedef struct {
 #define PLATFORM_MAX_WINDOW_TITLE_BYTES 4096u
 
 bool platform_config_valid(const PlatformConfig *cfg);
+void platform_window_hide(Platform *p);
+void platform_window_show(Platform *p);
 
 typedef enum {
     PLATFORM_EVENT_NONE,

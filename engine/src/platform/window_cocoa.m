@@ -770,4 +770,14 @@ void platform_mouse_set_relative(Platform *p, bool relative) {
     platform_mouse_set_visible(p, !relative);
 }
 
+void platform_window_show(Platform *p) {
+    if (p == NULL || p->window == nil) return;
+    [p->window makeKeyAndOrderFront:nil];
+}
+
+void platform_window_hide(Platform *p) {
+    if (p == NULL || p->window == nil) return;
+    [p->window orderOut:nil];
+}
+
 #endif /* ENGINE_PLATFORM_MACOS */

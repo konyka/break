@@ -2318,6 +2318,14 @@ bool platform_window_begin_move(Platform *p) {
     return true;
 }
 
+void platform_window_show(Platform *p) {
+    if (p == NULL || p->surface == NULL) return;
+    wl_surface_commit(p->surface);
+    wl_display_flush(p->display);
+}
+
+void platform_window_hide(Platform *p) { (void)p; }
+
 bool platform_needs_client_decoration(Platform *p) {
     (void)p;
     /* xdg-shell has no mandatory server-decoration protocol; use myui's CSD

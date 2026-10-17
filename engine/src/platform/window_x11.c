@@ -1426,3 +1426,15 @@ void platform_toggle_fullscreen(Platform *p) {
     XFlush(p->display);
     p->is_fullscreen = !p->is_fullscreen;
 }
+
+void platform_window_show(Platform *p) {
+    if (p == NULL || p->display == NULL || p->window == 0) return;
+    XMapWindow(p->display, p->window);
+    XFlush(p->display);
+}
+
+void platform_window_hide(Platform *p) {
+    if (p == NULL || p->display == NULL || p->window == 0) return;
+    XUnmapWindow(p->display, p->window);
+    XFlush(p->display);
+}
