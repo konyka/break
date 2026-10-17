@@ -98,6 +98,12 @@ The interactive `test_vulkan` window also presents a full startup frame
 long synchronous validation suite begins. The later rotatable camera loop
 and validation ordering are unchanged.
 
+On the current RHI split checkout `2c46267`, a fresh OpenGL build passed
+172/172 non-fuzz tests (the D3D12 dependency gate is a platform skip). A
+fresh Vulkan build passed `test_vulkan`, RHI capability/native/error contracts,
+backend selection, and `test_rt_trace`; direct executable runs must use the
+CTest working directory because shader paths are source-relative.
+
 On 2026-10-13, checkout `be6d645` was revalidated on the same Linux host:
 the fresh/incremental OpenGL build passed 129/129 non-fuzz CTest cases,
 including the `headless;platform_contract` group and X11 runtime tests; the
