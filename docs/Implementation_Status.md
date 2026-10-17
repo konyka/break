@@ -9,7 +9,17 @@
 - **修复 3（Windows/Clang 构建）**：远程提交 `417e2e2f` 等给 `EngineConfig`、`PlatformConfig` 增加尾部 `bool hide_window_until_first_frame`，`test_engine_lifecycle.c`/`test_rhi_push_offset_dump.c`/`test_rhi_vk_alloc_fault.c`/`rhi_swapchain_bench.c` 的位置初始化未跟进，在 Clang `-Werror=missing-field-initializers` 下编译失败（GCC 无此默认诊断，故只在 Clang/Windows 暴露）。补齐尾部初始化。
 - **验证（Windows 11 / RTX 4060 / Vulkan）**：**实证方法**——引擎自带截图因上述二次翻转不可信，故改用 PowerShell `CopyFromScreen` 独立抓取真实屏幕像素。①修复前：逻辑顶部画的绿色探针条落在屏幕**底部**（y≈892-910），逻辑底部的红条落在顶部；窗口底部可见倒置的 `FPS …` 徽章。②修复后：徽章回到左上角、文字方向正确，诊断行依次向下可读。③引擎 `BREAK_SCREENSHOT` 截图同样回到左上角且与屏幕一致。④完整 `ninja` 构建零错误零警告；`ctest -LE graphics` **176/176 通过**；`rhi_swapchain_bench` 通过。
 - **golden 漂移说明（非本次引入）**：`ctest -L graphics` 的 `test_vulkan` 报 GOLDEN DRIFT（MAE=28.75 / 13.54）。已用 `git stash` 回退到未改动代码复测，得到**完全相同**的 MAE——属 Windows/NVIDIA 与参考图生成机（Linux Intel Mesa）的既有差异；`rhi_oracle` 不含任何行序补偿逻辑，且 Vulkan 回读本就自上而下，故本轮行序契约统一对 golden 输入字节零影响。
-- **遗留**：`build-gl`（compat-override 路径）在本机环境下 debug UI 完全不渲染、GL 截图链路亦不可验证，GL 侧 `rhi_screenshot` 行序归一化仅经静态审查，未获运行时证据；D3D12 后端 `rhi_device_create_compiled` 仍是返回 NULL 的桩、FBO 函数多为 no-op，无法端到端运行，其 UI 修复效果依赖 VK 同构代码路径。
+- **遗留**：GL 后端另一处独立缺陷已在本轮后续修复（见 R715 续记）。D3D12 后端 `rhi_device_create_compiled` 仍为返回 NULL 的桩：全文件 210 个函数中 67 个是空桩（含 `rhi_shader_create`、render pass 起止、全部 FBO bind/unbind、纹理/立方图/SSBO 绑定），仓库无任何 HLSL 源，`RHIShaderVariant` 枚举仅 GLSL 与 GLSL_VK 两值——端到端跑通等于重写整个后端，不在本轮范围，且**刻意不做**"让 device 创建成功"的假修复：那会把一个早失败、可诊断的状态换成后续静默无操作绑定，显著降低可诊断性。
+
+## 本轮更新：R715 续记 — GL 后端 debug UI 完全不渲染根因（`rhi_frame_index` 未掩码导致 VBO 环形缓冲越界，读到空句柄、零片元且不报错）；双后端无头 CTest GL 175/175 + VK 176/176
+
+- **缺口（承接 R715）**：R715 修完 UI 垂直镜像后，GL 后端的 debug UI 仍然**一个像素都不画**（Vulkan 正常）。此前一直归因为"环境不可靠"，实为真实缺陷。
+- **排查方法**：先排除法——GL 端 shader 编译零报错、画布创建成功；插桩证实画布每帧确实提交 8210 个顶点。draw 后回读 GL 状态：视口/裁剪均全屏、深度测试关闭、混合开启、绑定默认帧缓冲(fbo=0)、program 有效、`glGetError()==0`。回读左上角像素仍是背景色 → **没有产生任何片元**。再查 VAO 绑定态发现 `g_gl_bound_vbo=0`，且传入的 RHIBuffer 句柄为 `0/0`。
+- **根因**：`rhi_frame_index` 是**自由递增的帧计数器，不是有界索引**。GL 的 `gl_frame_end` 每帧 `g_gl_frame_index++` 且**不回绕**（Vulkan 用 `VK_MAX_FRAMES` 取模回绕）。全代码库 11 处调用点中有 10 处都写 `rhi_frame_index(dev) & 1u` 做掩码，唯独 `my_vgcanvas_break_rhi.c` 直接拿它当 `solid_vbo[2]` / `image_vbo[2]` 的下标 → 第 2 帧起越界读到垃圾句柄 → 绑定了空顶点缓冲 → 无顶点、无片元、**且不产生任何 GL/VK 错误**。这也是它长期未被发现的直接原因。
+- **修复**：画布改用 `slot = rhi_frame_index(c->device) & 1u`，与全树既有惯例一致；同时使该模块对任何帧索引不小于 2 的后端都安全（D3D12 侧 `rhi_frame_index` 本就返回 `frame_parity & 1u`，与新写法一致）。
+- **验证（Windows 11 / RTX 4060 / GL 4.5 Core）**：修复前 `BREAK_SCREENSHOT` 截图中 UI 完全缺席；修复后 FPS 徽章出现在左上角、文字方向正确、诊断行依次向下可读。GL 构建零错误零警告、`ctest -LE graphics` **175/175 通过**；VK 同步复测 UI 未受影响（VK 侧 `current_frame` 本就模 2，`& 1` 为恒等）、`ctest -LE graphics` **176/176 通过**。
+- **GL 截图行序归一化获运行时证据**：徽章按构造绘制于逻辑左上角，修复后截图中它出现在**顶部**，证明 `rhi_screenshot` 返回的确为自上而下——R715 中 GL 侧的反转发回正确。
+- **遗留**：GL 实时窗口的跨进程抓屏在本机不可用（窗口被浏览器遮挡、且移动/改尺寸会打断重绘），故 GL 侧"截图与屏幕一致"未能做同 VK 那样的独立抓屏交叉验证，仅由截图内部坐标系自洽佐证。
 
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 

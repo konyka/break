@@ -385,13 +385,21 @@ frameworks).
   The canvas now sets `rhi_cmd_set_viewport` (the RHI's bottom-left-origin
   variant, +Y at the top on every backend) before issuing its draws. It also
   fixes the ImUI panel and every BreakUI window, which shared the canvas.
-- Fixed the screenshot path that had been hiding that UI bug: `save_bmp`
-  already emits BMP rows bottom-up and `demo_save_screenshot` flipped the
-  readback a second time, so every saved capture was mirrored relative to the
-  framebuffer. `rhi_screenshot` also delivered opposite row orders per backend
-  (top-down on Vulkan, bottom-up from `glReadPixels`). It now has one
-  documented top-down contract on both backends, and the redundant flip is
-  gone — screenshots finally match what is on screen.
+- Fixed the debug UI rendering *nothing at all* on OpenGL, from frame 2
+  onward. `rhi_frame_index` is a free-running counter, not a bounded index:
+  GL's `gl_frame_end` advances it once per frame with no wraparound, while
+  Vulkan masks it with `VK_MAX_FRAMES`. The canvas was the only consumer in
+  the tree using the raw value as an array index into its two-slot VBO ring,
+  so it read past the array and bound a garbage handle — a draw with no
+  vertex buffer, which produces no fragments and raises no GL/VK error. It
+  now masks with `& 1u` like every other call site.
+- Fixed the screenshot path that had been hiding the mirrored UI bug:
+  `save_bmp` already emits BMP rows bottom-up and `demo_save_screenshot`
+  flipped the readback a second time, so every saved capture was mirrored
+  relative to the framebuffer. `rhi_screenshot` also delivered opposite row
+  orders per backend (top-down on Vulkan, bottom-up from `glReadPixels`). It
+  now has one documented top-down contract on both backends, and the
+  redundant flip is gone — screenshots finally match what is on screen.
 - Fixed a Windows/Clang build break introduced by the hidden-window commits:
   `EngineConfig` and `PlatformConfig` gained a trailing `hide_window_until_first_frame`
   field, and positional initializers in four test/bench files tripped

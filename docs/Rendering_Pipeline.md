@@ -940,6 +940,14 @@ the whole overlay vertically: the top-left badge renders at the bottom-left
 with upside-down glyphs. The same canvas backs the ImUI panel and every BreakUI
 window, so they shared the defect.
 
+The canvas also owns its vertex-buffer ring. `rhi_frame_index` is a
+free-running frame counter, not a bounded index — GL advances it once per
+`frame_end` without wrapping, while Vulkan masks it against `VK_MAX_FRAMES`.
+Indexing the two-slot ring with the raw value reads past the array from the
+second frame on and binds a garbage handle, which draws nothing and reports
+no error. The canvas masks it with `& 1u`, the same way every other consumer
+in the tree does.
+
 Screen captures follow one contract across backends: `rhi_screenshot` takes a
 top-left-origin rect and returns rows top-down on every backend. Vulkan gets
 this from its swapchain copy; GL reverses `glReadPixels`' bottom-up rows to

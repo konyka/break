@@ -697,7 +697,12 @@ static my_ret_t rhi_end_frame(my_vgcanvas_t *vg) {
                            BREAK_RHI_ATLAS_SIZE * BREAK_RHI_ATLAS_SIZE * 4u);
     c->atlas_dirty = false;
   }
-  slot = rhi_frame_index(c->device);
+  /* Mask to the two-slot ring like every other rhi_frame_index consumer in
+   * the tree. The counter is not a bounded index: GL advances it once per
+   * frame_end with no wraparound, so from frame 2 on it exceeds the ring and
+   * indexed solid_vbo/image_vbo out of bounds — a garbage handle that binds
+   * no vertex buffer, which draws nothing and raises no GL/VK error. */
+  slot = rhi_frame_index(c->device) & 1u;
   if (c->solid_count > 0) {
     if (ensure_vbo(c, c->solid_vbo, &c->solid_vbo_cap, c->solid_count) !=
         MY_RET_OK) {
