@@ -1365,7 +1365,9 @@ foreach(f IN ITEMS
         "${REPO}/engine/src/myui/myr/my_vgcanvas_break_rhi.c")
     if(EXISTS "${f}")
         file(READ "${f}" c)
-        if(c MATCHES "glad|opengl32|rhi_gl")
+        # 2026-10-17 修订:原模式 rhi_gl 会误报良性类型名 break_rhi_glyph_t(子串
+        # rhi_glyph);收紧为 rhi_gl[.]c(与 §6.4 一致,匹配 include 路径)。
+        if(c MATCHES "glad|opengl32|rhi_gl[.]c")
             message(FATAL_ERROR "§6.5 UNMET: production consumer depends on GL: ${f}")
         endif()
     endif()
