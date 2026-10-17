@@ -510,6 +510,27 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
 `NET_LOOP_READ`，会拒绝包含 `NET_LOOP_WRITE` 的注册，避免用立即完成的零字节发送伪造
 可写边沿并造成忙循环。其他后端按各自原生 readiness/completion 语义提供 READ/WRITE。
 
+## 锁定依赖（计划 F Task 1 起，2026-10-17）
+
+全部构建/测试/发布依赖钉版。机器可校验清单：`engine/external/locked_dependencies.json`
+（契约测试 `test_locked_dependencies`——字段完整性、禁止 "latest"、vendored 文件 sha256）；
+人读说明：`engine/external/LOCKED_DEPENDENCIES.md`。实际钉版要点：
+
+- CMake `>=3.25,<4.0`（CI 钉 ubuntu-24.04 apt `cmake=3.28.*`）；clang `>=17`（CI 钉 clang-18）、
+  gcc `>=12`（CI 钉 gcc-13）、MSVC `>=19.38`。
+- vendored Vulkan SDK 1.4.357.0（tarball sha256 钉死；含 shaderc（sdk-bundled，运行时
+  GLSL→SPIR-V，target env Vulkan 1.2 / SPIR-V 1.5）、glslang 16.4.0、dxc 1.9.0.5399、
+  VK_LAYER_KHRONOS_validation）；Windows CI 另以 LunarG SDK 1.4.321.0 静默安装
+  （`engine/tools/fetch_vulkan_sdk_windows.cmake`，版本 + SHA256 钉死）。
+- Android NDK r27c（27.2.12479018）；Xcode `>=15.4`（macOS 侧 glslc/spirv-cross/cmake/ninja
+  的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
+- D3D12 Agility SDK 1.616.0（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
+  以 SHA512 复核 nupkg 与 D3D12Core.dll）。
+- Linux CI apt 钉版（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。
+
+禁止使用 "latest" 或未钉版系统包构建 release。缺失依赖的平台在 CI/台账中标记 UNAVAILABLE，
+不得伪造证据。
+
 ### 2.8 完整构建矩阵
 
 验证等级约定：`compiled` 只表示配置和编译成功；`headless` 表示无窗口契约测试通过；
@@ -631,26 +652,27 @@ creation/destruction 和 Vulkan opaque handle 仍保留在 backend dispatch 边�
 frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/present 路径都会
 修改 partial-present 状态；其 owner-busy 和 damage publication contract 已有测试覆盖。
 
-| 平台 | 窗口系统 | 图形后端 | 编译器 | 验证状态 |
-|------|---------|---------|--------|---------|
-| Linux | X11 | OpenGL | GCC | 通过 |
-| Linux | X11 | OpenGL | Clang | 通过 |
-| Linux | X11 | Vulkan | GCC | compiled + headless 契约通过；远程 Fedora 无 `xvfb-run`，GPU runtime 未测 |
-| Linux | X11 | Vulkan | Clang | 通过 |
-| Linux | Wayland | OpenGL | GCC | 通过 |
-| Linux | Wayland | OpenGL | Clang | 待 CI 验证 |
-| Linux | Wayland | Vulkan | GCC | 通过 |
-| Linux | Wayland | Vulkan | Clang | 待 CI 验证 |
-| Windows | Win32 | OpenGL | MinGW | 待验证 |
-| Windows | Win32 | OpenGL | MSVC | 原生构建 + 非图形 Win32 smoke 已验证 |
-| Windows | Win32 | OpenGL | Clang | 原生构建 + 非图形 CTest + WGL 桌面 GL runtime smoke 已验证 |
-| Windows | Win32 | Vulkan | MinGW | 待验证 |
-| Windows | Win32 | Vulkan | MSVC | 原生 Vulkan/AS/DLSS 验证已记录于 `docs/Realtime_Raytracing_Progress.md` |
-| Windows | Win32 | Vulkan | Clang | 原生构建 + 非图形 CTest + Vulkan demo 真实 GPU 120 帧 + test_vulkan TEST 1-9 已验证（TEST 9 unified cull/Hi-Z 全断言通过）；TEST 10 起 grouped compact 类 compute 在 NVIDIA 混合 GPU 驱动上 DEVICE_LOST 待 GPU 捕获 |
-| macOS | Cocoa | Vulkan via MoltenVK | AppleClang | 本机（macOS 26.7.1，Apple M2，MoltenVK 1.4.357）全量构建 + CTest `133/133` 通过（含 Cocoa runtime 契约与 `test_vulkan` GPU 验证门，2026-10-13）；远程 ARM64 SSH 目标机缺 `shaderc_shared`/MoltenVK 仍为依赖阻塞 |
-| iOS/iPadOS | 宿主注入 | Metal/Vulkan surface | AppleClang | 仅 CMake/代码路径；无仓库 runtime/CI 验证 |
-| Android | 宿主注入 `ANativeWindow` | Vulkan | Android NDK Clang | 仅编译路径；需 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，无仓库 runtime/CI 验证 |
-| OHOS/HarmonyOS | 宿主注入 | — | OHOS 工具链 | 网络 epoll 路径；无原生 surface/CI 验证 |
+| lane（.github/workflows/ci.yml） | runner | 后端 / 配置 | 收据 artifact |
+|---|---|---|---|
+| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL（兼容期），Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
+| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
+| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
+| lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
+| lane-headless-windows-asan | windows-latest | 默认 GL（兼容期），Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
+| wayland-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
+| lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
+| lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
+| lane-gpu-runtime-linux-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
+| lane-gpu-runtime-linux-vk | ubuntu-24.04 | X11 + Vulkan，clang-18 Debug，Xvfb + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
+| lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
+| lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
+| lane-validation-linux-vk | ubuntu-24.04 | Vulkan，Debug，VK_LAYER_KHRONOS_validation（VUID 即红） | evidence-receipt-validation-linux |
+| lane-benchmark-linux-vk | ubuntu-24.04 | Vulkan，Release，`rhi_swapchain_bench` 600 帧 lavapipe（GPU_RUNTIME 收据注明软渲染） | evidence-receipt-benchmark-linux-vk |
+| lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
+| lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（兼容参考） | evidence-receipt-proton |
+| clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
+| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib 断言 | — |
 
 ## 3. 构建产物
 
@@ -776,24 +798,36 @@ Windows 的本轮 MSVC 证据限于原生编译和非图形 Win32 platform smoke
 
 [![CI](https://github.com/konyka/break/actions/workflows/ci.yml/badge.svg)](https://github.com/konyka/break/actions/workflows/ci.yml)
 
-GitHub Actions workflow：`.github/workflows/ci.yml`，push/PR 到 `master` 触发，`ubuntu-latest` 上两个独立 job：
+GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `master` + schedule
+（周一 03:23 UTC）+ workflow_dispatch。计划 F Task 7（2026-10-17）起重排为六类证据 lane
+（headless / native-surface / GPU-runtime / validation / benchmark / proton），每 lane 尾部以
+`engine/tools/make_evidence_receipt.cmake` 生成收据、`engine/tests/test_evidence_receipt_schema.cmake`
+校验并上传 `evidence-receipt-*` artifact（Task 8 台账消费）。lane 明细同 §2.8 的六 lane 矩阵表
+（lane 名 / runner / 后端配置 / 收据 artifact 名），此处列分组：
 
-| Job | 配置 | 依赖（apt） | 测试 |
-|-----|------|-------------|------|
-| `gl` | X11 + OpenGL，Debug | `libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk xvfb x11-utils` | 全量构建 + `ctest -LE graphics` + Xvfb 下 `test_platform_x11_runtime`/`test_rhi_x11_runtime` |
-| `vk` | X11 + Vulkan，Debug | `libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk` | 全量构建 + `ctest -LE graphics` |
-| `wayland-gl` | Wayland + EGL OpenGL，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libegl1-mesa-dev libfreetype6-dev fonts-noto-cjk weston` | 全量构建、`dxx_break`、Weston headless + `ctest -LE graphics` |
-| `wayland-vk` | Wayland + Vulkan，Debug | `libwayland-dev wayland-protocols libxkbcommon-dev libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk weston` | 全量构建、`dxx_break`、Weston headless + `ctest -LE graphics` |
-| `windows-clang` | Win32 + OpenGL，Debug | Windows SDK/Ninja | 全量构建、`dxx_break`、`test_platform_win32_runtime` 及其他 `ctest -LE graphics` |
-| `macos-vulkan` | Cocoa + MoltenVK，Debug | Homebrew `molten-vk`、`shaderc`、`freetype` | 编译 `dxx_break`、Cocoa runtime smoke 与平台契约测试 |
-| `linux-clang-release` | X11 + OpenGL，Clang/LLD，Release，IPO ON | `clang lld cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
-| `linux-gcc-sanitizers` | X11 + OpenGL，GCC，Debug，ASan + UBSan | `gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev libfreetype6-dev fonts-noto-cjk` | 构建 + `ctest -LE graphics` |
-| `linux-graphics-smoke` | X11 + Vulkan，GCC，Debug，Xvfb + lavapipe/llvmpipe | `libvulkan-dev libshaderc-dev mesa-vulkan-drivers libgl1-mesa-dri xvfb` 及 X11/FreeType 依赖 | 仅 `ctest -L graphics`（当前为 `test_vulkan`） |
+| lane 类 | job |
+|---|---|
+| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan |
+| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ 兼容期 wayland-gl，DEPRECATED） |
+| GPU-runtime | lane-gpu-runtime-linux-gl（DEPRECATED）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
+| validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |
+| benchmark | lane-benchmark-linux-vk（lavapipe，GPU_RUNTIME 收据）/ lane-benchmark-steam-deck-vk（真机 BENCHMARK_COMPARABLE，`ENABLE_GPU_LANES` 门控） |
+| proton | lane-proton（steamrt sniper 钉 digest 容器内构建 + ctest；兼容参考，不计 Windows 原生证据；仅 schedule/手动触发） |
+| 非 lane 命名保留 | clean-room（Task 2 交付）、ios-metal-build（compile only） |
 
-CI 步骤与本地命令一一对应：装依赖 → `cmake -S engine -B build` → `cmake --build build --parallel` → `ctest --test-dir build -LE graphics --output-on-failure`；OpenGL job 另外启动 Xvfb 执行 GLX runtime 门禁。Wayland、Windows 和 macOS job
-额外显式构建 `dxx_break`，使 PAL/RHI 接口成为平台编译门禁。
+收据纪律：失败 lane 的收据如实降级 UNAVAILABLE（`job.status` 守卫）；hosted macOS 无 Metal
+会话时 graphics 整体 SKIP → HEADLESS；lavapipe/llvmpipe 软渲染收据在 gpu 字段与 command 字段
+如实标注，不计入硬件 GPU 证据。最近全绿 run（17 success / 3 设计内 skipped，15 个
+evidence-receipt artifact）：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，
+2026-10-17）。
 
-`linux-graphics-smoke` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe；该 job 同时执行 `graphics` 标签中的 X11 platform smoke。若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的 golden image 可能存在差异，因此该 job 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows job 的 `test_platform_win32_runtime` 提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；macOS job 执行 Cocoa window smoke；Wayland jobs 启动 Weston headless compositor 后执行 Wayland platform smoke。上述 smoke 仍不等价于真实 GPU、IME、buffer-age 或物理设备矩阵，也不等价于完整 retained-buffer partial-present 验证。
+`lane-gpu-runtime-linux-vk` 显式启动 Xvfb，并选择 Mesa 的软件 Vulkan ICD（lavapipe）及 llvmpipe；
+若 runner 缺少 Xvfb 或 lavapipe ICD，步骤直接失败，不把未执行宣称为通过。软件渲染与参考 GPU 的
+golden image 可能存在差异，因此该 lane 是环境/启动 smoke，不替代真实 GPU graphics 验证。Windows
+lane 的 `test_platform_win32_runtime` 提供 Win32 platform smoke 证据，不覆盖 WGL/Vulkan/GPU/present；
+macOS lane 执行 Cocoa window smoke；Wayland lane 启动 Weston headless compositor 后执行 Wayland
+platform smoke。上述 smoke 仍不等价于真实 GPU、IME、buffer-age 或物理设备矩阵，也不等价于完整
+retained-buffer partial-present 验证。
 
 ## 7. 项目结构与两套构建
 

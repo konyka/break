@@ -47,3 +47,26 @@
 - **screenshot**：drawable 自 acquire retain 到 present（frame_end 不再提前释放），
   layer 在 device create 时置 `framebufferOnly=NO`（VK/D3D12 swapchain 读回契约的
   Metal 前提）；字节序为原生 BGRA（与 VK 裸拷贝一致）。
+
+## 消费方与契约测试索引（Task 8 补全）
+
+每个特性面在引擎内的实际消费方与钉死它的契约测试（全部为仓库现有测试名，无虚构能力）：
+
+| 特性面 | 消费方（renderer / app） | 契约测试 |
+|---|---|---|
+| 设备创建 / 销毁 / device-lost 闩锁 | `engine_demo`、`dxx_break`（myui）全渲染路径；`rhi_swapchain_bench` | `test_rhi_metal_device_contract`、`test_rhi_metal_ownership`、`test_d3d12_device_contract`、`test_d3d12_lifetime_hresult_contract`（+ CI `windows-d3d12.yml`） |
+| Surface / swapchain / resize | `main.c` 帧循环 present 与 DPI/resize；myui 共享 RHI surface（逻辑窗口不二次开窗） | `test_rhi_metal_frame_lifecycle`、`test_d3d12_swapchain_contract`、`test_d3d12_warp_runtime`（WARP 证据下限） |
+| Render pass / pipeline 契约 | renderer 全管线（gbuffer/shadow/MRT/后处理）+ myui blit | `test_rhi_metal_resources`、`test_d3d12_pipeline_contract` |
+| 绑定模型（push constants / root constants） | `main.c`/renderer 412 处经 `RHIPipelineBindings` 反射取槽（计划 E 权威：`shader_reflect_push_constants`） | Metal：golden 688 行 uniform-location 与 VK 逐行一致（diff 为空）；跨后端：`test_shader_io`（反射×push 交叉对照，graphics+compute）、`test_rhi_capabilities`（push_constants_supported/max_push_constant_size） |
+| Compute / storage / blit | `renderer/gpucull.c`（Hi-Z/GPU cull，fail-closed init guard）、`renderer/indirect_draw.c`、后处理 compute、screenshot | `test_rhi_metal_resources`（compute dispatch/fill/update/copy/screenshot 用例）、`test_d3d12_pipeline_contract`（compute PSO） |
+| MSAA resolve 能力位 | renderer AA 路径按 `RHICapabilities` 消费（color resolve 可用、depth resolve fail-closed） | `test_rhi_capabilities` |
+| 加速结构（BLAS/TLAS）/ raytracing | `renderer/rt_trace.c`（RT1 temporal consumers：反射/SSGI 等；`RAY_TRACING_PIPELINE|ACCELERATION_STRUCTURE` 门控 + native handle 桥接 RHI-ESCAPE） | `test_d3d12_dxr_contract`（tier<1.0 fail-closed）、`test_rhi_metal_resources`（TLAS 实例转换/编码用例）、`test_rhi_backend_header_neutral` |
+| Present damage / buffer age | myui retained-buffer partial-present（capability 恒 false 时全量 present） | `test_d3d12_swapchain_contract`（dirty-rect 被 DXGI 拒绝时自动回落 full present 的语义）、`test_rhi_capabilities` |
+| Shader 路径 | 全 renderer GLSL 源（VK 变体 `*_vk`）；D3D12 旁挂 HLSL（blit/myui 管线，allowlist） | `test_d3d12_shader_contract`、`test_d3d12_shader_compile_gate`（DXC CLI ABI）、构建期 metallib/FNV manifest 断言（`test -s`） |
+| 验证 gate | 取证例程：`METAL_DEVICE_WRAPPER_TYPE=1` smoke；`ENGINE_D3D12_DEBUG`（debug layer + GBV + DRED 全配置） | CI `lane-gpu-runtime-macos-metal`（hosted 收据如实降级）与 `windows-d3d12.yml`（debug layer 面）；`docs/rhi_rollback_runbook.md`（PIX 捕获） |
+
+## 三项能力对照速览（详情见上表对应行）
+
+- **Push constants vs root constants（vs Vulkan push constants）**：Metal = `setVertexBytes/setFragmentBytes` 256B staging（compute 128B）经 `atIndex:29`；D3D12 = root `32BIT_CONSTANTS` 占 b0（graphics 256B / compute 128B，按 64-DWORD 根签名预算钳制，越界走 VK 对齐的丢弃语义）+ 256B uniform staging 与 DWORD 对齐 dirty-flush；VK = 真 push constants（设备 limit ≥128）。三者经同一反射权威（`shader_reflect_push_constants`，std430）取偏移，slot 全后端同源。
+- **Raytracing 能力**：Metal = `MTLAccelerationStructure` BLAS/TLAS + ray query（`setAccelerationStructure`）；**raygen pipeline 永不支持**（fail-closed）。D3D12 = DXR `ID3D12Device5/CommandList4` BLAS/TLAS + ray query + ray-tracing pipeline；`OPTIONS5.RaytracingTier < 1.0` 一律 fail-closed。消费门控同源：`feature_bits` 的 `RAY_TRACING_PIPELINE|RAY_QUERY|ACCELERATION_STRUCTURE`（`rt_trace.c`）。
+- **Swapchain 语义**：Metal = `CAMetalLayer` drawable acquire（1s 截止重试）/present 并入 `frame_end`（Metal 硬约束）/双槽 pacing/suspended-acquire BUSY；无 damage/buffer-age（capability 恒 false，fail-closed 非降级）。D3D12 = HWND flip-model（FLIP_DISCARD）3 back buffers、`Present1`（vsync=0 时 `DXGI_PRESENT_ALLOW_TEARING`）、resize 前全队列 fence drain；dirty-rect damage 被 inbox DXGI 拒绝时自动回落 full-surface present（优化不回传失败）。
