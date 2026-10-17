@@ -732,25 +732,40 @@ static VkResult vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
     return vkAllocateMemory(vk->device, info, NULL, out_memory);
 }
 
+/* Global instance extensions are loader state, not instance state. Cache the
+ * one enumeration for this process so each required extension does not repeat
+ * the loader call, allocation, and linear scan. */
+static VkExtensionProperties *g_instance_extensions;
+static u32 g_instance_extension_count;
+static bool g_instance_extensions_loaded;
+
 static bool vk_instance_extension_available(const char *name) {
-    u32 count = 0u;
-    if (!name || vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) != VK_SUCCESS)
-        return false;
-    VkExtensionProperties *props = calloc(count ? count : 1u, sizeof(*props));
-    if (!props) return false;
-    if (vkEnumerateInstanceExtensionProperties(NULL, &count, props) != VK_SUCCESS) {
-        free(props);
-        return false;
-    }
-    bool found = false;
-    for (u32 i = 0; i < count; i++) {
-        if (strcmp(props[i].extensionName, name) == 0) {
-            found = true;
-            break;
+    if (!name) return false;
+    if (!g_instance_extensions_loaded) {
+        for (u32 attempt = 0u; attempt < 3u; attempt++) {
+            u32 count = 0u;
+            if (vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) != VK_SUCCESS)
+                return false;
+            VkExtensionProperties *props = calloc(count ? count : 1u, sizeof(*props));
+            if (!props) return false;
+            u32 reported = count;
+            VkResult result = vkEnumerateInstanceExtensionProperties(NULL, &reported, props);
+            if (result == VK_SUCCESS) {
+                g_instance_extensions = props;
+                g_instance_extension_count = reported < count ? reported : count;
+                g_instance_extensions_loaded = true;
+                break;
+            }
+            free(props);
+            if (result != VK_INCOMPLETE) return false;
         }
+        if (!g_instance_extensions_loaded) return false;
     }
-    free(props);
-    return found;
+    for (u32 i = 0; i < g_instance_extension_count; i++) {
+        if (strcmp(g_instance_extensions[i].extensionName, name) == 0)
+            return true;
+    }
+    return false;
 }
 
 static bool vk_device_extension_available(VkPhysicalDevice physical,

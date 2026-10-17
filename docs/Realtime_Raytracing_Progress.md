@@ -104,10 +104,15 @@ Reading the lines:
   surface, physical-device probing, logical-device, and swapchain creation.
   On the current Linux NVK host, `vkCreateInstance` is the dominant phase
   (~3.17 s) because the loader probes an unusable `dzn` ICD before NVK.
-- Mesa/NVK users may optionally select the matching loader driver with
-  `VK_LOADER_DRIVERS_SELECT='*nouveau*'`; this reduced the local instance
-  phase to ~1.91 s, but it is intentionally not set by the engine because
-  ICD names and loader behavior are platform-specific.
+- Mesa/NVK users may optionally select one known-good ICD before launch with
+  `VK_DRIVER_FILES=/usr/share/vulkan/icd.d/nouveau_icd.x86_64.json`. On this
+  host that reduced standalone loader/tool startup to roughly `0.07-0.10 s`,
+  while the full `test_vulkan` path still measured about `1.9 s` in
+  `vkCreateInstance`; the remaining cost is driver instance initialization.
+  The path is machine-specific and is intentionally not set by the engine.
+  The loader's `VK_LOADER_DRIVERS_SELECT='*nouveau*'` filter is another valid
+  diagnostic option, but `VK_DRIVER_FILES` avoids discovering unrelated ICD
+  manifests.
 
 The interactive `test_vulkan` window also presents a full startup frame
 (clear + test triangle) after the vertex/index buffers are ready, before the
