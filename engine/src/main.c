@@ -2399,7 +2399,13 @@ static void export_profiler_chrome_trace(RHIGPUTimer *gpu_shadow, RHIGPUTimer *g
         meta[meta_count++] = (ProfilerMetaInstant){ "draw_bench_gpu_l_ms", meta_gpu_l };
     }
 
-    if (profiler_export_chrome_trace(path, pf, gpu, 4, meta, meta_count))
+    /* PROFILER_TRACE_FRAMES=1: dump the full 120-frame ring (per-frame
+     * "frame" events) for frame-time distribution analysis instead of the
+     * default last-frame-only export. */
+    if (getenv("PROFILER_TRACE_FRAMES")) {
+        if (profiler_export_chrome_trace_ring(path, gpu, 4, meta, meta_count))
+            LOG_INFO("Profiler Chrome trace (frame ring): %s", path);
+    } else if (profiler_export_chrome_trace(path, pf, gpu, 4, meta, meta_count))
         LOG_INFO("Profiler Chrome trace: %s", path);
     draw_bench_export_all();
 }
@@ -2759,6 +2765,19 @@ static int bench_stats_cmp_f32(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
+/* R447 frame pacing ownership: presentation pacing belongs to exactly ONE
+ * clock. While vsync is enabled the swapchain presents at refresh rate, so
+ * the CPU target_fps limiter must stay disengaged — sleeping to 1/target on
+ * top of a vsync-presenting swapchain double-throttles (Windows Sleep
+ * quantization beating against the vblank phase) and surfaces as
+ * input-correlated judder. The limiter is the pacer only when vsync is off;
+ * limit_when_off is the fps_limits[] preset to engage in that case. */
+static void apply_frame_pacing(Engine *e, RHIDevice *dev, bool vsync_enabled,
+                               f32 limit_when_off) {
+    rhi_set_vsync(dev, vsync_enabled);
+    e->target_fps = vsync_enabled ? 0.0f : limit_when_off;
+}
+
 int main(int argc, char **argv) {
     log_set_level(LOG_DEBUG);
 
@@ -2768,6 +2787,13 @@ int main(int argc, char **argv) {
 
     RenderState render = {0};
     if (!render_init(&render, engine.platform)) { LOG_FATAL("Render init failed"); engine_shutdown(&engine); return 1; }
+    /* R447: apply the vsync default to the backend at startup — without this
+     * the swapchain was created with vsync=false (IMMEDIATE) while the UI
+     * reported "on", leaving pacing entirely to the jittery CPU limiter.
+     * vsync_on is declared here (moved up from the settings block) so the
+     * startup pacing decision and the UI/hotkey toggles share one variable. */
+    bool vsync_on = true;
+    apply_frame_pacing(&engine, render.device, vsync_on, 60.0f);
 
     Skybox skybox = {0};
     skybox_init(&skybox, render.device, true);
@@ -3340,7 +3366,6 @@ i32 effect_preset = 0;
 f32 sun_azimuth = 1.03f;
 f32 sun_elevation = 0.93f;
 bool wireframe_mode = false;
-bool vsync_on = true;
 bool nearest_filter = false;
 bool show_help = false;
 bool terrain_follow = false;
@@ -3963,7 +3988,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
       if (e) bench_stats_target = (u32)atoll(e); }
     if (bench_stats_target > 0u) {
         vsync_on = false;
-        rhi_set_vsync(render.device, false);
+        apply_frame_pacing(&engine, render.device, vsync_on, 0.0f); /* raw stats: no limiter */
     }
     /* R445: BREAK_SCREENSHOT=N saves one screenshot after frame N completes
      * (same readback path as F12). A bare/0 value falls back to the
@@ -4695,8 +4720,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             InputState *bt_inp = platform_input(engine.platform);
             if (input_key_down(bt_inp, 289)) {
                 fps_limit_idx = (fps_limit_idx + 1) % 6;
-                engine.target_fps = fps_limits[fps_limit_idx];
-                LOG_INFO("FPS limit: %.0f%s", engine.target_fps, engine.target_fps == 0.0f ? " (unlimited)" : "");
+                engine.target_fps = vsync_on ? 0.0f : fps_limits[fps_limit_idx];
+                LOG_INFO("FPS limit: %.0f%s%s", engine.target_fps,
+                         engine.target_fps == 0.0f ? " (unlimited)" : "",
+                         vsync_on ? " [vsync on — limiter stays off]" : "");
             } else if (imui_font_ready) {
                 imui_visible = !imui_visible;
             }
@@ -6833,8 +6860,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
                 if (input_key_pressed(inp, (i32)'v')) {
                     vsync_on = !vsync_on;
-                    rhi_set_vsync(render.device, vsync_on);
-                    LOG_INFO("VSync: %s", vsync_on ? "on" : "off");
+                    apply_frame_pacing(&engine, render.device, vsync_on, fps_limits[fps_limit_idx]);
+                    LOG_INFO("VSync: %s (limiter %s)", vsync_on ? "on" : "off",
+                             vsync_on ? "off — vsync paces" :
+                             engine.target_fps == 0.0f ? "unlimited" : "engaged");
                 }
                 if (input_key_pressed(inp, (i32)'t')) {
                     nearest_filter = !nearest_filter;
@@ -8721,7 +8750,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* R437: settings grouped under collapsing headers. */
             if (imui_collapsing_header(&imui_ctx, 10, "General", &imui_sec_general)) {
                 if (imui_checkbox(&imui_ctx, 1, "VSync", &vsync_on))
-                    rhi_set_vsync(render.device, vsync_on);
+                    apply_frame_pacing(&engine, render.device, vsync_on, fps_limits[fps_limit_idx]);
                 imui_checkbox(&imui_ctx, 2, "Wireframe", &wireframe_mode);
                 imui_slider_float(&imui_ctx, 3, "Sun azimuth", &sun_azimuth, 0.0f, 6.2831853f);
                 imui_slider_float(&imui_ctx, 4, "Sun elevation", &sun_elevation, -1.4f, 1.4f);

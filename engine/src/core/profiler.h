@@ -89,6 +89,17 @@ bool profiler_export_chrome_trace(const char *path,
                                   const ProfilerMetaInstant *meta,
                                   u32 meta_count);
 
+/* Export the full recorded frame ring (oldest first) instead of just the
+ * last frame: one "frame" X event per recorded frame on a dedicated track
+ * plus every region, timestamps relative to the oldest recorded frame.
+ * GPU/meta events are attached once (session-late samples, not per-frame).
+ * Use for frame-time distribution analysis (e.g. input-induced stutter). */
+bool profiler_export_chrome_trace_ring(const char *path,
+                                       const ProfilerGpuRegion *gpu_regions,
+                                       u32 gpu_count,
+                                       const ProfilerMetaInstant *meta,
+                                       u32 meta_count);
+
 typedef struct {
     const char *platform;
     const char *window_system;

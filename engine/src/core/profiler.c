@@ -290,6 +290,103 @@ bool profiler_export_chrome_trace(const char *path,
     return write_ok;
 }
 
+bool profiler_export_chrome_trace_ring(const char *path,
+                                       const ProfilerGpuRegion *gpu_regions,
+                                       u32 gpu_count,
+                                       const ProfilerMetaInstant *meta,
+                                       u32 meta_count) {
+    if (!path) return false;
+    if (g_profiler.frame_count == 0) return false;
+    u32 recorded = g_profiler.frame_count;
+    if (recorded > PROFILER_MAX_FRAMES) recorded = PROFILER_MAX_FRAMES;
+    u32 head = g_profiler.frame_index; /* next write slot */
+    u32 oldest = (head + PROFILER_MAX_FRAMES - recorded) % PROFILER_MAX_FRAMES;
+
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    fprintf(f, "{\"traceEvents\":[\n");
+    bool first = true;
+    u64 t0 = g_profiler.frames[oldest].frame_start_us;
+
+    for (u32 n = 0; n < recorded; n++) {
+        const ProfilerFrame *frame = &g_profiler.frames[(oldest + n) % PROFILER_MAX_FRAMES];
+        for (u32 i = 0; i < frame->region_count; i++) {
+            const ProfilerRegion *r = &frame->regions[i];
+            char ename[128], etname[PROFILER_THREAD_NAME_LEN * 2];
+            profiler_json_escape_name(r->name, ename, sizeof(ename));
+            u64 ts = (r->start_us >= t0) ? (r->start_us - t0) : 0u;
+            u32 tid = (r->tid != 0u) ? r->tid : PROFILER_TID_MAIN;
+            profiler_json_escape_name(profiler_thread_name(tid), etname, sizeof(etname));
+            if (!first) fprintf(f, ",\n");
+            first = false;
+            fprintf(f,
+                "{\"name\":\"%s\",\"cat\":\"cpu\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
+                "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"%s\"}}",
+                ename,
+                (unsigned long long)ts,
+                (unsigned long long)r->elapsed_us,
+                tid, etname);
+        }
+        /* Per-frame duration marker on a dedicated track so frame-time
+         * distributions are one grep away in the trace. */
+        u64 frame_dur = (frame->frame_end_us >= frame->frame_start_us)
+            ? (frame->frame_end_us - frame->frame_start_us) : 0u;
+        u64 frame_ts = (frame->frame_start_us >= t0)
+            ? (frame->frame_start_us - t0) : 0u;
+        if (!first) fprintf(f, ",\n");
+        first = false;
+        fprintf(f,
+            "{\"name\":\"frame\",\"cat\":\"frame\",\"ph\":\"X\",\"ts\":%llu,\"dur\":%llu,"
+            "\"pid\":1,\"tid\":%u}",
+            (unsigned long long)frame_ts,
+            (unsigned long long)frame_dur,
+            PROFILER_TID_GPU + 1u);
+    }
+
+    if (gpu_regions) {
+        for (u32 i = 0; i < gpu_count; i++) {
+            char ename[128];
+            profiler_json_escape_name(gpu_regions[i].name, ename, sizeof(ename));
+            u64 dur_us = (u64)(gpu_regions[i].elapsed_ms * 1000.0);
+            if (!first) fprintf(f, ",\n");
+            first = false;
+            fprintf(f,
+                "{\"name\":\"%s\",\"cat\":\"gpu\",\"ph\":\"X\",\"ts\":0,\"dur\":%llu,"
+                "\"pid\":1,\"tid\":%u,\"args\":{\"thread\":\"gpu\"}}",
+                ename, (unsigned long long)dur_us, PROFILER_TID_GPU);
+        }
+    }
+    if (meta) {
+        for (u32 i = 0; i < meta_count; i++) {
+            if (!meta[i].key || !meta[i].value) continue;
+            char ekey[128], eval[128];
+            profiler_json_escape_name(meta[i].key, ekey, sizeof(ekey));
+            profiler_json_escape_name(meta[i].value, eval, sizeof(eval));
+            if (!first) fprintf(f, ",\n");
+            first = false;
+            fprintf(f,
+                "{\"name\":\"%s\",\"cat\":\"meta\",\"ph\":\"i\",\"ts\":0,"
+                "\"pid\":1,\"tid\":%u,\"args\":{\"value\":\"%s\"}}",
+                ekey, PROFILER_TID_MAIN, eval);
+        }
+    }
+    for (u32 t = 0; t < PROFILER_MAX_THREADS; t++) {
+        if (!atomic_load_explicit(&g_thread_used[t], memory_order_acquire)) continue;
+        char etname[PROFILER_THREAD_NAME_LEN * 2];
+        profiler_json_escape_name(profiler_thread_name(t), etname, sizeof(etname));
+        if (!first) fprintf(f, ",\n");
+        first = false;
+        fprintf(f,
+            "{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":1,\"tid\":%u,"
+            "\"args\":{\"name\":\"%s\"}}",
+            t, etname);
+    }
+    fprintf(f, "\n]}\n");
+    bool write_ok = !ferror(f);
+    if (fclose(f) != 0) write_ok = false;
+    return write_ok;
+}
+
 static void profiler_json_escape_value(const char *value, char *out, usize out_sz) {
     usize j = 0;
     if (!out || out_sz == 0) return;

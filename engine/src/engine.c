@@ -65,7 +65,10 @@ bool engine_frame(Engine *e) {
     /* Sleep before polling input so a mouse event arriving during the limiter
      * is consumed immediately before simulation/rendering instead of waiting
      * behind another target frame. last_frame_us still advances below, after
-     * the sleep and event pump, so delta_time remains the full frame period. */
+     * the sleep and event pump, so delta_time remains the full frame period.
+     * R447: this limiter must be the ONLY pacer — consumers with vsync on
+     * keep target_fps at 0 (double-throttling sleep against the vblank clock
+     * shows up as input-correlated judder; see main.c apply_frame_pacing). */
     if (isfinite(e->target_fps) && e->target_fps > 0.0) {
         f64 target_us = 1e6 / e->target_fps;
         f64 elapsed_us = (f64)(now_us - e->last_frame_us);

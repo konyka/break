@@ -336,3 +336,36 @@ frameworks).
 - Added a continuously visible anti-aliased FPS/frame-time badge to the
   top-left debug overlay. It uses the existing vector canvas rounded-fill path
   and remains visible when the detailed debug text is toggled off.
+
+- **R447 — mouse-move stutter root-caused and fixed: vsync default was never
+  applied, and the CPU limiter double-throttled against it.** Symptom: visible
+  judder whenever the mouse moved. Investigation (frame-ring traces, A/B with
+  an injected ~125 Hz `SetCursorPos` wiggle over the window): baseline frame
+  pacing was already 17–25 ms (22/119 intervals) even *idle*, and mouse input
+  added deadline misses (4× 25–33.5 ms vs 1×). Root cause chain, both parts:
+  1. `vsync_on = true` was a demo-local flag never handed to the backend at
+     startup — `rhi_set_vsync` only ran from the `V` hotkey and the imgui
+     checkbox — so the swapchain was created IMMEDIATE ("vsync=off" in the
+     swapchain log) while the UI reported "on". Pacing fell entirely to the
+     engine's CPU limiter.
+  2. When vsync *was* engaged, `engine_frame`'s `target_fps` sleep ran on top
+     of vblank pacing (double throttle); on Windows the limiter sleeps via
+     `Sleep()` quantized to ~15.6 ms then spins, beating against the vblank
+     phase — the classic beat-frequency judder, which mouse-driven extra
+     frame work tipped into visible misses.
+
+  Fix: the demo applies the vsync default to the backend at startup and makes
+  pacing single-owner — `apply_frame_pacing()` sets `target_fps = 0` while
+  vsync is on (the swapchain paces; the backend's MAILBOX preference for
+  interactive input, added earlier for exactly this class of latency, finally
+  engages) and engages the `fps_limits[]` limiter only when vsync is off. The
+  `V` hotkey, the imui VSync checkbox, the FPS-limit hotkey and the
+  `BREAK_BENCH_STATS` path all route through it. Post-fix A/B: with injected
+  mouse motion every frame interval lands < 12 ms (p95 8.2 ms, zero deadline
+  misses) versus the pre-fix 25–33.5 ms misses; swapchain log now shows
+  `present mode=MAILBOX ... vsync=on`. Regression: VK headless 171/171, GL
+  178/178, `test_vulkan` golden signature unchanged (MAE 28.75/13.54,
+  VALIDATION GATE 0). Diagnostic tooling added alongside:
+  `profiler_export_chrome_trace_ring()` + `PROFILER_TRACE_FRAMES=1` dump the
+  full 120-frame ring (per-frame `frame` events) for frame-time distribution
+  analysis — the single-frame export could not show judder.
