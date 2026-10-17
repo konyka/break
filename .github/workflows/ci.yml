@@ -1126,11 +1126,16 @@ jobs:
         run: |
           export PATH="/usr/bin:$PATH"
           cmake --version | head -1
+          # Release IPO 把 LLVM bitcode 写入 libengine.a，默认 GNU ld 链不动
+          # （toolchain-clang-linux.cmake 记载的同一坑）；本 lane 无裸 clang/lld，
+          # 按 -18 后缀接线等价物。
           cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_AR=llvm-ar-18 -DCMAKE_RANLIB=llvm-ranlib-18 \
+            -DCMAKE_EXE_LINKER_FLAGS="-fuse-ld=lld-18" \
             -DCMAKE_BUILD_TYPE=Release -DENGINE_VULKAN=ON
           set -o pipefail
           cmake --build build --parallel 2>&1 | tee /tmp/bench_build.log || {
-            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/bench_build.log \
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target|ld: |plugin needed|multiple definition|cannot open" /tmp/bench_build.log \
               | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
             exit 1
           }
