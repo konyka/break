@@ -434,6 +434,9 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
         RHICmdBuffer *clear_cmd = rhi_frame_begin_ex(rs->device, &begin_result);
         if (clear_cmd == NULL) {
             LOG_ERROR("PHASE: startup_clear_present begin_failed=%d", begin_result);
+            rhi_device_destroy(rs->device);
+            rs->device = NULL;
+            return false;
         } else {
             rhi_cmd_clear_color(clear_cmd, 0.1f, 0.1f, 0.15f, 1.0f);
             RHIResult end_result = rhi_frame_end_ex(rs->device);
@@ -443,6 +446,13 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
                      (double)(time_microseconds() - clear_t0) / 1000.0,
                      (double)(time_microseconds() - startup_t0) / 1000.0,
                      begin_result, end_result, present_result);
+            if (end_result != RHI_RESULT_OK || present_result != RHI_RESULT_OK) {
+                LOG_ERROR("FAIL: startup clear/present (end=%d present=%d)",
+                          end_result, present_result);
+                rhi_device_destroy(rs->device);
+                rs->device = NULL;
+                return false;
+            }
             platform_window_show(platform);
         }
     }
@@ -6020,14 +6030,14 @@ int main(int argc, char **argv) {
         }
     }
     EngineConfig cfg = { .width = 800, .height = 600, .title = TV_WINDOW_TITLE,
-                         .target_fps = test_fps };
+                         .target_fps = test_fps,
+                         .hide_window_until_first_frame = true };
     LOG_INFO("Input pacing: target_fps=%.0f (BREAK_TEST_FPS overrides; 0=uncapped)",
              test_fps);
     Engine engine = {0};
     u64 startup_t0 = time_microseconds();
     u64 startup_prev = startup_t0;
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
-    platform_window_hide(engine.platform);
     LOG_INFO("PHASE: engine_init elapsed_ms=%.3f total_ms=%.3f",
              (double)(time_microseconds() - startup_prev) / 1000.0,
              (double)(time_microseconds() - startup_t0) / 1000.0);
