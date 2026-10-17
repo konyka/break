@@ -95,8 +95,8 @@ Reading the lines:
   `BREAK_VK_VALIDATION=1 ctest --test-dir build-vk -R '^test_vulkan$' -V`.
   The validation-layer enumeration cost is intentionally isolated to that
   diagnostic path rather than the normal interactive render startup.
-- `test_vulkan` hides the platform window immediately after platform creation
-  and shows it after the first clear/present. The unavoidable Vulkan
+- `test_vulkan` requests a hidden window at platform creation and shows it
+  only after a successful clear/end/present sequence. The unavoidable Vulkan
   loader/driver initialization interval therefore no longer appears as a
   black render window; the first visible frame is already a valid clear frame.
 
