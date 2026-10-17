@@ -437,8 +437,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
         [p->window setDelegate:del];
 
         [p->window center];
-        [p->window makeKeyAndOrderFront:nil];
-        [NSApp activateIgnoringOtherApps:YES];
+        if (!cfg->hide_window_until_first_frame) {
+            [p->window makeKeyAndOrderFront:nil];
+            [NSApp activateIgnoringOtherApps:YES];
+        }
 
         input_init(&p->input);
 

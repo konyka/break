@@ -592,8 +592,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
     p->hdc = GetDC(p->hwnd);
 
-    ShowWindow(p->hwnd, SW_SHOW);
-    UpdateWindow(p->hwnd);
+    if (!cfg->hide_window_until_first_frame) {
+        ShowWindow(p->hwnd, SW_SHOW);
+        UpdateWindow(p->hwnd);
+    }
 
     input_init(&p->input);
     gamepad_init();

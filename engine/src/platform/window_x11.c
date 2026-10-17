@@ -858,8 +858,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
                  PointerMotionMask | StructureNotifyMask | FocusChangeMask |
                  PropertyChangeMask);
 
-    XMapWindow(p->display, p->window);
-    XFlush(p->display);
+    if (!cfg->hide_window_until_first_frame) {
+        XMapWindow(p->display, p->window);
+        XFlush(p->display);
+    }
 
     p->xim = XOpenIM(p->display, NULL, NULL, NULL);
     if (p->xim != NULL) {

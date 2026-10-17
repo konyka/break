@@ -2319,7 +2319,7 @@ bool platform_window_begin_move(Platform *p) {
 }
 
 void platform_window_show(Platform *p) {
-    if (p == NULL || p->surface == NULL) return;
+    if (p == NULL || p->surface == NULL || p->display == NULL) return;
     wl_surface_commit(p->surface);
     wl_display_flush(p->display);
 }

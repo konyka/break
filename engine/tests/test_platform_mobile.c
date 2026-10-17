@@ -14,7 +14,7 @@ TEST(mobile_platform_exposes_host_state)
     int window;
     int display;
     const PlatformConfig config = {
-        320, 240, "Break mobile", &window, &display
+        320, 240, "Break mobile", &window, &display, false
     };
     Platform *platform = platform_create(&config);
     u32 width = 0u;

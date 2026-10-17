@@ -47,6 +47,7 @@ typedef struct {
     const char *title;
     void *native_window;
     void *native_display;
+    bool hide_window_until_first_frame;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
@@ -54,6 +55,8 @@ typedef struct {
 #define PLATFORM_MAX_WINDOW_TITLE_BYTES 4096u
 
 bool platform_config_valid(const PlatformConfig *cfg);
+/* Best-effort visibility controls. Wayland has no toplevel hide primitive;
+ * its hidden startup path commits no application buffer until show. */
 void platform_window_hide(Platform *p);
 void platform_window_show(Platform *p);
 

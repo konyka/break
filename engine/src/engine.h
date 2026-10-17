@@ -7,6 +7,7 @@ typedef struct {
     u32       height;
     const char *title;
     f64       target_fps;
+    bool      hide_window_until_first_frame;
 } EngineConfig;
 
 typedef struct {
