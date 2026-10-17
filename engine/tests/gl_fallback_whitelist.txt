@@ -1,0 +1,20 @@
+# 兼容期已知 GL 落点白名单。OpenGL 删除（计划 F Task 6）后，引擎 RHI 相关行必须移除。
+# 格式: <相对 engine/ 的路径前缀>TAB<token 子串>
+src/rhi/rhi_gl.c	gl
+src/rhi/rhi.c	rhi_gl.c
+external/glad.c	gl
+external/glad.h	gl
+CMakeLists.txt	glad
+CMakeLists.txt	opengl32
+CMakeLists.txt	ENGINE_RHI_BACKEND STREQUAL "opengl"
+src/myui/myr/	GL
+src/myui/mypal/	GL
+src/renderer/skybox.c	glad
+src/rhi/rhi.h	GLX
+src/rhi/rhi.h	RHI_BACKEND_OPENGL
+src/test_vulkan.c	RHI_BACKEND_OPENGL
+tests/test_rhi_capabilities.c	RHI_BACKEND_OPENGL
+tests/test_rhi_error_contract.c	RHI_BACKEND_OPENGL
+tests/test_shader_io.c	rhi_gl
+tests/test_rhi_x11_runtime.c	gl
+tests/test_myui_gl_desktop	gl

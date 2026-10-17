@@ -2244,6 +2244,22 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_rollback_runbook_contract.cmake)
     set_tests_properties(test_rhi_rollback_runbook_contract PROPERTIES
         LABELS "headless;platform_contract")
+    add_test(NAME test_rhi_opengl_compat_fallback_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DRHI_C=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi.c
+            -DROLLOUT_C=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_rollout.c
+            -DROLLOUT_JSON=${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_opengl_compat_fallback_contract.cmake)
+    set_tests_properties(test_rhi_opengl_compat_fallback_contract PROPERTIES
+        LABELS "headless;platform_contract")
+    add_test(NAME test_no_hidden_gl_fallback
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DWHITELIST=${CMAKE_CURRENT_SOURCE_DIR}/tests/gl_fallback_whitelist.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_no_hidden_gl_fallback.cmake)
+    set_tests_properties(test_no_hidden_gl_fallback PROPERTIES
+        LABELS "headless;platform_contract")
     add_executable(test_rhi_capabilities tests/test_rhi_capabilities.c
         ${RHI_CORE_SOURCES} src/core/log.c)
     target_compile_definitions(test_rhi_capabilities PRIVATE ENGINE_RHI_TEST=1)
