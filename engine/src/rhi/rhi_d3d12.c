@@ -3420,21 +3420,40 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe,
     return -1;
 }
 
-/* Plan E Task 5: reflection-driven bindings — fail-closed link stubs
- * (create NULL / resolve -1 / destroy no-op), mirroring rhi_headless.c.
- * main.c/test_vulkan.c call sites link against these until the D3D12
- * reflection materialization lands; the sidecar table above stays the
- * legacy API's authority in the meantime. */
+/* Reflection-driven bindings: a snapshot view over the pipeline's sidecar
+ * uniform table (name -> byte offset into the 32BIT_CONSTANTS root param),
+ * the same authority rhi_pipeline_get_uniform_location reads. Returned as an
+ * owned copy so a destroyed pipeline cannot leave dangling name pointers. */
+struct RHIPipelineBindings {
+    char names[RHI_D3D12_MAX_UNIFORM_LOCS][SHADER_IO_NAME_MAX];
+    i32  slots[RHI_D3D12_MAX_UNIFORM_LOCS];
+    u32  count;
+};
 RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
-    (void)dev; (void)pipe; return NULL;
+    RHI_D3D12Pipeline *pd;
+    struct RHIPipelineBindings *b;
+    if (dev == NULL || !rhi_handle_valid(pipe)) return NULL;
+    pd = (RHI_D3D12Pipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (pd == NULL) return NULL;
+    b = (struct RHIPipelineBindings *)calloc(1u, sizeof(*b));
+    if (b == NULL) return NULL;
+    for (u32 i = 0u; i < pd->uniform_count && b->count < RHI_D3D12_MAX_UNIFORM_LOCS; ++i) {
+        memcpy(b->names[b->count], pd->uniforms[i].name, sizeof(b->names[0]));
+        b->names[b->count][sizeof(b->names[0]) - 1u] = '\0';
+        b->slots[b->count] = (i32)pd->uniforms[i].offset;
+        b->count++;
+    }
+    return b;
 }
-
-void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
-    (void)dev; (void)b;
+void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *bindings) {
+    (void)dev;
+    free(bindings);
 }
-
 i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
-    (void)b; (void)name; return -1;
+    if (b == NULL || name == NULL) return -1;
+    for (u32 i = 0u; i < b->count; ++i)
+        if (strcmp(b->names[i], name) == 0) return b->slots[i];
+    return -1;
 }
 
 /* ---- shadow map / cubemap / FBO ---- */

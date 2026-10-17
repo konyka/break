@@ -49,6 +49,14 @@
 - **验证**：`test_d3d12_warp_runtime`（WARP 强制软件光栅，像素确定）新增 `offscreen_fbo_clear_round_trips_pixels`：8x8 FBO 清成 0.25/0.5/0.75/1.0，经 `rhi_texture_read_pixels` 回读，断言首像素为 64/128/191/255（±2 容差覆盖 f32→unorm 取整）**且全部 64 个像素一致**。**反向验证**：把期望 R 改成 10 后测试转红，恢复后转绿——排除空转。回归：D3D12 零错误零警告、专项 **12/12**（全套 184 项中 179 通过，5 项 `fuzz_*_smoke` 为 `EXCLUDE_FROM_ALL` 有意门控）；GL **175/175**；VK **176/176**。
 - **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_pipeline_bindings_*`（命名 uniform 解析）、`rhi_cmd_bind_texture` 仍是桩，`rhi_cmd_begin/end_render_pass` 仍是 no-op。**顺序约束**：这些补齐后，才轮到按 CMake `ENGINE_D3D12_HLSL_PIPELINES` 的增量约定补渲染管线 sidecar。
 
+## 本轮更新：R715 六记 — D3D12 `rhi_pipeline_bindings_*` 落地（create 曾返回 NULL / resolve 恒 -1 / destroy 空转）→ 命名 uniform 解析可用，与既有 legacy lookup 同源同值
+
+- **缺口**：`rhi_pipeline_bindings_create/resolve/destroy` 在 D3D12 上是 fail-closed 桩（注释写"待 D3D12 反射落地"）。而 `main.c` 正是**优先**使用这套新 API，于是 D3D12 上任何按名字查 uniform 的调用都会拿到空绑定。
+- **实现**：不新增反射逻辑——D3D12 管线在创建时已从 sidecar 的 `// rhi:uniform <name> <offset>` 标记建好 `uniforms[]` 表，`rhi_pipeline_get_uniform_location` 也一直在读它。bindings 实现为该表的**拥有副本视图**（避免管线销毁后留下悬垂名字指针），`resolve` 做名字查表返回根常量字节偏移，与 legacy lookup 同权威、同取值。
+- **验证**：`test_d3d12_shader_contract` 新增 `pipeline_bindings_resolve_matches_legacy_lookup`——用现成的 `blit_hlsl` sidecar 造管线，断言 `bindings_create` 返回非 NULL（旧桩会失败）、`resolve("u_transform")` **等于** legacy lookup 的返回值、不存在的名字返回 -1、NULL 绑定返回 -1。
+- **回归**：D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
+- **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_cmd_bind_texture`（SRV 描述符 + 描述符表绑定，纹理化渲染的总闸）、`rhi_cmd_bind_uniform_buffer`、`rhi_cmd_begin/end_render_pass` 仍是桩/no-op。顺序约束：纹理绑定补齐后才轮到渲染管线 sidecar。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。
