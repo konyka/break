@@ -125,6 +125,13 @@ with Vulkan vsync disabled, reducing mouse-to-render latency. Set
 regression run is required; the startup `PHASE:` timing lines report the
 selected pacing separately from GPU work.
 
+On X11 relative mouse input, motion deltas are accumulated from consecutive
+event coordinates and the pointer is recentered once per poll, instead of
+calling `XWarpPointer` for every motion event. This avoids synthetic-event
+multiplication during high-rate movement, which could make camera rotation
+arrive in bursts. Keep vsync as the sole pacing clock; adding a CPU limiter
+while vsync is enabled reintroduces input judder.
+
 On the current RHI split checkout `2c46267`, a fresh OpenGL build passed
 172/172 non-fuzz tests (the D3D12 dependency gate is a platform skip). A
 fresh Vulkan build passed `test_vulkan`, RHI capability/native/error contracts,
