@@ -1,159 +1,30 @@
 name: CI
 
-# RHI 证据 lane 分类约定（spec: docs/superpowers/specs/2026-10-14-multi-backend-rhi-design.md §8.2）：
-#   headless       — 无 GPU/无显示；label "headless"/"platform_contract"；任何 runner 可跑
-#   native-surface — 真实窗口系统 surface，无 GPU 断言；环境缺失用 SKIP_RETURN_CODE 77
-#   GPU-runtime    — 真实或软渲染 GPU 运行；label "graphics"/"platform_runtime"
-#   validation     — Vulkan validation layer 消息计数 gate（test_vulkan 路径）
-#   benchmark      — 产出 docs/rhi_benchmark_receipt_schema.md 收据 artifact
-#   Proton         — 仅兼容验证，不计入 Windows D3D12 证据
-# 现有 lane 归类：gl/vk = headless + GPU-runtime（软渲染）；wayland-* = native-surface；
-# windows-clang = GPU-runtime；macos-vulkan = GPU-runtime（MoltenVK，非原生 Metal 证据）。
-# 本计划不新增 GPU lane；后续新增 lane 必须在本注释声明证据类别并产出收据 artifact。
+# RHI 证据 lane 分类（spec: docs/superpowers/specs/2026-10-14-multi-backend-rhi-design.md §8.2；
+# 计划 F task 7 起重排为六类 lane，每 lane 尾部产出 evidence-receipt-* artifact）：
+#   lane-headless-*        — 无 GPU/无显示；label "headless"/"platform_contract"；任何 runner 可跑
+#   lane-native-surface-*  — 真实窗口系统 surface 创建/resize/销毁，无 GPU 断言；环境缺失用 SKIP_RETURN_CODE 77
+#   lane-gpu-runtime-*     — 真实或软渲染 GPU 运行；label "graphics"/"platform_runtime"
+#   lane-validation-*      — Vulkan validation layer / D3D12 debug layer 消息计数 gate
+#   lane-benchmark-*       — 产出 docs/rhi_benchmark_receipt_schema.md 收据 artifact（含 metrics）
+#   lane-proton            — 仅兼容验证，不计入 Windows D3D12 证据（周跑 + 手动）
+# 收据由 engine/tools/make_evidence_receipt.cmake 生成、engine/tests/test_evidence_receipt_schema.cmake
+# 校验（Task 8 台账消费 evidence-receipt-* artifact 链接）。
+# 保留的非 lane 命名 job：clean-room（task 2 交付）、wayland-gl（兼容期保留，task 6 删除）、
+# ios-metal-build（Simulator compile-only 证据）。
 
 on:
   push:
     branches: [master]
   pull_request:
     branches: [master]
+  schedule:
+    - cron: "23 3 * * 1"   # 每周一 03:23 UTC（避开整点）
+  workflow_dispatch:
 
 jobs:
-  gl:
-    name: Linux X11 + OpenGL (GCC)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev fonts-noto-cjk xvfb x11-utils
-
-      - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Test (headless suite)
-        run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
-            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      - name: Test X11/OpenGL runtime
-        run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-gl.log 2>&1 &
-          xvfb_pid=$!
-          trap 'kill "$xvfb_pid"' EXIT
-          export DISPLAY=:99
-          export LIBGL_ALWAYS_SOFTWARE=1
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          ctest --test-dir build --output-on-failure -R \
-            '^(test_platform_x11_runtime|test_rhi_x11_runtime)$'
-
-  vk:
-    name: Linux X11 + Vulkan (GCC)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev \
-            libfreetype6-dev fonts-noto-cjk
-
-      - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
-
-      - name: Build
-        run: |
-          set -o pipefail
-          # Logs need auth to read: surface the compiler errors as
-          # annotations (wayland lane pattern). Link failures need the
-          # "undefined reference" lines and the failing link target too.
-          cmake --build build --parallel 2>&1 | tee /tmp/vk_build.log || {
-            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/vk_build.log \
-              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
-            grep -B4 -m 2 "collect2: error" /tmp/vk_build.log \
-              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
-            exit 1
-          }
-
-      - name: Test (headless suite)
-        run: |
-          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
-            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
-            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
-            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      - name: Test Vulkan graphics smoke
-        run: |
-          sudo apt-get install -y --no-install-recommends mesa-vulkan-drivers xvfb x11-utils
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-vk.log 2>&1 &
-          xvfb_pid=$!
-          trap 'kill "$xvfb_pid"' EXIT
-          export DISPLAY=:99
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
-           test -n "$vk_icd"
-           export VK_ICD_FILENAMES="$vk_icd"
-          ctest --test-dir build -L graphics --output-on-failure
-
-  clean-room:
-    # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；
-    # 本计划新增 lane，不产出 GPU 收据 artifact）。
-    name: Clean-room build (locked deps, fresh export)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-
-      # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
-      # cmake 3.28.3 / libvulkan-dev 1.3.275.0-1build1 / libshaderc-dev 2023.8-1build1。
-      - name: Install pinned toolchain
-        run: |
-          set +e
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ]; then
-            tail -40 /tmp/apt-install.log | while IFS= read -r line; do echo "::error::$line"; done
-            echo '## apt pin diagnosis' >> "$GITHUB_STEP_SUMMARY"
-            apt-cache policy cmake libvulkan-dev libshaderc-dev clang-18 lld-18 >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
-            exit $rc
-          fi
-
-      - name: Clean-room configure/build/test
-        run: |
-          # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
-          # /usr/bin/cmake；前置 /usr/bin 让 cmake=3.28.* 钉版真实生效。
-          export PATH="/usr/bin:$PATH"
-          cmake --version | head -1
-          bash engine/tools/clean_room_build.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/clean-room" --backend vulkan
-
-  linux-clang-release:
+  # ---- lane: headless（无显示依赖；原 5 个 headless job 改名，steps 不变，尾部收据 evidence_level=HEADLESS）----
+  lane-headless-linux-clang:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -185,7 +56,23 @@ jobs:
             exit 1
           fi
 
-  linux-gcc-sanitizers:
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz" -DBUILD_CONFIG=Release \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-headless-linux-clang
+          path: receipt.json
+
+  lane-headless-linux-gcc-asan:
     name: Linux + GCC (ASan + UBSan, headless)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -229,7 +116,23 @@ jobs:
             fuzz_decode_image fuzz_vfs_pak
           ctest --test-dir build -L fuzz --output-on-failure
 
-  linux-gcc-tsan:
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz + fuzz smoke (ASan/UBSan)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-headless-linux-gcc-asan
+          path: receipt.json
+
+  lane-headless-linux-gcc-tsan:
     name: Linux + GCC (TSan, headless)
     runs-on: ubuntu-24.04
     timeout-minutes: 25
@@ -274,10 +177,196 @@ jobs:
             exit 1
           fi
 
-  linux-graphics-smoke:
-    name: Linux + Xvfb/software graphics smoke
-    runs-on: ubuntu-24.04
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -LE graphics|fuzz -E test_async_loader (TSan)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-headless-linux-gcc-tsan
+          path: receipt.json
+
+  lane-headless-windows-clang:
+    name: Windows + Clang (headless)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # test_rhi_backend_selection sub-configures ENGINE_RHI_BACKEND=d3d12,
+      # which fail-closes without the pinned Agility redist
+      # (engine/CMakeLists.txt) and needs dxc for the HLSL->DXIL step.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # ENGINE_VULKAN=ON needs the Vulkan SDK (loader import lib + shaderc);
+      # windows-latest ships none. Pinned version+hash, fail-closed
+      # (engine/tools/fetch_vulkan_sdk_windows.cmake); exports VULKAN_SDK and
+      # the shaderc DLL dir for the build/test steps.
+      - name: Fetch and install Vulkan SDK (pinned)
+        run: cmake -P engine/tools/fetch_vulkan_sdk_windows.cmake
+
+      - name: Configure
+        # GL backends stay at defaults: the desktop GL backend is WGL-loaded
+        # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
+        # GLES2 SDK (configure-time discovery in engine/CMakeLists.txt).
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Verify Break myui demo
+        run: cmake --build build --target dxx_break --parallel
+
+      # win32 runtime 步保留在本 lane（其 native-surface 证据另由
+      # lane-native-surface-win32 出收据，brief :154）。
+      - name: Test Win32 platform runtime
+        run: |
+          cmake --build build --target test_platform_config test_platform_null_safety test_platform_win32_runtime --parallel
+          ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
+
+      - name: Test (headless suite)
+        env:
+          # Vendored VulkanSDK artifacts are gitignored and absent on CI
+          # checkouts; this lane provisions the pinned LunarG SDK instead
+          # (engine/tools/fetch_vulkan_sdk_windows.cmake).
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # CMake script gates (e.g. the d3d12 shader compile gate) put the
+            # diagnosis in the lines after "CMake Error at" — surface those.
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest-headless.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics|fuzz" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-clang
+          path: receipt.json
+
+  lane-headless-windows-asan:
+    name: Windows + Clang ASan (headless)
+    runs-on: windows-latest
     timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      - name: Configure
+        # R696: AddressSanitizer on Windows/clang — the runtime ships as
+        # clang_rt.asan DLLs that the loader must find; the test step
+        # copies them next to the executables after building.
+        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+
+      - name: Build
+        run: cmake --build build-asan --parallel
+
+      - name: Copy the ASan runtime DLLs next to the tests
+        shell: pwsh
+        run: |
+          $clangDir = & clang -print-resource-dir
+          $src = Join-Path $clangDir 'lib\windows'
+          if (-not (Test-Path $src)) { Write-Error "no ASan runtime at $src"; exit 1 }
+          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
+            ForEach-Object { Copy-Item $_.FullName -Destination build-asan }
+          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
+            ForEach-Object { $_.Name }
+
+      - name: Test (headless suite under ASan)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          # Vendored VulkanSDK artifacts are gitignored and absent on CI
+          # checkouts (lane builds the ASan matrix without the SDK).
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer|CMake Error' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            # CMake script gates (e.g. the d3d12 shader compile gate) put the
+            # diagnosis in the lines after "CMake Error at" — surface those.
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=HEADLESS -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build-asan -LE graphics|fuzz (ASan)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-asan
+          path: receipt.json
+
+  # ---- lane: native-surface（真实 surface 创建/resize/销毁；evidence_level=NATIVE_SURFACE）----
+  lane-native-surface-wayland:
+    # 原 wayland-vk（brief :158）。
+    name: Linux Wayland + Vulkan (GCC)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -285,43 +374,90 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libx11-dev libxrandr-dev libvulkan-dev libshaderc-dev \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers mesa-utils \
-            libgl1-mesa-dri libgl1-mesa-dev xvfb x11-utils
+            build-essential cmake ninja-build libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+             libegl1-mesa-dev libgles2-mesa-dev \
+             libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
+            libfreetype6-dev fonts-noto-cjk weston
 
       - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
 
       - name: Build
         run: |
           set -o pipefail
           # Logs need auth to read: surface the compiler errors as
-          # annotations (wayland lane pattern). Link failures need the
+          # annotations (macOS precedent below). Link failures need the
           # "undefined reference" lines and the failing link target too.
-          cmake --build build --parallel 2>&1 | tee /tmp/smoke_build.log || {
-            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/smoke_build.log \
+          cmake --build build --parallel 2>&1 | tee /tmp/wayland_vk_build.log || {
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/wayland_vk_build.log \
               | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
-            grep -B4 -m 2 "collect2: error" /tmp/smoke_build.log \
+            grep -B4 -m 2 "collect2: error" /tmp/wayland_vk_build.log \
               | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
             exit 1
           }
 
-      - name: Test graphics smoke
+      - name: Verify Break myui demo
+        run: cmake --build build --target dxx_break --parallel
+
+      - name: Test (headless and Wayland runtime suite)
         run: |
-          test -x "$(command -v Xvfb)"
-          vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
-          test -n "$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
-          xvfb_pid=$!
-          trap 'kill "$xvfb_pid"' EXIT
-          export DISPLAY=:99
-          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
-          export LIBGL_ALWAYS_SOFTWARE=1
-          export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
-          export VK_ICD_FILENAMES="$vk_icd"
-          ctest --test-dir build -L graphics --output-on-failure
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          export WAYLAND_DISPLAY=wayland-break
+          weston --backend=headless-backend.so \
+            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
+            >/tmp/weston-break.log 2>&1 &
+          weston_pid=$!
+          trap 'kill "$weston_pid"' EXIT
+          for attempt in $(seq 1 100); do
+            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
+            kill -0 "$weston_pid" 2>/dev/null || {
+              cat /tmp/weston-break.log
+              exit 1
+            }
+            sleep 0.1
+          done
+           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
+           set +e
+           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
+           rc_headless=$?
+           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
+           rc_runtime=$?
+           set -e
+           # Logs need auth to read: surface failing test names and FAIL
+           # lines as annotations (sanitizer-lane pattern), plus the weston
+           # log tail so headless-backend startup issues stay visible.
+           if [ $rc_headless -ne 0 ] || [ $rc_runtime -ne 0 ]; then
+             for f in /tmp/ctest-wayland.log /tmp/ctest-wayland-runtime.log; do
+               grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|abort|Aborted|CMake Error' "$f" | head -30 | while IFS= read -r line; do
+                 echo "::error::$line"
+               done
+             done
+             echo "::error::wayland test step failed (headless rc=$rc_headless, runtime rc=$rc_runtime); weston log tail:"
+             tail -20 /tmp/weston-break.log | while IFS= read -r line; do echo "::error::weston ${line}"; done
+             exit 1
+           fi
+
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -R test_platform_wayland_runtime (weston headless backend)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-native-surface-wayland
+          path: receipt.json
 
   wayland-gl:
+    # DEPRECATED（task 6 删除）：兼容期保留的 Wayland+OpenGL lane；收据归
+    # native-surface 类（test_platform_wayland_runtime 真实 surface 证据）。
     name: Linux Wayland + OpenGL (GCC)
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -397,92 +533,31 @@ jobs:
             exit 1
           fi
 
-  wayland-vk:
-    name: Linux Wayland + Vulkan (GCC)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install dependencies
+      - name: Emit evidence receipt
+        if: always()
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake libvulkan-dev libshaderc-dev \
-             libegl1-mesa-dev libgles2-mesa-dev \
-             libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
-            libfreetype6-dev fonts-noto-cjk weston
+          cmake -DOUT=receipt.json -DPLATFORM=linux-wayland -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -R test_platform_wayland_runtime (weston headless backend, GL)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-native-surface-wayland-gl
+          path: receipt.json
 
-      - name: Configure
-        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
-
-      - name: Build
-        run: |
-          set -o pipefail
-          # Logs need auth to read: surface the compiler errors as
-          # annotations (macOS precedent below). Link failures need the
-          # "undefined reference" lines and the failing link target too.
-          cmake --build build --parallel 2>&1 | tee /tmp/wayland_vk_build.log || {
-            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/wayland_vk_build.log \
-              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
-            grep -B4 -m 2 "collect2: error" /tmp/wayland_vk_build.log \
-              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
-            exit 1
-          }
-
-      - name: Verify Break myui demo
-        run: cmake --build build --target dxx_break --parallel
-
-      - name: Test (headless and Wayland runtime suite)
-        run: |
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-runtime"
-          mkdir -p "$XDG_RUNTIME_DIR"
-          chmod 700 "$XDG_RUNTIME_DIR"
-          export WAYLAND_DISPLAY=wayland-break
-          weston --backend=headless-backend.so \
-            --socket="$WAYLAND_DISPLAY" --idle-time=0 \
-            >/tmp/weston-break.log 2>&1 &
-          weston_pid=$!
-          trap 'kill "$weston_pid"' EXIT
-          for attempt in $(seq 1 100); do
-            test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY" && break
-            kill -0 "$weston_pid" 2>/dev/null || {
-              cat /tmp/weston-break.log
-              exit 1
-            }
-            sleep 0.1
-          done
-           test -S "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY"
-           set +e
-           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
-           rc_headless=$?
-           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
-           rc_runtime=$?
-           set -e
-           # Logs need auth to read: surface failing test names and FAIL
-           # lines as annotations (sanitizer-lane pattern), plus the weston
-           # log tail so headless-backend startup issues stay visible.
-           if [ $rc_headless -ne 0 ] || [ $rc_runtime -ne 0 ]; then
-             for f in /tmp/ctest-wayland.log /tmp/ctest-wayland-runtime.log; do
-               grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|abort|Aborted|CMake Error' "$f" | head -30 | while IFS= read -r line; do
-                 echo "::error::$line"
-               done
-             done
-             echo "::error::wayland test step failed (headless rc=$rc_headless, runtime rc=$rc_runtime); weston log tail:"
-             tail -20 /tmp/weston-break.log | while IFS= read -r line; do echo "::error::weston ${line}"; done
-             exit 1
-           fi
-
-  windows-clang:
-    name: Windows + Clang (headless)
+  lane-native-surface-win32:
+    # 自 windows-clang 拆出（brief :159）：仅 win32 runtime trio 的 native-surface
+    # 证据 lane；headless 全量（含同一步 win32 trio）仍在 lane-headless-windows-clang。
+    name: Windows + Clang (win32 native surface)
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      # test_rhi_backend_selection sub-configures ENGINE_RHI_BACKEND=d3d12,
-      # which fail-closes without the pinned Agility redist
-      # (engine/CMakeLists.txt) and needs dxc for the HLSL->DXIL step.
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
 
@@ -494,118 +569,37 @@ jobs:
           if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
           Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
 
-      # ENGINE_VULKAN=ON needs the Vulkan SDK (loader import lib + shaderc);
-      # windows-latest ships none. Pinned version+hash, fail-closed
-      # (engine/tools/fetch_vulkan_sdk_windows.cmake); exports VULKAN_SDK and
-      # the shaderc DLL dir for the build/test steps.
       - name: Fetch and install Vulkan SDK (pinned)
         run: cmake -P engine/tools/fetch_vulkan_sdk_windows.cmake
 
       - name: Configure
-        # GL backends stay at defaults: the desktop GL backend is WGL-loaded
-        # on Windows (my_gl_desktop.c), and GLES2 honestly stubs without a
-        # GLES2 SDK (configure-time discovery in engine/CMakeLists.txt).
         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
-
-      - name: Build
-        run: cmake --build build --parallel
-
-      - name: Verify Break myui demo
-        run: cmake --build build --target dxx_break --parallel
 
       - name: Test Win32 platform runtime
         run: |
-          cmake --build build --target test_platform_config test_platform_null_safety test_platform_win32_runtime --parallel
+          cmake --build build --parallel --target test_platform_config test_platform_null_safety test_platform_win32_runtime
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_win32_runtime)$'
 
-      - name: Test (headless suite)
-        env:
-          # Vendored VulkanSDK artifacts are gitignored and absent on CI
-          # checkouts; this lane provisions the pinned LunarG SDK instead
-          # (engine/tools/fetch_vulkan_sdk_windows.cmake).
-          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+      - name: Emit evidence receipt
+        if: always()
         shell: bash
         run: |
-          set +e
-          ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest-headless.log" 2>&1
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest-headless.log" | head -40 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            # CMake script gates (e.g. the d3d12 shader compile gate) put the
-            # diagnosis in the lines after "CMake Error at" — surface those.
-            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest-headless.log" | head -30 | while IFS= read -r line; do
-              echo "::error::ctx $line"
-            done
-            exit 1
-          fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -R test_platform_win32_runtime (win32 runtime trio)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-native-surface-win32
+          path: receipt.json
 
-  windows-clang-asan:
-    name: Windows + Clang ASan (headless)
-    runs-on: windows-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-
-      # Same d3d12 selector-contract prerequisite as the windows-clang job.
-      - name: Fetch Agility SDK (pinned)
-        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
-
-      - name: Add Windows SDK dxc to PATH
-        shell: pwsh
-        run: |
-          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
-                 Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
-          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
-
-      - name: Configure
-        # R696: AddressSanitizer on Windows/clang — the runtime ships as
-        # clang_rt.asan DLLs that the loader must find; the test step
-        # copies them next to the executables after building.
-        run: cmake -S engine -B build-asan -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer"
-
-      - name: Build
-        run: cmake --build build-asan --parallel
-
-      - name: Copy the ASan runtime DLLs next to the tests
-        shell: pwsh
-        run: |
-          $clangDir = & clang -print-resource-dir
-          $src = Join-Path $clangDir 'lib\windows'
-          if (-not (Test-Path $src)) { Write-Error "no ASan runtime at $src"; exit 1 }
-          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
-            ForEach-Object { Copy-Item $_.FullName -Destination build-asan }
-          Get-ChildItem $src -Filter 'clang_rt.asan*.dll' |
-            ForEach-Object { $_.Name }
-
-      - name: Test (headless suite under ASan)
-        env:
-          ASAN_OPTIONS: detect_leaks=0
-          # Vendored VulkanSDK artifacts are gitignored and absent on CI
-          # checkouts (lane builds the ASan matrix without the SDK).
-          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
-        shell: bash
-        run: |
-          set +e
-          ctest --test-dir build-asan -LE "graphics|fuzz" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
-          rc=$?
-          set -e
-          if [ $rc -ne 0 ]; then
-            grep -E 'FAIL|Failed|FAILED|Not Run|ERROR: AddressSanitizer|SUMMARY: AddressSanitizer|runtime error|Timeout|Segmentation|abort|Aborted|LeakSanitizer|CMake Error' "$RUNNER_TEMP/ctest.log" | head -60 | while IFS= read -r line; do
-              echo "::error::$line"
-            done
-            # CMake script gates (e.g. the d3d12 shader compile gate) put the
-            # diagnosis in the lines after "CMake Error at" — surface those.
-            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
-              echo "::error::ctx $line"
-            done
-            exit 1
-          fi
-
-  macos-vulkan:
+  lane-native-surface-cocoa:
+    # 原 macos-vulkan（brief :160）：test_platform_cocoa_runtime 的 native-surface
+    # 证据；MoltenVK 后端（schema backend=vulkan-moltenvk）。
     name: macOS Cocoa + MoltenVK (Clang)
     runs-on: macos-14
     timeout-minutes: 25
@@ -704,7 +698,7 @@ jobs:
           }
           ctest --test-dir build --output-on-failure -R '^(test_platform_config|test_platform_null_safety|test_platform_cocoa_runtime)$' 2>&1 | tee /tmp/macos_cocoa_test.log || {
             echo "::error::macOS Cocoa runtime test failures:"
-            grep -m 5 -E "\(Failed\)|\(Not Run\)|\(Timeout\)" /tmp/macos_cocoa_test.log | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -m 5 -E "\(Failed\)|\(Not Run\)|\(Timeout\)" /tmp/macos_cocoa_test.log | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           }
 
@@ -732,7 +726,172 @@ jobs:
             exit 1
           }
 
-  macos-metal:
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=macos -DBACKEND=vulkan-moltenvk \
+            -DEVIDENCE_LEVEL=NATIVE_SURFACE -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -R test_platform_cocoa_runtime" -DBUILD_CONFIG=Debug \
+            -DGPU="$(vulkaninfo --summary 2>/dev/null | grep -m1 deviceName || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-native-surface-cocoa
+          path: receipt.json
+
+  # ---- lane: GPU-runtime（真实 GPU/软渲染 ICD 跑通帧；evidence_level=GPU_RUNTIME）----
+  lane-gpu-runtime-linux-gl:
+    # DEPRECATED（task 6 删除）：兼容期保留的 X11+OpenGL lane（brief :121），
+    # 不再扩展；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
+    name: Linux X11 + OpenGL (GCC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev \
+            libfreetype6-dev fonts-noto-cjk xvfb x11-utils
+
+      - name: Configure
+        run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Test (headless suite)
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Test X11/OpenGL runtime
+        run: |
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-gl.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid"' EXIT
+          export DISPLAY=:99
+          export LIBGL_ALWAYS_SOFTWARE=1
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          ctest --test-dir build --output-on-failure -R \
+            '^(test_platform_x11_runtime|test_rhi_x11_runtime)$'
+
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -R x11_runtime (Xvfb + LIBGL_ALWAYS_SOFTWARE)" -DBUILD_CONFIG=Debug \
+            -DGPU="mesa software rasterizer (LIBGL_ALWAYS_SOFTWARE=1)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-gpu-runtime-linux-gl
+          path: receipt.json
+
+  lane-gpu-runtime-linux-vk:
+    # 原 vk + linux-graphics-smoke 合并（brief :163）：钉版工具链 + lavapipe
+    # VK_ICD_FILENAMES，headless 全量与 graphics suite 同 lane 出 GPU_RUNTIME 收据。
+    name: Linux X11 + Vulkan (lavapipe, Clang)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libgl1-mesa-dev libgl1-mesa-dri \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
+
+      - name: Configure
+        # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
+        # /usr/bin/cmake；前置 /usr/bin 让 cmake=3.28.* 钉版真实生效。
+        run: |
+          export PATH="/usr/bin:$PATH"
+          cmake --version | head -1
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+
+      - name: Build
+        run: |
+          set -o pipefail
+          # Logs need auth to read: surface the compiler errors as
+          # annotations (wayland lane pattern). Link failures need the
+          # "undefined reference" lines and the failing link target too.
+          cmake --build build --parallel 2>&1 | tee /tmp/vk_build.log || {
+            grep -m 8 -E "error:|fatal error:|undefined reference|cannot find -l|No rule to make target" /tmp/vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::${line}"; done
+            grep -B4 -m 2 "collect2: error" /tmp/vk_build.log \
+              | head -c 1500 | while IFS= read -r line; do echo "::error::linkctx ${line}"; done
+            exit 1
+          }
+
+      - name: Test (headless suite)
+        run: |
+          if ! ctest --test-dir build -LE "graphics|fuzz" --output-on-failure; then
+            echo '## Headless suite failures (rerun)' >> "$GITHUB_STEP_SUMMARY"
+            ctest --test-dir build -LE "graphics|fuzz" --rerun-failed --output-on-failure > /tmp/ctest-rerun.log 2>&1 || true
+            grep -E "FAIL|Failed|FAILED|Not Run|LeakSanitizer|ERROR: AddressSanitizer|colored pixels|selftest|CMake Error" /tmp/ctest-rerun.log | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            cat /tmp/ctest-rerun.log >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Test graphics smoke
+        run: |
+          test -x "$(command -v Xvfb)"
+          vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
+          test -n "$vk_icd"
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          xvfb_pid=$!
+          trap 'kill "$xvfb_pid"' EXIT
+          export DISPLAY=:99
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          export LIBGL_ALWAYS_SOFTWARE=1
+          export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+          export VK_ICD_FILENAMES="$vk_icd"
+          ctest --test-dir build -L graphics --output-on-failure
+
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -L graphics (lavapipe ICD, Xvfb)" -DBUILD_CONFIG=Debug \
+            -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-gpu-runtime-linux
+          path: receipt.json
+
+  lane-gpu-runtime-macos-metal:
+    # 计划 C lane（brief :164）：GitHub hosted macOS 无 Metal GPU 窗口会话，
+    # graphics 契约整体跳过（77）时收据如实降级 HEADLESS，不伪造 GPU_RUNTIME；
+    # 真机/self-hosted runner 上 graphics 全绿才标 GPU_RUNTIME。
     name: macOS native Metal (Clang)
     runs-on: macos-14
     timeout-minutes: 45
@@ -771,37 +930,220 @@ jobs:
           }
 
       - name: Metal device contract (GPU when available)
-        run: ctest --test-dir build -L graphics --output-on-failure || true   # 77 skip not fatal; GPU runners count as receipts
+        id: metal_graphics
+        continue-on-error: true
+        run: |
+          set +e
+          ctest --test-dir build -L graphics --output-on-failure
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc   # 77 skip not fatal; GPU runners count as receipts
 
-  ios-metal-build:
-    # Simulator evidence = compile only (marking 1 of 3: lane comment)
-    name: iOS native Metal build-only (Simulator evidence = compile only)
-    runs-on: macos-14
-    timeout-minutes: 45
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          if [ "${{ steps.metal_graphics.outputs.rc }}" = "0" ]; then lvl=GPU_RUNTIME; else lvl=HEADLESS; fi
+          echo "metal graphics rc=${{ steps.metal_graphics.outputs.rc }} -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=macos -DBACKEND=metal \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -L graphics (metal device contract)" -DBUILD_CONFIG=Debug \
+            -DGPU="$(system_profiler SPDisplaysDataType 2>/dev/null | grep -m1 Chipset | cut -d: -f2 | sed 's/^ *//' || echo unknown)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-gpu-runtime-macos-metal
+          path: receipt.json
+
+  lane-gpu-runtime-windows-d3d12:
+    # 计划 D 的真机 D3D12 GPU lane（brief :165）：self-hosted windows GPU
+    # runner 接单，ENABLE_GPU_LANES=1 显式开启（同 lane-benchmark-steam-deck
+    # 门控；hosted 上没有 self-hosted 标签可接单，不加 if 会永久 pending）。
+    # hosted WARP 下限证据在 windows-d3d12.yml（gpu=WARP，不超 GPU_RUNTIME），
+    # 不在本 workflow 重复；本 lane 只在真机接单且 graphics 全绿时标
+    # GPU_RUNTIME，否则收据如实标 UNAVAILABLE。
+    if: vars.ENABLE_GPU_LANES == '1'
+    runs-on: [self-hosted, windows, gpu]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Pin Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
 
-      - name: Install shader toolchain
-        run: brew install shaderc spirv-cross
-
-      - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
-
-      - name: Build (iOS Simulator destination)
-        run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
-
-      - name: Verify artifact
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
         run: |
-          test -s build-ios/metal_shaders/engine.metallib
-          test -d build-ios/Debug-iphonesimulator/engine_demo.app
-          test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
 
-  steam-deck-vulkan-benchmark:
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DENGINE_RHI_BACKEND=d3d12
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: D3D12 graphics suite (GPU-runtime evidence)
+        id: d3d12_graphics
+        continue-on-error: true
+        shell: bash
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        run: |
+          set +e
+          ctest --test-dir build -L graphics --output-on-failure
+          rc=$?
+          echo "rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          if [ "${{ steps.d3d12_graphics.outputs.rc }}" = "0" ]; then lvl=GPU_RUNTIME; else lvl=UNAVAILABLE; fi
+          echo "d3d12 graphics rc=${{ steps.d3d12_graphics.outputs.rc }} -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=d3d12 \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -L graphics (ENGINE_RHI_BACKEND=d3d12)" -DBUILD_CONFIG=Release \
+            -DGPU=unknown -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-gpu-runtime-windows-d3d12
+          path: receipt.json
+
+  # ---- lane: validation（validation layers + D3D12 debug layer）----
+  lane-validation-linux-vk:
+    name: "lane: validation (VK_LAYER_KHRONOS_validation)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
+            vulkan-validationlayers
+
+      - name: Configure / build
+        run: |
+          # 前置 /usr/bin 让 cmake=3.28.* 钉版生效（clean-room lane 先例）；
+          # clang-18 显式指定（apt 只装 clang-18，无裸 clang 链接）。
+          export PATH="/usr/bin:$PATH"
+          cmake --version | head -1
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=ON
+          cmake --build build --parallel
+
+      - name: Run graphics suite under validation layers
+        run: |
+          set -o pipefail
+          export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+          vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
+          test -n "$vk_icd"
+          export VK_ICD_FILENAMES="$vk_icd"
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          trap 'kill $!' EXIT
+          export DISPLAY=:99
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          ctest --test-dir build -L graphics --output-on-failure 2>&1 | tee /tmp/val.log
+          ! grep -q "VUID-" /tmp/val.log   # 任何 validation error 即 lane 失败
+
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest -L graphics (VK_LAYER_KHRONOS_validation, lavapipe ICD)" -DBUILD_CONFIG=Debug \
+            -DGPU="lavapipe (software ICD via VK_ICD_FILENAMES)" \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-validation-linux
+          path: receipt.json
+
+  # ---- lane: benchmark（evidence_level 如实标注；lavapipe 软渲染与真 GPU 不可比）----
+  lane-benchmark-linux-vk:
+    name: "lane: benchmark (linux vulkan, lavapipe)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
+            vulkan-validationlayers
+
+      - name: Configure / build
+        run: |
+          export PATH="/usr/bin:$PATH"
+          cmake --version | head -1
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 \
+            -DCMAKE_BUILD_TYPE=Release -DENGINE_VULKAN=ON
+          cmake --build build --parallel
+
+      - name: Run benchmark
+        run: |
+          # 实际 benchmark target 为 rhi_swapchain_bench <out.json>（600 帧定长；
+          # 无 --seconds/--headless-lavapipe CLI，偏差记录见 task-7 报告）。
+          # 软渲染经 Xvfb + VK_ICD_FILENAMES(lvp) 提供。
+          vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
+          test -n "$vk_icd"
+          export VK_ICD_FILENAMES="$vk_icd"
+          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          trap 'kill $!' EXIT
+          export DISPLAY=:99
+          until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
+          ./build/rhi_swapchain_bench metrics.json
+
+      - name: Emit benchmark receipt
+        run: |
+          # lavapipe 软渲染 fps 与真 GPU 不可比：evidence_level 如实标
+          # GPU_RUNTIME（BENCHMARK_COMPARABLE 仅授予真机收据，如
+          # lane-benchmark-steam-deck-vk 与本机 D3D12/VK 收据），command 注明
+          # lavapipe；metrics 照填供台账留档。
+          m() { python3 -c "import json;print(json.load(open('metrics.json'))['metrics']['$1'])"; }
+          cmake -DOUT=receipt.json -DPLATFORM=linux-x11 -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="rhi_swapchain_bench metrics.json (lavapipe software ICD, 600 frames)" \
+            -DBUILD_CONFIG=Release \
+            -DGPU="$(python3 -c "import json;print(json.load(open('metrics.json'))['gpu'])")" \
+            -DDRIVER_VERSION="$(python3 -c "import json;print(json.load(open('metrics.json'))['driver_version'])")" \
+            -DCPU="$(uname -m)" -DRAM=unknown \
+            -DFPS_AVG=$(m fps_avg) \
+            -DFPS_P1=$(m fps_p1) \
+            -DFRAME_MS_AVG=$(m frame_ms_avg) \
+            -DFRAME_MS_P99=$(m frame_ms_p99) \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-benchmark-linux-vk
+          path: receipt.json
+
+  lane-benchmark-steam-deck-vk:
     name: Steam Deck / Linux real-GPU Vulkan benchmark
-    # 真 GPU 自托管 lane：用仓库变量 ENABLE_GPU_LANES=1 显式开启；
+    # 真 GPU 自托管 benchmark lane：BENCHMARK_COMPARABLE 真机证据归这里
+    # （lavapipe 上的 lane-benchmark-linux-vk 只出 GPU_RUNTIME 收据）。
     # GitHub-hosted 运行器上没有 self-hosted 标签可接单，不加 if 会永久 pending。
     if: vars.ENABLE_GPU_LANES == '1'
     runs-on: [self-hosted, linux, gpu-vulkan]
@@ -812,9 +1154,10 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
+          # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
           sudo apt-get install -y --no-install-recommends \
             build-essential cmake ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev libshaderc-dev libfreetype6-dev fonts-noto-cjk
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* libfreetype6-dev fonts-noto-cjk
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
@@ -846,11 +1189,114 @@ jobs:
           test $rc -eq 0
           cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
             -P engine/tests/test_rhi_benchmark_receipt_validate.cmake
+          cmake -DRECEIPT=build/rhi_receipt_steam_deck.json \
+            -P engine/tests/test_evidence_receipt_schema.cmake
 
       - name: Upload receipt
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rhi-benchmark-receipt
+          name: evidence-receipt-benchmark-steam-deck
           path: build/rhi_receipt_steam_deck.json
           if-no-files-found: ignore
+
+  # ---- lane: proton（兼容验证，不计入 Windows D3D12 证据；schedule + 手动触发）----
+  lane-proton:
+    name: "lane: proton compatibility (reference only)"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build under Steam Runtime (pinned)
+        id: steamrt
+        continue-on-error: true   # 参考 lane：失败记 UNAVAILABLE 收据，不红
+        run: |
+          # steamrt sniper 钉 digest（registry.gitlab.steamos.cloud 匿名 token
+          # 实测 2026-10-17：latest 为单架构 docker manifest v2，linux/amd64，
+          # 镜像 built 2026-09-28；取法见 task-7 报告）。
+          docker run --rm -v "$GITHUB_WORKSPACE":/src -w /src \
+            registry.gitlab.steamos.cloud/steamrt/sniper/sdk@sha256:9ae8083ee9ae6298361a62f289e62f0a2b0779d23fc8c276304157f0c06010c5 \
+            bash -c "cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build --parallel && ctest --test-dir build -LE 'graphics|fuzz' --output-on-failure"
+
+      - name: Emit evidence receipt
+        if: always()
+        run: |
+          if [ "${{ steps.steamrt.outcome }}" = "success" ]; then lvl=HEADLESS; else lvl=UNAVAILABLE; fi
+          echo "steamrt outcome=${{ steps.steamrt.outcome }} -> evidence_level=$lvl"
+          cmake -DOUT=receipt.json -DPLATFORM=proton -DBACKEND=vulkan \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="docker steamrt sniper sdk (pinned digest) build + ctest -LE graphics|fuzz" \
+            -DBUILD_CONFIG=Release \
+            -DGPU=none -DDRIVER_VERSION=none -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-receipt-proton
+          path: receipt.json
+
+  ios-metal-build:
+    # Simulator evidence = compile only (marking 1 of 3: lane comment)
+    name: iOS native Metal build-only (Simulator evidence = compile only)
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Pin Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
+
+      - name: Install shader toolchain
+        run: brew install shaderc spirv-cross
+
+      - name: Configure (iOS, metal)
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+
+      - name: Build (iOS Simulator destination)
+        run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
+
+      - name: Verify artifact
+        run: |
+          test -s build-ios/metal_shaders/engine.metallib
+          test -d build-ios/Debug-iphonesimulator/engine_demo.app
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
+
+  clean-room:
+    # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；
+    # task 2 交付，保留原名；不产出 GPU 收据 artifact）。
+    name: Clean-room build (locked deps, fresh export)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
+      # cmake=3.28.3 / libvulkan-dev=1.3.275.0-1build1 / libshaderc-dev=2023.8-1build1。
+      - name: Install pinned toolchain
+        run: |
+          set +e
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8.* \
+            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            tail -40 /tmp/apt-install.log | while IFS= read -r line; do echo "::error::$line"; done
+            echo '## apt pin diagnosis' >> "$GITHUB_STEP_SUMMARY"
+            apt-cache policy cmake "libvulkan-dev" "libshaderc-dev" clang-18 lld-18 >> "$GITHUB_STEP_SUMMARY" 2>&1 || true
+            exit $rc
+          fi
+
+      - name: Clean-room configure/build/test
+        run: |
+          # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
+          # /usr/bin/cmake；前置 /usr/bin 让 cmake=3.28.* 钉版真实生效。
+          export PATH="/usr/bin:$PATH"
+          cmake --version | head -1
+          bash engine/tools/clean_room_build.sh "$GITHUB_WORKSPACE" "$RUNNER_TEMP/clean-room" --backend vulkan
+

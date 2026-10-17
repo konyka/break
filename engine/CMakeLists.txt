@@ -2637,6 +2637,30 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_clean_room_build_contract.cmake)
     set_tests_properties(test_clean_room_build_contract PROPERTIES
         LABELS "headless;platform_contract")
+    # Receipt contract (plan F task 7): generate the sample receipt at
+    # configure time so the schema validator is self-contained in every
+    # build tree (docs/rhi_benchmark_receipt_schema.md).
+    execute_process(
+        COMMAND ${CMAKE_COMMAND}
+            -DOUT=${CMAKE_CURRENT_BINARY_DIR}/sample_receipt.json
+            -DPLATFORM=windows -DBACKEND=vulkan
+            -DEVIDENCE_LEVEL=GPU_RUNTIME -DRUNNER=local
+            "-DCOMMAND_STR=ctest -L graphics"
+            -DGPU=(fill) -DDRIVER_VERSION=(fill) -DCPU=(fill) -DRAM=(fill)
+            -DBUILD_CONFIG=Debug
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/make_evidence_receipt.cmake
+        RESULT_VARIABLE _receipt_sample_rc)
+    if(_receipt_sample_rc EQUAL 0)
+        add_test(NAME test_evidence_receipt_schema
+            COMMAND ${CMAKE_COMMAND}
+                -DRECEIPT=${CMAKE_CURRENT_BINARY_DIR}/sample_receipt.json
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_evidence_receipt_schema.cmake)
+        set_tests_properties(test_evidence_receipt_schema PROPERTIES
+            LABELS "headless;platform_contract")
+    else()
+        message(WARNING "sample receipt generation failed (rc=${_receipt_sample_rc}); "
+                "test_evidence_receipt_schema not registered")
+    endif()
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register

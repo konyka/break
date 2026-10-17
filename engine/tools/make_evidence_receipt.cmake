@@ -1,0 +1,41 @@
+# make_evidence_receipt.cmake — emit a benchmark/evidence receipt JSON.
+# 必填 -D: OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR
+# 可选 -D: GPU DRIVER_VERSION CPU RAM BUILD_COMMIT BUILD_CONFIG
+#        FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99（benchmark lane 必填）
+foreach(v OUT PLATFORM BACKEND EVIDENCE_LEVEL RUNNER COMMAND_STR)
+    if(NOT DEFINED ${v})
+        message(FATAL_ERROR "${v} is required")
+    endif()
+endforeach()
+if(NOT EVIDENCE_LEVEL MATCHES "^(NONE|COMPILED|HEADLESS|NATIVE_SURFACE|GPU_RUNTIME|BENCHMARK_COMPARABLE|UNAVAILABLE)$")
+    message(FATAL_ERROR "invalid evidence_level: ${EVIDENCE_LEVEL}")
+endif()
+string(TIMESTAMP ts "%Y-%m-%dT%H:%M:%SZ" UTC)
+if(NOT DEFINED BUILD_COMMIT)
+    set(BUILD_COMMIT "$ENV{GITHUB_SHA}")
+    if(NOT BUILD_COMMIT)
+        set(BUILD_COMMIT "local")
+    endif()
+endif()
+if(EVIDENCE_LEVEL STREQUAL "BENCHMARK_COMPARABLE")
+    foreach(m FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99)
+        if(NOT DEFINED ${m})
+            message(FATAL_ERROR "benchmark receipt requires ${m}")
+        endif()
+    endforeach()
+    set(metrics "\"metrics\":{\"fps_avg\":${FPS_AVG},\"fps_p1\":${FPS_P1},\"frame_ms_avg\":${FRAME_MS_AVG},\"frame_ms_p99\":${FRAME_MS_P99}},")
+elseif(DEFINED FPS_AVG OR DEFINED FPS_P1 OR DEFINED FRAME_MS_AVG OR DEFINED FRAME_MS_P99)
+    # 非 BENCHMARK_COMPARABLE 等级可附带实测 metrics（如 lavapipe 软渲染上的
+    # GPU_RUNTIME benchmark 收据；evidence_level 不因此升级）；给出任一项则四项俱全。
+    foreach(m FPS_AVG FPS_P1 FRAME_MS_AVG FRAME_MS_P99)
+        if(NOT DEFINED ${m})
+            message(FATAL_ERROR "partial metrics: ${m} required when any metric is given")
+        endif()
+    endforeach()
+    set(metrics "\"metrics\":{\"fps_avg\":${FPS_AVG},\"fps_p1\":${FPS_P1},\"frame_ms_avg\":${FRAME_MS_AVG},\"frame_ms_p99\":${FRAME_MS_P99}},")
+else()
+    set(metrics "")
+endif()
+file(WRITE "${OUT}"
+"{\n  \"schema_version\": 1,\n  \"timestamp\": \"${ts}\",\n  \"platform\": \"${PLATFORM}\",\n  \"os_version\": \"$ENV{RUNNER_OS}\",\n  \"backend\": \"${BACKEND}\",\n  \"gpu\": \"${GPU}\",\n  \"driver_version\": \"${DRIVER_VERSION}\",\n  \"cpu\": \"${CPU}\",\n  \"ram\": \"${RAM}\",\n  \"build_commit\": \"${BUILD_COMMIT}\",\n  \"build_config\": \"${BUILD_CONFIG}\",\n  \"command\": \"${COMMAND_STR}\",\n  ${metrics}\n  \"evidence_level\": \"${EVIDENCE_LEVEL}\",\n  \"runner\": \"${RUNNER}\"\n}\n")
+message(STATUS "receipt written: ${OUT}")

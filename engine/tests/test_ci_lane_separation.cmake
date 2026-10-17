@@ -1,6 +1,8 @@
 # Plan C Task 14: CI lane separation contract (text-level, platform-free).
-# Asserts the macos-metal / ios-metal-build lanes exist alongside
-# macos-vulkan, that the metal lane never mentions MoltenVK, and that the
+# Asserts the lane-gpu-runtime-macos-metal / ios-metal-build lanes exist
+# alongside lane-native-surface-cocoa (plan F task 7 renames: macos-metal ->
+# lane-gpu-runtime-macos-metal, macos-vulkan -> lane-native-surface-cocoa),
+# that the metal lane never mentions MoltenVK, and that the
 # evidence register keeps native-Metal rows free of MoltenVK receipts.
 # Run:
 #   cmake -DCI_YML=<repo>/.github/workflows/ci.yml \
@@ -24,13 +26,13 @@ file(READ "${CI_YML}" ci)
 file(READ "${EVIDENCE_MD}" ev)
 
 # 1. Both lanes exist side by side (metal must not replace the Vulkan lane).
-string(FIND "${ci}" "macos-vulkan:" pos_vk)
+string(FIND "${ci}" "lane-native-surface-cocoa:" pos_vk)
 if(pos_vk EQUAL -1)
-    contract_fail("ci.yml missing macos-vulkan lane")
+    contract_fail("ci.yml missing lane-native-surface-cocoa lane (was macos-vulkan)")
 endif()
-string(FIND "${ci}" "macos-metal:" pos_metal)
+string(FIND "${ci}" "lane-gpu-runtime-macos-metal:" pos_metal)
 if(pos_metal EQUAL -1)
-    contract_fail("ci.yml missing macos-metal lane")
+    contract_fail("ci.yml missing lane-gpu-runtime-macos-metal lane (was macos-metal)")
 endif()
 string(FIND "${ci}" "ios-metal-build:" pos_ios)
 if(pos_ios EQUAL -1)
