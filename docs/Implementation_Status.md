@@ -38,7 +38,8 @@
 - **两个必须踩对的 D3D12 细节**（均由调试层原文定位，非猜测）：①placed footprint 的 `RowPitch` 必须按 `D3D12_TEXTURE_DATA_PITCH_ALIGNMENT`(256) 对齐，4 像素行只有 16 字节，不对齐会被直接拒绝；②`pSrcBox` 不能传 `NULL`（`NULL` 表示复制**整个**源子资源，与小 footprint 尺寸不符），且 `D3D12_BOX` 的 `front`/`back` 必须显式置 0/1，否则是空盒子、静默不拷贝。
 - **验证**：`rhi_swapchain_bench` 新增 `BREAK_BENCH_READBACK=1`，首帧 `frame_end` 后、`present` 前回读 4x4 并断言清屏色。D3D12 back buffer 契约为非 sRGB 的 `B8G8R8A8_UNORM`，故 0.1/0.2/0.3/1.0 必须回读为 RGBA 26/51/76/255（±2 容差覆盖 f32→unorm 取整）。实测 **`clear color verified (25 51 76 255)`**——这条断言同时反证了 D3D12 的清屏路径本身是好的（此前无法证明）。不带该开关时 bench 行为不变。
 - **回归**：D3D12 构建零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
-- **遗留**：调试层仍报一条 severity=1 告警——屏障的 before 状态与调试层跟踪的 COPY_SOURCE 不符。因回读已由像素验证正确、且为告警而非错误，未继续深挖其跨命令列表的状态跟踪细节；后续若该后端引入更复杂的多 pass 路径，应回头用同一条 info queue 诊断复查。
+- **告警根因（已修复，零告警）**：调试层报的 "Before state (0x0 COMMON|PRESENT) ... does not match with the state (0x800 COPY_SOURCE) specified in preceding ResourceBarrier" 是一条**逐字吻合的实锤**——截图代码里存在两条重复的 `PRESENT -> COPY_SOURCE` 屏障：第二条声明 before=PRESENT 时，调试层已被第一条置为 COPY_SOURCE。定位方法（可复用）：挂 `ID3D12InfoQueue` 全文转储（DEBUG 构建下调试层只写 debugger 输出，控制台看不到），再用"删掉回程屏障后 `Present()` 反过来抱怨 back buffer 停在 COPY_SOURCE"证明状态确实被恢复、告警并非无害噪声，最后按偏移数出重复屏障并删除。删除后 `ID3D12InfoQueue` 仅剩 GBV 启动信息，回读断言依旧通过。
+- **顺带收敛**：截图命令列表由"每次调用新建 allocator + list"改为复用代码库既有的 `rhi_d3d12_oneshot_begin/flush` + `ctx->upload_list`（与纹理上传、`rhi_texture_read_pixels` 同一机制），去掉每次截图的 COM 创建样板，执行+信号+等待由 oneshot_flush 统一承担。
 
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 

@@ -3827,8 +3827,6 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
     RHI_D3D12Swapchain *sc;
     ID3D12Resource *backbuffer;
     ID3D12Resource *staging = NULL;
-    ID3D12CommandAllocator *alloc = NULL;
-    ID3D12GraphicsCommandList *list = NULL;
     D3D12_TEXTURE_COPY_LOCATION dst_loc;
     D3D12_TEXTURE_COPY_LOCATION src_loc;
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
@@ -3838,7 +3836,7 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
     usize row_bytes;
     const u8 *src;
     u32 row_i;
-    HRESULT hr;
+    HRESULT hr = S_OK;
 
     if (dev == NULL || pixels == NULL) return false;
     ctx = (RHI_D3D12Context *)dev->backend_data;
@@ -3883,18 +3881,13 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
         return false;
     }
 
-    hr = ID3D12Device_CreateCommandAllocator(ctx->device,
-        D3D12_COMMAND_LIST_TYPE_DIRECT, &IID_ID3D12CommandAllocator,
-        (void **)&alloc);
-    if (FAILED(hr)) {
-        LOG_ERROR("D3D12: screenshot command allocator failed 0x%08lx",
-                  (unsigned long)hr);
+    /* Same reusable one-shot list the texture upload / read_pixels
+     * paths use: the engine declares transitions from CPU-tracked
+     * state rather than assuming an ambient value. */
+    if (FAILED(rhi_d3d12_oneshot_begin(ctx))) {
+        LOG_ERROR("D3D12: screenshot oneshot begin failed");
         goto cleanup;
     }
-    hr = ID3D12Device_CreateCommandList(ctx->device, 0u,
-        D3D12_COMMAND_LIST_TYPE_DIRECT, alloc, NULL,
-        &IID_ID3D12GraphicsCommandList, (void **)&list);
-    if (FAILED(hr)) { LOG_ERROR("D3D12: screenshot cmdlist failed"); goto cleanup; }
 
     ZeroMemory(&dst_loc, sizeof(dst_loc));
     dst_loc.pResource = staging;
@@ -3912,8 +3905,6 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
     src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src_loc.SubresourceIndex = 0u;
 
-    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_PRESENT,
-                         D3D12_RESOURCE_STATE_COPY_SOURCE);
     /* pSrcBox must name the region explicitly: NULL would mean the whole
      * source subresource (the full 640x480), which cannot fit the 4x4
      * placed footprint and fails Close with E_INVALIDARG. */
@@ -3921,21 +3912,21 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels,
     /* front/back select the depth slice; leaving them equal makes an
      * empty box and the copy silently does nothing. */
     box.front = 0; box.back = 1;
-    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_PRESENT,
+    rhi_d3d12_transition(ctx->upload_list, backbuffer, D3D12_RESOURCE_STATE_PRESENT,
                          D3D12_RESOURCE_STATE_COPY_SOURCE);
     /* agility-signature variant: pDst is a copy location (subresource
      * index is implied); DstX/Y/Z are offsets inside that footprint. */
-    ID3D12GraphicsCommandList_CopyTextureRegion(list, &dst_loc, 0u, 0u, 0u,
+    ID3D12GraphicsCommandList_CopyTextureRegion(ctx->upload_list, &dst_loc, 0u, 0u, 0u,
                                                 &src_loc, &box);
-    rhi_d3d12_transition(list, backbuffer, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    rhi_d3d12_transition(ctx->upload_list, backbuffer,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE,
                          D3D12_RESOURCE_STATE_PRESENT);
-    hr = ID3D12GraphicsCommandList_Close(list);
-    if (FAILED(hr)) { LOG_ERROR("D3D12: screenshot close failed"); goto cleanup; }
-
-    {
-        ID3D12CommandList *cmd_lists[1];
-        cmd_lists[0] = (ID3D12CommandList *)list;
-        ID3D12CommandQueue_ExecuteCommandLists(ctx->direct_queue, 1u, cmd_lists);
+    /* flush closes, executes, signals and waits; the copy is queued
+     * behind the frame submit on the same queue, so the staging
+     * buffer is complete when we map it. */
+    if (rhi_d3d12_oneshot_flush(ctx) != RHI_RESULT_OK) {
+        hr = E_FAIL;
+        goto cleanup;
     }
     /* Wait on the queue itself: the copy is the last thing enqueued, so a
      * fresh signal ordered behind it is a full drain for this readback. */
@@ -3964,8 +3955,6 @@ cleanup:
     if (!SUCCEEDED(hr))
         LOG_ERROR("D3D12: screenshot failed, hr=0x%08lx (x=%u y=%u w=%u h=%u backbuffer_index=%u)",
                   (unsigned long)hr, x, y, w, h, sc->current_index);
-    rhi_d3d12_release((IUnknown **)&list);
-    rhi_d3d12_release((IUnknown **)&alloc);
     rhi_d3d12_release((IUnknown **)&staging);
     return SUCCEEDED(hr);
 }
