@@ -118,6 +118,8 @@ The MyUI Vulkan canvas also caches the process-wide instance-extension
 enumeration, so requesting several optional WSI extensions no longer repeats
 the loader query for every name. This is a small CPU/allocation optimization;
 the RHI and MyUI Vulkan instances remain separate ownership domains.
+The RHI likewise enumerates the selected physical device's required optional
+extensions once per initialization and reuses the resulting capability flags.
 
 The interactive `test_vulkan` window also presents a full startup frame
 (clear + test triangle) after the vertex/index buffers are ready, before the
