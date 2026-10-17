@@ -132,6 +132,12 @@ descriptor layouts, pool entries, and compute pipeline sets when the required
 feature/extension is not enabled; RT/DLSS probes remain explicitly skipped
 when those capabilities are absent.
 
+The current multi-backend RHI checkout `f3090b22` was revalidated on Linux with
+fresh OpenGL and Vulkan configurations: OpenGL passed 172/172 non-fuzz tests;
+Vulkan passed `test_vulkan`, RHI capabilities/native/error contracts, backend
+selection, and `test_rt_trace`. Metal and D3D12 remain native-platform lanes;
+Linux does not claim their runtime execution.
+
 DLSS tag evaluation also fails closed unless both an RHI device and a recording
 native command buffer are supplied. The Windows-only Streamline contract test
 covers null, non-recording, and missing-native-handle inputs; Linux correctly
