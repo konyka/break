@@ -5,6 +5,7 @@
 #include <rhi/rhi_result_map.h>
 #include "rhi/rhi_rollout.h"
 #include <platform/platform_vk_surface.h>
+#include <platform/time.h>
 #if defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)
 /* vk_shutdown keeps the ANativeWindow_release half of the reference pair
  * (the acquire moved into platform_vk_surface.c); this header declares it. */
@@ -74,6 +75,12 @@ static bool vk_validation_enabled(void) {
 #else
     return false;
 #endif
+}
+
+static void vk_startup_phase(bool enabled, u64 start_us, const char *name) {
+    if (!enabled) return;
+    LOG_INFO("VK startup phase: %s elapsed_ms=%.3f",
+             name, (double)(time_microseconds() - start_us) / 1000.0);
 }
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL
@@ -1484,6 +1491,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     VKBackend *vk = calloc(1, sizeof(VKBackend));
     if (!vk) return false;
     dev->backend_data = vk;
+    const bool startup_timing = getenv("BREAK_VK_STARTUP_TIMING") != NULL;
+    const u64 startup_t0 = time_microseconds();
 
     /* R430: swap_format is chosen from the surface's supported formats in
      * vk_create_swapchain (after surface + physical device exist). */
@@ -1605,6 +1614,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
+    vk_startup_phase(startup_timing, startup_t0, "vkCreateInstance");
 
     if (validation_on) {
         /* R438: register a debug messenger so validation messages are counted
@@ -1662,6 +1672,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk->native_window = (struct ANativeWindow *)window_native;
 #endif
     }
+    vk_startup_phase(startup_timing, startup_t0, "surface_create");
 
     u32 gpu_count = 0;
     if (vkEnumeratePhysicalDevices(vk->instance, &gpu_count, NULL) != VK_SUCCESS) {
@@ -1669,6 +1680,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
+    vk_startup_phase(startup_timing, startup_t0, "physical_device_count");
     if (gpu_count == 0) { LOG_FATAL("Vulkan: no GPUs"); vk_init_cleanup(dev, vk); return false; }
     VkPhysicalDevice *gpus = calloc(gpu_count, sizeof(VkPhysicalDevice));
     if (!gpus) { LOG_FATAL("VK: OOM GPU list"); vk_init_cleanup(dev, vk); return false; }
@@ -1727,6 +1739,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         if (picked >= 0)
             vk->physical = gpus[picked];
     }
+    vk_startup_phase(startup_timing, startup_t0, "physical_device_probe");
     if (vk->physical == VK_NULL_HANDLE) {
         LOG_FATAL("VK: no suitable Vulkan GPU found");
         free(gpus);
@@ -2055,6 +2068,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
+    vk_startup_phase(startup_timing, startup_t0, "vkCreateDevice");
 
     if (enable_rt_pipeline) {
         dev->capabilities.feature_bits |= RHI_FEATURE_RAY_TRACING_PIPELINE;
@@ -2108,6 +2122,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         vk_init_cleanup(dev, vk);
         return false;
     }
+    vk_startup_phase(startup_timing, startup_t0, "swapchain_create");
     if (!vk_create_render_pass(vk) || !vk_create_depth(vk) ||
         !vk_create_framebuffers(vk)) {
         LOG_FATAL("VK: failed to create swapchain attachments");

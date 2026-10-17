@@ -99,6 +99,15 @@ Reading the lines:
   only after a successful clear/end/present sequence. The unavoidable Vulkan
   loader/driver initialization interval therefore no longer appears as a
   black render window; the first visible frame is already a valid clear frame.
+- To split the remaining RHI startup cost, set
+  `BREAK_VK_STARTUP_TIMING=1`; the diagnostic prints timings for instance,
+  surface, physical-device probing, logical-device, and swapchain creation.
+  On the current Linux NVK host, `vkCreateInstance` is the dominant phase
+  (~3.17 s) because the loader probes an unusable `dzn` ICD before NVK.
+- Mesa/NVK users may optionally select the matching loader driver with
+  `VK_LOADER_DRIVERS_SELECT='*nouveau*'`; this reduced the local instance
+  phase to ~1.91 s, but it is intentionally not set by the engine because
+  ICD names and loader behavior are platform-specific.
 
 The interactive `test_vulkan` window also presents a full startup frame
 (clear + test triangle) after the vertex/index buffers are ready, before the
