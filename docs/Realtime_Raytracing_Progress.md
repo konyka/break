@@ -84,14 +84,21 @@ Reading the lines:
 - The timings are phase boundaries (monotonic host clock), not GPU frame
   times. On a NVK/nouveau host with the validation gate enabled,
   `rhi_device_create` dominates (~3.3 s); the clear present itself is
-  sub-millisecond.
+  sub-millisecond. `test_vulkan` now leaves validation off for interactive
+  launches, so the window is not held black while the driver enumerates the
+  validation layer. CTest sets `BREAK_VK_VALIDATION=1` to retain the full
+  validation gate.
 - If the `startup_clear_present` line is absent, inspect `begin_failed=`,
   surface/swapchain creation, or an init failure — a missing line is a
   diagnostic signal, not a silent pass.
-- Eliminating the remaining black window requires deferring platform window
-  mapping until after device creation (a platform API change tracked as
-  follow-up); the validation gate and driver enumeration cost are inherent
-  to this build configuration.
+- For a validation-layer startup diagnostic, run
+  `BREAK_VK_VALIDATION=1 ctest --test-dir build-vk -R '^test_vulkan$' -V`.
+  The validation-layer enumeration cost is intentionally isolated to that
+  diagnostic path rather than the normal interactive render startup.
+- `test_vulkan` hides the platform window immediately after platform creation
+  and shows it after the first clear/present. The unavoidable Vulkan
+  loader/driver initialization interval therefore no longer appears as a
+  black render window; the first visible frame is already a valid clear frame.
 
 The interactive `test_vulkan` window also presents a full startup frame
 (clear + test triangle) after the vertex/index buffers are ready, before the
