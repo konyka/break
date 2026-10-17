@@ -251,3 +251,15 @@
 |---|---|---|---|---|
 | 2026-10-17 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal | `cmake -S engine -B engine/build-macos-current -DENGINE_RHI_BACKEND=metal -DCMAKE_BUILD_TYPE=Debug && cmake --build engine/build-macos-current && ctest --test-dir engine/build-macos-current -j4`（@579928cc + 本次修复） | 178/178 通过（`test_d3d12_dependency_gate` 平台跳过）；`-L graphics` 5 项全绿（`test_rhi_metal_device_contract/frame_lifecycle/resources`、`test_macos_metal_consumer_smoke`、`rhi_swapchain_bench`）。修复：① `test_vulkan` 仅在 effective backend 为 vulkan/opengl 时注册（此前在 metal/d3d12 构建下请求被拒的 OpenGL，即上方登记的既存基线失败；D3D12 构建同样不再注册）② `rhi_swapchain_bench` 新增 Metal 分支（此前走 GL 分支返回 77 跳过），收据 backend=metal、fps_avg≈120（受 vsync 限制，合成 harness，不作 benchmark-comparable 证据） |
 | 2026-10-17 | 同上 | Apple M2 / MoltenVK | `cmake -S engine -B engine/build-macos && cmake --build engine/build-macos && ctest --test-dir engine/build-macos -j4` | 176/176 通过（D3D12 门平台跳过），`test_vulkan` 与 `rhi_swapchain_bench` 均通过 |
+
+## 收据追加（Windows 本机复核 @b8308c8e，2026-10-17）
+
+macOS 侧 8 提交（`3efd4df7..b8308c8e`：Metal compiled backend 接线、test_vulkan 注册门控、macOS 后端链接修复等）拉取后的 Windows 三 lane 复核；**零新问题，无需修复**。
+
+| lane | 命令 | 结果 |
+|---|---|---|
+| build-vk（clang/lld，ENGINE_VULKAN=ON） | `cmake --build build-vk --parallel && ctest --test-dir build-vk` | 构建 exit 0（仅既有 `lld-link: --gc-sections` 链接提示，已登记）；**180/181**，唯一失败 `test_vulkan` = 既文本机漂移基线（goldens MAE 28.75/13.54、max 126/79，CI 为 golden 权威）+ 本轮 UNIFIED GPU CULL 为 §7 Hi-Z 偶发（已登记环境项）；`VALIDATION GATE: 0` ✓；其余全部 PASSED（含 BUFFER/TEXTURE 契约、绑定契约、token gate、release_gate） |
+| build-gl（clang，WGL） | `cmake -S engine -B build-gl -G Ninja -DCMAKE_BUILD_TYPE=Debug && cmake --build build-gl --parallel && ctest --test-dir build-gl` | 构建 0 警告；**178/178 = 100% 通过**（graphics 3 项含 `test_vulkan` goldens 通过；release_gate 1/1） |
+| build-win-d3d12-vs（MSVC VS 18 2026，D3D12） | `cmake -S engine -B build-win-d3d12-vs -G "Visual Studio 18 2026" -DENGINE_RHI_BACKEND=d3d12 && cmake --build build-win-d3d12-vs --config Debug --parallel && ctest -C Debug -L headless` | configure/build 成功；headless **27/27 = 100%**；全量构建 37 行 warning/error 均**先在**（myui_core C4132/C4456/C4090 系 + `test_platform_text.c` C4310，涉事文件自 2026-09-07 未改动，与本批提交无关） |
+
+附带：计划 F §6.5 gate 正则误报修正（`rhi_gl` 命中良性 `break_rhi_glyph_t` → 收紧 `rhi_gl[.]c`，commit `2c9f1a3b`）；修正后 §6 未满足项仅剩 iOS 真机收据（§6.2）、migration notice（§6.9，Task 6 自身交付物）、负责人 signoff（§6.11）。
