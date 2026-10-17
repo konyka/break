@@ -370,15 +370,18 @@ static void metal_end_encoders(RHICmdBuffer *cmd) {
     metal_end_compute_encoder(cmd);
 }
 
+RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
+                              void *display_native, u32 w, u32 h);
+
 RHIDevice *rhi_device_create_compiled(void *window_native,
                                       void *surface_native,
                                       void *display_native, u32 w, u32 h) {
-    /* 计划 E Task 2：编译期单后端入口——Metal lane 的 caps/shader_variant
-     * 契约未落地（_vk corpus 映射待后续计划），fail-closed 返回 NULL。
-     * 双句柄（rhi.h）均不消费。 */
-    (void)window_native; (void)surface_native; (void)display_native;
-    (void)w; (void)h;
-    return NULL;
+    /* Cocoa exposes the CAMetalLayer through both native handles.  Keep the
+     * compiled-backend entry point aligned with the explicit Metal selector
+     * so consumers cannot accidentally fall through to the MoltenVK path. */
+    (void)surface_native;
+    return rhi_device_create(RHI_BACKEND_METAL, window_native,
+                              display_native, w, h);
 }
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
@@ -482,6 +485,10 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
     dev->width = w;
     dev->height = h;
     dev->capabilities.backend = RHI_BACKEND_METAL;
+    /* Metal consumes the Vulkan-layout GLSL corpus after the offline
+     * SPIR-V/MSL conversion.  Keep renderer source selection in sync with
+     * the manifest hashes generated at build time. */
+    dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
     dev->capabilities.color_sample_counts = color_counts;
     dev->capabilities.depth_sample_counts = depth_counts;
     /* CAMetalLayer drawables cannot be multisampled; MSAA is only possible

@@ -401,10 +401,9 @@ endif()
 # renderer shader-file #ifdefs so the Metal lane read the *_vk corpus
 # (its offline manifest is keyed on those bytes). Plan E deleted every
 # consumer — it is now a no-op retained only for build-compat. Shader
-# selection follows caps.shader_variant instead (rhi_metal.m leaves it
-# zeroed → GLSL paths; harmless today only because Metal's
-# rhi_device_create_compiled is a fail-closed stub — a Metal revival
-# must set shader_variant rather than rely on this knob).
+# selection follows caps.shader_variant. The native Metal backend consumes
+# the offline MSL manifest generated from the Vulkan-layout GLSL corpus, so
+# its capabilities select that source set.
 if(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     target_compile_definitions(engine PUBLIC ENGINE_SHADER_CORPUS_VK=1)
 endif()

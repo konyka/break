@@ -370,8 +370,8 @@ RHIDevice *rhi_device_create_ex(RHIBackend backend, void *window_native,
 /* 编译期单后端的设备创建入口(Post-计划 A:enum 参数退役为内部细节)。
  * 双句柄:各编译后端按自身消费类型选取——VK 取 surface_native(Wayland
  * 上为 wl_surface*),GL 取 window_native(Wayland 上为 wl_egl_window*);
- * Metal 目前 fail-closed,转发落地时应取 window_native(Cocoa 两 getter
- * 同值);其余平台两 getter 返回相同句柄。 */
+ * Metal 取 window_native(Cocoa 两 getter 同值);其余平台两 getter 返回
+ * 相同句柄。 */
 RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
                                       void *display_native, u32 w, u32 h);
 void       rhi_device_destroy(RHIDevice *dev);

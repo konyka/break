@@ -442,8 +442,13 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
         input_init(&p->input);
 
+#if defined(ENGINE_RHI_BACKEND_METAL)
+        LOG_INFO("Platform initialized (Cocoa/Metal): %ux%u \"%s\"",
+                 cfg->width, cfg->height, cfg->title);
+#else
         LOG_INFO("Platform initialized (Cocoa/MoltenVK): %ux%u \"%s\"",
                  cfg->width, cfg->height, cfg->title);
+#endif
         return p;
     }
 }

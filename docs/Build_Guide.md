@@ -545,14 +545,20 @@ MoltenVK ICD 与验证层 manifest 按 2.1 节 macOS 备注安装）全量构建
 通过——Cocoa runtime 契约 `3/3`、无头套件 `127/127`、`graphics`/`fuzz` 标记 `6/6`
 （`test_vulkan` 进程内验证门在真实 GPU 上经 MoltenVK 通过）。
 
+本机 Metal 复核（2026-10-17）：`ENGINE_RHI_BACKEND=metal` 的 Ninja Debug 构建完成，
+离线 shader 管线生成 109 个 metallib 条目；macOS 平台/RHI 契约及无头测试 `168/168`
+通过（D3D12 依赖门按平台跳过），Metal 设备、帧生命周期、资源和 consumer smoke
+均通过。编译期 Metal 入口直接创建 `CAMetalLayer` 对应的 Metal 设备，并将
+`shader_variant` 固定为 Vulkan-layout GLSL，以匹配离线 MSL manifest。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
-Metal、D3D12 迁移的共同合同，不代表尚未实现的原生后端已经可用。
+Metal、D3D12 后端共用的生命周期合同。
 平台兼容描述符还区分当前 native graphics baseline 与未来 `target_graphics_api`；目标
 API 只是迁移计划元数据，不能替代 Metal/D3D12 的实际编译、native-surface 或 GPU-runtime
 证据。
 `ENGINE_RHI_BACKEND_EFFECTIVE` 和 `ENGINE_RHI_BACKEND_*` 编译宏只描述当前已经实现的
-OpenGL/Vulkan/D3D12（仅 Windows）构建选择；它们不会因为平台 target metadata 自动切换到未实现的 Metal。
+OpenGL/Vulkan/Metal/D3D12（仅 Windows）构建选择；平台 target metadata 不会自动改写选择。
 
 Windows D3D12 contract-first gate（2026-10-13）已确认 Windows SDK 10.0.26100
 头文件/库和 Vulkan SDK 内的 `dxc.exe` 可见，但当前环境没有独立的 `cl`/PIX PATH 证据，
