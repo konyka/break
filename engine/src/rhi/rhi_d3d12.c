@@ -965,6 +965,8 @@ void rhi_d3d12_swapchain_destroy(RHI_D3D12Context *context,
     (void)context;
 }
 
+static void rhi_d3d12_set_full_target_viewport(ID3D12GraphicsCommandList *list,
+                                               u32 w, u32 h);
 static void rhi_d3d12_backbuffer_barrier(RHI_D3D12Swapchain *sc,
                                          ID3D12GraphicsCommandList *list,
                                          D3D12_RESOURCE_STATES before,
@@ -1236,6 +1238,8 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
                                    sc->rtv_slots[sc->current_index]);
     ID3D12GraphicsCommandList_OMSetRenderTargets(ctx->command_lists[slot],
                                                  1u, &rtv, FALSE, NULL);
+    rhi_d3d12_set_full_target_viewport(ctx->command_lists[slot],
+                                       sc->width, sc->height);
     ctx->bound_rtvs[0] = rtv;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
@@ -3157,6 +3161,29 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
     vp.MaxDepth = max_depth;
     ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
 }
+/* Full-target viewport + scissor. D3D12's implicit default is 1280x720, so
+ * without this every draw is clipped to whatever sliver of the actual
+ * target the default viewport happens to cover (clears are target-wide and
+ * so look fine, which hides it). Uses the RHI's bottom-left convention -
+ * TopLeftY = y + h, negative height - so NDC +Y lands on the top row. */
+static void rhi_d3d12_set_full_target_viewport(ID3D12GraphicsCommandList *list,
+                                               u32 w, u32 h) {
+    D3D12_VIEWPORT vp;
+    D3D12_RECT rect;
+    if (list == NULL || w == 0u || h == 0u) return;
+    vp.TopLeftX = 0.0f;
+    vp.TopLeftY = (f32)h;
+    vp.Width = (f32)w;
+    vp.Height = -(f32)h;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    rect.left = 0;
+    rect.top = 0;
+    rect.right = (LONG)w;
+    rect.bottom = (LONG)h;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &rect);
+}
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
     ID3D12GraphicsCommandList *list = rhi_d3d12_cmd_list(ctx);
@@ -3841,6 +3868,7 @@ static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
     rtv = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, fd->rtv_slot);
     dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot);
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, TRUE, &dsv);
+    rhi_d3d12_set_full_target_viewport(list, fd->width, fd->height);
     ctx->bound_rtvs[0] = rtv;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv = dsv;

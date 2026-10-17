@@ -57,6 +57,15 @@
 - **回归**：D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
 - **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_cmd_bind_texture`（SRV 描述符 + 描述符表绑定，纹理化渲染的总闸）、`rhi_cmd_bind_uniform_buffer`、`rhi_cmd_begin/end_render_pass` 仍是桩/no-op。顺序约束：纹理绑定补齐后才轮到渲染管线 sidecar。
 
+## 本轮更新：R715 七记 — **D3D12 从未设置 viewport**（该后端上从未正确光栅化过任何几何）+ `probe_hlsl` 最小探针 sidecar 与像素用例
+
+- **缺口（潜伏级）**：整条 D3D12 帧路径（`rhi_frame_begin`、`rhi_offscreen_fbo_bind`）从不调用 `RSSetViewports`。D3D12 的隐式默认 viewport 是 1280x720，因此任何绘制都只落在"默认 viewport 与实际目标重叠的那条极窄边缘"上——8x8 的 FBO 上几乎一个片元都产生不了。**清理是全目标的、不受 viewport 限制**，所以此前所有"清屏回读正确"的用例都看不出问题，几何却一次都没画出来过。
+- **定位方法（可复用）**：先用 myui sidecar 的纹理化绘制测，失败且回读等于清屏色；再**去掉纹理绑定**复测——若绘制本身正常，采样失败会输出黑色（该管线未开混合），实测**仍是清屏色**，据此把嫌疑从"纹理绑定"收敛到"绘制/光栅化本身"。最后用一个**不含任何 `register(...)`、不含 uniform block、不含顶点缓冲**的 `probe_hlsl` sidecar（仅 `SV_VertexID` 生成全屏三角形、片元输出纯绿）做二分，直接指向 viewport。
+- **修复**：`rhi_frame_begin` 与 FBO `bind` 在设定渲染目标后调用新的 `rhi_d3d12_set_full_target_viewport(list, w, h)`，按 RHI 的 bottom-left 约定（`TopLeftY = h`、负高度）设置 viewport 与全目标 scissor。
+- **验证**：`probe_triangle_rasterises_into_offscreen_fbo`——`probe_hlsl` 全屏绿色三角形画进 8x8 FBO，回读断言全部 64 个像素为绿。修复前失败（等于清屏色），修复后通过。回归：D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
+- **新增资产**：`engine/shaders/probe_hlsl.{vert,frag}`——刻意无绑定、无 uniform 的最小光栅探针；CMake 的 `*_hlsl.*` glob 会自动 dxc 出 DXIL，无需改构建脚本。
+- **后续**：viewport 通了之后，push constants 与纹理绑定仍待验证（上一轮为此写的纹理用例已被回滚，因为它当时红）。建议下一步用同一个 probe 套路逐项加回：先 push constants（identity 变换 + 顶点缓冲），再加 SRV/描述符表。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。
