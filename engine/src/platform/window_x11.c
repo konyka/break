@@ -991,8 +991,13 @@ static void x11_collect_text(Platform *p, XKeyEvent *key) {
 }
 
 PlatformEventResult platform_poll(Platform *p) {
+    bool relative_motion_seen = false;
+    i32 relative_prev_x;
+    i32 relative_prev_y;
     if (p == NULL) return PLATFORM_EVENT_QUIT;
     input_new_frame(&p->input);
+    relative_prev_x = (i32)(p->width / 2);
+    relative_prev_y = (i32)(p->height / 2);
 
     while (XPending(p->display) > 0) {
         XEvent ev;
@@ -1088,15 +1093,15 @@ PlatformEventResult platform_poll(Platform *p) {
         }
         case MotionNotify: {
             if (p->mouse_relative) {
-                i32 cx = (i32)(p->width / 2);
-                i32 cy = (i32)(p->height / 2);
-                i32 dx = ev.xmotion.x - cx;
-                i32 dy = ev.xmotion.y - cy;
+                i32 dx = ev.xmotion.x - relative_prev_x;
+                i32 dy = ev.xmotion.y - relative_prev_y;
                 if (dx != 0 || dy != 0) {
                     p->input.mouse_dx += (f32)dx;
                     p->input.mouse_dy += (f32)dy;
-                    XWarpPointer(p->display, None, p->window, 0, 0, 0, 0, cx, cy);
+                    relative_motion_seen = true;
                 }
+                relative_prev_x = ev.xmotion.x;
+                relative_prev_y = ev.xmotion.y;
             } else {
                 input_set_mouse(&p->input, (f32)ev.xmotion.x, (f32)ev.xmotion.y);
             }
@@ -1150,6 +1155,14 @@ PlatformEventResult platform_poll(Platform *p) {
             if (p->xic != NULL && p->ime_enabled) XSetICFocus(p->xic);
             break;
         }
+    }
+
+    /* Recenter once per poll instead of once per MotionNotify. This avoids
+     * multiplying synthetic X11 events during high-rate mouse movement. */
+    if (p->mouse_relative && relative_motion_seen) {
+        XWarpPointer(p->display, None, p->window, 0, 0, 0, 0,
+                     (i32)(p->width / 2), (i32)(p->height / 2));
+        XFlush(p->display);
     }
 
     /* Pump gamepads (evdev) into the shared input state. */
