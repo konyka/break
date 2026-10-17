@@ -234,3 +234,13 @@
 | 6 OpenGL 删除 | **BLOCKED**（闸门未全开：iOS 无真机 UNAVAILABLE；规格 OpenGL 删除条件未全部满足） | —（兼容期交付见 Task 5） | 解锁条件见上方「计划 F 前置确认」节；文档口径 = 兼容期保留（deprecated，v2.0.0 移除） |
 | 7 CI lane 收尾分离 | 六类 lane + 收据生成器/校验器/注册（`make_evidence_receipt.cmake`、`test_evidence_receipt_schema.cmake`）+ proton digest 钉版 | 05fca358、279c26a3、6b609142、75dd942a、eb3e94b5、b00672e7、3c92a06b | `test_evidence_receipt_schema`、`test_ci_lane_separation`（锚点迁移）；全绿 run 38990768014 |
 | 8 文档全集收尾 | README 后端矩阵终态、Build_Guide 锁定依赖节 + 六 lane 矩阵、Architecture_Overview 链接模型终态、Vulkan/Metal-D3D12 矩阵充实、本台账 Task 1-8 索引 | （本 commit） | 本表 + `test_rhi_evidence_register` 全行完整性 |
+
+## 计划 F 完成记录（2026-10-17）
+
+**状态：Task 0/1/2/3/4/5/7/8/9/10 全部完成；Task 6（OpenGL 删除）保持 BLOCKED。**
+
+- 最终 CI 收据：run [38992609402](https://github.com/konyka/break/actions/runs/38992609402)（CI，17 success/3 skipped 设计内）+ [38992727134](https://github.com/konyka/break/actions/runs/38992727134)（proton-d3d12），15 个 `evidence-receipt-*` artifact（Task 8 已逐名入册）。
+- 本机终验（@baa5d021）：build-gate headless **170/170**、build-vk headless **171/171**、release_gate 1/1、clean-room（git archive + 锁定依赖物化 + vulkan-only 无 GL 断言）`CLEAN-ROOM OK`；`git diff --check` 干净、无未提交改动。
+- 版本：`project(PureCEngine VERSION 1.9.0)`（兼容期）；**v2.0.0 保留给 OpenGL 删除 release**。
+- Task 6 解锁条件（重申）：① iOS × Metal GPU_RUNTIME 真机收据（无设备，UNAVAILABLE）② 规格 §6 十一条删除条件全清单复核（Android/Linux/Steam Vulkan、macOS/iOS Metal、Windows D3D12 认证；renderer/UI 无 GL 依赖；无生产 consumer；头文件/GLAD/GL 库/GL shader 路径/GL runtime 测试从 release target 消失；禁用 GL 后 clean-room 成功；consumer link/startup；migration notice；可回滚版本；产品负责人书面确认）——届时 gate 脚本逐条可执行化（计划 F Task 6 brief）。
+- 签名 tag 与 GitHub Release：**由 maintainer 执行**（本机无 GPG 私钥，rollback-drill 的 `git tag -v` 需签名 tag 存在；runbook §5.1 已记录流程）。
