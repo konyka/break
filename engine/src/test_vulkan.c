@@ -6002,7 +6002,20 @@ int main(int argc, char **argv) {
     rhi_vk_validation_set_enabled(true);
 #endif
 
-    EngineConfig cfg = { .width = 800, .height = 600, .title = TV_WINDOW_TITLE, .target_fps = 60.0 };
+    f64 test_fps = 0.0;
+    const char *test_fps_env = getenv("BREAK_TEST_FPS");
+    if (test_fps_env != NULL && *test_fps_env != '\0') {
+        char *end = NULL;
+        test_fps = strtod(test_fps_env, &end);
+        if (end == test_fps_env || *end != '\0' || !isfinite(test_fps) ||
+            test_fps < 0.0) {
+            test_fps = 0.0;
+        }
+    }
+    EngineConfig cfg = { .width = 800, .height = 600, .title = TV_WINDOW_TITLE,
+                         .target_fps = test_fps };
+    LOG_INFO("Input pacing: target_fps=%.0f (BREAK_TEST_FPS overrides; 0=uncapped)",
+             test_fps);
     Engine engine = {0};
     u64 startup_t0 = time_microseconds();
     u64 startup_prev = startup_t0;

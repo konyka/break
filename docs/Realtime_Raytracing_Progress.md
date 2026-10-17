@@ -98,6 +98,12 @@ The interactive `test_vulkan` window also presents a full startup frame
 long synchronous validation suite begins. The later rotatable camera loop
 and validation ordering are unchanged.
 
+The interactive camera loop defaults to uncapped CPU pacing (`target_fps=0`)
+with Vulkan vsync disabled, reducing mouse-to-render latency. Set
+`BREAK_TEST_FPS=60` (or another non-negative value) when a fixed-rate
+regression run is required; the startup `PHASE:` timing lines report the
+selected pacing separately from GPU work.
+
 On the current RHI split checkout `2c46267`, a fresh OpenGL build passed
 172/172 non-fuzz tests (the D3D12 dependency gate is a platform skip). A
 fresh Vulkan build passed `test_vulkan`, RHI capability/native/error contracts,
