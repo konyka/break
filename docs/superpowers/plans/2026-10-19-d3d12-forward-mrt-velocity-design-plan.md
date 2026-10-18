@@ -274,3 +274,28 @@ is declared in all four, and only the MRT pair emits `SV_Target1`.
 clipboard in this session) on unmodified `HEAD`. The GL/Vulkan golden
 DRIFTs (15.60/1.15 and 28.75/13.54 against a MAE<=8 tolerance) and the GL
 `MATERIAL ARRAY` quadrant vertical flip are also baseline.
+
+### The gate口径 hid the one place this could break
+
+The standing gate for this repo is `ctest -LE "graphics|fuzz"`. That
+excludes the `graphics` label — and `test_d3d12_warp_runtime` carries it,
+along with the D3D12 swapchain/pipeline/shader/DXR contracts. The first
+commit of R600 passed every tree's gate while breaking two tests inside
+that lane:
+
+- `blinn_phong_sidecar_resolves_offsets_and_shades_red` pinned
+  `u_camera_pos -> 240` and got `-1`;
+- `material_binder_puts_albedo_on_t0_and_falls_back_to_white` asserted
+  `loc[i] >= 0` for the same seven names.
+
+Both are now on the R600 contract: `u_camera_pos` must resolve **-1**, and
+the camera reaches the shader through `warp_forward_temporal_create` +
+`rhi_cmd_bind_uniform_buffer(cmd, ubo, 1)`. The D3D12 graphics lane is
+**8/8**. Run it explicitly — `ctest -L graphics` — not only the default
+gate.
+
+The reverse check on that bind is the useful part: deleting the single
+`rhi_cmd_bind_uniform_buffer` line turns the WARP suite red, so the pixel
+assertions really are reading the camera out of the CBV. That is the
+mechanism step 5 needs; what it does *not* yet cover is the RT1 velocity
+attachment, which still has no pixel proof.

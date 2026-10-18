@@ -6,6 +6,40 @@
  * upgrade the evidence level past GPU-runtime. */
 static RHIDevice *g_dev;
 
+/* R600: u_camera_pos is no longer a push member — it rides the temporal CBV
+ * at register b1, byte-identical to main.c's ForwardTemporalUbo and to the
+ * GLSL ForwardTemporal block. Every blinn_phong draw here must publish it
+ * through rhi_cmd_bind_uniform_buffer(cmd, ubo, 1); writing it as a uniform
+ * would be a no-op now that resolve() returns -1, and a silently zeroed
+ * camera is the exact failure this layout exists to make impossible. */
+typedef struct {
+    float cam_pos[3];
+    float cam_pad;
+    float prev_vp[16];
+    float prev_model[16];
+} WARPForwardTemporal;
+
+static RHIBuffer warp_forward_temporal_create(RHIDevice *dev, float x, float y, float z)
+{
+    WARPForwardTemporal t;
+    RHIBufferDesc desc;
+    RHIBuffer ubo;
+    memset(&t, 0, sizeof(t));
+    t.cam_pos[0] = x; t.cam_pos[1] = y; t.cam_pos[2] = z;
+    /* Identity prev_vp / prev_model: the non-MRT sidecar never reads them,
+     * but the CBV is sized by the block, so it must carry them anyway. */
+    t.prev_vp[0] = 1.0f; t.prev_vp[5] = 1.0f;
+    t.prev_vp[10] = 1.0f; t.prev_vp[15] = 1.0f;
+    t.prev_model[0] = 1.0f; t.prev_model[5] = 1.0f;
+    t.prev_model[10] = 1.0f; t.prev_model[15] = 1.0f;
+    memset(&desc, 0, sizeof(desc));
+    desc.usage = RHI_BUFFER_USAGE_UNIFORM;
+    desc.size = sizeof(t);
+    desc.initial_data = &t;
+    ubo = rhi_buffer_create(dev, &desc);
+    return ubo;
+}
+
 TEST(warp_device_identity_is_honest) {
     RHIDeviceInfo info;
     ASSERT_TRUE(rhi_device_get_info(g_dev, &info));
@@ -487,13 +521,18 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     RHICmdBuffer *cmd;
     unsigned char px[8 * 8 * 4];
     /* The contract: the engine resolves these names for blinn_phong on every
-     * backend, and the Vulkan twin test pins the same seven numbers. */
+     * backend, and the Vulkan twin test pins the same numbers. R600:
+     * u_camera_pos is NO LONGER one of them — it moved into the temporal
+     * CBV at b1, so it must resolve -1. Pinning -1 (rather than dropping
+     * the name) is the point: a stale 240 here is how the camera would
+     * silently vanish from the push block again. */
     static const char *const names[7] = {
         "u_model", "u_view", "u_proj", "u_light_dir",
         "u_light_color", "u_ambient", "u_camera_pos"
     };
-    static const i32 expected[7] = { 0, 64, 128, 192, 208, 224, 240 };
+    static const i32 expected[7] = { 0, 64, 128, 192, 208, 224, -1 };
     i32 loc[7];
+    RHIBuffer temporal_ubo;
     int i;
 
     /* Form A only: the GLSL paths the engine itself passes, mapped onto the
@@ -546,6 +585,8 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     bdesc.initial_data = verts;
     vbo = rhi_buffer_create(g_dev, &bdesc);
     ASSERT_TRUE(rhi_handle_valid(vbo));
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
 
     /* Draw 1: red albedo, white ambient -> every pixel is exactly the albedo. */
     cmd = rhi_frame_begin(g_dev);
@@ -558,7 +599,7 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f); /* u_light_dir */
     rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f); /* u_light_color */
     rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f); /* u_ambient */
-    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
     rhi_cmd_bind_texture(cmd, red_tex, (RHISampler){0}, 0u);
     rhi_cmd_draw(cmd, 3u, 1u);
@@ -593,7 +634,7 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f,  1.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[5],  0.0f,  1.0f,  0.0f); /* green ambient */
-    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
     rhi_cmd_bind_texture(cmd, white_tex, (RHISampler){0}, 0u);
     rhi_cmd_draw(cmd, 3u, 1u);
@@ -614,6 +655,7 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     rhi_texture_destroy(g_dev, red_tex);
     rhi_texture_destroy(g_dev, white_tex);
     rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
     rhi_pipeline_destroy(g_dev, pipe);
     rhi_shader_destroy(g_dev, vs);
     rhi_shader_destroy(g_dev, fs);
@@ -689,6 +731,7 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     RHITexture cubes[4] = { RHI_HANDLE_NULL, RHI_HANDLE_NULL,
                             RHI_HANDLE_NULL, RHI_HANDLE_NULL };
     i32 loc[7];
+    RHIBuffer temporal_ubo;
     int i;
 
     vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
@@ -720,9 +763,16 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     pipe = rhi_pipeline_create(g_dev, &pdesc);
     ASSERT_TRUE(rhi_handle_valid(pipe));
 
+    /* R600: u_camera_pos is the one name that must NOT resolve — it lives
+     * in the temporal CBV now. Asserting -1 is what keeps the push block
+     * from quietly growing a camera back into the 248-byte tail. */
     for (i = 0; i < 7; ++i) {
         loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
-        ASSERT_TRUE(loc[i] >= 0);
+        if (strcmp(names[i], "u_camera_pos") == 0) {
+            ASSERT_EQ(loc[i], -1);
+        } else {
+            ASSERT_TRUE(loc[i] >= 0);
+        }
     }
 
     memset(&bdesc, 0, sizeof(bdesc));
@@ -731,6 +781,8 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     bdesc.initial_data = verts;
     vbo = rhi_buffer_create(g_dev, &bdesc);
     ASSERT_TRUE(rhi_handle_valid(vbo));
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
 
     /* Draw 1: red albedo on unit 0, every other material map invalid. */
     cmd = rhi_frame_begin(g_dev);
@@ -743,7 +795,7 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
-    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
     rhi_cmd_bind_material_textures(cmd, red_tex,
                                    RHI_HANDLE_NULL, RHI_HANDLE_NULL,
@@ -777,7 +829,7 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
-    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
     rhi_cmd_bind_material_textures(cmd, RHI_HANDLE_NULL,
                                    RHI_HANDLE_NULL, RHI_HANDLE_NULL,
@@ -812,7 +864,7 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
     rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
-    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
     rhi_cmd_bind_material_textures_ibl(cmd, red_tex,
                                        RHI_HANDLE_NULL, RHI_HANDLE_NULL,
@@ -838,6 +890,7 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     rhi_offscreen_fbo_destroy(g_dev, &fbo);
     rhi_texture_destroy(g_dev, red_tex);
     rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
     rhi_pipeline_destroy(g_dev, pipe);
     rhi_shader_destroy(g_dev, vs);
     rhi_shader_destroy(g_dev, fs);
