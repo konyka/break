@@ -479,6 +479,14 @@ bool        rhi_texture_desc_validate(const RHITextureDesc *desc);
 RHIBuffer   rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc);
 void        rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf);
 RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment);
+/* Path-based sibling of rhi_shader_create. GL and Vulkan read the file at
+ * `path` and compile its GLSL exactly as the text entry point does. D3D12
+ * has no GLSL path: it maps `path` onto the hand-authored sidecar named
+ * <base>_hlsl.<stage> in engine/shaders (base = final path component with
+ * its extension stripped; stage from `is_fragment`), then loads the HLSL
+ * source plus its precompiled DXIL. A path that already names the sidecar
+ * resolves to itself. */
+RHIShader   rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment);
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
 void        rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe);
@@ -846,6 +854,9 @@ void               rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w,
 
 /* ---- Compute shader ---- */
 RHIShader   rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len);
+/* Path-based sibling of rhi_shader_create_compute; same convention as
+ * rhi_shader_create_path, with the compute sidecar stage (.comp). */
+RHIShader   rhi_shader_create_compute_path(RHIDevice *dev, const char *path);
 void        rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z);
 void        rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding);
 /* Bind one acceleration structure to a compute pipeline's dedicated ray-query

@@ -3473,6 +3473,18 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     rhi_free_slot(dev, shader);
 }
 
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create(dev, source, len, is_fragment);
+    free(source);
+    return sh;
+}
+
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
     if (dev == NULL || source == NULL || len == 0u) return RHI_HANDLE_NULL;
     VKBackend *vk = vk_backend(dev);
@@ -3515,6 +3527,18 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize le
     dev->slots[idx].ptr = sd;
     dev->slots[idx].type = RHI_RES_SHADER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create_compute(dev, source, len);
+    free(source);
+    return sh;
 }
 
 static VkVertexInputBindingDescription vk_binding(u32 stride) {

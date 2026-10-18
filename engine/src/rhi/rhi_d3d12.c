@@ -2147,6 +2147,60 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
                                     usize len) {
     return rhi_d3d12_shader_alloc(dev, source, len, 0u);
 }
+
+/* Sidecar name derivation for rhi_shader_create_path: drop the directory and
+ * the extension, append "_hlsl" unless the base already carries it (so a path
+ * naming the sidecar resolves to itself), then add the stage suffix. Returns 0
+ * when the path yields no usable base or the name would be truncated — the
+ * caller fails closed rather than resolving a different file. */
+static int rhi_d3d12_shader_sidecar_name(const char *path, const char *stage,
+                                         char *out, usize out_cap) {
+    const char *base;
+    const char *p;
+    const char *ext = NULL;
+    usize base_len;
+    int written;
+    if (path == NULL || out == NULL || out_cap == 0u) return 0;
+    base = path;
+    for (p = path; *p != '\0'; ++p)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    for (p = base; *p != '\0'; ++p)
+        if (*p == '.') ext = p;
+    base_len = ext != NULL ? (usize)(ext - base) : strlen(base);
+    /* A base that cannot fit alongside the suffix and the NUL is rejected up
+     * front, which also keeps the (int) precision casts below in range. */
+    if (base_len == 0u || base_len >= out_cap) return 0;
+    if (base_len >= 5u && memcmp(base + base_len - 5u, "_hlsl", 5u) == 0) {
+        written = snprintf(out, out_cap, "%.*s%s", (int)base_len, base, stage);
+    } else {
+        written = snprintf(out, out_cap, "%.*s_hlsl%s", (int)base_len, base, stage);
+    }
+    if (written < 0 || (usize)written >= out_cap) {
+        LOG_WARN("D3D12: sidecar name for %s exceeds the %u byte name budget — "
+                 "refusing shader", path, (unsigned)out_cap);
+        return 0;
+    }
+    return 1;
+}
+
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
+                                 bool is_fragment) {
+    char name[256];
+    if (dev == NULL) return RHI_HANDLE_NULL;
+    if (!rhi_d3d12_shader_sidecar_name(path, is_fragment ? ".frag" : ".vert",
+                                       name, sizeof(name)))
+        return RHI_HANDLE_NULL;
+    return rhi_shader_create(dev, name, 0u, is_fragment);
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    char name[256];
+    if (dev == NULL) return RHI_HANDLE_NULL;
+    if (!rhi_d3d12_shader_sidecar_name(path, ".comp", name, sizeof(name)))
+        return RHI_HANDLE_NULL;
+    return rhi_shader_create_compute(dev, name, 0u);
+}
+
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     RHI_D3D12Shader *sd;
     if (dev == NULL) return;
