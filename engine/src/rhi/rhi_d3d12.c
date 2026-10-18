@@ -4194,14 +4194,72 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     }
     rhi_d3d12_mrt_cleanup(dev, fbo, md);
 }
+static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
+                                     bool load) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12MRTFBO *md;
+    RHI_D3D12Texture *colors[RHI_MRT_MAX_ATTACHMENTS];
+    RHI_D3D12Texture *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtvs[RHI_MRT_MAX_ATTACHMENTS];
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    u32 i;
+
+    if (ctx == NULL || g_current_device == NULL || fbo == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    md = (RHI_D3D12MRTFBO *)rhi_get_resource_typed(g_current_device,
+                                                    fbo->fb,
+                                                    RHI_RES_MRT_FBO);
+    if (md == NULL || md->attachment_count == 0u ||
+        md->attachment_count > RHI_MRT_MAX_ATTACHMENTS ||
+        fbo->attachment_count != md->attachment_count) return;
+
+    for (i = 0u; i < md->attachment_count; ++i) {
+        colors[i] = (RHI_D3D12Texture *)
+            rhi_get_resource_typed(g_current_device, fbo->color_tex[i],
+                                   RHI_RES_TEXTURE);
+        if (colors[i] == NULL) return;
+    }
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(
+        g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
+    if (depth == NULL) return;
+    for (i = 0u; i < md->attachment_count; ++i) {
+        rhi_d3d12_transition(list, colors[i]->resource, colors[i]->state,
+                             D3D12_RESOURCE_STATE_RENDER_TARGET);
+        colors[i]->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        rtvs[i] = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, md->rtv_slots[i]);
+    }
+    rhi_d3d12_transition(list, depth->resource, depth->state,
+                         D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot);
+
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, md->attachment_count,
+                                                 rtvs, FALSE, &dsv);
+    rhi_d3d12_set_full_target_viewport(list, md->width, md->height);
+    for (i = 0u; i < md->attachment_count; ++i)
+        ctx->bound_rtvs[i] = rtvs[i];
+    ctx->bound_rtv_count = md->attachment_count;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    if (!load) {
+        for (i = 0u; i < md->attachment_count; ++i)
+            ID3D12GraphicsCommandList_ClearRenderTargetView(
+                list, rtvs[i], clear_color, 0u, NULL);
+        ID3D12GraphicsCommandList_ClearDepthStencilView(
+            list, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
+    }
+}
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
-    (void)cmd; (void)fbo;
+    rhi_d3d12_mrt_bind_impl(cmd, fbo, false);
 }
 void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
-    (void)cmd; (void)fbo;
+    rhi_d3d12_mrt_bind_impl(cmd, fbo, true);
 }
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
 }
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     RHICubemapDepthFBO out;
