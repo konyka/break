@@ -364,6 +364,39 @@ The D3D12 debug layer and GPU-based validation were enabled for every one
 of these runs and emitted nothing, so the usual tool for this class of
 fault does not see it either.
 
+### Ruled out next: duplicate descriptor tables
+
+The strongest-looking theory left was the per-stage table duplication. The
+builder is called once per stage — `VISIBILITY_VERTEX` for the vertex pass,
+`VISIBILITY_PIXEL` for the pixel pass — and `rhi_d3d12_root_sig_add_bindings`
+has no dedupe, so a register both stages declare emits **two** tables for
+the same `(type, register, space)`. `image_root_params` /
+`uniform_root_params` keep the **last** index, and nothing binds the other,
+so a vertex shader reading such a resource is reading a table that was
+never set. That matches the symptom precisely, and it is also a real
+DWORD-per-register waste against the 64-DWORD budget R600 spends so
+carefully.
+
+Dedupe was implemented (reuse the matching range, union the visibility) and
+measured:
+
+- The pre-existing blinn_phong pipelines build with **2 params / 2 ranges /
+  1 sampler** instead of 4 tables, and every other D3D12 test still passes.
+- **The device loss is unchanged.** A vertex-stage cbuffer read still kills
+  it.
+- Worse, the MRT PSO then fails: `CreateGraphicsPipelineState` returns
+  `E_INVALIDARG` for `NumRenderTargets = 2` with
+  `{R8G8B8A8_UNORM, R16G16_SFLOAT}` — a failure that does not occur with the
+  same 2-param root signature and the non-MRT shaders, or with 4 tables.
+
+So the duplicate tables are a genuine inefficiency and very likely a real
+latent defect, but they are **not** this bug, and the fix is not safe to land
+without understanding the `E_INVALIDARG`. Reverted; nothing shipped.
+
+That `E_INVALIDARG` is itself worth a note: two formats, one root signature
+shape, and the result depends on how many descriptor tables precede it.
+Nobody has characterised that yet, and it is not in scope for R600.
+
 So the outstanding item is a D3D12-backend question, not a shader-authoring
 one: **why does a descriptor-bound cbuffer read fault when the shader stage
 is VERTEX?** The suspects left are the root-signature side (visibility,
