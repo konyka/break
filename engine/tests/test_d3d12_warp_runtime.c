@@ -266,6 +266,131 @@ TEST(blit_texture_binding_samples_red_into_offscreen_fbo) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* Plan D Task 2: a GLSL path must resolve to its hand-authored HLSL sidecar
+ * and the resulting pipeline must actually render. The name mapping itself is
+ * a string table in test_d3d12_shader_contract; what only a live device can
+ * prove is that a resolved handle carries real bytecode and drives a real
+ * draw, so this binds a known red texture through rhi_cmd_bind_texture,
+ * blits a fullscreen triangle into an 8x8 FBO and compares every pixel.
+ *
+ * Both path forms are asserted, because the amended brief requires the
+ * primary mapping and the self-resolution to be equally load-bearing:
+ * "shaders/blit.vert" is what the engine actually passes (GLSL in, sidecar
+ * out), while "shaders/blit_hlsl.vert" is the form a caller already holding
+ * the sidecar name would pass. Both pipelines must reflect the same
+ * u_transform and both must produce the same red frame — otherwise a
+ * regression that only breaks one form still shows up here. */
+static void blit_path_draw(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
+                           RHIPipeline pipe, RHITexture tex,
+                           const float *identity) {
+    rhi_offscreen_fbo_bind(cmd, fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, identity, 16u * sizeof(float));
+    rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);          /* oversized triangle, no VBO */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+}
+
+TEST(shader_paths_resolve_to_blit_sidecars_and_render_red) {
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255, 255, 0, 0, 255,
+        255, 0, 0, 255, 255, 0, 0, 255
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tex_desc;
+    RHITexture tex;
+    /* Form A: the GLSL path the engine passes, mapped onto the sidecar. */
+    RHIShader vs_glsl, fs_glsl;
+    /* Form B: the sidecar name itself, resolving to itself. */
+    RHIShader vs_self, fs_self;
+    RHIPipeline pipe_glsl, pipe_self;
+    RHIPipelineDesc pdesc;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_glsl, loc_self;
+    int form;
+    int i;
+
+    vs_glsl = rhi_shader_create_path(g_dev, "shaders/blit.vert", false);
+    fs_glsl = rhi_shader_create_path(g_dev, "shaders/blit.frag", true);
+    vs_self = rhi_shader_create_path(g_dev, "shaders/blit_hlsl.vert", false);
+    fs_self = rhi_shader_create_path(g_dev, "shaders/blit_hlsl.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs_glsl));
+    ASSERT_TRUE(rhi_handle_valid(fs_glsl));
+    ASSERT_TRUE(rhi_handle_valid(vs_self));
+    ASSERT_TRUE(rhi_handle_valid(fs_self));
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 2u; tex_desc.height = 2u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = red;
+    tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(tex));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.no_vertex_input = true;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.vert = vs_glsl; pdesc.frag = fs_glsl;
+    pipe_glsl = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe_glsl));
+    pdesc.vert = vs_self; pdesc.frag = fs_self;
+    pipe_self = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe_self));
+
+    /* Reflection is the cheapest proof the handles carry the real blit
+     * sidecar rather than a stub that happens to have a valid slot: only
+     * blit_hlsl.vert declares u_transform. Identical byte offsets across the
+     * two forms say they resolved to the same sidecar. */
+    loc_glsl = rhi_pipeline_get_uniform_location(g_dev, pipe_glsl, "u_transform");
+    loc_self = rhi_pipeline_get_uniform_location(g_dev, pipe_self, "u_transform");
+    ASSERT_TRUE(loc_glsl >= 0);
+    ASSERT_EQ(loc_glsl, loc_self);
+
+    for (form = 0; form < 2; ++form) {
+        RHIPipeline pipe = form == 0 ? pipe_glsl : pipe_self;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        blit_path_draw(cmd, &fbo, pipe, tex, identity);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+        /* A fresh bind cleared the target, so every pixel must come from the
+         * sampled red texture: a shader that failed to run would leave the
+         * clear colour behind. */
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (i = 0; i < (int)sizeof(px); i += 4) {
+            ASSERT_TRUE(px[i + 0] > 240);
+            ASSERT_TRUE(px[i + 1] < 15);
+            ASSERT_TRUE(px[i + 2] < 15);
+            ASSERT_TRUE(px[i + 3] > 240);
+        }
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+    rhi_pipeline_destroy(g_dev, pipe_glsl);
+    rhi_pipeline_destroy(g_dev, pipe_self);
+    rhi_shader_destroy(g_dev, vs_glsl);
+    rhi_shader_destroy(g_dev, fs_glsl);
+    rhi_shader_destroy(g_dev, vs_self);
+    rhi_shader_destroy(g_dev, fs_self);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -322,6 +447,7 @@ int main(void) {
     RUN_TEST(probe_triangle_rasterises_into_offscreen_fbo);
     RUN_TEST(push_constants_transform_reaches_the_shader);
     RUN_TEST(blit_texture_binding_samples_red_into_offscreen_fbo);
+    RUN_TEST(shader_paths_resolve_to_blit_sidecars_and_render_red);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
