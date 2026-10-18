@@ -4203,7 +4203,6 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
     RHI_D3D12Texture *depth;
     D3D12_CPU_DESCRIPTOR_HANDLE rtvs[RHI_MRT_MAX_ATTACHMENTS];
     D3D12_CPU_DESCRIPTOR_HANDLE dsv;
-    float clear_color[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     u32 i;
 
     if (ctx == NULL || g_current_device == NULL || fbo == NULL) return;
@@ -4247,7 +4246,7 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
     if (!load) {
         for (i = 0u; i < md->attachment_count; ++i)
             ID3D12GraphicsCommandList_ClearRenderTargetView(
-                list, rtvs[i], clear_color, 0u, NULL);
+                list, rtvs[i], md->clear_color[i], 0u, NULL);
         ID3D12GraphicsCommandList_ClearDepthStencilView(
             list, dsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
     }
