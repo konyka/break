@@ -2149,35 +2149,101 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
 }
 
 /* Sidecar name derivation for rhi_shader_create_path: drop the directory and
- * the extension, append "_hlsl" unless the base already carries it (so a path
- * naming the sidecar resolves to itself), then add the stage suffix. Returns 0
- * when the path yields no usable base or the name would be truncated — the
- * caller fails closed rather than resolving a different file. */
-static int rhi_d3d12_shader_sidecar_name(const char *path, const char *stage,
-                                         char *out, usize out_cap) {
+ * the extension, append "_hlsl" unless the base already carries it, then add
+ * the stage suffix. See rhi_d3d12.h for the full contract and the decision
+ * record on the idempotent suffix.
+ *
+ * The path's own stage extension is authoritative about intent: a path that
+ * says ".frag" handed to the vertex path entry point is a caller bug, and
+ * ignoring the extension would silently resolve the vertex sidecar and
+ * render it — the one outcome harder to notice than a refusal. So the
+ * mismatch is refused rather than papered over. An extension that names no
+ * known stage (or no extension at all) carries no claim about the stage, and
+ * the caller's stage argument stays authoritative there. */
+static const char *rhi_d3d12_shader_stage_suffix(RHI_D3D12ShaderStage stage) {
+    switch (stage) {
+        case RHI_D3D12_SHADER_STAGE_VERTEX:   return ".vert";
+        case RHI_D3D12_SHADER_STAGE_FRAGMENT: return ".frag";
+        case RHI_D3D12_SHADER_STAGE_COMPUTE:  return ".comp";
+        default: return NULL;
+    }
+}
+
+static int rhi_d3d12_shader_stage_from_ext(const char *ext,
+                                           RHI_D3D12ShaderStage *out) {
+    if (strcmp(ext, ".vert") == 0) { *out = RHI_D3D12_SHADER_STAGE_VERTEX;   return 1; }
+    if (strcmp(ext, ".frag") == 0) { *out = RHI_D3D12_SHADER_STAGE_FRAGMENT; return 1; }
+    if (strcmp(ext, ".comp") == 0) { *out = RHI_D3D12_SHADER_STAGE_COMPUTE;  return 1; }
+    return 0;
+}
+
+int rhi_d3d12_shader_sidecar_name(const char *path,
+                                  RHI_D3D12ShaderStage stage, char *out,
+                                  usize out_cap) {
     const char *base;
     const char *p;
     const char *ext = NULL;
+    const char *suffix;
     usize base_len;
+    usize needed;
+    int already_suffixed;
     int written;
+    /* Cleared up front so every refusal — including a NULL path or a zero
+     * capacity — leaves the caller with a name it can trust is absent. */
+    if (out != NULL && out_cap > 0u) out[0] = '\0';
     if (path == NULL || out == NULL || out_cap == 0u) return 0;
+
+    suffix = rhi_d3d12_shader_stage_suffix(stage);
+    if (suffix == NULL) return 0;
+
     base = path;
     for (p = path; *p != '\0'; ++p)
         if (*p == '/' || *p == '\\') base = p + 1;
     for (p = base; *p != '\0'; ++p)
         if (*p == '.') ext = p;
+
+    if (ext != NULL) {
+        RHI_D3D12ShaderStage path_stage;
+        if (rhi_d3d12_shader_stage_from_ext(ext, &path_stage) &&
+            path_stage != stage) {
+            LOG_WARN("D3D12: shader path %s names the %s stage but the %s "
+                     "stage was requested — refusing shader rather than "
+                     "resolving the wrong sidecar", path,
+                     rhi_d3d12_shader_stage_suffix(path_stage), suffix);
+            return 0;
+        }
+    }
+
     base_len = ext != NULL ? (usize)(ext - base) : strlen(base);
     /* A base that cannot fit alongside the suffix and the NUL is rejected up
-     * front, which also keeps the (int) precision casts below in range. */
-    if (base_len == 0u || base_len >= out_cap) return 0;
-    if (base_len >= 5u && memcmp(base + base_len - 5u, "_hlsl", 5u) == 0) {
-        written = snprintf(out, out_cap, "%.*s%s", (int)base_len, base, stage);
+     * front, which also keeps the (int) precision cast below in range. */
+    if (base_len == 0u || base_len >= out_cap) {
+        LOG_WARN("D3D12: shader path %s has no usable base name within the %u "
+                 "byte name budget — refusing shader", path,
+                 (unsigned)out_cap);
+        return 0;
+    }
+    already_suffixed = base_len >= 5u &&
+                       memcmp(base + base_len - 5u, "_hlsl", 5u) == 0;
+    /* Budget the whole name up front so the format below can never
+     * truncate: a partial name left in `out` would resolve some other file,
+     * which is exactly what the refusal exists to prevent. */
+    needed = base_len + (already_suffixed ? 0u : 5u) + strlen(suffix) + 1u;
+    if (needed > out_cap) {
+        LOG_WARN("D3D12: sidecar name for %s needs %u bytes, over the %u byte "
+                 "name budget — refusing shader", path, (unsigned)needed,
+                 (unsigned)out_cap);
+        return 0;
+    }
+    if (already_suffixed) {
+        written = snprintf(out, out_cap, "%.*s%s", (int)base_len, base, suffix);
     } else {
-        written = snprintf(out, out_cap, "%.*s_hlsl%s", (int)base_len, base, stage);
+        written = snprintf(out, out_cap, "%.*s_hlsl%s", (int)base_len, base, suffix);
     }
     if (written < 0 || (usize)written >= out_cap) {
-        LOG_WARN("D3D12: sidecar name for %s exceeds the %u byte name budget — "
-                 "refusing shader", path, (unsigned)out_cap);
+        out[0] = '\0';
+        LOG_WARN("D3D12: sidecar name for %s did not fit the %u byte name "
+                 "budget — refusing shader", path, (unsigned)out_cap);
         return 0;
     }
     return 1;
@@ -2185,18 +2251,20 @@ static int rhi_d3d12_shader_sidecar_name(const char *path, const char *stage,
 
 RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
                                  bool is_fragment) {
-    char name[256];
+    char name[RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY];
+    RHI_D3D12ShaderStage stage = is_fragment ? RHI_D3D12_SHADER_STAGE_FRAGMENT
+                                            : RHI_D3D12_SHADER_STAGE_VERTEX;
     if (dev == NULL) return RHI_HANDLE_NULL;
-    if (!rhi_d3d12_shader_sidecar_name(path, is_fragment ? ".frag" : ".vert",
-                                       name, sizeof(name)))
+    if (!rhi_d3d12_shader_sidecar_name(path, stage, name, (usize)sizeof(name)))
         return RHI_HANDLE_NULL;
     return rhi_shader_create(dev, name, 0u, is_fragment);
 }
 
 RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
-    char name[256];
+    char name[RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY];
     if (dev == NULL) return RHI_HANDLE_NULL;
-    if (!rhi_d3d12_shader_sidecar_name(path, ".comp", name, sizeof(name)))
+    if (!rhi_d3d12_shader_sidecar_name(path, RHI_D3D12_SHADER_STAGE_COMPUTE,
+                                       name, (usize)sizeof(name)))
         return RHI_HANDLE_NULL;
     return rhi_shader_create_compute(dev, name, 0u);
 }

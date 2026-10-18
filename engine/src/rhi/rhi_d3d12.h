@@ -246,6 +246,38 @@ UINT64 rhi_d3d12_retire_fence(const RHI_D3D12Context *context);
  * rule (VK parity: vkCmdDrawIndirect applies no such check). */
 UINT rhi_d3d12_indirect_args_valid(UINT indexed, UINT stride, UINT draw_count);
 
+/* ---- Task 1 (D3D12 shader path): GLSL path -> HLSL sidecar name ----
+ * The engine hands the RHI GLSL text and drops the file path, so this
+ * mapping is the only way D3D12 can find its hand-authored sidecars.
+ * Pure string logic with no device dependency, so the contract test locks
+ * it down directly. */
+typedef enum RHI_D3D12ShaderStage {
+    RHI_D3D12_SHADER_STAGE_VERTEX = 0,
+    RHI_D3D12_SHADER_STAGE_FRAGMENT = 1,
+    RHI_D3D12_SHADER_STAGE_COMPUTE = 2,
+} RHI_D3D12ShaderStage;
+
+#define RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY 256u
+
+/* Map a shader file path onto the bare file name of its sidecar: the final
+ * path component with its extension stripped, plus "_hlsl.<stage>".
+ *
+ * Returns 1 and writes a NUL-terminated name on success; returns 0, writes
+ * out[0] = '\0' and warns with the reason otherwise. Fails closed when the
+ * path's own extension names a different stage than `stage` (silently
+ * resolving the wrong sidecar is worse than refusing), when the path has no
+ * usable base name, or when the name would not fit `out_cap` — a truncated
+ * name would resolve a different file, never the intended one.
+ *
+ * Decision record: the "_hlsl" suffix is idempotent — a base that already
+ * ends in "_hlsl" resolves to itself instead of growing a second suffix.
+ * The plan's wording ("strip directory and extension, append _hlsl") taken
+ * literally would map shaders/blit_hlsl.vert to the non-existent
+ * blit_hlsl_hlsl.vert, and Task 2 asserts that self-resolution form. */
+int rhi_d3d12_shader_sidecar_name(const char *path,
+                                  RHI_D3D12ShaderStage stage, char *out,
+                                  usize out_cap);
+
 /* Task 4: flip-model swapchain. create binds the swapchain to `hwnd` (or to
  * a device-owned hidden fallback window when `hwnd` is not a real window,
  * which only contract tests do) and creates one RTV per back buffer in

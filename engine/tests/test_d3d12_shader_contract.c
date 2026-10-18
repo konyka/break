@@ -1,10 +1,96 @@
 #include <rhi/rhi.h>
 #include "test_framework.h"
+#if defined(_WIN32)
+#include <rhi/rhi_d3d12.h>
+#endif
 /* Plan D Task 6: the D3D12 blit pipeline must be creatable from the
  * hand-authored HLSL sidecars (engine/shaders/blit_hlsl.{vert,frag},
  * precompiled to DXIL at build time) and must expose its push-constant
  * range as a byte-offset location, matching the VK convention. */
 static RHIDevice *g_dev;
+
+#if defined(_WIN32)
+/* Task 1 (D3D12 shader path): the GLSL path -> sidecar name mapping is pure
+ * string logic, so it is locked down here as a table instead of only through
+ * a device-backed call. No device, no WARP, no sidecar files on disk: an
+ * expect == NULL row asserts the refusal. */
+typedef struct ShaderSidecarCase {
+    const char *path;
+    int stage;              /* RHI_D3D12ShaderStage, widened for the table */
+    const char *expect;     /* NULL => must be refused */
+} ShaderSidecarCase;
+
+static const ShaderSidecarCase k_sidecar_cases[] = {
+    /* Primary mapping: a GLSL path becomes its hand-authored sidecar. */
+    { "shaders/blit.vert",  RHI_D3D12_SHADER_STAGE_VERTEX,   "blit_hlsl.vert" },
+    { "shaders/blit.frag",  RHI_D3D12_SHADER_STAGE_FRAGMENT, "blit_hlsl.frag" },
+    { "shaders/blit.comp",  RHI_D3D12_SHADER_STAGE_COMPUTE,  "blit_hlsl.comp" },
+    /* Self-resolution: the "_hlsl" suffix is idempotent, never doubled. */
+    { "shaders/blit_hlsl.vert", RHI_D3D12_SHADER_STAGE_VERTEX,   "blit_hlsl.vert" },
+    { "shaders/blit_hlsl.frag", RHI_D3D12_SHADER_STAGE_FRAGMENT, "blit_hlsl.frag" },
+    /* Bare names and backslash separators (paths as Windows callers write them). */
+    { "blit",               RHI_D3D12_SHADER_STAGE_VERTEX,   "blit_hlsl.vert" },
+    { "shaders\\blit.frag", RHI_D3D12_SHADER_STAGE_FRAGMENT, "blit_hlsl.frag" },
+    /* Only the final path component survives. */
+    { "a/b/c/probe_vb.frag", RHI_D3D12_SHADER_STAGE_FRAGMENT, "probe_vb_hlsl.frag" },
+    /* A dotted base keeps its dots; only the last extension is stripped. */
+    { "shaders/my.pirates.vert", RHI_D3D12_SHADER_STAGE_VERTEX, "my.pirates_hlsl.vert" },
+    /* An extension that names no stage makes no claim about the stage. */
+    { "shaders/blit.glsl",  RHI_D3D12_SHADER_STAGE_FRAGMENT, "blit_hlsl.frag" },
+    /* Fail closed: the path's own stage extension must agree with the
+     * request. Resolving the vertex sidecar for a ".frag" path would be a
+     * silent stage swap, which is what this lock exists to prevent. */
+    { "shaders/blit.frag",  RHI_D3D12_SHADER_STAGE_VERTEX,   NULL },
+    { "shaders/blit.vert",  RHI_D3D12_SHADER_STAGE_FRAGMENT, NULL },
+    { "shaders/blit.vert",  RHI_D3D12_SHADER_STAGE_COMPUTE,  NULL },
+    { "shaders/blit.comp",  RHI_D3D12_SHADER_STAGE_FRAGMENT, NULL },
+    { "shaders/blit_hlsl.frag", RHI_D3D12_SHADER_STAGE_VERTEX, NULL },
+    /* A stage outside the enum has no suffix, so it cannot name a sidecar. */
+    { "shaders/blit.vert",  (int)RHI_D3D12_SHADER_STAGE_COMPUTE + 7, NULL },
+    /* Degenerate inputs. */
+    { NULL,                 RHI_D3D12_SHADER_STAGE_VERTEX,   NULL },
+    { "",                   RHI_D3D12_SHADER_STAGE_VERTEX,   NULL },
+    { ".vert",              RHI_D3D12_SHADER_STAGE_VERTEX,   NULL },
+    { "shaders/",           RHI_D3D12_SHADER_STAGE_VERTEX,   NULL },
+};
+
+TEST(shader_path_sidecar_derivation) {
+    char name[RHI_D3D12_SHADER_SIDECAR_NAME_CAPACITY];
+    usize i;
+    int failures = 0;
+    for (i = 0u; i < sizeof(k_sidecar_cases) / sizeof(k_sidecar_cases[0]); ++i) {
+        const ShaderSidecarCase *c = &k_sidecar_cases[i];
+        int ok = rhi_d3d12_shader_sidecar_name(
+            c->path, (RHI_D3D12ShaderStage)c->stage, name, (usize)sizeof(name));
+        if (c->expect == NULL) {
+            if (ok != 0 || name[0] != '\0') {
+                printf("  FAIL: path \"%s\" stage %d should be refused "
+                       "(ok=%d, out=\"%s\")\n",
+                       c->path ? c->path : "(null)", c->stage, ok, name);
+                failures++;
+            }
+        } else if (ok == 0 || strcmp(name, c->expect) != 0) {
+            printf("  FAIL: path \"%s\" stage %d -> \"%s\", want \"%s\"\n",
+                   c->path, c->stage, name, c->expect);
+            failures++;
+        }
+    }
+    /* A name that cannot fit is refused, never truncated into a name that
+     * would resolve a different file. */
+    {
+        char tiny[8];
+        int ok = rhi_d3d12_shader_sidecar_name("shaders/blit.vert",
+                                               RHI_D3D12_SHADER_STAGE_VERTEX,
+                                               tiny, (usize)sizeof(tiny));
+        if (ok != 0 || tiny[0] != '\0') {
+            printf("  FAIL: oversized sidecar name should be refused "
+                   "(ok=%d, out=\"%s\")\n", ok, tiny);
+            failures++;
+        }
+    }
+    ASSERT_EQ(failures, 0);
+}
+#endif
 
 TEST(blit_pipeline_push_location) {
     /* The blit pipeline must exist and expose its push range as a
@@ -68,6 +154,9 @@ int main(void) {
     g_dev = rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, NULL, 64, 64, &r);
     if (g_dev == NULL) return 77;
     printf("=== Running Tests ===\n");
+#if defined(_WIN32)
+    RUN_TEST(shader_path_sidecar_derivation);
+#endif
     RUN_TEST(blit_pipeline_push_location);
     RUN_TEST(pipeline_bindings_resolve_matches_legacy_lookup);
     rhi_device_destroy(g_dev);

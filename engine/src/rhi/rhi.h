@@ -484,8 +484,12 @@ RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, boo
  * has no GLSL path: it maps `path` onto the hand-authored sidecar named
  * <base>_hlsl.<stage> in engine/shaders (base = final path component with
  * its extension stripped; stage from `is_fragment`), then loads the HLSL
- * source plus its precompiled DXIL. A path that already names the sidecar
- * resolves to itself. */
+ * source plus its precompiled DXIL.
+ *
+ * The "_hlsl" suffix is idempotent, so a path that already names the sidecar
+ * resolves to itself. A D3D12 path whose own extension names a different
+ * stage than the request is refused rather than resolved, where GL and
+ * Vulkan would have failed anyway on the unreadable file. */
 RHIShader   rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment);
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
