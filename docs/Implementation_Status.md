@@ -45,6 +45,27 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：字段级定位 — **`pDesc = NULL` 也杀死设备，描述符内容被排除；句柄与资源均已验证为合法**
+
+- **矩阵从"换格式"升级为"换字段"**。7 个视图格各自只动一个字段，另有 2 个不建视图的对照格：
+
+  | 格 | 描述符形态 | WARP | RTX 4060 |
+  |---|---|---|---|
+  | 0 | `R32_TYPELESS`，`Buffer.Flags = 0`（**今天 binder 用的形态**） | KILLED | **KILLED** |
+  | 1 | `R32_TYPELESS` + `Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW` | KILLED | **KILLED** |
+  | 2 | `DXGI_FORMAT_UNKNOWN`，flags=0 | KILLED | **KILLED** |
+  | 3 | `DXGI_FORMAT_UNKNOWN` + `StructureByteStride = 16` | KILLED | **KILLED** |
+  | 4 | 全零描述符 | KILLED | **KILLED** |
+  | 5 | **`pDesc = NULL`（让 D3D12 自行推断）** | KILLED | **KILLED** |
+  | 6 | `R32_TYPELESS` + RAW + counter 资源 | KILLED | **KILLED** |
+  | 7–8 | 对照：不建视图 | ALIVE | **ALIVE** |
+
+- **格 5 是本轮的关键**：`pDesc = NULL` 时**我们没有传任何描述符内容**，D3D12 完全依据资源自行推断——**设备照样死**。这就把"描述符字段填错"整个方向排除了。
+- **顺手定位了一个真实的字段陷阱（已记，未修）**：`D3D12_UNORDERED_ACCESS_VIEW_DESC` 的成员藏在 `Buffer` union 里，而**区分"字节寻址"与"结构化"的是 `Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW`**。今天 binder 的形态是 `ZeroMemory` 后只设 `Format`，`Flags = 0`——于是 `R32_TYPELESS` 被当成**结构化** UAV 且 `StructureByteStride = 0`，这本身就不是合法描述符。**格 1 专门补上了 RAW 标志，但设备仍然死**，所以这不是（唯一的）原因，**但在正式实现 binder 之前必须按 RAW 形式写**。
+- **目标句柄第一次被真正验证**（此前从未验证过，它是我们**算出来**的而非读回来的）：新增断言比对 `base.ptr + slot*increment` 是否落在堆内。实测 `slot=0 incr=64 cap=4096 heapsz=262144 off=0`——**句柄合法且位于堆首**。资源侧同样验证：`bufsz=256 devloc=1`（正确的 device-local UAV 缓冲）。
+- **于是剩下的可能只有两个**：**(a) 资源本身**（创建期上传 one-shot 之后，该缓冲的 GPU VA 或状态不是我们以为的样子）；**(b) 这台机器的 D3D12 运行时确实无法创建 UAV 视图**（WARP 与 RTX 4060 都复现，且运行时对畸形视图既不返回错误码也不安全失败——零目标句柄会直接访问违例崩溃）。
+- **下一步（二选一，本轮不选）**：**(a)** 针对"创建期上传"做对照——用一条**不走上传路径**的 device-local UAV 缓冲建视图（需要给 `RHIBufferDesc` 一个显式的 device-local 信号，或临时给 `rhi_d3d12_buffer_alloc` 加测试钩子）；**(b)** 写一个**不经过本仓库任何代码**的最小 D3D12 UAV 程序（裸 Win32 + D3D12CreateDevice + CreateCommittedResource + CreateUnorderedAccessView），在同一台机器上跑。**(b) 能一次性判定"是我们的代码"还是"是这台机器的运行时"**，代价也小，**建议优先做 (b)**。
+
 ## 本轮更新：真实 GPU 复测 — **不是 WARP 的能力缺口，RTX 4060 上同样杀死设备**
 
 - **上一轮的结论被本轮推翻了一半**：矩阵在 **WARP** 上是"建 UAV 视图即移除设备"，当时据此推断"这台机器的 WARP 不支持 UAV"。本轮把同一矩阵跑在**真实 GPU** 上（不设 `ENGINE_D3D12_WARP`）：

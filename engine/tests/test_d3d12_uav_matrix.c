@@ -23,7 +23,13 @@ extern int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf,
                                       int format_kind);
 
 static const char *const k_uav_format_name[] = {
-    "R32_TYPELESS(raw)", "UNKNOWN(struct)", "R32_FLOAT(typed)"
+    "R32_TYPELESS flags=0",
+    "R32_TYPELESS +RAW",
+    "UNKNOWN flags=0",
+    "UNKNOWN stride16",
+    "zeroed desc",
+    "pDesc=NULL",
+    "R32_TYPELESS+RAW+cnt"
 };
 
 typedef struct {
@@ -116,20 +122,23 @@ static int uav_cell_survives(const UavCell *cell, char *detail, usize cap) {
 }
 
 TEST(uav_view_parameter_matrix) {
-    UavCell cells[10];
+    UavCell cells[9];
     int i;
     int survivors = 0;
     memset(cells, 0, sizeof(cells));
-    cells[0].format = 0; cells[0].size = 48u;  cells[0].uav_flag = 1; cells[0].create_view = 1;
-    cells[1].format = 0; cells[1].size = 256u; cells[1].uav_flag = 1; cells[1].create_view = 1;
-    cells[2].format = 1; cells[2].size = 48u;  cells[2].uav_flag = 1; cells[2].create_view = 1;
-    cells[3].format = 1; cells[3].size = 256u; cells[3].uav_flag = 1; cells[3].create_view = 1;
-    cells[4].format = 2; cells[4].size = 48u;  cells[4].uav_flag = 1; cells[4].create_view = 1;
-    cells[5].format = 2; cells[5].size = 256u; cells[5].uav_flag = 1; cells[5].create_view = 1;
-    cells[6].format = 0; cells[6].size = 48u;  cells[6].uav_flag = 1; cells[6].create_view = 0;
+    /* Field-level sweep: variant 0 is the shape the binder uses today and
+     * variants 1..6 each move exactly one field away from it. Two controls
+     * (no view at all) bracket the run so a device that came up broken shows
+     * up as a control failure instead of being read as a field-level result. */
+    cells[0].format = 0; cells[0].size = 256u; cells[0].uav_flag = 1; cells[0].create_view = 1;
+    cells[1].format = 1; cells[1].size = 256u; cells[1].uav_flag = 1; cells[1].create_view = 1;
+    cells[2].format = 2; cells[2].size = 256u; cells[2].uav_flag = 1; cells[2].create_view = 1;
+    cells[3].format = 3; cells[3].size = 256u; cells[3].uav_flag = 1; cells[3].create_view = 1;
+    cells[4].format = 4; cells[4].size = 256u; cells[4].uav_flag = 1; cells[4].create_view = 1;
+    cells[5].format = 5; cells[5].size = 256u; cells[5].uav_flag = 1; cells[5].create_view = 1;
+    cells[6].format = 6; cells[6].size = 256u; cells[6].uav_flag = 1; cells[6].create_view = 1;
     cells[7].format = 0; cells[7].size = 256u; cells[7].uav_flag = 1; cells[7].create_view = 0;
-    cells[8].format = 0; cells[8].size = 256u; cells[8].uav_flag = 0; cells[8].create_view = 1;
-    cells[9].format = 1; cells[9].size = 256u; cells[9].uav_flag = 0; cells[9].create_view = 1;
+    cells[8].format = 1; cells[8].size = 256u; cells[8].uav_flag = 1; cells[8].create_view = 0;
 
     for (i = 0; i < (int)(sizeof(cells) / sizeof(cells[0])); ++i) {
         char detail[72];
@@ -141,16 +150,18 @@ TEST(uav_view_parameter_matrix) {
         if (ok) ++survivors;
         fflush(stdout);
     }
-    printf("  uav-matrix: %d/10 cells survived\n", survivors);
+    printf("  uav-matrix: %d/%d cells survived\n", survivors,
+           (int)(sizeof(cells) / sizeof(cells[0])));
     /* The invariant that must hold on ANY runtime is the control pair: with no
      * UAV view built, the device stays healthy. That is what proves the matrix
      * is measuring the view and not the device coming up broken.
      *
-     * The view cells are reported, not asserted. On this machine's WARP every
-     * one of them kills the device — all three descriptor shapes, both sizes,
-     * both usage flags — so the honest encoding is a printed table, not a
+     * The view cells are reported, not asserted. Every field-level shape dies
+     * here — including pDesc=NULL, where D3D12 infers the descriptor itself,
+     * which clears our descriptor of blame — and it dies identically on WARP and
+     * on the RTX 4060. So the honest encoding is a printed table, not a
      * pass/fail whose meaning flips with the runtime. Asserting "views kill"
-     * would break on any GPU that supports them; asserting "views survive"
+     * would misreport on any GPU that supports them; asserting "views survive"
      * would be false here. */
     ASSERT_TRUE(survivors >= 2);
 }

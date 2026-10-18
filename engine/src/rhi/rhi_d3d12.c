@@ -4819,21 +4819,30 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_Dispatch(list, x, y, z);
 }
-/* R-matrix probe: build one UAV view over `buf` with an explicitly chosen
- * descriptor shape so the caller can enumerate which one this runtime
- * accepts. format_kind: 0 = R32_TYPELESS (raw), 1 = DXGI_FORMAT_UNKNOWN
- * (structured; DESC0 has no stride member so D3D12 assumes 4), 2 = R32_FLOAT
- * (typed). The stride-bearing DESC1 form is unreachable here: the installed
- * d3d12.h declares neither D3D12_UNORDERED_ACCESS_VIEW_DESC1 nor
- * ID3D12Device1::CreateUnorderedAccessView. Internal, not part of the RHI.
- * Exists for the parameter matrix in test_d3d12_uav_matrix. */
-int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int format_kind) {
+/* R-matrix probe: build one UAV view over `buf` so the caller can enumerate
+ * which descriptor field shape this runtime accepts.
+ *
+ * variant:
+ *   0  Format=R32_TYPELESS, Buffer.Flags left 0        (the current binder)
+ *   1  Format=R32_TYPELESS + Buffer.Flags = RAW
+ *   2  Format=DXGI_FORMAT_UNKNOWN, Buffer.Flags left 0  (structured)
+ *   3  Format=DXGI_FORMAT_UNKNOWN + StructureByteStride 16
+ *   4  fully zeroed descriptor
+ *   5  pDesc = NULL (D3D12 infers everything from the resource)
+ *   6  Format=R32_TYPELESS + RAW + counter resource
+ *
+ * Internal, not part of the RHI; exists for test_d3d12_uav_matrix. */
+int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int variant) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Buffer *bd;
     D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
     D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    D3D12_CPU_DESCRIPTOR_HANDLE heap_base;
+    ID3D12Resource *counter = NULL;
+    UINT64 heap_size;
     UINT slot;
-    if (dev == NULL || format_kind < 0 || format_kind > 2) return -1;
+    int rc = 0;
+    if (dev == NULL || variant < 0 || variant > 6) return -1;
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL || ctx->device == NULL) return -1;
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
@@ -4841,15 +4850,49 @@ int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int format_kind) {
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
     if (slot == UINT_MAX) return -1;
     cpu = rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot);
+    /* The handle is computed, not read back, so nothing ever proved it lands
+     * inside the heap this allocator owns. An out-of-range slot would write
+     * past the heap end and the only symptom would be the device dying
+     * somewhere unrelated. */
+    ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(
+        ctx->cbv_srv_uav_alloc.heap, &heap_base);
+    heap_size = (UINT64)ctx->cbv_srv_uav_alloc.capacity *
+                (UINT64)ctx->cbv_srv_uav_alloc.increment;
+    if ((UINT64)(cpu.ptr - heap_base.ptr) >= heap_size) {
+        rc = -2;  /* handle outside the heap */
+        goto done;
+    }
+
     ZeroMemory(&desc, sizeof(desc));
-    desc.Format = (format_kind == 0) ? DXGI_FORMAT_R32_TYPELESS
-               : (format_kind == 1) ? DXGI_FORMAT_UNKNOWN
-                                     : DXGI_FORMAT_R32_FLOAT;
-    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, NULL,
-                                           &desc, cpu);
+    switch (variant) {
+    case 0:
+    case 6:
+        desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        break;
+    case 1:
+        /* RAW is what distinguishes byte-address access from structured.
+         * Without it a R32_TYPELESS view is read as a structured UAV with
+         * StructureByteStride 0, which is not a legal descriptor. */
+        desc.Format = DXGI_FORMAT_R32_TYPELESS;
+        desc.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        break;
+    case 2:
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        break;
+    case 3:
+        desc.Format = DXGI_FORMAT_UNKNOWN;
+        desc.Buffer.StructureByteStride = 16u;
+        break;
+    default:
+        break;
+    }
+    if (variant == 6) counter = bd->resource;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, counter,
+                                           (variant == 5) ? NULL : &desc, cpu);
+done:
     rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
                                    ctx->next_fence);
-    return 0;
+    return rc;
 }
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
