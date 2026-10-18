@@ -100,6 +100,7 @@ typedef struct RHI_D3D12Context {
     UINT acquire_in_flight;             /* spec §4.3: one in-flight pair max */
     UINT frame_started;                 /* begin recorded, not yet submitted */
     UINT frame_submitted;               /* submitted, present allowed */
+    UINT render_pass_active;            /* explicit begin/end nesting guard */
     UINT rtv_increment;
     UINT dsv_increment;
     UINT cbv_srv_uav_increment;

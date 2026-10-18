@@ -134,6 +134,15 @@ else()
     add_compile_options(-Wall)
 endif()
 
+if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND
+   NOT CMAKE_MSVC_RUNTIME_LIBRARY)
+    # The Windows Clang toolchain is commonly installed without the Visual
+    # Studio Debug CRT. Use the redistributable CRT for Debug too: otherwise
+    # CMake emits --dependent-lib=msvcrtd and every test requires
+    # VCRUNTIME140D.dll, which is not part of the OS or LLVM installation.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+endif()
+
 if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()

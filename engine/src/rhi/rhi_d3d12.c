@@ -3120,8 +3120,19 @@ static void rhi_d3d12_flush_uniform_staging(RHI_D3D12Context *ctx) {
             lo / 4u);
 }
 
-void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) { (void)cmd; }
-void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) { (void)cmd; }
+void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (ctx == NULL || rhi_d3d12_cmd_list(ctx) == NULL) return;
+    /* D3D12 records RTV/DSV binding directly; FBO bind already performed the
+     * OMSetRenderTargets operation. Keep the explicit API stateful and
+     * idempotent like VK, without opening a second native pass object. */
+    if (!ctx->render_pass_active) ctx->render_pass_active = 1u;
+}
+void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (ctx == NULL) return;
+    ctx->render_pass_active = 0u;
+}
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
     ID3D12GraphicsCommandList *list;

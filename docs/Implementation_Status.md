@@ -95,6 +95,17 @@
 - **Regression**: D3D12 specialist tests **12/12**; GL **175/175**; VK **176/176**; all three backends build with zero compiler errors and warnings.
 - **Remaining**: `rhi_mrt_fbo_*`, cubemap FBOs, `rhi_cmd_begin/end_render_pass`, and texel/storage/image/cubemap bindings remain. The Windows platform runtime `OpenClipboard failed` result remains a local environment failure (14/15 pass), unrelated to this change.
 
+## 本轮更新：Windows Clang Debug CRT 可部署性修复 — 避免测试启动时报 VCRUNTIME140D.dll 缺失
+
+- **根因**：Windows 上使用 LLVM Clang + Debug 配置时，CMake 默认生成 `--dependent-lib=msvcrtd`，所有 Debug 测试依赖 Visual Studio 专用 Debug CRT（`VCRUNTIME140D.dll`/`msvcrtd.lib`）。本机只有 LLVM/Windows SDK，没有 VS Debug CRT，因此 `test_d3d12_lifetime_hresult_contract.exe` 启动即弹系统错误，甚至无法进入测试逻辑。
+- **修复**：Windows + Clang 且用户未显式设置 `CMAKE_MSVC_RUNTIME_LIBRARY` 时，CMake 默认设为 `MultiThreadedDLL`（发布 CRT，`msvcrt`），Debug 仍保留调试符号与项目的 Debug/validation 编译选项，但不再依赖开发机私有 Debug CRT。用户显式传入 runtime library 时不覆盖。
+- **验证**：清除缓存 runtime 选项后重新 configure，`build.ninja` 从 `--dependent-lib=msvcrtd` 变为 `--dependent-lib=msvcrt`；`test_d3d12_lifetime_hresult_contract.exe` 在当前 Windows 直接启动并通过，消除 `VCRUNTIME140D.dll` 缺失错误。
+
+## 本轮更新：D3D12 显式 render-pass 生命周期契约
+
+- `rhi_cmd_begin_render_pass` / `rhi_cmd_end_render_pass` 不再是空桩；D3D12 直接录制 RTV/DSV，FBO bind 已完成目标绑定，因此这里维护幂等的显式生命周期状态，不重复创建原生 pass 对象。
+- `test_d3d12_swapchain_contract` 新增 begin/begin/end/end 双调用生命周期用例，提交与 present 正常通过。
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

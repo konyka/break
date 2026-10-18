@@ -31,6 +31,19 @@ TEST(acquire_submit_present_cycle) {
     ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
 }
 
+TEST(explicit_render_pass_begin_end_is_idempotent) {
+    RHIResult r = RHI_RESULT_OK;
+    RHICmdBuffer *cmd = rhi_frame_acquire_ex(g_dev, &r);
+    ASSERT_TRUE(cmd != NULL);
+    ASSERT_EQ(r, RHI_RESULT_OK);
+    rhi_cmd_begin_render_pass(cmd);
+    rhi_cmd_begin_render_pass(cmd);
+    rhi_cmd_end_render_pass(cmd);
+    rhi_cmd_end_render_pass(cmd);
+    ASSERT_EQ(rhi_frame_submit_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+}
+
 TEST(resize_roundtrip_keeps_ready) {
     rhi_set_vsync(g_dev, false);
     ASSERT_EQ(rhi_device_resize_ex(g_dev, 640, 480), RHI_RESULT_OK);
@@ -67,6 +80,7 @@ int main(void) {
     printf("=== Running Tests ===\n");
     RUN_TEST(present_before_submit_refused);
     RUN_TEST(acquire_submit_present_cycle);
+    RUN_TEST(explicit_render_pass_begin_end_is_idempotent);
     RUN_TEST(resize_roundtrip_keeps_ready);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
