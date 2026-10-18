@@ -1,5 +1,31 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Task 1-3 / D3D12 第一条真实渲染管线 sidecar — `blinn_phong_hlsl.{vert,frag}` 手写成对、七个 uniform 字节偏移由 sidecar 自持、CMake sidecar 契约纳入 blinn_phong、WARP 像素级证明（含反向验证与"丢写不可见"负对照）
+
+- **意义**：在此之前 D3D12 只有 `blit`/`myui`/`probe*` 四个探针级 sidecar——没有任何**真实渲染管线**跑通过。`blinn_phong_hlsl.{vert,frag}` 是第一条，其渲染结果经 WARP 回读像素断言，不靠句柄有效性。
+- **sidecar 布局（sidecar 自持字节偏移）**：两个 stage 声明**逐字节相同**的根常量 struct，绑 `ConstantBuffer<PushConsts> g_push : register(b0, space0)`。b0 是保留的 32BIT_CONSTANTS 根参数（反射把它折进 constants param，不与任何 CBV 竞争）。偏移靠 HLSL 自然打包得出，**未使用 `packoffset`**——因此 struct 与 `// rhi:uniform` 标记无法悄悄漂移：任一成员类型一变，Task 2 的偏移断言即红。
+
+  | 成员 | 类型 | 字节偏移 |
+  | --- | --- | --- |
+  | `u_model` | `float4x4` | 0 |
+  | `u_view` | `float4x4` | 64 |
+  | `u_proj` | `float4x4` | 128 |
+  | `u_light_dir` | `float3` | 192（16B 槽） |
+  | `u_light_color` | `float3` | 208 |
+  | `u_ambient` | `float3` | 224 |
+  | `u_camera_pos` | `float3` | 240 |
+
+  标记按 stage 拆分：三个矩阵标记在 VS，四个光照/相机标记在 FS（管线创建时 VS 与 PS 源码读进同一张表，`rhi_d3d12.c:2824-2827`）。`u_albedo` **不是**标记而是采样资源：`Texture2D g_albedo : register(t0, space0)` + `SamplerState g_smp : register(s0, space0)`，反射转成一条 SRV 描述符范围 + 一个静态采样器。顶点输入语义 `POSITION`/`NORMAL`/`TEXCOORD0` 与 D3D12 默认 mesh 布局分支（`rhi_d3d12.c:2651-2656`，stride 32）一致。
+- **CMake sidecar 契约**：`blinn_phong` 已加入 `ENGINE_D3D12_HLSL_PIPELINES`，缺 twin 即 configure 期 `FATAL_ERROR`。已反向验证：把 `.frag` 藏起来后 configure 如期报 `D3D12 HLSL sidecar assertion failed … shaders/blinn_phong_hlsl.frag (renderer pipeline 'blinn_phong')` 并退出 1。加管线只需往该列表加名字，`*_hlsl.*` glob 会自动 dxc 出 DXIL，无需改构建脚本。
+- **本条修正计划里两个被证伪的值**：① **高光指数是 32，不是 8**——`engine/shaders/blinn_phong.frag:29` 有**五次** `spec *= spec`，即 2^5。sidecar 跟随 GLSL。若"8"才是本意，那是 GLSL 本身的既有跨后端缺陷（VK/GL 同样在渲染它），属独立决策，D3D12 sidecar 不得擅自分叉。② **Task 2 的 uniform 取值原写法会让测试失败**：`u_camera_pos=(0,0,0)` 配 z=0 三角形使 `V=normalize(0)=NaN`；`u_light_dir=(0,0,-1)` 使视口**中心**像素（世界原点）处 `V` 恰为 `(0,0,-1)`、`L+V=0`、`H=normalize(0)=NaN`。NaN 穿透乘法且 `0*NaN=NaN`——**零光色救不了退化的 H**。实际取值 `u_camera_pos=(0,0,-10)`、`u_light_dir=(0,-1,0)`、`u_light_color=(1,1,1)`（**刻意非零**），使 `diff`/`spec` 由**几何**归零：`(L+V).z = V.z < 0` 恒成立，故任意像素处 `H` 都有限。
+- **WARP 像素证明（`blinn_phong_sidecar_resolves_offsets_and_shades_red`）**：经 `rhi_shader_create_path` 用 GLSL 形态路径解析两 stage，断言七个偏移恰为 0/64/128/192/208/224/240，`vertex_stride=32` + `R8G8B8A8_UNORM` 建管线，2x2 纯红纹理绑 unit 0，超大 NDC 三角形画进 8x8 离屏 FBO，**64 个像素逐通道精确等于 (255,0,0,255)**（非容差：整个表达式取整值，偏差即缺陷）。第二次 draw 用白色 albedo + `u_ambient=(0,1,0)` 必须读回纯绿——因为偏移断言读的是**标记**而非 struct，只断言数字无法排除"标记对、struct 不符"导致写入落到别的成员。
+- **反向验证（两路）**：①把绿通道期望 0 改成 255，测试在像素断言处转红，恢复转绿；②移走两个 sidecar 并回退 CMake 列表项（还原 Task 1 之前的状态），测试在 shader 创建处转红并给出点名诊断 `HLSL source …/blinn_phong_hlsl.vert not readable — refusing shader`。
+- **负对照——丢掉的 push-constant 写入对测试不可见（必须在 CI grep）**：本管线**有效**根常量范围是 **252 字节而非 256**。根签名预算是 64 DWORD 且每条描述符表占 1 DWORD（`rhi_d3d12.c:2559-2562`），blinn_phong 有一条 t0 SRV 表（`SamplerState` 走静态采样器不占表），故 64 被钳到 **63 DWORD = 252 字节**。故所有 uniform 必须用 12/64 字节 setter；偏移 240 处若写 16 字节补齐版本会越过 252 而被丢弃。已做负对照：临时插入 `rhi_cmd_push_constants(cmd, 240, cam4, 16)` 后日志如期出现 `push_constants offset 240+16 outside declared 252 … write dropped`，而**测试仍然全绿（exit 0）**——丢写只记日志、绝不转红。因此 `"outside declared"` 的 grep 必须进 CI/评审，不能只靠本条落账。
+- **诚实的边界（勿写成"二者恰好一致"）**：HLSL struct 实为 **256 字节**（末尾 `float3` 占满 16 字节槽）；FS 生成 `cbufferLoadLegacy` 槽号 12/13/14/15，每次返回 4 分量 `CBufRet.f32`，即槽 *n* 覆盖字节 `16n..16n+15`，最后一次加载**名义上跨越字节 240-255**（同时独立印证了 192/208/224/240 四个偏移）。但只提取分量 0/1/2，分量 3 是 `float3` 填充道，从未被读。准确表述是：**根签名覆盖着色器实际消费的每个字节（0-251），而最后那次加载名义上跨到 255**。今天无害（未用道被丢弃 + D3D12 越界根常量读定义为返回 0），但若将来真去读那一道、或加第八个 uniform 越过 252，即破。
+- **FORWARD_MRT 变体刻意不做**：其 `#ifdef FORWARD_MRT` 分支额外引入 `std140` UBO（`u_prev_vp` + `u_prev_model` = 128B），与基座 256B 合计 384B，**装不进 D3D12 256 字节 graphics push 范围**，硬塞就得重排整块并改掉上面七个已钉死的偏移；FS 侧还需要第二张 render target（FBO/格式变更，非着色器翻译）。sidecar 头部已就地注明此省略，避免被误读为疏漏。**顺序不可颠倒**：它需要**第二条根常量范围或一个 CBV**，而**在 b1 加 CBV 会新增一条描述符表**，把 constants 压到 **62 DWORD = 248 字节**，于是 `u_camera_pos@240+12 = 252 > 248` 被**静默丢弃**——正是上面那条丢写不可见的坑，且会先牺牲 `u_camera_pos`。故 velocity 变体必须随独立 MRT FBO 计划一并设计，不能顺手加。
+- **回归证据**：全部用本 worktree 自己的构建树（`build-d3d12-debug`，Ninja + clang 22.1.6 + `ENGINE_RHI_BACKEND=d3d12`），CTest 环境 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1`，D3D12 调试层与 GPU-based validation 均开启（根签名/PSO 有问题会当场报）。`test_d3d12_warp_runtime` **8/8**；`ctest -R "d3d12|warp|swapchain"` **12/12**；全树 `ninja` 无错无警告。GL **175/175**、Vulkan **176/176**（`ctest -LE graphics`，跑在主 checkout 的 `build-gl`/`build-vk`——本 worktree 无 GL/VK 树；这是充分的：相对主 checkout HEAD 仅 4 个文件变动，全部 D3D12 专属，且 `test_d3d12_warp_runtime` 在 GL/VK 树里根本不编译也不注册，`ctest -N -R` 返回 0 项）。
+- **剩余有序工作（顺序是约束，不是偏好）**：①**材质 binder**；②**shadow map**；③**compute 绑定**；④**引擎调用点迁移到 path API**。前两项未落地之前继续加 sidecar，只会把今天那句响亮的 `pipeline needs compiled VS/PS blobs` 变成一帧静默错误的画面。此外 `rhi_headless.c`/`rhi_metal.m`/`engine/tests/rhi_stubs.c` 仍无 `rhi_shader_create_path*` 定义（无人调用，三个树均链接通过）；若要让这些后端也服务 path API，需补定义。
+
 ## 本轮更新：Task 1-2 / D3D12 shader 路径入口 — 根因是引擎丢弃 shader 路径（D3D12 上**任何**渲染管线都建不出来）、`rhi_shader_create_path` 三后端落地、sidecar 映射契约 + 无设备单测 + WARP 双形态像素证明
 
 - **根因（"缺 blinn_phong 的 sidecar"是误判）**：每条渲染管线都经共用的 `shader_io` 读 GLSL 后调用 `rhi_shader_create(dev, src, len, is_fragment)`——**文本**入口，文件路径从未进入 RHI。而 D3D12 的 `rhi_shader_create` 只在 `len == 0`（文件名模式）时解析 sidecar：读 HLSL 源码 + 预编译 DXIL；`len > 0` 时它把 GLSL 文本存进 shader 记录、**不带 blob**，随后 `rhi_pipeline_create` 以 `D3D12: pipeline needs compiled VS/PS blobs` 拒绝。因此这不是"某条管线还没写 sidecar"：**即使 sidecar 手写齐了也永远够不着**，因为标识它的那个名字早已被丢弃——D3D12 上**任何**渲染管线都建不出来。
