@@ -4098,6 +4098,9 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         return out;
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL) return out;
+    /* Texture creation and final MRT registration each consume a resource
+     * slot; preflight so rhi_alloc_slot cannot abort partway through setup. */
+    if (dev->free_count < attachment_count + 2u) return out;
     md = (RHI_D3D12MRTFBO *)calloc(1u, sizeof(*md));
     if (md == NULL) return out;
     for (i = 0u; i < RHI_MRT_MAX_ATTACHMENTS; ++i) {
