@@ -492,10 +492,11 @@ RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, boo
  * Vulkan would have failed anyway on the unreadable file.
  *
  * Note the remaining divergence, deliberate and not a general parity claim:
- * only GL and Vulkan check that `path` exists, because only they read it.
- * D3D12 does no path-existence I/O at all — it derives a sidecar name and
- * lets the loader refuse a missing HLSL source or DXIL blob. So a bad D3D12
- * path surfaces as "sidecar not readable" rather than "path not found". */
+ * GL, Vulkan and Metal read `path` and so fail when it is unreadable; D3D12
+ * and the headless backend do no path-existence I/O at all — D3D12 derives
+ * a sidecar name and lets the loader refuse a missing HLSL source or DXIL
+ * blob. So a bad D3D12 path surfaces as "sidecar not readable" rather than
+ * "path not found". */
 RHIShader   rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment);
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);
