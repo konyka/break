@@ -294,6 +294,44 @@ the camera reaches the shader through `warp_forward_temporal_create` +
 **8/8**. Run it explicitly — `ctest -L graphics` — not only the default
 gate.
 
+### Step 5, attempted: the blocker is now isolated to the sidecar
+
+A WARP pixel proof for `blinn_phong_mrt_hlsl` was written (8x8 MRT FBO,
+`{R8G8B8A8_UNORM, R16G16_SFLOAT}`, three draws with `u_prev_vp` scaled by
+(1,1), (2,1) and (2,2), RT1 decoded from binary16). The assertions were
+deliberately orientation-free — identity `u_prev_vp` must give exactly
++0.0 in both channels *on the raw 16 bits*, sx=2/sy=1 must pin one channel
+to a hard zero while the other is live, and sx=2/sy=2 must make the
+absolute-value multisets of the two channels match.
+
+**It does not pass, and the test was removed rather than shipped red.** What
+the attempt established, by bisection:
+
+| Change | Result |
+| --- | --- |
+| MRT sidecar, MRT pipeline, MRT FBO, draw | device lost — `rhi_texture_read_pixels` returns false and every later test gets invalid handles |
+| **non-MRT** sidecar, same MRT pipeline + FBO, draw | fine — RT0 is exactly red, device healthy |
+| MRT sidecar, same setup, **no draw** | fine — RT0 reads back the clear, device healthy |
+
+So the MRT FBO and the 2-RTV pipeline are both fine, and the defect is
+inside the new sidecar path, not in the MRT infrastructure. Two further
+observations from the run, both worth carrying forward:
+
+- The D3D12 debug layer and GPU-based validation were enabled throughout and
+  emitted **nothing**. Whatever kills the device is not a rule violation the
+  validation layer knows about, so a pixel test alone will not find it.
+- With the non-MRT sidecar, RT1 came back **non-zero** even though
+  `rhi_mrt_fbo_bind` clears both attachments to (0,0,0,0). Either the
+  D3D12 clear skips attachment 1, or the unwritten attachment is not what
+  the clear left. Unrelated to R600, but it means an MRT test cannot assume
+  a cleared RT1.
+
+Next entry point is therefore narrow: diff `blinn_phong_mrt_hlsl.*` against
+`blinn_phong_hlsl.*` (the only differences are the extra `TEXCOORD3`
+varying, the `curr_clip.xy / curr_clip.w` divide in the VS, and the
+`SV_Target1` output) and bisect those three. The divide is the first
+suspect — nothing else in the pair touches w.
+
 The reverse check on that bind is the useful part: deleting the single
 `rhi_cmd_bind_uniform_buffer` line turns the WARP suite red, so the pixel
 assertions really are reading the camera out of the CBV. That is the
