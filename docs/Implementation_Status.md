@@ -82,7 +82,9 @@
 - **修复**：①寄存器类别接受 `'s'`；②`SamplerState` 先判 → SAMPLER，`Texture*` → IMAGE（SRV 范围）；③SAMPLER 只产出**静态采样器**、不再建描述符范围（否则与 t0 的 SRV 范围同寄存器重叠，D3D12 拒绝该根签名）。结果：blit/myui 的根签名语义正确地变为 `constants + SRV@t0 表 + 静态采样器@s0`。
 - **验证**：`test_d3d12_shader_contract` 两个用例（blit 管线创建 + bindings 解析）修复前/后对比——修复中间态会因根签名重叠/未绑定而失败，修复后均通过；D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
 - **定位方法（可复用）**：反复试探无效后，改用**逐字段打印根签名**做精确 diff，立刻看到 `count=1` 且唯一绑定 `name=` 为空——由此定位到反射器漏行，而不是猜测分类顺序。GBV info queue 转储用于区分"根签名序列化失败"与"PSO 创建失败"。
-- **遗留**：`rhi_cmd_bind_texture` 仍未验证通过——管线已能正确创建，接入绑定后回读为 `0 0 0 0`（绘制产生了片元，但采样返回 0），说明 SRV 描述符写入或纹理初始数据上传仍有问题。该实现因未取得像素证据而未提交。
+- **修复并验证**：`rhi_cmd_bind_texture` 已落地——从 pipeline 的 `register(tN)` 映射取得 root parameter，创建显式 `D3D12_SHADER_RESOURCE_VIEW_DESC` 写入 shader-visible CBV/SRV/UAV heap，按当前资源状态转换到 pixel/non-pixel shader resource，并设置 graphics/compute root descriptor table。SRV 槽位记录到当前 frame 列表，在 frame submit fence 后归还，避免首帧 `retire_fence=0` 立即复用覆盖 GPU 仍在读取的描述符。
+- **像素证据**：WARP 用例 `blit_texture_sampling_round_trip` 用 2x2 纯红纹理 + blit sidecar 画到 8x8 FBO，回读全部像素为红；与 texture initial-data readback、viewport、push-constant、FBO 清屏用例共同覆盖完整路径。此前的 `0 0 0 0` 根因是 SRV 绑定为空/槽位生命周期未覆盖提交帧，不是纹理上传。
+- **回归**：D3D12 专项 12/12；GL/VK 非图形分别 175/175、176/176。
 
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 

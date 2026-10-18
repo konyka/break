@@ -1251,6 +1251,15 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     rhi_device_set_lifecycle_result(dev, RHI_RESULT_OK);
     return (RHICmdBuffer *)ctx;
 }
+static void rhi_d3d12_retire_frame_srvs(RHI_D3D12Context *ctx, UINT64 fence) {
+    UINT i;
+    if (ctx == NULL) return;
+    for (i = 0u; i < ctx->frame_srv_count; ++i)
+        rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc,
+                                       ctx->frame_srv_slots[i], fence);
+    ctx->frame_srv_count = 0u;
+}
+
 void rhi_frame_end(RHIDevice *dev) {
     RHI_D3D12Context *ctx;
     HRESULT hr;
@@ -1276,10 +1285,12 @@ void rhi_frame_end(RHIDevice *dev) {
             rhi_d3d12_note_device_lost(ctx) : RHI_RESULT_ERROR);
         ctx->frame_started = 0u;
         ctx->acquire_in_flight = 0u;
+        rhi_d3d12_retire_frame_srvs(ctx, 0u);
         rhi_frame_owner_release(dev);
         return;
     }
     ctx->frame_fence[slot] = fence;
+    rhi_d3d12_retire_frame_srvs(ctx, fence);
     ctx->frame_parity ^= 1u;
     ctx->frame_started = 0u;
     ctx->frame_submitted = 1u;
@@ -2048,6 +2059,7 @@ typedef struct RHI_D3D12Pipeline {
     D3D12_PRIMITIVE_TOPOLOGY topology;
     UINT uniform_count;
     RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
+    UINT image_root_params[16];
     RHIPipelineDesc desc;
 } RHI_D3D12Pipeline;
 
@@ -2372,6 +2384,8 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         param->DescriptorTable.NumDescriptorRanges = 1u;
         param->DescriptorTable.pDescriptorRanges = range;
         param->ShaderVisibility = visibility;
+        if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < 16u)
+            b->image_root_params[bind->binding] = b->param_count - 1u;
     }
     return 1;
 }
@@ -2607,6 +2621,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         !rhi_mrt_formats_valid(desc->mrt_formats, desc->mrt_attachment_count))
         return RHI_HANDLE_NULL;
     ZeroMemory(&builder, sizeof(builder));
+    for (u32 i = 0u; i < 16u; ++i) builder.image_root_params[i] = UINT_MAX;
     /* Push-constant contract: 128B compute / 256B graphics (VK parity); the
      * terrain/water/combined_* layout booleans select which HLSL root
      * constant block consumes these bytes (declared by Task 6's shaders);
@@ -2683,6 +2698,12 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             free(pd);
             return RHI_HANDLE_NULL;
         }
+    }
+    for (u32 i = 0u; i < 16u; ++i) {
+        pd->image_root_params[i] = builder.image_root_params[i];
+        if (pd->image_root_params[i] != UINT_MAX &&
+            pd->push_param_index != UINT_MAX)
+            pd->image_root_params[i]++;
     }
     pd->desc = *desc;
     pd->topology = desc->point_list ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
@@ -3355,7 +3376,51 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r,
 }
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
                           RHISampler sampler, u32 unit) {
-    (void)cmd; (void)tex; (void)sampler; (void)unit;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    D3D12_RESOURCE_STATES read_state;
+    UINT root_param;
+    UINT slot;
+    (void)sampler; /* blit samplers are static root-signature samplers */
+    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL)
+        return;
+    root_param = pd->image_root_params[unit];
+    if (root_param == UINT_MAX) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) {
+        LOG_WARN("D3D12: SRV descriptor heap exhausted");
+        return;
+    }
+    ZeroMemory(&srv, sizeof(srv));
+    srv.Format = td->dxgi_format;
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    srv.Texture2D.MostDetailedMip = 0u;
+    srv.Texture2D.MipLevels = td->mip_levels;
+    ID3D12Device_CreateShaderResourceView(ctx->device, td->resource, &srv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (td->state != read_state) {
+        rhi_d3d12_transition(list, td->resource, td->state, read_state);
+        td->state = read_state;
+    }
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, root_param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, root_param, gpu);
 }
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex,
                                  RHISampler sampler) {

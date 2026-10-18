@@ -110,6 +110,8 @@ typedef struct RHI_D3D12Context {
     UINT bound_dsv_valid;
     void *bound_pipeline;       /* RHI_D3D12Pipeline*, .c-internal */
     UINT bound_pipeline_compute;
+    UINT frame_srv_slots[RHI_D3D12_CBV_SRV_UAV_CAPACITY];
+    UINT frame_srv_count;
     UINT64 next_fence;
     UINT64 completed_fence;
     UINT64 descriptor_retire_fence;
@@ -187,6 +189,7 @@ typedef struct RHI_D3D12RootSigBuilder {
     UINT param_count;
     UINT range_count;
     UINT sampler_count;
+    UINT image_root_params[16]; /* register(tN) -> root parameter */
     UINT push_constant_size;   /* bytes; 0 = none */
 } RHI_D3D12RootSigBuilder;
 
