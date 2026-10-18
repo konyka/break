@@ -40,6 +40,31 @@ Adding `storage_root_params[uN]` follows the existing pattern exactly. The
 `kind`-vs-register-class question does not need to be resolved in the
 reflector, and `ShaderIOBinding` gains no new field.
 
+## STATUS: NOT LANDED — this plan was executed and reverted
+
+Implementation was written and bisected on WARP; the device is removed by
+something in the bind and the cause was not isolated. The whole code change was
+reverted rather than shipped unproven. Read
+`docs/Implementation_Status.md` (the "compute binding" round entry) for the
+bisect table and the next experiments.
+
+Two predictions in this plan are wrong and are corrected here so the next
+attempt does not repeat them:
+
+1. **There is no register-space collision to solve.** The root-signature
+   builder already keys `image_root_params[tN]` and `uniform_root_params[bN]` as
+   independent per-kind arrays, each written only by its own kind. A compute
+   shader declaring `Texture2D t0` and `RWStructuredBuffer u0` gets two
+   separate root parameters — an SRV range at register 0 and a UAV range at
+   register 0 — which is legal, since they are different descriptor types in
+   different tables. Adding `storage_root_params[uN]` follows the pattern; the
+   reflector needs no change and `ShaderIOBinding` gains no field.
+
+2. **`rhi_cmd_memory_barrier` is not a stub.** It already records a global
+   `D3D12_RESOURCE_BARRIER_TYPE_UAV` (NULL resource = every UAV on the list).
+   The section below claiming it was left a stub and a silent-correctness gap
+   does not hold.
+
 ## The real constraint: resource state
 
 `RHI_D3D12Buffer` tracks a `state`, and a storage buffer does **not** arrive in

@@ -39,10 +39,40 @@
   **一次真实的跨后端抓漏**：首次跑 GL 树时 `test_no_hidden_gl_fallback` 转红，报 `src/rhi/rhi_d3d12.c: token 'rhi_gl'`——该守卫对**注释原文**做子串扫描。修复同样选择了**不放宽守卫**（给整个 D3D12 后端永久豁免全部 GL token 的代价太大），而是让注释改指 GL 的**函数名**而非文件名；修复本轮注释时该守卫再次以同样方式转红一次，已按同一办法处理。
 - **剩余有序工作（顺序是约束，不是偏好）**：本轮完成材质 binder 后，上一轮清单里的"①材质 binder"出清，顺序变为：**② shadow map → ③ compute 绑定 → ④ FORWARD_MRT velocity 输出 → ⑤ 引擎调用点迁移到 path API**。
   - **② shadow map —— 本轮已完成，见上方"阴影图"条目**。此前记录的顺序约束（"卡在采样器，先做 pass 后做采样器等于交付一帧采样结果错误但看起来在跑的画面"）是**从上面那条错误论断推导出来的，因而一并作废**：采样从未是前置条件。
-  - **③ compute 绑定**：与 graphics binder 同构但走 compute 根签名与 UAV 表，属于独立的绑定面。
+  - **③ compute 绑定（storage buffer）——仍未落地，本轮只换来结论，详见上方"compute 绑定"条目**。可以**从清单上划掉的两条前置猜测**：①**不存在"寄存器空间冲突"**，根签名构造器本就按 kind 分表，加一张 `storage_root_params[uN]` 即可，反射器与 `ShaderIOBinding` 都不必改；②`rhi_cmd_memory_barrier`**早已实现**（全局 UAV 屏障），不是缺口。真正的阻塞是：**compute 管线一旦绑定 UAV 描述符，设备在下一帧的某个不相关调用上失效，且 `GetDeviceRemovedReason` 同时仍报健康**。**下一步第一件事是 drain `ID3D12InfoQueue`**——调试层全程开着但消息从未被读取过，那是唯一还没试过的、能直接点名被拒绝对象的信息源。
+
   - **④ FORWARD_MRT velocity 输出**：其 `#ifdef FORWARD_MRT` 分支要额外 128B `std140` UBO，与基座 256B 合计 384B，**装不进 D3D12 256B graphics push 范围**（详见上一轮记录：在 b1 加 CBV 会新增一条描述符表，把 constants 压到 248B，于是 `u_camera_pos@240+12 = 252 > 248` 被**静默丢弃**——正是那条"丢写对测试不可见"的坑），且 FS 侧需要第二条 render target。必须与独立 MRT FBO 计划一并设计，不能顺手加。
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
+
+## 本轮更新：compute 绑定（storage buffer）——**未落地**，一轮只换来结论
+
+- **结果先说**：`rhi_cmd_bind_storage_buffer` **仍是桩**，本轮**没有产生可提交的代码改动**。实现写出来了，在 WARP 上逐项 bisect 后未能定位到设备移除的确切触发条件，因此按既定纪律**整体回滚**，只把结论与证据写进本文件。计划见 `docs/superpowers/plans/2026-10-19-d3d12-storage-buffer-design-plan.md`。
+- **先纠正计划里一处预测**：计划写"必须先解决寄存器空间冲突——反射器把 HLSL 寄存器类别压进 `kind`，`RWStructuredBuffer<u0>` 与 `Texture2D<t0>` 都落在 `binding=0`，单靠 register 建键会与 `image_root_params` 撞车"。**这是虚惊**。根签名构造器（`rhi_d3d12_root_sig_add_bindings`）本来就按 kind 分成**互不相干的两张表**（`image_root_params[tN]` / `uniform_root_params[bN]`），每个 kind 只写自己那张。于是同一条 compute 管线里 `Texture2D t0` 与 `RWStructuredBuffer u0` 会拿到**两个独立根参数**——一个是 t0 的 SRV range，一个是 u0 的 UAV range——**都从寄存器 0 开始，这在 D3D12 上合法**（SRV 与 UAV 是不同描述符类型、不同描述符表）。加一张 `storage_root_params[uN]` 照抄现有模式即可，**不需要改反射器，也不需要给 `ShaderIOBinding` 加类别字段**。
+- **另一个计划里的预测也是错的**：计划把 `rhi_cmd_memory_barrier` 记为"仍是桩、且会构成静默正确性缺口"。核对后**它早已实现**（`rhi_d3d12.c` 内是一记 `D3D12_RESOURCE_BARRIER_TYPE_UAV` 全局屏障，NULL 资源 = 覆盖表上所有 UAV）。
+- **真正撞上的墙：compute 管线一旦绑定 UAV 相关状态，设备会在随后的某次调用上"被移除"，而 `ID3D12Device_GetDeviceRemovedReason` 同时仍报设备健康。** 这个失败形态极具误导性：
+  - `rhi_frame_end_ex` **照常返回 `RHI_RESULT_OK`**；
+  - 最早的症状是**毫不相干的下一个调用**失败——典型是一个 readback 用的 READBACK staging buffer 创建返回 `0x887A0005`（`DXGI_ERROR_DEVICE_REMOVED`）；
+  - 而同一时刻 `GetDeviceRemovedReason` 返回 `0x887A0001`（`NOT_FOUND`，即"健康"）；
+  - 结果是**这一轮里后续所有 API 连环失败**，看起来像显存耗尽或 readback 尺寸问题，实则是上一帧的提交被判无效。
+- **逐项 bisect 的实测结论（都是观察，不是推断）**：
+
+  | 变量 | 结果 |
+  |---|---|
+  | 是否 `rhi_cmd_bind_storage_buffer` | 唯一决定性因素：不绑则一切正常；一绑（哪怕不 dispatch、不设根描述符表）设备即在下一帧后失效 |
+  | `uav.Format`：`R32_TYPELESS` vs `DXGI_FORMAT_UNKNOWN` | 都失败 |
+  | `StructureByteStride` 0 vs 类型化视图 | 都失败 |
+  | `OffsetInDescriptorsFromTableStart`：`APPEND` vs 显式 0 | 都失败 |
+  | UAV 缓冲 256B 对齐（已实际打上补丁） | **仍然失败**——该补丁随后回滚 |
+  | 缓冲放置（`GENERIC_READ` → `UNORDERED_ACCESS` 转换） | 状态本来就是 8（`UNORDERED_ACCESS`），转换是 no-op，不是原因 |
+  | dispatch 尺寸、绑定寄存器个数 | 无关（1 与 3、绑 1 个与 2 个，结果相同） |
+  | 管线侧 `storage_root_params` | **正确**：`stor0=0 stor1=1 compute=1`，反射器也确实数到 2 个绑定 |
+  | 一个附带发现（**真实但本轮未能单独固定**） | 根签名构造器无条件为 compute 管线发出 `32BIT_CONSTANTS` 根参数；compute sidecar 若不声明 `ConstantBuffer<cbuffer>`，该参数永远不会被写入。**在 binder 桩状态下加/去这个修复对测试没有可观测差别**——只有在 binder 真正工作时才显现。所以它既没有被证实也没有被否证，**不作为已修 bug 记账** |
+
+- **另一条独立观测（与上面无关，但同样值得记）**：着色器**只绑 u0 就 dispatch、而着色器同时写 u1** 会**直接破坏进程内存**。未写入的 UAV 描述符不是惰性槽位——着色器照写不误，写入落到陈旧描述符所指向的地址上。这解释了开发过程中若干次莫名其妙的内存损坏，也说明**任何 compute 侧车脚本的每个 UAV 寄存器都必须在 dispatch 前绑定**，不能靠"这个槽没人用"。
+- **顺带修正了本会话另一处自查错误**：本轮诊断中我一度用 `fprintf(stderr, ..., rhi_buffer_read(...), readback[0], ...)` 采样返回值——C 的实参求值顺序未指定，`readback[0]` 可能在 `rhi_buffer_read` **之前**被读取，于是"读到全零"的结论是探针自身的假象，不是被测代码的行为。**探针必须先落变量、再断言**。
+- **下一步建议（按性价比排序）**：①**提交后立即 drain `ID3D12InfoQueue`**——调试层全程开着，但它的消息从未被读出来过，其中一条会直接点名被拒绝的对象；本轮试过引入 `d3d12sdklayers.h` 但 `ID3D12InfoQueue` 接口声明没进来（`__ID3D12InfoQueue_INTERFACE_DEFINED__` 守卫），需要先把接口头拉通。②**单独验证 GPU-based validation**（`ENGINE_D3D12_DEBUG` 在本构建里开着，移除可能就是 GBV 在拦）。③验证 RAW UAV 是否要求缓冲资源自身按 `R32_TYPELESS` 创建而非无格式。④`RHIBufferDesc` 没有 stride 字段，结构化 UAV（`RWStructuredBuffer<T>`）无法表达；要么加字段（跨后端公开 API 改动），要么 D3D12 侧车脚本统一走字节寻址形式。
+- **纪律记录**：这一轮**没有做到"改完就提交"**，因为反向验证把测试的意义否掉了——把唯一的修复回退后测试**仍然是绿的**，说明测试并没有钉住它。没有可验证收益的改动不提交，因此选择整体回滚、把结论留档。**这比提交一个看起来合理、实则无法证伪的"修复"要诚实。**
 
 ## 本轮更新：阴影图（shadow map）落地 — 六个桩入口实现、D3D12 typeless 别名、深度-only 管线接受空 PS、WARP 像素级往返证明（含五项反向验证与一项"证明不了"的如实登记）
 
