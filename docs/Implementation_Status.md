@@ -55,7 +55,9 @@
 - **实现**：不新增反射逻辑——D3D12 管线在创建时已从 sidecar 的 `// rhi:uniform <name> <offset>` 标记建好 `uniforms[]` 表，`rhi_pipeline_get_uniform_location` 也一直在读它。bindings 实现为该表的**拥有副本视图**（避免管线销毁后留下悬垂名字指针），`resolve` 做名字查表返回根常量字节偏移，与 legacy lookup 同权威、同取值。
 - **验证**：`test_d3d12_shader_contract` 新增 `pipeline_bindings_resolve_matches_legacy_lookup`——用现成的 `blit_hlsl` sidecar 造管线，断言 `bindings_create` 返回非 NULL（旧桩会失败）、`resolve("u_transform")` **等于** legacy lookup 的返回值、不存在的名字返回 -1、NULL 绑定返回 -1。
 - **回归**：D3D12 零错误零警告、专项 **12/12**；GL **175/175**；VK **176/176**。
-- **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_cmd_bind_texture`（SRV 描述符 + 描述符表绑定，纹理化渲染的总闸）、`rhi_cmd_bind_uniform_buffer`、`rhi_cmd_begin/end_render_pass` 仍是桩/no-op。顺序约束：纹理绑定补齐后才轮到渲染管线 sidecar。
+- **已补资源绑定**：`rhi_cmd_bind_texture` 已通过 WARP 纯红纹理像素断言；本轮继续补齐 `rhi_cmd_bind_uniform_buffer`（CBV 描述符 + shader-visible CBV/SRV/UAV heap + graphics/compute root descriptor table），并在 pipeline 侧记录 `register(bN)` 到 root parameter 的映射（push constants 插入 root 参数 0 后同步修正索引）。CBV descriptor 使用当前提交 fence 延迟回收，避免 GPU 仍在读取时复用槽位。
+- **验证/回归**：D3D12 专项 12/12；GL/VK 非图形测试均通过主体用例，唯一失败仍为既有 Windows `test_platform_win32_runtime` 的 `OpenClipboard failed` 环境性用例（14/15 通过）。
+- **剩余缺口（下一轮）**：`rhi_mrt_fbo_*`、立方图 FBO、`rhi_cmd_fill_buffer/update_buffer`、`rhi_cmd_begin/end_render_pass` 仍是桩/no-op。
 
 ## 本轮更新：R715 七记 — **D3D12 从未设置 viewport**（该后端上从未正确光栅化过任何几何）+ `probe_hlsl` 最小探针 sidecar 与像素用例
 

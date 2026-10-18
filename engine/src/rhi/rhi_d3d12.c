@@ -2060,6 +2060,7 @@ typedef struct RHI_D3D12Pipeline {
     UINT uniform_count;
     RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
     UINT image_root_params[16];
+    UINT uniform_root_params[16];
     RHIPipelineDesc desc;
 } RHI_D3D12Pipeline;
 
@@ -2386,6 +2387,8 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         param->ShaderVisibility = visibility;
         if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < 16u)
             b->image_root_params[bind->binding] = b->param_count - 1u;
+        if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < 16u)
+            b->uniform_root_params[bind->binding] = b->param_count - 1u;
     }
     return 1;
 }
@@ -2621,7 +2624,10 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         !rhi_mrt_formats_valid(desc->mrt_formats, desc->mrt_attachment_count))
         return RHI_HANDLE_NULL;
     ZeroMemory(&builder, sizeof(builder));
-    for (u32 i = 0u; i < 16u; ++i) builder.image_root_params[i] = UINT_MAX;
+    for (u32 i = 0u; i < 16u; ++i) {
+        builder.image_root_params[i] = UINT_MAX;
+        builder.uniform_root_params[i] = UINT_MAX;
+    }
     /* Push-constant contract: 128B compute / 256B graphics (VK parity); the
      * terrain/water/combined_* layout booleans select which HLSL root
      * constant block consumes these bytes (declared by Task 6's shaders);
@@ -2701,9 +2707,13 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     }
     for (u32 i = 0u; i < 16u; ++i) {
         pd->image_root_params[i] = builder.image_root_params[i];
+        pd->uniform_root_params[i] = builder.uniform_root_params[i];
         if (pd->image_root_params[i] != UINT_MAX &&
             pd->push_param_index != UINT_MAX)
             pd->image_root_params[i]++;
+        if (pd->uniform_root_params[i] != UINT_MAX &&
+            pd->push_param_index != UINT_MAX)
+            pd->uniform_root_params[i]++;
     }
     pd->desc = *desc;
     pd->topology = desc->point_list ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
@@ -3428,7 +3438,36 @@ void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex,
 }
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
-    (void)cmd; (void)buf; (void)binding;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Buffer *bd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    if (ctx == NULL || g_current_device == NULL || binding >= 16u) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL) return;
+    param = pd->uniform_root_params[binding];
+    if (param == UINT_MAX) return;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&cbv, sizeof(cbv));
+    cbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource);
+    cbv.SizeInBytes = (UINT)((bd->size + 255u) & ~255u);
+    ID3D12Device_CreateConstantBufferView(ctx->device, &cbv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
+    rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
+                                   ctx->next_fence);
 }
 /* Legacy per-uniform setters write the 256B push staging buffer; the dirty
  * range flushes as root constants before the next draw/dispatch (VK parity).

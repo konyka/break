@@ -190,6 +190,7 @@ typedef struct RHI_D3D12RootSigBuilder {
     UINT range_count;
     UINT sampler_count;
     UINT image_root_params[16]; /* register(tN) -> root parameter */
+    UINT uniform_root_params[16]; /* register(bN) -> root parameter */
     UINT push_constant_size;   /* bytes; 0 = none */
 } RHI_D3D12RootSigBuilder;
 
