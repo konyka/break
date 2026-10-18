@@ -45,6 +45,29 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：storage buffer 根因定位 — **`ID3D12Device_CreateUnorderedAccessView` 就是杀手**，且它**立即**生效（无失败提交，故 DRED 无面包屑）
+
+- **前两轮白走的路，本轮说清楚**：先前一直假设"设备是在某次提交后失效、只是症状出现在下一次 API 调用上"，所以一直在找"哪次提交有问题"，并试图靠 DRED/调试层拿到证据。**这个前提是错的。**
+- **本轮的判定链（每一步都是实测，不是推断）**：
+  | 步骤 | 结果 |
+  |---|---|
+  | binder 完全不调用 | 一切正常（这是前几轮已知的基线） |
+  | binder 调用，**去掉 dispatch** | 设备照样在下一帧后失效 → **与 GPU 执行无关** |
+  | binder 调用，去掉 dispatch，**再去掉 `SetComputeRootDescriptorTable`** | 仍然失效 → **与根描述符表无关** |
+  | binder 调用，去掉 dispatch，去掉根表，**只留 `CreateUnorderedAccessView`** | **仍然失效** |
+  | 同上，但**把 `CreateUnorderedAccessView` 也去掉**（其余全留） | **一切正常**：`read=1`、`tex=1`、`texread=1`、`p0=1` |
+  
+  收口只有一条：**`ID3D12Device_CreateUnorderedAccessView` 这一次调用本身就把设备弄死了。**
+- **这解释了此前一切反常现象**：
+  - **DRED 一片空白、没有任何面包屑**——因为**从来没有一次"失败的提交"**。DRED 的 auto-breadcrumb 记录的是命令列表执行到哪，而这里在命令列表被提交之前、甚至在没有任何 GPU 工作排队时设备就没了。
+  - **`ID3D12Device_GetDeviceRemovedReason` 一直报 `0x887a0001`（`DXGI_ERROR_NOT_FOUND`，即"健康"）**——前几轮我反复据此判定"设备是好的"，**这个判断在 WARP 上不可信**。本轮实测：失效之后**纹理创建同样失败**（`tex=0`），证明设备确实已经不可用，而 `GetDeviceRemovedReason` 仍在说健康。**WARP 的移除原因上报与真实状态不一致，后续任何诊断都不应再拿它当判据。**
+  - **症状总是落在不相关的地方**——readback 的 `CreateCommittedResource` 先撞上，返回 `0x887A0005`，于是看起来像"readback 尺寸不对"或"显存不足"。它只是**第一个撞上已死设备的 API**。
+- **本轮顺手修掉的两个真实缺陷（都已过门控）**：
+  ① **DRED 的 page fault 通道被"打开却从不读取"**。`rhi_d3d12_dred_enable` 早就 `SetPageFaultEnablement(FORCED_ON)`，但 `rhi_d3d12_dred_dump` 只读 auto-breadcrumbs。**能指出"什么东西坏了"的那一半（`GetPageFaultAllocationOutput1`，含故障虚拟地址 + 归属分配链 + 最近释放分配链）一直在空转**，现在补上并按"故障地址 → 归属分配 → 是否落在最近释放的分配里"输出，后者正是"描述符活得比它指向的缓冲久"的特征签名。
+  ② **`DXGI_ERROR_DEVICE_REMOVED` 此前不经过 `rhi_d3d12_note_device_lost`**。资源创建类 API（`rhi_d3d12_staging_buffer`、`rhi_d3d12_buffer_alloc`）拿到移除码只是返回 NULL，于是**损失被晚一两次调用才发现，届时 DRED 现场早已丢失**。现已接入，`note_device_lost` 会立刻锁存并 dump。
+- **仍未确定的是什么（诚实边界）**：**具体是哪个 UAV 参数让 WARP 拒绝**。已逐项排除：视图格式（`R32_TYPELESS` vs `DXGI_FORMAT_UNKNOWN`）、`StructureByteStride` 0、缓冲的 256B tile 对齐（实际打上补丁验证过仍失败）、缓冲放置、dispatch 尺寸、寄存器个数。**下一步实验因此已经很明确**：把 UAV 视图参数做成一个小矩阵（格式 × stride × 缓冲 flags × 缓冲大小）逐格实测，找出 WARP 接受的那一格。**这是机械活，不再是猜测。**
+- **本轮没有提交 binder 本身**：它仍然会让设备失效，不能交付。提交的是定位结论 + 两个已验证的诊断能力修复。
+
 ## 本轮更新：门控口径更正 — 5 个 `fuzz_*_smoke` **从来不是失败用例**，此前多轮落账把它记成"已知失败"是错的
 
 - **问题**：本会话此前的每一轮门控都写 `ctest -LE graphics`，然后把结果里的 5 个 `fuzz_*_smoke (Not Run)` 当作"已知环境失败"记进 `Implementation_Status.md`。**这个口径从根上就是错的**：那 5 项之所以 `Not Run`，是因为 `cmake` 用 `EXCLUDE_FROM_ALL` 建它们（`engine/CMakeLists.txt:3215/3421/3451/3463/3476`，注释写明"run by hand under ASan/UBSan"），而门控命令**没有排除 `fuzz` 标签**。

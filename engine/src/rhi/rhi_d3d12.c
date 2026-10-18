@@ -270,9 +270,36 @@ static void rhi_d3d12_dred_enable(RHI_D3D12Context *context) {
 static void rhi_d3d12_dred_dump(RHI_D3D12Context *ctx) {
     ID3D12DeviceRemovedExtendedData1 *dred = NULL;
     D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 crumbs;
+    D3D12_DRED_PAGE_FAULT_OUTPUT1 faults;
     if (!ctx->dred_enabled) return;
     if (FAILED(ID3D12Device_QueryInterface(ctx->device,
             &IID_ID3D12DeviceRemovedExtendedData1, (void **)&dred))) return;
+    /* Page faults first: a descriptor pointing at freed or bogus memory faults,
+     * and the faulting address names the resource. Breadcrumbs only say which
+     * command list got that far, which is much weaker evidence. DRED page
+     * faulting is already forced on in rhi_d3d12_dred_enable — it was enabled
+     * but never read, so the half that identifies WHAT was wrong went unused. */
+    ZeroMemory(&faults, sizeof(faults));
+    if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_GetPageFaultAllocationOutput1(
+            dred, &faults)) && faults.PageFaultVA != 0) {
+        LOG_ERROR("DRED page fault at VA=%p",
+                  (const void *)(ULONG_PTR)faults.PageFaultVA);
+        /* Walking the existing-allocation chain names what the bad address
+         * belongs to; a non-null recent-FREED chain instead means the address
+         * was freed — the signature of a descriptor outliving its buffer. */
+        {
+            const D3D12_DRED_ALLOCATION_NODE1 *node =
+                faults.pHeadExistingAllocationNode;
+            for (u32 i = 0; node != NULL && i < 4u; ++i, node = node->pNext) {
+                LOG_ERROR("DRED fault alloc[%u] type=%d name=%s", i,
+                          (int)node->AllocationType,
+                          node->ObjectNameA ? node->ObjectNameA : "(unnamed)");
+            }
+        }
+        if (faults.pHeadRecentFreedAllocationNode != NULL)
+            LOG_ERROR("DRED fault: the faulting address falls in a RECENTLY "
+                      "FREED allocation");
+    }
     if (SUCCEEDED(ID3D12DeviceRemovedExtendedData1_GetAutoBreadcrumbsOutput1(dred, &crumbs))) {
         const D3D12_AUTO_BREADCRUMB_NODE1 *node = crumbs.pHeadAutoBreadcrumbNode;
         while (node != NULL) {
@@ -747,6 +774,12 @@ static ID3D12Resource *rhi_d3d12_staging_buffer(RHI_D3D12Context *ctx,
         heap_type == D3D12_HEAP_TYPE_READBACK ? D3D12_RESOURCE_STATE_COPY_DEST
                                               : D3D12_RESOURCE_STATE_GENERIC_READ,
         NULL, &IID_ID3D12Resource, (void **)&staging);
+    /* A device that has already been removed answers every later call with
+     * DXGI_ERROR_DEVICE_REMOVED. Without this the loss is discovered one or
+     * two calls too late, by whichever unrelated API happens to fail next, and
+     * the DRED breadcrumbs for the submit that actually killed it are gone
+     * by then. */
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) (void)rhi_d3d12_note_device_lost(ctx);
     return SUCCEEDED(hr) ? staging : NULL;
 }
 
@@ -1882,6 +1915,7 @@ static HRESULT rhi_d3d12_buffer_alloc(RHI_D3D12Context *ctx, UINT64 size,
                                       ID3D12Resource **out) {
     D3D12_HEAP_PROPERTIES properties;
     D3D12_RESOURCE_DESC description;
+    HRESULT hr;
     ZeroMemory(&properties, sizeof(properties));
     properties.Type = device_local ? D3D12_HEAP_TYPE_DEFAULT : D3D12_HEAP_TYPE_UPLOAD;
     properties.CreationNodeMask = 1u;
@@ -1895,9 +1929,11 @@ static HRESULT rhi_d3d12_buffer_alloc(RHI_D3D12Context *ctx, UINT64 size,
     description.SampleDesc.Count = 1u;
     description.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     if (allow_uav) description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    return ID3D12Device_CreateCommittedResource(
+    hr = ID3D12Device_CreateCommittedResource(
         ctx->device, &properties, D3D12_HEAP_FLAG_NONE, &description,
         initial_state, NULL, &IID_ID3D12Resource, (void **)out);
+    if (hr == DXGI_ERROR_DEVICE_REMOVED) (void)rhi_d3d12_note_device_lost(ctx);
+    return hr;
 }
 
 /* One-shot staging upload into a DEFAULT-heap buffer range. */
