@@ -139,6 +139,7 @@ TEST(uav_view_parameter_matrix) {
                cells[i].uav_flag, cells[i].create_view,
                ok ? "ALIVE" : "KILLED", detail);
         if (ok) ++survivors;
+        fflush(stdout);
     }
     printf("  uav-matrix: %d/10 cells survived\n", survivors);
     /* The invariant that must hold on ANY runtime is the control pair: with no

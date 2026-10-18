@@ -4851,6 +4851,15 @@ int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int format_kind) {
                                    ctx->next_fence);
     return 0;
 }
+void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
+                                 u32 binding) {
+    (void)cmd; (void)buf; (void)binding;
+}
+void rhi_cmd_bind_acceleration_structure(RHICmdBuffer *cmd,
+                                         RHIAccelerationStructure structure,
+                                         u32 binding) {
+    (void)cmd; (void)structure; (void)binding;
+}
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);

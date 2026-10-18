@@ -45,6 +45,22 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：真实 GPU 复测 — **不是 WARP 的能力缺口，RTX 4060 上同样杀死设备**
+
+- **上一轮的结论被本轮推翻了一半**：矩阵在 **WARP** 上是"建 UAV 视图即移除设备"，当时据此推断"这台机器的 WARP 不支持 UAV"。本轮把同一矩阵跑在**真实 GPU** 上（不设 `ENGINE_D3D12_WARP`）：
+
+  | 视图格式 | 大小 | usage | WARP | RTX 4060 |
+  |---|---|---|---|---|
+  | R32_TYPELESS (raw) | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | DXGI_FORMAT_UNKNOWN | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | R32_FLOAT (typed) | 48 / 256 | STORAGE | KILLED | **KILLED** |
+  | 对照（不建视图） | 48 / 256 | STORAGE | ALIVE | **ALIVE** |
+
+  **完全一致。** 所以**方案 1（换真实 GPU lane）救不了这个特性**——问题不在运行时，在我们的代码路径。这直接回答了上一轮留档的抉择题：**选项 1 不成立**。
+- **另一条更硬的线索**：把视图的目标描述符换成**全零句柄**（D3D12 语义上表示"只校验不写入"）后，进程**不是返回错误，而是直接崩溃**（exit 125，访问违例）。也就是说，**D3D12 运行时对畸形的 UAV 视图创建不会返回错误码，而是直接崩**。这解释了为什么我们从来没能通过 HRESULT 拿到任何诊断信息——那些"失败"根本没走正常的错误返回路径。
+- **由此得到的当前最强假设（未验证，如实标注）**：我们的调用很可能传了某个畸形参数，而运行时的反应不是返回 `E_INVALIDARG` 而是毁掉设备。**下一轮该做的不是再换参数，而是先把 `CreateUnorderedAccessView` 的每个字段单独归零**（`Offset`/`NumElements`/`Flags`/`Format` 逐个），找出哪一个在触发——**与"整格换格式"的粗筛不同，这是字段级定位**。另外 `rhi_d3d12_descriptor_cpu` 算出的 `base.ptr + slot*increment` 是否落在堆内也值得直接断言一次。
+- **本轮顺手修回的东西**：上一轮的 python 批量替换在裁剪 binder 桩时多切掉了 `rhi_cmd_bind_storage_buffer` 与 `rhi_cmd_bind_acceleration_structure` 两个函数（链接期才发现 `undefined symbol`）。已恢复。**提醒自己：批量文本替换在这个文件上不可靠，逐段核对 `git diff` 才是可靠的。**
+
 ## 本轮更新：UAV 参数矩阵 — **这台机器的 WARP 上，任何 UAV 视图都会直接杀死设备**
 
 - **新增诊断用例** `test_d3d12_uav_matrix`（D3D12 树内已注册，`platform_runtime` 标签，2.6s）。它把 UAV 视图参数做成矩阵逐格实测，**每格单独建一个设备**——因为设备一旦死掉就无法测下一格，且 `GetDeviceRemovedReason` 在 WARP 上不可信。判定方式是"之后一个无关的纹理创建是否还成功"，**从不看 removal reason**。
