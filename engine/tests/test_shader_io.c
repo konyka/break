@@ -276,6 +276,78 @@ TEST(forward_velocity_uses_single_pass_mrt_contract)
     ASSERT_NOT_NULL(strstr(src, "rhi_offscreen_fbo_bind_load(cmd, &scene_fbo)"));
 }
 
+/* R600: the D3D12 blinn_phong sidecars must mirror their GLSL twins field for
+ * field. The contract that actually bites is the `// rhi:uniform` marker
+ * table — that is what rhi_pipeline_bindings_resolve reads, so a missing
+ * marker is the only thing that turns a dropped push write from a log line
+ * into a silently zeroed camera. These four files therefore assert:
+ *   - every base push member still carries its marker,
+ *   - u_camera_pos carries NONE (it rides the b1 temporal CBV now),
+ *   - the CBV is declared at b1, which is what adds the second descriptor
+ *     table that truncates the push range from 252 to 248 bytes. */
+TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv)
+{
+    static const char *const k_sidecars[] = {
+        "blinn_phong_hlsl.vert", "blinn_phong_hlsl.frag",
+        "blinn_phong_mrt_hlsl.vert", "blinn_phong_mrt_hlsl.frag",
+    };
+    /* Names each sidecar declares in the push block, with their offsets. */
+    static const char *const k_push_markers[] = {
+        "// rhi:uniform u_model 0",
+        "// rhi:uniform u_view 64",
+        "// rhi:uniform u_proj 128",
+        "// rhi:uniform u_light_dir 192",
+        "// rhi:uniform u_light_color 208",
+        "// rhi:uniform u_ambient 224",
+    };
+    usize i;
+    for (i = 0; i < sizeof(k_sidecars) / sizeof(k_sidecars[0]); i++) {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source(k_sidecars[i], src, sizeof(src)));
+        /* The push block must not grow back past 240: that is the whole
+         * reason the camera moved, and 240 is what survives the 248-byte
+         * clamp a second descriptor table imposes. */
+        ASSERT_FALSE(strstr(src, "u_camera_pos;  // 240") != NULL);
+        ASSERT_FALSE(strstr(src, "rhi:uniform u_camera_pos") != NULL);
+        /* The temporal CBV is the second table; losing it puts the camera
+         * back into a push write that would be dropped. */
+        ASSERT_NOT_NULL(strstr(src, "struct ForwardTemporal {"));
+        ASSERT_NOT_NULL(strstr(src, "register(b1, space0)"));
+    }
+    /* Markers are per-stage (VS publishes the matrices, PS the lights), so
+     * each stage file is checked against the members it must carry. */
+    {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.vert", src, sizeof(src)));
+        for (i = 0; i < 3; i++)
+            ASSERT_NOT_NULL(strstr(src, k_push_markers[i]));
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.frag", src, sizeof(src)));
+        for (i = 3; i < sizeof(k_push_markers) / sizeof(k_push_markers[0]); i++)
+            ASSERT_NOT_NULL(strstr(src, k_push_markers[i]));
+    }
+    /* The MRT pair is the only one that may emit velocity, and it must emit
+     * it to RT1 — the whole point of the variant. */
+    {
+        char src[16384];
+        ASSERT_TRUE(read_shader_source("blinn_phong_mrt_hlsl.vert", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "float2 velocity : TEXCOORD3"));
+        ASSERT_NOT_NULL(strstr(src, "curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w"));
+        ASSERT_TRUE(read_shader_source("blinn_phong_mrt_hlsl.frag", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "float2 velocity : SV_Target1"));
+        ASSERT_TRUE(read_shader_source("blinn_phong_hlsl.frag", src, sizeof(src)));
+        ASSERT_FALSE(strstr(src, "SV_Target1") != NULL);
+    }
+    /* The engine publishes the CBV bytes: one struct, one buffer, both
+     * backends. If it drifts from the sidecar the whole contract is a lie. */
+    {
+        char src[524288];
+        ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
+        ASSERT_NOT_NULL(strstr(src, "cam_pos[3]"));
+        ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo"));
+        ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo_write"));
+    }
+}
+
 TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
 {
     static char src[524288]; /* R584: test_vulkan.c > 128KiB (see line ~215) */
@@ -1251,22 +1323,26 @@ TEST(vk_push_tables_match_reflection)
 {
     static const VKPushRow rows[] = {
         /* blinn 家族（默认 forward 段：u_model@0 u_view@64 u_proj@128 +
-         * else 段 u_light_dir@192 u_light_color@208 u_ambient@224
-         * u_camera_pos@240） */
+         * else 段 u_light_dir@192 u_light_color@208 u_ambient@224）。
+         * R600：u_camera_pos 不再是 push 成员 —— 它进了 ForwardTemporal
+         * UBO（std140 {vec3 u_camera_pos; float pad; mat4 u_prev_vp;
+         * mat4 u_prev_model}），push 尾部止于 240。这样 D3D12 sidecar 加
+         * 一张 b1 CBV 表时，根签名 64-DWORD 预算只会把 push range 从
+         * 252 压到 248，而 u_camera_pos 不再落在被丢弃的那一段。 */
         { "blinn_phong_vk.vert", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_vk.vert", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_vk.vert", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_vk.vert", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_vk.vert", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_vk.vert", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_vk.vert", "u_camera_pos", "u_camera_pos", 240u, 12u },
+
         { "blinn_phong_vk.frag", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_vk.frag", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_vk.frag", "u_proj", "u_proj", 128u, 64u },
         { "blinn_phong_vk.frag", "u_light_dir", "u_light_dir", 192u, 12u },
         { "blinn_phong_vk.frag", "u_light_color", "u_light_color", 208u, 12u },
         { "blinn_phong_vk.frag", "u_ambient", "u_ambient", 224u, 12u },
-        { "blinn_phong_vk.frag", "u_camera_pos", "u_camera_pos", 240u, 12u },
+
         { "blinn_phong_arr_vk.vert", "u_model", "u_model", 0u, 64u },
         { "blinn_phong_arr_vk.vert", "u_view", "u_view", 64u, 64u },
         { "blinn_phong_arr_vk.vert", "u_proj", "u_proj", 128u, 64u },
@@ -2013,4 +2089,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(push_constants_absent_returns_zero_and_handles_null);
     RUN_TEST(vk_push_tables_match_reflection);
     RUN_TEST(vk_compute_push_tables_match_reflection);
+    RUN_TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv);
 TEST_MAIN_END()

@@ -7,12 +7,14 @@ layout(location = 2) in vec2 aUV;
 uniform mat4 u_model;
 uniform mat4 u_view;
 uniform mat4 u_proj;
-#ifdef FORWARD_MRT
+/* R600: ForwardTemporal is UNCONDITIONAL and leads with the camera
+ * position; see blinn_phong.frag for why. */
 layout(std140, binding = 0) uniform ForwardTemporal {
+    vec3 u_camera_pos;
+    float _cam_pad;
     mat4 u_prev_vp;
     mat4 u_prev_model;
-};
-#endif
+} temporal;
 
 out vec3 vWorldPos;
 out vec3 vNormal;

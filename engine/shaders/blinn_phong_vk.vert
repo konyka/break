@@ -14,8 +14,6 @@ layout(push_constant) uniform PushConstants {
     float _pad1;
     vec3 u_ambient;
     float _pad2;
-    vec3 u_camera_pos;
-    float _pad3;
 } pc;
 
 layout(location = 0) out vec3 vWorldPos;
@@ -23,11 +21,13 @@ layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
 #ifdef FORWARD_MRT
 layout(location = 3) out vec2 v_velocity;
+#endif
 layout(std140, set = 1, binding = 0) uniform ForwardTemporal {
+    vec3 u_camera_pos;
+    float _cam_pad;
     mat4 u_prev_vp;
     mat4 u_prev_model;
 } temporal;
-#endif
 
 void main() {
     vec4 world_pos = pc.u_model * vec4(aPos, 1.0);

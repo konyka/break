@@ -174,6 +174,41 @@ typedef struct { f32 pos[3]; } CTransform;
 typedef struct { u32 physics_id; } CRigidBody;
 typedef struct { u32 mesh_index; } CMeshRef;
 
+/* R600: mirrors the unconditional ForwardTemporal block the blinn_phong family
+ * declares — {vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4
+ * u_prev_model}. std140 and the D3D12 sidecar's cbuffer agree member for
+ * member, so the same bytes feed all three backends. The camera position
+ * LEADS so a stale rebind can never feed a zeroed camera to a shader that
+ * expects the temporal pair (R589's rule). This buffer is deliberately NOT
+ * rs->clustered_proj_ubo: the clustered family reads that one at a different
+ * layout and must keep it. */
+typedef struct {
+    f32  cam_pos[3];
+    f32  cam_pad;
+    Mat4 prev_vp;
+    Mat4 prev_model;
+} ForwardTemporalUbo;
+
+/* Writes the blinn forward path's frame UBO in one shot. Every path that draws
+ * a blinn_phong shader must call this and bind the buffer: the camera position
+ * lives there now, not in the push block, so a path that forgets renders with a
+ * zeroed view vector. prev_model is identity here — mega verts are world-space
+ * and static nodes match the blinn approximation; the instanced variant reads
+ * per-instance prev_model from its SSBO. */
+static void forward_temporal_ubo_write(RHIDevice *device, RHIBuffer ubo,
+                                      const Vec3 *cam_pos,
+                                      const Mat4 *prev_vp) {
+    ForwardTemporalUbo data;
+    if (!rhi_handle_valid(ubo) || cam_pos == NULL || prev_vp == NULL) return;
+    data.cam_pos[0] = cam_pos->e[0];
+    data.cam_pos[1] = cam_pos->e[1];
+    data.cam_pos[2] = cam_pos->e[2];
+    data.cam_pad = 0.0f;
+    data.prev_vp = *prev_vp;
+    data.prev_model = mat4_identity();
+    rhi_buffer_update(device, ubo, &data, sizeof(data));
+}
+
 /* ECS system: copy simulated rigid-body positions back into transforms and
  * respawn anything that fell out of the world. Each entity touches only its own
  * physics body (unique physics_id), so chunks dispatch safely across workers. */
@@ -286,6 +321,10 @@ typedef struct {
      * index differs per variant (static: set=2, instanced: set=3), but the
      * bind call resolves the pipeline's own ubo_set. */
     RHIBuffer     clustered_proj_ubo;
+    /* R600: blinn_phong's own frame UBO {u_camera_pos, u_prev_vp,
+     * u_prev_model}. Separate from clustered_proj_ubo, whose readers
+     * (pbr_clustered{,_vk}.vert) use a different layout. */
+    RHIBuffer     forward_temporal_ubo;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -602,11 +641,23 @@ static bool render_init(RenderState *rs, Platform *platform) {
              * pipeline still reads correct values. Refreshed per frame.
              * R592: +2x64 vec4 factor tables (offsets 192..2240) consumed by
              * the CLUSTERED_ARR frag branch's per-layer factor lookups. */
+            /* R600: the camera position left this block — it belongs to the
+             * blinn family's forward_temporal_ubo, so the {prev_vp,
+             * prev_model, proj} layout and the 192.. factor offsets below are
+             * unchanged. */
             RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
                                   .size = 3u * sizeof(Mat4) + 2u * 64u * 4u * sizeof(f32),
                                   .initial_data = NULL };
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
+    }
+    {
+        /* R600: the blinn_phong pipeline's frame UBO. Created unconditionally
+         * so the D3D12 sidecar can bind the same bytes as its b1 CBV. */
+        RHIBufferDesc ftd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                              .size = sizeof(ForwardTemporalUbo),
+                              .initial_data = NULL };
+        rs->forward_temporal_ubo = rhi_buffer_create(rs->device, &ftd);
     }
     if (rhi_handle_valid(rs->clustered_inst_pipeline)) {
         rs->bind_clustered_inst = rhi_pipeline_bindings_create(rs->device, rs->clustered_inst_pipeline);
@@ -1053,6 +1104,7 @@ static void render_shutdown(RenderState *rs) {
     if (rhi_handle_valid(rs->clustered_skin_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_skin_pipeline);
     if (rhi_handle_valid(rs->clustered_arr_pipeline)) rhi_pipeline_destroy(rs->device, rs->clustered_arr_pipeline);
     if (rhi_handle_valid(rs->clustered_proj_ubo)) rhi_buffer_destroy(rs->device, rs->clustered_proj_ubo);
+    if (rhi_handle_valid(rs->forward_temporal_ubo)) rhi_buffer_destroy(rs->device, rs->forward_temporal_ubo);
     if (rhi_handle_valid(rs->terrain_tex))  rhi_texture_destroy(rs->device, rs->terrain_tex);
     if (rhi_handle_valid(rs->fallback_tex)) rhi_texture_destroy(rs->device, rs->fallback_tex);
     if (rhi_handle_valid(rs->fallback_mr)) rhi_texture_destroy(rs->device, rs->fallback_mr);
@@ -1186,7 +1238,9 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
     /* Frame UBO {prev_vp, prev_model(identity — mega verts are world-space
      * and static nodes match the blinn bind_forward_temporal approximation;
      * the instanced variant reads per-instance prev_model from its SSBO),
-     * proj} — one buffer, one binding, both backends (RHI single-UBO model). */
+     * proj} — one buffer, one binding, both backends (RHI single-UBO model).
+     * R600 left this layout alone: the camera position moved to
+     * forward_temporal_ubo, which only the blinn family binds. */
     if (rhi_handle_valid(rs->clustered_proj_ubo)) {
         Mat4 ubo_data[3];
         ubo_data[0] = *prev_vp;
@@ -2071,11 +2125,13 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
          * (offsets 192+; R592 layout note at the buffer's creation). */
         rhi_cmd_set_uniform_mat4(cmd, render->car.cl_loc_model, &idm.e[0][0]);
         if (rhi_handle_valid(render->clustered_proj_ubo)) {
+            /* R600: unchanged — the camera never entered this buffer. */
+            const u32 factor_base = 3u * sizeof(Mat4);
             rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
-                                     3u * sizeof(Mat4),
+                                     factor_base,
                                      mb->mats.mat_factors, sizeof(mb->mats.mat_factors));
             rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
-                                     3u * sizeof(Mat4) + sizeof(mb->mats.mat_factors),
+                                     factor_base + (u32)sizeof(mb->mats.mat_factors),
                                      mb->mats.emissive_factors, sizeof(mb->mats.emissive_factors));
         }
         /* One bind for the whole pass: the five baked arrays (2D_ARRAY views
@@ -6714,8 +6770,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        /* R600: blinn_phong reads the camera from its ForwardTemporal block,
+         * not from the push/loose uniform, so this path must publish and bind
+         * forward_temporal_ubo every frame. */
+        forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
+                                   &camera.position, &prev_view_proj);
+        rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u);
 
         Frustum frustum = frame_frustum;
 
@@ -7644,8 +7704,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-                    rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                             camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                    forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
+                                               &camera.position, &prev_view_proj);
+                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u);
                 }
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);

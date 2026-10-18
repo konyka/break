@@ -137,8 +137,43 @@ typedef struct {
     RHISampler    sampler;
     RHITexture    test_tex;
     i32 loc_model, loc_view, loc_proj;
-    i32 loc_light_dir, loc_light_color, loc_ambient, loc_camera_pos;
+    i32 loc_light_dir, loc_light_color, loc_ambient;
+    /* R600: blinn_phong's ForwardTemporal UBO — u_camera_pos left the
+     * push/loose uniform, so every blinn draw here must publish it. */
+    RHIBuffer temporal_ubo;
 } TestRenderState;
+
+/* R600: mirrors the unconditional ForwardTemporal block blinn_phong declares
+ * ({vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4 u_prev_model}) and
+ * main.c's ForwardTemporalUbo, so the three writers cannot drift. */
+typedef struct {
+    f32 cam_pos[3];
+    f32 cam_pad;
+    f32 prev_vp[16];
+    f32 prev_model[16];
+} TvForwardTemporal;
+
+/* Publishes the camera position and binds the block at binding 0. Call after
+ * binding the blinn pipeline; without it the fragment reads a zeroed camera and
+ * the view vector collapses — a silently wrong frame, not an error. */
+static void tv_bind_forward_temporal(RHICmdBuffer *cmd, const TestRenderState *rs,
+                                     f32 x, f32 y, f32 z) {
+    TvForwardTemporal t;
+    if (!rhi_handle_valid(rs->temporal_ubo)) return;
+    t.cam_pos[0] = x; t.cam_pos[1] = y; t.cam_pos[2] = z; t.cam_pad = 0.0f;
+    for (u32 m = 0u; m < 4u; ++m) {
+        t.prev_vp[m * 4u + 0u]      = (m == 0u)  ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 1u]      = (m == 5u)  ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 2u]      = (m == 10u) ? 1.0f : 0.0f;
+        t.prev_vp[m * 4u + 3u]      = (m == 15u) ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 0u]   = (m == 0u)  ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 1u]   = (m == 5u)  ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 2u]   = (m == 10u) ? 1.0f : 0.0f;
+        t.prev_model[m * 4u + 3u]   = (m == 15u) ? 1.0f : 0.0f;
+    }
+    rhi_buffer_update(rs->device, rs->temporal_ubo, &t, sizeof(t));
+    rhi_cmd_bind_uniform_buffer(cmd, rs->temporal_ubo, 0u);
+}
 
 static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
                                    RHIBuffer ibo) {
@@ -175,13 +210,14 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
     Mat4 identity = mat4_identity();
     rhi_offscreen_fbo_bind(cmd, &fbo);
     rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -230,7 +266,7 @@ static bool tv_run_golden_regression(const TestRenderState *render, RHIBuffer vb
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos, 0, 0, 5);
+        tv_bind_forward_temporal(cmd, render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -294,8 +330,8 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render->loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render->loc_camera_pos,
-                                 cam.position.e[0], cam.position.e[1], cam.position.e[2]);
+        tv_bind_forward_temporal(cmd, render, cam.position.e[0],
+                                 cam.position.e[1], cam.position.e[2]);
         rhi_cmd_bind_texture(cmd, render->test_tex, render->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -321,11 +357,14 @@ static bool tv_run_golden_camera_regression(const TestRenderState *render, RHIBu
  * 全量迁移后失去旧 API 参照（调用点清零；旧 API 由 Task 8 随退役删除）。
  * 改为 pinned 契约：VK 端逐名断言 std430 反射偏移（与 5a gate 转录表一致：
  * blinn push 块 u_model@0 u_view@64 u_proj@128 u_light_dir@192 u_light_color@208
- * u_ambient@224 u_camera_pos@240；u_albedo 采样器恒 -1）；GL 端断言活动名
+ * u_ambient@224；u_albedo 采样器恒 -1）；GL 端断言活动名
  * 可解析（!= -1）、缺席名 __nonexistent__ 恒 -1（GL location 值由驱动分配，
- * 不 pin 数值）。Pin 2 保留：用 bindings 解析出的位置渲染 golden 场景
- * （rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）；oracle 结论（本机为
- * 已登记的 drift 基线，CI 为权威）只作记录，不并入断言。 */
+ * 不 pin 数值）。R600 起 u_camera_pos 离开 push/loose uniform、进入
+ * ForwardTemporal 块，因此两端都必须 resolve -1 —— 下面的 expected 表把
+ * 它 pin 在 -1，而不是放宽成「什么都行」。Pin 2 保留：用 bindings 解析出的
+ * 位置渲染 golden 场景（rhi_oracle_compare_frame，路径复用 GOLDEN_PATH）；
+ * 相机位置改由 forward temporal UBO 提供，与 main.c 的生产路径同源。
+ * oracle 结论（本机为已登记的 drift 基线，CI 为权威）只作记录，不并入断言。 */
 static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RHIBuffer ibo,
                                     u32 w, u32 h) {
     LOG_INFO("============================================");
@@ -343,7 +382,7 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
         "u_ambient", "u_camera_pos", "u_albedo", "__nonexistent__",
     };
 #ifdef ENGINE_VULKAN
-    static const i32 expected[] = {0, 64, 128, 192, 208, 224, 240, -1, -1};
+    static const i32 expected[] = {0, 64, 128, 192, 208, 224, -1, -1, -1};
 #endif
     bool parity = true;
     for (usize i = 0u; i < sizeof(names) / sizeof(names[0]); ++i) {
@@ -352,9 +391,12 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
 #ifdef ENGINE_VULKAN
         ok = (reflected == expected[i]);
 #else
-        /* GL: 真实成员与采样器必须可解析；缺席名必须 -1（u_albedo 在
-         * GL 是活动 sampler，VK 端不是 push 成员 — 两端语义各自 pin）。 */
-        ok = (strcmp(names[i], "__nonexistent__") == 0) ? (reflected == -1)
+        /* GL: 真实成员与采样器必须可解析；u_camera_pos 与缺席名必须 -1
+         * （u_albedo 在 GL 是活动 sampler，VK 端不是 push 成员；u_camera_pos
+         * 自 R600 起是 ForwardTemporal 块成员，glGetUniformLocation 对块成员
+         * 恒返 -1 —— 两端语义各自 pin）。 */
+        ok = (strcmp(names[i], "u_camera_pos") == 0 ||
+              strcmp(names[i], "__nonexistent__") == 0) ? (reflected == -1)
                                                         : (reflected != -1);
 #endif
         if (!ok) {
@@ -377,7 +419,6 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
     i32 loc_light_dir  = rhi_pipeline_bindings_resolve(bind, "u_light_dir");
     i32 loc_light_color = rhi_pipeline_bindings_resolve(bind, "u_light_color");
     i32 loc_ambient    = rhi_pipeline_bindings_resolve(bind, "u_ambient");
-    i32 loc_camera_pos = rhi_pipeline_bindings_resolve(bind, "u_camera_pos");
     u8 *shot = (u8 *)malloc((usize)w * h * 4u);
     bool captured = false;
     for (u32 f = 0; f < 3; f++) {
@@ -385,13 +426,17 @@ static bool tv_test_bindings_parity(const TestRenderState *rs, RHIBuffer vbo, RH
         if (!cmd) continue;
         rhi_cmd_clear_color(cmd, 0.10f, 0.10f, 0.15f, 1.0f);
         rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+        tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, loc_model, &gid.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, loc_view, &gid.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, loc_proj, &gid.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, loc_camera_pos, 0, 0, 5);
+        /* R600: u_camera_pos has no uniform location any more — it rides the
+         * ForwardTemporal UBO, exactly as the production path publishes it.
+         * Without this the golden frame would silently render zeroed. */
+        tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
         rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -507,7 +552,6 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
     rs->loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind, "u_light_dir");
     rs->loc_light_color = rhi_pipeline_bindings_resolve(rs->bind, "u_light_color");
     rs->loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind, "u_ambient");
-    rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind, "u_camera_pos");
 
     if (rs->loc_model < 0 || rs->loc_view < 0 || rs->loc_proj < 0) {
         LOG_ERROR("FAIL: uniform locations invalid (model=%d view=%d proj=%d)", rs->loc_model, rs->loc_view, rs->loc_proj);
@@ -538,6 +582,25 @@ static bool test_render_init(TestRenderState *rs, Platform *platform,
     rs->test_tex = rhi_texture_create(rs->device, &tdesc);
     if (!rhi_handle_valid(rs->test_tex)) { LOG_ERROR("FAIL: texture create"); return false; }
     LOG_INFO("PASS: Texture created + uploaded");
+
+    /* R600: u_camera_pos rides this block, not a uniform. Seeded so an early
+     * draw that forgets to publish still reads a sane camera. */
+    TvForwardTemporal seed = {0};
+    seed.cam_pos[2] = 5.0f;
+    for (u32 m = 0u; m < 4u; ++m) {
+        seed.prev_vp[m * 4u + 0u]    = (m == 0u)  ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 1u]    = (m == 5u)  ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 2u]    = (m == 10u) ? 1.0f : 0.0f;
+        seed.prev_vp[m * 4u + 3u]    = (m == 15u) ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 0u] = (m == 0u)  ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 1u] = (m == 5u)  ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 2u] = (m == 10u) ? 1.0f : 0.0f;
+        seed.prev_model[m * 4u + 3u] = (m == 15u) ? 1.0f : 0.0f;
+    }
+    RHIBufferDesc tud = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                          .size = sizeof(seed), .initial_data = &seed };
+    rs->temporal_ubo = rhi_buffer_create(rs->device, &tud);
+    if (!rhi_handle_valid(rs->temporal_ubo)) { LOG_ERROR("FAIL: forward temporal UBO"); return false; }
 
     return true;
 }
@@ -824,6 +887,7 @@ static bool test_one_triangle_blas_sizes(RHIDevice *device) {
 }
 
 static void test_render_shutdown(TestRenderState *rs) {
+    if (rhi_handle_valid(rs->temporal_ubo)) rhi_buffer_destroy(rs->device, rs->temporal_ubo);
     if (rhi_handle_valid(rs->test_tex))  rhi_texture_destroy(rs->device, rs->test_tex);
     if (rhi_handle_valid(rs->sampler))   rhi_sampler_destroy(rs->device, rs->sampler);
     if (rs->bind) rhi_pipeline_bindings_destroy(rs->device, rs->bind); /* T4 */
@@ -878,13 +942,14 @@ static bool tv_test_motion_blur_rt1(const TestRenderState *rs,
     rhi_cmd_clear_color(cmd, 0.01f, 0.02f, 0.03f, 1.0f);
     rhi_cmd_clear_depth(cmd);
     rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &id.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &id.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &id.e[0][0]);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
     rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-    rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+    tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
     rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
     rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
     rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -1187,13 +1252,14 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
             rhi_cmd_clear_color(cmd, 0.8f, 0.2f, 0.6f, 1.0f);
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -1852,13 +1918,14 @@ static bool tv_test_f16_roundtrip(const TestRenderState *rs, RHIBuffer vbo,
              * pin). */
             rhi_cmd_clear_depth(cmd);
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &identity.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &identity.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, rs->loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, rs->loc_camera_pos, 0.0f, 0.0f, 5.0f);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, rs->test_tex, rs->sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -4008,6 +4075,7 @@ static bool tv_test_grouped_compact(const TestRenderState *rs,
         if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
             Mat4 mid = mat4_identity();
             rhi_cmd_bind_pipeline(cmd, rs->pipeline);
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_model, &mid.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_view, &mid.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, rs->loc_proj, &mid.e[0][0]);
@@ -6158,7 +6226,7 @@ int main(int argc, char **argv) {
                                      1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_ambient,
                                      0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(startup_cmd, render.loc_camera_pos,
+            tv_bind_forward_temporal(startup_cmd, &render,
                                      startup_camera.position.e[0],
                                      startup_camera.position.e[1],
                                      startup_camera.position.e[2]);
@@ -6472,13 +6540,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             Mat4 id = mat4_identity();
             rhi_offscreen_fbo_bind(cmd, &fbo);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6486,13 +6555,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
             rhi_offscreen_fbo_unbind(cmd, 800, 600);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_draw_indexed(cmd, 3, 1);
@@ -6557,13 +6627,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                        (RHITexture){0,0}, NULL, 0.0f, -1.0f, 0.0f, 0.0f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                 camera.position.e[1], camera.position.e[2]);
 
         Mat4 model = mat4_identity();
         rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
@@ -6589,13 +6660,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
             Mat4 pipeline_inv_proj = mat4_inv_perspective(proj);
             skybox_render(&skybox, cmd, &view.e[0][0], &pipeline_inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
             rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-            rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                     camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                     camera.position.e[1], camera.position.e[2]);
             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &model.e[0][0]);
             rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6654,13 +6726,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         skybox_render(&skybox, cmd, &view.e[0][0], &inv_proj.e[0][0], 0.5f, -0.8f, 0.3f, 1.0f, 0.95f, 0.9f);
 
         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &view.e[0][0]);
         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &proj.e[0][0]);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos,
-                                 camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+        tv_bind_forward_temporal(cmd, &render, camera.position.e[0],
+                                 camera.position.e[1], camera.position.e[2]);
 
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -6963,13 +7036,13 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                 /* Produce some HDR content in the source FBO. */
                 rhi_offscreen_fbo_bind(cmd, &src);
                 rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &id.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &id.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &id.e[0][0]);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
                 rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-                rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
                 rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
                 rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
                 rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
@@ -7152,6 +7225,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                 if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
                     Mat4 mid = mat4_identity();
                     rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                    tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
                     rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
@@ -7224,6 +7298,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         if (rhi_handle_valid(vbo) && rhi_handle_valid(ibo)) {
                             Mat4 mid = mat4_identity();
                             rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &mid.e[0][0]);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_view, &mid.e[0][0]);
                             rhi_cmd_set_uniform_mat4(cmd, render.loc_proj, &mid.e[0][0]);
@@ -7252,13 +7327,14 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         if (!cmd) break;
                         rhi_offscreen_fbo_bind(cmd, &hz_fbo);
                         rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &quad.e[0][0]);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_view,  &vp_id.e[0][0]);
                         rhi_cmd_set_uniform_mat4(cmd, render.loc_proj,  &vp_id.e[0][0]);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_dir, 0.5f, -0.8f, 0.3f);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_light_color, 1.0f, 0.95f, 0.9f);
                         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, 0.35f, 0.35f, 0.40f);
-                        rhi_cmd_set_uniform_vec3(cmd, render.loc_camera_pos, 0, 0, 5);
+                        tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
                         rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
                         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
                         rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);

@@ -1,6 +1,6 @@
 # D3D12 FORWARD_MRT velocity / RT1 output — design
 
-Status: design only, not implemented
+Status: steps 1-4 implemented (R600); step 5 (WARP pixel proof) outstanding.
 Baseline: `d77882e7` (master)
 Backends affected: D3D12 sidecar design; one option changes the cross-backend
 uniform contract.
@@ -178,3 +178,99 @@ keeps mirroring its GLSL twin. The work is:
 
 Until step 1 lands, step ⑤ (migrating `main.c:382` to the path API) stays
 blocked, exactly as recorded.
+
+---
+
+## R600 — what actually shipped, and where the design was corrected
+
+Option B landed. Three things in the write-up above turned out to be wrong or
+under-specified, and the corrections are the interesting part.
+
+### The temporal UBO is its own buffer, not `clustered_proj_ubo`
+
+Step 2 said to extend `clustered_proj_ubo` to carry the camera position,
+leading. That was wrong. `clustered_proj_ubo` is read by a *different* family
+at a *different* layout: `pbr_clustered.vert` declares
+`ClusterVertTemporal { mat4 u_prev_vp; mat4 u_prev_model; }` (or
+`ClusterVertProj { mat4 u_proj; }` when `FORWARD_MRT` is off) at offsets
+0/64/128, and the `CLUSTERED_ARR` factor tables start at 192. Putting a
+16-byte camera header at the front would have silently shifted every one of
+those readers — including the non-MRT `u_proj@0` read, i.e. the projection
+matrix, on the default clustered path.
+
+So the camera leads a **new** buffer, `rs->forward_temporal_ubo`
+(`ForwardTemporalUbo { f32 cam_pos[3]; f32 cam_pad; Mat4 prev_vp;
+Mat4 prev_model; }`, 144 B). `clustered_proj_ubo` keeps its layout and its
+factor offsets untouched. "The camera leads the temporal block" is preserved —
+it just leads a block that only the blinn family binds, which is the same
+rule R589 stated without the false sharing.
+
+### Scope is the blinn_phong family, not all 27 files
+
+Step 1's own text names `blinn_phong.{vert,frag}` and the `_vk` twins. An
+earlier pass in this session widened that to every shader declaring
+`u_camera_pos` (`blinn_phong_arr`, `instanced`, `skinned`, `terrain`,
+`water`, `particle`) and half-applied it — vertices converted to the block,
+fragments left on the loose uniform. That is a GLSL link error, not a
+warning: `blinn_phong_arr.frag` declaring a loose `uniform vec3
+u_camera_pos` against `blinn_phong_arr.vert`'s block member fails to link,
+and OpenGL reports it as `INTERNAL ERROR: Invalid Uniform variable name`,
+which reads like a driver bug rather than a contract mismatch.
+
+The wide scope was also not achievable on its own terms. Those variants are
+GL-only in practice: D3D12 resolves `<base>_hlsl.<stage>`, and
+`terrain_hlsl`/`water_hlsl`/`particle_hlsl` do not exist. And their draw paths
+(`terrain.c`, `water.c`) resolve and write `u_camera_pos` as a loose uniform
+with **no** UBO bind — converting the fragments would have left them reading
+a never-bound buffer. Those edits are reverted. The 27-file / 17-write-site
+surface in "Option B is larger than first stated" is real work; it is
+recorded there as *future* scope, not done.
+
+### Making a block unconditional moves the failure mode, it doesn't remove it
+
+`ForwardTemporal` becoming unconditional means the blinn pipeline *statically
+uses* the UBO descriptor set on Vulkan, so **every** draw of it must bind
+that set — not just the ones that used to set a camera. Misses show up as
+`VUID-vkCmdDrawIndexed-None-08600` ("set 1 is out of bounds for the number of
+sets bound") plus a silently zeroed camera, which is exactly the
+invisible-failure shape this design exists to avoid. Nineteen draw sites in
+`test_vulkan.c` were converted to a `tv_bind_forward_temporal` helper for
+this; the production path binds `forward_temporal_ubo` right after
+`rhi_cmd_bind_pipeline(cmd, active_pipeline)`.
+
+### What shipped
+
+| Step | State |
+| --- | --- |
+| 1. `u_camera_pos` out of the base block, into the temporal UBO | done — `blinn_phong.{vert,frag}`, `blinn_phong_vk.{vert,frag}` |
+| 2. buffer carries it, leading | done — new `forward_temporal_ubo`, see correction above |
+| 3. `blinn_phong_hlsl` MRT sidecar | done — `blinn_phong_mrt_hlsl.{vert,frag}` (b1 CBV + `SV_Target1`) |
+| 4. sidecar selection | done — the path API's `_hlsl` derivation is idempotent, so `shaders/blinn_phong_mrt.vert` resolves to `blinn_phong_mrt_hlsl.vert` with no new mechanism |
+| 5. WARP pixel proof of RT0+RT1 | **not done** — the D3D12 forward path still loads GLSL sources at `main.c:403`, so step ⑤ remains blocked |
+
+`test_shader_io`'s new `hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv`
+pins the sidecar half: no `rhi:uniform u_camera_pos` marker survives on any
+of the four files (the marker table is what `rhi_pipeline_bindings_resolve`
+reads, so its absence is what makes a dropped write visible), the `b1` CBV
+is declared in all four, and only the MRT pair emits `SV_Target1`.
+
+### Coverage this change does NOT have — recorded so it is not assumed
+
+- **The golden scenes do not see the camera position.** Zeroing
+  `ForwardTemporalUbo.cam_pos[0]` leaves both Vulkan golden MAEs at exactly
+  28.75 / 13.54. The view vector only reaches the specular term on scenes
+  the goldens do not cover. A pixel proof of the camera has to come from a
+  new scene, not from the existing ones.
+- **`test_vulkan`'s `UNIFIED GPU CULL TEST` is flaky on this host** — measured
+  2 failures / 1 pass in three runs on unmodified `HEAD` (`7799b575`). Its
+  `Hi-Z vis flags {0,0}` assertion is not a reliable gate signal here; an
+  earlier note in this file recording it as "fixed" was one lucky run.
+- **Step 5 (WARP pixel proof) is the only thing that would prove the
+  velocity actually reaches RT1.** Everything above is contract-level.
+
+### Pre-existing on this host, not caused by R600
+
+`test_platform_win32_runtime` fails with `FAIL: OpenClipboard failed` (no
+clipboard in this session) on unmodified `HEAD`. The GL/Vulkan golden
+DRIFTs (15.60/1.15 and 28.75/13.54 against a MAE<=8 tolerance) and the GL
+`MATERIAL ARRAY` quadrant vertical flip are also baseline.

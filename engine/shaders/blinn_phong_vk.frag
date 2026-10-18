@@ -3,6 +3,14 @@
 layout(location = 0) in vec3 vWorldPos;
 layout(location = 1) in vec3 vNormal;
 layout(location = 2) in vec2 vUV;
+/* R600: ForwardTemporal is UNCONDITIONAL and leads with the camera
+ * position; see blinn_phong.frag for why. */
+layout(std140, set = 1, binding = 0) uniform ForwardTemporal {
+    vec3 u_camera_pos;
+    float _cam_pad;
+    mat4 u_prev_vp;
+    mat4 u_prev_model;
+} temporal;
 #ifdef FORWARD_MRT
 layout(location = 3) in vec2 v_velocity;
 #endif
@@ -17,8 +25,6 @@ layout(push_constant) uniform PushConstants {
     float _pad1;
     vec3 u_ambient;
     float _pad2;
-    vec3 u_camera_pos;
-    float _pad3;
 } pc;
 
 layout(binding = 0) uniform sampler2D u_albedo;
@@ -31,7 +37,7 @@ layout(location = 1) out vec2 out_velocity;
 void main() {
     vec3 N = normalize(vNormal);
     vec3 L = (-pc.u_light_dir)  /* R96-3: u_light_dir pre-normalized on CPU */;
-    vec3 V = normalize(pc.u_camera_pos - vWorldPos);
+    vec3 V = normalize(temporal.u_camera_pos - vWorldPos);
     vec3 H = normalize(L + V);
 
     float diff = max(dot(N, L), 0.0);
