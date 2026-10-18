@@ -3754,11 +3754,20 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
 }
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                          usize size, u32 value) {
-    (void)cmd; (void)buf; (void)offset; (void)size; (void)value;
+    u8 *bytes;
+    usize i;
+    if (cmd == NULL || size == 0u || (size & 3u) != 0u) return;
+    bytes = (u8 *)malloc(size);
+    if (bytes == NULL) return;
+    for (i = 0u; i < size; i += 4u)
+        memcpy(bytes + i, &value, sizeof(value));
+    rhi_buffer_update_region(g_current_device, buf, offset, bytes, size);
+    free(bytes);
 }
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                            const void *data, usize size) {
-    (void)cmd; (void)buf; (void)offset; (void)data; (void)size;
+    if (cmd == NULL || data == NULL || size == 0u) return;
+    rhi_buffer_update_region(g_current_device, buf, offset, data, size);
 }
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     RHI_D3D12Buffer *bd;

@@ -88,6 +88,13 @@
 - **像素证据**：WARP 用例 `blit_texture_sampling_round_trip` 用 2x2 纯红纹理 + blit sidecar 画到 8x8 FBO，回读全部像素为红；与 texture initial-data readback、viewport、push-constant、FBO 清屏用例共同覆盖完整路径。此前的 `0 0 0 0` 根因是 SRV 绑定为空/槽位生命周期未覆盖提交帧，不是纹理上传。
 - **回归**：D3D12 专项 12/12；GL/VK 非图形分别 175/175、176/176。
 
+## 本轮更新：R717 - D3D12 command buffer fill/update buffer operations + round-trip contract test
+
+- **Implementation**: `rhi_cmd_update_buffer` reuses `rhi_buffer_update_region`; UPLOAD heaps use Map, DEFAULT heaps use upload staging + CopyBufferRegion + CPU-tracked resource barriers. `rhi_cmd_fill_buffer` builds a repeated 32-bit pattern and reuses the same path, rejecting non-4-byte sizes.
+- **Verification**: `test_d3d12_pipeline_contract::command_buffer_fill_and_update_roundtrip` fills a buffer with `0xA5A5A5A5`, updates the first two DWORDs, submits/presents, then uses `rhi_buffer_read` to assert the updated prefix and preserved suffix.
+- **Regression**: D3D12 specialist tests **12/12**; GL **175/175**; VK **176/176**; all three backends build with zero compiler errors and warnings.
+- **Remaining**: `rhi_mrt_fbo_*`, cubemap FBOs, `rhi_cmd_begin/end_render_pass`, and texel/storage/image/cubemap bindings remain. The Windows platform runtime `OpenClipboard failed` result remains a local environment failure (14/15 pass), unrelated to this change.
+
 ## 本轮更新：R710 GLES2 字形纹理缓存亲和（TDD/graphics CI）— 固定 64 槽直接映射改为两候选 set-associative（primary + adjacent secondary），命中/空槽优先，双槽满按 `last_used` 驱逐；普通 codepoint glyph 与 shaped glyph 共用三键（font,key kind+id,size）匹配器，零动态分配，纹理重建冲突下降
 
 - **缺口**：原 GLES2 glyph texture cache 用 `(codepoint ^ device_size) % 64` 单槽直接映射；字体/字号/相邻码点碰撞会无条件驱逐，文本密集帧反复上传 glyph bitmap、增加 GL texture churn。

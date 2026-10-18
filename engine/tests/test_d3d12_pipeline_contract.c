@@ -22,6 +22,31 @@ TEST(buffer_write_read_roundtrip) {
     rhi_buffer_destroy(g_dev, buf);
 }
 
+TEST(command_buffer_fill_and_update_roundtrip) {
+    u32 readback[4] = { 0u, 0u, 0u, 0u };
+    const u32 update[2] = { 0x11223344u, 0x55667788u };
+    RHIBufferDesc desc;
+    RHIBuffer buf;
+    RHICmdBuffer *cmd;
+    memset(&desc, 0, sizeof(desc));
+    desc.usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_DEVICE_ADDRESS;
+    desc.size = sizeof(readback);
+    buf = rhi_buffer_create(g_dev, &desc);
+    ASSERT_TRUE(rhi_handle_valid(buf));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_cmd_fill_buffer(cmd, buf, 0u, sizeof(readback), 0xA5A5A5A5u);
+    rhi_cmd_update_buffer(cmd, buf, 0u, update, sizeof(update));
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, readback, 0u, sizeof(readback)));
+    ASSERT_EQ(readback[0], update[0]);
+    ASSERT_EQ(readback[1], update[1]);
+    ASSERT_EQ(readback[2], 0xA5A5A5A5u);
+    ASSERT_EQ(readback[3], 0xA5A5A5A5u);
+    rhi_buffer_destroy(g_dev, buf);
+}
+
 TEST(texture_create_readback_roundtrip) {
     /* RGBA8 4B/px byte contract (rhi.h:501). */
     static const u8 texels[16] = {
@@ -142,6 +167,7 @@ int main(void) {
     if (g_dev == NULL) return 77;
     printf("=== Running Tests ===\n");
     RUN_TEST(buffer_write_read_roundtrip);
+    RUN_TEST(command_buffer_fill_and_update_roundtrip);
     RUN_TEST(texture_create_readback_roundtrip);
     RUN_TEST(indirect_abi_rule_shared);
     RUN_TEST(swapchain_rtv_take_failure_returns_slots_once);
