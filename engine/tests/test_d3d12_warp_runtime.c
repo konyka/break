@@ -888,6 +888,334 @@ TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     rhi_mrt_fbo_destroy(g_dev, &fbo);
 }
 
+/* ---- shadow atlas ---- */
+/* R618: an atlas is published only if it names a real target. The create
+ * contract is the R358 gate seen from the other side — a zero-sized or
+ * otherwise invalid request must produce NO handles, because binding a handle
+ * that resolves to nothing is exactly the case that used to clear whatever
+ * depth was still bound. Destroy must be idempotent so a double teardown is a
+ * no-op rather than a double free. */
+TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
+    RHIShadowMap sm;
+    RHIShadowMap bad;
+    bad = rhi_shadow_map_create(g_dev, 0u, 0u);
+    ASSERT_FALSE(rhi_handle_valid(bad.depth_tex));
+    ASSERT_FALSE(rhi_handle_valid(bad.fbo));
+
+    sm = rhi_shadow_map_create(g_dev, 8u, 8u);
+    ASSERT_TRUE(rhi_handle_valid(sm.depth_tex));
+    ASSERT_TRUE(rhi_handle_valid(sm.fbo));
+    ASSERT_EQ(sm.width, 8u);
+    ASSERT_EQ(sm.height, 8u);
+
+    rhi_shadow_map_destroy(g_dev, &sm);
+    ASSERT_FALSE(rhi_handle_valid(sm.depth_tex));
+    ASSERT_FALSE(rhi_handle_valid(sm.fbo));
+    /* Second destroy on an already-cleared handle must not fault. */
+    rhi_shadow_map_destroy(g_dev, &sm);
+    ASSERT_FALSE(rhi_handle_valid(sm.fbo));
+}
+
+/* The pixel proof that the shadow atlas and the lighting pass see the SAME
+ * bytes.
+ *
+ * The one D3D12-specific thing under test is that a shadow atlas has to be two
+ * views over one allocation. DXGI_FORMAT_D32_FLOAT cannot back a shader
+ * resource view at all, so the atlas is created through the depth_samplable
+ * path: the resource is the canonical typeless DXGI_FORMAT_R32_TYPELESS, the
+ * shadow pass gets a D32_FLOAT depth-stencil view of it, and the lighting pass
+ * gets an R32_FLOAT SRV of it.
+ *
+ * WHAT THESE PIXELS PIN, AND WHAT THEY DO NOT. Reverse-verified: reverting the
+ * SRV's format to D32_FLOAT turns this test red (the invalid SRV takes the
+ * device down, and the readback one-shot fails), and so does reverting the
+ * shadow bind's unit to 0, its OMSetRenderTargets, the clear value, or the
+ * barrier into the read state. What they do NOT pin is the typeless
+ * ALLOCATION itself: allocating plain D32_FLOAT and still aliasing the SRV to
+ * R32_FLOAT was tried as a break and stayed GREEN on WARP, because the two
+ * formats have the same 4-byte texel and WARP tolerates the reinterpretation.
+ * The typeless allocation is what the D3D12 spec requires for the SRV alias to
+ * be legal on hardware drivers, so the implementation keeps it — but no WARP
+ * pixel here proves it, and this comment must not be read as saying otherwise.
+ *
+ * What the pixels say:
+ *   1. The bind clears the whole atlas to 1.0 (R618 "bind == fresh"). With a
+ *      receiver depth of 0.5 and the stored depth still 1.0, the hand-rolled
+ *      compare in shadow_sample_hlsl.frag gives lit => every pixel white.
+ *   2. A depth-only pass then draws a quad covering the centre 4x4 at depth
+ *      0.25. Re-reading the atlas, those 16 texels now compare 0.5 <= 0.25 as
+ *      false => black (in shadow), and the other 48 stay white (lit). That
+ *      single frame proves the clear, the DSV alias, the SRV alias, the
+ *      non-flipped shadow viewport and the unit-1 binding all at once — the
+ *      centre square is also what pins the viewport: a Y-flipped or mis-sized
+ *      viewport would put the square somewhere other than rows/cols 2..5.
+ *
+ * The compare is done by hand on the sampled .r, exactly as the production
+ * clustered shaders do, so this test also pins that D3D12's lack of comparison
+ * sampling is irrelevant to the shadow pass. */
+TEST(shadow_atlas_depth_round_trips_through_the_sampling_path) {
+    /* Centre half of NDC: on an 8x8 atlas that is the centre 4x4. */
+    static const float half[16] = {
+        0.5f, 0,   0,   0,
+        0,   0.5f, 0,   0,
+        0,   0,   1.0f, 0,
+        0,   0,   0,   1.0f
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const float quad[6 * 3] = {
+        -1.0f, -1.0f, 0.25f,   1.0f, -1.0f, 0.25f,   1.0f,  1.0f, 0.25f,
+        -1.0f, -1.0f, 0.25f,   1.0f,  1.0f, 0.25f,  -1.0f,  1.0f, 0.25f
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShadowMap sm;
+    RHIShader depth_vs, sample_vs, sample_fs;
+    RHIPipeline depth_pipe, sample_pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_compare;
+    int x, y;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    sm = rhi_shadow_map_create(g_dev, 8u, 8u);
+    ASSERT_TRUE(rhi_handle_valid(sm.fbo));
+
+    depth_vs = rhi_shader_create(g_dev, "shadow_depth_hlsl.vert", 0, false);
+    sample_vs = rhi_shader_create(g_dev, "shadow_sample_hlsl.vert", 0, false);
+    sample_fs = rhi_shader_create(g_dev, "shadow_sample_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(depth_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_fs));
+
+    /* Depth-only pipeline: no fragment stage, no render targets. */
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = depth_vs;
+    pd.frag = RHI_HANDLE_NULL;
+    pd.vertex_stride = 12u;              /* POSITION only */
+    pd.is_shadow_depth = true;
+    pd.disable_culling = true;
+    depth_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(depth_pipe));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = sample_vs; pd.frag = sample_fs;
+    pd.no_vertex_input = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.depth_write_disable = true;
+    sample_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(sample_pipe));
+    loc_compare = rhi_pipeline_get_uniform_location(g_dev, sample_pipe,
+                                                    "u_compare");
+    ASSERT_EQ(loc_compare, 64);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(quad);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+
+    /* Pass 1: bind clears the atlas to 1.0, then the depth pass writes 0.25
+     * over the centre 4x4. */
+    rhi_cmd_bind_shadow_map(cmd, &sm);
+    rhi_cmd_bind_pipeline(cmd, depth_pipe);
+    rhi_cmd_set_uniform_mat4(cmd,
+        rhi_pipeline_get_uniform_location(g_dev, depth_pipe, "u_transform"),
+        half);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_cmd_unbind_shadow_map(cmd, 64u, 64u);
+
+    /* Pass 2: the lighting pass reads the atlas back through unit 1 at a
+     * receiver depth of 0.5. */
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, sample_pipe);
+    rhi_cmd_set_uniform_mat4(cmd,
+        rhi_pipeline_get_uniform_location(g_dev, sample_pipe, "u_transform"),
+        identity);
+    rhi_cmd_set_uniform_vec4(cmd, loc_compare, 0.0f, 0.0f, 0.5f, 0.0f);
+    rhi_cmd_bind_shadow_texture(cmd, sm.depth_tex, (RHISampler){0});
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int centre = (x >= 2 && x < 6 && y >= 2 && y < 6);
+            const unsigned char want = centre ? 0u : 255u;
+            int i = (y * 8 + x) * 4;
+            ASSERT_EQ(px[i + 0], want);
+            ASSERT_EQ(px[i + 1], want);
+            ASSERT_EQ(px[i + 2], want);
+        }
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, depth_pipe);
+    rhi_pipeline_destroy(g_dev, sample_pipe);
+    rhi_shader_destroy(g_dev, depth_vs);
+    rhi_shader_destroy(g_dev, sample_vs);
+    rhi_shader_destroy(g_dev, sample_fs);
+    rhi_shadow_map_destroy(g_dev, &sm);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
+/* R618's clear and the unbind's target restore, as two separate observable
+ * facts.
+ *
+ * (a) Every bind starts the atlas fresh: the second frame draws nothing into
+ *     the atlas at all, so a reader must see all-white again. A bind that
+ *     skipped its clear would leave the previous frame's 0.25 square behind
+ *     and go black in the centre.
+ * (b) The unbind has to leave the SCREEN target bound, not the atlas — the
+ *     R230 rule. If it did not, the sampling draw that follows would rasterise
+ *     into the depth-only atlas and the readback would come back as the
+ *     previous frame's contents (or nothing at all) instead of this frame's
+ *     compare result. */
+TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen) {
+    static const float half[16] = {
+        0.5f, 0,   0,   0,
+        0,   0.5f, 0,   0,
+        0,   0,   1.0f, 0,
+        0,   0,   0,   1.0f
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const float quad[6 * 3] = {
+        -1.0f, -1.0f, 0.25f,   1.0f, -1.0f, 0.25f,   1.0f,  1.0f, 0.25f,
+        -1.0f, -1.0f, 0.25f,   1.0f,  1.0f, 0.25f,  -1.0f,  1.0f, 0.25f
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShadowMap sm;
+    RHIShader depth_vs, sample_vs, sample_fs;
+    RHIPipeline depth_pipe, sample_pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_compare, loc_depth_tf, loc_sample_tf;
+    int frame, x, y;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    sm = rhi_shadow_map_create(g_dev, 8u, 8u);
+    ASSERT_TRUE(rhi_handle_valid(sm.fbo));
+
+    depth_vs = rhi_shader_create(g_dev, "shadow_depth_hlsl.vert", 0, false);
+    sample_vs = rhi_shader_create(g_dev, "shadow_sample_hlsl.vert", 0, false);
+    sample_fs = rhi_shader_create(g_dev, "shadow_sample_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(depth_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = depth_vs; pd.frag = RHI_HANDLE_NULL;
+    pd.vertex_stride = 12u;
+    pd.is_shadow_depth = true;
+    pd.disable_culling = true;
+    depth_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(depth_pipe));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = sample_vs; pd.frag = sample_fs;
+    pd.no_vertex_input = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.depth_write_disable = true;
+    sample_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(sample_pipe));
+
+    loc_depth_tf = rhi_pipeline_get_uniform_location(g_dev, depth_pipe,
+                                                    "u_transform");
+    loc_sample_tf = rhi_pipeline_get_uniform_location(g_dev, sample_pipe,
+                                                      "u_transform");
+    loc_compare = rhi_pipeline_get_uniform_location(g_dev, sample_pipe,
+                                                    "u_compare");
+    ASSERT_EQ(loc_depth_tf, 0);
+    ASSERT_EQ(loc_sample_tf, 0);
+    ASSERT_EQ(loc_compare, 64);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(quad);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_cmd_bind_shadow_map(cmd, &sm);
+        /* Frame 0 fills the centre square; frame 1 draws nothing, so only the
+         * bind's clear can make frame 1 read as fully lit. */
+        if (frame == 0) {
+            rhi_cmd_bind_pipeline(cmd, depth_pipe);
+            rhi_cmd_set_uniform_mat4(cmd, loc_depth_tf, half);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+            rhi_cmd_draw(cmd, 6u, 1u);
+        }
+        rhi_cmd_unbind_shadow_map(cmd, 64u, 64u);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, sample_pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc_sample_tf, identity);
+        rhi_cmd_set_uniform_vec4(cmd, loc_compare, 0.0f, 0.0f, 0.5f, 0.0f);
+        rhi_cmd_bind_shadow_texture(cmd, sm.depth_tex, (RHISampler){0});
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px,
+                                            sizeof(px)));
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                int centre = (x >= 2 && x < 6 && y >= 2 && y < 6);
+                /* Frame 0 drew the square; frame 1 drew nothing and must be
+                 * clean everywhere because the bind cleared the atlas. */
+                const unsigned char want = (frame == 0 && centre) ? 0u : 255u;
+                int i = (y * 8 + x) * 4;
+                ASSERT_EQ(px[i + 0], want);
+                ASSERT_EQ(px[i + 1], want);
+                ASSERT_EQ(px[i + 2], want);
+            }
+        }
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, depth_pipe);
+    rhi_pipeline_destroy(g_dev, sample_pipe);
+    rhi_shader_destroy(g_dev, depth_vs);
+    rhi_shader_destroy(g_dev, sample_vs);
+    rhi_shader_destroy(g_dev, sample_fs);
+    rhi_shadow_map_destroy(g_dev, &sm);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -903,6 +1231,9 @@ int main(void) {
     RUN_TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red);
     RUN_TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
+    RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
+    RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

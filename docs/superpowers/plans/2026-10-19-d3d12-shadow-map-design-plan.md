@@ -68,7 +68,7 @@ format cannot back a shader resource view. A shadow map has to be *both*:
 - the SRV the lighting pass samples.
 
 D3D12 solves this with a typeless alias pair. Allocate the resource as
-`DXGI_FORMAT_R32_FLOAT_X8_TYPELESS` with
+`DXGI_FORMAT_R32_TYPELESS` with
 `D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL`, then create two views over it:
 
 - DSV with `Format = DXGI_FORMAT_D32_FLOAT` (depth-stencil aspect)
@@ -117,9 +117,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
 
 Inside the worker, when `desc->format == RHI_FORMAT_D32_FLOAT && depth_samplable`:
 
-- `description.Format = DXGI_FORMAT_R32_FLOAT_X8_TYPELESS` (the allocation)
+- `description.Format = DXGI_FORMAT_R32_TYPELESS` (the allocation)
 - `clear_value.Format = DXGI_FORMAT_D32_FLOAT` (the depth-stencil aspect)
-- `td->dxgi_format = DXGI_FORMAT_R32_FLOAT_X8_TYPELESS`
+- `td->dxgi_format = DXGI_FORMAT_R32_TYPELESS`
 - `td->srv_format = DXGI_FORMAT_R32_FLOAT`
 - `td->rhi_format = RHI_FORMAT_D32_FLOAT` — unchanged, so every existing
   depth-side behaviour keyed on `rhi_format` keeps working unchanged:
@@ -281,18 +281,21 @@ Cases:
 
 ### Reverse verification (mandatory)
 
-Before the change is considered done, each of these must be made and observed,
-in the WARP test, and the result recorded in the commit message:
+Observed results on WARP, each break applied, observed, reverted, and the
+suite returned to green:
 
-| # | Deliberate break | Expected |
+| # | Deliberate break | Result |
 | --- | --- | --- |
-| A | allocate `DXGI_FORMAT_D32_FLOAT` instead of the typeless alias | case 3 goes red (SRV creation fails or reads garbage) |
-| B | bind the shadow SRV at unit 0 instead of 1 | case 3 goes red |
-| C | drop the `OMSetRenderTargets` depth-only bind | case 2 goes red (clear never reaches the atlas) |
-| D | clear to `0.0` instead of `1.0` | case 2 goes red |
-| E | use `rhi_d3d12_texture_final_state` (`DEPTH_WRITE`) for the sampling state | case 3 goes red (missing barrier) |
+| A1 | allocate plain `DXGI_FORMAT_D32_FLOAT` instead of the typeless alias | **stayed GREEN — not observable on WARP.** Both formats are 4 bytes/texel and WARP tolerates the SRV reinterpretation. The typeless allocation stays because the spec requires it for hardware drivers, but no pixel proves it. |
+| A2 | leave `srv_format` unknown so the SRV names `DXGI_FORMAT_D32_FLOAT` | RED (the invalid SRV takes the device down; the readback one-shot fails) |
+| B | bind the shadow SRV at unit 0 instead of 1 | RED at the pixel assertion |
+| C | drop the `OMSetRenderTargets` depth-only bind | RED at the pixel assertion |
+| D | clear to `0.0` instead of `1.0` | RED at the pixel assertion |
+| E | drop the barrier into the read state in `rhi_cmd_bind_texture` | RED at the pixel assertion |
 
-Each break is reverted and the suite returned to green before the next.
+A1 is recorded rather than hidden: it is a real limitation of what a WARP
+receipt can establish about this feature, and the test's header comment says
+so explicitly.
 
 ### Gates
 

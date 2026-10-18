@@ -2809,7 +2809,11 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             dev, desc->vert, RHI_RES_SHADER);
         RHI_D3D12Shader *ps = (RHI_D3D12Shader *)rhi_get_resource_typed(
             dev, desc->frag, RHI_RES_SHADER);
-        if (vs == NULL || ps == NULL || vs->blob == NULL || ps->blob == NULL) {
+        /* A shadow-depth pass legitimately has no pixel stage: the PSO is built
+         * with zero render targets, so a pixel shader would have nothing to
+         * write. GL and Metal both accept the null fragment handle here. */
+        if (vs == NULL || vs->blob == NULL ||
+            (!desc->is_shadow_depth && (ps == NULL || ps->blob == NULL))) {
             LOG_WARN("D3D12: pipeline needs compiled VS/PS blobs");
             return RHI_HANDLE_NULL;
         }
@@ -2818,21 +2822,27 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
                                              D3D12_SHADER_VISIBILITY_VERTEX))
             return RHI_HANDLE_NULL;
-        binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
-                                               bindings, 16u);
-        if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
-                                             D3D12_SHADER_VISIBILITY_PIXEL))
-            return RHI_HANDLE_NULL;
+        if (ps != NULL) {
+            binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
+                                                   bindings, 16u);
+            if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings,
+                                                 binding_count,
+                                                 D3D12_SHADER_VISIBILITY_PIXEL))
+                return RHI_HANDLE_NULL;
+        }
         vs_code.pShaderBytecode = vs->blob;
         vs_code.BytecodeLength = vs->blob_size;
-        ps_code.pShaderBytecode = ps->blob;
-        ps_code.BytecodeLength = ps->blob_size;
+        if (ps != NULL) {
+            ps_code.pShaderBytecode = ps->blob;
+            ps_code.BytecodeLength = ps->blob_size;
+        }
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
         rhi_d3d12_uniform_markers(vs->source, vs->source_len, pd->uniforms,
                                   &pd->uniform_count);
-        rhi_d3d12_uniform_markers(ps->source, ps->source_len, pd->uniforms,
-                                  &pd->uniform_count);
+        if (ps != NULL)
+            rhi_d3d12_uniform_markers(ps->source, ps->source_len, pd->uniforms,
+                                      &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 0u,
             &pd->push_param_index, &pd->push_size);
         if (pd->root_sig != NULL)
@@ -2886,7 +2896,14 @@ static D3D12_RESOURCE_STATES rhi_d3d12_texture_final_state(RHIFormat format) {
            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 }
 
-RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
+/* depth_samplable asks for the typeless alias pair: the resource is allocated
+ * R32_TYPELESS so a D32_FLOAT depth-stencil view and an R32_FLOAT
+ * shader resource view can both address the same bytes. Only the shadow atlas
+ * needs it; every other depth target stays unsamplable D32_FLOAT, which is
+ * exactly what it is today. */
+static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
+                                              const RHITextureDesc *desc,
+                                              int depth_samplable) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Texture *td;
     D3D12_HEAP_PROPERTIES properties;
@@ -2895,6 +2912,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     D3D12_CLEAR_VALUE clear_value;
     D3D12_CLEAR_VALUE *clear_ptr = NULL;
     DXGI_FORMAT dxgi_format;
+    DXGI_FORMAT alloc_format;
     HRESULT hr;
     u32 idx;
     if (dev == NULL || !rhi_texture_desc_validate(desc)) return RHI_HANDLE_NULL;
@@ -2902,6 +2920,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     dxgi_format = rhi_d3d12_format(desc->format);
     if (dxgi_format == DXGI_FORMAT_UNKNOWN) return RHI_HANDLE_NULL;
+    if (depth_samplable && desc->format != RHI_FORMAT_D32_FLOAT)
+        return RHI_HANDLE_NULL;
+    alloc_format = (depth_samplable && desc->format == RHI_FORMAT_D32_FLOAT)
+        ? DXGI_FORMAT_R32_TYPELESS : dxgi_format;
     ZeroMemory(&properties, sizeof(properties));
     properties.Type = D3D12_HEAP_TYPE_DEFAULT;
     properties.CreationNodeMask = 1u;
@@ -2912,13 +2934,15 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     description.Height = desc->height;
     description.DepthOrArraySize = 1u;
     description.MipLevels = (UINT16)(desc->mip_levels == 0u ? 1u : desc->mip_levels);
-    description.Format = dxgi_format;
+    description.Format = alloc_format;
     description.SampleDesc.Count = 1u;
     initial_state = desc->data != NULL ? D3D12_RESOURCE_STATE_COPY_DEST
                                        : rhi_d3d12_texture_final_state(desc->format);
     if (desc->format == RHI_FORMAT_D32_FLOAT) {
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         ZeroMemory(&clear_value, sizeof(clear_value));
+        /* The clear value names the depth-stencil aspect, which is D32_FLOAT
+         * even when the resource itself was allocated typeless. */
         clear_value.Format = dxgi_format;
         clear_value.DepthStencil.Depth = 1.0f;
         clear_ptr = &clear_value;
@@ -2934,9 +2958,10 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         free(td);
         return RHI_HANDLE_NULL;
     }
-    td->dxgi_format = dxgi_format;
-    td->rhi_format = (UINT)desc->format;
-    td->width = desc->width;
+    td->dxgi_format = alloc_format;
+    td->srv_format = depth_samplable ? DXGI_FORMAT_R32_FLOAT
+                                     : DXGI_FORMAT_UNKNOWN;
+    td->rhi_format = (UINT)desc->format;    td->width = desc->width;
     td->height = desc->height;
     td->mip_levels = description.MipLevels;
     td->state = initial_state;
@@ -2994,6 +3019,9 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
     dev->slots[idx].ptr = td;
     dev->slots[idx].type = RHI_RES_TEXTURE;
     return rhi_make_handle(idx, dev->slots[idx].generation);
+}
+RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
+    return rhi_d3d12_texture_create_ex(dev, desc, 0);
 }
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     RHI_D3D12Texture *td;
@@ -3534,6 +3562,16 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r,
     ID3D12GraphicsCommandList_ClearRenderTargetView(list,
         ctx->bound_rtvs[attachment], color, 0u, NULL);
 }
+/* The format a shader resource view over this texture must declare. Every
+ * colour texture and every ordinary D32_FLOAT depth target reports its own
+ * format; only a shadow-atlas depth texture, allocated typeless so it can be
+ * both the shadow pass's DSV and the lighting pass's SRV, reports the
+ * R32_FLOAT alias instead of the unsamplable R32_TYPELESS it was
+ * actually allocated with. */
+static DXGI_FORMAT rhi_d3d12_srv_format(const RHI_D3D12Texture *td) {
+    return td->srv_format != DXGI_FORMAT_UNKNOWN ? td->srv_format
+                                                 : td->dxgi_format;
+}
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
                           RHISampler sampler, u32 unit) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
@@ -3558,23 +3596,31 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
      * What that means concretely: a texture can be filtered LINEAR and
      * addressed WRAP, and nothing else. In particular there is no comparison
      * sampling — EnableComparison is never set and no D3D12_SAMPLER_DESC
-     * reaches the shader — so the shadow map (material unit 1) and the
-     * point-shadow cubes (units 10-13), which are sampled through comparison
-     * samplers on GL, cannot do a depth compare on D3D12 today. That blocks
-     * the D3D12 forward pass at the shadow-map step.
+     * reaches the shader.
      *
-     * The infrastructure for the fix is half-present and unused: the context
-     * already owns a shader-visible sampler heap (sampler_heap /
-     * sampler_alloc) and rhi_sampler_create already writes a real
-     * D3D12_SAMPLER_DESC honouring RHISamplerDesc's filters and address modes
-     * into it (RHI_D3D12Sampler just holds the slot). What is missing is (a)
-     * a root parameter carrying a SAMPLER descriptor range for the pipeline's
-     * sampler registers, (b) a SetGraphicsRootDescriptorTable alongside the
-     * SRV table here, and (c) a comparison flag on RHISamplerDesc ->
-     * D3D12_SAMPLER_DESC, since rhi_sampler_create never sets
-     * EnableComparison either. Deliberately not done in this round: it is a
-     * root-signature change affecting every existing pipeline, not a binder
-     * fix. */
+     * That is NOT what blocks the shadow pass. No production shader declares
+     * a shadow sampler: the clustered forward shaders sample the point-shadow
+     * cubes and the shadow atlas as a plain sampler and compare by hand on
+     * the raw .r channel (blinn_phong_clustered.frag:70-71, the _vk twin
+     * likewise), and the GL backend deliberately sets
+     * GL_TEXTURE_COMPARE_MODE = GL_NONE for the same reason. A static LINEAR
+     * sampler plus a plain SRV is exactly what that code needs. The shadow
+     * atlas's real D3D12 constraint is the opposite one: D32_FLOAT cannot
+     * back an SRV at all, so the atlas is allocated as the typeless
+     * R32_TYPELESS and aliased to an R32_FLOAT SRV (see
+     * rhi_d3d12_srv_format).
+     *
+     * The infrastructure for a real sampler table is half-present and
+     * unused: the context already owns a shader-visible sampler heap
+     * (sampler_heap / sampler_alloc) and rhi_sampler_create already writes a
+     * real D3D12_SAMPLER_DESC honouring RHISamplerDesc's filters and address
+     * modes into it (RHI_D3D12Sampler just holds the slot). What is missing
+     * is (a) a root parameter carrying a SAMPLER descriptor range for the
+     * pipeline's sampler registers, (b) a SetGraphicsRootDescriptorTable
+     * alongside the SRV table here, and (c) a comparison flag on
+     * RHISamplerDesc -> D3D12_SAMPLER_DESC. Deliberately not done in this
+     * round: it is a root-signature change affecting every existing pipeline,
+     * not a binder fix, and nothing in the current shader set needs it. */
     (void)sampler;
     if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
     list = rhi_d3d12_cmd_list(ctx);
@@ -3592,7 +3638,7 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
         return;
     }
     ZeroMemory(&srv, sizeof(srv));
-    srv.Format = td->dxgi_format;
+    srv.Format = rhi_d3d12_srv_format(td);
     srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     srv.Texture2D.MostDetailedMip = 0u;
@@ -3614,7 +3660,12 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
 }
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex,
                                  RHISampler sampler) {
-    (void)cmd; (void)shadow_tex; (void)sampler;
+    /* Material unit 1 is where the atlas belongs — the same slot the GL
+     * backend binds it to. The sampler argument is discarded exactly as in
+     * rhi_cmd_bind_texture: the production shaders compare the sampled .r by
+     * hand rather than through a comparison sampler, so the static LINEAR
+     * sampler the root signature already provides is what they expect. */
+    rhi_cmd_bind_texture(cmd, shadow_tex, sampler, 1u);
 }
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
@@ -3780,20 +3831,169 @@ i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name
 }
 
 /* ---- shadow map / cubemap / FBO ---- */
+/* Mirrors the GL backend's shadow_map_create. The one D3D12-specific step is the
+ * allocation: a D32_FLOAT resource cannot back a shader resource view at all,
+ * so the atlas is created through the depth_samplable path, which allocates the
+ * canonical DXGI_FORMAT_R32_TYPELESS and aliases it two ways over the same
+ * bytes — a D32_FLOAT depth-stencil view here, and the R32_FLOAT SRV that
+ * rhi_cmd_bind_shadow_texture hands the lighting pass. */
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
-    RHIShadowMap out;
-    (void)dev; (void)width; (void)height;
-    memset(&out, 0, sizeof(out));
-    return out;
+    RHIShadowMap sm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *depth;
+    RHI_D3D12ShadowAtlas *sd;
+    RHITextureDesc tdesc;
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+    u32 idx;
+    memset(&sm, 0, sizeof(sm));
+    /* An atlas that publishes no target must never be bound: the R358 gate —
+     * binding it would clear whatever depth was left bound before it. */
+    if (dev == NULL || !rhi_drawable_dimensions_valid(width, height)) return sm;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return sm;
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = width;
+    tdesc.height = height;
+    tdesc.format = RHI_FORMAT_D32_FLOAT;
+    tdesc.mip_levels = 1u;
+    tdesc.data = NULL;
+    sm.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1);
+    if (!rhi_handle_valid(sm.depth_tex)) return sm;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, sm.depth_tex,
+                                                       RHI_RES_TEXTURE);
+    if (depth == NULL) goto fail_tex;
+
+    sd = (RHI_D3D12ShadowAtlas *)calloc(1u, sizeof(*sd));
+    if (sd == NULL) goto fail_tex;
+    sd->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+    if (sd->dsv_slot == UINT_MAX) {
+        free(sd);
+        goto fail_tex;
+    }
+    /* The typeless resource is viewed as D32_FLOAT on the depth-stencil
+     * aspect; the NULL-desc default would guess from the typeless format and
+     * fail, so the alias is named explicitly. */
+    ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+    dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+    ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, &dsv_desc,
+        rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, sd->dsv_slot));
+    sd->width = width;
+    sd->height = height;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = sd;
+    dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
+    sm.fbo = rhi_make_handle(idx, dev->slots[idx].generation);
+    sm.width = width;
+    sm.height = height;
+    return sm;
+
+fail_tex:
+    rhi_texture_destroy(dev, sm.depth_tex);
+    memset(&sm, 0, sizeof(sm));
+    return sm;
 }
 void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
-    (void)dev; (void)sm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12ShadowAtlas *sd;
+    UINT64 retire;
+    if (dev == NULL || sm == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (rhi_handle_valid(sm->depth_tex)) rhi_texture_destroy(dev, sm->depth_tex);
+    if (rhi_handle_valid(sm->fbo)) {
+        sd = (RHI_D3D12ShadowAtlas *)rhi_get_resource_typed(dev, sm->fbo,
+                                                            RHI_RES_FRAMEBUFFER);
+        if (sd != NULL && ctx != NULL && sd->dsv_slot != UINT_MAX) {
+            /* A command list may still hold this descriptor, so the slot goes
+             * back through the fence-retire path, not straight to the
+             * allocator — same rule the offscreen FBO teardown follows. */
+            retire = rhi_d3d12_retire_fence(ctx);
+            rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc, sd->dsv_slot,
+                                           retire);
+        }
+        free(sd);
+        rhi_free_slot(dev, sm->fbo);
+    }
+    sm->fbo = RHI_HANDLE_NULL;
+    sm->depth_tex = RHI_HANDLE_NULL;
 }
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
-    (void)cmd; (void)sm;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12ShadowAtlas *sd;
+    RHI_D3D12Texture *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    D3D12_VIEWPORT vp;
+    D3D12_RECT sc;
+    /* R358: never touch the depth attachment that is still bound when the
+     * atlas is missing — that would clear the caller's frame. */
+    if (ctx == NULL || g_current_device == NULL || sm == NULL) return;
+    if (!rhi_handle_valid(sm->fbo)) return;
+    sd = (RHI_D3D12ShadowAtlas *)rhi_get_resource_typed(g_current_device,
+                                                        sm->fbo,
+                                                        RHI_RES_FRAMEBUFFER);
+    if (sd == NULL || sd->dsv_slot == UINT_MAX) return;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+                                                       sm->depth_tex,
+                                                       RHI_RES_TEXTURE);
+    if (depth == NULL || depth->resource == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    if (depth->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, depth->resource, depth->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, sd->dsv_slot);
+    /* Depth-only pass: the shadow-depth PSO already declares zero render
+     * targets for is_shadow_depth (rhi_d3d12_create_graphics_pso), so zero
+     * RTVs is what it expects. */
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 0u, NULL, TRUE, &dsv);
+    ctx->bound_rtv_count = 0u;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    /* Non-flipped, matching rhi_cmd_set_shadow_viewport — the shadow pass uses
+     * a top-left-origin viewport, so it must NOT go through the Y-flipping
+     * rhi_d3d12_set_full_target_viewport the colour passes use. */
+    vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+    vp.Width = (f32)sd->width; vp.Height = (f32)sd->height;
+    vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    sc.left = 0; sc.top = 0;
+    sc.right = (LONG)sd->width; sc.bottom = (LONG)sd->height;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &sc);
+    /* R618 "bind == fresh": the whole atlas clears to 1.0 with the scissor
+     * wide open. Per-cascade quadrants are applied afterwards by
+     * rhi_cmd_set_shadow_viewport. */
+    ID3D12GraphicsCommandList_ClearDepthStencilView(list, dsv,
+        D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv;
+    D3D12_VIEWPORT vp;
+    D3D12_RECT sc;
+    if (ctx == NULL || g_current_device == NULL || !ctx->swapchain_ready) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    /* D3D12's "target 0" is the swapchain back buffer; the shadow depth buffer
+     * is not part of it, which is the same shape as the GL bind-FBO-0
+     * restore and the same shape as rhi_offscreen_fbo_unbind. */
+    rtv = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc,
+                                   ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
+    ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_count = 1u;
+    ctx->bound_dsv_valid = 0u;
+    vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
+    vp.Width = (f32)screen_w; vp.Height = (f32)screen_h;
+    vp.MinDepth = 0.0f; vp.MaxDepth = 1.0f;
+    ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);
+    sc.left = 0; sc.top = 0; sc.right = (LONG)screen_w; sc.bottom = (LONG)screen_h;
+    ID3D12GraphicsCommandList_RSSetScissorRects(list, 1u, &sc);
 }
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
@@ -4627,7 +4827,21 @@ void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex,
 }
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd,
                                       RHITexture depth_tex) {
-    (void)cmd; (void)depth_tex;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Texture *td;
+    D3D12_RESOURCE_STATES read_state;
+    if (ctx == NULL || g_current_device == NULL) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, depth_tex,
+                                                    RHI_RES_TEXTURE);
+    if (td == NULL || td->resource == NULL) return;
+    read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                 D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (td->state == read_state) return;
+    rhi_d3d12_transition(list, td->resource, td->state, read_state);
+    td->state = read_state;
 }
 
 /* ---- screenshot ---- */

@@ -161,6 +161,14 @@ typedef struct RHI_D3D12Buffer {
 typedef struct RHI_D3D12Texture {
     ID3D12Resource *resource;
     DXGI_FORMAT dxgi_format;
+    /* The format a shader resource view over this texture must declare.
+     * DXGI_FORMAT_UNKNOWN (calloc default) means "same as dxgi_format", which
+     * is every colour texture and every ordinary D32_FLOAT depth target.
+     * A shadow-atlas depth texture instead allocates the typeless
+     * R32_TYPELESS and sets this to R32_FLOAT, because D32_FLOAT
+     * cannot back an SRV at all and the lighting pass has to read the depth
+     * the shadow pass wrote. */
+    DXGI_FORMAT srv_format;
     UINT rhi_format;            /* RHIFormat */
     UINT width;
     UINT height;
@@ -190,6 +198,15 @@ typedef struct RHI_D3D12MRTFBO {
     UINT width, height, attachment_count, sample_count;
     float clear_color[RHI_MRT_MAX_ATTACHMENTS][4];
 } RHI_D3D12MRTFBO;
+
+/* Shadow atlas: depth-only, no colour attachment, so only the DSV slot is
+ * held. The depth texture is an ordinary RHI_RES_TEXTURE created with the
+ * typeless alias (see RHI_D3D12Texture.srv_format) because the lighting pass
+ * samples back what the shadow pass writes. */
+typedef struct RHI_D3D12ShadowAtlas {
+    UINT dsv_slot;              /* dsv_alloc slot */
+    UINT width, height;
+} RHI_D3D12ShadowAtlas;
 
 /* Root signature builder: one pass over reflected ShaderIOBindings
  * (core/shader_io.h) plus the pipeline's push-constant contract.
