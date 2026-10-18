@@ -35,7 +35,7 @@
   ④**负对照（cube 门禁没有自动守卫）**：把 `rhi_d3d12_live_cube` 改成接受 `RHI_RES_TEXTURE`（即"只要是纹理就算 cube"，正是评审要求堵掉的那个缺陷形态），测试**仍然 9/9 全绿**。这不是修复失败，而是如实记录：**在只有 t0 的管线下，unit 8/9/10-13 在像素上结构性不可观测**（未声明的寄存器在碰描述符之前就返回，旧代码即使给它们塞 2D fallback 也不会产生任何像素差异），因此该门禁目前**只有评审保证、没有自动化守卫**。若要自动化，需要导出成可测谓词或新增一条声明 t10+ 的 sidecar，二者都超出本轮范围。
 - **诚实的证明边界（勿把 unit map 整张表当成已被像素证明）**：**只有 unit 0 在这些像素里可观测**。blinn_phong sidecar 只声明 t0，而未声明的寄存器会被跳过，于是 unit 1-15 在此测试中**结构性不可见**。本测试证明的是：映射表的 **albedo 项**（以及经由 albedo 体现的 fallback 规则）、以及其余各项**不会扰动** t0。**不**证明 shadow 在 1、mr 在 2、ssao 在 14——那些依据是"逐槽位镜像 GL binder"这一事实加人工评审，不是像素。要像素证明它们，需要声明那些寄存器的 sidecar。
 - **回归证据**：全部使用本 worktree 自己的构建树（`build-d3d12-debug` / `build-gl` / `build-vk`，`CMAKE_HOME_DIRECTORY` 均指向本 worktree 的 `engine/`；Ninja + clang 22.1.6 + `ENGINE_RHI_BACKEND=d3d12`），CTest 环境 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1`，D3D12 调试层与 GPU-based validation 均开启。`test_d3d12_warp_runtime` **9/9**；`ctest -R "d3d12|warp|swapchain"` **12/12**；全树 `ninja` 无错无警告。
-  **一条需要更正的口径（此前落账把全树写成 184/184）**：全新 worktree 里 `engine/external/VulkanSDK` 是 gitignore 的 vendored 依赖、并不存在，故 `ctest` 必须带 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 才能跳过 `test_locked_dependencies`；**不带该变量时全树是 182/184**（多出的那一项正是 `test_locked_dependencies`，纯粹因为 vendored VulkanSDK 缺席，与本轮代码无关）。另需注明：`test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text`（`OpenClipboard failed`）在本会话后段失败——**它是会话级的环境性失败**：主 checkout 的 `build-d3d12-debug` 与本 worktree 的 `build-gl` 树同样失败，且它在本次会话早先的同一套命令里是通过的。GL **169/175**、Vulkan **170/176**（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE graphics`），两边失败项完全一致：5 个 `fuzz_*_smoke`（`EXCLUDE_FROM_ALL`，默认 `ninja` 不构建，故 "Not Run"，见 `engine/CMakeLists.txt` 注释）+ 上述 clipboard 项。
+  **一条需要更正的口径（此前落账把全树写成 184/184）**：全新 worktree 里 `engine/external/VulkanSDK` 是 gitignore 的 vendored 依赖、并不存在，故 `ctest` 必须带 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 才能跳过 `test_locked_dependencies`；**不带该变量时全树是 182/184**（多出的那一项正是 `test_locked_dependencies`，纯粹因为 vendored VulkanSDK 缺席，与本轮代码无关）。另需注明：`test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text`（`OpenClipboard failed`）在本会话后段失败——**它是会话级的环境性失败**：主 checkout 的 `build-d3d12-debug` 与本 worktree 的 `build-gl` 树同样失败，且它在本次会话早先的同一套命令里是通过的。GL **169/175**、Vulkan **170/176**（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE graphics`），两边失败项完全一致：5 个 `fuzz_*_smoke`（`EXCLUDE_FROM_ALL`，默认 `ninja` 不构建故 "Not Run"——⚠️ **这不是失败**，是门控命令漏了 `-LE fuzz`；本轮实测构建后 `ctest -L fuzz` 为 5/5 PASS，详见上方「门控口径更正」）+ 上述 clipboard 项。
   **一次真实的跨后端抓漏**：首次跑 GL 树时 `test_no_hidden_gl_fallback` 转红，报 `src/rhi/rhi_d3d12.c: token 'rhi_gl'`——该守卫对**注释原文**做子串扫描。修复同样选择了**不放宽守卫**（给整个 D3D12 后端永久豁免全部 GL token 的代价太大），而是让注释改指 GL 的**函数名**而非文件名；修复本轮注释时该守卫再次以同样方式转红一次，已按同一办法处理。
 - **剩余有序工作（顺序是约束，不是偏好）**：本轮完成材质 binder 后，上一轮清单里的"①材质 binder"出清，顺序变为：**② shadow map → ③ compute 绑定 → ④ FORWARD_MRT velocity 输出 → ⑤ 引擎调用点迁移到 path API**。
   - **② shadow map —— 本轮已完成，见上方"阴影图"条目**。此前记录的顺序约束（"卡在采样器，先做 pass 后做采样器等于交付一帧采样结果错误但看起来在跑的画面"）是**从上面那条错误论断推导出来的，因而一并作废**：采样从未是前置条件。
@@ -44,6 +44,25 @@
   - **④ FORWARD_MRT velocity 输出**：其 `#ifdef FORWARD_MRT` 分支要额外 128B `std140` UBO，与基座 256B 合计 384B，**装不进 D3D12 256B graphics push 范围**（详见上一轮记录：在 b1 加 CBV 会新增一条描述符表，把 constants 压到 248B，于是 `u_camera_pos@240+12 = 252 > 248` 被**静默丢弃**——正是那条"丢写对测试不可见"的坑），且 FS 侧需要第二条 render target。必须与独立 MRT FBO 计划一并设计，不能顺手加。
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
+
+## 本轮更新：门控口径更正 — 5 个 `fuzz_*_smoke` **从来不是失败用例**，此前多轮落账把它记成"已知失败"是错的
+
+- **问题**：本会话此前的每一轮门控都写 `ctest -LE graphics`，然后把结果里的 5 个 `fuzz_*_smoke (Not Run)` 当作"已知环境失败"记进 `Implementation_Status.md`。**这个口径从根上就是错的**：那 5 项之所以 `Not Run`，是因为 `cmake` 用 `EXCLUDE_FROM_ALL` 建它们（`engine/CMakeLists.txt:3215/3421/3451/3463/3476`，注释写明"run by hand under ASan/UBSan"），而门控命令**没有排除 `fuzz` 标签**。
+- **CI 的正确口径**是 `ctest -LE "graphics|fuzz"`（`.github/workflows/ci.yml:128` 明确写了 `-LE graphics|fuzz`），fuzz 由独立的 sanitizer job 显式 `cmake --build --target fuzz_*` 后 `ctest -L fuzz` 跑。**本会话的门控命令漏了 `fuzz`，等于把"按设计不参与默认运行"报成了失败。**
+- **实证（本轮亲自跑过，不是推断）**：`cmake --build . --target fuzz_scene_serial fuzz_net_packet fuzz_asset_gltf fuzz_decode_image fuzz_vfs_pak` 五个目标全部零错误建成，随后 `ctest -L fuzz --output-on-failure` 得 **5/5 PASS**（scene_serial 0.35s、net_packet 0.04s、decode_image 5.94s、vfs_pak 0.50s、asset_gltf 1.95s）。**它们是好的。**
+- **本机正确口径下的三棵树实测**：
+  | 树 | 命令 | 结果 |
+  |---|---|---|
+  | `build-d3d12-debug` | `ctest`（全量，含 graphics 与 fuzz） | **184/184 PASS** |
+  | `build-d3d12-debug` | `ctest -LE "graphics\|fuzz"` | **171/171 PASS** |
+  | `build-gl` | `ctest -LE "graphics\|fuzz"` | **170/170 PASS** |
+  | `build-vk` | `ctest -LE "graphics\|fuzz"` | **171/171 PASS** |
+  即：**默认门控范围内三棵树全绿，零失败**。
+- **`test_vulkan`（graphics 标签，只在 vulkan/opengl 构建注册）的失败需要分开看，三类性质完全不同**：
+  1. **golden 漂移（双树各 2 项）——已立项的既有基线，不是回归**。本机实测 VK `MAE=28.75 max=126`、VK cam `MAE=13.54 max=79`，GL `MAE=15.60 max=63`、GL cam `MAE=1.15 max=60`（阈值 `MAE<=8.0 max<=56`）。`Implementation_Status.md:184` 早已用 `git stash` 回退复测得到**完全相同**的 MAE，定性为 Windows/NVIDIA 与参考图生成机（Linux Intel Mesa）的既有差异。本轮又做了一步更强的确认：用 `GOLDEN_UPDATE=1` 重新生成参考后两树 golden 门**立刻转绿**，证明**渲染器自身自洽、只是提交进仓库的参考图与本机硬件不匹配**（随后已 `git checkout` 还原，**没有**把本机硬件的参考图提交上去——那会摧毁 CI 的权威性）。
+  2. **VK `UNIFIED GPU CULL TEST FAILED`（`FAIL: Hi-Z vis flags {0,0}, want {1,0}`）**：`Implementation_Status.md:1543` 精确记录过同一台机器型号（"NVIDIA 混合 GPU 笔记本（RTX 4060 dGPU + AMD 显示）"）上 TEST 9 unified cull 的 DEVICE_LOST 调查；`:1529` 记录 R574 修复后"首次全绿"。本轮它**又红了，且这次不是设备丢失而是可见性全 0**。
+  3. **GL `MATERIAL ARRAY SINGLE-EXECUTE TEST FAILED`**（象限 `red{0,0} green{255,255} culled{255,34,34} white{36}`）：red 与 culled 两个象限**对调**、white 落到 36，这不是色域标定偏差而是**实例层落位错误**；多条历史落账写的是"GL 全套件 ALL PASSED"。
+- **诚实边界**：第 2、3 项是**本会话完全没碰过的 GL/VK 代码**（`rhi_gl.c`/`rhi_vk.c` 最后一次改动是 `02c95e8b`，2026-10-18，且其内容经核对是纯增量的 path 入口委托，对现有编译结果字节级不变；golden 用到的 `blinn_phong*` shader 最后改动 2026-08-14，且新增部分全在 `#ifdef FORWARD_MRT` 内而 `test_vulkan.c` 从不定义该宏）。所以**不是本会话引入的回归**，但它们确实是**真实失败**，且都属于本会话工作流（GL/VK 渲染）之外的子系统。**本轮没有动它们**——在没有权威硬件基线的前提下，"修"它们的唯一可行手段是放宽断言，那会削弱真实的回归探测器，这个决定不该由本轮单方面做出。
 
 ## 本轮更新：compute 绑定（storage buffer）——**未落地**，一轮只换来结论
 
@@ -112,7 +131,7 @@
 | 树 | 命令 | 结果 |
 |---|---|---|
 | `build-d3d12-debug` | `ctest -R "d3d12\|warp\|swapchain"` | **12/12 PASS** |
-| `build-d3d12-debug` | `ctest -LE graphics` | **170/176**，失败项 = `test_platform_win32_runtime`（会话级剪贴板 `OpenClipboard failed`）+ 5 个 `fuzz_*_smoke`（`EXCLUDE_FROM_ALL`，故 Not Run）。与本轮之前**逐项一致**。 |
+| `build-d3d12-debug` | `ctest -LE graphics` | 170/176。⚠️ **此口径本身有误**：它把按设计 `EXCLUDE_FROM_ALL` 的 5 个 `fuzz_*_smoke` 报成了失败（"Not Run"），而它们并非失败用例——见上方「门控口径更正」。正确口径 `ctest -LE "graphics\|fuzz"` 为 **171/171**；全量 `ctest`（含 graphics 与 fuzz）为 **184/184**。 |
 | `build-gl` | `ctest -LE graphics` | **174/175**，唯一失败 = 上述 clipboard 项 |
 | `build-vk` | `ctest -LE graphics` | **175/176**，唯一失败 = 上述 clipboard 项 |
 
