@@ -394,6 +394,231 @@ TEST(shader_paths_resolve_to_blit_sidecars_and_render_red) {
     rhi_shader_destroy(g_dev, fs_self);
 }
 
+/* Sidecar Task 2: the first REAL renderer pipeline on D3D12, proven with
+ * pixels. Two independent claims are under test.
+ *
+ * (1) Offset resolution. The sidecar publishes its layout through
+ * `// rhi:uniform <name> <byte offset>` markers, and the D3D12 backend turns
+ * those markers into the name -> byte-offset table behind
+ * rhi_pipeline_get_uniform_location (rhi_d3d12.c:2824-2827 reads the VS and
+ * PS sources into one table). Asserting the numbers proves the markers parse;
+ * it does NOT prove the values written at those offsets reach the shader. The
+ * second draw below closes that gap by writing a distinct colour through
+ * u_ambient and reading it back out of the pixels.
+ *
+ * (2) Shading. Every one of the 64 pixels must equal the sampled albedo,
+ * which only happens when model/view/proj are identity, the texture is bound
+ * at unit 0, and every lighting uniform landed where the sidecar says.
+ *
+ * Degenerate-lighting analysis — why these exact uniform values:
+ * The GLSL reduces to `albedo * (u_ambient + u_light_color * diff) +
+ * u_light_color * spec * 0.15`. This test picks geometry that zeroes BOTH
+ * lighting terms on its own, so the expected colour is the albedo regardless
+ * of the specular exponent (the sidecar follows the GLSL's five squarings,
+ * exponent 32, not the plan prose's "spec^8"):
+ *
+ *   N = (0,0,1)  — every vertex carries it, so it interpolates constant and
+ *                  normalize() is a no-op.
+ *   u_light_dir = (0,-1,0) -> L = (0,1,0).
+ *   diff = max(dot(N,L),0) = max(0,0) = 0.
+ *   V = normalize(u_camera_pos - world) with u_camera_pos = (0,0,-10) and the
+ *   triangle on the z=0 plane, so V.z = -10/len < 0 strictly and V is never
+ *   zero-length. H = normalize(L + V) then has H.z = V.z/|L+V| < 0, so
+ *   spec = max(dot(N,H),0) = max(negative,0) = 0.
+ *
+ * Two NaN hazards this deliberately avoids, because NaN propagates through
+ * multiplication and 0 * NaN is NaN (so a zero light colour would NOT rescue
+ * a broken H):
+ *   - u_camera_pos coinciding with a vertex/pixel would make normalize(0).
+ *     The camera sits at z=-10, ten units from the geometry, and no vertex is
+ *     near it.
+ *   - L = -V at any point would make L+V = 0 and H = normalize(0). The
+ *     viewport-centre pixel is world (0,0,0); with L = (0,0,1) (the obvious
+ *     "light straight on" choice, u_light_dir = (0,0,-1)) V is exactly (0,0,-1)
+ *     there and H IS NaN. Choosing L = (0,1,0) makes (L+V).z strictly
+ *     negative for every pixel, so no P of the triangle can degenerate.
+ *
+ * Because spec is zero by construction and not by a zero multiplier,
+ * u_light_color is deliberately left NON-ZERO at (1,1,1). If the specular
+ * term were ever reachable here the colour would shift and the test would go
+ * red; the same for a mis-resolved u_light_dir.
+ *
+ * Push-constant sizing: this pipeline's root signature spends one DWORD on
+ * the t0 SRV descriptor table, and the D3D12 root-signature budget is 64
+ * DWORDs total (rhi_d3d12.c:2559-2562), so the constants param is clamped to
+ * 63 DWORDs = 252 bytes — four short of the 256-byte graphics contract. Every
+ * uniform here is therefore written with the 12-byte vec3 / 64-byte mat4
+ * setters, never a padded 16-byte copy: a 16-byte write at offset 240 would
+ * end at 256, fail rhi_push_helper_range_ok, and be dropped with a warning
+ * while the shader still read whatever was left in the staging buffer.
+ * u_camera_pos + 12 = 252 lands exactly on that boundary. */
+TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
+    /* pos3, normal3, uv2 = 32B stride, matching RHIPipelineDesc's mesh
+     * layout. An oversized NDC triangle so all 64 pixels are covered; the
+     * oversized UVs are harmless on a uniformly-coloured 2x2 texture with the
+     * engine's static WRAP sampler. */
+    static const float verts[3 * 8] = {
+        /*  pos                 normal          uv     */
+        -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    static const unsigned char white[2 * 2 * 4] = {
+        255, 255, 255, 255, 255, 255, 255, 255,
+        255, 255, 255, 255, 255, 255, 255, 255
+    };
+    /* Colume-major, matching HLSL's default float4x4 packing: index = col*4 + row. */
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tex_desc;
+    RHITexture red_tex, white_tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    /* The contract: the engine resolves these names for blinn_phong on every
+     * backend, and the Vulkan twin test pins the same seven numbers. */
+    static const char *const names[7] = {
+        "u_model", "u_view", "u_proj", "u_light_dir",
+        "u_light_color", "u_ambient", "u_camera_pos"
+    };
+    static const i32 expected[7] = { 0, 64, 128, 192, 208, 224, 240 };
+    i32 loc[7];
+    int i;
+
+    /* Form A only: the GLSL paths the engine itself passes, mapped onto the
+     * sidecars. The self-referential "_hlsl" form is already covered for blit
+     * by shader_paths_resolve_to_blit_sidecars_and_render_red. */
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 2u; tex_desc.height = 2u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = red;
+    red_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(red_tex));
+    tex_desc.data = white;
+    white_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(white_tex));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;    /* pos3 + normal3 + uv2 */
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;   /* also disables the depth test */
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 7; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expected[i]) {
+            printf("FAIL: %s resolved to %d, expected %d\n",
+                   names[i], (int)loc[i], (int)expected[i]);
+        }
+        ASSERT_EQ(loc[i], expected[i]);
+    }
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    /* Draw 1: red albedo, white ambient -> every pixel is exactly the albedo. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[2], identity);
+    rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f); /* u_light_dir */
+    rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f); /* u_light_color */
+    rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f); /* u_ambient */
+    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_texture(cmd, red_tex, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    /* A fresh bind cleared the target, so every pixel must come from the
+     * shader. Exact equality, not a tolerance: the whole expression is
+     * (1,0,0) * ((1,1,1) + 0) + 0, so any deviation is a real defect. */
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 255);
+        ASSERT_EQ(px[i + 1], 0);
+        ASSERT_EQ(px[i + 2], 0);
+        ASSERT_EQ(px[i + 3], 255);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    /* Draw 2: the offset markers could resolve to the right numbers while the
+     * struct behind them disagrees, in which case the write would land on the
+     * wrong member. A white albedo makes u_ambient the only contributor, so
+     * u_ambient = (0,1,0) must come out green — proof that the value written
+     * at byte 224 is the value the fragment shader reads. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[2], identity);
+    rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f,  1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[5],  0.0f,  1.0f,  0.0f); /* green ambient */
+    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_texture(cmd, white_tex, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 0);
+        ASSERT_EQ(px[i + 1], 255);
+        ASSERT_EQ(px[i + 2], 0);
+        ASSERT_EQ(px[i + 3], 255);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, red_tex);
+    rhi_texture_destroy(g_dev, white_tex);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -451,6 +676,7 @@ int main(void) {
     RUN_TEST(push_constants_transform_reaches_the_shader);
     RUN_TEST(blit_texture_binding_samples_red_into_offscreen_fbo);
     RUN_TEST(shader_paths_resolve_to_blit_sidecars_and_render_red);
+    RUN_TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
