@@ -130,6 +130,12 @@ typedef struct RHI_D3D12Context {
     UINT8 uniform_staging[256];
     UINT uniform_dirty_lo;
     UINT uniform_dirty_hi;
+    /* Material binder fallback: one shared 1x1 RGBA8 white texture, created
+     * on first use and released by rhi_device_destroy with the rest of the
+     * context. A D3D12 root descriptor table has no "unset" state the way a
+     * GL texture unit does, so a material slot with an invalid handle binds
+     * this instead of leaving the shader sampling an unwritten descriptor. */
+    RHITexture white_fallback;
 } RHI_D3D12Context;
 
 typedef struct RHI_D3D12Resource {

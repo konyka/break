@@ -619,6 +619,178 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* Material binder Task 1+2: the REAL binder path, not a hand-placed
+ * rhi_cmd_bind_texture. Two claims, both proven with pixels:
+ *
+ *  1. rhi_cmd_bind_material_textures puts albedo on texture unit 0, which is
+ *     what lands on register t0 — the register the blinn_phong sidecar's
+ *     `Texture2D g_albedo : register(t0)` reads. The five invalid handles
+ *     travel the same call and take the fallback path, so this is the exact
+ *     call the engine's forward pass makes.
+ *  2. The fallback is not a no-op: a D3D12 root descriptor table left unwritten
+ *     still samples whatever the last draw put in that descriptor slot, so the
+ *     binder substitutes a 1x1 white texture for an invalid handle. Draw 2
+ *     inverts the argument to prove the substitution happens: an INVALID
+ *     albedo must come out exactly white, never the clear colour and never
+ *     the previous frame's descriptor.
+ *
+ * Why two draws instead of one: the blinn_phong sidecar declares only t0, and
+ * rhi_cmd_bind_texture skips a register the pipeline does not declare, so the
+ * shadow/mr/normal/emissive/ssao slots of draw 1 are structurally unobservable
+ * in the pixels. Albedo is the one material slot this pipeline can see, so
+ * draw 2 puts the invalid handle THERE — that is the only way the fallback
+ * rule becomes a pixel assertion instead of a code-reading claim.
+ *
+ * The colours are exact, not approximate: with the degenerate lighting used
+ * by the sibling blinn_phong test (diff = 0 and spec = 0 by construction, see
+ * that test's header), the shader reduces to albedo * u_ambient with
+ * u_ambient = (1,1,1). Any other value can only come from a different
+ * descriptor having been sampled. */
+TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tex_desc;
+    RHITexture red_tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const names[7] = {
+        "u_model", "u_view", "u_proj", "u_light_dir",
+        "u_light_color", "u_ambient", "u_camera_pos"
+    };
+    i32 loc[7];
+    int i;
+
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 2u; tex_desc.height = 2u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = red;
+    red_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(red_tex));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;    /* pos3 + normal3 + uv2 */
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 7; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        ASSERT_TRUE(loc[i] >= 0);
+    }
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    /* Draw 1: red albedo on unit 0, every other material map invalid. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[2], identity);
+    rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_material_textures(cmd, red_tex,
+                                   RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                   RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                   RHI_HANDLE_NULL, (RHISampler){0});
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 255);
+        ASSERT_EQ(px[i + 1], 0);
+        ASSERT_EQ(px[i + 2], 0);
+        ASSERT_EQ(px[i + 3], 255);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    /* Draw 2: invalid albedo. Unit 0 must now resolve to the shared 1x1
+     * white fallback, so the same shader with the same uniforms comes out
+     * exactly white — proof the descriptor was written rather than left
+     * holding draw 1's red SRV. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[2], identity);
+    rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_material_textures(cmd, RHI_HANDLE_NULL,
+                                   RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                   RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                   RHI_HANDLE_NULL, (RHISampler){0});
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 255);
+        ASSERT_EQ(px[i + 1], 255);
+        ASSERT_EQ(px[i + 2], 255);
+        ASSERT_EQ(px[i + 3], 255);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, red_tex);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -677,6 +849,7 @@ int main(void) {
     RUN_TEST(blit_texture_binding_samples_red_into_offscreen_fbo);
     RUN_TEST(shader_paths_resolve_to_blit_sidecars_and_render_red);
     RUN_TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red);
+    RUN_TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

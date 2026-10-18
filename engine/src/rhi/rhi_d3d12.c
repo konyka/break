@@ -1131,6 +1131,14 @@ void rhi_device_destroy(RHIDevice *dev) {
          * latched-lost device skips the waits (fences may never signal
          * post-TDR). */
         (void)rhi_d3d12_drain_gpu(ctx);
+        /* The material binder's shared white fallback is an ordinary RHI
+         * texture, so it is released here — after the drain that guarantees
+         * no command list still references its SRV — and before the context
+         * itself goes away. */
+        if (rhi_handle_valid(ctx->white_fallback)) {
+            rhi_texture_destroy(dev, ctx->white_fallback);
+            ctx->white_fallback = RHI_HANDLE_NULL;
+        }
         if (ctx->swapchain_ready) {
             rhi_d3d12_swapchain_destroy(ctx, &ctx->swapchain);
             ctx->swapchain_ready = 0u;
@@ -3963,22 +3971,101 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
 }
 
 /* ---- material texture binders ---- */
+/* A GL texture unit that nothing bound still reads as the textureless
+ * default, so the GL binder can leave a missing map alone. A D3D12 root
+ * descriptor table has no such "unset" state: whatever the last draw left in
+ * that descriptor slot is what the shader samples, so a missing material map
+ * would read stale or never-written descriptor memory. Every material slot
+ * therefore resolves through this shared 1x1 RGBA8 white texture, created on
+ * first use and released with the context (rhi_device_destroy). White is the
+ * neutral value for the maps that reach it (ao/occlusion 1.0, metallic-
+ * roughness defaults), and it is the same fallback the engine's own scene
+ * resources use for absent textures. */
+static RHITexture rhi_d3d12_white_fallback(RHI_D3D12Context *ctx) {
+    static const unsigned char white[4] = { 255u, 255u, 255u, 255u };
+    RHITextureDesc desc;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->white_fallback)) return ctx->white_fallback;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = 1u;
+    desc.height = 1u;
+    desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    desc.mip_levels = 1u;
+    desc.data = white;
+    ctx->white_fallback = rhi_texture_create(g_current_device, &desc);
+    return ctx->white_fallback;
+}
+/* A handle that names no live texture (null, stale, or not a texture) takes
+ * the fallback, so a bound descriptor always describes something real. */
+static RHITexture rhi_d3d12_material_slot(RHI_D3D12Context *ctx,
+                                          RHITexture tex) {
+    if (g_current_device != NULL && rhi_get_resource_typed(g_current_device,
+            tex, RHI_RES_TEXTURE) != NULL) return tex;
+    return rhi_d3d12_white_fallback(ctx);
+}
+/* The binders only mean anything inside a started frame with a bound
+ * pipeline, and creating the fallback uploads on the queue, so both guard
+ * here rather than relying on rhi_cmd_bind_texture's per-call bail-outs. */
+static int rhi_d3d12_material_bindable(RHI_D3D12Context *ctx) {
+    if (ctx == NULL || g_current_device == NULL) return 0;
+    return rhi_d3d12_cmd_list(ctx) != NULL && ctx->bound_pipeline != NULL;
+}
+/* Unit map mirrors the GL backend's rhi_cmd_bind_material_textures binder
+ * exactly, so a D3D12 sidecar's register(tN) lines up with GL texture unit
+ * N — the blinn_phong sidecar declares g_albedo : register(t0), which is why
+ * albedo is unit 0. rhi_cmd_bind_texture returns without touching any table
+ * for a register the bound pipeline does not declare, so a sidecar
+ * declaring only t0 works here too. */
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow,
     RHITexture ssao, RHISampler sampler) {
-    (void)cmd; (void)albedo; (void)mr; (void)normal; (void)emissive;
-    (void)shadow; (void)ssao; (void)sampler;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, albedo), sampler, 0u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 1u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, mr), sampler, 2u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, normal), sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, emissive), sampler, 4u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 5u);
 }
+/* Unit map mirrors the GL backend's rhi_cmd_bind_material_textures_ibl binder
+ * exactly, including occlusion at 15, the point-shadow cubes at 10-13
+ * (clamped to four), ssao at 14, and the IBL units 7-9. */
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture occlusion, RHITexture shadow, RHITexture ssao,
     RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
     RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
     u32 point_shadow_count) {
-    (void)cmd; (void)albedo; (void)mr; (void)normal; (void)emissive;
-    (void)occlusion; (void)shadow; (void)ssao; (void)sampler; (void)brdf_lut;
-    (void)irradiance_map; (void)prefilter_map; (void)point_shadow_cubes;
-    (void)point_shadow_count;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    u32 count;
+    u32 i;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, albedo), sampler, 0u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 1u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, mr), sampler, 2u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, normal), sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, emissive), sampler, 4u);
+    /* R583: occlusion at 15. */
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, occlusion), sampler, 15u);
+    count = (point_shadow_cubes != NULL && point_shadow_count > 0u)
+                ? point_shadow_count : 0u;
+    if (count > 4u) count = 4u;
+    for (i = 0u; i < count; ++i)
+        rhi_cmd_bind_texture(cmd,
+            rhi_d3d12_material_slot(ctx, point_shadow_cubes[i]), sampler,
+            10u + i);
+    /* R213-B: ssao at 14 — units 10-13 are u_point_shadow_cubes[4]. */
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
+    /* Units 8 and 9 (irradiance, prefiltered radiance) take RHICubemap
+     * handles, and D3D12 cubemaps are not implemented yet
+     * (rhi_cmd_bind_cubemap is a no-op stub here): there is no cubemap
+     * creation, no SRV dimension for them, so both units are deliberately
+     * left unbound rather than given a 2D fallback that would silently
+     * sample a garbage cube. IBL stays unsupported until cubemaps land. */
+    (void)irradiance_map;
+    (void)prefilter_map;
 }
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,
