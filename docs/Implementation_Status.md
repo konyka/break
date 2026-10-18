@@ -45,6 +45,26 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：GL `MATERIAL ARRAY SINGLE-EXECUTE` 定位为**纯粹的垂直翻转**，VK 同一用例通过
+
+- **对比**：同一份 `test_vulkan.c`，**VK 树失败项是 golden×2 + Hi-Z，不含 material array；GL 树失败项含 material array**。所以这不是"GL 与 VK 都不支持的特性"，而是 GL 侧独有的行序问题。
+- **四个象限采样值全部指向"垂直对面的象限"**（用例期望 q0 红 / q1 绿 / q2 黑（被剔除）/ q3 白）：
+
+  | 象限 | 用例期望 | GL 实测 | 垂直对面的象限 |
+  |---|---|---|---|
+  | q0 (NDC -0.5,+0.5) | 红 亮/暗双拼 | `{0,0}` 黑 | q2（被剔除 = 黑） |
+  | q1 (NDC +0.5,+0.5) | 绿 亮/暗双拼 | `{255,255}` 亮 | q3（白） |
+  | q2 (NDC -0.5,-0.5) | 黑（剔除） | `{255,34,34}` **红** | q0（红） |
+  | q3 (NDC +0.5,-0.5) | 白 亮 | `{36}` 暗 | q1（绿的 R 通道） |
+
+  四项**全部**吻合"采样到了垂直对面的象限"，且不是色域偏差、不是双拼范围问题。**这是图像整体上下翻转，不是渲染内容错误。**
+- **嫌疑点已定位到一处且只有一处**：`rhi_gl.c:3494-3509` 的 `rhi_screenshot`。它在 `glReadPixels` 之后**做了一次行反转**（`scratch + (h-1-row_i)`），目的是把 glReadPixels 的自底向上转成契约要求的自顶向下（`rhi.h` 契约与 VK 拷贝路径一致）。**GL 树实测结果说明这一次反转在本驱动上是多余的——即这里发生了双重翻转。**
+- **用例注释里的既有断言被本轮实测证伪**：`test_vulkan.c:4279` 写着"readback 行原点两端不同（VK top-down、GL bottom-up），但 NDC->行 的公式在两种约定下都落到同一索引（R442：已对两个驱动验证过）"。**在 GL 侧这句话不成立**——公式假设自顶向下，而 `rhi_screenshot` 已经保证了自顶向下，于是采样整体错位一行块。
+- **两个候选修复，本轮不做（预算不足以覆盖三后端全量回归）**：
+  - **修后端（推荐）**：去掉 GL `rhi_screenshot` 的那次行反转。但**必须先确认**该反转不是为别的调用点存在——R445 记录过"修 GL 行翻转——glReadPixels 底向上"，说明这条路径历史上动过，盲删有回归风险。
+  - **修用例**：把 `test_vulkan.c:4292` 的 NDC→行公式改成按实际行序计算。但那只让这条用例变绿，**掩盖后端与契约的不一致**——`rhi.h` 明确写了截图自顶向下，后端就该交付自顶向下。
+  - **下一步该做的验证**：把 material array 的 `shot` 直接导出成 PPM 肉眼看一次。四个采样值的镜像吻合已经很强，但**导出实图能一次性排除"是内容错位而不是采样错位"**，成本极低（用例里已有 `shot`，只需一次写文件）。
+
 ## 本轮更新：**归属判定完成 —— 约 150 行零依赖 D3D12 程序同样失去设备，这是本机运行时/驱动栈的问题，不是本仓库的代码**
 
 - **判定实验**：`engine/tests/diagnostics/d3d12_uav_minimal.c`，**不包含任何引擎头文件**，只链 `d3d12/dxgi/dxguid`，行为只镜像 `rhi_d3d12.c` 建 storage buffer 绑定所做的四件事（工厂枚举 → FL11_0 建设备 → shader-visible CBV_SRV_UAV 描述符堆 → `ALLOW_UNORDERED_ACCESS` 的 256B `CreateCommittedResource` → `CreateUnorderedAccessView` → 再做一次无关分配）。
