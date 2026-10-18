@@ -1,5 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Task 6 / D3D12 MRT FBO 收口 — 多附件 FBO 生命周期、清除/加载语义与 WARP 像素证据
+
+- **D3D12 MRT 行为**：`rhi_mrt_fbo_create` now creates and registers each color attachment plus a D32 depth attachment; `rhi_mrt_fbo_bind`, `rhi_mrt_fbo_bind_load`, `rhi_mrt_fbo_unbind`, and `rhi_mrt_fbo_destroy` are implemented. Bind restores the full MRT viewport and binds every RTV plus the DSV; unbind restores the swapchain RTV and screen viewport/scissor; destroy retires descriptors and releases all attachment textures.
+- **Load/clear contract**: fresh `bind` clears **every** color attachment to its attachment-owned clear color and clears depth to `1.0`; `bind_load` performs the same target/state setup without issuing color or depth clears, so existing contents are preserved. The WARP runtime test `mrt_fbo_clears_and_reads_independent_attachments` creates two RGBA8 attachments, clears them independently red/blue, presents, and verifies all 64 pixels and four channels in both readbacks.
+- **Fail-closed boundary**: D3D12 MRT/offscreen FBOs are single-sample only. Any validated `sample_count > 1` request returns an invalid/empty FBO because multisample RTV/DSV resources plus resolve targets are not wired; the implementation does not silently substitute a single-sample target. D3D12 capabilities therefore advertise only sample count 1.
+- **Pixel and reverse validation**: the WARP two-attachment test passed in the specialist suite (`test_d3d12_warp_runtime`, 6/6). Temporarily changing attachment 1's expected blue value to red made the test fail at the per-pixel assertion (5/6), then restoring blue returned it to green, excluding an empty/no-op test path.
+- **Regression evidence**: isolated per-worktree D3D12 build `build-task6-d3d12` built cleanly and `ctest -R "d3d12|warp|swapchain" --output-on-failure` passed **12/12**. Isolated GL/Vulkan builds also completed; their non-graphics suites reached 175 and 176 tests respectively. Both retained the known Windows-only/environmental failures: `OpenClipboard failed`, the MSBuild/System.Memory RHI-selector configure failure, and the missing vendored `engine/external/VulkanSDK/Lib/vulkan-1.lib`; the five fuzz smoke targets were not built and therefore were `Not Run`.
+- **Remaining D3D12 limits**: cubemap color/depth FBO creation/bind paths remain unimplemented, and MRT MSAA remains fail-closed pending multisample attachments and resolve plumbing. Cubemap sampling/image bindings and other cubemap render-pass integration remain outside this task.
+
 ## 本轮更新：R715 debug UI 垂直镜像根因修复 — BreakUI 画布补齐自身 viewport（FPS 徽章曾落在左下角且文字上下颠倒）+ `rhi_screenshot` 行序契约统一为双后端自上而下（此前截图二次翻转，长期掩盖了该 UI bug）+ Windows/Clang 构建失败修复（`EngineConfig`/`PlatformConfig` 新增尾部字段后 4 处位置初始化触发 `-Werror=missing-field-initializers`）；无头 CTest 176/176
 
 - **缺口（用户报告）**：Windows 上 demo 的帧率徽章显示在窗口**左下角**，且文字上下颠倒。根因不在 `debug_ui.c`——徽章一直画在逻辑坐标 (4,4)/(12,10)，代码是对的；问题出在绘制时的 viewport。
