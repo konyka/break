@@ -326,6 +326,53 @@ observations from the run, both worth carrying forward:
   the clear left. Unrelated to R600, but it means an MRT test cannot assume
   a cleared RT1.
 
+### Step 5, bisected: it is the vertex stage reading the CBV
+
+Continuing the bisection past the three obvious differences, each change
+built and run on WARP with the debug layer on:
+
+| Variant | Device |
+| --- | --- |
+| MRT sidecar, full velocity (varying + `w` divide + `SV_Target1`) | **lost** |
+| `SV_Target1` dropped, varying and divide kept | **lost** |
+| `TEXCOORD3` dropped, divide kept | **lost** |
+| `TEXCOORD3` dropped and divide replaced by `rcp()` | **lost** |
+| `TEXCOORD3` dropped, divide and `prev_clip` dropped — VS reads `g_temporal.u_camera_pos` only | **lost** |
+| `TEXCOORD3` kept, **no CBV read in the VS at all** | fine |
+| non-MRT sidecar pair, **vertex shader** given a CBV read | **lost** |
+
+The last row is the whole result: the same `register(b1)` cbuffer, read by
+the pixel stage, works in every configuration above; read by the **vertex**
+stage it loses the device, on a single-target pipeline with no second
+render target, no extra varying and no divide.
+
+Ruled out by experiment, not by argument:
+
+- **Heap.** A CBV must point at a DEFAULT-heap resource, and
+  `rhi_d3d12_buffer_wants_device_local` sent `RHI_BUFFER_USAGE_UNIFORM`
+  buffers to the UPLOAD heap. That looks like a real spec violation and
+  probably is one, but forcing uniform buffers device-local changed
+  nothing here, so the change was **not** shipped on an unproven theory.
+- **CBV size.** `rhi_cmd_bind_uniform_buffer` rounds
+  `SizeInBytes` up to 256 while the buffer is 144 B, so the view claims
+  112 B past the resource. Backing the buffer to a full 256 B changed
+  nothing.
+- **The divide and `rcp()`**, **the `TEXCOORD3` varying**, **`SV_Target1`**,
+  and **the second render target** — each removed in turn.
+
+The D3D12 debug layer and GPU-based validation were enabled for every one
+of these runs and emitted nothing, so the usual tool for this class of
+fault does not see it either.
+
+So the outstanding item is a D3D12-backend question, not a shader-authoring
+one: **why does a descriptor-bound cbuffer read fault when the shader stage
+is VERTEX?** The suspects left are the root-signature side (visibility,
+the duplicate per-stage binding merge at `rhi_d3d12_root_sig_add_bindings`,
+or `uniform_root_params[1]` resolving to the wrong param) rather than the
+buffer itself. The pixel-stage-only path — which is what every current
+D3D12 test exercises — cannot see it, which is why the whole suite is
+green.
+
 Next entry point is therefore narrow: diff `blinn_phong_mrt_hlsl.*` against
 `blinn_phong_hlsl.*` (the only differences are the extra `TEXCOORD3`
 varying, the `curr_clip.xy / curr_clip.w` divide in the VS, and the
