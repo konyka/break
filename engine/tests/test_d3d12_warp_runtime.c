@@ -266,6 +266,51 @@ TEST(blit_texture_binding_samples_red_into_offscreen_fbo) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+TEST(mrt_fbo_clears_and_reads_independent_attachments) {
+    const RHIFormat formats[2] = {
+        RHI_FORMAT_R8G8B8A8_UNORM,
+        RHI_FORMAT_R8G8B8A8_UNORM
+    };
+    const unsigned char red[4] = {255u, 0u, 0u, 255u};
+    const unsigned char blue[4] = {0u, 0u, 255u, 255u};
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHICmdBuffer *cmd;
+    unsigned char pixels[2][8 * 8 * 4];
+    int attachment;
+    int pixel;
+    int channel;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    ASSERT_EQ(fbo.attachment_count, 2u);
+    ASSERT_TRUE(rhi_handle_valid(fbo.color_tex[0]));
+    ASSERT_TRUE(rhi_handle_valid(fbo.color_tex[1]));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color_attachment(cmd, 0u, 1.0f, 0.0f, 0.0f, 1.0f);
+    rhi_cmd_clear_color_attachment(cmd, 1u, 0.0f, 0.0f, 1.0f, 1.0f);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    memset(pixels, 0, sizeof(pixels));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0],
+                                        pixels[0], sizeof(pixels[0])));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1],
+                                        pixels[1], sizeof(pixels[1])));
+    for (attachment = 0; attachment < 2; ++attachment) {
+        const unsigned char *expected = attachment == 0 ? red : blue;
+        for (pixel = 0; pixel < 8 * 8; ++pixel) {
+            for (channel = 0; channel < 4; ++channel)
+                ASSERT_EQ(pixels[attachment][pixel * 4 + channel],
+                          expected[channel]);
+        }
+    }
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -277,6 +322,7 @@ int main(void) {
     RUN_TEST(probe_triangle_rasterises_into_offscreen_fbo);
     RUN_TEST(push_constants_transform_reaches_the_shader);
     RUN_TEST(blit_texture_binding_samples_red_into_offscreen_fbo);
+    RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
