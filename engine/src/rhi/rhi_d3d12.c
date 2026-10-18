@@ -4102,10 +4102,10 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     if (md == NULL) return out;
     for (i = 0u; i < RHI_MRT_MAX_ATTACHMENTS; ++i) {
         md->rtv_slots[i] = UINT_MAX;
-        md->clear_color[i][0] = 0.0f;
-        md->clear_color[i][1] = 0.0f;
-        md->clear_color[i][2] = 0.0f;
-        md->clear_color[i][3] = 0.0f;
+        md->clear_color[i][0] = 0.05f;
+        md->clear_color[i][1] = 0.05f;
+        md->clear_color[i][2] = 0.1f;
+        md->clear_color[i][3] = 1.0f;
     }
     md->dsv_slot = UINT_MAX;
     md->width = width;
@@ -4173,7 +4173,7 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         return (RHIMRTFBO){0};
     }
     dev->slots[idx].ptr = md;
-    dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
+    dev->slots[idx].type = RHI_RES_MRT_FBO;
     out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
     out.attachment_count = attachment_count;
     out.width = width;
@@ -4184,7 +4184,7 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     RHI_D3D12MRTFBO *md;
     if (dev == NULL || fbo == NULL) return;
     md = (RHI_D3D12MRTFBO *)rhi_get_resource_typed(dev, fbo->fb,
-                                                   RHI_RES_FRAMEBUFFER);
+                                                   RHI_RES_MRT_FBO);
     if (md == NULL) {
         memset(fbo, 0, sizeof(*fbo));
         return;
