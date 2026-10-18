@@ -74,6 +74,36 @@ jobs:
       - name: WARP GPU-runtime floor
         run: ctest --test-dir build-d3d12 -R test_d3d12_warp_runtime --output-on-failure
 
+      - name: WARP push-constant write-drop gate
+        # A dropped push-constant write is invisible to the suite: the
+        # backend validates the write against the pipeline's declared range,
+        # drops it with a warning, and every pixel assertion still passes —
+        # so the floor above stays GREEN on a silently broken uniform block.
+        # This grep is the only guard, hence its own step.
+        #
+        # -V is load-bearing: --output-on-failure prints nothing for a
+        # PASSING test, and this suite passes in exactly the case we need to
+        # catch. Without -V the log is empty and the gate is vacuous.
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build-d3d12 -R test_d3d12_warp_runtime -V > "$RUNNER_TEMP/ctest-warp.log" 2>&1
+          rc=$?
+          set -e
+          if grep -q "outside declared" "$RUNNER_TEMP/ctest-warp.log"; then
+            grep -E "outside declared" "$RUNNER_TEMP/ctest-warp.log" | head -20 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            echo "::error::a push-constant write was dropped as outside the pipeline's declared range; the WARP suite passes anyway, so this grep is the only detector"
+            exit 1
+          fi
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation' "$RUNNER_TEMP/ctest-warp.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            exit 1
+          fi
+
       - name: Agility deployment check
         # The locked Agility redist must land next to the executables
         # (D3D12SDKPath="."), and the backend export must survive the link.
