@@ -116,6 +116,47 @@ Declaring 248 B and letting `u_camera_pos` be dropped would render a wrong frame
 behind a log line. Rejected on the same grounds as the dropped-write bugs this
 project has already catalogued.
 
+## Correction: Option B is larger than first stated
+
+Writing this up surfaced a hole in Option B as originally scoped, which changes
+its cost estimate materially.
+
+`u_camera_pos` is used **unconditionally**:
+
+```glsl
+vec3 V = normalize(u_camera_pos - vWorldPos);   // blinn_phong.frag:25
+```
+
+but `ForwardTemporal` is declared only under `#ifdef FORWARD_MRT`. So moving
+`u_camera_pos` into the temporal block does not just move one uniform — it forces
+that block to exist for the non-MRT pipeline too. Concretely:
+
+- **27 shader files** declare `u_camera_pos`; the blinn_phong family alone is
+  `blinn_phong`, `blinn_phong_vk`, `blinn_phong_arr{,_vk}`,
+  `blinn_phong_clustered{,_vk}` plus their `.hlsl` twins.
+- **17 write sites** resolve and set `loc_camera_pos` in `main.c`.
+- Only the clustered path binds `clustered_proj_ubo` today (`main.c:1196`);
+  every other variant would need it bound, which means a new bind in each of
+  their paths.
+
+Option B therefore stops being "shift one uniform" and becomes "make the
+temporal UBO unconditional for the whole forward family and rebind it
+everywhere". That is a real contract change with a wide surface, and it is
+correct — but it is not a one-round job, and shipping it without the budget to
+reverse-verify it would break the rule this session has held to.
+
+### A second observation that may shrink the problem
+
+`main.c:1192` shows the base forward path already writes
+`ubo_data[1] = mat4_identity()` — `u_prev_model` is **identity** for the
+world-space mega vertices. Only the instanced variant reads a real per-instance
+`prev_model` (from its SSBO). So for the base pipeline the temporal block could
+reduce to `{u_prev_vp}` plus a camera position, i.e. 64 + 16 bytes. That does
+not change the table count — the push range is still clamped to 248 by having
+two tables rather than one — but it does mean the CBV is small enough that the
+whole block could later move into root constants if the base block were shrunk,
+which is worth recording before committing to either option.
+
 ## Recommendation
 
 **Option B, applied uniformly across all three backends** so the D3D12 sidecar
