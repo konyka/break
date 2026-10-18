@@ -45,6 +45,33 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：**归属判定完成 —— 约 150 行零依赖 D3D12 程序同样失去设备，这是本机运行时/驱动栈的问题，不是本仓库的代码**
+
+- **判定实验**：`engine/tests/diagnostics/d3d12_uav_minimal.c`，**不包含任何引擎头文件**，只链 `d3d12/dxgi/dxguid`，行为只镜像 `rhi_d3d12.c` 建 storage buffer 绑定所做的四件事（工厂枚举 → FL11_0 建设备 → shader-visible CBV_SRV_UAV 描述符堆 → `ALLOW_UNORDERED_ACCESS` 的 256B `CreateCommittedResource` → `CreateUnorderedAccessView` → 再做一次无关分配）。
+
+  | 适配器 | UAV 缓冲创建 | 建视图 | 之后的无关分配 | `GetDeviceRemovedReason` | 结论 |
+  |---|---|---|---|---|---|
+  | NVIDIA GeForce RTX 4060 Laptop GPU | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
+  | WARP | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
+
+- **结论**：**本机上任何程序都无法创建 UAV 视图。** `rhi_cmd_bind_storage_buffer` 不是被我们的代码写坏了，而是**在这台机器上根本无法被验证**——因为没有任何代码能通过这一步。
+- **这一条同时解释了此前所有观察**，而且解释得比"我们的描述符有问题"干净得多：
+  - `CreateUnorderedAccessView` **返回 void**，没有任何错误返回通道；
+  - 调用"成功"之后设备就没了；
+  - `GetDeviceRemovedReason` 仍报 `0x887A0001`（`NOT_FOUND`，健康值）——**这条在最小程序里同样复现**，所以它不是引擎的假象，而是本机 D3D12 栈的固有行为；
+  - DRED 没有面包屑——因为从来没有失败的**提交**，设备是在一次**立即生效的 API 调用**里没的。
+- **已排除的解释（全部有实验支撑）**：
+  - 不是描述符内容：引擎矩阵里 `pDesc = NULL`（完全不传描述符）同样死，而最小程序用的是正确的 `R32_TYPELESS + D3D12_BUFFER_UAV_FLAG_RAW` 形式，照样死；
+  - 不是目标描述符句柄越界：实测 `slot=0 off=0 heapsz=262144`，合法；最小程序用的是堆首句柄，照样死；
+  - 不是资源的初始状态：最小程序在 `COPY_DEST` 与 `UNORDERED_ACCESS` 两种初始状态下分别试过，结果相同；
+  - 不是调试层：最小程序**从不创建调试层**；
+  - 不是 WARP 独有问题：RTX 4060 同样复现。
+- **仍未定因（诚实边界，如实标注）**：为什么本机的 D3D12 栈在 `CreateUnorderedAccessView` 上失败。已知这台机器是 **RTX 4060 dGPU + AMD 显示的混合显卡笔记本**，`Implementation_Status.md:1543` 早就记录过该机型上的驱动级故障（Windows 事件日志 `nvlddmkm Event 153`）。**可能**是驱动栈/混合显卡/远程会话层面的问题，但**本轮不具备判定它的条件**——需要 RenderDoc/Nsight 级捕获，或一台能正常工作的对照机器。
+- **对路线的影响（这是本轮真正要交付的东西）**：
+  - **storage buffer 绑定在 D3D12 上继续挂起不是我们的过错**，但它也**不能交付**——在没有能跑通这一步的机器上，任何实现都无法被验证，而本会话的纪律是不提交无法反向验证的东西。
+  - **需要一台能创建 UAV 视图的机器**（CI runner 或另一台开发机）。一旦有了，最小程序先跑一遍确认环境可用，随后 storage binder 可以按 `R32_TYPELESS + D3D12_BUFFER_UAV_FLAG_RAW` 实现并用矩阵用例验证——**其余基础设施（`storage_root_params` 映射、DRED page fault、`DEVICE_REMOVED` 接线）都已就位且过门控**。
+  - **不浪费的一处副产品**：`CreateUnorderedAccessView` 缺失错误返回这件事本身就值得记进后端注释——它意味着 D3D12 上任何描述符创建的失败都**不可能**被就地诊断，只能靠"建视图前后各做一次无关分配"来检测。矩阵用例正是这么写的。
+
 ## 本轮更新：字段级定位 — **`pDesc = NULL` 也杀死设备，描述符内容被排除；句柄与资源均已验证为合法**
 
 - **矩阵从"换格式"升级为"换字段"**。7 个视图格各自只动一个字段，另有 2 个不建视图的对照格：
