@@ -4819,14 +4819,37 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_Dispatch(list, x, y, z);
 }
-void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
-                                 u32 binding) {
-    (void)cmd; (void)buf; (void)binding;
-}
-void rhi_cmd_bind_acceleration_structure(RHICmdBuffer *cmd,
-                                         RHIAccelerationStructure structure,
-                                         u32 binding) {
-    (void)cmd; (void)structure; (void)binding;
+/* R-matrix probe: build one UAV view over `buf` with an explicitly chosen
+ * descriptor shape so the caller can enumerate which one this runtime
+ * accepts. format_kind: 0 = R32_TYPELESS (raw), 1 = DXGI_FORMAT_UNKNOWN
+ * (structured; DESC0 has no stride member so D3D12 assumes 4), 2 = R32_FLOAT
+ * (typed). The stride-bearing DESC1 form is unreachable here: the installed
+ * d3d12.h declares neither D3D12_UNORDERED_ACCESS_VIEW_DESC1 nor
+ * ID3D12Device1::CreateUnorderedAccessView. Internal, not part of the RHI.
+ * Exists for the parameter matrix in test_d3d12_uav_matrix. */
+int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int format_kind) {
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Buffer *bd;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC desc;
+    D3D12_CPU_DESCRIPTOR_HANDLE cpu;
+    UINT slot;
+    if (dev == NULL || format_kind < 0 || format_kind > 2) return -1;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device == NULL) return -1;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return -1;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return -1;
+    cpu = rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot);
+    ZeroMemory(&desc, sizeof(desc));
+    desc.Format = (format_kind == 0) ? DXGI_FORMAT_R32_TYPELESS
+               : (format_kind == 1) ? DXGI_FORMAT_UNKNOWN
+                                     : DXGI_FORMAT_R32_FLOAT;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, NULL,
+                                           &desc, cpu);
+    rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
+                                   ctx->next_fence);
+    return 0;
 }
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     ID3D12GraphicsCommandList *list =

@@ -2847,6 +2847,21 @@ endif()
         set_tests_properties(test_d3d12_warp_runtime PROPERTIES
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
+
+        # UAV view parameter matrix: each cell builds its own device because the
+        # failure under investigation kills the device outright, and GetDevice-
+        # RemovedReason keeps reporting healthy, so cells cannot share one.
+        # headless rather than graphics-labelled: no swapchain is involved.
+        add_executable(test_d3d12_uav_matrix tests/test_d3d12_uav_matrix.c)
+        target_include_directories(test_d3d12_uav_matrix PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_link_libraries(test_d3d12_uav_matrix PRIVATE
+            engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_uav_matrix
+            COMMAND test_d3d12_uav_matrix)
+        set_tests_properties(test_d3d12_uav_matrix PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "platform_runtime"
+            ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
     endif()
     add_test(NAME test_rhi_backend_internal_contract
         COMMAND ${CMAKE_COMMAND}

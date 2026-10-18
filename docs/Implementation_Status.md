@@ -45,6 +45,31 @@
   - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
   - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
 
+## 本轮更新：UAV 参数矩阵 — **这台机器的 WARP 上，任何 UAV 视图都会直接杀死设备**
+
+- **新增诊断用例** `test_d3d12_uav_matrix`（D3D12 树内已注册，`platform_runtime` 标签，2.6s）。它把 UAV 视图参数做成矩阵逐格实测，**每格单独建一个设备**——因为设备一旦死掉就无法测下一格，且 `GetDeviceRemovedReason` 在 WARP 上不可信。判定方式是"之后一个无关的纹理创建是否还成功"，**从不看 removal reason**。
+- **实测结果（10 格）**：
+
+  | 格 | 视图格式 | 缓冲大小 | usage | 建视图 | 结果 |
+  |---|---|---|---|---|---|
+  | 0 | R32_TYPELESS (raw) | 48 | STORAGE | 是 | **KILLED** |
+  | 1 | R32_TYPELESS (raw) | 256 | STORAGE | 是 | **KILLED** |
+  | 2 | DXGI_FORMAT_UNKNOWN (structured) | 48 | STORAGE | 是 | **KILLED** |
+  | 3 | DXGI_FORMAT_UNKNOWN (structured) | 256 | STORAGE | 是 | **KILLED** |
+  | 4 | R32_FLOAT (typed) | 48 | STORAGE | 是 | **KILLED** |
+  | 5 | R32_FLOAT (typed) | 256 | STORAGE | 是 | **KILLED** |
+  | 6 | —（对照，不建视图） | 48 | STORAGE | 否 | **ALIVE** |
+  | 7 | —（对照，不建视图） | 256 | STORAGE | 否 | **ALIVE** |
+  | 8 | R32_TYPELESS (raw) | 256 | UNIFORM（无 UAV flag） | 是 | **KILLED** |
+  | 9 | DXGI_FORMAT_UNKNOWN | 256 | UNIFORM（无 UAV flag） | 是 | **KILLED**（设备创建失败，视为噪声） |
+
+- **结论**：**三种描述符形态、两种缓冲大小、两种 usage 标记，全部杀死设备；两个不建视图的对照组全部存活。** 所以这**不是参数选错的问题**——**这台机器的 WARP（Microsoft Basic Render Driver）在创建任何 unordered access view 时就会移除设备**。此前几轮把它当成"某个 UAV 参数不对"来二分，方向本身就是错的。
+- **这同时解释了 D3D12 树一直绿的现象**：`test_d3d12_pipeline_contract` 确实会建 `RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_DEVICE_ADDRESS` 缓冲并回读通过，但**它从不创建 UAV 视图**；`rhi_sampler_create` 创建的是采样器描述符，也不是 UAV。所以既有 184 项用例里**没有任何一项触碰过 UAV 视图**，设备一直没机会暴露这个能力缺口。
+- **矩阵本身的两处设计取舍**：
+  ① **视图格只打印不断言**。断言"建视图必死"会在任何支持 UAV 的 GPU 上误报；断言"建视图必活"在这里又是假的。**跨 runtime 稳定成立的不变量只有对照格**（不建视图则设备健康）——那正是证明"矩阵测的是视图、而不是设备一开始就起不来"的东西，所以只有它被断言。
+  ② **缓冲必须带 `initial_data`**，否则格子根本走不到视图：没有 `initial_data` 的 STORAGE 缓冲不是 device-local，会落到 UPLOAD heap，而 **UPLOAD heap 缓冲不能携带 `ALLOW_UNORDERED_ACCESS`**，`CreateCommittedResource` 直接失败。首轮矩阵正是栽在这里（前 6 格全部报 "buffer create failed"，是放置问题不是视图问题）。这条同时是一条**独立于本轮的真实缺陷**：`RHI_BUFFER_USAGE_STORAGE` 且无 `initial_data` 的缓冲在 D3D12 上**根本创建不出来**，而 `rhi_cmd_bind_storage_buffer` 对这种句柄只会静默返回——引擎侧 `gpucull.c` 的 R169 读回暂存孪生缓冲正是这个形状（它是**故意**要 host-visible 的，所以那里不修）。
+- **对 D3D12 compute 路线的后果（如实记录）**：**在 WARP 上无法验证 compute 绑定**，因为跑不出一个能创建 UAV 视图的设备。本机的真实 GPU 是 NVIDIA RTX 4060，**D3D12 树一直强制 WARP**（`ENGINE_D3D12_WARP=1`，证据规则要求 WARP 收据不升级到 GPU-runtime 级）。因此下一步必须二选一：**① 在真实 GPU 上跑 D3D12 compute 验证**（新起一个非 graphics 标签的 lane，证据等级按 GPU_RUNTIME 记录）；**② 保持现状，把 storage 绑定标记为"WARP 不可验证"**。**这已不是代码问题，是验证策略的选择**，留档待决。
+
 ## 本轮更新：storage buffer 根因定位 — **`ID3D12Device_CreateUnorderedAccessView` 就是杀手**，且它**立即**生效（无失败提交，故 DRED 无面包屑）
 
 - **前两轮白走的路，本轮说清楚**：先前一直假设"设备是在某次提交后失效、只是症状出现在下一次 API 调用上"，所以一直在找"哪次提交有问题"，并试图靠 DRED/调试层拿到证据。**这个前提是错的。**
