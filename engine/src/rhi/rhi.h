@@ -489,7 +489,13 @@ RHIShader   rhi_shader_create(RHIDevice *dev, const char *source, usize len, boo
  * The "_hlsl" suffix is idempotent, so a path that already names the sidecar
  * resolves to itself. A D3D12 path whose own extension names a different
  * stage than the request is refused rather than resolved, where GL and
- * Vulkan would have failed anyway on the unreadable file. */
+ * Vulkan would have failed anyway on the unreadable file.
+ *
+ * Note the remaining divergence, deliberate and not a general parity claim:
+ * only GL and Vulkan check that `path` exists, because only they read it.
+ * D3D12 does no path-existence I/O at all — it derives a sidecar name and
+ * lets the loader refuse a missing HLSL source or DXIL blob. So a bad D3D12
+ * path surfaces as "sidecar not readable" rather than "path not found". */
 RHIShader   rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment);
 void        rhi_shader_destroy(RHIDevice *dev, RHIShader shader);
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc);

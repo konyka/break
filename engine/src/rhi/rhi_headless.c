@@ -114,6 +114,17 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
                                     usize len) {
     (void)dev; (void)source; (void)len; return RHI_HANDLE_NULL;
 }
+/* Path-based siblings. Headless refuses unconditionally — it refuses every
+ * shader built from text too — so a readable path is refused exactly like an
+ * unreadable one. No file I/O happens here: a backend whose contract is "no
+ * GPU, no evidence" must not touch the filesystem on a caller's behalf. */
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
+                                 bool is_fragment) {
+    (void)dev; (void)path; (void)is_fragment; return RHI_HANDLE_NULL;
+}
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    (void)dev; (void)path; return RHI_HANDLE_NULL;
+}
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
     (void)dev; (void)shader;
 }

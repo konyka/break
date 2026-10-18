@@ -353,11 +353,14 @@ TEST(shader_paths_resolve_to_blit_sidecars_and_render_red) {
 
     /* Reflection is the cheapest proof the handles carry the real blit
      * sidecar rather than a stub that happens to have a valid slot: only
-     * blit_hlsl.vert declares u_transform. Identical byte offsets across the
-     * two forms say they resolved to the same sidecar. */
+     * blit_hlsl.vert declares u_transform. Absolute first — blit_hlsl.vert
+     * pins it at byte offset 0 (`// rhi:uniform u_transform 0`), so a
+     * relative-only check would still pass if both forms resolved to the
+     * same wrong shader. Identical offsets then show both forms agree. */
     loc_glsl = rhi_pipeline_get_uniform_location(g_dev, pipe_glsl, "u_transform");
     loc_self = rhi_pipeline_get_uniform_location(g_dev, pipe_self, "u_transform");
-    ASSERT_TRUE(loc_glsl >= 0);
+    ASSERT_EQ(loc_glsl, 0);
+    ASSERT_EQ(loc_self, 0);
     ASSERT_EQ(loc_glsl, loc_self);
 
     for (form = 0; form < 2; ++form) {

@@ -76,15 +76,25 @@ TEST(shader_path_sidecar_derivation) {
         }
     }
     /* A name that cannot fit is refused, never truncated into a name that
-     * would resolve a different file. */
+     * would resolve a different file. Two budgets, two refusals: the whole
+     * sidecar name over the buffer, and the base alone over it. */
     {
         char tiny[8];
+        char base_tiny[4];
         int ok = rhi_d3d12_shader_sidecar_name("shaders/blit.vert",
                                                RHI_D3D12_SHADER_STAGE_VERTEX,
                                                tiny, (usize)sizeof(tiny));
         if (ok != 0 || tiny[0] != '\0') {
             printf("  FAIL: oversized sidecar name should be refused "
                    "(ok=%d, out=\"%s\")\n", ok, tiny);
+            failures++;
+        }
+        ok = rhi_d3d12_shader_sidecar_name("shaders/blit",
+                                           RHI_D3D12_SHADER_STAGE_VERTEX,
+                                           base_tiny, (usize)sizeof(base_tiny));
+        if (ok != 0 || base_tiny[0] != '\0') {
+            printf("  FAIL: oversized base name should be refused "
+                   "(ok=%d, out=\"%s\")\n", ok, base_tiny);
             failures++;
         }
     }
@@ -148,15 +158,23 @@ TEST(pipeline_bindings_resolve_matches_legacy_lookup) {
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
+    /* Device-free first: this locks the path -> sidecar-name mapping on hosts
+     * with no D3D12 adapter, where everything below has to skip. */
+    printf("=== Running Tests ===\n");
+    RUN_TEST(shader_path_sidecar_derivation);
     /* The sentinel HWND needs the explicit test-only fallback-window opt-in
      * (Task 4 review gate: the fallback is fail-closed by default). */
     _putenv("BREAK_D3D12_TEST_FALLBACK_HWND=1");
     g_dev = rhi_device_create_ex(RHI_BACKEND_D3D12, (void *)1, NULL, 64, 64, &r);
-    if (g_dev == NULL) return 77;
-    printf("=== Running Tests ===\n");
-#if defined(_WIN32)
-    RUN_TEST(shader_path_sidecar_derivation);
-#endif
+    if (g_dev == NULL) {
+        /* No adapter: the device-backed cases below cannot run, but the
+         * device-free derivation lock already did. Report Skipped only when
+         * that coverage passed — a regression there must still turn ctest
+         * red rather than disappear behind a skip. */
+        printf("\n=== Results: %d passed, %d failed, %d total ===\n",
+               g_test_pass, g_test_fail, g_test_count);
+        return g_test_fail > 0 ? 1 : 77;
+    }
     RUN_TEST(blit_pipeline_push_location);
     RUN_TEST(pipeline_bindings_resolve_matches_legacy_lookup);
     rhi_device_destroy(g_dev);

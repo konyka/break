@@ -83,6 +83,11 @@ void       rhi_sampler_destroy(RHIDevice *d, RHISampler s)              { (void)
 
 RHIShader  rhi_shader_create(RHIDevice *d, const char *src, usize len, bool is_frag) { (void)d; (void)src; (void)len; (void)is_frag; return stub_shader; }
 RHIShader  rhi_shader_create_compute(RHIDevice *d, const char *src, usize len) { (void)d; (void)src; (void)len; return stub_shader; }
+/* Path-based siblings: the stub is argument-blind by design (see the rest of
+ * this file), so these mirror rhi_shader_create / _compute rather than
+ * inventing a stricter rule for the path form alone. */
+RHIShader  rhi_shader_create_path(RHIDevice *d, const char *path, bool is_frag) { (void)d; (void)path; (void)is_frag; return stub_shader; }
+RHIShader  rhi_shader_create_compute_path(RHIDevice *d, const char *path) { (void)d; (void)path; return stub_shader; }
 void       rhi_shader_destroy(RHIDevice *d, RHIShader s)                { (void)d; (void)s; }
 
 static RHIOffscreenFBO stub_offscreen_fbo = {{0,0}, {0,0}, {0,0}, 0, 0, 1};

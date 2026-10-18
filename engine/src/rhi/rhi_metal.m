@@ -48,6 +48,7 @@
 #include <rhi/rhi_metal_format.h>
 #include <rhi/rhi_native_vulkan.h>
 #include <core/log.h>
+#include <core/shader_io.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1809,6 +1810,35 @@ RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool 
 
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
     return metal_shader_manifest_create(dev, source, len, false);
+}
+
+/* Path-based siblings. Metal resolves a shader by hashing its GLSL text
+ * against the offline manifest (metal_shader_manifest_create), so it needs
+ * the text, not the name — read the file and delegate exactly as the text
+ * entry point does. An unreadable file is refused (RHI_HANDLE_NULL), the
+ * same fail-closed outcome the manifest lookup gives on a hash miss. */
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_fragment) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create(dev, source, len, is_fragment);
+    free(source);
+    return sh;
+}
+
+RHIShader rhi_shader_create_compute_path(RHIDevice *dev, const char *path) {
+    usize len = 0u;
+    char *source;
+    RHIShader sh;
+    if (dev == NULL || path == NULL) return RHI_HANDLE_NULL;
+    source = shader_read_file(path, &len);
+    if (source == NULL) return RHI_HANDLE_NULL;
+    sh = rhi_shader_create_compute(dev, source, len);
+    free(source);
+    return sh;
 }
 
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {

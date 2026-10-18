@@ -2194,7 +2194,11 @@ int rhi_d3d12_shader_sidecar_name(const char *path,
     if (path == NULL || out == NULL || out_cap == 0u) return 0;
 
     suffix = rhi_d3d12_shader_stage_suffix(stage);
-    if (suffix == NULL) return 0;
+    if (suffix == NULL) {
+        LOG_WARN("D3D12: shader stage %d is outside RHI_D3D12ShaderStage — no "
+                 "sidecar suffix exists, refusing shader", (int)stage);
+        return 0;
+    }
 
     base = path;
     for (p = path; *p != '\0'; ++p)
@@ -2215,12 +2219,17 @@ int rhi_d3d12_shader_sidecar_name(const char *path,
     }
 
     base_len = ext != NULL ? (usize)(ext - base) : strlen(base);
-    /* A base that cannot fit alongside the suffix and the NUL is rejected up
-     * front, which also keeps the (int) precision cast below in range. */
-    if (base_len == 0u || base_len >= out_cap) {
-        LOG_WARN("D3D12: shader path %s has no usable base name within the %u "
+    if (base_len == 0u) {
+        LOG_WARN("D3D12: shader path %s has no base name before its extension "
+                 "— refusing shader", path);
+        return 0;
+    }
+    /* Rejecting an over-long base here (rather than only via `needed` below)
+     * also keeps the (int) precision cast in range. */
+    if (base_len >= out_cap) {
+        LOG_WARN("D3D12: shader path %s has a %u byte base name, over the %u "
                  "byte name budget — refusing shader", path,
-                 (unsigned)out_cap);
+                 (unsigned)base_len, (unsigned)out_cap);
         return 0;
     }
     already_suffixed = base_len >= 5u &&
