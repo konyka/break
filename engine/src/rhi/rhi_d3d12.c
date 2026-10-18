@@ -4163,7 +4163,15 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
             rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
     }
+    if (dev->free_count == 0u) {
+        rhi_d3d12_mrt_cleanup(dev, &out, md);
+        return (RHIMRTFBO){0};
+    }
     idx = rhi_alloc_slot(dev);
+    if (idx >= RHI_MAX_RESOURCES) {
+        rhi_d3d12_mrt_cleanup(dev, &out, md);
+        return (RHIMRTFBO){0};
+    }
     dev->slots[idx].ptr = md;
     dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
     out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
