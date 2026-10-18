@@ -69,8 +69,8 @@ Expected: zero compiler errors and warnings in each tree.
 - [ ] **Step 1: Write the failing test**
 
 Create a test that:
-1. Calls `rhi_shader_create_path(g_dev, "shaders/blit_hlsl.vert", false)` and the `.frag` counterpart.
-2. Asserts both handles are valid.
+1. Calls `rhi_shader_create_path(g_dev, "shaders/blit_hlsl.vert", false)` and the `.frag` counterpart (self-resolution), then repeats with a GLSL-style path such as `shaders/blit.vert` (the primary mapping), and asserts all four handles are valid.
+2. Asserts every handle is valid.
 3. Builds a pipeline with `no_vertex_input` and the blit color format.
 4. Draws a fullscreen triangle into an 8x8 offscreen FBO while binding a known 2x2 red texture through `rhi_cmd_bind_texture`.
 5. Reads the FBO color texture back and asserts every pixel is red.
