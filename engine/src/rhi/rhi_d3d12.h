@@ -8,6 +8,7 @@
 #include <windows.h>
 #include <dxgi1_6.h>
 #include <d3d12.h>
+#include <rhi/rhi.h>
 
 typedef enum RHI_D3D12CreateFailure {
     RHI_D3D12_FAIL_NONE = 0,
@@ -176,6 +177,13 @@ typedef struct RHI_D3D12FBO {
     UINT sample_count;
     float clear_color[4];       /* caller-owned bind clear (R619) */
 } RHI_D3D12FBO;
+
+typedef struct RHI_D3D12MRTFBO {
+    UINT rtv_slots[RHI_MRT_MAX_ATTACHMENTS];
+    UINT dsv_slot;
+    UINT width, height, attachment_count, sample_count;
+    float clear_color[RHI_MRT_MAX_ATTACHMENTS][4];
+} RHI_D3D12MRTFBO;
 
 /* Root signature builder: one pass over reflected ShaderIOBindings
  * (core/shader_io.h) plus the pipeline's push-constant contract.

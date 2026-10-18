@@ -4055,16 +4055,133 @@ void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo,
     fd->clear_color[0] = r; fd->clear_color[1] = g;
     fd->clear_color[2] = b; fd->clear_color[3] = a;
 }
+static void rhi_d3d12_mrt_cleanup(RHIDevice *dev, RHIMRTFBO *fbo,
+                                   RHI_D3D12MRTFBO *md) {
+    RHI_D3D12Context *ctx;
+    UINT64 retire;
+    u32 i;
+    if (dev == NULL || fbo == NULL || md == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx != NULL) {
+        retire = rhi_d3d12_retire_fence(ctx);
+        for (i = 0u; i < RHI_MRT_MAX_ATTACHMENTS; ++i) {
+            if (md->rtv_slots[i] != UINT_MAX)
+                rhi_d3d12_descriptor_give_back(&ctx->rtv_alloc,
+                                               md->rtv_slots[i], retire);
+        }
+        if (md->dsv_slot != UINT_MAX)
+            rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc, md->dsv_slot,
+                                           retire);
+    }
+    if (rhi_handle_valid(fbo->fb)) rhi_free_slot(dev, fbo->fb);
+    for (i = 0u; i < RHI_MRT_MAX_ATTACHMENTS; ++i) {
+        if (rhi_handle_valid(fbo->color_tex[i]))
+            rhi_texture_destroy(dev, fbo->color_tex[i]);
+    }
+    if (rhi_handle_valid(fbo->depth_tex))
+        rhi_texture_destroy(dev, fbo->depth_tex);
+    free(md);
+    memset(fbo, 0, sizeof(*fbo));
+}
+
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
                              const RHIFormat *formats, u32 attachment_count) {
     RHIMRTFBO out;
-    (void)dev; (void)width; (void)height; (void)formats;
-    (void)attachment_count;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12MRTFBO *md;
+    RHITextureDesc tex_desc;
+    UINT idx;
+    u32 i;
     memset(&out, 0, sizeof(out));
+    if (dev == NULL || !rhi_mrt_desc_validate(width, height, formats,
+                                               attachment_count))
+        return out;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL) return out;
+    md = (RHI_D3D12MRTFBO *)calloc(1u, sizeof(*md));
+    if (md == NULL) return out;
+    for (i = 0u; i < RHI_MRT_MAX_ATTACHMENTS; ++i) {
+        md->rtv_slots[i] = UINT_MAX;
+        md->clear_color[i][0] = 0.0f;
+        md->clear_color[i][1] = 0.0f;
+        md->clear_color[i][2] = 0.0f;
+        md->clear_color[i][3] = 0.0f;
+    }
+    md->dsv_slot = UINT_MAX;
+    md->width = width;
+    md->height = height;
+    md->attachment_count = attachment_count;
+    md->sample_count = 1u;
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = width;
+    tex_desc.height = height;
+    tex_desc.mip_levels = 1u;
+    for (i = 0u; i < attachment_count; ++i) {
+        tex_desc.format = formats[i];
+        out.color_tex[i] = rhi_texture_create(dev, &tex_desc);
+        if (!rhi_handle_valid(out.color_tex[i])) {
+            rhi_d3d12_mrt_cleanup(dev, &out, md);
+            return (RHIMRTFBO){0};
+        }
+    }
+    tex_desc.format = RHI_FORMAT_D32_FLOAT;
+    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    if (!rhi_handle_valid(out.depth_tex)) {
+        rhi_d3d12_mrt_cleanup(dev, &out, md);
+        return (RHIMRTFBO){0};
+    }
+    for (i = 0u; i < attachment_count; ++i) {
+        md->rtv_slots[i] = rhi_d3d12_descriptor_take(ctx, &ctx->rtv_alloc);
+        if (md->rtv_slots[i] == UINT_MAX) {
+            rhi_d3d12_mrt_cleanup(dev, &out, md);
+            return (RHIMRTFBO){0};
+        }
+    }
+    md->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+    if (md->dsv_slot == UINT_MAX) {
+        rhi_d3d12_mrt_cleanup(dev, &out, md);
+        return (RHIMRTFBO){0};
+    }
+    for (i = 0u; i < attachment_count; ++i) {
+        RHI_D3D12Texture *color = (RHI_D3D12Texture *)
+            rhi_get_resource_typed(dev, out.color_tex[i], RHI_RES_TEXTURE);
+        if (color == NULL) {
+            rhi_d3d12_mrt_cleanup(dev, &out, md);
+            return (RHIMRTFBO){0};
+        }
+        ID3D12Device_CreateRenderTargetView(ctx->device, color->resource, NULL,
+            rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, md->rtv_slots[i]));
+    }
+    {
+        RHI_D3D12Texture *depth = (RHI_D3D12Texture *)
+            rhi_get_resource_typed(dev, out.depth_tex, RHI_RES_TEXTURE);
+        if (depth == NULL) {
+            rhi_d3d12_mrt_cleanup(dev, &out, md);
+            return (RHIMRTFBO){0};
+        }
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
+            rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
+    }
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = md;
+    dev->slots[idx].type = RHI_RES_FRAMEBUFFER;
+    out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
+    out.attachment_count = attachment_count;
+    out.width = width;
+    out.height = height;
     return out;
 }
 void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
-    (void)dev; (void)fbo;
+    RHI_D3D12MRTFBO *md;
+    if (dev == NULL || fbo == NULL) return;
+    md = (RHI_D3D12MRTFBO *)rhi_get_resource_typed(dev, fbo->fb,
+                                                   RHI_RES_FRAMEBUFFER);
+    if (md == NULL) {
+        memset(fbo, 0, sizeof(*fbo));
+        return;
+    }
+    rhi_d3d12_mrt_cleanup(dev, fbo, md);
 }
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
     (void)cmd; (void)fbo;
