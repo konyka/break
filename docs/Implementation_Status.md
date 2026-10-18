@@ -1,5 +1,47 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
+
+- **意义**：此前 D3D12 的 `rhi_cmd_bind_material_textures{,_ibl}` 是**空桩**，于是 forward draw 永远到不了 sidecar 的 albedo——上一轮 blinn_phong sidecar 之所以只能手工 `rhi_cmd_bind_texture` 绑 unit 0 验证，正是因为真实入口是空的。本轮把两个 binder 落地，并让"引擎真实调用"这件事本身被 WARP 像素覆盖。
+- **与 GL 逐槽位镜像的 unit map**（`rhi_gl.c:2400` / `:2412` 是唯一事实来源，D3D12 侧一字不改地照抄，**不重编号**）：
+
+  | unit | register | 槽位 | 前向 binder | IBL binder |
+  | --- | --- | --- | --- | --- |
+  | 0 | t0 | albedo | 有 | 有 |
+  | 1 | t1 | shadow | 有 | 有 |
+  | 2 | t2 | metallic-roughness | 有 | 有 |
+  | 3 | t3 | normal | 有 | 有 |
+  | 4 | t4 | emissive | 有 | 有 |
+  | 5 | t5 | ssao | 有 | — |
+  | 7 | t7 | brdf_lut | — | 有 |
+  | 8 | t8 | irradiance cube | — | **留空**（cube 未实现） |
+  | 9 | t9 | prefilter cube | — | **留空**（cube 未实现） |
+  | 10-13 | t10-t13 | `u_point_shadow_cubes[4]` | — | **留空**（cube 未实现） |
+  | 14 | t14 | ssao | — | 有（R213-B） |
+  | 15 | t15 | occlusion | — | 有（R583） |
+
+  镜像之所以成立：D3D12 侧 `register(tN)` 经根签名反射落进 `pd->image_root_params[N]`，`rhi_cmd_bind_texture` 用 `unit` 直接索引该表，故 **GL 纹理单元 N ≡ D3D12 register tN**。blinn_phong sidecar 声明 `Texture2D g_albedo : register(t0, space0)`，所以 unit 0 必须是 albedo，且这也是测试能钉死映射的原因。管线**未声明**的寄存器，`rhi_cmd_bind_texture` 在碰任何描述符表之前就返回——因此只声明 t0 的 sidecar 在这里照常工作，t1-t15 是静默 no-op 而非错误。
+- **白色 fallback 规则，以及为什么 D3D12 需要它**：GL 纹理单元即使什么都不绑也仍读作 textureless 默认值，所以 GL binder 可以放着缺失贴图不管；**D3D12 的根描述符表没有"unset"这个态**——没写过的表仍指向上一帧留在该描述符槽里的东西。实测（WARP，未绑定 t0 时）：**着色器照常运行（alpha=255），采样结果为黑 `(0,0,0,255)`**，即描述符本身是垃圾/空。故 D3D12 侧每个 2D 材质槽都先过一层解析：`rhi_d3d12_material_slot` 只在句柄指向**活的纹理**（`RHI_RES_TEXTURE`，含空句柄、陈旧句柄、非纹理句柄）时原样使用，否则换成 context 上**惰性创建、随 context 释放**的 1x1 RGBA8 白色纹理（`rhi_d3d12_white_fallback`；在 `rhi_device_destroy` 里 GPU drain 之后销毁，确保没有在飞命令列表还引用其 SRV）。白色是这些贴图的中性值（ao/occlusion 1.0、metallic-roughness 默认），与引擎自身"缺失贴图用白色 1x1"的既有做法一致（`engine/src/main.c` 的 `rs->fallback_*`）。
+  **该保证的边界（如实记录，勿写成无条件）**："永不留下未写描述符"**只在正常路径成立**。三条失败路径仍会跳过绑定而让描述符表保持原样：fallback 创建失败（device lost 或上传路径拒绝）、描述符分配器取不到槽、以及每帧 SRV 预算 `RHI_D3D12_CBV_SRV_UAV_CAPACITY` 用尽。三者都是**响亮/失败关闭**的条件而非"看起来正确的帧"，但保证是"逐槽位、尽力而为"，不是无条件的。
+- **cube 槽位刻意留空，且**不接** 2D fallback（评审 Important I-1 的修复）**：unit 8/9 与 10-13 在着色器里是 **cube** 采样——`engine/shaders/pbr_clustered.frag:56`、`blinn_phong_clustered.frag:22`、`deferred_light.frag:15` 均声明 `layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4]`。把 1x1 **2D** 白色 SRV 绑到 cube 寄存器上是**描述符/着色器类型错配**，也直接违反引擎自己的规则（`engine/src/main.c:1109`：IBL cube "must never receive a 2D fallback view"）。修复方式与 unit 8/9 一致：**除非句柄是活的 cube，否则整槽跳过**。判据 `rhi_d3d12_live_cube` 查的是 **`RHI_RES_CUBEMAP` 槽类型**（GL 侧 `rhi_cubemap_depth_fbo_create` 给 point-shadow depth cube 打的正是这个标签），所以**2D 纹理句柄不可能误过此门**，而 cube 句柄也不可能被 `rhi_d3d12_material_slot`（要求 `RHI_RES_TEXTURE`）误认成纹理——两个方向的混淆都被结构堵死。D3D12 今天根本没有 cube（`rhi_cubemap_create`、`rhi_cubemap_depth_fbo_create` 均为桩），故这六个槽位一律跳过；这正是"刻意留空"与"将来 cube FBO 落地时自动开始工作"的分界。**再往里一步仍然跳过**：`rhi_cmd_bind_texture` 只解析 `RHI_RES_TEXTURE` 并建 `TEXTURE2D` SRV，遇到 cube 句柄会拒绝而不是写出错误维度的描述符；cube SRV（`D3D12_SRV_DIMENSION_TEXTURECUBE` + `Cube2DArraySize`）属于 cube 工作，不属于本 binder。
+- **静态采样器限制（评审 Important I-2；既有基础设施缺陷，非本轮引入，但会卡住 D3D12 forward）**：`rhi_cmd_bind_texture` 接收 `sampler` 参数后**直接丢弃**。根签名构造把每个 `SamplerState` 寄存器解析成 `D3D12_STATIC_SAMPLER_DESC`，硬编码 `MIN_MAG_MIP_LINEAR` + `WRAP/WRAP/WRAP` + `MaxLOD=FLT_MAX`（`rhi_d3d12_root_sig_add_bindings`），**不发出任何 SAMPLER 表根参数**，因此根本没有"可指向"的采样器表。精确地说，D3D12 **能**表达的只有：线性过滤 + WRAP 寻址、按纹理 L0..MipLevels 采样；**不能**表达：调用方的过滤/寻址/LOD 选择，**尤其是比较采样（comparison sampling）**——`EnableComparison` 从未被置位，也没有 `D3D12_SAMPLER_DESC` 真正到达着色器。因此 shadow map（unit 1）与 point-shadow cube（10-13）在 GL 上是经比较采样器采样的，在 D3D12 上今天**根本做不了深度比较**。修复所需的三件事已就地记录在 `rhi_d3d12.c` 的 `rhi_cmd_bind_texture` 注释里：(a) 为管线的采样器寄存器发出带 SAMPLER 描述符范围的根参数；(b) 在那里与 SRV 表一起 `SetGraphicsRootDescriptorTable`；(c) `RHISamplerDesc` → `D3D12_SAMPLER_DESC` 的比较标志（`rhi_sampler_create` 同样从不置 `EnableComparison`）。**基础设施已半成品且闲置**：context 早已持有 shader-visible sampler heap（`sampler_heap`/`sampler_alloc`），`rhi_sampler_create` 也早已把真实的、遵循 `RHISamplerDesc` 过滤与寻址的 `D3D12_SAMPLER_DESC` 写进去（`RHI_D3D12Sampler` 只存槽号）——缺的只是没人去绑。**本轮刻意不做**：这是影响所有既有管线的根签名改动，不是 binder 修复。
+- **WARP 像素证明（`material_binder_puts_albedo_on_t0_and_falls_back_to_white`，`test_d3d12_warp_runtime` 9/9）**：三次 draw。①红 2x2 albedo + 其余五个**无效句柄**走**真实入口** `rhi_cmd_bind_material_textures`（不是手摆的 `rhi_cmd_bind_texture`），8x8 离屏 FBO，**64 像素逐通道精确 (255,0,0,255)**；②**albedo 换成无效句柄**，同一着色器同一组 uniform 必须**精确 (255,255,255,255)**——即 fallback 真的被绑上了，而不是留着上一帧的描述符；③改走引擎真正调用的 `rhi_cmd_bind_material_textures_ibl`，红 albedo + 四个无效 point-shadow cube，必须**仍然精确全红**——证明 cube 槽位的跳过逻辑与另外十一个 IBL 槽位都没有扰动 t0。颜色用精确相等而非容差：沿用同文件 blinn_phong 测试的退化光照（`u_light_dir=(0,-1,0)`、`u_camera_pos=(0,0,-10)`、恒定 `N=(0,0,1)`），`diff` 与 `spec` 由**几何**归零，着色器退化为 `albedo * u_ambient`。
+- **反向验证（三路 + 一条负对照）**：
+  ①**把 binder 退回成空桩**（即实现前的状态）→ 测试在 draw 1 的像素断言处转红（`px[i + 0] != 255`）。这同时是计划要求的"实现完成前测试必须是红的"。
+  ②**albedo 换到 unit 1**（shadow 换到 unit 0）→ draw 1 转红（`px[i + 1] != 0`）：t0 现在拿到的是 shadow 槽的白色 fallback，画面变白而非变红，**错单元是可见的错**。
+  ③**抽掉 fallback 替换**（`rhi_d3d12_material_slot` 原样返回句柄）→ **draw 1 仍然通过**（albedo 合法，与 fallback 无关），**draw 2 转红**（`px[i + 0] != 255`，实测像素 `(0,0,0,255)`）。这一路是唯一能区分"fallback 规则真的承重"与"恰好碰对了"的对照，且它顺带给出了"未写入的 D3D12 描述符到底会怎样"的实测答案：**WARP 返回黑、调试层不报、设备不被移除**——所以失败表现为像素断言不通过，而不是崩溃或设备丢失。
+  ④**负对照（cube 门禁没有自动守卫）**：把 `rhi_d3d12_live_cube` 改成接受 `RHI_RES_TEXTURE`（即"只要是纹理就算 cube"，正是评审要求堵掉的那个缺陷形态），测试**仍然 9/9 全绿**。这不是修复失败，而是如实记录：**在只有 t0 的管线下，unit 8/9/10-13 在像素上结构性不可观测**（未声明的寄存器在碰描述符之前就返回，旧代码即使给它们塞 2D fallback 也不会产生任何像素差异），因此该门禁目前**只有评审保证、没有自动化守卫**。若要自动化，需要导出成可测谓词或新增一条声明 t10+ 的 sidecar，二者都超出本轮范围。
+- **诚实的证明边界（勿把 unit map 整张表当成已被像素证明）**：**只有 unit 0 在这些像素里可观测**。blinn_phong sidecar 只声明 t0，而未声明的寄存器会被跳过，于是 unit 1-15 在此测试中**结构性不可见**。本测试证明的是：映射表的 **albedo 项**（以及经由 albedo 体现的 fallback 规则）、以及其余各项**不会扰动** t0。**不**证明 shadow 在 1、mr 在 2、ssao 在 14——那些依据是"逐槽位镜像 GL binder"这一事实加人工评审，不是像素。要像素证明它们，需要声明那些寄存器的 sidecar。
+- **回归证据**：全部使用本 worktree 自己的构建树（`build-d3d12-debug` / `build-gl` / `build-vk`，`CMAKE_HOME_DIRECTORY` 均指向本 worktree 的 `engine/`；Ninja + clang 22.1.6 + `ENGINE_RHI_BACKEND=d3d12`），CTest 环境 `ENGINE_D3D12_WARP=1 BREAK_D3D12_TEST_FALLBACK_HWND=1`，D3D12 调试层与 GPU-based validation 均开启。`test_d3d12_warp_runtime` **9/9**；`ctest -R "d3d12|warp|swapchain"` **12/12**；全树 `ninja` 无错无警告。
+  **一条需要更正的口径（此前落账把全树写成 184/184）**：全新 worktree 里 `engine/external/VulkanSDK` 是 gitignore 的 vendored 依赖、并不存在，故 `ctest` 必须带 `ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1` 才能跳过 `test_locked_dependencies`；**不带该变量时全树是 182/184**（多出的那一项正是 `test_locked_dependencies`，纯粹因为 vendored VulkanSDK 缺席，与本轮代码无关）。另需注明：`test_platform_win32_runtime` 的 `clipboard_read_bounds_unterminated_unicode_text`（`OpenClipboard failed`）在本会话后段失败——**它是会话级的环境性失败**：主 checkout 的 `build-d3d12-debug` 与本 worktree 的 `build-gl` 树同样失败，且它在本次会话早先的同一套命令里是通过的。GL **169/175**、Vulkan **170/176**（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE graphics`），两边失败项完全一致：5 个 `fuzz_*_smoke`（`EXCLUDE_FROM_ALL`，默认 `ninja` 不构建，故 "Not Run"，见 `engine/CMakeLists.txt` 注释）+ 上述 clipboard 项。
+  **一次真实的跨后端抓漏**：首次跑 GL 树时 `test_no_hidden_gl_fallback` 转红，报 `src/rhi/rhi_d3d12.c: token 'rhi_gl'`——该守卫对**注释原文**做子串扫描。修复同样选择了**不放宽守卫**（给整个 D3D12 后端永久豁免全部 GL token 的代价太大），而是让注释改指 GL 的**函数名**而非文件名；修复本轮注释时该守卫再次以同样方式转红一次，已按同一办法处理。
+- **剩余有序工作（顺序是约束，不是偏好）**：本轮完成材质 binder 后，上一轮清单里的"①材质 binder"出清，顺序变为：**② shadow map → ③ compute 绑定 → ④ FORWARD_MRT velocity 输出 → ⑤ 引擎调用点迁移到 path API**。
+  - **② shadow map 卡在采样器，不是卡在渲染**：shadow map 需要的是**比较采样**（以及一张 D3D12 depth-cube FBO 来渲染 point shadow），而上面记录的静态采样器限制使比较采样今天无法表达。因此 shadow map 这一步的前置是**采样器描述符表**（根签名 SAMPLER 范围 + 在 `rhi_cmd_bind_texture` 里一并设置 + `RHISamplerDesc` 的比较标志），不是先画 shadow pass 再补采样。**顺序不可颠倒**：先做 pass 后做采样器，等于交付一帧采样结果错误但"看起来在跑"的画面。
+  - **③ compute 绑定**：与 graphics binder 同构但走 compute 根签名与 UAV 表，属于独立的绑定面。
+  - **④ FORWARD_MRT velocity 输出**：其 `#ifdef FORWARD_MRT` 分支要额外 128B `std140` UBO，与基座 256B 合计 384B，**装不进 D3D12 256B graphics push 范围**（详见上一轮记录：在 b1 加 CBV 会新增一条描述符表，把 constants 压到 248B，于是 `u_camera_pos@240+12 = 252 > 248` 被**静默丢弃**——正是那条"丢写对测试不可见"的坑），且 FS 侧需要第二条 render target。必须与独立 MRT FBO 计划一并设计，不能顺手加。
+  - **⑤ 引擎调用点迁移到 path API**：`engine/src/main.c:383-405` 为生产用 blinn_phong forward 管线**无条件**注入 `FORWARD_MRT` 并以 `mrt_attachment_count = 2u` 建管线，而 path API 只映射到**不含 MRT** 的 sidecar。因此该调用点必须等 ④ 的 velocity/RT1 输出落地后才能迁，**不可当作"顺手加个可选变体"**处理。
+  - **cube（本轮刻意留空的那六个槽）**：unit 8/9/10-13 要真正可用，需要 cube 资源创建、`D3D12_SRV_DIMENSION_TEXTURECUBE` 描述符、cube FBO 与 cube 渲染目标支持；本轮已把门禁与注释就位，届时无需再改 binder。
+
 ## 本轮更新：Task 1-3 / D3D12 第一条真实渲染管线 sidecar — `blinn_phong_hlsl.{vert,frag}` 手写成对、七个 uniform 字节偏移由 sidecar 自持、CMake sidecar 契约纳入 blinn_phong、WARP 像素级证明（含反向验证与"丢写不可见"负对照）
 
 - **意义**：在此之前 D3D12 只有 `blit`/`myui`/`probe*` 四个探针级 sidecar——没有任何**真实渲染管线**跑通过。`blinn_phong_hlsl.{vert,frag}` 是第一条，其渲染结果经 WARP 回读像素断言，不靠句柄有效性。

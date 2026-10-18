@@ -3545,7 +3545,37 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
     D3D12_RESOURCE_STATES read_state;
     UINT root_param;
     UINT slot;
-    (void)sampler; /* blit samplers are static root-signature samplers */
+    /* KNOWN LIMIT — the sampler argument is accepted and then discarded, on
+     * every backend path that reaches this function, including the material
+     * binders. Root-signature construction resolves every SamplerState
+     * register to a D3D12_STATIC_SAMPLER_DESC (rhi_d3d12_root_sig_add_bindings)
+     * hardcoded to MIN_MAG_MIP_LINEAR + WRAP/WRAP/WRAP + MaxLOD FLT_MAX, and
+     * emits no root parameter of type SAMPLER table, so there is nothing for
+     * a bind to point at. GL applies the caller's sampler object per unit and
+     * so honours filter, address mode and LOD selection; D3D12 currently
+     * cannot.
+     *
+     * What that means concretely: a texture can be filtered LINEAR and
+     * addressed WRAP, and nothing else. In particular there is no comparison
+     * sampling — EnableComparison is never set and no D3D12_SAMPLER_DESC
+     * reaches the shader — so the shadow map (material unit 1) and the
+     * point-shadow cubes (units 10-13), which are sampled through comparison
+     * samplers on GL, cannot do a depth compare on D3D12 today. That blocks
+     * the D3D12 forward pass at the shadow-map step.
+     *
+     * The infrastructure for the fix is half-present and unused: the context
+     * already owns a shader-visible sampler heap (sampler_heap /
+     * sampler_alloc) and rhi_sampler_create already writes a real
+     * D3D12_SAMPLER_DESC honouring RHISamplerDesc's filters and address modes
+     * into it (RHI_D3D12Sampler just holds the slot). What is missing is (a)
+     * a root parameter carrying a SAMPLER descriptor range for the pipeline's
+     * sampler registers, (b) a SetGraphicsRootDescriptorTable alongside the
+     * SRV table here, and (c) a comparison flag on RHISamplerDesc ->
+     * D3D12_SAMPLER_DESC, since rhi_sampler_create never sets
+     * EnableComparison either. Deliberately not done in this round: it is a
+     * root-signature change affecting every existing pipeline, not a binder
+     * fix. */
+    (void)sampler;
     if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
@@ -3975,12 +4005,23 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
  * default, so the GL binder can leave a missing map alone. A D3D12 root
  * descriptor table has no such "unset" state: whatever the last draw left in
  * that descriptor slot is what the shader samples, so a missing material map
- * would read stale or never-written descriptor memory. Every material slot
+ * would read stale or never-written descriptor memory (measured on WARP:
+ * black, with the shader itself still running). Every 2D material slot
  * therefore resolves through this shared 1x1 RGBA8 white texture, created on
  * first use and released with the context (rhi_device_destroy). White is the
  * neutral value for the maps that reach it (ao/occlusion 1.0, metallic-
  * roughness defaults), and it is the same fallback the engine's own scene
- * resources use for absent textures. */
+ * resources use for absent textures.
+ *
+ * SCOPE OF THE RULE, honestly: "never leaves a descriptor unwritten" holds on
+ * the NORMAL path only. Three failure paths still skip the bind and leave the
+ * table as it was — fallback creation failing (device lost, or the upload
+ * path refusing), the descriptor allocator returning no slot, and the
+ * per-frame SRV budget (RHI_D3D12_CBV_SRV_UAV_CAPACITY) being full. Each of
+ * those is a loud, logged or fail-closed condition rather than a silent
+ * correct-looking frame, but the guarantee is per-slot-and-best-effort, not
+ * unconditional. Cube-typed slots do not even get this rule — see
+ * rhi_d3d12_live_cube. */
 static RHITexture rhi_d3d12_white_fallback(RHI_D3D12Context *ctx) {
     static const unsigned char white[4] = { 255u, 255u, 255u, 255u };
     RHITextureDesc desc;
@@ -4003,6 +4044,35 @@ static RHITexture rhi_d3d12_material_slot(RHI_D3D12Context *ctx,
             tex, RHI_RES_TEXTURE) != NULL) return tex;
     return rhi_d3d12_white_fallback(ctx);
 }
+/* Cube-typed slots — units 8/9 (irradiance, prefiltered radiance) and 10-13
+ * (u_point_shadow_cubes[4]) — are sampled as CUBES, not 2D: see
+ * engine/shaders/pbr_clustered.frag:56, blinn_phong_clustered.frag:22 and
+ * deferred_light.frag:15, all of which declare
+ * `layout(binding = 10) uniform samplerCube u_point_shadow_cubes[4]`. The
+ * 2D white fallback is therefore WRONG for them: a TEXTURE2D descriptor on a
+ * cube-sampled register is a descriptor/shader type mismatch, which is why
+ * the engine's own bind path never gives these a 2D view
+ * (engine/src/main.c:1109). They are skipped instead.
+ *
+ * "Live cube" is tested against the RHI_RES_CUBEMAP slot type — the type the
+ * GL backend tags a point-shadow depth cube with in its
+ * rhi_cubemap_depth_fbo_create — so a 2D texture handle can never pass this
+ * gate by accident, and a cube handle can never be mistaken for a texture by
+ * rhi_d3d12_material_slot (which requires RHI_RES_TEXTURE).
+ * D3D12 creates no cubes today (rhi_cubemap_create and
+ * rhi_cubemap_depth_fbo_create are stubs), so every one of these six slots
+ * skips; the gate is what makes that omission deliberate and self-starting
+ * rather than accidental when cube FBOs land. Note that even a live cube
+ * still skips today, one step further in: rhi_cmd_bind_texture resolves
+ * RHI_RES_TEXTURE and builds a TEXTURE2D SRV, so it declines a cube handle
+ * rather than writing a wrong-dimension descriptor. Cube SRVs
+ * (D3D12_SRV_DIMENSION_TEXTURECUBE + Cube2DArraySize) are part of the cube
+ * work, not this binder. */
+static int rhi_d3d12_live_cube(RHIHandle handle) {
+    return g_current_device != NULL &&
+           rhi_get_resource_typed(g_current_device, handle,
+                                  RHI_RES_CUBEMAP) != NULL;
+}
 /* The binders only mean anything inside a started frame with a bound
  * pipeline, and creating the fallback uploads on the queue, so both guard
  * here rather than relying on rhi_cmd_bind_texture's per-call bail-outs. */
@@ -4015,7 +4085,14 @@ static int rhi_d3d12_material_bindable(RHI_D3D12Context *ctx) {
  * N — the blinn_phong sidecar declares g_albedo : register(t0), which is why
  * albedo is unit 0. rhi_cmd_bind_texture returns without touching any table
  * for a register the bound pipeline does not declare, so a sidecar
- * declaring only t0 works here too. */
+ * declaring only t0 works here too.
+ *
+ * KNOWN SAMPLER LIMIT (inherited infrastructure, not introduced here):
+ * `sampler` is accepted and forwarded but has no effect — see
+ * rhi_cmd_bind_texture. Every D3D12 sampler register resolves to one
+ * hardcoded static sampler, so the shadow map on unit 1 is sampled without
+ * comparison filtering today. That blocks the D3D12 forward pass at the
+ * shadow-map step, not at this binder. */
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow,
     RHITexture ssao, RHISampler sampler) {
@@ -4030,7 +4107,10 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo,
 }
 /* Unit map mirrors the GL backend's rhi_cmd_bind_material_textures_ibl binder
  * exactly, including occlusion at 15, the point-shadow cubes at 10-13
- * (clamped to four), ssao at 14, and the IBL units 7-9. */
+ * (clamped to four), ssao at 14, and the IBL units 7-9. Same sampler caveat
+ * as the non-IBL binder, and it bites hardest here: the point-shadow cubes
+ * are samplerCube + manual .r compare on GL and want a comparison sampler
+ * both for the cube and for the depth comparison. */
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive,
     RHITexture occlusion, RHITexture shadow, RHITexture ssao,
@@ -4051,21 +4131,20 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     count = (point_shadow_cubes != NULL && point_shadow_count > 0u)
                 ? point_shadow_count : 0u;
     if (count > 4u) count = 4u;
+    /* Cube slots: skipped unless the handle is a live cube. No 2D fallback
+     * here even for an invalid handle — a 2D descriptor on a samplerCube
+     * register is a type mismatch (see rhi_d3d12_live_cube). */
     for (i = 0u; i < count; ++i)
-        rhi_cmd_bind_texture(cmd,
-            rhi_d3d12_material_slot(ctx, point_shadow_cubes[i]), sampler,
-            10u + i);
+        if (rhi_d3d12_live_cube(point_shadow_cubes[i]))
+            rhi_cmd_bind_texture(cmd, point_shadow_cubes[i], sampler, 10u + i);
     /* R213-B: ssao at 14 — units 10-13 are u_point_shadow_cubes[4]. */
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
-    /* Units 8 and 9 (irradiance, prefiltered radiance) take RHICubemap
-     * handles, and D3D12 cubemaps are not implemented yet
-     * (rhi_cmd_bind_cubemap is a no-op stub here): there is no cubemap
-     * creation, no SRV dimension for them, so both units are deliberately
-     * left unbound rather than given a 2D fallback that would silently
-     * sample a garbage cube. IBL stays unsupported until cubemaps land. */
-    (void)irradiance_map;
-    (void)prefilter_map;
+    /* Units 8 and 9 are the IBL cubes, gated on the same live-cube rule. */
+    if (rhi_d3d12_live_cube(irradiance_map))
+        rhi_cmd_bind_texture(cmd, irradiance_map, sampler, 8u);
+    if (rhi_d3d12_live_cube(prefilter_map))
+        rhi_cmd_bind_texture(cmd, prefilter_map, sampler, 9u);
 }
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,

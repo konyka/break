@@ -620,7 +620,7 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
 }
 
 /* Material binder Task 1+2: the REAL binder path, not a hand-placed
- * rhi_cmd_bind_texture. Two claims, both proven with pixels:
+ * rhi_cmd_bind_texture. Three draws, three claims:
  *
  *  1. rhi_cmd_bind_material_textures puts albedo on texture unit 0, which is
  *     what lands on register t0 — the register the blinn_phong sidecar's
@@ -633,13 +633,22 @@ TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red) {
  *     inverts the argument to prove the substitution happens: an INVALID
  *     albedo must come out exactly white, never the clear colour and never
  *     the previous frame's descriptor.
+ *  3. Draw 3 drives the same frame through rhi_cmd_bind_material_textures_ibl,
+ *     the entry point the engine actually calls, with a red albedo and four
+ *     INVALID point-shadow cubes. The cubes are gated on being live cubes and
+ *     must be skipped outright (a 2D descriptor on a samplerCube register is
+ *     a type mismatch), and the draw must still come out exactly red: neither
+ *     the gating nor the other eleven IBL slots may disturb t0.
  *
- * Why two draws instead of one: the blinn_phong sidecar declares only t0, and
- * rhi_cmd_bind_texture skips a register the pipeline does not declare, so the
- * shadow/mr/normal/emissive/ssao slots of draw 1 are structurally unobservable
- * in the pixels. Albedo is the one material slot this pipeline can see, so
- * draw 2 puts the invalid handle THERE — that is the only way the fallback
- * rule becomes a pixel assertion instead of a code-reading claim.
+ * PROVEN BOUNDARY — read this before quoting the coverage. Only unit 0 is
+ * observable in these pixels. The blinn_phong sidecar declares t0 and nothing
+ * else, and rhi_cmd_bind_texture skips a register the pipeline does not
+ * declare, so units 1-15 are structurally invisible here: this test proves the
+ * unit map's ALBEDO entry (and the fallback rule, through albedo) and proves
+ * that the other entries do not disturb it. It does NOT prove that shadow is
+ * on 1, mr on 2, or ssao on 14 — those rest on the map mirroring the GL
+ * binder and on review, not on a pixel. Proving them needs sidecars that
+ * declare those registers.
  *
  * The colours are exact, not approximate: with the degenerate lighting used
  * by the sibling blinn_phong test (diff = 0 and spec = 0 by construction, see
@@ -674,6 +683,11 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
         "u_model", "u_view", "u_proj", "u_light_dir",
         "u_light_color", "u_ambient", "u_camera_pos"
     };
+    /* Four invalid handles standing in for u_point_shadow_cubes[4]: the IBL
+     * binder must skip those slots rather than substitute a 2D texture,
+     * because the shaders declare samplerCube. */
+    RHITexture cubes[4] = { RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                            RHI_HANDLE_NULL, RHI_HANDLE_NULL };
     i32 loc[7];
     int i;
 
@@ -779,6 +793,44 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
         ASSERT_EQ(px[i + 0], 255);
         ASSERT_EQ(px[i + 1], 255);
         ASSERT_EQ(px[i + 2], 255);
+        ASSERT_EQ(px[i + 3], 255);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    /* Draw 3: the IBL entry point the engine actually calls. A red albedo
+     * must still reach t0 through it, and the four invalid point-shadow
+     * cubes (units 10-13) must be skipped rather than handed a 2D
+     * descriptor — they declare samplerCube, and there is no cube on D3D12
+     * yet for the binder to bind. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc[2], identity);
+    rhi_cmd_set_uniform_vec3(cmd, loc[3],  0.0f, -1.0f, 0.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[4],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[5],  1.0f,  1.0f, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc[6],  0.0f,  0.0f, -10.0f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_material_textures_ibl(cmd, red_tex,
+                                       RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                       RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                       RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                       (RHISampler){0}, RHI_HANDLE_NULL,
+                                       RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                       cubes, 4u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 255);
+        ASSERT_EQ(px[i + 1], 0);
+        ASSERT_EQ(px[i + 2], 0);
         ASSERT_EQ(px[i + 3], 255);
     }
     ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
