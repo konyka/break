@@ -51,6 +51,10 @@
 - **仍然不上线**，因为换成这个正确签名后 blinn_phong 管线**建不出来了**：`rhi_pipeline_create` 对 `blinn_phong_sidecar_resolves_offsets_and_shades_red` 和 `material_binder_puts_albedo_on_t0_and_falls_back_to_white` 都返回 NULL，既没有着色器编译告警，`CreateRootSignature` 也没报错。其它管线（blit / probe / shadow）都正常，这与之前 MRT PSO 的 `E_INVALIDARG` 一致：**让 blinn 或 MRT 管线失败的，是「CBV 表与纹理表共存」这件事**，而此前多出来的重复表把它掩盖了。
 - **所以现在的状态**：**已定案**——逐 stage 重复表是真缺陷；正确的根签名做得到且已审计；顶点/像素的不对称完全由「根参数 1 和 3 从未被绑定」解释。**未定案**——为什么「CBV + SRV 两张表共存」的正确签名建不出管线。这是一个**更小、隔离得更好**的问题，而且重复表这个干扰项已经不在里面了。**没上线**——顶点阶段 cbuffer 读仍然不对，而上线一个「修一半、反而弄坏管线创建」的东西比现状更糟。
 - **下一步不是「再试一次去重」，而是「查清 `CreateGraphicsPipelineState` 到底嫌弃这个签名的哪一点」**：签名现在是最小且已打出来的，候选只剩一个——**1.1 版根签名里 CBV 表、SRV 表与静态采样器共存**。这正是此前从未被真正跑到的配置（旧签名靠重复表把它遮住了，没人刻画过它到底在承担什么）。
+- **PSO 失败点已精确定位**。给 `CreateGraphicsPipelineState` 打了点，在**正确（去重后）的根签名**下跑，整个套件：`blit` `hr=0x00000000`、`probe` `hr=0`、`push-constants probe` `hr=0`、`shadow`（无颜色目标）`hr=0`、而 `blinn_phong hr=0x80070057`（E_INVALIDARG）。
+- 也就是说：**只有一条管线失败，是 E_INVALIDARG，而它与 `blit` 的差别恰好只有一个东西——`b1` 上的 CBV 表**（push 常量、单张 SRV 表、静态采样器三者都相同）。MRT 用同样的签名加两个 RT，行为一致。
+- **关于本 SDK 有两点必须先写下来**：①`D3D12_GRAPHICS_PIPELINE_STATE_DESC` 在这里**没有 `NumStaticSamplers` 成员**，也就是 PSO 用的是旧结构，而根签名是按 **1.1** 序列化并创建的——这个组合在本项目从未被真正跑到，因为重复表一直把它遮着。它是不是触发点，**一个实验就能验**：把根签名按 1.0 创建，看 blinn 的 PSO 是否开始能建。②重复表**可能是「以某种没人刻画过的方式在承重」**。它们确实是错的，但「错且在承重」这个组合必须被有意识地解决，不能删掉然后去承受后果。
+- 所以问题被收窄成一句：**为什么 `ID3D12Device_CreateGraphicsPipelineState` 拒绝「[0] 32BIT_CONSTANTS、[1] CBV b1、[2] SRV t0、静态采样器 s0」这个 1.1 版根签名，却接受去掉 [1] 的同一个列表？****什么都没上线**，去重在原理上依然正确，在弄清这个之前不能落地。
 - **五个假设全部排除；缺陷可以一句话说清了**。上一轮每个假设都只在 WARP 上验过；这一轮**同时在硬件上验**，正是这一步把「看不见的垃圾」变成了「可复现的垃圾」：| 改动 | WARP | RTX 4060 |
 | --- | --- | --- |
 | uniform 强制走 DEFAULT 堆 | 无变化 | 无变化 |

@@ -597,6 +597,48 @@ signature with a static sampler, which is exactly the configuration that was
 never exercised before (the old signature duplicated the tables, which may
 have been load-bearing in some way nobody has characterised).
 
+### The PSO failure, located exactly
+
+`CreateGraphicsPipelineState` was instrumented and run with the corrected
+(deduped) root signature. Every pipeline in the suite:
+
+    DIAG PSO hr=0x00000000 rtv=1 fmt0=28 fmt1=0    blit
+    DIAG PSO hr=0x00000000 rtv=1 fmt0=28 fmt1=0    probe
+    DIAG PSO hr=0x00000000 rtv=1 fmt0=28 fmt1=0    push-constants probe
+    DIAG PSO hr=0x00000000 rtv=0 fmt0=0  fmt1=0    shadow (no colour target)
+    DIAG PSO hr=0x80070057 rtv=1 fmt0=28 fmt1=0    blinn_phong   <- E_INVALIDARG
+
+So it is **one pipeline**, it is **E_INVALIDARG**, and the difference between
+it and `blit` -- which has the same push constants, the same single SRV table
+and the same static sampler -- is exactly one thing: **the CBV table at
+`b1`**. The MRT case is the same signature with two render targets and
+behaves the same way.
+
+That is a much sharper statement than "something about blinn". Concretely, the
+open question is now:
+
+> Why does `ID3D12Device_CreateGraphicsPipelineState` reject a 1.1-versioned
+> root signature whose parameter list is `[0] 32BIT_CONSTANTS, [1] CBV b1,
+> [2] SRV t0, static sampler s0` -- while accepting the same list with `[1]`
+> absent?
+
+Two things about this SDK make it worth writing down before anyone retries it:
+
+- `D3D12_GRAPHICS_PIPELINE_STATE_DESC` here has **no `NumStaticSamplers`
+  member**, so the PSO is created from the older struct while the root
+  signature is serialised and created as **1.1**. That combination has never
+  been exercised in this project, because the duplicated tables had been
+  hiding it. Whether that struct/version pairing is the trigger is the first
+  thing to check, and it is a one-line experiment: create the root signature
+  as 1.0 and see whether the blinn PSO starts building.
+- The duplicate tables may have been load-bearing for a reason nobody has
+  characterised. They were wrong, but "wrong and load-bearing" is a
+  combination that has to be resolved deliberately, not by deleting them and
+  discovering the consequence.
+
+Nothing shipped. The dedupe remains correct in principle and unlandable in
+practice until this is answered.
+
 ### Working the reading list: item 1 answered
 
 `rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
