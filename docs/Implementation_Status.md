@@ -255,19 +255,23 @@
     - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。
   - **再更正一次二分结论（第一次是度量错，第二次是读表错）**：R628 写的是「需要 TAA 与 motion blur **同时**开启」。重读那张表——`BREAK_MB=0`（TAA 开）**仍丢失**、`BREAK_TAA=0`（MB 开）**仍丢失**、只有**两者都关**才不丢。正确表述是：**两者各自单独就足以触发丢失**，「同时」是我从表里读反了方向。这也推翻了「共同点是机制」这个假设：既然单独就能触发，就与共性无关，而是它们**各自**做了同一件别处没有的事。
   - **⚠️ 标志的实际作用比名字窄**：`BREAK_TAA=0` 关掉的是 demo 里的 `combined_aa_apply`，而 `combined_aa` 用的是 `shaders/combined_taa_fxaa.frag`——**我没有移植它**，所以在 D3D12 上 `use_combined` 恒为 false，它走 fallback 链，**恰好就是我移植的 FXAA + TAA**。所以「TAA 开启」在 D3D12 上实际等于「FXAA + TAA 的 fallback 链在跑」。这条必须记下来，否则下次读这些标志会得出错的结论。
-  - **已排除的三条**（都记下来省得重复）：
+  - **已排除的六条**（都记下来省得重复）。**方法论提醒**：每排除一条都必须**关掉另一个 pass**，否则「A 关掉仍丢失」可能只是因为 B 自己就会丢——本轮有两条排除最初就是这么作废的，下面按修正后的结果记录：
     ①**同帧内资源既是渲染目标又是 SRV**——R629 的常驻诊断在 demo 上**一条都没报**（而诊断本身被证明是活的：强制打开守卫后 10 帧内 13 条）。整类原因排除。
-    ②**`taa_velocity`（前向 MRT 速度附件）**——加了一个临时开关把它强制置为 `RHI_HANDLE_NULL`（让两个 pass 都退到 `vel_tex = current_color` 的退化路径），**设备仍然丢失**。区分性输入不是它。该临时开关已撤销，工作树干净。
-    ③`rhi_cmd_end_render_pass` 不是共性——只有 TAA 和 DOF 调它，**motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。
-    ④**TAA 的 history 用 `R16G16B16A16_SFLOAT` 而其它 pass 的中间 FBO 多为 `R8G8B8A8_UNORM`**——把它改成 UNORM 后设备**仍然丢失**，所以「浮点中间目标在 D3D12 上未验证」这条猜测不成立。该改动已撤销。
+    ②**`taa_velocity`（前向 MRT 速度附件）**——强制置为 `RHI_HANDLE_NULL` 让 TAA 走 `vel_tex = current_color` 退化路径，**并且带 `BREAK_MB=0`** 以排除 MB 自己的致命性，设备**仍然丢失**。排除。临时开关已撤销。
+    ③**TAA history 的 `R16G16B16A16_SFLOAT`**——改成 `R8G8B8A8_UNORM`、同样带 `BREAK_MB=0` 后**仍然丢失**。（第一次测它时 MB 还开着，那次结论无效；重测后才成立。）排除。改动已撤销。
+    ④`rhi_cmd_end_render_pass` 不是共性——只有 TAA 和 DOF 调它，**motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。
+    ⑤**「深度绑在非 0 号槽位」不是原因**——TAA 把深度绑在 unit 2、MB 在 unit 1，而存活的 `contact_shadow` 绑在 unit 0，看似是唯一区分点；把 `contact_shadow` 的两个输入对调（深度改到 unit 1）后**依然不丢**。排除。已撤销。
+    ⑥两个 pass 的 **RHI 调用序列形状相同**（`fbo_bind → bind_pipeline → bind_textures_multi → 若干 set_uniform → draw`，与存活的 pass 逐项对照），差异不在调用形状。
   - **前提也核实过，没有建在未测的假设上**：在「TAA+MB 关」的**成功**配置里，`contact_shadow`、`lens_flare`、`lens_effects` 三者都正常初始化并在跑，且**同样采样 `scene_depth`**——设备依然不丢。所以这三个（进而「采样场景深度」）**不是**触发条件。`dof`/`ssr`/`ssgi` 默认就是关的，不构成证据。
-  - **仍未定位**。已确认的事实：TAA（在 D3D12 上经 `combined_aa` 的 fallback 链）与 motion blur **各自单独**就会让 demo 丢设备，而上述三个 pass 单独不触发。四条假设已排除（RT/SRV 同帧撞车、`taa_velocity`、浮点 history、`end_render_pass`）。剩下的差异尚未逐个试过——其中 TAA 独有而其它 pass 没有的是 **history ping-pong**（同一对 FBO 交替读写），MB 则没有，所以 ping-pong 也未必是答案；更可能的是两者**各自**的调用序列里某个尚未被单独验证的步骤。
-- **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，RTX 4060 上约 30 帧后设备丢失**。这是本轮最重要的、也是最需要如实说明的结果：
+  - **仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。**在定位之前不应把这两个 pass 留在 demo 默认开启的链路上**——单测绿只说明每个 pass 单独正确。
+- **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，D3D12 在**第一帧**就丢设备**。这是本轮最重要的、也是最需要如实说明的结果：
   ```
-  [UI] Closest pair: 11-12 dist=0.4 ...        <- 正常模拟
+  [INFO ] main.c:8635 PASSMARK before taa_resolve frame 1
   ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0001
   ERROR main.c:6320 frame_begin returned NULL (device lost?) — exiting demo loop
   ```
+  **插桩定位（R630）**：在 demo 的 `taa_resolve` 与 `motion_blur_apply` 调用前各打一个 pass 标记。结果是**两者各自都在第 1 帧、紧接自己的 draw 之后丢设备**（分别用 `BREAK_MB=0` 与 `BREAK_TAA=0` 单独验证）。**这一条同时更正了先前「约 30 帧后」的表述**——那是用 UI 行数估的，而 UI 行不是每帧一行，所以严重性被我低估了：真实情况是第一帧就死。探针已全部撤销，工作树干净。
+  **DRED 给不出答案**：demo 启用 DRED 且在设备丢失时会 dump（`rhi_d3d12_dred_enable` / `rhi_d3d12_dred_dump`），但这次输出**完全为空**——没有 page fault，也没有 breadcrumb。这与仓库早前记录一致（「从来没有一次失败的提交」）：设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点，**DRED 无法命名具体命令**。
   `BREAK_FRAMES=30/60/120` 三档都在同一位置丢失；**单独关掉 SSGI / DOF / SHARPEN / BLOOM 任何一个都不能避免**；`BREAK_FRAMES=30` 与 `120` 丢在同一处，说明不是帧数累积。WARP 上的表现与硬件不同（未见同一消息），但这条记录受限于当轮的 shell 引号问题，**不够干净，不能当结论**。
   - **这不是「新引入的 bug」也不是「早就坏了」——是第一次变得可达**：R611 判定「硬件干净」时，这 10 个后处理**一个都没有 sidecar**，管线建不出来、`ready = false`、`apply()` 第一行就返回，整条后处理链在 D3D12 上根本没执行过。R619–R627 让它第一次真的跑 GPU 工作，于是一直潜伏在下面的东西露了出来。
   - **定位进展（方法上先纠正了一个错误度量）**：第一轮二分只看「有没有 device removed」，结论是「四个全关才不丢」。**那个结论不可信**——不同配置运行到死亡的时刻不同，跑得更久的配置可能只是越过了比较窗口。改用「跑到第几行 UI + 耗时」作度量后结论反转为：
