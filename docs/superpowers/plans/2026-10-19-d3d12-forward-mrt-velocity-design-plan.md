@@ -997,6 +997,24 @@ the suite red at the shadowed pixel with (39,79,20) -- which is what
 `(61,120,30) -> (35,70,19)` becomes when the 0.4 factor becomes 0.5. Restored
 afterwards.
 
+**Then the same suite was run on the RTX 4060 instead of WARP, and that found
+a real fragility in the assertions.** Terrain's shadowed blue reads back 18,
+not 19. It is not a shader defect: the analytic value is 18.52, i.e. 0.02
+above a byte rounding boundary, and the chain contains `sin(10)*sin(20)`, so
+fp32 argument reduction alone decides which side it lands on. Every one of
+these three expected triples has at least one channel inside 0.08 of a
+boundary -- terrain 60.57 and 18.52, water 16.575, skybox 52.44 -- because
+they were all picked to land on round byte values. `warp_expect_rgba` now
+takes a per-channel tolerance and all three colour assertions pass 1. The
+velocity assertions stay exact, because 0.0 is a literal and has no boundary
+to fall across. The reverse check still fires under that bound: 0.4 -> 0.5
+moves red by 4 and green by 9.
+
+Hardware result after the fix: **16/17**. The one failure is
+`warp_device_identity_is_honest`, which asserts the adapter *is* WARP and is
+therefore supposed to fail when someone unsets `ENGINE_D3D12_WARP`. This is
+the first time the D3D12 pixel proofs have run on real silicon.
+
 Two arithmetic errors were in the *test comments* (the assertions were always
 right): terrain's `pattern` is -0.01490 not -0.02498, and skybox's
 `horizon_fog` is 0.0755 not 0 -- where the sky's dominant red contribution

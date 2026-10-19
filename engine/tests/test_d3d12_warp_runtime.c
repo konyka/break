@@ -1786,17 +1786,38 @@ static const float WARP_IDENTITY[16] = {
 };
 
 /* Prints the byte actually read next to the one expected; ASSERT_EQ reports
- * only the expressions, which is useless for an 8-bit value. */
+ * only the expressions, which is useless for an 8-bit value.
+ *
+ * `tol` is a per-channel LSB tolerance, and it is 1 for every colour
+ * assertion below. That is not slack for its own sake: each of these
+ * expected triples was chosen so the pipeline collapses to one colour, and
+ * every one of them lands at least one channel within 0.08 of a byte
+ * rounding boundary -- terrain 18.52 and 60.57, water 16.575, skybox
+ * 52.44. WARP and the RTX 4060 therefore disagree by one LSB on terrain's
+ * shadowed blue (19 vs 18) while agreeing everywhere else, and that is fp32
+ * `sin`/`exp` argument reduction, not a defect. Pinning one adapter's
+ * transcendental result as the contract would make this suite fail on
+ * hardware; a +-1 per-channel bound still catches any mutation worth
+ * catching -- flipping terrain's shadow factor 0.4 -> 0.5 moves red by 4 and
+ * green by 9. The velocity assertions below stay exact: 0.0 is a literal,
+ * so it has no boundary to fall across. */
 static int warp_expect_rgba(const unsigned char *px, int count,
-                            int r, int g, int b, int a, const char *what)
+                            int r, int g, int b, int a, int tol,
+                            const char *what)
 {
-    int i;
+    int i, ch;
+    const int want[4] = { r, g, b, a };
     for (i = 0; i < count * 4; i += 4) {
-        if (px[i] == (unsigned char)r && px[i+1] == (unsigned char)g &&
-            px[i+2] == (unsigned char)b && px[i+3] == (unsigned char)a)
-            continue;
-        printf("FAIL: %s pixel %d = (%u,%u,%u,%u), expected (%d,%d,%d,%d)\n",
-               what, i / 4, px[i], px[i+1], px[i+2], px[i+3], r, g, b, a);
+        int bad = 0;
+        for (ch = 0; ch < 4; ++ch) {
+            int d = (int)px[i + ch] - want[ch];
+            if (d < 0) d = -d;
+            if (d > tol) bad = 1;
+        }
+        if (!bad) continue;
+        printf("FAIL: %s pixel %d = (%u,%u,%u,%u), expected (%d,%d,%d,%d) +-%d\n",
+               what, i / 4, px[i], px[i+1], px[i+2], px[i+3],
+               r, g, b, a, tol);
         return 0;
     }
     return 1;
@@ -1910,7 +1931,7 @@ TEST(skybox_sidecar_scatters_an_exact_constant_sky) {
 
     memset(rt0, 0, sizeof(rt0));
     ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
-    ASSERT_TRUE(warp_expect_rgba(rt0, 64, 52, 35, 23, 255, "skybox RT0"));
+    ASSERT_TRUE(warp_expect_rgba(rt0, 64, 52, 35, 23, 255, 1, "skybox RT0"));
 
     memset(rt1, 0, sizeof(rt1));
     ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
@@ -2048,7 +2069,8 @@ TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact) {
                                      draw == 0 ? 17 : 16,
                                      draw == 0 ? 120 : 113,
                                      draw == 0 ? 115 : 108,
-                                     0, draw == 0 ? "water RT0 above" : "water RT0 below"));
+                                     0, 1,
+                                     draw == 0 ? "water RT0 above" : "water RT0 below"));
 
         memset(rt1, 0, sizeof(rt1));
         ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
@@ -2076,8 +2098,17 @@ TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact) {
  *   u_water_y = -100 -> foam 0 and no caustics; fog_dist < 40 -> fog 0
  *   diff = dot((0,1,0), -u_light_dir) = 0.808122, spec 0 (rock_w = 0)
  *
- *   lit      = albedo * (ambient + light_color * 0.808122)      -> (61,120,30)
- *   shadowed = albedo * (ambient + light_color * 0.808122*0.4)  -> (35, 70,19)
+ *   lit      = albedo * (ambient + light_color * 0.808122)
+ *              -> (60.57, 119.76, 30.21) -> bytes (61,120,30)
+ *   shadowed = albedo * (ambient + light_color * 0.808122*0.4)
+ *              -> (35.21, 70.41, 18.52) -> bytes (35,70,19)
+ *
+ * Those are the bytes WARP produces. The hardware adapter produces 18 for
+ * the shadowed blue: 18.52 is 0.02 above the rounding boundary and
+ * sin(10)*sin(20) is the one transcendental in the chain, so this is fp32
+ * argument reduction and not a defect. Hence the +-1 tolerance in
+ * warp_expect_rgba, which is also why the lit red (60.57) is not treated as
+ * special -- it is 0.07 from its boundary and just happens to agree.
  *
  * The shadowed triple comes from the SAME uniforms with a black 4x4 shadow
  * atlas instead of a white one, which is the only thing that changes: the
@@ -2226,7 +2257,8 @@ TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas) {
                                      draw == 1 ? 61 : 35,
                                      draw == 1 ? 120 : 70,
                                      draw == 1 ? 30 : 19,
-                                     255, draw == 1 ? "terrain RT0 lit" : "terrain RT0 shadowed"));
+                                     255, 1,
+                                     draw == 1 ? "terrain RT0 lit" : "terrain RT0 shadowed"));
 
         memset(rt1, 0, sizeof(rt1));
         ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
