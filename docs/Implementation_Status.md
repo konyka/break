@@ -243,7 +243,13 @@
   - 两帧：帧 0 `first_frame = 1` → 时序块整段跳过、棋盘格**原样**通过（这是对照帧，证明帧 1 的 115/141 真的是混合的结果）；帧 1 走混合。反向验证：把 `lerp(...)` 换成直接赋历史色，帧 1 第 0 像素读回 **(128,128,128)** 而不是 115。
   - demo 上 `TAA: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA** 六个。
   - 门控（WARP **27/27**、硬件 26/27、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
-- **剩余待办的后处理**：`ssgi`（2 纹理，**且有两个 pass**，比其它多一处接线）。多纹理绑定与深度约定现在都已就绪，只差 frag sidecar。
+- **R627：`ssgi` 上 D3D12（两个 pass）——至此 demo 默认开启的后处理全部到位**。`ssgi_hlsl.frag`（16 抽半球采样）与 `ssgi_blur_hlsl.frag`（9 抽高斯、自合成），共用 `post_hlsl.vert`。demo 上 `SSGI: initialized (320x180, radius=0.50, intensity=0.30)`，且**日志里已无任何 `shader compile` / `shaders not found` 告警**。
+  - **两处各有一个「精确可推」的断言点**：①gather pass 深度处处 1.0 → 着色器返回 `(0,0,0,1)`，与其它一切无关，逐像素精确断言；②blur pass 用**纯色 GI 缓冲**——九个权重之和 `0.0162*2 + 0.0540*2 + 0.1218*2 + 0.1960*2 + 0.2240 = 1.0000` 恰好为 1，且每次采样都落在精确纹理中心（纹素步长的整数倍），所以纯色的 9 抽和就是它本身，输出精确等于 `scene + gi`。这证明了模糊确实跑了、`u_direction` 确实送到了、两张纹理都绑上了，而答案**不依赖采样点如何摆放**。
+  - gather pass 的 `u_ssgi_proj` 在 GLSL 里声明、`ssgi_apply` 也会写，但**着色器函数体从不读它**。仍然按 offset 64 发布 marker，这样引擎的写入不会被静默丢弃；测试钉住这个偏移。
+  - push 块把两个 mat4 放最前，四个 float 跟在后面（GLSL 声明顺序会把 `u_ssgi_radius` 放最前、第一个矩阵被推到 16，白花 4 个 DWORD）。
+  - 反向验证：把中心权重 0.2240 改成 0.5000，blur 像素 0 读回 **26** 而不是 20。
+  - 门控（WARP **31/31**、硬件 30/31、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **D3D12 后处理小结**：`ColorGrade`/`LensEffects`/`FXAA`/`DOF`/`SSR`/`TAA`/`MotionBlur`/`ContactShadow`/`LensFlare`/`SSGI` 共 **10 个**，demo 默认开启的**全部**已可用。其中 `LensFlare` 与 `ColorGrade` 的测试是真正推导像素的；`SSR`/`MotionBlur`/`ContactShadow` 三个的测试**只钉接线不钉控制流**（反向验证证明它们的分支不可单独观测），这一点已在各自条目里如实写明。
 - **R626：`lens_flare` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 顺序一致 R550-A）。8 个 float、无矩阵，push 块只有 32 字节，是后处理族里最小的。demo 上 `LensFlare: initialized (640x360, intensity=0.50)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow / LensFlare** 九个。**至此默认开启的后处理全部到位。**
   - **这是第一个真正「推导像素」而不是只钉接线的后处理测试**。lens_flare 是 uv 的闭式函数：径向星芒 + 两道条纹 + 由 `depth > 0.99` 门控的鬼影 + 光晕，叠加到场景色上。没有步进、没有 early-out、没有反馈，所以 64 个像素全部可算：场景取 `(col*31, 0, 0)` 竖条纹、深度处处 1.0（鬼影恒成立）、光照 (0.5,0.5)、光色 (1,1,1)、强度 0.375，输出 `(scene_r + flare, flare, flare)`。
   - **强度是搜出来的而不是挑的**：0.375 处最接近取整边界的余量是 **0.007**，而 1.0 处只有 0.001——都太紧，不能精确断言，所以比较用 **±1**（与 R620 的 DOF 模糊同一处理）。±1 仍然抓得住结构性问题，因为整张表跨越 29..254。

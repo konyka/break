@@ -2010,6 +2010,200 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * the actual output rather than only the wiring: swapping t0 and t1, or
  * dropping the ghost, or changing the intensity all move specific pixels.
  */
+/* R627: SSGI on D3D12 -- both passes.
+ *
+ * SSGI is the one post pass with two pipelines, so this exercises two
+ * sidecars: ssgi_hlsl.frag (the 16-tap hemisphere gather) and
+ * ssgi_blur_hlsl.frag (the 9-tap Gaussian that self-composites). Both share
+ * post_hlsl.vert.
+ *
+ * Both are asserted exactly, and each for a different reason:
+ *
+ *  - gather pass, depth >= 1.0: the shader returns (0,0,0,1) with no
+ *    dependency on anything else. That pins the branch and both texture
+ *    registers without touching the 16-tap loop, which -- like ssr's march and
+ *    motion_blur's blur -- is not asserted.
+ *  - blur pass with a solid GI buffer: the nine weights sum to exactly
+ *    0.0162*2 + 0.0540*2 + 0.1218*2 + 0.1960*2 + 0.2240 = 1.0000, and every
+ *    tap lands on an exact texel centre (integer multiples of the texel step),
+ *    so the 9-tap sum of a constant is that constant and the output is
+ *    scene + gi exactly. That proves the blur runs, that u_direction reaches
+ *    the shader, and that both textures are bound -- without the answer
+ *    depending on how the taps were placed.
+ *
+ * The gather's u_ssgi_proj is declared in the GLSL and written by
+ * ssgi_apply, but never read by the shader body. It is published as a marker
+ * at offset 64 anyway so the engine's write is not silently dropped; the test
+ * pins that.
+ */
+TEST(ssgi_gather_early_out_and_blur_pass_through_are_exact) {
+    static unsigned char scene[8 * 8 * 4];
+    static unsigned char gi[8 * 8 * 4];
+    static float depth[8 * 8];
+    static float sky[8 * 8];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture dtex, skytex, ctex, gtex;
+    RHITexture pair[2];
+    RHIShader vs, fs_g, fs_b;
+    RHIPipeline pg, pb;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const gnames[6] = {
+        "u_ssgi_inv_proj", "u_ssgi_proj", "u_ssgi_radius",
+        "u_ssgi_intensity", "u_ssgi_sw", "u_ssgi_sh"
+    };
+    static const i32 gwant[6] = { 0, 64, 128, 132, 136, 140 };
+    int i;
+
+    for (i = 0; i < 64; ++i) {
+        scene[i * 4 + 0] = (unsigned char)((i & 7) * 31u);
+        scene[i * 4 + 1] = 40u;
+        scene[i * 4 + 2] = 70u;
+        scene[i * 4 + 3] = 255u;
+        gi[i * 4 + 0] = 20u;
+        gi[i * 4 + 1] = 110u;
+        gi[i * 4 + 2] = 5u;
+        gi[i * 4 + 3] = 255u;
+        depth[i] = 0.5f;
+        sky[i] = 1.0f;
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs_g = rhi_shader_create(g_dev, "ssgi_hlsl.frag", 0, true);
+    fs_b = rhi_shader_create(g_dev, "ssgi_blur_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs_g));
+    ASSERT_TRUE(rhi_handle_valid(fs_b));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs_g;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pg = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pg));
+    for (i = 0; i < 6; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pg, gnames[i]);
+        if (got != gwant[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", gnames[i],
+                   (int)got, (int)gwant[i]);
+        ASSERT_EQ(got, gwant[i]);
+    }
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs_b;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pb = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pb));
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pb, "u_direction"), 0);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth;  dtex   = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    tdesc.data = sky;    skytex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(skytex));
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = scene;  ctex   = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ctex));
+    tdesc.data = gi;     gtex   = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(gtex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    /* Gather pass: depth 1.0 everywhere -> (0,0,0,1), exactly. */
+    pair[0] = skytex; pair[1] = ctex;
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 1.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+    rhi_cmd_bind_pipeline(cmd, pg);
+    rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < 64; ++i) {
+        if (px[i * 4] || px[i * 4 + 1] || px[i * 4 + 2]) {
+            printf("FAIL: ssgi gather pixel %d = (%u,%u,%u), expected "
+                   "(0,0,0) from the depth >= 1.0 early-out\n", i,
+                   (unsigned)px[i * 4], (unsigned)px[i * 4 + 1],
+                   (unsigned)px[i * 4 + 2]);
+            break;
+        }
+    }
+    for (i = 0; i < 64; ++i) {
+        ASSERT_EQ(px[i * 4], 0u);
+        ASSERT_EQ(px[i * 4 + 1], 0u);
+        ASSERT_EQ(px[i * 4 + 2], 0u);
+        ASSERT_EQ(px[i * 4 + 3], 255u);
+    }
+
+    /* Blur pass: solid GI, so the nine weights sum to 1 and the output is
+     * scene + gi. */
+    pair[0] = gtex; pair[1] = ctex;
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 1.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+    rhi_cmd_bind_pipeline(cmd, pb);
+    rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+    rhi_cmd_set_uniform_vec2(cmd, 0, 1.0f, 0.0f);   /* u_direction */
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < 64; ++i) {
+        int ch;
+        for (ch = 0; ch < 3; ++ch) {
+            int exp = (int)scene[i * 4 + ch] + (int)gi[i * 4 + ch];
+            int got = px[i * 4 + ch];
+            int d = got - exp;
+            if (d < 0) d = -d;
+            if (d > 1) {
+                printf("FAIL: ssgi blur pixel %d ch%d = %d, expected %d "
+                       "(scene + gi) +- 1\n", i, ch, got, exp);
+            }
+            ASSERT_TRUE(d <= 1);
+        }
+        ASSERT_EQ(px[i * 4 + 3], 255u);
+    }
+
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_texture_destroy(g_dev, skytex);
+    rhi_texture_destroy(g_dev, ctex);
+    rhi_texture_destroy(g_dev, gtex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pg);
+    rhi_pipeline_destroy(g_dev, pb);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs_g);
+    rhi_shader_destroy(g_dev, fs_b);
+}
+
 TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table) {
     static const unsigned char want[8][8][4] = {
         {{ 29, 29, 29,255}, { 63, 32, 32,255}, { 97, 35, 35,255}, {130, 37, 37,255}, {161, 37, 37,255}, {190, 35, 35,255}, {218, 32, 32,255}, {246, 29, 29,255}},
@@ -4460,6 +4654,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(ssgi_gather_early_out_and_blur_pass_through_are_exact);
     RUN_TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table);
     RUN_TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march);
     RUN_TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs);
