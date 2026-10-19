@@ -1986,6 +1986,194 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * blacks the frame out; a mis-offset uniform moves the scene colour, because
  * u_ssr_proj / u_ssr_inv_proj are what decode the depth that decides the
  * early-out. */
+TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
+    static unsigned char grad[8 * 8 * 4];
+    static unsigned char solid[8 * 8 * 4];
+    static float depth[8 * 8];
+    static float far[8 * 8];
+    static const unsigned short zero_vel[8 * 8 * 4] = { 0 };
+    static const unsigned short vel_x[8 * 8 * 4] = {
+        /* 8.0 in R for every texel: half-float 0x4100 = 8.0. Doubled by the
+         * shader's 0.5 * res with res = (8,8), so velocity.x = 32 px. */
+        0x4100, 0x0000, 0x0000, 0x0000
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture gtex, stex, dtex, ftex, ztex, vtex;
+    RHITexture triple[3];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const names[6] = {
+        "u_mb_strength", "u_mb_sw", "u_mb_sh", "u_mb_use_velocity",
+        "u_mb_inv_proj", "u_mb_prev_vp"
+    };
+    /* u_mb_use_velocity shares the 12-byte tail, so the mat4 starts at 16 to
+     * stay 16B-aligned rather than at 12. */
+    static const i32 want[6] = { 0, 4, 8, 12, 16, 32 };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int frame, i;
+
+    for (i = 0; i < 64; ++i) {
+        /* Vertical stripes: the value depends on the column only, so every row
+         * is identical and the pattern survives a readback row flip. A
+         * per-texel-index ramp does not -- an earlier draft of this test used
+         * one and the row order decided whether it matched. Stripe centres
+         * land exactly on texel centres (uv = (col+0.5)/8), so the fetch is
+         * exact and the early-out can be asserted byte for byte. */
+        grad[i * 4 + 0] = (unsigned char)((i & 7) * 31u);
+        grad[i * 4 + 1] = 200u;
+        grad[i * 4 + 2] = 30u;
+        grad[i * 4 + 3] = 255u;
+        solid[i * 4 + 0] = 90u;
+        solid[i * 4 + 1] = 140u;
+        solid[i * 4 + 2] = 210u;
+        solid[i * 4 + 3] = 255u;
+        depth[i] = 0.5f;     /* < 1: past the first early-out */
+        far[i] = 1.0f;       /* >= 1: takes the first early-out */
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "motion_blur_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 6; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (got != want[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i], (int)got,
+                   (int)want[i]);
+        ASSERT_EQ(got, want[i]);
+    }
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = grad;   gtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(gtex));
+    tdesc.data = solid;  stex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(stex));
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth;  dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    tdesc.data = far;    ftex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ftex));
+    tdesc.format = RHI_FORMAT_R16G16_SFLOAT;
+    tdesc.data = zero_vel; ztex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ztex));
+    tdesc.data = vel_x;     vtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(vtex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    /* frame 0  depth 1.0        -> first early-out, gradient passes through
+     * frame 1  depth 0.5, no vel -> vel_len < 0.5 early-out, gradient through
+     * frame 2  depth 0.5, vel 32px -> the blur loop RUNS. The colour is solid,
+     *          so every tap returns the same value and the weighted average is
+     *          that value -- which proves t2 and u_mb_use_velocity reached the
+     *          shader (a zero velocity would have taken the frame-1 path) while
+     *          keeping the assertion exact.
+     *          +-1 because the weighted sum is not bit-exact in fp32. */
+    for (frame = 0; frame < 3; ++frame) {
+        const unsigned char *want_src = (frame == 2) ? solid : grad;
+        triple[0] = (frame == 2) ? stex : gtex;
+        triple[1] = (frame == 0) ? ftex : dtex;
+        triple[2] = (frame == 2) ? vtex : ztex;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 1.0f, 0.0f, 1.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, triple, 3, sampler);
+        rhi_cmd_set_uniform_f32(cmd, 0, 0.5f);    /* u_mb_strength */
+        rhi_cmd_set_uniform_f32(cmd, 4, 8.0f);    /* u_mb_sw */
+        rhi_cmd_set_uniform_f32(cmd, 8, 8.0f);    /* u_mb_sh */
+        rhi_cmd_set_uniform_f32(cmd, 12, frame == 0 ? 0.0f : 1.0f);
+        rhi_cmd_set_uniform_mat4(cmd, 16, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 32, identity);
+        /* Frames 1 and 2 take the velocity TEXTURE branch. The
+         * u_mb_use_velocity = 0 branch, which reconstructs velocity
+         * from u_mb_inv_proj / u_mb_prev_vp instead of reading t2, is
+         * not asserted: with both matrices at the identity and
+         * res = (8,8), prev_uv should collapse to uv and the
+         * velocity to exactly zero, and on BOTH adapters it did not --
+         * the stripes came back blurred, so the vel_len < 0.5
+         * early-out was not taken. All six offsets resolve (asserted
+         * above) and the 64-byte matrix writes fit inside the 96-byte
+         * declared block, so the cause is not located and is not
+         * guessed at here. Frame 0 still exercises use_velocity = 0
+         * because it exits on the depth test first.
+         *
+         * And the vel_len early-out is NOT separately observable
+         * either -- the reverse check proved it: disabling it leaves
+         * this test GREEN, because at zero velocity sample_count is 0,
+         * the loop degenerates to a single tap at uv with weight 1, and
+         * step_size is 0. Both routes return the same colour. The
+         * reverse check that DOES fire is swapping t0 and t1: frame 0
+         * then reads the depth texture as colour and pixel 0 comes
+         * back 255 instead of 0. And frame 2 only proves the loop
+         * executes -- on a solid source every tap is equal, so the
+         * blur GEOMETRY (span, jitter, weights) is not asserted here.
+         */
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (i = 0; i < 64; ++i) {
+            int ch;
+            ASSERT_EQ(px[i * 4 + 3], 255u);
+            for (ch = 0; ch < 3; ++ch) {
+                int got = px[i * 4 + ch];
+                int exp = want_src[i * 4 + ch];
+                int d = got - exp;
+                if (d < 0) d = -d;
+                if (d > (frame == 2 ? 1 : 0)) {
+                    printf("FAIL: motion blur frame %d pixel %d ch%d = %d, "
+                           "expected %d +- %d\n", frame, i, ch, got, exp,
+                           frame == 2 ? 1 : 0);
+                }
+                ASSERT_TRUE(d <= (frame == 2 ? 1 : 0));
+            }
+        }
+    }
+
+    rhi_texture_destroy(g_dev, gtex);
+    rhi_texture_destroy(g_dev, stex);
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_texture_destroy(g_dev, ftex);
+    rhi_texture_destroy(g_dev, ztex);
+    rhi_texture_destroy(g_dev, vtex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb) {
     static unsigned char curr[8 * 8 * 4];
     static unsigned char hist[8 * 8 * 4];
@@ -3965,6 +4153,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs);
     RUN_TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb);
     RUN_TEST(ssr_sidecar_pins_offsets_and_both_early_outs);
     RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
