@@ -403,6 +403,44 @@ by anything above; the obvious next check is whether RT1 is written at all
 versus holding its post-clear contents, and that needs the pixel dump this
 round did not manage to land cleanly.
 
+### What the RT1 attachment actually does on hardware
+
+Chasing the last open question — is RT1 written at all, or is it holding
+post-clear contents? — by making the fragment shader write **known
+constants** and reading the attachment back as raw binary16 on the RTX 4060:
+
+| Fragment shader writes | RT1 reads back | verdict |
+| --- | --- | --- |
+| `float2(0.25, -0.5)` | `3400 b800` on every pixel | **RT1 is bound, written and read back exactly** |
+| `velocity` from the varying, `u_prev_vp` = identity | `7fff 7fff` | NaN, not zero |
+| VS emits a **constant** varying `(0.75, 0.5)` | `3a00 3800` exactly | VS->PS varying link is fine |
+| VS emits `curr_clip.xy / curr_clip.w` | `baff baff`, `b8ff baff`, ... | garbage |
+| VS emits `curr_clip.wx` | first channel `3c00` = **1.0**, second `-128`, `-255`, ... | **w is exactly right, x is garbage** |
+
+That last row is the whole remaining problem, and it is a small one. The
+push constants **do** reach the vertex stage — `curr_clip.w` reads back as
+exactly `1.0`, which is only true if model, view and proj are the identity
+matrices the test wrote. A *constant* varying survives the trip. A varying
+carrying a computed `curr_clip.x` does not.
+
+So the open item is no longer "does RT1 work" (it does) or "do the uniforms
+reach the VS" (they do). It is: **a non-constant vertex output does not
+survive to the pixel stage on this path**, while the same varying with a
+constant value does. Candidates, in the order they are worth checking:
+
+1. `float2` at TEXCOORD3 as the fifth PS input — the input-layout
+   reflection only describes the VS *input*; nothing checks the VS *output*
+   against the PS *input*, and the MRT PS has five inputs where its sibling
+   has four. Worth testing `float4` or moving the varying.
+2. Register pressure / interpolator count on SM 6.0 for this signature.
+3. The oversized test triangle: `curr_clip.x` spans -1..3 at the vertices,
+   so the interpolant genuinely leaves [-1,1] before the divide. That would
+   explain large magnitudes, but **not** why `curr_clip.wx` shows w exactly
+   right in the same interpolant.
+
+Nothing here is shipped. The test stays out until the varying is explained,
+because a pixel proof that passes for the wrong reason is worse than none.
+
 ### Ruled out next: duplicate descriptor tables
 
 The strongest-looking theory left was the per-stage table duplication. The
