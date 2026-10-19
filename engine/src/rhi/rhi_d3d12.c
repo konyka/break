@@ -1258,6 +1258,9 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     }
     g_current_device = dev;
     dev->frame_partial_active = false;
+    /* R629 diagnostic: bump before anything in this frame can bind a resource,
+     * so every stamp written below belongs to the frame that reads it. */
+    ctx->debug_frame++;
     if (ctx->device_lost) { /* sticky latch: quiet fail-fast, no spam */
         rhi_device_set_lifecycle_result(dev, RHI_RESULT_DEVICE_LOST);
         rhi_frame_owner_release(dev);
@@ -3881,6 +3884,9 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
         td->state = read_state;
     }
     gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    /* R629 diagnostic: remember that this frame reads the texture as a
+     * resource, so a later render-target bind can notice the alias. */
+    td->srv_ref_frame = ctx->debug_frame;
     if (pd->is_compute)
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, root_param, gpu);
     else
@@ -4839,6 +4845,23 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
     memset(fbo, 0, sizeof(*fbo));
 }
+/* R629 diagnostic. A D3D12 resource referenced as a render target and as a
+ * shader resource in the same frame is undefined, and it is the shape that
+ * loses a device -- but nothing reported it, so a scene that triggers it just
+ * dies with DXGI_ERROR_DEVICE_REMOVED and no explanation. This warns the
+ * moment the alias is created, naming the texture and both roles. It is meant
+ * to be silent: every warning here is a bug, not a diagnostic run. */
+static void rhi_d3d12_warn_rt_srv_alias(RHI_D3D12Context *ctx,
+                                         const RHI_D3D12Texture *tex,
+                                         const char *role) {
+    if (ctx == NULL || tex == NULL) return;
+    if (tex->srv_ref_frame == 0u || tex->srv_ref_frame != ctx->debug_frame)
+        return;
+    LOG_WARN("D3D12: %ux%u texture was read as a shader resource this frame "
+             "and is now being bound as %s -- a resource cannot be both in the "
+             "same frame", tex->width, tex->height, role);
+}
+
 static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
                                     bool load) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
@@ -4857,9 +4880,11 @@ static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
     if (color == NULL || depth == NULL) return;
     /* Transitions declare the CPU-tracked state (td->state), the same rule
      * the texture upload / readback one-shots follow. */
+    rhi_d3d12_warn_rt_srv_alias(ctx, color, "RENDER_TARGET");
     rhi_d3d12_transition(list, color->resource, color->state,
                          D3D12_RESOURCE_STATE_RENDER_TARGET);
     color->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
     rhi_d3d12_transition(list, depth->resource, depth->state,
                          D3D12_RESOURCE_STATE_DEPTH_WRITE);
     depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
@@ -5087,11 +5112,13 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
         g_current_device, fbo->depth_tex, RHI_RES_TEXTURE);
     if (depth == NULL) return;
     for (i = 0u; i < md->attachment_count; ++i) {
+        rhi_d3d12_warn_rt_srv_alias(ctx, colors[i], "RENDER_TARGET");
         rhi_d3d12_transition(list, colors[i]->resource, colors[i]->state,
                              D3D12_RESOURCE_STATE_RENDER_TARGET);
         colors[i]->state = D3D12_RESOURCE_STATE_RENDER_TARGET;
         rtvs[i] = rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, md->rtv_slots[i]);
     }
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
     rhi_d3d12_transition(list, depth->resource, depth->state,
                          D3D12_RESOURCE_STATE_DEPTH_WRITE);
     depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;

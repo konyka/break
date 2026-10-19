@@ -250,7 +250,12 @@
   - 反向验证：把中心权重 0.2240 改成 0.5000，blur 像素 0 读回 **26** 而不是 20。
   - 门控（WARP **31/31**、硬件 30/31、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **D3D12 后处理小结**：`ColorGrade`/`LensEffects`/`FXAA`/`DOF`/`SSR`/`TAA`/`MotionBlur`/`ContactShadow`/`LensFlare`/`SSGI` 共 **10 个**，demo 默认开启的**全部**已可用。其中 `LensFlare` 与 `ColorGrade` 的测试是真正推导像素的；`SSR`/`MotionBlur`/`ContactShadow` 三个的测试**只钉接线不钉控制流**（反向验证证明它们的分支不可单独观测），这一点已在各自条目里如实写明。
-- **⚠️⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，RTX 4060 上约 30 帧后设备丢失**。这是本轮最重要的、也是最需要如实说明的结果：
+  - **R629：加了一条常驻诊断，并用它把一整类原因干净地排除掉**。后端新增 `ctx->debug_frame`（每帧 `rhi_frame_begin` 自增）与 `RHI_D3D12Texture.srv_ref_frame`（每次 `rhi_cmd_bind_texture` 盖上当前帧号）；`rhi_d3d12_fbo_bind_impl` 与 `rhi_d3d12_mrt_fbo_bind_impl` 在把纹理转为 RENDER_TARGET / DEPTH_WRITE **之前**检查该标记，若同一帧内既被当作着色器资源读过、又要成为渲染目标，就报出尺寸与两个角色。
+    - **诊断本身被证明是活的**：把判定临时改成无条件后，10 帧内出现 **13 条**警告；恢复守卫后一条不出现。所以「没触发」是有效结论，不是死代码。
+    - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。
+  - **本轮试过并排除的其他线索**（记录下来省得重复）：`end_render_pass` 不是共性——只有 TAA 和 DOF 调它，而 **motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。跨帧的速度附件写回读转换已在前一条核对过（MRT 绑定在循环里转回 RENDER_TARGET）。
+  - **仍未定位**。范围收窄到「TAA 与 motion blur 同时开启」这一事实，二者的其它共性（都消费 `taa_velocity` 与 `scene_depth`、都在链上改写 `taa_output`）尚未逐个排除。
+- **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，RTX 4060 上约 30 帧后设备丢失**。这是本轮最重要的、也是最需要如实说明的结果：
   ```
   [UI] Closest pair: 11-12 dist=0.4 ...        <- 正常模拟
   ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0001

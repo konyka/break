@@ -114,6 +114,13 @@ typedef struct RHI_D3D12Context {
     UINT bound_pipeline_compute;
     UINT frame_srv_slots[RHI_D3D12_CBV_SRV_UAV_CAPACITY];
     UINT frame_srv_count;
+    /* R629 diagnostic: bumped once per frame in rhi_frame_begin. A texture
+     * stamps srv_ref_frame when it is bound as a shader resource, and the FBO
+     * bind paths report when the same texture is about to become a render
+     * target in the SAME frame. One resource referenced as an RT and an SRV at
+     * once is undefined and is the shape that loses a D3D12 device; nothing in
+     * the backend reported it before this. */
+    UINT64 debug_frame;
     UINT64 next_fence;
     UINT64 completed_fence;
     UINT64 descriptor_retire_fence;
@@ -181,6 +188,11 @@ typedef struct RHI_D3D12Texture {
      * is a dimension mismatch the shader cannot sample through. */
     UINT array_size;
     D3D12_RESOURCE_STATES state;
+    /* R629 diagnostic: the frame index at which this texture last had an SRV
+     * written into a bound descriptor table. The FBO bind paths warn when a
+     * texture is about to become a render target in the same frame it was
+     * read from as a resource. See ctx->debug_frame. */
+    UINT64 srv_ref_frame;
 } RHI_D3D12Texture;
 
 typedef struct RHI_D3D12Sampler {
