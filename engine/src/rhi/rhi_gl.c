@@ -769,6 +769,11 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL;
+    /* R606: rhi_shader_create_path returns the GLSL file itself on GL — there
+     * are no sidecars. blinn_phong.frag declares ForwardTemporal at
+     * layout(binding = 0), which is what the frame loop publishes. */
+    dev->capabilities.shader_sidecar_paths = false;
+    dev->capabilities.temporal_ubo_binding = 0u;
 
     dev->backend_data = gl;
     dev->width  = w;

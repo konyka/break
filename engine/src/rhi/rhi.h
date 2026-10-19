@@ -142,6 +142,22 @@ typedef struct {
     bool       compute_supported;        /* rhi_cmd_dispatch 路径 */
     bool       indirect_draw_supported;  /* rhi_cmd_draw_*_indirect 族 */
     u32        shader_variant;           /* RHIShaderVariant */
+    /* R606：rhi_shader_create_path 不读源码，而是解析该后端自己的着色器产物。
+     * D3D12 的产物是手写 HLSL 边车（rhi_d3d12_shader_sidecar_name 派生
+     * <base>_hlsl.<ext>，后缀幂等，故 "shaders/blinn_phong_mrt.vert" 解析为
+     * blinn_phong_mrt_hlsl.vert）；GL / Vulkan 的产物就是 GLSL 文件本身。
+     *
+     * 为什么必须独立于 shader_variant：D3D12 从不设置该字段，落回
+     * RHI_SHADER_VARIANT_GLSL(0)，与桌面 GL 完全相同——caps 无法区分二者。
+     */
+    bool       shader_sidecar_paths;
+    /* R606：渲染器逐帧常量块（ForwardTemporal：相机位置 + prev_vp +
+     * prev_model）在 rhi_cmd_bind_uniform_buffer 里应绑到的 binding /
+     * CBV 寄存器号。GL / Vulkan 读 GLSL 的 layout(binding = N)，blinn 家族
+     * 声明 N=0；D3D12 读反射到的 ConstantBuffer 寄存器，而 b0 已被 32BIT_
+     * CONSTANTS 根参数保留给 push 块，同一块因此落在 b1。
+     * 缺省 0 对新后端是正确的 GLSL 约定，不是「未设置」。 */
+    u32        temporal_ubo_binding;
 } RHICapabilities;
 
 #define RHI_DEVICE_NAME_MAX 256u

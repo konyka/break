@@ -117,7 +117,12 @@ RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source,
 /* Path-based siblings. Headless refuses unconditionally — it refuses every
  * shader built from text too — so a readable path is refused exactly like an
  * unreadable one. No file I/O happens here: a backend whose contract is "no
- * GPU, no evidence" must not touch the filesystem on a caller's behalf. */
+ * GPU, no evidence" must not touch the filesystem on a caller's behalf.
+ * R606: there is nothing to derive a sidecar name for, and headless never
+ * constructs a device (both create entry points above return NULL), so it also
+ * never populates RHICapabilities — capabilities.shader_sidecar_paths stays at
+ * its fail-closed default false and temporal_ubo_binding at 0, which is what
+ * test_rhi_capabilities.c's stub-device contract asserts. */
 RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path,
                                  bool is_fragment) {
     (void)dev; (void)path; (void)is_fragment; return RHI_HANDLE_NULL;

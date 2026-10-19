@@ -490,6 +490,10 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *disp
      * SPIR-V/MSL conversion.  Keep renderer source selection in sync with
      * the manifest hashes generated at build time. */
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
+    /* R606: Metal has no sidecars either — rhi_shader_create_path returns the
+     * GLSL file. blinn_phong_vk.vert declares ForwardTemporal at binding 0. */
+    dev->capabilities.shader_sidecar_paths = false;
+    dev->capabilities.temporal_ubo_binding = 0u;
     dev->capabilities.color_sample_counts = color_counts;
     dev->capabilities.depth_sample_counts = depth_counts;
     /* CAMetalLayer drawables cannot be multisampled; MSAA is only possible

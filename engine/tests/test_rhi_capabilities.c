@@ -1145,6 +1145,13 @@ TEST(plan_e_capability_fields_default_closed_on_stub)
     ASSERT_FALSE(caps.compute_supported);
     ASSERT_FALSE(caps.indirect_draw_supported);
     ASSERT_EQ(caps.shader_variant, (u32)RHI_SHADER_VARIANT_GLSL);
+    /* R606: the stub backend resolves no sidecars and has no register layout to
+     * report, so both stay at the fail-closed GLSL defaults. GL, Vulkan, Metal
+     * and headless all report exactly this pair; only D3D12 differs, and only
+     * because it answers rhi_shader_create_path with HLSL sidecars whose
+     * temporal block sits on register b1. */
+    ASSERT_FALSE(caps.shader_sidecar_paths);
+    ASSERT_EQ(caps.temporal_ubo_binding, 0u);
     rhi_test_device_destroy(device);
 }
 

@@ -1,6 +1,6 @@
 # D3D12 FORWARD_MRT velocity / RT1 output — design
 
-Status: steps 1-5 implemented and verified (R600/R605); step 5 pixel proof passes on WARP.
+Status: all five steps implemented and verified (R600/R605/R606).
 Baseline: `d77882e7` (master)
 Backends affected: D3D12 sidecar design; one option changes the cross-backend
 uniform contract.
@@ -685,6 +685,50 @@ Two caveats to carry forward:
 
 Nothing shipped.
 
+### Step 4 closed: the production pipeline goes through the path API
+
+`main.c` could not tell D3D12 from desktop GL: `shader_variant` is `GLSL` on
+both, because D3D12 simply never assigns it. So the branch needed a new
+capability rather than a reinterpretation of an existing one.
+
+- `RHICapabilities.shader_sidecar_paths` — true only where
+  `rhi_shader_create_path` resolves hand-authored sidecars. Set by all four
+  backends that build a device (D3D12 true; GL, Vulkan, Metal false). It is
+  deliberately not folded into `shader_variant`: that field reads back as
+  `RHI_SHADER_VARIANT_GLSL` on D3D12, byte-identical to desktop GL, which is
+  the whole reason the call site could not branch on what it had.
+- `RHICapabilities.temporal_ubo_binding` — where the per-frame
+  `ForwardTemporal` block has to be published: 0 in both GLSL twins
+  (`binding = 0`), 1 in the D3D12 sidecars (`register(b1)`, because `b0` is
+  the push block there). The register number is a fact only the backend
+  knows, so the frame loop forwards it rather than recomputing it.
+
+`render_init` now branches on `caps.shader_sidecar_paths`. The sidecar branch
+asks for `shaders/blinn_phong_mrt.{vert,frag}`, which the idempotent `_hlsl`
+derivation resolves to `blinn_phong_mrt_hlsl.{vert,frag}` -- the MRT pair,
+because `pdesc` declares `mrt_attachment_count = 2`. The GLSL branch is the
+previous read + `shader_inject_define` + create code, moved verbatim. Both
+branches share the existing handle-validity cleanup.
+
+**What this actually changed**: before it, `render_init` aborted on D3D12
+with `Render init failed` -- a GLSL source has no DXIL blob, so
+`rhi_pipeline_create` refused it, and the D3D12 forward path never
+initialised at all. It now initialises:
+
+    [INFO] main.c:429 blinn_phong: backend resolves shader sidecars; loading
+           shaders/blinn_phong_mrt.{vert,frag} as blinn_phong_mrt_hlsl.{vert,frag}
+
+The remaining `D3D12: pipeline needs compiled VS/PS blobs` warnings in the
+demo come from the *other* subsystems -- terrain, clustered, deferred,
+post-processing, skybox, water, IBL, particles, point-shadow -- which are
+GLSL-only and still take the old path. They degrade with their existing
+warnings; no gate covers them. `main.c`'s hot-reload pipeline is the next
+call site in the same shape.
+
+GL and Vulkan are untouched: both golden MAEs are byte-identical (15.60 /
+1.15 and 28.75 / 13.54), and the emitted commands are unchanged because
+`temporal_ubo_binding` evaluates to the same `0u` there.
+
 ### Step 5 closed: the RT1 velocity pixel proof passes
 
 `blinn_phong_mrt_sidecar_writes_velocity_to_rt1` runs the blinn_phong MRT
@@ -722,8 +766,7 @@ precisely the NDC x of pixel 0 in an 8x8 target. Worth remembering as a class
 of bug: a decoder bug in the oracle masquerades as a defect in the thing
 under test.
 
-**Remaining for the plan**: only step 4's migration of `main.c` to the path
-API, which was blocked on this and is now unblocked.
+**The plan is now complete.** See the next entry for step 4.
 
 ### R605 -- fixed, verified, landed
 

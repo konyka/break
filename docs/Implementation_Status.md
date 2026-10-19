@@ -63,6 +63,15 @@
 - **但这两行给出了一个比之前锋利得多的命题**：**blinn_phong 用五参数的根签名能建出来，用三参数的建不出来；而 blit 两种都能建。**这两个 blinn 签名与 blit 唯一的结构差别，就是表从「重复」（两张 SRV + 两张 CBV）变成了「单张」（一张 SRV + 一张 CBV），别的都没动。**所以触发点是「被精简后的参数列表」的性质，而不是 CBV 本身的存在、寄存器号或描述符类型。**
 - **由此得出的下一个实验不需要任何新机制**：**把一个假的第四个描述符表参数加回去**，看 blinn 是否开始能建。能建 → 驱动拒绝的是参数的**个数或相邻关系**，修法在 builder 怎么摆它们；不能建 → 问题在三个参数中**某一个的内容**，逐个变即可。
 - **两条必须带上的告诫**：①本 SDK 的 `D3D12_GRAPHICS_PIPELINE_STATE_DESC` **没有 `NumStaticSamplers` 成员**，PSO 用旧结构而根签名按 **1.1** 序列化——这个组合在本项目从未被跑到，重复表一直遮着它。②重复表可能是「错**且在承重**」：一个没人刻画过的原因，让五参数签名能建而三参数不能。**这是目前最值得挖出来的东西**，而且它可以用二分法回答，不需要靠推理。**什么都没上线。**
+- **方案第 4 步闭了：生产管线走 path API**。`main.c` 此前**分不出 D3D12 和桌面 GL**——两者的 `shader_variant` 都是 `GLSL`（D3D12 干脆不赋值），所以分支需要一个新的能力位，而不是重新解释既有字段：
+- `RHICapabilities.shader_sidecar_paths`：仅在 `rhi_shader_create_path` 会解析手写 sidecar 的后端为真（D3D12 true；GL/VK/Metal false）。**刻意不并入 `shader_variant`**——那个字段在 D3D12 上读回来与桌面 GL 逐字节相同，而这正是原调用点无法分支的原因。
+- `RHICapabilities.temporal_ubo_binding`：每帧 `ForwardTemporal` 块该发布到哪里——两个 GLSL twin 是 `binding = 0`，D3D12 sidecar 是 `register(b1)`（那边 `b0` 是 push 块）。寄存器号只有后端知道，所以帧循环只做转发、不自己重算。
+- `render_init` 现在按 `caps.shader_sidecar_paths` 分支：sidecar 分支请求 `shaders/blinn_phong_mrt.{vert,frag}`，由幂等的 `_hlsl` 派生解析为 `blinn_phong_mrt_hlsl.{vert,frag}`（因为 `pdesc` 声明 `mrt_attachment_count = 2`，要 **MRT** 那一对）；GLSL 分支是原来的 read + `shader_inject_define` + create，逐字保留，两者共用既有的句柄校验清理。
+- **这实际改变了什么**：改之前，D3D12 上 `render_init` 直接 `Render init failed` 退出——GLSL 源没有 DXIL blob，`rhi_pipeline_create` 拒绝它，**D3D12 forward 路径从来没能初始化**。现在能了：
+  `[INFO] main.c:429 blinn_phong: backend resolves shader sidecars; loading shaders/blinn_phong_mrt.{vert,frag} as blinn_phong_mrt_hlsl.{vert,frag}`
+  demo 里剩下的 `D3D12: pipeline needs compiled VS/PS blobs` 来自**其它子系统**（terrain / clustered / deferred / 后处理 / skybox / water / IBL / 粒子 / 点阴影），它们仍是 GLSL-only、走老路径，按各自既有告警降级，没有门覆盖。`main.c` 的热重载管线是同形状的下一个调用点。
+- **GL/VK 未受影响**：两张 golden 的 MAE 逐字节不变（15.60 / 1.15 与 28.75 / 13.54），发出的命令也不变，因为 `temporal_ubo_binding` 在那两个后端求值出来就是原来的 `0u`。
+- **本计划至此全部五步完成。**
 - **方案第 5 步闭了：RT1 velocity 像素证明通过**。`blinn_phong_mrt_sidecar_writes_velocity_to_rt1` 用 8x8 MRT FBO `{R8G8B8A8, R16G16_SFLOAT}` 跑 `blinn_phong_mrt_hlsl` sidecar，**画两次**、RT1 按原始 binary16 回读，断言刻意与朝向无关，所以「通过」是关于速度本身、不是关于视口变换：
 - **Draw A**（单位 `u_prev_vp`）：两通道**精确 `+0.0`**，且是按**原始 16 位**断言的，「近似为零」蒙混不过。
 - **Draw B**（`u_prev_vp` 缩放 (2,1)）：每个像素的 velocity.y **精确为 0**，而 velocity.x 有正有负、且 `|·| <= 1.01`（w 除错了就会露馅）。**一个通道被钉死在硬零、另一个是活的**——这才是逐通道读正确的形状，附件缺失或读成垃圾都做不出来。

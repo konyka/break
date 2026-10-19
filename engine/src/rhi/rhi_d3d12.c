@@ -1149,6 +1149,17 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     dev->capabilities.present_damage_supported = true;
     dev->capabilities.present_buffer_age_supported = true;
     dev->capabilities.feature_bits = rhi_d3d12_probe_feature_bits(ctx);
+    /* R606: D3D12 is the sidecar backend — rhi_shader_create_path resolves the
+     * hand-authored HLSL pair via rhi_d3d12_shader_sidecar_name. shader_variant
+     * is deliberately left at its GLSL default: D3D12 has no GLSL, but claiming
+     * the VK variant would send the renderer looking for *_vk files that do not
+     * exist, and that is what caps.shader_sidecar_paths now answers instead.
+     *
+     * The temporal block rides register b1 because b0 is reserved for the
+     * 32BIT_CONSTANTS root parameter (the push block); see
+     * rhi_d3d12_root_sig_add_bindings and the blinn_phong_hlsl.vert header. */
+    dev->capabilities.shader_sidecar_paths = true;
+    dev->capabilities.temporal_ubo_binding = 1u;
     g_current_device = dev;
     return dev;
 }

@@ -345,6 +345,22 @@ TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv)
         ASSERT_NOT_NULL(strstr(src, "cam_pos[3]"));
         ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo"));
         ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo_write"));
+        /* R606: the production forward pipeline must reach the sidecar
+         * through the path API on a sidecar backend, and it must ask
+         * for the MRT pair -- the pipeline declares two colour
+         * attachments, so the non-MRT sidecar would drop the velocity
+         * output RT1 exists for. The temporal UBO must be bound at the
+         * index the backend reports: a hard 0 is the GLSL binding and a
+         * silent no-op against register b1. */
+        ASSERT_NOT_NULL(strstr(src, "caps.shader_sidecar_paths"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rhi_shader_create_path(rs->device, \"shaders/blinn_phong_mrt.vert\", false)"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rhi_shader_create_path(rs->device, \"shaders/blinn_phong_mrt.frag\", true)"));
+        ASSERT_NOT_NULL(strstr(src,
+            "rs->temporal_ubo_binding = caps.temporal_ubo_binding;"));
+        ASSERT_TRUE(strstr(src,
+            "rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u)") == NULL);
     }
 }
 

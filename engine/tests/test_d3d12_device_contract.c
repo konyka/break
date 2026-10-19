@@ -17,6 +17,14 @@ TEST(caps_and_info_are_d3d12) {
     ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
     ASSERT_EQ(caps.backend, RHI_BACKEND_D3D12);
     ASSERT_TRUE(caps.scissor_supported);
+    /* R606: D3D12 is the only backend that resolves hand-authored HLSL
+     * sidecars out of rhi_shader_create_path, and the only one whose temporal
+     * block is not at binding 0 (b0 is the push-constant root parameter, so
+     * ForwardTemporal lands on b1). shader_variant stays the GLSL default on
+     * both — which is exactly why this flag had to exist. */
+    ASSERT_TRUE(caps.shader_sidecar_paths);
+    ASSERT_EQ(caps.shader_variant, (u32)RHI_SHADER_VARIANT_GLSL);
+    ASSERT_EQ(caps.temporal_ubo_binding, 1u);
     RHIDeviceInfo info;
     ASSERT_TRUE(rhi_device_get_info(g_dev, &info));
     ASSERT_EQ(info.backend, RHI_BACKEND_D3D12);

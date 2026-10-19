@@ -325,6 +325,10 @@ typedef struct {
      * u_prev_model}. Separate from clustered_proj_ubo, whose readers
      * (pbr_clustered{,_vk}.vert) use a different layout. */
     RHIBuffer     forward_temporal_ubo;
+    /* R606: where forward_temporal_ubo has to be published. Copied from
+     * caps.temporal_ubo_binding at init — 0 on GL/Vulkan (the GLSL
+     * layout(binding = 0)), 1 on D3D12 (register b1; b0 is the push block). */
+    u32           temporal_ubo_binding;
     i32 inst_loc_view, inst_loc_proj;
     i32 inst_loc_light_dir, inst_loc_light_color, inst_loc_ambient, inst_loc_camera_pos;
     i32 sk_loc_view, sk_loc_proj;
@@ -404,31 +408,53 @@ static bool render_init(RenderState *rs, Platform *platform) {
     RHICapabilities caps = {0};
     if (!rhi_device_get_capabilities(rs->device, &caps)) goto fail;
     rs->caps = caps;
+    /* R606: the per-frame ForwardTemporal block has to be published at the
+     * index/register the active shader declares — binding 0 in both GLSL
+     * twins, register b1 in the D3D12 sidecars (b0 is the push block there).
+     * The backend owns that number; the frame loop only forwards it. */
+    rs->temporal_ubo_binding = caps.temporal_ubo_binding;
 
-    char vs_path[128], fs_path[128];
-    if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
-        goto fail;
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vs_path, &vs_len);
-    char *fs_src = shader_read_file(fs_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_FATAL("Failed to load shaders");
+    RHIShader vs, fs;
+    if (caps.shader_sidecar_paths) {
+        /* R606: D3D12 never compiles GLSL. Its shaders are hand-authored HLSL
+         * sidecars resolved from the requested path by the backend: the name
+         * gains an idempotent "_hlsl" before the stage extension. This
+         * pipeline declares two colour attachments, so it takes the MRT pair —
+         * shaders/blinn_phong_mrt.vert resolves to blinn_phong_mrt_hlsl.vert,
+         * the twin of blinn_phong.vert with FORWARD_MRT defined.
+         * shader_variant cannot select this: D3D12 leaves it at the GLSL
+         * default, identical to desktop GL. */
+        LOG_INFO("blinn_phong: backend resolves shader sidecars; "
+                 "loading shaders/blinn_phong_mrt.{vert,frag} as "
+                 "blinn_phong_mrt_hlsl.{vert,frag}");
+        vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.vert", false);
+        fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.frag", true);
+    } else {
+        char vs_path[128], fs_path[128];
+        if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path)))
+            goto fail;
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vs_path, &vs_len);
+        char *fs_src = shader_read_file(fs_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_FATAL("Failed to load shaders");
+            free(vs_src);
+            free(fs_src);
+            goto fail; /* R359: device already live */
+        }
+
+        usize vs_mrt_len = 0, fs_mrt_len = 0;
+        char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
+        char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
+        vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
+                               vs_mrt ? vs_mrt_len : vs_len, false);
+        fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
+                               fs_mrt ? fs_mrt_len : fs_len, true);
+        free(vs_mrt); free(fs_mrt);
         free(vs_src);
         free(fs_src);
-        goto fail; /* R359: device already live */
     }
-
-    usize vs_mrt_len = 0, fs_mrt_len = 0;
-    char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
-    char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
-    RHIShader vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
-                                     vs_mrt ? vs_mrt_len : vs_len, false);
-    RHIShader fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
-                                     fs_mrt ? fs_mrt_len : fs_len, true);
-    free(vs_mrt); free(fs_mrt);
-    free(vs_src);
-    free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(rs->device, vs);
@@ -6772,10 +6798,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
         /* R600: blinn_phong reads the camera from its ForwardTemporal block,
          * not from the push/loose uniform, so this path must publish and bind
-         * forward_temporal_ubo every frame. */
+         * forward_temporal_ubo every frame. R606: at the index the active
+         * shader declares for it — 0 in GLSL, register b1 on D3D12. */
         forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
                                    &camera.position, &prev_view_proj);
-        rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u);
+        rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                                    render.temporal_ubo_binding);
 
         Frustum frustum = frame_frustum;
 
@@ -7706,7 +7734,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_set_uniform_vec3(cmd, render.loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
                     forward_temporal_ubo_write(render.device, render.forward_temporal_ubo,
                                                &camera.position, &prev_view_proj);
-                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo, 0u);
+                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                                                render.temporal_ubo_binding);
                 }
                 Entity se = world->entities[selected_entity_id];
                 CTransform *st = world_get_component(world, se, COMP_TRANSFORM);
