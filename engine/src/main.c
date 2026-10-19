@@ -780,29 +780,60 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     {
-        usize dvl = 0, dfl = 0;
-        char *dv = shader_read_file("shaders/depth_only.vert", &dvl);
-        char *df = shader_read_file("shaders/depth_only.frag", &dfl);
-        if (dv && df) {
-            RHIShader dvs = rhi_shader_create(rs->device, dv, dvl, false);
-            RHIShader dfs = rhi_shader_create(rs->device, df, dfl, true);
-            free(dv); free(df);
-            if (rhi_handle_valid(dvs) && rhi_handle_valid(dfs)) {
-                RHIPipelineDesc dpd = {
-                    .vert = dvs, .frag = dfs,
-                    .depth_write_disable = false,
-                    .is_shadow_depth = true,
-                };
-                rs->depth_pipeline = rhi_pipeline_create(rs->device, &dpd);
-                rs->bind_depth = rhi_pipeline_bindings_create(rs->device, rs->depth_pipeline);
-                if (!rs->bind_depth)
-                    LOG_WARN("depth bindings create failed; locations resolve -1");
-                rs->depth_loc_model = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_model");
-                rs->depth_loc_lvp   = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_light_vp");
-                rhi_shader_destroy(rs->device, dvs);
-                rhi_shader_destroy(rs->device, dfs);
+        RHIPipelineDesc dpd;
+        RHIShader dvs = RHI_HANDLE_NULL, dfs = RHI_HANDLE_NULL;
+        bool stages_ok;
+        memset(&dpd, 0, sizeof(dpd));
+        dpd.depth_write_disable = false;
+        dpd.is_shadow_depth = true;
+        if (caps.shader_sidecar_paths) {
+            /* R613: on D3D12 the shadow cascade had no pipeline at all, so
+             * render.depth_pipeline stayed invalid and every cascade drew
+             * with depth_loc_model/lvp at -1 -- the guards at the call site
+             * swallow those writes silently, which is why this showed up as
+             * "shadows look fine but never update" rather than a crash.
+             *
+             * vertex_stride is set explicitly here and left at 0 in the GLSL
+             * branch below, because the cascade binds terrain.vbo (pos3 +
+             * nrm3 + uv2 = 32B). rhi_d3d12_input_layout turns 0 into the same
+             * 32B layout, so this states the contract rather than relying on
+             * that fallback, and the GLSL path stays byte-identical.
+             *
+             * No fragment stage: is_shadow_depth drops every render target,
+             * and depth_only.frag is an empty main() anyway. */
+            dvs = rhi_shader_create_path(rs->device, "shaders/depth_only.vert",
+                                         false);
+            dpd.vert = dvs;
+            dpd.frag = RHI_HANDLE_NULL;
+            dpd.vertex_stride = 32u;
+        } else {
+            usize dvl = 0, dfl = 0;
+            char *dv = shader_read_file("shaders/depth_only.vert", &dvl);
+            char *df = shader_read_file("shaders/depth_only.frag", &dfl);
+            if (dv && df) {
+                dvs = rhi_shader_create(rs->device, dv, dvl, false);
+                dfs = rhi_shader_create(rs->device, df, dfl, true);
+                free(dv); free(df);
+                dpd.vert = dvs; dpd.frag = dfs;
             }
         }
+        /* RHIHandle is a struct, so "no fragment stage" cannot be spelled as a
+         * comparison; each branch states whether its stages must all exist. */
+        stages_ok = caps.shader_sidecar_paths
+                        ? rhi_handle_valid(dpd.vert)
+                        : (rhi_handle_valid(dvs) && rhi_handle_valid(dfs));
+        if (stages_ok) {
+            rs->depth_pipeline = rhi_pipeline_create(rs->device, &dpd);
+            rs->bind_depth = rhi_pipeline_bindings_create(rs->device, rs->depth_pipeline);
+            if (!rs->bind_depth)
+                LOG_WARN("depth bindings create failed; locations resolve -1");
+            rs->depth_loc_model = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_model");
+            rs->depth_loc_lvp   = rhi_pipeline_bindings_resolve(rs->bind_depth, "u_light_vp");
+        } else {
+            LOG_WARN("depth_only: shader unavailable -- shadow cascades disabled");
+        }
+        if (rhi_handle_valid(dvs)) rhi_shader_destroy(rs->device, dvs);
+        if (rhi_handle_valid(dfs)) rhi_shader_destroy(rs->device, dfs);
     }
 
     {

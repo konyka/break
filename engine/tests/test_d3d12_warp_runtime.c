@@ -1745,6 +1745,159 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * The compare is done by hand on the sampled .r, exactly as the production
  * clustered shaders do, so this test also pins that D3D12's lack of comparison
  * sampling is irrelevant to the shadow pass. */
+/* R613: depth_only_hlsl.vert has to convert clip z, and this is the test that
+ * says so.
+ *
+ * depth_only.vert is one GLSL file shared by two backends behind #ifdef
+ * VULKAN, and the arms differ: the GL arm leaves clip.z alone because
+ * OpenGL's NDC is [-1,1] and fixed-function maps it to [0,1], while the
+ * Vulkan arm does gl_Position.z = (z + w) * 0.5 because Vulkan's NDC is
+ * [0,1]. D3D12's NDC is [0,1] too, so the sidecar follows the Vulkan arm --
+ * and the CPU settles it independently, because mat4_ortho() writes
+ * m.e[2][2] = -2/(far-near), the OpenGL form, so u_light_vp hands every
+ * backend a z in [-1,1].
+ *
+ * "Mirror the GL variant" is the wrong rule here and would be easy to apply
+ * by reflex, so the test is built to make the two conventions disagree by as
+ * much as possible rather than by a rounding hair:
+ *
+ *   flat = identity with e[2][2] and e[2][3] zeroed, so clip.z = 0 and
+ *   clip.w = 1 at every vertex of the quad.
+ *     converted   -> window depth (0 + 1) * 0.5 = 0.5
+ *     unconverted -> window depth 0.0
+ *
+ * The oracle is shadow_sample_hlsl.frag, which is the engine's real compare
+ * (receiver.z > stored depth -> shadowed). Sampling it at receiver depth
+ * 0.25 splits the two cases cleanly:
+ *
+ *     stored 0.5 -> 0.25 > 0.5 is false -> LIT      -> 255
+ *     stored 0.0 -> 0.25 > 0.0 is true  -> SHADOWED -> 0
+ *
+ * So a single exact byte decides it, and the unconverted variant fails by
+ * 255 rather than by one. The quad covers the whole 8x8 target, so there is
+ * no partially-shaded corner for the assertion to hide in. */
+TEST(depth_only_sidecar_converts_clip_z_to_window_depth) {
+    static const float flat[16] = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,   /* e[2][2] = 0 -> clip.z = 0 */
+        0.0f, 0.0f, 0.0f, 1.0f    /* e[2][3] = 0 -> clip.w stays 1 */
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const float quad[6 * 3] = {
+        -1.0f, -1.0f, 0.0f,   1.0f, -1.0f, 0.0f,   1.0f,  1.0f, 0.0f,
+        -1.0f, -1.0f, 0.0f,   1.0f,  1.0f, 0.0f,  -1.0f,  1.0f, 0.0f
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShadowMap sm;
+    RHIShader depth_vs, sample_vs, sample_fs;
+    RHIPipeline depth_pipe, sample_pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_model, loc_lvp, loc_compare;
+    int i;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    sm = rhi_shadow_map_create(g_dev, 8u, 8u);
+    ASSERT_TRUE(rhi_handle_valid(sm.fbo));
+
+    /* The real depth_only sidecar, not the test-only shadow_depth_hlsl --
+     * this is the shader main.c now binds for the cascades. */
+    depth_vs = rhi_shader_create(g_dev, "depth_only_hlsl.vert", 0, false);
+    sample_vs = rhi_shader_create(g_dev, "shadow_sample_hlsl.vert", 0, false);
+    sample_fs = rhi_shader_create(g_dev, "shadow_sample_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(depth_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_vs));
+    ASSERT_TRUE(rhi_handle_valid(sample_fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = depth_vs;
+    pd.frag = RHI_HANDLE_NULL;
+    pd.vertex_stride = 12u;
+    pd.is_shadow_depth = true;
+    pd.disable_culling = true;
+    depth_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(depth_pipe));
+
+    /* main.c resolves exactly these two names on the cascade pipeline, so the
+     * offsets are part of the contract the sidecar has to keep. */
+    loc_model = rhi_pipeline_get_uniform_location(g_dev, depth_pipe, "u_model");
+    loc_lvp   = rhi_pipeline_get_uniform_location(g_dev, depth_pipe, "u_light_vp");
+    ASSERT_EQ(loc_model, 0);
+    ASSERT_EQ(loc_lvp, 64);
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = sample_vs; pd.frag = sample_fs;
+    pd.no_vertex_input = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.depth_write_disable = true;
+    sample_pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(sample_pipe));
+    loc_compare = rhi_pipeline_get_uniform_location(g_dev, sample_pipe,
+                                                    "u_compare");
+    ASSERT_EQ(loc_compare, 64);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(quad);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_cmd_bind_shadow_map(cmd, &sm);
+    rhi_cmd_bind_pipeline(cmd, depth_pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc_model, identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc_lvp, flat);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_cmd_unbind_shadow_map(cmd, 64u, 64u);
+
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, sample_pipe);
+    rhi_cmd_set_uniform_mat4(cmd,
+        rhi_pipeline_get_uniform_location(g_dev, sample_pipe, "u_transform"),
+        identity);
+    rhi_cmd_set_uniform_vec4(cmd, loc_compare, 0.0f, 0.0f, 0.25f, 0.0f);
+    rhi_cmd_bind_shadow_texture(cmd, sm.depth_tex, (RHISampler){0});
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < 8 * 8; ++i) {
+        if (px[i * 4] != 255u)
+            printf("FAIL: pixel %d = %u, expected 255 (lit); 0 would mean the "
+                   "sidecar stored window depth 0.0 and skipped the "
+                   "GL->[0,1] clip.z conversion\n", i, (unsigned)px[i * 4]);
+        ASSERT_EQ(px[i * 4], 255u);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, depth_pipe);
+    rhi_pipeline_destroy(g_dev, sample_pipe);
+    rhi_shader_destroy(g_dev, depth_vs);
+    rhi_shader_destroy(g_dev, sample_vs);
+    rhi_shader_destroy(g_dev, sample_fs);
+    rhi_shadow_map_destroy(g_dev, &sm);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
 TEST(shadow_atlas_depth_round_trips_through_the_sampling_path) {
     /* Centre half of NDC: on an 8x8 atlas that is the centre 4x4. */
     static const float half[16] = {
@@ -2554,6 +2707,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(depth_only_sidecar_converts_clip_z_to_window_depth);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
     RUN_TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas);
