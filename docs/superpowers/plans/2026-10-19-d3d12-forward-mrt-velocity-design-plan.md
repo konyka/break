@@ -364,6 +364,45 @@ The D3D12 debug layer and GPU-based validation were enabled for every one
 of these runs and emitted nothing, so the usual tool for this class of
 fault does not see it either.
 
+### The blocker is WARP, not the backend
+
+The same edit, on the same machine, on the other adapter:
+
+| Adapter | `register(b1)` read by the vertex shader |
+| --- | --- |
+| WARP (`ENGINE_D3D12_WARP` set) | device lost |
+| RTX 4060 (that variable unset) | **fine** — every other assertion in the suite passes |
+
+`rhi_d3d12_pick_adapter` selects WARP on the *presence* of
+`ENGINE_D3D12_WARP`, not its value, so `ENGINE_D3D12_WARP=0` still gets WARP;
+the hardware run needs the variable unset plus
+`BREAK_D3D12_TEST_FALLBACK_HWND=1` (there is no real HWND in this session).
+
+That reframes everything above. The root signature, the descriptor tables,
+the CBV size, the heap and the shader are all **correct**; the D3D12 backend
+is not broken here. WARP faults on a vertex-stage constant-buffer view, and
+this project's own evidence rule already says WARP receipts "never upgrade
+the evidence level past GPU-runtime" — WARP is a floor, not the authority.
+
+Two consequences worth acting on:
+
+- **The engine is not blocked.** A D3D12 forward path whose vertex shader
+  reads `u_prev_vp` / `u_prev_model` from the b1 CBV works on hardware,
+  which is what step 5 needs.
+- **The WARP suite cannot carry this proof.** Any test that has the vertex
+  stage read a descriptor-bound CBV has to be hardware-gated, or it will
+  report a WARP limitation as an engine failure. That is a test-infrastructure
+  decision, not a shader one, and it is the next thing to settle.
+
+Running the RT1 proof on hardware gets past everything the WARP run could
+not: the pipeline builds, RT0 is exactly red on every draw, and the readback
+succeeds. It then stops at the RT1 content assertion — draw 0 expects both
+velocity channels to be exactly `+0.0` with an identity `u_prev_vp` and
+finds something else. That is a genuine open question and is NOT explained
+by anything above; the obvious next check is whether RT1 is written at all
+versus holding its post-clear contents, and that needs the pixel dump this
+round did not manage to land cleanly.
+
 ### Ruled out next: duplicate descriptor tables
 
 The strongest-looking theory left was the per-stage table duplication. The
