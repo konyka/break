@@ -4270,9 +4270,127 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
 }
 
 /* ---- buffers / texel (Task 5 host-side ops) ---- */
+/* R614: texel buffers (units 5 and 6).
+ *
+ * This was a no-op stub, which made instanced.vert and skinned.vert
+ * unwritable on D3D12 no matter how correct a sidecar was: both declare
+ * layout(binding = 5) uniform samplerBuffer, and the GL backend's
+ * rhi_cmd_bind_texel_buffers is what puts data there. Without it the shader
+ * reads an unbound table.
+ *
+ * D3D12 has no texel buffer. The equivalent is a raw buffer SRV:
+ * D3D12_SRV_DIMENSION_BUFFER, and the shader-side spelling is
+ * StructuredBuffer<float4> at register tN -- which the HLSL reflection
+ * already maps to an SRV range, so image_root_params[5] / [6] are populated
+ * by the sidecar declaring it and nothing else has to change.
+ *
+ * Stride: GLSL's texelFetch(u_instances, i) indexes vec4 elements, and
+ * instanced.vert reads the model matrix as eight separate fetches
+ * (idx + 0 .. idx + 3, and + 4 .. + 7 for prev_model under FORWARD_MRT), so
+ * the element is 16 bytes and NumElements is size/16. A StructuredBuffer
+ * declared with any other element type would silently mis-index here, which
+ * is why the divisor is fixed rather than taken from the shader: the engine
+ * only ever uploads vec4 instance/joint rows.
+ *
+ * Read-only SRV, so no UAV descriptor is created -- unlike every compute
+ * path, this one is not subject to the device loss that
+ * ID3D12Device_CreateUnorderedAccessView causes on this host (see
+ * test_d3d12_uav_matrix). Buffers here are UPLOAD-heap and CPU-mapped, so
+ * the transition is from COMMON to a combined read state.
+ */
+/* R614: texel buffers (units 5 and 6).
+ *
+ * This was a no-op stub, which made instanced.vert and skinned.vert
+ * unwritable on D3D12 no matter how correct a sidecar was: both declare
+ * layout(binding = 5) uniform samplerBuffer, and the GL backend's
+ * rhi_cmd_bind_texel_buffers is what puts data there. Without it the shader
+ * reads an unbound table.
+ *
+ * D3D12 has no texel buffer. The equivalent is a raw buffer SRV:
+ * D3D12_SRV_DIMENSION_BUFFER, and the shader-side spelling is
+ * StructuredBuffer<float4> at register tN -- which the HLSL reflection
+ * already maps to an SRV range, so image_root_params[5] / [6] are populated
+ * by the sidecar declaring it and nothing else has to change.
+ *
+ * Stride: GLSL's texelFetch(u_instances, i) indexes vec4 elements, and
+ * instanced.vert reads the model matrix as eight separate fetches
+ * (idx + 0 .. idx + 3, and + 4 .. + 7 for prev_model under FORWARD_MRT), so
+ * the element is 16 bytes and NumElements is size/16. A StructuredBuffer
+ * declared with any other element type would silently mis-index here, which
+ * is why the divisor is fixed rather than taken from the shader: the engine
+ * only ever uploads vec4 instance/joint rows.
+ *
+ * Read-only SRV, so no UAV descriptor is created -- unlike every compute
+ * path, this one is not subject to the device loss that
+ * ID3D12Device_CreateUnorderedAccessView causes on this host (see
+ * test_d3d12_uav_matrix). Buffers here are UPLOAD-heap and CPU-mapped, so
+ * the transition is from COMMON to a combined read state.
+ */
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0,
                                 RHIBuffer buf1) {
-    (void)cmd; (void)buf0; (void)buf1;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHIBuffer handles[2];
+    u32 unit;
+    if (ctx == NULL || g_current_device == NULL) return;
+    handles[0] = buf0;
+    handles[1] = buf1;
+    for (unit = 5u; unit <= 6u; ++unit) {
+        RHI_D3D12Buffer *bd;
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+        D3D12_RESOURCE_STATES read_state;
+        D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+        UINT root_param;
+        UINT slot;
+        list = rhi_d3d12_cmd_list(ctx);
+        pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+        if (list == NULL || pd == NULL) return;
+        /* An unset handle leaves the previous draw's descriptor in place, the
+         * same contract every other binder here follows -- there is no unset
+         * state in D3D12, which is why the material binder binds a white
+         * fallback instead of clearing. */
+        if (!rhi_handle_valid(handles[unit - 5u])) continue;
+        bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device,
+                                    handles[unit - 5u], RHI_RES_BUFFER);
+        if (bd == NULL || bd->resource == NULL || bd->size < 16u) continue;
+        root_param = pd->image_root_params[unit];
+        if (root_param == UINT_MAX) continue;
+        if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+        slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+        if (slot == UINT_MAX) {
+            LOG_WARN("D3D12: SRV descriptor heap exhausted");
+            return;
+        }
+        ZeroMemory(&srv, sizeof(srv));
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        /* This SDK's D3D12_BUFFER_SRV carries FirstElement /
+         * StructureByteStride / Flags rather than the older FirstBeforeUpdate
+         * pair. StructureByteStride is what makes the shader's float4
+         * indexing exact, so it is stated rather than left at 0. */
+        srv.Buffer.FirstElement = 0u;
+        srv.Buffer.NumElements = (UINT)(bd->size / 16u);
+        srv.Buffer.StructureByteStride = 16u;
+        srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
+        ID3D12Device_CreateShaderResourceView(ctx->device, bd->resource, &srv,
+            rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+        ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+        read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+                     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (bd->state != read_state) {
+            rhi_d3d12_transition(list, bd->resource, bd->state, read_state);
+            bd->state = read_state;
+        }
+        gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+        if (pd->is_compute)
+            ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+                                                                    root_param, gpu);
+        else
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+                                                                    root_param, gpu);
+    }
 }
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data,
                        usize size) {

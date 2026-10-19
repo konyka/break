@@ -1776,6 +1776,130 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * So a single exact byte decides it, and the unconverted variant fails by
  * 255 rather than by one. The quad covers the whole 8x8 target, so there is
  * no partially-shaded corner for the assertion to hide in. */
+/* R615: rhi_cmd_bind_texel_buffers reaches the shader.
+ *
+ * It was (void)cmd; (void)buf0; (void)buf1;, which is what made instanced and
+ * skinned unwritable on D3D12 however correct a sidecar was -- both read
+ * layout(binding = 5) samplerBuffer, and this is the call that fills unit 5.
+ *
+ * One buffer, two 16-byte rows, one full-target triangle:
+ *
+ *   row 0 = (255, 0, 0)   red
+ *   row 1 = (0, 255, 0)   green
+ *
+ * Frame 0 draws with InstanceCount 1, so SV_InstanceID is 0 and the whole
+ * target must be row 0. Frame 1 draws with InstanceCount 2; the pipeline has
+ * depth writing off and no depth test, so both instances cover the same
+ * pixels and the second rasterises last -- the whole target must be row 1.
+ *
+ * Two frames of one flat colour each is what makes this decisive. A binder
+ * that did nothing leaves the descriptor table unwritten, both instances
+ * read row 0, and frame 1 comes back red -- a wrong colour, not a wrong
+ * shade. A wrong StructureByteStride (say 4 instead of 16) turns row 1's
+ * green into whatever the bytes at offset 4 happen to be, which the exact
+ * comparison also catches. */
+TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader) {
+    static const float verts[3 * 3] = {
+        -1.0f, -1.0f, 0.0f,   3.0f, -1.0f, 0.0f,   -1.0f,  3.0f, 0.0f
+    };
+    static const float rows[2 * 4] = {
+        1.0f, 0.0f, 0.0f, 1.0f,        /* row 0 -> red   */
+        0.0f, 1.0f, 0.0f, 1.0f         /* row 1 -> green */
+    };
+    static const unsigned char expect[2][4] = {
+        { 255,   0,   0, 255 },
+        {   0, 255,   0, 255 }
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, inst;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int frame, pixel, i;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "texel_buffer_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "texel_buffer_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 12u;               /* POSITION only */
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(rows);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = rows;
+    inst = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(inst));
+
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 0.0f, 1.0f, 0.0f, 1.0f);   /* loud: never the answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_texel_buffers(cmd, inst, RHI_HANDLE_NULL);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 3u, frame == 0 ? 1u : 2u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (pixel = 0; pixel < 64; ++pixel) {
+            i = pixel * 4;
+            if (px[i + 0] != (unsigned char)expect[frame][0] ||
+                px[i + 1] != (unsigned char)expect[frame][1] ||
+                px[i + 2] != (unsigned char)expect[frame][2] ||
+                px[i + 3] != (unsigned char)expect[frame][3]) {
+                printf("FAIL: frame %d (InstanceCount %u) pixel %d = "
+                       "(%u,%u,%u,%u), expected (%u,%u,%u,%u)\n", frame,
+                       frame == 0 ? 1u : 2u, pixel,
+                       (unsigned)px[i + 0], (unsigned)px[i + 1],
+                       (unsigned)px[i + 2], (unsigned)px[i + 3],
+                       (unsigned)expect[frame][0], (unsigned)expect[frame][1],
+                       (unsigned)expect[frame][2], (unsigned)expect[frame][3]);
+            }
+            ASSERT_EQ(px[i + 0], (unsigned char)expect[frame][0]);
+            ASSERT_EQ(px[i + 1], (unsigned char)expect[frame][1]);
+            ASSERT_EQ(px[i + 2], (unsigned char)expect[frame][2]);
+            ASSERT_EQ(px[i + 3], (unsigned char)expect[frame][3]);
+        }
+    }
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, inst);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(depth_only_sidecar_converts_clip_z_to_window_depth) {
     static const float flat[16] = {
         1.0f, 0.0f, 0.0f, 0.0f,
@@ -2707,6 +2831,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader);
     RUN_TEST(depth_only_sidecar_converts_clip_z_to_window_depth);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
