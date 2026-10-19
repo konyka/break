@@ -13,8 +13,32 @@ static RHIShader  s_shader  = {1, 1};
 static RHIPipeline s_pipe   = {1, 1};
 static RHITexture s_tex     = {1, 1};
 
+/* R610: which compile route hotreload_compile_pipeline took, and whether the
+ * backend asked for sidecars. A default-false capability keeps every other
+ * test on the GLSL read_file path they were written against. */
+static bool s_sidecar_paths = false;
+static int  s_create_calls = 0;
+static int  s_path_calls = 0;
+
 RHIShader rhi_shader_create(RHIDevice *dev, const char *src, usize len, bool is_frag) {
     (void)dev; (void)src; (void)len; (void)is_frag;
+    s_create_calls++;
+    return s_shader;
+}
+/* R610: hotreload_compile_pipeline branches on shader_sidecar_paths, so this
+ * stub is load-bearing for every test below: it reports false by default,
+ * which keeps them all on the GLSL path they were written against. */
+bool rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out) {
+    (void)dev;
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        out->shader_sidecar_paths = s_sidecar_paths;
+    }
+    return true;
+}
+RHIShader rhi_shader_create_path(RHIDevice *dev, const char *path, bool is_frag) {
+    (void)dev; (void)path; (void)is_frag;
+    s_path_calls++;
     return s_shader;
 }
 void rhi_shader_destroy(RHIDevice *dev, RHIShader sh) { (void)dev; (void)sh; }
@@ -35,6 +59,44 @@ static bool write_file(const char *path, long size, char fill) {
     for (long i = 0; i < size; i++) fputc(fill, f);
     fclose(f);
     return true;
+}
+
+/* R610: on a sidecar backend the caller still hands hotreload the GLSL path,
+ * and reading it yields source with no DXIL blob, so the pipeline never
+ * built. Both routes are pinned here because the failure mode of getting
+ * this backwards is silent: the GLSL route succeeds against a stub and only
+ * fails on real hardware. */
+TEST(hotreload_uses_the_path_api_on_a_sidecar_backend)
+{
+    char TMP_VERT[64], TMP_FRAG[64];
+    HotReloadPipeline hr;
+    /* hotreload_pipeline_init rejects a NULL device outright, so this needs a
+     * non-NULL one; the stubs ignore it. */
+    RHIDevice *fake = (RHIDevice *)&s_shader;
+    test_tmp(TMP_VERT, sizeof TMP_VERT, "test_hotreload_sidecar.vert");
+    test_tmp(TMP_FRAG, sizeof TMP_FRAG, "test_hotreload_sidecar.frag");
+    ASSERT_TRUE(write_file(TMP_VERT, 16, '#'));
+    ASSERT_TRUE(write_file(TMP_FRAG, 16, '#'));
+
+    s_sidecar_paths = false;
+    s_create_calls = 0;
+    s_path_calls = 0;
+    ASSERT_TRUE(hotreload_pipeline_init(&hr, fake, TMP_VERT, TMP_FRAG, NULL));
+    ASSERT_EQ(s_create_calls, 2);
+    ASSERT_EQ(s_path_calls, 0);
+    hotreload_pipeline_shutdown(&hr);
+
+    s_sidecar_paths = true;
+    s_create_calls = 0;
+    s_path_calls = 0;
+    ASSERT_TRUE(hotreload_pipeline_init(&hr, fake, TMP_VERT, TMP_FRAG, NULL));
+    ASSERT_EQ(s_path_calls, 2);
+    ASSERT_EQ(s_create_calls, 0);
+    hotreload_pipeline_shutdown(&hr);
+
+    s_sidecar_paths = false;
+    remove(TMP_VERT);
+    remove(TMP_FRAG);
 }
 
 /* R393: read_file had no size cap — multi-GB shader path could malloc before compile. */
@@ -151,6 +213,7 @@ TEST(filewatch_rejects_path_truncation)
 
 TEST_MAIN_BEGIN()
     RUN_TEST(hotreload_rejects_oversized_shader);
+    RUN_TEST(hotreload_uses_the_path_api_on_a_sidecar_backend);
     RUN_TEST(hotreload_texture_rejects_path_truncation);
     RUN_TEST(hotreload_texture_failed_init_keeps_stdin);
     RUN_TEST(hotreload_pipeline_rejects_path_truncation);

@@ -1036,8 +1036,8 @@ already prints:
 
 - `main.c`: the clustered family (`pbr_clustered` / `_inst` / `_skin` /
   `_arr`), deferred (gbuffer / gbuffer_arr / deferred_light), `depth_only`,
-  `instanced`, `skinned`, and the hot-reload pipeline near `main.c:2940` --
-  the same shape as the three call sites landed here.
+  `instanced`, `skinned`. R610 removed the hot-reload pipeline from this list
+  (it was the one at `main.c:2940`); what remains there is those six.
 - `src/renderer/` (one vert/frag pair each): `cinematic`, `color_grade`,
   `combined_post_process`, `contact_shadow`, `debug_viz`, `deferred`, `dof`,
   `forward_velocity`, `fxaa`, `god_rays`, `lens_effects`, `lens_flare`,
@@ -1045,9 +1045,25 @@ already prints:
   `ssr`, `sss`, `taa`, `tonemap`, `upscale`, `volumetric`.
 - compute: `gpucull.c` (`cull.comp` / `unified_cull.comp`), `lighting.c`
   (`cluster_cull.comp`), `particles.c` (`particle_update.comp` /
-  `particle_cull.comp` / `particle.{vert,frag}`), `ibl.c`, `indirect_draw.c`,
-  `occlusion_cull.c`.
-- `asset/hotreload.c`, `myui/myr/my_vgcanvas_break_rhi.c`, `ui/myui_break.c`.
+  `particle_cull.comp` / `particle.{vert,frag}`), `ibl.c`,
+  `indirect_draw.c`, `occlusion_cull.c`.
+
+`indirect_draw.c` deserves its own line, because it is the one that decides
+whether the material-array path runs at all on D3D12. Two independent
+fail-closed gates, both currently closed:
+
+1. `rhi_d3d12.c` never sets `caps.indirect_draw_supported` -- only
+   `rhi_gl.c:770` and `rhi_vk.c:1852` do, and `RHIDevice` is `calloc`'d --
+   so `indirect_draw_init` bails with "backend reports no indirect draw
+   support".
+2. Even with the flag set, `id_load_compute` reads `compact_draws.comp`
+   through `shader_read_file`, which is GLSL, so the compaction pipeline is
+   invalid and `indirect_draw_init` destroys the system and returns false.
+
+R607 therefore landed the array sidecar and the 2D array texture support for
+a path that cannot execute on this backend yet. Enabling it needs a compute
+sidecar for `compact_draws.comp` -- and `rhi_shader_create_compute`'s own
+D3D12 support is unverified -- plus the layer fix from R609.
 
 The `shader_read_file` calls in `test_vulkan.c` are test fixtures and are not
 in this list.

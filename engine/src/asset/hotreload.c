@@ -12,19 +12,36 @@
 static RHIPipeline hotreload_compile_pipeline(RHIDevice *dev,
                                                const char *vert_path,
                                                const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
+    RHICapabilities caps;
+    RHIShader vs, fs;
+    RHIPipelineDesc pdesc;
+
+    /* R610: on a sidecar backend the caller still hands us the GLSL path --
+     * shader_variant_path resolves to shaders/blinn_phong.vert there, because
+     * D3D12 leaves shader_variant at GLSL -- and reading that file produces a
+     * source with no DXIL blob, so rhi_shader_create would fail and the hot
+     * reload pipeline would never build. rhi_shader_create_path takes the same
+     * string and the backend resolves it to blinn_phong_hlsl.vert itself. The
+     * branch lives here rather than at the call site so the file-watch
+     * recompile below goes through it too. */
+    if (!rhi_device_get_capabilities(dev, &caps)) memset(&caps, 0, sizeof(caps));
+    if (caps.shader_sidecar_paths) {
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            free(vs_src);
+            free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src);
         free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src);
-    free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Hot reload: shader compile failed");
@@ -33,7 +50,10 @@ static RHIPipeline hotreload_compile_pipeline(RHIDevice *dev,
         return RHI_HANDLE_NULL;
     }
 
-    RHIPipelineDesc pdesc = {.vert = vs, .frag = fs, .uses_textures = true};
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.uses_textures = true;
     RHIPipeline pipe = rhi_pipeline_create(dev, &pdesc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
@@ -77,6 +97,14 @@ bool hotreload_pipeline_init(HotReloadPipeline *hr, RHIDevice *dev,
     filewatch_init(&hr->watcher);
     filewatch_add(&hr->watcher, hr->vert_path, hotreload_shader_callback, hr);
     filewatch_add(&hr->watcher, hr->frag_path, hotreload_shader_callback, hr);
+    /* R610 caveat, not fixed here: on a sidecar backend the file actually
+     * compiled is <base>_hlsl.{vert,frag}, but the watcher still watches the
+     * GLSL path the caller passed. Editing the GLSL twin therefore triggers a
+     * recompile that reads an unchanged sidecar, and editing the sidecar
+     * triggers nothing. Watching the resolved name would need the backend's
+     * derivation exposed; until then, hot reload on D3D12 only rebuilds. The
+     * pipeline it produces is correct either way -- that is what this branch
+     * fixed -- the trigger is what's off. */
 
     hr->ready = true;
     return true;
