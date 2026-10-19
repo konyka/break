@@ -237,7 +237,13 @@
   - **工具链又一条命名坑，已写进 shader 头**：GLSL 的 `dFdx`/`dFdy` 是 **fine** 导数，而这个 DXC 的正确拼法是 **`ddx_fine` / `ddy_fine`**。三种直觉写法都不对——`DDX`/`DDY` 和 `dFdx`/`dFdy` 都被拒（"use of undeclared identifier"），而**小写 `ddx`/`ddy` 能编译却是 COARSE 导数**（`dx.op.unary.f32` opcode 83 `DerivCoarseX`）。2×2 quad 上 coarse 与 fine 斜率不同，误用会让重建法线与 GL 分叉。
   - demo 上 `SSR: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR** 五个。
   - 门控（WARP **26/26**、硬件 25/26、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。**一次瞬时 flake 记录在案**：某次 D3D12 全量门控里 `test_myui_loader` 失败，但单独连跑 3 次都是 120/120、重跑全量门控也不再出现，与本轮改动无关（很可能是共享临时文件）。
-- **剩余待办的后处理**：`motion_blur`（3 纹理）、`contact_shadow`（2）、`lens_flare`（2）、`ssgi`（2，且有两个 pass）、`taa`（4）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
+- **R623：`taa` 上 D3D12**（**4 张纹理**，是 `rhi_cmd_bind_textures_multi` 支持的上限，所以 R620 那个 binder 改动在这里同样关键）。212 字节 push 块，4 张表把根常量压到 240 字节，放得下。`u_taa_blend` 在 GLSL 孪生里是 `const`，测试钉 resolve = -1。
+  - **测试图案是刻意选的**：8×8 的 0/255 **棋盘格**，目的是让**每个**像素的 3×3 邻域在每个通道上都张满 [0,255]。这一点很关键——`clip_aabb()` 会把邻域盒之外的历史颜色拉回盒内，所以若用平坦或渐变源，历史色会被钳到中心像素、混合就**看不见**。棋盘格让 128 的纯色历史**不被钳制**，于是结果精确可推：`mix(128, curr, 0.1) = 128 + (curr - 128)*0.1`，curr=0 → **115**、curr=255 → **141**。两个值都不落在 .5 上，所以可以**精确**断言（对比 R620 的 DOF 模糊正因多个模型值恰好落在 .5 而需要 ±2）。8×8 棋盘格在翻转行序下不变，所以与回读朝向无关。
+  - 单位矩阵 + `use_velocity = 0` 时 `prev_uv` 恰好塌回 `uv`（ndc = uv*2−1，单位 inv_proj 与 prev_vp 不动 x/y，故 prev_uv = (uv*2−1)*0.5+0.5 = uv），所以「历史纹理取纯色」是合法输入。
+  - 两帧：帧 0 `first_frame = 1` → 时序块整段跳过、棋盘格**原样**通过（这是对照帧，证明帧 1 的 115/141 真的是混合的结果）；帧 1 走混合。反向验证：把 `lerp(...)` 换成直接赋历史色，帧 1 第 0 像素读回 **(128,128,128)** 而不是 115。
+  - demo 上 `TAA: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA** 六个。
+  - 门控（WARP **27/27**、硬件 26/27、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
+- **剩余待办的后处理**：`motion_blur`（3 纹理）、`contact_shadow`（2）、`lens_flare`（2）、`ssgi`（2，且有两个 pass）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

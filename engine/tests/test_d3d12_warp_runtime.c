@@ -1986,6 +1986,173 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * blacks the frame out; a mis-offset uniform moves the scene colour, because
  * u_ssr_proj / u_ssr_inv_proj are what decode the depth that decides the
  * early-out. */
+TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb) {
+    static unsigned char curr[8 * 8 * 4];
+    static unsigned char hist[8 * 8 * 4];
+    static float depth[8 * 8];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture ctex, htex, dtex, vtex;
+    RHITexture quad[4];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const names[7] = {
+        "u_taa_curr_vp", "u_taa_prev_vp", "u_taa_inv_proj", "u_taa_sw",
+        "u_taa_sh", "u_taa_first_frame", "u_taa_use_velocity"
+    };
+    static const i32 want[7] = { 0, 64, 128, 192, 196, 200, 204 };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int frame, r, c, i;
+
+    /* An 8x8 checkerboard of 0 and 255 is chosen so that EVERY pixel's 3x3
+     * neighbourhood spans the full [0,255] in each channel. That matters:
+     * clip_aabb() pulls anything outside the neighbourhood box back to it, so
+     * with a flat or ramped source the history colour would be clamped onto
+     * the centre pixel and the blend would be invisible. With a checkerboard
+     * a solid history of 128 survives unclipped, and the result is exactly
+     * derivable:
+     *
+     *   mix(128, curr, 0.1) = 128 + (curr - 128) * 0.1
+     *     curr =   0 -> 115.2000 -> byte 115
+     *     curr = 255 -> 140.7000 -> byte 141
+     *
+     * Neither lands on .5, so exact bytes are safe here (unlike the DOF blur,
+     * which needed a +-2 bound for exactly that reason). An 8x8 checkerboard
+     * is also symmetric under a row flip, so readback orientation cannot
+     * matter.
+     *
+     * With identity matrices and use_velocity = 0, prev_uv collapses back to
+     * uv: ndc = uv*2-1, the identity inv_proj and prev_vp leave x and y
+     * untouched, so prev_uv = (uv*2-1)*0.5 + 0.5 = uv. The history is
+     * therefore sampled from the same place as the current colour, which is
+     * what makes a solid history texture a valid input. */
+    for (r = 0; r < 8; ++r) {
+        for (c = 0; c < 8; ++c) {
+            unsigned char v = ((r + c) & 1) ? 255u : 0u;
+            i = (r * 8 + c) * 4;
+            curr[i + 0] = v; curr[i + 1] = v; curr[i + 2] = v; curr[i + 3] = 255u;
+            hist[i + 0] = 128u; hist[i + 1] = 128u; hist[i + 2] = 128u;
+            hist[i + 3] = 255u;
+            depth[r * 8 + c] = 0.5f;     /* < 1, so the temporal block runs */
+        }
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "taa_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 7; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (got != want[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i], (int)got,
+                   (int)want[i]);
+        ASSERT_EQ(got, want[i]);
+    }
+    /* GLSL const (0.1) in the twin, so taa_apply's write is a no-op on GL. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_taa_blend"), -1);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = curr; ctex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ctex));
+    tdesc.data = hist; htex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(htex));
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth; dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    tdesc.format = RHI_FORMAT_R16G16_SFLOAT;
+    {
+        static const unsigned short zero[8 * 8 * 4] = { 0 };
+        tdesc.data = zero;
+    }
+    vtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(vtex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    quad[0] = ctex; quad[1] = htex; quad[2] = dtex; quad[3] = vtex;
+
+    /* frame 0: first_frame = 1 -> the temporal block is skipped and the
+     * checkerboard must come through untouched, which is the control that says
+     * the 115/141 in frame 1 really is the blend. */
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 1.0f, 0.0f, 1.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, quad, 4, sampler);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_f32(cmd, 192, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 196, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 200, frame == 0 ? 1.0f : 0.0f);
+        rhi_cmd_set_uniform_f32(cmd, 204, 0.0f);   /* use_velocity off */
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (r = 0; r < 8; ++r) {
+            for (c = 0; c < 8; ++c) {
+                unsigned char want_px = frame == 0
+                    ? (unsigned char)(((r + c) & 1) ? 255u : 0u)
+                    : (unsigned char)(((r + c) & 1) ? 141u : 115u);
+                i = (r * 8 + c) * 4;
+                if (px[i + 0] != want_px || px[i + 1] != want_px ||
+                    px[i + 2] != want_px || px[i + 3] != 255u) {
+                    printf("FAIL: taa frame %d pixel (c=%d,r=%d) = "
+                           "(%u,%u,%u,%u), expected (%u,%u,%u,255)\n", frame,
+                           c, r, (unsigned)px[i + 0], (unsigned)px[i + 1],
+                           (unsigned)px[i + 2], (unsigned)px[i + 3],
+                           (unsigned)want_px, (unsigned)want_px,
+                           (unsigned)want_px);
+                }
+                ASSERT_EQ(px[i + 0], want_px);
+                ASSERT_EQ(px[i + 1], want_px);
+                ASSERT_EQ(px[i + 2], want_px);
+                ASSERT_EQ(px[i + 3], 255u);
+            }
+        }
+    }
+
+    rhi_texture_destroy(g_dev, ctex);
+    rhi_texture_destroy(g_dev, htex);
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_texture_destroy(g_dev, vtex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(ssr_sidecar_pins_offsets_and_both_early_outs) {
     static unsigned char colour[8 * 8 * 4];
     static float sky[8 * 8];
@@ -3798,6 +3965,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb);
     RUN_TEST(ssr_sidecar_pins_offsets_and_both_early_outs);
     RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
     RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
