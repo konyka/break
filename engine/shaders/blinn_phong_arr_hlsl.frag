@@ -62,7 +62,37 @@ PSOut main(float4 pos : SV_Position, float3 world : TEXCOORD0,
     float spec = max(dot(N, H), 0.0);
     spec *= spec; spec *= spec; spec *= spec; spec *= spec; spec *= spec;
 
-    // GLSL: texture(u_albedo, vec3(vUV, float(vLayer)))
+    // GLSL: texture(u_albedo, vec3(vUV, float(vLayer))) where
+    //     vLayer = uint(gl_BaseInstanceARB)
+    //
+    // ⚠️ KNOWN BROKEN ON D3D12 -- measured on the RTX 4060, not inferred.
+    // `layer` below arrives from SV_InstanceID in the vertex stage, and
+    // D3D12's SV_InstanceID does NOT include StartInstanceLocation; it is
+    // gl_InstanceID, and here it runs 0..InstanceCount-1 with the base
+    // dropped. Evidence: an ExecuteIndirect record with
+    // StartInstanceLocation = 1, InstanceCount = 1 renders layer 0, and one
+    // with StartInstanceLocation = 2, InstanceCount = 2 renders the last
+    // instance's layer as 1 -- i.e. 0..1, not 2..3. Production sets
+    // first_instance = array layer with InstanceCount = 1 (main.c:3779 and
+    // :3947), so on D3D12 every material-array mesh currently samples layer 0.
+    //
+    // There is no HLSL spelling of the base instance to fix this with:
+    // `SV_StartInstanceLocation` is the correct semantic and dxc rejects it
+    // for every shader model from ps_6_0 to ps_6_11 ("invalid semantic ...
+    // for ps 6.x"), in both the vertex and pixel stages. The bare name
+    // `StartInstanceLocation` compiles but dumps as SysValue = NONE, i.e. a
+    // user semantic the runtime never populates.
+    //
+    // The sanctioned D3D12 route is a command signature with a second
+    // D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT argument, which copies the value
+    // out of the argument buffer and into a root constant the shader can
+    // read. There is room for it: this push block ends at 240 and two
+    // descriptor tables clamp 32BIT_CONSTANTS at 62 DWORDs = 248 bytes, so
+    // `uint u_layer` at 240 fits without a new root parameter. That change
+    // spans the command signature, the indirect-argument ABI (the array path
+    // would need 24-byte records), and this shader, so it is recorded rather
+    // than attempted blind. See the R609 entry in
+    // docs/superpowers/plans/2026-10-19-d3d12-forward-mrt-velocity-design-plan.md.
     float3 albedo = g_albedo.Sample(g_smp, float3(uv, (float)layer)).rgb;
     float3 color = albedo * (g_push.u_ambient + g_push.u_light_color * diff)
                  + g_push.u_light_color * spec * 0.15;

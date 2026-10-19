@@ -10,13 +10,17 @@
 // R441 + R600: two deltas from the non-array pair, both forced by the array
 // variant's own contract.
 //   1. u_albedo is a sampler2DArray in the fragment sidecar, so this stage
-//      must hand the layer down. GLSL spells it uint(gl_BaseInstanceARB) - the
-//      indirect draw command's first_instance. HLSL names that same system
-//      value SV_InstanceID. It is a SYSTEM-VALUE semantic: it consumes no
-//      vertex-buffer slot, which is why the input layout below stays
-//      POSITION/NORMAL/TEXCOORD0 at 32B and rhi_d3d12_input_layout needs no
-//      change. Adding an "instance semantic" to the input element list would
-//      be a lie - there is no such attribute in the mesh.
+//      must hand the layer down. GLSL spells it uint(gl_BaseInstanceARB) --
+//      the indirect draw command's first_instance, which is independent of
+//      InstanceCount. HLSL's equivalent is SV_StartInstanceLocation.
+//      SV_InstanceID is NOT the twin: that is gl_InstanceID, i.e.
+//      base + instance index, so the two agree only when first_instance is 0
+//      and the draw is a single instance. Production here is
+//      first_instance = layer with InstanceCount = 1, and reading
+//      SV_InstanceID on the RTX 4060 renders layer 0 for StartInstanceLocation
+//      1 and 2 alike, so the old pairing was silently wrong on the one route
+//      the engine actually uses. See blinn_phong_arr_hlsl.frag for the full
+//      measurement and for why no other semantic fixes it.
 //   2. The push block has no u_camera_pos: R600 moved the camera into the
 //      b1 temporal CBV, exactly as blinn_phong_hlsl.vert did. Both twins of
 //      this pair below share the shortened 240-byte tail.
@@ -58,6 +62,10 @@ struct VSIn {
     // GLSL: vLayer = uint(gl_BaseInstanceARB). nointerpolation is HLSL's
     // flat-equivalent and is mandatory for an integer interpolant to survive
     // the trip unchanged; it must match the PS input's modifier exactly.
+    // ⚠️ This is NOT the GLSL twin -- SV_InstanceID is gl_InstanceID, not
+    // gl_BaseInstance. See the long note in blinn_phong_arr_hlsl.frag: the
+    // D3D12 material-array path is measurably broken for this reason and
+    // needs a command-signature CONSTANT, not a different semantic.
     uint layer : SV_InstanceID;
 };
 struct VSOut {

@@ -1060,3 +1060,69 @@ the fallback list above and deserves its own pass.
 Still open from R607, unchanged: the production array layer comes from
 `first_instance` (indirect `StartInstanceLocation`), which WARP discards. It
 needs a real GPU running `rhi_cmd_draw_indirect` to close.
+
+### R609 -- the real GPU says the layer is broken everywhere, not just on WARP
+
+The line above was wrong. Running the suite on the RTX 4060 closes the open
+item, and the answer is not "WARP drops it". **D3D12 drops it.**
+
+```
+{InstanceCount = 1, StartInstanceLocation = 1} -> layer 0
+{InstanceCount = 1, StartInstanceLocation = 2} -> layer 0
+{InstanceCount = 2, StartInstanceLocation = 2} -> last instance is layer 1
+```
+
+The third record is the discriminating one. `InstanceCount` *is* honoured --
+two instances rasterise and the second wins -- so the argument buffer is
+genuinely being read, and a layer of 0 in the first two rows can only be the
+base being dropped rather than an upload that never landed. The per-draw
+argument buffer is read back and asserted too, so "the record on the CPU was
+correct" is recorded evidence rather than an assumption.
+
+**The cause.** `blinn_phong_arr.vert` reads `uint(gl_BaseInstanceARB)` --
+the indirect record's `first_instance`, independent of `InstanceCount`. The
+D3D12 sidecar reads `SV_InstanceID`, which is `gl_InstanceID`: base plus
+instance index. The R607 sidecar comment asserted the two were "that same
+system value"; they are not. They agree only when `first_instance` is 0,
+which is the opposite of what production draws:
+
+- `main.c:3779` -- `cmds[cidx].instance_count = 1`
+- `main.c:3947` -- `cmds[ci].first_instance = group_layer[mg]`
+
+So **every material-array mesh on D3D12 samples layer 0**. GL and Vulkan are
+correct, which is why nothing upstream noticed.
+
+**There is no semantic that fixes this.** `SV_StartInstanceLocation` is the
+right one and dxc rejects it at every shader model from `ps_6_0` to
+`ps_6_11`, in both stages:
+
+```
+error: invalid semantic 'SV_StartInstanceLocation' for shader model: vs
+error: invalid semantic 'SV_StartInstanceLocation' for ps 6.0
+```
+
+The bare name `StartInstanceLocation` *does* compile, which is the trap:
+`-dumpbin` shows it as a plain user semantic with `SysValue = NONE` and its
+own register, i.e. nothing the runtime populates. Wiring that in would look
+fixed and read garbage.
+
+**The fix is the mechanism D3D12 provides for exactly this**: a command
+signature carrying a second `D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT`
+argument, which copies a value out of the argument buffer and into a root
+constant the shader can read. Room exists -- this pipeline's push block ends
+at 240 and two descriptor tables clamp `32BIT_CONSTANTS` at 62 DWORDs = 248
+bytes, so `uint u_layer` at 240 fits without a new root parameter. The change
+spans the command signature, the indirect-argument ABI (the array path needs
+24-byte records against a 20-byte `D3D12_DRAW_INDEXED_ARGUMENTS`), and the
+sidecar. That is a cross-backend ABI change, so it is **recorded, not
+attempted blind**.
+
+Until then the sidecars keep reading `SV_InstanceID` -- unchanged behaviour,
+so nothing regresses -- and `indirect_start_instance_does_not_reach_sv_instance_id`
+pins all three measured rows. When the path is fixed that test goes red,
+which is the point: the fix has to be a deliberate update, not a silent
+change of meaning inside a passing test.
+
+Hardware result: **17/18**. The one failure is `warp_device_identity_is_honest`,
+which asserts the adapter *is* WARP and is meant to fail when
+`ENGINE_D3D12_WARP` is unset.

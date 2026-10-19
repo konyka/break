@@ -123,6 +123,20 @@
 - **同一套像素证明第一次在真实 GPU 上跑了，并因此发现断言本身有缺陷**：`env -u ENGINE_D3D12_WARP` 后地形受阴影那一个像素的蓝通道读回 **18** 而不是 19。**不是着色器缺陷**——解析值是 **18.52**，离字节取整边界只有 **0.02**，而链路上有 `sin(10)*sin(20)`，fp32 的参数规约就足以决定它落在哪一侧。三个期望三元组**全都**至少有一个通道落在边界 0.08 以内（地形 60.57 / 18.52、水 16.575、天空盒 52.44），因为它们都是被挑成整数字节值的——这是设计的系统性特征，不是地形独有。`warp_expect_rgba` 因此改为接受每通道容差，三处颜色断言一律传 1；**velocity 断言仍然精确**，因为 0.0 是字面量，没有边界可跨。容差之下反向验证照样转红（0.4→0.5 让红偏 4、绿偏 9）。
 - 硬件上的结果是 **16/17**：唯一失败是 `warp_device_identity_is_honest`，它断言的正是「适配器**就是** WARP」，所以 `ENGINE_D3D12_WARP` 被 unset 时它本来就该红。**这是 D3D12 像素证明第一次跑在真实硅片上**（RTX 4060），此前所有像素证据都来自 WARP。
 
+- **⚠️ R609：真实 GPU 推翻了挂了好几轮的结论——材质数组的层号在 D3D12 上根本到不了着色器，不是 WARP 限制**。在 RTX 4060 上跑同一套件得到：
+  | 间接参数 | 实际渲染层 |
+  | --- | --- |
+  | `{InstanceCount = 1, StartInstanceLocation = 1}` | 层 0 |
+  | `{InstanceCount = 1, StartInstanceLocation = 2}` | 层 0 |
+  | `{InstanceCount = 2, StartInstanceLocation = 2}` | 末实例是**层 1** |
+
+  第三行是判别式证据：`InstanceCount` **确实被采纳**（两个实例都光栅化、后一个覆盖），所以参数缓冲是真的被读到了；前两行的「层 0」只可能是 **base 被丢弃**，而不是上传没生效。每一次 draw 的参数缓冲还会回读断言，所以「CPU 侧记录是对的」是**被记录的证据**而非假设。
+- **根因**：`blinn_phong_arr.vert` 读 `uint(gl_BaseInstanceARB)`（= 间接记录的 `first_instance`，与 `InstanceCount` 无关），而 D3D12 sidecar 读 `SV_InstanceID`（= `gl_InstanceID`，base + 实例下标）。R607 的 sidecar 注释断言两者「是同一个系统值」，**它们不是**；只有 `first_instance == 0` 时才相等——而生产恰恰相反：`main.c:3779` 写 `instance_count = 1`，`main.c:3947` 写 `first_instance = group_layer[mg]`。**因此 D3D12 上每个材质数组网格都在采样层 0**；GL/VK 正确，所以上游一直没发现。
+- **没有任何 HLSL 语义能修**。`SV_StartInstanceLocation` 是正确的那个，但 dxc 在 `ps_6_0` 到 `ps_6_11` 的**每一个** shader model、两个阶段都拒绝：`invalid semantic 'SV_StartInstanceLocation' for ps 6.0`。**裸名 `StartInstanceLocation` 能编译，这是个陷阱**——`dxc -dumpbin` 显示它是 `SysValue = NONE` 的普通用户语义、独立寄存器，运行时**不会**填充；接上去会「看起来修好了」然后读到垃圾。
+- **正确修法是 D3D12 为此专门提供的机制**：命令签名加第二个 `D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT` 参数，把参数缓冲里的值拷进 root constant 供着色器读。**空间是有的**——该管线 push 块止于 240，两张描述符表把 `32BIT_CONSTANTS` 压到 62 DWORD = 248 字节，`uint u_layer` 放 240 无需新增根参数。但改动横跨命令签名、间接参数 ABI（数组路径需要 24 字节记录，而 `D3D12_DRAW_INDEXED_ARGUMENTS` 是 20 字节）与 sidecar，**属于跨后端 ABI 变更，故如实记录而不盲改**。
+- 在修好之前 sidecar **维持读 `SV_InstanceID`**（行为不变，无回归），新增的 `indirect_start_instance_does_not_reach_sv_instance_id` 把上面三行全部钉成断言——**修好那天这个用例会转红**，这正是目的：修复必须是一次有意识的更新，而不是在「一直绿」的测试里悄悄改变含义。
+- 硬件上的结果是 **17/18**：唯一失败是 `warp_device_identity_is_honest`，它断言适配器**就是** WARP，`ENGINE_D3D12_WARP` 被 unset 时本来就该红。WARP 上 18/18。
+
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 
 - **意义**：此前 D3D12 的 `rhi_cmd_bind_material_textures{,_ibl}` 是**空桩**，于是 forward draw 永远到不了 sidecar 的 albedo——上一轮 blinn_phong sidecar 之所以只能手工 `rhi_cmd_bind_texture` 绑 unit 0 验证，正是因为真实入口是空的。本轮把两个 binder 落地，并让"引擎真实调用"这件事本身被 WARP 像素覆盖。

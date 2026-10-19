@@ -1374,6 +1374,256 @@ TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* D3D12_DRAW_ARGUMENTS, spelled out because rhi.h deliberately does not leak
+ * the SDK type: ExecuteIndirect reads exactly these four DWORDs, and the
+ * backend's command signature declares ByteStride == sizeof(D3D12_DRAW_ARGUMENTS)
+ * (rhi_d3d12.c), which rhi_d3d12_indirect_args_valid also enforces. */
+typedef struct {
+    u32 vertex_count_per_instance;
+    u32 instance_count;
+    u32 start_vertex_location;
+    u32 start_instance_location;
+} WarpDrawArgs;
+
+static int warp_adapter_is_warp(RHIDevice *dev)
+{
+    RHIDeviceInfo info;
+    if (!rhi_device_get_info(dev, &info)) return 0;
+    return strstr(info.device_name, "Basic Render") != NULL ||
+           strstr(info.device_name, "WARP") != NULL;
+}
+
+/* R609: the layer route production actually takes -- and it is BROKEN.
+ *
+ * mega_mat_arrays_draw encodes the material-array layer in the indirect
+ * record's first_instance (main.c:3947) with instance_count = 1
+ * (main.c:3779), and the GLSL twin reads it back as
+ * uint(gl_BaseInstanceARB) in blinn_phong_arr.vert. The D3D12 sidecar reads
+ * SV_InstanceID instead, and D3D12's SV_InstanceID does NOT include
+ * StartInstanceLocation -- it is gl_InstanceID, i.e. base + instance index,
+ * and here the base never arrives. So every material-array mesh on D3D12
+ * samples layer 0.
+ *
+ * This was recorded as a WARP limitation for several rounds and that was
+ * wrong. Measured on the RTX 4060:
+ *
+ *   {InstanceCount = 1, StartInstanceLocation = 1} -> layer 0
+ *   {InstanceCount = 1, StartInstanceLocation = 2} -> layer 0
+ *   {InstanceCount = 2, StartInstanceLocation = 2} -> last instance is 1
+ *
+ * The third record is the discriminating one. InstanceCount IS honoured (two
+ * instances rasterise and the second wins), so the argument buffer is being
+ * read; only StartInstanceLocation is dropped. Without it the first two rows
+ * would be indistinguishable from "the upload never happened".
+ *
+ * Every row is asserted, which is the point: the test pins the measured
+ * behaviour so the day the path is fixed this suite goes red and whoever
+ * fixes it updates the expectations deliberately, instead of the bug
+ * disappearing silently into a passing test. The per-draw argument buffer is
+ * read back and asserted too, so "the record on the CPU was right" is part of
+ * the recorded evidence rather than an assumption.
+ *
+ * The fix is a command signature with a second D3D12_INDIRECT_ARGUMENT_TYPE_
+ * CONSTANT argument, copying the layer out of the record into a root
+ * constant. There is room: this pipeline's push block ends at 240 and two
+ * descriptor tables clamp 32BIT_CONSTANTS at 62 DWORDs = 248 bytes. See the
+ * note in blinn_phong_arr_hlsl.frag. */
+TEST(indirect_start_instance_does_not_reach_sv_instance_id)
+{
+    static const float verts[6 * 8] = {
+        /*  pos                    normal        uv  */
+        -1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+         1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 2.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const unsigned char layer_red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    static const unsigned char layer_green[2 * 2 * 4] = {
+        0, 255, 0, 255,   0, 255, 0, 255,
+        0, 255, 0, 255,   0, 255, 0, 255
+    };
+    static const unsigned char layer_blue[2 * 2 * 4] = {
+        0, 0, 255, 255,   0, 0, 255, 255,
+        0, 0, 255, 255,   0, 0, 255, 255
+    };
+    /* Column-major: index = col*4 + row. */
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const unsigned char expect[3][4] = {
+        { 255,   0,   0, 255 },
+        {   0, 255,   0, 255 },
+        {   0,   0, 255, 255 }
+    };
+    /* The three measured records from the header comment. The third is the
+     * discriminating one: InstanceCount = 2 proves the argument buffer is
+     * read at all, so a layer of 0 in the first two rows is the base being
+     * dropped rather than an upload that never landed. */
+    static const struct { u32 instances; u32 start; int layer; } cases[3] = {
+        { 1u, 1u, 0 },
+        { 1u, 2u, 0 },
+        { 2u, 2u, 1 }
+    };
+    const RHIFormat formats[2] = {
+        RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT
+    };
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITexture albedo_array;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, args, temporal_ubo;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    WarpDrawArgs record, readback;
+    const int on_warp = warp_adapter_is_warp(g_dev);
+    int c, pixel, i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    albedo_array = rhi_texture_array_create(g_dev, 2u, 2u, 3u,
+                                            RHI_FORMAT_R8G8B8A8_UNORM);
+    ASSERT_TRUE(rhi_handle_valid(albedo_array));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 0u, layer_red,
+                                   sizeof(layer_red));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 1u, layer_green,
+                                   sizeof(layer_green));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 2u, layer_blue,
+                                   sizeof(layer_blue));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;
+    pdesc.uses_textures = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    /* INDIRECT, not STORAGE: the backend gives this one the UPLOAD heap, which
+     * is the CPU-writable / GPU-readable shape ExecuteIndirect needs. */
+    memset(&record, 0, sizeof(record));
+    record.vertex_count_per_instance = 6u;
+    record.instance_count = 2u;
+    record.start_vertex_location = 0u;
+    record.start_instance_location = 1u;
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(record);
+    bdesc.usage = RHI_BUFFER_USAGE_INDIRECT;
+    bdesc.initial_data = &record;
+    args = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(args));
+
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
+
+    /* The three measured records from the header comment. The third is the
+     * discriminating one: InstanceCount = 2 proves the argument buffer is
+     * read at all, so a layer of 0 in the first two rows is the base being
+     * dropped rather than an upload that never landed. */
+    for (c = 0; c < 3; ++c) {
+        const int layer = cases[c].layer;
+        record.instance_count = cases[c].instances;
+        record.start_instance_location = cases[c].start;
+        rhi_buffer_update(g_dev, args, &record, sizeof(record));
+        memset(&readback, 0, sizeof(readback));
+        ASSERT_TRUE(rhi_buffer_read(g_dev, args, &readback, 0u,
+                                    sizeof(readback)));
+        ASSERT_EQ(readback.vertex_count_per_instance, 6u);
+        ASSERT_EQ(readback.instance_count, cases[c].instances);
+        ASSERT_EQ(readback.start_vertex_location, 0u);
+        ASSERT_EQ(readback.start_instance_location, cases[c].start);
+
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, 0.0f, -1.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, albedo_array, (RHISampler){0}, 0u);
+        rhi_cmd_draw_indirect(g_dev, args, 0u, 1u, (u32)sizeof(record));
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0,
+                                            sizeof(rt0)));
+        for (pixel = 0; pixel < 64; ++pixel) {
+            i = pixel * 4;
+            if (rt0[i + 0] != expect[layer][0] ||
+                rt0[i + 1] != expect[layer][1] ||
+                rt0[i + 2] != expect[layer][2] ||
+                rt0[i + 3] != expect[layer][3]) {
+                printf("FAIL: {InstanceCount=%u, StartInstanceLocation=%u} on "
+                       "%s adapter rendered layer %d at pixel %d as "
+                       "(%u,%u,%u,%u), expected (%u,%u,%u,%u)\n",
+                       (unsigned)cases[c].instances,
+                       (unsigned)cases[c].start,
+                       on_warp ? "WARP" : "hardware", layer, pixel,
+                       (unsigned)rt0[i + 0], (unsigned)rt0[i + 1],
+                       (unsigned)rt0[i + 2], (unsigned)rt0[i + 3],
+                       (unsigned)expect[layer][0], (unsigned)expect[layer][1],
+                       (unsigned)expect[layer][2], (unsigned)expect[layer][3]);
+            }
+            ASSERT_EQ(rt0[i + 0], expect[layer][0]);
+            ASSERT_EQ(rt0[i + 1], expect[layer][1]);
+            ASSERT_EQ(rt0[i + 2], expect[layer][2]);
+            ASSERT_EQ(rt0[i + 3], expect[layer][3]);
+        }
+
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1,
+                                            sizeof(rt1)));
+        for (i = 0; i < 64 * 2; ++i) {
+            ASSERT_EQ(rt1[i], 0u);
+        }
+    }
+
+    printf("  note: %s agrees -- StartInstanceLocation does not reach "
+           "SV_InstanceID on either adapter, so the material-array layer is "
+           "always 0 here. Fix is a command-signature CONSTANT; see the "
+           "header comment.\n", on_warp ? "WARP" : "hardware");
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, albedo_array);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, args);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -2291,6 +2541,7 @@ int main(void) {
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     RUN_TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1);
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
+    RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
