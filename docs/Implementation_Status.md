@@ -219,6 +219,14 @@
   - 反向验证：把 early-out 条件改成恒真（即直通），用例报 `blended=0`。WARP 与 RTX 4060 **都通过**——两者在非 NaN 像素上一致。
   - demo（PowerShell 启动，exit 0）在 RTX 4060 上现在打印 `ColorGrade` / `FXAA` / `LensEffects` 三条 `initialized`。
 - 门控（WARP **23/23**、硬件 22/23（身份断言按设计）、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
+- **R620：`dof` 上 D3D12，同时补上 `rhi_cmd_bind_textures_multi`**（又一个空桩）。**9 个后处理调用点走它**——`dof`、`motion_blur`、`taa`、`ssr`、`ssgi`、`contact_shadow`、`lens_flare`、`combined_post_process` 两处——所以 D3D12 上它们即便有了 sidecar 也会读到未绑定的表。契约照 GL：`textures[i]` → unit i，最多 6 个；实现直接**委托给 `rhi_cmd_bind_texture`**（逐 unit 解析 `image_root_params`、跳过管线未声明的寄存器、按 2D / 2D-array 建视图、转到着色器读状态），不复制一份 SRV 路径。
+  - `dof` sidecar：4 个 float；`u_dof_near` / `u_dof_far` 在 GL 孪生里是 `const`（R89-2），测试钉 resolve 为 -1，与 fxaa / terrain 同规则。颜色 t0、深度 t1（R32_FLOAT）。
+  - 像素证明：左红右蓝条纹 + 全 0.5 深度（线性化为 0.1998）。帧 0 对焦 → coc=0 → early-out，条纹**精确**原样通过；帧 1 失焦 100 → coc 饱和 → 半径 10 texel 的六边形采样模糊边缘。期望值来自 Python 复刻模型。
+  - **测试第一稿是错的，两个适配器第一次运行就指出来了**：我只建模了第 3 行，并因为「源图逐行相同」就断言每行等于第 0 行。实际上着色器会**跳过 UV 越出 [0,1] 的采样点**，而 8 像素宽、半径 10 时大部分采样点都越界，**哪些点存活取决于行**——第 0 行第 1 列读回 170 而不是 128。改为对全部 64 像素建模后两个适配器都精确通过。该表在 r ↔ 7-r 下对称，所以与回读行序无关。多个模型值恰好落在 .5（127.5），所以帧 1 用 ±2 容差（否则就是在断言硬件的舍入规则），帧 0 精确；绿通道恒 0、红+蓝 = 255±2。
+  - **两路反向验证**：把多纹理 binder 改回空操作 → 读到未绑定表、断言失败；把 unit 对调（深度当颜色读）→ 对焦帧第 0 像素读回 **(128,0,0)** 而不是 (255,0,0)。
+  - demo（PowerShell，exit 0）在 RTX 4060 上现在打印 `DOF: initialized (320x180, …)`；后处理已上线：**ColorGrade / LensEffects / FXAA / DOF**。仍报 "shader compile failed"（无 sidecar）的：ContactShadow、LensFlare、MotionBlur、SSGI、SSR、TAA——它们的多纹理绑定现在已经就绪，只差 frag sidecar。
+- **⚠️ 顺带发现的前向通道缺陷（读代码确认，未修）：D3D12 的场景深度与 GL/VK 不一致**。`mat4_perspective` 是 OpenGL 形式（NDC z ∈ [-1,1]）；GL 靠深度范围把它映射到 [0,1]，**VK 前向着色器自己做** `gl_Position.z = (z + w) * 0.5`（`blinn_phong_vk.vert` R214-A）。而 **D3D12 的前向 sidecar 全都没做这一步**（逐个查过 `blinn_phong*_hlsl.vert`、`terrain_hlsl.vert`、`water_hlsl.vert`，均不碰 `pos.z`）——R613 只在阴影级联的 `depth_only_hlsl.vert` 里做了。后果：①D3D12 深度缓冲存的是原始 ndc_z 而不是 (ndc_z+1)/2，任何读场景深度的后处理（DOF、SSR、SSAO、contact shadow…）都会解出错误的距离；②ndc_z < 0 的部分被硬件裁掉——near 0.1 / far 100 时是视距 **0.1 到约 0.2**，一个很薄的近裁带，平时看不出来。修法与 R613 相同（每个前向 sidecar 的 VS 末尾加那一行），但会改变 D3D12 的深度测试与所有既有像素测试的深度值，**单独一轮做**，不在后处理移植里顺手改——在 DOF 侧做补偿只会把缺陷藏起来。
+- 门控（WARP **24/24**、硬件 23/24、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

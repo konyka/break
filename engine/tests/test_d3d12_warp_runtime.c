@@ -1885,6 +1885,188 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * A pass-through shader leaves no 191 pixels; a wrong u_fxaa_sw/sh changes
  * the texel step and moves or removes the blend; a missing t0 descriptor
  * blacks out the box. */
+/* R620: dof on D3D12, and rhi_cmd_bind_textures_multi with it.
+ *
+ * rhi_cmd_bind_textures_multi was a no-op stub on D3D12, and nine post passes
+ * use it -- dof, motion_blur, taa, ssr, ssgi, contact_shadow, lens_flare and
+ * both arms of combined_post_process. DOF is a good first proof of it because
+ * it needs BOTH units to be right at once: t1 (depth) decides which branch the
+ * shader takes, and t0 (colour) supplies the pixels in either branch.
+ *
+ * Source: an 8x8 colour image, columns 0..3 red and 4..7 blue, every row
+ * identical; and an 8x8 R32_FLOAT depth image that is 0.5 everywhere, which
+ * linearizes to 0.1998 at near 0.1 / far 100.
+ *
+ *   frame 0: u_dof_focus = 0.1998 (the depth itself) -> coc 0 -> early-out,
+ *            the stripes pass through exactly: (255,0,0) | (0,0,255).
+ *   frame 1: u_dof_focus = 100.1998, range 5 -> coc saturates at 1 -> the
+ *            hex-disk gather (radius 10 texels) blurs the edge. A Python
+ *            model of the shader gives the red table below, blue = 255 - red,
+ *            green exactly 0.
+ *
+ * The first draft of this test only modelled row 3 and asserted every row
+ * equal to row 0 because the SOURCE is row-invariant. That was wrong, and
+ * both adapters said so on the first run (row 0, column 1 read 170, not 128):
+ * the shader skips gather taps whose UV leaves [0,1], and at radius 10 on an
+ * 8-pixel target most taps leave it, so which taps survive depends on the
+ * row. The full table is what the model gives once all 64 pixels are
+ * evaluated. It is symmetric under row r <-> 7 - r, so it does not depend on
+ * whether readback row 0 is the top or the bottom of the image.
+ *
+ * Frame 1 is asserted with a +-2 tolerance and frame 0 exactly. Several model
+ * values sit exactly on .5 (127.5), so exact bytes would be asserting the
+ * hardware's round-half rule; the bound covers that and bilinear-weight
+ * ULPs. Green is exactly 0 and red + blue is 255 +- 2 on every pixel.
+ *
+ * What each fault looks like: a stub multi-binder leaves t0/t1 unbound and
+ * frame 0 is not the stripes; swapped units sample depth as colour and red is
+ * a flat 127; a wrong u_dof_focus offset keeps frame 1 in the early-out and
+ * it still shows hard stripes. */
+TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind) {
+    static unsigned char colour[8 * 8 * 4];
+    static float depth[8 * 8];
+    static const unsigned char model_red[8 * 8] = {
+        170, 170, 170, 170,  85,  85,  85,  85,
+        170, 170, 170, 170,  85,  85,  85,  85,
+        170, 128, 128, 142, 113, 128, 128,  85,
+        170, 128, 128, 142, 113, 128, 128,  85,
+        170, 128, 128, 142, 113, 128, 128,  85,
+        170, 128, 128, 142, 113, 128, 128,  85,
+        170, 170, 170, 170,  85,  85,  85,  85,
+        170, 170, 170, 170,  85,  85,  85,  85
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture ctex, dtex;
+    RHITexture pair[2];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_focus, loc_range, loc_sw, loc_sh;
+    int frame, r, c, i;
+
+    for (r = 0; r < 8; ++r) {
+        for (c = 0; c < 8; ++c) {
+            i = (r * 8 + c) * 4;
+            colour[i + 0] = c < 4 ? 255u : 0u;
+            colour[i + 1] = 0u;
+            colour[i + 2] = c < 4 ? 0u : 255u;
+            colour[i + 3] = 255u;
+            depth[r * 8 + c] = 0.5f;
+        }
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "dof_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    loc_focus = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_focus");
+    loc_range = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_range");
+    loc_sw    = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_sw");
+    loc_sh    = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_sh");
+    ASSERT_EQ(loc_focus, 0);
+    ASSERT_EQ(loc_range, 4);
+    ASSERT_EQ(loc_sw, 8);
+    ASSERT_EQ(loc_sh, 12);
+    /* GLSL consts in the twin (R89-2), so dof_apply's writes are no-ops on
+     * GL too. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_near"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_dof_far"), -1);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = colour;
+    ctex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ctex));
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth;
+    dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    pair[0] = ctex;
+    pair[1] = dtex;
+
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 0.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+        rhi_cmd_set_uniform_f32(cmd, loc_focus, frame == 0 ? 0.1998f : 100.1998f);
+        rhi_cmd_set_uniform_f32(cmd, loc_range, 5.0f);
+        rhi_cmd_set_uniform_f32(cmd, loc_sw, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, loc_sh, 8.0f);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (r = 0; r < 8; ++r) {
+            for (c = 0; c < 8; ++c) {
+                int red, blue, want_red;
+                i = (r * 8 + c) * 4;
+                red = px[i + 0];
+                blue = px[i + 2];
+                ASSERT_EQ(px[i + 1], 0u);
+                ASSERT_EQ(px[i + 3], 255u);
+                if (frame == 0) {
+                    want_red = c < 4 ? 255 : 0;
+                    if (red != want_red || blue != 255 - want_red)
+                        printf("FAIL: dof in-focus pixel (c=%d,r=%d) = (%d,0,%d), "
+                               "expected (%d,0,%d)\n", c, r, red, blue,
+                               want_red, 255 - want_red);
+                    ASSERT_EQ(red, want_red);
+                    ASSERT_EQ(blue, 255 - want_red);
+                } else {
+                    want_red = (int)model_red[r * 8 + c];
+                    if (red < want_red - 2 || red > want_red + 2 ||
+                        red + blue < 253 || red + blue > 257)
+                        printf("FAIL: dof blurred pixel (c=%d,r=%d) = (%d,0,%d), "
+                               "expected red %d+-2 and red+blue 255+-2\n",
+                               c, r, red, blue, want_red);
+                    ASSERT_TRUE(red >= want_red - 2 && red <= want_red + 2);
+                    ASSERT_TRUE(red + blue >= 253 && red + blue <= 257);
+                }
+            }
+        }
+    }
+
+    rhi_texture_destroy(g_dev, ctex);
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions) {
     static unsigned char box_tex[8 * 8 * 4];
     RHIOffscreenFBODesc fbo_desc;
@@ -3291,6 +3473,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
     RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);
     RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);
     RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);

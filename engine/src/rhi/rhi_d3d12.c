@@ -4704,9 +4704,28 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     (void)point_shadow_cubes;
     (void)point_shadow_count; (void)cube_sampler;
 }
+/* R620: was a no-op stub. Nine post passes route through it -- dof,
+ * motion_blur, taa, ssr, ssgi, contact_shadow, lens_flare and both arms of
+ * combined_post_process -- so on D3D12 every one of them would have built a
+ * pipeline and then sampled unbound tables.
+ *
+ * The contract is the GL one, which is the simplest of the three backends:
+ * textures[i] goes to unit i, at most six. That is exactly
+ * rhi_cmd_bind_texture called once per unit, so this delegates instead of
+ * duplicating the SRV path -- the per-unit binder already resolves
+ * image_root_params[unit], skips a register the pipeline does not declare,
+ * builds a 2D or 2D-array view from the texture, and transitions it to a
+ * shader-read state. Invalid handles are skipped the same way GL's
+ * gl_bind_tex_unit skips them. The sampler argument is accepted and dropped
+ * exactly as in rhi_cmd_bind_texture; see the KNOWN LIMIT note there. */
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures,
                                  int count, RHISampler sampler) {
-    (void)cmd; (void)textures; (void)count; (void)sampler;
+    int i;
+    if (cmd == NULL || textures == NULL || count <= 0) return;
+    for (i = 0; i < count && i < 6; ++i) {
+        if (!rhi_handle_valid(textures[i])) continue;
+        rhi_cmd_bind_texture(cmd, textures[i], sampler, (u32)i);
+    }
 }
 
 /* ---- offscreen / MRT / depth-cube FBO ---- */
