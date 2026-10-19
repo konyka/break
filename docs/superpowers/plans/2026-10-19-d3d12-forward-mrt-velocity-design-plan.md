@@ -530,6 +530,28 @@ Instrumentation that would answer it without any of the above: log
 `pd->uniform_root_params[1]` and the descriptor handle actually bound, at
 bind time, for the draw that misbehaves.
 
+### The instrumentation run: a definite defect, provable from the code alone
+
+`rhi_cmd_bind_uniform_buffer` now logs the slot, the root parameter and the descriptor handle. On the failing draw, on hardware:
+
+    DIAG ubo bind: slot=4095 root_param=2 gpu=...12FFE0 buf=...17DCD000 size=256
+
+`root_param=2` is the finding. The root signature is:
+
+| index | contents | ever bound? |
+| --- | --- | --- |
+| 0 | 32BIT_CONSTANTS | yes, at flush |
+| 1 | CBV `b1`, **VISIBILITY_VERTEX** (from the vertex pass) | **no** |
+| 2 | CBV `b1`, **VISIBILITY_PIXEL** (from the pixel pass) | yes |
+| 3 | SRV `t0`, **VISIBILITY_VERTEX** | **no** |
+| 4 | SRV `t0`, **VISIBILITY_PIXEL** | yes |
+
+Only two `SetGraphicsRootDescriptorTable` sites exist (`rhi_d3d12.c:3695` and `:3738`), and each binds exactly one table. So **root parameters 1 and 3 are never set, ever**, and D3D12 requires every descriptor-table parameter in the root signature to be set before a draw. A vertex shader reads `b1` through parameter 1; a pixel shader reads it through parameter 2, which is the one that was bound. That is the entire asymmetry, and it needs no driver bug to explain it.
+
+**This part is settled and does not depend on the rest of the investigation.** The duplicate per-stage tables are a real defect, provable by reading the builder, not merely correlated with the symptom.
+
+What is *not* yet explained is why deduplicating them did not make the vertex-stage read correct (it also introduced an `E_INVALIDARG` on the MRT PSO). Either the dedupe had a defect of its own, or something beyond the duplicate tables is also wrong. Those are now two separate questions, and the first one is small and well specified: collapse the two per-stage tables into one per (kind, register, space) with OR-ed visibility, and make sure every descriptor-table parameter the signature declares is actually bound before a draw — which is worth asserting in a test rather than assuming.
+
 ### Working the reading list: item 1 answered
 
 `rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
