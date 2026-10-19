@@ -1949,6 +1949,181 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * pixel proofs assert exact colours with degenerate lighting, and moving the
  * projection under them would change what they are testing. The probe isolates
  * the one thing R621 changed. */
+/* R622: ssr on D3D12 -- offsets, both early-outs, and an honest gap.
+ *
+ * SSR's pixel proof is much weaker than its siblings', and it is worth being
+ * precise about why rather than shipping a test that looks thorough:
+ *
+ *   - `u_ssr_thickness` is a GLSL const, pinned at -1 like fxaa's threshold.
+ *   - Frame 0: depth is 1.0 everywhere, so the first early-out
+ *     (`if (depth >= 1.0)`) returns the scene colour untouched. Exact.
+ *   - Frame 1: depth is a constant 0.5, so every pixel reconstructs to the
+ *     same plane; the normal from the screen-space derivatives is that plane's
+ *     normal, perpendicular to the view, which makes refl_dir.z > 0 and takes
+ *     the second early-out. Also the scene colour. Exact.
+ *   - The RAY MARCH is not asserted. Pinning it would mean modelling 32
+ *     marching steps plus a 4-iteration bisection in Python and hoping the
+ *     model's bilinear weights land in the same byte as the GPU's -- which is
+ *     precisely what went wrong trying to assert fxaa's blend table, and
+ *     fxaa also divides 0/0 on some edges, so some march inputs are undefined.
+ *     A synthetic reflection would have to be built from a depth step, and the
+ *     expected result would then be a number this test computed with a second
+ *     implementation rather than a value derived from the contract.
+ *
+ * ⚠️ AND the two early-outs are NOT separately observable here, which the
+ * reverse check proved rather than assumed: disabling the first one
+ * (if (depth >= 1.0) -> if (false)) leaves this test GREEN, because the
+ * second early-out then catches the same pixels, and with a flat depth field
+ * the march finds nothing either so fade stays 0. All three paths return the
+ * scene colour. So this test does NOT pin "the early-out fired"; it pins the
+ * wiring. Anything that moves a uniform, a texture or the projection turns it
+ * red; anything that merely changes which branch runs does not.
+ *
+ * What this pins is the wiring, which is where the real risk was: seven
+ * uniform offsets at 0/64/128/192/196/200/204, the const at -1, and both
+ * textures reaching the shader through rhi_cmd_bind_textures_multi (SSR is
+ * the second consumer of the binder R620 implemented). A missing t0 or t1
+ * blacks the frame out; a mis-offset uniform moves the scene colour, because
+ * u_ssr_proj / u_ssr_inv_proj are what decode the depth that decides the
+ * early-out. */
+TEST(ssr_sidecar_pins_offsets_and_both_early_outs) {
+    static unsigned char colour[8 * 8 * 4];
+    static float sky[8 * 8];
+    static float flat[8 * 8];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture ctex, skytex, flttex;
+    RHITexture pair[2];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    RHICapabilities caps;
+    static const char *const names[7] = {
+        "u_ssr_proj", "u_ssr_inv_proj", "u_ssr_view", "u_ssr_sw",
+        "u_ssr_sh", "u_ssr_max_steps", "u_ssr_stride"
+    };
+    static const i32 want[7] = { 0, 64, 128, 192, 196, 200, 204 };
+    const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int frame, i;
+
+    for (i = 0; i < 64; ++i) {
+        colour[i * 4 + 0] = (unsigned char)(40 + (i & 7) * 20u);
+        colour[i * 4 + 1] = 90u;
+        colour[i * 4 + 2] = 200u;
+        colour[i * 4 + 3] = 255u;
+        sky[i] = 1.0f;    /* depth >= 1 -> first early-out */
+        flat[i] = 0.5f;   /* constant depth -> plane normal -> second early-out */
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "ssr_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 7; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (got != want[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i], (int)got,
+                   (int)want[i]);
+        ASSERT_EQ(got, want[i]);
+    }
+    /* GLSL const (R89-2), so ssr_apply's write is a no-op on GL too. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ssr_thickness"), -1);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = colour;
+    ctex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(ctex));
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = sky;
+    skytex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(skytex));
+    tdesc.data = flat;
+    flttex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(flttex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
+    for (frame = 0; frame < 2; ++frame) {
+        pair[0] = ctex;
+        pair[1] = frame == 0 ? skytex : flttex;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_f32(cmd, 192, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 196, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 200, 32.0f);
+        rhi_cmd_set_uniform_f32(cmd, 204, 2.0f);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (i = 0; i < 64; ++i) {
+            if (px[i * 4 + 0] != colour[i * 4 + 0] ||
+                px[i * 4 + 1] != colour[i * 4 + 1] ||
+                px[i * 4 + 2] != colour[i * 4 + 2] ||
+                px[i * 4 + 3] != 255u) {
+                printf("FAIL: ssr frame %d pixel %d = (%u,%u,%u,%u), expected "
+                       "(%u,%u,%u,255) -- the early-out must return the scene "
+                       "colour untouched\n", frame, i,
+                       (unsigned)px[i * 4 + 0], (unsigned)px[i * 4 + 1],
+                       (unsigned)px[i * 4 + 2], (unsigned)px[i * 4 + 3],
+                       (unsigned)colour[i * 4 + 0], (unsigned)colour[i * 4 + 1],
+                       (unsigned)colour[i * 4 + 2]);
+                break;
+            }
+        }
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(px[i * 4 + 0], colour[i * 4 + 0]);
+            ASSERT_EQ(px[i * 4 + 1], colour[i * 4 + 1]);
+            ASSERT_EQ(px[i * 4 + 2], colour[i * 4 + 2]);
+            ASSERT_EQ(px[i * 4 + 3], 255u);
+        }
+    }
+
+    rhi_texture_destroy(g_dev, ctex);
+    rhi_texture_destroy(g_dev, skytex);
+    rhi_texture_destroy(g_dev, flttex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped) {
     /* ONE quad at eye distance 0.15, y = +-0.6, facing the camera in view
      * space (looking down -Z).
@@ -3623,6 +3798,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(ssr_sidecar_pins_offsets_and_both_early_outs);
     RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
     RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
     RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);

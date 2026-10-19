@@ -232,6 +232,12 @@
   - **反向验证极干净**：去掉那一行，像素 0 读回**蓝色清屏色**——近处几何**整个消失**。这就是修复前 D3D12 上的行为，两种适配器上完全一致。
   - **这个测试第一稿错了两处，都由第一次运行暴露**：①`proj` 的 `m.e[3][2]` 我写成了 -0.0020020，正确值是 **-0.2002002**（`-2*far*near/(far-near)`，少写了一位数字），整个四边形被推到视口外；②还多画了一个视距 1.0 的远四边形「证明绿色部分存在」，但它覆盖同样的像素、把近处**覆盖掉了**，于是几何画出来了（64 绿）而近处条带始终不出现。第三稿只留近处四边形，注释里把这个错误记下来了。
 - 门控（WARP **25/25**、硬件 24/25（仅身份断言按设计红）、D3D12 **172/172** + graphics **8/8**、VK **171/171**、GL **170/170**；VK golden MAE 仍精确为基线 28.75/13.54；demo 在 RTX 4060 上 exit=0 且无 device removed）。
+- **R622：`ssr` 上 D3D12**（7 个 uniform = 208 字节；2 张表把根常量压到 62 DWORD = 248 字节，**放得下**——这是 instanced 放不下的对照）。`u_ssr_thickness` 是 GLSL `const`，测试钉 resolve = -1。
+  - **⚠️ 这个像素证明比前几个弱，如实说清它证明了什么、没证明什么**：光线步进**没有断言**——要钉它就得在 Python 里复刻 32 步步进 + 4 次二分，然后指望模型的双线性权重和 GPU 落在同一个字节上，而这正是 R619 断言 fxaa 混合表时失败过的方式；fxaa 本身还在部分边缘像素上 0/0，所以部分步进输入是未定义的。**而且两个 early-out 也分不开，这一点是反向验证查出来的、不是假设的**：把 `if (depth >= 1.0)` 改成 `if (false)` 后用例**仍然绿**——第二个 early-out 接住了同样的像素，平坦深度场下步进也找不到命中、`fade` 保持 0，三条路径都返回场景色。所以这个测试**钉的是接线**不是「early-out 触发了」：7 个偏移（0/64/128/192/196/200/204）、const 为 -1、两张纹理经 `rhi_cmd_bind_textures_multi` 送达（SSR 是 R620 那个 binder 的第二个消费者）。动了 uniform / 纹理 / 投影会转红；只换了走哪条分支不会。
+  - **工具链又一条命名坑，已写进 shader 头**：GLSL 的 `dFdx`/`dFdy` 是 **fine** 导数，而这个 DXC 的正确拼法是 **`ddx_fine` / `ddy_fine`**。三种直觉写法都不对——`DDX`/`DDY` 和 `dFdx`/`dFdy` 都被拒（"use of undeclared identifier"），而**小写 `ddx`/`ddy` 能编译却是 COARSE 导数**（`dx.op.unary.f32` opcode 83 `DerivCoarseX`）。2×2 quad 上 coarse 与 fine 斜率不同，误用会让重建法线与 GL 分叉。
+  - demo 上 `SSR: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR** 五个。
+  - 门控（WARP **26/26**、硬件 25/26、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。**一次瞬时 flake 记录在案**：某次 D3D12 全量门控里 `test_myui_loader` 失败，但单独连跑 3 次都是 120/120、重跑全量门控也不再出现，与本轮改动无关（很可能是共享临时文件）。
+- **剩余待办的后处理**：`motion_blur`（3 纹理）、`contact_shadow`（2）、`lens_flare`（2）、`ssgi`（2，且有两个 pass）、`taa`（4）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 
