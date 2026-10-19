@@ -639,6 +639,52 @@ Two things about this SDK make it worth writing down before anyone retries it:
 Nothing shipped. The dedupe remains correct in principle and unlandable in
 practice until this is answered.
 
+### Narrowing the PSO failure further
+
+Two single-variable runs against the deduped builder:
+
+| blinn root signature | `CreateGraphicsPipelineState` |
+| --- | --- |
+| `[0]` constants, `[1]` CBV b1, `[2]` SRV t0, static sampler s0 | **E_INVALIDARG** |
+| `[0]` constants, `[1]` SRV t0, static sampler s0 (CBV table suppressed entirely) | **E_INVALIDARG** |
+
+The second row removes the CBV table, so "the CBV table is the trigger" is
+**wrong**. It fails for a different and boring reason -- the blinn sidecars
+still declare `ConstantBuffer<ForwardTemporal> g_temporal : register(b1)`,
+so a signature without `b1` references a register the root signature does not
+provide, which is itself invalid. Both directions fail.
+
+What the two rows do establish is a much crisper statement than before:
+
+> **blinn_phong builds with a five-parameter root signature and fails with a
+> three-parameter one; blit builds with either.**
+
+The only structural difference between those two blinn signatures and the
+blit one is that the tables went from duplicated (two SRV + two CBV) to single
+(one SRV + one CBV). Nothing else changed. So the trigger is a property of
+the *reduced* parameter list, not of the CBV's presence, its register, or its
+descriptor type.
+
+The cheapest next experiment follows directly from that and needs no new
+machinery: **add a dummy fourth descriptor-table parameter back** and see
+whether blinn starts building. If it does, the count or the adjacency of the
+parameters is what the driver rejects, and the fix is in how the builder lays
+them out. If it does not, the problem is in the *content* of one of the three
+parameters and each can be varied in turn.
+
+Two caveats to carry forward:
+
+- `D3D12_GRAPHICS_PIPELINE_STATE_DESC` in this SDK has no
+  `NumStaticSamplers` member, so the PSO is built from the older struct while
+  the root signature is serialised as **1.1**. That pairing has never been
+  exercised here, because the duplicated tables hid it.
+- The duplicate tables may be "wrong and load-bearing" -- an unidentified
+  reason a five-parameter signature works where a three-parameter one does
+  not. That is now the single most valuable thing left to find out, and it
+  is answerable by bisection rather than by reasoning.
+
+Nothing shipped.
+
 ### Working the reading list: item 1 answered
 
 `rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
