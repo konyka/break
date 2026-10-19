@@ -22,35 +22,58 @@ bool water_init(WaterPlane *w, RHIDevice *dev, f32 water_y, f32 size, bool forwa
     w->sampler = RHI_HANDLE_NULL;
 
     usize vs_len = 0, fs_len = 0;
-    char *vs_src = NULL, *fs_src = NULL;
 
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/water.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/water.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("Water: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("Water: capability query failed");
         return false;
     }
-    vs_src = shader_read_file(vs_path, &vs_len);
-    fs_src = shader_read_file(fs_path, &fs_len);
 
-    if (!vs_src || !fs_src) {
-        LOG_WARN("Water shaders not found");
+    RHIShader vs, fs;
+    if (caps.shader_sidecar_paths) {
+        /* R606: D3D12 never compiles GLSL; its shaders are hand-authored HLSL
+         * sidecars resolved from the requested path by the backend, which
+         * gains an idempotent "_hlsl" before the stage extension. water.vert
+         * and water_hlsl.vert carry no FORWARD_MRT difference that reaches the
+         * D3D12 pixel path (the sidecar writes the zero motion vector the
+         * engine never supplies a temporal UBO for), so one vertex sidecar
+         * serves both pipeline shapes and only the fragment stage forks. */
+        LOG_INFO("water: backend resolves shader sidecars; loading "
+                 "shaders/water.vert as water_hlsl.vert and "
+                 "shaders/water%s.frag as water%s_hlsl.frag",
+                 forward_mrt ? "_mrt" : "", forward_mrt ? "_mrt" : "");
+        vs = rhi_shader_create_path(dev, "shaders/water.vert", false);
+        fs = rhi_shader_create_path(dev,
+                                    forward_mrt ? "shaders/water_mrt.frag"
+                                                : "shaders/water.frag", true);
+    } else {
+        char *vs_src = NULL, *fs_src = NULL;
+        if (!shader_variant_path("shaders/water.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/water.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("Water: capability query or shader variant path failed");
+            return false;
+        }
+        vs_src = shader_read_file(vs_path, &vs_len);
+        fs_src = shader_read_file(fs_path, &fs_len);
+
+        if (!vs_src || !fs_src) {
+            LOG_WARN("Water shaders not found");
+            free(vs_src); free(fs_src);
+            return false;
+        }
+
+        usize vs_mrt_len = 0, fs_mrt_len = 0;
+        char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
+        char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
+        vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                               vs_mrt ? vs_mrt_len : vs_len, false);
+        fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                               fs_mrt ? fs_mrt_len : fs_len, true);
         free(vs_src); free(fs_src);
-        return false;
+        free(vs_mrt); free(fs_mrt);
     }
-
-    usize vs_mrt_len = 0, fs_mrt_len = 0;
-    char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
-    char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
-    RHIShader vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
-                                     vs_mrt ? vs_mrt_len : vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
-                                     fs_mrt ? fs_mrt_len : fs_len, true);
-    free(vs_src); free(fs_src);
-    free(vs_mrt); free(fs_mrt);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Water shader compile failed");

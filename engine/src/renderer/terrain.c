@@ -137,50 +137,86 @@ bool terrain_init(Terrain *t, RHIDevice *dev, u32 grid_size, f32 scale, f32 heig
         }
     }
 
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = NULL;
-    char *fs_src = NULL;
-    char vs_path[96], fs_path[96];
-    /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
-    if (!shader_variant_path("shaders/terrain.vert", (RHIShaderVariant)t->caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/terrain.frag", (RHIShaderVariant)t->caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("Terrain: shader variant path failed — using blinn_phong");
-    } else {
-        vs_src = shader_read_file(vs_path, &vs_len);
-        fs_src = shader_read_file(fs_path, &fs_len);
-    }
-
-    if (!vs_src || !fs_src) {
-        free(vs_src); free(fs_src);
-        LOG_WARN("Terrain shaders not found — using blinn_phong");
-    }
-
-    RHIShader vs, fs;
+    RHIShader vs = RHI_HANDLE_NULL, fs = RHI_HANDLE_NULL;
     bool used_terrain_shaders = false;
-    if (vs_src && fs_src) {
-        usize vs_mrt_len = 0, fs_mrt_len = 0;
-        char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
-        char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
-        vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
-                               vs_mrt ? vs_mrt_len : vs_len, false);
-        fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
-                               fs_mrt ? fs_mrt_len : fs_len, true);
-        free(vs_mrt); free(fs_mrt);
-        free(vs_src); free(fs_src);
-        used_terrain_shaders = true;
-    } else {
-        usize bl_vs_len = 0, bl_fs_len = 0;
-        char *bl_vs = NULL;
-        char *bl_fs = NULL;
-        char bl_vs_path[96], bl_fs_path[96];
-        if (shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)t->caps.shader_variant, bl_vs_path, sizeof(bl_vs_path)) &&
-            shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)t->caps.shader_variant, bl_fs_path, sizeof(bl_fs_path))) {
-            bl_vs = shader_read_file(bl_vs_path, &bl_vs_len);
-            bl_fs = shader_read_file(bl_fs_path, &bl_fs_len);
+    if (t->caps.shader_sidecar_paths) {
+        /* R606: D3D12 never compiles GLSL; its shaders are hand-authored HLSL
+         * sidecars resolved from the requested path by the backend, which gains
+         * an idempotent "_hlsl" before the stage extension. terrain_hlsl.vert
+         * carries no FORWARD_MRT difference that reaches the D3D12 pixel path
+         * (the sidecar writes the zero motion vector the engine never supplies
+         * a temporal UBO for), so one vertex sidecar serves both pipeline
+         * shapes and only the fragment stage forks.
+         *
+         * The blinn_phong degradation below is a GLSL-source fallback, which
+         * D3D12 cannot execute at all, so the sidecar route degrades to the
+         * blinn_phong SIDECARS instead -- otherwise "using blinn_phong" would
+         * name a fallback that leaves the terrain unlit and unrendered. */
+        LOG_INFO("terrain: backend resolves shader sidecars; loading "
+                 "shaders/terrain.vert as terrain_hlsl.vert and "
+                 "shaders/terrain%s.frag as terrain%s_hlsl.frag",
+                 forward_mrt ? "_mrt" : "", forward_mrt ? "_mrt" : "");
+        vs = rhi_shader_create_path(dev, "shaders/terrain.vert", false);
+        fs = rhi_shader_create_path(dev,
+                                    forward_mrt ? "shaders/terrain_mrt.frag"
+                                                : "shaders/terrain.frag", true);
+        if (rhi_handle_valid(vs) && rhi_handle_valid(fs)) {
+            used_terrain_shaders = true;
+        } else {
+            if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+            if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+            LOG_WARN("Terrain: D3D12 sidecars unusable — using blinn_phong sidecars");
+            vs = rhi_shader_create_path(dev,
+                                        forward_mrt ? "shaders/blinn_phong_mrt.vert"
+                                                    : "shaders/blinn_phong.vert", false);
+            fs = rhi_shader_create_path(dev,
+                                        forward_mrt ? "shaders/blinn_phong_mrt.frag"
+                                                    : "shaders/blinn_phong.frag", true);
         }
-        vs = rhi_shader_create(dev, bl_vs, bl_vs_len, false);
-        fs = rhi_shader_create(dev, bl_fs, bl_fs_len, true);
-        free(bl_vs); free(bl_fs);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = NULL;
+        char *fs_src = NULL;
+        char vs_path[96], fs_path[96];
+        /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
+        if (!shader_variant_path("shaders/terrain.vert", (RHIShaderVariant)t->caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/terrain.frag", (RHIShaderVariant)t->caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("Terrain: shader variant path failed — using blinn_phong");
+        } else {
+            vs_src = shader_read_file(vs_path, &vs_len);
+            fs_src = shader_read_file(fs_path, &fs_len);
+        }
+
+        if (!vs_src || !fs_src) {
+            free(vs_src); free(fs_src);
+            LOG_WARN("Terrain shaders not found — using blinn_phong");
+        }
+
+        if (vs_src && fs_src) {
+            usize vs_mrt_len = 0, fs_mrt_len = 0;
+            char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
+            char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
+            vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                                   vs_mrt ? vs_mrt_len : vs_len, false);
+            fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                                   fs_mrt ? fs_mrt_len : fs_len, true);
+            free(vs_mrt); free(fs_mrt);
+            free(vs_src); free(fs_src);
+            used_terrain_shaders = true;
+        } else {
+            usize bl_vs_len = 0, bl_fs_len = 0;
+            char *bl_vs = NULL;
+            char *bl_fs = NULL;
+            char bl_vs_path[96], bl_fs_path[96];
+            if (shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)t->caps.shader_variant, bl_vs_path, sizeof(bl_vs_path)) &&
+                shader_variant_path("shaders/blinn_phong.frag", (RHIShaderVariant)t->caps.shader_variant, bl_fs_path, sizeof(bl_fs_path))) {
+                bl_vs = shader_read_file(bl_vs_path, &bl_vs_len);
+                bl_fs = shader_read_file(bl_fs_path, &bl_fs_len);
+            }
+            vs = rhi_shader_create(dev, bl_vs, bl_vs_len, false);
+            fs = rhi_shader_create(dev, bl_fs, bl_fs_len, true);
+            free(bl_vs); free(bl_fs);
+        }
     }
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
@@ -367,7 +403,14 @@ void terrain_render(Terrain *t, RHICmdBuffer *cmd,
         {1,0,0,0}, {0,1,0,0}, {0,0,1,0}, {0,0,0,1}
     }};
     rhi_cmd_bind_pipeline(cmd, t->pipeline);
-    rhi_cmd_set_uniform_mat4(cmd, t->loc_model, &identity_model.e[0][0]);
+    /* The terrain model is the identity on every backend (terrain_vk.vert
+     * omits u_model for exactly that reason), but the D3D12 terrain sidecar
+     * has no u_model push member at all: with one, world_pos would land at
+     * byte 256 of a block that must end by 252 and the write would be dropped.
+     * So resolve() is -1 there and the write has to be guarded or every frame
+     * logs a dropped-set_uniform for a matrix nobody reads. */
+    if (t->loc_model >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, t->loc_model, &identity_model.e[0][0]);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_view, view);
     rhi_cmd_set_uniform_mat4(cmd, t->loc_proj, proj);
     if (t->loc_light_dir >= 0) {

@@ -1747,6 +1747,501 @@ TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen) {
     rhi_offscreen_fbo_destroy(g_dev, &fbo);
 }
 
+/* ---- environment sidecars: skybox, water, terrain ----
+ *
+ * These three follow blinn_phong into the sidecar path API, so each test
+ * drives the SHAPE OF PIPELINE the demo actually builds (forward_mrt = true
+ * in main.c) and asserts an exact RGBA byte, never "not black". The rig that
+ * makes an exact byte possible is the same trick in all three:
+ *
+ *  - a projection that swaps world (x, z) into NDC (x, y) while leaving depth
+ *    alone, so a single oversized triangle covers the whole target and the
+ *    geometry is fully controlled by the vertex buffer;
+ *  - uniforms chosen so every position-dependent term is either constant over
+ *    the covered area or pinned to a branch whose value is known by
+ *    construction.
+ *
+ * RT1 is read back on every draw as RAW 16-bit patterns. Both environment
+ * sidecars document a zero motion vector (neither terrain_render nor
+ * water_render ever binds a temporal UBO, so a b1 CBV would be an unbound
+ * descriptor table), which is also what the attachment is cleared to -- so
+ * "+0.0 exactly" is the assertion, not "approximately zero".
+ */
+
+/* Column-major (index = col*4 + row), matching HLSL's float4x4 packing.
+ * m00 = m12 = 1/1.5 maps world x -> NDC x and world z -> NDC y; the m22 = 0
+ * entry puts the whole plane at depth 0, which the depth-disabled test
+ * pipeline never looks at. */
+static const float WARP_XZ_TO_NDC[16] = {
+    0.66666667f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 0.66666667f, 0.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+};
+static const float WARP_IDENTITY[16] = {
+    1.0f, 0.0f, 0.0f, 0.0f,
+    0.0f, 1.0f, 0.0f, 0.0f,
+    0.0f, 0.0f, 1.0f, 0.0f,
+    0.0f, 0.0f, 0.0f, 1.0f
+};
+
+/* Prints the byte actually read next to the one expected; ASSERT_EQ reports
+ * only the expressions, which is useless for an 8-bit value. */
+static int warp_expect_rgba(const unsigned char *px, int count,
+                            int r, int g, int b, int a, const char *what)
+{
+    int i;
+    for (i = 0; i < count * 4; i += 4) {
+        if (px[i] == (unsigned char)r && px[i+1] == (unsigned char)g &&
+            px[i+2] == (unsigned char)b && px[i+3] == (unsigned char)a)
+            continue;
+        printf("FAIL: %s pixel %d = (%u,%u,%u,%u), expected (%d,%d,%d,%d)\n",
+               what, i / 4, px[i], px[i+1], px[i+2], px[i+3], r, g, b, a);
+        return 0;
+    }
+    return 1;
+}
+
+static int warp_expect_vel_zero(const unsigned short *rt1, const char *what)
+{
+    int i;
+    for (i = 0; i < 64 * 2; ++i) {
+        if (rt1[i] == 0u) continue;
+        printf("FAIL: %s RT1 halfword %d = 0x%04x, expected 0x0000\n",
+               what, i, (unsigned)rt1[i]);
+        return 0;
+    }
+    return 1;
+}
+
+/* R608: the skybox sidecar pair. "The sky is blue" proves nothing, so the
+ * uniforms are chosen to make the closed-form half of skybox.frag -- ray.y
+ * below 0.01, so the 24-step cloud march is skipped and no fbm/hash is in the
+ * pixel -- evaluate to one constant colour:
+ *
+ *   u_view     = identity
+ *   u_inv_proj = the matrix with m03 = +1 and m13 = -1, so
+ *                ray_eye.xy = (1, -1) at EVERY vertex and the whole screen
+ *                shades one ray: normalize(1,-1,-1) = (0.5774,-0.5774,-0.5774)
+ *   u_sun_dir  = (0,0,-1)   -> cos_sun = 0.57735, no sun disc, no halo
+ *                                (smoothstep(0.9995,...) = 0); the horizon
+ *                                term stays live at (1-|ray.y|)^3 = 0.0755
+ *   u_sun_color= (20,10,5)  -> a linear HDR triple, not a clamped white
+ *
+ *   density    = exp(-zenith*6371/8400) + exp(-zenith*6371/1250) = 0.190499
+ *   scattering = (RAYLEIGH_COEFF * phase_rayleigh * density) * 30000
+ *                + mie_scat * 1000
+ *   extinction = exp(-(RAYLEIGH_COEFF + 0.1*MIE_COEFF) * density*0.5 * 6371 * 0.01)
+ *   sky        = u_sun_color * (scattering + 0.1 * horizon_fog) * extinction
+ *
+ * giving (0.20565, 0.13692, 0.08983) = bytes (52, 35, 23). The three
+ * channels are the RAYLEIGH_COEFF ratio 5.5 : 13 : 22.4, so an error in the
+ * per-channel coefficient, the phase function, or u_sun_color's byte offset
+ * turns this red instead of merely darkening it. */
+TEST(skybox_sidecar_scatters_an_exact_constant_sky) {
+    /* m03 = 1 (column 3, row 0) and m13 = -1 (column 3, row 1): column 3 is
+     * the last group of four floats, and its first two entries are rows 0/1. */
+    static const float inv_proj[16] = {
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 0.0f,
+        1.0f, -1.0f, 0.0f, 1.0f
+    };
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    static const char *const names[4] = {"u_inv_proj", "u_view", "u_sun_dir", "u_sun_color"};
+    static const i32 expected[4] = {0, 64, 128, 144};
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHIShader vs, fs, vs1, fs1;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    i32 loc[4];
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    int i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    /* The GLSL paths the engine itself passes, plus the _mrt fragment name it
+     * passes on D3D12 -- the backend appends _hlsl to whatever it is given. */
+    vs = rhi_shader_create_path(g_dev, "shaders/skybox.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/skybox_mrt.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+    vs1 = rhi_shader_create_path(g_dev, "shaders/skybox.vert", false);
+    fs1 = rhi_shader_create_path(g_dev, "shaders/skybox.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs1));
+    ASSERT_TRUE(rhi_handle_valid(fs1));
+    rhi_shader_destroy(g_dev, vs1);
+    rhi_shader_destroy(g_dev, fs1);
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.no_vertex_input = true;   /* SV_VertexID only: zero input elements */
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 4; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expected[i])
+            printf("FAIL: skybox %s resolved to %d, expected %d\n",
+                   names[i], (int)loc[i], (int)expected[i]);
+        ASSERT_EQ(loc[i], expected[i]);
+    }
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, loc[0], inv_proj);
+    rhi_cmd_set_uniform_mat4(cmd, loc[1], WARP_IDENTITY);
+    rhi_cmd_set_uniform_vec3(cmd, loc[2], 0.0f, 0.0f, -1.0f);  /* u_sun_dir */
+    rhi_cmd_set_uniform_vec3(cmd, loc[3], 20.0f, 10.0f, 5.0f);  /* u_sun_color */
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    memset(rt0, 0, sizeof(rt0));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+    ASSERT_TRUE(warp_expect_rgba(rt0, 64, 52, 35, 23, 255, "skybox RT0"));
+
+    memset(rt1, 0, sizeof(rt1));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+    ASSERT_TRUE(warp_expect_vel_zero(rt1, "skybox"));
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* R608: the water sidecar pair. The GLSL modulates the colour by
+ * dist / wave / fresnel, all of which vary across a lit water quad, so the
+ * test plane is placed OUT of the 10..50 fade ramp instead:
+ *
+ *   fade = 1 - smoothstep(10, 50, dist) = 0   (camera.xz is (60,60), the
+ *                                             quad is at the origin)
+ *   -> wave *= 0, specular *= 0, and mix(deep, surface, fresnel*fade)
+ *      collapses to deep = u_water_color * 0.5 exactly, with alpha = 0.
+ *
+ * Draw A: camera above the plane -> colour = u_water_color * 0.5.
+ * Draw B: camera BELOW u_water_y -> depth_darken = 1 - 0.4*0.15 = 0.94,
+ *         so colour = u_water_color * 0.47. Two different exact triples from
+ *         one pipeline, and they can only both hold if u_camera_pos, u_water_y
+ *         and u_water_color each land on their own byte offset. */
+TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact) {
+    static const float verts[3 * 3] = {
+        -1.5f, 0.0f, -1.5f,
+         4.5f, 0.0f, -1.5f,
+        -1.5f, 0.0f,  4.5f
+    };
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    /* u_view, u_proj, u_light_vp, u_camera_pos, u_time, u_water_color,
+     * u_shadow_bias, u_water_y, and the deliberately absent u_model. */
+    static const char *const names[9] = {
+        "u_view", "u_proj", "u_light_vp", "u_camera_pos", "u_time",
+        "u_water_color", "u_shadow_bias", "u_water_y", "u_model"
+    };
+    static const i32 expected[9] = {0, 64, 128, 192, 204, 208, 220, 224, -1};
+    static const unsigned char white_tex[4 * 4 * 4] = {
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255
+    };
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITextureDesc tex_desc;
+    RHITexture shadow_tex;
+    RHIShader vs, fs, vs1, fs1;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    i32 loc[9];
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    int draw, i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 4u; tex_desc.height = 4u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = white_tex;
+    shadow_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(shadow_tex));
+
+    vs = rhi_shader_create_path(g_dev, "shaders/water.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/water_mrt.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+    vs1 = rhi_shader_create_path(g_dev, "shaders/water.vert", false);
+    fs1 = rhi_shader_create_path(g_dev, "shaders/water.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs1));
+    ASSERT_TRUE(rhi_handle_valid(fs1));
+    rhi_shader_destroy(g_dev, vs1);
+    rhi_shader_destroy(g_dev, fs1);
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;   /* packed vec3: rhi_d3d12_input_layout's stride==12 arm */
+    pdesc.uses_textures = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 9; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expected[i])
+            printf("FAIL: water %s resolved to %d, expected %d\n",
+                   names[i], (int)loc[i], (int)expected[i]);
+        ASSERT_EQ(loc[i], expected[i]);
+    }
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    for (draw = 0; draw < 2; ++draw) {
+        const float cam_y = (draw == 0) ? 1.0f : -0.4f;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc[0], WARP_IDENTITY);      /* u_view */
+        rhi_cmd_set_uniform_mat4(cmd, loc[1], WARP_XZ_TO_NDC);     /* u_proj */
+        rhi_cmd_set_uniform_mat4(cmd, loc[2], WARP_IDENTITY);      /* u_light_vp */
+        rhi_cmd_set_uniform_vec3(cmd, loc[3], 60.0f, cam_y, 60.0f);/* u_camera_pos */
+        rhi_cmd_set_uniform_f32(cmd, loc[4], 0.0f);               /* u_time */
+        rhi_cmd_set_uniform_vec3(cmd, loc[5], 0.13f, 0.94f, 0.90f);/* u_water_color */
+        rhi_cmd_set_uniform_f32(cmd, loc[6], 1.0f);                /* u_shadow_bias */
+        rhi_cmd_set_uniform_f32(cmd, loc[7], 0.0f);                /* u_water_y */
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, shadow_tex, (RHISampler){0}, 1u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        /* deep = u_water_color * 0.5  ->  x255 = wc * 127.5
+         * submerged adds depth_darken 0.94 -> x255 = wc * 119.85 */
+        ASSERT_TRUE(warp_expect_rgba(rt0, 64,
+                                     draw == 0 ? 17 : 16,
+                                     draw == 0 ? 120 : 113,
+                                     draw == 0 ? 115 : 108,
+                                     0, draw == 0 ? "water RT0 above" : "water RT0 below"));
+
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+        ASSERT_TRUE(warp_expect_vel_zero(rt1, "water"));
+    }
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, shadow_tex);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* R608: the terrain sidecar pair. terrain.frag hard-codes u_light_dir /
+ * u_light_color / u_ambient as GLSL consts, so the only shading knobs the
+ * test has are the geometry and the push block. The geometry is chosen so
+ * exactly one surface colour survives:
+ *
+ *   normal (0,1,0) -> slope 0 -> grass_w 1, rock_w 0, sand_w 0 (height 2 is
+ *                     above the smoothstep(1.5, 0, h) cut), snow_w 0 (below
+ *                     3.5), total 1
+ *   uv (0.125, 0.25) -> pattern = sin(10)*sin(20)*0.03 = -0.01490, so
+ *                     grass_color = (0.20510, 0.42020, 0.10510)
+ *   u_water_y = -100 -> foam 0 and no caustics; fog_dist < 40 -> fog 0
+ *   diff = dot((0,1,0), -u_light_dir) = 0.808122, spec 0 (rock_w = 0)
+ *
+ *   lit      = albedo * (ambient + light_color * 0.808122)      -> (61,120,30)
+ *   shadowed = albedo * (ambient + light_color * 0.808122*0.4)  -> (35, 70,19)
+ *
+ * The shadowed triple comes from the SAME uniforms with a black 4x4 shadow
+ * atlas instead of a white one, which is the only thing that changes: the
+ * sidecar's terrain_shadow() returns 1.0 or 0.4 off .r and the sampled texel.
+ * That makes it a real test of register t1 rather than of arithmetic alone. */
+TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas) {
+    static const float verts[3 * 8] = {
+        /*  pos                     normal        uv  */
+        -1.5f, 2.0f, -1.5f,        0.0f, 1.0f, 0.0f,   0.125f, 0.25f,
+         4.5f, 2.0f, -1.5f,        0.0f, 1.0f, 0.0f,   0.125f, 0.25f,
+        -1.5f, 2.0f,  4.5f,        0.0f, 1.0f, 0.0f,   0.125f, 0.25f
+    };
+    /* 0.25 on the xyz rows so the whole quad lands inside the atlas quadrant
+     * and ndc.z stays in [-0.375, 0.375]: window depth 0.5 never passes the
+     * 0.4-shadow comparison against a white texel and always passes against a
+     * black one, on every pixel. */
+    static const float light_vp[16] = {
+        0.25f, 0.0f, 0.0f, 0.0f,
+        0.0f, 0.25f, 0.0f, 0.0f,
+        0.0f, 0.0f, 0.25f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f
+    };
+    static const unsigned char white_tex[4 * 4 * 4] = {
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255
+    };
+    static const unsigned char black_tex[4 * 4 * 4] = {
+        0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255,
+        0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255,
+        0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255,
+        0,0,0,255, 0,0,0,255, 0,0,0,255, 0,0,0,255
+    };
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    /* The sidecar keeps no u_model (identity), no u_albedo (the GL twin never
+     * samples it) and no u_light_* (GL consts). Pinning -1 for those is the
+     * point: a stale offset there is how a silently-zeroed uniform returns. */
+    static const char *const names[12] = {
+        "u_view", "u_proj", "u_light_vp", "u_camera_pos", "u_time",
+        "u_water_y", "u_shadow_bias", "u_fog_strength", "u_model",
+        "u_albedo", "u_light_dir", "u_ambient"
+    };
+    static const i32 expected[12] = {
+        0, 64, 128, 192, 204, 208, 212, 216, -1, -1, -1, -1
+    };
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITextureDesc tex_desc;
+    RHITexture albedo_tex, shadow_tex;
+    RHIShader vs, fs, vs1, fs1;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    i32 loc[12];
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    int draw, i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 4u; tex_desc.height = 4u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = white_tex;
+    albedo_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(albedo_tex));
+    shadow_tex = albedo_tex;
+
+    vs = rhi_shader_create_path(g_dev, "shaders/terrain.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/terrain_mrt.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+    vs1 = rhi_shader_create_path(g_dev, "shaders/terrain.vert", false);
+    fs1 = rhi_shader_create_path(g_dev, "shaders/terrain.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs1));
+    ASSERT_TRUE(rhi_handle_valid(fs1));
+    rhi_shader_destroy(g_dev, vs1);
+    rhi_shader_destroy(g_dev, fs1);
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;   /* pos3 + normal3 + uv2 */
+    pdesc.uses_textures = true;
+    pdesc.terrain_layout = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 12; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expected[i])
+            printf("FAIL: terrain %s resolved to %d, expected %d\n",
+                   names[i], (int)loc[i], (int)expected[i]);
+        ASSERT_EQ(loc[i], expected[i]);
+    }
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    for (draw = 1; draw < 3; ++draw) {
+        if (draw == 2) {
+            /* Black atlas: terrain_shadow() now takes the 0.4 branch. */
+            tex_desc.data = black_tex;
+            shadow_tex = rhi_texture_create(g_dev, &tex_desc);
+            ASSERT_TRUE(rhi_handle_valid(shadow_tex));
+        }
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc[0], WARP_IDENTITY);        /* u_view */
+        rhi_cmd_set_uniform_mat4(cmd, loc[1], WARP_XZ_TO_NDC);       /* u_proj */
+        rhi_cmd_set_uniform_mat4(cmd, loc[2], light_vp);             /* u_light_vp */
+        rhi_cmd_set_uniform_vec3(cmd, loc[3], 0.0f, 2.0f, 12.0f);    /* u_camera_pos */
+        rhi_cmd_set_uniform_f32(cmd, loc[4], 0.0f);                  /* u_time */
+        rhi_cmd_set_uniform_f32(cmd, loc[5], -100.0f);               /* u_water_y */
+        rhi_cmd_set_uniform_f32(cmd, loc[6], 0.0f);                  /* u_shadow_bias */
+        rhi_cmd_set_uniform_f32(cmd, loc[7], 0.0f);                  /* u_fog_strength */
+        /* The REAL binder terrain_render calls: albedo on unit 0 (which this
+         * sidecar does not declare, so the call is skipped), shadow atlas on
+         * unit 1 -> register t1. */
+        rhi_cmd_bind_material_textures(cmd, albedo_tex, albedo_tex, albedo_tex,
+                                       albedo_tex, shadow_tex, albedo_tex,
+                                       (RHISampler){0});
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        ASSERT_TRUE(warp_expect_rgba(rt0, 64,
+                                     draw == 1 ? 61 : 35,
+                                     draw == 1 ? 120 : 70,
+                                     draw == 1 ? 30 : 19,
+                                     255, draw == 1 ? "terrain RT0 lit" : "terrain RT0 shadowed"));
+
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+        ASSERT_TRUE(warp_expect_vel_zero(rt1, "terrain"));
+    }
+    if (draw == 2) rhi_texture_destroy(g_dev, shadow_tex);
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, albedo_tex);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -1767,6 +2262,9 @@ int main(void) {
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
+    RUN_TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas);
+    RUN_TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact);
+    RUN_TEST(skybox_sidecar_scatters_an_exact_constant_sky);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

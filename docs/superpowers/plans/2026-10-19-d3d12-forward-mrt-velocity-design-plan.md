@@ -1,6 +1,8 @@
 # D3D12 FORWARD_MRT velocity / RT1 output — design
 
-Status: all five steps implemented and verified (R600/R605/R606).
+Status: all five steps implemented and verified (R600/R605/R606), plus two
+follow-on subsystems carried to D3D12 on hand-written sidecars (R607
+`blinn_phong_arr`, R608 skybox / water / terrain).
 Baseline: `d77882e7` (master)
 Backends affected: D3D12 sidecar design; one option changes the cross-backend
 uniform contract.
@@ -935,3 +937,108 @@ The reverse check on that bind is the useful part: deleting the single
 assertions really are reading the camera out of the CBV. That is the
 mechanism step 5 needs; what it does *not* yet cover is the RT1 velocity
 attachment, which still has no pixel proof.
+
+### R608 -- skybox / water / terrain, and what is left on GLSL
+
+The five steps closed the *forward* path. Three subsystems the engine draws
+every frame were still reading GLSL source through `shader_read_file`, which
+on D3D12 means `rhi_shader_create` has no DXIL blob and `rhi_pipeline_create`
+rejects it. `render_init` already learned to branch on
+`caps.shader_sidecar_paths` (R606); these three call sites are the same shape,
+so they branch the same way and request hand-written sidecars.
+
+Nine files: `{skybox,water,terrain}_hlsl.{vert,frag}` plus one
+`{...}_mrt_hlsl.frag` each. All three mirror the **GL** variant, not the `_vk`
+twin -- D3D12 is not Vulkan, and `terrain.vert` / `water.vert` under
+`FORWARD_MRT` *do* declare the `ForwardTemporal` block while their sidecars
+deliberately do not.
+
+Three register decisions were forced rather than chosen:
+
+- **No `b1` temporal CBV in the MRT vertex stage.** `terrain_render` and
+  `water_render` never call `rhi_cmd_bind_uniform_buffer`, and
+  `rhi_cmd_bind_pipeline` does not reset descriptor tables -- a CBV nobody
+  binds would read whatever stale table the previous draw left at that root
+  parameter. Both sidecars write `velocity = (0,0)`, which is defined *and*
+  is what the attachment is cleared to.
+- **terrain declares no `t0`.** `terrain.frag` declares `u_albedo` and never
+  samples it, so a GLSL compiler drops the inactive binding; the sidecar
+  follows. That is also what keeps the pipeline to **one** descriptor table --
+  two would clamp the root constants to 248 bytes and drop
+  `u_fog_strength@216+4`.
+- **terrain declares no `u_model`.** 4 matrices + 5 scalars is 284 bytes,
+  past the 64-DWORD budget. terrain's model is the identity on every backend
+  (`terrain_vk.vert` omits it for the same reason), so omitting it reproduces
+  the transform exactly; `terrain_render`'s model write now resolves -1 and
+  is guarded, or every frame would log a dropped-set_uniform for a matrix
+  nobody reads.
+
+**No semantic divergence**, and this was checked rather than assumed:
+`terrain.frag` declares `u_light_dir` / `u_light_color` / `u_ambient` as GLSL
+`const`, so `terrain_render`'s writes to them are *already* no-ops on GL. The
+sidecars use `static const` with no `rhi:uniform` marker, so both backends
+resolve -1 and behave the same.
+
+**The three pixel proofs are derived, not recorded.** Each expected triple
+falls out of the shader algebra in closed form:
+
+| subsystem | setup | closed form | bytes |
+| --- | --- | --- | --- |
+| skybox | geometry puts `ray.y < 0.01`, so the 24-step cloud march is skipped | `u_sun_color * (scattering + 0.1*horizon_fog) * extinction` | (52, 35, 23) |
+| water | plane sits outside the 10..50 fade ramp, so `fade = 0` collapses the fresnel term | `u_water_color * 0.5`, then `* 0.94` submerged | (17,120,115) / (16,113,108) |
+| terrain | same uniforms, white vs black shadow atlas | `albedo * (ambient + light_color * 0.808122 * shadow)` | (61,120,30) / (35,70,19) |
+
+The skybox row is the sharpest of the three: its channels *are* the
+`RAYLEIGH_COEFF` ratio 5.5 : 13 : 22.4, so a wrong per-channel coefficient or
+phase function turns the sky **red** rather than merely darkening it.
+
+Reverse check: changing terrain's shadow constant from `0.4f` to `0.5f` turns
+the suite red at the shadowed pixel with (39,79,20) -- which is what
+`(61,120,30) -> (35,70,19)` becomes when the 0.4 factor becomes 0.5. Restored
+afterwards.
+
+Two arithmetic errors were in the *test comments* (the assertions were always
+right): terrain's `pattern` is -0.01490 not -0.02498, and skybox's
+`horizon_fog` is 0.0755 not 0 -- where the sky's dominant red contribution
+comes from.
+
+Gates: D3D12 `ctest -LE "graphics|fuzz"` 171/172 and `ctest -L graphics` 8/8,
+WARP 17/17; VK 170/171 with 0 validation messages and golden MAE unchanged at
+28.75 / 13.54; GL 169/170 with golden MAE unchanged at 15.60 / 1.15. The one
+failure in all three trees is `test_platform_win32_runtime`'s
+`FAIL: OpenClipboard failed`, which unmodified HEAD also fails.
+
+**What is still GLSL-only on D3D12.** The test for this is not "which shaders
+exist" but "which call sites branch on `caps.shader_sidecar_paths`". There are
+**six**, in the whole repository: `main.c:421`, `main.c:495`, `main.c:533`,
+`skybox.c:24`, `terrain.c:142`, `water.c:35`. Everything else calls
+`shader_read_file` + `rhi_shader_create` unconditionally, so it fails to
+compile on D3D12 and degrades through whatever warning its own subsystem
+already prints:
+
+- `main.c`: the clustered family (`pbr_clustered` / `_inst` / `_skin` /
+  `_arr`), deferred (gbuffer / gbuffer_arr / deferred_light), `depth_only`,
+  `instanced`, `skinned`, and the hot-reload pipeline near `main.c:2940` --
+  the same shape as the three call sites landed here.
+- `src/renderer/` (one vert/frag pair each): `cinematic`, `color_grade`,
+  `combined_post_process`, `contact_shadow`, `debug_viz`, `deferred`, `dof`,
+  `forward_velocity`, `fxaa`, `god_rays`, `lens_effects`, `lens_flare`,
+  `motion_blur`, `point_shadow`, `post_process`, `sharpen`, `ssao`, `ssgi`,
+  `ssr`, `sss`, `taa`, `tonemap`, `upscale`, `volumetric`.
+- compute: `gpucull.c` (`cull.comp` / `unified_cull.comp`), `lighting.c`
+  (`cluster_cull.comp`), `particles.c` (`particle_update.comp` /
+  `particle_cull.comp` / `particle.{vert,frag}`), `ibl.c`, `indirect_draw.c`,
+  `occlusion_cull.c`.
+- `asset/hotreload.c`, `myui/myr/my_vgcanvas_break_rhi.c`, `ui/myui_break.c`.
+
+The `shader_read_file` calls in `test_vulkan.c` are test fixtures and are not
+in this list.
+
+**Unresolved and not independently re-verified here:** the D3D12 demo still
+exits with `D3D12 device removed: 0x887a0005` (`DXGI_ERROR_DEVICE_HUNG`). A/B
+suggests it predates these three subsystems, but it correlates closely with
+the fallback list above and deserves its own pass.
+
+Still open from R607, unchanged: the production array layer comes from
+`first_instance` (indirect `StartInstanceLocation`), which WARP discards. It
+needs a real GPU running `rhi_cmd_draw_indirect` to close.
