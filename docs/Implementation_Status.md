@@ -200,7 +200,17 @@
   - **顺带一个现存的设计异味，如实记录不修**：非集群的 instanced 绘制点**根本不绑** `forward_temporal_ubo`，只写那六个 uniform。GL/VK 上 MRT 的 `u_prev_vp` 因此读到的是**上一帧遗留的值**（同一帧里 blinn 路径先绑过 binding 0），而不是这一帧的。sidecar 若忠实镜像就会继承同一行为——改它就会与 GL/VK 分叉，所以这里只登记。
   - **`is_instanced` 与 `uses_texel_buffer` 两个 `RHIPipelineDesc` 字段在 D3D12 后端从未被读取**，与 `indirect_draw_supported` 同一族「标志存在但后端忽略」。本轮实现 `rhi_cmd_bind_texel_buffers` 时按 unit 5/6 无条件绑定，与 GL 侧一致，因此不需要它们。
   - **好消息：`main.c` 只建 MRT 一套 instanced 管线**（无条件注入 `FORWARD_MRT`，`mrt_attachment_count = 2`，目标是 `R16G16B16A16_SFLOAT`/`R16G16_SFLOAT` 浮点格式），所以只需要 `instanced_mrt_hlsl.{vert,frag}` 一对，不必做非 MRT 变体。
-- 门控（本节为文档与调研，无代码变更）。
+- **R617：`color_grade` 上 D3D12，顺带写下 `post_hlsl.vert`**——这是整族后处理的公共前提。**`shaders/post.vert` 被 `src/renderer/` 下 21 个子系统共用**（`cinematic`/`dof`/`fxaa`/`ssao`/`taa`/`ssr`/`tonemap`/`sharpen`/`upscale`/`volumetric`…），而它**一个 uniform 都没有**，所以移植它不牵涉任何预算问题；写完这一个文件，剩下 20 个后处理子系统就都只差自己的 frag sidecar 了。`color_grade` 是其中最便宜的一个：**5 个 float = 20 字节**的 push 块，数学封闭，所以像素期望值能解析推出。
+  - 两个配置各自隔离一段链路，期望值都是**精确字节**：
+    | 用例 | 输入 | saturation | temperature | 推导 | 结果 |
+    | --- | --- | --- | --- | --- | --- |
+    | A | 灰 (200,200,200) | 1 | 0 | sat/contrast/brightness 三段都是恒等；`t = mix(cool, warm, 0.5) = (0.85,0.85,0.85)` 灰色；`200*0.85 = 170` | **(170,170,170)** |
+    | B | 纯红 (255,0,0) | 0 | 0 | `luma = dot(red, Rec.709) = 0.2126`，sat=0 把颜色精确塌成 luma；`0.2126*0.85*255 = 46.08` | **(46,46,46)** |
+    A 证明三段恒等真的是恒等、且白平衡给的是**中性灰而不是逐通道**；B 是「saturation 读的是 uniform 而不是常量」的最强表述（结果变成灰色而非红色）。清屏色设成亮绿色，它永远不是答案。
+  - **反向验证**：把 frag 里的 saturation 写死成 `1.0f`，用例 B 读回 **(217,0,0)**（即 `255*0.85`，红通道原样透传）而不是 (46,46,46)——正是预测的失效形状；恢复后 21/21。
+  - **顺带记下一条工具链限制（会绊倒下一个写 sidecar 的人）**：**这个 DXC 拒绝单参数向量构造**。`float3(x)` 报 `too few elements in vector initialization (expected 3 elements, have 1)`，标量必须用 C 风格转换 `(float3)x` 展开。最小复现已确认。既有 sidecar 恰好都没用 splat，所以此前没人写下来过。而 `lerp(vec, vec, scalar)` 是**允许**的——和 GLSL 习惯把 mix 的第三参数留作标量正好相反，容易写错。
+  - demo 侧证据：RTX 4060 上从 `ColorGrade: pipeline creation failed` 变成 `[INFO] ColorGrade: initialized (640x360)`。
+- 门控（WARP 20/20 → **21/21**、硬件 20/21（`warp_device_identity_is_honest` 按设计红）、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170，三棵树唯一失败都是已知的 `FAIL: OpenClipboard failed`）。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

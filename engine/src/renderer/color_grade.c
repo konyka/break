@@ -7,6 +7,32 @@
 #include <core/shader_io.h>
 
 
+static RHIPipeline cg_create_pipe_path(RHIDevice *dev, const char *vert_path,
+                                       const char *frag_path) {
+    RHIShader vs = rhi_shader_create_path(dev, vert_path, false);
+    RHIShader fs = rhi_shader_create_path(dev, frag_path, true);
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_WARN("ColorGrade: sidecar shader unavailable (%s, %s)", vert_path,
+                 frag_path);
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        return RHI_HANDLE_NULL;
+    }
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.no_vertex_input = true;
+    pdesc.uses_textures = true;
+    pdesc.depth_write_disable = true;
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(dev, &pdesc);
+    rhi_shader_destroy(dev, vs);
+    rhi_shader_destroy(dev, fs);
+    return pipe;
+}
+
 static RHIPipeline cg_create_pipe(RHIDevice *dev,
                                    const char *vert_path, const char *frag_path) {
     usize vs_len = 0, fs_len = 0;
@@ -50,13 +76,27 @@ bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h) {
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/color_grade.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("ColorGrade: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("ColorGrade: capability query failed");
         return false;
     }
-    s->pipe = cg_create_pipe(dev, vs_path, fs_path);
+
+    if (caps.shader_sidecar_paths) {
+        /* R617: on D3D12 the GLSL branch below is a dead end -- this backend
+         * never compiles HLSL in-process, so rhi_shader_create refuses the
+         * source (see rhi_d3d12_shader_alloc) and the pipeline never built.
+         * The two paths the caller names are the ones to hand to
+         * rhi_shader_create_path: the backend appends _hlsl itself. */
+        s->pipe = cg_create_pipe_path(dev, "shaders/post.vert",
+                                      "shaders/color_grade.frag");
+    } else {
+        if (!shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/color_grade.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("ColorGrade: shader variant path failed");
+            return false;
+        }
+        s->pipe = cg_create_pipe(dev, vs_path, fs_path);
+    }
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("ColorGrade: pipeline creation failed");

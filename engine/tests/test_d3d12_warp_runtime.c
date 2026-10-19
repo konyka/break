@@ -1798,6 +1798,170 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * shade. A wrong StructureByteStride (say 4 instead of 16) turns row 1's
  * green into whatever the bytes at offset 4 happen to be, which the exact
  * comparison also catches. */
+/* R617: color_grade on D3D12, and post_hlsl.vert with it.
+ *
+ * color_grade is the cheapest member of the post family and the most
+ * instructive, because all five of its uniforms fit in 20 bytes of push block
+ * -- the opposite of instanced, whose six do not (R616). post_hlsl.vert is the
+ * other half of the value here: 21 subsystems in src/renderer/ request
+ * shaders/post.vert, so this file is the common prerequisite for the whole
+ * family and it carries no uniforms at all.
+ *
+ * The colour maths is closed-form, so the expected bytes are derived rather
+ * than recorded. Two configurations, each chosen so the result is an exact
+ * byte and each isolating a different stage:
+ *
+ *   case A  grey in (200,200,200), saturation 1, contrast 1, brightness 1,
+ *           temperature 0, tint 0.
+ *             adjust_saturation(c, 1)  -> lerp(luma, c, 1) = c   (identity)
+ *             adjust_contrast(c, 1)    -> (c-0.5)+0.5 = c        (identity)
+ *             brightness 1             -> c                      (identity)
+ *             temperature 0 -> t = mix(cool, warm, 0.5)
+ *                           = ((0.7+1)/2, 0.85, (1+0.7)/2) = (0.85,0.85,0.85)
+ *             grey in, grey multiplier -> 200 * 0.85 = 170 exactly.
+ *           So case A proves the three identity stages really are identity and
+ *           the white-balance vector is the neutral grey, not a per-channel
+ *           one.
+ *
+ *   case B  pure red in (255,0,0), saturation 0, everything else as above.
+ *             luma = dot(red, Rec.709) = 0.2126, and saturation 0 collapses the
+ *             colour to exactly luma -- the strongest possible statement that
+ *             the saturation term reads u_cg_saturation and not a constant.
+ *             0.2126 * 0.85 = 0.18071, *255 = 46.08 -> 46.
+ *
+ * The source is a solid colour per configuration, so "one flat output" is the
+ * assertion rather than a shortcut: a missing texture descriptor, a wrong
+ * uniform offset, or a mis-typed multiplier each make it a different flat
+ * colour, and the clear colour is set to a loud green that is never an answer. */
+TEST(color_grade_sidecar_applies_saturation_and_white_balance) {
+    static const unsigned char grey_tex[4 * 4 * 4] = {
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255
+    };
+    static const unsigned char red_tex[4 * 4 * 4] = {
+        255,0,0,255, 255,0,0,255, 255,0,0,255, 255,0,0,255,
+        255,0,0,255, 255,0,0,255, 255,0,0,255, 255,0,0,255,
+        255,0,0,255, 255,0,0,255, 255,0,0,255, 255,0,0,255,
+        255,0,0,255, 255,0,0,255, 255,0,0,255, 255,0,0,255
+    };
+    static const struct { const unsigned char *src; float sat;
+                         unsigned char want; const char *what; } cases[2] = {
+        { grey_tex, 1.0f, 170u, "grey in, saturation 1" },
+        { red_tex,  0.0f,  46u, "red in, saturation 0" }
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture src;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc[5];
+    static const char *const names[5] = {
+        "u_cg_saturation", "u_cg_contrast", "u_cg_brightness",
+        "u_cg_temperature", "u_cg_tint"
+    };
+    /* Declared offsets, in declaration order, so a reordering of the struct
+     * that silently moves one uniform cannot pass. */
+    static const i32 expect_off[5] = { 0, 4, 8, 12, 16 };
+    int c, pixel, i;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "color_grade_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 5; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expect_off[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i],
+                   (int)loc[i], (int)expect_off[i]);
+        ASSERT_EQ(loc[i], expect_off[i]);
+    }
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 4u; tdesc.height = 4u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = 1u;
+    tdesc.data = cases[0].src;
+    src = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(src));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    for (c = 0; c < 2; ++c) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 0.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_texture(cmd, src, sampler, 0u);
+        rhi_cmd_set_uniform_f32(cmd, loc[0], cases[c].sat);
+        rhi_cmd_set_uniform_f32(cmd, loc[1], 1.0f);
+        rhi_cmd_set_uniform_f32(cmd, loc[2], 1.0f);
+        rhi_cmd_set_uniform_f32(cmd, loc[3], 0.0f);
+        rhi_cmd_set_uniform_f32(cmd, loc[4], 0.0f);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (pixel = 0; pixel < 64; ++pixel) {
+            i = pixel * 4;
+            if (px[i + 0] != cases[c].want || px[i + 1] != cases[c].want ||
+                px[i + 2] != cases[c].want || px[i + 3] != 255u) {
+                printf("FAIL: %s pixel %d = (%u,%u,%u,%u), expected "
+                       "(%u,%u,%u,255)\n", cases[c].what, pixel,
+                       (unsigned)px[i + 0], (unsigned)px[i + 1],
+                       (unsigned)px[i + 2], (unsigned)px[i + 3],
+                       (unsigned)cases[c].want, (unsigned)cases[c].want,
+                       (unsigned)cases[c].want);
+            }
+            ASSERT_EQ(px[i + 0], cases[c].want);
+            ASSERT_EQ(px[i + 1], cases[c].want);
+            ASSERT_EQ(px[i + 2], cases[c].want);
+            ASSERT_EQ(px[i + 3], 255u);
+        }
+
+        /* Swap the source for the second case: same pipeline, same uniforms
+         * except saturation. */
+        tdesc.data = cases[c + 1 < 2 ? c + 1 : c].src;
+        rhi_texture_destroy(g_dev, src);
+        src = rhi_texture_create(g_dev, &tdesc);
+        ASSERT_TRUE(rhi_handle_valid(src));
+    }
+
+    rhi_texture_destroy(g_dev, src);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader) {
     static const float verts[3 * 3] = {
         -1.0f, -1.0f, 0.0f,   3.0f, -1.0f, 0.0f,   -1.0f,  3.0f, 0.0f
@@ -2831,6 +2995,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);
     RUN_TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader);
     RUN_TEST(depth_only_sidecar_converts_clip_z_to_window_depth);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
