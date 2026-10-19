@@ -483,6 +483,53 @@ on device loss. Neither is in place.
 
 Nothing is shipped for any of this.
 
+### The two observability gaps, and what is actually available
+
+Step 5's diagnosis kept saying "the debug layer reported nothing", which
+turned out to be two different problems:
+
+**1. Messages were never routed anywhere readable.** Without a message
+callback the layer writes to `OutputDebugString`, which a console test does
+not see. That is the whole reason every earlier run looked silent.
+
+**2. The callback cannot be installed with this SDK.** Writing it is a small
+change, and it was written and then deleted: `ID3D12InfoQueue`,
+`ID3D12Device_GetDebugInterface`, `D3D12_INFO_QUEUE_FILTER` and
+`D3D12_MESSAGE_ID_CLEAR_*` are all **undeclared** by the D3D12 headers this
+project compiles against. `D3D12GetDebugInterface` exists (DRED uses it) but
+the info-queue API around it does not, so there is no supported way to turn
+validation text into log lines here. Nothing shipped.
+
+That leaves **DRED as the only machine-readable channel**, and it has a
+precise limit worth stating: DRED reports a *page fault*, which requires the
+device to be removed. WARP does remove the device, so DRED can say something
+there. The hardware case never removes it — it silently returns wrong data —
+so DRED is silent exactly where the interesting symptom lives. **No
+validation channel can see the hardware failure**, which is why the
+hardware symptom has to be attacked by reading the code and by targeted
+instrumentation, not by waiting for a message.
+
+Concretely, the next person should read, in this order:
+
+1. `rhi_cmd_bind_uniform_buffer` — the descriptor is returned to the pool
+   **in the same call** via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`.
+   If `rhi_cmd_bind_texture` takes a slot from the same allocator, it can
+   overwrite the CBV descriptor before the GPU runs. Check the heaps: the
+   bind path uses `cbv_srv_uav_alloc`, and it is worth confirming the texture
+   path does not share it.
+2. `rhi_d3d12_root_signature_create` — the 32BIT_CONSTANTS param is inserted
+   by shifting `b->params`, and `uniform_root_params[i]++` compensates. With
+   the duplicate tables still present, that shift interacts with which table
+   index the vertex stage actually resolves.
+3. The per-stage reflection merge itself — `rhi_d3d12_reflect_hlsl` is run
+   once per stage over the same `bindings` array and both results are fed to
+   the builder, so the array's contents and the `count` handling are worth
+   re-reading closely.
+
+Instrumentation that would answer it without any of the above: log
+`pd->uniform_root_params[1]` and the descriptor handle actually bound, at
+bind time, for the draw that misbehaves.
+
 ### Ruled out next: duplicate descriptor tables
 
 The strongest-looking theory left was the per-stage table duplication. The
