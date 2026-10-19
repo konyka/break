@@ -256,8 +256,9 @@
   - 只建 **MRT** 一套：GLSL 路径无条件注入 `FORWARD_MRT`，非 MRT 变体从来不会被构建。
   - 绘制点的四个 `set_uniform` 写**跳过**而不是留着——D3D12 上它们 resolve 到 -1、会变成静默空操作，正是 R600 要消除的「丢写不可见」形状；改为调 `forward_temporal_ubo_write_lit` + 按 `temporal_ubo_binding` 绑定。GL/VK 分支逐字未动。
   - **效果是实测的**：D3D12 demo 的 `Draws:` 从移植前的 **20** 变成 **69**，且 120 帧干净跑完、无设备丢失——实例化网格现在真的在 D3D12 上画出来了。
-  - **⚠️ 这条路径仍未验证的部分**：sidecar 的 CBV 布局与引擎结构体是**手工对齐**的，**没有断言二者一致**；位偏移错一位会让光照读到垃圾而不报错。同时 `uses_texel_buffer` / `is_instanced` 两个 `RHIPipelineDesc` 字段在 D3D12 后端仍**从不读取**（R616 记录过），实例行靠 `rhi_cmd_bind_texel_buffers` 绑到 t5。
-  - 门控（WARP 31/31、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170；VK golden MAE 仍精确为 28.75/13.54，GL 为 15.60/1.15）。
+  - **⚠️ 这条路径的薄弱点已补上守卫（R633）**：R632 落地时 sidecar 的 CBV 布局是**手工对齐**引擎 `ForwardTemporalUbo` 的，**没有任何东西断言二者一致**——位偏移错一位会让光照读到垃圾而不报错。现补 `instanced_sidecar_reads_lighting_from_the_temporal_cbv`：把光照做成退化设置（顶点都在 z=0 平面、N=(0,0,1)、相机在 (0,0,-10)），使期望色是**解析可算**而非建模得到——帧 A `light_dir=(0,-1,0)` 使 diff=0 且 spec=0，输出精确等于 `ambient * albedo`（钉住 ambient 偏移，并证明 CBV 确实绑上了）；帧 B `light_dir=(0,0,-1)` 使 L=N、diff=1、ambient 清零，输出等于 `light_color * albedo`（钉住 light_dir 的 z 与 light_color 三分量）。RT1 速度全零再证明时序块被读而非未绑。另断言四个光照 uniform **必须 resolve 为 -1**（若为 0，说明移植被悄悄改回旧形状）。
+  - 反向验证：在光照块前插入 64 字节，用例在帧 0 第 0 像素读回 **(0,0,0)** 而不是 (102,51,20)——布局现在真的有守卫。（第一次的反向检查只改了注释，HLSL 布局由声明顺序决定，那次是无效验证，已重做。）
+  - 门控（WARP **32/32**、硬件 31/32、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170；VK golden MAE 仍精确为 28.75/13.54，GL 为 15.60/1.15）。
   - **R629：加了一条常驻诊断，并用它把一整类原因干净地排除掉**。后端新增 `ctx->debug_frame`（每帧 `rhi_frame_begin` 自增）与 `RHI_D3D12Texture.srv_ref_frame`（每次 `rhi_cmd_bind_texture` 盖上当前帧号）；`rhi_d3d12_fbo_bind_impl` 与 `rhi_d3d12_mrt_fbo_bind_impl` 在把纹理转为 RENDER_TARGET / DEPTH_WRITE **之前**检查该标记，若同一帧内既被当作着色器资源读过、又要成为渲染目标，就报出尺寸与两个角色。
     - **诊断本身被证明是活的**：把判定临时改成无条件后，10 帧内出现 **13 条**警告；恢复守卫后一条不出现。所以「没触发」是有效结论，不是死代码。
     - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。

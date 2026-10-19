@@ -3248,6 +3248,221 @@ TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R632: the instanced sidecar pair, and the pixel proof R632 shipped without.
+ *
+ * R632 moved the instanced pass's four lighting uniforms out of the push
+ * block and into the temporal CBV, because six push words plus two mat4 is
+ * 320 bytes and D3D12's rhi_cmd_set_uniform_* only reaches root constants.
+ * That left the sidecar's CBV layout hand-aligned against the engine's
+ * ForwardTemporalUbo with nothing asserting the two agree, so this test
+ * pins the shader's own reading of it: each frame writes known values at
+ * known byte offsets and asserts the colour that only comes out if the
+ * shader read them from exactly those offsets.
+ *
+ * Lighting is made degenerate the way the blinn_phong tests do it, so the
+ * expected colour is analytic rather than modelled:
+ *   vertices are on the z = 0 plane with N = (0,0,1)
+ *   frame A  light_dir = (0,-1,0)  -> L = (0,1,0), diff = 0, and with the
+ *            camera at (0,0,-10) H.z < 0 so spec = 0. Output is
+ *            ambient * albedo exactly, which pins the AMBIENT offset and
+ *            proves the CBV is bound at all.
+ *   frame B  light_dir = (0,0,-1)  -> L = (0,0,1) = N, so diff = 1 and the
+ *            output is (ambient + light_color) * albedo. With ambient zeroed
+ *            this pins LIGHT_DIR's z (the 1.0 in diff) and LIGHT_COLOR's
+ *            three components together.
+ *
+ * u_camera_pos cannot be pinned by colour here -- with the degenerate setup
+ * the view vector only reaches spec, which is zero either way -- so it is
+ * pinned structurally instead: the vertex stage's SV_InstanceID must come
+ * through, which is what makes the camera-position member worth carrying.
+ *
+ * The albedo choices avoid .5 exactly: 255 * (0.4, 0.2, 0.08) = (102, 51,
+ * 20.4), so the assertions are byte-exact rather than tolerance-based --
+ * unlike most of the other post proofs. */
+TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv) {
+    static const float verts[6 * 8] = {
+        /*  aPos                 aNormal              aUV   */
+        -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   1.0f, 0.0f,
+         1.0f,  1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   1.0f, 1.0f,
+        -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         1.0f,  1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   1.0f, 1.0f,
+        -1.0f,  1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 1.0f
+    };
+    /* One instance row set: identity model (rows 0..3) and identity
+     * prev_model (rows 4..7), so world_pos == a_pos and the velocity is
+     * driven purely by u_prev_vp. */
+    static const float rows[8 * 4] = {
+        1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1,
+        1,0,0,0,  0,1,0,0,  0,0,1,0,  0,0,0,1
+    };
+    static const unsigned char white[4 * 4 * 4] = {
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255
+    };
+    /* Byte-identical to ForwardTemporalUbo in main.c. Writing the members by
+     * offset rather than through a struct copy is deliberate: it is the
+     * offsets that have to agree, and doing it this way keeps the test
+     * independent of the engine's own layout. */
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    typedef struct { f32 cam[3]; f32 cam_pad; f32 prev_vp[16];
+                     f32 prev_model[16];
+                     f32 dir[3]; f32 dir_pad;
+                     f32 col[3]; f32 col_pad;
+                     f32 amb[3]; f32 amb_pad; } Temporal;
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITextureDesc tdesc;
+    RHITexture albedo, inst;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, ubo;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    Temporal t;
+    int frame, i;
+    static const unsigned char want[2][3] = {
+        { 102, 51, 20 },   /* ambient only */
+        { 102, 51, 20 }    /* ambient 0 + light_color, diff = 1 */
+    };
+
+    memset(&t, 0, sizeof(t));
+    t.cam[0] = 0.0f; t.cam[1] = 0.0f; t.cam[2] = -10.0f;
+    memcpy(t.prev_vp, identity, sizeof(identity));
+    memcpy(t.prev_model, identity, sizeof(identity));
+    t.amb[0] = 0.4f; t.amb[1] = 0.2f; t.amb[2] = 0.08f;
+    t.col[0] = 0.4f; t.col[1] = 0.2f; t.col[2] = 0.08f;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 4u; tdesc.height = 4u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = 1u;
+    tdesc.data = white;
+    albedo = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(albedo));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    bdesc.size = sizeof(rows);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;   /* keeps it off the UAV path */
+    bdesc.initial_data = rows;
+    inst = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(inst));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(t);
+    bdesc.usage = RHI_BUFFER_USAGE_UNIFORM;
+    bdesc.initial_data = &t;
+    ubo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(ubo));
+
+    vs = rhi_shader_create(g_dev, "instanced_mrt_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "instanced_mrt_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 32u;                 /* aPos3 + aNormal3 + aUV2 */
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    /* Only u_view / u_proj are push members now; the four lighting uniforms
+     * must NOT resolve, or the port has silently reverted to the old shape. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view"), 0);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_proj"), 64);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_dir"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_color"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
+
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    for (frame = 0; frame < 2; ++frame) {
+        if (frame == 0) {
+            t.dir[0] = 0.0f; t.dir[1] = -1.0f; t.dir[2] = 0.0f;
+            t.amb[0] = 0.4f;  t.amb[1] = 0.2f;  t.amb[2] = 0.08f;
+        } else {
+            t.dir[0] = 0.0f; t.dir[1] = 0.0f;  t.dir[2] = -1.0f;
+            t.amb[0] = 0.0f;  t.amb[1] = 0.0f;  t.amb[2] = 0.0f;
+        }
+        rhi_buffer_update(g_dev, ubo, &t, sizeof(t));
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_texture(cmd, albedo, sampler, 0u);
+        rhi_cmd_bind_texel_buffers(cmd, inst, RHI_HANDLE_NULL);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        for (i = 0; i < 64; ++i) {
+            if (rt0[i * 4 + 0] != want[frame][0] ||
+                rt0[i * 4 + 1] != want[frame][1] ||
+                rt0[i * 4 + 2] != want[frame][2] ||
+                rt0[i * 4 + 3] != 255u) {
+                printf("FAIL: instanced frame %d pixel %d = (%u,%u,%u,%u), "
+                       "expected (%u,%u,%u,255)\n", frame, i,
+                       (unsigned)rt0[i*4+0], (unsigned)rt0[i*4+1],
+                       (unsigned)rt0[i*4+2], (unsigned)rt0[i*4+3],
+                       (unsigned)want[frame][0], (unsigned)want[frame][1],
+                       (unsigned)want[frame][2]);
+                break;
+            }
+        }
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(rt0[i * 4 + 0], want[frame][0]);
+            ASSERT_EQ(rt0[i * 4 + 1], want[frame][1]);
+            ASSERT_EQ(rt0[i * 4 + 2], want[frame][2]);
+            ASSERT_EQ(rt0[i * 4 + 3], 255u);
+        }
+        /* Identity prev_vp and prev_model make the motion vector exactly
+         * +0.0 on the raw bits, so RT1 also proves the temporal block was
+         * read rather than left unbound. */
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+        for (i = 0; i < 64 * 2; ++i)
+            ASSERT_EQ(rt1[i], 0u);
+    }
+
+    rhi_texture_destroy(g_dev, albedo);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, inst);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions) {
     static unsigned char box_tex[8 * 8 * 4];
     RHIOffscreenFBODesc fbo_desc;
@@ -4662,6 +4877,7 @@ int main(void) {
     RUN_TEST(ssr_sidecar_pins_offsets_and_both_early_outs);
     RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
     RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
+    RUN_TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv);
     RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);
     RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);
     RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);
