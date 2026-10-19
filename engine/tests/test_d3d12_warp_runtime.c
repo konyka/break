@@ -1393,7 +1393,8 @@ static int warp_adapter_is_warp(RHIDevice *dev)
            strstr(info.device_name, "WARP") != NULL;
 }
 
-/* R609: the layer route production actually takes -- and it is BROKEN.
+/* R609: the layer route production uses -- and why the array path is dead on
+ * D3D12 today.
  *
  * mega_mat_arrays_draw encodes the material-array layer in the indirect
  * record's first_instance (main.c:3947) with instance_count = 1
@@ -1401,8 +1402,7 @@ static int warp_adapter_is_warp(RHIDevice *dev)
  * uint(gl_BaseInstanceARB) in blinn_phong_arr.vert. The D3D12 sidecar reads
  * SV_InstanceID instead, and D3D12's SV_InstanceID does NOT include
  * StartInstanceLocation -- it is gl_InstanceID, i.e. base + instance index,
- * and here the base never arrives. So every material-array mesh on D3D12
- * samples layer 0.
+ * and here the base never arrives.
  *
  * This was recorded as a WARP limitation for several rounds and that was
  * wrong. Measured on the RTX 4060:
@@ -1416,12 +1416,22 @@ static int warp_adapter_is_warp(RHIDevice *dev)
  * read; only StartInstanceLocation is dropped. Without it the first two rows
  * would be indistinguishable from "the upload never happened".
  *
- * Every row is asserted, which is the point: the test pins the measured
- * behaviour so the day the path is fixed this suite goes red and whoever
- * fixes it updates the expectations deliberately, instead of the bug
- * disappearing silently into a passing test. The per-draw argument buffer is
- * read back and asserted too, so "the record on the CPU was right" is part of
- * the recorded evidence rather than an assumption.
+ * It does not corrupt rendering today, and "it is broken" would be the wrong
+ * headline. rhi_d3d12.c never sets caps.indirect_draw_supported, so
+ * indirect_draw_init fail-closes with "backend reports no indirect draw
+ * support", mb->array_system_ready stays false, and mega_mat_arrays_draw
+ * returns 0 before it reaches the pipeline this test drives directly. The
+ * array pipeline is created and never drawn. So this is a trapdoor under a
+ * disabled subsystem: it becomes a live bug the moment indirect draw is
+ * enabled on D3D12, and it will not announce itself, because every mesh
+ * still shades correctly -- with layer 0.
+ *
+ * Every row is asserted anyway. The test pins the measured behaviour so the
+ * day the path is enabled the suite goes red and whoever fixes it updates
+ * the expectations deliberately, instead of the layer silently becoming 0
+ * inside a passing test. The per-draw argument buffer is read back and
+ * asserted too, so "the record on the CPU was right" is part of the recorded
+ * evidence rather than an assumption.
  *
  * The fix is a command signature with a second D3D12_INDIRECT_ARGUMENT_TYPE_
  * CONSTANT argument, copying the layer out of the record into a root
@@ -1610,9 +1620,10 @@ TEST(indirect_start_instance_does_not_reach_sv_instance_id)
     }
 
     printf("  note: %s agrees -- StartInstanceLocation does not reach "
-           "SV_InstanceID on either adapter, so the material-array layer is "
-           "always 0 here. Fix is a command-signature CONSTANT; see the "
-           "header comment.\n", on_warp ? "WARP" : "hardware");
+           "SV_InstanceID on either adapter. Latent today only because "
+           "caps.indirect_draw_supported is false on D3D12, so the array path "
+           "is disabled; see the header comment.\n",
+           on_warp ? "WARP" : "hardware");
 
     rhi_mrt_fbo_destroy(g_dev, &fbo);
     rhi_texture_destroy(g_dev, albedo_array);

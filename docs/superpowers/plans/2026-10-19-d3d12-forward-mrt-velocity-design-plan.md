@@ -1061,7 +1061,7 @@ Still open from R607, unchanged: the production array layer comes from
 `first_instance` (indirect `StartInstanceLocation`), which WARP discards. It
 needs a real GPU running `rhi_cmd_draw_indirect` to close.
 
-### R609 -- the real GPU says the layer is broken everywhere, not just on WARP
+### R609 -- the real GPU says the layer never reaches the shader, but nothing renders wrong today
 
 The line above was wrong. Running the suite on the RTX 4060 closes the open
 item, and the answer is not "WARP drops it". **D3D12 drops it.**
@@ -1089,8 +1089,19 @@ which is the opposite of what production draws:
 - `main.c:3779` -- `cmds[cidx].instance_count = 1`
 - `main.c:3947` -- `cmds[ci].first_instance = group_layer[mg]`
 
-So **every material-array mesh on D3D12 samples layer 0**. GL and Vulkan are
-correct, which is why nothing upstream noticed.
+**Correction to how severe that is.** The first version of this entry said
+"every material-array mesh on D3D12 samples layer 0". That overstated it.
+`rhi_d3d12.c` never sets `caps.indirect_draw_supported` (only `rhi_gl.c:770`
+and `rhi_vk.c:1852` do), so `indirect_draw_init` fail-closes with "backend
+reports no indirect draw support", `mb->array_system_ready` stays false, and
+`mega_mat_arrays_draw` returns 0 at its first line. The array pipeline is
+created and never drawn.
+
+So this is a **trapdoor under a disabled subsystem**, not a live rendering
+bug. It becomes one the moment indirect draw is enabled on D3D12, and it
+would not announce itself: every mesh keeps shading correctly, just always
+with material layer 0. Which is also a fair summary of where R607 left the
+array work -- built and unexercised end to end on this backend.
 
 **There is no semantic that fixes this.** `SV_StartInstanceLocation` is the
 right one and dxc rejects it at every shader model from `ps_6_0` to
@@ -1111,17 +1122,21 @@ signature carrying a second `D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT`
 argument, which copies a value out of the argument buffer and into a root
 constant the shader can read. Room exists -- this pipeline's push block ends
 at 240 and two descriptor tables clamp `32BIT_CONSTANTS` at 62 DWORDs = 248
-bytes, so `uint u_layer` at 240 fits without a new root parameter. The change
-spans the command signature, the indirect-argument ABI (the array path needs
-24-byte records against a 20-byte `D3D12_DRAW_INDEXED_ARGUMENTS`), and the
-sidecar. That is a cross-backend ABI change, so it is **recorded, not
-attempted blind**.
+bytes, so `uint u_layer` at 240 fits without a new root parameter.
 
-Until then the sidecars keep reading `SV_InstanceID` -- unchanged behaviour,
-so nothing regresses -- and `indirect_start_instance_does_not_reach_sv_instance_id`
-pins all three measured rows. When the path is fixed that test goes red,
-which is the point: the fix has to be a deliberate update, not a silent
-change of meaning inside a passing test.
+The blast radius is larger than it first looked. `indirect_draw_execute`
+dispatches records from `visible_draws_buf`, which is filled by a **GPU
+compute pass** that compacts and scatters whole `DrawIndexedIndirectCmd`
+entries, and that compute shader is GLSL-only on D3D12. So the fix has to
+land together across: the command signature, the compute compaction shader's
+own struct layout, the indirect-argument ABI, and the sidecar. It is
+**recorded, not attempted blind**.
+
+The sidecars keep reading `SV_InstanceID` -- unchanged behaviour -- and
+`indirect_start_instance_does_not_reach_sv_instance_id` pins all three
+measured rows. When the path is enabled that test goes red, which is the
+point: the fix has to be a deliberate update, not a silent change of meaning
+inside a passing test.
 
 Hardware result: **17/18**. The one failure is `warp_device_identity_is_honest`,
 which asserts the adapter *is* WARP and is meant to fail when

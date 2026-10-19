@@ -63,9 +63,10 @@ struct VSIn {
     // flat-equivalent and is mandatory for an integer interpolant to survive
     // the trip unchanged; it must match the PS input's modifier exactly.
     // ⚠️ This is NOT the GLSL twin -- SV_InstanceID is gl_InstanceID, not
-    // gl_BaseInstance. See the long note in blinn_phong_arr_hlsl.frag: the
-    // D3D12 material-array path is measurably broken for this reason and
-    // needs a command-signature CONSTANT, not a different semantic.
+    // gl_BaseInstance, and on D3D12 the base never reaches it. The array path
+    // is disabled on D3D12 today (caps.indirect_draw_supported is never set),
+    // so this is latent, not live. See the long note in
+    // blinn_phong_arr_hlsl.frag.
     uint layer : SV_InstanceID;
 };
 struct VSOut {
