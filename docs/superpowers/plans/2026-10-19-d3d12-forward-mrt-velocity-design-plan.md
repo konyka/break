@@ -552,6 +552,51 @@ Only two `SetGraphicsRootDescriptorTable` sites exist (`rhi_d3d12.c:3695` and `:
 
 What is *not* yet explained is why deduplicating them did not make the vertex-stage read correct (it also introduced an `E_INVALIDARG` on the MRT PSO). Either the dedupe had a defect of its own, or something beyond the duplicate tables is also wrong. Those are now two separate questions, and the first one is small and well specified: collapse the two per-stage tables into one per (kind, register, space) with OR-ed visibility, and make sure every descriptor-table parameter the signature declares is actually bound before a draw — which is worth asserting in a test rather than assuming.
 
+### The fix, implemented and audited -- and why it is not landed
+
+The dedupe was written properly this time (reuse the matching range, OR the
+visibility, keep the reused param index) and the resulting root signature was
+dumped for every pipeline before it is serialised:
+
+    param 0: non-table            <- 32BIT_CONSTANTS
+    param 1: type=2 reg=1 vis=5   <- CBV b1, ALL stages
+    param 1: type=0 reg=0 vis=5   <- SRV t0, ALL stages
+
+No duplicate tables, one table per register, visibility correct, and both
+bound. **The root signature the dedupe produces is provably right**, and that
+part of the story is finished.
+
+It is still not shipped, because with the corrected signature the blinn_phong
+pipelines stop building: `rhi_pipeline_create` returns NULL for both
+`blinn_phong_sidecar_resolves_offsets_and_shades_red` and
+`material_binder_puts_albedo_on_t0_and_falls_back_to_white`, with no shader
+compile warning and no error from `CreateRootSignature`. The other pipelines
+(blit, probe, shadow) build fine, which is consistent with the earlier
+`E_INVALIDARG` on the MRT PSO: whatever rejects a blinn or MRT pipeline is
+specific to having a **CBV table alongside the texture table**, and it was
+being masked before by the extra tables.
+
+So the state is:
+
+- **Settled**: the per-stage duplicate tables are a real defect; a correct
+  root signature is achievable and audited; the vertex/pixel asymmetry is
+  fully explained by unbound root parameters 1 and 3.
+- **Not settled**: why a correct signature with a CBV plus an SRV table fails
+  to produce a pipeline. That is a new, smaller, well-isolated question, and
+  it is the right next thing -- it no longer has the duplicate-table confound
+  in it.
+- **Not landed**: nothing. The vertex-stage cbuffer read is still wrong, and
+  shipping a half-fix that breaks pipeline creation would be worse than the
+  current state, which at least builds.
+
+The next step is therefore not "retry the dedupe" but "find out what
+`CreateGraphicsPipelineState` dislikes about that signature" -- and now that
+the signature is minimal and dumped, there is only one candidate left in it:
+the CBV table and the SRV table coexisting in a **1.1 versioned** root
+signature with a static sampler, which is exactly the configuration that was
+never exercised before (the old signature duplicated the tables, which may
+have been load-bearing in some way nobody has characterised).
+
 ### Working the reading list: item 1 answered
 
 `rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
