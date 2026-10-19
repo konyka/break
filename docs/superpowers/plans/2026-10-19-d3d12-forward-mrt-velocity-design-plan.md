@@ -441,6 +441,48 @@ constant value does. Candidates, in the order they are worth checking:
 Nothing here is shipped. The test stays out until the varying is explained,
 because a pixel proof that passes for the wrong reason is worse than none.
 
+### The defect, stated as narrowly as the evidence allows
+
+Five hypotheses tested, all dead. The last round closed the loop by
+running each one on **hardware** as well as WARP, which is what turned
+"invisible garbage" into "reproducible garbage":
+
+| Change | WARP | RTX 4060 |
+| --- | --- | --- |
+| uniform buffers forced to the DEFAULT heap | no change | no change |
+| CBV backed to its full 256 B | no change | no change |
+| duplicate descriptor tables removed | no change (PSO then `E_INVALIDARG`) | **no change** — the non-MRT pipeline still renders the wrong colour once the VS reads the CBV |
+| `float4` instead of `float2` for the varying | n/a | no change |
+| my own fp16 decoder, which was wrong | n/a | **fixed** — see below |
+
+The fp16 decoder in the proof was itself a bug worth recording: it used
+`1u << (exp - 15)`, which is undefined for every value with magnitude below
+1.0 — that is, most of a screen. It produced garbage that looked exactly
+like a broken shader. `0xbaff` decodes to **-0.8745**, which is precisely the
+NDC x of pixel 0 in an 8x8 target. So the varying is correct and always was.
+
+Which leaves one fact, established from both sides:
+
+> **The same `register(b1)` constant buffer, read by the pixel stage, arrives
+> correct; read by the vertex stage, it arrives as garbage** — silently on
+> hardware, and as device loss on WARP.
+
+The proof that the pixel stage is correct is `RT0 is exactly red`: with the
+camera read from that same CBV, a wrong or NaN camera would make `H` NaN and
+carry NaN into the colour. It does not. The proof that the vertex stage is
+not is `u_prev_vp` / `u_prev_model` coming back NaN and producing `7fff 7fff`
+velocity.
+
+Everything reachable from the buffer side is now exhausted: heap, view size,
+table layout, descriptor lifetime, visibility, shader content, and adapter.
+The remaining suspects are all inside `rhi_d3d12_root_signature_create` /
+`SetGraphicsRootDescriptorTable` ordering and the per-stage reflection, and
+finding them needs either the debug layer wired to a callback (its messages
+go to OutputDebugString today, which is why it looked silent) or DRED output
+on device loss. Neither is in place.
+
+Nothing is shipped for any of this.
+
 ### Ruled out next: duplicate descriptor tables
 
 The strongest-looking theory left was the per-stage table duplication. The

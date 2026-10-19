@@ -30,6 +30,16 @@
 | VS 吐 `curr_clip.xy / curr_clip.w` | `baff baff`、`b8ff baff`… | 垃圾 |
 | VS 吐 `curr_clip.wx` | 第一通道 `3c00` = **1.0**，第二通道 `-128`、`-255`… | **w 完全正确，x 是垃圾** |
 最后一行就是剩下的全部问题，而且很小：**push 常量确实到达了顶点阶段**——`curr_clip.w` 精确回读为 1.0，只有当 model/view/proj 都是测试写下的单位阵时才成立；常量 varying 能穿过，非常量 varying 不能。所以待解的不再是「RT1 通不通」或「uniform 到不到 VS」，而是：**这条路径上一个非常量的顶点输出到不了像素阶段，而同一个 varying 取常量值就能到**。按值得查的顺序：①`float2` 放在 TEXCOORD3、且是该 PS 的**第五个**输入（输入布局反射只描述 VS 的**输入**，没有任何环节校验 VS 的**输出**与 PS 的**输入**，而 MRT 的 PS 输入比它的孪生多一个）——先试 `float4` 或换个 varying 位置；②SM 6.0 下该签名的插值器/寄存器压力；③测试那个放大三角形 `curr_clip.x` 在顶点上本就跨 -1..3，插值后除法前确实会越出 [-1,1]，但这解释不了为什么同一个插值器里 w 是对的。本轮**什么都没上线**，varying 没解释清楚之前测试不进仓库——**一个因为错误原因而通过的像素证明比没有证明更糟**。
+- **五个假设全部排除；缺陷可以一句话说清了**。上一轮每个假设都只在 WARP 上验过；这一轮**同时在硬件上验**，正是这一步把「看不见的垃圾」变成了「可复现的垃圾」：| 改动 | WARP | RTX 4060 |
+| --- | --- | --- |
+| uniform 强制走 DEFAULT 堆 | 无变化 | 无变化 |
+| CBV 补足 256B | 无变化 | 无变化 |
+| 去掉重复描述符表 | 无变化（且 PSO 报 `E_INVALIDARG`） | **无变化**——非 MRT 管线只要 VS 一读 CBV 就照样渲错颜色 |
+| varying 由 `float2` 改 `float4` | — | 无变化 |
+| 我自己的 fp16 解码器 | — | **本身就是 bug，已修** |
+那个解码器用了 `1u << (exp - 15)`，对**幅值小于 1.0 的每一个值**（也就是屏幕上的大部分）都是未定义行为，产出的垃圾**长得极像坏掉的着色器**。`0xbaff` 正确解码是 **-0.8745**——正好是 8x8 目标里第 0 像素的 NDC x。**所以 varying 一直是对的**。
+于是只剩一条事实，两边都证过：**同一个 `register(b1)` 常量缓冲，像素阶段读出来是对的，顶点阶段读出来是垃圾**——硬件上静默，WARP 上直接丢设备。像素阶段正确的证据是「RT0 精确红」：相机就是从那个 CBV 读的，相机错或 NaN 会让 `H` 变 NaN 并把 NaN 带进颜色，但它没有。顶点阶段不正确的证据是 `u_prev_vp`/`u_prev_model` 回来是 NaN，velocity 成了 `7fff 7fff`。
+**缓冲侧已经穷尽**：堆、视图尺寸、表布局、描述符生命周期、可见性、着色器内容、适配器，全都试过了。剩下的嫌疑都在 `rhi_d3d12_root_signature_create` / `SetGraphicsRootDescriptorTable` 的顺序，以及逐 stage 反射上；要查下去，需要把调试层接到回调（它的消息现在走 OutputDebugString，所以一直「看起来没说话」）或让 DRED 在设备丢失时输出，**两者目前都没装**。本轮所有改动**一个都没上线**。
 - **再排除一个：逐 stage 重复描述符表**（实现并实测后回退，未上线）。`rhi_d3d12_root_sig_add_bindings` 对 VS 传 `VISIBILITY_VERTEX`、对 PS 传 `VISIBILITY_PIXEL` 且**不去重**，于是两 stage 都声明的寄存器会生成**两张同 `(type, register, space)` 的表**；`image_root_params`/`uniform_root_params` 只保留**最后那个**下标，另一张**从未被绑定**——顶点着色器读它就是读了一张没设过的表，与症状高度吻合，而且每个重复寄存器还白占 64-DWORD 预算里的一个 DWORD。实测去重后：既有 blinn 管线变成 **2 params / 2 ranges / 1 sampler**（原 4 张表），其他 D3D12 测试全过，但**设备丢失现象完全不变**；更进一步，MRT 的 PSO 改为 `CreateGraphicsPipelineState` 返回 `E_INVALIDARG`（`NumRenderTargets=2`、`{R8G8B8A8_UNORM, R16G16_SFLOAT}`），而同样的 2-param 根签名配非 MRT 着色器、或配 4 张表时都不报。结论：重复表是真实的浪费、很可能也是真实缺陷，但**不是这个 bug**，且在弄懂那个 `E_INVALIDARG` 之前不能安全上线，**已回退，什么都没上线**。
 - **附带记一笔（不在 R600 范围）**：那个 `E_INVALIDARG` 本身值得查——同样的两种格式、同样的根签名形状，PSO 成败取决于前面有几张描述符表。目前无人刻画过。
 - **因此剩下的入口在根签名侧**（可见性 / `rhi_d3d12_root_sig_add_bindings` 的逐 stage 重复绑定合并 / `uniform_root_params[1]` 是否指向了错误的 param），而不是缓冲本身。**当前 D3D12 测试全部只走像素阶段读 CBV**，所以整套件是绿的——这也解释了为什么这个缺陷能一直藏着。
