@@ -348,6 +348,45 @@ TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv)
     }
 }
 
+/* R605: the D3D12 root-signature builder used to run once per shader stage with
+ * no dedupe, so a register both stages declared produced TWO descriptor tables
+ * for the same (type, register, space). Only the last index was ever recorded
+ * in image_root_params / uniform_root_params and only that one was ever bound,
+ * leaving a root parameter permanently unbound -- which D3D12 forbids, and
+ * which a vertex shader reading a cbuffer paid for: it read the unbound table
+ * and got garbage, silently on hardware and as device loss on WARP. The pixel
+ * stage read the bound table and was fine, which is what made the asymmetry so
+ * hard to see.
+ *
+ * Two things are pinned here, both of which a naive fix gets wrong:
+ *   1. the tables must be reused, not duplicated;
+ *   2. the visibility must be ASSIGNED D3D12_SHADER_VISIBILITY_ALL, never
+ *      OR-ed with the incoming stage visibility -- in this SDK the
+ *      D3D12_SHADER_VISIBILITY enumerators are sequential values (ALL 0,
+ *      VERTEX 1, PIXEL 5), not bitmasks, so VERTEX | PIXEL evaluates to PIXEL
+ *      and silently drops vertex visibility. That failure still builds fine and
+ *      only shows up as the same unreadable-cbuffer symptom, so it earns a
+ *      test of its own. */
+TEST(d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility)
+{
+    static char src[524288];
+    ASSERT_TRUE(read_engine_source("rhi/rhi_d3d12.c", src, sizeof(src)));
+    /* The dedupe itself. */
+    ASSERT_NOT_NULL(strstr(src, "for (reuse = 0u; reuse < b->param_count; ++reuse)"));
+    ASSERT_NOT_NULL(strstr(src, "goto next_binding;"));
+    ASSERT_NOT_NULL(strstr(src, "next_binding:"));
+    /* Visibility assigned, never OR-ed: the OR form is a silent regression. */
+    ASSERT_NOT_NULL(strstr(src,
+                         "rp->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;"));
+    ASSERT_FALSE(strstr(src, "rp->ShaderVisibility |= visibility;") != NULL);
+    /* The reused param index has to be recorded for BOTH binding kinds,
+     * otherwise the resource still resolves to the param that is never bound. */
+    ASSERT_NOT_NULL(strstr(src,
+                         "b->image_root_params[base_register] = reuse;"));
+    ASSERT_NOT_NULL(strstr(src,
+                         "b->uniform_root_params[base_register] = reuse;"));
+}
+
 TEST(vulkan_ibl_gate_uses_compatible_vertex_contract)
 {
     static char src[524288]; /* R584: test_vulkan.c > 128KiB (see line ~215) */
@@ -2090,4 +2129,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(vk_push_tables_match_reflection);
     RUN_TEST(vk_compute_push_tables_match_reflection);
     RUN_TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv);
+    RUN_TEST(d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility);
 TEST_MAIN_END()

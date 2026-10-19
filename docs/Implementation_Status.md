@@ -63,6 +63,12 @@
 - **但这两行给出了一个比之前锋利得多的命题**：**blinn_phong 用五参数的根签名能建出来，用三参数的建不出来；而 blit 两种都能建。**这两个 blinn 签名与 blit 唯一的结构差别，就是表从「重复」（两张 SRV + 两张 CBV）变成了「单张」（一张 SRV + 一张 CBV），别的都没动。**所以触发点是「被精简后的参数列表」的性质，而不是 CBV 本身的存在、寄存器号或描述符类型。**
 - **由此得出的下一个实验不需要任何新机制**：**把一个假的第四个描述符表参数加回去**，看 blinn 是否开始能建。能建 → 驱动拒绝的是参数的**个数或相邻关系**，修法在 builder 怎么摆它们；不能建 → 问题在三个参数中**某一个的内容**，逐个变即可。
 - **两条必须带上的告诫**：①本 SDK 的 `D3D12_GRAPHICS_PIPELINE_STATE_DESC` **没有 `NumStaticSamplers` 成员**，PSO 用旧结构而根签名按 **1.1** 序列化——这个组合在本项目从未被跑到，重复表一直遮着它。②重复表可能是「错**且在承重**」：一个没人刻画过的原因，让五参数签名能建而三参数不能。**这是目前最值得挖出来的东西**，而且它可以用二分法回答，不需要靠推理。**什么都没上线。**
+- **R605：修好了、验证了、上线了**。前两条的前提是错的。要成立的有两件事，**第二件才是陷阱**：
+- **①表必须复用。** `rhi_d3d12_root_sig_add_bindings` 现在先扫已有 param，找单个 range 匹配 `(RangeType, BaseShaderRegister, RegisterSpace, NumDescriptors)` 的，复用它的下标并同时记进 `image_root_params` 与 `uniform_root_params`，跳过新建。blinn_phong 的根签名因此从「五个 param、其中两个永远不被绑定」变成 `[0] 32BIT_CONSTANTS、[1] CBV b1、[2] SRV t0` + 静态采样器；顺带每个重复寄存器省下一个 DWORD 的 64-DWORD 预算。
+- **②可见性必须「赋值」，绝不能「按位或」——这正是朴素修法会踩的坑。** 本 SDK 的 Agility 1.616.0 头文件里 `D3D12_SHADER_VISIBILITY` 是**连续枚举值、不是位掩码**（ALL 0、VERTEX 1、HULL 2、DOMAIN 3、GEOMETRY 4、`PIXEL 5`、AMP 6、MESH 7），所以 `VERTEX | PIXEL == 1 | 5 == 5 == PIXEL` —— 按位或的去重会**悄悄丢掉顶点可见性**，完整复现原来的症状，**而且照样能建出来**，因为 D3D12 根本不校验表可见性与使用它的 stage 是否匹配。修法是直接赋值 `D3D12_SHADER_VISIBILITY_ALL`，并且测试断言「按位或」那种写法不存在。
+- **实测（把 `blinn_phong_hlsl.vert` 的顶点阶段故意改成读 b1 cbuffer，即症状本身）**：RTX 4060 上修复前顶点读垃圾、RT0 错误 → **修复后 [7]/[8] 通过、RT0 精确红**；WARP 上修复前同一个 draw 直接丢设备 → **修复后 12/12 通过**。探针用的着色器改动已回退，那只是测量手段；上线的是后端修复 + 回归测试 `d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility`（钉住去重、两种 binding kind 的复用下标记账、赋值写法、以及按位或写法必须不存在）。**反向验证过**：把赋值改回 `|= visibility`，该测试转红。
+- **于是前面四条记录的整个谜团就是这一个缺陷**：WARP 不是异类，它只是对「读一张从未被绑定的表」更严格。
+- **顺带得到两条值得留下的知识**：①`CreateRootSignature` 在**根签名总 DWORD 数 > 64** 时返回 `E_INVALIDARG`，而 `D3D12SerializeVersionedRootSignature` **抓不到**——blob 能正常序列化，只有创建时拒绝；代价模型在边界上量过（64 通过、65 失败）：32BIT_CONSTANTS 代价是它的 Num32BitValues；**每张描述符表无论含几个 range 都只算 1 个 DWORD**；静态采样器算 0。②`CreateGraphicsPipelineState` 在**着色器声明的某个寄存器整个不在根签名里**时返回 `E_INVALIDARG`；而**可见性根本不校验**——这正是当初那个 bug 还能建出来的原因。
 - **五个假设全部排除；缺陷可以一句话说清了**。上一轮每个假设都只在 WARP 上验过；这一轮**同时在硬件上验**，正是这一步把「看不见的垃圾」变成了「可复现的垃圾」：| 改动 | WARP | RTX 4060 |
 | --- | --- | --- |
 | uniform 强制走 DEFAULT 堆 | 无变化 | 无变化 |

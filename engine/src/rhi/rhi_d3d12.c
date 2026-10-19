@@ -2543,8 +2543,36 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         default:
             continue; /* folded into the 32BIT_CONSTANTS param */
         }
-        if (b->param_count >= 16u || b->range_count >= 16u) return 0;
         base_register = bind->binding;
+        {
+            UINT reuse;
+            for (reuse = 0u; reuse < b->param_count; ++reuse) {
+                D3D12_ROOT_PARAMETER1 *rp = &b->params[reuse];
+                const D3D12_DESCRIPTOR_RANGE1 *rr;
+                if (rp->ParameterType !=
+                    D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE) continue;
+                if (rp->DescriptorTable.NumDescriptorRanges != 1u) continue;
+                rr = rp->DescriptorTable.pDescriptorRanges;
+                if (rr->RangeType != range_type) continue;
+                if (rr->BaseShaderRegister != base_register) continue;
+                if (rr->RegisterSpace != 0u) continue;
+                if (rr->NumDescriptors != 1u) continue;
+                /* R605: assign, never OR. In this SDK the
+                 * D3D12_SHADER_VISIBILITY enumerators are sequential
+                 * values (ALL 0, VERTEX 1, PIXEL 5), NOT bitmasks, so
+                 * VERTEX | PIXEL evaluates to PIXEL and silently drops
+                 * vertex visibility -- which is exactly the bug: the
+                 * vertex shader would keep reading a table it cannot
+                 * see, and the failure would be silent. */
+                rp->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+                if (bind->kind == SHADER_IO_RESOURCE_IMAGE && base_register < 16u)
+                    b->image_root_params[base_register] = reuse;
+                if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && base_register < 16u)
+                    b->uniform_root_params[base_register] = reuse;
+                goto next_binding;
+            }
+        }
+        if (b->param_count >= 16u || b->range_count >= 16u) return 0;
         range = &b->ranges[b->range_count++];
         ZeroMemory(range, sizeof(*range));
         range->RangeType = range_type;
@@ -2564,6 +2592,8 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
             b->image_root_params[bind->binding] = b->param_count - 1u;
         if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < 16u)
             b->uniform_root_params[bind->binding] = b->param_count - 1u;
+next_binding:
+        ;
     }
     return 1;
 }

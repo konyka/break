@@ -685,6 +685,63 @@ Two caveats to carry forward:
 
 Nothing shipped.
 
+### R605 -- fixed, verified, landed
+
+The premise of the last two entries was wrong and the fix is now in. Two
+things had to be true at once, and the second one is the trap.
+
+**1. The tables must be reused.** `rhi_d3d12_root_sig_add_bindings` now
+scans the existing params for one whose single range matches
+`(RangeType, BaseShaderRegister, RegisterSpace, NumDescriptors)`, records
+the reused index in *both* `image_root_params` and `uniform_root_params`,
+and skips creating a new param. A blinn_phong root signature is now
+`[0] 32BIT_CONSTANTS, [1] CBV b1, [2] SRV t0` plus a static sampler, instead
+of five params with two of them permanently unbound. It also gives back a
+DWORD of the 64-DWORD budget per duplicated register.
+
+**2. The visibility must be ASSIGNED, never OR-ed.** This is the part a
+naive fix gets wrong. In this SDK's Agility 1.616.0 header,
+`D3D12_SHADER_VISIBILITY` is a set of **sequential** enumerators, not
+bitmasks: `ALL 0`, `VERTEX 1`, `HULL 2`, `DOMAIN 3`, `GEOMETRY 4`, `PIXEL 5`,
+`AMP 6`, `MESH 7`. So `VERTEX | PIXEL == 1 | 5 == 5 == PIXEL` -- an OR-based
+dedupe silently drops vertex visibility, reproduces the exact original
+symptom, **and still builds**, because D3D12 does not validate a table's
+visibility against the stages that use it. The fix assigns
+`D3D12_SHADER_VISIBILITY_ALL` outright, and the test asserts the OR form is
+absent.
+
+Measured, with the vertex stage of `blinn_phong_hlsl.vert` deliberately
+reading the b1 cbuffer (the symptom):
+
+| | before | after |
+| --- | --- | --- |
+| RTX 4060 | vertex read garbage, RT0 wrong | **`[7]`/`[8]` pass, RT0 exactly red** |
+| WARP | device lost on the same draw | **12/12 pass** |
+
+The probe shader change was reverted; it was only ever the measurement. What
+ships is the backend fix plus a regression test,
+`d3d12_root_signature_dedupes_per_stage_tables_with_full_visibility`, which
+pins the dedupe, the reused-index bookkeeping for both binding kinds, the
+ASSIGN form, and the absence of the OR form. Reverse-verified: switching the
+assign back to `|= visibility` turns that test red.
+
+So the whole of the last four entries' mystery is this one defect. WARP was
+not the outlier -- it was simply stricter about reading a table that was
+never bound.
+
+Two useful things were learned along the way and are worth keeping:
+
+- **`CreateRootSignature` fails with `E_INVALIDARG` when the total root
+  signature exceeds 64 DWORDs**, and `D3D12SerializeVersionedRootSignature`
+  does not catch it -- the blob serialises fine and only creation rejects it.
+  Cost model, measured at the boundary (64 ok, 65 fails): `32BIT_CONSTANTS`
+  costs its `Num32BitValues`; each descriptor table costs exactly 1 DWORD
+  regardless of how many ranges it holds; static samplers cost 0.
+- **`CreateGraphicsPipelineState` fails with `E_INVALIDARG` when a register
+  the shader declares is absent from the root signature.** Register
+  *visibility* is not checked, which is precisely why the original bug could
+  build at all.
+
 ### Working the reading list: item 1 answered
 
 `rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
