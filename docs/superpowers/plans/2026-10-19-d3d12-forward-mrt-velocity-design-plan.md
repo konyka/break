@@ -729,6 +729,53 @@ GL and Vulkan are untouched: both golden MAEs are byte-identical (15.60 /
 1.15 and 28.75 / 13.54), and the emitted commands are unchanged because
 `temporal_ubo_binding` evaluates to the same `0u` there.
 
+### R607 -- the material-array variant follows, and D3D12 grows 2D arrays
+
+`blinn_phong_arr` is the closest sibling of `blinn_phong`, so it got the same
+five-part treatment: the R600 camera move in all four GLSL files (vert **and**
+frag together, which is what the earlier reverted attempt got wrong), the
+engine publishing through `forward_temporal_ubo`, new
+`blinn_phong_arr_hlsl.{vert,frag}` sidecars, `render_init` branching on
+`caps.shader_sidecar_paths`, and a WARP pixel proof.
+
+**D3D12 had no 2D-array textures at all.** `rhi_texture_array_create`,
+`rhi_texture_array_upload_layer` were stubs returning NULL and
+`rhi_cmd_bind_texture` hard-coded `D3D12_SRV_DIMENSION_TEXTURE2D`, so the
+proof was impossible until they were implemented: `array_size` plumbed into
+`DepthOrArraySize`, a per-layer footprint + `CopyTextureRegion` upload with
+the same host-OOB guard the GL backend uses, and an array-aware SRV emitting
+`D3D12_SRV_DIMENSION_TEXTURE2DARRAY` with `ArraySize = layers`. Two naming
+corrections worth keeping: `D3D12_TEX2D_ARRAY_SRV` uses `FirstArraySlice` /
+`ArraySize`, and the enum is `D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT`, not
+`..._INDIRECT_COMMAND`.
+
+That last one turned out to be a real latent bug: **nothing was putting the
+indirect argument buffer into `INDIRECT_ARGUMENT` before `ExecuteIndirect`**,
+which the API requires and which leaves the read undefined without it. Fixed
+in the same pass.
+
+The pixel proof makes the layer visible rather than asserting "not black": a
+three-layer array (red / green / blue), two triangles tiled along a seam
+chosen so no pixel centre lands on it, drawn with `InstanceCount` 2 and 3 so
+the layer index decides the colour. All 64 pixels asserted exactly, exact
+per-layer counts (0→64, 1→28, 2→36), RT1 asserted as raw binary16 zeros.
+Negative-checked: replacing the layer with a literal `0.0f` in the frag turns
+it red.
+
+**⚠️ What this does NOT prove.** The production route is the layer arriving
+via `first_instance` -- the indirect draw's `StartInstanceLocation`, which is
+what `SV_InstanceID` reads. On WARP that is dropped: a record with
+`StartInstanceLocation = 1 or 2` still yields `SV_InstanceID = 0` through this
+very pipeline and shader, while `InstanceCount` works. So the test drives the
+layer through the register it can observe and **the first-instance route is
+unproven**. The DXIL disassembles to a single `dx.op.loadInput` on
+`SV_InstanceID`, and real D3D12 hardware honours `StartInstanceLocation`,
+so this reads as a WARP limitation rather than an engine defect -- but closing
+it needs a real-GPU run of the same test through `rhi_cmd_draw_indirect`, and
+until then the claim is one adapter short. The limitation and its evidence
+are recorded in the test's header rather than left for the next reader to
+rediscover.
+
 ### Step 5 closed: the RT1 velocity pixel proof passes
 
 `blinn_phong_mrt_sidecar_writes_velocity_to_rt1` runs the blinn_phong MRT

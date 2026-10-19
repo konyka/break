@@ -2977,10 +2977,14 @@ static D3D12_RESOURCE_STATES rhi_d3d12_texture_final_state(RHIFormat format) {
  * R32_TYPELESS so a D32_FLOAT depth-stencil view and an R32_FLOAT
  * shader resource view can both address the same bytes. Only the shadow atlas
  * needs it; every other depth target stays unsamplable D32_FLOAT, which is
- * exactly what it is today. */
+ * exactly what it is today.
+ * R441: array_size is the resource's slice count (D3D12's DepthOrArraySize);
+ * 0 and 1 both mean an ordinary 2D texture and are the only values any
+ * non-array caller passes. */
 static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
                                               const RHITextureDesc *desc,
-                                              int depth_samplable) {
+                                              int depth_samplable,
+                                              u32 array_size) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Texture *td;
     D3D12_HEAP_PROPERTIES properties;
@@ -3009,7 +3013,7 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
     description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
     description.Width = desc->width;
     description.Height = desc->height;
-    description.DepthOrArraySize = 1u;
+    description.DepthOrArraySize = (UINT)(array_size > 0u ? array_size : 1u);
     description.MipLevels = (UINT16)(desc->mip_levels == 0u ? 1u : desc->mip_levels);
     description.Format = alloc_format;
     description.SampleDesc.Count = 1u;
@@ -3041,6 +3045,7 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
     td->rhi_format = (UINT)desc->format;    td->width = desc->width;
     td->height = desc->height;
     td->mip_levels = description.MipLevels;
+    td->array_size = description.DepthOrArraySize;
     td->state = initial_state;
     if (desc->data != NULL) {
         /* Tightly packed native-layout texels for mip 0. */
@@ -3098,7 +3103,7 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
     return rhi_make_handle(idx, dev->slots[idx].generation);
 }
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
-    return rhi_d3d12_texture_create_ex(dev, desc, 0);
+    return rhi_d3d12_texture_create_ex(dev, desc, 0, 0u);
 }
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     RHI_D3D12Texture *td;
@@ -3109,14 +3114,113 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     free(td);
     rhi_free_slot(dev, tex);
 }
+/* R441: 2D texture array — one mip, RGBA8/BGRA8 only (material albedo
+ * packing). The D3D12 shape is the ordinary TEXTURE2D resource description
+ * with DepthOrArraySize = layers and no separate "array" resource dimension:
+ * D3D12 spells GL_TEXTURE_2D_ARRAY / VkImageView 2D-array as slices of a
+ * TEXTURE2D, and the SRV view dimension (not the resource) is what tells the
+ * shader the slices are addressable. The validation mirror is the GL
+ * backend's rhi_texture_array_create so a bad request is refused identically
+ * on both. */
 RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height,
                                     u32 layers, RHIFormat fmt) {
-    (void)dev; (void)width; (void)height; (void)layers; (void)fmt;
-    return RHI_HANDLE_NULL;
+    RHITextureDesc td;
+    if (dev == NULL || width == 0u || height == 0u || layers == 0u ||
+        width > RHI_MAX_DRAWABLE_DIMENSION ||
+        height > RHI_MAX_DRAWABLE_DIMENSION ||
+        layers > RHI_MAX_TEXTURE_ARRAY_LAYERS) return RHI_HANDLE_NULL;
+    if (fmt != RHI_FORMAT_R8G8B8A8_UNORM && fmt != RHI_FORMAT_B8G8R8A8_UNORM) {
+        LOG_WARN("D3D12: texture array only supports 8-bit RGBA formats");
+        return RHI_HANDLE_NULL;
+    }
+    memset(&td, 0, sizeof(td));
+    td.width = width;
+    td.height = height;
+    td.format = fmt;
+    td.mip_levels = 1u;
+    td.data = NULL;
+    return rhi_d3d12_texture_create_ex(dev, &td, 0, layers);
 }
 void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex, u32 layer,
                                     const void *rgba8, usize size) {
-    (void)dev; (void)tex; (void)layer; (void)rgba8; (void)size;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    D3D12_RESOURCE_DESC description;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    UINT num_rows;
+    UINT64 row_size;
+    UINT64 total_size;
+    UINT64 row_bytes;
+    UINT bpp;
+    UINT r;
+    ID3D12Resource *staging;
+    void *mapped = NULL;
+    RHIResult rr = RHI_RESULT_ERROR;
+    if (dev == NULL || rgba8 == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (ctx == NULL || ctx->device_lost || td == NULL || td->resource == NULL)
+        return;
+    if (td->array_size <= 1u || layer >= td->array_size) return;
+    bpp = rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
+    if (bpp == 0u) return;
+    row_bytes = (UINT64)td->width * bpp;
+    /* Same host-OOB guard class as GL's copy (rhi.h:R441) — the copy reads
+     * w*h*bpp bytes and must never run off the caller's buffer. */
+    if (size < (usize)row_bytes * td->height) return;
+    /* One slice is subresource `layer` of a mip-0 chain; the footprint the
+     * copy needs is exactly what GetCopyableFootprints reports for that single
+     * subresource, so the staging buffer is one slice, not the whole array. */
+    ZeroMemory(&description, sizeof(description));
+    description.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    description.Width = td->width;
+    description.Height = td->height;
+    description.DepthOrArraySize = td->array_size;
+    description.MipLevels = td->mip_levels;
+    description.Format = td->dxgi_format;
+    description.SampleDesc.Count = 1u;
+    ID3D12Device_GetCopyableFootprints(ctx->device, &description, layer, 1u, 0u,
+                                       &footprint, &num_rows, &row_size,
+                                       &total_size);
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, total_size);
+    if (staging != NULL &&
+        SUCCEEDED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
+        const u8 *src = (const u8 *)rgba8;
+        u8 *dst = (u8 *)mapped + footprint.Offset;
+        for (r = 0u; r < num_rows; ++r)
+            memcpy(dst + (UINT64)r * footprint.Footprint.RowPitch,
+                   src + (UINT64)r * row_bytes, (size_t)row_bytes);
+        ID3D12Resource_Unmap(staging, 0u, NULL);
+        if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
+            D3D12_TEXTURE_COPY_LOCATION dst_loc;
+            D3D12_TEXTURE_COPY_LOCATION src_loc;
+            D3D12_RESOURCE_STATES after =
+                rhi_d3d12_texture_final_state((RHIFormat)td->rhi_format);
+            ZeroMemory(&dst_loc, sizeof(dst_loc));
+            dst_loc.pResource = td->resource;
+            dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+            dst_loc.SubresourceIndex = layer;
+            ZeroMemory(&src_loc, sizeof(src_loc));
+            src_loc.pResource = staging;
+            src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+            src_loc.PlacedFootprint = footprint;
+            /* The resource is already in its shader-read state (create
+             * allocated it there and nothing has bound it yet at bake time),
+             * so the slice copy has to walk it through COPY_DEST and back —
+             * the same two transitions rhi_texture_create does. */
+            rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                                 D3D12_RESOURCE_STATE_COPY_DEST);
+            ID3D12GraphicsCommandList_CopyTextureRegion(
+                ctx->upload_list, &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
+            rhi_d3d12_transition(ctx->upload_list, td->resource,
+                                 D3D12_RESOURCE_STATE_COPY_DEST, after);
+            td->state = after;
+            rr = rhi_d3d12_oneshot_flush(ctx);
+        }
+    }
+    if (staging != NULL) ID3D12Resource_Release(staging);
+    if (rr != RHI_RESULT_OK)
+        LOG_WARN("D3D12: texture array layer %u upload failed", (unsigned)layer);
 }
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w,
                           u32 *out_h) {
@@ -3593,7 +3697,28 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
         }
     }
     /* ExecuteIndirect requires the argument stride to equal the command
-     * signature stride; the gate above already enforced exactly that. */
+     * signature stride; the gate above already enforced exactly that.
+     *
+     * It also requires the argument buffer to be in INDIRECT_ARGUMENT state.
+     * Nothing else put it there: rhi_buffer_create ends a create-time upload
+     * in COMMON (or GENERIC_READ for an UPLOAD-heap buffer) and
+     * rhi_buffer_update returns it to COMMON, so without this transition the
+     * ExecuteIndirect reads a resource whose state never named the
+     * indirection, which the API leaves undefined. The state is left as
+     * INDIRECT_ARGUMENT: a later rhi_buffer_update transitions out of it
+     * before writing, and back is cheap.
+     *
+     * Note this is a correctness fix, not a fix for the layer: with this
+     * transition in place WARP still returns SV_InstanceID = 0 for a record
+     * whose StartInstanceLocation is 1 or 2, while the same pipeline and
+     * shader take it correctly from InstanceCount. See
+     * blinn_phong_arr_sidecar_forwards_the_layer_into_pixels in
+     * tests/test_d3d12_warp_runtime.c. */
+    if (args->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
+        rhi_d3d12_transition(list, args->resource, args->state,
+                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        args->state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    }
     ID3D12GraphicsCommandList_ExecuteIndirect(list,
         indexed ? ctx->draw_indexed_signature : ctx->draw_signature,
         counter != NULL ? max_draws : draw_count,
@@ -3716,10 +3841,27 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
     }
     ZeroMemory(&srv, sizeof(srv));
     srv.Format = rhi_d3d12_srv_format(td);
-    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    /* R441: the view dimension is the ONLY thing that distinguishes a 2D-array
+     * texture from a 2D one in D3D12 — both are a TEXTURE2D resource whose
+     * slices are counted by DepthOrArraySize. A sampler2DArray declared in a
+     * shader (blinn_phong_arr_hlsl.frag's Texture2DArray) needs a
+     * TEXTURE2DARRAY descriptor spanning every slice; handing it the TEXTURE2D
+     * view a 2D shader wants is a descriptor/shader dimension mismatch, not a
+     * soft fallback. ArraySize is the whole array because the shader selects
+     * the layer per draw (SV_InstanceID), not per descriptor. */
+    if (td->array_size > 1u) {
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
+        srv.Texture2DArray.MostDetailedMip = 0u;
+        srv.Texture2DArray.MipLevels = td->mip_levels;
+        srv.Texture2DArray.FirstArraySlice = 0u;
+        srv.Texture2DArray.ArraySize = td->array_size;
+        srv.Texture2DArray.PlaneSlice = 0u;
+    } else {
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Texture2D.MostDetailedMip = 0u;
+        srv.Texture2D.MipLevels = td->mip_levels;
+    }
     srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    srv.Texture2D.MostDetailedMip = 0u;
-    srv.Texture2D.MipLevels = td->mip_levels;
     ID3D12Device_CreateShaderResourceView(ctx->device, td->resource, &srv,
         rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
     ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
@@ -3935,7 +4077,7 @@ RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
     tdesc.format = RHI_FORMAT_D32_FLOAT;
     tdesc.mip_levels = 1u;
     tdesc.data = NULL;
-    sm.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1);
+    sm.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1, 0u);
     if (!rhi_handle_valid(sm.depth_tex)) return sm;
     depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, sm.depth_tex,
                                                        RHI_RES_TEXTURE);

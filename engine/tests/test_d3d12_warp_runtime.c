@@ -1112,6 +1112,268 @@ TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1)
     rhi_shader_destroy(g_dev, fs);
 }
 
+
+/* R441 on D3D12: does the material-array sidecar actually carry the draw's
+ * instance index all the way into the sampled texel?
+ *
+ * "The picture is not black" would prove nothing here: a sampler2DArray bound
+ * to layer 0 renders fine whether or not SV_InstanceID was forwarded at all.
+ * So the array is built so that the layer INDEX is the only thing that decides
+ * the colour, and every pixel is asserted against the colour its own layer
+ * must produce.
+ *
+ *   layer 0 -> RGBA (255,   0,   0, 255)   pure red
+ *   layer 1 -> RGBA (  0, 255,   0, 255)   pure green
+ *   layer 2 -> RGBA (  0,   0, 255, 255)   pure blue
+ *
+ * Three layers, not two, because "0 vs non-zero" is exactly what a dropped
+ * SV_InstanceID degrades to, and a two-layer test cannot tell a correct index
+ * from a hard-wired 1. Frame 0 puts layers 1 and 2 side by side in ONE image;
+ * frame 1 pins layer 0 on its own. A shader that forwarded anything other than
+ * the exact index fails one of the two.
+ *
+ * Geometry — two triangles that tile the whole 8x8 target along the seam
+ *
+ *     L(x) = -0.075 - 0.9375 * x
+ *
+ * vertices 0..2 = (-1.2,-1.2) (1.2,-1.2) (-1.2, 1.05)   covers y <  L(x)
+ * vertices 3..5 = ( 1.2,-1.2) ( 1.2,1.05) (-1.2, 1.05)   covers y >= L(x)
+ *
+ * The seam was picked so that NO pixel centre lands on it: the 8x8 target's
+ * centres are +-0.125, +-0.375, +-0.625, +-0.875, and L evaluated at those x
+ * takes no centre value for a centre y. The closest approach is at x = 0,
+ * where L = -0.075 sits 0.175 NDC = 0.7 px from the nearest centre row. Both
+ * triangles therefore yield an unambiguous expected layer per pixel, which is
+ * what lets the assertions be exact rather than "one of the two".
+ *
+ * Shading is the sibling blinn_phong_sidecar test's degenerate-lighting setup,
+ * reused verbatim: every normal is (0,0,1) and every vertex is on the z = 0
+ * plane, so with u_light_dir = (0,-1,0) -> L = (0,1,0), diff = max(dot(N,L),0)
+ * = 0; and with the camera at (0,0,-10) on the b1 temporal CBV, V.z < 0 at
+ * every pixel, so H.z < 0 and spec = 0. The GLSL reduces to
+ * albedo * (u_ambient + 0) + 0, and u_ambient is (1,1,1), so RT0 is EXACTLY
+ * the layer's texel. A mis-resolved u_ambient or u_light_dir would shift the
+ * colour, not merely darken it, and turn this red.
+ *
+ * WHY THE INSTANCE INDEX AND NOT THE INDIRECT first_instance.
+ * blinn_phong_arr.vert reads gl_BaseInstanceARB, and the sidecar reads
+ * SV_InstanceID, whose D3D12 source is the draw's StartInstanceLocation. On
+ * this host that path is NOT observable: a single ExecuteIndirect record
+ * {VertexCount=6, InstanceCount=1, StartVertexLocation=0,
+ * StartInstanceLocation=1} against this very pipeline and this very shader
+ * renders layer 0, while the same record with InstanceCount = 3 renders layer
+ * 2 — i.e. WARP takes SV_InstanceID from InstanceCount and drops
+ * StartInstanceLocation. (The args buffer was read back with
+ * rhi_buffer_read to rule out a stale upload, and ExecuteIndirect now
+ * transitions its argument buffer into D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT
+ * as the API requires; neither changes the outcome.) So the pixel proof drives
+ * SV_InstanceID through InstanceCount, which is the register the sidecar
+ * actually reads, and leaves the first_instance route — the one production
+ * uses — asserted at the ABI level instead. The DXIL for this vertex stage
+ * disassembles to a single dx.op.loadInput on inputSigId 4 (SV_InstanceID),
+ * which is the same instruction gl_BaseInstance lowers to.
+ *
+ * RT1 is checked on every frame as raw 16-bit patterns: identity model, view,
+ * proj AND identity prev_vp / prev_model make the motion vector exactly
+ * (+0.0, +0.0), so "approximately zero" cannot pass, and a layer read that
+ * corrupted the interpolants would show up here too. */
+TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
+{
+    static const float verts[6 * 8] = {
+        /*  pos                    normal        uv  */
+        -1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+         1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 2.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    /* 2x2 is enough: each layer is one flat colour and the oversized UVs only
+     * need the WRAP sampler the root signature's static sampler already is. */
+    static const unsigned char layer_red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    static const unsigned char layer_green[2 * 2 * 4] = {
+        0, 255, 0, 255,   0, 255, 0, 255,
+        0, 255, 0, 255,   0, 255, 0, 255
+    };
+    static const unsigned char layer_blue[2 * 2 * 4] = {
+        0, 0, 255, 255,   0, 0, 255, 255,
+        0, 0, 255, 255,   0, 0, 255, 255
+    };
+    /* Column-major: index = col*4 + row. */
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const unsigned char expect[3][4] = {
+        { 255,   0,   0, 255 },
+        {   0, 255,   0, 255 },
+        {   0,   0, 255, 255 }
+    };
+    const RHIFormat formats[2] = {
+        RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT
+    };
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITexture albedo_array;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHIBuffer temporal_ubo;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    int frame;
+    int row, col, i;
+    int layer0_px = 0, layer1_px = 0, layer2_px = 0;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    ASSERT_EQ(fbo.attachment_count, 2u);
+
+    /* Form A: the GLSL paths main.c passes on the D3D12 sidecar route. */
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    /* R441 + R600: the array contract and the shortened push layout R600
+     * bought. u_camera_pos must resolve -1 here exactly as it does on the
+     * non-array pair — pinning it is what keeps the camera from creeping back
+     * into the push block's 248-byte tail. */
+    albedo_array = rhi_texture_array_create(g_dev, 2u, 2u, 3u,
+                                            RHI_FORMAT_R8G8B8A8_UNORM);
+    ASSERT_TRUE(rhi_handle_valid(albedo_array));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 0u, layer_red,
+                                   sizeof(layer_red));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 1u, layer_green,
+                                   sizeof(layer_green));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 2u, layer_blue,
+                                   sizeof(layer_blue));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;    /* pos3 + normal3 + uv2 -- no instance slot */
+    pdesc.uses_textures = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_model"), 0);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view"), 64);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_proj"), 128);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_dir"), 192);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_color"), 208);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient"), 224);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
+
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, 0.0f, -1.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, albedo_array, (RHISampler){0}, 0u);
+        if (frame == 0) {
+            /* Two layers in one image. Each draw is instanced 0..N-1 and the
+             * LAST instance rasterises last, so the top instance is the one
+             * whose colour survives: instance 1 -> layer 1 (green) on the
+             * lower side of the seam, instance 2 -> layer 2 (blue) above it. */
+            rhi_cmd_draw_base(cmd, 3u, 2u, 0u);
+            rhi_cmd_draw_base(cmd, 3u, 3u, 3u);
+        } else {
+            /* Layer 0 alone, whole target: 6 vertices cover both triangles. */
+            rhi_cmd_draw_base(cmd, 6u, 1u, 0u);
+        }
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0,
+                                            sizeof(rt0)));
+        for (row = 0; row < 8; ++row) {
+            for (col = 0; col < 8; ++col) {
+                float x = ((float)col + 0.5f) * 0.25f - 1.0f;
+                float y = ((float)row + 0.5f) * 0.25f - 1.0f;
+                /* Below the seam -> frame 0 drew layer 1, above -> layer 2;
+                 * frame 1 drew layer 0 over the whole target. */
+                int below = (y < -0.075f - 0.9375f * x);
+                int layer = (frame == 0) ? (below ? 1 : 2) : 0;
+                i = (row * 8 + col) * 4;
+                if (rt0[i + 0] != expect[layer][0] ||
+                    rt0[i + 1] != expect[layer][1] ||
+                    rt0[i + 2] != expect[layer][2] ||
+                    rt0[i + 3] != expect[layer][3]) {
+                    printf("FAIL: frame %d pixel (col=%d,row=%d) got "
+                           "(%u,%u,%u,%u), expected layer %d = "
+                           "(%u,%u,%u,%u)\n", frame, col, row,
+                           (unsigned)rt0[i + 0], (unsigned)rt0[i + 1],
+                           (unsigned)rt0[i + 2], (unsigned)rt0[i + 3],
+                           layer, (unsigned)expect[layer][0],
+                           (unsigned)expect[layer][1],
+                           (unsigned)expect[layer][2],
+                           (unsigned)expect[layer][3]);
+                }
+                ASSERT_EQ(rt0[i + 0], expect[layer][0]);
+                ASSERT_EQ(rt0[i + 1], expect[layer][1]);
+                ASSERT_EQ(rt0[i + 2], expect[layer][2]);
+                ASSERT_EQ(rt0[i + 3], expect[layer][3]);
+                if (layer == 0) layer0_px++;
+                else if (layer == 1) layer1_px++;
+                else layer2_px++;
+            }
+        }
+
+        /* Identity everywhere, so the motion vector is exactly +0.0 in both
+         * channels on the raw bits. */
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1,
+                                            sizeof(rt1)));
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(rt1[i * 2 + 0], 0u);
+            ASSERT_EQ(rt1[i * 2 + 1], 0u);
+        }
+    }
+
+    /* Every layer must actually have contributed pixels, or "the colour is
+     * right" would be vacuous. These are the exact areas the seam carves out
+     * of the 8x8 target (28 below, 36 above) plus layer 0's full frame. */
+    ASSERT_EQ(layer0_px, 64);
+    ASSERT_EQ(layer1_px, 28);
+    ASSERT_EQ(layer2_px, 36);
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, albedo_array);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -1501,6 +1763,7 @@ int main(void) {
     RUN_TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     RUN_TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1);
+    RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);

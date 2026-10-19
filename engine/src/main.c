@@ -276,7 +276,10 @@ typedef struct {
     RHIPipeline   arr_pipeline;
     RHIPipelineBindings *bind_arr;
     i32 arr_loc_model, arr_loc_view, arr_loc_proj;
-    i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient, arr_loc_camera_pos;
+    /* R600: no arr_loc_camera_pos — the camera rides forward_temporal_ubo
+     * (see mega_mat_arrays_draw), so the name resolves -1 and there is
+     * nothing left to write. */
+    i32 arr_loc_light_dir, arr_loc_light_color, arr_loc_ambient;
     RHIBuffer     instance_buf[2]; /* R183: dual-slot vs in-flight instanced VS */
     RHISampler    sampler;
     RHISampler    nearest_sampler;
@@ -481,37 +484,58 @@ static bool render_init(RenderState *rs, Platform *platform) {
 
     /* R441: material texture-array forward variant. Same uniforms/push layout
      * as blinn_phong, but u_albedo is a sampler2DArray and the vertex stage
-     * forwards gl_BaseInstance(ARB) as the array layer. */
+     * forwards gl_BaseInstance(ARB) as the array layer. R606: D3D12 takes the
+     * sidecar route exactly as the blinn_phong pair above does — the backend
+     * derives blinn_phong_arr_hlsl.{vert,frag} from the same two GLSL paths,
+     * and the sidecars carry the MRT behaviour already authored in, so no
+     * FORWARD_MRT define is injected here (that injection is the GLSL-only
+     * branch's job). */
     {
-        usize avl = 0, afl = 0;
-        char avs_path[128] = {0}, afs_path[128] = {0};
-        shader_variant_path("shaders/blinn_phong_arr.vert", (RHIShaderVariant)caps.shader_variant, avs_path, sizeof(avs_path));
-        shader_variant_path("shaders/blinn_phong_arr.frag", (RHIShaderVariant)caps.shader_variant, afs_path, sizeof(afs_path));
-        char *avs = avs_path[0] ? shader_read_file(avs_path, &avl) : NULL;
-        char *afs = afs_path[0] ? shader_read_file(afs_path, &afl) : NULL;
-        if (avs && afs) {
-            usize avm_len = 0, afm_len = 0;
-            char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
-            char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
-            RHIShader svs = rhi_shader_create(rs->device, avm ? avm : avs,
-                                               avm ? avm_len : avl, false);
-            RHIShader sfs = rhi_shader_create(rs->device, afm ? afm : afs,
-                                               afm ? afm_len : afl, true);
-            free(avm); free(afm);
-            if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
-                RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
-                                       .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
-                                       .mrt_attachment_count = 2u,
-                                       .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
-                rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
-            }
-            if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
-            if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+        RHIShader svs = RHI_HANDLE_NULL, sfs = RHI_HANDLE_NULL;
+        if (caps.shader_sidecar_paths) {
+            LOG_INFO("blinn_phong_arr: backend resolves shader sidecars; "
+                     "loading shaders/blinn_phong_arr.{vert,frag} as "
+                     "blinn_phong_arr_hlsl.{vert,frag}");
+            svs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_arr.vert", false);
+            sfs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_arr.frag", true);
         } else {
-            LOG_WARN("MatIndirect: array shaders missing; single-execute path disabled");
+            usize avl = 0, afl = 0;
+            char avs_path[128] = {0}, afs_path[128] = {0};
+            shader_variant_path("shaders/blinn_phong_arr.vert", (RHIShaderVariant)caps.shader_variant, avs_path, sizeof(avs_path));
+            shader_variant_path("shaders/blinn_phong_arr.frag", (RHIShaderVariant)caps.shader_variant, afs_path, sizeof(afs_path));
+            char *avs = avs_path[0] ? shader_read_file(avs_path, &avl) : NULL;
+            char *afs = afs_path[0] ? shader_read_file(afs_path, &afl) : NULL;
+            if (avs && afs) {
+                usize avm_len = 0, afm_len = 0;
+                char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
+                char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
+                svs = rhi_shader_create(rs->device, avm ? avm : avs,
+                                        avm ? avm_len : avl, false);
+                sfs = rhi_shader_create(rs->device, afm ? afm : afs,
+                                        afm ? afm_len : afl, true);
+                free(avm); free(afm);
+            } else {
+                LOG_WARN("MatIndirect: array shaders missing; single-execute path disabled");
+            }
+            free(avs);
+            free(afs);
         }
-        free(avs);
-        free(afs);
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc apd = {.vert = svs, .frag = sfs, .uses_textures = true,
+                                   .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                   .mrt_attachment_count = 2u,
+                                   .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+            rs->arr_pipeline = rhi_pipeline_create(rs->device, &apd);
+        }
+        /* The GLSL branch above already named the failure it hit; the sidecar
+         * branch has no such line, and an unloadable sidecar otherwise
+         * disables the whole material-array path with nothing in the log. */
+        if (caps.shader_sidecar_paths &&
+            !(rhi_handle_valid(svs) && rhi_handle_valid(sfs)))
+            LOG_WARN("MatIndirect: blinn_phong_arr sidecars unusable; "
+                     "single-execute path disabled");
+        if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+        if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
     }
     if (rhi_handle_valid(rs->arr_pipeline)) {
         rs->bind_arr = rhi_pipeline_bindings_create(rs->device, rs->arr_pipeline);
@@ -523,7 +547,6 @@ static bool render_init(RenderState *rs, Platform *platform) {
         rs->arr_loc_light_dir   = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_dir");
         rs->arr_loc_light_color = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_light_color");
         rs->arr_loc_ambient     = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_ambient");
-        rs->arr_loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_arr, "u_camera_pos");
     }
 
     rs->loc_model       = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_model");
@@ -2113,6 +2136,9 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
                                 const Mat4 *view, const Mat4 *proj,
                                 const Vec3 *light_dir, const Vec3 *light_color,
                                 const Vec3 *ambient, const Vec3 *cam_pos,
+                                /* R600: prev-frame view-proj for the blinn (non-
+                                 * clustered) arm's ForwardTemporal block. */
+                                const Mat4 *prev_vp,
                                 /* R592: true = clustered forward mode
                                  * (BREAK_FORWARD_CLUSTERED): bind the
                                  * CLUSTERED_ARR variant pipeline, publish the
@@ -2182,8 +2208,15 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
                              light_color->e[0], light_color->e[1], light_color->e[2]);
     rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_ambient,
                              ambient->e[0], ambient->e[1], ambient->e[2]);
-    rhi_cmd_set_uniform_vec3(cmd, render->arr_loc_camera_pos,
-                             cam_pos->e[0], cam_pos->e[1], cam_pos->e[2]);
+    /* R600: u_camera_pos left this path's loose-uniform set for the
+     * ForwardTemporal block, so the camera is published and bound here the
+     * way the blinn_phong frame path does it — not written as a uniform that
+     * resolves -1 on every backend now. R606: at the index the active shader
+     * declares (binding 0 in GLSL, register b1 on D3D12). */
+    forward_temporal_ubo_write(render->device, render->forward_temporal_ubo,
+                               cam_pos, prev_vp);
+    rhi_cmd_bind_uniform_buffer(cmd, render->forward_temporal_ubo,
+                                render->temporal_ubo_binding);
 
     /* One bind for the whole pass: slot 0 = array, the rest reuse the same
      * fallback/shadow/SSAO/IBL slots bind_material would use. */
@@ -7857,7 +7890,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
                                                       &view, &proj, &sun_dir_vec, &sun_color,
                                                       &ambient_col, &camera.position,
-                                                      arr_clustered);
+                                                      &prev_view_proj, arr_clustered);
                         } else {
                             mc = mega_mat_groups_draw(cmd, &render, &scene,
                                                       &mega_buf, g_draw_vis,
@@ -7918,7 +7951,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         u32 mc = mega_mat_arrays_draw(cmd, &render, &mega_buf, g_draw_vis,
                                                       &view, &proj, &sun_dir_vec, &sun_color,
                                                       &ambient_col, &camera.position,
-                                                      arr_clustered);
+                                                      &prev_view_proj, arr_clustered);
                         draw_calls += mc;
                         draw_bench_add(mc,
                                        draw_bench_enabled ? mega_count_visible_node_vis(&mega_buf, g_node_vis) : 0u);

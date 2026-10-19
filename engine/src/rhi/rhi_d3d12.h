@@ -173,6 +173,13 @@ typedef struct RHI_D3D12Texture {
     UINT width;
     UINT height;
     UINT mip_levels;
+    /* R441: array slices in the resource (D3D12_RESOURCE_DESC.DepthOrArraySize).
+     * 1 = an ordinary 2D texture, which is every target the backend allocated
+     * before rhi_texture_array_create existed. >1 means a 2D array, and then
+     * rhi_cmd_bind_texture must emit a D3D12_SRV_DIMENSION_TEXTURE2DARRAY view
+     * covering every layer — a TEXTURE2D descriptor over a multi-slice resource
+     * is a dimension mismatch the shader cannot sample through. */
+    UINT array_size;
     D3D12_RESOURCE_STATES state;
 } RHI_D3D12Texture;
 

@@ -14,9 +14,24 @@ in vec2 v_velocity;
 uniform vec3 u_light_dir;
 uniform vec3 u_light_color;
 uniform vec3 u_ambient;
-uniform vec3 u_camera_pos;
 
 uniform sampler2DArray u_albedo;
+
+/* R600: the temporal block is UNCONDITIONAL and leads with the camera
+ * position. It used to be FORWARD_MRT-only, which is what forced
+ * u_camera_pos into the base block even though only the MRT path wanted
+ * the matrices. A D3D12 sidecar that adds the temporal CBV pays a whole
+ * DWORD of the 64-DWORD root-signature budget, clamping the declared push
+ * range from 252 to 248 bytes and dropping u_camera_pos@240+12=252 on the
+ * floor. Leading with the camera keeps the read self-consistent if the
+ * buffer is ever rebound stale, the rule the matrices already follow
+ * (R589). */
+layout(std140, binding = 0) uniform ForwardTemporal {
+    vec3 u_camera_pos;
+    float _cam_pad;
+    mat4 u_prev_vp;
+    mat4 u_prev_model;
+} temporal;
 
 layout(location = 0) out vec4 FragColor;
 #ifdef FORWARD_MRT
@@ -26,7 +41,7 @@ layout(location = 1) out vec2 out_velocity;
 void main() {
     vec3 N = normalize(vNormal);
     vec3 L = (-u_light_dir)  /* R96-3: u_light_dir pre-normalized on CPU */;
-    vec3 V = normalize(u_camera_pos - vWorldPos);
+    vec3 V = normalize(temporal.u_camera_pos - vWorldPos);
     vec3 H = normalize(L + V);
 
     float diff = max(dot(N, L), 0.0);

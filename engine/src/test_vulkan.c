@@ -4292,7 +4292,11 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
         i32 l_ldir  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_dir");
         i32 l_lcol  = rhi_pipeline_bindings_resolve(arr_bind, "u_light_color");
         i32 l_amb   = rhi_pipeline_bindings_resolve(arr_bind, "u_ambient");
-        i32 l_cam   = rhi_pipeline_bindings_resolve(arr_bind, "u_camera_pos");
+        /* R600: u_camera_pos left this pipeline's push block for the
+         * ForwardTemporal block, so it resolves -1 here and the camera
+         * must be published through the UBO instead. Dropping the name
+         * rather than keeping a dead write is the point: a set_uniform
+         * against -1 is a silent no-op. */
         Mat4 idm = mat4_identity();
         const u32 vis[4] = { 1u, 1u, 0u, 1u }; /* blue quad culled */
 
@@ -4314,7 +4318,12 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             rhi_cmd_set_uniform_vec3(cmd, l_ldir, 0.0f, 0.0f, -1.0f);
             rhi_cmd_set_uniform_vec3(cmd, l_lcol, 1.0f, 1.0f, 1.0f);
             rhi_cmd_set_uniform_vec3(cmd, l_amb, 0.35f, 0.35f, 0.35f);
-            rhi_cmd_set_uniform_vec3(cmd, l_cam, 0.0f, 0.0f, 5.0f);
+            /* R600: the camera the fragment shader reads now rides the
+             * ForwardTemporal block at binding 0, the same call every
+             * other blinn draw in this file makes. Without it the
+             * descriptor set the shader statically uses is never
+             * bound, which the VALIDATION GATE reports as VUID-08600. */
+            tv_bind_forward_temporal(cmd, rs, 0.0f, 0.0f, 5.0f);
             rhi_cmd_bind_material_textures_ibl(cmd,
                 arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex, arr_tex,
                 rs->sampler,
