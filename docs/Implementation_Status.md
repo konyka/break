@@ -253,8 +253,15 @@
   - **R629：加了一条常驻诊断，并用它把一整类原因干净地排除掉**。后端新增 `ctx->debug_frame`（每帧 `rhi_frame_begin` 自增）与 `RHI_D3D12Texture.srv_ref_frame`（每次 `rhi_cmd_bind_texture` 盖上当前帧号）；`rhi_d3d12_fbo_bind_impl` 与 `rhi_d3d12_mrt_fbo_bind_impl` 在把纹理转为 RENDER_TARGET / DEPTH_WRITE **之前**检查该标记，若同一帧内既被当作着色器资源读过、又要成为渲染目标，就报出尺寸与两个角色。
     - **诊断本身被证明是活的**：把判定临时改成无条件后，10 帧内出现 **13 条**警告；恢复守卫后一条不出现。所以「没触发」是有效结论，不是死代码。
     - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。
-  - **本轮试过并排除的其他线索**（记录下来省得重复）：`end_render_pass` 不是共性——只有 TAA 和 DOF 调它，而 **motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。跨帧的速度附件写回读转换已在前一条核对过（MRT 绑定在循环里转回 RENDER_TARGET）。
-  - **仍未定位**。范围收窄到「TAA 与 motion blur 同时开启」这一事实，二者的其它共性（都消费 `taa_velocity` 与 `scene_depth`、都在链上改写 `taa_output`）尚未逐个排除。
+  - **再更正一次二分结论（第一次是度量错，第二次是读表错）**：R628 写的是「需要 TAA 与 motion blur **同时**开启」。重读那张表——`BREAK_MB=0`（TAA 开）**仍丢失**、`BREAK_TAA=0`（MB 开）**仍丢失**、只有**两者都关**才不丢。正确表述是：**两者各自单独就足以触发丢失**，「同时」是我从表里读反了方向。这也推翻了「共同点是机制」这个假设：既然单独就能触发，就与共性无关，而是它们**各自**做了同一件别处没有的事。
+  - **⚠️ 标志的实际作用比名字窄**：`BREAK_TAA=0` 关掉的是 demo 里的 `combined_aa_apply`，而 `combined_aa` 用的是 `shaders/combined_taa_fxaa.frag`——**我没有移植它**，所以在 D3D12 上 `use_combined` 恒为 false，它走 fallback 链，**恰好就是我移植的 FXAA + TAA**。所以「TAA 开启」在 D3D12 上实际等于「FXAA + TAA 的 fallback 链在跑」。这条必须记下来，否则下次读这些标志会得出错的结论。
+  - **已排除的三条**（都记下来省得重复）：
+    ①**同帧内资源既是渲染目标又是 SRV**——R629 的常驻诊断在 demo 上**一条都没报**（而诊断本身被证明是活的：强制打开守卫后 10 帧内 13 条）。整类原因排除。
+    ②**`taa_velocity`（前向 MRT 速度附件）**——加了一个临时开关把它强制置为 `RHI_HANDLE_NULL`（让两个 pass 都退到 `vel_tex = current_color` 的退化路径），**设备仍然丢失**。区分性输入不是它。该临时开关已撤销，工作树干净。
+    ③`rhi_cmd_end_render_pass` 不是共性——只有 TAA 和 DOF 调它，**motion blur 不调**，且 DOF 默认就是关的、关它也不影响丢失。
+    ④**TAA 的 history 用 `R16G16B16A16_SFLOAT` 而其它 pass 的中间 FBO 多为 `R8G8B8A8_UNORM`**——把它改成 UNORM 后设备**仍然丢失**，所以「浮点中间目标在 D3D12 上未验证」这条猜测不成立。该改动已撤销。
+  - **前提也核实过，没有建在未测的假设上**：在「TAA+MB 关」的**成功**配置里，`contact_shadow`、`lens_flare`、`lens_effects` 三者都正常初始化并在跑，且**同样采样 `scene_depth`**——设备依然不丢。所以这三个（进而「采样场景深度」）**不是**触发条件。`dof`/`ssr`/`ssgi` 默认就是关的，不构成证据。
+  - **仍未定位**。已确认的事实：TAA（在 D3D12 上经 `combined_aa` 的 fallback 链）与 motion blur **各自单独**就会让 demo 丢设备，而上述三个 pass 单独不触发。四条假设已排除（RT/SRV 同帧撞车、`taa_velocity`、浮点 history、`end_render_pass`）。剩下的差异尚未逐个试过——其中 TAA 独有而其它 pass 没有的是 **history ping-pong**（同一对 FBO 交替读写），MB 则没有，所以 ping-pong 也未必是答案；更可能的是两者**各自**的调用序列里某个尚未被单独验证的步骤。
 - **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，RTX 4060 上约 30 帧后设备丢失**。这是本轮最重要的、也是最需要如实说明的结果：
   ```
   [UI] Closest pair: 11-12 dist=0.4 ...        <- 正常模拟
