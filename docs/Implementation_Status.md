@@ -243,7 +243,14 @@
   - 两帧：帧 0 `first_frame = 1` → 时序块整段跳过、棋盘格**原样**通过（这是对照帧，证明帧 1 的 115/141 真的是混合的结果）；帧 1 走混合。反向验证：把 `lerp(...)` 换成直接赋历史色，帧 1 第 0 像素读回 **(128,128,128)** 而不是 115。
   - demo 上 `TAA: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA** 六个。
   - 门控（WARP **27/27**、硬件 26/27、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
-- **剩余待办的后处理**：`lens_flare`（2 纹理）、`ssgi`（2，且有两个 pass）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
+- **剩余待办的后处理**：`ssgi`（2 纹理，**且有两个 pass**，比其它多一处接线）。多纹理绑定与深度约定现在都已就绪，只差 frag sidecar。
+- **R626：`lens_flare` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 顺序一致 R550-A）。8 个 float、无矩阵，push 块只有 32 字节，是后处理族里最小的。demo 上 `LensFlare: initialized (640x360, intensity=0.50)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow / LensFlare** 九个。**至此默认开启的后处理全部到位。**
+  - **这是第一个真正「推导像素」而不是只钉接线的后处理测试**。lens_flare 是 uv 的闭式函数：径向星芒 + 两道条纹 + 由 `depth > 0.99` 门控的鬼影 + 光晕，叠加到场景色上。没有步进、没有 early-out、没有反馈，所以 64 个像素全部可算：场景取 `(col*31, 0, 0)` 竖条纹、深度处处 1.0（鬼影恒成立）、光照 (0.5,0.5)、光色 (1,1,1)、强度 0.375，输出 `(scene_r + flare, flare, flare)`。
+  - **强度是搜出来的而不是挑的**：0.375 处最接近取整边界的余量是 **0.007**，而 1.0 处只有 0.001——都太紧，不能精确断言，所以比较用 **±1**（与 R620 的 DOF 模糊同一处理）。±1 仍然抓得住结构性问题，因为整张表跨越 29..254。
+  - 表在 r ↔ 7−r 下对称，与回读朝向无关；竖条纹按列取值，行翻转也不变。
+  - **反向验证**：去掉鬼影项，帧 1 第 0 像素读回 **21** 而不是 29。
+  - 工具链：`fabs` 在这个 DXC 上不存在，HLSL 用 `abs`（已改）。
+  - 门控（WARP **30/30**、硬件 29/30、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **R625：`contact_shadow` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 的 `bind_textures_multi` 顺序一致，R550-A）。demo 上 `ContactShadow: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow** 八个。
   - **push 块把 mat4 放在最前**，这是与 R624 相反的选择：`u_cs_light_x/_y/_z`、`u_cs_sw`、`u_cs_sh` 是 5 个 float，若照 GLSL 声明顺序放在矩阵前面，会在 16 字节对齐边界前留下 12 字节空洞；矩阵打头把块压进 **21 DWORD** 而不是 24。偏移由测试钉住（0/64/68/72/76/80），且这是 sidecar 局部布局，不改引擎契约。
   - **两帧都精确可推**：帧 0 深度 1.0 → early-out，竖条纹原样通过；帧 1 深度 0.5、光照方向 (0,0,1) → `screen_step` 为 0、12 次采样都落在 vUV 上、每次重建的深度相同而 `ray_pos.z` 随 offset 增长，故 `diff` 恒为负、无命中、`shadow` 保持 1——**12 步循环跑完而输出恰好是场景色**。

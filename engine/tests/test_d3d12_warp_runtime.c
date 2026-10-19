@@ -1986,6 +1986,161 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * blacks the frame out; a mis-offset uniform moves the scene colour, because
  * u_ssr_proj / u_ssr_inv_proj are what decode the depth that decides the
  * early-out. */
+/* R626: lens_flare on D3D12 -- and the first post pass whose test really does
+ * derive its pixels rather than only pinning the wiring.
+ *
+ * lens_flare is a closed-form function of uv: a radial star, two streaks, a
+ * ghost gated on depth > 0.99 and a halo, added to the scene colour. No
+ * march, no early-outs, no feedback. So all 64 pixels are computable:
+ *
+ *   scene  = (col * 31, 0, 0)          vertical stripes, column-dependent so a
+ *                                         readback row flip cannot change it
+ *   depth  = 1.0 everywhere             so the ghost always qualifies
+ *   light  = (0.5, 0.5), colour (1,1,1), intensity 0.375
+ *   out    = (scene_r + flare, flare, flare)
+ *
+ * Intensity 0.375 was searched for rather than picked: the closest any pixel
+ * came to a byte rounding boundary is 0.007 there, and 0.001 at intensity 1.0.
+ * Both are too tight to assert exact bytes, so the comparison is +-1 -- the
+ * same treatment DOF's blur needed. ±1 still catches anything structural,
+ * because the table spans 29..254 across the frame.
+ *
+ * The table is symmetric under r <-> 7-r, so readback orientation cannot
+ * change it. And unlike ssr, motion_blur and contact_shadow, this test pins
+ * the actual output rather than only the wiring: swapping t0 and t1, or
+ * dropping the ghost, or changing the intensity all move specific pixels.
+ */
+TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table) {
+    static const unsigned char want[8][8][4] = {
+        {{ 29, 29, 29,255}, { 63, 32, 32,255}, { 97, 35, 35,255}, {130, 37, 37,255}, {161, 37, 37,255}, {190, 35, 35,255}, {218, 32, 32,255}, {246, 29, 29,255}},
+        {{ 32, 32, 32,255}, { 67, 36, 36,255}, {104, 42, 42,255}, {139, 46, 46,255}, {170, 46, 46,255}, {197, 42, 42,255}, {222, 36, 36,255}, {249, 32, 32,255}},
+        {{ 35, 35, 35,255}, { 73, 42, 42,255}, {114, 52, 52,255}, {155, 62, 62,255}, {186, 62, 62,255}, {207, 52, 52,255}, {228, 42, 42,255}, {252, 35, 35,255}},
+        {{ 37, 37, 37,255}, { 77, 46, 46,255}, {124, 62, 62,255}, {183, 90, 90,255}, {214, 90, 90,255}, {217, 62, 62,255}, {232, 46, 46,255}, {254, 37, 37,255}},
+        {{ 37, 37, 37,255}, { 77, 46, 46,255}, {124, 62, 62,255}, {183, 90, 90,255}, {214, 90, 90,255}, {217, 62, 62,255}, {232, 46, 46,255}, {254, 37, 37,255}},
+        {{ 35, 35, 35,255}, { 73, 42, 42,255}, {114, 52, 52,255}, {155, 62, 62,255}, {186, 62, 62,255}, {207, 52, 52,255}, {228, 42, 42,255}, {252, 35, 35,255}},
+        {{ 32, 32, 32,255}, { 67, 36, 36,255}, {104, 42, 42,255}, {139, 46, 46,255}, {170, 46, 46,255}, {197, 42, 42,255}, {222, 36, 36,255}, {249, 32, 32,255}},
+        {{ 29, 29, 29,255}, { 63, 32, 32,255}, { 97, 35, 35,255}, {130, 37, 37,255}, {161, 37, 37,255}, {190, 35, 35,255}, {218, 32, 32,255}, {246, 29, 29,255}}
+    };
+    static unsigned char scene[8 * 8 * 4];
+    static float depth[8 * 8];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture dtex, stex;
+    RHITexture pair[2];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const names[8] = {
+        "u_lf_light_x", "u_lf_light_y", "u_lf_intensity", "u_lf_sw",
+        "u_lf_sh", "u_lf_lc_r", "u_lf_lc_g", "u_lf_lc_b"
+    };
+    static const i32 want_off[8] = { 0, 4, 8, 12, 16, 20, 24, 28 };
+    int frame, i, ch;
+
+    for (i = 0; i < 64; ++i) {
+        scene[i * 4 + 0] = (unsigned char)((i & 7) * 31u);
+        scene[i * 4 + 1] = 0u;
+        scene[i * 4 + 2] = 0u;
+        scene[i * 4 + 3] = 255u;
+        depth[i] = 1.0f;
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "lens_flare_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 8; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (got != want_off[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i], (int)got,
+                   (int)want_off[i]);
+        ASSERT_EQ(got, want_off[i]);
+    }
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth; dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = scene; stex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(stex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    pair[0] = dtex; pair[1] = stex;
+
+    for (frame = 0; frame < 2; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 1.0f, 0.0f, 1.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+        rhi_cmd_set_uniform_f32(cmd, 0, 0.5f);    /* light x */
+        rhi_cmd_set_uniform_f32(cmd, 4, 0.5f);    /* light y */
+        rhi_cmd_set_uniform_f32(cmd, 8, frame == 0 ? 0.0f : 0.375f);
+        rhi_cmd_set_uniform_f32(cmd, 12, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 16, 8.0f);
+        rhi_cmd_set_uniform_f32(cmd, 20, 1.0f);
+        rhi_cmd_set_uniform_f32(cmd, 24, 1.0f);
+        rhi_cmd_set_uniform_f32(cmd, 28, 1.0f);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(px[i * 4 + 3], 255u);
+            for (ch = 0; ch < 3; ++ch) {
+                int got = px[i * 4 + ch];
+                /* Frame 0 zeroes the flare, so the scene stripe passes through
+                 * exactly and is asserted exactly. */
+                int exp = (frame == 0) ? (int)scene[i * 4 + ch]
+                                       : (int)want[i >> 3][i & 7][ch];
+                int tol = (frame == 0) ? 0 : 1;
+                int d = got - exp;
+                if (d < 0) d = -d;
+                if (d > tol)
+                    printf("FAIL: lens flare frame %d pixel %d ch%d = %d, "
+                           "expected %d +- %d\n", frame, i, ch, got, exp, tol);
+                ASSERT_TRUE(d <= tol);
+            }
+        }
+    }
+
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_texture_destroy(g_dev, stex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march) {
     static unsigned char scene[8 * 8 * 4];
     static float depth[8 * 8];
@@ -4305,6 +4460,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table);
     RUN_TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march);
     RUN_TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs);
     RUN_TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb);

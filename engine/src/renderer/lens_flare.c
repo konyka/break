@@ -8,6 +8,32 @@
 #include <core/shader_io.h>
 
 
+static RHIPipeline lf_create_pipe_path(RHIDevice *dev, const char *vert_path,
+                                       const char *frag_path) {
+    RHIShader vs = rhi_shader_create_path(dev, vert_path, false);
+    RHIShader fs = rhi_shader_create_path(dev, frag_path, true);
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
+        LOG_WARN("LensFlare: sidecar shader unavailable (%s, %s)",
+                 vert_path, frag_path);
+        if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
+        if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
+        return RHI_HANDLE_NULL;
+    }
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs;
+    pdesc.frag = fs;
+    pdesc.no_vertex_input = true;
+    pdesc.uses_textures = true;
+    pdesc.depth_write_disable = true;
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(dev, &pdesc);
+    rhi_shader_destroy(dev, vs);
+    rhi_shader_destroy(dev, fs);
+    return pipe;
+}
+
 static RHIPipeline lf_create_pipe(RHIDevice *dev,
                                     const char *vert_path, const char *frag_path) {
     usize vs_len = 0, fs_len = 0;
@@ -54,13 +80,23 @@ bool lens_flare_init(LensFlareSystem *lf, RHIDevice *dev, u32 width, u32 height)
     /* 计划 E Task 6 F2：shader 源变体由 caps.shader_variant 契约决定。 */
     RHICapabilities caps;
     char vs_path[96], fs_path[96];
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
-        !shader_variant_path("shaders/lens_flare.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
-        LOG_WARN("LensFlare: capability query or shader variant path failed");
+    if (!rhi_device_get_capabilities(dev, &caps)) {
+        LOG_WARN("LensFlare: capability query failed");
         return false;
     }
-    lf->lf_pipe = lf_create_pipe(dev, vs_path, fs_path);
+    if (caps.shader_sidecar_paths) {
+        /* R626: D3D12 never compiles HLSL in-process; the backend resolves
+         * these to post_hlsl.vert / lens_flare_hlsl.frag. */
+        lf->lf_pipe = lf_create_pipe_path(dev, "shaders/post.vert",
+                                          "shaders/lens_flare.frag");
+    } else {
+        if (!shader_variant_path("shaders/post.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
+            !shader_variant_path("shaders/lens_flare.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
+            LOG_WARN("LensFlare: shader variant path failed");
+            return false;
+        }
+        lf->lf_pipe = lf_create_pipe(dev, vs_path, fs_path);
+    }
 
     if (!rhi_handle_valid(lf->lf_pipe)) {
         LOG_WARN("LensFlare: pipeline creation failed");
