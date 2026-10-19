@@ -268,7 +268,8 @@
 
     所以设备丢失需要 **TAA 与 motion blur 同时开启**，单独任何一个都不触发。
   - **这与它们的共同点是吻合的**：TAA 与 motion blur 是**仅有的两个消费 `taa_velocity` 的后处理**，而 `taa_velocity` 就是前向场景 MRT 的第二张附件（`forward_scene.color_tex[1]`，R16G16_SFLOAT 速度目标，`main.c:8614-8621`）。FXAA、sharpen、color_grade 等只消费颜色。
-  - **由此得到的具体下一步**：审计该速度附件在**帧与帧之间**的 RT ↔ SRV 状态转换。前向场景 pass 把它当渲染目标写，本帧后处理又经 `rhi_cmd_bind_texture` 的 `td->state != read_state` 分支把它转成 SRV 读；下一帧场景 pass 必须再转回 RENDER_TARGET。**若回转缺失，同一资源就会同时作为渲染目标与 SRV 被引用**，这是未定义行为，且正是会丢设备/挂起的那一类。下一步就是查这条回转路径（`rhi_d3d12` 的 FBO 绑定处），而不是继续在单元测试里二分。
+  - **⚠️ 第一条线索已被代码证伪，记录下来是为了不让下一个人去追它**：我猜是速度附件在帧间的 RT↔SRV 转换缺失（前向场景 pass 写它、后处理经 `rhi_cmd_bind_texture` 的 `td->state != read_state` 分支读它、下一帧要转回）。查了 `rhi_d3d12` 的绑定路径——**不成立**：`rhi_d3d12_fbo_bind_impl` 确实只转换单附件 FBO 的 `color_tex` 与 `depth_tex`，但 `forward_scene` 是 `rhi_mrt_fbo_create` 建的 MRT，走的是 `rhi_d3d12_mrt_fbo_bind_impl`，那个函数**在循环里把所有附件都转回 RENDER_TARGET**（`colors[i]->state = D3D12_RESOURCE_STATE_RENDER_TARGET`）。转换是到位的。
+  - **所以机制仍然未知**，定位范围收窄到「TAA + motion blur 同时开启」这一条事实本身。下一个更具体的做法是**加一条运行时诊断**而不是继续读代码：在 `rhi_d3d12_mrt_fbo_bind_impl` 与 `rhi_cmd_bind_texture` 里各加一个断言/日志——当一个即将被转为 RENDER_TARGET（或正被绑为 RT/DSV）的纹理，**同时**还挂在本帧某个已绑定的 SRV 描述符表上时报警。这类「同一资源既是 RT 又是 SRV」正是会丢设备/挂起的形状，而当前代码没有任何东西会报告它。
   - **在定位之前，诚实的结论是**：D3D12 现在能**构建**并**逐个验证**这 10 个后处理，但 demo 的完整后处理链**尚不可长时间运行**。不要把本轮的绿灯读成「D3D12 后处理完成」。
 - **R626：`lens_flare` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 顺序一致 R550-A）。8 个 float、无矩阵，push 块只有 32 字节，是后处理族里最小的。demo 上 `LensFlare: initialized (640x360, intensity=0.50)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow / LensFlare** 九个。**至此默认开启的后处理全部到位。**
   - **这是第一个真正「推导像素」而不是只钉接线的后处理测试**。lens_flare 是 uv 的闭式函数：径向星芒 + 两道条纹 + 由 `depth > 0.99` 门控的鬼影 + 光晕，叠加到场景色上。没有步进、没有 early-out、没有反馈，所以 64 个像素全部可算：场景取 `(col*31, 0, 0)` 竖条纹、深度处处 1.0（鬼影恒成立）、光照 (0.5,0.5)、光色 (1,1,1)、强度 0.375，输出 `(scene_r + flare, flare, flare)`。
