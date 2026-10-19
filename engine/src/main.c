@@ -975,6 +975,38 @@ instanced_pipeline_done:
         rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
     }
 
+    /* R634: on a sidecar backend this resolves to skinned_mrt_hlsl.{vert,frag}.
+     * Only the MRT variant is needed -- the GLSL path below injects
+     * FORWARD_MRT unconditionally, so the non-MRT form is never built. The
+     * CBV layout and the lighting move are the same as R632's instanced port;
+     * see skinned_mrt_hlsl.vert for why the block is not made unconditional. */
+    if (caps.shader_sidecar_paths) {
+        RHIShader svs = rhi_shader_create_path(rs->device,
+                                               "shaders/skinned.vert", false);
+        RHIShader sfs = rhi_shader_create_path(rs->device,
+                                               "shaders/skinned.frag", true);
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc spd = {
+                .vert = svs, .frag = sfs,
+                .uses_textures = true,
+                .uses_texel_buffer = true,
+                .skinned_vertex = true,
+                .is_instanced = true,
+                .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                .mrt_attachment_count = 2u,
+                .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
+            };
+            rs->skinned_pipeline = rhi_pipeline_create(rs->device, &spd);
+            spd.wireframe = true;
+            rs->wire_skinned_pipeline = rhi_pipeline_create(rs->device, &spd);
+            rhi_shader_destroy(rs->device, svs);
+            rhi_shader_destroy(rs->device, sfs);
+        } else {
+            LOG_WARN("skinned sidecars unavailable; skinned draws disabled");
+            if (rhi_handle_valid(svs)) rhi_shader_destroy(rs->device, svs);
+            if (rhi_handle_valid(sfs)) rhi_shader_destroy(rs->device, sfs);
+        }
+    } else {
     {
         usize svl = 0, sfl = 0;
         char *sv = NULL, *sf = NULL;
@@ -1011,6 +1043,7 @@ instanced_pipeline_done:
                 rhi_shader_destroy(rs->device, sfs);
             }
         } else { free(sv); free(sf); }
+    }
     }
     if (rhi_handle_valid(rs->skinned_pipeline)) {
         rs->bind_skinned = rhi_pipeline_bindings_create(rs->device, rs->skinned_pipeline);
@@ -6919,11 +6952,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_view, &view.e[0][0]);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_proj, &proj.e[0][0]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-            rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_camera_pos,
-                camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            /* R634: on a sidecar backend the four lighting uniforms come from
+             * the temporal CBV rather than from here -- see
+             * skinned_mrt_hlsl.vert. Skipping them rather than leaving the
+             * writes is deliberate: on D3D12 they resolve to -1 and would be
+             * silent no-ops, which is the dropped-write shape R600 exists to
+             * eliminate. */
+            if (!render.caps.shader_sidecar_paths) {
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
+                rhi_cmd_set_uniform_vec3(cmd, render.sk_loc_camera_pos,
+                    camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+            } else {
+                forward_temporal_ubo_write_lit(render.device,
+                    render.forward_temporal_ubo, &camera.position,
+                    &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
+                rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                    (u32)render.temporal_ubo_binding);
+            }
             }
 
             if (scene.skinned_mesh_count > 0) {

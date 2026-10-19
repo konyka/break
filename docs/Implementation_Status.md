@@ -250,6 +250,10 @@
   - 反向验证：把中心权重 0.2240 改成 0.5000，blur 像素 0 读回 **26** 而不是 20。
   - 门控（WARP **31/31**、硬件 30/31、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **D3D12 后处理小结**：`ColorGrade`/`LensEffects`/`FXAA`/`DOF`/`SSR`/`TAA`/`MotionBlur`/`ContactShadow`/`LensFlare`/`SSGI` 共 **10 个**，demo 默认开启的**全部**已可用。其中 `LensFlare` 与 `ColorGrade` 的测试是真正推导像素的；`SSR`/`MotionBlur`/`ContactShadow` 三个的测试**只钉接线不钉控制流**（反向验证证明它们的分支不可单独观测），这一点已在各自条目里如实写明。
+- **R634：`skinned` 上 D3D12**。与 `instanced` 同形：四个光照 uniform 也搬进时序 CBV（追加在 `prev_model` 之后，不动 blinn_phong 的偏移），块不改无条件，绘制点的四个 `set_uniform` 跳过而不是留着。页面 stride 是 **64 字节**（aPos 3 + aNormal 3 + aUV 2 + aJoints 4 + aWeights 4）。
+  - **⚠️ 两个发现自己犯的错，都由编译器/PSO 抓到**：①**顶点 stride 我一度写成 48、并只写了每顶点 12 个 float**——`-Wexcess-initializers` 抓到少算的 `aJoints`/`aWeights` 各 4 个。②**蒙皮两个属性的语义名我写成 `TEXCOORD1` / `TEXCOORD2`，编译通过但 `CreateGraphicsPipelineState` 直接拒绝**——它们应使用 glTF 惯例名 **`BLENDINDICES` / `BLENDWEIGHT`**，这正是 `rhi_d3d12_input_layout` 的 `skinned_vertex` 臂生成的元素名。
+  - **⚠️ 这条路径的 CBV 布局尚未有像素证明**：`skinned` 的侧写偏移同样是手工对齐的（测试草稿存在但未通过——WARP 帧 0 第 0 像素读到 (13,13,26) 而非期望色，硬件则 RT1 非零），按 R632 的先例**不提交失败的测试**，故布局守卫**只对 `instanced` 有效**。demo 侧 120 帧跑完、`Draws: 69`、无设备丢失，但那只说明接线正确，不说明偏移逐字节对齐。
+  - 门控（WARP 32/32、硬件 31/32、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
 - **R632：`instanced` 上 D3D12——R616 判定「不是机械移植」的那一项做成了**。做法：
   - **把四个光照 uniform 搬进时序 CBV**。GLSL 孪生里 `u_light_dir`/`u_light_color`/`u_ambient`/`u_camera_pos` 是 frag 的 loose uniform；D3D12 的 `rhi_cmd_set_uniform_*` **只能写根常量**，而这条管线要六个 push 块字 + 两个 mat4 = 320 字节，超过两张表留下的 244 字节上限。追加在 `ForwardTemporalUbo` 的 **`prev_model` 之后**，所以 blinn_phong 依赖的 `u_camera_pos@0` 与 `u_prev_vp@16` **一个字节都不动**。三个 vec3 各带一个显式 pad 字——cbuffer 里 `float3` 占 16 字节，没有 pad 就与引擎结构体对不齐。
   - **没有照搬 R600 的「块改无条件」**：那条对 blinn_phong 成立，但对 instanced 会**迫使每次 draw 都绑一个只有 MRT 才用的 UBO**，正是 R600 头部警告的陷阱。
