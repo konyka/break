@@ -1061,9 +1061,80 @@ fail-closed gates, both currently closed:
    invalid and `indirect_draw_init` destroys the system and returns false.
 
 R607 therefore landed the array sidecar and the 2D array texture support for
-a path that cannot execute on this backend yet. Enabling it needs a compute
-sidecar for `compact_draws.comp` -- and `rhi_shader_create_compute`'s own
-D3D12 support is unverified -- plus the layer fix from R609.
+a path that cannot execute on this backend yet. And the last of those gates is
+not a code problem at all.
+
+### R611 -- creating a UAV view kills the device on this host, on both adapters
+
+`test_d3d12_uav_matrix` was written to settle exactly this and still settles
+it the same way:
+
+```
+uav-matrix[0..6]  view=1  -> KILLED (the view succeeds; the next texture create fails)
+uav-matrix[7..8]  view=0  -> ALIVE (no view; buffer + resource fine throughout)
+2/9 cells survived
+```
+
+Every cell that creates a UAV view dies. Every cell that does not, lives. The
+kill is `ID3D12Device_CreateUnorderedAccessView` and it is immediate -- no
+failed submit, so DRED has nothing to report. **WARP and the RTX 4060 agree
+exactly**, so this is not a software-rasteriser gap; it is this machine's
+driver stack, and it matches what the repo recorded earlier as a host-level
+problem rather than a repository bug.
+
+This reframes the whole remaining plan. Anything that touches a storage
+buffer needs a UAV: the `atomicAdd` in `compact_draws.comp`, `cull.comp`,
+`unified_cull.comp`, `cluster_cull.comp`, `particle_update.comp`,
+`particle_cull.comp`, and the postfx that dispatches. **Every one of them
+would lose the device here.**
+
+So the material-array path is behind four gates, and they are not
+interchangeable:
+
+| # | gate | kind |
+| --- | --- | --- |
+| 1 | `caps.indirect_draw_supported` never set on D3D12 | code, one line |
+| 2 | `compact_draws.comp` has no D3D12 compute sidecar | code -- CMake's `.comp -> cs_6_0` rule already supports it, nobody has written one |
+| 3 | **UAV views kill the device** | **outside the code** |
+| 4 | the layer never reaches the shader (R609) | code, command-signature CONSTANT plus an ABI change |
+
+Gate 3 decides the order. Doing 1, 2 and 4 and then flipping the capability
+bit would replace a subsystem that currently fails closed with one that loses
+the device -- a worse failure, and one that would look like a driver bug
+rather than a missing feature. Gate 3 has to come first.
+
+The demo's `D3D12 device removed: 0x887a0005`, **not verified here** in the
+previous entry, is now settled as well -- but it is a different thing from
+gate 3, and the two must not be conflated. Running the demo to a real
+shutdown with `BREAK_FRAMES=120`, four configurations:
+
+| configuration | result |
+| --- | --- |
+| RTX 4060, normal window | 120 frames, **no** device removal, full shutdown |
+| RTX 4060 + `BREAK_D3D12_TEST_FALLBACK_HWND=1` | same, **no** device removal |
+| WARP + fallback window | one, demo exits gracefully (exit 0) |
+| WARP, normal window | one, demo exits gracefully (exit 0) |
+
+So WARP is the variable and the fallback window is irrelevant. And the log
+position shows it is **mid-run**, not at teardown:
+
+```
+[UI] Closest pair: 11-12 dist=0.4 ...            <- normal simulation
+ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0005
+RHIEVT {"event":"device_lost",...,"result":"DEVICE_LOST"}
+ERROR main.c:6289 frame_begin returned NULL (device lost?) - exiting demo loop
+INFO  main.c:8956 Shutting down...               <- graceful, exit 0
+```
+
+The demo detects the loss and shuts down cleanly. Real hardware does not
+lose the device on this path at all.
+
+The tempting link -- "the demo hangs because it creates UAVs" -- is **false,
+and was checked**: every compute subsystem in the demo fails closed *before*
+it creates a view (`cluster_cull.comp not found`, `Particle compute shader
+not found`, `GPUCull: backend reports no compute support`, `IndirectDraw:
+backend reports no indirect draw support`), so the demo never creates a UAV
+view at all. Gate 3 and the demo hang are unrelated.
 
 The `shader_read_file` calls in `test_vulkan.c` are test fixtures and are not
 in this list.

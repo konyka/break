@@ -119,7 +119,24 @@
   - compute：`gpucull.c`（`cull.comp` / `unified_cull.comp`）、`lighting.c`（`cluster_cull.comp`）、`particles.c`（`particle_update.comp` / `particle_cull.comp` / `particle.{vert,frag}`）、`ibl.c`、`indirect_draw.c`、`occlusion_cull.c`。
   - 其它：`asset/hotreload.c`、`myui/myr/my_vgcanvas_break_rhi.c`、`ui/myui_break.c`。
   （`test_vulkan.c` 里的 `shader_read_file` 是测试夹具，不计入。）
-- **⚠️ demo 结束时仍报 `D3D12 device removed: 0x887a0005`**（`DXGI_ERROR_DEVICE_HUNG`）。子 agent 做过 A/B（还原三个调用点后同样挂）并判定为**既有问题**，**本轮未独立复核**。它与上面那份仍 GLSL-only 的清单高度相关，值得下一轮单独查。
+- **⚠️ demo 的 `D3D12 device removed: 0x887a0005`：本轮用 `BREAK_FRAMES=120` 让 demo 跑到**正常退出**，四种配置全部实测，结论是「只在 WARP 上发生，硬件完全干净」**，这条不再是开放项**：
+
+  | 配置 | 结果 |
+  | --- | --- |
+  | RTX 4060，正常窗口 | 120 帧跑满，**0 次** device removed，完整 shutdown |
+  | RTX 4060 + `BREAK_D3D12_TEST_FALLBACK_HWND=1` | 同上，**0 次** |
+  | WARP + 回退窗口 | 1 次，demo 优雅退出（exit=0） |
+  | WARP，正常窗口 | 1 次，demo 优雅退出（exit=0） |
+
+  所以**回退窗口与它无关，WARP 才是变量**。而且它在日志里的位置是**跑到一半**，不是收尾：
+  ```
+  [UI] Closest pair: 11-12 dist=0.4 ...          <- 正常模拟中
+  ERROR rhi_d3d12.c:318 D3D12 device removed: 0x887a0005
+  RHIEVT {"event":"device_lost",...,"result":"DEVICE_LOST"}
+  ERROR main.c:6289 frame_begin returned NULL (device lost?) — exiting demo loop
+  INFO  main.c:8956 Shutting down...             <- 优雅退出，exit=0
+  ```
+  **设备丢失是 WARP 独有的现象，且 demo 已能检测并优雅处理**（`frame_begin` 返回 NULL → 退出循环 → 正常 shutdown）。真实 GPU 上这条路径完全健康。子 agent 早前「既有问题」的 A/B 判断是对的，这里补上精确定位。
 - **同一套像素证明第一次在真实 GPU 上跑了，并因此发现断言本身有缺陷**：`env -u ENGINE_D3D12_WARP` 后地形受阴影那一个像素的蓝通道读回 **18** 而不是 19。**不是着色器缺陷**——解析值是 **18.52**，离字节取整边界只有 **0.02**，而链路上有 `sin(10)*sin(20)`，fp32 的参数规约就足以决定它落在哪一侧。三个期望三元组**全都**至少有一个通道落在边界 0.08 以内（地形 60.57 / 18.52、水 16.575、天空盒 52.44），因为它们都是被挑成整数字节值的——这是设计的系统性特征，不是地形独有。`warp_expect_rgba` 因此改为接受每通道容差，三处颜色断言一律传 1；**velocity 断言仍然精确**，因为 0.0 是字面量，没有边界可跨。容差之下反向验证照样转红（0.4→0.5 让红偏 4、绿偏 9）。
 - 硬件上的结果是 **16/17**：唯一失败是 `warp_device_identity_is_honest`，它断言的正是「适配器**就是** WARP」，所以 `ENGINE_D3D12_WARP` 被 unset 时它本来就该红。**这是 D3D12 像素证明第一次跑在真实硅片上**（RTX 4060），此前所有像素证据都来自 WARP。
 
@@ -142,6 +159,24 @@
 - **R610：`main.c` 的热重载管线改走 path API**。它和 R608 那三个调用点同形状：`hotreload_pipeline_init` 在 `main.c` 里传的是 `shader_variant_path` 解析后的路径，而 D3D12 的 `shader_variant` 留在 GLSL，所以拿到的是 `shaders/blinn_phong.vert`——读它得到的是**没有 DXIL blob 的 GLSL 源**，`rhi_shader_create` 必然失败，热重载管线从来就没建成过。分支放在 `hotreload_compile_pipeline` 内部而不是调用点，这样**文件监视回调触发的重新编译也一起走上**。`blinn_phong_hlsl.{vert,frag}` 早就存在，所以这次不需要新 sidecar。
 - **新测试 `hotreload_uses_the_path_api_on_a_sidecar_backend` 两条路线都钉住**（GLSL 后端 `create` ×2 / `path` ×0；sidecar 后端 `path` ×2 / `create` ×0）。**反向验证**：把 `if (caps.shader_sidecar_paths)` 改成 `if (0 && ...)`，该用例在 `s_path_calls != 2` 处转红。这个测试必须有，因为它钉的失败模式是**静默**的——GLSL 路线对着桩会成功，只在真实硬件上才失败。
 - **未修且如实记录的文件监视器缺陷**：sidecar 后端上真正被编译的是 `<base>_hlsl.{vert,frag}`，但 watcher 仍监视调用方传的 GLSL 路径。于是**改 GLSL twin 会触发一次「读未变 sidecar」的无效重编译，改 sidecar 则什么都不触发**。修它需要把后端的 `_hlsl` 派生规则暴露出来。管线产物本身是对的（那正是本次修的），错的只是触发。
+- **⚠️ R611（本轮最重要的发现，直接决定后续所有 D3D12 compute 工作的可行性）**：`test_d3d12_uav_matrix` 至今仍然成立——**创建 UAV 视图会立即杀死 D3D12 设备**，而且 **WARP 与 RTX 4060 表现完全一致**，不是 WARP 的能力缺口：
+  ```
+  uav-matrix[0..6]  view=1  -> KILLED（视图建成功后，随后的 texture create 失败）
+  uav-matrix[7..8]  view=0  -> ALIVE（不建视图，buffer+resource 全程正常）
+  2/9 cells survived
+  ```
+  **7 个建了 UAV 视图的格子全死，2 个没建的格子全活**——死因是 `ID3D12Device_CreateUnorderedAccessView`，且**立即生效**（没有失败提交、无失败提交面包屑）。
+- **这条把「把 compute 子系统迁到 D3D12」整个计划的前提推翻了**，而不只是推迟：所有需要 storage buffer / atomic 的着色器（`compact_draws.comp` 的 atomicAdd、`cull.comp`、`cluster_cull.comp`、`particle_update.comp`、`particle_cull.comp`、粒子与后处理里的一切）都必然要建 UAV 视图，**在这台机器上一律会丢设备**。
+- **因此 D3D12 的数组路径被四道门挡住，其中一道在代码之外**：
+  | # | 门 | 性质 |
+  | --- | --- | --- |
+  | 1 | `caps.indirect_draw_supported` 从未被 D3D12 设置 | 代码，一行可改 |
+  | 2 | `compact_draws.comp` 是 GLSL-only，无 compute sidecar | 代码，需写 sidecar（CMake 的 `.comp → cs_6_0` 规则**已支持**，只是没人写） |
+  | 3 | **UAV 视图杀死设备（本机驱动栈）** | **代码之外** |
+  | 4 | 层号到不了着色器（R609） | 代码，需命令签名 CONSTANT + ABI 变更 |
+
+  第 3 条决定了：**即使把 1、2、4 全部做完并打开能力位，这台机器上数组路径依然会丢设备**。所以正确顺序是**先解决第 3 条**，否则做 1、2、4 只是把一个被 fail-closed 挡住的活板门换成一次崩溃。
+- **⚠️ 上条那个「demo 的 hang 也是 UAV 造成的」推测，本轮实测被推翻，不要采信**：demo 在 RTX 4060 上 `BREAK_FRAMES=120` 跑满并干净退出，**全程 0 次 device removed**；而且 demo 里所有 compute 子系统都在**建 UAV 之前**就 fail-closed 了（`cluster_cull.comp not found` / `Particle compute shader not found` / `GPUCull: backend reports no compute support` / `IndirectDraw: backend reports no indirect draw support`）——**demo 从头到尾没建过任何 UAV 视图**，所以第 3 条（UAV 杀设备）**不是** demo 的 hang 的原因。两条记录要分开看。
 - 门控（三棵树全绿：D3D12 **172/172** + graphics **8/8**、VK **171/171**、GL **170/170**；golden MAE 仍精确为 VK 28.75/13.54 与 GL 15.60/1.15）。`test_hotreload` 5/5 → **6/6**。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
