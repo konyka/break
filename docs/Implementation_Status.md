@@ -211,6 +211,8 @@
   - **顺带记下一条工具链限制（会绊倒下一个写 sidecar 的人）**：**这个 DXC 拒绝单参数向量构造**。`float3(x)` 报 `too few elements in vector initialization (expected 3 elements, have 1)`，标量必须用 C 风格转换 `(float3)x` 展开。最小复现已确认。既有 sidecar 恰好都没用 splat，所以此前没人写下来过。而 `lerp(vec, vec, scalar)` 是**允许**的——和 GLSL 习惯把 mix 的第三参数留作标量正好相反，容易写错。
   - demo 侧证据：RTX 4060 上从 `ColorGrade: pipeline creation failed` 变成 `[INFO] ColorGrade: initialized (640x360)`。
 - 门控（WARP 20/20 → **21/21**、硬件 20/21（`warp_device_identity_is_honest` 按设计红）、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170，三棵树唯一失败都是已知的 `FAIL: OpenClipboard failed`）。
+- **R618：`lens_effects` 上 D3D12**（色差 + 暗角 + 颗粒，4 个 float = 16 字节，共用 `post_hlsl.vert`）。像素证明关掉色差和颗粒，只留暗角——它是像素位置的纯函数，所以 **64 个像素全部可推导**：`vignette = 1 - smoothstep(0, 0.8, length(uv - 0.5))`，灰 200 输入。两个手算锚点（中心附近 (3,3) → **193**，角落 (7,7) → **26**）先与闭式表对上，再把整张表写进测试；**首次运行 64 个值全部精确命中**。断言整张径向表而不是一个纯色，是因为错误的 vUV 映射、错误的顶点着色器、缺 t0 描述符、错位的 `u_vignette_strength` 各自产生**不同的**径向表。反向验证：去掉 `color *= vignette`，像素 0 读回 200 而不是 26。顺带补了一行 `LensEffects: initialized` 日志——此前成功路径**一行都不打**，demo 日志里无法区分「成功」与「没被调用」。demo 在 RTX 4060 上现在打印 `ColorGrade: initialized` 与 `LensEffects: initialized`。
+- **⚠️ 顺带定位（非本轮引入）：Git Bash 下 demo 偶发 exit 125，且截断在 shutdown 的不同阶段**（`postfx done` / `asset done` / `lights done`）。A/B：**HEAD 本身同样出现**（2 次中 1 次），所以不是本轮改动。代码里不存在 `exit(125)`。同一二进制用 **PowerShell `Start-Process` 跑 3 次全部 exit 0**；只在 Git Bash 把 stdout 重定向到文件或管道时出现（4 次中 3 次）。结论：这是 **Git Bash（MSYS）对原生 Windows 进程的 stdout 重定向/退出码处理问题**，日志截断是 MSYS 管道在进程退出时未刷完，不是引擎在 shutdown 中崩溃。**以后判断 demo 是否干净退出，用 PowerShell 取退出码，不要用 Bash 的 `$?`。**
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

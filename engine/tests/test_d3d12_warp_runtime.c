@@ -1833,6 +1833,150 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * assertion rather than a shortcut: a missing texture descriptor, a wrong
  * uniform offset, or a mis-typed multiplier each make it a different flat
  * colour, and the clear colour is set to a loud green that is never an answer. */
+/* R617: lens_effects on D3D12.
+ *
+ * Chromatic aberration is disabled and grain is disabled, which leaves the
+ * vignette as the only term, and that is deliberate: on a flat source the CA
+ * offsets re-sample the same colour and grain is a hash that would have to be
+ * reproduced in the test. The vignette is a pure function of pixel position,
+ * so every expected byte is derivable:
+ *
+ *   vignette = 1 - smoothstep(u_vignette_softness, 0.8, dist * u_vignette_strength)
+ *
+ * with softness 0 and strength 1, dist = length(uv - 0.5), and uv = ((c+0.5)/8,
+ * (r+0.5)/8) from post_hlsl.vert. Two values are hand-derived in the comment
+ * below and the other 62 come from the same closed form; if the formula were
+ * wrong the two anchors would not agree with the table.
+ *
+ * Asserting all 64 rather than one flat colour is what gives this teeth
+ * despite the source being flat: a wrong vUV mapping, a wrong vertex shader,
+ * a missing t0 descriptor or a mis-ordered u_vignette_strength each produce a
+ * different radial table, and the corners and centre are the two ends of it.
+ * The clear colour is a loud green that is never an answer. */
+TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp) {
+    /* Hand-derived anchors:
+     *   centre-ish (col 3, row 3): uv = (0.4375, 0.4375), centre = -0.0625 both
+     *     axes, dist = 0.08839, t = 0.11048, smoothstep = 0.03392,
+     *     vignette = 0.96608, 200 * 0.96608 = 193.2 -> 193
+     *   corner (col 7, row 7): uv = (0.9375, 0.9375), centre = 0.4375 both
+     *     axes, dist = 0.61872, t = 0.77340, smoothstep = 0.86932,
+     *     vignette = 0.13068, 200 * 0.13068 = 26.1 -> 26
+     * Both agree with the table below, which is how the closed form was
+     * checked before the table was written down. */
+    static const unsigned char want[8 * 8] = {
+         26,  50,  72,  84,  84,  72,  50,  26,
+         50,  84, 113, 130, 130, 113,  84,  50,
+         72, 113, 149, 169, 169, 149, 113,  72,
+         84, 130, 169, 193, 193, 169, 130,  84,
+         84, 130, 169, 193, 193, 169, 130,  84,
+         72, 113, 149, 169, 169, 149, 113,  72,
+         50,  84, 113, 130, 130, 113,  84,  50,
+         26,  50,  72,  84,  84,  72,  50,  26
+    };
+    static const unsigned char grey_tex[4 * 4 * 4] = {
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
+        200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture src;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc[4];
+    static const char *const names[4] = {
+        "u_ca_strength", "u_vignette_strength", "u_vignette_softness",
+        "u_grain_strength"
+    };
+    static const i32 expect_off[4] = { 0, 4, 8, 12 };
+    int i, pixel;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "lens_effects_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 4; ++i) {
+        loc[i] = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (loc[i] != expect_off[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i],
+                   (int)loc[i], (int)expect_off[i]);
+        ASSERT_EQ(loc[i], expect_off[i]);
+    }
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 4u; tdesc.height = 4u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = 1u;
+    tdesc.data = grey_tex;
+    src = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(src));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 0.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, src, sampler, 0u);
+    rhi_cmd_set_uniform_f32(cmd, loc[0], 0.0f);   /* CA off  */
+    rhi_cmd_set_uniform_f32(cmd, loc[1], 1.0f);   /* vignette strength */
+    rhi_cmd_set_uniform_f32(cmd, loc[2], 0.0f);   /* vignette softness */
+    rhi_cmd_set_uniform_f32(cmd, loc[3], 0.0f);   /* grain off */
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (pixel = 0; pixel < 64; ++pixel) {
+        i = pixel * 4;
+        if (px[i + 0] != want[pixel] || px[i + 1] != want[pixel] ||
+            px[i + 2] != want[pixel] || px[i + 3] != 255u) {
+            printf("FAIL: lens vignette pixel %d = (%u,%u,%u,%u), expected "
+                   "(%u,%u,%u,255)\n", pixel, (unsigned)px[i + 0],
+                   (unsigned)px[i + 1], (unsigned)px[i + 2],
+                   (unsigned)px[i + 3], (unsigned)want[pixel],
+                   (unsigned)want[pixel], (unsigned)want[pixel]);
+        }
+        ASSERT_EQ(px[i + 0], want[pixel]);
+        ASSERT_EQ(px[i + 1], want[pixel]);
+        ASSERT_EQ(px[i + 2], want[pixel]);
+        ASSERT_EQ(px[i + 3], 255u);
+    }
+
+    rhi_texture_destroy(g_dev, src);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(color_grade_sidecar_applies_saturation_and_white_balance) {
     static const unsigned char grey_tex[4 * 4 * 4] = {
         200,200,200,255, 200,200,200,255, 200,200,200,255, 200,200,200,255,
@@ -2995,6 +3139,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);
     RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);
     RUN_TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader);
     RUN_TEST(depth_only_sidecar_converts_clip_z_to_window_depth);
