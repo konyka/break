@@ -3448,6 +3448,34 @@ bool dof_enabled = false; /* R446: default off -- DOF focus behavior was never v
 { const char *e = getenv("BREAK_TAA"); if (e && !atoi(e)) taa_enabled = false; }
 { const char *e = getenv("BREAK_MB");  if (e && !atoi(e)) mb_enabled = false; }
 { const char *e = getenv("BREAK_DOF"); if (e && !atoi(e)) dof_enabled = false; }
+/* R630: TAA and motion blur each lose the D3D12 device on frame 1, in the
+ * demo, in their own draw -- verified separately with each pass disabled in
+ * turn. DRED is completely silent about it (no page fault, no breadcrumb),
+ * so the cause is not located and the failure is indistinguishable from the
+ * host-level device loss already recorded for UAV creation on this machine.
+ *
+ * Their unit tests pass, which only says each pass is correct in isolation,
+ * so leaving them on by default would trade a working demo for one that dies
+ * before the first frame is presented. Default them OFF on the sidecar
+ * backend and leave GL/Vulkan alone. BREAK_TAA=1 / BREAK_MB=1 re-enable
+ * them, which is also how the failure is reproduced. Note the existing
+ * BREAK_TAA/BREAK_MB semantics are kill-switches only (`=0` disables, the
+ * default is on), so an explicit `=1` is read here as "yes, I know it dies and
+ * I want it anyway" -- without that, the escape hatch would silently do
+ * nothing, which is exactly what the first version of this did. */
+if (render.caps.shader_sidecar_paths && taa_enabled && mb_enabled) {
+    const char *et = getenv("BREAK_TAA");
+    const char *em = getenv("BREAK_MB");
+    int want_taa = (et && atoi(et) != 0);
+    int want_mb = (em && atoi(em) != 0);
+    if (!want_taa) taa_enabled = false;
+    if (!want_mb) mb_enabled = false;
+    if (!want_taa || !want_mb)
+        LOG_WARN("TAA and motion blur disabled by default on this backend: "
+                 "each one loses the D3D12 device on frame 1 (R630, cause "
+                 "unlocated, DRED silent). Set BREAK_TAA=1 and BREAK_MB=1 to "
+                 "re-enable and reproduce.");
+}
 { const char *e = getenv("BREAK_BLOOM"); if (e && !atoi(e)) postfx.bloom_strength = 0.0f; }
 /* R446: BREAK_UI=0 — hide the debug HUD for clean scripted captures (HUD text
  * is drawn post-tonemap and polluted pixel-diff A/B measurements). */

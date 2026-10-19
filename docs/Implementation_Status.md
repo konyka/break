@@ -263,7 +263,9 @@
     ⑤**「深度绑在非 0 号槽位」不是原因**——TAA 把深度绑在 unit 2、MB 在 unit 1，而存活的 `contact_shadow` 绑在 unit 0，看似是唯一区分点；把 `contact_shadow` 的两个输入对调（深度改到 unit 1）后**依然不丢**。排除。已撤销。
     ⑥两个 pass 的 **RHI 调用序列形状相同**（`fbo_bind → bind_pipeline → bind_textures_multi → 若干 set_uniform → draw`，与存活的 pass 逐项对照），差异不在调用形状。
   - **前提也核实过，没有建在未测的假设上**：在「TAA+MB 关」的**成功**配置里，`contact_shadow`、`lens_flare`、`lens_effects` 三者都正常初始化并在跑，且**同样采样 `scene_depth`**——设备依然不丢。所以这三个（进而「采样场景深度」）**不是**触发条件。`dof`/`ssr`/`ssgi` 默认就是关的，不构成证据。
-  - **仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。**在定位之前不应把这两个 pass 留在 demo 默认开启的链路上**——单测绿只说明每个 pass 单独正确。
+  - **仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。
+  - **已采取的缓解（R631）**：在 demo 里**仅对 sidecar 后端**把 TAA 与 motion blur 默认为关，并打一条明确的 `LOG_WARN` 说明原因与复现方法。理由是它们的单测绿只说明「单独正确」，留在默认链路上等于用一个能用的 demo 换一个第一帧就死的 demo。GL/Vulkan 的 `shader_sidecar_paths` 为 false，**完全不受影响**（已核对 GL demo 零条该警告，GL 门控 170/170）。
+    - 逃生开关：`BREAK_TAA=1` / `BREAK_MB=1` 重新打开。**注意这里踩过一个坑并已修正**：既有的 `BREAK_TAA`/`BREAK_MB` 语义**只有 `=0` 关闭**（默认开），所以 gating 若无条件生效，逃生开关会静默失效——第一版就是这样，`BREAK_TAA=1 BREAK_MB=1` 跑出来仍然 lost=0。现在 gating 会先看这两个变量是否为真值，是则不关。修正后实测：默认 lost=0 / UI=54（跑满 120 帧）；`BREAK_TAA=1 BREAK_MB=1` lost=1 / UI=1（复现）；`BREAK_TAA=1`（MB 仍被 gating 关掉）lost=1（**再次印证 TAA 单独即致命**）。
 - **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，D3D12 在**第一帧**就丢设备**。这是本轮最重要的、也是最需要如实说明的结果：
   ```
   [INFO ] main.c:8635 PASSMARK before taa_resolve frame 1
