@@ -213,6 +213,12 @@
 - 门控（WARP 20/20 → **21/21**、硬件 20/21（`warp_device_identity_is_honest` 按设计红）、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170，三棵树唯一失败都是已知的 `FAIL: OpenClipboard failed`）。
 - **R618：`lens_effects` 上 D3D12**（色差 + 暗角 + 颗粒，4 个 float = 16 字节，共用 `post_hlsl.vert`）。像素证明关掉色差和颗粒，只留暗角——它是像素位置的纯函数，所以 **64 个像素全部可推导**：`vignette = 1 - smoothstep(0, 0.8, length(uv - 0.5))`，灰 200 输入。两个手算锚点（中心附近 (3,3) → **193**，角落 (7,7) → **26**）先与闭式表对上，再把整张表写进测试；**首次运行 64 个值全部精确命中**。断言整张径向表而不是一个纯色，是因为错误的 vUV 映射、错误的顶点着色器、缺 t0 描述符、错位的 `u_vignette_strength` 各自产生**不同的**径向表。反向验证：去掉 `color *= vignette`，像素 0 读回 200 而不是 26。顺带补了一行 `LensEffects: initialized` 日志——此前成功路径**一行都不打**，demo 日志里无法区分「成功」与「没被调用」。demo 在 RTX 4060 上现在打印 `ColorGrade: initialized` 与 `LensEffects: initialized`。
 - **⚠️ 顺带定位（非本轮引入）：Git Bash 下 demo 偶发 exit 125，且截断在 shutdown 的不同阶段**（`postfx done` / `asset done` / `lights done`）。A/B：**HEAD 本身同样出现**（2 次中 1 次），所以不是本轮改动。代码里不存在 `exit(125)`。同一二进制用 **PowerShell `Start-Process` 跑 3 次全部 exit 0**；只在 Git Bash 把 stdout 重定向到文件或管道时出现（4 次中 3 次）。结论：这是 **Git Bash（MSYS）对原生 Windows 进程的 stdout 重定向/退出码处理问题**，日志截断是 MSYS 管道在进程退出时未刷完，不是引擎在 shutdown 中崩溃。**以后判断 demo 是否干净退出，用 PowerShell 取退出码，不要用 Bash 的 `$?`。**
+- **R619：`fxaa` 上 D3D12**（2 个 float；`u_fxaa_threshold` 在 GL 孪生里是 `const`，所以 `fxaa_apply` 对它的写入在 GL 上本来就是 no-op，sidecar 用 `static const` 且不发 marker，两边一致——同 terrain 的 `u_light_*` 规则）。逐行移植。
+  - **FXAA 不能像暗角那样断言整张推导表，原因如实记下**：①**GLSL 参考实现本身在部分边缘像素上做 0/0**——邻域跨边但两端探测点恰好都落在局部均值上时 `distA + distB == 0`，`blend` 变成 NaN 并被当作纹理坐标使用，GPU 对 NaN UV 返回什么是**未定义的**，因此这些像素与适配器相关。sidecar 是逐行移植、**故意继承**这一点（修了就和 GL 分叉），测试不看这些像素。用 Python 复刻着色器跑出：下面这个图案有 6 个这样的像素，全在方块轮廓上。②混合方向取决于纹理行序与回读行序的关系，钉死精确行号就等于在断言一个朝向约定而不是 FXAA。
+  - 所以只断言**定义良好且与朝向无关**的部分：8x8 黑底、列 3..4 / 行 3..4 一个白色 2x2 方块——4x4 窗口外 48 个像素**精确为 0**（平坦区走 early-out 原样通过）；窗口内**恰好两个**像素被混合到 **191±1**（= 255×0.75，模型值）且位于**同一行的第 3、4 列**；方块自身至少两个像素保持 255；每个像素灰度三通道相等（任何通道分裂都意味着采样错位）。
+  - 反向验证：把 early-out 条件改成恒真（即直通），用例报 `blended=0`。WARP 与 RTX 4060 **都通过**——两者在非 NaN 像素上一致。
+  - demo（PowerShell 启动，exit 0）在 RTX 4060 上现在打印 `ColorGrade` / `FXAA` / `LensEffects` 三条 `initialized`。
+- 门控（WARP **23/23**、硬件 22/23（身份断言按设计）、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

@@ -1853,6 +1853,158 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * a missing t0 descriptor or a mis-ordered u_vignette_strength each produce a
  * different radial table, and the corners and centre are the two ends of it.
  * The clear colour is a loud green that is never an answer. */
+/* R619: fxaa on D3D12.
+ *
+ * FXAA cannot be asserted as a whole derived table the way the vignette
+ * could, for two reasons that are recorded here rather than worked around
+ * silently:
+ *
+ *  1. The GLSL reference divides 0 by 0 on some edge pixels. When the
+ *     neighbourhood straddles an edge but both end-of-edge probes land on
+ *     the local average exactly, distA + distB == 0 and blend becomes NaN,
+ *     which is then used as a texture coordinate. What a GPU returns for a
+ *     NaN UV is undefined, so those pixels are adapter-dependent. The HLSL
+ *     sidecar is a line-for-line port and inherits this on purpose -- fixing
+ *     it would make D3D12 diverge from GL -- so the test does not look at
+ *     them. A Python model of the shader found six such pixels for the
+ *     pattern below; they all sit on the box's outline.
+ *  2. The blend direction depends on the texture's row order relative to the
+ *     readback, so a test that pinned exact row positions would be asserting
+ *     an orientation convention, not FXAA.
+ *
+ * So the assertions are the parts that are well defined and orientation-free,
+ * on an 8x8 black target with a white 2x2 box at columns 3..4, rows 3..4:
+ *
+ *   - every pixel outside the 4x4 window (columns/rows 2..5) is exactly 0:
+ *     flat regions pass through the early-out unchanged (48 pixels);
+ *   - inside the window, exactly two pixels are blended to 191 +- 1
+ *     (= 255 * 0.75, the model's value) and they are in columns 3 and 4 of the
+ *     same row -- i.e. FXAA actually ran and moved the edge;
+ *   - the box's own two fully-white pixels survive at 255.
+ *
+ * A pass-through shader leaves no 191 pixels; a wrong u_fxaa_sw/sh changes
+ * the texel step and moves or removes the blend; a missing t0 descriptor
+ * blacks out the box. */
+TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions) {
+    static unsigned char box_tex[8 * 8 * 4];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture src;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_sw, loc_sh;
+    int r, c, i;
+    int blended = 0, blend_row = -1, blend_c3 = 0, blend_c4 = 0, white = 0;
+
+    for (r = 0; r < 8; ++r) {
+        for (c = 0; c < 8; ++c) {
+            unsigned char v = (c >= 3 && c <= 4 && r >= 3 && r <= 4) ? 255u : 0u;
+            i = (r * 8 + c) * 4;
+            box_tex[i + 0] = v; box_tex[i + 1] = v; box_tex[i + 2] = v;
+            box_tex[i + 3] = 255u;
+        }
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "fxaa_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    loc_sw = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_fxaa_sw");
+    loc_sh = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_fxaa_sh");
+    ASSERT_EQ(loc_sw, 0);
+    ASSERT_EQ(loc_sh, 4);
+    /* A GLSL const in the twin, so fxaa_apply's write is a no-op on GL too. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_fxaa_threshold"), -1);
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = 1u;
+    tdesc.data = box_tex;
+    src = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(src));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 0.0f, 1.0f, 0.0f, 1.0f);   /* never an answer */
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, src, sampler, 0u);
+    rhi_cmd_set_uniform_f32(cmd, loc_sw, 8.0f);
+    rhi_cmd_set_uniform_f32(cmd, loc_sh, 8.0f);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (r = 0; r < 8; ++r) {
+        for (c = 0; c < 8; ++c) {
+            int in_window = (c >= 2 && c <= 5 && r >= 2 && r <= 5);
+            unsigned v;
+            i = (r * 8 + c) * 4;
+            v = px[i + 0];
+            /* FXAA keeps grey grey; any channel split means a wrong tap. */
+            ASSERT_EQ(px[i + 1], px[i + 0]);
+            ASSERT_EQ(px[i + 2], px[i + 0]);
+            ASSERT_EQ(px[i + 3], 255u);
+            if (!in_window) {
+                if (v != 0u)
+                    printf("FAIL: fxaa flat pixel (c=%d,r=%d) = %u, expected 0\n",
+                           c, r, v);
+                ASSERT_EQ(v, 0u);
+                continue;
+            }
+            if (v == 255u) white++;
+            if (v >= 190u && v <= 192u) {
+                blended++;
+                if (blend_row < 0) blend_row = r;
+                if (r == blend_row && c == 3) blend_c3 = 1;
+                if (r == blend_row && c == 4) blend_c4 = 1;
+            }
+        }
+    }
+    if (blended != 2 || !blend_c3 || !blend_c4)
+        printf("FAIL: fxaa blended=%d (row %d, c3=%d c4=%d), expected exactly "
+               "two 191+-1 pixels at columns 3 and 4 of one row\n",
+               blended, blend_row, blend_c3, blend_c4);
+    ASSERT_EQ(blended, 2);
+    ASSERT_TRUE(blend_c3 && blend_c4);
+    ASSERT_TRUE(white >= 2);
+
+    rhi_texture_destroy(g_dev, src);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp) {
     /* Hand-derived anchors:
      *   centre-ish (col 3, row 3): uv = (0.4375, 0.4375), centre = -0.0625 both
@@ -3139,6 +3291,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);
     RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);
     RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);
     RUN_TEST(texel_buffer_binding_delivers_instance_rows_to_the_shader);
