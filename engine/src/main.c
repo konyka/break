@@ -187,6 +187,19 @@ typedef struct {
     f32  cam_pad;
     Mat4 prev_vp;
     Mat4 prev_model;
+    /* R632: the instanced variant's lighting uniforms. They live here rather
+     * than in the push block because D3D12's rhi_cmd_set_uniform_* only
+     * writes root constants, and the instanced pass needs six push-block
+     * words plus two mat4 -- 320 bytes, past the 244-byte ceiling two
+     * descriptor tables leave (R616). Appending AFTER prev_model is what
+     * makes this safe: the blinn_phong family reads u_camera_pos@0 and
+     * u_prev_vp@16, and neither moves. */
+    f32  light_dir[3];
+    f32  light_dir_pad;
+    f32  light_color[3];
+    f32  light_color_pad;
+    f32  ambient[3];
+    f32  ambient_pad;
 } ForwardTemporalUbo;
 
 /* Writes the blinn forward path's frame UBO in one shot. Every path that draws
@@ -200,12 +213,45 @@ static void forward_temporal_ubo_write(RHIDevice *device, RHIBuffer ubo,
                                       const Mat4 *prev_vp) {
     ForwardTemporalUbo data;
     if (!rhi_handle_valid(ubo) || cam_pos == NULL || prev_vp == NULL) return;
+    memset(&data, 0, sizeof(data));
     data.cam_pos[0] = cam_pos->e[0];
     data.cam_pos[1] = cam_pos->e[1];
     data.cam_pos[2] = cam_pos->e[2];
     data.cam_pad = 0.0f;
     data.prev_vp = *prev_vp;
     data.prev_model = mat4_identity();
+    rhi_buffer_update(device, ubo, &data, sizeof(data));
+}
+
+/* R632: the same block with the instanced pass's lighting uniforms filled in.
+ * The blinn forward path calls forward_temporal_ubo_write and never reads
+ * them; sharing one buffer means there is a single temporal block to bind on
+ * every backend, and the members are appended so neither variant disturbs
+ * the other's offsets. */
+static void forward_temporal_ubo_write_lit(RHIDevice *device, RHIBuffer ubo,
+                                          const Vec3 *cam_pos,
+                                          const Mat4 *prev_vp,
+                                          const Vec3 *light_dir,
+                                          const Vec3 *light_color,
+                                          const Vec3 *ambient) {
+    ForwardTemporalUbo data;
+    if (!rhi_handle_valid(ubo) || cam_pos == NULL || prev_vp == NULL ||
+        light_dir == NULL || light_color == NULL || ambient == NULL) return;
+    memset(&data, 0, sizeof(data));
+    data.cam_pos[0] = cam_pos->e[0];
+    data.cam_pos[1] = cam_pos->e[1];
+    data.cam_pos[2] = cam_pos->e[2];
+    data.prev_vp = *prev_vp;
+    data.prev_model = mat4_identity();
+    data.light_dir[0] = light_dir->e[0];
+    data.light_dir[1] = light_dir->e[1];
+    data.light_dir[2] = light_dir->e[2];
+    data.light_color[0] = light_color->e[0];
+    data.light_color[1] = light_color->e[1];
+    data.light_color[2] = light_color->e[2];
+    data.ambient[0] = ambient->e[0];
+    data.ambient[1] = ambient->e[1];
+    data.ambient[2] = ambient->e[2];
     rhi_buffer_update(device, ubo, &data, sizeof(data));
 }
 
@@ -837,6 +883,39 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     {
+        /* R632: on a sidecar backend this resolves to
+         * instanced_mrt_hlsl.{vert,frag}. Only the MRT variant is needed:
+         * the GLSL path below injects FORWARD_MRT unconditionally, so the
+         * non-MRT form of this shader is never built. */
+        if (caps.shader_sidecar_paths) {
+            RHIShader ivs = rhi_shader_create_path(rs->device,
+                                                  "shaders/instanced.vert", false);
+            RHIShader ifs = rhi_shader_create_path(rs->device,
+                                                  "shaders/instanced.frag", true);
+            if (rhi_handle_valid(ivs) && rhi_handle_valid(ifs)) {
+                RHIPipelineDesc ipd = {
+                    .vert = ivs, .frag = ifs,
+                    .uses_textures = true,
+                    .uses_texel_buffer = true,
+                    .is_instanced = true,
+                    .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                    .mrt_attachment_count = 2u,
+                    .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT},
+                };
+                rs->instanced_pipeline = rhi_pipeline_create(rs->device, &ipd);
+                ipd.wireframe = true;
+                rs->wire_instanced_pipeline = rhi_pipeline_create(rs->device, &ipd);
+                rhi_shader_destroy(rs->device, ivs);
+                rhi_shader_destroy(rs->device, ifs);
+            } else {
+                LOG_WARN("instanced sidecars unavailable; instanced draws disabled");
+                if (rhi_handle_valid(ivs)) rhi_shader_destroy(rs->device, ivs);
+                if (rhi_handle_valid(ifs)) rhi_shader_destroy(rs->device, ifs);
+            }
+            goto instanced_pipeline_done;
+        }
+    }
+    {
         usize ivl = 0, ifl = 0;
         char *iv = NULL, *ifl_src = NULL;
         char ivp[128] = {0}, ifp[128] = {0};
@@ -872,6 +951,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
             }
         } else { free(iv); free(ifl_src); }
     }
+instanced_pipeline_done:
     if (rhi_handle_valid(rs->instanced_pipeline)) {
         rs->bind_instanced = rhi_pipeline_bindings_create(rs->device, rs->instanced_pipeline);
         if (!rs->bind_instanced)
@@ -7695,11 +7775,25 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_proj, &proj.e[0][0]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
-                rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
-                    camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                /* R632: on a sidecar backend the four lighting uniforms are
+                 * read from the temporal CBV, not written here -- see
+                 * instanced_mrt_hlsl.vert for why the push block cannot hold
+                 * them. The GLSL path is untouched. The writes below are
+                 * skipped rather than left in place: on D3D12 they resolve to
+                 * -1 (no marker) and would be silent no-ops, which is the
+                 * "dropped write" shape R600 exists to avoid. */
+                if (!render.caps.shader_sidecar_paths) {
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
+                    rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
+                        camera.position.e[0], camera.position.e[1], camera.position.e[2]);
+                    forward_temporal_ubo_write_lit(render.device,
+                        render.forward_temporal_ubo, &camera.position,
+                        &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
+                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                        (u32)render.temporal_ubo_binding);
+                }
                 }
 
                 /* R445: group instances by MeshRef.mesh_index — previously every

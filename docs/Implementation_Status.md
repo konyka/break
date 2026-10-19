@@ -250,6 +250,14 @@
   - 反向验证：把中心权重 0.2240 改成 0.5000，blur 像素 0 读回 **26** 而不是 20。
   - 门控（WARP **31/31**、硬件 30/31、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **D3D12 后处理小结**：`ColorGrade`/`LensEffects`/`FXAA`/`DOF`/`SSR`/`TAA`/`MotionBlur`/`ContactShadow`/`LensFlare`/`SSGI` 共 **10 个**，demo 默认开启的**全部**已可用。其中 `LensFlare` 与 `ColorGrade` 的测试是真正推导像素的；`SSR`/`MotionBlur`/`ContactShadow` 三个的测试**只钉接线不钉控制流**（反向验证证明它们的分支不可单独观测），这一点已在各自条目里如实写明。
+- **R632：`instanced` 上 D3D12——R616 判定「不是机械移植」的那一项做成了**。做法：
+  - **把四个光照 uniform 搬进时序 CBV**。GLSL 孪生里 `u_light_dir`/`u_light_color`/`u_ambient`/`u_camera_pos` 是 frag 的 loose uniform；D3D12 的 `rhi_cmd_set_uniform_*` **只能写根常量**，而这条管线要六个 push 块字 + 两个 mat4 = 320 字节，超过两张表留下的 244 字节上限。追加在 `ForwardTemporalUbo` 的 **`prev_model` 之后**，所以 blinn_phong 依赖的 `u_camera_pos@0` 与 `u_prev_vp@16` **一个字节都不动**。三个 vec3 各带一个显式 pad 字——cbuffer 里 `float3` 占 16 字节，没有 pad 就与引擎结构体对不齐。
+  - **没有照搬 R600 的「块改无条件」**：那条对 blinn_phong 成立，但对 instanced 会**迫使每次 draw 都绑一个只有 MRT 才用的 UBO**，正是 R600 头部警告的陷阱。
+  - 只建 **MRT** 一套：GLSL 路径无条件注入 `FORWARD_MRT`，非 MRT 变体从来不会被构建。
+  - 绘制点的四个 `set_uniform` 写**跳过**而不是留着——D3D12 上它们 resolve 到 -1、会变成静默空操作，正是 R600 要消除的「丢写不可见」形状；改为调 `forward_temporal_ubo_write_lit` + 按 `temporal_ubo_binding` 绑定。GL/VK 分支逐字未动。
+  - **效果是实测的**：D3D12 demo 的 `Draws:` 从移植前的 **20** 变成 **69**，且 120 帧干净跑完、无设备丢失——实例化网格现在真的在 D3D12 上画出来了。
+  - **⚠️ 这条路径仍未验证的部分**：sidecar 的 CBV 布局与引擎结构体是**手工对齐**的，**没有断言二者一致**；位偏移错一位会让光照读到垃圾而不报错。同时 `uses_texel_buffer` / `is_instanced` 两个 `RHIPipelineDesc` 字段在 D3D12 后端仍**从不读取**（R616 记录过），实例行靠 `rhi_cmd_bind_texel_buffers` 绑到 t5。
+  - 门控（WARP 31/31、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170；VK golden MAE 仍精确为 28.75/13.54，GL 为 15.60/1.15）。
   - **R629：加了一条常驻诊断，并用它把一整类原因干净地排除掉**。后端新增 `ctx->debug_frame`（每帧 `rhi_frame_begin` 自增）与 `RHI_D3D12Texture.srv_ref_frame`（每次 `rhi_cmd_bind_texture` 盖上当前帧号）；`rhi_d3d12_fbo_bind_impl` 与 `rhi_d3d12_mrt_fbo_bind_impl` 在把纹理转为 RENDER_TARGET / DEPTH_WRITE **之前**检查该标记，若同一帧内既被当作着色器资源读过、又要成为渲染目标，就报出尺寸与两个角色。
     - **诊断本身被证明是活的**：把判定临时改成无条件后，10 帧内出现 **13 条**警告；恢复守卫后一条不出现。所以「没触发」是有效结论，不是死代码。
     - **结论：同帧内资源既是渲染目标又是 SRV——这一整类原因被排除**，不是 TAA+MB 设备丢失的机制。
