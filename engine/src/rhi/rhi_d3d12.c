@@ -2178,14 +2178,23 @@ static RHIShader rhi_d3d12_shader_alloc(RHIDevice *dev, const char *source,
             return RHI_HANDLE_NULL;
         }
     } else {
-        sd->source = (char *)malloc(len + 1u);
-        if (sd->source == NULL) {
-            free(sd);
-            return RHI_HANDLE_NULL;
-        }
-        memcpy(sd->source, source, len);
-        sd->source[len] = '\0';
-        sd->source_len = len;
+        /* Inline-source mode. This backend has no HLSL compiler in-process:
+         * it loads precompiled DXIL by sidecar name (filename mode above,
+         * which refuses loudly when the DXIL is absent). So an inline source
+         * can only ever produce a shader with no blob, and returning a valid
+         * handle for one hides the real cause two steps downstream -- every
+         * call site saw "shader compile failed" as false, went on to
+         * rhi_pipeline_create, and reported "pipeline creation failed" or
+         * "bindings create failed", which names neither the backend nor the
+         * missing sidecar. Refusing here is what turns ~25 misleading demo
+         * warnings into one actionable line each. */
+        LOG_WARN("D3D12: rhi_shader_create was given inline source, but this "
+                 "backend never compiles HLSL in-process -- it only loads "
+                 "precompiled DXIL by sidecar name. Use rhi_shader_create_path"
+                 "(\"shaders/<name>.vert\") and add shaders/<name>_hlsl.vert "
+                 "to the build.");
+        free(sd);
+        return RHI_HANDLE_NULL;
     }
     sd->is_fragment = is_fragment;
     idx = rhi_alloc_slot(dev);

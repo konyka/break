@@ -102,6 +102,45 @@ TEST(shader_path_sidecar_derivation) {
 }
 #endif
 
+/* R612: inline source is refused, because this backend has no in-process
+ * HLSL compiler and therefore cannot produce a blob for it.
+ *
+ * The refusal matters less than the reason it was added. It used to return a
+ * VALID handle carrying source with no blob, so every GLSL-only call site
+ * passed its "shader compile failed" guard and then reported the failure two
+ * steps downstream as "pipeline creation failed" or "bindings create
+ * failed" -- which named neither the backend nor the missing sidecar. On the
+ * demo that was ~25 warnings that all pointed somewhere else.
+ *
+ * The same refusal is the contract filename mode already had: a missing DXIL
+ * refuses the shader. Both modes now agree that a shader without a blob does
+ * not exist. */
+TEST(inline_source_is_refused_and_filename_mode_still_works) {
+    static const char glsl[] = "#version 450 core\nvoid main() {}\n";
+    RHIShader bad_v = rhi_shader_create(g_dev, glsl, sizeof(glsl) - 1u, false);
+    RHIShader bad_f = rhi_shader_create(g_dev, glsl, sizeof(glsl) - 1u, true);
+    ASSERT_FALSE(rhi_handle_valid(bad_v));
+    ASSERT_FALSE(rhi_handle_valid(bad_f));
+
+    /* The compute entry point shares the allocator, so it shares the refusal. */
+    RHIShader bad_c = rhi_shader_create_compute(g_dev, glsl, sizeof(glsl) - 1u);
+    ASSERT_FALSE(rhi_handle_valid(bad_c));
+
+    /* Filename mode is the supported route and must be unaffected. */
+    RHIShader vs = rhi_shader_create(g_dev, "blit_hlsl.vert", 0, false);
+    RHIShader fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+
+    /* And a name with no sidecar is still refused by filename mode, so the
+     * two routes fail the same way rather than one being permissive. */
+    RHIShader missing = rhi_shader_create(g_dev, "no_such_sidecar_hlsl.vert",
+                                          0, false);
+    ASSERT_FALSE(rhi_handle_valid(missing));
+}
+
 TEST(blit_pipeline_push_location) {
     /* The blit pipeline must exist and expose its push range as a
      * byte-offset location, matching the VK convention. */
@@ -175,6 +214,7 @@ int main(void) {
                g_test_pass, g_test_fail, g_test_count);
         return g_test_fail > 0 ? 1 : 77;
     }
+    RUN_TEST(inline_source_is_refused_and_filename_mode_still_works);
     RUN_TEST(blit_pipeline_push_location);
     RUN_TEST(pipeline_bindings_resolve_matches_legacy_lookup);
     rhi_device_destroy(g_dev);
