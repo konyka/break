@@ -1986,6 +1986,158 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * blacks the frame out; a mis-offset uniform moves the scene colour, because
  * u_ssr_proj / u_ssr_inv_proj are what decode the depth that decides the
  * early-out. */
+TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march) {
+    static unsigned char scene[8 * 8 * 4];
+    static float depth[8 * 8];
+    static float sky[8 * 8];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc tdesc;
+    RHITexture dtex, stex, skytex;
+    RHITexture pair[2];
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const char *const names[6] = {
+        "u_cs_inv_proj", "u_cs_light_x", "u_cs_light_y", "u_cs_light_z",
+        "u_cs_sw", "u_cs_sh"
+    };
+    /* The sidecar leads with the mat4 so the five floats avoid a 12-byte hole
+     * before the 16-byte alignment boundary. */
+    static const i32 want[6] = { 0, 64, 68, 72, 76, 80 };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int frame, i;
+
+    /* Vertical stripes again: the value depends on the column only, so a
+     * readback row flip cannot change the answer, and the stripe centres land
+     * on texel centres. */
+    for (i = 0; i < 64; ++i) {
+        scene[i * 4 + 0] = (unsigned char)((i & 7) * 31u);
+        scene[i * 4 + 1] = 160u;
+        scene[i * 4 + 2] = 45u;
+        scene[i * 4 + 3] = 255u;
+        depth[i] = 0.5f;
+        sky[i] = 1.0f;
+    }
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "contact_shadow_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (i = 0; i < 6; ++i) {
+        i32 got = rhi_pipeline_get_uniform_location(g_dev, pipe, names[i]);
+        if (got != want[i])
+            printf("FAIL: %s resolved to %d, expected %d\n", names[i], (int)got,
+                   (int)want[i]);
+        ASSERT_EQ(got, want[i]);
+    }
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 8u; tdesc.height = 8u;
+    tdesc.mip_levels = 1u;
+    tdesc.format = RHI_FORMAT_R32_FLOAT;
+    tdesc.data = depth; dtex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(dtex));
+    tdesc.data = sky; skytex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(skytex));
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.data = scene; stex = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(stex));
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    /* frame 0: depth 1.0 -> the first early-out, stripes pass through.
+     * frame 1: depth 0.5 with the light straight down +Z. screen_step is
+     *   light_dir.xy * 5 / res = 0, so all 12 taps sample vUV and never leave
+     *   [0,1]; with an identity inv_proj the reconstructed depth of every tap
+     *   is the same, and ray_pos.z grows with the offset while
+     *   sampled_view.z stays put, so diff = sampled_view.z - ray_pos.z is
+     *   negative at every step. No hit, shadow stays 1, and the output is the
+     *   scene exactly -- with the march having run all 12 iterations.
+     *
+     * ⚠️ Neither branch is separately observable, and the reverse check
+     * proved it rather than assuming it: disabling the depth early-out leaves
+     * this test GREEN, because with the straight-on light the march also finds
+     * no occluder; and flattening ray_pos so every step DOES report a hit also
+     * leaves it green, because diff is 0 and the test is strict > 0. The reverse
+     * check that fires is swapping t0 and t1: frame 0 then reads the depth
+     * texture as colour and pixel 0 comes back (255,0,0). So this pins the
+     * wiring -- six offsets, both textures through rhi_cmd_bind_textures_multi
+     * (order depth-then-scene, R550-A) -- and not which branch runs. */
+    for (frame = 0; frame < 2; ++frame) {
+        pair[0] = (frame == 0) ? skytex : dtex;
+        pair[1] = stex;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_clear_color(cmd, 1.0f, 0.0f, 1.0f, 1.0f);   /* never an answer */
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_textures_multi(cmd, pair, 2, sampler);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_f32(cmd, 64, 0.0f);   /* light x */
+        rhi_cmd_set_uniform_f32(cmd, 68, 0.0f);   /* light y */
+        rhi_cmd_set_uniform_f32(cmd, 72, 1.0f);   /* light z */
+        rhi_cmd_set_uniform_f32(cmd, 76, 8.0f);   /* sw */
+        rhi_cmd_set_uniform_f32(cmd, 80, 8.0f);   /* sh */
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        for (i = 0; i < 64; ++i) {
+            if (px[i * 4 + 0] != scene[i * 4 + 0] ||
+                px[i * 4 + 1] != scene[i * 4 + 1] ||
+                px[i * 4 + 2] != scene[i * 4 + 2] ||
+                px[i * 4 + 3] != 255u) {
+                printf("FAIL: contact shadow frame %d pixel %d = "
+                       "(%u,%u,%u,%u), expected (%u,%u,%u,255)\n", frame, i,
+                       (unsigned)px[i * 4 + 0], (unsigned)px[i * 4 + 1],
+                       (unsigned)px[i * 4 + 2], (unsigned)px[i * 4 + 3],
+                       (unsigned)scene[i * 4 + 0], (unsigned)scene[i * 4 + 1],
+                       (unsigned)scene[i * 4 + 2]);
+                break;
+            }
+        }
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(px[i * 4 + 0], scene[i * 4 + 0]);
+            ASSERT_EQ(px[i * 4 + 1], scene[i * 4 + 1]);
+            ASSERT_EQ(px[i * 4 + 2], scene[i * 4 + 2]);
+            ASSERT_EQ(px[i * 4 + 3], 255u);
+        }
+    }
+
+    rhi_texture_destroy(g_dev, dtex);
+    rhi_texture_destroy(g_dev, skytex);
+    rhi_texture_destroy(g_dev, stex);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
     static unsigned char grad[8 * 8 * 4];
     static unsigned char solid[8 * 8 * 4];
@@ -4153,6 +4305,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march);
     RUN_TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs);
     RUN_TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb);
     RUN_TEST(ssr_sidecar_pins_offsets_and_both_early_outs);

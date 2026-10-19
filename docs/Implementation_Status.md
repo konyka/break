@@ -243,7 +243,12 @@
   - 两帧：帧 0 `first_frame = 1` → 时序块整段跳过、棋盘格**原样**通过（这是对照帧，证明帧 1 的 115/141 真的是混合的结果）；帧 1 走混合。反向验证：把 `lerp(...)` 换成直接赋历史色，帧 1 第 0 像素读回 **(128,128,128)** 而不是 115。
   - demo 上 `TAA: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA** 六个。
   - 门控（WARP **27/27**、硬件 26/27、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
-- **剩余待办的后处理**：`contact_shadow`（2 纹理）、`lens_flare`（2）、`ssgi`（2，且有两个 pass）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
+- **剩余待办的后处理**：`lens_flare`（2 纹理）、`ssgi`（2，且有两个 pass）。多纹理绑定与深度约定现在都已就绪，各自只差 frag sidecar。
+- **R625：`contact_shadow` 上 D3D12**（2 纹理：**深度在 t0、场景在 t1**，与 GL 的 `bind_textures_multi` 顺序一致，R550-A）。demo 上 `ContactShadow: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur / ContactShadow** 八个。
+  - **push 块把 mat4 放在最前**，这是与 R624 相反的选择：`u_cs_light_x/_y/_z`、`u_cs_sw`、`u_cs_sh` 是 5 个 float，若照 GLSL 声明顺序放在矩阵前面，会在 16 字节对齐边界前留下 12 字节空洞；矩阵打头把块压进 **21 DWORD** 而不是 24。偏移由测试钉住（0/64/68/72/76/80），且这是 sidecar 局部布局，不改引擎契约。
+  - **两帧都精确可推**：帧 0 深度 1.0 → early-out，竖条纹原样通过；帧 1 深度 0.5、光照方向 (0,0,1) → `screen_step` 为 0、12 次采样都落在 vUV 上、每次重建的深度相同而 `ray_pos.z` 随 offset 增长，故 `diff` 恒为负、无命中、`shadow` 保持 1——**12 步循环跑完而输出恰好是场景色**。
+  - **⚠️ 两个分支都不可单独观测，由反向验证查出而非假设**：禁掉深度 early-out 用例**仍绿**（因为直照光下步进也不命中）；把 `ray_pos` 压平让每步都命中也**仍绿**（`diff` 变成 0，而判定是严格 `> 0`）。**真正会转红的反向检查是交换 t0/t1**：帧 0 于是把深度纹理当颜色读，第 0 像素读回 (255,0,0)。所以这个测试钉的是**接线**（六个偏移、两张纹理经 `bind_textures_multi` 以「深度在前」到达），不是「走了哪条分支」。
+  - 门控（WARP **29/29**、硬件 28/29、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **R624：`motion_blur` 上 D3D12**（3 纹理：颜色/深度/速度；152 字节 push 块）。demo 上 `MotionBlur: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur** 七个。
   - **push 块有一处刻意的 16 字节空洞**：`u_mb_use_velocity` 排在 offset 12 之后，两个 `mat4` 必须 16B 对齐，所以从 **16** 而不是 12 开始。测试钉住这六个偏移（0/4/8/12/16/32）。
   - **测试图案改成竖条纹**并记录原因：第一稿用的是「按纹理索引递增」的渐变，**每行不同**，于是回读的行序决定了它匹不匹配。竖条纹只依赖列，各行相同，翻转行序后不变，且条纹中心正好落在纹理中心（uv = (col+0.5)/8），所以采样精确、early-out 能逐字节断言。
