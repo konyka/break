@@ -54,6 +54,10 @@ VSOut main(VSIn i) {
     o.normal = i.normal;
     o.uv = i.uv;
     o.pos = mul(g_push.u_proj, mul(g_push.u_view, world_pos));
+    // R621: OpenGL proj -> D3D12 clip.z [0,1], matching terrain_vk.vert. The
+    // terrain shadow cascade is a separate shader (depth_only_hlsl.vert) and
+    // had this from R613 already.
+    o.pos.z = (o.pos.z + o.pos.w) * 0.5f;
     /* FORWARD_MRT: terrain.vert reconstructs v_velocity from the
      * ForwardTemporal UBO at binding 0 (u_prev_vp). This sidecar does NOT
      * take that block: terrain_render never calls rhi_cmd_bind_uniform_buffer,

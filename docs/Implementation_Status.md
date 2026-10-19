@@ -227,6 +227,11 @@
   - demo（PowerShell，exit 0）在 RTX 4060 上现在打印 `DOF: initialized (320x180, …)`；后处理已上线：**ColorGrade / LensEffects / FXAA / DOF**。仍报 "shader compile failed"（无 sidecar）的：ContactShadow、LensFlare、MotionBlur、SSGI、SSR、TAA——它们的多纹理绑定现在已经就绪，只差 frag sidecar。
 - **⚠️ 顺带发现的前向通道缺陷（读代码确认，未修）：D3D12 的场景深度与 GL/VK 不一致**。`mat4_perspective` 是 OpenGL 形式（NDC z ∈ [-1,1]）；GL 靠深度范围把它映射到 [0,1]，**VK 前向着色器自己做** `gl_Position.z = (z + w) * 0.5`（`blinn_phong_vk.vert` R214-A）。而 **D3D12 的前向 sidecar 全都没做这一步**（逐个查过 `blinn_phong*_hlsl.vert`、`terrain_hlsl.vert`、`water_hlsl.vert`，均不碰 `pos.z`）——R613 只在阴影级联的 `depth_only_hlsl.vert` 里做了。后果：①D3D12 深度缓冲存的是原始 ndc_z 而不是 (ndc_z+1)/2，任何读场景深度的后处理（DOF、SSR、SSAO、contact shadow…）都会解出错误的距离；②ndc_z < 0 的部分被硬件裁掉——near 0.1 / far 100 时是视距 **0.1 到约 0.2**，一个很薄的近裁带，平时看不出来。修法与 R613 相同（每个前向 sidecar 的 VS 末尾加那一行），但会改变 D3D12 的深度测试与所有既有像素测试的深度值，**单独一轮做**，不在后处理移植里顺手改——在 DOF 侧做补偿只会把缺陷藏起来。
 - 门控（WARP **24/24**、硬件 23/24、D3D12 172/172 + graphics 8/8、VK 171/171、GL 170/170）。
+- **R621：修前向通道深度约定——D3D12 上 R620 之前的整个近处场景被裁掉了**。五个前向 sidecar 的顶点着色器末尾各加一行 `o.pos.z = (o.pos.z + o.pos.w) * 0.5`：`blinn_phong_hlsl.vert`、`blinn_phong_mrt_hlsl.vert`、`blinn_phong_arr_hlsl.vert`、`terrain_hlsl.vert`、`water_hlsl.vert`。与 Vulkan 前向孪生逐字一致（`blinn_phong_vk.vert` R214-A、`terrain_vk` / `water_vk` / `blinn_phong_arr_vk` 同一行），R613 已在 `depth_only_hlsl.vert` 做过。后处理与全屏三角形着色器**不受影响**：`post_hlsl.vert` / skybox 写字面 z=1、w=1，该转换是恒等。
+- **像素证明 `forward_clip_z_conversion_keeps_near_geometry_unclipped`** 用探针 `depth_clip_hlsl.{vert,frag}`（blinn_phong 的 push 块 + 同一行转换，未转换时 ndc_z<0 处写红）。几何是视距 **0.15** 处 y=±0.6 的单个四边形——它的 NDC 纵向跨度是 ±6.93，所以铺满整个 8x8 目标，而 D3D12 的 z 裁剪是**逐像素**的：像素在视距 0.15 到约 0.2 之间存活，也就是 8 行里的 3 行。带转换时 **64 个像素全是红**。
+  - **反向验证极干净**：去掉那一行，像素 0 读回**蓝色清屏色**——近处几何**整个消失**。这就是修复前 D3D12 上的行为，两种适配器上完全一致。
+  - **这个测试第一稿错了两处，都由第一次运行暴露**：①`proj` 的 `m.e[3][2]` 我写成了 -0.0020020，正确值是 **-0.2002002**（`-2*far*near/(far-near)`，少写了一位数字），整个四边形被推到视口外；②还多画了一个视距 1.0 的远四边形「证明绿色部分存在」，但它覆盖同样的像素、把近处**覆盖掉了**，于是几何画出来了（64 绿）而近处条带始终不出现。第三稿只留近处四边形，注释里把这个错误记下来了。
+- 门控（WARP **25/25**、硬件 24/25（仅身份断言按设计红）、D3D12 **172/172** + graphics **8/8**、VK **171/171**、GL **170/170**；VK golden MAE 仍精确为基线 28.75/13.54；demo 在 RTX 4060 上 exit=0 且无 device removed）。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

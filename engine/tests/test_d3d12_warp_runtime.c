@@ -1922,6 +1922,156 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * frame 0 is not the stripes; swapped units sample depth as colour and red is
  * a flat 127; a wrong u_dof_focus offset keeps frame 1 in the early-out and
  * it still shows hard stripes. */
+/* R621: the forward sidecars convert clip z, and this is what it buys.
+ *
+ * mat4_perspective is the OpenGL form, so ndc_z is negative for near
+ * geometry. At the demo's near 0.1 / far 100 the boundary is at eye distance
+ * 0.2:
+ *
+ *   dist 0.15 -> ndc_z -0.3327   (D3D12 rasteriser clips this)
+ *   dist 0.20 -> ndc_z +0.0010
+ *   dist 0.30 -> ndc_z +0.3347
+ *   dist 1.00 -> ndc_z +0.8018
+ *   dist 5.00 -> ndc_z +0.9620
+ *
+ * D3D12's NDC z is [0,1] with no fixed-function mapping, so before R621 every
+ * vertex closer than ~0.2 was clipped away. A quad spanning 0.15 to 1.0 under
+ * a real perspective therefore rendered only its far half.
+ *
+ * depth_clip_hlsl.vert is a probe with the blinn_phong push block and the same
+ * one-line conversion; it writes red where the un-converted ndc_z was
+ * negative. The quad's near edge sits at 0.15, so without the conversion the
+ * red band is missing (clipped); with it, the band is present. Both the vertex
+ * count and the colour are asserted, so the test fails either way -- on colour
+ * if the conversion is there but wrong, on missing pixels if it is absent.
+ *
+ * This is a probe rather than a blinn_phong test on purpose: blinn_phong's
+ * pixel proofs assert exact colours with degenerate lighting, and moving the
+ * projection under them would change what they are testing. The probe isolates
+ * the one thing R621 changed. */
+TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped) {
+    /* ONE quad at eye distance 0.15, y = +-0.6, facing the camera in view
+     * space (looking down -Z).
+     *
+     * Its vertical extent is +-6.93 in NDC, so it covers the whole 8x8 target
+     * at eye distance 0.15. The rasteriser's z clip is per pixel: a pixel
+     * survives when (z + w) / 2 is inside [0, w], which is eye distance 0.15
+     * to about 0.2 -- three of the eight rows. Where ndc_z < 0 the quad is
+     * gone and the clear colour shows.
+     *
+     * There is deliberately no far quad here. One would cover the same pixels
+     * and paint over the near quad, and the earlier draft of this test made
+     * exactly that mistake: geometry rendered (64 green pixels) but the near
+     * band never showed. Only the near geometry can demonstrate clipping.
+     *
+     * x is +-0.6 because a quad at x = 0 is degenerate and covers nothing. */
+    static const float verts[6 * 3] = {
+        -0.6f,  0.6f, -0.15f,   0.6f,  0.6f, -0.15f,   0.6f, -0.6f, -0.15f,
+        -0.6f,  0.6f, -0.15f,   0.6f, -0.6f, -0.15f,  -0.6f, -0.6f, -0.15f
+    };
+    /* mat4_perspective(60 deg vertical, aspect 1, near 0.1, far 100),
+     * column-major, from mat4_perspective in src/math/math.c:
+     *   e[0][0] = f/a = 1/tan(30)   =  1.7320508
+     *   e[1][1] = f                 =  1.7320508
+     *   e[2][2] = -(far+near)/(f-n) = -1.0020020
+     *   e[2][3] = -1                -> the implicit last row, w = -z_view
+     *   e[3][2] = -2*far*near/(f-n) = -0.2002002
+     */
+    static const float proj[16] = {
+        1.7320508f, 0.0f,  0.0f,        0.0f,
+        0.0f,       1.7320508f, 0.0f,   0.0f,
+        0.0f,       0.0f,      -1.0020020f, 0.0f,
+        0.0f,       0.0f,      -0.2002002f, 1.0f
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int i;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    vs = rhi_shader_create(g_dev, "depth_clip_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "depth_clip_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 12u;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 1.0f, 1.0f);   /* never an answer */
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+    rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+    rhi_cmd_set_uniform_mat4(cmd, 128, proj);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    /* With the conversion the quad survives everywhere, so all 64 pixels are
+     * red -- which is the point: red is what ndc_z < 0 means, and on D3D12
+     * that band is clipped unless the vertex stage converts. A blue clear
+     * means the near geometry disappeared, i.e. exactly the pre-R621 bug.
+     * (The first draft of this probe also drew a far quad at 1.0 and expected
+     * both colours; it covered the same pixels and painted over the near one,
+     * so the assertion was wrong twice over -- geometry rendered but the near
+     * band never showed.) */
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < 64; ++i) {
+        if (px[i * 4 + 0] != 255u || px[i * 4 + 1] != 0u) {
+            printf("FAIL: clip.z probe pixel %d = (%u,%u,%u), expected "
+                   "(255,0,0) red = survives the conversion, blue = clipped\n",
+                   i, (unsigned)px[i * 4 + 0], (unsigned)px[i * 4 + 1],
+                   (unsigned)px[i * 4 + 2]);
+            break;
+        }
+    }
+    for (i = 0; i < 64; ++i) {
+        ASSERT_EQ(px[i * 4 + 0], 255u);
+        ASSERT_EQ(px[i * 4 + 1], 0u);
+        ASSERT_EQ(px[i * 4 + 2], 0u);
+        ASSERT_EQ(px[i * 4 + 3], 255u);
+    }
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind) {
     static unsigned char colour[8 * 8 * 4];
     static float depth[8 * 8];
@@ -3473,6 +3623,7 @@ int main(void) {
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
+    RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
     RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
     RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);
     RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);

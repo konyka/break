@@ -14,20 +14,15 @@
 // R32_FLOAT SRV, which is the route the shadow-atlas test already proves.
 //
 // linearize_depth keeps the GL formula (z_n = 2d - 1): it decodes a window
-// depth d in [0,1] that was written as (ndc_z + 1) / 2, which is what GL's
-// depth range produces and what the Vulkan forward shaders produce by doing
+// depth d in [0,1] written as (ndc_z + 1) / 2, which is what GL's depth range
+// produces and what the Vulkan forward shaders produce by doing
 // gl_Position.z = (z + w) * 0.5 themselves (blinn_phong_vk.vert R214-A).
 //
-// ⚠️ The D3D12 forward sidecars do NOT do that conversion today
-// (blinn_phong*_hlsl.vert, terrain/water_hlsl.vert -- checked, none touch
-// pos.z), while mat4_perspective is the OpenGL form. So on D3D12 the scene
-// depth buffer holds raw ndc_z, not (ndc_z + 1) / 2, and everything with
-// ndc_z < 0 is clipped -- at near 0.1 / far 100 that is eye distance 0.1 to
-// ~0.2. This shader is correct for the convention the other two backends
-// use; on D3D12 its focus distance will be off until the forward pass
-// converts z the way depth_only_hlsl.vert already does for the shadow
-// cascades. That is a forward-pass defect, recorded in R620, not something
-// to compensate for here -- a DOF-side fix would hide it.
+// R621 made the D3D12 forward sidecars do that conversion too, so the depth
+// this reads is now the same convention on all three backends and this shader
+// needs no compensation. Before R621 it was reading raw ndc_z here, which is
+// what made DOF's focus wrong on D3D12; the fix belongs in the forward pass,
+// not in this one.
 struct PushConsts {
     float u_dof_focus;   //  0
     float u_dof_range;   //  4

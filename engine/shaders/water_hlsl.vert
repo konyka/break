@@ -44,6 +44,8 @@ VSOut main(VSIn i) {
     float3 wp = float3(i.pos.x, g_push.u_water_y, i.pos.z);
     o.world = wp;
     o.pos = mul(g_push.u_proj, mul(g_push.u_view, float4(wp, 1.0f)));
+    // R621: OpenGL proj -> D3D12 clip.z [0,1], matching water_vk.vert.
+    o.pos.z = (o.pos.z + o.pos.w) * 0.5f;
     /* FORWARD_MRT: water.vert reconstructs v_velocity from the ForwardTemporal
      * UBO at binding 0 (u_prev_vp). This sidecar does NOT take that block.
      * water_render never calls rhi_cmd_bind_uniform_buffer, so on D3D12 the

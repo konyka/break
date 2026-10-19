@@ -57,5 +57,9 @@ VSOut main(VSIn i) {
     o.normal = mul((float3x3)g_push.u_model, i.normal);
     o.uv = i.uv;
     o.pos = mul(mul(g_push.u_proj, g_push.u_view), world_pos);
+    // R621: OpenGL proj -> D3D12 clip.z [0,1]. Every Vulkan forward twin does
+    // this (blinn_phong_vk.vert R214-A); without it the whole near half of the
+    // scene is clipped away. See the shared note in blinn_phong_hlsl.frag.
+    o.pos.z = (o.pos.z + o.pos.w) * 0.5f;
     return o;
 }

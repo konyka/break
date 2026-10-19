@@ -93,5 +93,7 @@ VSOut main(VSIn i) {
                            float4(i.pos, 1.0));
     o.velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
     o.pos = curr_clip;
+    // R621: OpenGL proj -> D3D12 clip.z [0,1], matching blinn_phong_arr_vk.
+    o.pos.z = (o.pos.z + o.pos.w) * 0.5f;
     return o;
 }
