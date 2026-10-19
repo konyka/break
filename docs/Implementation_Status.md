@@ -177,7 +177,23 @@
 
   第 3 条决定了：**即使把 1、2、4 全部做完并打开能力位，这台机器上数组路径依然会丢设备**。所以正确顺序是**先解决第 3 条**，否则做 1、2、4 只是把一个被 fail-closed 挡住的活板门换成一次崩溃。
 - **⚠️ 上条那个「demo 的 hang 也是 UAV 造成的」推测，本轮实测被推翻，不要采信**：demo 在 RTX 4060 上 `BREAK_FRAMES=120` 跑满并干净退出，**全程 0 次 device removed**；而且 demo 里所有 compute 子系统都在**建 UAV 之前**就 fail-closed 了（`cluster_cull.comp not found` / `Particle compute shader not found` / `GPUCull: backend reports no compute support` / `IndirectDraw: backend reports no indirect draw support`）——**demo 从头到尾没建过任何 UAV 视图**，所以第 3 条（UAV 杀设备）**不是** demo 的 hang 的原因。两条记录要分开看。
-- 门控（三棵树全绿：D3D12 **172/172** + graphics **8/8**、VK **171/171**、GL **170/170**；golden MAE 仍精确为 VK 28.75/13.54 与 GL 15.60/1.15）。`test_hotreload` 5/5 → **6/6**。
+- **R614：把 D3D12 的 RHI 缺口逐个查清——剩下的渲染子系统大多不是卡在着色器，而是卡在缺失的 RHI 特性**。这条是查出来的，不是推断的，方法是通读 `rhi_d3d12.c` 里全部空实现桩并对每个去查生产调用方。**它直接推翻了我原本打算做的两件事**（`point_shadow`、`instanced`/`skinned` 的 sidecar），那两件都会是白做：
+
+  | 空实现桩 | 卡住谁 | 性质 |
+  | --- | --- | --- |
+  | `rhi_cmd_bind_texel_buffers`（unit 5/6） | `instanced`、`skinned`（两者都用 `layout(binding=5) samplerBuffer`） | 真实缺口，**一次解锁两个** |
+  | `rhi_cubemap_create` / `_destroy` / `_transition_to_read`、`rhi_cmd_bind_cubemap`、`rhi_cubemap_depth_fbo_{create,destroy,bind_face,unbind}` | `point_shadow`（六个 cubemap 面）、`ibl`（环境/辐照度/预滤波 cube） | **三个桩起步**，写 sidecar 无用 |
+  | `rhi_cmd_bind_deferred_gbuf_textures` | deferred GBuffer 路径 | 真实缺口 |
+  | `rhi_cmd_bind_textures_multi` | 任何多纹理绑定调用方 | 真实缺口 |
+  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | **即使实现也会丢设备**（见 R611 的 UAV 结论） |
+  | `rhi_cmd_set_depth_func_less` / `_less_or_equal`、`rhi_cmd_set_depth_mask`、`rhi_cmd_set_cull_face` | 目前**无人调用** | **惰性桩**：深度状态全部来自 `RHIPipelineDesc` 的 `depth_compare_lequal` / `depth_write_disable` / `disable_culling`，生产代码一次都没调过这四个。是留给后人的陷阱，不是现存缺陷 |
+  | `rhi_gpu_timer_{begin,end,destroy}`、`rhi_backend_*_get_native_info`、`rhi_backend_acceleration_structure_get_vk_handle` | 无 | 诊断/互操作/VK 专用逃生口，不阻塞渲染 |
+
+- **两个具体结论**：
+  - **`point_shadow` 的告警是误导性的**。它报 `PointShadow: depth pipeline creation failed (shaders missing?)`，括号里那句是猜测；真实情况是 `point_shadow_depth.vert` 是 `#version 330 core`（**GL 语法，且没有 `_vk` 变体**），本来就没打算给 D3D12 写，而它需要的 cubemap 深度 FBO 在 D3D12 上是三个空桩。就算现在给它写 sidecar，系统依然会在 `cubemap_fbos[i].fb` 无效处失败并报 "resource creation failed"。
+  - **`instanced` / `skinned` 的 sidecar 同理是白做**：`rhi_cmd_bind_texel_buffers` 在 D3D12 上是 `(void)cmd; (void)buf0; (void)buf1;`，着色器永远读不到实例/骨骼数据。正确顺序是**先实现这个 binder**（D3D12 侧是 `D3D12_SRV_DIMENSION_BUFFER` 描述符 + `image_root_params[5]`/`[6]`，**只读 SRV 不需要 UAV，因此不受 R611 的设备丢失影响**），再写 sidecar。
+- **不受任何 RHI 缺口阻塞、纯粹是着色器工作的只剩后处理那一族**（`ssao`、`taa`、`bloom`、`dof`、`ssr`、`ssgi`、`fxaa`、`tonemap`、`sharpen`、`sss`、`upscale`、`post_process`、`combined_post_process`、`motion_blur`、`vignette` 类等 `src/renderer/` 下 24 个子系统）。它们各自是一对 vert/frag，是 R608 那种机械工作——但每一个都需要自己的像素证明才值得上。
+- 门控（本节为文档与调研，无代码变更）。
 
 ## 本轮更新：D3D12 材质 binder（Task 1-2）— 与 GL 逐槽位镜像的 unit map、"D3D12 描述符没有 unset 态"故必须绑白色 fallback、cube 槽位刻意留空（**不接** 2D fallback）、静态采样器限制如实落账、WARP 像素证明含三路反向验证；随后完成 Task 3 文档
 

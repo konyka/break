@@ -1060,6 +1060,47 @@ fail-closed gates, both currently closed:
    through `shader_read_file`, which is GLSL, so the compaction pipeline is
    invalid and `indirect_draw_init` destroys the system and returns false.
 
+### R614 -- most of the remaining subsystems are blocked on RHI, not on shaders
+
+The list above reads as "shaders still to write". That framing is wrong, and
+checking it cost two wasted tasks before the mistake was caught: `point_shadow`
+and `instanced`/`skinned` both looked like shader work and neither is.
+
+`rhi_d3d12.c` contains 27 no-op entry points. Sorting them by what actually
+blocks a renderer subsystem:
+
+| stub | blocks | kind |
+| --- | --- | --- |
+| `rhi_cmd_bind_texel_buffers` (units 5/6) | `instanced`, `skinned` -- both declare `layout(binding = 5) samplerBuffer` | **real gap; unlocks two at once** |
+| `rhi_cubemap_*` (create/destroy/transition/bind) + `rhi_cubemap_depth_fbo_*` | `point_shadow` (six cube faces), `ibl` | three stubs minimum |
+| `rhi_cmd_bind_deferred_gbuf_textures` | the deferred GBuffer path | real gap |
+| `rhi_cmd_bind_textures_multi` | any multi-texture call site | real gap |
+| `rhi_cmd_bind_storage_buffer`, `_bind_image_texture`, `_bind_image_cubemap_face`, `_bind_texture_compute` | every compute subsystem | implemented or not, **they lose the device** (R611) |
+| `rhi_cmd_set_depth_func_less` / `_less_or_equal`, `_set_depth_mask`, `_set_cull_face` | nobody | **inert** -- all depth state comes from `RHIPipelineDesc`, and no production code calls these four |
+| `rhi_gpu_timer_*`, `rhi_backend_*_get_native_info`, the AS VK escape hatch | nobody | diagnostics / interop |
+
+Two concrete consequences:
+
+- `point_shadow`'s warning names a guess. It says "depth pipeline creation
+  failed (shaders missing?)"; the real situation is that
+  `point_shadow_depth.vert` is `#version 330 core` -- GL syntax, with no
+  `_vk` twin, so it was never meant for D3D12 -- and the cube depth FBO it
+  needs is three stubs. A sidecar would leave the system still failing at
+  `cubemap_fbos[i].fb`.
+- `instanced` and `skinned` are the good case, and the order matters:
+  `rhi_cmd_bind_texel_buffers` is `(void)cmd; (void)buf0; (void)buf1;`, so a
+  shader could never read its instance or joint data no matter how correct the
+  sidecar was. Implementing the binder first is a read-only
+  `D3D12_SRV_DIMENSION_BUFFER` descriptor at `image_root_params[5]`/`[6]`,
+  and -- unlike the compute paths -- **an SRV needs no UAV**, so it is not
+  subject to the device loss in R611.
+
+What is left as genuinely shader-only work is the post-processing family in
+`src/renderer/` -- `ssao`, `taa`, `dof`, `ssr`, `ssgi`, `fxaa`, `tonemap`,
+`sharpen`, `sss`, `upscale`, `motion_blur`, `bloom` and their siblings. Each
+is a vert/frag pair and mechanical in the R608 sense, but each still owes a
+pixel proof before it is worth landing.
+
 R607 therefore landed the array sidecar and the 2D array texture support for
 a path that cannot execute on this backend yet. And the last of those gates is
 not a code problem at all.
