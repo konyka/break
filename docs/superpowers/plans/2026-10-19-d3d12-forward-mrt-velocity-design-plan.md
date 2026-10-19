@@ -1,6 +1,6 @@
 # D3D12 FORWARD_MRT velocity / RT1 output — design
 
-Status: steps 1-4 implemented (R600); step 5 (WARP pixel proof) outstanding.
+Status: steps 1-5 implemented and verified (R600/R605); step 5 pixel proof passes on WARP.
 Baseline: `d77882e7` (master)
 Backends affected: D3D12 sidecar design; one option changes the cross-backend
 uniform contract.
@@ -684,6 +684,46 @@ Two caveats to carry forward:
   is answerable by bisection rather than by reasoning.
 
 Nothing shipped.
+
+### Step 5 closed: the RT1 velocity pixel proof passes
+
+`blinn_phong_mrt_sidecar_writes_velocity_to_rt1` runs the blinn_phong MRT
+sidecar into an 8x8 MRT FBO `{R8G8B8A8_UNORM, R16G16_SFLOAT}`, draws twice
+and reads RT1 back as raw binary16. The assertions are deliberately
+orientation-free, so a pass is about the velocity and not about the viewport
+transform:
+
+- **Draw A**, `u_prev_vp` identity: both velocity channels are exactly
+  `+0.0`, asserted on the **raw 16-bit patterns**, so "approximately zero"
+  cannot pass.
+- **Draw B**, `u_prev_vp` scaled (2,1): velocity.y is exactly 0 on every
+  pixel while velocity.x varies and takes both signs, and |velocity.x| stays
+  inside [-1.01, 1.01] so a wrong divide-by-w shows up. One channel pinned
+  to a hard zero while the other is live is what a correct per-channel read
+  looks like; a missing or garbage attachment cannot produce it.
+- **RT0 is exactly red on every draw** -- the regression guard on moving the
+  camera onto the b1 cbuffer.
+
+The arithmetic behind it: with identity model/view/proj the vertex stage
+computes `curr = (x, y, 0, 1)` so `curr_ndc = (x, y)`, and for a diagonal
+`u_prev_vp` of scale (sx, sy) with identity `u_prev_model`,
+`velocity = ((1 - sx) * x, (1 - ty) * y)`.
+
+**WARP 13/13.** Reverse-verified: with `rhi_d3d12.c` reverted to its
+pre-R605 form the same test fails on readback and takes the rest of the suite
+with it (9/13) -- so the proof is not passing for a reason unrelated to the
+fix it exists to cover.
+
+One thing this test also settles: the half-float decoder it needed. The first
+version used `1u << (exp - 15)`, which is undefined for every value with
+magnitude below 1.0 -- most of a screen -- and the garbage it produced read
+exactly like a broken shader. `0xbaff` decodes to **-0.8745**, which is
+precisely the NDC x of pixel 0 in an 8x8 target. Worth remembering as a class
+of bug: a decoder bug in the oracle masquerades as a defect in the thing
+under test.
+
+**Remaining for the plan**: only step 4's migration of `main.c` to the path
+API, which was blocked on this and is now unblocked.
 
 ### R605 -- fixed, verified, landed
 

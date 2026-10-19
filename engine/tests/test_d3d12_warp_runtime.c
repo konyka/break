@@ -896,6 +896,222 @@ TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R605 / plan step 5: does the MRT sidecar actually put the motion vector in
+ * RT1, and is it the value the matrices imply?
+ *
+ * The velocity is not a constant, so "every pixel equals X" does not apply.
+ * With identity model/view/proj the vertex stage computes
+ *
+ *     curr = (x, y, 0, 1)                    so curr_ndc = (x, y)
+ *     prev = u_prev_vp * u_prev_model * pos   so prev_ndc = (sx, ty)
+ *     velocity = ((1 - sx) * x, (1 - ty) * y)
+ *
+ * for a diagonal u_prev_vp of scale (sx, ty) and identity u_prev_model.
+ *
+ * Every assertion below is INDEPENDENT of which way the target is stored,
+ * which is deliberate: a test that had to know the pixel->NDC mapping would
+ * be asserting the viewport transform instead of the velocity, and would
+ * pass for the wrong reason.
+ *
+ *   Draw A (sx=sy=1)  velocity is exactly (0, 0) -- asserted on the RAW
+ *                      16-bit patterns, so "approximately zero" cannot pass.
+ *   Draw B (sx=2, sy=1) velocity.y is exactly 0 on every pixel while
+ *                      velocity.x varies and takes both signs. One channel
+ *                      pinned to a hard zero while the other is live is what
+ *                      a correct per-channel read looks like.
+ *
+ * RT0 is checked on every draw: the camera rides the b1 temporal CBV now,
+ * and RT0 must still come out exactly red, which is the regression guard on
+ * that move.
+ *
+ * This test is also the one that could not exist before R605: reading
+ * u_prev_vp / u_prev_model in the vertex stage used to resolve to a root
+ * parameter that was never bound, so the velocity was garbage (NaN) no
+ * matter what the matrices said. */
+
+
+
+
+/* IEEE-754 binary16 -> float, for reading back the R16G16_SFLOAT velocity
+ * attachment. Never shift by a negative count: most of a screen's NDC values
+ * sit below 1.0 and land on exp < 15, which is where 1u << (exp - 15) is
+ * undefined behaviour and silently produced garbage that read exactly like a
+ * broken shader. */
+static float warp_half_to_float(unsigned short h)
+{
+    unsigned int sign = (unsigned int)(h >> 15) & 1u;
+    int exp = (int)((h >> 10) & 0x1fu);
+    unsigned int frac = (unsigned int)(h & 0x3ffu);
+    float mag;
+    float scale = 1.0f;
+    if (exp == 0) {
+        mag = (float)frac * (1.0f / 16777216.0f);          /* subnormal */
+    } else if (exp == 31) {
+        mag = frac ? (0.0f / 0.0f) : (1.0f / 0.0f);       /* inf / NaN */
+    } else {
+        if (exp > 15) scale = (float)(1u << (unsigned int)(exp - 15));
+        else if (exp < 15) scale = 1.0f / (float)(1u << (unsigned int)(15 - exp));
+        mag = scale * (1.0f + (float)frac / 1024.0f);
+    }
+    return sign ? -mag : mag;
+}
+
+TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1)
+{
+    /* Oversized triangle covering the whole 8x8 target; normals all (0,0,1)
+     * and the sibling blinn test's degenerate lighting zeroes diff and spec,
+     * so RT0 is the albedo regardless. */
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, 0.0f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, 0.0f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    /* Column-major: index = col*4 + row. Diagonal scale (sx, sy, 1, 1). */
+    static const float identity[16] = {1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    static const float scale_x2[16]   = {2,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1};
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITextureDesc tex_desc;
+    RHITexture red_tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHIBuffer temporal_ubo;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    float min_x, max_x;
+    int draw, i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    ASSERT_EQ(fbo.attachment_count, 2u);
+    ASSERT_TRUE(rhi_handle_valid(fbo.color_tex[1]));
+
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_mrt.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_mrt.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&tex_desc, 0, sizeof(tex_desc));
+    tex_desc.width = 2u; tex_desc.height = 2u;
+    tex_desc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tex_desc.mip_levels = 1u;
+    tex_desc.data = red;
+    red_tex = rhi_texture_create(g_dev, &tex_desc);
+    ASSERT_TRUE(rhi_handle_valid(red_tex));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;    /* pos3 + normal3 + uv2 */
+    pdesc.uses_textures = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    /* R600: u_camera_pos is NOT a push member any more. Pin -1 rather than
+     * dropping the name -- a stale 240 is how the camera would slip back
+     * into the 248-byte tail. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient"), 224);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
+
+    for (draw = 0; draw < 2; ++draw) {
+        const float *prev_vp = (draw == 0) ? identity : scale_x2;
+        WARPForwardTemporal temporal;
+        RHIBufferDesc ubo_desc;
+        memset(&temporal, 0, sizeof(temporal));
+        temporal.cam_pos[2] = -10.0f;
+        memcpy(temporal.prev_vp, prev_vp, sizeof(temporal.prev_vp));
+        temporal.prev_model[0] = 1.0f; temporal.prev_model[5] = 1.0f;
+        temporal.prev_model[10] = 1.0f; temporal.prev_model[15] = 1.0f;
+        memset(&ubo_desc, 0, sizeof(ubo_desc));
+        (void)ubo_desc;
+        rhi_buffer_update(g_dev, temporal_ubo, &temporal, sizeof(temporal));
+
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, 0.0f, -1.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, red_tex, (RHISampler){0}, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        /* RT0 must be exactly the albedo on every draw -- the temporal CBV
+         * move must not have disturbed the colour path. */
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        for (i = 0; i < (int)sizeof(rt0); i += 4) {
+            ASSERT_EQ(rt0[i + 0], 255);
+            ASSERT_EQ(rt0[i + 1], 0);
+            ASSERT_EQ(rt0[i + 2], 0);
+            ASSERT_EQ(rt0[i + 3], 255);
+        }
+
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+        min_x = 1e30f; max_x = -1e30f;
+        for (i = 0; i < 64; ++i) {
+            float vx = warp_half_to_float(rt1[i * 2 + 0]);
+            float vy = warp_half_to_float(rt1[i * 2 + 1]);
+            if (draw == 0) {
+                /* Exactly +0.0 in both channels, on the raw bits. */
+                ASSERT_EQ(rt1[i * 2 + 0], 0u);
+                ASSERT_EQ(rt1[i * 2 + 1], 0u);
+            } else {
+                ASSERT_EQ(rt1[i * 2 + 1], 0u);
+            }
+            if (vx < min_x) min_x = vx;
+            if (vx > max_x) max_x = vx;
+            (void)vy;
+        }
+        if (draw == 1) {
+            /* curr_ndc lives in [-1, 1]; anything outside means the divide by
+             * w or the perspective mapping is wrong. */
+            ASSERT_TRUE(min_x < 0.0f);
+            ASSERT_TRUE(max_x > 0.0f);
+            ASSERT_TRUE(min_x >= -1.01f);
+            ASSERT_TRUE(max_x <= 1.01f);
+        }
+    }
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, red_tex);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -1284,6 +1500,7 @@ int main(void) {
     RUN_TEST(blinn_phong_sidecar_resolves_offsets_and_shades_red);
     RUN_TEST(material_binder_puts_albedo_on_t0_and_falls_back_to_white);
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
+    RUN_TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(shadow_atlas_depth_round_trips_through_the_sampling_path);
     RUN_TEST(shadow_bind_clears_each_frame_and_unbind_restores_the_screen);
