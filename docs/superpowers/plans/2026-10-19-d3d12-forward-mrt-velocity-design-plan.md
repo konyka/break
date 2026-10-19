@@ -530,6 +530,16 @@ Instrumentation that would answer it without any of the above: log
 `pd->uniform_root_params[1]` and the descriptor handle actually bound, at
 bind time, for the draw that misbehaves.
 
+### Working the reading list: item 1 answered
+
+`rhi_cmd_bind_texture` and `rhi_cmd_bind_uniform_buffer` **do share a descriptor allocator** — both take from `ctx->cbv_srv_uav_alloc` (`rhi_d3d12.c:3671` and `:3724`), and each returns the slot immediately via `rhi_d3d12_descriptor_give_back(..., ctx->next_fence)`. So the slot a CBV is written to is very likely the slot the next texture bind reuses, overwriting the CBV descriptor before the GPU runs.
+
+That is **not** sufficient to explain the fault, and it is worth saying so rather than leaving it hanging: the passing non-MRT pipeline binds a uniform buffer and a texture in the same order from the same allocator every frame, and its pixel-stage cbuffer read is correct. The overwrite, if it happens, must be harmless there — most likely because the last descriptor written is the one the bound table points at, or because the allocator does not hand the same slot straight back. Which leaves the observation sharp and unexplained: **the same descriptor, same allocator, same order, reads correctly from the pixel stage and not from the vertex stage.**
+
+Item 1 is also not about the temporal buffer lifetime: replacing the destroy-and-recreate of the UBO on every draw with a single buffer plus `rhi_buffer_update` changed nothing (draw 0 still reads back NaN velocity).
+
+The instrumentation from the previous entry has not been run yet and is still the cheapest next move: log `pd->uniform_root_params[1]` and the descriptor handle actually bound, at bind time, on the failing draw. If the vertex stage is resolving a different table than the pixel stage, that prints the difference immediately; if both resolve the same table, the fault is downstream of the root signature entirely.
+
 ### Ruled out next: duplicate descriptor tables
 
 The strongest-looking theory left was the per-stage table duplication. The
