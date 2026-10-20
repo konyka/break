@@ -1,5 +1,6 @@
 #include <rhi/rhi.h>
 #include <renderer/indirect_draw.h>
+#include <renderer/post_process.h>
 #include "test_framework.h"
 /* Forces WARP via ENGINE_D3D12_WARP=1 (set in CTest ENVIRONMENT) so the
  * windows-d3d12 lane has a deterministic software GPU-runtime floor.
@@ -5272,6 +5273,84 @@ TEST(indirect_draw_system_compacts_and_draws_on_the_gpu) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R638: the demo's whole D3D12 frame was black because PostProcess never
+ * initialised: post_process.c handed inline GLSL to rhi_shader_create, which
+ * this backend refuses, so postfx.ready stayed false and main.c skipped the
+ * final tex_pipe blit onto the swapchain -- the back buffer was never
+ * written. This drives the real PostProcess: init must succeed, tex_pipe
+ * must copy a texture exactly, and the full bloom chain (extract, 4 blurs,
+ * composite) must run. The grey input is below the 1.0 threshold, so bloom
+ * contributes nothing and the composite must equal the input. */
+TEST(post_process_initialises_and_blits_on_d3d12) {
+    static unsigned char grey[4 * 4 * 4];
+    PostProcess pp;
+    RHITextureDesc td;
+    RHITexture src;
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    u16 comp[8 * 8 * 4];
+    int i;
+    memset(grey, 128, sizeof(grey));
+    for (i = 3; i < (int)sizeof(grey); i += 4) grey[i] = 255;
+    memset(&td, 0, sizeof(td));
+    td.width = 4u; td.height = 4u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = grey;
+    src = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(src));
+
+    ASSERT_TRUE(post_process_init(&pp, g_dev, 8u, 8u));
+    ASSERT_TRUE(pp.ready);
+    ASSERT_TRUE(rhi_handle_valid(pp.tex_pipe));
+    ASSERT_TRUE(pp.loc_threshold >= 0);
+    ASSERT_TRUE(pp.loc_direction >= 0);
+    ASSERT_TRUE(pp.loc_bloom_strength >= 0);
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    post_process_apply(&pp, cmd, src, 8u, 8u);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pp.tex_pipe);
+    rhi_cmd_bind_texture(cmd, src, pp.sampler, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        ASSERT_EQ(px[i + 0], 128);
+        ASSERT_EQ(px[i + 1], 128);
+        ASSERT_EQ(px[i + 2], 128);
+    }
+    memset(comp, 0, sizeof(comp));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, pp.fbo_composite.color_tex,
+                                        comp, sizeof(comp)));
+    for (i = 0; i < 8 * 8 * 4; i += 4) {
+        float r = warp_half_to_float(comp[i + 0]);
+        float g = warp_half_to_float(comp[i + 1]);
+        float b = warp_half_to_float(comp[i + 2]);
+        ASSERT_TRUE(r > 0.495f && r < 0.51f);
+        ASSERT_TRUE(g > 0.495f && g < 0.51f);
+        ASSERT_TRUE(b > 0.495f && b < 0.51f);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    post_process_shutdown(&pp);
+    rhi_texture_destroy(g_dev, src);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5313,6 +5392,7 @@ int main(void) {
     RUN_TEST(skybox_sidecar_scatters_an_exact_constant_sky);
     RUN_TEST(storage_buffers_receive_raw_and_structured_compute_writes);
     RUN_TEST(indirect_draw_system_compacts_and_draws_on_the_gpu);
+    RUN_TEST(post_process_initialises_and_blits_on_d3d12);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

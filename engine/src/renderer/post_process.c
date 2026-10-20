@@ -7,20 +7,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline pp_create_pipe(RHIDevice *dev,
+static RHIPipeline pp_create_pipe(RHIDevice *dev, bool sidecar,
                                    const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("PostProcess: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("PostProcess: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("PostProcess: shader compile failed");
@@ -62,7 +69,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         LOG_WARN("PostProcess: shader variant path failed");
         return false;
     }
-    pp->extract_pipe = pp_create_pipe(dev, vs_path, fs_path);
+    pp->extract_pipe = pp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
     if (!rhi_handle_valid(pp->extract_pipe)) {
         LOG_WARN("PostProcess: extract pipeline failed");
         return false;
@@ -73,7 +80,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         LOG_WARN("PostProcess: shader variant path failed");
         return false;
     }
-    pp->blur_pipe = pp_create_pipe(dev, vs_path, fs_path);
+    pp->blur_pipe = pp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
     if (!rhi_handle_valid(pp->blur_pipe)) {
         LOG_WARN("PostProcess: blur pipeline failed");
         /* R354: extract_pipe already live — mirror FBO failure shutdown. */
@@ -86,7 +93,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         LOG_WARN("PostProcess: shader variant path failed");
         return false;
     }
-    pp->tex_pipe = pp_create_pipe(dev, vs_path, fs_path);
+    pp->tex_pipe = pp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
     if (!rhi_handle_valid(pp->tex_pipe)) {
         LOG_WARN("PostProcess: tex pipeline failed");
         post_process_shutdown(pp);
@@ -98,7 +105,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
         LOG_WARN("PostProcess: shader variant path failed");
         return false;
     }
-    pp->composite_pipe = pp_create_pipe(dev, vs_path, fs_path);
+    pp->composite_pipe = pp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
     if (!rhi_handle_valid(pp->composite_pipe)) {
         LOG_WARN("PostProcess: composite pipeline failed");
         post_process_shutdown(pp);

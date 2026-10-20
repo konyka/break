@@ -15,7 +15,11 @@
   - **反向验证**：把 `rhi_cmd_update_buffer` 改回主机写，该用例转红（全可见标志覆盖了被绘制的那次 compact）。\r
   - `indirect_start_instance_does_not_reach_sv_instance_id` 现在还断言 D3D12 的两个能力位（indirect 为 true、first_instance 为 false）。\r
   - demo 在 RTX 4060 上 `BREAK_FRAMES=120` 正常退出，无设备移除；日志 `IndirectDraw: initialized (max 11 draws, 11 groups)`，`Draws` 从 64 降到 24（逐网格 draw 合并为逐组 indirect）。\r
-- **发现但未在本轮处理：D3D12 demo 的截图是全黑**（`BREAK_SCREENSHOT`，1280×720 每像素 0）。**回退本轮改动到 HEAD 复测同样全黑**，VK 同场景均值约 (221, 226, 225)，所以不是本轮引入；最可能与 `tonemap` 等后处理没有 D3D12 sidecar（日志 `Tonemap: shader compile failed`）有关，尚未确认。\r
+- **D3D12 demo 整帧全黑——已定位并修复**（`BREAK_SCREENSHOT` 截图 1280×720 每像素 0；回退到上一提交同样全黑，VK 正常，所以是既有问题）。\r
+  - **根因**：最终把后处理链结果拷到交换链的是 `PostProcess.tex_pipe`（`main.c` 的 `rhi_offscreen_fbo_unbind` + `postfx.tex_pipe` 那一 draw）。`post_process.c` 用 `rhi_shader_create` 传内联 GLSL，D3D12 一律拒绝（不在进程内编译 HLSL），于是 `post_process_init` 在第一条管线就失败、`postfx.ready = false`，`main.c` 跳过最终 blit——**后台缓冲从未被写过**。先前怀疑的 `tonemap` 不是原因：它缺 sidecar 只是让色调映射这一步跳过。\r
+  - **修复**：补 4 个 sidecar（`post_tex_hlsl.frag`、`bloom_extract_hlsl.frag`、`bloom_blur_hlsl.frag`、`bloom_composite_hlsl.frag`，与现有 `post_hlsl.vert` 配对），`pp_create_pipe` 在 `caps.shader_sidecar_paths` 时走 `rhi_shader_create_path`（与 `color_grade.c` 同一模式）。修后截图均值约 (76, 81, 79)，场景可见。\r
+  - **测试**：`post_process_initialises_and_blits_on_d3d12` 驱动真实 `PostProcess`：init 必须成功、三个 uniform 位置可解析、`tex_pipe` 逐像素拷贝 128 灰、整条 bloom 链（extract + 4 次 blur + composite）跑完后 composite 等于输入（灰度低于阈值，bloom 贡献为 0）。WARP 与 RTX 4060 均通过；**反向验证**：把 `pp_create_pipe` 的 sidecar 开关强制为 false，该用例在 `post_process_init` 处转红。\r
+  - **仍未处理**：画面与 VK 有明显差异——D3D12 缺 `tonemap`、`ssao`、`sss`、`deferred`、`cinematic` 等 sidecar（日志里约 535 条「inline source」告警），所以是未经色调映射的 HDR 前向结果，且没有调试 UI 文字（`debug_ui` 字体管线同样缺 sidecar）。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
 \r
 ## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
 \r
