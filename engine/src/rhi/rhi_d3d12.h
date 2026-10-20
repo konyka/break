@@ -162,6 +162,7 @@ typedef struct RHI_D3D12Buffer {
     UINT usage;                 /* RHIBufferUsage bits */
     D3D12_RESOURCE_STATES state;
     UINT device_local;          /* DEFAULT heap; 0 = UPLOAD heap */
+    UINT allow_uav;             /* created with ALLOW_UNORDERED_ACCESS */
     void *mapped;               /* non-NULL while rhi_buffer_map is open */
 } RHI_D3D12Buffer;
 
@@ -242,6 +243,11 @@ typedef struct RHI_D3D12RootSigBuilder {
     UINT sampler_count;
     UINT image_root_params[16]; /* register(tN) -> root parameter */
     UINT uniform_root_params[16]; /* register(bN) -> root parameter */
+    UINT storage_root_params[16]; /* register(uN) -> root parameter */
+    /* register(uN) view shape: 0 = raw (RWByteAddressBuffer), N > 0 =
+     * structured with an N byte element, UINT_MAX = not a buffer view this
+     * backend can describe (RWTexture*, or an element type it cannot size). */
+    UINT storage_strides[16];
     UINT push_constant_size;   /* bytes; 0 = none */
 } RHI_D3D12RootSigBuilder;
 

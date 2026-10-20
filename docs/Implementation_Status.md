@@ -1,7 +1,7 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
-## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**\r
+## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
 \r
 > R611 起记录在案、并在 2026-10-20 两次复测（升级驱动、排除 RDP / ToDesk）中被「加固」的结论——「本机任何程序都无法创建 UAV 视图，归因于混合显卡/系统栈」——**是错的**。下文所有引用这条结论的段落（R611、R614 的 compute 行、「判定实验」一节、UAV 参数矩阵各节）均以本节为准。\r
 \r
@@ -19,7 +19,13 @@
   | **R32_FLOAT（类型化）** | **HEALTHY** |\r
 - **所以「驱动更新无效」「RDP / ToDesk 被排除」「嫌疑收敛到混合显卡」这三条复测结论的观测是真的，推论全错**：探针在任何机器上都会失败，换驱动、关远程软件自然都没有影响。这台机器的 D3D12 栈**能正常创建 UAV 视图**。\r
 - **顺带修掉的测试缺陷**：`test_d3d12_uav_matrix` 每格新建设备，但存活格把回读用的纹理泄漏了（`if (!alive) rhi_texture_destroy(...)` 条件写反）。D3D12 对同一适配器在仍有引用时**返回同一个设备**，于是第一个存活格之后再死一格，后面所有格都会继承那个已被移除的设备，表现成「device create failed」的级联。修好后矩阵的真实结果（WARP 与 RTX 4060 一致）：合法形态 `R32_TYPELESS+RAW`、`UNKNOWN+stride16`、两个对照格存活；非法形态（无 RAW 的 R32_TYPELESS、stride 0 的结构化、全零描述符、`pDesc=NULL`、在 raw 视图上挂 counter）以 `INVALID_CALL` 被移除。测试现在**断言**合法格必须存活，不再「只打印不断言」。\r
-- **对路线的影响**：R611 表里的第 3 道门（「UAV 视图杀死设备，代码之外」）**不存在**。D3D12 compute 路线（storage buffer、indirect draw、粒子、IBL 预计算）在本机**可以开发和验证**，前提是 binder 写出完整描述符（`ViewDimension`、`NumElements`，raw 视图带 `D3D12_BUFFER_UAV_FLAG_RAW`，counter 只用于结构化视图）。`rhi_cmd_bind_storage_buffer` 等四个 compute 绑定目前**仍是空桩**，这一点不变。\r
+- **对路线的影响**：R611 表里的第 3 道门（「UAV 视图杀死设备，代码之外」）**不存在**。D3D12 compute 路线（storage buffer、indirect draw、粒子、IBL 预计算）在本机**可以开发和验证**，前提是 binder 写出完整描述符（`ViewDimension`、`NumElements`，raw 视图带 `D3D12_BUFFER_UAV_FLAG_RAW`，counter 只用于结构化视图）。\r
+- **随后落地：`rhi_cmd_bind_storage_buffer` 不再是空桩（R637 第二步）**。\r
+  - 反射器为每个 `register(uN)` 记下视图形态：`RWByteAddressBuffer` → raw（`R32_TYPELESS` + `RAW`，`NumElements = size/4`）；`RWStructuredBuffer<T>` → 结构化（`UNKNOWN` + `StructureByteStride = sizeof(T)`，支持 `uint/int/float` 的 1–4 分量与 `float4x4`）。识别不了的类型（`RWTexture*`、自定义 struct）记为「无法描述」，绑定时**拒绝并告警**，不会把非法描述符交给运行时。\r
+  - 根签名构建器新增 `storage_root_params[]`，与 `image_root_params` / `uniform_root_params` 同样按 push 参数偏移 +1；绑定走 `SetComputeRootDescriptorTable`（图形管线走 Graphics 版本），资源转到 `UNORDERED_ACCESS`，描述符槽按帧回收（复用 `frame_srv_slots`）。\r
+  - **UPLOAD 堆的 STORAGE 缓冲（创建时没有 `initial_data`）没有 UAV 权限**：这是 `gpucull` / `occlusion_cull` 的 CPU 回读 staging 约定。绑定这种缓冲会被拒绝并告警，而不是让设备被移除。\r
+  - 新测试 `storage_buffers_receive_raw_and_structured_compute_writes`（在 `test_d3d12_warp_runtime` 中，配新 sidecar `shaders/probe_storage_hlsl.comp`）：一次 dispatch 同时写 raw UAV（u0，64 个字）和结构化 UAV（u1，16 行 `uint4`），种子值经 root constant 传入，回读后逐字校验；同时验证绑定 UPLOAD 堆缓冲会被拒绝且不影响设备。**WARP 与 RTX 4060 均通过**。全量 ctest：D3D12 185/185；VK 180/181、GL 177/178，唯一失败均为 `test_vulkan` 的既有 golden 漂移（MAE 28.75 / 13.54，与基线逐字相同，回退本改动复测同样失败）。**反向验证**：把绑定器的 `ViewDimension` 改回 `UNKNOWN`，该用例在 `rhi_device_idle_ex` 处转红（设备被移除）。\r
+  - **仍是空桩**：`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute`（需要纹理 UAV / cube 资源，cube 本身在 D3D12 上也还没实现）。`compute_supported` / `indirect_draw_supported` 能力位**仍未打开**：引擎的 compute 着色器（`cull.comp`、`compact_draws.comp`、粒子等）都还没有 `_hlsl.comp` sidecar，提前打开只会让子系统走到「找不到着色器」。\r
 \r
 ## 本轮更新：R636 — **D3D12 第 1 帧设备丢失已定位并修复**（根因：深度纹理的 SRV 格式非法）、`motion_blur` push 偏移 bug、`instanced`/`skinned` 从未真正绘制、STORAGE 缓冲创建失败；R630/R631 的「默认关闭」缓解**已撤销**
 
@@ -226,7 +232,7 @@
   | `rhi_cubemap_create` / `_destroy` / `_transition_to_read`、`rhi_cmd_bind_cubemap`、`rhi_cubemap_depth_fbo_{create,destroy,bind_face,unbind}` | `point_shadow`（六个 cubemap 面）、`ibl`（环境/辐照度/预滤波 cube） | **三个桩起步**，写 sidecar 无用 |
   | `rhi_cmd_bind_deferred_gbuf_textures` | deferred GBuffer 路径 | 真实缺口 |
   | `rhi_cmd_bind_textures_multi` | 任何多纹理绑定调用方 | 真实缺口 |
-  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | 真实缺口（R637：UAV 视图本机可用，原「即使实现也会丢设备」结论作废） |
+  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | 真实缺口（R637：UAV 视图本机可用，原「即使实现也会丢设备」结论作废；`rhi_cmd_bind_storage_buffer` 已在 R637 实现，其余三个仍是桩） |
   | `rhi_cmd_set_depth_func_less` / `_less_or_equal`、`rhi_cmd_set_depth_mask`、`rhi_cmd_set_cull_face` | 目前**无人调用** | **惰性桩**：深度状态全部来自 `RHIPipelineDesc` 的 `depth_compare_lequal` / `depth_write_disable` / `disable_culling`，生产代码一次都没调过这四个。是留给后人的陷阱，不是现存缺陷 |
   | `rhi_gpu_timer_{begin,end,destroy}`、`rhi_backend_*_get_native_info`、`rhi_backend_acceleration_structure_get_vk_handle` | 无 | 诊断/互操作/VK 专用逃生口，不阻塞渲染 |
 

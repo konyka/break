@@ -5051,6 +5051,89 @@ TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R637: the storage binder end to end. One dispatch writes a raw UAV (u0)
+ * and a structured UAV (u1), seeded by a root constant; both buffers are
+ * read back and checked word for word. Before R637 this binder was a stub,
+ * on the belief that any UAV view removed the device on this host -- which
+ * was the probes' own incomplete descriptor. A UPLOAD-heap STORAGE buffer
+ * (no initial_data) has no UAV access and must be refused, not bound. */
+TEST(storage_buffers_receive_raw_and_structured_compute_writes) {
+    enum { RAW_WORDS = 64, ROWS = 16 };
+    static u32 raw_init[RAW_WORDS];
+    static u32 rows_init[ROWS * 4];
+    u32 raw_out[RAW_WORDS];
+    u32 rows_out[ROWS * 4];
+    const u32 seed = 1000u;
+    RHIBufferDesc bd;
+    RHIBuffer raw, rows, upload_only;
+    RHIShader cs;
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    RHICmdBuffer *cmd;
+    i32 loc;
+    int i;
+    memset(raw_init, 0xAB, sizeof(raw_init));
+    memset(rows_init, 0xCD, sizeof(rows_init));
+    memset(&bd, 0, sizeof(bd));
+    bd.usage = RHI_BUFFER_USAGE_STORAGE;
+    bd.size = sizeof(raw_init);
+    bd.initial_data = raw_init;
+    raw = rhi_buffer_create(g_dev, &bd);
+    bd.size = sizeof(rows_init);
+    bd.initial_data = rows_init;
+    rows = rhi_buffer_create(g_dev, &bd);
+    bd.initial_data = NULL;
+    upload_only = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(raw));
+    ASSERT_TRUE(rhi_handle_valid(rows));
+    ASSERT_TRUE(rhi_handle_valid(upload_only));
+
+    cs = rhi_shader_create_compute_path(g_dev, "shaders/probe_storage.comp");
+    ASSERT_TRUE(rhi_handle_valid(cs));
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.is_compute = true;
+    pdesc.frag = cs;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_seed");
+    ASSERT_EQ(loc, 0);
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, (u32)loc, &seed, sizeof(seed));
+    /* Refused first: if it were bound, the real bind below would still
+     * overwrite it, so this only proves the refusal does not kill the
+     * device or the list. */
+    rhi_cmd_bind_storage_buffer(cmd, upload_only, 1u);
+    rhi_cmd_bind_storage_buffer(cmd, raw, 0u);
+    rhi_cmd_bind_storage_buffer(cmd, rows, 1u);
+    rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+
+    memset(raw_out, 0, sizeof(raw_out));
+    memset(rows_out, 0, sizeof(rows_out));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, raw, raw_out, 0u, sizeof(raw_out)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, rows, rows_out, 0u, sizeof(rows_out)));
+    for (i = 0; i < RAW_WORDS; ++i)
+        ASSERT_EQ(raw_out[i], seed + (u32)i);
+    for (i = 0; i < ROWS; ++i) {
+        ASSERT_EQ(rows_out[i * 4 + 0], (u32)i);
+        ASSERT_EQ(rows_out[i * 4 + 1], (u32)i * 2u);
+        ASSERT_EQ(rows_out[i * 4 + 2], (u32)i * 3u);
+        ASSERT_EQ(rows_out[i * 4 + 3], seed);
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, cs);
+    rhi_buffer_destroy(g_dev, upload_only);
+    rhi_buffer_destroy(g_dev, rows);
+    rhi_buffer_destroy(g_dev, raw);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5090,6 +5173,7 @@ int main(void) {
     RUN_TEST(terrain_sidecar_lights_grass_and_reads_the_shadow_atlas);
     RUN_TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact);
     RUN_TEST(skybox_sidecar_scatters_an_exact_constant_sky);
+    RUN_TEST(storage_buffers_receive_raw_and_structured_compute_writes);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

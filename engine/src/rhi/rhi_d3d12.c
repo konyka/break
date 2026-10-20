@@ -1998,8 +1998,8 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
      * buffer came back as an invalid handle and EVERY binding of it was
      * silently unbound. The skinned vertex shader then read a descriptor
      * that was never set and the GPU hung (DXGI_ERROR_DEVICE_HUNG). The
-     * D3D12 storage binder is a no-op stub, so the flag buys nothing here:
-     * drop it rather than fail the creation. */
+     * flag is dropped rather than failing the creation, and
+     * rhi_cmd_bind_storage_buffer refuses to bind such a buffer as a UAV. */
     allow_uav = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0u && device_local != 0u;
     if (!device_local) {
         /* UPLOAD heaps are persistently GENERIC_READ. */
@@ -2021,6 +2021,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->size = (UINT64)desc->size;
     bd->usage = (UINT)desc->usage;
     bd->device_local = device_local;
+    bd->allow_uav = allow_uav;
     if (device_local && desc->initial_data != NULL) {
         D3D12_RESOURCE_STATES final_state =
             allow_uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
@@ -2127,6 +2128,8 @@ typedef struct RHI_D3D12Pipeline {
     RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
     UINT image_root_params[16];
     UINT uniform_root_params[16];
+    UINT storage_root_params[16];
+    UINT storage_strides[16];
     RHIPipelineDesc desc;
 } RHI_D3D12Pipeline;
 
@@ -2478,6 +2481,25 @@ static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
         b->layout = layout;
         b->set = 0u;
         b->binding = regnum;
+        /* A UAV descriptor has to match the shader's view of the buffer, so
+         * the binder needs the element type. It rides in `format`: "raw" for
+         * RWByteAddressBuffer, the template argument for RWStructuredBuffer,
+         * empty for anything else (RWTexture*). */
+        if (kind == SHADER_IO_RESOURCE_STORAGE) {
+            const char *sb = rhi_d3d12_hlsl_find(p, line_end, "RWStructuredBuffer<");
+            if (rhi_d3d12_hlsl_find(p, line_end, "RWByteAddressBuffer") != NULL) {
+                memcpy(b->format, "raw", 4u);
+            } else if (sb != NULL) {
+                const char *t = sb + 19u;
+                usize n = 0u;
+                while (t < line_end && (*t == ' ' || *t == '\t')) ++t;
+                while (t + n < line_end && rhi_d3d12_hlsl_ident_char(t[n]) &&
+                       n + 1u < sizeof(b->format))
+                    ++n;
+                memcpy(b->format, t, n);
+                b->format[n] = '\0';
+            }
+        }
         line = nl != NULL ? nl + 1 : end;
     }
     return count;
@@ -2795,6 +2817,33 @@ static int rhi_d3d12_hlsl_markers_match_layout(const char *src, usize len) {
     return ok;
 }
 
+/* Element size of a reflected RWStructuredBuffer<T> for the scalar and
+ * vector types the compute sidecars use. 0 = raw view; UINT_MAX = no view
+ * this backend can describe, which makes the binder refuse the bind. */
+static UINT rhi_d3d12_storage_stride(const char *format) {
+    static const struct { const char *name; UINT size; } k_types[] = {
+        { "uint", 4u }, { "int", 4u }, { "float", 4u },
+        { "uint2", 8u }, { "int2", 8u }, { "float2", 8u },
+        { "uint3", 12u }, { "int3", 12u }, { "float3", 12u },
+        { "uint4", 16u }, { "int4", 16u }, { "float4", 16u },
+        { "float4x4", 64u },
+    };
+    usize i;
+    if (strcmp(format, "raw") == 0) return 0u;
+    for (i = 0u; i < sizeof(k_types) / sizeof(k_types[0]); ++i)
+        if (strcmp(format, k_types[i].name) == 0) return k_types[i].size;
+    return UINT_MAX;
+}
+
+static void rhi_d3d12_root_sig_note_storage(RHI_D3D12RootSigBuilder *b,
+                                            const ShaderIOBinding *bind,
+                                            UINT param) {
+    if (bind->kind != SHADER_IO_RESOURCE_STORAGE || bind->binding >= 16u)
+        return;
+    b->storage_root_params[bind->binding] = param;
+    b->storage_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+}
+
 /* ---- root signature generation (Task 5) ---- */
 /* One pass over reflected bindings: PUSH_CONSTANT folds into the constants
  * param the caller added first; UNIFORM -> CBV table; SAMPLER -> SRV table +
@@ -2869,6 +2918,7 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                     b->image_root_params[base_register] = reuse;
                 if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && base_register < 16u)
                     b->uniform_root_params[base_register] = reuse;
+                rhi_d3d12_root_sig_note_storage(b, bind, reuse);
                 goto next_binding;
             }
         }
@@ -2892,6 +2942,7 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
             b->image_root_params[bind->binding] = b->param_count - 1u;
         if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < 16u)
             b->uniform_root_params[bind->binding] = b->param_count - 1u;
+        rhi_d3d12_root_sig_note_storage(b, bind, b->param_count - 1u);
 next_binding:
         ;
     }
@@ -3132,6 +3183,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     for (u32 i = 0u; i < 16u; ++i) {
         builder.image_root_params[i] = UINT_MAX;
         builder.uniform_root_params[i] = UINT_MAX;
+        builder.storage_root_params[i] = UINT_MAX;
+        builder.storage_strides[i] = UINT_MAX;
     }
     /* Push-constant contract: 128B compute / 256B graphics (VK parity); the
      * terrain/water/combined_* layout booleans select which HLSL root
@@ -3246,6 +3299,11 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         if (pd->uniform_root_params[i] != UINT_MAX &&
             pd->push_param_index != UINT_MAX)
             pd->uniform_root_params[i]++;
+        pd->storage_root_params[i] = builder.storage_root_params[i];
+        pd->storage_strides[i] = builder.storage_strides[i];
+        if (pd->storage_root_params[i] != UINT_MAX &&
+            pd->push_param_index != UINT_MAX)
+            pd->storage_root_params[i]++;
     }
     pd->desc = *desc;
     pd->topology = desc->point_list ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
@@ -5583,9 +5641,83 @@ done:
                                    ctx->next_fence);
     return rc;
 }
+/* Storage buffer -> UAV at register(uN) of the bound pipeline.
+ *
+ * The descriptor must be complete: ViewDimension BUFFER and a non-zero
+ * NumElements are mandatory, and the shape has to match the shader's
+ * declaration -- RWByteAddressBuffer wants R32_TYPELESS + RAW (4-byte
+ * elements), RWStructuredBuffer<T> wants UNKNOWN + StructureByteStride.
+ * Anything else is an illegal descriptor, and since
+ * CreateUnorderedAccessView returns void the runtime reports it by removing
+ * the device (DXGI_ERROR_INVALID_CALL). R611-R636 misread exactly that as a
+ * platform fault; see R637 and test_d3d12_uav_matrix.
+ *
+ * Only DEFAULT-heap buffers carry ALLOW_UNORDERED_ACCESS. A STORAGE buffer
+ * created without initial_data stays on the UPLOAD heap (it is the
+ * CPU-readback convention the staging twins rely on), and binding one as a
+ * UAV is refused here rather than handed to the runtime. */
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                  u32 binding) {
-    (void)cmd; (void)buf; (void)binding;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Buffer *bd;
+    ID3D12GraphicsCommandList *list;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, stride, slot;
+    if (ctx == NULL || g_current_device == NULL || binding >= 16u) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL) return;
+    param = pd->storage_root_params[binding];
+    if (param == UINT_MAX) return;
+    stride = pd->storage_strides[binding];
+    if (stride == UINT_MAX) {
+        LOG_WARN("D3D12: register(u%u) is not a buffer view this backend can "
+                 "describe -- storage bind refused", (unsigned)binding);
+        return;
+    }
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return;
+    if (!bd->allow_uav) {
+        LOG_WARN("D3D12: storage bind at u%u refused -- buffer was not created "
+                 "with UAV access (STORAGE buffers need initial_data to be "
+                 "DEFAULT-heap)", (unsigned)binding);
+        return;
+    }
+    if (stride != 0u ? bd->size < stride : bd->size < 4u) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) {
+        LOG_WARN("D3D12: UAV descriptor heap exhausted");
+        return;
+    }
+    ZeroMemory(&uav, sizeof(uav));
+    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.FirstElement = 0u;
+    if (stride == 0u) {
+        uav.Format = DXGI_FORMAT_R32_TYPELESS;
+        uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
+        uav.Buffer.NumElements = (UINT)(bd->size / 4u);
+    } else {
+        uav.Format = DXGI_FORMAT_UNKNOWN;
+        uav.Buffer.StructureByteStride = stride;
+        uav.Buffer.NumElements = (UINT)(bd->size / stride);
+    }
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, bd->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    if (bd->state != D3D12_RESOURCE_STATE_UNORDERED_ACCESS) {
+        rhi_d3d12_transition(list, bd->resource, bd->state,
+                             D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        bd->state = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+    }
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 void rhi_cmd_bind_acceleration_structure(RHICmdBuffer *cmd,
                                          RHIAccelerationStructure structure,
