@@ -3,9 +3,8 @@
  * NOT part of the test suite. It is deliberately standalone: it includes no
  * engine header and links against nothing but d3d12/dxgi/dxguid, so its result
  * is attributable to the platform rather than to anything in this repository.
- * It is kept as a diagnostic, not wired into CMake, because on a host where
- * UAV view creation works it exits 0 and proves nothing, while on one where it
- * does not it exits 1 and would make the suite permanently red.
+ * It is kept as a diagnostic, not wired into CMake; test_d3d12_uav_matrix
+ * covers the same view shapes through the engine.
  *
  * Build (clang, from this directory):
  *   clang -x c -std=c11 -O1 -Wno-nonportable-include-path -DCOBJMACROS \
@@ -14,13 +13,17 @@
  *         -I"<sdk>/um" -I"<sdk>/shared" -I"<sdk>/ucrt"
  * Run with no argument for the hardware adapter, or "w" for WARP.
  *
- * WHAT IT ESTABLISHED (2026-10-19, this host):
- *   RTX 4060 Laptop GPU — RESULT: DEVICE LOST by CreateUnorderedAccessView
- *   WARP                 — RESULT: DEVICE LOST by CreateUnorderedAccessView
- * with GetDeviceRemovedReason still reporting DXGI_ERROR_NOT_FOUND, the healthy
- * value, in both cases. Independent of the buffer's initial resource state, and
- * the debug layer is never enabled here, so neither the engine's descriptor nor
- * the engine's debug configuration is involved.
+ * WHAT IT ESTABLISHED (2026-10-20, this host, RTX 4060 Laptop GPU and WARP):
+ *   With a complete descriptor (as below) — RESULT: UAV view created, device
+ *   HEALTHY on both adapters. Structured (UNKNOWN + stride 16) and typed
+ *   (R32_FLOAT) buffer views are healthy too.
+ *
+ *   The 2026-10-19 version of this file left ViewDimension and NumElements
+ *   zeroed and reported DEVICE LOST on both adapters. That was the probe's own
+ *   bug: removal reason 0x887A0001 is DXGI_ERROR_INVALID_CALL, i.e. the runtime
+ *   rejecting the descriptor, not a platform fault. Setting only one of the two
+ *   fields still dies; both are required. pDesc = NULL also dies, because a
+ *   buffer has no format for D3D12 to infer a view from.
  *
  * Mirrors only what rhi_d3d12.c does for a storage-buffer bind:
  *   - DXGI factory, pick the hardware adapter (or WARP with "w")
@@ -30,9 +33,8 @@
  *   - CreateUnorderedAccessView into that heap
  *   - then ask the device to do one more unrelated allocation
  *
- * Note CreateUnorderedAccessView returns void: it has no way to report a bad
- * descriptor. That is a large part of why this failure has been so hard to
- * diagnose from inside the engine.
+ * Note CreateUnorderedAccessView returns void: a bad descriptor surfaces only
+ * as the device being removed on the next call.
  */
 #include <windows.h>
 #include <dxgi1_6.h>
@@ -151,9 +153,12 @@ int main(int argc, char **argv) {
     ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(heap, &cpu);
     ZeroMemory(&uav, sizeof(uav));
     uav.Format = DXGI_FORMAT_R32_TYPELESS;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+    uav.Buffer.NumElements = 256u / 4u;
     uav.Buffer.Flags = D3D12_BUFFER_UAV_FLAG_RAW;
-    /* Returns void: it cannot report a bad descriptor, which is itself part of
-     * why the failure has been so hard to see. */
+    /* Returns void: an illegal descriptor is reported by removing the device
+     * with DXGI_ERROR_INVALID_CALL instead. Leaving ViewDimension zeroed
+     * (D3D12_UAV_DIMENSION_UNKNOWN) or NumElements at 0 does exactly that. */
     ID3D12Device_CreateUnorderedAccessView(g_dev, buf, NULL, &uav, cpu);
     printf("  CreateUnorderedAccessView: returned (void)\n");
 

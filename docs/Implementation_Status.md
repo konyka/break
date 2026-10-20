@@ -1,6 +1,26 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**\r
+\r
+> R611 起记录在案、并在 2026-10-20 两次复测（升级驱动、排除 RDP / ToDesk）中被「加固」的结论——「本机任何程序都无法创建 UAV 视图，归因于混合显卡/系统栈」——**是错的**。下文所有引用这条结论的段落（R611、R614 的 compute 行、「判定实验」一节、UAV 参数矩阵各节）均以本节为准。\r
+\r
+- **真正原因**：零依赖探针 `engine/tests/diagnostics/d3d12_uav_minimal.c` 和引擎内的 `rhi_d3d12_probe_create_uav`（供 `test_d3d12_uav_matrix` 用）都只填了 `Format` / `Buffer.Flags`，**从未设置 `ViewDimension = D3D12_UAV_DIMENSION_BUFFER` 和 `Buffer.NumElements`**。零化的 `ViewDimension` 是 `D3D12_UAV_DIMENSION_UNKNOWN`，这是非法描述符；`CreateUnorderedAccessView` 返回 `void`，运行时只能以**移除设备**来报错。\r
+- **证据就一直摆在那里，只是被读错了**：`GetDeviceRemovedReason` 报的 `0x887A0001` 是 **`DXGI_ERROR_INVALID_CALL`**（SDK `winerror.h` 定义），即「调用方传了非法参数」，不是硬件 / 驱动故障。此前文档把它当成「无意义的健康值」或「平台错误」处理。\r
+- **实测（2026-10-20，同一台机器，同一驱动，ToDesk 在跑）**，零依赖探针，RTX 4060 与 WARP 结果一致：\r
+  | 描述符 | 结果 |\r
+  | --- | --- |\r
+  | 原探针（缺 ViewDimension + NumElements） | DEVICE LOST，`0x887A0001` |\r
+  | 只补 ViewDimension | DEVICE LOST |\r
+  | 只补 NumElements | DEVICE LOST |\r
+  | `pDesc = NULL`（缓冲没有可推断的格式） | DEVICE LOST |\r
+  | **R32_TYPELESS + RAW + ViewDimension + NumElements** | **HEALTHY** |\r
+  | **UNKNOWN + StructureByteStride 16（结构化）** | **HEALTHY** |\r
+  | **R32_FLOAT（类型化）** | **HEALTHY** |\r
+- **所以「驱动更新无效」「RDP / ToDesk 被排除」「嫌疑收敛到混合显卡」这三条复测结论的观测是真的，推论全错**：探针在任何机器上都会失败，换驱动、关远程软件自然都没有影响。这台机器的 D3D12 栈**能正常创建 UAV 视图**。\r
+- **顺带修掉的测试缺陷**：`test_d3d12_uav_matrix` 每格新建设备，但存活格把回读用的纹理泄漏了（`if (!alive) rhi_texture_destroy(...)` 条件写反）。D3D12 对同一适配器在仍有引用时**返回同一个设备**，于是第一个存活格之后再死一格，后面所有格都会继承那个已被移除的设备，表现成「device create failed」的级联。修好后矩阵的真实结果（WARP 与 RTX 4060 一致）：合法形态 `R32_TYPELESS+RAW`、`UNKNOWN+stride16`、两个对照格存活；非法形态（无 RAW 的 R32_TYPELESS、stride 0 的结构化、全零描述符、`pDesc=NULL`、在 raw 视图上挂 counter）以 `INVALID_CALL` 被移除。测试现在**断言**合法格必须存活，不再「只打印不断言」。\r
+- **对路线的影响**：R611 表里的第 3 道门（「UAV 视图杀死设备，代码之外」）**不存在**。D3D12 compute 路线（storage buffer、indirect draw、粒子、IBL 预计算）在本机**可以开发和验证**，前提是 binder 写出完整描述符（`ViewDimension`、`NumElements`，raw 视图带 `D3D12_BUFFER_UAV_FLAG_RAW`，counter 只用于结构化视图）。`rhi_cmd_bind_storage_buffer` 等四个 compute 绑定目前**仍是空桩**，这一点不变。\r
+\r
 ## 本轮更新：R636 — **D3D12 第 1 帧设备丢失已定位并修复**（根因：深度纹理的 SRV 格式非法）、`motion_blur` push 偏移 bug、`instanced`/`skinned` 从未真正绘制、STORAGE 缓冲创建失败；R630/R631 的「默认关闭」缓解**已撤销**
 
 > 这一节更正此前多轮记录在案的结论：R628–R631 判定「TAA 与 motion blur 各自在第 1 帧丢设备、原因未定位、DRED 静默、与本机 UAV 同族」，并以「默认关闭这两个后处理」作为缓解。**根因现在已定位，那条缓解已撤销，两个后处理重新默认开启。**
@@ -178,7 +198,7 @@
 - **R610：`main.c` 的热重载管线改走 path API**。它和 R608 那三个调用点同形状：`hotreload_pipeline_init` 在 `main.c` 里传的是 `shader_variant_path` 解析后的路径，而 D3D12 的 `shader_variant` 留在 GLSL，所以拿到的是 `shaders/blinn_phong.vert`——读它得到的是**没有 DXIL blob 的 GLSL 源**，`rhi_shader_create` 必然失败，热重载管线从来就没建成过。分支放在 `hotreload_compile_pipeline` 内部而不是调用点，这样**文件监视回调触发的重新编译也一起走上**。`blinn_phong_hlsl.{vert,frag}` 早就存在，所以这次不需要新 sidecar。
 - **新测试 `hotreload_uses_the_path_api_on_a_sidecar_backend` 两条路线都钉住**（GLSL 后端 `create` ×2 / `path` ×0；sidecar 后端 `path` ×2 / `create` ×0）。**反向验证**：把 `if (caps.shader_sidecar_paths)` 改成 `if (0 && ...)`，该用例在 `s_path_calls != 2` 处转红。这个测试必须有，因为它钉的失败模式是**静默**的——GLSL 路线对着桩会成功，只在真实硬件上才失败。
 - **未修且如实记录的文件监视器缺陷**：sidecar 后端上真正被编译的是 `<base>_hlsl.{vert,frag}`，但 watcher 仍监视调用方传的 GLSL 路径。于是**改 GLSL twin 会触发一次「读未变 sidecar」的无效重编译，改 sidecar 则什么都不触发**。修它需要把后端的 `_hlsl` 派生规则暴露出来。管线产物本身是对的（那正是本次修的），错的只是触发。
-- **⚠️ R611（本轮最重要的发现，直接决定后续所有 D3D12 compute 工作的可行性）**：`test_d3d12_uav_matrix` 至今仍然成立——**创建 UAV 视图会立即杀死 D3D12 设备**，而且 **WARP 与 RTX 4060 表现完全一致**，不是 WARP 的能力缺口：
+- **❌ R611 本条及下面三条复测结论已被 R637 推翻（见文件顶部）：死因是探针描述符缺 `ViewDimension`/`NumElements`，不是本机驱动栈。以下保留为历史记录。** 原文：`test_d3d12_uav_matrix` 至今仍然成立——**创建 UAV 视图会立即杀死 D3D12 设备**，而且 **WARP 与 RTX 4060 表现完全一致**，不是 WARP 的能力缺口：
   ```
   uav-matrix[0..6]  view=1  -> KILLED（视图建成功后，随后的 texture create 失败）
   uav-matrix[7..8]  view=0  -> ALIVE（不建视图，buffer+resource 全程正常）
@@ -191,7 +211,7 @@
   | --- | --- | --- |
   | 1 | `caps.indirect_draw_supported` 从未被 D3D12 设置 | 代码，一行可改 |
   | 2 | `compact_draws.comp` 是 GLSL-only，无 compute sidecar | 代码，需写 sidecar（CMake 的 `.comp → cs_6_0` 规则**已支持**，只是没人写） |
-  | 3 | **UAV 视图杀死设备（本机驱动栈）** | **代码之外** |
+  | 3 | ~~UAV 视图杀死设备（本机驱动栈）~~ **R637：不存在，是探针描述符 bug** | ~~代码之外~~ |
   | 4 | 层号到不了着色器（R609） | 代码，需命令签名 CONSTANT + ABI 变更 |
 
   第 3 条决定了：**即使把 1、2、4 全部做完并打开能力位，这台机器上数组路径依然会丢设备**。所以正确顺序是**先解决第 3 条**，否则做 1、2、4 只是把一个被 fail-closed 挡住的活板门换成一次崩溃。
@@ -206,7 +226,7 @@
   | `rhi_cubemap_create` / `_destroy` / `_transition_to_read`、`rhi_cmd_bind_cubemap`、`rhi_cubemap_depth_fbo_{create,destroy,bind_face,unbind}` | `point_shadow`（六个 cubemap 面）、`ibl`（环境/辐照度/预滤波 cube） | **三个桩起步**，写 sidecar 无用 |
   | `rhi_cmd_bind_deferred_gbuf_textures` | deferred GBuffer 路径 | 真实缺口 |
   | `rhi_cmd_bind_textures_multi` | 任何多纹理绑定调用方 | 真实缺口 |
-  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | **即使实现也会丢设备**（见 R611 的 UAV 结论） |
+  | `rhi_cmd_bind_storage_buffer`、`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute` | 全部 compute 子系统 | 真实缺口（R637：UAV 视图本机可用，原「即使实现也会丢设备」结论作废） |
   | `rhi_cmd_set_depth_func_less` / `_less_or_equal`、`rhi_cmd_set_depth_mask`、`rhi_cmd_set_cull_face` | 目前**无人调用** | **惰性桩**：深度状态全部来自 `RHIPipelineDesc` 的 `depth_compare_lequal` / `depth_write_disable` / `disable_culling`，生产代码一次都没调过这四个。是留给后人的陷阱，不是现存缺陷 |
   | `rhi_gpu_timer_{begin,end,destroy}`、`rhi_backend_*_get_native_info`、`rhi_backend_acceleration_structure_get_vk_handle` | 无 | 诊断/互操作/VK 专用逃生口，不阻塞渲染 |
 
@@ -427,7 +447,7 @@
   | NVIDIA GeForce RTX 4060 Laptop GPU | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
   | WARP | S_OK | 返回（void） | **DXGI_ERROR_DEVICE_REMOVED** | **0x887a0001** | **DEVICE LOST** |
 
-- **结论**：**本机上任何程序都无法创建 UAV 视图。** `rhi_cmd_bind_storage_buffer` 不是被我们的代码写坏了，而是**在这台机器上根本无法被验证**——因为没有任何代码能通过这一步。
+- **结论（❌ 已被 R637 推翻：探针缺 `ViewDimension`/`NumElements`，补全后两适配器均 HEALTHY）**：**本机上任何程序都无法创建 UAV 视图。** `rhi_cmd_bind_storage_buffer` 不是被我们的代码写坏了，而是**在这台机器上根本无法被验证**——因为没有任何代码能通过这一步。
 - **这一条同时解释了此前所有观察**，而且解释得比"我们的描述符有问题"干净得多：
   - `CreateUnorderedAccessView` **返回 void**，没有任何错误返回通道；
   - 调用"成功"之后设备就没了；
@@ -482,7 +502,7 @@
 - **由此得到的当前最强假设（未验证，如实标注）**：我们的调用很可能传了某个畸形参数，而运行时的反应不是返回 `E_INVALIDARG` 而是毁掉设备。**下一轮该做的不是再换参数，而是先把 `CreateUnorderedAccessView` 的每个字段单独归零**（`Offset`/`NumElements`/`Flags`/`Format` 逐个），找出哪一个在触发——**与"整格换格式"的粗筛不同，这是字段级定位**。另外 `rhi_d3d12_descriptor_cpu` 算出的 `base.ptr + slot*increment` 是否落在堆内也值得直接断言一次。
 - **本轮顺手修回的东西**：上一轮的 python 批量替换在裁剪 binder 桩时多切掉了 `rhi_cmd_bind_storage_buffer` 与 `rhi_cmd_bind_acceleration_structure` 两个函数（链接期才发现 `undefined symbol`）。已恢复。**提醒自己：批量文本替换在这个文件上不可靠，逐段核对 `git diff` 才是可靠的。**
 
-## 本轮更新：UAV 参数矩阵 — **这台机器的 WARP 上，任何 UAV 视图都会直接杀死设备**
+## 本轮更新：UAV 参数矩阵 — **这台机器的 WARP 上，任何 UAV 视图都会直接杀死设备**（❌ 已被 R637 推翻，见文件顶部）
 
 - **新增诊断用例** `test_d3d12_uav_matrix`（D3D12 树内已注册，`platform_runtime` 标签，2.6s）。它把 UAV 视图参数做成矩阵逐格实测，**每格单独建一个设备**——因为设备一旦死掉就无法测下一格，且 `GetDeviceRemovedReason` 在 WARP 上不可信。判定方式是"之后一个无关的纹理创建是否还成功"，**从不看 removal reason**。
 - **实测结果（10 格）**：

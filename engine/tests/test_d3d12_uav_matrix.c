@@ -3,17 +3,15 @@
 
 /* UAV parameter matrix.
  *
- * Previous rounds established that ID3D12Device_CreateUnorderedAccessView is
- * what takes the D3D12 device down, immediately, and that GetDeviceRemovedReason
- * keeps reporting DXGI_ERROR_NOT_FOUND (healthy) throughout — so the device
- * cannot be shared between trials. Every cell therefore builds its own device,
+ * ID3D12Device_CreateUnorderedAccessView returns void; an illegal descriptor
+ * is reported by removing the device with DXGI_ERROR_INVALID_CALL. A dead
+ * device cannot be shared between trials, so every cell builds its own device
  * and "killed" is decided by whether an unrelated allocation still succeeds
- * afterwards, never by the removal reason.
+ * afterwards.
  *
- * Each cell varies one axis at a time from the configuration that reproduces
- * the kill, so the cells that survive identify the offending parameter. The
- * test fails only if fewer than four cells survive, which would mean even the
- * controls died and the axis set is wrong.
+ * Each cell varies one field of the view descriptor. Legal shapes must
+ * survive; the deliberately illegal ones (zeroed desc, pDesc=NULL) show what
+ * a bad descriptor looks like.
  */
 
 /* Internal to the D3D12 backend; lives in rhi_d3d12.c. format_kind:
@@ -115,7 +113,10 @@ static int uav_cell_survives(const UavCell *cell, char *detail, usize cap) {
                      (int)px[0], (int)seed[0]);
         else
             snprintf(detail, cap, "ok");
-        if (!alive) rhi_texture_destroy(dev, probe);
+        /* D3D12 hands back the existing device for an adapter while any
+         * reference to it lives, so a leaked texture here would make the next
+         * cell inherit this cell's device, removed or not. */
+        rhi_texture_destroy(dev, probe);
     }
     rhi_device_destroy(dev);
     return alive;
@@ -123,6 +124,7 @@ static int uav_cell_survives(const UavCell *cell, char *detail, usize cap) {
 
 TEST(uav_view_parameter_matrix) {
     UavCell cells[9];
+    int alive_cells[9];
     int i;
     int survivors = 0;
     memset(cells, 0, sizeof(cells));
@@ -147,23 +149,26 @@ TEST(uav_view_parameter_matrix) {
                i, k_uav_format_name[cells[i].format], (unsigned)cells[i].size,
                cells[i].uav_flag, cells[i].create_view,
                ok ? "ALIVE" : "KILLED", detail);
+        alive_cells[i] = ok;
         if (ok) ++survivors;
         fflush(stdout);
     }
     printf("  uav-matrix: %d/%d cells survived\n", survivors,
            (int)(sizeof(cells) / sizeof(cells[0])));
-    /* The invariant that must hold on ANY runtime is the control pair: with no
-     * UAV view built, the device stays healthy. That is what proves the matrix
-     * is measuring the view and not the device coming up broken.
+    /* Legal views must survive on any conforming runtime: raw (1), structured
+     * with a stride (3), and the no-view controls (7, 8). The others are
+     * illegal descriptors and are expected to die with
+     * DXGI_ERROR_INVALID_CALL: R32_TYPELESS without RAW (0), structured with
+     * stride 0 (2), zeroed (4), pDesc=NULL, which a buffer cannot satisfy (5),
+     * and a counter on a raw view, since counters need a structured view (6).
      *
-     * The view cells are reported, not asserted. Every field-level shape dies
-     * here — including pDesc=NULL, where D3D12 infers the descriptor itself,
-     * which clears our descriptor of blame — and it dies identically on WARP and
-     * on the RTX 4060. So the honest encoding is a printed table, not a
-     * pass/fail whose meaning flips with the runtime. Asserting "views kill"
-     * would misreport on any GPU that supports them; asserting "views survive"
-     * would be false here. */
-    ASSERT_TRUE(survivors >= 2);
+     * An earlier version of the probe left ViewDimension and NumElements
+     * zeroed, so every view cell died on both WARP and the RTX 4060. That was
+     * misread for several rounds as a platform fault. */
+    ASSERT_TRUE(alive_cells[1]);
+    ASSERT_TRUE(alive_cells[3]);
+    ASSERT_TRUE(alive_cells[7]);
+    ASSERT_TRUE(alive_cells[8]);
 }
 
 int main(void) {

@@ -1107,6 +1107,11 @@ not a code problem at all.
 
 ### R611 -- creating a UAV view kills the device on this host, on both adapters
 
+> Superseded by R637 (`docs/Implementation_Status.md`): the probes never set
+> `ViewDimension` or `NumElements`, so every view was an illegal descriptor and
+> the runtime removed the device with `DXGI_ERROR_INVALID_CALL` (0x887A0001).
+> With a complete descriptor, UAV views work on both adapters here.
+
 `test_d3d12_uav_matrix` was written to settle exactly this and still settles
 it the same way:
 

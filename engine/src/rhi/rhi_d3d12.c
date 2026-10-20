@@ -4592,11 +4592,9 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
  * is why the divisor is fixed rather than taken from the shader: the engine
  * only ever uploads vec4 instance/joint rows.
  *
- * Read-only SRV, so no UAV descriptor is created -- unlike every compute
- * path, this one is not subject to the device loss that
- * ID3D12Device_CreateUnorderedAccessView causes on this host (see
- * test_d3d12_uav_matrix). Buffers here are UPLOAD-heap and CPU-mapped, so
- * the transition is from COMMON to a combined read state.
+ * Read-only SRV, so no UAV descriptor is created. Buffers here are
+ * UPLOAD-heap and CPU-mapped, so the transition is from COMMON to a combined
+ * read state.
  */
 /* R614: texel buffers (units 5 and 6).
  *
@@ -4620,11 +4618,9 @@ void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
  * is why the divisor is fixed rather than taken from the shader: the engine
  * only ever uploads vec4 instance/joint rows.
  *
- * Read-only SRV, so no UAV descriptor is created -- unlike every compute
- * path, this one is not subject to the device loss that
- * ID3D12Device_CreateUnorderedAccessView causes on this host (see
- * test_d3d12_uav_matrix). Buffers here are UPLOAD-heap and CPU-mapped, so
- * the transition is from COMMON to a combined read state.
+ * Read-only SRV, so no UAV descriptor is created. Buffers here are
+ * UPLOAD-heap and CPU-mapped, so the transition is from COMMON to a combined
+ * read state.
  */
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0,
                                 RHIBuffer buf1) {
@@ -5506,7 +5502,7 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
  * which descriptor field shape this runtime accepts.
  *
  * variant:
- *   0  Format=R32_TYPELESS, Buffer.Flags left 0        (the current binder)
+ *   0  Format=R32_TYPELESS, Buffer.Flags left 0        (illegal: no RAW)
  *   1  Format=R32_TYPELESS + Buffer.Flags = RAW
  *   2  Format=DXGI_FORMAT_UNKNOWN, Buffer.Flags left 0  (structured)
  *   3  Format=DXGI_FORMAT_UNKNOWN + StructureByteStride 16
@@ -5547,6 +5543,15 @@ int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int variant) {
     }
 
     ZeroMemory(&desc, sizeof(desc));
+    /* Variants 0..3 and 6 are complete buffer views. ViewDimension and
+     * NumElements are mandatory: leaving either zeroed is an illegal
+     * descriptor, which D3D12 reports by removing the device with
+     * DXGI_ERROR_INVALID_CALL. Variants 4 and 5 keep that failure on purpose
+     * as negative cells. */
+    if (variant <= 3 || variant == 6) {
+        desc.ViewDimension = D3D12_UAV_DIMENSION_BUFFER;
+        desc.Buffer.NumElements = (UINT)(bd->size / 4u);
+    }
     switch (variant) {
     case 0:
     case 6:
@@ -5565,6 +5570,7 @@ int rhi_d3d12_probe_create_uav(RHIDevice *dev, RHIBuffer buf, int variant) {
     case 3:
         desc.Format = DXGI_FORMAT_UNKNOWN;
         desc.Buffer.StructureByteStride = 16u;
+        desc.Buffer.NumElements = (UINT)(bd->size / 16u);
         break;
     default:
         break;
