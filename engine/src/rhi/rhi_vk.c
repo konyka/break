@@ -1850,6 +1850,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.hiz_supported = true;
     dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.indirect_first_instance_supported = true;
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
     /* R606: no sidecars on VK — rhi_shader_create_path returns the *_vk GLSL
      * file. blinn_phong_vk.vert declares ForwardTemporal at binding 0. */

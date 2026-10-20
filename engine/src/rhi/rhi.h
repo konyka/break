@@ -141,6 +141,12 @@ typedef struct {
     bool       hiz_supported;            /* Hi-Z occlusion 金字塔路径 */
     bool       compute_supported;        /* rhi_cmd_dispatch 路径 */
     bool       indirect_draw_supported;  /* rhi_cmd_draw_*_indirect 族 */
+    /* R637：间接绘制记录的 first_instance 能否到达着色器（GLSL 的
+     * gl_BaseInstanceARB）。材质数组路径把数组层号放在这里。D3D12 为 false：
+     * SV_InstanceID 不含 StartInstanceLocation，实测 RTX 4060 与 WARP 都拿到
+     * 层 0（test_d3d12_warp_runtime 的
+     * indirect_start_instance_does_not_reach_sv_instance_id）。 */
+    bool       indirect_first_instance_supported;
     u32        shader_variant;           /* RHIShaderVariant */
     /* R606：rhi_shader_create_path 不读源码，而是解析该后端自己的着色器产物。
      * D3D12 的产物是手写 HLSL 边车（rhi_d3d12_shader_sidecar_name 派生

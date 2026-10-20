@@ -1,6 +1,22 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R638 — **D3D12 间接绘制上线**（`caps.indirect_draw_supported = true`）\r
+\r
+- **补齐的四块**（都在 `engine/src/rhi/rhi_d3d12.c`）：\r
+  - **`rhi_cmd_update_buffer` / `rhi_cmd_fill_buffer` 真正录入命令列表**。此前两者都走主机写（`rhi_buffer_update_region`），同一帧内的多次写在列表执行前就全部落地，GPU 只看得到最后一次——违反 C-BUF-3（录制写须与前后命令保序）。阴影逐 cascade 重写可见性再 compact 的模式在 D3D12 上会全部用最后一个 cascade 的结果。现在：DEFAULT 堆缓冲用逐次 UPLOAD staging + 帧内 `CopyBufferRegion`；UPLOAD 堆缓冲（永久 `GENERIC_READ`，不能做拷贝目标）改为「帧内快照别名」——写入生成整缓冲快照，本帧之后的绑定读快照，同时主机写保证帧后读到最后一次。staging 在该帧 fence 到达后于 `rhi_frame_begin` 释放。\r
+  - **只读 storage → buffer SRV**：GLSL 的 `readonly buffer` 在 sidecar 里写成 `tN` 上的 `ByteAddressBuffer` / `StructuredBuffer<T>`，`rhi_cmd_bind_storage_buffer` 在管线没有 `uN` 时自动走 SRV。SRV 可以建在 UPLOAD 堆上，这正是主机每帧更新的可见性标志所在之处（UAV 不行）。\r
+  - **`ExecuteIndirect` 的 count buffer 转到 `INDIRECT_ARGUMENT`**（此前只转了 argument buffer）；UPLOAD 堆的 argument/count buffer 不做转换（`GENERIC_READ` 已含该状态）。\r
+  - **`compact_draws_hlsl.comp`**：GLSL `compact_draws.comp` 的 sidecar，寄存器与 GLSL binding 一一对应（只读 → `tN`，可写 → `uN`）。`indirect_draw.c` 在 `caps.shader_sidecar_paths` 时改用 `rhi_shader_create_compute_path`。\r
+- **新能力位 `indirect_first_instance_supported`**（`rhi.h`）：间接绘制记录的 `first_instance` 能否到达着色器。GL / VK 为 true；**D3D12 为 false**——`SV_InstanceID` 不含 `StartInstanceLocation`，RTX 4060 与 WARP 实测都拿到层 0。材质数组路径把纹理层号放在 `first_instance`，所以 `main.c` 在该位为 false 时**保留 R437 的逐材质组路径**（每组一次材质绑定 + 一次 execute），并打印 `MatArray: disabled (...)`。不这样做，每个网格都会静默地用层 0 着色。\r
+- **`compute_supported` 仍为 false（有意）**：它门控 GPU 剔除与粒子，而 `cull.comp` / `unified_cull.comp` / `particle_*.comp` 还没有 HLSL sidecar，打开只会把它们的 fail-closed 点从「无 compute」挪到「找不到着色器」。\r
+- **验证**：\r
+  - 新测试 `indirect_draw_system_compacts_and_draws_on_the_gpu`（`test_d3d12_warp_runtime`）驱动真实的 `IndirectDrawSystem`：4 个四分之一屏四边形分两组，可见性剔掉 1、2 号，GPU compact 后逐组 `ExecuteIndirect`，断言恰好对角的 0、3 号象限变绿；**同一帧绘制之后再用全可见标志 compact 一次但不绘制**，回读计数器为最后一次的结果（每组 2、总计 4）。WARP 与 RTX 4060 均通过。\r
+  - **反向验证**：把 `rhi_cmd_update_buffer` 改回主机写，该用例转红（全可见标志覆盖了被绘制的那次 compact）。\r
+  - `indirect_start_instance_does_not_reach_sv_instance_id` 现在还断言 D3D12 的两个能力位（indirect 为 true、first_instance 为 false）。\r
+  - demo 在 RTX 4060 上 `BREAK_FRAMES=120` 正常退出，无设备移除；日志 `IndirectDraw: initialized (max 11 draws, 11 groups)`，`Draws` 从 64 降到 24（逐网格 draw 合并为逐组 indirect）。\r
+- **发现但未在本轮处理：D3D12 demo 的截图是全黑**（`BREAK_SCREENSHOT`，1280×720 每像素 0）。**回退本轮改动到 HEAD 复测同样全黑**，VK 同场景均值约 (221, 226, 225)，所以不是本轮引入；最可能与 `tonemap` 等后处理没有 D3D12 sidecar（日志 `Tonemap: shader compile failed`）有关，尚未确认。\r
+\r
 ## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
 \r
 > R611 起记录在案、并在 2026-10-20 两次复测（升级驱动、排除 RDP / ToDesk）中被「加固」的结论——「本机任何程序都无法创建 UAV 视图，归因于混合显卡/系统栈」——**是错的**。下文所有引用这条结论的段落（R611、R614 的 compute 行、「判定实验」一节、UAV 参数矩阵各节）均以本节为准。\r
@@ -25,7 +41,7 @@
   - 根签名构建器新增 `storage_root_params[]`，与 `image_root_params` / `uniform_root_params` 同样按 push 参数偏移 +1；绑定走 `SetComputeRootDescriptorTable`（图形管线走 Graphics 版本），资源转到 `UNORDERED_ACCESS`，描述符槽按帧回收（复用 `frame_srv_slots`）。\r
   - **UPLOAD 堆的 STORAGE 缓冲（创建时没有 `initial_data`）没有 UAV 权限**：这是 `gpucull` / `occlusion_cull` 的 CPU 回读 staging 约定。绑定这种缓冲会被拒绝并告警，而不是让设备被移除。\r
   - 新测试 `storage_buffers_receive_raw_and_structured_compute_writes`（在 `test_d3d12_warp_runtime` 中，配新 sidecar `shaders/probe_storage_hlsl.comp`）：一次 dispatch 同时写 raw UAV（u0，64 个字）和结构化 UAV（u1，16 行 `uint4`），种子值经 root constant 传入，回读后逐字校验；同时验证绑定 UPLOAD 堆缓冲会被拒绝且不影响设备。**WARP 与 RTX 4060 均通过**。全量 ctest：D3D12 185/185；VK 180/181、GL 177/178，唯一失败均为 `test_vulkan` 的既有 golden 漂移（MAE 28.75 / 13.54，与基线逐字相同，回退本改动复测同样失败）。**反向验证**：把绑定器的 `ViewDimension` 改回 `UNKNOWN`，该用例在 `rhi_device_idle_ex` 处转红（设备被移除）。\r
-  - **仍是空桩**：`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute`（需要纹理 UAV / cube 资源，cube 本身在 D3D12 上也还没实现）。`compute_supported` / `indirect_draw_supported` 能力位**仍未打开**：引擎的 compute 着色器（`cull.comp`、`compact_draws.comp`、粒子等）都还没有 `_hlsl.comp` sidecar，提前打开只会让子系统走到「找不到着色器」。\r
+  - **仍是空桩**：`rhi_cmd_bind_image_texture`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_texture_compute`（需要纹理 UAV / cube 资源，cube 本身在 D3D12 上也还没实现）。`compute_supported` 能力位**仍未打开**：`cull.comp`、粒子等 compute 着色器还没有 `_hlsl.comp` sidecar。（`indirect_draw_supported` 已在 R638 打开，见上。）\r
 \r
 ## 本轮更新：R636 — **D3D12 第 1 帧设备丢失已定位并修复**（根因：深度纹理的 SRV 格式非法）、`motion_blur` push 偏移 bug、`instanced`/`skinned` 从未真正绘制、STORAGE 缓冲创建失败；R630/R631 的「默认关闭」缓解**已撤销**
 
@@ -215,7 +231,7 @@
 - **因此 D3D12 的数组路径被四道门挡住，其中一道在代码之外**：
   | # | 门 | 性质 |
   | --- | --- | --- |
-  | 1 | `caps.indirect_draw_supported` 从未被 D3D12 设置 | 代码，一行可改 |
+  | 1 | ~~`caps.indirect_draw_supported` 从未被 D3D12 设置~~ **R638 已打开** | 代码 |
   | 2 | `compact_draws.comp` 是 GLSL-only，无 compute sidecar | 代码，需写 sidecar（CMake 的 `.comp → cs_6_0` 规则**已支持**，只是没人写） |
   | 3 | ~~UAV 视图杀死设备（本机驱动栈）~~ **R637：不存在，是探针描述符 bug** | ~~代码之外~~ |
   | 4 | 层号到不了着色器（R609） | 代码，需命令签名 CONSTANT + ABI 变更 |

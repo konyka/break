@@ -390,6 +390,7 @@ same public validation results without inheriting API-specific state.
 | `dynamic_rendering_supported` / `synchronization2_supported` | VK_KHR 扩展探测（迁移期追加，只探测） |
 | `push_constants_supported` / `max_push_constant_size` | **计划 E 新增**：push 常量支持位与字节上限（VK=true/设备 limit≥128，GL=false/0） |
 | `hiz_supported` / `compute_supported` / `indirect_draw_supported` | **计划 E 新增**：Hi-Z 金字塔 / `rhi_cmd_dispatch` / indirect draw 族 |
+| `indirect_first_instance_supported` | **R638 新增**：间接绘制记录的 `first_instance` 能否到达着色器（GL/VK 为 true，D3D12 为 false）；为 false 时材质数组路径退回逐组绘制 |
 | `shader_variant` | **计划 E 新增**：`RHI_SHADER_VARIANT_GLSL`（desktop 源）/ `RHI_SHADER_VARIANT_GLSL_VK`（`*_vk` 后缀 push-constant 块源）；`shader_variant_path()` 负责换源 |
 
 新增 6 字段在每个后端（GL/VK/headless）有真实消费，并由 `test_rhi_capabilities` 契约测试钉死。

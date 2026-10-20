@@ -768,6 +768,7 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.hiz_supported = true;
     dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.indirect_first_instance_supported = true;
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL;
     /* R606: rhi_shader_create_path returns the GLSL file itself on GL — there
      * are no sidecars. blinn_phong.frag declares ForwardTemporal at

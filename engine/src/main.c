@@ -4098,7 +4098,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  * R437 fallback path never reads it. */
                 mega_buf.array_system_ready = false;
                 mega_buf.mats.ready = false;
-                if (mat_indirect_enabled && mega_buf.mat_group_count > 0 &&
+                /* R637: the array path carries each draw's texture layer in
+                 * first_instance. A backend that cannot deliver it to the
+                 * shader would shade every mesh with layer 0, silently, so
+                 * keep the R437 per-group path there. */
+                if (mat_indirect_enabled && !render.caps.indirect_first_instance_supported) {
+                    LOG_WARN("MatArray: disabled (backend drops the indirect first_instance the layer rides in)");
+                } else if (mat_indirect_enabled && mega_buf.mat_group_count > 0 &&
                     rhi_handle_valid(render.arr_pipeline)) {
                     if (hotreload_tex_ready) {
                         /* Texture hot reload replaces texture handles at

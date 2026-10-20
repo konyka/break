@@ -1,0 +1,39 @@
+// compact_draws_hlsl.comp - D3D12 sidecar of shaders/compact_draws.comp.
+// GPU stream compaction for the indirect draw path: every visible command is
+// scattered into its material group's capacity interval [base, base+count),
+// counted per group (the group's indirect count) and in total.
+//
+// Register mapping follows the GLSL bindings one to one: a `readonly buffer`
+// at binding N is an SRV at tN, a writable one a UAV at uN, so
+// rhi_cmd_bind_storage_buffer(cmd, buf, N) lands on the right view without
+// the caller knowing which. The two inputs written by the host every pass
+// (visibility, binding 1) are UPLOAD-heap buffers, which can only be SRVs.
+// b0 is the reserved 32BIT_CONSTANTS root parameter.
+struct PushConsts { uint total_draws; };
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform total_draws 0
+ByteAddressBuffer   g_all_draws     : register(t0);   // 5 uints per cmd
+ByteAddressBuffer   g_visibility    : register(t1);   // 1 = visible
+RWByteAddressBuffer g_visible_draws : register(u2);
+RWByteAddressBuffer g_draw_count    : register(u3);
+ByteAddressBuffer   g_mat_ids       : register(t4);
+RWByteAddressBuffer g_group_counts  : register(u5);
+ByteAddressBuffer   g_group_bases   : register(t6);
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= g_push.total_draws) return;
+    if (g_visibility.Load(idx * 4u) == 0u) return;
+    uint g = g_mat_ids.Load(idx * 4u);
+    uint cursor;
+    g_group_counts.InterlockedAdd(g * 4u, 1u, cursor);
+    uint slot = g_group_bases.Load(idx * 4u) + cursor;
+    uint total;
+    g_draw_count.InterlockedAdd(0u, 1u, total);
+    // DrawIndexedIndirectCommand: index_count, instance_count, first_index,
+    // vertex_offset, first_instance.
+    uint src = idx * 20u;
+    uint dst = slot * 20u;
+    [unroll] for (uint i = 0u; i < 5u; ++i)
+        g_visible_draws.Store(dst + i * 4u, g_all_draws.Load(src + i * 4u));
+}

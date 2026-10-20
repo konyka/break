@@ -155,6 +155,15 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
         context->fence_event = NULL;
     }
     rhi_d3d12_release((IUnknown **)&context->fence);
+    for (i = 0u; i < 2u; ++i) {
+        UINT k;
+        for (k = 0u; k < context->frame_staging_count[i]; ++k)
+            rhi_d3d12_release((IUnknown **)&context->frame_staging[i][k]);
+        free(context->frame_staging[i]);
+        context->frame_staging[i] = NULL;
+        context->frame_staging_count[i] = 0u;
+        context->frame_staging_cap[i] = 0u;
+    }
     rhi_d3d12_descriptor_alloc_destroy(&context->rtv_alloc);
     rhi_d3d12_descriptor_alloc_destroy(&context->dsv_alloc);
     rhi_d3d12_descriptor_alloc_destroy(&context->cbv_srv_uav_alloc);
@@ -1160,6 +1169,19 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
      * rhi_d3d12_root_sig_add_bindings and the blinn_phong_hlsl.vert header. */
     dev->capabilities.shader_sidecar_paths = true;
     dev->capabilities.temporal_ubo_binding = 1u;
+    /* R637: indirect draw is complete on this backend -- ExecuteIndirect with
+     * a count buffer, the storage binder (UAV + read-only SRV), recorded
+     * buffer fills/updates, and the compact_draws_hlsl.comp sidecar.
+     * first_instance stays false: SV_InstanceID drops StartInstanceLocation
+     * (see indirect_first_instance_supported), so the material-array path
+     * falls back to per-group draws.
+     *
+     * compute_supported stays false on purpose. It gates GPU culling and
+     * particles, whose compute shaders (cull.comp, unified_cull.comp,
+     * particle_*.comp) have no HLSL sidecar yet; claiming compute would only
+     * move their fail-closed point from "no compute" to "shader missing". */
+    dev->capabilities.indirect_draw_supported = true;
+    dev->capabilities.indirect_first_instance_supported = false;
     g_current_device = dev;
     return dev;
 }
@@ -1237,6 +1259,13 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
     }
     rhi_device_control_release(dev);
 }
+static void rhi_d3d12_release_frame_staging(RHI_D3D12Context *ctx, UINT slot) {
+    UINT k;
+    for (k = 0u; k < ctx->frame_staging_count[slot]; ++k)
+        rhi_d3d12_release((IUnknown **)&ctx->frame_staging[slot][k]);
+    ctx->frame_staging_count[slot] = 0u;
+}
+
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Swapchain *sc;
@@ -1273,6 +1302,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         rhi_frame_owner_release(dev);
         return NULL;
     }
+    rhi_d3d12_release_frame_staging(ctx, slot);
     sc->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)sc->swapchain);
     hr = ID3D12CommandAllocator_Reset(ctx->allocators[slot]);
@@ -2130,6 +2160,7 @@ typedef struct RHI_D3D12Pipeline {
     UINT uniform_root_params[16];
     UINT storage_root_params[16];
     UINT storage_strides[16];
+    UINT srv_buffer_strides[16];
     RHIPipelineDesc desc;
 } RHI_D3D12Pipeline;
 
@@ -2485,12 +2516,14 @@ static usize rhi_d3d12_reflect_hlsl(const char *src, usize len,
          * the binder needs the element type. It rides in `format`: "raw" for
          * RWByteAddressBuffer, the template argument for RWStructuredBuffer,
          * empty for anything else (RWTexture*). */
-        if (kind == SHADER_IO_RESOURCE_STORAGE) {
-            const char *sb = rhi_d3d12_hlsl_find(p, line_end, "RWStructuredBuffer<");
-            if (rhi_d3d12_hlsl_find(p, line_end, "RWByteAddressBuffer") != NULL) {
+        if (kind == SHADER_IO_RESOURCE_STORAGE ||
+            (kind == SHADER_IO_RESOURCE_IMAGE && klass == 't' &&
+             rhi_d3d12_hlsl_find(p, line_end, "Texture") == NULL)) {
+            const char *sb = rhi_d3d12_hlsl_find(p, line_end, "StructuredBuffer<");
+            if (rhi_d3d12_hlsl_find(p, line_end, "ByteAddressBuffer") != NULL) {
                 memcpy(b->format, "raw", 4u);
             } else if (sb != NULL) {
-                const char *t = sb + 19u;
+                const char *t = sb + 17u;
                 usize n = 0u;
                 while (t < line_end && (*t == ' ' || *t == '\t')) ++t;
                 while (t + n < line_end && rhi_d3d12_hlsl_ident_char(t[n]) &&
@@ -2838,10 +2871,14 @@ static UINT rhi_d3d12_storage_stride(const char *format) {
 static void rhi_d3d12_root_sig_note_storage(RHI_D3D12RootSigBuilder *b,
                                             const ShaderIOBinding *bind,
                                             UINT param) {
-    if (bind->kind != SHADER_IO_RESOURCE_STORAGE || bind->binding >= 16u)
-        return;
-    b->storage_root_params[bind->binding] = param;
-    b->storage_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+    if (bind->binding >= 16u) return;
+    if (bind->kind == SHADER_IO_RESOURCE_STORAGE) {
+        b->storage_root_params[bind->binding] = param;
+        b->storage_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+    } else if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->format[0] != '\0') {
+        /* A read-only buffer at register(tN): GLSL's `readonly buffer`. */
+        b->srv_buffer_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
+    }
 }
 
 /* ---- root signature generation (Task 5) ---- */
@@ -3185,6 +3222,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         builder.uniform_root_params[i] = UINT_MAX;
         builder.storage_root_params[i] = UINT_MAX;
         builder.storage_strides[i] = UINT_MAX;
+        builder.srv_buffer_strides[i] = UINT_MAX;
     }
     /* Push-constant contract: 128B compute / 256B graphics (VK parity); the
      * terrain/water/combined_* layout booleans select which HLSL root
@@ -3301,6 +3339,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             pd->uniform_root_params[i]++;
         pd->storage_root_params[i] = builder.storage_root_params[i];
         pd->storage_strides[i] = builder.storage_strides[i];
+        pd->srv_buffer_strides[i] = builder.srv_buffer_strides[i];
         if (pd->storage_root_params[i] != UINT_MAX &&
             pd->push_param_index != UINT_MAX)
             pd->storage_root_params[i]++;
@@ -4078,10 +4117,19 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
      * shader take it correctly from InstanceCount. See
      * blinn_phong_arr_sidecar_forwards_the_layer_into_pixels in
      * tests/test_d3d12_warp_runtime.c. */
-    if (args->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
+    if (args->device_local &&
+        args->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
         rhi_d3d12_transition(list, args->resource, args->state,
                              D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
         args->state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+    }
+    /* The count buffer is read by ExecuteIndirect the same way and has the
+     * same requirement. compact_draws writes it as a UAV right before this. */
+    if (counter != NULL && counter->device_local &&
+        counter->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
+        rhi_d3d12_transition(list, counter->resource, counter->state,
+                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
+        counter->state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
     }
     ID3D12GraphicsCommandList_ExecuteIndirect(list,
         indexed ? ctx->draw_indexed_signature : ctx->draw_signature,
@@ -4765,8 +4813,11 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
     if (bd == NULL || offset >= (usize)bd->size) return;
     if (size > (usize)bd->size - offset) size = (usize)bd->size - offset;
     if (!bd->device_local) {
-        /* UPLOAD heap: host write through a transient Map. */
+        /* UPLOAD heap: host write through a transient Map. A host write is
+         * immediate, so it supersedes any recorded-write snapshot this frame
+         * made: later binds read the buffer itself again. */
         void *mapped = NULL;
+        bd->alias_resource = NULL;
         if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) return;
         memcpy((u8 *)mapped + offset, data, size);
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
@@ -4836,22 +4887,123 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
         return ok;
     }
 }
+/* C-BUF-3: a recorded buffer write is ordered against the draws/dispatches
+ * recorded around it. Both entry points used to write through the host
+ * (rhi_buffer_update_region), so every write in a frame landed before the
+ * frame's list ran and the GPU saw only the last one -- harmless while
+ * nothing read storage buffers on D3D12, wrong as soon as compact_draws runs
+ * once per shadow cascade with fresh visibility.
+ *
+ * DEFAULT heap: the bytes go into a per-write UPLOAD staging buffer and are
+ * copied by the frame's own command list, between barriers, so they take
+ * effect exactly at their place in the list.
+ *
+ * UPLOAD heap: such a resource is permanently GENERIC_READ and can never be
+ * a copy destination, so the in-list copy is impossible. The staging buffer
+ * itself becomes the buffer's view source for the rest of the frame
+ * (alias_resource): every later bind this frame reads that snapshot, earlier
+ * binds keep the previous one. The bytes are also written through the host
+ * so the buffer's own contents end up as the last write, which is what a
+ * host read after the frame expects. */
+static ID3D12Resource *rhi_d3d12_frame_staging(RHI_D3D12Context *ctx,
+                                               const void *data, u32 fill,
+                                               usize size) {
+    UINT slot = ctx->frame_parity & 1u;
+    ID3D12Resource *staging;
+    void *mapped = NULL;
+    if (ctx->frame_staging_count[slot] == ctx->frame_staging_cap[slot]) {
+        UINT cap = ctx->frame_staging_cap[slot] ? ctx->frame_staging_cap[slot] * 2u : 16u;
+        ID3D12Resource **grown = (ID3D12Resource **)realloc(
+            ctx->frame_staging[slot], (size_t)cap * sizeof(*grown));
+        if (grown == NULL) return NULL;
+        ctx->frame_staging[slot] = grown;
+        ctx->frame_staging_cap[slot] = cap;
+    }
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, (UINT64)size);
+    if (staging == NULL) return NULL;
+    if (FAILED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
+        ID3D12Resource_Release(staging);
+        return NULL;
+    }
+    if (data != NULL) {
+        memcpy(mapped, data, size);
+    } else {
+        usize i;
+        for (i = 0u; i < size; i += 4u) memcpy((u8 *)mapped + i, &fill, 4u);
+    }
+    ID3D12Resource_Unmap(staging, 0u, NULL);
+    ctx->frame_staging[slot][ctx->frame_staging_count[slot]++] = staging;
+    return staging;
+}
+
+static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
+                                          usize offset, const void *data,
+                                          u32 fill, usize size) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Buffer *bd;
+    ID3D12Resource *staging;
+    if (ctx == NULL || g_current_device == NULL || size == 0u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL || offset >= (usize)bd->size) return;
+    if (size > (usize)bd->size - offset) size = (usize)bd->size - offset;
+    if (!bd->device_local) {
+        /* The snapshot has to be the whole buffer: a view over it replaces
+         * the buffer for every element, not just the written range. */
+        u8 *whole = (u8 *)malloc((size_t)bd->size);
+        void *mapped = NULL;
+        if (whole == NULL) return;
+        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) {
+            free(whole);
+            return;
+        }
+        if (bd->alias_resource != NULL && bd->alias_frame == ctx->debug_frame) {
+            void *prev = NULL;
+            if (SUCCEEDED(ID3D12Resource_Map(bd->alias_resource, 0u, NULL, &prev))) {
+                memcpy(whole, prev, (size_t)bd->size);
+                ID3D12Resource_Unmap(bd->alias_resource, 0u, NULL);
+            } else {
+                memcpy(whole, mapped, (size_t)bd->size);
+            }
+        } else {
+            memcpy(whole, mapped, (size_t)bd->size);
+        }
+        if (data != NULL) {
+            memcpy(whole + offset, data, size);
+        } else {
+            usize i;
+            for (i = 0u; i < size; i += 4u) memcpy(whole + offset + i, &fill, 4u);
+        }
+        memcpy(mapped, whole, (size_t)bd->size);
+        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        staging = rhi_d3d12_frame_staging(ctx, whole, 0u, (usize)bd->size);
+        free(whole);
+        if (staging == NULL) return;
+        bd->alias_resource = staging;
+        bd->alias_frame = ctx->debug_frame;
+        return;
+    }
+    staging = rhi_d3d12_frame_staging(ctx, data, fill, size);
+    if (staging == NULL) return;
+    rhi_d3d12_transition(list, bd->resource, bd->state,
+                         D3D12_RESOURCE_STATE_COPY_DEST);
+    ID3D12GraphicsCommandList_CopyBufferRegion(list, bd->resource,
+        (UINT64)offset, staging, 0u, (UINT64)size);
+    rhi_d3d12_transition(list, bd->resource, D3D12_RESOURCE_STATE_COPY_DEST,
+                         bd->state);
+}
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                          usize size, u32 value) {
-    u8 *bytes;
-    usize i;
-    if (cmd == NULL || size == 0u || (size & 3u) != 0u) return;
-    bytes = (u8 *)malloc(size);
-    if (bytes == NULL) return;
-    for (i = 0u; i < size; i += 4u)
-        memcpy(bytes + i, &value, sizeof(value));
-    rhi_buffer_update_region(g_current_device, buf, offset, bytes, size);
-    free(bytes);
+    if (cmd == NULL || size == 0u || ((offset | size) & 3u) != 0u) return;
+    rhi_d3d12_record_buffer_write(cmd, buf, offset, NULL, value, size);
 }
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
                            const void *data, usize size) {
     if (cmd == NULL || data == NULL || size == 0u) return;
-    rhi_buffer_update_region(g_current_device, buf, offset, data, size);
+    rhi_d3d12_record_buffer_write(cmd, buf, offset, data, 0u, size);
 }
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     RHI_D3D12Buffer *bd;
@@ -5641,7 +5793,65 @@ done:
                                    ctx->next_fence);
     return rc;
 }
-/* Storage buffer -> UAV at register(uN) of the bound pipeline.
+/* Read-only storage buffer -> buffer SRV at register(tN). Unlike a UAV this
+ * works on an UPLOAD-heap buffer (GENERIC_READ already includes the shader
+ * resource states), which is where host-updated inputs such as the per-frame
+ * visibility flags live. A recorded write earlier in this frame
+ * (alias_resource) is what the view reads. */
+static void rhi_d3d12_bind_buffer_srv(RHI_D3D12Context *ctx,
+                                      ID3D12GraphicsCommandList *list,
+                                      RHI_D3D12Pipeline *pd,
+                                      RHI_D3D12Buffer *bd, u32 binding) {
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    ID3D12Resource *source = bd->resource;
+    UINT stride = pd->srv_buffer_strides[binding];
+    UINT slot;
+    if (stride != 0u ? bd->size < stride : bd->size < 4u) return;
+    if (!bd->device_local && bd->alias_resource != NULL &&
+        bd->alias_frame == ctx->debug_frame)
+        source = bd->alias_resource;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) {
+        LOG_WARN("D3D12: SRV descriptor heap exhausted");
+        return;
+    }
+    ZeroMemory(&srv, sizeof(srv));
+    srv.ViewDimension = D3D12_SRV_DIMENSION_BUFFER;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    if (stride == 0u) {
+        srv.Format = DXGI_FORMAT_R32_TYPELESS;
+        srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_RAW;
+        srv.Buffer.NumElements = (UINT)(bd->size / 4u);
+    } else {
+        srv.Format = DXGI_FORMAT_UNKNOWN;
+        srv.Buffer.StructureByteStride = stride;
+        srv.Buffer.NumElements = (UINT)(bd->size / stride);
+    }
+    ID3D12Device_CreateShaderResourceView(ctx->device, source, &srv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    if (bd->device_local) {
+        D3D12_RESOURCE_STATES read_state =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        if (bd->state != read_state) {
+            rhi_d3d12_transition(list, bd->resource, bd->state, read_state);
+            bd->state = read_state;
+        }
+    }
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+            pd->image_root_params[binding], gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+            pd->image_root_params[binding], gpu);
+}
+
+/* Storage buffer -> UAV at register(uN) of the bound pipeline, or -- when
+ * the pipeline declares no UAV there -- a buffer SRV at register(tN).
  *
  * The descriptor must be complete: ViewDimension BUFFER and a non-zero
  * NumElements are mandatory, and the shape has to match the shader's
@@ -5669,17 +5879,24 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     list = rhi_d3d12_cmd_list(ctx);
     if (pd == NULL || list == NULL) return;
+    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
+                                                    RHI_RES_BUFFER);
+    if (bd == NULL || bd->resource == NULL) return;
     param = pd->storage_root_params[binding];
-    if (param == UINT_MAX) return;
+    if (param == UINT_MAX) {
+        /* No UAV at uN: GLSL's `readonly buffer` at binding N is an SRV at
+         * tN in the sidecar convention. */
+        if (pd->image_root_params[binding] != UINT_MAX &&
+            pd->srv_buffer_strides[binding] != UINT_MAX)
+            rhi_d3d12_bind_buffer_srv(ctx, list, pd, bd, binding);
+        return;
+    }
     stride = pd->storage_strides[binding];
     if (stride == UINT_MAX) {
         LOG_WARN("D3D12: register(u%u) is not a buffer view this backend can "
                  "describe -- storage bind refused", (unsigned)binding);
         return;
     }
-    bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
-                                                    RHI_RES_BUFFER);
-    if (bd == NULL || bd->resource == NULL) return;
     if (!bd->allow_uav) {
         LOG_WARN("D3D12: storage bind at u%u refused -- buffer was not created "
                  "with UAV access (STORAGE buffers need initial_data to be "

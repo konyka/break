@@ -1,4 +1,5 @@
 #include <rhi/rhi.h>
+#include <renderer/indirect_draw.h>
 #include "test_framework.h"
 /* Forces WARP via ENGINE_D3D12_WARP=1 (set in CTest ENVIRONMENT) so the
  * windows-d3d12 lane has a deterministic software GPU-runtime floor.
@@ -1416,15 +1417,12 @@ static int warp_adapter_is_warp(RHIDevice *dev)
  * read; only StartInstanceLocation is dropped. Without it the first two rows
  * would be indistinguishable from "the upload never happened".
  *
- * It does not corrupt rendering today, and "it is broken" would be the wrong
- * headline. rhi_d3d12.c never sets caps.indirect_draw_supported, so
- * indirect_draw_init fail-closes with "backend reports no indirect draw
- * support", mb->array_system_ready stays false, and mega_mat_arrays_draw
- * returns 0 before it reaches the pipeline this test drives directly. The
- * array pipeline is created and never drawn. So this is a trapdoor under a
- * disabled subsystem: it becomes a live bug the moment indirect draw is
- * enabled on D3D12, and it will not announce itself, because every mesh
- * still shades correctly -- with layer 0.
+ * It does not corrupt rendering. R637 enabled indirect draw on D3D12, and
+ * this was the trapdoor under it: every mesh would still shade correctly --
+ * with layer 0 -- and nothing would announce it. So D3D12 reports
+ * caps.indirect_first_instance_supported = false, and main.c keeps the R437
+ * per-group path (one material bind + one execute per group) instead of the
+ * array path whenever that cap is false. The test asserts both caps below.
  *
  * Every row is asserted anyway. The test pins the measured behaviour so the
  * day the path is enabled the suite goes red and whoever fixes it updates
@@ -1620,10 +1618,16 @@ TEST(indirect_start_instance_does_not_reach_sv_instance_id)
     }
 
     printf("  note: %s agrees -- StartInstanceLocation does not reach "
-           "SV_InstanceID on either adapter. Latent today only because "
-           "caps.indirect_draw_supported is false on D3D12, so the array path "
-           "is disabled; see the header comment.\n",
+           "SV_InstanceID on either adapter. D3D12 therefore reports "
+           "caps.indirect_first_instance_supported = false and the demo keeps "
+           "the per-group path; see the header comment.\n",
            on_warp ? "WARP" : "hardware");
+    {
+        RHICapabilities caps;
+        ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
+        ASSERT_TRUE(caps.indirect_draw_supported);
+        ASSERT_FALSE(caps.indirect_first_instance_supported);
+    }
 
     rhi_mrt_fbo_destroy(g_dev, &fbo);
     rhi_texture_destroy(g_dev, albedo_array);
@@ -5134,6 +5138,140 @@ TEST(storage_buffers_receive_raw_and_structured_compute_writes) {
     rhi_buffer_destroy(g_dev, raw);
 }
 
+/* R637: the real IndirectDrawSystem on D3D12, end to end. Four quads, one
+ * per screen quadrant, in two material groups (0,1 | 2,3). Visibility culls
+ * quad 1 and quad 2. The grouped compact runs on the GPU (compact_draws_
+ * hlsl.comp), and each group then draws through ExecuteIndirect with its GPU
+ * count. Exactly quadrants 0 and 3 may turn green.
+ *
+ * After the draw the same frame compacts again with everything visible and
+ * draws nothing from it. That pins C-BUF-3 for the per-cascade shadow
+ * pattern: a recorded visibility write has to land at its place in the list,
+ * not be collapsed into the last host write of the frame. */
+TEST(indirect_draw_system_compacts_and_draws_on_the_gpu) {
+    static const float quads[4][6 * 3] = {
+        { -1,-1,0,  0,-1,0,  0, 0,0,  -1,-1,0,  0, 0,0, -1, 0,0 },
+        {  0,-1,0,  1,-1,0,  1, 0,0,   0,-1,0,  1, 0,0,  0, 0,0 },
+        { -1, 0,0,  0, 0,0,  0, 1,0,  -1, 0,0,  0, 1,0, -1, 1,0 },
+        {  0, 0,0,  1, 0,0,  1, 1,0,   0, 0,0,  1, 1,0,  0, 1,0 },
+    };
+    static const u16 indices[24] = {
+        0,1,2,3,4,5,  6,7,8,9,10,11,  12,13,14,15,16,17,  18,19,20,21,22,23
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    const u32 all_visible[4] = { 1u, 1u, 1u, 1u };
+    const u32 culled[4] = { 1u, 0u, 0u, 1u };
+    const u32 group_sizes[2] = { 2u, 2u };
+    DrawIndexedIndirectCmd cmds[4];
+    IndirectDrawSystem sys;
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, ibo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    u32 counts[2] = { 99u, 99u };
+    u32 total = 99u;
+    i32 loc;
+    int q, x, y;
+
+    for (q = 0; q < 4; ++q) {
+        cmds[q].index_count = 6u;
+        cmds[q].instance_count = 1u;
+        cmds[q].first_index = (u32)q * 6u;
+        cmds[q].vertex_offset = 0;
+        cmds[q].first_instance = 0u;
+    }
+    memset(&sys, 0, sizeof(sys));
+    ASSERT_TRUE(indirect_draw_init_grouped(&sys, g_dev, 4u, 2u));
+    indirect_draw_upload_grouped(&sys, g_dev, cmds, group_sizes, 2u);
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_transform");
+    ASSERT_TRUE(loc >= 0);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(quads);
+    bdesc.initial_data = quads;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.usage = RHI_BUFFER_USAGE_INDEX;
+    bdesc.size = sizeof(indices);
+    bdesc.initial_data = indices;
+    ibo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    ASSERT_TRUE(rhi_handle_valid(ibo));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    indirect_draw_upload_visibility_cmd(&sys, g_dev, cmd, culled, 4u);
+    indirect_draw_compact(&sys, g_dev, cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, (u32)loc, identity, sizeof(identity));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_index_buffer(cmd, ibo, 0u, false);
+    indirect_draw_execute_group(&sys, g_dev, 0u);
+    indirect_draw_execute_group(&sys, g_dev, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    /* A second pass in the same frame with everything visible, compacted but
+     * never drawn. If recorded writes collapsed into host writes, the draw
+     * above would see these flags and light all four quadrants. */
+    indirect_draw_upload_visibility_cmd(&sys, g_dev, cmd, all_visible, 4u);
+    indirect_draw_compact(&sys, g_dev, cmd);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+
+    /* The counters hold the LAST compact: all four visible, two per group. */
+    ASSERT_TRUE(rhi_buffer_read(g_dev, sys.group_counts_buf, counts, 0u, sizeof(counts)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, sys.draw_count_buf, &total, 0u, sizeof(total)));
+    ASSERT_EQ(counts[0], 2u);
+    ASSERT_EQ(counts[1], 2u);
+    ASSERT_EQ(total, 4u);
+
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    /* The backend's viewport is bottom-left origin (TopLeftY = h, negative
+     * height, rhi_d3d12_set_full_target_viewport), so NDC y = -1 is memory
+     * row 0 of the render target, as on GL. Quad 0 (x<0, y<0) is therefore
+     * rows 0..3, columns 0..3; quad 3 rows 4..7, columns 4..7. The two lit
+     * quadrants are on a diagonal, so a wrong cull and a wrong orientation
+     * cannot cancel out. */
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int quad = (x >= 4 ? 1 : 0) + (y >= 4 ? 2 : 0);
+            int green = px[(y * 8 + x) * 4 + 1] > 200;
+            if (green != (quad == 0 || quad == 3))
+                printf("  pixel (%d,%d) quad %d green=%d\n", x, y, quad, green);
+            ASSERT_EQ(green, (quad == 0 || quad == 3));
+        }
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    indirect_draw_destroy(&sys, g_dev);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, ibo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5174,6 +5312,7 @@ int main(void) {
     RUN_TEST(water_sidecar_deep_colour_and_underwater_darkening_are_exact);
     RUN_TEST(skybox_sidecar_scatters_an_exact_constant_sky);
     RUN_TEST(storage_buffers_receive_raw_and_structured_compute_writes);
+    RUN_TEST(indirect_draw_system_compacts_and_draws_on_the_gpu);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

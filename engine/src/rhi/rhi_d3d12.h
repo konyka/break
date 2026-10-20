@@ -143,6 +143,13 @@ typedef struct RHI_D3D12Context {
      * GL texture unit does, so a material slot with an invalid handle binds
      * this instead of leaving the shader sampling an unwritten descriptor. */
     RHITexture white_fallback;
+    /* rhi_cmd_update_buffer / rhi_cmd_fill_buffer staging: each recorded
+     * write gets its own UPLOAD buffer, copied in the frame's command list
+     * so it is ordered against the commands around it (C-BUF-3). Released
+     * when the slot's frame fence is reached. */
+    ID3D12Resource **frame_staging[2];
+    UINT frame_staging_count[2];
+    UINT frame_staging_cap[2];
 } RHI_D3D12Context;
 
 typedef struct RHI_D3D12Resource {
@@ -164,6 +171,13 @@ typedef struct RHI_D3D12Buffer {
     UINT device_local;          /* DEFAULT heap; 0 = UPLOAD heap */
     UINT allow_uav;             /* created with ALLOW_UNORDERED_ACCESS */
     void *mapped;               /* non-NULL while rhi_buffer_map is open */
+    /* UPLOAD-heap buffers only: the frame-staging snapshot that a recorded
+     * write (rhi_cmd_update_buffer / _fill_buffer) produced, valid while
+     * alias_frame == the context's debug_frame. Binds read it instead of
+     * resource so they see the write at its place in the frame. Not owned:
+     * the frame staging list releases it. */
+    ID3D12Resource *alias_resource;
+    UINT64 alias_frame;
 } RHI_D3D12Buffer;
 
 typedef struct RHI_D3D12Texture {
@@ -248,6 +262,11 @@ typedef struct RHI_D3D12RootSigBuilder {
      * structured with an N byte element, UINT_MAX = not a buffer view this
      * backend can describe (RWTexture*, or an element type it cannot size). */
     UINT storage_strides[16];
+    /* register(tN) declared as a read-only buffer (ByteAddressBuffer /
+     * StructuredBuffer<T>): same encoding as storage_strides; UINT_MAX = not
+     * a buffer (a texture, or nothing). The root parameter is
+     * image_root_params[N]. */
+    UINT srv_buffer_strides[16];
     UINT push_constant_size;   /* bytes; 0 = none */
 } RHI_D3D12RootSigBuilder;
 
