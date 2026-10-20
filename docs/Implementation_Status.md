@@ -1,6 +1,25 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R636 — **D3D12 第 1 帧设备丢失已定位并修复**（根因：深度纹理的 SRV 格式非法）、`motion_blur` push 偏移 bug、`instanced`/`skinned` 从未真正绘制、STORAGE 缓冲创建失败；R630/R631 的「默认关闭」缓解**已撤销**
+
+> 这一节更正此前多轮记录在案的结论：R628–R631 判定「TAA 与 motion blur 各自在第 1 帧丢设备、原因未定位、DRED 静默、与本机 UAV 同族」，并以「默认关闭这两个后处理」作为缓解。**根因现在已定位，那条缓解已撤销，两个后处理重新默认开启。**
+
+- **根因（一条，两个后处理共用）**：D3D12 里 **D32_FLOAT 资源根本不能作为 SRV**（仓库里 `rhi_shadow_map_create` 的注释早就写着这条：「a D32_FLOAT resource cannot back a shader resource view at all」）。后端此前只为 **shadow atlas** 一处走 `depth_samplable` 路径（分配 `R32_TYPELESS`，再用 `D32_FLOAT` 深度视图与 `R32_FLOAT` SRV 两别名指向同一批字节），**其余深度目标一律是普通 D32_FLOAT**。
+  - 而 FBO / MRT FBO 的深度附件正是普通 D32_FLOAT。`rhi_cmd_bind_texture` 给它建 SRV 时用的是 `DXGI_FORMAT_D32_FLOAT` → **`CreateShaderResourceView` 直接失败** → 描述符槽里留的是空描述符 → 着色器读**空描述符** → 设备在 present 时被判死（`0x887a0001`）。
+  - **TAA 与 motion blur 是仅有的两个采样 `scene_depth` 且不采样别处的后处理**（contact_shadow 也采样深度，但它同时采样场景色、且它的深度路径与本问题不同）。**为什么单测看不见**：单测里的「深度」是自己建的 `R32_FLOAT` **颜色**纹理（合法 SRV），而 demo 里采样的是**场景深度附件**。这是「单测绿、demo 死」的全部原因。
+  - **修法**：FBO 与 MRT FBO 的深度附件一并改走 `depth_samplable` 路径（`R32_TYPELESS` 资源 + 显式 `DXGI_FORMAT_D32_FLOAT` 的深度视图）。修完 TAA / MB / 两者同开 / 两者同关**四种配置全部 29–30 帧零设备丢失**（`BREAK_FRAMES=120` 跑满）。
+- **`motion_blur` 的 push 偏移是错的，且是确定性的、不是 flake**：`// rhi:uniform u_mb_prev_vp 32` 写在了 `u_mb_inv_proj`（16..80）**里面**。HLSL 的 cbuffer 打包规则里 `float4x4` 占 **64 字节**，所以第二个矩阵在 **80**，不在 32。此前 R635 记的「帧 1 读到 109 是偶发 flake」**结论错误**：109 = 竖条纹 0/31/…/217 的均值 108.75，是**矩阵读到垃圾 → 重建速度非零 → 整幅被糊成均值**的必然结果。已修（marker 32 → 80，结构体注释同步为 80 / 尾部 144）。
+  - **像素守卫已补**：`motion_blur_sidecar_reads_depth_and_velocity_and_blurs` 新增第 3 帧，走 `u_mb_use_velocity = 0` 的**深度重建分支**（两个矩阵给单位阵 → `prev_uv` 塌回 `uv` → 速度恰为零 → `vel_len < 0.5` 提前返回 → 竖条纹**逐字节精确**返回）。**反向检查已做**：把 prev_vp 写到 32（让着色器读到没写过的矩阵）后该帧读回 **109** 而不是 0，用例转红——证明这条守卫真的在守布局，而不是恒真。
+- **`instanced` / `skinned` 在 D3D12 上**从未真正绘制过**：demo 用 `rhi_shader_create_path(dev, "shaders/instanced.vert", …)`，而后端的名字推导规则是 `<base>_hlsl<suffix>` → 推出 **`instanced_hlsl.vert`**，这个文件**从来不存在**（唯一的孪生是 `instanced_mrt_hlsl.vert`；`skinned_hlsl.vert` 同理）。R632/R634 的注释写着「on a sidecar backend this resolves to instanced_mrt_hlsl.{vert,frag}」——**代码并没有实现这件事**。名字对不上的后果是静默的：demo 只打一条 `instanced sidecars unavailable; instanced draws disabled`，这两个网格在 D3D12 上一个都没画。已改为按真实名字直接加载。
+- **instanced 绘制在 D3D12 上**从未绑定时序 CBV**：`forward_temporal_ubo_write_lit` + `rhi_cmd_bind_uniform_buffer` 被放在 `if (!render.caps.shader_sidecar_paths)` 分支**里面**，也就是**只在 GL/VK 上执行**。而 `instanced_mrt_hlsl.frag` 的光照全部从 b1 的 `ForwardTemporal` CBV 读——D3D12 上那块 CBV 永远没绑。已把「写 + 绑」提出到分支外（只有四个 loose uniform 写是后端相关的）。
+- **`RHI_BUFFER_USAGE_STORAGE` 且无 `initial_data` 的缓冲在 D3D12 上创建不出来**（仓库早已记录，但没修）：`rhi_d3d12_buffer_wants_device_local` 要求有 `initial_data` 才走 DEFAULT 堆，于是它落到 UPLOAD 堆；而 `allow_uav` 只看 usage 位，UPLOAD 堆上的 `ALLOW_UNORDERED_ACCESS` 让 `CreateCommittedResource` **失败** → 句柄无效 → **每一次绑定都被静默跳过** → 顶点着色器读空描述符。已修：`allow_uav` 只在 device-local 时才请求（后端的 storage binder 本来就是空桩，这个 flag 在 D3D12 上换不到任何东西），且 UPLOAD 堆缓冲在 texel 绑定时**不再做状态转换**（它们终生是 `GENERIC_READ`，转换既非法也无必要）。这条顺带修好了 demo 日志里那条 `Lighting: buffer creation failed`。
+- **新增 fail-closed 的布局守卫**（`rhi_d3d12_hlsl_markers_match_layout`）：建管线时，后端把 `// rhi:uniform` 公布的偏移与 **b0 cbuffer 结构体的实际布局**（按 HLSL 打包规则算：矩阵按列 16 字节、`float3` 12 字节但 16 字节对齐、`float2` 8 字节、标量 4 字节）逐个核对，**不一致就拒绝这条管线**并打出成员名与两个偏移。这把「marker 与结构体各写各的」这一整类 bug 变成不可能悄悄上线。**反向检查已做**：把 `u_mb_prev_vp` 临时改回 32，后端立刻报 `uniform u_mb_prev_vp is published at byte 32 but the cbuffer layout puts it at 80 … Refusing the shader.`。
+- **`skinned` 的 CBV 布局守卫已补**（R634 留下的缺口）：`skinned_sidecar_reads_lighting_from_the_temporal_cbv` 与 R633 的 instanced 守卫同形（退化光照设置 → 期望色解析可算 → 逐像素精确断言 + RT1 速度全零 + 四个光照 uniform 必须 resolve 为 −1）。**反向检查已做**：把 sidecar 里 `light_dir` 与 `light_color` 的声明顺序对调，instanced 守卫仍绿、skinned 守卫转红（读回 (0,0,0) 而非 (102,51,20)）——证明两条守卫各自独立受检。
+- **R630/R631 的缓解已撤销**：`main.c` 里那段「sidecar 后端默认关掉 TAA 与 motion blur」的闸门整段删除，两个后处理**重新默认开启**。`BREAK_TAA=0` / `BREAK_MB=0` 回到 R446 的原始语义（只为脚本化 A/B 测量关掉某个 pass），`=1` 不再有特殊含义。
+- **WARP 与硬件的差别要说清**：本次定位在**硬件（RTX 4060）**上完成，移除原因是 `0x887a0006`（`DXGI_ERROR_DEVICE_HUNG`，GPU 挂起）与 `0x887a0001`（`GetDeviceRemovedReason` 报「健康」——本机上报不可信，仓库早有记录）。WARP 上 demo **无论 TAA/MB 开关都丢设备**，那是**另一个**既存问题（WARP 的能力缺口），本轮未动它。
+- **门控**：D3D12 WARP 套件 **33/33**（新增 skinned 守卫）、硬件 **32/33**（唯一失败是 `warp_device_identity_is_honest`，硬件上运行时的固有产物）、`ctest -LE "graphics|fuzz"` **172/172**、`ctest -L graphics` **8/8**、VK **171/171**、GL **170/170**。demo 在硬件上：默认配置 120 帧跑满、`Draws: 58`、零设备丢失、零「pipeline creation failed」新增项（与改动前的失败清单逐条一致）。
+
 ## 本轮更新：R600 — 方案 B 落地（`u_camera_pos` 从 push 块搬进时序 CBV / UBO），D3D12 sidecar 随之把 push 尾部收在 240，MRT sidecar（`blinn_phong_mrt_hlsl`）已写好并由 dxc 编译进构建
 
 - **做了什么**：`u_camera_pos` 不再是 `blinn_phong` 家族的 push/loose uniform，改为 `ForwardTemporal` 块的成员（`{vec3 u_camera_pos; float pad; mat4 u_prev_vp; mat4 u_prev_model;}`），三后端统一。GLSL/VK 侧改 `blinn_phong.{vert,frag}` 与 `blinn_phong_vk.{vert,frag}`（块改为**无条件**声明）；引擎侧新增 `rs->forward_temporal_ubo`（`ForwardTemporalUbo`，144B）与 `forward_temporal_ubo_write`，base forward 路径每帧写入并在 binding 0 绑定。D3D12 侧 `blinn_phong_hlsl.{vert,frag}` 同步把相机移进 `register(b1, space0)` 的 `ConstantBuffer<ForwardTemporal>`，并新增 MRT 变体 `blinn_phong_mrt_hlsl.{vert,frag}`（同 push/CBV，外加 `TEXCOORD3` / `SV_Target1` 的 velocity）。设计与踩坑详见 `docs/superpowers/plans/2026-10-19-d3d12-forward-mrt-velocity-design-plan.md` 的 "R600 — what actually shipped"。
@@ -284,7 +303,8 @@
     ⑤**「深度绑在非 0 号槽位」不是原因**——TAA 把深度绑在 unit 2、MB 在 unit 1，而存活的 `contact_shadow` 绑在 unit 0，看似是唯一区分点；把 `contact_shadow` 的两个输入对调（深度改到 unit 1）后**依然不丢**。排除。已撤销。
     ⑥两个 pass 的 **RHI 调用序列形状相同**（`fbo_bind → bind_pipeline → bind_textures_multi → 若干 set_uniform → draw`，与存活的 pass 逐项对照），差异不在调用形状。
   - **前提也核实过，没有建在未测的假设上**：在「TAA+MB 关」的**成功**配置里，`contact_shadow`、`lens_flare`、`lens_effects` 三者都正常初始化并在跑，且**同样采样 `scene_depth`**——设备依然不丢。所以这三个（进而「采样场景深度」）**不是**触发条件。`dof`/`ssr`/`ssgi` 默认就是关的，不构成证据。
-  - **仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。
+  - **⚠️ R636 已定位并修复**（本条结论作废，详见顶部 R636 一节）。**仍未定位**。已确认：**TAA 与 motion blur 各自单独、在第 1 帧自己的 draw 之后就丢设备**；上述三个 pass 单独不触发；六条假设已排除；**DRED 完全静默**（无 page fault、无 breadcrumb），说明设备是在提交时或 GPU 执行已录制命令时消失的，CPU 侧没有可见故障点。由于 DRED 静默且现象与 R611 记录的「建 UAV 视图即丢设备」同族，这更像**本机驱动/运行时层面的问题**。
+  - **⚠️ R636 撤销**：本条缓解已删除，TAA 与 motion blur **重新默认开启**——根因已定位（深度纹理的 SRV 格式非法，详见顶部 R636 一节）。
   - **已采取的缓解（R631）**：在 demo 里**仅对 sidecar 后端**把 TAA 与 motion blur 默认为关，并打一条明确的 `LOG_WARN` 说明原因与复现方法。理由是它们的单测绿只说明「单独正确」，留在默认链路上等于用一个能用的 demo 换一个第一帧就死的 demo。GL/Vulkan 的 `shader_sidecar_paths` 为 false，**完全不受影响**（已核对 GL demo 零条该警告，GL 门控 170/170）。
     - 逃生开关：`BREAK_TAA=1` / `BREAK_MB=1` 重新打开。**注意这里踩过一个坑并已修正**：既有的 `BREAK_TAA`/`BREAK_MB` 语义**只有 `=0` 关闭**（默认开），所以 gating 若无条件生效，逃生开关会静默失效——第一版就是这样，`BREAK_TAA=1 BREAK_MB=1` 跑出来仍然 lost=0。现在 gating 会先看这两个变量是否为真值，是则不关。修正后实测：默认 lost=0 / UI=54（跑满 120 帧）；`BREAK_TAA=1 BREAK_MB=1` lost=1 / UI=1（复现）；`BREAK_TAA=1`（MB 仍被 gating 关掉）lost=1（**再次印证 TAA 单独即致命**）。
 - **⚠️ 但「可用」只到单元测试这一层：把它们接回 demo 后，D3D12 在**第一帧**就丢设备**。这是本轮最重要的、也是最需要如实说明的结果：
@@ -323,7 +343,7 @@
   - **⚠️ 两个分支都不可单独观测，由反向验证查出而非假设**：禁掉深度 early-out 用例**仍绿**（因为直照光下步进也不命中）；把 `ray_pos` 压平让每步都命中也**仍绿**（`diff` 变成 0，而判定是严格 `> 0`）。**真正会转红的反向检查是交换 t0/t1**：帧 0 于是把深度纹理当颜色读，第 0 像素读回 (255,0,0)。所以这个测试钉的是**接线**（六个偏移、两张纹理经 `bind_textures_multi` 以「深度在前」到达），不是「走了哪条分支」。
   - 门控（WARP **29/29**、硬件 28/29、D3D12 171/172 + graphics 8/8、VK 170/171、GL 169/170）。
 - **R624：`motion_blur` 上 D3D12**（3 纹理：颜色/深度/速度；152 字节 push 块）。demo 上 `MotionBlur: initialized (640x360)`——D3D12 上可用的后处理现为 **ColorGrade / LensEffects / FXAA / DOF / SSR / TAA / MotionBlur** 七个。
-  - **push 块有一处刻意的 16 字节空洞**：`u_mb_use_velocity` 排在 offset 12 之后，两个 `mat4` 必须 16B 对齐，所以从 **16** 而不是 12 开始。测试钉住这六个偏移（0/4/8/12/16/32）。
+  - **push 块有一处刻意的 16 字节空洞**：`u_mb_use_velocity` 排在 offset 12 之后，两个 `mat4` 必须 16B 对齐，所以从 **16** 而不是 12 开始。测试钉住这六个偏移（0/4/8/12/16/**32**）。**⚠️ R636 更正：最后一个偏移是错的**——`float4x4` 在 cbuffer 里占 64 字节，`u_mb_prev_vp` 应在 **80** 而不在 32（旧 marker 落在 `u_mb_inv_proj` 里面）。已修并补了像素守卫，见本文件顶部的 R636 一节。
   - **测试图案改成竖条纹**并记录原因：第一稿用的是「按纹理索引递增」的渐变，**每行不同**，于是回读的行序决定了它匹不匹配。竖条纹只依赖列，各行相同，翻转行序后不变，且条纹中心正好落在纹理中心（uv = (col+0.5)/8），所以采样精确、early-out 能逐字节断言。
   - **⚠️ 两条路径没有被断言，且都是量出来的、不是猜的**：
     ①**`u_mb_use_velocity = 0` 的矩阵重建分支**：两个矩阵都给单位阵、res = (8,8) 时 `prev_uv` 应当塌回 `uv`、速度恰好为零，但**两个适配器上都不是**——条纹带着模糊回来了，说明没走 `vel_len < 0.5` 的 early-out。六个偏移都能正确解析（已断言），64 字节的矩阵写也在 96 字节声明块之内，所以**原因未定位，也不在此处臆测**。帧 1/2 改用速度纹理那条路径。

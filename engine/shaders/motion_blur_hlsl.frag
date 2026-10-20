@@ -3,26 +3,31 @@
 //
 // Three textures: t0 colour, t1 depth, t2 velocity (R219-A, matching
 // motion_blur_vk.frag and the GL bind_material_textures units). Three tables
-// clamp 32BIT_CONSTANTS at 61 DWORDs = 244 bytes; this uses 152, so it fits.
+// clamp 32BIT_CONSTANTS at 61 DWORDs = 244 bytes; this uses 144, so it fits.
 //
 // R621 matters for t1: depth is decoded as depth * 2 - 1, which assumes the
 // forward pass wrote (ndc_z + 1) / 2. Before R621 the D3D12 forward sidecars
 // wrote raw ndc_z, so every reconstructed view position here was wrong.
+// R636: a float4x4 occupies 64 bytes under the HLSL constant-buffer
+// packing rules, so u_mb_prev_vp sits at 80, not 32. The old marker
+// overlapped u_mb_inv_proj (16..80) and the shader read a matrix that
+// was never written, which turned the depth-reconstruction branch
+// (u_mb_use_velocity = 0) into a whole-frame blur.
 struct PushConsts {
     float    u_mb_strength;      //   0
     float    u_mb_sw;            //   4
     float    u_mb_sh;            //   8
     float    u_mb_use_velocity;  //  12  (mat4s must stay 16B-aligned)
     float4x4 u_mb_inv_proj;      //  16
-    float4x4 u_mb_prev_vp;       //  32
-};                              // tail at 96
+    float4x4 u_mb_prev_vp;       //  80
+};                              // tail at 144
 ConstantBuffer<PushConsts> g_push : register(b0, space0);
 // rhi:uniform u_mb_strength 0
 // rhi:uniform u_mb_sw 4
 // rhi:uniform u_mb_sh 8
 // rhi:uniform u_mb_use_velocity 12
 // rhi:uniform u_mb_inv_proj 16
-// rhi:uniform u_mb_prev_vp 32
+// rhi:uniform u_mb_prev_vp 80
 
 Texture2D g_color    : register(t0, space0);
 Texture2D g_depth    : register(t1, space0);

@@ -2514,8 +2514,10 @@ TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
         "u_mb_inv_proj", "u_mb_prev_vp"
     };
     /* u_mb_use_velocity shares the 12-byte tail, so the mat4 starts at 16 to
-     * stay 16B-aligned rather than at 12. */
-    static const i32 want[6] = { 0, 4, 8, 12, 16, 32 };
+     * stay 16B-aligned rather than at 12. A float4x4 is 64 bytes, so the
+     * second matrix starts at 80 -- R636, the old marker said 32 and
+     * overlapped u_mb_inv_proj. */
+    static const i32 want[6] = { 0, 4, 8, 12, 16, 80 };
     static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
     int frame, i;
 
@@ -2590,17 +2592,25 @@ TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
 
     /* frame 0  depth 1.0        -> first early-out, gradient passes through
      * frame 1  depth 0.5, no vel -> vel_len < 0.5 early-out, gradient through
-     * frame 2  depth 0.5, vel 32px -> the blur loop RUNS. The colour is solid,
+     * frame 2  depth 0.5, use_velocity = 0 -> the RECONSTRUCTION branch:
+     *          the shader rebuilds the previous clip position from
+     *          u_mb_inv_proj / u_mb_prev_vp. Both are the identity here, so
+     *          prev_uv collapses to uv, the velocity is exactly zero and the
+     *          vel_len early-out hands back the gradient untouched. This is
+     *          the LAYOUT GUARD: with a matrix at the wrong offset the read
+     *          is garbage, the velocity is not zero, the blur loop runs and
+     *          the stripes come back averaged instead of exact.
+     * frame 3  depth 0.5, vel 32px -> the blur loop RUNS. The colour is solid,
      *          so every tap returns the same value and the weighted average is
      *          that value -- which proves t2 and u_mb_use_velocity reached the
      *          shader (a zero velocity would have taken the frame-1 path) while
      *          keeping the assertion exact.
      *          +-1 because the weighted sum is not bit-exact in fp32. */
-    for (frame = 0; frame < 3; ++frame) {
-        const unsigned char *want_src = (frame == 2) ? solid : grad;
-        triple[0] = (frame == 2) ? stex : gtex;
+    for (frame = 0; frame < 4; ++frame) {
+        const unsigned char *want_src = (frame == 3) ? solid : grad;
+        triple[0] = (frame == 3) ? stex : gtex;
         triple[1] = (frame == 0) ? ftex : dtex;
-        triple[2] = (frame == 2) ? vtex : ztex;
+        triple[2] = (frame == 3) ? vtex : ztex;
         cmd = rhi_frame_begin(g_dev);
         ASSERT_TRUE(cmd != NULL);
         rhi_offscreen_fbo_bind(cmd, &fbo);
@@ -2610,30 +2620,17 @@ TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
         rhi_cmd_set_uniform_f32(cmd, 0, 0.5f);    /* u_mb_strength */
         rhi_cmd_set_uniform_f32(cmd, 4, 8.0f);    /* u_mb_sw */
         rhi_cmd_set_uniform_f32(cmd, 8, 8.0f);    /* u_mb_sh */
-        rhi_cmd_set_uniform_f32(cmd, 12, frame == 0 ? 0.0f : 1.0f);
+        rhi_cmd_set_uniform_f32(cmd, 12, (frame == 0 || frame == 2) ? 0.0f : 1.0f);
         rhi_cmd_set_uniform_mat4(cmd, 16, identity);
-        rhi_cmd_set_uniform_mat4(cmd, 32, identity);
-        /* Frames 1 and 2 take the velocity TEXTURE branch. The
-         * u_mb_use_velocity = 0 branch, which reconstructs velocity
-         * from u_mb_inv_proj / u_mb_prev_vp instead of reading t2, is
-         * not asserted: with both matrices at the identity and
-         * res = (8,8), prev_uv should collapse to uv and the
-         * velocity to exactly zero, and on BOTH adapters it did not --
-         * the stripes came back blurred, so the vel_len < 0.5
-         * early-out was not taken. All six offsets resolve (asserted
-         * above) and the 64-byte matrix writes fit inside the 96-byte
-         * declared block, so the cause is not located and is not
-         * guessed at here. Frame 0 still exercises use_velocity = 0
-         * because it exits on the depth test first.
-         *
-         * And the vel_len early-out is NOT separately observable
+        rhi_cmd_set_uniform_mat4(cmd, 80, identity);
+        /* The vel_len early-out is NOT separately observable
          * either -- the reverse check proved it: disabling it leaves
          * this test GREEN, because at zero velocity sample_count is 0,
          * the loop degenerates to a single tap at uv with weight 1, and
          * step_size is 0. Both routes return the same colour. The
          * reverse check that DOES fire is swapping t0 and t1: frame 0
          * then reads the depth texture as colour and pixel 0 comes
-         * back 255 instead of 0. And frame 2 only proves the loop
+         * back 255 instead of 0. And frame 3 only proves the loop
          * executes -- on a solid source every tap is equal, so the
          * blur GEOMETRY (span, jitter, weights) is not asserted here.
          */
@@ -2652,12 +2649,12 @@ TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
                 int exp = want_src[i * 4 + ch];
                 int d = got - exp;
                 if (d < 0) d = -d;
-                if (d > (frame == 2 ? 1 : 0)) {
+                if (d > (frame == 3 ? 1 : 0)) {
                     printf("FAIL: motion blur frame %d pixel %d ch%d = %d, "
                            "expected %d +- %d\n", frame, i, ch, got, exp,
-                           frame == 2 ? 1 : 0);
+                           frame == 3 ? 1 : 0);
                 }
-                ASSERT_TRUE(d <= (frame == 2 ? 1 : 0));
+                ASSERT_TRUE(d <= (frame == 3 ? 1 : 0));
             }
         }
     }
@@ -3456,6 +3453,210 @@ TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv) {
     rhi_sampler_destroy(g_dev, sampler);
     rhi_buffer_destroy(g_dev, vbo);
     rhi_buffer_destroy(g_dev, inst);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* R636: the skinned twin of the instanced guard above. R634 ported the
+ * skinned pass but left its temporal CBV layout unproven: the sidecar
+ * hand-writes the ForwardTemporal member offsets, and a drift there reads
+ * the wrong lighting with no error. The instanced guard does not cover it
+ * -- the two sidecars declare the struct separately, so the skinned one
+ * can drift on its own. */
+TEST(skinned_sidecar_reads_lighting_from_the_temporal_cbv) {
+    typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; u32 joints[4];
+                     f32 weights[4]; } SkinVert;
+    /* The skinned input layout is 64 bytes: POSITION 3, NORMAL 3, TEXCOORD 2,
+     * BLENDINDICES 4, BLENDWEIGHT 4. Joint 0 is the identity and the single
+     * weight is 1, so skin == identity and world == aPos. */
+    static const SkinVert verts[6] = {
+        { { -1.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { {  1.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 0.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { {  1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { { -1.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { {  1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 1.0f, 1.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } },
+        { { -1.0f,  1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f },
+          { 0u, 0u, 0u, 0u }, { 1.0f, 0.0f, 0.0f, 0.0f } }
+    };
+    static unsigned char white[4 * 4 * 4] = {
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255,
+        255,255,255,255, 255,255,255,255, 255,255,255,255, 255,255,255,255
+    };
+    /* Byte-identical to ForwardTemporalUbo in main.c. Writing the members by
+     * offset rather than through a struct copy is deliberate: it is the
+     * offsets that have to agree, and doing it this way keeps the test
+     * independent of the engine's own layout. */
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    typedef struct { f32 cam[3]; f32 cam_pad; f32 prev_vp[16];
+                     f32 prev_model[16];
+                     f32 dir[3]; f32 dir_pad;
+                     f32 col[3]; f32 col_pad;
+                     f32 amb[3]; f32 amb_pad; } Temporal;
+    /* The joint matrices are a raw buffer of float4: joint 0 is four column
+     * float4s, and the PREVIOUS joint matrices sit 512 elements further in
+     * (the offset the sidecar indexes). */
+    static float joints[516 * 4];
+    const RHIFormat formats[2] = {RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT};
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITextureDesc tdesc;
+    RHITexture albedo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, ubo, jbo;
+    RHISampler sampler;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    Temporal t;
+    int frame, i;
+    static const unsigned char want[2][3] = {
+        { 102, 51, 20 },   /* ambient only */
+        { 102, 51, 20 }    /* ambient 0 + light_color, diff = 1 */
+    };
+
+    memset(joints, 0, sizeof(joints));
+    joints[0] = 1.0f; joints[5] = 1.0f; joints[10] = 1.0f; joints[15] = 1.0f;
+    joints[512 * 4 + 0]  = 1.0f;
+    joints[512 * 4 + 5]  = 1.0f;
+    joints[512 * 4 + 10] = 1.0f;
+    joints[512 * 4 + 15] = 1.0f;
+
+    memset(&t, 0, sizeof(t));
+    t.cam[0] = 0.0f; t.cam[1] = 0.0f; t.cam[2] = -10.0f;
+    memcpy(t.prev_vp, identity, sizeof(identity));
+    memcpy(t.prev_model, identity, sizeof(identity));
+    t.amb[0] = 0.4f; t.amb[1] = 0.2f; t.amb[2] = 0.08f;
+    t.col[0] = 0.4f; t.col[1] = 0.2f; t.col[2] = 0.08f;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = 4u; tdesc.height = 4u;
+    tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = 1u;
+    tdesc.data = white;
+    albedo = rhi_texture_create(g_dev, &tdesc);
+    ASSERT_TRUE(rhi_handle_valid(albedo));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    bdesc.size = sizeof(joints);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;   /* keeps it off the UAV path */
+    bdesc.initial_data = joints;
+    jbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(jbo));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(t);
+    bdesc.usage = RHI_BUFFER_USAGE_UNIFORM;
+    bdesc.initial_data = &t;
+    ubo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(ubo));
+
+    vs = rhi_shader_create(g_dev, "skinned_mrt_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "skinned_mrt_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.skinned_vertex = true;
+    pd.uses_textures = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    /* Only u_view / u_proj are push members now; the four lighting uniforms
+     * must NOT resolve, or the port has silently reverted to the old shape. */
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view"), 0);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_proj"), 64);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "light_dir"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "light_color"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "ambient"), -1);
+    ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
+
+    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+
+    for (frame = 0; frame < 2; ++frame) {
+        if (frame == 0) {
+            t.dir[0] = 0.0f; t.dir[1] = -1.0f; t.dir[2] = 0.0f;
+            t.amb[0] = 0.4f;  t.amb[1] = 0.2f;  t.amb[2] = 0.08f;
+        } else {
+            t.dir[0] = 0.0f; t.dir[1] = 0.0f;  t.dir[2] = -1.0f;
+            t.amb[0] = 0.0f;  t.amb[1] = 0.0f;  t.amb[2] = 0.0f;
+        }
+        rhi_buffer_update(g_dev, ubo, &t, sizeof(t));
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_texture(cmd, albedo, sampler, 0u);
+        rhi_cmd_bind_texel_buffers(cmd, jbo, RHI_HANDLE_NULL);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        for (i = 0; i < 64; ++i) {
+            if (rt0[i * 4 + 0] != want[frame][0] ||
+                rt0[i * 4 + 1] != want[frame][1] ||
+                rt0[i * 4 + 2] != want[frame][2] ||
+                rt0[i * 4 + 3] != 255u) {
+                printf("FAIL: skinned frame %d pixel %d = (%u,%u,%u,%u), "
+                       "expected (%u,%u,%u,255)\n", frame, i,
+                       (unsigned)rt0[i*4+0], (unsigned)rt0[i*4+1],
+                       (unsigned)rt0[i*4+2], (unsigned)rt0[i*4+3],
+                       (unsigned)want[frame][0], (unsigned)want[frame][1],
+                       (unsigned)want[frame][2]);
+                break;
+            }
+        }
+        for (i = 0; i < 64; ++i) {
+            ASSERT_EQ(rt0[i * 4 + 0], want[frame][0]);
+            ASSERT_EQ(rt0[i * 4 + 1], want[frame][1]);
+            ASSERT_EQ(rt0[i * 4 + 2], want[frame][2]);
+            ASSERT_EQ(rt0[i * 4 + 3], 255u);
+        }
+        /* Identity prev_vp and an identity joint matrix make the motion
+         * vector exactly +0.0 on the raw bits, so RT1 also proves the
+         * temporal block was read rather than left unbound. */
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+        for (i = 0; i < 64 * 2; ++i)
+            ASSERT_EQ(rt1[i], 0u);
+    }
+
+    rhi_texture_destroy(g_dev, albedo);
+    rhi_sampler_destroy(g_dev, sampler);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, jbo);
     rhi_buffer_destroy(g_dev, ubo);
     rhi_mrt_fbo_destroy(g_dev, &fbo);
     rhi_pipeline_destroy(g_dev, pipe);
@@ -4878,6 +5079,7 @@ int main(void) {
     RUN_TEST(forward_clip_z_conversion_keeps_near_geometry_unclipped);
     RUN_TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind);
     RUN_TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv);
+    RUN_TEST(skinned_sidecar_reads_lighting_from_the_temporal_cbv);
     RUN_TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions);
     RUN_TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp);
     RUN_TEST(color_grade_sidecar_applies_saturation_and_white_balance);

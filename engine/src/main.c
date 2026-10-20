@@ -883,15 +883,21 @@ static bool render_init(RenderState *rs, Platform *platform) {
     }
 
     {
-        /* R632: on a sidecar backend this resolves to
-         * instanced_mrt_hlsl.{vert,frag}. Only the MRT variant is needed:
-         * the GLSL path below injects FORWARD_MRT unconditionally, so the
-         * non-MRT form of this shader is never built. */
+        /* R632/R636: the D3D12 twin of this GLSL pair is the MRT variant,
+         * because the GLSL path below injects FORWARD_MRT unconditionally.
+         *
+         * The sidecar has to be named directly. rhi_shader_create_path
+         * derives "<base>_hlsl<suffix>" from the GLSL path, which for
+         * "shaders/instanced.vert" is "instanced_hlsl.vert" -- a file that
+         * does not exist, because the only twin of this shader is the MRT
+         * one. The name mismatch was silent: the demo logged "instanced
+         * sidecars unavailable; instanced draws disabled" and drew none of
+         * these meshes, while the path looked ported. */
         if (caps.shader_sidecar_paths) {
-            RHIShader ivs = rhi_shader_create_path(rs->device,
-                                                  "shaders/instanced.vert", false);
-            RHIShader ifs = rhi_shader_create_path(rs->device,
-                                                  "shaders/instanced.frag", true);
+            RHIShader ivs = rhi_shader_create(rs->device,
+                                              "instanced_mrt_hlsl.vert", 0, false);
+            RHIShader ifs = rhi_shader_create(rs->device,
+                                              "instanced_mrt_hlsl.frag", 0, true);
             if (rhi_handle_valid(ivs) && rhi_handle_valid(ifs)) {
                 RHIPipelineDesc ipd = {
                     .vert = ivs, .frag = ifs,
@@ -975,16 +981,22 @@ instanced_pipeline_done:
         rs->instance_buf[1] = rhi_buffer_create(rs->device, &bdesc);
     }
 
-    /* R634: on a sidecar backend this resolves to skinned_mrt_hlsl.{vert,frag}.
-     * Only the MRT variant is needed -- the GLSL path below injects
-     * FORWARD_MRT unconditionally, so the non-MRT form is never built. The
-     * CBV layout and the lighting move are the same as R632's instanced port;
-     * see skinned_mrt_hlsl.vert for why the block is not made unconditional. */
+    /* R634/R636: the D3D12 twin is skinned_mrt_hlsl.{vert,frag}. Only the
+     * MRT variant is needed -- the GLSL path below injects FORWARD_MRT
+     * unconditionally, so the non-MRT form of this shader is never built.
+     * The CBV layout and the lighting move are the same as R632's instanced
+     * port; see skinned_mrt_hlsl.vert for why the block is not made
+     * unconditional.
+     *
+     * R636: the sidecar is named directly for the same reason as the
+     * instanced pair above -- rhi_shader_create_path would derive
+     * "skinned_hlsl.vert", which does not exist, and the skinned meshes
+     * were silently not drawn on this backend. */
     if (caps.shader_sidecar_paths) {
-        RHIShader svs = rhi_shader_create_path(rs->device,
-                                               "shaders/skinned.vert", false);
-        RHIShader sfs = rhi_shader_create_path(rs->device,
-                                               "shaders/skinned.frag", true);
+        RHIShader svs = rhi_shader_create(rs->device,
+                                           "skinned_mrt_hlsl.vert", 0, false);
+        RHIShader sfs = rhi_shader_create(rs->device,
+                                           "skinned_mrt_hlsl.frag", 0, true);
         if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
             RHIPipelineDesc spd = {
                 .vert = svs, .frag = sfs,
@@ -3561,34 +3573,18 @@ bool dof_enabled = false; /* R446: default off -- DOF focus behavior was never v
 { const char *e = getenv("BREAK_TAA"); if (e && !atoi(e)) taa_enabled = false; }
 { const char *e = getenv("BREAK_MB");  if (e && !atoi(e)) mb_enabled = false; }
 { const char *e = getenv("BREAK_DOF"); if (e && !atoi(e)) dof_enabled = false; }
-/* R630: TAA and motion blur each lose the D3D12 device on frame 1, in the
- * demo, in their own draw -- verified separately with each pass disabled in
- * turn. DRED is completely silent about it (no page fault, no breadcrumb),
- * so the cause is not located and the failure is indistinguishable from the
- * host-level device loss already recorded for UAV creation on this machine.
+/* R636: the R630/R631 mitigation is GONE. Both passes used to lose the
+ * D3D12 device on frame 1, and the cause is now located: the scene depth
+ * was a plain D32_FLOAT resource, which cannot back a shader resource
+ * view at all. The SRV creation failed, the descriptor stayed empty, and
+ * the pass read a null descriptor -- the device went down at present
+ * time (0x887a0001). The depth attachments now go through the
+ * depth_samplable path (R32_TYPELESS aliased as D32_FLOAT for the
+ * depth-stencil view and R32_FLOAT for the SRV), so the passes read real
+ * depth values and the demo runs them by default again.
  *
- * Their unit tests pass, which only says each pass is correct in isolation,
- * so leaving them on by default would trade a working demo for one that dies
- * before the first frame is presented. Default them OFF on the sidecar
- * backend and leave GL/Vulkan alone. BREAK_TAA=1 / BREAK_MB=1 re-enable
- * them, which is also how the failure is reproduced. Note the existing
- * BREAK_TAA/BREAK_MB semantics are kill-switches only (`=0` disables, the
- * default is on), so an explicit `=1` is read here as "yes, I know it dies and
- * I want it anyway" -- without that, the escape hatch would silently do
- * nothing, which is exactly what the first version of this did. */
-if (render.caps.shader_sidecar_paths && taa_enabled && mb_enabled) {
-    const char *et = getenv("BREAK_TAA");
-    const char *em = getenv("BREAK_MB");
-    int want_taa = (et && atoi(et) != 0);
-    int want_mb = (em && atoi(em) != 0);
-    if (!want_taa) taa_enabled = false;
-    if (!want_mb) mb_enabled = false;
-    if (!want_taa || !want_mb)
-        LOG_WARN("TAA and motion blur disabled by default on this backend: "
-                 "each one loses the D3D12 device on frame 1 (R630, cause "
-                 "unlocated, DRED silent). Set BREAK_TAA=1 and BREAK_MB=1 to "
-                 "re-enable and reproduce.");
-}
+ * BREAK_TAA=0 / BREAK_MB=0 keep their R446 meaning: they turn the pass
+ * off for a scripted A/B measurement. `=1` is no longer special. */
 { const char *e = getenv("BREAK_BLOOM"); if (e && !atoi(e)) postfx.bloom_strength = 0.0f; }
 /* R446: BREAK_UI=0 — hide the debug HUD for clean scripted captures (HUD text
  * is drawn post-tonemap and polluted pixel-diff A/B measurements). */
@@ -7828,19 +7824,27 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  * them. The GLSL path is untouched. The writes below are
                  * skipped rather than left in place: on D3D12 they resolve to
                  * -1 (no marker) and would be silent no-ops, which is the
-                 * "dropped write" shape R600 exists to avoid. */
+                 * "dropped write" shape R600 exists to avoid.
+                 *
+                 * R636: the CBV write and bind are NOT part of that skip.
+                 * They used to sit inside it, which meant the D3D12 path
+                 * never bound the temporal block at all -- the instanced
+                 * fragment shader read an unbound descriptor at b1 and the
+                 * GPU hung (DXGI_ERROR_DEVICE_HUNG, 0x887a0006) on the
+                 * first frame. Both backends need the bind; only the four
+                 * loose uniform writes are backend-specific. */
                 if (!render.caps.shader_sidecar_paths) {
                     rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_dir, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_light_color, sun_color.e[0], sun_color.e[1], sun_color.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_ambient, ambient_col.e[0], ambient_col.e[1], ambient_col.e[2]);
                     rhi_cmd_set_uniform_vec3(cmd, render.inst_loc_camera_pos,
                         camera.position.e[0], camera.position.e[1], camera.position.e[2]);
-                    forward_temporal_ubo_write_lit(render.device,
-                        render.forward_temporal_ubo, &camera.position,
-                        &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
-                    rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
-                        (u32)render.temporal_ubo_binding);
                 }
+                forward_temporal_ubo_write_lit(render.device,
+                    render.forward_temporal_ubo, &camera.position,
+                    &prev_view_proj, &sun_dir_vec, &sun_color, &ambient_col);
+                rhi_cmd_bind_uniform_buffer(cmd, render.forward_temporal_ubo,
+                    (u32)render.temporal_ubo_binding);
                 }
 
                 /* R445: group instances by MeshRef.mesh_index — previously every

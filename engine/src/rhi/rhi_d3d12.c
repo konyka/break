@@ -1992,7 +1992,15 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     device_local = rhi_d3d12_buffer_wants_device_local(desc);
-    allow_uav = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0u;
+    /* R636: ALLOW_UNORDERED_ACCESS is only legal on a DEFAULT-heap
+     * resource. A STORAGE buffer without initial data lands on the UPLOAD
+     * heap, and CreateCommittedResource refuses the flag there -- so the
+     * buffer came back as an invalid handle and EVERY binding of it was
+     * silently unbound. The skinned vertex shader then read a descriptor
+     * that was never set and the GPU hung (DXGI_ERROR_DEVICE_HUNG). The
+     * D3D12 storage binder is a no-op stub, so the flag buys nothing here:
+     * drop it rather than fail the creation. */
+    allow_uav = (desc->usage & RHI_BUFFER_USAGE_STORAGE) != 0u && device_local != 0u;
     if (!device_local) {
         /* UPLOAD heaps are persistently GENERIC_READ. */
         initial_state = D3D12_RESOURCE_STATE_GENERIC_READ;
@@ -2518,6 +2526,275 @@ static void rhi_d3d12_uniform_markers(const char *src, usize len,
     }
 }
 
+/* R636: the HLSL constant-buffer packing rules, as dxc applies them to a
+ * struct declared in a cbuffer: a matrix is one 16-byte column per column
+ * of the type (float4x4 -> 64 bytes) on a 16-byte boundary, a float3 is 12
+ * bytes but still 16-byte aligned, a float2 is 8 bytes on an 8-byte
+ * boundary, and a scalar is 4 bytes.
+ *
+ * The `// rhi:uniform` markers publish byte offsets into that same block,
+ * so a marker that disagrees with the struct it names is a silent bug: the
+ * write lands on the wrong member and the shader reads a value nobody
+ * wrote. motion_blur's u_mb_prev_vp said 32 where the layout says 80 --
+ * inside the 64-byte u_mb_inv_proj -- and the depth-reconstruction branch
+ * then read a matrix that was never written.
+ *
+ * The check is fail-closed: the pipeline is refused rather than built on
+ * offsets nobody can vouch for. */
+#define RHI_D3D12_MAX_CBUFFER_MEMBERS 32u
+
+typedef struct {
+    char name[SHADER_IO_NAME_MAX];
+    UINT offset;
+} RHI_D3D12CbufferMember;
+
+/* Size and alignment of one cbuffer member type, or 0 when the type is not
+ * one this checker understands (a struct member with a semantic, say, which
+ * is not a cbuffer member at all). */
+static int rhi_d3d12_hlsl_member_layout(const char *type, usize type_len,
+                                         UINT *out_size, UINT *out_align) {
+    static const struct { const char *name; UINT size; UINT align; } scalars[] = {
+        { "float", 4u, 4u },  { "int", 4u, 4u },    { "uint", 4u, 4u },
+        { "bool", 4u, 4u },   { "half", 4u, 4u },   { "float2", 8u, 8u },
+        { "int2", 8u, 8u },   { "uint2", 8u, 8u },  { "float3", 12u, 16u },
+        { "int3", 12u, 16u },{ "uint3", 12u, 16u },{ "float4", 16u, 16u },
+        { "int4", 16u, 16u }, { "uint4", 16u, 16u },
+    };
+    usize i;
+    for (i = 0u; i < sizeof(scalars) / sizeof(scalars[0]); ++i) {
+        if (strlen(scalars[i].name) == type_len &&
+            memcmp(scalars[i].name, type, type_len) == 0) {
+            *out_size = scalars[i].size;
+            *out_align = scalars[i].align;
+            return 1;
+        }
+    }
+    /* floatRxC: the cbuffer stores C columns of 16 bytes each. */
+    if (type_len >= 8u && memcmp(type, "float", 5u) == 0 &&
+        type[5] >= '2' && type[5] <= '4' && type[6] == 'x' &&
+        type[7] >= '2' && type[7] <= '4' && type_len == 8u) {
+        *out_size = (UINT)(type[7] - '0') * 16u;
+        *out_align = 16u;
+        return 1;
+    }
+    return 0;
+}
+
+/* Locate `struct <name> {` and hand back the body between the braces. */
+static int rhi_d3d12_hlsl_struct_body(const char *src, usize len,
+                                       const char *name, const char **out_body,
+                                       usize *out_len) {
+    const char *p = src;
+    const char *end = src + len;
+    char pattern[64];
+    int written = snprintf(pattern, sizeof(pattern), "struct %s", name);
+    if (written <= 0) return 0;
+    while (p < end) {
+        const char *hit = rhi_d3d12_hlsl_find(p, end, pattern);
+        const char *brace;
+        const char *scan;
+        int depth = 0;
+        if (hit == NULL) return 0;
+        brace = hit + written;
+        while (brace < end && *brace != '{') {
+            if (*brace == ';') return 0;   /* a forward declaration */
+            ++brace;
+        }
+        if (brace >= end) return 0;
+        for (scan = brace; scan < end; ++scan) {
+            if (*scan == '{') depth++;
+            else if (*scan == '}') {
+                depth--;
+                if (depth == 0) {
+                    *out_body = brace + 1;
+                    *out_len = (usize)(scan - brace - 1);
+                    return 1;
+                }
+            }
+        }
+        p = hit + written;
+    }
+    return 0;
+}
+
+/* The layout of the struct the push block is declared with: the markers
+ * publish offsets into the b0 cbuffer, so that is the struct they have to
+ * agree with. */
+static int rhi_d3d12_hlsl_push_layout(const char *src, usize len,
+                                       RHI_D3D12CbufferMember *out,
+                                       usize capacity, usize *out_count) {
+    const char *bind;
+    const char *end = src + len;
+    const char *body;
+    usize body_len;
+    char struct_name[SHADER_IO_NAME_MAX];
+    usize n = 0u;
+    *out_count = 0u;
+    /* The markers publish offsets into the b0 cbuffer, so the struct they
+     * have to agree with is the one bound at b0 -- not the first cbuffer in
+     * the file, which is the b1 temporal block in the sidecars that have
+     * one. */
+    bind = src;
+    struct_name[0] = '\0';
+    while (bind < end) {
+        const char *hit = rhi_d3d12_hlsl_find(bind, end, "ConstantBuffer<");
+        const char *scan;
+        usize name_len = 0u;
+        if (hit == NULL) break;
+        scan = hit + strlen("ConstantBuffer<");
+        while (scan < end && *scan != '>' && name_len + 1u < sizeof(struct_name)) {
+            if (rhi_d3d12_hlsl_ident_char(*scan))
+                struct_name[name_len++] = *scan;
+            else if (name_len > 0u) break;
+            ++scan;
+        }
+        struct_name[name_len] = '\0';
+        if (name_len == 0u) { bind = scan; continue; }
+        /* Is this declaration the b0 one? */
+        {
+            const char *probe = scan;
+            for (; probe < end && *probe != ';'; ++probe) {
+                if (rhi_d3d12_hlsl_find(probe, end, "register(b0") == probe)
+                    goto found;
+                if (*probe == '\n') break;   /* the declaration ended */
+            }
+        }
+        bind = hit + strlen("ConstantBuffer<");
+    }
+found:
+    if (struct_name[0] == '\0') return 1;   /* no push block: nothing to check */
+    if (!rhi_d3d12_hlsl_struct_body(src, len, struct_name, &body, &body_len))
+        return 1;
+    /* Members are `type name;` declarations; a member with a semantic
+     * (`: SV_Position`) is not a cbuffer member and is skipped. The body is
+     * copied with its comments blanked out first: a trailing `// 16` comment
+     * sits AFTER the semicolon, so splitting the raw text on ';' would make
+     * every declaration but the first start with the comment. */
+    {
+        char buf[2048];
+        usize n_copy = body_len < sizeof(buf) - 1u ? body_len : sizeof(buf) - 1u;
+        char *p;
+        char *pend;
+        char *semi;
+        char *colon;
+        char *d;
+        char *type_start;
+        char *type_end;
+        char *name_start;
+        char *name_end;
+        char type[32];
+        usize type_len;
+        UINT size = 0u;
+        UINT align_ = 0u;
+        UINT offset = 0u;
+        memcpy(buf, body, n_copy);
+        buf[n_copy] = '\0';
+        /* Blank the comments in the COPY: the source is const and a trailing
+         * `// 16` comment sits AFTER the semicolon, so splitting the raw
+         * text on ';' would make every declaration but the first start with
+         * the comment. */
+        p = buf;
+        pend = buf + n_copy;
+        while (p < pend) {
+            if (p + 1 < pend && p[0] == '/' && p[1] == '/') {
+                while (p < pend && *p != '\n') *p++ = ' ';
+                continue;
+            }
+            if (p + 1 < pend && p[0] == '/' && p[1] == '*') {
+                *p++ = ' ';
+                *p++ = ' ';
+                while (p + 1 < pend && !(p[0] == '*' && p[1] == '/')) {
+                    if (*p != '\n') *p = ' ';
+                    ++p;
+                }
+                if (p + 1 < pend) { *p = ' '; *(p + 1) = ' '; p += 2; }
+                continue;
+            }
+            ++p;
+        }
+        p = buf;
+        while (p < pend) {
+            semi = (char *)memchr(p, ';', (size_t)(pend - p));
+            if (semi == NULL) break;
+            colon = (char *)memchr(p, ':', (size_t)(semi - p));
+            if (colon != NULL) {   /* has a semantic: not a cbuffer member */
+                p = semi + 1;
+                continue;
+            }
+            d = p;
+            while (d < semi && (*d == ' ' || *d == '\t' || *d == '\r' ||
+                                *d == '\n')) ++d;
+            type_start = d;
+            while (d < semi && *d != ' ' && *d != '\t' && *d != '\r' &&
+                   *d != '\n') ++d;
+            type_end = d;
+            while (d < semi && (*d == ' ' || *d == '\t' || *d == '\r' ||
+                                *d == '\n')) ++d;
+            name_start = d;
+            while (d < semi && rhi_d3d12_hlsl_ident_char(*d)) ++d;
+            name_end = d;
+            type_len = (usize)(type_end - type_start);
+            if (type_len == 0u || type_len >= sizeof(type)) {
+                p = semi + 1;
+                continue;
+            }
+            memcpy(type, type_start, type_len);
+            type[type_len] = '\0';
+            if (!rhi_d3d12_hlsl_member_layout(type, type_len, &size, &align_)) {
+                p = semi + 1;
+                continue;
+            }
+            offset = (offset + align_ - 1u) / align_ * align_;
+            if (n < capacity) {
+                usize name_size = (usize)(name_end - name_start);
+                if (name_size > 0u && name_size < SHADER_IO_NAME_MAX) {
+                    memcpy(out[n].name, name_start, name_size);
+                    out[n].name[name_size] = '\0';
+                    out[n].offset = offset;
+                    n++;
+                }
+            }
+            offset += size;
+            p = semi + 1;
+        }
+    }
+    *out_count = n;
+    return 1;
+}
+
+/* Cross-check the markers against the push block's layout. Returns 0 when a
+ * marker disagrees, so the caller can refuse the pipeline. */
+static int rhi_d3d12_hlsl_markers_match_layout(const char *src, usize len) {
+    RHI_D3D12UniformLoc markers[RHI_D3D12_MAX_UNIFORM_LOCS];
+    RHI_D3D12CbufferMember members[RHI_D3D12_MAX_CBUFFER_MEMBERS];
+    UINT marker_count = 0u;
+    usize member_count = 0u;
+    UINT i;
+    int ok = 1;
+    rhi_d3d12_uniform_markers(src, len, markers, &marker_count);
+    if (marker_count == 0u) return 1;
+    if (!rhi_d3d12_hlsl_push_layout(src, len, members,
+                                    RHI_D3D12_MAX_CBUFFER_MEMBERS,
+                                    &member_count))
+        return 1;
+    if (member_count == 0u) return 1;
+    for (i = 0u; i < marker_count; ++i) {
+        usize j;
+        for (j = 0u; j < member_count; ++j) {
+            if (strcmp(members[j].name, markers[i].name) != 0) continue;
+            if (members[j].offset == markers[i].offset) break;
+            LOG_ERROR("D3D12: uniform %s is published at byte %u but the "
+                      "cbuffer layout puts it at %u -- the marker and the "
+                      "struct disagree, so the write would land on the "
+                      "wrong member. Refusing the shader.", markers[i].name,
+                      (unsigned)markers[i].offset, (unsigned)members[j].offset);
+            ok = 0;
+            break;
+        }
+    }
+    return ok;
+}
+
 /* ---- root signature generation (Task 5) ---- */
 /* One pass over reflected bindings: PUSH_CONSTANT folds into the constants
  * param the caller added first; UNIFORM -> CBV table; SAMPLER -> SRV table +
@@ -2877,6 +3154,12 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        /* R636: same fail-closed marker/layout cross-check as the graphics
+         * path. */
+        if (!rhi_d3d12_hlsl_markers_match_layout(cs->source, cs->source_len)) {
+            free(pd);
+            return RHI_HANDLE_NULL;
+        }
         rhi_d3d12_uniform_markers(cs->source, cs->source_len, pd->uniforms,
                                   &pd->uniform_count);
         pd->root_sig = rhi_d3d12_root_signature_create(ctx, &builder, 1u,
@@ -2927,6 +3210,17 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         }
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
+        /* R636: the published uniform offsets have to agree with the cbuffer
+         * layout of the struct they name, or a write lands on the wrong
+         * member and the shader reads a value nobody wrote. Fail closed: a
+         * pipeline built on offsets nobody can vouch for is worse than no
+         * pipeline. */
+        if (!rhi_d3d12_hlsl_markers_match_layout(vs->source, vs->source_len) ||
+            (ps != NULL &&
+             !rhi_d3d12_hlsl_markers_match_layout(ps->source, ps->source_len))) {
+            free(pd);
+            return RHI_HANDLE_NULL;
+        }
         rhi_d3d12_uniform_markers(vs->source, vs->source_len, pd->uniforms,
                                   &pd->uniform_count);
         if (ps != NULL)
@@ -4385,7 +4679,11 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0,
         ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
         read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-        if (bd->state != read_state) {
+        /* R636: an UPLOAD-heap buffer lives in GENERIC_READ for its whole
+         * life and may not be transitioned; GENERIC_READ already implies
+         * both shader-read states, so the barrier is not just illegal there
+         * -- it is unnecessary. */
+        if (bd->device_local && bd->state != read_state) {
             rhi_d3d12_transition(list, bd->resource, bd->state, read_state);
             bd->state = read_state;
         }
@@ -4763,7 +5061,15 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     out.color_tex = rhi_texture_create(dev, &tex_desc);
     if (!rhi_handle_valid(out.color_tex)) return out;
     tex_desc.format = RHI_FORMAT_D32_FLOAT;
-    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    /* R636: the depth attachment goes through the depth_samplable path, so
+     * the resource is the canonical R32_TYPELESS and can be aliased both as
+     * a D32_FLOAT depth-stencil view (here) and as an R32_FLOAT shader
+     * resource view (by every post pass that samples the scene depth).
+     * A plain D32_FLOAT resource cannot back an SRV at all: the SRV
+     * creation failed, the descriptor stayed empty, and the shader read a
+     * null descriptor -- which is how TAA and motion blur took the device
+     * down on the first frame (0x887a0001 at present time). */
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tex_desc, 1, 0u);
     if (!rhi_handle_valid(out.depth_tex)) {
         rhi_texture_destroy(dev, out.color_tex);
         memset(&out, 0, sizeof(out));
@@ -4786,8 +5092,19 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     }
     ID3D12Device_CreateRenderTargetView(ctx->device, color->resource, NULL,
         rhi_d3d12_descriptor_cpu(&ctx->rtv_alloc, fd->rtv_slot));
-    ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
-        rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot));
+    {
+        /* R636: the depth resource is R32_TYPELESS (see above), so the
+         * depth-stencil view has to name the D32_FLOAT aspect explicitly --
+         * a NULL-desc default would guess from the typeless format and
+         * fail. */
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, fd->dsv_slot));
+    }
     /* R617/R619 portable contract: the bind clear color is caller-owned and
      * defaults to {0.05, 0.05, 0.1, 1.0}; depth always clears to 1.0. */
     fd->clear_color[0] = 0.05f; fd->clear_color[1] = 0.05f;
@@ -5016,7 +5333,10 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         }
     }
     tex_desc.format = RHI_FORMAT_D32_FLOAT;
-    out.depth_tex = rhi_texture_create(dev, &tex_desc);
+    /* R636: same typeless-alias treatment as the plain FBO's depth
+     * attachment -- the forward scene's depth is the one TAA, motion blur
+     * and every other depth-reading post pass samples. */
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tex_desc, 1, 0u);
     if (!rhi_handle_valid(out.depth_tex)) {
         rhi_d3d12_mrt_cleanup(dev, &out, md);
         return (RHIMRTFBO){0};
@@ -5046,12 +5366,19 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
     {
         RHI_D3D12Texture *depth = (RHI_D3D12Texture *)
             rhi_get_resource_typed(dev, out.depth_tex, RHI_RES_TEXTURE);
+        D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
         if (depth == NULL) {
             rhi_d3d12_mrt_cleanup(dev, &out, md);
             return (RHIMRTFBO){0};
         }
-        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource, NULL,
-            rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
+        /* R636: the depth resource is R32_TYPELESS, so the depth-stencil
+         * view names the D32_FLOAT aspect explicitly. */
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, md->dsv_slot));
     }
     if (dev->free_count == 0u) {
         rhi_d3d12_mrt_cleanup(dev, &out, md);
