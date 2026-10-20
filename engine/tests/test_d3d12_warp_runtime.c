@@ -5468,6 +5468,86 @@ TEST(offscreen_fbo_budget_covers_the_demo_post_chain) {
     for (i = 0; i < N; ++i) rhi_offscreen_fbo_destroy(g_dev, &fbos[i]);
 }
 
+/* Swapchain orientation probe: a quad covering NDC y > 0 drawn straight to
+ * the back buffer must land in the TOP half of the presented image, which is
+ * what rhi_screenshot returns first (top-down rows, rhi.h contract). Drawn
+ * twice: once under the viewport rhi_frame_begin installs, once after an
+ * explicit rhi_cmd_set_viewport -- the call the UI canvas makes. */
+static int warp_swapchain_top_half_green(int explicit_viewport) {
+    static const float quad[6 * 3] = {
+        -1, 0,0,  1, 0,0,  1, 1,0,  -1, 0,0,  1, 1,0,  -1, 1,0
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    RHIShader vs, fs;
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    static unsigned char px[64 * 64 * 4];
+    int ok = 1, y;
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;
+    /* A viewport flip also flips screen-space winding; this probe measures
+     * orientation only, so facing must not decide whether it draws. */
+    pdesc.disable_culling = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(quad);
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    cmd = rhi_frame_begin(g_dev);
+    if (cmd == NULL || !rhi_handle_valid(pipe)) return -1;
+    rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
+    if (explicit_viewport)
+        rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, 64.0f, 64.0f, 0.0f, 1.0f);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, identity, sizeof(identity));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    if (rhi_frame_end_ex(g_dev) != RHI_RESULT_OK) return -1;
+    memset(px, 0, sizeof(px));
+    if (!rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px))) return -1;
+    /* 1 = exactly the top half green, 0 = exactly the bottom half, -1 =
+     * anything else (nothing drawn, or a partial cover). */
+    {
+        int top = 1, bottom = 1;
+        for (y = 0; y < 64; ++y) {
+            int green = px[(y * 64 + 32) * 4 + 1] > 200;
+            if (green != (y < 32)) top = 0;
+            if (green != (y >= 32)) bottom = 0;
+        }
+        ok = top ? 1 : (bottom ? 0 : -1);
+    }
+    printf("  swapchain probe (%s viewport): row 0 green=%d, row 63 green=%d\n",
+           explicit_viewport ? "explicit" : "frame_begin",
+           px[(0 * 64 + 32) * 4 + 1] > 200, px[(63 * 64 + 32) * 4 + 1] > 200);
+    (void)rhi_present_ex(g_dev);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    return ok;
+}
+
+/* R638: the two viewport conventions, pinned on the presented image.
+ * rhi_cmd_set_viewport is the RHI's +Y-up viewport (the UI canvas relies on
+ * it, R715) and must put NDC y > 0 in the top half. The frame's default
+ * viewport is the twin of VK's positive {0, 0, w, h}, which puts NDC +Y at
+ * the bottom; that is what keeps offscreen targets in GL row order for the
+ * post chain, and it is asserted as such so the two can never silently
+ * collapse into one again -- which is exactly the bug this pins. */
+TEST(swapchain_draws_put_ndc_up_at_the_top_of_the_screen) {
+    int frame_default = warp_swapchain_top_half_green(0);
+    int explicit_vp = warp_swapchain_top_half_green(1);
+    ASSERT_EQ(frame_default, 0);
+    ASSERT_EQ(explicit_vp, 1);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5512,6 +5592,7 @@ int main(void) {
     RUN_TEST(post_process_initialises_and_blits_on_d3d12);
     RUN_TEST(tonemap_and_luminance_sidecars_match_the_aces_formula);
     RUN_TEST(offscreen_fbo_budget_covers_the_demo_post_chain);
+    RUN_TEST(swapchain_draws_put_ndc_up_at_the_top_of_the_screen);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

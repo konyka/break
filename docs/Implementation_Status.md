@@ -21,7 +21,13 @@
   - **测试**：`post_process_initialises_and_blits_on_d3d12` 驱动真实 `PostProcess`：init 必须成功、三个 uniform 位置可解析、`tex_pipe` 逐像素拷贝 128 灰、整条 bloom 链（extract + 4 次 blur + composite）跑完后 composite 等于输入（灰度低于阈值，bloom 贡献为 0）。WARP 与 RTX 4060 均通过；**反向验证**：把 `pp_create_pipe` 的 sidecar 开关强制为 false，该用例在 `post_process_init` 处转红。\r
 - **色调映射上 D3D12**：新增 `tonemap_hlsl.frag`（ACES / AgX / Khronos-neutral，与 GLSL 同一常数；GLSL 的 `v * mat3(...)` 与 HLSL 的 `mul(float3x3(...), v)` 用同一组字面量）和 `luminance_hlsl.frag`（16×16 对数平均 + 时间自适应），`tonemap.c` 在 sidecar 后端走 path API。测试 `tonemap_and_luminance_sidecars_match_the_aces_formula`：非灰输入 (2.0, 0.25, 0.25)，先回读 1×1 亮度目标等于其 Rec.709 亮度，再逐通道比对按同一公式算出的 ACES 期望字节（±1）。**反向验证**：让 tonemap 从 t0 而不是 t1 读亮度，红通道 236 ≠ 245，用例转红。（第一版用灰色输入，这个错绑定恰好算出同样的值，测不出来——所以改成非灰。）\r
 - **DSV 描述符堆只有 16 个槽——这是 demo 里一大串后处理静默失效的真正原因**。每个离屏 FBO 占一个 RTV + 一个 DSV，demo 建的 FBO 远超 16，第 17 个起全部失败，于是 TAA、FXAA、motion blur、lens effects、contact shadow、第二个 tonemap、color grade 等都在 init 打印「FBO/sampler creation failed」后自我禁用。RTV/DSV 堆只在 CPU 侧、描述符很小，D3D12 对它们没有实际上限，所以两者都提到 1024（`rhi_d3d12.h`）。FBO 创建失败现在会明确告警是哪个堆耗尽。测试 `offscreen_fbo_budget_covers_the_demo_post_chain` 一次建 64 个 FBO 必须全部成功；把 DSV 改回 16，恰好第 17 个（索引 16）被拒，转红。修后 demo 日志里不再有 FBO 创建失败，截图均值约 (163, 165, 166)。\r
-- **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线以及调试 UI 字体管线的 sidecar（日志里仍有大量「inline source」告警），所以画面没有 SSAO、没有调试 UI 文字，与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
+- **调试 UI 上 D3D12，且修掉了它「上下颠倒、落在左下角」的问题**（本会话最初报告的症状在 D3D12 上的复现）：\r
+  - **sidecar**：`font_hlsl.{vert,frag}`、`ui_img_hlsl.{vert,frag}`；`my_vgcanvas_break_rhi.c` 与 `myui_break.c`（合成管线复用 `post_hlsl.vert` + `post_tex_hlsl.frag`）在 sidecar 后端走 path API。「inline source」告警从 535 条降到 45 条。\r
+  - **方向 bug 的根因**：`rhi_cmd_set_viewport` 是 RHI 的「+Y 向上」视口（R715 起 UI 画布靠它声明朝向），VK 实现是 `{x, y+h, w, -h}`。D3D12 版**照抄了 VK 的负高度**——但 Vulkan 的 NDC y 朝下、D3D12 朝上，符号不能照搬：D3D12 的负高度恰恰等于 VK 的**正**高度。于是 D3D12 的 `rhi_cmd_set_viewport` 与帧默认视口完全相同，UI 和一切依赖它的绘制都上下颠倒。修复：改为正高度 `{x, y, w, h}`。\r
+  - **测试** `swapchain_draws_put_ndc_up_at_the_top_of_the_screen`：直接往后台缓冲画一个覆盖 NDC y>0 的四边形，用 `rhi_screenshot`（自上而下行序）判断它落在上半还是下半。**两种视口都钉住**：显式 `rhi_cmd_set_viewport` 必须在上半；帧默认视口（VK 正高度 `{0,0,w,h}` 的孪生，让离屏目标保持 GL 行序供后处理采样）必须在下半——这样两者不会再悄悄变成同一个。修复前显式视口落在下半，测试红；WARP 与 RTX 4060 修后均通过。\r
+  - demo 截图：FPS 徽章回到左上角、诊断文字逐行向下可读。\r
+- **尚未定论：D3D12 的 3D 场景本身可能也是上下颠倒的**。关掉 UI 后与 VK 同帧对比，D3D12 画面顶部是绿色地形、底部是一块建筑，VK 顶部是天空；但两者整体画面差异很大（D3D12 缺 SSAO/延迟渲染等），简单的上下翻转相关性并不支持「整体翻转」（原样 0.29，翻转后 0.20）。需要单独用已知几何做定向测试，本轮不改。\r
+- **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线的 sidecar，画面与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
 \r
 ## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
 \r

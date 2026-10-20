@@ -3955,13 +3955,24 @@ void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h,
     ID3D12GraphicsCommandList *list = rhi_d3d12_cmd_list(ctx);
     D3D12_VIEWPORT vp;
     if (list == NULL) return;
-    /* R225-A parity with VK: the RHI viewport convention is GL bottom-left;
-     * a negative-height viewport flips to D3D12's top-left origin while
-     * honoring the recorded depth range. */
+    /* This is the RHI's "+Y up" viewport (R715: the UI canvas states its
+     * orientation through it), the twin of VK's {x, y + h, w, -h}.
+     *
+     * The sign does NOT carry over from Vulkan. Vulkan's NDC y points down,
+     * so VK needs a negative height to put NDC +Y at the top; D3D12's NDC y
+     * already points up, so the positive-height viewport does that, and a
+     * negative height is what turns +Y downward -- i.e. D3D12's negative
+     * height is VK's POSITIVE one. This used to copy VK's sign and was
+     * therefore identical to the frame/FBO default viewports
+     * (rhi_d3d12_set_full_target_viewport, which match VK's positive
+     * {0, 0, w, h}); R638 measured a quad covering NDC y > 0 landing in the
+     * bottom half of the back buffer under both, and the demo's UI drawing
+     * upside down at the bottom of the window. Covered by
+     * swapchain_draws_put_ndc_up_at_the_top_of_the_screen. */
     vp.TopLeftX = x;
-    vp.TopLeftY = y + h;
+    vp.TopLeftY = y;
     vp.Width = w;
-    vp.Height = -h;
+    vp.Height = h;
     vp.MinDepth = min_depth;
     vp.MaxDepth = max_depth;
     ID3D12GraphicsCommandList_RSSetViewports(list, 1u, &vp);

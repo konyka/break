@@ -1030,10 +1030,15 @@ static RHIShader load_shader(RHIDevice *device, const char *path, bool fragment)
   return shader;
 }
 
-static RHIPipeline create_pipeline(RHIDevice *device, const char *vert_path,
+static RHIPipeline create_pipeline(RHIDevice *device, bool sidecar,
+                                   const char *vert_path,
                                    const char *frag_path) {
-  RHIShader vs = load_shader(device, vert_path, false);
-  RHIShader fs = load_shader(device, frag_path, true);
+  /* D3D12 never compiles source in-process: on a sidecar backend the GLSL
+   * path resolves to the precompiled <name>_hlsl twin instead. */
+  RHIShader vs = sidecar ? rhi_shader_create_path(device, vert_path, false)
+                         : load_shader(device, vert_path, false);
+  RHIShader fs = sidecar ? rhi_shader_create_path(device, frag_path, true)
+                         : load_shader(device, frag_path, true);
   RHIPipeline pipe;
   RHIPipelineDesc desc;
   if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
@@ -1104,8 +1109,10 @@ my_vgcanvas_t *my_vgcanvas_break_rhi_create(const my_allocator_t *allocator,
     rhi_destroy((my_vgcanvas_t *)c);
     return NULL;
   }
-  c->font_pipeline = create_pipeline(device, font_vert, font_frag);
-  c->image_pipeline = create_pipeline(device, image_vert, image_frag);
+  c->font_pipeline = create_pipeline(device, caps.shader_sidecar_paths,
+                                     font_vert, font_frag);
+  c->image_pipeline = create_pipeline(device, caps.shader_sidecar_paths,
+                                      image_vert, image_frag);
   if (!rhi_handle_valid(c->font_pipeline) ||
       !rhi_handle_valid(c->image_pipeline)) {
     rhi_destroy((my_vgcanvas_t *)c);
