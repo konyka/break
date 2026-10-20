@@ -121,7 +121,7 @@ TEST(indirect_stride_gate_per_topology) {
 
 /* Review fix 3 regression: a GPU-busy youngest free slot must not mask
  * deeper completed slots (the old top-only check falsely exhausted the
- * heap). Uses the 16-slot DSV allocator, idle in this test. */
+ * heap). Uses the DSV allocator, idle in this test. */
 TEST(descriptor_take_scans_past_busy_top) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)g_dev->backend_data;
     RHI_D3D12DescriptorAlloc *alloc = &ctx->dsv_alloc;

@@ -1,6 +1,8 @@
 #include <rhi/rhi.h>
 #include <renderer/indirect_draw.h>
 #include <renderer/post_process.h>
+#include <renderer/tonemap.h>
+#include <math.h>
 #include "test_framework.h"
 /* Forces WARP via ENGINE_D3D12_WARP=1 (set in CTest ENVIRONMENT) so the
  * windows-d3d12 lane has a deterministic software GPU-runtime floor.
@@ -5351,6 +5353,121 @@ TEST(post_process_initialises_and_blits_on_d3d12) {
     rhi_texture_destroy(g_dev, src);
 }
 
+static double warp_aces(double x) {
+    double v = (x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14);
+    return v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v);
+}
+
+/* R638: tonemap and luminance on D3D12, through the real TonemapSystem.
+ * Before the sidecars, tonemap_init failed exactly like PostProcess did
+ * (inline GLSL refused), so the D3D12 frame went out untonemapped.
+ *
+ * Constant HDR input (2.0, 0.25, 0.25) in RGBA16F. The luminance pass
+ * log-averages a constant, so current = its Rec.709 luma L; dt is large
+ * enough that adaptation saturates (1 - exp(-speed*dt) == 1 in float), so
+ * adapted = L. Tonemap then uses exposure = mix(1.5, 1 / (L + 0.5), 0.8) and
+ * each channel is aces(c * exposure) ^ (1 / 2.2), computed below from the
+ * same formula rather than hard-coded. The luminance target is read back
+ * too, so a wrong t1 binding cannot hide behind a lucky exposure. */
+TEST(tonemap_and_luminance_sidecars_match_the_aces_formula) {
+    static u16 hdr[4 * 4 * 4];
+    TonemapSystem tm;
+    RHITextureDesc td;
+    RHITexture src;
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    u16 lum[4];
+    /* Non-grey on purpose: luminance (0.62205) differs from every channel,
+     * so sampling the scene where the luminance belongs changes the result. */
+    static const double in_rgb[3] = { 2.0, 0.25, 0.25 };
+    const double luma = 0.2126 * 2.0 + 0.7152 * 0.25 + 0.0722 * 0.25;
+    const double exposure = 0.2 * 1.5 + 0.8 * (1.0 / (luma + 0.5));
+    int want[3];
+    int i;
+    for (i = 0; i < 3; ++i)
+        want[i] = (int)floor(pow(warp_aces(in_rgb[i] * exposure), 1.0 / 2.2) * 255.0 + 0.5);
+    for (i = 0; i < 4 * 4 * 4; i += 4) {
+        hdr[i + 0] = 0x4000u; hdr[i + 1] = 0x3400u;   /* 2.0, 0.25 */
+        hdr[i + 2] = 0x3400u; hdr[i + 3] = 0x3C00u;   /* 0.25, 1.0 */
+    }
+    memset(&td, 0, sizeof(td));
+    td.width = 4u; td.height = 4u;
+    td.format = RHI_FORMAT_R16G16B16A16_SFLOAT; td.mip_levels = 1u;
+    td.data = hdr;
+    src = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(src));
+
+    ASSERT_TRUE(tonemap_init(&tm, g_dev));
+    ASSERT_TRUE(rhi_handle_valid(tm.lum_pipe));
+    ASSERT_TRUE(tm.loc_exposure >= 0 && tm.loc_gamma >= 0 && tm.loc_mode >= 0);
+    ASSERT_TRUE(tm.loc_lum_speed >= 0 && tm.loc_lum_dt >= 0);
+    tm.mode = 0;
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    tonemap_update_auto_exposure(&tm, cmd, src, 8u, 8u, 100.0f);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    tonemap_apply(&tm, cmd, src, 8u, 8u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+
+    memset(lum, 0, sizeof(lum));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, tm.lum_fbo[tm.lum_idx].color_tex,
+                                        lum, sizeof(lum)));
+    {
+        float adapted = warp_half_to_float(lum[0]);
+        ASSERT_TRUE(fabs(adapted - luma) < 0.005);
+    }
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < (int)sizeof(px); i += 4) {
+        int c;
+        for (c = 0; c < 3; ++c) {
+            int d = (int)px[i + c] - want[c];
+            if (d < -1 || d > 1)
+                printf("  px %d ch %d = %d, want %d\n", i / 4, c, (int)px[i + c], want[c]);
+            ASSERT_TRUE(d >= -1 && d <= 1);
+        }
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    tonemap_shutdown(&tm);
+    rhi_texture_destroy(g_dev, src);
+}
+
+/* R638: every offscreen FBO takes one RTV and one DSV. The DSV heap used to
+ * hold 16, so the demo's 17th FBO failed and about a dozen post subsystems
+ * (TAA, FXAA, motion blur, lens effects, the second tonemap, ...) disabled
+ * themselves at init. 64 live FBOs is comfortably above what the demo
+ * creates; all of them must come back valid. */
+TEST(offscreen_fbo_budget_covers_the_demo_post_chain) {
+    enum { N = 64 };
+    static RHIOffscreenFBO fbos[N];
+    RHIOffscreenFBODesc desc;
+    int i;
+    memset(&desc, 0, sizeof(desc));
+    desc.width = 4u; desc.height = 4u;
+    desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    desc.sample_count = 1u;
+    for (i = 0; i < N; ++i) {
+        fbos[i] = rhi_offscreen_fbo_create_desc(g_dev, &desc);
+        if (!rhi_handle_valid(fbos[i].fb)) printf("  fbo %d refused\n", i);
+        ASSERT_TRUE(rhi_handle_valid(fbos[i].fb));
+    }
+    for (i = 0; i < N; ++i) rhi_offscreen_fbo_destroy(g_dev, &fbos[i]);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5393,6 +5510,8 @@ int main(void) {
     RUN_TEST(storage_buffers_receive_raw_and_structured_compute_writes);
     RUN_TEST(indirect_draw_system_compacts_and_draws_on_the_gpu);
     RUN_TEST(post_process_initialises_and_blits_on_d3d12);
+    RUN_TEST(tonemap_and_luminance_sidecars_match_the_aces_formula);
+    RUN_TEST(offscreen_fbo_budget_covers_the_demo_post_chain);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

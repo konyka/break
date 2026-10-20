@@ -105,7 +105,7 @@ UINT rhi_d3d12_descriptor_take(RHI_D3D12Context *ctx,
     /* Scan the whole free stack (bottom = oldest retire) for a slot whose
      * retire fence has completed. A GPU-busy youngest entry must not mask
      * deeper completed slots (review fix: the old top-only check produced
-     * false exhaustion under churn, most acute on the 16-slot DSV heap).
+     * false exhaustion under churn, most acute on the then 16-slot DSV heap).
      * Still fail-closed: returns UINT_MAX only when every free slot is
      * genuinely in flight. */
     completed = ID3D12Fence_GetCompletedValue(ctx->fence);
@@ -5288,6 +5288,8 @@ RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev,
     fd->rtv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->rtv_alloc);
     fd->dsv_slot = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
     if (fd->rtv_slot == UINT_MAX || fd->dsv_slot == UINT_MAX) {
+        LOG_WARN("D3D12: offscreen FBO refused -- %s descriptor heap exhausted",
+                 fd->rtv_slot == UINT_MAX ? "RTV" : "DSV");
         retire = rhi_d3d12_retire_fence(ctx);
         if (fd->rtv_slot != UINT_MAX)
             rhi_d3d12_descriptor_give_back(&ctx->rtv_alloc, fd->rtv_slot, retire);

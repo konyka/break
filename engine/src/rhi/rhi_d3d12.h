@@ -34,10 +34,19 @@ typedef enum RHI_D3D12CreateFailure {
  * CBV/SRV/UAV heap aligns with the RHI slot-table model (RHI_MAX_RESOURCES
  * 4096, rhi_backend_internal.h:8) so any live resource can hold a view;
  * RTV/DSV/sampler heaps track the FBO budget. The sampler heap stays far
- * below the D3D12 shader-visible sampler hard cap (2048). */
+ * below the D3D12 shader-visible sampler hard cap (2048).
+ *
+ * R638: DSV was 16 and RTV 64. Every offscreen FBO takes one of each (the
+ * colour target an RTV, its depth a DSV), and the demo creates well over 16
+ * -- post passes, the 1x1 luminance pair, TAA history, shadow atlas, point
+ * shadow faces -- so the 17th and every later FBO failed and roughly a dozen
+ * post subsystems disabled themselves ("FBO/sampler creation failed"). RTV
+ * and DSV heaps are CPU-only (never shader-visible), a descriptor is a few
+ * tens of bytes, and D3D12 has no practical cap on them, so both now match
+ * the resource table: one per live resource can always get a view. */
 #define RHI_D3D12_CBV_SRV_UAV_CAPACITY 4096u
-#define RHI_D3D12_RTV_CAPACITY 64u
-#define RHI_D3D12_DSV_CAPACITY 16u
+#define RHI_D3D12_RTV_CAPACITY 1024u
+#define RHI_D3D12_DSV_CAPACITY 1024u
 #define RHI_D3D12_SAMPLER_CAPACITY 64u
 
 /* Free-list descriptor allocator over one heap; slots retire through the
