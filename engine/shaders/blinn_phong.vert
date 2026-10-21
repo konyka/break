@@ -30,7 +30,7 @@ void main() {
     vUV = aUV;
     vec4 curr_clip = u_proj * u_view * world_pos;
 #ifdef FORWARD_MRT
-    vec4 prev_clip = u_prev_vp * u_prev_model * vec4(aPos, 1.0);
+    vec4 prev_clip = temporal.u_prev_vp * temporal.u_prev_model * vec4(aPos, 1.0);
     v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
 #endif
     gl_Position = curr_clip;
