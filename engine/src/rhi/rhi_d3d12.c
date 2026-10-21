@@ -707,6 +707,67 @@ HRESULT rhi_d3d12_resource_transition(RHI_D3D12Context *context,
     return S_OK;
 }
 
+#if defined(ENGINE_D3D12_DEBUG)
+/* R643: the debug layer writes its messages to OutputDebugString only, so a
+ * console run never saw them -- "debug layer enabled" and a clean log meant
+ * nothing. Drain the device's info queue into the engine log after every
+ * submit. Only CORRUPTION / ERROR / WARNING are reported; INFO and MESSAGE
+ * are the layer's own chatter, and so is [820] (a clear without an optimised
+ * clear value: a speed hint, emitted on every clear of every FBO). The queue
+ * is cleared after each drain so a message is reported once. */
+static void rhi_d3d12_drain_info_queue(RHI_D3D12Context *ctx) {
+    ID3D12InfoQueue *q = NULL;
+    UINT64 n, i;
+    if (ctx == NULL || ctx->device == NULL) return;
+    if (FAILED(ID3D12Device_QueryInterface(ctx->device, &IID_ID3D12InfoQueue,
+                                           (void **)&q)))
+        return;
+    n = ID3D12InfoQueue_GetNumStoredMessages(q);
+    for (i = 0u; i < n; ++i) {
+        SIZE_T len = 0u;
+        D3D12_MESSAGE *msg;
+        if (FAILED(ID3D12InfoQueue_GetMessage(q, i, NULL, &len)) || len == 0u)
+            continue;
+        msg = (D3D12_MESSAGE *)malloc(len);
+        if (msg == NULL) break;
+        if (SUCCEEDED(ID3D12InfoQueue_GetMessage(q, i, msg, &len)) &&
+            msg->ID != D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE) {
+            if (msg->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ||
+                msg->Severity == D3D12_MESSAGE_SEVERITY_ERROR) {
+                LOG_ERROR("D3D12 debug layer [%d]: %s", (int)msg->ID,
+                          msg->pDescription);
+                ctx->debug_layer_errors++;
+            } else if (msg->Severity == D3D12_MESSAGE_SEVERITY_WARNING) {
+                LOG_WARN("D3D12 debug layer [%d]: %s", (int)msg->ID,
+                         msg->pDescription);
+                ctx->debug_layer_warnings++;
+            }
+        }
+        free(msg);
+    }
+    ID3D12InfoQueue_ClearStoredMessages(q);
+    ID3D12InfoQueue_Release(q);
+}
+#else
+static void rhi_d3d12_drain_info_queue(RHI_D3D12Context *ctx) { (void)ctx; }
+#endif
+
+int rhi_d3d12_debug_layer_counts(RHIDevice *dev, UINT64 *errors,
+                                 UINT64 *warnings, UINT64 *rt_srv_aliases) {
+    RHI_D3D12Context *ctx;
+    if (dev == NULL || dev->backend_data == NULL) return 0;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    rhi_d3d12_drain_info_queue(ctx);
+    if (errors != NULL) *errors = ctx->debug_layer_errors;
+    if (warnings != NULL) *warnings = ctx->debug_layer_warnings;
+    if (rt_srv_aliases != NULL) *rt_srv_aliases = ctx->rt_srv_alias_count;
+#if defined(ENGINE_D3D12_DEBUG)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
                          UINT64 *out_fence) {
     ID3D12CommandList *lists[1];
@@ -718,6 +779,7 @@ HRESULT rhi_d3d12_submit(RHI_D3D12Context *context, UINT allocator_index,
     if (FAILED(hr)) return hr;
     lists[0] = (ID3D12CommandList *)context->command_lists[allocator_index];
     ID3D12CommandQueue_ExecuteCommandLists(context->direct_queue, 1u, lists);
+    rhi_d3d12_drain_info_queue(context);
     value = context->next_fence++;
     hr = ID3D12CommandQueue_Signal(context->direct_queue, context->fence, value);
     if (FAILED(hr)) return hr;
@@ -764,6 +826,7 @@ static RHIResult rhi_d3d12_oneshot_flush(RHI_D3D12Context *ctx) {
     if (FAILED(hr)) return RHI_RESULT_ERROR;
     lists[0] = (ID3D12CommandList *)ctx->upload_list;
     ID3D12CommandQueue_ExecuteCommandLists(ctx->direct_queue, 1u, lists);
+    rhi_d3d12_drain_info_queue(ctx);
     value = ctx->next_fence++;
     hr = ID3D12CommandQueue_Signal(ctx->direct_queue, ctx->fence, value);
     if (hr == DXGI_ERROR_DEVICE_REMOVED) return rhi_d3d12_note_device_lost(ctx);
@@ -1341,10 +1404,12 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     rhi_d3d12_set_full_target_viewport(ctx->command_lists[slot],
                                        sc->width, sc->height);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = sc->format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
     ctx->bound_pipeline = NULL;
     ctx->bound_pipeline_compute = 0u;
+    memset(ctx->live_srv, 0, sizeof(ctx->live_srv));
     ctx->frame_started = 1u;
     ctx->frame_submitted = 0u;
     ctx->acquire_in_flight = 1u;
@@ -2029,6 +2094,7 @@ static RHIResult rhi_d3d12_buffer_stage_upload(RHI_D3D12Context *ctx,
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Buffer *bd;
+    UINT64 alloc_size;
     u32 idx;
     UINT device_local;
     UINT allow_uav;
@@ -2050,14 +2116,25 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
         /* UPLOAD heaps are persistently GENERIC_READ. */
         initial_state = D3D12_RESOURCE_STATE_GENERIC_READ;
     } else if (desc->initial_data != NULL) {
-        initial_state = D3D12_RESOURCE_STATE_COPY_DEST;
+        /* R643: buffers are always created in COMMON whatever InitialState
+         * says (debug layer [1328]); the upload copy promotes it. */
+        initial_state = D3D12_RESOURCE_STATE_COMMON;
     } else {
         initial_state = allow_uav ? D3D12_RESOURCE_STATE_UNORDERED_ACCESS
                                   : D3D12_RESOURCE_STATE_COMMON;
     }
     bd = (RHI_D3D12Buffer *)calloc(1u, sizeof(*bd));
     if (bd == NULL) return RHI_HANDLE_NULL;
-    if (FAILED(rhi_d3d12_buffer_alloc(ctx, (UINT64)desc->size, device_local,
+    /* R643: rhi_cmd_bind_uniform_buffer declares a CBV over the 256-rounded
+     * size (D3D12 requires SizeInBytes % 256 == 0), so a buffer whose size is
+     * not a multiple of 256 had a view running past the end of its
+     * own resource -- debug layer [649], undefined reads of the tail. Any buffer
+     * can be bound that way (usage flags are not checked there), so every
+     * resource is allocated at the rounded size; bd->size stays the caller's
+     * size, so every copy and readback still covers exactly the caller's
+     * bytes. */
+    alloc_size = ((UINT64)desc->size + 255u) & ~(UINT64)255u;
+    if (FAILED(rhi_d3d12_buffer_alloc(ctx, alloc_size, device_local,
                                       allow_uav, initial_state,
                                       &bd->resource))) {
         free(bd);
@@ -2083,6 +2160,8 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
             if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
                 ID3D12GraphicsCommandList_CopyBufferRegion(ctx->upload_list,
                     bd->resource, 0u, staging, 0u, bd->size);
+                /* The copy implicitly promoted COMMON to COPY_DEST, so the
+                 * barrier starts there. */
                 rhi_d3d12_transition(ctx->upload_list, bd->resource,
                                      D3D12_RESOURCE_STATE_COPY_DEST,
                                      final_state);
@@ -2177,6 +2256,26 @@ typedef struct RHI_D3D12Pipeline {
     UINT storage_strides[16];
     UINT srv_buffer_strides[16];
     RHIPipelineDesc desc;
+    /* R643: the PSO bakes its render-target formats, but callers only name a
+     * colour format when it is not the RGBA8 default -- the bloom, tonemap,
+     * sharpen, motion blur and SSS passes all draw into RGBA16F FBOs, and
+     * the UI draws into the BGRA8 swapchain, through pipelines that never
+     * said so. GL has no such state and VK builds per-format variants on
+     * first use (vk_pipeline_for_fmt); this mirrors VK. rtv_formats is what
+     * `pso` was built for (always with a D32 depth slot); variants are
+     * created at draw time when the bound targets differ -- colour formats,
+     * or no depth attachment at all -- from the DXIL copies kept here. */
+    DXGI_FORMAT rtv_formats[RHI_MRT_MAX_ATTACHMENTS];
+    UINT rtv_count;
+    void *vs_blob, *ps_blob;
+    usize vs_blob_size, ps_blob_size;
+    struct {
+        DXGI_FORMAT formats[RHI_MRT_MAX_ATTACHMENTS];
+        UINT count;
+        UINT no_dsv;
+        ID3D12PipelineState *pso;
+    } variants[6];
+    UINT variant_count;
 } RHI_D3D12Pipeline;
 
 /* Bare file names only: no separators, drive letters, or traversal — the
@@ -3136,7 +3235,9 @@ static UINT rhi_d3d12_input_layout(const RHIPipelineDesc *desc,
 static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         RHI_D3D12Context *ctx, ID3D12RootSignature *root_sig,
         const D3D12_SHADER_BYTECODE *vs, const D3D12_SHADER_BYTECODE *ps,
-        const RHIPipelineDesc *desc, UINT *out_stride) {
+        const RHIPipelineDesc *desc, UINT *out_stride,
+        const DXGI_FORMAT *rtv_override, UINT rtv_override_count,
+        UINT no_dsv) {
     D3D12_GRAPHICS_PIPELINE_STATE_DESC pso;
     D3D12_INPUT_ELEMENT_DESC elements[5];
     UINT rt_count;
@@ -3165,6 +3266,7 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         ? D3D12_DEPTH_WRITE_MASK_ZERO : D3D12_DEPTH_WRITE_MASK_ALL;
     rt_count = desc->mrt_attachment_count > 1u ? desc->mrt_attachment_count : 1u;
     if (desc->is_shadow_depth) rt_count = 0u;
+    if (rtv_override != NULL) rt_count = rtv_override_count;
     for (i = 0u; i < 8u; ++i) {
         pso.BlendState.RenderTarget[i].RenderTargetWriteMask =
             D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -3185,11 +3287,19 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
         for (i = 0u; i < rt_count; ++i) {
             RHIFormat f = desc->mrt_attachment_count > 1u
                 ? desc->mrt_formats[i] : desc->color_format;
-            pso.RTVFormats[i] = rhi_d3d12_format(f);
+            pso.RTVFormats[i] = rtv_override != NULL ? rtv_override[i]
+                                                     : rhi_d3d12_format(f);
             if (pso.RTVFormats[i] == DXGI_FORMAT_UNKNOWN) return NULL;
         }
     }
-    pso.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    /* R643: a pass with no depth attachment bound (the swapchain: frame
+     * begin, FBO unbind) must use a PSO whose DSVFormat is UNKNOWN, with
+     * depth testing off -- debug layer [615]. */
+    pso.DSVFormat = no_dsv ? DXGI_FORMAT_UNKNOWN : DXGI_FORMAT_D32_FLOAT;
+    if (no_dsv) {
+        pso.DepthStencilState.DepthEnable = FALSE;
+        pso.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    }
     pso.SampleDesc.Count = desc->sample_count == 0u ? 1u : desc->sample_count;
     pso.SampleMask = UINT_MAX;
     pso.PrimitiveTopologyType = desc->point_list
@@ -3336,11 +3446,30 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             &pd->push_param_index, &pd->push_size);
         if (pd->root_sig != NULL)
             pd->pso = rhi_d3d12_create_graphics_pso(ctx, pd->root_sig,
-                &vs_code, &ps_code, desc, &pd->vertex_stride);
+                &vs_code, &ps_code, desc, &pd->vertex_stride, NULL, 0u, 0u);
         if (pd->pso == NULL) {
             rhi_d3d12_release((IUnknown **)&pd->root_sig);
             free(pd);
             return RHI_HANDLE_NULL;
+        }
+        if (!desc->is_shadow_depth) {
+            UINT n = desc->mrt_attachment_count > 1u
+                ? desc->mrt_attachment_count : 1u;
+            for (UINT k = 0u; k < n; ++k)
+                pd->rtv_formats[k] = rhi_d3d12_format(
+                    desc->mrt_attachment_count > 1u ? desc->mrt_formats[k]
+                                                    : desc->color_format);
+            pd->rtv_count = n;
+            pd->vs_blob = malloc(vs->blob_size);
+            pd->ps_blob = ps != NULL ? malloc(ps->blob_size) : NULL;
+            if (pd->vs_blob != NULL) {
+                memcpy(pd->vs_blob, vs->blob, vs->blob_size);
+                pd->vs_blob_size = vs->blob_size;
+            }
+            if (pd->ps_blob != NULL) {
+                memcpy(pd->ps_blob, ps->blob, ps->blob_size);
+                pd->ps_blob_size = ps->blob_size;
+            }
         }
     }
     for (u32 i = 0u; i < 16u; ++i) {
@@ -3373,7 +3502,11 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     pd = (RHI_D3D12Pipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
     if (pd == NULL) return;
     rhi_d3d12_release((IUnknown **)&pd->pso);
+    for (UINT k = 0u; k < pd->variant_count; ++k)
+        rhi_d3d12_release((IUnknown **)&pd->variants[k].pso);
     rhi_d3d12_release((IUnknown **)&pd->root_sig);
+    free(pd->vs_blob);
+    free(pd->ps_blob);
     free(pd);
     rhi_free_slot(dev, pipe);
 }
@@ -3528,6 +3661,13 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     if (dev == NULL) return;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (td == NULL) return;
+    {
+        RHI_D3D12Context *ctx = (RHI_D3D12Context *)dev->backend_data;
+        UINT i;
+        if (ctx != NULL)
+            for (i = 0u; i < 16u; ++i)
+                if (ctx->live_srv[i] == td) ctx->live_srv[i] = NULL;
+    }
     rhi_d3d12_release((IUnknown **)&td->resource);
     free(td);
     rhi_free_slot(dev, tex);
@@ -3857,6 +3997,60 @@ static ID3D12GraphicsCommandList *rhi_d3d12_cmd_list(RHI_D3D12Context *ctx) {
  * Root-constant writes are 4-byte granular, so the dirty byte range widens
  * to DWORD alignment; every staged write was already validated against the
  * pipeline's declared (clamped) push range via rhi_push_helper_range_ok. */
+/* R643: select the PSO whose render-target formats (and depth slot) match
+ * what is bound now
+ * (see RHI_D3D12Pipeline.rtv_formats). Called right before every draw. The
+ * common case -- the pipeline was built for the bound formats -- is one
+ * compare loop. A miss looks up / builds a variant; if the cache is full or
+ * creation fails, the original PSO stays bound (the old behaviour). */
+static void rhi_d3d12_match_rtv_formats(RHI_D3D12Context *ctx) {
+    RHI_D3D12Pipeline *pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    ID3D12GraphicsCommandList *list = rhi_d3d12_cmd_list(ctx);
+    ID3D12PipelineState *want = NULL;
+    UINT i, k, n, no_dsv;
+    if (pd == NULL || list == NULL || pd->is_compute || pd->rtv_count == 0u ||
+        pd->vs_blob == NULL)
+        return;
+    n = ctx->bound_rtv_count;
+    if (n == 0u) return;
+    no_dsv = ctx->bound_dsv_valid ? 0u : 1u;
+    if (n == pd->rtv_count && !no_dsv) {
+        for (i = 0u; i < n; ++i)
+            if (ctx->bound_rtv_formats[i] != pd->rtv_formats[i]) break;
+        if (i == n) want = pd->pso;
+    }
+    for (k = 0u; want == NULL && k < pd->variant_count; ++k) {
+        if (pd->variants[k].count != n || pd->variants[k].no_dsv != no_dsv)
+            continue;
+        for (i = 0u; i < n; ++i)
+            if (pd->variants[k].formats[i] != ctx->bound_rtv_formats[i]) break;
+        if (i == n) want = pd->variants[k].pso;
+    }
+    if (want == NULL && pd->variant_count < 6u) {
+        D3D12_SHADER_BYTECODE vs, ps;
+        UINT stride = 0u;
+        vs.pShaderBytecode = pd->vs_blob;
+        vs.BytecodeLength = pd->vs_blob_size;
+        ps.pShaderBytecode = pd->ps_blob;
+        ps.BytecodeLength = pd->ps_blob_size;
+        want = rhi_d3d12_create_graphics_pso(ctx, pd->root_sig, &vs,
+            pd->ps_blob != NULL ? &ps : NULL, &pd->desc, &stride,
+            ctx->bound_rtv_formats, n, no_dsv);
+        if (want != NULL) {
+            k = pd->variant_count++;
+            pd->variants[k].no_dsv = no_dsv;
+            for (i = 0u; i < n; ++i)
+                pd->variants[k].formats[i] = ctx->bound_rtv_formats[i];
+            pd->variants[k].count = n;
+            pd->variants[k].pso = want;
+        }
+    }
+    if (want != NULL && want != ctx->bound_pso) {
+        ID3D12GraphicsCommandList_SetPipelineState(list, want);
+        ctx->bound_pso = want;
+    }
+}
+
 static void rhi_d3d12_flush_uniform_staging(RHI_D3D12Context *ctx) {
     RHI_D3D12Pipeline *pd;
     ID3D12GraphicsCommandList *list;
@@ -3916,11 +4110,28 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     heaps[1] = ctx->sampler_heap;
     ID3D12GraphicsCommandList_SetDescriptorHeaps(list, 2u, heaps);
     ID3D12GraphicsCommandList_SetPipelineState(list, pd->pso);
+    ctx->bound_pso = pd->pso;
+    if (!pd->is_compute) memset(ctx->live_srv, 0, sizeof(ctx->live_srv));
     if (pd->is_compute) {
         ID3D12GraphicsCommandList_SetComputeRootSignature(list, pd->root_sig);
     } else {
         ID3D12GraphicsCommandList_SetGraphicsRootSignature(list, pd->root_sig);
         ID3D12GraphicsCommandList_IASetPrimitiveTopology(list, pd->topology);
+        /* R643: a uniform buffer bound with rhi_cmd_bind_uniform_buffer stays
+         * bound across pipeline changes on GL (global binding points) and on
+         * Vulkan (compatible set layouts), and main.c relies on it: it binds
+         * the forward temporal block once and rebinds only the pipeline after
+         * other passes ran. D3D12 resets every root argument when the root
+         * signature changes, so the next draw read an uninitialised b1
+         * (GPU-based validation [935]). Re-apply this frame's CBVs to the
+         * registers the new pipeline declares. */
+        for (UINT r = 0u; r < 16u; ++r) {
+            UINT param = pd->uniform_root_params[r];
+            if (param == UINT_MAX || ctx->cbv_frame[r] != ctx->debug_frame)
+                continue;
+            ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(
+                list, param, ctx->cbv_gpu[r]);
+        }
     }
     ctx->bound_pipeline = pd;
     ctx->bound_pipeline_compute = pd->is_compute;
@@ -4052,6 +4263,7 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             0u, 0u);
@@ -4061,6 +4273,7 @@ void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             first_vertex, 0u);
@@ -4070,6 +4283,7 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
                                                    instance_count, 0u, 0, 0u);
@@ -4080,6 +4294,7 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
         instance_count, first_index, vertex_offset, 0u);
@@ -4113,6 +4328,7 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
     }
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
+    rhi_d3d12_match_rtv_formats(ctx);
     rhi_d3d12_flush_uniform_staging(ctx);
     args = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (args == NULL) {
@@ -4312,9 +4528,9 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
         td->state = read_state;
     }
     gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
-    /* R629 diagnostic: remember that this frame reads the texture as a
-     * resource, so a later render-target bind can notice the alias. */
-    td->srv_ref_frame = ctx->debug_frame;
+    /* R629/R643 diagnostic: the texture is now live in this pipeline's
+     * descriptor tables, so a render-target bind of it can be noticed. */
+    if (!pd->is_compute) ctx->live_srv[unit] = td;
     if (pd->is_compute)
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, root_param, gpu);
     else
@@ -4347,6 +4563,7 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                     RHI_RES_BUFFER);
     if (bd == NULL || bd->resource == NULL) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
     if (slot == UINT_MAX) return;
     ZeroMemory(&cbv, sizeof(cbv));
@@ -4356,12 +4573,22 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     ID3D12Device_CreateConstantBufferView(ctx->device, &cbv,
         rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
     gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
-    if (pd->is_compute)
+    if (pd->is_compute) {
         ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
-    else
+    } else {
         ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
-    rhi_d3d12_descriptor_give_back(&ctx->cbv_srv_uav_alloc, slot,
-                                   ctx->next_fence);
+        ctx->cbv_gpu[binding] = gpu;
+        ctx->cbv_frame[binding] = ctx->debug_frame;
+    }
+    /* R643: retire with the frame, like every other per-frame view. Giving
+     * the slot back here with ctx->next_fence as its retire point was wrong
+     * whenever a one-shot submit (a buffer or texture upload with initial
+     * data) ran later in the same frame: the one-shot signals that very
+     * value and waits for it, so the slot looked retired while the frame's
+     * own list -- which still points at it -- had not even been submitted.
+     * The next SRV bind then overwrote the descriptor under this CBV
+     * (debug layer [1001]). */
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
 }
 /* Legacy per-uniform setters write the 256B push staging buffer; the dirty
  * range flushes as root constants before the next draw/dispatch (VK parity).
@@ -4649,6 +4876,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
                                    ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = ctx->swapchain.format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
     vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
@@ -5409,21 +5637,29 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
     memset(fbo, 0, sizeof(*fbo));
 }
-/* R629 diagnostic. A D3D12 resource referenced as a render target and as a
- * shader resource in the same frame is undefined, and it is the shape that
- * loses a device -- but nothing reported it, so a scene that triggers it just
- * dies with DXGI_ERROR_DEVICE_REMOVED and no explanation. This warns the
- * moment the alias is created, naming the texture and both roles. It is meant
- * to be silent: every warning here is a bug, not a diagnostic run. */
+/* R629 diagnostic, narrowed in R643. A texture that is still bound as a
+ * shader resource of the current pipeline when it becomes a render target is
+ * read and written by the next draw -- undefined, and the shape that loses a
+ * device. R629 warned whenever the texture had been read at any point in the
+ * frame, which also fired on every legal ping-pong (bloom blur: read A ->
+ * write B, read B -> write A; each bind barriers the resource): 33 warnings
+ * per 12 demo frames, none of them a hazard, and the debug layer agreed. Now
+ * only a live binding counts: ctx->live_srv[] holds the textures in the bound
+ * pipeline's tables and is cleared when the root signature changes (which
+ * drops every root argument). */
 static void rhi_d3d12_warn_rt_srv_alias(RHI_D3D12Context *ctx,
                                          const RHI_D3D12Texture *tex,
                                          const char *role) {
+    UINT i;
     if (ctx == NULL || tex == NULL) return;
-    if (tex->srv_ref_frame == 0u || tex->srv_ref_frame != ctx->debug_frame)
+    for (i = 0u; i < 16u; ++i) {
+        if (ctx->live_srv[i] != tex) continue;
+        LOG_WARN("D3D12: %ux%u texture is still bound as a shader resource "
+                 "(unit %u) and is now being bound as %s -- the next draw "
+                 "would read and write it", tex->width, tex->height, i, role);
+        ctx->rt_srv_alias_count++;
         return;
-    LOG_WARN("D3D12: %ux%u texture was read as a shader resource this frame "
-             "and is now being bound as %s -- a resource cannot be both in the "
-             "same frame", tex->width, tex->height, role);
+    }
 }
 
 static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
@@ -5457,6 +5693,7 @@ static void rhi_d3d12_fbo_bind_impl(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo,
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, TRUE, &dsv);
     rhi_d3d12_set_full_target_viewport(list, fd->width, fd->height);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = color->dxgi_format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv = dsv;
     ctx->bound_dsv_valid = 1u;
@@ -5488,6 +5725,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
                                    ctx->swapchain.rtv_slots[ctx->swapchain.current_index]);
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, 1u, &rtv, FALSE, NULL);
     ctx->bound_rtvs[0] = rtv;
+    ctx->bound_rtv_formats[0] = ctx->swapchain.format;
     ctx->bound_rtv_count = 1u;
     ctx->bound_dsv_valid = 0u;
     vp.TopLeftX = 0.0f; vp.TopLeftY = 0.0f;
@@ -5701,8 +5939,10 @@ static void rhi_d3d12_mrt_bind_impl(RHICmdBuffer *cmd, RHIMRTFBO *fbo,
     ID3D12GraphicsCommandList_OMSetRenderTargets(list, md->attachment_count,
                                                  rtvs, FALSE, &dsv);
     rhi_d3d12_set_full_target_viewport(list, md->width, md->height);
-    for (i = 0u; i < md->attachment_count; ++i)
+    for (i = 0u; i < md->attachment_count; ++i) {
         ctx->bound_rtvs[i] = rtvs[i];
+        ctx->bound_rtv_formats[i] = colors[i]->dxgi_format;
+    }
     ctx->bound_rtv_count = md->attachment_count;
     ctx->bound_dsv = dsv;
     ctx->bound_dsv_valid = 1u;

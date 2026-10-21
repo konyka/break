@@ -1,6 +1,27 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R643 — **D3D12 debug layer 的报错终于看得见了，并清零**（6 类真实问题）
+
+- **问题**：debug 构建一直打开着 debug layer + GPU-based validation，但它的消息只写到 `OutputDebugString`，控制台运行**一条都看不到**——"debug layer enabled" 加一份干净日志什么也证明不了。新增 `rhi_d3d12_drain_info_queue`：每次 submit 后把 info queue 中的 CORRUPTION / ERROR / WARNING 写进引擎日志并计数（跳过 [820]：clear 时没有 optimized clear value，是逐次 clear 的速度提示）。第一次打开，demo 12 帧就报出 ~470 条：
+  - **[613] PSO 的 RTV 格式与实际目标不符（121 + 22 条）**：PSO 把渲染目标格式写死，而调用方只在非 RGBA8 时才声明格式——bloom、tonemap、sharpen、motion blur、SSS 都画进 RGBA16F FBO，UI 画进 BGRA8 交换链，管线却按 RGBA8 建。**修复**：后端记录每个绑定 RTV 的格式；draw 前若与 PSO 不符，按当前格式惰性建 PSO 变体并缓存（每管线最多 6 个，与 VK 的 `vk_pipeline_for_fmt` 同一思路）。管线保存 DXIL 副本用于建变体。
+  - **[615] 没绑 DSV 却用了带 D32 深度槽的 PSO**（交换链 pass）：变体键加上"有无深度附件"；无 DSV 时 `DSVFormat = UNKNOWN` 且关闭深度测试。
+  - **[649] CBV 越过缓冲区末尾（33 条）**：CBV 按 256 对齐声明大小（D3D12 要求），缓冲本身却按调用方大小分配（例如 52 字节的 forward temporal 块），视图尾部读到缓冲之外。**修复**：所有缓冲按 256 向上取整分配，`bd->size` 仍是调用方大小，拷贝/回读范围不变。
+  - **[935] 顶点着色器读到未初始化的根参数 1（b1，10 条）**：GL / VK 上 uniform buffer 绑定跨管线切换保持，main.c 依赖这一点（temporal 块发布一次，之后只重绑管线）；D3D12 换根签名会清空全部根实参。**修复**：记住本帧每个 bN 最后绑定的 CBV，`rhi_cmd_bind_pipeline` 时重新应用到新管线声明的寄存器上。
+  - **[1001] 描述符在命令列表执行前被改写（2 条）**：`rhi_cmd_bind_uniform_buffer` 立即归还槽位、以 `next_fence` 作为退役点；同帧稍后的一次 one-shot 上传（带初始数据的纹理/缓冲）恰好 signal 并等待这个值，于是槽位显得已退役，而本帧的列表还没提交，下一次 SRV 绑定就把视图写进了 CBV 的槽。**修复**：CBV 槽与其他每帧视图一样随帧退役。
+  - **[1328] 缓冲 InitialState 被忽略（35 条）**：缓冲总是以 COMMON 创建；带初始数据时改为 COMMON 创建，拷贝隐式提升为 COPY_DEST，屏障从 COPY_DEST 出发（第一次改成从 COMMON 出发，立刻换来 [527]，已改正）。
+- **R629 的 RT/SRV 别名诊断收窄**：原规则是"本帧读过的纹理又被绑成 RT 就警告"，这对合法的 ping-pong（bloom 模糊：读 A 写 B、读 B 写 A，每次绑定都有屏障）也报——demo 每 12 帧 33 条，**全是误报**（debug layer 也一条没报）。现在只有**仍在当前管线描述符表里**的纹理被绑成 RT 才警告（`ctx->live_srv[]`，换管线时清空，纹理销毁时移除）；`srv_ref_frame` 字段删除。
+- **新接口**：`rhi_d3d12_debug_layer_counts(dev, &errors, &warnings, &rt_srv_aliases)`，先 drain 再返回累计数；非 debug 构建返回 0，此时前两项恒为 0、不作证明。
+- **测试**（`test_d3d12_warp_runtime.c` +5）：
+  - `uniform_buffer_survives_a_pipeline_change`：CBV 在别的管线下绑定、再切回 blinn_phong 不重绑，图像必须与"绑定后立即绘制"逐字节一致；同时断言参考图确实依赖相机（有高光像素）。
+  - `cbv_descriptor_survives_a_mid_frame_upload`：帧中途创建带数据纹理后再绑 SRV，图像不变。**已知局限**：`descriptor_take` 从最旧的空闲槽开始扫，堆较空时陈旧槽不会被立刻复用，此用例对旧代码**也能通过**（已验证）；真正兜住 [1001] 回归的是套件末尾的 debug-layer 门和 demo（旧代码 demo 60 帧报 3 条）。
+  - `one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain`：同一条默认 RGBA8 管线画进 RGBA16F、RGBA8、BGRA8 交换链（无 DSV），三者像素都对且 debug layer 安静。
+  - `rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias`：post_process 顺序的 ping-pong 不报；旧管线下绑过、换管线后再绑成 RT 不报；仍在当前表中被绑成 RT 恰好报 1 次。
+  - `debug_layer_reported_nothing_for_the_whole_suite`（最后运行）：整套 57 个用例在 debug layer 下 0 error / 0 warning、别名计数恰为 1。
+- **反向验证**：去掉 CBV 重应用 → [935] 被门检出；关掉 PSO 变体 → 2 处 [613] + 套件 21 条；关掉无 DSV 变体 → 2 条 [615]；去掉 256 取整 → 2 条 [649]；别名改回"任何 RT 绑定都报" → 230 条；换管线不清空 live 集 → "rebind drops the table" 失败；live 集不记录 → 精确 1 次的断言失败；CBV 立即归还 → demo 3 条 [1001]。
+- **过程中修掉的测试自身问题**：别名用例最后几帧没有回读就销毁资源，D3D12 立即释放而 GPU 仍在执行（[921] + 约 60% 概率段错误）；补 `rhi_device_idle_ex` 后连跑 8 次全过。
+- **验证**：WARP 58/58、RTX 4060 57/58（只有预期的 [1]），两者 debug layer 均 0 消息；demo（D3D12 debug，60 帧）0 条 debug layer 消息、0 条别名警告，rc=0。ctest：D3D12 184/185、VK 180/181、GL 177/178——唯一失败是三棵树共同的 `test_platform_win32_runtime` 的 OpenClipboard：此时 ToDesk 在运行并占用剪贴板，PowerShell 的 `Clipboard.SetText` 同样失败，与本轮改动无关（该用例不经过 D3D12）。
+
 ## 本轮更新：R642 — **D3D12 上 DebugViz、合并后处理（CombinedAA / CombinedColor）上线**
 
 - **问题**：`debug_viz.c`、`combined_post_process.c` 仍把内联 GLSL 交给 `rhi_shader_create`。DebugViz 在 D3D12 上 init 失败（F 键切换的深度 / 法线 / AO / 级联视图全部不可用）；CombinedAA、CombinedColor 退回逐个效果串联的链路（功能正常，但每帧多 3 次 pass 切换）。

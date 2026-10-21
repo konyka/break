@@ -116,6 +116,13 @@ typedef struct RHI_D3D12Context {
     UINT cbv_srv_uav_increment;
     UINT sampler_increment;
     D3D12_CPU_DESCRIPTOR_HANDLE bound_rtvs[5]; /* RHI_MRT_MAX_ATTACHMENTS */
+    DXGI_FORMAT bound_rtv_formats[5];  /* R643: per-draw PSO variant key */
+    ID3D12PipelineState *bound_pso;    /* R643: PSO last set on the list */
+    /* R643: the graphics CBV last bound per register (bN) this frame, so a
+     * pipeline change can re-apply it -- see rhi_cmd_bind_pipeline. A slot
+     * counts only while cbv_frame equals debug_frame. */
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_gpu[16];
+    UINT64 cbv_frame[16];
     UINT bound_rtv_count;
     D3D12_CPU_DESCRIPTOR_HANDLE bound_dsv;
     UINT bound_dsv_valid;
@@ -123,13 +130,14 @@ typedef struct RHI_D3D12Context {
     UINT bound_pipeline_compute;
     UINT frame_srv_slots[RHI_D3D12_CBV_SRV_UAV_CAPACITY];
     UINT frame_srv_count;
-    /* R629 diagnostic: bumped once per frame in rhi_frame_begin. A texture
-     * stamps srv_ref_frame when it is bound as a shader resource, and the FBO
-     * bind paths report when the same texture is about to become a render
-     * target in the SAME frame. One resource referenced as an RT and an SRV at
-     * once is undefined and is the shape that loses a D3D12 device; nothing in
-     * the backend reported it before this. */
+    /* Bumped once per frame in rhi_frame_begin; per-frame stamps (buffer
+     * write aliases, cbv_frame) compare against it. */
     UINT64 debug_frame;
+    /* R643: textures currently bound as shader resources of the bound
+     * graphics pipeline, by unit (RHI_D3D12Texture*). The FBO bind paths warn
+     * when one of them is about to become a render target. Cleared on every
+     * pipeline bind (the root signature change drops the tables). */
+    void *live_srv[16];
     UINT64 next_fence;
     UINT64 completed_fence;
     UINT64 descriptor_retire_fence;
@@ -137,6 +145,10 @@ typedef struct RHI_D3D12Context {
     UINT device_lost;                   /* sticky latch */
     HRESULT removed_reason;
     UINT dred_enabled;
+    /* R643: debug-layer messages drained into the log (debug builds only). */
+    UINT64 debug_layer_errors;
+    UINT64 debug_layer_warnings;
+    UINT64 rt_srv_alias_count;   /* rhi_d3d12_warn_rt_srv_alias hits, all builds */
     RHI_D3D12CreateFailure injected_failure;
     RHI_D3D12Swapchain swapchain;       /* Task 4; valid iff swapchain_ready */
     UINT swapchain_ready;
@@ -212,11 +224,6 @@ typedef struct RHI_D3D12Texture {
      * is a dimension mismatch the shader cannot sample through. */
     UINT array_size;
     D3D12_RESOURCE_STATES state;
-    /* R629 diagnostic: the frame index at which this texture last had an SRV
-     * written into a bound descriptor table. The FBO bind paths warn when a
-     * texture is about to become a render target in the same frame it was
-     * read from as a resource. See ctx->debug_frame. */
-    UINT64 srv_ref_frame;
 } RHI_D3D12Texture;
 
 typedef struct RHI_D3D12Sampler {
@@ -360,6 +367,16 @@ int rhi_d3d12_shader_sidecar_name(const char *path,
  * context->rtv_heap; resize assumes the caller already drained the device
  * (spec §4.3) and re-creates the RTVs; destroy releases back buffers, the
  * swapchain, and any owned fallback window. */
+/* R643: drains the debug layer's info queue and reports how many ERROR /
+ * CORRUPTION and WARNING messages it has logged since device creation, plus
+ * how many times the backend's own RT/SRV alias diagnostic fired (that one
+ * counts in every build). Returns 1 when the debug layer is compiled in
+ * (ENGINE_D3D12_DEBUG), 0 otherwise -- errors/warnings then stay 0 and prove
+ * nothing. Tests use it to assert that a scenario is clean under
+ * validation. Any out pointer may be NULL. */
+int rhi_d3d12_debug_layer_counts(RHIDevice *dev, UINT64 *errors,
+                                 UINT64 *warnings, UINT64 *rt_srv_aliases);
+
 HRESULT rhi_d3d12_swapchain_create(RHI_D3D12Context *context,
                                    RHI_D3D12Swapchain *out, HWND hwnd,
                                    UINT width, UINT height);

@@ -7196,6 +7196,426 @@ TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa) {
     combined_aa_shutdown(&caa);
 }
 
+/* ---- R643: D3D12 validation fixes ----
+ * The debug layer's messages used to go to OutputDebugString only, so a
+ * console run never saw them; R643 drains them into the log and counts them
+ * (rhi_d3d12_debug_layer_counts). The tests below drive each pattern the
+ * demo hit and assert both the pixels and that the layer stayed silent. On
+ * a non-debug build the counts are not available and only the pixels are
+ * checked. */
+/* Declared here rather than through rhi/rhi_d3d12.h: that header pulls in
+ * <windows.h>, whose `near` / `far` macros break this file. */
+typedef unsigned long long UINT64;
+int rhi_d3d12_debug_layer_counts(RHIDevice *dev, UINT64 *errors,
+                                 UINT64 *warnings, UINT64 *rt_srv_aliases);
+static UINT64 r643_err0, r643_warn0, r643_alias0;
+static int r643_layer;
+
+static void r643_mark(void) {
+    r643_layer = rhi_d3d12_debug_layer_counts(g_dev, &r643_err0, &r643_warn0,
+                                              &r643_alias0);
+}
+
+static int r643_clean(const char *what) {
+    UINT64 e = 0, w = 0, a = 0;
+    (void)rhi_d3d12_debug_layer_counts(g_dev, &e, &w, &a);
+    if (a != r643_alias0)
+        printf("  %s: %llu RT/SRV alias warnings\n", what,
+               (unsigned long long)(a - r643_alias0));
+    if (!r643_layer) return a == r643_alias0;
+    if (e != r643_err0 || w != r643_warn0)
+        printf("  %s: debug layer logged %llu errors, %llu warnings\n", what,
+               (unsigned long long)(e - r643_err0),
+               (unsigned long long)(w - r643_warn0));
+    return e == r643_err0 && w == r643_warn0 && a == r643_alias0;
+}
+
+/* A uniform buffer bound once stays bound across a pipeline change on GL and
+ * Vulkan, and main.c depends on it (the forward temporal block is published
+ * once, then only the pipeline is rebound after other passes). D3D12 drops
+ * every root argument when the root signature changes; R643 re-applies the
+ * frame's CBVs on bind. The blinn_phong draw reads u_camera_pos from b1; a
+ * lost b1 reads zeros, V = normalize(-world) and the specular term moves.
+ * Draw A binds the CBV after the pipeline (the reference), draw B binds it,
+ * then a different pipeline, then blinn_phong again without rebinding -- the
+ * two images must match exactly, and the 52-byte UBO (not a multiple of 256)
+ * must not trip the CBV range check ([649]). */
+TEST(uniform_buffer_survives_a_pipeline_change) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, 0.0f,   0.3f, 0.2f, 0.93f,   0.0f, 0.0f,
+         3.0f, -1.0f, 0.0f,   0.3f, 0.2f, 0.93f,   2.0f, 0.0f,
+        -1.0f,  3.0f, 0.0f,   0.3f, 0.2f, 0.93f,   0.0f, 2.0f
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs, bvs, bfs;
+    RHIPipeline pipe, other;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo;
+    RHITexture white;
+    RHICmdBuffer *cmd;
+    unsigned char ref[8 * 8 * 4], got[8 * 8 * 4];
+    int pass, i, lit = 0;
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+    bvs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    bfs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs) &&
+                rhi_handle_valid(bvs) && rhi_handle_valid(bfs));
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM; fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 32u;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = bvs; pd.frag = bfs;
+    pd.no_vertex_input = true; pd.uses_textures = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    other = rhi_pipeline_create(g_dev, &pd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    ubo = warp_forward_temporal_create(g_dev, 0.5f, 0.8f, 2.0f);
+    white = r641_flat_rgba8(2u, 2u, 255, 255, 255);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(pipe) &&
+                rhi_handle_valid(other) && rhi_handle_valid(vbo) &&
+                rhi_handle_valid(ubo) && rhi_handle_valid(white));
+    r643_mark();
+    for (pass = 0; pass < 2; ++pass) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        if (pass == 1) {
+            /* Published while ANOTHER pipeline is bound... */
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+            rhi_cmd_bind_pipeline(cmd, other);
+            rhi_cmd_bind_texture(cmd, white, (RHISampler){0}, 0u);
+        }
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        if (pass == 0) rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, -0.2f, -0.3f, -0.93f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 0.6f, 0.6f, 0.6f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 0.1f, 0.1f, 0.1f);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, white, (RHISampler){0}, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex,
+                                            pass == 0 ? ref : got, sizeof(ref)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+    for (i = 0; i < 8 * 8 * 4; ++i) {
+        if (got[i] != ref[i])
+            printf("  ubo rebind byte %d = %u, reference %u\n", i, got[i], ref[i]);
+        ASSERT_EQ(got[i], ref[i]);
+    }
+    /* The reference itself must depend on the camera, or the comparison
+     * proves nothing: the specular highlight puts some pixels well above the
+     * diffuse level (0.1 + 0.6*0.98 = 0.69 -> 175). */
+    for (i = 0; i < 8 * 8; ++i) if (ref[i * 4] > 185) lit++;
+    ASSERT_TRUE(lit > 0);
+    ASSERT_TRUE(r643_clean("uniform_buffer_survives_a_pipeline_change"));
+    rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, other);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+    rhi_shader_destroy(g_dev, bvs); rhi_shader_destroy(g_dev, bfs);
+}
+
+/* [1001]: a CBV bound in a frame must keep its descriptor until that frame's
+ * list has executed. rhi_cmd_bind_uniform_buffer used to give the slot back
+ * at once with ctx->next_fence as its retire point; any one-shot submit later
+ * in the same frame (here: creating a texture with initial data) signals and
+ * waits on exactly that value, so the slot looked retired while the frame was
+ * still recording, and a later descriptor_take could hand it out again.
+ * The blinn_phong output must equal the frame without the mid-frame upload.
+ *
+ * Limit, stated plainly: descriptor_take scans the free list from the
+ * oldest entry, so with a mostly empty heap the stale slot is not the one
+ * handed out next and this test also passes against the old code (verified).
+ * The demo hit [1001] because its heap churns; the guard that actually
+ * catches a regression is the debug-layer gate at the end of the suite plus
+ * the demo run. The test stays as the scenario's pixel check. */
+TEST(cbv_descriptor_survives_a_mid_frame_upload) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, 0.0f,   0.3f, 0.2f, 0.93f,   0.0f, 0.0f,
+         3.0f, -1.0f, 0.0f,   0.3f, 0.2f, 0.93f,   2.0f, 0.0f,
+        -1.0f,  3.0f, 0.0f,   0.3f, 0.2f, 0.93f,   0.0f, 2.0f
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo;
+    RHITexture white, extra = RHI_HANDLE_NULL;
+    RHICmdBuffer *cmd;
+    unsigned char ref[8 * 8 * 4], got[8 * 8 * 4];
+    int pass, i;
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM; fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 32u;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    ubo = warp_forward_temporal_create(g_dev, 0.5f, 0.8f, 2.0f);
+    white = r641_flat_rgba8(2u, 2u, 255, 255, 255);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(pipe) &&
+                rhi_handle_valid(vbo) && rhi_handle_valid(ubo) &&
+                rhi_handle_valid(white));
+    r643_mark();
+    for (pass = 0; pass < 2; ++pass) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        if (pass == 1) {
+            /* One-shot upload while this frame is recording... */
+            extra = r641_flat_rgba8(2u, 2u, 0, 0, 0);
+            ASSERT_TRUE(rhi_handle_valid(extra));
+        }
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, -0.2f, -0.3f, -0.93f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 0.6f, 0.6f, 0.6f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 0.1f, 0.1f, 0.1f);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        /* ...then an SRV bind, which takes the next free descriptor slot. */
+        rhi_cmd_bind_texture(cmd, white, (RHISampler){0}, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex,
+                                            pass == 0 ? ref : got, sizeof(ref)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+    for (i = 0; i < 8 * 8 * 4; ++i) {
+        if (got[i] != ref[i])
+            printf("  mid-frame upload byte %d = %u, reference %u\n", i, got[i], ref[i]);
+        ASSERT_EQ(got[i], ref[i]);
+    }
+    ASSERT_TRUE(r643_clean("cbv_descriptor_survives_a_mid_frame_upload"));
+    rhi_texture_destroy(g_dev, extra);
+    rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, ubo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* One pipeline, declared with the default RGBA8 colour format, drawing into
+ * an RGBA16F FBO, an RGBA8 FBO and the BGRA8 swapchain -- the demo's post
+ * chain and UI do exactly this. The PSO bakes its RTV formats, so before
+ * R643 two of the three draws ran with a mismatched PSO ([613]) and the
+ * swapchain draw also with a D32 depth slot while no DSV was bound ([615]).
+ * Each target must hold the blitted colour and the layer must stay silent. */
+TEST(one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain) {
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO hdr, ldr;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHITexture src;
+    RHICmdBuffer *cmd;
+    u16 h[8 * 8 * 4];
+    unsigned char l[8 * 8 * 4];
+    static unsigned char sc[64 * 64 * 4];
+    int i;
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true; pd.uses_textures = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    hdr = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    ldr = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    src = r641_flat_rgba8(8u, 8u, 51, 102, 204);
+    ASSERT_TRUE(rhi_handle_valid(pipe) && rhi_handle_valid(hdr.fb) &&
+                rhi_handle_valid(ldr.fb) && rhi_handle_valid(src));
+    r643_mark();
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &hdr);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, src, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_bind(cmd, &ldr);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, src, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, src, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, sc, sizeof(sc)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, hdr.color_tex, h, sizeof(h)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ldr.color_tex, l, sizeof(l)));
+    for (i = 0; i < 8 * 8; ++i) {
+        if (fabsf(warp_half_to_float(h[i * 4 + 0]) - 0.2f) >= 0.003f ||
+            fabsf(warp_half_to_float(h[i * 4 + 2]) - 0.8f) >= 0.003f)
+            printf("  rgba16f px %d = %04x %04x %04x %04x | ldr %u %u %u\n", i,
+                   h[i * 4], h[i * 4 + 1], h[i * 4 + 2], h[i * 4 + 3],
+                   l[i * 4], l[i * 4 + 1], l[i * 4 + 2]);
+        ASSERT_TRUE(fabsf(warp_half_to_float(h[i * 4 + 0]) - 0.2f) < 0.003f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(h[i * 4 + 2]) - 0.8f) < 0.003f);
+        ASSERT_EQ(l[i * 4 + 0], 51);
+        ASSERT_EQ(l[i * 4 + 2], 204);
+    }
+    for (i = 0; i < 64 * 64; ++i) {
+        if (sc[i * 4 + 0] != 51 || sc[i * 4 + 1] != 102 || sc[i * 4 + 2] != 204) {
+            printf("  swapchain px %d = %u,%u,%u\n", i, sc[i * 4], sc[i * 4 + 1],
+                   sc[i * 4 + 2]);
+            ASSERT_TRUE(0);
+        }
+    }
+    ASSERT_TRUE(r643_clean("one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain"));
+    rhi_texture_destroy(g_dev, src);
+    rhi_offscreen_fbo_destroy(g_dev, &hdr);
+    rhi_offscreen_fbo_destroy(g_dev, &ldr);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* The bloom pattern: read A -> write B, read B -> write A, inside one frame.
+ * Legal (each bind barriers the resource), but R629's same-frame diagnostic
+ * flagged every iteration -- 33 false warnings per 12 demo frames. The R643
+ * diagnostic only fires while the texture is still bound to the CURRENT
+ * pipeline: the ping-pong stays silent, and binding A's own FBO while A is
+ * still in the bound tables does fire. */
+TEST(rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias) {
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO a, b;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHICmdBuffer *cmd;
+    UINT64 a0 = 0, a1 = 0;
+    int k;
+    vs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true; pd.uses_textures = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    a = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    b = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(pipe) && rhi_handle_valid(a.fb) &&
+                rhi_handle_valid(b.fb));
+    r643_mark();
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &a);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    /* post_process_apply's blur order: ONE pipeline bind, then per pass
+     * bind_texture(src) -> fbo_bind(dst) -> draw. Iteration k+1 makes the
+     * texture that iteration k read (still in the table) the new source, so
+     * it is rebound before its own FBO is bound -- not an alias. */
+    for (k = 0; k < 4; ++k) {
+        RHIOffscreenFBO *src = (k & 1) ? &b : &a, *dst = (k & 1) ? &a : &b;
+        rhi_cmd_bind_texture(cmd, src->color_tex, (RHISampler){0}, 0u);
+        rhi_offscreen_fbo_bind(cmd, dst);
+        rhi_cmd_draw(cmd, 3u, 1u);
+    }
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(r643_clean("ping-pong"));
+    /* A texture bound under the PREVIOUS pipeline is not bound any more once
+     * the pipeline changes (the root signature drops its tables), so making
+     * it a render target afterwards is legal and must stay silent too. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, a.color_tex, (RHISampler){0}, 0u);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_offscreen_fbo_bind(cmd, &a);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(r643_clean("rebind drops the table"));
+    /* Now the real alias, without drawing (the draw itself would be the
+     * undefined read/write): A stays in the tables while A's FBO is bound. */
+    (void)rhi_d3d12_debug_layer_counts(g_dev, NULL, NULL, &a0);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texture(cmd, a.color_tex, (RHISampler){0}, 0u);
+    rhi_offscreen_fbo_bind(cmd, &a);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    (void)rhi_d3d12_debug_layer_counts(g_dev, NULL, NULL, &a1);
+    ASSERT_EQ(a1 - a0, 1u);
+    /* Nothing above read back, so the GPU may still be running these frames;
+     * D3D12 destroy releases at once (the other tests drain through
+     * rhi_texture_read_pixels). Without this the release raced the GPU
+     * ([921], and an intermittent crash). */
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+    rhi_offscreen_fbo_destroy(g_dev, &a);
+    rhi_offscreen_fbo_destroy(g_dev, &b);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+/* The whole post chain this suite exercises must have run clean under the
+ * debug layer (when it is compiled in). Placed last, it covers every test
+ * above: a regression anywhere in the backend's state tracking shows up here
+ * even if the pixels happen to survive it. */
+TEST(debug_layer_reported_nothing_for_the_whole_suite) {
+    UINT64 e = 0, w = 0, a = 0;
+    int on = rhi_d3d12_debug_layer_counts(g_dev, &e, &w, &a);
+    printf("  (debug layer %s: %llu errors, %llu warnings, %llu aliases) ",
+           on ? "on" : "off", (unsigned long long)e, (unsigned long long)w,
+           (unsigned long long)a);
+    ASSERT_EQ(e, 0u);
+    ASSERT_EQ(w, 0u);
+    /* Exactly the one deliberate alias above. */
+    ASSERT_EQ(a, 1u);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -7255,6 +7675,11 @@ int main(void) {
     RUN_TEST(debug_viz_sidecar_renders_every_mode_from_the_shader_formulas);
     RUN_TEST(combined_color_sidecar_matches_the_fused_tonemap_grade_vignette);
     RUN_TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa);
+    RUN_TEST(uniform_buffer_survives_a_pipeline_change);
+    RUN_TEST(cbv_descriptor_survives_a_mid_frame_upload);
+    RUN_TEST(one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain);
+    RUN_TEST(rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias);
+    RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
