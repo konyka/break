@@ -2,6 +2,9 @@
 #include <renderer/indirect_draw.h>
 #include <renderer/post_process.h>
 #include <renderer/tonemap.h>
+#include <renderer/ssao.h>
+#include <renderer/sharpen.h>
+#include <renderer/god_rays.h>
 #include <math/math.h>
 #include <math.h>
 #include "test_framework.h"
@@ -5946,6 +5949,443 @@ TEST(texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows) {
     rhi_offscreen_fbo_destroy(g_dev, &fbo);
 }
 
+/* R640: SSAO on D3D12, through the real SSAOSystem. Before ssao_hlsl.frag /
+ * ssao_blur_hlsl.frag, ssao_init failed at "shader compile failed" (inline
+ * GLSL refused), so the demo ran with no AO on this backend.
+ *
+ * Scene: one plane perpendicular to the view axis at z = -3, written as a
+ * constant window depth d = ndc_z * 0.5 + 0.5 into an R32F texture. The
+ * projection is off-centre (e[2][0] = 0.3, e[2][1] = -0.15, the slots TAA
+ * jitter uses), which makes inv_proj asymmetric: an upload that transposes
+ * it, or reads it from the wrong offset, reconstructs a different plane.
+ * Constant depth means every tap reads the same texel value, so filtering
+ * cannot move the answer; the reconstructed position is linear in uv, so
+ * the fine derivatives give the exact plane normal (0,0,1).
+ *
+ * Expected values come from warp_ssao_ref, a line-for-line double-precision
+ * port of ssao.frag fed with the same f32 inv_proj and depth the GPU sees,
+ * at the pixel centre (c + 0.5, r + 0.5) -- SV_Position on an offscreen
+ * target, whose memory row 0 is NDC y = -1. bias 0.9 rather than the
+ * default 0.025: on a bare plane every horizon sits at the view's grazing
+ * angle and the default bias saturates the whole frame to AO = 0, which
+ * would pass with almost any wrong input; 0.9 spreads the 8x8 frame across
+ * the whole 0..1 range (checked below: the test refuses to run on a
+ * degenerate expectation). Tolerance is 3/255 for GPU acos/sin/cos.
+ *
+ * The blur pass is then checked against the raw AO actually read back:
+ * constant depth makes every bilateral weight exp(0) = 1, so the result is
+ * the plain 5x5 Gaussian exp(-(x^2+y^2)/4) of the raw values. Only the 4x4
+ * interior is asserted -- there all 25 taps are in range, so the D3D12
+ * static WRAP sampler and GL's CLAMP_TO_EDGE agree. A second frame with
+ * depth 1.0 must hit both early-outs and come back exactly white. */
+static double warp_ssao_ref(const Mat4 *inv, float depth, int c, int r,
+                            int w, int h, double sw, double sh,
+                            double radius, double bias)
+{
+    double u = (c + 0.5) / w, v = (r + 0.5) / h;
+    double pos[3], px[3], py[3], dx[3], dy[3], n[3], view[3];
+    double noise, ao = 0.0, len;
+    int d, s, k;
+#define WARP_SSAO_REC(out, uu, vv) do { \
+        double ndc_[4], vh_[4]; int i_, j_; \
+        ndc_[0] = (uu) * 2.0 - 1.0; ndc_[1] = (vv) * 2.0 - 1.0; \
+        ndc_[2] = (double)depth * 2.0 - 1.0; ndc_[3] = 1.0; \
+        for (i_ = 0; i_ < 4; ++i_) { \
+            vh_[i_] = 0.0; \
+            for (j_ = 0; j_ < 4; ++j_) vh_[i_] += (double)inv->e[j_][i_] * ndc_[j_]; \
+        } \
+        for (i_ = 0; i_ < 3; ++i_) (out)[i_] = vh_[i_] / vh_[3]; \
+    } while (0)
+    WARP_SSAO_REC(pos, u, v);
+    WARP_SSAO_REC(px, (c + 1.5) / w, v);
+    WARP_SSAO_REC(py, u, (r + 1.5) / h);
+    for (k = 0; k < 3; ++k) { dx[k] = px[k] - pos[k]; dy[k] = py[k] - pos[k]; }
+    n[0] = dx[1] * dy[2] - dx[2] * dy[1];
+    n[1] = dx[2] * dy[0] - dx[0] * dy[2];
+    n[2] = dx[0] * dy[1] - dx[1] * dy[0];
+    len = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (k = 0; k < 3; ++k) n[k] /= len;
+    {
+        double t = 0.06711056 * (c + 0.5) + 0.00583715 * (r + 0.5);
+        t = 52.9829189 * (t - floor(t));
+        noise = t - floor(t);
+    }
+    len = sqrt(pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]);
+    for (k = 0; k < 3; ++k) view[k] = -pos[k] / len;
+    for (d = 0; d < 4; ++d) {
+        double angle = (d + noise) * 3.14159265 / 4.0;
+        double dirx = cos(angle), diry = sin(angle);
+        double hpos = -1.0, bt[3], np[3], cos_n, h2, a1, a2, contrib, ndb;
+        for (s = 0; s < 6; ++s) {
+            double t = (s + 0.5) / 6.0 * radius;
+            double su = u + dirx * t / sw, sv = v + diry * t / sh;
+            double sp[3], diff[3], dist, cos_h;
+            if (su < 0.0 || su > 1.0 || sv < 0.0 || sv > 1.0) continue;
+            WARP_SSAO_REC(sp, su, sv);
+            for (k = 0; k < 3; ++k) diff[k] = sp[k] - pos[k];
+            dist = sqrt(diff[0] * diff[0] + diff[1] * diff[1] + diff[2] * diff[2]);
+            if (dist < 0.001) dist = 0.001;
+            cos_h = (view[0] * diff[0] + view[1] * diff[1] + view[2] * diff[2]) / dist;
+            if (cos_h > hpos) hpos = cos_h;
+        }
+        /* bitangent = normalize(cross(view, (dir, 0))) */
+        bt[0] = view[1] * 0.0 - view[2] * diry;
+        bt[1] = view[2] * dirx - view[0] * 0.0;
+        bt[2] = view[0] * diry - view[1] * dirx;
+        len = sqrt(bt[0] * bt[0] + bt[1] * bt[1] + bt[2] * bt[2]);
+        for (k = 0; k < 3; ++k) bt[k] /= len;
+        ndb = n[0] * bt[0] + n[1] * bt[1] + n[2] * bt[2];
+        for (k = 0; k < 3; ++k) np[k] = n[k] - bt[k] * ndb;
+        len = sqrt(np[0] * np[0] + np[1] * np[1] + np[2] * np[2]);
+        cos_n = len > 0.001
+            ? (np[0] * view[0] + np[1] * view[1] + np[2] * view[2]) / len : 0.0;
+        h2 = hpos + bias;
+        if (h2 < -1.0) h2 = -1.0;
+        if (h2 > 1.0) h2 = 1.0;
+        a1 = acos(cos_n < -1.0 ? -1.0 : (cos_n > 1.0 ? 1.0 : cos_n));
+        a2 = acos(h2);
+        contrib = (sin(a2) - sin(a1)) * 0.5 + (a2 - a1) * cos_n;
+        if (contrib > 0.0) ao += contrib;
+    }
+#undef WARP_SSAO_REC
+    ao = 1.0 - ao / 4.0 * 2.0;
+    return ao < 0.0 ? 0.0 : (ao > 1.0 ? 1.0 : ao);
+}
+
+TEST(ssao_sidecars_occlude_a_jittered_plane_and_blur_it) {
+    enum { SW = 16, SH = 16, AW = 8, AH = 8 };
+    static float depth[SW * SH];
+    SSAOSystem ssao;
+    Mat4 proj, inv;
+    RHITextureDesc td;
+    RHITexture dtex;
+    RHICmdBuffer *cmd;
+    unsigned char raw[AW * AH * 4], blur[AW * AH * 4];
+    float plane_depth;
+    int want[AW * AH];
+    int frame, i, r, c, lo = 0, hi = 0, mid = 0;
+
+    proj = mat4_perspective(1.04719755f, 1.0f, 0.5f, 20.0f);
+    proj.e[2][0] = 0.3f;
+    proj.e[2][1] = -0.15f;
+    inv = mat4_inverse(proj);
+    {
+        float zc = proj.e[2][2] * -3.0f + proj.e[3][2];
+        float wc = proj.e[2][3] * -3.0f;
+        plane_depth = (zc / wc) * 0.5f + 0.5f;
+    }
+    for (i = 0; i < AW * AH; ++i) {
+        double ao = warp_ssao_ref(&inv, plane_depth, i % AW, i / AW, AW, AH,
+                                  (double)SW, (double)SH, 2.0, 0.9);
+        want[i] = (int)floor(ao * 255.0 + 0.5);
+        if (want[i] <= 3) ++lo;
+        else if (want[i] >= 252) ++hi;
+        else ++mid;
+    }
+    /* A degenerate expectation would prove nothing about the inputs. */
+    ASSERT_TRUE(lo >= 4 && hi >= 2 && mid >= 24);
+
+    memset(&td, 0, sizeof(td));
+    td.width = SW; td.height = SH;
+    td.format = RHI_FORMAT_R32_FLOAT; td.mip_levels = 1u;
+    td.data = depth;
+
+    ASSERT_TRUE(ssao_init(&ssao, g_dev, SW, SH));
+    ASSERT_TRUE(ssao.ready);
+    ASSERT_EQ(ssao.loc_inv_proj, 0);
+    ASSERT_EQ(ssao.loc_screen_w, 64);
+    ASSERT_EQ(ssao.loc_screen_h, 68);
+    ASSERT_EQ(ssao.loc_radius, 72);
+    ASSERT_EQ(ssao.loc_bias, 76);
+    /* Declared but never read by ssao.frag, so GL drops it too. */
+    ASSERT_EQ(ssao.loc_proj, -1);
+    ssao.radius = 2.0f;
+    ssao.bias = 0.9f;
+
+    for (frame = 0; frame < 2; ++frame) {
+        for (i = 0; i < SW * SH; ++i) depth[i] = frame == 0 ? plane_depth : 1.0f;
+        dtex = rhi_texture_create(g_dev, &td);
+        ASSERT_TRUE(rhi_handle_valid(dtex));
+
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        ssao_apply(&ssao, cmd, dtex, &proj.e[0][0], &inv.e[0][0], SW, SH);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+
+        memset(raw, 0, sizeof(raw));
+        memset(blur, 0, sizeof(blur));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ssao.ssao_fbo.color_tex, raw, sizeof(raw)));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ssao_get_texture(&ssao), blur, sizeof(blur)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        for (i = 0; i < AW * AH; ++i) {
+            if (frame == 1) {
+                ASSERT_EQ(raw[i * 4 + 0], 255u);
+                ASSERT_EQ(blur[i * 4 + 0], 255u);
+                ASSERT_EQ(blur[i * 4 + 1], 255u);
+                continue;
+            }
+            {
+                int dv = (int)raw[i * 4 + 0] - want[i];
+                if (dv < -3 || dv > 3)
+                    printf("  ssao raw px (%d,%d) = %d, want %d\n",
+                           i % AW, i / AW, (int)raw[i * 4 + 0], want[i]);
+                ASSERT_TRUE(dv >= -3 && dv <= 3);
+                ASSERT_EQ(raw[i * 4 + 1], 0u);
+                ASSERT_EQ(raw[i * 4 + 3], 255u);
+            }
+        }
+        if (frame == 0) {
+            for (r = 2; r < AH - 2; ++r) {
+                for (c = 2; c < AW - 2; ++c) {
+                    double sum = 0.0, wsum = 0.0;
+                    int x, y, wb, got;
+                    for (y = -2; y <= 2; ++y) {
+                        for (x = -2; x <= 2; ++x) {
+                            double wgt = exp(-(double)(x * x + y * y) / 4.0);
+                            sum += wgt * raw[((r + y) * AW + (c + x)) * 4] / 255.0;
+                            wsum += wgt;
+                        }
+                    }
+                    wb = (int)floor(sum / wsum * 255.0 + 0.5);
+                    got = blur[(r * AW + c) * 4];
+                    if (got < wb - 1 || got > wb + 1)
+                        printf("  ssao blur px (%d,%d) = %d, want %d\n", c, r, got, wb);
+                    ASSERT_TRUE(got >= wb - 1 && got <= wb + 1);
+                    ASSERT_EQ(blur[(r * AW + c) * 4 + 1], (unsigned char)got);
+                }
+            }
+        }
+        rhi_texture_destroy(g_dev, dtex);
+    }
+    ssao_shutdown(&ssao);
+}
+
+/* R640: sharpen on D3D12, through the real SharpenSystem (same init failure
+ * as SSAO before sharpen_hlsl.frag).
+ *
+ * Input: an 8x8 RGBA8 pattern with a vertical red edge (col < 4: 51, else
+ * 204), a horizontal green edge (memory row < 4: 77, else 153) and one blue
+ * spot (230 at col 2, row 5, else 26). sharpen_apply is called with the
+ * input's own size, so the eight neighbour taps land exactly on texel
+ * centres and the static sampler's filtering cannot change them. Expected
+ * values are the shader formula computed per channel below:
+ *   peak = -1 / (8 * strength + 1),  w = 1 + 4 * peak
+ *   out  = max(e*w + 4*peak*(a+c+g+i) + peak*(b+d+f+h), 0) / max(w, 1e-5)
+ *   out  = clamp(out, mn - rng/8, mx + rng/8), then max(out, 0)
+ * with mn/mx/rng over the eight neighbours. strength 5.0 (peak = -1/41,
+ * w = 37/41) on purpose: at the default-ish 0.6 the kernel overshoots so
+ * far that the ringing clamp decides every edge pixel and strength never
+ * reaches the output (reverse-verified: a sidecar that ignored strength
+ * passed). At 5.0 the red edge's right column lands inside the clamp
+ * window at 0.514, and the test also asserts that at least 12 samples are
+ * changed by the unclamped kernel, so strength stays observable. Only the
+ * 6x6 interior is asserted: border
+ * taps go through D3D12's static WRAP sampler, not CLAMP_TO_EDGE (known
+ * sampler limit), so the border legitimately differs from GL. The target is
+ * RGBA16F; tolerance 0.004. */
+static double warp_sharpen_in(int c, int r, int ch)
+{
+    if (ch == 0) return (c < 4 ? 51 : 204) / 255.0;
+    if (ch == 1) return (r < 4 ? 77 : 153) / 255.0;
+    return (c == 2 && r == 5 ? 230 : 26) / 255.0;
+}
+
+TEST(sharpen_sidecar_matches_the_cas_formula_on_interior_pixels) {
+    enum { W = 8, H = 8 };
+    static unsigned char img[W * H * 4];
+    SharpenSystem sh;
+    RHITextureDesc td;
+    RHITexture src;
+    RHICmdBuffer *cmd;
+    u16 out[W * H * 4];
+    const double strength = 5.0;
+    int r, c, ch, changed = 0, unclamped = 0;
+
+    for (r = 0; r < H; ++r)
+        for (c = 0; c < W; ++c) {
+            for (ch = 0; ch < 3; ++ch)
+                img[(r * W + c) * 4 + ch] =
+                    (unsigned char)floor(warp_sharpen_in(c, r, ch) * 255.0 + 0.5);
+            img[(r * W + c) * 4 + 3] = 255u;
+        }
+    memset(&td, 0, sizeof(td));
+    td.width = W; td.height = H;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = img;
+    src = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(src));
+
+    ASSERT_TRUE(sharpen_init(&sh, g_dev, W, H));
+    ASSERT_TRUE(sh.ready);
+    ASSERT_EQ(sh.loc_strength, 0);
+    ASSERT_EQ(sh.loc_sw, 4);
+    ASSERT_EQ(sh.loc_sh, 8);
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    sharpen_apply(&sh, cmd, src, (f32)strength, W, H);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, sh.fbo.color_tex, out, sizeof(out)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (r = 1; r < H - 1; ++r) {
+        for (c = 1; c < W - 1; ++c) {
+            for (ch = 0; ch < 3; ++ch) {
+                double peak = -1.0 / (strength * 8.0 + 1.0);
+                double w = 1.0 + 4.0 * peak;
+                double nb[8], mn, mx, rng, corners, cross, e, v;
+                float got;
+                int k;
+                nb[0] = warp_sharpen_in(c - 1, r - 1, ch);
+                nb[1] = warp_sharpen_in(c,     r - 1, ch);
+                nb[2] = warp_sharpen_in(c + 1, r - 1, ch);
+                nb[3] = warp_sharpen_in(c - 1, r,     ch);
+                nb[4] = warp_sharpen_in(c + 1, r,     ch);
+                nb[5] = warp_sharpen_in(c - 1, r + 1, ch);
+                nb[6] = warp_sharpen_in(c,     r + 1, ch);
+                nb[7] = warp_sharpen_in(c + 1, r + 1, ch);
+                e = warp_sharpen_in(c, r, ch);
+                mn = mx = nb[0];
+                for (k = 1; k < 8; ++k) {
+                    if (nb[k] < mn) mn = nb[k];
+                    if (nb[k] > mx) mx = nb[k];
+                }
+                rng = mx - mn;
+                corners = nb[0] + nb[2] + nb[5] + nb[7];
+                cross = nb[1] + nb[3] + nb[4] + nb[6];
+                v = e * w + corners * 4.0 * peak + cross * peak;
+                if (v < 0.0) v = 0.0;
+                v /= (w > 1e-5 ? w : 1e-5);
+                if (v >= mn - rng * 0.125 && v <= mx + rng * 0.125 &&
+                    fabs(v - e) > 0.02) ++unclamped;
+                if (v < mn - rng * 0.125) v = mn - rng * 0.125;
+                if (v > mx + rng * 0.125) v = mx + rng * 0.125;
+                if (v < 0.0) v = 0.0;
+                if (fabs(v - e) > 0.02) ++changed;
+                got = warp_half_to_float(out[(r * W + c) * 4 + ch]);
+                if (fabs(got - v) > 0.004)
+                    printf("  sharpen px (%d,%d) ch %d = %f, want %f\n", c, r, ch, got, v);
+                ASSERT_TRUE(fabs(got - v) <= 0.004);
+            }
+        }
+    }
+    /* The pattern must exercise the kernel, not pass through, and enough of
+     * it must escape the ringing clamp for strength to be observable. */
+    ASSERT_TRUE(changed >= 20);
+    ASSERT_TRUE(unclamped >= 12);
+
+    sharpen_shutdown(&sh);
+    rhi_texture_destroy(g_dev, src);
+}
+
+/* R640: god rays on D3D12, through the real GodRaysSystem (same init failure
+ * as SSAO before god_rays_hlsl.frag).
+ *
+ * Scene: constant RGBA8 (51, 102, 153). Sun at uv (0.25, 0.7), intensity
+ * 0.8. Two frames, each with a constant R32F depth, so no tap depends on
+ * filtering:
+ *   depth 1.0 (all sky): the sun is inside the frame, so the 32-step march
+ *     never leaves [0,1] and every step counts:
+ *       illum = 0.8 / 32 * sum_{i=0..31} (1 - i/32)^2
+ *             = 0.8 / 32 * (32*33*65/6) / 1024 = 0.8 * 11440 / 32768
+ *     and each pixel is scene * (1 + 2 * illum * mask) with
+ *     mask = 1 - smoothstep(0, 0.8, |uv - sun|) at the pixel centre
+ *     (memory row 0 = NDC y = -1, so uv.y = (row + 0.5) / 8). The sun is
+ *     off-centre in both axes, so a sun_x/sun_y swap or a flipped uv moves
+ *     the bright spot; the 153 channel peaks at 0.935, below the clamp.
+ *   depth 0.5 (all occluded): illum = 0, output must equal the scene
+ *     exactly. With t0/t1 swapped the scene would come from the R32F
+ *     texture, (1.0, 0, 0) or (0.5, 0, 0), and fail both frames. */
+TEST(god_rays_sidecar_scatters_sky_and_passes_occluded_scene) {
+    enum { W = 8, H = 8 };
+    static unsigned char scene[W * H * 4];
+    static float depth[W * H];
+    static const int base[3] = { 51, 102, 153 };
+    GodRaysSystem gr;
+    RHITextureDesc td;
+    RHITexture stex, dtex;
+    RHICmdBuffer *cmd;
+    unsigned char px[W * H * 4];
+    const double sun_x = 0.25, sun_y = 0.7, inten = 0.8;
+    const double illum = inten * 11440.0 / 32768.0;
+    int frame, i, ch, distinct_lo = 255, distinct_hi = 0;
+
+    for (i = 0; i < W * H; ++i) {
+        scene[i * 4 + 0] = (unsigned char)base[0];
+        scene[i * 4 + 1] = (unsigned char)base[1];
+        scene[i * 4 + 2] = (unsigned char)base[2];
+        scene[i * 4 + 3] = 255u;
+    }
+    memset(&td, 0, sizeof(td));
+    td.width = W; td.height = H;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = scene;
+    stex = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(stex));
+
+    ASSERT_TRUE(god_rays_init(&gr, g_dev, W, H));
+    ASSERT_TRUE(gr.ready);
+    ASSERT_EQ(gr.loc_sun_x, 0);
+    ASSERT_EQ(gr.loc_sun_y, 4);
+    ASSERT_EQ(gr.loc_intensity, 8);
+    /* Declared but never read by god_rays.frag, so GL drops them too. */
+    ASSERT_EQ(gr.loc_sw, -1);
+    ASSERT_EQ(gr.loc_sh, -1);
+
+    td.format = RHI_FORMAT_R32_FLOAT;
+    td.data = depth;
+    for (frame = 0; frame < 2; ++frame) {
+        for (i = 0; i < W * H; ++i) depth[i] = frame == 0 ? 1.0f : 0.5f;
+        dtex = rhi_texture_create(g_dev, &td);
+        ASSERT_TRUE(rhi_handle_valid(dtex));
+
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        god_rays_apply(&gr, cmd, stex, dtex, (f32)sun_x, (f32)sun_y, (f32)inten, W, H);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, gr.fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        for (i = 0; i < W * H; ++i) {
+            double u = (i % W + 0.5) / W, v = (i / W + 0.5) / H;
+            double dist = sqrt((u - sun_x) * (u - sun_x) + (v - sun_y) * (v - sun_y));
+            double t = dist / 0.8, mask;
+            if (t > 1.0) t = 1.0;
+            mask = 1.0 - t * t * (3.0 - 2.0 * t);
+            for (ch = 0; ch < 3; ++ch) {
+                double c0 = base[ch] / 255.0;
+                double val = frame == 0 ? c0 * (1.0 + 2.0 * illum * mask) : c0;
+                int want = (int)floor((val > 1.0 ? 1.0 : val) * 255.0 + 0.5);
+                int got = px[i * 4 + ch];
+                if (got < want - 1 || got > want + 1)
+                    printf("  god rays frame %d px (%d,%d) ch %d = %d, want %d\n",
+                           frame, i % W, i / W, ch, got, want);
+                ASSERT_TRUE(got >= want - 1 && got <= want + 1);
+                if (frame == 0 && ch == 2) {
+                    if (want < distinct_lo) distinct_lo = want;
+                    if (want > distinct_hi) distinct_hi = want;
+                }
+            }
+            ASSERT_EQ(px[i * 4 + 3], 255u);
+        }
+        rhi_texture_destroy(g_dev, dtex);
+    }
+    /* The sky frame must be a real gradient, not a near-constant boost. */
+    ASSERT_TRUE(distinct_hi - distinct_lo >= 40);
+
+    god_rays_shutdown(&gr);
+    rhi_texture_destroy(g_dev, stex);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5995,6 +6435,9 @@ int main(void) {
     RUN_TEST(engine_camera_puts_world_up_at_the_top_of_the_screen);
     RUN_TEST(graphics_push_constants_survive_a_compute_pass_and_rebind);
     RUN_TEST(texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows);
+    RUN_TEST(ssao_sidecars_occlude_a_jittered_plane_and_blur_it);
+    RUN_TEST(sharpen_sidecar_matches_the_cas_formula_on_interior_pixels);
+    RUN_TEST(god_rays_sidecar_scatters_sky_and_passes_occluded_scene);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

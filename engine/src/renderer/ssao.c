@@ -6,20 +6,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline ssao_create_pipe(RHIDevice *dev,
+static RHIPipeline ssao_create_pipe(RHIDevice *dev, bool sidecar,
                                       const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("SSAO: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("SSAO: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("SSAO: shader compile failed");
@@ -57,8 +64,8 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
         LOG_WARN("SSAO: capability query or shader variant path failed");
         return false;
     }
-    ssao->ssao_pipe = ssao_create_pipe(dev, vs_path, fs_path);
-    ssao->blur_pipe = ssao_create_pipe(dev, vs_path, blur_path);
+    ssao->ssao_pipe = ssao_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
+    ssao->blur_pipe = ssao_create_pipe(dev, caps.shader_sidecar_paths, vs_path, blur_path);
 
     if (!rhi_handle_valid(ssao->ssao_pipe) || !rhi_handle_valid(ssao->blur_pipe)) {
         LOG_WARN("SSAO: pipeline creation failed");

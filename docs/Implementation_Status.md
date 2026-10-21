@@ -1,6 +1,25 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R640 — **D3D12 上 SSAO / 锐化 / 体积光（god rays）三个后处理上线**
+
+- **问题**：`ssao.c`、`sharpen.c`、`god_rays.c` 都把内联 GLSL 交给 `rhi_shader_create`，D3D12 后端一律拒绝（只按 sidecar 名加载预编译 DXIL），三者在 init 阶段报 "shader compile failed"，demo 在 D3D12 上没有 AO、没有锐化、没有体积光。
+- **修复**：
+  - 三个加载函数按 `post_process.c` 的模式加 `sidecar` 参数：`caps.shader_sidecar_paths` 为真（仅 D3D12）时走 `rhi_shader_create_path`，否则保持原 GLSL 路径不变。GL / VK 不受影响。
+  - 新增四个手写 HLSL twin（顶点阶段复用 `post_hlsl.vert`）：
+    - `ssao_hlsl.frag`：push 块 80 字节（`u_ssao_inv_proj` 0、sw 64、sh 68、radius 72、bias 76）。`u_ssao_proj` 在 GLSL 中声明但从未读取，GL 链接器会丢掉它（resolve 为 -1），这里同样不放进 push 块，省 16 DWORD。深度 t0；`dFdx/dFdy` 对应 `ddx_fine/ddy_fine`；循环内用 `SampleLevel 0`。
+    - `ssao_blur_hlsl.frag`：无 push 块。`ssao_apply` 用 `rhi_cmd_bind_material_textures` 绑定，原始 AO 在 albedo（t0），深度在 shadow（t1）；`textureSize` 改为 `GetDimensions`。
+    - `sharpen_hlsl.frag`：push 块 strength 0 / sw 4 / sh 8，纹理 t0；GLSL 向量 `fma` 写成 `mad`（HLSL 的 `fma` 只支持 double）。
+    - `god_rays_hlsl.frag`：push 块 sun_x 0 / sun_y 4 / intensity 8。`u_gr_sw/sh` 在 GLSL 中从未读取，同样省略（resolve 为 -1，与 GL 一致）。场景 t0、深度 t1（material binder）。
+  - 已知差异（沿用既有限制，非本轮引入）：D3D12 采样器是静态 LINEAR + WRAP，而非调用方请求的 CLAMP_TO_EDGE，所以锐化的 1 像素边框和 SSAO 模糊的外两圈在画面边缘可能与 GL 略有不同。
+- **测试**（`test_d3d12_warp_runtime.c` +3，都驱动真实子系统 API，期望值由着色器公式推导）：
+  - `ssao_sidecars_occlude_a_jittered_plane_and_blur_it`：z=-3 平面，投影带非对称抖动（转置或错位的 inv_proj 都会重建出不同的平面）；期望值来自测试内逐行移植的双精度 `warp_ssao_ref`；bias 取 0.9（默认 0.025 在平面上整帧饱和为 0，等于什么都没测），并断言期望分布不退化。模糊结果按回读的原始 AO 做 5x5 高斯校验（深度恒定，双边权重恒为 1），只校验 4x4 内部；深度 1.0 时两个 early-out 必须精确为白。
+  - `sharpen_sidecar_matches_the_cas_formula_on_interior_pixels`：红/绿边缘加一个蓝点，强度 5.0，校验 6x6 内部逐通道公式值，并断言至少 12 个样本落在 ringing clamp 之内（保证强度对输出可见）。
+  - `god_rays_sidecar_scatters_sky_and_passes_occluded_scene`：全天空帧按解析式 illum = 0.8·11440/32768 乘以 smoothstep 遮罩校验（太阳在两个轴上都偏离中心）；全遮挡帧必须与场景完全相等。
+- **反向验证**（每次只破坏一处，均失败后恢复）：三者强制走 GLSL 路径 → init 失败；SSAO 用 `mul(ndc, M)` 转置 → raw (0,0)=71（期望 147）；翻转 ddy → 0（期望 147）；模糊 t0/t1 互换 → 218（期望 160）；radius/bias marker 互换 → 后端 marker 校验拒绝该 shader；锐化 texel 步长错误 → 0.283（期望 0.265）；忽略强度 / 从 sw 槽读强度 → 0.125 / 0.626（期望 0.514）；体积光 t0/t1 互换 → 255（期望 53）；sun_x/sun_y 互换 → 58（期望 54）。**过程中发现一个漏洞并已修正**：锐化测试最初用强度 0.6，此时所有边缘像素都由 clamp 决定，"忽略强度"的破坏版本照样通过；改为 5.0 并加上 unclamped 计数断言后，该破坏被检出。
+- **验证**：WARP 46/46；RTX 4060 45/46（只有预期中的 [1] warp_device_identity_is_honest 失败）。ctest：D3D12 185/185、VK 181/181、GL 178/178。demo（D3D12，12 帧）日志出现 "SSAO: initialized (320x180)"、"Sharpen: initialized"、"GodRays: initialized"，rc=0。
+- **遗留**：demo 中 33 条 "320x180 texture was read as a shader resource ... RENDER_TARGET" 警告在本轮之前就有（SSAO 强制走旧路径、或 BREAK_BLOOM=0 时条数相同），与本轮无关，来源未查。D3D12 上 SSS、volumetric、upscale、cinematic、point_shadow、deferred、particles 仍是 "shader compile failed"。
+
 ## 本轮更新：R639 — **Vulkan 的 3D 场景上下颠倒，已修复**；顺带修好 GL 材质数组用例与 golden 图的换行损坏\r
 \r
 - **问题**：Vulkan 的 NDC y 朝下。引擎的投影矩阵和所有 `_vk` 顶点着色器都是 GL 风格（+Y 朝上），而 VK 后端在交换链成为渲染目标的四个地方（`rhi_frame_begin`、`rhi_cmd_begin_render_pass`、`rhi_offscreen_fbo_unbind`、`rhi_cmd_unbind_shadow_map`）用的是正高度视口 `{0,0,w,h}`。结果 Vulkan 窗口里整个 3D 场景是倒的。UI 没倒，是因为它走 `rhi_cmd_set_viewport`（负高度，R715）。证据见 R638「更正」一节：太阳位置解析解、GL 与 D3D12 一致、真实屏幕抓图。\r
