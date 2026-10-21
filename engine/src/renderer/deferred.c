@@ -33,6 +33,27 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
                                           const char *vert_path,
                                           const char *frag_path,
                                           const RHIPipelineDesc *base_desc) {
+    RHICapabilities caps;
+    if (rhi_device_get_capabilities(dev, &caps) && caps.shader_sidecar_paths) {
+        /* R644: D3D12 never compiles source in-process; the GLSL path
+         * resolves to the precompiled <name>_hlsl sidecar. HAS_IBL is not
+         * injected there: the sidecar is the no-IBL variant (the D3D12
+         * cubemaps it would sample are stubs). */
+        RHIShader svs = rhi_shader_create_path(dev, vert_path, false);
+        RHIShader sfs = rhi_shader_create_path(dev, frag_path, true);
+        RHIPipeline spipe = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            RHIPipelineDesc sdesc = *base_desc;
+            sdesc.vert = svs;
+            sdesc.frag = sfs;
+            spipe = rhi_pipeline_create(dev, &sdesc);
+        } else {
+            LOG_WARN("deferred: shader compile failed (%s)", frag_path);
+        }
+        if (rhi_handle_valid(svs)) rhi_shader_destroy(dev, svs);
+        if (rhi_handle_valid(sfs)) rhi_shader_destroy(dev, sfs);
+        return spipe;
+    }
     usize vs_len = 0, fs_len = 0;
     char *vs_src = shader_read_file(vert_path, &vs_len);
     char *fs_src = shader_read_file(frag_path, &fs_len);
@@ -133,6 +154,10 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
     sys->_loc_gbuf_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_view");
     sys->_loc_gbuf_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_proj");
     sys->_loc_gbuf_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_prev_mvp");
+    /* R644: the D3D12 sidecar takes view*proj as one push matrix (four mat4
+     * do not fit the root constants next to six descriptor tables); GL/VK
+     * keep u_view/u_proj and resolve this to -1. */
+    sys->_loc_gbuf_vp    = rhi_pipeline_bindings_resolve(sys->bind_gbuffer, "u_vp");
 
     /* R560: skinned-variant G-Buffer pass pipeline uniforms. */
     if (rhi_handle_valid(sys->gbuffer_skinned_pipeline)) {
@@ -189,6 +214,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_view       = -1;
     sys->_loc_gbuf_proj       = -1;
     sys->_loc_gbuf_prev_mvp   = -1;
+    sys->_loc_gbuf_vp         = -1;
     sys->_loc_gbuf_arr_model  = -1;
     sys->_loc_gbuf_arr_view   = -1;
     sys->_loc_gbuf_arr_proj   = -1;
@@ -208,6 +234,10 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     char vs_path[96], fs_path[96];
     if (!rhi_device_get_capabilities(dev, &caps))
         memset(&caps, 0, sizeof(caps));
+    /* R644: the factor block's binding -- GLSL binding 0, D3D12 register b1
+     * (b0 is the root-constant block). Same rule as the forward temporal
+     * block, so the capability that names it is reused. */
+    sys->_factor_binding = caps.temporal_ubo_binding;
 
     /* Allocate G-Buffer attachments. */
     defrd_alloc_targets(sys, dev, width, height);
@@ -488,7 +518,15 @@ void deferred_begin_gbuffer(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
     rhi_mrt_fbo_bind(cmd, &sys->_mrt_fbo);
     rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 0.0f);
     rhi_cmd_clear_depth(cmd);
-    rhi_cmd_set_viewport(cmd, 0.0f, 0.0f, (f32)sys->width, (f32)sys->height, 0.0f, 1.0f);
+    /* R644: no rhi_cmd_set_viewport here. The MRT bind already installs the
+     * full-target OFFSCREEN viewport (memory row 0 = NDC y -1, the convention
+     * every other offscreen pass and the lighting pass's uv rely on).
+     * rhi_cmd_set_viewport is the RHI's swapchain-oriented +Y-up viewport:
+     * on Vulkan and D3D12 it is the opposite height sign of the offscreen
+     * default, so it stored the G-Buffer upside down relative to the
+     * lighting pass and mirrored the winding -- D3D12 culled the whole
+     * scene, Vulkan lit it from a flipped G-Buffer. GL sets the same
+     * viewport in the bind (gl_set_fbo_pass_state), so it is unaffected. */
 
     rhi_cmd_bind_pipeline(cmd, sys->gbuffer_pipeline);
 }
@@ -516,7 +554,7 @@ void deferred_bind_gbuffer_factors(DeferredSystem *sys, RHIDevice *dev, RHICmdBu
     f32 f[8] = { metallic_factor, roughness_factor, ao_strength, emissive_flag,
                  emissive_r, emissive_g, emissive_b, 0.0f };
     rhi_cmd_update_buffer(cmd, slot, 0u, f, sizeof(f));
-    rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
+    rhi_cmd_bind_uniform_buffer(cmd, slot, sys->_factor_binding);
 }
 
 void deferred_set_gbuffer_factor_array(DeferredSystem *sys, const f32 *factors_xyzw, u32 count) {
@@ -561,6 +599,12 @@ void deferred_set_gbuffer_emissive_array(DeferredSystem *sys, const f32 *emissiv
     sys->_emissive_arr_dirty = true;
 }
 
+void deferred_set_lighting_target_size(DeferredSystem *sys, u32 width, u32 height) {
+    if (!sys) return;
+    sys->target_w = width;
+    sys->target_h = height;
+}
+
 void deferred_bind_gbuffer_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd) {
     if (!sys || !cmd || !sys->initialized) return;
     if (!rhi_handle_valid(sys->_factor_arr_buf)) return;
@@ -576,7 +620,7 @@ void deferred_bind_gbuffer_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd) 
                               sys->_emissive_arr, sizeof(sys->_emissive_arr));
         sys->_emissive_arr_dirty = false;
     }
-    rhi_cmd_bind_uniform_buffer(cmd, sys->_factor_arr_buf, 0u);
+    rhi_cmd_bind_uniform_buffer(cmd, sys->_factor_arr_buf, sys->_factor_binding);
 }
 
 void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *cmd,
@@ -646,11 +690,23 @@ void deferred_lighting_pass(DeferredSystem *sys, RHIDevice *dev, RHICmdBuffer *c
         }
     }
 
-    if (sys->_loc_screen_w >= 0) {
-        rhi_cmd_set_uniform_f32(cmd, sys->_loc_screen_w, (f32)sys->width);
-    }
-    if (sys->_loc_screen_h >= 0) {
-        rhi_cmd_set_uniform_f32(cmd, sys->_loc_screen_h, (f32)sys->height);
+    /* R644: u_screen_w/h is the size of the target this pass shades, not
+     * of the G-Buffer. The shader divides gl_FragCoord (a pixel of THIS
+     * target) by it to find the light cluster, and the grid comes from
+     * light_system_cull over the same target (main.c culls at rw x rh). The
+     * demo allocates the G-Buffer at the window size but lights into the
+     * render-scale scene FBO, so sending the G-Buffer size scaled every
+     * cluster lookup toward the top-left and point lights lit the wrong
+     * tiles, on every backend. The caller names the target with
+     * deferred_set_lighting_target_size; until it does, the G-Buffer size
+     * stands (identical when the two match). */
+    {
+        u32 tw = sys->target_w ? sys->target_w : sys->width;
+        u32 th = sys->target_h ? sys->target_h : sys->height;
+        if (sys->_loc_screen_w >= 0)
+            rhi_cmd_set_uniform_f32(cmd, sys->_loc_screen_w, (f32)tw);
+        if (sys->_loc_screen_h >= 0)
+            rhi_cmd_set_uniform_f32(cmd, sys->_loc_screen_h, (f32)th);
     }
     if (sys->_loc_near >= 0) {
         rhi_cmd_set_uniform_f32(cmd, sys->_loc_near, near_plane);

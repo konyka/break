@@ -5475,11 +5475,27 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map,
     RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
     u32 point_shadow_count, RHISampler cube_sampler) {
-    (void)cmd; (void)albedo_metallic; (void)roughness_ao; (void)normal;
-    (void)depth; (void)emissive; (void)shadow; (void)ssao; (void)sampler;
+    /* R644: was a no-op stub. The GL backend's unit map, which is what
+     * deferred_light_hlsl.frag declares: 0 albedo+metallic, 1 normal,
+     * 2 roughness/AO, 3 depth, 4 shadow, 14 SSAO, 15 emissive. Units the
+     * bound pipeline does not declare are skipped by rhi_cmd_bind_texture.
+     * Shadow and SSAO fall back to white (lit, unoccluded) like the material
+     * binder, because the sidecar always declares them and a D3D12 table has
+     * no unbound state. The IBL (7-9) and point-shadow cube (10-13) slots
+     * are not bound: the sidecar does not declare them yet, and D3D12 has no
+     * live cubes (rhi_cubemap_create / rhi_cubemap_depth_fbo_create are
+     * stubs). */
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
     (void)brdf_lut; (void)irradiance_map; (void)prefilter_map;
-    (void)point_shadow_cubes;
-    (void)point_shadow_count; (void)cube_sampler;
+    (void)point_shadow_cubes; (void)point_shadow_count; (void)cube_sampler;
+    if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, albedo_metallic, sampler, 0u);
+    rhi_cmd_bind_texture(cmd, normal, sampler, 1u);
+    rhi_cmd_bind_texture(cmd, roughness_ao, sampler, 2u);
+    rhi_cmd_bind_texture(cmd, depth, sampler, 3u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 4u);
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
+    rhi_cmd_bind_texture(cmd, emissive, sampler, 15u);
 }
 /* R620: was a no-op stub. Nine post passes route through it -- dof,
  * motion_blur, taa, ssr, ssgi, contact_shadow, lens_flare and both arms of

@@ -82,6 +82,9 @@ typedef struct {
     i32 _loc_gbuf_view;
     i32 _loc_gbuf_proj;
     i32 _loc_gbuf_prev_mvp;
+    i32 _loc_gbuf_vp;      /* R644: D3D12 sidecar only (view*proj) */
+    u32 _factor_binding;   /* R644: factor UBO binding (GLSL 0 / D3D12 b1) */
+    u32 target_w, target_h; /* R644: lighting target size (0 = G-Buffer size) */
 
     /* R442: cached uniform locations of gbuffer_arr_pipeline (-1 if absent). */
     i32 _loc_gbuf_arr_model;
@@ -163,6 +166,11 @@ void deferred_bind_gbuffer_factors(DeferredSystem *sys, RHIDevice *dev, RHICmdBu
 void deferred_set_gbuffer_factor_array(DeferredSystem *sys, const f32 *factors_xyzw, u32 count);
 void deferred_set_gbuffer_emissive_array(DeferredSystem *sys, const f32 *emissive_xyzw, u32 count);
 void deferred_bind_gbuffer_factor_array(DeferredSystem *sys, RHICmdBuffer *cmd);
+
+/* R644: size of the target deferred_lighting_pass shades into (the scene
+ * FBO), which is what its cluster lookup divides gl_FragCoord by. Must
+ * match the screen size handed to light_system_cull. 0x0 = G-Buffer size. */
+void deferred_set_lighting_target_size(DeferredSystem *sys, u32 width, u32 height);
 
 /* Deferred lighting pass: full-screen triangle that decodes the G-Buffer
  * and runs the same Cook-Torrance + clustered-lighting evaluation as the

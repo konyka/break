@@ -6729,8 +6729,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * pt_shadows gather above so that gather still observes the PREVIOUS
          * frame's lights (R75-1 semantics preserved); nothing between here and
          * the forward/deferred passes reads `lights`, so forward output is
-         * unchanged. */
-        if (rhi_handle_valid(render.clustered_pipeline)) {
+         * unchanged.
+         * R644: gated on the light system having a consumer, not on the
+         * clustered forward pipeline alone. D3D12 has no clustered pipeline
+         * (no pbr_clustered sidecar), so the deferred path lit the scene with
+         * an EMPTY light system: no sun, no point lights -- a black frame. */
+        if (rhi_handle_valid(render.clustered_pipeline) || render.deferred.initialized) {
             light_system_clear(&lights);
             light_system_add_dir(&lights, sun_dir_vec.e[0], sun_dir_vec.e[1], sun_dir_vec.e[2], sun_color.e[0], sun_color.e[1], sun_color.e[2]);
             /* R59-fix: Incremental orbit rotation — 0 trig calls per frame.
@@ -8363,6 +8367,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj.e[0][0]);
             if (dsys->_loc_gbuf_prev_mvp >= 0)
                 rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj.e[0][0]);
+            if (dsys->_loc_gbuf_vp >= 0) { /* R644: D3D12 sidecar */
+                Mat4 gvp = mat4_mul(proj, view);
+                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_vp, &gvp.e[0][0]);
+            }
 
             /* R560: skinned geometry -- procedural arm and glTF skinned
              * primitives write the same four G-Buffer attachments with the
@@ -8636,6 +8644,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 light_system_upload(&lights);
             }
 
+            deferred_set_lighting_target_size(dsys, rw, rh); /* R644: = cull size */
             deferred_lighting_pass(dsys, render.device, cmd,
                                    light_system_data_slot(&lights), light_system_grid_slot(&lights),
                                    lights.point_count, lights.dir_count,

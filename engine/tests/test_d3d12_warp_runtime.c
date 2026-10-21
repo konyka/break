@@ -12,6 +12,8 @@
 #include <renderer/debug_viz.h>
 #include <renderer/combined_post_process.h>
 #include <renderer/fxaa.h>
+#include <renderer/deferred.h>
+#include <renderer/lighting.h>
 #include <math/math.h>
 #include <math.h>
 #include "test_framework.h"
@@ -7196,6 +7198,785 @@ TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa) {
     combined_aa_shutdown(&caa);
 }
 
+/* ---- R644: deferred path on D3D12 ---- */
+
+/* G-Buffer pass through the real DeferredSystem: one oversized triangle at
+ * z = -0.5 (identity model / view-proj, so NDC z = -0.5), normal +Z, flat
+ * textures, known factors. Every attachment is checked against
+ * gbuffer.frag's arithmetic:
+ *   RT0 = (albedo, clamp(mr.b * mfac))        RT1 = (oct(N), 0, 1)
+ *   RT2 = (clamp(mr.g * rfac, .04, 1), mix(1, occ, aostr), flag, 1)
+ *   RT3 = (curr_ndc - prev_ndc, 0, 1)          RT4 = (emissive * efac, 1)
+ * The flat normal map (0.5, 0.5, 1) leaves N = +Z through the derivative
+ * TBN, so oct(N) = (0.5, 0.5). u_prev_mvp translates by (+0.25, -0.125), so
+ * the velocity is (-0.25, +0.125) on every pixel -- a transposed matrix read
+ * moves that translation into w and the velocity changes. Depth is the
+ * D3D12 window depth of NDC z = -0.5, i.e. 0.25. */
+static RHITexture r644_tex(u8 r, u8 g, u8 b, u8 a) {
+    static u8 px[2 * 2 * 4];
+    RHITextureDesc td;
+    int i;
+    for (i = 0; i < 4; ++i) { px[i * 4] = r; px[i * 4 + 1] = g; px[i * 4 + 2] = b; px[i * 4 + 3] = a; }
+    memset(&td, 0, sizeof(td));
+    td.width = 2u; td.height = 2u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = px;
+    return rhi_texture_create(g_dev, &td);
+}
+
+static void r644_gbuffer_frame_ex(DeferredSystem *ds, RHICmdBuffer *cmd, RHIBuffer vbo,
+                                  const float *vp, const float *prev_mvp, RHITexture *t,
+                                  u32 nverts, int round_trip) {
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    deferred_begin_gbuffer(ds, g_dev, cmd);
+    rhi_cmd_set_uniform_mat4(cmd, ds->_loc_gbuf_model, identity);
+    rhi_cmd_set_uniform_mat4(cmd, ds->_loc_gbuf_vp, vp);
+    rhi_cmd_set_uniform_mat4(cmd, ds->_loc_gbuf_prev_mvp, prev_mvp);
+    if (round_trip) {
+        /* main.c uploads the matrices once, then other pipelines run (skinned
+         * G-Buffer, indirect compact) and the G-Buffer pipeline is bound
+         * again WITHOUT re-uploading. On D3D12 a root-signature change drops
+         * root constants, but the staging block is only flushed at a draw,
+         * so values staged since the last draw still reach this one; the
+         * demo's terrain / mesh draws depend on exactly that. */
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        /* An off-screen draw flushes the staged uniforms, as the skinned
+         * draws do in the demo; only then does the root signature change
+         * drop them. */
+        rhi_cmd_draw(cmd, 1u, 1u);
+        rhi_cmd_bind_pipeline(cmd, ds->lighting_pipeline);
+        rhi_cmd_bind_pipeline(cmd, ds->gbuffer_pipeline);
+    }
+    /* bind_material's unit map: albedo 0, mr 2, normal 3, emissive 4,
+     * occlusion 15. */
+    rhi_cmd_bind_material_textures_ibl(cmd, t[0], t[1], t[2], t[3], t[4],
+                                        RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                        (RHISampler){0}, RHI_HANDLE_NULL,
+                                        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    deferred_bind_gbuffer_factors(ds, g_dev, cmd, 0.5f, 0.75f, 0.5f, 1.0f,
+                                  2.0f, 1.0f, 0.5f);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, nverts, 1u);
+    deferred_end_gbuffer(ds, g_dev, cmd);
+}
+static void r644_gbuffer_frame_n(DeferredSystem *ds, RHICmdBuffer *cmd, RHIBuffer vbo,
+                                 const float *prev_mvp, RHITexture *t, u32 nverts) {
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    r644_gbuffer_frame_ex(ds, cmd, vbo, identity, prev_mvp, t, nverts, 0);
+}
+static void r644_gbuffer_frame(DeferredSystem *ds, RHICmdBuffer *cmd, RHIBuffer vbo,
+                               const float *prev_mvp, RHITexture *t) {
+    r644_gbuffer_frame_n(ds, cmd, vbo, prev_mvp, t, 3u);
+}
+
+TEST(deferred_gbuffer_sidecar_writes_all_five_targets) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const float prev_mvp[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0.25f,-0.125f,0,1 };
+    DeferredSystem ds;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHITexture t[5];
+    RHICmdBuffer *cmd;
+    static u8 rt0[8 * 8 * 4], rt2[8 * 8 * 4];
+    static u16 rt1[8 * 8 * 4], rt3[8 * 8 * 4], rt4[8 * 8 * 4];
+    static float dep[8 * 8];
+    int i;
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    ASSERT_EQ(ds._loc_gbuf_model, 0);
+    ASSERT_EQ(ds._loc_gbuf_vp, 64);
+    ASSERT_EQ(ds._loc_gbuf_prev_mvp, 128);
+    ASSERT_EQ(ds._loc_gbuf_view, -1);
+    ASSERT_EQ(ds._loc_gbuf_proj, -1);
+    t[0] = r644_tex(200, 100, 50, 255);   /* albedo */
+    t[1] = r644_tex(0, 204, 153, 255);    /* mr: g = roughness, b = metallic */
+    t[2] = r644_tex(128, 128, 255, 255);  /* flat tangent-space normal */
+    t[3] = r644_tex(51, 102, 153, 255);   /* emissive */
+    t[4] = r644_tex(102, 0, 0, 255);      /* occlusion r */
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    r644_gbuffer_frame(&ds, cmd, vbo, prev_mvp, t);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_albedo_metallic, rt0, sizeof(rt0)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_normal, rt1, sizeof(rt1)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_roughness_ao, rt2, sizeof(rt2)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_velocity, rt3, sizeof(rt3)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_emissive, rt4, sizeof(rt4)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_depth, dep, sizeof(dep)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (i = 0; i < 8 * 8; ++i) {
+        double metal = 153 / 255.0 * 0.5, rough = 204 / 255.0 * 0.75;
+        double ao = 1.0 + (102 / 255.0 - 1.0) * 0.5;
+        if (i == 0)
+            printf("  gbuf px0 rt0 %u %u %u %u | rt1 %f %f | rt2 %u %u %u | rt3 %f %f | "
+                   "rt4 %f %f %f | depth %f\n", rt0[0], rt0[1], rt0[2], rt0[3],
+                   warp_half_to_float(rt1[0]), warp_half_to_float(rt1[1]),
+                   rt2[0], rt2[1], rt2[2], warp_half_to_float(rt3[0]),
+                   warp_half_to_float(rt3[1]), warp_half_to_float(rt4[0]),
+                   warp_half_to_float(rt4[1]), warp_half_to_float(rt4[2]), dep[0]);
+        ASSERT_EQ(rt0[i * 4 + 0], 200);
+        ASSERT_EQ(rt0[i * 4 + 1], 100);
+        ASSERT_EQ(rt0[i * 4 + 2], 50);
+        ASSERT_TRUE(abs(rt0[i * 4 + 3] - (int)floor(metal * 255.0 + 0.5)) <= 1);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt1[i * 4 + 0]) - 0.5f) < 0.002f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt1[i * 4 + 1]) - 0.5f) < 0.002f);
+        ASSERT_TRUE(abs(rt2[i * 4 + 0] - (int)floor(rough * 255.0 + 0.5)) <= 1);
+        ASSERT_TRUE(abs(rt2[i * 4 + 1] - (int)floor(ao * 255.0 + 0.5)) <= 1);
+        ASSERT_EQ(rt2[i * 4 + 2], 255);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i * 4 + 0]) + 0.25f) < 0.002f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i * 4 + 1]) - 0.125f) < 0.002f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt4[i * 4 + 0]) - 51 / 255.0f * 2.0f) < 0.004f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt4[i * 4 + 1]) - 102 / 255.0f) < 0.003f);
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt4[i * 4 + 2]) - 153 / 255.0f * 0.5f) < 0.003f);
+        ASSERT_TRUE(fabsf(dep[i] - 0.25f) < 1e-5f);
+    }
+    /* Frame 2: the normal map points along tangent-space +X (255,128,128),
+     * the uv is SWAPPED against screen space (u follows NDC y, v follows NDC
+     * x) and the matrices go through a pipeline round trip before the draw.
+     * Per pixel ddx(world) = (0.25, 0, 0), ddy(world) = (0, 0.25, 0) (row
+     * index grows with NDC y on both backends' offscreen targets), ddx(uv) =
+     * (0, 0.125), ddy(uv) = (0.125, 0). gbuffer.frag's
+     * t = normalize(q1 * st2.t - q2 * st1.t) = normalize(0 - q2 * 0.125)
+     * = -Y, so the perturbed normal is mostly -Y: oct = (0.5 +- small,
+     * ~0.004). Only ddy reaches t here, so a flipped ddy turns it into +Y
+     * (oct y ~0.996). */
+    rhi_texture_destroy(g_dev, t[2]);
+    t[2] = r644_tex(255, 128, 128, 255);
+    {
+        static const float sw[3 * 8] = {
+            -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+             3.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f,
+            -1.0f,  3.0f, -0.5f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f
+        };
+        rhi_buffer_update(g_dev, vbo, sw, sizeof(sw));
+    }
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    {
+        static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+        r644_gbuffer_frame_ex(&ds, cmd, vbo, identity, prev_mvp, t, 3u, 1);
+    }
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_normal, rt1, sizeof(rt1)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_velocity, rt3, sizeof(rt3)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (i = 0; i < 8 * 8; ++i) {
+        float ox = warp_half_to_float(rt1[i * 4 + 0]), oy = warp_half_to_float(rt1[i * 4 + 1]);
+        if (fabsf(ox - 0.5f) > 0.01f || oy > 0.01f)
+            printf("  gbuf tilted px %d oct = %f %f, want ~0.5 ~0.004\n", i, ox, oy);
+        ASSERT_TRUE(fabsf(ox - 0.5f) < 0.01f);
+        ASSERT_TRUE(oy < 0.01f);
+        /* The round trip kept u_prev_mvp: velocity unchanged. */
+        ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i * 4 + 0]) + 0.25f) < 0.002f);
+    }
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_buffer_destroy(g_dev, vbo);
+    deferred_destroy(&ds, g_dev);
+}
+
+/* Deferred lighting through the real DeferredSystem + LightSystem, against
+ * a double replay of deferred_light.frag (no IBL, no point-shadow cubes --
+ * see deferred_light_hlsl.frag). The G-Buffer comes from the test above's
+ * draw: albedo (200,100,50)/255, metallic 0.3, roughness 0.6, AO 0.75,
+ * emissive (0.4, 0.4, 0.3), N = +Z, depth 0.25 everywhere.
+ *
+ * Camera: identity view/proj, so inv_vp = identity and the world position of
+ * pixel (x, y) is (ndc_x, ndc_y, depth*2-1 = -0.5) with ndc from the pixel
+ * centre. camera_pos (0, 0, 3). One directional light straight down -Z and
+ * one point light. The cascade matrices map world into the atlas so that
+ * cascade 0's NDC z = 0.5 ndc... (see below) for a shadowed / lit split.
+ *
+ * Frame A: no shadow atlas (white fallback = depth 1, so no blocker) and the
+ * point light at (0.5, 0.5, 0) r=2 binned by light_system_cull -- every
+ * pixel lit by the dir light, the point light only where the grid says.
+ * Frame B: point_count = 0, a 2x2 shadow atlas with depth 0 (everything is a
+ * blocker), cascade 0 = identity: z_win = 0.25, blocker = 0, filter radius
+ * clamps to 5 -> samples = 5, every tap shadowed -> dir_shadow = 0.3. */
+static void r644_cook(const double alb[3], double metal, double rough,
+                      const double N[3], const double V[3], const double L[3],
+                      const double lc[3], double out[3]) {
+    double H[3], hl, ndh, ndv, ndl, hdv, a, a2, d, ndf, k, g, F0[3], c;
+    int i;
+    for (i = 0; i < 3; ++i) H[i] = V[i] + L[i];
+    hl = sqrt(H[0] * H[0] + H[1] * H[1] + H[2] * H[2]);
+    for (i = 0; i < 3; ++i) H[i] /= hl;
+    ndh = fmax(N[0] * H[0] + N[1] * H[1] + N[2] * H[2], 0.0);
+    ndv = fmax(N[0] * V[0] + N[1] * V[1] + N[2] * V[2], 0.0);
+    ndl = fmax(N[0] * L[0] + N[1] * L[1] + N[2] * L[2], 0.0);
+    hdv = fmax(H[0] * V[0] + H[1] * V[1] + H[2] * V[2], 0.0);
+    a = rough * rough; a2 = a * a;
+    d = ndh * ndh * (a2 - 1.0) + 1.0;
+    ndf = a2 / (3.14159265359 * d * d);
+    k = (rough + 1.0) * (rough + 1.0) / 8.0;
+    g = (ndv / (ndv * (1.0 - k) + k)) * (ndl / (ndl * (1.0 - k) + k));
+    c = 1.0 - hdv; c = c * c * c * c * c;
+    for (i = 0; i < 3; ++i) {
+        double F, spec, kD;
+        F0[i] = 0.04 + (alb[i] - 0.04) * metal;
+        F = F0[i] + (1.0 - F0[i]) * c;
+        spec = ndf * g * F / (4.0 * ndv * ndl + 0.001);
+        kD = (1.0 - F) * (1.0 - metal);
+        out[i] = (kD * alb[i] / 3.14159265359 + spec) * lc[i] * ndl;
+    }
+}
+
+TEST(deferred_lighting_sidecar_matches_the_brdf_and_csm_and_clusters) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    DeferredSystem ds;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO out;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHITexture t[5], atlas;
+    RHICmdBuffer *cmd;
+    static u16 px[8 * 8 * 4];
+    float cam[19];
+    Mat4 view_m, proj_m;
+    const double alb[3] = { 200 / 255.0, 100 / 255.0, 50 / 255.0 };
+    const double N[3] = { 0, 0, 1 };
+    const double dirc[3] = { 0.9, 0.8, 0.7 }, ptc[3] = { 3.0, 2.0, 1.0 };
+    const double ptp[3] = { 0.5, 0.5, 0.0 }, ptr = 1.5;
+    int frame, x, y, c, i, pt_lit = 0, pt_dark = 0;
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    ASSERT_EQ(ds._loc_inv_vp, 0);
+    ASSERT_EQ(ds._loc_view, 64);
+    ASSERT_EQ(ds._loc_camera_pos, 128);
+    ASSERT_EQ(ds._loc_screen_w, 140);
+    ASSERT_EQ(ds._loc_shadow_bias, 156);
+    ASSERT_EQ(ds._loc_point_count, 160);
+    ASSERT_EQ(ds._loc_dir_count, 164);
+    ASSERT_EQ(ds._loc_point_shadow_far_planes, 176);
+    t[0] = r644_tex(200, 100, 50, 255);
+    t[1] = r644_tex(0, 204, 153, 255);
+    t[2] = r644_tex(128, 128, 255, 255);
+    t[3] = r644_tex(51, 102, 153, 255);
+    t[4] = r644_tex(102, 0, 0, 255);
+    {
+        static float zero[2 * 2];
+        RHITextureDesc td;
+        memset(&td, 0, sizeof(td));
+        td.width = 2u; td.height = 2u;
+        td.format = RHI_FORMAT_R32_FLOAT; td.mip_levels = 1u;
+        td.data = zero;
+        atlas = rhi_texture_create(g_dev, &td);
+    }
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    out = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(out.fb) &&
+                rhi_handle_valid(atlas));
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    memcpy(view_m.e, identity, sizeof(identity));
+    memcpy(proj_m.e, identity, sizeof(identity));
+    memcpy(cam, identity, sizeof(identity));
+    cam[16] = 0.0f; cam[17] = 0.0f; cam[18] = 3.0f;
+    for (frame = 0; frame < 2; ++frame) {
+        double dir_shadow = frame == 0 ? 1.0 : 0.3;
+        light_system_clear(&ls);
+        light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, (f32)dirc[0], (f32)dirc[1], (f32)dirc[2]);
+        if (frame == 0)
+            light_system_add_point(&ls, (f32)ptp[0], (f32)ptp[1], (f32)ptp[2], (f32)ptr,
+                                   (f32)ptc[0], (f32)ptc[1], (f32)ptc[2]);
+        light_system_set_depth_range(&ls, 0.1f, 100.0f);
+        light_system_cull(&ls, &view_m, &proj_m, 8u, 8u);
+        light_system_upload(&ls);
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        r644_gbuffer_frame(&ds, cmd, vbo, identity, t);
+        rhi_offscreen_fbo_bind(cmd, &out);
+        deferred_lighting_pass(&ds, g_dev, cmd, light_system_data_slot(&ls),
+                               light_system_grid_slot(&ls), ls.point_count, ls.dir_count,
+                               frame == 0 ? RHI_HANDLE_NULL : atlas,
+                               RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                               0u, NULL, NULL, 0.1f, 100.0f, 0.002f, identity, cam,
+                               RHI_HANDLE_NULL);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, out.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                double w[3], V[3], vl, col[3], add[3], L[3];
+                double metal = 153 / 255.0 * 0.5, rough = 204 / 255.0 * 0.75;
+                const double emis[3] = { 51 / 255.0 * 2.0, 102 / 255.0, 153 / 255.0 * 0.5 };
+                w[0] = (x + 0.5) / 4.0 - 1.0; w[1] = (y + 0.5) / 4.0 - 1.0; w[2] = -0.5;
+                V[0] = -w[0]; V[1] = -w[1]; V[2] = 3.0 - w[2];
+                vl = sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+                for (c = 0; c < 3; ++c) V[c] /= vl;
+                metal = floor(metal * 255.0 + 0.5) / 255.0;   /* RGBA8 round trip */
+                rough = floor(rough * 255.0 + 0.5) / 255.0;
+                for (c = 0; c < 3; ++c) col[c] = emis[c];      /* ao * (no IBL) = 0 */
+                L[0] = 0; L[1] = 0; L[2] = 1;
+                {
+                    double lc[3];
+                    for (c = 0; c < 3; ++c) lc[c] = dirc[c] * dir_shadow;
+                    r644_cook(alb, metal, rough, N, V, L, lc, add);
+                    for (c = 0; c < 3; ++c) col[c] += add[c];
+                }
+                if (frame == 0) {
+                    double toL[3], dist, att, lc[3];
+                    for (c = 0; c < 3; ++c) toL[c] = ptp[c] - w[c];
+                    dist = sqrt(toL[0] * toL[0] + toL[1] * toL[1] + toL[2] * toL[2]);
+                    if (dist <= ptr) {
+                        for (c = 0; c < 3; ++c) L[c] = toL[c] / fmax(dist, 1e-3);
+                        att = 1.0 - dist / ptr; att *= att;
+                        for (c = 0; c < 3; ++c) lc[c] = ptc[c] * att;
+                        r644_cook(alb, metal, rough, N, V, L, lc, add);
+                        for (c = 0; c < 3; ++c) col[c] += add[c];
+                        if (att > 0.05) pt_lit++;
+                    } else {
+                        pt_dark++;
+                    }
+                }
+                for (c = 0; c < 3; ++c) {
+                    double want = col[c] / (col[c] + 1.0);
+                    float got = warp_half_to_float(px[(y * 8 + x) * 4 + c]);
+                    if (fabs(got - want) > 0.004)
+                        printf("  deferred light frame %d px (%d,%d) ch %d = %f, want %f\n",
+                               frame, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.004);
+                }
+            }
+        }
+    }
+    /* The point light must light some pixels strongly and miss others, or the
+     * cluster lookup was not exercised. */
+    ASSERT_TRUE(pt_lit >= 4 && pt_dark >= 8);
+    light_system_shutdown(&ls);
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_texture_destroy(g_dev, atlas);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_offscreen_fbo_destroy(g_dev, &out);
+    deferred_destroy(&ds, g_dev);
+}
+
+/* The demo allocates the G-Buffer at the WINDOW size (deferred_init(w, h)) but
+ * lights into the half-resolution scene FBO, so the lighting pass must address
+ * the G-Buffer by uv, not by SV_Position (the first port used Load(SV_Position)
+ * and lit the whole frame from the top-left quarter of the G-Buffer). Here the
+ * G-Buffer is 16x16 with the left half covered by a triangle at depth 0.25 and
+ * the right half empty (depth 1 -> the sky early-out, black), lit into an 8x8
+ * target: output pixel x must follow G-Buffer texel 2x+1, so columns 0..3 are
+ * lit and 4..7 are black. Addressing by SV_Position would read texels 0..7 --
+ * all inside the covered half -- and light every column. */
+TEST(deferred_lighting_reads_a_larger_gbuffer_by_uv) {
+    /* Left half of NDC as two triangles (clockwise on screen like the
+     * engine's meshes, which the default back-face culling keeps). */
+    static const float verts[6 * 8] = {
+        -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         0.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   1.0f, 0.0f,
+         0.0f,  1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   1.0f, 1.0f,
+        -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         0.0f,  1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   1.0f, 1.0f,
+        -1.0f,  1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 1.0f
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static LightSystem ls;
+    DeferredSystem ds;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO out;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHITexture t[5];
+    RHICmdBuffer *cmd;
+    static u16 px[8 * 8 * 4];
+    float cam[19];
+    Mat4 view_m;
+    int x, y, i, lit = 0, dark = 0;
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 16u, 16u);
+    ASSERT_TRUE(ds.initialized);
+    t[0] = r644_tex(200, 100, 50, 255);
+    t[1] = r644_tex(0, 204, 153, 255);
+    t[2] = r644_tex(128, 128, 255, 255);
+    t[3] = r644_tex(0, 0, 0, 255);
+    t[4] = r644_tex(255, 0, 0, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    out = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(out.fb));
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    light_system_clear(&ls);
+    light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, 1.0f, 1.0f, 1.0f);
+    memcpy(view_m.e, identity, sizeof(identity));
+    light_system_cull(&ls, &view_m, &view_m, 8u, 8u);
+    light_system_upload(&ls);
+    memcpy(cam, identity, sizeof(identity));
+    cam[16] = 0.0f; cam[17] = 0.0f; cam[18] = 3.0f;
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    r644_gbuffer_frame_n(&ds, cmd, vbo, identity, t, 6u);
+    rhi_offscreen_fbo_bind(cmd, &out);
+    deferred_lighting_pass(&ds, g_dev, cmd, light_system_data_slot(&ls),
+                           light_system_grid_slot(&ls), ls.point_count, ls.dir_count,
+                           RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                           RHI_HANDLE_NULL, 0u, NULL, NULL, 0.1f, 100.0f, 0.002f,
+                           identity, cam, RHI_HANDLE_NULL);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, out.color_tex, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            float r = warp_half_to_float(px[(y * 8 + x) * 4]);
+            int want_lit = x < 4;
+            if ((r > 0.05f) != want_lit)
+                printf("  larger gbuffer px (%d,%d) r = %f, want %s\n", x, y, r,
+                       want_lit ? "lit" : "black");
+            ASSERT_TRUE((r > 0.05f) == want_lit);
+            if (want_lit) lit++; else dark++;
+        }
+    }
+    ASSERT_TRUE(lit == 32 && dark == 32);
+    light_system_shutdown(&ls);
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_offscreen_fbo_destroy(g_dev, &out);
+    deferred_destroy(&ds, g_dev);
+}
+
+/* A real camera through the whole deferred path, against a double replay.
+ * The scene is a floor quad at y = 0 seen by a perspective camera at
+ * (0, 3, 6) looking down at the origin (camera_view-style matrices built here
+ * with mat4_lookat / mat4_perspective, the engine's own). With
+ * non-identity view / proj / inv_vp a transposed product on any of them
+ * moves the reconstructed world position, and the G-Buffer texel each output
+ * pixel reads is found by uv because the G-Buffer (16x16) is twice the
+ * lighting target (8x8), as in the demo.
+ *
+ * Lights: a directional light with cascade 0 = a top-down orthographic light
+ * VP whose atlas quadrant is fully shadowed on the left half of the floor
+ * (x < 0) and empty on the right; and one point light near the floor's +x/-z
+ * corner whose radius only reaches part of the screen, binned by the real
+ * light_system_cull with this camera -- a flipped cluster row or column puts
+ * it in the wrong tiles. The expected image is replayed per pixel: depth from
+ * the replayed G-Buffer projection, world from inv_vp, PCSS-free shadow
+ * (blocker = 0 -> full 11x11 PCF of 0.3) or 1, and the cluster lookup's
+ * light list replayed from ls.grid_* exactly as the shader indexes it. */
+static const u8 *r644_chk;
+static double r644_dot3(const double *a, const double *b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+/* deferred_light.frag's shadow_test, replayed in double over a 64x64 atlas
+ * read NEAREST + CLAMP (what deferred_light_hlsl.frag's nearest() does). */
+static const float *r644_atlas;
+static double r644_atlas_tap(int cascade, double u, double v, double ox, double oy) {
+    double qx = cascade & 1, qy = cascade >> 1, ts = 1.0 / 64.0;
+    double ax = (qx + u) * 0.5 + ox, ay = (qy + v) * 0.5 + oy;
+    double lo_x = qx * 0.5 + ts, hi_x = (qx + 1.0) * 0.5 - ts;
+    double lo_y = qy * 0.5 + ts, hi_y = (qy + 1.0) * 0.5 - ts;
+    int tx, ty;
+    ax = ax < lo_x ? lo_x : (ax > hi_x ? hi_x : ax);
+    ay = ay < lo_y ? lo_y : (ay > hi_y ? hi_y : ay);
+    tx = (int)floor(ax * 64.0); ty = (int)floor(ay * 64.0);
+    if (tx > 63) tx = 63;
+    if (ty > 63) ty = 63;
+    return r644_atlas[ty * 64 + tx];
+}
+static double r644_shadow(const Mat4 *casc, const double wp[3], double bias) {
+    double clip[4], n[3], u, v, z, ls_, sw, bsum = 0, blocker, pen, fr, s = 0;
+    int r, k, x, y, bcount = 0, samples;
+    for (r = 0; r < 4; ++r) {
+        clip[r] = casc[0].e[3][r];
+        for (k = 0; k < 3; ++k) clip[r] += casc[0].e[k][r] * wp[k];
+    }
+    for (k = 0; k < 3; ++k) n[k] = clip[k] / clip[3];
+    u = n[0] * 0.5 + 0.5; v = n[1] * 0.5 + 0.5;
+    if (u < 0 || u > 1 || v < 0 || v > 1) return 1.0;
+    z = n[2] * 0.5 + 0.5;
+    ls_ = 0.02;
+    sw = ls_ / fmax(z, 1e-3);
+    for (x = -2; x <= 2; ++x)
+        for (y = -2; y <= 2; ++y) {
+            double d = r644_atlas_tap(0, u, v, x / 64.0 * sw, y / 64.0 * sw);
+            if (d < z - 0.002) { bsum += d; bcount++; }
+        }
+    if (bcount == 0) return 1.0;
+    blocker = bsum / bcount;
+    pen = (z - blocker) / fmax(blocker, 1e-3);
+    fr = pen * ls_ * 40.0;
+    fr = fr < 1.0 ? 1.0 : (fr > 5.0 ? 5.0 : fr);
+    samples = (int)ceil(fr * 2.0);
+    samples = samples < 1 ? 1 : (samples > 5 ? 5 : samples);
+    for (x = -samples; x <= samples; ++x)
+        for (y = -samples; y <= samples; ++y) {
+            double d = r644_atlas_tap(0, u, v, x / 64.0 * fr, y / 64.0 * fr);
+            s += (z - bias) > d ? 0.3 : 1.0;
+        }
+    return s / ((2 * samples + 1) * (2 * samples + 1));
+}
+
+TEST(deferred_path_with_a_perspective_camera_matches_a_replay) {
+    static float verts[6 * 8];
+    static LightSystem ls;
+    static Mat4 cascades[4];
+    static float atlas_px[64 * 64];
+    DeferredSystem ds;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO out;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHITexture t[5], atlas;
+    RHITextureDesc td;
+    RHICmdBuffer *cmd;
+    static u16 px[8 * 8 * 4];
+    static float gdep[16 * 16];
+    float cam[19];
+    Mat4 view, proj, vp, inv_vp, lview, lproj;
+    const double ptp[3] = { 0.5, 0.3, 3.0 }, ptc[3] = { 4.0, 3.0, 2.0 }, ptr = 1.5;
+    const double dirc[3] = { 0.8, 0.8, 0.8 };
+    int x, y, c, i, sh = 0, unsh = 0, pt_on = 0, pt_off = 0, sky = 0;
+    const float q[4][2] = { {-4, -4}, {4, -4}, {4, 4}, {-4, 4} };
+    const int tri[6] = { 0, 2, 1, 0, 3, 2 };
+    for (i = 0; i < 6; ++i) {
+        float *v = &verts[i * 8];
+        v[0] = q[tri[i]][0]; v[1] = 0.0f; v[2] = q[tri[i]][1];
+        v[3] = 0.0f; v[4] = 1.0f; v[5] = 0.0f;
+        v[6] = (q[tri[i]][0] + 4.0f) / 8.0f; v[7] = (q[tri[i]][1] + 4.0f) / 8.0f;
+    }
+    view = mat4_lookat(vec3(0.0f, 3.0f, 6.0f), vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 1.0f, 0.0f));
+    proj = mat4_perspective(1.0f, 1.0f, 0.5f, 30.0f);
+    vp = mat4_mul(proj, view);
+    inv_vp = mat4_inverse(vp);
+    /* Light: straight down, ortho over [-4,4]^2, y from 10 to -10. */
+    lview = mat4_lookat(vec3(0.0f, 10.0f, 0.0f), vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 0.0f, -1.0f));
+    lproj = mat4_ortho(-4.0f, 4.0f, -4.0f, 4.0f, 0.1f, 20.0f);
+    cascades[0] = mat4_mul(lproj, lview);
+    for (i = 1; i < 4; ++i) cascades[i] = cascades[0];
+    /* Atlas 64x64, quadrant 0 = texels [0,32)^2. Light-space uv.x = world x
+     * mapped [-4,4] -> [0,1]; the caster (depth 0) covers world x < 0. */
+    /* Caster at depth 0.4 (a blocker between light and floor, z_win ~0.5)
+     * over world x < -1: a moderate penumbra, so both fully lit, fully
+     * shadowed and partial pixels appear. */
+    for (y = 0; y < 64; ++y)
+        for (x = 0; x < 64; ++x)
+            atlas_px[y * 64 + x] = (x < 32 && y < 32 && x < 12) ? 0.4f : 1.0f;
+    r644_atlas = atlas_px;
+    memset(&td, 0, sizeof(td));
+    td.width = 64u; td.height = 64u; td.format = RHI_FORMAT_R32_FLOAT; td.mip_levels = 1u;
+    td.data = atlas_px;
+    atlas = rhi_texture_create(g_dev, &td);
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 16u, 16u);
+    ASSERT_TRUE(ds.initialized);
+    /* Albedo: a 16x16 checker of two colours over the floor's uv, so every
+     * G-Buffer texel the lighting pass might read by mistake (SV_Position
+     * instead of uv, a swapped register) has a distinct colour. The
+     * metallic-roughness texture is a different flat colour from albedo, so
+     * reading one through the other's register changes the result. */
+    {
+        static u8 chk[16 * 16 * 4];
+        RHITextureDesc ctd;
+        for (y = 0; y < 16; ++y)
+            for (x = 0; x < 16; ++x) {
+                u8 *p = &chk[(y * 16 + x) * 4];
+                int on = (x + y) & 1;
+                p[0] = on ? 200 : 60; p[1] = on ? 100 : 180; p[2] = on ? 50 : 120; p[3] = 255;
+            }
+        memset(&ctd, 0, sizeof(ctd));
+        ctd.width = 16u; ctd.height = 16u;
+        ctd.format = RHI_FORMAT_R8G8B8A8_UNORM; ctd.mip_levels = 1u;
+        ctd.data = chk;
+        t[0] = rhi_texture_create(g_dev, &ctd);
+        r644_chk = chk;
+    }
+    t[1] = r644_tex(0, 204, 153, 255);
+    t[2] = r644_tex(128, 128, 255, 255);
+    t[3] = r644_tex(0, 0, 0, 255);
+    t[4] = r644_tex(255, 0, 0, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    out = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(out.fb) && rhi_handle_valid(atlas));
+    ASSERT_TRUE(rhi_handle_valid(t[0]));
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    light_system_clear(&ls);
+    light_system_add_dir(&ls, 0.0f, -1.0f, 0.0f, (f32)dirc[0], (f32)dirc[1], (f32)dirc[2]);
+    light_system_add_point(&ls, (f32)ptp[0], (f32)ptp[1], (f32)ptp[2], (f32)ptr,
+                           (f32)ptc[0], (f32)ptc[1], (f32)ptc[2]);
+    light_system_set_cascade_vp(&ls, cascades);
+    light_system_set_depth_range(&ls, 0.5f, 30.0f);
+    light_system_cull(&ls, &view, &proj, 8u, 8u);
+    light_system_upload(&ls);
+    memcpy(cam, inv_vp.e, sizeof(inv_vp.e));
+    cam[16] = 0.0f; cam[17] = 3.0f; cam[18] = 6.0f;
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    r644_gbuffer_frame_ex(&ds, cmd, vbo, &vp.e[0][0], &vp.e[0][0], t, 6u, 0);
+    rhi_offscreen_fbo_bind(cmd, &out);
+    deferred_set_lighting_target_size(&ds, 8u, 8u);   /* = the cull size */
+    deferred_lighting_pass(&ds, g_dev, cmd, light_system_data_slot(&ls),
+                           light_system_grid_slot(&ls), ls.point_count, ls.dir_count,
+                           atlas, RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                           0u, NULL, NULL, 0.5f, 30.0f, 0.002f, &view.e[0][0], cam,
+                           RHI_HANDLE_NULL);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, out.color_tex, px, sizeof(px)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_depth, gdep, sizeof(gdep)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            /* uv of this output pixel -> the G-Buffer texel nearest() reads. */
+            double u = (x + 0.5) / 8.0, v = (y + 0.5) / 8.0;
+            int gx = (int)floor(u * 16.0), gy = (int)floor(v * 16.0);
+            double d = gdep[gy * 16 + gx];
+            double clip[4], w[4], wp[3], V[3], vl, N[3] = { 0, 1, 0 }, col[3], add[3], L[3];
+            double metal = floor(153 / 255.0 * 0.5 * 255.0 + 0.5) / 255.0;
+            double rough = floor(204 / 255.0 * 0.75 * 255.0 + 0.5) / 255.0;
+            double shadow = 1.0, alb[3];
+            int k, r;
+            if (d >= 1.0) {
+                for (c = 0; c < 3; ++c)
+                    ASSERT_TRUE(warp_half_to_float(px[(y * 8 + x) * 4 + c]) == 0.0f);
+                sky++;
+                continue;
+            }
+            clip[0] = u * 2 - 1; clip[1] = v * 2 - 1; clip[2] = d * 2 - 1; clip[3] = 1;
+            for (r = 0; r < 4; ++r) {
+                w[r] = 0;
+                for (k = 0; k < 4; ++k) w[r] += inv_vp.e[k][r] * clip[k];
+            }
+            for (c = 0; c < 3; ++c) wp[c] = w[c] / w[3];
+            {
+                /* The G-Buffer texel's own centre is what was rasterised:
+                 * its world position on the floor gives the uv the albedo
+                 * texture was sampled at, replayed with the D3D12 static
+                 * sampler (bilinear, WRAP). */
+                double gc_clip[4], gw[4], fu, fv;
+                gc_clip[0] = (gx + 0.5) / 16.0 * 2 - 1; gc_clip[1] = (gy + 0.5) / 16.0 * 2 - 1;
+                gc_clip[2] = d * 2 - 1; gc_clip[3] = 1;
+                for (r = 0; r < 4; ++r) {
+                    gw[r] = 0;
+                    for (k = 0; k < 4; ++k) gw[r] += inv_vp.e[k][r] * gc_clip[k];
+                }
+                fu = (gw[0] / gw[3] + 4.0) / 8.0 * 16.0 - 0.5;
+                fv = (gw[2] / gw[3] + 4.0) / 8.0 * 16.0 - 0.5;
+                {
+                    int x0 = (int)floor(fu), y0 = (int)floor(fv), sx, sy;
+                    double ax = fu - x0, ay = fv - y0;
+                    for (c = 0; c < 3; ++c) alb[c] = 0.0;
+                    for (sy = 0; sy < 2; ++sy)
+                        for (sx = 0; sx < 2; ++sx) {
+                            int tx = (((x0 + sx) % 16) + 16) % 16;
+                            int ty = (((y0 + sy) % 16) + 16) % 16;
+                            double wgt = (sx ? ax : 1 - ax) * (sy ? ay : 1 - ay);
+                            for (c = 0; c < 3; ++c)
+                                alb[c] += wgt * r644_chk[(ty * 16 + tx) * 4 + c] / 255.0;
+                        }
+                    /* RT0 is RGBA8: the stored albedo is rounded. */
+                    for (c = 0; c < 3; ++c) alb[c] = floor(alb[c] * 255.0 + 0.5) / 255.0;
+                }
+            }
+            V[0] = 0 - wp[0]; V[1] = 3 - wp[1]; V[2] = 6 - wp[2];
+            vl = sqrt(r644_dot3(V, V));
+            for (c = 0; c < 3; ++c) V[c] /= vl;
+            shadow = r644_shadow(cascades, wp, 0.002);
+            if (shadow < 0.999) sh++; else unsh++;
+            for (c = 0; c < 3; ++c) col[c] = 0.0;   /* no emissive, no IBL */
+            L[0] = 0; L[1] = 1; L[2] = 0;
+            {
+                double lc[3];
+                for (c = 0; c < 3; ++c) lc[c] = dirc[c] * shadow;
+                r644_cook(alb, metal, rough, N, V, L, lc, add);
+                for (c = 0; c < 3; ++c) col[c] += add[c];
+            }
+            {
+                /* Cluster lookup exactly as the shader does it. */
+                double vpos[4], ld;
+                /* SV_Position is the pixel centre: cx = floor((x + .5) / (8/16)). */
+                int cx = (int)floor((x + 0.5) / (8.0 / 16.0));
+                int cy = (int)floor((y + 0.5) / (8.0 / 8.0)), cz, ci, go, gc, gi;
+                for (r = 0; r < 4; ++r) {
+                    vpos[r] = view.e[3][r];
+                    for (k = 0; k < 3; ++k) vpos[r] += view.e[k][r] * wp[k];
+                }
+                ld = -vpos[2];
+                if (cx > 15) cx = 15;
+                if (cy > 7) cy = 7;
+                cz = (int)floor(24.0 * log2(fmax(ld / 0.5, 1.0)) / log2(30.0 / 0.5));
+                if (cz > 23) cz = 23;
+                ci = cx + cy * 16 + cz * 128;
+                go = (int)ls.grid_offsets_counts[ci * 2];
+                gc = (int)ls.grid_offsets_counts[ci * 2 + 1];
+                for (gi = 0; gi < gc; ++gi) {
+                    int li = (int)ls.grid_indices[go + gi];
+                    double toL[3], dist, att, lc[3];
+                    (void)li;
+                    for (c = 0; c < 3; ++c) toL[c] = ptp[c] - wp[c];
+                    dist = sqrt(r644_dot3(toL, toL));
+                    if (dist > ptr) continue;
+                    for (c = 0; c < 3; ++c) L[c] = toL[c] / fmax(dist, 1e-3);
+                    att = 1.0 - dist / ptr; att *= att;
+                    for (c = 0; c < 3; ++c) lc[c] = ptc[c] * att;
+                    r644_cook(alb, metal, rough, N, V, L, lc, add);
+                    for (c = 0; c < 3; ++c) col[c] += add[c];
+                    if (att > 0.02) pt_on++;
+                }
+                if (gc == 0) pt_off++;
+            }
+            for (c = 0; c < 3; ++c) {
+                double want = col[c] / (col[c] + 1.0);
+                float got = warp_half_to_float(px[(y * 8 + x) * 4 + c]);
+                if (fabs(got - want) > 0.006)
+                    printf("  perspective px (%d,%d) ch %d = %f, want %f (world %.2f %.2f %.2f)\n",
+                           x, y, c, got, want, wp[0], wp[1], wp[2]);
+                ASSERT_TRUE(fabs(got - want) <= 0.006);
+            }
+        }
+    }
+    printf("  (perspective: %d shadowed, %d lit, %d sky, point on %d / off %d) ",
+           sh, unsh, sky, pt_on, pt_off);
+    ASSERT_TRUE(sh >= 3 && unsh >= 3 && sky >= 4 && pt_on >= 2 && pt_off >= 4);
+    light_system_shutdown(&ls);
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_texture_destroy(g_dev, atlas);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_offscreen_fbo_destroy(g_dev, &out);
+    deferred_destroy(&ds, g_dev);
+}
+
 /* ---- R643: D3D12 validation fixes ----
  * The debug layer's messages used to go to OutputDebugString only, so a
  * console run never saw them; R643 drains them into the log and counts them
@@ -7675,6 +8456,10 @@ int main(void) {
     RUN_TEST(debug_viz_sidecar_renders_every_mode_from_the_shader_formulas);
     RUN_TEST(combined_color_sidecar_matches_the_fused_tonemap_grade_vignette);
     RUN_TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa);
+    RUN_TEST(deferred_gbuffer_sidecar_writes_all_five_targets);
+    RUN_TEST(deferred_lighting_sidecar_matches_the_brdf_and_csm_and_clusters);
+    RUN_TEST(deferred_lighting_reads_a_larger_gbuffer_by_uv);
+    RUN_TEST(deferred_path_with_a_perspective_camera_matches_a_replay);
     RUN_TEST(uniform_buffer_survives_a_pipeline_change);
     RUN_TEST(cbv_descriptor_survives_a_mid_frame_upload);
     RUN_TEST(one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain);

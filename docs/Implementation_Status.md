@@ -1,6 +1,34 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R644 — **D3D12 延迟渲染路径上线**；顺带修掉 4 个三端共有的延迟/光照 bug
+
+- **问题**：`BREAK_RENDER_PATH=deferred` 在 D3D12 上 init 失败（`deferred.c` 内联 GLSL、无 sidecar、`rhi_cmd_bind_deferred_gbuf_textures` 是桩）。接通之后又逐层暴露出下面这些问题，其中 4 个不是 D3D12 专属。
+- **D3D12 部分**：
+  - `deferred.c` 加载函数按 `caps.shader_sidecar_paths` 走 `rhi_shader_create_path`；sidecar 是无 IBL 变体（D3D12 的 cubemap 仍是桩），因此不注入 `HAS_IBL`。
+  - **根签名预算**：G-Buffer 片元 5 张纹理 + factor CBV = 6 张表，只剩 232 字节根常量，放不下 4 个 mat4。`gbuffer_hlsl.vert` 改收 `u_vp`（= proj·view，main.c 上传；GL/VK resolve 为 -1，不受影响）：push `u_model 0 / u_vp 64 / u_prev_mvp 128`。
+  - factor UBO 绑定号改用 `caps.temporal_ubo_binding`（GL/VK 0、D3D12 b1，b0 是根常量）。
+  - `gbuffer_hlsl.frag`：纹理按 bind_material 的 GL 单元（t0 albedo、t2 MR、t3 法线、t4 自发光、t15 AO），五个 SV_Target。
+  - `deferred_light_hlsl.frag`：寄存器同 GL 单元表（t0-4、t5/t6 光源/网格 texel buffer、t14 SSAO、t15 自发光）；push 块 192 字节（inv_vp 0、view 64、camera 128、screen_w/h 140/144、near/far 148/152、bias 156、point/dir count 160/164、far_planes 176）。IBL 与点光源阴影立方体不在本轮（点光源阴影按"无遮挡"处理，已注明）。**所有纹理读取都用 `nearest()`（NEAREST + CLAMP 的精确复刻）按 uv 寻址**：静态采样器是 LINEAR + WRAP，而 SSAO、阴影图集、甚至 G-Buffer 本身（见下）都不是本 pass 的尺寸。
+  - `rhi_cmd_bind_deferred_gbuf_textures` 实现为 GL 单元表；shadow / SSAO 缺失时补白色 fallback。
+- **三端共有的问题（GL / VK / D3D12）**：
+  1. **G-Buffer 视口**：`deferred_begin_gbuffer` 调用 `rhi_cmd_set_viewport`，那是 RHI 面向交换链的 +Y 朝上视口，在 VK/D3D12 上与离屏默认视口高度符号相反——G-Buffer 被上下颠倒写入、绕序镜像。D3D12 整个场景被背面剔除；VK 用颠倒的 G-Buffer 做光照。删除该调用（MRT bind 已设好全目标离屏视口；GL 的 bind 本来就设同一视口，行为不变）。
+  2. **方向光读取越界**：`read_dir_light` 的基址写成 `(512 * 2) + index * 2` = 1024，而光源缓冲只有 536 个 texel（256 点光源×2 + 4 方向光×2 + 4 个级联矩阵×4）。正确值是 `256 * 2`（级联矩阵在 520 = 512 + 4×2 也印证了这一点）。GL/VK 的越界读返回 0 → **太阳从来没生效过**；D3D12 是 GPU-based validation [1005]。七个着色器（deferred_light、pbr_clustered、blinn_phong_clustered 各 GL/VK 版 + 新 HLSL）一并修正。
+  3. **光源系统没有被填充**：main.c 只在 `clustered_pipeline` 有效时才 clear/add 光源，D3D12 没有 clustered 管线（无 pbr_clustered sidecar），延迟路径因此用一个空的光源系统照明——黑屏。条件改为 `clustered_pipeline || deferred.initialized`。
+  4. **簇查找用错了屏幕尺寸**：`deferred_lighting_pass` 把 G-Buffer 尺寸作为 `u_screen_w/h`，但着色器用它去除光照目标的 `gl_FragCoord`，而簇网格由 `light_system_cull` 按 rw×rh（渲染缩放后的场景 FBO）构建。demo 的 G-Buffer 是窗口尺寸，于是每个像素都查到了偏向左上的簇，点光源照亮了错误的屏幕区块。新增 `deferred_set_lighting_target_size`，main.c 传入与 cull 相同的 rw×rh；未设置时沿用 G-Buffer 尺寸（两者相等时行为不变）。
+- **测试**（`test_d3d12_warp_runtime.c` +4，均走真实 DeferredSystem / LightSystem API）：
+  - `deferred_gbuffer_sidecar_writes_all_five_targets`：五个附件 + 深度逐像素对照 gbuffer.frag 公式（u_prev_mvp 平移出非零速度）；第二帧用 uv 与屏幕轴交换的三角形 + 切线空间 +X 法线贴图，只让 ddy 影响切线，校验扰动后法线的八面体编码；中间穿插一次管线往返（demo 的 skinned/compact 模式），确认上传过的矩阵仍生效。
+  - `deferred_lighting_sidecar_matches_the_brdf_and_csm_and_clusters`：恒等相机下双精度重放 Cook-Torrance + Reinhard；帧 A 有点光源、无阴影；帧 B 全遮挡图集 → PCF 0.3。
+  - `deferred_lighting_reads_a_larger_gbuffer_by_uv`：16×16 G-Buffer 光照到 8×8，左半覆盖 → 输出左 4 列亮、右 4 列黑。
+  - `deferred_path_with_a_perspective_camera_matches_a_replay`：真实透视相机俯视地面，16×16 棋盘反照率、正交光源级联 + 部分遮挡图集（完整 PCSS 双精度重放）、一个只覆盖第 0-2 行簇的点光源（光照目标 8×8、G-Buffer 16×16）；12 个阴影像素、27 个受光、25 个天空、点光源命中 8 个。
+- **反向验证**（每条单独破坏、观察失败、恢复）：u_vp / u_prev_mvp / inv_vp / 级联矩阵转置、去掉 clip-z 重映射、AO 读成反照率、MR 通道交换、ddy 取反、PCF 遮挡权重、簇行翻转、簇列翻转、点光源衰减不平方、丢掉自发光、深度/反照率按 SV_Position 读取、binder 法线/粗糙度单元互换、factor 绑到 0、恢复 set_viewport、u_screen_w 用回 G-Buffer 尺寸——全部被检出（旧的方向光偏移 1024 由套件末尾的 debug-layer 门检出 [1005]）。**过程中加强了 4 处**：恒等矩阵检不出转置 → 改透视相机；平坦法线贴图检不出 ddy 符号 → 改 uv 交换 + 倾斜法线；点光源覆盖第 3-4 行时行翻转互相映射 → 移到第 0-2 行；单色反照率检不出按 SV_Position 读取 → 改棋盘。`gbuffer: mr 放到 t0` 这条由 dxc 直接拒绝编译（寄存器重叠），init 失败，同样被检出。
+  - **曾尝试但撤回的改动**：在 `rhi_cmd_bind_pipeline` 时重发图形 push 常量（以为管线往返会丢矩阵）。反向验证显示去掉它不影响任何测试和 demo——暂存的 uniform 只在 draw 时 flush，往返之间没有 draw 就不会丢；已撤回，测试注释说明了这一点。
+- **验证**：WARP 62/62、RTX 4060 61/62（只有预期的 [1]），两者 debug layer 0 error / 0 warning、别名计数恰为 1。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败均为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk 占用剪贴板，与本轮无关）；VK 全量并行时 `test_vulkan` 偶发一次失败，单独与 graphics 子集各连跑 3 次全过。demo：D3D12 延迟 60 帧 rc=0、debug layer 0 条；VK 延迟 validation 0 条。**截图**（`BREAK_CAM=0,12,22,0,-25`、无 HUD、第 30 帧）：D3D12 vs GL 延迟 MAE **0.57**，前向 MAE **2.08**。
+- **遗留**：
+  - **VK 比 GL 亮**：延迟 MAE 33、前向 MAE 57，均为 VK 偏亮，修复前就存在（不是本轮引入），待查。
+  - **前向路径 D3D12 间歇问题（修复前即存在）**：60 帧 demo 约半数运行在帧循环中挂起（timeout 杀掉），另有一次段错误，并伴随 debug layer [921]（资源在命令列表执行前被销毁）。用 HEAD 的源码重编后复现同样现象，与本轮无关，待查。
+  - 点光源阴影（需要 D3D12 立方体深度 FBO）、IBL、gbuffer_skinned / gbuffer_arr 的 sidecar。
+
 ## 本轮更新：R643 — **D3D12 debug layer 的报错终于看得见了，并清零**（6 类真实问题）
 
 - **问题**：debug 构建一直打开着 debug layer + GPU-based validation，但它的消息只写到 `OutputDebugString`，控制台运行**一条都看不到**——"debug layer enabled" 加一份干净日志什么也证明不了。新增 `rhi_d3d12_drain_info_queue`：每次 submit 后把 info queue 中的 CORRUPTION / ERROR / WARNING 写进引擎日志并计数（跳过 [820]：clear 时没有 optimized clear value，是逐次 clear 的速度提示）。第一次打开，demo 12 帧就报出 ~470 条：

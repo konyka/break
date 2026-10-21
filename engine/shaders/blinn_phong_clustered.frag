@@ -51,7 +51,12 @@ PointLight read_point_light(int index) {
 }
 
 DirLight read_dir_light(int index) {
-    int base = (512 * 2) + index * 2;
+    /* R644: dir lights start right after LIGHT_MAX_POINT (256) point lights
+     * of 2 texels each -- texel 512, which is also why the cascades sit at
+     * 520 = 512 + LIGHT_MAX_DIR * 2 (lighting.c upload layout). This read
+     * (512 * 2) = 1024, past the end of the 536-texel buffer: the sun read
+     * as zero on GL/VK (robust access) and out of bounds on D3D12. */
+    int base = (256 * 2) + index * 2;
     vec4 d0 = texelFetch(u_light_data, base);
     vec4 d1 = texelFetch(u_light_data, base + 1);
     DirLight l;
