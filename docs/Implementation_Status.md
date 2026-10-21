@@ -11,9 +11,11 @@
 - **GL「材质数组象限垂直翻转」这个长期失败，根因其实在测试本身**：`test_vulkan.c` 的 MATERIAL ARRAY 用例按 `(y+1)/2*h` 把 NDC y 换算成截图行号。`rhi_screenshot` 在所有后端都是自上而下的行序（R715 契约），正确公式应为 `(1-y)/2*h`。旧公式只在 Vulkan 上碰巧对，因为 Vulkan 整个画面是倒的。改正后该用例在 GL 与 VK 上**都通过**。\r
 - **golden 图被 git 换行转换损坏**：本机 `core.autocrlf=true`，而 `.ppm` 没有标记为二进制。PPM 头是 ASCII，带 `\n`；每次 checkout 或 `git stash pop` 都会把它改写成 `\r\n`，于是 golden 比对报 DRIFT（MAE 28.73），参考图其实并没有变。新增 `.gitattributes` 规则 `*.ppm binary`。\r
 - **验证**：\r
-  - VK ctest 181/181（**`test_vulkan` 首次全绿**：golden 两张 MAE=0.00，材质数组通过，VALIDATION GATE 0 条消息）；D3D12 185/185；GL 177/178，剩下的 `test_vulkan` 只有 GL golden 偏差（MAE 15.60 / 1.15，参考图在 Linux Intel Mesa 上生成，与本次无关）。\r
+  - VK ctest 181/181（**`test_vulkan` 首次全绿**：golden 两张 MAE=0.00，材质数组通过，VALIDATION GATE 0 条消息）；D3D12 185/185；GL 178/178（见下）。\r
   - demo 默认帧在 GL / VK / D3D12 三个后端方向一致，UI 都在左上角。\r
-  - **已知间歇失败（非本次引入）**：`test_vulkan` 的 UNIFIED GPU CULL 用例偶发 `Hi-Z vis flags {0,0}, want {1,0}`。回退本次改动后复测 8 次失败 4 次，与改动后频率相当，是既有的不稳定用例，尚未定位。\r
+  - **UNIFIED GPU CULL 间歇失败——已定位并修复**：偶发 `Hi-Z vis flags {0,0}, want {1,0}`，回退改动后 8 次失败 4 次，是既有问题。根因在测试：`gpucull_read_vis_flags` 映射 `rhi_frame_index` 对应的 staging 槽，只有在 demo 那样「`rhi_frame_begin` 已等过该槽 fence」之后调用才无竞争；测试在 `rhi_present` 之后直接读，中间没有 `frame_begin`，GPU 往该槽的拷贝可能还没完成，读到的是旧内容。两处读取前加 `rhi_device_idle_ex` 后连跑 12 次 0 失败。\r
+  - **GL golden 偏差的真相**：一直标注为「Linux Intel Mesa 与本机差异」的 GL golden DRIFT（MAE 15.60 / 1.15），其实是**参考图本身上下颠倒**：本机 GL 输出与上下翻转后的参考图 MAE=0.00，三角形掩码与新的 VK 参考图完全一致（尖在上）。参考图生成于 R435（截图契约统一为自上而下之前，R715），当时的截图路径有二次翻转。已用本机输出重新生成 `test_vulkan_gl{,_cam}.ppm`。\r
+  - **至此三棵树全绿**：VK 181/181、GL 178/178、D3D12 185/185。\r
 \r
 ## 本轮更新：R638 — **D3D12 间接绘制上线**（`caps.indirect_draw_supported = true`）\r
 \r

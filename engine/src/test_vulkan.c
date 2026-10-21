@@ -7327,6 +7327,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         rhi_frame_end(render.device);
                         rhi_present(render.device);
                     }
+                    (void)rhi_device_idle_ex(render.device); /* see below */
                     if (gpucull_read_vis_flags(&uc, 2, flags))
                         fallback_ok = (flags[0] == 1u && flags[1] == 1u);
                     if (!fallback_ok)
@@ -7370,6 +7371,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         rhi_frame_end(render.device);
                         rhi_present(render.device);
                     }
+                    /* R639: gpucull_read_vis_flags maps the staging slot for
+                     * rhi_frame_index, and is only race-free where the demo
+                     * calls it -- inside a frame, after rhi_frame_begin has
+                     * waited that slot's fence. Here it runs straight after
+                     * rhi_present with no frame_begin in between, so the copy
+                     * into that slot can still be in flight: the read then
+                     * sees the previous contents. That was the intermittent
+                     * "Hi-Z vis flags {0,0}" failure (4/8 runs; 0/10 with
+                     * this wait). Both phases wait the GPU out first. */
+                    (void)rhi_device_idle_ex(render.device);
                     if (gpucull_read_vis_flags(&uc, 2, flags))
                         real_ok = (flags[0] == 1u && flags[1] == 0u);
                     if (!real_ok)
