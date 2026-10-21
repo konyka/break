@@ -8764,6 +8764,110 @@ TEST(deferred_lighting_samples_the_point_shadow_cube) {
     deferred_destroy(&ds, g_dev);
 }
 
+/* R649: the skinned G-Buffer sidecar. A half-screen quad (NDC x in [-1, 0])
+ * weighted 0.5 / 0.5 on joints 1 and 2. Joint 1 translates +1.0 in x and
+ * joint 2 is the identity, so the blended skin moves the quad +0.5: it must
+ * cover x in [-0.5, 0.5], i.e. columns 2..5 of an 8-wide target. Both
+ * previous poses are the identity and u_prev_mvp is identity, so the
+ * velocity is exactly +0.5 in x and 0 in y. u_model scales y by 1 (but
+ * offsets nothing) and u_vp is identity; the albedo is the material binder's
+ * t0 texture. What this pins: the joint fetch (indices and transpose), the
+ * weight blend, the 512-texel previous-pose offset, and the u_vp fold. */
+TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity) {
+    typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; u32 joints[4];
+                     f32 weights[4]; } SkinVert;
+#define R649_V(x, y) { { x, y, -0.5f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f }, \
+                       { 1u, 2u, 0u, 0u }, { 0.5f, 0.5f, 0.0f, 0.0f } }
+    static const SkinVert verts[6] = {
+        R649_V(-1.0f, -1.0f), R649_V(0.0f, -1.0f), R649_V(0.0f, 1.0f),
+        R649_V(-1.0f, -1.0f), R649_V(0.0f, 1.0f), R649_V(-1.0f, 1.0f)
+    };
+#undef R649_V
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static float joints[(512 + 12) * 4];
+    static u8 rt0[8 * 8 * 4];
+    static u16 rt3[8 * 8 * 4];
+    DeferredSystem ds;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, jbo;
+    RHITexture t[5];
+    RHICmdBuffer *cmd;
+    int x, y, j, i;
+    r643_mark();
+    memset(joints, 0, sizeof(joints));
+    for (j = 0; j < 3; ++j) {
+        float *cur = &joints[j * 16];
+        float *prev = &joints[(512 + j * 4) * 4];
+        cur[0] = cur[5] = cur[10] = cur[15] = 1.0f;
+        prev[0] = prev[5] = prev[10] = prev[15] = 1.0f;
+    }
+    joints[1 * 16 + 12] = 1.0f;   /* joint 1: column 3 = translation (+1, 0, 0) */
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    ASSERT_TRUE(rhi_handle_valid(ds.gbuffer_skinned_pipeline));
+    ASSERT_EQ(ds._loc_gbuf_skinned_model, 0);
+    ASSERT_EQ(ds._loc_gbuf_skinned_vp, 64);
+    ASSERT_EQ(ds._loc_gbuf_skinned_prev_mvp, 128);
+    ASSERT_EQ(ds._loc_gbuf_skinned_view, -1);
+    ASSERT_EQ(ds._loc_gbuf_skinned_proj, -1);
+    t[0] = r644_tex(200, 100, 50, 255);
+    t[1] = r644_tex(0, 204, 153, 255);
+    t[2] = r644_tex(128, 128, 255, 255);
+    t[3] = r644_tex(0, 0, 0, 255);
+    t[4] = r644_tex(255, 0, 0, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    bd.size = sizeof(joints); bd.initial_data = joints;
+    jbo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(jbo));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    deferred_begin_gbuffer(&ds, g_dev, cmd);
+    rhi_cmd_bind_pipeline(cmd, ds.gbuffer_skinned_pipeline);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_skinned_model, identity);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_skinned_vp, identity);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_skinned_prev_mvp, identity);
+    rhi_cmd_bind_material_textures_ibl(cmd, t[0], t[1], t[2], t[3], t[4],
+                                        RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                                        (RHISampler){0}, RHI_HANDLE_NULL,
+                                        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    deferred_bind_gbuffer_factors(&ds, g_dev, cmd, 1.0f, 1.0f, 1.0f, 0.0f,
+                                  0.0f, 0.0f, 0.0f);
+    rhi_cmd_bind_texel_buffers(cmd, jbo, jbo);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    deferred_end_gbuffer(&ds, g_dev, cmd);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_albedo_metallic, rt0, sizeof(rt0)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_velocity, rt3, sizeof(rt3)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int in = x >= 2 && x <= 5;
+            i = (y * 8 + x) * 4;
+            if ((rt0[i] == 200) != in)
+                printf("  skinned gbuf px (%d,%d) albedo r = %u, covered %d\n",
+                       x, y, (unsigned)rt0[i], in);
+            ASSERT_TRUE((rt0[i] == 200) == in);
+            if (in) {
+                ASSERT_EQ(rt0[i + 1], 100);
+                ASSERT_EQ(rt0[i + 2], 50);
+                ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i + 0]) - 0.5f) < 0.002f);
+                ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i + 1])) < 0.002f);
+            }
+        }
+    }
+    ASSERT_TRUE(r643_clean("gbuffer_skinned"));
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, jbo);
+    deferred_destroy(&ds, g_dev);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -8850,6 +8954,7 @@ int main(void) {
     RUN_TEST(destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done);
     RUN_TEST(point_shadow_cube_faces_read_back_by_direction);
     RUN_TEST(deferred_lighting_samples_the_point_shadow_cube);
+    RUN_TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

@@ -1351,6 +1351,23 @@ static u32 point_shadow_gather(const PointShadowSystem *pt, RHITexture *psc, f32
     return psc_n;
 }
 
+/* G-Buffer camera uniforms on the bound gbuffer_pipeline: u_view / u_proj on
+ * GL and VK, the folded u_vp on the D3D12 sidecar (R644), u_prev_mvp on all. */
+static void gbuffer_upload_camera(RHICmdBuffer *cmd, const DeferredSystem *dsys,
+                                  const Mat4 *view, const Mat4 *proj,
+                                  const Mat4 *prev_view_proj) {
+    if (dsys->_loc_gbuf_view >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_view, &view->e[0][0]);
+    if (dsys->_loc_gbuf_proj >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj->e[0][0]);
+    if (dsys->_loc_gbuf_prev_mvp >= 0)
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj->e[0][0]);
+    if (dsys->_loc_gbuf_vp >= 0) {
+        Mat4 gvp = mat4_mul(*proj, *view);
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_vp, &gvp.e[0][0]);
+    }
+}
+
 static void bind_material(RHICmdBuffer *cmd, RenderState *rs, Material *mat, Scene *scene) {
     RHITexture alb = (mat && rhi_handle_valid(mat->albedo)) ? mat->albedo : rs->fallback_tex;
     RHITexture mr  = (mat && rhi_handle_valid(mat->metallic_roughness)) ? mat->metallic_roughness : rs->fallback_mr;
@@ -8361,16 +8378,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             deferred_begin_gbuffer(dsys, render.device, cmd);
 
             /* Upload view/proj once per frame using cached locations. */
-            if (dsys->_loc_gbuf_view >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_view, &view.e[0][0]);
-            if (dsys->_loc_gbuf_proj >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_proj, &proj.e[0][0]);
-            if (dsys->_loc_gbuf_prev_mvp >= 0)
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_prev_mvp, &prev_view_proj.e[0][0]);
-            if (dsys->_loc_gbuf_vp >= 0) { /* R644: D3D12 sidecar */
-                Mat4 gvp = mat4_mul(proj, view);
-                rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_vp, &gvp.e[0][0]);
-            }
+            gbuffer_upload_camera(cmd, dsys, &view, &proj, &prev_view_proj);
 
             /* R560: skinned geometry -- procedural arm and glTF skinned
              * primitives write the same four G-Buffer attachments with the
@@ -8389,6 +8397,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_prev_mvp, &prev_view_proj.e[0][0]);
                 if (dsys->_loc_gbuf_skinned_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_model, &frame_identity.e[0][0]);
+                if (dsys->_loc_gbuf_skinned_vp >= 0) { /* R649: D3D12 sidecar */
+                    Mat4 gvp = mat4_mul(proj, view);
+                    rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_skinned_vp, &gvp.e[0][0]);
+                }
 
                 if (scene.skinned_mesh_count > 0) {
                     for (u32 si = 0; si < scene.skinned_mesh_count; si++) {
@@ -8422,8 +8434,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * draws. The skinned variant owns the 64B skinned vertex layout
              * and a joint texel buffer; leaving it bound would make terrain
              * (and any later geometry) read the wrong vertex contract. */
-            if (rhi_handle_valid(dsys->gbuffer_pipeline))
+            if (rhi_handle_valid(dsys->gbuffer_pipeline)) {
                 rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_pipeline);
+                /* R649: and re-upload the camera. GL keeps program uniforms
+                 * and VK keeps push constants across this re-bind, but a
+                 * D3D12 root-signature change drops every root constant, so
+                 * terrain and the mesh draws below would run with whatever
+                 * the skinned draws left in u_vp / u_prev_mvp. Latent until
+                 * the D3D12 skinned pipeline existed. */
+                if (rhi_handle_valid(dsys->gbuffer_skinned_pipeline))
+                    gbuffer_upload_camera(cmd, dsys, &view, &proj, &prev_view_proj);
+            }
 
             /* Render terrain. */
             if (rhi_handle_valid(terrain.vbo)) {

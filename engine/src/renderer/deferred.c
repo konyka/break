@@ -165,6 +165,8 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
         sys->_loc_gbuf_skinned_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_view");
         sys->_loc_gbuf_skinned_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_proj");
         sys->_loc_gbuf_skinned_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_prev_mvp");
+        /* R649: same view*proj fold as the static D3D12 sidecar. */
+        sys->_loc_gbuf_skinned_vp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_skinned, "u_vp");
     }
 
     /* R442: array-variant G-Buffer pass pipeline uniforms. */
@@ -223,6 +225,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_skinned_view  = -1;
     sys->_loc_gbuf_skinned_proj  = -1;
     sys->_loc_gbuf_skinned_prev_mvp = -1;
+    sys->_loc_gbuf_skinned_vp = -1;
 
     if (width == 0u || height == 0u) {
         LOG_WARN("deferred: zero-size init (%ux%u) -- skipping", width, height);

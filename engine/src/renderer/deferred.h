@@ -97,6 +97,7 @@ typedef struct {
     i32 _loc_gbuf_skinned_view;
     i32 _loc_gbuf_skinned_proj;
     i32 _loc_gbuf_skinned_prev_mvp;
+    i32 _loc_gbuf_skinned_vp;   /* R649: D3D12 sidecar only (view*proj) */
 
     /* R580/R581/R582: per-material glTF factor channel for the G-Buffer
      * pass. The gbuffer vertex stage already fills all 256B of push-constant

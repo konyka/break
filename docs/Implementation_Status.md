@@ -1,6 +1,32 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R649 — **D3D12 蒙皮 G-Buffer**：延迟路径不再跳过蒙皮几何
+
+- **问题**：`gbuffer_skinned_hlsl.vert` 不存在，所以 D3D12 上 `gbuffer_skinned_pipeline` 创建失败，日志里出现 `gbuffer_skinned pipeline unavailable -- skinned geometry skipped`。延迟路径下，蒙皮网格（程序化手臂 / glTF 蒙皮图元）不会写进 G-Buffer，整个从画面中消失。
+- **修复**：
+  - 新增 sidecar `gbuffer_skinned_hlsl.vert`，逐行对应 GLSL 的 `gbuffer_skinned.vert`。
+    - 关节矩阵从 t5（`rhi_cmd_bind_texel_buffers` 的 unit 5）读取，前一帧的姿态在偏移 512 个 float4 处。关节按列主序存储，所以要 transpose，与 `skinned_mrt_hlsl.vert` 相同。
+    - 输入语义是后端 64B 蒙皮布局声明的 BLENDINDICES / BLENDWEIGHT。
+    - 当前位置是 `u_model * (skin * pos)`，前一帧位置是 `u_prev_mvp * (prev_skin * pos)`。速度在 clip z 重映射之前计算。
+  - 片段着色器与 GL 一样复用 `gbuffer_hlsl.frag`。
+  - push 块沿用静态 sidecar 的 `u_model / u_vp / u_prev_mvp` 三个矩阵，原因相同：片段阶段 6 张表加关节 SRV 共 7 张，只剩 57 个 DWORD，放不下四个矩阵。
+  - `deferred.c` 新增 `_loc_gbuf_skinned_vp`（GL/VK 上解析为 −1）。main.c 在 D3D12 上为蒙皮管线上传 `proj*view`。
+- **随之暴露的第二个问题（D3D12 延迟画面整体错乱）**：蒙皮管线一旦可用，D3D12 延迟截图与 GL 的 MAE 就从 1.37 跳到 **58.8**，地形完全错位。原因在 main.c：蒙皮 draw 之后会重新绑回 `gbuffer_pipeline`，但没有重新上传相机。GL 的 program uniform 和 VK 的 push constant 在重绑后都会保留；D3D12 换根签名时会丢掉所有根常量，所以地形和后面的网格 draw 用的是蒙皮 draw 留下的 `u_vp / u_prev_mvp`。这个问题以前一直潜伏着，因为 D3D12 上蒙皮管线根本不存在，重绑之前没有任何 draw 刷新过根常量。修复：把相机上传提取成 `gbuffer_upload_camera`，帧开始时调用一次；蒙皮管线存在时，在重绑之后再调用一次。
+- **测试**：WARP 新增 `deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity`。
+  - 场景：一个左半屏的四边形，按 0.5 / 0.5 的权重绑定到关节 1（x 方向平移 +1）和关节 2（单位矩阵）。混合后应整体右移 0.5，落在第 2–5 列。
+  - 两个前一帧姿态都是单位矩阵，所以速度应恰好是 (+0.5, 0)。
+  - 用例逐像素检查覆盖范围、albedo、速度，并检查 debug layer 干净。
+- **反向验证**：
+  - ① 去掉关节矩阵的 transpose：覆盖范围出错（第 0 列被写入），用例失败。
+  - ② 前一帧姿态改为读当前姿态（去掉 512 偏移）：速度断言失败。
+  - ③ 删掉重绑之后的 `gbuffer_upload_camera`：demo 延迟截图 D3D12-GL 的 MAE 回到 58.84。
+  - 全部恢复后通过。
+- **验证结果**：
+  - WARP 66/66（debug layer 0/0/alias 1）。RTX 连跑 3 次都是 65/66，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：延迟路径 D3D12-GL **1.22**、VK-GL 0.29；前向路径 D3D12-GL 1.93、VK-GL 3.56。D3D12 日志里不再出现 `skinned geometry skipped`。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过（ToDesk 退出后，剪贴板用例也通过了）。
+
 ## 本轮更新：R648 — **RTX 上偶发的 GPU-based validation [1358]**：带初始数据的纹理改为以 COMMON 状态创建
 
 - **现象**：在 RTX 4060 Laptop 上跑 `test_d3d12_warp_runtime`，大约一半的运行会在某个用例里报出 `[1358] GPU-BASED VALIDATION: Draw, Incompatible texture barrier layout ... Layout: D3D12_BARRIER_LAYOUT_LEGACY_COPY_DEST`。出现在哪个用例是随机的（[22]、[51]、[53]、[60] 都出现过），每次 3 到 11 条，于是最后一个用例 `debug_layer_reported_nothing_for_the_whole_suite` 失败。WARP 上从来没有出现过。这就是之前记录的"`test_d3d12_warp_runtime` 偶发失败"。
