@@ -26,7 +26,10 @@
   - **方向 bug 的根因**：`rhi_cmd_set_viewport` 是 RHI 的「+Y 向上」视口（R715 起 UI 画布靠它声明朝向），VK 实现是 `{x, y+h, w, -h}`。D3D12 版**照抄了 VK 的负高度**——但 Vulkan 的 NDC y 朝下、D3D12 朝上，符号不能照搬：D3D12 的负高度恰恰等于 VK 的**正**高度。于是 D3D12 的 `rhi_cmd_set_viewport` 与帧默认视口完全相同，UI 和一切依赖它的绘制都上下颠倒。修复：改为正高度 `{x, y, w, h}`。\r
   - **测试** `swapchain_draws_put_ndc_up_at_the_top_of_the_screen`：直接往后台缓冲画一个覆盖 NDC y>0 的四边形，用 `rhi_screenshot`（自上而下行序）判断它落在上半还是下半。**两种视口都钉住**：显式 `rhi_cmd_set_viewport` 必须在上半；帧默认视口（VK 正高度 `{0,0,w,h}` 的孪生，让离屏目标保持 GL 行序供后处理采样）必须在下半——这样两者不会再悄悄变成同一个。修复前显式视口落在下半，测试红；WARP 与 RTX 4060 修后均通过。\r
   - demo 截图：FPS 徽章回到左上角、诊断文字逐行向下可读。\r
-- **尚未定论：D3D12 的 3D 场景本身可能也是上下颠倒的**。关掉 UI 后与 VK 同帧对比，D3D12 画面顶部是绿色地形、底部是一块建筑，VK 顶部是天空；但两者整体画面差异很大（D3D12 缺 SSAO/延迟渲染等），简单的上下翻转相关性并不支持「整体翻转」（原样 0.29，翻转后 0.20）。需要单独用已知几何做定向测试，本轮不改。\r
+- **D3D12 demo 场景与 VK 不一致——已定位到两处，尚未修复**（同机位 `BREAK_CAM=0,8,20,0,-10`、`BREAK_FORWARD_CLUSTERED=0`、`BREAK_UI=0` 对比）：\r
+  1. **instanced 路径在 D3D12 上画出错误几何**：默认画面里占满屏幕的大块纯色三角形（米黄 / 绿 / 灰）来自 ECS 实例化绘制（`render.instanced_pipeline`，`instanced_mrt_hlsl.*`）。设 `BREAK_FORCE_PER_ENTITY=1` 绕开它，这些三角形全部消失，场景内容与 VK 一致。\r
+  2. **绕开 instanced 后，D3D12 的场景相对 VK 上下翻转**：实体网格在山丘上方、盾形网格尖端朝向相反。按透视推理（机位 y=8 俯视 10°，近处地面物体应在画面下方）VK 是正的、D3D12 是倒的。\r
+  - **已排除的原因**（都有测试钉住，`c57f2173`，WARP 与 RTX 4060 均通过）：NDC +Y 经离屏 FBO + 最终 `tex_pipe` blit 后仍在屏幕上方；引擎自己的 `mat4_perspective` / `mat4_lookat` 把世界上方投到画面上方；图形管线的 root constant 在一次 compute dispatch + 重新绑定管线后仍然有效（前向 indirect 的模式）。所以翻转发生在 demo 帧链里这三个测试没覆盖的某一步（候选：MRT FBO 绑定、某个后处理 pass 的采样/写入方向不一致），**下一步应当按帧链逐 pass 二分**（`BREAK_INSPECT` 各模式在 VK 上部分是黑的，不能直接当参照）。\r
 - **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线的 sidecar，画面与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
 \r
 ## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
