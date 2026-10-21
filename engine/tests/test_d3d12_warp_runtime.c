@@ -2,6 +2,10 @@
 #include <renderer/indirect_draw.h>
 #include <renderer/post_process.h>
 #include <renderer/tonemap.h>
+#include <renderer/sss.h>
+#include <renderer/cinematic.h>
+#include <renderer/upscale.h>
+#include <renderer/volumetric.h>
 #include <renderer/ssao.h>
 #include <renderer/sharpen.h>
 #include <renderer/god_rays.h>
@@ -6386,6 +6390,407 @@ TEST(god_rays_sidecar_scatters_sky_and_passes_occluded_scene) {
     rhi_texture_destroy(g_dev, stex);
 }
 
+/* R641 helpers: an RGBA8 texture of one flat colour, and an R32F depth
+ * texture whose left half is one value and right half another. */
+static RHITexture r641_flat_rgba8(u32 w, u32 h, u8 r, u8 g, u8 b) {
+    static u8 px[16 * 16 * 4];
+    RHITextureDesc td;
+    u32 i;
+    for (i = 0; i < w * h; ++i) {
+        px[i * 4 + 0] = r; px[i * 4 + 1] = g; px[i * 4 + 2] = b; px[i * 4 + 3] = 255;
+    }
+    memset(&td, 0, sizeof(td));
+    td.width = w; td.height = h;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = px;
+    return rhi_texture_create(g_dev, &td);
+}
+static RHITexture r641_depth_split(u32 w, u32 h, f32 left, f32 right) {
+    static f32 d[16 * 16];
+    RHITextureDesc td;
+    u32 x, y;
+    for (y = 0; y < h; ++y)
+        for (x = 0; x < w; ++x) d[y * w + x] = x < w / 2 ? left : right;
+    memset(&td, 0, sizeof(td));
+    td.width = w; td.height = h;
+    td.format = RHI_FORMAT_R32_FLOAT; td.mip_levels = 1u;
+    td.data = d;
+    return rhi_texture_create(g_dev, &td);
+}
+
+/* R641: cinematic on D3D12. Flat grey 128 input, aberration and grain 0, so
+ * only the vignette acts: out = 128/255 * max(1 - |uv - 0.5|^2 * v, 0) with
+ * uv the pixel centre. With v = 2 the corner pixel of an 8x8 target (uv =
+ * 1/16) gets 1 - 2*(0.4375^2*2) = 0.234375 and the centre ring 0.984375, so
+ * a vignette read from the wrong push slot, or a uv that is not the pixel
+ * centre, moves every pixel by far more than the +-1 tolerance. */
+TEST(cinematic_sidecar_applies_the_exact_vignette_without_grain) {
+    CinematicSystem cine;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHITexture src;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int x, y;
+    memset(&cine, 0, sizeof(cine));
+    ASSERT_TRUE(cinematic_init(&cine, g_dev));
+    ASSERT_EQ(cine.loc_aberration, 0);
+    ASSERT_EQ(cine.loc_vignette, 4);
+    ASSERT_EQ(cine.loc_grain, 8);
+    ASSERT_EQ(cine.loc_screen_w, 16);
+    cine.aberration = 0.0f; cine.vignette = 2.0f; cine.grain = 0.0f;
+    src = r641_flat_rgba8(8u, 8u, 128, 128, 128);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM; fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(src) && rhi_handle_valid(fbo.fb));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    cinematic_apply(&cine, cmd, src, 8u, 8u, 0.0f);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            double u = (x + 0.5) / 8.0 - 0.5, v = (y + 0.5) / 8.0 - 0.5;
+            double vig = 1.0 - (u * u + v * v) * 2.0;
+            int want = (int)floor(128.0 / 255.0 * (vig > 0 ? vig : 0) * 255.0 + 0.5);
+            int got = px[(y * 8 + x) * 4 + 0];
+            if (abs(got - want) > 1)
+                printf("  cinematic px (%d,%d) = %d, want %d\n", x, y, got, want);
+            ASSERT_TRUE(abs(got - want) <= 1);
+            ASSERT_EQ(px[(y * 8 + x) * 4 + 0], px[(y * 8 + x) * 4 + 2]);
+        }
+    }
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, src);
+    cinematic_shutdown(&cine);
+}
+
+/* R641: SSS on D3D12. Two passes (horizontal into blur_fbo, vertical into
+ * fbo, mixed with the original by strength). First a flat 200 grey: any
+ * blur of it is 200 again, so this pins the value path end to end. Then
+ * vertical stripes, where the blur genuinely changes the value and the
+ * depth split (left sky, right surface) decides which branch each pixel
+ * takes; the expected image is the two passes replayed in double. */
+TEST(sss_sidecars_blur_only_where_depth_is_continuous) {
+    SSSSystem sss;
+    RHITexture col, depth;
+    RHICmdBuffer *cmd;
+    u16 out[8 * 8 * 4];
+    const f32 strength = 0.5f;
+    int x, y;
+    memset(&sss, 0, sizeof(sss));
+    ASSERT_TRUE(sss_init(&sss, g_dev, 8u, 8u));
+    ASSERT_EQ(sss.loc_strength, 0);
+    ASSERT_EQ(sss.loc_max_dist, 12);
+    ASSERT_EQ(sss.v_loc_strength, 0);
+    col = r641_flat_rgba8(8u, 8u, 200, 200, 200);
+    depth = r641_depth_split(8u, 8u, 1.0f, 0.5f);
+    ASSERT_TRUE(rhi_handle_valid(col) && rhi_handle_valid(depth));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    sss_apply(&sss, cmd, col, depth, strength, 0.05f, 8u, 8u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, sss.fbo.color_tex, out, sizeof(out)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    /* The colour and the original are the same flat 200 here, so both
+     * branches give 200/255; this pins the value path, the next frame pins
+     * the branch split. */
+    for (y = 0; y < 8; ++y)
+        for (x = 0; x < 8; ++x) {
+            f32 r = warp_half_to_float(out[(y * 8 + x) * 4 + 0]);
+            if (fabsf(r - 200.0f / 255.0f) > 0.004f)
+                printf("  sss flat px (%d,%d) = %f\n", x, y, r);
+            ASSERT_TRUE(fabsf(r - 200.0f / 255.0f) <= 0.004f);
+        }
+    rhi_texture_destroy(g_dev, col);
+
+    /* Branch split. Vertical stripes (column x is 255 if x odd, else 40) so
+     * a horizontal blur changes the value, and strength 1/12 so the kernel
+     * radius is exactly one texel: every tap lands on a texel centre and the
+     * linear sampler returns that texel. Both passes are replicated in
+     * double precision below. Left half is sky (depth 1.0) -> the pixel is
+     * the ORIGINAL; right half is surface (0.5) -> lerp(original, blurred,
+     * strength), with taps across the sky boundary rejected by the depth
+     * falloff. A swapped depth/colour unit, a vertical pass that reads the
+     * wrong input, or a dropped falloff all move the surface pixels. */
+    {
+        static const double k[9][3] = {
+            {0.020,0.020,0.020},{0.050,0.040,0.030},{0.100,0.070,0.050},
+            {0.150,0.130,0.080},{0.160,0.160,0.120},{0.150,0.130,0.080},
+            {0.100,0.070,0.050},{0.050,0.040,0.030},{0.020,0.020,0.020}
+        };
+        static u8 stripes[8 * 8 * 4];
+        const double s2 = 1.0 / 12.0, maxd = 0.05;
+        double colv[8], dep[8], h[8][3];
+        RHITextureDesc td;
+        RHITexture stex;
+        int c, i, moved = 0;
+        /* Surface columns 4..7 alternate 255/40; sky columns 0..3 are all
+         * 255. So a surface pixel's taps that reach across into the sky only
+         * stay out of the average because the depth falloff rejects them --
+         * dropping the falloff pulls column 4 and 6 toward 255. */
+        for (x = 0; x < 8; ++x) {
+            colv[x] = ((x < 4 || (x & 1)) ? 255.0 : 40.0) / 255.0;
+            dep[x] = x < 4 ? 1.0 : 0.5;
+        }
+        for (y = 0; y < 8; ++y)
+            for (x = 0; x < 8; ++x) {
+                u8 v = (x < 4 || (x & 1)) ? 255 : 40;
+                stripes[(y * 8 + x) * 4 + 0] = v; stripes[(y * 8 + x) * 4 + 1] = v;
+                stripes[(y * 8 + x) * 4 + 2] = v; stripes[(y * 8 + x) * 4 + 3] = 255;
+            }
+        memset(&td, 0, sizeof(td));
+        td.width = 8u; td.height = 8u;
+        td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+        td.data = stripes;
+        stex = rhi_texture_create(g_dev, &td);
+        ASSERT_TRUE(rhi_handle_valid(stex));
+        for (x = 0; x < 8; ++x) {
+            for (c = 0; c < 3; ++c) {
+                double sum = 0.0, tw = 0.0;
+                if (dep[x] >= 1.0) { h[x][c] = colv[x]; continue; }
+                for (i = -4; i <= 4; ++i) {
+                    int sx = x + i;
+                    double dd, t, fall, w;
+                    if (sx < 0 || sx > 7) continue;
+                    dd = fabs(dep[sx] - dep[x]);
+                    t = dd / maxd; if (t > 1) t = 1;
+                    fall = 1.0 - t * t * (3.0 - 2.0 * t);
+                    w = k[i + 4][c] * fall;
+                    sum += colv[sx] * w; tw += w;
+                }
+                h[x][c] = sum / (tw > 0.001 ? tw : 0.001);
+            }
+        }
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        sss_apply(&sss, cmd, stex, depth, (f32)s2, (f32)maxd, 8u, 8u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(out, 0, sizeof(out));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, sss.fbo.color_tex, out, sizeof(out)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 8; ++y)
+            for (x = 0; x < 8; ++x)
+                for (c = 0; c < 3; ++c) {
+                    /* Vertical pass over a column that is constant in y
+                     * returns h[x] (its weights normalise), so the result
+                     * is lerp(original, h, strength). */
+                    double want = dep[x] >= 1.0 ? colv[x]
+                                  : colv[x] + (h[x][c] - colv[x]) * s2;
+                    double got = warp_half_to_float(out[(y * 8 + x) * 4 + c]);
+                    if (fabs(got - want) > 0.004)
+                        printf("  sss stripes px (%d,%d) ch %d = %f, want %f\n",
+                               x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.004);
+                    if (fabs(want - colv[x]) > 0.01) moved++;
+                }
+        /* The surface half must actually be blurred, or this proves nothing. */
+        ASSERT_TRUE(moved >= 8 * 2 * 3);
+        rhi_texture_destroy(g_dev, stex);
+    }
+    rhi_texture_destroy(g_dev, depth);
+    sss_shutdown(&sss);
+}
+
+/* R641: upscale (TSR) on D3D12: the first frame with no history, then a
+ * second frame whose output is a known mix of history and current input.
+ * Also pins the push layout the sidecar declares. */
+TEST(upscale_sidecar_copies_flat_input_and_clips_history) {
+    UpscaleSystem ups;
+    RHITexture src, depth;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    int i;
+    memset(&ups, 0, sizeof(ups));
+    ASSERT_TRUE(upscale_init(&ups, g_dev, 8u, 8u, 8u, 8u));
+    ASSERT_EQ(ups.loc_inv_proj, 0);
+    ASSERT_EQ(ups.loc_prev_vp, 64);
+    ASSERT_EQ(ups.loc_rw, 128);
+    ASSERT_EQ(ups.loc_copy_only, 140);
+    ASSERT_EQ(ups.loc_first_frame, 144);
+    ASSERT_EQ(ups.loc_dw, -1);   /* declared, never read by upscale.frag */
+    src = r641_flat_rgba8(8u, 8u, 90, 140, 210);
+    depth = r641_depth_split(8u, 8u, 0.5f, 0.5f);
+    ASSERT_TRUE(rhi_handle_valid(src) && rhi_handle_valid(depth));
+    /* Frame 0: first frame, flat input. Catmull-Rom at a texel centre with
+     * render == display size has weights (0,1,0,0) per axis, and the 5-tap
+     * sharpener on a flat field adds 4c - 4c = 0, so the output is the
+     * input. Before the R641 weight fix this was 255 in every channel. */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    upscale_apply(&ups, cmd, src, depth, identity, identity, 0.3f, 8u, 8u, 8u, 8u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ups.fbo.color_tex, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (i = 0; i < 64; ++i) {
+        if (abs(px[i * 4 + 0] - 90) > 1 || abs(px[i * 4 + 1] - 140) > 1 ||
+            abs(px[i * 4 + 2] - 210) > 1)
+            printf("  upscale frame 0 px %d = %u,%u,%u\n", i,
+                   px[i * 4 + 0], px[i * 4 + 1], px[i * 4 + 2]);
+        ASSERT_TRUE(abs(px[i * 4 + 0] - 90) <= 1);
+        ASSERT_TRUE(abs(px[i * 4 + 1] - 140) <= 1);
+        ASSERT_TRUE(abs(px[i * 4 + 2] - 210) <= 1);
+    }
+    ASSERT_FALSE(ups.first_frame);
+
+    /* Frame 1: history on. Identity inv_proj / prev_vp reproject every pixel
+     * onto itself, so history is frame 0's (90,140,210). The input becomes
+     * vertical grey stripes 40 / 220 with sharpness 0, so the upscaled value
+     * is the stripe itself, and each pixel's 4-neighbourhood spans both
+     * stripes (left/right differ, up/down match) -- the history value lies
+     * inside that AABB in every channel and survives clip_aabb unchanged.
+     * The output is therefore 0.85 * history + 0.15 * stripe, which is
+     * nowhere near the input: a wrong history unit, a broken copy-only
+     * pass 0 -> history, or a reprojection that falls outside [0,1] (no
+     * history mix at all) each give a different value. */
+    {
+        static u8 stripes[8 * 8 * 4];
+        static const int hist[3] = { 90, 140, 210 };
+        RHITextureDesc td;
+        RHITexture stex;
+        int x, y, c;
+        for (y = 0; y < 8; ++y)
+            for (x = 0; x < 8; ++x) {
+                u8 v = (x & 1) ? 220 : 40;
+                stripes[(y * 8 + x) * 4 + 0] = v; stripes[(y * 8 + x) * 4 + 1] = v;
+                stripes[(y * 8 + x) * 4 + 2] = v; stripes[(y * 8 + x) * 4 + 3] = 255;
+            }
+        memset(&td, 0, sizeof(td));
+        td.width = 8u; td.height = 8u;
+        td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+        td.data = stripes;
+        stex = rhi_texture_create(g_dev, &td);
+        ASSERT_TRUE(rhi_handle_valid(stex));
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        upscale_apply(&ups, cmd, stex, depth, identity, identity, 0.0f, 8u, 8u, 8u, 8u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ups.fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 8; ++y)
+            for (x = 0; x < 8; ++x)
+                for (c = 0; c < 3; ++c) {
+                    int stripe = (x & 1) ? 220 : 40;
+                    int want = (int)floor(0.85 * hist[c] + 0.15 * stripe + 0.5);
+                    int got = px[(y * 8 + x) * 4 + c];
+                    if (abs(got - want) > 1)
+                        printf("  upscale frame 1 px (%d,%d) ch %d = %d, want %d\n",
+                               x, y, c, got, want);
+                    ASSERT_TRUE(abs(got - want) <= 1);
+                }
+        rhi_texture_destroy(g_dev, stex);
+    }
+    rhi_texture_destroy(g_dev, depth);
+    rhi_texture_destroy(g_dev, src);
+    upscale_shutdown(&ups);
+}
+
+/* R641: volumetric on D3D12, checked against the shader's own march done in
+ * double precision. Identity matrices make view space == clip space, so for
+ * a window depth d the ray end is (ndc.x, ndc.y, 2d - 1) and world_y is the
+ * view y. The light direction (0,0,1) points straight at the camera, so
+ * light_amount = max(dot(-ray_dir, (0,0,1)), 0) depends on the per-pixel ray.
+ * Shadow is 1 (lit). Every quantity in the march -- ray length, height
+ * falloff, transmittance, in-scatter -- is reproduced below, so a transposed
+ * inv_view (world_y from the wrong row), a wrong depth decode, a swapped
+ * texture unit or a mis-offset push member all land outside +-1. */
+TEST(volumetric_sidecar_extincts_the_scene_by_the_marched_fog) {
+    VolumetricSystem vol;
+    RHITexture depth, shadow, scene;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    /* Camera 2 units up: view = translate(0,-2,0), column-major, so the CPU
+     * inverse handed to the shader as u_vol_inv_view translates by +2 and
+     * world_y = view_y + 2. Rotation-free, so light_dir in view space is
+     * unchanged. With an identity view a transposed inv_view read would be
+     * invisible; here it moves the +2 out of the y row. */
+    static const float cam_up_view[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,-2,0,1 };
+    const f32 ldir[3] = { 0.0f, 0.0f, 1.0f };
+    const f32 lcol[3] = { 1.0f, 0.5f, 0.25f };
+    const double fog[3] = { 0.2, 0.3, 0.4 };
+    const double sc[3] = { 200.0 / 255.0, 100.0 / 255.0, 50.0 / 255.0 };
+    const double dval = 0.2;
+    int x, y, c;
+    memset(&vol, 0, sizeof(vol));
+    ASSERT_TRUE(volumetric_init(&vol, g_dev, 8u, 8u));
+    ASSERT_EQ(vol.loc_inv_proj, 0);
+    ASSERT_EQ(vol.loc_view, 64);
+    ASSERT_EQ(vol.loc_inv_view, 128);
+    ASSERT_EQ(vol.loc_ldx, 192);
+    ASSERT_EQ(vol.loc_fog_density, 216);
+    ASSERT_EQ(vol.loc_fog_color_b, 228);
+    vol.fog_density = 0.3f;
+    vol.fog_color[0] = (f32)fog[0]; vol.fog_color[1] = (f32)fog[1];
+    vol.fog_color[2] = (f32)fog[2];
+    depth = r641_depth_split(8u, 8u, (f32)dval, (f32)dval);
+    shadow = r641_depth_split(8u, 8u, 1.0f, 1.0f);
+    scene = r641_flat_rgba8(8u, 8u, 200, 100, 50);
+    ASSERT_TRUE(rhi_handle_valid(depth) && rhi_handle_valid(shadow) &&
+                rhi_handle_valid(scene));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    volumetric_apply(&vol, cmd, depth, shadow, scene, identity, cam_up_view,
+                     ldir, lcol, 8u, 8u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, volumetric_get_texture(&vol), px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            /* GL row order offscreen: memory row 0 is uv.y = 1/16. */
+            double u = (x + 0.5) / 8.0, v = (y + 0.5) / 8.0;
+            double ex = u * 2 - 1, ey = v * 2 - 1, ez = dval * 2 - 1;
+            double len = sqrt(ex * ex + ey * ey + ez * ez);
+            double dz = ez / len;
+            double light_amount = -dz > 0 ? -dz : 0;
+            double step = len / 16.0, trans = 1.0, accum[3] = { 0, 0, 0 };
+            double lighting[3];
+            int i;
+            for (c = 0; c < 3; ++c)
+                lighting[c] = fog[c] * 0.3 + lcol[c] * light_amount * 1.0;
+            for (i = 0; i < 16; ++i) {
+                double t = (i + 0.5) * step;
+                double wy = (ey / len) * t + 2.0;
+                double dens = 0.3 * exp(-wy * 0.3);
+                double amt;
+                if (dens < 0.0001) continue;
+                amt = dens * step;
+                for (c = 0; c < 3; ++c) accum[c] += lighting[c] * trans * amt;
+                trans *= 1.0 - amt;
+                if (trans < 0) trans = 0;
+            }
+            for (c = 0; c < 3; ++c) {
+                double o = sc[c] * trans + accum[c];
+                int want = (int)floor((o > 1 ? 1 : o) * 255.0 + 0.5);
+                int got = px[(y * 8 + x) * 4 + c];
+                if (abs(got - want) > 1)
+                    printf("  volumetric px (%d,%d) ch %d = %d, want %d\n", x, y, c, got, want);
+                ASSERT_TRUE(abs(got - want) <= 1);
+            }
+        }
+    }
+    rhi_texture_destroy(g_dev, scene);
+    rhi_texture_destroy(g_dev, shadow);
+    rhi_texture_destroy(g_dev, depth);
+    volumetric_shutdown(&vol);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -6438,6 +6843,10 @@ int main(void) {
     RUN_TEST(ssao_sidecars_occlude_a_jittered_plane_and_blur_it);
     RUN_TEST(sharpen_sidecar_matches_the_cas_formula_on_interior_pixels);
     RUN_TEST(god_rays_sidecar_scatters_sky_and_passes_occluded_scene);
+    RUN_TEST(cinematic_sidecar_applies_the_exact_vignette_without_grain);
+    RUN_TEST(sss_sidecars_blur_only_where_depth_is_continuous);
+    RUN_TEST(upscale_sidecar_copies_flat_input_and_clips_history);
+    RUN_TEST(volumetric_sidecar_extincts_the_scene_by_the_marched_fog);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

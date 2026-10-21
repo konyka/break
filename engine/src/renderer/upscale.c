@@ -7,20 +7,27 @@
 #include <core/shader_io.h>
 
 
-static RHIPipeline ups_create_pipe(RHIDevice *dev,
+static RHIPipeline ups_create_pipe(RHIDevice *dev, bool sidecar,
                                     const char *vert_path, const char *frag_path) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
-        LOG_WARN("Upscale: shaders not found (%s)", frag_path);
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            LOG_WARN("Upscale: shaders not found (%s)", frag_path);
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         LOG_WARN("Upscale: shader compile failed");
@@ -58,7 +65,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
         LOG_WARN("Upscale: capability query or shader variant path failed");
         return false;
     }
-    s->pipe = ups_create_pipe(dev, vs_path, fs_path);
+    s->pipe = ups_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path);
 
     if (!rhi_handle_valid(s->pipe)) {
         LOG_WARN("Upscale: pipeline creation failed");

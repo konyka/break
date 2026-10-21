@@ -1,6 +1,26 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R641 — **D3D12 上 SSS / 体积雾 / TSR 上采样 / 电影效果上线**；修复三个后端共有的 Catmull-Rom 权重错误
+
+- **问题**：`sss.c`、`volumetric.c`、`upscale.c`、`cinematic.c` 把内联 GLSL 交给 `rhi_shader_create`，D3D12 一律拒绝，demo 在 D3D12 上这四个效果 init 失败（"shader compile failed"）。
+- **修复**：
+  - 四个加载函数沿用 R640 的模式加 `sidecar` 参数，`caps.shader_sidecar_paths` 为真（仅 D3D12）时走 `rhi_shader_create_path`。GL / VK 路径不变。
+  - 新增五个 HLSL twin（顶点阶段复用 `post_hlsl.vert`），逐行对照 GLSL 移植：
+    - `cinematic_hlsl.frag`：push 偏移 0/4/8/12/16/20（与 GLSL uniform 声明顺序一致）。
+    - `sss_hlsl.frag`、`sss_vertical_hlsl.frag`：push 0/4/8/12。
+    - `upscale_hlsl.frag`：inv_proj 0、prev_vp 64、rw 128、rh 132、sharp 136、copy_only 140、first_frame 144。`u_ups_dw/dh` 在 GLSL 中声明但从未读取，不放进 push 块（resolve 为 -1，与 GL 链接器一致）。
+    - `volumetric_hlsl.frag`：三个矩阵 0/64/128，其后 ldx 192 … fog_b 228。`u_vol_sw/sh` 同样未读取，省略。
+- **Catmull-Rom 权重 bug（GL / VK / D3D12 共有）**：`upscale.frag`、`upscale_vk.frag` 的 bicubic 权重漏了整体的 1/2，每个轴权重和为 2（中点 1.5），平坦区域被放大两倍后 clamp 成白。已改为标准权重 `0.5*(...)`，三个着色器一致。golden 测试不走 upscale，不受影响。
+- **测试**（`test_d3d12_warp_runtime.c` +4，驱动真实子系统 API，期望值由着色器公式推导）：
+  - `cinematic_sidecar_applies_the_exact_vignette_without_grain`：vignette=2、色差和颗粒为 0，逐像素校验暗角公式。
+  - `sss_sidecars_blur_only_where_depth_is_continuous`：平坦 200 灰校验数值；竖条纹 + 左天空（depth=1.0、全 255）/右 depth=0.5（255/40 交替）校验分支，与双精度两遍重放比对，并要求足够多像素被移动。
+  - `upscale_sidecar_copies_flat_input_and_clips_history`：第 0 帧平坦输入必须原样输出；第 1 帧换成 40/220 条纹，期望 `0.85*hist + 0.15*stripe`。
+  - `volumetric_sidecar_extincts_the_scene_by_the_marched_fog`：view 为 translate(0,-2,0)（单位阵看不出 inv_view 乘法转置），按光线步进公式解析出期望值。
+- **反向验证**（每次只破坏一处，失败后恢复）：cinematic 从颗粒槽读 vignette → 128（期望 30）；SSS 采样 t9 / 垂直 pass 中心读错输入 → 失败；SSS 去掉 falloff → 0.2036（期望 0.1874）；volumetric shadow 恒为 0 → 失败；inv_view 乘法转置 → 172（期望 183）；upscale 不混 history → 40（期望 83）；去掉权重的 0.5 → 第 0 帧 255（期望 90）。**过程中加强了三个测试**：最初版本 SSS 去 falloff、volumetric 转置（单位 view）、upscale 不混 history（平坦输入被 clip_aabb 截到当前值）都能通过，改成天空 255 / 平移 view / 条纹 history 后全部检出。
+- **验证**：WARP 50/50；RTX 4060 49/50（只有预期中的 [1] 失败）。ctest 与 demo 结果见下。
+- **遗留**：D3D12 的静态采样器是 LINEAR + WRAP，不是调用方要求的 CLAMP，边缘像素可能与 GL 略有差异。combined_post_process、point_shadow（需 cube RT）、deferred、particles / GPU cull（compute 仍关闭）在 D3D12 上尚未实现。demo 中 33 条 "texture read as SRV ... RENDER_TARGET" 警告仍未查。
+
 ## 本轮更新：R640 — **D3D12 上 SSAO / 锐化 / 体积光（god rays）三个后处理上线**
 
 - **问题**：`ssao.c`、`sharpen.c`、`god_rays.c` 都把内联 GLSL 交给 `rhi_shader_create`，D3D12 后端一律拒绝（只按 sidecar 名加载预编译 DXIL），三者在 init 阶段报 "shader compile failed"，demo 在 D3D12 上没有 AO、没有锐化、没有体积光。

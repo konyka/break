@@ -24,15 +24,19 @@ vec3 sample_catmull(sampler2D tex, vec2 uv, vec2 texel) {
     vec2 f = fract(pos);
     float fx = f.x, fy = f.y;
 
-    float wx0 =       -fx + 2.0*fx*fx - fx*fx*fx;
-    float wx1 =  2.0 - fx +       fx*fx*(-5.0 + 3.0*fx);
-    float wx2 =       fx +       fx*fx*( 4.0 - 3.0*fx);
-    float wx3 =           -fx*fx + fx*fx*fx;
+    /* R641: Catmull-Rom weights carry an overall 1/2. Without it they
+     * summed to 2 at texel centres (1.5 at the midpoint), so the upscale
+     * doubled every flat region and clamp() turned it white on every
+     * backend; each axis now sums to exactly 1. */
+    float wx0 = 0.5 * (-fx + 2.0*fx*fx - fx*fx*fx);
+    float wx1 = 0.5 * (2.0 - 5.0*fx*fx + 3.0*fx*fx*fx);
+    float wx2 = 0.5 * (fx + 4.0*fx*fx - 3.0*fx*fx*fx);
+    float wx3 = 0.5 * (-fx*fx + fx*fx*fx);
 
-    float wy0 =       -fy + 2.0*fy*fy - fy*fy*fy;
-    float wy1 =  2.0 - fy +       fy*fy*(-5.0 + 3.0*fy);
-    float wy2 =       fy +       fy*fy*( 4.0 - 3.0*fy);
-    float wy3 =           -fy*fy + fy*fy*fy;
+    float wy0 = 0.5 * (-fy + 2.0*fy*fy - fy*fy*fy);
+    float wy1 = 0.5 * (2.0 - 5.0*fy*fy + 3.0*fy*fy*fy);
+    float wy2 = 0.5 * (fy + 4.0*fy*fy - 3.0*fy*fy*fy);
+    float wy3 = 0.5 * (-fy*fy + fy*fy*fy);
 
     float row_w[4] = float[4](wy0, wy1, wy2, wy3);
     float col_w[4] = float[4](wx0, wx1, wx2, wx3);
