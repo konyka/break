@@ -8381,6 +8381,96 @@ TEST(rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* ---- R645: deferred release of resources still referenced by the GPU ----
+ * The UI canvas grows its vertex buffers mid-frame: ensure_vbo destroys the
+ * buffers the frame has already drawn from and creates bigger ones. D3D12
+ * released the old resource at once, while the recorded command list (and
+ * the previous, possibly still running submission) referenced it -- debug
+ * layer [921], and the demo intermittently hung or crashed. Here a frame
+ * draws from a buffer, destroys it (and a texture and a pipeline it used)
+ * before the frame is submitted, then draws again with fresh objects. The
+ * pixels must be those of the second draw and the debug layer must stay
+ * silent; before R645 this reported [921] on every run. */
+TEST(destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done) {
+    static const float quad[6 * 3] = {
+        -1,-1,0,  1,-1,0,  1,1,0,  -1,-1,0,  1,1,0,  -1,1,0
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs, bvs, bfs;
+    RHIPipelineDesc pd;
+    RHIPipeline pipe, blit;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHITexture tex;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int pass, i;
+    r643_mark();
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM; fd.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    bvs = rhi_shader_create(g_dev, "post_hlsl.vert", 0, false);
+    bfs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(vs) && rhi_handle_valid(fs) &&
+                rhi_handle_valid(bvs) && rhi_handle_valid(bfs));
+    for (pass = 0; pass < 3; ++pass) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        for (i = 0; i < 2; ++i) {
+            /* Fresh objects for each draw, destroyed right after it while the
+             * frame is still recording. */
+            memset(&pd, 0, sizeof(pd));
+            pd.vert = vs; pd.frag = fs;
+            pd.vertex_stride = 12u;
+            pd.disable_culling = true; pd.depth_write_disable = true;
+            pipe = rhi_pipeline_create(g_dev, &pd);
+            memset(&bd, 0, sizeof(bd));
+            bd.size = sizeof(quad); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+            bd.initial_data = quad;
+            vbo = rhi_buffer_create(g_dev, &bd);
+            ASSERT_TRUE(rhi_handle_valid(pipe) && rhi_handle_valid(vbo));
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_push_constants(cmd, 0u, identity, sizeof(identity));
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+            rhi_cmd_draw(cmd, 6u, 1u);
+            rhi_buffer_destroy(g_dev, vbo);
+            rhi_pipeline_destroy(g_dev, pipe);
+        }
+        /* A texture sampled by this frame, destroyed before submission. */
+        tex = r641_flat_rgba8(2u, 2u, 30, 60, 90);
+        memset(&pd, 0, sizeof(pd));
+        pd.vert = bvs; pd.frag = bfs;
+        pd.no_vertex_input = true; pd.uses_textures = true;
+        pd.disable_culling = true; pd.depth_write_disable = true;
+        blit = rhi_pipeline_create(g_dev, &pd);
+        ASSERT_TRUE(rhi_handle_valid(tex) && rhi_handle_valid(blit));
+        rhi_cmd_bind_pipeline(cmd, blit);
+        rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_texture_destroy(g_dev, tex);
+        rhi_pipeline_destroy(g_dev, blit);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (i = 0; i < 8 * 8; ++i) {
+        ASSERT_EQ(px[i * 4 + 0], 30);
+        ASSERT_EQ(px[i * 4 + 1], 60);
+        ASSERT_EQ(px[i * 4 + 2], 90);
+    }
+    ASSERT_TRUE(r643_clean("destroying_objects_mid_frame"));
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+    rhi_shader_destroy(g_dev, bvs); rhi_shader_destroy(g_dev, bfs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -8464,6 +8554,7 @@ int main(void) {
     RUN_TEST(cbv_descriptor_survives_a_mid_frame_upload);
     RUN_TEST(one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain);
     RUN_TEST(rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias);
+    RUN_TEST(destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

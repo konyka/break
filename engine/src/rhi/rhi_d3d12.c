@@ -1343,6 +1343,43 @@ static void rhi_d3d12_release_frame_staging(RHI_D3D12Context *ctx, UINT slot) {
         rhi_d3d12_release((IUnknown **)&ctx->frame_staging[slot][k]);
     ctx->frame_staging_count[slot] = 0u;
 }
+/* R645: release a D3D12 object that a command list may still reference.
+ * rhi_*_destroy used to Release at once; the UI canvas grows its vertex
+ * buffers mid-frame (ensure_vbo destroys and recreates them while the frame
+ * that drew with the old ones is recording or in flight), so the GPU read a
+ * freed resource -- debug layer [921], and the demo intermittently hung or
+ * crashed. GL keeps a deleted buffer alive until its last use and Vulkan's
+ * destroy waits for the frames; here the object joins the frame-staging list
+ * of the slot being recorded, which is released only after that slot's
+ * fence has been waited on (rhi_frame_begin). Outside a frame the previous
+ * submission may still run, so the object goes to the slot submitted last
+ * (released when that slot is next acquired, after its fence). */
+static void rhi_d3d12_release_deferred(RHI_D3D12Context *ctx, IUnknown **obj) {
+    UINT slot;
+    if (obj == NULL || *obj == NULL) return;
+    if (ctx == NULL || ctx->device_lost) {
+        rhi_d3d12_release(obj);
+        return;
+    }
+    slot = ctx->frame_started ? (ctx->frame_parity & 1u)
+                              : ((ctx->frame_parity + 1u) & 1u);
+    if (ctx->frame_staging_count[slot] == ctx->frame_staging_cap[slot]) {
+        UINT cap = ctx->frame_staging_cap[slot] ? ctx->frame_staging_cap[slot] * 2u : 16u;
+        ID3D12Resource **grown = (ID3D12Resource **)realloc(
+            ctx->frame_staging[slot], (size_t)cap * sizeof(*grown));
+        if (grown == NULL) {
+            /* Out of memory for the list: wait instead of racing the GPU. */
+            (void)rhi_d3d12_drain_gpu(ctx);
+            rhi_d3d12_release(obj);
+            return;
+        }
+        ctx->frame_staging[slot] = grown;
+        ctx->frame_staging_cap[slot] = cap;
+    }
+    ctx->frame_staging[slot][ctx->frame_staging_count[slot]++] =
+        (ID3D12Resource *)*obj;
+    *obj = NULL;
+}
 
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     RHI_D3D12Context *ctx;
@@ -2203,7 +2240,8 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
         bd->mapped = NULL;
     }
-    rhi_d3d12_release((IUnknown **)&bd->resource);
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&bd->resource);
     free(bd);
     rhi_free_slot(dev, buf);
 }
@@ -3501,10 +3539,13 @@ void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
     if (dev == NULL) return;
     pd = (RHI_D3D12Pipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
     if (pd == NULL) return;
-    rhi_d3d12_release((IUnknown **)&pd->pso);
-    for (UINT k = 0u; k < pd->variant_count; ++k)
-        rhi_d3d12_release((IUnknown **)&pd->variants[k].pso);
-    rhi_d3d12_release((IUnknown **)&pd->root_sig);
+    {
+        RHI_D3D12Context *dctx = (RHI_D3D12Context *)dev->backend_data;
+        rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->pso);
+        for (UINT k = 0u; k < pd->variant_count; ++k)
+            rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->variants[k].pso);
+        rhi_d3d12_release_deferred(dctx, (IUnknown **)&pd->root_sig);
+    }
     free(pd->vs_blob);
     free(pd->ps_blob);
     free(pd);
@@ -3668,7 +3709,8 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
             for (i = 0u; i < 16u; ++i)
                 if (ctx->live_srv[i] == td) ctx->live_srv[i] = NULL;
     }
-    rhi_d3d12_release((IUnknown **)&td->resource);
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&td->resource);
     free(td);
     rhi_free_slot(dev, tex);
 }

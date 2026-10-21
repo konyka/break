@@ -1,6 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R645 — **D3D12 前向路径间歇卡死 / 段错误修复**：GPU 仍在用的资源被立即释放
+
+- **现象**（R644 记录的遗留，修复前即存在）：D3D12 debug 构建的默认（前向）demo 跑 60 帧，约半数在帧循环中卡死（被 timeout 杀掉），偶发段错误，并伴随 debug layer [921]「资源在命令列表执行前被删除」。
+- **定位**：在 buffer/texture destroy 处临时打印资源指针，与 [921] 报出的指针比对——全部是约 256 KB 的 `RHI_BUFFER_USAGE_VERTEX` 缓冲，来自 UI 画布 `my_vgcanvas_break_rhi.c` 的 `ensure_vbo`：顶点数超出容量时在**帧中途**销毁旧的双缓冲 VBO 并新建更大的。本帧已录制的命令列表、以及上一帧可能仍在执行的提交都引用着旧资源，而 `rhi_buffer_destroy` 立即 `Release`。GL 会保留被删除的缓冲直到最后一次使用，Vulkan 的 destroy 会等待帧完成，只有 D3D12 立即释放。
+- **修复**（`rhi_d3d12.c`）：新增 `rhi_d3d12_release_deferred`，buffer / texture / pipeline（PSO、变体 PSO、根签名）的销毁改为把对象挂到帧暂存列表：帧内挂到正在录制的槽，帧外挂到最后提交的槽；这些列表只在 `rhi_frame_begin` 等待该槽的 fence 之后才释放（与已有的 per-write staging 同一机制）。设备丢失时直接释放；列表扩容失败时先 drain 再释放。
+- **测试**：`destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done`——连续 3 帧，每帧用新建的顶点缓冲 + 管线画两次并立即销毁，再用一张新纹理 + blit 管线画一次并立即销毁，最后校验像素为 blit 颜色且 debug layer 安静（套件末尾的总门也覆盖）。**反向验证**：把延迟释放改回立即释放，测试进程 3/3 次段错误（其中一次先报 9 条 [921]）。
+- **验证**：demo 前向 60 帧连跑 6 次全部 rc=0、[921] 0 条（修复前 6 次中 2 次卡死、1 次段错误）；前向 / 延迟 120 帧各 rc=0、debug layer 0 条。WARP 63/63、RTX 62/63（预期的 [1]）。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败均为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk 占用剪贴板）。
+
 ## 本轮更新：R644 — **D3D12 延迟渲染路径上线**；顺带修掉 4 个三端共有的延迟/光照 bug
 
 - **问题**：`BREAK_RENDER_PATH=deferred` 在 D3D12 上 init 失败（`deferred.c` 内联 GLSL、无 sidecar、`rhi_cmd_bind_deferred_gbuf_textures` 是桩）。接通之后又逐层暴露出下面这些问题，其中 4 个不是 D3D12 专属。
