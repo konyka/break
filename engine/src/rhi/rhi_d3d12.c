@@ -3610,7 +3610,15 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
     description.MipLevels = (UINT16)(desc->mip_levels == 0u ? 1u : desc->mip_levels);
     description.Format = alloc_format;
     description.SampleDesc.Count = 1u;
-    initial_state = desc->data != NULL ? D3D12_RESOURCE_STATE_COPY_DEST
+    /* R648: a texture with initial data is created in COMMON and moved to
+     * COPY_DEST by an explicit barrier on the upload list, rather than being
+     * created in COPY_DEST. Created in COPY_DEST, the first draw sampling
+     * such a texture intermittently tripped GPU-based validation [1358]
+     * ("Incompatible texture barrier layout ... LEGACY_COPY_DEST") on the
+     * RTX driver even though the upload list's COPY_DEST -> shader-read
+     * barrier had already executed and been waited on. WARP never showed it.
+     * See docs/Implementation_Status.md R648 for the run counts. */
+    initial_state = desc->data != NULL ? D3D12_RESOURCE_STATE_COMMON
                                        : rhi_d3d12_texture_final_state(desc->format);
     if (desc->format == RHI_FORMAT_D32_FLOAT) {
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
@@ -3632,6 +3640,17 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
         free(td);
         return RHI_HANDLE_NULL;
     }
+#if defined(ENGINE_D3D12_DEBUG)
+    {
+        static unsigned s_tex_serial;
+        wchar_t wname[96];
+        swprintf(wname, 96, L"tex#%u %ux%ux%u fmt%u data%d frame%llu",
+                 ++s_tex_serial, (unsigned)desc->width, (unsigned)desc->height,
+                 (unsigned)description.DepthOrArraySize, (unsigned)desc->format,
+                 desc->data != NULL, (unsigned long long)ctx->debug_frame);
+        ID3D12Object_SetName((ID3D12Object *)td->resource, wname);
+    }
+#endif
     td->dxgi_format = alloc_format;
     td->srv_format = depth_samplable ? DXGI_FORMAT_R32_FLOAT
                                      : DXGI_FORMAT_UNKNOWN;
@@ -3674,6 +3693,8 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
                 src_loc.pResource = staging;
                 src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
                 src_loc.PlacedFootprint = footprint;
+                rhi_d3d12_transition(ctx->upload_list, td->resource,
+                    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST);
                 ID3D12GraphicsCommandList_CopyTextureRegion(
                     ctx->upload_list, &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
                 rhi_d3d12_transition(ctx->upload_list, td->resource,

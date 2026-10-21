@@ -1,6 +1,19 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R648 — **RTX 上偶发的 GPU-based validation [1358]**：带初始数据的纹理改为以 COMMON 状态创建
+
+- **现象**：在 RTX 4060 Laptop 上跑 `test_d3d12_warp_runtime`，大约一半的运行会在某个用例里报出 `[1358] GPU-BASED VALIDATION: Draw, Incompatible texture barrier layout ... Layout: D3D12_BARRIER_LAYOUT_LEGACY_COPY_DEST`。出现在哪个用例是随机的（[22]、[51]、[53]、[60] 都出现过），每次 3 到 11 条，于是最后一个用例 `debug_layer_reported_nothing_for_the_whole_suite` 失败。WARP 上从来没有出现过。这就是之前记录的"`test_d3d12_warp_runtime` 偶发失败"。
+- **不是 R647 引入的**：把 R647 之前的代码 stash 后连跑 5 次，有 2 次出现（分别 3 条、11 条）。
+- **定位**：在 debug 构建里给每个纹理资源 `SetName`，名字带序号、尺寸、格式、是否有初始数据、创建时的帧号。抓到一次命中，报错的资源是 `tex#81 4x4x1 fmt0 data1`，即 [22] 中用 `rhi_texture_create` 带数据创建的 4×4 albedo。它在 one-shot 上传列表里已经经历了 COPY_DEST → 着色器可读的转换，并且等过 fence。CPU 侧记录的状态是正确的，但 GBV 在 draw 时仍然认为它处于 COPY_DEST。
+- **修复**：带初始数据的纹理改为以 **COMMON** 状态创建，然后在上传列表里显式加一道 COMMON → COPY_DEST 的 barrier，再执行拷贝。原来是直接以 COPY_DEST 创建。拷贝之后到 shader-read 的转换不变。这次排查用的 `SetName` 调试命名保留在 debug 构建里（只在 `ENGINE_D3D12_DEBUG` 下生效），之后的 GBV 报错能直接指出是哪个纹理。
+- **为什么这样改有效，只能如实说明到这一步**：改动之后，RTX 上连续 12 次运行 0 条 [1358]；改动之前，两组运行合计 15 次里有 8 次命中。这是统计上的证据，不是机理上的证明。直接以 COPY_DEST 创建是合法用法，GBV 为什么会偶发地把初始状态"种"晚，我没有找到官方说明；网上能查到的同类报告（[UnleashedRecomp #1638](https://github.com/hedge-dev/UnleashedRecomp/issues/1638)、[DirectXTex #306](https://github.com/microsoft/DirectXTex/issues/306)）都和 GBV 对 legacy 初始布局的处理有关，但不是同一个场景。代码注释也只写观察到的现象。
+- **验证**：
+  - RTX 连续 12 次：每次都是 64/65（只有预期中的 [1]），debug layer 都是 0 error / 0 warning。
+  - WARP 65/65，debug layer 0 error / 0 warning / alias 1。
+  - ctest：D3D12 185/186、VK 181/182、GL 178/179，唯一失败仍是 ToDesk 占用剪贴板导致的 `test_platform_win32_runtime`。
+- **遗留问题**：如果 [1358] 以后在其他创建路径上再出现（例如 `rhi_texture_array_upload_layer`、`rhi_texture_upload_mip`，它们是从着色器可读状态转到 COPY_DEST 再转回来），可以根据 `SetName` 的名字直接定位到是哪个纹理。
+
 ## 本轮更新：R647 — **D3D12 点光源阴影**；顺带修复三个后端共有的立方体面朝向错误
 
 - **D3D12 立方体深度 FBO**（原来 `rhi_cubemap_depth_fbo_*` 四个函数都是桩）：
