@@ -2,6 +2,7 @@
 #include <renderer/indirect_draw.h>
 #include <renderer/post_process.h>
 #include <renderer/tonemap.h>
+#include <math/math.h>
 #include <math.h>
 #include "test_framework.h"
 /* Forces WARP via ENGINE_D3D12_WARP=1 (set in CTest ENVIRONMENT) so the
@@ -5548,6 +5549,257 @@ TEST(swapchain_draws_put_ndc_up_at_the_top_of_the_screen) {
     ASSERT_EQ(explicit_vp, 1);
 }
 
+/* R638: the demo's whole route for scene orientation. A quad over NDC
+ * y > 0 is drawn into an offscreen FBO (as the forward pass does, under the
+ * FBO's default viewport), then copied to the back buffer with
+ * PostProcess.tex_pipe after rhi_offscreen_fbo_unbind -- the exact last two
+ * steps of main.c's frame. "Up in NDC" must come out as the top half of the
+ * presented image, which is what the user sees. */
+TEST(scene_through_offscreen_and_final_blit_keeps_ndc_up_on_top) {
+    static const float quad[6 * 3] = {
+        -1, 0,0,  1, 0,0,  1, 1,0,  -1, 0,0,  1, 1,0,  -1, 1,0
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static unsigned char px[64 * 64 * 4];
+    PostProcess pp;
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    int y, top = 1;
+    ASSERT_TRUE(post_process_init(&pp, g_dev, 64u, 64u));
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 64u; fbo_desc.height = 64u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;
+    pdesc.disable_culling = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(quad);
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(pipe) && rhi_handle_valid(vbo));
+
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, identity, sizeof(identity));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    rhi_cmd_bind_pipeline(cmd, pp.tex_pipe);
+    rhi_cmd_bind_texture(cmd, fbo.color_tex, pp.sampler, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
+    for (y = 0; y < 64; ++y)
+        if ((px[(y * 64 + 32) * 4 + 1] > 200) != (y < 32)) top = 0;
+    printf("  scene route: screen row 0 green=%d, row 63 green=%d\n",
+           px[(0 * 64 + 32) * 4 + 1] > 200, px[(63 * 64 + 32) * 4 + 1] > 200);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(top);
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    post_process_shutdown(&pp);
+}
+
+/* R638: the engine's own camera matrices, end to end. A camera at the origin
+ * looking down -Z (mat4_lookat) with mat4_perspective, and a quad 5 units
+ * ahead spanning world y in [0.5, 2]: it is above the eye, so it must come
+ * out in the TOP half of the presented image after the offscreen pass and
+ * the final blit. Unlike the NDC probes above this goes through P * V built
+ * by src/math, so a matrix-packing or handedness mismatch shows up here. */
+TEST(engine_camera_puts_world_up_at_the_top_of_the_screen) {
+    static const float quad[6 * 3] = {
+        -1.0f, 0.5f, -5.0f,   1.0f, 0.5f, -5.0f,   1.0f, 2.0f, -5.0f,
+        -1.0f, 0.5f, -5.0f,   1.0f, 2.0f, -5.0f,  -1.0f, 2.0f, -5.0f
+    };
+    static unsigned char px[64 * 64 * 4];
+    Mat4 proj = mat4_perspective(1.0471976f, 1.0f, 0.1f, 100.0f);
+    Mat4 view = mat4_lookat(vec3(0.0f, 0.0f, 0.0f), vec3(0.0f, 0.0f, -1.0f),
+                            vec3(0.0f, 1.0f, 0.0f));
+    Mat4 vp = mat4_mul(proj, view);
+    PostProcess pp;
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    int y, first = -1, last = -1;
+    ASSERT_TRUE(post_process_init(&pp, g_dev, 64u, 64u));
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 64u; fbo_desc.height = 64u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;
+    pdesc.disable_culling = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(quad);
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(pipe) && rhi_handle_valid(vbo));
+
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, &vp.e[0][0], 64u);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    rhi_cmd_bind_pipeline(cmd, pp.tex_pipe);
+    rhi_cmd_bind_texture(cmd, fbo.color_tex, pp.sampler, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
+    for (y = 0; y < 64; ++y) {
+        if (px[(y * 64 + 32) * 4 + 1] > 200) {
+            if (first < 0) first = y;
+            last = y;
+        }
+    }
+    printf("  camera route: green rows %d..%d of 64\n", first, last);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    /* y in [0.5, 2] at distance 5 with a 60 deg fov: NDC y in [0.17, 0.69],
+     * i.e. screen rows ~10..26 from the top. */
+    ASSERT_TRUE(first >= 0);
+    ASSERT_TRUE(last < 32);
+
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    post_process_shutdown(&pp);
+}
+
+/* R638: main.c sets the forward pass's view/proj once, runs the indirect
+ * compact (a compute dispatch), rebinds the graphics pipeline (R234-A) and
+ * then draws. Vulkan keeps the graphics push constants across that; this
+ * pins the same on D3D12. The quad only covers the centre if the pushed
+ * 0.5-scale transform is still in effect at the draw; a lost transform
+ * (zeroed root constants) degenerates every vertex onto the origin. */
+TEST(graphics_push_constants_survive_a_compute_pass_and_rebind) {
+    static const float quad[6 * 3] = {
+        -1,-1,0,  1,-1,0,  1,1,0,  -1,-1,0,  1,1,0,  -1,1,0
+    };
+    static const float half[16] = { 0.5f,0,0,0, 0,0.5f,0,0, 0,0,1,0, 0,0,0,1 };
+    static u32 raw_init[64];
+    static u32 rows_init[64];
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs, cs;
+    RHIPipelineDesc pdesc;
+    RHIPipeline pipe, cpipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, raw, rows;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    const u32 seed = 7u;
+    int x, y;
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    vs = rhi_shader_create(g_dev, "probe_vb_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "probe_vb_hlsl.frag", 0, true);
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 12u;
+    pdesc.disable_culling = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    cs = rhi_shader_create_compute_path(g_dev, "shaders/probe_storage.comp");
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.is_compute = true;
+    pdesc.frag = cs;
+    cpipe = rhi_pipeline_create(g_dev, &pdesc);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(quad);
+    bdesc.initial_data = quad;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = sizeof(raw_init);
+    bdesc.initial_data = raw_init;
+    raw = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.size = sizeof(rows_init);
+    bdesc.initial_data = rows_init;
+    rows = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe) && rhi_handle_valid(cpipe));
+
+    rhi_offscreen_fbo_set_clear_color(g_dev, &fbo, 0.0f, 0.0f, 0.0f, 1.0f);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, half, sizeof(half));
+    rhi_cmd_bind_pipeline(cmd, cpipe);
+    rhi_cmd_push_constants(cmd, 0u, &seed, sizeof(seed));
+    rhi_cmd_bind_storage_buffer(cmd, raw, 0u);
+    rhi_cmd_bind_storage_buffer(cmd, rows, 1u);
+    rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int inside = x >= 2 && x < 6 && y >= 2 && y < 6;
+            int green = px[(y * 8 + x) * 4 + 1] > 200;
+            if (green != inside) printf("  px (%d,%d) green=%d want %d\n", x, y, green, inside);
+            ASSERT_EQ(green, inside);
+        }
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    rhi_buffer_destroy(g_dev, rows);
+    rhi_buffer_destroy(g_dev, raw);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, cpipe);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, cs);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5593,6 +5845,9 @@ int main(void) {
     RUN_TEST(tonemap_and_luminance_sidecars_match_the_aces_formula);
     RUN_TEST(offscreen_fbo_budget_covers_the_demo_post_chain);
     RUN_TEST(swapchain_draws_put_ndc_up_at_the_top_of_the_screen);
+    RUN_TEST(scene_through_offscreen_and_final_blit_keeps_ndc_up_on_top);
+    RUN_TEST(engine_camera_puts_world_up_at_the_top_of_the_screen);
+    RUN_TEST(graphics_push_constants_survive_a_compute_pass_and_rebind);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
