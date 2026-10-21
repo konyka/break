@@ -28,8 +28,15 @@
   - demo 截图：FPS 徽章回到左上角、诊断文字逐行向下可读。\r
 - **D3D12 demo 场景与 VK 不一致——已定位到两处，尚未修复**（同机位 `BREAK_CAM=0,8,20,0,-10`、`BREAK_FORWARD_CLUSTERED=0`、`BREAK_UI=0` 对比）：\r
   1. **instanced 路径在 D3D12 上画出错误几何**：默认画面里占满屏幕的大块纯色三角形（米黄 / 绿 / 灰）来自 ECS 实例化绘制（`render.instanced_pipeline`，`instanced_mrt_hlsl.*`）。设 `BREAK_FORCE_PER_ENTITY=1` 绕开它，这些三角形全部消失，场景内容与 VK 一致。\r
-  2. **绕开 instanced 后，D3D12 的场景相对 VK 上下翻转**：实体网格在山丘上方、盾形网格尖端朝向相反。按透视推理（机位 y=8 俯视 10°，近处地面物体应在画面下方）VK 是正的、D3D12 是倒的。\r
-  - **已排除的原因**（都有测试钉住，`c57f2173`，WARP 与 RTX 4060 均通过）：NDC +Y 经离屏 FBO + 最终 `tex_pipe` blit 后仍在屏幕上方；引擎自己的 `mat4_perspective` / `mat4_lookat` 把世界上方投到画面上方；图形管线的 root constant 在一次 compute dispatch + 重新绑定管线后仍然有效（前向 indirect 的模式）。所以翻转发生在 demo 帧链里这三个测试没覆盖的某一步（候选：MRT FBO 绑定、某个后处理 pass 的采样/写入方向不一致），**下一步应当按帧链逐 pass 二分**（`BREAK_INSPECT` 各模式在 VK 上部分是黑的，不能直接当参照）。\r
+  2. **更正（上一版写反了）：绕开 instanced 后，上下颠倒的是 Vulkan，不是 D3D12。**\r
+     - 先前「VK 是正的、D3D12 是倒的」只是按画面直觉推断。现在有三条独立证据，都指向 D3D12 是对的：\r
+       - **GL 与 D3D12 一致**。GL demo 先前根本起不来（见下条修复），修好后同机位截图，GL 与 D3D12 画面方向相同（山丘在下、实体在上方），与 VK 相反。\r
+       - **太阳位置有解析解**。机位 `BREAK_CAM=0,8,20,0,60`，太阳方向 el=0.93 / az=1.03。按 `camera_view`、`mat4_perspective` 与 skybox 顶点着色器的同一套公式算，太阳应在画面 x≈0.20、y≈0.36（自顶向下）。实测 D3D12 x=0.203 / y=0.349，GL x=0.188 / y=0.283，**VK x=0.199 / y=0.560**：x 都对，只有 VK 的 y 落在镜像位置（≈1−0.36−0.08）。\r
+       - **真实屏幕抓图与引擎截图一致**。用 DPI 感知的 `CopyFromScreen` 抓窗口，VK y=0.558、D3D12 y=0.350，和各自的 `BREAK_SCREENSHOT` 吻合。所以 VK 不是截图读回翻了，是**实际显示的画面就是倒的**。\r
+     - **原因方向（未改）**：Vulkan 的 NDC y 朝下。VK 后端在 `rhi_frame_begin` / `rhi_offscreen_fbo_unbind` / `rhi_cmd_unbind_shadow_map` 用的是正高度视口 `{0,0,w,h}`，而所有 `_vk` 着色器都没有对 `gl_Position.y` 取反，投影矩阵也没有按后端翻转 Y。这样 3D 场景在 VK 上整体上下颠倒；UI 走 `rhi_cmd_set_viewport`（负高度），所以 VK 的 UI 是正的（R715 当时只修了 UI）。VK 的 golden 参考图（`tests/golden/test_vulkan_vk*.ppm`）是在这个状态下生成的，所以 `test_vulkan` 的 golden 用例在 VK 上一直「对得上」，没能暴露问题。\r
+     - **为什么本轮不修**：要修就得改 VK 后端的帧/离屏视口约定，或者给 VK 着色器加 Y 翻转。这会动到所有 VK 的离屏采样方向，并且要重新生成 VK 的 golden 参考图，是跨后端的约定变更，需要单独决定。\r
+  - **已排除的 D3D12 侧原因**（都有测试钉住，`c57f2173`，WARP 与 RTX 4060 均通过）：NDC +Y 经离屏 FBO + 最终 `tex_pipe` blit 后仍在屏幕上方；引擎自己的 `mat4_perspective` / `mat4_lookat` 把世界上方投到画面上方；图形管线的 root constant 在一次 compute dispatch + 重新绑定管线后仍然有效（前向 indirect 的模式）。\r
+- **顺带修复：GL demo 启动即崩溃**（`8b29ed6a`）。`blinn_phong.vert` 的 `FORWARD_MRT` 分支读的是裸名 `u_prev_vp` / `u_prev_model`，但 R600 已经把 `ForwardTemporal` 放进实例名 `temporal` 之下。GL 编译该变体时报 `'u_prev_vp' : undeclared identifier`，随后 `Render init failed`。改成 `temporal.u_prev_vp` / `temporal.u_prev_model`，与 `blinn_phong_arr.vert` 的写法一致。GL 构建 ctest 177/178，剩下的 1 个是既有的 `test_vulkan` golden 偏差。\r
 - **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线的 sidecar，画面与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r
 \r
 ## 本轮更新：R637 — **更正：「本机无法创建 UAV 视图」是探针自身的 bug，不是驱动 / 系统 / 环境问题**；D3D12 storage buffer 绑定随之落地\r
