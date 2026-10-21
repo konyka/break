@@ -69,7 +69,14 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     float4 r1 = g_rows[idx + 1];
     float4 r2 = g_rows[idx + 2];
     float4 r3 = g_rows[idx + 3];
-    float4x4 model = float4x4(r0, r1, r2, r3);
+    // The rows are COLUMNS: the engine uploads column-major mat4s (translation
+    // in r3.xyz), and GLSL's mat4(r0, r1, r2, r3) consumes its arguments as
+    // columns. HLSL's float4x4(...) consumes them as ROWS, so it must be
+    // transposed to be the same matrix. Without it the translation lands in
+    // the bottom (projective) row and every translated instance is a sliver
+    // stretched across the screen -- R638's demo showed exactly that. The
+    // pre-R638 test only ever used identity, which is its own transpose.
+    float4x4 model = transpose(float4x4(r0, r1, r2, r3));
 
     float4 world_pos = mul(model, float4(aPos, 1.0f));
     o.world = world_pos.xyz;
@@ -82,7 +89,7 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     float4 p1 = g_rows[idx + 5];
     float4 p2 = g_rows[idx + 6];
     float4 p3 = g_rows[idx + 7];
-    float4x4 prev_model = float4x4(p0, p1, p2, p3);
+    float4x4 prev_model = transpose(float4x4(p0, p1, p2, p3));
     float4 prev_clip = mul(g_temporal.u_prev_vp,
                            mul(prev_model, float4(aPos, 1.0f)));
     o.velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;

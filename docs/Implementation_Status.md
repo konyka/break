@@ -27,7 +27,10 @@
   - **测试** `swapchain_draws_put_ndc_up_at_the_top_of_the_screen`：直接往后台缓冲画一个覆盖 NDC y>0 的四边形，用 `rhi_screenshot`（自上而下行序）判断它落在上半还是下半。**两种视口都钉住**：显式 `rhi_cmd_set_viewport` 必须在上半；帧默认视口（VK 正高度 `{0,0,w,h}` 的孪生，让离屏目标保持 GL 行序供后处理采样）必须在下半——这样两者不会再悄悄变成同一个。修复前显式视口落在下半，测试红；WARP 与 RTX 4060 修后均通过。\r
   - demo 截图：FPS 徽章回到左上角、诊断文字逐行向下可读。\r
 - **D3D12 demo 场景与 VK 不一致——已定位到两处，尚未修复**（同机位 `BREAK_CAM=0,8,20,0,-10`、`BREAK_FORWARD_CLUSTERED=0`、`BREAK_UI=0` 对比）：\r
-  1. **instanced 路径在 D3D12 上画出错误几何**：默认画面里占满屏幕的大块纯色三角形（米黄 / 绿 / 灰）来自 ECS 实例化绘制（`render.instanced_pipeline`，`instanced_mrt_hlsl.*`）。设 `BREAK_FORCE_PER_ENTITY=1` 绕开它，这些三角形全部消失，场景内容与 VK 一致。\r
+  1. **instanced 路径在 D3D12 上画出错误几何——已修复（两个独立 bug）**：默认画面里占满屏幕的大块纯色三角形（米黄 / 绿 / 灰）来自 ECS 实例化绘制。\r
+     - **矩阵转置**：引擎按列主序上传实例矩阵（平移在第 4 列，即上传数据的 12..14）。GLSL 的 `mat4(r0,r1,r2,r3)` 把参数当**列**，HLSL 的 `float4x4(...)` 把参数当**行**——`instanced_mrt_hlsl.vert` 直接照抄，平移落进了投影行，每个带平移的实例都被拉成横贯屏幕的细长三角形。`skinned_mrt_hlsl.vert` 的关节矩阵是同一个错误。两处都改成 `transpose(float4x4(...))`。既有测试只用单位矩阵（它的转置还是它自己），所以一直没测出来；现在 `instanced_sidecar_reads_lighting_from_the_temporal_cbv` 加了第三帧：缩放 0.5 + 平移 (+0.5,+0.5) 的实例，必须只落在 +x/+y 象限。去掉 transpose 该帧转红。\r
+     - **UPLOAD 堆缓冲在帧内被多次改写时，绑定读到的是最后一次**：main.c 每个网格都用 `rhi_cmd_update_buffer` 重写同一个实例缓冲再绑定。R638 的帧内快照只接到了 storage 绑定上，texel / 顶点 / 索引 / CBV 绑定仍然直接看缓冲本体，而本体在录制后已经是这一帧的最后一次写入。现在这些绑定统一通过 `rhi_d3d12_buffer_view_source` 取视图源（有本帧快照就用快照）；快照补齐到 256 字节，CBV 才不会越界读。测试 `texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows`：同一帧内同一缓冲先写红画左半、再写绿画右半，两半必须各是各的颜色；让 texel 绑定改回直接看缓冲，左半变绿、测试转红。\r
+     - 修后 D3D12 默认 demo 帧（不设 `BREAK_FORCE_PER_ENTITY`）与 GL 内容和朝向一致。WARP 与 RTX 4060 均通过；D3D12 ctest 185/185。\r
   2. **更正（上一版写反了）：绕开 instanced 后，上下颠倒的是 Vulkan，不是 D3D12。**\r
      - 先前「VK 是正的、D3D12 是倒的」只是按画面直觉推断。现在有三条独立证据，都指向 D3D12 是对的：\r
        - **GL 与 D3D12 一致**。GL demo 先前根本起不来（见下条修复），修好后同机位截图，GL 与 D3D12 画面方向相同（山丘在下、实体在上方），与 VK 相反。\r

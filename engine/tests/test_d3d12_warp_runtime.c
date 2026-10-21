@@ -3457,6 +3457,59 @@ TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv) {
             ASSERT_EQ(rt1[i], 0u);
     }
 
+    /* R638: a TRANSLATED instance. Identity is its own transpose, so the two
+     * frames above could not tell a row-major from a column-major read of
+     * the instance rows -- and the sidecar did read them as rows, which in
+     * the demo stretched every entity across the screen. Here the model is
+     * scale 0.5 plus translation (+0.5, +0.5) in the engine's column-major
+     * layout (translation in the 4th column = rows 12..14 of the upload), so
+     * the full-screen quad must shrink into the +x/+y quadrant only. */
+    {
+        static const float moved[8 * 4] = {
+            0.5f,0,0,0,  0,0.5f,0,0,  0,0,1,0,  0.5f,0.5f,0,1,
+            0.5f,0,0,0,  0,0.5f,0,0,  0,0,1,0,  0.5f,0.5f,0,1
+        };
+        RHIBuffer moved_buf;
+        int x, y;
+        memset(&bdesc, 0, sizeof(bdesc));
+        bdesc.size = sizeof(moved);
+        bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+        bdesc.initial_data = moved;
+        moved_buf = rhi_buffer_create(g_dev, &bdesc);
+        ASSERT_TRUE(rhi_handle_valid(moved_buf));
+        t.dir[0] = 0.0f; t.dir[1] = -1.0f; t.dir[2] = 0.0f;
+        t.amb[0] = 0.4f;  t.amb[1] = 0.2f;  t.amb[2] = 0.08f;
+        rhi_buffer_update(g_dev, ubo, &t, sizeof(t));
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_bind_texture(cmd, albedo, sampler, 0u);
+        rhi_cmd_bind_texel_buffers(cmd, moved_buf, RHI_HANDLE_NULL);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+        /* Offscreen targets keep GL row order: NDC y > 0 is rows 4..7. */
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                int lit = rt0[(y * 8 + x) * 4 + 0] == want[0][0];
+                int inside = x >= 4 && y >= 4;
+                if (lit != inside)
+                    printf("  translated instance: px (%d,%d) lit=%d want %d\n",
+                           x, y, lit, inside);
+                ASSERT_EQ(lit, inside);
+            }
+        }
+        rhi_buffer_destroy(g_dev, moved_buf);
+    }
+
     rhi_texture_destroy(g_dev, albedo);
     rhi_sampler_destroy(g_dev, sampler);
     rhi_buffer_destroy(g_dev, vbo);
@@ -5800,6 +5853,99 @@ TEST(graphics_push_constants_survive_a_compute_pass_and_rebind) {
     rhi_offscreen_fbo_destroy(g_dev, &fbo);
 }
 
+/* R638: the demo's instanced pattern. main.c owns ONE host-visible instance
+ * buffer per frame slot, rewrites it with rhi_cmd_update_buffer for every
+ * mesh and binds it with rhi_cmd_bind_texel_buffers before that mesh's draw.
+ * The texel binder used to view the buffer itself, which after recording
+ * already holds the frame's LAST write, so every draw got the last mesh's
+ * rows -- the large wrong triangles in the D3D12 demo. Here two draws in
+ * one frame write different rows (red, then green) into the same buffer and
+ * cover the left and right halves; each half must keep its own colour. */
+TEST(texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows) {
+    static const float left[3 * 3]  = { -1,-1,0,  0,-1,0,  -1, 3,0 };
+    static const float left2[3 * 3] = { 0,-1,0,  0, 3,0,  -1, 3,0 };
+    static const float right[3 * 3] = { 0,-1,0,  3,-1,0,   0, 3,0 };
+    static const float red[4]   = { 1.0f, 0.0f, 0.0f, 1.0f };
+    static const float green[4] = { 0.0f, 1.0f, 0.0f, 1.0f };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bdesc;
+    RHIBuffer vl, vl2, vr, inst;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int x, y;
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    vs = rhi_shader_create(g_dev, "texel_buffer_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "texel_buffer_hlsl.frag", 0, true);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.vertex_stride = 12u;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.disable_culling = true;
+    pd.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(left);
+    bdesc.initial_data = left;  vl  = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.initial_data = left2; vl2 = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.initial_data = right; vr  = rhi_buffer_create(g_dev, &bdesc);
+    /* Same shape as main.c's instance_buf: TEXEL | STORAGE, no initial
+     * data, so it lives on the UPLOAD heap. */
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = 256u;
+    inst = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe) && rhi_handle_valid(inst));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 1.0f, 1.0f);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_update_buffer(cmd, inst, 0u, red, sizeof(red));
+    rhi_cmd_bind_texel_buffers(cmd, inst, inst);
+    rhi_cmd_bind_vertex_buffer(cmd, vl, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_cmd_bind_vertex_buffer(cmd, vl2, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_cmd_update_buffer(cmd, inst, 0u, green, sizeof(green));
+    rhi_cmd_bind_texel_buffers(cmd, inst, inst);
+    rhi_cmd_bind_vertex_buffer(cmd, vr, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            const unsigned char *p = &px[(y * 8 + x) * 4];
+            int want_red = x < 4;
+            if ((p[0] > 200) != want_red || (p[1] > 200) == want_red)
+                printf("  px (%d,%d) = %u,%u,%u want %s\n", x, y, p[0], p[1], p[2],
+                       want_red ? "red" : "green");
+            ASSERT_EQ(p[0] > 200, want_red);
+            ASSERT_EQ(p[1] > 200, !want_red);
+        }
+    }
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    rhi_buffer_destroy(g_dev, inst);
+    rhi_buffer_destroy(g_dev, vr);
+    rhi_buffer_destroy(g_dev, vl2);
+    rhi_buffer_destroy(g_dev, vl);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -5848,6 +5994,7 @@ int main(void) {
     RUN_TEST(scene_through_offscreen_and_final_blit_keeps_ndc_up_on_top);
     RUN_TEST(engine_camera_puts_world_up_at_the_top_of_the_screen);
     RUN_TEST(graphics_push_constants_survive_a_compute_pass_and_rebind);
+    RUN_TEST(texel_buffer_rewritten_per_draw_feeds_each_draw_its_own_rows);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

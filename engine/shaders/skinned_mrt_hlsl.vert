@@ -64,12 +64,15 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     float4x4 prev_skin = (float4x4)0.0f;
     for (int i = 0; i < 4; i++) {
         int j = (int)aJoints[i];
-        float4x4 joint = float4x4(g_joints[j * 4 + 0], g_joints[j * 4 + 1],
-                                   g_joints[j * 4 + 2], g_joints[j * 4 + 3]);
+        // Column-major joint matrices, four float4 COLUMNS each; HLSL's
+        // float4x4(...) takes ROWS, hence the transpose (GLSL mat4(...)
+        // takes columns). Same defect and fix as instanced_mrt_hlsl.vert.
+        float4x4 joint = transpose(float4x4(g_joints[j * 4 + 0], g_joints[j * 4 + 1],
+                                            g_joints[j * 4 + 2], g_joints[j * 4 + 3]));
         skin += aWeights[i] * joint;
-        float4x4 prev_joint =
+        float4x4 prev_joint = transpose(
             float4x4(g_joints[512 + j * 4 + 0], g_joints[512 + j * 4 + 1],
-                     g_joints[512 + j * 4 + 2], g_joints[512 + j * 4 + 3]);
+                     g_joints[512 + j * 4 + 2], g_joints[512 + j * 4 + 3]));
         prev_skin += aWeights[i] * prev_joint;
     }
 

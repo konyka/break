@@ -29,6 +29,21 @@ __declspec(dllexport) const char *D3D12SDKPath = ".\\";
 
 #define RHI_D3D12_FENCE_TIMEOUT_MS 20000u
 
+/* The resource a view or binding of `bd` must point at right now. For an
+ * UPLOAD-heap buffer that rhi_cmd_update_buffer / _fill_buffer wrote earlier
+ * in this frame, that is the write's snapshot (rhi_d3d12_record_buffer_write):
+ * the buffer itself already holds the frame's LAST write, so binding it
+ * directly would give every earlier draw the last draw's data. Every binder
+ * that reads a buffer -- vertex, index, CBV, SRV, texel -- goes through
+ * here. */
+static ID3D12Resource *rhi_d3d12_buffer_view_source(const RHI_D3D12Context *ctx,
+                                                    const RHI_D3D12Buffer *bd) {
+    if (!bd->device_local && bd->alias_resource != NULL &&
+        bd->alias_frame == ctx->debug_frame)
+        return bd->alias_resource;
+    return bd->resource;
+}
+
 static void rhi_d3d12_release(IUnknown **object) {
     if (*object != NULL) {
         IUnknown_Release(*object);
@@ -3925,7 +3940,8 @@ void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                    RHI_RES_BUFFER);
     if (bd == NULL || offset >= (usize)bd->size) return;
-    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource) +
+    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+                              rhi_d3d12_buffer_view_source(ctx, bd)) +
                           (UINT64)offset;
     view.SizeInBytes = (UINT)(bd->size - offset);
     view.StrideInBytes = pd->vertex_stride;
@@ -3943,7 +3959,8 @@ void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(g_current_device, buf,
                                                    RHI_RES_BUFFER);
     if (bd == NULL || offset >= (usize)bd->size) return;
-    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource) +
+    view.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+                              rhi_d3d12_buffer_view_source(ctx, bd)) +
                           (UINT64)offset;
     view.SizeInBytes = (UINT)(bd->size - offset);
     view.Format = is_u32 ? DXGI_FORMAT_R32_UINT : DXGI_FORMAT_R16_UINT;
@@ -4333,7 +4350,8 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
     if (slot == UINT_MAX) return;
     ZeroMemory(&cbv, sizeof(cbv));
-    cbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(bd->resource);
+    cbv.BufferLocation = ID3D12Resource_GetGPUVirtualAddress(
+        rhi_d3d12_buffer_view_source(ctx, bd));
     cbv.SizeInBytes = (UINT)((bd->size + 255u) & ~255u);
     ID3D12Device_CreateConstantBufferView(ctx->device, &cbv,
         rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
@@ -4787,8 +4805,14 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0,
         srv.Buffer.NumElements = (UINT)(bd->size / 16u);
         srv.Buffer.StructureByteStride = 16u;
         srv.Buffer.Flags = D3D12_BUFFER_SRV_FLAG_NONE;
-        ID3D12Device_CreateShaderResourceView(ctx->device, bd->resource, &srv,
-            rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+        /* An UPLOAD-heap buffer written with rhi_cmd_update_buffer earlier in
+         * this frame is read through that write's snapshot (see
+         * rhi_d3d12_record_buffer_write). main.c rewrites the instance buffer
+         * once per mesh and binds it here before each draw; viewing the raw
+         * resource would give every mesh the LAST mesh's rows, which is what
+         * drew the large garbage triangles in the R638 demo. */
+        ID3D12Device_CreateShaderResourceView(ctx->device,
+            rhi_d3d12_buffer_view_source(ctx, bd), &srv, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
         ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
         read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                      D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
@@ -4963,8 +4987,11 @@ static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
     if (size > (usize)bd->size - offset) size = (usize)bd->size - offset;
     if (!bd->device_local) {
         /* The snapshot has to be the whole buffer: a view over it replaces
-         * the buffer for every element, not just the written range. */
-        u8 *whole = (u8 *)malloc((size_t)bd->size);
+         * the buffer for every element, not just the written range. It is
+         * padded to 256 bytes because a CBV over it covers the 256-rounded
+         * size, as rhi_cmd_bind_uniform_buffer declares for the original. */
+        usize snap_size = ((usize)bd->size + 255u) & ~(usize)255u;
+        u8 *whole = (u8 *)calloc(1u, snap_size);
         void *mapped = NULL;
         if (whole == NULL) return;
         if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) {
@@ -4990,7 +5017,7 @@ static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
         }
         memcpy(mapped, whole, (size_t)bd->size);
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
-        staging = rhi_d3d12_frame_staging(ctx, whole, 0u, (usize)bd->size);
+        staging = rhi_d3d12_frame_staging(ctx, whole, 0u, snap_size);
         free(whole);
         if (staging == NULL) return;
         bd->alias_resource = staging;
@@ -5016,6 +5043,7 @@ void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset,
     if (cmd == NULL || data == NULL || size == 0u) return;
     rhi_d3d12_record_buffer_write(cmd, buf, offset, data, 0u, size);
 }
+
 void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     RHI_D3D12Buffer *bd;
     void *mapped = NULL;
@@ -5821,9 +5849,7 @@ static void rhi_d3d12_bind_buffer_srv(RHI_D3D12Context *ctx,
     UINT stride = pd->srv_buffer_strides[binding];
     UINT slot;
     if (stride != 0u ? bd->size < stride : bd->size < 4u) return;
-    if (!bd->device_local && bd->alias_resource != NULL &&
-        bd->alias_frame == ctx->debug_frame)
-        source = bd->alias_resource;
+    source = rhi_d3d12_buffer_view_source(ctx, bd);
     if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
     if (slot == UINT_MAX) {
