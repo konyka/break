@@ -1,6 +1,22 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R642 — **D3D12 上 DebugViz、合并后处理（CombinedAA / CombinedColor）上线**
+
+- **问题**：`debug_viz.c`、`combined_post_process.c` 仍把内联 GLSL 交给 `rhi_shader_create`。DebugViz 在 D3D12 上 init 失败（F 键切换的深度 / 法线 / AO / 级联视图全部不可用）；CombinedAA、CombinedColor 退回逐个效果串联的链路（功能正常，但每帧多 3 次 pass 切换）。
+- **修复**：两个加载函数沿用 R640 的 `sidecar` 参数模式；新增三个 HLSL twin（顶点阶段复用 `post_hlsl.vert`）：
+  - `debug_viz_hlsl.frag`：push mode 0、near 4、far 8、split0..3 12..24；颜色 t0、深度 t1（material binder）。
+  - `combined_color_hlsl.frag`：14 个 push 常量按 GLSL 声明顺序 0..52；HDR t0、亮度 t1，`combined_color_apply` 的两条绑定分支（material binder / multi-bind）都落在 0/1。AgX 矩阵写法与 `tonemap_hlsl.frag` 相同。
+  - `combined_taa_fxaa_hlsl.frag`：prev_vp 0、inv_proj 64、screen_w 128、screen_h 132、first_frame 136、use_velocity 140。`u_taa_curr_vp` 在 GLSL 中声明但未读取，省略（resolve -1，与 GL 一致）；`u_taa_blend`、`u_fxaa_threshold` 是 GLSL const，这里同为 static const。
+  - 两个 combined pass 现在接管 D3D12 的默认后处理链；D3D12 与 GL 的 demo 截图（第 30 帧）MAE 6.4，差异来自物理状态和 HUD 数字。
+- **测试**（`test_d3d12_warp_runtime.c` +3）：
+  - `debug_viz_sidecar_renders_every_mode_from_the_shader_formulas`：五种模式逐像素对照公式；深度为双轴斜坡，断言四个级联都被覆盖；法线模式只校验有 +x/+y 邻居的像素（WRAP 与 CLAMP 的边界差异）。
+  - `combined_color_sidecar_matches_the_fused_tonemap_grade_vignette`：ACES / AgX / Khronos 三种模式，双精度重放整条 tonemap → 调色 → 暗角链；前两帧走自动曝光的 material binder，第三帧走 multi-bind（亮度 < 0.01，用手动曝光）。
+  - `combined_aa_sidecar_reprojects_history_and_matches_fxaa`：经过真实的 history 乒乓 4 帧——首帧原样输出；棋盘格下 `0.9*hist + 0.1*curr`；prev_vp 平移 2 texel 时按列偏移混合、越界列直接输出当前值；最后一帧对照双精度 FXAA 重放（bilinear + WRAP）和独立 FXAA sidecar 的输出。
+- **反向验证**：级联比较、法线 dy 采样、AO 模式通道、深度读成颜色、饱和度槽、亮度从 t0 读、AgX 矩阵转置、tint 加到 r、饱和度 lerp 反向、prev_vp 转置、blend 系数、去掉 clip_aabb、history 读成 current、FXAA 横竖判定反转、跳过 FXAA 早退，全部失败。**加强了一处**：最初用 2x2 白块做 FXAA 对照，块上没有像素走到端点搜索分支，破坏 `posB` 采样也能通过；改成底边为 64..255 斜坡的水平边（从 64 起步，避免 WRAP 边界出现 FXAA 的 0/0）后 15 个像素被混合，`posB` 破坏被检出。同一输入也检出了独立 `fxaa_hlsl.frag` 的同类破坏。
+- **验证**：WARP 53/53；RTX 4060 52/53（只有预期的 [1]）。ctest：D3D12 185/185、VK 181/181、GL 178/178。demo（D3D12，12 帧）两个 combined pipeline 均 active，rc=0。
+- **遗留**：point_shadow（需 cube RT）、deferred、particles / GPU cull / IBL / cluster cull（compute 仍关闭）；33 条 RENDER_TARGET/SRV 同帧警告仍未查。
+
 ## 本轮更新：R641 — **D3D12 上 SSS / 体积雾 / TSR 上采样 / 电影效果上线**；修复三个后端共有的 Catmull-Rom 权重错误
 
 - **问题**：`sss.c`、`volumetric.c`、`upscale.c`、`cinematic.c` 把内联 GLSL 交给 `rhi_shader_create`，D3D12 一律拒绝，demo 在 D3D12 上这四个效果 init 失败（"shader compile failed"）。

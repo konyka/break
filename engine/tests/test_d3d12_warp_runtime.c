@@ -9,6 +9,9 @@
 #include <renderer/ssao.h>
 #include <renderer/sharpen.h>
 #include <renderer/god_rays.h>
+#include <renderer/debug_viz.h>
+#include <renderer/combined_post_process.h>
+#include <renderer/fxaa.h>
 #include <math/math.h>
 #include <math.h>
 #include "test_framework.h"
@@ -6791,6 +6794,408 @@ TEST(volumetric_sidecar_extincts_the_scene_by_the_marched_fog) {
     volumetric_shutdown(&vol);
 }
 
+/* R642: debug_viz on D3D12, all five modes. The colour input is a flat
+ * (200,100,50) and the depth a ramp in both axes, so every mode has an
+ * exact closed form: 0 passes the colour, 3 its red channel, 1 the
+ * linearised depth as a blue->red ramp, 4 the cascade colour picked by the
+ * splits, 2 the depth-derived normal. Taps are whole texels from the pixel
+ * centre (texture and target are both 8x8), so the linear sampler returns
+ * texel values; mode 2 reads the +x / +y neighbour and is only checked
+ * where that neighbour exists (the static WRAP sampler would wrap the last
+ * row/column, GL's CLAMP would not). */
+static double r642_dv_depth(int c, int r) { return 0.1 + 0.08 * c + 0.03 * r; }
+
+TEST(debug_viz_sidecar_renders_every_mode_from_the_shader_formulas) {
+    DebugVizSystem dv;
+    RHITexture col, depth;
+    RHITextureDesc td;
+    RHICmdBuffer *cmd;
+    static f32 dpx[8 * 8];
+    unsigned char px[8 * 8 * 4];
+    static const f32 splits[5] = { 0.0f, 0.8f, 1.2f, 1.8f, 100.0f };
+    static const double casc[4][3] = {
+        { 1.0, 0.2, 0.2 }, { 0.2, 1.0, 0.2 }, { 0.2, 0.4, 1.0 }, { 1.0, 1.0, 0.2 }
+    };
+    const double n = 0.5, f = 10.0;
+    int mode, x, y, c, seen[4] = { 0, 0, 0, 0 };
+    memset(&dv, 0, sizeof(dv));
+    ASSERT_TRUE(debug_viz_init(&dv, g_dev, 8u, 8u));
+    ASSERT_EQ(dv.loc_mode, 0);
+    ASSERT_EQ(dv.loc_near, 4);
+    ASSERT_EQ(dv.loc_far, 8);
+    ASSERT_EQ(dv.loc_split0, 12);
+    ASSERT_EQ(dv.loc_split3, 24);
+    for (y = 0; y < 8; ++y)
+        for (x = 0; x < 8; ++x) dpx[y * 8 + x] = (f32)r642_dv_depth(x, y);
+    memset(&td, 0, sizeof(td));
+    td.width = 8u; td.height = 8u;
+    td.format = RHI_FORMAT_R32_FLOAT; td.mip_levels = 1u;
+    td.data = dpx;
+    depth = rhi_texture_create(g_dev, &td);
+    col = r641_flat_rgba8(8u, 8u, 200, 100, 50);
+    ASSERT_TRUE(rhi_handle_valid(col) && rhi_handle_valid(depth));
+    for (mode = 0; mode < 5; ++mode) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        debug_viz_apply(&dv, cmd, col, depth, mode, (f32)n, (f32)f, splits, 8u, 8u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, dv.fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                double want[3];
+                double d = r642_dv_depth(x, y);
+                double lin = n * f / (f - d * (f - n));
+                if (mode == 2 && (x == 7 || y == 7)) continue;
+                if (mode == 0) {
+                    want[0] = 200 / 255.0; want[1] = 100 / 255.0; want[2] = 50 / 255.0;
+                } else if (mode == 3) {
+                    want[0] = want[1] = want[2] = 200 / 255.0;
+                } else if (mode == 1) {
+                    double v = lin / f;
+                    v = v < 0 ? 0 : (v > 1 ? 1 : v);
+                    want[0] = v; want[1] = 0; want[2] = 1 - v;
+                } else if (mode == 4) {
+                    int k = 3, i;
+                    for (i = 0; i < 4; ++i)
+                        if (lin < splits[i + 1]) { k = i; break; }
+                    seen[k]++;
+                    for (c = 0; c < 3; ++c) want[c] = casc[k][c];
+                } else {
+                    double a = 2.0 / 8.0, bx = 2.0 * (r642_dv_depth(x + 1, y) - d);
+                    double by = 2.0 * (r642_dv_depth(x, y + 1) - d);
+                    /* cross((a,0,bx), (0,a,by)) */
+                    double nx = 0.0 * by - bx * a, ny = bx * 0.0 - a * by, nz = a * a;
+                    double len = sqrt(nx * nx + ny * ny + nz * nz);
+                    want[0] = nx / len * 0.5 + 0.5;
+                    want[1] = ny / len * 0.5 + 0.5;
+                    want[2] = nz / len * 0.5 + 0.5;
+                }
+                for (c = 0; c < 3; ++c) {
+                    int w = (int)floor(want[c] * 255.0 + 0.5);
+                    int got = px[(y * 8 + x) * 4 + c];
+                    if (abs(got - w) > 1)
+                        printf("  debug viz mode %d px (%d,%d) ch %d = %d, want %d\n",
+                               mode, x, y, c, got, w);
+                    ASSERT_TRUE(abs(got - w) <= 1);
+                }
+            }
+        }
+    }
+    /* The depth ramp must reach all four cascades, or mode 4 proved little. */
+    for (c = 0; c < 4; ++c) ASSERT_TRUE(seen[c] > 0);
+    rhi_texture_destroy(g_dev, col);
+    rhi_texture_destroy(g_dev, depth);
+    debug_viz_shutdown(&dv);
+}
+
+/* R642: CombinedColor (tonemap + grade + cinematic in one pass) on D3D12,
+ * against a double-precision replay of combined_color.frag. Flat input, so
+ * the aberration taps all read the same texel; grain 0 (the hash is chaotic
+ * in float and not reproducible in double). One frame per tonemap mode:
+ * ACES and AgX with a 0.75 adapted luminance (auto exposure 0.8, blended
+ * 0.8 into the manual 1.5 -> 0.94), Khronos-neutral with 0.005 (< 0.01, so
+ * the manual exposure is used as is). The first two go through the
+ * auto-exposure material binder, the third through the multi-bind arm, so
+ * both of combined_color_apply's bind paths have to put the luminance on
+ * t1. The vignette varies per pixel, so a wrong uv moves the result too. */
+static double r642_cl(double v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+static void r642_mat3_cols(const double a[9], const double v[3], double o[3]) {
+    int j;
+    for (j = 0; j < 3; ++j)
+        o[j] = v[0] * a[3 * j] + v[1] * a[3 * j + 1] + v[2] * a[3 * j + 2];
+}
+
+static void r642_tonemap(int mode, const double in[3], double out[3]) {
+    static const double inset[9] = {
+        0.84247906, 0.04232824, 0.04237565,
+        0.07843371, 0.87846855, 0.07843397,
+        0.07922376, 0.07916613, 0.87923044 };
+    static const double outset[9] = {
+        1.1968790, -0.0525374, -0.0525374,
+        -0.0920852, 1.1515179, -0.0920852,
+        -0.0398265, -0.0398265, 1.1637448 };
+    int c;
+    if (mode == 1) {
+        double v[3], t[3];
+        for (c = 0; c < 3; ++c) v[c] = in[c] > 0 ? in[c] : 0;
+        r642_mat3_cols(inset, v, t);
+        for (c = 0; c < 3; ++c) {
+            double s = r642_cl(t[c]);
+            s = log(s + 0.0001) / log(2.0);
+            s = r642_cl((s * 1.7 + 6.5) / 11.7);
+            v[c] = s * s * (3.0 - 2.0 * s);
+        }
+        r642_mat3_cols(outset, v, t);
+        for (c = 0; c < 3; ++c) out[c] = r642_cl(t[c]);
+    } else {
+        for (c = 0; c < 3; ++c) {
+            double x = mode == 2 ? (in[c] > 0 ? in[c] : 0) : in[c];
+            out[c] = r642_cl(x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14));
+        }
+    }
+}
+
+TEST(combined_color_sidecar_matches_the_fused_tonemap_grade_vignette) {
+    CombinedColor cc;
+    RHITexture hdr, lum_hi, lum_lo;
+    RHICmdBuffer *cmd;
+    u16 out[8 * 8 * 4];
+    const double src[3] = { 200 / 255.0, 100 / 255.0, 50 / 255.0 };
+    const double e = 1.5, gam = 2.2, sat = 1.3, con = 1.1, bri = 0.95;
+    const double temp = 0.4, tint = 0.6, vig = 1.5;
+    int mode, x, y, c;
+    memset(&cc, 0, sizeof(cc));
+    ASSERT_TRUE(combined_color_init(&cc, g_dev, 8u, 8u));
+    ASSERT_TRUE(cc.use_combined);
+    ASSERT_EQ(cc.loc_exposure, 0);
+    ASSERT_EQ(cc.loc_mode, 8);
+    ASSERT_EQ(cc.loc_saturation, 12);
+    ASSERT_EQ(cc.loc_tint, 28);
+    ASSERT_EQ(cc.loc_aberration, 32);
+    ASSERT_EQ(cc.loc_grain, 40);
+    ASSERT_EQ(cc.loc_screen_h, 52);
+    hdr = r641_flat_rgba8(8u, 8u, 200, 100, 50);
+    lum_hi = r641_depth_split(1u, 1u, 0.75f, 0.75f);
+    lum_lo = r641_depth_split(1u, 1u, 0.005f, 0.005f);
+    ASSERT_TRUE(rhi_handle_valid(hdr) && rhi_handle_valid(lum_hi) &&
+                rhi_handle_valid(lum_lo));
+    for (mode = 0; mode < 3; ++mode) {
+        double exposure, ldr[3], h[3], luma;
+        double scene_luma = mode == 2 ? 0.005 : 0.75;
+        double auto_exp = scene_luma > 0.01 ? 1.0 / (scene_luma + 0.5) : e;
+        exposure = e + (auto_exp - e) * 0.8;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        combined_color_apply(&cc, cmd, hdr, mode == 2 ? lum_lo : lum_hi,
+                             mode != 2, (f32)e, (f32)gam, mode,
+                             (f32)sat, (f32)con, (f32)bri, (f32)temp, (f32)tint,
+                             2.0f, (f32)vig, 0.0f, 0.0f, 8u, 8u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(out, 0, sizeof(out));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, cc.output_fbo.color_tex,
+                                            out, sizeof(out)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (c = 0; c < 3; ++c) h[c] = src[c] * exposure;
+        r642_tonemap(mode, h, ldr);
+        for (c = 0; c < 3; ++c) ldr[c] = ldr[c] > 0 ? pow(ldr[c], 1.0 / gam) : 0;
+        luma = ldr[0] * 0.2126 + ldr[1] * 0.7152 + ldr[2] * 0.0722;
+        {
+            const double warm[3] = { 1.0, 0.85, 0.7 }, cool[3] = { 0.7, 0.85, 1.0 };
+            double k = temp * 0.5 + 0.5;
+            for (c = 0; c < 3; ++c) {
+                ldr[c] = luma + (ldr[c] - luma) * sat;
+                ldr[c] = (ldr[c] - 0.5) * con + 0.5;
+                ldr[c] *= bri;
+                ldr[c] *= cool[c] + (warm[c] - cool[c]) * k;
+            }
+            ldr[1] += tint * 0.05;
+        }
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                double du = (x + 0.5) / 8.0 - 0.5, dvv = (y + 0.5) / 8.0 - 0.5;
+                double v = 1.0 - (du * du + dvv * dvv) * vig;
+                if (v < 0) v = 0;
+                for (c = 0; c < 3; ++c) {
+                    double want = r642_cl(ldr[c] * v);
+                    float got = warp_half_to_float(out[(y * 8 + x) * 4 + c]);
+                    if (fabs(got - want) > 0.004)
+                        printf("  combined colour mode %d px (%d,%d) ch %d = %f, want %f\n",
+                               mode, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.004);
+                }
+            }
+        }
+    }
+    rhi_texture_destroy(g_dev, hdr);
+    rhi_texture_destroy(g_dev, lum_hi);
+    rhi_texture_destroy(g_dev, lum_lo);
+    combined_color_shutdown(&cc);
+}
+
+/* R642: CombinedAA (TAA resolve + FXAA in one pass) on D3D12. Four frames
+ * through the real history ping-pong:
+ *   F0  first frame, flat (90,140,210): FXAA early-outs (no contrast), no
+ *       history -> the input comes back.
+ *   F1  checkerboard 0/255. FXAA's contrast test looks only at the centre and
+ *       the diagonals, which on a checkerboard are all the same colour, so
+ *       aa_color is the centre; the 3x3 box spans [0,1], so F0's flat
+ *       history survives clip_aabb and out = 0.9*hist + 0.1*curr.
+ *   F2  same input, prev_vp = translate(+0.5 NDC x): prev_uv = uv + 2 texels,
+ *       so columns 0..5 blend with F1's output two columns to the right and
+ *       columns 6..7 fall off the history (out = curr). A transposed
+ *       prev_vp read moves the shift into w and breaks both.
+ *   F3  first_frame forced again with a horizontal edge whose bright side is
+ *       a ramp 64..255 (starting at 64, not 0, so no pixel hits FXAA's
+ *       0/0 distA+distB on the wrapped border): out must match a double replay of the FXAA math (bilinear,
+ *       WRAP) and the standalone FXAA sidecar. A plain box is not enough
+ *       here: none of its blended pixels reaches the end-search branch, so
+ *       a broken posB tap passed; on the ramp edge it moves 15 pixels. */
+/* R642: double replay of the FXAA half of combined_taa_fxaa.frag on an 8x8
+ * grey image, bilinear with WRAP addressing (the D3D12 static sampler), so
+ * the half-texel end-search taps (posA / posB) are reproduced exactly. */
+static const u8 *r642_img;
+static double r642_tex(int x, int y) {
+    x = ((x % 8) + 8) % 8; y = ((y % 8) + 8) % 8;
+    return r642_img[(y * 8 + x) * 4] / 255.0;
+}
+static double r642_bilin(double u, double v) {
+    double fx = u * 8.0 - 0.5, fy = v * 8.0 - 0.5;
+    int x0 = (int)floor(fx), y0 = (int)floor(fy);
+    double ax = fx - x0, ay = fy - y0;
+    return (r642_tex(x0, y0) * (1 - ax) + r642_tex(x0 + 1, y0) * ax) * (1 - ay) +
+           (r642_tex(x0, y0 + 1) * (1 - ax) + r642_tex(x0 + 1, y0 + 1) * ax) * ay;
+}
+static double r642_fxaa(double u, double v) {
+    const double t = 1.0 / 8.0;
+    double M = r642_bilin(u, v), N = r642_bilin(u, v - t), S = r642_bilin(u, v + t);
+    double W = r642_bilin(u - t, v), E = r642_bilin(u + t, v);
+    double NW = r642_bilin(u - t, v - t), NE = r642_bilin(u + t, v - t);
+    double SW = r642_bilin(u - t, v + t), SE = r642_bilin(u + t, v + t);
+    double mn = fmin(M, fmin(fmin(NW, NE), fmin(SW, SE)));
+    double mx = fmax(M, fmax(fmax(NW, NE), fmax(SW, SE)));
+    double ev, eh, p1, p2, l1, l2, g1, g2, gs, avg, pos, ua, va, ub, vb, da, db, blend;
+    int horiz, is1;
+    /* Grey input: dot(c, LUMA) = c because LUMA sums to 1. */
+    if (mx - mn < fmax(0.0312, mx * 0.125)) return M;
+    ev = fabs(N + S - 2 * M) * 2 + fabs(NW + SW - 2 * N) + fabs(NE + SE - 2 * S);
+    eh = fabs(W + E - 2 * M) * 2 + fabs(NW + NE - 2 * W) + fabs(SW + SE - 2 * E);
+    horiz = eh >= ev;
+    p1 = t; p2 = t;
+    l1 = horiz ? N : W; l2 = horiz ? S : E;
+    g1 = fabs(l1 - M); g2 = fabs(l2 - M);
+    is1 = g1 >= g2;
+    gs = fmax(g1, g2) * 0.25;
+    avg = is1 ? (l1 + M) * 0.5 : (l2 + M) * 0.5;
+    pos = is1 ? -p1 : p1;
+    ua = ub = u; va = vb = v;
+    if (horiz) { va += pos; vb += pos; ua -= p2 * 0.5; ub += p2 * 0.5; }
+    else       { ua += pos; ub += pos; va -= p2 * 0.5; vb += p2 * 0.5; }
+    da = fabs(r642_bilin(ua, va) - avg);
+    db = fabs(r642_bilin(ub, vb) - avg);
+    if (da < gs && db < gs) blend = 0.5 - 0.5 * (pos / p1);
+    else blend = da < db ? -0.5 + 0.5 * (da / (da + db)) : 0.5 - 0.5 * (db / (da + db));
+    if (horiz) v += blend * p1; else u += blend * p1;
+    return r642_bilin(u, v);
+}
+
+static RHITexture r642_rgba8(const u8 *px) {
+    RHITextureDesc td;
+    memset(&td, 0, sizeof(td));
+    td.width = 8u; td.height = 8u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = px;
+    return rhi_texture_create(g_dev, &td);
+}
+
+TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa) {
+    CombinedAA caa;
+    FXAASystem fx;
+    RHITexture flat, checker, box, depth, fx_out;
+    RHICmdBuffer *cmd;
+    static u8 chk[8 * 8 * 4], bx[8 * 8 * 4];
+    static u16 f1[8 * 8 * 4], out[8 * 8 * 4], ref[8 * 8 * 4];
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const float shift[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0.5f,0,0,1 };
+    const double fl[3] = { 90 / 255.0, 140 / 255.0, 210 / 255.0 };
+    int frame, x, y, c, i, blended = 0;
+    for (y = 0; y < 8; ++y)
+        for (x = 0; x < 8; ++x) {
+            u8 v = ((x + y) & 1) ? 255u : 0u;
+            u8 b = y >= 4 ? (u8)floor(64.0 + 191.0 * x / 7.0 + 0.5) : 0u;
+            i = (y * 8 + x) * 4;
+            chk[i] = chk[i + 1] = chk[i + 2] = v; chk[i + 3] = 255u;
+            bx[i] = bx[i + 1] = bx[i + 2] = b; bx[i + 3] = 255u;
+        }
+    memset(&caa, 0, sizeof(caa));
+    ASSERT_TRUE(combined_aa_init(&caa, g_dev, 8u, 8u));
+    ASSERT_TRUE(caa.use_combined);
+    ASSERT_EQ(caa.loc_curr_vp, -1);
+    ASSERT_EQ(caa.loc_prev_vp, 0);
+    ASSERT_EQ(caa.loc_inv_proj, 64);
+    ASSERT_EQ(caa.loc_screen_w, 128);
+    ASSERT_EQ(caa.loc_taa_first_frame, 136);
+    ASSERT_EQ(caa.loc_use_velocity, 140);
+    ASSERT_EQ(caa.loc_taa_blend, -1);
+    ASSERT_EQ(caa.loc_fxaa_threshold, -1);
+    flat = r641_flat_rgba8(8u, 8u, 90, 140, 210);
+    checker = r642_rgba8(chk);
+    box = r642_rgba8(bx);
+    depth = r641_depth_split(8u, 8u, 0.5f, 0.5f);
+    ASSERT_TRUE(rhi_handle_valid(flat) && rhi_handle_valid(checker) &&
+                rhi_handle_valid(box) && rhi_handle_valid(depth));
+    for (frame = 0; frame < 4; ++frame) {
+        RHITexture in = frame == 0 ? flat : (frame == 3 ? box : checker);
+        if (frame == 3) caa.first_frame = true;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        combined_aa_apply(&caa, cmd, in, depth, RHI_HANDLE_NULL, identity,
+                          frame == 2 ? shift : identity, identity, 8u, 8u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(out, 0, sizeof(out));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, combined_aa_get_output(&caa),
+                                            out, sizeof(out)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        if (frame == 3) break;
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                double cur = ((x + y) & 1) ? 1.0 : 0.0;
+                for (c = 0; c < 3; ++c) {
+                    double want;
+                    float got = warp_half_to_float(out[(y * 8 + x) * 4 + c]);
+                    if (frame == 0) want = fl[c];
+                    else if (frame == 1) want = 0.9 * fl[c] + 0.1 * cur;
+                    else if (x >= 6) want = cur;
+                    else want = 0.9 * warp_half_to_float(f1[(y * 8 + x + 2) * 4 + c]) +
+                                0.1 * cur;
+                    if (fabs(got - want) > 0.003)
+                        printf("  combined aa frame %d px (%d,%d) ch %d = %f, want %f\n",
+                               frame, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.003);
+                }
+            }
+        }
+        if (frame == 1) memcpy(f1, out, sizeof(f1));
+    }
+
+    memset(&fx, 0, sizeof(fx));
+    ASSERT_TRUE(fxaa_init(&fx, g_dev, 8u, 8u));
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    fxaa_apply(&fx, cmd, box, 8u, 8u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    fx_out = fxaa_get_texture(&fx);
+    memset(ref, 0, sizeof(ref));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fx_out, ref, sizeof(ref)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    r642_img = bx;
+    for (i = 0; i < 8 * 8; ++i) {
+        float got = warp_half_to_float(out[i * 4]);
+        float want = warp_half_to_float(ref[i * 4]);
+        double model = r642_fxaa((i % 8 + 0.5) / 8.0, (i / 8 + 0.5) / 8.0);
+        if (fabsf(got - want) > 0.002f || fabs(got - model) > 0.006)
+            printf("  combined aa fxaa px %d = %f, fxaa sidecar %f, model %f\n",
+                   i, got, want, model);
+        ASSERT_TRUE(fabsf(got - want) <= 0.002f);
+        ASSERT_TRUE(fabs(got - model) <= 0.006);
+        if (fabsf(got - bx[i * 4] / 255.0f) > 0.02f) blended++;
+    }
+    if (blended < 8) printf("  combined aa fxaa blended only %d pixels\n", blended);
+    ASSERT_TRUE(blended >= 8);
+    fxaa_shutdown(&fx);
+    rhi_texture_destroy(g_dev, flat);
+    rhi_texture_destroy(g_dev, checker);
+    rhi_texture_destroy(g_dev, box);
+    rhi_texture_destroy(g_dev, depth);
+    combined_aa_shutdown(&caa);
+}
+
 int main(void) {
 #if defined(_WIN32)
     RHIResult r = RHI_RESULT_OK;
@@ -6847,6 +7252,9 @@ int main(void) {
     RUN_TEST(sss_sidecars_blur_only_where_depth_is_continuous);
     RUN_TEST(upscale_sidecar_copies_flat_input_and_clips_history);
     RUN_TEST(volumetric_sidecar_extincts_the_scene_by_the_marched_fog);
+    RUN_TEST(debug_viz_sidecar_renders_every_mode_from_the_shader_formulas);
+    RUN_TEST(combined_color_sidecar_matches_the_fused_tonemap_grade_vignette);
+    RUN_TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);

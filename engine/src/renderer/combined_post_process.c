@@ -9,20 +9,27 @@
  * Helper: read shader file
  * ======================================================================== */
 
-static RHIPipeline cpp_create_pipe(RHIDevice *dev,
+static RHIPipeline cpp_create_pipe(RHIDevice *dev, bool sidecar,
                                     const char *vert_path, const char *frag_path,
                                     bool combined_aa, bool combined_color) {
-    usize vs_len = 0, fs_len = 0;
-    char *vs_src = shader_read_file(vert_path, &vs_len);
-    char *fs_src = shader_read_file(frag_path, &fs_len);
-    if (!vs_src || !fs_src) {
+    RHIShader vs, fs;
+    if (sidecar) {
+        /* D3D12 never compiles source in-process: the GLSL path resolves to
+         * the precompiled <name>_hlsl sidecar instead. */
+        vs = rhi_shader_create_path(dev, vert_path, false);
+        fs = rhi_shader_create_path(dev, frag_path, true);
+    } else {
+        usize vs_len = 0, fs_len = 0;
+        char *vs_src = shader_read_file(vert_path, &vs_len);
+        char *fs_src = shader_read_file(frag_path, &fs_len);
+        if (!vs_src || !fs_src) {
+            free(vs_src); free(fs_src);
+            return RHI_HANDLE_NULL;
+        }
+        vs = rhi_shader_create(dev, vs_src, vs_len, false);
+        fs = rhi_shader_create(dev, fs_src, fs_len, true);
         free(vs_src); free(fs_src);
-        return RHI_HANDLE_NULL;
     }
-
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_src, fs_len, true);
-    free(vs_src); free(fs_src);
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
@@ -77,7 +84,7 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         !shader_variant_path("shaders/combined_taa_fxaa.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
         LOG_WARN("CombinedAA: capability query or shader variant path failed");
     } else {
-        caa->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, true, false);
+        caa->combined_pipe = cpp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path, true, false);
     }
 
     if (rhi_handle_valid(caa->combined_pipe)) {
@@ -266,7 +273,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
         !shader_variant_path("shaders/combined_color.frag", (RHIShaderVariant)caps.shader_variant, fs_path, sizeof(fs_path))) {
         LOG_WARN("CombinedColor: capability query or shader variant path failed");
     } else {
-        cc->combined_pipe = cpp_create_pipe(dev, vs_path, fs_path, false, true);
+        cc->combined_pipe = cpp_create_pipe(dev, caps.shader_sidecar_paths, vs_path, fs_path, false, true);
     }
 
     if (rhi_handle_valid(cc->combined_pipe)) {
