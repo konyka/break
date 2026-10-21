@@ -1,6 +1,36 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R647 — **D3D12 点光源阴影**；顺带修复三个后端共有的立方体面朝向错误
+
+- **D3D12 立方体深度 FBO**（原来 `rhi_cubemap_depth_fbo_*` 四个函数都是桩）：
+  - 一张 6 层的 D32 资源，按 R32_TYPELESS 分配，同一份数据有两种视图：每个面一个 D32_FLOAT 的 DSV（TEXTURE2DARRAY，FirstArraySlice=面号，ArraySize=1），以及 R32_FLOAT 的 TEXTURECUBE SRV。
+  - 纹理新增 `is_cube` 标志。`rhi_cmd_bind_texture` 遇到它时建 TEXTURECUBE 视图；`rhi_d3d12_live_cube` 也接受这类纹理（普通 2D 纹理仍然过不了这道门）。
+  - `bind_face` 遵守 R618 契约：转换到 DEPTH_WRITE，清成 1.0，使用离屏视口（内存第 0 行 = NDC y −1，和 GL/VK 写立方体面的行序一致）。`unbind` 复用 `rhi_cmd_unbind_shadow_map`。`destroy` 的 DSV 槽走 fence-retire 归还，纹理走 R645 的延迟释放。
+  - **立方体 fallback**：在 D3D12 上，已声明的寄存器每次 draw 都必须有描述符。新增 1×1 的深度立方体，清成 1.0，读出来等于"无遮挡"。没有活的立方体时，t10–t13 就绑它。IBL binder 和延迟 G-Buffer binder 都改用 `rhi_d3d12_bind_point_shadow_cubes`。这个 fallback 随设备销毁一起释放。
+- **点光源阴影深度 pass 接入 D3D12**：
+  - 新增 sidecar `point_shadow_depth_hlsl.{vert,frag}`。push 布局与 `_vk` 版一致（0/64/128/144），PS 写 `SV_Depth = 距离 / far`，VS 做 clip z 重映射。
+  - `point_shadow.c` 的加载器按 `caps.shader_sidecar_paths` 走 `rhi_shader_create_path`。
+  - `u_light_pos` / `u_far_plane` 改为每个面都设置（R82-3 原来只在 face 0 设）。D3D12 每次 draw 只把上次 draw 之后写过的字节作为根常量刷新出去，而 main.c 在两个面之间可能执行 compute compaction 并重新绑定管线，所以不能依赖根参数在重绑后保留。
+- **延迟光照 sidecar 采样点光源阴影**：`deferred_light_hlsl.frag` 新增 4 个 `TextureCube`（t10–t13）和 `SamplerState s10`。`point_shadow_test` 与 GLSL 逐行对应（距离/far 与 `cube.Sample(dir).r + bias` 比较，被遮挡时乘 0.15）。根签名共 14 张表，剩 50 个 DWORD（200B），192B 的 push 块放得下；以后如果再加 IBL 的 3 个寄存器，就会超出预算。
+- **三个后端共有的问题：立方体面朝向错误**（`point_shadow_compute_face_vp`）。
+  - 旧注释说"渲染和采样用同一个 VP，所以自洽"，这个说法不成立。`texture(cube, dir)` 选纹素靠的是固定的立方体寻址规则：按主轴选面，再由 sc/tc 算出 s,t。它不经过这个 VP。
+  - 用 Python 把旧的面基对照寻址规则逐方向核算：±X 两个面整体旋转了 180°，±Y/±Z 四个面上下镜像。结果是接收面读到的是别的方向的深度，阴影只在每个面的中心附近位置正确。
+  - 修正后，面基改为标准立方体面表：侧面 up=−Y，+Y 面 up=+Z，−Y 面 up=−Z，满足 s×u=−f，与 camera_view 的手性相同，剔除方向不变。
+- **测试**：
+  - 新增 headless 的 `test_point_shadow_faces`，共 2 个用例：① 12 个非对称方向的 NDC 坐标必须等于寻址规则给出的 2s−1、2t−1；② 每个面都保持相机的绕序。
+  - WARP 新增 `point_shadow_cube_faces_read_back_by_direction`：用真实的 `PointShadowSystem` 渲染 6 个面，每个面只在 s<0.5、t<0.5 的象限放一块遮挡物。之后用新的测试专用着色器 `cube_probe_hlsl.frag` 通过 TextureCube **按方向**读回，逐纹素与 `2|d|/far` 比较。
+  - WARP 新增 `deferred_lighting_samples_the_point_shadow_cube`：G-Buffer 平面上方放一块 x<0.5 的遮挡板，共跑四帧——A 无点光、B 空立方体、C 有遮挡物、D 不传立方体（走 fallback）。要求遮挡列的点光份额正好 ×0.15，其余列 C==B，且 D==B。
+- **反向验证**：
+  - ① `point_shadow_test` 改回恒返回 1：只有 [64] 失败。
+  - ② 面基改回旧表：`test_point_shadow_faces` 的 2 个用例都失败；WARP 的 [63]、[64] 都失败（`face 0 texel (0,0) = 255, expected 81`）。
+  - 两处都恢复后全部转绿。
+- **验证结果**：WARP **65/65**，debug layer 0 error / 0 warning / alias 1。RTX 64/65，失败的只有预期中的 [1]。ctest：D3D12 185/186、VK 181/182、GL 178/179（各新增 1 个用例；唯一失败仍是 ToDesk 占用剪贴板导致的 `test_platform_win32_runtime`）。demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：延迟路径 D3D12-GL 1.37、VK-GL 0.31；前向路径 D3D12-GL 1.87、VK-GL 3.59。三个后端都初始化了 `PointShadow`，D3D12 日志里没有 debug layer 错误。
+- **遗留问题**：
+  - RTX 上 GPU-based validation **偶发** `[1358] Incompatible texture barrier layout ... LEGACY_COPY_DEST`，出现在 [22]/[51]/[53] 这类与本轮无关的用例中。**改动前的基线代码**连跑 5 次也有 2 次出现（3 / 11 条），所以不是本轮引入的。这就是之前记录的"`test_d3d12_warp_runtime` 偶发失败"的来源，下一轮排查。
+  - IBL 立方体（t7–t9）仍未接入：`rhi_cubemap_create` 是桩，根签名预算也不够。
+  - 前向 blinn 着色器不采样点光源阴影，所以前向路径下的点光源阴影 pass 仍然是白算（三个后端都一样）。
+
 ## 本轮更新：R646 — **Vulkan 画面整体偏亮：sRGB 交换链导致伽马叠加两次**
 
 - **现象**（R644 遗留）：同一相机同一帧，VK 截图比 GL / D3D12 明显发白——前向 MAE 57、延迟 MAE 33。关掉 bloom、TAA/MB、自动曝光差异都不变；inspector 模式 1（tonemap 前的 HDR 场景）GL/VK 基本一致（MAE 0.8），差异只出现在最终输出。
