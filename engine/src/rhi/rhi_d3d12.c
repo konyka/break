@@ -1283,6 +1283,7 @@ void rhi_device_destroy(RHIDevice *dev) {
             rhi_texture_destroy(dev, ctx->white_fallback);
             ctx->white_fallback = RHI_HANDLE_NULL;
         }
+        rhi_cubemap_depth_fbo_destroy(dev, &ctx->cube_fallback);
         if (ctx->swapchain_ready) {
             rhi_d3d12_swapchain_destroy(ctx, &ctx->swapchain);
             ctx->swapchain_ready = 0u;
@@ -4547,7 +4548,15 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
      * view a 2D shader wants is a descriptor/shader dimension mismatch, not a
      * soft fallback. ArraySize is the whole array because the shader selects
      * the layer per draw (SV_InstanceID), not per descriptor. */
-    if (td->array_size > 1u) {
+    if (td->is_cube) {
+        /* R647: a point-shadow depth cube. The shader declares TextureCube
+         * and selects the face by direction, so the view spans all six
+         * slices as one cube. */
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURECUBE;
+        srv.TextureCube.MostDetailedMip = 0u;
+        srv.TextureCube.MipLevels = td->mip_levels;
+        srv.TextureCube.ResourceMinLODClamp = 0.0f;
+    } else if (td->array_size > 1u) {
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2DARRAY;
         srv.Texture2DArray.MostDetailedMip = 0u;
         srv.Texture2DArray.MipLevels = td->mip_levels;
@@ -5434,9 +5443,66 @@ static RHITexture rhi_d3d12_material_slot(RHI_D3D12Context *ctx,
  * (D3D12_SRV_DIMENSION_TEXTURECUBE + Cube2DArraySize) are part of the cube
  * work, not this binder. */
 static int rhi_d3d12_live_cube(RHIHandle handle) {
-    return g_current_device != NULL &&
-           rhi_get_resource_typed(g_current_device, handle,
-                                  RHI_RES_CUBEMAP) != NULL;
+    const RHI_D3D12Texture *td;
+    if (g_current_device == NULL) return 0;
+    if (rhi_get_resource_typed(g_current_device, handle, RHI_RES_CUBEMAP) != NULL)
+        return 1;
+    /* R647: a point-shadow depth cube is an RHI_RES_TEXTURE flagged is_cube
+     * (rhi_cubemap_depth_fbo_create), which rhi_cmd_bind_texture views as a
+     * TEXTURECUBE. A plain 2D texture still fails this gate. */
+    td = (const RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+                                                          handle, RHI_RES_TEXTURE);
+    return td != NULL && td->is_cube;
+}
+/* R647: the cube twin of the white fallback, for the point-shadow cube
+ * registers (t10-t13). A sidecar that declares them gets a descriptor on
+ * every draw, and a depth of 1.0 is "nothing nearer than the far plane",
+ * i.e. unshadowed — the same answer the old stubbed point_shadow_test gave.
+ * The resource is cleared once, on the command list that first binds it,
+ * before any read of it on that list. */
+static RHITexture rhi_d3d12_cube_fallback(RHI_D3D12Context *ctx) {
+    RHI_D3D12CubeDepthFBO *cd;
+    RHI_D3D12Texture *td;
+    ID3D12GraphicsCommandList *list;
+    UINT f;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->cube_fallback.depth_tex))
+        return ctx->cube_fallback.depth_tex;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return RHI_HANDLE_NULL;
+    ctx->cube_fallback = rhi_cubemap_depth_fbo_create(g_current_device, 1u);
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(g_current_device,
+        ctx->cube_fallback.fb, RHI_RES_CUBEMAP_DEPTH_FBO);
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+        ctx->cube_fallback.depth_tex, RHI_RES_TEXTURE);
+    if (cd == NULL || td == NULL) {
+        rhi_cubemap_depth_fbo_destroy(g_current_device, &ctx->cube_fallback);
+        return RHI_HANDLE_NULL;
+    }
+    if (td->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, td->resource, td->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        td->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    for (f = 0u; f < 6u; ++f)
+        ID3D12GraphicsCommandList_ClearDepthStencilView(list,
+            rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[f]),
+            D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
+    return ctx->cube_fallback.depth_tex;
+}
+/* Point-shadow cube unit 10 + i: the caller's cube when it is live, else the
+ * cleared fallback. */
+static void rhi_d3d12_bind_point_shadow_cubes(RHICmdBuffer *cmd,
+    RHI_D3D12Context *ctx, const RHITexture *cubes, u32 count,
+    RHISampler sampler) {
+    u32 i;
+    if (cubes == NULL) count = 0u;
+    if (count > 4u) count = 4u;
+    for (i = 0u; i < 4u; ++i) {
+        RHITexture t = (i < count && rhi_d3d12_live_cube(cubes[i]))
+                           ? cubes[i] : rhi_d3d12_cube_fallback(ctx);
+        if (rhi_handle_valid(t)) rhi_cmd_bind_texture(cmd, t, sampler, 10u + i);
+    }
 }
 /* The binders only mean anything inside a started frame with a bound
  * pipeline, and creating the fallback uploads on the queue, so both guard
@@ -5483,8 +5549,6 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     RHICubemap prefilter_map, const RHITexture *point_shadow_cubes,
     u32 point_shadow_count) {
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
-    u32 count;
-    u32 i;
     if (!rhi_d3d12_material_bindable(ctx)) return;
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, albedo), sampler, 0u);
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, shadow), sampler, 1u);
@@ -5493,15 +5557,11 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, emissive), sampler, 4u);
     /* R583: occlusion at 15. */
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, occlusion), sampler, 15u);
-    count = (point_shadow_cubes != NULL && point_shadow_count > 0u)
-                ? point_shadow_count : 0u;
-    if (count > 4u) count = 4u;
-    /* Cube slots: skipped unless the handle is a live cube. No 2D fallback
-     * here even for an invalid handle — a 2D descriptor on a samplerCube
-     * register is a type mismatch (see rhi_d3d12_live_cube). */
-    for (i = 0u; i < count; ++i)
-        if (rhi_d3d12_live_cube(point_shadow_cubes[i]))
-            rhi_cmd_bind_texture(cmd, point_shadow_cubes[i], sampler, 10u + i);
+    /* Cube slots: a live cube, else the cube fallback — never a 2D
+     * texture, which on a samplerCube register is a type mismatch (see
+     * rhi_d3d12_live_cube). */
+    rhi_d3d12_bind_point_shadow_cubes(cmd, ctx, point_shadow_cubes,
+                                      point_shadow_count, sampler);
     /* R213-B: ssao at 14 — units 10-13 are u_point_shadow_cubes[4]. */
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
@@ -5523,14 +5583,15 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
      * bound pipeline does not declare are skipped by rhi_cmd_bind_texture.
      * Shadow and SSAO fall back to white (lit, unoccluded) like the material
      * binder, because the sidecar always declares them and a D3D12 table has
-     * no unbound state. The IBL (7-9) and point-shadow cube (10-13) slots
-     * are not bound: the sidecar does not declare them yet, and D3D12 has no
-     * live cubes (rhi_cubemap_create / rhi_cubemap_depth_fbo_create are
-     * stubs). */
+     * no unbound state. R647: the point-shadow cubes go to 10-13 (a live
+     * cube, else the 1.0 cube fallback). The IBL slots (7-9) are still not
+     * bound: the sidecar does not declare them and rhi_cubemap_create is a
+     * stub. */
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
     (void)brdf_lut; (void)irradiance_map; (void)prefilter_map;
-    (void)point_shadow_cubes; (void)point_shadow_count; (void)cube_sampler;
     if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_d3d12_bind_point_shadow_cubes(cmd, ctx, point_shadow_cubes,
+                                      point_shadow_count, cube_sampler);
     rhi_cmd_bind_texture(cmd, albedo_metallic, sampler, 0u);
     rhi_cmd_bind_texture(cmd, normal, sampler, 1u);
     rhi_cmd_bind_texture(cmd, roughness_ao, sampler, 2u);
@@ -6021,22 +6082,136 @@ void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
 }
+/* R647: point-light depth cube. One six-slice D32 resource allocated
+ * typeless (R32_TYPELESS) so it has two views over the same bytes: a
+ * D32_FLOAT DSV per face for the depth pass, and the R32_FLOAT TEXTURECUBE
+ * SRV the lighting pass samples (is_cube, see rhi_cmd_bind_texture). Slice
+ * N is face N in D3D12 TextureCube order +X,-X,+Y,-Y,+Z,-Z — the same order
+ * rhi.h documents for the face index. */
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
     RHICubemapDepthFBO out;
-    (void)dev; (void)size;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *depth;
+    RHI_D3D12CubeDepthFBO *cd;
+    RHITextureDesc tdesc;
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsv_desc;
+    u32 idx;
+    u32 f;
     memset(&out, 0, sizeof(out));
+    if (dev == NULL || !rhi_drawable_dimensions_valid(size, size)) return out;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return out;
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = size;
+    tdesc.height = size;
+    tdesc.format = RHI_FORMAT_D32_FLOAT;
+    tdesc.mip_levels = 1u;
+    out.depth_tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 1, 6u);
+    if (!rhi_handle_valid(out.depth_tex)) return out;
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, out.depth_tex,
+                                                       RHI_RES_TEXTURE);
+    cd = (RHI_D3D12CubeDepthFBO *)calloc(1u, sizeof(*cd));
+    if (depth == NULL || cd == NULL) {
+        free(cd);
+        rhi_texture_destroy(dev, out.depth_tex);
+        memset(&out, 0, sizeof(out));
+        return out;
+    }
+    depth->is_cube = 1u;
+    for (f = 0u; f < 6u; ++f) cd->dsv_slots[f] = UINT_MAX;
+    for (f = 0u; f < 6u; ++f) {
+        cd->dsv_slots[f] = rhi_d3d12_descriptor_take(ctx, &ctx->dsv_alloc);
+        if (cd->dsv_slots[f] == UINT_MAX) {
+            u32 k;
+            for (k = 0u; k < f; ++k)
+                rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc,
+                    cd->dsv_slots[k], rhi_d3d12_retire_fence(ctx));
+            free(cd);
+            rhi_texture_destroy(dev, out.depth_tex);
+            memset(&out, 0, sizeof(out));
+            return out;
+        }
+        ZeroMemory(&dsv_desc, sizeof(dsv_desc));
+        dsv_desc.Format = DXGI_FORMAT_D32_FLOAT;
+        dsv_desc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2DARRAY;
+        dsv_desc.Flags = D3D12_DSV_FLAG_NONE;
+        dsv_desc.Texture2DArray.MipSlice = 0u;
+        dsv_desc.Texture2DArray.FirstArraySlice = f;
+        dsv_desc.Texture2DArray.ArraySize = 1u;
+        ID3D12Device_CreateDepthStencilView(ctx->device, depth->resource,
+            &dsv_desc, rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[f]));
+    }
+    cd->size = size;
+    idx = rhi_alloc_slot(dev);
+    dev->slots[idx].ptr = cd;
+    dev->slots[idx].type = RHI_RES_CUBEMAP_DEPTH_FBO;
+    out.fb = rhi_make_handle(idx, dev->slots[idx].generation);
+    out.size = size;
     return out;
 }
 void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
-    (void)dev; (void)fbo;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12CubeDepthFBO *cd;
+    u32 f;
+    if (dev == NULL || fbo == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (rhi_handle_valid(fbo->depth_tex)) rhi_texture_destroy(dev, fbo->depth_tex);
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(dev, fbo->fb,
+                                                         RHI_RES_CUBEMAP_DEPTH_FBO);
+    if (cd != NULL) {
+        /* Same rule as the shadow atlas: a recorded list may still hold the
+         * DSVs, so the slots go back through the fence-retire path. */
+        if (ctx != NULL)
+            for (f = 0u; f < 6u; ++f)
+                if (cd->dsv_slots[f] != UINT_MAX)
+                    rhi_d3d12_descriptor_give_back(&ctx->dsv_alloc,
+                        cd->dsv_slots[f], rhi_d3d12_retire_fence(ctx));
+        free(cd);
+        rhi_free_slot(dev, fbo->fb);
+    }
+    fbo->fb = RHI_HANDLE_NULL;
+    fbo->depth_tex = RHI_HANDLE_NULL;
+    fbo->size = 0u;
 }
+/* rhi.h R618 contract: binding a face clears it to 1.0. The viewport is the
+ * offscreen one (memory row 0 = NDC y -1), the same row order GL and Vulkan
+ * give a cube face: cube addressing puts face-space t = 0 on row 0, and
+ * point_shadow_compute_face_vp builds each face for exactly that order. */
 void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd,
                                      RHICubemapDepthFBO *fbo, u32 face) {
-    (void)cmd; (void)fbo; (void)face;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12CubeDepthFBO *cd;
+    RHI_D3D12Texture *depth;
+    D3D12_CPU_DESCRIPTOR_HANDLE dsv;
+    if (ctx == NULL || g_current_device == NULL || fbo == NULL || face >= 6u)
+        return;
+    cd = (RHI_D3D12CubeDepthFBO *)rhi_get_resource_typed(g_current_device,
+        fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
+    depth = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device,
+        fbo->depth_tex, RHI_RES_TEXTURE);
+    if (cd == NULL || depth == NULL || depth->resource == NULL ||
+        cd->dsv_slots[face] == UINT_MAX) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    rhi_d3d12_warn_rt_srv_alias(ctx, depth, "DEPTH_WRITE");
+    if (depth->state != D3D12_RESOURCE_STATE_DEPTH_WRITE) {
+        rhi_d3d12_transition(list, depth->resource, depth->state,
+                             D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        depth->state = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    }
+    dsv = rhi_d3d12_descriptor_cpu(&ctx->dsv_alloc, cd->dsv_slots[face]);
+    ID3D12GraphicsCommandList_OMSetRenderTargets(list, 0u, NULL, TRUE, &dsv);
+    ctx->bound_rtv_count = 0u;
+    ctx->bound_dsv = dsv;
+    ctx->bound_dsv_valid = 1u;
+    rhi_d3d12_set_full_target_viewport(list, cd->size, cd->size);
+    ID3D12GraphicsCommandList_ClearDepthStencilView(list, dsv,
+        D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w,
                                   u32 screen_h) {
-    (void)cmd; (void)screen_w; (void)screen_h;
+    rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
 }
 
 /* ---- compute ---- */

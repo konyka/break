@@ -7,17 +7,22 @@
 // binds on D3D12 (same as rhi_gl.c):
 //   t0 albedo+metallic  t1 normal  t2 roughness/AO  t3 depth  t4 shadow atlas
 //   t5 light data (texel buffer)   t6 light grid (texel buffer)
+//   t10..t13 point-shadow depth cubes (R647)
 //   t14 SSAO            t15 emissive
 //
-// NOT in this twin (D3D12 follow-up work, both are stubs on this backend):
-//   - HAS_IBL (t7 BRDF LUT, t8/t9 irradiance/prefilter cubes): the GL loader
-//     injects HAS_IBL; here diffuse_ibl / specular_ibl are 0, exactly the
-//     GLSL #else branch.
-//   - point-shadow cubes (t10..t13): point_shadow_test returns 1 (unshadowed)
-//     instead of sampling a cube. The early return for dist > radius is kept,
-//     but the caller already skips those lights, so it never changes a pixel.
-// Both also keep the root signature inside its budget: 10 descriptor tables
-// leave 54 DWORDs of root constants for the 192-byte push block below.
+// NOT in this twin: HAS_IBL (t7 BRDF LUT, t8/t9 irradiance/prefilter cubes;
+// rhi_cubemap_create is a stub on D3D12). The GL loader injects HAS_IBL;
+// here diffuse_ibl / specular_ibl are 0, exactly the GLSL #else branch.
+//
+// Root-signature budget: 14 descriptor tables leave 50 DWORDs (200 bytes)
+// of root constants for the 192-byte push block below. Adding the IBL
+// registers later would need 3 more tables and no longer fit.
+//
+// The point-shadow cubes are the one place that uses Sample(), as GL does
+// (LINEAR sampler, deferred.c): cube addressing is seamless on D3D12, so
+// the static sampler's WRAP mode does not apply to them. The binder fills
+// every cube register — a live cube, else a 1x1 cube cleared to 1.0 that
+// reads as unshadowed.
 //
 // Push block: u_inv_vp / u_view / camera / screen / clip / counts / far
 // planes in the GLSL declaration order, with the vec3 padded to 16 bytes.
@@ -71,6 +76,11 @@ Texture2D g_depth           : register(t3, space0);
 Texture2D g_shadow_map      : register(t4, space0);
 StructuredBuffer<float4> g_light_data : register(t5, space0);
 StructuredBuffer<float4> g_light_grid : register(t6, space0);
+TextureCube g_point_shadow0 : register(t10, space0);
+TextureCube g_point_shadow1 : register(t11, space0);
+TextureCube g_point_shadow2 : register(t12, space0);
+TextureCube g_point_shadow3 : register(t13, space0);
+SamplerState g_cube_smp     : register(s10, space0);
 Texture2D g_ssao            : register(t14, space0);
 Texture2D g_emissive        : register(t15, space0);
 
@@ -257,9 +267,17 @@ float shadow_test(float3 world_pos) {
 
 float point_shadow_test(float3 wpos, int shadow_idx, float3 light_pos, float light_radius) {
     if (shadow_idx < 0 || shadow_idx > 3) return 1.0f;
-    float dist = length(wpos - light_pos);
+    float3 frag_to_light = wpos - light_pos;
+    float dist = length(frag_to_light);
     if (dist > light_radius) return 0.0f;
-    return 1.0f;   // no point-shadow cubes on D3D12 yet (see header)
+    float far_plane = g_push.u_point_shadow_far_planes[shadow_idx];
+    float compare = dist / max(far_plane, 1e-4f);
+    float depth;
+    if (shadow_idx == 0)      depth = g_point_shadow0.Sample(g_cube_smp, frag_to_light).r;
+    else if (shadow_idx == 1) depth = g_point_shadow1.Sample(g_cube_smp, frag_to_light).r;
+    else if (shadow_idx == 2) depth = g_point_shadow2.Sample(g_cube_smp, frag_to_light).r;
+    else                      depth = g_point_shadow3.Sample(g_cube_smp, frag_to_light).r;
+    return compare <= depth + g_push.u_shadow_bias ? 1.0f : 0.15f;
 }
 
 float4 main(float4 frag_pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {

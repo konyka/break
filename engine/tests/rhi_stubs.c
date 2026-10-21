@@ -90,6 +90,11 @@ RHIShader  rhi_shader_create_path(RHIDevice *d, const char *path, bool is_frag) 
 RHIShader  rhi_shader_create_compute_path(RHIDevice *d, const char *path) { (void)d; (void)path; return stub_shader; }
 void       rhi_shader_destroy(RHIDevice *d, RHIShader s)                { (void)d; (void)s; }
 
+RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *d, u32 size) { RHICubemapDepthFBO o; (void)d; memset(&o, 0, sizeof(o)); o.size = size; return o; }
+void rhi_cubemap_depth_fbo_destroy(RHIDevice *d, RHICubemapDepthFBO *f) { (void)d; (void)f; }
+void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *c, RHICubemapDepthFBO *f, u32 face) { (void)c; (void)f; (void)face; }
+void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *c, u32 w, u32 h) { (void)c; (void)w; (void)h; }
+
 static RHIOffscreenFBO stub_offscreen_fbo = {{0,0}, {0,0}, {0,0}, 0, 0, 1};
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *d, u32 w, u32 h)    { (void)d; (void)w; (void)h; return stub_offscreen_fbo; }

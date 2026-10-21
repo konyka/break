@@ -14,6 +14,8 @@
 #include <renderer/fxaa.h>
 #include <renderer/deferred.h>
 #include <renderer/lighting.h>
+#include <renderer/point_shadow.h>
+#include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
 #include "test_framework.h"
@@ -8471,6 +8473,297 @@ TEST(destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done) {
     rhi_shader_destroy(g_dev, bvs); rhi_shader_destroy(g_dev, bfs);
 }
 
+/* R647: the point-shadow cube, end to end on the real PointShadowSystem.
+ * Every face gets an occluder that covers only its face-space quadrant
+ * s < 0.5, t < 0.5, at plane distance 2 from the light. cube_probe_hlsl
+ * then reads each face back BY DIRECTION through a TextureCube view, the
+ * way the lighting pass does. A face rendered rotated or mirrored puts the
+ * occluder in another quadrant; a missing SRV/DSV path reads 1.0 or junk;
+ * the shader writing rasterised depth instead of distance / far gets the
+ * value wrong. Expected texel = 2 |d| / far for the probe direction d. */
+static void r647_dir(int f, float a, float b, float d[3]) {
+    switch (f) {
+    case 0:  d[0] =  1.0f; d[1] = -b;    d[2] = -a;    break;
+    case 1:  d[0] = -1.0f; d[1] = -b;    d[2] =  a;    break;
+    case 2:  d[0] =  a;    d[1] =  1.0f; d[2] =  b;    break;
+    case 3:  d[0] =  a;    d[1] = -1.0f; d[2] = -b;    break;
+    case 4:  d[0] =  a;    d[1] = -b;    d[2] =  1.0f; break;
+    default: d[0] = -a;    d[1] = -b;    d[2] = -1.0f; break;
+    }
+}
+TEST(point_shadow_cube_faces_read_back_by_direction) {
+    static const float corner[6][2] = {
+        {-1,-1}, {0,-1}, {0,0},  {-1,-1}, {0,0}, {-1,0}
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static PointShadowSystem ps;
+    static float verts[6 * 12 * 8];
+    const float light[3] = { 0.5f, -0.25f, 1.0f };
+    const float far_plane = 10.0f;
+    Vec3 lp;
+    f32 radius = far_plane;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO fbo;
+    RHIShader vs, fs;
+    RHIPipelineDesc pd;
+    RHIPipeline probe;
+    RHIBufferDesc bd;
+    RHIBuffer vbo;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    i32 loc_face;
+    int f, k, x, y, dark = 0;
+    r643_mark();
+    for (f = 0; f < 6; ++f) {
+        for (k = 0; k < 12; ++k) {
+            /* Both windings, so back-face culling cannot hide the quad. */
+            int c = k < 6 ? k : 5 - (k - 6);
+            float d[3];
+            float *v = &verts[((size_t)f * 12u + (size_t)k) * 8u];
+            r647_dir(f, corner[c][0], corner[c][1], d);
+            v[0] = light[0] + 2.0f * d[0];
+            v[1] = light[1] + 2.0f * d[1];
+            v[2] = light[2] + 2.0f * d[2];
+        }
+    }
+    memset(&ps, 0, sizeof(ps));
+    point_shadow_init(&ps, g_dev, 8u);
+    ASSERT_TRUE(ps.ready);
+    ASSERT_EQ(ps.loc_model, 0);
+    ASSERT_EQ(ps.loc_mvp, 64);
+    ASSERT_EQ(ps.loc_light_pos, 128);
+    ASSERT_EQ(ps.loc_far_plane, 144);
+    lp.e[0] = light[0]; lp.e[1] = light[1]; lp.e[2] = light[2];
+    point_shadow_update(&ps, &lp, &radius, 1u, lp);
+    ASSERT_EQ(ps.active_count, 1u);
+
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    vs = rhi_shader_create(g_dev, "shadow_sample_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "cube_probe_hlsl.frag", 0, true);
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.no_vertex_input = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pd.depth_write_disable = true;
+    probe = rhi_pipeline_create(g_dev, &pd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb) && rhi_handle_valid(probe) &&
+                rhi_handle_valid(vbo));
+    loc_face = rhi_pipeline_get_uniform_location(g_dev, probe, "u_face");
+    ASSERT_EQ(loc_face, 64);
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    for (f = 0; f < 6; ++f) {
+        point_shadow_render_begin(&ps, cmd, 0u, (u32)f);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, (usize)f * 12u * 8u * sizeof(float));
+        rhi_cmd_draw(cmd, 12u, 1u);
+    }
+    point_shadow_render_end(&ps, cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (f = 0; f < 6; ++f) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, probe);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_vec4(cmd, loc_face, (float)f, 0.0f, 0.0f, 0.0f);
+        rhi_cmd_bind_texture(cmd, ps.cubemap_fbos[0].depth_tex, ps.sampler, 10u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 8; ++y) {
+            for (x = 0; x < 8; ++x) {
+                const unsigned char got = px[(y * 8 + x) * 4];
+                int want = 255;
+                if (x < 4 && y < 4) {
+                    float d[3];
+                    r647_dir(f, (x + 0.5f) / 4.0f - 1.0f,
+                             (y + 0.5f) / 4.0f - 1.0f, d);
+                    want = (int)(2.0f * sqrtf(d[0] * d[0] + d[1] * d[1] +
+                                              d[2] * d[2]) / far_plane *
+                                 255.0f + 0.5f);
+                    ++dark;
+                }
+                if (abs((int)got - want) > 2)
+                    printf("FAIL: face %d texel (%d,%d) = %u, expected %d\n",
+                           f, x, y, (unsigned)got, want);
+                ASSERT_TRUE(abs((int)got - want) <= 2);
+            }
+        }
+    }
+    ASSERT_EQ(dark, 6 * 16);
+    ASSERT_TRUE(r643_clean("point_shadow_cube"));
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_pipeline_destroy(g_dev, probe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    point_shadow_destroy(&ps, g_dev);
+}
+
+/* R647: the deferred lighting pass samples the point-shadow cube. Same
+ * G-Buffer plane as the BRDF test (world == NDC, z = -0.5) and its point
+ * light at (0.5, 0.5, 0) with radius 1.5. An occluder plane at z = -0.25,
+ * x < 0.5, is drawn into the light's cube; the ray from the light to a
+ * surface point crosses z = -0.25 halfway, at x = 0.5 + (w.x - 0.5) / 2, so
+ * exactly the columns with w.x < 0.5 (x <= 5) are shadowed.
+ *
+ * Four frames: A no point light, B an empty cube, C the occluder, D no cube
+ * at all (psc_count 0, so t10 gets the 1.0 fallback). In linear space (the
+ * pass ends with c / (c + 1)) the point light's share is B - A; the shadow
+ * multiplies it by 0.15 (C - A), the lit columns keep it (C == B), and the
+ * fallback must read as unshadowed (D == B). */
+static double r647_lin(u16 h) {
+    double t = warp_half_to_float(h);
+    return t / (1.0 - t);
+}
+TEST(deferred_lighting_samples_the_point_shadow_cube) {
+    static const float verts[3 * 8] = {
+        -1.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         3.0f, -1.0f, -0.5f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.0f,  3.0f, -0.5f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const float occ[12 * 8] = {
+        -3.0f, -3.0f, -0.25f,0,0,0,0,0,  0.5f, -3.0f, -0.25f,0,0,0,0,0,
+         0.5f,  3.0f, -0.25f,0,0,0,0,0, -3.0f, -3.0f, -0.25f,0,0,0,0,0,
+         0.5f,  3.0f, -0.25f,0,0,0,0,0, -3.0f,  3.0f, -0.25f,0,0,0,0,0,
+        -3.0f,  3.0f, -0.25f,0,0,0,0,0,  0.5f,  3.0f, -0.25f,0,0,0,0,0,
+        -3.0f, -3.0f, -0.25f,0,0,0,0,0,  0.5f,  3.0f, -0.25f,0,0,0,0,0,
+         0.5f, -3.0f, -0.25f,0,0,0,0,0, -3.0f, -3.0f, -0.25f,0,0,0,0,0
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    static PointShadowSystem ps;
+    static u16 px[4][8 * 8 * 4];
+    DeferredSystem ds;
+    RHIOffscreenFBODesc fd;
+    RHIOffscreenFBO out;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ovbo;
+    RHITexture t[5];
+    RHICmdBuffer *cmd;
+    Mat4 view_m, proj_m;
+    Vec3 lp = {{0.5f, 0.5f, 0.0f}};
+    f32 radius = 1.5f;
+    float cam[19];
+    int frame, x, y, c, i, shadowed = 0, lit = 0;
+    r643_mark();
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    memset(&ps, 0, sizeof(ps));
+    point_shadow_init(&ps, g_dev, 64u);
+    ASSERT_TRUE(ps.ready);
+    point_shadow_update(&ps, &lp, &radius, 1u, lp);
+    ASSERT_EQ(ps.active_count, 1u);
+    t[0] = r644_tex(200, 100, 50, 255);
+    t[1] = r644_tex(0, 204, 153, 255);
+    t[2] = r644_tex(128, 128, 255, 255);
+    t[3] = r644_tex(51, 102, 153, 255);
+    t[4] = r644_tex(102, 0, 0, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX;
+    bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    bd.size = sizeof(occ); bd.initial_data = occ;
+    ovbo = rhi_buffer_create(g_dev, &bd);
+    memset(&fd, 0, sizeof(fd));
+    fd.width = 8u; fd.height = 8u; fd.sample_count = 1u;
+    fd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    out = rhi_offscreen_fbo_create_desc(g_dev, &fd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(ovbo) &&
+                rhi_handle_valid(out.fb));
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    memcpy(view_m.e, identity, sizeof(identity));
+    memcpy(proj_m.e, identity, sizeof(identity));
+    memcpy(cam, identity, sizeof(identity));
+    cam[16] = 0.0f; cam[17] = 0.0f; cam[18] = 3.0f;
+    for (frame = 0; frame < 4; ++frame) {
+        light_system_clear(&ls);
+        light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, 0.9f, 0.8f, 0.7f);
+        if (frame != 0)
+            light_system_add_point(&ls, 0.5f, 0.5f, 0.0f, 1.5f, 3.0f, 2.0f, 1.0f);
+        light_system_set_point_shadow_indices(&ls, &ps);
+        light_system_set_depth_range(&ls, 0.1f, 100.0f);
+        light_system_cull(&ls, &view_m, &proj_m, 8u, 8u);
+        light_system_upload(&ls);
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        for (i = 0; i < 6; ++i) {
+            point_shadow_render_begin(&ps, cmd, 0u, (u32)i);
+            if (frame == 2) {
+                rhi_cmd_bind_vertex_buffer(cmd, ovbo, 0u);
+                rhi_cmd_draw(cmd, 12u, 1u);
+            }
+        }
+        point_shadow_render_end(&ps, cmd, 64u, 64u);
+        r644_gbuffer_frame(&ds, cmd, vbo, identity, t);
+        rhi_offscreen_fbo_bind(cmd, &out);
+        deferred_lighting_pass(&ds, g_dev, cmd, light_system_data_slot(&ls),
+                               light_system_grid_slot(&ls), ls.point_count, ls.dir_count,
+                               RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL,
+                               RHI_HANDLE_NULL,
+                               frame == 3 ? 0u : 1u,
+                               frame == 3 ? NULL : &ps.cubemap_fbos[0].depth_tex,
+                               ps.far_planes, 0.1f, 100.0f, 0.002f, identity, cam,
+                               RHI_HANDLE_NULL);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, out.color_tex, px[frame],
+                                            sizeof(px[frame])));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int idx = (y * 8 + x) * 4;
+            double share = r647_lin(px[1][idx]) - r647_lin(px[0][idx]);
+            for (c = 0; c < 3; ++c) {
+                double a = r647_lin(px[0][idx + c]);
+                double b = r647_lin(px[1][idx + c]);
+                double cc = r647_lin(px[2][idx + c]);
+                double d = r647_lin(px[3][idx + c]);
+                double want = x <= 5 ? a + 0.15 * (b - a) : b;
+                double tol = 0.01 + 0.02 * fabs(want);
+                if (fabs(d - b) > tol || fabs(cc - want) > tol)
+                    printf("  point shadow px (%d,%d) ch %d: A %f B %f C %f "
+                           "(want %f) D %f\n", x, y, c, a, b, cc, want, d);
+                ASSERT_TRUE(fabs(d - b) <= tol);
+                ASSERT_TRUE(fabs(cc - want) <= tol);
+            }
+            if (share > 0.05) {
+                if (x <= 5) ++shadowed; else ++lit;
+            }
+        }
+    }
+    /* Both sides of the occluder edge carry real point light, or the test
+     * proves nothing about where the shadow falls. */
+    ASSERT_TRUE(shadowed >= 6 && lit >= 4);
+    ASSERT_TRUE(r643_clean("deferred_point_shadow"));
+    light_system_shutdown(&ls);
+    for (i = 0; i < 5; ++i) rhi_texture_destroy(g_dev, t[i]);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, ovbo);
+    rhi_offscreen_fbo_destroy(g_dev, &out);
+    point_shadow_destroy(&ps, g_dev);
+    deferred_destroy(&ds, g_dev);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -8555,6 +8848,8 @@ int main(void) {
     RUN_TEST(one_pipeline_draws_into_rgba16f_rgba8_and_the_swapchain);
     RUN_TEST(rt_srv_alias_diagnostic_ignores_ping_pong_and_catches_a_live_alias);
     RUN_TEST(destroying_objects_mid_frame_is_deferred_until_the_gpu_is_done);
+    RUN_TEST(point_shadow_cube_faces_read_back_by_direction);
+    RUN_TEST(deferred_lighting_samples_the_point_shadow_cube);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

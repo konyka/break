@@ -19,6 +19,29 @@
 static RHIPipeline ps_create_pipeline(RHIDevice *dev,
                                       const char *vert_path,
                                       const char *frag_path) {
+    RHIPipelineDesc desc = {
+        .depth_write_disable = false,
+        .is_shadow_depth = true,
+    };
+    RHICapabilities caps;
+    if (rhi_device_get_capabilities(dev, &caps) && caps.shader_sidecar_paths) {
+        /* R647: D3D12 compiles no source in-process; the path resolves to
+         * the precompiled point_shadow_depth_hlsl sidecar pair. */
+        RHIShader svs = rhi_shader_create_path(dev, vert_path, false);
+        RHIShader sfs = rhi_shader_create_path(dev, frag_path, true);
+        RHIPipeline spipe = RHI_HANDLE_NULL;
+        if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
+            desc.vert = svs;
+            desc.frag = sfs;
+            spipe = rhi_pipeline_create(dev, &desc);
+        } else {
+            LOG_WARN("PointShadow: sidecar shaders not found (%s, %s)",
+                     vert_path, frag_path);
+        }
+        if (rhi_handle_valid(svs)) rhi_shader_destroy(dev, svs);
+        if (rhi_handle_valid(sfs)) rhi_shader_destroy(dev, sfs);
+        return spipe;
+    }
     usize vs_len = 0, fs_len = 0;
     char *vs_src = shader_read_file(vert_path, &vs_len);
     char *fs_src = shader_read_file(frag_path, &fs_len);
@@ -42,12 +65,8 @@ static RHIPipeline ps_create_pipeline(RHIDevice *dev,
         return RHI_HANDLE_NULL;
     }
 
-    RHIPipelineDesc desc = {
-        .vert = vs,
-        .frag = fs,
-        .depth_write_disable = false,
-        .is_shadow_depth = true,
-    };
+    desc.vert = vs;
+    desc.frag = fs;
     RHIPipeline pipe = rhi_pipeline_create(dev, &desc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
@@ -76,15 +95,26 @@ void point_shadow_compute_face_vp(Vec3 light_pos, f32 radius,
     f32 far_plane = (radius > 0.1f) ? radius : 0.1f;
     Mat4 proj = mat4_perspective((f32)(M_PI * 0.5), 1.0f, 0.1f, far_plane);
 
-    /* Per-face orthonormal basis (right s, up u, forward f) with s×u = f.
-     * Right-handed — same convention as camera_view after R439; this is
-     * self-consistent because the same VP is used for rendering and the shader
-     * samples the cubemap by direction with a length()-based depth. */
+    /* Per-face orthonormal basis (right s, up u, forward f): the canonical
+     * cube-map face table, i.e. lookat(eye, eye + f, up) with up = -Y for the
+     * four side faces, +Z for +Y and -Z for -Y. s × u = -f on every face, the
+     * same handedness as camera_view, so culling matches the camera pass.
+     *
+     * R647 (CORRECTNESS): "the same VP renders and the shader samples by
+     * direction" is NOT self-consistent on its own. texture(cube, dir) picks
+     * the texel through the fixed cube addressing (face-space s,t from the
+     * major axis), not through this VP, so each face has to be rendered so
+     * that NDC x/y (row 0 = NDC y -1, as on every backend's cube face) equal
+     * that s,t. The previous table did not: the X faces were rotated 180
+     * degrees and the Y/Z faces were mirrored vertically, so a receiver read
+     * the depth of a different direction — shadows landed in the wrong place
+     * except along the face centres. test_point_shadow_faces pins the table
+     * against the addressing rule. */
     static const Vec3 s_axis[POINT_SHADOW_FACES] = {  /* right  */
-        {{0,0, 1}}, {{0,0,-1}}, {{1,0,0}}, {{1,0,0}}, {{1,0,0}}, {{-1,0,0}}
+        {{0,0,-1}}, {{0,0, 1}}, {{1,0,0}}, {{1,0,0}}, {{1,0,0}}, {{-1,0,0}}
     };
     static const Vec3 u_axis[POINT_SHADOW_FACES] = {  /* up     */
-        {{0,1,0}}, {{0,1,0}}, {{0,0,-1}}, {{0,0,1}}, {{0,1,0}}, {{0,1,0}}
+        {{0,-1,0}}, {{0,-1,0}}, {{0,0,1}}, {{0,0,-1}}, {{0,-1,0}}, {{0,-1,0}}
     };
     static const Vec3 f_axis[POINT_SHADOW_FACES] = {  /* forward */
         {{1,0,0}}, {{-1,0,0}}, {{0,1,0}}, {{0,-1,0}}, {{0,0,1}}, {{0,0,-1}}
@@ -319,19 +349,21 @@ void point_shadow_render_begin(PointShadowSystem *sys, RHICmdBuffer *cmd,
     if (sys->loc_mvp >= 0)
         rhi_cmd_set_uniform_mat4(cmd, sys->loc_mvp,
                                  &sys->light_vp[idx].e[0][0]);
-    /* R82-3: Per-light uniforms set only on first face (values don't change per face).
-     * Uniforms persist across FBO/viewport changes in both GL (program state) and
-     * VK (push constant state). Same pipeline bound for all faces. */
-    if (face == 0u) {
-        if (sys->loc_light_pos >= 0) {
-            Vec3 lp = sys->lights[light_index].position;
-            rhi_cmd_set_uniform_vec3(cmd, sys->loc_light_pos,
-                                     lp.e[0], lp.e[1], lp.e[2]);
-        }
-        if (sys->loc_far_plane >= 0)
-            rhi_cmd_set_uniform_f32(cmd, sys->loc_far_plane,
-                                    sys->far_planes[light_index]);
+    /* R647: the per-light uniforms are set on every face, not only face 0
+     * (R82-3). The pipeline is re-bound per face above, and between faces
+     * the caller may run a compute compaction and re-bind again; GL keeps
+     * program uniforms and VK keeps push constants through that, but D3D12
+     * flushes only the bytes written since the last draw as root constants,
+     * so this must not depend on root arguments surviving a re-bind. Two
+     * small writes per face. */
+    if (sys->loc_light_pos >= 0) {
+        Vec3 lp = sys->lights[light_index].position;
+        rhi_cmd_set_uniform_vec3(cmd, sys->loc_light_pos,
+                                 lp.e[0], lp.e[1], lp.e[2]);
     }
+    if (sys->loc_far_plane >= 0)
+        rhi_cmd_set_uniform_f32(cmd, sys->loc_far_plane,
+                                sys->far_planes[light_index]);
 }
 
 void point_shadow_render_end(PointShadowSystem *sys, RHICmdBuffer *cmd,

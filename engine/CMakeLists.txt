@@ -3547,6 +3547,13 @@ endif()
     target_link_libraries(test_lighting PRIVATE m)
     add_test(NAME test_lighting COMMAND test_lighting)
 
+    # R647: point-shadow cube face VPs against the cube addressing rule.
+    add_executable(test_point_shadow_faces tests/test_point_shadow_faces.c
+        src/renderer/point_shadow.c src/core/shader_io.c src/math/math.c src/core/log.c tests/rhi_stubs.c)
+    target_include_directories(test_point_shadow_faces PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_point_shadow_faces PRIVATE m)
+    add_test(NAME test_point_shadow_faces COMMAND test_point_shadow_faces)
+
     # test_occlusion_visibility: needs occlusion_cull.c + log.c + RHI stubs
     add_executable(test_occlusion_visibility tests/test_occlusion_visibility.c
         src/renderer/occlusion_cull.c src/core/shader_io.c src/core/log.c tests/rhi_stubs.c)

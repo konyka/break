@@ -164,6 +164,10 @@ typedef struct RHI_D3D12Context {
      * GL texture unit does, so a material slot with an invalid handle binds
      * this instead of leaving the shader sampling an unwritten descriptor. */
     RHITexture white_fallback;
+    /* R647: the cube twin of white_fallback — a 1x1 depth cube cleared to
+     * 1.0 (unshadowed) that fills a declared TextureCube register no live
+     * point-shadow cube was supplied for. Released with white_fallback. */
+    RHICubemapDepthFBO cube_fallback;
     /* rhi_cmd_update_buffer / rhi_cmd_fill_buffer staging: each recorded
      * write gets its own UPLOAD buffer, copied in the frame's command list
      * so it is ordered against the commands around it (C-BUF-3). Released
@@ -223,6 +227,10 @@ typedef struct RHI_D3D12Texture {
      * covering every layer — a TEXTURE2D descriptor over a multi-slice resource
      * is a dimension mismatch the shader cannot sample through. */
     UINT array_size;
+    /* R647: six slices that a shader samples as a TextureCube (the point-
+     * shadow depth cubes). rhi_cmd_bind_texture then emits a TEXTURECUBE view
+     * instead of a 2D-array one, and rhi_d3d12_live_cube accepts the handle. */
+    UINT is_cube;
     D3D12_RESOURCE_STATES state;
 } RHI_D3D12Texture;
 
@@ -257,6 +265,14 @@ typedef struct RHI_D3D12ShadowAtlas {
     UINT dsv_slot;              /* dsv_alloc slot */
     UINT width, height;
 } RHI_D3D12ShadowAtlas;
+
+/* R647: point-light depth cube. The depth texture is an ordinary
+ * RHI_RES_TEXTURE (typeless alias, six slices, is_cube); this holds one DSV
+ * per face, each a single-slice TEXTURE2DARRAY view. */
+typedef struct RHI_D3D12CubeDepthFBO {
+    UINT dsv_slots[6];          /* dsv_alloc slots, UINT_MAX = none */
+    UINT size;
+} RHI_D3D12CubeDepthFBO;
 
 /* Root signature builder: one pass over reflected ShaderIOBindings
  * (core/shader_io.h) plus the pipeline's push-constant contract.
