@@ -1,6 +1,20 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R639 — **Vulkan 的 3D 场景上下颠倒，已修复**；顺带修好 GL 材质数组用例与 golden 图的换行损坏\r
+\r
+- **问题**：Vulkan 的 NDC y 朝下。引擎的投影矩阵和所有 `_vk` 顶点着色器都是 GL 风格（+Y 朝上），而 VK 后端在交换链成为渲染目标的四个地方（`rhi_frame_begin`、`rhi_cmd_begin_render_pass`、`rhi_offscreen_fbo_unbind`、`rhi_cmd_unbind_shadow_map`）用的是正高度视口 `{0,0,w,h}`。结果 Vulkan 窗口里整个 3D 场景是倒的。UI 没倒，是因为它走 `rhi_cmd_set_viewport`（负高度，R715）。证据见 R638「更正」一节：太阳位置解析解、GL 与 D3D12 一致、真实屏幕抓图。\r
+- **修复**（`engine/src/rhi/rhi_vk.c`）：\r
+  - 新增 `vk_set_swapchain_viewport`，上述四处改用负高度视口 `{0, h, w, -h}`。**离屏目标保持正高度视口不变**：它让 NDC y=-1 落在内存第 0 行，与 GL 的 FBO 和 D3D12 的离屏视口一致，后处理按 `uv = ndc*0.5+0.5` 采样离屏纹理的方向因此不受影响。只有用户最终看到的那张图需要翻转。\r
+  - **剔除方向**：视口翻转会镜像屏幕空间的绕序。所以管线不再只有一个 `frontFace`：离屏 pass 仍用 `CLOCKWISE`（以前的值，离屏行为不变）；交换链 pass 由 `vk_pipeline_for_fmt` 构建 `COUNTER_CLOCKWISE` 的变体。变体键从 (格式, 采样数) 扩成 (格式, 采样数, 是否交换链)；当前 pass 是否交换链由 `vk_record_pass` 根据其 LOAD 孪生是否为 `vk->render_pass_load` 判定。不做这一步，golden 三角形在交换链上会被剔除成空白图（实测「captured a single flat color」）。\r
+- **golden 参考图**：`tests/golden/test_vulkan_vk{,_cam}.ppm` 是在场景倒置的状态下生成的，用 `GOLDEN_UPDATE=1` 重新生成。新图与 GL 参考图方向一致（三角形尖朝上），复测 MAE=0.00。**GL 的参考图没有改。**\r
+- **GL「材质数组象限垂直翻转」这个长期失败，根因其实在测试本身**：`test_vulkan.c` 的 MATERIAL ARRAY 用例按 `(y+1)/2*h` 把 NDC y 换算成截图行号。`rhi_screenshot` 在所有后端都是自上而下的行序（R715 契约），正确公式应为 `(1-y)/2*h`。旧公式只在 Vulkan 上碰巧对，因为 Vulkan 整个画面是倒的。改正后该用例在 GL 与 VK 上**都通过**。\r
+- **golden 图被 git 换行转换损坏**：本机 `core.autocrlf=true`，而 `.ppm` 没有标记为二进制。PPM 头是 ASCII，带 `\n`；每次 checkout 或 `git stash pop` 都会把它改写成 `\r\n`，于是 golden 比对报 DRIFT（MAE 28.73），参考图其实并没有变。新增 `.gitattributes` 规则 `*.ppm binary`。\r
+- **验证**：\r
+  - VK ctest 181/181（**`test_vulkan` 首次全绿**：golden 两张 MAE=0.00，材质数组通过，VALIDATION GATE 0 条消息）；D3D12 185/185；GL 177/178，剩下的 `test_vulkan` 只有 GL golden 偏差（MAE 15.60 / 1.15，参考图在 Linux Intel Mesa 上生成，与本次无关）。\r
+  - demo 默认帧在 GL / VK / D3D12 三个后端方向一致，UI 都在左上角。\r
+  - **已知间歇失败（非本次引入）**：`test_vulkan` 的 UNIFIED GPU CULL 用例偶发 `Hi-Z vis flags {0,0}, want {1,0}`。回退本次改动后复测 8 次失败 4 次，与改动后频率相当，是既有的不稳定用例，尚未定位。\r
+\r
 ## 本轮更新：R638 — **D3D12 间接绘制上线**（`caps.indirect_draw_supported = true`）\r
 \r
 - **补齐的四块**（都在 `engine/src/rhi/rhi_d3d12.c`）：\r
@@ -37,7 +51,7 @@
        - **太阳位置有解析解**。机位 `BREAK_CAM=0,8,20,0,60`，太阳方向 el=0.93 / az=1.03。按 `camera_view`、`mat4_perspective` 与 skybox 顶点着色器的同一套公式算，太阳应在画面 x≈0.20、y≈0.36（自顶向下）。实测 D3D12 x=0.203 / y=0.349，GL x=0.188 / y=0.283，**VK x=0.199 / y=0.560**：x 都对，只有 VK 的 y 落在镜像位置（≈1−0.36−0.08）。\r
        - **真实屏幕抓图与引擎截图一致**。用 DPI 感知的 `CopyFromScreen` 抓窗口，VK y=0.558、D3D12 y=0.350，和各自的 `BREAK_SCREENSHOT` 吻合。所以 VK 不是截图读回翻了，是**实际显示的画面就是倒的**。\r
      - **原因方向（未改）**：Vulkan 的 NDC y 朝下。VK 后端在 `rhi_frame_begin` / `rhi_offscreen_fbo_unbind` / `rhi_cmd_unbind_shadow_map` 用的是正高度视口 `{0,0,w,h}`，而所有 `_vk` 着色器都没有对 `gl_Position.y` 取反，投影矩阵也没有按后端翻转 Y。这样 3D 场景在 VK 上整体上下颠倒；UI 走 `rhi_cmd_set_viewport`（负高度），所以 VK 的 UI 是正的（R715 当时只修了 UI）。VK 的 golden 参考图（`tests/golden/test_vulkan_vk*.ppm`）是在这个状态下生成的，所以 `test_vulkan` 的 golden 用例在 VK 上一直「对得上」，没能暴露问题。\r
-     - **为什么本轮不修**：要修就得改 VK 后端的帧/离屏视口约定，或者给 VK 着色器加 Y 翻转。这会动到所有 VK 的离屏采样方向，并且要重新生成 VK 的 golden 参考图，是跨后端的约定变更，需要单独决定。\r
+     - **已在 R639 修复**（见文件顶部）：只翻转交换链视口，离屏约定不变。\r
   - **已排除的 D3D12 侧原因**（都有测试钉住，`c57f2173`，WARP 与 RTX 4060 均通过）：NDC +Y 经离屏 FBO + 最终 `tex_pipe` blit 后仍在屏幕上方；引擎自己的 `mat4_perspective` / `mat4_lookat` 把世界上方投到画面上方；图形管线的 root constant 在一次 compute dispatch + 重新绑定管线后仍然有效（前向 indirect 的模式）。\r
 - **顺带修复：GL demo 启动即崩溃**（`8b29ed6a`）。`blinn_phong.vert` 的 `FORWARD_MRT` 分支读的是裸名 `u_prev_vp` / `u_prev_model`，但 R600 已经把 `ForwardTemporal` 放进实例名 `temporal` 之下。GL 编译该变体时报 `'u_prev_vp' : undeclared identifier`，随后 `Render init failed`。改成 `temporal.u_prev_vp` / `temporal.u_prev_model`，与 `blinn_phong_arr.vert` 的写法一致。GL 构建 ctest 177/178，剩下的 1 个是既有的 `test_vulkan` golden 偏差。\r
 - **仍未处理**：D3D12 仍缺 `ssao`、`sss`、`deferred`、`cinematic`、`god_rays`、`sharpen`、`upscale`、`volumetric`、`debug_viz`、`point_shadow` 深度管线的 sidecar，画面与 VK 仍有差异。这些是逐个补 sidecar 的工作量，不是单点 bug。\r

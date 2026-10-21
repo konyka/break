@@ -3,3 +3,9 @@
 # bytes the renderer reads at runtime, so checkout line endings must be
 # identical on every machine. Scoped to shaders only.
 engine/shaders/* text eol=lf
+
+# Golden reference images are binary PPMs. Without this, core.autocrlf=true
+# rewrites the LF in their ASCII header (and any 0x0A pixel byte) to CRLF on
+# checkout -- or on a stash pop -- and every golden compare reports DRIFT
+# against a reference that was never changed.
+*.ppm binary

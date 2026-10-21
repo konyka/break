@@ -4348,10 +4348,15 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     }
 
     /* Readback: 4 quadrant samples (uv 0.25 / 0.75 per quad for the
-     * two-tone split). Non-flipped viewport on both backends; the readback
-     * row origin differs (VK top-down, GL bottom-up) but the NDC->row
-     * formula lands on the same index under either convention (R442:
-     * verified against both drivers). */
+     * two-tone split). rhi_screenshot returns top-down rows on every backend
+     * (R715 contract) and NDC +Y is the top of the presented image on every
+     * backend (R639: VK's swapchain viewport now flips, as GL's default
+     * framebuffer always did), so NDC y maps to row (1 - y) / 2 * h.
+     *
+     * The old (y + 1) / 2 * h was only right on Vulkan, and only because
+     * Vulkan's whole scene was upside down; on GL the same formula sampled
+     * the vertically opposite quadrant -- the long-standing "GL material
+     * array quadrants are vertically flipped" failure was this line. */
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         u32 pw = scr_w, ph = scr_h;
@@ -4362,12 +4367,12 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             return false;
         }
         if (shot) {
-            /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (y+1)/2*h */
+            /* quad k: NDC center (qcx,qcy) -> px = (x+1)/2*w, py = (1-y)/2*h */
             const f32 qcx[4] = { -0.5f, 0.5f, -0.5f, 0.5f };
             const f32 qcy[4] = {  0.5f, 0.5f, -0.5f, -0.5f };
             u8 rgb[4][2][3]; /* [quad][left/right sample][rgb] */
             for (u32 k = 0; k < 4; k++) {
-                u32 by = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)ph);
+                u32 by = (u32)((1.0f - qcy[k]) * 0.5f * (f32)ph);
                 /* uv 0.25 / 0.75 within the 0.9-NDC-wide quad. */
                 u32 xl = (u32)((qcx[k] - 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
                 u32 xr = (u32)((qcx[k] + 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);

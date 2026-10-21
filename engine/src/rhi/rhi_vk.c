@@ -197,6 +197,7 @@ typedef struct {
     VkRenderPass      mrt_render_pass;
     VkFormat          variant_fmt[8];
     VkSampleCountFlagBits variant_samples[8];
+    bool              variant_swapchain[8]; /* R639: mirrored front face */
     VkPipeline        variant_pipe[8];
     u32               variant_count;
     u32              *vs_spirv;  usize vs_spirv_size;
@@ -465,6 +466,8 @@ typedef struct {
      * VK_FORMAT_UNDEFINED means "do not variant" (depth-only/MRT passes). */
     VkFormat      active_color_fmt;
     VkSampleCountFlagBits active_sample_count;
+    bool          active_is_swapchain;   /* R639: flipped viewport pass */
+    bool          building_swapchain_variant; /* R639: CCW front face build */
     /* R94-2: viewport/scissor cache -- skip redundant vkCmdSetViewport/Scissor */
     f32           cached_vp_x, cached_vp_y, cached_vp_w, cached_vp_h;
     f32           cached_vp_min_d, cached_vp_max_d;
@@ -892,6 +895,10 @@ static void vk_record_pass(VKBackend *vk, VkRenderPass resume_rp,
     vk->pass_suspended = false;
     vk->active_color_fmt = color_fmt;
     vk->active_sample_count = samples;
+    /* R639: the swapchain pass is the one whose resume twin is the
+     * swapchain's own LOAD pass; its viewport is flipped, so its pipelines
+     * need the mirrored front face (see vk_pipeline_for_fmt). */
+    vk->active_is_swapchain = (resume_rp == vk->render_pass_load);
 }
 
 /* Resume a render pass previously suspended by rhi_cmd_dispatch. No clears: the
@@ -2852,6 +2859,28 @@ void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
     rhi_device_control_release(dev);
 }
 
+/* R639: the default viewport whenever the SWAPCHAIN becomes the colour
+ * target (frame begin, explicit render-pass begin, offscreen/shadow unbind).
+ *
+ * The engine's projection and every _vk vertex shader are GL-style: NDC +Y
+ * is up. Vulkan's NDC Y points down, so a positive-height viewport puts NDC
+ * +Y at the BOTTOM of the presented image. These four sites used exactly
+ * that, which turned the whole 3D scene upside down on Vulkan (measured
+ * R638: the analytic sun position matched GL and D3D12 in y and Vulkan sat
+ * at the mirrored row; a real-screen capture agreed). The UI was right only
+ * because it states its own viewport through rhi_cmd_set_viewport (R715),
+ * which already used the flipped form.
+ *
+ * Offscreen targets keep the positive-height viewport on purpose: there it
+ * stores NDC y = -1 in memory row 0, the same as GL's FBOs and D3D12's
+ * offscreen viewport, so every pass that samples an offscreen texture with
+ * uv = ndc * 0.5 + 0.5 reads it the right way up. Only the final image the
+ * user sees needs the flip. */
+static void vk_set_swapchain_viewport(VKBackend *vk, u32 w, u32 h) {
+    VkViewport vp = {0.0f, (f32)h, (f32)w, -(f32)h, 0.0f, 1.0f};
+    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+}
+
 RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     if (dev == NULL) return NULL;
     VKBackend *vk = vk_backend(dev);
@@ -2985,8 +3014,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
                    vk->swap_extent.width, vk->swap_extent.height, vk->swap_format,
                    VK_SAMPLE_COUNT_1_BIT);
 
-    VkViewport vp = {0, 0, (f32)vk->swap_extent.width, (f32)vk->swap_extent.height, 0.0f, 1.0f};
-    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    vk_set_swapchain_viewport(vk, vk->swap_extent.width, vk->swap_extent.height);
     VkRect2D sc = {{0, 0}, vk->swap_extent};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
 
@@ -4061,7 +4089,15 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
                        ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL;
     raster.lineWidth = 1.0f;
     raster.cullMode = (desc->no_vertex_input || desc->disable_culling) ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT;
-    raster.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    /* R639: offscreen targets keep the positive-height viewport, under which
+     * the engine's meshes are CLOCKWISE on screen. The swapchain viewport is
+     * the negative-height one (vk_set_swapchain_viewport), which mirrors
+     * screen-space winding, so pipelines drawing to the swapchain are built
+     * as variants with the opposite front face (vk_pipeline_for_fmt sets
+     * building_swapchain_variant around the build). */
+    raster.frontFace = vk->building_swapchain_variant
+                           ? VK_FRONT_FACE_COUNTER_CLOCKWISE
+                           : VK_FRONT_FACE_CLOCKWISE;
     raster.depthBiasEnable = VK_FALSE;
 
     VkPipelineMultisampleStateCreateInfo msaa = {0};
@@ -4161,11 +4197,18 @@ static VkPipeline vk_build_graphics_pipeline(VKBackend *vk, const RHIPipelineDes
  * the format is the base format, not variant-able, or a rebuild fails. */
 static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkFormat vkfmt,
                                       VkSampleCountFlagBits samples) {
+    /* R639: the base pipeline is built for offscreen passes (clockwise front
+     * face, positive-height viewport). A swapchain pass needs the mirrored
+     * face, so it never takes the base pipeline: it gets a variant keyed by
+     * (format, samples, swapchain). */
+    const bool swap = vk->active_is_swapchain;
     if (pd->is_compute || pd->base_color_fmt == VK_FORMAT_UNDEFINED) return pd->pipeline;
-    if ((vkfmt == VK_FORMAT_UNDEFINED || vkfmt == pd->base_color_fmt) &&
+    if (vkfmt == VK_FORMAT_UNDEFINED) vkfmt = pd->base_color_fmt;
+    if (!swap && vkfmt == pd->base_color_fmt &&
         samples == pd->base_sample_count) return pd->pipeline;
     for (u32 i = 0; i < pd->variant_count; i++) {
-        if (pd->variant_fmt[i] == vkfmt && pd->variant_samples[i] == samples)
+        if (pd->variant_fmt[i] == vkfmt && pd->variant_samples[i] == samples &&
+            pd->variant_swapchain[i] == swap)
             return pd->variant_pipe[i];
     }
     if (pd->variant_count >= 8 || !pd->vs_spirv || !pd->fs_spirv) return pd->pipeline;
@@ -4188,14 +4231,17 @@ static VkPipeline vk_pipeline_for_fmt(VKBackend *vk, VKPipelineData *pd, VkForma
     VkRenderPass rp = (samples == VK_SAMPLE_COUNT_1_BIT)
         ? vk_pipeline_render_pass_fmt(vk, vkfmt)
         : vk_pipeline_render_pass_fmt_samples(vk, vkfmt, samples);
+    vk->building_swapchain_variant = swap;
     VkPipeline var = vk_build_graphics_pipeline(vk, &variant_desc, pd->layout,
                                                 vs_mod, fs_mod, rp, NULL);
+    vk->building_swapchain_variant = false;
     vkDestroyShaderModule(vk->device, vs_mod, NULL);
     vkDestroyShaderModule(vk->device, fs_mod, NULL);
     if (var == VK_NULL_HANDLE) return pd->pipeline;
 
     pd->variant_fmt[pd->variant_count] = vkfmt;
     pd->variant_samples[pd->variant_count] = samples;
+    pd->variant_swapchain[pd->variant_count] = swap;
     pd->variant_pipe[pd->variant_count] = var;
     pd->variant_count++;
     return var;
@@ -6373,8 +6419,7 @@ void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
                    vk->swap_extent.width, vk->swap_extent.height, vk->swap_format,
                    VK_SAMPLE_COUNT_1_BIT);
 
-    VkViewport vp = {0, 0, (f32)vk->swap_extent.width, (f32)vk->swap_extent.height, 0.0f, 1.0f};
-    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    vk_set_swapchain_viewport(vk, vk->swap_extent.width, vk->swap_extent.height);
     VkRect2D sc = {{0, 0}, vk->swap_extent};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
     vk->vp_valid = false; vk->sc_valid = false;  /* R95-1: invalidate cache (render pass begin uses non-flipped viewport, different from rhi_cmd_set_viewport's flipped viewport) */
@@ -8394,8 +8439,7 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
                    screen_w, screen_h, vk->swap_format, VK_SAMPLE_COUNT_1_BIT);
 
-    VkViewport vp = {0, 0, (f32)screen_w, (f32)screen_h, 0, 1};
-    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    vk_set_swapchain_viewport(vk, screen_w, screen_h);
     VkRect2D sc = {{0, 0}, {screen_w, screen_h}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
     vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
@@ -9830,8 +9874,7 @@ void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
     vk_record_pass(vk, vk->render_pass_load, vk->framebuffers[vk->image_index],
                    screen_w, screen_h, vk->swap_format, VK_SAMPLE_COUNT_1_BIT);
 
-    VkViewport vp = {0, 0, (f32)screen_w, (f32)screen_h, 0, 1};
-    vkCmdSetViewport(vk->cmd_buffers[vk->current_frame], 0, 1, &vp);
+    vk_set_swapchain_viewport(vk, screen_w, screen_h);
     VkRect2D sc = {{0, 0}, {screen_w, screen_h}};
     vkCmdSetScissor(vk->cmd_buffers[vk->current_frame], 0, 1, &sc);
     vk->vp_valid = false; vk->sc_valid = false;  /* R95-2: invalidate cache */
