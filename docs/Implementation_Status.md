@@ -1,6 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R646 — **Vulkan 画面整体偏亮：sRGB 交换链导致伽马叠加两次**
+
+- **现象**（R644 遗留）：同一相机同一帧，VK 截图比 GL / D3D12 明显发白——前向 MAE 57、延迟 MAE 33。关掉 bloom、TAA/MB、自动曝光差异都不变；inspector 模式 1（tonemap 前的 HDR 场景）GL/VK 基本一致（MAE 0.8），差异只出现在最终输出。
+- **根因**：对 GL 截图逐像素做一次 linear→sRGB 编码后，与 VK 截图的 MAE 从 57 降到 **2.7**（延迟 33 → 1.2）。引擎的 tonemap / 颜色分级自己做伽马编码（`exp2(log2(ldr) / gamma)`），GL 默认帧缓冲与 D3D12 的 `B8G8R8A8_UNORM` 交换链按原样写出；而 `vk_probe_choose_surface_format` 首选 `B8G8R8A8_SRGB`，写入时硬件再编码一次。
+- **修复**：交换链格式协商改为首选 `B8G8R8A8_UNORM`，其次 `R8G8B8A8_UNORM`，否则取列表第一个；"任意格式" 哨兵也映射到 `B8G8R8A8_UNORM`。`test_rhi_vk_probe.c` 的协商用例同步更新（四种格式混合列表中必须选 BGRA UNORM、只有 RGBA UNORM 时选它、都没有时退回第一个）。
+- **golden 图**：`tests/golden/test_vulkan_vk{,_cam}.ppm` 是在伽马叠加的状态下生成的（与 GL golden 的 MAE 66.8 / 65.5），用 `GOLDEN_UPDATE=1` 重新生成后与 **GL golden** 的 MAE 为 **0.33 / 0.64**——两端第一次在数值上一致，说明新输出是对的而不是"换了一个基线"。
+- **验证**：demo 截图（`BREAK_CAM=0,12,22,0,-25`、第 30 帧）VK vs GL：前向 MAE 57.1 → **3.6**，延迟 33.1 → **0.29**。VK demo 前向 / 延迟各 60 帧 validation 0 条。ctest：D3D12 184/185、VK 180/181、GL 177/178，唯一失败为 `test_platform_win32_runtime` 的 OpenClipboard（ToDesk）。另：一次全量并行 ctest 中 `test_d3d12_warp_runtime` 失败过一次，随后单独 3 次、全量并行 3 次均通过，记为偶发，原因未查明。
+
 ## 本轮更新：R645 — **D3D12 前向路径间歇卡死 / 段错误修复**：GPU 仍在用的资源被立即释放
 
 - **现象**（R644 记录的遗留，修复前即存在）：D3D12 debug 构建的默认（前向）demo 跑 60 帧，约半数在帧循环中卡死（被 timeout 杀掉），偶发段错误，并伴随 debug layer [921]「资源在命令列表执行前被删除」。

@@ -1154,8 +1154,8 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
             LOG_FATAL("VK: surface reports no formats");
             return false;
         }
-        if (picked.format != (u32)VK_FORMAT_B8G8R8A8_SRGB) {
-            LOG_WARN("VK: B8G8R8A8_SRGB unsupported, falling back to surface format %d", (int)picked.format);
+        if (picked.format != (u32)VK_FORMAT_B8G8R8A8_UNORM) {
+            LOG_WARN("VK: B8G8R8A8_UNORM unsupported, falling back to surface format %d", (int)picked.format);
         }
         vk->swap_format = (VkFormat)picked.format;
         swap_colorspace = (VkColorSpaceKHR)picked.color_space;
