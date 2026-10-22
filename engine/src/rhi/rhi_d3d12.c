@@ -7163,13 +7163,140 @@ cleanup:
     return SUCCEEDED(hr);
 }
 
-/* ---- GPU timer ---- */
-RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) { (void)dev; return NULL; }
-void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
-    (void)dev; (void)t;
+/* ---- GPU timer ----
+ * R663: a timestamp query heap with two queries per frame slot (begin, end),
+ * resolved into a persistent READBACK buffer when the end timestamp is
+ * written. The slot is the frame-parity slot being recorded, so a frame in
+ * flight never overwrites the results of the one before it. Results are read
+ * from the slot that was submitted LAST (parity ^ 1, both during and after a
+ * frame) and only once its frame fence has completed, so elapsed_ms never
+ * blocks: it returns the newest finished measurement, or 0 before the first
+ * one lands. GL and Vulkan report one frame of latency in the same way; the
+ * difference is that a finished value stays readable instead of dropping to 0
+ * after one read, which is what the debug overlay and the trace export want
+ * when they sample at different points of the frame. */
+struct RHIGPUTimer {
+    RHIDevice *owner;
+    ID3D12QueryHeap *heap;
+    ID3D12Resource *readback;       /* 2 slots x 2 x u64, kept in COPY_DEST */
+    UINT64 frequency;               /* timestamp ticks per second */
+    UINT cur_slot;                  /* slot begin() recorded into */
+    UINT started;                   /* begin() seen, end() not yet */
+    UINT recorded[2];               /* slot holds a resolved measurement */
+    f64 last_ms;
+};
+
+RHIGPUTimer *rhi_gpu_timer_create(RHIDevice *dev) {
+    RHI_D3D12Context *ctx;
+    RHIGPUTimer *t;
+    D3D12_QUERY_HEAP_DESC qd;
+    if (dev == NULL) return NULL;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost || ctx->direct_queue == NULL) return NULL;
+    t = (RHIGPUTimer *)calloc(1u, sizeof(*t));
+    if (t == NULL) return NULL;
+    ZeroMemory(&qd, sizeof(qd));
+    qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+    qd.Count = 4u;
+    if (FAILED(ID3D12Device_CreateQueryHeap(ctx->device, &qd, &IID_ID3D12QueryHeap,
+                                            (void **)&t->heap)) ||
+        FAILED(ID3D12CommandQueue_GetTimestampFrequency(ctx->direct_queue,
+                                                        &t->frequency)) ||
+        t->frequency == 0u) {
+        LOG_WARN("D3D12: timestamp queries unavailable -- GPU timer disabled");
+        rhi_d3d12_release((IUnknown **)&t->heap);
+        free(t);
+        return NULL;
+    }
+    t->readback = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK,
+                                           4u * sizeof(UINT64));
+    if (t->readback == NULL) {
+        rhi_d3d12_release((IUnknown **)&t->heap);
+        free(t);
+        return NULL;
+    }
+    t->owner = dev;
+    return t;
 }
-void rhi_gpu_timer_begin(RHIGPUTimer *t) { (void)t; }
-void rhi_gpu_timer_end(RHIGPUTimer *t) { (void)t; }
-f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) { (void)t; return 0.0; }
+
+void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    if (t == NULL) return;
+    ctx = dev != NULL ? (RHI_D3D12Context *)dev->backend_data : NULL;
+    /* A command list in flight may still reference both objects. */
+    rhi_d3d12_release_deferred(ctx, (IUnknown **)&t->readback);
+    rhi_d3d12_release_deferred(ctx, (IUnknown **)&t->heap);
+    free(t);
+}
+
+void rhi_gpu_timer_begin(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    ID3D12GraphicsCommandList *list;
+    if (t == NULL || t->owner == NULL || g_current_device != t->owner) return;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (list == NULL) return;
+    t->cur_slot = ctx->frame_parity & 1u;
+    t->recorded[t->cur_slot] = 0u;
+    ID3D12GraphicsCommandList_EndQuery(list, t->heap,
+                                       D3D12_QUERY_TYPE_TIMESTAMP,
+                                       t->cur_slot * 2u);
+    t->started = 1u;
+}
+
+void rhi_gpu_timer_end(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    ID3D12GraphicsCommandList *list;
+    if (t == NULL || t->owner == NULL || !t->started ||
+        g_current_device != t->owner)
+        return;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    list = rhi_d3d12_cmd_list(ctx);
+    /* begin() and end() must land in the same frame: the pair shares one
+     * slot of the heap. */
+    if (list == NULL || t->cur_slot != (ctx->frame_parity & 1u)) {
+        t->started = 0u;
+        return;
+    }
+    ID3D12GraphicsCommandList_EndQuery(list, t->heap,
+                                       D3D12_QUERY_TYPE_TIMESTAMP,
+                                       t->cur_slot * 2u + 1u);
+    ID3D12GraphicsCommandList_ResolveQueryData(list, t->heap,
+        D3D12_QUERY_TYPE_TIMESTAMP, t->cur_slot * 2u, 2u, t->readback,
+        (UINT64)t->cur_slot * 2u * sizeof(UINT64));
+    t->recorded[t->cur_slot] = 1u;
+    t->started = 0u;
+}
+
+f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
+    RHI_D3D12Context *ctx;
+    UINT slot;
+    if (t == NULL || t->owner == NULL || g_current_device != t->owner)
+        return 0.0;
+    ctx = (RHI_D3D12Context *)t->owner->backend_data;
+    if (ctx == NULL || ctx->device_lost || ctx->fence == NULL) return t->last_ms;
+    /* The slot submitted last: while a frame records, the recording slot is
+     * parity and the previous frame sits in the other one; after frame_end the
+     * parity has flipped, so it is again the other one. */
+    slot = (ctx->frame_parity + 1u) & 1u;
+    if (!t->recorded[slot] || ctx->frame_fence[slot] == 0u ||
+        ID3D12Fence_GetCompletedValue(ctx->fence) < ctx->frame_fence[slot])
+        return t->last_ms;
+    {
+        D3D12_RANGE range;
+        UINT64 *ticks = NULL;
+        range.Begin = (SIZE_T)slot * 2u * sizeof(UINT64);
+        range.End = range.Begin + 2u * sizeof(UINT64);
+        if (SUCCEEDED(ID3D12Resource_Map(t->readback, 0u, &range, (void **)&ticks)) &&
+            ticks != NULL) {
+            UINT64 a = ticks[slot * 2u], z = ticks[slot * 2u + 1u];
+            D3D12_RANGE none = { 0u, 0u };
+            ID3D12Resource_Unmap(t->readback, 0u, &none);
+            if (z >= a)
+                t->last_ms = (f64)(z - a) * 1000.0 / (f64)t->frequency;
+        }
+    }
+    return t->last_ms;
+}
 
 #endif

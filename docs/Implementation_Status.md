@@ -1,6 +1,35 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R663 — D3D12 GPU 计时器
+
+### 问题
+R662 的审计里唯一一组真正的空桩：`rhi_gpu_timer_create/destroy/begin/end/elapsed_ms` 在 D3D12 上全是空函数，create 返回 NULL。后果是 demo 的调试叠层「--- GPU ---」每一行、Chrome trace 的 `gpu_shadow/forward/scene/postfx` 区域、draw-bench 的 GPU 样本都恒为 0。没有崩溃，因为调用方不检查 NULL 计时器。
+
+### 实现
+- 每个计时器：一个 `D3D12_QUERY_HEAP_TYPE_TIMESTAMP` 查询堆（4 个查询 = 2 个帧槽 × begin/end）和一个常驻的 READBACK 缓冲，频率取 `GetTimestampFrequency(direct_queue)`。
+- `begin`/`end` 记录 `EndQuery` 时间戳到当前帧槽（`frame_parity & 1`）；`end` 同时 `ResolveQueryData` 进该槽对应偏移的 READBACK。begin 与 end 跨帧则丢弃这一对。
+- `elapsed_ms`：读**上一个已提交**的帧槽（`(parity + 1) & 1`，帧录制中和 frame_end 之后都是它），且仅当该槽的帧栅栏已完成才 Map 读取，所以**永不阻塞 CPU**；栅栏未完成就返回上一次完成的测量值。与 GL/VK 一样有一帧延迟，区别是已完成的值可重复读取，而不是读一次后清零——调试叠层和 trace 导出在帧内不同位置采样，这样两处看到同一个值。
+- 销毁走 `release_deferred`（帧在途时查询堆和 READBACK 仍被命令列表引用）。
+
+### 测试
+`gpu_timer_measures_the_gpu_time_of_a_recorded_region`：6 帧，计时区域里分别画 300/100/30/300/100/30 次 256×256 全屏 blit，使两个帧槽都各承载一次长和一次短的测量。每帧读两次：frame_end 之后立刻读（GPU 通常还在跑）只能是上一帧或本帧的值；device_idle 之后读必须是本帧自己的值。六个稳定读数里，draw 数更多的必须长 1.5 倍以上；空的 begin/end 对必须低于最短值的一半；值可重复读取；从没录制过的计时器报 0。
+实测 WARP 154.9/53.5/18.3/160.5/53.5/16.8 ms，RTX 35.2/11.8/3.6/35.2/11.8/3.6 ms，空对约 0.0004 ms——两个适配器上都是干净的 3:1 阶梯，说明测到的是 GPU 工作量而不是常数。
+
+### 反向验证
+- 去掉 `ResolveQueryData`：读数恒为 0，失败。
+- 读错帧槽 / 无视栅栏 / READBACK 偏移写成 0：见下方「验证过程中发现的弱点」。
+
+### 验证过程中发现的弱点
+第一版测试（一个长计时器、一个空计时器，三帧同样的负载）只抓得住「完全没解析」。把读槽改成当前槽、无视栅栏、写错偏移这三种变异它都放行——三帧负载相同，读到哪个槽的值都一样。所以改成上面的 300/100/30 阶梯加「立刻读 / 空闲后读」两次读取，并用 `.tmp/r663mut.py` 复跑全部变异。
+
+### 验证结果
+WARP 79/79，RTX 78/79（仅预期的 [1]），debug layer 0 错误 0 警告。ctest：三棵树各 1 个失败，都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`），其余全过（D3D12 185/186、VK 181/182、GL 178/179）。这个失败与本轮无关：把本轮改动 stash 掉、回到已推送的 R662 提交，同一个用例照样失败；原因是 ToDesk 又在运行（进程 7896 在控制台会话），它会占用剪贴板，与更早会话里记录的现象一致（退出 ToDesk 后该用例通过）。
+
+### 遗留
+- NEAREST 采样仍是双线性（需要真正的 sampler 描述符表）。
+- D3D12 对 `no_vertex_input` 管线不强制关闭背面剔除（VK/GL 会），天空盒与粒子管线今天恰好是正面朝向。
+
 ## 本轮更新：R661–R662 — 清掉调试 printf；全屏/计算管线的静态采样器改为 CLAMP
 
 ### R661：清理

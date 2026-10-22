@@ -10939,6 +10939,126 @@ TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R663: GPU timers on D3D12. Before this the five rhi_gpu_timer_* entry points
+ * were empty (create returned NULL), so the debug overlay, the trace's gpu_*
+ * regions and the draw-bench all read 0.00 ms.
+ *
+ * Six frames with 300 / 100 / 30 / 300 / 100 / 30 fullscreen blits of a
+ * 256x256 target inside the timed region, so (a) any three consecutive frames
+ * have three clearly different durations and (b) both frame slots (parity 0
+ * and 1) carry both a long and a short measurement. After every frame the
+ * timer is read twice:
+ *
+ *   immediately after frame_end -- the GPU is usually still running, so the
+ *     fence gate must hand back the previous finished value (or this frame's,
+ *     if it already finished). A reader that ignored the fence would return
+ *     what the slot's readback buffer still holds, the frame BEFORE the
+ *     previous one -- distinct from both -- and fail.
+ *   after device_idle -- must be this frame's own measurement: a reader that
+ *     looked at the wrong slot returns the neighbouring frame's value, and a
+ *     resolve that wrote at the wrong offset leaves slot 1 reading zeros.
+ *
+ * Across the six settled readings, more draws must mean a clearly longer time
+ * (x1.5 per step down the 300 > 100 > 30 ladder), an empty begin/end pair
+ * reads far below the shortest, a value stays readable on a second read, and a
+ * timer that never recorded a frame reports 0. Reading is fence-gated, so
+ * elapsed_ms never stalls the CPU. */
+TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region) {
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255
+    };
+    static const int draws[6] = { 300, 100, 30, 300, 100, 30 };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc td;
+    RHITexture tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIGPUTimer *empty_t, *busy_t, *never_t;
+    RHICmdBuffer *cmd;
+    f64 settled[6], immediate[6], empty_ms = 0.0;
+    int frame, i, j;
+    empty_t = rhi_gpu_timer_create(g_dev);
+    busy_t = rhi_gpu_timer_create(g_dev);
+    never_t = rhi_gpu_timer_create(g_dev);
+    ASSERT_TRUE(empty_t != NULL && busy_t != NULL && never_t != NULL);
+    ASSERT_TRUE(rhi_gpu_timer_elapsed_ms(busy_t) == 0.0);
+
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 256u; fbo_desc.height = 256u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    memset(&td, 0, sizeof(td));
+    td.width = 2u; td.height = 2u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = red;
+    tex = rhi_texture_create(g_dev, &td);
+    vs = rhi_shader_create(g_dev, "blit_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(tex) && rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs; pd.no_vertex_input = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (frame = 0; frame < 6; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_gpu_timer_begin(empty_t);
+        rhi_gpu_timer_end(empty_t);
+        rhi_gpu_timer_begin(busy_t);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_push_constants(cmd, 0u, identity, sizeof(identity));
+        rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+        for (i = 0; i < draws[frame]; ++i) rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        rhi_gpu_timer_end(busy_t);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        immediate[frame] = rhi_gpu_timer_elapsed_ms(busy_t);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_device_idle_ex(g_dev), RHI_RESULT_OK);
+        settled[frame] = rhi_gpu_timer_elapsed_ms(busy_t);
+        empty_ms = rhi_gpu_timer_elapsed_ms(empty_t);
+        printf("%s%.2f", frame ? "/" : "  (gpu timer ms: ", settled[frame]);
+    }
+    printf(" empty %.4f) ", empty_ms);
+
+    for (frame = 0; frame < 6; ++frame) {
+        ASSERT_TRUE(settled[frame] > 0.0 && settled[frame] < 5000.0);
+        if (frame == 0) {
+            ASSERT_TRUE(immediate[0] == 0.0 || immediate[0] == settled[0]);
+        } else {
+            ASSERT_TRUE(immediate[frame] == settled[frame - 1] ||
+                        immediate[frame] == settled[frame]);
+        }
+    }
+    for (i = 0; i < 6; ++i)
+        for (j = 0; j < 6; ++j)
+            if (draws[i] > draws[j]) ASSERT_TRUE(settled[i] > 1.5 * settled[j]);
+    {
+        f64 shortest = settled[2] < settled[5] ? settled[2] : settled[5];
+        ASSERT_TRUE(empty_ms >= 0.0 && empty_ms < 0.5 * shortest);
+    }
+    ASSERT_TRUE(rhi_gpu_timer_elapsed_ms(busy_t) == settled[5]);   /* stays readable */
+    ASSERT_TRUE(rhi_gpu_timer_elapsed_ms(never_t) == 0.0);
+    ASSERT_TRUE(r643_clean("gpu_timer"));
+    rhi_gpu_timer_destroy(g_dev, empty_t);
+    rhi_gpu_timer_destroy(g_dev, busy_t);
+    rhi_gpu_timer_destroy(g_dev, never_t);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -11038,6 +11158,7 @@ int main(void) {
     RUN_TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets);
     RUN_TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent);
     RUN_TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes);
+    RUN_TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
