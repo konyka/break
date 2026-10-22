@@ -1,6 +1,35 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R658 — D3D12 材质数组路径：SV_StartInstanceLocation、blinn/clustered/gbuffer 数组边车
+
+### 问题
+R609 实测过 D3D12 的 SV_InstanceID 拿不到 ExecuteIndirect 记录里的 StartInstanceLocation（那是 gl_InstanceID，不带 base），并据此断定「没有 HLSL 写法能拿到它」，把 `indirect_first_instance_supported` 写死为 false，材质数组单次执行路径在 D3D12 上整体停用。这个结论来自只试过像素阶段 profile——`SV_StartInstanceLocation` 是**顶点**阶段的输入语义，从 shader model 6.8 才有；dxc 对 vs_6_8 编译通过，WARP 和 RTX 4060 都正确交付 base。
+
+### 修复
+- **能力位**（`rhi_d3d12.c`）：不再写死 false，`CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL)` 探测设备，SM ≥ 6.8 才为 true；main.c 已有的能力门会据此打开 MatArray 路径。
+- **CMake**：对含有 `SV_StartInstanceLocation` 的顶点边车用 vs_6_8 编译（读源码探测），其余仍是 6.0。
+- **边车**：`blinn_phong_arr_hlsl.vert` 的层号从 SV_InstanceID 改成 SV_StartInstanceLocation（frag 里的长注记同步改为现在的行为）；新增 `pbr_clustered_arr_hlsl.{vert,frag}`（五个材质寄存器改 Texture2DArray，按层采样；64 项每层的 metallic/roughness/AO 和 emissive 表挂在 b1 cbuffer 的 304/1328 偏移——GL 版把表放在自己的 UBO 192/1216 处，D3D12 这里帧常量占了 0..304）；新增 `gbuffer_arr_hlsl.{vert,frag}`（同样按层采样 + 表在 b1，`u_factor_arr[64]` 后接 `u_emissive_arr[64]`）。
+- **接线**：`main.c` sidecar 分支建 `clustered_arr_pipeline`；`clustered_proj_ubo` 扩容为 `sizeof(ClusterFrameUbo) + 2*64*16`，sidecar 路径的表基址换成 304；deferred 的数组管线补 `_loc_gbuf_arr_vp`（折叠的 view*proj，同 R644 静态管线）并在 `mega_mat_arrays_draw_gbuffer` 上传。
+
+### 测试
+- 改写 R609 的用例为 `indirect_start_instance_reaches_the_shader`：四条记录，{1,0}→层0、{1,1}→层1、{1,2}→层2、**{3,1}→层1**（最后一条证明读的是 base 而不是 instance 编号——旧的失败模式在这里会渲成层 2），参数缓冲回读排除过期上传，能力位断言为 true。
+- 改写 `blinn_phong_arr_sidecar_forwards_the_layer_into_pixels`：两个三角各一条 indirect 记录，用 first_instance 驱动层号（原先借用 InstanceCount 伪造层号）。
+- 新增 `clustered_array_sidecar_picks_texture_and_factors_by_first_instance`：两个四边形两条记录（层 1 / 层 2），逐像素对比 CPU 复算的 PBR，分别验纹理层、系数表层、emissive 表层和零速度。
+- 新增 `gbuffer_array_sidecar_writes_each_layer_its_own_targets`：走真实 DeferredSystem 的 `gbuffer_arr_pipeline`，RT0/RT2/RT4 分别钉纹理层、系数表和 emissive 表，RT3 钉速度为零。
+- 踩到的测试构造细节：用色值 128 的平法线图经切线扰动后是 (+0.0039,+0.0039,1)，低粗糙度层的锐瓣看得到，CPU 复算要含它；RGBA8 目标在 WARP 和 RTX 上对 x.5 的舍入不同，factor 比较放 ±1；`deferred_end_gbuffer` 只是 unbind，不像 offscreen FBO 的 unbind 会隐式切回屏幕，故画完必须再调 `rhi_offscreen_fbo_unbind`，否则 readback 落到屏幕上全黑。
+
+### 反向验证
+- `pbr_clustered_arr`：层改读 SV_InstanceID、系数表偏移加垫一个 float4、emissive 表锁层 0、albedo 锁层 0——四个都失败。
+- `gbuffer_arr`：层改读 SV_InstanceID、系数表锁层 0、albedo 锁层 0——三个都失败（分别表现为层 0 的 128 灰 albedo + 恒 1 的 factor）。
+
+### 验证结果
+WARP 76/76，RTX 75/76 两次（仅预期的 [1]），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.41、VK-GL 3.54；延迟 D3D12-GL 1.19、VK-GL 0.29。D3D12 demo 日志确认 `MatArray: 12 layers`、`Material indirect: on`，前向与延迟的数组单次执行路径都真正跑了。
+
+### 遗留
+- 能力位依赖设备 SM 6.8（Agility 1.616 运行时已部署在构建目录）；不支持 6.8 的设备会保持 per-group 回退，这在能力契约里是成文行为。
+- R592 的 arr 变体 push 块与静态变体同形（`u_mr_factor` 等未用），省一张根签名布局。
+
 ## 本轮更新：R657 — D3D12 前向簇光照的蒙皮变体
 
 ### 问题

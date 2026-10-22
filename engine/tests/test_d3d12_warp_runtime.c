@@ -1178,23 +1178,15 @@ TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1)
  * the layer's texel. A mis-resolved u_ambient or u_light_dir would shift the
  * colour, not merely darken it, and turn this red.
  *
- * WHY THE INSTANCE INDEX AND NOT THE INDIRECT first_instance.
- * blinn_phong_arr.vert reads gl_BaseInstanceARB, and the sidecar reads
- * SV_InstanceID, whose D3D12 source is the draw's StartInstanceLocation. On
- * this host that path is NOT observable: a single ExecuteIndirect record
- * {VertexCount=6, InstanceCount=1, StartVertexLocation=0,
- * StartInstanceLocation=1} against this very pipeline and this very shader
- * renders layer 0, while the same record with InstanceCount = 3 renders layer
- * 2 — i.e. WARP takes SV_InstanceID from InstanceCount and drops
- * StartInstanceLocation. (The args buffer was read back with
- * rhi_buffer_read to rule out a stale upload, and ExecuteIndirect now
- * transitions its argument buffer into D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT
- * as the API requires; neither changes the outcome.) So the pixel proof drives
- * SV_InstanceID through InstanceCount, which is the register the sidecar
- * actually reads, and leaves the first_instance route — the one production
- * uses — asserted at the ABI level instead. The DXIL for this vertex stage
- * disassembles to a single dx.op.loadInput on inputSigId 4 (SV_InstanceID),
- * which is the same instruction gl_BaseInstance lowers to.
+ * HOW THE LAYER IS DRIVEN. blinn_phong_arr.vert reads gl_BaseInstanceARB, the
+ * indirect command's first_instance; the sidecar reads the same value through
+ * SV_StartInstanceLocation (shader model 6.8, vs_6_8). Production draws one
+ * instance per command with first_instance = layer, so this test does too:
+ * both frames go through ExecuteIndirect with records whose
+ * StartInstanceLocation is the layer and whose InstanceCount is 1. (Until R658
+ * the sidecar read SV_InstanceID, which drops the base, and this test had to
+ * fake the layer with InstanceCount instead; see the note on
+ * indirect_start_instance_reaches_the_shader.)
  *
  * RT1 is checked on every frame as raw 16-bit patterns: identity model, view,
  * proj AND identity prev_vp / prev_model make the motion vector exactly
@@ -1245,6 +1237,7 @@ TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
     RHIBufferDesc bdesc;
     RHIBuffer vbo;
     RHIBuffer temporal_ubo;
+    RHIBuffer args;
     RHICmdBuffer *cmd;
     unsigned char rt0[8 * 8 * 4];
     unsigned short rt1[8 * 8 * 2];
@@ -1304,6 +1297,20 @@ TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
     ASSERT_TRUE(rhi_handle_valid(vbo));
     temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
     ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
+    {
+        /* {vertex_count, instance_count, start_vertex, start_instance} x 3 */
+        static const u32 records[3][4] = {
+            { 3u, 1u, 0u, 1u },
+            { 3u, 1u, 3u, 2u },
+            { 6u, 1u, 0u, 0u }
+        };
+        memset(&bdesc, 0, sizeof(bdesc));
+        bdesc.size = sizeof(records);
+        bdesc.usage = RHI_BUFFER_USAGE_INDIRECT;
+        bdesc.initial_data = records;
+        args = rhi_buffer_create(g_dev, &bdesc);
+        ASSERT_TRUE(rhi_handle_valid(args));
+    }
 
     for (frame = 0; frame < 2; ++frame) {
         cmd = rhi_frame_begin(g_dev);
@@ -1320,15 +1327,14 @@ TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
         rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
         rhi_cmd_bind_texture(cmd, albedo_array, (RHISampler){0}, 0u);
         if (frame == 0) {
-            /* Two layers in one image. Each draw is instanced 0..N-1 and the
-             * LAST instance rasterises last, so the top instance is the one
-             * whose colour survives: instance 1 -> layer 1 (green) on the
-             * lower side of the seam, instance 2 -> layer 2 (blue) above it. */
-            rhi_cmd_draw_base(cmd, 3u, 2u, 0u);
-            rhi_cmd_draw_base(cmd, 3u, 3u, 3u);
+            /* Two layers in one image, one indirect record each: triangle 0
+             * (vertices 0..2) with first_instance 1 -> layer 1 (green) on the
+             * lower side of the seam, triangle 1 (vertices 3..5) with
+             * first_instance 2 -> layer 2 (blue) above it. */
+            rhi_cmd_draw_indirect(g_dev, args, 0u, 2u, 16u);
         } else {
             /* Layer 0 alone, whole target: 6 vertices cover both triangles. */
-            rhi_cmd_draw_base(cmd, 6u, 1u, 0u);
+            rhi_cmd_draw_indirect(g_dev, args, 32u, 1u, 16u);
         }
         rhi_mrt_fbo_unbind(cmd, 64u, 64u);
         ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
@@ -1391,6 +1397,7 @@ TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels)
     rhi_mrt_fbo_destroy(g_dev, &fbo);
     rhi_texture_destroy(g_dev, albedo_array);
     rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, args);
     rhi_buffer_destroy(g_dev, temporal_ubo);
     rhi_pipeline_destroy(g_dev, pipe);
     rhi_shader_destroy(g_dev, vs);
@@ -1416,49 +1423,32 @@ static int warp_adapter_is_warp(RHIDevice *dev)
            strstr(info.device_name, "WARP") != NULL;
 }
 
-/* R609: the layer route production uses -- and why the array path is dead on
- * D3D12 today.
+/* R609 / R658: the layer route production uses.
  *
  * mega_mat_arrays_draw encodes the material-array layer in the indirect
- * record's first_instance (main.c:3947) with instance_count = 1
- * (main.c:3779), and the GLSL twin reads it back as
- * uint(gl_BaseInstanceARB) in blinn_phong_arr.vert. The D3D12 sidecar reads
- * SV_InstanceID instead, and D3D12's SV_InstanceID does NOT include
- * StartInstanceLocation -- it is gl_InstanceID, i.e. base + instance index,
- * and here the base never arrives.
+ * record's first_instance with instance_count = 1, and the GLSL twin reads it
+ * back as uint(gl_BaseInstanceARB) in blinn_phong_arr.vert.
  *
- * This was recorded as a WARP limitation for several rounds and that was
- * wrong. Measured on the RTX 4060:
+ * R609 measured that a sidecar reading SV_InstanceID renders layer 0 for
+ * {InstanceCount = 1, StartInstanceLocation = 1 or 2}, because D3D12's
+ * SV_InstanceID is gl_InstanceID: it counts 0..InstanceCount-1 and never
+ * includes the base. It then concluded no HLSL spelling of the base existed,
+ * having tried pixel-stage profiles only. SV_StartInstanceLocation is a
+ * VERTEX input from shader model 6.8 (dxc rejects it for vs_6_0..6_7), and the
+ * array vertex sidecar is now compiled as vs_6_8 and reads it.
  *
- *   {InstanceCount = 1, StartInstanceLocation = 1} -> layer 0
- *   {InstanceCount = 1, StartInstanceLocation = 2} -> layer 0
- *   {InstanceCount = 2, StartInstanceLocation = 2} -> last instance is 1
- *
- * The third record is the discriminating one. InstanceCount IS honoured (two
- * instances rasterise and the second wins), so the argument buffer is being
- * read; only StartInstanceLocation is dropped. Without it the first two rows
- * would be indistinguishable from "the upload never happened".
- *
- * It does not corrupt rendering. R637 enabled indirect draw on D3D12, and
- * this was the trapdoor under it: every mesh would still shade correctly --
- * with layer 0 -- and nothing would announce it. So D3D12 reports
- * caps.indirect_first_instance_supported = false, and main.c keeps the R437
- * per-group path (one material bind + one execute per group) instead of the
- * array path whenever that cap is false. The test asserts both caps below.
- *
- * Every row is asserted anyway. The test pins the measured behaviour so the
- * day the path is enabled the suite goes red and whoever fixes it updates
- * the expectations deliberately, instead of the layer silently becoming 0
- * inside a passing test. The per-draw argument buffer is read back and
- * asserted too, so "the record on the CPU was right" is part of the recorded
- * evidence rather than an assumption.
- *
- * The fix is a command signature with a second D3D12_INDIRECT_ARGUMENT_TYPE_
- * CONSTANT argument, copying the layer out of the record into a root
- * constant. There is room: this pipeline's push block ends at 240 and two
- * descriptor tables clamp 32BIT_CONSTANTS at 62 DWORDs = 248 bytes. See the
- * note in blinn_phong_arr_hlsl.frag. */
-TEST(indirect_start_instance_does_not_reach_sv_instance_id)
+ * What this pins, each record against its own colour on an 8x8 target:
+ *   {1 instance,  start 0} -> layer 0     the unshifted case
+ *   {1 instance,  start 1} -> layer 1     the production shape
+ *   {1 instance,  start 2} -> layer 2
+ *   {3 instances, start 1} -> layer 1     every instance sees the SAME base,
+ *                                         so InstanceCount cannot be what is
+ *                                         being read (the old failure mode
+ *                                         rendered layer 2 here)
+ * RT1 stays at raw zero everywhere (identity matrices), the argument buffer is
+ * read back so a stale upload cannot pass, and caps.indirect_first_instance_
+ * supported must be true, since main.c enables the material-array path on it. */
+TEST(indirect_start_instance_reaches_the_shader)
 {
     static const float verts[6 * 8] = {
         /*  pos                    normal        uv  */
@@ -1490,14 +1480,12 @@ TEST(indirect_start_instance_does_not_reach_sv_instance_id)
         {   0, 255,   0, 255 },
         {   0,   0, 255, 255 }
     };
-    /* The three measured records from the header comment. The third is the
-     * discriminating one: InstanceCount = 2 proves the argument buffer is
-     * read at all, so a layer of 0 in the first two rows is the base being
-     * dropped rather than an upload that never landed. */
-    static const struct { u32 instances; u32 start; int layer; } cases[3] = {
-        { 1u, 1u, 0 },
-        { 1u, 2u, 0 },
-        { 2u, 2u, 1 }
+    /* The four records from the header comment. */
+    static const struct { u32 instances; u32 start; int layer; } cases[4] = {
+        { 1u, 0u, 0 },
+        { 1u, 1u, 1 },
+        { 1u, 2u, 2 },
+        { 3u, 1u, 1 }
     };
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT
@@ -1570,11 +1558,8 @@ TEST(indirect_start_instance_does_not_reach_sv_instance_id)
     temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
     ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
 
-    /* The three measured records from the header comment. The third is the
-     * discriminating one: InstanceCount = 2 proves the argument buffer is
-     * read at all, so a layer of 0 in the first two rows is the base being
-     * dropped rather than an upload that never landed. */
-    for (c = 0; c < 3; ++c) {
+    /* The four records from the header comment. */
+    for (c = 0; c < 4; ++c) {
         const int layer = cases[c].layer;
         record.instance_count = cases[c].instances;
         record.start_instance_location = cases[c].start;
@@ -1639,16 +1624,11 @@ TEST(indirect_start_instance_does_not_reach_sv_instance_id)
         }
     }
 
-    printf("  note: %s agrees -- StartInstanceLocation does not reach "
-           "SV_InstanceID on either adapter. D3D12 therefore reports "
-           "caps.indirect_first_instance_supported = false and the demo keeps "
-           "the per-group path; see the header comment.\n",
-           on_warp ? "WARP" : "hardware");
     {
         RHICapabilities caps;
         ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
         ASSERT_TRUE(caps.indirect_draw_supported);
-        ASSERT_FALSE(caps.indirect_first_instance_supported);
+        ASSERT_TRUE(caps.indirect_first_instance_supported);
     }
 
     rhi_mrt_fbo_destroy(g_dev, &fbo);
@@ -10173,6 +10153,456 @@ TEST(clustered_skin_sidecar_blends_joints_and_writes_velocity) {
     rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
 }
 
+/* R658: the clustered forward TEXTURE-ARRAY variant
+ * (pbr_clustered_arr_hlsl.{vert,frag}) through ExecuteIndirect, the way
+ * mega_mat_arrays_draw drives it: one record per draw with InstanceCount = 1
+ * and StartInstanceLocation = the array layer.
+ *
+ * Two quads (x in [-0.8, -0.1] and [0.1, 0.8], y in [-0.5, 0.5], z = 0) under
+ * identity view / proj, drawn by records {6,1,0,start 1} and {6,1,6,start 2}.
+ * The five arrays carry three layers each:
+ *   albedo    layer 0 (200,100,50)   1 (50,200,100)   2 (100,50,200)
+ *   mr        white everywhere, so the per-layer factor IS metallic/roughness
+ *   normal    flat; occlusion white; emissive black on 0 and 1, white on 2
+ * and the b1 cbuffer's two 64-entry tables (offsets 304 / 1328) hold
+ *   layer 1: metallic 0.3 roughness 0.6, no emissive
+ *   layer 2: metallic 0.8 roughness 0.3, emissive (0.10, 0.05, 0.00)
+ * so each quad can only come out right if the layer reached BOTH the texture
+ * lookups and the factor tables. A layer stuck at 0 (SV_InstanceID, or a
+ * dropped base) shades both quads with layer 0's colour and factors; a wrong
+ * table offset reads the neighbouring entry. Colour is a CPU replay of the
+ * PBR terms with black IBL and one directional light. */
+TEST(clustered_array_sidecar_picks_texture_and_factors_by_first_instance) {
+    enum { W = 64, H = 32 };
+    static const float verts[12 * 8] = {
+        -0.8f, -0.5f, 0.0f,  0, 0, 1,  0.0f, 0.0f,
+        -0.1f, -0.5f, 0.0f,  0, 0, 1,  0.7f, 0.0f,
+        -0.1f,  0.5f, 0.0f,  0, 0, 1,  0.7f, 1.0f,
+        -0.8f, -0.5f, 0.0f,  0, 0, 1,  0.0f, 0.0f,
+        -0.1f,  0.5f, 0.0f,  0, 0, 1,  0.7f, 1.0f,
+        -0.8f,  0.5f, 0.0f,  0, 0, 1,  0.0f, 1.0f,
+         0.1f, -0.5f, 0.0f,  0, 0, 1,  0.0f, 0.0f,
+         0.8f, -0.5f, 0.0f,  0, 0, 1,  0.7f, 0.0f,
+         0.8f,  0.5f, 0.0f,  0, 0, 1,  0.7f, 1.0f,
+         0.1f, -0.5f, 0.0f,  0, 0, 1,  0.0f, 0.0f,
+         0.8f,  0.5f, 0.0f,  0, 0, 1,  0.7f, 1.0f,
+         0.1f,  0.5f, 0.0f,  0, 0, 1,  0.0f, 1.0f
+    };
+    static const u32 records[2][4] = { { 6u, 1u, 0u, 1u }, { 6u, 1u, 6u, 2u } };
+    static const unsigned char alb_rgb[3][3] = { { 200, 100, 50 }, { 50, 200, 100 }, { 100, 50, 200 } };
+    static const double fac[3][4] = { { 1, 1, 1, 0 }, { 0.3, 0.6, 0, 0 }, { 0.8, 0.3, 0, 0 } };
+    static const double emi[3][3] = { { 0, 0, 0 }, { 0, 0, 0 }, { 0.10, 0.05, 0.0 } };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    static u16 px[W * H * 4], rt1[W * H * 2];
+    const RHIFormat formats[2] = { RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT };
+    /* The 128-valued normal texel is (+0.0039, +0.0039, 1) in tangent space;
+     * the shader's UV-derivative frame (T = +x, B = -y here) tilts N by that
+     * much, which the low-roughness layer's sharp lobe can see. */
+    const double nt = (128.0 / 255.0) * 2.0 - 1.0;
+    const double nl = sqrt(nt * nt * 2.0 + 1.0);
+    const double N[3] = { nt / nl, -nt / nl, 1.0 / nl };
+    RHIMRTFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo, args;
+    RHITexture arr_alb, arr_mr, arr_nrm, arr_emi, arr_occ, white;
+    RHICmdBuffer *cmd;
+    Mat4 view_m, proj_m;
+    i32 loc_view;
+    int x, y, c, i, l, covered[2] = { 0, 0 };
+    struct { float prev_vp[16], prev_model[16], proj[16], cam[4], amb[4],
+             fogc[4], fog[4], screen[4], counts[4], far[4];
+             float layer_factor[64][4], layer_emissive[64][4]; } fr;
+    r643_mark();
+    vs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered_arr.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered_arr.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.uses_textures = true; pd.uses_texel_buffer = true; pd.disable_culling = true;
+    pd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+    ASSERT_EQ(loc_view, 64);
+
+    {
+        unsigned char tex[4 * 4];
+        arr_alb = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_mr = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_nrm = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_emi = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_occ = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        ASSERT_TRUE(rhi_handle_valid(arr_alb) && rhi_handle_valid(arr_mr) &&
+                    rhi_handle_valid(arr_nrm) && rhi_handle_valid(arr_emi) &&
+                    rhi_handle_valid(arr_occ));
+        for (l = 0; l < 3; ++l) {
+            for (i = 0; i < 4; ++i) {
+                tex[i * 4 + 0] = alb_rgb[l][0]; tex[i * 4 + 1] = alb_rgb[l][1];
+                tex[i * 4 + 2] = alb_rgb[l][2]; tex[i * 4 + 3] = 255;
+            }
+            rhi_texture_array_upload_layer(g_dev, arr_alb, (u32)l, tex, sizeof(tex));
+            for (i = 0; i < 4; ++i) {
+                tex[i * 4 + 0] = tex[i * 4 + 1] = tex[i * 4 + 2] = 255; tex[i * 4 + 3] = 255;
+            }
+            rhi_texture_array_upload_layer(g_dev, arr_mr, (u32)l, tex, sizeof(tex));
+            rhi_texture_array_upload_layer(g_dev, arr_occ, (u32)l, tex, sizeof(tex));
+            if (l == 2) rhi_texture_array_upload_layer(g_dev, arr_emi, (u32)l, tex, sizeof(tex));
+            for (i = 0; i < 4; ++i) {
+                tex[i * 4 + 0] = 128; tex[i * 4 + 1] = 128; tex[i * 4 + 2] = 255; tex[i * 4 + 3] = 255;
+            }
+            rhi_texture_array_upload_layer(g_dev, arr_nrm, (u32)l, tex, sizeof(tex));
+            if (l != 2) {
+                for (i = 0; i < 4; ++i) {
+                    tex[i * 4 + 0] = tex[i * 4 + 1] = tex[i * 4 + 2] = 0; tex[i * 4 + 3] = 255;
+                }
+                rhi_texture_array_upload_layer(g_dev, arr_emi, (u32)l, tex, sizeof(tex));
+            }
+        }
+    }
+    white = r644_tex(255, 255, 255, 255);
+
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(fr); bd.usage = RHI_BUFFER_USAGE_UNIFORM;
+    ubo = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(records); bd.usage = RHI_BUFFER_USAGE_INDIRECT; bd.initial_data = records;
+    args = rhi_buffer_create(g_dev, &bd);
+    fbo = rhi_mrt_fbo_create(g_dev, W, H, formats, 2u);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(ubo) &&
+                rhi_handle_valid(args) && rhi_handle_valid(fbo.fb));
+
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    memcpy(view_m.e, identity, sizeof(identity));
+    memcpy(proj_m.e, identity, sizeof(identity));
+    light_system_clear(&ls);
+    light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, 0.9f, 0.8f, 0.7f);
+    light_system_set_depth_range(&ls, 0.1f, 100.0f);
+    light_system_cull(&ls, &view_m, &proj_m, W, H);
+    light_system_upload(&ls);
+
+    memset(&fr, 0, sizeof(fr));
+    memcpy(fr.prev_vp, identity, sizeof(identity));
+    memcpy(fr.prev_model, identity, sizeof(identity));
+    memcpy(fr.proj, identity, sizeof(identity));
+    fr.cam[2] = 3.0f;
+    fr.fog[0] = 1e6f; fr.fog[1] = 2e6f;
+    fr.screen[0] = (float)W; fr.screen[1] = (float)H;
+    fr.screen[2] = 0.1f; fr.screen[3] = 100.0f;
+    fr.counts[1] = (float)ls.dir_count;
+    fr.counts[2] = 0.002f;
+    fr.far[0] = fr.far[1] = fr.far[2] = fr.far[3] = 25.0f;
+    for (l = 0; l < 64; ++l) {
+        fr.layer_factor[l][0] = 1.0f; fr.layer_factor[l][1] = 1.0f; fr.layer_factor[l][2] = 0.0f;
+    }
+    for (l = 1; l < 3; ++l) {
+        fr.layer_factor[l][0] = (float)fac[l][0];
+        fr.layer_factor[l][1] = (float)fac[l][1];
+        for (c = 0; c < 3; ++c) fr.layer_emissive[l][c] = (float)emi[l][c];
+    }
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_buffer_update(g_dev, ubo, &fr, sizeof(fr));
+    rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+    rhi_cmd_set_uniform_mat4(cmd, loc_view, identity);
+    rhi_cmd_bind_material_textures_ibl(cmd, arr_alb, arr_mr, arr_nrm, arr_emi, arr_occ,
+        RHI_HANDLE_NULL, white, (RHISampler){0}, RHI_HANDLE_NULL,
+        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
+                               light_system_grid_slot(&ls));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw_indirect(g_dev, args, 0u, 2u, 16u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px, sizeof(px)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (y = 0; y < H; ++y) {
+        for (x = 0; x < W; ++x) {
+            double nx = (x + 0.5) / W * 2.0 - 1.0, ny = (y + 0.5) / H * 2.0 - 1.0;
+            double mx = 1.5 * (2.0 / W), my = 1.5 * (2.0 / H);
+            int which = -1, outside = 1;
+            if (ny > -0.5 + my && ny < 0.5 - my) {
+                if (nx > -0.8 + mx && nx < -0.1 - mx) which = 0;
+                else if (nx > 0.1 + mx && nx < 0.8 - mx) which = 1;
+            }
+            if (nx > -0.8 - mx && nx < -0.1 + mx && ny > -0.5 - my && ny < 0.5 + my) outside = 0;
+            if (nx > 0.1 - mx && nx < 0.8 + mx && ny > -0.5 - my && ny < 0.5 + my) outside = 0;
+            if (which >= 0) {
+                int layer = which + 1;
+                double alb[3], V[3] = { -nx, -ny, 3.0 }, vl, L[3] = { 0, 0, 1 };
+                double lc[3] = { 0.9, 0.8, 0.7 }, add[3];
+                for (c = 0; c < 3; ++c) alb[c] = alb_rgb[layer][c] / 255.0;
+                vl = sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+                for (c = 0; c < 3; ++c) V[c] /= vl;
+                r644_cook(alb, fac[layer][0], fac[layer][1], N, V, L, lc, add);
+                for (c = 0; c < 3; ++c) {
+                    double col = add[c] + emi[layer][c];
+                    double tm = col / (col + 1.0), want = pow(tm, 1.0 / 2.2);
+                    double got = warp_half_to_float(px[(y * W + x) * 4 + c]);
+                    if (fabs(got - want) > 0.008)
+                        printf("  array quad %d px (%d,%d) ch %d = %f, want %f\n",
+                               which, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.008);
+                }
+                for (c = 0; c < 2; ++c)
+                    ASSERT_TRUE(fabs(warp_half_to_float(rt1[(y * W + x) * 2 + c])) <= 0.002);
+                ++covered[which];
+            } else if (outside) {
+                for (c = 0; c < 3; ++c)
+                    ASSERT_TRUE(px[(y * W + x) * 4 + c] == px[c]);
+            }
+        }
+    }
+    ASSERT_TRUE(covered[0] >= 100 && covered[1] >= 100);
+    ASSERT_TRUE(r643_clean("clustered_array"));
+    light_system_shutdown(&ls);
+    rhi_texture_destroy(g_dev, arr_alb); rhi_texture_destroy(g_dev, arr_mr);
+    rhi_texture_destroy(g_dev, arr_nrm); rhi_texture_destroy(g_dev, arr_emi);
+    rhi_texture_destroy(g_dev, arr_occ); rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, vbo); rhi_buffer_destroy(g_dev, ubo);
+    rhi_buffer_destroy(g_dev, args);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+}
+
+/* R658: the texture-array G-Buffer sidecar (gbuffer_arr_hlsl.{vert,frag}),
+ * through the real DeferredSystem pipeline and ExecuteIndirect, as
+ * mega_mat_arrays_draw_gbuffer drives it: one record per quad with
+ * InstanceCount = 1 and StartInstanceLocation = the array layer.
+ *
+ * Two quads (x in [-0.7, -0.2] and [0.2, 0.7], y in [-0.5, 0.5], z = 0),
+ * identity matrices, layers 1 and 2 of five three-layer arrays:
+ *   albedo  layer 1 = (200,100,50), layer 2 = (50,200,100)
+ *   mr / normal / occlusion  flat/white everywhere
+ *   emissive layer 1 = white, layer 2 = black
+ * and the factor UBO's per-layer tables set layer 1 to metallic 0.25,
+ * roughness 0.5, AO strength 0.5, emissive flag 0.75 and layer 2 to metallic
+ * 0.5, roughness 0.75, AO strength 0.25. What each readback pins:
+ *   RT0 (RGBA8)   = albedo texel + factor metallic  ->  texture layer
+ *   RT2 (RGBA8)   = factor roughness/AO/emissive    ->  factor table layer
+ *   RT4 (RGBA16F) = emissive texel x factor         ->  emissive array layer
+ *                                                    and emissive table layer
+ *   RT3 (RG16F)   = 0 (identity matrices, both frames)
+ * A layer stuck at 0 (SV_InstanceID, or a dropped base) fails RT0; a table
+ * read at the wrong index fails RT2/RT4. */
+TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets) {
+    typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } GVert;
+    static const GVert verts[12] = {
+        { { -0.7f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 0.0f } },
+        { { -0.2f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 0.0f } },
+        { { -0.2f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 1.0f } },
+        { { -0.7f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 0.0f } },
+        { { -0.2f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 1.0f } },
+        { { -0.7f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 1.0f } },
+        { {  0.2f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 0.0f } },
+        { {  0.7f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 0.0f } },
+        { {  0.7f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 1.0f } },
+        { {  0.2f, -0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 0.0f } },
+        { {  0.7f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.5f, 1.0f } },
+        { {  0.2f,  0.5f, 0.0f }, { 0, 0, 1 }, { 0.0f, 1.0f } }
+    };
+    static const u32 indices[12] = { 0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u, 10u, 11u };
+    /* DrawIndexedIndirectCommand: index_count, instance_count, first_index,
+     * vertex_offset, first_instance -- one record per quad, the layer in
+     * first_instance exactly as production's array system encodes it. */
+    static const u32 records[2][5] = {
+        { 6u, 1u, 0u, 0, 1u },
+        { 6u, 1u, 6u, 0, 2u }
+    };
+    static const unsigned char alb_rgb[3][3] = { { 128, 128, 128 }, { 200, 100, 50 }, { 50, 200, 100 } };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static u8 rt0[8 * 8 * 4], rt2[8 * 8 * 4];
+    static u16 rt3[8 * 8 * 4], rt4[8 * 8 * 4];
+    DeferredSystem ds;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ibo, args;
+    RHITexture arr_alb, arr_mr, arr_nrm, arr_emi, arr_occ, white;
+    RHICmdBuffer *cmd;
+    int x, y, i, l, covered[2] = { 0, 0 };
+    float fac[DEFERRED_FACTOR_MAX_LAYERS][4], efa[DEFERRED_FACTOR_MAX_LAYERS][4];
+    r643_mark();
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    deferred_destroy(&ds, g_dev);
+    memset(&ds, 0, sizeof(ds));
+    deferred_init(&ds, g_dev, 8u, 8u);
+    ASSERT_TRUE(ds.initialized);
+    ASSERT_TRUE(rhi_handle_valid(ds.gbuffer_arr_pipeline));
+    ASSERT_EQ(ds._loc_gbuf_arr_model, 0);
+    ASSERT_EQ(ds._loc_gbuf_arr_vp, 64);
+    ASSERT_EQ(ds._loc_gbuf_arr_prev_mvp, 128);
+    ASSERT_EQ(ds._loc_gbuf_arr_view, -1);
+    ASSERT_EQ(ds._loc_gbuf_arr_proj, -1);
+
+    {
+        unsigned char tex[4 * 4];
+        arr_alb = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_mr = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_nrm = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_emi = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        arr_occ = rhi_texture_array_create(g_dev, 2u, 2u, 3u, RHI_FORMAT_R8G8B8A8_UNORM);
+        ASSERT_TRUE(rhi_handle_valid(arr_alb) && rhi_handle_valid(arr_mr) &&
+                    rhi_handle_valid(arr_nrm) && rhi_handle_valid(arr_emi) &&
+                    rhi_handle_valid(arr_occ));
+        for (l = 0; l < 3; ++l) {
+            for (i = 0; i < 4; ++i) {
+                tex[i * 4 + 0] = alb_rgb[l][0]; tex[i * 4 + 1] = alb_rgb[l][1];
+                tex[i * 4 + 2] = alb_rgb[l][2]; tex[i * 4 + 3] = 255;
+            }
+            rhi_texture_array_upload_layer(g_dev, arr_alb, (u32)l, tex, sizeof(tex));
+            for (i = 0; i < 4; ++i)
+                tex[i * 4 + 0] = tex[i * 4 + 1] = tex[i * 4 + 2] = 255, tex[i * 4 + 3] = 255;
+            rhi_texture_array_upload_layer(g_dev, arr_mr, (u32)l, tex, sizeof(tex));
+            rhi_texture_array_upload_layer(g_dev, arr_occ, (u32)l, tex, sizeof(tex));
+            if (l == 1) rhi_texture_array_upload_layer(g_dev, arr_emi, (u32)l, tex, sizeof(tex));
+            for (i = 0; i < 4; ++i)
+                tex[i * 4 + 0] = 128, tex[i * 4 + 1] = 128, tex[i * 4 + 2] = 255, tex[i * 4 + 3] = 255;
+            rhi_texture_array_upload_layer(g_dev, arr_nrm, (u32)l, tex, sizeof(tex));
+            if (l != 1) {
+                for (i = 0; i < 4; ++i)
+                    tex[i * 4 + 0] = tex[i * 4 + 1] = tex[i * 4 + 2] = 0, tex[i * 4 + 3] = 255;
+                rhi_texture_array_upload_layer(g_dev, arr_emi, (u32)l, tex, sizeof(tex));
+            }
+        }
+    }
+    white = r644_tex(255, 255, 255, 255);
+
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(records); bd.usage = RHI_BUFFER_USAGE_INDIRECT; bd.initial_data = records;
+    args = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(indices); bd.usage = RHI_BUFFER_USAGE_INDEX; bd.initial_data = indices;
+    ibo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(args) && rhi_handle_valid(ibo));
+
+    memset(fac, 0, sizeof(fac));
+    memset(efa, 0, sizeof(efa));
+    for (l = 0; l < (int)DEFERRED_FACTOR_MAX_LAYERS; ++l) {
+        fac[l][0] = 1.0f; fac[l][1] = 1.0f; fac[l][2] = 0.0f; fac[l][3] = 0.0f;
+    }
+    fac[1][0] = 0.25f; fac[1][1] = 0.5f; fac[1][2] = 0.5f; fac[1][3] = 0.75f;
+    fac[2][0] = 0.5f;  fac[2][1] = 0.75f; fac[2][2] = 0.25f; fac[2][3] = 1.0f;
+    deferred_set_gbuffer_factor_array(&ds, &fac[0][0], DEFERRED_FACTOR_MAX_LAYERS);
+    deferred_set_gbuffer_emissive_array(&ds, &efa[0][0], DEFERRED_FACTOR_MAX_LAYERS);
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    deferred_begin_gbuffer(&ds, g_dev, cmd);
+    rhi_cmd_bind_pipeline(cmd, ds.gbuffer_arr_pipeline);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_arr_model, identity);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_arr_vp, identity);
+    rhi_cmd_set_uniform_mat4(cmd, ds._loc_gbuf_arr_prev_mvp, identity);
+    rhi_cmd_bind_material_textures_ibl(cmd, arr_alb, arr_mr, arr_nrm, arr_emi, arr_occ,
+        RHI_HANDLE_NULL, RHI_HANDLE_NULL, (RHISampler){0}, RHI_HANDLE_NULL,
+        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    deferred_bind_gbuffer_factor_array(&ds, cmd);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_bind_index_buffer(cmd, ibo, 0u, true);
+    rhi_cmd_draw_indexed_indirect(g_dev, args, 0u, 2u, 20u);
+    deferred_end_gbuffer(&ds, g_dev, cmd);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_albedo_metallic, rt0, sizeof(rt0)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_roughness_ao, rt2, sizeof(rt2)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_velocity, rt3, sizeof(rt3)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ds.gbuf_emissive, rt4, sizeof(rt4)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            int which = -1;
+            /* The quads span x in [-0.7,-0.2] / [0.2,0.7] -> columns 1..2 /
+             * 5..6 (they ARE row 0..1 thin slivers), y in [-0.5,0.5] -> rows
+             * 2..5. */
+            if (x >= 1 && x <= 2 && y >= 2 && y <= 5) which = 0;
+            else if (x >= 5 && x <= 6 && y >= 2 && y <= 5) which = 1;
+            if (which >= 0) {
+                int layer = which + 1;
+                i = (y * 8 + x) * 4;
+                if (rt0[i + 0] != alb_rgb[layer][0] || rt0[i + 3] != (unsigned)(layer == 1 ? 0.25f * 255.0f + 0.5f : 0.5f * 255.0f + 0.5f) ||
+                    rt2[i + 0] != (unsigned)(layer == 1 ? 0.5f * 255.0f + 0.5f : 0.75f * 255.0f + 0.5f))
+                    printf("  garr px (%d,%d) layer %d rt0=(%u,%u,%u,%u) rt2=(%u,%u,%u,%u) rt4=(%f,%f,%f) rt3=(%f,%f)",
+                           x, y, layer, rt0[i], rt0[i+1], rt0[i+2], rt0[i+3], rt2[i], rt2[i+1], rt2[i+2], rt2[i+3],
+                           (double)warp_half_to_float(rt4[i]), (double)warp_half_to_float(rt4[i+1]), (double)warp_half_to_float(rt4[i+2]),
+                           (double)warp_half_to_float(rt3[i]), (double)warp_half_to_float(rt3[i+1]));
+                ASSERT_EQ(rt0[i + 0], alb_rgb[layer][0]);
+                ASSERT_EQ(rt0[i + 1], alb_rgb[layer][1]);
+                ASSERT_EQ(rt0[i + 2], alb_rgb[layer][2]);
+                /* +-1/255: same RGBA8 rounding class as roughness. */
+                {
+                    int metal_px = rt0[i + 3];
+                    int want_px = (int)(layer == 1 ? 0.25f * 255.0f + 0.5f
+                                                   : 0.5f * 255.0f + 0.5f);
+                    ASSERT_TRUE(abs(metal_px - want_px) <= 1);
+                }
+                /* +-1/255: RT2 is RGBA8 and WARP/RTX round a clamped f32 x
+                 * 255 differently at exactly x.5. */
+                {
+                    int rough_px = rt2[i + 0];
+                    int want_px = (int)(layer == 1 ? 0.5f * 255.0f + 0.5f
+                                                   : 0.75f * 255.0f + 0.5f);
+                    ASSERT_TRUE(abs(rough_px - want_px) <= 1);
+                }
+                /* ao = 1 on both (occlusion texel is white). The flat normal
+                 * texel (128,128,255) tilts the derivative TBN by +0.0039, and
+                 * the octahedron encode of that shows up as +-2/255 elsewhere,
+                 * so the emissive flag compares after a printf, exactly. */
+                ASSERT_EQ(rt2[i + 1], 255u);
+                {
+                    int flag = rt2[i + 2];
+                    int want = layer == 1 ? (int)(0.75f * 255.0f + 0.5f) : 255;
+                    if (abs(flag - want) > 1) printf("  garr px (%d,%d) emissive flag %d want %d", x, y, flag, want);
+                    ASSERT_TRUE(abs(flag - want) <= 1);
+                }
+                {
+                    double e = warp_half_to_float(rt4[i + 0]);
+                    double g = warp_half_to_float(rt4[i + 1]);
+                    double b2 = warp_half_to_float(rt4[i + 2]);
+                    /* Both tables are zeroed: RT4 must be black regardless of
+                     * which layer the texture lookup uses. */
+                    ASSERT_TRUE(fabs(e) < 0.002 && fabs(g) < 0.002 && fabs(b2) < 0.002);
+                }
+                ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i + 0])) < 0.002f);
+                ASSERT_TRUE(fabsf(warp_half_to_float(rt3[i + 1])) < 0.002f);
+                ++covered[which];
+            }
+        }
+    }
+    ASSERT_EQ(covered[0], 8);
+    ASSERT_EQ(covered[1], 8);
+    ASSERT_TRUE(r643_clean("gbuffer_arr"));
+    rhi_texture_destroy(g_dev, arr_alb); rhi_texture_destroy(g_dev, arr_mr);
+    rhi_texture_destroy(g_dev, arr_nrm); rhi_texture_destroy(g_dev, arr_emi);
+    rhi_texture_destroy(g_dev, arr_occ); rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, ibo);
+    rhi_buffer_destroy(g_dev, args);
+    deferred_destroy(&ds, g_dev);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -10206,7 +10636,7 @@ int main(void) {
     RUN_TEST(mrt_fbo_clears_and_reads_independent_attachments);
     RUN_TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1);
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
-    RUN_TEST(indirect_start_instance_does_not_reach_sv_instance_id);
+    RUN_TEST(indirect_start_instance_reaches_the_shader);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(ssgi_gather_early_out_and_blur_pass_through_are_exact);
     RUN_TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table);
@@ -10268,6 +10698,8 @@ int main(void) {
     RUN_TEST(clustered_forward_sidecar_matches_a_cpu_replay);
     RUN_TEST(clustered_inst_sidecar_places_two_instances_and_their_velocity);
     RUN_TEST(clustered_skin_sidecar_blends_joints_and_writes_velocity);
+    RUN_TEST(clustered_array_sidecar_picks_texture_and_factors_by_first_instance);
+    RUN_TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

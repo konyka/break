@@ -1250,9 +1250,9 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     /* R637: indirect draw is complete on this backend -- ExecuteIndirect with
      * a count buffer, the storage binder (UAV + read-only SRV), recorded
      * buffer fills/updates, and the compact_draws_hlsl.comp sidecar.
-     * first_instance stays false: SV_InstanceID drops StartInstanceLocation
-     * (see indirect_first_instance_supported), so the material-array path
-     * falls back to per-group draws.
+     * first_instance is answered below from the device's shader model:
+     * the sidecars read the base through SV_StartInstanceLocation, a
+     * shader-model 6.8 vertex input (R658).
      *
      * R652: compute_supported is true. It only gates GPU culling
      * (gpucull_init); cull.comp and unified_cull.comp now have HLSL
@@ -1264,7 +1264,17 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
     dev->capabilities.compute_supported = true;
     dev->capabilities.hiz_supported = true;
     dev->capabilities.indirect_draw_supported = true;
-    dev->capabilities.indirect_first_instance_supported = false;
+    {
+        D3D12_FEATURE_DATA_SHADER_MODEL sm;
+        ZeroMemory(&sm, sizeof(sm));
+        sm.HighestShaderModel = D3D_SHADER_MODEL_6_8;
+        dev->capabilities.indirect_first_instance_supported =
+            SUCCEEDED(ID3D12Device_CheckFeatureSupport(
+                ctx->device, D3D12_FEATURE_SHADER_MODEL, &sm, (UINT)sizeof(sm))) &&
+            sm.HighestShaderModel >= D3D_SHADER_MODEL_6_8;
+        printf("R658DBG sm=0x%02x supported=%d", (unsigned)sm.HighestShaderModel,
+               (int)dev->capabilities.indirect_first_instance_supported);
+    }
     g_current_device = dev;
     return dev;
 }

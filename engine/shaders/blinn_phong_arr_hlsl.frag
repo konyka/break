@@ -64,45 +64,11 @@ PSOut main(float4 pos : SV_Position, float3 world : TEXCOORD0,
 
     // GLSL: texture(u_albedo, vec3(vUV, float(vLayer))) where
     //     vLayer = uint(gl_BaseInstanceARB)
-    //
-    // ⚠️ NOT THE GLSL TWIN, and currently unreachable anyway. Measured on the
-    // RTX 4060, not inferred: `layer` below arrives from SV_InstanceID in the
-    // vertex stage, and D3D12's SV_InstanceID does NOT include
-    // StartInstanceLocation; it is gl_InstanceID, and here it runs
-    // 0..InstanceCount-1 with the base dropped. Evidence: an ExecuteIndirect
-    // record with StartInstanceLocation = 1, InstanceCount = 1 renders layer
-    // 0, and one with StartInstanceLocation = 2, InstanceCount = 2 renders
-    // the last instance's layer as 1 -- i.e. 0..1, not 2..3.
-    //
-    // Production sets first_instance = array layer with InstanceCount = 1
-    // (main.c:3779 and :3947), which is exactly the case that breaks.
-    //
-    // It does not corrupt anything TODAY because this path never runs on
-    // D3D12: rhi_d3d12.c never sets caps.indirect_draw_supported, so
-    // indirect_draw_init fail-closes, mb->array_system_ready stays false and
-    // mega_mat_arrays_draw returns 0 before it reaches this pipeline. The
-    // pipeline is created (R607) and never drawn. So this is a trapdoor under
-    // a disabled subsystem, not a live rendering bug -- it becomes one the
-    // moment indirect draw is enabled on D3D12, and it will not announce
-    // itself, because every mesh will still shade correctly with layer 0.
-    //
-    // There is no HLSL spelling of the base instance to fix this with:
-    // `SV_StartInstanceLocation` is the correct semantic and dxc rejects it
-    // for every shader model from ps_6_0 to ps_6_11 ("invalid semantic ...
-    // for ps 6.x"), in both the vertex and pixel stages. The bare name
-    // `StartInstanceLocation` compiles but dumps as SysValue = NONE, i.e. a
-    // user semantic the runtime never populates.
-    //
-    // The sanctioned D3D12 route is a command signature with a second
-    // D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT argument, which copies the value
-    // out of the argument buffer and into a root constant the shader can
-    // read. There is room for it: this push block ends at 240 and two
-    // descriptor tables clamp 32BIT_CONSTANTS at 62 DWORDs = 248 bytes, so
-    // `uint u_layer` at 240 fits without a new root parameter. That change
-    // spans the command signature, the indirect-argument ABI, the GPU
-    // compaction shader that reshuffles those records, and this shader. See
-    // the R609 entry in
-    // docs/superpowers/plans/2026-10-19-d3d12-forward-mrt-velocity-design-plan.md.
+    // The vertex stage reads the same value from SV_StartInstanceLocation
+    // (shader model 6.8), so `layer` is the indirect command's first_instance
+    // exactly as on GL and Vulkan. SV_InstanceID would be wrong here: it is
+    // gl_InstanceID and drops the base, which rendered every mesh with
+    // layer 0 until R658.
     float3 albedo = g_albedo.Sample(g_smp, float3(uv, (float)layer)).rgb;
     float3 color = albedo * (g_push.u_ambient + g_push.u_light_color * diff)
                  + g_push.u_light_color * spec * 0.15;

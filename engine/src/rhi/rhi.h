@@ -142,10 +142,10 @@ typedef struct {
     bool       compute_supported;        /* rhi_cmd_dispatch 路径 */
     bool       indirect_draw_supported;  /* rhi_cmd_draw_*_indirect 族 */
     /* R637：间接绘制记录的 first_instance 能否到达着色器（GLSL 的
-     * gl_BaseInstanceARB）。材质数组路径把数组层号放在这里。D3D12 为 false：
-     * SV_InstanceID 不含 StartInstanceLocation，实测 RTX 4060 与 WARP 都拿到
-     * 层 0（test_d3d12_warp_runtime 的
-     * indirect_start_instance_does_not_reach_sv_instance_id）。 */
+     * gl_BaseInstanceARB）。材质数组路径把数组层号放在这里。D3D12 取决于设备
+     * 的着色器模型：边车用 SV_StartInstanceLocation 读取它，该语义是 SM 6.8
+     * 的顶点输入（SV_InstanceID 不含 StartInstanceLocation，会让每个网格都取层 0；
+     * 见 test_d3d12_warp_runtime 的 indirect_start_instance_reaches_the_shader）。 */
     bool       indirect_first_instance_supported;
     u32        shader_variant;           /* RHIShaderVariant */
     /* R606：rhi_shader_create_path 不读源码，而是解析该后端自己的着色器产物。

@@ -175,6 +175,9 @@ static void defrd_cache_uniform_locations(DeferredSystem *sys, RHIDevice *dev) {
         sys->_loc_gbuf_arr_view  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_view");
         sys->_loc_gbuf_arr_proj  = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_proj");
         sys->_loc_gbuf_arr_prev_mvp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_prev_mvp");
+        /* R658: the D3D12 sidecar takes view*proj folded, exactly as the
+         * static sidecar does (R644). */
+        sys->_loc_gbuf_arr_vp = rhi_pipeline_bindings_resolve(sys->bind_gbuffer_arr, "u_vp");
     }
 
     /* Lighting pass pipeline uniforms. The screen/clip names are legacy
@@ -221,6 +224,7 @@ void deferred_init(DeferredSystem *sys, RHIDevice *dev, u32 width, u32 height) {
     sys->_loc_gbuf_arr_view   = -1;
     sys->_loc_gbuf_arr_proj   = -1;
     sys->_loc_gbuf_arr_prev_mvp = -1;
+    sys->_loc_gbuf_arr_vp = -1;
     sys->_loc_gbuf_skinned_model = -1;
     sys->_loc_gbuf_skinned_view  = -1;
     sys->_loc_gbuf_skinned_proj  = -1;

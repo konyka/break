@@ -12,15 +12,15 @@
 //   1. u_albedo is a sampler2DArray in the fragment sidecar, so this stage
 //      must hand the layer down. GLSL spells it uint(gl_BaseInstanceARB) --
 //      the indirect draw command's first_instance, which is independent of
-//      InstanceCount. HLSL's equivalent is SV_StartInstanceLocation.
-//      SV_InstanceID is NOT the twin: that is gl_InstanceID, i.e.
-//      base + instance index, so the two agree only when first_instance is 0
-//      and the draw is a single instance. Production here is
-//      first_instance = layer with InstanceCount = 1, and reading
-//      SV_InstanceID on the RTX 4060 renders layer 0 for StartInstanceLocation
-//      1 and 2 alike, so the old pairing was silently wrong on the one route
-//      the engine actually uses. See blinn_phong_arr_hlsl.frag for the full
-//      measurement and for why no other semantic fixes it.
+//      InstanceCount. HLSL's equivalent is SV_StartInstanceLocation, a vertex
+//      input from shader model 6.8, so this file is compiled as vs_6_8 (the
+//      build selects the profile by finding the semantic in the source) and
+//      the backend reports caps.indirect_first_instance_supported only when
+//      the device runs 6.8. SV_InstanceID is NOT the twin: it is
+//      gl_InstanceID and never includes the base. Production uses
+//      first_instance = layer with InstanceCount = 1, where SV_InstanceID
+//      renders layer 0 for every layer; R609 recorded that and wrongly
+//      concluded no semantic existed, because it tried pixel-stage profiles.
 //   2. The push block has no u_camera_pos: R600 moved the camera into the
 //      b1 temporal CBV, exactly as blinn_phong_hlsl.vert did. Both twins of
 //      this pair below share the shortened 240-byte tail.
@@ -59,15 +59,11 @@ struct VSIn {
     float3 pos : POSITION;   // aPos    float3 @ 0
     float3 normal : NORMAL;  // aNormal float3 @ 12
     float2 uv : TEXCOORD0;   // aUV     float2 @ 24
-    // GLSL: vLayer = uint(gl_BaseInstanceARB). nointerpolation is HLSL's
+    // GLSL: vLayer = uint(gl_BaseInstanceARB), the indirect command's
+    // first_instance. nointerpolation (on the VSOut copy below) is HLSL's
     // flat-equivalent and is mandatory for an integer interpolant to survive
     // the trip unchanged; it must match the PS input's modifier exactly.
-    // ⚠️ This is NOT the GLSL twin -- SV_InstanceID is gl_InstanceID, not
-    // gl_BaseInstance, and on D3D12 the base never reaches it. The array path
-    // is disabled on D3D12 today (caps.indirect_draw_supported is never set),
-    // so this is latent, not live. See the long note in
-    // blinn_phong_arr_hlsl.frag.
-    uint layer : SV_InstanceID;
+    uint layer : SV_StartInstanceLocation;
 };
 struct VSOut {
     float4 pos : SV_Position;

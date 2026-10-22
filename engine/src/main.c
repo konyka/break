@@ -661,6 +661,24 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     LOG_WARN("clustered: D3D12 skinned sidecar pipeline creation failed");
                 rhi_shader_destroy(rs->device, csvs);
             }
+            /* R658: texture-array variant -- own pixel stage (Texture2DArray
+             * registers, per-layer factor tables in the b1 cbuffer) and a
+             * vertex stage that forwards first_instance as the layer. */
+            {
+                RHIShader cavs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_arr.vert", false);
+                RHIShader cafs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_arr.frag", true);
+                if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
+                    cpd.vert = cavs;
+                    cpd.frag = cafs;
+                    cpd.uses_storage = false;
+                    cpd.skinned_vertex = false;
+                    rs->clustered_arr_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    if (!rhi_handle_valid(rs->clustered_arr_pipeline))
+                        LOG_WARN("clustered: D3D12 array sidecar pipeline creation failed");
+                }
+                if (rhi_handle_valid(cavs)) rhi_shader_destroy(rs->device, cavs);
+                if (rhi_handle_valid(cafs)) rhi_shader_destroy(rs->device, cafs);
+            }
         } else {
             LOG_WARN("clustered: pbr_clustered sidecars unavailable");
         }
@@ -668,7 +686,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (rhi_handle_valid(cfs)) rhi_shader_destroy(rs->device, cfs);
         if (rhi_handle_valid(rs->clustered_pipeline)) {
             RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
-                                  .size = sizeof(ClusterFrameUbo),
+                                  .size = sizeof(ClusterFrameUbo) + 2u * 64u * 4u * sizeof(f32),
                                   .initial_data = NULL };
             rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
         }
@@ -2451,7 +2469,9 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
         rhi_cmd_set_uniform_mat4(cmd, render->car.cl_loc_model, &idm.e[0][0]);
         if (rhi_handle_valid(render->clustered_proj_ubo)) {
             /* R600: unchanged — the camera never entered this buffer. */
-            const u32 factor_base = 3u * sizeof(Mat4);
+            const u32 factor_base = render->caps.shader_sidecar_paths
+                                        ? (u32)sizeof(ClusterFrameUbo)
+                                        : 3u * (u32)sizeof(Mat4);
             rhi_buffer_update_region(render->device, render->clustered_proj_ubo,
                                      factor_base,
                                      mb->mats.mat_factors, sizeof(mb->mats.mat_factors));
@@ -2540,6 +2560,12 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_proj, &proj->e[0][0]);
     if (dsys->_loc_gbuf_arr_prev_mvp >= 0)
         rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_prev_mvp, &prev_mvp->e[0][0]);
+    if (dsys->_loc_gbuf_arr_vp >= 0) {
+        /* R658: the D3D12 sidecar's folded view*proj (R644 for the static
+         * pipeline). */
+        Mat4 vp = mat4_mul(*proj, *view);
+        rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_arr_vp, &vp.e[0][0]);
+    }
 
     /* One bind for the whole pass: slot 0 = albedo array, slot 2 = MR array,
      * slot 3 = normal array (R595: R594's baked per-layer normal maps drive

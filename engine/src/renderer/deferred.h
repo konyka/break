@@ -91,6 +91,7 @@ typedef struct {
     i32 _loc_gbuf_arr_view;
     i32 _loc_gbuf_arr_proj;
     i32 _loc_gbuf_arr_prev_mvp;
+    i32 _loc_gbuf_arr_vp;      /* R658: D3D12 sidecar only (view*proj) */
 
     /* R560: cached uniform locations of gbuffer_skinned_pipeline (-1 if absent). */
     i32 _loc_gbuf_skinned_model;
