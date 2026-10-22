@@ -8967,6 +8967,77 @@ TEST(particles_spawn_age_cull_and_draw_as_sized_quads) {
     particles_shutdown(&ps);
 }
 
+/* R651: GPU cluster binning on D3D12 must produce the same per-cluster light
+ * SETS as the CPU producer (light_system_cull), for the same lights and the
+ * same perspective camera. The CPU path packs indices densely and the GPU
+ * path into fixed per-cluster regions, so offsets differ by design; what has
+ * to agree is each cluster's count and the set of indices it lists (both
+ * walk lights in index order, so the order agrees too). 40 lights on a ring
+ * in front of the camera with radii 1.5-3, seen by a 60-degree camera, give
+ * clusters with 0, 1 and several lights at a range of depths. */
+TEST(cluster_cull_sidecar_matches_the_cpu_binning) {
+    static LightSystem ls;
+    static u32 cpu_oc[CLUSTER_COUNT * 2];
+    static u32 cpu_idx[CLUSTER_COUNT * LIGHT_MAX_PER_CLUSTER];
+    static u32 gpu[CLUSTER_COUNT * 2 + CLUSTER_COUNT * LIGHT_MAX_PER_CLUSTER];
+    Mat4 view_m, proj_m, vp;
+    RHICmdBuffer *cmd;
+    RHIBuffer grid;
+    u32 ci, k, nonempty = 0, multi = 0, total = 0;
+    int i;
+    r643_mark();
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    ASSERT_TRUE(light_system_init_gpu_cull(&ls));
+    ASSERT_EQ(ls.cc_loc_vp, 0);
+    ASSERT_EQ(ls.cc_loc_params0, 64);
+    ASSERT_EQ(ls.cc_loc_params1, 80);
+    view_m = mat4_lookat(vec3(0.0f, 2.0f, 6.0f), vec3(0.0f, 0.0f, -6.0f), vec3(0.0f, 1.0f, 0.0f));
+    proj_m = mat4_perspective(1.0471976f, 16.0f / 9.0f, 0.1f, 60.0f);
+    vp = mat4_mul(proj_m, view_m);
+    light_system_clear(&ls);
+    for (i = 0; i < 40; ++i) {
+        float a = (float)i * 0.4f;
+        light_system_add_point(&ls, 6.0f * cosf(a), 0.5f * (float)(i % 5) - 1.0f,
+                               -6.0f - 9.0f * sinf(a) * 0.5f - (float)i * 0.3f,
+                               1.5f + 0.04f * (float)i, 1.0f, 0.5f, 0.25f);
+    }
+    light_system_set_depth_range(&ls, 0.1f, 60.0f);
+    light_system_cull(&ls, &view_m, &proj_m, 160u, 90u);
+    memcpy(cpu_oc, ls.grid_offsets_counts, sizeof(cpu_oc));
+    memcpy(cpu_idx, ls.grid_indices, sizeof(cpu_idx));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    light_system_upload_lights(&ls);
+    light_system_cull_gpu(&ls, cmd, &vp.e[0][0], 160u, 90u);
+    /* The grid slot follows rhi_frame_index, which advances at frame end. */
+    grid = light_system_grid_slot(&ls);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_buffer_read(g_dev, grid, gpu, 0u, sizeof(gpu)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (ci = 0u; ci < CLUSTER_COUNT; ++ci) {
+        u32 cn = cpu_oc[ci * 2u + 1u], gn = gpu[ci * 2u + 1u];
+        u32 co = cpu_oc[ci * 2u], go = gpu[ci * 2u];
+        if (cn != gn) {
+            printf("  cluster %u: cpu %u lights, gpu %u\n", ci, cn, gn);
+            ASSERT_EQ(cn, gn);
+        }
+        ASSERT_EQ(go, ci * LIGHT_MAX_PER_CLUSTER);
+        for (k = 0u; k < cn; ++k)
+            ASSERT_EQ(cpu_idx[co + k], gpu[CLUSTER_COUNT * 2u + go + k]);
+        if (cn > 0u) ++nonempty;
+        if (cn > 1u) ++multi;
+        total += cn;
+    }
+    printf("  cluster cull: %u non-empty clusters, %u with >1 light, %u entries\n",
+           nonempty, multi, total);
+    ASSERT_TRUE(nonempty >= 50u && multi >= 20u);
+    ASSERT_TRUE(r643_clean("cluster_cull"));
+    light_system_shutdown(&ls);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9055,6 +9126,7 @@ int main(void) {
     RUN_TEST(deferred_lighting_samples_the_point_shadow_cube);
     RUN_TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity);
     RUN_TEST(particles_spawn_age_cull_and_draw_as_sized_quads);
+    RUN_TEST(cluster_cull_sidecar_matches_the_cpu_binning);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

@@ -1,6 +1,28 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R651 — **D3D12 GPU 簇光源分箱**（`cluster_cull_hlsl.comp`）
+
+- **问题**：D3D12 上 `light_system_init_gpu_cull` 把 GLSL 源码交给 `rhi_shader_create_compute`，日志报 `cluster_cull.comp compile failed; using CPU binning`。前向簇光照和延迟光照的簇网格每帧都由 CPU 分箱，再整块上传。
+- **修复**：
+  - 新增 sidecar `cluster_cull_hlsl.comp`，逐行对应 GL 版 `cluster_cull.comp`：每个簇一个线程（16×8×24），按簇的屏幕 tile 和视深切片测试每个点光源，把命中的灯写进固定的每簇区域（偏移 = ci × 128）。网格布局和 CPU 生产者、光照着色器用的密集 uint 布局完全一致。
+  - 灯光数据是每帧由主机写入的 UPLOAD 堆缓冲，只能作为 SRV 读取，所以放在 t0（ByteAddressBuffer，每盏灯 32 字节）。网格是用零初始化的 DEFAULT 堆缓冲，作为 raw UAV 放在 u1。
+  - `lighting.c` 在 `caps.shader_sidecar_paths` 下改走 `rhi_shader_create_compute_path`。
+- **测试**：WARP 新增 `cluster_cull_sidecar_matches_the_cpu_binning`。
+  - 40 盏点光源排成环形放在相机前，半径 1.5–3；相机 60° 透视，160×90。
+  - 同一组灯先用 CPU 的 `light_system_cull` 分箱，再用 GPU 的 `light_system_cull_gpu` 分箱。逐簇比较灯数和灯索引序列，要求完全一致；同时要求 GPU 每簇的偏移等于 ci × 128。
+  - 实测：152 个非空簇，其中 124 个簇有不止一盏灯，共 644 个条目，CPU 与 GPU 逐项相同。用例结束时 debug layer 干净。
+  - 用例里踩到一个测试本身的问题：网格槽位按 `rhi_frame_index` 选取，帧结束时就会切换，所以必须在帧结束**之前**记下槽位再回读。
+- **反向验证**：
+  - ① 灯光步长从 32 字节改成 16 字节：第 1977 簇 CPU 0 盏、GPU 20 盏，失败。
+  - ② 屏幕 y 翻转：第 2211 簇 CPU 0 盏、GPU 1 盏，失败。
+  - 恢复后 68/68。
+- **验证结果**：
+  - WARP 68/68，debug layer 0/0/alias 1。RTX 连跑 2 次都是 67/68，只有预期中的 [1] 失败，两次的簇统计与 WARP 完全相同（152/124/644）。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：前向路径 D3D12-GL 1.46、VK-GL 3.64；延迟路径 D3D12-GL **0.73**（R650 时为 1.34）、VK-GL 0.85。D3D12 日志显示 `GPU cluster binning enabled`，debug layer 0 条。
+- **没有做的部分（如实说明）**：GPU 视锥剔除（`cull.comp` / `unified_cull.comp`）仍未移植，`compute_supported` 仍为 false。原因是这一步会打开 `gpucull_enabled`，进而打开 unified 路径。这条路径还依赖 D3D12 上仍是桩的几项：`rhi_cmd_bind_texture_compute`（Hi-Z 纹理）、vis_flags 回读、`occlusion_cull` 的 Hi-Z 生成。只翻开关会让 demo 改走一条没有验证过的绘制路径，所以留到下一轮整体做。
+
 ## 本轮更新：R650 — **D3D12 粒子系统**（GPU 模拟、剔除、间接绘制）；顺带修复 D3D12 的独立混合
 
 - **问题**：D3D12 上 `particles_init` 拿 GLSL 源码去调 `rhi_shader_create_compute`，日志报 `Particle compute shader compile failed`，粒子系统整个被禁用，画面里没有喷泉粒子。
