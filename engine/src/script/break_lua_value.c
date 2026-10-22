@@ -232,12 +232,21 @@ static void break_lua_record_frame_error(BreakLuaRuntime *runtime,
     rec->budget = budget;
     rec->dispatch_failure = dispatch_failure;
     n = break_lua_name_len(module_name, sizeof(rec->module));
+    if (n >= sizeof(rec->module)) {
+        n = sizeof(rec->module) - 1u;
+    }
     memcpy(rec->module, module_name, n);
     rec->module[n] = '\0';
     n = break_lua_name_len(hook_name, sizeof(rec->hook));
+    if (n >= sizeof(rec->hook)) {
+        n = sizeof(rec->hook) - 1u;
+    }
     memcpy(rec->hook, hook_name, n);
     rec->hook[n] = '\0';
     n = break_lua_name_len(message, sizeof(rec->message));
+    if (n >= sizeof(rec->message)) {
+        n = sizeof(rec->message) - 1u;
+    }
     memcpy(rec->message, message, n);
     rec->message[n] = '\0';
 }

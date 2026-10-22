@@ -33,8 +33,8 @@
  *    BREAK_LUA_INVALID   — malformed call (NULL argument) or a config whose
  *                          caps exceed the documented hard ceilings.
  *    BREAK_LUA_CLOSED    — admission after the runtime has begun closing
- *                          (reserved for later tasks; nothing closes in
- *                          Task 1).
+ *                          (reserved; no close semantics exist yet — no API
+ *                          maps to it).
  *    BREAK_LUA_OVERLOAD  — a bounded resource (module count, value count,
  *                          module bytes) would exceed its cap.
  *    BREAK_LUA_OOM       — allocation failure.
@@ -131,8 +131,10 @@ const char *break_lua_error_name(BreakLuaError error);
  *  module's persistent state table; the chunk's own globals are private to
  *  the environment and NEVER survive a reload, while the state table
  *  persists by identity across reloads (contents preserved). A chunk that
- *  overwrites or nils its own `state` global forfeits that persistence: the
- *  next reload then stages against a fresh empty state table.
+ *  overwrites `state` with ANOTHER TABLE keeps that table: it becomes the
+ *  persisted state from then on. Only nil'ing `state` (or replacing it
+ *  with a non-table value) forfeits persistence: the next reload then
+ *  stages against a fresh empty state table.
  *
  *  IDENTITY: a module version is name + monotonically increasing u32
  *  (1 at first load, +1 per committed reload); hashes are FNV-1a-64 over

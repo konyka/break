@@ -27,7 +27,7 @@
 
 ### 2.3 模块：加载与版本化 reload（Task 2）
 
-- load：text chunk（拒绝 bytecode）在全新 per-module 环境编译执行；环境全局经 metatable `__index` 解析到固定**白名单沙箱**（§2.7；base 全局表对 module 永不可达）；`state` 全局指向与 chunk 分离的持久 state 表，跨 reload 按身份保留（chunk 自身覆盖/nil 化 `state` 则放弃保留）。
+- load：text chunk（拒绝 bytecode）在全新 per-module 环境编译执行；环境全局经 metatable `__index` 解析到固定**白名单沙箱**（§2.7；base 全局表对 module 永不可达）；`state` 全局指向与 chunk 分离的持久 state 表，跨 reload 按身份保留。覆盖语义与代码一致：chunk 把 `state` 覆盖成**另一张 table** 时该新 table 从此按身份保留；仅 nil 化（或替换为非 table 值）才放弃保留，下一次 reload 对全新空表 staging。
 - 身份 = 名字 + 单调递增 u32 version（首载 1）；hash = 源字节 FNV-1a-64（签名验证属 Stage 5，仅记录元数据字段）。
 - reload 三段式原子提交：staging（新环境 + 保留 state）→ 旧环境可选 `on_unload`（pcall 保护）→ commit（退役旧环境、version+1）。任一失败保持旧版本完整服务（`committed == false`）；只有环境/版本 commit 是原子的，staging 对 `state` 的部分写入不回滚（文档化并测试钉住）。
 - 错误面：重复 load → `REJECTED`；source 超字节上限 → `OVERLOAD`（含边界值准入）；registry 满 → `OVERLOAD`；未知名字 reload → `STALE`（绝不隐式 load）；staging/on_unload 失败 → `FAILED`；Lua 侧分配失败 → `OOM`（所有会分配的 Lua C API 均在 pcall 保护的 dispatch 闭包内）；version 达 `UINT32_MAX` → `REJECTED`。`BreakLuaReloadReport` 在每条返回路径完整写回。
@@ -43,6 +43,7 @@
   - 被调函数抛 Lua 错误 → `FAILED`；路径上任何 Lua 侧分配失败 → `OOM`（整个调用经共享 pcall dispatch，Lua 错误绝不 panic 进程）。
   - 返回缓冲：准入通过后先整体 NIL 预填，再以 exactly `return_capacity` 个期望返回值调用（Lua 自动 nil 补齐不足、丢弃多余），缓冲必然写满、Lua 栈在所有出口平衡；准入前失败不写缓冲。
 - Lua 栈纪律：测试用 test-only VM accessor 断言每次 call/frame 后 `lua_gettop == 0`。
+- **指令预算覆盖范围**：只有帧 hook（`on_frame_begin`/`on_frame_end`，§2.5）在计数钩子下运行；`break_lua_runtime_call` 与 load/reload/`on_unload` **全程无指令预算**。已知边界：预算按 VM 指令计数，单个 C 调用内部的循环不计入——白名单内的 `string.rep` 一次调用即可完成大额分配/拼接而不触发预算（文档化已知边界；allocator 级内存预算见 §3 设计-only）。
 
 ### 2.5 帧生命周期（Task 3）
 
@@ -83,9 +84,10 @@
 - **LuaJIT**：Stage 3.5 延期项，本计划不交付（gating 条件见 roadmap）。
 - **engine/demo 集成**：未做；本文件全部条目是独立可选库证据。
 - **CLOSED/TIMEOUT 语义**：枚举保留，无 API 映射。
+- **内存预算（memory budget）**：仅指令预算已交付（§2.5）；Lua 侧 allocator 级内存上限为设计-only，当前无任何代码承诺。
 
 ## 4. 验证证据索引
 
-- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（26）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
-- 全量套件（`ctest -LE 'graphics|fuzz'`，`build-sdd-l5`）：180/180 通过、0 失败、1 项 platform-skip（`test_d3d12_dependency_gate`，Windows-only 门）；兼容层 `engine/src/script/script_lua.c/.h` 与 `engine/tests/test_script_lua.c` 在 `master..HEAD` 全分支逐字节未动（diff 0 行）。
+- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（27）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
+- 全量套件（`ctest -LE 'graphics|fuzz'`，`build-sdd-l5`）：共 180 项，179 通过 + 1 项 platform-skip（`test_d3d12_dependency_gate`，Windows-only 门）、0 失败；兼容层 `engine/src/script/script_lua.c/.h` 与 `engine/tests/test_script_lua.c` 在 `master..HEAD` 全分支逐字节未动（diff 0 行）。
 - 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4,5}-report.md`。

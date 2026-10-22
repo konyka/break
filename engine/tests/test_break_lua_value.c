@@ -722,6 +722,38 @@ TEST(frame_error_message_is_truncated_to_bounds)
     break_lua_runtime_destroy(rt);
 }
 
+TEST(frame_error_record_clamps_boundary_length_inputs)
+{
+    /* Closest reachable long-input path for the bounded record copy: a
+     * module name at the exact admission boundary (127 chars, filling the
+     * record field completely) plus an over-long error text. Asserts
+     * correct truncation and NUL termination; the sanitizer lanes trip on
+     * any out-of-bounds write. */
+    char name[BREAK_LUA_MAX_MODULE_NAME_BYTES];
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaTestFrameError fe;
+    ASSERT_NOT_NULL(rt);
+    memset(name, 'm', sizeof(name) - 1u);
+    name[sizeof(name) - 1u] = '\0';
+    ASSERT_EQ(break_lua_runtime_load_module(rt, name, kChunkHookLongErr,
+                                            chunk_len(kChunkHookLongErr)),
+              BREAK_LUA_OK);
+
+    break_lua_runtime_begin_frame(rt, 0.0);
+
+    fe = break_lua_test_last_frame_error(rt);
+    ASSERT_TRUE(fe.valid);
+    ASSERT_EQ(fe.total, UINT64_C(1));
+    ASSERT_EQ(strlen(fe.module), sizeof(fe.module) - 1u);
+    ASSERT_STR_EQ(fe.module, name);
+    ASSERT_STR_EQ(fe.hook, "on_frame_begin");
+    ASSERT_EQ(strlen(fe.message), sizeof(fe.message) - 1u);
+    ASSERT_EQ(fe.message[sizeof(fe.message) - 1u], '\0');
+
+    assert_stack_balanced(rt);
+    break_lua_runtime_destroy(rt);
+}
+
 static PLATFORM_THREAD_RET frame_begin_probe_worker(PLATFORM_THREAD_ARG arg)
 {
     (void)arg;
@@ -1067,6 +1099,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(frame_hooks_receive_dt_and_run_per_module);
     RUN_TEST(frame_hook_error_is_recorded_and_other_modules_continue);
     RUN_TEST(frame_error_message_is_truncated_to_bounds);
+    RUN_TEST(frame_error_record_clamps_boundary_length_inputs);
     RUN_TEST(frame_dispatch_rejects_non_owner_thread_with_abort);
     RUN_TEST(frame_snapshot_with_many_modules_reserves_stack);
     RUN_TEST(frame_reload_between_dispatches_serves_new_environment);
