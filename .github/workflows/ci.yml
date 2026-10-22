@@ -89,7 +89,7 @@ jobs:
             libfreetype6-dev fonts-noto-cjk
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON -DENGINE_BUILD_FUZZ_SMOKE=ON
 
       - name: Build
         run: cmake --build build --parallel

@@ -1,0 +1,178 @@
+# Programs / UbaHost
+
+- module root: `Source/Programs/UnrealBuildAccelerator/Host`
+- headers: 1; symbols: 162
+- symbol kinds: class=1, member=3, namespace=1, prototype=145, typedef=12
+- PrivateDependencyModuleNames: UbaCommon, UbaMimalloc
+
+### `Source/Programs/UnrealBuildAccelerator/Host/Public/UbaHost.h` (Public)
+
+
+#### class `uba::CallbackLogWriter`  
+`class CallbackLogWriter : public LogWriter`  
+_L26-42_
+- inherits: `LogWriter`
+- L29 _public typedef_ `using BeginScopeCallback = void();`
+- L30 _public typedef_ `using EndScopeCallback = void();`
+- L31 _public typedef_ `using LogCallback = void(LogEntryType type, const uba::tchar* str, u32 strLen);`
+- L33 _public prototype_ `CallbackLogWriter(BeginScopeCallback* begin, EndScopeCallback* end, LogCallback* log);`
+- L34 _public prototype_ `virtual void BeginScope() override;`
+- L35 _public prototype_ `virtual void EndScope() override;`
+- L36 _public prototype_ `virtual void Log(LogEntryType type, const uba::tchar* str, u32 strLen, const uba::tchar* prefix = nullptr, u32 prefixLen = 0) override;`
+- L39 _private member_ `BeginScopeCallback* m_beginScope;`
+- L40 _private member_ `EndScopeCallback* m_endScope;`
+- L41 _private member_ `LogCallback* m_logCallback;`
+
+#### Free symbols / members of external scopes
+
+- L8 _namespace_ `namespace uba`
+- L48 _prototype_ `uba::LogWriter* LogWriter_GetDefault();` — LogWriter
+- L49 _prototype_ `uba::LogWriter* LogWriter_GetNull();`
+- L50 _prototype_ `uba::LogWriter* LogWriter_CreateCallback(uba::CallbackLogWriter::BeginScopeCallback begin, uba::CallbackLogWriter::EndScopeCallback end, uba::CallbackLogWriter::LogCallback log);`
+- L51 _prototype_ `void LogWriter_SetGlobal(uba::LogWriter* writer);`
+- L52 _prototype_ `void LogWriter_DestroyCallback(uba::LogWriter* writer);`
+- L55 _prototype_ `uba::Config* Config_Load(const uba::tchar* configFile);` — Config
+- L56 _prototype_ `uba::Config* Config_Create();`
+- L57 _prototype_ `void Config_Destroy(uba::Config* config);`
+- L58 _prototype_ `uba::ConfigTable* Config_RootTable(uba::Config& config);`
+- L59 _prototype_ `uba::ConfigTable* Config_AddTable(uba::Config& config, const uba::tchar* name);`
+- L60 _prototype_ `void ConfigTable_AddValueInt(uba::ConfigTable& table, const uba::tchar* key, int value);`
+- L61 _prototype_ `void ConfigTable_AddValueU32(uba::ConfigTable& table, const uba::tchar* key, uba::u32 value);`
+- L62 _prototype_ `void ConfigTable_AddValueU64(uba::ConfigTable& table, const uba::tchar* key, uba::u64 value);`
+- L63 _prototype_ `void ConfigTable_AddValueBool(uba::ConfigTable& table, const uba::tchar* key, bool value);`
+- L64 _prototype_ `void ConfigTable_AddValueString(uba::ConfigTable& table, const uba::tchar* key, const uba::tchar* str);`
+- L67 _prototype_ `uba::NetworkServer* NetworkServer_Create(uba::LogWriter& writer = uba::g_consoleLogWriter, uba::u32 workerCount = 64, uba::u32 sendSize = uba::SendDefaultSize, uba::u32 receiveTimeoutSeconds = uba::DefaultNetworkReceiveTimeoutSeconds, bool useQuic = false);` — NetworkServer
+- L68 _prototype_ `void NetworkServer_Destroy(uba::NetworkServer* server);`
+- L69 _prototype_ `bool NetworkServer_StartListen(uba::NetworkServer* server, int port = uba::DefaultPort, const uba::tchar* ip = nullptr, const uba::tchar* crypto = nullptr);`
+- L70 _prototype_ `void NetworkServer_Stop(uba::NetworkServer* server);`
+- L71 _prototype_ `void NetworkServer_SetClientsConfig(uba::NetworkServer* server, const uba::Config& config);`
+- L72 _prototype_ `bool NetworkServer_AddClient(uba::NetworkServer* server, const uba::tchar* ip, int port = uba::DefaultPort, const uba::tchar* crypto = nullptr);`
+- L75 _prototype_ `uba::StorageServer* StorageServer_Create(uba::NetworkServer& server, const uba::tchar* rootDir, uba::u64 casCapacityBytes, bool storeCompressed, uba::LogWriter& writer = uba::g_consoleLogWriter, const uba::tchar* zone = TC(""));` — StorageServer
+- L76 _prototype_ `uba::StorageServer* StorageServer_Create2(uba::NetworkServer& server, const uba::Config& config, uba::LogWriter& writer = uba::g_consoleLogWriter);`
+- L77 _prototype_ `void StorageServer_PreloadCasTable(uba::StorageServer* storageServer);`
+- L78 _prototype_ `void StorageServer_Destroy(uba::StorageServer* storageServer);`
+- L79 _prototype_ `void StorageServer_SaveCasTable(uba::StorageServer* storageServer);`
+- L80 _prototype_ `void StorageServer_RegisterDisallowedPath(uba::StorageServer* storageServer, const uba::tchar* path);`
+- L81 _prototype_ `void StorageServer_DeleteFile(uba::StorageServer* storage, const uba::tchar* file);`
+- L84 _typedef_ `using ProcessHandle_ExitCallback = void(void* userData, const uba::ProcessHandle&);` — ProcessStartInfo
+- L85 _typedef_ `using ProcessHandle_ExitCallback2 = void(void* userData, const uba::ProcessHandle&, uba::ProcessExitedResponse&);`
+- L86 _typedef_ `using ProcessHandle_PredictedMemoryCallback = uba::u64(void* userData);`
+- L87 _prototype_ `uba::ProcessStartInfo* ProcessStartInfo_Create(const uba::tchar* application, const uba::tchar* arguments, const uba::tchar* workingDir, const uba::tchar* description, uba::u32 priorityClass, uba::u64 outputStatsThresholdMs, bool trackInputs, const uba::tchar* logFile, ProcessHandle_ExitCallback* exit);`
+- L88 _prototype_ `uba::ProcessStartInfo* ProcessStartInfo_Create2(const uba::tchar* application, const uba::tchar* arguments, const uba::tchar* workingDir, const uba::tchar* description, uba::u32 priorityClass, uba::u64 rootsHandle, bool trackInputs, const uba::tchar* logFile, ProcessHandle_ExitCallback2* exit);`
+- L89 _prototype_ `uba::ProcessStartInfo* ProcessStartInfo_Create3(const uba::Config& config, const uba::tchar* configTable = TC(""));`
+- L90 _prototype_ `void ProcessStartInfo_SetExitedCallback(uba::ProcessStartInfo& info, ProcessHandle_ExitCallback* exitedFunc, void* exitedUserData);`
+- L91 _prototype_ `void ProcessStartInfo_Destroy(uba::ProcessStartInfo* info);`
+- L94 _typedef_ `using ProcessHandle_OutputFileCallback = void(void* userData, const uba::tchar* file);` — ProcessHandle
+- L95 _prototype_ `uba::u32 ProcessHandle_GetExitCode(const uba::ProcessHandle* handle);`
+- L96 _prototype_ `bool ProcessHandle_IsCancelled(const uba::ProcessHandle* handle);`
+- L97 _prototype_ `uba::u8 ProcessHandle_GetExecutionType(const uba::ProcessHandle* handle);`
+- L98 _prototype_ `const uba::tchar* ProcessHandle_GetExecutingHost(const uba::ProcessHandle* handle);`
+- L99 _prototype_ `const uba::tchar* ProcessHandle_GetLogLine(const uba::ProcessHandle* handle, uba::u32 index);`
+- L100 _prototype_ `uba::u64 ProcessHandle_GetHash(const uba::ProcessHandle* handle);`
+- L101 _prototype_ `uba::u64 ProcessHandle_GetTotalProcessorTime(const uba::ProcessHandle* handle);`
+- L102 _prototype_ `uba::u64 ProcessHandle_GetTotalWallTime(const uba::ProcessHandle* handle);`
+- L103 _prototype_ `uba::u64 ProcessHandle_GetPeakMemory(const uba::ProcessHandle* handle);`
+- L104 _prototype_ `void ProcessHandle_TraverseOutputFiles(const uba::ProcessHandle* handle, ProcessHandle_OutputFileCallback* callback, void* userData);`
+- L105 _prototype_ `bool ProcessHandle_WaitForExit(const uba::ProcessHandle* handle, uba::u32 millisecondsTimeout);`
+- L106 _prototype_ `void ProcessHandle_Cancel(const uba::ProcessHandle* handle, bool terminate);`
+- L107 _prototype_ `void ProcessHandle_Destroy(const uba::ProcessHandle* handle);`
+- L108 _prototype_ `const uba::ProcessStartInfo* Process_GetStartInfo(const uba::Process& process);`
+- L111 _typedef_ `using SessionServer_RemoteProcessAvailableCallback = void(void* userData, bool isCrossArchitecture);` — SessionServer
+- L112 _typedef_ `using SessionServer_RemoteProcessReturnedCallback = void(uba::Process& process, void* userData);`
+- L113 _typedef_ `using SessionServer_CustomServiceFunction = uba::u32(uba::ProcessHandle* handle, const void* recv, uba::u32 recvSize, void* send, uba::u32 sendCapacity, void* userData);`
+- L115 _prototype_ `uba::SessionServerCreateInfo* SessionServerCreateInfo_Create(uba::StorageServer& storage, uba::NetworkServer& client, uba::LogWriter& writer, const uba::tchar* rootDir, const uba::tchar* traceOutputFile, bool disableCustomAllocator, bool launchVisualizer, bool resetCas, bool writeToDisk, bool detailedTrace, bool allowWaitOnMem = false, bool allowKillOnMem = false, bool storeIntermediateFilesCompressed = false);`
+- L117 _prototype_ `void SessionServerCreateInfo_Destroy(uba::SessionServerCreateInfo* info);`
+- L119 _prototype_ `uba::SessionServer* SessionServer_Create(const uba::SessionServerCreateInfo& info, const uba::u8* environment = nullptr, uba::u32 environmentSize = 0);`
+- L120 _prototype_ `uba::SessionServer* SessionServer_Create2(uba::StorageServer& s, uba::NetworkServer& ns, const uba::Config& c, uba::LogWriter& lw = uba::g_consoleLogWriter, const uba::u8* environment = nullptr, uba::u32 environmentSize = 0);`
+- L121 _prototype_ `void SessionServer_SetRemoteProcessAvailable(uba::SessionServer* server, SessionServer_RemoteProcessAvailableCallback* available, void* userData);`
+- L122 _prototype_ `void SessionServer_SetRemoteProcessReturned(uba::SessionServer* server, SessionServer_RemoteProcessReturnedCallback* returned, void* userData);`
+- L124 _prototype_ `bool SessionServer_RefreshDirectory(uba::SessionServer* server, const uba::tchar* directory);`
+- L125 _prototype_ `bool SessionServer_RegisterNewFile(uba::SessionServer* server, const uba::tchar* filePath);`
+- L126 _prototype_ `void SessionServer_RegisterDeleteFile(uba::SessionServer* server, const uba::tchar* filePath);`
+- L127 _prototype_ `bool SessionServer_RegisterNewDirectory(uba::SessionServer* server, const uba::tchar* directoryPath);`
+- L128 _prototype_ `bool SessionServer_RegisterVirtualFile(uba::SessionServer* server, const uba::tchar* filename, const uba::tchar* sourceFile, uba::u64 sourceOffset, uba::u64 sourceSize);`
+- L129 _prototype_ `bool SessionServer_CreateVirtualFile(uba::SessionServer* server, const uba::tchar* filename, const void* memory, uba::u64 memorySize, bool transient, bool registerToDir);`
+- L130 _prototype_ `bool SessionServer_DeleteVirtualFile(uba::SessionServer* server, const uba::tchar* filename, bool registerToDir);`
+- L132 _prototype_ `bool SessionServer_GetOutputFileSize(uba::SessionServer* server, uba::u64& outSize, const uba::tchar* filename);`
+- L133 _prototype_ `bool SessionServer_GetOutputFileData(uba::SessionServer* server, void* outData, const uba::tchar* filename, bool deleteInternalMapping);`
+- L134 _prototype_ `bool SessionServer_WriteOutputFile(uba::SessionServer* server, const uba::tchar* filename, bool deleteInternalMapping);`
+- L136 _prototype_ `uba::ProcessHandle* SessionServer_RunProcess(uba::SessionServer* server, uba::ProcessStartInfo& info, bool async, bool enableDetour);`
+- L137 _prototype_ `uba::ProcessHandle* SessionServer_RunProcessRemote(uba::SessionServer* server, uba::ProcessStartInfo& info, float weight, const void* knownInputs = nullptr, uba::u32 knownInputsCount = 0, bool allowCrossArchitecture = false);`
+- L138 _prototype_ `uba::u64 SessionServer_RegisterRoots(uba::SessionServer* server, const void* rootsData, uba::u64 rootsDataSize);`
+- L140 _prototype_ `void SessionServer_SetMaxRemoteProcessCount(uba::SessionServer* server, uba::u32 count);`
+- L141 _prototype_ `void SessionServer_DisableRemoteExecution(uba::SessionServer* server);`
+- L142 _prototype_ `void SessionServer_PrintSummary(uba::SessionServer* server);`
+- L143 _prototype_ `void SessionServer_CancelAll(uba::SessionServer* server);`
+- L144 _prototype_ `void SessionServer_SetCustomCasKeyFromTrackedInputs(uba::SessionServer* server, uba::ProcessHandle* handle, const uba::tchar* fileName, const uba::tchar* workingDir);`
+- L145 _prototype_ `uba::u32 SessionServer_BeginExternalProcess(uba::SessionServer* server, const uba::tchar* description);`
+- L146 _prototype_ `void SessionServer_EndExternalProcess(uba::SessionServer* server, uba::u32 id, uba::u32 exitCode);`
+- L147 _prototype_ `void SessionServer_UpdateProgress(uba::SessionServer* server, uba::u32 processesTotal, uba::u32 processesDone, uba::u32 errorCount);`
+- L148 _prototype_ `void SessionServer_UpdateStatus(uba::SessionServer* server, uba::u32 statusRow, uba::u32 statusColumn, const uba::tchar* statusText, uba::LogEntryType statusType, const uba::tchar* statusLink);`
+- L149 _prototype_ `void SessionServer_AddProcessBreadcrumbs(uba::SessionServer* server, uba::u32 processId, const uba::tchar* breadcrumbs, bool deleteOld = false);`
+- L150 _prototype_ `void SessionServer_RegisterCustomService(uba::SessionServer* server, SessionServer_CustomServiceFunction* function, void* userData = nullptr);`
+- L151 _prototype_ `void SessionServer_RegisterCrossArchitectureMapping(uba::SessionServer* server, const uba::tchar* from, const uba::tchar* to);`
+- L152 _prototype_ `void SessionServer_SaveSnapshotOfTrace(uba::SessionServer* server);`
+- L153 _prototype_ `void SessionServer_AddInfo(uba::SessionServer* server, const uba::tchar* info);`
+- L154 _prototype_ `uba::Trace* SessionServer_GetTrace(uba::SessionServer* server);`
+- L155 _prototype_ `uba::u32 SessionServer_TaskBegin(uba::SessionServer* server, const uba::tchar* description, const uba::tchar* details, uba::u32 color);`
+- L156 _prototype_ `void SessionServer_TaskHint(uba::SessionServer* server, uba::u32 taskId, const uba::tchar* hint);`
+- L157 _prototype_ `void SessionServer_TaskEnd(uba::SessionServer* server, uba::u32 taskId, bool success);`
+- L158 _prototype_ `bool SessionServer_DisableRemoteExecutionOnAgent(uba::SessionServer* server, const uba::tchar* agentName);`
+- L159 _prototype_ `void SessionServer_Destroy(uba::SessionServer* server);`
+- L162 _prototype_ `uba::Scheduler* Scheduler_Create(uba::SessionServer* session, uba::u32 maxLocalProcessors = ~0u, bool enableProcessReuse = false);` — Scheduler
+- L163 _prototype_ `uba::Scheduler* Scheduler_Create2(uba::SessionServer& session, const uba::Config& config);`
+- L164 _prototype_ `uba::Scheduler* Scheduler_Create3(uba::SessionServer& session, uba::CacheClient** cacheClients, uba::u32 cacheClientCount, const uba::Config& config);`
+- L165 _prototype_ `void Scheduler_Start(uba::Scheduler* scheduler);`
+- L166 _prototype_ `uba::u32 Scheduler_EnqueueProcess(uba::Scheduler* scheduler, const uba::ProcessStartInfo& info, float weight = 1.0f, const void* knownInputs = nullptr, uba::u32 knownInputsBytes = 0, uba::u32 knownInputsCount = 0);`
+- L167 _prototype_ `uba::u32 Scheduler_EnqueueProcess2(uba::Scheduler* scheduler, const uba::ProcessStartInfo& info, float weight, bool canDetour, bool canExecuteRemotely, const uba::u32* dependencies, uba::u32 dependencyCount, const void* knownInputs, uba::u32 knownInputsBytes, uba::u32 knownInputsCount, uba::u32 cacheBucket);`
+- L168 _prototype_ `uba::u32 Scheduler_EnqueueProcess3(uba::Scheduler* scheduler, const uba::ProcessStartInfo& info, float weight, bool canDetour, bool canExecuteRemotely, const uba::u32* dependencies, uba::u32 dependencyCount, const void* knownInputs, uba::u32 knownInputsBytes, uba::u32 knownInputsCount, uba::u32 cacheBucket, uba::u32 memoryGroup, uba::u64 predictedMemoryUsage);`
+- L169 _prototype_ `uba::u32 Scheduler_EnqueueProcess4(uba::Scheduler* scheduler, const uba::ProcessStartInfo& info, float weight, bool canDetour, bool canExecuteRemotely, bool canCrossArchitecture, bool canCrossPlatform, const uba::u32* dependencies, uba::u32 dependencyCount, const void* knownInputs, uba::u32 knownInputsBytes, uba::u32 knownInputsCount, uba::u32 cacheBucket, uba::u32 memoryGroup, uba::u64 predictedMemoryUsage);`
+- L170 _prototype_ `uba::u32 Scheduler_EnqueueProcess5(uba::Scheduler* scheduler, const uba::ProcessStartInfo& info, float weight, bool canDetour, bool canExecuteRemotely, bool canCrossArchitecture, bool canCrossPlatform, const uba::u32* dependencies, uba::u32 dependencyCount, const void* knownInputs, uba::u32 knownInputsBytes, uba::u32 knownInputsCount, uba::u32 cacheBucket, uba::u64 memoryGroup, uba::u64 predictedMemoryUsage);`
+- L171 _prototype_ `void Scheduler_SetMaxLocalProcessors(uba::Scheduler* scheduler, uba::u32 maxLocalProcessors);`
+- L172 _prototype_ `void Scheduler_Stop(uba::Scheduler* scheduler);`
+- L173 _prototype_ `void Scheduler_Cancel(uba::Scheduler* scheduler);`
+- L174 _prototype_ `void Scheduler_Destroy(uba::Scheduler* scheduler);`
+- L175 _prototype_ `void Scheduler_GetStats(uba::Scheduler* scheduler, uba::u32& outQueued, uba::u32& outActiveLocal, uba::u32& outActiveRemote, uba::u32& outFinished);`
+- L176 _prototype_ `bool Scheduler_IsEmpty(uba::Scheduler* scheduler);`
+- L177 _prototype_ `void Scheduler_SetProcessFinishedCallback(uba::Scheduler* scheduler);`
+- L178 _prototype_ `void Scheduler_SetPredictedMemoryCallback(uba::Scheduler* scheduler, ProcessHandle_PredictedMemoryCallback* predictedMemory);`
+- L179 _prototype_ `float Scheduler_GetProcessWeightThatCanRunRemotelyNow(uba::Scheduler* scheduler);`
+- L180 _prototype_ `void Scheduler_GetProcessWeightThatCanRunRemotelyNow2(uba::Scheduler* scheduler, float& outTotal, float& outCrossArchitecture, float& outCrossPlatform);`
+- L181 _prototype_ `void Scheduler_SetAllowDisableRemoteExecution(uba::Scheduler* scheduler, bool allow);`
+- L184 _prototype_ `uba::CacheClient* CacheClient_Create(uba::SessionServer* session, bool reportMissReason = false, const uba::tchar* crypto = nullptr, const uba::tchar* hint = nullptr);` — Cache
+- L185 _prototype_ `bool CacheClient_Connect(uba::CacheClient* cacheClient, const uba::tchar* host, int port);`
+- L186 _prototype_ `bool CacheClient_RegisterPathHash(uba::CacheClient* cacheClient, const uba::tchar* path, const uba::tchar* hashString);`
+- L187 _prototype_ `bool CacheClient_WriteToCache2(uba::CacheClient* cacheClient, uba::u32 bucket, const uba::ProcessHandle* process, const uba::u8* inputs, uba::u32 inputsSize, const uba::u8* outputs, uba::u32 outputsSize);`
+- L188 _prototype_ `uba::CacheResult* CacheClient_FetchFromCache3(uba::CacheClient* cacheClient, uba::u64 rootsHandle, uba::u32 bucket, const uba::ProcessStartInfo& info);`
+- L189 _prototype_ `void CacheClient_RequestServerShutdown(uba::CacheClient* cacheClient, const uba::tchar* reason);`
+- L190 _prototype_ `void CacheClient_Disconnect(uba::CacheClient* cacheClient);`
+- L191 _prototype_ `void CacheClient_Destroy(uba::CacheClient* cacheClient);`
+- L192 _prototype_ `const uba::tchar* CacheResult_GetLogLine(uba::CacheResult* result, uba::u32 index);`
+- L193 _prototype_ `uba::u32 CacheResult_GetLogLineType(uba::CacheResult* result, uba::u32 index);`
+- L194 _prototype_ `void CacheResult_Delete(uba::CacheResult* result);`
+- L197 _prototype_ `uba::Trace* Trace_Create(const uba::tchar* name, const uba::tchar* channel = TC("Defa` — Trace (automatically created by session if not provided)
+- L198 _prototype_ `uba::u32 Trace_TaskBegin(uba::Trace* trace, const uba::tchar* description, const uba::tchar* details, uba::u32 color);`
+- L199 _prototype_ `void Trace_TaskHint(uba::Trace* trace, uba::u32 taskId, const uba::tchar* hint);`
+- L200 _prototype_ `void Trace_TaskEnd(uba::Trace* trace, uba::u32 taskId, bool success);`
+- L201 _prototype_ `void Trace_UpdateStatus(uba::Trace* trace, uba::u32 statusRow, uba::u32 statusColumn, const uba::tchar* statusText, uba::LogEntryType statusType, const uba::tchar* statusLink);`
+- L202 _prototype_ `void Trace_Destroy(uba::Trace* trace, const uba::tchar* writeFile);`
+- L203 _prototype_ `void Trace_SetGlobal(uba::Trace* trace);`
+- L206 _typedef_ `using Uba_CustomAssertHandler = void(const uba::tchar* text);` — Misc
+- L207 _prototype_ `void Uba_SetCustomAssertHandler(Uba_CustomAssertHandler* handler);`
+- L209 _typedef_ `using ImportFunc = void(const uba::tchar* importName, void* userData);`
+- L210 _prototype_ `void Uba_FindImports(const uba::tchar* binary, ImportFunc* func, void* userData);`
+- L212 _prototype_ `bool Uba_GetExclusiveAccess(const uba::tchar* path);` — Will take a global mutex if returns true and will hand it over to StorageServer on creation.
+- L215 _prototype_ `void* Uba_Create(const uba::tchar* configFile);` — High level interface using config file instead. Uses scheduler under the hood
+- L216 _prototype_ `uba::u32 Uba_RunProcess(void* uba, const uba::tchar* app, const uba::tchar* args, const uba::tchar* workDir, const uba::tchar* desc, void* userData, ProcessHandle_ExitCallback* exit);`
+- L217 _prototype_ `void Uba_RegisterNewFile(void* uba, const uba::tchar* file);`
+- L218 _prototype_ `void Uba_Destroy(void* uba);`
+- L222 _prototype_ `uba::LogWriter* CreateCallbackLogWriter(uba::CallbackLogWriter::BeginScopeCallback begin, uba::CallbackLogWriter::EndScopeCallback end, uba::CallbackLogWriter::LogCallback log);` — DEPRECATED, don't use
+- L223 _prototype_ `void DestroyCallbackLogWriter(uba::LogWriter* writer);`
+- L224 _prototype_ `void DestroyProcessHandle(const uba::ProcessHandle* handle);`
+- L225 _prototype_ `uba::RootPaths* RootPaths_Create(uba::LogWriter& writer);`
+- L226 _prototype_ `bool RootPaths_RegisterRoot(uba::RootPaths* rootPaths, const uba::tchar* path, bool includeInKey, uba::u8 id = 0);`
+- L227 _prototype_ `bool RootPaths_RegisterSystemRoots(uba::RootPaths* rootPaths, uba::u8 startId = 0);`
+- L228 _prototype_ `void RootPaths_Destroy(uba::RootPaths* rootPaths);`
+- L229 _prototype_ `bool CacheClient_WriteToCache(uba::CacheClient* cacheClient, uba::RootPaths* rootPaths, uba::u32 bucket, const uba::ProcessHandle* process, const uba::u8* inputs, uba::u32 inputsSize, const uba::u8* outputs, uba::u32 outputsSize);`
+- L230 _prototype_ `uba::u32 CacheClient_FetchFromCache(uba::CacheClient* cacheClient, uba::RootPaths* rootPaths, uba::u32 bucket, const uba::ProcessStartInfo& info);`
+- L231 _prototype_ `uba::CacheResult* CacheClient_FetchFromCache2(uba::CacheClient* cacheClient, uba::RootPaths* rootPaths, uba::u32 bucket, const uba::ProcessStartInfo& info);`

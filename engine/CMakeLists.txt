@@ -35,6 +35,12 @@ option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
+option(ENGINE_BUILD_FUZZ_SMOKE
+    "Register deterministic fuzz smoke tests (requires explicit fuzz targets)" OFF)
+option(BREAK_ENABLE_SNOWFLAKE
+    "Enable the Snowflake-backed C11 Break network adapter" OFF)
+set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
+    "Snowflake source tree required by the Break network adapter")
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -280,6 +286,94 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
             "shaderc headers not found — install shaderc development headers or set SHADERC_INCLUDE_DIR")
     endif()
     find_package(Vulkan REQUIRED)
+endif()
+
+if(BREAK_ENABLE_SNOWFLAKE)
+    if(NOT SNOWFLAKE_SOURCE_DIR OR
+       NOT EXISTS "${SNOWFLAKE_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "BREAK_ENABLE_SNOWFLAKE requires SNOWFLAKE_SOURCE_DIR to point to "
+            "a Snowflake source tree with CMakeLists.txt; got '${SNOWFLAKE_SOURCE_DIR}'")
+    endif()
+    message(STATUS "Break Snowflake adapter: adding ${SNOWFLAKE_SOURCE_DIR}")
+    set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
+    set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
+    set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    add_subdirectory("${SNOWFLAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/snowflake"
+        EXCLUDE_FROM_ALL)
+    if(NOT TARGET snow::net)
+        message(FATAL_ERROR
+            "Snowflake source tree did not provide the required target snow::net")
+    endif()
+    message(STATUS "Break Snowflake adapter: using target snow::net")
+endif()
+
+# Formal optional replication libraries. These are intentionally independent of
+# engine and Snowflake: consumers opt in and own the transport/session boundary.
+add_library(break_ecs_replication STATIC
+    src/ecs/ecs.c
+    src/ecs/replication_schema.c
+    src/ecs/world_snapshot.c
+    src/ecs/world_delta.c
+    src/core/log.c)
+set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
+target_include_directories(break_ecs_replication PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_ecs_replication PUBLIC m)
+endif()
+
+add_library(break_replication_core STATIC
+    src/network/break_aoi.c
+    src/network/break_replication.c
+    src/network/break_replication_fragment.c)
+set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
+target_include_directories(break_replication_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
+
+# Formal optional Runtime Core library: unified error/lifecycle types, the
+# single-owner lifecycle coordinator, the formal message/queue/task facade,
+# the formal thread + IO/VFS facades, and the reload coordinator + profiler
+# bridge. Top-level like the other formal optional libraries — built
+# regardless of ENGINE_BUILD_TESTS, and deliberately NOT linked into engine,
+# engine_demo, or dxx_break; consumers opt in explicitly in later tasks.
+# runtime_io.c/runtime_reload.c reference the borrowed VFS (vfs_*),
+# runtime_task.c the legacy TaskSystem (task_*), and runtime_profiler.c the
+# existing profiler singleton (profiler_*) + time_microseconds: all resolve
+# at the consumer's final link, exactly like the task facade precedent.
+add_library(runtime_core STATIC
+    src/runtime/runtime_coordinator.c
+    src/runtime/runtime_message.c
+    src/runtime/runtime_queue.c
+    src/runtime/runtime_task.c
+    src/runtime/runtime_thread.c
+    src/runtime/runtime_io.c
+    src/runtime/runtime_reload.c
+    src/runtime/runtime_profiler.c)
+set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
+target_include_directories(runtime_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# Formal optional Snowflake network/session library. Produced whenever
+# BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
+# engine target stays transport-neutral and never links it. Consumers
+# (engine_demo and dxx_break excluded) opt into break_net explicitly.
+if(BREAK_ENABLE_SNOWFLAKE)
+    add_library(break_net STATIC
+        src/network/break_net_adapter.c
+        src/network/break_net_events.c
+        src/network/break_net_message.c
+        src/network/break_net_protocol.c
+        src/network/break_net_envelope.c
+        src/network/break_net_message_registry.c
+        src/network/break_session.c)
+    set_property(TARGET break_net PROPERTY C_STANDARD 11)
+    target_include_directories(break_net PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(break_net PRIVATE
+        ${SNOWFLAKE_SOURCE_DIR}/include)
+    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
 endif()
 
 # Engine library
@@ -3130,10 +3224,145 @@ endif()
     # test_ecs: needs ecs.c + log.c
     add_executable(test_ecs tests/test_ecs.c src/ecs/ecs.c src/core/log.c)
     target_include_directories(test_ecs PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs PRIVATE ECS_TESTING=1)
     if(NOT ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_ecs PRIVATE m)
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
+
+    # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
+    # non-Snowflake library. Fault injection remains test-target-only.
+    add_library(break_ecs_replication_test STATIC
+        src/ecs/ecs.c
+        src/ecs/replication_schema.c
+        src/ecs/world_snapshot.c
+        src/ecs/world_delta.c
+        src/network/break_aoi.c
+        src/core/log.c
+        tests/break_world_delta_test_hooks.c)
+    set_property(TARGET break_ecs_replication_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_ecs_replication_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_ecs_replication_test PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(break_ecs_replication_test PUBLIC m)
+    endif()
+
+    add_executable(test_ecs_replication tests/test_ecs_replication.c)
+    target_include_directories(test_ecs_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs_replication PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_ecs_replication PRIVATE -Wno-missing-field-initializers)
+    endif()
+    target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
+    add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
+    add_test(NAME test_replication_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_replication_target_contract.cmake)
+    set_tests_properties(test_replication_target_contract PROPERTIES
+        LABELS "headless;replication;platform_contract")
+
+    # Runtime Core lifecycle coordinator focused tests link the formal
+    # top-level runtime_core target (defined independent of
+    # ENGINE_BUILD_TESTS); engine/engine_demo/dxx_break never link it.
+    add_executable(test_runtime_core tests/test_runtime_core.c)
+    target_include_directories(test_runtime_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_runtime_core PRIVATE runtime_core)
+    add_test(NAME test_runtime_core COMMAND test_runtime_core)
+    add_test(NAME test_runtime_core_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_core_target_contract.cmake)
+    set_tests_properties(test_runtime_core_target_contract PROPERTIES
+        LABELS "headless;runtime_core;platform_contract")
+
+    # Formal facade (owned message / bounded queue / formal task submit)
+    # focused tests. The test-only runtime_core_test variant compiles the new
+    # runtime_core sources with BREAK_RUNTIME_TESTING=1 hooks (allocation
+    # failure injection, double-release registry), mirroring the
+    # break_ecs_replication_test / BREAK_WORLD_DELTA_TESTING pattern; the
+    # production runtime_core target stays hook-free.
+    add_library(runtime_core_test STATIC
+        src/runtime/runtime_message.c
+        src/runtime/runtime_queue.c
+        src/runtime/runtime_task.c
+        src/runtime/runtime_thread.c
+        src/runtime/runtime_io.c
+        src/runtime/runtime_reload.c
+        src/runtime/runtime_profiler.c)
+    set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
+    target_include_directories(runtime_core_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(runtime_core_test PRIVATE BREAK_RUNTIME_TESTING=1)
+
+    add_executable(test_runtime_facade tests/test_runtime_facade.c
+        src/task/task.c src/core/log.c)
+    target_include_directories(test_runtime_facade PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_facade PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_facade PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_facade PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_facade PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_facade PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_facade PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_facade COMMAND test_runtime_facade)
+    set_tests_properties(test_runtime_facade PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Formal thread + IO/VFS facade focused tests (Task 5). vfs.c/log.c are
+    # compiled beside the test: the facade reads through a borrowed VFS whose
+    # symbols resolve at this final link (same pattern as the task facade
+    # resolving the legacy TaskSystem). The compatibility async loader is not
+    # involved and stays unchanged.
+    add_executable(test_runtime_io tests/test_runtime_io.c
+        src/asset/vfs.c src/core/log.c)
+    target_include_directories(test_runtime_io PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_io PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_io PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_io PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_io PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_io PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_io PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_io COMMAND test_runtime_io)
+    set_tests_properties(test_runtime_io PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Reload coordinator + profiler bridge focused tests (Task 6). vfs.c,
+    # log.c, profiler.c and time.c are compiled beside the test: the
+    # coordinator reads through a borrowed VFS and the profiler bridge hands
+    # off to the existing profiler singleton — both resolve at this final
+    # link (same pattern as test_runtime_io). The compatibility
+    # filewatch.c/hotreload.c are NOT compiled here and stay unchanged; the
+    # only seams are break_runtime_reload_notify_file_event() and the
+    # owner-thread commit hook.
+    add_executable(test_runtime_reload tests/test_runtime_reload.c
+        src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_reload PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_reload PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_reload PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_reload PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_reload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_reload PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_reload PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_reload COMMAND test_runtime_reload)
+    set_tests_properties(test_runtime_reload PROPERTIES
+        LABELS "headless;runtime_core")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c
@@ -3172,6 +3401,47 @@ endif()
         target_link_libraries(test_network PRIVATE ws2_32)
     endif()
     add_test(NAME test_network COMMAND test_network)
+
+    # Focused fragmentation coverage links the formal non-Snowflake core.
+    add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
+    target_include_directories(test_break_replication_fragment PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_replication_fragment PRIVATE break_replication_core)
+    add_test(NAME test_break_replication_fragment COMMAND test_break_replication_fragment)
+    set_tests_properties(test_break_replication_fragment PROPERTIES
+        TIMEOUT 20 LABELS "network;replication;fragmentation")
+
+    # Adapter-backed test executables link the formal top-level break_net
+    # target (defined independent of ENGINE_BUILD_TESTS when
+    # BREAK_ENABLE_SNOWFLAKE=ON); engine_demo and dxx_break do not link it.
+    if(BREAK_ENABLE_SNOWFLAKE)
+        add_executable(test_break_net_adapter tests/test_break_net_adapter.c)
+        target_include_directories(test_break_net_adapter PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_net_adapter PRIVATE break_net)
+        add_test(NAME test_break_net_adapter COMMAND test_break_net_adapter)
+        set_tests_properties(test_break_net_adapter PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake")
+
+        add_executable(test_break_replication tests/test_break_replication.c)
+        target_include_directories(test_break_replication PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_replication PRIVATE break_net)
+        add_test(NAME test_break_replication COMMAND test_break_replication)
+        set_tests_properties(test_break_replication PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;replication")
+
+        add_executable(test_break_session tests/test_break_session.c)
+        target_include_directories(test_break_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+        endif()
+        target_link_libraries(test_break_session PRIVATE break_net)
+        add_test(NAME test_break_session COMMAND test_break_session)
+        set_tests_properties(test_break_session PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;session")
+    endif()
 
     # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).
     # Backend source is selected the same way the engine target does it.
@@ -3478,20 +3748,19 @@ endif()
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
 
-    # R630: fuzz smoke — bounded deterministic runs of the manual fuzzers.
-    # Labeled "fuzz" so default runs skip them (like "graphics"); the
-    # ASan/UBSan CI job builds the targets explicitly and runs them under
-    # sanitizers (the R623 "manual sanitizer evidence" boundary, automated).
-    # Args are (iters, seed[, seed file]); scratch paths are pid-unique.
-    add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
-    add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
-    add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
-    add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
-    add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
-             "${CMAKE_SOURCE_DIR}/assets/test.glb")
-    set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
-        fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
-        PROPERTIES LABELS "fuzz")
+    if(ENGINE_BUILD_FUZZ_SMOKE)
+        # Explicit fuzz lane only: these targets are EXCLUDE_FROM_ALL and are
+        # built before CTest runs them, so ordinary CTest has no Not Run tests.
+        add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
+        add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
+        add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
+        add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
+        add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
+                 "${CMAKE_SOURCE_DIR}/assets/test.glb")
+        set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
+            fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
+            PROPERTIES LABELS "fuzz")
+    endif()
 
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
     add_executable(test_camera_frustum tests/test_camera_frustum.c

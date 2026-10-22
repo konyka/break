@@ -1,0 +1,841 @@
+# Shaders / Shaders/Shared/ThirdParty/AMD
+
+- files: 2; lines: 7702
+- record kinds: define=281, function=514, groupshared=1, member=1, prototype=5, struct=3
+
+### `Shaders/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx11.h` (Shared)
+
+- lines: 3708; parse: all-branches
+
+#### Macros (#define, 139)
+
+- L38 `#define _AMDDXEXTSHADERINTRINSICS_HLSL_ ` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L45 `#define AmdDxExtShaderIntrinsics_MagicCodeShift 28` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L46 `#define AmdDxExtShaderIntrinsics_MagicCodeMask 0xf` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L47 `#define AmdDxExtShaderIntrinsics_OpcodePhaseShift 24` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L48 `#define AmdDxExtShaderIntrinsics_OpcodePhaseMask 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L49 `#define AmdDxExtShaderIntrinsics_DataShift 8` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L50 `#define AmdDxExtShaderIntrinsics_DataMask 0xffff` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L51 `#define AmdDxExtShaderIntrinsics_OpcodeShift 0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L52 `#define AmdDxExtShaderIntrinsics_OpcodeMask 0xff` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L54 `#define AmdDxExtShaderIntrinsics_MagicCode 0x5` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L62 `#define AmdDxExtShaderIntrinsicsOpcode_Readfirstlane 0x01` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L63 `#define AmdDxExtShaderIntrinsicsOpcode_Readlane 0x02` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L64 `#define AmdDxExtShaderIntrinsicsOpcode_LaneId 0x03` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L65 `#define AmdDxExtShaderIntrinsicsOpcode_Swizzle 0x04` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L66 `#define AmdDxExtShaderIntrinsicsOpcode_Ballot 0x05` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L67 `#define AmdDxExtShaderIntrinsicsOpcode_MBCnt 0x06` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L68 `#define AmdDxExtShaderIntrinsicsOpcode_Min3U 0x08` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L69 `#define AmdDxExtShaderIntrinsicsOpcode_Min3F 0x09` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L70 `#define AmdDxExtShaderIntrinsicsOpcode_Med3U 0x0a` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L71 `#define AmdDxExtShaderIntrinsicsOpcode_Med3F 0x0b` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L72 `#define AmdDxExtShaderIntrinsicsOpcode_Max3U 0x0c` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L73 `#define AmdDxExtShaderIntrinsicsOpcode_Max3F 0x0d` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L74 `#define AmdDxExtShaderIntrinsicsOpcode_BaryCoord 0x0e` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L75 `#define AmdDxExtShaderIntrinsicsOpcode_VtxParam 0x0f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L76 `#define AmdDxExtShaderIntrinsicsOpcode_ViewportIndex 0x10` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L77 `#define AmdDxExtShaderIntrinsicsOpcode_RtArraySlice 0x11` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L78 `#define AmdDxExtShaderIntrinsicsOpcode_WaveReduce 0x12` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L79 `#define AmdDxExtShaderIntrinsicsOpcode_WaveScan 0x13` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L80 `#define AmdDxExtShaderIntrinsicsOpcode_Reserved1 0x14` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L81 `#define AmdDxExtShaderIntrinsicsOpcode_Reserved2 0x15` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L82 `#define AmdDxExtShaderIntrinsicsOpcode_Reserved3 0x16` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L83 `#define AmdDxExtShaderIntrinsicsOpcode_DrawIndex 0x17` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L84 `#define AmdDxExtShaderIntrinsicsOpcode_AtomicU64 0x18` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L85 `#define AmdDxExtShaderIntrinsicsOpcode_GetWaveSize 0x19` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L86 `#define AmdDxExtShaderIntrinsicsOpcode_BaseInstance 0x1a` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L87 `#define AmdDxExtShaderIntrinsicsOpcode_BaseVertex 0x1b` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L95 `#define AmdDxExtShaderIntrinsicsOpcodePhase_0 0x0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L96 `#define AmdDxExtShaderIntrinsicsOpcodePhase_1 0x1` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L97 `#define AmdDxExtShaderIntrinsicsOpcodePhase_2 0x2` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L98 `#define AmdDxExtShaderIntrinsicsOpcodePhase_3 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L106 `#define AmdDxExtShaderIntrinsicsSwizzle_SwapX1 0x041f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L107 `#define AmdDxExtShaderIntrinsicsSwizzle_SwapX2 0x081f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L108 `#define AmdDxExtShaderIntrinsicsSwizzle_SwapX4 0x101f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L109 `#define AmdDxExtShaderIntrinsicsSwizzle_SwapX8 0x201f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L110 `#define AmdDxExtShaderIntrinsicsSwizzle_SwapX16 0x401f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L111 `#define AmdDxExtShaderIntrinsicsSwizzle_ReverseX2 0x041f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L112 `#define AmdDxExtShaderIntrinsicsSwizzle_ReverseX4 0x0c1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L113 `#define AmdDxExtShaderIntrinsicsSwizzle_ReverseX8 0x1c1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L114 `#define AmdDxExtShaderIntrinsicsSwizzle_ReverseX16 0x3c1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L115 `#define AmdDxExtShaderIntrinsicsSwizzle_ReverseX32 0x7c1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L116 `#define AmdDxExtShaderIntrinsicsSwizzle_BCastX2 0x003e` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L117 `#define AmdDxExtShaderIntrinsicsSwizzle_BCastX4 0x003c` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L118 `#define AmdDxExtShaderIntrinsicsSwizzle_BCastX8 0x0038` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L119 `#define AmdDxExtShaderIntrinsicsSwizzle_BCastX16 0x0030` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L120 `#define AmdDxExtShaderIntrinsicsSwizzle_BCastX32 0x0020` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L129 `#define AmdDxExtShaderIntrinsicsBarycentric_LinearCenter 0x1` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L130 `#define AmdDxExtShaderIntrinsicsBarycentric_LinearCentroid 0x2` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L131 `#define AmdDxExtShaderIntrinsicsBarycentric_LinearSample 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L132 `#define AmdDxExtShaderIntrinsicsBarycentric_PerspCenter 0x4` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L133 `#define AmdDxExtShaderIntrinsicsBarycentric_PerspCentroid 0x5` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L134 `#define AmdDxExtShaderIntrinsicsBarycentric_PerspSample 0x6` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L135 `#define AmdDxExtShaderIntrinsicsBarycentric_PerspPullModel 0x7` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L143 `#define AmdDxExtShaderIntrinsicsBarycentric_Vertex0 0x0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L144 `#define AmdDxExtShaderIntrinsicsBarycentric_Vertex1 0x1` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L145 `#define AmdDxExtShaderIntrinsicsBarycentric_Vertex2 0x2` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L147 `#define AmdDxExtShaderIntrinsicsBarycentric_Param0 0x00` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L148 `#define AmdDxExtShaderIntrinsicsBarycentric_Param1 0x01` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L149 `#define AmdDxExtShaderIntrinsicsBarycentric_Param2 0x02` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L150 `#define AmdDxExtShaderIntrinsicsBarycentric_Param3 0x03` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L151 `#define AmdDxExtShaderIntrinsicsBarycentric_Param4 0x04` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L152 `#define AmdDxExtShaderIntrinsicsBarycentric_Param5 0x05` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L153 `#define AmdDxExtShaderIntrinsicsBarycentric_Param6 0x06` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L154 `#define AmdDxExtShaderIntrinsicsBarycentric_Param7 0x07` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L155 `#define AmdDxExtShaderIntrinsicsBarycentric_Param8 0x08` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L156 `#define AmdDxExtShaderIntrinsicsBarycentric_Param9 0x09` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L157 `#define AmdDxExtShaderIntrinsicsBarycentric_Param10 0x0a` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L158 `#define AmdDxExtShaderIntrinsicsBarycentric_Param11 0x0b` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L159 `#define AmdDxExtShaderIntrinsicsBarycentric_Param12 0x0c` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L160 `#define AmdDxExtShaderIntrinsicsBarycentric_Param13 0x0d` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L161 `#define AmdDxExtShaderIntrinsicsBarycentric_Param14 0x0e` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L162 `#define AmdDxExtShaderIntrinsicsBarycentric_Param15 0x0f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L163 `#define AmdDxExtShaderIntrinsicsBarycentric_Param16 0x10` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L164 `#define AmdDxExtShaderIntrinsicsBarycentric_Param17 0x11` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L165 `#define AmdDxExtShaderIntrinsicsBarycentric_Param18 0x12` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L166 `#define AmdDxExtShaderIntrinsicsBarycentric_Param19 0x13` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L167 `#define AmdDxExtShaderIntrinsicsBarycentric_Param20 0x14` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L168 `#define AmdDxExtShaderIntrinsicsBarycentric_Param21 0x15` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L169 `#define AmdDxExtShaderIntrinsicsBarycentric_Param22 0x16` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L170 `#define AmdDxExtShaderIntrinsicsBarycentric_Param23 0x17` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L171 `#define AmdDxExtShaderIntrinsicsBarycentric_Param24 0x18` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L172 `#define AmdDxExtShaderIntrinsicsBarycentric_Param25 0x19` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L173 `#define AmdDxExtShaderIntrinsicsBarycentric_Param26 0x1a` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L174 `#define AmdDxExtShaderIntrinsicsBarycentric_Param27 0x1b` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L175 `#define AmdDxExtShaderIntrinsicsBarycentric_Param28 0x1c` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L176 `#define AmdDxExtShaderIntrinsicsBarycentric_Param29 0x1d` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L177 `#define AmdDxExtShaderIntrinsicsBarycentric_Param30 0x1e` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L178 `#define AmdDxExtShaderIntrinsicsBarycentric_Param31 0x1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L180 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentX 0x0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L181 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentY 0x1` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L182 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentZ 0x2` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L183 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentW 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L185 `#define AmdDxExtShaderIntrinsicsBarycentric_ParamShift 0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L186 `#define AmdDxExtShaderIntrinsicsBarycentric_ParamMask 0x1f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L187 `#define AmdDxExtShaderIntrinsicsBarycentric_VtxShift 0x5` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L188 `#define AmdDxExtShaderIntrinsicsBarycentric_VtxMask 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L189 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentShift 0x7` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L190 `#define AmdDxExtShaderIntrinsicsBarycentric_ComponentMask 0x3` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L198 `#define AmdDxExtShaderIntrinsicsWaveOp_AddF 0x01` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L199 `#define AmdDxExtShaderIntrinsicsWaveOp_AddI 0x02` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L200 `#define AmdDxExtShaderIntrinsicsWaveOp_AddU 0x03` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L201 `#define AmdDxExtShaderIntrinsicsWaveOp_MulF 0x04` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L202 `#define AmdDxExtShaderIntrinsicsWaveOp_MulI 0x05` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L203 `#define AmdDxExtShaderIntrinsicsWaveOp_MulU 0x06` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L204 `#define AmdDxExtShaderIntrinsicsWaveOp_MinF 0x07` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L205 `#define AmdDxExtShaderIntrinsicsWaveOp_MinI 0x08` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L206 `#define AmdDxExtShaderIntrinsicsWaveOp_MinU 0x09` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L207 `#define AmdDxExtShaderIntrinsicsWaveOp_MaxF 0x0a` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L208 `#define AmdDxExtShaderIntrinsicsWaveOp_MaxI 0x0b` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L209 `#define AmdDxExtShaderIntrinsicsWaveOp_MaxU 0x0c` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L210 `#define AmdDxExtShaderIntrinsicsWaveOp_And 0x0d` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L211 `#define AmdDxExtShaderIntrinsicsWaveOp_Or 0x0e` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L212 `#define AmdDxExtShaderIntrinsicsWaveOp_Xor 0x0f` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L219 `#define AmdDxExtShaderIntrinsicsWaveOp_OpcodeShift 0` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L220 `#define AmdDxExtShaderIntrinsicsWaveOp_OpcodeMask 0xff` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L221 `#define AmdDxExtShaderIntrinsicsWaveOp_FlagShift 8` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L222 `#define AmdDxExtShaderIntrinsicsWaveOp_FlagMask 0xff` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L229 `#define AmdDxExtShaderIntrinsicsWaveOp_Inclusive 0x01` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L230 `#define AmdDxExtShaderIntrinsicsWaveOp_Exclusive 0x02` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L238 `#define AmdDxExtShaderIntrinsicsAtomicOp_MinU64 0x01` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L239 `#define AmdDxExtShaderIntrinsicsAtomicOp_MaxU64 0x02` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L240 `#define AmdDxExtShaderIntrinsicsAtomicOp_AndU64 0x03` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L241 `#define AmdDxExtShaderIntrinsicsAtomicOp_OrU64 0x04` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L242 `#define AmdDxExtShaderIntrinsicsAtomicOp_XorU64 0x05` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L243 `#define AmdDxExtShaderIntrinsicsAtomicOp_AddU64 0x06` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L244 `#define AmdDxExtShaderIntrinsicsAtomicOp_XchgU64 0x07` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L245 `#define AmdDxExtShaderIntrinsicsAtomicOp_CmpXchgU64 0x08` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L254 `#define AmdDxExtShaderIntrinsicsUAVSlot u7` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_) && !defined(AmdDxExtShaderIntrinsicsUAVSlot)]_
+- L265 `#define AmdDxExtShaderIntrinsicsResSlot t127` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_) && !defined(AmdDxExtShaderIntrinsicsResSlot)]_
+- L269 `#define AmdDxExtShaderIntrinsicsSamplerSlot s15` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_) && !defined(AmdDxExtShaderIntrinsicsSamplerSlot)]_
+
+#### Functions (251)
+
+- L284-290 _function_ `uint MakeAmdShaderIntrinsicsInstruction(uint opcode, uint opcodePhase, uint immediateData)` — MakeAmdShaderIntrinsicsInstruction Creates instruction from supplied opcode and immediate data. NOTE: This is an internal function and should not be called by the source HLSL shader directly. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L303-311 _function_ `float AmdDxExtShaderIntrinsics_ReadfirstlaneF(float src)` — AmdDxExtShaderIntrinsics_ReadfirstlaneF Returns the value of float src for the first active lane of the wavefront. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Readfirstlane) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L324-332 _function_ `uint AmdDxExtShaderIntrinsics_ReadfirstlaneU(uint src)` — AmdDxExtShaderIntrinsics_ReadfirstlaneU Returns the value of unsigned integer src for the first active lane of the wavefront. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Readfirstlane) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L344-352 _function_ `float AmdDxExtShaderIntrinsics_ReadlaneF(float src, uint laneId)` — AmdDxExtShaderIntrinsics_ReadlaneF Returns the value of float src for the lane within the wavefront specified by laneId. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Readlane) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L364-372 _function_ `uint AmdDxExtShaderIntrinsics_ReadlaneU(uint src, uint laneId)` — AmdDxExtShaderIntrinsics_ReadlaneU Returns the value of unsigned integer src for the lane within the wavefront specified by laneId. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Readlane) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L384-391 _function_ `uint AmdDxExtShaderIntrinsics_LaneId()` — AmdDxExtShaderIntrinsics_LaneId Returns the current lane id for the thread within the wavefront. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_LaneId) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L403-410 _function_ `uint AmdDxExtShaderIntrinsics_GetWaveSize()` — AmdDxExtShaderIntrinsics_GetWaveSize Returns the wave size for the current shader, including active, inactive and helper lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_GetWaveSize) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L424-432 _function_ `float AmdDxExtShaderIntrinsics_SwizzleF(float src, uint operation)` — AmdDxExtShaderIntrinsics_Swizzle Generic instruction to shuffle the float src value among different lanes as specified by the operation. Note that the operation parameter must be an immediately specified value not a value from a variable. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Swizzle) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L446-454 _function_ `uint AmdDxExtShaderIntrinsics_SwizzleU(uint src, uint operation)` — AmdDxExtShaderIntrinsics_SwizzleU Generic instruction to shuffle the unsigned integer src value among different lanes as specified by the operation. Note that the operation parameter must be an immediately specified value not a value from a variable. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Swizzle) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L468-483 _function_ `uint2 AmdDxExtShaderIntrinsics_Ballot(bool predicate)` — AmdDxExtShaderIntrinsics_Ballot Given an input predicate returns a bit mask indicating for which lanes the predicate is true. Inactive or non-existent lanes will always return 0.  The number of existent lanes is the wavefront size. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L497-502 _function_ `bool AmdDxExtShaderIntrinsics_BallotAny(bool predicate)` — AmdDxExtShaderIntrinsics_BallotAny Convenience routine that uses Ballot and returns true if for any of the active lanes the predicate is true. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L516-523 _function_ `bool AmdDxExtShaderIntrinsics_BallotAll(bool predicate)` — AmdDxExtShaderIntrinsics_BallotAll Convenience routine that uses Ballot and returns true if for all of the active lanes the predicate is true. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L537-546 _function_ `uint AmdDxExtShaderIntrinsics_MBCnt(uint2 src)` — AmdDxExtShaderIntrinsics_MBCnt Returns the masked bit count of the source register for this thread within all the active threads within a wavefront. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_MBCnt) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L558-573 _function_ `float AmdDxExtShaderIntrinsics_Min3F(float src0, float src1, float src2)` — AmdDxExtShaderIntrinsics_Min3F Returns the minimum value of the three floating point source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L585-600 _function_ `uint AmdDxExtShaderIntrinsics_Min3U(uint src0, uint src1, uint src2)` — AmdDxExtShaderIntrinsics_Min3U Returns the minimum value of the three unsigned integer source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L612-627 _function_ `float AmdDxExtShaderIntrinsics_Med3F(float src0, float src1, float src2)` — AmdDxExtShaderIntrinsics_Med3F Returns the median value of the three floating point source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L639-654 _function_ `uint AmdDxExtShaderIntrinsics_Med3U(uint src0, uint src1, uint src2)` — AmdDxExtShaderIntrinsics_Med3U Returns the median value of the three unsigned integer source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L666-681 _function_ `float AmdDxExtShaderIntrinsics_Max3F(float src0, float src1, float src2)` — AmdDxExtShaderIntrinsics_Max3F Returns the maximum value of the three floating point source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L693-708 _function_ `uint AmdDxExtShaderIntrinsics_Max3U(uint src0, uint src1, uint src2)` — AmdDxExtShaderIntrinsics_Max3U Returns the maximum value of the three unsigned integer source arguments. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L724-739 _function_ `float2 AmdDxExtShaderIntrinsics_IjBarycentricCoords(uint interpMode)` — AmdDxExtShaderIntrinsics_IjBarycentricCoords Returns the (i, j) barycentric coordinate pair for this shader invocation with the specified interpolation mode at the specified pixel location.  Should not be used for "pull-model" interpolation, PullModelBarycentricCoords should be used instead Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_BaryCoord) returned S_OK. Can only be used in pixel shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L754-774 _function_ `float3 AmdDxExtShaderIntrinsics_PullModelBarycentricCoords()` — AmdDxExtShaderIntrinsics_PullModelBarycentricCoords Returns the (1/W,1/I,1/J) coordinates at the pixel center which can be used for custom interpolation at any location in the pixel. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_BaryCoord) returned S_OK. Can only be used in pixel shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L789-823 _function_ `float4 AmdDxExtShaderIntrinsics_VertexParameter(uint vertexIdx, uint parameterIdx)` — AmdDxExtShaderIntrinsics_VertexParameter Returns the triangle's parameter information at the specified triangle vertex. The vertex and parameter indices must specified as immediate values. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_VtxParam) returned S_OK. Only available in pixel shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L838-849 _function_ `float AmdDxExtShaderIntrinsics_VertexParameterComponent(uint vertexIdx, uint parameterIdx, uint componentIdx)` — AmdDxExtShaderIntrinsics_VertexParameterComponent Returns the triangle's parameter information at the specified triangle vertex and component. The vertex, parameter and component indices must be specified as immediate values. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_VtxParam) returned S_OK. Only available in pixel shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L864-873 _function_ `uint AmdDxExtShaderIntrinsics_GetViewportIndex()` — AmdDxExtShaderIntrinsics_GetViewportIndex Returns current viewport index for replicated draws when MultiView extension is enabled (broadcast masks are set). Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_MultiViewIndices) returned S_OK. Only available in vertex/geometry/domain shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L888-896 _function_ `uint AmdDxExtShaderIntrinsics_GetViewportIndexPsOnly()` — AmdDxExtShaderIntrinsics_GetViewportIndexPsOnly Returns current viewport index for replicated draws when MultiView extension is enabled (broadcast masks are set). Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_MultiViewIndices) returned S_OK. Only available in pixel shader stage. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L911-920 _function_ `uint AmdDxExtShaderIntrinsics_GetRTArraySlice()` — AmdDxExtShaderIntrinsics_GetRTArraySlice Returns current RT array slice for replicated draws when MultiView extension is enabled (broadcast masks are set). Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_MultiViewIndices) returned S_OK. Only available in vertex/geometry/domain shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L935-943 _function_ `uint AmdDxExtShaderIntrinsics_GetRTArraySlicePsOnly()` — AmdDxExtShaderIntrinsics_GetRTArraySlicePsOnly Returns current RT array slice for replicated draws when MultiView extension is enabled (broadcast masks are set). Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_MultiViewIndices) returned S_OK. Only available in pixel shader stage. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L963-973 _function_ `float AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, float src)` — AmdDxExtShaderIntrinsics_WaveReduce : float _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L980-991 _function_ `float2 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, float2 src)` — AmdDxExtShaderIntrinsics_WaveReduce : float2 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L998-1010 _function_ `float3 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, float3 src)` — AmdDxExtShaderIntrinsics_WaveReduce : float3 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1017-1030 _function_ `float4 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, float4 src)` — AmdDxExtShaderIntrinsics_WaveReduce : float4 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1037-1047 _function_ `int AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, int src)` — AmdDxExtShaderIntrinsics_WaveReduce : int _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1054-1065 _function_ `int2 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, int2 src)` — AmdDxExtShaderIntrinsics_WaveReduce : int2 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1072-1084 _function_ `int3 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, int3 src)` — AmdDxExtShaderIntrinsics_WaveReduce : int3 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1091-1104 _function_ `int4 AmdDxExtShaderIntrinsics_WaveReduce(uint waveOp, int4 src)` — AmdDxExtShaderIntrinsics_WaveReduce : int4 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1126-1136 _function_ `float AmdDxExtShaderIntrinsics_WaveScan(uint waveOp, uint flags, float src)` — AmdDxExtShaderIntrinsics_WaveScan : float _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1143-1154 _function_ `float2 AmdDxExtShaderIntrinsics_WaveScan(uint waveOp, uint flags, float2 src)` — AmdDxExtShaderIntrinsics_WaveScan : float2 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1161-1173 _function_ `float3 AmdDxExtShaderIntrinsics_WaveScan(uint waveOp, uint flags, float3 src)` — AmdDxExtShaderIntrinsics_WaveScan : float3 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1180-1193 _function_ `float4 AmdDxExtShaderIntrinsics_WaveScan(uint waveOp, uint flags, float4 src)` — AmdDxExtShaderIntrinsics_WaveScan : float4 _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1207-1216 _function_ `uint AmdDxExtShaderIntrinsics_GetDrawIndex()` — AmdDxExtShaderIntrinsics_GetDrawIndex Returns the 0-based draw index in an indirect draw. Always returns 0 for direct draws. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_DrawIndex) returned S_OK. Only available in vertex shader stage. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1230-1239 _function_ `uint AmdDxExtShaderIntrinsics_GetBaseInstance()` — AmdDxExtShaderIntrinsics_GetBaseInstance Returns the StartInstanceLocation parameter passed to direct or indirect drawing commands. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_BaseInstance) returned S_OK. Only available in vertex shader stage. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1254-1263 _function_ `uint AmdDxExtShaderIntrinsics_GetBaseVertex()` — AmdDxExtShaderIntrinsics_GetBaseVertex For non-indexed draw commands, returns the StartVertexLocation parameter. For indexed draw commands, returns the BaseVertexLocation parameter. Available if CheckSupport(AmdDxExtShaderIntrinsicsSupport_BaseVertex) returned S_OK. Only available in vertex shader stage. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1274-1286 _function_ `uint4 AmdDxExtShaderIntrinsics_MakeAtomicInstructions(uint op)` — AmdDxExtShaderIntrinsics_MakeAtomicInstructions Creates uint4 with x/y/z/w components containing phase 0/1/2/3 for atomic instructions. NOTE: This is an internal function and should not be called by the source HLSL shader directly. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1297-1308 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp(RWByteAddressBuffer uav, uint3 address, uint2 value, uint op)` — AmdDxExtShaderIntrinsics_AtomicOp Creates intrinstic instructions for the specified atomic op. NOTE: These are internal functions and should not be called by the source HLSL shader directly. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1310-1321 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp(RWTexture1D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1323-1334 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp(RWTexture2D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1336-1347 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp(RWTexture3D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1349-1362 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp( RWByteAddressBuffer uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1364-1377 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp( RWTexture1D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1379-1392 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp( RWTexture2D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1394-1407 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOp( RWTexture3D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1421-1425 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMinU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicMinU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic minimum of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1427-1431 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMinU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1433-1437 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMinU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1439-1443 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMinU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1457-1461 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMaxU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicMaxU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic maximum of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1463-1467 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMaxU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1469-1473 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMaxU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1475-1479 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicMaxU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1493-1497 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAndU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicAndU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic AND of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1499-1503 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAndU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1505-1509 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAndU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1511-1515 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAndU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1529-1533 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOrU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicOrU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic OR of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1535-1539 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOrU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1541-1545 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOrU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1547-1551 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicOrU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1565-1569 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXorU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicXorU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic XOR of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1571-1575 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXorU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1577-1581 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXorU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1583-1587 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXorU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1601-1605 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAddU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicAddU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic add of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1607-1611 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAddU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1613-1617 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAddU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1619-1623 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicAddU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1637-1641 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXchgU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicXchgU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic exchange of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1643-1647 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXchgU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1649-1653 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXchgU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1655-1659 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicXchgU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1674-1679 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicCmpXchgU64( RWByteAddressBuffer uav, uint address, uint2 compare_value, uint2 value)` — AmdDxExtShaderIntrinsics_AtomicCmpXchgU64 The following functions are available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic compare of comparison value with UAV at address, stores value if values match, returns the original value. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1681-1686 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicCmpXchgU64( RWTexture1D<uint2> uav, uint address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1688-1693 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicCmpXchgU64( RWTexture2D<uint2> uav, uint2 address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1695-1700 _function_ `uint2 AmdDxExtShaderIntrinsics_AtomicCmpXchgU64( RWTexture3D<uint2> uav, uint3 address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1716-1719 _function_ `float AmdDxExtShaderIntrinsics_WaveActiveSum(float src)` — AmdDxExtShaderIntrinsics_WaveActiveSum Performs reduction operation across a wave and returns the result of the reduction (sum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1726-1729 _function_ `float2 AmdDxExtShaderIntrinsics_WaveActiveSum(float2 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1736-1739 _function_ `float3 AmdDxExtShaderIntrinsics_WaveActiveSum(float3 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1746-1749 _function_ `float4 AmdDxExtShaderIntrinsics_WaveActiveSum(float4 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1756-1759 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveSum(int src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1766-1769 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveSum(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1776-1779 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveSum(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1786-1789 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveSum(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1796-1799 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveSum(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1806-1809 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveSum(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1816-1819 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveSum(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1826-1829 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveSum(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveSum<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1844-1847 _function_ `float AmdDxExtShaderIntrinsics_WaveActiveProduct(float src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct Performs reduction operation across a wave and returns the result of the reduction (product of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1854-1857 _function_ `float2 AmdDxExtShaderIntrinsics_WaveActiveProduct(float2 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1864-1867 _function_ `float3 AmdDxExtShaderIntrinsics_WaveActiveProduct(float3 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1874-1877 _function_ `float4 AmdDxExtShaderIntrinsics_WaveActiveProduct(float4 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1884-1887 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveProduct(int src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1894-1897 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveProduct(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1904-1907 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveProduct(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1914-1917 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveProduct(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1924-1927 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveProduct(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1934-1937 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveProduct(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1944-1947 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveProduct(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1954-1957 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveProduct(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveProduct<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1972-1975 _function_ `float AmdDxExtShaderIntrinsics_WaveActiveMin(float src)` — AmdDxExtShaderIntrinsics_WaveActiveMin Performs reduction operation across a wave and returns the result of the reduction (minimum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1982-1985 _function_ `float2 AmdDxExtShaderIntrinsics_WaveActiveMin(float2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L1992-1995 _function_ `float3 AmdDxExtShaderIntrinsics_WaveActiveMin(float3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2002-2005 _function_ `float4 AmdDxExtShaderIntrinsics_WaveActiveMin(float4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2012-2015 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveMin(int src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2022-2025 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveMin(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2032-2035 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveMin(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2042-2045 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveMin(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2052-2055 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveMin(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2062-2065 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveMin(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2072-2075 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveMin(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2082-2085 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveMin(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMin<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2100-2103 _function_ `float AmdDxExtShaderIntrinsics_WaveActiveMax(float src)` — AmdDxExtShaderIntrinsics_WaveActiveMax Performs reduction operation across a wave and returns the result of the reduction (maximum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2110-2113 _function_ `float2 AmdDxExtShaderIntrinsics_WaveActiveMax(float2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2120-2123 _function_ `float3 AmdDxExtShaderIntrinsics_WaveActiveMax(float3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2130-2133 _function_ `float4 AmdDxExtShaderIntrinsics_WaveActiveMax(float4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2140-2143 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveMax(int src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2150-2153 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveMax(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2160-2163 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveMax(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2170-2173 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveMax(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2180-2183 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveMax(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2190-2193 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveMax(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2200-2203 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveMax(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2210-2213 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveMax(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveMax<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2234-2237 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveBitAnd(int src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2244-2247 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2254-2257 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2264-2267 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2274-2277 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveBitAnd(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2284-2287 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2294-2297 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2304-2307 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveBitAnd(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitAnd<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2328-2331 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveBitOr(int src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2338-2341 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveBitOr(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2348-2351 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveBitOr(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2358-2361 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveBitOr(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2368-2371 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveBitOr(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2378-2381 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveBitOr(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2388-2391 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveBitOr(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2398-2401 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveBitOr(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitOr<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2422-2425 _function_ `int AmdDxExtShaderIntrinsics_WaveActiveBitXor(int src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2432-2435 _function_ `int2 AmdDxExtShaderIntrinsics_WaveActiveBitXor(int2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2442-2445 _function_ `int3 AmdDxExtShaderIntrinsics_WaveActiveBitXor(int3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2452-2455 _function_ `int4 AmdDxExtShaderIntrinsics_WaveActiveBitXor(int4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2462-2465 _function_ `uint AmdDxExtShaderIntrinsics_WaveActiveBitXor(uint src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2472-2475 _function_ `uint2 AmdDxExtShaderIntrinsics_WaveActiveBitXor(uint2 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2482-2485 _function_ `uint3 AmdDxExtShaderIntrinsics_WaveActiveBitXor(uint3 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2492-2495 _function_ `uint4 AmdDxExtShaderIntrinsics_WaveActiveBitXor(uint4 src)` — AmdDxExtShaderIntrinsics_WaveActiveBitXor<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2509-2514 _function_ `float AmdDxExtShaderIntrinsics_WavePrefixSum(float src)` — AmdDxExtShaderIntrinsics_WavePrefixSum Performs a prefix (exclusive) scan operation across a wave and returns the resulting sum to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2521-2526 _function_ `float2 AmdDxExtShaderIntrinsics_WavePrefixSum(float2 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2533-2538 _function_ `float3 AmdDxExtShaderIntrinsics_WavePrefixSum(float3 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2545-2550 _function_ `float4 AmdDxExtShaderIntrinsics_WavePrefixSum(float4 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2557-2563 _function_ `int AmdDxExtShaderIntrinsics_WavePrefixSum(int src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2570-2575 _function_ `int2 AmdDxExtShaderIntrinsics_WavePrefixSum(int2 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2582-2587 _function_ `int3 AmdDxExtShaderIntrinsics_WavePrefixSum(int3 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2594-2599 _function_ `int4 AmdDxExtShaderIntrinsics_WavePrefixSum(int4 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2606-2611 _function_ `uint AmdDxExtShaderIntrinsics_WavePrefixSum(uint src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2618-2623 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePrefixSum(uint2 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2630-2635 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePrefixSum(uint3 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2642-2647 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePrefixSum(uint4 src)` — AmdDxExtShaderIntrinsics_WavePrefixSum<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2661-2666 _function_ `float AmdDxExtShaderIntrinsics_WavePrefixProduct(float src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct Performs a prefix scan operation across a wave and returns the resulting product to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2673-2678 _function_ `float2 AmdDxExtShaderIntrinsics_WavePrefixProduct(float2 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2685-2690 _function_ `float3 AmdDxExtShaderIntrinsics_WavePrefixProduct(float3 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2697-2702 _function_ `float4 AmdDxExtShaderIntrinsics_WavePrefixProduct(float4 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2709-2714 _function_ `int AmdDxExtShaderIntrinsics_WavePrefixProduct(int src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2721-2726 _function_ `int2 AmdDxExtShaderIntrinsics_WavePrefixProduct(int2 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2733-2738 _function_ `int3 AmdDxExtShaderIntrinsics_WavePrefixProduct(int3 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2745-2750 _function_ `int4 AmdDxExtShaderIntrinsics_WavePrefixProduct(int4 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2757-2762 _function_ `uint AmdDxExtShaderIntrinsics_WavePrefixProduct(uint src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2769-2774 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePrefixProduct(uint2 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2781-2786 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePrefixProduct(uint3 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2793-2798 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePrefixProduct(uint4 src)` — AmdDxExtShaderIntrinsics_WavePrefixProduct<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2812-2817 _function_ `float AmdDxExtShaderIntrinsics_WavePrefixMin(float src)` — AmdDxExtShaderIntrinsics_WavePrefixMin Performs a prefix scan operation across a wave and returns the resulting minimum value to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2824-2829 _function_ `float2 AmdDxExtShaderIntrinsics_WavePrefixMin(float2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2836-2841 _function_ `float3 AmdDxExtShaderIntrinsics_WavePrefixMin(float3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2848-2853 _function_ `float4 AmdDxExtShaderIntrinsics_WavePrefixMin(float4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2860-2865 _function_ `int AmdDxExtShaderIntrinsics_WavePrefixMin(int src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2872-2877 _function_ `int2 AmdDxExtShaderIntrinsics_WavePrefixMin(int2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2884-2889 _function_ `int3 AmdDxExtShaderIntrinsics_WavePrefixMin(int3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2896-2901 _function_ `int4 AmdDxExtShaderIntrinsics_WavePrefixMin(int4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2908-2913 _function_ `uint AmdDxExtShaderIntrinsics_WavePrefixMin(uint src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2920-2925 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePrefixMin(uint2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2932-2937 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePrefixMin(uint3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2944-2949 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePrefixMin(uint4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMin<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2963-2968 _function_ `float AmdDxExtShaderIntrinsics_WavePrefixMax(float src)` — AmdDxExtShaderIntrinsics_WavePrefixMax Performs a prefix scan operation across a wave and returns the resulting maximum value to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2975-2980 _function_ `float2 AmdDxExtShaderIntrinsics_WavePrefixMax(float2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2987-2992 _function_ `float3 AmdDxExtShaderIntrinsics_WavePrefixMax(float3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L2999-3004 _function_ `float4 AmdDxExtShaderIntrinsics_WavePrefixMax(float4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3011-3016 _function_ `int AmdDxExtShaderIntrinsics_WavePrefixMax(int src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3023-3028 _function_ `int2 AmdDxExtShaderIntrinsics_WavePrefixMax(int2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3035-3040 _function_ `int3 AmdDxExtShaderIntrinsics_WavePrefixMax(int3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3047-3052 _function_ `int4 AmdDxExtShaderIntrinsics_WavePrefixMax(int4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3059-3064 _function_ `uint AmdDxExtShaderIntrinsics_WavePrefixMax(uint src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3071-3076 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePrefixMax(uint2 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3083-3088 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePrefixMax(uint3 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3095-3100 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePrefixMax(uint4 src)` — AmdDxExtShaderIntrinsics_WavePrefixMax<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3114-3119 _function_ `float AmdDxExtShaderIntrinsics_WavePostfixSum(float src)` — AmdDxExtShaderIntrinsics_WavePostfixSum Performs a Postfix (Inclusive) scan operation across a wave and returns the resulting sum to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3126-3131 _function_ `float2 AmdDxExtShaderIntrinsics_WavePostfixSum(float2 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3138-3143 _function_ `float3 AmdDxExtShaderIntrinsics_WavePostfixSum(float3 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3150-3155 _function_ `float4 AmdDxExtShaderIntrinsics_WavePostfixSum(float4 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3162-3167 _function_ `int AmdDxExtShaderIntrinsics_WavePostfixSum(int src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3174-3179 _function_ `int2 AmdDxExtShaderIntrinsics_WavePostfixSum(int2 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3186-3191 _function_ `int3 AmdDxExtShaderIntrinsics_WavePostfixSum(int3 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3198-3203 _function_ `int4 AmdDxExtShaderIntrinsics_WavePostfixSum(int4 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3210-3215 _function_ `uint AmdDxExtShaderIntrinsics_WavePostfixSum(uint src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3222-3227 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePostfixSum(uint2 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3234-3239 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePostfixSum(uint3 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3246-3251 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePostfixSum(uint4 src)` — AmdDxExtShaderIntrinsics_WavePostfixSum<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3265-3270 _function_ `float AmdDxExtShaderIntrinsics_WavePostfixProduct(float src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct Performs a Postfix scan operation across a wave and returns the resulting product to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3277-3282 _function_ `float2 AmdDxExtShaderIntrinsics_WavePostfixProduct(float2 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3289-3294 _function_ `float3 AmdDxExtShaderIntrinsics_WavePostfixProduct(float3 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3301-3306 _function_ `float4 AmdDxExtShaderIntrinsics_WavePostfixProduct(float4 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3313-3318 _function_ `int AmdDxExtShaderIntrinsics_WavePostfixProduct(int src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3325-3330 _function_ `int2 AmdDxExtShaderIntrinsics_WavePostfixProduct(int2 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3337-3342 _function_ `int3 AmdDxExtShaderIntrinsics_WavePostfixProduct(int3 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3349-3354 _function_ `int4 AmdDxExtShaderIntrinsics_WavePostfixProduct(int4 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3361-3366 _function_ `uint AmdDxExtShaderIntrinsics_WavePostfixProduct(uint src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3373-3378 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePostfixProduct(uint2 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3385-3390 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePostfixProduct(uint3 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3397-3402 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePostfixProduct(uint4 src)` — AmdDxExtShaderIntrinsics_WavePostfixProduct<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3416-3421 _function_ `float AmdDxExtShaderIntrinsics_WavePostfixMin(float src)` — AmdDxExtShaderIntrinsics_WavePostfixMin Performs a Postfix scan operation across a wave and returns the resulting minimum value to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3428-3433 _function_ `float2 AmdDxExtShaderIntrinsics_WavePostfixMin(float2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3440-3445 _function_ `float3 AmdDxExtShaderIntrinsics_WavePostfixMin(float3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3452-3457 _function_ `float4 AmdDxExtShaderIntrinsics_WavePostfixMin(float4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3464-3469 _function_ `int AmdDxExtShaderIntrinsics_WavePostfixMin(int src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3476-3481 _function_ `int2 AmdDxExtShaderIntrinsics_WavePostfixMin(int2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3488-3493 _function_ `int3 AmdDxExtShaderIntrinsics_WavePostfixMin(int3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3500-3505 _function_ `int4 AmdDxExtShaderIntrinsics_WavePostfixMin(int4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3512-3517 _function_ `uint AmdDxExtShaderIntrinsics_WavePostfixMin(uint src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3524-3529 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePostfixMin(uint2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3536-3541 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePostfixMin(uint3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3548-3553 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePostfixMin(uint4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMin<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3567-3572 _function_ `float AmdDxExtShaderIntrinsics_WavePostfixMax(float src)` — AmdDxExtShaderIntrinsics_WavePostfixMax Performs a Postfix scan operation across a wave and returns the resulting maximum value to all participating lanes. Available if CheckSupport(AmdDxExtShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3579-3584 _function_ `float2 AmdDxExtShaderIntrinsics_WavePostfixMax(float2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<float2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3591-3596 _function_ `float3 AmdDxExtShaderIntrinsics_WavePostfixMax(float3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<float3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3603-3608 _function_ `float4 AmdDxExtShaderIntrinsics_WavePostfixMax(float4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<float4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3615-3620 _function_ `int AmdDxExtShaderIntrinsics_WavePostfixMax(int src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<int> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3627-3632 _function_ `int2 AmdDxExtShaderIntrinsics_WavePostfixMax(int2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<int2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3639-3644 _function_ `int3 AmdDxExtShaderIntrinsics_WavePostfixMax(int3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<int3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3651-3656 _function_ `int4 AmdDxExtShaderIntrinsics_WavePostfixMax(int4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<int4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3663-3668 _function_ `uint AmdDxExtShaderIntrinsics_WavePostfixMax(uint src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<uint> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3675-3680 _function_ `uint2 AmdDxExtShaderIntrinsics_WavePostfixMax(uint2 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<uint2> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3687-3692 _function_ `uint3 AmdDxExtShaderIntrinsics_WavePostfixMax(uint3 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<uint3> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L3699-3704 _function_ `uint4 AmdDxExtShaderIntrinsics_WavePostfixMax(uint4 src)` — AmdDxExtShaderIntrinsics_WavePostfixMax<uint4> _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+
+#### Prototypes (3)
+
+- L257 _prototype_ `RWByteAddressBuffer AmdDxExtShaderIntrinsicsUAV : register(AmdDxExtShaderIntrinsicsUAVSlot)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L272 _prototype_ `SamplerState AmdDxExtShaderIntrinsicsSamplerState : register (AmdDxExtShaderIntrinsicsSamplerSlot)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+- L273 _prototype_ `Texture3D<float4> AmdDxExtShaderIntrinsicsResource : register (AmdDxExtShaderIntrinsicsResSlot)` _[#if !defined(_AMDDXEXTSHADERINTRINSICS_HLSL_)]_
+
+### `Shaders/Shared/ThirdParty/AMD/ags_shader_intrinsics_dx12.h` (Shared)
+
+- lines: 3994; parse: all-branches
+
+#### Macros (#define, 142)
+
+- L36 `#define _AMDEXTD3DSHADERINTRINICS_HLSL ` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L39 `#define AmdExtD3DShaderIntrinsicsSpaceId space2147420894` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L56 `#define AmdExtD3DShaderIntrinsics_MagicCodeShift 28` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L57 `#define AmdExtD3DShaderIntrinsics_MagicCodeMask 0xf` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L58 `#define AmdExtD3DShaderIntrinsics_OpcodePhaseShift 24` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L59 `#define AmdExtD3DShaderIntrinsics_OpcodePhaseMask 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L60 `#define AmdExtD3DShaderIntrinsics_DataShift 8` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L61 `#define AmdExtD3DShaderIntrinsics_DataMask 0xffff` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L62 `#define AmdExtD3DShaderIntrinsics_OpcodeShift 0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L63 `#define AmdExtD3DShaderIntrinsics_OpcodeMask 0xff` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L65 `#define AmdExtD3DShaderIntrinsics_MagicCode 0x5` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L73 `#define AmdExtD3DShaderIntrinsicsOpcode_Readfirstlane 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L74 `#define AmdExtD3DShaderIntrinsicsOpcode_Readlane 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L75 `#define AmdExtD3DShaderIntrinsicsOpcode_LaneId 0x03` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L76 `#define AmdExtD3DShaderIntrinsicsOpcode_Swizzle 0x04` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L77 `#define AmdExtD3DShaderIntrinsicsOpcode_Ballot 0x05` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L78 `#define AmdExtD3DShaderIntrinsicsOpcode_MBCnt 0x06` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L79 `#define AmdExtD3DShaderIntrinsicsOpcode_Min3U 0x07` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L80 `#define AmdExtD3DShaderIntrinsicsOpcode_Min3F 0x08` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L81 `#define AmdExtD3DShaderIntrinsicsOpcode_Med3U 0x09` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L82 `#define AmdExtD3DShaderIntrinsicsOpcode_Med3F 0x0a` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L83 `#define AmdExtD3DShaderIntrinsicsOpcode_Max3U 0x0b` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L84 `#define AmdExtD3DShaderIntrinsicsOpcode_Max3F 0x0c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L85 `#define AmdExtD3DShaderIntrinsicsOpcode_BaryCoord 0x0d` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L86 `#define AmdExtD3DShaderIntrinsicsOpcode_VtxParam 0x0e` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L87 `#define AmdExtD3DShaderIntrinsicsOpcode_Reserved1 0x0f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L88 `#define AmdExtD3DShaderIntrinsicsOpcode_Reserved2 0x10` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L89 `#define AmdExtD3DShaderIntrinsicsOpcode_Reserved3 0x11` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L90 `#define AmdExtD3DShaderIntrinsicsOpcode_WaveReduce 0x12` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L91 `#define AmdExtD3DShaderIntrinsicsOpcode_WaveScan 0x13` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L92 `#define AmdExtD3DShaderIntrinsicsOpcode_LoadDwAtAddr 0x14` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L93 `#define AmdExtD3DShaderIntrinsicsOpcode_DrawIndex 0x17` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L94 `#define AmdExtD3DShaderIntrinsicsOpcode_AtomicU64 0x18` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L95 `#define AmdExtD3DShaderIntrinsicsOpcode_GetWaveSize 0x19` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L96 `#define AmdExtD3DShaderIntrinsicsOpcode_BaseInstance 0x1a` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L97 `#define AmdExtD3DShaderIntrinsicsOpcode_BaseVertex 0x1b` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L98 `#define AmdExtD3DShaderIntrinsicsOpcode_FloatConversion 0x1c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L99 `#define AmdExtD3DShaderIntrinsicsOpcode_ReadlaneAt 0x1d` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L106 `#define AmdExtD3DShaderIntrinsicsOpcodePhase_0 0x0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L107 `#define AmdExtD3DShaderIntrinsicsOpcodePhase_1 0x1` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L108 `#define AmdExtD3DShaderIntrinsicsOpcodePhase_2 0x2` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L109 `#define AmdExtD3DShaderIntrinsicsOpcodePhase_3 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L117 `#define AmdExtD3DShaderIntrinsicsWaveOp_AddF 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L118 `#define AmdExtD3DShaderIntrinsicsWaveOp_AddI 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L119 `#define AmdExtD3DShaderIntrinsicsWaveOp_AddU 0x03` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L120 `#define AmdExtD3DShaderIntrinsicsWaveOp_MulF 0x04` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L121 `#define AmdExtD3DShaderIntrinsicsWaveOp_MulI 0x05` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L122 `#define AmdExtD3DShaderIntrinsicsWaveOp_MulU 0x06` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L123 `#define AmdExtD3DShaderIntrinsicsWaveOp_MinF 0x07` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L124 `#define AmdExtD3DShaderIntrinsicsWaveOp_MinI 0x08` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L125 `#define AmdExtD3DShaderIntrinsicsWaveOp_MinU 0x09` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L126 `#define AmdExtD3DShaderIntrinsicsWaveOp_MaxF 0x0a` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L127 `#define AmdExtD3DShaderIntrinsicsWaveOp_MaxI 0x0b` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L128 `#define AmdExtD3DShaderIntrinsicsWaveOp_MaxU 0x0c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L129 `#define AmdExtD3DShaderIntrinsicsWaveOp_And 0x0d` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L130 `#define AmdExtD3DShaderIntrinsicsWaveOp_Or 0x0e` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L131 `#define AmdExtD3DShaderIntrinsicsWaveOp_Xor 0x0f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L138 `#define AmdExtD3DShaderIntrinsicsWaveOp_OpcodeShift 0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L139 `#define AmdExtD3DShaderIntrinsicsWaveOp_OpcodeMask 0xff` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L140 `#define AmdExtD3DShaderIntrinsicsWaveOp_FlagShift 8` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L141 `#define AmdExtD3DShaderIntrinsicsWaveOp_FlagMask 0xff` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L148 `#define AmdExtD3DShaderIntrinsicsWaveOp_Inclusive 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L149 `#define AmdExtD3DShaderIntrinsicsWaveOp_Exclusive 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L157 `#define AmdExtD3DShaderIntrinsicsSwizzle_SwapX1 0x041f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L158 `#define AmdExtD3DShaderIntrinsicsSwizzle_SwapX2 0x081f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L159 `#define AmdExtD3DShaderIntrinsicsSwizzle_SwapX4 0x101f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L160 `#define AmdExtD3DShaderIntrinsicsSwizzle_SwapX8 0x201f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L161 `#define AmdExtD3DShaderIntrinsicsSwizzle_SwapX16 0x401f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L162 `#define AmdExtD3DShaderIntrinsicsSwizzle_ReverseX2 0x041f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L163 `#define AmdExtD3DShaderIntrinsicsSwizzle_ReverseX4 0x0c1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L164 `#define AmdExtD3DShaderIntrinsicsSwizzle_ReverseX8 0x1c1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L165 `#define AmdExtD3DShaderIntrinsicsSwizzle_ReverseX16 0x3c1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L166 `#define AmdExtD3DShaderIntrinsicsSwizzle_ReverseX32 0x7c1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L167 `#define AmdExtD3DShaderIntrinsicsSwizzle_BCastX2 0x003e` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L168 `#define AmdExtD3DShaderIntrinsicsSwizzle_BCastX4 0x003c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L169 `#define AmdExtD3DShaderIntrinsicsSwizzle_BCastX8 0x0038` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L170 `#define AmdExtD3DShaderIntrinsicsSwizzle_BCastX16 0x0030` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L171 `#define AmdExtD3DShaderIntrinsicsSwizzle_BCastX32 0x0020` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L180 `#define AmdExtD3DShaderIntrinsicsBarycentric_LinearCenter 0x1` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L181 `#define AmdExtD3DShaderIntrinsicsBarycentric_LinearCentroid 0x2` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L182 `#define AmdExtD3DShaderIntrinsicsBarycentric_LinearSample 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L183 `#define AmdExtD3DShaderIntrinsicsBarycentric_PerspCenter 0x4` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L184 `#define AmdExtD3DShaderIntrinsicsBarycentric_PerspCentroid 0x5` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L185 `#define AmdExtD3DShaderIntrinsicsBarycentric_PerspSample 0x6` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L186 `#define AmdExtD3DShaderIntrinsicsBarycentric_PerspPullModel 0x7` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L194 `#define AmdExtD3DShaderIntrinsicsBarycentric_Vertex0 0x0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L195 `#define AmdExtD3DShaderIntrinsicsBarycentric_Vertex1 0x1` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L196 `#define AmdExtD3DShaderIntrinsicsBarycentric_Vertex2 0x2` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L198 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param0 0x00` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L199 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param1 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L200 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param2 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L201 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param3 0x03` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L202 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param4 0x04` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L203 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param5 0x05` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L204 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param6 0x06` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L205 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param7 0x07` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L206 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param8 0x08` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L207 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param9 0x09` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L208 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param10 0x0a` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L209 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param11 0x0b` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L210 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param12 0x0c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L211 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param13 0x0d` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L212 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param14 0x0e` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L213 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param15 0x0f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L214 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param16 0x10` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L215 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param17 0x11` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L216 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param18 0x12` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L217 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param19 0x13` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L218 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param20 0x14` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L219 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param21 0x15` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L220 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param22 0x16` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L221 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param23 0x17` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L222 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param24 0x18` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L223 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param25 0x19` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L224 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param26 0x1a` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L225 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param27 0x1b` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L226 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param28 0x1c` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L227 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param29 0x1d` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L228 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param30 0x1e` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L229 `#define AmdExtD3DShaderIntrinsicsBarycentric_Param31 0x1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L231 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentX 0x0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L232 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentY 0x1` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L233 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentZ 0x2` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L234 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentW 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L236 `#define AmdExtD3DShaderIntrinsicsBarycentric_ParamShift 0` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L237 `#define AmdExtD3DShaderIntrinsicsBarycentric_ParamMask 0x1f` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L238 `#define AmdExtD3DShaderIntrinsicsBarycentric_VtxShift 0x5` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L239 `#define AmdExtD3DShaderIntrinsicsBarycentric_VtxMask 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L240 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentShift 0x7` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L241 `#define AmdExtD3DShaderIntrinsicsBarycentric_ComponentMask 0x3` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L249 `#define AmdExtD3DShaderIntrinsicsAtomicOp_MinU64 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L250 `#define AmdExtD3DShaderIntrinsicsAtomicOp_MaxU64 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L251 `#define AmdExtD3DShaderIntrinsicsAtomicOp_AndU64 0x03` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L252 `#define AmdExtD3DShaderIntrinsicsAtomicOp_OrU64 0x04` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L253 `#define AmdExtD3DShaderIntrinsicsAtomicOp_XorU64 0x05` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L254 `#define AmdExtD3DShaderIntrinsicsAtomicOp_AddU64 0x06` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L255 `#define AmdExtD3DShaderIntrinsicsAtomicOp_XchgU64 0x07` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L256 `#define AmdExtD3DShaderIntrinsicsAtomicOp_CmpXchgU64 0x08` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L264 `#define AmdExtD3DShaderIntrinsicsFloatConversionOp_FToF16Near 0x01` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L265 `#define AmdExtD3DShaderIntrinsicsFloatConversionOp_FToF16NegInf 0x02` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L266 `#define AmdExtD3DShaderIntrinsicsFloatConversionOp_FToF16PlusInf 0x03` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3972 `#define AmdTraceRay(accelStruct, rayFlags, instanceInclusionMask, rayContributionToHitGroupIndex, geometryMultiplier, missShaderIndex, ray, payload, token) AmdSetHitToken(token); TraceRay(accelStruct, rayFlags, instanceInclusionMask, rayContributionToHitGroupIndex, geometryMultiplier, missShaderIndex, ray, payload);` (19 lines) _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+
+#### Structs / classes (3)
+
+- L3902-3905 _struct_ **`AmdExtRtHitToken`** `struct AmdExtRtHitToken` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+  - L3904 _member_ `uint dword[2];` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+- L3915-3915 _struct_ **`AmdExtRtHitTokenIn`** `struct AmdExtRtHitTokenIn : AmdExtRtHitToken` — base/reg: `AmdExtRtHitToken` — @brief AmdExtD3DShaderIntrinsicsRT structure when included in a Ray Tracing payload will indicate to the driver that the dwords are already supplied in AmdExtRtHitTokenIn and only requires a call to intersect ray, bypassing the traversal of the acceleration structure. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+- L3925-3925 _struct_ **`AmdExtRtHitTokenOut`** `struct AmdExtRtHitTokenOut : AmdExtRtHitToken` — base/reg: `AmdExtRtHitToken` — @brief AmdExtD3DShaderIntrinsicsRT structure when included in a Ray Tracing payload will indicate to the driver that the dwords must be patched into the payload after traversal.  The application can store this data in a buffer which can then be used for hit group sorting so shading divergence can be avoided. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+
+#### groupshared (1)
+
+- L3935 _groupshared_ `groupshared AmdExtRtHitToken AmdHitToken;` — @brief Group shared memory reserved for temprary storage of hit tokens. Not intended to touched by the app shader. Application shader must only use the extension functions defined below to access the hit tokens _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+
+#### Functions (263)
+
+- L278-284 _function_ `uint MakeAmdShaderIntrinsicsInstruction(uint opcode, uint opcodePhase, uint immediateData)` — MakeAmdShaderIntrinsicsInstruction Creates instruction from supplied opcode and immediate data. NOTE: This is an internal function and should not be called by the source HLSL shader directly. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L297-304 _function_ `float AmdExtD3DShaderIntrinsics_ReadfirstlaneF(float src)` — AmdExtD3DShaderIntrinsics_ReadfirstlaneF Returns the value of float src for the first active lane of the wavefront. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Readfirstlane) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L317-324 _function_ `uint AmdExtD3DShaderIntrinsics_ReadfirstlaneU(uint src)` — AmdExtD3DShaderIntrinsics_ReadfirstlaneU Returns the value of unsigned integer src for the first active lane of the wavefront. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Readfirstlane) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L336-343 _function_ `float AmdExtD3DShaderIntrinsics_ReadlaneF(float src, uint laneId)` — AmdExtD3DShaderIntrinsics_Readlane Returns the value of float src for the lane within the wavefront specified by laneId. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Readlane) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L356-363 _function_ `uint AmdExtD3DShaderIntrinsics_ReadlaneU(uint src, uint laneId)` — AmdExtD3DShaderIntrinsics_ReadlaneU Returns the value of unsigned integer src for the lane within the wavefront specified by laneId. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Readlane) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L375-382 _function_ `uint AmdExtD3DShaderIntrinsics_LaneId()` — AmdExtD3DShaderIntrinsics_LaneId Returns the current lane id for the thread within the wavefront. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_LaneId) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L394-401 _function_ `uint AmdExtD3DShaderIntrinsics_GetWaveSize()` — AmdExtD3DShaderIntrinsics_GetWaveSize Returns the wave size for the current shader, including active, inactive and helper lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_GetWaveSize) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L414-422 _function_ `float AmdExtD3DShaderIntrinsics_SwizzleF(float src, uint operation)` — AmdExtD3DShaderIntrinsics_Swizzle Generic instruction to shuffle the float src value among different lanes as specified by the operation. Note that the operation parameter must be an immediately specified value not a value from a variable. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Swizzle) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L435-442 _function_ `uint AmdExtD3DShaderIntrinsics_SwizzleU(uint src, uint operation)` — AmdExtD3DShaderIntrinsics_SwizzleU Generic instruction to shuffle the unsigned integer src value among different lanes as specified by the operation. Note that the operation parameter must be an immediately specified value not a value from a variable. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Swizzle) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L455-470 _function_ `uint2 AmdExtD3DShaderIntrinsics_Ballot(bool predicate)` — AmdExtD3DShaderIntrinsics_Ballot Given an input predicate returns a bit mask indicating for which lanes the predicate is true. Inactive or non-existent lanes will always return 0.  The number of existent lanes is the wavefront size. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L483-488 _function_ `bool AmdExtD3DShaderIntrinsics_BallotAny(bool predicate)` — AmdExtD3DShaderIntrinsics_BallotAny Convenience routine that uses Ballot and returns true if for any of the active lanes the predicate is true. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L501-508 _function_ `bool AmdExtD3DShaderIntrinsics_BallotAll(bool predicate)` — AmdExtD3DShaderIntrinsics_BallotAll Convenience routine that uses Ballot and returns true if for all of the active lanes the predicate is true. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Ballot) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L522-531 _function_ `uint AmdExtD3DShaderIntrinsics_MBCnt(uint2 src)` — AmdExtD3DShaderIntrinsics_MBCnt Returns the masked bit count of the source register for this thread within all the active threads within a wavefront. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_MBCnt) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L543-558 _function_ `float AmdExtD3DShaderIntrinsics_Min3F(float src0, float src1, float src2)` — AmdExtD3DShaderIntrinsics_Min3F Returns the minimum value of the three floating point source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L570-585 _function_ `uint AmdExtD3DShaderIntrinsics_Min3U(uint src0, uint src1, uint src2)` — AmdExtD3DShaderIntrinsics_Min3U Returns the minimum value of the three unsigned integer source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L597-612 _function_ `float AmdExtD3DShaderIntrinsics_Med3F(float src0, float src1, float src2)` — AmdExtD3DShaderIntrinsics_Med3F Returns the median value of the three floating point source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L624-639 _function_ `uint AmdExtD3DShaderIntrinsics_Med3U(uint src0, uint src1, uint src2)` — AmdExtD3DShaderIntrinsics_Med3U Returns the median value of the three unsigned integer source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L651-666 _function_ `float AmdExtD3DShaderIntrinsics_Max3F(float src0, float src1, float src2)` — AmdExtD3DShaderIntrinsics_Max3F Returns the maximum value of the three floating point source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L678-693 _function_ `uint AmdExtD3DShaderIntrinsics_Max3U(uint src0, uint src1, uint src2)` — AmdExtD3DShaderIntrinsics_Max3U Returns the maximum value of the three unsigned integer source arguments. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_Compare3) returned S_OK. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L709-724 _function_ `float2 AmdExtD3DShaderIntrinsics_IjBarycentricCoords(uint interpMode)` — AmdExtD3DShaderIntrinsics_IjBarycentricCoords Returns the (i, j) barycentric coordinate pair for this shader invocation with the specified interpolation mode at the specified pixel location.  Should not be used for "pull-model" interpolation, PullModelBarycentricCoords should be used instead Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_BaryCoord) returned S_OK. Can only be used in pixel shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L739-759 _function_ `float3 AmdExtD3DShaderIntrinsics_PullModelBarycentricCoords()` — AmdExtD3DShaderIntrinsics_PullModelBarycentricCoords Returns the (1/W,1/I,1/J) coordinates at the pixel center which can be used for custom interpolation at any location in the pixel. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_BaryCoord) returned S_OK. Can only be used in pixel shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L774-812 _function_ `float4 AmdExtD3DShaderIntrinsics_VertexParameter(uint vertexIdx, uint parameterIdx)` — AmdExtD3DShaderIntrinsics_VertexParameter Returns the triangle's parameter information at the specified triangle vertex. The vertex and parameter indices must specified as immediate values. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_VtxParam) returned S_OK. Only available in pixel shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L827-839 _function_ `float AmdExtD3DShaderIntrinsics_VertexParameterComponent(uint vertexIdx, uint parameterIdx, uint componentIdx)` — AmdExtD3DShaderIntrinsics_VertexParameterComponent Returns the triangle's parameter information at the specified triangle vertex and component. The vertex, parameter and component indices must be specified as immediate values. Available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_VtxParam) returned S_OK. Only available in pixel shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L859-868 _function_ `float AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, float src)` — AmdExtD3DShaderIntrinsics_WaveReduce : float _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L875-886 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, float2 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : float2 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L893-905 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, float3 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : float3 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L912-925 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, float4 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : float4 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L932-942 _function_ `int AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, int src)` — AmdExtD3DShaderIntrinsics_WaveReduce : int _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L949-960 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, int2 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : int2 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L967-979 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, int3 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : int3 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L986-999 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveReduce(uint waveOp, int4 src)` — AmdExtD3DShaderIntrinsics_WaveReduce : int4 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1019-1031 _function_ `float AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, float src)` — AmdExtD3DShaderIntrinsics_WaveScan : float _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1038-1052 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, float2 src)` — AmdExtD3DShaderIntrinsics_WaveScan : float2 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1059-1074 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, float3 src)` — AmdExtD3DShaderIntrinsics_WaveScan : float3 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1081-1097 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, float4 src)` — AmdExtD3DShaderIntrinsics_WaveScan : float4 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1104-1117 _function_ `int AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, int src)` — AmdExtD3DShaderIntrinsics_WaveScan : int _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1124-1138 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, int2 src)` — AmdExtD3DShaderIntrinsics_WaveScan : int2 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1145-1160 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, int3 src)` — AmdExtD3DShaderIntrinsics_WaveScan : int3 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1167-1183 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveScan(uint waveOp, uint flags, int4 src)` — AmdExtD3DShaderIntrinsics_WaveScan : int4 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1203-1220 _function_ `uint AmdExtD3DShaderIntrinsics_LoadDwordAtAddr(uint gpuVaLoBits, uint gpuVaHiBits, uint offset)` — AmdExtD3DShaderIntrinsics_LoadDwordAtAddr _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1227-1235 _function_ `uint2 AmdExtD3DShaderIntrinsics_LoadDwordAtAddrx2(uint gpuVaLoBits, uint gpuVaHiBits, uint offset)` — AmdExtD3DShaderIntrinsics_LoadDwordAtAddrx2 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1242-1252 _function_ `uint4 AmdExtD3DShaderIntrinsics_LoadDwordAtAddrx4(uint gpuVaLoBits, uint gpuVaHiBits, uint offset)` — AmdExtD3DShaderIntrinsics_LoadDwordAtAddrx4 _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1267-1278 _function_ `uint AmdExtD3DShaderIntrinsics_GetDrawIndex()` — AmdExtD3DShaderIntrinsics_GetDrawIndex The following function is available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_GetDrawIndex) returned S_OK. Returns the 0-based draw index in an indirect draw. Always returns 0 for direct draws. Available in vertex shader stage only. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1292-1303 _function_ `uint AmdExtD3DShaderIntrinsics_GetBaseInstance()` — AmdExtD3DShaderIntrinsics_GetBaseInstance The following function is available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_BaseInstance) returned S_OK. Returns the StartInstanceLocation parameter passed to direct or indirect drawing commands. Available in vertex shader stage only. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1318-1329 _function_ `uint AmdExtD3DShaderIntrinsics_GetBaseVertex()` — AmdExtD3DShaderIntrinsics_GetBaseVertex The following function is available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_BaseVertex) returned S_OK. For non-indexed draw commands, returns the StartVertexLocation parameter. For indexed draw commands, returns the BaseVertexLocation parameter. Available in vertex shader stage only. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1344-1355 _function_ `uint AmdExtD3DShaderIntrinsics_ReadlaneAt(uint src, uint laneId)` — AmdExtD3DShaderIntrinsics_ReadlaneAt : uint The following function is available if CheckSupport(AmdExtD3DShaderIntrinsicsSupport_ReadlaneAt) returned S_OK. Returns the value of the source for the given lane index within the specified wave.  The lane index can be non-uniform across the wave. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1362-1373 _function_ `int AmdExtD3DShaderIntrinsics_ReadlaneAt(int src, uint laneId)` — AmdExtD3DShaderIntrinsics_ReadlaneAt : int _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1380-1391 _function_ `float AmdExtD3DShaderIntrinsics_ReadlaneAt(float src, uint laneId)` — AmdExtD3DShaderIntrinsics_ReadlaneAt : float _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1412-1424 _function_ `uint3 AmdExtD3DShaderIntrinsics_ConvertF32toF16(in uint convOp, in float3 val)` — AmdExtD3DShaderIntrinsics_ConvertF32toF16 - helper to convert f32 to f16 number _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1431-1434 _function_ `uint3 AmdExtD3DShaderIntrinsics_ConvertF32toF16Near(in float3 inVec)` — AmdExtD3DShaderIntrinsics_ConvertF32toF16Near - convert f32 to f16 number using nearest rounding mode _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1441-1444 _function_ `uint3 AmdExtD3DShaderIntrinsics_ConvertF32toF16NegInf(in float3 inVec)` — AmdExtD3DShaderIntrinsics_ConvertF32toF16Near - convert f32 to f16 number using -inf rounding mode _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1451-1454 _function_ `uint3 AmdExtD3DShaderIntrinsics_ConvertF32toF16PosInf(in float3 inVec)` — AmdExtD3DShaderIntrinsics_ConvertF32toF16Near - convert f32 to f16 number using +inf rounding mode _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1467-1479 _function_ `uint4 AmdExtD3DShaderIntrinsics_MakeAtomicInstructions(uint op)` — AmdExtD3DShaderIntrinsics_MakeAtomicInstructions Creates uint4 with x/y/z/w components containing phase 0/1/2/3 for atomic instructions. NOTE: This is an internal function and should not be called by the source HLSL shader directly. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1490-1501 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp(RWByteAddressBuffer uav, uint3 address, uint2 value, uint op)` — AmdExtD3DShaderIntrinsics_AtomicOp Creates intrinstic instructions for the specified atomic op. NOTE: These are internal functions and should not be called by the source HLSL shader directly. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1503-1514 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp(RWTexture1D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1516-1527 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp(RWTexture2D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1529-1540 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp(RWTexture3D<uint2> uav, uint3 address, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1542-1555 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp( RWByteAddressBuffer uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1557-1570 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp( RWTexture1D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1572-1585 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp( RWTexture2D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1587-1600 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOp( RWTexture3D<uint2> uav, uint3 address, uint2 compare_value, uint2 value, uint op)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1614-1618 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMinU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicMinU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic minimum of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1620-1624 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMinU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1626-1630 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMinU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1632-1636 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMinU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1650-1654 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMaxU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicMaxU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic maximum of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1656-1660 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMaxU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1662-1666 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMaxU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1668-1672 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicMaxU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1686-1690 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAndU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicAndU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic AND of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1692-1696 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAndU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1698-1702 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAndU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1704-1708 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAndU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1722-1726 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOrU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicOrU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic OR of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1728-1732 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOrU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1734-1738 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOrU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1740-1744 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicOrU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1758-1762 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXorU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicXorU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic XOR of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1764-1768 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXorU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1770-1774 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXorU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1776-1780 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXorU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1794-1798 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAddU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicAddU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic add of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1800-1804 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAddU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1806-1810 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAddU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1812-1816 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicAddU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1830-1834 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXchgU64(RWByteAddressBuffer uav, uint address, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicXchgU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic exchange of value with the UAV at address, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1836-1840 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXchgU64(RWTexture1D<uint2> uav, uint address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1842-1846 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXchgU64(RWTexture2D<uint2> uav, uint2 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1848-1852 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicXchgU64(RWTexture3D<uint2> uav, uint3 address, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1867-1872 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicCmpXchgU64( RWByteAddressBuffer uav, uint address, uint2 compare_value, uint2 value)` — AmdExtD3DShaderIntrinsics_AtomicCmpXchgU64 The following functions are available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_AtomicU64) returned S_OK. Performs 64-bit atomic compare of comparison value with UAV at address, stores value if values match, returns the original value. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1874-1879 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicCmpXchgU64( RWTexture1D<uint2> uav, uint address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1881-1886 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicCmpXchgU64( RWTexture2D<uint2> uav, uint2 address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1888-1893 _function_ `uint2 AmdExtD3DShaderIntrinsics_AtomicCmpXchgU64( RWTexture3D<uint2> uav, uint3 address, uint2 compare_value, uint2 value)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1909-1912 _function_ `float AmdExtD3DShaderIntrinsics_WaveActiveSum(float src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum Performs reduction operation across a wave and returns the result of the reduction (sum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1919-1922 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveActiveSum(float2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1929-1932 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveActiveSum(float3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1939-1942 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveActiveSum(float4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1949-1952 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveSum(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1959-1962 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveSum(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1969-1972 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveSum(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1979-1982 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveSum(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1989-1992 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveSum(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L1999-2002 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveSum(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2009-2012 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveSum(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2019-2022 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveSum(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveSum<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2037-2040 _function_ `float AmdExtD3DShaderIntrinsics_WaveActiveProduct(float src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct Performs reduction operation across a wave and returns the result of the reduction (product of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2047-2050 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveActiveProduct(float2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2057-2060 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveActiveProduct(float3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2067-2070 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveActiveProduct(float4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2077-2080 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveProduct(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2087-2090 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveProduct(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2097-2100 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveProduct(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2107-2110 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveProduct(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2117-2120 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveProduct(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2127-2130 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveProduct(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2137-2140 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveProduct(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2147-2150 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveProduct(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveProduct<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2165-2168 _function_ `float AmdExtD3DShaderIntrinsics_WaveActiveMin(float src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin Performs reduction operation across a wave and returns the result of the reduction (minimum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2175-2178 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveActiveMin(float2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2185-2188 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveActiveMin(float3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2195-2198 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveActiveMin(float4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2205-2208 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveMin(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2215-2218 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveMin(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2225-2228 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveMin(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2235-2238 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveMin(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2245-2248 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveMin(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2255-2258 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveMin(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2265-2268 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveMin(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2275-2278 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveMin(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMin<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2293-2296 _function_ `float AmdExtD3DShaderIntrinsics_WaveActiveMax(float src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax Performs reduction operation across a wave and returns the result of the reduction (maximum of all threads in a wave) to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveReduce) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2303-2306 _function_ `float2 AmdExtD3DShaderIntrinsics_WaveActiveMax(float2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2313-2316 _function_ `float3 AmdExtD3DShaderIntrinsics_WaveActiveMax(float3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2323-2326 _function_ `float4 AmdExtD3DShaderIntrinsics_WaveActiveMax(float4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2333-2336 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveMax(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2343-2346 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveMax(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2353-2356 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveMax(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2363-2366 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveMax(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2373-2376 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveMax(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2383-2386 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveMax(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2393-2396 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveMax(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2403-2406 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveMax(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveMax<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2427-2430 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2437-2440 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2447-2450 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2457-2460 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2467-2470 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2477-2480 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2487-2490 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2497-2500 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveBitAnd(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitAnd<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2521-2524 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveBitOr(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2531-2534 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2541-2544 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2551-2554 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2561-2564 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveBitOr(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2571-2574 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2581-2584 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2591-2594 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveBitOr(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitOr<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2615-2618 _function_ `int AmdExtD3DShaderIntrinsics_WaveActiveBitXor(int src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2625-2628 _function_ `int2 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(int2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2635-2638 _function_ `int3 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(int3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2645-2648 _function_ `int4 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(int4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2655-2658 _function_ `uint AmdExtD3DShaderIntrinsics_WaveActiveBitXor(uint src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2665-2668 _function_ `uint2 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(uint2 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2675-2678 _function_ `uint3 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(uint3 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2685-2688 _function_ `uint4 AmdExtD3DShaderIntrinsics_WaveActiveBitXor(uint4 src)` — AmdExtD3DShaderIntrinsics_WaveActiveBitXor<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2702-2707 _function_ `float AmdExtD3DShaderIntrinsics_WavePrefixSum(float src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum Performs a prefix (exclusive) scan operation across a wave and returns the resulting sum to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2714-2719 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePrefixSum(float2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2726-2731 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePrefixSum(float3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2738-2743 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePrefixSum(float4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2750-2755 _function_ `int AmdExtD3DShaderIntrinsics_WavePrefixSum(int src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2762-2767 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePrefixSum(int2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2774-2779 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePrefixSum(int3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2786-2791 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePrefixSum(int4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2798-2803 _function_ `uint AmdExtD3DShaderIntrinsics_WavePrefixSum(uint src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2810-2815 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePrefixSum(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2822-2827 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePrefixSum(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2834-2839 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePrefixSum(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixSum<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2853-2858 _function_ `float AmdExtD3DShaderIntrinsics_WavePrefixProduct(float src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct Performs a prefix scan operation across a wave and returns the resulting product to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2865-2870 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePrefixProduct(float2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2877-2882 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePrefixProduct(float3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2889-2894 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePrefixProduct(float4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2901-2906 _function_ `int AmdExtD3DShaderIntrinsics_WavePrefixProduct(int src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2913-2918 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePrefixProduct(int2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2925-2930 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePrefixProduct(int3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2937-2942 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePrefixProduct(int4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2949-2954 _function_ `uint AmdExtD3DShaderIntrinsics_WavePrefixProduct(uint src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2961-2966 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePrefixProduct(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2973-2978 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePrefixProduct(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L2985-2990 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePrefixProduct(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixProduct<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3004-3009 _function_ `float AmdExtD3DShaderIntrinsics_WavePrefixMin(float src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin Performs a prefix scan operation across a wave and returns the resulting minimum value to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3016-3021 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePrefixMin(float2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3028-3033 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePrefixMin(float3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3040-3045 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePrefixMin(float4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3052-3057 _function_ `int AmdExtD3DShaderIntrinsics_WavePrefixMin(int src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3064-3069 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePrefixMin(int2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3076-3081 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePrefixMin(int3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3088-3093 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePrefixMin(int4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3100-3105 _function_ `uint AmdExtD3DShaderIntrinsics_WavePrefixMin(uint src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3112-3117 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePrefixMin(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3124-3129 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePrefixMin(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3136-3141 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePrefixMin(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMin<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3155-3160 _function_ `float AmdExtD3DShaderIntrinsics_WavePrefixMax(float src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax Performs a prefix scan operation across a wave and returns the resulting maximum value to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3167-3172 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePrefixMax(float2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3179-3184 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePrefixMax(float3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3191-3196 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePrefixMax(float4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3203-3208 _function_ `int AmdExtD3DShaderIntrinsics_WavePrefixMax(int src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3215-3220 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePrefixMax(int2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3227-3232 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePrefixMax(int3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3239-3244 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePrefixMax(int4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3251-3256 _function_ `uint AmdExtD3DShaderIntrinsics_WavePrefixMax(uint src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3263-3268 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePrefixMax(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3275-3280 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePrefixMax(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3287-3292 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePrefixMax(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePrefixMax<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3306-3311 _function_ `float AmdExtD3DShaderIntrinsics_WavePostfixSum(float src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum Performs a Postfix (Inclusive) scan operation across a wave and returns the resulting sum to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3318-3323 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePostfixSum(float2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3330-3335 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePostfixSum(float3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3342-3347 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePostfixSum(float4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3354-3359 _function_ `int AmdExtD3DShaderIntrinsics_WavePostfixSum(int src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3366-3371 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePostfixSum(int2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3378-3383 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePostfixSum(int3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3390-3395 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePostfixSum(int4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3402-3407 _function_ `uint AmdExtD3DShaderIntrinsics_WavePostfixSum(uint src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3414-3419 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePostfixSum(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3426-3431 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePostfixSum(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3438-3443 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePostfixSum(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixSum<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3457-3462 _function_ `float AmdExtD3DShaderIntrinsics_WavePostfixProduct(float src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct Performs a Postfix scan operation across a wave and returns the resulting product to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3469-3474 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePostfixProduct(float2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3481-3486 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePostfixProduct(float3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3493-3498 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePostfixProduct(float4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3505-3510 _function_ `int AmdExtD3DShaderIntrinsics_WavePostfixProduct(int src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3517-3522 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePostfixProduct(int2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3529-3534 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePostfixProduct(int3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3541-3546 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePostfixProduct(int4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3553-3558 _function_ `uint AmdExtD3DShaderIntrinsics_WavePostfixProduct(uint src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3565-3570 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePostfixProduct(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3577-3582 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePostfixProduct(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3589-3594 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePostfixProduct(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixProduct<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3608-3613 _function_ `float AmdExtD3DShaderIntrinsics_WavePostfixMin(float src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin Performs a Postfix scan operation across a wave and returns the resulting minimum value to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3620-3625 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePostfixMin(float2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3632-3637 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePostfixMin(float3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3644-3649 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePostfixMin(float4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3656-3661 _function_ `int AmdExtD3DShaderIntrinsics_WavePostfixMin(int src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3668-3673 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePostfixMin(int2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3680-3685 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePostfixMin(int3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3692-3697 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePostfixMin(int4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3704-3709 _function_ `uint AmdExtD3DShaderIntrinsics_WavePostfixMin(uint src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3716-3721 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePostfixMin(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3728-3733 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePostfixMin(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3740-3745 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePostfixMin(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMin<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3759-3764 _function_ `float AmdExtD3DShaderIntrinsics_WavePostfixMax(float src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax Performs a Postfix scan operation across a wave and returns the resulting maximum value to all participating lanes. Available if CheckSupport(AmdExtD3DShaderIntrinsicsOpcode_WaveScan) returned S_OK. Available in all shader stages. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3771-3776 _function_ `float2 AmdExtD3DShaderIntrinsics_WavePostfixMax(float2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<float2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3783-3788 _function_ `float3 AmdExtD3DShaderIntrinsics_WavePostfixMax(float3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<float3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3795-3800 _function_ `float4 AmdExtD3DShaderIntrinsics_WavePostfixMax(float4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<float4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3807-3812 _function_ `int AmdExtD3DShaderIntrinsics_WavePostfixMax(int src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<int> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3819-3824 _function_ `int2 AmdExtD3DShaderIntrinsics_WavePostfixMax(int2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<int2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3831-3836 _function_ `int3 AmdExtD3DShaderIntrinsics_WavePostfixMax(int3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<int3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3843-3848 _function_ `int4 AmdExtD3DShaderIntrinsics_WavePostfixMax(int4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<int4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3855-3860 _function_ `uint AmdExtD3DShaderIntrinsics_WavePostfixMax(uint src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<uint> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3867-3872 _function_ `uint2 AmdExtD3DShaderIntrinsics_WavePostfixMax(uint2 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<uint2> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3879-3884 _function_ `uint3 AmdExtD3DShaderIntrinsics_WavePostfixMax(uint3 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<uint3> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3891-3896 _function_ `uint4 AmdExtD3DShaderIntrinsics_WavePostfixMax(uint4 src)` — AmdExtD3DShaderIntrinsics_WavePostfixMax<uint4> _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL)]_
+- L3945-3948 _function_ `uint2 AmdGetLastHitToken()` — @brief Accessor function to obtain the hit tokens from the last call to TraceRays(). The data returned by this function only guarantees valid values for the last call to TraceRays() prior to calling this function. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+- L3959-3963 _function_ `void AmdSetHitToken(uint2 token)` — @brief This function initialises hit tokens for subsequent TraceRays() call. Note, any TraceRay() that intends to use these hit tokens must include this function call in the same basic block. Applications can use a convenience macro defined below to enforce that. _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined (AGS_RAY_HIT_TOKEN)]_
+
+#### Prototypes (2)
+
+- L46 _prototype_ `RWByteAddressBuffer AmdExtD3DShaderIntrinsicsUAV : register(AMD_EXT_SHADER_INTRINSIC_UAV_OVERRIDE)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && defined(AMD_EXT_SHADER_INTRINSIC_UAV_OVERRIDE)]_
+- L48 _prototype_ `RWByteAddressBuffer AmdExtD3DShaderIntrinsicsUAV : register(u0, AmdExtD3DShaderIntrinsicsSpaceId)` _[#if !defined(_AMDEXTD3DSHADERINTRINICS_HLSL) && !(defined(AMD_EXT_SHADER_INTRINSIC_UAV_OVERRIDE))]_

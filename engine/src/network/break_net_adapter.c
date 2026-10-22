@@ -1,0 +1,1139 @@
+#include "network/break_net_adapter.h"
+#include "network/break_net_envelope.h"
+#include "network/break_net_protocol.h"
+
+#include "core/platform_thread.h"
+
+#include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
+
+#if defined(PLATFORM_THREAD_POSIX)
+#include <errno.h>
+#include <time.h>
+extern int nanosleep(const struct timespec *, struct timespec *);
+#endif
+
+#include <snow/connection.h>
+#include <snow/net_thread.h>
+#include <snow/recv_context.h>
+#include <snow/send_context.h>
+#include <snow/socket.h>
+
+enum BreakNetState {
+    BREAK_NET_STATE_CREATED,
+    BREAK_NET_STATE_STARTING,
+    BREAK_NET_STATE_STARTED,
+    BREAK_NET_STATE_STOPPING,
+    BREAK_NET_STATE_STOPPED,
+    BREAK_NET_STATE_FAILED
+};
+
+typedef struct BreakNetOutboundCommand {
+    uint64_t connection_key;
+    BreakNetOwnedMessage message;
+} BreakNetOutboundCommand;
+
+#define BREAK_NET_ADDRESS_TEXT_CAPACITY 108u
+
+typedef struct BreakNetConnectionContext {
+    BreakNetEnvelopeContext envelope;
+} BreakNetConnectionContext;
+
+typedef struct BreakNetConnectionIdentity {
+    uint64_t key;
+    uint32_t uid;
+    int fd;
+    int thread_index;
+    uint16_t port;
+    char ip[BREAK_NET_ADDRESS_TEXT_CAPACITY];
+    snow_recv_context_t *send_recv;
+    size_t pending_send_count;
+    bool closing;
+    bool valid;
+} BreakNetConnectionIdentity;
+
+static bool break_net_event_push(BreakNetReactor *reactor, BreakNetEvent *event);
+static void break_net_reactor_fail(BreakNetReactor *reactor);
+static BreakNetConnectionIdentity *break_net_identity_find(BreakNetReactor *reactor,
+                                                            uint64_t key);
+static BreakNetConnectionIdentity *break_net_identity_alloc(BreakNetReactor *reactor,
+                                                            uint64_t key);
+
+static void break_net_drain_outbound(BreakNetReactor *reactor);
+static void break_net_identity_release_if_drained(BreakNetConnectionIdentity *identity);
+static void break_net_identity_abort(BreakNetConnectionIdentity *identity);
+static void break_net_identity_mark_closed(BreakNetConnectionIdentity *identity);
+static void break_net_identity_mark_send_drained(BreakNetConnectionIdentity *identity);
+static void break_net_identity_on_closed(BreakNetReactor *reactor, uint64_t key);
+static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_t key);
+static unsigned int break_net_new_connection_failure_for_test;
+static BreakNetStartFailureForTest break_net_start_failure_for_test;
+
+static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
+                                         snow_connection_t *connection,
+                                         void *ud)
+{
+    uint8_t header[BREAK_NET_ENVELOPE_HEADER_SIZE];
+    size_t available;
+    size_t frame_size;
+    uint32_t payload_size;
+    BreakNetEnvelope envelope;
+    BreakNetConnectionContext *connection_context =
+        (BreakNetConnectionContext *)snow_connection_user(connection);
+    (void)ud;
+    available = snow_network_buffer_length(buffer);
+    if (available < BREAK_NET_ENVELOPE_HEADER_SIZE) return SNOW_NB_PACKET_LESS;
+    if (snow_network_buffer_get_header(buffer, sizeof(header), header,
+                                       sizeof(header), &available) != SNOW_OK) {
+        return SNOW_NB_PACKET_ERR;
+    }
+    payload_size = (uint32_t)header[14] |
+                   ((uint32_t)header[15] << 8u) |
+                   ((uint32_t)header[16] << 16u) |
+                   ((uint32_t)header[17] << 24u);
+    if (payload_size > BREAK_NET_MAX_PAYLOAD_SIZE) {
+        return SNOW_NB_PACKET_ERR;
+    }
+    frame_size = BREAK_NET_ENVELOPE_HEADER_SIZE + (size_t)payload_size;
+    if (snow_network_buffer_length(buffer) < frame_size) return SNOW_NB_PACKET_LESS;
+    {
+        unsigned char *frame_header = malloc(frame_size);
+        if (frame_header == NULL || snow_network_buffer_copy_to(buffer, frame_header,
+                                                                  frame_size, &available) != SNOW_OK) {
+            free(frame_header);
+            return SNOW_NB_PACKET_ERR;
+        }
+        if (break_net_envelope_decode_with_context(
+                connection_context != NULL ? &connection_context->envelope : NULL,
+                frame_header, frame_size, &envelope) != BREAK_NET_ENVELOPE_OK) {
+            free(frame_header);
+            return SNOW_NB_PACKET_ERR;
+        }
+        free(frame_header);
+    }
+    {
+        void *frame = malloc(frame_size);
+        snow_recv_context_t *context = NULL;
+        if (frame == NULL || snow_network_buffer_copy_to(buffer, frame, frame_size,
+                                                          &available) != SNOW_OK ||
+            snow_recv_context_make_for_packet(connection, frame, frame_size, 0,
+                                              &context) != SNOW_OK ||
+            snow_connection_push_recv(connection, context) != SNOW_OK) {
+            free(frame);
+            snow_recv_context_free(context);
+            return SNOW_NB_PACKET_ERR;
+        }
+        free(frame);
+    }
+    if (snow_network_buffer_move_header(buffer, frame_size) != SNOW_OK) {
+        return SNOW_NB_PACKET_ERR;
+    }
+    return SNOW_NB_PACKET_FULL;
+}
+
+static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)ud;
+    BreakNetConnectionContext *context =
+        (BreakNetConnectionContext *)calloc(1u, sizeof(*context));
+    BreakNetEvent event = {0};
+    if (context == NULL || break_net_new_connection_failure_for_test == 1) {
+        free(context);
+        break_net_new_connection_failure_for_test = 0;
+        break_net_reactor_fail(reactor);
+        return;
+    }
+    {
+        BreakNetConnectionIdentity *identity =
+            break_net_new_connection_failure_for_test == 2
+                ? NULL
+                : break_net_identity_alloc(reactor, (uint64_t)snow_connection_uid(connection));
+        snow_socket_addr_t *addr = NULL;
+        if (identity == NULL || break_net_new_connection_failure_for_test == 3 ||
+            snow_socket_addr_alloc(&addr) != SNOW_OK ||
+            snow_socket_addr_from_inet(addr, snow_connection_ip(connection),
+                                       snow_connection_port(connection)) != SNOW_OK ||
+            snow_socket_addr_to_string(addr, identity->ip, sizeof(identity->ip)) != SNOW_OK ||
+            break_net_new_connection_failure_for_test == 4 ||
+            snow_recv_context_create(&identity->send_recv,
+                0, snow_connection_uid(connection), addr, snow_connection_fd(connection),
+                NULL, false, SNOW_CLOSE_CLIENT, 0) != SNOW_OK) {
+            snow_socket_addr_free(addr);
+            break_net_identity_abort(identity);
+            free(context);
+            break_net_reactor_fail(reactor);
+            return;
+        }
+        identity->uid = snow_connection_uid(connection);
+        identity->fd = snow_connection_fd(connection);
+        identity->thread_index = snow_net_thread_index(
+            (const snow_net_thread_t *)snow_connection_net_thread(connection));
+        identity->port = snow_connection_port(connection);
+        snow_socket_addr_free(addr);
+    }
+    snow_connection_set_user(connection, context);
+    event.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    event.connection_key = (uint64_t)snow_connection_uid(connection);
+    (void)break_net_event_push(reactor, &event);
+}
+
+static void break_net_on_packet(snow_connection_t *connection,
+                                snow_recv_context_t *context, void *ud)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)ud;
+    const void *data = NULL;
+    size_t size = 0u;
+    BreakNetEvent event = {0};
+    BreakNetMessageView view;
+    BreakNetEnvelope envelope;
+    snow_recv_context_buffer(context, &data, &size);
+    event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+    event.connection_key = (uint64_t)snow_connection_uid(connection);
+    if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) !=
+            BREAK_NET_ENVELOPE_OK ||
+        break_net_message_view_init(&view, envelope.message_id,
+                                    envelope.protocol_version, envelope.sequence,
+                                    envelope.payload, envelope.payload_size) != BREAK_NET_MESSAGE_OK ||
+        break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
+        break_net_event_release(&event);
+        snow_recv_context_free(snow_connection_pop_recv(connection));
+        return;
+    }
+    if (!break_net_event_push(reactor, &event)) {
+        break_net_event_release(&event);
+    }
+    snow_recv_context_free(snow_connection_pop_recv(connection));
+}
+
+static void break_net_on_send_drained(snow_connection_t *connection, void *ud)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)ud;
+    BreakNetEvent event = {0};
+    event.type = BREAK_NET_EVENT_SEND_DRAINED;
+    event.connection_key = (uint64_t)snow_connection_uid(connection);
+    (void)break_net_event_push(reactor, &event);
+    break_net_identity_on_send_drained(reactor, (uint64_t)snow_connection_uid(connection));
+}
+
+static void break_net_on_closed(snow_connection_t *connection, snow_close_t reason,
+                                const char *error, void *ud)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)ud;
+    BreakNetEvent event = {0};
+    event.type = error != NULL ? BREAK_NET_EVENT_TRANSPORT_ERROR : BREAK_NET_EVENT_CONNECTION_CLOSED;
+    event.connection_key = (uint64_t)snow_connection_uid(connection);
+    event.reason = (uint32_t)reason;
+    (void)break_net_event_push(reactor, &event);
+    break_net_identity_on_closed(reactor, (uint64_t)snow_connection_uid(connection));
+    free(snow_connection_user(connection));
+    snow_connection_set_user(connection, NULL);
+}
+
+struct BreakNetReactor {
+    BreakNetReactorConfig config;
+    snow_net_thread_t *snow_thread;
+    snow_acceptor_t *acceptor;
+    enum BreakNetState state;
+    atomic_flag step_driver;
+    PlatformMutex lifecycle_mutex;
+    PlatformCond lifecycle_cond;
+    bool step_active;
+    uint32_t step_delay_ms_for_test;
+    PlatformThread host_thread;
+    bool host_thread_valid;
+    bool stop_cleanup_in_progress;
+    bool start_in_progress;
+    atomic_bool host_ready;
+    atomic_bool host_active;
+    atomic_bool host_exited;
+    PlatformMutex queue_mutex;
+    BreakNetEvent events[BREAK_NET_EVENT_QUEUE_CAPACITY];
+    size_t event_head;
+    size_t event_count;
+    BreakNetOutboundCommand outbound[BREAK_NET_OUTBOUND_QUEUE_CAPACITY];
+    size_t outbound_head;
+    size_t outbound_count;
+    size_t outbound_attempts;
+    BreakNetConnectionIdentity identities[BREAK_NET_CONNECTION_IDENTITY_CAPACITY];
+};
+
+static bool break_net_wait_for_step_exit(BreakNetReactor *reactor, uint32_t timeout_ms)
+{
+#if defined(PLATFORM_THREAD_POSIX)
+    struct timespec deadline;
+    if (timespec_get(&deadline, TIME_UTC) != TIME_UTC) return false;
+    deadline.tv_sec += (time_t)(timeout_ms / 1000u);
+    deadline.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    while (reactor->step_active) {
+        int result = pthread_cond_timedwait(&reactor->lifecycle_cond,
+                                            &reactor->lifecycle_mutex, &deadline);
+        if (result == ETIMEDOUT) break;
+        if (result != 0) return false;
+    }
+#else
+    ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeout_ms;
+    while (reactor->step_active) {
+        ULONGLONG now = GetTickCount64();
+        DWORD remaining = now >= deadline ? 0u : (DWORD)(deadline - now);
+        if (!SleepConditionVariableCS(&reactor->lifecycle_cond,
+                                      &reactor->lifecycle_mutex, remaining)) {
+            if (GetLastError() == ERROR_TIMEOUT) break;
+            return false;
+        }
+    }
+#endif
+    return !reactor->step_active;
+}
+
+static bool break_net_wait_for_host_exit(BreakNetReactor *reactor, uint32_t timeout_ms)
+{
+#if defined(PLATFORM_THREAD_POSIX)
+    struct timespec deadline;
+    if (timespec_get(&deadline, TIME_UTC) != TIME_UTC) return false;
+    deadline.tv_sec += (time_t)(timeout_ms / 1000u);
+    deadline.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+    if (deadline.tv_nsec >= 1000000000L) {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000L;
+    }
+    while (!atomic_load_explicit(&reactor->host_exited, memory_order_acquire)) {
+        int result = pthread_cond_timedwait(&reactor->lifecycle_cond,
+                                            &reactor->lifecycle_mutex, &deadline);
+        if (result == ETIMEDOUT) break;
+        if (result != 0) return false;
+    }
+    return atomic_load_explicit(&reactor->host_exited, memory_order_acquire);
+#else
+    ULONGLONG deadline = GetTickCount64() + (ULONGLONG)timeout_ms;
+    while (!atomic_load_explicit(&reactor->host_exited, memory_order_acquire)) {
+        ULONGLONG now = GetTickCount64();
+        DWORD remaining = now >= deadline ? 0u : (DWORD)(deadline - now);
+        if (!SleepConditionVariableCS(&reactor->lifecycle_cond,
+                                      &reactor->lifecycle_mutex, remaining)) {
+            if (GetLastError() == ERROR_TIMEOUT) break;
+            return false;
+        }
+    }
+    return atomic_load_explicit(&reactor->host_exited, memory_order_acquire);
+#endif
+}
+
+static BreakNetConnectionIdentity *break_net_identity_find(BreakNetReactor *reactor,
+                                                            uint64_t key)
+{
+    size_t i;
+    for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+        if (reactor->identities[i].valid && reactor->identities[i].key == key)
+            return &reactor->identities[i];
+    }
+    return NULL;
+}
+
+static void break_net_identity_release_if_drained(BreakNetConnectionIdentity *identity)
+{
+    if (identity != NULL && identity->closing && identity->pending_send_count == 0u) {
+        snow_recv_context_free(identity->send_recv);
+        memset(identity, 0, sizeof(*identity));
+    }
+}
+
+static void break_net_identity_abort(BreakNetConnectionIdentity *identity)
+{
+    if (identity != NULL) {
+        snow_recv_context_free(identity->send_recv);
+        memset(identity, 0, sizeof(*identity));
+    }
+}
+
+static void break_net_identity_mark_closed(BreakNetConnectionIdentity *identity)
+{
+    if (identity != NULL) {
+        identity->closing = true;
+        break_net_identity_release_if_drained(identity);
+    }
+}
+
+static void break_net_identity_mark_send_drained(BreakNetConnectionIdentity *identity)
+{
+    if (identity != NULL) {
+        identity->pending_send_count = 0u;
+        break_net_identity_release_if_drained(identity);
+    }
+}
+
+static void break_net_identity_on_closed(BreakNetReactor *reactor, uint64_t key)
+{
+    platform_mutex_lock(&reactor->queue_mutex);
+    break_net_identity_mark_closed(break_net_identity_find(reactor, key));
+    platform_mutex_unlock(&reactor->queue_mutex);
+}
+
+static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_t key)
+{
+    platform_mutex_lock(&reactor->queue_mutex);
+    break_net_identity_mark_send_drained(break_net_identity_find(reactor, key));
+    platform_mutex_unlock(&reactor->queue_mutex);
+}
+
+static void break_net_drain_outbound(BreakNetReactor *reactor)
+{
+    for (;;) {
+        BreakNetOutboundCommand *command;
+        BreakNetConnectionIdentity *identity;
+        BreakNetEnvelope envelope = {0};
+        uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE];
+        size_t encoded_size = 0u;
+        snow_send_context_t *send = NULL;
+        snow_status_t status;
+
+        platform_mutex_lock(&reactor->queue_mutex);
+        if (reactor->outbound_count == 0u) {
+            platform_mutex_unlock(&reactor->queue_mutex);
+            return;
+        }
+        command = &reactor->outbound[reactor->outbound_head];
+        reactor->outbound_attempts++;
+        identity = break_net_identity_find(reactor, command->connection_key);
+        if (identity == NULL || identity->send_recv == NULL || identity->closing) {
+            break_net_message_release(&command->message);
+            memset(command, 0, sizeof(*command));
+            reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+            reactor->outbound_count--;
+            platform_mutex_unlock(&reactor->queue_mutex);
+            continue;
+        }
+        envelope.protocol_version = command->message.protocol_version;
+        envelope.message_id = command->message.message_id;
+        envelope.sequence = command->message.sequence;
+        envelope.payload = command->message.data;
+        envelope.payload_size = command->message.size;
+        status = break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
+                 BREAK_NET_ENVELOPE_OK
+                     ? snow_send_context_create_with(&send, identity->send_recv,
+                                                     SNOW_SEND_CMD_DATA, encoded, encoded_size)
+                     : SNOW_ERR_INVAL;
+        if (status == SNOW_OK) status = snow_net_thread_send(reactor->snow_thread, send);
+        if (status == SNOW_OK) {
+            send = NULL;
+            identity->pending_send_count++;
+            break_net_message_release(&command->message);
+            memset(command, 0, sizeof(*command));
+            reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+            reactor->outbound_count--;
+        }
+        snow_send_context_free(send);
+        platform_mutex_unlock(&reactor->queue_mutex);
+        if (status != SNOW_OK) return;
+    }
+}
+
+static BreakNetConnectionIdentity *break_net_identity_alloc(BreakNetReactor *reactor,
+                                                            uint64_t key)
+{
+    size_t i;
+    for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+        if (!reactor->identities[i].valid) {
+            memset(&reactor->identities[i], 0, sizeof(reactor->identities[i]));
+            reactor->identities[i].key = key;
+            reactor->identities[i].valid = true;
+            return &reactor->identities[i];
+        }
+    }
+    return NULL;
+}
+
+static bool break_net_reactor_config_valid(const BreakNetReactorConfig *config)
+{
+    return config != NULL &&
+           (config->drive_mode == BREAK_NET_DRIVE_STEP ||
+            config->drive_mode == BREAK_NET_DRIVE_THREAD) &&
+           config->logical_index >= 0 &&
+           config->max_connections <= BREAK_NET_CONNECTION_IDENTITY_CAPACITY;
+}
+
+static void break_net_reactor_fail(BreakNetReactor *reactor)
+{
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    reactor->state = BREAK_NET_STATE_FAILED;
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+}
+
+static void break_net_reactor_start_failure_cleanup(BreakNetReactor *reactor)
+{
+    if (reactor->snow_thread != NULL) {
+        snow_net_thread_terminate(reactor->snow_thread);
+        snow_net_thread_destroy(reactor->snow_thread);
+        reactor->snow_thread = NULL;
+    }
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    reactor->start_in_progress = false;
+    reactor->state = BREAK_NET_STATE_FAILED;
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+}
+
+static void break_net_reactor_publish_ready(BreakNetReactor *reactor)
+{
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    atomic_store_explicit(&reactor->host_ready, true, memory_order_release);
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+}
+
+static PLATFORM_THREAD_RET break_net_reactor_thread_main(PLATFORM_THREAD_ARG arg)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)arg;
+    snow_status_t status;
+
+    atomic_store_explicit(&reactor->host_active, true, memory_order_release);
+    break_net_drain_outbound(reactor);
+    status = snow_net_thread_step(reactor->snow_thread,
+                                  (int)reactor->config.step_timeout_ms);
+    if (status == SNOW_OK) {
+        break_net_reactor_publish_ready(reactor);
+        for (;;) {
+            break_net_drain_outbound(reactor);
+            status = snow_net_thread_step(reactor->snow_thread,
+                                          (int)reactor->config.step_timeout_ms);
+            if (status != SNOW_OK) {
+                break;
+            }
+            platform_mutex_lock(&reactor->lifecycle_mutex);
+            if (reactor->state == BREAK_NET_STATE_STOPPING ||
+                reactor->state == BREAK_NET_STATE_FAILED) {
+                platform_mutex_unlock(&reactor->lifecycle_mutex);
+                break;
+            }
+            platform_mutex_unlock(&reactor->lifecycle_mutex);
+        }
+    }
+
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    atomic_store_explicit(&reactor->host_active, false, memory_order_release);
+    atomic_store_explicit(&reactor->host_exited, true, memory_order_release);
+    if (status != SNOW_OK && reactor->state != BREAK_NET_STATE_STOPPING) {
+        reactor->state = BREAK_NET_STATE_FAILED;
+    }
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return PLATFORM_THREAD_RETURN;
+}
+
+BreakNetReactor *break_net_reactor_create(const BreakNetReactorConfig *config)
+{
+    BreakNetReactor *reactor;
+
+    if (!break_net_reactor_config_valid(config)) {
+        return NULL;
+    }
+    reactor = (BreakNetReactor *)calloc(1, sizeof(*reactor));
+    if (reactor == NULL) {
+        return NULL;
+    }
+    reactor->config = *config;
+    reactor->state = BREAK_NET_STATE_CREATED;
+    atomic_flag_clear(&reactor->step_driver);
+    platform_mutex_init(&reactor->lifecycle_mutex);
+    platform_cond_init(&reactor->lifecycle_cond);
+    platform_mutex_init(&reactor->queue_mutex);
+    return reactor;
+}
+
+bool break_net_reactor_set_acceptor(BreakNetReactor *reactor, void *acceptor)
+{
+    bool accepted = false;
+    if (reactor == NULL || acceptor == NULL) return false;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state == BREAK_NET_STATE_CREATED) {
+        reactor->acceptor = (snow_acceptor_t *)acceptor;
+        accepted = true;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return accepted;
+}
+
+void break_net_reactor_destroy(BreakNetReactor *reactor)
+{
+    bool can_destroy;
+
+    if (reactor == NULL) {
+        return;
+    }
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    can_destroy = reactor->state != BREAK_NET_STATE_STARTING &&
+                  reactor->state != BREAK_NET_STATE_STARTED &&
+                  reactor->state != BREAK_NET_STATE_STOPPING &&
+                  !reactor->start_in_progress && !reactor->host_thread_valid;
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    if (!can_destroy) {
+        return;
+    }
+    if (reactor->snow_thread != NULL) {
+        snow_net_thread_destroy(reactor->snow_thread);
+        reactor->snow_thread = NULL;
+    }
+    platform_mutex_lock(&reactor->queue_mutex);
+    {
+        size_t i;
+        for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+            snow_recv_context_free(reactor->identities[i].send_recv);
+            memset(&reactor->identities[i], 0, sizeof(reactor->identities[i]));
+        }
+    }
+    while (reactor->event_count != 0u) {
+        break_net_event_release(&reactor->events[reactor->event_head]);
+        reactor->event_head = (reactor->event_head + 1u) % BREAK_NET_EVENT_QUEUE_CAPACITY;
+        reactor->event_count--;
+    }
+    while (reactor->outbound_count != 0u) {
+        break_net_message_release(&reactor->outbound[reactor->outbound_head].message);
+        reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+        reactor->outbound_count--;
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    platform_mutex_destroy(&reactor->queue_mutex);
+    platform_cond_destroy(&reactor->lifecycle_cond);
+    platform_mutex_destroy(&reactor->lifecycle_mutex);
+    free(reactor);
+}
+
+bool break_net_reactor_start_failure_for_test(BreakNetReactor *reactor,
+                                              BreakNetStartFailureForTest failure)
+{
+    bool result;
+    if (reactor == NULL || failure == BREAK_NET_START_FAIL_NONE) return false;
+    break_net_start_failure_for_test = failure;
+    result = break_net_reactor_start(reactor);
+    break_net_start_failure_for_test = BREAK_NET_START_FAIL_NONE;
+    return result;
+}
+
+int break_net_reactor_state_for_test(const BreakNetReactor *reactor)
+{
+    int state;
+    if (reactor == NULL) return -1;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    state = (int)reactor->state;
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    return state;
+}
+
+bool break_net_reactor_start(BreakNetReactor *reactor)
+{
+    snow_status_t status;
+
+    if (reactor == NULL) {
+        return false;
+    }
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_CREATED || reactor->start_in_progress) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    reactor->start_in_progress = true;
+    reactor->stop_cleanup_in_progress = false;
+    atomic_store_explicit(&reactor->host_exited, false, memory_order_release);
+    reactor->state = BREAK_NET_STATE_STARTING;
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+
+    if (snow_net_thread_create(reactor->config.logical_index,
+                               &reactor->snow_thread) != SNOW_OK) {
+        break_net_reactor_start_failure_cleanup(reactor);
+        return false;
+    }
+    if (reactor->acceptor == NULL) {
+        break_net_reactor_start_failure_cleanup(reactor);
+        return false;
+    }
+    status = break_net_start_failure_for_test == BREAK_NET_START_FAIL_SETTER
+                 ? SNOW_ERR_INVAL
+                 : snow_net_thread_set_max_conn(reactor->snow_thread,
+                                                reactor->config.max_connections);
+    if (status == SNOW_OK) {
+        status = snow_net_thread_set_empty_timeout(
+            reactor->snow_thread, reactor->config.empty_connection_timeout_ms);
+    }
+    if (status == SNOW_OK) {
+        status = snow_net_thread_set_watchdog_interval_ms(
+            reactor->snow_thread, reactor->config.watchdog_interval_ms);
+    }
+    if (status == SNOW_OK) {
+        snow_conn_handlers_t handlers = {0};
+        handlers.parser = break_net_parser;
+        handlers.on_new_connection = break_net_on_new_connection;
+        handlers.on_packet = break_net_on_packet;
+        handlers.on_send_drained = break_net_on_send_drained;
+        handlers.on_closed = break_net_on_closed;
+        status = break_net_start_failure_for_test == BREAK_NET_START_FAIL_REGISTRATION
+                     ? SNOW_ERR_INVAL
+                     : snow_net_thread_add_acceptor_with_handlers(
+                           reactor->snow_thread, reactor->acceptor, handlers, reactor);
+    }
+    if (status != SNOW_OK) {
+        break_net_reactor_start_failure_cleanup(reactor);
+        return false;
+    }
+
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_STARTING) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        snow_net_thread_destroy(reactor->snow_thread);
+        reactor->snow_thread = NULL;
+        platform_mutex_lock(&reactor->lifecycle_mutex);
+        reactor->start_in_progress = false;
+        reactor->state = BREAK_NET_STATE_STOPPED;
+        platform_cond_broadcast(&reactor->lifecycle_cond);
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    reactor->state = BREAK_NET_STATE_STARTED;
+    if (reactor->config.drive_mode == BREAK_NET_DRIVE_STEP) {
+        reactor->start_in_progress = false;
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return break_net_reactor_step(reactor, 0);
+    }
+    reactor->host_thread_valid = platform_thread_create(
+        &reactor->host_thread, break_net_reactor_thread_main, reactor);
+    if (!reactor->host_thread_valid) {
+        reactor->state = BREAK_NET_STATE_FAILED;
+        reactor->start_in_progress = false;
+        platform_cond_broadcast(&reactor->lifecycle_cond);
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    while (!atomic_load_explicit(&reactor->host_ready, memory_order_acquire) &&
+           reactor->state == BREAK_NET_STATE_STARTED) {
+        platform_cond_wait(&reactor->lifecycle_cond, &reactor->lifecycle_mutex);
+    }
+    status = atomic_load_explicit(&reactor->host_ready, memory_order_acquire)
+                 ? SNOW_OK
+                 : SNOW_ERR_INVAL;
+    reactor->start_in_progress = false;
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return status == SNOW_OK;
+}
+
+bool break_net_reactor_step(BreakNetReactor *reactor, int timeout_ms)
+{
+    snow_status_t status;
+    uint32_t delay_ms;
+    snow_net_thread_t *snow_thread;
+
+    if (reactor == NULL || reactor->config.drive_mode != BREAK_NET_DRIVE_STEP ||
+        timeout_ms < 0) {
+        return false;
+    }
+    if (atomic_flag_test_and_set(&reactor->step_driver)) {
+        return false;
+    }
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_STARTED || reactor->snow_thread == NULL) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        atomic_flag_clear(&reactor->step_driver);
+        return false;
+    }
+    reactor->step_active = true;
+    delay_ms = reactor->step_delay_ms_for_test;
+    reactor->step_delay_ms_for_test = 0u;
+    snow_thread = reactor->snow_thread;
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+
+    if (delay_ms != 0u) {
+#if defined(PLATFORM_THREAD_POSIX)
+        struct timespec delay = {(time_t)(delay_ms / 1000u),
+                                 (long)(delay_ms % 1000u) * 1000000L};
+        nanosleep(&delay, NULL);
+#else
+        Sleep((DWORD)delay_ms);
+#endif
+    }
+    break_net_drain_outbound(reactor);
+    status = snow_net_thread_step(snow_thread, timeout_ms);
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    reactor->step_active = false;
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    atomic_flag_clear(&reactor->step_driver);
+    if (status != SNOW_OK) {
+        break_net_reactor_fail(reactor);
+        return false;
+    }
+    return true;
+}
+
+bool break_net_reactor_stop(BreakNetReactor *reactor, uint32_t timeout_ms)
+{
+    bool join_thread = false;
+    bool do_terminate = false;
+
+    if (reactor == NULL) return false;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    for (;;) {
+        if (reactor->state == BREAK_NET_STATE_STOPPED) {
+            platform_mutex_unlock(&reactor->lifecycle_mutex);
+            return true;
+        }
+        if (reactor->state == BREAK_NET_STATE_CREATED) {
+            reactor->state = BREAK_NET_STATE_STOPPED;
+            platform_cond_broadcast(&reactor->lifecycle_cond);
+            platform_mutex_unlock(&reactor->lifecycle_mutex);
+            return true;
+        }
+        if (reactor->state != BREAK_NET_STATE_STARTED &&
+            reactor->state != BREAK_NET_STATE_FAILED &&
+            reactor->state != BREAK_NET_STATE_STOPPING) {
+            platform_mutex_unlock(&reactor->lifecycle_mutex);
+            return false;
+        }
+        if (reactor->state != BREAK_NET_STATE_STOPPING) {
+            reactor->state = BREAK_NET_STATE_STOPPING;
+            do_terminate = true;
+        }
+        if (reactor->host_thread_valid && !reactor->stop_cleanup_in_progress) {
+            reactor->stop_cleanup_in_progress = true;
+            join_thread = true;
+            break;
+        }
+        if (!reactor->host_thread_valid) break;
+        if (!break_net_wait_for_host_exit(reactor, timeout_ms)) {
+            platform_mutex_unlock(&reactor->lifecycle_mutex);
+            return false;
+        }
+        if (reactor->stop_cleanup_in_progress) continue;
+        reactor->stop_cleanup_in_progress = true;
+        join_thread = true;
+        break;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+
+    if (do_terminate && reactor->snow_thread != NULL)
+        snow_net_thread_terminate(reactor->snow_thread);
+
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->step_active && !break_net_wait_for_step_exit(reactor, timeout_ms)) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+
+    if (join_thread) {
+        platform_mutex_lock(&reactor->lifecycle_mutex);
+        if (!atomic_load_explicit(&reactor->host_exited, memory_order_acquire)) {
+            if (!break_net_wait_for_host_exit(reactor, timeout_ms)) {
+                reactor->stop_cleanup_in_progress = false;
+                platform_cond_broadcast(&reactor->lifecycle_cond);
+                platform_mutex_unlock(&reactor->lifecycle_mutex);
+                return false;
+            }
+        }
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        platform_thread_join(reactor->host_thread);
+    }
+    if (reactor->snow_thread != NULL) {
+        snow_net_thread_destroy(reactor->snow_thread);
+        reactor->snow_thread = NULL;
+    }
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    reactor->host_thread_valid = false;
+    reactor->stop_cleanup_in_progress = false;
+    reactor->state = BREAK_NET_STATE_STOPPED;
+    platform_cond_broadcast(&reactor->lifecycle_cond);
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return true;
+}
+
+bool break_net_reactor_is_ready(const BreakNetReactor *reactor)
+{
+    bool ready;
+    if (reactor == NULL) {
+        return false;
+    }
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    if (reactor->config.drive_mode == BREAK_NET_DRIVE_THREAD) {
+        ready = atomic_load_explicit(&reactor->host_ready, memory_order_acquire);
+    } else {
+        ready = reactor->state == BREAK_NET_STATE_STARTED &&
+                reactor->snow_thread != NULL &&
+                snow_net_thread_is_ready(reactor->snow_thread);
+    }
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    return ready;
+}
+
+static bool break_net_event_push(BreakNetReactor *reactor, BreakNetEvent *event)
+{
+    size_t index;
+    if (reactor == NULL || event == NULL) return false;
+    platform_mutex_lock(&reactor->queue_mutex);
+    if (reactor->event_count == BREAK_NET_EVENT_QUEUE_CAPACITY) {
+        platform_mutex_unlock(&reactor->queue_mutex);
+        return false;
+    }
+    index = (reactor->event_head + reactor->event_count) % BREAK_NET_EVENT_QUEUE_CAPACITY;
+    reactor->events[index] = *event;
+    memset(event, 0, sizeof(*event));
+    reactor->event_count++;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return true;
+}
+
+BreakNetPollResult break_net_reactor_poll_event(BreakNetReactor *reactor,
+                                                BreakNetEvent *event)
+{
+    if (reactor == NULL || event == NULL) return BREAK_NET_EVENT_EMPTY;
+    memset(event, 0, sizeof(*event));
+    platform_mutex_lock(&reactor->queue_mutex);
+    if (reactor->event_count == 0u) {
+        platform_mutex_unlock(&reactor->queue_mutex);
+        return BREAK_NET_EVENT_EMPTY;
+    }
+    *event = reactor->events[reactor->event_head];
+    memset(&reactor->events[reactor->event_head], 0, sizeof(*event));
+    reactor->event_head = (reactor->event_head + 1u) % BREAK_NET_EVENT_QUEUE_CAPACITY;
+    reactor->event_count--;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return BREAK_NET_EVENT_OK;
+}
+
+bool break_net_reactor_event_queue_empty(BreakNetReactor *reactor)
+{
+    bool empty;
+    if (reactor == NULL) return true;
+    platform_mutex_lock(&reactor->queue_mutex);
+    empty = reactor->event_count == 0u;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return empty;
+}
+
+bool break_net_reactor_enqueue_opened_for_test(BreakNetReactor *reactor,
+                                               uint64_t connection_key)
+{
+    BreakNetEvent event = {0};
+    event.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    event.connection_key = connection_key;
+    if (!break_net_event_push(reactor, &event)) return false;
+    return true;
+}
+
+bool break_net_reactor_pending_send_close_contract_for_test(BreakNetReactor *reactor)
+{
+    BreakNetConnectionIdentity *identity;
+    snow_socket_addr_t *addr = NULL;
+    bool deferred;
+    bool released;
+    if (reactor == NULL || snow_socket_addr_alloc(&addr) != SNOW_OK ||
+        snow_socket_addr_from_inet(addr, "127.0.0.1", 1u) != SNOW_OK) {
+        snow_socket_addr_free(addr);
+        return false;
+    }
+    platform_mutex_lock(&reactor->queue_mutex);
+    identity = break_net_identity_alloc(reactor, UINT64_C(0xffff));
+    if (identity != NULL &&
+        snow_recv_context_create(&identity->send_recv, 0u, UINT32_C(0xffff), addr, 1,
+                                 NULL, false, SNOW_CLOSE_CLIENT, 0) == SNOW_OK) {
+        identity->pending_send_count = 1u;
+        break_net_identity_mark_closed(identity);
+        deferred = identity->valid && identity->send_recv != NULL;
+        break_net_identity_mark_send_drained(identity);
+        released = !identity->valid && identity->send_recv == NULL;
+    } else {
+        deferred = false;
+        released = false;
+        if (identity != NULL) memset(identity, 0, sizeof(*identity));
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    snow_socket_addr_free(addr);
+    return deferred && released;
+}
+
+bool break_net_reactor_new_connection_failure_cleanup_for_test(
+    BreakNetReactor *reactor, BreakNetNewConnectionFailureForTest failure)
+{
+    snow_connection_t *connection = NULL;
+    bool cleaned;
+    bool reusable;
+    if (reactor == NULL || failure < BREAK_NET_NEW_CONNECTION_FAIL_CONTEXT ||
+        failure > BREAK_NET_NEW_CONNECTION_FAIL_RECV_CONTEXT ||
+        snow_connection_create_tcp(&connection, 0, "127.0.0.1", 1) != SNOW_OK) {
+        return false;
+    }
+    break_net_new_connection_failure_for_test = (unsigned int)failure;
+    break_net_on_new_connection(connection, reactor);
+    cleaned = break_net_reactor_connection_identity_count_for_test(reactor) == 0u;
+    break_net_new_connection_failure_for_test = 0u;
+    break_net_on_new_connection(connection, reactor);
+    reusable = break_net_reactor_connection_identity_count_for_test(reactor) == 1u;
+    platform_mutex_lock(&reactor->queue_mutex);
+    break_net_identity_abort(break_net_identity_find(
+        reactor, (uint64_t)snow_connection_uid(connection)));
+    platform_mutex_unlock(&reactor->queue_mutex);
+    free(snow_connection_user(connection));
+    snow_connection_set_user(connection, NULL);
+    snow_connection_free(connection);
+    return cleaned && reusable;
+}
+
+bool break_net_reactor_malformed_packet_cleanup_for_test(BreakNetReactor *reactor)
+{
+    snow_connection_t *connection = NULL;
+    snow_recv_context_t *context = NULL;
+    unsigned char malformed[BREAK_NET_ENVELOPE_HEADER_SIZE] = {0};
+    bool empty;
+    if (reactor == NULL || snow_connection_create_tcp(&connection, 0,
+                                                       "127.0.0.1", 1) != SNOW_OK) {
+        return false;
+    }
+    if (snow_recv_context_make_for_packet(connection, malformed, sizeof(malformed),
+                                          0, &context) != SNOW_OK ||
+        snow_connection_push_recv(connection, context) != SNOW_OK) {
+        snow_recv_context_free(context);
+        snow_connection_free(connection);
+        return false;
+    }
+    break_net_on_packet(connection, context, reactor);
+    empty = snow_connection_recv_queue_size(connection) == 0u;
+    snow_connection_free(connection);
+    return empty;
+}
+
+bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
+                                                uint64_t connection_key,
+                                                uint16_t message_id,
+                                                uint16_t protocol_version,
+                                                const void *data, size_t size)
+{
+    BreakNetEvent event = {0};
+    BreakNetMessageView view;
+    if (break_net_message_view_init(&view, message_id, protocol_version, 0u,
+                                    data, size) != BREAK_NET_MESSAGE_OK) return false;
+    if (break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) return false;
+    event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+    event.connection_key = connection_key;
+    if (!break_net_event_push(reactor, &event)) {
+        break_net_event_release(&event);
+        return false;
+    }
+    return true;
+}
+
+BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
+                                          uint64_t connection_key,
+                                          uint16_t message_id,
+                                          uint16_t protocol_version,
+                                          const void *data, size_t size)
+{
+    BreakNetMessageView view;
+    size_t index;
+    if (reactor == NULL || (size != 0u && data == NULL)) return BREAK_NET_SEND_INVALID;
+    if (break_net_message_view_init(&view, message_id, protocol_version, 0u,
+                                    data, size) != BREAK_NET_MESSAGE_OK) return BREAK_NET_SEND_INVALID;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_STARTED) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return BREAK_NET_SEND_CLOSED;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    platform_mutex_lock(&reactor->queue_mutex);
+    if (reactor->outbound_count == BREAK_NET_OUTBOUND_QUEUE_CAPACITY) {
+        platform_mutex_unlock(&reactor->queue_mutex);
+        return BREAK_NET_SEND_OVERLOAD;
+    }
+    index = (reactor->outbound_head + reactor->outbound_count) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+    memset(&reactor->outbound[index], 0, sizeof(reactor->outbound[index]));
+    if (break_net_message_copy(&reactor->outbound[index].message, &view) != BREAK_NET_MESSAGE_OK) {
+        platform_mutex_unlock(&reactor->queue_mutex);
+        return BREAK_NET_SEND_INVALID;
+    }
+    reactor->outbound[index].connection_key = connection_key;
+    reactor->outbound_count++;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return BREAK_NET_SEND_OK;
+}
+
+size_t break_net_reactor_outbound_count(BreakNetReactor *reactor)
+{
+    size_t count;
+    if (reactor == NULL) return 0u;
+    platform_mutex_lock(&reactor->queue_mutex);
+    count = reactor->outbound_count;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return count;
+}
+
+size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor)
+{
+    size_t attempts;
+    if (reactor == NULL) return 0u;
+    platform_mutex_lock(&reactor->queue_mutex);
+    attempts = reactor->outbound_attempts;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return attempts;
+}
+
+size_t break_net_reactor_connection_identity_count_for_test(BreakNetReactor *reactor)
+{
+    size_t count = 0u;
+    size_t i;
+    if (reactor == NULL) return 0u;
+    platform_mutex_lock(&reactor->queue_mutex);
+    for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i)
+        if (reactor->identities[i].valid) count++;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return count;
+}
+
+bool break_net_reactor_stop_pending_for_test(const BreakNetReactor *reactor)
+{
+    bool pending;
+    if (reactor == NULL) return false;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    pending = reactor->state == BREAK_NET_STATE_STOPPING &&
+              (reactor->host_thread_valid || reactor->snow_thread != NULL);
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    return pending;
+}
+
+bool break_net_reactor_step_delay_for_test(BreakNetReactor *reactor, uint32_t delay_ms)
+{
+    bool accepted = false;
+    if (reactor == NULL || reactor->config.drive_mode != BREAK_NET_DRIVE_STEP) return false;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state == BREAK_NET_STATE_STARTED && !reactor->step_active) {
+        reactor->step_delay_ms_for_test = delay_ms;
+        accepted = true;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return accepted;
+}
+
+BreakNetPollResult break_net_reactor_poll_outbound_for_test(
+    BreakNetReactor *reactor, uint64_t *connection_key, BreakNetOwnedMessage *message)
+{
+    BreakNetOutboundCommand *command;
+    if (reactor == NULL || connection_key == NULL || message == NULL) {
+        return BREAK_NET_EVENT_EMPTY;
+    }
+    memset(message, 0, sizeof(*message));
+    platform_mutex_lock(&reactor->queue_mutex);
+    if (reactor->outbound_count == 0u) {
+        platform_mutex_unlock(&reactor->queue_mutex);
+        return BREAK_NET_EVENT_EMPTY;
+    }
+    command = &reactor->outbound[reactor->outbound_head];
+    *connection_key = command->connection_key;
+    *message = command->message;
+    memset(command, 0, sizeof(*command));
+    reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+    reactor->outbound_count--;
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return BREAK_NET_EVENT_OK;
+}
