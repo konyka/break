@@ -51,7 +51,15 @@ typedef enum RHI_D3D12CreateFailure {
  * (GL's texture units); the instanced / skinned clustered vertex stages put
  * their SSBO at t16, because the shared pixel stage already owns t0-t15. */
 #define RHI_D3D12_MAX_REGISTERS 24u
-#define RHI_D3D12_SAMPLER_CAPACITY 64u
+/* R666: sampler objects (rhi_sampler_create) live in a CPU-only heap of this
+ * size; the shader-visible sampler heap is a per-frame ring of
+ * RHI_D3D12_SAMPLER_RING descriptors (the D3D12 hard cap for a shader-visible
+ * sampler heap is 2048) that draws copy their tables into. CopyDescriptors
+ * cannot read a shader-visible heap, hence the two. */
+#define RHI_D3D12_SAMPLER_CAPACITY 256u
+#define RHI_D3D12_SAMPLER_RING 2048u
+#define RHI_D3D12_SAMPLER_TABLE_MAX 8u
+#define RHI_D3D12_SAMPLER_CACHE 128u
 
 /* Free-list descriptor allocator over one heap; slots retire through the
  * context fence (the descriptor_retire_fence pattern generalised per slot).
@@ -97,7 +105,8 @@ typedef struct RHI_D3D12Context {
     ID3D12DescriptorHeap *rtv_heap;
     ID3D12DescriptorHeap *dsv_heap;
     ID3D12DescriptorHeap *cbv_srv_uav_heap;
-    ID3D12DescriptorHeap *sampler_heap;         /* shader-visible, Task 5 */
+    ID3D12DescriptorHeap *sampler_heap;         /* shader-visible ring (R666) */
+    ID3D12DescriptorHeap *sampler_cpu_heap;     /* sampler objects, CPU-only (R666) */
     ID3D12CommandAllocator *upload_allocator;   /* one-shot staging uploads */
     ID3D12GraphicsCommandList *upload_list;     /* (rhi.h:394-397 semantics) */
     ID3D12CommandSignature *draw_signature;     /* ExecuteIndirect, stride 16 */
@@ -162,6 +171,22 @@ typedef struct RHI_D3D12Context {
     UINT8 uniform_staging[256];
     UINT uniform_dirty_lo;
     UINT uniform_dirty_hi;
+    /* R666: per-register sampler state, the D3D12 twin of GL's per-unit
+     * glBindSampler. bound_sampler[r] is a sampler_alloc slot, or UINT_MAX
+     * for "the pipeline's default" (what an invalid RHISampler means). Set by
+     * every texture bind, reset at frame begin, emitted as one descriptor
+     * table per draw/dispatch when dirty (rhi_d3d12_flush_samplers). */
+    UINT bound_sampler[RHI_D3D12_MAX_REGISTERS];
+    UINT sampler_dirty;
+    UINT sampler_default_slot[2];       /* [0] LINEAR+WRAP, [1] LINEAR+CLAMP */
+    UINT sampler_ring_cursor;           /* next free descriptor in this frame's half */
+    UINT sampler_ring_warned;
+    UINT sampler_cache_count;
+    struct {
+        UINT count;
+        UINT slots[RHI_D3D12_SAMPLER_TABLE_MAX];
+        UINT base;                      /* ring index of the first descriptor */
+    } sampler_cache[RHI_D3D12_SAMPLER_CACHE];
     /* Material binder fallback: one shared 1x1 RGBA8 white texture, created
      * on first use and released by rhi_device_destroy with the rest of the
      * context. A D3D12 root descriptor table has no "unset" state the way a
@@ -307,10 +332,15 @@ typedef struct RHI_D3D12RootSigBuilder {
      * 64-DWORD root budget, not this array, is the real limit. */
     D3D12_ROOT_PARAMETER1 params[24];
     D3D12_DESCRIPTOR_RANGE1 ranges[24];
-    D3D12_STATIC_SAMPLER_DESC samplers[8];
+    /* R666: SamplerState registers, emitted as ONE descriptor table (one
+     * range per register, contiguous in the ring) instead of static
+     * samplers, so the caller's RHISampler reaches the shader. */
+    D3D12_DESCRIPTOR_RANGE1 sampler_ranges[RHI_D3D12_SAMPLER_TABLE_MAX];
+    UINT sampler_regs[RHI_D3D12_SAMPLER_TABLE_MAX];
     UINT param_count;
     UINT range_count;
     UINT sampler_count;
+    UINT sampler_table_param;  /* UINT_MAX = none; index before the push shift */
     UINT image_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(tN) -> root parameter */
     UINT uniform_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(bN) -> root parameter */
     UINT storage_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(uN) -> root parameter */
@@ -324,10 +354,11 @@ typedef struct RHI_D3D12RootSigBuilder {
      * image_root_params[N]. */
     UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
     UINT push_constant_size;   /* bytes; 0 = none */
-    /* R662: address mode of the static samplers. The renderer's fullscreen
-     * and compute passes (post chain, deferred lighting, IBL bakes, particle
-     * and cull helpers) all ask for CLAMP_TO_EDGE; only the material sampler
-     * (main.c) is REPEAT, and that one is bound by mesh pipelines. */
+    /* R662: the default sampler's address mode -- what a register gets when
+     * the caller binds an invalid RHISampler. Fullscreen and compute passes
+     * all ask for CLAMP_TO_EDGE; mesh pipelines use the REPEAT material
+     * sampler. R666 keeps this as the fallback only: a valid RHISampler is
+     * now honoured as given. */
     UINT clamp_samplers;
 } RHI_D3D12RootSigBuilder;
 

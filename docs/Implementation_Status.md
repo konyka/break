@@ -1,6 +1,36 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R666 — D3D12 采样器描述符表：调用方的 RHISampler 终于生效
+
+### 为什么做（R665 之后的分析结论）
+`RHISamplerDesc` 是后端无关契约，GL/VK/Metal 每次绑定都应用调用方的采样器，只有 D3D12 丢弃它。这类分歧不会自己暴露：R662 之前后处理在屏幕边缘错了很多轮无人察觉，DOF 和 combined AA 两个像素用例甚至把 WRAP 下的错误结果固化成了期望值。R662 的「按管线类型选 CLAMP/WRAP」只是对当前调用方碰巧成立的近似（UI 字体/图片、水面的采样器都要 CLAMP 却拿到 WRAP）。将来的各向异性、比较采样、LOD 偏移都要经过 `RHISamplerDesc`，在静态采样器模型下 D3D12 只能继续忽略或在 `RHIPipelineDesc` 里堆提示字段。所以这一项按「契约统一」做，而不是按眼下的两个用户（`T` 键、UI 图片 `scale_filter`）做。
+
+### 先做的预算核查
+在 `rhi_pipeline_create` 里临时加日志，统计 WARP 全套 + demo 前向/延迟路径实际创建的 73 条管线：加一张采样器表（1 个根 DWORD）后，push 常量上限是否仍覆盖着色器 b0 结构的末尾。全部容纳；59 条少 4 字节余量，最紧的是**延迟光照：16 张表，push 读到 184 字节，上限 192→188，只剩 4 字节**——以后往 `deferred_light_hlsl` 的 push 块加任何成员都要改放进 CBV。根参数最多 20/24，描述符 range 最多 19/24，单管线最多 5 个采样器寄存器（G-Buffer）。核查代码已还原，未提交。
+
+### 实现
+- **两个堆**：`rhi_sampler_create` 写进一个 CPU-only 采样器堆（256 个）；着色器可见的采样器堆变成 2048 个描述符的环（D3D12 着色器可见采样器堆的硬上限），按帧奇偶分两半，`rhi_frame_begin` 在等待该槽栅栏之后重置本半。`CopyDescriptors` 不能从着色器可见堆读，所以必须拆成两个。
+- **根签名**：`SamplerState` 寄存器不再生成静态采样器，而是收集起来、在两个阶段都处理完后生成**一张**描述符表，第 k 个 range 对应第 k 个寄存器（VS/PS 都声明的寄存器只算一次）。
+- **绑定**：`rhi_cmd_bind_texture` / `bind_cubemap` / `bind_texture_mip`（以及经由它们的所有 material / deferred / multi 绑定器）把采样器记到 `bound_sampler[unit]`（沿用 sN 与 tN 配对的边车约定）。每次 draw / dispatch / indirect 前 `rhi_d3d12_flush_samplers` 在脏时把当前管线各寄存器的采样器拷进环、设置表；同一帧内相同组合通过小缓存共享，环里每种组合只存一份。管线切换会把表标脏（根签名变了，旧表作废）。
+- **兼容**：无效的 `RHISampler`（空句柄）选管线默认——LINEAR，全屏/计算管线 CLAMP、网格管线 WRAP，即 R662 的规则，所以不传采样器的调用方行为不变。环满时退回每半环开头预留的默认块并 WARN 一次，绝不留下未设置的表。
+- 顺带：混合过滤（min LINEAR / mag NEAREST 等）的 mip 过滤改为跟随 min 过滤，与 GL 的映射一致（之前是 `MIN_LINEAR_MAG_MIP_POINT`）。
+
+### 测试与改动的既有用例
+- 12 个后处理用例原先传 `(RHISamplerDesc){0}`，那是 **NEAREST + REPEAT**；它们一直是靠 D3D12 忽略采样器、用静态 LINEAR 才通过的。改成引擎后处理实际创建的 LINEAR + CLAMP（`r666_post_sampler_desc`），期望值不变——这正是采样器生效后才会暴露的那类「测试碰巧依赖后端缺陷」。
+- 新用例 `rhi_sampler_filter_and_address_mode_reach_the_shader`：4×1 斜坡纹理；LINEAR+CLAMP、NEAREST+CLAMP、LINEAR+REPEAT、不绑采样器四种情况逐像素对比 CPU 复算；同一帧内两次 draw 用剪刀分左右、分别绑 NEAREST 与 LINEAR（证明每次 draw 拿到自己的表）；网格管线（blinn_phong，默认 WRAP）显式绑 NEAREST+CLAMP，在 UV 超出 1 且不落在纹素中心的位置读出精确纹素。用例内断言各模式在被测列上确实相差 20 以上，防止空洞。
+- 第一版用例的网格部分 UV 恰好落在纹素中心，NEAREST 与 LINEAR 结果相同，只抓得住寻址不抓过滤；改为 0..3 的 UV 后两者都能区分。
+
+### 反向验证
+四种变异全部失败：忽略采样器（退回旧行为）、记录后不再标脏（同帧两次 draw 共用一张表）、缓存只比较数量不比较内容、NEAREST 映射成 LINEAR。
+
+### 验证过程中发现的问题
+- 采样器默认值的初始化放在了栅栏创建之前，`descriptor_take` 读栅栏完成值时空指针崩溃（所有用例在设备创建后立即退出）。改到栅栏创建之后，并在默认采样器分配失败时让上下文创建失败。
+- 新注释里写了 `rhi_gl.c`，触发 `test_no_hidden_gl_fallback`（D3D12 后端源码里禁止出现 GL 标识）。改了措辞。
+
+### 验证结果
+WARP 81/81，RTX 80/81（仅预期的 [1]），debug layer 0 错误 0 警告。ctest 三棵树 186/186、182/182、179/179。demo 截图（D3D12 对 GL）：延迟路径边缘 0.43、内部 1.14，与 R664 持平；前向路径多次运行 1.22–1.41（R664 为 1.40–1.47），日志无警告。
+
 ## 本轮更新：R665 — 更正「NEAREST 采样无人使用」的结论（仅文档）
 
 ### 更正

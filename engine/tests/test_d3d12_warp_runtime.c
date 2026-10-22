@@ -28,6 +28,15 @@
  * Evidence rule: WARP receipts are recorded with gpu=WARP and never
  * upgrade the evidence level past GPU-runtime. */
 static RHIDevice *g_dev;
+/* R666: the sampler these post-pass tests model -- LINEAR + CLAMP, the one
+ * the engine's post subsystems create. They used to pass (RHISamplerDesc){0},
+ * which is NEAREST + REPEAT, and only got bilinear because D3D12 ignored the
+ * sampler and used its static LINEAR one; now the sampler is honoured, so the
+ * tests ask for what their expected values assume. */
+static const RHISamplerDesc r666_post_sampler_desc = {
+    RHI_FILTER_LINEAR, RHI_FILTER_LINEAR,
+    RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE
+};
 
 /* R600: u_camera_pos is no longer a push member — it rides the temporal CBV
  * at register b1, byte-identical to main.c's ForwardTemporalUbo and to the
@@ -2139,7 +2148,7 @@ TEST(ssgi_gather_early_out_and_blur_pass_through_are_exact) {
     ASSERT_TRUE(rhi_handle_valid(ctex));
     tdesc.data = gi;     gtex   = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(gtex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     /* Gather pass: depth 1.0 everywhere -> (0,0,0,1), exactly. */
     pair[0] = skytex; pair[1] = ctex;
@@ -2294,7 +2303,7 @@ TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table) {
     tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
     tdesc.data = scene; stex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(stex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
     pair[0] = dtex; pair[1] = stex;
 
     for (frame = 0; frame < 2; ++frame) {
@@ -2425,7 +2434,7 @@ TEST(contact_shadow_sidecar_passes_offsets_and_runs_a_clean_march) {
     tdesc.format = RHI_FORMAT_R8G8B8A8_UNORM;
     tdesc.data = scene; stex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(stex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     /* frame 0: depth 1.0 -> the first early-out, stripes pass through.
      * frame 1: depth 0.5 with the light straight down +Z. screen_step is
@@ -2600,7 +2609,7 @@ TEST(motion_blur_sidecar_reads_depth_and_velocity_and_blurs) {
     ASSERT_TRUE(rhi_handle_valid(ztex));
     tdesc.data = vel_x;     vtex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(vtex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     /* frame 0  depth 1.0        -> first early-out, gradient passes through
      * frame 1  depth 0.5, no vel -> vel_len < 0.5 early-out, gradient through
@@ -2790,7 +2799,7 @@ TEST(taa_sidecar_blends_history_through_the_neighbourhood_aabb) {
     }
     vtex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(vtex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
     quad[0] = ctex; quad[1] = htex; quad[2] = dtex; quad[3] = vtex;
 
     /* frame 0: first_frame = 1 -> the temporal block is skipped and the
@@ -2930,7 +2939,7 @@ TEST(ssr_sidecar_pins_offsets_and_both_early_outs) {
     tdesc.data = flat;
     flttex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(flttex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
     for (frame = 0; frame < 2; ++frame) {
@@ -3196,7 +3205,7 @@ TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind) {
     tdesc.data = depth;
     dtex = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(dtex));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
     pair[0] = ctex;
     pair[1] = dtex;
 
@@ -3404,7 +3413,7 @@ TEST(instanced_sidecar_reads_lighting_from_the_temporal_cbv) {
     ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient"), -1);
     ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
 
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     for (frame = 0; frame < 2; ++frame) {
         if (frame == 0) {
@@ -3661,7 +3670,7 @@ TEST(skinned_sidecar_reads_lighting_from_the_temporal_cbv) {
     ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "ambient"), -1);
     ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, "u_camera_pos"), -1);
 
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     for (frame = 0; frame < 2; ++frame) {
         if (frame == 0) {
@@ -3790,7 +3799,7 @@ TEST(fxaa_sidecar_blends_the_box_edge_and_passes_flat_regions) {
     tdesc.data = box_tex;
     src = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(src));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     cmd = rhi_frame_begin(g_dev);
     ASSERT_TRUE(cmd != NULL);
@@ -3930,7 +3939,7 @@ TEST(lens_effects_sidecar_produces_the_exact_vignette_ramp) {
     tdesc.data = grey_tex;
     src = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(src));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     cmd = rhi_frame_begin(g_dev);
     ASSERT_TRUE(cmd != NULL);
@@ -4048,7 +4057,7 @@ TEST(color_grade_sidecar_applies_saturation_and_white_balance) {
     tdesc.data = cases[0].src;
     src = rhi_texture_create(g_dev, &tdesc);
     ASSERT_TRUE(rhi_handle_valid(src));
-    sampler = rhi_sampler_create(g_dev, &(RHISamplerDesc){0});
+    sampler = rhi_sampler_create(g_dev, &r666_post_sampler_desc);
 
     for (c = 0; c < 2; ++c) {
         cmd = rhi_frame_begin(g_dev);
@@ -11207,6 +11216,254 @@ TEST(no_vertex_input_pipelines_are_never_back_face_culled) {
     rhi_texture_destroy(g_dev, tex);
 }
 
+/* R666: the caller's RHISampler reaches the shader. Before R666 every
+ * SamplerState register was a static sampler (LINEAR, and WRAP or CLAMP by
+ * pipeline kind since R662) and rhi_cmd_bind_texture dropped its sampler
+ * argument, so NEAREST and a mesh pipeline's CLAMP could not be expressed.
+ *
+ * One pipeline, one 4x1 ramp texture (10 / 90 / 170 / 250), three draws on
+ * an 8x8 target, each with a different sampler, plus one with no sampler:
+ *   LINEAR + CLAMP   column x reads the bilinear blend of its two texels
+ *   NEAREST + CLAMP  column x reads exactly texel floor(u * 4): 10,10,90,90..
+ *   LINEAR + REPEAT  same as CLAMP inside, but column 7 blends texel 3 with
+ *                    texel 0 (the wrapped neighbour) instead of itself
+ *   no sampler       the pipeline default (R662 rule: CLAMP for this
+ *                    fullscreen pipeline) -- equal to LINEAR + CLAMP
+ * All four are asserted per pixel against a CPU replay. The blit pipeline is
+ * fullscreen, so a fifth draw puts the ramp on a MESH pipeline (blinn_phong,
+ * default WRAP) with an explicit NEAREST + CLAMP sampler on its oversized-UV
+ * triangle: the pixels past u = 1 must read texel 3 exactly, which neither
+ * R662's WRAP default nor LINEAR could produce.
+ *
+ * A sixth draw switches samplers BETWEEN two draws of one frame (NEAREST then
+ * LINEAR into the left and right halves), so each draw must get its own
+ * table -- a sampler recorded only once per frame would paint both halves
+ * alike. */
+static double r666_ramp_px(const unsigned char *ramp, double u, int nearest,
+                           int repeat) {
+    double fx;
+    int x0, x1;
+    double a;
+    if (nearest) {
+        int xi = (int)floor(u * 4.0);
+        if (repeat) xi = ((xi % 4) + 4) % 4;
+        else xi = xi < 0 ? 0 : (xi > 3 ? 3 : xi);
+        return ramp[xi * 4];
+    }
+    fx = u * 4.0 - 0.5;
+    x0 = (int)floor(fx);
+    a = fx - x0;
+    x1 = x0 + 1;
+    if (repeat) { x0 = ((x0 % 4) + 4) % 4; x1 = ((x1 % 4) + 4) % 4; }
+    else {
+        x0 = x0 < 0 ? 0 : (x0 > 3 ? 3 : x0);
+        x1 = x1 < 0 ? 0 : (x1 > 3 ? 3 : x1);
+    }
+    return ramp[x0 * 4] * (1 - a) + ramp[x1 * 4] * a;
+}
+
+TEST(rhi_sampler_filter_and_address_mode_reach_the_shader) {
+    static const unsigned char ramp[4 * 1 * 4] = {
+        10, 10, 10, 255,   90, 90, 90, 255,   170, 170, 170, 255,   250, 250, 250, 255
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    /* Clip x scaled by 0.5: target column x reads u = (x + .5) / 4 - .5, so
+     * columns 2..7 are covered and 6..7 read u > 1 (R662's probe). */
+    static const float half_x[16] = { 0.5f,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const struct { RHISamplerDesc d; int nearest, repeat, valid; } cases[4] = {
+        { { RHI_FILTER_LINEAR,  RHI_FILTER_LINEAR,  RHI_WRAP_CLAMP_TO_EDGE,
+            RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE }, 0, 0, 1 },
+        { { RHI_FILTER_NEAREST, RHI_FILTER_NEAREST, RHI_WRAP_CLAMP_TO_EDGE,
+            RHI_WRAP_CLAMP_TO_EDGE, RHI_WRAP_CLAMP_TO_EDGE }, 1, 0, 1 },
+        { { RHI_FILTER_LINEAR,  RHI_FILTER_LINEAR,  RHI_WRAP_REPEAT,
+            RHI_WRAP_REPEAT, RHI_WRAP_REPEAT }, 0, 1, 1 },
+        { { RHI_FILTER_LINEAR,  RHI_FILTER_LINEAR,  RHI_WRAP_REPEAT,
+            RHI_WRAP_REPEAT, RHI_WRAP_REPEAT }, 0, 0, 0 }   /* no sampler bound */
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc td;
+    RHITexture tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHISampler smp[4] = { {0, 0}, {0, 0}, {0, 0}, {0, 0} };
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int c, x, y, checked = 0;
+    r643_mark();
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    memset(&td, 0, sizeof(td));
+    td.width = 4u; td.height = 1u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = ramp;
+    tex = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(tex));
+    for (c = 0; c < 3; ++c) {
+        smp[c] = rhi_sampler_create(g_dev, &cases[c].d);
+        ASSERT_TRUE(rhi_handle_valid(smp[c]));
+    }
+    vs = rhi_shader_create(g_dev, "blit_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs; pd.no_vertex_input = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (c = 0; c < 4; ++c) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_push_constants(cmd, 0u, half_x, sizeof(half_x));
+        rhi_cmd_bind_texture(cmd, tex, smp[c], 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (y = 0; y < 4; ++y) {
+            for (x = 2; x < 8; ++x) {
+                double u = (x + 0.5) / 4.0 - 0.5;
+                double want = r666_ramp_px(ramp, u, cases[c].nearest, cases[c].repeat);
+                double got = px[(y * 8 + x) * 4];
+                if (fabs(got - want) > 2.0)
+                    printf("  sampler case %d px (%d,%d) = %.0f, want %.1f\n",
+                           c, x, y, got, want);
+                ASSERT_TRUE(fabs(got - want) <= 2.0);
+                ++checked;
+            }
+        }
+    }
+
+    /* Two samplers in one frame: NEAREST for the left half, LINEAR for the
+     * right. Identity matrix, so the triangle covers the target and column x
+     * reads u = (x + .5) / 8 -- inside [0,1], where the two filters differ by
+     * up to 40 levels (e.g. column 1: NEAREST 10, LINEAR 20). */
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, identity, sizeof(identity));
+    rhi_cmd_set_scissor(cmd, 0, 0, 4u, 8u);
+    rhi_cmd_bind_texture(cmd, tex, smp[1], 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_cmd_set_scissor(cmd, 4, 0, 4u, 8u);
+    rhi_cmd_bind_texture(cmd, tex, smp[0], 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            double u = (x + 0.5) / 8.0;
+            double want = r666_ramp_px(ramp, u, x < 4, 0);
+            double got = px[(y * 8 + x) * 4];
+            if (fabs(got - want) > 2.0)
+                printf("  two-sampler frame px (%d,%d) = %.0f, want %.1f (%s)\n",
+                       x, y, got, want, x < 4 ? "NEAREST" : "LINEAR");
+            ASSERT_TRUE(fabs(got - want) <= 2.0);
+            ++checked;
+        }
+    }
+    ASSERT_EQ(checked, 4 * 4 * 6 + 64);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+
+    /* Mesh pipeline + explicit NEAREST + CLAMP. blinn_phong shades
+     * albedo * (ambient + light * diff) + spec; with ambient (1,1,1), a light
+     * at N.L = 0 and the camera behind the plane (spec 0), RT0 is the texel.
+     * The triangle's UV runs 0..3 across NDC x -1..3, so visible column x
+     * reads u = 1.5 * (x + .5) / 8: off the texel centres (u * 4 - .5 is
+     * fractional), so NEAREST differs from LINEAR, and past 1 from column 5
+     * on, so CLAMP differs from WRAP. NEAREST + CLAMP gives texel floor(u * 4)
+     * clamped to 3; R662's mesh default (LINEAR + WRAP) would blend and wrap.
+     * The probes above read texel centres (the half-x draws) and so tell CLAMP
+     * from WRAP but not NEAREST from LINEAR; the two-sampler frame and this
+     * draw are the NEAREST proofs. */
+    {
+        static const float tri[3 * 8] = {
+            -1.0f, -1.0f, 0.0f,  0, 0, 1,  0, 0,
+             3.0f, -1.0f, 0.0f,  0, 0, 1,  3, 0,
+            -1.0f,  3.0f, 0.0f,  0, 0, 1,  0, 3
+        };
+        RHIBufferDesc bd;
+        RHIBuffer vbo, temporal;
+        i32 loc_model, loc_view, loc_proj, loc_ld, loc_lc, loc_am;
+        vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+        fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+        ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+        memset(&pd, 0, sizeof(pd));
+        pd.vert = vs; pd.frag = fs; pd.vertex_stride = 32u;
+        pd.disable_culling = true; pd.depth_write_disable = true;
+        pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        pipe = rhi_pipeline_create(g_dev, &pd);
+        ASSERT_TRUE(rhi_handle_valid(pipe));
+        loc_model = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_model");
+        loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+        loc_proj = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_proj");
+        loc_ld = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_dir");
+        loc_lc = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_color");
+        loc_am = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient");
+        memset(&bd, 0, sizeof(bd));
+        bd.size = sizeof(tri); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = tri;
+        vbo = rhi_buffer_create(g_dev, &bd);
+        temporal = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+        ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(temporal));
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, loc_model, identity);
+        rhi_cmd_set_uniform_mat4(cmd, loc_view, identity);
+        rhi_cmd_set_uniform_mat4(cmd, loc_proj, identity);
+        rhi_cmd_set_uniform_vec3(cmd, loc_ld, 0.0f, -1.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_lc, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_am, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_bind_uniform_buffer(cmd, temporal, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_texture(cmd, tex, smp[1], 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        for (x = 0; x < 8; ++x) {
+            double u = 1.5 * (x + 0.5) / 8.0;
+            double want = r666_ramp_px(ramp, u, 1, 0);
+            /* The check must separate the modes on the columns that matter. */
+            if (x == 2) ASSERT_TRUE(fabs(want - r666_ramp_px(ramp, u, 0, 0)) > 20.0);
+            if (x == 7) ASSERT_TRUE(fabs(want - r666_ramp_px(ramp, u, 1, 1)) > 20.0);
+            double got = px[(0 * 8 + x) * 4];
+            if (fabs(got - want) > 2.0)
+                printf("  mesh NEAREST+CLAMP px (%d,0) = %.0f, want %.0f\n", x, got, want);
+            ASSERT_TRUE(fabs(got - want) <= 2.0);
+        }
+        rhi_buffer_destroy(g_dev, vbo);
+        rhi_buffer_destroy(g_dev, temporal);
+        rhi_pipeline_destroy(g_dev, pipe);
+        rhi_shader_destroy(g_dev, vs);
+        rhi_shader_destroy(g_dev, fs);
+    }
+    ASSERT_TRUE(r643_clean("sampler_tables"));
+    for (c = 0; c < 3; ++c) rhi_sampler_destroy(g_dev, smp[c]);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -11308,6 +11565,7 @@ int main(void) {
     RUN_TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes);
     RUN_TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region);
     RUN_TEST(no_vertex_input_pipelines_are_never_back_face_culled);
+    RUN_TEST(rhi_sampler_filter_and_address_mode_reach_the_shader);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

@@ -188,6 +188,7 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
     rhi_d3d12_release((IUnknown **)&context->upload_list);
     rhi_d3d12_release((IUnknown **)&context->upload_allocator);
     rhi_d3d12_release((IUnknown **)&context->sampler_heap);
+    rhi_d3d12_release((IUnknown **)&context->sampler_cpu_heap);
     rhi_d3d12_release((IUnknown **)&context->cbv_srv_uav_heap);
     rhi_d3d12_release((IUnknown **)&context->dsv_heap);
     rhi_d3d12_release((IUnknown **)&context->rtv_heap);
@@ -404,6 +405,106 @@ static u32 rhi_d3d12_probe_feature_bits(const RHI_D3D12Context *ctx) {
     return 0u;
 }
 
+/* ---- R666: sampler descriptor tables ----
+ * The ring is split by frame parity: half `slot` serves the frame recording
+ * into command list `slot`, and is reset in rhi_frame_begin right after that
+ * slot's fence was waited on. Each half starts with two reserved blocks of
+ * RHI_D3D12_SAMPLER_TABLE_MAX default descriptors (WRAP, then CLAMP), so a
+ * full ring degrades to the pipeline's default instead of leaving a table
+ * unset. */
+#define RHI_D3D12_SAMPLER_RING_HALF (RHI_D3D12_SAMPLER_RING / 2u)
+#define RHI_D3D12_SAMPLER_RING_RESERVED (2u * RHI_D3D12_SAMPLER_TABLE_MAX)
+
+static void rhi_d3d12_sampler_desc_fill(D3D12_SAMPLER_DESC *sd,
+                                        RHIFilter min_filter, RHIFilter mag_filter,
+                                        RHIWrapMode u, RHIWrapMode v, RHIWrapMode w) {
+    ZeroMemory(sd, sizeof(*sd));
+    /* Same rule as the GL backend's min-filter mapping: the mip filter follows the
+     * MIN filter -- LINEAR -> *_MIPMAP_LINEAR, NEAREST -> *_MIPMAP_NEAREST. */
+    if (min_filter == RHI_FILTER_NEAREST && mag_filter == RHI_FILTER_NEAREST)
+        sd->Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    else if (min_filter == RHI_FILTER_LINEAR && mag_filter == RHI_FILTER_LINEAR)
+        sd->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    else if (min_filter == RHI_FILTER_LINEAR)
+        sd->Filter = D3D12_FILTER_MIN_LINEAR_MAG_POINT_MIP_LINEAR;
+    else
+        sd->Filter = D3D12_FILTER_MIN_POINT_MAG_LINEAR_MIP_POINT;
+    sd->AddressU = u == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->AddressV = v == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->AddressW = w == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
+                                        : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sd->MaxLOD = D3D12_FLOAT32_MAX;
+}
+
+static D3D12_CPU_DESCRIPTOR_HANDLE rhi_d3d12_sampler_ring_cpu(
+        const RHI_D3D12Context *ctx, UINT index) {
+    D3D12_CPU_DESCRIPTOR_HANDLE h;
+    ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(ctx->sampler_heap, &h);
+    h.ptr += (SIZE_T)index * (SIZE_T)ctx->sampler_increment;
+    return h;
+}
+
+static D3D12_GPU_DESCRIPTOR_HANDLE rhi_d3d12_sampler_ring_gpu(
+        const RHI_D3D12Context *ctx, UINT index) {
+    D3D12_GPU_DESCRIPTOR_HANDLE h;
+    ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(ctx->sampler_heap, &h);
+    h.ptr += (UINT64)index * (UINT64)ctx->sampler_increment;
+    return h;
+}
+
+/* The two defaults (LINEAR + WRAP, LINEAR + CLAMP: what R662's static
+ * samplers were) as sampler objects, plus their reserved blocks in both ring
+ * halves, which are never overwritten. */
+static void rhi_d3d12_sampler_defaults_init(RHI_D3D12Context *ctx) {
+    UINT k, half, i;
+    for (k = 0u; k < 2u; ++k) {
+        D3D12_SAMPLER_DESC sd;
+        RHIWrapMode m = k == 0u ? RHI_WRAP_REPEAT : RHI_WRAP_CLAMP_TO_EDGE;
+        UINT slot = rhi_d3d12_descriptor_take(ctx, &ctx->sampler_alloc);
+        ctx->sampler_default_slot[k] = slot;
+        if (slot == UINT_MAX) continue;
+        rhi_d3d12_sampler_desc_fill(&sd, RHI_FILTER_LINEAR, RHI_FILTER_LINEAR, m, m, m);
+        ID3D12Device_CreateSampler(ctx->device, &sd,
+            rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slot));
+        for (half = 0u; half < 2u; ++half)
+            for (i = 0u; i < RHI_D3D12_SAMPLER_TABLE_MAX; ++i)
+                ID3D12Device_CreateSampler(ctx->device, &sd,
+                    rhi_d3d12_sampler_ring_cpu(ctx, half * RHI_D3D12_SAMPLER_RING_HALF +
+                                               k * RHI_D3D12_SAMPLER_TABLE_MAX + i));
+    }
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) ctx->bound_sampler[i] = UINT_MAX;
+    ctx->sampler_dirty = 1u;
+}
+
+/* Frame begin: this half of the ring is free again (its fence was waited). */
+static void rhi_d3d12_sampler_ring_reset(RHI_D3D12Context *ctx) {
+    UINT i;
+    ctx->sampler_ring_cursor = RHI_D3D12_SAMPLER_RING_RESERVED;
+    ctx->sampler_cache_count = 0u;
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) ctx->bound_sampler[i] = UINT_MAX;
+    ctx->sampler_dirty = 1u;
+}
+
+/* Record the sampler a texture bind brings for register(s<unit>). An invalid
+ * handle selects the pipeline's default, as R662's static samplers did. */
+static void rhi_d3d12_note_sampler(RHI_D3D12Context *ctx, RHISampler sampler,
+                                   u32 unit) {
+    UINT slot = UINT_MAX;
+    if (ctx == NULL || unit >= RHI_D3D12_MAX_REGISTERS || g_current_device == NULL)
+        return;
+    if (rhi_handle_valid(sampler)) {
+        const RHI_D3D12Sampler *smp = (const RHI_D3D12Sampler *)
+            rhi_get_resource_typed(g_current_device, sampler, RHI_RES_SAMPLER);
+        if (smp != NULL) slot = smp->slot;
+    }
+    if (ctx->bound_sampler[unit] != slot) {
+        ctx->bound_sampler[unit] = slot;
+        ctx->sampler_dirty = 1u;
+    }
+}
+
 HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
                                  RHI_D3D12CreateFailure injected_failure) {
     D3D12_COMMAND_QUEUE_DESC queue_desc;
@@ -522,10 +623,16 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
                                            (void **)&context->cbv_srv_uav_heap);
     if (FAILED(hr)) goto fail;
     heap_desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
-    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_CAPACITY;
+    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_RING;
     hr = ID3D12Device_CreateDescriptorHeap(context->device, &heap_desc,
                                            &IID_ID3D12DescriptorHeap,
                                            (void **)&context->sampler_heap);
+    if (FAILED(hr)) goto fail;
+    heap_desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    heap_desc.NumDescriptors = RHI_D3D12_SAMPLER_CAPACITY;
+    hr = ID3D12Device_CreateDescriptorHeap(context->device, &heap_desc,
+                                           &IID_ID3D12DescriptorHeap,
+                                           (void **)&context->sampler_cpu_heap);
     if (FAILED(hr)) goto fail;
     context->rtv_increment = ID3D12Device_GetDescriptorHandleIncrementSize(
         context->device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
@@ -546,7 +653,7 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
         RHI_D3D12_CBV_SRV_UAV_CAPACITY);
     if (FAILED(hr)) goto fail;
     hr = rhi_d3d12_descriptor_alloc_init(&context->sampler_alloc,
-        context->sampler_heap, context->sampler_increment,
+        context->sampler_cpu_heap, context->sampler_increment,
         RHI_D3D12_SAMPLER_CAPACITY);
     if (FAILED(hr)) goto fail;
     /* One-shot upload/readback command pair (private allocator + list; the
@@ -607,6 +714,13 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
         goto fail;
     }
     context->next_fence = 1u;
+    /* R666: needs the fence -- descriptor_take reads its completed value. */
+    rhi_d3d12_sampler_defaults_init(context);
+    if (context->sampler_default_slot[0] == UINT_MAX ||
+        context->sampler_default_slot[1] == UINT_MAX) {
+        hr = E_OUTOFMEMORY;
+        goto fail;
+    }
     return S_OK;
 fail:
     rhi_d3d12_cleanup_objects(context);
@@ -1436,6 +1550,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         return NULL;
     }
     rhi_d3d12_release_frame_staging(ctx, slot);
+    rhi_d3d12_sampler_ring_reset(ctx);
     sc->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)sc->swapchain);
     hr = ID3D12CommandAllocator_Reset(ctx->allocators[slot]);
@@ -2315,6 +2430,11 @@ typedef struct RHI_D3D12Pipeline {
     UINT storage_root_params[RHI_D3D12_MAX_REGISTERS];
     UINT storage_strides[RHI_D3D12_MAX_REGISTERS];
     UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
+    /* R666: the sampler table (see rhi_d3d12_root_sig_add_sampler_table). */
+    UINT sampler_root_param;    /* UINT_MAX = the shaders declare no sampler */
+    UINT sampler_count;
+    UINT sampler_regs[RHI_D3D12_SAMPLER_TABLE_MAX];
+    UINT default_clamp;         /* default for an unbound register: CLAMP vs WRAP */
     RHIPipelineDesc desc;
     /* R643: the PSO bakes its render-target formats, but callers only name a
      * colour format when it is not the RGBA8 default -- the bloom, tonemap,
@@ -2582,10 +2702,10 @@ void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
  *       handoff): a CBV at b0 would collide with the constants register and
  *       fail root-signature serialization.
  *   ConstantBuffer<T> name : register(bN)  (N > 0)   -> CBV table
- *   Texture2D name : register(tN)                    -> SRV + static sampler
- *       (sidecar convention: SamplerState sN pairs with Texture2D tN; the
- *       SamplerState line itself is skipped, the builder emits the static
- *       sampler for the SAMPLER-kind binding)
+ *   Texture2D name : register(tN)                    -> SRV table
+ *   SamplerState name : register(sN)                 -> sampler table range
+ *       (sidecar convention: SamplerState sN pairs with Texture2D tN, so the
+ *       sampler bound with texture unit N lands in register sN)
  *   StructuredBuffer<T> name : register(tN)          -> SRV
  *   RWStructuredBuffer<T> / RWByteAddressBuffer /
  *   RWTexture2D<T> name : register(uN)               -> UAV
@@ -3057,9 +3177,10 @@ static void rhi_d3d12_root_sig_note_storage(RHI_D3D12RootSigBuilder *b,
 
 /* ---- root signature generation (Task 5) ---- */
 /* One pass over reflected bindings: PUSH_CONSTANT folds into the constants
- * param the caller added first; UNIFORM -> CBV table; SAMPLER -> SRV table +
- * static sampler slot; STORAGE -> UAV table; IMAGE -> SRV table. Registers
- * follow the reflected binding (space 0). Returns 0 on overflow. */
+ * param the caller added first; UNIFORM -> CBV table; SAMPLER -> collected
+ * for the one sampler table (R666, rhi_d3d12_root_sig_add_sampler_table);
+ * STORAGE -> UAV table; IMAGE -> SRV table. Registers follow the reflected
+ * binding (space 0). Returns 0 on overflow. */
 static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                                            const ShaderIOBinding *bindings,
                                            usize count,
@@ -3079,24 +3200,18 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
             range_type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
             break;
         case SHADER_IO_RESOURCE_SAMPLER:
-            /* A SamplerState resolves through a static sampler, not a
-             * descriptor table; emitting both overlaps at register 0. */
+            /* R666: collected here, emitted as one descriptor table by
+             * rhi_d3d12_root_sig_add_sampler_table once both stages are in
+             * (a register the VS and PS both declare is one range). */
             {
-                D3D12_STATIC_SAMPLER_DESC *sampler;
-                if (b->sampler_count >= 8u) return 0;
-                sampler = &b->samplers[b->sampler_count++];
-                ZeroMemory(sampler, sizeof(*sampler));
-                sampler->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                sampler->AddressU = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
-                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressV = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
-                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressW = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
-                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->MaxLOD = D3D12_FLOAT32_MAX;
-                sampler->ShaderRegister = bind->binding;
-                sampler->RegisterSpace = 0u;
-                sampler->ShaderVisibility = visibility;
+                UINT s;
+                if (bind->binding >= RHI_D3D12_MAX_REGISTERS) return 0;
+                for (s = 0u; s < b->sampler_count; ++s)
+                    if (b->sampler_regs[s] == bind->binding) break;
+                if (s == b->sampler_count) {
+                    if (b->sampler_count >= RHI_D3D12_SAMPLER_TABLE_MAX) return 0;
+                    b->sampler_regs[b->sampler_count++] = bind->binding;
+                }
             }
             continue;
         case SHADER_IO_RESOURCE_IMAGE:
@@ -3160,6 +3275,36 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
 next_binding:
         ;
     }
+    return 1;
+}
+
+/* R666: the SamplerState registers as ONE descriptor table: range k holds
+ * register sampler_regs[k] at table offset k, so a draw fills `count`
+ * consecutive ring descriptors. Costs one root DWORD (audited in R666: every
+ * pipeline still fits its push block). */
+static int rhi_d3d12_root_sig_add_sampler_table(RHI_D3D12RootSigBuilder *b) {
+    D3D12_ROOT_PARAMETER1 *param;
+    UINT k;
+    b->sampler_table_param = UINT_MAX;
+    if (b->sampler_count == 0u) return 1;
+    if (b->param_count >= 23u) return 0;
+    for (k = 0u; k < b->sampler_count; ++k) {
+        D3D12_DESCRIPTOR_RANGE1 *r = &b->sampler_ranges[k];
+        ZeroMemory(r, sizeof(*r));
+        r->RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER;
+        r->NumDescriptors = 1u;
+        r->BaseShaderRegister = b->sampler_regs[k];
+        r->RegisterSpace = 0u;
+        r->Flags = D3D12_DESCRIPTOR_RANGE_FLAG_NONE;
+        r->OffsetInDescriptorsFromTableStart = k;
+    }
+    param = &b->params[b->param_count];
+    ZeroMemory(param, sizeof(*param));
+    param->ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+    param->DescriptorTable.NumDescriptorRanges = b->sampler_count;
+    param->DescriptorTable.pDescriptorRanges = b->sampler_ranges;
+    param->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+    b->sampler_table_param = b->param_count++;
     return 1;
 }
 
@@ -3229,8 +3374,8 @@ static ID3D12RootSignature *rhi_d3d12_root_signature_create(
     d1 = &desc.Desc_1_1;
     d1->NumParameters = b->param_count;
     d1->pParameters = b->params;
-    d1->NumStaticSamplers = b->sampler_count;
-    d1->pStaticSamplers = b->samplers;
+    d1->NumStaticSamplers = 0u;   /* R666: samplers are a descriptor table */
+    d1->pStaticSamplers = NULL;
     d1->Flags = is_compute ? D3D12_ROOT_SIGNATURE_FLAG_NONE
                            : D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
     hr = D3D12SerializeVersionedRootSignature(&desc, &serialized, &error_blob);
@@ -3418,6 +3563,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         !rhi_mrt_formats_valid(desc->mrt_formats, desc->mrt_attachment_count))
         return RHI_HANDLE_NULL;
     ZeroMemory(&builder, sizeof(builder));
+    builder.sampler_table_param = UINT_MAX;
     for (u32 i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         builder.image_root_params[i] = UINT_MAX;
         builder.uniform_root_params[i] = UINT_MAX;
@@ -3443,7 +3589,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         binding_count = rhi_d3d12_reflect_hlsl(cs->source, cs->source_len,
                                                bindings, 32u);
         if (!rhi_d3d12_root_sig_from_bindings(&builder, bindings,
-                                              binding_count))
+                                              binding_count) ||
+            !rhi_d3d12_root_sig_add_sampler_table(&builder))
             return RHI_HANDLE_NULL;
         pd = (RHI_D3D12Pipeline *)calloc(1u, sizeof(*pd));
         if (pd == NULL) return RHI_HANDLE_NULL;
@@ -3495,6 +3642,8 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
                                                  D3D12_SHADER_VISIBILITY_PIXEL))
                 return RHI_HANDLE_NULL;
         }
+        if (!rhi_d3d12_root_sig_add_sampler_table(&builder))
+            return RHI_HANDLE_NULL;
         vs_code.pShaderBytecode = vs->blob;
         vs_code.BytecodeLength = vs->blob_size;
         if (ps != NULL) {
@@ -3565,6 +3714,13 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             pd->push_param_index != UINT_MAX)
             pd->storage_root_params[i]++;
     }
+    pd->sampler_root_param = builder.sampler_table_param;
+    if (pd->sampler_root_param != UINT_MAX && pd->push_param_index != UINT_MAX)
+        pd->sampler_root_param++;
+    pd->sampler_count = builder.sampler_count;
+    for (u32 i = 0u; i < builder.sampler_count; ++i)
+        pd->sampler_regs[i] = builder.sampler_regs[i];
+    pd->default_clamp = builder.clamp_samplers;
     pd->desc = *desc;
     pd->topology = desc->point_list ? D3D_PRIMITIVE_TOPOLOGY_POINTLIST
                                     : D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST;
@@ -4140,24 +4296,8 @@ RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
     if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
     slot = rhi_d3d12_descriptor_take(ctx, &ctx->sampler_alloc);
     if (slot == UINT_MAX) return RHI_HANDLE_NULL;
-    ZeroMemory(&sd, sizeof(sd));
-    if (desc->min_filter == RHI_FILTER_NEAREST &&
-        desc->mag_filter == RHI_FILTER_NEAREST)
-        sd.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-    else if (desc->min_filter == RHI_FILTER_LINEAR &&
-             desc->mag_filter == RHI_FILTER_LINEAR)
-        sd.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    else if (desc->min_filter == RHI_FILTER_LINEAR)
-        sd.Filter = D3D12_FILTER_MIN_LINEAR_MAG_MIP_POINT;
-    else
-        sd.Filter = D3D12_FILTER_MIN_POINT_MAG_MIP_LINEAR;
-    sd.AddressU = desc->wrap_u == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.AddressV = desc->wrap_v == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.AddressW = desc->wrap_w == RHI_WRAP_REPEAT ? D3D12_TEXTURE_ADDRESS_MODE_WRAP
-                                                  : D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sd.MaxLOD = D3D12_FLOAT32_MAX;
+    rhi_d3d12_sampler_desc_fill(&sd, desc->min_filter, desc->mag_filter,
+                                desc->wrap_u, desc->wrap_v, desc->wrap_w);
     ID3D12Device_CreateSampler(ctx->device, &sd,
         rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slot));
     smp = (RHI_D3D12Sampler *)calloc(1u, sizeof(*smp));
@@ -4253,6 +4393,64 @@ static void rhi_d3d12_match_rtv_formats(RHI_D3D12Context *ctx) {
     }
 }
 
+/* R666: before a draw/dispatch, give the bound pipeline's sampler table the
+ * descriptors for its registers: the bound sampler, else the pipeline's
+ * default. Identical tables are shared within a frame through a small cache,
+ * so the ring holds one copy per distinct combination, not one per draw. */
+static void rhi_d3d12_flush_samplers(RHI_D3D12Context *ctx) {
+    RHI_D3D12Pipeline *pd;
+    ID3D12GraphicsCommandList *list;
+    UINT slots[RHI_D3D12_SAMPLER_TABLE_MAX];
+    UINT half, base = UINT_MAX, k, c;
+    if (ctx == NULL || !ctx->sampler_dirty) return;
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    list = rhi_d3d12_cmd_list(ctx);
+    if (pd == NULL || list == NULL) return;
+    if (pd->sampler_root_param == UINT_MAX) { ctx->sampler_dirty = 0u; return; }
+    half = (ctx->frame_parity & 1u) * RHI_D3D12_SAMPLER_RING_HALF;
+    for (k = 0u; k < pd->sampler_count; ++k) {
+        UINT s = ctx->bound_sampler[pd->sampler_regs[k]];
+        slots[k] = s != UINT_MAX ? s : ctx->sampler_default_slot[pd->default_clamp ? 1u : 0u];
+    }
+    for (c = 0u; c < ctx->sampler_cache_count && base == UINT_MAX; ++c) {
+        if (ctx->sampler_cache[c].count != pd->sampler_count) continue;
+        if (memcmp(ctx->sampler_cache[c].slots, slots,
+                   pd->sampler_count * sizeof(UINT)) == 0)
+            base = ctx->sampler_cache[c].base;
+    }
+    if (base == UINT_MAX) {
+        if (ctx->sampler_ring_cursor + pd->sampler_count > RHI_D3D12_SAMPLER_RING_HALF ||
+            ctx->sampler_cache_count >= RHI_D3D12_SAMPLER_CACHE) {
+            /* Never leave the table unset: the reserved default block. */
+            if (!ctx->sampler_ring_warned) {
+                LOG_WARN("D3D12: sampler table ring full this frame -- "
+                         "falling back to default samplers");
+                ctx->sampler_ring_warned = 1u;
+            }
+            base = half + (pd->default_clamp ? RHI_D3D12_SAMPLER_TABLE_MAX : 0u);
+        } else {
+            base = half + ctx->sampler_ring_cursor;
+            for (k = 0u; k < pd->sampler_count; ++k)
+                ID3D12Device_CopyDescriptorsSimple(ctx->device, 1u,
+                    rhi_d3d12_sampler_ring_cpu(ctx, base + k),
+                    rhi_d3d12_descriptor_cpu(&ctx->sampler_alloc, slots[k]),
+                    D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
+            ctx->sampler_ring_cursor += pd->sampler_count;
+            c = ctx->sampler_cache_count++;
+            ctx->sampler_cache[c].count = pd->sampler_count;
+            memcpy(ctx->sampler_cache[c].slots, slots, pd->sampler_count * sizeof(UINT));
+            ctx->sampler_cache[c].base = base;
+        }
+    }
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list,
+            pd->sampler_root_param, rhi_d3d12_sampler_ring_gpu(ctx, base));
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list,
+            pd->sampler_root_param, rhi_d3d12_sampler_ring_gpu(ctx, base));
+    ctx->sampler_dirty = 0u;
+}
+
 static void rhi_d3d12_flush_uniform_staging(RHI_D3D12Context *ctx) {
     RHI_D3D12Pipeline *pd;
     ID3D12GraphicsCommandList *list;
@@ -4337,6 +4535,7 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
     }
     ctx->bound_pipeline = pd;
     ctx->bound_pipeline_compute = pd->is_compute;
+    ctx->sampler_dirty = 1u;   /* R666: the new root signature has no table yet */
 }
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
                                 usize offset) {
@@ -4466,6 +4665,7 @@ void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
     rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             0u, 0u);
@@ -4476,6 +4676,7 @@ void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count,
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
     rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawInstanced(list, vertex_count, instance_count,
                                             first_vertex, 0u);
@@ -4486,6 +4687,7 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
     rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
                                                    instance_count, 0u, 0, 0u);
@@ -4497,6 +4699,7 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
     rhi_d3d12_match_rtv_formats((RHI_D3D12Context *)cmd);
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
         instance_count, first_index, vertex_offset, 0u);
@@ -4531,6 +4734,7 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
     rhi_d3d12_match_rtv_formats(ctx);
+    rhi_d3d12_flush_samplers(ctx);
     rhi_d3d12_flush_uniform_staging(ctx);
     args = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, cmd_buf, RHI_RES_BUFFER);
     if (args == NULL) {
@@ -4690,51 +4894,22 @@ static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
                           RHISampler sampler, u32 unit) {
     RHI_D3D12Texture *td;
-    /* KNOWN LIMIT — the sampler argument is accepted and then discarded, on
-     * every backend path that reaches this function, including the material
-     * binders. Root-signature construction resolves every SamplerState
-     * register to a D3D12_STATIC_SAMPLER_DESC (rhi_d3d12_root_sig_add_bindings)
-     * hardcoded to MIN_MAG_MIP_LINEAR + MaxLOD FLT_MAX, and emits no root
-     * parameter of type SAMPLER table, so there is nothing for a bind to
-     * point at. GL applies the caller's sampler object per unit and so
-     * honours filter, address mode and LOD selection; D3D12 currently
-     * cannot. R662 picks the address mode per pipeline instead of per bind:
-     * CLAMP for fullscreen (no_vertex_input) and compute pipelines -- every
-     * sampler the post chain, deferred lighting, IBL and particle passes
-     * create asks for CLAMP_TO_EDGE -- and WRAP for mesh pipelines, which
-     * bind the engine's REPEAT material sampler.
+    /* R666: the sampler is honoured. It is recorded for register(s<unit>)
+     * (the sidecar convention pairs SamplerState sN with texture tN), and
+     * the next draw/dispatch copies the bound pipeline's sampler registers
+     * into one descriptor table (rhi_d3d12_flush_samplers). An invalid
+     * RHISampler selects the pipeline's default -- LINEAR, CLAMP for
+     * fullscreen / compute pipelines and WRAP for mesh pipelines (the R662
+     * rule) -- so callers that pass none keep their old behaviour.
      *
-     * What that means concretely: a texture can be filtered LINEAR and
-     * addressed WRAP or CLAMP by pipeline kind, and nothing else (NEAREST
-     * requests come back bilinear). In particular there is no comparison
-     * sampling — EnableComparison is never set and no D3D12_SAMPLER_DESC
-     * reaches the shader.
-     *
-     * That is NOT what blocks the shadow pass. No production shader declares
-     * a shadow sampler: the clustered forward shaders sample the point-shadow
-     * cubes and the shadow atlas as a plain sampler and compare by hand on
-     * the raw .r channel (blinn_phong_clustered.frag:70-71, the _vk twin
-     * likewise), and the GL backend deliberately sets
-     * GL_TEXTURE_COMPARE_MODE = GL_NONE for the same reason. A static LINEAR
-     * sampler plus a plain SRV is exactly what that code needs. The shadow
-     * atlas's real D3D12 constraint is the opposite one: D32_FLOAT cannot
-     * back an SRV at all, so the atlas is allocated as the typeless
-     * R32_TYPELESS and aliased to an R32_FLOAT SRV (see
-     * rhi_d3d12_srv_format).
-     *
-     * The infrastructure for a real sampler table is half-present and
-     * unused: the context already owns a shader-visible sampler heap
-     * (sampler_heap / sampler_alloc) and rhi_sampler_create already writes a
-     * real D3D12_SAMPLER_DESC honouring RHISamplerDesc's filters and address
-     * modes into it (RHI_D3D12Sampler just holds the slot). What is missing
-     * is (a) a root parameter carrying a SAMPLER descriptor range for the
-     * pipeline's sampler registers, (b) a SetGraphicsRootDescriptorTable
-     * alongside the SRV table here, and (c) a comparison flag on
-     * RHISamplerDesc -> D3D12_SAMPLER_DESC. Deliberately not done in this
-     * round: it is a root-signature change affecting every existing pipeline,
-     * not a binder fix, and nothing in the current shader set needs it. */
-    (void)sampler;
+     * Still not expressible: comparison sampling (RHISamplerDesc has no
+     * compare flag). No production shader needs it -- the shadow passes
+     * compare the raw .r by hand, and GL sets GL_TEXTURE_COMPARE_MODE =
+     * GL_NONE for the same reason. The shadow atlas's D3D12 constraint is
+     * different: D32_FLOAT cannot back an SRV, so it is R32_TYPELESS aliased
+     * to an R32_FLOAT SRV (rhi_d3d12_srv_format). */
     if (g_current_device == NULL) return;
+    rhi_d3d12_note_sampler((RHI_D3D12Context *)cmd, sampler, unit);
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
                                                     RHI_RES_TEXTURE);
     if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
@@ -4815,10 +4990,9 @@ static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex,
                                  RHISampler sampler) {
     /* Material unit 1 is where the atlas belongs — the same slot the GL
-     * backend binds it to. The sampler argument is discarded exactly as in
-     * rhi_cmd_bind_texture: the production shaders compare the sampled .r by
-     * hand rather than through a comparison sampler, so the static LINEAR
-     * sampler the root signature already provides is what they expect. */
+     * backend binds it to. The production shaders compare the sampled .r by
+     * hand rather than through a comparison sampler, so a plain sampler is
+     * what they expect. */
     rhi_cmd_bind_texture(cmd, shadow_tex, sampler, 1u);
 }
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
@@ -5308,7 +5482,7 @@ static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm,
                           RHISampler sampler, u32 unit) {
     RHI_D3D12Texture *td = rhi_d3d12_cube_tex(cm);
-    (void)sampler;
+    rhi_d3d12_note_sampler((RHI_D3D12Context *)cmd, sampler, unit);
     if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
 }
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) { (void)cmd; }
@@ -5900,12 +6074,8 @@ static int rhi_d3d12_material_bindable(RHI_D3D12Context *ctx) {
  * for a register the bound pipeline does not declare, so a sidecar
  * declaring only t0 works here too.
  *
- * KNOWN SAMPLER LIMIT (inherited infrastructure, not introduced here):
- * `sampler` is accepted and forwarded but has no effect — see
- * rhi_cmd_bind_texture. Every D3D12 sampler register resolves to one
- * hardcoded static sampler, so the shadow map on unit 1 is sampled without
- * comparison filtering today. That blocks the D3D12 forward pass at the
- * shadow-map step, not at this binder. */
+ * `sampler` applies to every unit this binds (R666; see
+ * rhi_cmd_bind_texture), as GL's binder does. */
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo,
     RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow,
     RHITexture ssao, RHISampler sampler) {
@@ -6006,8 +6176,8 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
  * image_root_params[unit], skips a register the pipeline does not declare,
  * builds a 2D or 2D-array view from the texture, and transitions it to a
  * shader-read state. Invalid handles are skipped the same way GL's
- * gl_bind_tex_unit skips them. The sampler argument is accepted and dropped
- * exactly as in rhi_cmd_bind_texture; see the KNOWN LIMIT note there. */
+ * gl_bind_tex_unit skips them. The sampler applies to every unit, as in
+ * rhi_cmd_bind_texture. */
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures,
                                  int count, RHISampler sampler) {
     int i;
@@ -6613,6 +6783,7 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
+    rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_Dispatch(list, x, y, z);
 }
@@ -6967,8 +7138,8 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex,
     D3D12_SHADER_RESOURCE_VIEW_DESC srv;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
-    (void)sampler;
     if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
+    rhi_d3d12_note_sampler(ctx, sampler, unit);
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
