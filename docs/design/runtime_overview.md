@@ -28,7 +28,7 @@
 
 | 能力 | 当前分类 | 证据 | Stage 2 设计结论 |
 |---|---|---|---|
-| ECS schema/snapshot/delta/AoI | 正式可选 `break_ecs_replication`（2026-10-22 Task 1 交付，未链入 engine/demo） | `engine/CMakeLists.txt:313-324`；fault-injection 变体 `break_ecs_replication_test`（`:3235-3249`）仅供 `test_ecs_replication`；`docs/design/ecs_snapshot_replication_aoi.md:5-20` | 迁入 `engine` 或 runtime/session 集成仍需独立 plan；snapshot publication service 未实现 |
+| ECS schema/snapshot/delta | 正式可选 `break_ecs_replication`（2026-10-22 Task 1 交付，未链入 engine/demo；AoI 实现 `break_aoi.c` 在 `break_replication_core`） | `engine/CMakeLists.txt:313-324`；fault-injection 变体 `break_ecs_replication_test`（`:3235-3249`）仅供 `test_ecs_replication`；`docs/design/ecs_snapshot_replication_aoi.md:5-20` | 迁入 `engine` 或 runtime/session 集成仍需独立 plan；snapshot publication service 未实现 |
 | replication + fragment | 正式可选 `break_replication_core`（非 Snowflake，Task 1） | `engine/CMakeLists.txt:326-333`；`docs/design/ecs_snapshot_replication_aoi.md:134-159` | fragment 保持 transport-independent；正式集成需另有 scheduler、schema/tick wire contract 和 failure policy |
 | `break_net` + Session | 正式可选、Snowflake-conditional（Task 2） | `engine/CMakeLists.txt:362-377`；`BREAK_ENABLE_SNOWFLAKE=ON` 即生成（独立于 `ENGINE_BUILD_TESTS`），链接 `break_replication_core` 与 `snow::net`；`engine_demo`/`dxx_break` 不链接 | 接入生产应用属后续独立集成任务；不让 demo 隐式依赖 Snowflake |
 | Task | formal `engine` source，但单实例限制 | `engine/src/task/task.h:67-113`、`:129-147`；`task.c:482-530` | Runtime Core facade 应包住现有 TaskSystem 的 ownership、shutdown 和 overload 语义，不复制第二套 scheduler |

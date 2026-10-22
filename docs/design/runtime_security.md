@@ -16,7 +16,7 @@
 - **未实现/风险**：明确不在当前交付范围，不能由本文推断为已有能力。
 
 路线依据是 `docs/design/roadmap_2026-10-22.md:31-49` 和
-`docs/superpowers/plans/2026-10-22-runtime-expansion-todo.md:14-24`：Stage 2 当前仍是 design next，且要求先解决 focused ECS/network 到正式库的边界。本文不修改源码、CMake 或 target，也不声称已完成 Stage 2。
+`docs/superpowers/plans/2026-10-22-runtime-expansion-todo.md:14-24`。Stage 2 的 Runtime Core 已于 2026-10-22/23 交付为正式可选库（`runtime_core`，未链入 engine/demo）；本文的安全边界与威胁模型仍为设计目标，传输认证/密钥生命周期属 Stage 5 独立计划。
 
 ## 2. 真实现状与 target 证据
 

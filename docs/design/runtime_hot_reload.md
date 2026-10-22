@@ -15,7 +15,7 @@
 - **设计目标**：本文建议的接口、所有权和验收合同，当前未实现除非另有证据。
 - **未实现/风险**：明确不能由当前代码推断出来的能力；不得在实现前写成已完成。
 
-路线依据：`docs/design/roadmap_2026-10-22.md:31-49` 将这些文件列为 Stage 2 输出，并要求映射到正式 CMake target、定义所有权/容量/背压/关闭和测试 lane；`docs/superpowers/plans/2026-10-22-runtime-expansion-todo.md:14-24` 仍将本文和正式-vs-focused target review 标为未完成。
+路线依据：`docs/design/roadmap_2026-10-22.md:31-49` 将这些文件列为 Stage 2 输出，并要求映射到正式 CMake target、定义所有权/容量/背压/关闭和测试 lane；2026-10-22/23 的 runtime core formalization 已交付 `runtime_reload`/`runtime_profiler` 等正式可选库（未链入 engine/demo），本文 §2.3 与 §7 记录交付与设计边界。
 
 ## 2. 真实代码与 target 证据
 

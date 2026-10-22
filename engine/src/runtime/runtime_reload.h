@@ -48,7 +48,10 @@
  * states (LOADING/VALIDATING) and CONSUMING for every terminal state
  * (COMMITTED/FAILED_KEEP_OLD/CANCELLED/TIMEOUT/OOM): the terminal state is
  * delivered exactly once, the slot is released, and a later poll/cancel with
- * the same handle returns BREAK_RUNTIME_STALE.
+ * the same handle returns BREAK_RUNTIME_STALE. When request() merged callers
+ * onto one handle (stats.merged), the terminal state is consumed exactly once
+ * across ALL holders of that handle: the first poll observes it, later peer
+ * polls get BREAK_RUNTIME_STALE (treat that as "consumed by peer").
  *
  * Coalescing: file events for a path already present in the bounded event
  * queue merge into one pending hint (stats.events_coalesced). request() for a
