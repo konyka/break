@@ -22,7 +22,7 @@
 
 ### 2.1 正式 engine target
 
-根架构文档定义 `engine/` 为纯 C11 引擎层、`framework/` 为 C++ 应用框架层（`docs/Architecture_Overview.md:41-72`、`:102-110`）。实际 `engine/CMakeLists.txt:319-403` 的 `engine` static library 已包含 Core、Platform、Profiler、Time/Filewatch、Asset/VFS、ECS、Task、Lua script、普通 network 等源；但该列表没有 `world_snapshot.c`、`world_delta.c`、`replication_schema.c`、`break_aoi.c`、`break_replication.c`、`break_net_adapter.c`、`break_session.c` 或 `break_replication_fragment.c`。
+根架构文档定义 `engine/` 为纯 C11 引擎层、`framework/` 为 C++ 应用框架层（`docs/Architecture_Overview.md:41-72`、`:102-110`）。实际 `engine/CMakeLists.txt:387-471` 的 `engine` static library 已包含 Core、Platform、Profiler、Time/Filewatch、Asset/VFS、ECS、Task、Lua script、普通 network 等源；但该列表没有 `world_snapshot.c`、`world_delta.c`、`replication_schema.c`、`break_aoi.c`、`break_replication.c`、`break_net_adapter.c`、`break_session.c` 或 `break_replication_fragment.c`。
 
 因此，“ECS/Network 模块在目录中存在”不能写成“正式 runtime 已集成”。正式 target 的安全规则是：
 
@@ -30,16 +30,16 @@
 - focused 源在独立 target 验收前，不得被 `engine_demo`、`dxx_break` 或 `framework` 间接依赖；
 - 不以复制源码到多个 executable 的方式制造第二套 ownership 语义。
 
-### 2.2 focused/test-only target
+### 2.2 正式可选与 test-only target
 
 真实 CMake 证据如下：
 
-- `engine/CMakeLists.txt:3165-3179` 将 `test_ecs_replication` 直接编入 `ecs.c`、`replication_schema.c`、`world_snapshot.c`、`world_delta.c`、`break_aoi.c`；注释明确写着这些源不在 `engine` static library。
-- `engine/CMakeLists.txt:3219-3233` 创建 test-only `break_replication_fragment` static library 和 `test_break_replication_fragment`。
-- `engine/CMakeLists.txt:3235-3283` 只在 Snowflake 条件成立时创建 `break_net`，并将 adapter、protocol、Session、AoI、replication、fragment 编入其中；`test_break_net_adapter`、`test_break_replication`、`test_break_session` 链接该库。
-- `BREAK_ENABLE_SNOWFLAKE` 还要求真实 `SNOWFLAKE_SOURCE_DIR` 和 `snow::net` target（`engine/CMakeLists.txt:291-308`）；不存在替代 transport。
+- `engine/CMakeLists.txt:313-324` 创建正式可选 `break_ecs_replication`（ecs/schema/snapshot/delta + core logging）；`engine/CMakeLists.txt:3235-3249` 的 test-only `break_ecs_replication_test` 变体以 `BREAK_WORLD_DELTA_TESTING=1` 直接编译这些源（另含 `break_aoi.c`）供 `test_ecs_replication`。
+- `engine/CMakeLists.txt:326-333` 创建正式可选非 Snowflake `break_replication_core`（AoI/replication/fragment）；`test_break_replication_fragment`（`:3405-3412`）链接该正式库。
+- `engine/CMakeLists.txt:362-377` 在 Snowflake 条件成立时创建正式可选 `break_net`（独立于 `ENGINE_BUILD_TESTS`），编入 adapter、protocol/envelope/message/registry 和 Session 源，链接 `break_replication_core` 与 `snow::net`；`test_break_net_adapter`、`test_break_replication`、`test_break_session` 链接该库。
+- `BREAK_ENABLE_SNOWFLAKE` 还要求真实 `SNOWFLAKE_SOURCE_DIR` 和 `snow::net` target（`engine/CMakeLists.txt:291-309`）；不存在替代 transport。
 
-当前 focused API 的边界在 `docs/design/ecs_snapshot_replication_aoi.md:5-20`、`docs/design/session_protocol.md:1-19`、`docs/design/snowflake_c11_adapter.md:1-17` 已有记录。本文沿用这些事实：fragment checksum 是 FNV-1a 完整性检查，不是加密认证；Session 不是 player authentication backend；`break_net` 仍是可选/test-gated 集成。
+当前 focused API 的边界在 `docs/design/ecs_snapshot_replication_aoi.md:5-20`、`docs/design/session_protocol.md:1-19`、`docs/design/snowflake_c11_adapter.md:1-17` 已有记录。本文沿用这些事实：fragment checksum 是 FNV-1a 完整性检查，不是加密认证；Session 不是 player authentication backend；`break_net` 仍是可选（Snowflake-conditional）集成，未链入 engine/demo。
 
 ## 3. 威胁模型与安全目标
 
@@ -241,8 +241,8 @@ PAL/OS -> IO/Network driver -> validate + copy -> bounded Message queues
 3. Task ownership、fence、worker shutdown；
 4. VFS path/PAK validation 与 async owned blob；
 5. Profiler bounded recording/export/redaction；
-6. 将 ECS focused sources 迁入正式 runtime library，并由 GameThread/message contracts 接入；
-7. 将 `break_net` 从 test-gated 目标晋级，补齐正式 Session/replication integration；
+6. 将 ECS focused sources 迁入正式 runtime library——已交付为正式可选 `break_ecs_replication`/`break_replication_core`（2026-10-22 Task 1）；迁入 `engine` 并由 GameThread/message contracts 接入仍未实现；
+7. 将 `break_net` 从 test-gated 目标晋级——已交付（2026-10-22 Task 2：`BREAK_ENABLE_SNOWFLAKE=ON` 即生成，独立于 `ENGINE_BUILD_TESTS`）；正式 Session/replication integration 仍未实现；
 8. Stage 3 Lua facade 只能建立在上述 owner/queue/snapshot contracts 上；
 9. Stage 5 才处理认证、签名更新、crash upload、replay protection、server authority 和 anti-tamper。
 
@@ -266,5 +266,5 @@ PAL/OS -> IO/Network driver -> validate + copy -> bounded Message queues
 - `docs/design/ecs_snapshot_replication_aoi.md`：snapshot/schema/delta/AoI/replication/fragment 的 ownership、容量、失败和未实现项。
 - `docs/design/session_protocol.md`：18-byte envelope、256 队列、Session GameThread ownership、stale/close 语义。
 - `docs/design/snowflake_c11_adapter.md`：Snowflake target 要求、single driver、callback 边界、bounded stop 和 owned payload。
-- `engine/CMakeLists.txt:291-308,319-403,3165-3283`：真实 `engine`、focused ECS、fragment、Snowflake `break_net` target 证据。
+- `engine/CMakeLists.txt:291-309,313-377,387-471,3235-3298,3405-3444`：真实 `engine`、正式可选 ECS/fragment/Snowflake `break_net`/`runtime_core` target 与 test-only 变体证据。
 - `engine/src/task/task.h`、`engine/src/asset/vfs.h`、`engine/src/core/profiler.h`：Runtime Core 现有容量、线程、VFS 和 Profiler API 证据。

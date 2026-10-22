@@ -19,7 +19,7 @@ Stage 2 的顺序是硬约束：先把网络复制和资源请求的 target、�
 
 ### 2.1 资源基础设施
 
-当前 `engine` static library 在 `engine/CMakeLists.txt:319-403` 已包含：
+当前 `engine` static library 在 `engine/CMakeLists.txt:387-471` 已包含：
 
 - `src/asset/asset.c`
 - `src/asset/async_loader.c`
@@ -48,8 +48,8 @@ Stage 2 的顺序是硬约束：先把网络复制和资源请求的 target、�
 
 ECS 和网络切片的事实来源是 `docs/design/ecs_snapshot_replication_aoi.md`、`docs/design/session_protocol.md`、`docs/design/snowflake_c11_adapter.md`，并由 `docs/Architecture_Overview.md:482-506` 与 `docs/Implementation_Status.md` 的最新条目交叉记录。
 
-- **focused/test-only 当前已有**：`replication_schema.*` 的 deterministic POD schema/hash；`world_snapshot.*` 的 GameThread 构建、generation-aware entity identity、owned immutable bytes；`world_delta.*` 的 immutable diff、base/schema/tick validation、staging + atomic replace；`break_aoi.*` 的 deterministic enter/stay/leave；`break_replication.*` 的 Real/Ghost/baseline/dirty/destroy/dormant 与预算；`break_replication_fragment.*` 的有界分片、乱序重组、duplicate/conflict、FNV-1a 完整性检查。
-- **target 证据**：`engine/CMakeLists.txt:3165-3179` 把 snapshot/schema/delta/AoI 源直接编入 `test_ecs_replication`，而不是 `engine`；`engine/CMakeLists.txt:3219-3233` 将 fragment 编成 test-only `break_replication_fragment`；`engine/CMakeLists.txt:3235-3283` 仅在 `ENGINE_BUILD_TESTS=ON && BREAK_ENABLE_SNOWFLAKE=ON` 时生成 `break_net`，并且 `engine_demo`/`dxx_break` 不链接它。
+- **正式可选库当前已有（2026-10-22 Tasks 1-2 交付 target，未链入 engine/demo）**：`replication_schema.*` 的 deterministic POD schema/hash；`world_snapshot.*` 的 GameThread 构建、generation-aware entity identity、owned immutable bytes；`world_delta.*` 的 immutable diff、base/schema/tick validation、staging + atomic replace；`break_aoi.*` 的 deterministic enter/stay/leave；`break_replication.*` 的 Real/Ghost/baseline/dirty/destroy/dormant 与预算；`break_replication_fragment.*` 的有界分片、乱序重组、duplicate/conflict、FNV-1a 完整性检查。
+- **target 证据**：`engine/CMakeLists.txt:313-324` 的正式可选 `break_ecs_replication` 承载 snapshot/schema/delta 源（test-only fault-injection 变体 `break_ecs_replication_test` `:3235-3249` 供 `test_ecs_replication`）；`engine/CMakeLists.txt:326-333` 的正式可选 `break_replication_core` 承载 AoI/replication/fragment 源；`engine/CMakeLists.txt:362-377` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成正式可选 `break_net`（独立于 `ENGINE_BUILD_TESTS`），并且 `engine_demo`/`dxx_break` 不链接它。
 - **线程事实**：GameThread 独占可变 World/ECS/schema/Real/Ghost/apply；snapshot/delta/AoI 消费者只读 owned immutable values；网络 callback 只验证、复制、入 bounded queue，不访问 World/ECS/Lua/UI/RHI。`BreakSessionManager` 是同一 GameThread 串行拥有的非线程安全对象。
 - **仍未实现**：正式 `engine` runtime/session integration、snapshot publication service、wire-level schema/tick negotiation、fragment timeout/eviction scheduler、加密认证、authority handoff、client prediction/rollback、Lua/editor/network gameplay integration。
 
@@ -310,9 +310,9 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 | Decode | `decode_pipeline.*` 2 worker/256 input、RGBA8 mip decode | 现有 async/decode tests | typed decoder registry、每类型预算、取消与失败语义 | 所有格式/压缩格式均已支持 |
 | Mipmap | `mipmap_stream.*` 最多1024 texture/16 mip/预算/eviction | 现有 mipmap tests | 通用 residency/cache 与 GPU command queue | distributed asset cache |
 | Hot reload | file watcher + pipeline/texture poll/callback | watcher/hotreload tests | staged candidate + atomic swap + old version retention | production online patch |
-| ECS snapshot/schema/delta/AoI | focused C11 APIs已实现 | `test_ecs_replication` 直接编源码 | 正式 runtime target 前先冻结边界、publication service | 自动 barrier、distributed Cell、prediction/rollback |
-| Replication/fragment | focused Real/Ghost、fragment integrity/reassembly | `break_replication_fragment`、Snowflake focused tests | asset manifest message integration、timeout/eviction scheduler | cryptographic auth currently absent |
-| break_net/session | optional Snowflake adapter、256 event/outbound queue、GameThread Session | `break_net`/tests仅 Snowflake + tests 条件下 | formal target promotion after contract review | player auth backend、Lua/editor RPC |
+| ECS snapshot/schema/delta/AoI | C11 APIs 已实现，正式可选 `break_ecs_replication` 承载（2026-10-22 Task 1，未链入 engine/demo） | `test_ecs_replication` 经 fault-injection 变体 `break_ecs_replication_test` 验证 | 迁入 engine/runtime 前先冻结边界、publication service | 自动 barrier、distributed Cell、prediction/rollback |
+| Replication/fragment | Real/Ghost、fragment integrity/reassembly，正式可选 `break_replication_core` 承载（Task 1） | `test_break_replication_fragment` 链接正式库、Snowflake focused tests | asset manifest message integration、timeout/eviction scheduler | cryptographic auth currently absent |
+| break_net/session | 正式可选 Snowflake adapter、256 event/outbound queue、GameThread Session（`BREAK_ENABLE_SNOWFLAKE=ON` 即生成，Task 2） | `test_break_net_adapter`/`test_break_session`/`test_break_replication` 链接正式 `break_net` | engine/demo integration after contract review | player auth backend、Lua/editor RPC |
 | Profiling | global 120-frame/32-thread Chrome trace | existing profiler tests | asset stage/queue/failure counters and trace metadata | remote telemetry/upload |
 
 ## 8. 验证与验收

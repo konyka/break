@@ -13,7 +13,7 @@
 
 ## Stage 2 — Runtime design
 
-> 设计已完成，实施计划为 `docs/superpowers/plans/2026-10-22-runtime-core-formalization.md`。Lua boundary、Runtime Core formal facade、Asset/HotReload contracts 仍是设计目标，尚未实现。
+> 设计已完成，实施计划为 `docs/superpowers/plans/2026-10-22-runtime-core-formalization.md`。实施已交付（2026-10-22/23 Tasks 1-7）：正式可选 targets `break_ecs_replication`、`break_replication_core`、`break_net`（Snowflake-conditional）与 `runtime_core`（coordinator/message/queue/task/thread/io/reload/profiler），均不链入 `engine`/`engine_demo`/`dxx_break`；normal/ASan+UBSan/TSan/fuzz/full-suite 验证证据见 `docs/Implementation_Status.md` 顶部条目。Lua boundary facade、统一 PAL facade、mailbox 拓扑、真实子系统接入与 engine/demo 集成仍是设计目标，尚未实现。
 
 - [x] `runtime_overview.md`
 - [x] `runtime_thread_model.md`
@@ -67,12 +67,12 @@
 
 ## Cross-cutting validation
 
-- [ ] Clean normal build with all relevant targets explicitly built
-- [ ] Clean ASan/UBSan build and relevant tests
-- [ ] Clean TSan build and relevant tests
-- [ ] Explicitly build/run all fuzz smoke targets
+- [x] Clean normal build with all relevant targets explicitly built（2026-10-23 Task 7：`build-sdd-t7`，Snowflake ON，4 个正式 target 显式构建 + 完整默认 target 集）
+- [x] Clean ASan/UBSan build and relevant tests（`build-sdd-t7-asan`，focused runtime/ecs/net lane 16/16）
+- [x] Clean TSan build and relevant tests（`build-sdd-t7-tsan`，同一 lane 16/16，零报告）
+- [x] Explicitly build/run all fuzz smoke targets（5 个 fuzz target 显式构建，`ctest -L fuzz` 5/5）
 - [ ] Native/CI cross-platform evidence recorded
-- [ ] Full CTest failures classified as code vs environment vs not-built
-- [ ] `git diff --check`
-- [ ] 文档自审：生命周期、shutdown 顺序、错误类别、容量/背压、Lua boundary、Asset/HotReload 状态机前后一致
+- [x] Full CTest failures classified as code vs environment vs not-built（178 项入选：177 通过、0 失败、1 platform skip；graphics/fuzz label 排除项逐项列出）
+- [x] `git diff --check`
+- [x] 文档自审：生命周期、shutdown 顺序、错误类别、容量/背压、Lua boundary、Asset/HotReload 状态机前后一致
 - [ ] Final independent code review

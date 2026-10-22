@@ -22,22 +22,22 @@
 
 ### 2.2 正式与 focused target 的事实
 
-`engine/CMakeLists.txt:319-403` 的 `engine` static library 已包含 `src/task/task.c`、`src/asset/async_loader.c`、`src/asset/vfs.c`、`src/core/profiler.c`、`src/network/network.c`、`src/network/net_loop_*` 和 ECS core；`engine_demo` 在 `engine/CMakeLists.txt:1512-1514` 链接 `engine`，`dxx_break` 在 `:1168-1169` 链接 `dxx_core break_myui engine`。这证明的是底层基础设施已进入正式 `engine` target，不证明新的 Runtime facade 已存在。
+`engine/CMakeLists.txt:387-471` 的 `engine` static library 已包含 `src/task/task.c`、`src/asset/async_loader.c`、`src/asset/vfs.c`、`src/core/profiler.c`、`src/network/network.c`、`src/network/net_loop_*` 和 ECS core；`engine_demo` 在 `engine/CMakeLists.txt:1581` 链接 `engine`，`dxx_break` 在 `:1236` 链接 `dxx_core break_myui engine`。这证明的是底层基础设施已进入正式 `engine` target，不证明新的 Runtime facade 已存在。
 
 以下边界必须在实现前保持显式：
 
 | 能力 | 当前分类 | 证据 | Stage 2 设计结论 |
 |---|---|---|---|
-| ECS schema/snapshot/delta/AoI | focused/test-only | `engine/CMakeLists.txt:3168-3179` 直接把源编入 `test_ecs_replication`；`docs/design/ecs_snapshot_replication_aoi.md:5-20` | 先定义正式 library 的 ownership/ABI/target contract，再决定逐步迁入 `engine` |
-| replication + fragment | focused；fragment 有独立 test library | `engine/CMakeLists.txt:3221-3233`；`docs/design/ecs_snapshot_replication_aoi.md:134-159` | fragment 保持 transport-independent；正式集成需另有 scheduler、schema/tick wire contract 和 failure policy |
-| `break_net` + Session | optional/test-gated | `engine/CMakeLists.txt:3235-3283`；只在 `BREAK_ENABLE_SNOWFLAKE` 下生成且链接 `snow::net` | 先固定 adapter/session public boundary，再决定 formal `engine_net`/runtime target；不让 demo 隐式依赖 Snowflake |
+| ECS schema/snapshot/delta/AoI | 正式可选 `break_ecs_replication`（2026-10-22 Task 1 交付，未链入 engine/demo） | `engine/CMakeLists.txt:313-324`；fault-injection 变体 `break_ecs_replication_test`（`:3235-3249`）仅供 `test_ecs_replication`；`docs/design/ecs_snapshot_replication_aoi.md:5-20` | 迁入 `engine` 或 runtime/session 集成仍需独立 plan；snapshot publication service 未实现 |
+| replication + fragment | 正式可选 `break_replication_core`（非 Snowflake，Task 1） | `engine/CMakeLists.txt:326-333`；`docs/design/ecs_snapshot_replication_aoi.md:134-159` | fragment 保持 transport-independent；正式集成需另有 scheduler、schema/tick wire contract 和 failure policy |
+| `break_net` + Session | 正式可选、Snowflake-conditional（Task 2） | `engine/CMakeLists.txt:362-377`；`BREAK_ENABLE_SNOWFLAKE=ON` 即生成（独立于 `ENGINE_BUILD_TESTS`），链接 `break_replication_core` 与 `snow::net`；`engine_demo`/`dxx_break` 不链接 | 接入生产应用属后续独立集成任务；不让 demo 隐式依赖 Snowflake |
 | Task | formal `engine` source，但单实例限制 | `engine/src/task/task.h:67-113`、`:129-147`；`task.c:482-530` | Runtime Core facade 应包住现有 TaskSystem 的 ownership、shutdown 和 overload 语义，不复制第二套 scheduler |
 | Async IO/VFS | formal `engine` source | `engine/src/asset/async_loader.h:38-87`；`async_loader.c:16-24`；`engine/src/asset/vfs.h:5-12` | 以现有有界请求/完成队列和 VFS caps 为基线，补统一 Runtime IO contract |
 | Profiler | formal `engine` source | `engine/src/core/profiler.h:4-11,47-119`；`profiler.c:12-35` | Runtime facade 统一 frame/thread lifecycle，不伪称已有完整 cross-domain trace service |
-| PAL / Thread / Message Runtime Core | 尚无本文所述统一 facade | `engine/src/core/platform_thread.h:3-17` 仅提供 primitive wrapper；现有 network/PAL API 分散 | 设计目标；必须先有 focused contract tests，再实现正式 target |
-| Runtime 生命周期 coordinator | formal optional `runtime_core`（2026-10-22 交付骨架，未接入 engine/demo） | `engine/CMakeLists.txt` 顶层 `add_library(runtime_core STATIC src/runtime/runtime_coordinator.c)`，`ENGINE_BUILD_TESTS=OFF` 时可构建；头文件 `engine/src/runtime/runtime_types.h`、`engine/src/runtime/runtime_coordinator.h` | 状态机/admission/stop timeout-retry/sticky FAILED 已交付；message/queue/task、PAL/Thread facade 与真实子系统接入仍为设计目标 |
+| PAL / 统一 PAL facade | 尚无本文所述统一 PAL facade | `engine/src/core/platform_thread.h:3-17` 仅提供 primitive wrapper；现有 network/PAL API 分散 | 设计目标；必须先有 focused contract tests，再实现正式 target |
+| Runtime Core（coordinator + message/queue/task + thread/IO + reload/profiler） | formal optional `runtime_core`（2026-10-22/23 Tasks 3-6 交付，未接入 engine/demo） | `engine/CMakeLists.txt:345-356` 顶层 `add_library(runtime_core STATIC ...)`，共 8 个翻译单元，`ENGINE_BUILD_TESTS=OFF` 时可构建；头文件 `engine/src/runtime/runtime_types.h`、`runtime_coordinator.h`、`runtime_message.h`、`runtime_queue.h`、`runtime_task.h`、`runtime_thread.h`、`runtime_io.h`、`runtime_reload.h`、`runtime_profiler.h` | 状态机/admission/stop timeout-retry/sticky FAILED、owned message、bounded MPSC queue、formal task/thread/IO facade、reload coordinator 与 profiler bridge 已交付；PAL facade、mailbox 拓扑与真实子系统接入仍为设计目标 |
 
-`engine/CMakeLists.txt:3239-3249` 目前还把 `break_aoi.c`、`break_replication.c` 和 `break_replication_fragment.c` 放入 `break_net`，但这只在 Snowflake 开启时成立；该耦合不应成为最终 Runtime Core 的强制依赖。正式 target graph 应禁止“为了使用 ECS replication 而引入 Snowflake transport”。
+2026-10-22 的 target 拆分（Tasks 1-2）已把 `break_aoi.c`、`break_replication.c` 和 `break_replication_fragment.c` 收进非 Snowflake 的正式可选 `break_replication_core`（`engine/CMakeLists.txt:326-333`），`break_net`（`:362-377`）只含 adapter/protocol/envelope/message/registry/session 源并链接 `break_replication_core` + `snow::net`；使用 ECS replication 不再强制引入 Snowflake target。注意 `break_replication.h` 仍引用 `break_net_adapter.h`、`break_replication.c` 调用 `break_net_reactor_send`（符号由消费方最终链接解析，与 task/IO facade 同一先例），彻底的 transport 解耦仍属后续 integration 设计。
 
 ## 3. 目标架构
 
@@ -93,7 +93,7 @@ flowchart TB
 4. **Fragment**：transport-independent 的 fragment/reassembly 只拥有 metadata 和完整 payload，支持乱序、duplicate/conflict、checksum、reset/destroy；它不调用 Snowflake、不 enqueue、不 apply World。当前 checksum 是 FNV-1a 完整性检查，不是加密认证；timeout/eviction 必须由上层 scheduler 设计。
 5. **`break_net`/Session**：adapter callback 只验证、copy、enqueue；GameThread 才 poll event、推进 Session、调用 ECS/Lua/UI/RHI。`BreakNetReactor` 当前有 256 event 与 256 outbound capacity（`engine/src/network/break_net_adapter.h:39-63`），Session 是 GameThread-only 且 registry/reactor/handler 为 borrowed contract（`engine/src/network/break_session.h:64-95`）。正式化不改变这个线程纪律。
 
-Phase A 的 target 方向是拆出不依赖 Snowflake 的 `break_ecs_replication`（或等价正式库）与保留 Snowflake optional 的 `break_net`；具体 target 名称需在单独 implementation plan 中定案，本文不把未来 target 写成当前存在。
+Phase A 的 target 拆分已交付（2026-10-22，Tasks 1-2）：非 Snowflake 的正式可选 `break_ecs_replication` 与 `break_replication_core`，以及保留 Snowflake optional 的 `break_net`（独立于 `ENGINE_BUILD_TESTS`）；三者均为 `engine/CMakeLists.txt` 顶层目标且不链入 `engine`/`engine_demo`/`dxx_break`。迁入 `engine` 或 runtime/session 集成仍属后续 plan。
 
 ### 4.2 Phase B：Runtime Core
 
@@ -165,7 +165,7 @@ Runtime Core 的唯一 coordinator 发布全局状态：`CREATED -> STARTING -> 
 
 `break_net_reactor_stop(timeout_ms)` 超时保留 host thread/reactor 的现有 compatibility 语义；formal facade 通过 coordinator 映射到上述状态和错误，不改变 legacy API。
 
-**已交付事实（2026-10-22，Task 3）**：正式可选 static target `runtime_core`（`engine/CMakeLists.txt` 顶层，`ENGINE_BUILD_TESTS=OFF` 时可独立构建；`engine`、`engine_demo`、`dxx_break` 均不链接）现在提供上述全局状态机与唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h`（`BreakRuntimeError` 九类错误、`BreakRuntimeState` 全局状态）与 `engine/src/runtime/runtime_coordinator.h/.c`。已交付迁移：create→`CREATED`；`start` 完成 `CREATED -> STARTING -> RUNNING`；`stop` 从 `RUNNING` 依序驱动 `QUIESCING -> DRAINING -> STOPPING -> STOPPED`（subsystem bounded 表按 stop_admission → stop_producers → close_queues → drain → join → destroy 分阶段、按注册顺序执行）；callback 返回 `BREAK_RUNTIME_TIMEOUT` 时保留 live ownership 与当前 stop 状态、不释放资源，同一 coordinator 从 `STOPPING`（及 `QUIESCING`/`DRAINING`）retry 并精确恢复到超时 callback；`fail()` 从任意非终态发布 sticky `FAILED`，FAILED 对 admission sticky 且不重新开放。C11 枚举常量共享一个作用域，全局状态 `FAILED` 以 `BREAK_RUNTIME_STATE_FAILED` 拼写（序号位置与设计一致），错误类 `BREAK_RUNTIME_FAILED` 保持设计拼写。仍为设计-only：message/queue/task facade、PAL/Thread facade、真实 Network/IO/Task/Audio/RHI/Asset/HotReload 子系统接入，以及 coordinator 与 engine/demo runtime 的集成。
+**已交付事实（2026-10-22，Task 3）**：正式可选 static target `runtime_core`（`engine/CMakeLists.txt` 顶层，`ENGINE_BUILD_TESTS=OFF` 时可独立构建；`engine`、`engine_demo`、`dxx_break` 均不链接）现在提供上述全局状态机与唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h`（`BreakRuntimeError` 九类错误、`BreakRuntimeState` 全局状态）与 `engine/src/runtime/runtime_coordinator.h/.c`。已交付迁移：create→`CREATED`；`start` 完成 `CREATED -> STARTING -> RUNNING`；`stop` 从 `RUNNING` 依序驱动 `QUIESCING -> DRAINING -> STOPPING -> STOPPED`（subsystem bounded 表按 stop_admission → stop_producers → close_queues → drain → join → destroy 分阶段、按注册顺序执行）；callback 返回 `BREAK_RUNTIME_TIMEOUT` 时保留 live ownership 与当前 stop 状态、不释放资源，同一 coordinator 从 `STOPPING`（及 `QUIESCING`/`DRAINING`）retry 并精确恢复到超时 callback；`fail()` 从任意非终态发布 sticky `FAILED`，FAILED 对 admission sticky 且不重新开放。C11 枚举常量共享一个作用域，全局状态 `FAILED` 以 `BREAK_RUNTIME_STATE_FAILED` 拼写（序号位置与设计一致），错误类 `BREAK_RUNTIME_FAILED` 保持设计拼写。后续已交付：owned message、bounded MPSC queue 与 formal task facade（Task 4，见 `runtime_message_model.md` 文首与 `runtime_thread_model.md` §6.2）；formal thread 与 IO/VFS facade（Task 5，见 `runtime_thread_model.md` §5.3）；reload coordinator 与 profiler bridge（Task 6，见 `runtime_hot_reload.md` §2.3）。仍为设计-only：统一 PAL facade、mailbox 拓扑接线、真实 Network/IO/Task/Audio/RHI/Asset/HotReload 子系统接入 coordinator 子系统表，以及 coordinator 与 engine/demo runtime 的集成。Task 7（2026-10-23）的 normal/ASan+UBSan/TSan/fuzz/full-suite 验证证据见 `docs/Implementation_Status.md` 顶部条目。
 
 ## 8. 错误处理与安全边界
 

@@ -481,7 +481,7 @@ platform lane 尚未在本机验证；Snowflake per-context completion/drop noti
 
 ### ECS Snapshot / Replication / AoI 边界
 
-最新验证记录：`/tmp/break-final-current` 的 full CTest 共 181 项；该测试树主体已运行，但 5 个 fuzz smoke executable 未构建，因此 5 项为 `Not Run`，不能称为完整构建后的 full gate。已知无关失败为 `test_myui_text_layout` Hebrew boundary（`engine/tests/test_myui_text_layout.c:680`）和 `test_vulkan` golden drift（MAE 15.60/max 63；camera MAE 1.15/max 60）；Linux D3D12 dependency gate skipped。另有独立 fuzz smoke **5/5** 通过证据。fragment focused normal/ASan/TSan 均为 **7/7**，Snowflake replication focused normal/ASan/TSan 亦均为 **7/7**；这些 focused 结果来自已有 sanitizer build trees，不声称一次全新 clean rebuild。该证据确认 focused API 已实现及其测试边界，不等同于正式 engine runtime/session integration；后者另列边界，包括真实 Snowflake registration/socket-send E2E、Task 6 scheduler/close-event integration、Task 7 timeout/eviction chain、timeout/eviction 或 cryptographic authentication。fragment checksum 仍非加密认证。
+最新验证记录（2026-10-23，Task 7）：clean 构建树 `build-sdd-t7`（`-DBREAK_ENABLE_SNOWFLAKE=ON`，187 项注册测试）中 5 个 fuzz executable 全部显式构建，`ctest -L fuzz` **5/5**；完整构建后非 graphics/fuzz CTest 178 项入选：**177 通过、0 失败、1 platform skip**（`test_d3d12_dependency_gate`，Windows-only lane）。ASan+UBSan 树（`build-sdd-t7-asan`）与 TSan 树（`build-sdd-t7-tsan`）的 runtime/ecs/net focused lane 各 **16/16** 通过、无 sanitizer 报告。早期记录中的 `test_myui_text_layout` Hebrew boundary 失败本次未复现（该测试在 full run 中通过）；`test_vulkan` 带 graphics label，本轮未在本机执行。`test_break_replication_fragment` 在各 lane 均通过；它带有一条与本计划提交无关的间歇性 flake 记录（已在 ledger 停放）。该证据确认 focused API 与正式可选 target 已实现及其测试边界，不等同于正式 engine runtime/session integration；后者另列边界，包括真实 Snowflake registration/socket-send E2E、Task 6 scheduler/close-event integration、Task 7 timeout/eviction chain、timeout/eviction 或 cryptographic authentication。fragment checksum 仍非加密认证。
 
 ECS 的 GameThread 拥有可变 `World`；系统完成并进入结构屏障后，`world_snapshot.*` 才能深拷贝
 带 `(index,generation)` 身份的实体和已注册确定性 POD 组件。Snapshot build 不会自动建立
@@ -503,8 +503,7 @@ destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送�
 `break_ecs_replication_test` 只供测试使用并私有启用 `BREAK_WORLD_DELTA_TESTING=1`，生产库
 不包含 fault-injection hooks。两个 formal target 当前不加入 `engine`，`engine_demo`/`dxx_break`
 也不链接它们；这样 runtime/session owner 必须先定义 snapshot publication、authority 和线程
-生命周期边界。`break_net` 仅在 `ENGINE_BUILD_TESTS=ON && BREAK_ENABLE_SNOWFLAKE=ON` 时生成，
-并通过 `break_replication_core` 复用非 Snowflake 实现。timeout/eviction、checksum 的加密认证，
+生命周期边界。`break_net` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成（独立于 `ENGINE_BUILD_TESTS`），并通过链接 `break_replication_core` 复用非 Snowflake 实现。timeout/eviction、checksum 的加密认证，
 以及正式 runtime/session integration 仍是另列边界。
 完整边界、线程/生命周期 Mermaid 图和 future work 见
 [`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md)。

@@ -30,7 +30,7 @@
 
 ### 2.1 正式已有（当前 `engine` target 或已有公共基础设施）
 
-- `engine` static library 在 `engine/CMakeLists.txt:319-403` 已编入 `src/task/task.c`、`src/asset/vfs.c`、`src/core/profiler.c`、`src/network/network.c`、`src/network/packet.c`、`src/network/net_replication.c`、平台选择的 `net_loop` backend，以及 `src/platform/` 中的 input/config/time/filewatch/WSI 相关源；窗口后端由后续 `target_sources(engine ...)` 按平台加入。
+- `engine` static library 在 `engine/CMakeLists.txt:387-471` 已编入 `src/task/task.c`、`src/asset/vfs.c`、`src/core/profiler.c`、`src/network/network.c`、`src/network/packet.c`、`src/network/net_replication.c`、平台选择的 `net_loop` backend，以及 `src/platform/` 中的 input/config/time/filewatch/WSI 相关源；窗口后端由后续 `target_sources(engine ...)` 按平台加入。
 - 现有 `src/network/net_replication.c` 是 engine 内 UDP transform snapshot 路径，测试为 `test_net_replication`；它不是 focused ECS `break_replication` / `break_net` Session 路径，不得混称为同一 replication 合同。
 - `engine/src/task/task.h` 定义线程池、外部提交队列 `SUBMIT_QUEUE_CAPACITY == 256`、优先级、依赖 handle，并明确 `TaskSystem` 单进程单实例；worker task 不得调用 `task_wait()`/`task_wait_handle()`，否则自等待死锁。
 - `engine/src/network/net_loop.h` 提供 epoll/io_uring/kqueue/IOCP 选择的 readiness loop。除 `net_loop_wakeup()` 外，操作与 `wait()`/destroy 不能并发，且 loop-thread-affine。
@@ -38,23 +38,25 @@
 - `engine/src/core/profiler.h` 提供每帧 ring、最多 32 个 profiler thread track 和 Chrome trace/provenance 导出；这不是消息队列本身。
 - `engine/src/platform/platform.h` 的窗口、输入、IME、WSI 和 clipboard API 属于所属平台/主循环线程；跨线程调用须通过未来的 command message，不得直接调用。
 
-### 2.2 已有但 focused/test-only（不可称为正式 Runtime 集成）
+### 2.2 正式可选库（2026-10-22 Tasks 1-2 交付 target；仍不链入 `engine`/`engine_demo`/`dxx_break`，不等于正式 Runtime 集成）
+
+正式 target graph：`break_ecs_replication`（ECS schema/snapshot/delta + core logging，`engine/CMakeLists.txt:313-324`）、`break_replication_core`（AoI/replication/fragment，`:326-333`）、`break_net`（Snowflake-conditional，`:362-377`）。以下 API 描述不变：
 
 - `engine/src/ecs/replication_schema.{h,c}`：确定性 POD schema 注册、canonical component ID hash；registry 是初始化/GameThread-owned，非同步热路径。
 - `engine/src/ecs/world_snapshot.{h,c}`：GameThread 在结构屏障完成后构造拥有字节的不可变 snapshot；实体身份含 `(index,generation)`，无自动 barrier。
 - `engine/src/ecs/world_delta.{h,c}`：不可变 snapshot diff、base/schema/tick 验证、ECS-owned staging、final validation 和 atomic replace；失败时原 World 不变。
 - `engine/src/network/break_aoi.{h,c}`：空间网格、sphere/AABB witness、owner/dormant/relevancy、hysteresis 和确定性 `enter/stay/leave`。
-- `engine/src/network/break_replication.{h,c}`：Real/Ghost、baseline/dirty/destroy/dormant、带宽预算和 overload 后 retry。该路径依赖 `BreakNetReactor`，当前只随 `break_net`/focused tests 存在。
-- `engine/src/network/break_replication_fragment.{h,c}`：transport-independent 分片/重组，单次重组上限 `BREAK_REPLICATION_MAX_REASSEMBLY_SIZE == 16 MiB`，FNV-1a 完整性校验、乱序、精确 duplicate/conflict、owned 完整 payload、reset/destroy。
-- `engine/src/network/break_net_adapter.{h,c}`、`break_session.{h,c}` 及相关 protocol/message/event 文件：只在 `ENGINE_BUILD_TESTS=ON && BREAK_ENABLE_SNOWFLAKE=ON` 下生成 `break_net`；`engine_demo`/`dxx_break` 不链接它。adapter event/outbound queue 均为 256 项，Session manager 为 GameThread-only；真实 loopback 和 focused normal/ASan/TSan 证据见 `docs/design/snowflake_c11_adapter.md`、`docs/design/session_protocol.md`。
-- `engine/CMakeLists.txt:3165-3179` 将 ECS snapshot/schema/delta/AoI 直接编入 `test_ecs_replication`；`engine/CMakeLists.txt:3219-3233` 将 fragment 编为 test-only `break_replication_fragment`；`engine/CMakeLists.txt:3235-3283` 将 `break_net` 及其 Session/replication tests 限定在测试/Snowflake 条件下。
+- `engine/src/network/break_replication.{h,c}`：Real/Ghost、baseline/dirty/destroy/dormant、带宽预算和 overload 后 retry。该路径仍经 `BreakNetReactor` 发送（`break_replication.h` 引用 `break_net_adapter.h`，reactor 符号由消费方最终链接解析）；2026-10-22 起由正式可选 `break_replication_core` 承载。
+- `engine/src/network/break_replication_fragment.{h,c}`：transport-independent 分片/重组，单次重组上限 `BREAK_REPLICATION_MAX_REASSEMBLY_SIZE == 16 MiB`，FNV-1a 完整性校验、乱序、精确 duplicate/conflict、owned 完整 payload、reset/destroy。同属正式可选 `break_replication_core`。
+- `engine/src/network/break_net_adapter.{h,c}`、`break_session.{h,c}` 及相关 protocol/message/event 文件：`BREAK_ENABLE_SNOWFLAKE=ON` 即生成正式可选 `break_net`（独立于 `ENGINE_BUILD_TESTS`，链接 `break_replication_core` + `snow::net`）；`engine_demo`/`dxx_break` 不链接它。adapter event/outbound queue 均为 256 项，Session manager 为 GameThread-only；真实 loopback 和 focused normal/ASan/TSan 证据见 `docs/design/snowflake_c11_adapter.md`、`docs/design/session_protocol.md`。
+- `engine/CMakeLists.txt:3235-3258` 的 `break_ecs_replication_test` 仍以 fault-injection 宏（`BREAK_WORLD_DELTA_TESTING=1`）直接编译 ECS snapshot/schema/delta/AoI 源供 `test_ecs_replication`；`engine/CMakeLists.txt:3405-3412` 的 `test_break_replication_fragment` 链接正式 `break_replication_core`；`engine/CMakeLists.txt:3417-3444` 的 Snowflake 测试链接正式 `break_net`。
 
 ### 2.3 设计目标（本文件提出，当前未实现）
 
 - 消息类型 registry、per-kind byte budget、未知 kind/version 策略（envelope 与 owned/borrowed contract 已交付，见文首 Task 4 已交付事实）；
 - GameThread、Task workers、Network/IO、PAL/MainLoop、Profiler 之间的有界 mailbox 拓扑与接线（单队列基元已交付，mailbox 拓扑未接线）；
 - snapshot publication、delta apply、fragment timeout/eviction、Session 事件的正式 runtime service；
-- PAL/Thread/IO/VFS/Profiler Runtime Core facade 及其独立测试矩阵（Message/Queue/Task facade 已交付，其余仍为设计目标）。
+- PAL facade、mailbox 拓扑接线仍为设计目标；Message/Queue/Task facade 已交付（Task 4），Thread 与 IO/VFS facade 已交付（Task 5），reload coordinator 与 Profiler bridge 已交付（Task 6），各自带独立 focused 测试矩阵（见 `runtime_thread_model.md` §5.3/§6.2、`runtime_hot_reload.md` §2.3）。
 
 ## 3. 语言与 ABI 边界
 
@@ -115,15 +117,20 @@ Lua 是唯一计划中的 runtime scripting language（`docs/design/roadmap_2026
 engine (当前正式 C11 engine library)
   ├─ core/platform/task/asset/network 基础（已有）
   └─ [未来显式集成，需独立批准]
-       runtime_core (PAL/Thread/Task/Message/IO/VFS/Profiler contracts)
+       runtime_core (coordinator + Message/Queue/Task/Thread/IO/Reload/Profiler contracts)
           ├─ ecs_runtime_bridge (snapshot/schema/delta/AoI/replication)
           ├─ session_runtime_bridge (break_net/Session)
           └─ application/framework consumers (C++11)
 
-focused/test-only（当前）
-  test_ecs_replication -> snapshot/schema/delta/AoI sources
-  break_replication_fragment -> test_break_replication_fragment
-  break_net -> Snowflake + adapter/session/replication focused tests
+正式可选 targets（2026-10-22/23 Tasks 1-6 交付；不链入 engine/engine_demo/dxx_break）
+  break_ecs_replication -> snapshot/schema/delta sources（非 Snowflake）
+  break_replication_core -> AoI/replication/fragment sources（非 Snowflake）
+  break_net -> Snowflake + adapter/session sources（BREAK_ENABLE_SNOWFLAKE=ON）
+  runtime_core -> src/runtime/ 8 个翻译单元（engine/CMakeLists.txt:345-356）
+
+test-only 变体（fault-injection hooks，生产库不带）
+  break_ecs_replication_test (BREAK_WORLD_DELTA_TESTING=1) -> test_ecs_replication
+  runtime_core_test (BREAK_RUNTIME_TESTING=1) -> test_runtime_facade/io/reload
 ```
 
 关键规则：focused source 在实现正式 bridge 前不能移动进 `engine`，不能仅通过扩大 library source list 宣称完成。正式 target 必须有独立头文件依赖、link contract、normal/ASan/TSan 测试和 runtime/session E2E。
@@ -232,22 +239,22 @@ Runtime shutdown 由 `runtime_overview.md` 定义的唯一 Runtime coordinator �
 
 ## 7. 正式化顺序与接口方向
 
-### Phase A：先 formalize ECS/network boundary（未实现）
+### Phase A：先 formalize ECS/network boundary（target 拆分已交付 2026-10-22 Tasks 1-2；integration 仍未实现）
 
-1. 为 snapshot/schema/delta/AoI/replication/fragment 建立单独 formal library contract；保留现有 focused target 作为 RED/GREEN 回归，不直接删除。
-2. 决定 `break_net` 是否拆成不依赖 Snowflake 的 protocol/message/fragment library 与可选 Snowflake adapter；Session 继续 GameThread-only。
+1. 已交付：snapshot/schema/delta/AoI/replication/fragment 的单独 formal library contract——`break_ecs_replication` 与 `break_replication_core`（`engine/CMakeLists.txt:313-333`）；现有 focused target 保留为 RED/GREEN 回归，未删除。
+2. 已交付拆分：`break_replication_core` 为不依赖 Snowflake 的 policy/fragment 库；`break_net` 保留为可选 Snowflake adapter/session 库（链接 `break_replication_core` + `snow::net`）；Session 继续 GameThread-only。注意 `break_replication.h` 仍引用 `break_net_adapter.h`，reactor send 符号由消费方最终链接解析。
 3. 增加正式 publication service：GameThread publish owned snapshot，workers retain；明确 mutex/atomic publication 和 shutdown epoch。当前文档明确此 service 尚不存在。
 4. 增加 wire schema/tick/base fields 与 version negotiation；没有 schema negotiation 前不称为 production replication。
 5. 增加 fragment timeout/eviction scheduler；当前 reassembler 只支持 reset/destroy，无 timeout/eviction。
 
-### Phase B：Runtime Core foundation（未实现）
+### Phase B：Runtime Core foundation（部分交付 2026-10-22/23 Tasks 3-6）
 
-1. PAL/Thread contract：thread ID、mutex/cond、wakeup、deadline、owner assertions，复用 `engine/src/core/platform_thread.h` 语义但不暴露 OS type。
-2. Message registry/mailbox：固定容量、reserved control slots、per-kind byte budget、FIFO/priority 规则、sequence/correlation、owned release。
-3. Task bridge：只接受 immutable input handle 或 copied command，禁止跨 worker 访问 World；显式记录 submit/reject/completed。
-4. IO bridge：`net_loop`/VFS/async loader 的 completion 统一为 copied result；IO worker 不触碰 UI/ECS/Lua。
-5. VFS bridge：mount/read request 带 path length 和 128 MiB cap；PAK shared cursor 继续由 VFS owner lock 保护。
-6. Profiler bridge：每线程只写自身 recorder，flush/export 在 owner 线程；queue overload 不破坏 frame ring 或 trace JSON。
+1. PAL/Thread contract：Thread 已交付（Task 5 `runtime_thread.h/.c`：opaque handle、joinable lifecycle、bounded stop/timeout-retry，不暴露 OS type）；统一 PAL contract（time/deadline/platform capability）仍为设计目标。
+2. Message registry/mailbox：owned message 与 bounded MPSC queue 已交付（Task 4）；固定 registry、per-kind byte budget、mailbox 拓扑接线仍为设计目标。
+3. Task bridge：formal task facade 已交付（Task 4 `runtime_task.h/.c`，bounded pending queue、绝不 inline、owner drain 到借用 legacy TaskSystem）；worker 禁止跨域访问 World 的约束不变。
+4. IO bridge：`runtime_io.h/.c` 已交付（Task 5：借用 VFS、owned completion、deadline/shutdown 可打断 wait、非阻塞 OVERLOAD）；decode 队列/typed blob 仍为设计目标。
+5. VFS bridge：VFS 读取经 `runtime_io` 借用注入（128 MiB cap 沿用 `vfs.h`）；mount 管理进入 formal facade 仍为设计目标。
+6. Profiler bridge：`runtime_profiler.h/.c` 已交付（Task 6：任意线程 record、owner collect/export 经现有 `profiler_export_chrome_trace()`、bounded presentation window）；`engine/src/core/profiler.c` 未动。
 
 ### Phase C：Game/Application bridge（未实现）
 
@@ -313,7 +320,7 @@ C++11 framework 在 `Init/Tick/DeInit` 建立 runtime；每 tick 由 GameThread 
 - `docs/design/ecs_snapshot_replication_aoi.md:1-20,43-78,100-159`：snapshot/delta/schema/AoI/replication/fragment 的当前实现与未来边界。
 - `docs/design/session_protocol.md:1-19,21-84,174-237`：Session/adapter message ownership、256 queue、GameThread-only 和 wire lifecycle。
 - `docs/design/snowflake_c11_adapter.md:1-17,73-103,201-228`：Snowflake ownership、driver mode、bounded stop 和 failure cleanup。
-- `engine/CMakeLists.txt:319-403,3165-3283`：正式 `engine` source 与 focused/test-only target 的真实构建边界。
+- `engine/CMakeLists.txt:313-377,387-471,3235-3298,3405-3444`：正式 `engine` source、正式可选 targets 与 test-only 变体的真实构建边界。
 - `engine/src/ecs/{replication_schema.h,world_snapshot.h,world_delta.h}`：C11 snapshot/schema/delta API 方向。
 - `engine/src/network/{break_net_message.h,break_net_events.h,break_net_adapter.h,break_session.h,break_replication_fragment.h}`：owned/borrowed message、event/queue、Session、fragment API 证据。
 - `engine/src/task/task.h`, `engine/src/network/net_loop.h`, `engine/src/asset/vfs.h`, `engine/src/core/profiler.h`, `engine/src/core/platform_thread.h`：现有 Task/IO/VFS/Profiler/PAL基础约束。

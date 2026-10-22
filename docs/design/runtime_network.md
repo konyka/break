@@ -24,9 +24,9 @@
 
 ECS/network 新切片仍有明确边界：
 
-- `test_ecs_replication` 直接编译 `engine/src/ecs/ecs.c`、`replication_schema.c`、`world_snapshot.c`、`world_delta.c`、`break_aoi.c`；`engine` 静态库没有这些 snapshot/schema/delta/AoI 源。CMake 注释明确写着 formal runtime/session integration 尚未完成。
-- `break_replication_fragment` 是单独的静态 test-only library，只编译 `break_replication_fragment.c`；其 CMake 注释明确排除正式 runtime target graph。
-- `break_net` 仅在 `ENGINE_BUILD_TESTS=ON && BREAK_ENABLE_SNOWFLAKE=ON` 时生成，链接真实 `snow::net`；它包含 adapter、protocol/envelope/message/registry、Session、AoI、replication 和 fragment 源。`engine_demo`/`dxx_break` 当前不链接它。
+- `engine` 静态库没有 snapshot/schema/delta/AoI 源；2026-10-22 起它们由正式可选 `break_ecs_replication`（`engine/CMakeLists.txt:313-324`）承载。`test_ecs_replication` 改经 fault-injection 变体 `break_ecs_replication_test`（`:3235-3249`，`BREAK_WORLD_DELTA_TESTING=1`）编译这些源。formal runtime/session integration 仍未完成。
+- AoI/replication/fragment 由正式可选非 Snowflake `break_replication_core`（`:326-333`）承载；`test_break_replication_fragment`（`:3405-3412`）链接该正式库。
+- `break_net` 在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成（独立于 `ENGINE_BUILD_TESTS`），链接 `break_replication_core` 与真实 `snow::net`；它包含 adapter、protocol/envelope/message/registry 和 Session 源（`:362-377`）。`engine_demo`/`dxx_break` 当前不链接它。
 - `test_break_net_adapter`、`test_break_replication`、`test_break_session` 只在 Snowflake 条件满足时生成。`SNOWFLAKE_SOURCE_DIR` 缺失或没有 CMake target `snow::net` 时配置失败；没有替代 transport。
 
 因此，正式化的第一步不是“再加一个网络回调”，而是建立清晰的生产 library target 边界，并在不改变当前 focused 语义的前提下逐步接入。
@@ -99,7 +99,7 @@ publisher 必须明确 acquire/release 和 shutdown fence；不能返回无生�
 
 `engine/src/network/break_aoi.{h,c}` 当前提供 sphere/AABB witness、空间网格、owner/always-relevant/dormant flags、hysteresis 和确定性 `enter/stay/leave`。`break_replication.{h,c}` 当前维护 Real/Ghost、baseline/dirty/destroy/dormant，并按 bandwidth budget 尝试向 `BreakNetReactor` 发送；连接断开时由 replication owner 清理 Ghost。
 
-这些逻辑目前仍是 focused/test-only，且 replication header 直接引用 adapter。正式化时应拆为两层：
+这些逻辑自 2026-10-22 起由正式可选 `break_replication_core` 承载（不链入 `engine`/demo），但 replication header 仍直接引用 adapter（`break_replication.h` include `break_net_adapter.h`，reactor send 符号在消费方最终链接解析）。完整正式化仍应拆为两层：
 
 1. **transport-independent policy library**：AoI、scope diff、Real/Ghost 和 record scheduling 只产出 owned `BreakReplicationCommand`；不调用 Snowflake。
 2. **network bridge**：GameThread 消费 command，编码成 Session/Message envelope，再调用 Message/IO queue。
@@ -141,7 +141,7 @@ Session 不拥有 socket，不执行 blocking I/O，不从 handler 线程调用 
 
 ## 6. Runtime Core 接口方向
 
-Runtime Core 是 Stage 2 的后续实现目标，不是当前状态。每个模块先形成 C11 contract，再由 CMake 形成正式 target；focused targets 可以继续存在，但必须明确链接层级。
+Runtime Core 的首批 contract 已作为正式可选 `runtime_core` 交付（2026-10-22/23 Tasks 3-6：coordinator、owned message、bounded queue、task/thread/IO facade、reload coordinator、profiler bridge），但不链入 `engine`/demo；统一 PAL facade 与真实子系统接线仍是后续实现目标。每个模块先形成 C11 contract，再由 CMake 形成正式 target；focused targets 可以继续存在，但必须明确链接层级。
 
 ### 6.1 PAL / Thread
 
@@ -318,4 +318,4 @@ Stage 2 网络边界只有在以下条件同时满足后才能标记“formal ru
 8. **Lua/editor 依赖风险**：Lua facade、editor RPC、remote diagnostics 和 online update 尚未实现；网络设计只能提供 owned command 边界，不能提前承诺 gameplay/editor integration。
 9. **验证完整性风险**：已有 full CTest 记录包含未构建 fuzz smoke 和无关环境/图形失败；后续报告必须逐项说明“测试通过”“未构建”“跳过”或“与本改动无关”。
 
-**结论：**当前仓库已经有可验证的 ECS snapshot/replication 和 Snowflake adapter/Session focused contract，但它们尚未构成正式 runtime network。Stage 2 的第一交付是 target/ownership/queue/lifecycle 边界正式化；Runtime Core 的实现只能在该边界稳定并通过 normal/ASan/TSan 验收后开始。
+**结论：**当前仓库已经有可验证的 ECS snapshot/replication 和 Snowflake adapter/Session contract，target/ownership/queue/lifecycle 边界正式化已交付（2026-10-22 Tasks 1-2：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`），Runtime Core 首批 contract 也已交付（2026-10-22/23 Tasks 3-6 的 `runtime_core`）；但它们尚未构成正式 runtime network——各库均不链入 `engine`/`engine_demo`/`dxx_break`，GameThread 集成、snapshot publication、authority 与真实子系统接线仍属后续 plan。

@@ -46,7 +46,7 @@ Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scriptin
 
 ### 3.1 正式已有 target
 
-`engine/CMakeLists.txt:319-403` 的正式 `engine` static library 当前包含：
+`engine/CMakeLists.txt:387-471` 的正式 `engine` static library 当前包含：
 
 - `src/core/profiler.c`；
 - `src/platform/input.c`、`platform_config.c`、`time.c`、`filewatch.c` 等平台基础设施；
@@ -55,15 +55,15 @@ Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scriptin
 - `src/script/script.c`、`script_lua.c`；
 - 现有 `network.c`、`packet.c`、`net_replication.c`。
 
-因此 PAL/Task/IO/VFS/Profiler 的基础能力是**当前已有**，但本文建议的统一 Runtime Core coordinator、消息合同、线程 owner ledger 和跨 subsystem shutdown graph 仍是**设计目标**。2026-10-22 更新：生命周期 coordinator 骨架已作为正式可选 target `runtime_core` 交付（见 §7.1 已交付事实），仍不接入 `engine`/demo；消息合同、owner ledger 与 shutdown graph 的其余部分保持设计目标。
+因此 PAL/Task/IO/VFS/Profiler 的基础能力是**当前已有**，但本文建议的统一 Runtime Core coordinator、消息合同、线程 owner ledger 和跨 subsystem shutdown graph 仍是**设计目标**。2026-10-22/23 更新：正式可选 target `runtime_core` 已交付生命周期 coordinator（Task 3，见 §7.1）、owned message/bounded MPSC queue/formal task facade（Task 4，见 §6.2）、formal thread 与 IO/VFS facade（Task 5，见 §5.3）、reload coordinator 与 profiler bridge（Task 6，见 `runtime_hot_reload.md` §2.3），仍不接入 `engine`/demo；统一 PAL facade、owner ledger、mailbox 拓扑与真实子系统 shutdown graph 接线保持设计目标。
 
-`engine_demo` 与 `dxx_break` 分别在 `engine/CMakeLists.txt:1512-1514` 和 `:1161-1169` 链接正式 `engine`/UI/RHI；它们不是当前 ECS snapshot/session 集成的证据。
+`engine_demo` 与 `dxx_break` 分别在 `engine/CMakeLists.txt:1581` 和 `:1236` 链接正式 `engine`/UI/RHI；它们不是当前 ECS snapshot/session 集成的证据。
 
-### 3.2 focused/test-only target
+### 3.2 正式可选与 focused/test-only target
 
-`engine/CMakeLists.txt:3165-3179` 明确将 `test_ecs_replication` 的 `replication_schema.c`、`world_snapshot.c`、`world_delta.c` 和 `break_aoi.c` 直接编入测试 executable，并注明不在 `engine` static library。`engine/CMakeLists.txt:3219-3233` 把 `break_replication_fragment` 建成 test-only library。`engine/CMakeLists.txt:3235-3263` 的 `break_net` 只在 `BREAK_ENABLE_SNOWFLAKE=ON` 时生成，并链接真实 `snow::net`；`engine_demo`/`dxx_break` 不链接它。
+2026-10-22 的 target 正式化（Tasks 1-2）之后，下列能力已由 `engine/CMakeLists.txt` 顶层的正式可选 static library 承载，均不链入 `engine`/`engine_demo`/`dxx_break`：`break_ecs_replication`（`:313-324`，ECS schema/snapshot/delta + core logging）、`break_replication_core`（`:326-333`，AoI/replication/fragment）、`break_net`（`:362-377`，Snowflake-conditional，独立于 `ENGINE_BUILD_TESTS`，链接 `break_replication_core` 与真实 `snow::net`）。test-only 只剩 fault-injection 变体：`break_ecs_replication_test`（`:3235-3249`，私有 `BREAK_WORLD_DELTA_TESTING=1`，供 `test_ecs_replication`）与 `runtime_core_test`（`:3287-3298`，`BREAK_RUNTIME_TESTING=1`）；focused 测试改为链接正式库（`test_break_replication_fragment` `:3405-3412`；Snowflake 测试 `:3417-3444`）。
 
-所以以下都是**focused/test-only 当前已有**，不是正式 runtime：
+所以以下 API 是**正式可选库能力**（不等于已集成进 `engine`/demo runtime）：
 
 - `engine/src/ecs/replication_schema.*`：确定性 schema 注册/查找/hash；
 - `world_snapshot.*`：GameThread barrier 后的深拷贝、generation-aware entity、immutable snapshot；
@@ -211,7 +211,7 @@ Runtime Core 的全局状态（由唯一 Runtime coordinator 发布）统一为�
 
 超时返回 `TIMEOUT`，保留仍被引用的资源、队列和线程状态，不得强拆或 free；后续必须由同一 coordinator retry。不可恢复的启动/不变量/资源失败进入 sticky `FAILED`，保留诊断和安全清理路径，不得伪造 `RUNNING`。现有 Snowflake adapter 的 terminate -> host-exited deadline -> join -> destroy 只是 Network 子系统的局部动作，不能成为第二个 coordinator。
 
-**已交付事实（2026-10-22，Task 3）**：正式可选 target `runtime_core`（不链入 `engine`/`engine_demo`/`dxx_break`，`ENGINE_BUILD_TESTS=OFF` 可独立构建）交付了唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h` 定义统一 `BreakRuntimeError` 与全局 `BreakRuntimeState`（状态 `FAILED` 因 C11 枚举作用域拼写为 `BREAK_RUNTIME_STATE_FAILED`）；`engine/src/runtime/runtime_coordinator.h/.c` 实现 owner-thread-only（无 mutex）状态机、bounded subsystem callback 表（默认/上限 16，超限 `BREAK_RUNTIME_OVERLOAD`）、分阶段 shutdown 顺序（admission → producers → close → drain → join → destroy）、timeout 保留 live ownership 并可从 `STOPPING` retry 恢复、sticky `FAILED` admission 拒绝（`BREAK_RUNTIME_FAILED`）。线程域的 join/deadline 动作仍由各子系统 callback 自行完成（同 §7.1 规则）；真实 worker/adapter 接入、message/task/PAL facade 仍为设计目标。验证：`test_runtime_core` 9/9 + target contract，normal/ASan+UBSan/TSan 三树各 2/2。
+**已交付事实（2026-10-22，Task 3）**：正式可选 target `runtime_core`（不链入 `engine`/`engine_demo`/`dxx_break`，`ENGINE_BUILD_TESTS=OFF` 可独立构建）交付了唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h` 定义统一 `BreakRuntimeError` 与全局 `BreakRuntimeState`（状态 `FAILED` 因 C11 枚举作用域拼写为 `BREAK_RUNTIME_STATE_FAILED`）；`engine/src/runtime/runtime_coordinator.h/.c` 实现 owner-thread-only（无 mutex）状态机、bounded subsystem callback 表（默认/上限 16，超限 `BREAK_RUNTIME_OVERLOAD`）、分阶段 shutdown 顺序（admission → producers → close → drain → join → destroy）、timeout 保留 live ownership 并可从 `STOPPING` retry 恢复、sticky `FAILED` admission 拒绝（`BREAK_RUNTIME_FAILED`）。线程域的 join/deadline 动作仍由各子系统 callback 自行完成（同 §7.1 规则）；真实 worker/adapter 接入 coordinator 子系统表仍为设计目标（message/queue/task/thread/IO/reload/profiler facade 已陆续交付，见 §5.3/§6.2 已交付事实）。验证：`test_runtime_core` 9/9 + target contract，normal/ASan+UBSan/TSan 三树各 2/2。
 
 ### 7.2 失败分类
 
@@ -261,7 +261,7 @@ Stage 2 每一项实现必须先有 focused RED/GREEN test，再决定 source pr
 
 ## 9. 未实现与未决风险
 
-1. **Target promotion 尚未发生**：ECS snapshot/schema/delta/AoI/replication/fragment 仍不是正式 `engine` library contract；`break_net`/Session 仍是 Snowflake 条件 focused integration。
+1. **Target promotion 已发生但未接入 engine**：ECS snapshot/schema/delta/AoI/replication/fragment 已由正式可选 `break_ecs_replication`/`break_replication_core` 承载，`break_net`/Session 是 Snowflake 条件正式可选 target（均不链入 `engine`/`engine_demo`/`dxx_break`）；它们仍不是 `engine` static library 的组成部分，runtime/session integration 与 publication/authority/线程生命周期边界仍待后续 plan。
 2. **Snapshot publication service 未实现**：当前没有 mutex-protected current-snapshot service、epoch reclamation 或统一 owner handoff；调用者必须自行 retain 当前 snapshot。
 3. **Fragment timeout/eviction 未实现**：没有 scheduler、deadline、最大并发 assembly 或网络断线清理链；16 MiB 是内存上限，不是生命周期上限。
 4. **协议与安全未实现**：schema negotiation、wire schema/tick fields、cryptographic authentication、authority handoff、prediction/rollback、player authentication backend 均不属于当前 runtime。
@@ -281,7 +281,7 @@ Stage 2 每一项实现必须先有 focused RED/GREEN test，再决定 source pr
 - **Slice E — formal ECS/network integration**：snapshot store、fragment timeout/eviction scheduler、Session/replication Game owner coordinator；端到端验证后才允许正式 target claim。
 - **Slice F — consumers**：Lua facade、editor command routing、asset/hot reload 和后续 security/network features 按各自设计文档依赖上述合同。
 
-在 Slice A-E 完成且验收证据齐全前，本文中的 Runtime Core、正式 ECS/network integration 和完整 Stage 2 都必须保持“设计目标/未实现”标记。
+Slice A 的 target 边界与 Slice B/C/D 的首批基元已交付（2026-10-22/23 Tasks 1-6：正式可选 `break_ecs_replication`/`break_replication_core`/`break_net`/`runtime_core`，含 coordinator、owned message、bounded queue、task/thread/IO facade、reload coordinator、profiler bridge；均不链入 `engine`/demo）。在 Slice E（formal ECS/network integration）与 Slice F（consumers）完成且验收证据齐全前，本文中的 Runtime Core 集成与完整 Stage 2 仍必须保持“设计目标/未实现”标记。
 
 ## 附录 A：与原始需求 12 线程域表的对照（2026-10-22）
 
