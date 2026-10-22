@@ -2925,7 +2925,7 @@ endif()
     if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         add_executable(test_rhi_metal_device_contract
             tests/test_rhi_metal_device_contract.c tests/metal_test_layer.m
-            ${RHI_CORE_SOURCES} src/core/log.c)
+            ${RHI_CORE_SOURCES} src/core/log.c src/core/shader_io.c)
         target_include_directories(test_rhi_metal_device_contract PRIVATE
             ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_rhi_metal_device_contract PRIVATE
@@ -2949,7 +2949,7 @@ endif()
         # offscreen-layer and direct-RHI_CORE_SOURCES pattern as above.
         add_executable(test_rhi_metal_frame_lifecycle
             tests/test_rhi_metal_frame_lifecycle.c tests/metal_test_layer.m
-            ${RHI_CORE_SOURCES} src/core/log.c)
+            ${RHI_CORE_SOURCES} src/core/log.c src/core/shader_io.c)
         target_include_directories(test_rhi_metal_frame_lifecycle PRIVATE
             ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_rhi_metal_frame_lifecycle PRIVATE

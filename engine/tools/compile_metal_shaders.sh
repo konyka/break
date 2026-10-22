@@ -188,10 +188,11 @@ process_one() {
 
 for src in "$SHADER_DIR"/*_vk.vert; do  [ -e "$src" ] || continue; process_one "$src" vert vertex; done
 for src in "$SHADER_DIR"/*_vk.frag; do  [ -e "$src" ] || continue; process_one "$src" frag fragment; done
-# Compute shaders are shared GLSL (no _vk infix); *_gl.comp are the GL variants.
+# Compute shaders are shared GLSL (no _vk infix); *_gl.comp are the GL variants
+# and *_hlsl.comp are D3D12 HLSL sidecars (not GLSL, glslc cannot compile them).
 for src in "$SHADER_DIR"/*.comp; do
     [ -e "$src" ] || continue
-    case "$src" in *_gl.comp) continue ;; esac
+    case "$src" in *_gl.comp|*_hlsl.comp) continue ;; esac
     process_one "$src" comp kernel
 done
 # Shared-source graphics shaders used by the Vulkan path without a _vk
