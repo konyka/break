@@ -26,7 +26,9 @@ foreach(runtime_src
         src/runtime/runtime_queue.c
         src/runtime/runtime_task.c
         src/runtime/runtime_thread.c
-        src/runtime/runtime_io.c)
+        src/runtime/runtime_io.c
+        src/runtime/runtime_reload.c
+        src/runtime/runtime_profiler.c)
     string(FIND "${cmake_text}" "${runtime_src}" runtime_src_pos)
     if(runtime_src_pos LESS runtime_core_pos OR runtime_src_pos GREATER engine_target_pos)
         message(FATAL_ERROR "${runtime_src} is not owned by runtime_core")
@@ -58,6 +60,15 @@ if(NOT cmake_text MATCHES "add_executable\\(test_runtime_io tests/test_runtime_i
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_runtime_io PRIVATE runtime_core_test")
     message(FATAL_ERROR "test_runtime_io does not link runtime_core_test")
+endif()
+
+# The reload/profiler focused test links the test-only variant (hooked)
+# rather than the production target.
+if(NOT cmake_text MATCHES "add_executable\\(test_runtime_reload tests/test_runtime_reload.c")
+    message(FATAL_ERROR "missing test_runtime_reload executable")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_runtime_reload PRIVATE runtime_core_test")
+    message(FATAL_ERROR "test_runtime_reload does not link runtime_core_test")
 endif()
 
 message(STATUS "runtime_core target contract passed")

@@ -334,19 +334,23 @@ target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
 # Formal optional Runtime Core library: unified error/lifecycle types, the
 # single-owner lifecycle coordinator, the formal message/queue/task facade,
-# and the formal thread + IO/VFS facades. Top-level like the other formal
-# optional libraries — built regardless of ENGINE_BUILD_TESTS, and
-# deliberately NOT linked into engine, engine_demo, or dxx_break; consumers
-# opt in explicitly in later tasks. runtime_io.c references the borrowed VFS
-# (vfs_*) and runtime_task.c the legacy TaskSystem (task_*): both resolve at
-# the consumer's final link, exactly like the task facade precedent.
+# the formal thread + IO/VFS facades, and the reload coordinator + profiler
+# bridge. Top-level like the other formal optional libraries — built
+# regardless of ENGINE_BUILD_TESTS, and deliberately NOT linked into engine,
+# engine_demo, or dxx_break; consumers opt in explicitly in later tasks.
+# runtime_io.c/runtime_reload.c reference the borrowed VFS (vfs_*),
+# runtime_task.c the legacy TaskSystem (task_*), and runtime_profiler.c the
+# existing profiler singleton (profiler_*) + time_microseconds: all resolve
+# at the consumer's final link, exactly like the task facade precedent.
 add_library(runtime_core STATIC
     src/runtime/runtime_coordinator.c
     src/runtime/runtime_message.c
     src/runtime/runtime_queue.c
     src/runtime/runtime_task.c
     src/runtime/runtime_thread.c
-    src/runtime/runtime_io.c)
+    src/runtime/runtime_io.c
+    src/runtime/runtime_reload.c
+    src/runtime/runtime_profiler.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3285,7 +3289,9 @@ endif()
         src/runtime/runtime_queue.c
         src/runtime/runtime_task.c
         src/runtime/runtime_thread.c
-        src/runtime/runtime_io.c)
+        src/runtime/runtime_io.c
+        src/runtime/runtime_reload.c
+        src/runtime/runtime_profiler.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3330,6 +3336,32 @@ endif()
     target_link_libraries(test_runtime_io PRIVATE runtime_core_test)
     add_test(NAME test_runtime_io COMMAND test_runtime_io)
     set_tests_properties(test_runtime_io PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Reload coordinator + profiler bridge focused tests (Task 6). vfs.c,
+    # log.c, profiler.c and time.c are compiled beside the test: the
+    # coordinator reads through a borrowed VFS and the profiler bridge hands
+    # off to the existing profiler singleton — both resolve at this final
+    # link (same pattern as test_runtime_io). The compatibility
+    # filewatch.c/hotreload.c are NOT compiled here and stay unchanged; the
+    # only seams are break_runtime_reload_notify_file_event() and the
+    # owner-thread commit hook.
+    add_executable(test_runtime_reload tests/test_runtime_reload.c
+        src/asset/vfs.c src/core/log.c src/core/profiler.c src/platform/time.c)
+    target_include_directories(test_runtime_reload PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_reload PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_reload PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_reload PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_reload PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_reload PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_reload PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_reload COMMAND test_runtime_reload)
+    set_tests_properties(test_runtime_reload PROPERTIES
         LABELS "headless;runtime_core")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c

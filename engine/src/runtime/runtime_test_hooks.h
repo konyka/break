@@ -39,6 +39,19 @@ extern _Atomic u64 g_break_runtime_test_io_popped;
  * in runtime_io.c (test variant); a no-op safe call before init. */
 void break_runtime_test_io_set_gates(u32 gate_pop, u32 gate_read);
 
+/* Reload coordinator worker gates (defined in runtime_reload.c, test variant
+ * only). gate_claim != 0: workers block BEFORE claiming from the pending ring
+ * (the request stays QUEUED). gate_load != 0: workers block AFTER claiming
+ * (QUEUED->LOADING) and BEFORE the VFS read. 0 disables each gate. */
+extern _Atomic u32 g_break_runtime_test_reload_gate_claim;
+extern _Atomic u32 g_break_runtime_test_reload_gate_load;
+/* Number of requests workers have claimed (QUEUED->LOADING). */
+extern _Atomic u64 g_break_runtime_test_reload_popped;
+
+/* Sets both gates and wakes gated workers when a gate is released. Defined
+ * in runtime_reload.c (test variant); a no-op safe call before create. */
+void break_runtime_test_reload_set_gates(u32 gate_claim, u32 gate_load);
+
 static inline void break_runtime_test_set_forward_fail_budget(u64 budget)
 {
     atomic_store_explicit(&g_break_runtime_test_forward_fail_budget, budget,

@@ -40,6 +40,19 @@
 
 因此，Stage 2 的第一道门不是“让 hot reload 直接调用这些 API”，而是先决定哪些 focused 源成为正式库、哪些继续 test-only，并给正式库补 target、ABI、生命周期和 sanitizer 证据。本文的 Runtime Core 只消费正式合同；在该门通过前不得声称网络 session 热重载已集成。
 
+### 2.3 Runtime Core Task 6 已交付事实（2026-10-23）
+
+以下事实由代码与测试证据支持，其余部分仍为设计目标：
+
+- 正式可选 `runtime_core` static target（仍不链入 `engine`/`engine_demo`/`dxx_break`，`ENGINE_BUILD_TESTS=OFF` 可独立构建）新增两个翻译单元：`engine/src/runtime/runtime_reload.h/.c`（热重载 coordinator）与 `engine/src/runtime/runtime_profiler.h/.c`（profiler 桥接）。公共 API 只有 opaque `BreakRuntimeReload *`、u64+generation `BreakRuntimeReloadRequest`（0 非法，高 32 位为 slot generation）与 opaque `BreakRuntimeProfiler *`；无 World*/Archetype*/Chunk*/OS 线程句柄/Lua VM/RHI 句柄。
+- **Reload 状态机**：brief 状态枚举逐字交付（`LOADING/VALIDATING/COMMITTED/FAILED_KEEP_OLD/CANCELLED/TIMEOUT/OOM`）。worker 线程经借用 VFS 读入 owned staging copy（16 MiB 预算，超限 → `FAILED_KEEP_OLD`），纯 validate hook 在 worker 上运行，commit hook 只在 owner 线程的 `break_runtime_reload_commit_owner()` 内运行；load/validate/commit 失败均 `FAILED_KEEP_OLD`（旧版本保持服务）。每个 request 恰好一次 terminal completion：poll 对非终态非消费、对终态消费并释放 slot（同 handle 再 poll/cancel → `STALE`）。
+- **Coalescing 与 backpressure**：`break_runtime_reload_notify_file_event()` 是 FileWatch 唯一接缝（任意线程、复制路径、有界去重 hint 队列；同 path 合并计入 `events_coalesced`，新 path 满队列 → 非阻塞 `OVERLOAD`）；owner 线程 `pump_events` 把 hint 转为 request，同 asset 在飞时 head-of-line 延迟（`events_deferred`），在飞期间不覆盖旧 staging；request 层同 path 合并（`merged`）；request 准入为 live 计数 + pending ring 物理占用双闸门，满 → 非阻塞 `OVERLOAD`；commit 队列有界，满 → 该 request 落 `FAILED_KEEP_OLD`（`commit_overloads`），worker 不阻塞、不覆盖 live entry。
+- **cancel/timeout/OOM/shutdown**：cancel 无分配路径（不可能半取消），QUEUED/LOADING/VALIDATING → `CANCELLED`（bump publication epoch，worker 迟到结果按 stale epoch 丢弃并计数 `stale_drops`）；已 CANCELLED 幂等 OK；owner 正在 commit（COMMITTING）或已有真实终态 → `REJECTED`；`request_timeout_ms` 处理 deadline 在 load 前检查 → `TIMEOUT`；staging 分配失败 → `OOM` 终态；`shutdown(timeout_ms)` 关闭 admission（→`CLOSED`）、把 QUEUED/LOADING/VALIDATING 全部 finalize 为 `CANCELLED`（terminal 态跨 shutdown 可 poll）、有界 stop/join worker，超时返回 `TIMEOUT` 保留 live ownership 可重试；`destroy` 要求已 STOPPED（test 构建 fail-stop abort）。
+- **Profiler 桥接**：`break_runtime_profiler_record()` 任意线程、不分配、不等容量、不跑 callback（有界 ring + 短 mutex），在调用点捕获 `profiler_current_tid()` 与微秒时间戳，满 → `OVERLOAD` 计数丢弃；owner/collector 线程 `collect()` 把事件移入有界 presentation window（满则丢弃计数，不覆盖 live entry），`export_meta()` 借用 window 填充 `ProfilerMetaInstant` 交给现有 `profiler_export_chrome_trace()`。`engine/src/core/profiler.c` 逐字节未动，现有 consumer 行为不变；span 记录仍由录制线程直接 `profiler_push/pop`（桥不在 collector 重放 span，避免排队延迟失真）。
+- **现有 filewatch/hotreload 集成边界**：`filewatch.c`/`hotreload.c` 零改动；集成只靠消费者把 filewatch callback 接到 `notify_file_event()`、把 swap 逻辑放进 owner 线程 commit hook。端到端 watch→commit 接线（真实 watcher 驱动 coordinator）仍是设计目标。
+- **Lua**：本任务无 Lua VM；Lua module reload 的 staging VM/版本保留策略属 Stage 3 依赖（见 §3.3、§9）。validate/commit hook 是当前唯一 staging 面。
+- 验证：`test_runtime_reload` 30/30（coalescing、双闸门 overload、commit 队列 overload、failed-keep-old 三lane、stale generation、cancel 各相位、timeout、OOM 注入、shutdown/timeout 重试、owner-thread 强制、fork 子进程 destroy 合约 abort、profiler record/collect/export/多线程交接/close），normal/ASan+UBSan/TSan 三树（`build-sdd-t6*`）全绿；生产 `runtime_core` nm 验证 0 个 test-hook 符号。报告：`.superpowers/sdd/2026-10-22-runtime-core-formalization/task-6-report.md`。
+
 ## 3. 语言、层次和边界
 
 ### 3.1 C11 Runtime Core
@@ -226,8 +239,8 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 
 | 主题 | 当前已有 | focused/test-only | 设计目标 | 仍未实现 |
 |---|---|---|---|---|
-| 文件监视 | `FileWatcher`、递归 `FileWatch`、Linux inotify/macOS kqueue/FSEvents/Windows API | `test_hotreload` 直接编译 watcher/hotreload 源 | watcher 只发 bounded hint，coordinator 去重并可 rescan | 可靠跨平台 event journal、统一 overflow contract |
-| Shader/texture reload | 开发期 pipeline/texture callback；失败保留旧对象 | `test_hotreload` 使用 RHI stubs | staging + owner commit + GPU fence + versioned registry | 多线程 RHI-safe swap、依赖图、生产资源 registry |
+| 文件监视 | `FileWatcher`、递归 `FileWatch`、Linux inotify/macOS kqueue/FSEvents/Windows API；Runtime Core reload coordinator 已交付有界去重 hint 接缝 `break_runtime_reload_notify_file_event()`（Task 6，可选库） | `test_hotreload` 直接编译 watcher/hotreload 源 | watcher 只发 bounded hint，coordinator 去重并可 rescan；真实 watcher → coordinator 的端到端接线仍未做 | 可靠跨平台 event journal、统一 overflow contract |
+| Shader/texture reload | 开发期 pipeline/texture callback；失败保留旧对象；Runtime Core reload coordinator 已交付 staging→validate→owner-commit 状态机（failed-keep-old、cancel/timeout/OOM、恰好一次 completion，Task 6，可选库） | `test_hotreload` 使用 RHI stubs；`test_runtime_reload` 用 probe hook 验证 owner-thread commit | staging + owner commit + GPU fence + versioned registry | 多线程 RHI-safe swap、依赖图、生产资源 registry |
 | VFS/IO | DIR/PAK、128 MiB file cap、async loader、range/priority | `test_vfs`、`test_async_loader` 等专项 target | IO/decoder/commit 分离，统一 backpressure/cancel | Runtime Core IO facade、跨域 cancellation contract |
 | Task | C11 worker pool、work stealing、submit 256、单实例 | `test_task`/TSan lanes | reload job class、bounded submit result、可观测 cancellation | reload-specific scheduler policy |
 | ECS snapshot/schema/delta/AoI | focused API 已实现、GameThread ownership | `test_ecs_replication` 直接编译 focused 源 | 正式 library target 后接入 immutable version publication | formal runtime integration、schema negotiation/epoch |
