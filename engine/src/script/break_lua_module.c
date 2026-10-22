@@ -127,8 +127,11 @@ static void break_lua_module_capture_error(lua_State *L,
  * table, compile the candidate source as a text chunk, and execute it.
  * Errors from luaL_loadbufferx are returned, not thrown; chunk execution
  * errors propagate to the wrapper pcall (see file header). On success the
- * only registry reference (the staged environment) is taken last. */
-static void break_lua_stage_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
+ * only registry reference (the staged environment) is taken last. The
+ * environment's globals resolve to the Task 4 whitelist sandbox (never the
+ * base global table): see break_lua_binding.c. */
+static void break_lua_stage_impl(lua_State *L, BreakLuaRuntime *runtime,
+                                 BreakLuaModuleOpCtx *ctx)
 {
     int base = lua_gettop(L);
     int load_status;
@@ -150,10 +153,7 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     }
 
     lua_newtable(L);                                       /* [state env] */
-    lua_newtable(L);                                       /* [state env mt] */
-    lua_pushglobaltable(L);                                /* [state env mt G] */
-    lua_setfield(L, -2, "__index");                        /* [state env mt] */
-    lua_setmetatable(L, -2);                               /* [state env] */
+    break_lua_sandbox_wire_env(L, runtime);                /* [state env] */
     lua_pushliteral(L, "state");
     lua_pushvalue(L, -3);                            /* [state env "state" state] */
     lua_rawset(L, -3);                                     /* [state env] */
@@ -230,7 +230,7 @@ static int break_lua_op_dispatch(lua_State *L)
     }
     switch (hdr->op) {
     case BREAK_LUA_OP_STAGE:
-        break_lua_stage_impl(L, (BreakLuaModuleOpCtx *)hdr);
+        break_lua_stage_impl(L, runtime, (BreakLuaModuleOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_COMMIT:
         break_lua_commit_impl(L, (BreakLuaModuleOpCtx *)hdr);

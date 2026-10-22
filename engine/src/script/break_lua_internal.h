@@ -1,9 +1,9 @@
 #pragma once
 
 /* Internal to the break_lua library: shared by break_lua_runtime.c,
- * break_lua_module.c, and break_lua_value.c. NOT public ABI — never
- * installed for consumers, never included by public headers. The public
- * surface stays break_lua.h alone. */
+ * break_lua_module.c, break_lua_value.c, and break_lua_binding.c. NOT
+ * public ABI — never installed for consumers, never included by public
+ * headers. The public surface stays break_lua.h alone. */
 
 #include <script/break_lua.h>
 
@@ -39,6 +39,15 @@ typedef struct BreakLuaFrameError {
     char message[128];     /* truncated Lua error text */
 } BreakLuaFrameError;
 
+/* One bound config entry (Task 4). The value is clamped to
+ * [min_value, max_value] at bind time; scripts read `value` verbatim. */
+typedef struct BreakLuaConfigSlot {
+    char key[BREAK_LUA_MAX_CONFIG_KEY_BYTES]; /* NUL-terminated */
+    double min_value;
+    double max_value;
+    double value; /* clamped initial */
+} BreakLuaConfigSlot;
+
 struct BreakLuaRuntime {
     lua_State *L;
     PlatformThreadId owner;
@@ -54,6 +63,14 @@ struct BreakLuaRuntime {
     u64 frame_error_total;   /* lifetime count of frame hook faults */
     bool budget_tripped;     /* set by the budget hook callback while armed */
     BreakLuaFrameError last_frame_error;
+    /* Task 4: host bindings and sandbox. sandbox_ref names the per-runtime
+     * whitelist table (registry-held, never script-reachable); batch is a
+     * BORROWED host object (never owned, never pushed into Lua); configs is
+     * a lazily allocated owned array of BREAK_LUA_MAX_CONFIG_BINDINGS slots. */
+    int sandbox_ref;
+    BreakLuaEcsBatch *batch;      /* borrowed; NULL until bound */
+    BreakLuaConfigSlot *configs;  /* owned; NULL until first bind_config */
+    u32 config_count;
 };
 
 /* Protected op dispatch (shared by module load/reload, calls, and frame
@@ -164,3 +181,22 @@ void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
 void break_lua_test_reloader_impl(lua_State *L,
                                   BreakLuaTestReloaderOpCtx *ctx);
 #endif
+
+/* break_lua_binding.c internals consumed by the other library TUs (Task 4).
+ */
+
+/* Builds the registry-held binding/sandbox structures (os-subset table,
+ * break impl tables, read-through proxies, whitelist table) and stores the
+ * whitelist in runtime->sandbox_ref. Called from the create bootstrap
+ * wrapper, i.e. already under lua_pcall: allocations here longjmp safely. */
+void break_lua_binding_bootstrap(lua_State *L, BreakLuaRuntime *runtime);
+
+/* Wires the fresh module environment on the top of the stack to the
+ * sandbox: metatable __index -> whitelist table, plus `_G` naming the
+ * environment itself. Runs inside the staging op (pcall-protected). */
+void break_lua_sandbox_wire_env(lua_State *L, BreakLuaRuntime *runtime);
+
+/* Pure C teardown (no Lua API): releases the borrowed batch binding (clears
+ * the batch's back-pointer; the batch itself stays host-owned) and frees
+ * the config store. Safe to run immediately before lua_close. */
+void break_lua_binding_shutdown(BreakLuaRuntime *runtime);

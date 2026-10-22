@@ -484,7 +484,8 @@ void break_lua_test_reloader_impl(lua_State *L,
     ctx->hdr.status = BREAK_LUA_OK;
 }
 
-/* Test-only binding that simulates the Task 4 script-triggered reload path:
+/* Test-only binding that simulates a script-triggered reload path (the
+ * production `break.*` surface deliberately exposes no reload binding):
  * installs `_test_reload_now()` into the named module's environment. Pure
  * admission checks mirror load_module's; the install itself runs under the
  * shared protected op dispatch. */

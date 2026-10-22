@@ -125,12 +125,12 @@ bool break_lua_test_module_hooks_disabled(BreakLuaRuntime *runtime,
 
 /* Installs the test-only `_test_reload_now()` binding into the named live
  * module's environment: when Lua code calls it, the runtime reloads
- * `target_module` with the given source. This simulates the Task 4
- * script-triggered reload path so the Task 3 frame snapshot semantics
- * (pinned environments survive a mid-dispatch reload) are exercisable
- * before script bindings exist. Error surface mirrors load_module's
- * admission checks (INVALID shapes, OVERLOAD bytes, STALE unknown module,
- * REJECTED non-owner). */
+ * `target_module` with the given source. This simulates a script-triggered
+ * reload path (the production `break.*` surface has no reload binding) so
+ * the Task 3 frame snapshot semantics (pinned environments survive a
+ * mid-dispatch reload) are exercisable without one. Error surface mirrors
+ * load_module's admission checks (INVALID shapes, OVERLOAD bytes, STALE
+ * unknown module, REJECTED non-owner). */
 BreakLuaError break_lua_test_install_reloader(BreakLuaRuntime *runtime,
                                               const char *module_name,
                                               const char *target_module,

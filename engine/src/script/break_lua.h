@@ -18,12 +18,15 @@
  *  break_lua_runtime_check_owner() is the documented probe; owner-only query
  *  APIs return BREAK_LUA_REJECTED from any other thread.
  *
- *  SANDBOX STATUS (unchanged through Task 3): the owned state is created with the Lua
- *  standard libraries opened (luaL_openlibs), so `os`/`io` are present on the
- *  global environment, and module environments currently inherit them via
- *  metatable fallback. Per-module environments with a whitelisted global set
- *  (no io / no os.execute / no raw host access) are Task 4 scope; scripts
- *  have no host-surface bindings yet at all (also Task 4).
+ *  SANDBOX STATUS (delivered in Task 4): the owned state is created with the
+ *  Lua standard libraries opened (luaL_openlibs) on the BASE global table,
+ *  but module environments never see that table: every module chunk runs in
+ *  a per-module environment whose metatable __index resolves to a fixed
+ *  WHITELIST (see HOST BINDINGS AND SANDBOX below) — no io, no os.execute,
+ *  no raw coroutine, no debug/package/load* — and the script-visible `break`
+ *  table chain is read-only. Scripts reach the host exclusively through the
+ *  bounded `break.ecs.*` / `break.config.*` surface; no raw host handle
+ *  (World, RHI, physics, network, OS thread) is ever reachable from Lua.
  *
  *  Error taxonomy (mirrors the Stage 2 runtime_core shape):
  *    BREAK_LUA_OK        — success.
@@ -122,8 +125,9 @@ const char *break_lua_error_name(BreakLuaError error);
  *  bounded check that never reads past that many bytes). Loading compiles
  *  and executes the source as a TEXT chunk (binary/bytecode chunks are
  *  rejected by the loader) in a fresh per-module environment whose globals
- *  resolve to the runtime's base environment (a whitelisted sandbox is
- *  Task 4 scope). The environment carries a `state` global naming the
+ *  resolve to the runtime's fixed whitelist sandbox (see HOST BINDINGS AND
+ *  SANDBOX below; the base global table is never reachable from modules).
+ *  The environment carries a `state` global naming the
  *  module's persistent state table; the chunk's own globals are private to
  *  the environment and NEVER survive a reload, while the state table
  *  persists by identity across reloads (contents preserved). A chunk that
@@ -227,9 +231,9 @@ BreakLuaError break_lua_runtime_reload_module(
  *
  *  CALL CONTRACT (break_lua_runtime_call): the target function must be a
  *  RAW field of the module's live environment (i.e. defined by the chunk
- *  itself); names that would only resolve through the environment
- *  metatable's _G fallback (e.g. stdlib globals like tostring) do NOT
- *  resolve and answer INVALID. Check order, all bounded:
+ *  itself); names that only resolve through the environment metatable's
+ *  whitelist fallback (e.g. stdlib globals like tostring) do NOT resolve
+ *  and answer INVALID. Check order, all bounded:
  *    - NULL runtime, NULL/empty/overlong module or function name (same
  *      128-byte cap as module names), NULL args with arg_count > 0, NULL
  *      returns with return_capacity > 0 -> BREAK_LUA_INVALID. Malformed
@@ -278,9 +282,10 @@ BreakLuaError break_lua_runtime_reload_module(
  *  table alive — and the new environment serves from the next dispatch; a
  *  module disabled at capture stays skipped for the whole dispatch even if
  *  reloaded mid-dispatch. Reload can only re-enter mid-dispatch through
- *  Lua-visible bindings (Task 4 scope; exercised in tests via a test-only
- *  binding); the host calling reload between begin_frame and end_frame sees
- *  each dispatch snapshot independently.
+ *  Lua-visible bindings; the production `break.*` surface (Task 4)
+ *  deliberately exposes no reload binding, so the path is exercised in
+ *  tests via a test-only binding. The host calling reload between
+ *  begin_frame and end_frame sees each dispatch snapshot independently.
  *
  *  HOOK ERROR POLICY: every hook invocation runs under its own lua_pcall.
  *  A failing hook produces a bounded error record in the runtime (module
@@ -294,20 +299,17 @@ BreakLuaError break_lua_runtime_reload_module(
  *  every hook invocation runs under a per-invocation Lua count hook
  *  (lua_sethook LUA_MASKCOUNT); budgets above 2^31-1 are clamped to
  *  2^31-1 instructions. The accounting is per hook invocation, NOT
- *  cumulative across modules or frames. KNOWN LIMIT (pinned by review,
- *  fixed by the Task 4 sandbox): Lua 5.4 hooks are per-coroutine — the
- *  budget covers the MAIN coroutine only. Nested Lua execution on the main
- *  coroutine (pcall chains, the test-only reloader, etc.) counts toward the
- *  armed budget, but a coroutine created at chunk-load time (hook mask 0)
- *  resumed inside a budgeted hook runs uncounted, and a coroutine created
- *  inside a budgeted hook inherits the mask with a FRESH full countdown
- *  (lstate.c: lua_newthread -> resethookcount). Module environments
- *  currently inherit the base globals (including `coroutine`), so a module
- *  could burn unbounded instructions per frame despite the budget; the
- *  Task 4 sandbox closes this by not exposing raw `coroutine` to module
- *  environments (or exposing a budget-preserving wrapper) — recorded as a
- *  Task 4 acceptance checkbox in the plan. Exceeding the budget aborts the
- *  hook with an error: the fault is recorded like any hook error (with a
+ *  cumulative across modules or frames. COROUTINE SCOPE (the Task 3 review
+ *  limit, closed by the Task 4 sandbox): Lua 5.4 hooks are per-coroutine —
+ *  a raw `coroutine` global would let a module escape the armed count
+ *  (lstate.c: lua_newthread -> resethookcount gives a fresh thread a fresh
+ *  countdown, and a load-time thread carries hook mask 0). Module
+ *  environments therefore do NOT expose `coroutine` at all (see HOST
+ *  BINDINGS AND SANDBOX below): module code can only ever run on the main
+ *  coroutine, so every nested Lua execution inside a budgeted hook (pcall
+ *  chains, the test-only reloader, the break.ecs/break.config closures,
+ *  etc.) counts toward the same armed budget. Exceeding the budget aborts
+ *  the hook with an error: the fault is recorded like any hook error (with a
  *  budget flag) and the module is MARKED — its frame hooks are skipped on
  *  subsequent dispatches until the next committed reload clears the mark
  *  (a fail-closed, deterministic runaway-module policy). Other modules are
@@ -353,3 +355,214 @@ void break_lua_runtime_begin_frame(BreakLuaRuntime *runtime, double delta_second
 /* Dispatches on_frame_end() exactly like begin_frame dispatches
  * on_frame_begin. */
 void break_lua_runtime_end_frame(BreakLuaRuntime *runtime);
+
+/* ==========================================================================
+ *  Host bindings and module sandbox (Task 4): bounded ECS batch commands,
+ *  clamped config reads, and the whitelisted module environment.
+ *
+ *  SECURITY BOUNDARY (acceptance criterion): scripts cannot reach raw
+ *  RHI/physics/network handles — no World pointer exists anywhere in
+ *  break_lua, and no host pointer of any kind is ever pushed into the Lua
+ *  state. The ONLY host contact surface is the script-visible `break` table
+ *  chain described below; the bound batch pointer lives in C registry-side
+ *  storage (the runtime struct) and is never reachable from Lua (no
+ *  lightuserdata, no userdata — the `break` chain enumerates to nothing and
+ *  contains only proxy tables and C closures).
+ *
+ *  MODULE SANDBOX: every module chunk executes in a fresh per-module
+ *  environment whose metatable __index resolves to a fixed per-runtime
+ *  WHITELIST table (built once at create, held in the Lua registry — itself
+ *  never script-reachable). Whitelisted globals:
+ *    - base functions: assert, error, ipairs, pairs, pcall, xpcall, select,
+ *      tonumber, tostring, type, print; plus the _VERSION string;
+ *    - libraries (exposed through read-through proxies, see below):
+ *      string, table, math, utf8 (full tables);
+ *    - os SUBSET: exactly os.clock / os.time / os.date (a rebuilt table;
+ *      os.execute, os.exit, os.remove, os.rename, os.getenv, os.setlocale,
+ *      os.tmpname are absent);
+ *    - the `break` table (below) — registered under the literal name
+ *      "break" AND under the alias `brk` naming the SAME proxy: `break` is
+ *      a reserved Lua keyword, so the design brief's literal
+ *      `break.ecs.spawn()` is not spellable Lua syntax; scripts write
+ *      `brk.ecs.spawn()` (or `_G["break"].ecs.spawn()`). Both names resolve
+ *      to one identical read-only table;
+ *    - env._G names the module's own environment (standard sandbox idiom).
+ *  ABSENT by construction (the whitelist never copies them): io, debug,
+ *  package, require, coroutine, load, loadstring, loadfile, dofile,
+ *  collectgarbage, warn, unpack, next, rawget, rawset, rawequal, rawlen,
+ *  setmetatable, getmetatable. load/dofile/loadfile/loadstring are DROPPED
+ *  entirely (not restricted): modules are host-fed source only, so no
+ *  script-side chunk compilation path exists to police. Raw-access and
+ *  metatable-mutating base functions are deliberately excluded: they are
+ *  the only Lua-side paths that could shadow a read-through proxy's fields,
+ *  so without them the proxies below are unforgeable from scripts.
+ *  `coroutine` is dropped because Lua 5.4 count hooks are per-coroutine and
+ *  a resumed thread would escape the Task 3 instruction budget (lstate.c:
+ *  lua_newthread -> resethookcount); with no `coroutine` global, all module
+ *  execution stays on the main coroutine and inside the armed budget.
+ *
+ *  READ-ONLY TABLES: every script-visible binding/stdlib table (the `break`
+ *  chain, string/table/math/utf8, the os subset) is a per-runtime
+ *  read-through PROXY: an empty table whose metatable __index names the
+ *  registry-held implementation table and whose __newindex raises
+ *  ("attempted to mutate a read-only table"), with a locked metatable.
+ *  Assignment (`break.ecs.spawn = f`) raises a bounded Lua error; with
+ *  rawset/setmetatable absent from the whitelist there is no script path
+ *  around the guard, and a module cannot poison a sibling module's stdlib.
+ *  pairs() over a proxy yields nothing (it is raw-empty).
+ *
+ *  ECS BATCH: BreakLuaEcsBatch is an opaque HOST-OWNED bounded FIFO command
+ *  buffer, created and destroyed by the host (break_lua_ecs_batch_create /
+ *  break_lua_ecs_batch_destroy) and BORROWED by a runtime through
+ *  break_lua_runtime_bind_ecs_batch. Scripts enqueue command records via
+ *  break.ecs.spawn() / break.ecs.set(component, field, value); the host
+ *  drains them with break_lua_ecs_batch_drain. The facade NEVER applies
+ *  records anywhere: no World pointer exists in break_lua, application is
+ *  entirely the host's business. Enqueue never blocks: a full batch makes
+ *  the script call return (false, "break.ecs: batch full") — a Lua-visible
+ *  bounded failure, not an error, not a wait.
+ *    - Script argument validation runs BEFORE the batch is consulted and is
+ *      the same bounded (false, message) failure: component/field must be
+ *      strings of 1..BREAK_LUA_ECS_NAME_CAPACITY-1 bytes; the value must be
+ *      a number, a boolean, or a string of at most
+ *      BREAK_LUA_ECS_VALUE_STRING_CAPACITY-1 bytes; anything else is
+ *      rejected and nothing is enqueued.
+ *    - break.ecs.spawn() enqueues a BREAK_LUA_ECS_RECORD_SPAWN record
+ *      (payload zeroed, value_type BREAK_LUA_ECS_VALUE_NONE) and returns
+ *      true; break.ecs.set(...) enqueues BREAK_LUA_ECS_RECORD_SET.
+ *    - With no batch bound, both return (false, "break.ecs: no batch
+ *      bound"); the argument shapes are still validated first.
+ *
+ *  RECORD FORMAT (the drain wire format): BreakLuaEcsRecord is fixed-size
+ *  POD — a u16 kind (BREAK_LUA_ECS_RECORD_*) plus a bounded payload: u16
+ *  value_type (BREAK_LUA_ECS_VALUE_*; NONE for SPAWN), NUL-terminated
+ *  component/field names bounded to BREAK_LUA_ECS_NAME_CAPACITY bytes
+ *  including the terminator (zeroed for SPAWN), and a value union (f64 /
+ *  bool / bounded NUL-terminated string of at most
+ *  BREAK_LUA_ECS_VALUE_STRING_CAPACITY - 1 payload bytes). Drain copies
+ *  records verbatim in FIFO order.
+ *
+ *  CONFIG: break_lua_runtime_bind_config registers a batch of
+ *  {key, min, max, initial} entries; break.config.get(key) returns the
+ *  stored value as a Lua number. Values are clamped to [min, max] AT BIND
+ *  TIME (initial out of range -> the clamped bound is stored), so script
+ *  reads always observe an in-range value. Unknown or malformed keys return
+ *  (nil, message); no script-visible failure raises. Dynamic host-side
+ *  updates are out of scope for this task: bound values are fixed until
+ *  destroy.
+ *
+ *  ERROR SURFACES (all bounded; owner thread is checked FIRST, before any
+ *  shape check, on every API):
+ *    - break_lua_ecs_batch_create: capacity 0 -> default
+ *      BREAK_LUA_ECS_BATCH_DEFAULT_CAPACITY; capacity above
+ *      BREAK_LUA_ECS_BATCH_MAX_CAPACITY or a capacity*sizeof(record)
+ *      multiply that would overflow size_t -> NULL (INVALID class,
+ *      fail-closed); allocation failure -> NULL (OOM class).
+ *    - break_lua_ecs_batch_destroy: NULL is a no-op; owner-thread-only —
+ *      a non-owner destroy is a contract violation (test builds fail-stop
+ *      abort; production ignores the call). Double destroy (or a foreign
+ *      pointer) is a contract violation: test builds fail-stop with a
+ *      diagnostic abort before freeing; production behavior is undefined.
+ *    - break_lua_ecs_batch_drain: returns the number of records copied
+ *      (FIFO); NULL batch, NULL out_records, or zero capacity -> 0; a
+ *      non-owner call -> 0 (bounded no-op, the batch is untouched). The
+ *      batch owner thread is the thread that created it.
+ *    - break_lua_runtime_bind_ecs_batch: NULL runtime/batch -> INVALID;
+ *      non-owner (of the runtime OR the batch) -> REJECTED; runtime already
+ *      has a batch bound, or the batch is already bound to a runtime ->
+ *      REJECTED (binding is one-to-one and one-shot for the runtime's
+ *      lifetime; runtime destroy releases the binding, the batch stays
+ *      host-owned). No Lua state is touched.
+ *    - break_lua_runtime_bind_config: entry_count 0 -> OK no-op (entries may
+ *      be NULL); NULL entries with entry_count > 0 -> INVALID; entry_count
+ *      above BREAK_LUA_MAX_CONFIG_BINDINGS, or a cumulative count that
+ *      would exceed it -> OVERLOAD; per entry: NULL/empty key or a key of
+ *      BREAK_LUA_MAX_CONFIG_KEY_BYTES or more bytes -> INVALID; NaN
+ *      min/max/initial or min > max -> INVALID; a duplicate key (within the
+ *      call or against already-bound keys) -> REJECTED; store allocation
+ *      failure -> OOM. Validation is all-or-nothing: a rejected call
+ *      registers nothing. No Lua state is touched.
+ * ========================================================================== */
+
+typedef struct BreakLuaEcsBatch BreakLuaEcsBatch;   /* opaque; host-drained */
+
+/* Batch capacity bounds (records). create(0) selects the default. */
+#define BREAK_LUA_ECS_BATCH_DEFAULT_CAPACITY 256u
+#define BREAK_LUA_ECS_BATCH_MAX_CAPACITY 4096u
+
+/* Bounded record payload: component/field names and string values,
+ * INCLUDING their NUL terminators (largest payload is capacity - 1). */
+#define BREAK_LUA_ECS_NAME_CAPACITY 64u
+#define BREAK_LUA_ECS_VALUE_STRING_CAPACITY 64u
+
+/* Record kinds (BreakLuaEcsRecord.kind). */
+typedef enum BreakLuaEcsRecordKind {
+    BREAK_LUA_ECS_RECORD_SPAWN = 1,
+    BREAK_LUA_ECS_RECORD_SET = 2
+} BreakLuaEcsRecordKind;
+
+/* Value tags (BreakLuaEcsRecord.value_type). */
+typedef enum BreakLuaEcsValueKind {
+    BREAK_LUA_ECS_VALUE_NONE = 0,
+    BREAK_LUA_ECS_VALUE_NUMBER = 1,
+    BREAK_LUA_ECS_VALUE_BOOL = 2,
+    BREAK_LUA_ECS_VALUE_STRING = 3
+} BreakLuaEcsValueKind;
+
+/* One drained command record: kind u16 + bounded payload (see RECORD FORMAT
+ * above). Fixed-size POD; drain copies records verbatim. */
+typedef struct BreakLuaEcsRecord {
+    u16 kind;        /* BreakLuaEcsRecordKind */
+    u16 value_type;  /* BreakLuaEcsValueKind (NONE for SPAWN) */
+    char component[BREAK_LUA_ECS_NAME_CAPACITY]; /* SET; zeroed for SPAWN */
+    char field[BREAK_LUA_ECS_NAME_CAPACITY];     /* SET; zeroed for SPAWN */
+    union {
+        f64 n;                                   /* VALUE_NUMBER */
+        bool b;                                  /* VALUE_BOOL */
+        struct {
+            char data[BREAK_LUA_ECS_VALUE_STRING_CAPACITY];
+            u32 len; /* payload bytes, excluding the NUL terminator */
+        } s;                                     /* VALUE_STRING */
+    } value;
+} BreakLuaEcsRecord;
+
+/* Creates a host-owned batch of `capacity` records (0 -> default capacity).
+ * The calling thread becomes the batch owner. See ERROR SURFACES above. */
+BreakLuaEcsBatch *break_lua_ecs_batch_create(usize capacity);
+
+/* Destroys a batch. NULL is a no-op. Owner-thread-only; see ERROR SURFACES.
+ * Destroying a still-bound batch is legal: the binding is released first
+ * (the runtime then answers scripts with "no batch bound"). */
+void break_lua_ecs_batch_destroy(BreakLuaEcsBatch *batch);
+
+/* Copies up to `capacity` oldest records (FIFO) into out_records and removes
+ * them from the batch; returns the number copied. See ERROR SURFACES. */
+usize break_lua_ecs_batch_drain(BreakLuaEcsBatch *batch,
+                                BreakLuaEcsRecord *out_records,
+                                usize capacity);
+
+/* Borrows the host-owned batch into the runtime: break.ecs.spawn/set calls
+ * from modules enqueue into it until runtime destroy (or batch destroy).
+ * Owner-thread-only. See ERROR SURFACES above. */
+BreakLuaError break_lua_runtime_bind_ecs_batch(
+    BreakLuaRuntime *runtime, BreakLuaEcsBatch *batch);   /* borrowed host object */
+
+/* Hard ceiling for the total number of bound config entries per runtime,
+ * and the bounded key scan cap (a key of this many bytes or more is
+ * INVALID). */
+#define BREAK_LUA_MAX_CONFIG_BINDINGS 256u
+#define BREAK_LUA_MAX_CONFIG_KEY_BYTES 128u
+
+typedef struct BreakLuaConfigBinding {
+    const char *key;          /* borrowed */
+    double min_value;
+    double max_value;
+    double initial_value;
+} BreakLuaConfigBinding;
+
+/* Registers `entry_count` config entries (all-or-nothing validation; values
+ * clamped to [min, max] at bind time). Owner-thread-only. See ERROR
+ * SURFACES above. */
+BreakLuaError break_lua_runtime_bind_config(
+    BreakLuaRuntime *runtime, const BreakLuaConfigBinding *entries,
+    usize entry_count);

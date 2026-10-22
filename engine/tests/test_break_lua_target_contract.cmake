@@ -32,6 +32,7 @@ endif()
 string(FIND "${cmake_text}" "src/script/break_lua_runtime.c" runtime_src_pos)
 string(FIND "${cmake_text}" "src/script/break_lua_module.c" module_src_pos)
 string(FIND "${cmake_text}" "src/script/break_lua_value.c" value_src_pos)
+string(FIND "${cmake_text}" "src/script/break_lua_binding.c" binding_src_pos)
 string(FIND "${cmake_text}" "add_library(stb_truetype STATIC" stb_pos)
 if(runtime_src_pos LESS break_lua_pos OR
    (stb_pos GREATER break_lua_pos AND runtime_src_pos GREATER stb_pos))
@@ -44,6 +45,10 @@ endif()
 if(value_src_pos LESS break_lua_pos OR
    (stb_pos GREATER break_lua_pos AND value_src_pos GREATER stb_pos))
     message(FATAL_ERROR "src/script/break_lua_value.c is not owned by break_lua")
+endif()
+if(binding_src_pos LESS break_lua_pos OR
+   (stb_pos GREATER break_lua_pos AND binding_src_pos GREATER stb_pos))
+    message(FATAL_ERROR "src/script/break_lua_binding.c is not owned by break_lua")
 endif()
 
 # ...linking the vendored Lua target PUBLIC.
@@ -63,8 +68,8 @@ endforeach()
 
 # The focused test links the test-only variant (BREAK_LUA_TESTING=1 hooks)
 # rather than the production target; the production archive stays hook-free.
-# The variant compiles the same three translation units.
-if(NOT cmake_text MATCHES "add_library\\(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c")
+# The variant compiles the same four translation units.
+if(NOT cmake_text MATCHES "add_library\\(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c src/script/break_lua_binding.c")
     message(FATAL_ERROR "missing test-only break_lua_test variant over all break_lua sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_lua_test PRIVATE BREAK_LUA_TESTING=1")
@@ -87,6 +92,12 @@ if(NOT cmake_text MATCHES "add_executable\\(test_break_lua_value tests/test_brea
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_break_lua_value PRIVATE break_lua_test")
     message(FATAL_ERROR "test_break_lua_value does not link break_lua_test")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_break_lua_binding tests/test_break_lua_binding.c")
+    message(FATAL_ERROR "missing test_break_lua_binding executable")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_break_lua_binding PRIVATE break_lua_test")
+    message(FATAL_ERROR "test_break_lua_binding does not link break_lua_test")
 endif()
 
 message(STATUS "break_lua target contract passed")

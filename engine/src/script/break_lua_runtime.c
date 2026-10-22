@@ -17,8 +17,9 @@
  * struct BreakLuaRuntime and the registry slots live in the library-internal
  * header break_lua_internal.h); Task 3 added value marshalling, module
  * calls, and frame hooks (break_lua_value.c) consuming the recorded caps;
- * host bindings land in Task 4. The config caps are recorded here so those
- * paths enforce them without re-validation. */
+ * Task 4 adds host bindings and the module sandbox (break_lua_binding.c).
+ * The config caps are recorded here so those paths enforce them without
+ * re-validation. */
 
 #if defined(BREAK_LUA_TESTING)
 
@@ -126,6 +127,11 @@ static int break_lua_bootstrap_wrapper(lua_State *L)
     BreakLuaRuntime *runtime = (BreakLuaRuntime *)lua_touserdata(L, 1);
     luaL_openlibs(L);
     break_lua_op_bootstrap(L, runtime);
+    /* Task 4: build the registry-held binding/sandbox graph (whitelist
+     * table, read-through proxies, break impl chain) in the same protected
+     * bootstrap. Module environments never see the base global table that
+     * luaL_openlibs populated. */
+    break_lua_binding_bootstrap(L, runtime);
     return 0;
 }
 
@@ -195,6 +201,7 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
     }
     runtime->module_count = 0u;
     runtime->op_ref = LUA_NOREF;
+    runtime->sandbox_ref = LUA_NOREF;
 
     runtime->L = lua_newstate(break_lua_alloc, runtime);
     if (!runtime->L) {
@@ -203,10 +210,12 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
         return NULL;
     }
     /* Standard libraries opened on the owned state, under protection so an
-     * allocation failure here fails closed instead of panicking. Per-module
-     * sandboxed environments are Task 4 scope. The bootstrap also registers
-     * the protected op dispatch closure used by load/reload (Task 2) and by
-     * calls/frame hooks (Task 3). */
+     * allocation failure here fails closed instead of panicking. The base
+     * global table they populate is never exposed to modules: Task 4 module
+     * environments resolve globals through the whitelist sandbox built by
+     * the same bootstrap. The bootstrap also registers the protected op
+     * dispatch closure used by load/reload (Task 2) and by calls/frame
+     * hooks (Task 3). */
     lua_pushcfunction(runtime->L, break_lua_bootstrap_wrapper);
     lua_pushlightuserdata(runtime->L, runtime);
     if (lua_pcall(runtime->L, 1, 0, 0) != LUA_OK) {
@@ -241,6 +250,7 @@ void break_lua_runtime_destroy(BreakLuaRuntime *runtime)
         abort();
     }
 #endif
+    break_lua_binding_shutdown(runtime); /* Task 4: pure C, runs before close */
     break_lua_module_registry_destroy(runtime);
     lua_close(runtime->L);
     free(runtime);
