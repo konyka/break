@@ -1,6 +1,26 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R665 — 更正「NEAREST 采样无人使用」的结论（仅文档）
+
+### 更正
+R662–R664 的几处记录把 D3D12 丢弃 sampler 参数的后果写成「NEAREST 请求被当成双线性，今天没有场景受影响」，依据是只查了 `deferred.c`（着色器用 `Load()`）和 `gpucull.c`/`occlusion_cull.c`（计算着色器）。这个结论不完整，核对后还有两处真实的使用方，在 D3D12 上都**静默无效**：
+
+1. **`T` 键切换纹理过滤**：`main.c` 的 `nearest_filter` 在按键时翻转，`active_sampler` 取 `render.nearest_sampler`，传给 `terrain_render`。D3D12 上无论按不按，地形都是 LINEAR。
+2. **UI 图片控件的 `scale_filter`**：`my_image` 通过 `my_vgcanvas_set_scale_filter` 把 `MY_SCALE_FILTER_NEAREST` 传到 `my_vgcanvas_break_rhi.c`，后者选 `nearest_sampler` 绑定图片批次。D3D12 上图片缩放始终是双线性（控件默认就是 BILINEAR，所以默认画面不受影响；只有显式要像素风缩放的使用者会看到差别）。
+
+另外 `my_vgcanvas_break_rhi.c` 的 `capabilities.scale_filters` 声明了同时支持 NEAREST 和 BILINEAR，在 D3D12 后端上这个能力声明与实际行为不符。
+
+### 为什么这一轮不修
+真正的修法是 sampler 描述符表：CPU 端 sampler 堆（现在 `rhi_sampler_create` 写进的是着色器可见堆，不能作为拷贝源）、每条管线根签名里一张带多个 range 的 sampler 表（一张表只占 1 个 DWORD，但各 range 在堆里必须连续）、绘制前把当前 sampler 拷进着色器可见堆的环形区、管线切换与计算管线后的重新绑定，并且要按帧在途分区。它还会让引擎里每个 pass 在 D3D12 上**第一次**使用调用方真正指定的 sampler（R662 的按管线类型 CLAMP/WRAP 只是近似），影响面是整个渲染器；而收益是一个调试热键和一个默认关闭的控件选项。没有可视化回归对照就动全局，不划算。
+
+### 不引入的权宜做法
+给 `RHIPipelineDesc` 加一个「静态采样器用 NEAREST」的提示、再让调用方为这两处各建一条管线变体：能立刻让两处生效，但会往共享 API 里加一个将来要拆掉的字段，并且 GL/VK 要特意忽略它，所以不做。
+
+### 建议
+- 若要正式支持：做上面的 sampler 描述符表，并在同一轮里用 demo 前向/延迟截图对照 + 全套 WARP/RTX 像素测试做回归。
+- 在那之前，`my_vgcanvas_break_rhi.c` 在 D3D12 上应只声明 BILINEAR，这样上层的能力查询是诚实的（尚未改动，涉及 UI 库的能力位语义，需要单独评估）。
+
 ## 本轮更新：R664 — D3D12 对 no_vertex_input 管线不再做背面剔除
 
 ### 问题
