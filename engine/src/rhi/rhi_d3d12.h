@@ -238,6 +238,13 @@ typedef struct RHI_D3D12Texture {
      * instead of a 2D-array one, and rhi_d3d12_live_cube accepts the handle. */
     UINT is_cube;
     D3D12_RESOURCE_STATES state;
+    /* R653: per-mip states while a compute pass works mip by mip (the Hi-Z
+     * pyramid: one mip read as an SRV while the next ones are written as
+     * UAVs). mip_split == 0 means every mip is in `state`; otherwise
+     * mip_state[m] is authoritative and any whole-resource use first brings
+     * every mip back to one state (rhi_d3d12_tex_unify). */
+    UINT mip_split;
+    D3D12_RESOURCE_STATES mip_state[16];
 } RHI_D3D12Texture;
 
 typedef struct RHI_D3D12Sampler {

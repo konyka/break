@@ -17,6 +17,7 @@
 #include <renderer/point_shadow.h>
 #include <renderer/particles.h>
 #include <renderer/gpucull.h>
+#include <renderer/occlusion_cull.h>
 #include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
@@ -9152,6 +9153,138 @@ TEST(gpu_cull_sidecars_flag_compact_and_read_back) {
     gpucull_shutdown(&gc);
 }
 
+/* R653: the Hi-Z pyramid and the occlusion test on D3D12, through the real
+ * OcclusionCullSystem. A 40x24 "scene depth" (R32_FLOAT, texel (x, y) =
+ * (x + 3y) / 128 + 0.1, except a 0.05 near blocker over x < 20) is reduced
+ * into the 20x12 pyramid: five mips (20x6... see r653_mips), so TWO chunks
+ * of dispatches -- the second one reads mip 3 back through
+ * rhi_cmd_bind_texture_mip. Every texel of every mip must equal a CPU
+ * replay of the same chunked reduction, with the R436 rule that the last
+ * row/column of a mip absorbs the input remainder. Then the occlusion pass, identity VP:
+ *  - object 0, a small box in front of the blocker but behind its depth
+ *    (window z 0.5 > 0.05): occluded;
+ *  - object 1, the same box over the right half where the stored depth is
+ *    far: visible;
+ *  - object 2, entirely outside the NDC cube: culled.
+ * The visibility comes back through the staging readback on the next frame,
+ * which also exercises rhi_cmd_copy_buffer -> READBACK twin. */
+static float r653_depth(int x, int y) {
+    return x < 20 ? 0.05f : (float)(x + 3 * y) / 128.0f + 0.1f;
+}
+static float r653_reduce(const float *src, int sw, int sh, int x0, int y0, int x1, int y1) {
+    float m = 0.0f;
+    int x, y;
+    (void)sh;
+    for (y = y0; y < y1; ++y)
+        for (x = x0; x < x1; ++x)
+            if (src[y * sw + x] > m) m = src[y * sw + x];
+    return m;
+}
+TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction) {
+    static float depth[40 * 24];
+    static float want[20 * 12 + 10 * 6 + 5 * 3 + 2 * 1 + 1];
+    static float got[20 * 12 + 10 * 6 + 5 * 3 + 2 * 1 + 1];
+    static OcclusionCullSystem oc;
+    static const int lv_w[5] = { 20, 10, 5, 2, 1 }, lv_h[5] = { 12, 6, 3, 1, 1 };
+    int lv_off[5] = { 0, 240, 300, 315, 317 };
+    ObjectAABB boxes[3];
+    RHITextureDesc td;
+    RHITexture scene;
+    RHIShader cs;
+    RHIPipelineDesc pd;
+    RHIPipeline probe;
+    RHIBufferDesc bd;
+    RHIBuffer out;
+    RHICmdBuffer *cmd;
+    Mat4 vp;
+    int x, y, m, frame;
+    r643_mark();
+    for (y = 0; y < 24; ++y)
+        for (x = 0; x < 40; ++x) depth[y * 40 + x] = r653_depth(x, y);
+    /* CPU replay of occlusion_cull_generate_hi_z: chunk 0 (mips 0..3) reads
+     * the scene depth, chunk 1 (mip 4) reads mip 3; mip k of a chunk covers
+     * a 2^(k+1) block of the chunk input, last row/col taking the rest. */
+    for (m = 0; m < 5; ++m) {
+        int first = m < 4 ? 0 : 4, k = m - first, R = 2 << k;
+        const float *in = first == 0 ? depth : &want[lv_off[3]];
+        int iw = first == 0 ? 40 : lv_w[3], ih = first == 0 ? 24 : lv_h[3];
+        int w = lv_w[m], h = lv_h[m];
+        for (y = 0; y < h; ++y)
+            for (x = 0; x < w; ++x) {
+                int x0 = x * R, y0 = y * R, x1 = x0 + R, y1 = y0 + R;
+                if (x == w - 1) x1 = iw;
+                if (y == h - 1) y1 = ih;
+                if (x1 > iw) x1 = iw;
+                if (y1 > ih) y1 = ih;
+                want[lv_off[m] + y * w + x] = r653_reduce(in, iw, ih, x0, y0, x1, y1);
+            }
+    }
+    memset(&oc, 0, sizeof(oc));
+    ASSERT_TRUE(occlusion_cull_init(&oc, g_dev, 40u, 24u));
+    ASSERT_EQ(oc.hi_z_width, 20u);
+    ASSERT_EQ(oc.hi_z_height, 12u);
+    ASSERT_EQ(oc.hi_z_levels, 5u);
+    ASSERT_EQ(oc._loc_hi_z_output_size, 0);
+    ASSERT_EQ(oc._loc_cull_object_count, 64);
+    memset(&td, 0, sizeof(td));
+    td.width = 40u; td.height = 24u; td.format = RHI_FORMAT_R32_FLOAT;
+    td.mip_levels = 1u; td.data = depth;
+    scene = rhi_texture_create(g_dev, &td);
+    cs = rhi_shader_create_compute(g_dev, "hiz_probe_hlsl.comp", 0u);
+    memset(&pd, 0, sizeof(pd));
+    pd.frag = cs; pd.is_compute = true; pd.uses_storage = true; pd.uses_textures = true;
+    probe = rhi_pipeline_create(g_dev, &pd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(got); bd.usage = RHI_BUFFER_USAGE_STORAGE; bd.initial_data = got;
+    out = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(scene) && rhi_handle_valid(probe) && rhi_handle_valid(out));
+
+    memset(boxes, 0, sizeof(boxes));
+    /* NDC x in [-0.9, -0.6] is over the blocker (texels x < 20 of 40). */
+    boxes[0].min = vec3(-0.9f, -0.2f, -0.1f); boxes[0].max = vec3(-0.6f, 0.2f, 0.1f);
+    boxes[1].min = vec3( 0.5f, -0.2f, -0.1f); boxes[1].max = vec3( 0.8f, 0.2f, 0.1f);
+    boxes[2].min = vec3( 2.0f,  2.0f, -0.1f); boxes[2].max = vec3( 2.5f, 2.5f, 0.1f);
+    occlusion_cull_upload_aabbs(&oc, boxes, 3u);
+    memcpy(vp.e, (float[16]){ 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 }, sizeof(vp.e));
+
+    for (frame = 0; frame < 3; ++frame) {
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        occlusion_cull_generate_hi_z(&oc, cmd, scene);
+        if (frame == 0) ASSERT_EQ(occlusion_cull_hiz_dispatch_count(&oc), 2u);
+        if (frame == 0) {
+            rhi_cmd_bind_pipeline(cmd, probe);
+            rhi_cmd_bind_texture_compute(cmd, oc.hi_z_texture, oc.hi_z_sampler, 0u);
+            rhi_cmd_bind_storage_buffer(cmd, out, 1u);
+            rhi_cmd_set_uniform_i32(cmd, 0, 5);
+            rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+            rhi_cmd_memory_barrier(cmd);
+        }
+        occlusion_cull_dispatch(&oc, cmd, &vp, 3u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        if (frame == 0) {
+            ASSERT_TRUE(rhi_buffer_read(g_dev, out, got, 0u, sizeof(got)));
+            for (m = 0; m < (int)(sizeof(got) / sizeof(got[0])); ++m) {
+                if (got[m] != want[m])
+                    printf("  hi-z texel %d = %f, want %f\n", m, got[m], want[m]);
+                ASSERT_TRUE(got[m] == want[m]);
+            }
+        }
+    }
+    /* Frame 2 read back frame 0's staged result (two in-flight slots). */
+    ASSERT_TRUE(occlusion_cull_is_visible(&oc, 1u));
+    ASSERT_FALSE(occlusion_cull_is_visible(&oc, 0u));
+    ASSERT_FALSE(occlusion_cull_is_visible(&oc, 2u));
+    ASSERT_EQ(occlusion_cull_visible_count(&oc), 1u);
+    ASSERT_TRUE(r643_clean("hi_z"));
+    rhi_buffer_destroy(g_dev, out);
+    rhi_pipeline_destroy(g_dev, probe);
+    rhi_shader_destroy(g_dev, cs);
+    rhi_texture_destroy(g_dev, scene);
+    occlusion_cull_shutdown(&oc);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9242,6 +9375,7 @@ int main(void) {
     RUN_TEST(particles_spawn_age_cull_and_draw_as_sized_quads);
     RUN_TEST(cluster_cull_sidecar_matches_the_cpu_binning);
     RUN_TEST(gpu_cull_sidecars_flag_compact_and_read_back);
+    RUN_TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

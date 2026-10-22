@@ -67,8 +67,13 @@ void main() {
         vec3(aabb.max_pos.x, aabb.max_pos.y, aabb.max_pos.z)
     );
 
-    vec2 ndc_min = vec2(1.0);
-    vec2 ndc_max = vec2(-1.0);
+    /* R653 (CORRECTNESS): start the bounds at +-infinity, not at the NDC
+     * edges. Seeded with 1 / -1 they were clamped from the start: a box
+     * entirely right of the screen got ndc_min.x = min(1, x) = 1, so the
+     * ndc_min.x > 1 rejection below could never fire (same for every side)
+     * and the frustum test here rejected nothing in x or y. */
+    vec2 ndc_min = vec2(1e30);
+    vec2 ndc_max = vec2(-1e30);
     float closest_z = 1.0;
     bool crosses_near = false;
 

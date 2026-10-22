@@ -1,0 +1,22 @@
+// hiz_probe_hlsl.comp - test-only CS for test_d3d12_warp_runtime: copies
+// every texel of every mip of a Hi-Z pyramid (t0, full-mip view) into a raw
+// buffer, mips back to back in row-major order, so the test can check the
+// whole pyramid with one buffer readback.
+struct PushConsts { uint u_levels; };
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_levels 0
+Texture2D           g_pyramid : register(t0);
+RWByteAddressBuffer g_out     : register(u1);
+[numthreads(1, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint off = 0u;
+    for (uint m = 0u; m < g_push.u_levels; ++m) {
+        uint w, h, l;
+        g_pyramid.GetDimensions(m, w, h, l);
+        for (uint y = 0u; y < h; ++y)
+            for (uint x = 0u; x < w; ++x) {
+                g_out.Store(off * 4u, asuint(g_pyramid.Load(int3(x, y, m)).r));
+                ++off;
+            }
+    }
+}

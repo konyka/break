@@ -1,6 +1,41 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R653 — **D3D12 Hi-Z 遮挡剔除**（`hiz_supported = true`）；顺带修复三个后端共有的 `occlusion_cull.comp` 视锥判定失效
+
+- **问题**：D3D12 的 `hiz_supported` 为 false，`occlusion_cull_init` 直接失败（`device does not report Hi-Z support`）。没有 Hi-Z 金字塔，unified cull 只能对着 1×1 的 fallback 做视锥剔除。
+- **后端补齐**：
+  - **可 UAV 的纹理**：`RHI_FORMAT_R32_FLOAT` 颜色纹理创建时额外加 `ALLOW_UNORDERED_ACCESS`。这是 compute 写入用的格式，Hi-Z 金字塔就是它。
+  - **按 mip 跟踪状态**：Hi-Z 生成在同一个 pass 里，把一个 mip 当 SRV 读，同时把后面的 mip 当 UAV 写。纹理新增 `mip_split` 和 `mip_state[16]`：
+    - 逐 mip 的屏障只转换对应的那个子资源；
+    - 整资源绑定（`rhi_cmd_bind_texture`）之前，先把所有 mip 统一到同一个状态（`rhi_d3d12_tex_unify`）；
+    - `read_pixels` 遇到处于分裂状态的纹理时，拒绝读取。
+  - **`rhi_cmd_bind_image_texture`**（原来是桩）：在 register(u\<unit\>) 绑定单 mip 的 TEXTURE2D UAV，只把该 mip 转换到 UNORDERED_ACCESS。
+  - **`rhi_cmd_bind_texture_mip`**（原来是桩）：在 register(t\<unit\>) 绑定单 mip 的 TEXTURE2D SRV，`MostDetailedMip = level`，符合 rhi.h C-TEX-2 契约；只转换该 mip。
+- **新增 sidecar**：
+  - `hi_z_generate_hlsl.comp`：分段金字塔，每次 dispatch 写最多 4 个 mip，逐行对应 GL 版。
+  - `occlusion_cull_hlsl.comp`：投影 8 个角点 → NDC 立方体拒绝 → 与对应 mip 的纹素比较。Hi-Z 读取用 `Load` 加 clamp 后的纹素。
+  - `occlusion_cull.c` 按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+  - 另有一个测试专用的 `hiz_probe_hlsl.comp`：把整个金字塔逐 mip 拷进一个缓冲。
+- **三个后端共有的错误**：`occlusion_cull.comp` 里 `ndc_min` / `ndc_max` 的初值是 `vec2(1.0)` / `vec2(-1.0)`，等于一开始就被夹到了屏幕边缘。一个完全在屏幕右侧的盒子会得到 `ndc_min.x = min(1, x) = 1`，`ndc_min.x > 1` 的拒绝条件永远不成立，四个方向都是如此。所以这里的视锥判定对 x/y 一个都剔不掉，屏幕外的物体会继续去做 Hi-Z 采样，结果取决于边缘纹素。现在 GLSL 和 HLSL 都改成 ±1e30 作为初值。
+- **测试**：WARP 新增 `hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction`，用真实的 `OcclusionCullSystem`。
+  - 场景深度 40×24：左半是 0.05 的近处遮挡，右半是渐变深度。金字塔 20×12，共 5 个 mip，需要**两段** dispatch，第二段通过 `rhi_cmd_bind_texture_mip` 回读 mip 3。用例断言 dispatch 数为 2。
+  - 用测试专用着色器读回所有 mip 的 318 个纹素，与 CPU 按同样分段规则（包括最后一行/列吸收余数）复算的结果**逐个相等**。
+  - 遮挡结果经暂存回读后检查：遮挡物后面的盒子不可见；右半边的盒子可见；完全在屏幕外的盒子被剔除；可见计数为 1。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① 去掉"最后一列吸收余数"：第 76 号纹素是 0.85，应为 0.9125，失败。
+  - ② 单 mip SRV 忽略 level，或偏移一个 level：debug layer 报 6–8 条错误，用例失败。
+  - ③ `ndc_min/max` 改回旧初值：屏幕外的盒子被判为可见，失败。
+  - 全部恢复后 70/70。
+  - 最初的测试场景只有 4 个 mip、只走一段 dispatch，测不到 `bind_texture_mip`。扩大场景后反向验证 ② 才会失败。
+- **验证结果**：
+  - WARP 70/70，debug layer 0/0/alias 1。RTX 连跑 2 次都是 69/70，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。GL 和 VK 版的 `occlusion_cull.comp` 也随初值修复一起改了，两棵树的回归测试全部通过。
+  - demo 日志：`OcclusionCull: initialized (320x180, 9 mip levels)`、`Hi-Z Occlusion Cull: on`；D3D12 debug layer 0 条，VK validation 0 条。
+  - demo 截图 MAE（各跑 2 次）：前向路径 D3D12-GL 1.44–1.47、VK-GL 3.55；延迟路径 D3D12-GL 1.21–1.23、VK-GL 0.30–0.33。
+- **遗留问题**：IBL（`brdf_lut` / `irradiance_env` / `prefilter_env` / `sky_to_cube`）还需要 `rhi_cubemap_create`、`rhi_cmd_bind_image_cubemap_face`、`rhi_cmd_bind_cubemap_sampler` 三个仍是桩的接口，以及根签名预算。
+
 ## 本轮更新：R652 — **D3D12 打开 `compute_supported`**：GPU 视锥剔除（legacy + unified）、计算阶段纹理绑定、GPU→主机回读
 
 - **问题**：D3D12 把 `compute_supported` 报成 false，`gpucull_init` 因此直接返回失败（`backend reports no compute support; cull disabled`）。mega-buffer 的阴影级联、点光源阴影面、前向/延迟可见性全部走 CPU 剔除。

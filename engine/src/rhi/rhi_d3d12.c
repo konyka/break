@@ -1258,9 +1258,11 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
      * (gpucull_init); cull.comp and unified_cull.comp now have HLSL
      * sidecars, rhi_cmd_bind_texture_compute binds the Hi-Z SRV, and a GPU
      * copy into a host-visible staging buffer lands in its READBACK twin.
-     * hiz_supported stays false: hi_z_generate.comp has no sidecar, so the
-     * unified cull runs frustum-only against the 1x1 depth-1 fallback. */
+     * R653: hiz_supported is true -- hi_z_generate.comp and
+     * occlusion_cull.comp have sidecars, and the per-mip SRV / storage-image
+     * binders exist, so the unified cull reads a real Hi-Z pyramid. */
     dev->capabilities.compute_supported = true;
+    dev->capabilities.hiz_supported = true;
     dev->capabilities.indirect_draw_supported = true;
     dev->capabilities.indirect_first_instance_supported = false;
     g_current_device = dev;
@@ -3644,6 +3646,11 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
         clear_ptr = &clear_value;
     } else {
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+        /* R653: R32_FLOAT is the compute-written format (the Hi-Z pyramid,
+         * written through rhi_cmd_bind_image_texture), so it may also back
+         * a UAV. */
+        if (desc->format == RHI_FORMAT_R32_FLOAT)
+            description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
     td = (RHI_D3D12Texture *)calloc(1u, sizeof(*td));
     if (td == NULL) return RHI_HANDLE_NULL;
@@ -3887,6 +3894,10 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8,
     if (ctx == NULL || ctx->device_lost) return false;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (td == NULL) return false;
+    if (td->mip_split) {
+        LOG_WARN("D3D12: read_pixels on a texture with per-mip states pending");
+        return false;
+    }
     bpp = rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
     data_size = (UINT64)td->width * td->height * bpp;
     if (size < (usize)data_size) return false;
@@ -4514,6 +4525,37 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r,
  * both the shadow pass's DSV and the lighting pass's SRV, reports the
  * R32_FLOAT alias instead of the unsamplable R32_TYPELESS it was
  * actually allocated with. */
+/* R653: per-mip state tracking (see RHI_D3D12Texture.mip_state). */
+static void rhi_d3d12_tex_mip_transition(ID3D12GraphicsCommandList *list,
+                                         RHI_D3D12Texture *td, UINT mip,
+                                         D3D12_RESOURCE_STATES want) {
+    D3D12_RESOURCE_BARRIER barrier;
+    UINT m;
+    if (mip >= td->mip_levels || mip >= 16u) return;
+    if (!td->mip_split) {
+        for (m = 0u; m < td->mip_levels && m < 16u; ++m) td->mip_state[m] = td->state;
+        td->mip_split = 1u;
+    }
+    if (td->mip_state[mip] == want) return;
+    ZeroMemory(&barrier, sizeof(barrier));
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition.pResource = td->resource;
+    barrier.Transition.Subresource = mip;
+    barrier.Transition.StateBefore = td->mip_state[mip];
+    barrier.Transition.StateAfter = want;
+    ID3D12GraphicsCommandList_ResourceBarrier(list, 1u, &barrier);
+    td->mip_state[mip] = want;
+}
+static void rhi_d3d12_tex_unify(ID3D12GraphicsCommandList *list,
+                                RHI_D3D12Texture *td,
+                                D3D12_RESOURCE_STATES want) {
+    UINT m;
+    if (!td->mip_split) return;
+    for (m = 0u; m < td->mip_levels && m < 16u; ++m)
+        rhi_d3d12_tex_mip_transition(list, td, m, want);
+    td->mip_split = 0u;
+    td->state = want;
+}
 static DXGI_FORMAT rhi_d3d12_srv_format(const RHI_D3D12Texture *td) {
     return td->srv_format != DXGI_FORMAT_UNKNOWN ? td->srv_format
                                                  : td->dxgi_format;
@@ -4619,6 +4661,7 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
     ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
     read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    rhi_d3d12_tex_unify(list, td, read_state);
     if (td->state != read_state) {
         rhi_d3d12_transition(list, td->resource, td->state, read_state);
         td->state = read_state;
@@ -6538,9 +6581,49 @@ void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
     barrier.UAV.pResource = NULL;
     ID3D12GraphicsCommandList_ResourceBarrier(list, 1u, &barrier);
 }
+/* R653: storage image = a single-mip TEXTURE2D UAV at register(u<unit>),
+ * with only that mip moved to UNORDERED_ACCESS. */
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit,
                                 u32 mip_level, bool write_only) {
-    (void)cmd; (void)tex; (void)unit; (void)mip_level; (void)write_only;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    (void)write_only;
+    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip_level >= td->mip_levels) return;
+    param = pd->storage_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (td->rhi_format != (UINT)RHI_FORMAT_R32_FLOAT) {
+        LOG_WARN("D3D12: storage image bind refused -- only R32_FLOAT "
+                 "textures are created UAV-capable");
+        return;
+    }
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&uav, sizeof(uav));
+    uav.Format = td->dxgi_format;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
+    uav.Texture2D.MipSlice = mip_level;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, td->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_mip_transition(list, td, mip_level,
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm,
                                      u32 face, u32 mip, u32 unit,
@@ -6551,9 +6634,49 @@ void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm,
                                   RHISampler sampler, u32 unit) {
     (void)cmd; (void)cm; (void)sampler; (void)unit;
 }
+/* R653: a single-mip TEXTURE2D SRV at register(t<unit>) (rhi.h C-TEX-2:
+ * mip 0 of the view is `mip_level`), with only that mip moved to the
+ * shader-read state -- the others may be UAVs of the same pass. */
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex,
                               RHISampler sampler, u32 unit, u32 mip_level) {
-    (void)cmd; (void)tex; (void)sampler; (void)unit; (void)mip_level;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    (void)sampler;
+    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip_level >= td->mip_levels || td->array_size > 1u || td->is_cube)
+        return;
+    param = pd->image_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&srv, sizeof(srv));
+    srv.Format = rhi_d3d12_srv_format(td);
+    srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    srv.Texture2D.MostDetailedMip = mip_level;
+    srv.Texture2D.MipLevels = 1u;
+    srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    ID3D12Device_CreateShaderResourceView(ctx->device, td->resource, &srv,
+        rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_mip_transition(list, td, mip_level,
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 /* R652: the per-unit binder already resolves the bound pipeline's SRV table
  * for register(t<unit>) and sets it on the compute root when the pipeline is
