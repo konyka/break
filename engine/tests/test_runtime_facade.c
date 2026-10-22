@@ -400,6 +400,181 @@ TEST(queue_stale_generation_rejected)
     break_runtime_queue_destroy(q);
 }
 
+TEST(queue_control_fill_then_data_overload_keeps_ring_intact)
+{
+    /* Regression (review Critical 1): control messages may legitimately
+     * occupy EVERY physical slot. A data enqueue into a control-filled ring
+     * must report OVERLOAD; admitting it would overwrite the live head slot
+     * (message loss, FIFO corruption, double release at destroy). */
+    BreakRuntimeQueueConfig cfg;
+    BreakRuntimeQueue *q = NULL;
+    BreakRuntimeQueueStats stats;
+    BreakRuntimeOwnedMessage *msg;
+    u64 gen;
+    int i;
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = 4u;
+    cfg.reserved_control = 1u;
+    ASSERT_EQ(break_runtime_queue_create(&cfg, &q), BREAK_RUNTIME_OK);
+    gen = break_runtime_queue_generation(q);
+
+    /* Controls spill beyond the reserved slot and fill the whole ring. */
+    for (i = 1; i <= 4; i++) {
+        msg = make_value_msg((u64)i, (u32)i);
+        ASSERT_NOT_NULL(msg);
+        {
+            BreakRuntimeMessageView view;
+            BreakRuntimeOwnedMessage *control = NULL;
+            u32 payload = (u32)i;
+            memset(&view, 0, sizeof(view));
+            view.kind = 7u;
+            view.version = 1u;
+            view.flags = BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+            view.sequence = (u64)i;
+            view.data = &payload;
+            view.size = sizeof(payload);
+            ASSERT_EQ(break_runtime_message_copy(&view, &control),
+                      BREAK_RUNTIME_OK);
+            break_runtime_message_release(msg);
+            ASSERT_EQ(break_runtime_queue_enqueue(q, control, gen),
+                      BREAK_RUNTIME_OK);
+        }
+    }
+
+    /* The ring is physically full: a data enqueue MUST be rejected. (On the
+     * buggy admission this returned OK and corrupted the ring; the early
+     * assertion return keeps the RED run at assertion level.) */
+    msg = make_value_msg(99u, 99u);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(break_runtime_queue_enqueue(q, msg, gen), BREAK_RUNTIME_OVERLOAD);
+    break_runtime_message_release(msg);
+
+    /* Ring intact: all four controls drain in FIFO order. */
+    for (i = 1; i <= 4; i++) {
+        msg = NULL;
+        ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+        ASSERT_NOT_NULL(msg);
+        ASSERT_EQ(msg_first_u32(msg), (u32)i);
+        break_runtime_message_release(msg);
+    }
+    msg = NULL;
+    ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(msg, NULL);
+
+    ASSERT_EQ(break_runtime_queue_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.enqueued, 4u);
+    ASSERT_EQ(stats.dequeued, 4u);
+    ASSERT_EQ(stats.overload_rejects, 1u);
+
+    /* Destroy on an uncorrupted ring: every slot released exactly once. */
+    break_runtime_queue_destroy(q);
+}
+
+TEST(queue_mixed_control_data_wraparound_fifo)
+{
+    /* Regression (review Important 2): mixed control/data interleavings keep
+     * FIFO within the physical ring, including after wraparound; once the
+     * ring is physically full, BOTH classes report OVERLOAD. */
+    BreakRuntimeQueueConfig cfg;
+    BreakRuntimeQueue *q = NULL;
+    BreakRuntimeOwnedMessage *msg;
+    u64 gen;
+    int i;
+    static const u32 phase_a[] = {1u, 2u, 3u, 4u, 5u, 6u};
+    static const u32 phase_b[] = {4u, 5u, 6u, 7u, 8u, 9u};
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.capacity = 6u;
+    cfg.reserved_control = 2u;
+    ASSERT_EQ(break_runtime_queue_create(&cfg, &q), BREAK_RUNTIME_OK);
+    gen = break_runtime_queue_generation(q);
+
+    /* Phase A: interleave d1,c1,d2,c2,d3,c3 — ring physically full. */
+    for (i = 0; i < 6; i++) {
+        u32 value = phase_a[i];
+        int is_control = (i % 2) == 1;
+        BreakRuntimeMessageView view;
+        BreakRuntimeOwnedMessage *m = NULL;
+        memset(&view, 0, sizeof(view));
+        view.kind = 7u;
+        view.version = 1u;
+        view.flags = is_control ? BREAK_RUNTIME_MESSAGE_FLAG_CONTROL : 0u;
+        view.sequence = (u64)value;
+        view.data = &value;
+        view.size = sizeof(value);
+        ASSERT_EQ(break_runtime_message_copy(&view, &m), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_queue_enqueue(q, m, gen), BREAK_RUNTIME_OK);
+    }
+
+    /* Full ring: data AND control both reject. */
+    msg = make_value_msg(70u, 70u);
+    ASSERT_EQ(break_runtime_queue_enqueue(q, msg, gen), BREAK_RUNTIME_OVERLOAD);
+    break_runtime_message_release(msg);
+    {
+        BreakRuntimeMessageView view;
+        BreakRuntimeOwnedMessage *control = NULL;
+        u32 payload = 71u;
+        memset(&view, 0, sizeof(view));
+        view.kind = 7u;
+        view.version = 1u;
+        view.flags = BREAK_RUNTIME_MESSAGE_FLAG_CONTROL;
+        view.sequence = 71u;
+        view.data = &payload;
+        view.size = sizeof(payload);
+        ASSERT_EQ(break_runtime_message_copy(&view, &control),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_queue_enqueue(q, control, gen),
+                  BREAK_RUNTIME_OVERLOAD);
+        break_runtime_message_release(control);
+    }
+
+    /* Drain three (head moves to mid-ring), then interleave c,d,c into the
+     * freed slots — the ring wraps. */
+    for (i = 0; i < 3; i++) {
+        msg = NULL;
+        ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+        ASSERT_NOT_NULL(msg);
+        ASSERT_EQ(msg_first_u32(msg), phase_a[i]);
+        break_runtime_message_release(msg);
+    }
+    for (i = 7; i <= 9; i++) {
+        u32 value = (u32)i;
+        int is_control = (i != 8);
+        BreakRuntimeMessageView view;
+        BreakRuntimeOwnedMessage *m = NULL;
+        memset(&view, 0, sizeof(view));
+        view.kind = 7u;
+        view.version = 1u;
+        view.flags = is_control ? BREAK_RUNTIME_MESSAGE_FLAG_CONTROL : 0u;
+        view.sequence = (u64)value;
+        view.data = &value;
+        view.size = sizeof(value);
+        ASSERT_EQ(break_runtime_message_copy(&view, &m), BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_queue_enqueue(q, m, gen), BREAK_RUNTIME_OK);
+    }
+
+    /* Wrapped ring is physically full again: data_count (2) < capacity -
+     * reserved (4) would wrongly admit without the physical-slot guard. */
+    msg = make_value_msg(72u, 72u);
+    ASSERT_EQ(break_runtime_queue_enqueue(q, msg, gen), BREAK_RUNTIME_OVERLOAD);
+    break_runtime_message_release(msg);
+
+    /* FIFO order survives the wrap: 4,5,6,7,8,9. */
+    for (i = 0; i < 6; i++) {
+        msg = NULL;
+        ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+        ASSERT_NOT_NULL(msg);
+        ASSERT_EQ(msg_first_u32(msg), phase_b[i]);
+        break_runtime_message_release(msg);
+    }
+    msg = NULL;
+    ASSERT_EQ(break_runtime_queue_poll(q, &msg), BREAK_RUNTIME_OK);
+    ASSERT_EQ(msg, NULL);
+
+    break_runtime_queue_destroy(q);
+}
+
 TEST(queue_allocation_failure_injection)
 {
     BreakRuntimeQueue *q = NULL;
@@ -757,6 +932,62 @@ TEST(task_drain_executes_on_legacy_system)
     task_system_destroy(ts);
 }
 
+TEST(task_drain_forward_failure_retains_queue)
+{
+    /* Regression (review Important 1): legacy task_submit_ex can return
+     * TASK_HANDLE_INVALID WITHOUT consuming the task call. Drain must not
+     * leak the node/payload or count it as forwarded: the tasks stay queued
+     * (retain-and-stop) and a later drain runs them. The injection hook
+     * simulates the legacy rejection deterministically. */
+    BreakRuntimeTaskQueue *q = NULL;
+    BreakRuntimeTaskStats stats;
+    TaskSystem *ts;
+    u32 forwarded = 0u;
+    int i;
+
+    atomic_store(&g_task_sum, 0u);
+    atomic_store(&g_task_ran, 0u);
+
+    ts = task_system_create(2);
+    ASSERT_NOT_NULL(ts);
+    ASSERT_EQ(break_runtime_task_queue_create(NULL, &q), BREAK_RUNTIME_OK);
+    for (i = 1; i <= 2; i++) {
+        BreakRuntimeOwnedMessage *payload = make_value_msg((u64)i, (u32)i);
+        ASSERT_NOT_NULL(payload);
+        ASSERT_EQ(break_runtime_task_submit(q, accumulate_task, payload,
+                                            TASK_PRIORITY_NORMAL),
+                  BREAK_RUNTIME_OK);
+    }
+
+    /* Legacy forward rejected: nothing is forwarded, nothing runs, the queue
+     * retains both tasks. */
+    break_runtime_test_set_forward_fail_budget(1u);
+    ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 16u, &forwarded),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(forwarded, 0u);
+    ASSERT_EQ(atomic_load(&g_task_ran), 0u);
+    ASSERT_EQ(break_runtime_task_queue_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.forwarded, 0u);
+    ASSERT_EQ(stats.forward_rejects, 1u);
+
+    /* After the transient failure the same tasks drain and execute, still in
+     * FIFO submit order. */
+    break_runtime_test_set_forward_fail_budget(0u);
+    ASSERT_EQ(break_runtime_task_queue_drain(q, ts, 16u, &forwarded),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(forwarded, 2u);
+    task_wait(ts);
+    ASSERT_EQ(atomic_load(&g_task_ran), 2u);
+    ASSERT_EQ(atomic_load(&g_task_sum), 3u);
+    ASSERT_EQ(break_runtime_task_queue_stats(q, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.forwarded, 2u);
+    ASSERT_EQ(stats.forward_rejects, 1u);
+
+    break_runtime_task_queue_destroy(q);
+    task_system_destroy(ts);
+}
+
 TEST(task_allocation_failure_injection)
 {
     BreakRuntimeTaskQueue *q = NULL;
@@ -792,10 +1023,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(queue_fifo_order_and_stats);
     RUN_TEST(queue_reserved_control_capacity);
     RUN_TEST(queue_stale_generation_rejected);
+    RUN_TEST(queue_control_fill_then_data_overload_keeps_ring_intact);
+    RUN_TEST(queue_mixed_control_data_wraparound_fifo);
     RUN_TEST(queue_allocation_failure_injection);
     RUN_TEST(queue_close_wakes_waiters_and_stops_admission);
     RUN_TEST(queue_mpsc_producers_single_consumer);
     RUN_TEST(task_submit_overload_never_inlines);
     RUN_TEST(task_drain_executes_on_legacy_system);
+    RUN_TEST(task_drain_forward_failure_retains_queue);
     RUN_TEST(task_allocation_failure_injection);
 TEST_MAIN_END()

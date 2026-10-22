@@ -67,6 +67,8 @@ typedef struct BreakRuntimeTaskStats {
     u64 forwarded;        /* tasks handed to the legacy system by drain */
     u64 overload_rejects; /* submits rejected OVERLOAD */
     u64 closed_rejects;   /* submits rejected CLOSED */
+    u64 forward_rejects;  /* drain forwards rejected by the legacy system
+                           * (TASK_HANDLE_INVALID); the task stays queued */
     u64 high_water;       /* maximum queued tasks observed */
 } BreakRuntimeTaskStats;
 
@@ -97,7 +99,14 @@ BreakRuntimeError break_runtime_task_submit(
  * borrowed legacy `ts` via task_submit_ex(). Stops early when the legacy
  * external submit queue shows no credit (best-effort gate) or when the queue
  * empties. *out_forwarded receives the number forwarded this call. Legal
- * after close() to drain the remainder. */
+ * after close() to drain the remainder.
+ *
+ * Legacy rejection policy (retain-and-stop): task_submit_ex() may return
+ * TASK_HANDLE_INVALID without consuming the task (legacy task pool exhausted
+ * and its heap-fallback allocation failed). Drain then stops immediately,
+ * counts the attempt in stats.forward_rejects, and the task stays queued
+ * with its owned payload intact — nothing is leaked or dropped, and a later
+ * drain retries it in FIFO order. */
 BreakRuntimeError break_runtime_task_queue_drain(
     BreakRuntimeTaskQueue *queue,
     TaskSystem *ts,

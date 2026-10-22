@@ -20,6 +20,33 @@
 
 extern _Atomic u64 g_break_runtime_test_alloc_budget;
 
+/* Forward-failure injection for the task facade drain: the budget is the
+ * number of further legacy-forward attempts that report TASK_HANDLE_INVALID
+ * (as if the legacy task pool were exhausted and its heap fallback OOM'd)
+ * without consuming the task call. 0 disables the hook (default). */
+extern _Atomic u64 g_break_runtime_test_forward_fail_budget;
+
+static inline void break_runtime_test_set_forward_fail_budget(u64 budget)
+{
+    atomic_store_explicit(&g_break_runtime_test_forward_fail_budget, budget,
+                          memory_order_relaxed);
+}
+
+static inline bool break_runtime_test_forward_should_fail(void)
+{
+    u64 budget =
+        atomic_load_explicit(&g_break_runtime_test_forward_fail_budget,
+                             memory_order_relaxed);
+    while (budget != 0u) {
+        if (atomic_compare_exchange_weak_explicit(
+                &g_break_runtime_test_forward_fail_budget, &budget,
+                budget - 1u, memory_order_relaxed, memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static inline void break_runtime_test_set_alloc_budget(u64 budget)
 {
     atomic_store_explicit(&g_break_runtime_test_alloc_budget, budget,

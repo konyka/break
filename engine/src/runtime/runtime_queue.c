@@ -184,8 +184,11 @@ BreakRuntimeError break_runtime_queue_enqueue(
     if (control) {
         admitted = queue->count < queue->capacity;
     } else {
-        /* Data messages never touch the reserved control slots. */
-        admitted = queue->data_count < queue->capacity - queue->reserved_control;
+        /* Data messages never touch the reserved control slots, and no class
+         * may exceed the physical ring: control spill alone may already
+         * occupy every slot, so data_count alone is not a sufficient guard. */
+        admitted = queue->count < queue->capacity &&
+                   queue->data_count < queue->capacity - queue->reserved_control;
     }
     if (!admitted) {
         queue->overload_rejects++;

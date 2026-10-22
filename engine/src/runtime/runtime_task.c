@@ -6,6 +6,10 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 
+#if defined(BREAK_RUNTIME_TESTING)
+_Atomic u64 g_break_runtime_test_forward_fail_budget = 0u;
+#endif
+
 /* Formal task facade: a bounded queue of owned task calls over the legacy
  * TaskSystem. The legacy queue-full inline fallback lives in task.c and is
  * untouched; this facade never executes a submitted task itself — submit()
@@ -35,6 +39,7 @@ struct BreakRuntimeTaskQueue {
     u64 forwarded;
     u64 overload_rejects;
     u64 closed_rejects;
+    u64 forward_rejects;
     u64 high_water;
 };
 
@@ -185,6 +190,7 @@ BreakRuntimeError break_runtime_task_queue_drain(
 
     while (forwarded < max_tasks) {
         BreakRuntimeTaskCall *call;
+        TaskHandle handle;
 
         platform_mutex_lock(&queue->mutex);
         if (queue->count == 0u) {
@@ -200,24 +206,48 @@ BreakRuntimeError break_runtime_task_queue_drain(
             platform_mutex_unlock(&queue->mutex);
             break;
         }
+        /* Peek, not pop: the node stays linked until the legacy system has
+         * accepted it. drain() is owner-thread-only, so the head cannot move
+         * while the lock is dropped; concurrent submits only append. */
         call = queue->ring[queue->head];
+        platform_mutex_unlock(&queue->mutex);
+
+        /* Outside the queue mutex: on acceptance the legacy system takes over
+         * the call node and the trampoline frees it after the callback
+         * returns. `call` is never dereferenced after this point. */
+#if defined(BREAK_RUNTIME_TESTING)
+        if (break_runtime_test_forward_should_fail()) {
+            handle = TASK_HANDLE_INVALID;
+        } else
+#endif
+        {
+            handle = task_submit_ex(ts, break_runtime_task_trampoline, call,
+                                    (TaskPriority)call->priority);
+        }
+
+        if (handle == TASK_HANDLE_INVALID) {
+            /* Legacy rejected the task WITHOUT consuming ctx (task pool
+             * exhausted + heap-fallback OOM): retain-and-stop. The node and
+             * its owned payload stay queued for a later drain; nothing is
+             * leaked, dropped, or misreported. */
+            platform_mutex_lock(&queue->mutex);
+            queue->forward_rejects++;
+            platform_mutex_unlock(&queue->mutex);
+            break;
+        }
+
+        /* Accepted: detach the head (still `call`; only this owner thread
+         * dequeues). The trampoline may already have run and freed the node —
+         * detaching touches only the ring slot, never the node. */
+        platform_mutex_lock(&queue->mutex);
         queue->ring[queue->head] = NULL;
         queue->head = (queue->head + 1u) % queue->capacity;
         queue->count--;
+        queue->forwarded++;
         platform_mutex_unlock(&queue->mutex);
-
-        /* Outside the queue mutex: the legacy system takes over the call
-         * node; the trampoline frees it after the callback returns. */
-        task_submit_ex(ts, break_runtime_task_trampoline, call,
-                       (TaskPriority)call->priority);
         forwarded++;
     }
 
-    if (forwarded > 0u) {
-        platform_mutex_lock(&queue->mutex);
-        queue->forwarded += forwarded;
-        platform_mutex_unlock(&queue->mutex);
-    }
     *out_forwarded = forwarded;
     return BREAK_RUNTIME_OK;
 }
@@ -234,6 +264,7 @@ BreakRuntimeError break_runtime_task_queue_stats(
     out_stats->forwarded = queue->forwarded;
     out_stats->overload_rejects = queue->overload_rejects;
     out_stats->closed_rejects = queue->closed_rejects;
+    out_stats->forward_rejects = queue->forward_rejects;
     out_stats->high_water = queue->high_water;
     platform_mutex_unlock(&queue->mutex);
     return BREAK_RUNTIME_OK;
