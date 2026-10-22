@@ -17,12 +17,19 @@ if(runtime_core_pos LESS 0 OR first_tests_block_pos LESS 0 OR
     message(FATAL_ERROR "runtime_core must be defined before the first ENGINE_BUILD_TESTS block")
 endif()
 
-# ...owning exactly the coordinator translation unit.
+# ...owning the coordinator and formal facade translation units (and nothing
+# from outside src/runtime/).
 string(FIND "${cmake_text}" "add_library(engine STATIC" engine_target_pos)
-string(FIND "${cmake_text}" "src/runtime/runtime_coordinator.c" coordinator_src_pos)
-if(coordinator_src_pos LESS runtime_core_pos OR coordinator_src_pos GREATER engine_target_pos)
-    message(FATAL_ERROR "runtime_coordinator.c is not owned by runtime_core")
-endif()
+foreach(runtime_src
+        src/runtime/runtime_coordinator.c
+        src/runtime/runtime_message.c
+        src/runtime/runtime_queue.c
+        src/runtime/runtime_task.c)
+    string(FIND "${cmake_text}" "${runtime_src}" runtime_src_pos)
+    if(runtime_src_pos LESS runtime_core_pos OR runtime_src_pos GREATER engine_target_pos)
+        message(FATAL_ERROR "${runtime_src} is not owned by runtime_core")
+    endif()
+endforeach()
 
 # engine, engine_demo, and dxx_break must not link runtime_core. Their
 # target_link_libraries calls are single-line in this file, so a line-level

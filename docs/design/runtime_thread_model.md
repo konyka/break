@@ -194,6 +194,8 @@ Network callback -> envelope/registry/sequence validation -> owned event copy ->
 - IO completion 满时 worker 不调用 Main callback；保留 request 为 retry/cancel 或转为 `FAILED_OVERLOAD`，并释放其 owned buffers。
 - Fragment incomplete 状态保留已收片供 retry；由于当前 focused API 没有 timeout/eviction，正式 runtime promotion 前必须增加 scheduler owner、deadline、最大并发 assembly 和 reset/evict 结果。
 
+**已交付事实（2026-10-22，Task 4）**：正式可选 `runtime_core`（仍不链入 `engine`/`engine_demo`/`dxx_break`）交付了本节 queue/backpressure 规则的可执行基元。`engine/src/runtime/runtime_queue.h/.c`：bounded MPSC FIFO 消息队列，满统一非阻塞返回 `BREAK_RUNTIME_OVERLOAD`；`reserved_control` 槽位仅供 `BREAK_RUNTIME_MESSAGE_FLAG_CONTROL` 消息（数据区满时控制消息仍可入队）；enqueue 携带 expected generation，失配返回 `BREAK_RUNTIME_STALE`；`close()` 停止 admission 并 broadcast 唤醒全部 `wait()` waiter（shutdown wakeup），drain 完毕后报 `BREAK_RUNTIME_CLOSED`；队列节点只持有 owned payload 拷贝，不保留栈/World/Lua/Snowflake/UI 指针；`break_runtime_queue_stats()` 暴露 high-water/overload/stale/closed 计数。`engine/src/runtime/runtime_task.h/.c`：legacy `task_submit` 的 queue-full inline fallback 完全未动；formal facade 拥有自己的 bounded pending queue，`break_runtime_task_submit()` 满返回 `BREAK_RUNTIME_OVERLOAD` 且绝不 inline 执行；submit 时队列节点取得 owned payload message 所有权（callback 负责 release），owner 线程 `break_runtime_task_queue_drain()` 以 FIFO+优先级把任务转发给借用的 legacy `TaskSystem`（对 legacy external submit queue 做 best-effort credit gate，不等待、不扩容）。§6.1 表中 "Runtime internal message / Task external submit" 两行的 formal 策略由此落地为代码；Network/IO/Audio/RHI 路径仍未接入（设计-only）。验证：`test_runtime_facade` 13/13（FIFO、reserved control、OVERLOAD、STALE、shutdown wakeup、4 生产者 MPSC、分配/queue-full 故障注入、formal submit 无 inline），normal/ASan+UBSan/TSan 三树各 3/3；TSan 10 次连跑零报告。
+
 ## 7. Shutdown、失败与恢复
 
 ### 7.1 统一生命周期

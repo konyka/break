@@ -143,9 +143,9 @@ sequenceDiagram
 
 | 队列/池 | 当前证据或目标 | formal 满载策略 |
 |---|---:|---|
-| Runtime Core message/mailbox | 设计目标，固定 slots + byte budget | 非阻塞 `BREAK_RUNTIME_OVERLOAD`；控制/关闭 watermark 只使用有界 reserved capacity |
+| Runtime Core message/mailbox | 已交付单队列基元（2026-10-22，Task 4）：`runtime_queue.h` 固定 slots，默认 256/上限 4096；mailbox 拓扑与 per-kind byte budget 仍为设计目标 | 非阻塞 `BREAK_RUNTIME_OVERLOAD`；`BREAK_RUNTIME_MESSAGE_FLAG_CONTROL` 只使用有界 `reserved_control` capacity |
 | Network/IO/Audio/RHI ingress | 各子系统局部容量 | compatibility 行为不变；经 Runtime Core facade 时统一 `BREAK_RUNTIME_OVERLOAD`，热路径禁止 inline |
-| Task external submit | 256；legacy 满载 inline（`task.c:238-251`） | legacy queue 保持 inline；formal task submit 按 reject/credit policy 返回 overload，必须可观测 |
+| Task external submit | 256；legacy 满载 inline（`task.c:238-251`，保持不动）；formal `runtime_task.h` 已交付独立 bounded queue（2026-10-22，Task 4） | legacy queue 保持 inline；formal task submit 满返回 `BREAK_RUNTIME_OVERLOAD`、绝不 inline，reject 计数可观测 |
 | Worker deque | 1024/priority | formal 不越界、不无限转移；按 reject/credit policy 返回 overload |
 | Async IO request/completion | 256 / 1024 | formal ingress reject/credit；completion 等待必须可被 deadline/shutdown 打断 |
 | Network wire fragment | 单片默认 64 KiB | 只限制 wire fragment，不等同 Runtime message 或 asset blob |

@@ -1,6 +1,8 @@
 # Runtime Message Model 设计
 
-**状态：Stage 2 设计提案；未实现。**
+**状态：Stage 2 设计提案；消息 envelope 与 bounded queue 基元已作为正式可选 `runtime_core` 库的一部分交付（2026-10-22，Task 4），但未集成进 `engine`/`engine_demo`/`dxx_break`；registry、mailbox 拓扑与各域 bridge 仍未实现。**
+
+**已交付事实（2026-10-22，Task 4）**：`runtime_core` 新增 `engine/src/runtime/runtime_message.h/.c`（`BreakRuntimeMessageView` 借用 view：kind/version/flags/sequence + data/size；`break_runtime_message_copy()` 做 checked size 校验（NULL 参数/无 data 的 size>0 → `INVALID`，超过 `BREAK_RUNTIME_MAX_MESSAGE_PAYLOAD`（默认 16 MiB，可编译期覆盖）→ `OVERLOAD`，分配失败 → `OOM`），单分配生成 owned message，只持有拷贝的 bounded bytes，绝不保留生产者栈/World/Lua/Snowflake/UI 指针；`break_runtime_message_release()` 显式释放，test 构建（`BREAK_RUNTIME_TESTING`）用按指针值查询的 live registry 拒绝 double release/外来指针（fail-stop abort，且解引用前先查表，ASan 验证无 UAF））与 `engine/src/runtime/runtime_queue.h/.c`（bounded MPSC FIFO 队列：满 → 非阻塞 `BREAK_RUNTIME_OVERLOAD`；`reserved_control` 槽位仅供 `BREAK_RUNTIME_MESSAGE_FLAG_CONTROL` 消息，数据区满时控制消息仍可入队；enqueue 显式携带 expected generation，失配 → `BREAK_RUNTIME_STALE`；`close()` 停止 admission、推进 generation 并 broadcast 唤醒全部 `wait()` waiter（drain 完毕后报 `CLOSED`）；enqueue 时所有权转移给队列、poll/wait 转移给消费者、任何失败路径调用方保留所有权并负责释放；create 做 count+byte 双检查；`break_runtime_queue_stats()` 暴露 enqueued/dequeued/overload/stale/closed/high-water 计数）。以上均为正式可选库能力，不构成 engine/demo 集成。验证：`test_runtime_facade` 13/13（含 fork 子进程 double-release abort、分配故障注入、4 生产者 MPSC、shutdown wakeup），normal/ASan+UBSan/TSan 三树各 3/3（含 `test_runtime_core` 9/9 与 target contract）；TSan 连跑 10 次零报告。
 
 本文定义 Break Runtime Core 的跨线程消息模型、所有权和生命周期边界。它不声称新增 Runtime target、ECS/Session 正式集成或 PAL/Thread/Task/IO/VFS/Profiler facade 已经存在。本文只覆盖消息合同和与现有 ECS snapshot/schema/delta/AoI/replication、`break_net`/Session 边界的衔接方向。
 
@@ -49,11 +51,10 @@
 
 ### 2.3 设计目标（本文件提出，当前未实现）
 
-- 正式的 `runtime_core`/消息模型 target graph；
-- `BreakRuntimeMessage`、消息类型 registry、owned/borrowed payload contract；
-- GameThread、Task workers、Network/IO、PAL/MainLoop、Profiler 之间的有界 mailbox；
+- 消息类型 registry、per-kind byte budget、未知 kind/version 策略（envelope 与 owned/borrowed contract 已交付，见文首 Task 4 已交付事实）；
+- GameThread、Task workers、Network/IO、PAL/MainLoop、Profiler 之间的有界 mailbox 拓扑与接线（单队列基元已交付，mailbox 拓扑未接线）；
 - snapshot publication、delta apply、fragment timeout/eviction、Session 事件的正式 runtime service；
-- PAL/Thread/Task/Message/IO/VFS/Profiler Runtime Core facade 及其独立测试矩阵。
+- PAL/Thread/IO/VFS/Profiler Runtime Core facade 及其独立测试矩阵（Message/Queue/Task facade 已交付，其余仍为设计目标）。
 
 ## 3. 语言与 ABI 边界
 

@@ -332,13 +332,16 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
-# Formal optional Runtime Core library: unified error/lifecycle types and the
-# single-owner lifecycle coordinator skeleton. Top-level like the other formal
-# optional libraries — built regardless of ENGINE_BUILD_TESTS, and deliberately
-# NOT linked into engine, engine_demo, or dxx_break; consumers opt in
-# explicitly in later tasks.
+# Formal optional Runtime Core library: unified error/lifecycle types, the
+# single-owner lifecycle coordinator, and the formal message/queue/task
+# facade. Top-level like the other formal optional libraries — built
+# regardless of ENGINE_BUILD_TESTS, and deliberately NOT linked into engine,
+# engine_demo, or dxx_break; consumers opt in explicitly in later tasks.
 add_library(runtime_core STATIC
-    src/runtime/runtime_coordinator.c)
+    src/runtime/runtime_coordinator.c
+    src/runtime/runtime_message.c
+    src/runtime/runtime_queue.c
+    src/runtime/runtime_task.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3265,6 +3268,39 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_core_target_contract.cmake)
     set_tests_properties(test_runtime_core_target_contract PROPERTIES
         LABELS "headless;runtime_core;platform_contract")
+
+    # Formal facade (owned message / bounded queue / formal task submit)
+    # focused tests. The test-only runtime_core_test variant compiles the new
+    # runtime_core sources with BREAK_RUNTIME_TESTING=1 hooks (allocation
+    # failure injection, double-release registry), mirroring the
+    # break_ecs_replication_test / BREAK_WORLD_DELTA_TESTING pattern; the
+    # production runtime_core target stays hook-free.
+    add_library(runtime_core_test STATIC
+        src/runtime/runtime_message.c
+        src/runtime/runtime_queue.c
+        src/runtime/runtime_task.c)
+    set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
+    target_include_directories(runtime_core_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(runtime_core_test PRIVATE BREAK_RUNTIME_TESTING=1)
+
+    add_executable(test_runtime_facade tests/test_runtime_facade.c
+        src/task/task.c src/core/log.c)
+    target_include_directories(test_runtime_facade PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_facade PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_facade PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_facade PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_facade PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_facade PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_facade PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_facade COMMAND test_runtime_facade)
+    set_tests_properties(test_runtime_facade PROPERTIES
+        LABELS "headless;runtime_core")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c
