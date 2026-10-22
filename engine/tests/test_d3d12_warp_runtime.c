@@ -10603,6 +10603,175 @@ TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets) {
     deferred_destroy(&ds, g_dev);
 }
 
+/* R659: the forward clustered sidecar's normal-map perturbation, which the
+ * flat (128,128,255) texels of every other clustered test cannot see -- with
+ * map.xy = 0 the tangent and bitangent are multiplied by zero, so a flipped
+ * bitangent sign (or a swapped T/B) passes.
+ *
+ * Here the normal texel is (128, 230, 200): map = (~0, +0.80, +0.57), all of
+ * the tilt on the BITANGENT axis. The quad is the +Z plane facing the camera,
+ * UVs linear in world x/y (u = (x+8)/16, v = (y+4)/8). Under the backend's
+ * offscreen viewport SV_Position.y grows with NDC y, as gl_FragCoord.y does
+ * on GL, so ddx(world) = (+a,0,0), ddy(world) = (0,+b,0) and the shader's
+ *   T = normalize(Q1 * st2.y - Q2 * st1.y) = +x
+ *   B = -normalize(cross(N, T))             = -y
+ * i.e. the perturbed normal leans toward -y. One directional light shines
+ * along (0, 0.6, -0.8), so L = (0, -0.6, 0.8): leaning toward -y faces the
+ * light (N.L ~ 0.94), leaning toward +y faces away (N.L ~ 0.0). A flipped B
+ * sign turns the lit quad nearly black, far outside the 0.008 tolerance. */
+TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent) {
+    enum { W = 64, H = 32 };
+    static const float verts[6 * 8] = {
+        -8.0f, -4.0f, -0.5f,  0, 0, 1,  0, 0,
+         8.0f, -4.0f, -0.5f,  0, 0, 1,  1, 0,
+         8.0f,  4.0f, -0.5f,  0, 0, 1,  1, 1,
+        -8.0f, -4.0f, -0.5f,  0, 0, 1,  0, 0,
+         8.0f,  4.0f, -0.5f,  0, 0, 1,  1, 1,
+        -8.0f,  4.0f, -0.5f,  0, 0, 1,  0, 1
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    static u16 px[W * H * 4];
+    const RHIFormat formats[2] = { RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT };
+    const double fov = 1.0471975512, aspect = 2.0;
+    RHIMRTFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo;
+    RHITexture alb, mrt, nrm, emi, white;
+    RHICmdBuffer *cmd;
+    Mat4 view_m, proj_m;
+    i32 loc_model, loc_view, loc_mr, loc_occ, loc_em;
+    int x, y, c, i, checked = 0;
+    const double albedo[3] = { 200 / 255.0, 100 / 255.0, 50 / 255.0 };
+    const double metal = 0.3, rough = 0.6;
+    double Np[3];
+    struct { float prev_vp[16], prev_model[16], proj[16], cam[4], amb[4],
+             fogc[4], fog[4], screen[4], counts[4], far[4]; } fr;
+    {
+        /* T = +x, B = -y, N = +z (see the header). */
+        double m[3] = { 128.0 / 255.0 * 2.0 - 1.0, 230.0 / 255.0 * 2.0 - 1.0,
+                        200.0 / 255.0 * 2.0 - 1.0 };
+        double l;
+        Np[0] = m[0]; Np[1] = -m[1]; Np[2] = m[2];
+        l = sqrt(Np[0] * Np[0] + Np[1] * Np[1] + Np[2] * Np[2]);
+        for (c = 0; c < 3; ++c) Np[c] /= l;
+    }
+    r643_mark();
+    vs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.uses_textures = true; pd.uses_texel_buffer = true; pd.disable_culling = true;
+    pd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc_model = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_model");
+    loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+    loc_mr = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_mr_factor");
+    loc_occ = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_occlusion_strength");
+    loc_em = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_emissive_factor");
+
+    alb = r644_tex(200, 100, 50, 255);
+    mrt = r644_tex(255, 255, 255, 255);
+    nrm = r644_tex(128, 230, 200, 255);
+    emi = r644_tex(0, 0, 0, 255);
+    white = r644_tex(255, 255, 255, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    fbo = rhi_mrt_fbo_create(g_dev, W, H, formats, 2u);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = 304u; bd.usage = RHI_BUFFER_USAGE_UNIFORM;
+    ubo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(fbo.fb) && rhi_handle_valid(ubo));
+
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    view_m = mat4_lookat(vec3(0.0f, 0.0f, 3.0f), vec3(0.0f, 0.0f, -1.0f), vec3(0.0f, 1.0f, 0.0f));
+    proj_m = mat4_perspective((f32)fov, (f32)aspect, 0.1f, 100.0f);
+    light_system_clear(&ls);
+    light_system_add_dir(&ls, 0.0f, 0.6f, -0.8f, 0.9f, 0.8f, 0.7f);
+    light_system_set_depth_range(&ls, 0.1f, 100.0f);
+    light_system_cull(&ls, &view_m, &proj_m, W, H);
+    light_system_upload(&ls);
+
+    memset(&fr, 0, sizeof(fr));
+    memcpy(fr.prev_vp, identity, sizeof(identity));
+    memcpy(fr.prev_model, identity, sizeof(identity));
+    memcpy(fr.proj, proj_m.e, sizeof(fr.proj));
+    fr.cam[2] = 3.0f;
+    fr.fog[0] = 1e6f; fr.fog[1] = 2e6f;
+    fr.screen[0] = (float)W; fr.screen[1] = (float)H;
+    fr.screen[2] = 0.1f; fr.screen[3] = 100.0f;
+    fr.counts[1] = (float)ls.dir_count;
+    fr.counts[2] = 0.002f;
+    fr.far[0] = fr.far[1] = fr.far[2] = fr.far[3] = 25.0f;
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_buffer_update(g_dev, ubo, &fr, sizeof(fr));
+    rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+    rhi_cmd_set_uniform_mat4(cmd, loc_model, identity);
+    rhi_cmd_set_uniform_mat4(cmd, loc_view, &view_m.e[0][0]);
+    rhi_cmd_set_uniform_vec2(cmd, loc_mr, (float)metal, (float)rough);
+    rhi_cmd_set_uniform_f32(cmd, loc_occ, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc_em, 0.0f, 0.0f, 0.0f);
+    rhi_cmd_bind_material_textures_ibl(cmd, alb, mrt, nrm, emi, white,
+        RHI_HANDLE_NULL, white, (RHISampler){0}, RHI_HANDLE_NULL,
+        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
+                               light_system_grid_slot(&ls));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (y = 0; y < H; ++y) {
+        for (x = 0; x < W; ++x) {
+            double nx = (x + 0.5) / W * 2.0 - 1.0, ny = (y + 0.5) / H * 2.0 - 1.0;
+            double th = tan(fov * 0.5), t = 3.5;
+            double w[3] = { t * nx * th * aspect, t * ny * th, -0.5 };
+            double V[3], vl, L[3] = { 0.0, -0.6, 0.8 }, lc[3] = { 0.9, 0.8, 0.7 }, add[3];
+            V[0] = -w[0]; V[1] = -w[1]; V[2] = 3.0 - w[2];
+            vl = sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+            for (c = 0; c < 3; ++c) V[c] /= vl;
+            r644_cook(albedo, metal, rough, Np, V, L, lc, add);
+            for (c = 0; c < 3; ++c) {
+                double tm = add[c] / (add[c] + 1.0), want = pow(tm, 1.0 / 2.2);
+                double got = warp_half_to_float(px[(y * W + x) * 4 + c]);
+                if (fabs(got - want) > 0.008)
+                    printf("  bitangent px (%d,%d) ch %d = %f, want %f\n", x, y, c, got, want);
+                ASSERT_TRUE(fabs(got - want) <= 0.008);
+                ++checked;
+            }
+        }
+    }
+    ASSERT_EQ(checked, W * H * 3);
+    ASSERT_TRUE(r643_clean("clustered_bitangent"));
+    light_system_shutdown(&ls);
+    rhi_texture_destroy(g_dev, alb); rhi_texture_destroy(g_dev, mrt);
+    rhi_texture_destroy(g_dev, nrm); rhi_texture_destroy(g_dev, emi);
+    rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, vbo); rhi_buffer_destroy(g_dev, ubo);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -10700,6 +10869,7 @@ int main(void) {
     RUN_TEST(clustered_skin_sidecar_blends_joints_and_writes_velocity);
     RUN_TEST(clustered_array_sidecar_picks_texture_and_factors_by_first_instance);
     RUN_TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets);
+    RUN_TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
