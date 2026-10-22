@@ -3087,9 +3087,12 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                 sampler = &b->samplers[b->sampler_count++];
                 ZeroMemory(sampler, sizeof(*sampler));
                 sampler->Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-                sampler->AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-                sampler->AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->AddressU = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->AddressV = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+                sampler->AddressW = b->clamp_samplers ? D3D12_TEXTURE_ADDRESS_MODE_CLAMP
+                                                      : D3D12_TEXTURE_ADDRESS_MODE_WRAP;
                 sampler->MaxLOD = D3D12_FLOAT32_MAX;
                 sampler->ShaderRegister = bind->binding;
                 sampler->RegisterSpace = 0u;
@@ -3421,6 +3424,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
      * constant block consumes these bytes (declared by Task 6's shaders);
      * they are retained in pd->desc for the uniform-location mapping. */
     builder.push_constant_size = desc->is_compute ? 128u : 256u;
+    builder.clamp_samplers = (desc->is_compute || desc->no_vertex_input) ? 1u : 0u;
     ZeroMemory(&vs_code, sizeof(vs_code));
     ZeroMemory(&ps_code, sizeof(ps_code));
     if (desc->is_compute) {
@@ -4684,14 +4688,19 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
      * every backend path that reaches this function, including the material
      * binders. Root-signature construction resolves every SamplerState
      * register to a D3D12_STATIC_SAMPLER_DESC (rhi_d3d12_root_sig_add_bindings)
-     * hardcoded to MIN_MAG_MIP_LINEAR + WRAP/WRAP/WRAP + MaxLOD FLT_MAX, and
-     * emits no root parameter of type SAMPLER table, so there is nothing for
-     * a bind to point at. GL applies the caller's sampler object per unit and
-     * so honours filter, address mode and LOD selection; D3D12 currently
-     * cannot.
+     * hardcoded to MIN_MAG_MIP_LINEAR + MaxLOD FLT_MAX, and emits no root
+     * parameter of type SAMPLER table, so there is nothing for a bind to
+     * point at. GL applies the caller's sampler object per unit and so
+     * honours filter, address mode and LOD selection; D3D12 currently
+     * cannot. R662 picks the address mode per pipeline instead of per bind:
+     * CLAMP for fullscreen (no_vertex_input) and compute pipelines -- every
+     * sampler the post chain, deferred lighting, IBL and particle passes
+     * create asks for CLAMP_TO_EDGE -- and WRAP for mesh pipelines, which
+     * bind the engine's REPEAT material sampler.
      *
      * What that means concretely: a texture can be filtered LINEAR and
-     * addressed WRAP, and nothing else. In particular there is no comparison
+     * addressed WRAP or CLAMP by pipeline kind, and nothing else (NEAREST
+     * requests come back bilinear). In particular there is no comparison
      * sampling — EnableComparison is never set and no D3D12_SAMPLER_DESC
      * reaches the shader.
      *

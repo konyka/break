@@ -324,6 +324,11 @@ typedef struct RHI_D3D12RootSigBuilder {
      * image_root_params[N]. */
     UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
     UINT push_constant_size;   /* bytes; 0 = none */
+    /* R662: address mode of the static samplers. The renderer's fullscreen
+     * and compute passes (post chain, deferred lighting, IBL bakes, particle
+     * and cull helpers) all ask for CLAMP_TO_EDGE; only the material sampler
+     * (main.c) is REPEAT, and that one is bound by mesh pipelines. */
+    UINT clamp_samplers;
 } RHI_D3D12RootSigBuilder;
 
 HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,

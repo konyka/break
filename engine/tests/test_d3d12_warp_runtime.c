@@ -1919,6 +1919,12 @@ TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent) {
  * evaluated. It is symmetric under row r <-> 7 - r, so it does not depend on
  * whether readback row 0 is the top or the bottom of the image.
  *
+ * R662: the table is for CLAMP_TO_EDGE addressing, which fullscreen pipelines
+ * get now (it is what the engine's dof sampler asks for and what GL does).
+ * The pre-R662 table came from the static WRAP sampler, where the bilinear
+ * tap at the stripe boundary wrapped to the opposite edge (columns 3 and 4
+ * read 142 / 113 instead of 191 / 64).
+ *
  * Frame 1 is asserted with a +-2 tolerance and frame 0 exactly. Several model
  * values sit exactly on .5 (127.5), so exact bytes would be asserting the
  * hardware's round-half rule; the bound covers that and bilinear-weight
@@ -3110,14 +3116,14 @@ TEST(dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind) {
     static unsigned char colour[8 * 8 * 4];
     static float depth[8 * 8];
     static const unsigned char model_red[8 * 8] = {
-        170, 170, 170, 170,  85,  85,  85,  85,
-        170, 170, 170, 170,  85,  85,  85,  85,
-        170, 128, 128, 142, 113, 128, 128,  85,
-        170, 128, 128, 142, 113, 128, 128,  85,
-        170, 128, 128, 142, 113, 128, 128,  85,
-        170, 128, 128, 142, 113, 128, 128,  85,
-        170, 170, 170, 170,  85,  85,  85,  85,
-        170, 170, 170, 170,  85,  85,  85,  85
+        170, 170, 170, 191,  64,  85,  85,  85,
+        170, 170, 170, 191,  64,  85,  85,  85,
+        170, 128, 128, 170,  85, 128, 128,  85,
+        170, 128, 128, 170,  85, 128, 128,  85,
+        170, 128, 128, 170,  85, 128, 128,  85,
+        170, 128, 128, 170,  85, 128, 128,  85,
+        170, 170, 170, 191,  64,  85,  85,  85,
+        170, 170, 170, 191,  64,  85,  85,  85
     };
     RHIOffscreenFBODesc fbo_desc;
     RHIOffscreenFBO fbo;
@@ -7019,16 +7025,20 @@ TEST(combined_color_sidecar_matches_the_fused_tonemap_grade_vignette) {
  *       prev_vp read moves the shift into w and breaks both.
  *   F3  first_frame forced again with a horizontal edge whose bright side is
  *       a ramp 64..255 (starting at 64, not 0, so no pixel hits FXAA's
- *       0/0 distA+distB on the wrapped border): out must match a double replay of the FXAA math (bilinear,
- *       WRAP) and the standalone FXAA sidecar. A plain box is not enough
+ *       0/0 distA+distB on the border): out must match a double replay of the FXAA math (bilinear,
+ *       CLAMP) and the standalone FXAA sidecar. A plain box is not enough
  *       here: none of its blended pixels reaches the end-search branch, so
  *       a broken posB tap passed; on the ramp edge it moves 15 pixels. */
 /* R642: double replay of the FXAA half of combined_taa_fxaa.frag on an 8x8
- * grey image, bilinear with WRAP addressing (the D3D12 static sampler), so
- * the half-texel end-search taps (posA / posB) are reproduced exactly. */
+ * grey image, bilinear with CLAMP addressing (the D3D12 static sampler for
+ * fullscreen pipelines since R662; it was WRAP before), so the half-texel
+ * end-search taps (posA / posB) are reproduced exactly. */
 static const u8 *r642_img;
 static double r642_tex(int x, int y) {
-    x = ((x % 8) + 8) % 8; y = ((y % 8) + 8) % 8;
+    /* R662: CLAMP_TO_EDGE -- fullscreen pipelines get clamped static
+     * samplers now, as the engine's post samplers ask for and GL does. */
+    x = x < 0 ? 0 : (x > 7 ? 7 : x);
+    y = y < 0 ? 0 : (y > 7 ? 7 : y);
     return r642_img[(y * 8 + x) * 4] / 255.0;
 }
 static double r642_bilin(double u, double v) {
@@ -7132,7 +7142,14 @@ TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa) {
         if (frame == 3) break;
         for (y = 0; y < 8; ++y) {
             for (x = 0; x < 8; ++x) {
-                double cur = ((x + y) & 1) ? 1.0 : 0.0;
+                /* The 3x3 taps are whole texels, so on the interior a
+                 * checkerboard's diagonals all equal the centre and FXAA
+                 * returns it; at the border CLAMP repeats the edge texel and
+                 * the diagonals no longer agree, so FXAA's own replay is the
+                 * "current" colour (R662; under WRAP it was the raw texel). */
+                double cur;
+                r642_img = chk;
+                cur = r642_fxaa((x + 0.5) / 8.0, (y + 0.5) / 8.0);
                 for (c = 0; c < 3; ++c) {
                     double want;
                     float got = warp_half_to_float(out[(y * 8 + x) * 4 + c]);
@@ -7174,8 +7191,12 @@ TEST(combined_aa_sidecar_reprojects_history_and_matches_fxaa) {
         ASSERT_TRUE(fabs(got - model) <= 0.006);
         if (fabsf(got - bx[i * 4] / 255.0f) > 0.02f) blended++;
     }
-    if (blended < 8) printf("  combined aa fxaa blended only %d pixels\n", blended);
-    ASSERT_TRUE(blended >= 8);
+    /* Non-vacuity guard only: every pixel is already compared with the model
+     * and with the standalone FXAA sidecar above. Under CLAMP the ramp edge
+     * blends 7 pixels (8 under the old WRAP sampler, where the wrapped border
+     * row added one). */
+    if (blended < 7) printf("  combined aa fxaa blended only %d pixels\n", blended);
+    ASSERT_TRUE(blended >= 7);
     fxaa_shutdown(&fx);
     rhi_texture_destroy(g_dev, flat);
     rhi_texture_destroy(g_dev, checker);
@@ -10816,6 +10837,108 @@ TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent) {
     rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
 }
 
+/* R662: the static samplers' address mode follows the pipeline kind.
+ *
+ * Fullscreen (no_vertex_input) and compute pipelines get CLAMP_TO_EDGE -- the
+ * mode every post / deferred / IBL sampler in the renderer asks for, and what
+ * GL applies. The D3D12 backend ignores the sampler argument of
+ * rhi_cmd_bind_texture (documented limit), so before R662 every pass wrapped
+ * at the screen edge: the post chain's edge pixels sampled the opposite side.
+ *
+ * Probe: blit_hlsl.vert builds UV from the untransformed vertex (p * .5 + .5)
+ * and only moves the POSITION through the push matrix. A matrix scaling clip x
+ * by 0.5 therefore shrinks the triangle to pos.x = 0.5 * p.x, so target column
+ * x reads UV (x + .5) / 4 - 0.5: columns 2..7 are covered and column 7 reads
+ * u = 1.375, outside [0,1] (columns 0..1 fall left of the triangle). Rows 0..3
+ * (NDC y < 0) lie inside the hypotenuse for every covered column. The source
+ * is a 4x1 ramp 10 / 90 / 170 / 250, bilinear: a tap past the right edge
+ * returns texel 3 (250) under CLAMP and wraps to texel 0..2 under WRAP, so the
+ * two modes differ by well over 20 levels for columns 5..7.
+ *
+ * Each covered pixel is compared with a CPU bilinear replay under CLAMP, and
+ * the replay under WRAP is computed alongside and required to differ on the
+ * out-of-range columns, so the test cannot go vacuous. */
+TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes) {
+    static const unsigned char ramp[4 * 1 * 4] = {
+        10, 10, 10, 255,   90, 90, 90, 255,   170, 170, 170, 255,   250, 250, 250, 255
+    };
+    static const float half_x[16] = { 0.5f,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc td;
+    RHITexture tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int x, y, separated = 0;
+    r643_mark();
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    memset(&td, 0, sizeof(td));
+    td.width = 4u; td.height = 1u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = ramp;
+    tex = rhi_texture_create(g_dev, &td);
+    ASSERT_TRUE(rhi_handle_valid(tex));
+    vs = rhi_shader_create(g_dev, "blit_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs; pd.no_vertex_input = true;
+    pd.disable_culling = true; pd.depth_write_disable = true;
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_push_constants(cmd, 0u, half_x, sizeof(half_x));
+    rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (y = 0; y < 4; ++y) {
+        for (x = 2; x < 8; ++x) {
+            double u = (x + 0.5) / 4.0 - 0.5, fx = u * 4.0 - 0.5, a;
+            int x0 = (int)floor(fx), k;
+            double clampv, wrapv, t[2][2];
+            a = fx - x0;
+            for (k = 0; k < 2; ++k) {
+                int xi = x0 + k;
+                t[0][k] = ramp[(xi < 0 ? 0 : (xi > 3 ? 3 : xi)) * 4];
+                t[1][k] = ramp[(((xi % 4) + 4) % 4) * 4];
+            }
+            clampv = t[0][0] * (1 - a) + t[0][1] * a;
+            wrapv = t[1][0] * (1 - a) + t[1][1] * a;
+            if (fabs(px[(y * 8 + x) * 4] - clampv) > 2.0)
+                printf("  fullscreen sampler px (%d,%d) = %u, CLAMP model %f (WRAP %f)\n",
+                       x, y, (unsigned)px[(y * 8 + x) * 4], clampv, wrapv);
+            ASSERT_TRUE(fabs(px[(y * 8 + x) * 4] - clampv) <= 2.0);
+            if (u > 1.0 && fabs(clampv - wrapv) > 20.0) ++separated;
+        }
+    }
+    /* Columns 5..7 read past the right edge on all four rows. */
+    ASSERT_TRUE(separated >= 8);
+    ASSERT_TRUE(r643_clean("static_sampler_clamp"));
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -10914,6 +11037,7 @@ int main(void) {
     RUN_TEST(clustered_array_sidecar_picks_texture_and_factors_by_first_instance);
     RUN_TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets);
     RUN_TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent);
+    RUN_TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

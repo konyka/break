@@ -1,6 +1,32 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R661–R662 — 清掉调试 printf；全屏/计算管线的静态采样器改为 CLAMP
+
+### R661：清理
+R658 调试时在 `rhi_d3d12.c` 设备创建里加的 `printf("R658DBG ...")` 被一起提交了，每次建设备都会往 stdout 打一行没有换行的内容。删除；测试里一个只在失败时打印的诊断补上换行并改成有意义的前缀。
+
+### R662：全屏与计算管线的静态采样器地址模式
+**发现**：让子 agent 对比 `rhi_d3d12.c` 与 `rhi_gl.c` 的每个导出函数，D3D12 剩下的真空桩只有 GPU 计时器（读数恒为 0，无功能损坏）。影响最大的是文档里早已写明的「已知限制」：D3D12 丢弃 `rhi_cmd_bind_texture` 的 sampler 参数，根签名里每个 `SamplerState` 都是写死的 LINEAR + **WRAP** 静态采样器。而渲染器里后处理、延迟光照、IBL、粒子等所有 sampler 都要求 CLAMP_TO_EDGE，GL 也确实按此应用。
+
+**量化**：把 demo 截图里 D3D12 与 GL 的差分拆成屏幕边缘 8 像素带和内部。R658 时前向路径边缘误差 3.83、内部 1.32（延迟 2.04 / 1.16）——边缘是内部的 3 倍，与「WRAP 在屏幕边缘取到对侧像素」吻合。实验：临时把所有静态采样器改成 CLAMP，边缘降到 0.77（延迟 0.43），内部不变，确认原因。
+
+**修复**：不去做完整的 sampler 描述符表（那是改所有管线根签名的大改动），而是按管线类型选地址模式：`RHI_D3D12RootSigBuilder.clamp_samplers`，全屏（`no_vertex_input`）和计算管线为 CLAMP，网格管线保持 WRAP（引擎的材质采样器是 REPEAT，网格的 UV 常常超出 [0,1]）。NEAREST 请求仍然被当作双线性，这一条限制保留并写进了代码注释。
+
+**被改写的既有用例**（这三个用例钉住的恰好是 WRAP 行为，不是回归）：
+- `dof_sidecar_passes_focus_and_blurs_out_of_focus_via_multi_bind`：期望表在条纹交界处的两列从 142/113 变为 191/64——WRAP 下交界处的双线性采样绕到了对侧。新表用 Python 模型（含 WRAP 表的对照复现，WRAP 模型逐项等于旧表，所以模型可信）算出。
+- `combined_aa_sidecar_reprojects_history_and_matches_fxaa`：FXAA 的 CPU 复算改成 CLAMP；棋盘格在边界处的对角线不再相等，所以第 1、2 帧的「当前色」改用 FXAA 复算而不是原始纹素；斜坡边缘的混合像素数由 8 变 7（旧 WRAP 的绕边行多算了一个），非空洞守卫相应放宽到 7，每个像素仍然逐个对比模型。
+- 新增 `static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes`：blit 顶点着色器的 UV 取自未变换的顶点，推矩阵只缩放位置，于是 4×1 斜坡 (10/90/170/250) 在列 5..7 读到 u>1。对每个被覆盖像素对比 CPU 的 CLAMP 双线性复算，并要求同一处 WRAP 复算与 CLAMP 复算相差 20 以上，防止测试空洞。
+
+**反向验证**：把 `clamp_samplers` 强制为 0 后，上述三个用例全部失败（DOF 191 vs 170、combined AA 第 1 帧、新用例）；恢复后全部通过。
+
+**验证结果**：WARP 78/78，RTX 77/78（仅预期的 [1]），debug layer 0 错误 0 警告。demo 截图 D3D12 与 GL 的屏幕边缘误差：前向 3.83 → 0.7–0.8，延迟 2.04 → 0.43；内部持平。整体 MAE：前向 1.40–1.46（噪声范围内，之前 1.41），延迟 1.13（之前 1.19）。
+
+### 遗留
+- GPU 计时器在 D3D12 上恒为 0（`rhi_gpu_timer_*` 是空桩）：调试叠层的 GPU 耗时、trace 的 gpu_* 区域和 draw-bench 的 GPU 样本都是 0，不影响渲染。实现需要 timestamp 查询堆 + readback，是下一个可做的功能项。
+- NEAREST 采样仍是双线性（需要真正的 sampler 描述符表）；`rhi_cmd_set_depth_func_*`/`set_cull_face` 在 D3D12 是空函数，但天空盒的 PSO 已经把这些状态烘焙进去，无可见影响。
+- 潜在风险：VK 与 GL 对 `no_vertex_input` 管线强制关闭背面剔除，D3D12 没有；天空盒与粒子管线没设 `disable_culling`，今天恰好是正面朝向所以能渲染。
+
 ## 本轮更新：R660 — 补辐照度 +Z 面镜像的像素证明
 
 ### 问题
