@@ -333,15 +333,20 @@ target_include_directories(break_replication_core PUBLIC
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
 # Formal optional Runtime Core library: unified error/lifecycle types, the
-# single-owner lifecycle coordinator, and the formal message/queue/task
-# facade. Top-level like the other formal optional libraries — built
-# regardless of ENGINE_BUILD_TESTS, and deliberately NOT linked into engine,
-# engine_demo, or dxx_break; consumers opt in explicitly in later tasks.
+# single-owner lifecycle coordinator, the formal message/queue/task facade,
+# and the formal thread + IO/VFS facades. Top-level like the other formal
+# optional libraries — built regardless of ENGINE_BUILD_TESTS, and
+# deliberately NOT linked into engine, engine_demo, or dxx_break; consumers
+# opt in explicitly in later tasks. runtime_io.c references the borrowed VFS
+# (vfs_*) and runtime_task.c the legacy TaskSystem (task_*): both resolve at
+# the consumer's final link, exactly like the task facade precedent.
 add_library(runtime_core STATIC
     src/runtime/runtime_coordinator.c
     src/runtime/runtime_message.c
     src/runtime/runtime_queue.c
-    src/runtime/runtime_task.c)
+    src/runtime/runtime_task.c
+    src/runtime/runtime_thread.c
+    src/runtime/runtime_io.c)
 set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3278,7 +3283,9 @@ endif()
     add_library(runtime_core_test STATIC
         src/runtime/runtime_message.c
         src/runtime/runtime_queue.c
-        src/runtime/runtime_task.c)
+        src/runtime/runtime_task.c
+        src/runtime/runtime_thread.c
+        src/runtime/runtime_io.c)
     set_property(TARGET runtime_core_test PROPERTY C_STANDARD 11)
     target_include_directories(runtime_core_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3300,6 +3307,29 @@ endif()
     target_link_libraries(test_runtime_facade PRIVATE runtime_core_test)
     add_test(NAME test_runtime_facade COMMAND test_runtime_facade)
     set_tests_properties(test_runtime_facade PROPERTIES
+        LABELS "headless;runtime_core")
+
+    # Formal thread + IO/VFS facade focused tests (Task 5). vfs.c/log.c are
+    # compiled beside the test: the facade reads through a borrowed VFS whose
+    # symbols resolve at this final link (same pattern as the task facade
+    # resolving the legacy TaskSystem). The compatibility async loader is not
+    # involved and stays unchanged.
+    add_executable(test_runtime_io tests/test_runtime_io.c
+        src/asset/vfs.c src/core/log.c)
+    target_include_directories(test_runtime_io PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_runtime_io PRIVATE BREAK_RUNTIME_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_runtime_io PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_runtime_io PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_runtime_io PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_runtime_io PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_runtime_io PRIVATE runtime_core_test)
+    add_test(NAME test_runtime_io COMMAND test_runtime_io)
+    set_tests_properties(test_runtime_io PROPERTIES
         LABELS "headless;runtime_core")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c

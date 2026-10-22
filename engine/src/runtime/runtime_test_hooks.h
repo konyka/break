@@ -26,6 +26,19 @@ extern _Atomic u64 g_break_runtime_test_alloc_budget;
  * without consuming the task call. 0 disables the hook (default). */
 extern _Atomic u64 g_break_runtime_test_forward_fail_budget;
 
+/* IO facade worker gates (defined in runtime_io.c, test variant only).
+ * gate_pop != 0: workers block BEFORE claiming from the pending ring (the
+ * request stays QUEUED). gate_read != 0: workers block AFTER claiming
+ * (QUEUED->READING) and BEFORE the VFS read. 0 disables each gate. */
+extern _Atomic u32 g_break_runtime_test_io_gate_pop;
+extern _Atomic u32 g_break_runtime_test_io_gate_read;
+/* Number of requests workers have claimed (QUEUED->READING). */
+extern _Atomic u64 g_break_runtime_test_io_popped;
+
+/* Sets both gates and wakes gated workers when a gate is released. Defined
+ * in runtime_io.c (test variant); a no-op safe call before init. */
+void break_runtime_test_io_set_gates(u32 gate_pop, u32 gate_read);
+
 static inline void break_runtime_test_set_forward_fail_budget(u64 budget)
 {
     atomic_store_explicit(&g_break_runtime_test_forward_fail_budget, budget,

@@ -194,6 +194,8 @@ IO worker 只拥有 request 的 immutable path/range copy 和临时 bytes。VFS 
 
 当前 `mipmap_stream` 的 range contract（`mipmap_stream.h:93-115`）可作为纹理 streaming 的 focused 先验：resident bytes 先 reserve、失败释放 reservation、stale completion 用 request ID 丢弃、budget 超限先 eviction。但它假设 raw mip chain、RGBA8 和宿主 upload callback；通用 Runtime Asset Stream 不能把这个假设扩展成所有 asset type。
 
+**已交付事实（2026-10-23，Task 5）**：正式可选 `runtime_core`（仍不链入 `engine`/`engine_demo`/`dxx_break`）交付了本节 IO/VFS 方向的第一切片：`engine/src/runtime/runtime_io.h/.c` 是 module-level 单例 formal IO facade（brief 的 request API 不携带 context 指针），VFS 以借用指针注入（mount table 生命周期长于全部 IO worker），IO worker 是正式 `BreakRuntimeThread`（`runtime_thread.h/.c`，包装 `platform_thread.h` 且公共头不暴露任何 OS handle）。每个 request 获得恰好一个 owned completion（`BreakRuntimeOwnedMessage`，kind=`BREAK_RUNTIME_IO_COMPLETION_KIND`，payload = wire header + 文件字节，byte budget `BREAK_RUNTIME_IO_MAX_FILE_BYTES` 默认 16 MiB 且仍需装入 message budget，超限 → FAILED/OVERLOAD completion）；`poll_completion` 非阻塞、`wait_completion` 可被 deadline（`BREAK_RUNTIME_TIMEOUT`，不消费 completion，可重试）与 shutdown（`BREAK_RUNTIME_CLOSED`）打断；submit 满载非阻塞返回 `BREAK_RUNTIME_OVERLOAD`（live request 计数有界，绝不等待容量）；cancel 推进 request generation，worker 迟到结果按 stale generation 丢弃并释放自有 bytes（stats 计数）；`shutdown(timeout_ms)` 按「关闭 admission → drain 队列（queued request 发布 CANCELLED completion）→ 有界 stop/join worker」执行，worker 超时返回 `BREAK_RUNTIME_TIMEOUT` 并保留 live ownership，可重试。facade 没有任何 callback，因此「IO worker 不调用 GameThread callback」在结构上成立。兼容 loader（`async_loader.c` 含其 completion 队列等待行为）逐字节未动。range request、decode 队列、typed blob、manifest、RHI upload command 仍为设计-only。验证：`test_runtime_io` 14/14（thread start/stop timeout/owner completion、owned completion bytes、cancel-before-start、stale generation drop、queue overload、deadline/shutdown 打断 completion wait、fork 子进程 double-release abort、alloc 故障注入），normal/ASan+UBSan/TSan 三树各 4/4，TSan 连跑 10 次零报告。
+
 ### 4.4 RHI 与 resource lifetime
 
 - RHI handle 只能由 RHI owner thread 创建、更新、销毁；asset worker 不得调用 `rhi_*`。
@@ -304,7 +306,7 @@ Asset/HotReload formal facade 统一映射到 `BreakRuntimeError`：`OK`、`INVA
 | 领域 | 当前已有 | focused/test-only | 本文设计目标 | 未实现/不承诺 |
 |---|---|---|---|---|
 | VFS/PAK/DIR | `engine/src/asset/vfs.*` 正式编入 `engine`，mount/path/file cap | VFS 单元测试按现有 CTest 配置 | manifest-aware canonical asset source、mount policy、IO facade | signed package、online update/A-B rollback |
-| Async IO | `async_loader.*` 正式编入 `engine`，range/priority/cancel/callback | `test_async_loader` 验证当前行为 | Runtime IO queue、credit/backpressure、request generation API | 任意 worker 直接 RHI |
+| Async IO | `async_loader.*` 正式编入 `engine`，range/priority/cancel/callback；`runtime_io.*` formal IO facade 编入可选 `runtime_core`（2026-10-23 Task 5，未集成进 engine/demo） | `test_async_loader` 验证当前行为；`test_runtime_io` 验证 formal facade | 全链路 credit/backpressure、range/decode 队列接线 | 任意 worker 直接 RHI |
 | Decode | `decode_pipeline.*` 2 worker/256 input、RGBA8 mip decode | 现有 async/decode tests | typed decoder registry、每类型预算、取消与失败语义 | 所有格式/压缩格式均已支持 |
 | Mipmap | `mipmap_stream.*` 最多1024 texture/16 mip/预算/eviction | 现有 mipmap tests | 通用 residency/cache 与 GPU command queue | distributed asset cache |
 | Hot reload | file watcher + pipeline/texture poll/callback | watcher/hotreload tests | staged candidate + atomic swap + old version retention | production online patch |
