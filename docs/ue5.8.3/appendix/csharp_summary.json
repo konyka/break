@@ -1,0 +1,5308 @@
+{
+ "total_files": 5719,
+ "total_symbols": 89219,
+ "groups": [
+  {
+   "label": "Agent",
+   "root": "Source/Programs/UnrealSwarm/Agent",
+   "files": 15,
+   "symbols": 793,
+   "stat": {
+    "interface": 1,
+    "method": 278,
+    "struct": 1,
+    "field": 321,
+    "class": 47,
+    "ctor": 26,
+    "const": 3,
+    "property": 62,
+    "enum": 6,
+    "enumerator": 31,
+    "delegate": 16,
+    "indexer": 1
+   },
+   "outputs": [
+    "Agent.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 15
+   },
+   "ct_total": 467,
+   "ct_hit": 467,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AgentInterface",
+   "root": "Source/Programs/UnrealSwarm/AgentInterface",
+   "files": 2,
+   "symbols": 224,
+   "stat": {
+    "class": 13,
+    "const": 18,
+    "enum": 11,
+    "enumerator": 104,
+    "ctor": 17,
+    "method": 18,
+    "field": 42,
+    "interface": 1
+   },
+   "outputs": [
+    "AgentInterface.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 164,
+   "ct_hit": 164,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Android.Automation",
+   "root": "Source/Programs/AutomationTool/Android",
+   "files": 4,
+   "symbols": 355,
+   "stat": {
+    "class": 14,
+    "delegate": 1,
+    "property": 14,
+    "const": 27,
+    "field": 82,
+    "ctor": 7,
+    "dtor": 3,
+    "method": 199,
+    "enum": 2,
+    "enumerator": 6
+   },
+   "outputs": [
+    "Android.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 124,
+   "ct_hit": 124,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AndroidPortForwarder",
+   "root": "Source/Developer/Android/AndroidZenServerPlugin/AndroidPortForwarder",
+   "files": 5,
+   "symbols": 41,
+   "stat": {
+    "class": 6,
+    "field": 11,
+    "method": 18,
+    "enum": 1,
+    "enumerator": 2,
+    "delegate": 1,
+    "ctor": 2
+   },
+   "outputs": [
+    "AndroidPortForwarder.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 5
+   },
+   "ct_total": 29,
+   "ct_hit": 27,
+   "ct_missing": [
+    [
+     "Source/Developer/Android/AndroidZenServerPlugin/AndroidPortForwarder/AndroidPortForwarderCLI.cs",
+     23,
+     "method",
+     "forwarder.StartMonitor"
+    ],
+    [
+     "Source/Developer/Android/AndroidZenServerPlugin/AndroidPortForwarder/AndroidPortForwarderCLI.cs",
+     25,
+     "method",
+     "exitEvent.WaitOne"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "Apple.Automation",
+   "root": "Source/Programs/AutomationTool/Apple",
+   "files": 3,
+   "symbols": 58,
+   "stat": {
+    "class": 3,
+    "ctor": 2,
+    "method": 21,
+    "record": 25,
+    "field": 6,
+    "property": 1
+   },
+   "outputs": [
+    "Apple.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 52,
+   "ct_hit": 52,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AutomatedPerfTesting.Automation",
+   "root": "Plugins/Performance/AutomatedPerfTesting/Build/Scripts",
+   "files": 4,
+   "symbols": 138,
+   "stat": {
+    "interface": 2,
+    "method": 54,
+    "class": 11,
+    "field": 55,
+    "ctor": 7,
+    "property": 9
+   },
+   "outputs": [
+    "AutomatedPerfTesting.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 81,
+   "ct_hit": 81,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AutomationScripts.Automation",
+   "root": "Source/Programs/AutomationTool/Scripts",
+   "files": 104,
+   "symbols": 1909,
+   "stat": {
+    "class": 223,
+    "const": 23,
+    "method": 717,
+    "field": 429,
+    "ctor": 78,
+    "struct": 13,
+    "property": 338,
+    "enum": 14,
+    "enumerator": 63,
+    "operator": 5,
+    "interface": 2,
+    "record struct": 2,
+    "record": 2
+   },
+   "outputs": [
+    "AutomationScripts.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 104
+   },
+   "ct_total": 1313,
+   "ct_hit": 1311,
+   "ct_missing": [
+    [
+     "Source/Programs/AutomationTool/Scripts/BenchmarkBuild/BenchmarkBuild.Automation.cs",
+     675,
+     "property",
+     "BenchmarkEditorTaskBase"
+    ],
+    [
+     "Source/Programs/AutomationTool/Scripts/BuildAcquire.Automation.cs",
+     31,
+     "struct",
+     "IConvertible"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "AutomationTool",
+   "root": "Source/Programs/AutomationTool",
+   "files": 2,
+   "symbols": 10,
+   "stat": {
+    "class": 1,
+    "method": 8,
+    "field": 1
+   },
+   "outputs": [
+    "AutomationTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 9,
+   "ct_hit": 9,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AutomationToolLauncher",
+   "root": "Source/Programs/AutomationToolLauncher",
+   "files": 2,
+   "symbols": 3,
+   "stat": {
+    "class": 1,
+    "method": 2
+   },
+   "outputs": [
+    "AutomationToolLauncher.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 3,
+   "ct_hit": 3,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "AutomationUtils.Automation",
+   "root": "Source/Programs/AutomationTool/AutomationUtils",
+   "files": 54,
+   "symbols": 2828,
+   "stat": {
+    "class": 173,
+    "property": 404,
+    "field": 772,
+    "method": 1033,
+    "enum": 36,
+    "enumerator": 259,
+    "ctor": 98,
+    "struct": 7,
+    "const": 26,
+    "delegate": 4,
+    "interface": 6,
+    "dtor": 2,
+    "operator": 8
+   },
+   "outputs": [
+    "AutomationUtils.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 54
+   },
+   "ct_total": 2001,
+   "ct_hit": 1997,
+   "ct_missing": [
+    [
+     "Source/Programs/AutomationTool/AutomationUtils/BundleUtils.cs",
+     374,
+     "property",
+     "BundleSettings"
+    ],
+    [
+     "Source/Programs/AutomationTool/AutomationUtils/BundleUtils.cs",
+     386,
+     "property",
+     "BundleSettings"
+    ],
+    [
+     "Source/Programs/AutomationTool/AutomationUtils/BundleUtils.cs",
+     326,
+     "property",
+     "BundleSettings"
+    ],
+    [
+     "Source/Programs/AutomationTool/AutomationUtils/DeviceReservation.cs",
+     401,
+     "method",
+     "ICloneable.Clone"
+    ]
+   ],
+   "ct_missing_n": 4
+  },
+  {
+   "label": "BuildGraph.Automation",
+   "root": "Source/Programs/AutomationTool/BuildGraph",
+   "files": 84,
+   "symbols": 1746,
+   "stat": {
+    "class": 221,
+    "ctor": 113,
+    "record": 2,
+    "const": 21,
+    "field": 133,
+    "method": 609,
+    "property": 583,
+    "enum": 5,
+    "enumerator": 54,
+    "interface": 1,
+    "struct": 3,
+    "operator": 1
+   },
+   "outputs": [
+    "BuildGraph.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 84
+   },
+   "ct_total": 1569,
+   "ct_hit": 1558,
+   "ct_missing": [
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     49,
+     "method",
+     "Bind"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     13,
+     "method",
+     "ExecuteAsync"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     174,
+     "method",
+     "ParseValue"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     34,
+     "property",
+     "Tasks"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     11,
+     "class",
+     "BgNodeExecutor"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     29,
+     "class",
+     "BgScriptNode"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     211,
+     "method",
+     "ExecuteAsync"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     16,
+     "class",
+     "BgExpressionNodeExecutor"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     44,
+     "method",
+     "BgScriptNodeExecutor"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     21,
+     "method",
+     "BgExpressionNodeExecutor"
+    ],
+    [
+     "Source/Programs/AutomationTool/BuildGraph/BgScriptNode.cs",
+     67,
+     "method",
+     "BindTask"
+    ]
+   ],
+   "ct_missing_n": 11
+  },
+  {
+   "label": "CSVCollate",
+   "root": "Source/Programs/CSVTools/CSVCollate",
+   "files": 2,
+   "symbols": 7,
+   "stat": {
+    "class": 2,
+    "field": 2,
+    "method": 3
+   },
+   "outputs": [
+    "CSVCollate.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 5,
+   "ct_hit": 5,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CSVFilter",
+   "root": "Source/Programs/CSVTools/CSVFilter",
+   "files": 2,
+   "symbols": 8,
+   "stat": {
+    "class": 2,
+    "field": 2,
+    "method": 4
+   },
+   "outputs": [
+    "CSVFilter.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 6,
+   "ct_hit": 6,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CSVSplit",
+   "root": "Source/Programs/CSVTools/CSVSplit",
+   "files": 2,
+   "symbols": 7,
+   "stat": {
+    "class": 2,
+    "field": 2,
+    "method": 3
+   },
+   "outputs": [
+    "CSVSplit.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 5,
+   "ct_hit": 5,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CSVStats-Core",
+   "root": "Source/Programs/CSVTools/CsvStats",
+   "files": 4,
+   "symbols": 245,
+   "stat": {
+    "class": 16,
+    "field": 47,
+    "method": 112,
+    "ctor": 23,
+    "enum": 9,
+    "enumerator": 35,
+    "property": 3
+   },
+   "outputs": [
+    "CSVStats-Core.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 198,
+   "ct_hit": 197,
+   "ct_missing": [
+    [
+     "Source/Programs/CSVTools/CsvStats/CommandLineTool.cs",
+     306,
+     "property",
+     "System.Enum"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "CSVToSVG",
+   "root": "Source/Programs/CSVTools/CSVToSVG",
+   "files": 2,
+   "symbols": 17,
+   "stat": {
+    "class": 2,
+    "method": 9,
+    "field": 6
+   },
+   "outputs": [
+    "CSVToSVG.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 11,
+   "ct_hit": 11,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CompileTimeAnalyzer",
+   "root": "Source/Programs/Windows/CompileTimeAnalyzer/CompileTimeAnalyzer",
+   "files": 13,
+   "symbols": 204,
+   "stat": {
+    "class": 19,
+    "field": 31,
+    "event": 5,
+    "ctor": 14,
+    "property": 31,
+    "method": 94,
+    "enum": 1,
+    "enumerator": 6,
+    "struct": 1,
+    "const": 2
+   },
+   "outputs": [
+    "CompileTimeAnalyzer.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 13
+   },
+   "ct_total": 164,
+   "ct_hit": 164,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CookedEditor.Automation",
+   "root": "Source/Programs/AutomationTool/CookedEditor",
+   "files": 3,
+   "symbols": 91,
+   "stat": {
+    "class": 9,
+    "field": 30,
+    "property": 1,
+    "ctor": 2,
+    "method": 49
+   },
+   "outputs": [
+    "CookedEditor.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 61,
+   "ct_hit": 61,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CrowdinLocalization.Automation",
+   "root": "Source/Programs/AutomationTool/CrowdinLocalization",
+   "files": 2,
+   "symbols": 68,
+   "stat": {
+    "struct": 2,
+    "property": 33,
+    "class": 12,
+    "field": 9,
+    "ctor": 1,
+    "method": 11
+   },
+   "outputs": [
+    "CrowdinLocalization.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 58,
+   "ct_hit": 58,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CsvConvert",
+   "root": "Source/Programs/CSVTools/CsvConvert",
+   "files": 2,
+   "symbols": 8,
+   "stat": {
+    "class": 2,
+    "field": 1,
+    "method": 5
+   },
+   "outputs": [
+    "CsvConvert.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 7,
+   "ct_hit": 7,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CsvInfo",
+   "root": "Source/Programs/CSVTools/CsvInfo",
+   "files": 2,
+   "symbols": 10,
+   "stat": {
+    "class": 2,
+    "field": 1,
+    "method": 7
+   },
+   "outputs": [
+    "CsvInfo.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 9,
+   "ct_hit": 9,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "CsvToSvgLib",
+   "root": "Source/Programs/CSVTools/CsvToSvgLib",
+   "files": 2,
+   "symbols": 200,
+   "stat": {
+    "class": 13,
+    "field": 109,
+    "method": 61,
+    "enum": 1,
+    "enumerator": 3,
+    "ctor": 11,
+    "const": 1,
+    "struct": 1
+   },
+   "outputs": [
+    "CsvToSvgLib.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 90,
+   "ct_hit": 90,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Analytics.Generators",
+   "root": "Source/Programs/Shared/EpicGames.Analytics.Generators",
+   "files": 2,
+   "symbols": 24,
+   "stat": {
+    "class": 3,
+    "const": 3,
+    "method": 9,
+    "record struct": 1,
+    "field": 6,
+    "ctor": 1,
+    "property": 1
+   },
+   "outputs": [
+    "EpicGames.Analytics.Generators.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 14,
+   "ct_hit": 14,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Analytics.PerformanceTrends",
+   "root": "Source/Programs/Shared/EpicGames.Analytics.PerformanceTrends",
+   "files": 2,
+   "symbols": 69,
+   "stat": {
+    "record": 2,
+    "const": 20,
+    "field": 2,
+    "property": 36,
+    "ctor": 3,
+    "class": 1,
+    "method": 5
+   },
+   "outputs": [
+    "EpicGames.Analytics.PerformanceTrends.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 5,
+   "ct_hit": 3,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Analytics.PerformanceTrends/KeyStatTelemetryRecord.cs",
+     15,
+     "property",
+     "PerformanceTrendTelemetry"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Analytics.PerformanceTrends/PerformanceTrendTelemetry.cs",
+     146,
+     "property",
+     "HordeContextTelemetryRecord"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "EpicGames.Analytics.Telemetry",
+   "root": "Source/Programs/Shared/EpicGames.Analytics.Telemetry",
+   "files": 6,
+   "symbols": 31,
+   "stat": {
+    "record": 2,
+    "const": 1,
+    "property": 6,
+    "method": 10,
+    "ctor": 5,
+    "class": 4,
+    "field": 3
+   },
+   "outputs": [
+    "EpicGames.Analytics.Telemetry.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 6
+   },
+   "ct_total": 15,
+   "ct_hit": 14,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Analytics.Telemetry/CorrelatableTelemetryRecord.cs",
+     12,
+     "property",
+     "AbstractTelemetryRecord"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "EpicGames.AspNet",
+   "root": "Source/Programs/Shared/EpicGames.AspNet",
+   "files": 4,
+   "symbols": 64,
+   "stat": {
+    "class": 13,
+    "method": 27,
+    "ctor": 6,
+    "const": 4,
+    "struct": 1,
+    "field": 10,
+    "interface": 1,
+    "property": 2
+   },
+   "outputs": [
+    "EpicGames.AspNet.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 46,
+   "ct_hit": 46,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Benchmarks",
+   "root": "Source/Programs/Shared/EpicGames.Benchmarks",
+   "files": 2,
+   "symbols": 10,
+   "stat": {
+    "class": 2,
+    "property": 1,
+    "field": 1,
+    "method": 6
+   },
+   "outputs": [
+    "EpicGames.Benchmarks.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 9,
+   "ct_hit": 9,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Build",
+   "root": "Source/Programs/Shared/EpicGames.Build",
+   "files": 30,
+   "symbols": 732,
+   "stat": {
+    "class": 44,
+    "property": 88,
+    "method": 292,
+    "field": 164,
+    "enum": 8,
+    "enumerator": 73,
+    "interface": 2,
+    "record": 1,
+    "ctor": 30,
+    "const": 21,
+    "record struct": 1,
+    "struct": 8
+   },
+   "outputs": [
+    "EpicGames.Build.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 30
+   },
+   "ct_total": 345,
+   "ct_hit": 343,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Build/Exceptions/BuildException.cs",
+     33,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Build/Exceptions/BuildLogEventException.cs",
+     14,
+     "method",
+     "UnrealBuildTool.BuildException"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "EpicGames.BuildGraph",
+   "root": "Source/Programs/Shared/EpicGames.BuildGraph",
+   "files": 35,
+   "symbols": 1039,
+   "stat": {
+    "class": 144,
+    "property": 276,
+    "ctor": 132,
+    "method": 319,
+    "enum": 9,
+    "enumerator": 83,
+    "field": 35,
+    "struct": 1,
+    "operator": 38,
+    "indexer": 1,
+    "interface": 1
+   },
+   "outputs": [
+    "EpicGames.BuildGraph.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 35
+   },
+   "ct_total": 930,
+   "ct_hit": 909,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgExpr.cs",
+     176,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgExpr.cs",
+     81,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgExpr.cs",
+     189,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgExpr.cs",
+     68,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgLabel.cs",
+     39,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     576,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     521,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     588,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     554,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     618,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     532,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     599,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     565,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     543,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgNode.cs",
+     607,
+     "property",
+     "BgNode"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgObject.cs",
+     45,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgObject.cs",
+     67,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgType.cs",
+     67,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgType.cs",
+     134,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgType.cs",
+     123,
+     "property",
+     "BgExpr"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.BuildGraph/Expressions/BgType.cs",
+     112,
+     "property",
+     "BgExpr"
+    ]
+   ],
+   "ct_missing_n": 21
+  },
+  {
+   "label": "EpicGames.Core",
+   "root": "Source/Programs/Shared/EpicGames.Core",
+   "files": 141,
+   "symbols": 4309,
+   "stat": {
+    "class": 332,
+    "ctor": 240,
+    "enum": 33,
+    "enumerator": 416,
+    "struct": 33,
+    "field": 621,
+    "method": 1924,
+    "property": 545,
+    "interface": 26,
+    "operator": 72,
+    "event": 1,
+    "indexer": 9,
+    "const": 54,
+    "record struct": 2,
+    "dtor": 1
+   },
+   "outputs": [
+    "EpicGames.Core.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 141
+   },
+   "ct_total": 3292,
+   "ct_hit": 3247,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchive.cs",
+     17,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchiveReader.cs",
+     459,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchiveReader.cs",
+     486,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchiveReader.cs",
+     292,
+     "method",
+     "ReadBulkData"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchiveWriter.cs",
+     337,
+     "method",
+     "WriteBulkData"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryArchiveWriter.cs",
+     463,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryReaderExtensions.cs",
+     122,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryReaderExtensions.cs",
+     41,
+     "class",
+     "IBinarySerializable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryReaderExtensions.cs",
+     85,
+     "class",
+     "IBinarySerializable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryReaderExtensions.cs",
+     20,
+     "class",
+     "IBinarySerializable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryWriterExtensions.cs",
+     100,
+     "method",
+     "Write"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryWriterExtensions.cs",
+     54,
+     "class",
+     "IBinarySerializable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryWriterExtensions.cs",
+     56,
+     "method",
+     "Write"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryWriterExtensions.cs",
+     98,
+     "class",
+     "IBinarySerializable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/BinaryWriterExtensions.cs",
+     136,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/CommandLineArguments.cs",
+     1383,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/CondensedGraphBuilder.cs",
+     23,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/EnumerableExtensions.cs",
+     122,
+     "class",
+     "TNewValue"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/FileSet.cs",
+     244,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/JsonObject.cs",
+     839,
+     "property",
+     "Enum"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/JsonObject.cs",
+     914,
+     "property",
+     "Enum"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/JsonWriter.cs",
+     228,
+     "method",
+     "WriteStringArrayField"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/JsonWriter.cs",
+     322,
+     "method",
+     "WriteValue"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ListExtensions.cs",
+     92,
+     "property",
+     "TOutput"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ListExtensions.cs",
+     105,
+     "property",
+     "TOutput"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ListSegment.cs",
+     193,
+     "method",
+     "IDisposable.Dispose"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ListSegment.cs",
+     207,
+     "method",
+     "IEnumerator.Reset"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ListSegment.cs",
+     214,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/ForwardingLogger.cs",
+     47,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/ILoggerIndent.cs",
+     175,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/ILoggerIndent.cs",
+     123,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/JsonLogEvent.cs",
+     411,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/LogEvent.cs",
+     126,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/Logging/LogEvent.cs",
+     604,
+     "method",
+     "System.Collections.IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryReader.cs",
+     443,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryReader.cs",
+     409,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryReader.cs",
+     429,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryReader.cs",
+     389,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryWriter.cs",
+     1034,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/MemoryWriter.cs",
+     1051,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ReadOnlyHashSet.cs",
+     82,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ReadOnlyMemoryArray.cs",
+     82,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/ReadOnlyMemoryArray.cs",
+     141,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/RefCountedHandle.cs",
+     51,
+     "property",
+     "IDisposable"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Core/RefCountedHandle.cs",
+     40,
+     "method",
+     "IRefCountedHandle.AddRef"
+    ]
+   ],
+   "ct_missing_n": 45
+  },
+  {
+   "label": "EpicGames.Horde",
+   "root": "Source/Programs/Shared/EpicGames.Horde",
+   "files": 282,
+   "symbols": 7761,
+   "stat": {
+    "record struct": 59,
+    "method": 2309,
+    "class": 693,
+    "record": 92,
+    "property": 2697,
+    "interface": 87,
+    "struct": 29,
+    "field": 770,
+    "ctor": 467,
+    "operator": 54,
+    "enum": 63,
+    "enumerator": 290,
+    "const": 140,
+    "event": 2,
+    "indexer": 8,
+    "delegate": 1
+   },
+   "outputs": [
+    "EpicGames.Horde.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 282
+   },
+   "ct_total": 5870,
+   "ct_hit": 5845,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Auth/AuthExtensions.cs",
+     54,
+     "method",
+     "services.AddScoped"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Auth/AuthExtensions.cs",
+     52,
+     "class",
+     "TImplementation"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Auth/AuthExtensions.cs",
+     58,
+     "method",
+     "services.AddHttpClient"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Auth/AuthExtensions.cs",
+     55,
+     "method",
+     "services.AddHttpClient"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Auth/AuthExtensions.cs",
+     56,
+     "method",
+     "services.AddScoped"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/BinaryIdConverter.cs",
+     18,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/HordeClient.cs",
+     198,
+     "property",
+     "ClientBase"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Jobs/SubResourceIdConverter.cs",
+     16,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Jobs/Templates/TemplateMessages.cs",
+     144,
+     "method",
+     "ITemplateParameter.GetArguments"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Jobs/Templates/TemplateMessages.cs",
+     147,
+     "method",
+     "ITemplateParameter.GetDefaultParameters"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Logs/LogChunkNode.cs",
+     50,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Logs/LoggerUtils.cs",
+     36,
+     "property",
+     "args"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Logs/LoggerUtils.cs",
+     19,
+     "property",
+     "args"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Logs/NgramSet.cs",
+     124,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/BlobSerializer.cs",
+     111,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleHeader.cs",
+     696,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleHeader.cs",
+     488,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleHeader.cs",
+     547,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleHeader.cs",
+     949,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleHeader.cs",
+     1106,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/Bundles/V1/BundleWriter.cs",
+     569,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Storage/EncodedBlobData.cs",
+     34,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/StringIdConverter.cs",
+     18,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Telemetry/HordeContextTelemetryRecord.cs",
+     17,
+     "property",
+     "CorrelatableTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Horde/Tools/HttpToolCollection.cs",
+     93,
+     "method",
+     "IToolDeployment.UpdateAsync"
+    ]
+   ],
+   "ct_missing_n": 25
+  },
+  {
+   "label": "EpicGames.IoHash",
+   "root": "Source/Programs/Shared/EpicGames.IoHash",
+   "files": 2,
+   "symbols": 79,
+   "stat": {
+    "struct": 2,
+    "const": 5,
+    "property": 4,
+    "ctor": 2,
+    "method": 45,
+    "operator": 14,
+    "class": 4,
+    "field": 3
+   },
+   "outputs": [
+    "EpicGames.IoHash.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 30,
+   "ct_hit": 30,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.LogMatchers",
+   "root": "Source/Programs/Shared/EpicGames.LogMatchers",
+   "files": 23,
+   "symbols": 180,
+   "stat": {
+    "class": 23,
+    "const": 17,
+    "field": 99,
+    "method": 39,
+    "property": 2
+   },
+   "outputs": [
+    "EpicGames.LogMatchers.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 23
+   },
+   "ct_total": 62,
+   "ct_hit": 62,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.MongoDB",
+   "root": "Source/Programs/Shared/EpicGames.MongoDB",
+   "files": 4,
+   "symbols": 49,
+   "stat": {
+    "class": 9,
+    "method": 22,
+    "property": 6,
+    "ctor": 6,
+    "interface": 1,
+    "field": 5
+   },
+   "outputs": [
+    "EpicGames.MongoDB.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 39,
+   "ct_hit": 35,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.MongoDB/MongoExtensions.cs",
+     41,
+     "property",
+     "TResult"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.MongoDB/SingletonDocument.cs",
+     85,
+     "property",
+     "SingletonBase"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.MongoDB/TransactionBuilder.cs",
+     16,
+     "class",
+     "TDocument"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.MongoDB/TransactionBuilder.cs",
+     112,
+     "class",
+     "TValue"
+    ]
+   ],
+   "ct_missing_n": 4
+  },
+  {
+   "label": "EpicGames.MsBuild",
+   "root": "Source/Programs/Shared/EpicGames.MsBuild",
+   "files": 2,
+   "symbols": 12,
+   "stat": {
+    "class": 2,
+    "method": 8,
+    "field": 2
+   },
+   "outputs": [
+    "EpicGames.MsBuild.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 10,
+   "ct_hit": 10,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.OIDC",
+   "root": "Source/Programs/Shared/EpicGames.OIDC",
+   "files": 15,
+   "symbols": 294,
+   "stat": {
+    "class": 34,
+    "const": 6,
+    "property": 55,
+    "field": 47,
+    "ctor": 19,
+    "method": 104,
+    "record": 3,
+    "interface": 8,
+    "event": 2,
+    "enum": 3,
+    "enumerator": 11,
+    "struct": 2
+   },
+   "outputs": [
+    "EpicGames.OIDC.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 15
+   },
+   "ct_total": 208,
+   "ct_hit": 208,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Oodle",
+   "root": "Source/Programs/Shared/EpicGames.Oodle",
+   "files": 1,
+   "symbols": 66,
+   "stat": {
+    "enum": 6,
+    "enumerator": 38,
+    "class": 3,
+    "field": 8,
+    "method": 10,
+    "ctor": 1
+   },
+   "outputs": [
+    "EpicGames.Oodle.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 58,
+   "ct_hit": 58,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Perforce",
+   "root": "Source/Programs/Shared/EpicGames.Perforce",
+   "files": 113,
+   "symbols": 1466,
+   "stat": {
+    "struct": 3,
+    "property": 416,
+    "ctor": 81,
+    "method": 379,
+    "operator": 7,
+    "class": 93,
+    "field": 103,
+    "interface": 4,
+    "const": 5,
+    "delegate": 2,
+    "dtor": 1,
+    "enum": 50,
+    "enumerator": 320,
+    "record struct": 2
+   },
+   "outputs": [
+    "EpicGames.Perforce.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 113
+   },
+   "ct_total": 1311,
+   "ct_hit": 1310,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Perforce/PerforceConnection.cs",
+     507,
+     "method",
+     "AddAttributes"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "EpicGames.Perforce.Fixture",
+   "root": "Source/Programs/Shared/EpicGames.Perforce.Fixture",
+   "files": 3,
+   "symbols": 72,
+   "stat": {
+    "class": 6,
+    "property": 17,
+    "ctor": 3,
+    "method": 28,
+    "const": 6,
+    "field": 6,
+    "record": 6
+   },
+   "outputs": [
+    "EpicGames.Perforce.Fixture.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 43,
+   "ct_hit": 43,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.Perforce.Managed",
+   "root": "Source/Programs/Shared/EpicGames.Perforce.Managed",
+   "files": 12,
+   "symbols": 325,
+   "stat": {
+    "class": 29,
+    "field": 70,
+    "ctor": 30,
+    "method": 124,
+    "property": 41,
+    "record": 1,
+    "enum": 4,
+    "enumerator": 18,
+    "const": 6,
+    "delegate": 1,
+    "event": 1
+   },
+   "outputs": [
+    "EpicGames.Perforce.Managed.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 12
+   },
+   "ct_total": 230,
+   "ct_hit": 230,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.ProjectStore",
+   "root": "Source/Programs/Shared/EpicGames.ProjectStore",
+   "files": 5,
+   "symbols": 266,
+   "stat": {
+    "class": 21,
+    "field": 19,
+    "enum": 4,
+    "enumerator": 29,
+    "ctor": 13,
+    "method": 88,
+    "record": 5,
+    "property": 82,
+    "record struct": 3,
+    "interface": 1,
+    "delegate": 1
+   },
+   "outputs": [
+    "EpicGames.ProjectStore.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 5
+   },
+   "ct_total": 196,
+   "ct_hit": 195,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.ProjectStore/CloudStorage/ICloudStorage.cs",
+     451,
+     "property",
+     "IValidatableObject"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "EpicGames.Redis",
+   "root": "Source/Programs/Shared/EpicGames.Redis",
+   "files": 21,
+   "symbols": 465,
+   "stat": {
+    "class": 35,
+    "field": 38,
+    "ctor": 21,
+    "method": 321,
+    "interface": 2,
+    "property": 13,
+    "struct": 3,
+    "operator": 19,
+    "record struct": 12,
+    "record": 1
+   },
+   "outputs": [
+    "EpicGames.Redis.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 21
+   },
+   "ct_total": 393,
+   "ct_hit": 392,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Redis/RedisSerializer.cs",
+     192,
+     "property",
+     "IRedisConverter"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "EpicGames.Serialization",
+   "root": "Source/Programs/Shared/EpicGames.Serialization",
+   "files": 16,
+   "symbols": 763,
+   "stat": {
+    "class": 76,
+    "property": 88,
+    "method": 415,
+    "interface": 2,
+    "field": 68,
+    "ctor": 30,
+    "enum": 4,
+    "enumerator": 33,
+    "struct": 5,
+    "operator": 17,
+    "const": 22,
+    "indexer": 2,
+    "record struct": 1
+   },
+   "outputs": [
+    "EpicGames.Serialization.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 16
+   },
+   "ct_total": 552,
+   "ct_hit": 546,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/CbField.cs",
+     2385,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/CbField.cs",
+     1653,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/CbField.cs",
+     2624,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/Converters/CbClassConverter.cs",
+     16,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/Converters/CbClassConverter.cs",
+     453,
+     "property",
+     "ICollection"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Serialization/Converters/CbClassConverter.cs",
+     295,
+     "property",
+     "Delegate"
+    ]
+   ],
+   "ct_missing_n": 6
+  },
+  {
+   "label": "EpicGames.Slack",
+   "root": "Source/Programs/Shared/EpicGames.Slack",
+   "files": 26,
+   "symbols": 318,
+   "stat": {
+    "class": 58,
+    "property": 149,
+    "ctor": 36,
+    "interface": 2,
+    "method": 47,
+    "enum": 2,
+    "enumerator": 6,
+    "operator": 4,
+    "field": 3,
+    "const": 11
+   },
+   "outputs": [
+    "EpicGames.Slack.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 26
+   },
+   "ct_total": 304,
+   "ct_hit": 298,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     163,
+     "property",
+     "SlackResponse"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     199,
+     "property",
+     "SlackResponse"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     185,
+     "property",
+     "SlackResponse"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     194,
+     "property",
+     "SlackResponse"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     180,
+     "property",
+     "SlackResponse"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.Slack/SlackClient.cs",
+     427,
+     "property",
+     "SlackResponse"
+    ]
+   ],
+   "ct_missing_n": 6
+  },
+  {
+   "label": "EpicGames.Tracing",
+   "root": "Source/Programs/Shared/EpicGames.Tracing",
+   "files": 13,
+   "symbols": 293,
+   "stat": {
+    "class": 26,
+    "method": 96,
+    "interface": 1,
+    "property": 65,
+    "ctor": 26,
+    "field": 57,
+    "const": 22
+   },
+   "outputs": [
+    "EpicGames.Tracing.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 13
+   },
+   "ct_total": 184,
+   "ct_hit": 184,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.UBA",
+   "root": "Source/Programs/Shared/EpicGames.UBA",
+   "files": 21,
+   "symbols": 505,
+   "stat": {
+    "interface": 13,
+    "method": 260,
+    "ctor": 16,
+    "record struct": 1,
+    "enum": 4,
+    "enumerator": 15,
+    "property": 82,
+    "struct": 4,
+    "class": 23,
+    "delegate": 14,
+    "event": 11,
+    "field": 50,
+    "dtor": 11,
+    "const": 1
+   },
+   "outputs": [
+    "EpicGames.UBA.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 21
+   },
+   "ct_total": 405,
+   "ct_hit": 405,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "EpicGames.UHT",
+   "root": "Source/Programs/Shared/EpicGames.UHT",
+   "files": 140,
+   "symbols": 4423,
+   "stat": {
+    "class": 241,
+    "const": 122,
+    "method": 1968,
+    "struct": 51,
+    "field": 320,
+    "ctor": 243,
+    "record struct": 9,
+    "enum": 60,
+    "enumerator": 377,
+    "interface": 15,
+    "property": 989,
+    "delegate": 25,
+    "operator": 1,
+    "record": 2
+   },
+   "outputs": [
+    "EpicGames.UHT.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 140
+   },
+   "ct_total": 3467,
+   "ct_hit": 3450,
+   "ct_missing": [
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtPackageCodeGeneratorCppFile.cs",
+     391,
+     "property",
+     "UhtObject"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     377,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     743,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     694,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     645,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     535,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     443,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     234,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     595,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     19,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     552,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     567,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     463,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Exporters/CodeGen/UhtUsedDefineScopes.cs",
+     484,
+     "property",
+     "UhtType"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Tables/UhtExporterTable.cs",
+     254,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Tokenizer/UhtTokenReplayReader.cs",
+     283,
+     "property",
+     "IUhtMessageLineNumber.MessageLineNumber"
+    ],
+    [
+     "Source/Programs/Shared/EpicGames.UHT/Utils/UhtTables.cs",
+     236,
+     "class",
+     "TTable"
+    ]
+   ],
+   "ct_missing_n": 17
+  },
+  {
+   "label": "Gauntlet.Automation",
+   "root": "Source/Programs/AutomationTool/Gauntlet",
+   "files": 139,
+   "symbols": 4828,
+   "stat": {
+    "class": 366,
+    "method": 1667,
+    "property": 1009,
+    "ctor": 255,
+    "field": 1149,
+    "dtor": 20,
+    "interface": 55,
+    "enum": 39,
+    "enumerator": 207,
+    "operator": 4,
+    "struct": 8,
+    "const": 39,
+    "delegate": 10
+   },
+   "outputs": [
+    "Gauntlet.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 139
+   },
+   "ct_total": 3471,
+   "ct_hit": 3454,
+   "ct_missing": [
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.ConfigOption.cs",
+     14,
+     "interface",
+     "ConfigType"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.Database.cs",
+     53,
+     "interface",
+     "Data"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.Database.cs",
+     62,
+     "interface",
+     "Data"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.Database.cs",
+     27,
+     "interface",
+     "Data"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.Database.cs",
+     443,
+     "class",
+     "Data"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Base/Gauntlet.TestTracking.cs",
+     287,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Devices/Gauntlet.DevicePool.cs",
+     1176,
+     "property",
+     "IDeviceReservationService"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Devices/Gauntlet.DeviceReservationService.cs",
+     280,
+     "method",
+     "IDeviceReservationService.ReserveDevicesFromService"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Devices/Gauntlet.DeviceReservationService.cs",
+     389,
+     "method",
+     "IDeviceReservationService.ReleaseDevices"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Gauntlet.Utils.cs",
+     2817,
+     "method",
+     "System.Collections.IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/RpcFramework/Gauntlet.RpcLibrary.cs",
+     80,
+     "property",
+     "FortBaseRpcHttpResponse"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Framework/Utils/Gauntlet.HordeReport.cs",
+     1329,
+     "property",
+     "params"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Platform/IOS/Gauntlet.IOSBuildSource.cs",
+     253,
+     "property",
+     "AppleBuild"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Platform/Microsoft/Gauntlet.GDKBuildSource.cs",
+     100,
+     "property",
+     "GDKPackagedBuild"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Platform/Microsoft/Gauntlet.GDKBuildSource.cs",
+     218,
+     "property",
+     "GDKPackagedBuild"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Unreal/BuildSource/Gauntlet.StagedBuildSource.cs",
+     255,
+     "property",
+     "StagedBuild"
+    ],
+    [
+     "Source/Programs/AutomationTool/Gauntlet/Unreal/Utils/Gauntlet.UnrealSnapshotParser.cs",
+     233,
+     "class",
+     "TSnapshotClass"
+    ]
+   ],
+   "ct_missing_n": 17
+  },
+  {
+   "label": "GitDependencies",
+   "root": "Source/Programs/GitDependencies",
+   "files": 8,
+   "symbols": 199,
+   "stat": {
+    "class": 17,
+    "field": 87,
+    "ctor": 6,
+    "method": 68,
+    "property": 10,
+    "delegate": 1,
+    "enum": 1,
+    "enumerator": 3,
+    "struct": 2,
+    "const": 4
+   },
+   "outputs": [
+    "GitDependencies.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 8
+   },
+   "ct_total": 104,
+   "ct_hit": 104,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeAgent",
+   "root": "Source/Programs/Horde/HordeAgent",
+   "files": 49,
+   "symbols": 991,
+   "stat": {
+    "class": 88,
+    "property": 151,
+    "ctor": 48,
+    "const": 73,
+    "method": 324,
+    "enum": 7,
+    "enumerator": 31,
+    "field": 233,
+    "interface": 8,
+    "record": 9,
+    "delegate": 3,
+    "event": 2,
+    "struct": 14
+   },
+   "outputs": [
+    "HordeAgent.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 49
+   },
+   "ct_total": 619,
+   "ct_hit": 618,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/HordeAgent/Utility/JsonConfig.cs",
+     43,
+     "property",
+     "JsonNode"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "HordeCmd",
+   "root": "Source/Programs/Horde/HordeCmd",
+   "files": 47,
+   "symbols": 327,
+   "stat": {
+    "class": 54,
+    "const": 3,
+    "property": 140,
+    "method": 89,
+    "ctor": 27,
+    "field": 13,
+    "record": 1
+   },
+   "outputs": [
+    "HordeCmd.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 47
+   },
+   "ct_total": 300,
+   "ct_hit": 300,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer",
+   "root": "Source/Programs/Horde/HordeServer",
+   "files": 102,
+   "symbols": 1875,
+   "stat": {
+    "class": 199,
+    "property": 420,
+    "const": 37,
+    "method": 731,
+    "record": 17,
+    "ctor": 136,
+    "field": 287,
+    "interface": 13,
+    "indexer": 1,
+    "event": 1,
+    "enum": 4,
+    "enumerator": 25,
+    "struct": 3,
+    "delegate": 1
+   },
+   "outputs": [
+    "HordeServer.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 102
+   },
+   "ct_total": 1416,
+   "ct_hit": 1397,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/HordeServer/Configuration/ConfigService.cs",
+     999,
+     "property",
+     "Attribute"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Plugins/PluginConfigCollection.cs",
+     21,
+     "class",
+     "IPluginConfig"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Plugins/PluginOptionsFactory.cs",
+     64,
+     "method",
+     "services.AddSingleton"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Plugins/PluginOptionsFactory.cs",
+     63,
+     "method",
+     "services.AddSingleton"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Plugins/PluginOptionsFactory.cs",
+     62,
+     "method",
+     "services.AddSingleton"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Server/MongoService.cs",
+     815,
+     "property",
+     "SingletonBase"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Server/MongoService.cs",
+     759,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Server/MongoService.cs",
+     868,
+     "property",
+     "SingletonBase"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Startup.cs",
+     111,
+     "class",
+     "TResponse"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Startup.cs",
+     129,
+     "method",
+     "GuardAsync"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Startup.cs",
+     116,
+     "class",
+     "TResponse"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Startup.cs",
+     121,
+     "class",
+     "TResponse"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/ConditionSerializer.cs",
+     19,
+     "method",
+     "IBsonSerializer.Serialize"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/ConditionSerializer.cs",
+     22,
+     "method",
+     "IBsonSerializer.Deserialize"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/ContentHashSerializer.cs",
+     24,
+     "method",
+     "IBsonSerializer.Deserialize"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/ContentHashSerializer.cs",
+     18,
+     "method",
+     "IBsonSerializer.Serialize"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/LazyCachedValue.cs",
+     12,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/MongoTracingCollection.cs",
+     549,
+     "property",
+     "T"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer/Utilities/ReadOnlyTrie.cs",
+     109,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ]
+   ],
+   "ct_missing_n": 19
+  },
+  {
+   "label": "HordeServer.Analytics",
+   "root": "Source/Programs/Horde/Plugins/Analytics/HordeServer.Analytics",
+   "files": 16,
+   "symbols": 228,
+   "stat": {
+    "class": 22,
+    "property": 63,
+    "field": 52,
+    "method": 65,
+    "interface": 5,
+    "record": 1,
+    "record struct": 1,
+    "ctor": 10,
+    "enum": 1,
+    "enumerator": 6,
+    "const": 2
+   },
+   "outputs": [
+    "HordeServer.Analytics.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 16
+   },
+   "ct_total": 163,
+   "ct_hit": 163,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.Build",
+   "root": "Source/Programs/Horde/Plugins/Build/HordeServer.Build",
+   "files": 157,
+   "symbols": 5835,
+   "stat": {
+    "class": 399,
+    "property": 2637,
+    "field": 686,
+    "ctor": 324,
+    "method": 1547,
+    "const": 58,
+    "record": 25,
+    "record struct": 12,
+    "interface": 80,
+    "struct": 5,
+    "enum": 10,
+    "enumerator": 41,
+    "delegate": 5,
+    "event": 6
+   },
+   "outputs": [
+    "HordeServer.Build.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 157
+   },
+   "ct_total": 4403,
+   "ct_hit": 4385,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Issues/IssueTelemetry.cs",
+     325,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Issues/IssueTelemetry.cs",
+     23,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobCollection.cs",
+     160,
+     "method",
+     "IJob.TryGetStep"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobCollection.cs",
+     140,
+     "method",
+     "IJob.TryGetBatch"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobStepRefIdSerializer.cs",
+     23,
+     "method",
+     "IBsonSerializer.Deserialize"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobStepRefIdSerializer.cs",
+     17,
+     "method",
+     "IBsonSerializer.Serialize"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobTelemetry.cs",
+     828,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobTelemetry.cs",
+     24,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobTelemetry.cs",
+     548,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobTelemetry.cs",
+     440,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/JobTelemetry.cs",
+     282,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/TestData/TestDataCollection.cs",
+     1234,
+     "property",
+     "ITestExpire"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Jobs/TestData/TestDataCollectionV2.cs",
+     1677,
+     "property",
+     "ITestExpire"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Notifications/NotificationService.cs",
+     498,
+     "property",
+     "INotification"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Notifications/NotificationService.cs",
+     430,
+     "property",
+     "INotification"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Utilities/TransactionBuilder.cs",
+     13,
+     "class",
+     "TDocument"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/Utilities/TransactionBuilder.cs",
+     109,
+     "class",
+     "TValue"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Build/HordeServer.Build/VersionControl/Perforce/CommitTelemetry.cs",
+     20,
+     "property",
+     "AbstractTelemetryRecord"
+    ]
+   ],
+   "ct_missing_n": 18
+  },
+  {
+   "label": "HordeServer.Compute",
+   "root": "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute",
+   "files": 97,
+   "symbols": 2424,
+   "stat": {
+    "class": 179,
+    "property": 830,
+    "method": 739,
+    "field": 378,
+    "ctor": 154,
+    "record struct": 9,
+    "indexer": 3,
+    "record": 21,
+    "event": 4,
+    "const": 30,
+    "enum": 10,
+    "enumerator": 35,
+    "interface": 29,
+    "struct": 1,
+    "delegate": 2
+   },
+   "outputs": [
+    "HordeServer.Compute.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 97
+   },
+   "ct_total": 1760,
+   "ct_hit": 1755,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute/Agents/Leases/LeaseTelemetry.cs",
+     20,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute/Agents/Telemetry/AgentTelemetry.cs",
+     17,
+     "property",
+     "AbstractTelemetryRecord"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute/Compute/RedisMessageQueue.cs",
+     12,
+     "interface",
+     "T"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute/Compute/RedisTaskScheduler.cs",
+     19,
+     "interface",
+     "TQueueId"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Compute/HordeServer.Compute/Logs/LogCollection.cs",
+     850,
+     "property",
+     "ILogEventData.Message"
+    ]
+   ],
+   "ct_missing_n": 5
+  },
+  {
+   "label": "HordeServer.Epic.ClickHouseTelemetry",
+   "root": "Source/Programs/Horde/Plugins/ClickHouseTelemetry/HordeServer.Epic.ClickHouseTelemetry",
+   "files": 14,
+   "symbols": 160,
+   "stat": {
+    "class": 17,
+    "field": 33,
+    "ctor": 6,
+    "method": 67,
+    "property": 25,
+    "const": 11,
+    "record": 1
+   },
+   "outputs": [
+    "HordeServer.Epic.ClickHouseTelemetry.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 14
+   },
+   "ct_total": 112,
+   "ct_hit": 112,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.ExamplePlugin",
+   "root": "Source/Programs/Horde/Plugins/ExamplePlugin/HordeServer.ExamplePlugin",
+   "files": 4,
+   "symbols": 16,
+   "stat": {
+    "class": 5,
+    "ctor": 2,
+    "method": 6,
+    "property": 1,
+    "field": 2
+   },
+   "outputs": [
+    "HordeServer.ExamplePlugin.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 14,
+   "ct_hit": 14,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.Experimental",
+   "root": "Source/Programs/Horde/Plugins/Experimental/HordeServer.Experimental",
+   "files": 9,
+   "symbols": 251,
+   "stat": {
+    "class": 16,
+    "property": 62,
+    "field": 22,
+    "method": 123,
+    "ctor": 12,
+    "interface": 5,
+    "record struct": 1,
+    "struct": 1,
+    "const": 9
+   },
+   "outputs": [
+    "HordeServer.Experimental.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 9
+   },
+   "ct_total": 208,
+   "ct_hit": 208,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.OdbcTelemetry",
+   "root": "Source/Programs/Horde/Plugins/OdbcTelemetry/HordeServer.OdbcTelemetry",
+   "files": 6,
+   "symbols": 50,
+   "stat": {
+    "class": 7,
+    "const": 4,
+    "field": 9,
+    "property": 8,
+    "ctor": 2,
+    "method": 20
+   },
+   "outputs": [
+    "HordeServer.OdbcTelemetry.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 6
+   },
+   "ct_total": 36,
+   "ct_hit": 36,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.PerformanceTrends",
+   "root": "Source/Programs/Horde/Plugins/PerformanceTrends/HordeServer.PerformanceTrends",
+   "files": 13,
+   "symbols": 133,
+   "stat": {
+    "interface": 2,
+    "property": 47,
+    "method": 48,
+    "class": 14,
+    "ctor": 10,
+    "field": 10,
+    "struct": 1,
+    "const": 1
+   },
+   "outputs": [
+    "HordeServer.PerformanceTrends.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 13
+   },
+   "ct_total": 116,
+   "ct_hit": 116,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.Secrets",
+   "root": "Source/Programs/Horde/Plugins/Secrets/HordeServer.Secrets",
+   "files": 14,
+   "symbols": 125,
+   "stat": {
+    "interface": 1,
+    "property": 41,
+    "method": 29,
+    "class": 22,
+    "field": 16,
+    "ctor": 8,
+    "enum": 2,
+    "enumerator": 4,
+    "const": 2
+   },
+   "outputs": [
+    "HordeServer.Secrets.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 14
+   },
+   "ct_total": 104,
+   "ct_hit": 104,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.Shared",
+   "root": "Source/Programs/Horde/HordeServer.Shared",
+   "files": 81,
+   "symbols": 791,
+   "stat": {
+    "class": 108,
+    "property": 176,
+    "field": 52,
+    "method": 310,
+    "ctor": 50,
+    "record struct": 3,
+    "interface": 39,
+    "indexer": 1,
+    "enum": 3,
+    "enumerator": 11,
+    "event": 1,
+    "record": 6,
+    "const": 27,
+    "operator": 3,
+    "struct": 1
+   },
+   "outputs": [
+    "HordeServer.Shared.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 81
+   },
+   "ct_total": 616,
+   "ct_hit": 612,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/HordeServer.Shared/Configuration/ConfigObject.cs",
+     156,
+     "method",
+     "typeof"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer.Shared/Utilities/JsonConfigFile.cs",
+     56,
+     "property",
+     "JsonNode"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer.Shared/Utilities/ObjectIdConverter.cs",
+     18,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer.Shared/Utilities/StringIdConverter.cs",
+     48,
+     "struct",
+     "TValue"
+    ]
+   ],
+   "ct_missing_n": 4
+  },
+  {
+   "label": "HordeServer.Storage",
+   "root": "Source/Programs/Horde/Plugins/Storage/HordeServer.Storage",
+   "files": 16,
+   "symbols": 649,
+   "stat": {
+    "class": 54,
+    "field": 111,
+    "ctor": 32,
+    "method": 215,
+    "record struct": 1,
+    "property": 216,
+    "record": 3,
+    "interface": 5,
+    "enum": 2,
+    "enumerator": 9,
+    "const": 1
+   },
+   "outputs": [
+    "HordeServer.Storage.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 16
+   },
+   "ct_total": 469,
+   "ct_hit": 467,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/Plugins/Storage/HordeServer.Storage/Storage/StorageService.cs",
+     396,
+     "method",
+     "ISupportInitialize.BeginInit"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/Storage/HordeServer.Storage/Storage/StorageService.cs",
+     398,
+     "method",
+     "ISupportInitialize.EndInit"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "HordeServer.StructuredAnalytics",
+   "root": "Source/Programs/Horde/Plugins/StructuredAnalytics/HordeServer.StructuredAnalytics",
+   "files": 29,
+   "symbols": 611,
+   "stat": {
+    "interface": 12,
+    "method": 216,
+    "class": 72,
+    "field": 52,
+    "property": 201,
+    "const": 7,
+    "ctor": 21,
+    "enum": 4,
+    "enumerator": 17,
+    "event": 4,
+    "struct": 3,
+    "operator": 2
+   },
+   "outputs": [
+    "HordeServer.StructuredAnalytics.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 29
+   },
+   "ct_total": 497,
+   "ct_hit": 494,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/Plugins/StructuredAnalytics/HordeServer.StructuredAnalytics/AbstractAnalyticsService.cs",
+     16,
+     "interface",
+     "TConfig"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/StructuredAnalytics/HordeServer.StructuredAnalytics/Schemas/ITelemetrySchemaCache.cs",
+     25,
+     "event",
+     "SchemasChanged"
+    ],
+    [
+     "Source/Programs/Horde/Plugins/StructuredAnalytics/HordeServer.StructuredAnalytics/Schemas/TelemetrySchemaCache.cs",
+     41,
+     "event",
+     "SchemasChanged"
+    ]
+   ],
+   "ct_missing_n": 3
+  },
+  {
+   "label": "HordeServer.Symbols",
+   "root": "Source/Programs/Horde/Plugins/Symbols/HordeServer.Symbols",
+   "files": 6,
+   "symbols": 22,
+   "stat": {
+    "class": 5,
+    "property": 6,
+    "method": 6,
+    "field": 4,
+    "ctor": 1
+   },
+   "outputs": [
+    "HordeServer.Symbols.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 6
+   },
+   "ct_total": 18,
+   "ct_hit": 18,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "HordeServer.Tests.Shared",
+   "root": "Source/Programs/Horde/HordeServer.Tests.Shared",
+   "files": 9,
+   "symbols": 152,
+   "stat": {
+    "class": 12,
+    "property": 58,
+    "ctor": 14,
+    "method": 48,
+    "field": 19,
+    "const": 1
+   },
+   "outputs": [
+    "HordeServer.Tests.Shared.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 9
+   },
+   "ct_total": 107,
+   "ct_hit": 104,
+   "ct_missing": [
+    [
+     "Source/Programs/Horde/HordeServer.Tests.Shared/ServerTestSetup.cs",
+     167,
+     "class",
+     "IPluginStartup"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer.Tests.Shared/ServerTestSetup.cs",
+     169,
+     "method",
+     "_pluginCollection.Add"
+    ],
+    [
+     "Source/Programs/Horde/HordeServer.Tests.Shared/TestScopedMongoService.cs",
+     132,
+     "property",
+     "SingletonBase"
+    ]
+   ],
+   "ct_missing_n": 3
+  },
+  {
+   "label": "HordeServer.Tools",
+   "root": "Source/Programs/Horde/Plugins/Tools/HordeServer.Tools",
+   "files": 10,
+   "symbols": 169,
+   "stat": {
+    "class": 16,
+    "property": 70,
+    "ctor": 12,
+    "method": 49,
+    "field": 22
+   },
+   "outputs": [
+    "HordeServer.Tools.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 10
+   },
+   "ct_total": 124,
+   "ct_hit": 124,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "ICVFX.Automation",
+   "root": "Plugins/VirtualProduction/ICVFXTesting/Build/Scripts",
+   "files": 1,
+   "symbols": 54,
+   "stat": {
+    "class": 3,
+    "field": 41,
+    "ctor": 2,
+    "method": 5,
+    "property": 3
+   },
+   "outputs": [
+    "ICVFX.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 13,
+   "ct_hit": 13,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "IOS.Automation",
+   "root": "Source/Programs/AutomationTool/IOS",
+   "files": 7,
+   "symbols": 154,
+   "stat": {
+    "class": 9,
+    "method": 87,
+    "property": 28,
+    "ctor": 7,
+    "field": 18,
+    "enum": 1,
+    "enumerator": 4
+   },
+   "outputs": [
+    "IOS.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 7
+   },
+   "ct_total": 134,
+   "ct_hit": 134,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "ImageValidator",
+   "root": "Source/Programs/ImageValidator",
+   "files": 11,
+   "symbols": 188,
+   "stat": {
+    "class": 12,
+    "field": 81,
+    "method": 77,
+    "ctor": 7,
+    "struct": 5,
+    "property": 6
+   },
+   "outputs": [
+    "ImageValidator.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 11
+   },
+   "ct_total": 107,
+   "ct_hit": 107,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "IncludeTool",
+   "root": "Source/Programs/IncludeTool/IncludeTool",
+   "files": 36,
+   "symbols": 1002,
+   "stat": {
+    "enum": 18,
+    "enumerator": 106,
+    "class": 70,
+    "field": 291,
+    "method": 388,
+    "property": 48,
+    "ctor": 54,
+    "const": 12,
+    "struct": 6,
+    "indexer": 5,
+    "operator": 4
+   },
+   "outputs": [
+    "IncludeTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 36
+   },
+   "ct_total": 694,
+   "ct_hit": 689,
+   "ct_missing": [
+    [
+     "Source/Programs/IncludeTool/IncludeTool/Support/HashList.cs",
+     216,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/IncludeTool/IncludeTool/Support/MultiValueDictionary.cs",
+     463,
+     "method",
+     "IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/IncludeTool/IncludeTool/TokenReader.cs",
+     190,
+     "method",
+     "IDisposable.Dispose"
+    ],
+    [
+     "Source/Programs/IncludeTool/IncludeTool/TokenReader.cs",
+     255,
+     "method",
+     "IEnumerator.Reset"
+    ],
+    [
+     "Source/Programs/IncludeTool/IncludeTool/TokenReader.cs",
+     182,
+     "property",
+     "IEnumerator.Current"
+    ]
+   ],
+   "ct_missing_n": 5
+  },
+  {
+   "label": "JobDriver",
+   "root": "Source/Programs/Horde/Drivers/JobDriver",
+   "files": 26,
+   "symbols": 604,
+   "stat": {
+    "class": 64,
+    "property": 174,
+    "field": 89,
+    "ctor": 46,
+    "method": 200,
+    "record": 4,
+    "const": 15,
+    "interface": 3,
+    "enum": 2,
+    "enumerator": 7
+   },
+   "outputs": [
+    "JobDriver.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 26
+   },
+   "ct_total": 468,
+   "ct_hit": 468,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Jupiter",
+   "root": "Source/Programs/UnrealCloudDDC/Jupiter",
+   "files": 112,
+   "symbols": 3149,
+   "stat": {
+    "class": 324,
+    "field": 545,
+    "ctor": 289,
+    "method": 1198,
+    "property": 633,
+    "enum": 21,
+    "enumerator": 71,
+    "const": 18,
+    "interface": 30,
+    "record struct": 3,
+    "record": 5,
+    "struct": 3,
+    "operator": 6,
+    "event": 3
+   },
+   "outputs": [
+    "Jupiter.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 112
+   },
+   "ct_total": 2498,
+   "ct_hit": 2494,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter/Implementation/DataStore/DataStoreTable.cs",
+     13,
+     "class",
+     "TObjectType"
+    ],
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter/Implementation/DataStore/DataStoreTableService.cs",
+     96,
+     "struct",
+     "IDataStoreTableObject"
+    ],
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter/Implementation/DataStore/DataStoreTableService.cs",
+     113,
+     "struct",
+     "IDataStoreTableObject"
+    ],
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter/Implementation/DataStore/DataStoreTableService.cs",
+     119,
+     "struct",
+     "IDataStoreTableObject"
+    ]
+   ],
+   "ct_missing_n": 4
+  },
+  {
+   "label": "Jupiter.Common",
+   "root": "Source/Programs/UnrealCloudDDC/Jupiter.Common",
+   "files": 38,
+   "symbols": 608,
+   "stat": {
+    "class": 92,
+    "method": 226,
+    "property": 136,
+    "enum": 5,
+    "enumerator": 22,
+    "ctor": 45,
+    "field": 53,
+    "const": 9,
+    "struct": 6,
+    "operator": 10,
+    "interface": 4
+   },
+   "outputs": [
+    "Jupiter.Common.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 38
+   },
+   "ct_total": 474,
+   "ct_hit": 471,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter.Common/BaseProgram.cs",
+     18,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter.Common/NamespaceNotFoundException.cs",
+     16,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealCloudDDC/Jupiter.Common/StringIdConverter.cs",
+     18,
+     "class",
+     "T"
+    ]
+   ],
+   "ct_missing_n": 3
+  },
+  {
+   "label": "Linux.Automation",
+   "root": "Source/Programs/AutomationTool/Linux",
+   "files": 2,
+   "symbols": 43,
+   "stat": {
+    "class": 7,
+    "field": 4,
+    "ctor": 7,
+    "method": 24,
+    "property": 1
+   },
+   "outputs": [
+    "Linux.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 39,
+   "ct_hit": 39,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "LiveLinkHub.Automation",
+   "root": "Source/Programs/AutomationTool/LiveLinkHub",
+   "files": 1,
+   "symbols": 4,
+   "stat": {
+    "class": 1,
+    "method": 3
+   },
+   "outputs": [
+    "LiveLinkHub.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 4,
+   "ct_hit": 4,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Localization.Automation",
+   "root": "Source/Programs/AutomationTool/Localization",
+   "files": 12,
+   "symbols": 237,
+   "stat": {
+    "enum": 1,
+    "enumerator": 3,
+    "class": 27,
+    "field": 26,
+    "property": 95,
+    "ctor": 11,
+    "method": 72,
+    "const": 1,
+    "struct": 1
+   },
+   "outputs": [
+    "Localization.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 12
+   },
+   "ct_total": 210,
+   "ct_hit": 210,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Mac.Automation",
+   "root": "Source/Programs/AutomationTool/Mac",
+   "files": 2,
+   "symbols": 23,
+   "stat": {
+    "class": 1,
+    "field": 1,
+    "ctor": 1,
+    "method": 19,
+    "property": 1
+   },
+   "outputs": [
+    "Mac.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 22,
+   "ct_hit": 22,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "MetadataServer",
+   "root": "Source/Programs/UnrealGameSync/MetadataServer",
+   "files": 22,
+   "symbols": 208,
+   "stat": {
+    "class": 32,
+    "method": 64,
+    "field": 75,
+    "const": 1,
+    "property": 11,
+    "enum": 4,
+    "enumerator": 20,
+    "ctor": 1
+   },
+   "outputs": [
+    "MetadataServer.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 22
+   },
+   "ct_total": 132,
+   "ct_hit": 132,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Microsoft.Automation",
+   "root": "Source/Programs/AutomationTool/Microsoft",
+   "files": 3,
+   "symbols": 113,
+   "stat": {
+    "class": 7,
+    "method": 43,
+    "enum": 1,
+    "enumerator": 2,
+    "field": 38,
+    "property": 13,
+    "ctor": 4,
+    "struct": 4,
+    "const": 1
+   },
+   "outputs": [
+    "Microsoft.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 67,
+   "ct_hit": 67,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "ModuleRules",
+   "root": "",
+   "files": 2435,
+   "symbols": 5092,
+   "stat": {
+    "class": 2440,
+    "ctor": 2441,
+    "property": 112,
+    "method": 80,
+    "const": 4,
+    "field": 15
+   },
+   "outputs": [
+    "ModuleRules.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2435
+   },
+   "ct_total": 5065,
+   "ct_hit": 5065,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Mutable.Automation",
+   "root": "Source/Programs/AutomationTool/Mutable",
+   "files": 1,
+   "symbols": 7,
+   "stat": {
+    "class": 1,
+    "field": 3,
+    "ctor": 1,
+    "method": 2
+   },
+   "outputs": [
+    "Mutable.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 4,
+   "ct_hit": 4,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "NetworkProfiler",
+   "root": "Source/Programs/NetworkProfiler/NetworkProfiler",
+   "files": 13,
+   "symbols": 516,
+   "stat": {
+    "class": 45,
+    "field": 238,
+    "ctor": 33,
+    "method": 121,
+    "enum": 4,
+    "enumerator": 66,
+    "property": 5,
+    "const": 4
+   },
+   "outputs": [
+    "NetworkProfiler.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 13
+   },
+   "ct_total": 278,
+   "ct_hit": 272,
+   "ct_missing": [
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/MainWindow.cs",
+     57,
+     "enumerator",
+     "MiscSocketSendSize"
+    ],
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/MainWindow.cs",
+     59,
+     "enumerator",
+     "MiscSocketSendCount"
+    ],
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/MainWindow.cs",
+     60,
+     "enumerator",
+     "MiscSocketSendCountSec"
+    ],
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/MainWindow.cs",
+     58,
+     "enumerator",
+     "MiscSocketSendSizeSec"
+    ],
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/PartialNetworkStream.cs",
+     632,
+     "class",
+     "T"
+    ],
+    [
+     "Source/Programs/NetworkProfiler/NetworkProfiler/PartialNetworkStream.cs",
+     653,
+     "class",
+     "ItemT"
+    ]
+   ],
+   "ct_missing_n": 6
+  },
+  {
+   "label": "NoProject__Platforms__VisionOS__Source__Programs",
+   "root": "Platforms/VisionOS/Source/Programs",
+   "files": 6,
+   "symbols": 33,
+   "stat": {
+    "class": 8,
+    "property": 4,
+    "ctor": 6,
+    "field": 1,
+    "method": 14
+   },
+   "outputs": [
+    "NoProject__Platforms__VisionOS__Source__Programs.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 6
+   },
+   "ct_total": 25,
+   "ct_hit": 24,
+   "ct_missing": [
+    [
+     "Platforms/VisionOS/Source/Programs/UnrealBuildTool/UEBuildVisionOS.cs",
+     15,
+     "method",
+     "base"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "NoProject__Source__Programs__BuildPatchTool",
+   "root": "Source/Programs/BuildPatchTool",
+   "files": 93,
+   "symbols": 2635,
+   "stat": {
+    "class": 116,
+    "method": 1719,
+    "delegate": 20,
+    "field": 298,
+    "ctor": 132,
+    "property": 93,
+    "enum": 25,
+    "enumerator": 127,
+    "dtor": 22,
+    "event": 18,
+    "interface": 1,
+    "const": 60,
+    "struct": 4
+   },
+   "outputs": [
+    "NoProject__Source__Programs__BuildPatchTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 93
+   },
+   "ct_total": 2275,
+   "ct_hit": 2238,
+   "ct_missing": [
+    [
+     "Source/Programs/Enterprise/Datasmith/DatasmithFacadeCSharp/Public/FDatasmithFacadeExpressionParameterSwigImpl.cs",
+     49,
+     "method",
+     "FDatasmithFacadeExpressionParameter.GetInterfaceCPtr"
+    ],
+    [
+     "Source/Programs/Enterprise/Datasmith/DatasmithFacadeCSharp/Public/FDatasmithFacadeMaterialExpressionBool.cs",
+     39,
+     "method",
+     "FDatasmithFacadeExpressionParameter.GetInterfaceCPtr"
+    ],
+    [
+     "Source/Programs/Enterprise/Datasmith/DatasmithFacadeCSharp/Public/FDatasmithFacadeMaterialExpressionColor.cs",
+     39,
+     "method",
+     "FDatasmithFacadeExpressionParameter.GetInterfaceCPtr"
+    ],
+    [
+     "Source/Programs/Enterprise/Datasmith/DatasmithFacadeCSharp/Public/FDatasmithFacadeMaterialExpressionScalar.cs",
+     39,
+     "method",
+     "FDatasmithFacadeExpressionParameter.GetInterfaceCPtr"
+    ],
+    [
+     "Source/Programs/Enterprise/Datasmith/DatasmithFacadeCSharp/Public/FDatasmithFacadeMaterialExpressionTexture.cs",
+     39,
+     "method",
+     "FDatasmithFacadeExpressionParameter.GetInterfaceCPtr"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/P4Commands.cs",
+     1222,
+     "method",
+     "IVsRunningDocTableEvents3.OnAfterAttributeChangeEx"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/P4Commands.cs",
+     1228,
+     "method",
+     "IVsRunningDocTableEvents2.OnAfterAttributeChangeEx"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     775,
+     "method",
+     "IVsSolutionEvents.OnBeforeCloseProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     907,
+     "method",
+     "IVsHierarchyEvents.OnItemsAppended"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     896,
+     "method",
+     "IVsHierarchyEvents.OnItemAdded"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     744,
+     "method",
+     "IVsSolutionEvents.OnAfterOpenProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     917,
+     "method",
+     "IVsHierarchyEvents.OnInvalidateItems"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     995,
+     "method",
+     "IVsDebuggerEvents.OnModeChange"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     912,
+     "method",
+     "IVsHierarchyEvents.OnItemDeleted"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     988,
+     "method",
+     "IVsPersistSolutionProps.OnProjectLoadFailure"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     836,
+     "method",
+     "IVsSelectionEvents.OnCmdUIContextChanged"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     816,
+     "method",
+     "IVsSolutionEvents.OnQueryCloseSolution"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     954,
+     "method",
+     "IVsPersistSolutionProps.SaveSolutionProps"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     959,
+     "method",
+     "IVsPersistSolutionProps.WriteSolutionProps"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     934,
+     "method",
+     "IVsPersistSolutionProps.LoadUserOptions"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     734,
+     "method",
+     "IVsSolutionEvents.OnAfterLoadProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     944,
+     "method",
+     "IVsPersistSolutionProps.ReadUserOptions"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     939,
+     "method",
+     "IVsPersistSolutionProps.WriteUserOptions"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     762,
+     "method",
+     "IVsSolutionEvents.OnAfterOpenSolution"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     811,
+     "method",
+     "IVsSolutionEvents.OnQueryCloseProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     886,
+     "method",
+     "IVsSelectionEvents.OnSelectionChanged"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     723,
+     "method",
+     "IVsSolutionEvents.OnAfterCloseSolution"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     964,
+     "method",
+     "IVsPersistSolutionProps.ReadSolutionProps"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     801,
+     "method",
+     "IVsSolutionEvents.OnBeforeUnloadProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     843,
+     "method",
+     "IVsSelectionEvents.OnElementValueChanged"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     922,
+     "method",
+     "IVsHierarchyEvents.OnInvalidateIcon"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     826,
+     "method",
+     "IVsSolutionEvents.OnQueryUnloadProject"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     949,
+     "method",
+     "IVsPersistSolutionProps.QuerySaveSolutionProps"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     901,
+     "method",
+     "IVsHierarchyEvents.OnPropertyChanged"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     929,
+     "method",
+     "IVsPersistSolutionProps.SaveUserOptions"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/UnrealVSPackage.cs",
+     792,
+     "method",
+     "IVsSolutionEvents.OnBeforeCloseSolution"
+    ],
+    [
+     "Source/Programs/UnrealVS/UnrealVS.Shared/Utils.cs",
+     957,
+     "property",
+     "System.Windows.DependencyObject"
+    ]
+   ],
+   "ct_missing_n": 37
+  },
+  {
+   "label": "OidcToken",
+   "root": "Source/Programs/OidcToken",
+   "files": 2,
+   "symbols": 64,
+   "stat": {
+    "class": 11,
+    "property": 25,
+    "method": 9,
+    "enum": 2,
+    "enumerator": 9,
+    "ctor": 3,
+    "field": 5
+   },
+   "outputs": [
+    "OidcToken.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 59,
+   "ct_hit": 59,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "OneSkyLocalization.Automation",
+   "root": "Source/Programs/AutomationTool/OneSkyLocalization",
+   "files": 3,
+   "symbols": 26,
+   "stat": {
+    "class": 3,
+    "field": 7,
+    "method": 14,
+    "ctor": 2
+   },
+   "outputs": [
+    "OneSkyLocalization.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 19,
+   "ct_hit": 19,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "PartnerCenterTool",
+   "root": "Source/Programs/Microsoft/PartnerCenterTool",
+   "files": 2,
+   "symbols": 6,
+   "stat": {
+    "class": 1,
+    "method": 4,
+    "ctor": 1
+   },
+   "outputs": [
+    "PartnerCenterTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 6,
+   "ct_hit": 6,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "PerfreportTool",
+   "root": "Source/Programs/CSVTools/PerfReportTool",
+   "files": 28,
+   "symbols": 1029,
+   "stat": {
+    "interface": 1,
+    "method": 308,
+    "class": 78,
+    "field": 452,
+    "ctor": 98,
+    "const": 8,
+    "enum": 17,
+    "enumerator": 55,
+    "property": 9,
+    "struct": 2,
+    "operator": 1
+   },
+   "outputs": [
+    "PerfreportTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 28
+   },
+   "ct_total": 560,
+   "ct_hit": 560,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "PostBadgeStatus",
+   "root": "Source/Programs/UnrealGameSync/PostBadgeStatus",
+   "files": 2,
+   "symbols": 20,
+   "stat": {
+    "class": 2,
+    "method": 3,
+    "enum": 1,
+    "enumerator": 5,
+    "field": 7,
+    "property": 2
+   },
+   "outputs": [
+    "PostBadgeStatus.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 11,
+   "ct_hit": 11,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "RegressionsReport",
+   "root": "Source/Programs/CSVTools/RegressionsReport",
+   "files": 2,
+   "symbols": 14,
+   "stat": {
+    "class": 2,
+    "field": 3,
+    "method": 9
+   },
+   "outputs": [
+    "RegressionsReport.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 11,
+   "ct_hit": 11,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "ReleaseNotes",
+   "root": "Source/Programs/Horde/Tools/ReleaseNotes",
+   "files": 1,
+   "symbols": 16,
+   "stat": {
+    "class": 2,
+    "field": 6,
+    "record": 1,
+    "property": 5,
+    "method": 2
+   },
+   "outputs": [
+    "ReleaseNotes.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 10,
+   "ct_hit": 10,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "RemoteClient",
+   "root": "Source/Programs/Horde/Samples/RemoteClient",
+   "files": 1,
+   "symbols": 16,
+   "stat": {
+    "class": 2,
+    "property": 7,
+    "method": 4,
+    "const": 3
+   },
+   "outputs": [
+    "RemoteClient.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 13,
+   "ct_hit": 13,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "RemoteWorker",
+   "root": "Source/Programs/Horde/Samples/RemoteWorker",
+   "files": 1,
+   "symbols": 2,
+   "stat": {
+    "class": 1,
+    "method": 1
+   },
+   "outputs": [
+    "RemoteWorker.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 2,
+   "ct_hit": 2,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "ScriptGeneratorUbtPlugin.ubtplugin",
+   "root": "Plugins/ScriptPlugin/Source/ScriptGeneratorUbtPlugin",
+   "files": 4,
+   "symbols": 44,
+   "stat": {
+    "class": 6,
+    "method": 33,
+    "ctor": 3,
+    "field": 1,
+    "property": 1
+   },
+   "outputs": [
+    "ScriptGeneratorUbtPlugin.ubtplugin.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 42,
+   "ct_hit": 42,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SmartlingLocalization.Automation",
+   "root": "Source/Programs/AutomationTool/SmartlingLocalization",
+   "files": 2,
+   "symbols": 43,
+   "stat": {
+    "class": 7,
+    "field": 9,
+    "property": 11,
+    "method": 15,
+    "ctor": 1
+   },
+   "outputs": [
+    "SmartlingLocalization.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 34,
+   "ct_hit": 34,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SteamDeck.Automation",
+   "root": "Source/Programs/AutomationTool/SteamDeck",
+   "files": 1,
+   "symbols": 17,
+   "stat": {
+    "class": 1,
+    "field": 6,
+    "method": 10
+   },
+   "outputs": [
+    "SteamDeck.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 11,
+   "ct_hit": 11,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SwarmCommonUtils",
+   "root": "Source/Programs/UnrealSwarm/SwarmCommonUtils",
+   "files": 2,
+   "symbols": 6,
+   "stat": {
+    "class": 2,
+    "method": 4
+   },
+   "outputs": [
+    "SwarmCommonUtils.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 6,
+   "ct_hit": 6,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SwarmCoordinator",
+   "root": "Source/Programs/UnrealSwarm/SwarmCoordinator",
+   "files": 7,
+   "symbols": 69,
+   "stat": {
+    "class": 7,
+    "field": 25,
+    "method": 31,
+    "ctor": 2,
+    "property": 4
+   },
+   "outputs": [
+    "SwarmCoordinator.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 7
+   },
+   "ct_total": 44,
+   "ct_hit": 44,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SwarmCoordinatorInterface",
+   "root": "Source/Programs/UnrealSwarm/SwarmCoordinatorInterface",
+   "files": 2,
+   "symbols": 26,
+   "stat": {
+    "enum": 2,
+    "enumerator": 13,
+    "class": 1,
+    "field": 4,
+    "interface": 1,
+    "method": 5
+   },
+   "outputs": [
+    "SwarmCoordinatorInterface.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 22,
+   "ct_hit": 22,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "SwarmInterface",
+   "root": "Source/Editor/SwarmInterface/DotNET",
+   "files": 3,
+   "symbols": 311,
+   "stat": {
+    "class": 21,
+    "method": 87,
+    "field": 123,
+    "ctor": 28,
+    "delegate": 47,
+    "struct": 1,
+    "const": 2,
+    "property": 2
+   },
+   "outputs": [
+    "SwarmInterface.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 186,
+   "ct_hit": 186,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "TVOS.Automation",
+   "root": "Source/Programs/AutomationTool/TVOS",
+   "files": 2,
+   "symbols": 7,
+   "stat": {
+    "class": 1,
+    "ctor": 1,
+    "method": 5
+   },
+   "outputs": [
+    "TVOS.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 7,
+   "ct_hit": 7,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "TargetRules",
+   "root": "",
+   "files": 93,
+   "symbols": 218,
+   "stat": {
+    "class": 95,
+    "ctor": 96,
+    "field": 13,
+    "method": 11,
+    "delegate": 2,
+    "const": 1
+   },
+   "outputs": [
+    "TargetRules.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 93
+   },
+   "ct_total": 204,
+   "ct_hit": 204,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Turnkey.Automation",
+   "root": "Source/Programs/AutomationTool/Turnkey",
+   "files": 36,
+   "symbols": 416,
+   "stat": {
+    "class": 42,
+    "field": 90,
+    "method": 192,
+    "property": 22,
+    "delegate": 1,
+    "const": 2,
+    "ctor": 18,
+    "enum": 5,
+    "enumerator": 42,
+    "dtor": 1,
+    "struct": 1
+   },
+   "outputs": [
+    "Turnkey.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 36
+   },
+   "ct_total": 310,
+   "ct_hit": 310,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Unreal.TestAdapter",
+   "root": "Source/Programs/UnrealVS/Unreal.TestAdapter",
+   "files": 3,
+   "symbols": 15,
+   "stat": {
+    "class": 2,
+    "field": 3,
+    "method": 10
+   },
+   "outputs": [
+    "Unreal.TestAdapter.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 12,
+   "ct_hit": 12,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealAndroidFileTool",
+   "root": "Source/Programs/UnrealAndroidFileTool",
+   "files": 2,
+   "symbols": 8,
+   "stat": {
+    "class": 1,
+    "field": 2,
+    "method": 5
+   },
+   "outputs": [
+    "UnrealAndroidFileTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 6,
+   "ct_hit": 6,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealBuildTool",
+   "root": "Source/Programs/UnrealBuildTool",
+   "files": 301,
+   "symbols": 10927,
+   "stat": {
+    "enum": 117,
+    "enumerator": 655,
+    "interface": 23,
+    "property": 2345,
+    "class": 607,
+    "ctor": 507,
+    "method": 3635,
+    "field": 2869,
+    "const": 94,
+    "record struct": 1,
+    "record": 18,
+    "struct": 36,
+    "delegate": 5,
+    "operator": 12,
+    "event": 1,
+    "indexer": 2
+   },
+   "outputs": [
+    "UnrealBuildTool.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 301
+   },
+   "ct_total": 6698,
+   "ct_hit": 6660,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealBuildTool/Actions/ActionSerializer.cs",
+     48,
+     "method",
+     "IActionSerializer.Write"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Configuration/Ini/ConfigCache.cs",
+     444,
+     "property",
+     "System.Reflection.MemberInfo"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Configuration/Rules/CppCompileWarnings.cs",
+     1699,
+     "property",
+     "Attribute"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Configuration/Xml/XmlConfig.cs",
+     541,
+     "property",
+     "System.Reflection.MemberInfo"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Configuration/Xml/XmlConfigData.cs",
+     230,
+     "property",
+     "Attribute"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Modes/ProfileUnitySizesMode.cs",
+     60,
+     "property",
+     "notnull"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Android/AndroidToolChain.cs",
+     123,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Android/UEDeployAndroid.cs",
+     121,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Apple/AppleToolChain.cs",
+     93,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/IOS/IOSToolChain.cs",
+     28,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Linux/LinuxToolChain.cs",
+     28,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Mac/MacToolChain.cs",
+     53,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/TVOS/UEBuildTVOS.cs",
+     16,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Windows/VCCompileAction.cs",
+     286,
+     "property",
+     "IExternalAction.ProducedItems"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Windows/VCCompileAction.cs",
+     231,
+     "property",
+     "IExternalAction.CommandDescription"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Platform/Windows/VCCompileAction.cs",
+     254,
+     "property",
+     "IExternalAction.PrerequisiteItems"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Preprocessor/Preprocessor.cs",
+     33,
+     "method",
+     "String.Format"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Preprocessor/TokenReader.cs",
+     192,
+     "method",
+     "IDisposable.Dispose"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/Preprocessor/TokenReader.cs",
+     545,
+     "method",
+     "IEnumerator.Reset"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/AndroidStudio/AndroidStudioProjectFileGenerator.cs",
+     25,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/CLion/CLionGenerator.cs",
+     16,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/CMake/CMakefileGenerator.cs",
+     30,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/CodeLite/CodeLiteGenerator.cs",
+     28,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/Eddie/EddieGenerator.cs",
+     15,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/KDevelop/KDevelopGenerator.cs",
+     28,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/Make/MakefileGenerator.cs",
+     32,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/QMake/QMakefileGenerator.cs",
+     29,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/Rider/RiderProjectFileGenerator.cs",
+     71,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/VisualStudio/VCProjectFileGenerator.cs",
+     144,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/VisualStudio/VisualStudioSolutionBuilder.cs",
+     17,
+     "class",
+     "TProjectParams"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/VisualStudioCode/VSCodeProjectFileGenerator.cs",
+     168,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/VisualStudioWorkspace/VSWorkspaceProjectFileGenerator.cs",
+     84,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/Xcode/XcodeProject.cs",
+     808,
+     "property",
+     "XcodeProjectNode"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/ProjectFiles/Xcode/XcodeProjectFileGenerator.cs",
+     107,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/System/CppRootPaths.cs",
+     186,
+     "method",
+     "System.Collections.IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/System/CppRootPaths.cs",
+     194,
+     "property",
+     "extra"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/System/Telemetry.cs",
+     44,
+     "method",
+     "base"
+    ],
+    [
+     "Source/Programs/UnrealBuildTool/System/TopologicalSorter.cs",
+     22,
+     "class",
+     "T"
+    ]
+   ],
+   "ct_missing_n": 38
+  },
+  {
+   "label": "UnrealControls",
+   "root": "Source/Programs/UnrealControls",
+   "files": 26,
+   "symbols": 451,
+   "stat": {
+    "struct": 6,
+    "field": 108,
+    "ctor": 25,
+    "property": 59,
+    "class": 27,
+    "method": 189,
+    "indexer": 4,
+    "const": 9,
+    "event": 7,
+    "operator": 8,
+    "delegate": 2,
+    "enum": 1,
+    "enumerator": 6
+   },
+   "outputs": [
+    "UnrealControls.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 26
+   },
+   "ct_total": 321,
+   "ct_hit": 319,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealControls/DynamicTabControl.cs",
+     206,
+     "method",
+     "System.Collections.IEnumerable.GetEnumerator"
+    ],
+    [
+     "Source/Programs/UnrealControls/SerializableDictionary.cs",
+     169,
+     "method",
+     "System.Collections.IEnumerable.GetEnumerator"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "UnrealGameSync",
+   "root": "Source/Programs/UnrealGameSync/UnrealGameSync",
+   "files": 138,
+   "symbols": 3794,
+   "stat": {
+    "class": 244,
+    "field": 1436,
+    "event": 20,
+    "ctor": 133,
+    "method": 1443,
+    "property": 330,
+    "interface": 5,
+    "enum": 24,
+    "enumerator": 98,
+    "const": 43,
+    "struct": 3,
+    "delegate": 15
+   },
+   "outputs": [
+    "UnrealGameSync.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 138
+   },
+   "ct_total": 2178,
+   "ct_hit": 2176,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealGameSync/UnrealGameSync/IssueMonitor.cs",
+     304,
+     "method",
+     "IDisposable.Dispose"
+    ],
+    [
+     "Source/Programs/UnrealGameSync/UnrealGameSync/Workspace.cs",
+     30,
+     "event",
+     "OnUpdateComplete"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "UnrealGameSyncAutomation",
+   "root": "Source/Programs/UnrealGameSync/UnrealGameSyncAutomation",
+   "files": 2,
+   "symbols": 14,
+   "stat": {
+    "class": 1,
+    "enum": 2,
+    "enumerator": 9,
+    "method": 2
+   },
+   "outputs": [
+    "UnrealGameSyncAutomation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 14,
+   "ct_hit": 14,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealGameSyncCmd",
+   "root": "Source/Programs/UnrealGameSync/UnrealGameSyncCmd",
+   "files": 35,
+   "symbols": 203,
+   "stat": {
+    "interface": 1,
+    "class": 48,
+    "property": 77,
+    "method": 70,
+    "ctor": 4,
+    "field": 1,
+    "const": 2
+   },
+   "outputs": [
+    "UnrealGameSyncCmd.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 35
+   },
+   "ct_total": 198,
+   "ct_hit": 198,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealGameSyncShared",
+   "root": "Source/Programs/UnrealGameSync/UnrealGameSyncShared",
+   "files": 26,
+   "symbols": 1164,
+   "stat": {
+    "class": 81,
+    "const": 21,
+    "property": 374,
+    "field": 116,
+    "method": 420,
+    "ctor": 64,
+    "interface": 6,
+    "enum": 12,
+    "enumerator": 65,
+    "dtor": 1,
+    "indexer": 1,
+    "event": 3
+   },
+   "outputs": [
+    "UnrealGameSyncShared.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 26
+   },
+   "ct_total": 951,
+   "ct_hit": 951,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealHitchParser",
+   "root": "Source/Programs/UnrealHitchParser",
+   "files": 2,
+   "symbols": 4,
+   "stat": {
+    "class": 1,
+    "field": 1,
+    "method": 2
+   },
+   "outputs": [
+    "UnrealHitchParser.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 3,
+   "ct_hit": 3,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealToolbox",
+   "root": "Source/Programs/UnrealToolbox",
+   "files": 34,
+   "symbols": 662,
+   "stat": {
+    "class": 49,
+    "ctor": 44,
+    "method": 225,
+    "field": 171,
+    "enum": 3,
+    "enumerator": 9,
+    "property": 127,
+    "const": 6,
+    "record": 8,
+    "event": 10,
+    "interface": 6,
+    "record struct": 1,
+    "struct": 3
+   },
+   "outputs": [
+    "UnrealToolbox.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 34
+   },
+   "ct_total": 413,
+   "ct_hit": 412,
+   "ct_missing": [
+    [
+     "Source/Programs/UnrealToolbox/JsonConfig.cs",
+     9,
+     "class",
+     "T"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "UnrealToolboxExampleApplication",
+   "root": "Source/Programs/UnrealToolboxExampleApplication",
+   "files": 11,
+   "symbols": 71,
+   "stat": {
+    "class": 12,
+    "method": 28,
+    "field": 18,
+    "ctor": 9,
+    "const": 4
+   },
+   "outputs": [
+    "UnrealToolboxExampleApplication.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 11
+   },
+   "ct_total": 46,
+   "ct_hit": 46,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealVS.2022",
+   "root": "Source/Programs/UnrealVS/UnrealVS.2022",
+   "files": 2,
+   "symbols": 8,
+   "stat": {
+    "class": 1,
+    "field": 2,
+    "ctor": 1,
+    "property": 4
+   },
+   "outputs": [
+    "UnrealVS.2022.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 2
+   },
+   "ct_total": 6,
+   "ct_hit": 6,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnrealWindowsForms",
+   "root": "Source/Programs/Windows/UnrealWindowsForms",
+   "files": 5,
+   "symbols": 64,
+   "stat": {
+    "class": 6,
+    "field": 29,
+    "method": 25,
+    "property": 1,
+    "ctor": 3
+   },
+   "outputs": [
+    "UnrealWindowsForms.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 5
+   },
+   "ct_total": 35,
+   "ct_hit": 35,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "UnsyncUI",
+   "root": "Source/Programs/UnsyncUI/UnsyncUI",
+   "files": 11,
+   "symbols": 537,
+   "stat": {
+    "class": 53,
+    "ctor": 25,
+    "property": 181,
+    "field": 129,
+    "method": 133,
+    "struct": 6,
+    "event": 2,
+    "interface": 1,
+    "enum": 3,
+    "enumerator": 4
+   },
+   "outputs": [
+    "UnsyncUI.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 11
+   },
+   "ct_total": 388,
+   "ct_hit": 387,
+   "ct_missing": [
+    [
+     "Source/Programs/UnsyncUI/UnsyncUI/BuildSelectorControl.xaml.cs",
+     72,
+     "property",
+     "args"
+    ]
+   ],
+   "ct_missing_n": 1
+  },
+  {
+   "label": "VisionOS.Automation",
+   "root": "Platforms/VisionOS/Source/Programs/AutomationTool",
+   "files": 3,
+   "symbols": 22,
+   "stat": {
+    "class": 4,
+    "property": 11,
+    "ctor": 3,
+    "method": 4
+   },
+   "outputs": [
+    "VisionOS.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 3
+   },
+   "ct_total": 11,
+   "ct_hit": 11,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "Win.Automation",
+   "root": "Source/Programs/AutomationTool/Win",
+   "files": 10,
+   "symbols": 229,
+   "stat": {
+    "class": 16,
+    "property": 24,
+    "ctor": 11,
+    "method": 132,
+    "field": 35,
+    "const": 5,
+    "enum": 1,
+    "enumerator": 4,
+    "delegate": 1
+   },
+   "outputs": [
+    "Win.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 10
+   },
+   "ct_total": 175,
+   "ct_hit": 175,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "XLocLocalization.Automation",
+   "root": "Source/Programs/AutomationTool/XLocLocalization",
+   "files": 4,
+   "symbols": 428,
+   "stat": {
+    "struct": 2,
+    "field": 126,
+    "method": 111,
+    "class": 24,
+    "ctor": 14,
+    "property": 116,
+    "interface": 4,
+    "enum": 3,
+    "enumerator": 28
+   },
+   "outputs": [
+    "XLocLocalization.Automation.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 4
+   },
+   "ct_total": 302,
+   "ct_hit": 300,
+   "ct_missing": [
+    [
+     "Source/Programs/AutomationTool/XLocLocalization/XLocService/TransferService.cs",
+     242,
+     "method",
+     "ITransferService.UploadGameFileAsync"
+    ],
+    [
+     "Source/Programs/AutomationTool/XLocLocalization/XLocService/TransferService.cs",
+     225,
+     "method",
+     "ITransferService.UploadGameFile"
+    ]
+   ],
+   "ct_missing_n": 2
+  },
+  {
+   "label": "iPhonePackager",
+   "root": "Source/Programs/IOS/iPhonePackager",
+   "files": 26,
+   "symbols": 1177,
+   "stat": {
+    "class": 81,
+    "field": 390,
+    "method": 495,
+    "property": 33,
+    "ctor": 42,
+    "struct": 3,
+    "const": 65,
+    "enum": 3,
+    "enumerator": 61,
+    "delegate": 4
+   },
+   "outputs": [
+    "iPhonePackager.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 26
+   },
+   "ct_total": 721,
+   "ct_hit": 721,
+   "ct_missing": [],
+   "ct_missing_n": 0
+  },
+  {
+   "label": "unixsocketsserver",
+   "root": "Source/Programs/WebTestsServerPy/unixsockets",
+   "files": 1,
+   "symbols": 0,
+   "stat": {},
+   "outputs": [
+    "unixsocketsserver.md"
+   ],
+   "fails": [],
+   "modes": {
+    "ok": 1
+   },
+   "ct_total": 2,
+   "ct_hit": 0,
+   "ct_missing": [
+    [
+     "Source/Programs/WebTestsServerPy/unixsockets/Program.cs",
+     48,
+     "method",
+     "WebServerApp.Run"
+    ],
+    [
+     "Source/Programs/WebTestsServerPy/unixsockets/Program.cs",
+     28,
+     "method",
+     "AppBuilder.WebHost.UseKestrel"
+    ]
+   ],
+   "ct_missing_n": 2
+  }
+ ]
+}

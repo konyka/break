@@ -1,0 +1,711 @@
+# Runtime / CUDA
+
+- module root: `Source/Runtime/CUDA/Source`
+- headers: 2; symbols: 684
+- symbol kinds: class=1, delegate=2, function=1, macro=1, member=334, prototype=16, struct=1, typedef=328
+- PrivateIncludePathModuleNames: VulkanRHI
+- PublicDependencyModuleNames: CUDAHeader
+
+### `Source/Runtime/CUDA/Source/Public/CudaModule.h` (Public)
+
+
+#### class `FCUDAModule`  
+`class FCUDAModule : public IModuleInterface`  
+_L16-61_
+- inherits: `IModuleInterface`
+- L19 _public function_ `static CUDA_DRIVER_API_FUNCTION_LIST CUDA()`
+- L24 _public prototype_ `virtual void StartupModule() override;`
+- L25 _public prototype_ `virtual void ShutdownModule() override;`
+- L28 _public prototype_ `bool IsAvailable();` — Determines if the CUDA Driver API is available for use
+- L31 _public prototype_ `const CUDA_DRIVER_API_FUNCTION_LIST* DriverAPI();` — Retrieves the function pointer list for the CUDA Driver API
+- L34 _public prototype_ `CUcontext GetCudaContext();` — Retrieves the CUDA context for the GPU device currently in use by the Vulkan RHI
+- L37 _public prototype_ `uint32 GetCudaDeviceIndex() const;` — Retrieves the device index for the current context
+- L40 _public prototype_ `CUcontext GetCudaContextForDevice(int DeviceIndex);` — Retrieves or creates the CUDA context for the specified GPU device
+- L43 _public member_ `FOnPostCUDAInit OnPostCUDAInit;` — Called after CUDA is loaded successfully
+- L45 _public prototype_ `bool IsDeviceIndexRHISelected(int DeviceIndex);`
+- L48 _private prototype_ `bool LoadCuda();`
+- L49 _private prototype_ `void UnloadCuda();`
+- L51 _private prototype_ `void InitCuda();`
+- L52 _private prototype_ `bool IsRHISelectedDevice(CUdevice cuDevice);`
+- L54 _private member_ `void* DriverLibrary;`
+- L55 _private member_ `CUDA_DRIVER_API_FUNCTION_LIST DriverApiPtrs;`
+- L57 _private member_ `uint32 rhiDeviceIndex;`
+- L58 _private member_ `TMap<uint32, CUcontext> contextMap;`
+- L60 _private member_ `FDelegateHandle PostEngineInitHandle;`
+
+#### Free symbols / members of external scopes
+
+- L13 _delegate_ `DECLARE_MULTICAST_DELEGATE(FOnPostCUDAInit) DECLARE_LOG_CATEGORY_EXTERN(LogCUDA, Log, All);`
+- L15 _delegate_ `DECLARE_LOG_CATEGORY_EXTERN(LogCUDA, Log, All);`
+- L15 _prototype_ `DECLARE_LOG_CATEGORY_EXTERN(LogCUDA, Log, All);`
+
+### `Source/Runtime/CUDA/Source/Public/CudaWrapper.h` (Public)
+
+
+#### struct `CUDA_DRIVER_API_FUNCTION_LIST`  
+`struct CUDA_DRIVER_API_FUNCTION_LIST`  
+_L662-992_
+- desc: Function pointer list for CUDA Driver API functions
+- L664 _public member_ `PFNCUGETERRORSTRING cuGetErrorString;`
+- L665 _public member_ `PFNCUGETERRORNAME cuGetErrorName;`
+- L666 _public member_ `PFNCUINIT cuInit;`
+- L667 _public member_ `PFNCUDRIVERGETVERSION cuDriverGetVersion;`
+- L668 _public member_ `PFNCUDEVICEGET cuDeviceGet;`
+- L669 _public member_ `PFNCUDEVICEGETCOUNT cuDeviceGetCount;`
+- L670 _public member_ `PFNCUDEVICEGETNAME cuDeviceGetName;`
+- L671 _public member_ `PFNCUDEVICEGETUUID cuDeviceGetUuid;`
+- L672 _public member_ `PFNCUDEVICEGETLUID cuDeviceGetLuid;`
+- L673 _public member_ `PFNCUDEVICETOTALMEM cuDeviceTotalMem;`
+- L674 _public member_ `PFNCUDEVICEGETTEXTURE1DLINEARMAXWIDTH cuDeviceGetTexture1DLinearMaxWidth;`
+- L675 _public member_ `PFNCUDEVICEGETATTRIBUTE cuDeviceGetAttribute;`
+- L676 _public member_ `PFNCUDEVICEGETNVSCISYNCATTRIBUTES cuDeviceGetNvSciSyncAttributes;`
+- L677 _public member_ `PFNCUDEVICESETMEMPOOL cuDeviceSetMemPool;`
+- L678 _public member_ `PFNCUDEVICEGETMEMPOOL cuDeviceGetMemPool;`
+- L679 _public member_ `PFNCUDEVICEGETDEFAULTMEMPOOL cuDeviceGetDefaultMemPool;`
+- L680 _public member_ `PFNCUDEVICEGETPROPERTIES cuDeviceGetProperties;`
+- L681 _public member_ `PFNCUDEVICECOMPUTECAPABILITY cuDeviceComputeCapability;`
+- L682 _public member_ `PFNCUDEVICEPRIMARYCTXRETAIN cuDevicePrimaryCtxRetain;`
+- L683 _public member_ `PFNCUDEVICEPRIMARYCTXRELEASE cuDevicePrimaryCtxRelease;`
+- L684 _public member_ `PFNCUDEVICEPRIMARYCTXSETFLAGS cuDevicePrimaryCtxSetFlags;`
+- L685 _public member_ `PFNCUDEVICEPRIMARYCTXGETSTATE cuDevicePrimaryCtxGetState;`
+- L686 _public member_ `PFNCUDEVICEPRIMARYCTXRESET cuDevicePrimaryCtxReset;`
+- L687 _public member_ `PFNCUCTXCREATE cuCtxCreate;`
+- L688 _public member_ `PFNCUCTXDESTROY cuCtxDestroy;`
+- L689 _public member_ `PFNCUCTXPUSHCURRENT cuCtxPushCurrent;`
+- L690 _public member_ `PFNCUCTXPOPCURRENT cuCtxPopCurrent;`
+- L691 _public member_ `PFNCUCTXSETCURRENT cuCtxSetCurrent;`
+- L692 _public member_ `PFNCUCTXGETCURRENT cuCtxGetCurrent;`
+- L693 _public member_ `PFNCUCTXGETDEVICE cuCtxGetDevice;`
+- L694 _public member_ `PFNCUCTXGETFLAGS cuCtxGetFlags;`
+- L695 _public member_ `PFNCUCTXSYNCHRONIZE cuCtxSynchronize;`
+- L696 _public member_ `PFNCUCTXSETLIMIT cuCtxSetLimit;`
+- L697 _public member_ `PFNCUCTXGETLIMIT cuCtxGetLimit;`
+- L698 _public member_ `PFNCUCTXGETCACHECONFIG cuCtxGetCacheConfig;`
+- L699 _public member_ `PFNCUCTXSETCACHECONFIG cuCtxSetCacheConfig;`
+- L700 _public member_ `PFNCUCTXGETSHAREDMEMCONFIG cuCtxGetSharedMemConfig;`
+- L701 _public member_ `PFNCUCTXSETSHAREDMEMCONFIG cuCtxSetSharedMemConfig;`
+- L702 _public member_ `PFNCUCTXGETAPIVERSION cuCtxGetApiVersion;`
+- L703 _public member_ `PFNCUCTXGETSTREAMPRIORITYRANGE cuCtxGetStreamPriorityRange;`
+- L704 _public member_ `PFNCUCTXRESETPERSISTINGL2CACHE cuCtxResetPersistingL2Cache;`
+- L705 _public member_ `PFNCUCTXATTACH cuCtxAttach;`
+- L706 _public member_ `PFNCUCTXDETACH cuCtxDetach;`
+- L707 _public member_ `PFNCUMODULELOAD cuModuleLoad;`
+- L708 _public member_ `PFNCUMODULELOADDATA cuModuleLoadData;`
+- L709 _public member_ `PFNCUMODULELOADDATAEX cuModuleLoadDataEx;`
+- L710 _public member_ `PFNCUMODULELOADFATBINARY cuModuleLoadFatBinary;`
+- L711 _public member_ `PFNCUMODULEUNLOAD cuModuleUnload;`
+- L712 _public member_ `PFNCUMODULEGETFUNCTION cuModuleGetFunction;`
+- L713 _public member_ `PFNCUMODULEGETGLOBAL cuModuleGetGlobal;`
+- L714 _public member_ `PFNCUMODULEGETTEXREF cuModuleGetTexRef;`
+- L715 _public member_ `PFNCUMODULEGETSURFREF cuModuleGetSurfRef;`
+- L716 _public member_ `PFNCULINKCREATE cuLinkCreate;`
+- L717 _public member_ `PFNCULINKADDDATA cuLinkAddData;`
+- L718 _public member_ `PFNCULINKADDFILE cuLinkAddFile;`
+- L719 _public member_ `PFNCULINKCOMPLETE cuLinkComplete;`
+- L720 _public member_ `PFNCULINKDESTROY cuLinkDestroy;`
+- L721 _public member_ `PFNCUMEMGETINFO cuMemGetInfo;`
+- L722 _public member_ `PFNCUMEMALLOC cuMemAlloc;`
+- L723 _public member_ `PFNCUMEMALLOCPITCH cuMemAllocPitch;`
+- L724 _public member_ `PFNCUMEMFREE cuMemFree;`
+- L725 _public member_ `PFNCUMEMGETADDRESSRANGE cuMemGetAddressRange;`
+- L726 _public member_ `PFNCUMEMALLOCHOST cuMemAllocHost;`
+- L727 _public member_ `PFNCUMEMFREEHOST cuMemFreeHost;`
+- L728 _public member_ `PFNCUMEMHOSTALLOC cuMemHostAlloc;`
+- L729 _public member_ `PFNCUMEMHOSTGETDEVICEPOINTER cuMemHostGetDevicePointer;`
+- L730 _public member_ `PFNCUMEMHOSTGETFLAGS cuMemHostGetFlags;`
+- L731 _public member_ `PFNCUMEMALLOCMANAGED cuMemAllocManaged;`
+- L732 _public member_ `PFNCUDEVICEGETBYPCIBUSID cuDeviceGetByPCIBusId;`
+- L733 _public member_ `PFNCUDEVICEGETPCIBUSID cuDeviceGetPCIBusId;`
+- L734 _public member_ `PFNCUIPCGETEVENTHANDLE cuIpcGetEventHandle;`
+- L735 _public member_ `PFNCUIPCOPENEVENTHANDLE cuIpcOpenEventHandle;`
+- L736 _public member_ `PFNCUIPCGETMEMHANDLE cuIpcGetMemHandle;`
+- L737 _public member_ `PFNCUIPCOPENMEMHANDLE cuIpcOpenMemHandle;`
+- L738 _public member_ `PFNCUIPCCLOSEMEMHANDLE cuIpcCloseMemHandle;`
+- L739 _public member_ `PFNCUMEMHOSTREGISTER cuMemHostRegister;`
+- L740 _public member_ `PFNCUMEMHOSTUNREGISTER cuMemHostUnregister;`
+- L741 _public member_ `PFNCUMEMCPY cuMemcpy;`
+- L742 _public member_ `PFNCUMEMCPYPEER cuMemcpyPeer;`
+- L743 _public member_ `PFNCUMEMCPYHTOD cuMemcpyHtoD;`
+- L744 _public member_ `PFNCUMEMCPYDTOH cuMemcpyDtoH;`
+- L745 _public member_ `PFNCUMEMCPYDTOD cuMemcpyDtoD;`
+- L746 _public member_ `PFNCUMEMCPYDTOA cuMemcpyDtoA;`
+- L747 _public member_ `PFNCUMEMCPYATOD cuMemcpyAtoD;`
+- L748 _public member_ `PFNCUMEMCPYHTOA cuMemcpyHtoA;`
+- L749 _public member_ `PFNCUMEMCPYATOH cuMemcpyAtoH;`
+- L750 _public member_ `PFNCUMEMCPYATOA cuMemcpyAtoA;`
+- L751 _public member_ `PFNCUMEMCPY2D cuMemcpy2D;`
+- L752 _public member_ `PFNCUMEMCPY2DUNALIGNED cuMemcpy2DUnaligned;`
+- L753 _public member_ `PFNCUMEMCPY3D cuMemcpy3D;`
+- L754 _public member_ `PFNCUMEMCPY3DPEER cuMemcpy3DPeer;`
+- L755 _public member_ `PFNCUMEMCPYASYNC cuMemcpyAsync;`
+- L756 _public member_ `PFNCUMEMCPYPEERASYNC cuMemcpyPeerAsync;`
+- L757 _public member_ `PFNCUMEMCPYHTODASYNC cuMemcpyHtoDAsync;`
+- L758 _public member_ `PFNCUMEMCPYDTOHASYNC cuMemcpyDtoHAsync;`
+- L759 _public member_ `PFNCUMEMCPYDTODASYNC cuMemcpyDtoDAsync;`
+- L760 _public member_ `PFNCUMEMCPYHTOAASYNC cuMemcpyHtoAAsync;`
+- L761 _public member_ `PFNCUMEMCPYATOHASYNC cuMemcpyAtoHAsync;`
+- L762 _public member_ `PFNCUMEMCPY2DASYNC cuMemcpy2DAsync;`
+- L763 _public member_ `PFNCUMEMCPY3DASYNC cuMemcpy3DAsync;`
+- L764 _public member_ `PFNCUMEMCPY3DPEERASYNC cuMemcpy3DPeerAsync;`
+- L765 _public member_ `PFNCUMEMSETD8 cuMemsetD8;`
+- L766 _public member_ `PFNCUMEMSETD16 cuMemsetD16;`
+- L767 _public member_ `PFNCUMEMSETD32 cuMemsetD32;`
+- L768 _public member_ `PFNCUMEMSETD2D8 cuMemsetD2D8;`
+- L769 _public member_ `PFNCUMEMSETD2D16 cuMemsetD2D16;`
+- L770 _public member_ `PFNCUMEMSETD2D32 cuMemsetD2D32;`
+- L771 _public member_ `PFNCUMEMSETD8ASYNC cuMemsetD8Async;`
+- L772 _public member_ `PFNCUMEMSETD16ASYNC cuMemsetD16Async;`
+- L773 _public member_ `PFNCUMEMSETD32ASYNC cuMemsetD32Async;`
+- L774 _public member_ `PFNCUMEMSETD2D8ASYNC cuMemsetD2D8Async;`
+- L775 _public member_ `PFNCUMEMSETD2D16ASYNC cuMemsetD2D16Async;`
+- L776 _public member_ `PFNCUMEMSETD2D32ASYNC cuMemsetD2D32Async;`
+- L777 _public member_ `PFNCUARRAYCREATE cuArrayCreate;`
+- L778 _public member_ `PFNCUARRAYGETDESCRIPTOR cuArrayGetDescriptor;`
+- L779 _public member_ `PFNCUARRAYGETSPARSEPROPERTIES cuArrayGetSparseProperties;`
+- L780 _public member_ `PFNCUMIPMAPPEDARRAYGETSPARSEPROPERTIES cuMipmappedArrayGetSparseProperties;`
+- L781 _public member_ `PFNCUARRAYGETPLANE cuArrayGetPlane;`
+- L782 _public member_ `PFNCUARRAYDESTROY cuArrayDestroy;`
+- L783 _public member_ `PFNCUARRAY3DCREATE cuArray3DCreate;`
+- L784 _public member_ `PFNCUARRAY3DGETDESCRIPTOR cuArray3DGetDescriptor;`
+- L785 _public member_ `PFNCUMIPMAPPEDARRAYCREATE cuMipmappedArrayCreate;`
+- L786 _public member_ `PFNCUMIPMAPPEDARRAYGETLEVEL cuMipmappedArrayGetLevel;`
+- L787 _public member_ `PFNCUMIPMAPPEDARRAYDESTROY cuMipmappedArrayDestroy;`
+- L788 _public member_ `PFNCUMEMADDRESSRESERVE cuMemAddressReserve;`
+- L789 _public member_ `PFNCUMEMADDRESSFREE cuMemAddressFree;`
+- L790 _public member_ `PFNCUMEMCREATE cuMemCreate;`
+- L791 _public member_ `PFNCUMEMRELEASE cuMemRelease;`
+- L792 _public member_ `PFNCUMEMMAP cuMemMap;`
+- L793 _public member_ `PFNCUMEMMAPARRAYASYNC cuMemMapArrayAsync;`
+- L794 _public member_ `PFNCUMEMUNMAP cuMemUnmap;`
+- L795 _public member_ `PFNCUMEMSETACCESS cuMemSetAccess;`
+- L796 _public member_ `PFNCUMEMGETACCESS cuMemGetAccess;`
+- L797 _public member_ `PFNCUMEMEXPORTTOSHAREABLEHANDLE cuMemExportToShareableHandle;`
+- L798 _public member_ `PFNCUMEMIMPORTFROMSHAREABLEHANDLE cuMemImportFromShareableHandle;`
+- L799 _public member_ `PFNCUMEMGETALLOCATIONGRANULARITY cuMemGetAllocationGranularity;`
+- L800 _public member_ `PFNCUMEMGETALLOCATIONPROPERTIESFROMHANDLE cuMemGetAllocationPropertiesFromHandle;`
+- L801 _public member_ `PFNCUMEMRETAINALLOCATIONHANDLE cuMemRetainAllocationHandle;`
+- L802 _public member_ `PFNCUMEMFREEASYNC cuMemFreeAsync;`
+- L803 _public member_ `PFNCUMEMALLOCASYNC cuMemAllocAsync;`
+- L804 _public member_ `PFNCUMEMPOOLTRIMTO cuMemPoolTrimTo;`
+- L805 _public member_ `PFNCUMEMPOOLSETATTRIBUTE cuMemPoolSetAttribute;`
+- L806 _public member_ `PFNCUMEMPOOLGETATTRIBUTE cuMemPoolGetAttribute;`
+- L807 _public member_ `PFNCUMEMPOOLSETACCESS cuMemPoolSetAccess;`
+- L808 _public member_ `PFNCUMEMPOOLGETACCESS cuMemPoolGetAccess;`
+- L809 _public member_ `PFNCUMEMPOOLCREATE cuMemPoolCreate;`
+- L810 _public member_ `PFNCUMEMPOOLDESTROY cuMemPoolDestroy;`
+- L811 _public member_ `PFNCUMEMALLOCFROMPOOLASYNC cuMemAllocFromPoolAsync;`
+- L812 _public member_ `PFNCUMEMPOOLEXPORTTOSHAREABLEHANDLE cuMemPoolExportToShareableHandle;`
+- L813 _public member_ `PFNCUMEMPOOLIMPORTFROMSHAREABLEHANDLE cuMemPoolImportFromShareableHandle;`
+- L814 _public member_ `PFNCUMEMPOOLEXPORTPOINTER cuMemPoolExportPointer;`
+- L815 _public member_ `PFNCUMEMPOOLIMPORTPOINTER cuMemPoolImportPointer;`
+- L816 _public member_ `PFNCUPOINTERGETATTRIBUTE cuPointerGetAttribute;`
+- L817 _public member_ `PFNCUMEMPREFETCHASYNC cuMemPrefetchAsync;`
+- L818 _public member_ `PFNCUMEMADVISE cuMemAdvise;`
+- L819 _public member_ `PFNCUMEMRANGEGETATTRIBUTE cuMemRangeGetAttribute;`
+- L820 _public member_ `PFNCUMEMRANGEGETATTRIBUTES cuMemRangeGetAttributes;`
+- L821 _public member_ `PFNCUPOINTERSETATTRIBUTE cuPointerSetAttribute;`
+- L822 _public member_ `PFNCUPOINTERGETATTRIBUTES cuPointerGetAttributes;`
+- L823 _public member_ `PFNCUSTREAMCREATE cuStreamCreate;`
+- L824 _public member_ `PFNCUSTREAMCREATEWITHPRIORITY cuStreamCreateWithPriority;`
+- L825 _public member_ `PFNCUSTREAMGETPRIORITY cuStreamGetPriority;`
+- L826 _public member_ `PFNCUSTREAMGETFLAGS cuStreamGetFlags;`
+- L827 _public member_ `PFNCUSTREAMGETCTX cuStreamGetCtx;`
+- L828 _public member_ `PFNCUSTREAMWAITEVENT cuStreamWaitEvent;`
+- L829 _public member_ `PFNCUSTREAMADDCALLBACK cuStreamAddCallback;`
+- L830 _public member_ `PFNCUSTREAMBEGINCAPTURE cuStreamBeginCapture;`
+- L831 _public member_ `PFNCUTHREADEXCHANGESTREAMCAPTUREMODE cuThreadExchangeStreamCaptureMode;`
+- L832 _public member_ `PFNCUSTREAMENDCAPTURE cuStreamEndCapture;`
+- L833 _public member_ `PFNCUSTREAMISCAPTURING cuStreamIsCapturing;`
+- L834 _public member_ `PFNCUSTREAMGETCAPTUREINFO cuStreamGetCaptureInfo;`
+- L835 _public member_ `PFNCUSTREAMATTACHMEMASYNC cuStreamAttachMemAsync;`
+- L836 _public member_ `PFNCUSTREAMQUERY cuStreamQuery;`
+- L837 _public member_ `PFNCUSTREAMSYNCHRONIZE cuStreamSynchronize;`
+- L838 _public member_ `PFNCUSTREAMDESTROY cuStreamDestroy;`
+- L839 _public member_ `PFNCUSTREAMCOPYATTRIBUTES cuStreamCopyAttributes;`
+- L840 _public member_ `PFNCUSTREAMGETATTRIBUTE cuStreamGetAttribute;`
+- L841 _public member_ `PFNCUSTREAMSETATTRIBUTE cuStreamSetAttribute;`
+- L842 _public member_ `PFNCUEVENTCREATE cuEventCreate;`
+- L843 _public member_ `PFNCUEVENTRECORD cuEventRecord;`
+- L844 _public member_ `PFNCUEVENTRECORDWITHFLAGS cuEventRecordWithFlags;`
+- L845 _public member_ `PFNCUEVENTQUERY cuEventQuery;`
+- L846 _public member_ `PFNCUEVENTSYNCHRONIZE cuEventSynchronize;`
+- L847 _public member_ `PFNCUEVENTDESTROY cuEventDestroy;`
+- L848 _public member_ `PFNCUEVENTELAPSEDTIME cuEventElapsedTime;`
+- L849 _public member_ `PFNCUIMPORTEXTERNALMEMORY cuImportExternalMemory;`
+- L850 _public member_ `PFNCUEXTERNALMEMORYGETMAPPEDBUFFER cuExternalMemoryGetMappedBuffer;`
+- L851 _public member_ `PFNCUEXTERNALMEMORYGETMAPPEDMIPMAPPEDARRAY cuExternalMemoryGetMappedMipmappedArray;`
+- L852 _public member_ `PFNCUDESTROYEXTERNALMEMORY cuDestroyExternalMemory;`
+- L853 _public member_ `PFNCUIMPORTEXTERNALSEMAPHORE cuImportExternalSemaphore;`
+- L854 _public member_ `PFNCUSIGNALEXTERNALSEMAPHORESASYNC cuSignalExternalSemaphoresAsync;`
+- L855 _public member_ `PFNCUWAITEXTERNALSEMAPHORESASYNC cuWaitExternalSemaphoresAsync;`
+- L856 _public member_ `PFNCUDESTROYEXTERNALSEMAPHORE cuDestroyExternalSemaphore;`
+- L857 _public member_ `PFNCUSTREAMWAITVALUE32 cuStreamWaitValue32;`
+- L858 _public member_ `PFNCUSTREAMWAITVALUE64 cuStreamWaitValue64;`
+- L859 _public member_ `PFNCUSTREAMWRITEVALUE32 cuStreamWriteValue32;`
+- L860 _public member_ `PFNCUSTREAMWRITEVALUE64 cuStreamWriteValue64;`
+- L861 _public member_ `PFNCUSTREAMBATCHMEMOP cuStreamBatchMemOp;`
+- L862 _public member_ `PFNCUFUNCGETATTRIBUTE cuFuncGetAttribute;`
+- L863 _public member_ `PFNCUFUNCSETATTRIBUTE cuFuncSetAttribute;`
+- L864 _public member_ `PFNCUFUNCSETCACHECONFIG cuFuncSetCacheConfig;`
+- L865 _public member_ `PFNCUFUNCSETSHAREDMEMCONFIG cuFuncSetSharedMemConfig;`
+- L866 _public member_ `PFNCULAUNCHKERNEL cuLaunchKernel;`
+- L867 _public member_ `PFNCULAUNCHCOOPERATIVEKERNEL cuLaunchCooperativeKernel;`
+- L868 _public member_ `PFNCULAUNCHCOOPERATIVEKERNELMULTIDEVICE cuLaunchCooperativeKernelMultiDevice;`
+- L869 _public member_ `PFNCULAUNCHHOSTFUNC cuLaunchHostFunc;`
+- L870 _public member_ `PFNCUFUNCSETBLOCKSHAPE cuFuncSetBlockShape;`
+- L871 _public member_ `PFNCUFUNCSETSHAREDSIZE cuFuncSetSharedSize;`
+- L872 _public member_ `PFNCUPARAMSETSIZE cuParamSetSize;`
+- L873 _public member_ `PFNCUPARAMSETI cuParamSeti;`
+- L874 _public member_ `PFNCUPARAMSETF cuParamSetf;`
+- L875 _public member_ `PFNCUPARAMSETV cuParamSetv;`
+- L876 _public member_ `PFNCULAUNCH cuLaunch;`
+- L877 _public member_ `PFNCULAUNCHGRID cuLaunchGrid;`
+- L878 _public member_ `PFNCULAUNCHGRIDASYNC cuLaunchGridAsync;`
+- L879 _public member_ `PFNCUPARAMSETTEXREF cuParamSetTexRef;`
+- L880 _public member_ `PFNCUGRAPHCREATE cuGraphCreate;`
+- L881 _public member_ `PFNCUGRAPHADDKERNELNODE cuGraphAddKernelNode;`
+- L882 _public member_ `PFNCUGRAPHKERNELNODEGETPARAMS cuGraphKernelNodeGetParams;`
+- L883 _public member_ `PFNCUGRAPHKERNELNODESETPARAMS cuGraphKernelNodeSetParams;`
+- L884 _public member_ `PFNCUGRAPHADDMEMCPYNODE cuGraphAddMemcpyNode;`
+- L885 _public member_ `PFNCUGRAPHMEMCPYNODEGETPARAMS cuGraphMemcpyNodeGetParams;`
+- L886 _public member_ `PFNCUGRAPHMEMCPYNODESETPARAMS cuGraphMemcpyNodeSetParams;`
+- L887 _public member_ `PFNCUGRAPHADDMEMSETNODE cuGraphAddMemsetNode;`
+- L888 _public member_ `PFNCUGRAPHMEMSETNODEGETPARAMS cuGraphMemsetNodeGetParams;`
+- L889 _public member_ `PFNCUGRAPHMEMSETNODESETPARAMS cuGraphMemsetNodeSetParams;`
+- L890 _public member_ `PFNCUGRAPHADDHOSTNODE cuGraphAddHostNode;`
+- L891 _public member_ `PFNCUGRAPHHOSTNODEGETPARAMS cuGraphHostNodeGetParams;`
+- L892 _public member_ `PFNCUGRAPHHOSTNODESETPARAMS cuGraphHostNodeSetParams;`
+- L893 _public member_ `PFNCUGRAPHADDCHILDGRAPHNODE cuGraphAddChildGraphNode;`
+- L894 _public member_ `PFNCUGRAPHCHILDGRAPHNODEGETGRAPH cuGraphChildGraphNodeGetGraph;`
+- L895 _public member_ `PFNCUGRAPHADDEMPTYNODE cuGraphAddEmptyNode;`
+- L896 _public member_ `PFNCUGRAPHADDEVENTRECORDNODE cuGraphAddEventRecordNode;`
+- L897 _public member_ `PFNCUGRAPHEVENTRECORDNODEGETEVENT cuGraphEventRecordNodeGetEvent;`
+- L898 _public member_ `PFNCUGRAPHEVENTRECORDNODESETEVENT cuGraphEventRecordNodeSetEvent;`
+- L899 _public member_ `PFNCUGRAPHADDEVENTWAITNODE cuGraphAddEventWaitNode;`
+- L900 _public member_ `PFNCUGRAPHEVENTWAITNODEGETEVENT cuGraphEventWaitNodeGetEvent;`
+- L901 _public member_ `PFNCUGRAPHEVENTWAITNODESETEVENT cuGraphEventWaitNodeSetEvent;`
+- L902 _public member_ `PFNCUGRAPHADDEXTERNALSEMAPHORESSIGNALNODE cuGraphAddExternalSemaphoresSignalNode;`
+- L903 _public member_ `PFNCUGRAPHEXTERNALSEMAPHORESSIGNALNODEGETPARAMS cuGraphExternalSemaphoresSignalNodeGetParams;`
+- L904 _public member_ `PFNCUGRAPHEXTERNALSEMAPHORESSIGNALNODESETPARAMS cuGraphExternalSemaphoresSignalNodeSetParams;`
+- L905 _public member_ `PFNCUGRAPHADDEXTERNALSEMAPHORESWAITNODE cuGraphAddExternalSemaphoresWaitNode;`
+- L906 _public member_ `PFNCUGRAPHEXTERNALSEMAPHORESWAITNODEGETPARAMS cuGraphExternalSemaphoresWaitNodeGetParams;`
+- L907 _public member_ `PFNCUGRAPHEXTERNALSEMAPHORESWAITNODESETPARAMS cuGraphExternalSemaphoresWaitNodeSetParams;`
+- L908 _public member_ `PFNCUGRAPHCLONE cuGraphClone;`
+- L909 _public member_ `PFNCUGRAPHNODEFINDINCLONE cuGraphNodeFindInClone;`
+- L910 _public member_ `PFNCUGRAPHNODEGETTYPE cuGraphNodeGetType;`
+- L911 _public member_ `PFNCUGRAPHGETNODES cuGraphGetNodes;`
+- L912 _public member_ `PFNCUGRAPHGETROOTNODES cuGraphGetRootNodes;`
+- L913 _public member_ `PFNCUGRAPHGETEDGES cuGraphGetEdges;`
+- L914 _public member_ `PFNCUGRAPHNODEGETDEPENDENCIES cuGraphNodeGetDependencies;`
+- L915 _public member_ `PFNCUGRAPHNODEGETDEPENDENTNODES cuGraphNodeGetDependentNodes;`
+- L916 _public member_ `PFNCUGRAPHADDDEPENDENCIES cuGraphAddDependencies;`
+- L917 _public member_ `PFNCUGRAPHREMOVEDEPENDENCIES cuGraphRemoveDependencies;`
+- L918 _public member_ `PFNCUGRAPHDESTROYNODE cuGraphDestroyNode;`
+- L919 _public member_ `PFNCUGRAPHINSTANTIATE cuGraphInstantiate;`
+- L920 _public member_ `PFNCUGRAPHEXECKERNELNODESETPARAMS cuGraphExecKernelNodeSetParams;`
+- L921 _public member_ `PFNCUGRAPHEXECMEMCPYNODESETPARAMS cuGraphExecMemcpyNodeSetParams;`
+- L922 _public member_ `PFNCUGRAPHEXECMEMSETNODESETPARAMS cuGraphExecMemsetNodeSetParams;`
+- L923 _public member_ `PFNCUGRAPHEXECHOSTNODESETPARAMS cuGraphExecHostNodeSetParams;`
+- L924 _public member_ `PFNCUGRAPHEXECCHILDGRAPHNODESETPARAMS cuGraphExecChildGraphNodeSetParams;`
+- L925 _public member_ `PFNCUGRAPHEXECEVENTRECORDNODESETEVENT cuGraphExecEventRecordNodeSetEvent;`
+- L926 _public member_ `PFNCUGRAPHEXECEVENTWAITNODESETEVENT cuGraphExecEventWaitNodeSetEvent;`
+- L927 _public member_ `PFNCUGRAPHEXECEXTERNALSEMAPHORESSIGNALNODESETPARAMS cuGraphExecExternalSemaphoresSignalNodeSetParams;`
+- L928 _public member_ `PFNCUGRAPHEXECEXTERNALSEMAPHORESWAITNODESETPARAMS cuGraphExecExternalSemaphoresWaitNodeSetParams;`
+- L929 _public member_ `PFNCUGRAPHUPLOAD cuGraphUpload;`
+- L930 _public member_ `PFNCUGRAPHLAUNCH cuGraphLaunch;`
+- L931 _public member_ `PFNCUGRAPHEXECDESTROY cuGraphExecDestroy;`
+- L932 _public member_ `PFNCUGRAPHDESTROY cuGraphDestroy;`
+- L933 _public member_ `PFNCUGRAPHEXECUPDATE cuGraphExecUpdate;`
+- L934 _public member_ `PFNCUGRAPHKERNELNODECOPYATTRIBUTES cuGraphKernelNodeCopyAttributes;`
+- L935 _public member_ `PFNCUGRAPHKERNELNODEGETATTRIBUTE cuGraphKernelNodeGetAttribute;`
+- L936 _public member_ `PFNCUGRAPHKERNELNODESETATTRIBUTE cuGraphKernelNodeSetAttribute;`
+- L937 _public member_ `PFNCUOCCUPANCYMAXACTIVEBLOCKSPERMULTIPROCESSOR cuOccupancyMaxActiveBlocksPerMultiprocessor;`
+- L938 _public member_ `PFNCUOCCUPANCYMAXACTIVEBLOCKSPERMULTIPROCESSORWITHFLAGS cuOccupancyMaxActiveBlocksPerMultiprocessorWithFlags;`
+- L939 _public member_ `PFNCUOCCUPANCYMAXPOTENTIALBLOCKSIZE cuOccupancyMaxPotentialBlockSize;`
+- L940 _public member_ `PFNCUOCCUPANCYMAXPOTENTIALBLOCKSIZEWITHFLAGS cuOccupancyMaxPotentialBlockSizeWithFlags;`
+- L941 _public member_ `PFNCUOCCUPANCYAVAILABLEDYNAMICSMEMPERBLOCK cuOccupancyAvailableDynamicSMemPerBlock;`
+- L942 _public member_ `PFNCUTEXREFSETARRAY cuTexRefSetArray;`
+- L943 _public member_ `PFNCUTEXREFSETMIPMAPPEDARRAY cuTexRefSetMipmappedArray;`
+- L944 _public member_ `PFNCUTEXREFSETADDRESS cuTexRefSetAddress;`
+- L945 _public member_ `PFNCUTEXREFSETADDRESS2D cuTexRefSetAddress2D;`
+- L946 _public member_ `PFNCUTEXREFSETFORMAT cuTexRefSetFormat;`
+- L947 _public member_ `PFNCUTEXREFSETADDRESSMODE cuTexRefSetAddressMode;`
+- L948 _public member_ `PFNCUTEXREFSETFILTERMODE cuTexRefSetFilterMode;`
+- L949 _public member_ `PFNCUTEXREFSETMIPMAPFILTERMODE cuTexRefSetMipmapFilterMode;`
+- L950 _public member_ `PFNCUTEXREFSETMIPMAPLEVELBIAS cuTexRefSetMipmapLevelBias;`
+- L951 _public member_ `PFNCUTEXREFSETMIPMAPLEVELCLAMP cuTexRefSetMipmapLevelClamp;`
+- L952 _public member_ `PFNCUTEXREFSETMAXANISOTROPY cuTexRefSetMaxAnisotropy;`
+- L953 _public member_ `PFNCUTEXREFSETBORDERCOLOR cuTexRefSetBorderColor;`
+- L954 _public member_ `PFNCUTEXREFSETFLAGS cuTexRefSetFlags;`
+- L955 _public member_ `PFNCUTEXREFGETADDRESS cuTexRefGetAddress;`
+- L956 _public member_ `PFNCUTEXREFGETARRAY cuTexRefGetArray;`
+- L957 _public member_ `PFNCUTEXREFGETMIPMAPPEDARRAY cuTexRefGetMipmappedArray;`
+- L958 _public member_ `PFNCUTEXREFGETADDRESSMODE cuTexRefGetAddressMode;`
+- L959 _public member_ `PFNCUTEXREFGETFILTERMODE cuTexRefGetFilterMode;`
+- L960 _public member_ `PFNCUTEXREFGETFORMAT cuTexRefGetFormat;`
+- L961 _public member_ `PFNCUTEXREFGETMIPMAPFILTERMODE cuTexRefGetMipmapFilterMode;`
+- L962 _public member_ `PFNCUTEXREFGETMIPMAPLEVELBIAS cuTexRefGetMipmapLevelBias;`
+- L963 _public member_ `PFNCUTEXREFGETMIPMAPLEVELCLAMP cuTexRefGetMipmapLevelClamp;`
+- L964 _public member_ `PFNCUTEXREFGETMAXANISOTROPY cuTexRefGetMaxAnisotropy;`
+- L965 _public member_ `PFNCUTEXREFGETBORDERCOLOR cuTexRefGetBorderColor;`
+- L966 _public member_ `PFNCUTEXREFGETFLAGS cuTexRefGetFlags;`
+- L967 _public member_ `PFNCUTEXREFCREATE cuTexRefCreate;`
+- L968 _public member_ `PFNCUTEXREFDESTROY cuTexRefDestroy;`
+- L969 _public member_ `PFNCUSURFREFSETARRAY cuSurfRefSetArray;`
+- L970 _public member_ `PFNCUSURFREFGETARRAY cuSurfRefGetArray;`
+- L971 _public member_ `PFNCUTEXOBJECTCREATE cuTexObjectCreate;`
+- L972 _public member_ `PFNCUTEXOBJECTDESTROY cuTexObjectDestroy;`
+- L973 _public member_ `PFNCUTEXOBJECTGETRESOURCEDESC cuTexObjectGetResourceDesc;`
+- L974 _public member_ `PFNCUTEXOBJECTGETTEXTUREDESC cuTexObjectGetTextureDesc;`
+- L975 _public member_ `PFNCUTEXOBJECTGETRESOURCEVIEWDESC cuTexObjectGetResourceViewDesc;`
+- L976 _public member_ `PFNCUSURFOBJECTCREATE cuSurfObjectCreate;`
+- L977 _public member_ `PFNCUSURFOBJECTDESTROY cuSurfObjectDestroy;`
+- L978 _public member_ `PFNCUSURFOBJECTGETRESOURCEDESC cuSurfObjectGetResourceDesc;`
+- L979 _public member_ `PFNCUDEVICECANACCESSPEER cuDeviceCanAccessPeer;`
+- L980 _public member_ `PFNCUCTXENABLEPEERACCESS cuCtxEnablePeerAccess;`
+- L981 _public member_ `PFNCUCTXDISABLEPEERACCESS cuCtxDisablePeerAccess;`
+- L982 _public member_ `PFNCUDEVICEGETP2PATTRIBUTE cuDeviceGetP2PAttribute;`
+- L983 _public member_ `PFNCUGRAPHICSUNREGISTERRESOURCE cuGraphicsUnregisterResource;`
+- L984 _public member_ `PFNCUGRAPHICSSUBRESOURCEGETMAPPEDARRAY cuGraphicsSubResourceGetMappedArray;`
+- L985 _public member_ `PFNCUGRAPHICSRESOURCEGETMAPPEDMIPMAPPEDARRAY cuGraphicsResourceGetMappedMipmappedArray;`
+- L986 _public member_ `PFNCUGRAPHICSRESOURCEGETMAPPEDPOINTER cuGraphicsResourceGetMappedPointer;`
+- L987 _public member_ `PFNCUGRAPHICSRESOURCESETMAPFLAGS cuGraphicsResourceSetMapFlags;`
+- L988 _public member_ `PFNCUGRAPHICSMAPRESOURCES cuGraphicsMapResources;`
+- L989 _public member_ `PFNCUGRAPHICSUNMAPRESOURCES cuGraphicsUnmapResources;`
+- L990 _public member_ `PFNCUGETEXPORTTABLE cuGetExportTable;`
+- L991 _public member_ `PFNCUFUNCGETMODULE cuFuncGetModule;`
+
+#### Free symbols / members of external scopes
+
+- L6 _macro_ `#define _CUDA_WRAPPER_H`
+- L332 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGETERRORSTRING) (CUresult error, const char **pStr);` — Function pointer types for CUDA Driver API functions
+- L333 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGETERRORNAME) (CUresult error, const char **pStr);`
+- L334 _typedef_ `typedef CUresult (CUDAAPI *PFNCUINIT) (unsigned int Flags);`
+- L335 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDRIVERGETVERSION) (int *driverVersion);`
+- L336 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGET) (CUdevice *device, int ordinal);`
+- L337 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETCOUNT) (int *count);`
+- L338 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETNAME) (char *name, int len, CUdevice dev);`
+- L339 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETUUID) (CUuuid *uuid, CUdevice dev);`
+- L340 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETLUID) (char *luid, unsigned int *deviceNodeMask, CUdevice dev);`
+- L341 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICETOTALMEM) (size_t *bytes, CUdevice dev);`
+- L342 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETTEXTURE1DLINEARMAXWIDTH) (size_t *maxWidthInElements, CUarray_format format, unsigned numChannels, CUdevice dev);`
+- L343 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETATTRIBUTE) (int *pi, CUdevice_attribute attrib, CUdevice dev);`
+- L344 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETNVSCISYNCATTRIBUTES) (void *nvSciSyncAttrList, CUdevice dev, int flags);`
+- L345 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICESETMEMPOOL) (CUdevice dev, CUmemoryPool pool);`
+- L346 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETMEMPOOL) (CUmemoryPool *pool, CUdevice dev);`
+- L347 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETDEFAULTMEMPOOL) (CUmemoryPool *pool_out, CUdevice dev);`
+- L348 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETPROPERTIES) (CUdevprop *prop, CUdevice dev);`
+- L349 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICECOMPUTECAPABILITY) (int *major, int *minor, CUdevice dev);`
+- L350 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEPRIMARYCTXRETAIN) (CUcontext *pctx, CUdevice dev);`
+- L351 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEPRIMARYCTXRELEASE) (CUdevice dev);`
+- L352 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEPRIMARYCTXSETFLAGS) (CUdevice dev, unsigned int flags);`
+- L353 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEPRIMARYCTXGETSTATE) (CUdevice dev, unsigned int *flags, int *active);`
+- L354 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEPRIMARYCTXRESET) (CUdevice dev);`
+- L355 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXCREATE) (CUcontext *pctx, unsigned int flags, CUdevice dev);`
+- L356 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXDESTROY) (CUcontext ctx);`
+- L357 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXPUSHCURRENT) (CUcontext ctx);`
+- L358 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXPOPCURRENT) (CUcontext *pctx);`
+- L359 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXSETCURRENT) (CUcontext ctx);`
+- L360 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETCURRENT) (CUcontext *pctx);`
+- L361 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETDEVICE) (CUdevice *device);`
+- L362 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETFLAGS) (unsigned int *flags);`
+- L363 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXSYNCHRONIZE) (void);`
+- L364 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXSETLIMIT) (CUlimit limit, size_t value);`
+- L365 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETLIMIT) (size_t *pvalue, CUlimit limit);`
+- L366 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETCACHECONFIG) (CUfunc_cache *pconfig);`
+- L367 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXSETCACHECONFIG) (CUfunc_cache config);`
+- L368 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETSHAREDMEMCONFIG) (CUsharedconfig *pConfig);`
+- L369 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXSETSHAREDMEMCONFIG) (CUsharedconfig config);`
+- L370 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETAPIVERSION) (CUcontext ctx, unsigned int *version);`
+- L371 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXGETSTREAMPRIORITYRANGE) (int *leastPriority, int *greatestPriority);`
+- L372 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXRESETPERSISTINGL2CACHE) (void);`
+- L373 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXATTACH) (CUcontext *pctx, unsigned int flags);`
+- L374 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXDETACH) (CUcontext ctx);`
+- L375 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULELOAD) (CUmodule *module, const char *fname);`
+- L376 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULELOADDATA) (CUmodule *module, const void *image);`
+- L377 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULELOADDATAEX) (CUmodule *module, const void *image, unsigned int numOptions, CUjit_option *options, void **optionValues);`
+- L378 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULELOADFATBINARY) (CUmodule *module, const void *fatCubin);`
+- L379 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULEUNLOAD) (CUmodule hmod);`
+- L380 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULEGETFUNCTION) (CUfunction *hfunc, CUmodule hmod, const char *name);`
+- L381 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULEGETGLOBAL) (CUdeviceptr *dptr, size_t *bytes, CUmodule hmod, const char *name);`
+- L382 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULEGETTEXREF) (CUtexref *pTexRef, CUmodule hmod, const char *name);`
+- L383 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMODULEGETSURFREF) (CUsurfref *pSurfRef, CUmodule hmod, const char *name);`
+- L384 _typedef_ `typedef CUresult (CUDAAPI *PFNCULINKCREATE) (unsigned int numOptions, CUjit_option *options, void **optionValues, CUlinkState *stateOut);`
+- L385 _typedef_ `typedef CUresult (CUDAAPI *PFNCULINKADDDATA) (CUlinkState state, CUjitInputType type, void *data, size_t size, const char *name, unsigned int numOptions, CUjit_option *options, void **optionValues);`
+- L386 _typedef_ `typedef CUresult (CUDAAPI *PFNCULINKADDFILE) (CUlinkState state, CUjitInputType type, const char *path, unsigned int numOptions, CUjit_option *options, void **optionValues);`
+- L387 _typedef_ `typedef CUresult (CUDAAPI *PFNCULINKCOMPLETE) (CUlinkState state, void **cubinOut, size_t *sizeOut);`
+- L388 _typedef_ `typedef CUresult (CUDAAPI *PFNCULINKDESTROY) (CUlinkState state);`
+- L389 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMGETINFO) (size_t *free, size_t *total);`
+- L390 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOC) (CUdeviceptr *dptr, size_t bytesize);`
+- L391 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOCPITCH) (CUdeviceptr *dptr, size_t *pPitch, size_t WidthInBytes, size_t Height, unsigned int ElementSizeBytes);`
+- L392 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMFREE) (CUdeviceptr dptr);`
+- L393 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMGETADDRESSRANGE) (CUdeviceptr *pbase, size_t *psize, CUdeviceptr dptr);`
+- L394 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOCHOST) (void **pp, size_t bytesize);`
+- L395 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMFREEHOST) (void *p);`
+- L396 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMHOSTALLOC) (void **pp, size_t bytesize, unsigned int Flags);`
+- L397 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMHOSTGETDEVICEPOINTER) (CUdeviceptr *pdptr, void *p, unsigned int Flags);`
+- L398 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMHOSTGETFLAGS) (unsigned int *pFlags, void *p);`
+- L399 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOCMANAGED) (CUdeviceptr *dptr, size_t bytesize, unsigned int flags);`
+- L400 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETBYPCIBUSID) (CUdevice *dev, const char *pciBusId);`
+- L401 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETPCIBUSID) (char *pciBusId, int len, CUdevice dev);`
+- L402 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIPCGETEVENTHANDLE) (CUipcEventHandle *pHandle, CUevent event);`
+- L403 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIPCOPENEVENTHANDLE) (CUevent *phEvent, CUipcEventHandle handle);`
+- L404 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIPCGETMEMHANDLE) (CUipcMemHandle *pHandle, CUdeviceptr dptr);`
+- L405 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIPCOPENMEMHANDLE) (CUdeviceptr *pdptr, CUipcMemHandle handle, unsigned int Flags);`
+- L406 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIPCCLOSEMEMHANDLE) (CUdeviceptr dptr);`
+- L407 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMHOSTREGISTER) (void *p, size_t bytesize, unsigned int Flags);`
+- L408 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMHOSTUNREGISTER) (void *p);`
+- L409 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY) (CUdeviceptr dst, CUdeviceptr src, size_t ByteCount);`
+- L410 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYPEER) (CUdeviceptr dstDevice, CUcontext dstContext, CUdeviceptr srcDevice, CUcontext srcContext, size_t ByteCount);`
+- L411 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYHTOD) (CUdeviceptr dstDevice, const void *srcHost, size_t ByteCount);`
+- L412 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYDTOH) (void *dstHost, CUdeviceptr srcDevice, size_t ByteCount);`
+- L413 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYDTOD) (CUdeviceptr dstDevice, CUdeviceptr srcDevice, size_t ByteCount);`
+- L414 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYDTOA) (CUarray dstArray, size_t dstOffset, CUdeviceptr srcDevice, size_t ByteCount);`
+- L415 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYATOD) (CUdeviceptr dstDevice, CUarray srcArray, size_t srcOffset, size_t ByteCount);`
+- L416 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYHTOA) (CUarray dstArray, size_t dstOffset, const void *srcHost, size_t ByteCount);`
+- L417 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYATOH) (void *dstHost, CUarray srcArray, size_t srcOffset, size_t ByteCount);`
+- L418 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYATOA) (CUarray dstArray, size_t dstOffset, CUarray srcArray, size_t srcOffset, size_t ByteCount);`
+- L419 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY2D) (const CUDA_MEMCPY2D *pCopy);`
+- L420 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY2DUNALIGNED) (const CUDA_MEMCPY2D *pCopy);`
+- L421 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY3D) (const CUDA_MEMCPY3D *pCopy);`
+- L422 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY3DPEER) (const CUDA_MEMCPY3D_PEER *pCopy);`
+- L423 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYASYNC) (CUdeviceptr dst, CUdeviceptr src, size_t ByteCount, CUstream hStream);`
+- L424 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYPEERASYNC) (CUdeviceptr dstDevice, CUcontext dstContext, CUdeviceptr srcDevice, CUcontext srcContext, size_t ByteCount, CUstream hStream);`
+- L425 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYHTODASYNC) (CUdeviceptr dstDevice, const void *srcHost, size_t ByteCount, CUstream hStream);`
+- L426 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYDTOHASYNC) (void *dstHost, CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);`
+- L427 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYDTODASYNC) (CUdeviceptr dstDevice, CUdeviceptr srcDevice, size_t ByteCount, CUstream hStream);`
+- L428 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYHTOAASYNC) (CUarray dstArray, size_t dstOffset, const void *srcHost, size_t ByteCount, CUstream hStream);`
+- L429 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPYATOHASYNC) (void *dstHost, CUarray srcArray, size_t srcOffset, size_t ByteCount, CUstream hStream);`
+- L430 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY2DASYNC) (const CUDA_MEMCPY2D *pCopy, CUstream hStream);`
+- L431 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY3DASYNC) (const CUDA_MEMCPY3D *pCopy, CUstream hStream);`
+- L432 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCPY3DPEERASYNC) (const CUDA_MEMCPY3D_PEER *pCopy, CUstream hStream);`
+- L433 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD8) (CUdeviceptr dstDevice, unsigned char uc, size_t N);`
+- L434 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD16) (CUdeviceptr dstDevice, unsigned short us, size_t N);`
+- L435 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD32) (CUdeviceptr dstDevice, unsigned int ui, size_t N);`
+- L436 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D8) (CUdeviceptr dstDevice, size_t dstPitch, unsigned char uc, size_t Width, size_t Height);`
+- L437 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D16) (CUdeviceptr dstDevice, size_t dstPitch, unsigned short us, size_t Width, size_t Height);`
+- L438 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D32) (CUdeviceptr dstDevice, size_t dstPitch, unsigned int ui, size_t Width, size_t Height);`
+- L439 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD8ASYNC) (CUdeviceptr dstDevice, unsigned char uc, size_t N, CUstream hStream);`
+- L440 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD16ASYNC) (CUdeviceptr dstDevice, unsigned short us, size_t N, CUstream hStream);`
+- L441 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD32ASYNC) (CUdeviceptr dstDevice, unsigned int ui, size_t N, CUstream hStream);`
+- L442 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D8ASYNC) (CUdeviceptr dstDevice, size_t dstPitch, unsigned char uc, size_t Width, size_t Height, CUstream hStream);`
+- L443 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D16ASYNC) (CUdeviceptr dstDevice, size_t dstPitch, unsigned short us, size_t Width, size_t Height, CUstream hStream);`
+- L444 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETD2D32ASYNC) (CUdeviceptr dstDevice, size_t dstPitch, unsigned int ui, size_t Width, size_t Height, CUstream hStream);`
+- L445 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAYCREATE) (CUarray *pHandle, const CUDA_ARRAY_DESCRIPTOR *pAllocateArray);`
+- L446 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAYGETDESCRIPTOR) (CUDA_ARRAY_DESCRIPTOR *pArrayDescriptor, CUarray hArray);`
+- L447 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAYGETSPARSEPROPERTIES) (CUDA_ARRAY_SPARSE_PROPERTIES *sparseProperties, CUarray array);`
+- L448 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMIPMAPPEDARRAYGETSPARSEPROPERTIES) (CUDA_ARRAY_SPARSE_PROPERTIES *sparseProperties, CUmipmappedArray mipmap);`
+- L449 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAYGETPLANE) (CUarray *pPlaneArray, CUarray hArray, unsigned int planeIdx);`
+- L450 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAYDESTROY) (CUarray hArray);`
+- L451 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAY3DCREATE) (CUarray *pHandle, const CUDA_ARRAY3D_DESCRIPTOR *pAllocateArray);`
+- L452 _typedef_ `typedef CUresult (CUDAAPI *PFNCUARRAY3DGETDESCRIPTOR) (CUDA_ARRAY3D_DESCRIPTOR *pArrayDescriptor, CUarray hArray);`
+- L453 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMIPMAPPEDARRAYCREATE) (CUmipmappedArray *pHandle, const CUDA_ARRAY3D_DESCRIPTOR *pMipmappedArrayDesc, unsigned int numMipmapLevels);`
+- L454 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMIPMAPPEDARRAYGETLEVEL) (CUarray *pLevelArray, CUmipmappedArray hMipmappedArray, unsigned int level);`
+- L455 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMIPMAPPEDARRAYDESTROY) (CUmipmappedArray hMipmappedArray);`
+- L456 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMADDRESSRESERVE) (CUdeviceptr *ptr, size_t size, size_t alignment, CUdeviceptr addr, unsigned long long flags);`
+- L457 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMADDRESSFREE) (CUdeviceptr ptr, size_t size);`
+- L458 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMCREATE) (CUmemGenericAllocationHandle *handle, size_t size, const CUmemAllocationProp *prop, unsigned long long flags);`
+- L459 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMRELEASE) (CUmemGenericAllocationHandle handle);`
+- L460 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMMAP) (CUdeviceptr ptr, size_t size, size_t offset, CUmemGenericAllocationHandle handle, unsigned long long flags);`
+- L461 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMMAPARRAYASYNC) (CUarrayMapInfo *mapInfoList, unsigned int count, CUstream hStream);`
+- L462 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMUNMAP) (CUdeviceptr ptr, size_t size);`
+- L463 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMSETACCESS) (CUdeviceptr ptr, size_t size, const CUmemAccessDesc *desc, size_t count);`
+- L464 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMGETACCESS) (unsigned long long *flags, const CUmemLocation *location, CUdeviceptr ptr);`
+- L465 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMEXPORTTOSHAREABLEHANDLE) (void *shareableHandle, CUmemGenericAllocationHandle handle, CUmemAllocationHandleType handleType, unsigned long long flags);`
+- L466 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMIMPORTFROMSHAREABLEHANDLE) (CUmemGenericAllocationHandle *handle, void *osHandle, CUmemAllocationHandleType shHandleType);`
+- L467 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMGETALLOCATIONGRANULARITY) (size_t *granularity, const CUmemAllocationProp *prop, CUmemAllocationGranularity_flags option);`
+- L468 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMGETALLOCATIONPROPERTIESFROMHANDLE) (CUmemAllocationProp *prop, CUmemGenericAllocationHandle handle);`
+- L469 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMRETAINALLOCATIONHANDLE) (CUmemGenericAllocationHandle *handle, void *addr);`
+- L470 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMFREEASYNC) (CUdeviceptr dptr, CUstream hStream);`
+- L471 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOCASYNC) (CUdeviceptr *dptr, size_t bytesize, CUstream hStream);`
+- L472 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLTRIMTO) (CUmemoryPool pool, size_t minBytesToKeep);`
+- L473 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLSETATTRIBUTE) (CUmemoryPool pool, CUmemPool_attribute attr, void *value);`
+- L474 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLGETATTRIBUTE) (CUmemoryPool pool, CUmemPool_attribute attr, void *value);`
+- L475 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLSETACCESS) (CUmemoryPool pool, const CUmemAccessDesc *map, size_t count);`
+- L476 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLGETACCESS) (CUmemAccess_flags *flags, CUmemoryPool memPool, CUmemLocation *location);`
+- L477 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLCREATE) (CUmemoryPool *pool, const CUmemPoolProps *poolProps);`
+- L478 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLDESTROY) (CUmemoryPool pool);`
+- L479 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMALLOCFROMPOOLASYNC) (CUdeviceptr *dptr, size_t bytesize, CUmemoryPool pool, CUstream hStream);`
+- L480 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLEXPORTTOSHAREABLEHANDLE) (void *handle_out, CUmemoryPool pool, CUmemAllocationHandleType handleType, unsigned long long flags);`
+- L481 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLIMPORTFROMSHAREABLEHANDLE) (CUmemoryPool *pool_out, void *handle, CUmemAllocationHandleType handleType, unsigned long long flags);`
+- L482 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLEXPORTPOINTER) (CUmemPoolPtrExportData *shareData_out, CUdeviceptr ptr);`
+- L483 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPOOLIMPORTPOINTER) (CUdeviceptr *ptr_out, CUmemoryPool pool, CUmemPoolPtrExportData *shareData);`
+- L484 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPOINTERGETATTRIBUTE) (void *data, CUpointer_attribute attribute, CUdeviceptr ptr);`
+- L485 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMPREFETCHASYNC) (CUdeviceptr devPtr, size_t count, CUdevice dstDevice, CUstream hStream);`
+- L486 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMADVISE) (CUdeviceptr devPtr, size_t count, CUmem_advise advice, CUdevice device);`
+- L487 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMRANGEGETATTRIBUTE) (void *data, size_t dataSize, CUmem_range_attribute attribute, CUdeviceptr devPtr, size_t count);`
+- L488 _typedef_ `typedef CUresult (CUDAAPI *PFNCUMEMRANGEGETATTRIBUTES) (void **data, size_t *dataSizes, CUmem_range_attribute *attributes, size_t numAttributes, CUdeviceptr devPtr, size_t count);`
+- L489 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPOINTERSETATTRIBUTE) (const void *value, CUpointer_attribute attribute, CUdeviceptr ptr);`
+- L490 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPOINTERGETATTRIBUTES) (unsigned int numAttributes, CUpointer_attribute *attributes, void **data, CUdeviceptr ptr);`
+- L491 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMCREATE) (CUstream *phStream, unsigned int Flags);`
+- L492 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMCREATEWITHPRIORITY) (CUstream *phStream, unsigned int flags, int priority);`
+- L493 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMGETPRIORITY) (CUstream hStream, int *priority);`
+- L494 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMGETFLAGS) (CUstream hStream, unsigned int *flags);`
+- L495 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMGETCTX) (CUstream hStream, CUcontext *pctx);`
+- L496 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMWAITEVENT) (CUstream hStream, CUevent hEvent, unsigned int Flags);`
+- L497 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMADDCALLBACK) (CUstream hStream, CUstreamCallback callback, void *userData, unsigned int flags);`
+- L498 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMBEGINCAPTURE) (CUstream hStream, CUstreamCaptureMode mode);`
+- L499 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTHREADEXCHANGESTREAMCAPTUREMODE) (CUstreamCaptureMode *mode);`
+- L500 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMENDCAPTURE) (CUstream hStream, CUgraph *phGraph);`
+- L501 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMISCAPTURING) (CUstream hStream, CUstreamCaptureStatus *captureStatus);`
+- L502 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMGETCAPTUREINFO) (CUstream hStream, CUstreamCaptureStatus *captureStatus, cuuint64_t *id);`
+- L503 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMATTACHMEMASYNC) (CUstream hStream, CUdeviceptr dptr, size_t length, unsigned int flags);`
+- L504 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMQUERY) (CUstream hStream);`
+- L505 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMSYNCHRONIZE) (CUstream hStream);`
+- L506 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMDESTROY) (CUstream hStream);`
+- L507 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMCOPYATTRIBUTES) (CUstream dst, CUstream src);`
+- L508 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMGETATTRIBUTE) (CUstream hStream, CUstreamAttrID attr, CUstreamAttrValue *value_out);`
+- L509 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMSETATTRIBUTE) (CUstream hStream, CUstreamAttrID attr, const CUstreamAttrValue *value);`
+- L510 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTCREATE) (CUevent *phEvent, unsigned int Flags);`
+- L511 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTRECORD) (CUevent hEvent, CUstream hStream);`
+- L512 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTRECORDWITHFLAGS) (CUevent hEvent, CUstream hStream, unsigned int flags);`
+- L513 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTQUERY) (CUevent hEvent);`
+- L514 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTSYNCHRONIZE) (CUevent hEvent);`
+- L515 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTDESTROY) (CUevent hEvent);`
+- L516 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEVENTELAPSEDTIME) (float *pMilliseconds, CUevent hStart, CUevent hEnd);`
+- L517 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIMPORTEXTERNALMEMORY) (CUexternalMemory *extMem_out, const CUDA_EXTERNAL_MEMORY_HANDLE_DESC *memHandleDesc);`
+- L518 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEXTERNALMEMORYGETMAPPEDBUFFER) (CUdeviceptr *devPtr, CUexternalMemory extMem, const CUDA_EXTERNAL_MEMORY_BUFFER_DESC *bufferDesc);`
+- L519 _typedef_ `typedef CUresult (CUDAAPI *PFNCUEXTERNALMEMORYGETMAPPEDMIPMAPPEDARRAY) (CUmipmappedArray *mipmap, CUexternalMemory extMem, const CUDA_EXTERNAL_MEMORY_MIPMAPPED_ARRAY_DESC *mipmapDesc);`
+- L520 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDESTROYEXTERNALMEMORY) (CUexternalMemory extMem);`
+- L521 _typedef_ `typedef CUresult (CUDAAPI *PFNCUIMPORTEXTERNALSEMAPHORE) (CUexternalSemaphore *extSem_out, const CUDA_EXTERNAL_SEMAPHORE_HANDLE_DESC *semHandleDesc);`
+- L522 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSIGNALEXTERNALSEMAPHORESASYNC) (const CUexternalSemaphore *extSemArray, const CUDA_EXTERNAL_SEMAPHORE_SIGNAL_PARAMS *paramsArray, unsigned int numExtSems, CUstream stream);`
+- L523 _typedef_ `typedef CUresult (CUDAAPI *PFNCUWAITEXTERNALSEMAPHORESASYNC) (const CUexternalSemaphore *extSemArray, const CUDA_EXTERNAL_SEMAPHORE_WAIT_PARAMS *paramsArray, unsigned int numExtSems, CUstream stream);`
+- L524 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDESTROYEXTERNALSEMAPHORE) (CUexternalSemaphore extSem);`
+- L525 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMWAITVALUE32) (CUstream stream, CUdeviceptr addr, cuuint32_t value, unsigned int flags);`
+- L526 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMWAITVALUE64) (CUstream stream, CUdeviceptr addr, cuuint64_t value, unsigned int flags);`
+- L527 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMWRITEVALUE32) (CUstream stream, CUdeviceptr addr, cuuint32_t value, unsigned int flags);`
+- L528 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMWRITEVALUE64) (CUstream stream, CUdeviceptr addr, cuuint64_t value, unsigned int flags);`
+- L529 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSTREAMBATCHMEMOP) (CUstream stream, unsigned int count, CUstreamBatchMemOpParams *paramArray, unsigned int flags);`
+- L530 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCGETATTRIBUTE) (int *pi, CUfunction_attribute attrib, CUfunction hfunc);`
+- L531 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCSETATTRIBUTE) (CUfunction hfunc, CUfunction_attribute attrib, int value);`
+- L532 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCSETCACHECONFIG) (CUfunction hfunc, CUfunc_cache config);`
+- L533 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCSETSHAREDMEMCONFIG) (CUfunction hfunc, CUsharedconfig config);`
+- L534 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHKERNEL) (CUfunction f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream, void **kernelParams, void **extra);`
+- L535 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHCOOPERATIVEKERNEL) (CUfunction f, unsigned int gridDimX, unsigned int gridDimY, unsigned int gridDimZ, unsigned int blockDimX, unsigned int blockDimY, unsigned int blockDimZ, unsigned int sharedMemBytes, CUstream hStream, void **kernelParams);`
+- L536 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHCOOPERATIVEKERNELMULTIDEVICE) (CUDA_LAUNCH_PARAMS *launchParamsList, unsigned int numDevices, unsigned int flags);`
+- L537 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHHOSTFUNC) (CUstream hStream, CUhostFn fn, void *userData);`
+- L538 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCSETBLOCKSHAPE) (CUfunction hfunc, int x, int y, int z);`
+- L539 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCSETSHAREDSIZE) (CUfunction hfunc, unsigned int bytes);`
+- L540 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPARAMSETSIZE) (CUfunction hfunc, unsigned int numbytes);`
+- L541 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPARAMSETI) (CUfunction hfunc, int offset, unsigned int value);`
+- L542 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPARAMSETF) (CUfunction hfunc, int offset, float value);`
+- L543 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPARAMSETV) (CUfunction hfunc, int offset, void *ptr, unsigned int numbytes);`
+- L544 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCH) (CUfunction f);`
+- L545 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHGRID) (CUfunction f, int grid_width, int grid_height);`
+- L546 _typedef_ `typedef CUresult (CUDAAPI *PFNCULAUNCHGRIDASYNC) (CUfunction f, int grid_width, int grid_height, CUstream hStream);`
+- L547 _typedef_ `typedef CUresult (CUDAAPI *PFNCUPARAMSETTEXREF) (CUfunction hfunc, int texunit, CUtexref hTexRef);`
+- L548 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHCREATE) (CUgraph *phGraph, unsigned int flags);`
+- L549 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDKERNELNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_KERNEL_NODE_PARAMS *nodeParams);`
+- L550 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHKERNELNODEGETPARAMS) (CUgraphNode hNode, CUDA_KERNEL_NODE_PARAMS *nodeParams);`
+- L551 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHKERNELNODESETPARAMS) (CUgraphNode hNode, const CUDA_KERNEL_NODE_PARAMS *nodeParams);`
+- L552 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDMEMCPYNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_MEMCPY3D *copyParams, CUcontext ctx);`
+- L553 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHMEMCPYNODEGETPARAMS) (CUgraphNode hNode, CUDA_MEMCPY3D *nodeParams);`
+- L554 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHMEMCPYNODESETPARAMS) (CUgraphNode hNode, const CUDA_MEMCPY3D *nodeParams);`
+- L555 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDMEMSETNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_MEMSET_NODE_PARAMS *memsetParams, CUcontext ctx);`
+- L556 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHMEMSETNODEGETPARAMS) (CUgraphNode hNode, CUDA_MEMSET_NODE_PARAMS *nodeParams);`
+- L557 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHMEMSETNODESETPARAMS) (CUgraphNode hNode, const CUDA_MEMSET_NODE_PARAMS *nodeParams);`
+- L558 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDHOSTNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_HOST_NODE_PARAMS *nodeParams);`
+- L559 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHHOSTNODEGETPARAMS) (CUgraphNode hNode, CUDA_HOST_NODE_PARAMS *nodeParams);`
+- L560 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHHOSTNODESETPARAMS) (CUgraphNode hNode, const CUDA_HOST_NODE_PARAMS *nodeParams);`
+- L561 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDCHILDGRAPHNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, CUgraph childGraph);`
+- L562 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHCHILDGRAPHNODEGETGRAPH) (CUgraphNode hNode, CUgraph *phGraph);`
+- L563 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDEMPTYNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies);`
+- L564 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDEVENTRECORDNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, CUevent event);`
+- L565 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEVENTRECORDNODEGETEVENT) (CUgraphNode hNode, CUevent *event_out);`
+- L566 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEVENTRECORDNODESETEVENT) (CUgraphNode hNode, CUevent event);`
+- L567 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDEVENTWAITNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, CUevent event);`
+- L568 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEVENTWAITNODEGETEVENT) (CUgraphNode hNode, CUevent *event_out);`
+- L569 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEVENTWAITNODESETEVENT) (CUgraphNode hNode, CUevent event);`
+- L570 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDEXTERNALSEMAPHORESSIGNALNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_EXT_SEM_SIGNAL_NODE_PARAMS *nodeParams);`
+- L571 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXTERNALSEMAPHORESSIGNALNODEGETPARAMS) (CUgraphNode hNode, CUDA_EXT_SEM_SIGNAL_NODE_PARAMS *params_out);`
+- L572 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXTERNALSEMAPHORESSIGNALNODESETPARAMS) (CUgraphNode hNode, const CUDA_EXT_SEM_SIGNAL_NODE_PARAMS *nodeParams);`
+- L573 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDEXTERNALSEMAPHORESWAITNODE) (CUgraphNode *phGraphNode, CUgraph hGraph, const CUgraphNode *dependencies, size_t numDependencies, const CUDA_EXT_SEM_WAIT_NODE_PARAMS *nodeParams);`
+- L574 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXTERNALSEMAPHORESWAITNODEGETPARAMS) (CUgraphNode hNode, CUDA_EXT_SEM_WAIT_NODE_PARAMS *params_out);`
+- L575 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXTERNALSEMAPHORESWAITNODESETPARAMS) (CUgraphNode hNode, const CUDA_EXT_SEM_WAIT_NODE_PARAMS *nodeParams);`
+- L576 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHCLONE) (CUgraph *phGraphClone, CUgraph originalGraph);`
+- L577 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHNODEFINDINCLONE) (CUgraphNode *phNode, CUgraphNode hOriginalNode, CUgraph hClonedGraph);`
+- L578 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHNODEGETTYPE) (CUgraphNode hNode, CUgraphNodeType *type);`
+- L579 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHGETNODES) (CUgraph hGraph, CUgraphNode *nodes, size_t *numNodes);`
+- L580 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHGETROOTNODES) (CUgraph hGraph, CUgraphNode *rootNodes, size_t *numRootNodes);`
+- L581 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHGETEDGES) (CUgraph hGraph, CUgraphNode *from, CUgraphNode *to, size_t *numEdges);`
+- L582 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHNODEGETDEPENDENCIES) (CUgraphNode hNode, CUgraphNode *dependencies, size_t *numDependencies);`
+- L583 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHNODEGETDEPENDENTNODES) (CUgraphNode hNode, CUgraphNode *dependentNodes, size_t *numDependentNodes);`
+- L584 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHADDDEPENDENCIES) (CUgraph hGraph, const CUgraphNode *from, const CUgraphNode *to, size_t numDependencies);`
+- L585 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHREMOVEDEPENDENCIES) (CUgraph hGraph, const CUgraphNode *from, const CUgraphNode *to, size_t numDependencies);`
+- L586 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHDESTROYNODE) (CUgraphNode hNode);`
+- L587 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHINSTANTIATE) (CUgraphExec *phGraphExec, CUgraph hGraph, CUgraphNode *phErrorNode, char *logBuffer, size_t bufferSize);`
+- L588 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECKERNELNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_KERNEL_NODE_PARAMS *nodeParams);`
+- L589 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECMEMCPYNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_MEMCPY3D *copyParams, CUcontext ctx);`
+- L590 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECMEMSETNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_MEMSET_NODE_PARAMS *memsetParams, CUcontext ctx);`
+- L591 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECHOSTNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_HOST_NODE_PARAMS *nodeParams);`
+- L592 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECCHILDGRAPHNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, CUgraph childGraph);`
+- L593 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECEVENTRECORDNODESETEVENT) (CUgraphExec hGraphExec, CUgraphNode hNode, CUevent event);`
+- L594 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECEVENTWAITNODESETEVENT) (CUgraphExec hGraphExec, CUgraphNode hNode, CUevent event);`
+- L595 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECEXTERNALSEMAPHORESSIGNALNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_EXT_SEM_SIGNAL_NODE_PARAMS *nodeParams);`
+- L596 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECEXTERNALSEMAPHORESWAITNODESETPARAMS) (CUgraphExec hGraphExec, CUgraphNode hNode, const CUDA_EXT_SEM_WAIT_NODE_PARAMS *nodeParams);`
+- L597 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHUPLOAD) (CUgraphExec hGraphExec, CUstream hStream);`
+- L598 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHLAUNCH) (CUgraphExec hGraphExec, CUstream hStream);`
+- L599 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECDESTROY) (CUgraphExec hGraphExec);`
+- L600 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHDESTROY) (CUgraph hGraph);`
+- L601 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHEXECUPDATE) (CUgraphExec hGraphExec, CUgraph hGraph, CUgraphNode *hErrorNode_out, CUgraphExecUpdateResult *updateResult_out);`
+- L602 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHKERNELNODECOPYATTRIBUTES) (CUgraphNode dst, CUgraphNode src);`
+- L603 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHKERNELNODEGETATTRIBUTE) (CUgraphNode hNode, CUkernelNodeAttrID attr, CUkernelNodeAttrValue *value_out);`
+- L604 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHKERNELNODESETATTRIBUTE) (CUgraphNode hNode, CUkernelNodeAttrID attr, const CUkernelNodeAttrValue *value);`
+- L605 _typedef_ `typedef CUresult (CUDAAPI *PFNCUOCCUPANCYMAXACTIVEBLOCKSPERMULTIPROCESSOR) (int *numBlocks, CUfunction func, int blockSize, size_t dynamicSMemSize);`
+- L606 _typedef_ `typedef CUresult (CUDAAPI *PFNCUOCCUPANCYMAXACTIVEBLOCKSPERMULTIPROCESSORWITHFLAGS) (int *numBlocks, CUfunction func, int blockSize, size_t dynamicSMemSize, unsigned int flags);`
+- L607 _typedef_ `typedef CUresult (CUDAAPI *PFNCUOCCUPANCYMAXPOTENTIALBLOCKSIZE) (int *minGridSize, int *blockSize, CUfunction func, CUoccupancyB2DSize blockSizeToDynamicSMemSize, size_t dynamicSMemSize, int blockSizeLimit);`
+- L608 _typedef_ `typedef CUresult (CUDAAPI *PFNCUOCCUPANCYMAXPOTENTIALBLOCKSIZEWITHFLAGS) (int *minGridSize, int *blockSize, CUfunction func, CUoccupancyB2DSize blockSizeToDynamicSMemSize, size_t dynamicSMemSize, int blockSizeLimit, unsigned int flags);`
+- L609 _typedef_ `typedef CUresult (CUDAAPI *PFNCUOCCUPANCYAVAILABLEDYNAMICSMEMPERBLOCK) (size_t *dynamicSmemSize, CUfunction func, int numBlocks, int blockSize);`
+- L610 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETARRAY) (CUtexref hTexRef, CUarray hArray, unsigned int Flags);`
+- L611 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETMIPMAPPEDARRAY) (CUtexref hTexRef, CUmipmappedArray hMipmappedArray, unsigned int Flags);`
+- L612 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETADDRESS) (size_t *ByteOffset, CUtexref hTexRef, CUdeviceptr dptr, size_t bytes);`
+- L613 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETADDRESS2D) (CUtexref hTexRef, const CUDA_ARRAY_DESCRIPTOR *desc, CUdeviceptr dptr, size_t Pitch);`
+- L614 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETFORMAT) (CUtexref hTexRef, CUarray_format fmt, int NumPackedComponents);`
+- L615 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETADDRESSMODE) (CUtexref hTexRef, int dim, CUaddress_mode am);`
+- L616 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETFILTERMODE) (CUtexref hTexRef, CUfilter_mode fm);`
+- L617 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETMIPMAPFILTERMODE) (CUtexref hTexRef, CUfilter_mode fm);`
+- L618 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETMIPMAPLEVELBIAS) (CUtexref hTexRef, float bias);`
+- L619 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETMIPMAPLEVELCLAMP) (CUtexref hTexRef, float minMipmapLevelClamp, float maxMipmapLevelClamp);`
+- L620 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETMAXANISOTROPY) (CUtexref hTexRef, unsigned int maxAniso);`
+- L621 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETBORDERCOLOR) (CUtexref hTexRef, float *pBorderColor);`
+- L622 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFSETFLAGS) (CUtexref hTexRef, unsigned int Flags);`
+- L623 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETADDRESS) (CUdeviceptr *pdptr, CUtexref hTexRef);`
+- L624 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETARRAY) (CUarray *phArray, CUtexref hTexRef);`
+- L625 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETMIPMAPPEDARRAY) (CUmipmappedArray *phMipmappedArray, CUtexref hTexRef);`
+- L626 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETADDRESSMODE) (CUaddress_mode *pam, CUtexref hTexRef, int dim);`
+- L627 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETFILTERMODE) (CUfilter_mode *pfm, CUtexref hTexRef);`
+- L628 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETFORMAT) (CUarray_format *pFormat, int *pNumChannels, CUtexref hTexRef);`
+- L629 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETMIPMAPFILTERMODE) (CUfilter_mode *pfm, CUtexref hTexRef);`
+- L630 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETMIPMAPLEVELBIAS) (float *pbias, CUtexref hTexRef);`
+- L631 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETMIPMAPLEVELCLAMP) (float *pminMipmapLevelClamp, float *pmaxMipmapLevelClamp, CUtexref hTexRef);`
+- L632 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETMAXANISOTROPY) (int *pmaxAniso, CUtexref hTexRef);`
+- L633 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETBORDERCOLOR) (float *pBorderColor, CUtexref hTexRef);`
+- L634 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFGETFLAGS) (unsigned int *pFlags, CUtexref hTexRef);`
+- L635 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFCREATE) (CUtexref *pTexRef);`
+- L636 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXREFDESTROY) (CUtexref hTexRef);`
+- L637 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSURFREFSETARRAY) (CUsurfref hSurfRef, CUarray hArray, unsigned int Flags);`
+- L638 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSURFREFGETARRAY) (CUarray *phArray, CUsurfref hSurfRef);`
+- L639 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXOBJECTCREATE) (CUtexObject *pTexObject, const CUDA_RESOURCE_DESC *pResDesc, const CUDA_TEXTURE_DESC *pTexDesc, const CUDA_RESOURCE_VIEW_DESC *pResViewDesc);`
+- L640 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXOBJECTDESTROY) (CUtexObject texObject);`
+- L641 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXOBJECTGETRESOURCEDESC) (CUDA_RESOURCE_DESC *pResDesc, CUtexObject texObject);`
+- L642 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXOBJECTGETTEXTUREDESC) (CUDA_TEXTURE_DESC *pTexDesc, CUtexObject texObject);`
+- L643 _typedef_ `typedef CUresult (CUDAAPI *PFNCUTEXOBJECTGETRESOURCEVIEWDESC) (CUDA_RESOURCE_VIEW_DESC *pResViewDesc, CUtexObject texObject);`
+- L644 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSURFOBJECTCREATE) (CUsurfObject *pSurfObject, const CUDA_RESOURCE_DESC *pResDesc);`
+- L645 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSURFOBJECTDESTROY) (CUsurfObject surfObject);`
+- L646 _typedef_ `typedef CUresult (CUDAAPI *PFNCUSURFOBJECTGETRESOURCEDESC) (CUDA_RESOURCE_DESC *pResDesc, CUsurfObject surfObject);`
+- L647 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICECANACCESSPEER) (int *canAccessPeer, CUdevice dev, CUdevice peerDev);`
+- L648 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXENABLEPEERACCESS) (CUcontext peerContext, unsigned int Flags);`
+- L649 _typedef_ `typedef CUresult (CUDAAPI *PFNCUCTXDISABLEPEERACCESS) (CUcontext peerContext);`
+- L650 _typedef_ `typedef CUresult (CUDAAPI *PFNCUDEVICEGETP2PATTRIBUTE) (int* value, CUdevice_P2PAttribute attrib, CUdevice srcDevice, CUdevice dstDevice);`
+- L651 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSUNREGISTERRESOURCE) (CUgraphicsResource resource);`
+- L652 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSSUBRESOURCEGETMAPPEDARRAY) (CUarray *pArray, CUgraphicsResource resource, unsigned int arrayIndex, unsigned int mipLevel);`
+- L653 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSRESOURCEGETMAPPEDMIPMAPPEDARRAY) (CUmipmappedArray *pMipmappedArray, CUgraphicsResource resource);`
+- L654 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSRESOURCEGETMAPPEDPOINTER) (CUdeviceptr *pDevPtr, size_t *pSize, CUgraphicsResource resource);`
+- L655 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSRESOURCESETMAPFLAGS) (CUgraphicsResource resource, unsigned int flags);`
+- L656 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSMAPRESOURCES) (unsigned int count, CUgraphicsResource *resources, CUstream hStream);`
+- L657 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGRAPHICSUNMAPRESOURCES) (unsigned int count, CUgraphicsResource *resources, CUstream hStream);`
+- L658 _typedef_ `typedef CUresult (CUDAAPI *PFNCUGETEXPORTTABLE) (const void **ppExportTable, const CUuuid *pExportTableId);`
+- L659 _typedef_ `typedef CUresult (CUDAAPI *PFNCUFUNCGETMODULE) (CUmodule *hmod, CUfunction hfunc);`
+- L995 _prototype_ `void* OpenCudaDriverLibrary();` — Attempts to load the shared library for the CUDA Driver API
+- L998 _prototype_ `bool LoadCudaDriverFunctions(void* library, CUDA_DRIVER_API_FUNCTION_LIST* funcList);` — Attempts to retrieve the list of function pointers for the CUDA Driver API shared library
+- L1001 _prototype_ `void CloseCudaLibrary(void* library);` — Closes a previously-loaded CUDA shared library

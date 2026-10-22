@@ -130,7 +130,7 @@ graph TB
 | **Platform** | `engine/src/platform/` | 平台抽象：窗口管理(window_x11 / window_wayland / window_win32 / window_cocoa)、输入处理(input，含键盘/鼠标/游戏手柄)、高精度时间(time)、文件监视(filewatch，递归；macOS kqueue/FSEvents 自适应)、高 DPI 与多显示器查询 |
 | **RHI** | `engine/src/rhi/` | 渲染硬件接口：统一的 GPU API 抽象层，编译期单后端：Vulkan (`rhi_vk.c`)、Metal (`rhi_metal.m`，Apple)、D3D12 (`rhi_d3d12.c`，仅 Windows)、兼容期 OpenGL (`rhi_gl.c`，deprecated，计划 v2.0.0 移除)、headless fail-closed stub (`rhi_headless.c`) |
 | **Math** | `engine/src/math/` | 数学库：向量、矩阵、四元数、变换等 |
-| **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理 |
+| **ECS** | `engine/src/ecs/` | 实体-组件-系统架构，数据驱动的对象管理；不可变 Snapshot/Delta 与确定性组件 schema 见 [`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md) |
 | **Asset** | `engine/src/asset/` | 资源管理：资产加载(asset)、热重载(hotreload)、虚拟文件系统(vfs) |
 | **Renderer** | `engine/src/renderer/` | 渲染管线：相机、剔除、天空盒、地形、水体、粒子、光照、阴影、后处理全链路（SSAO/TAA/SSR/DoF/Bloom/FXAA/运动模糊/色调映射/体积光/God Rays 等） |
 | **Animation** | `engine/src/animation/` | 骨骼动画系统 |
@@ -438,6 +438,76 @@ Linux 的 X11、Wayland 配置和部分 runtime 路径已有实现与 CI 验证�
 ### 线程与任务边界
 
 `engine/src/task/task.h` 定义的 `TaskSystem` 是进程内单实例 API，创建第二个存活实例会与全局任务释放状态冲突。任务提交可来自外部线程，系统内部使用 worker 线程；`task_wait()` 和 `task_wait_handle()` 不能从 worker task 调用，否则会形成自等待死锁并按头文件契约直接返回。UI 和窗口 API 仍必须在所属主循环线程执行，跨线程 UI 操作应投递 command。规则引擎的 engine、facts、windows 和 provider handle 是单线程句柄，调用方必须为同一 handle 提供外部同步；可选 C11 executor 只在私有 worker 中评估只读条件，再回到 engine 线程合并结果。
+
+### Snowflake C11 网络适配器边界
+
+启用 `BREAK_ENABLE_SNOWFLAKE=ON` 时，`engine/src/network/` 中的
+`break_net_adapter.*` 以不透明 C11 `BreakNetReactor` 包装 Snowflake 的
+passive reactor，并通过 `SNOWFLAKE_SOURCE_DIR` 绑定真实的 `snow::net` 目标；
+没有替代 transport。Snowflake 继续拥有 socket、连接、readiness backend 和
+transport queue，Break 只拥有生命周期、驱动线程、状态同步，以及有界消息
+view/copy/release 和 envelope validation。
+
+适配器支持两种互斥驱动方式：`BREAK_NET_DRIVE_STEP` 由单一调用方逐次调用
+`break_net_reactor_step`，`BREAK_NET_DRIVE_THREAD` 由 Break 创建并 join 一个
+host thread。每个 reactor 只能有一个 Snowflake driver；回调/网络线程不调用
+GameThread、Session、ECS、World、Lua、UI 或 RHI。`start` 通过真实的
+`snow_net_thread_add_acceptor_with_handlers` 注册 parser/open/packet/send-drained/close
+handlers；adapter loopback fixture 驱动真实 accept/read/write/close。消息 view 借用输入，owned
+message 由 Break 拷贝并由 `break_net_message_release` 释放。adapter focused normal/ASan/TSan
+均为 30/30；真实 loopback 已覆盖 inbound、outbound、close notification、identity
+cleanup，bounded stop 也已实现。
+
+当前 Session/Protocol 切片已提供 18-byte little-endian `BreakNetEnvelope`、默认
+message registry、256 项有界 adapter event/outbound queues，以及由 GameThread
+串行拥有的 `BreakSessionManager`。Session 状态迁移为
+`NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED`，也允许
+`NEW -> CLOSING -> CLOSED`；已关闭或未知 connection 的后续 event 被拒绝。
+Session manager 的 `poll` 当前只推进 `CLOSING -> CLOSED`，不自动轮询 adapter
+队列；推荐的 `poll_adapter` 消费 adapter event、应用 close watermark，并在队列排空后
+完成 `CLOSING -> CLOSED`。outbound queue 已接线为 18-byte little-endian envelope 到
+Snowflake send context 的真实发送路径；adapter 与 Session focused loopback 覆盖真实
+wire-level 入站、handler dispatch、出站 response、client close、identity cleanup 和
+stale 语义。完整当前 API、ownership、wire layout、stale-event 边界和未实现项见
+[`design/session_protocol.md`](design/session_protocol.md)。
+
+停止顺序是 terminate Snowflake、必要时 join Break host thread、destroy
+Snowflake reactor、再发布 stopped。`break_net_reactor_stop` 的 `timeout_ms` 是
+adapter-owned bounded deadline：thread mode 等待 host exit，step mode 等待 active
+step 完成；超时返回 false 并保留 STOPPING、reactor 和 thread/step ownership，后续
+stop 可完成清理。stop 不在 lifecycle lock 内调用 Snowflake step。非 Linux timeout/stop
+platform lane 尚未在本机验证；Snowflake per-context completion/drop notification 仍较粗粒度；adapter ownership、callback signatures 和停止语义见
+[`design/snowflake_c11_adapter.md`](design/snowflake_c11_adapter.md)。
+
+### ECS Snapshot / Replication / AoI 边界
+
+最新验证记录：`/tmp/break-final-current` 的 full CTest 共 181 项；该测试树主体已运行，但 5 个 fuzz smoke executable 未构建，因此 5 项为 `Not Run`，不能称为完整构建后的 full gate。已知无关失败为 `test_myui_text_layout` Hebrew boundary（`engine/tests/test_myui_text_layout.c:680`）和 `test_vulkan` golden drift（MAE 15.60/max 63；camera MAE 1.15/max 60）；Linux D3D12 dependency gate skipped。另有独立 fuzz smoke **5/5** 通过证据。fragment focused normal/ASan/TSan 均为 **7/7**，Snowflake replication focused normal/ASan/TSan 亦均为 **7/7**；这些 focused 结果来自已有 sanitizer build trees，不声称一次全新 clean rebuild。该证据确认 focused API 已实现及其测试边界，不等同于正式 engine runtime/session integration；后者另列边界，包括真实 Snowflake registration/socket-send E2E、Task 6 scheduler/close-event integration、Task 7 timeout/eviction chain、timeout/eviction 或 cryptographic authentication。fragment checksum 仍非加密认证。
+
+ECS 的 GameThread 拥有可变 `World`；系统完成并进入结构屏障后，`world_snapshot.*` 才能深拷贝
+带 `(index,generation)` 身份的实体和已注册确定性 POD 组件。Snapshot build 不会自动建立
+barrier，调用方必须维持 GameThread/结构屏障纪律。`world_delta.*` 只在不可变 Snapshot 间
+做 diff，并通过 ECS-owned deep clone/staging、最终验证和 atomic replace commit 应用；失败时
+销毁 staging，原 World 保持不变。schema hash 基于 canonical component ID，delta 还要求 tick
+单调递增；clone、mutation、final-validation fault injection 仅用于测试。`break_aoi.*`
+用简单空间网格、Witness、owner/dormant/relevancy flags 和 hysteresis 计算确定性的
+`enter/stay/leave`；`break_replication.*` 将 Real/Ghost 生命周期转换成 baseline、dirty、
+destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送。
+
+网络线程只处理有界消息 view/copy 和队列事件，不访问 World/ECS/Lua/UI/RHI；网络回调不
+直接变更 GameThread 状态。Task 7 的 `break_replication_fragment.*` 已实现 transport-independent
+分片与 opaque reassembly：携带 delta/base ID、fragment index/count、FNV-1a checksum，支持
+乱序、完整性校验、精确重复识别、冲突拒绝、owned 完整 payload、reset/destroy；该 API 不
+直接调用 Snowflake 或 World。需要明确：snapshot/schema/delta/AoI/replication focused API 已实现，并由两个正式的可选、
+非 Snowflake static target 承载：`break_ecs_replication`（ECS schema/snapshot/delta、AoI
+独立依赖及 core logging）和 `break_replication_core`（AoI、replication、fragmentation）。
+`break_ecs_replication_test` 只供测试使用并私有启用 `BREAK_WORLD_DELTA_TESTING=1`，生产库
+不包含 fault-injection hooks。两个 formal target 当前不加入 `engine`，`engine_demo`/`dxx_break`
+也不链接它们；这样 runtime/session owner 必须先定义 snapshot publication、authority 和线程
+生命周期边界。`break_net` 仅在 `ENGINE_BUILD_TESTS=ON && BREAK_ENABLE_SNOWFLAKE=ON` 时生成，
+并通过 `break_replication_core` 复用非 Snowflake 实现。timeout/eviction、checksum 的加密认证，
+以及正式 runtime/session integration 仍是另列边界。
+完整边界、线程/生命周期 Mermaid 图和 future work 见
+[`design/ecs_snapshot_replication_aoi.md`](design/ecs_snapshot_replication_aoi.md)。
 
 ### 构建变体
 
