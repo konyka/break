@@ -65,6 +65,37 @@ static inline void *break_lua_test_calloc(usize bytes)
  * result back to lua_State* locally. NULL runtime -> NULL. */
 void *break_lua_test_lua_state(BreakLuaRuntime *runtime);
 
+/* Task 2 module probes (test variant only, defined in break_lua_module.c).
+ * They are plain owner-thread probes using the Lua C API directly (no
+ * metamethods are triggered: all lookups are raw); call them only with the
+ * allocation-injection budget disabled. */
+
+typedef struct BreakLuaTestModuleStat {
+    bool loaded;    /* a module with this name is registered */
+    u32 version;    /* live version; 0 when not loaded */
+    u64 hash;       /* FNV-1a-64 of the live source bytes; 0 when not loaded */
+} BreakLuaTestModuleStat;
+
+BreakLuaTestModuleStat break_lua_test_module_stat(BreakLuaRuntime *runtime,
+                                                  const char *module_name);
+
+/* Number of registered (live) modules; 0 for NULL runtime. */
+u32 break_lua_test_module_count(BreakLuaRuntime *runtime);
+
+/* Reads a numeric global from the module's live environment (raw field of
+ * the environment table, i.e. defined by the chunk itself). Returns false
+ * when the module is unknown, the key is absent, or the value is not a
+ * number. */
+bool break_lua_test_module_env_number(BreakLuaRuntime *runtime,
+                                      const char *module_name,
+                                      const char *key, double *out_value);
+
+/* Reads a numeric field of the module's persistent state table (the `state`
+ * global of the live environment). Same false contract as above. */
+bool break_lua_test_module_state_number(BreakLuaRuntime *runtime,
+                                        const char *module_name,
+                                        const char *key, double *out_value);
+
 #else
 
 #include <stdlib.h>

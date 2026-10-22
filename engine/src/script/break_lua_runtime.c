@@ -1,5 +1,6 @@
 #include <script/break_lua.h>
 
+#include <script/break_lua_internal.h>
 #include <script/break_lua_test_hooks.h>
 
 #include <core/platform_thread.h>
@@ -12,19 +13,11 @@
 
 /* One runtime = one lua_State = one owner thread. No synchronization
  * primitives: the owner-thread rule in break_lua.h is the whole threading
- * model. The runtime owns the VM it creates and nothing else yet (module
- * registry lands in Task 2, frame hooks in Task 3, host bindings in Task 4);
- * the config caps are recorded here so those tasks enforce them without
- * re-validation. */
-
-struct BreakLuaRuntime {
-    lua_State *L;
-    PlatformThreadId owner;
-    u32 max_modules;
-    u32 max_values;
-    usize max_module_bytes;
-    u64 instruction_budget;
-};
+ * model. The runtime owns the VM and the bounded module registry (Task 2;
+ * struct BreakLuaRuntime and the registry slots live in the library-internal
+ * header break_lua_internal.h); frame hooks land in Task 3, host bindings in
+ * Task 4. The config caps are recorded here so those tasks enforce them
+ * without re-validation. */
 
 #if defined(BREAK_LUA_TESTING)
 
@@ -121,10 +114,16 @@ static void *break_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
 /* luaL_openlibs is not internally protected: an allocation failure inside it
  * would longjmp with no recovery point and hit Lua's default panic (abort).
  * Running it through lua_pcall makes any error (LUA_ERRMEM included) a clean
- * NULL return from create, in test injection and in production alike. */
-static int break_lua_openlibs_wrapper(lua_State *L)
+ * NULL return from create, in test injection and in production alike. The
+ * module-op dispatch registration (Task 2) joins it in the same protected
+ * bootstrap: the runtime arrives as a lightuserdata argument (pushing a
+ * lightuserdata cannot allocate), so nothing in this sequence runs outside
+ * the pcall except lua_pushcfunction below. */
+static int break_lua_bootstrap_wrapper(lua_State *L)
 {
+    BreakLuaRuntime *runtime = (BreakLuaRuntime *)lua_touserdata(L, 1);
     luaL_openlibs(L);
+    break_lua_module_bootstrap(L, runtime);
     return 0;
 }
 
@@ -178,18 +177,38 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
         return NULL;
     }
 
+    /* Module registry (Task 2): one bounded array, preallocated so module
+     * admission never needs to grow it. max_modules is validated against
+     * BREAK_LUA_MAX_MODULES above, so this multiply cannot wrap; the guard
+     * documents the bound explicitly. */
+    if (max_modules > (u32)(SIZE_MAX / sizeof(BreakLuaModule))) {
+        free(runtime);
+        return NULL;
+    }
+    runtime->modules =
+        break_lua_test_calloc((usize)max_modules * sizeof(BreakLuaModule));
+    if (!runtime->modules) {
+        free(runtime);
+        return NULL;
+    }
+    runtime->module_count = 0u;
+    runtime->op_ref = LUA_NOREF;
+
     runtime->L = lua_newstate(break_lua_alloc, runtime);
     if (!runtime->L) {
+        free(runtime->modules);
         free(runtime);
         return NULL;
     }
     /* Standard libraries opened on the owned state, under protection so an
      * allocation failure here fails closed instead of panicking. Per-module
-     * sandboxed environments are Task 4 scope; no module can be loaded yet
-     * (Task 2), so nothing script-controlled reaches this state. */
-    lua_pushcfunction(runtime->L, break_lua_openlibs_wrapper);
-    if (lua_pcall(runtime->L, 0, 0, 0) != LUA_OK) {
+     * sandboxed environments are Task 4 scope. The bootstrap also registers
+     * the module-op dispatch closure used by load/reload (Task 2). */
+    lua_pushcfunction(runtime->L, break_lua_bootstrap_wrapper);
+    lua_pushlightuserdata(runtime->L, runtime);
+    if (lua_pcall(runtime->L, 1, 0, 0) != LUA_OK) {
         lua_close(runtime->L);
+        free(runtime->modules);
         free(runtime);
         return NULL;
     }
@@ -219,6 +238,7 @@ void break_lua_runtime_destroy(BreakLuaRuntime *runtime)
         abort();
     }
 #endif
+    break_lua_module_registry_destroy(runtime);
     lua_close(runtime->L);
     free(runtime);
 }
