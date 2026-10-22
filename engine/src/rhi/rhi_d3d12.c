@@ -2302,11 +2302,11 @@ typedef struct RHI_D3D12Pipeline {
     D3D12_PRIMITIVE_TOPOLOGY topology;
     UINT uniform_count;
     RHI_D3D12UniformLoc uniforms[RHI_D3D12_MAX_UNIFORM_LOCS];
-    UINT image_root_params[16];
-    UINT uniform_root_params[16];
-    UINT storage_root_params[16];
-    UINT storage_strides[16];
-    UINT srv_buffer_strides[16];
+    UINT image_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT uniform_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT storage_root_params[RHI_D3D12_MAX_REGISTERS];
+    UINT storage_strides[RHI_D3D12_MAX_REGISTERS];
+    UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
     RHIPipelineDesc desc;
     /* R643: the PSO bakes its render-target formats, but callers only name a
      * colour format when it is not the RGBA8 default -- the bloom, tonemap,
@@ -3037,7 +3037,7 @@ static UINT rhi_d3d12_storage_stride(const char *format) {
 static void rhi_d3d12_root_sig_note_storage(RHI_D3D12RootSigBuilder *b,
                                             const ShaderIOBinding *bind,
                                             UINT param) {
-    if (bind->binding >= 16u) return;
+    if (bind->binding >= RHI_D3D12_MAX_REGISTERS) return;
     if (bind->kind == SHADER_IO_RESOURCE_STORAGE) {
         b->storage_root_params[bind->binding] = param;
         b->storage_strides[bind->binding] = rhi_d3d12_storage_stride(bind->format);
@@ -3117,9 +3117,9 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                  * vertex shader would keep reading a table it cannot
                  * see, and the failure would be silent. */
                 rp->ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-                if (bind->kind == SHADER_IO_RESOURCE_IMAGE && base_register < 16u)
+                if (bind->kind == SHADER_IO_RESOURCE_IMAGE && base_register < RHI_D3D12_MAX_REGISTERS)
                     b->image_root_params[base_register] = reuse;
-                if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && base_register < 16u)
+                if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && base_register < RHI_D3D12_MAX_REGISTERS)
                     b->uniform_root_params[base_register] = reuse;
                 rhi_d3d12_root_sig_note_storage(b, bind, reuse);
                 goto next_binding;
@@ -3141,9 +3141,9 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
         param->DescriptorTable.NumDescriptorRanges = 1u;
         param->DescriptorTable.pDescriptorRanges = range;
         param->ShaderVisibility = visibility;
-        if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < 16u)
+        if (bind->kind == SHADER_IO_RESOURCE_IMAGE && bind->binding < RHI_D3D12_MAX_REGISTERS)
             b->image_root_params[bind->binding] = b->param_count - 1u;
-        if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < 16u)
+        if (bind->kind == SHADER_IO_RESOURCE_UNIFORM && bind->binding < RHI_D3D12_MAX_REGISTERS)
             b->uniform_root_params[bind->binding] = b->param_count - 1u;
         rhi_d3d12_root_sig_note_storage(b, bind, b->param_count - 1u);
 next_binding:
@@ -3401,7 +3401,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
         !rhi_mrt_formats_valid(desc->mrt_formats, desc->mrt_attachment_count))
         return RHI_HANDLE_NULL;
     ZeroMemory(&builder, sizeof(builder));
-    for (u32 i = 0u; i < 16u; ++i) {
+    for (u32 i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         builder.image_root_params[i] = UINT_MAX;
         builder.uniform_root_params[i] = UINT_MAX;
         builder.storage_root_params[i] = UINT_MAX;
@@ -3531,7 +3531,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             }
         }
     }
-    for (u32 i = 0u; i < 16u; ++i) {
+    for (u32 i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         pd->image_root_params[i] = builder.image_root_params[i];
         pd->uniform_root_params[i] = builder.uniform_root_params[i];
         if (pd->image_root_params[i] != UINT_MAX &&
@@ -3755,7 +3755,7 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
         RHI_D3D12Context *ctx = (RHI_D3D12Context *)dev->backend_data;
         UINT i;
         if (ctx != NULL)
-            for (i = 0u; i < 16u; ++i)
+            for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i)
                 if (ctx->live_srv[i] == td) ctx->live_srv[i] = NULL;
     }
     rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
@@ -4309,7 +4309,7 @@ void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
          * signature changes, so the next draw read an uninitialised b1
          * (GPU-based validation [935]). Re-apply this frame's CBVs to the
          * registers the new pipeline declares. */
-        for (UINT r = 0u; r < 16u; ++r) {
+        for (UINT r = 0u; r < RHI_D3D12_MAX_REGISTERS; ++r) {
             UINT param = pd->uniform_root_params[r];
             if (param == UINT_MAX || ctx->cbv_frame[r] != ctx->debug_frame)
                 continue;
@@ -4726,7 +4726,7 @@ static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
     D3D12_RESOURCE_STATES read_state;
     UINT root_param;
     UINT slot;
-    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     if (list == NULL || pd == NULL || td == NULL || td->resource == NULL)
@@ -4807,7 +4807,7 @@ void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     D3D12_CONSTANT_BUFFER_VIEW_DESC cbv;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
-    if (ctx == NULL || g_current_device == NULL || binding >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || binding >= RHI_D3D12_MAX_REGISTERS) return;
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     list = rhi_d3d12_cmd_list(ctx);
     if (pd == NULL || list == NULL) return;
@@ -6142,7 +6142,7 @@ static void rhi_d3d12_warn_rt_srv_alias(RHI_D3D12Context *ctx,
                                          const char *role) {
     UINT i;
     if (ctx == NULL || tex == NULL) return;
-    for (i = 0u; i < 16u; ++i) {
+    for (i = 0u; i < RHI_D3D12_MAX_REGISTERS; ++i) {
         if (ctx->live_srv[i] != tex) continue;
         LOG_WARN("D3D12: %ux%u texture is still bound as a shader resource "
                  "(unit %u) and is now being bound as %s -- the next draw "
@@ -6758,7 +6758,7 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf,
     D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, stride, slot;
-    if (ctx == NULL || g_current_device == NULL || binding >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || binding >= RHI_D3D12_MAX_REGISTERS) return;
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     list = rhi_d3d12_cmd_list(ctx);
     if (pd == NULL || list == NULL) return;
@@ -6848,7 +6848,7 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit,
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
     (void)write_only;
-    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
@@ -6895,7 +6895,7 @@ void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm,
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
     (void)write_only;
-    if (ctx == NULL || g_current_device == NULL || unit >= 16u || face >= 6u) return;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS || face >= 6u) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     td = rhi_d3d12_cube_tex(cm);
@@ -6945,7 +6945,7 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex,
     D3D12_GPU_DESCRIPTOR_HANDLE gpu;
     UINT param, slot;
     (void)sampler;
-    if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
+    if (ctx == NULL || g_current_device == NULL || unit >= RHI_D3D12_MAX_REGISTERS) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,

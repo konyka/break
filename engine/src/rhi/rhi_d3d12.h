@@ -47,6 +47,10 @@ typedef enum RHI_D3D12CreateFailure {
 #define RHI_D3D12_CBV_SRV_UAV_CAPACITY 4096u
 #define RHI_D3D12_RTV_CAPACITY 1024u
 #define RHI_D3D12_DSV_CAPACITY 1024u
+/* R656: how many register(tN / bN / uN) slots a pipeline tracks. It was 16
+ * (GL's texture units); the instanced / skinned clustered vertex stages put
+ * their SSBO at t16, because the shared pixel stage already owns t0-t15. */
+#define RHI_D3D12_MAX_REGISTERS 24u
 #define RHI_D3D12_SAMPLER_CAPACITY 64u
 
 /* Free-list descriptor allocator over one heap; slots retire through the
@@ -121,8 +125,8 @@ typedef struct RHI_D3D12Context {
     /* R643: the graphics CBV last bound per register (bN) this frame, so a
      * pipeline change can re-apply it -- see rhi_cmd_bind_pipeline. A slot
      * counts only while cbv_frame equals debug_frame. */
-    D3D12_GPU_DESCRIPTOR_HANDLE cbv_gpu[16];
-    UINT64 cbv_frame[16];
+    D3D12_GPU_DESCRIPTOR_HANDLE cbv_gpu[RHI_D3D12_MAX_REGISTERS];
+    UINT64 cbv_frame[RHI_D3D12_MAX_REGISTERS];
     UINT bound_rtv_count;
     D3D12_CPU_DESCRIPTOR_HANDLE bound_dsv;
     UINT bound_dsv_valid;
@@ -137,7 +141,7 @@ typedef struct RHI_D3D12Context {
      * graphics pipeline, by unit (RHI_D3D12Texture*). The FBO bind paths warn
      * when one of them is about to become a render target. Cleared on every
      * pipeline bind (the root signature change drops the tables). */
-    void *live_srv[16];
+    void *live_srv[RHI_D3D12_MAX_REGISTERS];
     UINT64 next_fence;
     UINT64 completed_fence;
     UINT64 descriptor_retire_fence;
@@ -307,18 +311,18 @@ typedef struct RHI_D3D12RootSigBuilder {
     UINT param_count;
     UINT range_count;
     UINT sampler_count;
-    UINT image_root_params[16]; /* register(tN) -> root parameter */
-    UINT uniform_root_params[16]; /* register(bN) -> root parameter */
-    UINT storage_root_params[16]; /* register(uN) -> root parameter */
+    UINT image_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(tN) -> root parameter */
+    UINT uniform_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(bN) -> root parameter */
+    UINT storage_root_params[RHI_D3D12_MAX_REGISTERS]; /* register(uN) -> root parameter */
     /* register(uN) view shape: 0 = raw (RWByteAddressBuffer), N > 0 =
      * structured with an N byte element, UINT_MAX = not a buffer view this
      * backend can describe (RWTexture*, or an element type it cannot size). */
-    UINT storage_strides[16];
+    UINT storage_strides[RHI_D3D12_MAX_REGISTERS];
     /* register(tN) declared as a read-only buffer (ByteAddressBuffer /
      * StructuredBuffer<T>): same encoding as storage_strides; UINT_MAX = not
      * a buffer (a texture, or nothing). The root parameter is
      * image_root_params[N]. */
-    UINT srv_buffer_strides[16];
+    UINT srv_buffer_strides[RHI_D3D12_MAX_REGISTERS];
     UINT push_constant_size;   /* bytes; 0 = none */
 } RHI_D3D12RootSigBuilder;
 

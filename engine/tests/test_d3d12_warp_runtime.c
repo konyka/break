@@ -9775,6 +9775,203 @@ TEST(clustered_forward_sidecar_matches_a_cpu_replay) {
     rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
 }
 
+/* R656: the INSTANCED clustered variant (pbr_clustered_inst_hlsl.vert). The
+ * instance rows are a structured buffer at t16 -- the shared pixel stage owns
+ * t0-t15 -- bound with rhi_cmd_bind_storage_buffer(cmd, buf, 16) and filled
+ * through rhi_cmd_update_buffer, exactly as main.c does.
+ *
+ * Two instances of one quad (+-0.25 at z = 0) under identity view / proj, so
+ * clip = world and every pixel centre maps straight to NDC: instance 0 is a
+ * pure translation to (-0.5, 0); instance 1 is scaled by 0.8 and translated
+ * to (0.5, 0.25). Both carry a previous model that differs only in
+ * translation, so RT1 must hold current - previous per instance
+ * ((0.1, -0.1) and (0.2, 0)). Translation is what a transposed upload gets
+ * wrong (it lands in the bottom row, which a w = 1 position never reads
+ * back), and the scale tells row order from column order. Colour is a CPU
+ * replay of the PBR terms with the camera at (0, 0, 3) and one directional
+ * light; outside the two rectangles the target keeps its clear value. */
+TEST(clustered_inst_sidecar_places_two_instances_and_their_velocity) {
+    enum { W = 64, H = 32 };
+    static const float verts[6 * 8] = {
+        -0.25f, -0.25f, 0.0f,  0, 0, 1,  0, 0,
+         0.25f, -0.25f, 0.0f,  0, 0, 1,  1, 0,
+         0.25f,  0.25f, 0.0f,  0, 0, 1,  1, 1,
+        -0.25f, -0.25f, 0.0f,  0, 0, 1,  0, 0,
+         0.25f,  0.25f, 0.0f,  0, 0, 1,  1, 1,
+        -0.25f,  0.25f, 0.0f,  0, 0, 1,  0, 1
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    /* Column-major, as the engine uploads them: translation in e[12..14]. */
+    static const float inst_rows[2][32] = {
+        { 1,0,0,0, 0,1,0,0, 0,0,1,0, -0.5f, 0.0f, 0, 1,
+          1,0,0,0, 0,1,0,0, 0,0,1,0, -0.6f, 0.1f, 0, 1 },
+        { 0.8f,0,0,0, 0,0.8f,0,0, 0,0,1,0, 0.5f, 0.25f, 0, 1,
+          0.8f,0,0,0, 0,0.8f,0,0, 0,0,1,0, 0.3f, 0.25f, 0, 1 }
+    };
+    static const double cen[2][2] = { { -0.5, 0.0 }, { 0.5, 0.25 } };
+    static const double half_ext[2] = { 0.25, 0.2 };
+    static const double vel[2][2] = { { 0.1, -0.1 }, { 0.2, 0.0 } };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    static u16 px[W * H * 4], rt1[W * H * 2];
+    const RHIFormat formats[2] = { RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT };
+    const double albedo[3] = { 200 / 255.0, 100 / 255.0, 50 / 255.0 };
+    const double N[3] = { 0, 0, 1 }, metal = 0.3, rough = 0.6;
+    RHIMRTFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo, inst;
+    RHITexture alb, mrt, nrm, emi, white;
+    RHICmdBuffer *cmd;
+    Mat4 view_m, proj_m;
+    i32 loc_view, loc_mr, loc_occ, loc_em;
+    int x, y, c, i, inside_cnt[2] = { 0, 0 };
+    struct { float prev_vp[16], prev_model[16], proj[16], cam[4], amb[4],
+             fogc[4], fog[4], screen[4], counts[4], far[4]; } fr;
+    r643_mark();
+    vs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered_inst.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.uses_textures = true; pd.uses_texel_buffer = true; pd.uses_storage = true;
+    pd.disable_culling = true;
+    pd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+    loc_mr = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_mr_factor");
+    loc_occ = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_occlusion_strength");
+    loc_em = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_emissive_factor");
+    ASSERT_EQ(loc_view, 64);
+    ASSERT_EQ(loc_mr, 128);
+    ASSERT_EQ(loc_occ, 136);
+    ASSERT_EQ(loc_em, 144);
+
+    alb = r644_tex(200, 100, 50, 255);
+    mrt = r644_tex(255, 255, 255, 255);
+    nrm = r644_tex(128, 128, 255, 255);
+    emi = r644_tex(0, 0, 0, 255);
+    white = r644_tex(255, 255, 255, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = 304u; bd.usage = RHI_BUFFER_USAGE_UNIFORM;
+    ubo = rhi_buffer_create(g_dev, &bd);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(inst_rows); bd.usage = RHI_BUFFER_USAGE_TEXEL | RHI_BUFFER_USAGE_STORAGE;
+    inst = rhi_buffer_create(g_dev, &bd);
+    fbo = rhi_mrt_fbo_create(g_dev, W, H, formats, 2u);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(ubo) &&
+                rhi_handle_valid(inst) && rhi_handle_valid(fbo.fb));
+
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    memcpy(view_m.e, identity, sizeof(identity));
+    memcpy(proj_m.e, identity, sizeof(identity));
+    light_system_clear(&ls);
+    light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, 0.9f, 0.8f, 0.7f);
+    light_system_set_depth_range(&ls, 0.1f, 100.0f);
+    light_system_cull(&ls, &view_m, &proj_m, W, H);
+    light_system_upload(&ls);
+
+    memset(&fr, 0, sizeof(fr));
+    memcpy(fr.prev_vp, identity, sizeof(identity));
+    memcpy(fr.prev_model, identity, sizeof(identity));
+    memcpy(fr.proj, identity, sizeof(identity));
+    fr.cam[2] = 3.0f;
+    fr.fog[0] = 1e6f; fr.fog[1] = 2e6f;
+    fr.screen[0] = (float)W; fr.screen[1] = (float)H;
+    fr.screen[2] = 0.1f; fr.screen[3] = 100.0f;
+    fr.counts[1] = (float)ls.dir_count;
+    fr.counts[2] = 0.002f;
+    fr.far[0] = fr.far[1] = fr.far[2] = fr.far[3] = 25.0f;
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_buffer_update(g_dev, ubo, &fr, sizeof(fr));
+    rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+    rhi_cmd_set_uniform_mat4(cmd, loc_view, identity);
+    rhi_cmd_set_uniform_vec2(cmd, loc_mr, (float)metal, (float)rough);
+    rhi_cmd_set_uniform_f32(cmd, loc_occ, 1.0f);
+    rhi_cmd_set_uniform_vec3(cmd, loc_em, 0.0f, 0.0f, 0.0f);
+    rhi_cmd_bind_material_textures_ibl(cmd, alb, mrt, nrm, emi, white,
+        RHI_HANDLE_NULL, white, (RHISampler){0}, RHI_HANDLE_NULL,
+        RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+    rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
+                               light_system_grid_slot(&ls));
+    rhi_cmd_bind_storage_buffer(cmd, inst, 16u);
+    rhi_cmd_update_buffer(cmd, inst, 0u, inst_rows, sizeof(inst_rows));
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 6u, 2u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px, sizeof(px)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    for (y = 0; y < H; ++y) {
+        for (x = 0; x < W; ++x) {
+            double nx = (x + 0.5) / W * 2.0 - 1.0, ny = (y + 0.5) / H * 2.0 - 1.0;
+            double px_w = 2.0 / W, py_w = 2.0 / H;
+            int which = -1, near_edge = 0;
+            for (i = 0; i < 2; ++i) {
+                double dx = fabs(nx - cen[i][0]), dy = fabs(ny - cen[i][1]);
+                if (dx < half_ext[i] - 1.5 * px_w && dy < half_ext[i] - 1.5 * py_w) which = i;
+                else if (dx < half_ext[i] + 1.5 * px_w && dy < half_ext[i] + 1.5 * py_w) near_edge = 1;
+            }
+            if (near_edge) continue;
+            if (which >= 0) {
+                double V[3] = { -nx, -ny, 3.0 }, vl, L[3] = { 0, 0, 1 }, lc[3] = { 0.9, 0.8, 0.7 }, add[3];
+                vl = sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+                for (c = 0; c < 3; ++c) V[c] /= vl;
+                r644_cook(albedo, metal, rough, N, V, L, lc, add);
+                for (c = 0; c < 3; ++c) {
+                    double tm = add[c] / (add[c] + 1.0), want = pow(tm, 1.0 / 2.2);
+                    double got = warp_half_to_float(px[(y * W + x) * 4 + c]);
+                    if (fabs(got - want) > 0.008)
+                        printf("  inst %d px (%d,%d) ch %d = %f, want %f\n", which, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.008);
+                }
+                for (c = 0; c < 2; ++c) {
+                    double got = warp_half_to_float(rt1[(y * W + x) * 2 + c]);
+                    if (fabs(got - vel[which][c]) > 0.002)
+                        printf("  inst %d px (%d,%d) velocity %d = %f, want %f\n",
+                               which, x, y, c, got, vel[which][c]);
+                    ASSERT_TRUE(fabs(got - vel[which][c]) <= 0.002);
+                }
+                ++inside_cnt[which];
+            } else {
+                for (c = 0; c < 3; ++c)
+                    ASSERT_TRUE(px[(y * W + x) * 4 + c] == px[c]);
+                for (c = 0; c < 2; ++c)
+                    ASSERT_TRUE(rt1[(y * W + x) * 2 + c] == rt1[c]);
+            }
+        }
+    }
+    ASSERT_TRUE(inside_cnt[0] >= 40 && inside_cnt[1] >= 20);
+    ASSERT_TRUE(r643_clean("clustered_inst"));
+    light_system_shutdown(&ls);
+    rhi_texture_destroy(g_dev, alb); rhi_texture_destroy(g_dev, mrt);
+    rhi_texture_destroy(g_dev, nrm); rhi_texture_destroy(g_dev, emi);
+    rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, vbo); rhi_buffer_destroy(g_dev, ubo);
+    rhi_buffer_destroy(g_dev, inst);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9868,6 +10065,7 @@ int main(void) {
     RUN_TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction);
     RUN_TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders);
     RUN_TEST(clustered_forward_sidecar_matches_a_cpu_replay);
+    RUN_TEST(clustered_inst_sidecar_places_two_instances_and_their_velocity);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

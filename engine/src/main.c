@@ -638,6 +638,17 @@ static bool render_init(RenderState *rs, Platform *platform) {
             rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
             if (!rhi_handle_valid(rs->clustered_pipeline))
                 LOG_WARN("clustered: D3D12 sidecar pipeline creation failed");
+            /* R656: instanced variant. Same fragment object; the instance
+             * rows are a structured buffer at t16 (see the shader header). */
+            RHIShader civs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_inst.vert", false);
+            if (rhi_handle_valid(civs)) {
+                cpd.vert = civs;
+                cpd.uses_storage = true;
+                rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                if (!rhi_handle_valid(rs->clustered_inst_pipeline))
+                    LOG_WARN("clustered: D3D12 instanced sidecar pipeline creation failed");
+                rhi_shader_destroy(rs->device, civs);
+            }
         } else {
             LOG_WARN("clustered: pbr_clustered sidecars unavailable");
         }
@@ -773,7 +784,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (!rs->bind_clustered)
             LOG_WARN("clustered bindings create failed; locations resolve -1");
         clustered_query_locs(&rs->cl, rs->bind_clustered);
-        {
+        if (!caps.shader_sidecar_paths) {
             /* R589: clustered frame UBO {prev_vp, prev_model, proj} — the RHI
              * binds one UBO descriptor set per call, so proj (VK) and the
              * FORWARD_MRT temporal pair share a single binding (VK set=2
@@ -7918,7 +7929,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                      * descriptor set between draws invalidates the command
                      * buffer (no UPDATE_AFTER_BIND). Content changes ride
                      * rhi_cmd_update_buffer below; the binding is constant. */
-                    rhi_cmd_bind_storage_buffer(cmd, inst_slot, 0u);
+                    rhi_cmd_bind_storage_buffer(cmd, inst_slot,
+                                                render.caps.shader_sidecar_paths ? 16u : 0u);
                 } else {
                 rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ? render.wire_instanced_pipeline : render.instanced_pipeline);
                 rhi_cmd_set_uniform_mat4(cmd, render.inst_loc_view, &view.e[0][0]);

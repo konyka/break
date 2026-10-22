@@ -1,6 +1,33 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R656 — D3D12 前向簇光照的实例化变体
+
+### 问题
+R655 只移植了静态网格的 `pbr_clustered`。实例化的 ECS 绘制在 D3D12 上仍回退到 blinn 实例化管线，与 GL/VK 的 PBR 结果不一致。GL 版 `pbr_clustered_inst.vert` 把实例数据放在存储缓冲槽 0；D3D12 的 `rhi_cmd_bind_storage_buffer` 对只读缓冲退化成同编号的 SRV，也就是 t0，但共用的 `pbr_clustered_hlsl.frag` 已占满 t0-t15。
+
+### 修复
+- 后端寄存器数组从硬编码 16 放宽到 `RHI_D3D12_MAX_REGISTERS`（24）：根参数索引表、存储步长、`cbv_gpu`/`cbv_frame`/`live_srv`、各处边界检查。
+- 新增 `engine/shaders/pbr_clustered_inst_hlsl.vert`：实例行放在 `StructuredBuffer<float4>` 的 t16，每实例 8 个 float4（model 四列 + prev_model 四列，需要 transpose）；复用静态变体的像素阶段、PushConsts 和 `ClusterFrame`（b1）。
+- `main.c`：sidecar 分支建 `clustered_inst_pipeline`（`uses_storage = true`）；绑定实例缓冲时 sidecar 后端用 16 号寄存器，其余后端仍是 0。顺手把通用分支里重复创建 `clustered_proj_ubo` 的块限定为非 sidecar 路径，避免 sidecar 路径下该缓冲被创建两次而泄漏。
+- 根签名预算：实例化变体约 88 字节，18 张表后仍有余量。
+
+### 测试
+`clustered_inst_sidecar_places_two_instances_and_their_velocity`：同一个四边形两个实例（纯平移；缩放 0.8 加平移），单位 view/proj 下像素中心直接对应 NDC。逐像素对比 CPU 复算的 PBR 颜色（容差 0.008），RT1 速度必须等于 current - previous（(0.1,-0.1) 和 (0.2,0)），实例外的像素保持清屏值。
+
+### 反向验证
+- 去掉 transpose：平移落到错误位置，实例外像素被改写，失败。
+- 实例行跨度 8 改成 4：第二个实例读到错行，失败。
+- 速度用 model 代替 prev_model：速度为 0，失败。
+三次都确认 dxil 被重新编译，改回后恢复通过。
+
+### 验证结果
+WARP 73/73，RTX 72/73（仅预期的 [1] `warp_device_identity_is_honest`），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.42、VK-GL 3.52；延迟路径 D3D12-GL 0.75。
+
+### 遗留
+- 蒙皮簇变体（`pbr_clustered_skin`）和数组变体（`pbr_clustered_arr`）仍未移植；蒙皮可沿用 t16 方案。
+- `gbuffer_arr` 仍被「D3D12 间接绘制不传 first_instance」卡住。
+
 ## 本轮更新：R655 — **D3D12 前向簇光照 PBR**（`pbr_clustered_hlsl.{vert,frag}`）
 
 - **问题**：D3D12 没有 `pbr_clustered` 的 sidecar，`clustered_pipeline` 创建不出来。默认的前向路径（R597 起 `BREAK_FORWARD_CLUSTERED` 默认开）因此回落到 blinn_phong：没有 IBL、没有点光源阴影、没有 GPU 簇分箱的网格，也没有 glTF 的金属度/粗糙度/自发光/遮挡贴图。
