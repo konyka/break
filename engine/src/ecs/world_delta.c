@@ -250,122 +250,11 @@ static bool world_matches_snapshot(const World *world, const BreakWorldSnapshot 
     return true;
 }
 
-#if 0
-static World *clone_world(const World *source) {
-    if (!source) return NULL;
-    World *clone = world_create();
-    if (!clone) return NULL;
-    memcpy(clone->component_sizes, source->component_sizes, sizeof(clone->component_sizes));
-    memcpy(clone->entities, source->entities, (usize)ECS_MAX_ENTITIES * sizeof(*clone->entities));
-    memcpy(clone->entity_archetype, source->entity_archetype,
-           (usize)ECS_MAX_ENTITIES * sizeof(*clone->entity_archetype));
-    memcpy(clone->entity_index, source->entity_index,
-           (usize)ECS_MAX_ENTITIES * sizeof(*clone->entity_index));
-    memcpy(clone->free_stack, source->free_stack,
-           (usize)ECS_MAX_ENTITIES * sizeof(*clone->free_stack));
-    memcpy(clone->entity_bitmap, source->entity_bitmap, sizeof(clone->entity_bitmap));
-    clone->entity_count = source->entity_count;
-    clone->free_stack_top = source->free_stack_top;
-    clone->cache_version = source->cache_version;
-    clone->archetype_count = source->archetype_count;
-    for (u32 ai = 0u; ai < source->archetype_count; ++ai) {
-        const Archetype *src = &source->archetypes[ai];
-        Archetype *dst = &clone->archetypes[ai];
-        *dst = *src;
-        dst->key.ids = NULL;
-        dst->offsets = NULL;
-        dst->chunks = NULL;
-        dst->chunk_tail = NULL;
-        dst->edges_add = NULL;
-        dst->edges_remove = NULL;
-        if (src->key.count != 0u) {
-            usize key_bytes = (usize)src->key.count * sizeof(*src->key.ids);
-            dst->key.ids = malloc(key_bytes + (usize)src->key.count * sizeof(*src->offsets));
-            if (!dst->key.ids) { world_destroy(clone); return NULL; }
-            memcpy(dst->key.ids, src->key.ids, key_bytes);
-            dst->offsets = (u32 *)((u8 *)dst->key.ids + key_bytes);
-            memcpy(dst->offsets, src->offsets, (usize)src->key.count * sizeof(*src->offsets));
-        }
-        for (const Chunk *sc = src->chunks; sc; sc = sc->next) {
-            Chunk *dc = (Chunk *)malloc(src->chunk_bytes);
-            if (!dc) { world_destroy(clone); return NULL; }
-            memcpy(dc, sc, src->chunk_bytes);
-            dc->next = NULL;
-            if (!dst->chunks) dst->chunks = dc;
-            else dst->chunk_tail->next = dc;
-            dst->chunk_tail = dc;
-        }
-        if (src->edges_add_count != 0u) {
-            dst->edges_add = malloc((usize)src->edges_add_count * sizeof(*src->edges_add));
-            if (!dst->edges_add) { world_destroy(clone); return NULL; }
-            memcpy(dst->edges_add, src->edges_add,
-                   (usize)src->edges_add_count * sizeof(*src->edges_add));
-        }
-        if (src->edges_remove_count != 0u) {
-            dst->edges_remove = malloc((usize)src->edges_remove_count * sizeof(*src->edges_remove));
-            if (!dst->edges_remove) { world_destroy(clone); return NULL; }
-            memcpy(dst->edges_remove, src->edges_remove,
-                   (usize)src->edges_remove_count * sizeof(*src->edges_remove));
-        }
-    }
-    memcpy(clone->archetype_hash, source->archetype_hash, sizeof(clone->archetype_hash));
-    for (u32 ai = 0u; ai < clone->archetype_count; ++ai) {
-        Archetype *dst = &clone->archetypes[ai];
-        for (u32 i = 0u; i < dst->edges_add_count; ++i) {
-            usize target = (usize)(source->archetypes[ai].edges_add[i].target - source->archetypes);
-            dst->edges_add[i].target = &clone->archetypes[target];
-        }
-        for (u32 i = 0u; i < dst->edges_remove_count; ++i) {
-            usize target = (usize)(source->archetypes[ai].edges_remove[i].target - source->archetypes);
-            dst->edges_remove[i].target = &clone->archetypes[target];
-        }
-    }
-    memcpy(clone->query_cache, source->query_cache, sizeof(clone->query_cache));
-    clone->query_count = source->query_count;
-    atomic_store_explicit(&clone->query_next_slot,
-                          atomic_load_explicit(&source->query_next_slot, memory_order_relaxed),
-                          memory_order_relaxed);
-    for (u32 qi = 0u; qi < 256u; ++qi) {
-        const Query *src = &source->queries[qi];
-        Query *dst = &clone->queries[qi];
-        *dst = *src;
-        if (src->matching == src->_inline_matching) dst->matching = dst->_inline_matching;
-        else if (src->matching && src->match_cap > ECS_QUERY_INLINE_CAP) {
-            dst->matching = malloc((usize)src->match_cap * sizeof(*src->matching));
-            if (!dst->matching) { world_destroy(clone); return NULL; }
-            memcpy(dst->matching, src->matching, (usize)src->match_count * sizeof(*src->matching));
-        }
-        for (u32 mi = 0u; mi < dst->match_count; ++mi) {
-            usize target = (usize)(src->matching[mi] - source->archetypes);
-            dst->matching[mi] = &clone->archetypes[target];
-        }
-    }
-    return clone;
-}
-#endif
-
-static BreakDeltaApplyResult apply_in_place(World *world, const BreakWorldDelta *delta) {
-    if (!world || !delta || !delta->base || !delta->target) return BREAK_DELTA_INVALID;
-    if (delta->base_schema_hash != delta->target_schema_hash) return BREAK_DELTA_SCHEMA_MISMATCH;
-    if (delta->target_tick <= delta->base_tick) return BREAK_DELTA_INVALID;
-    if (break_world_snapshot_id(delta->target) == delta->target_id &&
-        world_matches_snapshot(world, delta->target)) return BREAK_DELTA_ALREADY_APPLIED;
-    if (!world_matches_snapshot(world, delta->base)) return BREAK_DELTA_BASE_MISMATCH;
-
-    for (usize i = 0u; i < delta->record_count; ++i) {
-        const BreakWorldDeltaRecordInternal *record = &delta->records[i];
-        if (!delta_record_preflight(world, delta, record)) return BREAK_DELTA_APPLY_FAILED;
-        if (record->kind == BREAK_DELTA_ENTITY_CREATE && record->entity.generation == 0u) {
-            return BREAK_DELTA_APPLY_FAILED;
-        }
-        if (record->kind == BREAK_DELTA_ENTITY_DESTROY &&
-            !world_entity_exists(world, record->entity)) return BREAK_DELTA_APPLY_FAILED;
-    }
-
+static BreakDeltaApplyResult apply_records(World *world, const BreakWorldDelta *delta,
+                                           u32 *predicted_generations,
+                                           u32 *predicted_free_stack) {
     u32 predicted_free_top = world->free_stack_top;
     u32 predicted_entity_count = world->entity_count;
-    u32 predicted_generations[ECS_MAX_ENTITIES];
-    u32 predicted_free_stack[ECS_MAX_ENTITIES];
     if (predicted_free_top != 0u) {
         memcpy(predicted_free_stack, world->free_stack,
                predicted_free_top * sizeof(*predicted_free_stack));
@@ -469,6 +358,52 @@ static BreakDeltaApplyResult apply_in_place(World *world, const BreakWorldDelta 
         return BREAK_DELTA_APPLY_FAILED;
     }
     return BREAK_DELTA_OK;
+}
+
+static BreakDeltaApplyResult apply_in_place(World *world, const BreakWorldDelta *delta) {
+    if (!world || !delta || !delta->base || !delta->target) return BREAK_DELTA_INVALID;
+    if (delta->base_schema_hash != delta->target_schema_hash) return BREAK_DELTA_SCHEMA_MISMATCH;
+    if (delta->target_tick <= delta->base_tick) return BREAK_DELTA_INVALID;
+    if (break_world_snapshot_id(delta->target) == delta->target_id &&
+        world_matches_snapshot(world, delta->target)) return BREAK_DELTA_ALREADY_APPLIED;
+    if (!world_matches_snapshot(world, delta->base)) return BREAK_DELTA_BASE_MISMATCH;
+
+    usize destroy_count = 0u;
+    for (usize i = 0u; i < delta->record_count; ++i) {
+        const BreakWorldDeltaRecordInternal *record = &delta->records[i];
+        if (!delta_record_preflight(world, delta, record)) return BREAK_DELTA_APPLY_FAILED;
+        if (record->kind == BREAK_DELTA_ENTITY_CREATE && record->entity.generation == 0u) {
+            return BREAK_DELTA_APPLY_FAILED;
+        }
+        if (record->kind == BREAK_DELTA_ENTITY_DESTROY) {
+            if (!world_entity_exists(world, record->entity)) return BREAK_DELTA_APPLY_FAILED;
+            ++destroy_count;
+        }
+    }
+
+    /* Prediction scratch is heap-allocated and sized by the actual world/delta
+     * counts: generations are only ever indexed below world->entity_count, and
+     * the free stack grows by exactly one entry per DESTROY record (the
+     * ECS_MAX_ENTITIES check in apply_records still bounds the logical top).
+     * Failure here precedes any mutation; the caller destroys staging. */
+    usize generation_count = world->entity_count != 0u ? world->entity_count : 1u;
+    usize free_stack_capacity = (usize)world->free_stack_top + destroy_count;
+    if (free_stack_capacity > ECS_MAX_ENTITIES) free_stack_capacity = ECS_MAX_ENTITIES;
+    if (free_stack_capacity == 0u) free_stack_capacity = 1u;
+    u32 *predicted_generations =
+        (u32 *)malloc(generation_count * sizeof(*predicted_generations));
+    u32 *predicted_free_stack =
+        (u32 *)malloc(free_stack_capacity * sizeof(*predicted_free_stack));
+    if (!predicted_generations || !predicted_free_stack) {
+        free(predicted_generations);
+        free(predicted_free_stack);
+        return BREAK_DELTA_APPLY_FAILED;
+    }
+    BreakDeltaApplyResult result =
+        apply_records(world, delta, predicted_generations, predicted_free_stack);
+    free(predicted_generations);
+    free(predicted_free_stack);
+    return result;
 }
 
 BreakDeltaApplyResult break_world_delta_apply(World *world, const BreakWorldDelta *delta) {

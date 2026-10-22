@@ -444,7 +444,12 @@ bool world_replace_contents(World *destination, World *replacement) {
                                          a->edges_remove[j].target, &ignored)) return false;
         }
     }
-    u32 query_indices[256][ECS_MAX_ARCHETYPES];
+    /* Query match remapping scratch: flat heap buffer sized by the actual
+     * total match count instead of a fixed 256*ECS_MAX_ARCHETYPES stack frame
+     * (1 MiB, which alone can exhaust a Windows thread stack). Validation and
+     * allocation both complete before destination is touched, so failure here
+     * leaves the old world state intact. */
+    usize total_matches = 0u;
     for (u32 i = 0; i < 256u; ++i) {
         Query *q = &replacement->queries[i];
         if (q->match_count > ECS_MAX_ARCHETYPES ||
@@ -453,11 +458,26 @@ bool world_replace_contents(World *destination, World *replacement) {
              q->matching != q->_inline_matching) ||
             (q->match_cap > ECS_QUERY_INLINE_CAP && !q->matching) ||
             (q->match_count > 0u && !q->matching)) return false;
+        total_matches += q->match_count;
+    }
+    u32 *query_indices = NULL;
+    if (total_matches != 0u) {
+        query_indices = (u32 *)malloc(total_matches * sizeof(*query_indices));
+        if (!query_indices) return false;
+    }
+    usize match_offset = 0u;
+    for (u32 i = 0; i < 256u; ++i) {
+        Query *q = &replacement->queries[i];
         for (u32 j = 0; j < q->match_count; ++j) {
             if (!archetype_pointer_index(replacement->archetypes,
                                          replacement->archetype_count,
-                                         q->matching[j], &query_indices[i][j])) return false;
+                                         q->matching[j],
+                                         &query_indices[match_offset + j])) {
+                free(query_indices);
+                return false;
+            }
         }
+        match_offset += q->match_count;
     }
     world_release_contents(destination);
     *destination = *replacement;
@@ -482,6 +502,7 @@ bool world_replace_contents(World *destination, World *replacement) {
             }
         }
     }
+    match_offset = 0u;
     for (u32 i = 0; i < 256u; ++i) {
         Query *q = &destination->queries[i];
         Archetype **old_matching = q->matching;
@@ -492,9 +513,11 @@ bool world_replace_contents(World *destination, World *replacement) {
             q->matching = q->_inline_matching;
         }
         for (u32 j = 0; j < old_match_count; ++j) {
-            q->matching[j] = destination->archetypes + query_indices[i][j];
+            q->matching[j] = destination->archetypes + query_indices[match_offset + j];
         }
+        match_offset += old_match_count;
     }
+    free(query_indices);
     memset(replacement, 0, sizeof(*replacement));
     free(replacement);
     return true;
