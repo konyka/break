@@ -5924,11 +5924,17 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo,
     /* R213-B: ssao at 14 — units 10-13 are u_point_shadow_cubes[4]. */
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, ssao), sampler, 14u);
     rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
-    /* Units 8 and 9 are the IBL cubes, gated on the same live-cube rule. */
-    if (rhi_d3d12_live_cube(irradiance_map))
-        rhi_cmd_bind_texture(cmd, irradiance_map, sampler, 8u);
-    if (rhi_d3d12_live_cube(prefilter_map))
-        rhi_cmd_bind_texture(cmd, prefilter_map, sampler, 9u);
+    /* Units 8 and 9 are the IBL cubes. R655: a live cube, else the black
+     * fallback -- a sidecar that declares t8/t9 (pbr_clustered_hlsl.frag)
+     * must get a descriptor on every draw, and black adds no environment
+     * light. rhi_cmd_bind_cubemap understands the colour cube; the old
+     * rhi_cmd_bind_texture call could not build a cube view for it. */
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(irradiance_map) != NULL
+                                  ? irradiance_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 8u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(prefilter_map) != NULL
+                                  ? prefilter_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 9u);
 }
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
     RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal,

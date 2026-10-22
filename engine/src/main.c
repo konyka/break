@@ -202,6 +202,24 @@ typedef struct {
     f32  ambient_pad;
 } ForwardTemporalUbo;
 
+/* R655: the D3D12 clustered sidecar's b1 cbuffer (ClusterFrame in
+ * pbr_clustered_hlsl.{vert,frag}). The frame constants cannot ride the push
+ * block there -- 17 descriptor tables leave 47 root DWORDs -- so
+ * forward_clustered_bind_frame fills this and binds it at b1. GL/VK keep the
+ * {prev_vp, prev_model, proj} + factor tables layout of clustered_proj_ubo. */
+typedef struct {
+    Mat4 prev_vp;
+    Mat4 prev_model;
+    Mat4 proj;
+    f32  camera_pos[4];
+    f32  ambient[4];
+    f32  fog_color[4];
+    f32  fog[4];          /* near, far, underwater, pom */
+    f32  screen[4];       /* w, h, near, far */
+    f32  counts[4];       /* point, dir, shadow_bias, - */
+    f32  far_planes[4];
+} ClusterFrameUbo;
+
 /* Writes the blinn forward path's frame UBO in one shot. Every path that draws
  * a blinn_phong shader must call this and bind the buffer: the camera position
  * lives there now, not in the push block, so a path that forgets renders with a
@@ -604,6 +622,34 @@ static bool render_init(RenderState *rs, Platform *platform) {
     rs->loc_camera_pos  = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_camera_pos");
     rs->loc_albedo      = rhi_pipeline_bindings_resolve(rs->bind_pipeline, "u_albedo");
 
+    /* R655: a sidecar backend (D3D12) builds the STATIC clustered pipeline
+     * from pbr_clustered_hlsl.{vert,frag}. IBL, point-shadow cubes and
+     * FORWARD_MRT are authored into the pair (the GLSL needs the defines
+     * injected), and the instanced / skinned / array variants have no
+     * sidecar, so those draws keep their blinn-family pipelines. */
+    if (caps.shader_sidecar_paths) {
+        RHIShader cvs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered.vert", false);
+        RHIShader cfs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered.frag", true);
+        if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
+            RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
+                                   .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
+                                   .mrt_attachment_count = 2u,
+                                   .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+            rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
+            if (!rhi_handle_valid(rs->clustered_pipeline))
+                LOG_WARN("clustered: D3D12 sidecar pipeline creation failed");
+        } else {
+            LOG_WARN("clustered: pbr_clustered sidecars unavailable");
+        }
+        if (rhi_handle_valid(cvs)) rhi_shader_destroy(rs->device, cvs);
+        if (rhi_handle_valid(cfs)) rhi_shader_destroy(rs->device, cfs);
+        if (rhi_handle_valid(rs->clustered_pipeline)) {
+            RHIBufferDesc pjd = { .usage = RHI_BUFFER_USAGE_UNIFORM,
+                                  .size = sizeof(ClusterFrameUbo),
+                                  .initial_data = NULL };
+            rs->clustered_proj_ubo = rhi_buffer_create(rs->device, &pjd);
+        }
+    } else
     /* Clustered lighting pipelines (static + R590 instanced + R591 skinned + R592 array) */
     {
         usize cvl = 0, cfl = 0, civl = 0, csvl = 0, cavl = 0;
@@ -1457,6 +1503,37 @@ static void forward_clustered_bind_frame(RHICmdBuffer *cmd, RenderState *rs,
                                          u32 screen_w, u32 screen_h, f32 shadow_bias) {
     rhi_cmd_bind_pipeline(cmd, pipe);
     rhi_cmd_set_uniform_mat4(cmd, L->cl_loc_view, &view->e[0][0]);
+    if (rs->caps.shader_sidecar_paths) {
+        /* R655: D3D12 -- one cbuffer instead of ~30 loose uniforms. */
+        ClusterFrameUbo fr;
+        memset(&fr, 0, sizeof(fr));
+        fr.prev_vp = *prev_vp;
+        fr.prev_model = mat4_identity();
+        fr.proj = *proj;
+        fr.camera_pos[0] = cam_pos->e[0]; fr.camera_pos[1] = cam_pos->e[1];
+        fr.camera_pos[2] = cam_pos->e[2];
+        fr.ambient[0] = ambient->e[0]; fr.ambient[1] = ambient->e[1];
+        fr.ambient[2] = ambient->e[2];
+        fr.fog_color[0] = fog_col->e[0]; fr.fog_color[1] = fog_col->e[1];
+        fr.fog_color[2] = fog_col->e[2];
+        fr.fog[0] = fog_on ? fog_n : 1e6f;
+        fr.fog[1] = fog_on ? fog_f : 2e6f;
+        fr.fog[2] = underwater ? 1.0f : 0.0f;
+        fr.screen[0] = (f32)screen_w; fr.screen[1] = (f32)screen_h;
+        fr.screen[2] = near_p; fr.screen[3] = far_p;
+        fr.counts[0] = (f32)ls->point_count; fr.counts[1] = (f32)ls->dir_count;
+        fr.counts[2] = shadow_bias;
+        for (u32 q = 0u; q < 4u; ++q) fr.far_planes[q] = g_psc.far_planes[q];
+        if (rhi_handle_valid(rs->clustered_proj_ubo)) {
+            rhi_buffer_update(rs->device, rs->clustered_proj_ubo, &fr, sizeof(fr));
+            rhi_cmd_bind_uniform_buffer(cmd, rs->clustered_proj_ubo,
+                                        (u32)rs->temporal_ubo_binding);
+        }
+        rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(ls),
+                                   light_system_grid_slot(ls));
+        g_fwd_clustered_taken++;
+        return;
+    }
     /* Frame UBO {prev_vp, prev_model(identity — mega verts are world-space
      * and static nodes match the blinn bind_forward_temporal approximation;
      * the instanced variant reads per-instance prev_model from its SSBO),

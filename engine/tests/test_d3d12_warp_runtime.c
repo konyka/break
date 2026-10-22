@@ -9578,6 +9578,203 @@ TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders) {
     ibl_destroy(&ibl, g_dev);
 }
 
+/* R655: the clustered forward PBR sidecar (pbr_clustered_hlsl.{vert,frag})
+ * through the real pipeline, against a CPU replay of pbr_clustered.frag.
+ *
+ * Scene: a +Z-facing quad on the plane z = -0.5, x in [-8, 8], y in [-4, 4],
+ * seen by the engine's own mat4_lookat / mat4_perspective (60 degrees,
+ * aspect 2, camera (0, 0, 3)) on a 64x32 target. A real perspective makes
+ * clip.w the view distance, so a light of radius 0.9 covers only a few of
+ * the 16x8 cluster tiles (columns 9-11, rows 1-3: a column/row swap lands
+ * in clamped row 7 / column 15, outside the light's conservative tile range; a w = 1 projection lets every cluster see it, and
+ * then a wrong cluster index finds the light anyway). One directional light
+ * straight down -Z, one point light at (1.2, -0.6, -0.2) binned by
+ * light_system_cull; flat albedo (200,100,50), metallic 0.3 / roughness 0.6
+ * from the u_mr_factor push members, no shadow atlas (white fallback = no
+ * blocker), black IBL (the binder's fallback cubes), no fog. The shader
+ * tone-maps and gamma-encodes, so the replay does too. Frame A has no point
+ * light, frame B adds it: B differs from A only inside the light radius,
+ * which pins the b1 frame constants, the cluster lookup and the light-grid
+ * binding together. */
+TEST(clustered_forward_sidecar_matches_a_cpu_replay) {
+    enum { W = 64, H = 32 };
+    static const float verts[6 * 8] = {
+        -8.0f, -4.0f, -0.5f,  0, 0, 1,  0, 0,
+         8.0f, -4.0f, -0.5f,  0, 0, 1,  1, 0,
+         8.0f,  4.0f, -0.5f,  0, 0, 1,  1, 1,
+        -8.0f, -4.0f, -0.5f,  0, 0, 1,  0, 0,
+         8.0f,  4.0f, -0.5f,  0, 0, 1,  1, 1,
+        -8.0f,  4.0f, -0.5f,  0, 0, 1,  0, 1
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static Mat4 cascades[4];
+    static LightSystem ls;
+    static u16 px[2][W * H * 4];
+    const RHIFormat formats[2] = { RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT };
+    const double fov = 1.0471975512, aspect = 2.0;
+    const double plight[3] = { 1.2, -0.6, -0.2 }, prad = 0.9;
+    RHIMRTFBO fbo;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHIBufferDesc bd;
+    RHIBuffer vbo, ubo;
+    RHITexture alb, mrt, nrm, emi, white;
+    RHICmdBuffer *cmd;
+    Mat4 view_m, proj_m;
+    i32 loc_model, loc_view, loc_mr, loc_occ, loc_em;
+    int frame, x, y, c, i, lit = 0;
+    const double albedo[3] = { 200 / 255.0, 100 / 255.0, 50 / 255.0 };
+    const double N[3] = { 0, 0, 1 };
+    const double metal = 0.3, rough = 0.6;
+    r643_mark();
+    vs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/pbr_clustered.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs;
+    pd.uses_textures = true; pd.uses_texel_buffer = true; pd.disable_culling = true;
+    pd.color_format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_attachment_count = 2u;
+    pd.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    pd.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+    loc_model = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_model");
+    loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+    loc_mr = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_mr_factor");
+    loc_occ = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_occlusion_strength");
+    loc_em = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_emissive_factor");
+    ASSERT_EQ(loc_model, 0);
+    ASSERT_EQ(loc_view, 64);
+    ASSERT_EQ(loc_mr, 128);
+    ASSERT_EQ(loc_occ, 136);
+    ASSERT_EQ(loc_em, 144);
+
+    alb = r644_tex(200, 100, 50, 255);
+    mrt = r644_tex(255, 255, 255, 255);
+    nrm = r644_tex(128, 128, 255, 255);
+    emi = r644_tex(0, 0, 0, 255);
+    white = r644_tex(255, 255, 255, 255);
+    memset(&bd, 0, sizeof(bd));
+    bd.size = sizeof(verts); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bd);
+    fbo = rhi_mrt_fbo_create(g_dev, W, H, formats, 2u);
+    ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(fbo.fb));
+    memset(&bd, 0, sizeof(bd));
+    bd.size = 304u; bd.usage = RHI_BUFFER_USAGE_UNIFORM;
+    ubo = rhi_buffer_create(g_dev, &bd);
+    ASSERT_TRUE(rhi_handle_valid(ubo));
+
+    memset(&ls, 0, sizeof(ls));
+    light_system_init(&ls, g_dev);
+    for (i = 0; i < 4; ++i) memcpy(cascades[i].e, identity, sizeof(identity));
+    light_system_set_cascade_vp(&ls, cascades);
+    view_m = mat4_lookat(vec3(0.0f, 0.0f, 3.0f), vec3(0.0f, 0.0f, -1.0f), vec3(0.0f, 1.0f, 0.0f));
+    proj_m = mat4_perspective((f32)fov, (f32)aspect, 0.1f, 100.0f);
+
+    for (frame = 0; frame < 2; ++frame) {
+        struct { float prev_vp[16], prev_model[16], proj[16], cam[4], amb[4],
+                 fogc[4], fog[4], screen[4], counts[4], far[4]; } fr;
+        memset(&fr, 0, sizeof(fr));
+        memcpy(fr.prev_vp, identity, sizeof(identity));
+        memcpy(fr.prev_model, identity, sizeof(identity));
+        memcpy(fr.proj, proj_m.e, sizeof(fr.proj));
+        fr.cam[2] = 3.0f;
+        fr.fog[0] = 1e6f; fr.fog[1] = 2e6f;
+        fr.screen[0] = (float)W; fr.screen[1] = (float)H;
+        fr.screen[2] = 0.1f; fr.screen[3] = 100.0f;
+        light_system_clear(&ls);
+        light_system_add_dir(&ls, 0.0f, 0.0f, -1.0f, 0.9f, 0.8f, 0.7f);
+        if (frame == 1)
+            light_system_add_point(&ls, (f32)plight[0], (f32)plight[1], (f32)plight[2],
+                                   (f32)prad, 3.0f, 2.0f, 1.0f);
+        light_system_set_depth_range(&ls, 0.1f, 100.0f);
+        light_system_cull(&ls, &view_m, &proj_m, W, H);
+        light_system_upload(&ls);
+        fr.counts[0] = (float)ls.point_count; fr.counts[1] = (float)ls.dir_count;
+        fr.counts[2] = 0.002f;
+        fr.far[0] = fr.far[1] = fr.far[2] = fr.far[3] = 25.0f;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_buffer_update(g_dev, ubo, &fr, sizeof(fr));
+        rhi_cmd_bind_uniform_buffer(cmd, ubo, 1u);
+        rhi_cmd_set_uniform_mat4(cmd, loc_model, identity);
+        rhi_cmd_set_uniform_mat4(cmd, loc_view, &view_m.e[0][0]);
+        rhi_cmd_set_uniform_vec2(cmd, loc_mr, (float)metal, (float)rough);
+        rhi_cmd_set_uniform_f32(cmd, loc_occ, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, loc_em, 0.0f, 0.0f, 0.0f);
+        rhi_cmd_bind_material_textures_ibl(cmd, alb, mrt, nrm, emi, white,
+            RHI_HANDLE_NULL, white, (RHISampler){0}, RHI_HANDLE_NULL,
+            RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
+        rhi_cmd_bind_texel_buffers(cmd, light_system_data_slot(&ls),
+                                   light_system_grid_slot(&ls));
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_draw(cmd, 6u, 1u);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], px[frame], sizeof(px[frame])));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+
+    for (y = 0; y < H; ++y) {
+        for (x = 0; x < W; ++x) {
+            /* Pixel centre -> the point where its view ray meets z = -0.5.
+             * Offscreen rows grow with NDC y; camera at (0, 0, 3). */
+            double nx = (x + 0.5) / W * 2.0 - 1.0, ny = (y + 0.5) / H * 2.0 - 1.0;
+            double th = tan(fov * 0.5), t = 3.5;
+            double w[3] = { t * nx * th * aspect, t * ny * th, -0.5 };
+            double V[3], vl, L[3], col[2][3], add[3];
+            V[0] = -w[0]; V[1] = -w[1]; V[2] = 3.0 - w[2];
+            vl = sqrt(V[0] * V[0] + V[1] * V[1] + V[2] * V[2]);
+            for (c = 0; c < 3; ++c) V[c] /= vl;
+            L[0] = 0; L[1] = 0; L[2] = 1;
+            {
+                double lc[3] = { 0.9, 0.8, 0.7 };
+                r644_cook(albedo, metal, rough, N, V, L, lc, add);
+                for (c = 0; c < 3; ++c) col[0][c] = col[1][c] = add[c];
+            }
+            {
+                double toL[3], dist, att, lc[3];
+                static const double pc[3] = { 3.0, 2.0, 1.0 };
+                for (c = 0; c < 3; ++c) toL[c] = plight[c] - w[c];
+                dist = sqrt(toL[0] * toL[0] + toL[1] * toL[1] + toL[2] * toL[2]);
+                if (dist <= prad) {
+                    for (c = 0; c < 3; ++c) L[c] = toL[c] / fmax(dist, 1e-3);
+                    att = 1.0 - dist / prad; att *= att;
+                    for (c = 0; c < 3; ++c) lc[c] = pc[c] * att;
+                    r644_cook(albedo, metal, rough, N, V, L, lc, add);
+                    for (c = 0; c < 3; ++c) col[1][c] += add[c];
+                    if (att > 0.05) ++lit;
+                }
+            }
+            for (frame = 0; frame < 2; ++frame) {
+                for (c = 0; c < 3; ++c) {
+                    double tm = col[frame][c] / (col[frame][c] + 1.0);
+                    double want = pow(tm, 1.0 / 2.2);
+                    double got = warp_half_to_float(px[frame][(y * W + x) * 4 + c]);
+                    if (fabs(got - want) > 0.008)
+                        printf("  clustered frame %d px (%d,%d) ch %d = %f, want %f\n",
+                               frame, x, y, c, got, want);
+                    ASSERT_TRUE(fabs(got - want) <= 0.008);
+                }
+            }
+        }
+    }
+    ASSERT_TRUE(lit >= 60);
+    ASSERT_TRUE(r643_clean("clustered_forward"));
+    light_system_shutdown(&ls);
+    rhi_texture_destroy(g_dev, alb); rhi_texture_destroy(g_dev, mrt);
+    rhi_texture_destroy(g_dev, nrm); rhi_texture_destroy(g_dev, emi);
+    rhi_texture_destroy(g_dev, white);
+    rhi_buffer_destroy(g_dev, vbo); rhi_buffer_destroy(g_dev, ubo);
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs); rhi_shader_destroy(g_dev, fs);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9670,6 +9867,7 @@ int main(void) {
     RUN_TEST(gpu_cull_sidecars_flag_compact_and_read_back);
     RUN_TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction);
     RUN_TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders);
+    RUN_TEST(clustered_forward_sidecar_matches_a_cpu_replay);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

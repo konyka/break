@@ -1,6 +1,37 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R655 — **D3D12 前向簇光照 PBR**（`pbr_clustered_hlsl.{vert,frag}`）
+
+- **问题**：D3D12 没有 `pbr_clustered` 的 sidecar，`clustered_pipeline` 创建不出来。默认的前向路径（R597 起 `BREAK_FORWARD_CLUSTERED` 默认开）因此回落到 blinn_phong：没有 IBL、没有点光源阴影、没有 GPU 簇分箱的网格，也没有 glTF 的金属度/粗糙度/自发光/遮挡贴图。
+- **新增 sidecar**：`pbr_clustered_hlsl.vert` / `.frag`，逐行对应 GL 版（`FORWARD_MRT` + `HAS_IBL` + `HAS_POINT_SHADOW`，也就是引擎实际编译的那个变体）：
+  - 级联阴影的 PCSS（沿用延迟光照 sidecar 里已验证的实现）、点光源阴影立方体 t10–t13、IBL（t7 BRDF LUT、t8 辐照度、t9 预滤波）、法线贴图、Cook-Torrance、簇光源循环、雾和水下处理。
+  - 输出 RT0 颜色加 RT1 速度，与前向 MRT 通道一致。
+  - POM 没有移植：引擎在所有后端都把 `u_pom_enabled` 写成 0，那个分支是死代码。
+- **根签名预算**：片元阶段声明了 16 张 SRV 表，再加上与顶点阶段共用的帧 CBV b1，共 17 张表，剩 47 个 DWORD 的根常量，放不下 GLSL 里约 30 个松散 uniform。所以：
+  - push 块只放 `u_model`（每个 draw 变）、`u_view`、每材质的 `u_mr_factor` / `u_occlusion_strength` / `u_emissive_factor`，共 156 字节；
+  - 其余全部是整帧不变的值，放进 b1 的 `ClusterFrame` cbuffer（304 字节）：`prev_vp`、`prev_model`、`proj`、相机位置、环境光、雾、屏幕与近远平面、光源数量、阴影偏置、点光源阴影的远平面。
+- **引擎侧**：
+  - `render_init` 在 sidecar 后端上用 `rhi_shader_create_path` 建静态簇管线，并创建 `ClusterFrameUbo` 大小的缓冲。实例化、蒙皮、数组三个变体在 D3D12 上仍没有 sidecar，这些 draw 继续走各自的 blinn 家族管线。
+  - `forward_clustered_bind_frame` 在 sidecar 后端上把帧常量写进这个 cbuffer 并绑到 b1，不再逐个写 uniform。
+- **后端补丁**：`rhi_cmd_bind_material_textures_ibl` 的 t8/t9 原来用 `rhi_cmd_bind_texture` 绑立方体，对彩色立方体建不出 TEXTURECUBE 视图，导致 GPU-based validation 报 [935] "未初始化的根参数"（根参数 10/11）。现在改用 `rhi_cmd_bind_cubemap`，没有真立方体时绑 R654 的黑色立方体。
+- **测试**：WARP 新增 `clustered_forward_sidecar_matches_a_cpu_replay`。
+  - 场景：x∈[−8, 8]、y∈[−4, 4] 的 +Z 四边形，放在 z = −0.5，用引擎自己的 `mat4_lookat` / `mat4_perspective`（60°，宽高比 2，相机 (0, 0, 3)），目标 64×32。
+  - 一盏向 −Z 的方向光，一盏点光源 (1.2, −0.6, −0.2)、半径 0.9。真透视下 `clip.w` 是视距，所以这盏灯只落在 16×8 簇网格的 9–11 列、1–3 行；如果用 w = 1 的投影，每个簇都看得到它，簇索引算错也能碰巧找到灯。
+  - 两帧：A 只有方向光，B 加上点光源。逐像素对比 CPU 复算（Cook-Torrance → Reinhard → γ 2.2），3 通道 × 2048 像素 × 2 帧，误差 0.008 以内。B 与 A 只在灯的半径内有差别，这同时钉住了 b1 帧常量、簇查找和光网格绑定。
+  - 用例结束时 debug layer 干净。
+- **反向验证**（每一项都让用例失败）：
+  - 簇列号用 `frag_pos.y`；簇行号用 `frag_pos.x`；簇深度符号取反；
+  - 顶点着色器里 `proj` 与 `view` 的乘法顺序；粗糙度取自 `mr.x`；
+  - 作为对照，"环境光加常数"、"方向光数量写 0"、"衰减不平方"也都让用例失败。
+  - 第一版场景没有抓住"行号取自 x"和"proj/view 顺序"：当时用的是 w = 1 的投影，所有簇都看得到灯。换成真透视并把灯放到 1–3 行、9–11 列后，两者都能被抓住。
+  - **盲区**：法线贴图的副切线符号（`B = -normalize(cross(N, T))`）改反后用例仍通过，因为测试用的是平坦法线贴图 (128, 128, 255)，切线空间不影响结果。这块与延迟 G-Buffer 里已经被测试覆盖的同一段数学一致，但在前向 sidecar 里没有独立的像素证明。
+- **验证结果**：
+  - WARP 72/72，debug layer 0/0/alias 1。RTX 连跑 2 次都是 71/72，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 前向路径（默认走簇光照）：日志里 `Forward clustered PBR: ON`，D3D12 debug layer 0 条。截图 MAE（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）D3D12-GL 1.3–1.7、VK-GL 3.5–3.6；同样的相机，关掉簇光照（`BREAK_FORWARD_CLUSTERED=0`）时 D3D12-GL 为 1.44，簇光照与 blinn 在 D3D12 上相差 0.77、在 GL 上相差 0.53，也就是两条路径的画面本来就很接近。延迟路径 D3D12-GL 1.22。
+  - **一次未复现的异常**：14 次前向截图里有 1 次只有 D3D12 偏离（均值 76.4，MAE 57.6，GL/VK 都是正常的 130 左右），画面的相机明显偏了，天空占了大半幅。同一条命令随后连跑 10 次全部正常（1.3–1.7）。那次运行 D3D12 的帧率是 11–12 FPS（正常运行约 12–17 FPS），机器上同时有 ToDesk 抓屏。`BREAK_CAM` 把相机固定在启动日志里的位置，截图时相机状态依赖鼠标输入，我没有找到它被改动的证据，也没有找到 D3D12 渲染错误的证据（debug layer 0 条，画面里的地形形状是对的，只是视角不同）。我没法证明这不是回归，所以如实记下：1/14，未复现，嫌疑是外部输入，未证实。
+
 ## 本轮更新：R654 — **D3D12 IBL**：彩色立方体贴图、四个 IBL 计算着色器、延迟光照里的 BRDF LUT / 辐照度 / 预滤波环境光
 
 - **问题**：D3D12 上 `rhi_cubemap_create` / `rhi_cmd_bind_image_cubemap_face` / `rhi_cmd_bind_cubemap_sampler` / `rhi_cmd_bind_image_texture` 都是空桩，IBL 的四个计算着色器（`sky_to_cube`、`irradiance_env`、`prefilter_env`、`brdf_lut`）也没有 HLSL 版本。日志里是 `IBL: failed to create environment/irradiance/prefilter cubemap`、`compute shader compile failed: shaders/brdf_lut.comp`，延迟光照的 `diffuse_ibl` / `specular_ibl` 被写死成 0。
