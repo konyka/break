@@ -15,7 +15,7 @@
 - **设计目标**：本文建议的接口、所有权和验收合同，当前未实现除非另有证据。
 - **未实现/风险**：明确不能由当前代码推断出来的能力；不得在实现前写成已完成。
 
-路线依据：`docs/design/roadmap_2026-10-22.md:31-49` 将这些文件列为 Stage 2 输出，并要求映射到正式 CMake target、定义所有权/容量/背压/关闭和测试 lane；2026-10-22/23 的 runtime core formalization 已交付 `runtime_reload`/`runtime_profiler` 等正式可选库（未链入 engine/demo），本文 §2.3 与 §7 记录交付与设计边界。
+路线依据：`docs/design/roadmap_2026-10-22.md:42-61` 将这些文件列为 Stage 2 输出，并要求映射到正式 CMake target、定义所有权/容量/背压/关闭和测试 lane；2026-10-22/23 的 runtime core formalization 已交付 `runtime_reload`/`runtime_profiler` 等正式可选库（未链入 engine/demo），本文 §2.3 与 §7 记录交付与设计边界。
 
 ## 2. 真实代码与 target 证据
 
@@ -50,8 +50,21 @@
 - **cancel/timeout/OOM/shutdown**：cancel 无分配路径（不可能半取消），QUEUED/LOADING/VALIDATING → `CANCELLED`（bump publication epoch，worker 迟到结果按 stale epoch 丢弃并计数 `stale_drops`）；已 CANCELLED 幂等 OK；owner 正在 commit（COMMITTING）或已有真实终态 → `REJECTED`；`request_timeout_ms` 处理 deadline 在 load 前检查 → `TIMEOUT`；staging 分配失败 → `OOM` 终态；`shutdown(timeout_ms)` 关闭 admission（→`CLOSED`）、把 QUEUED/LOADING/VALIDATING 全部 finalize 为 `CANCELLED`（terminal 态跨 shutdown 可 poll）、有界 stop/join worker，worker 超时或 owner commit 在飞（`commit_owner` 在 hook 期间放开 facade mutex）均返回 `TIMEOUT` 并保留 live ownership（不 free、保持 STOPPING、commit_owner 返回后重试可完成），因此跨线程 destroy 不可能在 owner commit 在飞时释放 facade；`destroy` 要求已 STOPPED（test 构建 fail-stop abort）。
 - **Profiler 桥接**：`break_runtime_profiler_record()` 任意线程、不分配、不等容量、不跑 callback（有界 ring + 短 mutex），在调用点捕获 `profiler_current_tid()` 与微秒时间戳，满 → `OVERLOAD` 计数丢弃；owner/collector 线程 `collect()` 把事件移入有界 presentation window（满则丢弃计数，不覆盖 live entry），`export_meta()` 借用 window 填充 `ProfilerMetaInstant` 交给现有 `profiler_export_chrome_trace()`，`window_advance()` 由 owner 按 FIFO 退休已展示条目以释放 window 容量（持续 handoff，不是一次性缓冲区；不 advance 则 window 饱和后持续丢弃并计数）。`engine/src/core/profiler.c` 逐字节未动，现有 consumer 行为不变；span 记录仍由录制线程直接 `profiler_push/pop`（桥不在 collector 重放 span，避免排队延迟失真）。
 - **现有 filewatch/hotreload 集成边界**：`filewatch.c`/`hotreload.c` 零改动；集成只靠消费者把 filewatch callback 接到 `notify_file_event()`、把 swap 逻辑放进 owner 线程 commit hook。端到端 watch→commit 接线（真实 watcher 驱动 coordinator）仍是设计目标。
-- **Lua**：本任务无 Lua VM；Lua module reload 的 staging VM/版本保留策略属 Stage 3 依赖（见 §3.3、§9）。validate/commit hook 是当前唯一 staging 面。
+- **Lua**：Runtime Core 本任务无 Lua VM。Stage 3 `break_lua` 已交付 Task 1-4（VM ownership 生命周期；module load + 版本化 reload 旧版本保留；值编组、模块调用与帧生命周期 + 每 hook 指令预算；有界 ECS batch + config host bindings 与白名单沙箱）作为正式可选库（见 §2.4），但仍未集成进 engine/demo runtime；validate/commit hook 仍是 Runtime Core 当前唯一 staging 面。
 - 验证：`test_runtime_reload` 32/32（coalescing、双闸门 overload、commit 队列 overload、failed-keep-old 三lane、stale generation、cancel 各相位、timeout、OOM 注入、shutdown/timeout 重试、跨线程 shutdown 撞上在飞 owner commit 保留所有权、owner-thread 强制、fork 子进程 destroy 合约 abort、profiler record/collect/export/window_advance/多线程交接/close），normal/ASan+UBSan/TSan 三树（`build-sdd-t6*`）全绿；生产 `runtime_core` nm 验证 0 个 test-hook 符号。报告：`.superpowers/sdd/2026-10-22-runtime-core-formalization/task-6-report.md`。
+
+### 2.4 Stage 3 `break_lua` Task 1-4 已交付事实（2026-10-23）
+
+以下事实由代码与测试证据支持；`break_lua` 是正式可选 static 库（不链入 `engine`/`engine_demo`/`dxx_break`），**未集成**进 engine/demo runtime，其余仍为设计目标：
+
+- **Module load**：`break_lua_runtime_load_module()` 把 text chunk（`luaL_loadbufferx` mode `"t"`，拒绝 bytecode）编译并在全新的 per-module 环境中执行；环境带 `state` 全局指向独立的持久 state 表（与 chunk 分离），chunk 自带全局写入环境本身，其余全局经 metatable 回落到 base 环境（白名单沙箱裁剪属 Task 4）。重复 load（不重载）→ `REJECTED`；source 超 `max_module_bytes`（含边界恰等于上限即放行）→ `OVERLOAD`；registry 满（`max_modules`，默认 64 / 硬上限 1024，create 时校验记录、Task 2 起消费）→ `OVERLOAD`；名字有界扫描（>127 字符 → `INVALID`）；staging 编译/运行失败 → `FAILED` 且不注册任何模块。
+- **版本化 reload 与旧版本保留**：`break_lua_runtime_reload_module()` 先 staging 新 chunk（新环境 + 按身份保留的 state 表），staging 成功后经 pcall 运行旧环境可选 `on_unload` 钩子，全部成功才原子 commit（退役旧环境、version +1、hash 换新）；staging 语法错误、staging 运行时错误、`on_unload` 错误、OOM 任一路径均保持旧版本完整服务（`committed == false`，live registry 的 version/hash 不变，旧环境全局与 state 表内容不变，后续合法 reload 仍可提交——测试逐项断言）。module 身份 = name + 单调递增 u32 version + FNV-1a-64 source hash，无指针身份。
+- **Report 合约**：`BreakLuaReloadReport` 在每条返回路径（含 INVALID/REJECTED/STALE 早退）都完整写回；`new_version` 仅 commit 时 = old+1；`error_line` 从 Lua `name:line: msg` 消息解析；`error[128]` 有界截断 NUL 结尾（300+ 字节错误消息测试验证）。未知名字 reload → `STALE`（绝不隐式 load）。
+- **state 不回滚语义**：只有环境/版本 commit 是原子的；staging chunk 先写 `state` 再失败会留下部分写入（state 是 module 自有数据，文档化且有测试钉住）。
+- **OOM 有界且无泄漏**：所有会分配的 Lua C API 序列都在 `lua_pcall` 保护的 dispatch 闭包内运行（闭包本身经 registry rawgeti + lightuserdata 参数取得，无分配、无未保护入口）；staging 成功前不取任何 registry 引用；分配故障注入 sweep（load 与 reload 路径）在 ASan lane 证明每条失败路径清理无泄漏，OOM 后预算恢复同一 reload 可正常提交。
+- **Task 3/4 追加事实**：值编组 `BreakLuaValue`（nil/bool/f64/有界 string）与 `break_lua_runtime_call()`（目标必须是 module 环境原始函数字段；检查顺序 owner → 形状 → 计数上限 → STALE → 字段）；帧 hook `on_frame_begin(dt)`/`on_frame_end()` 经稳定 registry 快照 dispatch，hook 错误产生有界记录且其余 module 继续，指令预算按每次 hook 调用记账、超预算标记 module 至下一次成功 reload；host bindings 仅有界 ECS batch（host 所有、host drain，facade 从不自行 apply）与 bind 时 clamp 的 config；module 环境为每 runtime 白名单沙箱（`io`/`debug`/`package`/`require`/`coroutine`/`load` 等按构造缺席，stdlib 经只读 proxy），scripts 永不可达裸 RHI/physics/network 句柄，唯一 host 接触面是 `break`/`brk` 表链。完整合同见 `docs/design/lua_runtime.md`。
+- 验证（Task 2 时点）：`test_break_lua_module` 19/19 + `test_break_lua_runtime` 8/8 + `test_break_lua_target_contract` + 兼容层 `test_script_lua` 在三个干净树各 **4/4**：normal（`build-sdd-l2`）、ASan+UBSan（`build-sdd-l2-asan`，零报告）、TSan（`build-sdd-l2-tsan`，二进制各连跑 10 次零报告）；`ENGINE_BUILD_TESTS=OFF` 树独立构建 `break_lua` 且 nm 验证 0 个 test-hook 符号。`script_lua.*` 逐字节未动。报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-2-report.md`。
+- 验证（Task 5 closeout）：`test_break_lua_runtime` 8/8 + `test_break_lua_module` 19/19 + `test_break_lua_value` 27/27 + `test_break_lua_binding` 22/22 + `test_break_lua_target_contract` + 兼容层 `test_script_lua` 在三个干净树各 **6/6**：normal（`build-sdd-l5`）、ASan+UBSan（`build-sdd-l5-asan`，零报告）、TSan（`build-sdd-l5-tsan`，四个 break_lua 二进制各连跑 10 次零报告）；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号；全量 `ctest -LE 'graphics|fuzz'` 共 180 项：179 通过 + 1 项 Windows-only platform-skip、0 失败；`script_lua.*` 与 `test_script_lua.c` 在 `master..HEAD` 逐字节未动（diff 0 行）。报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{3,4,5}-report.md`。
 
 ## 3. 语言、层次和边界
 
@@ -74,7 +87,7 @@ C++11 只负责应用生命周期、编辑器 command routing、窗口/UI 所属
 
 Lua 是唯一计划中的 runtime scripting language，Lua VM 必须由一个明确的 Script/Game owner 线程拥有；但 Stage 2 这里只定义 boundary，不能要求当前已有 Lua VM/facade。`engine/src/script/script.h:39-60` 当前是有限的 `ScriptEngine`/`.script` API，`script_lua.c` 的存在不等于稳定 `BreakLuaRuntime` facade。本文只定义边界：Lua reload 请求进入 Game/Script owner 的 bounded command queue；新 chunk/module 在隔离 staging VM 或受控 staging state 中加载和校验；旧 module 在新版本成功提交前继续服务；失败只产生错误事件并保留旧版本。Lua 不直接访问 raw RHI、network reactor、ECS mutable World 或 UI。
 
-`BreakLuaRuntime` facade、module dependency graph、sandbox、memory/instruction budget、C API binding 和 ASan/TSan lane 属于后续 Stage 3，本文不将其写成当前实现。
+`BreakLuaRuntime` facade、sandbox、instruction budget、C API binding 与 ASan/TSan lane 已由 Stage 3 Task 1-4 作为正式可选库交付（§2.4）；module dependency graph、memory budget 与 engine/demo 集成仍属后续，本文不将其写成当前实现。
 
 ## 4. 目标架构
 
@@ -204,7 +217,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 4. worker 产出 `BreakReloadVersion`，其中包含 owned bytes/decoded object、schema/dependency metadata、source fingerprint、版本号和错误信息；owner 只消费 immutable staging。
 5. owner commit 先验证当前 live version 仍等于 request 的 `base_version`，否则返回 `STALE` 并重新排队/合并；提交顺序是 publish-new、切换引用、发布旧版 retire，不能先销毁旧版。
 6. RHI 资源采用双版本或 handle indirection：GPU 使用完成前旧 resource 由 render fence 保留。当前 `hotreload.c:146-153` 直接 destroy old 后写 target，只能作为开发期同步路径，不能作为多线程 Runtime Core 合同。
-7. Lua module commit 采用旧版保留策略；模块加载/校验失败不得替换旧 module。Lua 的真实 facade 待 Stage 3。
+7. Lua module commit 采用旧版保留策略；模块加载/校验失败不得替换旧 module。Lua facade 已作为正式可选库交付（Stage 3 Task 1-4，§2.4）；engine/demo runtime 集成仍待后续。
 8. ECS schema 变化不是普通 asset swap：schema hash 变化必须建立新的 snapshot/delta epoch；在正式 schema negotiation/authority policy 前，拒绝把新 schema 直接应用到旧 stream。当前 `docs/design/ecs_snapshot_replication_aoi.md:74-79` 已明确 schema change 会改变 hash，online schema update 未实现。
 
 ### 5.1 典型流程
@@ -246,7 +259,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 | ECS snapshot/schema/delta/AoI | API 已实现、GameThread ownership；正式可选 `break_ecs_replication`（2026-10-22 Task 1，未链入 engine/demo） | `test_ecs_replication` 经 `break_ecs_replication_test` 变体编译 focused 源 | 接入 engine/runtime 前先交付 immutable version publication | formal runtime integration、schema negotiation/epoch |
 | replication/fragment | Real/Ghost/AoI/fragment；16 MiB guard；正式可选 `break_replication_core`（Task 1） | `test_break_replication_fragment` 链接正式库与 Snowflake tests | owner scheduler 管 timeout/eviction、完整 wire contract | timeout/eviction、加密认证、authority/prediction |
 | break_net/Session | C11 adapter、256 queues、GameThread Session、loopback；正式可选 `break_net`（Task 2，Snowflake-conditional） | Snowflake-enabled tests 链接正式 `break_net` | engine/demo 集成与 Runtime Message boundary | `engine_demo`/`dxx_break` integration、auth/Lua/editor RPC |
-| Lua | `.script` engine、Lua source 与 `script_lua.c` | `test_script*` | owner-thread versioned module reload、old-version retention | `BreakLuaRuntime` facade 和完整 policy |
+| Lua | `.script` engine、Lua source 与 `script_lua.c`；正式可选 `break_lua`（Stage 3 Task 1-4：VM ownership、module load/版本化 reload 旧版本保留、值编组/call/帧 hook/每 hook 指令预算、有界 ECS batch + config bindings、白名单沙箱；未链入 engine/demo） | `test_script*`；`test_break_lua_*` 经 test-only `break_lua_test` 变体编译 | owner-thread versioned module reload、old-version retention（facade 层已交付） | engine/demo 集成、module dependency graph、LuaJIT |
 | Profiler | frame ring、per-thread tid、Chrome trace/sidecar | existing profiler tests | reload span/status/backpressure telemetry | reload-specific export schema |
 
 ## 8. 验证与验收
@@ -276,7 +289,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 - **ASan/UBSan**：覆盖 staging lifetime、queue drop/merge、VFS/decoder、fragment payload、shutdown/cancel、RHI old-version retire；不得以只运行 import/compile 代替真实 reload 流程。
 - **TSan**：至少覆盖 FileWatch producer→reload queue、IO/Task completion→owner commit、adapter event queue→Session poll、Profiler per-thread registration；零 data race，特别检查 C11 atomic publication、mutex/cond 生命周期和 queue slot reuse。
 - **End-to-end**：修改一个受监视 shader/texture 或测试 asset，真实经过 watch→read→validate→owner commit→旧版保留/retire；注入坏版本确认画面/对象仍使用旧版。ECS 端真实场景必须先构建 snapshot、生成 delta、完成 validation，再 apply；network 端只能由 GameThread `poll_adapter` 消费，不允许 callback 直接 apply。
-- **证据纪律**：记录 build configuration、target、CTest 数量、ASan/TSan 输出和环境失败分类。`docs/Implementation_Status.md:26-39` 已说明当前 full CTest 可能缺少 fuzz executable、存在无关图形/UI failure；这些不能被混写成 hot reload 通过证据。
+- **证据纪律**：记录 build configuration、target、CTest 数量、ASan/TSan 输出和环境失败分类。`docs/Implementation_Status.md:82-87` 已说明当前 full CTest 可能缺少 fuzz executable、存在无关图形/UI failure；这些不能被混写成 hot reload 通过证据。
 
 ## 9. 后续依赖与实现顺序
 
@@ -285,7 +298,7 @@ request handle 是 stream/reload instance 内唯一的 opaque `u64` token，实�
 3. **Publication/commit primitive**：实现 immutable version、owner command queue、generation check、fence-retire；这是 shader/texture/Lua/ECS reload 的共同地基。
 4. **Asset hot reload**：把现有 `hotreload.c` 的同步 callback 迁移到 staging/coordinator；保留失败保旧行为和 path/size guards。
 5. **ECS/network integration**：在 formal target 和 schema/session contracts 通过后，接 snapshot publication、delta apply scheduler、fragment timeout/eviction 和 Session message routing。
-6. **Lua Stage 3**：实现 `BreakLuaRuntime` opaque C11 facade、module version/reload/error policy，再允许 script reload 消费 Runtime Core。
+6. **Lua Stage 3**：`BreakLuaRuntime` opaque C11 facade、module version/reload/error policy 已作为正式可选库交付（Task 1-4，§2.4）；尚未做的是让 script reload 消费 Runtime Core 以及 engine/demo 集成。
 7. **Editor Stage 4**：UI 只显示 owned reload status、发 command；不把编辑器 direct mutation 当作 runtime hot reload。
 8. **Online update/security Stage 5**：签名包、远端更新、认证和 crash reporting 必须另有设计；本地 filewatch hot reload 不得复用为安全更新机制。
 
