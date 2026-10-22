@@ -10,14 +10,15 @@
 #include <string.h>
 
 /* Module load / versioned reload (Task 2). Full contract: break_lua.h
- * MODULES section.
+ * MODULES section. This TU also owns the shared protected op dispatch used
+ * by every Lua-touching facade operation (module ops, calls, frame hooks).
  *
  * pcall DISCIPLINE: every Lua C API sequence that can allocate (and so can
  * longjmp on LUA_ERRMEM) runs inside the dispatch closure invoked through
- * lua_pcall by break_lua_run_op(). The closure itself is fetched from the
+ * lua_pcall by break_lua_op_run(). The closure itself is fetched from the
  * registry with lua_rawgeti and its context pushed as a lightuserdata —
- * neither can allocate — so no Lua entry point on the load/reload paths
- * ever runs unprotected. Inside a staged operation, chunk execution errors
+ * neither can allocate — so no Lua entry point on any facade path ever runs
+ * unprotected. Inside a staged operation, chunk execution errors
  * deliberately propagate to that pcall: no registry reference is taken
  * until staging has fully succeeded, so unwinding is complete cleanup. The
  * one exception is the old module's on_unload hook, which runs under its
@@ -26,25 +27,7 @@
  *
  * STACK DISCIPLINE: every operation restores lua_settop(base) on every exit
  * it controls; the wrapper's pcall unwinds anything it does not. The tests
- * assert lua_gettop == 0 across load/reload/failure mixes. */
-
-#define BREAK_LUA_MODULE_OP_STAGE 1
-#define BREAK_LUA_MODULE_OP_COMMIT 2
-
-typedef struct BreakLuaModuleOpCtx {
-    int op;                /* BREAK_LUA_MODULE_OP_* */
-    const char *module_name; /* borrowed, validated caller name */
-    const void *source;
-    usize source_size;
-    char chunkname[BREAK_LUA_MAX_MODULE_NAME_BYTES + 2u]; /* "@name" */
-    int old_env_ref;       /* in: live env to reuse state/hook from */
-    int new_env_ref;       /* out: staged env (STAGE) / in: discard or keep
-                            * (COMMIT); LUA_NOREF until taken */
-    bool committed;        /* out: COMMIT swapped the live environment */
-    BreakLuaError status;  /* out: operation result */
-    u32 error_line;        /* out: parsed from the Lua error message */
-    char error[128];       /* out: truncated Lua error text */
-} BreakLuaModuleOpCtx;
+ * assert lua_gettop == 0 across load/reload/call/frame/failure mixes. */
 
 static u64 break_lua_fnv1a64(const void *data, usize size)
 {
@@ -58,9 +41,7 @@ static u64 break_lua_fnv1a64(const void *data, usize size)
     return h;
 }
 
-/* Bounded name scan: no libc strnlen (C11 strict), never reads past cap.
- * Returns cap when no NUL is found within cap bytes. */
-static usize break_lua_name_len(const char *name, usize cap)
+usize break_lua_name_len(const char *name, usize cap)
 {
     usize n = 0u;
     while (n < cap && name[n] != '\0') {
@@ -105,35 +86,41 @@ static u32 break_lua_error_line(const char *msg, const char *module_name)
     return (*p == ':') ? line : 0u;
 }
 
-/* Copies the error object at the top of the stack into ctx->error (bounded,
- * NUL-terminated), parses its line, and pops it. Allocation-free on the Lua
- * side: strings are read in place, numbers are formatted with snprintf, any
- * other object type maps to a fixed fallback text. Safe to run outside a
- * pcall recovery point. */
-static void break_lua_capture_error(lua_State *L, BreakLuaModuleOpCtx *ctx)
+void break_lua_op_take_error(lua_State *L, char *out, usize out_cap)
 {
     const char *msg;
     usize len;
     int type = lua_type(L, -1);
+    if (out_cap == 0u) {
+        lua_pop(L, 1);
+        return;
+    }
     if (type == LUA_TNUMBER) {
-        int written = snprintf(ctx->error, sizeof(ctx->error), "%.14g",
-                               lua_tonumber(L, -1));
+        int written = snprintf(out, out_cap, "%.14g", lua_tonumber(L, -1));
         (void)written;
-        ctx->error[sizeof(ctx->error) - 1u] = '\0';
-        ctx->error_line = 0u;
+        out[out_cap - 1u] = '\0';
         lua_pop(L, 1);
         return;
     }
     msg = (type == LUA_TSTRING) ? lua_tostring(L, -1)
                                 : "non-string Lua error object";
     len = strlen(msg);
-    if (len >= sizeof(ctx->error)) {
-        len = sizeof(ctx->error) - 1u;
+    if (len >= out_cap) {
+        len = out_cap - 1u;
     }
-    memcpy(ctx->error, msg, len);
-    ctx->error[len] = '\0';
-    ctx->error_line = break_lua_error_line(ctx->error, ctx->module_name);
+    memcpy(out, msg, len);
+    out[len] = '\0';
     lua_pop(L, 1);
+}
+
+/* Module-op error capture: bounded copy plus the source-line parse (the
+ * module name prefix match needs ctx->module_name). */
+static void break_lua_module_capture_error(lua_State *L,
+                                           BreakLuaModuleOpCtx *ctx)
+{
+    break_lua_op_take_error(L, ctx->hdr.error, sizeof(ctx->hdr.error));
+    ctx->hdr.error_line =
+        break_lua_error_line(ctx->hdr.error, ctx->module_name);
 }
 
 /* STAGE: build a fresh module environment wired to the preserved state
@@ -175,9 +162,9 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     load_status = luaL_loadbufferx(L, (const char *)ctx->source,
                                    ctx->source_size, ctx->chunkname, "t");
     if (load_status != LUA_OK) {                     /* [state env errmsg] */
-        ctx->status = (load_status == LUA_ERRMEM) ? BREAK_LUA_OOM
-                                                  : BREAK_LUA_FAILED;
-        break_lua_capture_error(L, ctx);
+        ctx->hdr.status = (load_status == LUA_ERRMEM) ? BREAK_LUA_OOM
+                                                      : BREAK_LUA_FAILED;
+        break_lua_module_capture_error(L, ctx);
         lua_settop(L, base);
         return;
     }                                                    /* [state env chunk] */
@@ -185,16 +172,16 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     if (lua_setupvalue(L, -2, 1) == NULL) {              /* sets _ENV */
         /* A text main chunk always carries _ENV; defensive only. */
         lua_settop(L, base);
-        ctx->status = BREAK_LUA_FAILED;
-        memcpy(ctx->error, "chunk has no _ENV upvalue",
+        ctx->hdr.status = BREAK_LUA_FAILED;
+        memcpy(ctx->hdr.error, "chunk has no _ENV upvalue",
                sizeof("chunk has no _ENV upvalue"));
-        ctx->error_line = 0u;
+        ctx->hdr.error_line = 0u;
         return;
     }                                                    /* [state env chunk] */
     lua_call(L, 0, 0);               /* chunk error: propagate to the pcall */
     /* [state env] */
     ctx->new_env_ref = luaL_ref(L, LUA_REGISTRYINDEX);     /* [state] */
-    ctx->status = BREAK_LUA_OK;
+    ctx->hdr.status = BREAK_LUA_OK;
     lua_settop(L, base);
 }
 
@@ -215,9 +202,9 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     if (lua_isfunction(L, -1)) {
         hook_status = lua_pcall(L, 0, 0, 0);       /* [env] or [env errmsg] */
         if (hook_status != LUA_OK) {
-            ctx->status = (hook_status == LUA_ERRMEM) ? BREAK_LUA_OOM
-                                                      : BREAK_LUA_FAILED;
-            break_lua_capture_error(L, ctx);
+            ctx->hdr.status = (hook_status == LUA_ERRMEM) ? BREAK_LUA_OOM
+                                                          : BREAK_LUA_FAILED;
+            break_lua_module_capture_error(L, ctx);
             luaL_unref(L, LUA_REGISTRYINDEX, ctx->new_env_ref);
             ctx->new_env_ref = LUA_NOREF;
             lua_settop(L, base);
@@ -227,58 +214,75 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     lua_settop(L, base);
     luaL_unref(L, LUA_REGISTRYINDEX, ctx->old_env_ref);
     ctx->committed = true;
-    ctx->status = BREAK_LUA_OK;
+    ctx->hdr.status = BREAK_LUA_OK;
 }
 
-static int break_lua_module_dispatch(lua_State *L)
+/* Single dispatch entry for every protected facade op. The runtime arrives
+ * as the closure's sole upvalue (set at bootstrap); the op ctx is argument
+ * 1 (lightuserdata). Both fetches are allocation-free. */
+static int break_lua_op_dispatch(lua_State *L)
 {
-    BreakLuaModuleOpCtx *ctx =
-        (BreakLuaModuleOpCtx *)lua_touserdata(L, 1);
-    if (!ctx) {
+    BreakLuaRuntime *runtime =
+        (BreakLuaRuntime *)lua_touserdata(L, lua_upvalueindex(1));
+    BreakLuaOpHeader *hdr = (BreakLuaOpHeader *)lua_touserdata(L, 1);
+    if (!hdr) {
         return 0;
     }
-    switch (ctx->op) {
-    case BREAK_LUA_MODULE_OP_STAGE:
-        break_lua_stage_impl(L, ctx);
+    switch (hdr->op) {
+    case BREAK_LUA_OP_STAGE:
+        break_lua_stage_impl(L, (BreakLuaModuleOpCtx *)hdr);
         break;
-    case BREAK_LUA_MODULE_OP_COMMIT:
-        break_lua_commit_impl(L, ctx);
+    case BREAK_LUA_OP_COMMIT:
+        break_lua_commit_impl(L, (BreakLuaModuleOpCtx *)hdr);
         break;
+    case BREAK_LUA_OP_CALL:
+        break_lua_call_impl(L, (BreakLuaCallOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_FRAME:
+        break_lua_frame_impl(L, runtime, (BreakLuaFrameOpCtx *)hdr);
+        break;
+#if defined(BREAK_LUA_TESTING)
+    case BREAK_LUA_OP_TEST_RELOADER:
+        break_lua_test_reloader_impl(L, (BreakLuaTestReloaderOpCtx *)hdr);
+        break;
+#endif
     default:
         break;
     }
     return 0;
 }
 
-void break_lua_module_bootstrap(lua_State *L, BreakLuaRuntime *runtime)
+void break_lua_op_bootstrap(lua_State *L, BreakLuaRuntime *runtime)
 {
-    lua_pushcfunction(L, break_lua_module_dispatch);
+    /* Extraspace gives the budget hook callback an allocation-free path
+     * back to the runtime (a hook receives only the lua_State). */
+    *(void **)lua_getextraspace(L) = (void *)runtime;
+    lua_pushlightuserdata(L, runtime);
+    lua_pushcclosure(L, break_lua_op_dispatch, 1);
     runtime->op_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
-/* Runs one module operation under pcall protection. The rawgeti fetch and
- * the lightuserdata push cannot allocate, so nothing here is exposed to a
- * Lua longjmp outside the pcall. An error that propagated out of the
- * operation (chunk failure, LUA_ERRMEM) is mapped and captured here. */
-static BreakLuaError break_lua_run_op(BreakLuaRuntime *runtime,
-                                      BreakLuaModuleOpCtx *ctx)
+BreakLuaError break_lua_op_run(BreakLuaRuntime *runtime,
+                               BreakLuaOpHeader *hdr)
 {
     lua_State *L = runtime->L;
     int status;
-    ctx->status = BREAK_LUA_FAILED;
+    hdr->status = BREAK_LUA_FAILED;
+    hdr->error[0] = '\0';
+    hdr->error_line = 0u;
     lua_rawgeti(L, LUA_REGISTRYINDEX, runtime->op_ref);
-    lua_pushlightuserdata(L, ctx);
+    lua_pushlightuserdata(L, hdr);
     status = lua_pcall(L, 1, 0, 0);
     if (status != LUA_OK) {
-        ctx->status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
+        hdr->status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
                                              : BREAK_LUA_FAILED;
-        break_lua_capture_error(L, ctx);
+        break_lua_op_take_error(L, hdr->error, sizeof(hdr->error));
     }
-    return ctx->status;
+    return hdr->status;
 }
 
-static BreakLuaModule *break_lua_module_find(BreakLuaRuntime *runtime,
-                                             const char *name)
+BreakLuaModule *break_lua_module_find(BreakLuaRuntime *runtime,
+                                      const char *name)
 {
     u32 i;
     for (i = 0u; i < runtime->max_modules; i++) {
@@ -365,7 +369,7 @@ BreakLuaError break_lua_runtime_load_module(BreakLuaRuntime *runtime,
     memcpy(name_copy, module_name, name_len);
 
     memset(&ctx, 0, sizeof(ctx));
-    ctx.op = BREAK_LUA_MODULE_OP_STAGE;
+    ctx.hdr.op = BREAK_LUA_OP_STAGE;
     ctx.module_name = module_name;
     ctx.source = source;
     ctx.source_size = source_size;
@@ -375,7 +379,7 @@ BreakLuaError break_lua_runtime_load_module(BreakLuaRuntime *runtime,
     memcpy(ctx.chunkname + 1u, module_name, name_len);
     ctx.chunkname[1u + name_len] = '\0';
 
-    err = break_lua_run_op(runtime, &ctx);
+    err = break_lua_op_run(runtime, &ctx.hdr);
     if (err != BREAK_LUA_OK) {
         free(name_copy);
         return err;
@@ -395,6 +399,7 @@ BreakLuaError break_lua_runtime_load_module(BreakLuaRuntime *runtime,
     slot->version = 1u;
     slot->hash = break_lua_fnv1a64(source, source_size);
     slot->env_ref = ctx.new_env_ref;
+    slot->hooks_disabled = false;
     runtime->module_count++;
     return BREAK_LUA_OK;
 }
@@ -478,26 +483,39 @@ BreakLuaError break_lua_runtime_reload_module(BreakLuaRuntime *runtime,
     memcpy(ctx.chunkname + 1u, module_name, name_len);
     ctx.chunkname[1u + name_len] = '\0';
 
-    ctx.op = BREAK_LUA_MODULE_OP_STAGE;
-    err = break_lua_run_op(runtime, &ctx);
+    ctx.hdr.op = BREAK_LUA_OP_STAGE;
+    err = break_lua_op_run(runtime, &ctx.hdr);
     if (err != BREAK_LUA_OK) {
-        local.error_line = ctx.error_line;
-        memcpy(local.error, ctx.error, sizeof(local.error));
+        /* A chunk error that propagated to the wrapper pcall carries no
+         * parsed line yet; parse it here where the module name is known. */
+        local.error_line = ctx.hdr.error_line;
+        if (local.error_line == 0u && ctx.hdr.error[0] != '\0') {
+            local.error_line =
+                break_lua_error_line(ctx.hdr.error, module_name);
+        }
+        memcpy(local.error, ctx.hdr.error, sizeof(local.error));
         goto out; /* old registration untouched */
     }
 
-    ctx.op = BREAK_LUA_MODULE_OP_COMMIT;
-    err = break_lua_run_op(runtime, &ctx);
+    ctx.hdr.op = BREAK_LUA_OP_COMMIT;
+    err = break_lua_op_run(runtime, &ctx.hdr);
     if (err != BREAK_LUA_OK) {
-        local.error_line = ctx.error_line;
-        memcpy(local.error, ctx.error, sizeof(local.error));
+        local.error_line = ctx.hdr.error_line;
+        if (local.error_line == 0u && ctx.hdr.error[0] != '\0') {
+            local.error_line =
+                break_lua_error_line(ctx.hdr.error, module_name);
+        }
+        memcpy(local.error, ctx.hdr.error, sizeof(local.error));
         goto out; /* staged env discarded by the commit op; old still live */
     }
 
-    /* Committed: swap is infallible plain assignments. */
+    /* Committed: swap is infallible plain assignments. The new version
+     * starts with its frame hooks enabled (a budget mark never survives a
+     * committed reload). */
     m->env_ref = ctx.new_env_ref;
     m->version += 1u;
     m->hash = local.new_hash;
+    m->hooks_disabled = false;
     local.committed = true;
     local.new_version = m->version;
     err = BREAK_LUA_OK;

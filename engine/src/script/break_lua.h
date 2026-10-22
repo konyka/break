@@ -18,7 +18,7 @@
  *  break_lua_runtime_check_owner() is the documented probe; owner-only query
  *  APIs return BREAK_LUA_REJECTED from any other thread.
  *
- *  SANDBOX STATUS (Task 2 scope): the owned state is created with the Lua
+ *  SANDBOX STATUS (unchanged through Task 3): the owned state is created with the Lua
  *  standard libraries opened (luaL_openlibs), so `os`/`io` are present on the
  *  global environment, and module environments currently inherit them via
  *  metatable fallback. Per-module environments with a whitelisted global set
@@ -35,9 +35,12 @@
  *    BREAK_LUA_OVERLOAD  — a bounded resource (module count, value count,
  *                          module bytes) would exceed its cap.
  *    BREAK_LUA_OOM       — allocation failure.
- *    BREAK_LUA_TIMEOUT   — a bounded wait/budget expired (Task 3 scope).
+ *    BREAK_LUA_TIMEOUT   — a bounded wait/budget expired (reserved; no API
+ *                          maps to it yet — the instruction budget reports
+ *                          FAILED-class fault records, not TIMEOUT).
  *    BREAK_LUA_STALE     — a handle/version no longer names the live object
- *                          (Task 2 scope).
+ *                          (Task 2 scope: reload of a never-loaded name;
+ *                          Task 3 scope: call into a never-loaded name).
  *    BREAK_LUA_REJECTED  — a meaningful request rejected by policy, e.g. an
  *                          owner-only API called from a non-owner thread.
  *    BREAK_LUA_FAILED    — sticky failure / bounded operation failure.
@@ -209,3 +212,133 @@ BreakLuaError break_lua_runtime_reload_module(
     BreakLuaRuntime *runtime, const char *module_name,
     const void *source, usize source_size,
     BreakLuaReloadReport *report);
+
+/* ==========================================================================
+ *  Values and calls (Task 3): bounded marshalling between C and a module
+ *  environment's chunk-defined functions.
+ *
+ *  VALUE MODEL: BreakLuaValue is a bounded tagged union: nil, bool, f64
+ *  number, or a string of at most BREAK_LUA_VALUE_STRING_CAPACITY - 1 bytes
+ *  plus its NUL terminator (len counts the payload bytes, excluding the
+ *  terminator). Produced strings are always NUL-terminated at data[len].
+ *  Lua values outside this model (tables, functions, userdata, threads)
+ *  are unrepresentable and fail the call bounded (see below) rather than
+ *  being silently coerced.
+ *
+ *  CALL CONTRACT (break_lua_runtime_call): the target function must be a
+ *  RAW field of the module's live environment (i.e. defined by the chunk
+ *  itself); names that would only resolve through the environment
+ *  metatable's _G fallback (e.g. stdlib globals like tostring) do NOT
+ *  resolve and answer INVALID. Check order, all bounded:
+ *    - NULL runtime, NULL/empty/overlong module or function name (same
+ *      128-byte cap as module names), NULL args with arg_count > 0, NULL
+ *      returns with return_capacity > 0 -> BREAK_LUA_INVALID. Malformed
+ *      calls never touch the Lua state.
+ *    - Non-owner thread -> BREAK_LUA_REJECTED (checked first, before any
+ *      shape check, so an attacker thread learns nothing about names).
+ *    - arg_count or return_capacity over the runtime's max_values ->
+ *      BREAK_LUA_OVERLOAD (exactly-at-cap is admitted).
+ *    - A module name that names no live module -> BREAK_LUA_STALE (same
+ *      contract as reload; never an implicit load).
+ *    - Field missing or not a function -> BREAK_LUA_INVALID.
+ *    - A STRING argument whose len >= BREAK_LUA_VALUE_STRING_CAPACITY (the
+ *      bounded buffer cannot hold that many bytes) -> BREAK_LUA_OVERLOAD.
+ *    - Lua error raised by the function -> BREAK_LUA_FAILED; Lua-side
+ *      allocation failure anywhere -> BREAK_LUA_OOM (the whole call runs
+ *      under the runtime's pcall-protected op dispatch; a Lua error can
+ *      never panic the process).
+ *    - A returned string of len >= BREAK_LUA_VALUE_STRING_CAPACITY ->
+ *      BREAK_LUA_OVERLOAD (bounded; no overflow ever occurs).
+ *    - An unrepresentable return type -> BREAK_LUA_FAILED.
+ *  RETURN BUFFER: once admission has passed (module found, caps OK), all
+ *  return_capacity slots are NIL-initialised before marshalling, so any
+ *  post-admission failure leaves them NIL. The function is invoked with
+ *  exactly return_capacity wanted results: Lua nil-pads when it returns
+ *  fewer and discards extras when it returns more, so the buffer is always
+ *  fully written and the Lua stack stays balanced on every exit. Pre-
+ *  admission failures (INVALID/REJECTED/OVERLOAD-caps/STALE) do not write
+ *  the returns buffer.
+ *
+ *  FRAME LIFECYCLE (begin_frame/end_frame): each call dispatches to the
+ *  modules' frame hooks. Hook names (pinned by tests): on_frame_begin(dt)
+ *  receives the delta_seconds verbatim as a Lua number; on_frame_end()
+ *  takes no arguments. A hook must be a raw function field of the module
+ *  environment; a module without the hook is simply skipped (not an error).
+ *  Hook results are discarded. begin_frame and end_frame are independent
+ *  dispatches — pairing them is the host's responsibility; either may be
+ *  called alone. begin_frame increments a u64 frame sequence used for
+ *  diagnostics.
+ *
+ *  SNAPSHOT: every dispatch first takes a stable snapshot of the registry:
+ *  each occupied module's live environment is pinned by a Lua stack
+ *  reference (ref-based, never a registry-slot pointer) together with its
+ *  name and its hooks-disabled flag. The dispatch then serves exactly that
+ *  snapshot: a module reloaded mid-dispatch keeps serving its pinned (old)
+ *  environment for the rest of the dispatch — the pin keeps the retired
+ *  table alive — and the new environment serves from the next dispatch; a
+ *  module disabled at capture stays skipped for the whole dispatch even if
+ *  reloaded mid-dispatch. Reload can only re-enter mid-dispatch through
+ *  Lua-visible bindings (Task 4 scope; exercised in tests via a test-only
+ *  binding); the host calling reload between begin_frame and end_frame sees
+ *  each dispatch snapshot independently.
+ *
+ *  HOOK ERROR POLICY: every hook invocation runs under its own lua_pcall.
+ *  A failing hook produces a bounded error record in the runtime (module
+ *  name, hook name, message truncated to 127 bytes + NUL, frame sequence,
+ *  lifetime counter; observable in this task through the BREAK_LUA_TESTING
+ *  probes) and the dispatch CONTINUES with the remaining modules. An
+ *  ordinary hook error does not disable the module: it serves again next
+ *  frame.
+ *
+ *  INSTRUCTION BUDGET (config.instruction_budget, 0 = disabled): when set,
+ *  every hook invocation runs under a per-invocation Lua count hook
+ *  (lua_sethook LUA_MASKCOUNT); budgets above 2^31-1 are clamped to
+ *  2^31-1 instructions. The accounting is per hook invocation, NOT
+ *  cumulative across modules or frames. While a hook runs under the budget,
+ *  any nested Lua execution on the owned state counts toward the same
+ *  budget. Exceeding the budget aborts the hook with an error: the fault is
+ *  recorded like any hook error (with a budget flag) and the module is
+ *  MARKED — its frame hooks are skipped on subsequent dispatches until the
+ *  next committed reload clears the mark (a fail-closed, deterministic
+ *  runaway-module policy). Other modules are unaffected.
+ *
+ *  OWNER THREAD: break_lua_runtime_call returns BREAK_LUA_REJECTED from a
+ *  non-owner thread. begin_frame/end_frame return void, so a non-owner call
+ *  is a contract violation handled like double-destroy: test builds
+ *  (BREAK_LUA_TESTING) fail-stop with a diagnostic abort; production builds
+ *  ignore the call (no-op). NULL runtime is a no-op for begin/end_frame.
+ * ========================================================================== */
+
+/* Bounded payload capacity of a BreakLuaValue string INCLUDING its NUL
+ * terminator: the largest representable payload is 127 bytes. */
+#define BREAK_LUA_VALUE_STRING_CAPACITY 128u
+
+typedef enum BreakLuaValueType {
+    BREAK_LUA_VALUE_NIL = 0,
+    BREAK_LUA_VALUE_BOOL,
+    BREAK_LUA_VALUE_NUMBER,   /* f64 */
+    BREAK_LUA_VALUE_STRING    /* bounded copy, NUL-terminated */
+} BreakLuaValueType;
+
+typedef struct BreakLuaValue {
+    BreakLuaValueType type;
+    union { bool b; f64 n; struct { char data[128]; u32 len; } s; } as;
+} BreakLuaValue;
+
+/* Calls the chunk-defined function `function_name` of the live module
+ * `module_name` with `args`[0..arg_count) and writes up to
+ * return_capacity marshalled results into `returns`. Owner-thread-only.
+ * See VALUES AND CALLS above for the full bounded error contract. */
+BreakLuaError break_lua_runtime_call(
+    BreakLuaRuntime *runtime, const char *module_name,
+    const char *function_name, const BreakLuaValue *args, usize arg_count,
+    BreakLuaValue *returns, usize return_capacity);
+
+/* Dispatches on_frame_begin(delta_seconds) to every module in a stable
+ * registry snapshot, then returns. Owner-thread-only; see FRAME LIFECYCLE
+ * above for the snapshot, error, and budget contracts. */
+void break_lua_runtime_begin_frame(BreakLuaRuntime *runtime, double delta_seconds);
+
+/* Dispatches on_frame_end() exactly like begin_frame dispatches
+ * on_frame_begin. */
+void break_lua_runtime_end_frame(BreakLuaRuntime *runtime);

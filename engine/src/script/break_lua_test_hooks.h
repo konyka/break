@@ -14,6 +14,8 @@
 
 #include <core/types.h>
 
+#include <script/break_lua.h>
+
 #if defined(BREAK_LUA_TESTING)
 
 #include <stdatomic.h>
@@ -95,6 +97,45 @@ bool break_lua_test_module_env_number(BreakLuaRuntime *runtime,
 bool break_lua_test_module_state_number(BreakLuaRuntime *runtime,
                                         const char *module_name,
                                         const char *key, double *out_value);
+
+/* Task 3 frame-lifecycle probes (test variant only, defined in
+ * break_lua_value.c). Plain owner-thread probes using no Lua API except
+ * where noted; call them only with the allocation-injection budget
+ * disabled. */
+
+/* Bounded copy of the runtime's most recent frame-hook fault record plus
+ * the lifetime fault counter. All fixed storage; never allocates. */
+typedef struct BreakLuaTestFrameError {
+    bool valid;            /* at least one fault has been recorded */
+    u64 frame_seq;         /* begin_frame sequence number of the last fault */
+    u64 total;             /* lifetime count of frame hook faults */
+    bool budget;           /* last fault was an instruction-budget trip */
+    bool dispatch_failure; /* last fault was dispatch-level, not a module hook */
+    char module[BREAK_LUA_MAX_MODULE_NAME_BYTES];
+    char hook[16];
+    char message[128];
+} BreakLuaTestFrameError;
+
+BreakLuaTestFrameError break_lua_test_last_frame_error(BreakLuaRuntime *runtime);
+
+/* True when the named live module's frame hooks are currently marked
+ * disabled (instruction-budget runaway policy). False for unknown names. */
+bool break_lua_test_module_hooks_disabled(BreakLuaRuntime *runtime,
+                                          const char *module_name);
+
+/* Installs the test-only `_test_reload_now()` binding into the named live
+ * module's environment: when Lua code calls it, the runtime reloads
+ * `target_module` with the given source. This simulates the Task 4
+ * script-triggered reload path so the Task 3 frame snapshot semantics
+ * (pinned environments survive a mid-dispatch reload) are exercisable
+ * before script bindings exist. Error surface mirrors load_module's
+ * admission checks (INVALID shapes, OVERLOAD bytes, STALE unknown module,
+ * REJECTED non-owner). */
+BreakLuaError break_lua_test_install_reloader(BreakLuaRuntime *runtime,
+                                              const char *module_name,
+                                              const char *target_module,
+                                              const void *source,
+                                              usize source_size);
 
 #else
 

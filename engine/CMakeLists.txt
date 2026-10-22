@@ -868,7 +868,7 @@ endif()
 # or dxx_break; consumers opt in explicitly in later tasks. Links the
 # vendored Lua 5.4 target PUBLIC so consumers inherit its external/ include
 # dir; the public header itself only needs src/.
-add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c)
+add_library(break_lua STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c)
 set_property(TARGET break_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_lua PUBLIC lua)
@@ -3291,16 +3291,21 @@ endif()
         LABELS "headless;runtime_core;platform_contract")
 
     # Stage 3 Lua runtime facade (Task 1: VM ownership and lifecycle;
-    # Task 2: module load + versioned reload with old-version retention)
+    # Task 2: module load + versioned reload with old-version retention;
+    # Task 3: value marshalling, module calls, frame lifecycle with a stable
+    # registry snapshot, bounded hook error records, and an opt-in
+    # instruction budget)
     # focused tests. The test-only break_lua_test variant compiles the same
     # sources with BREAK_LUA_TESTING=1 hooks (allocation failure injection
     # covering the struct calloc AND the Lua allocator, double-destroy
     # fail-stop registry, type-erased VM state accessor, module registry /
-    # environment / state-table probes), mirroring the runtime_core_test /
+    # environment / state-table probes, frame-error record and
+    # hooks-disabled probes, and a test-only mid-frame reloader binding),
+    # mirroring the runtime_core_test /
     # BREAK_RUNTIME_TESTING pattern; the production break_lua target
     # (top-level, defined independent of ENGINE_BUILD_TESTS) stays hook-free
     # and is never linked into engine, engine_demo, or dxx_break.
-    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c)
+    add_library(break_lua_test STATIC src/script/break_lua_runtime.c src/script/break_lua_module.c src/script/break_lua_value.c)
     set_property(TARGET break_lua_test PROPERTY C_STANDARD 11)
     target_include_directories(break_lua_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3339,6 +3344,25 @@ endif()
     target_link_libraries(test_break_lua_module PRIVATE break_lua_test)
     add_test(NAME test_break_lua_module COMMAND test_break_lua_module)
     set_tests_properties(test_break_lua_module PROPERTIES
+        LABELS "headless;break_lua")
+
+    # Task 3: value marshalling, module calls, frame lifecycle (hook
+    # snapshot, bounded error records, instruction budget).
+    add_executable(test_break_lua_value tests/test_break_lua_value.c)
+    target_include_directories(test_break_lua_value PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_value PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_value PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_value PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_value PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_value PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_value PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_value COMMAND test_break_lua_value)
+    set_tests_properties(test_break_lua_value PROPERTIES
         LABELS "headless;break_lua")
 
     add_test(NAME test_break_lua_target_contract

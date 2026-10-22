@@ -15,9 +15,10 @@
  * primitives: the owner-thread rule in break_lua.h is the whole threading
  * model. The runtime owns the VM and the bounded module registry (Task 2;
  * struct BreakLuaRuntime and the registry slots live in the library-internal
- * header break_lua_internal.h); frame hooks land in Task 3, host bindings in
- * Task 4. The config caps are recorded here so those tasks enforce them
- * without re-validation. */
+ * header break_lua_internal.h); Task 3 added value marshalling, module
+ * calls, and frame hooks (break_lua_value.c) consuming the recorded caps;
+ * host bindings land in Task 4. The config caps are recorded here so those
+ * paths enforce them without re-validation. */
 
 #if defined(BREAK_LUA_TESTING)
 
@@ -115,15 +116,16 @@ static void *break_lua_alloc(void *ud, void *ptr, size_t osize, size_t nsize)
  * would longjmp with no recovery point and hit Lua's default panic (abort).
  * Running it through lua_pcall makes any error (LUA_ERRMEM included) a clean
  * NULL return from create, in test injection and in production alike. The
- * module-op dispatch registration (Task 2) joins it in the same protected
- * bootstrap: the runtime arrives as a lightuserdata argument (pushing a
- * lightuserdata cannot allocate), so nothing in this sequence runs outside
- * the pcall except lua_pushcfunction below. */
+ * op dispatch registration (module ops in Task 2; calls and frame hooks in
+ * Task 3) joins it in the same protected bootstrap: the runtime arrives as a
+ * lightuserdata argument (pushing a lightuserdata cannot allocate), so
+ * nothing in this sequence runs outside the pcall except lua_pushcfunction
+ * below. */
 static int break_lua_bootstrap_wrapper(lua_State *L)
 {
     BreakLuaRuntime *runtime = (BreakLuaRuntime *)lua_touserdata(L, 1);
     luaL_openlibs(L);
-    break_lua_module_bootstrap(L, runtime);
+    break_lua_op_bootstrap(L, runtime);
     return 0;
 }
 
@@ -203,7 +205,8 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
     /* Standard libraries opened on the owned state, under protection so an
      * allocation failure here fails closed instead of panicking. Per-module
      * sandboxed environments are Task 4 scope. The bootstrap also registers
-     * the module-op dispatch closure used by load/reload (Task 2). */
+     * the protected op dispatch closure used by load/reload (Task 2) and by
+     * calls/frame hooks (Task 3). */
     lua_pushcfunction(runtime->L, break_lua_bootstrap_wrapper);
     lua_pushlightuserdata(runtime->L, runtime);
     if (lua_pcall(runtime->L, 1, 0, 0) != LUA_OK) {
