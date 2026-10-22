@@ -1,6 +1,33 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R657 — D3D12 前向簇光照的蒙皮变体
+
+### 问题
+R656 之后，簇光照剩下蒙皮变体没有 D3D12 版本：蒙皮网格在 D3D12 上仍走 blinn 蒙皮管线。GL 版 `pbr_clustered_skin.vert` 把关节放在存储缓冲槽 0（D3D12 上即 t0，被共用像素阶段占用）。
+
+### 修复
+- 新增 `engine/shaders/pbr_clustered_skin_hlsl.vert`：关节放在 t16 的 `StructuredBuffer<float4>`，当前姿态从 float4 槽 0 起，上一帧姿态在 512 槽之后，每个关节四列（需要 transpose）；复用静态变体的像素阶段、PushConsts 和 `ClusterFrame`。
+- `main.c`：sidecar 分支建 `clustered_skin_pipeline`（`uses_storage` + `skinned_vertex`，64 字节蒙皮顶点布局）；绑定关节缓冲时 sidecar 后端用 16 号寄存器，其余后端仍是 0。
+
+### 测试
+`clustered_skin_sidecar_blends_joints_and_writes_velocity`：一个四边形，两个关节各占 0.5 权重。关节 1 平移 x，关节 2 缩放 x 并平移 y，上一帧姿态各不相同。混合后的 RT1 速度随 x 变化（0.25x+0.15, 0.05），所以关节行号、步长、上一帧偏移或转置出错都会改变数值。颜色逐像素对比 CPU 的 PBR 复算（容差 0.008）。
+
+测试里踩到的一个点：片元阶段用 UV 导数构造切线框，UV 恒定时会归一化成 NaN 并输出黑色，因此测试顶点的 UV 必须随位置变化。
+
+### 反向验证
+- 去掉 transpose：平移丢失，覆盖范围错误，失败。
+- 上一帧偏移 512 改成 256：速度错误，失败。
+- 速度用当前蒙皮代替上一帧：速度为 0，失败。
+- 只用第一个权重：颜色偏差，失败。
+每次都确认 dxil 被重新编译，改回后通过。
+
+### 验证结果
+WARP 74/74，RTX 73/74（仅预期的 [1]），debug layer 0 错误 0 警告。前向 demo MAE：D3D12-GL 1.42、VK-GL 3.52；延迟 D3D12-GL 1.22。demo 场景里没有蒙皮网格，蒙皮路径只靠单元测试覆盖。
+
+### 遗留
+- 数组变体（`pbr_clustered_arr`）仍未移植；`gbuffer_arr` 仍被「D3D12 间接绘制不传 first_instance」卡住。
+
 ## 本轮更新：R656 — D3D12 前向簇光照的实例化变体
 
 ### 问题

@@ -649,6 +649,18 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     LOG_WARN("clustered: D3D12 instanced sidecar pipeline creation failed");
                 rhi_shader_destroy(rs->device, civs);
             }
+            /* R657: skinned variant. Joints are a structured buffer at t16;
+             * the 64-byte joint vertex layout comes from .skinned_vertex. */
+            RHIShader csvs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_skin.vert", false);
+            if (rhi_handle_valid(csvs)) {
+                cpd.vert = csvs;
+                cpd.uses_storage = true;
+                cpd.skinned_vertex = true;
+                rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                if (!rhi_handle_valid(rs->clustered_skin_pipeline))
+                    LOG_WARN("clustered: D3D12 skinned sidecar pipeline creation failed");
+                rhi_shader_destroy(rs->device, csvs);
+            }
         } else {
             LOG_WARN("clustered: pbr_clustered sidecars unavailable");
         }
@@ -7059,7 +7071,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 /* Joints ride the vertex SSBO (R591) — bound ONCE here (the
                  * R590 UPDATE_AFTER_BIND lesson: never re-update a consumed
                  * descriptor set between draws). */
-                rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot(&render.skeleton), 0u);
+                rhi_cmd_bind_storage_buffer(cmd, skeleton_joint_slot(&render.skeleton),
+                                            render.caps.shader_sidecar_paths ? 16u : 0u);
             } else {
             rhi_cmd_bind_pipeline(cmd, wireframe_mode && rhi_handle_valid(render.wire_skinned_pipeline) ? render.wire_skinned_pipeline : render.skinned_pipeline);
             rhi_cmd_set_uniform_mat4(cmd, render.sk_loc_view, &view.e[0][0]);
