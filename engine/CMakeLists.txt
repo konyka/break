@@ -2856,6 +2856,22 @@ endif()
             SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
             ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
 
+        # R667: the myui break-RHI canvas on D3D12 -- the scale filter the
+        # canvas advertises must reach the pixels (R666 made the RHISampler
+        # count). Kept out of test_d3d12_warp_runtime so that suite stays
+        # pure RHI.
+        add_executable(test_d3d12_ui_canvas tests/test_d3d12_ui_canvas.c
+            src/myui/myr/my_vgcanvas_break_rhi.c)
+        target_include_directories(test_d3d12_ui_canvas PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+        target_link_libraries(test_d3d12_ui_canvas PRIVATE
+            myui_core engine_rhi_d3d12 d3d12 dxgi dxguid)
+        add_test(NAME test_d3d12_ui_canvas COMMAND test_d3d12_ui_canvas)
+        set_tests_properties(test_d3d12_ui_canvas PROPERTIES
+            SKIP_RETURN_CODE 77 LABELS "graphics;platform_runtime"
+            ENVIRONMENT "ENGINE_D3D12_WARP=1;BREAK_D3D12_TEST_FALLBACK_HWND=1")
+
         # UAV view parameter matrix: each cell builds its own device because the
         # failure under investigation kills the device outright, and GetDevice-
         # RemovedReason keeps reporting healthy, so cells cannot share one.

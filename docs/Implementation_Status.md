@@ -1,6 +1,25 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R667 — UI 画布的 scale_filter 在 D3D12 上端到端验证
+
+### 背景
+R666 让 D3D12 遵循调用方的 `RHISampler`，但它的像素测试只走 RHI 层。R665 点名的两个真实用户之一——myui 画布的 `my_vgcanvas_set_scale_filter`（`my_image` 控件经它切换 NEAREST/BILINEAR，画布的 `capabilities.scale_filters` 也声明两者都支持）——没有在 D3D12 上从公开 API 一路验证到像素。
+
+### 测试
+新增独立测试程序 `test_d3d12_ui_canvas`（只在 D3D12 构建里有，链接 `myui_core` + 画布实现，单独成程序，以免 `test_d3d12_warp_runtime` 引入 UI 库）：用 `my_vgcanvas_break_rhi_create` 建画布，在 16×4 目标上把 2×1 的黑白图片 `my_vgcanvas_draw_image` 放大 8 倍。
+- NEAREST：硬台阶，0–7 列纯黑、8–15 列纯白，逐像素精确比较。
+- BILINEAR：中间在两纹素中心之间的列都是真正的中间值（至少 24 个像素），外侧四分之一因 CLAMP 保持纯黑/纯白。
+
+### 反向验证
+用 R666 的 `ignore_sampler` 变异（即 R666 之前的行为）重跑：NEAREST 的 (0,0) 读到 112 而不是 0，失败；恢复后通过。所以这个用例能证明 UI 的 scale filter 依赖 R666，而不只是碰巧通过。
+
+### 验证结果
+WARP 与 RTX 都 1/1。ctest：D3D12 187/187（多了这个用例）、VK 182/182、GL 179/179。
+
+### 未覆盖
+`T` 键切换地形过滤：同一机制（`terrain_render` 把 `nearest_sampler` 经 `rhi_cmd_bind_material_textures` 绑到 unit 0），但地形 HLSL 边车只采样阴影图（t1/s1），并不采样 albedo 纹理（`terrain_hlsl.frag` 里程序化着色），GL 版也是如此——所以这个热键在任何后端上对地形画面都没有可见效果，不是 D3D12 的问题，不加测试。
+
 ## 本轮更新：R666 — D3D12 采样器描述符表：调用方的 RHISampler 终于生效
 
 ### 为什么做（R665 之后的分析结论）
