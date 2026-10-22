@@ -55,7 +55,7 @@ Lua 是唯一计划中的运行时脚本语言；Zig 不作为 gameplay scriptin
 - `src/script/script.c`、`script_lua.c`；
 - 现有 `network.c`、`packet.c`、`net_replication.c`。
 
-因此 PAL/Task/IO/VFS/Profiler 的基础能力是**当前已有**，但本文建议的统一 Runtime Core coordinator、消息合同、线程 owner ledger 和跨 subsystem shutdown graph 仍是**设计目标**。
+因此 PAL/Task/IO/VFS/Profiler 的基础能力是**当前已有**，但本文建议的统一 Runtime Core coordinator、消息合同、线程 owner ledger 和跨 subsystem shutdown graph 仍是**设计目标**。2026-10-22 更新：生命周期 coordinator 骨架已作为正式可选 target `runtime_core` 交付（见 §7.1 已交付事实），仍不接入 `engine`/demo；消息合同、owner ledger 与 shutdown graph 的其余部分保持设计目标。
 
 `engine_demo` 与 `dxx_break` 分别在 `engine/CMakeLists.txt:1512-1514` 和 `:1161-1169` 链接正式 `engine`/UI/RHI；它们不是当前 ECS snapshot/session 集成的证据。
 
@@ -206,6 +206,8 @@ Runtime Core 的全局状态（由唯一 Runtime coordinator 发布）统一为�
 唯一 coordinator 按 `runtime_overview.md` 的全局顺序编排 shutdown。本节只规定线程域动作：在 coordinator 停止 admission 后拒绝新 submit；停止 producer callbacks 并发出 close watermark；在 bounded drain 期间响应 wakeup/deadline；在 `STOPPING` 仅 join 已停止 admission 的 joinable worker/adapter host；将 live ownership 和 timeout 状态交回 coordinator。线程域不得自行 destroy 其他域资源或发布全局 `STOPPED`。
 
 超时返回 `TIMEOUT`，保留仍被引用的资源、队列和线程状态，不得强拆或 free；后续必须由同一 coordinator retry。不可恢复的启动/不变量/资源失败进入 sticky `FAILED`，保留诊断和安全清理路径，不得伪造 `RUNNING`。现有 Snowflake adapter 的 terminate -> host-exited deadline -> join -> destroy 只是 Network 子系统的局部动作，不能成为第二个 coordinator。
+
+**已交付事实（2026-10-22，Task 3）**：正式可选 target `runtime_core`（不链入 `engine`/`engine_demo`/`dxx_break`，`ENGINE_BUILD_TESTS=OFF` 可独立构建）交付了唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h` 定义统一 `BreakRuntimeError` 与全局 `BreakRuntimeState`（状态 `FAILED` 因 C11 枚举作用域拼写为 `BREAK_RUNTIME_STATE_FAILED`）；`engine/src/runtime/runtime_coordinator.h/.c` 实现 owner-thread-only（无 mutex）状态机、bounded subsystem callback 表（默认/上限 16，超限 `BREAK_RUNTIME_OVERLOAD`）、分阶段 shutdown 顺序（admission → producers → close → drain → join → destroy）、timeout 保留 live ownership 并可从 `STOPPING` retry 恢复、sticky `FAILED` admission 拒绝（`BREAK_RUNTIME_FAILED`）。线程域的 join/deadline 动作仍由各子系统 callback 自行完成（同 §7.1 规则）；真实 worker/adapter 接入、message/task/PAL facade 仍为设计目标。验证：`test_runtime_core` 9/9 + target contract，normal/ASan+UBSan/TSan 三树各 2/2。
 
 ### 7.2 失败分类
 

@@ -35,6 +35,7 @@
 | Async IO/VFS | formal `engine` source | `engine/src/asset/async_loader.h:38-87`；`async_loader.c:16-24`；`engine/src/asset/vfs.h:5-12` | 以现有有界请求/完成队列和 VFS caps 为基线，补统一 Runtime IO contract |
 | Profiler | formal `engine` source | `engine/src/core/profiler.h:4-11,47-119`；`profiler.c:12-35` | Runtime facade 统一 frame/thread lifecycle，不伪称已有完整 cross-domain trace service |
 | PAL / Thread / Message Runtime Core | 尚无本文所述统一 facade | `engine/src/core/platform_thread.h:3-17` 仅提供 primitive wrapper；现有 network/PAL API 分散 | 设计目标；必须先有 focused contract tests，再实现正式 target |
+| Runtime 生命周期 coordinator | formal optional `runtime_core`（2026-10-22 交付骨架，未接入 engine/demo） | `engine/CMakeLists.txt` 顶层 `add_library(runtime_core STATIC src/runtime/runtime_coordinator.c)`，`ENGINE_BUILD_TESTS=OFF` 时可构建；头文件 `engine/src/runtime/runtime_types.h`、`engine/src/runtime/runtime_coordinator.h` | 状态机/admission/stop timeout-retry/sticky FAILED 已交付；message/queue/task、PAL/Thread facade 与真实子系统接入仍为设计目标 |
 
 `engine/CMakeLists.txt:3239-3249` 目前还把 `break_aoi.c`、`break_replication.c` 和 `break_replication_fragment.c` 放入 `break_net`，但这只在 Snowflake 开启时成立；该耦合不应成为最终 Runtime Core 的强制依赖。正式 target graph 应禁止“为了使用 ECS replication 而引入 Snowflake transport”。
 
@@ -163,6 +164,8 @@ Runtime Core 的唯一 coordinator 发布全局状态：`CREATED -> STARTING -> 
 统一顺序：停止新 admission（Network/IO/Task external submit） -> 停止 producer callbacks -> 关闭 mailbox/queues -> drain bounded completions/close watermarks -> join workers -> destroy IO/Network/RHI/PAL。`QUIESCING` 仍允许 owner poll；`DRAINING` 只处理有界 completion/close watermark。timeout 必须返回 `BREAK_RUNTIME_TIMEOUT`/`TIMEOUT`，保留 live resources、ownership 和 `STOPPING` 状态，后续 coordinator stop 可 retry；禁止 detached thread、强拆或 UAF。`FAILED` 保留诊断和仍存活资源，只允许 cleanup/diagnostic 与安全 retry，不重新开放普通 admission；retry 规则由同一 coordinator 串行执行，禁止子系统各自 retry。
 
 `break_net_reactor_stop(timeout_ms)` 超时保留 host thread/reactor 的现有 compatibility 语义；formal facade 通过 coordinator 映射到上述状态和错误，不改变 legacy API。
+
+**已交付事实（2026-10-22，Task 3）**：正式可选 static target `runtime_core`（`engine/CMakeLists.txt` 顶层，`ENGINE_BUILD_TESTS=OFF` 时可独立构建；`engine`、`engine_demo`、`dxx_break` 均不链接）现在提供上述全局状态机与唯一 coordinator 骨架：`engine/src/runtime/runtime_types.h`（`BreakRuntimeError` 九类错误、`BreakRuntimeState` 全局状态）与 `engine/src/runtime/runtime_coordinator.h/.c`。已交付迁移：create→`CREATED`；`start` 完成 `CREATED -> STARTING -> RUNNING`；`stop` 从 `RUNNING` 依序驱动 `QUIESCING -> DRAINING -> STOPPING -> STOPPED`（subsystem bounded 表按 stop_admission → stop_producers → close_queues → drain → join → destroy 分阶段、按注册顺序执行）；callback 返回 `BREAK_RUNTIME_TIMEOUT` 时保留 live ownership 与当前 stop 状态、不释放资源，同一 coordinator 从 `STOPPING`（及 `QUIESCING`/`DRAINING`）retry 并精确恢复到超时 callback；`fail()` 从任意非终态发布 sticky `FAILED`，FAILED 对 admission sticky 且不重新开放。C11 枚举常量共享一个作用域，全局状态 `FAILED` 以 `BREAK_RUNTIME_STATE_FAILED` 拼写（序号位置与设计一致），错误类 `BREAK_RUNTIME_FAILED` 保持设计拼写。仍为设计-only：message/queue/task facade、PAL/Thread facade、真实 Network/IO/Task/Audio/RHI/Asset/HotReload 子系统接入，以及 coordinator 与 engine/demo runtime 的集成。
 
 ## 8. 错误处理与安全边界
 

@@ -332,6 +332,17 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
+# Formal optional Runtime Core library: unified error/lifecycle types and the
+# single-owner lifecycle coordinator skeleton. Top-level like the other formal
+# optional libraries — built regardless of ENGINE_BUILD_TESTS, and deliberately
+# NOT linked into engine, engine_demo, or dxx_break; consumers opt in
+# explicitly in later tasks.
+add_library(runtime_core STATIC
+    src/runtime/runtime_coordinator.c)
+set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
+target_include_directories(runtime_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 # Formal optional Snowflake network/session library. Produced whenever
 # BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
 # engine target stays transport-neutral and never links it. Consumers
@@ -3239,6 +3250,21 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_replication_target_contract.cmake)
     set_tests_properties(test_replication_target_contract PROPERTIES
         LABELS "headless;replication;platform_contract")
+
+    # Runtime Core lifecycle coordinator focused tests link the formal
+    # top-level runtime_core target (defined independent of
+    # ENGINE_BUILD_TESTS); engine/engine_demo/dxx_break never link it.
+    add_executable(test_runtime_core tests/test_runtime_core.c)
+    target_include_directories(test_runtime_core PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_runtime_core PRIVATE runtime_core)
+    add_test(NAME test_runtime_core COMMAND test_runtime_core)
+    add_test(NAME test_runtime_core_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_core_target_contract.cmake)
+    set_tests_properties(test_runtime_core_target_contract PROPERTIES
+        LABELS "headless;runtime_core;platform_contract")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c

@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Runtime Core Task 3 — `runtime_core` target 与生命周期 coordinator 骨架（最新）
+
+- **已实现**：正式可选 static target `runtime_core` 在 `engine/CMakeLists.txt` 顶层定义（`add_library(runtime_core STATIC src/runtime/runtime_coordinator.c)`），`ENGINE_BUILD_TESTS=OFF` 时可独立构建；`engine`、`engine_demo`、`dxx_break` 均不链接它，消费者后续显式 opt in。公共头为 `engine/src/runtime/runtime_types.h`（统一 `BreakRuntimeError` 九类错误与全局 `BreakRuntimeState` 生命周期）和 `engine/src/runtime/runtime_coordinator.h`（单 owner coordinator API）；实现为 `engine/src/runtime/runtime_coordinator.c`。
+- **已交付语义**：`CREATED -> STARTING -> RUNNING -> QUIESCING -> DRAINING -> STOPPING -> STOPPED`；`fail()` 从任意非终态发布 sticky `FAILED`。bounded subsystem callback 表（默认=上限 `BREAK_RUNTIME_MAX_SUBSYSTEMS`=16，超限 `BREAK_RUNTIME_OVERLOAD`，create 做 count+byte checked arithmetic）按 stop_admission → stop_producers → close_queues → drain → join → destroy 阶段、注册顺序执行；callback 返回 `BREAK_RUNTIME_TIMEOUT` 时保留 live ownership 与当前 stop 状态、不释放任何资源，同一 coordinator 可从 `STOPPING`（及 `QUIESCING`/`DRAINING`）retry 并精确恢复到超时 callback；非 timeout 的 callback 错误原样传播并发布 sticky `FAILED`；`FAILED` 对 admission sticky（返回 `BREAK_RUNTIME_FAILED`），不重新开放普通 admission。coordinator 是 Game/Main owner 对象，无 mutex；C11 枚举常量共享作用域，全局状态 `FAILED` 拼写为 `BREAK_RUNTIME_STATE_FAILED`（序号位置与设计一致），错误类保持 `BREAK_RUNTIME_FAILED`。
+- **验证**：`test_runtime_core`（9 个用例全过）+ `test_runtime_core_target_contract` 在三个干净构建树中各 2/2 通过：normal（`build-sdd-t3`）、ASan+UBSan（`build-sdd-t3-asan`）、TSan（`build-sdd-t3-tsan`）；另有 `ENGINE_BUILD_TESTS=OFF` 树独立构建 `runtime_core` 成功。报告：`.superpowers/sdd/2026-10-22-runtime-core-formalization/task-3-report.md`。
+- **未实现/设计-only**：message/queue/task facade、PAL/Thread facade、真实子系统（Network/IO/Task/Audio/RHI/Asset/HotReload）接入 coordinator、以及 engine/demo runtime 集成；本条目是独立骨架库证据，不构成正式 engine runtime 集成证据。
+
 ## 本轮更新：fragment/replication 验证与 full CTest 边界（最新）
 
 - `BREAK_REPLICATION_MAX_REASSEMBLY_SIZE` 公开户为 16 MiB；fragmenter 在分片前拒绝超预算 payload，reassembler 在元数据分配、单片接收和 `total_size` 累加前均 fail-closed，避免无界重组分配。version overflow 在 `UINT64_MAX` 时拒绝 register/mark-dirty，保留旧 Real payload、版本和 Ghost 状态。
