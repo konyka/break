@@ -86,6 +86,12 @@ void break_editor_doc_slot_clear(BreakEditorDoc *doc, u32 index);
 void break_editor_cmd_stack_push_applied(BreakEditorDoc *doc,
                                          BreakEditorCmd *cmd);
 
+/* Destroys every held command and resets size/undo_pos/dropped_oldest to a
+ * fresh state. Never allocates, never fails. editor_scene.c calls this on a
+ * successful load: the recorded commands reference the pre-load world, which
+ * no longer exists. */
+void break_editor_cmd_stack_clear(BreakEditorCmdStack *stack);
+
 /* Command constructors (editor_cmd.c). Return NULL on OOM; the remove and
  * rename constructors also return NULL when the id is not a live named
  * entity of this document. Callers validate name lengths first. */

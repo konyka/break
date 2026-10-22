@@ -84,6 +84,17 @@ bool break_editor_redo(BreakEditorDoc *doc) {
     return true;
 }
 
+void break_editor_cmd_stack_clear(BreakEditorCmdStack *stack) {
+    if (!stack) return;
+    for (u32 i = 0; i < stack->size; i++) {
+        stack->entries[i]->destroy(stack->entries[i]);
+        stack->entries[i] = NULL;
+    }
+    stack->size = 0;
+    stack->undo_pos = 0;
+    stack->dropped_oldest = false;
+}
+
 u32 break_editor_cmd_stack_capacity(const BreakEditorCmdStack *stack) {
     return stack ? stack->capacity : 0u;
 }

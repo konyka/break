@@ -27,9 +27,12 @@ if(break_editor_pos GREATER next_tests_block_pos)
     message(FATAL_ERROR "break_editor must be defined at top level, not inside an ENGINE_BUILD_TESTS block")
 endif()
 
-# ...owning its two translation units (first mention of each is inside the
-# add_library(break_editor ...) call; the test-only variant repeats them
-# later inside the tests block).
+# ...owning its four translation units (first mention of each editor source
+# is inside the add_library(break_editor ...) call; the test-only variant
+# repeats them later inside the tests block). scene_serial.c is additionally
+# compiled inline by the engine target and test_scene_serial (accepted
+# existing pattern), so for it only membership in the break_editor block is
+# checked, not first mention.
 string(FIND "${cmake_text}" "src/editor/editor_doc.c" doc_src_pos)
 string(FIND "${cmake_text}" "src/editor/editor_cmd.c" cmd_src_pos)
 string(FIND "${cmake_text}" "add_library(stb_truetype STATIC" stb_pos)
@@ -42,18 +45,27 @@ if(cmd_src_pos LESS break_editor_pos OR
     message(FATAL_ERROR "src/editor/editor_cmd.c is not owned by break_editor")
 endif()
 
-# ...linking break_ecs_replication PUBLIC (which owns ecs.c)...
+# ...linking break_ecs_replication PUBLIC (which owns ecs.c and log.c)...
 if(NOT cmake_text MATCHES "target_link_libraries\\(break_editor PUBLIC break_ecs_replication")
     message(FATAL_ERROR "break_editor does not link break_ecs_replication PUBLIC")
 endif()
 
-# ...and never compiling ecs.c itself (break_ecs_replication owns it).
+# ...compiling exactly one copy of scene_serial.c (Task 2: no formal library
+# owns it; the engine target's and test_scene_serial's inline copies are the
+# accepted existing pattern) and never compiling ecs.c itself
+# (break_ecs_replication owns it).
 string(REGEX MATCH "add_library\\(break_editor STATIC[^)]*\\)" break_editor_block "${cmake_text}")
 if(NOT break_editor_block)
     message(FATAL_ERROR "could not isolate the break_editor add_library block")
 endif()
 if(break_editor_block MATCHES "ecs\\.c")
     message(FATAL_ERROR "break_editor must not compile ecs.c (break_ecs_replication owns it)")
+endif()
+if(NOT break_editor_block MATCHES "src/editor/editor_scene\\.c")
+    message(FATAL_ERROR "break_editor does not own src/editor/editor_scene.c")
+endif()
+if(NOT break_editor_block MATCHES "src/scene/scene_serial\\.c")
+    message(FATAL_ERROR "break_editor does not own exactly one src/scene/scene_serial.c copy")
 endif()
 
 # engine, engine_demo, and dxx_break must not link break_editor. Their
@@ -68,9 +80,9 @@ endforeach()
 
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
 # hooks) rather than the production target; the production archive stays
-# hook-free. The variant compiles the same two translation units and links
+# hook-free. The variant compiles the same four translation units and links
 # the same break_ecs_replication.
-if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c")
+if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/scene/scene_serial.c")
     message(FATAL_ERROR "missing test-only break_editor_test variant over all break_editor sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1")
@@ -90,6 +102,12 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_cmd tests/test_editor_cm
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_cmd PRIVATE break_editor_test")
     message(FATAL_ERROR "test_editor_cmd does not link break_editor_test")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_scene tests/test_editor_scene.c")
+    message(FATAL_ERROR "missing test_editor_scene executable")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_scene PRIVATE break_editor_test")
+    message(FATAL_ERROR "test_editor_scene does not link break_editor_test")
 endif()
 
 message(STATUS "break_editor target contract passed")
