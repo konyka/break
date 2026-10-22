@@ -2,6 +2,39 @@
 #include <core/log.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ecs/ecs_internal.h>
+
+#ifdef ECS_TESTING
+static i32 clone_fail_after = -1;
+void world_clone_test_fail_after(i32 allocation_index) { clone_fail_after = allocation_index; }
+static bool clone_should_fail(void) {
+    if (clone_fail_after < 0) return false;
+    if (clone_fail_after == 0) { clone_fail_after = -1; return true; }
+    clone_fail_after--;
+    return false;
+}
+#else
+static bool clone_should_fail(void) { return false; }
+#endif
+
+static bool archetype_pointer_index(const Archetype *base, u32 count,
+                                    const Archetype *ptr, u32 *out_index) {
+    uintptr_t begin = (uintptr_t)base;
+    uintptr_t end = begin + (usize)count * sizeof(*base);
+    uintptr_t value = (uintptr_t)ptr;
+    if (!ptr || value < begin || value >= end ||
+        ((value - begin) % sizeof(*base)) != 0u) return false;
+    *out_index = (u32)((value - begin) / sizeof(*base));
+    return true;
+}
+
+static void *clone_malloc(usize size) {
+    return clone_should_fail() ? NULL : malloc(size);
+}
+
+static void *clone_calloc(usize count, usize size) {
+    return clone_should_fail() ? NULL : calloc(count, size);
+}
 
 /* FNV1a hash of sorted component type IDs for archetype early-reject */
 static u32 archetype_key_hash(const ComponentType *types, u32 count) {
@@ -204,7 +237,7 @@ World *world_create(void) {
     return w;
 }
 
-void world_destroy(World *w) {
+static void world_release_contents(World *w) {
     for (u32 i = 0; i < w->archetype_count; i++) {
         Archetype *a = &w->archetypes[i];
         Chunk *c = a->chunks;
@@ -231,7 +264,240 @@ void world_destroy(World *w) {
     }
     /* Single free for all per-entity arrays (allocated as one block) */
     free(w->entities);
+    w->entities = NULL;
+}
+
+void world_destroy(World *w) {
+    if (!w) return;
+    world_release_contents(w);
     free(w);
+}
+
+
+static bool clone_archetype(World *dst, const World *src, u32 index) {
+    const Archetype *sa = &src->archetypes[index];
+    Archetype *da = &dst->archetypes[index];
+    memset(da, 0, sizeof(*da));
+    da->key.count = sa->key.count;
+    da->chunk_capacity = sa->chunk_capacity;
+    da->chunk_bytes = sa->chunk_bytes;
+    da->entity_offset = sa->entity_offset;
+    da->total_count = sa->total_count;
+    da->edges_add_count = sa->edges_add_count;
+    da->edges_remove_count = sa->edges_remove_count;
+    if ((sa->edges_add_count > 0u && !sa->edges_add) ||
+        (sa->edges_remove_count > 0u && !sa->edges_remove)) return false;
+    if (sa->key.count) {
+        usize bytes = (usize)sa->key.count * sizeof(ComponentType) +
+                      (usize)sa->key.count * sizeof(u32);
+        da->key.ids = (ComponentType *)clone_malloc(bytes);
+        if (!da->key.ids) return false;
+        memcpy(da->key.ids, sa->key.ids, bytes);
+        da->offsets = (u32 *)(da->key.ids + sa->key.count);
+    }
+    for (const Chunk *sc = sa->chunks; sc; sc = sc->next) {
+        Chunk *dc = clone_should_fail() ? NULL : chunk_alloc(sa->chunk_bytes);
+        if (!dc) return false;
+        memcpy(dc, sc, sa->chunk_bytes);
+        dc->next = NULL;
+        if (!da->chunks) da->chunks = dc;
+        else da->chunk_tail->next = dc;
+        da->chunk_tail = dc;
+    }
+    da->edges_add = NULL;
+    da->edges_remove = NULL;
+    if (sa->edges_add_count) {
+        da->edges_add = clone_malloc((usize)sa->edges_add_count * sizeof(*da->edges_add));
+        if (!da->edges_add) return false;
+        memcpy(da->edges_add, sa->edges_add,
+               (usize)sa->edges_add_count * sizeof(*da->edges_add));
+    }
+    if (sa->edges_remove_count) {
+        da->edges_remove = clone_malloc((usize)sa->edges_remove_count * sizeof(*da->edges_remove));
+        if (!da->edges_remove) return false;
+        memcpy(da->edges_remove, sa->edges_remove,
+               (usize)sa->edges_remove_count * sizeof(*da->edges_remove));
+    }
+    return true;
+}
+
+World *world_clone_deep(const World *source) {
+    if (!source) return NULL;
+    World *clone = clone_calloc(1, sizeof(*clone));
+    if (!clone) return NULL;
+    atomic_init(&clone->query_next_slot,
+                atomic_load_explicit(&source->query_next_slot, memory_order_relaxed));
+    memcpy(clone->component_sizes, source->component_sizes, sizeof(clone->component_sizes));
+    memcpy(clone->archetype_hash, source->archetype_hash, sizeof(clone->archetype_hash));
+    memcpy(clone->entity_bitmap, source->entity_bitmap, sizeof(clone->entity_bitmap));
+    memcpy(clone->query_cache, source->query_cache, sizeof(clone->query_cache));
+    clone->archetype_count = 0;
+    clone->query_count = source->query_count;
+    clone->entity_count = source->entity_count;
+    clone->free_stack_top = source->free_stack_top;
+    clone->cache_version = source->cache_version;
+    usize ent_bytes = (usize)ECS_MAX_ENTITIES * sizeof(Entity);
+    usize array_bytes = (usize)ECS_MAX_ENTITIES * sizeof(u32);
+    u8 *block = clone_calloc(1u, ent_bytes + array_bytes * 3u);
+    if (!block) { world_destroy(clone); return NULL; }
+    clone->entities = (Entity *)block;
+    clone->entity_archetype = (u32 *)(block + ent_bytes);
+    clone->entity_index = clone->entity_archetype + ECS_MAX_ENTITIES;
+    clone->free_stack = clone->entity_index + ECS_MAX_ENTITIES;
+    memcpy(clone->entities, source->entities, ent_bytes);
+    memcpy(clone->entity_archetype, source->entity_archetype, array_bytes);
+    memcpy(clone->entity_index, source->entity_index, array_bytes);
+    memcpy(clone->free_stack, source->free_stack, array_bytes);
+    for (u32 i = 0; i < source->archetype_count; ++i) {
+        clone->archetype_count = i + 1u;
+        if (!clone_archetype(clone, source, i)) {
+            world_destroy(clone);
+            return NULL;
+        }
+    }
+    for (u32 i = 0; i < clone->archetype_count; ++i) {
+        Archetype *a = &clone->archetypes[i];
+        const Archetype *sa = &source->archetypes[i];
+        for (u32 j = 0; j < a->edges_add_count; ++j) {
+            if (!sa->edges_add[j].target) {
+                a->edges_add[j].target = NULL;
+                continue;
+            }
+            u32 target;
+            if (!archetype_pointer_index(source->archetypes, source->archetype_count,
+                                         sa->edges_add[j].target, &target)) {
+                world_destroy(clone);
+                return NULL;
+            }
+            a->edges_add[j].target = target < clone->archetype_count ?
+                &clone->archetypes[target] : NULL;
+        }
+        for (u32 j = 0; j < a->edges_remove_count; ++j) {
+            if (!sa->edges_remove[j].target) {
+                a->edges_remove[j].target = NULL;
+                continue;
+            }
+            u32 target;
+            if (!archetype_pointer_index(source->archetypes, source->archetype_count,
+                                         sa->edges_remove[j].target, &target)) {
+                world_destroy(clone);
+                return NULL;
+            }
+            a->edges_remove[j].target = target < clone->archetype_count ?
+                &clone->archetypes[target] : NULL;
+        }
+    }
+    for (u32 i = 0; i < 256u; ++i) {
+        clone->queries[i] = source->queries[i];
+        clone->queries[i].matching = NULL;
+        Query *q = &clone->queries[i];
+        if (source->queries[i].match_cap > ECS_QUERY_INLINE_CAP) {
+            q->matching = clone_malloc((usize)q->match_cap * sizeof(*q->matching));
+            if (!q->matching) { world_destroy(clone); return NULL; }
+        } else {
+            q->matching = q->_inline_matching;
+        }
+        if (q->match_count > q->match_cap ||
+            (q->match_count > 0u && !source->queries[i].matching)) {
+            world_destroy(clone);
+            return NULL;
+        }
+        for (u32 j = 0; j < q->match_count; ++j) {
+            u32 ai;
+            if (!archetype_pointer_index(source->archetypes, source->archetype_count,
+                                         source->queries[i].matching[j], &ai)) {
+                world_destroy(clone);
+                return NULL;
+            }
+            q->matching[j] = &clone->archetypes[ai];
+        }
+    }
+    return clone;
+}
+
+bool world_replace_contents(World *destination, World *replacement) {
+    if (!destination || !replacement || destination == replacement) return false;
+    if (replacement->archetype_count == 0u ||
+        replacement->archetype_count > ECS_MAX_ARCHETYPES ||
+        replacement->entity_count > ECS_MAX_ENTITIES ||
+        replacement->free_stack_top > ECS_MAX_ENTITIES ||
+        !replacement->entities || !replacement->entity_archetype ||
+        !replacement->entity_index || !replacement->free_stack) return false;
+    for (u32 i = 0; i < replacement->archetype_count; ++i) {
+        Archetype *a = &replacement->archetypes[i];
+        if (a->edges_add_count > ECS_MAX_ARCHETYPES ||
+            a->edges_remove_count > ECS_MAX_ARCHETYPES ||
+            (a->edges_add_count > 0u && !a->edges_add) ||
+            (a->edges_remove_count > 0u && !a->edges_remove)) return false;
+        for (u32 j = 0; j < a->edges_add_count; ++j) {
+            u32 ignored;
+            if (a->edges_add[j].target &&
+                !archetype_pointer_index(replacement->archetypes,
+                                         replacement->archetype_count,
+                                         a->edges_add[j].target, &ignored)) return false;
+        }
+        for (u32 j = 0; j < a->edges_remove_count; ++j) {
+            u32 ignored;
+            if (a->edges_remove[j].target &&
+                !archetype_pointer_index(replacement->archetypes,
+                                         replacement->archetype_count,
+                                         a->edges_remove[j].target, &ignored)) return false;
+        }
+    }
+    u32 query_indices[256][ECS_MAX_ARCHETYPES];
+    for (u32 i = 0; i < 256u; ++i) {
+        Query *q = &replacement->queries[i];
+        if (q->match_count > ECS_MAX_ARCHETYPES ||
+            q->match_count > q->match_cap ||
+            (q->match_cap <= ECS_QUERY_INLINE_CAP &&
+             q->matching != q->_inline_matching) ||
+            (q->match_cap > ECS_QUERY_INLINE_CAP && !q->matching) ||
+            (q->match_count > 0u && !q->matching)) return false;
+        for (u32 j = 0; j < q->match_count; ++j) {
+            if (!archetype_pointer_index(replacement->archetypes,
+                                         replacement->archetype_count,
+                                         q->matching[j], &query_indices[i][j])) return false;
+        }
+    }
+    world_release_contents(destination);
+    *destination = *replacement;
+    for (u32 i = 0; i < destination->archetype_count; ++i) {
+        Archetype *a = &destination->archetypes[i];
+        for (u32 j = 0; j < a->edges_add_count; ++j) {
+            if (a->edges_add[j].target) {
+                u32 ai = 0u;
+                (void)archetype_pointer_index(replacement->archetypes,
+                                              replacement->archetype_count,
+                                              a->edges_add[j].target, &ai);
+                a->edges_add[j].target = destination->archetypes + ai;
+            }
+        }
+        for (u32 j = 0; j < a->edges_remove_count; ++j) {
+            if (a->edges_remove[j].target) {
+                u32 ai = 0u;
+                (void)archetype_pointer_index(replacement->archetypes,
+                                              replacement->archetype_count,
+                                              a->edges_remove[j].target, &ai);
+                a->edges_remove[j].target = destination->archetypes + ai;
+            }
+        }
+    }
+    for (u32 i = 0; i < 256u; ++i) {
+        Query *q = &destination->queries[i];
+        Archetype **old_matching = q->matching;
+        u32 old_match_count = q->match_count;
+        if (q->match_cap <= ECS_QUERY_INLINE_CAP) {
+            memcpy(q->_inline_matching, old_matching,
+                   (usize)old_match_count * sizeof(*old_matching));
+            q->matching = q->_inline_matching;
+        }
+        for (u32 j = 0; j < old_match_count; ++j) {
+            q->matching[j] = destination->archetypes + query_indices[i][j];
+        }
+    }
+    memset(replacement, 0, sizeof(*replacement));
+    free(replacement);
+    return true;
 }
 
 void world_register_component(World *w, ComponentType id, u32 size) {

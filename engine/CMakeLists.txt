@@ -35,6 +35,12 @@ option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
+option(ENGINE_BUILD_FUZZ_SMOKE
+    "Register deterministic fuzz smoke tests (requires explicit fuzz targets)" OFF)
+option(BREAK_ENABLE_SNOWFLAKE
+    "Enable the Snowflake-backed C11 Break network adapter" OFF)
+set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
+    "Snowflake source tree required by the Break network adapter")
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -281,6 +287,50 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
     endif()
     find_package(Vulkan REQUIRED)
 endif()
+
+if(BREAK_ENABLE_SNOWFLAKE)
+    if(NOT SNOWFLAKE_SOURCE_DIR OR
+       NOT EXISTS "${SNOWFLAKE_SOURCE_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "BREAK_ENABLE_SNOWFLAKE requires SNOWFLAKE_SOURCE_DIR to point to "
+            "a Snowflake source tree with CMakeLists.txt; got '${SNOWFLAKE_SOURCE_DIR}'")
+    endif()
+    message(STATUS "Break Snowflake adapter: adding ${SNOWFLAKE_SOURCE_DIR}")
+    set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
+    set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
+    set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    add_subdirectory("${SNOWFLAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/snowflake"
+        EXCLUDE_FROM_ALL)
+    if(NOT TARGET snow::net)
+        message(FATAL_ERROR
+            "Snowflake source tree did not provide the required target snow::net")
+    endif()
+    message(STATUS "Break Snowflake adapter: using target snow::net")
+endif()
+
+# Formal optional replication libraries. These are intentionally independent of
+# engine and Snowflake: consumers opt in and own the transport/session boundary.
+add_library(break_ecs_replication STATIC
+    src/ecs/ecs.c
+    src/ecs/replication_schema.c
+    src/ecs/world_snapshot.c
+    src/ecs/world_delta.c
+    src/core/log.c)
+set_property(TARGET break_ecs_replication PROPERTY C_STANDARD 11)
+target_include_directories(break_ecs_replication PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+if(NOT ENGINE_PLATFORM STREQUAL "windows")
+    target_link_libraries(break_ecs_replication PUBLIC m)
+endif()
+
+add_library(break_replication_core STATIC
+    src/network/break_aoi.c
+    src/network/break_replication.c
+    src/network/break_replication_fragment.c)
+set_property(TARGET break_replication_core PROPERTY C_STANDARD 11)
+target_include_directories(break_replication_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
 # Engine library
 set(RHI_CORE_SOURCES
@@ -3130,10 +3180,44 @@ endif()
     # test_ecs: needs ecs.c + log.c
     add_executable(test_ecs tests/test_ecs.c src/ecs/ecs.c src/core/log.c)
     target_include_directories(test_ecs PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs PRIVATE ECS_TESTING=1)
     if(NOT ENGINE_PLATFORM STREQUAL "windows")
         target_link_libraries(test_ecs PRIVATE m)
     endif()
     add_test(NAME test_ecs COMMAND test_ecs)
+
+    # Focused ECS snapshot/schema/delta/AoI API coverage links the formal
+    # non-Snowflake library. Fault injection remains test-target-only.
+    add_library(break_ecs_replication_test STATIC
+        src/ecs/ecs.c
+        src/ecs/replication_schema.c
+        src/ecs/world_snapshot.c
+        src/ecs/world_delta.c
+        src/network/break_aoi.c
+        src/core/log.c
+        tests/break_world_delta_test_hooks.c)
+    set_property(TARGET break_ecs_replication_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_ecs_replication_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_ecs_replication_test PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(NOT ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(break_ecs_replication_test PUBLIC m)
+    endif()
+
+    add_executable(test_ecs_replication tests/test_ecs_replication.c)
+    target_include_directories(test_ecs_replication PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_ecs_replication PRIVATE BREAK_WORLD_DELTA_TESTING=1)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+        target_compile_options(test_ecs_replication PRIVATE -Wno-missing-field-initializers)
+    endif()
+    target_link_libraries(test_ecs_replication PRIVATE break_ecs_replication_test)
+    add_test(NAME test_ecs_replication COMMAND test_ecs_replication)
+    add_test(NAME test_replication_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_replication_target_contract.cmake)
+    set_tests_properties(test_replication_target_contract PROPERTIES
+        LABELS "headless;replication;platform_contract")
 
     # test_ecs_system: needs ecs.c + ecs_system.c + task.c + log.c
     add_executable(test_ecs_system tests/test_ecs_system.c
@@ -3172,6 +3256,64 @@ endif()
         target_link_libraries(test_network PRIVATE ws2_32)
     endif()
     add_test(NAME test_network COMMAND test_network)
+
+    # Focused fragmentation coverage links the formal non-Snowflake core.
+    add_executable(test_break_replication_fragment tests/test_break_replication_fragment.c)
+    target_include_directories(test_break_replication_fragment PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_break_replication_fragment PRIVATE break_replication_core)
+    add_test(NAME test_break_replication_fragment COMMAND test_break_replication_fragment)
+    set_tests_properties(test_break_replication_fragment PROPERTIES
+        TIMEOUT 20 LABELS "network;replication;fragmentation")
+
+    # break_net is a test-only Snowflake integration target. It is generated
+    # only when both ENGINE_BUILD_TESTS and BREAK_ENABLE_SNOWFLAKE are ON;
+    # engine_demo and dxx_break do not link it.
+    if(BREAK_ENABLE_SNOWFLAKE)
+        add_library(break_net STATIC
+            src/network/break_net_adapter.c
+            src/network/break_net_events.c
+            src/network/break_net_message.c
+            src/network/break_net_protocol.c
+            src/network/break_net_envelope.c
+            src/network/break_net_message_registry.c
+            src/network/break_session.c)
+        target_link_libraries(break_net PUBLIC break_replication_core)
+        target_include_directories(break_net PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        set_property(TARGET break_net PROPERTY C_STANDARD 11)
+        target_include_directories(break_net PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_include_directories(break_net PRIVATE
+            ${SNOWFLAKE_SOURCE_DIR}/include)
+        target_link_libraries(break_net PUBLIC snow::net)
+
+        add_executable(test_break_net_adapter tests/test_break_net_adapter.c)
+        target_include_directories(test_break_net_adapter PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_net_adapter PRIVATE break_net)
+        add_test(NAME test_break_net_adapter COMMAND test_break_net_adapter)
+        set_tests_properties(test_break_net_adapter PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake")
+
+        add_executable(test_break_replication tests/test_break_replication.c)
+        target_include_directories(test_break_replication PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_replication PRIVATE break_net)
+        add_test(NAME test_break_replication COMMAND test_break_replication)
+        set_tests_properties(test_break_replication PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;replication")
+
+        add_executable(test_break_session tests/test_break_session.c)
+        target_include_directories(test_break_session PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
+            target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
+        endif()
+        target_link_libraries(test_break_session PRIVATE break_net)
+        add_test(NAME test_break_session COMMAND test_break_session)
+        set_tests_properties(test_break_session PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;session")
+    endif()
 
     # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).
     # Backend source is selected the same way the engine target does it.
@@ -3478,20 +3620,19 @@ endif()
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
 
-    # R630: fuzz smoke — bounded deterministic runs of the manual fuzzers.
-    # Labeled "fuzz" so default runs skip them (like "graphics"); the
-    # ASan/UBSan CI job builds the targets explicitly and runs them under
-    # sanitizers (the R623 "manual sanitizer evidence" boundary, automated).
-    # Args are (iters, seed[, seed file]); scratch paths are pid-unique.
-    add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
-    add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
-    add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
-    add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
-    add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
-             "${CMAKE_SOURCE_DIR}/assets/test.glb")
-    set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
-        fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
-        PROPERTIES LABELS "fuzz")
+    if(ENGINE_BUILD_FUZZ_SMOKE)
+        # Explicit fuzz lane only: these targets are EXCLUDE_FROM_ALL and are
+        # built before CTest runs them, so ordinary CTest has no Not Run tests.
+        add_test(NAME fuzz_scene_serial_smoke COMMAND fuzz_scene_serial 500 7)
+        add_test(NAME fuzz_net_packet_smoke   COMMAND fuzz_net_packet 2000 11)
+        add_test(NAME fuzz_decode_image_smoke COMMAND fuzz_decode_image 2000 13)
+        add_test(NAME fuzz_vfs_pak_smoke      COMMAND fuzz_vfs_pak 2000 17)
+        add_test(NAME fuzz_asset_gltf_smoke   COMMAND fuzz_asset_gltf 800 23
+                 "${CMAKE_SOURCE_DIR}/assets/test.glb")
+        set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
+            fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
+            PROPERTIES LABELS "fuzz")
+    endif()
 
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
     add_executable(test_camera_frustum tests/test_camera_frustum.c
