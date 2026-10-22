@@ -559,6 +559,18 @@ CTest `178/178`、MoltenVK 默认构建 `176/176`，D3D12 依赖门均为平台�
 `-L graphics` 为 `5/5`，`rhi_swapchain_bench` 约 120 fps（vsync 未关闭的合成 harness，
 非 benchmark-comparable 证据）。
 
+2026-10-22 同步 @fb589d7e（含 R638–R661 的 D3D12 工作）后在 macOS 复核，发现并修复两处
+回归：① `tools/compile_metal_shaders.sh` 的 `shaders/*.comp` 通配吞入了新增的
+`*_hlsl.comp`（D3D12 HLSL sidecar，不是 GLSL），`glslc` 报 `#version` 错误导致
+`engine.metallib` 无法生成，现与 `*_gl.comp` 一并跳过；② `rhi_metal.m` 新增的
+`rhi_shader_create_path` 依赖 `shader_read_file`，`test_rhi_metal_device_contract` 与
+`test_rhi_metal_frame_lifecycle` 的源文件列表缺 `src/core/shader_io.c`，链接失败，已补上。
+复核结果：Metal 构建（含 5 个手动 fuzz 目标）CTest `179/179`，`-L graphics` `5/5`；
+MoltenVK 构建（`-DENGINE_VULKAN=ON`，与 CI 一致）`179/179`，`test_vulkan` 与
+`rhi_swapchain_bench` 均通过，D3D12 依赖门均为平台跳过。注意：`ENGINE_RHI_BACKEND=auto`
+在 macOS 上解析为 `opengl`（macOS 不支持，`rhi_gl.c` 编译失败），macOS 上必须显式给出
+`-DENGINE_VULKAN=ON` 或 `-DENGINE_RHI_BACKEND=metal`。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
