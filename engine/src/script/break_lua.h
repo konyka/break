@@ -294,13 +294,24 @@ BreakLuaError break_lua_runtime_reload_module(
  *  every hook invocation runs under a per-invocation Lua count hook
  *  (lua_sethook LUA_MASKCOUNT); budgets above 2^31-1 are clamped to
  *  2^31-1 instructions. The accounting is per hook invocation, NOT
- *  cumulative across modules or frames. While a hook runs under the budget,
- *  any nested Lua execution on the owned state counts toward the same
- *  budget. Exceeding the budget aborts the hook with an error: the fault is
- *  recorded like any hook error (with a budget flag) and the module is
- *  MARKED — its frame hooks are skipped on subsequent dispatches until the
- *  next committed reload clears the mark (a fail-closed, deterministic
- *  runaway-module policy). Other modules are unaffected.
+ *  cumulative across modules or frames. KNOWN LIMIT (pinned by review,
+ *  fixed by the Task 4 sandbox): Lua 5.4 hooks are per-coroutine — the
+ *  budget covers the MAIN coroutine only. Nested Lua execution on the main
+ *  coroutine (pcall chains, the test-only reloader, etc.) counts toward the
+ *  armed budget, but a coroutine created at chunk-load time (hook mask 0)
+ *  resumed inside a budgeted hook runs uncounted, and a coroutine created
+ *  inside a budgeted hook inherits the mask with a FRESH full countdown
+ *  (lstate.c: lua_newthread -> resethookcount). Module environments
+ *  currently inherit the base globals (including `coroutine`), so a module
+ *  could burn unbounded instructions per frame despite the budget; the
+ *  Task 4 sandbox closes this by not exposing raw `coroutine` to module
+ *  environments (or exposing a budget-preserving wrapper) — recorded as a
+ *  Task 4 acceptance checkbox in the plan. Exceeding the budget aborts the
+ *  hook with an error: the fault is recorded like any hook error (with a
+ *  budget flag) and the module is MARKED — its frame hooks are skipped on
+ *  subsequent dispatches until the next committed reload clears the mark
+ *  (a fail-closed, deterministic runaway-module policy). Other modules are
+ *  unaffected.
  *
  *  OWNER THREAD: break_lua_runtime_call returns BREAK_LUA_REJECTED from a
  *  non-owner thread. begin_frame/end_frame return void, so a non-owner call

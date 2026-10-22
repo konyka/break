@@ -52,7 +52,7 @@
   - module 在 dispatch 中途被 reload：本次仍以被 pin 的旧环境服务（pin 保活已退役表），新版本从下一次 dispatch 起服务。Task 3 中脚本尚无法触发 reload（bindings 属 Task 4），该路径经 test-only `_test_reload_now` binding 验证；host 在 begin/end 之间调 reload 则两次 dispatch 各自独立快照。
   - 快照时刻被禁用的 module 整个 dispatch 保持跳过，即使中途 reload。
 - **hook 错误策略**：每个 hook 在各自的 `lua_pcall` 下运行。失败的 hook 产生一条**有界错误记录**（module 名、hook 名、127 字节截断 + NUL 的消息、帧序号、生命周期计数器；本任务经 `BREAK_LUA_TESTING` 探针观测），其余 module 继续运行。普通 hook 错误**不**禁用 module，下一帧照常服务。
-- **指令预算**（`config.instruction_budget`，0 = 禁用）：启用时每次 hook 调用在独立的 Lua 计数钩子（`lua_sethook LUA_MASKCOUNT`）下运行；超过 2³¹-1 的预算 clamp 到 2³¹-1。记账是**每次 hook 调用**独立的，不跨 module、不跨帧累计；hook 运行期间 owned state 上的嵌套 Lua 执行计入同一预算。超预算 → hook 以错误中止：记录带 budget 标志的错误记录，并**标记**该 module——后续 dispatch 跳过其帧 hook，直到下一次成功提交的 reload 清除标记（fail-closed 的失控 module 确定性策略）；其余 module 不受影响。
+- **指令预算**（`config.instruction_budget`，0 = 禁用）：启用时每次 hook 调用在独立的 Lua 计数钩子（`lua_sethook LUA_MASKCOUNT`）下运行；超过 2³¹-1 的预算 clamp 到 2³¹-1。记账是**每次 hook 调用**独立的，不跨 module、不跨帧累计。**已知边界（review 钉住，Task 4 沙箱收口）**：Lua 5.4 hook 是 per-coroutine 的——预算只覆盖**主 coroutine**；主 coroutine 上的嵌套 Lua 执行（pcall 链、test-only reloader 等）计入同一预算，但 chunk 加载期创建的 coroutine（hook mask 0）在预算 hook 内 resume 完全不计数，预算 hook 内新建的 coroutine 虽继承 mask 却拿到**全新满额**计数（lstate.c: `lua_newthread` → `resethookcount`）。当前 module 环境经 metatable 回落继承含 `coroutine` 的 base 全局，故 module 可借此绕过帧预算；Task 4 沙箱通过不向 module 环境暴露裸 `coroutine`（或提供保预算的包装）关闭该逃逸，已列为计划 Task 4 验收勾选项。超预算 → hook 以错误中止：记录带 budget 标志的错误记录，并**标记**该 module——后续 dispatch 跳过其帧 hook，直到下一次成功提交的 reload 清除标记（fail-closed 的失控 module 确定性策略）；其余 module 不受影响。
 - owner 线程：`call` 非 owner → `REJECTED`；`begin_frame`/`end_frame` 返回 void，非 owner 调用是合约违规——test 构建 fail-stop abort（double-destroy 同一先例），production 构建忽略（no-op）；NULL runtime 对 begin/end 是 no-op。
 
 ### 2.6 测试钩子（test-only，`BREAK_LUA_TESTING`）
@@ -69,5 +69,5 @@
 
 ## 4. 验证证据索引
 
-- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（24）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 `build-sdd-l3`（normal）、`build-sdd-l3-asan`（ASan+UBSan）、`build-sdd-l3-tsan`（TSan）三树各自全绿。
+- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（26）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 `build-sdd-l3`（normal）、`build-sdd-l3-asan`（ASan+UBSan）、`build-sdd-l3-tsan`（TSan）三树各自全绿。
 - 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3}-report.md`。
