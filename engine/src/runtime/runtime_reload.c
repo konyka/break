@@ -94,6 +94,7 @@ struct BreakRuntimeReload {
     u32 request_timeout_ms;
     ReloadFacadeState facade_state;
     bool workers_should_exit;
+    u32 commits_in_flight; /* owner thread inside a commit hook right now */
     u64 next_epoch;
     /* stats (all under mutex) */
     u64 requested;
@@ -710,6 +711,15 @@ BreakRuntimeError break_runtime_reload_shutdown(
     }
 
     platform_mutex_lock(&reload->mutex);
+    if (reload->commits_in_flight != 0u) {
+        /* An owner-thread commit is in flight (commit_owner dropped the
+         * mutex around the hook): completing STOPPED now would let a
+         * cross-thread destroy() free the slots and mutex under the owner's
+         * feet. Retain live ownership — the coordinator's
+         * timeout-retains-ownership rule; retry after commit_owner returns. */
+        platform_mutex_unlock(&reload->mutex);
+        return BREAK_RUNTIME_TIMEOUT;
+    }
     reload->facade_state = RELOAD_FACADE_STOPPED;
     platform_mutex_unlock(&reload->mutex);
     return BREAK_RUNTIME_OK;
@@ -1115,7 +1125,10 @@ BreakRuntimeError break_runtime_reload_commit_owner(
             continue;
         }
         /* Claim: the owner takes over the staging bytes; the slot becomes
-         * COMMITTING (cancel now rejects — the swap may be in flight). */
+         * COMMITTING (cancel now rejects — the swap may be in flight). The
+         * in-flight counter makes a cross-thread shutdown retain live
+         * ownership (TIMEOUT) instead of freeing the facade under this
+         * thread's feet while the mutex is dropped around the hook. */
         staged = slot->staged;
         staged_size = slot->staged_size;
         slot->staged = NULL;
@@ -1123,6 +1136,7 @@ BreakRuntimeError break_runtime_reload_commit_owner(
         slot->state = RELOAD_SLOT_COMMITTING;
         slot->epoch = ++reload->next_epoch;
         claimed_epoch = slot->epoch;
+        reload->commits_in_flight++;
         memcpy(path, slot->path, sizeof(path));
         platform_mutex_unlock(&reload->mutex);
 
@@ -1132,6 +1146,7 @@ BreakRuntimeError break_runtime_reload_commit_owner(
                                             reload->hooks.user);
 
         platform_mutex_lock(&reload->mutex);
+        reload->commits_in_flight--;
         if (slot->state == RELOAD_SLOT_COMMITTING &&
             slot->epoch == claimed_epoch) {
             slot->state = RELOAD_SLOT_TERMINAL;

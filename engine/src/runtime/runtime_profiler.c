@@ -264,6 +264,38 @@ BreakRuntimeError break_runtime_profiler_export_meta(
     return BREAK_RUNTIME_OK;
 }
 
+BreakRuntimeError break_runtime_profiler_window_advance(
+    BreakRuntimeProfiler *profiler,
+    u32 count)
+{
+    u32 remaining;
+
+    if (!profiler) {
+        return BREAK_RUNTIME_INVALID;
+    }
+    if (!platform_thread_id_equal(profiler->owner,
+                                  platform_thread_current_id())) {
+        return BREAK_RUNTIME_REJECTED;
+    }
+    platform_mutex_lock(&profiler->mutex);
+    if (count > profiler->window_count) {
+        count = profiler->window_count; /* clamp: retire what exists */
+    }
+    remaining = profiler->window_count - count;
+    if (count > 0u && remaining > 0u) {
+        /* FIFO retirement: compact the live suffix down over the retired
+         * prefix. Bounded by the window capacity; no entry is created or
+         * destroyed here, only moved. */
+        memmove(profiler->window, profiler->window + count,
+                (usize)remaining * sizeof(*profiler->window));
+        memmove(profiler->window_values, profiler->window_values + count,
+                (usize)remaining * sizeof(*profiler->window_values));
+    }
+    profiler->window_count = remaining;
+    platform_mutex_unlock(&profiler->mutex);
+    return BREAK_RUNTIME_OK;
+}
+
 BreakRuntimeError break_runtime_profiler_stats(
     BreakRuntimeProfiler *profiler,
     BreakRuntimeProfilerStats *out_stats)

@@ -1407,6 +1407,92 @@ TEST(reload_owner_thread_enforced)
     vfs_destroy(vfs);
 }
 
+typedef struct ShutdownDuringCommitCtx {
+    BreakRuntimeReload *reload;
+    _Atomic u32 shutdown_result;
+} ShutdownDuringCommitCtx;
+
+static void shutdown_during_commit_worker(void *arg)
+{
+    ShutdownDuringCommitCtx *ctx = (ShutdownDuringCommitCtx *)arg;
+    u32 guard = 0u;
+    /* Wait until the owner thread is inside the commit hook. */
+    while (atomic_load_explicit(&g_probe.commit_entered,
+                                memory_order_acquire) == 0u &&
+           guard++ < 4000000u) {
+        platform_thread_yield();
+    }
+    /* Cross-thread shutdown while the owner commit is in flight: must return
+     * TIMEOUT and retain live ownership (nothing may be freed under the
+     * owner thread's feet). */
+    atomic_store_explicit(&ctx->shutdown_result,
+                          (u32)break_runtime_reload_shutdown(ctx->reload, 100u),
+                          memory_order_release);
+    /* Release the owner's commit hook so it can finalize. */
+    atomic_store_explicit(&g_probe.commit_release, 1u, memory_order_release);
+}
+
+TEST(reload_shutdown_during_inflight_commit_retains_ownership)
+{
+    VFS *vfs = fixture_setup();
+    BreakRuntimeReload *reload = NULL;
+    BreakRuntimeReloadConfig config;
+    BreakRuntimeReloadRequest request = 0u;
+    BreakRuntimeReloadState state = BREAK_RUNTIME_RELOAD_LOADING;
+    u32 count = 0u;
+    ASSERT_NOT_NULL(vfs);
+
+    probe_reset();
+    atomic_store_explicit(&g_probe.commit_block, 1u, memory_order_release);
+    config = probe_config(vfs);
+    ASSERT_EQ(break_runtime_reload_create(&config, &reload), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_reload_request(reload, "good.bin", &request),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(wait_state(reload, request, BREAK_RUNTIME_RELOAD_VALIDATING),
+              BREAK_RUNTIME_OK);
+
+    {
+        ShutdownDuringCommitCtx ctx;
+        BreakRuntimeThreadConfig thread_cfg;
+        BreakRuntimeThread *thread = NULL;
+        ctx.reload = reload;
+        atomic_store_explicit(&ctx.shutdown_result, 0xFFFFFFFFu,
+                              memory_order_release);
+        memset(&thread_cfg, 0, sizeof(thread_cfg));
+        thread_cfg.name = "shutdown-probe";
+        thread_cfg.fn = shutdown_during_commit_worker;
+        thread_cfg.arg = &ctx;
+        ASSERT_EQ(break_runtime_thread_create(&thread_cfg, &thread),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(break_runtime_thread_start(thread), BREAK_RUNTIME_OK);
+        /* Owner thread: enters the blocking commit hook; the helper thread
+         * runs shutdown across it and then releases the hook. */
+        ASSERT_EQ(break_runtime_reload_commit_owner(reload, 4u, &count),
+                  BREAK_RUNTIME_OK);
+        ASSERT_EQ(count, 1u);
+        ASSERT_EQ(break_runtime_thread_stop(thread, 2000u), BREAK_RUNTIME_OK);
+        break_runtime_thread_destroy(thread);
+        /* The cross-thread shutdown saw the in-flight commit and retained
+         * live ownership instead of reaching STOPPED. */
+        ASSERT_EQ(atomic_load_explicit(&ctx.shutdown_result,
+                                       memory_order_acquire),
+                  (u32)BREAK_RUNTIME_TIMEOUT);
+    }
+
+    /* The in-flight commit finalized normally: COMMITTED, exactly once. */
+    ASSERT_EQ(break_runtime_reload_poll(reload, request, &state),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(state, BREAK_RUNTIME_RELOAD_COMMITTED);
+    ASSERT_EQ(g_probe.live_version, 1u);
+
+    /* Retried shutdown (after commit_owner returned) completes; destroy is
+     * now safe. */
+    ASSERT_EQ(break_runtime_reload_shutdown(reload, 2000u), BREAK_RUNTIME_OK);
+    break_runtime_reload_destroy(reload);
+    vfs_destroy(vfs);
+}
+
 #if !defined(_WIN32)
 TEST(reload_destroy_requires_shutdown_aborts)
 {
@@ -1802,10 +1888,97 @@ TEST(profiler_window_bounded_drop)
     break_runtime_profiler_destroy(profiler);
 }
 
+TEST(profiler_window_advance_keeps_continuous)
+{
+    BreakRuntimeProfiler *profiler = NULL;
+    BreakRuntimeProfilerConfig config;
+    BreakRuntimeProfilerStats stats;
+    ProfilerMetaInstant meta[8];
+    u32 count = 0u;
+    u32 meta_count = 0u;
+    u32 i;
+    char name[16];
+
+    memset(&config, 0, sizeof(config));
+    config.event_capacity = 16u;
+    config.window_capacity = 4u;
+    ASSERT_EQ(break_runtime_profiler_create(&config, &profiler),
+              BREAK_RUNTIME_OK);
+
+    /* Phase A: saturate the window — further collects drop (counted). */
+    for (i = 0u; i < 6u; i++) {
+        snprintf(name, sizeof(name), "e%u", i);
+        ASSERT_EQ(break_runtime_profiler_record(profiler, name),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_profiler_collect(profiler, 8u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 6u);
+    ASSERT_EQ(break_runtime_profiler_stats(profiler, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.window_count, 4u);
+    ASSERT_EQ(stats.window_drops, 2u);
+    ASSERT_EQ(break_runtime_profiler_export_meta(profiler, meta, 8u,
+                                                 &meta_count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(meta_count, 4u);
+    ASSERT_STR_EQ(meta[0].key, "e0"); /* oldest first */
+
+    /* Retire the two oldest presented entries (FIFO): the next collect fits
+     * again — the bridge is continuous, not a one-shot buffer. */
+    ASSERT_EQ(break_runtime_profiler_window_advance(profiler, 2u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_stats(profiler, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.window_count, 2u);
+    ASSERT_EQ(break_runtime_profiler_export_meta(profiler, meta, 8u,
+                                                 &meta_count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(meta_count, 2u);
+    ASSERT_STR_EQ(meta[0].key, "e2"); /* e0/e1 retired */
+
+    ASSERT_EQ(break_runtime_profiler_window_advance(profiler, 4u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_stats(profiler, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.window_count, 0u);
+
+    /* Phase B: after retirement, subsequent collects no longer drop. */
+    for (i = 0u; i < 3u; i++) {
+        snprintf(name, sizeof(name), "n%u", i);
+        ASSERT_EQ(break_runtime_profiler_record(profiler, name),
+                  BREAK_RUNTIME_OK);
+    }
+    ASSERT_EQ(break_runtime_profiler_collect(profiler, 8u, &count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(count, 3u);
+    ASSERT_EQ(break_runtime_profiler_stats(profiler, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.window_count, 3u);
+    ASSERT_EQ(stats.window_drops, 2u); /* unchanged since phase A */
+    ASSERT_EQ(break_runtime_profiler_export_meta(profiler, meta, 8u,
+                                                 &meta_count),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(meta_count, 3u);
+    ASSERT_STR_EQ(meta[0].key, "n0");
+    ASSERT_STR_EQ(meta[2].key, "n2");
+
+    /* Advance clamps to the presented count; advancing an empty window is a
+     * no-op OK. */
+    ASSERT_EQ(break_runtime_profiler_window_advance(profiler, 100u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_stats(profiler, &stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.window_count, 0u);
+    ASSERT_EQ(break_runtime_profiler_window_advance(profiler, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_profiler_window_advance(NULL, 1u),
+              BREAK_RUNTIME_INVALID);
+
+    break_runtime_profiler_close(profiler);
+    break_runtime_profiler_destroy(profiler);
+}
+
 typedef struct ProfilerEnforceArg {
     BreakRuntimeProfiler *profiler;
     _Atomic u32 *collect_result;
     _Atomic u32 *export_result;
+    _Atomic u32 *advance_result;
 } ProfilerEnforceArg;
 
 static void profiler_enforce_worker(void *arg)
@@ -1823,6 +1996,10 @@ static void profiler_enforce_worker(void *arg)
         (u32)break_runtime_profiler_export_meta(enforce->profiler, meta, 4u,
                                                 &meta_count),
         memory_order_release);
+    atomic_store_explicit(
+        enforce->advance_result,
+        (u32)break_runtime_profiler_window_advance(enforce->profiler, 1u),
+        memory_order_release);
 }
 
 TEST(profiler_collect_owner_enforced)
@@ -1838,10 +2015,12 @@ TEST(profiler_collect_owner_enforced)
         BreakRuntimeThread *thread = NULL;
         _Atomic u32 collect_result = 0xFFFFFFFFu;
         _Atomic u32 export_result = 0xFFFFFFFFu;
+        _Atomic u32 advance_result = 0xFFFFFFFFu;
         ProfilerEnforceArg arg;
         arg.profiler = profiler;
         arg.collect_result = &collect_result;
         arg.export_result = &export_result;
+        arg.advance_result = &advance_result;
         memset(&thread_cfg, 0, sizeof(thread_cfg));
         thread_cfg.name = "prof-owner-probe";
         thread_cfg.fn = profiler_enforce_worker;
@@ -1854,6 +2033,8 @@ TEST(profiler_collect_owner_enforced)
         ASSERT_EQ(atomic_load_explicit(&collect_result, memory_order_acquire),
                   (u32)BREAK_RUNTIME_REJECTED);
         ASSERT_EQ(atomic_load_explicit(&export_result, memory_order_acquire),
+                  (u32)BREAK_RUNTIME_REJECTED);
+        ASSERT_EQ(atomic_load_explicit(&advance_result, memory_order_acquire),
                   (u32)BREAK_RUNTIME_REJECTED);
     }
 
@@ -1888,6 +2069,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(reload_shutdown_timeout_retains_live_ownership);
     RUN_TEST(reload_events_pump_defers_while_inflight);
     RUN_TEST(reload_owner_thread_enforced);
+    RUN_TEST(reload_shutdown_during_inflight_commit_retains_ownership);
 #if !defined(_WIN32)
     RUN_TEST(reload_destroy_requires_shutdown_aborts);
 #endif
@@ -1898,5 +2080,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(profiler_multithreaded_handoff);
     RUN_TEST(profiler_close_drains_then_closed);
     RUN_TEST(profiler_window_bounded_drop);
+    RUN_TEST(profiler_window_advance_keeps_continuous);
     RUN_TEST(profiler_collect_owner_enforced);
 TEST_MAIN_END()

@@ -37,11 +37,17 @@
  *    into the bounded presentation window. Window full -> the event is
  *    dropped and counted (stats.window_drops); the window never overwrites a
  *    live entry.
+ *  - break_runtime_profiler_window_advance() (owner thread) retires the
+ *    oldest presented entries FIFO after the consumer has exported them,
+ *    freeing window capacity: the bridge is a CONTINUOUS handoff, not a
+ *    one-shot buffer. Without advance the window eventually saturates and
+ *    every later collect drops (all counted, never silent).
  *  - break_runtime_profiler_export_meta() fills a caller-provided
  *    ProfilerMetaInstant array (key = event name, value = "tid=N ts=US")
  *    borrowing the window storage; the consumer hands the array straight to
  *    profiler_export_chrome_trace(). The borrowed pointers stay valid until
- *    the next collect()/export_meta()/destroy() on this bridge.
+ *    the next collect()/window_advance()/export_meta()/destroy() on this
+ *    bridge.
  *
  * close() stops admission (record -> CLOSED, idempotent); collect() drains
  * the remainder and reports CLOSED once a closed bridge is empty. destroy()
@@ -115,12 +121,20 @@ BreakRuntimeError break_runtime_profiler_collect(
  * `capacity`) with key/value pairs borrowing the presentation window; hand
  * the array to profiler_export_chrome_trace(). *out_count receives the
  * number filled. Borrowed pointers are valid until the next
- * collect/export_meta/destroy on this bridge. */
+ * collect/window_advance/export_meta/destroy on this bridge. */
 BreakRuntimeError break_runtime_profiler_export_meta(
     BreakRuntimeProfiler *profiler,
     ProfilerMetaInstant *out_meta,
     u32 capacity,
     u32 *out_count);
+
+/* COLLECTOR/OWNER THREAD ONLY (REJECTED otherwise). Retires the oldest
+ * min(`count`, window_count) presented entries FIFO, freeing window capacity
+ * for later collect() calls. Advancing zero entries is a no-op (OK). Call it
+ * after the consumer has exported/consumed the presented entries. */
+BreakRuntimeError break_runtime_profiler_window_advance(
+    BreakRuntimeProfiler *profiler,
+    u32 count);
 
 /* Observability snapshot. INVALID on NULL arguments. Legal in any state. */
 BreakRuntimeError break_runtime_profiler_stats(

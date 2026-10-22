@@ -80,8 +80,13 @@
  * stats.stale_drops), clears pending events/commit commands, then stops the
  * workers with the bounded runtime_thread stop contract. On a worker timeout
  * it returns BREAK_RUNTIME_TIMEOUT and RETAINS live ownership (state
- * STOPPING; nothing freed; a later shutdown resumes). Terminal states stay
- * pollable across shutdown. destroy() requires a fully stopped facade;
+ * STOPPING; nothing freed; a later shutdown resumes). The same TIMEOUT rule
+ * applies while an owner-thread commit is in flight (commit_owner drops the
+ * facade mutex around the commit hook): shutdown retains live ownership
+ * instead of reaching STOPPED, so a destroy() from another thread can never
+ * free the facade under the owner thread's feet — retry shutdown after
+ * commit_owner has returned. Terminal states stay pollable across shutdown.
+ * destroy() requires a fully stopped facade;
  * destroying a live facade is a contract violation (test builds abort),
  * mirroring the thread/queue destroy rules.
  *
@@ -96,7 +101,8 @@
  *   OVERLOAD — bounded queue/capacity full (see Backpressure); never blocks.
  *   STALE    — poll/cancel with a handle whose generation no longer names a
  *              live slot (consumed, or never valid).
- *   TIMEOUT  — shutdown budget expired with a worker still live (ownership
+ *   TIMEOUT  — shutdown budget expired with a worker still live, or an
+ *              owner-thread commit still in flight at shutdown (ownership
  *              retained, retry allowed).
  *   OOM      — allocation failure at create. (A staging allocation failure
  *              during a request is delivered as the request's OOM state.)
