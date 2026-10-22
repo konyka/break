@@ -332,6 +332,27 @@ target_include_directories(break_replication_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_replication_core PUBLIC break_ecs_replication)
 
+# Formal optional Snowflake network/session library. Produced whenever
+# BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
+# engine target stays transport-neutral and never links it. Consumers
+# (engine_demo and dxx_break excluded) opt into break_net explicitly.
+if(BREAK_ENABLE_SNOWFLAKE)
+    add_library(break_net STATIC
+        src/network/break_net_adapter.c
+        src/network/break_net_events.c
+        src/network/break_net_message.c
+        src/network/break_net_protocol.c
+        src/network/break_net_envelope.c
+        src/network/break_net_message_registry.c
+        src/network/break_session.c)
+    set_property(TARGET break_net PROPERTY C_STANDARD 11)
+    target_include_directories(break_net PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(break_net PRIVATE
+        ${SNOWFLAKE_SOURCE_DIR}/include)
+    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+endif()
+
 # Engine library
 set(RHI_CORE_SOURCES
     src/rhi/rhi.c
@@ -3266,27 +3287,10 @@ endif()
     set_tests_properties(test_break_replication_fragment PROPERTIES
         TIMEOUT 20 LABELS "network;replication;fragmentation")
 
-    # break_net is a test-only Snowflake integration target. It is generated
-    # only when both ENGINE_BUILD_TESTS and BREAK_ENABLE_SNOWFLAKE are ON;
-    # engine_demo and dxx_break do not link it.
+    # Adapter-backed test executables link the formal top-level break_net
+    # target (defined independent of ENGINE_BUILD_TESTS when
+    # BREAK_ENABLE_SNOWFLAKE=ON); engine_demo and dxx_break do not link it.
     if(BREAK_ENABLE_SNOWFLAKE)
-        add_library(break_net STATIC
-            src/network/break_net_adapter.c
-            src/network/break_net_events.c
-            src/network/break_net_message.c
-            src/network/break_net_protocol.c
-            src/network/break_net_envelope.c
-            src/network/break_net_message_registry.c
-            src/network/break_session.c)
-        target_link_libraries(break_net PUBLIC break_replication_core)
-        target_include_directories(break_net PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        set_property(TARGET break_net PROPERTY C_STANDARD 11)
-        target_include_directories(break_net PUBLIC
-            ${CMAKE_CURRENT_SOURCE_DIR}/src)
-        target_include_directories(break_net PRIVATE
-            ${SNOWFLAKE_SOURCE_DIR}/include)
-        target_link_libraries(break_net PUBLIC snow::net)
-
         add_executable(test_break_net_adapter tests/test_break_net_adapter.c)
         target_include_directories(test_break_net_adapter PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})

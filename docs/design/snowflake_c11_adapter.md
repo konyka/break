@@ -14,7 +14,24 @@ expose Snowflake concrete structs in its public headers.
 
 When enabled, the engine CMake configuration requires
 `SNOWFLAKE_SOURCE_DIR` and links the actual `snow::net` target. There is no
-fallback transport.
+fallback transport; enabling `BREAK_ENABLE_SNOWFLAKE` without a valid
+`SNOWFLAKE_SOURCE_DIR` fails configure with a fatal error.
+
+## Target graph
+
+`break_net` is a formal top-level static library target in
+`engine/CMakeLists.txt`, produced whenever `BREAK_ENABLE_SNOWFLAKE=ON`,
+independent of `ENGINE_BUILD_TESTS`. It contains the adapter, event, message,
+protocol, envelope, message-registry, and session sources under
+`engine/src/network/`, and links `break_replication_core` and `snow::net`.
+
+The base `engine` target remains transport-neutral: it never compiles
+Snowflake headers and never links `snow::net` or `break_net`. Consumers opt
+into `break_net` explicitly. `engine_demo` and `dxx_break` do not consume
+`break_net`; wiring it into a production application is deferred to a separate
+integration task. The adapter/session/replication test executables
+(`test_break_net_adapter`, `test_break_session`, `test_break_replication`)
+link the formal `break_net` target when tests are enabled.
 
 ## Public API
 
