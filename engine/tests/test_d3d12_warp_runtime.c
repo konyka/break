@@ -11059,6 +11059,154 @@ TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R664: a no_vertex_input pipeline is never back-face culled, whichever way
+ * its generated triangle winds. VK (cullMode NONE) and GL already forced this;
+ * D3D12 only honoured disable_culling, so the skybox and particle pipelines,
+ * which do not set it, rendered only because their triangles happened to wind
+ * front-facing.
+ *
+ * Probe: the blit pair (SV_VertexID fullscreen triangle) with a push matrix
+ * that mirrors clip x, which flips the winding. disable_culling is left false
+ * on purpose. Before the fix the mirrored triangle was culled and the target
+ * kept its clear colour; now it is drawn in both orientations. A mesh pipeline
+ * (vertex input present, culling left at the default) must still cull the same
+ * mirrored triangle, so the change cannot have turned culling off globally. */
+TEST(no_vertex_input_pipelines_are_never_back_face_culled) {
+    static const unsigned char red[2 * 2 * 4] = {
+        255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255, 255, 0, 0, 255
+    };
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const float mirror_x[16] = { -1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const float tri[3 * 8] = {
+        -1.0f, -1.0f, 0.0f,  0, 0, 1,  0, 0,
+         3.0f, -1.0f, 0.0f,  0, 0, 1,  2, 0,
+        -1.0f,  3.0f, 0.0f,  0, 0, 1,  0, 2
+    };
+    RHIOffscreenFBODesc fbo_desc;
+    RHIOffscreenFBO fbo;
+    RHITextureDesc td;
+    RHITexture tex;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pd;
+    RHICmdBuffer *cmd;
+    unsigned char px[8 * 8 * 4];
+    int pass, i, drawn[2];
+    r643_mark();
+    memset(&fbo_desc, 0, sizeof(fbo_desc));
+    fbo_desc.width = 8u; fbo_desc.height = 8u;
+    fbo_desc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    fbo_desc.sample_count = 1u;
+    fbo = rhi_offscreen_fbo_create_desc(g_dev, &fbo_desc);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    memset(&td, 0, sizeof(td));
+    td.width = 2u; td.height = 2u;
+    td.format = RHI_FORMAT_R8G8B8A8_UNORM; td.mip_levels = 1u;
+    td.data = red;
+    tex = rhi_texture_create(g_dev, &td);
+    vs = rhi_shader_create(g_dev, "blit_hlsl.vert", 0, false);
+    fs = rhi_shader_create(g_dev, "blit_hlsl.frag", 0, true);
+    ASSERT_TRUE(rhi_handle_valid(tex) && rhi_handle_valid(vs) && rhi_handle_valid(fs));
+    memset(&pd, 0, sizeof(pd));
+    pd.vert = vs; pd.frag = fs; pd.no_vertex_input = true;
+    pd.depth_write_disable = true;              /* disable_culling stays false */
+    pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pipe = rhi_pipeline_create(g_dev, &pd);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    for (pass = 0; pass < 2; ++pass) {
+        const float *m = pass == 0 ? identity : mirror_x;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_offscreen_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_push_constants(cmd, 0u, m, 16u * sizeof(float));
+        rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+        rhi_cmd_draw(cmd, 3u, 1u);
+        rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        memset(px, 0, sizeof(px));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+        drawn[pass] = 0;
+        for (i = 0; i < 64; ++i) if (px[i * 4] > 240) ++drawn[pass];
+    }
+    if (drawn[0] != 64 || drawn[1] != 64)
+        printf("  no_vertex_input drawn pixels: normal %d, mirrored %d (want 64/64)\n",
+               drawn[0], drawn[1]);
+    ASSERT_EQ(drawn[0], 64);
+    ASSERT_EQ(drawn[1], 64);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+
+    /* Control: a mesh pipeline with default culling still culls the mirrored
+     * triangle. blinn_phong's push block starts with u_model, so the mirror
+     * matrix goes there; the other matrices stay identity. */
+    {
+        RHIBufferDesc bd;
+        RHIBuffer vbo, temporal;
+        i32 loc_model, loc_view, loc_proj, loc_ld, loc_lc, loc_am;
+        int mesh_drawn[2];
+        vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.vert", false);
+        fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong.frag", true);
+        ASSERT_TRUE(rhi_handle_valid(vs) && rhi_handle_valid(fs));
+        memset(&pd, 0, sizeof(pd));
+        pd.vert = vs; pd.frag = fs; pd.vertex_stride = 32u;
+        pd.depth_write_disable = true;
+        pd.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+        pipe = rhi_pipeline_create(g_dev, &pd);
+        ASSERT_TRUE(rhi_handle_valid(pipe));
+        loc_model = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_model");
+        loc_view = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_view");
+        loc_proj = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_proj");
+        loc_ld = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_dir");
+        loc_lc = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_light_color");
+        loc_am = rhi_pipeline_get_uniform_location(g_dev, pipe, "u_ambient");
+        memset(&bd, 0, sizeof(bd));
+        bd.size = sizeof(tri); bd.usage = RHI_BUFFER_USAGE_VERTEX; bd.initial_data = tri;
+        vbo = rhi_buffer_create(g_dev, &bd);
+        temporal = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+        ASSERT_TRUE(rhi_handle_valid(vbo) && rhi_handle_valid(temporal));
+        for (pass = 0; pass < 2; ++pass) {
+            cmd = rhi_frame_begin(g_dev);
+            ASSERT_TRUE(cmd != NULL);
+            rhi_offscreen_fbo_bind(cmd, &fbo);
+            rhi_cmd_bind_pipeline(cmd, pipe);
+            rhi_cmd_set_uniform_mat4(cmd, loc_model, pass == 0 ? identity : mirror_x);
+            rhi_cmd_set_uniform_mat4(cmd, loc_view, identity);
+            rhi_cmd_set_uniform_mat4(cmd, loc_proj, identity);
+            rhi_cmd_set_uniform_vec3(cmd, loc_ld, 0.0f, -1.0f, 0.0f);
+            rhi_cmd_set_uniform_vec3(cmd, loc_lc, 1.0f, 1.0f, 1.0f);
+            rhi_cmd_set_uniform_vec3(cmd, loc_am, 1.0f, 1.0f, 1.0f);
+            rhi_cmd_bind_uniform_buffer(cmd, temporal, 1u);
+            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+            rhi_cmd_bind_texture(cmd, tex, (RHISampler){0}, 0u);
+            rhi_cmd_draw(cmd, 3u, 1u);
+            rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+            ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+            memset(px, 0, sizeof(px));
+            ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+            ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+            mesh_drawn[pass] = 0;
+            for (i = 0; i < 64; ++i) if (px[i * 4] > 240) ++mesh_drawn[pass];
+        }
+        if (mesh_drawn[0] != 64 || mesh_drawn[1] != 0)
+            printf("  mesh pipeline drawn pixels: normal %d, mirrored %d (want 64/0)\n",
+                   mesh_drawn[0], mesh_drawn[1]);
+        ASSERT_EQ(mesh_drawn[0], 64);
+        ASSERT_EQ(mesh_drawn[1], 0);
+        rhi_buffer_destroy(g_dev, vbo);
+        rhi_buffer_destroy(g_dev, temporal);
+        rhi_pipeline_destroy(g_dev, pipe);
+        rhi_shader_destroy(g_dev, vs);
+        rhi_shader_destroy(g_dev, fs);
+    }
+    ASSERT_TRUE(r643_clean("no_vertex_input_cull"));
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, tex);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -11159,6 +11307,7 @@ int main(void) {
     RUN_TEST(clustered_forward_sidecar_perturbs_the_normal_along_the_bitangent);
     RUN_TEST(static_samplers_clamp_for_fullscreen_pipelines_and_wrap_for_meshes);
     RUN_TEST(gpu_timer_measures_the_gpu_time_of_a_recorded_region);
+    RUN_TEST(no_vertex_input_pipelines_are_never_back_face_culled);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

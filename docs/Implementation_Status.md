@@ -1,6 +1,21 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R664 — D3D12 对 no_vertex_input 管线不再做背面剔除
+
+### 问题
+R662 审计登记的潜在风险：VK（`cullMode = NONE`）和 GL（`disable_culling || no_vertex_input`）都对 `no_vertex_input` 管线强制关闭背面剔除，D3D12 只认 `disable_culling`。天空盒、粒子等管线没有设 `disable_culling`，在 D3D12 上之所以能画出来，只是因为它们的三角形碰巧是正面朝向。任何改变朝向的矩阵（镜像、翻转的相机）都会让它们整个消失，而且没有任何警告。这类管线是全屏三角形或程序生成的几何，调用方从未选择过绕序，背面剔除只会白白丢掉它们。
+
+### 修复
+`rhi_d3d12_create_graphics_pso`：`CullMode = (disable_culling || no_vertex_input) ? NONE : BACK`，与 VK/GL 一致。
+
+### 测试
+`no_vertex_input_pipelines_are_never_back_face_culled`：blit 管线（SV_VertexID 全屏三角形，`disable_culling` 故意不设）分别用单位矩阵和镜像 x 的推矩阵各画一次，后者翻转绕序。要求两次都铺满 64 个像素。对照组：带顶点输入、默认剔除的 blinn_phong 网格管线画同一个镜像三角形，必须被剔除（0 像素），而正常朝向画满（64 像素），证明没有把剔除整体关掉。
+先写测试、后改代码：修复前镜像那次是 0 像素（`drawn pixels: normal 64, mirrored 0`），失败原因正是被剔除；修复后 64/64，对照组 64/0。
+
+### 验证结果
+WARP 80/80，RTX 79/80（仅预期的 [1]），debug layer 0 错误 0 警告。demo 截图不变（前向 D3D12-GL 1.47、延迟 1.12，日志无警告），符合预期：这是潜在风险的修复，现有场景里没有朝向相反的 no_vertex_input 管线。
+
 ## 本轮更新：R663 — D3D12 GPU 计时器
 
 ### 问题
@@ -24,7 +39,7 @@ R662 的审计里唯一一组真正的空桩：`rhi_gpu_timer_create/destroy/beg
 第一版测试（一个长计时器、一个空计时器，三帧同样的负载）只抓得住「完全没解析」。把读槽改成当前槽、无视栅栏、写错偏移这三种变异它都放行——三帧负载相同，读到哪个槽的值都一样。所以改成上面的 300/100/30 阶梯加「立刻读 / 空闲后读」两次读取，并用 `.tmp/r663mut.py` 复跑全部变异。
 
 ### 验证结果
-WARP 79/79，RTX 78/79（仅预期的 [1]），debug layer 0 错误 0 警告。ctest：三棵树各 1 个失败，都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`），其余全过（D3D12 185/186、VK 181/182、GL 178/179）。这个失败与本轮无关：把本轮改动 stash 掉、回到已推送的 R662 提交，同一个用例照样失败；原因是 ToDesk 又在运行（进程 7896 在控制台会话），它会占用剪贴板，与更早会话里记录的现象一致（退出 ToDesk 后该用例通过）。
+WARP 79/79，RTX 78/79（仅预期的 [1]），debug layer 0 错误 0 警告。ctest：三棵树各 1 个失败，都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`），其余全过（D3D12 185/186、VK 181/182、GL 178/179）。这个失败与本轮无关：把本轮改动 stash 掉、回到已推送的 R662 提交，同一个用例照样失败；原因是 ToDesk 在远程会话中运行（进程 7896 在控制台会话），它会占用剪贴板。R664 复跑时 ToDesk 没有占着剪贴板，三棵树 186/186、182/182、179/179 全部通过，印证了这一点。
 
 ### 遗留
 - NEAREST 采样仍是双线性（需要真正的 sampler 描述符表）。

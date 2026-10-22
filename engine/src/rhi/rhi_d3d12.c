@@ -3313,8 +3313,14 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
     pso.InputLayout.pInputElementDescs = elements;
     pso.RasterizerState.FillMode = desc->wireframe ? D3D12_FILL_MODE_WIREFRAME
                                                    : D3D12_FILL_MODE_SOLID;
-    pso.RasterizerState.CullMode = desc->disable_culling ? D3D12_CULL_MODE_NONE
-                                                         : D3D12_CULL_MODE_BACK;
+    /* no_vertex_input also forces culling off, as on VK (cullMode NONE) and GL:
+     * those pipelines are fullscreen triangles / generated geometry whose
+     * winding the caller never chose, so a back-face cull can only ever drop
+     * them. Without this the skybox and particle pipelines drew only because
+     * their triangles happened to wind front-facing (R664). */
+    pso.RasterizerState.CullMode =
+        (desc->disable_culling || desc->no_vertex_input) ? D3D12_CULL_MODE_NONE
+                                                          : D3D12_CULL_MODE_BACK;
     pso.RasterizerState.FrontCounterClockwise = FALSE;
     pso.RasterizerState.DepthClipEnable = TRUE;
     /* R445 parity with VK/GL: fullscreen blits (write-disable without
