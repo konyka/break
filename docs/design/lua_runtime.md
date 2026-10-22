@@ -4,7 +4,7 @@
 
 本文记录 Stage 3 正式可选静态库 `break_lua` 到 Task 4 为止的**已交付** facade 合同，并明确区分仍为**设计-only** 的部分。状态词汇沿用 runtime 设计文档惯例：
 
-- **已交付**：代码、测试与 sanitizer lane 证据齐备的行为（构建树 `build-sdd-l4{,-asan,-tsan}`，报告 `.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4}-report.md`）。
+- **已交付**：代码、测试与 sanitizer lane 证据齐备的行为（Task 5 closeout 干净树 `build-sdd-l5{,-asan,-tsan}`，报告 `.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4,5}-report.md`）。
 - **设计-only / 未实现**：接口或意图已记录，但当前无任何代码承诺；不得写成已完成。
 
 `break_lua` 是正式可选库：`engine/CMakeLists.txt` 顶层 target（`ENGINE_BUILD_TESTS=OFF` 时同样产出），**不**链入 `engine`、`engine_demo`、`dxx_break`；本条目不构成 engine/demo 集成证据。兼容层 `engine/src/script/script_lua.c/.h` 保持逐字节不变，`test_script_lua` 在每个 lane 绿灯。
@@ -86,5 +86,6 @@
 
 ## 4. 验证证据索引
 
-- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（26）+ `test_break_lua_binding`（21）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 `build-sdd-l4`（normal）、`build-sdd-l4-asan`（ASan+UBSan，零报告；该 lane 抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l4-tsan`（TSan，四个二进制各连跑 10 次零报告）三树各自全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l4-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号。
-- 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4}-report.md`。
+- focused ctest：`test_break_lua_runtime`（8）+ `test_break_lua_module`（19）+ `test_break_lua_value`（26）+ `test_break_lua_binding`（22）+ `test_break_lua_target_contract` + 兼容层 `test_script_lua`，在 Task 5 closeout 干净树 `build-sdd-l5`（normal）、`build-sdd-l5-asan`（ASan+UBSan，零报告；per-task lane 曾抓到并已修复 batch double-destroy 的一例真实 UAF——registry 按值查询必须先于任何解引用）、`build-sdd-l5-tsan`（TSan，四个 break_lua 二进制各连跑 10 次零报告）三树各自 6/6 全绿；`ENGINE_BUILD_TESTS=OFF` 树（`build-sdd-l5-notests`）独立构建 `break_lua` 且 nm 验证 0 个 test-hook 导出符号（仅 26 个 `break_lua_*` production 导出）。
+- 全量套件（`ctest -LE 'graphics|fuzz'`，`build-sdd-l5`）：180/180 通过、0 失败、1 项 platform-skip（`test_d3d12_dependency_gate`，Windows-only 门）；兼容层 `engine/src/script/script_lua.c/.h` 与 `engine/tests/test_script_lua.c` 在 `master..HEAD` 全分支逐字节未动（diff 0 行）。
+- 任务报告：`.superpowers/sdd/2026-10-23-lua-runtime/task-{1,2,3,4,5}-report.md`。
