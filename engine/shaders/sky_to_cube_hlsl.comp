@@ -1,0 +1,88 @@
+// sky_to_cube_hlsl.comp - D3D12 sidecar of shaders/sky_to_cube.comp (the GL
+// variant). Renders the analytic atmospheric sky into one face of the HDR
+// environment cube (LINEAR radiance, no tonemap). One dispatch per face.
+//
+// u0 is the face, bound by rhi_cmd_bind_image_cubemap_face as a single-slice
+// TEXTURE2DARRAY UAV -- hence RWTexture2DArray indexed at slice 0.
+struct PushConsts {
+    int    u_face;        //  0
+    int    u_face_size;   //  4
+    float2 _pad0;         //  8
+    float3 u_sun_dir;     // 16
+    float  _pad1;         // 28
+    float3 u_sun_color;   // 32
+};                        // tail at 44
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_face 0
+// rhi:uniform u_face_size 4
+// rhi:uniform u_sun_dir 16
+// rhi:uniform u_sun_color 32
+RWTexture2DArray<float4> g_out_face : register(u0);
+
+static const float PI = 3.14159265359;
+static const float3 RAYLEIGH_COEFF = float3(5.5e-6, 13.0e-6, 22.4e-6);
+static const float MIE_COEFF = 21.0e-6;
+static const float RAYLEIGH_SCALE = 8.4e3;
+static const float MIE_SCALE = 1.25e3;
+static const float G_MIE = 0.758;
+static const float SUN_INTENSITY = 20.0;
+
+float phase_rayleigh(float cos_theta) {
+    return (3.0 / (16.0 * PI)) * (1.0 + cos_theta * cos_theta);
+}
+float phase_mie(float cos_theta) {
+    float g = G_MIE;
+    float g2 = g * g;
+    float num = (1.0 - g2);
+    float denom = (4.0 * PI) * (1.0 + g2 - 2.0 * g * cos_theta) *
+                  sqrt(1.0 + g2 - 2.0 * g * cos_theta);
+    return num / max(denom, 1e-6);
+}
+float atmosphere_density(float height) {
+    float rayleigh = exp(-max(height, 0.0) / RAYLEIGH_SCALE);
+    float mie = exp(-max(height, 0.0) / MIE_SCALE);
+    return min(rayleigh + mie, 1.0);
+}
+float3 cube_dir_from_face_uv(int face, float2 uv) {
+    float2 t = uv * 2.0 - 1.0;
+    float3 d;
+    if      (face == 0) d = float3( 1.0, -t.y, -t.x);
+    else if (face == 1) d = float3(-1.0, -t.y,  t.x);
+    else if (face == 2) d = float3( t.x,  1.0,  t.y);
+    else if (face == 3) d = float3( t.x, -1.0, -t.y);
+    else if (face == 4) d = float3( t.x, -t.y,  1.0);
+    else                d = float3(-t.x, -t.y, -1.0);
+    return normalize(d);
+}
+float3 sky_radiance(float3 ray, float3 sun) {
+    float cos_sun = max(dot(ray, sun), -1.0);
+    float rayleigh_phase = phase_rayleigh(cos_sun);
+    float mie_phase = phase_mie(cos_sun);
+    float zenith = acos(clamp(ray.y, -1.0, 1.0));
+    float density = atmosphere_density(zenith * 6371.0);
+    float3 rayleigh_scat = RAYLEIGH_COEFF * rayleigh_phase * density;
+    float mie_scat = MIE_COEFF * mie_phase * density;
+    float3 scattering = (rayleigh_scat + mie_scat) * SUN_INTENSITY;
+    float optical_depth = density * 0.5;
+    float3 extinction = exp(-(RAYLEIGH_COEFF + MIE_COEFF * 0.1) *
+                            optical_depth * 6371.0 * 0.01);
+    float3 sky = g_push.u_sun_color * scattering * extinction;
+    float sun_disc = smoothstep(0.9995, 0.9999, cos_sun);
+    float sun_halo = smoothstep(0.993, 0.999, cos_sun);
+    sky += g_push.u_sun_color * SUN_INTENSITY * 0.05 * sun_disc * extinction;
+    sky += g_push.u_sun_color * SUN_INTENSITY * 0.008 * sun_halo * extinction;
+    float horizon = 1.0 - abs(ray.y);
+    horizon = horizon * horizon * horizon;
+    sky += g_push.u_sun_color * 0.1 * horizon * extinction;
+    return max(sky, 0.0);
+}
+
+[numthreads(16, 16, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    int2 px = int2(id.xy);
+    if (px.x >= g_push.u_face_size || px.y >= g_push.u_face_size) return;
+    float2 uv = (float2(px) + 0.5) / float(g_push.u_face_size);
+    float3 ray = cube_dir_from_face_uv(g_push.u_face, uv);
+    float3 sun = normalize(g_push.u_sun_dir);
+    g_out_face[uint3(px, 0)] = float4(sky_radiance(ray, sun), 1.0);
+}

@@ -18,6 +18,7 @@
 #include <renderer/particles.h>
 #include <renderer/gpucull.h>
 #include <renderer/occlusion_cull.h>
+#include <renderer/ibl.h>
 #include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
@@ -7470,7 +7471,9 @@ TEST(deferred_lighting_sidecar_matches_the_brdf_and_csm_and_clusters) {
     ASSERT_EQ(ds._loc_shadow_bias, 156);
     ASSERT_EQ(ds._loc_point_count, 160);
     ASSERT_EQ(ds._loc_dir_count, 164);
-    ASSERT_EQ(ds._loc_point_shadow_far_planes, 176);
+    /* R654: 168 -- the IBL tables took the root DWORDs the old 176..192
+     * slot used; see deferred_light_hlsl.frag. */
+    ASSERT_EQ(ds._loc_point_shadow_far_planes, 168);
     t[0] = r644_tex(200, 100, 50, 255);
     t[1] = r644_tex(0, 204, 153, 255);
     t[2] = r644_tex(128, 128, 255, 255);
@@ -9285,6 +9288,296 @@ TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction) {
     occlusion_cull_shutdown(&oc);
 }
 
+/* R654: the IBL bake on D3D12, through the real IBLSystem, against a CPU
+ * replay of the four GLSL compute shaders.
+ *  - env (sky_to_cube): six faces, sampled texels;
+ *  - irradiance: the 1024-sample cosine-weighted sum over the env cube,
+ *    replayed with the env texel the sample direction lands on (the GPU
+ *    filters LINEAR between texels; at 128^2 the difference stays well
+ *    under the tolerance);
+ *  - BRDF LUT: the 1024-sample split-sum integral at sampled texels;
+ *  - prefilter: mip 0 (roughness 0, a mirror: equals the env direction)
+ *    and the coarsest mip (roughness 1).
+ * A face/mip written to the wrong subresource, a wrong face basis or a
+ * cube read through the wrong view dimension fails one of these. */
+bool rhi_d3d12_cube_read_face(RHIDevice *dev, RHICubemap cm, u32 face,
+                              u32 mip, void *dst);
+static double r654_h2f(u16 h) { return warp_half_to_float(h); }
+static void r654_dir(int face, double u, double v, double d[3]) {
+    double tx = u * 2.0 - 1.0, ty = v * 2.0 - 1.0, l;
+    switch (face) {
+    case 0:  d[0] = 1;   d[1] = -ty; d[2] = -tx; break;
+    case 1:  d[0] = -1;  d[1] = -ty; d[2] = tx;  break;
+    case 2:  d[0] = tx;  d[1] = 1;   d[2] = ty;  break;
+    case 3:  d[0] = tx;  d[1] = -1;  d[2] = -ty; break;
+    case 4:  d[0] = tx;  d[1] = -ty; d[2] = 1;   break;
+    default: d[0] = -tx; d[1] = -ty; d[2] = -1;  break;
+    }
+    l = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    d[0] /= l; d[1] /= l; d[2] /= l;
+}
+/* Inverse of the face mapping: direction -> (face, texel) on a size^2 face. */
+static void r654_lookup(const double d[3], int size, int *face, int *x, int *y) {
+    double ax = fabs(d[0]), ay = fabs(d[1]), az = fabs(d[2]), sc, tc, ma;
+    if (ax >= ay && ax >= az) {
+        ma = ax;
+        if (d[0] > 0) { *face = 0; sc = -d[2]; tc = -d[1]; }
+        else          { *face = 1; sc = d[2];  tc = -d[1]; }
+    } else if (ay >= az) {
+        ma = ay;
+        if (d[1] > 0) { *face = 2; sc = d[0]; tc = d[2]; }
+        else          { *face = 3; sc = d[0]; tc = -d[2]; }
+    } else {
+        ma = az;
+        if (d[2] > 0) { *face = 4; sc = d[0];  tc = -d[1]; }
+        else          { *face = 5; sc = -d[0]; tc = -d[1]; }
+    }
+    *x = (int)floor((sc / ma + 1.0) * 0.5 * size);
+    *y = (int)floor((tc / ma + 1.0) * 0.5 * size);
+    if (*x < 0) *x = 0;
+    if (*x >= size) *x = size - 1;
+    if (*y < 0) *y = 0;
+    if (*y >= size) *y = size - 1;
+}
+static double r654_radical(u32 bits) {
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return (double)bits * 2.3283064365386963e-10;
+}
+static void r654_basis(const double n[3], double t[3], double b[3]) {
+    double up[3] = { 0, 0, 1 }, l;
+    if (fabs(n[2]) >= 0.999) { up[0] = 1; up[2] = 0; }
+    t[0] = up[1] * n[2] - up[2] * n[1];
+    t[1] = up[2] * n[0] - up[0] * n[2];
+    t[2] = up[0] * n[1] - up[1] * n[0];
+    l = sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+    t[0] /= l; t[1] /= l; t[2] /= l;
+    b[0] = n[1] * t[2] - n[2] * t[1];
+    b[1] = n[2] * t[0] - n[0] * t[2];
+    b[2] = n[0] * t[1] - n[1] * t[0];
+}
+static void r654_ggx(double xi0, double xi1, const double n[3], double rough,
+                     double h[3]) {
+    double a = rough * rough, phi = 2.0 * 3.14159265359 * xi0;
+    double ct = sqrt((1.0 - xi1) / (1.0 + (a * a - 1.0) * xi1));
+    double st = sqrt(1.0 - ct * ct), t[3], b[3], hl[3], l;
+    int c;
+    hl[0] = cos(phi) * st; hl[1] = sin(phi) * st; hl[2] = ct;
+    r654_basis(n, t, b);
+    for (c = 0; c < 3; ++c) h[c] = t[c] * hl[0] + b[c] * hl[1] + n[c] * hl[2];
+    l = sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]);
+    for (c = 0; c < 3; ++c) h[c] /= l;
+}
+TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders) {
+    static IBLSystem ibl;
+    static u16 env[6 * 128 * 128 * 4];
+    static u16 irr[6 * 64 * 64 * 4];
+    static u16 lut[512 * 512 * 4];
+    static u16 pref0[256 * 256 * 4];
+    static u16 pref4[16 * 16 * 4];
+    const f32 sun_dir[3] = { 0.55f, 0.25f, 0.8f };
+    const f32 sun_col[3] = { 1.0f, 0.9f, 0.7f };
+    int f, i, c, checked = 0;
+    r643_mark();
+    memset(&ibl, 0, sizeof(ibl));
+    ibl_init(&ibl, g_dev);
+    ASSERT_TRUE(rhi_handle_valid(ibl.env_map) && rhi_handle_valid(ibl.irradiance_map) &&
+                rhi_handle_valid(ibl.prefilter_map) && rhi_handle_valid(ibl.brdf_lut));
+    ibl_capture_env_sky(&ibl, g_dev, sun_dir, sun_col);
+    ibl_generate(&ibl, g_dev, ibl.env_map);
+    ASSERT_TRUE(ibl.ready);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ibl.env_map, env, sizeof(env)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ibl.irradiance_map, irr, sizeof(irr)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ibl.brdf_lut, lut, sizeof(lut)));
+    ASSERT_TRUE(rhi_d3d12_cube_read_face(g_dev, ibl.prefilter_map, 4u, 0u, pref0));
+    ASSERT_TRUE(rhi_d3d12_cube_read_face(g_dev, ibl.prefilter_map, 4u, 4u, pref4));
+
+    /* Env: the sky is brighter towards the sun than away from it, on the
+     * face pair of each axis the sun leans to; and no face is black. */
+    {
+        double mean[6] = { 0 };
+        for (f = 0; f < 6; ++f) {
+            for (i = 0; i < 128 * 128; ++i)
+                for (c = 0; c < 3; ++c) mean[f] += r654_h2f(env[(f * 128 * 128 + i) * 4 + c]);
+            ASSERT_TRUE(mean[f] > 0.0);
+        }
+        ASSERT_TRUE(mean[0] > mean[1]);   /* sun +x */
+        ASSERT_TRUE(mean[2] > mean[3]);   /* sun +y */
+        ASSERT_TRUE(mean[4] > mean[5]);   /* sun +z */
+    }
+    /* Env, texel by texel: the sky depends on the direction strongly enough
+     * (sun lobe, horizon) that a face rendered with a flipped or swapped
+     * axis shows up at the sampled texels. CPU replay of sky_to_cube.comp's
+     * radiance. */
+    {
+        const double sd = sqrt((double)sun_dir[0] * sun_dir[0] +
+                               (double)sun_dir[1] * sun_dir[1] +
+                               (double)sun_dir[2] * sun_dir[2]);
+        const double sun[3] = { sun_dir[0] / sd, sun_dir[1] / sd, sun_dir[2] / sd };
+        static const int tex[5][2] = { { 5, 9 }, { 120, 17 }, { 64, 100 },
+                                       { 30, 110 }, { 99, 61 } };
+        int k;
+        for (f = 0; f < 6; ++f) {
+            for (k = 0; k < 5; ++k) {
+                double d[3], cs, rph, mph, zen, dens, ext[3], sky[3], hz;
+                const double RC[3] = { 5.5e-6, 13.0e-6, 22.4e-6 };
+                const double MIE = 21.0e-6, SI = 20.0;
+                double g = 0.758, g2 = g * g, dn;
+                double sc[3];
+                r654_dir(f, (tex[k][0] + 0.5) / 128.0, (tex[k][1] + 0.5) / 128.0, d);
+                cs = d[0] * sun[0] + d[1] * sun[1] + d[2] * sun[2];
+                if (cs < -1.0) cs = -1.0;
+                rph = (3.0 / (16.0 * 3.14159265359)) * (1.0 + cs * cs);
+                dn = (4.0 * 3.14159265359) * (1.0 + g2 - 2.0 * g * cs) *
+                     sqrt(1.0 + g2 - 2.0 * g * cs);
+                mph = (1.0 - g2) / fmax(dn, 1e-6);
+                zen = acos(fmax(-1.0, fmin(1.0, d[1])));
+                dens = fmin(exp(-fmax(zen * 6371.0, 0.0) / 8.4e3) +
+                            exp(-fmax(zen * 6371.0, 0.0) / 1.25e3), 1.0);
+                hz = 1.0 - fabs(d[1]); hz = hz * hz * hz;
+                sc[0] = sun_col[0]; sc[1] = sun_col[1]; sc[2] = sun_col[2];
+                for (c = 0; c < 3; ++c) {
+                    ext[c] = exp(-(RC[c] + MIE * 0.1) * dens * 0.5 * 6371.0 * 0.01);
+                    sky[c] = sc[c] * ((RC[c] * rph * dens + MIE * mph * dens) * SI) * ext[c];
+                    sky[c] += sc[c] * 0.1 * hz * ext[c];
+                    if (sky[c] < 0.0) sky[c] = 0.0;
+                }
+                for (c = 0; c < 3; ++c) {
+                    double got = r654_h2f(env[((f * 128 + tex[k][1]) * 128 + tex[k][0]) * 4 + c]);
+                    /* The sun disc / halo smoothsteps (cs > 0.993) are left out
+                     * of the CPU model: only texels away from the sun count. */
+                    if (cs < 0.99 && fabs(got - sky[c]) > 0.03 * sky[c] + 1e-3)
+                        printf("  env face %d texel (%d,%d) ch %d = %f, cpu %f\n",
+                               f, tex[k][0], tex[k][1], c, got, sky[c]);
+                    if (cs < 0.99) ASSERT_TRUE(fabs(got - sky[c]) <= 0.03 * sky[c] + 1e-3);
+                }
+            }
+        }
+    }
+    /* Env, the sun lobe: ray.y alone cannot tell a face rendered mirrored
+     * left-to-right, but the Mie forward peak around the sun can. The texel
+     * the sun direction lands on must out-shine the texel mirrored across
+     * its face's vertical axis by a wide margin. */
+    {
+        const double sd = sqrt((double)sun_dir[0] * sun_dir[0] +
+                               (double)sun_dir[1] * sun_dir[1] +
+                               (double)sun_dir[2] * sun_dir[2]);
+        double sun[3] = { sun_dir[0] / sd, sun_dir[1] / sd, sun_dir[2] / sd };
+        int sf, sx, sy;
+        double at_sun = 0.0, mirrored = 0.0;
+        r654_lookup(sun, 128, &sf, &sx, &sy);
+        for (c = 0; c < 3; ++c) {
+            at_sun += r654_h2f(env[((sf * 128 + sy) * 128 + sx) * 4 + c]);
+            mirrored += r654_h2f(env[((sf * 128 + sy) * 128 + (127 - sx)) * 4 + c]);
+        }
+        if (!(at_sun > 3.0 * mirrored))
+            printf("  sun texel on face %d (%d,%d): %f, mirrored %f\n", sf, sx, sy,
+                   at_sun, mirrored);
+        ASSERT_TRUE(at_sun > 3.0 * mirrored);
+    }
+    /* Irradiance: CPU replay of the 1024-sample sum at an off-centre texel
+     * (12, 50) of each face -- off both axes, so a sign flip in either face
+     * coordinate moves the normal -- reading the env texel each sample
+     * direction lands on. */
+    for (f = 0; f < 6; ++f) {
+        double n[3], t[3], b[3], acc[3] = { 0, 0, 0 };
+        u32 s;
+        r654_dir(f, 12.5 / 64.0, 50.5 / 64.0, n);
+        r654_basis(n, t, b);
+        for (s = 0; s < 1024u; ++s) {
+            double xi0 = (double)s / 1024.0, xi1 = r654_radical(s);
+            double phi = 2.0 * 3.14159265359 * xi0, ct = sqrt(xi1), st = sqrt(1.0 - xi1);
+            double l[3];
+            int ef, ex, ey;
+            for (c = 0; c < 3; ++c)
+                l[c] = t[c] * cos(phi) * st + b[c] * sin(phi) * st + n[c] * ct;
+            r654_lookup(l, 128, &ef, &ex, &ey);
+            for (c = 0; c < 3; ++c)
+                acc[c] += r654_h2f(env[((ef * 128 + ey) * 128 + ex) * 4 + c]);
+        }
+        for (c = 0; c < 3; ++c) {
+            double want = acc[c] / 1024.0;
+            double got = r654_h2f(irr[((f * 64 + 50) * 64 + 12) * 4 + c]);
+            if (fabs(got - want) > 0.02 * want + 2e-4)
+                printf("  irradiance face %d ch %d = %f, cpu %f\n", f, c, got, want);
+            ASSERT_TRUE(fabs(got - want) <= 0.02 * want + 2e-4);
+            ++checked;
+        }
+    }
+    /* BRDF LUT at a few texels: the split-sum integral, 1024 samples. */
+    {
+        static const int px[4][2] = { { 40, 40 }, { 300, 100 }, { 100, 400 }, { 480, 480 } };
+        int k;
+        for (k = 0; k < 4; ++k) {
+            double ndv = (px[k][0] + 0.5) / 512.0, rough = (px[k][1] + 0.5) / 512.0;
+            double V[3] = { sqrt(1.0 - ndv * ndv), 0.0, ndv }, N[3] = { 0, 0, 1 };
+            double A = 0, B = 0, kk = rough * rough / 2.0;
+            u32 s;
+            for (s = 0; s < 1024u; ++s) {
+                double h[3], l[3], vdh, ndl, ndh, g, gv, fc;
+                r654_ggx((double)s / 1024.0, r654_radical(s), N, rough, h);
+                vdh = V[0] * h[0] + V[1] * h[1] + V[2] * h[2];
+                for (c = 0; c < 3; ++c) l[c] = 2.0 * vdh * h[c] - V[c];
+                ndl = l[2];
+                if (ndl <= 0.0) continue;
+                ndh = h[2] > 0 ? h[2] : 0; vdh = vdh > 0 ? vdh : 0;
+                g = (ndv / (ndv * (1 - kk) + kk)) * (ndl / (ndl * (1 - kk) + kk));
+                gv = g * vdh / fmax(ndh * ndv, 1e-5);
+                fc = pow(1.0 - vdh, 5.0);
+                A += (1.0 - fc) * gv; B += fc * gv;
+            }
+            A /= 1024.0; B /= 1024.0;
+            {
+                double ga = r654_h2f(lut[(px[k][1] * 512 + px[k][0]) * 4 + 0]);
+                double gb = r654_h2f(lut[(px[k][1] * 512 + px[k][0]) * 4 + 1]);
+                if (fabs(ga - A) > 0.003 || fabs(gb - B) > 0.003)
+                    printf("  brdf lut (%d,%d) = %f %f, cpu %f %f\n", px[k][0], px[k][1], ga, gb, A, B);
+                ASSERT_TRUE(fabs(ga - A) <= 0.003 && fabs(gb - B) <= 0.003);
+                checked += 2;
+            }
+        }
+    }
+    /* Prefilter mip 0 is roughness 0: every GGX sample is the mirror
+     * direction, so it equals the env radiance in that direction; the
+     * coarsest mip (roughness 1) of the face the sun is on (+Z) is darker
+     * than that face's brightest mip-0 texel (the sun lobe) and brighter
+     * than its darkest. */
+    {
+        static const int px2[3][2] = { { 128, 128 }, { 30, 200 }, { 220, 40 } };
+        int k;
+        double mn = 1e30, mx = 0, m4 = 0;
+        for (k = 0; k < 3; ++k) {
+            double d[3];
+            int ef, ex, ey;
+            r654_dir(4, (px2[k][0] + 0.5) / 256.0, (px2[k][1] + 0.5) / 256.0, d);
+            r654_lookup(d, 128, &ef, &ex, &ey);
+            for (c = 0; c < 3; ++c) {
+                double want = r654_h2f(env[((ef * 128 + ey) * 128 + ex) * 4 + c]);
+                double got = r654_h2f(pref0[(px2[k][1] * 256 + px2[k][0]) * 4 + c]);
+                if (fabs(got - want) > 0.05 * want + 5e-4)
+                    printf("  prefilter mip0 (%d,%d) ch %d = %f, env %f\n",
+                           px2[k][0], px2[k][1], c, got, want);
+                ASSERT_TRUE(fabs(got - want) <= 0.05 * want + 5e-4);
+                ++checked;
+            }
+        }
+        for (i = 0; i < 256 * 256; ++i) {
+            double v = r654_h2f(pref0[i * 4]);
+            if (v < mn) mn = v;
+            if (v > mx) mx = v;
+        }
+        for (i = 0; i < 16 * 16; ++i) m4 += r654_h2f(pref4[i * 4]);
+        m4 /= 256.0;
+        ASSERT_TRUE(m4 > mn && m4 < mx);
+    }
+    ASSERT_TRUE(checked == 18 + 8 + 9);
+    ASSERT_TRUE(r643_clean("ibl"));
+    ibl_destroy(&ibl, g_dev);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9376,6 +9669,7 @@ int main(void) {
     RUN_TEST(cluster_cull_sidecar_matches_the_cpu_binning);
     RUN_TEST(gpu_cull_sidecars_flag_compact_and_read_back);
     RUN_TEST(hi_z_pyramid_and_occlusion_cull_match_a_cpu_reduction);
+    RUN_TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

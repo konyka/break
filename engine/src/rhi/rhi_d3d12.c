@@ -1289,6 +1289,10 @@ void rhi_device_destroy(RHIDevice *dev) {
             ctx->white_fallback = RHI_HANDLE_NULL;
         }
         rhi_cubemap_depth_fbo_destroy(dev, &ctx->cube_fallback);
+        if (rhi_handle_valid(ctx->black_cube)) {
+            rhi_cubemap_destroy(dev, ctx->black_cube);
+            ctx->black_cube = RHI_HANDLE_NULL;
+        }
         if (ctx->swapchain_ready) {
             rhi_d3d12_swapchain_destroy(ctx, &ctx->swapchain);
             ctx->swapchain_ready = 0u;
@@ -3121,7 +3125,7 @@ static int rhi_d3d12_root_sig_add_bindings(RHI_D3D12RootSigBuilder *b,
                 goto next_binding;
             }
         }
-        if (b->param_count >= 16u || b->range_count >= 16u) return 0;
+        if (b->param_count >= 23u || b->range_count >= 24u) return 0;
         range = &b->ranges[b->range_count++];
         ZeroMemory(range, sizeof(*range));
         range->RangeType = range_type;
@@ -3177,7 +3181,7 @@ static ID3D12RootSignature *rhi_d3d12_root_signature_create(
     HRESULT hr;
     *out_push_param_index = UINT_MAX;
     *out_push_size = 0u;
-    if (b->push_constant_size > 0u && b->param_count < 16u) {
+    if (b->push_constant_size > 0u && b->param_count < 24u) {
         D3D12_ROOT_PARAMETER1 *param;
         UINT i;
         requested_dwords = b->push_constant_size / 4u;
@@ -3385,7 +3389,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
     RHI_D3D12Context *ctx;
     RHI_D3D12Pipeline *pd;
     RHI_D3D12RootSigBuilder builder;
-    ShaderIOBinding bindings[16];
+    ShaderIOBinding bindings[32];   /* R654: deferred_light declares 19 */
     usize binding_count;
     D3D12_SHADER_BYTECODE vs_code;
     D3D12_SHADER_BYTECODE ps_code;
@@ -3419,7 +3423,7 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         }
         binding_count = rhi_d3d12_reflect_hlsl(cs->source, cs->source_len,
-                                               bindings, 16u);
+                                               bindings, 32u);
         if (!rhi_d3d12_root_sig_from_bindings(&builder, bindings,
                                               binding_count))
             return RHI_HANDLE_NULL;
@@ -3461,13 +3465,13 @@ RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
             return RHI_HANDLE_NULL;
         }
         binding_count = rhi_d3d12_reflect_hlsl(vs->source, vs->source_len,
-                                               bindings, 16u);
+                                               bindings, 32u);
         if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings, binding_count,
                                              D3D12_SHADER_VISIBILITY_VERTEX))
             return RHI_HANDLE_NULL;
         if (ps != NULL) {
             binding_count = rhi_d3d12_reflect_hlsl(ps->source, ps->source_len,
-                                                   bindings, 16u);
+                                                   bindings, 32u);
             if (!rhi_d3d12_root_sig_add_bindings(&builder, bindings,
                                                  binding_count,
                                                  D3D12_SHADER_VISIBILITY_PIXEL))
@@ -3648,8 +3652,10 @@ static RHITexture rhi_d3d12_texture_create_ex(RHIDevice *dev,
         description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         /* R653: R32_FLOAT is the compute-written format (the Hi-Z pyramid,
          * written through rhi_cmd_bind_image_texture), so it may also back
-         * a UAV. */
-        if (desc->format == RHI_FORMAT_R32_FLOAT)
+         * a UAV. R654: so may RGBA16F -- the IBL BRDF LUT and cubemaps are
+         * written by compute too. */
+        if (desc->format == RHI_FORMAT_R32_FLOAT ||
+            desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT)
             description.Flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     }
     td = (RHI_D3D12Texture *)calloc(1u, sizeof(*td));
@@ -3875,6 +3881,79 @@ bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w,
     *out_h = td->height;
     return true;
 }
+/* R654: one subresource (slice * mips + mip) to tightly packed rows. */
+static bool rhi_d3d12_read_subresource(RHI_D3D12Context *ctx,
+                                       RHI_D3D12Texture *td, UINT sub,
+                                       u8 *dst) {
+    D3D12_RESOURCE_DESC description;
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
+    D3D12_TEXTURE_COPY_LOCATION src_loc, dst_loc;
+    UINT num_rows, r;
+    UINT64 row_size, total_size, row_bytes;
+    ID3D12Resource *staging;
+    void *mapped = NULL;
+    D3D12_RANGE read_range;
+    UINT mip = sub % td->mip_levels;
+    UINT w = td->width >> mip, h = td->height >> mip;
+    if (w == 0u) w = 1u;
+    if (h == 0u) h = 1u;
+    row_bytes = (UINT64)w * rhi_d3d12_format_bytes_per_pixel((RHIFormat)td->rhi_format);
+    ID3D12Resource_GetDesc(td->resource, &description);
+    ID3D12Device_GetCopyableFootprints(ctx->device, &description, sub, 1u, 0u,
+        &footprint, &num_rows, &row_size, &total_size);
+    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK, total_size);
+    if (staging == NULL) return false;
+    if (FAILED(rhi_d3d12_oneshot_begin(ctx))) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE);
+    ZeroMemory(&src_loc, sizeof(src_loc));
+    src_loc.pResource = td->resource;
+    src_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    src_loc.SubresourceIndex = sub;
+    ZeroMemory(&dst_loc, sizeof(dst_loc));
+    dst_loc.pResource = staging;
+    dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+    dst_loc.PlacedFootprint = footprint;
+    ID3D12GraphicsCommandList_CopyTextureRegion(ctx->upload_list, &dst_loc,
+                                                0u, 0u, 0u, &src_loc, NULL);
+    rhi_d3d12_transition(ctx->upload_list, td->resource,
+                         D3D12_RESOURCE_STATE_COPY_SOURCE, td->state);
+    if (rhi_d3d12_oneshot_flush(ctx) != RHI_RESULT_OK) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    read_range.Begin = 0u;
+    read_range.End = (SIZE_T)total_size;
+    if (FAILED(ID3D12Resource_Map(staging, 0u, &read_range, &mapped))) {
+        ID3D12Resource_Release(staging);
+        return false;
+    }
+    for (r = 0u; r < num_rows; ++r)
+        memcpy(dst + (UINT64)r * row_bytes,
+               (const u8 *)mapped + footprint.Offset +
+                   (UINT64)r * footprint.Footprint.RowPitch,
+               (size_t)row_bytes);
+    ID3D12Resource_Unmap(staging, 0u, NULL);
+    ID3D12Resource_Release(staging);
+    return true;
+}
+/* R654 test hook (not RHI API): read one face/mip of a colour cube, so the
+ * WARP suite can check the IBL prefilter chain below mip 0. */
+bool rhi_d3d12_cube_read_face(RHIDevice *dev, RHICubemap cm, u32 face,
+                              u32 mip, void *dst) {
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    if (dev == NULL || dst == NULL || face >= 6u) return false;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return false;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL || td->mip_split || mip >= td->mip_levels) return false;
+    return rhi_d3d12_read_subresource(ctx, td, face * td->mip_levels + mip,
+                                      (u8 *)dst);
+}
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8,
                              usize size) {
     RHI_D3D12Context *ctx;
@@ -3893,7 +3972,23 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8,
     ctx = (RHI_D3D12Context *)dev->backend_data;
     if (ctx == NULL || ctx->device_lost) return false;
     td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
-    if (td == NULL) return false;
+    /* R654: a colour cube (RHI_RES_CUBEMAP) reads back all six faces at
+     * mip 0, face-major, in native bytes (rhi.h R624). */
+    if (td == NULL) {
+        RHI_D3D12Texture *cube = (RHI_D3D12Texture *)rhi_get_resource_typed(
+            dev, tex, RHI_RES_CUBEMAP);
+        UINT64 face_bytes;
+        u32 f;
+        bool ok = true;
+        if (cube == NULL || cube->mip_split) return false;
+        face_bytes = (UINT64)cube->width * cube->height *
+                     rhi_d3d12_format_bytes_per_pixel((RHIFormat)cube->rhi_format);
+        if (size < (usize)(face_bytes * 6u)) return false;
+        for (f = 0u; f < 6u && ok; ++f)
+            ok = rhi_d3d12_read_subresource(ctx, cube, f * cube->mip_levels,
+                                            (u8 *)dst_rgba8 + face_bytes * f);
+        return ok;
+    }
     if (td->mip_split) {
         LOG_WARN("D3D12: read_pixels on a texture with per-mip states pending");
         return false;
@@ -4525,34 +4620,46 @@ void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r,
  * both the shadow pass's DSV and the lighting pass's SRV, reports the
  * R32_FLOAT alias instead of the unsamplable R32_TYPELESS it was
  * actually allocated with. */
-/* R653: per-mip state tracking (see RHI_D3D12Texture.mip_state). */
-static void rhi_d3d12_tex_mip_transition(ID3D12GraphicsCommandList *list,
-                                         RHI_D3D12Texture *td, UINT mip,
+/* R653/R654: per-subresource state tracking (see RHI_D3D12Texture.mip_state). */
+static UINT rhi_d3d12_tex_subresource_count(const RHI_D3D12Texture *td) {
+    UINT n = td->mip_levels * (td->array_size > 0u ? td->array_size : 1u);
+    return n < 64u ? n : 64u;
+}
+static void rhi_d3d12_tex_sub_transition(ID3D12GraphicsCommandList *list,
+                                         RHI_D3D12Texture *td, UINT sub,
                                          D3D12_RESOURCE_STATES want) {
     D3D12_RESOURCE_BARRIER barrier;
+    UINT n = rhi_d3d12_tex_subresource_count(td);
     UINT m;
-    if (mip >= td->mip_levels || mip >= 16u) return;
+    if (sub >= n) return;
     if (!td->mip_split) {
-        for (m = 0u; m < td->mip_levels && m < 16u; ++m) td->mip_state[m] = td->state;
+        for (m = 0u; m < n; ++m) td->mip_state[m] = td->state;
         td->mip_split = 1u;
     }
-    if (td->mip_state[mip] == want) return;
+    if (td->mip_state[sub] == want) return;
     ZeroMemory(&barrier, sizeof(barrier));
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = td->resource;
-    barrier.Transition.Subresource = mip;
-    barrier.Transition.StateBefore = td->mip_state[mip];
+    barrier.Transition.Subresource = sub;
+    barrier.Transition.StateBefore = td->mip_state[sub];
     barrier.Transition.StateAfter = want;
     ID3D12GraphicsCommandList_ResourceBarrier(list, 1u, &barrier);
-    td->mip_state[mip] = want;
+    td->mip_state[sub] = want;
+}
+static void rhi_d3d12_tex_mip_transition(ID3D12GraphicsCommandList *list,
+                                         RHI_D3D12Texture *td, UINT mip,
+                                         D3D12_RESOURCE_STATES want) {
+    if (mip >= td->mip_levels) return;
+    rhi_d3d12_tex_sub_transition(list, td, mip, want);
 }
 static void rhi_d3d12_tex_unify(ID3D12GraphicsCommandList *list,
                                 RHI_D3D12Texture *td,
                                 D3D12_RESOURCE_STATES want) {
+    UINT n = rhi_d3d12_tex_subresource_count(td);
     UINT m;
     if (!td->mip_split) return;
-    for (m = 0u; m < td->mip_levels && m < 16u; ++m)
-        rhi_d3d12_tex_mip_transition(list, td, m, want);
+    for (m = 0u; m < n; ++m)
+        rhi_d3d12_tex_sub_transition(list, td, m, want);
     td->mip_split = 0u;
     td->state = want;
 }
@@ -4560,17 +4667,11 @@ static DXGI_FORMAT rhi_d3d12_srv_format(const RHI_D3D12Texture *td) {
     return td->srv_format != DXGI_FORMAT_UNKNOWN ? td->srv_format
                                                  : td->dxgi_format;
 }
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit);
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
                           RHISampler sampler, u32 unit) {
-    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
-    ID3D12GraphicsCommandList *list;
-    RHI_D3D12Pipeline *pd;
     RHI_D3D12Texture *td;
-    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
-    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
-    D3D12_RESOURCE_STATES read_state;
-    UINT root_param;
-    UINT slot;
     /* KNOWN LIMIT — the sampler argument is accepted and then discarded, on
      * every backend path that reaches this function, including the material
      * binders. Root-signature construction resolves every SamplerState
@@ -4610,11 +4711,24 @@ void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex,
      * round: it is a root-signature change affecting every existing pipeline,
      * not a binder fix, and nothing in the current shader set needs it. */
     (void)sampler;
+    if (g_current_device == NULL) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
+                                                    RHI_RES_TEXTURE);
+    if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
+}
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit) {
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    D3D12_SHADER_RESOURCE_VIEW_DESC srv;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    D3D12_RESOURCE_STATES read_state;
+    UINT root_param;
+    UINT slot;
     if (ctx == NULL || g_current_device == NULL || unit >= 16u) return;
     list = rhi_d3d12_cmd_list(ctx);
     pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
-    td = (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, tex,
-                                                    RHI_RES_TEXTURE);
     if (list == NULL || pd == NULL || td == NULL || td->resource == NULL)
         return;
     root_param = pd->image_root_params[unit];
@@ -5032,14 +5146,116 @@ void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
     ID3D12GraphicsCommandList_ClearDepthStencilView(list, ctx->bound_dsv,
         D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
 }
+/* R654: colour cubemap (IBL env / irradiance / prefilter). An ordinary
+ * RHI_D3D12Texture -- six slices, mip chain, is_cube -- that lives in a
+ * RHI_RES_CUBEMAP slot, so RHICubemap handles never pass for 2D textures.
+ * RGBA16F is created UAV-capable: the IBL bake writes every face/mip from
+ * compute (rhi_cmd_bind_image_cubemap_face). Faces are uploaded at create
+ * when given (mip 0, native bytes per rhi.h R625). */
+static RHI_D3D12Texture *rhi_d3d12_cube_tex(RHIHandle handle) {
+    if (g_current_device == NULL) return NULL;
+    return (RHI_D3D12Texture *)rhi_get_resource_typed(g_current_device, handle,
+                                                      RHI_RES_CUBEMAP);
+}
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
-    (void)dev; (void)desc; return RHI_HANDLE_NULL;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    RHITextureDesc tdesc;
+    RHITexture tex;
+    RHIResourceSlot *slot;
+    u32 f;
+    if (dev == NULL || !rhi_cubemap_desc_validate(desc)) return RHI_HANDLE_NULL;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return RHI_HANDLE_NULL;
+    memset(&tdesc, 0, sizeof(tdesc));
+    tdesc.width = desc->size;
+    tdesc.height = desc->size;
+    tdesc.format = desc->format == RHI_FORMAT_R16G16B16A16_SFLOAT
+                       ? RHI_FORMAT_R16G16B16A16_SFLOAT : RHI_FORMAT_R8G8B8A8_UNORM;
+    tdesc.mip_levels = desc->mip_levels == 0u ? 1u : desc->mip_levels;
+    tex = rhi_d3d12_texture_create_ex(dev, &tdesc, 0, 6u);
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
+    if (td == NULL) return RHI_HANDLE_NULL;
+    td->is_cube = 1u;
+    slot = &dev->slots[tex.index];
+    slot->type = RHI_RES_CUBEMAP;
+    for (f = 0u; f < 6u; ++f) {
+        UINT bpp = rhi_d3d12_format_bytes_per_pixel(tdesc.format);
+        UINT64 row_bytes = (UINT64)desc->size * bpp;
+        D3D12_RESOURCE_DESC rd;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp;
+        UINT rows;
+        UINT64 rsz, total;
+        ID3D12Resource *staging;
+        void *mapped = NULL;
+        UINT sub = f * td->mip_levels;
+        if (desc->faces[f] == NULL) continue;
+        ID3D12Resource_GetDesc(td->resource, &rd);
+        ID3D12Device_GetCopyableFootprints(ctx->device, &rd, sub, 1u, 0u, &fp,
+                                           &rows, &rsz, &total);
+        staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, total);
+        if (staging == NULL) continue;
+        if (SUCCEEDED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
+            UINT r;
+            for (r = 0u; r < rows; ++r)
+                memcpy((u8 *)mapped + fp.Offset + (UINT64)r * fp.Footprint.RowPitch,
+                       (const u8 *)desc->faces[f] + (UINT64)r * row_bytes,
+                       (size_t)row_bytes);
+            ID3D12Resource_Unmap(staging, 0u, NULL);
+            if (SUCCEEDED(rhi_d3d12_oneshot_begin(ctx))) {
+                D3D12_TEXTURE_COPY_LOCATION dst_loc, src_loc;
+                ZeroMemory(&dst_loc, sizeof(dst_loc));
+                dst_loc.pResource = td->resource;
+                dst_loc.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+                dst_loc.SubresourceIndex = sub;
+                ZeroMemory(&src_loc, sizeof(src_loc));
+                src_loc.pResource = staging;
+                src_loc.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+                src_loc.PlacedFootprint = fp;
+                rhi_d3d12_transition(ctx->upload_list, td->resource, td->state,
+                                     D3D12_RESOURCE_STATE_COPY_DEST);
+                ID3D12GraphicsCommandList_CopyTextureRegion(ctx->upload_list,
+                    &dst_loc, 0u, 0u, 0u, &src_loc, NULL);
+                rhi_d3d12_transition(ctx->upload_list, td->resource,
+                                     D3D12_RESOURCE_STATE_COPY_DEST, td->state);
+                (void)rhi_d3d12_oneshot_flush(ctx);
+            }
+        }
+        ID3D12Resource_Release(staging);
+    }
+    return tex;
 }
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
-    (void)dev; (void)cm;
+    RHI_D3D12Texture *td;
+    if (dev == NULL) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL) return;
+    rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                               (IUnknown **)&td->resource);
+    free(td);
+    rhi_free_slot(dev, cm);
 }
+/* All faces/mips back to the shader-read state, on the upload list (the
+ * rhi.h contract: a device-idle one-time submit after the bake). */
 void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
-    (void)dev; (void)cm;
+    RHI_D3D12Context *ctx;
+    RHI_D3D12Texture *td;
+    const D3D12_RESOURCE_STATES read_state =
+        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+        D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+    if (dev == NULL) return;
+    ctx = (RHI_D3D12Context *)dev->backend_data;
+    if (ctx == NULL || ctx->device_lost) return;
+    td = (RHI_D3D12Texture *)rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
+    if (td == NULL) return;
+    if (!td->mip_split && td->state == read_state) return;
+    if (FAILED(rhi_d3d12_oneshot_begin(ctx))) return;
+    if (td->mip_split) rhi_d3d12_tex_unify(ctx->upload_list, td, read_state);
+    else rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
+    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK) {
+        td->state = read_state;
+        td->mip_split = 0u;
+    }
 }
 void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     RHI_D3D12Context *ctx;
@@ -5052,15 +5268,25 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     if (td == NULL) return;
     read_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
                  D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-    if (td->state == read_state) return;
+    if (!td->mip_split && td->state == read_state) return;
     if (FAILED(rhi_d3d12_oneshot_begin(ctx))) return;
-    rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
-    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK)
+    if (td->mip_split) rhi_d3d12_tex_unify(ctx->upload_list, td, read_state);
+    else rhi_d3d12_transition(ctx->upload_list, td->resource, td->state, read_state);
+    if (rhi_d3d12_oneshot_flush(ctx) == RHI_RESULT_OK) {
         td->state = read_state;
+        td->mip_split = 0u;
+    }
 }
+/* R654: a colour cube's TEXTURECUBE SRV at register(t<unit>). The cube is
+ * an RHI_D3D12Texture in an RHI_RES_CUBEMAP slot; rhi_d3d12_bind_texture_td
+ * is the per-unit binder rhi_cmd_bind_texture wraps. */
+static void rhi_d3d12_bind_texture_td(RHICmdBuffer *cmd, RHI_D3D12Texture *td,
+                                      u32 unit);
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm,
                           RHISampler sampler, u32 unit) {
-    (void)cmd; (void)cm; (void)sampler; (void)unit;
+    RHI_D3D12Texture *td = rhi_d3d12_cube_tex(cm);
+    (void)sampler;
+    if (td != NULL) rhi_d3d12_bind_texture_td(cmd, td, unit);
 }
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) { (void)cmd; }
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) { (void)cmd; }
@@ -5606,6 +5832,23 @@ static RHITexture rhi_d3d12_cube_fallback(RHI_D3D12Context *ctx) {
             D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0u, 0u, NULL);
     return ctx->cube_fallback.depth_tex;
 }
+/* R654: IBL cube fallback (t8 irradiance / t9 prefilter) -- a 1x1 RGBA16F
+ * colour cube of zeros, i.e. "no environment light", the GLSL #else branch
+ * of HAS_IBL. Created on first use and released with the context. */
+static RHICubemap rhi_d3d12_black_cube(RHI_D3D12Context *ctx) {
+    static const u16 zero[4] = { 0u, 0u, 0u, 0u };
+    RHICubemapDesc d;
+    u32 f;
+    if (ctx == NULL || g_current_device == NULL) return RHI_HANDLE_NULL;
+    if (rhi_handle_valid(ctx->black_cube)) return ctx->black_cube;
+    memset(&d, 0, sizeof(d));
+    d.size = 1u;
+    d.format = RHI_FORMAT_R16G16B16A16_SFLOAT;
+    d.mip_levels = 1u;
+    for (f = 0u; f < 6u; ++f) d.faces[f] = zero;
+    ctx->black_cube = rhi_cubemap_create(g_current_device, &d);
+    return ctx->black_cube;
+}
 /* Point-shadow cube unit 10 + i: the caller's cube when it is live, else the
  * cleared fallback. */
 static void rhi_d3d12_bind_point_shadow_cubes(RHICmdBuffer *cmd,
@@ -5700,12 +5943,18 @@ void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd,
      * Shadow and SSAO fall back to white (lit, unoccluded) like the material
      * binder, because the sidecar always declares them and a D3D12 table has
      * no unbound state. R647: the point-shadow cubes go to 10-13 (a live
-     * cube, else the 1.0 cube fallback). The IBL slots (7-9) are still not
-     * bound: the sidecar does not declare them and rhi_cubemap_create is a
-     * stub. */
+     * cube, else the 1.0 cube fallback). R654: the IBL inputs go to 7-9 --
+     * the BRDF LUT (white fallback) and the irradiance / prefiltered cubes
+     * (black fallback, so a missing environment adds no light). */
     RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
-    (void)brdf_lut; (void)irradiance_map; (void)prefilter_map;
     if (!rhi_d3d12_material_bindable(ctx)) return;
+    rhi_cmd_bind_texture(cmd, rhi_d3d12_material_slot(ctx, brdf_lut), sampler, 7u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(irradiance_map) != NULL
+                                  ? irradiance_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 8u);
+    rhi_cmd_bind_cubemap(cmd, rhi_d3d12_cube_tex(prefilter_map) != NULL
+                                  ? prefilter_map : rhi_d3d12_black_cube(ctx),
+                         sampler, 9u);
     rhi_d3d12_bind_point_shadow_cubes(cmd, ctx, point_shadow_cubes,
                                       point_shadow_count, cube_sampler);
     rhi_cmd_bind_texture(cmd, albedo_metallic, sampler, 0u);
@@ -6602,9 +6851,10 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit,
         mip_level >= td->mip_levels) return;
     param = pd->storage_root_params[unit];
     if (param == UINT_MAX) return;
-    if (td->rhi_format != (UINT)RHI_FORMAT_R32_FLOAT) {
-        LOG_WARN("D3D12: storage image bind refused -- only R32_FLOAT "
-                 "textures are created UAV-capable");
+    if (td->rhi_format != (UINT)RHI_FORMAT_R32_FLOAT &&
+        td->rhi_format != (UINT)RHI_FORMAT_R16G16B16A16_SFLOAT) {
+        LOG_WARN("D3D12: storage image bind refused -- only R32_FLOAT and "
+                 "RGBA16F textures are created UAV-capable");
         return;
     }
     if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
@@ -6625,14 +6875,56 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit,
     else
         ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
+/* R654: one face at one mip of a colour cube as a TEXTURE2DARRAY UAV with
+ * ArraySize 1 (the shader declares RWTexture2D, which a single-slice array
+ * UAV satisfies), and only that subresource moved to UNORDERED_ACCESS. */
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm,
                                      u32 face, u32 mip, u32 unit,
                                      bool write_only) {
-    (void)cmd; (void)cm; (void)face; (void)mip; (void)unit; (void)write_only;
+    RHI_D3D12Context *ctx = (RHI_D3D12Context *)cmd;
+    ID3D12GraphicsCommandList *list;
+    RHI_D3D12Pipeline *pd;
+    RHI_D3D12Texture *td;
+    D3D12_UNORDERED_ACCESS_VIEW_DESC uav;
+    D3D12_GPU_DESCRIPTOR_HANDLE gpu;
+    UINT param, slot;
+    (void)write_only;
+    if (ctx == NULL || g_current_device == NULL || unit >= 16u || face >= 6u) return;
+    list = rhi_d3d12_cmd_list(ctx);
+    pd = (RHI_D3D12Pipeline *)ctx->bound_pipeline;
+    td = rhi_d3d12_cube_tex(cm);
+    if (list == NULL || pd == NULL || td == NULL || td->resource == NULL ||
+        mip >= td->mip_levels) return;
+    param = pd->storage_root_params[unit];
+    if (param == UINT_MAX) return;
+    if (td->rhi_format != (UINT)RHI_FORMAT_R16G16B16A16_SFLOAT) {
+        LOG_WARN("D3D12: cube face storage bind refused -- only RGBA16F cubes "
+                 "are created UAV-capable");
+        return;
+    }
+    if (ctx->frame_srv_count >= RHI_D3D12_CBV_SRV_UAV_CAPACITY) return;
+    slot = rhi_d3d12_descriptor_take(ctx, &ctx->cbv_srv_uav_alloc);
+    if (slot == UINT_MAX) return;
+    ZeroMemory(&uav, sizeof(uav));
+    uav.Format = td->dxgi_format;
+    uav.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2DARRAY;
+    uav.Texture2DArray.MipSlice = mip;
+    uav.Texture2DArray.FirstArraySlice = face;
+    uav.Texture2DArray.ArraySize = 1u;
+    ID3D12Device_CreateUnorderedAccessView(ctx->device, td->resource, NULL,
+        &uav, rhi_d3d12_descriptor_cpu(&ctx->cbv_srv_uav_alloc, slot));
+    ctx->frame_srv_slots[ctx->frame_srv_count++] = slot;
+    rhi_d3d12_tex_sub_transition(list, td, face * td->mip_levels + mip,
+                                 D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+    gpu = rhi_d3d12_descriptor_gpu(&ctx->cbv_srv_uav_alloc, slot);
+    if (pd->is_compute)
+        ID3D12GraphicsCommandList_SetComputeRootDescriptorTable(list, param, gpu);
+    else
+        ID3D12GraphicsCommandList_SetGraphicsRootDescriptorTable(list, param, gpu);
 }
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm,
                                   RHISampler sampler, u32 unit) {
-    (void)cmd; (void)cm; (void)sampler; (void)unit;
+    rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
 }
 /* R653: a single-mip TEXTURE2D SRV at register(t<unit>) (rhi.h C-TEX-2:
  * mip 0 of the view is `mip_level`), with only that mip moved to the

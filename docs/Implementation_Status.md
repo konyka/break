@@ -1,6 +1,43 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R654 — **D3D12 IBL**：彩色立方体贴图、四个 IBL 计算着色器、延迟光照里的 BRDF LUT / 辐照度 / 预滤波环境光
+
+- **问题**：D3D12 上 `rhi_cubemap_create` / `rhi_cmd_bind_image_cubemap_face` / `rhi_cmd_bind_cubemap_sampler` / `rhi_cmd_bind_image_texture` 都是空桩，IBL 的四个计算着色器（`sky_to_cube`、`irradiance_env`、`prefilter_env`、`brdf_lut`）也没有 HLSL 版本。日志里是 `IBL: failed to create environment/irradiance/prefilter cubemap`、`compute shader compile failed: shaders/brdf_lut.comp`，延迟光照的 `diffuse_ibl` / `specular_ibl` 被写死成 0。
+- **后端：彩色立方体贴图**。
+  - `rhi_cubemap_create`：6 层、带 mip 链的纹理，登记为 `RHI_RES_CUBEMAP` 槽位，所以 `RHICubemap` 句柄永远不会被当成 2D 纹理。RGBA16F 创建时带 UAV 权限。给了 `faces[]` 就在创建时上传 mip 0。
+  - `rhi_cubemap_destroy`（走延迟释放）、`rhi_cubemap_transition_to_read`（把所有面/mip 统一到着色器可读状态）。
+  - `rhi_cmd_bind_image_cubemap_face`：把指定的（面，mip）绑成单切片 TEXTURE2DARRAY UAV（ArraySize = 1），只把这一个子资源转到 UNORDERED_ACCESS。
+  - `rhi_cmd_bind_cubemap` / `rhi_cmd_bind_cubemap_sampler`：TEXTURECUBE 的 SRV。
+  - `rhi_texture_read_pixels` 支持立方体：六个面按 mip 0 面主序读回（rhi.h R624 契约）。
+  - 为了能测预滤波链，加了一个测试专用的 `rhi_d3d12_cube_read_face`（不属于 RHI API），可读任意面/任意 mip。
+- **后端：状态跟踪从"按 mip"升级为"按子资源"**。R653 的 `mip_state[16]` 改为 `mip_state[64]`，下标是 D3D12 子资源号（切片 × mip 数 + mip），这样一个立方体可以一个面一个 mip 地写。`rhi_cmd_bind_texture` 和 `rhi_texture_transition_to_read` 在整资源使用前会先统一状态。`rhi_cmd_bind_image_texture` 现在也接受 RGBA16F（BRDF LUT）。
+- **新增 4 个 sidecar**：`sky_to_cube_hlsl.comp`、`irradiance_env_hlsl.comp`、`prefilter_env_hlsl.comp`、`brdf_lut_hlsl.comp`，逐行对应 GL 版（同样的 Hammersley / GGX 采样、同样的面方向表）。输出面是 `RWTexture2DArray` 的第 0 层，环境立方体读取用 `SampleLevel(…, 0)`。`ibl.c` 的加载器按 `caps.shader_sidecar_paths` 走 `*_path`。
+- **延迟光照开启 IBL**。`deferred_light_hlsl.frag` 里 `diffuse_ibl` / `specular_ibl` 现在和 GLSL 的 `HAS_IBL` 分支逐行一致：t7 BRDF LUT、t8 辐照度立方体、t9 预滤波立方体。`rhi_cmd_bind_deferred_gbuf_textures` 绑定它们；没有 IBL 数据时绑白色 LUT / 黑色立方体，两项 IBL 项恰好为 0，等同旧行为。
+- **根签名预算**：延迟光照现在有 17 张描述符表，加上 46 个 DWORD 的根常量，合计 63 / 64。为腾出空间，push 块缩到 184 字节：`u_point_shadow_far_planes` 从偏移 176 搬到 168（占用原来的填充位，拆成两个 float2 保证 4 个远平面连续，引擎仍然是一次写入 vec4）。为了容纳 17 张表，`RHI_D3D12RootSigBuilder` 的参数/范围数组从 16 扩到 24，着色器反射的绑定上限从 16 扩到 32（原来的上限会悄悄丢掉 `s10` 这个采样器，debug layer 报 [690]）。
+- **测试**：
+  - 新增 WARP 用例 `ibl_bake_matches_a_cpu_replay_of_the_compute_shaders`，用真实的 `IBLSystem` 做完整烘焙，再和 CPU 复算对比：
+    - 环境立方体：30 个纹素（6 面 × 5）与解析天空公式逐个比对（误差 3% 以内），外加太阳方向纹素必须比它的左右镜像亮至少 3 倍（这一项能分辨左右镜像的面）；
+    - 辐照度：6 个面各取偏离中心的纹素（12, 50），CPU 复算 1024 个余弦采样，误差 2% 以内；
+    - BRDF LUT：4 个纹素的 1024 样本分裂和积分，误差 0.003 以内；
+    - 预滤波：+Z 面 mip 0（粗糙度 0 应等于环境辐射）的 3 个纹素，以及最粗 mip 的平均值必须落在 mip 0 的最小值和最大值之间。
+  - `test_ibl` 的假后端补了 `rhi_device_get_capabilities` 和 `rhi_shader_create_compute_path`。
+  - 测试里的 `getenv` 调试开关已移除。
+- **反向验证**（每一项都让用例失败）：
+  - 辐照度的 +X 面镜像；预滤波的 V 方向翻转；BRDF LUT 里 k 用 /8 代替 /2；
+  - UAV 的面切片忽略；UAV 的 mip 忽略。
+  - 第一版测试漏掉了两个镜像：天空的 +Z 面镜像、辐照度的 +Z 面镜像。原因：天空的亮度只取决于 `ray.y` 和到太阳的夹角，面内左右镜像时，`ray.y` 相同的位置仍然对得上；而太阳一开始放在 +Y 面，+Z 面上没有太阳瓣。把太阳移到偏 +Z 的方向、并加上"太阳纹素 vs 其镜像"这一项后，天空 +Z 镜像才会失败。**辐照度的 +Z 面镜像仍然没有被捕捉到**：辐照度是对半球的余弦平均，在太阳不在该面附近时，面内左右镜像几乎不改变数值。这是一个已知的测试盲区，已如实记录。
+- **验证结果**：
+  - WARP 71/71，debug layer 0/0/alias 1。RTX 连跑 2 次都是 70/71，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 日志：D3D12 没有 `IBL:` 警告，debug layer 0 条。延迟截图里 IBL 在 D3D12 上贡献的平均亮度约为 3 级，GL 上约为 2 级（在两者都有 IBL 光的像素上，D3D12 3.5 对 GL 3.1）。把两边的 IBL 项都置零后，D3D12-GL 的 MAE 为 1.21，开着 IBL 为 1.22，也就是说没有拉开差距。
+  - demo 截图 MAE：延迟路径 D3D12-GL 0.69–1.23、VK-GL 0.30–0.85；前向路径正常时 D3D12-GL 1.4–1.5、VK-GL 3.4–3.6。
+  - **截图在机器有负载时会整体漂移**：本轮有几次前向截图异常（D3D12-GL 21–55、VK-GL 13–56），异常的运行里**没改动的 GL 和 VK 一起偏离**（GL 均值在 94.7–130 之间跳），帧率掉到 11–13。第 30 帧的场景状态依赖时间（太阳轨道、动画），帧率一低，三个后端画的就不是同一时刻。把本轮改动 stash 掉连跑 3 次基线都是 0.9–1.0；恢复改动后 4 次里 3 次正常、1 次异常。这是环境噪声，不是回归。
+- **遗留问题**：
+  - 辐照度的 +Z 面镜像无法被现有场景区分（见上）。
+  - 前向的 `pbr_clustered` 没有 D3D12 sidecar，所以 IBL 目前只进了延迟路径。
+  - 预滤波立方体的 mip 选择：GL 用 NEAREST_MIPMAP_NEAREST 采样，D3D12 的静态采样器是 LINEAR（面内双线性、mip 间线性），我用 `round(lod)` + `SampleLevel` 取最近的 mip；面内的双线性与 GL 的最近采样有亚纹素差异，在 64²/256² 的平滑环境图上不可见。
+
 ## 本轮更新：R653 — **D3D12 Hi-Z 遮挡剔除**（`hiz_supported = true`）；顺带修复三个后端共有的 `occlusion_cull.comp` 视锥判定失效
 
 - **问题**：D3D12 的 `hiz_supported` 为 false，`occlusion_cull_init` 直接失败（`device does not report Hi-Z support`）。没有 Hi-Z 金字塔，unified cull 只能对着 1×1 的 fallback 做视锥剔除。

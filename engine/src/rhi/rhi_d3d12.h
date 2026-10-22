@@ -168,6 +168,8 @@ typedef struct RHI_D3D12Context {
      * 1.0 (unshadowed) that fills a declared TextureCube register no live
      * point-shadow cube was supplied for. Released with white_fallback. */
     RHICubemapDepthFBO cube_fallback;
+    /* R654: 1x1 black colour cube for unbound IBL cube registers. */
+    RHICubemap black_cube;
     /* rhi_cmd_update_buffer / rhi_cmd_fill_buffer staging: each recorded
      * write gets its own UPLOAD buffer, copied in the frame's command list
      * so it is ordered against the commands around it (C-BUF-3). Released
@@ -238,13 +240,15 @@ typedef struct RHI_D3D12Texture {
      * instead of a 2D-array one, and rhi_d3d12_live_cube accepts the handle. */
     UINT is_cube;
     D3D12_RESOURCE_STATES state;
-    /* R653: per-mip states while a compute pass works mip by mip (the Hi-Z
-     * pyramid: one mip read as an SRV while the next ones are written as
-     * UAVs). mip_split == 0 means every mip is in `state`; otherwise
-     * mip_state[m] is authoritative and any whole-resource use first brings
-     * every mip back to one state (rhi_d3d12_tex_unify). */
+    /* R653: per-subresource states while a compute pass works one
+     * subresource at a time (the Hi-Z pyramid: one mip read as an SRV while
+     * the next ones are written as UAVs; R654: an IBL cube written face by
+     * face, mip by mip). Indexed by D3D12 subresource (slice * mips + mip).
+     * mip_split == 0 means every subresource is in `state`; otherwise
+     * mip_state[] is authoritative and any whole-resource use first brings
+     * every subresource back to one state (rhi_d3d12_tex_unify). */
     UINT mip_split;
-    D3D12_RESOURCE_STATES mip_state[16];
+    D3D12_RESOURCE_STATES mip_state[64];
 } RHI_D3D12Texture;
 
 typedef struct RHI_D3D12Sampler {
@@ -294,8 +298,11 @@ typedef struct RHI_D3D12CubeDepthFBO {
  * UNIFORM -> CBV table, STORAGE -> UAV table, SAMPLER -> SRV table + static
  * sampler, IMAGE -> SRV table; descriptor registers follow the binding. */
 typedef struct RHI_D3D12RootSigBuilder {
-    D3D12_ROOT_PARAMETER1 params[16];
-    D3D12_DESCRIPTOR_RANGE1 ranges[16];
+    /* R654: 24, not 16 -- the deferred lighting sidecar declares 17
+     * descriptor tables plus the constants (one table per register). The
+     * 64-DWORD root budget, not this array, is the real limit. */
+    D3D12_ROOT_PARAMETER1 params[24];
+    D3D12_DESCRIPTOR_RANGE1 ranges[24];
     D3D12_STATIC_SAMPLER_DESC samplers[8];
     UINT param_count;
     UINT range_count;

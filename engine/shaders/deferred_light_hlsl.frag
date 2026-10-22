@@ -10,13 +10,15 @@
 //   t10..t13 point-shadow depth cubes (R647)
 //   t14 SSAO            t15 emissive
 //
-// NOT in this twin: HAS_IBL (t7 BRDF LUT, t8/t9 irradiance/prefilter cubes;
-// rhi_cubemap_create is a stub on D3D12). The GL loader injects HAS_IBL;
-// here diffuse_ibl / specular_ibl are 0, exactly the GLSL #else branch.
+// R654: HAS_IBL is always on here (the GL loader injects it): t7 BRDF LUT,
+// t8 irradiance cube, t9 prefiltered cube, read as the GLSL does. The D3D12
+// binder fills them with a white LUT / black cubes when no IBL is supplied,
+// which makes both IBL terms exactly 0 -- the GLSL #else branch.
 //
-// Root-signature budget: 14 descriptor tables leave 50 DWORDs (200 bytes)
-// of root constants for the 192-byte push block below. Adding the IBL
-// registers later would need 3 more tables and no longer fit.
+// Root-signature budget: 17 descriptor tables + the 184-byte push block
+// (46 DWORDs) = 63 of 64. The far-plane vector therefore starts at 168,
+// in what used to be padding: two float2 halves keep it contiguous for the
+// engine's single vec4 write without crossing a 16-byte row.
 //
 // The point-shadow cubes are the one place that uses Sample(), as GL does
 // (LINEAR sampler, deferred.c): cube addressing is seamless on D3D12, so
@@ -53,9 +55,9 @@ struct PushConsts {
     float    u_shadow_bias;              // 156
     int      u_point_count;              // 160
     int      u_dir_count;                // 164
-    float2   _pad;                       // 168
-    float4   u_point_shadow_far_planes;  // 176
-};                                       // tail at 192
+    float2   u_point_shadow_far_planes;  // 168 (lights 0, 1)
+    float2   _point_shadow_far_23;       // 176 (lights 2, 3)
+};                                       // tail at 184
 ConstantBuffer<PushConsts> g_push : register(b0, space0);
 // rhi:uniform u_inv_vp 0
 // rhi:uniform u_view 64
@@ -67,7 +69,7 @@ ConstantBuffer<PushConsts> g_push : register(b0, space0);
 // rhi:uniform u_shadow_bias 156
 // rhi:uniform u_point_count 160
 // rhi:uniform u_dir_count 164
-// rhi:uniform u_point_shadow_far_planes 176
+// rhi:uniform u_point_shadow_far_planes 168
 
 Texture2D g_albedo_metallic : register(t0, space0);
 Texture2D g_normal          : register(t1, space0);
@@ -81,6 +83,10 @@ TextureCube g_point_shadow1 : register(t11, space0);
 TextureCube g_point_shadow2 : register(t12, space0);
 TextureCube g_point_shadow3 : register(t13, space0);
 SamplerState g_cube_smp     : register(s10, space0);
+Texture2D g_brdf_lut        : register(t7, space0);
+TextureCube g_irradiance_map : register(t8, space0);
+TextureCube g_prefilter_map  : register(t9, space0);
+SamplerState g_ibl_smp      : register(s7, space0);
 Texture2D g_ssao            : register(t14, space0);
 Texture2D g_emissive        : register(t15, space0);
 
@@ -270,7 +276,8 @@ float point_shadow_test(float3 wpos, int shadow_idx, float3 light_pos, float lig
     float3 frag_to_light = wpos - light_pos;
     float dist = length(frag_to_light);
     if (dist > light_radius) return 0.0f;
-    float far_plane = g_push.u_point_shadow_far_planes[shadow_idx];
+    float4 fps = float4(g_push.u_point_shadow_far_planes, g_push._point_shadow_far_23);
+    float far_plane = fps[shadow_idx];
     float compare = dist / max(far_plane, 1e-4f);
     float depth;
     if (shadow_idx == 0)      depth = g_point_shadow0.Sample(g_cube_smp, frag_to_light).r;
@@ -296,8 +303,21 @@ float4 main(float4 frag_pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {
     float3 wpos = reconstruct_world_pos(uv, depth);
     float3 V    = normalize(g_push.u_camera_pos - wpos);
 
-    float3 diffuse_ibl  = (float3)0.0f;
-    float3 specular_ibl = (float3)0.0f;
+    // HAS_IBL, line for line with the GLSL. GL binds these with the
+    // G-Buffer's NEAREST sampler (MIN NEAREST_MIPMAP_NEAREST): the LUT read
+    // is nearest() exactly; the cube reads take the nearest mip (round of
+    // the lod) with the static LINEAR filter inside the face -- the one
+    // known difference, sub-texel on 64^2 / 256^2 smooth environment maps.
+    float3 F0     = lerp((float3)0.04f, albedo, metal);
+    float3 F_env  = fresnel_schlick(max(dot(N, V), 0.0f), F0);
+    float3 kD_env = (1.0f - F_env) * (1.0f - metal);
+    float3 irradiance = g_irradiance_map.SampleLevel(g_ibl_smp, N, 0.0f).rgb;
+    float3 diffuse_ibl = irradiance * albedo * kD_env;
+    float3 R = reflect(-V, N);
+    float lod = round(rough * 4.0f);
+    float3 prefiltered = g_prefilter_map.SampleLevel(g_ibl_smp, R, lod).rgb;
+    float2 brdf = nearest(g_brdf_lut, float2(max(dot(N, V), 0.0f), rough)).rg;
+    float3 specular_ibl = prefiltered * (F0 * brdf.x + brdf.y);
     float3 color = (diffuse_ibl + specular_ibl) * ao;
 
     color += nearest(g_emissive, uv).rgb;
