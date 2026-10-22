@@ -40,7 +40,12 @@
  * Request contract:
  *  - submit() copies the path into bounded storage, stamps the opaque
  *    request with a u64 id and the current facade generation, and NEVER
- *    waits for capacity: live-request count at capacity -> OVERLOAD.
+ *    waits for capacity: live-request count at capacity OR the pending
+ *    ring physically full -> OVERLOAD. The two gates differ because
+ *    releasing a still-QUEUED request (release-before-completion is
+ *    supported; its completion is then abandoned with the request) frees
+ *    a live-request slot immediately but its ring slot only at
+ *    claim/drain.
  *  - `deadline_ns` is an absolute timespec_get(TIME_UTC) nanosecond deadline;
  *    0 disables it. A request whose deadline has expired before its read
  *    starts finalizes as TIMED_OUT without touching the VFS.
@@ -155,7 +160,8 @@ BreakRuntimeError break_runtime_io_submit(
 /* QUEUED/READING -> CANCELLED; publishes the CANCELLED completion.
  * Idempotent on an already-cancelled request (OK). REJECTED when a
  * non-cancellation completion already exists. OOM leaves the request
- * uncancelled (retry allowed). */
+ * completely untouched — no state change, no generation bump (the
+ * completion is built before any mutation), so retry is allowed. */
 BreakRuntimeError break_runtime_io_cancel(BreakRuntimeIoRequest *request);
 
 /* Non-blocking completion take. OK with *out_completion set (ownership

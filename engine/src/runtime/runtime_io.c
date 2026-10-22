@@ -757,6 +757,20 @@ BreakRuntimeError break_runtime_io_submit(
         io_global_unlock();
         return BREAK_RUNTIME_OVERLOAD;
     }
+    if (facade->ring_count >= facade->ring_capacity) {
+        /* The pending ring is physically full. This is NOT implied by the
+         * active gate: releasing a still-QUEUED request decrements active
+         * while its slot stays occupied until claim/drain reclaims it
+         * (release-before-completion is supported; the completion is then
+         * abandoned with the request). Without this gate the push index
+         * (head + ring_count) % capacity would overwrite a live slot.
+         * Occupied slots are exactly [head, head + ring_count): full ring
+         * -> bounded non-blocking OVERLOAD, never an overwrite. */
+        facade->overload_rejects++;
+        platform_mutex_unlock(&facade->mutex);
+        io_global_unlock();
+        return BREAK_RUNTIME_OVERLOAD;
+    }
 
     request = break_runtime_test_calloc(sizeof(*request));
     if (!request) {
@@ -772,7 +786,8 @@ BreakRuntimeError break_runtime_io_submit(
     request->deadline_ns = deadline_ns;
     memcpy(request->path, path, path_len + 1u);
 
-    /* ring_count <= active < ring_capacity: the push always has room. */
+    /* ring_count < ring_capacity (gated above): the push slot
+     * (head + ring_count) % capacity is the first free slot. */
     facade->ring[(facade->ring_head + facade->ring_count) %
                  facade->ring_capacity] = request;
     facade->ring_count++;
@@ -796,6 +811,7 @@ BreakRuntimeError break_runtime_io_cancel(BreakRuntimeIoRequest *request)
 {
     BreakRuntimeIoFacade *facade;
     BreakRuntimeOwnedMessage *message;
+    u64 generation;
 
     if (!request) {
         return BREAK_RUNTIME_INVALID;
@@ -812,16 +828,37 @@ BreakRuntimeError break_runtime_io_cancel(BreakRuntimeIoRequest *request)
                    ? BREAK_RUNTIME_OK
                    : BREAK_RUNTIME_REJECTED;
     }
-    /* QUEUED or READING: cancel bumps the generation so a worker finalizing
-     * an in-flight read detects the stale generation and drops its bytes. */
-    request->generation++;
-    message = io_build_completion(request, request->generation,
+    generation = request->generation;
+    platform_mutex_unlock(&facade->mutex);
+
+    /* Build-then-bump: the completion is allocated BEFORE any state change,
+     * so an OOM here leaves the request completely untouched (QUEUED/
+     * READING, generation unbumped) — a stranded half-cancelled request
+     * whose in-flight result would be dropped as stale, leaving zero
+     * completions, is impossible. Retry is allowed. The wire generation is
+     * the post-bump value the request will carry if the commit succeeds. */
+    message = io_build_completion(request, generation + 1u,
                                   BREAK_RUNTIME_IO_CANCELLED,
                                   BREAK_RUNTIME_OK, NULL, 0u);
     if (!message) {
-        platform_mutex_unlock(&facade->mutex);
-        return BREAK_RUNTIME_OOM; /* not cancelled; retry allowed */
+        return BREAK_RUNTIME_OOM; /* nothing changed */
     }
+
+    platform_mutex_lock(&facade->mutex);
+    if (request->state == IO_REQ_DONE || request->completion) {
+        /* Completed or cancelled by a concurrent path while the completion
+         * was being built. */
+        u32 completion_state = request->completion_state;
+        platform_mutex_unlock(&facade->mutex);
+        break_runtime_message_release(message);
+        return completion_state == (u32)BREAK_RUNTIME_IO_CANCELLED
+                   ? BREAK_RUNTIME_OK
+                   : BREAK_RUNTIME_REJECTED;
+    }
+    /* QUEUED or READING: the generation bump is what makes a worker
+     * finalizing an in-flight read detect the stale generation and drop
+     * its bytes. */
+    request->generation++;
     request->state = IO_REQ_DONE;
     request->completion_state = (u32)BREAK_RUNTIME_IO_CANCELLED;
     request->completion = message;

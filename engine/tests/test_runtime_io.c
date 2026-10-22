@@ -697,6 +697,181 @@ TEST(io_queue_overload_never_waits)
     vfs_destroy(vfs);
 }
 
+TEST(io_release_queued_at_full_ring_keeps_integrity)
+{
+    /* Regression (review Critical 1): releasing a still-QUEUED request
+     * decrements the live-request count but NOT the ring occupancy — the
+     * slot is reclaimed only at claim/drain. Submitting into that window
+     * must be rejected by the physical ring gate (OVERLOAD); without it the
+     * push slot (head + ring_count) % capacity overwrites a live entry. */
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *req_a = NULL;
+    BreakRuntimeIoRequest *req_b = NULL;
+    BreakRuntimeIoRequest *req_c = NULL;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoCompletion completion;
+    BreakRuntimeIoStats stats;
+
+    ASSERT_NOT_NULL(vfs);
+    /* Worker parked before the claim: both submits occupy the ring. */
+    break_runtime_test_io_set_gates(1u, 0u);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 2u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_io_submit(&req_a, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_submit(&req_b, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OK);
+    /* Ring full AND live count full: OVERLOAD via the live-count gate. */
+    ASSERT_EQ(break_runtime_io_submit(&req_c, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(req_c, NULL);
+
+    /* Release the still-QUEUED A: live count drops, ring slot stays. */
+    break_runtime_io_request_release(req_a);
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.active, 1u);
+
+    /* The ring is still physically full: the ring gate must reject. */
+    ASSERT_EQ(break_runtime_io_submit(&req_c, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OVERLOAD);
+    ASSERT_EQ(req_c, NULL);
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.overload_rejects, 2u);
+
+    /* B is cancelled while queued; A is processed normally after the gate
+     * opens (its completion is abandoned with the released request). */
+    ASSERT_EQ(break_runtime_io_cancel(req_b), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_poll_completion(req_b, &msg),
+              BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.state, BREAK_RUNTIME_IO_CANCELLED);
+    break_runtime_message_release(msg);
+
+    /* Ungate and let the worker CLAIM A (QUEUED -> READING) before the
+     * shutdown drain can cancel it: this exercises the released-but-in-
+     * flight path — the read completes, publishes into the released
+     * request, and the facade-reference drop frees it. The popped counter
+     * makes the claim deterministic. */
+    {
+        u64 baseline = atomic_load_explicit(&g_break_runtime_test_io_popped,
+                                            memory_order_acquire);
+        break_runtime_test_io_set_gates(0u, 0u);
+        spin_until_u64(&g_break_runtime_test_io_popped, baseline + 1u);
+    }
+    ASSERT_EQ(break_runtime_io_shutdown(2000u), BREAK_RUNTIME_OK);
+
+    break_runtime_io_request_release(req_b);
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.overload_rejects, 2u);
+    ASSERT_EQ(stats.completed, 1u); /* A's read completed before release-free */
+    ASSERT_EQ(stats.cancelled, 1u);
+    ASSERT_EQ(stats.stale_drops, 0u);
+    ASSERT_EQ(stats.active, 0u);
+
+    vfs_destroy(vfs);
+}
+
+TEST(io_cancel_completion_oom_keeps_completion_promise)
+{
+    /* Regression (review Important 2): a cancel whose completion build OOMs
+     * must leave the request completely untouched (no state change, no
+     * generation bump) — "exactly one completion per request, always" must
+     * survive the OOM path for both QUEUED and READING requests. */
+    VFS *vfs = fixture_setup();
+    BreakRuntimeIoConfig cfg;
+    BreakRuntimeIoRequest *req_q = NULL;
+    BreakRuntimeIoRequest *req_r = NULL;
+    BreakRuntimeOwnedMessage *msg = NULL;
+    BreakRuntimeIoCompletion completion;
+    BreakRuntimeIoStats stats;
+    u64 baseline;
+
+    ASSERT_NOT_NULL(vfs);
+    /* Phase 1 (QUEUED): the pop gate must be armed BEFORE init so the
+     * worker hits it at loop top — a worker already parked in the
+     * empty-ring wait would be woken by submit's signal past the gate
+     * (the gate is only checked at loop top). */
+    break_runtime_test_io_set_gates(1u, 0u);
+
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.vfs = vfs;
+    cfg.worker_count = 1u;
+    cfg.request_capacity = 4u;
+    ASSERT_EQ(break_runtime_io_init(&cfg), BREAK_RUNTIME_OK);
+
+    /* Cancel OOM first, then a successful cancel retry. */
+    ASSERT_EQ(break_runtime_io_submit(&req_q, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OK);
+    break_runtime_test_set_alloc_budget(0u);
+    ASSERT_EQ(break_runtime_io_cancel(req_q), BREAK_RUNTIME_OOM);
+    break_runtime_test_set_alloc_budget(BREAK_RUNTIME_TEST_ALLOC_DISABLED);
+    /* Untouched: no completion was published by the failed cancel. */
+    ASSERT_EQ(break_runtime_io_poll_completion(req_q, &msg),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(msg, NULL);
+    /* Retry succeeds and publishes exactly one CANCELLED completion. */
+    ASSERT_EQ(break_runtime_io_cancel(req_q), BREAK_RUNTIME_OK);
+    ASSERT_EQ(break_runtime_io_poll_completion(req_q, &msg),
+              BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.state, BREAK_RUNTIME_IO_CANCELLED);
+    break_runtime_message_release(msg);
+
+    /* Phase 2 (READING): the worker claims the request and parks before the
+     * read; cancel OOM must not strand it. */
+    break_runtime_test_io_set_gates(0u, 1u);
+    baseline = atomic_load_explicit(&g_break_runtime_test_io_popped,
+                                    memory_order_acquire);
+    ASSERT_EQ(break_runtime_io_submit(&req_r, "payload.bin", 0u, 0u),
+              BREAK_RUNTIME_OK);
+    spin_until_u64(&g_break_runtime_test_io_popped, baseline + 1u);
+
+    break_runtime_test_set_alloc_budget(0u);
+    ASSERT_EQ(break_runtime_io_cancel(req_r), BREAK_RUNTIME_OOM);
+    break_runtime_test_set_alloc_budget(BREAK_RUNTIME_TEST_ALLOC_DISABLED);
+
+    /* Ungated without a cancel: the in-flight read is NOT stale (the OOM
+     * cancel never bumped the generation), so it publishes READY. */
+    break_runtime_test_io_set_gates(0u, 0u);
+    ASSERT_EQ(break_runtime_io_wait_completion(req_r, 5000u, &msg),
+              BREAK_RUNTIME_OK);
+    ASSERT_NOT_NULL(msg);
+    ASSERT_EQ(parse_completion(msg, &completion), BREAK_RUNTIME_OK);
+    ASSERT_EQ(completion.state, BREAK_RUNTIME_IO_COMPLETED);
+    ASSERT_EQ(completion.byte_size, (u64)IO_TEST_FILE_BYTES);
+    ASSERT_EQ(memcmp(completion.bytes, g_expected_bytes,
+                     IO_TEST_FILE_BYTES), 0);
+    break_runtime_message_release(msg);
+
+    /* Exactly one completion; cancel after completion is REJECTED. */
+    ASSERT_EQ(break_runtime_io_poll_completion(req_r, &msg),
+              BREAK_RUNTIME_OK);
+    ASSERT_EQ(msg, NULL);
+    ASSERT_EQ(break_runtime_io_cancel(req_r), BREAK_RUNTIME_REJECTED);
+
+    break_runtime_io_request_release(req_q);
+    break_runtime_io_request_release(req_r);
+    ASSERT_EQ(break_runtime_io_shutdown(2000u), BREAK_RUNTIME_OK);
+
+    ASSERT_EQ(break_runtime_io_stats(&stats), BREAK_RUNTIME_OK);
+    ASSERT_EQ(stats.submitted, 2u);
+    ASSERT_EQ(stats.cancelled, 1u);
+    ASSERT_EQ(stats.completed, 1u);
+    ASSERT_EQ(stats.stale_drops, 0u);
+    ASSERT_EQ(stats.active, 0u);
+
+    vfs_destroy(vfs);
+}
+
 /* ------------------------------------------------------------------ */
 /* shutdown interruption of completion waits                           */
 /* ------------------------------------------------------------------ */
@@ -895,6 +1070,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(io_cancel_before_start);
     RUN_TEST(io_stale_generation_dropped);
     RUN_TEST(io_queue_overload_never_waits);
+    RUN_TEST(io_release_queued_at_full_ring_keeps_integrity);
+    RUN_TEST(io_cancel_completion_oom_keeps_completion_promise);
     RUN_TEST(io_completion_wait_deadline_and_shutdown_interruption);
     RUN_TEST(io_request_double_release_aborts);
     RUN_TEST(io_facade_alloc_failure_injection);
