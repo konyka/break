@@ -861,6 +861,18 @@ else()
     target_compile_options(lua PRIVATE -w)
 endif()
 
+# Formal optional Stage 3 Lua runtime facade. One runtime = one lua_State =
+# one owner thread behind an opaque handle. Top-level like the other formal
+# optional libraries (runtime_core precedent) — built regardless of
+# ENGINE_BUILD_TESTS, and deliberately NOT linked into engine, engine_demo,
+# or dxx_break; consumers opt in explicitly in later tasks. Links the
+# vendored Lua 5.4 target PUBLIC so consumers inherit its external/ include
+# dir; the public header itself only needs src/.
+add_library(break_lua STATIC src/script/break_lua_runtime.c)
+set_property(TARGET break_lua PROPERTY C_STANDARD 11)
+target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_lua PUBLIC lua)
+
 # Vendored stb single-header implementations are shared by the engine asset
 # pipeline, myui's font/image backends, and the dxx application.
 add_library(stb_truetype STATIC external/stb_truetype_impl.c)
@@ -3277,6 +3289,45 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_runtime_core_target_contract.cmake)
     set_tests_properties(test_runtime_core_target_contract PROPERTIES
         LABELS "headless;runtime_core;platform_contract")
+
+    # Stage 3 Lua runtime facade (Task 1: VM ownership and lifecycle) focused
+    # tests. The test-only break_lua_test variant compiles the same source
+    # with BREAK_LUA_TESTING=1 hooks (allocation failure injection covering
+    # the struct calloc AND the Lua allocator, double-destroy fail-stop
+    # registry, type-erased VM state accessor), mirroring the
+    # runtime_core_test / BREAK_RUNTIME_TESTING pattern; the production
+    # break_lua target (top-level, defined independent of
+    # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
+    # engine_demo, or dxx_break.
+    add_library(break_lua_test STATIC src/script/break_lua_runtime.c)
+    set_property(TARGET break_lua_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_lua_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_lua_test PRIVATE BREAK_LUA_TESTING=1)
+    target_link_libraries(break_lua_test PUBLIC lua)
+
+    add_executable(test_break_lua_runtime tests/test_break_lua_runtime.c)
+    target_include_directories(test_break_lua_runtime PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_lua_runtime PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_break_lua_runtime PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_break_lua_runtime PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_break_lua_runtime PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_break_lua_runtime PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_break_lua_runtime PRIVATE break_lua_test)
+    add_test(NAME test_break_lua_runtime COMMAND test_break_lua_runtime)
+    set_tests_properties(test_break_lua_runtime PROPERTIES
+        LABELS "headless;break_lua")
+    add_test(NAME test_break_lua_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_lua_target_contract.cmake)
+    set_tests_properties(test_break_lua_target_contract PROPERTIES
+        LABELS "headless;break_lua;platform_contract")
 
     # Formal facade (owned message / bounded queue / formal task submit)
     # focused tests. The test-only runtime_core_test variant compiles the new
