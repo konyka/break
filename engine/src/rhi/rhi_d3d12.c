@@ -3306,6 +3306,13 @@ static ID3D12PipelineState *rhi_d3d12_create_graphics_pso(
     rt_count = desc->mrt_attachment_count > 1u ? desc->mrt_attachment_count : 1u;
     if (desc->is_shadow_depth) rt_count = 0u;
     if (rtv_override != NULL) rt_count = rtv_override_count;
+    /* R650: per-target blend state only takes effect with
+     * IndependentBlendEnable; without it D3D12 applies RenderTarget[0] to
+     * every target, so alpha_blend_color_only blended the motion-vector RT1
+     * as well (particles and water wrote a velocity mixed with the clear
+     * value instead of their own). */
+    pso.BlendState.IndependentBlendEnable =
+        (desc->alpha_blend && desc->alpha_blend_color_only) ? TRUE : FALSE;
     for (i = 0u; i < 8u; ++i) {
         pso.BlendState.RenderTarget[i].RenderTargetWriteMask =
             D3D12_COLOR_WRITE_ENABLE_ALL;
@@ -4425,11 +4432,21 @@ static void rhi_d3d12_execute_indirect(RHIDevice *dev, RHIBuffer cmd_buf,
      * shader take it correctly from InstanceCount. See
      * blinn_phong_arr_sidecar_forwards_the_layer_into_pixels in
      * tests/test_d3d12_warp_runtime.c. */
+    /* R650: a buffer the bound pipeline also reads as an SRV (the particle
+     * DrawBuf: header for ExecuteIndirect, alive indices for the vertex
+     * shader) keeps its shader-read bits -- read states combine, and
+     * dropping them would leave that SRV reading a buffer in a state that
+     * does not name it. */
     if (args->device_local &&
-        args->state != D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) {
-        rhi_d3d12_transition(list, args->resource, args->state,
-                             D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT);
-        args->state = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        (args->state & D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT) == 0) {
+        const D3D12_RESOURCE_STATES srv_bits =
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+        D3D12_RESOURCE_STATES want = D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT;
+        if ((args->state & ~srv_bits) == 0 && (args->state & srv_bits) != 0)
+            want |= args->state;
+        rhi_d3d12_transition(list, args->resource, args->state, want);
+        args->state = want;
     }
     /* The count buffer is read by ExecuteIndirect the same way and has the
      * same requirement. compact_draws writes it as a UAV right before this. */

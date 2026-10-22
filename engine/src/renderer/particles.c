@@ -5,6 +5,19 @@
 #include <string.h>
 #include <core/shader_io.h>
 
+/* R650: D3D12 compiles no shader source in-process; a sidecar backend gets
+ * the precompiled <name>_hlsl.comp for the same path. */
+static RHIShader particles_compute_shader(RHIDevice *dev, const RHICapabilities *caps,
+                                          const char *path) {
+    if (caps->shader_sidecar_paths) return rhi_shader_create_compute_path(dev, path);
+    usize len = 0;
+    char *src = shader_read_file(path, &len);
+    if (!src) return RHI_HANDLE_NULL;
+    RHIShader cs = rhi_shader_create_compute(dev, src, len);
+    free(src);
+    return cs;
+}
+
 bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     memset(ps, 0, sizeof(*ps));
     ps->device = dev;
@@ -23,15 +36,7 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     ps->emit_vel_max[0] =  2.0f; ps->emit_vel_max[1] = 6.0f;  ps->emit_vel_max[2] =  2.0f;
 
     /* ---- Compute pipeline (particle update) ---- */
-    usize cs_len = 0;
-    char *cs_src = shader_read_file("shaders/particle_update.comp", &cs_len);
-    if (!cs_src) {
-        LOG_WARN("Particle compute shader not found — particles disabled");
-        return false;
-    }
-
-    RHIShader cs = rhi_shader_create_compute(dev, cs_src, cs_len);
-    free(cs_src);
+    RHIShader cs = particles_compute_shader(dev, &ps->caps, "shaders/particle_update.comp");
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("Particle compute shader compile failed");
         return false;
@@ -54,11 +59,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
         LOG_WARN("Particle: compute bindings create failed; uniform locations resolve -1");
 
     /* ---- GPU alive-particle cull (Round 12) ---- */
-    usize cull_len = 0;
-    char *cull_src = shader_read_file("shaders/particle_cull.comp", &cull_len);
-    if (cull_src) {
-        RHIShader cull_cs = rhi_shader_create_compute(dev, cull_src, cull_len);
-        free(cull_src);
+    {
+        RHIShader cull_cs = particles_compute_shader(dev, &ps->caps, "shaders/particle_cull.comp");
         if (rhi_handle_valid(cull_cs)) {
             RHIPipelineDesc cull_desc = {0};
             cull_desc.frag = cull_cs;
@@ -73,6 +75,19 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     }
 
     /* ---- Graphics pipeline (particle render) ---- */
+    RHIShader vs = RHI_HANDLE_NULL, fs = RHI_HANDLE_NULL;
+    if (ps->caps.shader_sidecar_paths) {
+        /* R650: D3D12 has no point size, so its sidecar draws each particle
+         * as a 6-vertex quad (particle_mrt_hlsl.vert); only the MRT variant
+         * exists, which is the one main.c asks for. */
+        if (!forward_mrt) {
+            LOG_WARN("Particle: the D3D12 sidecar is MRT-only");
+            particles_shutdown(ps);
+            return false;
+        }
+        vs = rhi_shader_create_path(dev, "shaders/particle_mrt.vert", false);
+        fs = rhi_shader_create_path(dev, "shaders/particle_mrt.frag", true);
+    } else {
     usize vs_len = 0, fs_len = 0;
     char *vs_src = shader_read_file("shaders/particle.vert", &vs_len);
     char *fs_src = shader_read_file("shaders/particle.frag", &fs_len);
@@ -87,13 +102,14 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
     usize vs_mrt_len = 0, fs_mrt_len = 0;
     char *vs_mrt = forward_mrt ? shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len) : NULL;
     char *fs_mrt = forward_mrt ? shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len) : NULL;
-    RHIShader vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
-                                     vs_mrt ? vs_mrt_len : vs_len, false);
-    RHIShader fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
-                                     fs_mrt ? fs_mrt_len : fs_len, true);
+    vs = rhi_shader_create(dev, vs_mrt ? vs_mrt : vs_src,
+                           vs_mrt ? vs_mrt_len : vs_len, false);
+    fs = rhi_shader_create(dev, fs_mrt ? fs_mrt : fs_src,
+                           fs_mrt ? fs_mrt_len : fs_len, true);
     free(vs_src); free(fs_src);
     free(vs_mrt);
     free(fs_mrt);
+    }
 
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
@@ -115,7 +131,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
      * "no-write && no-compare ⇒ no depth test" rule for fullscreen blits;
      * LEQUAL is equivalent to LESS here except exact z ties. */
     rpdesc.depth_compare_lequal = true;
-    rpdesc.point_list = true; /* R168-C: POINT_LIST + gl_PointSize / PointCoord */
+    /* R168-C: POINT_LIST + gl_PointSize / PointCoord; triangles on D3D12. */
+    rpdesc.point_list = !ps->caps.shader_sidecar_paths;
     if (forward_mrt) {
         rpdesc.mrt_attachment_count = 2u;
         rpdesc.mrt_formats[0] = RHI_FORMAT_R16G16B16A16_SFLOAT;
@@ -164,6 +181,8 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
         return false;
     }
     particles_build_cull_fallback(cull_init, cull_words);
+    /* R650: the D3D12 quad is six vertices per particle instance. */
+    if (ps->caps.shader_sidecar_paths) cull_init[0] = 6u;
     RHIBufferDesc cull_desc_buf = {
         .usage = RHI_BUFFER_USAGE_STORAGE | RHI_BUFFER_USAGE_INDIRECT,
         .size = cull_bytes,
@@ -257,6 +276,10 @@ bool particles_init(ParticleSystem *ps, RHIDevice *dev, bool forward_mrt) {
         ps->_loc_view = rhi_pipeline_bindings_resolve(ps->bind_render, "u_view");
         ps->_loc_proj = rhi_pipeline_bindings_resolve(ps->bind_render, "u_proj");
     }
+    /* R650: D3D12 sidecar only (GL/VK resolve -1): the previous view-proj
+     * rides the push block, and the quad needs the target size. */
+    ps->_loc_prev_vp  = rhi_pipeline_bindings_resolve(ps->bind_render, "u_prev_vp");
+    ps->_loc_viewport = rhi_pipeline_bindings_resolve(ps->bind_render, "u_viewport");
 
     LOG_INFO("Particle system initialized (%u particles, compute-driven%s)",
              PARTICLES_MAX, ps->cull_ready ? ", GPU cull" : "");
@@ -364,7 +387,8 @@ void particles_cull(ParticleSystem *ps, RHICmdBuffer *cmd) {
     rhi_cmd_memory_barrier(cmd);
 }
 
-void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj) {
+void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, const f32 *proj,
+                      const f32 *prev_vp, u32 target_w, u32 target_h) {
     if (!ps->initialized) return;
 
     rhi_cmd_bind_pipeline(cmd, ps->render_pipeline);
@@ -373,6 +397,11 @@ void particles_render(ParticleSystem *ps, RHICmdBuffer *cmd, const f32 *view, co
 
     if (ps->_loc_view >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_view, view);
     if (ps->_loc_proj >= 0) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_proj, proj);
+    if (ps->_loc_prev_vp >= 0 && prev_vp) rhi_cmd_set_uniform_mat4(cmd, ps->_loc_prev_vp, prev_vp);
+    if (ps->_loc_viewport >= 0)
+        rhi_cmd_set_uniform_vec2(cmd, ps->_loc_viewport,
+                                 (f32)(target_w > 0u ? target_w : 1u),
+                                 (f32)(target_h > 0u ? target_h : 1u));
 
     /* The cull-unavailable fallback is prefilled with identity indices, so the
      * vertex shader always receives its declared DrawBuf SSBO. */

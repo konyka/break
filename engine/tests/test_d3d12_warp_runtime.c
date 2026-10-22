@@ -15,6 +15,7 @@
 #include <renderer/deferred.h>
 #include <renderer/lighting.h>
 #include <renderer/point_shadow.h>
+#include <renderer/particles.h>
 #include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
@@ -8868,6 +8869,104 @@ TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity) {
     deferred_destroy(&ds, g_dev);
 }
 
+/* R650: particles on D3D12, through the real ParticleSystem. Frame 1 emits
+ * exactly 4 particles (rate 4, dt 1) at the origin with zero velocity, no
+ * gravity and a 10 s life; frame 2 (rate 0, dt 0.5) only ages them, so each
+ * must read back life 9.5, size lerp(0.1, 1, 0.95) = 0.955 and alpha 0.95,
+ * and the rest of the buffer must stay dead. The cull must count exactly
+ * those 4 into the DrawBuf (vertexCount 6 for the D3D12 quad). Frame 2 then
+ * renders them with view = identity and a projection whose w = 100: the
+ * GLSL point size is max(1, 0.955 * 400 / 100) = 3.82 px, so the quad covers
+ * the centre of the 8x8 target and the corners keep the clear colour. Velocity is 0 (previous position == position). */
+TEST(particles_spawn_age_cull_and_draw_as_sized_quads) {
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const float proj_w100[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,100 };
+    static ParticleSystem ps;
+    static GPUParticle parts[PARTICLES_MAX];
+    static u32 draw[4 + PARTICLES_MAX];
+    static u16 rt0[8 * 8 * 4];
+    static u16 rt1[8 * 8 * 2];
+    const RHIFormat formats[2] = { RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT };
+    RHIMRTFBO fbo;
+    RHICmdBuffer *cmd;
+    int i, alive = 0, x, y;
+    r643_mark();
+    ASSERT_TRUE(particles_init(&ps, g_dev, true));
+    ASSERT_TRUE(ps.cull_ready);
+    ASSERT_EQ(ps._loc_view, 0);
+    ASSERT_EQ(ps._loc_proj, 64);
+    ASSERT_EQ(ps._loc_prev_vp, 128);
+    ASSERT_EQ(ps._loc_viewport, 192);
+    ASSERT_EQ(ps._loc_dt, 0);
+    ASSERT_EQ(ps._loc_emit_budget, 8);
+    ASSERT_EQ(ps._loc_lifetime_range, 64);
+    ps.emit_rate = 4.0f;
+    ps.emit_pos[0] = ps.emit_pos[1] = ps.emit_pos[2] = 0.0f;
+    for (i = 0; i < 3; ++i) { ps.emit_vel_min[i] = 0.0f; ps.emit_vel_max[i] = 0.0f; }
+    ps.gravity = 0.0f;
+    ps.lifetime_min = 10.0f;
+    ps.lifetime_range = 0.0f;
+    fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    particles_compute(&ps, cmd, 1.0f);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    ps.emit_rate = 0.0f;
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    particles_compute(&ps, cmd, 0.5f);
+    particles_cull(&ps, cmd);
+    rhi_mrt_fbo_bind(cmd, &fbo);
+    particles_render(&ps, cmd, identity, proj_w100, identity, 8u, 8u);
+    rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+    ASSERT_TRUE(rhi_buffer_read(g_dev, ps.particle_ssbo, parts, 0u, sizeof(parts)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, ps.cull_buf, draw, 0u, sizeof(draw)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0, sizeof(rt0)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1, sizeof(rt1)));
+    for (i = 0; i < (int)PARTICLES_MAX; ++i) {
+        if (parts[i].pos_life[3] <= 0.0f) continue;
+        ++alive;
+        ASSERT_TRUE(fabsf(parts[i].pos_life[3] - 9.5f) < 1e-5f);
+        ASSERT_TRUE(fabsf(parts[i].size_color[0] - 0.955f) < 1e-5f);
+        ASSERT_TRUE(fabsf(parts[i].size_color[3] - 0.95f) < 1e-5f);
+        ASSERT_TRUE(fabsf(parts[i].pos_life[0]) < 1e-6f);
+    }
+    if (alive != 4) printf("  particles alive = %d, want 4\n", alive);
+    ASSERT_EQ(alive, 4);
+    ASSERT_EQ(draw[0], 6u);
+    ASSERT_EQ(draw[1], 4u);
+    for (i = 0; i < 4; ++i) {
+        ASSERT_TRUE(draw[4 + i] < PARTICLES_MAX);
+        ASSERT_TRUE(parts[draw[4 + i]].pos_life[3] > 0.0f);
+    }
+    for (y = 0; y < 8; ++y) {
+        for (x = 0; x < 8; ++x) {
+            /* The MRT clear is (0.05, 0.05, 0.1); a particle blends red
+             * towards 0.95 * 1.0 (colour * alpha, then SRC_ALPHA blend). */
+            float r = warp_half_to_float(rt0[(y * 8 + x) * 4 + 0]);
+            int centre = (x == 3 || x == 4) && (y == 3 || y == 4);
+            int corner = (x <= 1 || x >= 6) && (y <= 1 || y >= 6);
+            if ((centre && r < 0.3f) || (corner && fabsf(r - 0.05f) > 0.001f))
+                printf("  particle px (%d,%d) red %f\n", x, y, r);
+            if (centre) {
+                ASSERT_TRUE(r > 0.3f);
+                ASSERT_TRUE(warp_half_to_float(rt1[(y * 8 + x) * 2]) == 0.0f);
+            }
+            if (corner) ASSERT_TRUE(fabsf(r - 0.05f) <= 0.001f);
+        }
+    }
+    ASSERT_TRUE(r643_clean("particles"));
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    particles_shutdown(&ps);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -8955,6 +9054,7 @@ int main(void) {
     RUN_TEST(point_shadow_cube_faces_read_back_by_direction);
     RUN_TEST(deferred_lighting_samples_the_point_shadow_cube);
     RUN_TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity);
+    RUN_TEST(particles_spawn_age_cull_and_draw_as_sized_quads);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

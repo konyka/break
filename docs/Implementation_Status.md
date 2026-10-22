@@ -1,6 +1,39 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R650 — **D3D12 粒子系统**（GPU 模拟、剔除、间接绘制）；顺带修复 D3D12 的独立混合
+
+- **问题**：D3D12 上 `particles_init` 拿 GLSL 源码去调 `rhi_shader_create_compute`，日志报 `Particle compute shader compile failed`，粒子系统整个被禁用，画面里没有喷泉粒子。
+- **新增 4 个 sidecar**：
+  - `particle_update_hlsl.comp`：逐行对应 GL 版 `particle_update.comp`（loose uniform → push 块，偏移由 `rhi:uniform` 标记发布）。粒子缓冲按 `RWStructuredBuffer<float4>` 访问，每个粒子 4 个 float4，与 `GPUParticle` 一致；因为后端的 UAV 绑定器只能描述标量/向量元素。生成计数器是 raw 缓冲上的 `InterlockedAdd`。
+  - `particle_cull_hlsl.comp`：把存活粒子的索引追加到 DrawBuf，并累加 `instanceCount`（第 1 个字）。
+  - `particle_mrt_hlsl.{vert,frag}`：引擎只构建 FORWARD_MRT 这一种变体。
+- **D3D12 没有 `gl_PointSize`**：POINTLIST 每个点只光栅化 1 个像素。所以 D3D12 上每个粒子画成 **6 顶点的四边形**：
+  - 主机侧把 DrawBuf 的 `vertexCount` 写成 6（其他后端仍是 1）。
+  - VS 以粒子的 clip 位置为中心展开四边形，像素尺寸与 GLSL 相同：`max(1, size*400/w)`。需要的目标尺寸通过新 uniform `u_viewport` 传入。
+  - uv 代替 `gl_PointCoord`，供 PS 做圆形遮罩。
+  - 管线在 D3D12 上不设 `point_list`。
+- **`u_prev_vp` 改放进 push 块**：GLSL 从 binding 0 的 ForwardTemporal UBO 读，而 D3D12 的 b0 是根常量保留寄存器，这个 UBO 到不了着色器。新增 `_loc_prev_vp`，GL/VK 上解析为 −1。`particles_render` 新增参数 `prev_vp / target_w / target_h`，main.c 传入 `prev_view_proj` 和场景 FBO 的尺寸。
+- **加载器**：`particles.c` 的两个 compute 着色器和渲染着色器都按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+- **后端修复 1：间接参数缓冲同时是 SRV**。粒子的 DrawBuf 既是 ExecuteIndirect 的参数，又被 VS 当作 SRV 读取索引。`rhi_d3d12_execute_indirect` 原来把它整个转换成 INDIRECT_ARGUMENT，丢掉了 shader-read 状态位。现在，如果它当前只处于读取状态，就保留这些位，与 INDIRECT_ARGUMENT 合并成一个组合读状态。
+- **后端修复 2：独立混合（三个后端的共性契约，只有 D3D12 出错）**。`alpha_blend_color_only` 的意思是只混合 RT0，RT1 运动矢量直接写入。D3D12 的 PSO 逐 RT 设置了混合状态，但没有打开 `IndependentBlendEnable`，于是 D3D12 把 RenderTarget[0] 的混合状态套用到所有 RT。结果粒子和**水面**的速度都被和清屏值混在一起（测试测得 0.05，正确值是 0）。现在当 `alpha_blend && alpha_blend_color_only` 时打开它。
+- **测试**：WARP 新增 `particles_spawn_age_cull_and_draw_as_sized_quads`，用真实的 `ParticleSystem`：
+  - 第 1 帧：rate 4、dt 1，恰好生成 4 个粒子。
+  - 第 2 帧：rate 0、dt 0.5，只做老化。读回粒子缓冲：恰好 4 个存活，每个 life 9.5、size 0.955、alpha 0.95。
+  - DrawBuf 的 `vertexCount` 应为 6、`instanceCount` 应为 4，且索引都指向存活粒子。
+  - 用 w=100 的投影渲染到 8×8 MRT：中心 2×2 被覆盖（red > 0.3），速度恰好为 0；四角保持清屏色。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① 关掉 `IndependentBlendEnable`：速度断言失败。
+  - ② 去掉 `vertexCount = 6`：`draw[0] != 6`。
+  - ③ 去掉 VS 的四边形展开：中心覆盖断言失败（red < 0.3）。
+  - 三处都恢复后 67/67。
+- **验证结果**：
+  - WARP 67/67，debug layer 0/0/alias 1。RTX 连跑 3 次都是 66/67，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：VK 182/182、GL 179/179；D3D12 185/186，失败的是 `test_net_replication`。这是 R633 起就记录在案的网络定时偶发失败，单独连跑 5 次都通过，与本轮无关。
+  - demo 截图（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）MAE：前向路径 D3D12-GL **1.42**（R649 时为 1.93，当时 D3D12 画面里没有粒子）、VK-GL 3.61；延迟路径 D3D12-GL 1.34、VK-GL 0.29。D3D12 日志里粒子系统显示 `compute-driven, GPU cull`，debug layer 0 条。
+- **遗留问题**：GPU 剔除（`cull.comp` / `unified_cull.comp`）、簇剔除（`cluster_cull.comp`）、Hi-Z（`hi_z_generate.comp`）、IBL 生成（`irradiance_env` / `prefilter_env` / `brdf_lut` / `sky_to_cube`）仍没有 sidecar；`compute_supported` 仍为 false。粒子不依赖这个标志，所以本轮不受影响。
+
 ## 本轮更新：R649 — **D3D12 蒙皮 G-Buffer**：延迟路径不再跳过蒙皮几何
 
 - **问题**：`gbuffer_skinned_hlsl.vert` 不存在，所以 D3D12 上 `gbuffer_skinned_pipeline` 创建失败，日志里出现 `gbuffer_skinned pipeline unavailable -- skinned geometry skipped`。延迟路径下，蒙皮网格（程序化手臂 / glTF 蒙皮图元）不会写进 G-Buffer，整个从画面中消失。

@@ -1,0 +1,99 @@
+// particle_update_hlsl.comp - D3D12 sidecar of shaders/particle_update.comp
+// (the GL variant: loose uniforms, which here are the push block the engine
+// writes with rhi_cmd_set_uniform_*).
+//
+// The particle buffer is a RWStructuredBuffer<float4>, four float4 per
+// particle (pos_life, vel_maxlife, size_color, previous_pos -- GPUParticle),
+// because the backend's UAV binder describes scalar/vector element types,
+// not user structs. The spawn counter is a raw buffer (GLSL `uint claimed`).
+struct PushConsts {
+    float  u_dt;              //  0
+    float  u_emit_rate;       //  4
+    float  u_emit_budget;     //  8
+    float  _pad0;             // 12
+    float3 u_emit_pos;        // 16
+    float  u_gravity;         // 28
+    float3 u_emit_vel_min;    // 32
+    float  _pad1;             // 44
+    float3 u_emit_vel_max;    // 48
+    float  u_lifetime_min;    // 60
+    float  u_lifetime_range;  // 64
+};                            // tail at 68
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_dt 0
+// rhi:uniform u_emit_rate 4
+// rhi:uniform u_emit_budget 8
+// rhi:uniform u_emit_pos 16
+// rhi:uniform u_gravity 28
+// rhi:uniform u_emit_vel_min 32
+// rhi:uniform u_emit_vel_max 48
+// rhi:uniform u_lifetime_min 60
+// rhi:uniform u_lifetime_range 64
+RWStructuredBuffer<float4> g_particles : register(u0);
+RWByteAddressBuffer        g_spawn     : register(u1);
+
+uint hash_u(uint x) {
+    x ^= x >> 16;
+    x *= 0x45d9f3bu;
+    x ^= x >> 16;
+    x *= 0x45d9f3bu;
+    x ^= x >> 16;
+    return x;
+}
+
+float random_float(uint seed) {
+    return float(hash_u(seed)) / 4294967295.0;
+}
+
+[numthreads(256, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint n, stride;
+    g_particles.GetDimensions(n, stride);
+    uint idx = id.x;
+    if (idx >= n / 4u) return;
+    uint base = idx * 4u;
+    float4 pos_life = g_particles[base + 0u];
+    float4 vel_maxlife = g_particles[base + 1u];
+    float4 size_color = g_particles[base + 2u];
+    float4 previous_pos = g_particles[base + 3u];
+    float life = pos_life.w;
+    float max_life = vel_maxlife.w;
+
+    if (life <= 0.0) {
+        uint budget = (uint)g_push.u_emit_budget;
+        if (budget == 0u) return;
+        uint ticket;
+        g_spawn.InterlockedAdd(0u, 1u, ticket);
+        if (ticket >= budget) return;
+        uint seed = idx * 12749u + hash_u((uint)(g_push.u_emit_rate * 1000.0) + ticket);
+        float rx = random_float(seed);
+        float ry = random_float(seed + 1u);
+        float rz = random_float(seed + 2u);
+        float rl = random_float(seed + 3u);
+        float3 vel = g_push.u_emit_vel_min +
+                     (g_push.u_emit_vel_max - g_push.u_emit_vel_min) * float3(rx, ry, rz);
+        float lifetime = g_push.u_lifetime_min + rl * g_push.u_lifetime_range;
+        pos_life = float4(g_push.u_emit_pos, lifetime);
+        vel_maxlife = float4(vel, lifetime);
+        size_color = float4(1.0, 1.0, 0.8, 1.0);
+        previous_pos = float4(g_push.u_emit_pos, 1.0);
+    } else {
+        float3 pos = pos_life.xyz;
+        float3 vel = vel_maxlife.xyz;
+        vel.y -= g_push.u_gravity * g_push.u_dt;
+        pos += vel * g_push.u_dt;
+        life -= g_push.u_dt;
+        // R281: fade from the constant spawn size, not the previous size.
+        float t = clamp(life / max(max_life, 0.001), 0.0, 1.0);
+        float size = lerp(0.1, 1.0, t);
+        previous_pos = float4(pos_life.xyz, 1.0);
+        pos_life = float4(pos, life);
+        vel_maxlife = float4(vel, max_life);
+        size_color.x = size;
+        size_color.w = t;
+    }
+    g_particles[base + 0u] = pos_life;
+    g_particles[base + 1u] = vel_maxlife;
+    g_particles[base + 2u] = size_color;
+    g_particles[base + 3u] = previous_pos;
+}

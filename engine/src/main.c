@@ -6947,7 +6947,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * It used to be forward-only here. */
 
         particles_cull(&particles, cmd);
-        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0]);
+        particles_render(&particles, cmd, &view.e[0][0], &proj.e[0][0],
+                         &prev_view_proj.e[0][0], rw, rh);
 
 
         if (rhi_handle_valid(render.skinned_pipeline)) {
