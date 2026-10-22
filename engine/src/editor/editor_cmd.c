@@ -125,7 +125,9 @@ static void cmd_destroy(BreakEditorCmd *self) {
  * restored — the scene_serial generation-restore mechanism
  * (engine/src/scene/scene_serial.c:1056-1064). Fails bounded (destroying
  * the wrong entity again) if the world diverged from the command's
- * expectation. */
+ * expectation. DEPENDENCY: ecs.c free-stack internals (LIFO reuse
+ * ecs.c:563-566/681 + generation bump ecs.c:565/682); if ecs.c changes,
+ * re-verify the redo pins in test_editor_cmd.c. */
 static bool recreate_with_stored_id(BreakEditorDoc *doc,
                                     BreakEditorEntityId stored) {
     World *w = break_editor_doc_world_raw(doc);

@@ -230,26 +230,58 @@ TEST(dirty_flag_set_and_cleared) {
 }
 
 TEST(oom_doc_create_sweep) {
-    /* Editor-owned allocations at create: doc struct, name-slot block, stack
-     * struct, stack entry array. Every budget below the count must fail with
-     * NULL and no leak; the first sufficient budget must succeed. */
-    for (u64 budget = 0; budget < 8; budget++) {
+    /* Doc create performs exactly 4 editor-owned allocations: doc struct,
+     * name-slot block, stack struct, stack entry array. Budgets 0..3 must
+     * fail with NULL (no leak); budget 4 is the first success. */
+    for (u64 budget = 0; budget < 4; budget++) {
         break_editor_test_set_alloc_budget(budget);
         BreakEditorDoc *doc = break_editor_doc_create();
         break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
-        if (doc) {
-            /* Sufficient budget: every later create in this sweep also
-             * succeeds; the interesting assertion is failure before it. */
-            break_editor_doc_destroy(doc);
-        }
+        ASSERT_TRUE(doc == NULL);
     }
 
-    break_editor_test_set_alloc_budget(0);
-    ASSERT_TRUE(break_editor_doc_create() == NULL);
+    break_editor_test_set_alloc_budget(4);
+    BreakEditorDoc *doc = break_editor_doc_create();
     break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
+    ASSERT_NOT_NULL(doc);
+    break_editor_doc_destroy(doc);
 
+    /* Ample budget always succeeds. */
+    BreakEditorDoc *doc2 = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc2);
+    break_editor_doc_destroy(doc2);
+}
+
+TEST(oom_remove_and_rename_command_alloc_fail_bounded) {
+    /* Per-constructor injection: remove and rename allocate their command
+     * objects only after the entity-exists check; budget 0 must fail both
+     * bounded with the doc completely unchanged. */
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
+
+    BreakEditorEntityId id = break_editor_doc_add_entity(doc, "target");
+    ASSERT_TRUE(break_editor_entity_id_valid(id));
+    break_editor_doc_clear_dirty(doc);
+
+    break_editor_test_set_alloc_budget(0);
+    bool removed = break_editor_doc_remove_entity(doc, id);
+    bool renamed = break_editor_doc_rename_entity(doc, id, "other");
+    break_editor_test_set_alloc_budget(BREAK_EDITOR_TEST_ALLOC_DISABLED);
+    ASSERT_FALSE(removed);
+    ASSERT_FALSE(renamed);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(id)));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    BreakEditorEntityId at_id;
+    const char *at_name = NULL;
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at_id, &at_name));
+    ASSERT_STR_EQ(at_name, "target");
+
+    /* Recovery: both mutations succeed with the budget disabled. */
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, id, "other"));
+    ASSERT_TRUE(break_editor_doc_remove_entity(doc, id));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+
     break_editor_doc_destroy(doc);
 }
 
@@ -302,6 +334,7 @@ int main(void) {
     RUN_TEST(dirty_flag_set_and_cleared);
     RUN_TEST(oom_doc_create_sweep);
     RUN_TEST(oom_command_allocation_fails_bounded_doc_unchanged);
+    RUN_TEST(oom_remove_and_rename_command_alloc_fail_bounded);
     RUN_TEST(null_doc_calls_fail_bounded);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n", g_test_pass,
            g_test_fail, g_test_count);

@@ -117,6 +117,104 @@ TEST(redo_add_restores_same_id) {
     break_editor_doc_destroy(doc);
 }
 
+TEST(redo_restores_exact_ids_with_two_free_indices) {
+    /* Pop-order pin with TWO indices on the free stack: undoing two
+     * create-type commands pushes B's index then A's; redoing must pop in
+     * LIFO order (A first) so each command's stored index matches. A
+     * free-stack regression (LIFO -> FIFO) in ecs.c would make the first
+     * redo pop B's index, hit the stored-index mismatch, and degrade redo
+     * to bounded failure — this test fails on both the false return and
+     * the id mismatch. */
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+
+    BreakEditorEntityId a = break_editor_doc_add_entity(doc, "a");
+    BreakEditorEntityId b = break_editor_doc_add_entity(doc, "b");
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    ASSERT_TRUE(break_editor_entity_id_valid(b));
+    ASSERT_NEQ(a.index, b.index);
+
+    ASSERT_TRUE(break_editor_undo(doc)); /* reverts add B: push b.index */
+    ASSERT_TRUE(break_editor_undo(doc)); /* reverts add A: push a.index */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_FALSE(world_entity_exists(doc_world(doc), to_ecs(a)));
+    ASSERT_FALSE(world_entity_exists(doc_world(doc), to_ecs(b)));
+    ASSERT_EQ(break_editor_cmd_stack_redo_count(break_editor_doc_stack(doc)),
+              2u);
+
+    /* Redo A then B: BOTH must succeed with the EXACT original ids. */
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(a)));
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(b)));
+
+    /* Doc contents and ascending-index iteration order match the original. */
+    BreakEditorEntityId at0, at1;
+    const char *name0 = NULL;
+    const char *name1 = NULL;
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at0, &name0));
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 1, &at1, &name1));
+    ASSERT_TRUE(at0.index < at1.index);
+    if (a.index < b.index) {
+        ASSERT_TRUE(break_editor_entity_id_eq(at0, a));
+        ASSERT_TRUE(break_editor_entity_id_eq(at1, b));
+        ASSERT_STR_EQ(name0, "a");
+        ASSERT_STR_EQ(name1, "b");
+    } else {
+        ASSERT_TRUE(break_editor_entity_id_eq(at0, b));
+        ASSERT_TRUE(break_editor_entity_id_eq(at1, a));
+        ASSERT_STR_EQ(name0, "b");
+        ASSERT_STR_EQ(name1, "a");
+    }
+
+    break_editor_doc_destroy(doc);
+}
+
+TEST(rename_remove_undo_chain_keeps_ids_exact) {
+    /* Chain pin: rename X -> remove X -> undo(remove) -> undo(rename). The
+     * remove-revert must restore X's exact generation, because the OLDER
+     * rename command's stored id is only valid again if it does (its
+     * defensive has_entity check compares generation). Then redo(rename),
+     * redo(remove): renamed name applied, then entity gone. */
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+
+    BreakEditorEntityId x = break_editor_doc_add_entity(doc, "before");
+    ASSERT_TRUE(break_editor_entity_id_valid(x));
+    ASSERT_TRUE(break_editor_doc_rename_entity(doc, x, "after"));
+    ASSERT_TRUE(break_editor_doc_remove_entity(doc, x));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+
+    BreakEditorEntityId at_id;
+    const char *at_name = NULL;
+
+    /* Undo remove: entity back with exact id and the post-rename name. */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(world_entity_exists(doc_world(doc), to_ecs(x)));
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at_id, &at_name));
+    ASSERT_TRUE(break_editor_entity_id_eq(at_id, x));
+    ASSERT_STR_EQ(at_name, "after");
+
+    /* Undo rename: the older rename command's stored id must match the
+     * restored entity exactly; final state equals the pre-rename name. */
+    ASSERT_TRUE(break_editor_undo(doc));
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at_id, &at_name));
+    ASSERT_TRUE(break_editor_entity_id_eq(at_id, x));
+    ASSERT_STR_EQ(at_name, "before");
+
+    /* Redo rename, redo remove: name applied, then entity gone. */
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &at_id, &at_name));
+    ASSERT_TRUE(break_editor_entity_id_eq(at_id, x));
+    ASSERT_STR_EQ(at_name, "after");
+    ASSERT_TRUE(break_editor_redo(doc));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_FALSE(world_entity_exists(doc_world(doc), to_ecs(x)));
+
+    break_editor_doc_destroy(doc);
+}
+
 TEST(undo_remove_restores_id_and_name) {
     BreakEditorDoc *doc = break_editor_doc_create();
     ASSERT_NOT_NULL(doc);
@@ -323,6 +421,8 @@ int main(void) {
     RUN_TEST(undo_redo_empty_stack);
     RUN_TEST(undo_add_removes_entity_and_frees_name);
     RUN_TEST(redo_add_restores_same_id);
+    RUN_TEST(redo_restores_exact_ids_with_two_free_indices);
+    RUN_TEST(rename_remove_undo_chain_keeps_ids_exact);
     RUN_TEST(undo_remove_restores_id_and_name);
     RUN_TEST(undo_redo_rename);
     RUN_TEST(redo_cleared_on_new_mutation);

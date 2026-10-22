@@ -11,7 +11,12 @@
  * break_editor_cmd_stack_dropped_oldest), and never fails. Pushing a new
  * command clears the redo tail — this is what guarantees revert/redo
  * adjacency and makes the generation-restore redo mechanism (editor_doc.h
- * header comment) exact.
+ * header comment) exact. DEPENDENCY: that mechanism relies on ecs.c
+ * free-stack internals (LIFO index reuse + generation bump on
+ * destroy/create); if ecs.c changes, re-verify the redo pins in
+ * test_editor_cmd.c (redo_add_restores_same_id,
+ * redo_restores_exact_ids_with_two_free_indices,
+ * rename_remove_undo_chain_keeps_ids_exact).
  *
  * Undo/redo cursors: entries [0, undo_pos) are applied (undoable);
  * [undo_pos, size) are reverted (redoable). undo/redo return false when

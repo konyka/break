@@ -32,7 +32,13 @@
  * (engine/src/scene/scene_serial.c:1056-1064). remove_entity revert uses
  * the same mechanism and restores the entity id + display name; component
  * bytes are NOT restored — component restoration lands with Task 3's
- * add/remove-component commands (plan Task 3).
+ * add/remove-component commands (plan Task 3). DEPENDENCY: this mechanism
+ * relies on ecs.c free-stack internals (LIFO index reuse,
+ * ecs.c:563-566/681, and the generation bump on destroy/create,
+ * ecs.c:565/682). If ecs.c changes, re-verify the redo pins in
+ * test_editor_cmd.c: redo_add_restores_same_id,
+ * redo_restores_exact_ids_with_two_free_indices (>=2 free indices at pop
+ * time), and rename_remove_undo_chain_keeps_ids_exact.
  *
  * Dirty flag: any successful command apply (add/remove/rename) and any
  * successful undo/redo sets it; only break_editor_doc_clear_dirty clears
