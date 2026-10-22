@@ -1,0 +1,44 @@
+// cull_hlsl.comp - D3D12 sidecar of shaders/cull.comp (the GL variant).
+// GPU frustum culling: one flag per object (1 visible, 0 culled), plus an
+// atomic visible counter.
+//
+// Register mapping follows compact_draws_hlsl.comp: the GLSL `readonly
+// buffer` at binding 0 is an SRV at t0, the writable ones are UAVs at u1/u2.
+struct PushConsts {
+    float4x4 u_cull_vp;     //  0
+    int      u_cull_count;  // 64
+};                          // tail at 68
+ConstantBuffer<PushConsts> g_push : register(b0, space0);
+// rhi:uniform u_cull_vp 0
+// rhi:uniform u_cull_count 64
+ByteAddressBuffer   g_objects : register(t0);   // float4 pos_radius per object
+RWByteAddressBuffer g_flags   : register(u1);
+RWByteAddressBuffer g_count   : register(u2);
+
+bool sphere_visible(float3 center, float radius) {
+    float4 clip = mul(g_push.u_cull_vp, float4(center, 1.0));
+    float w = clip.w;
+    if (w <= 0.0) w = 1e-6;
+    float3 nc = clip.xyz / w;
+    float r = radius / w;
+    if (nc.x - r >  1.0) return false;
+    if (nc.x + r < -1.0) return false;
+    if (nc.y - r >  1.0) return false;
+    if (nc.y + r < -1.0) return false;
+    if (nc.z - r >  1.0) return false;
+    if (nc.z + r < -1.0) return false;   // R233-A: GL NDC z in [-1, 1]
+    return true;
+}
+
+[numthreads(64, 1, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+    uint idx = id.x;
+    if (idx >= (uint)g_push.u_cull_count) return;
+    float4 pr = asfloat(g_objects.Load4(idx * 16u));
+    bool vis = sphere_visible(pr.xyz, pr.w);
+    g_flags.Store(idx * 4u, vis ? 1u : 0u);
+    if (vis) {
+        uint prev;
+        g_count.InterlockedAdd(0u, 1u, prev);
+    }
+}

@@ -16,6 +16,7 @@
 #include <renderer/lighting.h>
 #include <renderer/point_shadow.h>
 #include <renderer/particles.h>
+#include <renderer/gpucull.h>
 #include <stdlib.h>
 #include <math/math.h>
 #include <math.h>
@@ -9038,6 +9039,119 @@ TEST(cluster_cull_sidecar_matches_the_cpu_binning) {
     light_system_shutdown(&ls);
 }
 
+/* R652: GPU frustum culling on D3D12 through the real GPUCullSystem, both
+ * passes. Eight spheres, identity VP (the NDC cube is the frustum): even
+ * ones sit inside it, odd ones are pushed well outside along a different
+ * axis each (x, y, z on both sides). Object 6 sits at NDC z -0.6, inside the
+ * GL [-1, 1] depth range but behind a [0, 1] near plane, so a cull written
+ * against the D3D12 depth range instead of the engine's GL clip space drops
+ * it. Each object owns a distinct draw
+ * command (index_count = 100 + i).
+ *
+ *  - legacy cull.comp writes one flag per object;
+ *  - unified_cull.comp writes the same flags, compacts exactly the four
+ *    visible commands (their payload intact, in any order) and counts them;
+ *  - the flags-only unified pass stages the flags into the host-visible
+ *    staging buffer through rhi_cmd_copy_buffer, and gpucull_read_vis_flags
+ *    returns them on the next frame, once that slot is reused. */
+TEST(gpu_cull_sidecars_flag_compact_and_read_back) {
+    static const float identity[16] = { 1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1 };
+    static const float far_off[8][3] = {
+        { 0.0f, 0.0f, 0.0f }, { 3.0f, 0.0f, 0.0f },
+        { 0.5f, 0.0f, 0.0f }, { 0.0f, -3.0f, 0.0f },
+        { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.0f, 3.0f },
+        { -0.5f, -0.5f, -0.6f }, { 0.0f, 0.0f, -3.0f },
+    };
+    static GPUCullSystem gc;
+    GPUCullDrawCmd cmds[8];
+    GPUCullObject objs[8];
+    f32 pos[8 * 3], rad[8];
+    u32 flags[8], vis[8], count = 0u, seen = 0u;
+    GPUCullDrawCmd out[8];
+    RHICmdBuffer *cmd;
+    int i, frame;
+    r643_mark();
+    memset(&gc, 0, sizeof(gc));
+    ASSERT_TRUE(gpucull_init(&gc, g_dev));
+    ASSERT_TRUE(gpucull_init_unified(&gc, g_dev));
+    ASSERT_TRUE(gc.unified_ready);
+    ASSERT_EQ(gc._loc_cull_vp, 0);
+    ASSERT_EQ(gc._loc_cull_count, 64);
+    ASSERT_EQ(gc._loc_uni_count, 64);
+    ASSERT_EQ(gc._loc_uni_write, 80);
+    memset(cmds, 0, sizeof(cmds));
+    memset(objs, 0, sizeof(objs));
+    for (i = 0; i < 8; ++i) {
+        pos[i * 3 + 0] = far_off[i][0];
+        pos[i * 3 + 1] = far_off[i][1];
+        pos[i * 3 + 2] = far_off[i][2];
+        rad[i] = 0.25f;
+        objs[i].position[0] = far_off[i][0];
+        objs[i].position[1] = far_off[i][1];
+        objs[i].position[2] = far_off[i][2];
+        objs[i].position[3] = 0.25f;
+        cmds[i].index_count = 100u + (u32)i;
+        cmds[i].instance_count = 1u;
+        cmds[i].first_index = 10u * (u32)i;
+    }
+
+    /* Legacy pass. */
+    gpucull_update_objects(&gc, pos, rad, 8u);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    gpucull_dispatch(&gc, cmd, identity);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_buffer_read(g_dev, gc.visible_ssbo, flags, 0u, sizeof(flags)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, gc.count_buf, &count, 0u, sizeof(count)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (i = 0; i < 8; ++i) ASSERT_EQ(flags[i], (i % 2 == 0) ? 1u : 0u);
+    ASSERT_EQ(count, 4u);
+
+    /* Unified pass with compaction. */
+    gpucull_upload_draw_cmds(&gc, cmds, 8u);
+    gpucull_upload_objects_unified(&gc, objs, 8u);
+    cmd = rhi_frame_begin(g_dev);
+    ASSERT_TRUE(cmd != NULL);
+    gpucull_dispatch_unified(&gc, cmd, identity, NULL, RHI_HANDLE_NULL, 0u, 0u,
+                             RHI_HANDLE_NULL, true, false);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    ASSERT_TRUE(rhi_buffer_read(g_dev, gc.visible_flags_ssbo, flags, 0u, sizeof(flags)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, gc.draw_count_buf, &count, 0u, sizeof(count)));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, gc.visible_draws_ssbo, out, 0u, sizeof(out)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    for (i = 0; i < 8; ++i) ASSERT_EQ(flags[i], (i % 2 == 0) ? 1u : 0u);
+    ASSERT_EQ(count, 4u);
+    for (i = 0; i < 4; ++i) {
+        u32 k = out[i].index_count - 100u;
+        ASSERT_TRUE(k < 8u && k % 2u == 0u);
+        ASSERT_EQ(out[i].first_index, 10u * k);
+        ASSERT_EQ(out[i].instance_count, 1u);
+        seen |= 1u << k;
+    }
+    ASSERT_EQ(seen, 0x55u);
+    for (i = 4; i < 8; ++i) ASSERT_EQ(out[i].index_count, 0u);
+
+    /* Flags-only pass staged for next-frame readback. Two frames, so the
+     * second one reuses (and reads) the slot the first one staged into. */
+    for (frame = 0; frame < 3; ++frame) {
+        bool have;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        memset(vis, 0xEE, sizeof(vis));
+        have = gpucull_read_vis_flags(&gc, 8u, vis);
+        if (frame == 2) {
+            ASSERT_TRUE(have);
+            for (i = 0; i < 8; ++i) ASSERT_EQ(vis[i], (i % 2 == 0) ? 1u : 0u);
+        }
+        gpucull_dispatch_unified(&gc, cmd, identity, NULL, RHI_HANDLE_NULL, 0u, 0u,
+                                 gc.visible_flags_ssbo, false, true);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    }
+    ASSERT_TRUE(r643_clean("gpu_cull"));
+    gpucull_shutdown(&gc);
+}
+
 /* The whole post chain this suite exercises must have run clean under the
  * debug layer (when it is compiled in). Placed last, it covers every test
  * above: a regression anywhere in the backend's state tracking shows up here
@@ -9127,6 +9241,7 @@ int main(void) {
     RUN_TEST(deferred_gbuffer_skinned_sidecar_skins_and_writes_velocity);
     RUN_TEST(particles_spawn_age_cull_and_draw_as_sized_quads);
     RUN_TEST(cluster_cull_sidecar_matches_the_cpu_binning);
+    RUN_TEST(gpu_cull_sidecars_flag_compact_and_read_back);
     RUN_TEST(debug_layer_reported_nothing_for_the_whole_suite);
     rhi_device_destroy(g_dev);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",

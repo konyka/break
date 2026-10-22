@@ -1254,10 +1254,13 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
      * (see indirect_first_instance_supported), so the material-array path
      * falls back to per-group draws.
      *
-     * compute_supported stays false on purpose. It gates GPU culling and
-     * particles, whose compute shaders (cull.comp, unified_cull.comp,
-     * particle_*.comp) have no HLSL sidecar yet; claiming compute would only
-     * move their fail-closed point from "no compute" to "shader missing". */
+     * R652: compute_supported is true. It only gates GPU culling
+     * (gpucull_init); cull.comp and unified_cull.comp now have HLSL
+     * sidecars, rhi_cmd_bind_texture_compute binds the Hi-Z SRV, and a GPU
+     * copy into a host-visible staging buffer lands in its READBACK twin.
+     * hiz_supported stays false: hi_z_generate.comp has no sidecar, so the
+     * unified cull runs frustum-only against the 1x1 depth-1 fallback. */
+    dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
     dev->capabilities.indirect_first_instance_supported = false;
     g_current_device = dev;
@@ -2238,11 +2241,15 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (bd == NULL) return;
     if (bd->mapped != NULL) {
-        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        ID3D12Resource_Unmap(bd->readback != NULL ? bd->readback : bd->resource,
+                             0u, NULL);
         bd->mapped = NULL;
     }
     rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
                                (IUnknown **)&bd->resource);
+    if (bd->readback != NULL)
+        rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
+                                   (IUnknown **)&bd->readback);
     free(bd);
     rhi_free_slot(dev, buf);
 }
@@ -5193,15 +5200,19 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset,
         return true;
     }
     if (!bd->device_local) {
-        /* UPLOAD heaps are host-readable (write-combined; slow but legal). */
+        /* UPLOAD heaps are host-readable (write-combined; slow but legal).
+         * R652: after a GPU copy into it, the READBACK twin holds the
+         * bytes (see RHI_D3D12Buffer.readback). */
+        ID3D12Resource *src = bd->readback != NULL ? bd->readback : bd->resource;
         D3D12_RANGE read_range;
+        D3D12_RANGE none = { 0u, 0u };
         void *mapped = NULL;
         read_range.Begin = (SIZE_T)offset;
         read_range.End = (SIZE_T)(offset + size);
-        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, &read_range, &mapped)))
+        if (FAILED(ID3D12Resource_Map(src, 0u, &read_range, &mapped)))
             return false;
         memcpy(dst, (const u8 *)mapped + offset, size);
-        ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        ID3D12Resource_Unmap(src, 0u, bd->readback != NULL ? &none : NULL);
         return true;
     }
     /* DEFAULT heap: READBACK staging + one-shot copy + Map/memcpy/Unmap. */
@@ -5371,7 +5382,8 @@ void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
         LOG_WARN("D3D12: rhi_buffer_map on DEFAULT-heap buffer; use rhi_buffer_read");
         return NULL;
     }
-    if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped)))
+    if (FAILED(ID3D12Resource_Map(bd->readback != NULL ? bd->readback : bd->resource,
+                                  0u, NULL, &mapped)))
         return NULL;
     bd->mapped = mapped;
     return mapped;
@@ -5381,7 +5393,13 @@ void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
     if (dev == NULL) return;
     bd = (RHI_D3D12Buffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (bd == NULL || bd->mapped == NULL) return;
-    ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+    {
+        D3D12_RANGE none = { 0u, 0u };
+        if (bd->readback != NULL)
+            ID3D12Resource_Unmap(bd->readback, 0u, &none);
+        else
+            ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+    }
     bd->mapped = NULL;
 }
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
@@ -5400,6 +5418,23 @@ void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst,
     if (sbd == NULL || dbd == NULL) return;
     if (size > (usize)sbd->size) size = (usize)sbd->size;
     if (size > (usize)dbd->size) size = (usize)dbd->size;
+    if (!dbd->device_local) {
+        /* R652: GPU -> host staging (gpucull's vis-flag readback). The
+         * READBACK twin stays in COPY_DEST for its whole life. */
+        if (!sbd->device_local) return;
+        if (dbd->readback == NULL) {
+            dbd->readback = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_READBACK,
+                                                     dbd->size);
+            if (dbd->readback == NULL) return;
+        }
+        rhi_d3d12_transition(list, sbd->resource, sbd->state,
+                             D3D12_RESOURCE_STATE_COPY_SOURCE);
+        ID3D12GraphicsCommandList_CopyBufferRegion(list, dbd->readback, 0u,
+                                                   sbd->resource, 0u, (UINT64)size);
+        rhi_d3d12_transition(list, sbd->resource, D3D12_RESOURCE_STATE_COPY_SOURCE,
+                             sbd->state);
+        return;
+    }
     rhi_d3d12_transition(list, sbd->resource, sbd->state,
                          D3D12_RESOURCE_STATE_COPY_SOURCE);
     rhi_d3d12_transition(list, dbd->resource, dbd->state,
@@ -6520,9 +6555,12 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex,
                               RHISampler sampler, u32 unit, u32 mip_level) {
     (void)cmd; (void)tex; (void)sampler; (void)unit; (void)mip_level;
 }
+/* R652: the per-unit binder already resolves the bound pipeline's SRV table
+ * for register(t<unit>) and sets it on the compute root when the pipeline is
+ * a compute one, so a compute-stage sampled texture is that same bind. */
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex,
                                   RHISampler sampler, u32 unit) {
-    (void)cmd; (void)tex; (void)sampler; (void)unit;
+    rhi_cmd_bind_texture(cmd, tex, sampler, unit);
 }
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd,
                                       RHITexture depth_tex) {

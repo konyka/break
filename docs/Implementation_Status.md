@@ -1,6 +1,38 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R652 — **D3D12 打开 `compute_supported`**：GPU 视锥剔除（legacy + unified）、计算阶段纹理绑定、GPU→主机回读
+
+- **问题**：D3D12 把 `compute_supported` 报成 false，`gpucull_init` 因此直接返回失败（`backend reports no compute support; cull disabled`）。mega-buffer 的阴影级联、点光源阴影面、前向/延迟可见性全部走 CPU 剔除。
+- **新增 sidecar**：
+  - `cull_hlsl.comp`：逐行对应 GL 版 `cull.comp`。
+  - `unified_cull_hlsl.comp`：逐行对应 GL 版 `unified_cull.comp`，含 Hi-Z 分支。Hi-Z 金字塔在 t4，与 GL 的 `binding = 4` 采样单元一致，和 u4 的 flags UAV 是两个不同的寄存器。读取用 `Load` 加 clamp 后的纹素，与引擎 Hi-Z 采样器的 NEAREST + CLAMP 等价；后端静态采样器是 LINEAR + WRAP，不适用。
+  - `gpucull.c` 的两个 compute 着色器都按 `caps.shader_sidecar_paths` 走 `*_path` 接口。
+- **后端补齐两处桩**：
+  - **`rhi_cmd_bind_texture_compute`**：原来是空函数，unified cull 的 Hi-Z 寄存器从来没有绑过描述符。逐单元绑定器本来就会为计算管线设置 compute root 上的 SRV 表，所以直接委托给它。
+  - **GPU 拷贝到主机可见暂存缓冲**：gpucull 每帧用 `rhi_cmd_copy_buffer` 把 vis flags 拷进无初始数据的 STORAGE 缓冲，下一帧再 `rhi_buffer_map` 读出来。在 D3D12 上，这种缓冲落在 UPLOAD 堆，而 UPLOAD 堆**永远不能作为拷贝目标**。现在第一次被 GPU 拷入时，为它创建一个 READBACK 堆的孪生缓冲；拷贝写进孪生缓冲，`rhi_buffer_map` / `rhi_buffer_read` / `unmap` 改读孪生缓冲；销毁时一并走延迟释放。
+- **能力位**：`compute_supported = true`。`hiz_supported` 仍为 false：`hi_z_generate.comp` 还没有 sidecar，unified cull 对着 1×1、深度为 1 的 fallback 只做视锥剔除。
+- **测试**：WARP 新增 `gpu_cull_sidecars_flag_compact_and_read_back`，用真实的 `GPUCullSystem`。
+  - 场景：8 个球体，VP 取单位矩阵，NDC 立方体就是视锥。偶数号在视锥内，奇数号分别沿 ±x、±y、±z 推到视锥外。6 号放在 NDC z = −0.6：它在 GL 的 [−1, 1] 深度范围内，但在 [0, 1] 近平面之后。
+  - legacy pass：flags 逐个正确，计数为 4。
+  - unified compact pass：flags 正确；恰好压缩出 4 条偶数号命令，载荷（`index_count`、`first_index`）完整；其余槽位为 0。
+  - flags-only pass 带暂存回读：第 3 帧 `gpucull_read_vis_flags` 返回的 flags 与预期一致。
+  - 用例结束时 debug layer 干净。
+- **反向验证**：
+  - ① `rhi_buffer_map` 不读 READBACK 孪生缓冲：回读的 flags 错误；debug layer 还报了 1 条错误。
+  - ② 两个 sidecar 的近平面改成 0（D3D12 的深度范围）：flags 断言失败。第一版测试**没有**捕获这个错误，因为没有物体落在 [−1, 0) 区间；补上 6 号球体后才能区分。
+  - ③ 压缩时从 `dst` 而不是 `src` 读取命令：载荷断言失败。
+  - 全部恢复后 69/69。
+- **验证结果**：
+  - WARP 69/69，debug layer 0/0/alias 1。RTX 连跑 2 次都是 68/69，只有预期中的 [1] 失败，debug layer 都是 0/0。
+  - ctest：D3D12 186/186、VK 182/182、GL 179/179，全部通过。
+  - demo 日志：`GPUCull: initialized`、`UnifiedCull: initialized`、`Unified GPU Cull+Compact: on`，debug layer 0 条。
+  - demo 截图 MAE（`BREAK_CAM=0,12,22,0,-25`，第 30 帧）：前向路径 D3D12-GL 1.29–1.32、VK-GL 3.5–3.6；延迟路径 D3D12-GL 0.65–1.67。
+  - 延迟路径的数字每次运行都会波动，但这不是本轮引入的：GL 自己两次运行之间的 MAE 就有 0.67（粒子是随机的，帧时间也不同）；用 `BREAK_GPUCULL=0` 关掉 GPU 剔除后，D3D12 落在同样的 0.97–1.04 区间。
+- **遗留问题**：
+  - Hi-Z 生成（`hi_z_generate.comp`）和 `occlusion_cull.comp` 没有 sidecar，`hiz_supported` 仍为 false，`OcclusionCull: init failed`。
+  - IBL 的 4 个 compute 着色器同样没有 sidecar，而且 `rhi_cubemap_create`、`rhi_cmd_bind_image_*` 在 D3D12 上仍是桩。
+
 ## 本轮更新：R651 — **D3D12 GPU 簇光源分箱**（`cluster_cull_hlsl.comp`）
 
 - **问题**：D3D12 上 `light_system_init_gpu_cull` 把 GLSL 源码交给 `rhi_shader_create_compute`，日志报 `cluster_cull.comp compile failed; using CPU binning`。前向簇光照和延迟光照的簇网格每帧都由 CPU 分箱，再整块上传。

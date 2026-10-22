@@ -14,6 +14,19 @@
 
 #include <core/shader_io.h>
 
+/* R652: D3D12 compiles no source in-process; a sidecar backend gets the
+ * precompiled <name>_hlsl.comp for the same path. */
+static RHIShader gpucull_compute_shader(RHIDevice *dev, const RHICapabilities *caps,
+                                        const char *path) {
+    if (caps->shader_sidecar_paths) return rhi_shader_create_compute_path(dev, path);
+    usize len = 0;
+    char *src = shader_read_file(path, &len);
+    if (!src) return RHI_HANDLE_NULL;
+    RHIShader cs = rhi_shader_create_compute(dev, src, len);
+    free(src);
+    return cs;
+}
+
 
 bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
     memset(gc, 0, sizeof(*gc));
@@ -33,15 +46,7 @@ bool gpucull_init(GPUCullSystem *gc, RHIDevice *dev) {
         return false;
     }
 
-    usize cs_len = 0;
-    char *cs_src = shader_read_file("shaders/cull.comp", &cs_len);
-    if (!cs_src) {
-        LOG_WARN("GPUCull: compute shader not found");
-        return false;
-    }
-
-    RHIShader cs = rhi_shader_create_compute(dev, cs_src, cs_len);
-    free(cs_src);
+    RHIShader cs = gpucull_compute_shader(dev, &gc->caps, "shaders/cull.comp");
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("GPUCull: shader compile failed");
         return false;
@@ -265,19 +270,7 @@ bool gpucull_init_unified(GPUCullSystem *gc, RHIDevice *dev) {
     gc->device = dev;
     
     /* Load unified culling compute shader */
-    usize cs_len = 0;
-    char *cs_src = shader_read_file("shaders/unified_cull.comp", &cs_len);
-    if (!cs_src) {
-        LOG_WARN("UnifiedCull: compute shader not found, using fallback");
-        /* Create a minimal inline shader as fallback */
-        gc->unified_cull_pipe = RHI_HANDLE_NULL;
-        gc->unified_ready = false;
-        return true; /* Not a fatal error - can use legacy path */
-    }
-    
-    RHIShader cs = rhi_shader_create_compute(dev, cs_src, cs_len);
-    free(cs_src);
-    
+    RHIShader cs = gpucull_compute_shader(dev, &gc->caps, "shaders/unified_cull.comp");
     if (!rhi_handle_valid(cs)) {
         LOG_WARN("UnifiedCull: shader compile failed");
         gc->unified_ready = false;

@@ -203,6 +203,12 @@ typedef struct RHI_D3D12Buffer {
      * the frame staging list releases it. */
     ID3D12Resource *alias_resource;
     UINT64 alias_frame;
+    /* R652: UPLOAD-heap buffers only: a READBACK-heap twin that a recorded
+     * rhi_cmd_copy_buffer lands in (an UPLOAD heap can never be a copy
+     * destination), created on the first such copy. Once it exists
+     * rhi_buffer_map / rhi_buffer_read return its bytes -- the GPU-written
+     * staging contract the VK/GL backends give a host-visible buffer. */
+    ID3D12Resource *readback;
 } RHI_D3D12Buffer;
 
 typedef struct RHI_D3D12Texture {
