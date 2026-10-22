@@ -9351,6 +9351,30 @@ static void r654_ggx(double xi0, double xi1, const double n[3], double rough,
     l = sqrt(h[0] * h[0] + h[1] * h[1] + h[2] * h[2]);
     for (c = 0; c < 3; ++c) h[c] /= l;
 }
+/* R660: the irradiance_conv.comp replay at one texel, factored out of the
+ * per-face loop below so the sun-face mirror check can reuse it. */
+static void r660_irradiance_replay(const u16 *env, int face, double u, double v,
+                                   double out[3]) {
+    double n[3], t[3], b[3];
+    u32 s;
+    int c;
+    out[0] = out[1] = out[2] = 0.0;
+    r654_dir(face, u, v, n);
+    r654_basis(n, t, b);
+    for (s = 0; s < 1024u; ++s) {
+        double xi0 = (double)s / 1024.0, xi1 = r654_radical(s);
+        double phi = 2.0 * 3.14159265359 * xi0, ct = sqrt(xi1), st = sqrt(1.0 - xi1);
+        double l[3];
+        int ef, ex, ey;
+        for (c = 0; c < 3; ++c)
+            l[c] = t[c] * cos(phi) * st + b[c] * sin(phi) * st + n[c] * ct;
+        r654_lookup(l, 128, &ef, &ex, &ey);
+        for (c = 0; c < 3; ++c)
+            out[c] += r654_h2f(env[((ef * 128 + ey) * 128 + ex) * 4 + c]);
+    }
+    for (c = 0; c < 3; ++c) out[c] /= 1024.0;
+}
+
 TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders) {
     static IBLSystem ibl;
     static u16 env[6 * 128 * 128 * 4];
@@ -9463,28 +9487,54 @@ TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders) {
      * coordinate moves the normal -- reading the env texel each sample
      * direction lands on. */
     for (f = 0; f < 6; ++f) {
-        double n[3], t[3], b[3], acc[3] = { 0, 0, 0 };
-        u32 s;
-        r654_dir(f, 12.5 / 64.0, 50.5 / 64.0, n);
-        r654_basis(n, t, b);
-        for (s = 0; s < 1024u; ++s) {
-            double xi0 = (double)s / 1024.0, xi1 = r654_radical(s);
-            double phi = 2.0 * 3.14159265359 * xi0, ct = sqrt(xi1), st = sqrt(1.0 - xi1);
-            double l[3];
-            int ef, ex, ey;
-            for (c = 0; c < 3; ++c)
-                l[c] = t[c] * cos(phi) * st + b[c] * sin(phi) * st + n[c] * ct;
-            r654_lookup(l, 128, &ef, &ex, &ey);
-            for (c = 0; c < 3; ++c)
-                acc[c] += r654_h2f(env[((ef * 128 + ey) * 128 + ex) * 4 + c]);
-        }
+        double acc[3];
+        r660_irradiance_replay(env, f, 12.5 / 64.0, 50.5 / 64.0, acc);
         for (c = 0; c < 3; ++c) {
-            double want = acc[c] / 1024.0;
+            double want = acc[c];
             double got = r654_h2f(irr[((f * 64 + 50) * 64 + 12) * 4 + c]);
             if (fabs(got - want) > 0.02 * want + 2e-4)
                 printf("  irradiance face %d ch %d = %f, cpu %f\n", f, c, got, want);
             ASSERT_TRUE(fabs(got - want) <= 0.02 * want + 2e-4);
             ++checked;
+        }
+    }
+    /* R660: irradiance mirrored within the sun's face (+Z). The cosine-
+     * weighted hemisphere average is smooth, so texel (12, 50) cannot tell a
+     * left-right mirrored face from a correct one (R654 recorded that blind
+     * spot). Scanning the +Z face, the most asymmetric mirror pair is the
+     * edge pair (0, 62) / (63, 62), about 7% apart (the sun lobe's position
+     * on the face is not symmetric about its vertical axis). Both texels are
+     * checked against their own replay at 2%, and the replays must differ by
+     * more than 5%, so a mirrored face puts each value ~5% off its replay and
+     * the margin cannot silently vanish. */
+    {
+        const double sd = sqrt((double)sun_dir[0] * sun_dir[0] +
+                               (double)sun_dir[1] * sun_dir[1] +
+                               (double)sun_dir[2] * sun_dir[2]);
+        double sun[3] = { sun_dir[0] / sd, sun_dir[1] / sd, sun_dir[2] / sd };
+        double at[3], mir[3], sum_at = 0.0, sum_mir = 0.0;
+        int sf, sx, sy, mx;
+        r654_lookup(sun, 64, &sf, &sx, &sy);
+        ASSERT_EQ(sf, 4);   /* the sun lands on +Z, the face R654 could not see */
+        sx = 0; sy = 62;
+        mx = 63 - sx;
+        r660_irradiance_replay(env, sf, (sx + 0.5) / 64.0, (sy + 0.5) / 64.0, at);
+        r660_irradiance_replay(env, sf, (mx + 0.5) / 64.0, (sy + 0.5) / 64.0, mir);
+        for (c = 0; c < 3; ++c) { sum_at += at[c]; sum_mir += mir[c]; }
+        if (!(fabs(sum_mir / sum_at - 1.0) > 0.05))
+            printf("  irradiance texel (%d,%d) replay %f vs mirror (%d,%d) %f\n",
+                   sx, sy, sum_at, mx, sy, sum_mir);
+        ASSERT_TRUE(fabs(sum_mir / sum_at - 1.0) > 0.05);
+        for (c = 0; c < 3; ++c) {
+            double g_at = r654_h2f(irr[((sf * 64 + sy) * 64 + sx) * 4 + c]);
+            double g_mir = r654_h2f(irr[((sf * 64 + sy) * 64 + mx) * 4 + c]);
+            if (fabs(g_at - at[c]) > 0.02 * at[c] + 2e-4 ||
+                fabs(g_mir - mir[c]) > 0.02 * mir[c] + 2e-4)
+                printf("  irradiance sun face ch %d: (%d,%d) %f cpu %f, (%d,%d) %f cpu %f\n",
+                       c, sx, sy, g_at, at[c], mx, sy, g_mir, mir[c]);
+            ASSERT_TRUE(fabs(g_at - at[c]) <= 0.02 * at[c] + 2e-4);
+            ASSERT_TRUE(fabs(g_mir - mir[c]) <= 0.02 * mir[c] + 2e-4);
+            checked += 2;
         }
     }
     /* BRDF LUT at a few texels: the split-sum integral, 1024 samples. */
@@ -9553,7 +9603,7 @@ TEST(ibl_bake_matches_a_cpu_replay_of_the_compute_shaders) {
         m4 /= 256.0;
         ASSERT_TRUE(m4 > mn && m4 < mx);
     }
-    ASSERT_TRUE(checked == 18 + 8 + 9);
+    ASSERT_TRUE(checked == 18 + 6 + 8 + 9);
     ASSERT_TRUE(r643_clean("ibl"));
     ibl_destroy(&ibl, g_dev);
 }
