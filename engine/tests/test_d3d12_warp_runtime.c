@@ -10592,12 +10592,6 @@ TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets) {
             if (which >= 0) {
                 int layer = which + 1;
                 i = (y * 8 + x) * 4;
-                if (rt0[i + 0] != alb_rgb[layer][0] || rt0[i + 3] != (unsigned)(layer == 1 ? 0.25f * 255.0f + 0.5f : 0.5f * 255.0f + 0.5f) ||
-                    rt2[i + 0] != (unsigned)(layer == 1 ? 0.5f * 255.0f + 0.5f : 0.75f * 255.0f + 0.5f))
-                    printf("  garr px (%d,%d) layer %d rt0=(%u,%u,%u,%u) rt2=(%u,%u,%u,%u) rt4=(%f,%f,%f) rt3=(%f,%f)",
-                           x, y, layer, rt0[i], rt0[i+1], rt0[i+2], rt0[i+3], rt2[i], rt2[i+1], rt2[i+2], rt2[i+3],
-                           (double)warp_half_to_float(rt4[i]), (double)warp_half_to_float(rt4[i+1]), (double)warp_half_to_float(rt4[i+2]),
-                           (double)warp_half_to_float(rt3[i]), (double)warp_half_to_float(rt3[i+1]));
                 ASSERT_EQ(rt0[i + 0], alb_rgb[layer][0]);
                 ASSERT_EQ(rt0[i + 1], alb_rgb[layer][1]);
                 ASSERT_EQ(rt0[i + 2], alb_rgb[layer][2]);
@@ -10624,7 +10618,7 @@ TEST(gbuffer_array_sidecar_writes_each_layer_its_own_targets) {
                 {
                     int flag = rt2[i + 2];
                     int want = layer == 1 ? (int)(0.75f * 255.0f + 0.5f) : 255;
-                    if (abs(flag - want) > 1) printf("  garr px (%d,%d) emissive flag %d want %d", x, y, flag, want);
+                    if (abs(flag - want) > 1) printf("  gbuffer_arr px (%d,%d) emissive flag %d want %d\n", x, y, flag, want);
                     ASSERT_TRUE(abs(flag - want) <= 1);
                 }
                 {

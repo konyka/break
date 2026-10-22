@@ -1272,8 +1272,6 @@ RHIDevice *rhi_device_create(RHIBackend backend, void *window_native,
             SUCCEEDED(ID3D12Device_CheckFeatureSupport(
                 ctx->device, D3D12_FEATURE_SHADER_MODEL, &sm, (UINT)sizeof(sm))) &&
             sm.HighestShaderModel >= D3D_SHADER_MODEL_6_8;
-        printf("R658DBG sm=0x%02x supported=%d", (unsigned)sm.HighestShaderModel,
-               (int)dev->capabilities.indirect_first_instance_supported);
     }
     g_current_device = dev;
     return dev;
