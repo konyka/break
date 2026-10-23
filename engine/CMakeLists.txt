@@ -875,6 +875,26 @@ set_property(TARGET break_lua PROPERTY C_STANDARD 11)
 target_include_directories(break_lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_lua PUBLIC lua)
 
+# Formal optional Stage 4 scene editor core library: the document model
+# (one owned ECS World, bounded entity name map, dirty flag), the bounded
+# command-based undo/redo stack, BSCN + sidecar scene save/load, and the
+# bounded editable-component registry (inspector data model + undoable
+# field/add/remove-component commands).
+# Top-level like the other formal optional libraries (runtime_core/break_lua
+# precedent) — built regardless of ENGINE_BUILD_TESTS, and deliberately NOT
+# linked into engine, engine_demo, or dxx_break; the editor shell (Phase 1
+# Task 4) opts in explicitly. ecs.c is NOT compiled here: the formal
+# break_ecs_replication library already owns it (and log.c) and is linked
+# PUBLIC instead. scene_serial.c has no formal library owner (the engine
+# target and test_scene_serial each compile their own inline copy), so
+# break_editor owns exactly one copy itself; its remaining includes resolve
+# header-only (math/math.h is all static inline) or via break_ecs_replication
+# (core/log.c).
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/scene/scene_serial.c)
+set_property(TARGET break_editor PROPERTY C_STANDARD 11)
+target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(break_editor PUBLIC break_ecs_replication)
+
 # Vendored stb single-header implementations are shared by the engine asset
 # pipeline, myui's font/image backends, and the dxx application.
 add_library(stb_truetype STATIC external/stb_truetype_impl.c)
@@ -1249,6 +1269,35 @@ target_include_directories(dxx_break PRIVATE
 )
 target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
 engine_link_rhi_backend(dxx_break)
+
+# Stage 4 scene editor Phase 1 shell executable (Task 4). Top-level like the
+# break_editor library: built regardless of ENGINE_BUILD_TESTS and kept thin —
+# all panel logic lives in editor_panels.c so the headless dummy-PAL test
+# exercises it. src/myui/mypal/dummy/my_pal_dummy.c is compiled in because
+# editor_panels.c hosts break_editor_shell_create_for_test(); when MYUI_PAL
+# is a desktop port myui_core also carries the dummy PAL, and the archive
+# copy is then simply never pulled (the executable's own object defines the
+# symbols first) — no duplicate definitions.
+#
+# Link-order note (carried review item): libbreak_editor.a and libengine.a
+# BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
+# engine compiles src/scene/scene_serial.c inline). Static archives only pull
+# objects to resolve still-undefined symbols, and break_editor is listed
+# FIRST, so editor_panels.o -> editor_scene.o -> scene_serial.o all resolve
+# from break_editor; engine's copy is never pulled for the same symbols.
+# Verified at link time and via `nm` (exactly one scene_save_binary
+# definition in the binary).
+add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+    src/myui/mypal/dummy/my_pal_dummy.c)
+set_property(TARGET editor PROPERTY C_STANDARD 11)
+target_include_directories(editor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(editor PRIVATE break_editor break_myui engine m)
+engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -3393,6 +3442,74 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_lua_target_contract.cmake)
     set_tests_properties(test_break_lua_target_contract PROPERTIES
         LABELS "headless;break_lua;platform_contract")
+
+    # Stage 4 scene editor Phase 1 Task 1+2+3 focused tests. The test-only
+    # break_editor_test variant compiles the same five translation units
+    # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
+    # covering every editor-owned allocation: doc struct, name-slot block,
+    # stack struct, stack entry array, command objects — including the
+    # component commands, sidecar read buffer), mirroring the
+    # break_lua_test / BREAK_LUA_TESTING pattern; the
+    # production break_editor target (top-level, defined independent of
+    # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
+    # engine_demo, or dxx_break.
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/scene/scene_serial.c)
+    set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
+    target_include_directories(break_editor_test PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
+
+    add_executable(test_editor_doc tests/test_editor_doc.c)
+    target_include_directories(test_editor_doc PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_doc PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_doc PRIVATE break_editor_test)
+    add_test(NAME test_editor_doc COMMAND test_editor_doc)
+    set_tests_properties(test_editor_doc PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_cmd tests/test_editor_cmd.c)
+    target_include_directories(test_editor_cmd PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_cmd PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_cmd PRIVATE break_editor_test)
+    add_test(NAME test_editor_cmd COMMAND test_editor_cmd)
+    set_tests_properties(test_editor_cmd PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_scene tests/test_editor_scene.c)
+    target_include_directories(test_editor_scene PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_scene PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_scene PRIVATE break_editor_test)
+    add_test(NAME test_editor_scene COMMAND test_editor_scene)
+    set_tests_properties(test_editor_scene PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_components tests/test_editor_components.c)
+    target_include_directories(test_editor_components PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_components PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_components PRIVATE break_editor_test)
+    add_test(NAME test_editor_components COMMAND test_editor_components)
+    set_tests_properties(test_editor_components PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
+    # production editor_panels.c translation unit directly (the
+    # test_scene_serial inline-copy precedent) plus the dummy PAL port (the
+    # test_myui_window_manager precedent — MYUI_PAL=dummy keeps the port out
+    # of myui_core); links the hook-instrumented break_editor_test like the
+    # other editor tests. No RHI: the shell's test path is dummy-PAL only.
+    add_executable(test_editor_shell tests/test_editor_shell.c
+        apps/editor/editor_panels.c src/myui/mypal/dummy/my_pal_dummy.c)
+    set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
+    target_include_directories(test_editor_shell PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
+    add_test(NAME test_editor_shell COMMAND test_editor_shell)
+    set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")
+
+    add_test(NAME test_break_editor_target_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_editor_target_contract.cmake)
+    set_tests_properties(test_break_editor_target_contract PROPERTIES
+        LABELS "headless;editor;platform_contract")
 
     # Formal facade (owned message / bounded queue / formal task submit)
     # focused tests. The test-only runtime_core_test variant compiles the new
