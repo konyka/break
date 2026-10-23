@@ -1,6 +1,18 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R679 — fonts-noto-cjk 改为可选安装步骤
+
+R678 推送后的那轮 CI（bc92f10f）里，有 3 个 job 在 apt 阶段失败：`Linux Wayland + OpenGL`、`Linux + GCC (ASan + UBSan)`、`Linux X11 + Vulkan (lavapipe)`。三者的注解都显示，两次 360 秒尝试最后都停在同一个包：`Get: … fonts-noto-cjk [61.2 MB]`。R678 去掉的那 4 个 lane 这次都通过了。到这里，所有被抓到的停滞都落在这一个包上（R677 两处、R678 三处），R677 里 Wayland lane 的 110 包那次也是在这个包之前停下的。
+
+改动（`ci.yml` 里还安装这个包的 7 个 lane）：
+- 必需的依赖安装列表中去掉 `fonts-noto-cjk`；
+- 紧接着加一个独立步骤 `Install CJK test font (optional)`：`continue-on-error: true`，步骤时限 7 分钟，单次 `timeout 360`。装不上只记一条 warning，用到它的两个 CJK 用例（`test_myui_font.c`）会打印 SKIP。
+
+镜像正常时，覆盖和以前完全一样。镜像卡在这个包上时，job 不再失败，只是 CJK 字体用例被跳过，并留下注解。
+
+验证：`ci.yml` 能被 `yaml.safe_load` 解析，20 段含 apt 的 run 脚本都通过 `bash -n`；7 个可选步骤都紧跟在各自 job 的依赖安装步骤之后（解析 YAML 后确认了步骤顺序）。实际效果要看推送后的 CI。
+
 ## 本轮更新：R678 — 不跑字体测试的 CI lane 不再安装 fonts-noto-cjk
 
 根据 R677 拿到的证据，先做不需要新增外部依赖的那一步：`fonts-noto-cjk`（61 MB，是单个最大的下载）只被 `test_myui_font.c` 的两个 CJK 用例用到，而且找不到字体时会 SKIP。所以这几个 lane 不再装它：
