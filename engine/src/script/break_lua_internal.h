@@ -62,6 +62,18 @@ struct BreakLuaRuntime {
     u64 frame_seq;           /* begin_frame counter (diagnostics) */
     u64 frame_error_total;   /* lifetime count of frame hook faults */
     bool budget_tripped;     /* set by the budget hook callback while armed */
+    u64 budget_trip_total;   /* lifetime count of budget trips (public
+                              * diagnostic via
+                              * break_lua_runtime_budget_trip_count) */
+    /* Budget-trip sentinel identity: the error VALUE raised by the count
+     * hook is a lightuserdata naming THIS FIELD'S ADDRESS (host-owned,
+     * per-runtime). Scripts cannot construct, obtain, or compare it — no
+     * lightuserdata-producing API exists in the sandbox, and the sandboxed
+     * pcall/xpcall re-raise it uninspected (break_lua_binding.c), so a trip
+     * always propagates to the host-side catcher (fix round 4, NEW-C4:
+     * script pcall used to catch the plain-string trip, and
+     * resethookcount re-armed the countdown — self-catching evasion). */
+    u32 budget_sentinel;
     BreakLuaFrameError last_frame_error;
     /* Task 4: host bindings and sandbox. sandbox_ref names the per-runtime
      * whitelist table (registry-held, never script-reachable); batch is a
@@ -202,6 +214,22 @@ BreakLuaModule *break_lua_module_find(BreakLuaRuntime *runtime,
  * Lua API calls, so it is safe to run immediately before lua_close (which
  * then tears down every remaining registry reference at once). */
 void break_lua_module_registry_destroy(BreakLuaRuntime *runtime);
+
+/* Budget-trip sentinel helpers (fix round 4). The sentinel value is the
+ * ADDRESS of the runtime's budget_sentinel field — host-owned, never
+ * script-reachable. */
+static inline void *break_lua_budget_sentinel_ptr(BreakLuaRuntime *runtime) {
+    return (void *)&runtime->budget_sentinel;
+}
+
+/* Identity check for the budget-trip error value on the Lua stack. Reaches
+ * the runtime through the extraspace (set at bootstrap; allocation-free). */
+static inline bool break_lua_is_budget_trip_error(lua_State *L, int idx) {
+    BreakLuaRuntime *runtime =
+        *(BreakLuaRuntime **)lua_getextraspace(L);
+    return runtime && lua_type(L, idx) == LUA_TLIGHTUSERDATA &&
+           lua_touserdata(L, idx) == break_lua_budget_sentinel_ptr(runtime);
+}
 
 /* break_lua_value.c implementations consumed by the dispatch closure. */
 void break_lua_call_impl(lua_State *L, BreakLuaCallOpCtx *ctx);

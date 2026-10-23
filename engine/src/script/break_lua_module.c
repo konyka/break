@@ -107,11 +107,23 @@ void break_lua_op_take_error(lua_State *L, char *out, usize out_cap)
 {
     const char *msg;
     usize len;
-    int type = lua_type(L, -1);
+    int type;
     if (out_cap == 0u) {
         lua_pop(L, 1);
         return;
     }
+    /* The budget-trip sentinel maps to its canonical message text (the
+     * sentinel itself is a bare lightuserdata — it carries no position and
+     * must never be surfaced as an opaque "non-string" fallback). */
+    if (break_lua_is_budget_trip_error(L, -1)) {
+        msg = "break_lua: instruction budget exceeded";
+        len = strlen(msg);
+        memcpy(out, msg, len + 1u > out_cap ? out_cap : len + 1u);
+        out[out_cap - 1u] = '\0';
+        lua_pop(L, 1);
+        return;
+    }
+    type = lua_type(L, -1);
     if (type == LUA_TNUMBER) {
         int written = snprintf(out, out_cap, "%.14g", lua_tonumber(L, -1));
         (void)written;

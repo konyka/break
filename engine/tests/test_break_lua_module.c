@@ -750,6 +750,13 @@ static const char kChunkOnUnloadSpin[] =
     "    while true do end\n"
     "end\n";
 
+/* NEW-C4 (fix round 4): a script-level pcall must NOT catch the staging
+ * trip — the sandboxed pcall re-raises the host-owned sentinel value, so
+ * the chunk dies before writing state. */
+static const char kChunkStagePcallSpin[] =
+    "local ok, err = pcall(function() while true do end end)\n"
+    "state.caught = 1\n"; /* never reached: the trip is uncatchable */
+
 /* A load whose chunk top level spins forever must ABORT bounded when the
  * runtime has an instruction budget: the staging execution is armed with
  * the same per-invocation count hook as frame hooks. */
@@ -803,11 +810,11 @@ TEST(staging_budget_trip_on_reload_keeps_old_version_serving)
     ASSERT_EQ(rep.old_version, 1u);
     ASSERT_EQ(rep.new_version, 1u); /* a failed reload consumes no version */
     ASSERT_TRUE(strstr(rep.error, "instruction budget exceeded") != NULL);
-    /* A count-hook trip during a TOP-LEVEL spin carries no position prefix
-     * (luaL_where finds no Lua frame at level 1 there), so no line parses —
-     * consumers must handle the position-less form (the console logs it
-     * verbatim, bounded). A trip inside a Lua function called from the
-     * chunk DOES carry the usual "name:line: " prefix (verified). */
+    /* The trip raises a bare sentinel VALUE via lua_error (fix round 4,
+     * NEW-C4): it never carries a position prefix — even for a trip inside
+     * a Lua function called from the chunk — so no line parses. Consumers
+     * handle the position-less canonical text (the console logs it
+     * verbatim, bounded). */
     ASSERT_EQ(rep.error_line, 0u);
 
     st = break_lua_test_module_stat(rt, "mod");
@@ -878,6 +885,43 @@ TEST(on_unload_budget_trip_vetoes_reload_bounded)
     break_lua_runtime_destroy(rt);
 }
 
+/* NEW-C4: the sandboxed pcall is budget-transparent, so a chunk top level
+ * cannot pcall-shield an infinite loop through staging. */
+TEST(staging_budget_trip_is_uncatchable_by_script_pcall)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    BreakLuaReloadReport rep;
+    BreakLuaTestModuleStat st;
+    double value = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "mod", kChunkV1,
+                                            chunk_len(kChunkV1)),
+              BREAK_LUA_OK);
+
+    memset(&rep, 0, sizeof(rep));
+    ASSERT_EQ(break_lua_runtime_reload_module(rt, "mod", kChunkStagePcallSpin,
+                                              chunk_len(kChunkStagePcallSpin),
+                                              &rep),
+              BREAK_LUA_FAILED);
+    ASSERT_FALSE(rep.committed);
+    ASSERT_TRUE(strstr(rep.error, "instruction budget exceeded") != NULL);
+    /* The sentinel is bare (raised via lua_error): no position prefix. */
+    ASSERT_EQ(rep.error_line, 0u);
+    /* The script's catch point never ran; the old version keeps serving. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "mod", "caught",
+                                                    &value));
+    st = break_lua_test_module_stat(rt, "mod");
+    ASSERT_EQ(st.version, 1u);
+    ASSERT_TRUE(break_lua_test_module_env_number(rt, "mod", "only_in_v1",
+                                                 &value));
+
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(load_basic_runs_in_module_env_with_persistent_state);
     RUN_TEST(load_duplicate_rejected_without_reload);
@@ -902,4 +946,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(staging_budget_trip_on_reload_keeps_old_version_serving);
     RUN_TEST(staging_within_budget_runs_normally);
     RUN_TEST(on_unload_budget_trip_vetoes_reload_bounded);
+    RUN_TEST(staging_budget_trip_is_uncatchable_by_script_pcall);
 TEST_MAIN_END()

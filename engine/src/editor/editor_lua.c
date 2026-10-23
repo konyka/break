@@ -82,12 +82,29 @@
  * harness that dies anywhere leaves __DONE false and the eval fails CLOSED
  * (records discarded), never a false success (N2).
  *
+ * BUDGET-TRIP TRANSPARENCY (fix round 4, NEW-C4): since fix round 4 the
+ * sandboxed pcall RE-RAISES the trip sentinel instead of returning it —
+ * the harness's __pcall is that wrapper, so a trip is NOT caught in Lua:
+ * on_frame_begin dies, the per-hook pcall in the frame dispatch catches
+ * the sentinel, the module is marked hooks-disabled (Stage 3 runaway
+ * policy — cleared by the next eval's committed reload, which is why the
+ * console survives), and the C side recognizes the trip via the
+ * break_lua_runtime_budget_trip_count delta across the dispatch. The
+ * epilogue does NOT run on a trip, so a body that set on_unload before
+ * looping would wedge the NEXT reload — closed by the pinned
+ * __console_cleanup called pre-reload every eval (below).
+ *
  * The getter functions ARE env fields (runtime visibility), but the host
  * never calls them by name after the body ran: their function VALUES are
  * pinned via break_lua_runtime_ref_function after the reload commits and
  * BEFORE the dispatch (the body cannot have run yet), and invoked through
  * break_lua_runtime_call_ref — a body overwrite of the env fields
- * substitutes nothing (NEW-C3 closed). */
+ * substitutes nothing (NEW-C3 closed). __console_cleanup is pinned the
+ * same way and kept ACROSS evals: each eval calls the PREVIOUS env's
+ * pinned cleanup (clearing on_unload/on_frame_end there) before its
+ * reload, so even a trip that skipped the epilogue cannot carry a veto
+ * into the next commit; the console-runtime health check + recreate stays
+ * as the backstop. */
 #define HARNESS_PREFIX                                              \
     "local function __body()\n"
 #define HARNESS_SUFFIX                                              \
@@ -131,6 +148,7 @@
     "  function __console_err() return __DONE, __E end\n"           \
     "  function __console_lines() return __unpack(__L) end\n"       \
     "  function __console_result() return __R end\n"                \
+    "  function __console_cleanup() on_unload=nil on_frame_end=nil end\n" \
     "end\n"
 
 struct BreakEditorLuaConsole {
@@ -145,6 +163,11 @@ struct BreakEditorLuaConsole {
     BreakLuaRuntime *probe_runtime; /* owned; NO batch bound (probe-only);
                                      * same lazy re-init policy */
     BreakLuaEcsBatch *batch;        /* owned (bound to runtime) */
+    /* Pinned __console_cleanup of the LIVE console env (called pre-reload
+     * every eval to clear any body-set on_unload/on_frame_end there — the
+     * trip path skips the harness epilogue, fix round 4). UINT32_MAX when
+     * none (pin died with a destroyed runtime). */
+    u32 cleanup_ref;
     /* Fixed scratch for the post-eval drain; the batch default capacity is
      * 256, so one drain empties it. Keeping it here means eval allocates
      * nothing (the struct is the single editor-owned allocation). */
@@ -171,9 +194,9 @@ static bool console_is_owner(const BreakEditorLuaConsole *c) {
  * standard "<chunkname>:N: " position prefix and N is past the host-side
  * wrapper (offset = wrapper lines before the body, so M is the
  * input-relative line); otherwise "error: <raw>" — the raw fallback covers
- * position-less messages such as the count-hook trip text for a top-level
- * spin (a trip inside a Lua function called from the chunk DOES carry the
- * prefix — the parser handles both). Bounded by console_log. */
+ * position-less messages such as the budget-trip canonical text (the
+ * sentinel value is raised bare via lua_error, fix round 4). Bounded by
+ * console_log. */
 static void console_log_lua_error(const BreakEditorLuaConsole *c,
                                   const char *raw, u32 line_offset) {
     const char *colon = strchr(raw, ':');
@@ -261,28 +284,52 @@ static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
     return true;
 }
 
+/* Pins the live console env's __console_cleanup (fix round 4: called
+ * pre-reload every eval to clear any body-set on_unload/on_frame_end there
+ * — the budget-trip path skips the harness epilogue). A pin failure leaves
+ * cleanup_ref UINT32_MAX: the epilogue clear plus the health-check recreate
+ * remain as backstops, so a pin failure degrades, never wedges. The caller
+ * guarantees any previous pin belongs to the CURRENT c->runtime. */
+static void console_pin_cleanup(BreakEditorLuaConsole *c) {
+    if (c->cleanup_ref != UINT32_MAX) {
+        (void)break_lua_runtime_unref_function(c->runtime, c->cleanup_ref);
+        c->cleanup_ref = UINT32_MAX;
+    }
+    (void)break_lua_runtime_ref_function(c->runtime, CONSOLE_MODULE,
+                                         "__console_cleanup", &c->cleanup_ref);
+}
+
 /* Console-runtime recovery (fix round 3, symmetric with the probe side): a
  * vetoing on_unload on the live console env would fail every reload; a
  * Lua-side OOM can lose the runtime outright. Health check = reloading the
  * seed harness (trivial, host-controlled); on failure the runtime is
- * destroyed (releasing the batch binding — the batch stays host-owned) and
- * recreated+rebound+reseeded. A recreation failure leaves runtime NULL:
- * the next eval re-tries the init at admission and, until then, fails
- * bounded with a "console runtime unavailable" line. */
+ * destroyed (releasing the batch binding and every pin — the batch stays
+ * host-owned) and recreated+rebound+reseeded. A recreation failure leaves
+ * runtime NULL: the next eval re-tries the init at admission and, until
+ * then, fails bounded with a "console runtime unavailable" line. */
 static void console_main_runtime_reset_if_unhealthy(BreakEditorLuaConsole *c) {
     if (!c->runtime) {
-        (void)console_main_runtime_init(c);
+        if (console_main_runtime_init(c)) {
+            console_pin_cleanup(c);
+        }
         return;
     }
     if (break_lua_runtime_reload_module(c->runtime, CONSOLE_MODULE,
                                         k_console_seed,
                                         sizeof(k_console_seed) - 1u,
                                         NULL) == BREAK_LUA_OK) {
+        /* Healthy: the seed reload REPLACED the console env, so the cleanup
+         * pin (captured from an older env) is stale — re-pin from the live
+         * seed env. The old pin is still valid (pins survive reloads). */
+        console_pin_cleanup(c);
         return;
     }
-    break_lua_runtime_destroy(c->runtime);
+    break_lua_runtime_destroy(c->runtime); /* every pin dies with it */
     c->runtime = NULL;
-    (void)console_main_runtime_init(c);
+    c->cleanup_ref = UINT32_MAX;
+    if (console_main_runtime_init(c)) {
+        console_pin_cleanup(c);
+    }
 }
 
 /* Probe-runtime recovery: a crafted escape that ran at probe staging could
@@ -483,6 +530,7 @@ BreakEditorLuaConsole *break_editor_lua_create(BreakEditorDoc *doc,
     c->log_fn = log_fn;
     c->log_ctx = log_ctx;
     c->owner = platform_thread_current_id();
+    c->cleanup_ref = UINT32_MAX;
     c->batch = break_lua_ecs_batch_create(0u); /* 256 default */
     if (!c->batch) {
         free(c);
@@ -491,6 +539,13 @@ BreakEditorLuaConsole *break_editor_lua_create(BreakEditorDoc *doc,
     if (!console_main_runtime_init(c) || !console_probe_runtime_init(c)) {
         /* destroy tolerates the partial state (NULL runtimes, live batch,
          * owner already recorded). */
+        break_editor_lua_destroy(c);
+        return NULL;
+    }
+    /* Pin the seed harness's cleanup for the first eval's pre-reload call
+     * (a pin failure here fails the create: Lua-side OOM under injection). */
+    console_pin_cleanup(c);
+    if (c->cleanup_ref == UINT32_MAX) {
         break_editor_lua_destroy(c);
         return NULL;
     }
@@ -531,6 +586,7 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     char eval_err[BREAK_LUA_VALUE_STRING_CAPACITY];
     bool eval_ok = false;
     bool done = false;
+    bool tripped = false;
     usize drained = 0u;
     usize i;
     u32 harness_offset;
@@ -585,7 +641,22 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         return false;
     }
 
-    /* 2. Embed the probe-verified body in the console harness and reload.
+    /* 2. Pre-reload veto clear (fix round 4): the budget-trip path skips
+     *    the harness epilogue (the trip is deliberately uncatchable — see
+     *    NEW-C4 below), so a body that set on_unload before tripping would
+     *    veto THIS reload's commit. Call the PREVIOUS env's pinned cleanup
+     *    (captured before that env ever ran — overwrite-proof); failures
+     *    are bounded and the health-check recreate stays as the backstop. */
+    if (console->cleanup_ref != UINT32_MAX) {
+        (void)break_lua_runtime_call_ref(console->runtime,
+                                         console->cleanup_ref, NULL, 0u,
+                                         NULL, 0u);
+        (void)break_lua_runtime_unref_function(console->runtime,
+                                               console->cleanup_ref);
+        console->cleanup_ref = UINT32_MAX;
+    }
+
+    /* 3. Embed the probe-verified body in the console harness and reload.
      *    The harness top level is host-controlled definitions only and its
      *    `local function __body()` statement context rejects any expression
      *    continuation the probe could not see, so console staging never
@@ -619,10 +690,12 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         return false;
     }
 
-    /* 3. Capture the outcome getter function REFERENCES after the commit
+    /* 4. Capture the outcome getter function REFERENCES after the commit
      *    and BEFORE the dispatch (the body cannot have run yet); the
      *    outcome channel is read only through these pinned values, so body
-     *    overwrites of the getter env fields substitute nothing (NEW-C3). */
+     *    overwrites of the getter env fields substitute nothing (NEW-C3).
+     *    The cleanup pin is kept in the console struct ACROSS evals (used
+     *    by the next eval's pre-reload veto clear). */
     err = break_lua_runtime_ref_function(console->runtime, CONSOLE_MODULE,
                                          "__console_err", &refs[0]);
     if (err == BREAK_LUA_OK) {
@@ -640,16 +713,27 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         console_main_runtime_reset_if_unhealthy(console);
         return false;
     }
+    console_pin_cleanup(console); /* cleanup_ref is UINT32_MAX here */
 
-    /* 4. Dispatch on_frame_begin: the Stage 3 count hook arms the console
+    /* 5. Dispatch on_frame_begin: the Stage 3 count hook arms the console
      *    instruction budget over exactly this invocation (main coroutine).
-     *    The harness pcall catches runtime errors and the budget trip; the
-     *    shadow- AND upvalue-proof epilogue then clears
-     *    on_unload/on_frame_end and sets the __DONE completion marker. */
-    break_lua_runtime_begin_frame(console->runtime, 0.0);
-    break_lua_runtime_end_frame(console->runtime);
+     *    NEW-C4 semantics: the sandboxed pcall is budget-TRANSPARENT — the
+     *    harness's __pcall returns ordinary body errors (false, msg) but
+     *    re-raises the trip sentinel, so a budget trip kills the hook
+     *    (module marked hooks-disabled, cleared by the next eval's
+     *    committed reload) and is recognized here via the trip-counter
+     *    delta. Ordinary errors keep flowing through __E. */
+    {
+        u64 trips_before =
+            break_lua_runtime_budget_trip_count(console->runtime);
+        break_lua_runtime_begin_frame(console->runtime, 0.0);
+        break_lua_runtime_end_frame(console->runtime);
+        tripped =
+            break_lua_runtime_budget_trip_count(console->runtime) !=
+            trips_before;
+    }
 
-    /* 5. Read the host-trusted outcome markers, the captured print lines,
+    /* 6. Read the host-trusted outcome markers, the captured print lines,
      *    and the result — via the pinned refs only. */
     eval_err[0] = '\0';
     err = break_lua_runtime_call_ref(console->runtime, refs[0], NULL, 0u,
@@ -664,11 +748,18 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
             memcpy(eval_err, status[1].as.s.data, status[1].as.s.len + 1u);
         }
         if (!done && eval_err[0] == '\0') {
-            /* The hook died between clearing the sentinel and setting
-             * __DONE (unreachable via sandbox means since round 3; a
-             * dispatch-level Lua OOM lands here). */
-            memcpy(eval_err, "console internal: eval dispatch did not run",
-                   sizeof("console internal: eval dispatch did not run"));
+            if (tripped) {
+                /* The trip is uncatchable by design (NEW-C4): the hook
+                 * died, the module is marked (cleared by the next eval's
+                 * reload), the records below are discarded. */
+                memcpy(eval_err, "break_lua: instruction budget exceeded",
+                       sizeof("break_lua: instruction budget exceeded"));
+            } else {
+                /* The hook died another way (unreachable via sandbox means
+                 * since round 3; a dispatch-level Lua OOM lands here). */
+                memcpy(eval_err, "console internal: eval dispatch did not run",
+                       sizeof("console internal: eval dispatch did not run"));
+            }
         }
     }
     eval_ok = done && eval_err[0] == '\0';
@@ -717,14 +808,15 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     }
     console_release_refs(console, refs, 3u);
 
-    /* The outcome channel being unreadable (or __DONE unset) means the
-     * console runtime is in an unexpected state — health-check and
-     * recover it (ordinary body errors are healthy and skip this). */
+    /* The outcome channel being unreadable (getter failure) or the hook
+     * dying WITHOUT a budget trip means the console runtime is in an
+     * unexpected state — health-check and recover it (ordinary body errors
+     * and budget trips are healthy states and skip this). */
     if (!done && eval_err[0] == '\0') {
         console_main_runtime_reset_if_unhealthy(console);
     }
 
-    /* 6. Drain the batch AFTER every eval: applied only when the host-
+    /* 7. Drain the batch AFTER every eval: applied only when the host-
      *    trusted markers prove the chunk ran clean; a failed eval discards
      *    its records (never half-applied). Early returns above cannot leave
      *    residue: probe staging runs on the batch-free probe runtime and

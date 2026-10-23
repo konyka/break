@@ -113,6 +113,14 @@ BreakLuaError break_lua_runtime_effective_config(
  * BREAK_LUA_REJECTED from any other thread, BREAK_LUA_INVALID for NULL. */
 BreakLuaError break_lua_runtime_check_owner(const BreakLuaRuntime *runtime);
 
+/* Lifetime count of instruction-budget trips on this runtime (frame hooks,
+ * module staging, on_unload — every armed execution). Hosts use the delta
+ * across an eval/dispatch to distinguish a budget trip from a
+ * dispatch-level fault. Owner-only query: returns 0 for NULL or from a
+ * non-owner thread (bounded no-op; no error channel exists on a value
+ * return). */
+u64 break_lua_runtime_budget_trip_count(const BreakLuaRuntime *runtime);
+
 /* Stable diagnostic name for each BreakLuaError ("OK", "INVALID", ...);
  * "UNKNOWN" for values outside the enum. */
 const char *break_lua_error_name(BreakLuaError error);
@@ -313,9 +321,29 @@ BreakLuaError break_lua_runtime_reload_module(
  *      frame hooks only);
  *    - the commit-path on_unload hook: a trip is an on_unload failure —
  *      the reload is vetoed (bounded), the old version stays live;
- *    - module functions invoked through break_lua_runtime_call remain
- *      UNARMED (documented — hosts needing a budget there dispatch through
- *      frame hooks instead).
+ *    - module functions invoked through break_lua_runtime_call /
+ *      break_lua_runtime_call_ref remain UNARMED (documented — hosts
+ *      needing a budget there dispatch through frame hooks instead).
+ *  TRIP VALUE AND CATCHABILITY (fix round 4, NEW-C4): the trip raises a
+ *  host-owned SENTINEL value (a lightuserdata naming a runtime field),
+ *  never a string. Scripts cannot construct, obtain, or compare it — no
+ *  lightuserdata-producing API exists in the sandbox — and the sandboxed
+ *  pcall/xpcall (see HOST BINDINGS AND SANDBOX) RE-RAISE it uninspected
+ *  instead of returning it: SCRIPTS CANNOT CATCH THE BUDGET-TRIP ERROR;
+ *  ALL OTHER ERRORS REMAIN CATCHABLE (ordinary pcall/xpcall semantics,
+ *  (false, err) results, xpcall handler invoked post-unwind). One trip
+ *  therefore always propagates through any depth of script pcall nesting
+ *  to the host-side catcher (per-hook pcall / staging pcall / commit
+ *  pcall) and terminates the protected execution. Residual truth: the
+ *  count hook resets its countdown before firing (Lua 5.4
+ *  resethookcount), so a single pcall round may burn up to the budget
+ *  before the trip fires — but because the trip is uncatchable, exactly
+ *  one trip terminates the eval/dispatch and the bound holds. The
+ *  sentinel carries NO position prefix (raised bare via lua_error); error
+ *  capture maps it to the canonical text "break_lua: instruction budget
+ *  exceeded" with error_line 0. break_lua_runtime_budget_trip_count()
+ *  exposes the lifetime trip counter for hosts that must distinguish a
+ *  trip from a dispatch-level fault.
  *  COROUTINE SCOPE (the Task 3 review
  *  limit, closed by the Task 4 sandbox): Lua 5.4 hooks are per-coroutine —
  *  a raw `coroutine` global would let a module escape the armed count
@@ -325,7 +353,9 @@ BreakLuaError break_lua_runtime_reload_module(
  *  BINDINGS AND SANDBOX below): module code can only ever run on the main
  *  coroutine, so every nested Lua execution inside a budgeted hook (pcall
  *  chains, the test-only reloader, the break.ecs/break.config closures,
- *  etc.) counts toward the same armed budget. Exceeding the budget aborts
+ *  etc.) decrements the same armed countdown — and because the trip value
+ *  is uncatchable from scripts (see TRIP VALUE above), the nested pcall
+ *  chain cannot absorb it. Exceeding the budget aborts
  *  the hook with an error: the fault is recorded like any hook error (with a
  *  budget flag) and the module is MARKED — its frame hooks are skipped on
  *  subsequent dispatches until the next committed reload clears the mark
@@ -390,7 +420,11 @@ void break_lua_runtime_end_frame(BreakLuaRuntime *runtime);
  *  runs the chunk).
  *
  *  HANDLES: a handle is a u32 slot index < BREAK_LUA_MAX_FN_REFS per
- *  runtime, released with break_lua_runtime_unref_function. A pinned
+ *  runtime, released with break_lua_runtime_unref_function. Slots are
+ *  reused after release with NO generation counter — a handle stale from
+ *  before an unref may alias a LATER pin of the same slot; the documented
+ *  console pattern (capture after commit, release after the read, never
+ *  hold a handle across a release) avoids aliasing. A pinned
  *  function survives the module's reload (its upvalues are the RETIRED
  *  chunk's locals — a caller that needs the new version's functions must
  *  re-capture; this is the documented pattern) and is released wholesale at
@@ -451,8 +485,16 @@ BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
  *  environment whose metatable __index resolves to a fixed per-runtime
  *  WHITELIST table (built once at create, held in the Lua registry — itself
  *  never script-reachable). Whitelisted globals:
- *    - base functions: assert, error, ipairs, pairs, pcall, xpcall, select,
+ *    - base functions: assert, error, ipairs, pairs, select,
  *      tonumber, tostring, type, print; plus the _VERSION string;
+ *    - pcall/xpcall as BUDGET-TRANSPARENT wrappers (fix round 4, NEW-C4):
+ *      ordinary errors behave exactly like the base functions ((false,
+ *      err) results; the xpcall handler is invoked by the wrapper after
+ *      the call returns — post-unwind, which is safe here because the
+ *      debug library is absent), but the instruction-budget trip value
+ *      (see INSTRUCTION BUDGET) is RE-RAISED uninspected instead of being
+ *      returned: scripts cannot catch a trip at any nesting depth, and
+ *      never observe the sentinel value at all;
  *    - libraries (exposed through read-through proxies, see below):
  *      string, table, math, utf8 (full tables);
  *    - os SUBSET: exactly os.clock / os.time / os.date (a rebuilt table;

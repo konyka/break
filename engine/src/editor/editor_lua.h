@@ -101,11 +101,24 @@
  *      channel — review NEW-C1/C2 — is closed); the body's only visible
  *      upvalue is __body itself, whose mid-run overwrite is harmless (the
  *      running call is unaffected; the harness never re-references it).
- *      The hook pcalls __body, so runtime errors — including the budget
- *      trip — are CAUGHT and stored: the module's frame hooks are never
- *      marked disabled (Stage 3 runaway policy) and the console is usable
- *      on the next eval. begin_frame is paired with end_frame. The
- *      epilogue nils on_unload AND on_frame_end on every path (a plain
+ *      The hook pcalls __body with the sandboxed pcall — since fix round 4
+ *      (NEW-C4) that pcall is BUDGET-TRANSPARENT: ordinary runtime errors
+ *      are returned as (false, msg) and stored in __E, but the
+ *      instruction-budget trip is an unforgeable host-owned sentinel VALUE
+ *      that every script-level pcall/xpcall re-raises uninspected — a trip
+ *      is uncatchable at any nesting depth and kills on_frame_begin
+ *      (propagating to the per-hook pcall; the module is marked
+ *      hooks-disabled per the Stage 3 runaway policy, and the next eval's
+ *      committed reload clears the mark — the console stays usable). The C
+ *      side recognizes the trip via the break_lua_runtime_budget_trip_count
+ *      delta across the dispatch and reports "error: break_lua:
+ *      instruction budget exceeded" (bounded). Because a trip skips the
+ *      epilogue, a body that set on_unload before looping would veto the
+ *      NEXT reload's commit — closed by calling the PREVIOUS env's pinned
+ *      __console_cleanup (clears on_unload/on_frame_end there) before every
+ *      reload; the console-runtime health check + recreate stays as the
+ *      backstop. begin_frame is paired with end_frame. The epilogue nils
+ *      on_unload AND on_frame_end on every non-trip path (a plain
  *      `on_unload = function() error('veto') end` eval cannot wedge the
  *      console; a body-defined on_frame_end never dispatches — the console
  *      is eval-based, not a frame loop) and then sets __DONE.

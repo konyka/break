@@ -1005,6 +1005,107 @@ TEST(console_runtime_recovers_from_lua_oom) {
     fixture_close(&f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Review fix round 4 regressions (NEW-C4: budget evasion via script     */
+/* pcall + resethookcount)                                               */
+/* ------------------------------------------------------------------ */
+
+TEST(budget_trip_uncatchable_by_script_pcall_in_console) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* NEW-C4 live payload 1 (verbatim): pre-fix this never returned (each
+     * trip was caught by the script's pcall and the countdown re-armed).
+     * Now the first trip terminates the eval, bounded. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console, "while true do pcall(function() while true do end end) end"));
+    ASSERT_TRUE(sink_find(&f.sink, "instruction budget") >= 0);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    /* The console module was marked hooks-disabled by the trip, but the
+     * next eval's committed reload clears the mark: usable immediately. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+1"));
+    ASSERT_TRUE(sink_find(&f.sink, "2") >= 0);
+
+    /* NEW-C4 live payload 3 (verbatim): five sequential pcall-wrapped
+     * loops must NOT survive — the first trip terminates the eval. */
+    sink_reset(&f.sink);
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "for i=1,5 do pcall(function() while true do end end) end"
+        " return 'survived'"));
+    ASSERT_TRUE(sink_find(&f.sink, "instruction budget") >= 0);
+    ASSERT_TRUE(sink_find(&f.sink, "survived") < 0);
+
+    /* Depth-3 nesting with the trip at the bottom. */
+    sink_reset(&f.sink);
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "pcall(function() return pcall(function()"
+        " return pcall(function() while true do end end) end) end)"));
+    ASSERT_TRUE(sink_find(&f.sink, "instruction budget") >= 0);
+
+    /* Ordinary pcall still catches ordinary errors in the console. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "local ok = pcall(function() error('x') end) print(ok)"));
+    ASSERT_TRUE(sink_find(&f.sink, "false") >= 0);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "6*7"));
+    ASSERT_TRUE(sink_find(&f.sink, "42") >= 0);
+
+    ASSERT_FALSE(f.sink.overlong);
+    fixture_close(&f);
+}
+
+TEST(budget_trip_in_probe_staging_is_bounded) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* NEW-C4 live payload 2 (verbatim): the escapee runs at probe staging
+     * (batch-free runtime) and trips the armed staging budget there —
+     * bounded staging failure, old probe module retained, console
+     * usable. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "end .. (function() while true do pcall(function()"
+        " while true do end end) end end)() .. function() return 0"));
+    ASSERT_TRUE(sink_find(&f.sink, "instruction budget") >= 0);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "2+3"));
+    ASSERT_TRUE(sink_find(&f.sink, "5") >= 0);
+
+    fixture_close(&f);
+}
+
+TEST(on_unload_veto_plus_trip_recovers_via_cleanup_pin) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* A trip skips the harness epilogue, so the vetoing on_unload set
+     * before the loop WOULD persist into the next reload's commit — closed
+     * by the pinned __console_cleanup called on the previous env before
+     * every reload: the very next eval must succeed (no veto, no runtime
+     * recreation needed). */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "on_unload = function() error('veto') end while true do end"));
+    ASSERT_TRUE(sink_find(&f.sink, "instruction budget") >= 0);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "brk.ecs.spawn()"));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 1u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    fixture_close(&f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(eval_arithmetic_result_logged);
     RUN_TEST(eval_result_string_truncated_and_unrepresentable);
@@ -1035,4 +1136,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(on_unload_veto_with_upvalue_overwrite_no_wedge);
     RUN_TEST(getter_overwrite_cannot_forge_or_hang);
     RUN_TEST(console_runtime_recovers_from_lua_oom);
+    RUN_TEST(budget_trip_uncatchable_by_script_pcall_in_console);
+    RUN_TEST(budget_trip_in_probe_staging_is_bounded);
+    RUN_TEST(on_unload_veto_plus_trip_recovers_via_cleanup_pin);
 TEST_MAIN_END()

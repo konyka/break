@@ -344,10 +344,20 @@ static void break_lua_record_frame_error(BreakLuaRuntime *runtime,
 /* Count-hook callback armed while a frame hook runs under an instruction
  * budget, and (Phase 3 Task 2 review fix) while module code runs outside
  * frame dispatch — the staging chunk execution of load/reload and the
- * commit-path on_unload hook. Raising an error from a hook is legal in Lua
- * 5.4 and lands in the nearest pcall (the per-hook lua_pcall for frames,
- * the staging/commit lua_pcall for module ops). lua_getextraspace reaches
- * the runtime without allocating (the pointer was stored at bootstrap). */
+ * commit-path on_unload hook.
+ *
+ * The trip raises the host-owned SENTINEL value (a lightuserdata naming the
+ * runtime's budget_sentinel field), never a string: scripts cannot
+ * construct, obtain, or compare it, and the sandboxed pcall/xpcall
+ * re-raise it uninspected (fix round 4, NEW-C4 — a plain-string trip was
+ * caught by script-level pcall while resethookcount re-armed the
+ * countdown, making each trip self-catching and self-resetting). Host-side
+ * catchers recognize it by identity (break_lua_is_budget_trip_error;
+ * break_lua_op_take_error maps it to the canonical message text). Raising
+ * from a hook is legal in Lua 5.4 and lands in the nearest pcall that is
+ * NOT a script sandbox wrapper (the per-hook lua_pcall for frames, the
+ * staging/commit lua_pcall for module ops). lua_getextraspace reaches the
+ * runtime without allocating (the pointer was stored at bootstrap). */
 void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
 {
     BreakLuaRuntime *runtime;
@@ -355,8 +365,14 @@ void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
     runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
     if (runtime) {
         runtime->budget_tripped = true;
+        runtime->budget_trip_total++;
+        lua_pushlightuserdata(L, break_lua_budget_sentinel_ptr(runtime));
+    } else {
+        /* Defensive only: the extraspace is set at bootstrap before any
+         * arming. Never reached. */
+        lua_pushliteral(L, "break_lua: instruction budget exceeded");
     }
-    luaL_error(L, "break_lua: instruction budget exceeded");
+    (void)lua_error(L);
 }
 
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,

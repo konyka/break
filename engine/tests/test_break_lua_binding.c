@@ -963,6 +963,214 @@ TEST(bind_config_allocation_failure_is_bounded)
     break_lua_runtime_destroy(rt);
 }
 
+/* ------------------------------------------------------------------ */
+/* NEW-C4 (fix round 4): the instruction-budget trip raises a           */
+/* host-owned sentinel value; the sandboxed pcall/xpcall are            */
+/* budget-TRANSPARENT wrappers that re-raise it uninspected, so a trip  */
+/* propagates through any script pcall nesting to the host catcher.     */
+/* ------------------------------------------------------------------ */
+
+static const char kChunkPcallOrdinary[] =
+    "local ok, err = pcall(function() error('ordinary') end)\n"
+    "if not ok then state.caught = 1 end\n"
+    "local ok2 = pcall(function() return 5 end)\n"
+    "if ok2 then state.clean = 1 end\n";
+
+static const char kChunkXpcallOrdinary[] =
+    "local ok, err = xpcall(function() error('x') end,\n"
+    "                       function(m) return 'handled' end)\n"
+    "if not ok and err == 'handled' then state.handled = 1 end\n";
+
+/* The hook's pcall wraps an infinite loop: the trip must NOT be returned
+ * to the script (state.caught never set); it propagates to the per-hook
+ * pcall — budget fault record + module marked, per the Stage 3 runaway
+ * policy. */
+static const char kChunkPcallTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    local ok, err = pcall(function() while true do end end)\n"
+    "    state.caught = 1\n"  /* never reached: the trip is uncatchable */
+    "end\n";
+
+/* The reviewer's third live payload shape at hook level: five sequential
+ * pcall-wrapped loops must NOT survive — the FIRST trip terminates the
+ * hook. */
+static const char kChunkPcallTripLoop[] =
+    "function on_frame_begin(dt)\n"
+    "    for i=1,5 do pcall(function() while true do end end) end\n"
+    "    state.survived = 1\n"  /* never reached */
+    "end\n";
+
+/* Depth-3 pcall nesting with the trip at the bottom. */
+static const char kChunkNestedTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    pcall(function()\n"
+    "        return pcall(function()\n"
+    "            return pcall(function() while true do end end)\n"
+    "        end)\n"
+    "    end)\n"
+    "    state.survived = 1\n"  /* never reached */
+    "end\n";
+
+/* The xpcall handler must never receive the sentinel (it would make the
+ * value script-observable). */
+static const char kChunkXpcallTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    local ok = xpcall(function() while true do end end,\n"
+    "                      function(m) state.handler_saw = 1 return m end)\n"
+    "    state.caught = 1\n"  /* never reached */
+    "end\n";
+
+static const char kChunkSpinHook[] =
+    "function on_frame_begin(dt)\n"
+    "    while true do end\n"
+    "end\n";
+
+static const char kChunkCleanHook[] =
+    "function on_frame_begin(dt)\n"
+    "    state.ran = (state.ran or 0) + 1\n"
+    "end\n";
+
+TEST(sandbox_pcall_still_catches_ordinary_errors)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkPcallOrdinary,
+                                            chunk_len(kChunkPcallOrdinary)),
+              BREAK_LUA_OK);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "caught", &v));
+    ASSERT_EQ(v, 1.0);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "clean", &v));
+    ASSERT_EQ(v, 1.0);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(sandbox_xpcall_handler_runs_for_ordinary_errors)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkXpcallOrdinary,
+                                            chunk_len(kChunkXpcallOrdinary)),
+              BREAK_LUA_OK);
+    /* The wrapper invokes the script handler itself (post-unwind — safe:
+     * the debug library is absent from the sandbox) and returns its
+     * result. */
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "handled", &v));
+    ASSERT_EQ(v, 1.0);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_is_uncatchable_by_script_pcall_in_hooks)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    BreakLuaTestFrameError rec;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "a", kChunkPcallTrip,
+                                            chunk_len(kChunkPcallTrip)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "b", kChunkPcallTripLoop,
+                                            chunk_len(kChunkPcallTripLoop)),
+              BREAK_LUA_OK);
+
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+
+    /* Both hooks tripped and were marked; neither script caught anything. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "a", "caught", &v));
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "b", "survived", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "a"));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "b"));
+    rec = break_lua_test_last_frame_error(rt);
+    ASSERT_TRUE(rec.valid);
+    ASSERT_TRUE(rec.budget);
+    ASSERT_TRUE(strstr(rec.message, "instruction budget exceeded") != NULL);
+    /* One trip per hook invocation; two armed invocations tripped. */
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 2u);
+
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_propagates_through_nested_pcall_depth3)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "n", kChunkNestedTrip,
+                                            chunk_len(kChunkNestedTrip)),
+              BREAK_LUA_OK);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "n", "survived", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "n"));
+    ASSERT_TRUE(break_lua_test_last_frame_error(rt).budget);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_sentinel_never_observable_via_xpcall_handler)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "x", kChunkXpcallTrip,
+                                            chunk_len(kChunkXpcallTrip)),
+              BREAK_LUA_OK);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+    /* The handler never ran (the sentinel is never script-observable), and
+     * the trip propagated out anyway. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "x", "handler_saw",
+                                                    &v));
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "x", "caught", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "x"));
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_count_tracks_and_reload_recovers)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "s", kChunkSpinHook,
+                                            chunk_len(kChunkSpinHook)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 0u);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 1u);
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "s"));
+
+    /* A committed reload clears the mark (Stage 3 contract); the counter
+     * is a lifetime diagnostic and keeps counting. */
+    ASSERT_EQ(break_lua_runtime_reload_module(rt, "s", kChunkCleanHook,
+                                              chunk_len(kChunkCleanHook),
+                                              NULL),
+              BREAK_LUA_OK);
+    ASSERT_FALSE(break_lua_test_module_hooks_disabled(rt, "s"));
+    break_lua_runtime_begin_frame(rt, 0.016);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "s", "ran", &v));
+    ASSERT_EQ(v, 1.0);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 1u);
+
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(batch_create_capacity_validation);
     RUN_TEST(batch_double_destroy_aborts_in_test_builds);
@@ -986,4 +1194,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bind_config_validation);
     RUN_TEST(config_get_returns_clamped_values);
     RUN_TEST(bind_config_allocation_failure_is_bounded);
+    RUN_TEST(sandbox_pcall_still_catches_ordinary_errors);
+    RUN_TEST(sandbox_xpcall_handler_runs_for_ordinary_errors);
+    RUN_TEST(budget_trip_is_uncatchable_by_script_pcall_in_hooks);
+    RUN_TEST(budget_trip_propagates_through_nested_pcall_depth3);
+    RUN_TEST(budget_trip_sentinel_never_observable_via_xpcall_handler);
+    RUN_TEST(budget_trip_count_tracks_and_reload_recovers);
 TEST_MAIN_END()
