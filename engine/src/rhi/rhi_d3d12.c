@@ -178,6 +178,21 @@ static void rhi_d3d12_cleanup_objects(RHI_D3D12Context *context) {
         context->frame_staging[i] = NULL;
         context->frame_staging_count[i] = 0u;
         context->frame_staging_cap[i] = 0u;
+        for (k = 0u; k < context->frame_blocks_count[i]; ++k)
+            rhi_d3d12_release((IUnknown **)&context->frame_blocks[i][k].resource);
+        free(context->frame_blocks[i]);
+        context->frame_blocks[i] = NULL;
+        context->frame_blocks_count[i] = 0u;
+        context->frame_blocks_cap[i] = 0u;
+    }
+    {
+        UINT k;
+        for (k = 0u; k < context->block_free_count; ++k)
+            rhi_d3d12_release((IUnknown **)&context->block_free[k].resource);
+        free(context->block_free);
+        context->block_free = NULL;
+        context->block_free_count = 0u;
+        context->block_free_cap = 0u;
     }
     rhi_d3d12_descriptor_alloc_destroy(&context->rtv_alloc);
     rhi_d3d12_descriptor_alloc_destroy(&context->dsv_alloc);
@@ -1475,6 +1490,33 @@ static void rhi_d3d12_release_frame_staging(RHI_D3D12Context *ctx, UINT slot) {
         rhi_d3d12_release((IUnknown **)&ctx->frame_staging[slot][k]);
     ctx->frame_staging_count[slot] = 0u;
 }
+/* R670: the slot's fence has been reached, so its UPLOAD blocks are idle:
+ * return them to the free pool (bounded; the rest are released). */
+#define RHI_D3D12_BLOCK_FREE_MAX 256u
+static void rhi_d3d12_recycle_frame_blocks(RHI_D3D12Context *ctx, UINT slot) {
+    UINT k;
+    for (k = 0u; k < ctx->frame_blocks_count[slot]; ++k) {
+        RHI_D3D12StagingBlock *b = &ctx->frame_blocks[slot][k];
+        if (ctx->block_free_count == ctx->block_free_cap &&
+            ctx->block_free_cap < RHI_D3D12_BLOCK_FREE_MAX) {
+            UINT cap = ctx->block_free_cap ? ctx->block_free_cap * 2u : 32u;
+            RHI_D3D12StagingBlock *grown;
+            if (cap > RHI_D3D12_BLOCK_FREE_MAX) cap = RHI_D3D12_BLOCK_FREE_MAX;
+            grown = (RHI_D3D12StagingBlock *)realloc(ctx->block_free,
+                                                     (size_t)cap * sizeof(*grown));
+            if (grown != NULL) {
+                ctx->block_free = grown;
+                ctx->block_free_cap = cap;
+            }
+        }
+        if (ctx->block_free_count < ctx->block_free_cap)
+            ctx->block_free[ctx->block_free_count++] = *b;
+        else
+            rhi_d3d12_release((IUnknown **)&b->resource);
+        b->resource = NULL;
+    }
+    ctx->frame_blocks_count[slot] = 0u;
+}
 /* R645: release a D3D12 object that a command list may still reference.
  * rhi_*_destroy used to Release at once; the UI canvas grows its vertex
  * buffers mid-frame (ensure_vbo destroys and recreates them while the frame
@@ -1550,6 +1592,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         return NULL;
     }
     rhi_d3d12_release_frame_staging(ctx, slot);
+    rhi_d3d12_recycle_frame_blocks(ctx, slot);
     rhi_d3d12_sampler_ring_reset(ctx);
     sc->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)sc->swapchain);
@@ -2379,6 +2422,7 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     if (bd->readback != NULL)
         rhi_d3d12_release_deferred((RHI_D3D12Context *)dev->backend_data,
                                    (IUnknown **)&bd->readback);
+    free(bd->shadow);
     free(bd);
     rhi_free_slot(dev, buf);
 }
@@ -5646,6 +5690,7 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset,
         if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) return;
         memcpy((u8 *)mapped + offset, data, size);
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
+        if (bd->shadow != NULL) memcpy(bd->shadow + offset, data, size);
         return;
     }
     (void)rhi_d3d12_buffer_stage_upload(ctx, bd, (UINT64)offset, data,
@@ -5738,31 +5783,46 @@ static ID3D12Resource *rhi_d3d12_frame_staging(RHI_D3D12Context *ctx,
                                                const void *data, u32 fill,
                                                usize size) {
     UINT slot = ctx->frame_parity & 1u;
-    ID3D12Resource *staging;
-    void *mapped = NULL;
-    if (ctx->frame_staging_count[slot] == ctx->frame_staging_cap[slot]) {
-        UINT cap = ctx->frame_staging_cap[slot] ? ctx->frame_staging_cap[slot] * 2u : 16u;
-        ID3D12Resource **grown = (ID3D12Resource **)realloc(
-            ctx->frame_staging[slot], (size_t)cap * sizeof(*grown));
+    RHI_D3D12StagingBlock block;
+    UINT64 want = ((UINT64)size + 255u) & ~(UINT64)255u;
+    UINT best = UINT_MAX;
+    UINT k;
+    if (ctx->frame_blocks_count[slot] == ctx->frame_blocks_cap[slot]) {
+        UINT cap = ctx->frame_blocks_cap[slot] ? ctx->frame_blocks_cap[slot] * 2u : 16u;
+        RHI_D3D12StagingBlock *grown = (RHI_D3D12StagingBlock *)realloc(
+            ctx->frame_blocks[slot], (size_t)cap * sizeof(*grown));
         if (grown == NULL) return NULL;
-        ctx->frame_staging[slot] = grown;
-        ctx->frame_staging_cap[slot] = cap;
+        ctx->frame_blocks[slot] = grown;
+        ctx->frame_blocks_cap[slot] = cap;
     }
-    staging = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, (UINT64)size);
-    if (staging == NULL) return NULL;
-    if (FAILED(ID3D12Resource_Map(staging, 0u, NULL, &mapped))) {
-        ID3D12Resource_Release(staging);
-        return NULL;
+    /* R670: best fit from the idle pool, but not a block far larger than
+     * the write (a small update must not pin a megabyte snapshot block). */
+    for (k = 0u; k < ctx->block_free_count; ++k) {
+        UINT64 bs = ctx->block_free[k].size;
+        if (bs < want || bs > want * 2u + 65536u) continue;
+        if (best == UINT_MAX || bs < ctx->block_free[best].size) best = k;
+    }
+    if (best != UINT_MAX) {
+        block = ctx->block_free[best];
+        ctx->block_free[best] = ctx->block_free[--ctx->block_free_count];
+    } else {
+        block.mapped = NULL;
+        block.size = want;
+        block.resource = rhi_d3d12_staging_buffer(ctx, D3D12_HEAP_TYPE_UPLOAD, want);
+        if (block.resource == NULL) return NULL;
+        if (FAILED(ID3D12Resource_Map(block.resource, 0u, NULL, &block.mapped))) {
+            ID3D12Resource_Release(block.resource);
+            return NULL;
+        }
     }
     if (data != NULL) {
-        memcpy(mapped, data, size);
+        memcpy(block.mapped, data, size);
     } else {
         usize i;
-        for (i = 0u; i < size; i += 4u) memcpy((u8 *)mapped + i, &fill, 4u);
+        for (i = 0u; i < size; i += 4u) memcpy((u8 *)block.mapped + i, &fill, 4u);
     }
-    ID3D12Resource_Unmap(staging, 0u, NULL);
-    ctx->frame_staging[slot][ctx->frame_staging_count[slot]++] = staging;
-    return staging;
+    ctx->frame_blocks[slot][ctx->frame_blocks_count[slot]++] = block;
+    return block.resource;
 }
 
 static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
@@ -5784,35 +5844,31 @@ static void rhi_d3d12_record_buffer_write(RHICmdBuffer *cmd, RHIBuffer buf,
          * the buffer for every element, not just the written range. It is
          * padded to 256 bytes because a CBV over it covers the 256-rounded
          * size, as rhi_cmd_bind_uniform_buffer declares for the original. */
+        /* R670: the snapshot is built from the host shadow (see
+         * RHI_D3D12Buffer.shadow) rather than read back from write-combined
+         * UPLOAD memory, and only the written range goes to the resource. */
         usize snap_size = ((usize)bd->size + 255u) & ~(usize)255u;
-        u8 *whole = (u8 *)calloc(1u, snap_size);
         void *mapped = NULL;
-        if (whole == NULL) return;
-        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) {
-            free(whole);
-            return;
+        if (bd->mapped != NULL) bd->shadow_valid = 0u;
+        if (bd->shadow == NULL) {
+            bd->shadow = (u8 *)calloc(1u, snap_size);
+            if (bd->shadow == NULL) return;
+            bd->shadow_valid = 0u;
         }
-        if (bd->alias_resource != NULL && bd->alias_frame == ctx->debug_frame) {
-            void *prev = NULL;
-            if (SUCCEEDED(ID3D12Resource_Map(bd->alias_resource, 0u, NULL, &prev))) {
-                memcpy(whole, prev, (size_t)bd->size);
-                ID3D12Resource_Unmap(bd->alias_resource, 0u, NULL);
-            } else {
-                memcpy(whole, mapped, (size_t)bd->size);
-            }
-        } else {
-            memcpy(whole, mapped, (size_t)bd->size);
+        if (FAILED(ID3D12Resource_Map(bd->resource, 0u, NULL, &mapped))) return;
+        if (!bd->shadow_valid) {
+            memcpy(bd->shadow, mapped, (size_t)bd->size);
+            bd->shadow_valid = 1u;
         }
         if (data != NULL) {
-            memcpy(whole + offset, data, size);
+            memcpy(bd->shadow + offset, data, size);
         } else {
             usize i;
-            for (i = 0u; i < size; i += 4u) memcpy(whole + offset + i, &fill, 4u);
+            for (i = 0u; i < size; i += 4u) memcpy(bd->shadow + offset + i, &fill, 4u);
         }
-        memcpy(mapped, whole, (size_t)bd->size);
+        memcpy((u8 *)mapped + offset, bd->shadow + offset, size);
         ID3D12Resource_Unmap(bd->resource, 0u, NULL);
-        staging = rhi_d3d12_frame_staging(ctx, whole, 0u, snap_size);
-        free(whole);
+        staging = rhi_d3d12_frame_staging(ctx, bd->shadow, 0u, snap_size);
         if (staging == NULL) return;
         bd->alias_resource = staging;
         bd->alias_frame = ctx->debug_frame;
@@ -5852,6 +5908,7 @@ void *rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
                                   0u, NULL, &mapped)))
         return NULL;
     bd->mapped = mapped;
+    bd->shadow_valid = 0u;
     return mapped;
 }
 void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {

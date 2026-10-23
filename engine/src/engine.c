@@ -21,6 +21,7 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
     if (!platform_config_valid(&pcfg)) return false;
 
     e->delta_time = 0.0;
+    e->raw_delta_time = 0.0;
     e->frame_count = 0;
     e->fps = 0.0;
     e->target_fps = 0.0;
@@ -96,6 +97,7 @@ bool engine_frame(Engine *e) {
     now_us = time_microseconds();
 
     e->delta_time = (f64)(now_us - e->last_frame_us) / 1e6;
+    e->raw_delta_time = e->delta_time;
     /* R147: Clamp delta_time to prevent physics tunneling / animation jumps
      * when the process is paused (debugger, system sleep, window minimized). */
     if (e->delta_time > 0.1) e->delta_time = 0.1;

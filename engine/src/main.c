@@ -4515,7 +4515,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         arena_free_all(&frame_arena);
         if (bench_stats_target > 0u && bench_stats_count < 4096u)
             bench_stats_ms[bench_stats_count++] =
-                (f32)(engine.delta_time * 1000.0);
+                (f32)(engine.raw_delta_time * 1000.0);
         if (auto_exit_frames > 0 && (i64)engine.frame_count >= auto_exit_frames) break;
         profiler_begin_frame();
 

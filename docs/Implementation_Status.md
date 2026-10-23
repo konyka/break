@@ -1,6 +1,46 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R670 — D3D12 帧率修复合入：暂存块池与延迟释放分开 + 主机影子副本（更正 R669 的「compact 越界读」结论）
+
+### 更正 R669
+R669 认为复用池「暴露了 compact 着色器本来就有的越界读」。这个结论不对。真正的原因是：`rhi_d3d12_release_deferred`（R645）把所有待延迟释放的对象都塞进同一个 `frame_staging[slot]` 列表，包括 PSO、根签名、GPU 计时器的 `ID3D12QueryHeap`，以及已销毁的 DEFAULT 堆缓冲和 READBACK 资源。R669 的复用池从这个列表回收，于是：
+- 把 DEFAULT 堆缓冲当 UPLOAD 块 Map，GBV 报 [822]；
+- 把别的资源当成可见性数据交给 compact，越界写，设备失效，之后 46 个用例连锁失败；
+- 对 QueryHeap 当资源调用，退出时段错误。
+
+compact 着色器本身没有改动，现在全套测试都通过。
+
+### 实现（`engine/src/rhi/rhi_d3d12.c/.h`）
+1. 暂存块单独记账：`RHI_D3D12StagingBlock`（资源、大小、常驻映射指针），按帧槽存在 `frame_blocks[2]`。只有 `rhi_d3d12_frame_staging` 自己创建的 UPLOAD 块进这个列表。
+   - `rhi_frame_begin` 等到该槽的栅栏后，调用 `rhi_d3d12_recycle_frame_blocks`，把块移进 `block_free` 池（上限 256，超出的直接释放）。
+   - 取块时按 best-fit 选，不接受比需求大 2 倍又 64KB 以上的块，避免小写入占住 MB 级的块。
+   - 延迟释放列表 `frame_staging` 保持原样，照旧直接 Release。
+2. 块常驻映射（UPLOAD 堆允许），复用时只需一次 memcpy。
+3. UPLOAD 缓冲新增主机影子副本 `RHI_D3D12Buffer.shadow`：第一次 record write 时从资源载入一次。
+   - 之后每次写入：先改影子副本里被写的范围；整份影子副本写进块，只写不读写合并内存；`bd->resource` 只写被修改的那一段。
+   - 快照仍然是全尺寸资源，视图按 `bd->size` 创建依旧合法。R669 的「前缀快照」会让视图越界，已放弃。
+   - `rhi_buffer_update_region` 同步更新影子副本；`rhi_buffer_map` 让影子副本失效，下次写入时从资源重新载入；`rhi_buffer_destroy` 释放影子副本。
+4. 测量口径修正：`BREAK_BENCH_STATS` 原来用的是被 R147 钳到 0.1s 的 `delta_time`，任何低于 10 FPS 的测量都会显示成 100.000ms（Debug 构建延迟管线就因此显示「10.00 FPS」）。`Engine` 新增 `raw_delta_time`（未钳制），bench 统计改用它。
+
+### 数据（RTX，`BREAK_UI=0 BREAK_CAM=0,12,22,0,-25 BREAK_FRAMES=240 BREAK_BENCH_STATS=1`，fps_avg，均为未钳制口径）
+| 构建 | 前向 修复前 → 后 | 延迟 修复前 → 后 |
+|---|---|---|
+| d3d12-bench（无调试层） | 14.7 → 99–180 | 21.9 → 30–36 |
+| d3d12-debug（GBV） | 8.9 → 18.4 | 4.5 → 5.4 |
+| GL / VK 参考 | 57 / 86 | 27 / 34 |
+
+bench 前向波动较大（99–180），原因是 vsync 关闭后受 CPU 调度影响。D3D12 bench 构建现在前向和延迟都已与 GL/VK 相当或更快。Debug 构建仍然慢，主要是 GBV 自身的开销（逐次访问校验），属于设计内成本，性能评估请用 bench 构建。
+
+### 验证
+- WARP 全套 81/81，调试层 0 errors / 0 warnings / 1 alias；RTX 80/81，只有预期的 [1] 设备名用例失败。
+- 截图：前向 D3D12 对 GL 平均差 2.45（VK 对 GL 3.54），延迟 1.09。修复前 Debug 构建同一截帧的差是 25.48，那一帧被慢帧打乱了动画状态。日志无 WARN/ERROR。
+- ctest：d3d12-debug 187/187、gl 179/179；vk 181/182，`test_vulkan` 在 -j4 并发下失败一次，单独连跑 4 次都通过（与 GPU 资源争用有关，本轮改动不涉及 VK 后端）。
+
+### 下一步
+- 延迟管线三个后端都在 30 FPS 左右，瓶颈与后端无关。下一个要看的是点光阴影（8 灯 × 6 面 = 48 次 cull+execute），以及延迟管线本身的 CPU 开销。
+- GBV 可考虑做成运行时开关（目前是构建期的 `ENGINE_D3D12_DEBUG`）。
+
 ## 本轮更新：R669 — 帧率排查：根因定位到 D3D12 缓冲写入路径（修复已原型验证，尚未合入）
 
 ### 现象与测量

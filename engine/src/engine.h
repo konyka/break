@@ -12,7 +12,8 @@ typedef struct {
 
 typedef struct {
     Platform *platform;
-    f64       delta_time;
+    f64       delta_time;       /* clamped to 0.1 s (R147) */
+    f64       raw_delta_time;   /* unclamped wall time of the last frame */
     u64       frame_count;
     f64       fps;
     f64       target_fps;

@@ -93,6 +93,14 @@ typedef struct RHI_D3D12Swapchain {
                                  * (contract tests); NULL in production */
 } RHI_D3D12Swapchain;
 
+/* R670: a reusable UPLOAD block for recorded buffer writes; persistently
+ * mapped (UPLOAD heaps allow it), so a reuse is a plain memcpy. */
+typedef struct RHI_D3D12StagingBlock {
+    ID3D12Resource *resource;
+    UINT64 size;
+    void *mapped;
+} RHI_D3D12StagingBlock;
+
 typedef struct RHI_D3D12Context {
     IDXGIFactory6 *factory;
     IDXGIAdapter1 *adapter;
@@ -206,6 +214,18 @@ typedef struct RHI_D3D12Context {
     ID3D12Resource **frame_staging[2];
     UINT frame_staging_count[2];
     UINT frame_staging_cap[2];
+    /* R670: the UPLOAD blocks rhi_d3d12_frame_staging handed out for the
+     * frame recorded in each slot, kept apart from frame_staging (which
+     * also receives every deferred-release object: PSOs, root signatures,
+     * query heaps, DEFAULT-heap buffers -- none of them reusable). When the
+     * slot's fence is reached they move to block_free, from which later
+     * recorded writes take a block instead of creating a resource each. */
+    RHI_D3D12StagingBlock *frame_blocks[2];
+    UINT frame_blocks_count[2];
+    UINT frame_blocks_cap[2];
+    RHI_D3D12StagingBlock *block_free;
+    UINT block_free_count;
+    UINT block_free_cap;
 } RHI_D3D12Context;
 
 typedef struct RHI_D3D12Resource {
@@ -240,6 +260,14 @@ typedef struct RHI_D3D12Buffer {
      * rhi_buffer_map / rhi_buffer_read return its bytes -- the GPU-written
      * staging contract the VK/GL backends give a host-visible buffer. */
     ID3D12Resource *readback;
+    /* R670: UPLOAD-heap buffers only: a host copy of the buffer's bytes
+     * (256-rounded, tail zero), created on the first recorded write. A
+     * recorded write builds its snapshot from it instead of reading the
+     * write-combined UPLOAD memory back. shadow_valid is cleared while the
+     * buffer is mapped (the caller may write anything through the
+     * pointer); the next recorded write reloads it from the resource. */
+    u8 *shadow;
+    UINT shadow_valid;
 } RHI_D3D12Buffer;
 
 typedef struct RHI_D3D12Texture {
