@@ -4,6 +4,7 @@
  * editor_components.c (Task 3) include this. */
 
 #include <editor/editor_cmd.h>
+#include <editor/editor_components.h>
 #include <editor/editor_doc.h>
 
 #include <ecs/ecs.h>
@@ -26,7 +27,10 @@ static inline void break_editor_name_copy(char *dst, const char *src) {
 enum {
     BREAK_EDITOR_CMD_KIND_ADD_ENTITY = 1,
     BREAK_EDITOR_CMD_KIND_REMOVE_ENTITY = 2,
-    BREAK_EDITOR_CMD_KIND_RENAME_ENTITY = 3
+    BREAK_EDITOR_CMD_KIND_RENAME_ENTITY = 3,
+    BREAK_EDITOR_CMD_KIND_SET_FIELD_F32 = 4,
+    BREAK_EDITOR_CMD_KIND_ADD_COMPONENT = 5,
+    BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -55,12 +59,52 @@ typedef struct {
     char name[BREAK_EDITOR_NAME_CAPACITY]; /* NUL-terminated */
 } BreakEditorNameSlot;
 
+/* Registry entry for one editable component type (Task 3). Mirrors the
+ * public BreakEditorComponentInfo plus the World's registered byte size
+ * (needed for snapshot bounds and field-offset validation). */
+typedef struct {
+    u32 component_id;
+    char display_name[32];        /* NUL-terminated */
+    u32 size;                     /* byte size registered in the World */
+    BreakEditorField fields[9];   /* matches BreakEditorComponentInfo cap */
+    u32 field_count;
+} BreakEditorComponentReg;
+
+/* Concrete component command payload (Task 3): one bounded allocation,
+ * vtable-compatible via the embedded base (MUST be the first member).
+ * base.id is the entity; base.name/other_name are unused (zeroed). The
+ * display/field names are copied in at construction because describe() has
+ * no doc access.
+ *   set_field_f32:   old_bits/new_bits are the 4 bytes at field_offset
+ *                    (byte-exact revert; -0.0/NaN payloads survive).
+ *   add_component:   snapshot captured after the first apply (the zeroed
+ *                    state), restored on redo.
+ *   remove_component: snapshot captured at construction (the pre-remove
+ *                    bytes), restored on revert. */
+typedef struct {
+    BreakEditorCmd base;
+    u32 component_id;
+    u32 field_offset;    /* set_field: byte offset within the component */
+    u32 old_bits;        /* set_field: previous 4 bytes */
+    u32 new_bits;        /* set_field: bytes to apply */
+    u32 snapshot_size;   /* add/remove: component size (<= 256) */
+    bool snapshot_taken; /* add: snapshot captured after first apply */
+    char display_name[32];
+    char field_name[32]; /* set_field only */
+    u8 snapshot[BREAK_EDITOR_COMPONENT_SNAPSHOT_CAPACITY];
+} BreakEditorComponentCmd;
+
 struct BreakEditorDoc {
     World *world;               /* owned: world_create/world_destroy */
     BreakEditorNameSlot *slots; /* owned: ECS_MAX_ENTITIES slots */
     usize named_count;          /* live named entities == entity_count */
     bool dirty;
     BreakEditorCmdStack *stack; /* owned */
+    /* Task 3: bounded editable-component registry (cap 16). Phase 1 holds
+     * exactly one entry (EditorTransform) installed at doc create by
+     * break_editor_doc_init_components. */
+    BreakEditorComponentReg components[BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY];
+    u32 component_count;
 };
 
 struct BreakEditorCmdStack {
@@ -101,3 +145,13 @@ BreakEditorCmd *break_editor_cmd_remove_entity_create(BreakEditorDoc *doc,
 BreakEditorCmd *break_editor_cmd_rename_entity_create(BreakEditorDoc *doc,
                                                       BreakEditorEntityId id,
                                                       const char *new_name);
+
+/* Task 3 (editor_components.c): installs the doc's editable-component
+ * registry and registers each type into the doc's World. No allocation,
+ * never fails. Called by break_editor_doc_create. */
+void break_editor_doc_init_components(BreakEditorDoc *doc);
+
+/* Registry lookup (editor_components.c): NULL when component_id is not a
+ * registered editable type. */
+const BreakEditorComponentReg *break_editor_doc_find_component(
+    const BreakEditorDoc *doc, u32 component_id);

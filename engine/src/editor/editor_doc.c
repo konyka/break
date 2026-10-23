@@ -51,6 +51,10 @@ BreakEditorDoc *break_editor_doc_create(void) {
         return NULL;
     }
 
+    /* Task 3: editable-component registry + World registration (no
+     * allocation, never fails). */
+    break_editor_doc_init_components(doc);
+
     return doc;
 }
 
