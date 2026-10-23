@@ -23,6 +23,9 @@
 - 截图：前向 D3D12 对 GL 的差 1.0（此前 2.4–2.5，核显上的舍入不同），延迟 0.26（此前约 0.45），日志无 WARN/ERROR。
 - ctest：gl 178/179、vk 181/182、d3d12-debug 186/187。唯一的失败都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`，ToDesk 占用剪贴板，属已知问题，与本次改动无关）。
 
+### 待查（未复现）：VK demo 退出时一次性的 `vkDestroyDevice: 8 leaked objects`
+排查 GL 时，VK demo（`BREAK_UI=0 BREAK_FRAMES=5`）有一次退出时报了 validation：`VkDevice … has 8 leaked objects`。同一条命令又跑了 24 次，另外试了前向/延迟、240 帧、和 GL demo 同时运行等变体，VK 全量 ctest（182 个，中间有大量创建和销毁）也跑过，都是 0 次。这次 validation 输出没有带对象类型，判断不了漏的是哪类对象，所以暂时记录为偶发，不改代码。下次再出现时，可以设 `VK_LAYER_ENABLES` / `khronos_validation.report_flags` 打开对象列表，拿到对象类型再定位。
+
 ## 本轮更新：R683 — BREAK_BENCH_STATS 排除预热帧（更正此前所有 demo 帧率数据的口径）
 
 ### 发现
