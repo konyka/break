@@ -507,7 +507,11 @@ BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
  *      base walks the not-yet-unwound error chain (the callee's error
  *      line) and the wrapper walks the xpcall call site. The residue is
  *      position-prefix CONTENT only: message text, result values, and
- *      catchability are bit-identical to base;
+ *      catchability are bit-identical to base; a handler that itself
+ *      errors is invoked exactly ONCE here, where base re-enters it
+ *      recursively until the C call depth caps out (the LUA_ERRERR
+ *      result is the same on both sides, the wrapper is strictly more
+ *      bounded);
  *    - libraries (exposed through read-through proxies, see below):
  *      string, table, math, utf8 (full tables);
  *    - os SUBSET: exactly os.clock / os.time / os.date (a rebuilt table;

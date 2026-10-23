@@ -569,7 +569,12 @@ static int break_lua_sandbox_xpcall(lua_State *L)
      * base walks the not-yet-unwound error chain (the callee's error line)
      * and the wrapper walks the xpcall call site. The residue is
      * position-prefix content only: message text, result values, and
-     * catchability are bit-identical to base. */
+     * catchability are bit-identical to base. One further accepted
+     * difference: base reaches LUA_ERRERR by re-entering the handler
+     * recursively until the C call depth caps out (observed: 216
+     * invocations), while this wrapper invokes an erroring handler
+     * exactly once; results and catchability still match, and the
+     * wrapper direction is strictly more bounded. */
     lua_pushvalue(L, 1);      /* [f, handler, args..., f] */
     lua_rotate(L, 3, 1);      /* [f, handler, f, args...] */
     status = lua_pcallk(L, n - 2, LUA_MULTRET, 0, 0, NULL);
