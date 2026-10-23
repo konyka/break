@@ -87,7 +87,10 @@ static inline bool break_editor_entity_id_eq(BreakEditorEntityId a,
 
 BreakEditorDoc *break_editor_doc_create(void); /* owns an internal World */
 void break_editor_doc_destroy(BreakEditorDoc *doc); /* NULL is a no-op */
-void *break_editor_doc_world(BreakEditorDoc *doc); /* borrowed World*, shell-only */
+/* Borrowed World* (shell-only). A successful break_editor_doc_load SWAPS the
+ * internal World (editor_scene.h): any pointer borrowed before the load
+ * DANGLES afterwards — callers must re-fetch. */
+void *break_editor_doc_world(BreakEditorDoc *doc);
 
 /* Command-driven mutations (all fail bounded, document unchanged on
  * failure): */

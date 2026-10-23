@@ -86,6 +86,11 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
   weak）；真实路径 destroy 时 remove_child 摘树（释放树引用），测试路径
   destroy 时窗口 teardown 连带销毁整树；监听器 ctx（shell/池内嵌结构）
   不会晚于控件存活。
+- **World 借用指针的 load 失效（Task 2 review 遗留收口）**：
+  `break_editor_doc_load` 成功即整体交换内部 World（staging world
+  swap），此前经 `break_editor_doc_world()` 借用的指针全部悬垂，调用方
+  必须重新获取；load 失败则 World 不变（editor_doc.h / editor_scene.h
+  合同均已注明）。
 - **scene_serial 单份解析（carried review item 收口）**：`libbreak_editor.a`
   与 `libengine.a` 都含 `scene_serial.o`。`editor` 链接行把 `break_editor`
   列在最前（`target_link_libraries(editor PRIVATE break_editor break_myui

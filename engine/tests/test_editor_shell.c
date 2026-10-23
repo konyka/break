@@ -60,6 +60,19 @@ static bool file_exists(const char *path) {
     return true;
 }
 
+/* Start of the last line in the console's joined text (each line, including
+ * the final one, is '\n'-terminated by shell_log). */
+static const char *last_console_line(const char *console) {
+    const char *last = console;
+    const char *p;
+    for (p = console; *p != '\0'; p++) {
+        if (*p == '\n' && p[1] != '\0') {
+            last = p + 1;
+        }
+    }
+    return last;
+}
+
 TEST(shell_create_and_destroy)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -126,6 +139,33 @@ TEST(remove_selected_via_panel_button)
     /* Undo restores the removed entity (Task 1 remove command revert). */
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
     ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remove_selected_console_line_names_removed_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    const char *name = NULL;
+    const char *last;
+    char saved_name[BREAK_EDITOR_NAME_CAPACITY];
+    char expected[BREAK_EDITOR_NAME_CAPACITY + 32u];
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    doc = break_editor_shell_doc(shell);
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &id, &name));
+    snprintf(saved_name, sizeof(saved_name), "%s", name);
+    emit_click(find(shell, "editor-remove-button"));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 0u);
+    /* Regression pin: shell_do_remove_selected must copy the borrowed
+     * entity_at name BEFORE break_editor_doc_remove_entity clears the slot
+     * (slot_clear zeroes name[0], editor_doc.c) — the console's latest line
+     * names the removed entity, never "remove entity ''". */
+    last = last_console_line(break_editor_shell_console_text(shell));
+    snprintf(expected, sizeof(expected), "remove entity '%s'", saved_name);
+    ASSERT_TRUE(strstr(last, expected) == last);
     break_editor_shell_destroy(shell);
 }
 
@@ -464,6 +504,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(add_entity_via_panel_button_increments_outliner);
     RUN_TEST(add_entity_via_palette_and_ctrl_z_removes_row);
     RUN_TEST(remove_selected_via_panel_button);
+    RUN_TEST(remove_selected_console_line_names_removed_entity);
     RUN_TEST(rename_via_name_edit_then_undo_reverts_displayed_name);
     RUN_TEST(tool_keys_update_tool_label);
     RUN_TEST(focus_key_records_intent_note);

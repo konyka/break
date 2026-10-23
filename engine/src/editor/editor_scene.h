@@ -48,6 +48,10 @@
  * into the staging world before parsing, so registrations made through the
  * borrowed World* survive the swap; payloads for unregistered or
  * size-mismatched ids are skipped by scene_serial itself.
+ * WORLD-SWAP HAZARD: because a successful load swaps the internal World,
+ * any World* previously borrowed via break_editor_doc_world() DANGLES after
+ * break_editor_doc_load returns true — callers MUST re-fetch it
+ * (editor_doc.h). A failed load leaves the World untouched.
  *
  * Sidecar handling on load (NEVER fails the load):
  *   - missing / unreadable / > BREAK_EDITOR_SIDECAR_MAX_BYTES / corrupt /
@@ -105,5 +109,7 @@
 
 /* <path> BSCN + <path>.editor.json sidecar; clears dirty on success. */
 bool break_editor_doc_save(BreakEditorDoc *doc, const char *path);
-/* REPLACE semantics; missing/corrupt sidecar => generated names + warning. */
+/* REPLACE semantics; missing/corrupt sidecar => generated names + warning.
+ * A successful load swaps the internal World: borrowed
+ * break_editor_doc_world() pointers DANGLE — callers must re-fetch. */
 bool break_editor_doc_load(BreakEditorDoc *doc, const char *path);

@@ -727,9 +727,19 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
         return;
     }
     {
-        const char *name = shell_entity_name(shell, shell->selected);
+        /* remove_entity clears the slot (editor_doc.c slot_clear zeroes
+         * name[0]), invalidating the borrowed entity_at name — copy it
+         * BEFORE the mutation. */
+        char name[BREAK_EDITOR_NAME_CAPACITY];
+        const char *borrowed = shell_entity_name(shell, shell->selected);
+        if (borrowed != NULL) {
+            (void)snprintf(name, sizeof(name), "%s", borrowed);
+        } else {
+            name[0] = '\0';
+        }
         if (break_editor_doc_remove_entity(shell->doc, shell->selected)) {
-            shell_log(shell, "remove entity '%s'", name != NULL ? name : "?");
+            shell_log(shell, "remove entity '%s'",
+                      name[0] != '\0' ? name : "?");
         } else {
             shell_log(shell, "remove entity failed");
         }
