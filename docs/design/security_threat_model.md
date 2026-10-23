@@ -11,7 +11,7 @@
 - **设计目标**：本文建议的接口、边界或验收标准，尚未实现。
 - **未实现/风险**：明确不在当前交付范围，不能由本文推断为已有能力。
 
-Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
+Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**；Phase A 收口（Task 5）时它们已交付为正式可选 target，本文 §4/§9/§12 已按收口状态更新。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
 
 ## 2. 客户端信任边界
 
@@ -41,9 +41,9 @@ Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-fo
 
 统一原则：客户端发送的是**请求/意图**，服务端返回的是**裁定/快照**；客户端预测只可影响表现层，不得提前落账。以上全部是**设计目标/未实现**——当前仓库没有服务端、没有权威模拟、没有结算代码。
 
-## 4. 更新信任链（Phase A 设计目标）
+## 4. 更新信任链（Phase A：离线验证侧当前已有）
 
-**设计目标**的信任链（形状与界限钉死，验收对应 roadmap acceptance 行）：
+信任链的形状与界限钉死如下，验收对应 roadmap acceptance 行；其**离线验证侧当前已有**（Phase A Tasks 2-4 交付为正式可选 target，证据见本节末与 §12），下载/激活侧仍**未实现**（§10）：
 
 ```text
 离线 Ed25519 签名密钥（signing key 永不离开离线环境；客户端与构建产物只携带公钥）
@@ -62,18 +62,18 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 - **客户端只验签（client verifies only）**：签名动作只发生在离线 tooling；客户端代码路径上不存在签名能力；
 - **release 无未签名路径**：roadmap 验收行 "No default remote debug or unsigned update path in release configuration"（`roadmap_2026-10-22.md:126`）——验签失败、manifest 结构异常、哈希不匹配一律 fail-closed，不存在"跳过校验"的 release 配置；
 - **密码学原语只用维护中的平台/库实现**：系统 OpenSSL 3 libcrypto EVP（SHA-256 / HMAC-SHA256 / Ed25519 verify / CSPRNG），roadmap 验收行 "Cryptographic tests use maintained platform/library primitives; no home-grown authentication"（`roadmap_2026-10-22.md:123`）；禁止自造 hash/MAC/签名，`snow_auth` keyed-FNV-1a 与 fragment FNV-1a 均不复用（§2）；
-- **版本与兼容性**：manifest 的 `version`/`min-version` 三元组与产品身份 `BREAK_VERSION_MAJOR/MINOR/PATCH`（当前 0.1.0，`engine/src/core/break_version.h`，CMake 注入 `BREAK_BUILD_ID` 短哈希、回退 `"unknown"`，`engine/CMakeLists.txt:382-393,501`）比较；兼容策略 = platform 相等 AND channel 相等 AND 当前版本 ≥ min-version；
+- **版本与兼容性**：manifest 的 `version`/`min-version` 三元组与产品身份 `BREAK_VERSION_MAJOR/MINOR/PATCH`（当前 0.1.0，`engine/src/core/break_version.h`，CMake 注入 `BREAK_BUILD_ID` 短哈希、回退 `"unknown"`，`engine/CMakeLists.txt:409-423,531`）比较；兼容策略 = platform 相等 AND channel 相等 AND 当前版本 ≥ min-version；
 - **解析失败无 oracle**：verify API 对任何校验失败只返回 false；parse API 失败只返回 NULL + 内部原因枚举，不向攻击者控制的输入泄漏细节化解析错误（文档化决策，见计划 Global Constraints）；
 - **OpenSSL OOM 路径不可被本仓库测试钩子拦截**：文档化声明，不声称该路径的注入覆盖。
 
-**当前已有**：仅产品版本/构建身份（`break_version_string()` 返回 `"0.1.0[+buildid]"`，静态存储、永非 NULL；测试 `engine/tests/test_break_version.c`）。`break_crypto`、`break_update`、原子写 PAL 在本文首次提交时均为**设计目标**（Phase A Tasks 2-4）。下载/续传/A-B/回滚属子项目 2，**未实现**（§10）。
+**当前已有（Phase A Tasks 1-4 交付，本 Phase）**：产品版本/构建身份（`break_version_string()` 返回 `"0.1.0[+buildid]"`，静态存储、永非 NULL；`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c` 7/7）；`break_crypto`（`engine/src/crypto/break_crypto.h/.c`，SHA-256/HMAC-SHA256/Ed25519 verify/CSPRNG 全走 OpenSSL EVP，测试 20/20）；`break_update`（`engine/src/update/break_update.h/.c`，canonical manifest parse/verify + CAS chunk store，测试 19/19）；原子写 PAL（`engine/src/platform/platform_fs.h/.c` 的 `PlatformAtomicWriter`（fsync file → rename → fsync dir）+ `platform_mkdir`/`platform_file_size`，测试 10/10）。四者均为正式 target/引擎 TU，由契约 ctest 钉住不泄入 `engine`/`engine_demo`/`dxx_break`/`editor`（§12）。下载/续传/A-B/回滚属子项目 2，**未实现**（§10）。
 
 ## 5. 传输认证与密钥/会话生命周期（范围声明，Phase B/C）
 
 属 Stage 5 子项目 4，由后续 Phase B/C 计划交付；本阶段只立范围声明：
 
 - **范围**：`break_net` adapter 的 TLS 接线、密钥生成/存储/轮换/吊销生命周期、会话密钥协商与过期、`snow`（Snowflake）TLS 能力的采用决策；
-- **现状**：`break_net` 是 Snowflake 条件的正式可选库（`engine/CMakeLists.txt:362-377`），当前只提供 bounded queue 与 lifecycle 契约，**无任何传输认证**；`runtime_security.md:119` 已明确 fragment 层正式接入前必须由 Stage 5 transport security contract 提供认证；
+- **现状**：`break_net` 是 Snowflake 条件的正式可选库（`engine/CMakeLists.txt:388-407`），当前只提供 bounded queue 与 lifecycle 契约，**无任何传输认证**；`runtime_security.md:119` 已明确 fragment 层正式接入前必须由 Stage 5 transport security contract 提供认证；
 - **本阶段声明**：在传输认证落地前，任何跨网消息都不具备来源认证与保密性；`break_net` 的使用者不得把现有 envelope/fragment 完整性检查当作安全边界。
 
 TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10）。
@@ -98,9 +98,9 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 
 ## 8. 依赖与供应链风险记录
 
-- **Snowflake 未锁定（风险登记）**：`break_net` 依赖的 Snowflake 源码树经 `SNOWFLAKE_SOURCE_DIR` **路径引用**接入（`engine/CMakeLists.txt:291-309`，fail-closed：缺树即 `FATAL_ERROR`），但 Snowflake **不在** `engine/external/locked_dependencies.json`（2026-10-24 以 `grep -i snow` 验证无条目）——该依赖没有钉版/哈希锁定，供应链完整性与可复现性风险**未决**；缓解方向（vendoring 或入锁定清单）留给后续阶段决策，本阶段只记录风险；
-- **OpenSSL（新增唯一外部依赖）**：系统 OpenSSL 3 libcrypto（EVP），维护中的原语来源；Phase A 计划将其纳入 `BREAK_ENABLE_CRYPTO` fail-closed 查找（计划 Global Constraints `:15`）；系统库版本漂移风险由 locked_dependencies 流程后续登记；
-- **构建身份**：`BREAK_BUILD_ID` 注入 `git rev-parse --short=12 HEAD`，非 git 检出（如 clean-room 导出）回退 `"unknown"`（`engine/CMakeLists.txt:382-393`）——回退路径下产物不可追溯 commit，发布流程须以 git 检出构建为准。
+- **Snowflake 未锁定（风险登记）**：`break_net` 依赖的 Snowflake 源码树经 `SNOWFLAKE_SOURCE_DIR` **路径引用**接入（`engine/CMakeLists.txt:293-311`，fail-closed：缺树即 `FATAL_ERROR`），但 Snowflake **不在** `engine/external/locked_dependencies.json`（2026-10-24 以 `grep -i snow` 验证无条目）——该依赖没有钉版/哈希锁定，供应链完整性与可复现性风险**未决**；缓解方向（vendoring 或入锁定清单）留给后续阶段决策，本阶段只记录风险；
+- **OpenSSL（新增唯一外部依赖）**：系统 OpenSSL 3 libcrypto（EVP），维护中的原语来源；已落地为 `BREAK_ENABLE_CRYPTO` 选项（默认 ON）+ `find_package(OpenSSL REQUIRED)` fail-closed 查找——ON 且缺失即 `FATAL_ERROR`，OFF 则 `break_crypto`/`break_update` 两 target 缺席（`engine/CMakeLists.txt:44,313-339`，镜像 `BREAK_ENABLE_SNOWFLAKE` 惯例）；本 lane 实测系统库 3.5.9（`pkg-config --modversion openssl`）；系统库版本漂移风险由 locked_dependencies 流程后续登记；
+- **构建身份**：`BREAK_BUILD_ID` 注入 `git rev-parse --short=12 HEAD`，非 git 检出（如 clean-room 导出）回退 `"unknown"`（`engine/CMakeLists.txt:409-423`）——回退路径下产物不可追溯 commit，发布流程须以 git 检出构建为准。注意：该值在 CMake **configure 时刻**捕获，之后新提交上的增量重建**不刷新**它——stale until reconfigure（`engine/src/core/break_version.h` 头注释同述）；
 
 ## 9. 本文交付物与状态小结
 
@@ -108,7 +108,7 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 | --- | --- |
 | 客户端信任边界 / 反篡改成本模型语义 | 本文交付（契约声明） |
 | 服务端权威枚举 | 设计目标 |
-| 更新信任链形状与界限 | 设计目标（实现属 Phase A Tasks 2-4） |
+| 更新信任链离线验证侧（签名 manifest 格式 + CAS chunk store + 密码学原语 + 原子写 PAL） | **当前已有**（Phase A Tasks 2-4；下载/续传/A-B/回滚属子项目 2，未实现） |
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
 | 传输认证 / 密钥与会话生命周期 | 范围声明；实现属 Phase B/C，未实现 |
 | 崩溃数据脱敏契约 | 本文交付（契约）；capture/spool/upload 未实现 |
@@ -132,7 +132,7 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 - OpenSSL 系统库版本漂移：EVP 行为由宿主机库决定，尚未入 `locked_dependencies.json`；
 - OpenSSL OOM 路径不可注入测试：内存耗尽下的 EVP 失败路径无覆盖率声明（文档化，不假称覆盖）；
 - 密钥管理未定义：离线签名密钥的生成、保管、轮换、吊销流程属 Phase B/C，在其落地前签名体系不可投入真实发布；
-- 本文所有"设计目标"条目均无实现证据；交付状态唯一事实来源是 `docs/Implementation_Status.md` 与各阶段台账（focused/test-only 不等于正式集成，`docs/Implementation_Status.md:1-39` 口径）。
+- 本文所有"设计目标"条目均无实现证据；交付状态唯一事实来源是 `docs/Implementation_Status.md` 与各阶段台账（focused/test-only 不等于正式集成，`docs/Implementation_Status.md:215,223` 口径）。
 
 ## 12. 证据索引
 
@@ -140,10 +140,14 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 - `docs/design/runtime_security.md:11-16`：状态词定义；`:60-62`（§3.3）与 `:249-258`（§10）：本文的扩展基点；`:115-131` fragment/Session 非认证事实；`:171` profiler 脱敏设计目标；`:182` observable-overload 总则；`:254-256` Stage 5 待定义项与泄漏风险。
 - `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`：Phase A 计划；Global Constraints（`:13` snow_auth 不复用；`:15` OpenSSL fail-closed；`:16-17` 界限与无 oracle；`:21` 诚实范围）与 Tasks 2-4 接口（`:70-178`）。
 - `engine/src/core/break_version.h`、`engine/src/core/break_version.c`：版本/构建身份接口与实现（**当前已有**）。
-- `engine/tests/test_break_version.c`、`engine/CMakeLists.txt:382-393,403-489,501,3881-3885`：构建身份注入（git 短哈希 / `"unknown"` 回退）、`engine` target 编入与测试注册证据。
-- `engine/CMakeLists.txt:291-309,362-377`：Snowflake 路径引用 fail-closed 与 `break_net` 正式可选 target 证据。
+- `engine/tests/test_break_version.c`、`engine/CMakeLists.txt:409-423,435,531,3910-3915`：构建身份注入（git 短哈希 / `"unknown"` 回退，configure 时刻捕获、增量重建不刷新）、`engine` target 编入与测试注册证据。
+- `engine/CMakeLists.txt:44,313-339`：`BREAK_ENABLE_CRYPTO` 选项（默认 ON）与 `break_crypto`/`break_update` 正式可选 target 块（`find_package(OpenSSL REQUIRED)` fail-closed；OFF ⇒ 两 target 缺席；契约脚本按首 `endif()` 抽取该块，块内禁嵌套 if）。
+- `engine/src/crypto/break_crypto.h/.c`、`engine/tests/test_break_crypto.c`、`engine/tests/test_break_crypto_target_contract.cmake`：break_crypto 接口、20/20 测试与契约（**当前已有（本 Phase）**；nm 钉住恰 8 个 `break_crypto_*` 导出、零 OpenSSL 重导出；engine/engine_demo/dxx_break/editor 禁链）。
+- `engine/src/update/break_update.h/.c`、`engine/tests/test_break_update.c`、`engine/tests/test_break_update_target_contract.cmake`：签名 manifest + CAS store、19/19 测试与契约（**当前已有（本 Phase）**；恰 15 个导出；unsigned-path 钉用真实测试公钥——OpenSSL 零公钥接受的消息相关性见库头注释块）。
+- `engine/src/platform/platform_fs.h/.c`（`PlatformAtomicWriter`/`platform_mkdir`/`platform_file_size`，编入 `engine` target `engine/CMakeLists.txt:446`）、`engine/tests/test_platform_fs_write.c`：原子写 PAL，10/10 测试（**当前已有（本 Phase）**；fsync file → rename → fsync dir；Win32 分支 compile-only）。
+- `engine/CMakeLists.txt:293-311,388-407`：Snowflake 路径引用 fail-closed 与 `break_net` 正式可选 target 证据（后者独立于 `ENGINE_BUILD_TESTS`，仅门控 `BREAK_ENABLE_SNOWFLAKE`）。
 - `engine/external/locked_dependencies.json`：锁定依赖清单；Snowflake 不在其中（2026-10-24 `grep -i snow` 验证无匹配）。
 - `engine/src/network/break_replication_fragment.h:20-26`：FNV-1a checksum 字段（完整性检查，非认证）。
 - `engine/src/asset/vfs.h:5-12`：VFS 资源上限（16 mounts / 4096 entries / 128 MiB）。
 - `docs/design/session_protocol.md:21-37`：Session GameThread ownership 与队列语义。
-- `docs/Implementation_Status.md:1-39`：focused 不等于正式集成、fuzz 未构建写 `Not Run` 的房屋口径。
+- `docs/Implementation_Status.md:193,213,215,223`：房屋口径锚点——fuzz 未构建写 `Not Run`（`:193`/`:213`）、focused/test-only 不等于正式集成（`:215` "因果边界"/`:223` "正式集成边界"；`:223` 另含已修正的 `break_net` 门控表述）。

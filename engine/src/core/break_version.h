@@ -17,5 +17,8 @@
 /* Returns "MAJOR.MINOR.PATCH[+buildid]" — static storage, never NULL.
  * The "+buildid" suffix is present iff BREAK_BUILD_ID was defined (as a
  * non-empty string literal) at compile time; CMake injects the short git
- * hash and falls back to "unknown". Repeated calls return the same pointer. */
+ * hash and falls back to "unknown". Repeated calls return the same pointer.
+ * Note: BREAK_BUILD_ID is captured at CMake CONFIGURE time (git rev-parse
+ * of that moment's HEAD); incremental rebuilds after new commits do NOT
+ * refresh it — the baked-in id is stale until the next reconfigure. */
 const char *break_version_string(void);

@@ -45,6 +45,18 @@
  *  OpenSSL-internal OOM paths cannot be intercepted by this repository's
  *  test hooks (no injection coverage there — documented in
  *  docs/design/security_threat_model.md §4/§8).
+ *
+ *  Ed25519 small-order public-key note: OpenSSL's verifier follows ZIP-215
+ *  cofactorless semantics, so its acceptance of a small-order (e.g.
+ *  all-zero) public key is MESSAGE-DEPENDENT — empirically about 1/4 of
+ *  message samples verify with an all-zero key + all-zero signature (Task 4
+ *  review; pinned by the unsigned-path pins, which therefore must use a
+ *  real key — test_break_update_target_contract.cmake:174-180). This is
+ *  architecturally unreachable here by contract: the verification pubkey
+ *  MUST be a compile-time built-in trusted constant and is NEVER
+ *  attacker-controlled input (there is no key field in the manifest). If a
+ *  future phase ever takes the pubkey from external input, this acceptance
+ *  behavior MUST be re-evaluated before doing so.
  * ========================================================================== */
 
 #include <core/types.h>
