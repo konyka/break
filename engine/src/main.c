@@ -3854,7 +3854,11 @@ i32 bench_frames = 0;
 /* BREAK_BENCH_STATS=N: record per-frame ms (cap 4096) and print
  * fps_avg/fps_p1/frame_ms_avg/frame_ms_p99 at shutdown (rhi benchmark
  * receipt schema, plan C Task 15); also disables vsync so the numbers
- * measure throughput rather than display pacing. */
+ * measure throughput rather than display pacing. R683: the first
+ * BENCH_STATS_WARMUP frames are not recorded -- frame 0 carries all of
+ * startup (0.75-1.7 s: asset load, PSO/shader creation) and alone added
+ * 3-7 ms to a 240-frame average, which also put fps_p1 above fps_avg. */
+#define BENCH_STATS_WARMUP 8u
 static f32 bench_stats_ms[4096];
 static u32 bench_stats_count = 0u;
 static u32 bench_stats_target = 0u;
@@ -4513,7 +4517,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
     while (engine_frame(&engine)) {
         arena_free_all(&frame_arena);
-        if (bench_stats_target > 0u && bench_stats_count < 4096u)
+        if (bench_stats_target > 0u && bench_stats_count < 4096u &&
+            engine.frame_count > BENCH_STATS_WARMUP)
             bench_stats_ms[bench_stats_count++] =
                 (f32)(engine.raw_delta_time * 1000.0);
         if (auto_exit_frames > 0 && (i64)engine.frame_count >= auto_exit_frames) break;
