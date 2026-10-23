@@ -756,6 +756,116 @@ TEST(body_defined_on_frame_end_never_runs) {
     fixture_close(&f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Review fix round 2 regressions                                      */
+/* ------------------------------------------------------------------ */
+
+TEST(shadowed_stdlib_cannot_defeat_epilogue) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* I1 round 2: the round-1 epilogue called env-resolved type/tostring
+     * before clearing on_unload, so shadowing them killed the harness
+     * before the clear and wedged the console. All harness stdlib
+     * references are chunk-top locals now. */
+    /* Variant A1: type shadow + successful body — the eval itself is
+     * legitimately fine (the shadow is body-local business), the veto must
+     * still be cleared. */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "on_unload = function() error('veto') end type = 42 return 7"));
+    ASSERT_TRUE(sink_find(&f.sink, "7") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+
+    /* Variant A2: type shadow + body error — bounded error, no wedge. */
+    sink_reset(&f.sink);
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "on_unload = function() error('veto') end type = 42 error('boom')"));
+    ASSERT_TRUE(sink_find(&f.sink, "boom") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "2+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "4") >= 0);
+
+    /* Variant B: tostring shadow + body error — the round-1 else-branch
+     * died here; bounded error + no wedge now. */
+    sink_reset(&f.sink);
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "on_unload = function() error('veto') end tostring = 42 error('boom')"));
+    ASSERT_TRUE(sink_find(&f.sink, "boom") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "3+3"));
+    ASSERT_TRUE(sink_find(&f.sink, "6") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "4+4"));
+    ASSERT_TRUE(sink_find(&f.sink, "8") >= 0);
+
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+    ASSERT_FALSE(f.sink.overlong);
+    fixture_close(&f);
+}
+
+TEST(failed_eval_never_applies_records_n2) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* N2 (exact review payload): the shadowed tostring killed the round-1
+     * harness before __E was set, so eval reported success and APPLIED the
+     * spawn. The __DONE/__E markers are host-trusted now: the eval fails,
+     * the error is reported, nothing is applied, no residue. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console, "brk.ecs.spawn() tostring = 42 error('boom')"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+    ASSERT_FALSE(break_editor_undo(f.doc));
+
+    /* Same shape through the type-shadow/success arm: the body succeeds,
+     * so the spawn legitimately applies (nothing about the eval failed). */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "brk.ecs.spawn() type = 42 return 5"));
+    ASSERT_TRUE(sink_find(&f.sink, "5") >= 0);
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 1u);
+    ASSERT_TRUE(break_editor_undo(f.doc));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+
+    fixture_close(&f);
+}
+
+TEST(probe_planted_wedge_recovers_on_stage_failure) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* Round-2 disclosed gap: this payload passes the probe as an
+     * expression continuation, so its middle function RUNS at probe
+     * staging (budgeted, batch-free) and plants a vetoing on_unload on the
+     * probe module's env; the harness compile then rejects it (statement
+     * context). The eval must fail bounded AND the probe runtime must be
+     * health-checked HERE (round 1 checked only the probe-failure path, so
+     * the NEXT eval paid the wedge). */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "end and (function() _G.on_unload = function() error('veto') end"
+        " return 'x' end)() and function() return 0"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+
+    /* The very next eval must work — the wedge was detected and the probe
+     * runtime recreated on the stage-failure path. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "6*7"));
+    ASSERT_TRUE(sink_find(&f.sink, "42") >= 0);
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    fixture_close(&f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(eval_arithmetic_result_logged);
     RUN_TEST(eval_result_string_truncated_and_unrepresentable);
@@ -779,4 +889,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(eval_escape_payload_no_doc_side_effects);
     RUN_TEST(on_unload_veto_payload_does_not_wedge);
     RUN_TEST(body_defined_on_frame_end_never_runs);
+    RUN_TEST(shadowed_stdlib_cannot_defeat_epilogue);
+    RUN_TEST(failed_eval_never_applies_records_n2);
+    RUN_TEST(probe_planted_wedge_recovers_on_stage_failure);
 TEST_MAIN_END()

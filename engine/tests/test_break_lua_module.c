@@ -803,9 +803,11 @@ TEST(staging_budget_trip_on_reload_keeps_old_version_serving)
     ASSERT_EQ(rep.old_version, 1u);
     ASSERT_EQ(rep.new_version, 1u); /* a failed reload consumes no version */
     ASSERT_TRUE(strstr(rep.error, "instruction budget exceeded") != NULL);
-    /* A count-hook trip carries no position prefix (the hook fires outside
-     * a Lua call frame), so no line parses — consumers must handle the
-     * position-less form (the console logs it verbatim, bounded). */
+    /* A count-hook trip during a TOP-LEVEL spin carries no position prefix
+     * (luaL_where finds no Lua frame at level 1 there), so no line parses —
+     * consumers must handle the position-less form (the console logs it
+     * verbatim, bounded). A trip inside a Lua function called from the
+     * chunk DOES carry the usual "name:line: " prefix (verified). */
     ASSERT_EQ(rep.error_line, 0u);
 
     st = break_lua_test_module_stat(rt, "mod");

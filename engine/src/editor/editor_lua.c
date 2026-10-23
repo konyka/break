@@ -1,5 +1,5 @@
 /* BreakEditorLuaConsole — implementation. The full contract (owner thread,
- * eval pipeline, injection-safe dual-probe shape, budget arming, record
+ * eval pipeline, injection-safety layers, budget arming, record
  * application, bounds) is documented in editor_lua.h. */
 
 #include <editor/editor_lua.h>
@@ -19,55 +19,90 @@
  * stages only probe-verified harness chunks (user code on it runs solely
  * inside the budgeted frame dispatch); the PROBE runtime has NO batch bound,
  * so even a crafted escape that reaches probe staging cannot enqueue ECS
- * records — its worst side effect is a bounded stdout print. Module names
- * are fixed; each eval is a committed reload of the touched modules, so
- * evals share no environment state. */
+ * records — its worst side effect is a bounded stdout print. Each eval is a
+ * committed reload of the touched modules, so evals share no environment
+ * state. */
 #define CONSOLE_MODULE "console"
-#define PROBE_R_MODULE "probe_r"
-#define PROBE_L_MODULE "probe_l"
+#define PROBE_MODULE "probe_r"
 
 /* Chunk size bound: prefixes/suffixes are fixed small strings; the body is
  * "return " (7) + input (<= 4096). */
 #define CONSOLE_CHUNK_CAPACITY 5632u
 
-/* Dual compile probes (fix round 1, C1): a single wrapper context is never
- * escape-proof — in an EXPRESSION context (`return function() <B> end`) the
- * body can close the function early and continue the expression
- * (`end .. (function() ... end)() .. function() return 0`); in a STATEMENT
- * context (`local __p = function() <B> end`) it can close early and continue
- * with statements (`end while true do` swallows the trailing `end`). A body
- * passing BOTH probes is a syntactically complete block: probe R kills every
- * statement continuation (nothing may follow a return), probe L kills every
- * expression continuation (a statement cannot start with an operator), and
- * the two continuation token classes are disjoint — so an escape can pass at
- * most one. Since break_lua arms the instruction budget over staging too
- * (same fix round), even a hypothetical payload defeating both probes would
- * run bounded at staging. The body starts on probe line 2 in both. */
-#define PROBE_R_PREFIX "return function()\n"
-#define PROBE_L_PREFIX "local __p = function()\n"
+/* INJECTION SAFETY — the REAL layers (fix round 2, N1; the round-1
+ * "dual-probe disjointness" claim was false and probe L was dropped: a
+ * `local p = function() <B> end` wrapper is expression context too and adds
+ * nothing over the harness's own compile):
+ *   - The harness embeds the body in a STATEMENT context
+ *     (`local function __body() <B> end`). A body that closes the function
+ *     early must continue with either a STATEMENT (e.g. `end while true
+ *     do`) or an EXPRESSION continuation (e.g. the review's C1 payload
+ *     `end .. (function() while true do end end)() .. function() return
+ *     0`); the harness compile itself rejects every expression continuation
+ *     (a statement cannot start with an operator), so those bodies fail the
+ *     console-module reload with a plain syntax error before anything runs.
+ *   - The probe answers the remaining question — could the body escape as
+ *     a STATEMENT sequence? — by compiling `return function() <B> end` on
+ *     the probe runtime: nothing may follow a return, so statement
+ *     continuations fail the probe compile. Together: a body passing the
+ *     probe AND embedding cleanly in the harness is a syntactically
+ *     complete block; the console runtime never stages user code.
+ *   - A body that escapes ONLY the probe (expression continuation) is
+ *     staged once on the probe runtime — budgeted (break_lua arms the count
+ *     hook over staging since fix round 1) and batch-free, so it can neither
+ *     hang nor touch the doc — and is then rejected by the harness compile.
+ *   - Both runtimes carry the 1e6 staging budget as defense in depth.
+ * The body starts on probe line 2. */
+#define PROBE_PREFIX "return function()\n"
 #define PROBE_PREFIX_LINES 1u
 #define PROBE_SUFFIX "\nend\n"
 
 /* The console harness: print capture (32 lines x 127 visible bytes), the
  * probe-verified body as __body, on_frame_begin running it under the armed
- * count hook inside a pcall (runtime errors AND the budget trip are caught
- * and stored — the module is never marked hooks-disabled), and three raw
- * env getters the host calls afterwards. The body starts on line 15.
- * The epilogue clears on_unload/on_frame_end (fix round 1, I1/M3): the user
- * body may raw-set them; clearing runs after the pcall on every path, so
- * the live console env never carries an on_unload veto into the next eval's
- * reload, and a body-defined on_frame_end never dispatches (the console is
- * eval-based, not a frame loop). */
+ * count hook inside a pcall, and three raw env getters the host calls
+ * afterwards.
+ *
+ * SHADOW-PROOFING (fix round 2, I1/N2): every stdlib/global the harness
+ * itself relies on is captured into a chunk-top LOCAL (pcall/tostring/type/
+ * select/table.concat/table.unpack), evaluated at staging time — BEFORE the
+ * body runs — from the whitelist (env metatable fallback). Body globals can
+ * only shadow ENV fields, never locals, so no sandbox-whitelist means can
+ * defeat the harness epilogue or the error/result reporting. (`s:sub` rides
+ * the string metatable, which the body cannot reach: get/setmetatable are
+ * absent from the whitelist.)
+ *
+ * SUCCESS SIGNALLING (N2): __DONE is false at chunk top and set true only
+ * as the LAST statement of on_frame_begin (after the epilogue); __E holds a
+ * chunk-top sentinel string until the hook's first statement clears it and
+ * is then set only from the body pcall's failure. The C side computes
+ * eval_ok = (__DONE == true) && (__E empty): a harness that dies anywhere —
+ * shadowing, OOM, anything — leaves __DONE false and the eval fails closed
+ * (records discarded), never a false success. Both markers are chunk-local
+ * upvalues; the getters are raw env fields (body overwrites of the getters
+ * themselves degrade to a bounded "eval status unavailable" false).
+ *
+ * The epilogue clears on_unload/on_frame_end BEFORE setting __DONE (fix
+ * round 1, I1/M3): the user body may raw-set them; clearing on every path
+ * means the live console env never carries an on_unload veto into the next
+ * eval's reload, and a body-defined on_frame_end never dispatches (the
+ * console is eval-based, not a frame loop). */
 #define HARNESS_PREFIX                                              \
+    "local __pcall=pcall\n"                                         \
+    "local __tostring=tostring\n"                                   \
+    "local __type=type\n"                                           \
+    "local __select=select\n"                                       \
+    "local __concat=table.concat\n"                                 \
+    "local __unpack=table.unpack\n"                                 \
     "local __L={}\n"                                                \
     "local __R=nil\n"                                               \
     "local __E='console internal: eval dispatch did not run'\n"     \
+    "local __DONE=false\n"                                          \
     "print=function(...)\n"                                         \
-    "  local n=select('#',...)\n"                                   \
+    "  local n=__select('#',...)\n"                                 \
     "  if #__L<32 then\n"                                           \
     "    local p={}\n"                                              \
-    "    for i=1,n do p[i]=tostring(select(i,...)) end\n"           \
-    "    local s=table.concat(p,'\\t')\n"                           \
+    "    for i=1,n do p[i]=__tostring(__select(i,...)) end\n"       \
+    "    local s=__concat(p,'\\t')\n"                               \
     "    if #s>127 then s=s:sub(1,127) end\n"                       \
     "    __L[#__L+1]=s\n"                                           \
     "  end\n"                                                       \
@@ -77,20 +112,21 @@
     "\nend\n"                                                       \
     "function on_frame_begin(dt)\n"                                 \
     "  __E=nil\n"                                                   \
-    "  local ok,r=pcall(__body)\n"                                  \
+    "  local ok,r=__pcall(__body)\n"                                \
     "  if ok then\n"                                                \
-    "    if type(r)=='string' and #r>127 then r=r:sub(1,127) end\n" \
+    "    if __type(r)=='string' and #r>127 then r=r:sub(1,127) end\n" \
     "    __R=r\n"                                                   \
     "  else\n"                                                      \
-    "    local e=tostring(r)\n"                                     \
+    "    local e=__tostring(r)\n"                                   \
     "    if #e>120 then e=e:sub(1,120) end\n"                       \
     "    __E=e\n"                                                   \
     "  end\n"                                                       \
     "  on_unload=nil\n"                                             \
     "  on_frame_end=nil\n"                                          \
+    "  __DONE=true\n"                                               \
     "end\n"                                                         \
-    "function __console_err() return __E end\n"                     \
-    "function __console_lines() return table.unpack(__L) end\n"     \
+    "function __console_err() return __DONE, __E end\n"             \
+    "function __console_lines() return __unpack(__L) end\n"         \
     "function __console_result() return __R end\n"
 
 struct BreakEditorLuaConsole {
@@ -122,8 +158,9 @@ static void console_log(const BreakEditorLuaConsole *c, const char *fmt, ...) {
  * standard "<chunkname>:N: " position prefix and N is past the host-side
  * wrapper (offset = wrapper lines before the body, so M is the
  * input-relative line); otherwise "error: <raw>" — the raw fallback covers
- * position-less messages such as the count-hook trip text. Bounded by
- * console_log. */
+ * position-less messages such as the count-hook trip text for a top-level
+ * spin (a trip inside a Lua function called from the chunk DOES carry the
+ * prefix — the parser handles both). Bounded by console_log. */
 static void console_log_lua_error(const BreakEditorLuaConsole *c,
                                   const char *raw, u32 line_offset) {
     const char *colon = strchr(raw, ':');
@@ -158,11 +195,10 @@ static bool console_build_chunk(char *out, usize cap, const char *prefix,
     return n >= 0 && (usize)n < cap;
 }
 
-/* The probe runtime + both seed modules. On any failure the partial state
- * is torn down and probe_runtime is NULL. */
+/* The probe runtime + its seed module. On any failure the partial state is
+ * torn down and probe_runtime is NULL. */
 static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
-    static const char k_probe_r_seed[] = "return function() end\n";
-    static const char k_probe_l_seed[] = "local __p = function() end\n";
+    static const char k_probe_seed[] = "return function() end\n";
     BreakLuaRuntimeConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     cfg.max_modules = 4u;
@@ -171,14 +207,10 @@ static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
     if (!c->probe_runtime) {
         return false;
     }
-    if (break_lua_runtime_load_module(c->probe_runtime, PROBE_R_MODULE,
-                                      k_probe_r_seed,
-                                      sizeof(k_probe_r_seed) - 1u) !=
-            BREAK_LUA_OK ||
-        break_lua_runtime_load_module(c->probe_runtime, PROBE_L_MODULE,
-                                      k_probe_l_seed,
-                                      sizeof(k_probe_l_seed) - 1u) !=
-            BREAK_LUA_OK) {
+    if (break_lua_runtime_load_module(c->probe_runtime, PROBE_MODULE,
+                                      k_probe_seed,
+                                      sizeof(k_probe_seed) - 1u) !=
+        BREAK_LUA_OK) {
         break_lua_runtime_destroy(c->probe_runtime);
         c->probe_runtime = NULL;
         return false;
@@ -187,17 +219,19 @@ static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
 }
 
 /* Health check after a failed eval: a crafted escape that ran at probe
- * staging could have raw-set a vetoing on_unload on a probe module's env
+ * staging could have raw-set a vetoing on_unload on the probe module's env
  * (I1's wedge class, one level down). A trivial known-good reload answers
  * the question; on veto the whole probe runtime is recreated (it holds no
- * valuable state — two scratch modules), so a wedged probe can never
- * permanently kill the console. */
+ * valuable state — one scratch module), so a wedged probe can never
+ * permanently kill the console. A recreation failure (Lua-side OOM) leaves
+ * probe_runtime NULL: every later eval then fails bounded with a "probe
+ * runtime unavailable" error line (documented, never a crash). */
 static void console_probe_runtime_reset_if_wedged(BreakEditorLuaConsole *c) {
     static const char k_trivial[] = "return function() end\n";
     if (!c->probe_runtime) {
         return;
     }
-    if (break_lua_runtime_reload_module(c->probe_runtime, PROBE_R_MODULE,
+    if (break_lua_runtime_reload_module(c->probe_runtime, PROBE_MODULE,
                                         k_trivial, sizeof(k_trivial) - 1u,
                                         NULL) == BREAK_LUA_OK) {
         return;
@@ -207,29 +241,19 @@ static void console_probe_runtime_reset_if_wedged(BreakEditorLuaConsole *c) {
     (void)console_probe_runtime_init(c);
 }
 
-/* Compiles one body form ("ret" is "" or "return ") through BOTH probes on
- * the probe runtime. BREAK_LUA_FAILED = syntax/escape rejection (or a
- * budgeted staging trip for a payload that slipped one probe's compile);
- * `report` carries the first failing probe's diagnostics. */
+/* Compiles one body form ("ret" is "" or "return ") through the probe on
+ * the probe runtime. BREAK_LUA_FAILED = syntax/statement-escape rejection;
+ * other codes = staging budget trip / OOM / policy. `report` carries the
+ * diagnostics. */
 static BreakLuaError console_probe_form(BreakEditorLuaConsole *c,
                                         const char *ret, const char *body,
                                         BreakLuaReloadReport *report) {
     char chunk[CONSOLE_CHUNK_CAPACITY];
-    BreakLuaError err;
-    if (!console_build_chunk(chunk, sizeof(chunk), PROBE_R_PREFIX, ret, body,
+    if (!console_build_chunk(chunk, sizeof(chunk), PROBE_PREFIX, ret, body,
                              PROBE_SUFFIX)) {
         return BREAK_LUA_FAILED;
     }
-    err = break_lua_runtime_reload_module(c->probe_runtime, PROBE_R_MODULE,
-                                          chunk, strlen(chunk), report);
-    if (err != BREAK_LUA_OK) {
-        return err;
-    }
-    if (!console_build_chunk(chunk, sizeof(chunk), PROBE_L_PREFIX, ret, body,
-                             PROBE_SUFFIX)) {
-        return BREAK_LUA_FAILED;
-    }
-    return break_lua_runtime_reload_module(c->probe_runtime, PROBE_L_MODULE,
+    return break_lua_runtime_reload_module(c->probe_runtime, PROBE_MODULE,
                                            chunk, strlen(chunk), report);
 }
 
@@ -451,9 +475,11 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     BreakLuaReloadReport report;
     BreakLuaError err;
     BreakLuaValue v[BREAK_EDITOR_LUA_MAX_PRINT_LINES];
+    BreakLuaValue status[2];
     BreakLuaValue single;
     char eval_err[BREAK_LUA_VALUE_STRING_CAPACITY];
-    bool eval_ok = true;
+    bool eval_ok = false;
+    bool done = false;
     usize drained = 0u;
     usize i;
     u32 harness_offset;
@@ -484,28 +510,30 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
      *    as-is-first would never produce its value; return-first makes
      *    every bare expression auto-return, and genuine statements fail the
      *    wrap (return must be last) and fall through to the as-is attempt.
-     *    Each form must pass BOTH compile probes — a form that passes is a
-     *    syntactically complete block (see the dual-probe comment above):
-     *    the console runtime never stages user code. */
+     *    The probe (see INJECTION SAFETY above) rejects exactly the
+     *    statement-continuation escapes; expression continuations are
+     *    rejected by the harness compile in step 2. */
     err = console_probe_form(console, ret, input, &report);
     if (err != BREAK_LUA_OK) {
         err = console_probe_form(console, "", input, &report);
         ret = ""; /* statement input: staged as-is */
     }
     if (err != BREAK_LUA_OK) {
-        /* Report the AS-IS attempt's first probe failure (same convention
-         * as the standalone lua REPL of reporting the plain-form error):
-         * its line numbers match the typed input exactly — the wrap is
-         * inline, shifting columns, not lines. */
+        /* Report the AS-IS attempt's probe failure (same convention as the
+         * standalone lua REPL of reporting the plain-form error): its line
+         * numbers match the typed input exactly — the wrap is inline,
+         * shifting columns, not lines. */
         console_log_lua_error(console, report.error, PROBE_PREFIX_LINES);
         console_probe_runtime_reset_if_wedged(console);
         return false;
     }
 
-    /* 2. Embed the verified body in the console harness and reload. The
-     *    harness top level is host-controlled definitions only, so console
-     *    staging never runs user code either (and is budget-armed at the
-     *    break_lua layer regardless — defense in depth). */
+    /* 2. Embed the probe-verified body in the console harness and reload.
+     *    The harness top level is host-controlled definitions only and its
+     *    `local function __body()` statement context rejects any expression
+     *    continuation the probe could not see, so console staging never
+     *    runs user code (and is budget-armed at the break_lua layer
+     *    regardless — defense in depth). */
     if (!console_build_chunk(chunk, sizeof(chunk), HARNESS_PREFIX, ret, input,
                              HARNESS_SUFFIX)) {
         console_log(console, "error: console: chunk assembly overflow");
@@ -514,9 +542,10 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     err = break_lua_runtime_reload_module(console->runtime, CONSOLE_MODULE,
                                           chunk, strlen(chunk), &report);
     if (err != BREAK_LUA_OK) {
-        /* Probe-verified bodies cannot syntax-fail here; a failure is
-         * harness-internal, a staging budget trip on a probe-defeating
-         * payload, or OOM. */
+        /* Expected rejections: an expression-continuation escape that
+         * passed the probe (its staging ran bounded and batch-free on the
+         * probe runtime) fails this compile with a plain syntax error.
+         * Anything else is harness-internal or OOM. */
         if (report.error[0] != '\0') {
             console_log_lua_error(console, report.error,
                                   console_count_lines(HARNESS_PREFIX));
@@ -524,29 +553,49 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
             console_log(console, "error: console: stage failed (%s)",
                         break_lua_error_name(err));
         }
+        /* A payload reaching this path may have executed at probe staging
+         * (probe R passes expression continuations) and could have planted
+         * a vetoing on_unload on the probe module — health-check it here
+         * too (the round-1 gap: this path skipped the check). */
+        console_probe_runtime_reset_if_wedged(console);
         return false;
     }
 
     /* 3. Dispatch on_frame_begin: the Stage 3 count hook arms the console
      *    instruction budget over exactly this invocation (main coroutine).
      *    The harness pcall catches runtime errors and the budget trip; the
-     *    epilogue then clears on_unload/on_frame_end (I1/M3). */
+     *    shadow-proof epilogue then clears on_unload/on_frame_end and sets
+     *    the __DONE completion marker (I1/M3/N2). */
     break_lua_runtime_begin_frame(console->runtime, 0.0);
     break_lua_runtime_end_frame(console->runtime);
 
-    /* 4. Collect the stored error, the captured print lines, and the
-     *    result — via raw env getters (bounded BreakLuaValue marshalling). */
+    /* 4. Collect the host-trusted outcome markers, the captured print
+     *    lines, and the result — via raw env getters (bounded BreakLuaValue
+     *    marshalling). eval_ok = (__DONE && __E empty): both markers are
+     *    chunk-local upvalues written only by the shadow-proof harness, so
+     *    a harness that died mid-way (or a body that shadowed stdlib
+     *    globals) can never masquerade as success (N2). */
     eval_err[0] = '\0';
     err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
-                                 "__console_err", NULL, 0u, &single, 1u);
+                                 "__console_err", NULL, 0u, status, 2u);
     if (err != BREAK_LUA_OK) {
         console_log(console, "error: console: eval status unavailable (%s)",
                     break_lua_error_name(err));
-        eval_ok = false;
-    } else if (single.type == BREAK_LUA_VALUE_STRING && single.as.s.len > 0u) {
-        memcpy(eval_err, single.as.s.data, single.as.s.len + 1u);
-        eval_ok = false;
+    } else {
+        done = status[0].type == BREAK_LUA_VALUE_BOOL && status[0].as.b;
+        if (status[1].type == BREAK_LUA_VALUE_STRING &&
+            status[1].as.s.len > 0u) {
+            memcpy(eval_err, status[1].as.s.data, status[1].as.s.len + 1u);
+        }
+        if (!done && eval_err[0] == '\0') {
+            /* The hook died between clearing the sentinel and setting
+             * __DONE (cannot happen via sandbox means post-round-2; OOM of
+             * the dispatch itself lands here). */
+            memcpy(eval_err, "console internal: eval dispatch did not run",
+                   sizeof("console internal: eval dispatch did not run"));
+        }
     }
+    eval_ok = done && eval_err[0] == '\0';
 
     err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
                                  "__console_lines", NULL, 0u, v,
@@ -562,12 +611,10 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
                     break_lua_error_name(err));
     }
 
-    if (!eval_ok) {
-        if (eval_err[0] != '\0') {
-            harness_offset = console_count_lines(HARNESS_PREFIX);
-            console_log_lua_error(console, eval_err, harness_offset);
-        }
-    } else {
+    if (eval_err[0] != '\0') {
+        harness_offset = console_count_lines(HARNESS_PREFIX);
+        console_log_lua_error(console, eval_err, harness_offset);
+    } else if (eval_ok) {
         err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
                                      "__console_result", NULL, 0u, &single,
                                      1u);
@@ -595,11 +642,12 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         }
     }
 
-    /* 5. Drain the batch AFTER every eval: applied only when the chunk ran
-     *    clean; a failed eval discards its records (never half-applied).
-     *    Early returns above cannot leave residue: probe staging runs on
-     *    the batch-free probe runtime and harness staging runs no user
-     *    code, so only the dispatch enqueues. */
+    /* 5. Drain the batch AFTER every eval: applied only when the host-
+     *    trusted markers prove the chunk ran clean; a failed eval discards
+     *    its records (never half-applied). Early returns above cannot leave
+     *    residue: probe staging runs on the batch-free probe runtime and
+     *    harness staging runs no user code, so only the dispatch
+     *    enqueues. */
     for (;;) {
         usize k = break_lua_ecs_batch_drain(
             console->batch, console->drain + drained,

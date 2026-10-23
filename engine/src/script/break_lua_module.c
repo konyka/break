@@ -19,12 +19,28 @@
  * lua_pcall by break_lua_op_run(). The closure itself is fetched from the
  * registry with lua_rawgeti and its context pushed as a lightuserdata —
  * neither can allocate — so no Lua entry point on any facade path ever runs
- * unprotected. Inside a staged operation, chunk execution errors
- * deliberately propagate to that pcall: no registry reference is taken
- * until staging has fully succeeded, so unwinding is complete cleanup. The
+ * unprotected. Inside a staged operation, chunk execution runs under its
+ * own LOCAL lua_pcall when the instruction budget is armed (the
+ * per-coroutine count hook must be disarmed on every exit, so the error
+ * cannot be left to unwind to the wrapper); with the budget disabled the
+ * historical lua_call still propagates chunk errors to the wrapper pcall.
+ * Either way no registry reference is taken until staging has fully
+ * succeeded, so cleanup is complete. The
  * one exception is the old module's on_unload hook, which runs under its
  * own lua_pcall inside the commit operation because a hook failure must
  * discard the staged environment (unref) rather than unwind past it.
+ *
+ * NESTED ARMING LIMITATION (documented, production-unreachable): the
+ * staging and commit budget arming uses lua_sethook on the main coroutine,
+ * which REPLACES whatever hook is currently armed and whose disarm then
+ * clears it. A reload triggered from INSIDE a budget-armed frame hook would
+ * therefore destroy the outer hook's arming mid-flight (the outer hook's
+ * remainder runs unbudgeted, and the nested staging runs with a fresh full
+ * count). The production `break.*` surface deliberately exposes no reload
+ * binding, so this nesting is reachable only through the BREAK_LUA_TESTING
+ * reloader test binding; the test that exercises mid-dispatch reload
+ * (frame_mid_dispatch_reload_serves_pinned_old_environment) runs with the
+ * budget disabled.
  *
  * STACK DISCIPLINE: every operation restores lua_settop(base) on every exit
  * it controls; the wrapper's pcall unwinds anything it does not. The tests
@@ -127,7 +143,9 @@ static void break_lua_module_capture_error(lua_State *L,
 /* STAGE: build a fresh module environment wired to the preserved state
  * table, compile the candidate source as a text chunk, and execute it.
  * Errors from luaL_loadbufferx are returned, not thrown; chunk execution
- * errors are caught by a local lua_pcall (see file header). On success the
+ * errors are caught by a local lua_pcall when the budget is armed and
+ * propagate to the wrapper pcall when it is disabled (see file header).
+ * On success the
  * only registry reference (the staged environment) is taken last. The
  * environment's globals resolve to the Task 4 whitelist sandbox (never the
  * base global table): see break_lua_binding.c.
