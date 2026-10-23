@@ -12,6 +12,8 @@ R675 那轮 CI（4c22ef1b）里 19 个 job 全部通过，比之前有进步。�
 
 验证：`yaml.safe_load` 解析通过，13 段脚本都通过 `bash -n`，每个步骤都带 20 分钟时限。实际效果要看推送后的 CI。
 
+**结果（8d2c3c87）**：没有解决。18 个 job 通过，`Linux + GCC (TSan)` 和 `Linux X11 + OpenGL (GCC)` 两个都卡在 `Install dependencies`，用了约 18 分 40 秒后以退出码 1 失败。也就是说，换到 `archive.ubuntu.com` 以后三次尝试照样超时。三轮下来（R674–R676），每轮被卡住的 job 都不同，编译和测试步骤没有一次失败，所以结论是 GitHub 托管 runner 到 Ubuntu 软件源的网络问题，不是仓库代码的问题。CI 配置调整到此为止，R674–R676 的防护保留：现在卡住时会在 20 分钟内明确失败并给出注解，不会再无声地被取消。可以考虑的根本办法：把依赖做成预装好的容器镜像（`container:`），或者用 apt 缓存类的 action（例如 `awalsh128/cache-apt-pkgs-action`）。这两种都会引入新的外部依赖，需要 owner 决定。
+
 ## 本轮更新：R675 — CI apt 步骤按次限时重试（R674 的后续）
 
 R674 推送后的那轮 CI（d5dff51b）不再出现「job 超时被取消」，但还是有一个 job 卡在 apt：`Linux + Clang/LLD (Release, headless)` 的 `Install dependencies` 撞上新加的 10 分钟步骤时限，结论是 failed。同一轮里其余 19 个 job 的安装都在 1 分钟左右完成，编译和测试全部 success。
