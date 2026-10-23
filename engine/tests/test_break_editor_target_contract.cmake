@@ -225,14 +225,35 @@ endif()
 # reaches scene_serial through break_editor's editor_scene.o — with this
 # order the engine copy is never pulled (verified on the built binary with
 # nm: exactly one scene_save_binary definition, zero undefined references).
+#
+# Phase 3 Task 3 UPDATE (pre-authorized by the task controller): the Lua
+# console panel (apps/editor/editor_panel_lua.c) now references
+# break_editor_lua_*, so editor_lua.o AND the break_lua archive are pulled
+# into the editor binary — the Task 2 "editor binary has no
+# break_editor_lua_* references yet" nm observation described the pre-wiring
+# state and is superseded. The link line lists break_lua EXPLICITLY, right
+# after break_editor (it also arrived transitively via break_editor's PUBLIC
+# link). The engine/engine_demo/dxx_break no-link pins above are UNCHANGED —
+# they still link neither break_editor nor break_lua.
 if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c")
     message(FATAL_ERROR "missing formal editor executable target")
 endif()
-if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE break_editor break_myui engine m")
-    message(FATAL_ERROR "editor must link break_editor before break_myui/engine (scene_serial single-owner link order)")
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c apps/editor/editor_panels.c[^)]*apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c[^)]*apps/editor/editor_panel_profiler.c")
+    message(FATAL_ERROR "editor must carry the three Phase 3 Task 3 panel TUs (assets/lua/profiler)")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE break_editor break_lua break_myui engine m")
+    message(FATAL_ERROR "editor must link break_editor FIRST, then break_lua, then break_myui/engine (scene_serial single-owner link order; Phase 3 Task 3 wires the Lua console panel into the binary)")
 endif()
 if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(editor\\)")
     message(FATAL_ERROR "editor does not go through engine_link_rhi_backend")
+endif()
+
+# Phase 3 Task 3: the headless shell test compiles the panel TUs plus their
+# support TUs inline (platform_fs.c for platform_list_dir; profiler.c +
+# time.c for the profiler panel's last-frame reads) — exactly one definition
+# per binary, engine keeps sole production ownership.
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c[^)]*apps/editor/editor_panel_profiler.c[^)]*src/platform/platform_fs\\.c src/core/profiler\\.c src/platform/time\\.c")
+    message(FATAL_ERROR "test_editor_shell must compile the Phase 3 panel TUs + platform_fs.c/profiler.c/time.c inline")
 endif()
 
 message(STATUS "break_editor target contract passed")

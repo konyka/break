@@ -11,12 +11,17 @@
  * Optional argv[1]: scene path used as the Ctrl+S / palette-save target
  * (Phase 1 has no save-as dialog; loading is intentionally not wired to
  * argv — the document model supports it, the shell UI lands it in a later
- * phase). */
+ * phase).
+ *
+ * Phase 3 Task 3: the profiler PANEL (editor_panel_profiler.c) is a pure
+ * view — the PRODUCER side lives here: the app enables the profiler and
+ * pumps one frame region around the loop body so the panel has data. */
 #include <stdio.h>
 #include <string.h>
 
 #include "editor_panels.h"
 
+#include <core/profiler.h>
 #include <editor/editor_scene.h>
 
 #include "myui/my_window.h"
@@ -127,11 +132,17 @@ int main(int argc, char **argv) {
             BREAK_EDITOR_SCENE_PATH_CAPACITY);
   }
 
+  /* Phase 3 Task 3: producer side of the profiler panel (the panel itself
+   * is a pure view over profiler_last_frame and never touches state). */
+  profiler_set_enabled(true);
+
   while (platform_poll(platform) != PLATFORM_EVENT_QUIT) {
     RHICmdBuffer *cmd;
     bool skip = false;
     u32 nw = 0, nh = 0;
     u32 lw = 0, lh = 0;
+    profiler_begin_frame();
+    profiler_push("editor.frame");
     platform_get_drawable_size(platform, &nw, &nh);
     if (nw != 0 && nh != 0 && (nw != drawable_w || nh != drawable_h)) {
       rhi_device_resize(device, nw, nh);
@@ -145,7 +156,11 @@ int main(int argc, char **argv) {
     break_editor_shell_tick(shell);
     platform_get_logical_size(platform, &lw, &lh);
     cmd = break_ui_frame_begin(ui, drawable_w, drawable_h, &skip, NULL);
-    if (skip) continue;
+    if (skip) {
+      profiler_pop();
+      profiler_end_frame();
+      continue;
+    }
     if (cmd != NULL) {
       /* 3D viewport pass into the SAME command buffer (offscreen FBO), then
        * the retained UI pass whose viewport widget blits the FBO texture. */
@@ -155,6 +170,8 @@ int main(int argc, char **argv) {
       rhi_frame_end(device);
       rhi_present(device);
     }
+    profiler_pop();
+    profiler_end_frame();
   }
 
   break_editor_shell_destroy(shell);

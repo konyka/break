@@ -1294,6 +1294,15 @@ engine_link_rhi_backend(dxx_break)
 # copy is then simply never pulled (the executable's own object defines the
 # symbols first) — no duplicate definitions.
 #
+# Phase 3 Task 3: + the three panel TUs (assets browser / Lua console /
+# profiler view; the panel structs are opaque to the shell — see
+# apps/editor/editor_shell_internal.h). The Lua console panel references
+# break_editor_lua_*, so editor_lua.o and the break_lua archive are now
+# pulled into the binary — break_lua is listed EXPLICITLY (it also arrives
+# via break_editor's PUBLIC link, Task 2); the contract ctest pins this
+# line. engine/engine_demo/dxx_break still link neither break_editor nor
+# break_lua (consumer no-link scan unchanged).
+#
 # Link-order note (carried review item): libbreak_editor.a and libengine.a
 # BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
 # engine compiles src/scene/scene_serial.c inline). Static archives only pull
@@ -1304,6 +1313,8 @@ engine_link_rhi_backend(dxx_break)
 # definition in the binary).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c
+    apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+    apps/editor/editor_panel_profiler.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -1312,7 +1323,7 @@ target_include_directories(editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
-target_link_libraries(editor PRIVATE break_editor break_myui engine m)
+target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
@@ -3581,14 +3592,33 @@ endif()
     # symbol, never exercised on the dummy-PAL canvas) + shader_io.c (the
     # viewport's shader-source lookup) + rhi_stubs.c (the renderer TUs
     # reference rhi_* symbols; no device exists so none are called).
+    # Phase 3 Task 3: + the three panel TUs (editor_panel_assets.c /
+    # editor_panel_lua.c / editor_panel_profiler.c) and their support TUs
+    # compiled inline — platform_fs.c (the assets model's platform_list_dir;
+    # the test_editor_assets precedent), profiler.c + time.c (the profiler
+    # panel reads profiler_last_frame; the engine target keeps sole
+    # production ownership of all three — exactly one definition per
+    # binary). break_lua symbols arrive transitively: break_editor_test
+    # links break_lua_test PUBLIC (Phase 3 Task 2).
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+        apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+        apps/editor/editor_panel_profiler.c
+        src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
         src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
         src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
     set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
     target_include_directories(test_editor_shell PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    # Phase 3 Task 3: time.c needs the same platform feature macros the
+    # engine target carries PUBLIC (the test_editor_lua precedent).
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_editor_shell PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_editor_shell PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
     target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
     add_test(NAME test_editor_shell COMMAND test_editor_shell)
     set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")
