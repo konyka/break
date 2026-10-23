@@ -606,6 +606,41 @@ static RHITexture image_texture(my_vgcanvas_break_rhi_t *c, const u8 *rgba,
   return c->images[c->image_cache_count++].texture;
 }
 
+/* Shared image-quad emit: appends two triangles (device px, uv 0..1 with
+ * v=0 at the dst top edge) under a batch keyed by texture+sampler. */
+static my_ret_t emit_texture_quad(my_vgcanvas_break_rhi_t *c, RHITexture tex,
+                                  RHISampler image_sampler, float x0,
+                                  float y0, float x1, float y1) {
+  if (c->image_batch_count == 0 ||
+      c->image_batches[c->image_batch_count - 1].texture.index != tex.index ||
+      c->image_batches[c->image_batch_count - 1].texture.generation !=
+          tex.generation ||
+      c->image_batches[c->image_batch_count - 1].sampler.index !=
+          image_sampler.index ||
+      c->image_batches[c->image_batch_count - 1].sampler.generation !=
+          image_sampler.generation) {
+    if (c->image_batch_count >= BREAK_RHI_MAX_IMAGES) {
+      return MY_RET_OOM;
+    }
+    c->image_batches[c->image_batch_count].texture = tex;
+    c->image_batches[c->image_batch_count].sampler = image_sampler;
+    c->image_batches[c->image_batch_count].offset = (u32)c->image_count;
+    c->image_batches[c->image_batch_count].count = 0;
+    c->image_batch_count++;
+  }
+  {
+    my_ret_t ret;
+    ret = emit_image_triangle(c, x0, y0, 0.0f, 0.0f, x1, y0, 1.0f, 0.0f,
+                              x0, y1, 0.0f, 1.0f);
+    if (ret != MY_RET_OK) return ret;
+    ret = emit_image_triangle(c, x1, y0, 1.0f, 0.0f, x1, y1, 1.0f, 1.0f,
+                              x0, y1, 0.0f, 1.0f);
+    if (ret != MY_RET_OK) return ret;
+  }
+  c->image_batches[c->image_batch_count - 1].count += 6u;
+  return MY_RET_OK;
+}
+
 static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
                                int32_t w, int32_t h, const my_rectf_t *dst,
                                const my_color_t *bg) {
@@ -635,34 +670,7 @@ static my_ret_t rhi_draw_image(my_vgcanvas_t *vg, const uint8_t *rgba,
   y0 = (dst->y + c->state.ty) * c->state.scale;
   x1 = x0 + dst->w * c->state.scale;
   y1 = y0 + dst->h * c->state.scale;
-  if (c->image_batch_count == 0 ||
-      c->image_batches[c->image_batch_count - 1].texture.index != tex.index ||
-      c->image_batches[c->image_batch_count - 1].texture.generation !=
-          tex.generation ||
-      c->image_batches[c->image_batch_count - 1].sampler.index !=
-          image_sampler.index ||
-      c->image_batches[c->image_batch_count - 1].sampler.generation !=
-          image_sampler.generation) {
-    if (c->image_batch_count >= BREAK_RHI_MAX_IMAGES) {
-      return MY_RET_OOM;
-    }
-    c->image_batches[c->image_batch_count].texture = tex;
-    c->image_batches[c->image_batch_count].sampler = image_sampler;
-    c->image_batches[c->image_batch_count].offset = (u32)c->image_count;
-    c->image_batches[c->image_batch_count].count = 0;
-    c->image_batch_count++;
-  }
-  {
-    my_ret_t ret;
-    ret = emit_image_triangle(c, x0, y0, 0.0f, 0.0f, x1, y0, 1.0f, 0.0f,
-                              x0, y1, 0.0f, 1.0f);
-    if (ret != MY_RET_OK) return ret;
-    ret = emit_image_triangle(c, x1, y0, 1.0f, 0.0f, x1, y1, 1.0f, 1.0f,
-                              x0, y1, 0.0f, 1.0f);
-    if (ret != MY_RET_OK) return ret;
-  }
-  c->image_batches[c->image_batch_count - 1].count += 6u;
-  return MY_RET_OK;
+  return emit_texture_quad(c, tex, image_sampler, x0, y0, x1, y1);
 }
 
 static my_ret_t rhi_begin_frame(my_vgcanvas_t *vg, const my_rect_t *dirty) {
@@ -1222,4 +1230,28 @@ my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,
   c->width = width;
   c->height = height;
   return MY_RET_OK;
+}
+
+my_ret_t my_vgcanvas_break_rhi_blit_texture(my_vgcanvas_t *vg,
+                                            RHITexture texture, float x,
+                                            float y, float w, float h) {
+  my_vgcanvas_break_rhi_t *c;
+  RHISampler image_sampler;
+  float x0, y0, x1, y1;
+  if (vg == NULL || vg->vtable != &s_break_rhi_vtable) {
+    return MY_RET_INVALID_PARAMS; /* foreign canvas (e.g. dummy-PAL LCD) */
+  }
+  c = rhi_canvas(vg);
+  if (!rhi_handle_valid(texture) || !isfinite(x) || !isfinite(y) ||
+      !isfinite(w) || !isfinite(h) || w <= 0.0f || h <= 0.0f) {
+    return MY_RET_INVALID_PARAMS;
+  }
+  image_sampler = c->state.scale_filter == MY_SCALE_FILTER_BILINEAR
+                      ? c->sampler
+                      : c->nearest_sampler;
+  x0 = (x + c->state.tx) * c->state.scale;
+  y0 = (y + c->state.ty) * c->state.scale;
+  x1 = x0 + w * c->state.scale;
+  y1 = y0 + h * c->state.scale;
+  return emit_texture_quad(c, texture, image_sampler, x0, y0, x1, y1);
 }

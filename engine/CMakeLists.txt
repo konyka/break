@@ -1292,6 +1292,7 @@ engine_link_rhi_backend(dxx_break)
 # Verified at link time and via `nm` (exactly one scene_save_binary
 # definition in the binary).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+    apps/editor/editor_viewport3d.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -3520,9 +3521,18 @@ endif()
     # test_scene_serial inline-copy precedent) plus the dummy PAL port (the
     # test_myui_window_manager precedent — MYUI_PAL=dummy keeps the port out
     # of myui_core); links the hook-instrumented break_editor_test like the
-    # other editor tests. No RHI: the shell's test path is dummy-PAL only.
+    # other editor tests.
+    # Phase 2 Task 3: + editor_viewport3d.c (the viewport panel widget and
+    # its pointer routing are headless-tested; the GPU render path is a
+    # guarded no-op without a device) + my_vgcanvas_break_rhi.c (hosts the
+    # Task 3 additive blit the widget's on_paint calls — linked for the
+    # symbol, never exercised on the dummy-PAL canvas) + shader_io.c (the
+    # viewport's shader-source lookup) + rhi_stubs.c (the renderer TUs
+    # reference rhi_* symbols; no device exists so none are called).
     add_executable(test_editor_shell tests/test_editor_shell.c
-        apps/editor/editor_panels.c src/myui/mypal/dummy/my_pal_dummy.c)
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+        src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
+        src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
     set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
     target_include_directories(test_editor_shell PRIVATE
         ${TEST_INCLUDE_DIRS}

@@ -4,6 +4,7 @@
  * break_editor_undo/redo), and the bounds documentation. */
 
 #include "editor_panels.h"
+#include "editor_viewport3d.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -90,6 +91,17 @@ struct BreakEditorShell {
 
     BreakEditorEntityId selected;
     u32 tool; /* 0 select, 1 translate, 2 rotate, 3 scale */
+
+    /* Phase 2 Task 3 viewport state (see editor_panels.h): the camera is
+     * view state (never undoable); the gizmo is glued to the selection via
+     * shell_gizmo_reconcile; vp3d is the GPU side (no GPU objects on the
+     * dummy-PAL test path — render is a guarded no-op there). */
+    BreakEditorCamera camera;
+    BreakEditorGizmo *gizmo;              /* owned */
+    BreakEditorViewport3D *vp3d;          /* owned */
+    my_widget_t *viewport_widget;         /* weak (owned by the tree) */
+    BreakEditorEntityId gizmo_attached;   /* reconcile cache */
+
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
     u32 palette_match_count;
@@ -212,25 +224,60 @@ static void shell_refresh_tool_label(BreakEditorShell *shell) {
     (void)my_label_set_text(shell->tool_label, buf);
 }
 
+/* Glue between the selection and the gizmo (Phase 2 Task 3): attach when the
+ * selection is valid, detach when it cleared. Idempotent — the reconcile
+ * cache avoids redundant attach calls (attach ALWAYS end-drags first, Task 2
+ * contract, so a redundant attach mid-drag would commit it early). Also
+ * rewires the viewport's borrowed view state on selection changes (highlight
+ * tint). */
+static void shell_gizmo_reconcile(BreakEditorShell *shell) {
+    BreakEditorEntityId want = BREAK_EDITOR_ENTITY_NULL;
+    if (shell == NULL || shell->gizmo == NULL) {
+        return;
+    }
+    if (break_editor_entity_id_valid(shell->selected)) {
+        want = shell->selected;
+    }
+    if (!break_editor_entity_id_eq(want, shell->gizmo_attached)) {
+        if (break_editor_entity_id_valid(want)) {
+            break_editor_gizmo_attach(shell->gizmo, shell->doc, want);
+        } else {
+            break_editor_gizmo_attach(shell->gizmo, NULL,
+                                      BREAK_EDITOR_ENTITY_NULL);
+        }
+        shell->gizmo_attached = want;
+        if (shell->vp3d != NULL) {
+            break_editor_viewport3d_set_view_state(
+                shell->vp3d, &shell->camera, shell->gizmo, shell->selected);
+        }
+    }
+}
+
 /* Re-validate the shell selection against the doc; clears it when the entity
  * no longer exists (remove, undo, load). Returns true when still valid. */
 static bool shell_sync_selection(BreakEditorShell *shell) {
     usize i, n;
-    if (shell == NULL ||
-        !break_editor_entity_id_valid(shell->selected)) {
+    bool valid = false;
+    if (shell == NULL) {
         return false;
     }
-    n = break_editor_doc_entity_count(shell->doc);
-    for (i = 0u; i < n; i++) {
-        BreakEditorEntityId id;
-        const char *unused = NULL;
-        if (break_editor_doc_entity_at(shell->doc, i, &id, &unused) &&
-            break_editor_entity_id_eq(id, shell->selected)) {
-            return true;
+    if (break_editor_entity_id_valid(shell->selected)) {
+        n = break_editor_doc_entity_count(shell->doc);
+        for (i = 0u; i < n; i++) {
+            BreakEditorEntityId id;
+            const char *unused = NULL;
+            if (break_editor_doc_entity_at(shell->doc, i, &id, &unused) &&
+                break_editor_entity_id_eq(id, shell->selected)) {
+                valid = true;
+                break;
+            }
+        }
+        if (!valid) {
+            shell->selected = BREAK_EDITOR_ENTITY_NULL;
         }
     }
-    shell->selected = BREAK_EDITOR_ENTITY_NULL;
-    return false;
+    shell_gizmo_reconcile(shell);
+    return valid;
 }
 
 /* Borrowed display name for an id, NULL when stale. */
@@ -765,6 +812,13 @@ static void shell_do_save(BreakEditorShell *shell) {
 }
 
 static void shell_do_undo(BreakEditorShell *shell) {
+    /* Task 3 mid-drag policy: an external undo during an active gizmo drag
+     * first ENDS+COMMITS the drag (one command), then the undo below reverts
+     * exactly that committed drag. end_drag without an active drag is a
+     * documented no-op. */
+    if (shell->gizmo != NULL) {
+        break_editor_gizmo_end_drag(shell->gizmo);
+    }
     if (break_editor_undo(shell->doc)) {
         char last[128];
         last[0] = '\0';
@@ -779,6 +833,11 @@ static void shell_do_undo(BreakEditorShell *shell) {
 }
 
 static void shell_do_redo(BreakEditorShell *shell) {
+    /* Same mid-drag policy as undo (documented: external history ops close
+     * the drag first). */
+    if (shell->gizmo != NULL) {
+        break_editor_gizmo_end_drag(shell->gizmo);
+    }
     if (break_editor_redo(shell->doc)) {
         char last[128];
         last[0] = '\0';
@@ -794,21 +853,34 @@ static void shell_do_redo(BreakEditorShell *shell) {
 
 static void shell_do_tool(BreakEditorShell *shell, u32 tool) {
     shell->tool = tool & 3u;
+    /* Phase 2 Task 3: the tool IS the gizmo mode (NONE/TRANSLATE/ROTATE/
+     * SCALE share the 0..3 numbering). set_mode mid-drag implicitly
+     * end+commits the in-progress drag (Task 2 contract). */
+    if (shell->gizmo != NULL) {
+        break_editor_gizmo_set_mode(shell->gizmo,
+                                    (BreakEditorGizmoMode)shell->tool);
+    }
     shell_refresh_tool_label(shell);
     shell_log(shell, "tool %s", k_tool_names[shell->tool]);
     shell_refresh_status(shell);
 }
 
 static void shell_do_focus_selected(BreakEditorShell *shell) {
-    /* Phase 1 records the intent only; the camera focus is Phase 2. */
+    /* Phase 2 Task 3: real camera focus on the selection's proxy AABB (view
+     * state — deliberately NOT an undoable command). */
     if (break_editor_entity_id_valid(shell->selected)) {
         const char *name = shell_entity_name(shell, shell->selected);
-        (void)snprintf(shell->note, sizeof(shell->note),
-                       "focus '%s' (Phase 2 camera pending)",
+        break_editor_camera_focus(&shell->camera, shell->doc,
+                                  shell->selected);
+        (void)snprintf(shell->note, sizeof(shell->note), "focus '%s'",
                        name != NULL ? name : "?");
-        shell_log(shell, "focus selected '%s' (intent recorded; camera is "
-                         "Phase 2)",
-                  name != NULL ? name : "?");
+        shell_log(shell, "focus '%s' (camera target %.3g %.3g %.3g)",
+                  name != NULL ? name : "?", (double)shell->camera.target[0],
+                  (double)shell->camera.target[1],
+                  (double)shell->camera.target[2]);
+        if (shell->viewport_widget != NULL) {
+            my_widget_invalidate(shell->viewport_widget, NULL);
+        }
     } else {
         (void)snprintf(shell->note, sizeof(shell->note), "focus: no selection");
         shell_log(shell, "focus: no selection");
@@ -1076,7 +1148,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     shell_add_child(toolbar, shell->tool_label, "w:140 h:24");
     shell_add_child(root, toolbar, "w:100% h:28");
 
-    /* middle row: outliner | inspector */
+    /* middle row: outliner 25% | viewport 1f | inspector 28% (Phase 2) */
     middle = my_widget_create(NULL, "editor-middle");
     if (middle == NULL) {
         return false;
@@ -1108,7 +1180,16 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         return false;
     }
     shell_add_child(outliner_panel, shell->outliner_list, "w:100% h:1f");
-    shell_add_child(middle, outliner_panel, "w:34% h:100%");
+    shell_add_child(middle, outliner_panel, "w:25% h:100%");
+
+    /* viewport panel (Phase 2 Task 3): custom on_paint blit + pointer
+     * routing; the widget borrows the shell via user_data */
+    shell->viewport_widget = break_editor_viewport3d_widget_create(shell);
+    if (shell->viewport_widget == NULL) {
+        my_widget_unref(middle);
+        return false;
+    }
+    shell_add_child(middle, shell->viewport_widget, "w:1f h:100%");
 
     shell->inspector = my_widget_create(NULL, "editor-inspector");
     if (shell->inspector == NULL) {
@@ -1117,7 +1198,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     }
     (void)my_widget_set_layouter(
         shell->inspector, my_layouter_linear_create(NULL, false, 2));
-    shell_add_child(middle, shell->inspector, "w:1f h:100%");
+    shell_add_child(middle, shell->inspector, "w:28% h:100%");
     shell_add_child(root, middle, "w:100% h:1f");
 
     /* console (read-only log view fed by the 64-entry ring) */
@@ -1199,6 +1280,21 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         free(shell);
         return NULL;
     }
+    /* Phase 2 Task 3 owned viewport state (pure CPU here — vp3d has no GPU
+     * objects until a first render with a live device) */
+    break_editor_camera_init(&shell->camera);
+    shell->gizmo = break_editor_gizmo_create();
+    shell->vp3d = break_editor_viewport3d_create();
+    if (shell->gizmo == NULL || shell->vp3d == NULL) {
+        break_editor_viewport3d_destroy(shell->vp3d);
+        break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_doc_destroy(shell->doc);
+        free(shell);
+        return NULL;
+    }
+    break_editor_viewport3d_set_view_state(shell->vp3d, &shell->camera,
+                                           shell->gizmo,
+                                           BREAK_EDITOR_ENTITY_NULL);
     shell->win = win;
     shell->selected = BREAK_EDITOR_ENTITY_NULL;
     content = my_window_widget(win);
@@ -1208,6 +1304,8 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         if (shell->root != NULL) {
             (void)my_widget_remove_child(content, shell->root);
         }
+        break_editor_viewport3d_destroy(shell->vp3d);
+        break_editor_gizmo_destroy(shell->gizmo);
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
@@ -1291,6 +1389,13 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
         (void)my_widget_remove_child(my_window_widget(shell->win),
                                      shell->root);
     }
+    /* The gizmo borrows the doc: destroy it FIRST (a mid-drag destroy
+     * end+commits against the still-live doc, Task 2 contract). The
+     * viewport's GPU objects need the RHI device alive — on the real path
+     * editor_main destroys the shell before rhi_device_destroy; on the
+     * dummy-PAL path vp3d holds no GPU objects at all. */
+    break_editor_viewport3d_destroy(shell->vp3d);
+    break_editor_gizmo_destroy(shell->gizmo);
     break_editor_doc_destroy(shell->doc);
     free(shell);
 }
@@ -1387,4 +1492,81 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
     memcpy(shell->scene_path, path, len + 1u);
     shell->scene_path_set = true;
     return true;
+}
+
+/* ---------------- Phase 2 Task 3: viewport panel ---------------- */
+
+struct my_widget_t *break_editor_shell_viewport_widget(
+    BreakEditorShell *shell) {
+    return shell != NULL ? shell->viewport_widget : NULL;
+}
+
+struct BreakEditorViewport3D *break_editor_shell_viewport3d(
+    BreakEditorShell *shell) {
+    return shell != NULL ? shell->vp3d : NULL;
+}
+
+BreakEditorCamera *break_editor_shell_camera(BreakEditorShell *shell) {
+    return shell != NULL ? &shell->camera : NULL;
+}
+
+BreakEditorGizmo *break_editor_shell_gizmo(BreakEditorShell *shell) {
+    return shell != NULL ? shell->gizmo : NULL;
+}
+
+BreakEditorGizmoMode break_editor_shell_gizmo_mode(
+    const BreakEditorShell *shell) {
+    return shell != NULL ? (BreakEditorGizmoMode)(shell->tool & 3u)
+                         : BREAK_EDITOR_GIZMO_NONE;
+}
+
+bool break_editor_shell_select_id(BreakEditorShell *shell,
+                                  BreakEditorEntityId id) {
+    if (shell == NULL) {
+        return false;
+    }
+    /* an id that is stale/absent is cleared by the sync inside the refresh */
+    shell->selected = id;
+    shell_refresh_all(shell);
+    return true;
+}
+
+void break_editor_shell_refresh(BreakEditorShell *shell) {
+    shell_refresh_all(shell);
+}
+
+void break_editor_shell_tick(BreakEditorShell *shell) {
+    if (shell == NULL) {
+        return;
+    }
+    /* Live 3D view: the retained UI only repaints on damage, so the
+     * viewport widget takes damage every frame while visible (documented
+     * intended exception, plan Global Constraints). */
+    if (shell->viewport_widget != NULL && shell->viewport_widget->visible) {
+        my_widget_invalidate(shell->viewport_widget, NULL);
+    }
+    (void)shell_sync_selection(shell); /* keeps the gizmo attach current */
+}
+
+void break_editor_shell_render_viewport(BreakEditorShell *shell,
+                                        void *rhi_device, void *rhi_cmd,
+                                        int drawable_w, int drawable_h,
+                                        int logical_w, int logical_h) {
+    int panel_w, panel_h;
+    if (shell == NULL || rhi_device == NULL || rhi_cmd == NULL ||
+        shell->vp3d == NULL || shell->viewport_widget == NULL ||
+        !shell->viewport_widget->visible) {
+        return; /* guarded no-op (dummy-PAL test path: no GPU, ever) */
+    }
+    /* panel pixel size = logical rect x input scale */
+    {
+        f32 sx = logical_w > 0 ? (f32)drawable_w / (f32)logical_w : 1.0f;
+        f32 sy = logical_h > 0 ? (f32)drawable_h / (f32)logical_h : 1.0f;
+        panel_w = (int)((f32)shell->viewport_widget->rect.w * sx + 0.5f);
+        panel_h = (int)((f32)shell->viewport_widget->rect.h * sy + 0.5f);
+    }
+    break_editor_viewport3d_set_screen_size(shell->vp3d, drawable_w,
+                                            drawable_h);
+    break_editor_viewport3d_render(shell->vp3d, shell->doc, rhi_device,
+                                   rhi_cmd, panel_w, panel_h);
 }
