@@ -286,6 +286,33 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaRuntime *runtime,
 /* Single dispatch entry for every protected facade op. The runtime arrives
  * as the closure's sole upvalue (set at bootstrap); the op ctx is argument
  * 1 (lightuserdata). Both fetches are allocation-free. */
+static void break_lua_fn_ref_impl(lua_State *L, BreakLuaFnRefOpCtx *ctx)
+{
+    int base = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->env_ref);       /* [env] */
+    lua_pushstring(L, ctx->function_name);
+    lua_rawget(L, -2);                                   /* [env fn?] */
+    /* Raw lookup only, same rule as break_lua_runtime_call: names that only
+     * resolve through the whitelist fallback are deliberately not
+     * pinnable. */
+    if (!lua_isfunction(L, -1)) {
+        ctx->hdr.status = BREAK_LUA_INVALID;
+        lua_settop(L, base);
+        return;
+    }
+    ctx->lua_ref = luaL_ref(L, LUA_REGISTRYINDEX);         /* [env] */
+    ctx->hdr.status = BREAK_LUA_OK;
+    lua_settop(L, base);
+}
+
+static void break_lua_fn_unref_impl(lua_State *L, BreakLuaFnRefOpCtx *ctx)
+{
+    /* luaL_unref on an existing registry slot is allocation-free; it still
+     * runs under the op pcall like every other Lua touch (discipline). */
+    luaL_unref(L, LUA_REGISTRYINDEX, ctx->lua_ref);
+    ctx->hdr.status = BREAK_LUA_OK;
+}
+
 static int break_lua_op_dispatch(lua_State *L)
 {
     BreakLuaRuntime *runtime =
@@ -303,6 +330,15 @@ static int break_lua_op_dispatch(lua_State *L)
         break;
     case BREAK_LUA_OP_CALL:
         break_lua_call_impl(L, (BreakLuaCallOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_REF_FN:
+        break_lua_fn_ref_impl(L, (BreakLuaFnRefOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_UNREF_FN:
+        break_lua_fn_unref_impl(L, (BreakLuaFnRefOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_CALL_REF:
+        break_lua_call_ref_impl(L, (BreakLuaCallRefOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_FRAME:
         break_lua_frame_impl(L, runtime, (BreakLuaFrameOpCtx *)hdr);
@@ -606,6 +642,91 @@ void break_lua_module_registry_destroy(BreakLuaRuntime *runtime)
     free(runtime->modules);
     runtime->modules = NULL;
     runtime->module_count = 0u;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Function references (Stage 4 Phase 3 Task 2 review addition). The Lua  */
+/* touchpoints run as ops under the shared dispatch pcall; the slot table */
+/* is fixed C storage in the runtime struct (no allocation).              */
+
+BreakLuaError break_lua_runtime_ref_function(BreakLuaRuntime *runtime,
+                                             const char *module_name,
+                                             const char *function_name,
+                                             u32 *out_ref)
+{
+    BreakLuaFnRefOpCtx ctx;
+    BreakLuaModule *m;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaError err;
+    usize name_len;
+    usize fn_len;
+    u32 slot;
+
+    /* Owner check first (INVALID for NULL runtime, REJECTED cross-thread),
+     * then shape checks: nothing untrusted is inspected before validation. */
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (!out_ref || !module_name || !function_name) {
+        return BREAK_LUA_INVALID;
+    }
+    name_len = break_lua_name_len(module_name, BREAK_LUA_MAX_MODULE_NAME_BYTES);
+    fn_len = break_lua_name_len(function_name, BREAK_LUA_MAX_MODULE_NAME_BYTES);
+    if (name_len == 0u || name_len >= BREAK_LUA_MAX_MODULE_NAME_BYTES ||
+        fn_len == 0u || fn_len >= BREAK_LUA_MAX_MODULE_NAME_BYTES) {
+        return BREAK_LUA_INVALID;
+    }
+    m = break_lua_module_find(runtime, module_name);
+    if (!m) {
+        return BREAK_LUA_STALE;
+    }
+    for (slot = 0u; slot < BREAK_LUA_MAX_FN_REFS; slot++) {
+        if (!runtime->fn_ref_used[slot]) {
+            break;
+        }
+    }
+    if (slot == BREAK_LUA_MAX_FN_REFS) {
+        return BREAK_LUA_OVERLOAD;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_REF_FN;
+    ctx.env_ref = m->env_ref;
+    ctx.function_name = function_name;
+    ctx.lua_ref = LUA_NOREF;
+    err = break_lua_op_run(runtime, &ctx.hdr);
+    if (err != BREAK_LUA_OK) {
+        return err;
+    }
+    runtime->fn_refs[slot] = ctx.lua_ref;
+    runtime->fn_ref_used[slot] = true;
+    *out_ref = slot;
+    return BREAK_LUA_OK;
+}
+
+BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
+                                               u32 ref)
+{
+    BreakLuaFnRefOpCtx ctx;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaError err;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (ref >= BREAK_LUA_MAX_FN_REFS || !runtime->fn_ref_used[ref]) {
+        /* Covers out-of-range, never-pinned, and double-unref: bounded
+         * INVALID, no fail-stop (documented). */
+        return BREAK_LUA_INVALID;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_UNREF_FN;
+    ctx.lua_ref = runtime->fn_refs[ref];
+    err = break_lua_op_run(runtime, &ctx.hdr);
+    if (err == BREAK_LUA_OK) {
+        runtime->fn_ref_used[ref] = false;
+        runtime->fn_refs[ref] = LUA_NOREF;
+    }
+    return err;
 }
 
 #if defined(BREAK_LUA_TESTING)

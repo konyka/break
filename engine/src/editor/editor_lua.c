@@ -1,6 +1,6 @@
 /* BreakEditorLuaConsole — implementation. The full contract (owner thread,
- * eval pipeline, injection-safety layers, budget arming, record
- * application, bounds) is documented in editor_lua.h. */
+ * eval pipeline, injection-safety layers, budget arming, outcome channel
+ * integrity, record application, bounds) is documented in editor_lua.h. */
 
 #include <editor/editor_lua.h>
 
@@ -8,6 +8,7 @@
 #include <editor/editor_components.h>
 #include <editor/editor_test_hooks.h>
 
+#include <core/platform_thread.h>
 #include <script/break_lua.h>
 
 #include <math.h>
@@ -19,9 +20,10 @@
  * stages only probe-verified harness chunks (user code on it runs solely
  * inside the budgeted frame dispatch); the PROBE runtime has NO batch bound,
  * so even a crafted escape that reaches probe staging cannot enqueue ECS
- * records — its worst side effect is a bounded stdout print. Each eval is a
- * committed reload of the touched modules, so evals share no environment
- * state. */
+ * records — its worst side effect is a bounded stdout print. Both runtimes
+ * are lazily recreated when lost (fix round 3 — symmetric recovery paths;
+ * see editor_lua.h). Each eval is a committed reload of the touched
+ * modules, so evals share no environment state. */
 #define CONSOLE_MODULE "console"
 #define PROBE_MODULE "probe_r"
 
@@ -57,84 +59,91 @@
 #define PROBE_PREFIX_LINES 1u
 #define PROBE_SUFFIX "\nend\n"
 
-/* The console harness: print capture (32 lines x 127 visible bytes), the
- * probe-verified body as __body, on_frame_begin running it under the armed
- * count hook inside a pcall, and three raw env getters the host calls
- * afterwards.
+/* The console harness (fix round 3: LEXICAL ISOLATION). __body is the only
+ * chunk-top local, so the body — lexically nested inside __body's own
+ * definition — sees NOTHING of the harness: every harness local lives in
+ * the `do ... end` block that FOLLOWS __body's definition, a scope the body
+ * is lexically outside of. Body assignments like `__tostring = ...` or
+ * `__DONE = true` therefore create/overwrite ENV fields, never the harness
+ * locals (fix round 1/2's shared-chunk-scope upvalue channel — NEW-C1/C2 —
+ * is closed). The body's ONLY visible harness upvalue is __body itself;
+ * overwriting it mid-run is harmless (the running call is unaffected and
+ * the harness never references it again after the pcall invocation).
  *
- * SHADOW-PROOFING (fix round 2, I1/N2): every stdlib/global the harness
- * itself relies on is captured into a chunk-top LOCAL (pcall/tostring/type/
- * select/table.concat/table.unpack), evaluated at staging time — BEFORE the
- * body runs — from the whitelist (env metatable fallback). Body globals can
- * only shadow ENV fields, never locals, so no sandbox-whitelist means can
- * defeat the harness epilogue or the error/result reporting. (`s:sub` rides
- * the string metatable, which the body cannot reach: get/setmetatable are
- * absent from the whitelist.)
+ * Inside the block: stdlib captured as locals at staging time (before the
+ * body runs — env shadowing cannot reach them, fix round 2), print capture
+ * (32 lines x 127 visible bytes), on_frame_begin running __body under the
+ * armed count hook inside __pcall, the epilogue clearing on_unload /
+ * on_frame_end on every path (veto wedge impossible; a body-defined
+ * on_frame_end never dispatches), and the outcome markers: __DONE is false
+ * at chunk top and set true only as the hook's LAST statement; __E holds a
+ * sentinel until the hook's first statement clears it and is then set only
+ * from the body pcall's failure. eval_ok = (__DONE && __E empty) — a
+ * harness that dies anywhere leaves __DONE false and the eval fails CLOSED
+ * (records discarded), never a false success (N2).
  *
- * SUCCESS SIGNALLING (N2): __DONE is false at chunk top and set true only
- * as the LAST statement of on_frame_begin (after the epilogue); __E holds a
- * chunk-top sentinel string until the hook's first statement clears it and
- * is then set only from the body pcall's failure. The C side computes
- * eval_ok = (__DONE == true) && (__E empty): a harness that dies anywhere —
- * shadowing, OOM, anything — leaves __DONE false and the eval fails closed
- * (records discarded), never a false success. Both markers are chunk-local
- * upvalues; the getters are raw env fields (body overwrites of the getters
- * themselves degrade to a bounded "eval status unavailable" false).
- *
- * The epilogue clears on_unload/on_frame_end BEFORE setting __DONE (fix
- * round 1, I1/M3): the user body may raw-set them; clearing on every path
- * means the live console env never carries an on_unload veto into the next
- * eval's reload, and a body-defined on_frame_end never dispatches (the
- * console is eval-based, not a frame loop). */
+ * The getter functions ARE env fields (runtime visibility), but the host
+ * never calls them by name after the body ran: their function VALUES are
+ * pinned via break_lua_runtime_ref_function after the reload commits and
+ * BEFORE the dispatch (the body cannot have run yet), and invoked through
+ * break_lua_runtime_call_ref — a body overwrite of the env fields
+ * substitutes nothing (NEW-C3 closed). */
 #define HARNESS_PREFIX                                              \
-    "local __pcall=pcall\n"                                         \
-    "local __tostring=tostring\n"                                   \
-    "local __type=type\n"                                           \
-    "local __select=select\n"                                       \
-    "local __concat=table.concat\n"                                 \
-    "local __unpack=table.unpack\n"                                 \
-    "local __L={}\n"                                                \
-    "local __R=nil\n"                                               \
-    "local __E='console internal: eval dispatch did not run'\n"     \
-    "local __DONE=false\n"                                          \
-    "print=function(...)\n"                                         \
-    "  local n=__select('#',...)\n"                                 \
-    "  if #__L<32 then\n"                                           \
-    "    local p={}\n"                                              \
-    "    for i=1,n do p[i]=__tostring(__select(i,...)) end\n"       \
-    "    local s=__concat(p,'\\t')\n"                               \
-    "    if #s>127 then s=s:sub(1,127) end\n"                       \
-    "    __L[#__L+1]=s\n"                                           \
-    "  end\n"                                                       \
-    "end\n"                                                         \
     "local function __body()\n"
 #define HARNESS_SUFFIX                                              \
     "\nend\n"                                                       \
-    "function on_frame_begin(dt)\n"                                 \
-    "  __E=nil\n"                                                   \
-    "  local ok,r=__pcall(__body)\n"                                \
-    "  if ok then\n"                                                \
-    "    if __type(r)=='string' and #r>127 then r=r:sub(1,127) end\n" \
-    "    __R=r\n"                                                   \
-    "  else\n"                                                      \
-    "    local e=__tostring(r)\n"                                   \
-    "    if #e>120 then e=e:sub(1,120) end\n"                       \
-    "    __E=e\n"                                                   \
+    "do\n"                                                          \
+    "  local __pcall=pcall\n"                                       \
+    "  local __tostring=tostring\n"                                 \
+    "  local __type=type\n"                                         \
+    "  local __select=select\n"                                     \
+    "  local __concat=table.concat\n"                               \
+    "  local __unpack=table.unpack\n"                               \
+    "  local __L={}\n"                                              \
+    "  local __R=nil\n"                                             \
+    "  local __E='console internal: eval dispatch did not run'\n"   \
+    "  local __DONE=false\n"                                        \
+    "  print=function(...)\n"                                       \
+    "    local n=__select('#',...)\n"                               \
+    "    if #__L<32 then\n"                                         \
+    "      local p={}\n"                                            \
+    "      for i=1,n do p[i]=__tostring(__select(i,...)) end\n"     \
+    "      local s=__concat(p,'\\t')\n"                             \
+    "      if #s>127 then s=s:sub(1,127) end\n"                     \
+    "      __L[#__L+1]=s\n"                                         \
+    "    end\n"                                                     \
     "  end\n"                                                       \
-    "  on_unload=nil\n"                                             \
-    "  on_frame_end=nil\n"                                          \
-    "  __DONE=true\n"                                               \
-    "end\n"                                                         \
-    "function __console_err() return __DONE, __E end\n"             \
-    "function __console_lines() return __unpack(__L) end\n"         \
-    "function __console_result() return __R end\n"
+    "  function on_frame_begin(dt)\n"                               \
+    "    __E=nil\n"                                                 \
+    "    local ok,r=__pcall(__body)\n"                              \
+    "    if ok then\n"                                              \
+    "      if __type(r)=='string' and #r>127 then r=r:sub(1,127) end\n" \
+    "      __R=r\n"                                                 \
+    "    else\n"                                                    \
+    "      local e=__tostring(r)\n"                                 \
+    "      if #e>120 then e=e:sub(1,120) end\n"                     \
+    "      __E=e\n"                                                 \
+    "    end\n"                                                     \
+    "    on_unload=nil\n"                                           \
+    "    on_frame_end=nil\n"                                        \
+    "    __DONE=true\n"                                             \
+    "  end\n"                                                       \
+    "  function __console_err() return __DONE, __E end\n"           \
+    "  function __console_lines() return __unpack(__L) end\n"       \
+    "  function __console_result() return __R end\n"                \
+    "end\n"
 
 struct BreakEditorLuaConsole {
     BreakEditorDoc *doc; /* borrowed; must outlive the console */
     BreakEditorLuaLogFn log_fn;
     void *log_ctx;
-    BreakLuaRuntime *runtime;       /* owned; owns the batch binding */
-    BreakLuaRuntime *probe_runtime; /* owned; NO batch bound (probe-only) */
+    PlatformThreadId owner;         /* creating thread; runtime-liveness-
+                                     * independent (survives a lost runtime) */
+    BreakLuaRuntime *runtime;       /* owned; owns the batch binding; NULL
+                                     * after an unrecoverable loss (lazy
+                                     * re-init on next eval) */
+    BreakLuaRuntime *probe_runtime; /* owned; NO batch bound (probe-only);
+                                     * same lazy re-init policy */
     BreakLuaEcsBatch *batch;        /* owned (bound to runtime) */
     /* Fixed scratch for the post-eval drain; the batch default capacity is
      * 256, so one drain empties it. Keeping it here means eval allocates
@@ -152,6 +161,10 @@ static void console_log(const BreakEditorLuaConsole *c, const char *fmt, ...) {
     va_end(ap);
     line[sizeof(line) - 1u] = '\0'; /* defensive; vsnprintf terminates */
     c->log_fn(c->log_ctx, line);
+}
+
+static bool console_is_owner(const BreakEditorLuaConsole *c) {
+    return platform_thread_id_equal(platform_thread_current_id(), c->owner);
 }
 
 /* Logs a Lua error message as "error: line M: <rest>" when it carries the
@@ -195,8 +208,38 @@ static bool console_build_chunk(char *out, usize cap, const char *prefix,
     return n >= 0 && (usize)n < cap;
 }
 
-/* The probe runtime + its seed module. On any failure the partial state is
- * torn down and probe_runtime is NULL. */
+/* ---------------------------------------------------------------------- */
+/* Runtime lifecycle (create / lazy re-init / wedge recovery).            */
+
+static const char k_console_seed[] = HARNESS_PREFIX "\n" HARNESS_SUFFIX;
+
+/* Creates the console runtime, binds the (existing, host-owned) batch, and
+ * seeds the console module. c->runtime must be NULL on entry and stays NULL
+ * on failure (fully torn down). */
+static bool console_main_runtime_init(BreakEditorLuaConsole *c) {
+    BreakLuaRuntimeConfig cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.max_modules = 8u;
+    cfg.instruction_budget = BREAK_EDITOR_LUA_INSTRUCTION_BUDGET;
+    c->runtime = break_lua_runtime_create(&cfg);
+    if (!c->runtime) {
+        return false;
+    }
+    if (break_lua_runtime_bind_ecs_batch(c->runtime, c->batch) !=
+            BREAK_LUA_OK ||
+        break_lua_runtime_load_module(c->runtime, CONSOLE_MODULE,
+                                      k_console_seed,
+                                      sizeof(k_console_seed) - 1u) !=
+            BREAK_LUA_OK) {
+        break_lua_runtime_destroy(c->runtime);
+        c->runtime = NULL;
+        return false;
+    }
+    return true;
+}
+
+/* Creates the probe runtime (no batch is ever bound to it) and seeds the
+ * probe module. Same NULL-on-failure discipline. */
 static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
     static const char k_probe_seed[] = "return function() end\n";
     BreakLuaRuntimeConfig cfg;
@@ -218,17 +261,39 @@ static bool console_probe_runtime_init(BreakEditorLuaConsole *c) {
     return true;
 }
 
-/* Health check after a failed eval: a crafted escape that ran at probe
- * staging could have raw-set a vetoing on_unload on the probe module's env
- * (I1's wedge class, one level down). A trivial known-good reload answers
- * the question; on veto the whole probe runtime is recreated (it holds no
- * valuable state — one scratch module), so a wedged probe can never
- * permanently kill the console. A recreation failure (Lua-side OOM) leaves
- * probe_runtime NULL: every later eval then fails bounded with a "probe
- * runtime unavailable" error line (documented, never a crash). */
+/* Console-runtime recovery (fix round 3, symmetric with the probe side): a
+ * vetoing on_unload on the live console env would fail every reload; a
+ * Lua-side OOM can lose the runtime outright. Health check = reloading the
+ * seed harness (trivial, host-controlled); on failure the runtime is
+ * destroyed (releasing the batch binding — the batch stays host-owned) and
+ * recreated+rebound+reseeded. A recreation failure leaves runtime NULL:
+ * the next eval re-tries the init at admission and, until then, fails
+ * bounded with a "console runtime unavailable" line. */
+static void console_main_runtime_reset_if_unhealthy(BreakEditorLuaConsole *c) {
+    if (!c->runtime) {
+        (void)console_main_runtime_init(c);
+        return;
+    }
+    if (break_lua_runtime_reload_module(c->runtime, CONSOLE_MODULE,
+                                        k_console_seed,
+                                        sizeof(k_console_seed) - 1u,
+                                        NULL) == BREAK_LUA_OK) {
+        return;
+    }
+    break_lua_runtime_destroy(c->runtime);
+    c->runtime = NULL;
+    (void)console_main_runtime_init(c);
+}
+
+/* Probe-runtime recovery: a crafted escape that ran at probe staging could
+ * have raw-set a vetoing on_unload on the probe module's env (the wedge
+ * class, one level down). A trivial known-good reload answers the question;
+ * on veto the whole probe runtime is recreated (it holds no valuable
+ * state), so a wedged probe never permanently kills the console. */
 static void console_probe_runtime_reset_if_wedged(BreakEditorLuaConsole *c) {
     static const char k_trivial[] = "return function() end\n";
     if (!c->probe_runtime) {
+        (void)console_probe_runtime_init(c);
         return;
     }
     if (break_lua_runtime_reload_module(c->probe_runtime, PROBE_MODULE,
@@ -264,6 +329,20 @@ static u32 console_count_lines(const char *s) {
         if (*s == '\n') n++;
     }
     return n;
+}
+
+/* Releases up to three captured function refs (UINT32_MAX = not captured).
+ * Owner-thread context; failures are impossible for live captured refs and
+ * ignored otherwise (UINT32_MAX is simply invalid). */
+static void console_release_refs(BreakEditorLuaConsole *c, u32 *refs,
+                                 usize count) {
+    usize i;
+    for (i = 0u; i < count; i++) {
+        if (refs[i] != UINT32_MAX) {
+            (void)break_lua_runtime_unref_function(c->runtime, refs[i]);
+            refs[i] = UINT32_MAX;
+        }
+    }
 }
 
 /* ---------------------------------------------------------------------- */
@@ -390,17 +469,10 @@ static void console_apply_records(BreakEditorLuaConsole *c, usize n) {
 BreakEditorLuaConsole *break_editor_lua_create(BreakEditorDoc *doc,
                                                BreakEditorLuaLogFn log_fn,
                                                void *log_ctx) {
-    static const char k_console_seed[] =
-        HARNESS_PREFIX "\n" HARNESS_SUFFIX;
-    BreakLuaRuntimeConfig cfg;
     BreakEditorLuaConsole *c;
     if (!doc || !log_fn) {
         return NULL;
     }
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.max_modules = 8u;
-    cfg.instruction_budget = BREAK_EDITOR_LUA_INSTRUCTION_BUDGET;
-
     /* The struct is the only editor-owned allocation; the runtimes, batch,
      * and seed compiles are break_lua-owned (BREAK_LUA_TESTING hooks). */
     c = (BreakEditorLuaConsole *)break_editor_test_calloc(sizeof(*c));
@@ -410,41 +482,16 @@ BreakEditorLuaConsole *break_editor_lua_create(BreakEditorDoc *doc,
     c->doc = doc;
     c->log_fn = log_fn;
     c->log_ctx = log_ctx;
-    c->runtime = break_lua_runtime_create(&cfg);
-    if (!c->runtime) {
-        free(c);
-        return NULL;
-    }
+    c->owner = platform_thread_current_id();
     c->batch = break_lua_ecs_batch_create(0u); /* 256 default */
     if (!c->batch) {
-        break_lua_runtime_destroy(c->runtime);
         free(c);
         return NULL;
     }
-    if (break_lua_runtime_bind_ecs_batch(c->runtime, c->batch) !=
-        BREAK_LUA_OK) {
-        break_lua_ecs_batch_destroy(c->batch);
-        break_lua_runtime_destroy(c->runtime);
-        free(c);
-        return NULL;
-    }
-    /* Seed the console module so every eval is a reload with full
-     * diagnostics. The seed compiles trivially; failure means Lua-side
-     * OOM. */
-    if (break_lua_runtime_load_module(c->runtime, CONSOLE_MODULE,
-                                      k_console_seed,
-                                      sizeof(k_console_seed) - 1u) !=
-        BREAK_LUA_OK) {
-        break_lua_ecs_batch_destroy(c->batch);
-        break_lua_runtime_destroy(c->runtime);
-        free(c);
-        return NULL;
-    }
-    /* The probe runtime: no batch is ever bound to it. */
-    if (!console_probe_runtime_init(c)) {
-        break_lua_ecs_batch_destroy(c->batch);
-        break_lua_runtime_destroy(c->runtime);
-        free(c);
+    if (!console_main_runtime_init(c) || !console_probe_runtime_init(c)) {
+        /* destroy tolerates the partial state (NULL runtimes, live batch,
+         * owner already recorded). */
+        break_editor_lua_destroy(c);
         return NULL;
     }
     return c;
@@ -456,15 +503,18 @@ void break_editor_lua_destroy(BreakEditorLuaConsole *console) {
     }
     /* Owner-thread-only: a non-owner destroy is a contract violation and is
      * ignored (mirrors the break_lua production convention; test builds get
-     * the probe coverage through the owner-thread rejection test). */
-    if (break_lua_runtime_check_owner(console->runtime) != BREAK_LUA_OK) {
+     * the probe coverage through the owner-thread rejection test). The
+     * stored owner id keeps this exact even when a runtime was lost. */
+    if (!console_is_owner(console)) {
         return;
     }
     if (console->probe_runtime) {
         break_lua_runtime_destroy(console->probe_runtime);
     }
+    if (console->runtime) {
+        break_lua_runtime_destroy(console->runtime);
+    }
     break_lua_ecs_batch_destroy(console->batch);
-    break_lua_runtime_destroy(console->runtime);
     free(console);
 }
 
@@ -472,6 +522,7 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     static const char k_return_wrap[] = "return ";
     char chunk[CONSOLE_CHUNK_CAPACITY];
     const char *ret = k_return_wrap;
+    u32 refs[3] = {UINT32_MAX, UINT32_MAX, UINT32_MAX};
     BreakLuaReloadReport report;
     BreakLuaError err;
     BreakLuaValue v[BREAK_EDITOR_LUA_MAX_PRINT_LINES];
@@ -487,7 +538,7 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
     if (!console || !input) {
         return false;
     }
-    if (break_lua_runtime_check_owner(console->runtime) != BREAK_LUA_OK) {
+    if (!console_is_owner(console)) {
         console_log(console, "error: console: non-owner thread call rejected");
         return false;
     }
@@ -500,7 +551,13 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
             return false;
         }
     }
-    if (!console->probe_runtime) {
+    /* Lazy re-init of a lost runtime (bounded degradation, never a
+     * permanent kill). */
+    if (!console->runtime && !console_main_runtime_init(console)) {
+        console_log(console, "error: console: console runtime unavailable");
+        return false;
+    }
+    if (!console->probe_runtime && !console_probe_runtime_init(console)) {
         console_log(console, "error: console: probe runtime unavailable");
         return false;
     }
@@ -554,30 +611,49 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
                         break_lua_error_name(err));
         }
         /* A payload reaching this path may have executed at probe staging
-         * (probe R passes expression continuations) and could have planted
-         * a vetoing on_unload on the probe module — health-check it here
-         * too (the round-1 gap: this path skipped the check). */
+         * (the probe passes expression continuations) and could have
+         * planted a vetoing on_unload on the probe module — health-check
+         * it here too. The console runtime gets the symmetric check. */
         console_probe_runtime_reset_if_wedged(console);
+        console_main_runtime_reset_if_unhealthy(console);
         return false;
     }
 
-    /* 3. Dispatch on_frame_begin: the Stage 3 count hook arms the console
+    /* 3. Capture the outcome getter function REFERENCES after the commit
+     *    and BEFORE the dispatch (the body cannot have run yet); the
+     *    outcome channel is read only through these pinned values, so body
+     *    overwrites of the getter env fields substitute nothing (NEW-C3). */
+    err = break_lua_runtime_ref_function(console->runtime, CONSOLE_MODULE,
+                                         "__console_err", &refs[0]);
+    if (err == BREAK_LUA_OK) {
+        err = break_lua_runtime_ref_function(console->runtime, CONSOLE_MODULE,
+                                             "__console_lines", &refs[1]);
+    }
+    if (err == BREAK_LUA_OK) {
+        err = break_lua_runtime_ref_function(console->runtime, CONSOLE_MODULE,
+                                             "__console_result", &refs[2]);
+    }
+    if (err != BREAK_LUA_OK) {
+        console_log(console, "error: console: outcome channel capture failed (%s)",
+                    break_lua_error_name(err));
+        console_release_refs(console, refs, 3u);
+        console_main_runtime_reset_if_unhealthy(console);
+        return false;
+    }
+
+    /* 4. Dispatch on_frame_begin: the Stage 3 count hook arms the console
      *    instruction budget over exactly this invocation (main coroutine).
      *    The harness pcall catches runtime errors and the budget trip; the
-     *    shadow-proof epilogue then clears on_unload/on_frame_end and sets
-     *    the __DONE completion marker (I1/M3/N2). */
+     *    shadow- AND upvalue-proof epilogue then clears
+     *    on_unload/on_frame_end and sets the __DONE completion marker. */
     break_lua_runtime_begin_frame(console->runtime, 0.0);
     break_lua_runtime_end_frame(console->runtime);
 
-    /* 4. Collect the host-trusted outcome markers, the captured print
-     *    lines, and the result — via raw env getters (bounded BreakLuaValue
-     *    marshalling). eval_ok = (__DONE && __E empty): both markers are
-     *    chunk-local upvalues written only by the shadow-proof harness, so
-     *    a harness that died mid-way (or a body that shadowed stdlib
-     *    globals) can never masquerade as success (N2). */
+    /* 5. Read the host-trusted outcome markers, the captured print lines,
+     *    and the result — via the pinned refs only. */
     eval_err[0] = '\0';
-    err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
-                                 "__console_err", NULL, 0u, status, 2u);
+    err = break_lua_runtime_call_ref(console->runtime, refs[0], NULL, 0u,
+                                     status, 2u);
     if (err != BREAK_LUA_OK) {
         console_log(console, "error: console: eval status unavailable (%s)",
                     break_lua_error_name(err));
@@ -589,17 +665,16 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         }
         if (!done && eval_err[0] == '\0') {
             /* The hook died between clearing the sentinel and setting
-             * __DONE (cannot happen via sandbox means post-round-2; OOM of
-             * the dispatch itself lands here). */
+             * __DONE (unreachable via sandbox means since round 3; a
+             * dispatch-level Lua OOM lands here). */
             memcpy(eval_err, "console internal: eval dispatch did not run",
                    sizeof("console internal: eval dispatch did not run"));
         }
     }
     eval_ok = done && eval_err[0] == '\0';
 
-    err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
-                                 "__console_lines", NULL, 0u, v,
-                                 BREAK_EDITOR_LUA_MAX_PRINT_LINES);
+    err = break_lua_runtime_call_ref(console->runtime, refs[1], NULL, 0u, v,
+                                     BREAK_EDITOR_LUA_MAX_PRINT_LINES);
     if (err == BREAK_LUA_OK) {
         for (i = 0u; i < BREAK_EDITOR_LUA_MAX_PRINT_LINES; i++) {
             if (v[i].type == BREAK_LUA_VALUE_STRING) {
@@ -615,9 +690,8 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
         harness_offset = console_count_lines(HARNESS_PREFIX);
         console_log_lua_error(console, eval_err, harness_offset);
     } else if (eval_ok) {
-        err = break_lua_runtime_call(console->runtime, CONSOLE_MODULE,
-                                     "__console_result", NULL, 0u, &single,
-                                     1u);
+        err = break_lua_runtime_call_ref(console->runtime, refs[2], NULL, 0u,
+                                         &single, 1u);
         if (err == BREAK_LUA_FAILED) {
             /* Unrepresentable result type (table/function/...): the eval
              * itself succeeded; only the value cannot cross the boundary. */
@@ -641,8 +715,16 @@ bool break_editor_lua_eval(BreakEditorLuaConsole *console, const char *input) {
             }
         }
     }
+    console_release_refs(console, refs, 3u);
 
-    /* 5. Drain the batch AFTER every eval: applied only when the host-
+    /* The outcome channel being unreadable (or __DONE unset) means the
+     * console runtime is in an unexpected state — health-check and
+     * recover it (ordinary body errors are healthy and skip this). */
+    if (!done && eval_err[0] == '\0') {
+        console_main_runtime_reset_if_unhealthy(console);
+    }
+
+    /* 6. Drain the batch AFTER every eval: applied only when the host-
      *    trusted markers prove the chunk ran clean; a failed eval discards
      *    its records (never half-applied). Early returns above cannot leave
      *    residue: probe staging runs on the batch-free probe runtime and
@@ -669,11 +751,12 @@ usize break_editor_lua_pending_records(const BreakEditorLuaConsole *console) {
     if (!console) {
         return 0u;
     }
-    if (break_lua_runtime_check_owner(console->runtime) != BREAK_LUA_OK) {
+    if (!console_is_owner(console)) {
         return 0u;
     }
     /* The batch has no count query; a bounded drain-and-discard loop is the
-     * documented test-probe semantics (0 after any eval). */
+     * documented test-probe semantics (0 after any eval). The batch is
+     * host-owned and stays valid even if a runtime was lost. */
     while (break_lua_ecs_batch_drain(console->batch, &rec, 1u) != 0u) {
         total++;
     }

@@ -866,6 +866,145 @@ TEST(probe_planted_wedge_recovers_on_stage_failure) {
     fixture_close(&f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Review fix round 3 regressions                                      */
+/* ------------------------------------------------------------------ */
+
+TEST(upvalue_overwrite_has_zero_effect_on_harness) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* NEW-C1 (verbatim): the body writes `__tostring` — with the harness
+     * state now lexically isolated in a do-block the body is outside of,
+     * this creates an ENV field, not the harness local. Round 2: eval
+     * TRUE, spawn applied, no error line. Now: fails closed. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "__tostring = function() return '' end brk.ecs.spawn() error('boom')"));
+    ASSERT_TRUE(sink_find(&f.sink, "boom") >= 0);
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+    ASSERT_FALSE(break_editor_undo(f.doc));
+
+    /* Naming harness internals must have ZERO effect: forged __DONE, a
+     * nil'ed __body (the one visible upvalue — the running call is
+     * unaffected), a fake __pcall env field. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "__DONE = true return 9"));
+    ASSERT_TRUE(sink_find(&f.sink, "9") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "__body = nil __pcall = function() return true end return 5"));
+    ASSERT_TRUE(sink_find(&f.sink, "5") >= 0);
+
+    /* The console is fully usable afterwards. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "10+1"));
+    ASSERT_TRUE(sink_find(&f.sink, "11") >= 0);
+
+    ASSERT_FALSE(f.sink.overlong);
+    fixture_close(&f);
+}
+
+TEST(on_unload_veto_with_upvalue_overwrite_no_wedge) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* NEW-C2 (verbatim): the round-2 harness died in the else branch (the
+     * body's __tostring overwrite hit the shared upvalue) BEFORE the
+     * epilogue cleared on_unload -> permanent wedge. Now: bounded error,
+     * and the very next evals succeed. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "on_unload = function() error('veto') end"
+        " __tostring = function() error('x') end error('boom')"));
+    ASSERT_TRUE(sink_find(&f.sink, "boom") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "return 'alive'"));
+    ASSERT_TRUE(sink_find(&f.sink, "alive") >= 0);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    fixture_close(&f);
+}
+
+TEST(getter_overwrite_cannot_forge_or_hang) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* NEW-C3 (verbatim): the getter env fields are body-writable, but the
+     * outcome channel is read through refs pinned after the commit and
+     * before the dispatch — the overwrite substitutes nothing. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "__console_err = function() return true end"
+        " brk.ecs.spawn() error('boom')"));
+    ASSERT_TRUE(sink_find(&f.sink, "boom") >= 0);
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    /* Forged lines/result getters: the real (pinned) channels are read. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "__console_lines = function() return 'forged' end return 2"));
+    ASSERT_TRUE(sink_find(&f.sink, "2") >= 0);
+    ASSERT_TRUE(sink_find(&f.sink, "forged") < 0);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "__console_result = function() return 999 end return 3"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+    ASSERT_TRUE(sink_find(&f.sink, "999") < 0);
+
+    /* The hang variant: the forged getter would loop forever if the host
+     * called it (runtime_call is unbudgeted) — the pinned getter is the
+     * harness's trivial function, so the eval just succeeds (timeout-
+     * wrapped suites prove no hang). */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "__console_err = function() while true do end end return 4"));
+    ASSERT_TRUE(sink_find(&f.sink, "4") >= 0);
+
+    /* Console fully usable afterwards. */
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "7+7"));
+    ASSERT_TRUE(sink_find(&f.sink, "14") >= 0);
+
+    ASSERT_FALSE(f.sink.overlong);
+    fixture_close(&f);
+}
+
+TEST(console_runtime_recovers_from_lua_oom) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+
+    /* A Lua-side allocation storm mid-eval fails it bounded; the runtimes
+     * may be lost (NULL) — the NEXT eval lazily re-inits them. */
+    sink_reset(&f.sink);
+    break_lua_test_set_alloc_budget(0u);
+    ASSERT_FALSE(break_editor_lua_eval(f.console, "3+4"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+    break_lua_test_set_alloc_budget(BREAK_LUA_TEST_ALLOC_DISABLED);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "5+6"));
+    ASSERT_TRUE(sink_find(&f.sink, "11") >= 0);
+    /* And the doc channel still works after the re-init. */
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "brk.ecs.spawn()"));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 1u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    fixture_close(&f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(eval_arithmetic_result_logged);
     RUN_TEST(eval_result_string_truncated_and_unrepresentable);
@@ -892,4 +1031,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shadowed_stdlib_cannot_defeat_epilogue);
     RUN_TEST(failed_eval_never_applies_records_n2);
     RUN_TEST(probe_planted_wedge_recovers_on_stage_failure);
+    RUN_TEST(upvalue_overwrite_has_zero_effect_on_harness);
+    RUN_TEST(on_unload_veto_with_upvalue_overwrite_no_wedge);
+    RUN_TEST(getter_overwrite_cannot_forge_or_hang);
+    RUN_TEST(console_runtime_recovers_from_lua_oom);
 TEST_MAIN_END()

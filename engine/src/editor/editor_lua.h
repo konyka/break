@@ -66,50 +66,68 @@
  *      (break_lua arms the count hook over module staging execution and
  *      the commit-path on_unload since fix round 1 — see break_lua.h
  *      INSTRUCTION BUDGET).
- *      Wedged-probe recovery: a crafted escape that ran at probe staging
- *      could raw-set a vetoing on_unload on the probe module's env, and the
- *      wedge surfaces at the NEXT probe reload — possibly on an eval that
- *      itself fails at console staging. The console therefore health-checks
- *      the probe runtime with a trivial known-good reload on EVERY failed
- *      eval path (probe failure AND harness stage failure) and recreates
- *      it on veto (it holds no valuable state), so a wedged probe never
- *      permanently kills the console. Recreation failure (Lua-side OOM)
- *      leaves the probe runtime down: every later eval fails bounded with
- *      "error: console: probe runtime unavailable" — degraded, never a
- *      crash (documented).
+ *      Wedged/lost-runtime recovery (fix round 3 — symmetric on BOTH
+ *      runtimes): a crafted escape that ran at probe staging could raw-set
+ *      a vetoing on_unload on the probe module's env, and the wedge
+ *      surfaces at the NEXT probe reload — possibly on an eval that itself
+ *      fails at console staging. The console therefore health-checks the
+ *      probe runtime with a trivial known-good reload on EVERY failed eval
+ *      path (probe failure AND harness stage failure) and recreates it on
+ *      veto. The console runtime gets the equivalent path: its health check
+ *      (reloading the seed harness) runs on the stage-failure path and on
+ *      any dispatch-outcome-unreadable failure; on failure the runtime is
+ *      destroyed (releasing the batch binding — the batch stays host-owned)
+ *      and recreated + rebound + reseeded. Post-round-3 the console runtime
+ *      is not wedgable from the sandbox (the shadow-proof epilogue always
+ *      clears on_unload) — this path defends against FUTURE unknown wedge
+ *      classes. A lost runtime (Lua-side OOM in init/recreate leaves it
+ *      NULL) is lazily re-initialized at the next eval's admission; until
+ *      then evals fail bounded with "error: console: console/probe runtime
+ *      unavailable" — degraded, never a crash, never permanent (pinned by
+ *      console_runtime_recovers_from_lua_oom).
  *   4. Execution: the verified body is embedded in the persistent "console"
  *      module (committed reload per eval — a fresh environment each eval;
  *      no globals leak between evals) as `local function __body() ... end`
  *      and dispatched through break_lua_runtime_begin_frame(), so the Stage
  *      3 count hook arms the 1,000,000-instruction budget on the main
- *      coroutine for exactly the user-code invocation. The hook body pcalls
- *      __body in Lua, so runtime errors — including the budget trip — are
- *      CAUGHT and stored instead of propagating: the module's frame hooks
- *      are never marked disabled (Stage 3 runaway policy) and the console
- *      is usable on the next eval. begin_frame is paired with end_frame.
- *      SHADOW-PROOFING (fix round 2, I1/N2): every stdlib global the
- *      harness itself relies on (pcall/tostring/type/select/table.concat/
- *      table.unpack) is captured into a chunk-top LOCAL at staging time,
- *      before the body runs; body globals can only shadow ENV fields,
- *      never locals, so no sandbox-whitelist means can defeat the harness
- *      epilogue or its error/result reporting. The epilogue nils
- *      on_unload AND on_frame_end and then sets the __DONE completion
- *      marker as the hook's last statement (I1/M3: a plain
+ *      coroutine for exactly the user-code invocation. LEXICAL ISOLATION
+ *      (fix round 3): __body is the ONLY chunk-top local; every harness
+ *      local (captured stdlib pcall/tostring/type/select/table.concat/
+ *      table.unpack, the capture table, the outcome markers) lives in a
+ *      `do ... end` block that FOLLOWS __body's definition — a scope the
+ *      body is lexically outside of. Body assignments to harness names
+ *      (`__tostring = ...`, `__DONE = true`, ...) therefore hit ENV fields,
+ *      never harness locals (the round-1/2 shared-chunk-scope upvalue
+ *      channel — review NEW-C1/C2 — is closed); the body's only visible
+ *      upvalue is __body itself, whose mid-run overwrite is harmless (the
+ *      running call is unaffected; the harness never re-references it).
+ *      The hook pcalls __body, so runtime errors — including the budget
+ *      trip — are CAUGHT and stored: the module's frame hooks are never
+ *      marked disabled (Stage 3 runaway policy) and the console is usable
+ *      on the next eval. begin_frame is paired with end_frame. The
+ *      epilogue nils on_unload AND on_frame_end on every path (a plain
  *      `on_unload = function() error('veto') end` eval cannot wedge the
- *      console, and a body-defined on_frame_end never dispatches — the
- *      console is eval-based, not a frame loop).
- *   5. Outcome + reporting: the C side computes success from HOST-TRUSTED
+ *      console; a body-defined on_frame_end never dispatches — the console
+ *      is eval-based, not a frame loop) and then sets __DONE.
+ *   5. Outcome + reporting: the C side reads the outcome channel ONLY
+ *      through function references pinned via
+ *      break_lua_runtime_ref_function after the harness reload commits and
+ *      BEFORE the dispatch (the body cannot have run yet) — invoked with
+ *      break_lua_runtime_call_ref and released after the read (fix round 3,
+ *      NEW-C3: no post-dispatch env-field calls, so a body-overwritten or
+ *      looping getter substitutes nothing and cannot hang the host through
+ *      the unbudgeted call path). Success is computed from host-trusted
  *      markers only (fix round 2, N2): __DONE (set true only as the hook's
  *      last statement) AND __E (the body pcall's error, empty on success) —
- *      both chunk-local upvalues; eval_ok = __DONE && __E-empty. A harness
- *      that dies anywhere (shadowing, OOM, anything) leaves __DONE false
- *      and the eval fails CLOSED: bounded error line, records discarded,
- *      never a false success. Then: captured print lines (see below), and
- *      either the bounded "error: line N: ..." line (N adjusted back to
- *      input-relative line numbers when the standard `console:N:` position
- *      prefix parses; position-less messages — e.g. the count-hook trip
- *      text for a top-level spin — are logged verbatim, bounded) or the
- *      single result value (first return only; strings pre-truncated to
+ *      both lexically isolated upvalues; eval_ok = __DONE && __E-empty. A
+ *      harness that dies anywhere (OOM-class only, post-round-3) leaves
+ *      __DONE false and the eval fails CLOSED: bounded error line, records
+ *      discarded, never a false success. Then: captured print lines (see
+ *      below), and either the bounded "error: line N: ..." line (N adjusted
+ *      back to input-relative line numbers when the standard `console:N:`
+ *      position prefix parses; position-less messages — e.g. the count-hook
+ *      trip text for a top-level spin — are logged verbatim, bounded) or
+ *      the single result value (first return only; strings pre-truncated to
  *      127 bytes inside Lua; table/function/userdata results are
  *      unrepresentable in BreakLuaValue and yield a bounded "error: ..."
  *      line while the eval itself still counts as successful).
@@ -124,12 +142,13 @@
  *
  * VERSION CHURN: only committed reloads bump a module's u32 version (Stage
  * 3 contract — a failed reload consumes no version). A successful eval
- * commits exactly 2 reloads (probe_r, console); the failing attempts of a
- * rejected input consume none, and a wedged-probe recreation adds one
- * trivial probe reload per failed eval. Version-space exhaustion
- * (2^32-1 committed reloads on one module) is a checked, fail-closed
- * BREAK_LUA_REJECTED surfaced as a bounded error line — unreachable in
- * practice (4 billion successful evals).
+ * commits exactly 2 reloads (probe_r, console) plus 3 ref captures+releases
+ * (fixed-slot handles, no versions); the failing attempts of a rejected
+ * input consume none, and a wedged-probe recreation adds one trivial probe
+ * reload per failed eval. Version-space exhaustion (2^32-1 committed
+ * reloads on one module) is a checked, fail-closed BREAK_LUA_REJECTED
+ * surfaced as a bounded error line — unreachable in practice (4 billion
+ * successful evals).
  *
  * PRINT CAPTURE: the console module's chunk installs its own `print` env
  * global (shadowing the whitelisted stdout print for this module only —

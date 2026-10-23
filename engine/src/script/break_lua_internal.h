@@ -71,6 +71,12 @@ struct BreakLuaRuntime {
     BreakLuaEcsBatch *batch;      /* borrowed; NULL until bound */
     BreakLuaConfigSlot *configs;  /* owned; NULL until first bind_config */
     u32 config_count;
+    /* Function-reference handles (Stage 4 Phase 3): fixed slot table; a used
+     * slot pins its function value in the Lua registry (fn_refs[i] >= 0,
+     * a luaL_ref). calloc zeroes fn_ref_used; lua_close releases every pin
+     * wholesale. */
+    int fn_refs[BREAK_LUA_MAX_FN_REFS];
+    bool fn_ref_used[BREAK_LUA_MAX_FN_REFS];
 };
 
 /* Protected op dispatch (shared by module load/reload, calls, and frame
@@ -82,8 +88,11 @@ struct BreakLuaRuntime {
 #define BREAK_LUA_OP_COMMIT 2
 #define BREAK_LUA_OP_CALL 3
 #define BREAK_LUA_OP_FRAME 4
+#define BREAK_LUA_OP_REF_FN 5
+#define BREAK_LUA_OP_UNREF_FN 6
+#define BREAK_LUA_OP_CALL_REF 7
 #if defined(BREAK_LUA_TESTING)
-#define BREAK_LUA_OP_TEST_RELOADER 5
+#define BREAK_LUA_OP_TEST_RELOADER 8
 #endif
 
 #define BREAK_LUA_FRAME_PHASE_BEGIN 1
@@ -124,6 +133,27 @@ typedef struct BreakLuaFrameOpCtx {
     int phase;              /* BREAK_LUA_FRAME_PHASE_* */
     double delta_seconds;   /* begin phase only */
 } BreakLuaFrameOpCtx;
+
+/* REF_FN: pin a chunk-defined raw env function field into the registry
+ * (env_ref/function_name in; lua_ref out). UNREF_FN: release a registry pin
+ * (lua_ref in). Both run under the shared op pcall: luaL_ref may allocate. */
+typedef struct BreakLuaFnRefOpCtx {
+    BreakLuaOpHeader hdr;
+    int env_ref;               /* in: live module env (REF_FN) */
+    const char *function_name; /* in: borrowed, validated (REF_FN) */
+    int lua_ref;               /* out (REF_FN) / in (UNREF_FN) */
+} BreakLuaFnRefOpCtx;
+
+/* CALL_REF: invoke a pinned function by its registry ref with the same
+ * marshalling contract as BreakLuaCallOpCtx. */
+typedef struct BreakLuaCallRefOpCtx {
+    BreakLuaOpHeader hdr;
+    int lua_ref;               /* in: pinned function's registry ref */
+    const BreakLuaValue *args; /* borrowed */
+    usize arg_count;
+    BreakLuaValue *returns;    /* borrowed caller buffer, NIL-prefilled */
+    usize return_capacity;
+} BreakLuaCallRefOpCtx;
 
 #if defined(BREAK_LUA_TESTING)
 typedef struct BreakLuaTestReloaderOpCtx {
@@ -175,6 +205,7 @@ void break_lua_module_registry_destroy(BreakLuaRuntime *runtime);
 
 /* break_lua_value.c implementations consumed by the dispatch closure. */
 void break_lua_call_impl(lua_State *L, BreakLuaCallOpCtx *ctx);
+void break_lua_call_ref_impl(lua_State *L, BreakLuaCallRefOpCtx *ctx);
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
                           BreakLuaFrameOpCtx *ctx);
 

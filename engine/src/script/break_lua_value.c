@@ -212,6 +212,96 @@ BreakLuaError break_lua_runtime_call(BreakLuaRuntime *runtime,
     return break_lua_op_run(runtime, &ctx.hdr);
 }
 
+/* Pinned-function call (Stage 4 Phase 3): identical marshalling to
+ * break_lua_call_impl, but the function is fetched by its registry pin —
+ * the module environment is never consulted, so a chunk that overwrote the
+ * env field between capture and call cannot substitute anything. */
+void break_lua_call_ref_impl(lua_State *L, BreakLuaCallRefOpCtx *ctx)
+{
+    int base = lua_gettop(L);
+    usize i;
+    int status;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->lua_ref);       /* [fn] */
+    luaL_checkstack(L, (int)(ctx->arg_count + ctx->return_capacity + 8u),
+                    "break_lua call_ref");
+    for (i = 0u; i < ctx->arg_count; i++) {
+        BreakLuaError push_err = break_lua_push_value(L, &ctx->args[i]);
+        if (push_err != BREAK_LUA_OK) {
+            ctx->hdr.status = push_err;
+            lua_settop(L, base);
+            return;
+        }
+    }
+    /* Exactly return_capacity wanted results: Lua nil-pads shortfalls and
+     * discards extras, so the buffer is always fully written and the stack
+     * shape stays deterministic. */
+    status = lua_pcall(L, (int)ctx->arg_count, (int)ctx->return_capacity, 0);
+    if (status != LUA_OK) {
+        ctx->hdr.status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
+                                                 : BREAK_LUA_FAILED;
+        lua_pop(L, 1); /* error object; no report surface on calls */
+        lua_settop(L, base);
+        return;
+    }
+    /* [fn r1..rk] — result i sits at base + 1 + i. */
+    for (i = 0u; i < ctx->return_capacity; i++) {
+        BreakLuaError take_err =
+            break_lua_take_value(L, base + 1 + (int)i, &ctx->returns[i]);
+        if (take_err != BREAK_LUA_OK) {
+            ctx->hdr.status = take_err;
+            lua_settop(L, base);
+            return;
+        }
+    }
+    ctx->hdr.status = BREAK_LUA_OK;
+    lua_settop(L, base);
+}
+
+BreakLuaError break_lua_runtime_call_ref(BreakLuaRuntime *runtime, u32 ref,
+                                         const BreakLuaValue *args,
+                                         usize arg_count,
+                                         BreakLuaValue *returns,
+                                         usize return_capacity)
+{
+    BreakLuaCallRefOpCtx ctx;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+
+    /* Owner check first, then handle/shape/cap validation (nothing is read
+     * from the handle's slot before the handle is validated). */
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (ref >= BREAK_LUA_MAX_FN_REFS || !runtime->fn_ref_used[ref]) {
+        return BREAK_LUA_INVALID;
+    }
+    if (arg_count > 0u && !args) {
+        return BREAK_LUA_INVALID;
+    }
+    if (return_capacity > 0u && !returns) {
+        return BREAK_LUA_INVALID;
+    }
+    if (arg_count > (usize)runtime->max_values ||
+        return_capacity > (usize)runtime->max_values) {
+        return BREAK_LUA_OVERLOAD;
+    }
+
+    /* NIL-prefill: any post-admission failure leaves the buffer fully
+     * written with NIL slots (same documented shape as runtime_call). */
+    if (return_capacity > 0u) {
+        memset(returns, 0, return_capacity * sizeof(*returns));
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_CALL_REF;
+    ctx.lua_ref = runtime->fn_refs[ref];
+    ctx.args = args;
+    ctx.arg_count = arg_count;
+    ctx.returns = returns;
+    ctx.return_capacity = return_capacity;
+    return break_lua_op_run(runtime, &ctx.hdr);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Frame lifecycle.                                                        */
 

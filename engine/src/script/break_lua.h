@@ -374,6 +374,67 @@ void break_lua_runtime_begin_frame(BreakLuaRuntime *runtime, double delta_second
 void break_lua_runtime_end_frame(BreakLuaRuntime *runtime);
 
 /* ==========================================================================
+ *  Function references (Stage 4 Phase 3 Task 2 review addition):
+ *  host-pinned module functions.
+ *
+ *  break_lua_runtime_ref_function captures a chunk-defined RAW env function
+ *  field (the same lookup rule as break_lua_runtime_call: whitelist-fallback
+ *  names do not resolve) into a host handle: the function VALUE is pinned in
+ *  the Lua registry, so break_lua_runtime_call_ref later invokes THAT
+ *  function without consulting the module environment again. A chunk that
+ *  overwrote the env field between capture and call cannot substitute
+ *  another function — the env is never re-read — and cannot turn the
+ *  outcome read into a hang, because the pinned function is the
+ *  chunk-defined one as committed (the capture window is the host's
+ *  responsibility: capture after a reload commits and before any dispatch
+ *  runs the chunk).
+ *
+ *  HANDLES: a handle is a u32 slot index < BREAK_LUA_MAX_FN_REFS per
+ *  runtime, released with break_lua_runtime_unref_function. A pinned
+ *  function survives the module's reload (its upvalues are the RETIRED
+ *  chunk's locals — a caller that needs the new version's functions must
+ *  re-capture; this is the documented pattern) and is released wholesale at
+ *  runtime destroy (lua_close tears the registry down); using a handle
+ *  after its runtime's destroy is a contract violation.
+ *
+ *  ERROR SURFACES (owner thread checked FIRST on every API, before any
+ *  shape check):
+ *    - ref_function: NULL runtime/out_ref, NULL/empty/overlong module or
+ *      function name (128-byte cap as module names) -> INVALID; non-owner
+ *      -> REJECTED; unknown module -> STALE; field missing or not a
+ *      function -> INVALID; no free handle slot -> OVERLOAD; Lua-side
+ *      allocation failure (the registry pin) -> OOM. *out_ref is written
+ *      only on BREAK_LUA_OK.
+ *    - call_ref: NULL runtime -> INVALID; non-owner -> REJECTED; handle >=
+ *      BREAK_LUA_MAX_FN_REFS or naming a free slot -> INVALID; arg/return
+ *      caps and marshalling exactly as break_lua_runtime_call (OVERLOAD for
+ *      over-cap counts and over-long strings, FAILED for Lua errors and
+ *      unrepresentable returns, OOM for Lua-side allocation failure; the
+ *      returns buffer is NIL-prefilled once admission passes).
+ *      call_ref is — like break_lua_runtime_call — NOT armed with the
+ *      instruction budget (the budget covers frame-hook dispatches and
+ *      module staging/commit); pin and call only host-trusted functions.
+ *    - unref_function: NULL runtime -> INVALID; non-owner -> REJECTED;
+ *      handle >= cap or naming a free slot (including a double unref) ->
+ *      INVALID, bounded, no fail-stop.
+ * ========================================================================== */
+
+/* Hard ceiling for simultaneously pinned function references per runtime. */
+#define BREAK_LUA_MAX_FN_REFS 16u
+
+BreakLuaError break_lua_runtime_ref_function(
+    BreakLuaRuntime *runtime, const char *module_name,
+    const char *function_name, u32 *out_ref);
+
+BreakLuaError break_lua_runtime_call_ref(
+    BreakLuaRuntime *runtime, u32 ref,
+    const BreakLuaValue *args, usize arg_count,
+    BreakLuaValue *returns, usize return_capacity);
+
+BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
+                                               u32 ref);
+
+/* ==========================================================================
  *  Host bindings and module sandbox (Task 4): bounded ECS batch commands,
  *  clamped config reads, and the whitelisted module environment.
  *
