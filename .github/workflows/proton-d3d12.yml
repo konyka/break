@@ -14,13 +14,15 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
       - name: Install Wine + vkd3d-proton
+        timeout-minutes: 10
         # vkd3d-proton is not in the Ubuntu archive (apt exit 100); install
         # wine64 from apt and the pinned upstream vkd3d-proton release
         # tarball instead.
         run: |
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
           sudo dpkg --add-architecture i386
-          sudo apt-get update
-          sudo apt-get install -y wine wine64 zstd
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y wine wine64 zstd
           curl -sSL -o /tmp/vkd3d-proton.tar.zst \
             https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.0.1/vkd3d-proton-3.0.1.tar.zst
           tar -C /tmp --zstd -xf /tmp/vkd3d-proton.tar.zst

@@ -1,6 +1,18 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R674 — CI：apt 安装步骤加网络超时、重试和步骤级时限
+
+### 发现
+R667 之后主 CI（`ci.yml`）每一轮都是 cancelled（5ffe2eda → 636a8415），一直没有出过完整结论。逐个 job 查看后发现，被取消的 job 都卡在 `Install dependencies` / `Install pinned toolchain`（`apt-get update/install`）这一步，直到撞上 job 的 20–30 分钟时限（注解为「The job has exceeded the maximum execution time」）。被取消的 job 每轮不同（Clean-room、benchmark、validation、Linux X11/GL 等），同一轮里其余 job 的编译和测试全部 success。所以这是 runner 侧 apt 镜像挂起，不是代码问题。
+
+### 修复
+- `ci.yml`、`proton-d3d12.yml`、`rollback-drill.yml` 的 13 个 apt 步骤统一加上 `APT_OPTS`：`Acquire::Retries=5`、http/https 超时 30 秒、`DPkg::Lock::Timeout=120`。
+- 每个这样的步骤再加 `timeout-minutes: 10`。镜像挂起时最多 10 分钟就失败，并且失败点明确，不再拖到 job 时限把整个 job 取消。
+
+### 验证
+三个 workflow 都用 `yaml.safe_load` 解析通过，并断言每个含 `APT_OPTS` 的步骤都带有 10 分钟时限。实际效果要看推送后的 CI 运行。
+
 ## 本轮更新：R673 — D3D12 GPU-based validation 运行时开关
 
 Debug 构建（`ENGINE_D3D12_DEBUG`）下 demo 只有约 20 FPS，几乎全部是 GBV 的开销：它会给每次着色器资源访问插桩。新增环境变量 `BREAK_D3D12_GBV=0`，只关 GBV，debug layer 照常开着（`rhi_d3d12_context_create`），日志会写明当前状态。默认仍然开启，所以测试套件和 CI 的覆盖不变。

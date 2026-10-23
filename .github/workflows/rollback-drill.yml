@@ -21,9 +21,11 @@ jobs:
       - name: Verify tag signature exists
         run: git tag -v "${{ inputs.tag }}"
       - name: Install pinned toolchain
+        timeout-minutes: 10
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          sudo apt-get $APT_OPTS update
+          sudo apt-get $APT_OPTS install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libfreetype6-dev fonts-noto-cjk
       - name: Configure / build / headless test
