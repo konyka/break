@@ -7,6 +7,15 @@ R674–R676 都在猜 apt 卡在哪一步：是镜像、某个大包（各 lane 
 
 验证：13 段脚本都通过 `bash -n`；在本地用假 `apt-get` 模拟（挂起和成功两种）：挂起时每次 1 秒超时，重试 3 次，每次都写出最后的输出行，最终 `rc=1`；成功时直接 `rc=0`。
 
+
+**取证结果（05779e1c，run 39956912416）**：19 个 job 通过，1 个 job 失败（`lane: validation (VK_LAYER_KHRONOS_validation)`），另有一个 job 第 1 次尝试超时、重试后成功（`Linux Wayland + Vulkan (GCC)`）。注解里记下了两处卡住的位置：
+- `lane: validation` 第 2 次尝试（每次限时 360 秒）的最后几行，是正从 `azure.archive.ubuntu.com` 下载 `fonts-noto-cjk`（**61.2 MB**），前面依次是 cmake（11.2 MB）和 cmake-data；
+- `Linux Wayland + Vulkan` 第 1 次尝试停在 `Get:110 … libgstreamer-plugins-base1.0-0 [862 kB]`，那次一共要下载 110 多个包。
+
+结论：并不是镜像整个挂掉，而是从 Azure 镜像下载的速度偶尔会掉到很低，一次下载量越大越容易撞上超时。其中最重的单个包是 `fonts-noto-cjk`（61 MB），可它只被 `test_myui_font.c` 的两个 CJK 用例用到，而且这两个用例在找不到字体时会打印 SKIP。
+
+建议（需要 owner 决定）：首选用 apt 缓存类 action（例如 `awalsh128/cache-apt-pkgs-action`）。命中缓存后各 lane 不再从镜像下载，从根上消除这类问题；代价是多一个第三方 action 依赖，版本需要钉到 commit SHA。另一个不加依赖的办法是：只让一个 headless lane 安装 `fonts-noto-cjk`，其余 lane 都去掉，每个 job 少下 61 MB。这只能降低失败概率，消除不了 Wayland lane 那种 110 个包的情况。
+
 ## 本轮更新：R676 — CI apt 重试时换镜像（R675 的后续）
 
 R675 那轮 CI（4c22ef1b）里 19 个 job 全部通过，比之前有进步。唯一的失败是 `lane: validation (VK_LAYER_KHRONOS_validation)` 的 `Install pinned toolchain` 步骤，用时 12 分 45 秒，大约就是 3 次 240 秒超时加上间隔，判断是 runner 的 Azure apt 镜像一直卡着。这个 lane 之前几轮也反复卡在同一步。匿名访问拿不到 job 日志（403），所以这个判断依据的是用时和注解，没有看到原始日志。
