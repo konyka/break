@@ -27,7 +27,7 @@ if(break_editor_pos GREATER next_tests_block_pos)
     message(FATAL_ERROR "break_editor must be defined at top level, not inside an ENGINE_BUILD_TESTS block")
 endif()
 
-# ...owning its ten translation units (first mention of each editor source
+# ...owning its eleven translation units (first mention of each editor source
 # is inside the add_library(break_editor ...) call; the test-only variant
 # repeats them later inside the tests block). scene_serial.c is additionally
 # compiled inline by the engine target and test_scene_serial, and bvh.c /
@@ -100,6 +100,17 @@ endif()
 if(NOT break_editor_block MATCHES "src/editor/editor_assets\\.c")
     message(FATAL_ERROR "break_editor does not own src/editor/editor_assets.c")
 endif()
+if(NOT break_editor_block MATCHES "src/editor/editor_lua\\.c")
+    message(FATAL_ERROR "break_editor does not own src/editor/editor_lua.c")
+endif()
+
+# Phase 3 Task 2: the Lua console core consumes the Stage 3 facade, so
+# break_editor links break_lua PUBLIC (consumers of break_editor inherit it;
+# engine/engine_demo/dxx_break never link break_editor, so the facade stays
+# out of their closure).
+if(NOT cmake_text MATCHES "target_link_libraries\\(break_editor PUBLIC break_lua")
+    message(FATAL_ERROR "break_editor does not link break_lua PUBLIC")
+endif()
 
 # Phase 3 Task 1 single-ownership pin: platform_fs.c's only production owner
 # is the engine target (platform siblings live there); break_editor consumes
@@ -118,21 +129,29 @@ if(break_editor_test_block MATCHES "platform_fs\\.c")
     message(FATAL_ERROR "break_editor_test must not compile platform_fs.c (test_editor_assets compiles it inline)")
 endif()
 
-# engine, engine_demo, and dxx_break must not link break_editor. Their
-# target_link_libraries calls are single-line in this file, so a line-level
-# scan is exact for the current style.
+# engine, engine_demo, and dxx_break must not link break_editor (and, since
+# Phase 3 Task 2, must not link break_lua either — the facade reaches the
+# editor executable only through break_editor). Their target_link_libraries
+# calls are single-line in this file, so a line-level scan is exact for the
+# current style. The engine target's vendored raw `lua` link is fine and is
+# not matched by the break_lua pattern.
 string(REGEX MATCHALL "target_link_libraries\\((engine|engine_demo|dxx_break)[^\n]*" consumer_link_lines "${cmake_text}")
 foreach(line IN LISTS consumer_link_lines)
     if(line MATCHES "break_editor")
         message(FATAL_ERROR "break_editor leaked into a consumer link line: ${line}")
     endif()
+    if(line MATCHES "break_lua")
+        message(FATAL_ERROR "break_lua leaked into a consumer link line: ${line}")
+    endif()
 endforeach()
 
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
 # hooks) rather than the production target; the production archive stays
-# hook-free. The variant compiles the same ten translation units and links
-# the same break_ecs_replication.
-if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c")
+# hook-free. The variant compiles the same eleven translation units and
+# links the same break_ecs_replication plus the Lua-side hook variant
+# break_lua_test (Phase 3 Task 2: console-core tests inject Lua-side
+# allocation failures through its budget).
+if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c")
     message(FATAL_ERROR "missing test-only break_editor_test variant over all break_editor sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1")
@@ -140,6 +159,9 @@ if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVAT
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(break_editor_test PUBLIC break_ecs_replication")
     message(FATAL_ERROR "break_editor_test does not link break_ecs_replication PUBLIC")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(break_editor_test PUBLIC break_lua_test")
+    message(FATAL_ERROR "break_editor_test does not link break_lua_test PUBLIC")
 endif()
 if(NOT cmake_text MATCHES "add_executable\\(test_editor_doc tests/test_editor_doc.c")
     message(FATAL_ERROR "missing test_editor_doc executable")
@@ -185,6 +207,15 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_assets tests/test_editor
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_assets PRIVATE break_editor_test")
     message(FATAL_ERROR "test_editor_assets does not link break_editor_test")
+endif()
+
+# Phase 3 Task 2: test_editor_lua links BOTH test variants (editor + Lua
+# injection hooks).
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_lua tests/test_editor_lua.c")
+    message(FATAL_ERROR "missing test_editor_lua executable")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_lua PRIVATE break_editor_test break_lua_test")
+    message(FATAL_ERROR "test_editor_lua does not link break_editor_test + break_lua_test")
 endif()
 
 # Task 4: the editor shell executable is a formal top-level target linking
