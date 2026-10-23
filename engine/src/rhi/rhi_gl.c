@@ -17,6 +17,18 @@
 static bool gl_extension_has(const char *extensions, const char *name);
 #endif
 
+#ifdef ENGINE_PLATFORM_WINDOWS
+/* R684: on hybrid laptops (NVIDIA Optimus / AMD PowerXpress) the GL driver
+ * creates the context on the integrated GPU unless the EXECUTABLE exports
+ * these two symbols -- the demo's GL backend ran on the AMD iGPU while
+ * VK/D3D12 (which pick the adapter themselves) used the RTX 4060, so GL
+ * postfx was 3-4x slower per pass. Vulkan/D3D12 are unaffected (they
+ * enumerate adapters). Exported from the GL backend so every GL consumer
+ * gets it (the object is always linked: it holds the whole backend). */
+__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
+__declspec(dllexport) int AmdPowerXpressRequestHighPerformance = 1;
+#endif
+
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
     (void)dev;
     if (out != NULL) memset(out, 0, sizeof(*out));
@@ -686,7 +698,8 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     }
 #endif
 
-    LOG_INFO("OpenGL %s initialized", (const char *)glGetString(GL_VERSION));
+    LOG_INFO("OpenGL %s initialized (%s / %s)", (const char *)glGetString(GL_VERSION),
+             (const char *)glGetString(GL_VENDOR), (const char *)glGetString(GL_RENDERER));
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);

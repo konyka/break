@@ -1,6 +1,28 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R684 — GL 后端一直跑在核显上：导出 NvOptimusEnablement / AmdPowerXpressRequestHighPerformance
+
+### 发现
+逐 pass 测 GPU 计时（临时探针，已移除）：GL 的每个后处理 pass 都比 VK 慢 3–4 倍，例如 ssao 0.45ms 对 0.14ms、sss 0.50 对 0.16、post_process 0.30 对 0.11。慢得这么均匀，不像是某个着色器的问题。在 GL 初始化日志里加上 `GL_VENDOR/GL_RENDERER` 后看到：**`ATI Technologies Inc. / AMD Radeon(TM) Graphics`**。也就是说，在这台 NVIDIA Optimus 混合显卡笔记本上，GL 上下文一直建在 AMD 核显上；VK 和 D3D12 是自己枚举适配器的，所以用的是 RTX 4060。此前所有「GL 比 VK/D3D12 慢」的结论（包括 R672 里的 GL 数据），比较的其实是两块不同的 GPU。
+
+### 修复（`engine/src/rhi/rhi_gl.c`）
+- Windows 下从 GL 后端导出 `NvOptimusEnablement = 1` 和 `AmdPowerXpressRequestHighPerformance = 1`。这是 NVIDIA/AMD 驱动约定的方式：可执行文件导出这两个符号，驱动就会把它的 GL 上下文放到独显上。`llvm-objdump -p` 确认 engine_demo.exe、test_vulkan.exe 的导出表里有这两项。
+- 初始化日志改为打印 `GL_VERSION (GL_VENDOR / GL_RENDERER)`，以后一眼就能看出跑在哪块 GPU 上。
+- 局限：`echarts_demo`、`myui_widgets_demo` 这类只链接 myui 自带 WGL（`my_pal_win32.c`）、不链接 GL 后端的程序，没有这两个导出，仍然由驱动决定用哪块 GPU。
+
+### 数据（RTX，修复后 GL 已在 RTX 4060 上，`BREAK_BENCH_STATS=1`，已排除预热帧）
+| GL | 修复前（AMD 核显） | 修复后（RTX 4060） |
+|---|---|---|
+| 前向 fps_avg / p1 | 90–104 / ~50 | 192–205 / 113–126 |
+| 延迟 fps_avg / p1 | 59–64 / ~40 | 184 / 148–154 |
+
+三个后端现在都在同一块 GPU 上，同一量级：D3D12 前向 255、VK 147、GL 约 200。
+
+### 验证
+- 截图：前向 D3D12 对 GL 的差 1.0（此前 2.4–2.5，核显上的舍入不同），延迟 0.26（此前约 0.45），日志无 WARN/ERROR。
+- ctest：gl 178/179、vk 181/182、d3d12-debug 186/187。唯一的失败都是 `test_platform_win32_runtime` 的剪贴板用例（`OpenClipboard failed`，ToDesk 占用剪贴板，属已知问题，与本次改动无关）。
+
 ## 本轮更新：R683 — BREAK_BENCH_STATS 排除预热帧（更正此前所有 demo 帧率数据的口径）
 
 ### 发现
