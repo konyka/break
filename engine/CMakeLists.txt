@@ -3903,6 +3903,16 @@ endif()
     target_link_libraries(test_break_version PRIVATE m)
     add_test(NAME test_break_version COMMAND test_break_version)
 
+    # Stage 5 Phase A Task 3: write-side PAL (PlatformAtomicWriter /
+    # platform_mkdir / platform_file_size). platform_fs.c's single production
+    # owner is the engine target; this test compiles the TU inline (the
+    # test_editor_assets precedent — exactly one definition per binary).
+    add_executable(test_platform_fs_write tests/test_platform_fs_write.c src/platform/platform_fs.c)
+    target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_fs_write PRIVATE m)
+    add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
+    set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
+
     # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
     # formal library; the contract ctest pins the target shape, the
     # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
