@@ -26,12 +26,15 @@
  * blits fbo.color_tex into the retained UI surface through
  * my_vgcanvas_break_rhi_blit_texture().
  *
- * Texture orientation (pinned by the smoke run): the renderer negates the
- * projection's Y scale so NDC +Y (scene up) lands at texture row 0 (v=0) —
- * matching the blit's convention that v=0 samples at the dst TOP edge (the
- * my_vgcanvas_break_rhi_blit_texture / rhi_draw_image convention). The
- * CPU-side pick/gizmo math uses the UN-negated matrices; the flip is
- * render-only.
+ * Texture orientation (static code analysis of both backends' FBO viewport
+ * conventions — rhi_gl.c gl_set_fbo_pass_state and rhi_vk.c
+ * rhi_offscreen_fbo_bind both store NDC +Y at texture v=1; consistent with
+ * the recorded smoke run, which captured init/survival logs only and is NOT
+ * pixel evidence): the renderer negates the projection's Y scale so NDC +Y
+ * (scene up) lands at texture row 0 (v=0) — matching the blit's convention
+ * that v=0 samples at the dst TOP edge (the my_vgcanvas_break_rhi_blit_texture
+ * / rhi_draw_image convention). The CPU-side pick/gizmo math uses the
+ * UN-negated matrices; the flip is render-only.
  *
  * Model matrix convention (plan Global Constraints, Task 2 pinned):
  * EditorTransform.rot[k] is the rotation ABOUT axis k in DEGREES; the model

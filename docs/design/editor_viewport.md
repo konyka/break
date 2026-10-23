@@ -1,4 +1,4 @@
-# Scene Editor Phase 2 — 3D Viewport 设计合同（Task 3 交付定稿）
+# Scene Editor Phase 2 — 3D Viewport 设计合同（交付定稿，Task 4 验证收口）
 
 ## 1. 文档定位
 
@@ -6,7 +6,9 @@
 渲染器 + shell 接线）的**已交付**合同与明确排除项。状态词汇沿用
 `docs/design/editor_phase1.md` 惯例：已交付 = 代码 + 测试 + sanitizer
 lane + 记录在案的 live smoke 证据；设计-only = 仅有意图记录。
-证据链：`.superpowers/sdd/2026-10-23-scene-editor-phase2/task-{1,2,3}-report.md`。
+证据链：`.superpowers/sdd/2026-10-23-scene-editor-phase2/task-{1,2,3,4}-report.md`。
+Task 4 收口：全套验证 lane（normal/ASan+UBSan/TSan/notests/全量套件）+
+终态 live smoke 复跑记录于 task-4-report.md。
 
 分层总览：
 
@@ -85,12 +87,15 @@ editor 可执行
   break_ui_render（控件 on_paint blit FBO color_tex 进 retained UI
   surface）→ rhi_frame_end/present`。unbind 用全屏 drawable 尺寸恢复
   swapchain pass（shell 每帧经 `set_screen_size` 刷新）。
-- **纹理朝向（smoke 钉住）**：FBO bind 的默认视口在两后端都把 NDC +Y
-  存到纹理 v=1 侧，而 blit 在 dst 顶边采样 v=0——渲染器把投影矩阵的
-  Y 缩放取反（`proj.e[1][1] *= -1`），使场景上方落在 v=0。**仅渲染侧**
-  翻转；拾取/gizmo 数学用未翻转矩阵。VK 变体另做 clip z [-1,1]→[0,1]
-  重映射（blinn_phong_vk 先例 R214-A）。三角形绕向因 Y 翻转改变，管线
-  `disable_culling` 故无影响。
+- **纹理朝向（双后端视口约定的代码分析 + 与 smoke 一致；非像素证据）**：
+  源码层面 FBO bind 的默认视口在两后端都把 NDC +Y 存到纹理 v=1 侧
+  （rhi_gl.c `gl_set_fbo_pass_state` / rhi_vk.c `rhi_offscreen_fbo_bind`），
+  而 blit 在 dst 顶边采样 v=0——渲染器把投影矩阵的 Y 缩放取反
+  （`proj.e[1][1] *= -1`），使场景上方落在 v=0。已记录的 smoke run 仅
+  捕获 init+存活日志、不含像素判读，与该分析一致但不构成像素级钉住。
+  **仅渲染侧**翻转；拾取/gizmo 数学用未翻转矩阵。VK 变体另做 clip z
+  [-1,1]→[0,1] 重映射（blinn_phong_vk 先例 R214-A）。三角形绕向因 Y
+  翻转改变，管线 `disable_culling` 故无影响。
 - **VK render-pass 兼容**：管线 color_format 默认（R8G8B8A8），FBO 为
   R8G8B8A8；后端 `vk_pipeline_for_fmt` 按当前 pass 格式自动重建变体
   （与 UI surface_fbo 上的 font/image 管线同一机制）。

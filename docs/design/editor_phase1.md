@@ -102,6 +102,11 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 
 ## 6. Phase 2+ / 设计-only（明确不声称已交付）
 
+> 2026-10-23 更新：第一条（3D viewport/gizmo/相机 + 真实 F focus）已由
+> **Phase 2 交付**（branch `sdd/scene-editor-phase2` Tasks 1-4），合同见
+> `docs/design/editor_viewport.md`；本表其余各项仍为后续 phase 的设计-only
+> 意图。下文为 Phase 1 收口时的原始记录。
+
 - 3D viewport / gizmo / 相机（F 键只记意图）；真正的 focus 相机移动。
 - save-as / open 文件对话框；argv 加载；菜单栏（my_menu 已可用，Phase 1
   用 toolbar + 调色板替代）。
