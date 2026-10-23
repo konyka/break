@@ -1,13 +1,13 @@
-# Scene Editor Phase 1 — shell 架构与已交付合同（Task 4 收口）
+# Scene Editor Phase 1 — shell 架构与已交付合同（Phase 1 收口，Task 5 验证定稿）
 
 ## 1. 文档定位与状态词汇
 
 本文记录 Stage 4 scene editor Phase 1 的 **editor shell**（`editor` 可执行 +
-`engine/apps/editor/editor_panels.h/.c`）到 Task 4 为止的**已交付**行为，并
+`engine/apps/editor/editor_panels.h/.c`）的**已交付**行为，并
 明确列出仍是 **Phase 2+ / 设计-only** 的部分。状态词汇沿用
 `docs/design/lua_runtime.md` 惯例：已交付 = 代码 + 测试 + sanitizer lane
 证据齐备；设计-only = 仅有意图记录，无代码承诺。证据链：
-`.superpowers/sdd/2026-10-23-scene-editor-phase1/task-{1..4}-report.md`。
+`.superpowers/sdd/2026-10-23-scene-editor-phase1/task-{1..5}-report.md`。
 
 **本 shell 是正式可选工具 target，不是生产级 editor 产品。**
 
@@ -109,20 +109,59 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
   add/remove-component 命令持有）；editor 重保存丢游戏侧 BSCN 渲染 scene
   chunk（Task 2 Phase 1 限制）。
 
-## 7. 验证摘要（详见 task-4-report.md）
+## 7. 验证摘要（Task 5 收口定稿；分任务细节见 task-{1..4}-report.md）
 
-`test_editor_shell` 15/15（三 lane：normal `build-sdd-e4`、ASan+UBSan
-`build-sdd-e4-asan` 3 连跑零报告、TSan `build-sdd-e4-tsan` 10 连跑零报告），
-含**有判别力的 PPM 冒烟**：断言窗口真实绘制后的两个主题色——window bg
-`0xF5F5F5`（`my_theme.c:1127-1128`，经 `my_window.c:110-111` 消费）占帧主体
-+ button bg `0xE0E0E0`（`my_theme.c:1129-1130`）存在；从未绘制的零填充 dummy
-lcd 两者皆为 0（mutate-check：跳过 paint 调用该测试必红）。Task 1-3 回归 +
-`test_break_editor_target_contract` 在各 lane 6/6；myui 回归（
+**Task 5 全量收口 lane**（报告：task-5-report.md）：
+
+- **normal 树 `build-sdd-e5`**：完整默认 target 集（179 个 target，含
+  `break_editor`/`editor`/全部测试）构建零告警（除 vendored Lua 的
+  `tmpnam` 链接器既有提示）；editor lane `ctest -L editor` **6/6**
+  （`test_editor_doc` 12 + `test_editor_cmd` 14 + `test_editor_scene` 15 +
+  `test_editor_components` 15 + `test_editor_shell` 15 +
+  `test_break_editor_target_contract`）。
+- **sanitizer lane**：ASan+UBSan 树 `build-sdd-e5-asan` 与 TSan 树
+  `build-sdd-e5-tsan` 各 **6/6**，零 sanitizer 报告（ASan
+  `detect_leaks=1`、UBSan `halt_on_error=1`）。
+- **`ENGINE_BUILD_TESTS=OFF` 树 `build-sdd-e5-notests`**：独立构建
+  `break_editor` + `editor` 成功；`nm libbreak_editor.a` **零
+  `break_editor_test_*` / test-hook 符号**（Task 5 修复后：production
+  分支的 `break_editor_test_calloc` 由 static inline 改为宏直通 calloc，
+  连本地符号也不再出现——此前 Debug -O0 下会留下 4 个本地 `t` 符号，
+  虽无注入机制但名义上是 test 命名符号；注入钩子本体
+  `g_break_editor_test_alloc_budget` 等自始至终不存在于 production）。
+- **全量非图形/非 fuzz 套件** `ctest -LE 'graphics|fuzz'`：**186/186
+  通过、0 失败**；1 项 platform-skip（`test_d3d12_dependency_gate`，
+  Windows-only by design）；label 排除 4 项（`test_platform_x11_runtime`、
+  `test_rhi_x11_runtime`、`test_vulkan`、`rhi_swapchain_bench`，图形/fuzz
+  需 GPU/display 的既有 lane）；预先清除的间歇 flake
+  `test_break_replication_fragment` 本轮通过。
+- **`editor` 二进制 smoke-run**（不构成 GPU 验证）：headless RHI 路径
+  **不存在**——`ENGINE_RHI_BACKEND=headless` 在 configure 期即被
+  FATAL_ERROR 拒绝（合法值仅 auto/opengl/vulkan/metal/d3d12，
+  `engine/CMakeLists.txt:161-167`）；`engine_rhi_headless`
+  （`src/rhi/rhi_headless.c`）是 fail-closed 契约测试后端，
+  `rhi_device_create` 恒返 NULL 且 `engine_link_rhi_backend()` 无
+  headless 分支；platform 亦无 dummy/headless 后端（Linux 仅
+  X11/Wayland 真实窗口）。实际 smoke 命令与结果：
+  `cd build-sdd-e5 && DISPLAY=:0 timeout -s TERM 6 ./editor /tmp/editor_smoke.bscn`
+  → exit 124（timeout 终止 = 进入主循环），日志两行：
+  `Platform initialized: 1280x800 "Break Scene Editor"`（X11/XWayland）与
+  `OpenGL 4.6 (Compatibility Profile) Mesa 26.2.4 initialized`，随后 6 秒
+  内零错误输出——platform 窗口、GL RHI device、BreakUI 初始化、shell
+  创建与渲染主循环全部真实跑通。单元级交互证据仍由
+  `test_editor_shell`（dummy PAL + 判别性 PPM）承担。
+
+**Task 4 原始 lane（历史记录）**：`test_editor_shell` 15/15（三 lane：normal
+`build-sdd-e4`、ASan+UBSan `build-sdd-e4-asan` 3 连跑零报告、TSan
+`build-sdd-e4-tsan` 10 连跑零报告），含**有判别力的 PPM 冒烟**：断言窗口真实
+绘制后的两个主题色——window bg `0xF5F5F5`（`my_theme.c:1127-1128`，经
+`my_window.c:110-111` 消费）占帧主体 + button bg `0xE0E0E0`
+（`my_theme.c:1129-1130`）存在；从未绘制的零填充 dummy lcd 两者皆为 0
+（mutate-check：跳过 paint 调用该测试必红）。myui 回归（
 `test_myui_window_manager`/`test_myui_mvvm`/`myui_widgets_demo_smoke` 等）
-normal lane 42/42、两个 sanitizer lane 各 9/9。`ENGINE_BUILD_TESTS=OFF`
-树独立构建 `break_editor` + `editor` 成功，production 库零 shell 符号。
+normal lane 42/42、两个 sanitizer lane 各 9/9。
 
-**Fix round 1 记录**（详见 task-4-report.md 附录）：
+**Fix round 1 记录（Task 4）**（详见 task-4-report.md 附录）：
 - outliner 行曾恒显示 `<stale>`：`bind_row` 误传 `out_id=NULL`（
   `entity_at` 有界拒绝 NULL），修复为真实 out 参数；新增
   `rename_then_undo_reverts_outliner_row_text` 钉住"改名→undo/redo 时
@@ -137,3 +176,10 @@ normal lane 42/42、两个 sanitizer lane 各 9/9。`ENGINE_BUILD_TESTS=OFF`
   `lv_on_layout_changed` 同步同步）。这是对 plan"legacy myui 零diff"约束的
   有意例外——任务交付物（真实窗口可绘制 + brief 要求的 PPM 冒烟）被该 bug
   阻断；测试 15 即其回归钉。
+
+**Task 5 adjudicated fix**：`editor_test_hooks.h` production 分支
+`break_editor_test_calloc` 从 static inline 函数改为宏（
+`#define break_editor_test_calloc(bytes) calloc(1, (bytes))`），使 production
+归档在 `nm` 下真正零 `break_editor_test_*` 符号（Debug -O0 未内联的 static
+inline 曾留下本地 `t` 符号；语义不变，测试分支不动）。修复后四个树
+（normal/ASan+UBSan/TSan/notests）全部重建并复测通过。
