@@ -39,10 +39,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang lld llvm cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
@@ -99,10 +101,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
@@ -171,10 +175,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
@@ -418,10 +424,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake ninja-build libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
@@ -524,10 +532,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake libgl1-mesa-dev libegl1-mesa-dev \
@@ -828,10 +838,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev \
@@ -902,10 +914,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
@@ -1182,10 +1196,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
@@ -1252,10 +1268,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 llvm-18-tools cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
@@ -1341,10 +1359,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
           apt_retry 360 install -y --no-install-recommends \
@@ -1495,10 +1515,12 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          # R677: each failed attempt publishes the tail of its output as
+          # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
