@@ -110,7 +110,7 @@ resume-chunk: <sha256hex>|<offset>  OR  none
 跨字段不变量（任何合法转换都造不出的组合 = 畸形）：current=none 当且仅当
 current-version=none；current=none ⇒ previous-version=none；永不
 pending=yes 且 confirmed=yes；pending=yes ⇒ current≠none；
-confirmed=yes ⇒ current≠none。实测最坏序列化 ≈324 字节（上限 64 KiB）。
+confirmed=yes ⇒ current≠none。实测最坏序列化 ≈326 字节（上限 64 KiB）。
 
 **完整性边界（诚实声明）**：state 文件与槽内 `update-version` 标记只受
 **解析校验**保护（canonical 格式 + 跨字段不变量），**没有任何 MAC/签名**。

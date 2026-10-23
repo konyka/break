@@ -16,7 +16,7 @@
 
 #define UPC_STATE_MAX_BYTES (64u * 1024u) /* state file ≤ 64 KiB */
 #define UPC_HEX_NAME_LEN    64u
-#define UPC_TEXT_CAP        512u /* worst-case serialized state ≈ 324 bytes */
+#define UPC_TEXT_CAP        512u /* worst-case serialized state ≈ 326 bytes */
 #define UPC_CHUNK_NAME_MAX  128u /* manifest chunk-name cap (break_update.c) */
 #define UPC_WRITER_TMP_LEN  10u  /* PlatformAtomicWriter's ".tmpXXXXXX" */
 
