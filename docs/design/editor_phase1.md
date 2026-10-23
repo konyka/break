@@ -111,8 +111,29 @@ create 时把焦点设到 root，故快捷键只在焦点控件未消费该键�
 
 ## 7. 验证摘要（详见 task-4-report.md）
 
-`test_editor_shell` 14/14（三 lane：normal `build-sdd-e4`、ASan+UBSan
+`test_editor_shell` 15/15（三 lane：normal `build-sdd-e4`、ASan+UBSan
 `build-sdd-e4-asan` 3 连跑零报告、TSan `build-sdd-e4-tsan` 10 连跑零报告），
-含 PPM 冒烟（dummy lcd 上非背景像素 > 0）；Task 1-3 回归 +
-`test_break_editor_target_contract` 在各 lane 6/6；`ENGINE_BUILD_TESTS=OFF`
+含**有判别力的 PPM 冒烟**：断言窗口真实绘制后的两个主题色——window bg
+`0xF5F5F5`（`my_theme.c:1127-1128`，经 `my_window.c:110-111` 消费）占帧主体
++ button bg `0xE0E0E0`（`my_theme.c:1129-1130`）存在；从未绘制的零填充 dummy
+lcd 两者皆为 0（mutate-check：跳过 paint 调用该测试必红）。Task 1-3 回归 +
+`test_break_editor_target_contract` 在各 lane 6/6；myui 回归（
+`test_myui_window_manager`/`test_myui_mvvm`/`myui_widgets_demo_smoke` 等）
+normal lane 42/42、两个 sanitizer lane 各 9/9。`ENGINE_BUILD_TESTS=OFF`
 树独立构建 `break_editor` + `editor` 成功，production 库零 shell 符号。
+
+**Fix round 1 记录**（详见 task-4-report.md 附录）：
+- outliner 行曾恒显示 `<stale>`：`bind_row` 误传 `out_id=NULL`（
+  `entity_at` 有界拒绝 NULL），修复为真实 out 参数；新增
+  `rename_then_undo_reverts_outliner_row_text` 钉住"改名→undo/redo 时
+  outliner 行显示名双向跟随"。
+- 上述 PPM 判别力修复暴露一个 myui 核心潜伏 bug 并一并修复：
+  `my_list_view` 的 `on_layout` 无条件 `lv_sync_rows`（重建行子节点）→
+  add/remove_child 再次请求布局 → 宿主窗口 `my_window_prepare_layout`
+  8 趟永不收敛、整帧放弃（`myui_break.c:707` 同路径）——**任何包含非空
+  list_view 的绘制窗口（含真实 `editor` 窗口）都不会渲染**。修复：
+  `on_layout` 仅在视口高度变化时重同步（新增
+  `my_list_view_t.layout_synced_height`；其余入口本就经
+  `lv_on_layout_changed` 同步同步）。这是对 plan"legacy myui 零diff"约束的
+  有意例外——任务交付物（真实窗口可绘制 + brief 要求的 PPM 冒烟）被该 bug
+  阻断；测试 15 即其回归钉。

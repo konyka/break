@@ -575,8 +575,11 @@ static void editor_adapter_bind_row(my_list_adapter_t *adapter,
         rc->index = (usize)index;
     }
     if (a->kind == 0u) {
+        BreakEditorEntityId id;
         const char *name = NULL;
-        if (break_editor_doc_entity_at(a->shell->doc, (usize)index, NULL,
+        /* entity_at rejects NULL out_id/out_name (editor_doc.c:157) — both
+         * out-params must be real, otherwise every row binds "<stale>" */
+        if (break_editor_doc_entity_at(a->shell->doc, (usize)index, &id,
                                        &name) &&
             name != NULL) {
             (void)my_button_set_text(row, name);

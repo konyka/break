@@ -25,6 +25,7 @@
 #include "myr/my_lcd_mem.h"
 #include "myui/my_widget.h"
 #include "myui/my_window.h"
+#include "myui/widgets/my_button.h"
 #include "myui/widgets/my_edit.h"
 
 static void emit_click(my_widget_t *w) {
@@ -295,6 +296,49 @@ TEST(outliner_row_click_selects)
     break_editor_shell_destroy(shell);
 }
 
+TEST(rename_then_undo_reverts_outliner_row_text)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *row;
+    my_widget_t *edit;
+    const char *row_text;
+    char original[BREAK_EDITOR_NAME_CAPACITY];
+    ASSERT_NOT_NULL(shell);
+    emit_click(find(shell, "editor-add-button"));
+    shell_paint(shell); /* realize the virtualized rows */
+    row = find(shell, "editor-outliner-row");
+    ASSERT_NOT_NULL(row);
+    row_text = ((const my_button_t *)row)->text;
+    ASSERT_NOT_NULL(row_text);
+    /* the row binds the doc's display name, never the "<stale>" fallback
+     * (fix-round pin: entity_at rejects NULL out_id, and bind_row must not
+     * pass one) */
+    ASSERT_TRUE(strcmp(row_text, "<stale>") != 0);
+    ASSERT_TRUE(strstr(row_text, "entity_") == row_text);
+    snprintf(original, sizeof(original), "%s", row_text);
+    /* rename through the shell UI (name edit "activate"), then undo — the
+     * OUTLINER ROW's displayed name must follow both ways because rows
+     * rebind from the doc on refresh */
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0));
+    edit = find(shell, "editor-name-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "hero"), MY_RET_OK);
+    emit_activate(edit);
+    row = find(shell, "editor-outliner-row");
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "hero");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    row = find(shell, "editor-outliner-row");
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, original);
+    /* redo re-applies the displayed rename */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'y', MY_KEYMOD_CTRL));
+    row = find(shell, "editor-outliner-row");
+    ASSERT_NOT_NULL(row);
+    ASSERT_STR_EQ(((const my_button_t *)row)->text, "hero");
+    break_editor_shell_destroy(shell);
+}
+
 TEST(inspector_field_edit_routes_through_command_stack)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -368,14 +412,15 @@ TEST(console_ring_is_bounded_at_64_entries)
     break_editor_shell_destroy(shell);
 }
 
-TEST(ppm_smoke_paints_non_background_pixels)
+TEST(ppm_smoke_paints_expected_theme_colors)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
     my_window_t *win;
     my_lcd_t *lcd;
     const uint8_t *pixels;
     uint32_t stride;
-    size_t colored = 0u;
+    size_t bg_count = 0u;
+    size_t button_count = 0u;
     uint32_t x, y;
     ASSERT_NOT_NULL(shell);
     emit_click(find(shell, "editor-add-button"));
@@ -387,18 +432,31 @@ TEST(ppm_smoke_paints_non_background_pixels)
     pixels = my_lcd_mem_get_buffer(lcd);
     stride = my_lcd_mem_get_stride(lcd);
     ASSERT_NOT_NULL(pixels);
-    /* Window bg is rgb(32,32,32) BGRA (my_window.c:468). */
+    /* Discriminating discriminant: the default theme overrides the window
+     * bg to 0xF5F5F5FF (my_theme.c:1127-1128), consumed by the window's
+     * on_paint (my_window.c:110-111); the normal-state button bg is
+     * 0xE0E0E0FF (my_theme.c:1129-1130). A NEVER-painted dummy lcd stays
+     * zero-filled, so both counts are 0 unless a frame was actually
+     * rendered — comparing against the pre-theme rgb(32,32,32) fallback
+     * would count 100% of the frame in BOTH cases. */
     for (y = 0u; y < 480u; y++) {
         for (x = 0u; x < 800u; x++) {
             const uint8_t *p = pixels + y * stride + x * 4u;
-            if (p[0] != 32u || p[1] != 32u || p[2] != 32u) {
-                colored++;
+            if (p[0] == 245u && p[1] == 245u && p[2] == 245u) {
+                bg_count++;
+            } else if (p[0] == 224u && p[1] == 224u && p[2] == 224u) {
+                button_count++;
             }
         }
     }
-    ASSERT_TRUE(colored > 0u);
+    /* most of the 800x480 frame is window bg... */
+    /* most of the 800x480 frame is window bg... */
+    printf("    (ppm smoke: %zu window-bg px, %zu button-bg px)\n", bg_count,
+           button_count);
+    ASSERT_TRUE(bg_count > (800u * 480u) / 2u);
+    /* ...and the toolbar/outliner-row buttons painted their bg */
+    ASSERT_TRUE(button_count > 100u);
     break_editor_shell_destroy(shell);
-    printf("    (ppm smoke: %zu non-background pixels)\n", colored);
 }
 
 TEST_MAIN_BEGIN()
@@ -413,7 +471,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(palette_executes_tool_command_on_activate);
     RUN_TEST(ctrl_s_saves_to_configured_path);
     RUN_TEST(outliner_row_click_selects);
+    RUN_TEST(rename_then_undo_reverts_outliner_row_text);
     RUN_TEST(inspector_field_edit_routes_through_command_stack);
     RUN_TEST(console_ring_is_bounded_at_64_entries);
-    RUN_TEST(ppm_smoke_paints_non_background_pixels);
+    RUN_TEST(ppm_smoke_paints_expected_theme_colors);
 TEST_MAIN_END()
