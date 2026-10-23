@@ -13,6 +13,12 @@ R678 推送后的那轮 CI（bc92f10f）里，有 3 个 job 在 apt 阶段失败
 
 验证：`ci.yml` 能被 `yaml.safe_load` 解析，20 段含 apt 的 run 脚本都通过 `bash -n`；7 个可选步骤都紧跟在各自 job 的依赖安装步骤之后（解析 YAML 后确认了步骤顺序）。实际效果要看推送后的 CI。
 
+**结果（f506d181，run 39967095914）**：**全绿**（Status Success，用时 4 分 17 秒），0 个 error。从 R667 起的连续红灯和 cancelled 到这里终止。可选字体步骤这次没有触发 warning，说明镜像正常时字体照常装上了。
+
+## 本轮更新：R680 — 剩余的 `ubuntu-latest` lane 也钉到 ubuntu-24.04
+
+同一轮 CI 的注解提示：`ubuntu-latest` 从 2026-10-19 起迁到 Ubuntu 26（runner-images#14748）。`ci.yml` 中的 `wayland-gl`、`lane-gpu-runtime-linux-gl`、`lane-gpu-runtime-windows-d3d12-unavailable`，以及 `proton-d3d12.yml`，原来写的都是 `ubuntu-latest`；其余 Linux lane 早就钉在 `ubuntu-24.04`，所用的 apt 钉版（cmake 3.28、libvulkan 1.3.275 等）也都取自 noble。现在这 4 处都改成 `ubuntu-24.04`，避免 runner 镜像悄悄换代，导致包名或版本变化。验证：YAML 解析通过，非注释行里已经没有 `ubuntu-latest`。
+
 ## 本轮更新：R678 — 不跑字体测试的 CI lane 不再安装 fonts-noto-cjk
 
 根据 R677 拿到的证据，先做不需要新增外部依赖的那一步：`fonts-noto-cjk`（61 MB，是单个最大的下载）只被 `test_myui_font.c` 的两个 CJK 用例用到，而且找不到字体时会 SKIP。所以这几个 lane 不再装它：

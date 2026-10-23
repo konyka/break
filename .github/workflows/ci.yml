@@ -563,7 +563,9 @@ jobs:
     # DEPRECATED（task 6 删除）：兼容期保留的 Wayland+OpenGL lane；收据归
     # native-surface 类（test_platform_wayland_runtime 真实 surface 证据）。
     name: Linux Wayland + OpenGL (GCC)
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -880,7 +882,9 @@ jobs:
     # DEPRECATED（task 6 删除）：兼容期保留的 X11+OpenGL lane（brief :121），
     # 不再扩展；Xvfb + LIBGL_ALWAYS_SOFTWARE 下跑 X11/GL runtime。
     name: Linux X11 + OpenGL (GCC)
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -1238,7 +1242,9 @@ jobs:
     #（<1 min，ubuntu 即可——只跑 cmake 脚本）；artifact 名与真机 lane 互斥共用。
     if: vars.ENABLE_GPU_LANES != '1'
     name: "lane: GPU-runtime (windows d3d12, unavailable receipt)"
-    runs-on: ubuntu-latest
+    # R680: pinned like every other Linux lane -- ubuntu-latest moves to
+    # Ubuntu 26 from 2026-10-19 (runner-images#14748).
+    runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
       - uses: actions/checkout@v4
