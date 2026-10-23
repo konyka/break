@@ -1,6 +1,34 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R672 — GL 帧率：主机回读暂存缓冲改用 STREAM_READ，并补上帧槽栅栏（GL 前向 62 → 76 FPS、延迟 43 → 51）
+
+### 现象与定位
+R671 之后，GL 前向管线约 62 FPS，D3D12 和 VK 都在 85–95，差距主要在 CPU 侧。逐帧 profiler 显示 GL 的 `scene` 区段中位数约 9ms，D3D12/VK 只有约 0.5ms。加临时区段二分后定位到 `mega_unified_vis_flags` → `gpucull_read_vis_flags` → `rhi_buffer_map`，每帧阻塞约 8.2ms。
+
+### 根因
+gpucull 的可见性标志回读用的是双槽暂存缓冲：GPU 复制进去，两帧后 CPU 再 map 读出。RHI 约定这种「STORAGE、无初始数据」的缓冲是主机可见的暂存区（VK 对应 HOST_VISIBLE，D3D12 对应 UPLOAD，见 `rhi_d3d12_buffer_wants_device_local`）。但 GL 后端统一按 `GL_DYNAMIC_DRAW` 创建，驱动把它放在显存里，每次 map 都要同步下载。
+
+另外 GL 原本没有帧栅栏，所以「两帧前的槽已经完成」这个前提在 GL 上从来没有成立过。
+
+### 修复（`engine/src/rhi/rhi_gl.c`）
+1. `rhi_buffer_create`：usage 只有 STORAGE 且没有初始数据的缓冲，改用 `GL_STREAM_READ`。
+2. `GLBackend.frame_fence[2]`：`gl_frame_end` 时插入 `glFenceSync`；`rhi_frame_begin` 复用这个槽之前先 `glClientWaitSync`（带 FLUSH 位，超时 5 秒），销毁时删除。这和 VK/D3D12 的帧槽语义对齐。
+   - 单独加栅栏测不出提速（map 照样在等下载），但它保证了回读的正确性前提。
+
+### 数据（RTX，`BREAK_BENCH_STATS=1`，fps_avg）
+| | 修复前 | 修复后 |
+|---|---|---|
+| GL 前向 | 62 | 76 |
+| GL 延迟 | 43 | 51 |
+
+`vis_read` 区段从 8.2ms 降到约 1ms。修复后 GL 主要受 GPU 后处理限制（约 4.7ms），不再是 CPU 卡顿。
+
+### 验证
+- ctest：gl 179/179，d3d12-debug 187/187。
+- vk 一次 181/182：`test_vulkan` TEST 9 设备丢失，属于本机已知的 TDR（R577/R574 有记录，R670 也出现过一次，早于本轮所有改动）。单独连跑 4 次通过，整套重跑 182/182。
+- 截图：前向 D3D12 对 GL 2.55，延迟 0.45，和 R671 一致；日志无 WARN/ERROR。
+
 ## 本轮更新：R671 — 延迟管线帧率修复：Hi-Z 生成按比例划分输入（三后端 GPU 每帧省约 23ms），修正 D3D12 GPU 计时器 GPU 受限时恒为 0
 
 ### 现象

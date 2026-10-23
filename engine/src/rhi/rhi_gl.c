@@ -168,6 +168,13 @@ typedef struct {
     RHIPresentDamageHistory damage_history;
     bool       damage_history_valid;
 #endif
+    /* R672: one fence per frame slot, inserted at frame end and waited on
+     * when the slot is reused (rhi_frame_begin), as VK and D3D12 do. The
+     * dual-slot staging readbacks (gpucull vis flags, occlusion) read the
+     * slot written two frames ago; without the fence GL had no way to know
+     * that copy had finished, so mapping it drained the whole pipeline
+     * (~8 ms per frame in the demo). */
+    GLsync frame_fence[2];
 } GLBackend;
 
 /* Plan E Task 5: reflection-driven bindings — per-stage push-member name
@@ -807,6 +814,12 @@ bool rhi_device_idle(RHIDevice *dev) {
 static void gl_shutdown(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
     if (!gl) return;
+    for (int i = 0; i < 2; i++) {
+        if (gl->frame_fence[i] != NULL) {
+            glDeleteSync(gl->frame_fence[i]);
+            gl->frame_fence[i] = NULL;
+        }
+    }
 #ifdef ENGINE_PLATFORM_WINDOWS
     wglMakeCurrent(NULL, NULL);
     wglDeleteContext(gl->gl_ctx);
@@ -1011,9 +1024,27 @@ static void *gl_frame_begin(RHIDevice *dev) {
 }
 
 static void gl_frame_end(RHIDevice *dev) {
-    (void)dev;
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+    if (gl != NULL) {
+        u32 slot = g_gl_frame_index & 1u;
+        if (gl->frame_fence[slot] != NULL) glDeleteSync(gl->frame_fence[slot]);
+        gl->frame_fence[slot] = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+    }
     /* R178: Advance so dual staging (gpucull/occlusion) can ping-pong. */
     g_gl_frame_index++;
+}
+
+/* R672: wait for the frame that last used this slot (see
+ * GLBackend.frame_fence). The flush bit guarantees the fence is submitted,
+ * so the wait cannot deadlock on an unflushed command stream. */
+static void gl_wait_frame_slot(RHIDevice *dev) {
+    GLBackend *gl = (GLBackend *)dev->backend_data;
+    u32 slot = g_gl_frame_index & 1u;
+    if (gl == NULL || gl->frame_fence[slot] == NULL) return;
+    (void)glClientWaitSync(gl->frame_fence[slot], GL_SYNC_FLUSH_COMMANDS_BIT,
+                           (GLuint64)5000000000ull);
+    glDeleteSync(gl->frame_fence[slot]);
+    gl->frame_fence[slot] = NULL;
 }
 
 static bool gl_present(RHIDevice *dev) {
@@ -1422,6 +1453,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     gl_cache_sync(dev);
     g_current_device = dev;
     g_gl_frame_active = true;
+    gl_wait_frame_slot(dev);
     return (RHICmdBuffer *)gl_frame_begin(dev);
 }
 
@@ -1736,6 +1768,15 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     glBindBuffer(target, gl_buf);
     GLenum usage = (desc->usage & (RHI_BUFFER_USAGE_UNIFORM | RHI_BUFFER_USAGE_TEXEL)) ? GL_DYNAMIC_DRAW : GL_STATIC_DRAW;
     if (is_storage) usage = GL_DYNAMIC_DRAW;
+    /* R672: a STORAGE-only buffer created without data is the host-visible
+     * staging buffer of the RHI contract (VK HOST_VISIBLE, D3D12 UPLOAD --
+     * see rhi_d3d12_buffer_wants_device_local): written by a GPU copy, read
+     * back with rhi_buffer_map. DYNAMIC_DRAW kept it in video memory and the
+     * map paid for a synchronous download (~8 ms/frame for the gpucull
+     * vis-flags readback in the demo); STREAM_READ lets the driver place it
+     * where the CPU can read it. */
+    if (desc->usage == RHI_BUFFER_USAGE_STORAGE && desc->initial_data == NULL)
+        usage = GL_STREAM_READ;
     glBufferData(target, (GLsizeiptr)desc->size, desc->initial_data, usage);
     glBindBuffer(target, 0);
     /* R191-A: create bypasses cached binds — ARRAY_BUFFER cache would still
