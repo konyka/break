@@ -894,7 +894,7 @@ target_link_libraries(break_lua PUBLIC lua)
 # as scene_serial). The viewport's remaining includes resolve header-only
 # (math/math.h vector/quaternion helpers are static inline) or via
 # break_ecs_replication (core/log.c).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -3447,19 +3447,20 @@ endif()
     set_tests_properties(test_break_lua_target_contract PROPERTIES
         LABELS "headless;break_lua;platform_contract")
 
-    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1 focused
+    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 focused
     # tests. The test-only
-    # break_editor_test variant compiles the same eight translation units
+    # break_editor_test variant compiles the same nine translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
-    # component commands, sidecar read buffer, and the viewport pick's
-    # proxy AABB array / entity-id map / BVH struct), mirroring the
+    # component commands and the gizmo's drag command, sidecar read buffer,
+    # and the viewport pick's proxy AABB array / entity-id map / BVH
+    # struct), mirroring the
     # break_lua_test / BREAK_LUA_TESTING pattern; the
     # production break_editor target (top-level, defined independent of
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3503,6 +3504,16 @@ endif()
     target_link_libraries(test_editor_viewport PRIVATE break_editor_test)
     add_test(NAME test_editor_viewport COMMAND test_editor_viewport)
     set_tests_properties(test_editor_viewport PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 2 Task 2: gizmo state machine (modes,
+    # handles, hit-test, drag math, single-command undo semantics). Pure CPU
+    # — the drag command lives in break_editor_test's editor_gizmo.c copy.
+    add_executable(test_editor_gizmo tests/test_editor_gizmo.c)
+    target_include_directories(test_editor_gizmo PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_gizmo PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_gizmo PRIVATE break_editor_test)
+    add_test(NAME test_editor_gizmo COMMAND test_editor_gizmo)
+    set_tests_properties(test_editor_gizmo PROPERTIES LABELS "headless;editor")
 
     # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
     # production editor_panels.c translation unit directly (the

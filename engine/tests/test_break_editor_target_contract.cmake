@@ -27,7 +27,7 @@ if(break_editor_pos GREATER next_tests_block_pos)
     message(FATAL_ERROR "break_editor must be defined at top level, not inside an ENGINE_BUILD_TESTS block")
 endif()
 
-# ...owning its eight translation units (first mention of each editor source
+# ...owning its nine translation units (first mention of each editor source
 # is inside the add_library(break_editor ...) call; the test-only variant
 # repeats them later inside the tests block). scene_serial.c is additionally
 # compiled inline by the engine target and test_scene_serial, and bvh.c /
@@ -39,6 +39,7 @@ endif()
 string(FIND "${cmake_text}" "src/editor/editor_doc.c" doc_src_pos)
 string(FIND "${cmake_text}" "src/editor/editor_cmd.c" cmd_src_pos)
 string(FIND "${cmake_text}" "src/editor/editor_viewport.c" viewport_src_pos)
+string(FIND "${cmake_text}" "src/editor/editor_gizmo.c" gizmo_src_pos)
 string(FIND "${cmake_text}" "add_library(stb_truetype STATIC" stb_pos)
 if(doc_src_pos LESS break_editor_pos OR
    (stb_pos GREATER break_editor_pos AND doc_src_pos GREATER stb_pos))
@@ -51,6 +52,10 @@ endif()
 if(viewport_src_pos LESS break_editor_pos OR
    (stb_pos GREATER break_editor_pos AND viewport_src_pos GREATER stb_pos))
     message(FATAL_ERROR "src/editor/editor_viewport.c is not owned by break_editor")
+endif()
+if(gizmo_src_pos LESS break_editor_pos OR
+   (stb_pos GREATER break_editor_pos AND gizmo_src_pos GREATER stb_pos))
+    message(FATAL_ERROR "src/editor/editor_gizmo.c is not owned by break_editor")
 endif()
 
 # ...linking break_ecs_replication PUBLIC (which owns ecs.c and log.c)...
@@ -80,6 +85,9 @@ endif()
 if(NOT break_editor_block MATCHES "src/editor/editor_viewport\\.c")
     message(FATAL_ERROR "break_editor does not own src/editor/editor_viewport.c")
 endif()
+if(NOT break_editor_block MATCHES "src/editor/editor_gizmo\\.c")
+    message(FATAL_ERROR "break_editor does not own src/editor/editor_gizmo.c")
+endif()
 if(NOT break_editor_block MATCHES "src/scene/scene_serial\\.c")
     message(FATAL_ERROR "break_editor does not own exactly one src/scene/scene_serial.c copy")
 endif()
@@ -102,9 +110,9 @@ endforeach()
 
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
 # hooks) rather than the production target; the production archive stays
-# hook-free. The variant compiles the same eight translation units and links
+# hook-free. The variant compiles the same nine translation units and links
 # the same break_ecs_replication.
-if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c")
+if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c")
     message(FATAL_ERROR "missing test-only break_editor_test variant over all break_editor sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1")
@@ -142,6 +150,12 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_viewport tests/test_edit
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_viewport PRIVATE break_editor_test")
     message(FATAL_ERROR "test_editor_viewport does not link break_editor_test")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_gizmo tests/test_editor_gizmo.c")
+    message(FATAL_ERROR "missing test_editor_gizmo executable")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_gizmo PRIVATE break_editor_test")
+    message(FATAL_ERROR "test_editor_gizmo does not link break_editor_test")
 endif()
 
 # Task 4: the editor shell executable is a formal top-level target linking

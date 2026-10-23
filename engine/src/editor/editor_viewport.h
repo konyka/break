@@ -21,7 +21,13 @@
  *
  * EditorTransform.rot convention (plan Global Constraints — DEFINED by this
  * plan, pinned here for every later consumer): rot[0..2] are intrinsic
- * yaw(Y)->pitch(X)->roll(Z) Euler angles in DEGREES. Task 1 never builds
+ * yaw(Y)->pitch(X)->roll(Z) Euler angles in DEGREES. Storage mapping
+ * (disambiguated and pinned by Task 2's gizmo tests): rot[k] is the
+ * rotation ABOUT axis k, matching the Phase 1 inspector field names
+ * (rot[0] = rot.x = pitch about X, rot[1] = rot.y = yaw about Y,
+ * rot[2] = rot.z = roll about Z); "yaw->pitch->roll" is the COMPOSITION
+ * ORDER for model matrices: M = R_y(rot.y) * R_x(rot.x) * R_z(rot.z).
+ * Task 1 never builds
  * model matrices (proxy AABBs are axis-aligned from pos/scale alone); the
  * Task 3 proxy renderer applies rot via mat4_mul chains in exactly that
  * order.
