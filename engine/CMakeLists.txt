@@ -41,6 +41,8 @@ option(BREAK_ENABLE_SNOWFLAKE
     "Enable the Snowflake-backed C11 Break network adapter" OFF)
 set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
     "Snowflake source tree required by the Break network adapter")
+option(BREAK_ENABLE_CRYPTO
+    "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -306,6 +308,23 @@ if(BREAK_ENABLE_SNOWFLAKE)
             "Snowflake source tree did not provide the required target snow::net")
     endif()
     message(STATUS "Break Snowflake adapter: using target snow::net")
+endif()
+
+# Stage 5 Phase A Task 2: break_crypto — formal optional static library, a
+# thin C11 wrapper over the system OpenSSL 3 libcrypto EVP API (SHA-256 /
+# HMAC-SHA256 / Ed25519 verify / CSPRNG; zero home-grown crypto).
+# find_package with REQUIRED IS the fail-closed FATAL_ERROR when OpenSSL
+# libcrypto is absent (mirrors the BREAK_ENABLE_SNOWFLAKE idiom above).
+# Independent of ENGINE_BUILD_TESTS; engine, engine_demo, dxx_break, and
+# editor never link it (pinned by test_break_crypto_target_contract).
+if(BREAK_ENABLE_CRYPTO)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
+    add_library(break_crypto STATIC src/crypto/break_crypto.c)
+    set_property(TARGET break_crypto PROPERTY C_STANDARD 11)
+    target_include_directories(break_crypto PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crypto PUBLIC OpenSSL::Crypto)
 endif()
 
 # Formal optional replication libraries. These are intentionally independent of
@@ -3883,6 +3902,43 @@ endif()
     target_compile_definitions(test_break_version PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
     target_link_libraries(test_break_version PRIVATE m)
     add_test(NAME test_break_version COMMAND test_break_version)
+
+    # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
+    # formal library; the contract ctest pins the target shape, the
+    # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
+    # (exactly 8 public symbols), and a minimal archive-only link test.
+    if(BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_crypto tests/test_break_crypto.c)
+        target_include_directories(test_break_crypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_crypto PRIVATE break_crypto)
+        add_test(NAME test_break_crypto COMMAND test_break_crypto)
+
+        # The contract script compiles a tiny checker against the production
+        # archive with the system compiler; sanitizer trees must propagate
+        # their instrumentation flags or the archive's sanitizer runtime
+        # references would not resolve.
+        set(BREAK_CRYPTO_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_crypto_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRYPTO_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DCRYPTO_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
+                -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
+        set_tests_properties(test_break_crypto_target_contract PROPERTIES
+            LABELS "headless;crypto;platform_contract")
+    endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
     add_executable(test_pbr_math tests/test_pbr_math.c)
