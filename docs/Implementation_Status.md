@@ -1,6 +1,18 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R675 — CI apt 步骤按次限时重试（R674 的后续）
+
+R674 推送后的那轮 CI（d5dff51b）不再出现「job 超时被取消」，但还是有一个 job 卡在 apt：`Linux + Clang/LLD (Release, headless)` 的 `Install dependencies` 撞上新加的 10 分钟步骤时限，结论是 failed。同一轮里其余 19 个 job 的安装都在 1 分钟左右完成，编译和测试全部 success。
+
+这说明 `Acquire::*::Timeout` 管不住所有挂起：它只限制单次网络读取，dpkg 触发器或连接挂起时不起作用。所以改成按次限时并重试：
+- `apt_retry` 每次调用 `timeout 240 apt-get …`，最多 3 次；两次之间执行 `dpkg --configure -a`，修复中断安装留下的状态。
+- 删除 `/var/lib/man-db/auto-update`，跳过已知很慢的 man-db 触发器。
+- 步骤时限改为 15 分钟，大于 3 × 4 分钟加上间隔。
+- 覆盖 `ci.yml`（11 处）、`proton-d3d12.yml`、`rollback-drill.yml`。
+
+验证：三个 workflow 都能被 `yaml.safe_load` 解析；13 个 run 脚本都通过 `bash -n` 语法检查；每个用到 apt 的步骤都带 15 分钟时限。实际效果要看推送后的 CI。
+
 ## 本轮更新：R674 — CI：apt 安装步骤加网络超时、重试和步骤级时限
 
 ### 发现
