@@ -320,8 +320,10 @@ endif()
 # Stage 5 Phase A Task 4 adds break_update (signed canonical manifest +
 # content-addressed chunk store) to the same gated block, PUBLIC-chained on
 # break_crypto; the same no-link rule applies (pinned by
-# test_break_update_target_contract). Keep this block free of nested if():
-# both contract scripts extract it up to its first endif().
+# test_break_update_target_contract). Stage 5 Phase B Task 1 extends the
+# target to TWO TUs (+ break_update_client.c: client state machine + A/B
+# slot layout; no download yet). Keep this block free of nested if(): both
+# contract scripts extract it up to its first endif().
 if(BREAK_ENABLE_CRYPTO)
     find_package(OpenSSL REQUIRED)
     message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
@@ -331,7 +333,7 @@ if(BREAK_ENABLE_CRYPTO)
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(break_crypto PUBLIC OpenSSL::Crypto)
 
-    add_library(break_update STATIC src/update/break_update.c)
+    add_library(break_update STATIC src/update/break_update.c src/update/break_update_client.c)
     set_property(TARGET break_update PROPERTY C_STANDARD 11)
     target_include_directories(break_update PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3965,12 +3967,21 @@ endif()
         # test_platform_fs_write precedent — engine keeps sole production
         # ownership of that TU, exactly one definition per binary). The
         # contract ctest pins the target shape, the no-link rule, the nm
-        # export gate (exactly 15 public symbols), and a minimal archive
-        # link test.
+        # export gate (exactly 24 public symbols since Phase B Task 1:
+        # 15 manifest/store + 9 client), and a minimal archive link test.
         add_executable(test_break_update tests/test_break_update.c src/platform/platform_fs.c)
         target_include_directories(test_break_update PRIVATE ${TEST_INCLUDE_DIRS})
         target_link_libraries(test_break_update PRIVATE break_update m)
         add_test(NAME test_break_update COMMAND test_break_update)
+
+        # Stage 5 Phase B Task 1: update client state machine + A/B slot
+        # tests (same inline-platform_fs.c precedent — engine keeps sole
+        # production ownership of that TU; links the formal break_update
+        # library). No fetch/stage/activate symbols exist yet (Tasks 2/3).
+        add_executable(test_break_update_client tests/test_break_update_client.c src/platform/platform_fs.c)
+        target_include_directories(test_break_update_client PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_update_client PRIVATE break_update m)
+        add_test(NAME test_break_update_client COMMAND test_break_update_client)
 
         # Sanitizer trees propagate their flags to the contract's
         # system-compiler link test (the crypto contract precedent).
