@@ -65,3 +65,6 @@ frag.spv
 .qoder/
 screenshot_*.bmp
 .worktrees/
+# demo output: PROFILER_TRACE=1 / BREAK_DRAW_BENCH (main.c)
+profile_trace.json
+draw_bench.csv
