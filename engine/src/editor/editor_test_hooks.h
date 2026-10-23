@@ -58,8 +58,9 @@ static inline void *break_editor_test_calloc(usize bytes) {
 
 #include <stdlib.h>
 
-static inline void *break_editor_test_calloc(usize bytes) {
-    return calloc(1, bytes);
-}
+/* Production passthrough: a macro (not a static inline function) so the
+ * production archive carries no break_editor_test_* symbol at all —
+ * Task 5 verified `nm libbreak_editor.a` shows zero test-hook symbols. */
+#define break_editor_test_calloc(bytes) calloc(1, (bytes))
 
 #endif
