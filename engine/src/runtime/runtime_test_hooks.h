@@ -102,9 +102,11 @@ static inline void *break_runtime_test_calloc(usize bytes)
 
 #include <stdlib.h>
 
-static inline void *break_runtime_test_calloc(usize bytes)
-{
-    return calloc(1, bytes);
-}
+/* Production passthrough: a macro (not a static inline function) so the
+ * production archive carries no break_runtime_test_* symbol at all — at -O0
+ * an uninlined static inline leaves a local `t break_runtime_test_calloc`
+ * per TU (the editor_test_hooks.h / break_lua_test_hooks.h adjudicated fix
+ * precedent, commit 11d55da4). */
+#define break_runtime_test_calloc(bytes) calloc(1, (bytes))
 
 #endif
