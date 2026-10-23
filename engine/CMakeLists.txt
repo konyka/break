@@ -41,6 +41,8 @@ option(BREAK_ENABLE_SNOWFLAKE
     "Enable the Snowflake-backed C11 Break network adapter" OFF)
 set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
     "Snowflake source tree required by the Break network adapter")
+option(BREAK_ENABLE_CRYPTO
+    "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -308,6 +310,34 @@ if(BREAK_ENABLE_SNOWFLAKE)
     message(STATUS "Break Snowflake adapter: using target snow::net")
 endif()
 
+# Stage 5 Phase A Task 2: break_crypto — formal optional static library, a
+# thin C11 wrapper over the system OpenSSL 3 libcrypto EVP API (SHA-256 /
+# HMAC-SHA256 / Ed25519 verify / CSPRNG; zero home-grown crypto).
+# find_package with REQUIRED IS the fail-closed FATAL_ERROR when OpenSSL
+# libcrypto is absent (mirrors the BREAK_ENABLE_SNOWFLAKE idiom above).
+# Independent of ENGINE_BUILD_TESTS; engine, engine_demo, dxx_break, and
+# editor never link it (pinned by test_break_crypto_target_contract).
+# Stage 5 Phase A Task 4 adds break_update (signed canonical manifest +
+# content-addressed chunk store) to the same gated block, PUBLIC-chained on
+# break_crypto; the same no-link rule applies (pinned by
+# test_break_update_target_contract). Keep this block free of nested if():
+# both contract scripts extract it up to its first endif().
+if(BREAK_ENABLE_CRYPTO)
+    find_package(OpenSSL REQUIRED)
+    message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
+    add_library(break_crypto STATIC src/crypto/break_crypto.c)
+    set_property(TARGET break_crypto PROPERTY C_STANDARD 11)
+    target_include_directories(break_crypto PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_crypto PUBLIC OpenSSL::Crypto)
+
+    add_library(break_update STATIC src/update/break_update.c)
+    set_property(TARGET break_update PROPERTY C_STANDARD 11)
+    target_include_directories(break_update PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_update PUBLIC break_crypto)
+endif()
+
 # Formal optional replication libraries. These are intentionally independent of
 # engine and Snowflake: consumers opt in and own the transport/session boundary.
 add_library(break_ecs_replication STATIC
@@ -376,6 +406,22 @@ if(BREAK_ENABLE_SNOWFLAKE)
     target_link_libraries(break_net PUBLIC break_replication_core snow::net)
 endif()
 
+# Product build identity: short git hash baked into break_version.c (engine)
+# and into its test. Falls back to "unknown" outside a git checkout (e.g.
+# clean-room source exports) or when git is absent/fails.
+find_program(BREAK_GIT_EXECUTABLE git)
+if(BREAK_GIT_EXECUTABLE)
+    execute_process(COMMAND ${BREAK_GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE BREAK_BUILD_ID
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT BREAK_BUILD_ID)
+    set(BREAK_BUILD_ID "unknown")
+endif()
+message(STATUS "Break build identity: ${BREAK_BUILD_ID}")
+
 # Engine library
 set(RHI_CORE_SOURCES
     src/rhi/rhi.c
@@ -386,6 +432,7 @@ set(RHI_CORE_SOURCES
     src/rhi/rhi_rollout.c)
 add_library(engine STATIC
     src/core/log.c
+    src/core/break_version.c
     src/core/shader_io.c
     src/core/alloc.c
     src/core/pool.c
@@ -479,6 +526,9 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json" ENGINE_R
 string(JSON ENGINE_ROLLOUT_CFGVER GET "${ENGINE_ROLLOUT_JSON}" config_version)
 target_compile_definitions(engine PUBLIC
     ENGINE_RHI_ROLLOUT_CONFIG_VERSION=${ENGINE_ROLLOUT_CFGVER})
+# Build identity is consumed only by break_version.c inside this target; the
+# test target injects the same value itself.
+target_compile_definitions(engine PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
 
 if(WIN32 AND STREAMLINE_ROOT)
     enable_language(CXX)
@@ -3856,6 +3906,97 @@ endif()
     target_include_directories(test_alloc PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_alloc PRIVATE m)
     add_test(NAME test_alloc COMMAND test_alloc)
+
+    # test_break_version: product version/build identity (core TU, like log.c)
+    add_executable(test_break_version tests/test_break_version.c src/core/break_version.c)
+    target_include_directories(test_break_version PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_version PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+    target_link_libraries(test_break_version PRIVATE m)
+    add_test(NAME test_break_version COMMAND test_break_version)
+
+    # Stage 5 Phase A Task 3: write-side PAL (PlatformAtomicWriter /
+    # platform_mkdir / platform_file_size). platform_fs.c's single production
+    # owner is the engine target; this test compiles the TU inline (the
+    # test_editor_assets precedent — exactly one definition per binary).
+    add_executable(test_platform_fs_write tests/test_platform_fs_write.c src/platform/platform_fs.c)
+    target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_fs_write PRIVATE m)
+    add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
+    set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
+
+    # Stage 5 Phase A Task 2: break_crypto known-answer/misuse tests link the
+    # formal library; the contract ctest pins the target shape, the
+    # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
+    # (exactly 8 public symbols), and a minimal archive-only link test.
+    if(BREAK_ENABLE_CRYPTO)
+        add_executable(test_break_crypto tests/test_break_crypto.c)
+        target_include_directories(test_break_crypto PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_crypto PRIVATE break_crypto)
+        add_test(NAME test_break_crypto COMMAND test_break_crypto)
+
+        # The contract script compiles a tiny checker against the production
+        # archive with the system compiler; sanitizer trees must propagate
+        # their instrumentation flags or the archive's sanitizer runtime
+        # references would not resolve.
+        set(BREAK_CRYPTO_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_crypto_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRYPTO_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DCRYPTO_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
+                -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
+        set_tests_properties(test_break_crypto_target_contract PROPERTIES
+            LABELS "headless;crypto;platform_contract")
+
+        # Stage 5 Phase A Task 4: break_update tests link the formal library
+        # (PUBLIC break_crypto chain); platform_fs.c compiles inline (the
+        # test_platform_fs_write precedent — engine keeps sole production
+        # ownership of that TU, exactly one definition per binary). The
+        # contract ctest pins the target shape, the no-link rule, the nm
+        # export gate (exactly 15 public symbols), and a minimal archive
+        # link test.
+        add_executable(test_break_update tests/test_break_update.c src/platform/platform_fs.c)
+        target_include_directories(test_break_update PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_update PRIVATE break_update m)
+        add_test(NAME test_break_update COMMAND test_break_update)
+
+        # Sanitizer trees propagate their flags to the contract's
+        # system-compiler link test (the crypto contract precedent).
+        set(BREAK_UPDATE_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_update_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DUPDATE_CONTRACT_ARCHIVE=$<TARGET_FILE:break_update>
+                -DUPDATE_CONTRACT_CRYPTO_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DUPDATE_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
+                -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
+        set_tests_properties(test_break_update_target_contract PROPERTIES
+            LABELS "headless;update;platform_contract")
+    endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
     add_executable(test_pbr_math tests/test_pbr_math.c)

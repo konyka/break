@@ -59,12 +59,14 @@
 
 ## Stage 5 — Online update/crash/security
 
-- [ ] Signed manifest/content-addressed package design
-- [ ] Download/resume/A-B/rollback implementation plan
-- [ ] Crash context/spool/upload/symbolization design
-- [ ] Authentication/replay/rate-limit threat model
-- [ ] Anti-cheat trust-boundary design
-- [ ] Security review and release configuration tests
+> Phase A 已交付（2026-10-24 Tasks 1-5，branch `sdd/stage5-security-foundations`，提交范围 `515ee51a..HEAD`）：威胁模型/安全契约文档 `docs/design/security_threat_model.md` + 版本身份 `break_version` 0.1.0+buildid + `break_crypto`（系统 OpenSSL 3.5.9 EVP：SHA-256/HMAC-SHA256/Ed25519 verify/CSPRNG，零自造密码学，`BREAK_ENABLE_CRYPTO` fail-closed 门控）+ 写侧 PAL 原子写（`PlatformAtomicWriter` fsync file→rename→fsync dir）+ `break_update`（签名 canonical manifest + 内容寻址 chunk store，**仅客户端离线验证**）。测试 `test_break_version` 7 / `test_break_crypto` 20 / `test_platform_fs_write` 10 / `test_break_update` 19 在 `build-sdd-p5a`（normal，全量非图形套件 196=195+1skip 零失败）/`-asan`（×3 零报告）/`-tsan`（×5 零报告）三树全绿；六个 target contract ctest 三树 6/6（两新库不泄入 engine/demos/editor 链接闭包）；`ENGINE_BUILD_TESTS=OFF` 树全部 production target 构建成功。下载/续传/A-B/回滚、崩溃 capture/spool/upload、传输认证、重放/限速/反篡改**实现**均未交付（子项目 2-5，后续 Phase 计划）；Win32 lane 与 fuzz lane 未跑（fuzz `Not Run`）。任务报告 `.superpowers/sdd/2026-10-24-stage5-security-foundations/task-{1..5}-report.md`。
+
+- [x] Signed manifest/content-addressed package design（**超出 design**：Phase A 已交付格式 + 客户端离线验证实现 `break_update` 19/19 + `break_crypto` 20/20；下载/激活不在内——见下项）
+- [ ] Download/resume/A-B/rollback implementation plan（**未交付**：Phase A 无任何下载/传输代码，实现计划属后续 Phase B）
+- [ ] Crash context/spool/upload/symbolization design（**未交付**：仅脱敏契约设计已交付——`security_threat_model.md` §6；capture/spool/upload/symbolization 设计与实现均 pending）
+- [x] Authentication/replay/rate-limit threat model（威胁模型**文档**已交付——`security_threat_model.md` §5 传输认证范围声明 + §7 重放/限速模型声明；**实现未交付**）
+- [x] Anti-cheat trust-boundary design（信任边界 + 反篡改成本模型设计已交付——`security_threat_model.md` §2；任何反篡改**代码**未交付）
+- [ ] Security review and release configuration tests（安全评审**文档**已交付——`security_threat_model.md`（§10 NOT-delivered 清单经代码交叉核对）；release 配置**测试**不存在——Phase A 无任何更新路径，无 remote debug 通道）
 
 ## Stage 6 — Graphics API lifecycle
 
