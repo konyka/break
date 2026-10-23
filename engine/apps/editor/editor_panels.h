@@ -6,8 +6,9 @@
  * (virtualized my_list_view over break_editor_doc_entity_*), center 3D
  * viewport panel (Phase 2 Task 3: offscreen RHI render blitted into the
  * layout + pointer routing into the CPU viewport/gizmo core), right inspector
- * (selected entity name edit + editable component f32 fields), bottom console
- * (bounded 64-entry log ring on a read-only my_text_area), a status bar
+ * (selected entity name edit + editable component f32 fields), bottom row
+ * (Phase 3 Task 3: two columns — the bounded 64-entry console log ring on a
+ * read-only my_text_area left, the Lua console right), a status bar
  * (entity count / dirty marker / last command description), and a Ctrl+P
  * command palette (my_edit + filtered my_list_view over the registered
  * command names; executes on "activate").
@@ -74,11 +75,35 @@
  * GPU call ever happens (pinned by
  * viewport_render_without_device_is_bounded_noop).
  *
+ * Phase 3 Task 3 panels (design doc: docs/design/editor_panels_phase3.md):
+ *   - ASSETS browser under the outliner (bottom of the left column, h:40%):
+ *     path label + list_view over the Phase 3 Task 1 BreakEditorAssets
+ *     model; row 0 is always ".."; row click activates — dirs navigate,
+ *     a .bscn loads confirm-free via break_editor_doc_load (world swap +
+ *     undo-stack clear are the Phase 2 documented semantics; the load is
+ *     logged to the console ring), other files get a bounded note.
+ *   - LUA console at bottom-right: the bottom row became two columns —
+ *     console ring left (w:1f), Lua panel right (w:40%, my_edit + Enter
+ *     evaluates through the Phase 3 Task 2 BreakEditorLuaConsole; core
+ *     output lines land in the SHARED console ring prefixed "lua| ").
+ *     my_edit has no history recall, so the panel owns a bounded 32-entry
+ *     history with Up/Down set_text recall.
+ *   - PROFILER view under the inspector (h:30%): pure view — snapshots
+ *     profiler_last_frame() at <= 4 Hz from break_editor_shell_tick into
+ *     top-N (N<=16) "<name> <ms> ms" rows; NEVER mutates profiler state.
+ *   The panel structs are opaque to the shell (one pointer each);
+ *   cross-TU wiring goes through editor_shell_internal.h (the
+ *   editor_viewport3d.c precedent).
+ *
  * Bounds: console ring 64 entries x 128 bytes; palette filter and name edits
  * capped at 127 codepoints (name cap is the doc's BREAK_EDITOR_NAME_CAPACITY);
  * scene path capped at BREAK_EDITOR_SCENE_PATH_CAPACITY; the row-click
  * context pool is fixed at 64 entries per shell (virtualized lists create
  * only visible+1 rows; on exhaustion rows still render but lose click).
+ * Phase 3 Task 3 additions: assets row-click pool 32; Lua history 32 entries
+ * x 1024 bytes + 255-codepoint edit cap (an edit-sourced line always fits a
+ * history entry); profiler snapshot 16 rows x 80 bytes refreshed at <= 4 Hz;
+ * assets/profiler paths and rows bounded by the Task 1 model caps.
  *
  * Threading: single-owner-thread convention, same as the document. */
 
@@ -172,3 +197,29 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
                                         void *rhi_device, void *rhi_cmd,
                                         int drawable_w, int drawable_h,
                                         int logical_w, int logical_h);
+
+/* ---------------- Phase 3 Task 3: assets / lua / profiler panels --------- */
+
+/* Re-roots the assets browser model (BreakEditorAssets, Task 1) at an
+ * existing directory; the assets panel refreshes to the new root. Bounded
+ * false for NULL shell/path, an over-cap path, or an unlistable root (the
+ * previous model is kept). The default root at shell create is "." (the
+ * process cwd). */
+bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
+                                        const char *root_path);
+/* Assets panel row count INCLUDING the always-present ".." top row. */
+usize break_editor_shell_assets_row_count(const BreakEditorShell *shell);
+/* Borrowed assets path label text ("assets: /<rel>"). */
+const char *break_editor_shell_assets_path_text(const BreakEditorShell *shell);
+
+/* Lua console history depth (bounded at 32 entries; my_edit has no history
+ * recall, so the panel owns it — Up/Down set_text). */
+usize break_editor_shell_lua_history_count(const BreakEditorShell *shell);
+
+/* Profiler panel snapshot rows (top-N by duration, N <= 16, refreshed from
+ * profiler_last_frame at <= 4 Hz from break_editor_shell_tick; the panel is
+ * a pure view and NEVER mutates profiler state). row_text returns a borrowed
+ * "<name> <ms> ms" line, NULL out of range. */
+usize break_editor_shell_profiler_row_count(const BreakEditorShell *shell);
+const char *break_editor_shell_profiler_row_text(const BreakEditorShell *shell,
+                                                 usize i);

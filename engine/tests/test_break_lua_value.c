@@ -1081,6 +1081,390 @@ TEST(oom_injection_on_call_and_frame_is_bounded)
     break_lua_runtime_destroy(rt);
 }
 
+/* ------------------------------------------------------------------ */
+/* Function references (Stage 4 Phase 3 Task 2 review addition):        */
+/* host-pinned chunk functions, invoked without re-consulting the env.  */
+/* ------------------------------------------------------------------ */
+
+static const char kChunkRefPin[] =
+    "marker = 1\n"
+    "function get() return marker end\n"
+    "function clobber() get = function() return 999 end end\n";
+
+static const char kChunkRefPinV2[] =
+    "marker = 2\n"
+    "function get() return marker end\n";
+
+static const char kChunkManyFns[] =
+    "function f1() return 1 end\n"
+    "function f2() return 2 end\n"
+    "function f3() return 3 end\n"
+    "function f4() return 4 end\n"
+    "function f5() return 5 end\n"
+    "function f6() return 6 end\n"
+    "function f7() return 7 end\n"
+    "function f8() return 8 end\n"
+    "function f9() return 9 end\n"
+    "function f10() return 10 end\n"
+    "function f11() return 11 end\n"
+    "function f12() return 12 end\n"
+    "function f13() return 13 end\n"
+    "function f14() return 14 end\n"
+    "function f15() return 15 end\n"
+    "function f16() return 16 end\n"
+    "function f17() return 17 end\n";
+
+/* The core pin (NEW-C3 class): an env-field overwrite between capture and
+ * call substitutes the function for name-based calls but can NEVER touch
+ * the pinned reference. */
+TEST(fnref_pin_is_immune_to_env_field_overwrite)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u32 ref = UINT32_MAX;
+    BreakLuaValue ret;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkRefPin,
+                                            chunk_len(kChunkRefPin)),
+              BREAK_LUA_OK);
+
+    /* Capture after commit, before any chunk code runs (the documented
+     * window): the pinned function is the chunk-defined get. */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "get", &ref),
+              BREAK_LUA_OK);
+    ASSERT_TRUE(ref < BREAK_LUA_MAX_FN_REFS);
+
+    /* The chunk clobbers its own env field (the console-body channel). */
+    ASSERT_EQ(break_lua_runtime_call(rt, "m", "clobber", NULL, 0u, NULL, 0u),
+              BREAK_LUA_OK);
+
+    /* Name-based call resolves the substituted function (the raw env rule
+     * is live lookup); the pin still invokes the ORIGINAL. */
+    memset(&ret, 0, sizeof(ret));
+    ASSERT_EQ(break_lua_runtime_call(rt, "m", "get", NULL, 0u, &ret, 1u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ret.type, BREAK_LUA_VALUE_NUMBER);
+    ASSERT_EQ(ret.as.n, 999.0);
+    memset(&ret, 0, sizeof(ret));
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref, NULL, 0u, &ret, 1u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ret.type, BREAK_LUA_VALUE_NUMBER);
+    ASSERT_EQ(ret.as.n, 1.0);
+
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, ref), BREAK_LUA_OK);
+    break_lua_runtime_destroy(rt);
+}
+
+/* A pinned function survives the module's reload: its upvalues are the
+ * RETIRED chunk's environment (documented — callers re-capture after a
+ * reload to get the new version). */
+TEST(fnref_survives_reload_with_retired_environment)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u32 ref_v1 = UINT32_MAX;
+    u32 ref_v2 = UINT32_MAX;
+    BreakLuaValue ret;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkRefPin,
+                                            chunk_len(kChunkRefPin)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "get", &ref_v1),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_reload_module(rt, "m", kChunkRefPinV2,
+                                              chunk_len(kChunkRefPinV2),
+                                              NULL),
+              BREAK_LUA_OK);
+
+    memset(&ret, 0, sizeof(ret));
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_v1, NULL, 0u, &ret, 1u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ret.as.n, 1.0); /* v1's retired environment: marker stays 1 */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "get", &ref_v2),
+              BREAK_LUA_OK);
+    memset(&ret, 0, sizeof(ret));
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_v2, NULL, 0u, &ret, 1u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ret.as.n, 2.0); /* re-captured: the live v2 environment */
+
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, ref_v1), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, ref_v2), BREAK_LUA_OK);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(fnref_admission_errors)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u32 ref = 0u;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkRefPin,
+                                            chunk_len(kChunkRefPin)),
+              BREAK_LUA_OK);
+
+    ASSERT_EQ(break_lua_runtime_ref_function(NULL, "m", "get", &ref),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, NULL, "get", &ref),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", NULL, &ref),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "get", NULL),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "", "get", &ref),
+              BREAK_LUA_INVALID);
+    /* Unknown module names STALE (same contract as reload/call). */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "nosuch", "get", &ref),
+              BREAK_LUA_STALE);
+    /* Missing field, non-function field, and whitelist-fallback names are
+     * all INVALID (raw-field rule, same as call). */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "nosuchfn", &ref),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "marker", &ref),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "tostring", &ref),
+              BREAK_LUA_INVALID);
+    /* On every failure out_ref is untouched... */
+    ASSERT_EQ(ref, 0u);
+
+    /* call_ref handle validation: out-of-range and free-slot are INVALID. */
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, BREAK_LUA_MAX_FN_REFS, NULL, 0u,
+                                         NULL, 0u),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, 3u, NULL, 0u, NULL, 0u),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_call_ref(NULL, 0u, NULL, 0u, NULL, 0u),
+              BREAK_LUA_INVALID);
+    /* unref validation: same classes, bounded INVALID (no fail-stop). */
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, 3u), BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, BREAK_LUA_MAX_FN_REFS),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_unref_function(NULL, 0u), BREAK_LUA_INVALID);
+
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(fnref_table_full_is_bounded_overload)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u32 refs[BREAK_LUA_MAX_FN_REFS];
+    u32 extra = 0u;
+    char name[8];
+    u32 i;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkManyFns,
+                                            chunk_len(kChunkManyFns)),
+              BREAK_LUA_OK);
+    for (i = 0u; i < BREAK_LUA_MAX_FN_REFS; i++) {
+        snprintf(name, sizeof(name), "f%u", i + 1u);
+        ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", name, &refs[i]),
+                  BREAK_LUA_OK);
+    }
+    /* The 17th raw function field cannot be pinned: bounded OVERLOAD. */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "f17", &extra),
+              BREAK_LUA_OVERLOAD);
+    /* A freed handle is INVALID for call_ref, and double-unref is INVALID. */
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, refs[3]), BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, refs[3], NULL, 0u, NULL, 0u),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, refs[3]),
+              BREAK_LUA_INVALID);
+    /* ...and freeing a slot lets the 17th pin succeed (reusing the slot). */
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "f17", &extra),
+              BREAK_LUA_OK);
+    ASSERT_EQ(extra, 3u); /* slot reuse: the freed slot is the first free */
+
+    for (i = 0u; i < BREAK_LUA_MAX_FN_REFS; i++) {
+        if (i != 3u) {
+            ASSERT_EQ(break_lua_runtime_unref_function(rt, refs[i]),
+                      BREAK_LUA_OK);
+        }
+    }
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, extra), BREAK_LUA_OK);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(fnref_call_ref_marshalling_parity)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u32 ref_mix = UINT32_MAX;
+    u32 ref_boom = UINT32_MAX;
+    u32 ref_tab = UINT32_MAX;
+    u32 ref_long = UINT32_MAX;
+    u32 ref_echo = UINT32_MAX;
+    BreakLuaValue args[4];
+    BreakLuaValue rets[4];
+    BreakLuaValue long_arg;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkMix,
+                                            chunk_len(kChunkMix)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "b", kChunkBoom,
+                                            chunk_len(kChunkBoom)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "t", kChunkTable,
+                                            chunk_len(kChunkTable)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "l", kChunkLongStr,
+                                            chunk_len(kChunkLongStr)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "e", kChunkEcho,
+                                            chunk_len(kChunkEcho)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "m", "mix", &ref_mix),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "b", "boom", &ref_boom),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "t", "tab", &ref_tab),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "l", "longstr", &ref_long),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(rt, "e", "echo", &ref_echo),
+              BREAK_LUA_OK);
+
+    /* Round-trip parity with runtime_call (same arg shape as the call
+     * suite: leading NIL, then bool/number/string). */
+    memset(&args[0], 0, sizeof(args[0]));
+    args[0].type = BREAK_LUA_VALUE_NIL;
+    args[1] = value_bool(true);
+    args[2] = value_number(21.0);
+    args[3] = value_string("hi");
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_mix, args, 4u, rets, 4u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_TRUE(rets[0].as.b); /* a == nil */
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_TRUE(rets[1].as.b);
+    ASSERT_EQ(rets[2].type, BREAK_LUA_VALUE_NUMBER);
+    ASSERT_EQ(rets[2].as.n, 42.0);
+    ASSERT_EQ(rets[3].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[3].as.s.data, "hi!");
+
+    /* Lua error -> FAILED; unrepresentable return -> FAILED; over-long
+     * return string -> OVERLOAD; over-long string arg -> OVERLOAD. */
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_boom, NULL, 0u, rets, 1u),
+              BREAK_LUA_FAILED);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_NIL); /* NIL-prefilled */
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_tab, NULL, 0u, rets, 1u),
+              BREAK_LUA_FAILED);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_long, NULL, 0u, rets, 1u),
+              BREAK_LUA_OVERLOAD);
+    long_arg = value_string_len("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                                "cccccccccccccccccccccccccccccccc"
+                                "dddddddddddddddddddddddddddddddd", 128u);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_echo, &long_arg, 1u, rets,
+                                         1u),
+              BREAK_LUA_OVERLOAD);
+    /* Count caps mirror call: > max_values is OVERLOAD (defaults 64). */
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_echo, args, 65u, NULL, 0u),
+              BREAK_LUA_OVERLOAD);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_echo, NULL, 0u, rets, 65u),
+              BREAK_LUA_OVERLOAD);
+    /* NULL args/returns with non-zero counts are INVALID. */
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_echo, NULL, 1u, NULL, 0u),
+              BREAK_LUA_INVALID);
+    ASSERT_EQ(break_lua_runtime_call_ref(rt, ref_echo, NULL, 0u, NULL, 1u),
+              BREAK_LUA_INVALID);
+
+    break_lua_runtime_destroy(rt);
+}
+
+static BreakLuaRuntime *g_fnref_rt;
+static BreakLuaError g_fnref_ref_err;
+static BreakLuaError g_fnref_call_err;
+static BreakLuaError g_fnref_unref_err;
+
+static PLATFORM_THREAD_RET fnref_probe_worker(PLATFORM_THREAD_ARG arg)
+{
+    BreakLuaValue ret;
+    u32 out = 0u;
+    (void)arg;
+    g_fnref_ref_err =
+        break_lua_runtime_ref_function(g_fnref_rt, "m", "get", &out);
+    g_fnref_call_err = break_lua_runtime_call_ref(g_fnref_rt, 0u, NULL, 0u,
+                                                  &ret, 1u);
+    g_fnref_unref_err = break_lua_runtime_unref_function(g_fnref_rt, 0u);
+    return PLATFORM_THREAD_RETURN;
+}
+
+TEST(fnref_apis_reject_non_owner_threads)
+{
+    PlatformThread t;
+    u32 ref = 0u;
+    g_fnref_rt = break_lua_runtime_create(NULL);
+    ASSERT_NOT_NULL(g_fnref_rt);
+    ASSERT_EQ(break_lua_runtime_load_module(g_fnref_rt, "m", kChunkRefPin,
+                                            chunk_len(kChunkRefPin)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_ref_function(g_fnref_rt, "m", "get", &ref),
+              BREAK_LUA_OK);
+    ASSERT_EQ(ref, 0u);
+
+    g_fnref_ref_err = BREAK_LUA_OK;
+    g_fnref_call_err = BREAK_LUA_OK;
+    g_fnref_unref_err = BREAK_LUA_OK;
+    ASSERT_TRUE(platform_thread_create(&t, fnref_probe_worker, NULL));
+    platform_thread_join(t);
+    ASSERT_EQ(g_fnref_ref_err, BREAK_LUA_REJECTED);
+    ASSERT_EQ(g_fnref_call_err, BREAK_LUA_REJECTED);
+    ASSERT_EQ(g_fnref_unref_err, BREAK_LUA_REJECTED);
+
+    /* The handle is still live for the owner. */
+    {
+        BreakLuaValue ret;
+        ASSERT_EQ(break_lua_runtime_call_ref(g_fnref_rt, ref, NULL, 0u, &ret,
+                                             1u),
+                  BREAK_LUA_OK);
+        ASSERT_EQ(ret.as.n, 1.0);
+    }
+    ASSERT_EQ(break_lua_runtime_unref_function(g_fnref_rt, ref),
+              BREAK_LUA_OK);
+    break_lua_runtime_destroy(g_fnref_rt);
+    g_fnref_rt = NULL;
+}
+
+TEST(fnref_ref_function_oom_is_bounded)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    u64 budget;
+    u32 ref = 999u;
+    BreakLuaError err;
+    ASSERT_NOT_NULL(rt);
+    break_lua_test_set_alloc_budget(BREAK_LUA_TEST_ALLOC_DISABLED);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkRefPin,
+                                            chunk_len(kChunkRefPin)),
+              BREAK_LUA_OK);
+
+    /* The pin path's only allocation is interning the name / growing the
+     * registry — with "get" already interned from the load, budget 0 may
+     * legitimately SUCCEED (no allocation needed). So: any failure must be
+     * a bounded OOM consuming no slot, and enough budget must succeed. */
+    break_lua_test_set_alloc_budget(0u);
+    err = break_lua_runtime_ref_function(rt, "m", "get", &ref);
+    break_lua_test_set_alloc_budget(BREAK_LUA_TEST_ALLOC_DISABLED);
+    if (err != BREAK_LUA_OK) {
+        ASSERT_EQ(err, BREAK_LUA_OOM);
+        ASSERT_EQ(ref, 999u); /* out_ref untouched on failure */
+    } else {
+        ASSERT_EQ(break_lua_runtime_unref_function(rt, ref), BREAK_LUA_OK);
+        ref = 999u;
+    }
+
+    /* Doubling probe over the pin path: every failure bounded. */
+    budget = 1u;
+    for (;;) {
+        break_lua_test_set_alloc_budget(budget);
+        err = break_lua_runtime_ref_function(rt, "m", "get", &ref);
+        if (err == BREAK_LUA_OK) {
+            break;
+        }
+        ASSERT_EQ(err, BREAK_LUA_OOM);
+        ASSERT_TRUE(budget <= (1u << 20));
+        budget *= 2u;
+    }
+    break_lua_test_set_alloc_budget(BREAK_LUA_TEST_ALLOC_DISABLED);
+    ASSERT_EQ(break_lua_runtime_unref_function(rt, ref), BREAK_LUA_OK);
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(call_round_trips_mixed_args_and_returns);
     RUN_TEST(call_return_nil_padding_and_extra_discard);
@@ -1109,4 +1493,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(instruction_budget_disabled_by_default_runs_long_hook);
     RUN_TEST(frame_end_without_begin_is_an_independent_dispatch);
     RUN_TEST(oom_injection_on_call_and_frame_is_bounded);
+    RUN_TEST(fnref_pin_is_immune_to_env_field_overwrite);
+    RUN_TEST(fnref_survives_reload_with_retired_environment);
+    RUN_TEST(fnref_admission_errors);
+    RUN_TEST(fnref_table_full_is_bounded_overload);
+    RUN_TEST(fnref_call_ref_marshalling_parity);
+    RUN_TEST(fnref_apis_reject_non_owner_threads);
+    RUN_TEST(fnref_ref_function_oom_is_bounded);
 TEST_MAIN_END()

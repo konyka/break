@@ -285,6 +285,20 @@ BreakLuaError break_lua_runtime_check_owner(const BreakLuaRuntime *runtime)
     return BREAK_LUA_OK;
 }
 
+/* Documented lifetime diagnostic (see break_lua.h): 0 for NULL or a
+ * non-owner caller (bounded no-op query, same convention as the other
+ * owner-only value-returning probes — no error channel exists here). */
+u64 break_lua_runtime_budget_trip_count(const BreakLuaRuntime *runtime)
+{
+    if (!runtime) {
+        return 0u;
+    }
+    if (break_lua_runtime_check_owner(runtime) != BREAK_LUA_OK) {
+        return 0u;
+    }
+    return runtime->budget_trip_total;
+}
+
 #if defined(BREAK_LUA_TESTING)
 void *break_lua_test_lua_state(BreakLuaRuntime *runtime)
 {

@@ -396,6 +396,7 @@ add_library(engine STATIC
     src/platform/platform_display_media.c
     src/platform/platform_vk_surface.c
     src/platform/platform_text.c
+    src/platform/platform_fs.c
     src/platform/time.c
     src/platform/filewatch.c
     src/platform/filewatch_backend.c
@@ -879,8 +880,13 @@ target_link_libraries(break_lua PUBLIC lua)
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
 # command-based undo/redo stack, BSCN + sidecar scene save/load, the
 # bounded editable-component registry (inspector data model + undoable
-# field/add/remove-component commands), and the Phase 2 viewport CPU core
-# (orbit camera, screen->world ray, BVH picking).
+# field/add/remove-component commands), the Phase 2 viewport CPU core
+# (orbit camera, screen->world ray, BVH picking), the Phase 3 asset
+# browser model (editor_assets.c — pure CPU directory view model), and the
+# Phase 3 Lua console core (editor_lua.c — owns one Stage 3 BreakLuaRuntime
+# + ECS batch; hence the PUBLIC break_lua link: consumers of break_editor
+# (the editor executable, tests) inherit it, while engine/engine_demo/
+# dxx_break never link break_editor and so never see break_lua symbols).
 # Top-level like the other formal optional libraries (runtime_core/break_lua
 # precedent) — built regardless of ENGINE_BUILD_TESTS, and deliberately NOT
 # linked into engine, engine_demo, or dxx_break; the editor shell (Phase 1
@@ -893,11 +899,16 @@ target_link_libraries(break_lua PUBLIC lua)
 # first, so the engine archive's copies are never pulled (nm-verified, same
 # as scene_serial). The viewport's remaining includes resolve header-only
 # (math/math.h vector/quaternion helpers are static inline) or via
-# break_ecs_replication (core/log.c).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
+# break_ecs_replication (core/log.c). platform_fs.c is NOT compiled here
+# either (Phase 3 Task 1 decision): its single production owner is the
+# engine target (its platform siblings live there) and the editor
+# executable resolves platform_list_dir from libengine.a; editor tests
+# compile the TU inline instead (test_editor_assets).
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
+target_link_libraries(break_editor PUBLIC break_lua)
 
 # Vendored stb single-header implementations are shared by the engine asset
 # pipeline, myui's font/image backends, and the dxx application.
@@ -1283,6 +1294,15 @@ engine_link_rhi_backend(dxx_break)
 # copy is then simply never pulled (the executable's own object defines the
 # symbols first) — no duplicate definitions.
 #
+# Phase 3 Task 3: + the three panel TUs (assets browser / Lua console /
+# profiler view; the panel structs are opaque to the shell — see
+# apps/editor/editor_shell_internal.h). The Lua console panel references
+# break_editor_lua_*, so editor_lua.o and the break_lua archive are now
+# pulled into the binary — break_lua is listed EXPLICITLY (it also arrives
+# via break_editor's PUBLIC link, Task 2); the contract ctest pins this
+# line. engine/engine_demo/dxx_break still link neither break_editor nor
+# break_lua (consumer no-link scan unchanged).
+#
 # Link-order note (carried review item): libbreak_editor.a and libengine.a
 # BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
 # engine compiles src/scene/scene_serial.c inline). Static archives only pull
@@ -1293,6 +1313,8 @@ engine_link_rhi_backend(dxx_break)
 # definition in the binary).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c
+    apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+    apps/editor/editor_panel_profiler.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -1301,7 +1323,7 @@ target_include_directories(editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
-target_link_libraries(editor PRIVATE break_editor break_myui engine m)
+target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
@@ -3448,25 +3470,29 @@ endif()
     set_tests_properties(test_break_lua_target_contract PROPERTIES
         LABELS "headless;break_lua;platform_contract")
 
-    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 focused
+    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1+2 + Phase 3
+    # Task 1+2 focused
     # tests. The test-only
-    # break_editor_test variant compiles the same nine translation units
+    # break_editor_test variant compiles the same eleven translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
     # component commands and the gizmo's drag command, sidecar read buffer,
-    # and the viewport pick's proxy AABB array / entity-id map / BVH
-    # struct), mirroring the
+    # the viewport pick's proxy AABB array / entity-id map / BVH
+    # struct, the assets model's struct / 4096-entry cache /
+    # visible-index array, and the Lua console struct), mirroring the
     # break_lua_test / BREAK_LUA_TESTING pattern; the
     # production break_editor target (top-level, defined independent of
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
-    # engine_demo, or dxx_break.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
+    # engine_demo, or dxx_break. The variant links break_lua_test (not
+    # break_lua) so console-core tests share the Lua-side injection hooks.
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
+    target_link_libraries(break_editor_test PUBLIC break_lua_test)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
     target_include_directories(test_editor_doc PRIVATE ${TEST_INCLUDE_DIRS})
@@ -3516,6 +3542,43 @@ endif()
     add_test(NAME test_editor_gizmo COMMAND test_editor_gizmo)
     set_tests_properties(test_editor_gizmo PROPERTIES LABELS "headless;editor")
 
+    # Stage 4 scene editor Phase 3 Task 1: asset browser model +
+    # platform_list_dir. platform_fs.c's single production owner is the
+    # engine target (its platform siblings live there); break_editor and
+    # break_editor_test deliberately do NOT compile it — the editor
+    # executable resolves platform_list_dir from libengine.a, and this test
+    # compiles the production TU inline (the test_scene_serial /
+    # test_editor_shell inline-copy precedent). Exactly one definition per
+    # binary.
+    add_executable(test_editor_assets tests/test_editor_assets.c src/platform/platform_fs.c)
+    target_include_directories(test_editor_assets PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_assets PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_assets PRIVATE break_editor_test)
+    add_test(NAME test_editor_assets COMMAND test_editor_assets)
+    set_tests_properties(test_editor_assets PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 3 Task 2: Lua console core. Links BOTH test
+    # variants: break_editor_test (BREAK_EDITOR_TESTING=1 editor allocation
+    # hooks) and break_lua_test (BREAK_LUA_TESTING=1 Lua-side hooks — the
+    # console's runtime/batch allocations are injected through its budget).
+    # platform_thread.h drives the owner-thread rejection probe (the
+    # test_break_lua_runtime precedent).
+    add_executable(test_editor_lua tests/test_editor_lua.c)
+    target_include_directories(test_editor_lua PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_lua PRIVATE BREAK_EDITOR_TESTING=1)
+    target_compile_definitions(test_editor_lua PRIVATE BREAK_LUA_TESTING=1)
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_editor_lua PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+        target_link_libraries(test_editor_lua PRIVATE pthread m)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_editor_lua PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+        target_link_libraries(test_editor_lua PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_editor_lua PRIVATE break_editor_test break_lua_test)
+    add_test(NAME test_editor_lua COMMAND test_editor_lua)
+    set_tests_properties(test_editor_lua PROPERTIES LABELS "headless;editor")
+
     # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
     # production editor_panels.c translation unit directly (the
     # test_scene_serial inline-copy precedent) plus the dummy PAL port (the
@@ -3529,14 +3592,33 @@ endif()
     # symbol, never exercised on the dummy-PAL canvas) + shader_io.c (the
     # viewport's shader-source lookup) + rhi_stubs.c (the renderer TUs
     # reference rhi_* symbols; no device exists so none are called).
+    # Phase 3 Task 3: + the three panel TUs (editor_panel_assets.c /
+    # editor_panel_lua.c / editor_panel_profiler.c) and their support TUs
+    # compiled inline — platform_fs.c (the assets model's platform_list_dir;
+    # the test_editor_assets precedent), profiler.c + time.c (the profiler
+    # panel reads profiler_last_frame; the engine target keeps sole
+    # production ownership of all three — exactly one definition per
+    # binary). break_lua symbols arrive transitively: break_editor_test
+    # links break_lua_test PUBLIC (Phase 3 Task 2).
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+        apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+        apps/editor/editor_panel_profiler.c
+        src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
         src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
         src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
     set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
     target_include_directories(test_editor_shell PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    # Phase 3 Task 3: time.c needs the same platform feature macros the
+    # engine target carries PUBLIC (the test_editor_lua precedent).
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_compile_definitions(test_editor_shell PRIVATE
+            ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_compile_definitions(test_editor_shell PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
     target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
     add_test(NAME test_editor_shell COMMAND test_editor_shell)
     set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")

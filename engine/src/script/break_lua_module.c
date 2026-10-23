@@ -5,6 +5,7 @@
 
 #include <lua/lauxlib.h>
 
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,12 +19,28 @@
  * lua_pcall by break_lua_op_run(). The closure itself is fetched from the
  * registry with lua_rawgeti and its context pushed as a lightuserdata —
  * neither can allocate — so no Lua entry point on any facade path ever runs
- * unprotected. Inside a staged operation, chunk execution errors
- * deliberately propagate to that pcall: no registry reference is taken
- * until staging has fully succeeded, so unwinding is complete cleanup. The
+ * unprotected. Inside a staged operation, chunk execution runs under its
+ * own LOCAL lua_pcall when the instruction budget is armed (the
+ * per-coroutine count hook must be disarmed on every exit, so the error
+ * cannot be left to unwind to the wrapper); with the budget disabled the
+ * historical lua_call still propagates chunk errors to the wrapper pcall.
+ * Either way no registry reference is taken until staging has fully
+ * succeeded, so cleanup is complete. The
  * one exception is the old module's on_unload hook, which runs under its
  * own lua_pcall inside the commit operation because a hook failure must
  * discard the staged environment (unref) rather than unwind past it.
+ *
+ * NESTED ARMING LIMITATION (documented, production-unreachable): the
+ * staging and commit budget arming uses lua_sethook on the main coroutine,
+ * which REPLACES whatever hook is currently armed and whose disarm then
+ * clears it. A reload triggered from INSIDE a budget-armed frame hook would
+ * therefore destroy the outer hook's arming mid-flight (the outer hook's
+ * remainder runs unbudgeted, and the nested staging runs with a fresh full
+ * count). The production `break.*` surface deliberately exposes no reload
+ * binding, so this nesting is reachable only through the BREAK_LUA_TESTING
+ * reloader test binding; the test that exercises mid-dispatch reload
+ * (frame_mid_dispatch_reload_serves_pinned_old_environment) runs with the
+ * budget disabled.
  *
  * STACK DISCIPLINE: every operation restores lua_settop(base) on every exit
  * it controls; the wrapper's pcall unwinds anything it does not. The tests
@@ -90,11 +107,23 @@ void break_lua_op_take_error(lua_State *L, char *out, usize out_cap)
 {
     const char *msg;
     usize len;
-    int type = lua_type(L, -1);
+    int type;
     if (out_cap == 0u) {
         lua_pop(L, 1);
         return;
     }
+    /* The budget-trip sentinel maps to its canonical message text (the
+     * sentinel itself is a bare lightuserdata — it carries no position and
+     * must never be surfaced as an opaque "non-string" fallback). */
+    if (break_lua_is_budget_trip_error(L, -1)) {
+        msg = "break_lua: instruction budget exceeded";
+        len = strlen(msg);
+        memcpy(out, msg, len + 1u > out_cap ? out_cap : len + 1u);
+        out[out_cap - 1u] = '\0';
+        lua_pop(L, 1);
+        return;
+    }
+    type = lua_type(L, -1);
     if (type == LUA_TNUMBER) {
         int written = snprintf(out, out_cap, "%.14g", lua_tonumber(L, -1));
         (void)written;
@@ -126,10 +155,23 @@ static void break_lua_module_capture_error(lua_State *L,
 /* STAGE: build a fresh module environment wired to the preserved state
  * table, compile the candidate source as a text chunk, and execute it.
  * Errors from luaL_loadbufferx are returned, not thrown; chunk execution
- * errors propagate to the wrapper pcall (see file header). On success the
+ * errors are caught by a local lua_pcall when the budget is armed and
+ * propagate to the wrapper pcall when it is disabled (see file header).
+ * On success the
  * only registry reference (the staged environment) is taken last. The
  * environment's globals resolve to the Task 4 whitelist sandbox (never the
- * base global table): see break_lua_binding.c. */
+ * base global table): see break_lua_binding.c.
+ *
+ * STAGING BUDGET (Phase 3 Task 2 review fix): when the runtime config has
+ * an instruction_budget, the chunk execution runs under the same
+ * per-invocation LUA_MASKCOUNT hook as frame hooks — a chunk whose top
+ * level spins forever no longer hangs the host; the trip is a bounded
+ * BREAK_LUA_FAILED staging failure ("break_lua: instruction budget
+ * exceeded"), so a load registers nothing and a reload retains the old
+ * version. The hook is per-coroutine state and is always disarmed before
+ * returning (hence the local lua_pcall even though the wrapper pcall would
+ * catch the error anyway). Budget 0 keeps the historical unprotected
+ * lua_call path byte-for-byte. */
 static void break_lua_stage_impl(lua_State *L, BreakLuaRuntime *runtime,
                                  BreakLuaModuleOpCtx *ctx)
 {
@@ -178,7 +220,27 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaRuntime *runtime,
         ctx->hdr.error_line = 0u;
         return;
     }                                                    /* [state env chunk] */
-    lua_call(L, 0, 0);               /* chunk error: propagate to the pcall */
+    if (runtime->instruction_budget != 0u) {
+        /* Budgets above INT_MAX are clamped (same rule as the frame
+         * dispatch); lua_sethook takes an int count. */
+        const int budget_count =
+            (runtime->instruction_budget > (u64)INT_MAX)
+                ? INT_MAX
+                : (int)runtime->instruction_budget;
+        int run_status;
+        lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT, budget_count);
+        run_status = lua_pcall(L, 0, 0, 0); /* [state env] or [state env e] */
+        lua_sethook(L, NULL, 0, 0);
+        if (run_status != LUA_OK) {
+            ctx->hdr.status = (run_status == LUA_ERRMEM) ? BREAK_LUA_OOM
+                                                         : BREAK_LUA_FAILED;
+            break_lua_module_capture_error(L, ctx);
+            lua_settop(L, base);
+            return;
+        }
+    } else {
+        lua_call(L, 0, 0);         /* chunk error: propagate to the pcall */
+    }
     /* [state env] */
     ctx->new_env_ref = luaL_ref(L, LUA_REGISTRYINDEX);     /* [state] */
     ctx->hdr.status = BREAK_LUA_OK;
@@ -189,8 +251,12 @@ static void break_lua_stage_impl(lua_State *L, BreakLuaRuntime *runtime,
  * the old environment. On hook failure the staged environment is discarded
  * and the old one stays referenced (old version keeps serving). The hook
  * runs under its own pcall so its error lands here instead of unwinding
- * past the unref. */
-static void break_lua_commit_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
+ * past the unref. When the runtime has an instruction budget the hook is
+ * armed with the same count hook as staging/frame hooks (a forever-spinning
+ * on_unload vetoes the reload BOUNDED instead of hanging the host — the
+ * wedge stays the module's own policy choice). */
+static void break_lua_commit_impl(lua_State *L, BreakLuaRuntime *runtime,
+                                  BreakLuaModuleOpCtx *ctx)
 {
     int base = lua_gettop(L);
     int hook_status;
@@ -200,7 +266,19 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
     lua_pushliteral(L, "on_unload");
     lua_rawget(L, -2);                                     /* [env hook?] */
     if (lua_isfunction(L, -1)) {
+        const bool armed = runtime->instruction_budget != 0u;
+        if (armed) {
+            const int budget_count =
+                (runtime->instruction_budget > (u64)INT_MAX)
+                    ? INT_MAX
+                    : (int)runtime->instruction_budget;
+            lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT,
+                        budget_count);
+        }
         hook_status = lua_pcall(L, 0, 0, 0);       /* [env] or [env errmsg] */
+        if (armed) {
+            lua_sethook(L, NULL, 0, 0);
+        }
         if (hook_status != LUA_OK) {
             ctx->hdr.status = (hook_status == LUA_ERRMEM) ? BREAK_LUA_OOM
                                                           : BREAK_LUA_FAILED;
@@ -220,6 +298,33 @@ static void break_lua_commit_impl(lua_State *L, BreakLuaModuleOpCtx *ctx)
 /* Single dispatch entry for every protected facade op. The runtime arrives
  * as the closure's sole upvalue (set at bootstrap); the op ctx is argument
  * 1 (lightuserdata). Both fetches are allocation-free. */
+static void break_lua_fn_ref_impl(lua_State *L, BreakLuaFnRefOpCtx *ctx)
+{
+    int base = lua_gettop(L);
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->env_ref);       /* [env] */
+    lua_pushstring(L, ctx->function_name);
+    lua_rawget(L, -2);                                   /* [env fn?] */
+    /* Raw lookup only, same rule as break_lua_runtime_call: names that only
+     * resolve through the whitelist fallback are deliberately not
+     * pinnable. */
+    if (!lua_isfunction(L, -1)) {
+        ctx->hdr.status = BREAK_LUA_INVALID;
+        lua_settop(L, base);
+        return;
+    }
+    ctx->lua_ref = luaL_ref(L, LUA_REGISTRYINDEX);         /* [env] */
+    ctx->hdr.status = BREAK_LUA_OK;
+    lua_settop(L, base);
+}
+
+static void break_lua_fn_unref_impl(lua_State *L, BreakLuaFnRefOpCtx *ctx)
+{
+    /* luaL_unref on an existing registry slot is allocation-free; it still
+     * runs under the op pcall like every other Lua touch (discipline). */
+    luaL_unref(L, LUA_REGISTRYINDEX, ctx->lua_ref);
+    ctx->hdr.status = BREAK_LUA_OK;
+}
+
 static int break_lua_op_dispatch(lua_State *L)
 {
     BreakLuaRuntime *runtime =
@@ -233,10 +338,19 @@ static int break_lua_op_dispatch(lua_State *L)
         break_lua_stage_impl(L, runtime, (BreakLuaModuleOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_COMMIT:
-        break_lua_commit_impl(L, (BreakLuaModuleOpCtx *)hdr);
+        break_lua_commit_impl(L, runtime, (BreakLuaModuleOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_CALL:
         break_lua_call_impl(L, (BreakLuaCallOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_REF_FN:
+        break_lua_fn_ref_impl(L, (BreakLuaFnRefOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_UNREF_FN:
+        break_lua_fn_unref_impl(L, (BreakLuaFnRefOpCtx *)hdr);
+        break;
+    case BREAK_LUA_OP_CALL_REF:
+        break_lua_call_ref_impl(L, (BreakLuaCallRefOpCtx *)hdr);
         break;
     case BREAK_LUA_OP_FRAME:
         break_lua_frame_impl(L, runtime, (BreakLuaFrameOpCtx *)hdr);
@@ -540,6 +654,91 @@ void break_lua_module_registry_destroy(BreakLuaRuntime *runtime)
     free(runtime->modules);
     runtime->modules = NULL;
     runtime->module_count = 0u;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Function references (Stage 4 Phase 3 Task 2 review addition). The Lua  */
+/* touchpoints run as ops under the shared dispatch pcall; the slot table */
+/* is fixed C storage in the runtime struct (no allocation).              */
+
+BreakLuaError break_lua_runtime_ref_function(BreakLuaRuntime *runtime,
+                                             const char *module_name,
+                                             const char *function_name,
+                                             u32 *out_ref)
+{
+    BreakLuaFnRefOpCtx ctx;
+    BreakLuaModule *m;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaError err;
+    usize name_len;
+    usize fn_len;
+    u32 slot;
+
+    /* Owner check first (INVALID for NULL runtime, REJECTED cross-thread),
+     * then shape checks: nothing untrusted is inspected before validation. */
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (!out_ref || !module_name || !function_name) {
+        return BREAK_LUA_INVALID;
+    }
+    name_len = break_lua_name_len(module_name, BREAK_LUA_MAX_MODULE_NAME_BYTES);
+    fn_len = break_lua_name_len(function_name, BREAK_LUA_MAX_MODULE_NAME_BYTES);
+    if (name_len == 0u || name_len >= BREAK_LUA_MAX_MODULE_NAME_BYTES ||
+        fn_len == 0u || fn_len >= BREAK_LUA_MAX_MODULE_NAME_BYTES) {
+        return BREAK_LUA_INVALID;
+    }
+    m = break_lua_module_find(runtime, module_name);
+    if (!m) {
+        return BREAK_LUA_STALE;
+    }
+    for (slot = 0u; slot < BREAK_LUA_MAX_FN_REFS; slot++) {
+        if (!runtime->fn_ref_used[slot]) {
+            break;
+        }
+    }
+    if (slot == BREAK_LUA_MAX_FN_REFS) {
+        return BREAK_LUA_OVERLOAD;
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_REF_FN;
+    ctx.env_ref = m->env_ref;
+    ctx.function_name = function_name;
+    ctx.lua_ref = LUA_NOREF;
+    err = break_lua_op_run(runtime, &ctx.hdr);
+    if (err != BREAK_LUA_OK) {
+        return err;
+    }
+    runtime->fn_refs[slot] = ctx.lua_ref;
+    runtime->fn_ref_used[slot] = true;
+    *out_ref = slot;
+    return BREAK_LUA_OK;
+}
+
+BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
+                                               u32 ref)
+{
+    BreakLuaFnRefOpCtx ctx;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+    BreakLuaError err;
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (ref >= BREAK_LUA_MAX_FN_REFS || !runtime->fn_ref_used[ref]) {
+        /* Covers out-of-range, never-pinned, and double-unref: bounded
+         * INVALID, no fail-stop (documented). */
+        return BREAK_LUA_INVALID;
+    }
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_UNREF_FN;
+    ctx.lua_ref = runtime->fn_refs[ref];
+    err = break_lua_op_run(runtime, &ctx.hdr);
+    if (err == BREAK_LUA_OK) {
+        runtime->fn_ref_used[ref] = false;
+        runtime->fn_refs[ref] = LUA_NOREF;
+    }
+    return err;
 }
 
 #if defined(BREAK_LUA_TESTING)

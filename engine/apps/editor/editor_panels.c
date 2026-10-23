@@ -4,6 +4,7 @@
  * break_editor_undo/redo), and the bounds documentation. */
 
 #include "editor_panels.h"
+#include "editor_shell_internal.h"
 #include "editor_viewport3d.h"
 
 #include <stdarg.h>
@@ -102,6 +103,14 @@ struct BreakEditorShell {
     my_widget_t *viewport_widget;         /* weak (owned by the tree) */
     BreakEditorEntityId gizmo_attached;   /* reconcile cache */
 
+    /* Phase 3 Task 3 panels (opaque; owned by the shell, see
+     * editor_shell_internal.h for the create/build/destroy contract): assets
+     * browser under the outliner, Lua console at bottom-right, profiler view
+     * under the inspector. */
+    EditorPanelAssets *assets_panel;
+    EditorPanelLua *lua_panel;
+    EditorPanelProfiler *profiler_panel;
+
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
     u32 palette_match_count;
@@ -146,14 +155,14 @@ enum {
     PAL_TOOL_SCALE
 };
 
-static void shell_refresh_all(BreakEditorShell *shell);
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
 
 /* Bounded console log: appends one <=127-byte line to the ring, dropping the
  * oldest entry when full, and republishes the joined text to the read-only
- * console widget. */
-static void shell_log(BreakEditorShell *shell, const char *fmt, ...) {
+ * console widget. Non-static: the Phase 3 panels route their lines (lua|
+ * output, asset load notices) through it (editor_shell_internal.h). */
+void editor_shell_log(BreakEditorShell *shell, const char *fmt, ...) {
     char line[EDITOR_CONSOLE_LINE_BYTES];
     va_list ap;
     size_t pos = 0u;
@@ -318,12 +327,12 @@ static void on_name_edit_activate(void *ctx, const char *event, void *data) {
         return;
     }
     if (break_editor_doc_rename_entity(shell->doc, shell->selected, text)) {
-        shell_log(shell, "rename entity -> '%s'", text);
+        editor_shell_log(shell, "rename entity -> '%s'", text);
     } else {
-        shell_log(shell, "rename failed (name cap %u bytes)",
+        editor_shell_log(shell, "rename failed (name cap %u bytes)",
                   BREAK_EDITOR_NAME_CAPACITY);
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 static void on_field_edit_activate(void *ctx, const char *event, void *data) {
@@ -335,22 +344,22 @@ static void on_field_edit_activate(void *ctx, const char *event, void *data) {
     }
     (void)event;
     if (!break_editor_parse_f32(text, &value)) {
-        shell_log(fc->shell, "invalid f32: '%s'", text);
-        shell_refresh_all(fc->shell);
+        editor_shell_log(fc->shell, "invalid f32: '%s'", text);
+        editor_shell_refresh_all(fc->shell);
         return;
     }
     if (break_editor_doc_set_field_f32(fc->shell->doc, fc->shell->selected,
                                        fc->component_id, fc->field_index,
                                        value)) {
-        shell_log(fc->shell, "set %s field %u = %g",
+        editor_shell_log(fc->shell, "set %s field %u = %g",
                   fc->component_id == BREAK_EDITOR_COMPONENT_TRANSFORM
                       ? "transform"
                       : "component",
                   (unsigned)fc->field_index, (double)value);
     } else {
-        shell_log(fc->shell, "set field failed");
+        editor_shell_log(fc->shell, "set field failed");
     }
-    shell_refresh_all(fc->shell);
+    editor_shell_refresh_all(fc->shell);
 }
 
 static void on_component_button_click(void *ctx, const char *event,
@@ -370,22 +379,22 @@ static void on_component_button_click(void *ctx, const char *event,
         /* add button */
         if (break_editor_doc_add_component(shell->doc, shell->selected,
                                            fc->component_id)) {
-            shell_log(shell, "add component %u", (unsigned)fc->component_id);
+            editor_shell_log(shell, "add component %u", (unsigned)fc->component_id);
         } else {
-            shell_log(shell, "add component %u failed",
+            editor_shell_log(shell, "add component %u failed",
                       (unsigned)fc->component_id);
         }
     } else {
         if (break_editor_doc_remove_component(shell->doc, shell->selected,
                                               fc->component_id)) {
-            shell_log(shell, "remove component %u",
+            editor_shell_log(shell, "remove component %u",
                       (unsigned)fc->component_id);
         } else {
-            shell_log(shell, "remove component %u failed",
+            editor_shell_log(shell, "remove component %u failed",
                       (unsigned)fc->component_id);
         }
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 /* Rebuilds the inspector subtree from the current selection. Bounded: at
@@ -575,11 +584,11 @@ static void on_row_click(void *ctx, const char *event, void *data) {
         BreakEditorShell *shell = rc->shell;
         if (rc->index < shell->palette_match_count) {
             u32 cmd = shell->palette_matches[rc->index];
-            shell_log(shell, "palette: %s", k_palette_commands[cmd]);
+            editor_shell_log(shell, "palette: %s", k_palette_commands[cmd]);
             shell_execute_palette_command(shell, cmd);
         }
         shell_palette_set_open(shell, false);
-        shell_refresh_all(shell);
+        editor_shell_refresh_all(shell);
     }
 }
 
@@ -760,17 +769,17 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
     BreakEditorEntityId id = break_editor_doc_add_entity(shell->doc, NULL);
     if (break_editor_entity_id_valid(id)) {
         const char *name = shell_entity_name(shell, id);
-        shell_log(shell, "add entity '%s'", name != NULL ? name : "?");
+        editor_shell_log(shell, "add entity '%s'", name != NULL ? name : "?");
         shell->selected = id;
     } else {
-        shell_log(shell, "add entity failed (bounded)");
+        editor_shell_log(shell, "add entity failed (bounded)");
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 static void shell_do_remove_selected(BreakEditorShell *shell) {
     if (!break_editor_entity_id_valid(shell->selected)) {
-        shell_log(shell, "remove: no selection");
+        editor_shell_log(shell, "remove: no selection");
         return;
     }
     {
@@ -785,27 +794,27 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
             name[0] = '\0';
         }
         if (break_editor_doc_remove_entity(shell->doc, shell->selected)) {
-            shell_log(shell, "remove entity '%s'",
+            editor_shell_log(shell, "remove entity '%s'",
                       name[0] != '\0' ? name : "?");
         } else {
-            shell_log(shell, "remove entity failed");
+            editor_shell_log(shell, "remove entity failed");
         }
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 static void shell_do_save(BreakEditorShell *shell) {
     if (!shell->scene_path_set) {
-        shell_log(shell, "save: no scene path configured");
+        editor_shell_log(shell, "save: no scene path configured");
         (void)snprintf(shell->note, sizeof(shell->note), "save: no path");
         shell_refresh_status(shell);
         return;
     }
     if (break_editor_doc_save(shell->doc, shell->scene_path)) {
-        shell_log(shell, "saved %s", shell->scene_path);
+        editor_shell_log(shell, "saved %s", shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "saved");
     } else {
-        shell_log(shell, "save failed %s", shell->scene_path);
+        editor_shell_log(shell, "save failed %s", shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "save failed");
     }
     shell_refresh_status(shell);
@@ -824,12 +833,12 @@ static void shell_do_undo(BreakEditorShell *shell) {
         last[0] = '\0';
         (void)break_editor_cmd_stack_describe_last(
             break_editor_doc_stack(shell->doc), last);
-        shell_log(shell, "undo ok (now last: %s)",
+        editor_shell_log(shell, "undo ok (now last: %s)",
                   last[0] != '\0' ? last : "-");
     } else {
-        shell_log(shell, "undo: nothing to undo");
+        editor_shell_log(shell, "undo: nothing to undo");
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 static void shell_do_redo(BreakEditorShell *shell) {
@@ -843,12 +852,12 @@ static void shell_do_redo(BreakEditorShell *shell) {
         last[0] = '\0';
         (void)break_editor_cmd_stack_describe_last(
             break_editor_doc_stack(shell->doc), last);
-        shell_log(shell, "redo ok (now last: %s)",
+        editor_shell_log(shell, "redo ok (now last: %s)",
                   last[0] != '\0' ? last : "-");
     } else {
-        shell_log(shell, "redo: nothing to redo");
+        editor_shell_log(shell, "redo: nothing to redo");
     }
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 static void shell_do_tool(BreakEditorShell *shell, u32 tool) {
@@ -861,7 +870,7 @@ static void shell_do_tool(BreakEditorShell *shell, u32 tool) {
                                     (BreakEditorGizmoMode)shell->tool);
     }
     shell_refresh_tool_label(shell);
-    shell_log(shell, "tool %s", k_tool_names[shell->tool]);
+    editor_shell_log(shell, "tool %s", k_tool_names[shell->tool]);
     shell_refresh_status(shell);
 }
 
@@ -874,7 +883,7 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
                                   shell->selected);
         (void)snprintf(shell->note, sizeof(shell->note), "focus '%s'",
                        name != NULL ? name : "?");
-        shell_log(shell, "focus '%s' (camera target %.3g %.3g %.3g)",
+        editor_shell_log(shell, "focus '%s' (camera target %.3g %.3g %.3g)",
                   name != NULL ? name : "?", (double)shell->camera.target[0],
                   (double)shell->camera.target[1],
                   (double)shell->camera.target[2]);
@@ -883,7 +892,7 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
         }
     } else {
         (void)snprintf(shell->note, sizeof(shell->note), "focus: no selection");
-        shell_log(shell, "focus: no selection");
+        editor_shell_log(shell, "focus: no selection");
     }
     shell_refresh_status(shell);
 }
@@ -903,9 +912,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
             shell->name_edit != NULL && shell->win != NULL) {
             my_event_dispatcher_set_focus(&shell->win->dispatcher,
                                           shell->name_edit);
-            shell_log(shell, "rename: edit the Name field, Enter commits");
+            editor_shell_log(shell, "rename: edit the Name field, Enter commits");
         } else {
-            shell_log(shell, "rename: no selection");
+            editor_shell_log(shell, "rename: no selection");
         }
         break;
     case PAL_SAVE:
@@ -937,11 +946,11 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
 static void shell_execute_palette_first(BreakEditorShell *shell) {
     if (shell->palette_match_count > 0u) {
         u32 cmd = shell->palette_matches[0u];
-        shell_log(shell, "palette: %s", k_palette_commands[cmd]);
+        editor_shell_log(shell, "palette: %s", k_palette_commands[cmd]);
         shell_execute_palette_command(shell, cmd);
     }
     shell_palette_set_open(shell, false);
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 /* ---------------- toolbar buttons ---------------- */
@@ -1073,7 +1082,9 @@ static void shell_on_root_key_down(void *ctx, const char *event, void *data) {
 
 /* ---------------- refresh fan-out ---------------- */
 
-static void shell_refresh_all(BreakEditorShell *shell) {
+/* Non-static: the Phase 3 assets panel calls this after a .bscn load (the
+ * world swap invalidates the selection and every panel's displayed state). */
+void editor_shell_refresh_all(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
     }
@@ -1092,6 +1103,8 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     my_widget_t *toolbar;
     my_widget_t *middle;
     my_widget_t *outliner_panel;
+    my_widget_t *right_panel;
+    my_widget_t *bottom;
     my_widget_t *add_btn;
     my_widget_t *remove_btn;
 
@@ -1148,7 +1161,9 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     shell_add_child(toolbar, shell->tool_label, "w:140 h:24");
     shell_add_child(root, toolbar, "w:100% h:28");
 
-    /* middle row: outliner 25% | viewport 1f | inspector 28% (Phase 2) */
+    /* middle row: outliner column 25% | viewport 1f | right column 28%
+     * (Phase 2; Phase 3 Task 3 nests assets under the outliner and the
+     * profiler under the inspector) */
     middle = my_widget_create(NULL, "editor-middle");
     if (middle == NULL) {
         return false;
@@ -1180,6 +1195,12 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         return false;
     }
     shell_add_child(outliner_panel, shell->outliner_list, "w:100% h:1f");
+    /* Phase 3 Task 3: assets browser below the outliner (h:40% of the left
+     * column, set by the panel build) */
+    if (!editor_panel_assets_build(shell->assets_panel, outliner_panel)) {
+        my_widget_unref(middle);
+        return false;
+    }
     shell_add_child(middle, outliner_panel, "w:25% h:100%");
 
     /* viewport panel (Phase 2 Task 3): custom on_paint blit + pointer
@@ -1191,25 +1212,56 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     }
     shell_add_child(middle, shell->viewport_widget, "w:1f h:100%");
 
+    /* Phase 3 Task 3: the right column is a container — inspector (h:1f)
+     * over the profiler view (h:30% of the column, set by the panel
+     * build) */
+    right_panel = my_widget_create(NULL, "editor-right-panel");
+    if (right_panel == NULL) {
+        my_widget_unref(middle);
+        return false;
+    }
+    (void)my_widget_set_layouter(right_panel,
+                                 my_layouter_linear_create(NULL, false, 2));
     shell->inspector = my_widget_create(NULL, "editor-inspector");
     if (shell->inspector == NULL) {
+        my_widget_unref(right_panel);
         my_widget_unref(middle);
         return false;
     }
     (void)my_widget_set_layouter(
         shell->inspector, my_layouter_linear_create(NULL, false, 2));
-    shell_add_child(middle, shell->inspector, "w:28% h:100%");
+    shell_add_child(right_panel, shell->inspector, "w:100% h:1f");
+    if (!editor_panel_profiler_build(shell->profiler_panel, right_panel)) {
+        my_widget_unref(right_panel);
+        my_widget_unref(middle);
+        return false;
+    }
+    shell_add_child(middle, right_panel, "w:28% h:100%");
     shell_add_child(root, middle, "w:100% h:1f");
 
-    /* console (read-only log view fed by the 64-entry ring) */
+    /* Phase 3 Task 3: the bottom row is two columns — the console (existing
+     * 64-entry log ring, read-only) left w:1f, the Lua console right w:40%
+     * (set by the panel build) */
+    bottom = my_widget_create(NULL, "editor-bottom");
+    if (bottom == NULL) {
+        return false;
+    }
+    (void)my_widget_set_layouter(bottom,
+                                 my_layouter_linear_create(NULL, true, 2));
     shell->console_area = my_text_area_create(NULL);
     if (shell->console_area == NULL) {
+        my_widget_unref(bottom);
         return false;
     }
     (void)my_widget_set_name(shell->console_area, "editor-console");
     (void)my_text_area_set_readonly(shell->console_area, true);
     (void)my_text_area_set_hint(shell->console_area, "console");
-    shell_add_child(root, shell->console_area, "w:100% h:96");
+    shell_add_child(bottom, shell->console_area, "w:1f h:100%");
+    if (!editor_panel_lua_build(shell->lua_panel, bottom)) {
+        my_widget_unref(bottom);
+        return false;
+    }
+    shell_add_child(root, bottom, "w:100% h:96");
 
     /* status bar */
     shell->status_label = my_label_create(NULL, "");
@@ -1295,6 +1347,25 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     break_editor_viewport3d_set_view_state(shell->vp3d, &shell->camera,
                                            shell->gizmo,
                                            BREAK_EDITOR_ENTITY_NULL);
+    /* Phase 3 Task 3 panel CPU state (see editor_shell_internal.h): needs
+     * the doc (the Lua console borrows it; the assets model lists ".").
+     * Panel create fails only on allocation — a degraded assets model or
+     * Lua console inside a panel is NOT fatal (the panel logs bounded
+     * error lines instead). */
+    shell->assets_panel = editor_panel_assets_create(shell);
+    shell->lua_panel = editor_panel_lua_create(shell);
+    shell->profiler_panel = editor_panel_profiler_create(shell);
+    if (shell->assets_panel == NULL || shell->lua_panel == NULL ||
+        shell->profiler_panel == NULL) {
+        editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_lua_destroy(shell->lua_panel);
+        editor_panel_assets_destroy(shell->assets_panel);
+        break_editor_viewport3d_destroy(shell->vp3d);
+        break_editor_gizmo_destroy(shell->gizmo);
+        break_editor_doc_destroy(shell->doc);
+        free(shell);
+        return NULL;
+    }
     shell->win = win;
     shell->selected = BREAK_EDITOR_ENTITY_NULL;
     content = my_window_widget(win);
@@ -1304,6 +1375,9 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         if (shell->root != NULL) {
             (void)my_widget_remove_child(content, shell->root);
         }
+        editor_panel_profiler_destroy(shell->profiler_panel);
+        editor_panel_lua_destroy(shell->lua_panel);
+        editor_panel_assets_destroy(shell->assets_panel);
         break_editor_viewport3d_destroy(shell->vp3d);
         break_editor_gizmo_destroy(shell->gizmo);
         break_editor_doc_destroy(shell->doc);
@@ -1312,7 +1386,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     }
     /* shortcuts work before any widget is clicked */
     my_event_dispatcher_set_focus(&win->dispatcher, shell->root);
-    shell_log(shell, "editor shell ready");
+    editor_shell_log(shell, "editor shell ready");
     return shell;
 }
 
@@ -1393,7 +1467,12 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
      * end+commits against the still-live doc, Task 2 contract). The
      * viewport's GPU objects need the RHI device alive — on the real path
      * editor_main destroys the shell before rhi_device_destroy; on the
-     * dummy-PAL path vp3d holds no GPU objects at all. */
+     * dummy-PAL path vp3d holds no GPU objects at all. The Phase 3 panels
+     * free CPU-side state only (their widgets died with the tree above);
+     * the Lua console borrows the doc, so panels go before the doc too. */
+    editor_panel_profiler_destroy(shell->profiler_panel);
+    editor_panel_lua_destroy(shell->lua_panel);
+    editor_panel_assets_destroy(shell->assets_panel);
     break_editor_viewport3d_destroy(shell->vp3d);
     break_editor_gizmo_destroy(shell->gizmo);
     break_editor_doc_destroy(shell->doc);
@@ -1527,12 +1606,12 @@ bool break_editor_shell_select_id(BreakEditorShell *shell,
     }
     /* an id that is stale/absent is cleared by the sync inside the refresh */
     shell->selected = id;
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
     return true;
 }
 
 void break_editor_shell_refresh(BreakEditorShell *shell) {
-    shell_refresh_all(shell);
+    editor_shell_refresh_all(shell);
 }
 
 void break_editor_shell_tick(BreakEditorShell *shell) {
@@ -1546,6 +1625,51 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
         my_widget_invalidate(shell->viewport_widget, NULL);
     }
     (void)shell_sync_selection(shell); /* keeps the gizmo attach current */
+    /* Phase 3 Task 3: the profiler view snapshots profiler_last_frame at
+     * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
+     * never touches profiler state. */
+    editor_panel_profiler_tick(shell->profiler_panel);
+}
+
+/* ---------------- Phase 3 Task 3: panel accessors ---------------- */
+
+bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
+                                        const char *root_path) {
+    if (shell == NULL) {
+        return false;
+    }
+    return editor_panel_assets_set_root(shell->assets_panel, root_path);
+}
+
+usize break_editor_shell_assets_row_count(const BreakEditorShell *shell) {
+    return shell != NULL
+               ? editor_panel_assets_row_count(shell->assets_panel)
+               : 0u;
+}
+
+const char *break_editor_shell_assets_path_text(const BreakEditorShell *shell) {
+    return shell != NULL
+               ? editor_panel_assets_path_text(shell->assets_panel)
+               : "";
+}
+
+usize break_editor_shell_lua_history_count(const BreakEditorShell *shell) {
+    return shell != NULL
+               ? editor_panel_lua_history_count(shell->lua_panel)
+               : 0u;
+}
+
+usize break_editor_shell_profiler_row_count(const BreakEditorShell *shell) {
+    return shell != NULL
+               ? editor_panel_profiler_row_count(shell->profiler_panel)
+               : 0u;
+}
+
+const char *break_editor_shell_profiler_row_text(const BreakEditorShell *shell,
+                                                 usize i) {
+    return shell != NULL
+               ? editor_panel_profiler_row_text(shell->profiler_panel, i)
+               : NULL;
 }
 
 void break_editor_shell_render_viewport(BreakEditorShell *shell,

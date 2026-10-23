@@ -62,6 +62,18 @@ struct BreakLuaRuntime {
     u64 frame_seq;           /* begin_frame counter (diagnostics) */
     u64 frame_error_total;   /* lifetime count of frame hook faults */
     bool budget_tripped;     /* set by the budget hook callback while armed */
+    u64 budget_trip_total;   /* lifetime count of budget trips (public
+                              * diagnostic via
+                              * break_lua_runtime_budget_trip_count) */
+    /* Budget-trip sentinel identity: the error VALUE raised by the count
+     * hook is a lightuserdata naming THIS FIELD'S ADDRESS (host-owned,
+     * per-runtime). Scripts cannot construct, obtain, or compare it — no
+     * lightuserdata-producing API exists in the sandbox, and the sandboxed
+     * pcall/xpcall re-raise it uninspected (break_lua_binding.c), so a trip
+     * always propagates to the host-side catcher (fix round 4, NEW-C4:
+     * script pcall used to catch the plain-string trip, and
+     * resethookcount re-armed the countdown — self-catching evasion). */
+    u32 budget_sentinel;
     BreakLuaFrameError last_frame_error;
     /* Task 4: host bindings and sandbox. sandbox_ref names the per-runtime
      * whitelist table (registry-held, never script-reachable); batch is a
@@ -71,6 +83,12 @@ struct BreakLuaRuntime {
     BreakLuaEcsBatch *batch;      /* borrowed; NULL until bound */
     BreakLuaConfigSlot *configs;  /* owned; NULL until first bind_config */
     u32 config_count;
+    /* Function-reference handles (Stage 4 Phase 3): fixed slot table; a used
+     * slot pins its function value in the Lua registry (fn_refs[i] >= 0,
+     * a luaL_ref). calloc zeroes fn_ref_used; lua_close releases every pin
+     * wholesale. */
+    int fn_refs[BREAK_LUA_MAX_FN_REFS];
+    bool fn_ref_used[BREAK_LUA_MAX_FN_REFS];
 };
 
 /* Protected op dispatch (shared by module load/reload, calls, and frame
@@ -82,8 +100,11 @@ struct BreakLuaRuntime {
 #define BREAK_LUA_OP_COMMIT 2
 #define BREAK_LUA_OP_CALL 3
 #define BREAK_LUA_OP_FRAME 4
+#define BREAK_LUA_OP_REF_FN 5
+#define BREAK_LUA_OP_UNREF_FN 6
+#define BREAK_LUA_OP_CALL_REF 7
 #if defined(BREAK_LUA_TESTING)
-#define BREAK_LUA_OP_TEST_RELOADER 5
+#define BREAK_LUA_OP_TEST_RELOADER 8
 #endif
 
 #define BREAK_LUA_FRAME_PHASE_BEGIN 1
@@ -124,6 +145,27 @@ typedef struct BreakLuaFrameOpCtx {
     int phase;              /* BREAK_LUA_FRAME_PHASE_* */
     double delta_seconds;   /* begin phase only */
 } BreakLuaFrameOpCtx;
+
+/* REF_FN: pin a chunk-defined raw env function field into the registry
+ * (env_ref/function_name in; lua_ref out). UNREF_FN: release a registry pin
+ * (lua_ref in). Both run under the shared op pcall: luaL_ref may allocate. */
+typedef struct BreakLuaFnRefOpCtx {
+    BreakLuaOpHeader hdr;
+    int env_ref;               /* in: live module env (REF_FN) */
+    const char *function_name; /* in: borrowed, validated (REF_FN) */
+    int lua_ref;               /* out (REF_FN) / in (UNREF_FN) */
+} BreakLuaFnRefOpCtx;
+
+/* CALL_REF: invoke a pinned function by its registry ref with the same
+ * marshalling contract as BreakLuaCallOpCtx. */
+typedef struct BreakLuaCallRefOpCtx {
+    BreakLuaOpHeader hdr;
+    int lua_ref;               /* in: pinned function's registry ref */
+    const BreakLuaValue *args; /* borrowed */
+    usize arg_count;
+    BreakLuaValue *returns;    /* borrowed caller buffer, NIL-prefilled */
+    usize return_capacity;
+} BreakLuaCallRefOpCtx;
 
 #if defined(BREAK_LUA_TESTING)
 typedef struct BreakLuaTestReloaderOpCtx {
@@ -173,10 +215,43 @@ BreakLuaModule *break_lua_module_find(BreakLuaRuntime *runtime,
  * then tears down every remaining registry reference at once). */
 void break_lua_module_registry_destroy(BreakLuaRuntime *runtime);
 
+/* Budget-trip sentinel helpers (fix round 4). The sentinel value is the
+ * ADDRESS of the runtime's budget_sentinel field — host-owned, never
+ * script-reachable. */
+static inline void *break_lua_budget_sentinel_ptr(BreakLuaRuntime *runtime) {
+    return (void *)&runtime->budget_sentinel;
+}
+
+/* Identity check for the budget-trip error value on the Lua stack. Reaches
+ * the runtime through the extraspace (set at bootstrap; allocation-free). */
+static inline bool break_lua_is_budget_trip_error(lua_State *L, int idx) {
+    BreakLuaRuntime *runtime =
+        *(BreakLuaRuntime **)lua_getextraspace(L);
+    return runtime && lua_type(L, idx) == LUA_TLIGHTUSERDATA &&
+           lua_touserdata(L, idx) == break_lua_budget_sentinel_ptr(runtime);
+}
+
 /* break_lua_value.c implementations consumed by the dispatch closure. */
 void break_lua_call_impl(lua_State *L, BreakLuaCallOpCtx *ctx);
+void break_lua_call_ref_impl(lua_State *L, BreakLuaCallRefOpCtx *ctx);
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
                           BreakLuaFrameOpCtx *ctx);
+
+/* Count-hook callback for the instruction budget (defined in
+ * break_lua_value.c): raises the host-owned budget-trip SENTINEL value (a
+ * lightuserdata naming the runtime's budget_sentinel field; see the
+ * sentinel helpers above) via lua_error and sets runtime->budget_tripped.
+ * The sandboxed pcall/xpcall wrappers (break_lua_binding.c) re-raise the
+ * sentinel uninspected, so it lands at the nearest NON-wrapper pcall — the
+ * host-side per-hook / staging / commit pcall — never at a script pcall.
+ * Host-side error capture (break_lua_op_take_error) maps the sentinel to
+ * the canonical text "break_lua: instruction budget exceeded". Shared by
+ * the frame dispatch and the module staging / on_unload paths
+ * (break_lua_module.c).
+ * Arm with lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT, count) and
+ * ALWAYS disarm after the protected call — the hook is per-coroutine
+ * state that must not leak past the operation. */
+void break_lua_budget_hook(lua_State *L, lua_Debug *ar);
 #if defined(BREAK_LUA_TESTING)
 void break_lua_test_reloader_impl(lua_State *L,
                                   BreakLuaTestReloaderOpCtx *ctx);

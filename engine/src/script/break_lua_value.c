@@ -212,6 +212,96 @@ BreakLuaError break_lua_runtime_call(BreakLuaRuntime *runtime,
     return break_lua_op_run(runtime, &ctx.hdr);
 }
 
+/* Pinned-function call (Stage 4 Phase 3): identical marshalling to
+ * break_lua_call_impl, but the function is fetched by its registry pin —
+ * the module environment is never consulted, so a chunk that overwrote the
+ * env field between capture and call cannot substitute anything. */
+void break_lua_call_ref_impl(lua_State *L, BreakLuaCallRefOpCtx *ctx)
+{
+    int base = lua_gettop(L);
+    usize i;
+    int status;
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, ctx->lua_ref);       /* [fn] */
+    luaL_checkstack(L, (int)(ctx->arg_count + ctx->return_capacity + 8u),
+                    "break_lua call_ref");
+    for (i = 0u; i < ctx->arg_count; i++) {
+        BreakLuaError push_err = break_lua_push_value(L, &ctx->args[i]);
+        if (push_err != BREAK_LUA_OK) {
+            ctx->hdr.status = push_err;
+            lua_settop(L, base);
+            return;
+        }
+    }
+    /* Exactly return_capacity wanted results: Lua nil-pads shortfalls and
+     * discards extras, so the buffer is always fully written and the stack
+     * shape stays deterministic. */
+    status = lua_pcall(L, (int)ctx->arg_count, (int)ctx->return_capacity, 0);
+    if (status != LUA_OK) {
+        ctx->hdr.status = (status == LUA_ERRMEM) ? BREAK_LUA_OOM
+                                                 : BREAK_LUA_FAILED;
+        lua_pop(L, 1); /* error object; no report surface on calls */
+        lua_settop(L, base);
+        return;
+    }
+    /* [fn r1..rk] — result i sits at base + 1 + i. */
+    for (i = 0u; i < ctx->return_capacity; i++) {
+        BreakLuaError take_err =
+            break_lua_take_value(L, base + 1 + (int)i, &ctx->returns[i]);
+        if (take_err != BREAK_LUA_OK) {
+            ctx->hdr.status = take_err;
+            lua_settop(L, base);
+            return;
+        }
+    }
+    ctx->hdr.status = BREAK_LUA_OK;
+    lua_settop(L, base);
+}
+
+BreakLuaError break_lua_runtime_call_ref(BreakLuaRuntime *runtime, u32 ref,
+                                         const BreakLuaValue *args,
+                                         usize arg_count,
+                                         BreakLuaValue *returns,
+                                         usize return_capacity)
+{
+    BreakLuaCallRefOpCtx ctx;
+    BreakLuaError owner = break_lua_runtime_check_owner(runtime);
+
+    /* Owner check first, then handle/shape/cap validation (nothing is read
+     * from the handle's slot before the handle is validated). */
+    if (owner != BREAK_LUA_OK) {
+        return owner;
+    }
+    if (ref >= BREAK_LUA_MAX_FN_REFS || !runtime->fn_ref_used[ref]) {
+        return BREAK_LUA_INVALID;
+    }
+    if (arg_count > 0u && !args) {
+        return BREAK_LUA_INVALID;
+    }
+    if (return_capacity > 0u && !returns) {
+        return BREAK_LUA_INVALID;
+    }
+    if (arg_count > (usize)runtime->max_values ||
+        return_capacity > (usize)runtime->max_values) {
+        return BREAK_LUA_OVERLOAD;
+    }
+
+    /* NIL-prefill: any post-admission failure leaves the buffer fully
+     * written with NIL slots (same documented shape as runtime_call). */
+    if (return_capacity > 0u) {
+        memset(returns, 0, return_capacity * sizeof(*returns));
+    }
+
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.hdr.op = BREAK_LUA_OP_CALL_REF;
+    ctx.lua_ref = runtime->fn_refs[ref];
+    ctx.args = args;
+    ctx.arg_count = arg_count;
+    ctx.returns = returns;
+    ctx.return_capacity = return_capacity;
+    return break_lua_op_run(runtime, &ctx.hdr);
+}
+
 /* ---------------------------------------------------------------------- */
 /* Frame lifecycle.                                                        */
 
@@ -252,18 +342,37 @@ static void break_lua_record_frame_error(BreakLuaRuntime *runtime,
 }
 
 /* Count-hook callback armed while a frame hook runs under an instruction
- * budget. Raising an error from a hook is legal in Lua 5.4 and lands in the
- * per-hook lua_pcall. lua_getextraspace reaches the runtime without
- * allocating (the pointer was stored at bootstrap). */
-static void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
+ * budget, and (Phase 3 Task 2 review fix) while module code runs outside
+ * frame dispatch — the staging chunk execution of load/reload and the
+ * commit-path on_unload hook.
+ *
+ * The trip raises the host-owned SENTINEL value (a lightuserdata naming the
+ * runtime's budget_sentinel field), never a string: scripts cannot
+ * construct, obtain, or compare it, and the sandboxed pcall/xpcall
+ * re-raise it uninspected (fix round 4, NEW-C4 — a plain-string trip was
+ * caught by script-level pcall while resethookcount re-armed the
+ * countdown, making each trip self-catching and self-resetting). Host-side
+ * catchers recognize it by identity (break_lua_is_budget_trip_error;
+ * break_lua_op_take_error maps it to the canonical message text). Raising
+ * from a hook is legal in Lua 5.4 and lands in the nearest pcall that is
+ * NOT a script sandbox wrapper (the per-hook lua_pcall for frames, the
+ * staging/commit lua_pcall for module ops). lua_getextraspace reaches the
+ * runtime without allocating (the pointer was stored at bootstrap). */
+void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
 {
     BreakLuaRuntime *runtime;
     (void)ar;
     runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
     if (runtime) {
         runtime->budget_tripped = true;
+        runtime->budget_trip_total++;
+        lua_pushlightuserdata(L, break_lua_budget_sentinel_ptr(runtime));
+    } else {
+        /* Defensive only: the extraspace is set at bootstrap before any
+         * arming. Never reached. */
+        lua_pushliteral(L, "break_lua: instruction budget exceeded");
     }
-    luaL_error(L, "break_lua: instruction budget exceeded");
+    (void)lua_error(L);
 }
 
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,

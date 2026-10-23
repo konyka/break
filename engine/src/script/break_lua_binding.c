@@ -511,6 +511,104 @@ static int break_lua_readonly_newindex(lua_State *L)
 }
 
 /* ---------------------------------------------------------------------- */
+/* Budget-transparent pcall/xpcall (fix round 4, NEW-C4). The base         */
+/* functions would return the budget-trip error to the SCRIPT as an        */
+/* ordinary (false, err) result — and since the count hook resets its      */
+/* countdown before firing (Lua 5.4 resethookcount), each trip was         */
+/* self-catching and self-resetting: unbounded budget evasion. The trip    */
+/* now raises a host-owned sentinel VALUE (break_lua_budget_hook), and     */
+/* these wrappers re-raise it uninspected; every OTHER error behaves       */
+/* exactly like the base functions. The sentinel is never observable from  */
+/* scripts: it is never returned and never passed to an xpcall handler.    */
+/* Both reach the runtime through the extraspace like the other closures.  */
+/* ---------------------------------------------------------------------- */
+
+static int break_lua_sandbox_pcall(lua_State *L)
+{
+    BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+    int status;
+    (void)runtime;
+    luaL_checkany(L, 1);
+    status = lua_pcallk(L, lua_gettop(L) - 1, LUA_MULTRET, 0, 0, NULL);
+    /* [results...] or [errobj] */
+    if (status != LUA_OK) {
+        if (break_lua_is_budget_trip_error(L, -1)) {
+            return lua_error(L); /* re-raise the sentinel: uncatchable */
+        }
+        lua_pushboolean(L, 0);
+        lua_insert(L, -2); /* [false, errobj] */
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    lua_insert(L, 1); /* [true, results...] */
+    return lua_gettop(L);
+}
+
+static int break_lua_sandbox_xpcall(lua_State *L)
+{
+    BreakLuaRuntime *runtime = *(BreakLuaRuntime **)lua_getextraspace(L);
+    int n = lua_gettop(L);
+    int status;
+    (void)runtime;
+    /* Same shape check as base xpcall — and NOTHING else: base checks only
+     * the handler argument, so xpcall() with zero arguments reports
+     * "bad argument #2 (function expected, got no value)", never #1. */
+    luaL_checktype(L, 2, LUA_TFUNCTION);
+    /* [f, handler, args...] -> [f, handler, f, args...]: the callee+args go
+     * on top (the base function's rotate, minus its pre-pushed status).
+     * Call with NO VM-registered handler: the base errfunc would receive
+     * the sentinel (pre-unwind), making it script-observable. The script
+     * handler below is invoked by US after the pcall returns, and only for
+     * ordinary errors. Running the handler post-unwind (base: pre-unwind)
+     * is an accepted, documented difference: the sandbox's only
+     * stack-relative operation is error(msg, level)'s position prefix (the
+     * debug library is absent). Levels resolving at or above the handler
+     * frame — and its immediate caller, a C frame on BOTH sides (base sees
+     * the triggering error() C frame, the wrapper sees its own) — are
+     * identical; the first frame that DIFFERS is one level deeper, where
+     * base walks the not-yet-unwound error chain (the callee's error line)
+     * and the wrapper walks the xpcall call site. The residue is
+     * position-prefix content only: message text, result values, and
+     * catchability are bit-identical to base. One further accepted
+     * difference: base reaches LUA_ERRERR by re-entering the handler
+     * recursively until the C call depth caps out (observed: 216
+     * invocations), while this wrapper invokes an erroring handler
+     * exactly once; results and catchability still match, and the
+     * wrapper direction is strictly more bounded. */
+    lua_pushvalue(L, 1);      /* [f, handler, args..., f] */
+    lua_rotate(L, 3, 1);      /* [f, handler, f, args...] */
+    status = lua_pcallk(L, n - 2, LUA_MULTRET, 0, 0, NULL);
+    /* [f, handler, results...] or [f, handler, errobj] */
+    if (status != LUA_OK) {
+        if (break_lua_is_budget_trip_error(L, -1)) {
+            return lua_error(L); /* re-raise: handler never sees it */
+        }
+        lua_pushvalue(L, 2);  /* [.. errobj handler] */
+        lua_insert(L, -2);    /* [.. handler errobj] */
+        status = lua_pcall(L, 1, 1, 0); /* handler(errobj), protected */
+        if (status != LUA_OK) {
+            /* [.. herr]: an ordinary handler error is absorbed by xpcall
+             * itself, exactly like base (LUA_ERRERR maps to the literal
+             * below in luaD_seterrorobj); a looping handler trips the armed
+             * count hook again, and THAT error is the sentinel — re-raised,
+             * never absorbed (the round-4 property). */
+            if (break_lua_is_budget_trip_error(L, -1)) {
+                return lua_error(L); /* re-raise: trips stay uncatchable */
+            }
+            lua_pop(L, 1);    /* discard the handler's error object */
+            lua_pushliteral(L, "error in error handling");
+        }
+        /* [.. result] */
+        lua_pushboolean(L, 0);
+        lua_insert(L, -2);    /* [.. false result] */
+        return 2;
+    }
+    lua_pushboolean(L, 1);
+    lua_insert(L, 3);         /* [f, handler, true, results...] */
+    return lua_gettop(L) - 2; /* skip f and handler */
+}
+
+/* ---------------------------------------------------------------------- */
 /* Sandbox construction (bootstrap) and module environment wiring.         */
 
 /* Pushes a fresh read-through proxy for the impl table at the given index:
@@ -553,9 +651,11 @@ static void break_lua_sandbox_proxy_of_global(lua_State *L, int global_index,
 
 void break_lua_binding_bootstrap(lua_State *L, BreakLuaRuntime *runtime)
 {
+    /* pcall/xpcall are deliberately NOT copied by reference: the sandbox
+     * installs the budget-transparent wrappers instead (NEW-C4). */
     static const char *const kBaseNames[] = {
-        "assert", "error", "ipairs", "pairs",  "pcall",   "xpcall",
-        "select", "tonumber", "tostring", "type", "print", "_VERSION",
+        "assert", "error", "ipairs", "pairs", "select",
+        "tonumber", "tostring", "type", "print", "_VERSION",
     };
     static const char *const kProxiedLibs[] = {
         "string", "table", "math", "utf8",
@@ -618,6 +718,12 @@ void break_lua_binding_bootstrap(lua_State *L, BreakLuaRuntime *runtime)
     for (i = 0u; i < sizeof(kBaseNames) / sizeof(kBaseNames[0]); i++) {
         break_lua_sandbox_copy(L, global, sandbox, kBaseNames[i]);
     }
+    /* Budget-transparent pcall/xpcall wrappers (C closures; the runtime
+     * reaches them via the extraspace like every other binding). */
+    lua_pushcfunction(L, break_lua_sandbox_pcall);
+    lua_setfield(L, sandbox, "pcall");
+    lua_pushcfunction(L, break_lua_sandbox_xpcall);
+    lua_setfield(L, sandbox, "xpcall");
     for (i = 0u; i < sizeof(kProxiedLibs) / sizeof(kProxiedLibs[0]); i++) {
         break_lua_sandbox_proxy_of_global(L, global, sandbox, kProxiedLibs[i]);
     }

@@ -16,6 +16,7 @@
 #include "editor_panels.h"
 #include "editor_viewport3d.h"
 
+#include <core/profiler.h>
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_gizmo.h>
@@ -612,6 +613,7 @@ TEST(viewport_widget_present_and_laid_out)
     my_widget_t *vp;
     my_widget_t *outliner;
     my_widget_t *inspector;
+    my_widget_t *right_panel;
     ASSERT_NOT_NULL(shell);
     vp = break_editor_shell_viewport_widget(shell);
     ASSERT_NOT_NULL(vp);
@@ -619,12 +621,18 @@ TEST(viewport_widget_present_and_laid_out)
     shell_paint(shell);
     outliner = find(shell, "editor-outliner-panel");
     inspector = find(shell, "editor-inspector");
+    /* Phase 3 Task 3: the inspector is nested in the right column container
+     * (inspector over profiler), so the same-parent-space x comparison runs
+     * against editor-right-panel (widget->rect is in PARENT coordinates) */
+    right_panel = find(shell, "editor-right-panel");
     ASSERT_NOT_NULL(outliner);
     ASSERT_NOT_NULL(inspector);
-    /* middle row: outliner 25% | viewport 1f | inspector 28% */
+    ASSERT_NOT_NULL(right_panel);
+    /* middle row: outliner 25% | viewport 1f | right column 28% */
     ASSERT_TRUE(vp->rect.w > 0 && vp->rect.h > 0);
     ASSERT_TRUE(vp->rect.x >= outliner->rect.x + outliner->rect.w - 1);
-    ASSERT_TRUE(inspector->rect.x >= vp->rect.x + vp->rect.w - 1);
+    ASSERT_TRUE(right_panel->rect.x >= vp->rect.x + vp->rect.w - 1);
+    ASSERT_TRUE(inspector->rect.w > 0 && inspector->rect.h > 0);
     ASSERT_EQ(vp->rect.h, outliner->rect.h);
     break_editor_shell_destroy(shell);
 }
@@ -899,6 +907,333 @@ TEST(model_matrix_known_answers)
     }
 }
 
+/* ---------------- Phase 3 Task 3: assets / lua / profiler panels -------- */
+
+static bool write_text_file(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb");
+    if (f == NULL) {
+        return false;
+    }
+    fputs(text, f);
+    return fclose(f) == 0;
+}
+
+/* Saves a scratch doc with `n` entities to `path` (BSCN + sidecar) so the
+ * assets panel has a loadable .bscn fixture. */
+static void save_fixture_scene(const char *path, u32 n) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    u32 i;
+    ASSERT_NOT_NULL(doc);
+    for (i = 0u; i < n; i++) {
+        ASSERT_TRUE(break_editor_entity_id_valid(
+            break_editor_doc_add_entity(doc, NULL)));
+    }
+    ASSERT_TRUE(break_editor_doc_save(doc, path));
+    break_editor_doc_destroy(doc);
+}
+
+/* Iterates the realized (painted) rows of a list_view and returns the first
+ * row whose button text equals `text` (rows are direct children of the
+ * list — my_list_view.c my_widget_add_child(self, row)). */
+static my_widget_t *list_row_by_text(my_widget_t *list, const char *text) {
+    usize i, n;
+    if (list == NULL || text == NULL) {
+        return NULL;
+    }
+    n = my_widget_child_count(list);
+    for (i = 0u; i < n; i++) {
+        my_widget_t *row = my_widget_get_child(list, i);
+        const char *t;
+        if (row == NULL) {
+            continue;
+        }
+        t = ((const my_button_t *)row)->text;
+        if (t != NULL && strcmp(t, text) == 0) {
+            return row;
+        }
+    }
+    return NULL;
+}
+
+/* Emits a raw key_down on a widget's emitter (the path the myui dispatcher
+ * takes for keys the widget itself did not consume — my_edit returns
+ * MY_RET_FAIL for Up/Down, so they reach the panel's "key_down" handler). */
+static void emit_key_down(my_widget_t *w, u32 key) {
+    my_event_t ev = my_event_init(MY_EVENT_KEY_DOWN);
+    ASSERT_NOT_NULL(w);
+    ev.u.key.key = key;
+    ev.u.key.modifiers = 0u;
+    ASSERT_EQ(my_emitter_emit(w->emitter, "key_down", &ev), MY_RET_OK);
+}
+
+TEST(assets_panel_lists_fixture_root)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512];
+    char sub[600];
+    char f1[700];
+    char f2[700];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_list");
+    TEST_MKDIR(dir);
+    snprintf(sub, sizeof(sub), "%s/sub", dir);
+    TEST_MKDIR(sub);
+    snprintf(f1, sizeof(f1), "%s/a.txt", dir);
+    snprintf(f2, sizeof(f2), "%s/b.txt", dir);
+    ASSERT_TRUE(write_text_file(f1, "a"));
+    ASSERT_TRUE(write_text_file(f2, "b"));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    /* rows: the always-present ".." + sub/ + a.txt + b.txt (the model sorts
+     * directories first, then byte-wise) */
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 4u);
+    ASSERT_TRUE(strstr(break_editor_shell_assets_path_text(shell), "assets:") !=
+                NULL);
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    ASSERT_NOT_NULL(list_row_by_text(list, ".."));
+    ASSERT_NOT_NULL(list_row_by_text(list, "sub/"));
+    ASSERT_NOT_NULL(list_row_by_text(list, "a.txt"));
+    ASSERT_NOT_NULL(list_row_by_text(list, "b.txt"));
+    break_editor_shell_destroy(shell);
+    remove(f1);
+    remove(f2);
+    TEST_RMDIR(sub);
+    TEST_RMDIR(dir);
+}
+
+TEST(assets_panel_navigation_updates_rows)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512];
+    char sub[600];
+    char f1[700];
+    char f2[700];
+    my_widget_t *list;
+    my_widget_t *row;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_nav");
+    TEST_MKDIR(dir);
+    snprintf(sub, sizeof(sub), "%s/sub", dir);
+    TEST_MKDIR(sub);
+    snprintf(f1, sizeof(f1), "%s/a.txt", dir);
+    snprintf(f2, sizeof(f2), "%s/inner.txt", sub);
+    ASSERT_TRUE(write_text_file(f1, "a"));
+    ASSERT_TRUE(write_text_file(f2, "i"));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 3u);
+    /* enter the subdirectory: rows rebind from the model's new snapshot */
+    row = list_row_by_text(list, "sub/");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+    ASSERT_TRUE(strstr(break_editor_shell_assets_path_text(shell), "sub") !=
+                NULL);
+    shell_paint(shell);
+    ASSERT_NOT_NULL(list_row_by_text(list, "inner.txt"));
+    /* ".." row on top navigates back, clamped at the root */
+    row = list_row_by_text(list, "..");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 3u);
+    shell_paint(shell);
+    ASSERT_NOT_NULL(list_row_by_text(list, "sub/"));
+    /* at the root, ".." is a clamped no-op */
+    row = list_row_by_text(list, "..");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 3u);
+    break_editor_shell_destroy(shell);
+    remove(f1);
+    remove(f2);
+    TEST_RMDIR(sub);
+    TEST_RMDIR(dir);
+}
+
+TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512];
+    char scene[600];
+    char sidecar[700];
+    my_widget_t *list;
+    my_widget_t *row;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_load");
+    TEST_MKDIR(dir);
+    snprintf(scene, sizeof(scene), "%s/scene.bscn", dir);
+    snprintf(sidecar, sizeof(sidecar), "%s" BREAK_EDITOR_SIDECAR_SUFFIX,
+             scene);
+    save_fixture_scene(scene, 2u);
+    doc = break_editor_shell_doc(shell);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    row = list_row_by_text(list, "scene.bscn");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    /* confirm-free load (Phase 2 documents the world swap + undo clear) */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 2u);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "load") != NULL);
+    /* the load cleared the command stack: Ctrl+Z cannot resurrect the
+     * pre-load (empty) document */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    break_editor_shell_destroy(shell);
+    remove(scene);
+    remove(sidecar);
+    TEST_RMDIR(dir);
+}
+
+TEST(lua_panel_eval_routes_result_to_console_ring)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *edit;
+    ASSERT_NOT_NULL(shell);
+    edit = find(shell, "editor-lua-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "return 1+2"), MY_RET_OK);
+    emit_activate(edit);
+    /* Task 2 core output lands in the SHARED console ring with the lua|
+     * prefix */
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "lua| 3") !=
+                NULL);
+    ASSERT_EQ(break_editor_shell_lua_history_count(shell), 1u);
+    /* the input field is cleared for the next line */
+    ASSERT_STR_EQ(my_edit_get_text(edit), "");
+    break_editor_shell_destroy(shell);
+}
+
+TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *edit;
+    ASSERT_NOT_NULL(shell);
+    edit = find(shell, "editor-lua-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "brk.ecs.spawn()"), MY_RET_OK);
+    emit_activate(edit);
+    /* the console core drains its ECS batch into undoable doc commands; the
+     * outliner refresh after eval picks the new entity up */
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_outliner_count(shell), 0u);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(lua_panel_history_up_down_recall)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *edit;
+    ASSERT_NOT_NULL(shell);
+    edit = find(shell, "editor-lua-edit");
+    ASSERT_NOT_NULL(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "return 1"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(my_edit_set_text(edit, "return 2"), MY_RET_OK);
+    emit_activate(edit);
+    ASSERT_EQ(break_editor_shell_lua_history_count(shell), 2u);
+    /* Up walks newest->oldest; Down walks back; past the newest the
+     * in-progress (stashed) line is restored */
+    emit_key_down(edit, MY_KEY_UP);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "return 2");
+    emit_key_down(edit, MY_KEY_UP);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "return 1");
+    emit_key_down(edit, MY_KEY_DOWN);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "return 2");
+    emit_key_down(edit, MY_KEY_DOWN);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "");
+    /* Up past the oldest is a clamped no-op */
+    emit_key_down(edit, MY_KEY_UP);
+    emit_key_down(edit, MY_KEY_UP);
+    emit_key_down(edit, MY_KEY_UP);
+    ASSERT_STR_EQ(my_edit_get_text(edit), "return 1");
+    break_editor_shell_destroy(shell);
+}
+
+TEST(profiler_panel_populates_rows_after_pumped_frame)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    u32 frames_before;
+    ASSERT_NOT_NULL(shell);
+    /* pump one frame with a marker region in THIS process */
+    profiler_set_enabled(true);
+    profiler_begin_frame();
+    profiler_push("p33_marker_region");
+    profiler_pop();
+    profiler_end_frame();
+    frames_before = g_profiler.frame_count;
+    ASSERT_TRUE(frames_before >= 1u);
+    /* the first tick after create always refreshes (4 Hz throttle onwards);
+     * the panel is a pure view: profiler state is byte-identical across the
+     * refresh */
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(g_profiler.frame_count, frames_before);
+    ASSERT_TRUE(break_editor_shell_profiler_row_count(shell) >= 1u);
+    ASSERT_NOT_NULL(break_editor_shell_profiler_row_text(shell, 0u));
+    ASSERT_TRUE(strstr(break_editor_shell_profiler_row_text(shell, 0u),
+                       "p33_marker_region") != NULL);
+    ASSERT_TRUE(strstr(break_editor_shell_profiler_row_text(shell, 0u), "ms") !=
+                NULL);
+    profiler_set_enabled(false);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(phase3_layout_assets_lua_profiler_panels_present)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *bottom;
+    my_widget_t *console;
+    my_widget_t *lua_panel;
+    my_widget_t *outliner_panel;
+    my_widget_t *assets_panel;
+    my_widget_t *inspector;
+    my_widget_t *profiler_panel;
+    ASSERT_NOT_NULL(shell);
+    shell_paint(shell);
+    /* widget presence */
+    ASSERT_NOT_NULL(find(shell, "editor-assets-list"));
+    ASSERT_NOT_NULL(find(shell, "editor-assets-path"));
+    ASSERT_NOT_NULL(find(shell, "editor-lua-edit"));
+    ASSERT_NOT_NULL(find(shell, "editor-profiler-list"));
+    /* bottom row = two columns: console ring left, lua panel right (~40%) */
+    bottom = find(shell, "editor-bottom");
+    console = find(shell, "editor-console");
+    lua_panel = find(shell, "editor-lua-panel");
+    ASSERT_NOT_NULL(bottom);
+    ASSERT_NOT_NULL(console);
+    ASSERT_NOT_NULL(lua_panel);
+    ASSERT_TRUE(console->rect.x < lua_panel->rect.x);
+    ASSERT_TRUE(lua_panel->rect.x >= console->rect.x + console->rect.w - 1);
+    ASSERT_TRUE(lua_panel->rect.w * 10 >= bottom->rect.w * 3);  /* >= 30% */
+    ASSERT_TRUE(lua_panel->rect.w * 10 <= bottom->rect.w * 5);  /* <= 50% */
+    /* assets panel under the outliner; profiler panel under the inspector */
+    outliner_panel = find(shell, "editor-outliner-panel");
+    assets_panel = find(shell, "editor-assets-panel");
+    inspector = find(shell, "editor-inspector");
+    profiler_panel = find(shell, "editor-profiler-panel");
+    ASSERT_NOT_NULL(outliner_panel);
+    ASSERT_NOT_NULL(assets_panel);
+    ASSERT_NOT_NULL(inspector);
+    ASSERT_NOT_NULL(profiler_panel);
+    ASSERT_TRUE(assets_panel->rect.y > outliner_panel->rect.y);
+    ASSERT_TRUE(assets_panel->rect.h * 10 >= outliner_panel->rect.h * 3);
+    ASSERT_TRUE(assets_panel->rect.h * 10 <= outliner_panel->rect.h * 5);
+    ASSERT_TRUE(profiler_panel->rect.y > inspector->rect.y);
+    ASSERT_TRUE(profiler_panel->rect.h * 10 >= inspector->rect.h * 3);
+    ASSERT_TRUE(profiler_panel->rect.h * 10 <= inspector->rect.h * 7);
+    break_editor_shell_destroy(shell);
+}
+
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
     RUN_TEST(add_entity_via_panel_button_increments_outliner);
@@ -925,4 +1260,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_orbit_pan_zoom_via_pointer_and_wheel);
     RUN_TEST(viewport_render_without_device_is_bounded_noop);
     RUN_TEST(model_matrix_known_answers);
+    RUN_TEST(assets_panel_lists_fixture_root);
+    RUN_TEST(assets_panel_navigation_updates_rows);
+    RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
+    RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
+    RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);
+    RUN_TEST(lua_panel_history_up_down_recall);
+    RUN_TEST(profiler_panel_populates_rows_after_pumped_frame);
+    RUN_TEST(phase3_layout_assets_lua_profiler_panels_present);
 TEST_MAIN_END()

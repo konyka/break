@@ -963,6 +963,474 @@ TEST(bind_config_allocation_failure_is_bounded)
     break_lua_runtime_destroy(rt);
 }
 
+/* ------------------------------------------------------------------ */
+/* NEW-C4 (fix round 4): the instruction-budget trip raises a           */
+/* host-owned sentinel value; the sandboxed pcall/xpcall are            */
+/* budget-TRANSPARENT wrappers that re-raise it uninspected, so a trip  */
+/* propagates through any script pcall nesting to the host catcher.     */
+/* ------------------------------------------------------------------ */
+
+static const char kChunkPcallOrdinary[] =
+    "local ok, err = pcall(function() error('ordinary') end)\n"
+    "if not ok then state.caught = 1 end\n"
+    "local ok2 = pcall(function() return 5 end)\n"
+    "if ok2 then state.clean = 1 end\n";
+
+static const char kChunkXpcallOrdinary[] =
+    "local ok, err = xpcall(function() error('x') end,\n"
+    "                       function(m) return 'handled' end)\n"
+    "if not ok and err == 'handled' then state.handled = 1 end\n";
+
+/* The hook's pcall wraps an infinite loop: the trip must NOT be returned
+ * to the script (state.caught never set); it propagates to the per-hook
+ * pcall — budget fault record + module marked, per the Stage 3 runaway
+ * policy. */
+static const char kChunkPcallTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    local ok, err = pcall(function() while true do end end)\n"
+    "    state.caught = 1\n"  /* never reached: the trip is uncatchable */
+    "end\n";
+
+/* The reviewer's third live payload shape at hook level: five sequential
+ * pcall-wrapped loops must NOT survive — the FIRST trip terminates the
+ * hook. */
+static const char kChunkPcallTripLoop[] =
+    "function on_frame_begin(dt)\n"
+    "    for i=1,5 do pcall(function() while true do end end) end\n"
+    "    state.survived = 1\n"  /* never reached */
+    "end\n";
+
+/* Depth-3 pcall nesting with the trip at the bottom. */
+static const char kChunkNestedTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    pcall(function()\n"
+    "        return pcall(function()\n"
+    "            return pcall(function() while true do end end)\n"
+    "        end)\n"
+    "    end)\n"
+    "    state.survived = 1\n"  /* never reached */
+    "end\n";
+
+/* The xpcall handler must never receive the sentinel (it would make the
+ * value script-observable). */
+static const char kChunkXpcallTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    local ok = xpcall(function() while true do end end,\n"
+    "                      function(m) state.handler_saw = 1 return m end)\n"
+    "    state.caught = 1\n"  /* never reached */
+    "end\n";
+
+static const char kChunkSpinHook[] =
+    "function on_frame_begin(dt)\n"
+    "    while true do end\n"
+    "end\n";
+
+static const char kChunkCleanHook[] =
+    "function on_frame_begin(dt)\n"
+    "    state.ran = (state.ran or 0) + 1\n"
+    "end\n";
+
+TEST(sandbox_pcall_still_catches_ordinary_errors)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkPcallOrdinary,
+                                            chunk_len(kChunkPcallOrdinary)),
+              BREAK_LUA_OK);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "caught", &v));
+    ASSERT_EQ(v, 1.0);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "clean", &v));
+    ASSERT_EQ(v, 1.0);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(sandbox_xpcall_handler_runs_for_ordinary_errors)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkXpcallOrdinary,
+                                            chunk_len(kChunkXpcallOrdinary)),
+              BREAK_LUA_OK);
+    /* The wrapper invokes the script handler itself (post-unwind — safe:
+     * the debug library is absent from the sandbox) and returns its
+     * result. */
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "handled", &v));
+    ASSERT_EQ(v, 1.0);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_is_uncatchable_by_script_pcall_in_hooks)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    BreakLuaTestFrameError rec;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "a", kChunkPcallTrip,
+                                            chunk_len(kChunkPcallTrip)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "b", kChunkPcallTripLoop,
+                                            chunk_len(kChunkPcallTripLoop)),
+              BREAK_LUA_OK);
+
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+
+    /* Both hooks tripped and were marked; neither script caught anything. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "a", "caught", &v));
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "b", "survived", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "a"));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "b"));
+    rec = break_lua_test_last_frame_error(rt);
+    ASSERT_TRUE(rec.valid);
+    ASSERT_TRUE(rec.budget);
+    ASSERT_TRUE(strstr(rec.message, "instruction budget exceeded") != NULL);
+    /* One trip per hook invocation; two armed invocations tripped. */
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 2u);
+
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_propagates_through_nested_pcall_depth3)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "n", kChunkNestedTrip,
+                                            chunk_len(kChunkNestedTrip)),
+              BREAK_LUA_OK);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "n", "survived", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "n"));
+    ASSERT_TRUE(break_lua_test_last_frame_error(rt).budget);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_sentinel_never_observable_via_xpcall_handler)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "x", kChunkXpcallTrip,
+                                            chunk_len(kChunkXpcallTrip)),
+              BREAK_LUA_OK);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+    /* The handler never ran (the sentinel is never script-observable), and
+     * the trip propagated out anyway. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "x", "handler_saw",
+                                                    &v));
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "x", "caught", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "x"));
+    break_lua_runtime_destroy(rt);
+}
+
+/* ------------------------------------------------------------------ */
+/* Fix round 5 (review of 121733c8): xpcall base-semantics parity.     */
+/* I1: an ORDINARY error raised by the xpcall handler is absorbed by   */
+/* xpcall itself exactly like base Lua 5.4 (LUA_ERRERR): the call      */
+/* returns (false, "error in error handling") and the code after the   */
+/* xpcall KEEPS RUNNING (pre-fix the handler error escaped the call    */
+/* point and killed the enclosing chunk/function). A handler that      */
+/* trips the budget still re-raises the sentinel — a trip is never     */
+/* absorbed (round-4 property kept). M3: with zero arguments the       */
+/* argument error names #2 like base (the wrapper no longer            */
+/* pre-checks #1). M2: error(msg, level>=2) is the sandbox's only      */
+/* stack-relative operation; a level resolving to the frames BELOW the */
+/* handler hits the wrapper's C frame (post-unwind) instead of the     */
+/* not-yet-unwound callee frame (base) — a position-prefix-only        */
+/* difference, pinned below as documented expected behavior.           */
+/* ------------------------------------------------------------------ */
+
+static const char kChunkXpcallHandlerError[] =
+    "function raised_handler()\n"
+    "    local a, b = xpcall(function() error('inner') end,\n"
+    "                        function(m) error('probe', 0) end)\n"
+    "    state.continued = 1\n" /* reached: base absorbs the handler error */
+    "    return a, b\n"
+    "end\n"
+    "function raised_handler_nested()\n"
+    "    local ok, tag, a, b = pcall(function()\n"
+    "        local x, y = xpcall(function() error('inner') end,\n"
+    "                            function(m) error('probe', 0) end)\n"
+    "        return 'continued', x, y\n"
+    "    end)\n"
+    "    return ok, tag, a, b\n"
+    "end\n";
+
+/* The HANDLER-side trip variant of the round-4 uncatchability pins: a
+ * handler that burns the budget trips the armed count hook inside the
+ * wrapper's (nested, protected) handler call; the sentinel is re-raised
+ * through the script's outer pcall to the host catcher. */
+static const char kChunkXpcallHandlerTrip[] =
+    "function on_frame_begin(dt)\n"
+    "    local ok = pcall(function()\n"
+    "        return xpcall(function() error('inner') end,\n"
+    "                      function(m) while true do end end)\n"
+    "    end)\n"
+    "    state.caught = 1\n" /* never reached: the handler trip is uncatchable */
+    "end\n";
+
+/* M3 shapes. The module name ("arg") is the chunk name, so the position
+ * prefix is deterministic; the pcall'd anonymous function sits on line 2. */
+static const char kChunkXpcallArgShapes[] =
+    "function zero_arg()\n"
+    "    local ok, e = pcall(function() return xpcall() end)\n"
+    "    return ok, e\n"
+    "end\n"
+    "function nil_first()\n"
+    "    local ok, xf, xm = pcall(function()\n"
+    "        return xpcall(nil, function(m) return m end)\n"
+    "    end)\n"
+    "    return ok, xf, xm\n"
+    "end\n";
+
+/* M2 pins. raise_lvl2: a handler raising error(msg, 2) is absorbed to the
+ * LUA_ERRERR result exactly like base (the level-2 prefix is discarded in
+ * both). observe_lvl4/observe_lvl5 pin the documented post-unwind residue:
+ * error levels are the sandbox's only stack-relative operation. Levels
+ * resolving at or above the handler frame (and its immediate caller — a C
+ * frame on BOTH sides: base sees the triggering error() C frame, the
+ * wrapper sees its own) resolve identically modulo the host-chosen chunk
+ * name; the first frame that DIFFERS is one level deeper, where base
+ * walks the not-yet-unwound error chain (the callee's error line) and the
+ * wrapper walks the xpcall call site. Position-prefix content only;
+ * message text, values, and catchability are bit-identical. */
+static const char kChunkXpcallHandlerLevel[] =
+    "function raise_lvl2()\n"
+    "    local a, b = xpcall(function() error('inner') end,\n"
+    "                        function(m) error('probe', 2) end)\n"
+    "    state.continued_lvl2 = 1\n"
+    "    return a, b\n"
+    "end\n"
+    "\n"
+    "function observe_lvl4()\n"
+    "    local f = function() error('inner') end\n"
+    "    local ok, e = xpcall(f,\n"
+    "        function(m)\n"
+    "            local _, obs = pcall(function() error('obs', 4) end)\n"
+    "            return obs\n"
+    "        end)\n"
+    "    return e\n"
+    "end\n"
+    "\n"
+    "function observe_lvl5()\n"
+    "    local f = function() error('inner') end\n"
+    "    local ok, e = xpcall(f,\n"
+    "        function(m)\n"
+    "            local _, obs = pcall(function() error('obs', 5) end)\n"
+    "            return obs\n"
+    "        end)\n"
+    "    return e\n"
+    "end\n";
+
+TEST(sandbox_xpcall_absorbs_ordinary_handler_error_like_base)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaValue rets[4];
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "m", kChunkXpcallHandlerError,
+                                            chunk_len(kChunkXpcallHandlerError)),
+              BREAK_LUA_OK);
+
+    /* Base shape 1: xpcall itself returns (false, "error in error
+     * handling") and the statement after it runs. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "m", "raised_handler", NULL, 0u,
+                                     rets, 4u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_FALSE(rets[0].as.b);
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[1].as.s.data, "error in error handling");
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "m", "continued", &v));
+    ASSERT_EQ(v, 1.0);
+
+    /* Base shape 2: an outer pcall sees the xpcall RETURN normally. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "m", "raised_handler_nested", NULL,
+                                     0u, rets, 4u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_TRUE(rets[0].as.b);
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[1].as.s.data, "continued");
+    ASSERT_EQ(rets[2].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_FALSE(rets[2].as.b);
+    ASSERT_EQ(rets[3].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[3].as.s.data, "error in error handling");
+
+    assert_stack_balanced(rt);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_inside_xpcall_handler_is_uncatchable)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    BreakLuaTestFrameError rec;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "h", kChunkXpcallHandlerTrip,
+                                            chunk_len(kChunkXpcallHandlerTrip)),
+              BREAK_LUA_OK);
+
+    break_lua_runtime_begin_frame(rt, 0.016);
+    assert_stack_balanced(rt);
+
+    /* Neither the wrapper's nested handler pcall nor the script's outer
+     * pcall absorbed the trip: the hook died, the module is marked, and
+     * exactly one trip was recorded. */
+    ASSERT_FALSE(break_lua_test_module_state_number(rt, "h", "caught", &v));
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "h"));
+    rec = break_lua_test_last_frame_error(rt);
+    ASSERT_TRUE(rec.valid);
+    ASSERT_TRUE(rec.budget);
+    ASSERT_TRUE(strstr(rec.message, "instruction budget exceeded") != NULL);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 1u);
+
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(sandbox_xpcall_argument_errors_match_base_text)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaValue rets[3];
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "arg", kChunkXpcallArgShapes,
+                                            chunk_len(kChunkXpcallArgShapes)),
+              BREAK_LUA_OK);
+
+    /* Zero arguments: base checks ONLY the handler argument, so the error
+     * names #2 (never #1) with the caller's position prefix. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "arg", "zero_arg", NULL, 0u,
+                                     rets, 3u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_FALSE(rets[0].as.b);
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[1].as.s.data,
+                  "arg:2: bad argument #2 to 'xpcall' (function expected, "
+                  "got no value)");
+
+    /* nil first argument: base reaches the call attempt, which fails and
+     * routes through the handler (returned here) — wrapper identical. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "arg", "nil_first", NULL, 0u,
+                                     rets, 3u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_TRUE(rets[0].as.b);
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_FALSE(rets[1].as.b);
+    ASSERT_EQ(rets[2].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[2].as.s.data, "attempt to call a nil value");
+
+    assert_stack_balanced(rt);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(sandbox_xpcall_handler_error_levels_match_documented_behavior)
+{
+    BreakLuaRuntime *rt = break_lua_runtime_create(NULL);
+    BreakLuaValue rets[2];
+    double v = 0.0;
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "lvl", kChunkXpcallHandlerLevel,
+                                            chunk_len(kChunkXpcallHandlerLevel)),
+              BREAK_LUA_OK);
+
+    /* error(msg, 2) raised BY the handler: absorbed like base (LUA_ERRERR);
+     * the differing level-2 prefix never surfaces because the handler
+     * message is replaced by "error in error handling" in both. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "lvl", "raise_lvl2", NULL, 0u,
+                                     rets, 2u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_BOOL);
+    ASSERT_FALSE(rets[0].as.b);
+    ASSERT_EQ(rets[1].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[1].as.s.data, "error in error handling");
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "lvl",
+                                                   "continued_lvl2", &v));
+    ASSERT_EQ(v, 1.0);
+
+    /* Level 4 (the frame below the handler): a C frame on BOTH sides —
+     * base sees the triggering error() C frame, the wrapper sees its own —
+     * so both resolve bare. Parity, pinned. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "lvl", "observe_lvl4", NULL, 0u,
+                                     rets, 2u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[0].as.s.data, "obs");
+
+    /* Level 5 — the first frame that DIFFERS (documented M2 residue): base
+     * walks the not-yet-unwound error chain and names the callee's error
+     * line ("lvl:19: obs"); the post-unwind wrapper names the xpcall call
+     * site instead ("lvl:20: obs"). Position-prefix content only. */
+    memset(rets, 0xFF, sizeof(rets));
+    ASSERT_EQ(break_lua_runtime_call(rt, "lvl", "observe_lvl5", NULL, 0u,
+                                     rets, 2u),
+              BREAK_LUA_OK);
+    ASSERT_EQ(rets[0].type, BREAK_LUA_VALUE_STRING);
+    ASSERT_STR_EQ(rets[0].as.s.data, "lvl:20: obs");
+
+    assert_stack_balanced(rt);
+    break_lua_runtime_destroy(rt);
+}
+
+TEST(budget_trip_count_tracks_and_reload_recovers)
+{
+    BreakLuaRuntimeConfig cfg;
+    BreakLuaRuntime *rt;
+    double v = 0.0;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.instruction_budget = 100000u;
+    rt = break_lua_runtime_create(&cfg);
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ(break_lua_runtime_load_module(rt, "s", kChunkSpinHook,
+                                            chunk_len(kChunkSpinHook)),
+              BREAK_LUA_OK);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 0u);
+    break_lua_runtime_begin_frame(rt, 0.016);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 1u);
+    ASSERT_TRUE(break_lua_test_module_hooks_disabled(rt, "s"));
+
+    /* A committed reload clears the mark (Stage 3 contract); the counter
+     * is a lifetime diagnostic and keeps counting. */
+    ASSERT_EQ(break_lua_runtime_reload_module(rt, "s", kChunkCleanHook,
+                                              chunk_len(kChunkCleanHook),
+                                              NULL),
+              BREAK_LUA_OK);
+    ASSERT_FALSE(break_lua_test_module_hooks_disabled(rt, "s"));
+    break_lua_runtime_begin_frame(rt, 0.016);
+    ASSERT_TRUE(break_lua_test_module_state_number(rt, "s", "ran", &v));
+    ASSERT_EQ(v, 1.0);
+    ASSERT_EQ(break_lua_runtime_budget_trip_count(rt), 1u);
+
+    break_lua_runtime_destroy(rt);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(batch_create_capacity_validation);
     RUN_TEST(batch_double_destroy_aborts_in_test_builds);
@@ -986,4 +1454,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(bind_config_validation);
     RUN_TEST(config_get_returns_clamped_values);
     RUN_TEST(bind_config_allocation_failure_is_bounded);
+    RUN_TEST(sandbox_pcall_still_catches_ordinary_errors);
+    RUN_TEST(sandbox_xpcall_handler_runs_for_ordinary_errors);
+    RUN_TEST(budget_trip_is_uncatchable_by_script_pcall_in_hooks);
+    RUN_TEST(budget_trip_propagates_through_nested_pcall_depth3);
+    RUN_TEST(budget_trip_sentinel_never_observable_via_xpcall_handler);
+    RUN_TEST(sandbox_xpcall_absorbs_ordinary_handler_error_like_base);
+    RUN_TEST(budget_trip_inside_xpcall_handler_is_uncatchable);
+    RUN_TEST(sandbox_xpcall_argument_errors_match_base_text);
+    RUN_TEST(sandbox_xpcall_handler_error_levels_match_documented_behavior);
+    RUN_TEST(budget_trip_count_tracks_and_reload_recovers);
 TEST_MAIN_END()

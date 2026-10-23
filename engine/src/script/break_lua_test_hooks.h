@@ -141,9 +141,10 @@ BreakLuaError break_lua_test_install_reloader(BreakLuaRuntime *runtime,
 
 #include <stdlib.h>
 
-static inline void *break_lua_test_calloc(usize bytes)
-{
-    return calloc(1, bytes);
-}
+/* Production passthrough: a macro (not a static inline function) so the
+ * production archive carries no break_lua_test_* symbol at all — at -O0 an
+ * uninlined static inline leaves a local `t break_lua_test_calloc` per TU
+ * (the editor_test_hooks.h Task 5 fix precedent). */
+#define break_lua_test_calloc(bytes) calloc(1, (bytes))
 
 #endif
