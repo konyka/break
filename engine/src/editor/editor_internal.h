@@ -1,7 +1,7 @@
 #pragma once
 /* Library-internal shared state for break_editor (Task 1). Not part of the
- * public editor API — only editor_doc.c, editor_cmd.c, and later
- * editor_components.c (Task 3) include this. */
+ * public editor API — only editor_doc.c, editor_cmd.c, editor_components.c
+ * (Task 3), editor_viewport.c/editor_gizmo.c (Phase 2) include this. */
 
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
@@ -30,7 +30,8 @@ enum {
     BREAK_EDITOR_CMD_KIND_RENAME_ENTITY = 3,
     BREAK_EDITOR_CMD_KIND_SET_FIELD_F32 = 4,
     BREAK_EDITOR_CMD_KIND_ADD_COMPONENT = 5,
-    BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6
+    BREAK_EDITOR_CMD_KIND_REMOVE_COMPONENT = 6,
+    BREAK_EDITOR_CMD_KIND_GIZMO_TRANSFORM = 7
 };
 
 /* Concrete command: one bounded allocation per mutation. name/other_name
@@ -155,3 +156,13 @@ void break_editor_doc_init_components(BreakEditorDoc *doc);
  * registered editable type. */
 const BreakEditorComponentReg *break_editor_doc_find_component(
     const BreakEditorDoc *doc, u32 component_id);
+
+/* Raw component bytes for the gizmo's coalescing drag command (Phase 2
+ * Task 2, editor_gizmo.c): registry-gated (NULL for unregistered ids,
+ * stale entities, or absent components). The gizmo writes through this
+ * pointer ONLY while its in-progress multi-field command owns the mutation
+ * (begin_drag..end_drag); the command is pushed at end_drag, so the undo
+ * stack still sees exactly one command per drag. */
+u8 *break_editor_doc_component_bytes(BreakEditorDoc *doc,
+                                     BreakEditorEntityId id,
+                                     u32 component_id);

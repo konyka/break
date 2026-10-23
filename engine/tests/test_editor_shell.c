@@ -14,15 +14,19 @@
 #endif
 
 #include "editor_panels.h"
+#include "editor_viewport3d.h"
 
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
+#include <editor/editor_gizmo.h>
 #include <editor/editor_scene.h>
+#include <editor/editor_viewport.h>
 
 #include "myc/my_emitter.h"
 #include "mypal/my_event.h"
 #include "mypal/my_pal.h"
 #include "myr/my_lcd_mem.h"
+#include "myui/my_event_dispatch.h"
 #include "myui/my_widget.h"
 #include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
@@ -461,6 +465,7 @@ TEST(ppm_smoke_paints_expected_theme_colors)
     uint32_t stride;
     size_t bg_count = 0u;
     size_t button_count = 0u;
+    size_t viewport_count = 0u;
     uint32_t x, y;
     ASSERT_NOT_NULL(shell);
     emit_click(find(shell, "editor-add-button"));
@@ -476,9 +481,16 @@ TEST(ppm_smoke_paints_expected_theme_colors)
      * bg to 0xF5F5F5FF (my_theme.c:1127-1128), consumed by the window's
      * on_paint (my_window.c:110-111); the normal-state button bg is
      * 0xE0E0E0FF (my_theme.c:1129-1130). A NEVER-painted dummy lcd stays
-     * zero-filled, so both counts are 0 unless a frame was actually
+     * zero-filled, so all counts are 0 unless a frame was actually
      * rendered — comparing against the pre-theme rgb(32,32,32) fallback
-     * would count 100% of the frame in BOTH cases. */
+     * would count 100% of the frame in BOTH cases.
+     * Phase 2 Task 3 recalibration: the frame now contains the 3D viewport
+     * panel (placeholder rgb(30,31,34), ~376x334 = ~125k px on the dummy
+     * canvas where no FBO exists) under the open palette (420x300 = 126k
+     * px), so the window bg legitimately covers only ~25-35% of the frame
+     * (was >50% in the Phase 1 layout). The threshold keeps its
+     * discriminating power (never-painted = 0) and the viewport placeholder
+     * count is pinned directly. */
     for (y = 0u; y < 480u; y++) {
         for (x = 0u; x < 800u; x++) {
             const uint8_t *p = pixels + y * stride + x * 4u;
@@ -486,17 +498,405 @@ TEST(ppm_smoke_paints_expected_theme_colors)
                 bg_count++;
             } else if (p[0] == 224u && p[1] == 224u && p[2] == 224u) {
                 button_count++;
+            } else if ((p[0] == 30u && p[1] == 31u && p[2] == 34u) ||
+                       (p[0] == 34u && p[1] == 31u && p[2] == 30u)) {
+                /* placeholder rgb(30,31,34): the dummy lcd pixel format is
+                 * BGRA8888 on some configs (my_vgcanvas_soft.c fill path),
+                 * so accept either channel order (the gray theme probes
+                 * above are order-agnostic, which is why they never cared) */
+                viewport_count++;
             }
         }
     }
-    /* most of the 800x480 frame is window bg... */
-    /* most of the 800x480 frame is window bg... */
-    printf("    (ppm smoke: %zu window-bg px, %zu button-bg px)\n", bg_count,
-           button_count);
-    ASSERT_TRUE(bg_count > (800u * 480u) / 2u);
+    printf("    (ppm smoke: %zu window-bg px, %zu button-bg px, %zu viewport "
+           "placeholder px)\n",
+           bg_count, button_count, viewport_count);
+    /* window bg still paints broadly (the palette only covers part of it) */
+    ASSERT_TRUE(bg_count > (800u * 480u) / 5u);
     /* ...and the toolbar/outliner-row buttons painted their bg */
     ASSERT_TRUE(button_count > 100u);
+    /* ...and the viewport panel painted its placeholder (dummy path: no FBO) */
+    ASSERT_TRUE(viewport_count > 100000u);
     break_editor_shell_destroy(shell);
+}
+
+/* ---------------- Phase 2 Task 3: viewport panel + wiring ---------------- */
+
+/* Projects a world point through the shell camera's PUBLIC view/proj into
+ * the viewport widget's local pixel space (top-left origin, the same
+ * unprojection convention break_editor_viewport_screen_ray inverts). */
+static bool project_to_viewport(BreakEditorShell *shell,
+                                const my_widget_t *vp, const f32 wp[3],
+                                f32 out_local[2]) {
+    const BreakEditorCamera *cam = break_editor_shell_camera(shell);
+    f32 v[16], p[16];
+    f32 vx, vy, vz, vw;
+    f32 cx, cy, cw;
+    f32 ndc_x, ndc_y;
+    if (cam == NULL || vp == NULL || vp->rect.w <= 0 || vp->rect.h <= 0) {
+        return false;
+    }
+    break_editor_camera_view(cam, v);
+    break_editor_camera_proj(cam, (f32)vp->rect.w / (f32)vp->rect.h, p);
+    /* Mat4 is column-major e[col][row]; flat index = col*4 + row. */
+    vx = v[0] * wp[0] + v[4] * wp[1] + v[8] * wp[2] + v[12];
+    vy = v[1] * wp[0] + v[5] * wp[1] + v[9] * wp[2] + v[13];
+    vz = v[2] * wp[0] + v[6] * wp[1] + v[10] * wp[2] + v[14];
+    vw = v[3] * wp[0] + v[7] * wp[1] + v[11] * wp[2] + v[15];
+    cx = p[0] * vx + p[4] * vy + p[8] * vz + p[12] * vw;
+    cy = p[1] * vx + p[5] * vy + p[9] * vz + p[13] * vw;
+    cw = p[3] * vx + p[7] * vy + p[11] * vz + p[15] * vw;
+    if (cw < 1e-6f) {
+        return false; /* behind the camera */
+    }
+    ndc_x = cx / cw;
+    ndc_y = cy / cw;
+    out_local[0] = (ndc_x + 1.0f) * 0.5f * (f32)vp->rect.w;
+    out_local[1] = (1.0f - ndc_y) * 0.5f * (f32)vp->rect.h;
+    return true;
+}
+
+/* Dispatches one pointer event at a viewport-LOCAL logical pixel position
+ * through the real window dispatcher (hit-test + grab semantics included). */
+static void viewport_pointer(BreakEditorShell *shell, my_event_type_t type,
+                             f32 local_x, f32 local_y, u8 button, u8 mods,
+                             int delta) {
+    my_widget_t *vp = break_editor_shell_viewport_widget(shell);
+    my_window_t *win = break_editor_shell_window(shell);
+    my_event_t ev = my_event_init(type);
+    int32_t gx = (int32_t)(local_x + 0.5f);
+    int32_t gy = (int32_t)(local_y + 0.5f);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_NOT_NULL(win);
+    my_widget_local_to_global(vp, &gx, &gy);
+    ev.u.pointer.x = gx;
+    ev.u.pointer.y = gy;
+    ev.u.pointer.button = button;
+    ev.u.pointer.modifiers = mods;
+    ev.u.pointer.delta = delta;
+    (void)my_event_dispatch(&win->dispatcher, &ev);
+}
+
+/* Adds one entity with an EditorTransform at pos via the real panel buttons
+ * (command-stack path) and selects it; the caller reads the id back with
+ * break_editor_shell_selected(). */
+static void add_transformed_entity(BreakEditorShell *shell, f32 px, f32 py,
+                                   f32 pz) {
+    my_widget_t *field;
+    char val[32];
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    emit_click(find(shell, "editor-component-add-64"));
+    ASSERT_TRUE(break_editor_entity_id_valid(break_editor_shell_selected(shell)));
+    /* pos.x/y/z are fields 0..2 of the transform component */
+    snprintf(val, sizeof(val), "%.9g", (double)px);
+    field = find(shell, "editor-field-64-0");
+    ASSERT_NOT_NULL(field);
+    ASSERT_EQ(my_edit_set_text(field, val), MY_RET_OK);
+    emit_activate(field);
+    snprintf(val, sizeof(val), "%.9g", (double)py);
+    field = find(shell, "editor-field-64-1");
+    ASSERT_NOT_NULL(field);
+    ASSERT_EQ(my_edit_set_text(field, val), MY_RET_OK);
+    emit_activate(field);
+    snprintf(val, sizeof(val), "%.9g", (double)pz);
+    field = find(shell, "editor-field-64-2");
+    ASSERT_NOT_NULL(field);
+    ASSERT_EQ(my_edit_set_text(field, val), MY_RET_OK);
+    emit_activate(field);
+}
+
+TEST(viewport_widget_present_and_laid_out)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *vp;
+    my_widget_t *outliner;
+    my_widget_t *inspector;
+    ASSERT_NOT_NULL(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(find(shell, "editor-viewport") == vp);
+    shell_paint(shell);
+    outliner = find(shell, "editor-outliner-panel");
+    inspector = find(shell, "editor-inspector");
+    ASSERT_NOT_NULL(outliner);
+    ASSERT_NOT_NULL(inspector);
+    /* middle row: outliner 25% | viewport 1f | inspector 28% */
+    ASSERT_TRUE(vp->rect.w > 0 && vp->rect.h > 0);
+    ASSERT_TRUE(vp->rect.x >= outliner->rect.x + outliner->rect.w - 1);
+    ASSERT_TRUE(inspector->rect.x >= vp->rect.x + vp->rect.w - 1);
+    ASSERT_EQ(vp->rect.h, outliner->rect.h);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(tool_keys_set_gizmo_mode_and_label)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_NONE);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell),
+              BREAK_EDITOR_GIZMO_TRANSLATE);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Translate");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'e', 0u));
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_ROTATE);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Rotate");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'r', 0u));
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_SCALE);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Scale");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'q', 0u));
+    ASSERT_EQ(break_editor_shell_gizmo_mode(shell), BREAK_EDITOR_GIZMO_NONE);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Select");
+    break_editor_shell_destroy(shell);
+}
+
+TEST(focus_key_moves_camera_target_to_selection)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    const BreakEditorCamera *cam;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 5.0f, 2.0f, -3.0f);
+    cam = break_editor_shell_camera(shell);
+    ASSERT_NOT_NULL(cam);
+    ASSERT_FLOAT_EQ(cam->target[0], 0.0f, 1e-6f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'f', 0u));
+    cam = break_editor_shell_camera(shell);
+    ASSERT_FLOAT_EQ(cam->target[0], 5.0f, 1e-4f);
+    ASSERT_FLOAT_EQ(cam->target[1], 2.0f, 1e-4f);
+    ASSERT_FLOAT_EQ(cam->target[2], -3.0f, 1e-4f);
+    /* focus fits a sane distance (Task 1 contract: clamped, positive) */
+    ASSERT_TRUE(cam->distance > 0.04f && cam->distance < 10000.0f);
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "focus") !=
+                NULL);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(pointer_down_on_viewport_picks_entity)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorEntityId id;
+    my_widget_t *vp;
+    f32 local[2];
+    f32 origin[3] = {0.0f, 0.0f, 0.0f};
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    id = break_editor_shell_selected(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(project_to_viewport(shell, vp, origin, local));
+    /* left press where the proxy projects: pick selects the entity */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u,
+                     0u, 0);
+    ASSERT_TRUE(break_editor_entity_id_eq(break_editor_shell_selected(shell),
+                                          id));
+    /* left press far off the proxy (top-left corner area): selection clears */
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0], local[1], 1u, 0u,
+                     0);
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, 4.0f, 4.0f, 1u, 0u, 0);
+    ASSERT_FALSE(break_editor_entity_id_valid(
+        break_editor_shell_selected(shell)));
+    break_editor_shell_destroy(shell);
+}
+
+TEST(gizmo_drag_via_pointer_events_then_single_undo)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    my_widget_t *vp;
+    BreakEditorGizmoHandle handles[4];
+    usize n;
+    f32 local[2];
+    f32 center[3];
+    f32 value = 0.0f;
+    f32 dragged = 0.0f;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    id = break_editor_shell_selected(shell);
+    doc = break_editor_shell_doc(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_NOT_NULL(vp);
+    /* W = translate mode; selection attached the gizmo */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    n = break_editor_gizmo_handles(break_editor_shell_gizmo(shell), handles,
+                                   4u);
+    ASSERT_EQ(n, 4u);
+    /* X handle center in world space */
+    center[0] = 0.5f * (handles[0].aabb_min[0] + handles[0].aabb_max[0]);
+    center[1] = 0.5f * (handles[0].aabb_min[1] + handles[0].aabb_max[1]);
+    center[2] = 0.5f * (handles[0].aabb_min[2] + handles[0].aabb_max[2]);
+    ASSERT_EQ(handles[0].part, BREAK_EDITOR_GIZMO_PART_X);
+    ASSERT_TRUE(project_to_viewport(shell, vp, center, local));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u,
+                     0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 40.0f, local[1],
+                     0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 40.0f, local[1],
+                     1u, 0u, 0);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_TRUE(value > 0.01f); /* dragged right along +X */
+    dragged = value;
+    /* ONE undo reverts the whole drag (single command contract) */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
+    /* redo re-applies the drag result */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'y', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, dragged, 1e-5f);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(mid_drag_ctrl_z_commits_then_undoes_the_drag)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    BreakEditorEntityId id;
+    my_widget_t *vp;
+    BreakEditorGizmoHandle handles[4];
+    f32 local[2];
+    f32 center[3];
+    f32 value = 0.0f;
+    ASSERT_NOT_NULL(shell);
+    add_transformed_entity(shell, 0.0f, 0.0f, 0.0f);
+    id = break_editor_shell_selected(shell);
+    doc = break_editor_shell_doc(shell);
+    shell_paint(shell);
+    vp = break_editor_shell_viewport_widget(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_EQ(break_editor_gizmo_handles(break_editor_shell_gizmo(shell),
+                                         handles, 4u),
+              4u);
+    center[0] = 0.5f * (handles[0].aabb_min[0] + handles[0].aabb_max[0]);
+    center[1] = 0.5f * (handles[0].aabb_min[1] + handles[0].aabb_max[1]);
+    center[2] = 0.5f * (handles[0].aabb_min[2] + handles[0].aabb_max[2]);
+    ASSERT_TRUE(project_to_viewport(shell, vp, center, local));
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, local[0], local[1], 1u,
+                     0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 40.0f, local[1],
+                     0u, 0u, 0);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_TRUE(value > 0.01f); /* mid-drag: live write happened */
+    /* External undo mid-drag: the drag is ended+committed FIRST, then the
+     * undo reverts exactly that committed drag (documented policy). */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
+    /* the drag is closed: further moves write nothing, the up is a no-op */
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, local[0] + 80.0f, local[1],
+                     0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, local[0] + 80.0f, local[1],
+                     1u, 0u, 0);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(camera_orbit_pan_zoom_via_pointer_and_wheel)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    const BreakEditorCamera *cam;
+    f32 yaw0, dist0;
+    f32 target0[3];
+    ASSERT_NOT_NULL(shell);
+    shell_paint(shell);
+    cam = break_editor_shell_camera(shell);
+    ASSERT_NOT_NULL(cam);
+    yaw0 = cam->yaw;
+    dist0 = cam->distance;
+    target0[0] = cam->target[0];
+    target0[1] = cam->target[1];
+    target0[2] = cam->target[2];
+    /* right-drag orbits */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, 100.0f, 100.0f, 3u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, 160.0f, 100.0f, 0u, 0u, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, 160.0f, 100.0f, 3u, 0u, 0);
+    ASSERT_TRUE(cam->yaw != yaw0);
+    /* shift+left-drag pans */
+    viewport_pointer(shell, MY_EVENT_POINTER_DOWN, 100.0f, 100.0f, 1u,
+                     MY_KEYMOD_SHIFT, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_MOVE, 100.0f, 140.0f, 0u,
+                     MY_KEYMOD_SHIFT, 0);
+    viewport_pointer(shell, MY_EVENT_POINTER_UP, 100.0f, 140.0f, 1u,
+                     MY_KEYMOD_SHIFT, 0);
+    ASSERT_TRUE(cam->target[0] != target0[0] || cam->target[1] != target0[1] ||
+                cam->target[2] != target0[2]);
+    /* wheel zooms */
+    viewport_pointer(shell, MY_EVENT_POINTER_WHEEL, 100.0f, 100.0f, 0u, 0u,
+                     3);
+    ASSERT_TRUE(cam->distance < dist0); /* positive delta zooms in */
+    /* camera moves are view state: nothing undoable was recorded */
+    {
+        char last[128];
+        last[0] = '\0';
+        (void)break_editor_cmd_stack_describe_last(
+            break_editor_doc_stack(break_editor_shell_doc(shell)), last);
+        ASSERT_STR_EQ(last, "");
+    }
+    break_editor_shell_destroy(shell);
+}
+
+TEST(viewport_render_without_device_is_bounded_noop)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    /* dummy-PAL path: no RHI device — the render entry must be a guarded
+     * no-op (and the per-frame tick must be safe too). */
+    break_editor_shell_tick(shell);
+    break_editor_shell_render_viewport(shell, NULL, NULL, 800, 480, 800, 480);
+    break_editor_shell_tick(NULL);
+    break_editor_shell_render_viewport(NULL, NULL, NULL, 0, 0, 0, 0);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(model_matrix_known_answers)
+{
+    f32 m[16];
+    /* pos (1,2,3), yaw 90 deg about Y, scale 2: local +X -> world -Z
+     * (R_y(90): x' = z, z' = -x), scaled, then translated. */
+    break_editor_viewport3d_model_matrix(
+        (const f32[]){1.0f, 2.0f, 3.0f}, (const f32[]){0.0f, 90.0f, 0.0f},
+        (const f32[]){2.0f, 2.0f, 2.0f}, m);
+    {
+        /* M * (1,0,0,1) column-vector: row i = m[i] + m[4+i]*0 + ... */
+        f32 px = m[0] * 1.0f + m[12];
+        f32 py = m[1] * 1.0f + m[13];
+        f32 pz = m[2] * 1.0f + m[14];
+        ASSERT_FLOAT_EQ(px, 1.0f, 1e-4f);
+        ASSERT_FLOAT_EQ(py, 2.0f, 1e-4f);
+        ASSERT_FLOAT_EQ(pz, 1.0f, 1e-4f); /* -2 + 3 */
+    }
+    /* composition order pin: M = R_y * R_x * R_z — (0,1,0) through
+     * pitch 90 then yaw 90 lands on +X, not +Z. */
+    break_editor_viewport3d_model_matrix(
+        (const f32[]){0.0f, 0.0f, 0.0f}, (const f32[]){90.0f, 90.0f, 0.0f},
+        (const f32[]){1.0f, 1.0f, 1.0f}, m);
+    {
+        f32 px = m[4];
+        f32 py = m[5];
+        f32 pz = m[6];
+        ASSERT_FLOAT_EQ(px, 1.0f, 1e-4f);
+        ASSERT_FLOAT_EQ(py, 0.0f, 1e-4f);
+        ASSERT_FLOAT_EQ(pz, 0.0f, 1e-4f);
+    }
+    /* degrees, not radians: rot.x = 90 must be a quarter turn */
+    break_editor_viewport3d_model_matrix(
+        (const f32[]){0.0f, 0.0f, 0.0f}, (const f32[]){90.0f, 0.0f, 0.0f},
+        (const f32[]){1.0f, 1.0f, 1.0f}, m);
+    {
+        /* R_x(90): (0,1,0) -> (0,0,1) */
+        ASSERT_FLOAT_EQ(m[5], 0.0f, 1e-4f);
+        ASSERT_FLOAT_EQ(m[6], 1.0f, 1e-4f);
+    }
 }
 
 TEST_MAIN_BEGIN()
@@ -516,4 +916,13 @@ TEST_MAIN_BEGIN()
     RUN_TEST(inspector_field_edit_routes_through_command_stack);
     RUN_TEST(console_ring_is_bounded_at_64_entries);
     RUN_TEST(ppm_smoke_paints_expected_theme_colors);
+    RUN_TEST(viewport_widget_present_and_laid_out);
+    RUN_TEST(tool_keys_set_gizmo_mode_and_label);
+    RUN_TEST(focus_key_moves_camera_target_to_selection);
+    RUN_TEST(pointer_down_on_viewport_picks_entity);
+    RUN_TEST(gizmo_drag_via_pointer_events_then_single_undo);
+    RUN_TEST(mid_drag_ctrl_z_commits_then_undoes_the_drag);
+    RUN_TEST(camera_orbit_pan_zoom_via_pointer_and_wheel);
+    RUN_TEST(viewport_render_without_device_is_bounded_noop);
+    RUN_TEST(model_matrix_known_answers);
 TEST_MAIN_END()

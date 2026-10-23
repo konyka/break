@@ -47,4 +47,28 @@ u32 my_vgcanvas_break_rhi_sample_count_for_aa_level(int level);
 my_ret_t my_vgcanvas_break_rhi_resize(my_vgcanvas_t *vg, u32 width,
                                       u32 height);
 
+/* Stage 4 scene editor Phase 2 Task 3 (additive extension slot): blit an
+ * existing RHI texture (e.g. an offscreen FBO's color attachment) into the
+ * dst rect of the current frame's command stream. Implemented with the
+ * canvas's existing image pipeline/batch path — no vtable change, and the
+ * CPU-bitmap image cache (image_texture()) is NOT involved: the texture
+ * handle is used as-is and never inserted into the cache slots.
+ *
+ * Coordinates are canvas-local logical units (the current transform/scale
+ * applies, exactly like draw_image): (x,y) is the dst top-left. UV
+ * convention matches draw_image: texture v=0 lands at the dst TOP edge —
+ * callers blitting an FBO rendered with the default bind viewport (NDC +Y ->
+ * v=1 on both backends) must flip their content up front (the editor
+ * viewport renderer negates the projection's Y scale).
+ *
+ * The blit is recorded into the CURRENT frame's batch: call between
+ * my_vgcanvas_begin_frame/end_frame (typically from a widget on_paint) with
+ * set_cmd() already pointing at a live command buffer. Bounded no-op errors
+ * (nothing recorded): NULL/foreign canvas (not this backend), invalid
+ * texture handle, non-finite or non-positive w/h, batch ring exhausted
+ * (MY_RET_OOM, same bound as draw_image). */
+my_ret_t my_vgcanvas_break_rhi_blit_texture(my_vgcanvas_t *vg,
+                                            RHITexture texture, float x,
+                                            float y, float w, float h);
+
 #endif /* MY_VGCANVAS_BREAK_RHI_H */

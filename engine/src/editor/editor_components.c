@@ -153,6 +153,14 @@ static u8 *component_ptr(BreakEditorDoc *doc, BreakEditorEntityId id,
                                      ecs_id(id), component_id);
 }
 
+u8 *break_editor_doc_component_bytes(BreakEditorDoc *doc,
+                                     BreakEditorEntityId id,
+                                     u32 component_id) {
+    if (!doc || !break_editor_doc_has_entity(doc, id)) return NULL;
+    if (!break_editor_doc_find_component(doc, component_id)) return NULL;
+    return component_ptr(doc, id, component_id);
+}
+
 static void component_cmd_destroy(BreakEditorCmd *self) {
     free(self);
 }

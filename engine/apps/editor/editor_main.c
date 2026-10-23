@@ -1,9 +1,12 @@
-/* Break scene editor — Stage 4 Phase 1 shell executable (Task 4).
+/* Break scene editor — Stage 4 Phase 1 shell + Phase 2 3D viewport.
  *
  * Thin main: platform + RHI + BreakUI bridge (the dxx_break_main.c
  * precedent), then break_editor_shell_create() builds the whole panel tree
  * into the bridge window. All panel logic lives in editor_panels.c so the
- * headless dummy-PAL tests (test_editor_shell) exercise the same code.
+ * headless dummy-PAL tests (test_editor_shell) exercise the same code. The
+ * Phase 2 3D viewport renders offscreen between break_ui_frame_begin and
+ * break_ui_render on the same command buffer; the panel widget blits the
+ * resulting FBO texture during the UI pass.
  *
  * Optional argv[1]: scene path used as the Ctrl+S / palette-save target
  * (Phase 1 has no save-as dialog; loading is intentionally not wired to
@@ -128,6 +131,7 @@ int main(int argc, char **argv) {
     RHICmdBuffer *cmd;
     bool skip = false;
     u32 nw = 0, nh = 0;
+    u32 lw = 0, lh = 0;
     platform_get_drawable_size(platform, &nw, &nh);
     if (nw != 0 && nh != 0 && (nw != drawable_w || nh != drawable_h)) {
       rhi_device_resize(device, nw, nh);
@@ -135,9 +139,18 @@ int main(int argc, char **argv) {
       drawable_h = nh;
     }
     break_ui_pump(ui);
+    /* Phase 2 Task 3: per-frame viewport housekeeping (per-frame damage for
+     * the live 3D view + gizmo/selection reconcile) BEFORE frame_begin's
+     * skip decision, so the damage is visible to it. */
+    break_editor_shell_tick(shell);
+    platform_get_logical_size(platform, &lw, &lh);
     cmd = break_ui_frame_begin(ui, drawable_w, drawable_h, &skip, NULL);
     if (skip) continue;
     if (cmd != NULL) {
+      /* 3D viewport pass into the SAME command buffer (offscreen FBO), then
+       * the retained UI pass whose viewport widget blits the FBO texture. */
+      break_editor_shell_render_viewport(shell, device, cmd, (int)drawable_w,
+                                         (int)drawable_h, (int)lw, (int)lh);
       break_ui_render(ui, cmd, drawable_w, drawable_h);
       rhi_frame_end(device);
       rhi_present(device);

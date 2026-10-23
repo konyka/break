@@ -125,3 +125,16 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *c, RHITexture t, u32 u, u32 mip, b
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *c, RHITexture t)   { (void)c; (void)t; }
 void rhi_cmd_memory_barrier(RHICmdBuffer *c)                            { (void)c; }
 void rhi_cmd_dispatch(RHICmdBuffer *c, u32 x, u32 y, u32 z)            { (void)c; (void)x; (void)y; (void)z; }
+
+/* Stage 4 scene editor Phase 2 Task 3: the editor viewport renderer +
+ * myui RHI canvas are link-only in test_editor_shell (dummy PAL — no device,
+ * never called), so these are pure link satisfiers like the rest. */
+void rhi_texture_upload_mip(RHIDevice *d, RHITexture t, u32 mip, u32 w, u32 h,
+                            const void *data, usize size) {
+    (void)d; (void)t; (void)mip; (void)w; (void)h; (void)data; (void)size;
+}
+void rhi_offscreen_fbo_set_clear_color(RHIDevice *d, RHIOffscreenFBO *fbo,
+                                       f32 r, f32 g, f32 b, f32 a) {
+    (void)d; (void)fbo; (void)r; (void)g; (void)b; (void)a;
+}
+void rhi_cmd_clear_depth(RHICmdBuffer *c) { (void)c; }
