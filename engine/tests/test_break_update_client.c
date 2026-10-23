@@ -1,8 +1,8 @@
 /* ==========================================================================
  *  test_break_update_client.c — Stage 5 Phase B Task 1 tests: update client
  *  state machine + A/B slot layout; Task 2 tests: chunked downloader with
- *  byte-level resume via an in-process fake fetcher (stage/activate/unstage
- *  are Task 3 and do not exist yet).
+ *  byte-level resume via an in-process fake fetcher; Task 3 tests: the
+ *  stage/activate/unstage pipeline end-to-end headless.
  *
  *  Task 1 pins: fresh-open layout + byte-exact initial state; reopen
  *  round-trips; corrupt-state battery → open NULL (truncated / unknown key /
@@ -31,6 +31,25 @@
  *  near-U64_MAX claimed size → every call clamped from the manifest size
  *  (saw_bad_range stays false); confirm_boot preserves a resume-chunk line
  *  byte-exactly (review M1 pin).
+ *
+ *  Task 3 pins (signed fixture manifests — test-only Ed25519 keypair, see the
+ *  Task 3 section header for provenance): full cycle fresh stage → activate →
+ *  confirm with slot file bytes == chunk bytes (byte-exact, nested names via
+ *  per-component mkdir) and byte-exact state at every step; SIGNATURE BEFORE
+ *  TRANSPORT gate — invalid signature → VERIFY + zero fetch calls + zero disk
+ *  change; channel/platform mismatch and below-min-version → POLICY + zero
+ *  fetch; fresh-client min-version semantics (current=none ⇒ source 0.0.0:
+ *  a 0.0.0-floor payload stages, a higher floor refuses) both ways; stage
+ *  while staged → STATE (unstage is the only clear path); fetch failure ⇒
+ *  slot trees untouched + resume progress kept; materialize failure ⇒ partial
+ *  slot removed + state unchanged; activate without stage → STATE; activate
+ *  with missing/corrupt update-version marker → IO (fail closed, no flip);
+ *  rollback pre-confirm flips back + clears pending; rollback post-confirm
+ *  allowed above / refused below the min-rollback floor; rollback while
+ *  staged → STATE, then unstage → rollback allowed again; unstage without
+ *  staged → false; A→B→A re-stage over the retained slot is byte-exact with
+ *  zero stale files; crash-simulation (destroy+reopen between stage and
+ *  activate) keeps the staged slot intact and current unchanged.
  * ========================================================================== */
 
 #include "test_framework.h"
@@ -118,10 +137,35 @@ static bool dir_has_tmp(const char *dir) {
     return false;
 }
 
+/* Best-effort recursive removal of a file or directory tree (test teardown;
+ * Task 3 fills the slots with real trees). ISO-C remove() handles files and
+ * emptied directories on POSIX. */
+static void remove_tree(const char *path) {
+    PlatformDirEntry entries[32];
+    u32 count = 0;
+    if (!platform_list_dir(path, entries, 32, &count)) {
+        remove(path);
+        return;
+    }
+    u32 i;
+    for (i = 0; i < count && i < 32; i++) {
+        char child[1200];
+        join_path(child, sizeof(child), path, entries[i].name);
+        if (entries[i].is_dir) {
+            remove_tree(child);
+        } else {
+            remove(child);
+        }
+    }
+    TEST_RMDIR(path);
+}
+
 /* Best-effort teardown of the fixed Task 1 layout (state may be a file or,
  * after the failure-injection test, already gone; remove() handles both on
  * POSIX and TEST_RMDIR covers the directory case). Task 2: chunks/ may hold
- * downloaded chunks + a .part spool — remove files before the rmdir. */
+ * downloaded chunks + a .part spool — remove files before the rmdir.
+ * Task 3: slots/A + slots/B may hold materialized trees (files/ subtrees +
+ * update-version markers) — removed recursively. */
 static void cleanup_root(const char *root) {
     char p[1200];
     join_path(p, sizeof(p), root, "state");
@@ -142,9 +186,9 @@ static void cleanup_root(const char *root) {
     }
     TEST_RMDIR(p);
     join_path(p, sizeof(p), root, "slots/A");
-    TEST_RMDIR(p);
+    remove_tree(p);
     join_path(p, sizeof(p), root, "slots/B");
-    TEST_RMDIR(p);
+    remove_tree(p);
     join_path(p, sizeof(p), root, "slots");
     TEST_RMDIR(p);
     TEST_RMDIR(root);
@@ -1004,6 +1048,7 @@ static bool fake_fetch(void *user, const char *object_name, u64 offset, u64 len,
 
 static u8 g_fx_small[100];
 static u8 g_fx_a[100000];
+static u8 g_fx_a2[100000];
 static u8 g_fx_big[200000];
 static u8 g_fx_b[300];
 static u8 g_fx_c[70000];
@@ -1709,6 +1754,1154 @@ TEST(confirm_boot_preserves_resume_line) {
     cleanup_root(root);
 }
 
+/* ==================== Task 3: stage → activate → unstage ===================
+ * Signed fixture manifests (REAL Ed25519 signatures — stage's verify gate
+ * demands them; Phase A's keypair cannot sign new bodies because its private
+ * key was never committed). Test-vector provenance (generated ONCE offline on
+ * 2026-10-24 with the system OpenSSL 3.5.9 CLI; scratch dir
+ * /tmp/upd_t3_keygen; the private key is NOT committed anywhere — TEST-ONLY
+ * keypair, never a product key):
+ *   openssl genpkey -algorithm ed25519 -out sk.pem
+ *   openssl pkey -in sk.pem -pubout -out pk.pem
+ *   openssl pkey -pubin -in pk.pem -outform DER | tail -c 32 | xxd -p -c 64
+ *       -> STAGE_PUBKEY_HEX
+ *   chunk hashes: sha256 over the fill_bytes(seed, size) fixture bytes (the
+ *       same generator the fixtures below use — pinned by
+ *       stage_fixture_vectors_match so fixture drift fails loudly)
+ *   openssl pkeyutl -sign -inkey sk.pem -rawin -in <body> | base64
+ *       -> SIG_* lines (body = all bytes before the signature line);
+ *       every signature cross-checked with pkeyutl -verify.
+ * Manifests (channel stable / platform linux-x86-64 throughout):
+ *   M_A    version 2.0.0 min-version 0.0.0   bin/engine(100000,s11)
+ *          data/base.pak(300,s23) shaders/pbr.spv(70000,s37)
+ *   M_B    version 3.0.0 min-version 1.0.0   bin/engine(100000,s51)
+ *          data/extra.pak(1000,s61)
+ *   M_C    version 4.0.0 min-version 2.0.0   bin/engine(300,s71)
+ *          readme.txt(42,s81)       (file set disjoint from M_A: staleness pin)
+ *   M_MINV version 2.1.0 min-version 2.0.0   core.bin(100,s91)  (policy probe)
+ * ========================================================================== */
+
+static const char STAGE_PUBKEY_HEX[] =
+    "8ee7de4ce6e6abed6c656cb57b92868957979edf28fb0fc41d73845f15587f31";
+
+#define HASH_A_ENGINE \
+    "b0287b430b1f8d1b4c2347812dc7da5374f3b390562249366600281df8f78bd6"
+#define HASH_A_BASEPAK \
+    "1ba3e75a0797219ef7fbe3a1b6c43996c0c50a30b93a813c1ff5483a0ad1d4d6"
+#define HASH_A_PBRSPV \
+    "29b676461c156fab5db89a3a89cc3d8676e7eb013899b37f65a0b4751fcd844a"
+#define HASH_B_ENGINE \
+    "432c0bf203827797fb8b586807798268cf92d873a1b3ef83c253994ce7898355"
+#define HASH_B_EXTRAPAK \
+    "90fb7379afb6eb020b272ffc9c03c22a7477e1bfe0356e7ef7d2e72b3cd0db21"
+#define HASH_C_ENGINE \
+    "01559ffa2e81750c21ff41fd393bebbcd5475be4c5b618a057776e42c5441b91"
+#define HASH_C_README \
+    "6ea595b29bc254143fa27ab0c040165de66053edf1d942c6a9c264a2fcaac318"
+#define HASH_MINV_CORE \
+    "9a910e8d6b031043251615469920de9011270d57253e55d05e5023b0ec0d5fb8"
+
+#define SIG_A \
+    "RsjbaYyEX7rYwqrTl4n+yWtGuoHbFaYyAttJasEpmzRHbnWunt1WnDeY2YNYfZOMbNrdA26rU18JihNap1FNCg=="
+#define SIG_B \
+    "VYq6WBAjMsCzKxCvzqGlPTsuhfTsZtzqJdC96yB76pTsJep3XwXw1u01vO6jLpLhTcfsN1EOC3QzpN64hegvBw=="
+#define SIG_C \
+    "YcKzm/tLCVOyu55meeAH6ubq1J3kfKLHa9BqFXOcyqcYeJVd6psCRJYcrIWptguIlrbYtGLhugxf6u4FS4V9BA=="
+#define SIG_MINV \
+    "ardYg8E4atHGzqt5ApSFs2oGhkWRAA4c96kFLSGMDGRFKZpdDcaosshzN8+lM/06Tr/lUH+QFkNfJ6IozVNgCg=="
+
+static const u8 *stage_pubkey(void) {
+    static u8 pub[32];
+    static bool done = false;
+    if (!done) {
+        usize i;
+        for (i = 0; i < 32; i++) {
+            int hi = -1, lo = -1;
+            char ch = STAGE_PUBKEY_HEX[2 * i], cl = STAGE_PUBKEY_HEX[2 * i + 1];
+            if (ch >= '0' && ch <= '9') hi = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') hi = ch - 'a' + 10;
+            if (cl >= '0' && cl <= '9') lo = cl - '0';
+            else if (cl >= 'a' && cl <= 'f') lo = cl - 'a' + 10;
+            if (hi < 0 || lo < 0) test_fatal("stage pubkey hex malformed");
+            pub[i] = (u8)((hi << 4) | lo);
+        }
+        done = true;
+    }
+    return pub;
+}
+
+/* Canonical signed manifest text: header (parameterized version/min-version,
+ * fixed stable/linux-x86-64) + chunk lines + the given base64 signature. */
+static BreakUpdateManifest *signed_manifest(const char *version, const char *min_version,
+                                            const ManChunk *chunks, usize n,
+                                            const char *sig_b64) {
+    char buf[4096];
+    usize off;
+    usize i;
+    int r = snprintf(buf, sizeof(buf),
+                     "break-manifest-v1\n"
+                     "version: %s\n"
+                     "channel: stable\n"
+                     "platform: linux-x86-64\n"
+                     "min-version: %s\n",
+                     version, min_version);
+    if (r < 0 || (usize)r >= sizeof(buf)) test_fatal("signed manifest header");
+    off = (usize)r;
+    for (i = 0; i < n; i++) {
+        r = snprintf(buf + off, sizeof(buf) - off, "chunk: %s %llu %s\n",
+                     chunks[i].hex, (unsigned long long)chunks[i].size,
+                     chunks[i].mname);
+        if (r < 0 || (usize)r >= sizeof(buf) - off) test_fatal("signed manifest overflow");
+        off += (usize)r;
+    }
+    r = snprintf(buf + off, sizeof(buf) - off, "signature: %s\n", sig_b64);
+    if (r < 0 || (usize)r >= sizeof(buf) - off) test_fatal("signed manifest overflow");
+    off += (usize)r;
+    BreakUpdateManifest *m = break_update_manifest_parse(buf, off);
+    if (!m) test_fatal("signed test manifest failed to parse");
+    return m;
+}
+
+static BreakUpdateManifest *manifest_a(void) {
+    ManChunk chunks[] = {
+        {"bin/engine", HASH_A_ENGINE, 100000},
+        {"data/base.pak", HASH_A_BASEPAK, 300},
+        {"shaders/pbr.spv", HASH_A_PBRSPV, 70000},
+    };
+    return signed_manifest("2.0.0", "0.0.0", chunks, 3, SIG_A);
+}
+
+static BreakUpdateManifest *manifest_b(void) {
+    ManChunk chunks[] = {
+        {"bin/engine", HASH_B_ENGINE, 100000},
+        {"data/extra.pak", HASH_B_EXTRAPAK, 1000},
+    };
+    return signed_manifest("3.0.0", "1.0.0", chunks, 2, SIG_B);
+}
+
+static BreakUpdateManifest *manifest_c(void) {
+    ManChunk chunks[] = {
+        {"bin/engine", HASH_C_ENGINE, 300},
+        {"readme.txt", HASH_C_README, 42},
+    };
+    return signed_manifest("4.0.0", "2.0.0", chunks, 2, SIG_C);
+}
+
+static BreakUpdateManifest *manifest_minv(void) {
+    ManChunk chunks[] = {
+        {"core.bin", HASH_MINV_CORE, 100},
+    };
+    return signed_manifest("2.1.0", "2.0.0", chunks, 1, SIG_MINV);
+}
+
+static void fill_fx_a(void) {
+    fill_bytes(g_fx_a, 100000, 11);
+    fill_bytes(g_fx_b, 300, 23);
+    fill_bytes(g_fx_c, 70000, 37);
+}
+
+static void fill_fx_b(void) {
+    fill_bytes(g_fx_a2, 100000, 51);
+    fill_bytes(g_fx_x, 1000, 61);
+}
+
+static void fill_fx_c(void) {
+    fill_bytes(g_fx_right, 300, 71);
+    fill_bytes(g_fx_n, 42, 81);
+}
+
+static void fake_add_a(FakeFetch *f) {
+    fake_add(f, HASH_A_ENGINE, g_fx_a, 100000, 100000);
+    fake_add(f, HASH_A_BASEPAK, g_fx_b, 300, 300);
+    fake_add(f, HASH_A_PBRSPV, g_fx_c, 70000, 70000);
+}
+
+static void fake_add_b(FakeFetch *f) {
+    fake_add(f, HASH_B_ENGINE, g_fx_a2, 100000, 100000);
+    fake_add(f, HASH_B_EXTRAPAK, g_fx_x, 1000, 1000);
+}
+
+static void fake_add_c(FakeFetch *f) {
+    fake_add(f, HASH_C_ENGINE, g_fx_right, 300, 300);
+    fake_add(f, HASH_C_README, g_fx_n, 42, 42);
+}
+
+/* The common stage call shape: configured channel/platform match the signed
+ * fixture manifests. */
+static bool stage_call(BreakUpdateClient *c, BreakUpdateManifest *m, FakeFetch *f) {
+    return break_update_client_stage(c, m, stage_pubkey(), "stable", "linux-x86-64",
+                                     fake_fetch, f);
+}
+
+/* ---- slot-tree inspection helpers ------------------------------------------ */
+
+/* "<root>/slots/<slot><suffix>" */
+static void slot_path_of(const char *root, char slot, const char *suffix,
+                         char *out, usize cap) {
+    char dir[1200];
+    char leaf[1200];
+    join_path(dir, sizeof(dir), root, "slots");
+    snprintf(leaf, sizeof(leaf), "%c%s", slot, suffix);
+    join_path(out, cap, dir, leaf);
+}
+
+/* Byte-exact compare of a file against a binary expectation. */
+static bool file_bytes_equal_buf(const char *path, const u8 *expect, usize len) {
+    u64 size = 0;
+    if (!platform_file_size(path, &size)) return false;
+    if (size != (u64)len) return false;
+    u8 *buf = malloc(len ? len : 1);
+    if (!buf) return false;
+    usize got = 0;
+    FILE *fp = fopen(path, "rb");
+    if (fp) {
+        if (len) got = fread(buf, 1, len, fp);
+        fclose(fp);
+    }
+    bool ok = fp && got == len && (len == 0 || memcmp(buf, expect, len) == 0);
+    free(buf);
+    return ok;
+}
+
+/* Exact directory membership: count == n and every expected name present
+ * (is_dirs may be NULL to skip the file/dir classification check). */
+static bool dir_entries_exact(const char *path, const char *const *names,
+                              const bool *is_dirs, usize n) {
+    PlatformDirEntry entries[32];
+    u32 count = 0;
+    if (!platform_list_dir(path, entries, 32, &count)) return false;
+    if (count != n) return false;
+    usize i;
+    u32 j;
+    for (i = 0; i < n; i++) {
+        bool found = false;
+        for (j = 0; j < count && j < 32; j++) {
+            if (strcmp(entries[j].name, names[i]) == 0) {
+                if (is_dirs && entries[j].is_dir != is_dirs[i]) return false;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+static bool slot_file_bytes_equal(const char *root, char slot, const char *name,
+                                  const u8 *expect, usize len) {
+    char p[1200];
+    char f[1200];
+    slot_path_of(root, slot, "/files", p, sizeof(p));
+    join_path(f, sizeof(f), p, name);
+    return file_bytes_equal_buf(f, expect, len);
+}
+
+static bool slot_path_absent(const char *root, char slot, const char *suffix) {
+    char p[1200];
+    u64 sz = 0;
+    slot_path_of(root, slot, suffix, p, sizeof(p));
+    return !platform_file_size(p, &sz);
+}
+
+/* slots/<slot> == {files/ (dir), update-version (file)}. */
+static bool slot_top_exact(const char *root, char slot) {
+    static const char *const names[] = {"files", "update-version"};
+    static const bool dirs[] = {true, false};
+    char p[1200];
+    slot_path_of(root, slot, "", p, sizeof(p));
+    return dir_entries_exact(p, names, dirs, 2);
+}
+
+static bool marker_is(const char *root, char slot, const char *version_line) {
+    char p[1200];
+    slot_path_of(root, slot, "/update-version", p, sizeof(p));
+    return file_bytes_equal(p, version_line);
+}
+
+/* Slot tree == M_A exactly (byte-exact per chunk, marker 2.0.0, no extras). */
+static bool slot_matches_manifest_a(const char *root, char slot) {
+    static const char *const dirs3[] = {"bin", "data", "shaders"};
+    static const bool isdir3[] = {true, true, true};
+    char p[1200];
+    if (!slot_top_exact(root, slot)) return false;
+    slot_path_of(root, slot, "/files", p, sizeof(p));
+    if (!dir_entries_exact(p, dirs3, isdir3, 3)) return false;
+    if (!slot_file_bytes_equal(root, slot, "bin/engine", g_fx_a, 100000)) return false;
+    if (!slot_file_bytes_equal(root, slot, "data/base.pak", g_fx_b, 300)) return false;
+    if (!slot_file_bytes_equal(root, slot, "shaders/pbr.spv", g_fx_c, 70000)) return false;
+    return marker_is(root, slot, "2.0.0\n");
+}
+
+static bool slot_matches_manifest_b(const char *root, char slot) {
+    static const char *const top[] = {"bin", "data"};
+    static const bool topd[] = {true, true};
+    char p[1200];
+    if (!slot_top_exact(root, slot)) return false;
+    slot_path_of(root, slot, "/files", p, sizeof(p));
+    if (!dir_entries_exact(p, top, topd, 2)) return false;
+    if (!slot_file_bytes_equal(root, slot, "bin/engine", g_fx_a2, 100000)) return false;
+    if (!slot_file_bytes_equal(root, slot, "data/extra.pak", g_fx_x, 1000)) return false;
+    return marker_is(root, slot, "3.0.0\n");
+}
+
+static bool slot_matches_manifest_c(const char *root, char slot) {
+    static const char *const top[] = {"bin", "readme.txt"};
+    static const bool topd[] = {true, false};
+    char p[1200];
+    if (!slot_top_exact(root, slot)) return false;
+    slot_path_of(root, slot, "/files", p, sizeof(p));
+    if (!dir_entries_exact(p, top, topd, 2)) return false;
+    if (!slot_file_bytes_equal(root, slot, "bin/engine", g_fx_right, 300)) return false;
+    if (!slot_file_bytes_equal(root, slot, "readme.txt", g_fx_n, 42)) return false;
+    return marker_is(root, slot, "4.0.0\n");
+}
+
+/* Zero disk activity below root: chunks/ empty, both slots empty, state file
+ * byte-equal to expect_state. */
+static bool disk_pristine(const char *root, const char *expect_state) {
+    char p[1200];
+    u32 files = 99;
+    bool part = true;
+    if (!chunks_dir_scan(root, &files, &part) || files != 0 || part) return false;
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    if (!dir_entries_exact(p, NULL, NULL, 0)) return false;
+    slot_path_of(root, 'B', "", p, sizeof(p));
+    if (!dir_entries_exact(p, NULL, NULL, 0)) return false;
+    join_path(p, sizeof(p), root, "state");
+    return file_bytes_equal(p, expect_state);
+}
+
+/* ---- shared expected states (byte-exact) ------------------------------------ */
+
+static const char STATE_STAGED_A_FRESH[] =
+    L_MAGIC L_CUR_N "staged: A\n" L_PEND_N L_CONF_N L_CVER_N L_PVER_N L_MINRB L_RES_N;
+static const char STATE_CURRENT_A_PENDING[] =
+    L_MAGIC "current: A\n" L_STG_N "pending: yes\n" L_CONF_N
+    "current-version: 2.0.0\n" L_PVER_N L_MINRB L_RES_N;
+static const char STATE_CURRENT_A_CONFIRMED[] =
+    L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+    "current-version: 2.0.0\n" L_PVER_N L_MINRB L_RES_N;
+
+TEST(stage_fixture_vectors_match) {
+    /* Fixture-drift guard: the embedded hashes must be the sha256 of the
+     * fill_bytes fixtures, or every signed-manifest test fails obscurely. */
+    char h[65];
+    fill_fx_a();
+    fill_fx_b();
+    fill_fx_c();
+    fill_bytes(g_fx_small, sizeof(g_fx_small), 91);
+    hash_hex_of(g_fx_a, 100000, h);
+    ASSERT_STR_EQ(h, HASH_A_ENGINE);
+    hash_hex_of(g_fx_b, 300, h);
+    ASSERT_STR_EQ(h, HASH_A_BASEPAK);
+    hash_hex_of(g_fx_c, 70000, h);
+    ASSERT_STR_EQ(h, HASH_A_PBRSPV);
+    hash_hex_of(g_fx_a2, 100000, h);
+    ASSERT_STR_EQ(h, HASH_B_ENGINE);
+    hash_hex_of(g_fx_x, 1000, h);
+    ASSERT_STR_EQ(h, HASH_B_EXTRAPAK);
+    hash_hex_of(g_fx_right, 300, h);
+    ASSERT_STR_EQ(h, HASH_C_ENGINE);
+    hash_hex_of(g_fx_n, 42, h);
+    ASSERT_STR_EQ(h, HASH_C_README);
+    hash_hex_of(g_fx_small, 100, h);
+    ASSERT_STR_EQ(h, HASH_MINV_CORE);
+    /* And the four embedded signatures really verify against the test key. */
+    BreakUpdateManifest *m = manifest_a();
+    ASSERT_TRUE(break_update_manifest_verify(m, stage_pubkey()));
+    break_update_manifest_destroy(m);
+    m = manifest_b();
+    ASSERT_TRUE(break_update_manifest_verify(m, stage_pubkey()));
+    break_update_manifest_destroy(m);
+    m = manifest_c();
+    ASSERT_TRUE(break_update_manifest_verify(m, stage_pubkey()));
+    break_update_manifest_destroy(m);
+    m = manifest_minv();
+    ASSERT_TRUE(break_update_manifest_verify(m, stage_pubkey()));
+    break_update_manifest_destroy(m);
+}
+
+TEST(stage_activate_confirm_full_cycle) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_cycle");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    /* stage: fetch_all runs (3 chunks missing), then slot A materializes. */
+    ASSERT_TRUE(stage_call(c, m, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_OK);
+    ASSERT_TRUE(f.objs[0].calls > 0u && f.objs[1].calls > 0u && f.objs[2].calls > 0u);
+    ASSERT_FALSE(f.saw_bad_range);
+    ASSERT_TRUE(cas_has(root, HASH_A_ENGINE));
+    ASSERT_TRUE(cas_has(root, HASH_A_BASEPAK));
+    ASSERT_TRUE(cas_has(root, HASH_A_PBRSPV));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, STATE_STAGED_A_FRESH)); /* mark persisted */
+    ASSERT_EQ(break_update_client_current_slot(c), '-');    /* current unchanged */
+    slot_path_of(root, 'A', "/files", p, sizeof(p));
+    ASSERT_FALSE(dir_has_tmp(p)); /* no writer residue in the slot tree */
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    ASSERT_FALSE(dir_has_tmp(p));
+
+    /* activate: pure state flip (slots are data); byte-exact persisted first. */
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_OK);
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    ASSERT_TRUE(break_update_client_pending(c));
+    ASSERT_FALSE(break_update_client_confirmed(c));
+    u32 v[3] = {0, 0, 0};
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 2u);
+    ASSERT_EQ(v[1], 0u);
+    ASSERT_EQ(v[2], 0u);
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, STATE_CURRENT_A_PENDING));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A')); /* activate touches nothing */
+
+    /* confirm_boot completes the cycle. */
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, STATE_CURRENT_A_CONFIRMED));
+
+    /* Persistence across reopen. */
+    break_update_client_destroy(c);
+    c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    ASSERT_TRUE(break_update_client_confirmed(c));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+    break_update_client_destroy(c);
+
+    break_update_manifest_destroy(m);
+    cleanup_root(root);
+}
+
+TEST(stage_verify_failure_zero_fetch_zero_disk) {
+    /* THE cross-cutting gate: signature BEFORE transport — a VERIFY failure
+     * must perform zero fetch calls, zero disk writes, zero state changes. */
+    fill_fx_a();
+    ManChunk chunks[] = {
+        {"bin/engine", HASH_A_ENGINE, 100000},
+        {"data/base.pak", HASH_A_BASEPAK, 300},
+        {"shaders/pbr.spv", HASH_A_PBRSPV, 70000},
+    };
+    /* Structurally valid (canonical zero signature) but cryptographically
+     * wrong: parses, never verifies. */
+    BreakUpdateManifest *m = signed_manifest("2.0.0", "0.0.0", chunks, 3, ZERO_SIG_B64);
+
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_verify");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    ASSERT_FALSE(stage_call(c, m, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_VERIFY);
+    ASSERT_EQ(f.total_calls, (u64)0); /* zero transport — the pinned gate */
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+    ASSERT_FALSE(dir_has_tmp(root));
+
+    /* Real signature + wrong key: indistinguishable refusal, still zero. */
+    break_update_manifest_destroy(m);
+    m = manifest_a();
+    u8 wrong[32];
+    memcpy(wrong, stage_pubkey(), 32);
+    wrong[0] ^= 0x01;
+    ASSERT_FALSE(break_update_client_stage(c, m, wrong, "stable", "linux-x86-64",
+                                           fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_VERIFY);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+
+    /* Control: the same manifest with the right key stages fine. */
+    ASSERT_TRUE(stage_call(c, m, &f));
+    ASSERT_TRUE(f.total_calls > 0u);
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(stage_policy_channel_platform_mismatch) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a(); /* valid signature */
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_policy");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    ASSERT_FALSE(break_update_client_stage(c, m, stage_pubkey(), "beta",
+                                           "linux-x86-64", fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_POLICY);
+    ASSERT_EQ(f.total_calls, (u64)0); /* policy precedes transport too */
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+
+    ASSERT_FALSE(break_update_client_stage(c, m, stage_pubkey(), "stable",
+                                           "windows-x86-64", fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_POLICY);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(stage_policy_min_version) {
+    fill_fx_a();
+    fill_bytes(g_fx_small, sizeof(g_fx_small), 91);
+    BreakUpdateManifest *m = manifest_minv(); /* min-version 2.0.0, signed */
+
+    /* (a) current version 1.0.0 < manifest min-version 2.0.0 → POLICY. */
+    static const char current_v1[] =
+        L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 1.0.0\n" L_PVER_N L_MINRB L_RES_N;
+    char root[512];
+    BreakUpdateClient *c = open_with_state(root, sizeof(root), "upc_st_minv",
+                                           current_v1);
+    ASSERT_NOT_NULL(c);
+    /* The live slot holds a marker-less fixture file (content irrelevant). */
+    char p[1200];
+    slot_path_of(root, 'A', "/files", p, sizeof(p));
+    ASSERT_EQ(TEST_MKDIR(p), 0);
+    char fpath[1200];
+    join_path(fpath, sizeof(fpath), p, "old.bin");
+    ASSERT_TRUE(write_file(fpath, "old-bytes", 9));
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add(&f, HASH_MINV_CORE, g_fx_small, 100, 100);
+    ASSERT_FALSE(stage_call(c, m, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_POLICY);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(file_bytes_equal_buf(fpath, (const u8 *)"old-bytes", 9)); /* intact */
+    slot_path_of(root, 'B', "", p, sizeof(p));
+    ASSERT_TRUE(dir_entries_exact(p, NULL, NULL, 0));
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, current_v1));
+    break_update_client_destroy(c);
+    cleanup_root(root);
+
+    /* (b) fresh client (current=none → source 0.0.0): the same floor refuses
+     * — documented semantics: only a 0.0.0-floor payload provisions fresh. */
+    test_tmp(root, sizeof(root), "upc_st_minv_fresh");
+    c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    ASSERT_FALSE(stage_call(c, m, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_POLICY);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+
+    /* (c) a 0.0.0-floor manifest stages fine on the same fresh client. */
+    BreakUpdateManifest *ma = manifest_a();
+    fake_reset_phase(&f);
+    fake_add_a(&f);
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_EQ(break_update_client_current_slot(c), '-');
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+    break_update_manifest_destroy(ma);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+
+    break_update_manifest_destroy(m);
+}
+
+TEST(stage_while_staged_refused) {
+    fill_fx_a();
+    fill_fx_b();
+    fill_fx_c();
+    BreakUpdateManifest *ma = manifest_a();
+    BreakUpdateManifest *mb = manifest_b();
+    BreakUpdateManifest *mc = manifest_c();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_twice");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    fake_add_b(&f);
+    fake_add_c(&f);
+
+    /* Live current A v2.0.0 (so the M_B/M_C policy floors 1.0.0/2.0.0 pass
+     * and the staged interlock is what actually refuses). */
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    static const char staged_b[] =
+        L_MAGIC "current: A\n" "staged: B\n" L_PEND_N "confirmed: yes\n"
+        "current-version: 2.0.0\n" L_PVER_N L_MINRB L_RES_N;
+
+    fake_reset_phase(&f);
+    /* The plan designates unstage as the ONLY non-activating clear: a second
+     * stage while staged refuses with STATE, zero transport, zero changes. */
+    ASSERT_FALSE(stage_call(c, mc, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    ASSERT_EQ(f.total_calls, (u64)0);
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B')); /* staged tree untouched */
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, staged_b));
+
+    /* unstage + stage IS the re-stage path. */
+    ASSERT_TRUE(break_update_client_unstage(c));
+    ASSERT_TRUE(stage_call(c, mc, &f));
+    ASSERT_TRUE(slot_matches_manifest_c(root, 'B'));
+
+    break_update_manifest_destroy(ma);
+    break_update_manifest_destroy(mb);
+    break_update_manifest_destroy(mc);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(stage_fetch_failure_keeps_resume_and_slots) {
+    fill_fx_b();
+    BreakUpdateManifest *mb = manifest_b();
+    /* current=A v1.0.0 confirmed with a fixture file in the LIVE slot. */
+    static const char current_v1[] =
+        L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 1.0.0\n" L_PVER_N L_MINRB L_RES_N;
+    char root[512];
+    BreakUpdateClient *c = open_with_state(root, sizeof(root), "upc_st_fetchfail",
+                                           current_v1);
+    ASSERT_NOT_NULL(c);
+    char p[1200];
+    slot_path_of(root, 'A', "/files", p, sizeof(p));
+    ASSERT_EQ(TEST_MKDIR(p), 0);
+    char fpath[1200];
+    join_path(fpath, sizeof(fpath), p, "old.bin");
+    ASSERT_TRUE(write_file(fpath, "old-bytes", 9));
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_b(&f);
+    /* Die after the first block of bin/engine. */
+    memcpy(f.fail_obj, HASH_B_ENGINE, 65);
+    f.fail_after_bytes = 1;
+
+    ASSERT_FALSE(stage_call(c, mb, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_FETCH);
+    /* A transport failure touches NO slot: the live slot's bytes and the
+     * (empty) inactive slot are exactly as before; resume progress persists. */
+    ASSERT_TRUE(file_bytes_equal_buf(fpath, (const u8 *)"old-bytes", 9));
+    slot_path_of(root, 'B', "", p, sizeof(p));
+    ASSERT_TRUE(dir_entries_exact(p, NULL, NULL, 0));
+    ASSERT_TRUE(state_contains(root, "resume-chunk: " HASH_B_ENGINE "|"));
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_FALSE(file_bytes_equal(p, current_v1)); /* resume line differs */
+    break_update_client_destroy(c);
+
+    /* Retry with a healthy transport: resumes at the byte boundary, then
+     * materializes into B; the live slot A still keeps its bytes. */
+    c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_OK);
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    ASSERT_TRUE(file_bytes_equal_buf(fpath, (const u8 *)"old-bytes", 9));
+
+    break_update_manifest_destroy(mb);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(stage_materialize_failure_cleans_slot) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_matfail");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    /* Pre-seed the whole CAS: fetch_all becomes a zero-transport no-op, so a
+     * materialize failure leaves the state file BYTE-UNCHANGED (no resume
+     * progress either) — "state unchanged except resume progress", exactly. */
+    ASSERT_TRUE(cas_put(root, g_fx_a, 100000));
+    ASSERT_TRUE(cas_put(root, g_fx_b, 300));
+    ASSERT_TRUE(cas_put(root, g_fx_c, 70000));
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    /* Injection: slots/A is a regular FILE — the clean cannot fix that (it
+     * never removes the slot dir itself), mkdir of files/ fails (ENOTDIR). */
+    char p[1200];
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    ASSERT_EQ(TEST_RMDIR(p), 0);
+    ASSERT_TRUE(write_file(p, "jam", 3));
+    ASSERT_FALSE(stage_call(c, m, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_IO);
+    ASSERT_EQ(f.total_calls, (u64)0); /* CAS hit ⇒ zero transport by design */
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, INITIAL_STATE)); /* nothing persisted */
+
+    /* Repair → retry succeeds (no wedge). */
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    ASSERT_EQ(remove(p), 0);
+    ASSERT_EQ(TEST_MKDIR(p), 0);
+    ASSERT_TRUE(stage_call(c, m, &f));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(activate_without_stage_state) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_act_none");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    ASSERT_FALSE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, INITIAL_STATE));
+
+    /* Chunks in the CAS do NOT imply staged: fetch_all then activate still
+     * refuses (only the full stage marks staged). */
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    ASSERT_TRUE(break_update_client_fetch_all(c, m, fake_fetch, &f));
+    ASSERT_FALSE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, INITIAL_STATE));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(activate_marker_missing_or_corrupt) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_act_marker");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    ASSERT_TRUE(stage_call(c, m, &f));
+
+    /* Marker removed (partial-tree window): activate fails closed — IO, no
+     * flip, state byte-unchanged. */
+    char p[1200];
+    char st[1200];
+    slot_path_of(root, 'A', "/update-version", p, sizeof(p));
+    ASSERT_EQ(remove(p), 0);
+    ASSERT_FALSE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_IO);
+    ASSERT_EQ(break_update_client_current_slot(c), '-');
+    join_path(st, sizeof(st), root, "state");
+    ASSERT_TRUE(file_bytes_equal(st, STATE_STAGED_A_FRESH));
+
+    /* Corrupt marker (not a canonical version line): same refusal. */
+    ASSERT_TRUE(write_file(p, "not-a-version\n", 14));
+    ASSERT_FALSE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_IO);
+    ASSERT_EQ(break_update_client_current_slot(c), '-');
+    ASSERT_TRUE(file_bytes_equal(st, STATE_STAGED_A_FRESH));
+
+    /* Restored marker → activate succeeds (no wedge). */
+    ASSERT_TRUE(write_file(p, "2.0.0\n", 6));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    ASSERT_TRUE(break_update_client_pending(c));
+    ASSERT_TRUE(file_bytes_equal(st, STATE_CURRENT_A_PENDING));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(rollback_after_activate_preconfirm) {
+    fill_fx_a();
+    fill_fx_b();
+    BreakUpdateManifest *ma = manifest_a();
+    BreakUpdateManifest *mb = manifest_b();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_rb_preconf");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    fake_add_b(&f);
+
+    /* First activation ever: no previous — rollback refused even pending. */
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_FALSE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    ASSERT_TRUE(break_update_client_confirm_boot(c)); /* A = v2.0.0 live */
+
+    /* Second update: stage B → activate → pending (previous = A 2.0.0). */
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'B');
+    u32 v[3] = {0, 0, 0};
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 3u);
+    ASSERT_TRUE(break_update_client_pending(c));
+
+    /* Pre-confirm rollback: flips back, pending cleared, known-good mark. */
+    ASSERT_TRUE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_OK);
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 2u);
+    ASSERT_FALSE(break_update_client_pending(c));
+    ASSERT_TRUE(break_update_client_confirmed(c));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A')); /* rollback touches no tree */
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    static const char rolled_back[] =
+        L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 2.0.0\n" "previous-version: 3.0.0\n" L_MINRB L_RES_N;
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, rolled_back));
+
+    break_update_manifest_destroy(ma);
+    break_update_manifest_destroy(mb);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(rollback_after_confirm_and_floor) {
+    fill_fx_a();
+    fill_fx_b();
+    BreakUpdateManifest *ma = manifest_a();
+    BreakUpdateManifest *mb = manifest_b();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_rb_postconf");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    fake_add_b(&f);
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c)); /* B v3 confirmed, prev A v2 */
+
+    /* Post-confirm rollback is allowed while the previous slot is retained
+     * (floor 0.0.0 ≤ 2.0.0). */
+    ASSERT_TRUE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    /* …and back (both slots ≥ floor: ping-pong at the state level). */
+    ASSERT_TRUE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'B');
+    u32 v[3] = {0, 0, 0};
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 3u);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+
+    /* Below the min-rollback floor → POLICY (the floor is product policy —
+     * no client API mutates it this phase, so craft it). A fixture file in
+     * the current slot stays untouched by the refusal. */
+    static const char floored[] =
+        L_MAGIC "current: B\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 3.0.0\n" "previous-version: 2.0.0\n"
+        "min-rollback-version: 3.0.0\n" L_RES_N;
+    c = open_with_state(root, sizeof(root), "upc_rb_floor3", floored);
+    ASSERT_NOT_NULL(c);
+    char fp_[1200];
+    slot_path_of(root, 'B', "/files", fp_, sizeof(fp_));
+    ASSERT_EQ(TEST_MKDIR(fp_), 0);
+    {
+        char ffile[1200];
+        join_path(ffile, sizeof(ffile), fp_, "keep.bin");
+        ASSERT_TRUE(write_file(ffile, "keep", 4));
+    }
+    ASSERT_FALSE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_POLICY);
+    ASSERT_EQ(break_update_client_current_slot(c), 'B');
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, floored));
+    {
+        char ffile[1200];
+        join_path(ffile, sizeof(ffile), fp_, "keep.bin");
+        ASSERT_TRUE(file_bytes_equal(ffile, "keep")); /* refusal touches nothing */
+    }
+    break_update_client_destroy(c);
+    cleanup_root(root);
+
+    break_update_manifest_destroy(ma);
+    break_update_manifest_destroy(mb);
+}
+
+TEST(rollback_while_staged_then_unstage_allows) {
+    fill_fx_a();
+    fill_fx_b();
+    fill_fx_c();
+    BreakUpdateManifest *ma = manifest_a();
+    BreakUpdateManifest *mb = manifest_b();
+    BreakUpdateManifest *mc = manifest_c();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_rb_staged");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    fake_add_b(&f);
+    fake_add_c(&f);
+    /* Reach current=B v3.0.0 confirmed, previous=A v2.0.0. */
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+
+    /* Stage M_C into A: the clean consumes the retained previous tree — the
+     * exact reason rollback interlocks on staged. */
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mc, &f));
+    ASSERT_TRUE(slot_matches_manifest_c(root, 'A'));
+    ASSERT_TRUE(slot_path_absent(root, 'A', "/files/data/base.pak")); /* stale gone */
+    ASSERT_FALSE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+
+    /* unstage: mark cleared (persisted first), staged tree removed. */
+    ASSERT_TRUE(break_update_client_unstage(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_OK);
+    char p[1200];
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    ASSERT_TRUE(dir_entries_exact(p, NULL, NULL, 0)); /* slot A empty */
+    static const char unstaged[] =
+        L_MAGIC "current: B\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 3.0.0\n" "previous-version: 2.0.0\n" L_MINRB L_RES_N;
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, unstaged));
+
+    /* Rollback allowed again (version policy; previous-version 2.0.0 ≥ floor)
+     * — a pure pointer flip: slot A's tree was consumed by the stage+unstage
+     * cycle (documented 2-slot A/B caveat); slot B keeps M_B byte-exactly. */
+    ASSERT_TRUE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    u32 v[3] = {0, 0, 0};
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 2u);
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    slot_path_of(root, 'A', "", p, sizeof(p));
+    ASSERT_TRUE(dir_entries_exact(p, NULL, NULL, 0));
+    static const char after_rb[] =
+        L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 2.0.0\n" "previous-version: 3.0.0\n" L_MINRB L_RES_N;
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, after_rb));
+
+    break_update_manifest_destroy(ma);
+    break_update_manifest_destroy(mb);
+    break_update_manifest_destroy(mc);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(unstage_without_staged) {
+    fill_fx_a();
+    BreakUpdateManifest *ma = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_unst_none");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    /* Fresh: nothing staged → false + STATE, state byte-unchanged. */
+    ASSERT_FALSE(break_update_client_unstage(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, INITIAL_STATE));
+
+    /* After ACTIVATE there is no staged slot anymore: unstage cannot touch
+     * the live slot (pending=yes) → false + STATE, nothing changes. */
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_FALSE(break_update_client_unstage(c));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    ASSERT_TRUE(break_update_client_pending(c));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    ASSERT_FALSE(break_update_client_unstage(c)); /* confirmed: still none staged */
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_STATE);
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+
+    break_update_manifest_destroy(ma);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(restage_cycle_a_b_a) {
+    fill_fx_a();
+    fill_fx_b();
+    fill_fx_c();
+    BreakUpdateManifest *ma = manifest_a();
+    BreakUpdateManifest *mb = manifest_b();
+    BreakUpdateManifest *mc = manifest_c();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_cycle_aba");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    fake_add_b(&f);
+    fake_add_c(&f);
+
+    /* A: v2.0.0 live (first activation picks slot A — the fixed fresh choice). */
+    ASSERT_TRUE(stage_call(c, ma, &f));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    /* B: v3.0.0 live; previous = A 2.0.0. */
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mb, &f));
+    ASSERT_EQ(f.total_calls, (u64)3); /* engine 2 blocks + extra.pak 1 (no dedup yet) */
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A')); /* retained previous intact */
+
+    /* A again: v4.0.0 staged over the RETAINED slot — the clean must make the
+     * slot exactly M_C (M_A-only names base.pak/pbr.spv must vanish). */
+    fake_reset_phase(&f);
+    ASSERT_TRUE(stage_call(c, mc, &f));
+    ASSERT_TRUE(slot_matches_manifest_c(root, 'A'));
+    ASSERT_TRUE(slot_path_absent(root, 'A', "/files/data/base.pak"));
+    ASSERT_TRUE(slot_path_absent(root, 'A', "/files/shaders/pbr.spv"));
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    u32 v[3] = {0, 0, 0};
+    break_update_client_current_version(c, v);
+    ASSERT_EQ(v[0], 4u);
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    static const char cycle_state[] =
+        L_MAGIC "current: A\n" L_STG_N L_PEND_N "confirmed: yes\n"
+        "current-version: 4.0.0\n" "previous-version: 3.0.0\n" L_MINRB L_RES_N;
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, cycle_state));
+
+    /* Rollback to B: B was never re-staged since its activation → its content
+     * IS guaranteed — byte-exact M_B after the flip. */
+    ASSERT_TRUE(break_update_client_rollback(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'B');
+    ASSERT_TRUE(slot_matches_manifest_b(root, 'B'));
+    ASSERT_TRUE(slot_matches_manifest_c(root, 'A'));
+
+    break_update_manifest_destroy(ma);
+    break_update_manifest_destroy(mb);
+    break_update_manifest_destroy(mc);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(crash_between_stage_and_activate_reopen) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_crash_stage");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+    ASSERT_TRUE(stage_call(c, m, &f));
+
+    /* Crash simulation: the process dies between stage and activate. */
+    break_update_client_destroy(c);
+    c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    /* State consistent: staged intact (slot + state), current unchanged. */
+    ASSERT_EQ(break_update_client_current_slot(c), '-');
+    ASSERT_FALSE(break_update_client_pending(c));
+    ASSERT_TRUE(slot_matches_manifest_a(root, 'A'));
+    ASSERT_TRUE(cas_bytes_equal(root, HASH_A_ENGINE, g_fx_a, 100000));
+    char p[1200];
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, STATE_STAGED_A_FRESH));
+
+    /* The staged update survives the crash and activates normally. */
+    ASSERT_TRUE(break_update_client_activate(c));
+    ASSERT_EQ(break_update_client_current_slot(c), 'A');
+    ASSERT_TRUE(break_update_client_confirm_boot(c));
+    join_path(p, sizeof(p), root, "state");
+    ASSERT_TRUE(file_bytes_equal(p, STATE_CURRENT_A_CONFIRMED));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
+TEST(stage_null_args) {
+    fill_fx_a();
+    BreakUpdateManifest *m = manifest_a();
+    char root[512];
+    test_tmp(root, sizeof(root), "upc_st_null");
+    BreakUpdateClient *c = break_update_client_open(root);
+    ASSERT_NOT_NULL(c);
+    FakeFetch f;
+    memset(&f, 0, sizeof(f));
+    fake_add_a(&f);
+
+    ASSERT_FALSE(break_update_client_stage(NULL, m, stage_pubkey(), "stable",
+                                           "linux-x86-64", fake_fetch, &f));
+    ASSERT_FALSE(break_update_client_stage(c, NULL, stage_pubkey(), "stable",
+                                           "linux-x86-64", fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_FALSE(break_update_client_stage(c, m, NULL, "stable", "linux-x86-64",
+                                           fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_FALSE(break_update_client_stage(c, m, stage_pubkey(), NULL,
+                                           "linux-x86-64", fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_FALSE(break_update_client_stage(c, m, stage_pubkey(), "stable", NULL,
+                                           fake_fetch, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_FALSE(break_update_client_stage(c, m, stage_pubkey(), "stable",
+                                           "linux-x86-64", NULL, &f));
+    ASSERT_EQ(break_update_client_last_error(c), BREAK_UPDATE_CLIENT_INVALID);
+    ASSERT_EQ(f.total_calls, (u64)0); /* nothing attempted */
+    ASSERT_TRUE(disk_pristine(root, INITIAL_STATE));
+    ASSERT_FALSE(break_update_client_activate(NULL));
+    ASSERT_FALSE(break_update_client_unstage(NULL));
+
+    break_update_manifest_destroy(m);
+    break_update_client_destroy(c);
+    cleanup_root(root);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(fresh_open_layout_and_initial_state);
     RUN_TEST(reopen_roundtrip);
@@ -1736,4 +2929,21 @@ TEST_MAIN_BEGIN()
     RUN_TEST(fetch_all_offset_len_overflow_clamped);
     RUN_TEST(fetch_all_null_args);
     RUN_TEST(confirm_boot_preserves_resume_line);
+    RUN_TEST(stage_fixture_vectors_match);
+    RUN_TEST(stage_activate_confirm_full_cycle);
+    RUN_TEST(stage_verify_failure_zero_fetch_zero_disk);
+    RUN_TEST(stage_policy_channel_platform_mismatch);
+    RUN_TEST(stage_policy_min_version);
+    RUN_TEST(stage_while_staged_refused);
+    RUN_TEST(stage_fetch_failure_keeps_resume_and_slots);
+    RUN_TEST(stage_materialize_failure_cleans_slot);
+    RUN_TEST(activate_without_stage_state);
+    RUN_TEST(activate_marker_missing_or_corrupt);
+    RUN_TEST(rollback_after_activate_preconfirm);
+    RUN_TEST(rollback_after_confirm_and_floor);
+    RUN_TEST(rollback_while_staged_then_unstage_allows);
+    RUN_TEST(unstage_without_staged);
+    RUN_TEST(restage_cycle_a_b_a);
+    RUN_TEST(crash_between_stage_and_activate_reopen);
+    RUN_TEST(stage_null_args);
 TEST_MAIN_END()

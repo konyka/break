@@ -8,6 +8,12 @@
 # no transport code ships; the callback is caller-supplied); the nm gate
 # grows 24 → 25 symbols; the link test gains an empty-manifest fetch_all
 # pass (callback registered, never invoked).
+# Stage 5 Phase B Task 3 update: the client gains the stage/activate/unstage
+# pipeline (signature + policy before any transport, materialization into
+# the inactive slot, write-ahead activation); the nm gate grows 25 → 28
+# symbols; the link test gains a VERIFY-refusal stage pass (zero-signature
+# manifest, fetch callback never invoked — the signature-before-transport
+# gate pinned at contract level) plus no-staged activate/unstage refusals.
 #
 # Pins (mirrors the test_break_crypto_target_contract.cmake shape):
 #   1. The break_update target lives inside the if(BREAK_ENABLE_CRYPTO)
@@ -19,7 +25,7 @@
 #   3. break_update links break_crypto PUBLIC.
 #   4. No-link pins: engine / engine_demo / dxx_break / editor never link
 #      break_update (their target_link_libraries calls are single-line).
-#   5. nm gate: the production archive exports exactly the 24 public
+#   5. nm gate: the production archive exports exactly the 28 public
 #      break_update_* symbols (zero OpenSSL/break_crypto symbols
 #      re-exported — a static archive only carries undefined references).
 #   6. Minimal archive link test: a tiny executable links ONLY
@@ -28,7 +34,8 @@
 #      precedent, engine keeps sole production ownership of it) and runs
 #      one manifest parse + one store round-trip + one client
 #      open/query/refusal pass + one zero-chunk fetch_all pass (callback
-#      registered, never invoked).
+#      registered, never invoked) + the Task 3 stage/activate/unstage
+#      refusal passes.
 
 if(NOT DEFINED ENGINE_CMAKE)
     message(FATAL_ERROR "ENGINE_CMAKE is required")
@@ -137,7 +144,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_target_contract")
     message(FATAL_ERROR "missing test_break_update_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 25 public symbols ------------------------------
+# --- 5. nm gate: exactly the 28 public symbols ------------------------------
 find_program(UPDATE_CONTRACT_NM nm)
 if(NOT UPDATE_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_update export gate)")
@@ -152,6 +159,7 @@ if(NOT nm_rc EQUAL 0)
 endif()
 
 set(expected_symbols
+    break_update_client_activate
     break_update_client_confirm_boot
     break_update_client_confirmed
     break_update_client_current_slot
@@ -162,6 +170,8 @@ set(expected_symbols
     break_update_client_open
     break_update_client_pending
     break_update_client_rollback
+    break_update_client_stage
+    break_update_client_unstage
     break_update_manifest_channel
     break_update_manifest_chunk_at
     break_update_manifest_chunk_count
@@ -192,7 +202,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_update.a must export exactly the 25 public symbols.\n"
+        "libbreak_update.a must export exactly the 28 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 
@@ -290,6 +300,18 @@ int main(void) {
     if (!break_update_client_fetch_all(cl, m, counting_fetch, NULL)) return 19;
     if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_OK) return 20;
     if (g_fetch_calls != 0) return 21;
+    /* Phase B Task 3: stage refuses the zero-signature manifest at VERIFY
+     * before ANY transport (the signature-before-transport gate pinned at
+     * contract level — the callback counter stays zero); activate/unstage
+     * without a staged slot refuse STATE. */
+    if (break_update_client_stage(cl, m, pub, \"stable\", \"linux-x86-64\",
+                                  counting_fetch, NULL)) return 22;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_VERIFY) return 23;
+    if (g_fetch_calls != 0) return 24;
+    if (break_update_client_activate(cl)) return 25;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 26;
+    if (break_update_client_unstage(cl)) return 27;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 28;
     break_update_client_destroy(cl);
     break_update_manifest_destroy(m);
     return 0;

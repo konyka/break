@@ -1,10 +1,10 @@
 #pragma once
 /* ==========================================================================
  *  break_update_client — Stage 5 Phase B: update client state machine + A/B
- *  slot layout (Task 1) + chunked downloader with byte-level resume (Task 2).
- *  stage/activate/unstage land in Task 3 and are deliberately NOT declared
- *  here. No network code exists in this phase (plan Global Constraints): the
- *  caller-supplied BreakUpdateFetchFn below is the sole transport seam.
+ *  slot layout (Task 1) + chunked downloader with byte-level resume (Task 2)
+ *  + the stage/activate/unstage pipeline (Task 3). No network code exists in
+ *  this phase (plan Global Constraints): the caller-supplied
+ *  BreakUpdateFetchFn below is the sole transport seam.
  *
  *  Interface (plan 2026-10-24-stage5-update-client.md, verbatim):
  *
@@ -178,3 +178,82 @@ bool break_update_client_fetch_all(BreakUpdateClient *c, const BreakUpdateManife
  *    STATE = corrupt resume entry (already restarted clean on return).
  *  - fetch_all ignores the slot fields entirely (chunks/ is the shared CAS);
  *    a fresh state's resume-chunk: none line round-trips byte-exactly. */
+
+/* ---- Task 3: stage → activate → unstage pipeline ----------------------------
+ *
+ * Interface (plan 2026-10-24-stage5-update-client.md, verbatim): */
+
+/* Full pipeline: verify signature (pubkey) → compatible() policy (channel/platform/
+ * current version from state) → fetch_all → materialize chunks into the INACTIVE slot
+ * (each manifest chunk name → slots/<inactive>/files/<name>, via atomic writer;
+ * names already manifest-validated; nested names create intermediate dirs via
+ * platform_mkdir per component) → mark staged. Any failure: staged slot removed,
+ * state unchanged except resume progress. */
+bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                               const u8 pubkey[32], const char *channel, const char *platform,
+                               BreakUpdateFetchFn fetch, void *user);
+/* Atomically flip current → staged slot, pending=yes, confirmed=no, previous-* recorded.
+ * Persists state BEFORE the flip becomes visible. False when no staged slot. */
+bool break_update_client_activate(BreakUpdateClient *c);
+/* Remove a staged (not yet activated) slot and clear it from state; false when none staged.
+ * This is the ONLY way to clear a staged slot without activating it (rollback refuses
+ * while staged exists). */
+bool break_update_client_unstage(BreakUpdateClient *c);
+
+/* Task 3 semantics (documented decisions; all pinned by test_break_update_client):
+ *
+ *  - Signature before EVERYTHING (cross-cutting review gate): stage verifies
+ *    the manifest signature against pubkey first, then runs the compatible()
+ *    policy, and only then may fetch_all invoke the transport. A VERIFY or
+ *    POLICY failure performs ZERO fetch calls, ZERO disk writes, and ZERO
+ *    state changes (test pins all three). last_error: VERIFY (signature),
+ *    POLICY (channel/platform/min-version), STATE (a staged slot already
+ *    exists — see below), INVALID (NULL m/pubkey/channel/platform/fetch).
+ *  - "Current version from state": the compatible() current triple is the
+ *    state's current-version. A FRESH client (current=none) is treated as
+ *    source version 0.0.0 — the full policy still runs (channel + platform +
+ *    manifest min-version ≤ 0.0.0), so only a payload whose min-version
+ *    floor is 0.0.0 can provision a device that has no installed version.
+ *  - Inactive slot: the non-current slot; with current=none the fixed choice
+ *    is 'A'. stage REFUSES (false + STATE) while a staged slot exists: the
+ *    plan designates unstage as the ONLY non-activating way to clear a staged
+ *    slot, so re-staging a different payload = unstage + stage.
+ *  - Slot tree layout: each manifest chunk name materializes at
+ *    slots/<slot>/files/<name>; alongside it stage writes
+ *    slots/<slot>/update-version, a one-line canonical "M.m.p\n" marker
+ *    carrying the STAGED manifest's version. The Task-1-pinned state format
+ *    has no staged-version field, so the version rides inside the slot;
+ *    activate reads it back (missing/corrupt marker → false + IO, state
+ *    untouched). The marker lives OUTSIDE files/ so no manifest name can
+ *    collide with it. Slot file bytes come from break_update_store_get_chunk
+ *    (verify-on-read re-hashes before handing bytes out).
+ *  - Materialization CLEANS the target slot first (the retained tree from
+ *    older cycles is removed), so a staged slot's files/ exactly matches the
+ *    manifest — no stale files survive a re-stage. The clean runs only AFTER
+ *    fetch_all succeeds: a transport failure never touches a slot (the
+ *    retained previous version's bytes survive a failed download).
+ *  - Failure atomicity: any failure after the clean removes the partial slot
+ *    tree; state is unchanged except resume progress (the staged mark is the
+ *    LAST write-ahead persist — a crash before it leaves staged=none and a
+ *    partial slot the next stage's clean reclaims).
+ *  - activate: pending=yes/confirmed=no/current=staged slot/current-version=
+ *    marker version; previous-version records the outgoing current version
+ *    (none on the very first activation — a fresh install has nothing to
+ *    roll back to). Persist BEFORE the flip, as every transition.
+ *  - unstage: persists staged=none FIRST (write-ahead), then removes the
+ *    slot tree. A removal failure after the persist reports false + IO with
+ *    staged already cleared — the inert leftover is reclaimed by the next
+ *    stage's clean (documented; never wedges: rollback's staged-interlock no
+ *    longer applies).
+ *  - Rollback content caveat (inherent to 2-slot A/B): staging consumes the
+ *    inactive slot, which with a live current IS the retained previous slot —
+ *    that is why rollback refuses while staged exists. After a stage+unstage
+ *    cycle the previous slot's bytes are gone; rollback remains a
+ *    version-policy state flip (the plan's pointer-flip design: slots are
+ *    never renamed while live). The previous slot's CONTENT is guaranteed
+ *    only when no stage has targeted it since it was activated.
+ *  - Tree removal uses ISO-C remove() on files and emptied directories
+ *    (POSIX removes both; recursion depth ≤ 64, bounded by the manifest's
+ *    ≤128-byte names). No new _WIN32 branches (plan Global Constraints);
+ *    the open-time root path bound now covers the deepest join:
+ *    "/slots/A/files/" + 128-byte name + the writer's ".tmpXXXXXX" + NUL. */

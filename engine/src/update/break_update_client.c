@@ -1,10 +1,9 @@
-/* break_update_client — Stage 5 Phase B Tasks 1+2 implementation. The
+/* break_update_client — Stage 5 Phase B Tasks 1+2+3 implementation. The
  * contract (on-disk layout, canonical state format, write-ahead discipline,
- * rollback policy, error enum semantics, download/resume semantics) is
- * documented in break_update_client.h; the parser deliberately mirrors the
- * Phase A manifest discipline in break_update.c (strict grammars,
- * unknown/malformed → fail, no repair). No stage/activate/unstage code
- * exists here yet (Task 3). */
+ * rollback policy, error enum semantics, download/resume semantics, the
+ * stage/activate/unstage pipeline) is documented in break_update_client.h;
+ * the parser deliberately mirrors the Phase A manifest discipline in
+ * break_update.c (strict grammars, unknown/malformed → fail, no repair). */
 
 #include <update/break_update_client.h>
 
@@ -18,6 +17,8 @@
 #define UPC_STATE_MAX_BYTES (64u * 1024u) /* state file ≤ 64 KiB */
 #define UPC_HEX_NAME_LEN    64u
 #define UPC_TEXT_CAP        512u /* worst-case serialized state ≈ 324 bytes */
+#define UPC_CHUNK_NAME_MAX  128u /* manifest chunk-name cap (break_update.c) */
+#define UPC_WRITER_TMP_LEN  10u  /* PlatformAtomicWriter's ".tmpXXXXXX" */
 
 typedef struct {
     char current; /* 'A' | 'B' | '-' (none) */
@@ -357,10 +358,12 @@ static bool upc_read_state(const char *path, u64 size, UpcState *out) {
 BreakUpdateClient *break_update_client_open(const char *root_path) {
     if (!root_path) return NULL;
     usize n = strlen(root_path);
-    /* Tightest suffix: "/chunks/" + 64 hex + ".part" + NUL (Task 2's spool
-     * path; covers "/state" + the atomic writer's ".tmpXXXXXX" too). Checked
-     * once up front so every later join is safe by construction. */
-    if (n == 0 || n + 8 + UPC_HEX_NAME_LEN + 5 + 1 > PLATFORM_FS_PATH_CAPACITY)
+    /* Tightest suffix: "/slots/A/files/" + a 128-byte manifest chunk name +
+     * the writer's ".tmpXXXXXX" + NUL (Task 3's materialization path; covers
+     * "/chunks/<64hex>.part", "/slots/A/update-version" and "/state" too).
+     * Checked once up front so every later join is safe by construction. */
+    if (n == 0 ||
+        n + 15 + UPC_CHUNK_NAME_MAX + UPC_WRITER_TMP_LEN + 1 > PLATFORM_FS_PATH_CAPACITY)
         return NULL;
     if (!platform_mkdir(root_path)) return NULL;
 
@@ -822,4 +825,312 @@ bool break_update_client_fetch_all(BreakUpdateClient *c, const BreakUpdateManife
 out:
     break_update_store_destroy(s);
     return ok;
+}
+
+/* ---- Task 3: stage → activate → unstage --------------------------------------
+ * Semantics are documented in the header ("Task 3 semantics"): signature +
+ * policy before ANY transport, clean-then-materialize into the inactive
+ * slot, write-ahead staged mark last, slot-resident update-version marker,
+ * failure ⇒ partial slot removed + state unchanged except resume progress. */
+
+#define UPC_SLOT_TREE_DEPTH 64u /* manifest names ≤ 128 B ⇒ ≤ 64 components */
+
+/* "<root>/slots/<slot><suffix>" — safe by construction after the open-time
+ * path bound (which covers the deepest join); checked anyway. */
+static bool upc_slot_path(const BreakUpdateClient *c, char slot,
+                          const char *suffix, char *out, usize cap) {
+    usize rn = strlen(c->root);
+    usize sn = strlen(suffix);
+    if (rn + 7 + 1 + sn + 1 > cap) return false;
+    memcpy(out, c->root, rn);
+    memcpy(out + rn, "/slots/", 7);
+    out[rn + 7] = slot;
+    memcpy(out + rn + 8, suffix, sn + 1);
+    return true;
+}
+
+/* Removes the file or directory tree at path (post-order), depth-bounded;
+ * an absent path is success. Entries are re-listed after each drained batch
+ * so a directory holding more entries than one listing's capacity still
+ * empties. Files and emptied directories both go through ISO-C remove()
+ * (POSIX remove() unlinks files and rmdir's directories; Win32 is
+ * compile-only this phase — no new _WIN32 branches, plan Global
+ * Constraints). Fails closed: any unremovable entry → false. */
+static bool upc_remove_tree_at(const char *path, unsigned depth) {
+    PlatformDirEntry entries[16];
+    u32 count = 0;
+    if (depth > UPC_SLOT_TREE_DEPTH) return false;
+    if (!platform_list_dir(path, entries, 16, &count)) {
+        u64 sz = 0;
+        if (!platform_file_size(path, &sz)) return true; /* absent */
+        return remove(path) == 0;                        /* a plain file */
+    }
+    for (;;) {
+        u32 i;
+        for (i = 0; i < count && i < 16; i++) {
+            char child[PLATFORM_FS_PATH_CAPACITY];
+            usize pn = strlen(path);
+            usize en = strlen(entries[i].name);
+            if (pn + 1 + en + 1 > sizeof(child)) return false;
+            memcpy(child, path, pn);
+            child[pn] = '/';
+            memcpy(child + pn + 1, entries[i].name, en + 1);
+            if (entries[i].is_dir) {
+                if (!upc_remove_tree_at(child, depth + 1)) return false;
+            } else if (remove(child) != 0) {
+                return false;
+            }
+        }
+        if (count <= 16) break; /* fully listed ⇒ fully drained */
+        count = 0;
+        if (!platform_list_dir(path, entries, 16, &count)) return false;
+    }
+    return remove(path) == 0; /* the now-empty directory itself */
+}
+
+/* Clears a slot's staged content: the files/ tree and the update-version
+ * marker. The slot DIRECTORY itself is part of the fixed open-time layout
+ * and is never removed. */
+static bool upc_clean_slot(const BreakUpdateClient *c, char slot) {
+    char p[PLATFORM_FS_PATH_CAPACITY];
+    if (!upc_slot_path(c, slot, "/files", p, sizeof(p))) return false;
+    if (!upc_remove_tree_at(p, 0)) return false;
+    if (!upc_slot_path(c, slot, "/update-version", p, sizeof(p))) return false;
+    return upc_remove_tree_at(p, 0);
+}
+
+/* The staged manifest's version rides inside the slot (the Task-1-pinned
+ * state format has no staged-version field): one canonical "M.m.p\n" line
+ * at slots/<slot>/update-version, written via the atomic writer. */
+static bool upc_write_marker(const BreakUpdateClient *c, char slot, const u32 v[3]) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    char text[40];
+    int r = snprintf(text, sizeof(text), "%lu.%lu.%lu\n", (unsigned long)v[0],
+                     (unsigned long)v[1], (unsigned long)v[2]);
+    if (r < 0 || (usize)r >= sizeof(text)) return false;
+    if (!upc_slot_path(c, slot, "/update-version", path, sizeof(path))) return false;
+    PlatformAtomicWriter *w = platform_atomic_writer_open(path);
+    if (!w) return false;
+    if (!platform_atomic_writer_write(w, text, (usize)r)) {
+        platform_atomic_writer_abort(w); /* consumes the writer */
+        return false;
+    }
+    return platform_atomic_writer_commit(w); /* consumes the writer */
+}
+
+/* Strict marker read: 6..34 bytes ("0.0.0\n" .. u32-max triple + LF), one
+ * line, manifest version grammar. Any deviation → false (fail closed). */
+static bool upc_read_marker(const BreakUpdateClient *c, char slot, u32 v[3]) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    u8 buf[40];
+    u64 size = 0;
+    usize got = 0;
+    FILE *fp;
+    if (!upc_slot_path(c, slot, "/update-version", path, sizeof(path))) return false;
+    if (!platform_file_size(path, &size)) return false;
+    if (size < 6 || size > 34) return false;
+    fp = fopen(path, "rb");
+    if (!fp) return false;
+    got = fread(buf, 1, (usize)size, fp);
+    if (fclose(fp) != 0) return false;
+    if (got != (usize)size) return false;
+    if (buf[size - 1] != '\n') return false;
+    return upc_parse_version(buf, (usize)size - 1, v);
+}
+
+/* Clean the target slot, then materialize every manifest chunk from the CAS
+ * (verify-on-read) to slots/<slot>/files/<name> via the atomic writer —
+ * intermediate dirs per name component — and finally the version marker.
+ * On ANY failure the partial slot tree is removed and false returned. */
+static bool upc_materialize_slot(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                                 char slot) {
+    char files_dir[PLATFORM_FS_PATH_CAPACITY];
+    char dst[PLATFORM_FS_PATH_CAPACITY];
+    char hex[UPC_HEX_NAME_LEN + 1];
+    BreakUpdateStore *s = NULL;
+    u64 count, i;
+    usize fn;
+    bool ok = false;
+
+    if (!upc_clean_slot(c, slot)) goto out;
+    if (!upc_slot_path(c, slot, "/files", files_dir, sizeof(files_dir))) goto out;
+    if (!platform_mkdir(files_dir)) goto out;
+    s = break_update_store_open(c->root);
+    if (!s) goto out;
+    fn = strlen(files_dir);
+    count = break_update_manifest_chunk_count(m);
+    for (i = 0; i < count; i++) {
+        const char *nm;
+        u8 h[32];
+        u64 csz;
+        u8 *buf = NULL;
+        u64 len = 0;
+        usize nn, comp;
+        PlatformAtomicWriter *w;
+        if (!break_update_manifest_chunk_at(m, i, &nm, h, &csz)) goto out; /* unreachable */
+        nn = strlen(nm);
+        /* Join + the writer's tmp suffix must fit (guaranteed by the
+         * open-time bound; checked anyway). */
+        if (fn + 1 + nn + UPC_WRITER_TMP_LEN + 1 > sizeof(dst)) goto out;
+        memcpy(dst, files_dir, fn);
+        dst[fn] = '/';
+        memcpy(dst + fn + 1, nm, nn + 1);
+        /* One platform_mkdir per intermediate component (names are manifest-
+         * validated: [A-Za-z0-9._/-], no "..", no leading '/' — contained). */
+        for (comp = fn + 1; comp < fn + 1 + nn; comp++) {
+            if (dst[comp] == '/') {
+                dst[comp] = '\0';
+                if (!platform_mkdir(dst)) {
+                    free(buf);
+                    goto out;
+                }
+                dst[comp] = '/';
+            }
+        }
+        upc_hex_encode(h, 32, hex);
+        if (!break_update_store_get_chunk(s, hex, &buf, &len)) {
+            free(buf);
+            goto out;
+        }
+        w = platform_atomic_writer_open(dst);
+        if (!w || !platform_atomic_writer_write(w, buf, (usize)len) ||
+            !platform_atomic_writer_commit(w)) {
+            platform_atomic_writer_abort(w); /* abort(NULL) is a safe no-op */
+            free(buf);
+            goto out;
+        }
+        free(buf);
+    }
+    {
+        u32 v[3];
+        break_update_manifest_version(m, v);
+        if (!upc_write_marker(c, slot, v)) goto out;
+    }
+    ok = true;
+out:
+    if (s) break_update_store_destroy(s);
+    if (!ok) upc_clean_slot(c, slot); /* partial staged slot removed */
+    return ok;
+}
+
+bool break_update_client_stage(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                               const u8 pubkey[32], const char *channel,
+                               const char *platform, BreakUpdateFetchFn fetch,
+                               void *user) {
+    u32 cur[3] = {0, 0, 0};
+    char target;
+    UpcState next;
+
+    if (!c) return false;
+    if (!m || !pubkey || !channel || !platform || !fetch) {
+        c->last_error = BREAK_UPDATE_CLIENT_INVALID;
+        return false;
+    }
+    /* Signature BEFORE any transport or disk effect (the cross-cutting
+     * gate): VERIFY/POLICY failures perform zero fetch calls, zero disk
+     * writes, zero state changes. */
+    if (!break_update_manifest_verify(m, pubkey)) {
+        c->last_error = BREAK_UPDATE_CLIENT_VERIFY;
+        return false;
+    }
+    /* Policy: current version from state; a fresh client (current=none) is
+     * source version 0.0.0 — the full check still runs, so only a payload
+     * with min-version 0.0.0 provisions a versionless device (documented). */
+    if (c->st.current != '-') memcpy(cur, c->st.current_v, sizeof(cur));
+    if (!break_update_manifest_compatible(m, channel, platform, cur[0], cur[1],
+                                          cur[2])) {
+        c->last_error = BREAK_UPDATE_CLIENT_POLICY;
+        return false;
+    }
+    /* unstage is the ONLY non-activating way to clear a staged slot (plan
+     * verbatim) — re-staging is unstage + stage, never implicit. */
+    if (c->st.staged != '-') {
+        c->last_error = BREAK_UPDATE_CLIENT_STATE;
+        return false;
+    }
+    /* Download first: a transport failure never touches a slot (the retained
+     * previous version's bytes survive a failed download). fetch_all sets
+     * last_error (FETCH/VERIFY/IO/STATE) and mutates only resume progress. */
+    if (!break_update_client_fetch_all(c, m, fetch, user)) return false;
+    target = c->st.current == 'A' ? 'B' : 'A'; /* current=none → 'A' (fixed) */
+    if (!upc_materialize_slot(c, m, target)) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    next = c->st;
+    next.staged = target;
+    if (!upc_persist(c->state_path, &next)) { /* the mark persists LAST */
+        upc_clean_slot(c, target);
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    c->st = next;
+    c->last_error = BREAK_UPDATE_CLIENT_OK;
+    return true;
+}
+
+bool break_update_client_activate(BreakUpdateClient *c) {
+    UpcState next;
+    u32 v[3];
+    char slot;
+
+    if (!c) return false;
+    if (c->st.staged == '-') {
+        c->last_error = BREAK_UPDATE_CLIENT_STATE;
+        return false;
+    }
+    slot = c->st.staged;
+    /* The staged version comes from the slot marker; missing/corrupt → fail
+     * closed with the state untouched. */
+    if (!upc_read_marker(c, slot, v)) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    next = c->st;
+    next.has_previous = c->st.current != '-';
+    if (next.has_previous)
+        memcpy(next.previous_v, c->st.current_v, sizeof(next.previous_v));
+    next.current = slot;
+    next.staged = '-';
+    memcpy(next.current_v, v, sizeof(next.current_v));
+    next.pending = true;
+    next.confirmed = false;
+    if (!upc_persist(c->state_path, &next)) { /* persist BEFORE the flip */
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    c->st = next;
+    c->last_error = BREAK_UPDATE_CLIENT_OK;
+    return true;
+}
+
+bool break_update_client_unstage(BreakUpdateClient *c) {
+    UpcState next;
+    char slot;
+
+    if (!c) return false;
+    if (c->st.staged == '-') {
+        c->last_error = BREAK_UPDATE_CLIENT_STATE;
+        return false;
+    }
+    slot = c->st.staged;
+    next = c->st;
+    next.staged = '-';
+    /* Write-ahead: the cleared mark persists FIRST (a crash then leaves an
+     * inert tree the next stage's clean reclaims — never a staged slot whose
+     * tree is gone). */
+    if (!upc_persist(c->state_path, &next)) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    c->st = next;
+    /* A removal failure after the persist reports IO with staged already
+     * cleared (documented): the leftover is inert, and the staged-interlock
+     * no longer blocks rollback. */
+    if (!upc_clean_slot(c, slot)) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    c->last_error = BREAK_UPDATE_CLIENT_OK;
+    return true;
 }
