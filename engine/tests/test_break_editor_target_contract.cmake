@@ -27,7 +27,7 @@ if(break_editor_pos GREATER next_tests_block_pos)
     message(FATAL_ERROR "break_editor must be defined at top level, not inside an ENGINE_BUILD_TESTS block")
 endif()
 
-# ...owning its nine translation units (first mention of each editor source
+# ...owning its ten translation units (first mention of each editor source
 # is inside the add_library(break_editor ...) call; the test-only variant
 # repeats them later inside the tests block). scene_serial.c is additionally
 # compiled inline by the engine target and test_scene_serial, and bvh.c /
@@ -97,6 +97,26 @@ endif()
 if(NOT break_editor_block MATCHES "src/math/math\\.c")
     message(FATAL_ERROR "break_editor does not own exactly one src/math/math.c copy")
 endif()
+if(NOT break_editor_block MATCHES "src/editor/editor_assets\\.c")
+    message(FATAL_ERROR "break_editor does not own src/editor/editor_assets.c")
+endif()
+
+# Phase 3 Task 1 single-ownership pin: platform_fs.c's only production owner
+# is the engine target (platform siblings live there); break_editor consumes
+# platform_list_dir as an unresolved symbol that the editor executable
+# resolves from libengine.a, and editor tests compile the TU inline. Neither
+# break_editor archive may carry it (exactly one definition per binary).
+if(break_editor_block MATCHES "platform_fs\\.c")
+    message(FATAL_ERROR "break_editor must not compile platform_fs.c (engine owns it)")
+endif()
+string(REGEX MATCH "add_library\\(engine STATIC[^)]*\\)" engine_block "${cmake_text}")
+if(NOT engine_block MATCHES "src/platform/platform_fs\\.c")
+    message(FATAL_ERROR "engine does not own src/platform/platform_fs.c")
+endif()
+string(REGEX MATCH "add_library\\(break_editor_test STATIC[^)]*\\)" break_editor_test_block "${cmake_text}")
+if(break_editor_test_block MATCHES "platform_fs\\.c")
+    message(FATAL_ERROR "break_editor_test must not compile platform_fs.c (test_editor_assets compiles it inline)")
+endif()
 
 # engine, engine_demo, and dxx_break must not link break_editor. Their
 # target_link_libraries calls are single-line in this file, so a line-level
@@ -110,9 +130,9 @@ endforeach()
 
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
 # hooks) rather than the production target; the production archive stays
-# hook-free. The variant compiles the same nine translation units and links
+# hook-free. The variant compiles the same ten translation units and links
 # the same break_ecs_replication.
-if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c")
+if(NOT cmake_text MATCHES "add_library\\(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c")
     message(FATAL_ERROR "missing test-only break_editor_test variant over all break_editor sources")
 endif()
 if(NOT cmake_text MATCHES "target_compile_definitions\\(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1")
@@ -156,6 +176,15 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_gizmo tests/test_editor_
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_gizmo PRIVATE break_editor_test")
     message(FATAL_ERROR "test_editor_gizmo does not link break_editor_test")
+endif()
+
+# Phase 3 Task 1: test_editor_assets links break_editor_test and compiles
+# the engine-owned platform_fs.c inline (exactly one definition per binary).
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_assets tests/test_editor_assets.c src/platform/platform_fs.c")
+    message(FATAL_ERROR "missing test_editor_assets executable with inline platform_fs.c")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_assets PRIVATE break_editor_test")
+    message(FATAL_ERROR "test_editor_assets does not link break_editor_test")
 endif()
 
 # Task 4: the editor shell executable is a formal top-level target linking
