@@ -630,6 +630,8 @@ ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
 - `ENGINE_D3D12_DEBUG`：Debug 默认 ON、Release 默认 OFF（显式
   `-DENGINE_D3D12_DEBUG=OFF` 可覆盖）；ON 时启用 D3D12 debug layer +
   GPU-based validation，DRED（auto breadcrumbs + page fault）全配置强制。
+  运行时 `BREAK_D3D12_GBV=0` 只保留 debug layer、关掉 GPU-based validation
+  （demo 在 Debug 构建下从约 20 FPS 回到 76–87 FPS）；默认开启，测试与 CI 不受影响。
   PIX 捕获与 device-lost（DRED）排查见 `docs/rhi_rollback_runbook.md` 的
   D3D12/PIX 节。
 - shader 路径：手写 HLSL 旁挂（`engine/shaders/*_hlsl.{vert,frag}`）构建期经 dxc

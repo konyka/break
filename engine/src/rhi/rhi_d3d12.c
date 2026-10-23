@@ -539,12 +539,21 @@ HRESULT rhi_d3d12_context_create(RHI_D3D12Context *context,
      * instead of faking validation. */
     {
         ID3D12Debug1 *debug = NULL;
+        /* R673: BREAK_D3D12_GBV=0 keeps the debug layer but drops GPU-based
+         * validation, which instruments every shader resource access and
+         * costs the demo ~20-40 ms per frame. Default stays on (tests, CI). */
+        const char *gbv_env = getenv("BREAK_D3D12_GBV");
+        BOOL gbv = !(gbv_env != NULL && gbv_env[0] == '0');
         if (SUCCEEDED(D3D12GetDebugInterface(&IID_ID3D12Debug1, (void **)&debug))) {
             ID3D12Debug1_EnableDebugLayer(debug);
-            ID3D12Debug1_SetEnableGPUBasedValidation(debug, TRUE);
+            ID3D12Debug1_SetEnableGPUBasedValidation(debug, gbv);
             ID3D12Debug1_Release(debug);
-            LOG_INFO("D3D12: debug layer + GPU-based validation enabled "
-                     "(ENGINE_D3D12_DEBUG)");
+            if (gbv)
+                LOG_INFO("D3D12: debug layer + GPU-based validation enabled "
+                         "(ENGINE_D3D12_DEBUG)");
+            else
+                LOG_INFO("D3D12: debug layer enabled, GPU-based validation off "
+                         "(BREAK_D3D12_GBV=0)");
         } else {
             LOG_WARN("D3D12: ENGINE_D3D12_DEBUG is set but the debug layer is "
                      "unavailable (deploy d3d12SDKLayers.dll next to the exe)");

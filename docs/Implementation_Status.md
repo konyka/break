@@ -1,6 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R673 — D3D12 GPU-based validation 运行时开关
+
+Debug 构建（`ENGINE_D3D12_DEBUG`）下 demo 只有约 20 FPS，几乎全部是 GBV 的开销：它会给每次着色器资源访问插桩。新增环境变量 `BREAK_D3D12_GBV=0`，只关 GBV，debug layer 照常开着（`rhi_d3d12_context_create`），日志会写明当前状态。默认仍然开启，所以测试套件和 CI 的覆盖不变。
+
+| Debug 构建，RTX | GBV 开 | `BREAK_D3D12_GBV=0` |
+|---|---|---|
+| 前向 | 19.2 | 76.5 |
+| 延迟 | 21.7 | 87.3 |
+
+验证：GBV 关闭时 demo 跑 120 帧，日志无 WARN/ERROR；WARP 81/81，debug layer 0 errors / 0 warnings；d3d12-debug ctest 187/187。`docs/Build_Guide.md` 的 `ENGINE_D3D12_DEBUG` 一条同步补充了说明。
+
 ## 本轮更新：R672 — GL 帧率：主机回读暂存缓冲改用 STREAM_READ，并补上帧槽栅栏（GL 前向 62 → 76 FPS、延迟 43 → 51）
 
 ### 现象与定位
