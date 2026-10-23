@@ -1,6 +1,20 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R681 — CI action 升到 Node 24 版本
+
+每个 job 都会报一条 warning：「Node.js 20 is deprecated … actions/checkout@v4, actions/upload-artifact@v4」。核对各 action 在对应 tag 下 `action.yml` 里的 `runs.using`：checkout v5 起是 node24，upload-artifact v6 起是 node24（v5 仍是 node20），download-artifact v7 起是 node24（v5/v6 仍是 node20）。升级如下：
+- `actions/checkout@v4` → `@v6`（22 处）；
+- `actions/upload-artifact@v4` → `@v6`（20 处）；
+- `actions/download-artifact@v4` → `@v7`（`proton-d3d12.yml`，1 处）。
+
+升级前查过各版本 README 列出的不兼容变化：
+- checkout v6 把 `persist-credentials` 存到 `$RUNNER_TEMP`，只影响 Docker 容器 action，本仓库没有用到；
+- upload/download 的 v6/v7 只是换了运行时，最低要求 runner 2.327.1，托管 runner 满足；self-hosted 的 Steam Deck / D3D12 lane 需要满足同样的版本；
+- download v5 改的是「按 artifact ID 下载」的解压目录，本仓库按 name 下载，不受影响。
+
+`evidence-receipt-gpu-runtime-windows-d3d12` 这个名字被两个 job 共用，但两者互斥（self-hosted GPU 与 unavailable receipt），所以和 v4 时一样，不会在同一轮里重复上传。验证：4 个 workflow 都能被 `yaml.safe_load` 解析。实际效果要看推送后的 CI。
+
 ## 本轮更新：R679 — fonts-noto-cjk 改为可选安装步骤
 
 R678 推送后的那轮 CI（bc92f10f）里，有 3 个 job 在 apt 阶段失败：`Linux Wayland + OpenGL`、`Linux + GCC (ASan + UBSan)`、`Linux X11 + Vulkan (lavapipe)`。三者的注解都显示，两次 360 秒尝试最后都停在同一个包：`Get: … fonts-noto-cjk [61.2 MB]`。R678 去掉的那 4 个 lane 这次都通过了。到这里，所有被抓到的停滞都落在这一个包上（R677 两处、R678 三处），R677 里 Wayland lane 的 110 包那次也是在这个包之前停下的。

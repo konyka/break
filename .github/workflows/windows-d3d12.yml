@@ -19,7 +19,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
@@ -123,7 +123,7 @@ jobs:
       # Consumed by the proton-d3d12 compatibility lane (workflow_run
       # trigger): contract executables + Agility redist + precompiled DXIL.
       - name: Upload build artifact (proton-d3d12 lane input)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: windows-d3d12-artifact
           path: |

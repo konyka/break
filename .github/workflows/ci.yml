@@ -29,7 +29,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -91,7 +91,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-clang
@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -176,7 +176,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-gcc-asan
@@ -187,7 +187,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -262,7 +262,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-linux-gcc-tsan
@@ -273,7 +273,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # test_rhi_backend_selection sub-configures ENGINE_RHI_BACKEND=d3d12,
       # which fail-closes without the pinned Agility redist
@@ -352,7 +352,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-windows-clang
@@ -363,7 +363,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # Same d3d12 selector-contract prerequisite as the windows-clang job.
       - name: Fetch Agility SDK (pinned)
@@ -434,7 +434,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-headless-windows-asan
@@ -447,7 +447,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -553,7 +553,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-wayland
@@ -568,7 +568,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -674,7 +674,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-wayland-gl
@@ -687,7 +687,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
@@ -724,7 +724,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-win32
@@ -737,7 +737,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         # spirv-cross: test_rhi_backend_selection (headless suite) asserts the
@@ -871,7 +871,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-native-surface-cocoa
@@ -887,7 +887,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -961,7 +961,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-linux-gl
@@ -974,7 +974,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned toolchain
         timeout-minutes: 20
@@ -1071,7 +1071,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-linux
@@ -1085,7 +1085,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Pin Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
@@ -1157,7 +1157,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-macos-metal
@@ -1174,7 +1174,7 @@ jobs:
     runs-on: [self-hosted, windows, gpu]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Fetch Agility SDK (pinned)
         run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
@@ -1230,7 +1230,7 @@ jobs:
             -DGPU=unknown -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-windows-d3d12
@@ -1247,7 +1247,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Emit UNAVAILABLE receipt
         run: |
           cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=d3d12 \
@@ -1257,7 +1257,7 @@ jobs:
             -DGPU=none -DDRIVER_VERSION=none -DCPU=none -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-gpu-runtime-windows-d3d12
@@ -1269,7 +1269,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned toolchain
         timeout-minutes: 20
@@ -1332,7 +1332,7 @@ jobs:
             -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-validation-linux
@@ -1344,7 +1344,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install pinned toolchain
         timeout-minutes: 20
@@ -1423,7 +1423,7 @@ jobs:
             -DFRAME_MS_P99=$(m frame_ms_p99) \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-benchmark-linux-vk
@@ -1438,7 +1438,7 @@ jobs:
     runs-on: [self-hosted, linux, gpu-vulkan]
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install dependencies
         timeout-minutes: 20
@@ -1515,7 +1515,7 @@ jobs:
 
       - name: Upload receipt
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: evidence-receipt-benchmark-steam-deck
           path: |
@@ -1530,7 +1530,7 @@ jobs:
     timeout-minutes: 40
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build under Steam Runtime (pinned)
         id: steamrt
@@ -1555,7 +1555,7 @@ jobs:
             -DGPU=none -DDRIVER_VERSION=none -DCPU="$(uname -m)" -DRAM=unknown \
             -P engine/tools/make_evidence_receipt.cmake
           cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: evidence-receipt-proton
@@ -1567,7 +1567,7 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Pin Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer && xcodebuild -version
@@ -1594,7 +1594,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
       # cmake=3.28.3 / libvulkan-dev=1.3.275.0-1build1 / libshaderc-dev=2023.8-1build1。
