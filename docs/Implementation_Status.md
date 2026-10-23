@@ -9,7 +9,7 @@
 ### 修复（`engine/src/rhi/rhi_gl.c`）
 - Windows 下从 GL 后端导出 `NvOptimusEnablement = 1` 和 `AmdPowerXpressRequestHighPerformance = 1`。这是 NVIDIA/AMD 驱动约定的方式：可执行文件导出这两个符号，驱动就会把它的 GL 上下文放到独显上。`llvm-objdump -p` 确认 engine_demo.exe、test_vulkan.exe 的导出表里有这两项。
 - 初始化日志改为打印 `GL_VERSION (GL_VENDOR / GL_RENDERER)`，以后一眼就能看出跑在哪块 GPU 上。
-- 局限：`echarts_demo`、`myui_widgets_demo` 这类只链接 myui 自带 WGL（`my_pal_win32.c`）、不链接 GL 后端的程序，没有这两个导出，仍然由驱动决定用哪块 GPU。
+- `myui_explorer` 带有自己的 WGL 窗口运行器（`tools/ex_platform_win32.c`），不链接 GL 后端，所以在那个文件里也加了同样的两个导出（已确认三棵构建树中 `myui_explorer.exe` 的导出表里都有，explorer 测试 2/2 通过）。`echarts_demo`、`myui_widgets_demo` 是 headless 的，不创建 GL 上下文，不需要这两个导出。
 
 ### 数据（RTX，修复后 GL 已在 RTX 4060 上，`BREAK_BENCH_STATS=1`，已排除预热帧）
 | GL | 修复前（AMD 核显） | 修复后（RTX 4060） |
