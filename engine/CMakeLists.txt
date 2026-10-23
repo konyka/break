@@ -376,6 +376,22 @@ if(BREAK_ENABLE_SNOWFLAKE)
     target_link_libraries(break_net PUBLIC break_replication_core snow::net)
 endif()
 
+# Product build identity: short git hash baked into break_version.c (engine)
+# and into its test. Falls back to "unknown" outside a git checkout (e.g.
+# clean-room source exports) or when git is absent/fails.
+find_program(BREAK_GIT_EXECUTABLE git)
+if(BREAK_GIT_EXECUTABLE)
+    execute_process(COMMAND ${BREAK_GIT_EXECUTABLE} rev-parse --short=12 HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE BREAK_BUILD_ID
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT BREAK_BUILD_ID)
+    set(BREAK_BUILD_ID "unknown")
+endif()
+message(STATUS "Break build identity: ${BREAK_BUILD_ID}")
+
 # Engine library
 set(RHI_CORE_SOURCES
     src/rhi/rhi.c
@@ -386,6 +402,7 @@ set(RHI_CORE_SOURCES
     src/rhi/rhi_rollout.c)
 add_library(engine STATIC
     src/core/log.c
+    src/core/break_version.c
     src/core/shader_io.c
     src/core/alloc.c
     src/core/pool.c
@@ -479,6 +496,9 @@ file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json" ENGINE_R
 string(JSON ENGINE_ROLLOUT_CFGVER GET "${ENGINE_ROLLOUT_JSON}" config_version)
 target_compile_definitions(engine PUBLIC
     ENGINE_RHI_ROLLOUT_CONFIG_VERSION=${ENGINE_ROLLOUT_CFGVER})
+# Build identity is consumed only by break_version.c inside this target; the
+# test target injects the same value itself.
+target_compile_definitions(engine PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
 
 if(WIN32 AND STREAMLINE_ROOT)
     enable_language(CXX)
@@ -3856,6 +3876,13 @@ endif()
     target_include_directories(test_alloc PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_alloc PRIVATE m)
     add_test(NAME test_alloc COMMAND test_alloc)
+
+    # test_break_version: product version/build identity (core TU, like log.c)
+    add_executable(test_break_version tests/test_break_version.c src/core/break_version.c)
+    target_include_directories(test_break_version PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_break_version PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
+    target_link_libraries(test_break_version PRIVATE m)
+    add_test(NAME test_break_version COMMAND test_break_version)
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
     add_executable(test_pbr_math tests/test_pbr_math.c)
