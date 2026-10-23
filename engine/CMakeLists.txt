@@ -1270,6 +1270,35 @@ target_include_directories(dxx_break PRIVATE
 target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
 engine_link_rhi_backend(dxx_break)
 
+# Stage 4 scene editor Phase 1 shell executable (Task 4). Top-level like the
+# break_editor library: built regardless of ENGINE_BUILD_TESTS and kept thin —
+# all panel logic lives in editor_panels.c so the headless dummy-PAL test
+# exercises it. src/myui/mypal/dummy/my_pal_dummy.c is compiled in because
+# editor_panels.c hosts break_editor_shell_create_for_test(); when MYUI_PAL
+# is a desktop port myui_core also carries the dummy PAL, and the archive
+# copy is then simply never pulled (the executable's own object defines the
+# symbols first) — no duplicate definitions.
+#
+# Link-order note (carried review item): libbreak_editor.a and libengine.a
+# BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
+# engine compiles src/scene/scene_serial.c inline). Static archives only pull
+# objects to resolve still-undefined symbols, and break_editor is listed
+# FIRST, so editor_panels.o -> editor_scene.o -> scene_serial.o all resolve
+# from break_editor; engine's copy is never pulled for the same symbols.
+# Verified at link time and via `nm` (exactly one scene_save_binary
+# definition in the binary).
+add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+    src/myui/mypal/dummy/my_pal_dummy.c)
+set_property(TARGET editor PROPERTY C_STANDARD 11)
+target_include_directories(editor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(editor PRIVATE break_editor break_myui engine m)
+engine_link_rhi_backend(editor)
+
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT ENGINE_IPO_SUPPORTED OUTPUT ENGINE_IPO_ERROR)
@@ -3458,6 +3487,22 @@ endif()
     target_link_libraries(test_editor_components PRIVATE break_editor_test)
     add_test(NAME test_editor_components COMMAND test_editor_components)
     set_tests_properties(test_editor_components PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
+    # production editor_panels.c translation unit directly (the
+    # test_scene_serial inline-copy precedent) plus the dummy PAL port (the
+    # test_myui_window_manager precedent — MYUI_PAL=dummy keeps the port out
+    # of myui_core); links the hook-instrumented break_editor_test like the
+    # other editor tests. No RHI: the shell's test path is dummy-PAL only.
+    add_executable(test_editor_shell tests/test_editor_shell.c
+        apps/editor/editor_panels.c src/myui/mypal/dummy/my_pal_dummy.c)
+    set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
+    target_include_directories(test_editor_shell PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
+    add_test(NAME test_editor_shell COMMAND test_editor_shell)
+    set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")
 
     add_test(NAME test_break_editor_target_contract
         COMMAND ${CMAKE_COMMAND}

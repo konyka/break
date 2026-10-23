@@ -119,4 +119,21 @@ if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_components PRIVAT
     message(FATAL_ERROR "test_editor_components does not link break_editor_test")
 endif()
 
+# Task 4: the editor shell executable is a formal top-level target linking
+# break_editor. break_editor must be listed FIRST on its link line: both
+# libbreak_editor.a and libengine.a carry scene_serial.o, static archives
+# only pull members to resolve still-undefined symbols, and editor_panels.o
+# reaches scene_serial through break_editor's editor_scene.o — with this
+# order the engine copy is never pulled (verified on the built binary with
+# nm: exactly one scene_save_binary definition, zero undefined references).
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c")
+    message(FATAL_ERROR "missing formal editor executable target")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE break_editor break_myui engine m")
+    message(FATAL_ERROR "editor must link break_editor before break_myui/engine (scene_serial single-owner link order)")
+endif()
+if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(editor\\)")
+    message(FATAL_ERROR "editor does not go through engine_link_rhi_backend")
+endif()
+
 message(STATUS "break_editor target contract passed")
