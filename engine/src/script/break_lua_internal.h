@@ -238,9 +238,16 @@ void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
                           BreakLuaFrameOpCtx *ctx);
 
 /* Count-hook callback for the instruction budget (defined in
- * break_lua_value.c): raises "break_lua: instruction budget exceeded" into
- * the nearest pcall and sets runtime->budget_tripped. Shared by the frame
- * dispatch and the module staging / on_unload paths (break_lua_module.c).
+ * break_lua_value.c): raises the host-owned budget-trip SENTINEL value (a
+ * lightuserdata naming the runtime's budget_sentinel field; see the
+ * sentinel helpers above) via lua_error and sets runtime->budget_tripped.
+ * The sandboxed pcall/xpcall wrappers (break_lua_binding.c) re-raise the
+ * sentinel uninspected, so it lands at the nearest NON-wrapper pcall — the
+ * host-side per-hook / staging / commit pcall — never at a script pcall.
+ * Host-side error capture (break_lua_op_take_error) maps the sentinel to
+ * the canonical text "break_lua: instruction budget exceeded". Shared by
+ * the frame dispatch and the module staging / on_unload paths
+ * (break_lua_module.c).
  * Arm with lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT, count) and
  * ALWAYS disarm after the protected call — the hook is per-coroutine
  * state that must not leak past the operation. */

@@ -490,11 +490,24 @@ BreakLuaError break_lua_runtime_unref_function(BreakLuaRuntime *runtime,
  *    - pcall/xpcall as BUDGET-TRANSPARENT wrappers (fix round 4, NEW-C4):
  *      ordinary errors behave exactly like the base functions ((false,
  *      err) results; the xpcall handler is invoked by the wrapper after
- *      the call returns — post-unwind, which is safe here because the
- *      debug library is absent), but the instruction-budget trip value
- *      (see INSTRUCTION BUDGET) is RE-RAISED uninspected instead of being
- *      returned: scripts cannot catch a trip at any nesting depth, and
- *      never observe the sentinel value at all;
+ *      the call returns; an ordinary error raised BY the handler is
+ *      absorbed by xpcall itself, which returns (false, "error in error
+ *      handling") — base Lua 5.4 LUA_ERRERR semantics, fix round 5), but
+ *      the instruction-budget trip value (see INSTRUCTION BUDGET) is
+ *      RE-RAISED uninspected instead of being returned — including a trip
+ *      fired inside the handler —: scripts cannot catch a trip at any
+ *      nesting depth, and never observe the sentinel value at all. The
+ *      handler runs post-unwind where base invokes it pre-unwind (via the
+ *      VM errfunc); the ONLY stack-relative operation reachable in the
+ *      sandbox is error(msg, level)'s position prefix (the debug library
+ *      is absent). Levels resolving at or above the handler frame — and
+ *      its immediate caller, a C frame on BOTH sides (base sees the
+ *      triggering error() C frame, the wrapper sees its own) — are
+ *      identical; the first frame that DIFFERS is one level deeper, where
+ *      base walks the not-yet-unwound error chain (the callee's error
+ *      line) and the wrapper walks the xpcall call site. The residue is
+ *      position-prefix CONTENT only: message text, result values, and
+ *      catchability are bit-identical to base;
  *    - libraries (exposed through read-through proxies, see below):
  *      string, table, math, utf8 (full tables);
  *    - os SUBSET: exactly os.clock / os.time / os.date (a rebuilt table;

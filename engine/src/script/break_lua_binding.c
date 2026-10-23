@@ -550,16 +550,26 @@ static int break_lua_sandbox_xpcall(lua_State *L)
     int n = lua_gettop(L);
     int status;
     (void)runtime;
-    luaL_checkany(L, 1);
-    luaL_checktype(L, 2, LUA_TFUNCTION); /* same shape check as base xpcall */
+    /* Same shape check as base xpcall — and NOTHING else: base checks only
+     * the handler argument, so xpcall() with zero arguments reports
+     * "bad argument #2 (function expected, got no value)", never #1. */
+    luaL_checktype(L, 2, LUA_TFUNCTION);
     /* [f, handler, args...] -> [f, handler, f, args...]: the callee+args go
      * on top (the base function's rotate, minus its pre-pushed status).
      * Call with NO VM-registered handler: the base errfunc would receive
      * the sentinel (pre-unwind), making it script-observable. The script
      * handler below is invoked by US after the pcall returns, and only for
-     * ordinary errors — safe here because the debug library is absent from
-     * the sandbox (no stack-dependent handler work is possible: no
-     * traceback/debug info exists to lose). */
+     * ordinary errors. Running the handler post-unwind (base: pre-unwind)
+     * is an accepted, documented difference: the sandbox's only
+     * stack-relative operation is error(msg, level)'s position prefix (the
+     * debug library is absent). Levels resolving at or above the handler
+     * frame — and its immediate caller, a C frame on BOTH sides (base sees
+     * the triggering error() C frame, the wrapper sees its own) — are
+     * identical; the first frame that DIFFERS is one level deeper, where
+     * base walks the not-yet-unwound error chain (the callee's error line)
+     * and the wrapper walks the xpcall call site. The residue is
+     * position-prefix content only: message text, result values, and
+     * catchability are bit-identical to base. */
     lua_pushvalue(L, 1);      /* [f, handler, args..., f] */
     lua_rotate(L, 3, 1);      /* [f, handler, f, args...] */
     status = lua_pcallk(L, n - 2, LUA_MULTRET, 0, 0, NULL);
@@ -570,11 +580,22 @@ static int break_lua_sandbox_xpcall(lua_State *L)
         }
         lua_pushvalue(L, 2);  /* [.. errobj handler] */
         lua_insert(L, -2);    /* [.. handler errobj] */
-        lua_call(L, 1, 1);    /* handler(errobj); a handler error
-                                 propagates (base semantics); a looping
-                                 handler trips the armed count hook again */
+        status = lua_pcall(L, 1, 1, 0); /* handler(errobj), protected */
+        if (status != LUA_OK) {
+            /* [.. herr]: an ordinary handler error is absorbed by xpcall
+             * itself, exactly like base (LUA_ERRERR maps to the literal
+             * below in luaD_seterrorobj); a looping handler trips the armed
+             * count hook again, and THAT error is the sentinel — re-raised,
+             * never absorbed (the round-4 property). */
+            if (break_lua_is_budget_trip_error(L, -1)) {
+                return lua_error(L); /* re-raise: trips stay uncatchable */
+            }
+            lua_pop(L, 1);    /* discard the handler's error object */
+            lua_pushliteral(L, "error in error handling");
+        }
+        /* [.. result] */
         lua_pushboolean(L, 0);
-        lua_insert(L, -2);    /* [.. false handler_result] */
+        lua_insert(L, -2);    /* [.. false result] */
         return 2;
     }
     lua_pushboolean(L, 1);
