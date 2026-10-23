@@ -432,6 +432,40 @@ TEST(null_and_error_matrix) {
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }
 
+#if !defined(_WIN32)
+/* Stage 5 Task 3 review M2 pin (controller pre-authorized in the Task 4
+ * dispatch): platform_file_size FOLLOWS symlinks (stat(2)) — a symlink to
+ * a regular file reports the target's size; a dangling symlink and a
+ * directory are false. The CAS consumer (Task 4 break_update store) is
+ * protected by verify-on-read regardless. */
+TEST(file_size_follows_symlinks) {
+    char root[512];
+    test_tmp(root, sizeof(root), "fsw_symlink");
+    ASSERT_TRUE(mk_dir(root));
+    char target[600];
+    join2(target, sizeof(target), root, "real.bin");
+    ASSERT_TRUE(put_file(target, "123456789", 9));
+
+    char link[600];
+    join2(link, sizeof(link), root, "link.bin");
+    ASSERT_EQ(symlink("real.bin", link), 0);
+    u64 size = 0;
+    ASSERT_TRUE(platform_file_size(link, &size)); /* follows → target size */
+    ASSERT_EQ(size, (u64)9);
+
+    char dangling[600];
+    join2(dangling, sizeof(dangling), root, "dangling.bin");
+    ASSERT_EQ(symlink("no_such_file", dangling), 0);
+    ASSERT_FALSE(platform_file_size(dangling, &size)); /* dangling → false */
+    ASSERT_FALSE(platform_file_size(root, &size));     /* directory → false */
+
+    remove(link);
+    remove(dangling);
+    remove(target);
+    ASSERT_TRUE(TEST_RMDIR(root) == 0);
+}
+#endif
+
 TEST_MAIN_BEGIN()
     RUN_TEST(commit_content_readable_tmp_gone);
     RUN_TEST(commit_overwrites_existing_target);
@@ -440,6 +474,7 @@ TEST_MAIN_BEGIN()
 #if !defined(_WIN32)
     RUN_TEST(write_failure_latches_then_commit_fails_clean);
     RUN_TEST(readonly_dir_0444_fail_closed);
+    RUN_TEST(file_size_follows_symlinks);
 #endif
     RUN_TEST(mkdir_single_level_and_existing);
     RUN_TEST(file_size_zero_and_1mib);

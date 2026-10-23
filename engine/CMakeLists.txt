@@ -317,6 +317,11 @@ endif()
 # libcrypto is absent (mirrors the BREAK_ENABLE_SNOWFLAKE idiom above).
 # Independent of ENGINE_BUILD_TESTS; engine, engine_demo, dxx_break, and
 # editor never link it (pinned by test_break_crypto_target_contract).
+# Stage 5 Phase A Task 4 adds break_update (signed canonical manifest +
+# content-addressed chunk store) to the same gated block, PUBLIC-chained on
+# break_crypto; the same no-link rule applies (pinned by
+# test_break_update_target_contract). Keep this block free of nested if():
+# both contract scripts extract it up to its first endif().
 if(BREAK_ENABLE_CRYPTO)
     find_package(OpenSSL REQUIRED)
     message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
@@ -325,6 +330,12 @@ if(BREAK_ENABLE_CRYPTO)
     target_include_directories(break_crypto PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(break_crypto PUBLIC OpenSSL::Crypto)
+
+    add_library(break_update STATIC src/update/break_update.c)
+    set_property(TARGET break_update PROPERTY C_STANDARD 11)
+    target_include_directories(break_update PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(break_update PUBLIC break_crypto)
 endif()
 
 # Formal optional replication libraries. These are intentionally independent of
@@ -3948,6 +3959,43 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
         set_tests_properties(test_break_crypto_target_contract PROPERTIES
             LABELS "headless;crypto;platform_contract")
+
+        # Stage 5 Phase A Task 4: break_update tests link the formal library
+        # (PUBLIC break_crypto chain); platform_fs.c compiles inline (the
+        # test_platform_fs_write precedent — engine keeps sole production
+        # ownership of that TU, exactly one definition per binary). The
+        # contract ctest pins the target shape, the no-link rule, the nm
+        # export gate (exactly 15 public symbols), and a minimal archive
+        # link test.
+        add_executable(test_break_update tests/test_break_update.c src/platform/platform_fs.c)
+        target_include_directories(test_break_update PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_update PRIVATE break_update m)
+        add_test(NAME test_break_update COMMAND test_break_update)
+
+        # Sanitizer trees propagate their flags to the contract's
+        # system-compiler link test (the crypto contract precedent).
+        set(BREAK_UPDATE_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_update_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DUPDATE_CONTRACT_ARCHIVE=$<TARGET_FILE:break_update>
+                -DUPDATE_CONTRACT_CRYPTO_ARCHIVE=$<TARGET_FILE:break_crypto>
+                -DUPDATE_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
+                -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
+        set_tests_properties(test_break_update_target_contract PROPERTIES
+            LABELS "headless;update;platform_contract")
     endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
