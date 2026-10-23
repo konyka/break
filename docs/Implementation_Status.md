@@ -1,6 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R678 — 不跑字体测试的 CI lane 不再安装 fonts-noto-cjk
+
+根据 R677 拿到的证据，先做不需要新增外部依赖的那一步：`fonts-noto-cjk`（61 MB，是单个最大的下载）只被 `test_myui_font.c` 的两个 CJK 用例用到，而且找不到字体时会 SKIP。所以这几个 lane 不再装它：
+- `lane-validation-linux-vk`、`lane-benchmark-steam-deck-vk`：只跑 `ctest -L graphics`，不跑字体测试；
+- `lane-benchmark-linux-vk`：只跑 `rhi_swapchain_bench`；
+- `clean-room`：会跑 headless ctest，但 CJK 用例在这里打印 SKIP，覆盖由其余 headless lane 提供。
+
+其余 7 个 lane 保持不变。R677 里有一个 lane 在同一个包上连续两次超时，这次改动就是针对它。Wayland lane 一次要下 110 多个包，那种停滞这次消除不了；要根治，还是得用 apt 缓存 action，这需要 owner 决定。
+
+验证：`ci.yml` 能被 `yaml.safe_load` 解析；只有这 4 个 job 的安装列表少了这个包（`grep -v "#"` 确认还剩 7 处）。实际效果要看推送后的 CI。
+
 ## 本轮更新：R677 — CI apt 失败时把输出写成注解（为选定根治方案取证）
 
 R674–R676 都在猜 apt 卡在哪一步：是镜像、某个大包（各 lane 都会装几十 MB 的 `fonts-noto-cjk`），还是 dpkg 触发器。匿名访问读不到 job 日志（403/404），只能看到注解。现在 `apt_retry` 每次失败都会把这次 `apt-get` 输出的最后 8 行写成 `::warning::` 注解（输出先 `tee` 到 `/tmp/apt-attempt.log`，用 `pipefail` 保住 apt 的退出码）。下次再卡住，能在 run 页面上直接看到停在哪个包、哪个阶段。拿到这个证据后，再决定是换容器镜像、加 apt 缓存，还是把 CJK 字体改成按需安装。

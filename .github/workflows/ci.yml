@@ -1202,11 +1202,14 @@ jobs:
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
           apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          # R678: no fonts-noto-cjk here (61 MB, the largest download; R677
+          # caught this lane timing out on it twice) -- this lane runs no font
+          # test; the headless lanes keep it for test_myui_font's CJK cases.
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils \
+            libfreetype6-dev mesa-vulkan-drivers xvfb x11-utils \
             vulkan-validationlayers
 
       - name: Configure / build
@@ -1274,11 +1277,14 @@ jobs:
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
           apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          # R678: no fonts-noto-cjk here (61 MB, the largest download; R677
+          # caught this lane timing out on it twice) -- this lane runs no font
+          # test; the headless lanes keep it for test_myui_font's CJK cases.
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 llvm-18-tools cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers xvfb x11-utils
+            libfreetype6-dev mesa-vulkan-drivers xvfb x11-utils
 
       - name: Configure / build
         run: |
@@ -1365,11 +1371,14 @@ jobs:
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
           apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          # R678: no fonts-noto-cjk here (61 MB, the largest download; R677
+          # caught this lane timing out on it twice) -- this lane runs no font
+          # test; the headless lanes keep it for test_myui_font's CJK cases.
           apt_retry 120 update
           # 钉版候选取自 ubuntu-24.04 (noble)：self-hosted runner 需为 24.04。
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake ninja-build libx11-dev libxrandr-dev \
-            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev fonts-noto-cjk
+            libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
@@ -1521,11 +1530,14 @@ jobs:
           # attempt moves the runner off its Azure mirror to archive.ubuntu.com
           # (R675 run: three 240 s attempts on the same stalled mirror).
           apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          # R678: no fonts-noto-cjk here (61 MB, the largest download; R677
+          # caught this lane timing out on it twice) -- this lane runs no font
+          # test; the headless lanes keep it for test_myui_font's CJK cases.
           apt_retry 120 update
           apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
-            libfreetype6-dev fonts-noto-cjk mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
+            libfreetype6-dev mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
           rc=$?
           set -e
           if [ $rc -ne 0 ]; then
