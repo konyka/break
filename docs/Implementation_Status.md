@@ -1,6 +1,39 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R669 — 帧率排查：根因定位到 D3D12 缓冲写入路径（修复已原型验证，尚未合入）
+
+### 现象与测量
+demo 在 D3D12 上约 11-15 FPS（GL 63、VK 158）。系统排查（bench 构建 = Debug 无 GBV，`BREAK_BENCH_STATS=1` + `PROFILER_TRACE=1` + 临时后端计数器/计时器 + 自制采样器）：
+- **GPU 不是瓶颈**：R663 计时器显示 shadow+forward+scene 合计 1.4ms、postfx 1.2ms；nvidia-smi SM 占用 8-11%。
+- **进程 CPU 占 264%（2.7 核）**：主线程 52% 在 VCRUNTIME（mem*）、34% 在 win32u（DXG 系统调用）——大量 memcopy + 内核提交调用。
+- **逐区定位**：`P:point_shadow` ≈ 21-29ms（8 灯 × 6 面 × 48 次 unified cull+execute）、scene ≈ 25ms。
+- **根因（QPC 实测）**：`rhi_d3d12_record_buffer_write`（UPLOAD 堆缓冲的每帧快照路径）**每帧 37ms / 42 次调用 / 0.9ms 一次**。每次写入都：calloc 整个缓冲（instance_buf 1.28MB → 新页清零）+ 3 次整缓冲 memcpy + `CreateCommittedResource` 新建提交资源。写大小只有几 KB，成本却按**缓冲总大小**计。
+- GBV（Debug 构建默认开）再叠加约 21ms/帧（87.9 → 66.7）。
+
+### 已原型验证的修复（265 FPS，已回退未合入）
+1. 快照只拷贝前缀 `[0, offset+size)`（种子 = 实缓冲，256 对齐，≤8KB 走栈）——消除 calloc 与整缓冲 memcpy。
+2. 帧暂存块复用池（`frame_block_free[2][192]`，帧槽隔离，`release_frame_staging` 回收入池、`frame_staging` 按大小出池）——消除每次写入的 `CreateCommittedResource`。
+合计 rbw 37ms → 0.19ms；bench 前向 **261-273 FPS**（p1 40-50）。
+
+### 为什么回退
+合入前跑 WARP 全套：`indirect_draw_system_compacts_and_draws_on_the_gpu` 失败——GBV 报 compact dispatch 对 80 字节可见性/可见列表视图越界写（[83..119]），`counts[0] != 2`，随后设备失效、46 个用例连锁失败、退出段错误。最小化复现：**只保留「暂存块复用」一件事（连前缀快照都不用）即可复现**；只去掉复用则 81/81 全过。
+即：复用的块与「按 bd->size 创建视图 + 着色器越界读几行可见性标志」交互出未定义行为（静态根描述符的越界访问在硬件上返回垃圾 → 过多 draw 被判定可见 → 越界写）。旧实现每次 fresh 分配的块恰好零页、读出 0，把问题掩盖了。这属于「修复暴露了本已存在的越界读」，而非修复本身写错——但要合入就必须先把 compact 对可见性的越界读修掉（dispatch 线程数按 draw_count 对齐，或视图/pool 块保证可读范围），并重跑全套。
+WIP 保存在 `.tmp/r668-fps-WIP-rhi_d3d12.{c,h}.txt`。
+
+### 同步发现与处理
+- Debug 构建（含 GBV）跑日常 demo 慢是**设计内成本**；性能评估用 bench 构建（`ENGINE_D3D12_DEBUG=OFF`）。两者数字都已在案。
+- `time_sleep_us` 在无 `timeBeginPeriod(1)` 时 `Sleep` 粒度 15.6ms——本次无证据指向它，未动。
+- CI ASan 通道的 test_async_loader 修复见 R668；推后该通道的结果待确认。
+
+### 验证结果（当前合入状态）
+回退后 WARP 81/81、RTX 81/80（预期 [1]）、debug 构建重建干净；demo 回到 11.4 FPS 的已提交基线。本轮唯一落盘的代码是文档。
+
+### 下一步（按序）
+1. 修 compact 对可见性的越界读（根因），或让 pool 块对「bd->size 全范围读」安全（块保持 bd->size 全大 + 前缀外保证零：入池时整块 memset 0 一次、出池不 memset、写后由 host 写穿透——已试「出池 memset」仍失败，说明越界读的范围超出块或时序不同，需要 PIX 抓帧定位）。
+2. 重跑 WARP/RTX/三树 + demo 截图。
+3. 预期收益：bench 前向 265 FPS、Debug 前向 ~73 FPS（GBV 21ms 仍在，另行评估运行时开关）。
+
 ## 本轮更新：R668 — 修 CI ASan 通道里 test_async_loader 的竞态
 
 ### 发现
