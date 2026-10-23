@@ -1,22 +1,41 @@
 # Stage 5 Phase A Task 4 — break_update target contract.
+# Stage 5 Phase B Task 1 update: the target grows to TWO TUs
+# (+src/update/break_update_client.c — client state machine + A/B slots,
+# no download yet); the nm gate grows 15 → 24 symbols (+9 client); the
+# minimal archive link test gains a client open/query/refusal pass.
+# Stage 5 Phase B Task 2 update: the client gains the chunked downloader
+# (break_update_client_fetch_all + the BreakUpdateFetchFn transport seam —
+# no transport code ships; the callback is caller-supplied); the nm gate
+# grows 24 → 25 symbols; the link test gains an empty-manifest fetch_all
+# pass (callback registered, never invoked).
+# Stage 5 Phase B Task 3 update: the client gains the stage/activate/unstage
+# pipeline (signature + policy before any transport, materialization into
+# the inactive slot, write-ahead activation); the nm gate grows 25 → 28
+# symbols; the link test gains a VERIFY-refusal stage pass (zero-signature
+# manifest, fetch callback never invoked — the signature-before-transport
+# gate pinned at contract level) plus no-staged activate/unstage refusals.
 #
 # Pins (mirrors the test_break_crypto_target_contract.cmake shape):
 #   1. The break_update target lives inside the if(BREAK_ENABLE_CRYPTO)
 #      gated block (OFF → target absent).
 #   2. Source-list pin: break_update is a formal STATIC library owning
-#      exactly one TU (src/update/break_update.c, single mention in the
-#      file); the engine target does not compile it.
+#      exactly two TUs (src/update/break_update.c +
+#      src/update/break_update_client.c, one mention each in the file);
+#      the engine target does not compile them.
 #   3. break_update links break_crypto PUBLIC.
 #   4. No-link pins: engine / engine_demo / dxx_break / editor never link
 #      break_update (their target_link_libraries calls are single-line).
-#   5. nm gate: the production archive exports exactly the 15 public
+#   5. nm gate: the production archive exports exactly the 28 public
 #      break_update_* symbols (zero OpenSSL/break_crypto symbols
 #      re-exported — a static archive only carries undefined references).
 #   6. Minimal archive link test: a tiny executable links ONLY
 #      libbreak_update.a + libbreak_crypto.a + -lcrypto (plus the PAL TU
 #      src/platform/platform_fs.c compiled inline — the focused-test
 #      precedent, engine keeps sole production ownership of it) and runs
-#      one manifest parse + one store round-trip.
+#      one manifest parse + one store round-trip + one client
+#      open/query/refusal pass + one zero-chunk fetch_all pass (callback
+#      registered, never invoked) + the Task 3 stage/activate/unstage
+#      refusal passes.
 
 if(NOT DEFINED ENGINE_CMAKE)
     message(FATAL_ERROR "ENGINE_CMAKE is required")
@@ -60,22 +79,27 @@ endif()
 string(SUBSTRING "${crypto_block_rest}" 0 ${crypto_block_end_rel} crypto_block)
 
 # --- 2. formal target + source-list pin -----------------------------------
-if(NOT crypto_block MATCHES "add_library\\(break_update STATIC src/update/break_update.c\\)")
-    message(FATAL_ERROR "break_update must be a STATIC library owning exactly src/update/break_update.c")
+if(NOT crypto_block MATCHES "add_library\\(break_update STATIC src/update/break_update.c src/update/break_update_client.c\\)")
+    message(FATAL_ERROR "break_update must be a STATIC library owning exactly src/update/break_update.c + src/update/break_update_client.c")
 endif()
 if(NOT crypto_block MATCHES "set_property\\(TARGET break_update PROPERTY C_STANDARD 11\\)")
     message(FATAL_ERROR "break_update does not pin C_STANDARD 11")
 endif()
 
-# src/update/break_update.c has exactly one mention in the whole file (the
-# test target links the library rather than compiling the TU inline).
+# Each break_update TU has exactly one mention in the whole file (the test
+# targets link the library rather than compiling the TUs inline).
 string(REGEX MATCHALL "src/update/break_update\\.c" update_src_mentions "${cmake_text}")
 list(LENGTH update_src_mentions update_src_mentions_count)
 if(NOT update_src_mentions_count EQUAL 1)
     message(FATAL_ERROR "src/update/break_update.c must appear exactly once (break_update owns it); got ${update_src_mentions_count}")
 endif()
+string(REGEX MATCHALL "src/update/break_update_client\\.c" update_client_src_mentions "${cmake_text}")
+list(LENGTH update_client_src_mentions update_client_src_mentions_count)
+if(NOT update_client_src_mentions_count EQUAL 1)
+    message(FATAL_ERROR "src/update/break_update_client.c must appear exactly once (break_update owns it); got ${update_client_src_mentions_count}")
+endif()
 
-# The engine target must not compile it.
+# The engine target must not compile them.
 string(REGEX MATCH "add_library\\(engine STATIC[^)]*\\)" engine_block "${cmake_text}")
 if(NOT engine_block)
     message(FATAL_ERROR "could not isolate the engine add_library block")
@@ -107,11 +131,20 @@ endif()
 if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update COMMAND test_break_update\\)")
     message(FATAL_ERROR "missing test_break_update ctest registration")
 endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_break_update_client tests/test_break_update_client.c src/platform/platform_fs.c\\)")
+    message(FATAL_ERROR "missing test_break_update_client executable (with inline platform_fs.c)")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_break_update_client PRIVATE break_update")
+    message(FATAL_ERROR "test_break_update_client does not link break_update")
+endif()
+if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_client COMMAND test_break_update_client\\)")
+    message(FATAL_ERROR "missing test_break_update_client ctest registration")
+endif()
 if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_target_contract")
     message(FATAL_ERROR "missing test_break_update_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 15 public symbols ------------------------------
+# --- 5. nm gate: exactly the 28 public symbols ------------------------------
 find_program(UPDATE_CONTRACT_NM nm)
 if(NOT UPDATE_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_update export gate)")
@@ -126,6 +159,19 @@ if(NOT nm_rc EQUAL 0)
 endif()
 
 set(expected_symbols
+    break_update_client_activate
+    break_update_client_confirm_boot
+    break_update_client_confirmed
+    break_update_client_current_slot
+    break_update_client_current_version
+    break_update_client_destroy
+    break_update_client_fetch_all
+    break_update_client_last_error
+    break_update_client_open
+    break_update_client_pending
+    break_update_client_rollback
+    break_update_client_stage
+    break_update_client_unstage
     break_update_manifest_channel
     break_update_manifest_chunk_at
     break_update_manifest_chunk_count
@@ -156,7 +202,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_update.a must export exactly the 15 public symbols.\n"
+        "libbreak_update.a must export exactly the 28 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 
@@ -165,6 +211,7 @@ file(MAKE_DIRECTORY "${UPDATE_CONTRACT_WORK}")
 set(link_main "${UPDATE_CONTRACT_WORK}/update_link_main.c")
 file(WRITE "${link_main}" "
 #include <update/break_update.h>
+#include <update/break_update_client.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -182,6 +229,16 @@ static int hexval(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
+}
+/* Phase B Task 2: counting fetch callback for the fetch_all link pass — the
+ * minimal manifest has zero chunks, so fetch_all must succeed without a
+ * single callback invocation. */
+static int g_fetch_calls = 0;
+static bool counting_fetch(void *user, const char *object_name, u64 offset,
+                           u64 len, u8 *out) {
+    (void)user; (void)object_name; (void)offset; (void)len; (void)out;
+    g_fetch_calls++;
+    return false;
 }
 int main(void) {
     static const char text[] =
@@ -205,7 +262,6 @@ int main(void) {
     break_update_manifest_version(m, v);
     if (v[0] != 0 || v[1] != 1 || v[2] != 0) return 4;
     if (!break_update_manifest_compatible(m, \"stable\", \"linux-x86-64\", 0, 1, 0)) return 5;
-    break_update_manifest_destroy(m);
 
     char root[1024];
     snprintf(root, sizeof(root), \"%s/link_store\", UPDATE_LINK_WORK);
@@ -222,6 +278,42 @@ int main(void) {
     if (len != 1 || buf[0] != 'x') return 10;
     free(buf);
     break_update_store_destroy(s);
+
+    /* Phase B Task 1: client open on a fresh root (creates the layout +
+     * initial state), query pins, and the two refusal paths. */
+    snprintf(root, sizeof(root), \"%s/link_client\", UPDATE_LINK_WORK);
+    BreakUpdateClient *cl = break_update_client_open(root);
+    if (!cl) return 11;
+    if (break_update_client_current_slot(cl) != '-') return 12;
+    if (break_update_client_pending(cl) || break_update_client_confirmed(cl)) return 13;
+    {
+        u32 cv[3] = {9, 9, 9};
+        break_update_client_current_version(cl, cv);
+        if (cv[0] != 0 || cv[1] != 0 || cv[2] != 0) return 14;
+    }
+    if (break_update_client_confirm_boot(cl)) return 15; /* no pending */
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 16;
+    if (break_update_client_rollback(cl)) return 17; /* no previous */
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 18;
+    /* Phase B Task 2: fetch_all over the zero-chunk manifest — true, and the
+     * transport callback is never invoked. */
+    if (!break_update_client_fetch_all(cl, m, counting_fetch, NULL)) return 19;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_OK) return 20;
+    if (g_fetch_calls != 0) return 21;
+    /* Phase B Task 3: stage refuses the zero-signature manifest at VERIFY
+     * before ANY transport (the signature-before-transport gate pinned at
+     * contract level — the callback counter stays zero); activate/unstage
+     * without a staged slot refuse STATE. */
+    if (break_update_client_stage(cl, m, pub, \"stable\", \"linux-x86-64\",
+                                  counting_fetch, NULL)) return 22;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_VERIFY) return 23;
+    if (g_fetch_calls != 0) return 24;
+    if (break_update_client_activate(cl)) return 25;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 26;
+    if (break_update_client_unstage(cl)) return 27;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 28;
+    break_update_client_destroy(cl);
+    break_update_manifest_destroy(m);
     return 0;
 }
 ")
