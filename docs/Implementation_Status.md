@@ -20,6 +20,8 @@ VK 有一次测出 `fps_p1=89 > fps_avg=69`：1% 最差帧的帧率居然高于�
 
 验证：d3d12-debug 重建，ctest 187/187；三个后端的 demo 都输出 `frames=232`。
 
+补充：GL 帧率在不同次运行之间波动很大（连续 3 次：前向 90–104、延迟 59–64；表里的 42 那一次偏低）。GL 延迟的 profile 显示，CPU 在 `frame_begin` 里等 GPU 等了 12.6ms，GPU postfx 用了 7.7ms（前向约 4.7ms），也就是受 GPU 限制，不是 CPU 卡顿。GL 后处理比 VK/D3D12 慢（同场景下那两个约 1.2ms），如果要继续优化，下一步是逐个 pass 看 GL postfx 的 GPU 计时。
+
 ## 本轮更新：R682 — CI 用 GitHub 自带的 actions/cache 缓存 apt 包
 
 R677–R681 的证据表明，卡住的是 Azure apt 镜像整体的下载速度，具体卡在哪个包每次不同，所以精简包列表解决不了。这一轮改为缓存下载好的 .deb，只用 GitHub 官方的 `actions/cache@v5`（node24，不引入第三方依赖）：
