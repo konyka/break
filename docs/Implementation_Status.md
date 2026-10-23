@@ -1,6 +1,17 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R676 — CI apt 重试时换镜像（R675 的后续）
+
+R675 那轮 CI（4c22ef1b）里 19 个 job 全部通过，比之前有进步。唯一的失败是 `lane: validation (VK_LAYER_KHRONOS_validation)` 的 `Install pinned toolchain` 步骤，用时 12 分 45 秒，大约就是 3 次 240 秒超时加上间隔，判断是 runner 的 Azure apt 镜像一直卡着。这个 lane 之前几轮也反复卡在同一步。匿名访问拿不到 job 日志（403），所以这个判断依据的是用时和注解，没有看到原始日志。
+
+改动（3 个 workflow，共 13 处）：
+- `apt_retry` 增加一个参数，指定每次尝试的秒数：`update` 每次 120 秒，`install` 每次 360 秒。
+- 一次尝试失败后，把 sources 里的 `azure.archive.ubuntu.com` 换成 `archive.ubuntu.com`；如果失败的是 install，先重新 `update` 再重试。这样不会三次都耗在同一个卡住的镜像上。
+- 步骤时限改为 20 分钟。
+
+验证：`yaml.safe_load` 解析通过，13 段脚本都通过 `bash -n`，每个步骤都带 20 分钟时限。实际效果要看推送后的 CI。
+
 ## 本轮更新：R675 — CI apt 步骤按次限时重试（R674 的后续）
 
 R674 推送后的那轮 CI（d5dff51b）不再出现「job 超时被取消」，但还是有一个 job 卡在 apt：`Linux + Clang/LLD (Release, headless)` 的 `Install dependencies` 撞上新加的 10 分钟步骤时限，结论是 failed。同一轮里其余 19 个 job 的安装都在 1 分钟左右完成，编译和测试全部 success。

@@ -14,7 +14,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
       - name: Install Wine + vkd3d-proton
-        timeout-minutes: 15
+        timeout-minutes: 20
         # vkd3d-proton is not in the Ubuntu archive (apt exit 100); install
         # wine64 from apt and the pinned upstream vkd3d-proton release
         # tarball instead.
@@ -24,10 +24,13 @@ jobs:
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
-          apt_retry() { for i in 1 2 3; do sudo timeout 240 apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo dpkg --configure -a || true; sleep 10; done; return 1; }
+          # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
+          # attempt moves the runner off its Azure mirror to archive.ubuntu.com
+          # (R675 run: three 240 s attempts on the same stalled mirror).
+          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
           sudo dpkg --add-architecture i386
-          apt_retry update
-          apt_retry install -y wine wine64 zstd
+          apt_retry 120 update
+          apt_retry 360 install -y wine wine64 zstd
           curl -sSL -o /tmp/vkd3d-proton.tar.zst \
             https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v3.0.1/vkd3d-proton-3.0.1.tar.zst
           tar -C /tmp --zstd -xf /tmp/vkd3d-proton.tar.zst

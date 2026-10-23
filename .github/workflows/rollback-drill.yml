@@ -21,16 +21,19 @@ jobs:
       - name: Verify tag signature exists
         run: git tag -v "${{ inputs.tag }}"
       - name: Install pinned toolchain
-        timeout-minutes: 15
+        timeout-minutes: 20
         run: |
           APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
-          apt_retry() { for i in 1 2 3; do sudo timeout 240 apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo dpkg --configure -a || true; sleep 10; done; return 1; }
-          apt_retry update
-          apt_retry install -y --no-install-recommends \
+          # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
+          # attempt moves the runner off its Azure mirror to archive.ubuntu.com
+          # (R675 run: three 240 s attempts on the same stalled mirror).
+          apt_retry() { t=$1; shift; for i in 1 2 3; do sudo timeout "$t" apt-get $APT_OPTS "$@" && return 0; echo "apt-get $1: attempt $i failed or timed out"; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
+          apt_retry 120 update
+          apt_retry 360 install -y --no-install-recommends \
             clang-18 lld-18 cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libfreetype6-dev fonts-noto-cjk
       - name: Configure / build / headless test
