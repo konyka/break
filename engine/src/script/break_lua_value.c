@@ -252,10 +252,13 @@ static void break_lua_record_frame_error(BreakLuaRuntime *runtime,
 }
 
 /* Count-hook callback armed while a frame hook runs under an instruction
- * budget. Raising an error from a hook is legal in Lua 5.4 and lands in the
- * per-hook lua_pcall. lua_getextraspace reaches the runtime without
- * allocating (the pointer was stored at bootstrap). */
-static void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
+ * budget, and (Phase 3 Task 2 review fix) while module code runs outside
+ * frame dispatch — the staging chunk execution of load/reload and the
+ * commit-path on_unload hook. Raising an error from a hook is legal in Lua
+ * 5.4 and lands in the nearest pcall (the per-hook lua_pcall for frames,
+ * the staging/commit lua_pcall for module ops). lua_getextraspace reaches
+ * the runtime without allocating (the pointer was stored at bootstrap). */
+void break_lua_budget_hook(lua_State *L, lua_Debug *ar)
 {
     BreakLuaRuntime *runtime;
     (void)ar;

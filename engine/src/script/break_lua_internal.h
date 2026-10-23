@@ -177,6 +177,15 @@ void break_lua_module_registry_destroy(BreakLuaRuntime *runtime);
 void break_lua_call_impl(lua_State *L, BreakLuaCallOpCtx *ctx);
 void break_lua_frame_impl(lua_State *L, BreakLuaRuntime *runtime,
                           BreakLuaFrameOpCtx *ctx);
+
+/* Count-hook callback for the instruction budget (defined in
+ * break_lua_value.c): raises "break_lua: instruction budget exceeded" into
+ * the nearest pcall and sets runtime->budget_tripped. Shared by the frame
+ * dispatch and the module staging / on_unload paths (break_lua_module.c).
+ * Arm with lua_sethook(L, break_lua_budget_hook, LUA_MASKCOUNT, count) and
+ * ALWAYS disarm after the protected call — the hook is per-coroutine
+ * state that must not leak past the operation. */
+void break_lua_budget_hook(lua_State *L, lua_Debug *ar);
 #if defined(BREAK_LUA_TESTING)
 void break_lua_test_reloader_impl(lua_State *L,
                                   BreakLuaTestReloaderOpCtx *ctx);

@@ -654,6 +654,108 @@ TEST(owner_thread_rejection_probe) {
     fixture_close(&f);
 }
 
+/* ------------------------------------------------------------------ */
+/* Review fix round 1 regressions                                      */
+/* ------------------------------------------------------------------ */
+
+TEST(eval_escape_payload_bounded_and_recoverable) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* C1 regression (exact review payload): a BALANCED escape that
+     * continues the probe's return expression — pre-fix this ran the loop
+     * at module staging with no count hook and hung the thread. Now:
+     * bounded error line, fast return, console usable. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "end .. (function() while true do end end)() .. function() return 0"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+1"));
+    ASSERT_TRUE(sink_find(&f.sink, "2") >= 0);
+
+    /* Swallow variant: statement-context escape closing the wrapper early
+     * and absorbing the trailing `end` into a while block. */
+    sink_reset(&f.sink);
+    ASSERT_FALSE(break_editor_lua_eval(f.console, "end while true do"));
+    ASSERT_TRUE(sink_has_prefix(&f.sink, "error:"));
+
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "2+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "4") >= 0);
+
+    ASSERT_FALSE(f.sink.overlong);
+    fixture_close(&f);
+}
+
+TEST(eval_escape_payload_no_doc_side_effects) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* A fast escapee that would enqueue a spawn record if it ever ran at
+     * staging: the console runtime never stages user code, so nothing is
+     * enqueued, nothing applied, no residue. */
+    ASSERT_FALSE(break_editor_lua_eval(
+        f.console,
+        "end .. (function() _G['break'].ecs.spawn() return 'x' end)() .."
+        " function() return 'y'"));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 0u);
+    ASSERT_EQ(break_editor_lua_pending_records(f.console), 0u);
+
+    /* The next legit spawn creates exactly one entity (no staged residue
+     * leaks through). */
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "brk.ecs.spawn()"));
+    ASSERT_EQ(break_editor_doc_entity_count(f.doc), 1u);
+
+    fixture_close(&f);
+}
+
+TEST(on_unload_veto_payload_does_not_wedge) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* I1 regression: a plain eval setting a vetoing on_unload on the
+     * console module's env. The harness epilogue clears it after the body
+     * runs, so the next eval's reload is never vetoed. */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "on_unload = function() error('veto') end"));
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "1+2"));
+    ASSERT_TRUE(sink_find(&f.sink, "3") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "return 'alive'"));
+    ASSERT_TRUE(sink_find(&f.sink, "alive") >= 0);
+
+    fixture_close(&f);
+}
+
+TEST(body_defined_on_frame_end_never_runs) {
+    Fixture f;
+    ASSERT_TRUE(fixture_open(&f));
+
+    /* M3: the console is eval-based, not a frame loop — a body-defined
+     * on_frame_end is cleared by the harness epilogue and never dispatched
+     * at the eval's end_frame. */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console, "on_frame_end = function() print('end-hook-ran') end"));
+    ASSERT_TRUE(sink_find(&f.sink, "end-hook-ran") < 0);
+    /* Same for a body that replaces on_frame_begin mid-eval: the pinned
+     * dispatch already holds the harness function; the console is
+     * unaffected afterwards. */
+    ASSERT_TRUE(break_editor_lua_eval(
+        f.console,
+        "on_frame_begin = function() print('hijack') end return 9"));
+    ASSERT_TRUE(sink_find(&f.sink, "9") >= 0);
+    sink_reset(&f.sink);
+    ASSERT_TRUE(break_editor_lua_eval(f.console, "5+5"));
+    ASSERT_TRUE(sink_find(&f.sink, "10") >= 0);
+    ASSERT_TRUE(sink_find(&f.sink, "hijack") < 0);
+
+    fixture_close(&f);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(eval_arithmetic_result_logged);
     RUN_TEST(eval_result_string_truncated_and_unrepresentable);
@@ -673,4 +775,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(create_oom_sweep_editor_hook);
     RUN_TEST(create_oom_sweep_lua_hook);
     RUN_TEST(owner_thread_rejection_probe);
+    RUN_TEST(eval_escape_payload_bounded_and_recoverable);
+    RUN_TEST(eval_escape_payload_no_doc_side_effects);
+    RUN_TEST(on_unload_veto_payload_does_not_wedge);
+    RUN_TEST(body_defined_on_frame_end_never_runs);
 TEST_MAIN_END()

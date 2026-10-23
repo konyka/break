@@ -301,7 +301,22 @@ BreakLuaError break_lua_runtime_reload_module(
  *  every hook invocation runs under a per-invocation Lua count hook
  *  (lua_sethook LUA_MASKCOUNT); budgets above 2^31-1 are clamped to
  *  2^31-1 instructions. The accounting is per hook invocation, NOT
- *  cumulative across modules or frames. COROUTINE SCOPE (the Task 3 review
+ *  cumulative across modules or frames. The SAME per-invocation arming
+ *  covers every other module-code execution the facade performs (Phase 3
+ *  Task 2 review fix — before it, these paths ran unbudgeted and a
+ *  forever-looping chunk could hang the host thread):
+ *    - module STAGING chunk execution (the load/reload chunk run): a trip
+ *      aborts staging with a bounded BREAK_LUA_FAILED ("break_lua:
+ *      instruction budget exceeded"); a failed load registers nothing, a
+ *      failed reload retains the old version per the MODULES contract, and
+ *      no hooks-disabled mark is set (the runaway policy below governs
+ *      frame hooks only);
+ *    - the commit-path on_unload hook: a trip is an on_unload failure —
+ *      the reload is vetoed (bounded), the old version stays live;
+ *    - module functions invoked through break_lua_runtime_call remain
+ *      UNARMED (documented — hosts needing a budget there dispatch through
+ *      frame hooks instead).
+ *  COROUTINE SCOPE (the Task 3 review
  *  limit, closed by the Task 4 sandbox): Lua 5.4 hooks are per-coroutine —
  *  a raw `coroutine` global would let a module escape the armed count
  *  (lstate.c: lua_newthread -> resethookcount gives a fresh thread a fresh
