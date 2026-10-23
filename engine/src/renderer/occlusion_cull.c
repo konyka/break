@@ -309,7 +309,8 @@ void occlusion_cull_upload_aabbs(OcclusionCullSystem *sys, const ObjectAABB *aab
  * R436: Segmented generation chain (was: one dispatch + one barrier per mip
  * level — 10 dispatches at 1280x720). Each dispatch now produces a chunk of
  * up to 4 consecutive mip levels in a single pass: every output texel is
- * reduced directly from the chunk input (2^(k+1) x 2^(k+1) block), so no
+ * reduced directly from the chunk input (its proportional block -- 2^(k+1)
+ * square when the input is 2x the first output mip), so no
  * cross-workgroup synchronization is required and no atomic-spin SPD tricks
  * are needed. Chunks are separated by one memory barrier (chunk c+1 samples
  * the last mip written by chunk c). 10 levels -> 3 dispatches + 3 barriers.

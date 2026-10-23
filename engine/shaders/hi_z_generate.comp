@@ -14,7 +14,8 @@ layout(local_size_x = 64) in;
  *   - Instead each dispatch generates a chunk of up to 4 consecutive mip
  *     levels. Within a chunk every output texel is reduced DIRECTLY from the
  *     chunk's input texture (an output texel of relative mip k covers the
- *     2^(k+1) x 2^(k+1) input block), so there is no cross-workgroup or even
+ *     2^(k+1) x 2^(k+1) input block when the input is 2x the first output;
+ *     in general its proportional share), so there is no cross-workgroup or even
  *     cross-thread dependency: no shared memory, no barrier(), no spin.
  *   - Only ONE memory barrier separates chunks (chunk c+1 samples the last
  *     mip written by chunk c). 10 levels -> 3 dispatches + 3 barriers.
@@ -94,17 +95,25 @@ void main() {
     /*
      * Max-depth reduction (farthest point; reversed-Z would use min), same
      * conservative-occlusion contract as before. Output texel (x,y) of
-     * relative mip k covers input block [pos*R, pos*R+R). For odd input
+     * relative mip k covers input block [pos*in/sz, (pos+1)*in/sz). For odd input
      * sizes the last row/column absorbs the remainder texels, so coverage is
      * always a superset of the true cell footprint — never less conservative
      * than the old 4-tap nearest sampling (which could skip edge texels).
      */
-    int   R    = 1 << (k + 1);
-    ivec2 base = pos * R;
-    ivec2 hi   = base + ivec2(R);
+    /* R671: the footprint is a proportional partition of the input, not a
+     * fixed 2^(k+1) block. The fixed block assumed the input is exactly 2x
+     * the first output mip; on the deferred path the input is the
+     * full-resolution G-Buffer depth while the pyramid follows the render
+     * scale, so the last row/column "absorbed" the rest of the screen (the
+     * corner thread alone read ~640x540 texels: 23 ms of GPU per frame on
+     * every backend) and mip 0 only covered the top-left of the screen.
+     * With in == 2*sz this is the same block as before. */
+    ivec2 base = (pos * in_size) / sz;
+    ivec2 hi   = ((pos + ivec2(1)) * in_size) / sz;
     if (pos.x == sz.x - 1) hi.x = in_size.x;
     if (pos.y == sz.y - 1) hi.y = in_size.y;
-    hi = min(hi, in_size);
+    base = min(base, in_size - ivec2(1));
+    hi = clamp(hi, base + ivec2(1), in_size);
 
     float max_depth = 0.0;
     for (int y = base.y; y < hi.y; y++) {

@@ -6525,12 +6525,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         /* Capture render transforms once before any geometry pass. The dense
          * node index is stable for the loaded scene; generation 1 is reset by
          * destroying/reinitializing this history when the scene changes. */
+        profiler_push("transforms");
         scene_compute_world_transforms(&scene);
         motion_history_begin_frame(&node_motion_history);
         motion_history_begin_frame(&entity_motion_history);
         for (u32 ni = 0; ni < scene.node_count; ni++)
             motion_history_set_current(&node_motion_history, ni, 1u,
                                        &scene.nodes[ni].world_transform);
+        profiler_pop();
 
         RHISampler active_sampler = nearest_filter && rhi_handle_valid(render.nearest_sampler) ? render.nearest_sampler : render.sampler;
 
@@ -6599,7 +6601,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             platform_poll(engine.platform);
             continue; /* SUSPENDED/LOST/DESTROYING：跳过本帧渲染 */
         }
+        /* R671: frame_begin waits for the frame slot's fence, so on a
+         * GPU-bound frame this zone is the GPU time the CPU waited for. */
+        profiler_push("frame_begin");
         RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+        profiler_pop();
         if (!cmd) {
             /* R578: device lost (or fatal frame error) — exit gracefully
              * instead of spinning NULL frames on a dead device. */

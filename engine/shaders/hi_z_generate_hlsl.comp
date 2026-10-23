@@ -1,8 +1,8 @@
 // hi_z_generate_hlsl.comp - D3D12 sidecar of shaders/hi_z_generate.comp (the
 // GL variant). Segmented Hi-Z pyramid: one dispatch writes up to four
 // consecutive mips, every output texel a max-depth reduction straight from
-// the chunk's input (an output texel of relative mip k covers the
-// 2^(k+1) x 2^(k+1) input block), so there is no cross-thread dependency.
+// the chunk's input (an output texel of relative mip k covers its
+// proportional share of the input), so there is no cross-thread dependency.
 //
 // t0 is the chunk input: the scene depth for the first chunk
 // (rhi_cmd_bind_texture_compute), the previous chunk's last mip as a
@@ -49,12 +49,14 @@ void main(uint3 id : SV_DispatchThreadID) {
     else               { k = 3; sz = sz3; t = tid - n2; }
     int2 pos = int2(t % sz.x, t / sz.x);
 
-    int R = (int)(1u << (uint)(k + 1));
-    int2 base = pos * R;
-    int2 hi = base + int2(R, R);
+    // R671: proportional partition of the input (see hi_z_generate.comp):
+    // the input need not be exactly 2x the first output mip.
+    int2 base = (pos * in_size) / sz;
+    int2 hi = ((pos + int2(1, 1)) * in_size) / sz;
     if (pos.x == sz.x - 1) hi.x = in_size.x;
     if (pos.y == sz.y - 1) hi.y = in_size.y;
-    hi = min(hi, in_size);
+    base = min(base, in_size - int2(1, 1));
+    hi = clamp(hi, base + int2(1, 1), in_size);
 
     float max_depth = 0.0;
     for (int y = base.y; y < hi.y; y++)

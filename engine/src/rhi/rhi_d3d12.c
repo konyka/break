@@ -7417,6 +7417,9 @@ struct RHIGPUTimer {
     UINT cur_slot;                  /* slot begin() recorded into */
     UINT started;                   /* begin() seen, end() not yet */
     UINT recorded[2];               /* slot holds a resolved measurement */
+    UINT64 seq[2];                  /* R671: end() count when the slot resolved */
+    UINT64 end_count;
+    UINT64 harvested_seq;           /* seq of the value in last_ms */
     f64 last_ms;
 };
 
@@ -7463,6 +7466,8 @@ void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
     free(t);
 }
 
+static void rhi_d3d12_gpu_timer_harvest(RHIGPUTimer *t, UINT slot);
+
 void rhi_gpu_timer_begin(RHIGPUTimer *t) {
     RHI_D3D12Context *ctx;
     ID3D12GraphicsCommandList *list;
@@ -7471,6 +7476,14 @@ void rhi_gpu_timer_begin(RHIGPUTimer *t) {
     list = rhi_d3d12_cmd_list(ctx);
     if (list == NULL) return;
     t->cur_slot = ctx->frame_parity & 1u;
+    /* R671: a GPU-bound frame is still running whenever elapsed_ms looks
+     * at the slot submitted last, so the value never landed (last_ms stayed
+     * 0). This slot's fence was waited on by rhi_frame_begin, so its pair
+     * -- two frames old -- is final: take it before it is overwritten,
+     * unless last_ms already holds something newer. */
+    if (t->recorded[t->cur_slot] && t->seq[t->cur_slot] > t->harvested_seq &&
+        ID3D12Fence_GetCompletedValue(ctx->fence) >= ctx->frame_fence[t->cur_slot])
+        rhi_d3d12_gpu_timer_harvest(t, t->cur_slot);
     t->recorded[t->cur_slot] = 0u;
     ID3D12GraphicsCommandList_EndQuery(list, t->heap,
                                        D3D12_QUERY_TYPE_TIMESTAMP,
@@ -7499,7 +7512,27 @@ void rhi_gpu_timer_end(RHIGPUTimer *t) {
         D3D12_QUERY_TYPE_TIMESTAMP, t->cur_slot * 2u, 2u, t->readback,
         (UINT64)t->cur_slot * 2u * sizeof(UINT64));
     t->recorded[t->cur_slot] = 1u;
+    t->seq[t->cur_slot] = ++t->end_count;
     t->started = 0u;
+}
+
+/* Read the resolved pair of `slot` into last_ms. The caller has checked
+ * that the frame which resolved it has completed. */
+static void rhi_d3d12_gpu_timer_harvest(RHIGPUTimer *t, UINT slot) {
+    D3D12_RANGE range;
+    UINT64 *ticks = NULL;
+    range.Begin = (SIZE_T)slot * 2u * sizeof(UINT64);
+    range.End = range.Begin + 2u * sizeof(UINT64);
+    if (SUCCEEDED(ID3D12Resource_Map(t->readback, 0u, &range, (void **)&ticks)) &&
+        ticks != NULL) {
+        UINT64 a = ticks[slot * 2u], z = ticks[slot * 2u + 1u];
+        D3D12_RANGE none = { 0u, 0u };
+        ID3D12Resource_Unmap(t->readback, 0u, &none);
+        if (z >= a) {
+            t->last_ms = (f64)(z - a) * 1000.0 / (f64)t->frequency;
+            t->harvested_seq = t->seq[slot];
+        }
+    }
 }
 
 f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
@@ -7516,20 +7549,7 @@ f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
     if (!t->recorded[slot] || ctx->frame_fence[slot] == 0u ||
         ID3D12Fence_GetCompletedValue(ctx->fence) < ctx->frame_fence[slot])
         return t->last_ms;
-    {
-        D3D12_RANGE range;
-        UINT64 *ticks = NULL;
-        range.Begin = (SIZE_T)slot * 2u * sizeof(UINT64);
-        range.End = range.Begin + 2u * sizeof(UINT64);
-        if (SUCCEEDED(ID3D12Resource_Map(t->readback, 0u, &range, (void **)&ticks)) &&
-            ticks != NULL) {
-            UINT64 a = ticks[slot * 2u], z = ticks[slot * 2u + 1u];
-            D3D12_RANGE none = { 0u, 0u };
-            ID3D12Resource_Unmap(t->readback, 0u, &none);
-            if (z >= a)
-                t->last_ms = (f64)(z - a) * 1000.0 / (f64)t->frequency;
-        }
-    }
+    rhi_d3d12_gpu_timer_harvest(t, slot);
     return t->last_ms;
 }
 
