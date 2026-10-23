@@ -13,6 +13,11 @@ R677–R681 的证据表明，卡住的是 Azure apt 镜像整体的下载速度
 
 验证：3 个 workflow 都能被 `yaml.safe_load` 解析；13 段 apt 脚本和可选字体步骤都通过 `bash -n`；解析 YAML 确认 13 个 apt 步骤前面都紧挨着 `actions/cache`。本机没有能跑 apt 的 Linux（WSL 不可用），所以实际效果要看推送后连续两轮的 CI（第一轮写缓存，第二轮应该命中）。
 
+**结果**：
+- 第一轮（e5bd79ad，cache miss）：Failure。`Linux Wayland + OpenGL` 两次都卡在 `libcodec2-1.2`，TSan 的 CJK 可选步骤超时被跳过（按设计记 warning，job 照常通过）。其余 job 都把缓存存下来了。仓库 Actions caches 页面上有 10 个 `apt-Linux-<job>-eced24…` 条目，单个大小 23–140 MB，合计约 0.8 GB。
+- 第二轮（「gitignore: demo profiler trace…」，与上一轮 workflow 哈希相同）：**Success，4 分 18 秒，apt 超时 0 次**。各缓存条目的 Last used 都更新到了这一轮，说明确实命中了。
+- 已知局限：`actions/cache` 在 key 完全命中时不会再保存。TSan 的缓存是在字体下载失败的那一轮存的（23 MB，里面没有 fonts-noto-cjk），所以在 workflow 文件下次变动之前，TSan 每一轮都要单独去镜像下载这个字体。好在这一步是可选的，下载失败也不影响 job。workflow 一改，key 就会换，届时重新完整保存一次。
+
 ## 本轮更新：R681 — CI action 升到 Node 24 版本
 
 每个 job 都会报一条 warning：「Node.js 20 is deprecated … actions/checkout@v4, actions/upload-artifact@v4」。核对各 action 在对应 tag 下 `action.yml` 里的 `runs.using`：checkout v5 起是 node24，upload-artifact v6 起是 node24（v5 仍是 node20），download-artifact v7 起是 node24（v5/v6 仍是 node20）。升级如下：
