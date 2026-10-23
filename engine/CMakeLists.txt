@@ -877,20 +877,24 @@ target_link_libraries(break_lua PUBLIC lua)
 
 # Formal optional Stage 4 scene editor core library: the document model
 # (one owned ECS World, bounded entity name map, dirty flag), the bounded
-# command-based undo/redo stack, BSCN + sidecar scene save/load, and the
+# command-based undo/redo stack, BSCN + sidecar scene save/load, the
 # bounded editable-component registry (inspector data model + undoable
-# field/add/remove-component commands).
+# field/add/remove-component commands), and the Phase 2 viewport CPU core
+# (orbit camera, screen->world ray, BVH picking).
 # Top-level like the other formal optional libraries (runtime_core/break_lua
 # precedent) — built regardless of ENGINE_BUILD_TESTS, and deliberately NOT
 # linked into engine, engine_demo, or dxx_break; the editor shell (Phase 1
 # Task 4) opts in explicitly. ecs.c is NOT compiled here: the formal
 # break_ecs_replication library already owns it (and log.c) and is linked
-# PUBLIC instead. scene_serial.c has no formal library owner (the engine
-# target and test_scene_serial each compile their own inline copy), so
-# break_editor owns exactly one copy itself; its remaining includes resolve
-# header-only (math/math.h is all static inline) or via break_ecs_replication
-# (core/log.c).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/scene/scene_serial.c)
+# PUBLIC instead. scene_serial.c, bvh.c, and math.c have no formal library
+# owner (the engine target and several tests each compile their own inline
+# copies — the accepted existing pattern), so break_editor owns exactly one
+# copy of each itself; the editor executable's link line keeps break_editor
+# first, so the engine archive's copies are never pulled (nm-verified, same
+# as scene_serial). The viewport's remaining includes resolve header-only
+# (math/math.h vector/quaternion helpers are static inline) or via
+# break_ecs_replication (core/log.c).
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -3443,17 +3447,19 @@ endif()
     set_tests_properties(test_break_lua_target_contract PROPERTIES
         LABELS "headless;break_lua;platform_contract")
 
-    # Stage 4 scene editor Phase 1 Task 1+2+3 focused tests. The test-only
-    # break_editor_test variant compiles the same five translation units
+    # Stage 4 scene editor Phase 1 Task 1+2+3 + Phase 2 Task 1 focused
+    # tests. The test-only
+    # break_editor_test variant compiles the same eight translation units
     # with BREAK_EDITOR_TESTING=1 hooks (allocation failure injection
     # covering every editor-owned allocation: doc struct, name-slot block,
     # stack struct, stack entry array, command objects — including the
-    # component commands, sidecar read buffer), mirroring the
+    # component commands, sidecar read buffer, and the viewport pick's
+    # proxy AABB array / entity-id map / BVH struct), mirroring the
     # break_lua_test / BREAK_LUA_TESTING pattern; the
     # production break_editor target (top-level, defined independent of
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/scene/scene_serial.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3487,6 +3493,16 @@ endif()
     target_link_libraries(test_editor_components PRIVATE break_editor_test)
     add_test(NAME test_editor_components COMMAND test_editor_components)
     set_tests_properties(test_editor_components PROPERTIES LABELS "headless;editor")
+
+    # Stage 4 scene editor Phase 2 Task 1: viewport CPU core (camera math,
+    # screen->ray unprojection, BVH picking, focus/orbit/pan/zoom). Pure
+    # CPU — no RHI; the bvh.c/math.c copies come from break_editor_test.
+    add_executable(test_editor_viewport tests/test_editor_viewport.c)
+    target_include_directories(test_editor_viewport PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_viewport PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_viewport PRIVATE break_editor_test)
+    add_test(NAME test_editor_viewport COMMAND test_editor_viewport)
+    set_tests_properties(test_editor_viewport PROPERTIES LABELS "headless;editor")
 
     # Stage 4 scene editor Phase 1 Task 4: headless shell test. Compiles the
     # production editor_panels.c translation unit directly (the
