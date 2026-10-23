@@ -92,20 +92,22 @@ TEST(async_loader_load_nonexistent) {
                                    test_load_callback, NULL);
     ASSERT_NEQ(id, (u64)0);
 
-    /* Wait for completion - poll until done or the deadline expires */
+    /* Wait for the CALLBACK, not for the status. The worker publishes the
+     * final state (async_finalize's CAS) before it enqueues the completion,
+     * so a poll can read ASSET_FAILED while the callback is not yet in the
+     * queue; stopping there and ticking once missed it whenever the worker
+     * was preempted in between (CI ASan lane, 2026-10-22: callback_called
+     * 0 and, because the assert returned early, a LeakSanitizer report for
+     * the skipped shutdown). Reproduced locally by widening that window. */
     u64 deadline = test_wait_deadline();
     for (;;) {
         async_loader_tick();
-        AssetState st = async_loader_status(id);
-        if (st == ASSET_FAILED || st == ASSET_READY || st == ASSET_UNLOADED) {
-            break;
-        }
+        if (atomic_load(&g_callback_called) == 1) break;
         if (test_now_us() >= deadline) break;
         /* Small sleep equivalent: busy loop */
         for (volatile int j = 0; j < 100000; j++) { (void)j; }
     }
 
-    async_loader_tick(); /* ensure callback is dispatched */
     ASSERT_EQ(atomic_load(&g_callback_called), 1);
     ASSERT_EQ(atomic_load(&g_callback_data_null), 1);
 

@@ -1,6 +1,24 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R668 — 修 CI ASan 通道里 test_async_loader 的竞态
+
+### 发现
+此前一直只看本地结果，没核对远程 CI。用 GitHub 公开 API 查了最近的运行：`windows-d3d12` 与 `proton-d3d12` 每次都成功；主 CI 有多次取消/失败。取消大多停在「Install dependencies」（runner 侧，与代码无关）。唯一真正的测试失败是 `b715881c` 那次的 **Linux + GCC (ASan + UBSan) 无头套件**，从检查注解（check-run annotations，公开可读）拿到：
+- `test_async_loader.c:109: atomic_load(&g_callback_called) != 1`
+- `LeakSanitizer: 5176 byte(s) leaked in 2 allocation(s)`
+
+### 原因
+`async_loader_load_nonexistent` 轮询 `async_loader_status`，一看到 `ASSET_FAILED` 就退出循环、再 tick 一次后断言回调已触发。但 worker 的 `async_finalize` 先用 CAS 发布最终状态，**然后**才 `enqueue_completion`。主线程可能在两步之间读到 FAILED，那一次 tick 时完成队列里还没有这个请求，回调就漏了。断言失败后测试提前返回，跳过了 `async_loader_shutdown`/`vfs_destroy`，于是 LeakSanitizer 又报了泄漏——两个报错是同一个原因。只有 worker 恰好在那两步之间被抢占才会触发，所以是偶发的，本地正常跑 200 次 0 失败。
+
+### 复现与修复
+在 `async_finalize` 的 CAS 与 enqueue 之间临时插入一段忙等加宽窗口：未修改的测试每次都在第 109 行失败。测试改为**等回调本身**（`g_callback_called == 1`）而不是等状态，带原有的 5 秒截止时间。同样的加宽窗口下修复后的测试 3/3 通过。只改了测试：引擎的行为（状态先于回调可见）是 API 允许的，`async_loader_status` 本来就不承诺回调已派发。
+
+加宽到极端值（每个请求约 1 秒）时 `async_loader_completion_burst` 也会失败，那是 1200 个请求必然超过 5 秒预算，属于探针本身造成的，适中的加宽下不失败，不是第二个竞态。探针代码已还原。
+
+### 验证
+ASan 构建 100 次 0 失败；GL / VK / D3D12 三棵树该用例均通过。
+
 ## 本轮更新：R667 — UI 画布的 scale_filter 在 D3D12 上端到端验证
 
 ### 背景
