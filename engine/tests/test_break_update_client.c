@@ -839,8 +839,10 @@ TEST(open_path_rejections) {
     ASSERT_TRUE(break_update_client_open(root) == NULL);
     remove(root);
 
-    /* Over-long root: "<root>/state" + the writer's ".tmpXXXXXX" + NUL must
-     * stay below PLATFORM_FS_PATH_CAPACITY → reject beyond that. */
+    /* Over-long root: the open-time bound reserves room for the tightest
+     * suffix — "/slots/A/files/" (15) + a 128-byte manifest name + the
+     * writer's ".tmpXXXXXX" (10) + NUL = 154 bytes (covers "/state" etc.)
+     * below PLATFORM_FS_PATH_CAPACITY → reject beyond that. */
     char long_root[1200];
     memset(long_root, 'a', sizeof(long_root) - 1);
     long_root[sizeof(long_root) - 1] = '\0';

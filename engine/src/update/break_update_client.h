@@ -66,7 +66,8 @@
  *
  *  Error discipline: fixed enum BreakUpdateClientError; NO attacker-
  *  controlled strings anywhere. last_error reflects the most recent
- *  confirm_boot/rollback/fetch_all call (BREAK_UPDATE_CLIENT_OK on success)
+ *  confirm_boot/rollback/fetch_all/stage/activate/unstage call
+ *  (BREAK_UPDATE_CLIENT_OK on success)
  *  and is OK initially after open; open itself reports failure as NULL only
  *  (no client exists to hold an error). confirm_boot without pending → false
  *  + STATE (state unchanged). rollback: staged slot exists → false + STATE (clean it
@@ -144,12 +145,16 @@ bool break_update_client_fetch_all(BreakUpdateClient *c, const BreakUpdateManife
  *    the entry clears).
  *  - Write-ahead progress: starting a chunk persists resume-chunk=hash|0
  *    BEFORE the .part is created; every fetched block is appended + fflush'd
- *    BEFORE the new offset persists. A crash in the window leaves .part
- *    LONGER than the persisted offset — detected as corrupt on the next call
- *    (below): the chunk restarts clean. Crash-durable progress granularity is
- *    one block (fsync of .part is deliberately not done; the fail-closed
- *    detection covers process/power loss at the cost of re-fetching the
- *    in-flight block window).
+ *    BEFORE the new offset persists. A crash in the window leaves the .part
+ *    LONGER than the persisted offset (process kill), and with no fsync on
+ *    the .part a power loss can leave it any size — either way the next
+ *    call's consistency check (below) detects the mismatch, discards the
+ *    spool, and restarts the chunk from byte 0. The crash cost is therefore
+ *    the WHOLE in-flight chunk re-downloaded (bounded by one chunk ≤ the
+ *    store's 128 MiB cap; bytes already in the CAS are never re-fetched) —
+ *    not just the last block. The fail-closed detection covers process and
+ *    power loss at that re-download cost; crash-DURABLE progress granularity
+ *    is one block only for the persisted offset itself.
  *  - Resume-entry triage at entry (state resume-chunk = H|O):
  *      H names a manifest chunk already in CAS  → stale (crash between
  *          store_put and entry-clear): .part removed, entry cleared, fetch_all
