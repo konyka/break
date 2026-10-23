@@ -15,6 +15,8 @@
 
 `evidence-receipt-gpu-runtime-windows-d3d12` 这个名字被两个 job 共用，但两者互斥（self-hosted GPU 与 unavailable receipt），所以和 v4 时一样，不会在同一轮里重复上传。验证：4 个 workflow 都能被 `yaml.safe_load` 解析。实际效果要看推送后的 CI。
 
+**结果（e66be30a）**：Node 20 弃用 warning 已经没有了（ci 和 windows-d3d12 两个 workflow 都是 0 条）；windows-d3d12 Success，artifact 上传和下载都没有报错。但主 CI 又失败了：`Linux Wayland + OpenGL` 和 `Linux Wayland + Vulkan` 两个 job 的两次 360 秒尝试都超时；X11/GL 和 Clang/LLD 的第一次也超时了，重试后才成功。这一次卡住的包各不一样，不再是 fonts-noto-cjk：`libcodec2-1.2`（9 MB，weston 依赖链上的）、`glslang-dev`、`libx11-dev`。这说明 R679 之前「都卡在同一个包」只是因为那个包最大、最容易撞上。根本原因是 Azure apt 镜像整体时快时慢，靠精简包列表消除不了。要根治需要 apt 缓存 action 或预装依赖的容器镜像，两者都会引入新的外部依赖，需要 owner 决定。
+
 ## 本轮更新：R679 — fonts-noto-cjk 改为可选安装步骤
 
 R678 推送后的那轮 CI（bc92f10f）里，有 3 个 job 在 apt 阶段失败：`Linux Wayland + OpenGL`、`Linux + GCC (ASan + UBSan)`、`Linux X11 + Vulkan (lavapipe)`。三者的注解都显示，两次 360 秒尝试最后都停在同一个包：`Get: … fonts-noto-cjk [61.2 MB]`。R678 去掉的那 4 个 lane 这次都通过了。到这里，所有被抓到的停滞都落在这一个包上（R677 两处、R678 三处），R677 里 Wayland lane 的 110 包那次也是在这个包之前停下的。
