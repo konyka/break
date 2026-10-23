@@ -50,8 +50,13 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
             if (name_len > 0 && name_len < PLATFORM_FS_NAME_CAPACITY) {
                 if (count < capacity) {
                     memcpy(entries[count].name, name, name_len + 1);
+                    /* No-follow parity with the POSIX lstat branch:
+                     * reparse points (directory symlinks, junctions) carry
+                     * FILE_ATTRIBUTE_DIRECTORY but must report
+                     * is_dir == false. */
                     entries[count].is_dir =
-                        (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+                        (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+                        (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
                 }
                 count++;
             }
@@ -85,10 +90,18 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
     if (!dir) return false;
 
     u32 count = 0;
-    errno = 0;
+    int readdir_errno = 0;
     for (;;) {
+        /* Per-iteration reset: a failed lstat above (skipped entry) leaves
+         * errno set, and EOF readdir returns NULL without clearing it —
+         * without the reset the EOF check below would misread the stale
+         * lstat errno as a readdir error and fail the whole listing. */
+        errno = 0;
         struct dirent *de = readdir(dir);
-        if (!de) break; /* EOF or error — distinguished by errno below */
+        if (!de) {
+            readdir_errno = errno; /* 0 = EOF, otherwise a readdir error */
+            break;
+        }
         const char *name = de->d_name;
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) continue;
         usize name_len = strlen(name);
@@ -108,9 +121,8 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
         }
         count++;
     }
-    int saved_errno = errno;
     closedir(dir);
-    if (saved_errno != 0) { /* readdir error, not EOF */
+    if (readdir_errno != 0) { /* genuine readdir error, not EOF */
         *out_count = 0;
         return false;
     }

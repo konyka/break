@@ -258,6 +258,41 @@ TEST(platform_list_stat_join_overflow_skips_entry) {
     ASSERT_TRUE(TEST_RMDIR(dir) == 0);
 }
 
+TEST(platform_list_lstat_failure_skips_entry_not_listing) {
+    /* Non-root only: permission bits don't bind euid 0. */
+    if (geteuid() == 0) return;
+    char root[512];
+    test_tmp(root, sizeof(root), "assets_lstatfail");
+    ASSERT_TRUE(mk_dir(root));
+    char p[600];
+    join2(p, sizeof(p), root, "a.txt"); ASSERT_TRUE(mk_file(p));
+    join2(p, sizeof(p), root, "sub"); ASSERT_TRUE(mk_dir(p));
+    join2(p, sizeof(p), root, "b.txt"); ASSERT_TRUE(mk_file(p));
+
+    /* Control: a readable+searchable directory lists all three. */
+    PlatformDirEntry entries[8];
+    u32 count = 0;
+    ASSERT_TRUE(platform_list_dir(root, entries, 8, &count));
+    ASSERT_EQ(count, 3u);
+
+    /* Read-without-search on the LISTED directory: readdir still yields
+     * names (read bit), but every lstat fails EACCES (no search bit) —
+     * a deterministic mid-listing lstat failure. Contract: unclassifiable
+     * entries are skipped and not counted; the listing itself still
+     * succeeds (a stale lstat errno must not turn EOF into an error). */
+    ASSERT_EQ(chmod(root, 0444), 0);
+    count = 77;
+    bool ok = platform_list_dir(root, entries, 8, &count);
+    chmod(root, 0755); /* restore before any ASSERT can bail out */
+    ASSERT_TRUE(ok);
+    ASSERT_EQ(count, 0u);
+
+    join2(p, sizeof(p), root, "a.txt"); remove(p);
+    join2(p, sizeof(p), root, "b.txt"); remove(p);
+    join2(p, sizeof(p), root, "sub"); TEST_RMDIR(p);
+    ASSERT_TRUE(TEST_RMDIR(root) == 0);
+}
+
 TEST(platform_list_symlink_not_followed) {
     char root[512];
     test_tmp(root, sizeof(root), "assets_symlink");
@@ -810,6 +845,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(platform_list_name_bounds);
 #if !defined(_WIN32)
     RUN_TEST(platform_list_stat_join_overflow_skips_entry);
+    RUN_TEST(platform_list_lstat_failure_skips_entry_not_listing);
     RUN_TEST(platform_list_symlink_not_followed);
 #endif
     RUN_TEST(model_create_sorts_dirs_first_deterministic);

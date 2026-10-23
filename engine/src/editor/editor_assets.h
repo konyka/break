@@ -48,6 +48,12 @@
  * BREAK_EDITOR_TESTING budget hook covers them (test_editor_assets.c
  * OOM sweep).
  *
+ * Borrowed pointers: the name returned by break_editor_assets_entry_at
+ * points into the entry cache and is valid until the next enter/up/destroy
+ * (which re-read and re-sort the cache); set_filter only rewrites the
+ * visible-index array and does NOT invalidate borrowed names. The same
+ * rule covers break_editor_assets_current_rel.
+ *
  * Threading: single-owner-thread convention (the editor shell thread owns
  * the model; no mutex), same as BreakEditorDoc. */
 
