@@ -31,14 +31,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-headless-linux-clang-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-headless-linux-clang-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -49,6 +63,7 @@ jobs:
           apt_retry 360 install -y --no-install-recommends \
             clang lld llvm cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
             libfreetype6-dev
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -58,8 +73,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
@@ -104,14 +120,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-headless-linux-gcc-asan-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-headless-linux-gcc-asan-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -122,6 +152,7 @@ jobs:
           apt_retry 360 install -y --no-install-recommends \
             gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
             libfreetype6-dev
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -131,8 +162,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON
@@ -189,14 +221,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-headless-linux-gcc-tsan-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-headless-linux-gcc-tsan-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -207,6 +253,7 @@ jobs:
           apt_retry 360 install -y --no-install-recommends \
             gcc cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
             libfreetype6-dev
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -216,8 +263,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Lower the ASLR entropy for TSan
         # R697: TSan cannot map its shadow on kernels with 32-bit
@@ -449,14 +497,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-native-surface-wayland-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-native-surface-wayland-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -469,6 +531,7 @@ jobs:
              libegl1-mesa-dev libgles2-mesa-dev \
              libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
             libfreetype6-dev weston
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -478,8 +541,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VULKAN=ON
@@ -570,14 +634,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-wayland-gl-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-wayland-gl-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -590,6 +668,7 @@ jobs:
              libgles2-mesa-dev \
              libwayland-dev wayland-protocols libxkbcommon-dev libx11-dev \
             libfreetype6-dev weston
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -599,8 +678,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug -DENGINE_ENABLE_WAYLAND=ON
@@ -889,14 +969,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-gpu-runtime-linux-gl-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-gpu-runtime-linux-gl-
+
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -907,6 +1001,7 @@ jobs:
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake libx11-dev libxrandr-dev libgl1-mesa-dev \
             libfreetype6-dev xvfb x11-utils
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -916,8 +1011,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -DCMAKE_BUILD_TYPE=Debug
@@ -976,14 +1072,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-gpu-runtime-linux-vk-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-gpu-runtime-linux-vk-
+
       - name: Install pinned toolchain
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -996,6 +1106,7 @@ jobs:
             libgl1-mesa-dev libgl1-mesa-dri \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev mesa-vulkan-drivers xvfb x11-utils
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Install CJK test font (optional)
         # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
@@ -1005,8 +1116,9 @@ jobs:
         continue-on-error: true
         timeout-minutes: 7
         run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y --no-install-recommends fonts-noto-cjk \
+          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
             || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         # runner 的 toolcache cmake (/usr/local/bin) 会遮蔽 apt 钉版的
@@ -1271,14 +1383,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-validation-linux-vk-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-validation-linux-vk-
+
       - name: Install pinned toolchain
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -1294,6 +1420,7 @@ jobs:
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev mesa-vulkan-drivers xvfb x11-utils \
             vulkan-validationlayers
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Configure / build
         run: |
@@ -1346,14 +1473,28 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-lane-benchmark-linux-vk-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-lane-benchmark-linux-vk-
+
       - name: Install pinned toolchain
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -1368,6 +1509,7 @@ jobs:
             clang-18 lld-18 llvm-18-tools cmake=3.28.* ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev mesa-vulkan-drivers xvfb x11-utils
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Configure / build
         run: |
@@ -1443,11 +1585,12 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 20
         run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -1462,6 +1605,7 @@ jobs:
           apt_retry 360 install -y --no-install-recommends \
             build-essential cmake ninja-build libx11-dev libxrandr-dev \
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* libfreetype6-dev
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
 
       - name: Configure
         run: cmake -S engine -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DENGINE_VULKAN=ON
@@ -1598,15 +1742,29 @@ jobs:
 
       # 钉版以 ubuntu-24.04 (noble) apt-cache policy 实测候选为准：
       # cmake=3.28.3 / libvulkan-dev=1.3.275.0-1build1 / libshaderc-dev=2023.8-1build1。
+      - name: Restore apt package cache
+        # R682: .debs a previous run downloaded; apt only fetches what is
+        # missing, so a slow Azure mirror (R677-R681: stalls on varied
+        # packages) is only hit on a cache miss. GitHub's own action, no
+        # third-party dependency. The key changes with the workflow file,
+        # i.e. whenever a package list or pin changes.
+        uses: actions/cache@v5
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-clean-room-${{ hashFiles('.github/workflows/*.yml') }}
+          restore-keys: |
+            apt-${{ runner.os }}-clean-room-
+
       - name: Install pinned toolchain
         timeout-minutes: 20
         run: |
           set +e
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120"
+          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
           # R675: each attempt is capped and retried -- a hung mirror otherwise
           # ate the whole step (R674 run: one job timed out at 10 min while
           # every other job installed in ~1 min). man-db triggers are skipped.
           sudo rm -f /var/lib/man-db/auto-update
+          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
           # R677: each failed attempt publishes the tail of its output as
           # ::warning:: annotations (job logs are not readable anonymously).
           # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
@@ -1622,6 +1780,7 @@ jobs:
             libvulkan-dev=1.3.275.* libshaderc-dev=2023.8* \
             libfreetype6-dev mesa-vulkan-drivers > /tmp/apt-install.log 2>&1
           rc=$?
+          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
           set -e
           if [ $rc -ne 0 ]; then
             tail -40 /tmp/apt-install.log | while IFS= read -r line; do echo "::error::$line"; done

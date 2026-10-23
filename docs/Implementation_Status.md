@@ -1,6 +1,18 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R682 — CI 用 GitHub 自带的 actions/cache 缓存 apt 包
+
+R677–R681 的证据表明，卡住的是 Azure apt 镜像整体的下载速度，具体卡在哪个包每次不同，所以精简包列表解决不了。这一轮改为缓存下载好的 .deb，只用 GitHub 官方的 `actions/cache@v5`（node24，不引入第三方依赖）：
+- 每个 hosted lane 在 apt 安装步骤之前加 `Restore apt package cache`：`path: ~/apt-archives`；key 由 job 名和全部 workflow 文件的哈希组成（包列表或钉版一改，就自动换一个新 key）；restore-keys 按 job 前缀回退，取同一 job 最近一次的缓存。
+- `APT_OPTS` 加上 `Dir::Cache::Archives=$HOME/apt-archives` 和 `Binary::apt::APT::Keep-Downloaded-Packages=true`（runner 默认会删掉已下载的 deb）；同时 `mkdir partial`，并删除 `docker-clean` 配置。缓存里已有的 deb，apt 不会再去下载。
+- apt 是 root 身份运行的，所以安装后 `chown` 回 runner 用户，否则 post 步骤保存缓存时读不到这些文件。可选的 CJK 字体步骤也做了同样处理。
+- 覆盖 `ci.yml` 中 10 个 hosted lane，以及 proton、rollback-drill。self-hosted 的 Steam Deck lane 不加（它本地本来就有 apt 缓存）。
+
+预期：第一轮是 cache miss，照常下载；之后的每一轮只下载有变化的包。镜像慢只会影响 miss 的那一轮，R674–R677 的超时重试仍然保留，作为兜底。缓存配额：每个 job 几百 MB，13 个 job 合计约 4 GB，在仓库 10 GB 上限以内，超出部分按 LRU 淘汰。
+
+验证：3 个 workflow 都能被 `yaml.safe_load` 解析；13 段 apt 脚本和可选字体步骤都通过 `bash -n`；解析 YAML 确认 13 个 apt 步骤前面都紧挨着 `actions/cache`。本机没有能跑 apt 的 Linux（WSL 不可用），所以实际效果要看推送后连续两轮的 CI（第一轮写缓存，第二轮应该命中）。
+
 ## 本轮更新：R681 — CI action 升到 Node 24 版本
 
 每个 job 都会报一条 warning：「Node.js 20 is deprecated … actions/checkout@v4, actions/upload-artifact@v4」。核对各 action 在对应 tag 下 `action.yml` 里的 `runs.using`：checkout v5 起是 node24，upload-artifact v6 起是 node24（v5 仍是 node20），download-artifact v7 起是 node24（v5/v6 仍是 node20）。升级如下：
