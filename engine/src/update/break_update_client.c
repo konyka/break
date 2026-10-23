@@ -1,12 +1,14 @@
-/* break_update_client — Stage 5 Phase B Task 1 implementation. The contract
- * (on-disk layout, canonical state format, write-ahead discipline, rollback
- * policy, error enum semantics) is documented in break_update_client.h; the
- * parser deliberately mirrors the Phase A manifest discipline in
- * break_update.c (strict grammars, unknown/malformed → fail, no repair).
- * No download/stage/activate code exists here yet (Tasks 2/3). */
+/* break_update_client — Stage 5 Phase B Tasks 1+2 implementation. The
+ * contract (on-disk layout, canonical state format, write-ahead discipline,
+ * rollback policy, error enum semantics, download/resume semantics) is
+ * documented in break_update_client.h; the parser deliberately mirrors the
+ * Phase A manifest discipline in break_update.c (strict grammars,
+ * unknown/malformed → fail, no repair). No stage/activate/unstage code
+ * exists here yet (Task 3). */
 
 #include <update/break_update_client.h>
 
+#include <crypto/break_crypto.h>
 #include <platform/platform_fs.h>
 
 #include <stdio.h>
@@ -32,6 +34,7 @@ typedef struct {
 } UpcState;
 
 struct BreakUpdateClient {
+    char root[PLATFORM_FS_PATH_CAPACITY];       /* <root> (chunks live below) */
     char state_path[PLATFORM_FS_PATH_CAPACITY]; /* "<root>/state" */
     UpcState st;
     BreakUpdateClientError last_error;
@@ -354,10 +357,11 @@ static bool upc_read_state(const char *path, u64 size, UpcState *out) {
 BreakUpdateClient *break_update_client_open(const char *root_path) {
     if (!root_path) return NULL;
     usize n = strlen(root_path);
-    /* Tightest suffix: "/state" + the atomic writer's ".tmpXXXXXX" + NUL
-     * (covers "/slots/A" too). Checked once up front so every later join is
-     * safe by construction. */
-    if (n == 0 || n + 6 + 10 + 1 > PLATFORM_FS_PATH_CAPACITY) return NULL;
+    /* Tightest suffix: "/chunks/" + 64 hex + ".part" + NUL (Task 2's spool
+     * path; covers "/state" + the atomic writer's ".tmpXXXXXX" too). Checked
+     * once up front so every later join is safe by construction. */
+    if (n == 0 || n + 8 + UPC_HEX_NAME_LEN + 5 + 1 > PLATFORM_FS_PATH_CAPACITY)
+        return NULL;
     if (!platform_mkdir(root_path)) return NULL;
 
     char p[PLATFORM_FS_PATH_CAPACITY];
@@ -387,6 +391,7 @@ BreakUpdateClient *break_update_client_open(const char *root_path) {
 
     BreakUpdateClient *c = calloc(1, sizeof(*c));
     if (!c) return NULL; /* layout + initial state survive; next open parses them */
+    memcpy(c->root, root_path, n + 1);
     memcpy(c->state_path, state_path, n + 6 + 1);
     c->st = st;
     c->last_error = BREAK_UPDATE_CLIENT_OK;
@@ -487,4 +492,334 @@ bool break_update_client_rollback(BreakUpdateClient *c) {
     c->st = next;
     c->last_error = BREAK_UPDATE_CLIENT_OK;
     return true;
+}
+
+/* ---- Task 2: chunked downloader with byte-level resume -----------------------
+ * Semantics are documented in the header ("Task 2 semantics"): manifest-size
+ * clamping, one .part at a time, block-granular write-ahead progress, resume
+ * triage (stale-complete → silent clear; corrupt → STATE clean restart),
+ * digest-gated store put. */
+
+#define UPC_FETCH_BLOCK (64u * 1024u) /* fixed spool block; never sized by the manifest */
+
+static void upc_hex_encode(const u8 *in, usize n, char *out) {
+    static const char h[] = "0123456789abcdef";
+    usize i;
+    for (i = 0; i < n; i++) {
+        out[2 * i] = h[in[i] >> 4];
+        out[2 * i + 1] = h[in[i] & 15];
+    }
+    out[2 * n] = '\0';
+}
+
+/* "<root>/chunks/<name64><suffix>" — safe by construction after the open-time
+ * path bound (which covers exactly this join); checked anyway. */
+static bool upc_chunk_path(const BreakUpdateClient *c, const char *hex,
+                           const char *suffix, char *out, usize cap) {
+    usize rn = strlen(c->root);
+    usize sn = strlen(suffix);
+    if (rn + 8 + UPC_HEX_NAME_LEN + sn + 1 > cap) return false;
+    memcpy(out, c->root, rn);
+    memcpy(out + rn, "/chunks/", 8);
+    memcpy(out + rn + 8, hex, UPC_HEX_NAME_LEN);
+    memcpy(out + rn + 8 + UPC_HEX_NAME_LEN, suffix, sn + 1);
+    return true;
+}
+
+/* Persist-then-flip transitions of the resume entry (the same write-ahead
+ * discipline as the boot lifecycle ops: on persist failure the in-memory
+ * state stays put, so memory and disk never disagree). */
+static bool upc_set_resume(BreakUpdateClient *c, const char *hex, u64 off) {
+    UpcState next = c->st;
+    next.has_resume = true;
+    memcpy(next.resume_hash, hex, UPC_HEX_NAME_LEN + 1);
+    next.resume_offset = off;
+    if (!upc_persist(c->state_path, &next)) return false;
+    c->st = next;
+    return true;
+}
+
+static bool upc_clear_resume(BreakUpdateClient *c) {
+    UpcState next = c->st;
+    next.has_resume = false;
+    next.resume_offset = 0;
+    if (!upc_persist(c->state_path, &next)) return false;
+    c->st = next;
+    return true;
+}
+
+/* .part on disk consistent with resume offset O: absent iff O == 0, exact
+ * size otherwise (O == size is valid: a fully-spooled chunk pending
+ * verify+store). */
+static bool upc_part_consistent(const char *part_path, u64 off) {
+    u64 sz = 0;
+    if (!platform_file_size(part_path, &sz)) return off == 0;
+    return sz == off;
+}
+
+static bool upc_remove_part(const char *part_path) {
+    u64 sz = 0;
+    if (!platform_file_size(part_path, &sz)) return true; /* absent */
+    return remove(part_path) == 0;
+}
+
+/* One chunk: spool to .part from `offset` (the resume entry hash|offset is
+ * already persisted), streaming-hash as bytes land, verify the full digest
+ * against the manifest, store_put (which recomputes the hash — the chunk
+ * lands under the manifest name by construction), remove the .part, clear
+ * the entry. false → c->last_error set (FETCH/VERIFY/IO). */
+static bool upc_fetch_chunk(BreakUpdateClient *c, BreakUpdateStore *s,
+                            const char *hex, const u8 expect[32], u64 size,
+                            u64 offset, BreakUpdateFetchFn fetch, void *user) {
+    char part_path[PLATFORM_FS_PATH_CAPACITY];
+    FILE *fp = NULL;
+    FILE *in = NULL;
+    BreakCryptoSha256Ctx *ctx = NULL;
+    u8 *buf = NULL;
+    u8 *all = NULL;
+    u64 left, off, len;
+    usize want, got;
+    u8 digest[32];
+    bool read_ok, hash_ok, readback_ok;
+    int close_rc;
+    bool ok = false;
+
+    if (!upc_chunk_path(c, hex, ".part", part_path, sizeof(part_path))) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    fp = fopen(part_path, offset ? "ab" : "wb"); /* append lands at exactly the offset */
+    if (!fp) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    ctx = break_crypto_sha256_ctx_create();
+    buf = ctx ? malloc(UPC_FETCH_BLOCK) : NULL;
+    if (!ctx || !buf) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO; /* OOM counts as local IO */
+        goto out;
+    }
+
+    /* Re-hash the spooled prefix on resume (a prefix cannot be verified
+     * against the final digest; these bytes are trusted until completion,
+     * where the FULL digest gates the store). */
+    left = offset;
+    if (left) {
+        in = fopen(part_path, "rb");
+        if (!in) {
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+            goto out;
+        }
+        read_ok = true;
+        while (left) {
+            want = left < (u64)UPC_FETCH_BLOCK ? (usize)left : (usize)UPC_FETCH_BLOCK;
+            got = fread(buf, 1, want, in);
+            if (got != want || !break_crypto_sha256_update(ctx, buf, got)) {
+                read_ok = false;
+                break;
+            }
+            left -= want;
+        }
+        fclose(in);
+        in = NULL;
+        if (!read_ok) {
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+            goto out;
+        }
+    }
+
+    off = offset;
+    while (off < size) {
+        len = size - off; /* off <= size: no underflow; off+len <= size <= UINT64_MAX */
+        if (len > (u64)UPC_FETCH_BLOCK) len = (u64)UPC_FETCH_BLOCK;
+        /* offset+len is overflow-free by construction (the interface's
+         * "overflow-checked by the client before calling" contract). */
+        if (!fetch(user, hex, off, len, buf)) {
+            c->last_error = BREAK_UPDATE_CLIENT_FETCH; /* progress kept */
+            goto out;
+        }
+        /* Write-ahead: bytes to the OS first, the new offset persists after. */
+        if (fwrite(buf, 1, (usize)len, fp) != (usize)len || fflush(fp) != 0 ||
+            !break_crypto_sha256_update(ctx, buf, (usize)len) ||
+            !upc_set_resume(c, hex, off + len)) {
+            /* A short write may leave .part LONGER than the persisted entry —
+             * the next call's consistency check restarts the chunk clean. */
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+            goto out;
+        }
+        off += len;
+    }
+
+    hash_ok = break_crypto_sha256_final(ctx, digest);
+    close_rc = fclose(fp);
+    fp = NULL;
+    if (!hash_ok || close_rc != 0) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        goto out;
+    }
+    if (memcmp(digest, expect, sizeof(digest)) != 0) {
+        /* VERIFY: discard the .part, clear the entry. If the cleanup itself
+         * fails, report IO — the next call's triage self-heals. */
+        if (!upc_remove_part(part_path) || !upc_clear_resume(c))
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+        else
+            c->last_error = BREAK_UPDATE_CLIENT_VERIFY;
+        goto out;
+    }
+
+    /* Verified: read the spool back fully and put it into the CAS. */
+    if ((u64)(usize)size != size) { /* u64 → usize truncation guard (32-bit) */
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        goto out;
+    }
+    all = malloc(size ? (usize)size : 1);
+    if (!all) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        goto out;
+    }
+    readback_ok = false;
+    in = fopen(part_path, "rb");
+    if (in) {
+        got = size ? fread(all, 1, (usize)size, in) : 0;
+        close_rc = fclose(in);
+        in = NULL;
+        readback_ok = close_rc == 0 && got == (usize)size;
+    }
+    /* put fails e.g. beyond the store's 128 MiB cap → IO (documented). On
+     * failure the entry is kept: the next call re-verifies and re-puts the
+     * fully-spooled chunk without any transport. */
+    if (!readback_ok || !break_update_store_put_chunk(s, all, (usize)size)) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        goto out;
+    }
+    free(all);
+    all = NULL;
+
+    if (!upc_remove_part(part_path) || !upc_clear_resume(c)) {
+        /* The chunk IS in the CAS; a kept entry is the stale-complete case
+         * the triage clears silently on the next call. */
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        goto out;
+    }
+    ok = true;
+out:
+    free(all);
+    free(buf);
+    if (ctx) break_crypto_sha256_ctx_destroy(ctx);
+    if (in) fclose(in);
+    if (fp) fclose(fp);
+    return ok;
+}
+
+bool break_update_client_fetch_all(BreakUpdateClient *c, const BreakUpdateManifest *m,
+                                   BreakUpdateFetchFn fetch, void *user) {
+    BreakUpdateStore *s;
+    u64 count, i;
+    u64 resume_idx = UINT64_MAX;
+    u64 resume_off = 0;
+    bool ok = false;
+
+    if (!c) return false;
+    if (!m || !fetch) {
+        c->last_error = BREAK_UPDATE_CLIENT_INVALID;
+        return false;
+    }
+    s = break_update_store_open(c->root);
+    if (!s) {
+        c->last_error = BREAK_UPDATE_CLIENT_IO;
+        return false;
+    }
+    count = break_update_manifest_chunk_count(m);
+
+    /* Resume-entry triage (header "Task 2 semantics"). */
+    if (c->st.has_resume) {
+        char part_path[PLATFORM_FS_PATH_CAPACITY];
+        char hex[UPC_HEX_NAME_LEN + 1];
+        const char *rh = c->st.resume_hash;
+        const char *nm;
+        u8 h[32];
+        u64 roff = c->st.resume_offset;
+        u64 found_size = 0;
+        bool found = false, resumable;
+        if (!upc_chunk_path(c, rh, ".part", part_path, sizeof(part_path))) {
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+            goto out;
+        }
+        for (i = 0; i < count; i++) {
+            if (!break_update_manifest_chunk_at(m, i, &nm, h, &found_size)) {
+                c->last_error = BREAK_UPDATE_CLIENT_IO; /* i < count: unreachable */
+                goto out;
+            }
+            upc_hex_encode(h, 32, hex);
+            if (memcmp(hex, rh, UPC_HEX_NAME_LEN + 1) == 0) {
+                found = true;
+                resume_idx = i;
+                break;
+            }
+        }
+        if (found && break_update_store_has_chunk(s, rh)) {
+            /* Stale entry (crash between store_put and entry-clear): clean
+             * up and continue — a resumable partial state, not an error. */
+            if (!upc_remove_part(part_path) || !upc_clear_resume(c)) {
+                c->last_error = BREAK_UPDATE_CLIENT_IO;
+                goto out;
+            }
+            resume_idx = UINT64_MAX;
+        } else {
+            resumable = found && roff <= found_size &&
+                        upc_part_consistent(part_path, roff);
+            if (!resumable) {
+                /* Corrupt resume → restarted clean: the next call re-fetches
+                 * the chunk from 0. */
+                if (!upc_remove_part(part_path) || !upc_clear_resume(c)) {
+                    c->last_error = BREAK_UPDATE_CLIENT_IO;
+                    goto out;
+                }
+                c->last_error = BREAK_UPDATE_CLIENT_STATE;
+                goto out;
+            }
+            resume_off = roff;
+        }
+    }
+
+    /* A valid resume entry's chunk continues FIRST (starting any other chunk
+     * would overwrite its entry), then the manifest in order. Sequential:
+     * at most one .part exists at any moment. */
+    if (resume_idx != UINT64_MAX) {
+        const char *nm;
+        u8 h[32];
+        u64 csz;
+        char hex[UPC_HEX_NAME_LEN + 1];
+        if (!break_update_manifest_chunk_at(m, resume_idx, &nm, h, &csz)) {
+            c->last_error = BREAK_UPDATE_CLIENT_IO; /* validated above */
+            goto out;
+        }
+        upc_hex_encode(h, 32, hex);
+        if (!upc_fetch_chunk(c, s, hex, h, csz, resume_off, fetch, user))
+            goto out; /* last_error set inside */
+    }
+    for (i = 0; i < count; i++) {
+        const char *nm;
+        u8 h[32];
+        u64 csz;
+        char hex[UPC_HEX_NAME_LEN + 1];
+        if (!break_update_manifest_chunk_at(m, i, &nm, h, &csz)) {
+            c->last_error = BREAK_UPDATE_CLIENT_IO; /* i < count: unreachable */
+            goto out;
+        }
+        upc_hex_encode(h, 32, hex);
+        /* CAS dedup: present chunks are NEVER re-fetched (call-count pin).
+         * Also skips the just-completed resume chunk. */
+        if (break_update_store_has_chunk(s, hex)) continue;
+        if (!upc_set_resume(c, hex, 0)) { /* intent persists BEFORE the .part */
+            c->last_error = BREAK_UPDATE_CLIENT_IO;
+            goto out;
+        }
+        if (!upc_fetch_chunk(c, s, hex, h, csz, 0, fetch, user)) goto out;
+    }
+    ok = true;
+    c->last_error = BREAK_UPDATE_CLIENT_OK;
+out:
+    break_update_store_destroy(s);
+    return ok;
 }

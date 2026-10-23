@@ -3,6 +3,11 @@
 # (+src/update/break_update_client.c — client state machine + A/B slots,
 # no download yet); the nm gate grows 15 → 24 symbols (+9 client); the
 # minimal archive link test gains a client open/query/refusal pass.
+# Stage 5 Phase B Task 2 update: the client gains the chunked downloader
+# (break_update_client_fetch_all + the BreakUpdateFetchFn transport seam —
+# no transport code ships; the callback is caller-supplied); the nm gate
+# grows 24 → 25 symbols; the link test gains an empty-manifest fetch_all
+# pass (callback registered, never invoked).
 #
 # Pins (mirrors the test_break_crypto_target_contract.cmake shape):
 #   1. The break_update target lives inside the if(BREAK_ENABLE_CRYPTO)
@@ -22,7 +27,8 @@
 #      src/platform/platform_fs.c compiled inline — the focused-test
 #      precedent, engine keeps sole production ownership of it) and runs
 #      one manifest parse + one store round-trip + one client
-#      open/query/refusal pass.
+#      open/query/refusal pass + one zero-chunk fetch_all pass (callback
+#      registered, never invoked).
 
 if(NOT DEFINED ENGINE_CMAKE)
     message(FATAL_ERROR "ENGINE_CMAKE is required")
@@ -131,7 +137,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_target_contract")
     message(FATAL_ERROR "missing test_break_update_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 24 public symbols ------------------------------
+# --- 5. nm gate: exactly the 25 public symbols ------------------------------
 find_program(UPDATE_CONTRACT_NM nm)
 if(NOT UPDATE_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_update export gate)")
@@ -151,6 +157,7 @@ set(expected_symbols
     break_update_client_current_slot
     break_update_client_current_version
     break_update_client_destroy
+    break_update_client_fetch_all
     break_update_client_last_error
     break_update_client_open
     break_update_client_pending
@@ -185,7 +192,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_update.a must export exactly the 24 public symbols.\n"
+        "libbreak_update.a must export exactly the 25 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 
@@ -213,6 +220,16 @@ static int hexval(char c) {
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
     return -1;
 }
+/* Phase B Task 2: counting fetch callback for the fetch_all link pass — the
+ * minimal manifest has zero chunks, so fetch_all must succeed without a
+ * single callback invocation. */
+static int g_fetch_calls = 0;
+static bool counting_fetch(void *user, const char *object_name, u64 offset,
+                           u64 len, u8 *out) {
+    (void)user; (void)object_name; (void)offset; (void)len; (void)out;
+    g_fetch_calls++;
+    return false;
+}
 int main(void) {
     static const char text[] =
         \"break-manifest-v1\\n\"
@@ -235,7 +252,6 @@ int main(void) {
     break_update_manifest_version(m, v);
     if (v[0] != 0 || v[1] != 1 || v[2] != 0) return 4;
     if (!break_update_manifest_compatible(m, \"stable\", \"linux-x86-64\", 0, 1, 0)) return 5;
-    break_update_manifest_destroy(m);
 
     char root[1024];
     snprintf(root, sizeof(root), \"%s/link_store\", UPDATE_LINK_WORK);
@@ -269,7 +285,13 @@ int main(void) {
     if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 16;
     if (break_update_client_rollback(cl)) return 17; /* no previous */
     if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_STATE) return 18;
+    /* Phase B Task 2: fetch_all over the zero-chunk manifest — true, and the
+     * transport callback is never invoked. */
+    if (!break_update_client_fetch_all(cl, m, counting_fetch, NULL)) return 19;
+    if (break_update_client_last_error(cl) != BREAK_UPDATE_CLIENT_OK) return 20;
+    if (g_fetch_calls != 0) return 21;
     break_update_client_destroy(cl);
+    break_update_manifest_destroy(m);
     return 0;
 }
 ")
