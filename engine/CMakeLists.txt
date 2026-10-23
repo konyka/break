@@ -43,6 +43,8 @@ set(SNOWFLAKE_SOURCE_DIR "" CACHE PATH
     "Snowflake source tree required by the Break network adapter")
 option(BREAK_ENABLE_CRYPTO
     "Enable the break_crypto OpenSSL EVP wrapper library (Stage 5)" ON)
+option(BREAK_ENABLE_CRASH
+    "Enable the break_crash crash-record/spool library (Stage 5 Phase C)" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
 set_property(CACHE ENGINE_RHI_BACKEND PROPERTY STRINGS auto opengl vulkan metal d3d12)
@@ -340,6 +342,23 @@ if(BREAK_ENABLE_CRYPTO)
     target_include_directories(break_update PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(break_update PUBLIC break_crypto)
+endif()
+
+# Stage 5 Phase C Task 1: break_crash — the crash record format (canonical
+# text "break-crash-v1") + bounded on-disk spool. Record + spool ONLY:
+# signal capture is Task 2, redaction/upload seam Task 3. Formal optional
+# static library with ZERO external dependencies and no link libraries (the
+# write-side PAL is consumed header-only; callers link platform_fs
+# themselves — the tests compile the TU inline, the test_break_update
+# precedent). Independent of BREAK_ENABLE_CRYPTO and ENGINE_BUILD_TESTS;
+# engine, engine_demo, dxx_break, and editor never link it (pinned by
+# test_break_crash_target_contract). Keep this block free of nested if():
+# the contract script extracts it up to its first endif().
+if(BREAK_ENABLE_CRASH)
+    add_library(break_crash STATIC src/crash/break_crash.c)
+    set_property(TARGET break_crash PROPERTY C_STANDARD 11)
+    target_include_directories(break_crash PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
 endif()
 
 # Formal optional replication libraries. These are intentionally independent of
@@ -4010,6 +4029,44 @@ endif()
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
         set_tests_properties(test_break_update_target_contract PROPERTIES
             LABELS "headless;update;platform_contract")
+    endif()
+
+    # Stage 5 Phase C Task 1: break_crash record/spool tests link the formal
+    # library; platform_fs.c compiles inline (the test_break_update
+    # precedent — engine keeps sole production ownership of that TU). The
+    # contract ctest pins the option gate, the target shape + zero-dep rule,
+    # the engine/engine_demo/dxx_break/editor no-link rule, the nm export
+    # gate (exactly 29 public symbols), and a minimal archive link test.
+    if(BREAK_ENABLE_CRASH)
+        add_executable(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c)
+        target_include_directories(test_break_crash PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_break_crash PRIVATE break_crash m)
+        add_test(NAME test_break_crash COMMAND test_break_crash)
+        set_tests_properties(test_break_crash PROPERTIES LABELS "headless;crash")
+
+        # Sanitizer trees propagate their flags to the contract's
+        # system-compiler link test (the crypto/update contract precedent).
+        set(BREAK_CRASH_CONTRACT_SAN "")
+        if(ENGINE_USE_ASAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=address")
+        endif()
+        if(ENGINE_USE_UBSAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=undefined")
+        endif()
+        if(ENGINE_USE_TSAN)
+            string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=thread")
+        endif()
+        add_test(NAME test_break_crash_target_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+                -DCRASH_CONTRACT_ARCHIVE=$<TARGET_FILE:break_crash>
+                -DCRASH_CONTRACT_CC=${CMAKE_C_COMPILER}
+                -DCRASH_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
+                -DCRASH_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crash_contract_tmp
+                -DCRASH_CONTRACT_SAN=${BREAK_CRASH_CONTRACT_SAN}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crash_target_contract.cmake)
+        set_tests_properties(test_break_crash_target_contract PROPERTIES
+            LABELS "headless;crash;platform_contract")
     endif()
 
     # test_pbr_math: CPU reference Cook-Torrance PBR (header-only, R579)
