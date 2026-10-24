@@ -5397,17 +5397,9 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usiz
             [staging release];
             return false;
         }
-        /* Row-order contract: rhi_screenshot delivers GL-style BOTTOM-UP
-         * rows (rhi.h R425/R428 — GL glReadPixels and the VK backend both
-         * do; main.c's BMP writer flips on that assumption). Metal blit
-         * rows are top-down, so deliver them reversed. */
-        {
-            const u8 *src = (const u8 *)staging.contents;
-            u32 row;
-            for (row = 0u; row < h; ++row)
-                memcpy(pixels + (usize)row * row_bytes,
-                       src + (usize)(h - 1u - row) * row_bytes, row_bytes);
-        }
+        /* Row-order contract (rhi.h): top-left origin, rows top-down on
+         * every backend. Metal blit rows are already top-down. */
+        memcpy(pixels, staging.contents, (usize)row_bytes * h);
         [staging release];
         ok = true;
     }

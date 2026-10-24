@@ -963,6 +963,50 @@ TEST(screenshot_clear_color_and_post_present_refused) {
     ASSERT_FALSE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
 }
 
+TEST(screenshot_rows_are_top_down) {
+    /* rhi.h row-order contract: top-left origin, rows top-down on every
+     * backend. Red is scissored to the top half of the drawable (Metal
+     * scissor is top-left origin), so row 0 must read red and the last row
+     * the blue clear. A bottom-up readback swaps them. */
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *top;
+    const u8 *bottom;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_begin_render_pass(cmd);
+    rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 1.0f, 1.0f);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_set_scissor_top_left(cmd, 0u, 0u, 64u, 32u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_cmd_end_render_pass(cmd);
+    ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_screenshot(g_dev, 0u, 0u, 64u, 64u, px, sizeof(px)));
+    ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+    top = px + 32u * 4u;
+    bottom = px + ((usize)63u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)top[0], 0u);       /* B,G,R,A: red */
+    ASSERT_EQ((u32)top[2], 255u);
+    ASSERT_EQ((u32)bottom[0], 255u);  /* blue clear */
+    ASSERT_EQ((u32)bottom[2], 0u);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(draw_indirect_executes_arg_buffer) {
     /* Non-indexed indirect: the 16-byte arg record {vertexCount,
      * instanceCount, vertexStart, baseInstance} is ABI-identical in VK
@@ -2750,6 +2794,7 @@ int main(void) {
     RUN_TEST(buffer_size_constants_fed_to_kernel);
     RUN_TEST(fill_buffer_pattern_and_clamp_readback);
     RUN_TEST(screenshot_clear_color_and_post_present_refused);
+    RUN_TEST(screenshot_rows_are_top_down);
     RUN_TEST(draw_indirect_executes_arg_buffer);
     RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
     RUN_TEST(gpu_timer_roundtrip_smoke);
