@@ -231,14 +231,16 @@ void break_net_on_closed(snow_connection_t *connection, snow_close_t reason,
 Snowflake 的真实 registration API 是：
 
 ```c
-snow_status_t snow_net_thread_add_acceptor_with_handlers(
+snow_status_t snow_net_thread_add_acceptor_with_handlers_ex(
     snow_net_thread_t *nt,
     snow_acceptor_t *a,
     snow_conn_handlers_t handlers,
-    void *handlers_ud);
+    void *handlers_ud,
+    snow_nt_admit_fn admit,
+    void *admit_ud);
 ```
 
-`handlers.parser` 必须非 NULL；acceptor 由 caller 持有，并且应在 reactor 销毁前存活。另有带 admission gate 的 `_ex` 变体，但 Break 当前使用基础 registration API；acceptor 通过 Break 的 borrowed opaque setter 注入。没有 acceptor 时 `start` fail-closed。
+`handlers.parser` 必须非 NULL；acceptor 由 caller 持有，并且应在 reactor 销毁前存活。Break 当前使用带 admission gate 的 `_ex` 变体（`break_net_adapter.c` 的 `break_net_reactor_start`；`admission==NULL` 时传 NULL admit 保持 legacy 行为，非 NULL 时传 `break_net_admission_admit`）；acceptor 通过 Break 的 borrowed opaque setter 注入。没有 acceptor 时 `start` fail-closed。
 
 因此，callback 函数中已有的 event 构造逻辑现在已由 session wire loopback 测试以真实 socket 驱动；adapter callback 的细节如下：
 
@@ -256,4 +258,4 @@ snow_status_t snow_net_thread_add_acceptor_with_handlers(
 
 ## 验证与边界
 
-Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan 均为 30/30，Session focused normal/ASan/TSan 均为 20/20；真实 loopback 覆盖 Snowflake acceptor registration、parser/open/message/send/close、AUTH 入站、Session poll/handler dispatch、PING response、18-byte wire envelope、client close 后 `CLOSED`/stale 语义和 bounded stop。默认 registry 下 AUTH/PING 均为 `ANY` phase；自定义 registry 的 phase/duplicate policy、duplicate 行为、lifetime capacity、borrowed registry/reactor/handler/payload contract 均已明确。仍不应把本切片写成已完成 player authentication backend、复制、Lua、editor、security、ECS/World 或 gameplay integration；Snowflake per-context completion/drop 通知不足、custom registry codec 当前仍使用 default registry 的真实 adapter codec 边界、GameThread-only contract、full CTest 其他模块失败、fuzz 未运行以及 timeout/stop 的非 Linux 平台 lane 均保留为限制。
+Task 5 文档应与实际验证保持一致：adapter focused normal/ASan/TSan 均为 38/38，Session focused normal/ASan/TSan 均为 34/34，TLS focused normal/ASan/TSan 均为 10/10；真实 loopback 覆盖 Snowflake acceptor registration、parser/open/message/send/close、AUTH 入站、Session poll/handler dispatch、PING response、18-byte wire envelope、client close 后 `CLOSED`/stale 语义和 bounded stop。默认 registry 下 AUTH/PING 均为 `ANY` phase；自定义 registry 的 phase/duplicate policy、duplicate 行为、lifetime capacity、borrowed registry/reactor/handler/payload contract 均已明确。仍不应把本切片写成已完成 player authentication backend、复制、Lua、editor、security、ECS/World 或 gameplay integration；Snowflake per-context completion/drop 通知不足、custom registry codec 当前仍使用 default registry 的真实 adapter codec 边界、GameThread-only contract、full CTest 其他模块失败、fuzz 未运行以及 timeout/stop 的非 Linux 平台 lane 均保留为限制。
