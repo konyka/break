@@ -222,7 +222,27 @@ typedef struct {
     GLuint tbo_tex;
     usize  size;
     bool   uniform_buffer;
+    /* R689: "STORAGE, no initial data" buffer still in DYNAMIC_DRAW. It is
+     * re-specified GL_STREAM_READ on the first CPU read (map / read), so
+     * only real readback staging pays for host-readable placement. */
+    bool   readback_candidate;
 } GLBufferData;
+
+/* R689: R672 placed every STORAGE buffer created without data in
+ * GL_STREAM_READ, because that desc is the RHI contract's readback staging
+ * buffer. The same desc also backs GPU-written / GPU-read and CPU-written
+ * buffers (indirect-draw visibility slots), and compute reading from a
+ * STREAM_READ placement stalled the static-mesh compact by ~0.6 ms/frame on
+ * NVIDIA. The switch now happens on the first host read; contents survive. */
+static void gl_buffer_make_readback(GLBufferData *bd) {
+    if (!bd->readback_candidate) return;
+    bd->readback_candidate = false;
+    void *keep = malloc(bd->size);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
+    if (keep) glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, (GLsizeiptr)bd->size, keep);
+    glBufferData(GL_SHADER_STORAGE_BUFFER, (GLsizeiptr)bd->size, keep, GL_STREAM_READ);
+    free(keep);
+}
 
 typedef struct {
     GLuint gl_shader;
@@ -1787,9 +1807,10 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
      * back with rhi_buffer_map. DYNAMIC_DRAW kept it in video memory and the
      * map paid for a synchronous download (~8 ms/frame for the gpucull
      * vis-flags readback in the demo); STREAM_READ lets the driver place it
-     * where the CPU can read it. */
-    if (desc->usage == RHI_BUFFER_USAGE_STORAGE && desc->initial_data == NULL)
-        usage = GL_STREAM_READ;
+     * where the CPU can read it. R689: deferred to the first host read, see
+     * gl_buffer_make_readback. */
+    bool readback_candidate =
+        desc->usage == RHI_BUFFER_USAGE_STORAGE && desc->initial_data == NULL;
     glBufferData(target, (GLsizeiptr)desc->size, desc->initial_data, usage);
     glBindBuffer(target, 0);
     /* R191-A: create bypasses cached binds — ARRAY_BUFFER cache would still
@@ -1815,6 +1836,7 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     bd->tbo_tex = tbo_tex;
     bd->size    = desc->size;
     bd->uniform_buffer = (desc->usage & RHI_BUFFER_USAGE_UNIFORM) != 0;
+    bd->readback_candidate = readback_candidate;
     dev->slots[idx].ptr  = bd;
     dev->slots[idx].type = RHI_RES_BUFFER;
     return rhi_make_handle(idx, dev->slots[idx].generation);
@@ -2999,6 +3021,7 @@ void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
     GLBufferData *bd = (GLBufferData *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (!bd) return NULL;
+    gl_buffer_make_readback(bd);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     /* R79-3: Removed trailing unbind — next glBindBuffer/glBindBufferBase
      * will overwrite the generic binding point. Same pattern as R77-2.
@@ -3023,6 +3046,7 @@ bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usi
     if (!bd || !dst || size == 0u) return false;
     if (offset >= bd->size) return false;
     if (size > bd->size - offset) size = bd->size - offset;
+    gl_buffer_make_readback(bd);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, bd->gl_buf);
     glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, (GLintptr)offset, (GLsizeiptr)size, dst);
     return true;

@@ -1,6 +1,39 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R689 — 引擎性能：GL 的 STREAM_READ 放置推迟到第一次 CPU 读，scene 段 GPU 1.48 → 0.89 ms
+
+### 定位
+R688 之后，GL/VK 的 scene 段 GPU 时间约 1.1–1.5 ms，D3D12 约 0.66 ms。这次用跳过法拆分：每次关掉一个子 pass，看 scene 计时少了多少（VK 的 timestamp 会打断 render pass，不能直接分段计时）。
+
+GL 上最大的一项是静态 mega 块，约 0.66 ms，在 D3D12 上只有 0.05 ms。其中单独跳过可见性上传，或单独跳过 compact dispatch，都能省约 0.7 ms，说明是同一个开销：上传之后，compact 读这块 buffer 时卡住了。
+
+### 根因（`engine/src/rhi/rhi_gl.c`）
+R672 把所有「STORAGE、没有初始数据」的 buffer 都建成 `GL_STREAM_READ`。本意是给 readback staging 用：GPU 写、CPU map 读。可是同一种 desc 也用在 indirect-draw 的两个可见性槽位上（`indirect_draw.c` 的 `visibility_buf`）：它们由 CPU 每帧 `glBufferSubData` 写入，再由 compact 着色器读取。驱动按 STREAM_READ 放置之后，GPU 从那里读要等，静态网格的 compact 被拖慢约 0.6 ms。
+
+启动日志统计：这类 buffer 共 10 个，2×64 KB、2×16 KB、6×44 B。真正会被 map 读回的只有 gpucull 的 `vis_flags_staging` 和 occlusion 的 `readback_staging`。
+
+### 修复
+这类 buffer 先按 `GL_DYNAMIC_DRAW` 创建，并记下 `readback_candidate`。第一次 `rhi_buffer_map` 或 `rhi_buffer_read` 时，由 `gl_buffer_make_readback()` 用 `glBufferData(..., GL_STREAM_READ)` 重新指定存储，原有内容先读出来再写回去。所以只有真正被 CPU 读的 buffer 才放到 CPU 可读的位置，R672 修过的 map 慢问题不会再出现（每帧耗时 3.6 ms，当时是 8 ms）。VK/D3D12 不受影响。
+
+### 数据（Release，RTX，GL）
+| | 修改前 | 修改后 |
+|---|---|---|
+| scene GPU，前向 | 1.47–1.49 ms | 0.85–0.92 ms |
+| scene GPU，延迟 | 1.54–1.64 ms | 1.00–1.01 ms |
+| fps_avg，前向 | 279 / 284 | 311 / 292 |
+| fps_avg，延迟 | 245 / 244 | 270 / 259 |
+
+修改后 GL 的 scene 段已经和 D3D12（0.66–0.90 ms）在同一水平。
+
+### 还没做的（VK 的 scene 段约 1.1 ms）
+- skybox 是 VK 上最大的一项（0.52 ms），而且先于地形画在 depth 1.0。要是改成最后用 LEQUAL 画，被地形挡住的像素就不用再走云层 ray march，三个后端都能省。
+- ECS 实例绘制中，每组 mesh 都调一次 `rhi_cmd_update_buffer`（`main.c` 的 ECS instanced 段）。在 VK 上这会结束 render pass，加 barrier，再用 LOAD 重开，约 0.2 ms。可以改成在 pass 开始前一次上传全部实例。
+
+### 验证
+- ctest：gl 179/179、vk 182/182、d3d12-debug 187/187，全部通过。GL 那一套包括 gpucull 和 occlusion 的 readback 用例，这些 buffer 现在会在第一次 map 时切到 STREAM_READ。
+- 截图：GL 第 3 帧和 R688 对比，平均差 0.37，差异像素只在粒子精灵的边缘；前向和延迟日志都无 WARN/ERROR。
+
 ## 本轮更新：R688 — 引擎性能：点光阴影的 24 个面改为 CPU 球体剔除 + 直接绘制
 
 ### 定位
