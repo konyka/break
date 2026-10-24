@@ -44,7 +44,18 @@ D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 
 - 帧率（Release，fps_avg）：前向 D3D12 368、VK 301、GL 337，延迟 423 / 332 / 381，和 R691 一样处在噪声范围内（物理按 60 Hz 步进，比原来每帧一步还少）。
 
 ### 未处理：D3D12/GL 的 vsync 帧节奏
-后续可以做：D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在帧开始时等待 waitable object，让节奏均匀。另外建议本地直接看一次（不通过 ToDesk），确认还有多少抖动是远程采集带来的。
+**试过 waitable 交换链，已撤回。** 做法是 D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在 `rhi_frame_begin` 里先等待 waitable object。同一个 exe 交替测了 2 轮：
+
+| | 平均帧时间 | 帧率 | 中位数 | 标准差 | >15 ms 的帧 |
+|---|---|---|---|---|---|
+| 不用 waitable | 13.7 / 12.9 ms | 73 / 78 | 3.4 ms | 13.9 / 13.2 | 211 / 194（共 540 帧） |
+| waitable | 33.5 / 32.7 ms | 30 / 31 | 31.3 ms | 6.8 / 5.9 | 539（共 540 帧） |
+
+抖动确实小了，但节奏被锁在约 30 fps，比原来的平均 74 fps 更差。
+
+同时取了 `IDXGISwapChain::GetFrameStatistics`：`SyncRefreshCount` / `SyncQPCTime` 一直是 0；`GetContainingOutput` 也拿不到 output（`output_on_this_adapter=0`），可见交换链所在的适配器上没有显示输出。也就是说 RTX 渲染出来的画面要跨适配器复制到 AMD 核显的输出（240 Hz）上，DXGI 不能直接对齐那边的 vblank。这和 VK 的 MAILBOX 完全平稳一致：VK 不等 vblank。
+
+所以 D3D12/GL 在 vsync 开启时的节奏，取决于这台笔记本的混合显卡呈现路径（以及 ToDesk）。引擎这边能做的 R694 已经做了：物理不再受影响。如果想要画面本身也平稳，可以先在 NVIDIA 控制面板里把显示模式切成「独显直连」（dGPU only / Advanced Optimus）再看；或者 demo 默认关闭 vsync，用帧率限制器（`fps_limits`）代替。后者是行为改动，需要另外决定。
 
 ## 本轮更新：R692 — 调查记录：VK postfx 比 D3D12 慢约 0.2 ms，原因是相互依赖的全屏 pass 之间必须串行（未修改代码）
 
