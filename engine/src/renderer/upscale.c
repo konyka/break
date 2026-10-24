@@ -78,7 +78,6 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     if (!s->bind_pipe)
         LOG_WARN("Upscale: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history[0] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history[1] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
     s->history_idx = 0;
@@ -94,7 +93,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     s->sampler = rhi_sampler_create(dev, &sdesc);
 
     /* R348: align R347 — present path uses upscale when ready; reject empty FBOs. */
-    if (!rhi_handle_valid(s->fbo.fb) || !rhi_handle_valid(s->history[0].fb) ||
+    if (!rhi_handle_valid(s->history[0].fb) ||
         !rhi_handle_valid(s->history[1].fb) || !rhi_handle_valid(s->sampler)) {
         LOG_WARN("Upscale: FBO/sampler creation failed");
         upscale_shutdown(s);
@@ -119,7 +118,6 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
 void upscale_shutdown(UpscaleSystem *s) {
     if (!s->dev) return;
     if (s->bind_pipe) { rhi_pipeline_bindings_destroy(s->dev, s->bind_pipe); s->bind_pipe = NULL; }
-    if (rhi_handle_valid(s->fbo.fb))         rhi_offscreen_fbo_destroy(s->dev, &s->fbo);
     if (rhi_handle_valid(s->history[0].fb))   rhi_offscreen_fbo_destroy(s->dev, &s->history[0]);
     if (rhi_handle_valid(s->history[1].fb))   rhi_offscreen_fbo_destroy(s->dev, &s->history[1]);
     if (rhi_handle_valid(s->sampler))         rhi_sampler_destroy(s->dev, s->sampler);
@@ -138,8 +136,10 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
     i32 read_idx  = s->history_idx;
     i32 write_idx = 1 - s->history_idx;
 
-    /* Pass 1: temporal upscale into output FBO */
-    rhi_offscreen_fbo_bind(cmd, &s->fbo);
+    /* Temporal upscale straight into the next history target, which is also
+     * this frame's output (R686: the R197-A copy-only pass 2 that blitted a
+     * separate output FBO into history cost a full display-res pass). */
+    rhi_offscreen_fbo_bind(cmd, &s->history[write_idx]);
     rhi_cmd_bind_pipeline(cmd, s->pipe);
     /* R99-2: Use rhi_cmd_bind_material_textures instead of three rhi_cmd_bind_texture
      * calls. In the VK path, rhi_cmd_bind_texture ignores the unit parameter and
@@ -166,26 +166,10 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
 
     rhi_cmd_draw(cmd, 3, 1);
 
-    /* Pass 2: blit Pass 1 result into history (no second TSR mix). */
-    rhi_offscreen_fbo_bind(cmd, &s->history[write_idx]);
-    rhi_cmd_bind_pipeline(cmd, s->pipe);
-    /* R197-A: history/depth unused when copy_only; bind fbo.color_tex for all slots. */
-    rhi_cmd_bind_material_textures(cmd, s->fbo.color_tex, s->fbo.color_tex,
-                                   s->fbo.color_tex, s->fbo.color_tex, s->fbo.color_tex,
-                                   s->fbo.color_tex, s->sampler);
-
-    if (s->loc_rw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rw, (f32)render_w);
-    if (s->loc_rh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_rh, (f32)render_h);
-    if (s->loc_dw >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dw, (f32)display_w);
-    if (s->loc_dh >= 0)        rhi_cmd_set_uniform_f32(cmd, s->loc_dh, (f32)display_h);
-    if (s->loc_sharp >= 0)     rhi_cmd_set_uniform_f32(cmd, s->loc_sharp, 0.0f);
-    if (s->loc_copy_only >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_copy_only, 1.0f);
-    if (s->loc_first_frame >= 0) rhi_cmd_set_uniform_f32(cmd, s->loc_first_frame, 0.0f);
-    if (s->loc_inv_proj >= 0)  rhi_cmd_set_uniform_mat4(cmd, s->loc_inv_proj, inv_proj);
-    if (s->loc_prev_vp >= 0)   rhi_cmd_set_uniform_mat4(cmd, s->loc_prev_vp, prev_vp);
-
-    rhi_cmd_draw(cmd, 3, 1);
-
     s->history_idx = write_idx;
     s->first_frame = false; /* R446 */
+}
+
+RHITexture upscale_output_texture(const UpscaleSystem *s) {
+    return s->history[s->history_idx].color_tex;
 }

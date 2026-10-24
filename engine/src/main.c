@@ -9206,7 +9206,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_offscreen_fbo_unbind(cmd, w, h);
             if (postfx.ready && rhi_handle_valid(postfx.tex_pipe)) {
                 rhi_cmd_bind_pipeline(cmd, postfx.tex_pipe);
-                rhi_cmd_bind_texture(cmd, upscale_sys.fbo.color_tex, postfx.sampler, 0);
+                rhi_cmd_bind_texture(cmd, upscale_output_texture(&upscale_sys), postfx.sampler, 0);
                 rhi_cmd_draw(cmd, 3, 1);
             }
         } else {

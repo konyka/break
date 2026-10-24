@@ -6638,7 +6638,7 @@ TEST(upscale_sidecar_copies_flat_input_and_clips_history) {
     rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
     ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
     memset(px, 0, sizeof(px));
-    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ups.fbo.color_tex, px, sizeof(px)));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, upscale_output_texture(&ups), px, sizeof(px)));
     ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
     for (i = 0; i < 64; ++i) {
         if (abs(px[i * 4 + 0] - 90) > 1 || abs(px[i * 4 + 1] - 140) > 1 ||
@@ -6658,8 +6658,9 @@ TEST(upscale_sidecar_copies_flat_input_and_clips_history) {
      * stripes (left/right differ, up/down match) -- the history value lies
      * inside that AABB in every channel and survives clip_aabb unchanged.
      * The output is therefore 0.85 * history + 0.15 * stripe, which is
-     * nowhere near the input: a wrong history unit, a broken copy-only
-     * pass 0 -> history, or a reprojection that falls outside [0,1] (no
+     * nowhere near the input: a wrong history unit, frame 0 not landing in
+     * the history target (R686: there is no copy pass any more), or a
+     * reprojection that falls outside [0,1] (no
      * history mix at all) each give a different value. */
     {
         static u8 stripes[8 * 8 * 4];
@@ -6685,7 +6686,7 @@ TEST(upscale_sidecar_copies_flat_input_and_clips_history) {
         rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
         ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
         memset(px, 0, sizeof(px));
-        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, ups.fbo.color_tex, px, sizeof(px)));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, upscale_output_texture(&ups), px, sizeof(px)));
         ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
         for (y = 0; y < 8; ++y)
             for (x = 0; x < 8; ++x)

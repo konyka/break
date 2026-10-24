@@ -6,7 +6,9 @@ typedef struct {
     RHIPipeline pipe;
     /* 计划 E Task 5 T1：反射物化表，loc_* 缓存的查询来源。 */
     RHIPipelineBindings *bind_pipe;
-    RHIOffscreenFBO fbo;
+    /* R686: pass 1 writes history[history_idx ^ 1] directly and that target
+     * is the frame's output; there is no separate output FBO and no
+     * copy-only pass 2 any more. */
     RHIOffscreenFBO history[2];
     i32 history_idx;
     RHISampler sampler;
@@ -32,3 +34,5 @@ void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
                    const f32 *inv_proj, const f32 *prev_vp,
                    f32 sharpness,
                    u32 render_w, u32 render_h, u32 display_w, u32 display_h);
+/* The texture the last upscale_apply wrote (display resolution). */
+RHITexture upscale_output_texture(const UpscaleSystem *s);

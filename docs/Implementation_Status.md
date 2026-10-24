@@ -1,6 +1,42 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R686 — 引擎性能：TSR 上采样去掉整屏复制 pass，Catmull-Rom 16 次采样降到 9 次
+
+### 定位
+R685 之后，在 Release 树里给 postfx 的每个 `*_apply` 加了 GPU 计时（临时探针，已移除）。D3D12 前向 postfx 共 1.23 ms，其中 `upscale_apply` 一项就占 0.506 ms，是最大的一项（第二是 sss 0.155 ms）。
+
+### 根因（`engine/src/renderer/upscale.c` 和 3 个 `upscale*.frag`）
+1. 每帧都多跑一个 1280×720 的全屏 pass。pass 1 把 TSR 结果写进 `s->fbo`，pass 2（R197-A 的 copy-only）再把它原样拷进 `history[write_idx]`。pass 1 的输出本来就可以直接当作下一帧的 history，这次拷贝没有必要。
+2. Catmull-Rom 每像素做 16 次采样（4×4，全部落在 texel 中心）。
+3. 锐化用的十字 4 邻域和 history clip AABB 用的 4 邻域是同一组像素，却分别采样了两次。
+
+### 修复
+- pass 1 直接写 `history[write_idx]`，删掉 `s->fbo` 和 pass 2。新增 `upscale_output_texture()`，返回本帧写入的那个 history；`main.c` 的 present 和 WARP 测试都改用它。`u_ups_copy_only` 分支保留在着色器里，push 布局和各张契约表都不变。
+- Catmull-Rom 改为 9 次双线性采样：每个轴把中间两个权重合成一次线性 fetch，放在 `t1 + w2/(w1+w2)` 处。权重和 R641 修正后的权重完全一致。我用 Python 在 16×16 随机纹理上对新旧两种公式各取 5000 个点比较，最大差 1.4e-15。
+- 4 个邻域只采样一次，锐化和 AABB 共用。因为分支依赖深度，GLSL 用 `textureLod(…, 0)`，HLSL 用 `SampleLevel 0`。
+
+单像素采样次数：16 + 5 + 4 + 1(history) + 1(depth) = 27 次，降到 9 + 5 + 1 + 1 = 16 次。每帧的全屏 pass 从 2 个降到 1 个。
+
+### 数据（Release，RTX）
+`upscale_apply` 的 GPU 时间：D3D12 从 0.506 ms 降到 0.286 ms，GL 0.298 ms，VK 0.287 ms。
+
+fps_avg：基线和新版本交替构建，各跑 2 轮。D3D12 的 p1 偶尔出现 35–80 的尖峰，基线和新版本都出现过，与本改动无关。
+
+| fps_avg | 修改前（2 轮） | 修改后（2 轮） |
+|---|---|---|
+| D3D12 前向 | 298 / 309 | 296 / 334 |
+| D3D12 延迟 | 282 / 240 | 286 / 289 |
+| VK 前向 | 248 / 249 | 263 / 269（+7%） |
+| VK 延迟 | 219 / 196 | 216 / 209 |
+| GL 前向 | 250 / 232 | 267 / 267（+10%） |
+| GL 延迟 | 198 / 197 | 228 / 232（+16%） |
+
+### 验证
+- 截图（Debug 三后端）：R685 和 R686 的同一后端对比，VK 差 0.22 / 0.05（前向 / 延迟），D3D12 差 1.01 / 1.02，GL 差 1.49 / 0.97，都在 demo 动画本身造成的连跑差异范围内（见 R685）。日志无 WARN/ERROR。
+- WARP：`upscale_sidecar_copies_flat_input_and_clips_history` 通过，这个用例同时验证了 frame 0 写进 history，以及 frame 1 的 history 混合。整套测试连跑 3 次：两次 81/81，debug layer 0 errors / 0 warnings；第一次有 10 个用例的 `rhi_present_ex` 失败，都在 [70] 之后，upscale 用例没有失败，后两次重跑都没有复现，判断是 WARP 的偶发问题。RTX 80/81，只有预期中的 [1] 失败。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。剪贴板用例这次也通过了，当时 ToDesk 没有占用剪贴板。
+
 ## 本轮更新：R685 — 引擎性能：点光阴影只渲染被采样的 4 盏；首次建立 Release 基线
 
 ### Release 基线

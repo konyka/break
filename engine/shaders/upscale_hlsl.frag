@@ -12,12 +12,10 @@
 // read, so GL's linker drops them and upscale_init resolves -1; no member
 // and no marker here, for the same result.
 //
-// GLSL textureOffset(s, uv, ivec2) is Sample(s, uv, int2); the AABB taps and
-// the history read sit behind a data-dependent branch, so they use
-// SampleLevel 0 (single-mip targets, the LOD texture() selects on GL). The
-// Catmull-Rom taps land on source texel centres (base is floor(pos) - 0.5
-// texels), so filtering does not move them. Matrices come in whole and
-// column-major: GLSL M * v is mul(M, v).
+// The neighbour taps and the history read sit behind a data-dependent
+// branch, so they use SampleLevel 0 (single-mip targets, the LOD texture()
+// selects on GL). Matrices come in whole and column-major: GLSL M * v is
+// mul(M, v).
 struct PushConsts {
     float4x4 u_ups_inv_proj;     //   0
     float4x4 u_ups_prev_vp;      //  64
@@ -43,37 +41,34 @@ SamplerState g_smp0 : register(s0, space0);
 SamplerState g_smp1 : register(s1, space0);
 SamplerState g_smp2 : register(s2, space0);
 
+/* R686: 9 bilinear taps instead of 16 point taps; see upscale.frag. The
+ * outer taps sit on texel centres, the folded inner tap needs the linear
+ * filter, so all of them use SampleLevel 0 (single-mip source). */
 float3 sample_catmull(float2 uv, float2 texel) {
-    float2 p = uv / texel - 0.5f;
-    float2 f = frac(p);
-    float fx = f.x, fy = f.y;
+    float2 pos = uv / texel;
+    float2 t1 = floor(pos - 0.5f) + 0.5f;
+    float2 f = pos - t1;
 
-    /* R641: Catmull-Rom weights carry an overall 1/2. Without it they
-     * summed to 2 at texel centres (1.5 at the midpoint), so the upscale
-     * doubled every flat region and clamp() turned it white on every
-     * backend; each axis now sums to exactly 1. */
-    float wx0 = 0.5f * (-fx + 2.0f*fx*fx - fx*fx*fx);
-    float wx1 = 0.5f * (2.0f - 5.0f*fx*fx + 3.0f*fx*fx*fx);
-    float wx2 = 0.5f * (fx + 4.0f*fx*fx - 3.0f*fx*fx*fx);
-    float wx3 = 0.5f * (-fx*fx + fx*fx*fx);
+    float2 w0 = f * (-0.5f + f * (1.0f - 0.5f * f));
+    float2 w1 = 1.0f + f * f * (-2.5f + 1.5f * f);
+    float2 w2 = f * (0.5f + f * (2.0f - 1.5f * f));
+    float2 w3 = f * f * (-0.5f + 0.5f * f);
 
-    float wy0 = 0.5f * (-fy + 2.0f*fy*fy - fy*fy*fy);
-    float wy1 = 0.5f * (2.0f - 5.0f*fy*fy + 3.0f*fy*fy*fy);
-    float wy2 = 0.5f * (fy + 4.0f*fy*fy - 3.0f*fy*fy*fy);
-    float wy3 = 0.5f * (-fy*fy + fy*fy*fy);
-
-    float row_w[4] = { wy0, wy1, wy2, wy3 };
-    float col_w[4] = { wx0, wx1, wx2, wx3 };
-
-    float2 base = (floor(p) - float2(0.5f, 0.5f)) * texel;
+    float2 w12 = w1 + w2;
+    float2 uv0  = (t1 - 1.0f) * texel;
+    float2 uv12 = (t1 + w2 / w12) * texel;
+    float2 uv3  = (t1 + 2.0f) * texel;
 
     float3 result = (float3)0.0f;
-    for (int r = 0; r < 4; r++) {
-        for (int c = 0; c < 4; c++) {
-            float2 sample_uv = base + float2((float)c, (float)r) * texel;
-            result += g_src.SampleLevel(g_smp0, sample_uv, 0.0f).rgb * row_w[r] * col_w[c];
-        }
-    }
+    result += g_src.SampleLevel(g_smp0, float2(uv0.x,  uv0.y), 0.0f).rgb  * (w0.x  * w0.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv12.x, uv0.y), 0.0f).rgb  * (w12.x * w0.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv3.x,  uv0.y), 0.0f).rgb  * (w3.x  * w0.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv0.x,  uv12.y), 0.0f).rgb * (w0.x  * w12.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv12.x, uv12.y), 0.0f).rgb * (w12.x * w12.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv3.x,  uv12.y), 0.0f).rgb * (w3.x  * w12.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv0.x,  uv3.y), 0.0f).rgb  * (w0.x  * w3.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv12.x, uv3.y), 0.0f).rgb  * (w12.x * w3.y);
+    result += g_src.SampleLevel(g_smp0, float2(uv3.x,  uv3.y), 0.0f).rgb  * (w3.x  * w3.y);
     return result;
 }
 
@@ -97,17 +92,23 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {
     float2 render_texel = 1.0f / float2(g_push.u_ups_rw, g_push.u_ups_rh);
     float3 upscaled = sample_catmull(render_uv, render_texel);
 
-    if (g_push.u_ups_sharp > 0.0f) {
-        float3 c = g_src.SampleLevel(g_smp0, render_uv, 0.0f).rgb;
-        float3 n = g_src.SampleLevel(g_smp0, render_uv + float2(0.0f, -render_texel.y), 0.0f).rgb;
-        float3 s = g_src.SampleLevel(g_smp0, render_uv + float2(0.0f,  render_texel.y), 0.0f).rgb;
-        float3 w = g_src.SampleLevel(g_smp0, render_uv + float2(-render_texel.x, 0.0f), 0.0f).rgb;
-        float3 e = g_src.SampleLevel(g_smp0, render_uv + float2( render_texel.x, 0.0f), 0.0f).rgb;
-        upscaled += (c * 4.0f - n - s - w - e) * g_push.u_ups_sharp * 0.25f;
+    /* R686: the sharpen cross and the history clip AABB share four taps. */
+    float depth = g_depth.Sample(g_smp1, render_uv).r;
+    bool use_history = depth < 1.0f && g_push.u_ups_first_frame < 0.5f;
+    float3 nw = (float3)0.0f, ne = (float3)0.0f, nn = (float3)0.0f, ns = (float3)0.0f;
+    if (g_push.u_ups_sharp > 0.0f || use_history) {
+        nw = g_src.SampleLevel(g_smp0, render_uv + float2(-render_texel.x, 0.0f), 0.0f).rgb;
+        ne = g_src.SampleLevel(g_smp0, render_uv + float2( render_texel.x, 0.0f), 0.0f).rgb;
+        nn = g_src.SampleLevel(g_smp0, render_uv + float2(0.0f, -render_texel.y), 0.0f).rgb;
+        ns = g_src.SampleLevel(g_smp0, render_uv + float2(0.0f,  render_texel.y), 0.0f).rgb;
     }
 
-    float depth = g_depth.Sample(g_smp1, render_uv).r;
-    if (depth < 1.0f && g_push.u_ups_first_frame < 0.5f) {
+    if (g_push.u_ups_sharp > 0.0f) {
+        float3 c = g_src.SampleLevel(g_smp0, render_uv, 0.0f).rgb;
+        upscaled += (c * 4.0f - nn - ns - nw - ne) * g_push.u_ups_sharp * 0.25f;
+    }
+
+    if (use_history) {
         float2 ndc = render_uv * 2.0f - 1.0f;
         float4 clip_pos = float4(ndc.x, ndc.y, depth * 2.0f - 1.0f, 1.0f);
         float4 view_pos = mul(g_push.u_ups_inv_proj, clip_pos);
@@ -119,12 +120,8 @@ float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target0 {
             prev_uv.y >= 0.0f && prev_uv.y <= 1.0f) {
             float3 history = g_history.SampleLevel(g_smp2, prev_uv, 0.0f).rgb;
 
-            float3 n0 = g_src.SampleLevel(g_smp0, render_uv, 0.0f, int2(-1, 0)).rgb;
-            float3 n1 = g_src.SampleLevel(g_smp0, render_uv, 0.0f, int2( 1, 0)).rgb;
-            float3 n2 = g_src.SampleLevel(g_smp0, render_uv, 0.0f, int2( 0,-1)).rgb;
-            float3 n3 = g_src.SampleLevel(g_smp0, render_uv, 0.0f, int2( 0, 1)).rgb;
-            float3 aabb_min = min(min(n0, n1), min(n2, n3));
-            float3 aabb_max = max(max(n0, n1), max(n2, n3));
+            float3 aabb_min = min(min(nw, ne), min(nn, ns));
+            float3 aabb_max = max(max(nw, ne), max(nn, ns));
 
             history = clip_aabb(aabb_min, aabb_max, history);
             upscaled = lerp(history, upscaled, 0.15f);
