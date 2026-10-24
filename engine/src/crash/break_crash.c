@@ -1,13 +1,15 @@
-/* break_crash — Stage 5 Phase C Tasks 1+2 implementation: the canonical crash
- * record ("break-crash-v1"), the bounded on-disk spool, and the
- * async-signal-safe capture (install/handler). The grammar and every
- * behavioral contract are documented in break_crash.h; the parse discipline
+/* break_crash — Stage 5 Phase C Tasks 1-3 implementation: the canonical crash
+ * record ("break-crash-v1"), the bounded on-disk spool, the
+ * async-signal-safe capture (install/handler), the pure redaction pass, and
+ * the caller-supplied upload seam with its persisted retry/discard policy.
+ * The grammar and every behavioral contract are documented in break_crash.h;
+ * the parse discipline
  * mirrors the Phase A manifest parser (break_update.c): ASCII subset + LF
  * only, fixed key order, fixed-width lowercase hex, two passes (validate
  * everything BEFORE filling — allocation size here is a fixed struct, never
  * attacker-derived), NULL = the only oracle.
  *
- * Redaction/upload (Task 3) are deliberately absent. Zero external
+ * Zero external
  * dependencies: the write-side PAL (platform_fs.h) and the build identity
  * (break_version.h) are consumed header-only and resolved at the consumer's
  * final link (the test_break_update / test_break_version precedent). */
@@ -482,86 +484,190 @@ static void bc_put_hexbytes(u8 **p, const u8 *in, usize n) {
 }
 
 /* Exact serialized size (≤ 35746 bytes by construction — the 64 KiB cap is
- * unreachable from the builder but enforced at finish regardless). */
-static usize bc_record_size(const BreakCrashRecordBuilder *b) {
+ * unreachable from the builder but enforced at emit regardless). */
+typedef struct {
+    int signo, code;
+    u64 fault_addr, pid, tid, rip, rsp, rbp;
+    const char *build_id;
+    u64 module_count;
+    const BcModule *modules;
+    const u8 *stack_window;
+    usize stack_window_len;
+    const u8 *context_blob;
+    usize context_blob_len;
+} BcView;
+
+static usize bc_view_size(const BcView *v) {
     usize n = 15;             /* "break-crash-v1\n" */
     n += 7 + 8 + 1;           /* "signo: " hex8 LF */
     n += 6 + 8 + 1;           /* "code: " */
     n += 12 + 16 + 1;         /* "fault_addr: " */
     n += (5 + 16 + 1) * 5;    /* pid/tid/rip/rsp/rbp */
-    n += 10 + strlen(b->build_id) + 1;
-    u32 i;
-    for (i = 0; i < b->module_count; i++) {
-        n += 8 + 16 + 1 + 16 + 1 + strlen(b->modules[i].name) + 1;
+    n += 10 + strlen(v->build_id) + 1;
+    u64 i;
+    for (i = 0; i < v->module_count; i++) {
+        n += 8 + 16 + 1 + 16 + 1 + strlen(v->modules[i].name) + 1;
     }
-    n += 13 + (b->stack_window_len ? 1 + 2 * b->stack_window_len : 0) + 1;
-    n += 13 + (b->context_blob_len ? 1 + 2 * b->context_blob_len : 0) + 1;
+    n += 13 + (v->stack_window_len ? 1 + 2 * v->stack_window_len : 0) + 1;
+    n += 13 + (v->context_blob_len ? 1 + 2 * v->context_blob_len : 0) + 1;
     return n;
 }
 
-usize break_crash_record_builder_finish(const BreakCrashRecordBuilder *b, u8 *out,
-                                        usize capacity) {
-    if (!b || !out) return 0;
-    usize need = bc_record_size(b);
+/* The ONE normal-context writer: the builder's finish and Task 3's record
+ * serialize both emit through this (byte-identical output pinned by the
+ * golden test; the signal-side writer stays the second, interlocked writer). */
+static usize bc_view_emit(const BcView *v, u8 *out, usize capacity) {
+    usize need = bc_view_size(v);
     if (capacity < need) return 0;
     if (need > BREAK_CRASH_RECORD_MAX) return 0; /* unreachable by construction */
 
     u8 *p = out;
-    u32 i;
+    u64 i;
     bc_put_str(&p, "break-crash-v1\n");
     bc_put_str(&p, "signo: ");
-    bc_put_hex(&p, (u32)b->signo, 8);
+    bc_put_hex(&p, (u32)v->signo, 8);
     *p++ = '\n';
     bc_put_str(&p, "code: ");
-    bc_put_hex(&p, (u32)b->code, 8);
+    bc_put_hex(&p, (u32)v->code, 8);
     *p++ = '\n';
     bc_put_str(&p, "fault_addr: ");
-    bc_put_hex(&p, b->fault_addr, 16);
+    bc_put_hex(&p, v->fault_addr, 16);
     *p++ = '\n';
     bc_put_str(&p, "pid: ");
-    bc_put_hex(&p, b->pid, 16);
+    bc_put_hex(&p, v->pid, 16);
     *p++ = '\n';
     bc_put_str(&p, "tid: ");
-    bc_put_hex(&p, b->tid, 16);
+    bc_put_hex(&p, v->tid, 16);
     *p++ = '\n';
     bc_put_str(&p, "rip: ");
-    bc_put_hex(&p, b->rip, 16);
+    bc_put_hex(&p, v->rip, 16);
     *p++ = '\n';
     bc_put_str(&p, "rsp: ");
-    bc_put_hex(&p, b->rsp, 16);
+    bc_put_hex(&p, v->rsp, 16);
     *p++ = '\n';
     bc_put_str(&p, "rbp: ");
-    bc_put_hex(&p, b->rbp, 16);
+    bc_put_hex(&p, v->rbp, 16);
     *p++ = '\n';
     bc_put_str(&p, "build-id: ");
-    bc_put_str(&p, b->build_id);
+    bc_put_str(&p, v->build_id);
     *p++ = '\n';
-    for (i = 0; i < b->module_count; i++) {
+    for (i = 0; i < v->module_count; i++) {
         bc_put_str(&p, "module: ");
-        bc_put_hex(&p, b->modules[i].offset, 16);
+        bc_put_hex(&p, v->modules[i].offset, 16);
         *p++ = ' ';
-        bc_put_hex(&p, b->modules[i].size, 16);
+        bc_put_hex(&p, v->modules[i].size, 16);
         *p++ = ' ';
-        bc_put_str(&p, b->modules[i].name);
+        bc_put_str(&p, v->modules[i].name);
         *p++ = '\n';
     }
     bc_put_str(&p, "stack-window:");
-    if (b->stack_window_len) {
+    if (v->stack_window_len) {
         *p++ = ' ';
-        bc_put_hexbytes(&p, b->stack_window, b->stack_window_len);
+        bc_put_hexbytes(&p, v->stack_window, v->stack_window_len);
     }
     *p++ = '\n';
     bc_put_str(&p, "context-blob:");
-    if (b->context_blob_len) {
+    if (v->context_blob_len) {
         *p++ = ' ';
-        bc_put_hexbytes(&p, b->context_blob, b->context_blob_len);
+        bc_put_hexbytes(&p, v->context_blob, v->context_blob_len);
     }
     *p++ = '\n';
     return (usize)(p - out); /* == need by construction */
 }
 
+usize break_crash_record_builder_finish(const BreakCrashRecordBuilder *b, u8 *out,
+                                        usize capacity) {
+    if (!b || !out) return 0;
+    BcView v;
+    v.signo = b->signo;
+    v.code = b->code;
+    v.fault_addr = b->fault_addr;
+    v.pid = b->pid;
+    v.tid = b->tid;
+    v.rip = b->rip;
+    v.rsp = b->rsp;
+    v.rbp = b->rbp;
+    v.build_id = b->build_id;
+    v.module_count = b->module_count;
+    v.modules = b->modules;
+    v.stack_window = b->stack_window;
+    v.stack_window_len = b->stack_window_len;
+    v.context_blob = b->context_blob;
+    v.context_blob_len = b->context_blob_len;
+    return bc_view_emit(&v, out, capacity);
+}
+
 void break_crash_record_builder_destroy(BreakCrashRecordBuilder *b) {
     free(b);
+}
+
+/* ==========================================================================
+ *  Redaction + serialization (Task 3)
+ * ========================================================================== */
+
+usize break_crash_record_serialize(const BreakCrashRecord *r, u8 *out, usize capacity) {
+    if (!r || !out) return 0;
+    BcView v;
+    v.signo = r->signo;
+    v.code = r->code;
+    v.fault_addr = r->fault_addr;
+    v.pid = r->pid;
+    v.tid = r->tid;
+    v.rip = r->rip;
+    v.rsp = r->rsp;
+    v.rbp = r->rbp;
+    v.build_id = r->build_id;
+    v.module_count = r->module_count;
+    v.modules = r->modules;
+    v.stack_window = r->stack_window;
+    v.stack_window_len = r->stack_window_len;
+    v.context_blob = r->context_blob;
+    v.context_blob_len = r->context_blob_len;
+    return bc_view_emit(&v, out, capacity);
+}
+
+/* Basename over BOTH '/' and '\' separators, in place (the NUL-terminated
+ * name buffer is fixed-size; basename only ever shortens). A name that ends
+ * at a separator has no basename → the "redacted" placeholder (§6 permits
+ * remove-or-placeholder; module count/offsets stay aligned). */
+static void bc_basename_inplace(char *name) {
+    const char *base = name;
+    const char *p;
+    for (p = name; *p; p++) {
+        if (*p == '/' || *p == '\\') base = p + 1;
+    }
+    if (base == name) return; /* already a basename: idempotent no-op */
+    if (!*base) {
+        memcpy(name, "redacted", sizeof("redacted")); /* includes NUL */
+        return;
+    }
+    memmove(name, base, strlen(base) + 1);
+}
+
+BreakCrashRecord *break_crash_record_redact(const BreakCrashRecord *r) {
+    if (!r) return NULL;
+    /* Field-level rules per break_crash.h: every field is copied verbatim
+     * EXCEPT module names, which basename in place. The transformed record
+     * is re-serialized and re-parsed so the result provably satisfies the
+     * grammar (fail closed: NULL on anomaly — unreachable for a valid input;
+     * OOM also reports as NULL here). */
+    BreakCrashRecord *tmp = malloc(sizeof(*tmp));
+    if (!tmp) return NULL;
+    memcpy(tmp, r, sizeof(*tmp));
+    u64 i;
+    for (i = 0; i < tmp->module_count; i++) {
+        bc_basename_inplace(tmp->modules[i].name);
+    }
+    u8 *text = malloc(BREAK_CRASH_RECORD_MAX);
+    if (!text) {
+        free(tmp);
+        return NULL;
+    }
+    usize n = break_crash_record_serialize(tmp, text, BREAK_CRASH_RECORD_MAX);
+    free(tmp);
+    BreakCrashRecord *out = n ? break_crash_record_parse(text, n) : NULL;
+    free(text);
+    return out;
 }
 
 /* ==========================================================================
@@ -680,6 +786,73 @@ static void bc_dir_fsync(const char *path) {
 #endif
 }
 
+/* pending/<id>.meta — the upload retry sidecar (Task 3). */
+static bool bc_meta_path(const BreakCrashSpool *s, u64 id, char *out, usize cap) {
+    char name[26]; /* ≤20 digits + ".meta" + NUL */
+    snprintf(name, sizeof(name), "%llu.meta", (unsigned long long)id);
+    return bc_join(out, cap, s->pending, name);
+}
+
+/* Attempt count from the sidecar. Absent OR corrupt → 0: retry metadata is
+ * local bookkeeping, never a reason to discard crash evidence — a corrupt
+ * sidecar is atomically rewritten on the next failed pass (self-heals). */
+static u32 bc_meta_read_attempts(const BreakCrashSpool *s, u64 id) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    if (!bc_meta_path(s, id, path, sizeof(path))) return 0;
+    u64 size = 0;
+    if (!platform_file_size(path, &size)) return 0; /* absent: no failures yet */
+    /* the largest valid sidecar is 41 bytes (30 + 10 digits + LF) */
+    if (size == 0 || size >= 64) return 0;
+    u8 buf[64];
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return 0;
+    usize got = fread(buf, 1, (usize)size, fp);
+    fclose(fp);
+    if (got != (usize)size) return 0;
+    /* canonical: "break-crash-meta-v1\nattempts: <u32 decimal>\n" */
+    static const char PREFIX[] = "break-crash-meta-v1\nattempts: ";
+    const usize plen = sizeof(PREFIX) - 1; /* 30 */
+    if ((usize)size <= plen + 1) return 0; /* need ≥ 1 digit + final LF */
+    if (memcmp(buf, PREFIX, plen) != 0) return 0;
+    if (buf[size - 1] != '\n') return 0;
+    usize digits = (usize)size - plen - 1;
+    if (digits > 10) return 0;
+    if (digits > 1 && buf[plen] == '0') return 0; /* no leading zeros */
+    u64 v = 0;
+    usize i;
+    for (i = 0; i < digits; i++) {
+        u8 c = buf[plen + i];
+        if (c < '0' || c > '9') return 0;
+        v = v * 10u + (u64)(c - '0');
+    }
+    if (v > 0xffffffffull) return 0;
+    return (u32)v;
+}
+
+/* Atomically rewrites the sidecar (PlatformAtomicWriter: tmp+fsync+rename —
+ * a crash mid-pass leaves the OLD or the NEW count, never a torn file). */
+static bool bc_meta_write_attempts(BreakCrashSpool *s, u64 id, u32 attempts) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    if (!bc_meta_path(s, id, path, sizeof(path))) return false;
+    char text[48];
+    int n = snprintf(text, sizeof(text), "break-crash-meta-v1\nattempts: %llu\n",
+                     (unsigned long long)attempts);
+    if (n <= 0 || (usize)n >= sizeof(text)) return false;
+    PlatformAtomicWriter *w = platform_atomic_writer_open(path);
+    if (!w) return false;
+    return platform_atomic_writer_write(w, text, (usize)n) &&
+           platform_atomic_writer_commit(w); /* consumes the writer */
+}
+
+/* The sidecar's lifetime is bound to the record's stay in pending/: every
+ * path that removes a record from pending removes its sidecar (best-effort —
+ * a leftover is foreign-name residue, never counted, never shipped). */
+static void bc_meta_remove(const BreakCrashSpool *s, u64 id) {
+    char path[PLATFORM_FS_PATH_CAPACITY];
+    if (!bc_meta_path(s, id, path, sizeof(path))) return;
+    if (remove(path) == 0) bc_dir_fsync(s->pending);
+}
+
 /* Retention: pending/sent overflow moves the OLDEST (lowest id) into
  * discarded; discarded overflow DELETES its oldest. Janitorial best-effort:
  * the triggering operation's own effect has already committed, and the
@@ -710,6 +883,7 @@ static void bc_enforce_retention(BreakCrashSpool *s, int class_) {
             if (rename(src, dst) != 0) return;
             bc_dir_fsync(dir);
             bc_dir_fsync(s->discarded);
+            if (class_ == BC_CLASS_PENDING) bc_meta_remove(s, victim);
             bc_enforce_retention(s, BC_CLASS_DISCARDED);
         }
     }
@@ -892,21 +1066,10 @@ bool break_crash_spool_put_pending(BreakCrashSpool *s, const void *record_bytes,
     return true;
 }
 
-bool break_crash_spool_read_pending(const BreakCrashSpool *s, u64 index,
-                                    u8 **out_buf, u64 *out_len) {
-    if (!s || !out_buf || !out_len) return false;
-    *out_buf = NULL;
-    *out_len = 0;
-    u64 *ids = NULL;
-    u32 count = 0;
-    if (!bc_list_ids(s->pending, &ids, &count)) return false;
-    if (index >= count) {
-        free(ids);
-        return false;
-    }
-    u64 id = ids[count - 1 - index]; /* newest-first (documented) */
-    free(ids);
-
+/* Read one pending record by canonical id (the index-based public read and
+ * the Task 3 upload pass both resolve through this). */
+static bool bc_read_pending_id(const BreakCrashSpool *s, u64 id,
+                               u8 **out_buf, u64 *out_len) {
     char name[25];
     bc_id_to_name(id, name);
     char path[PLATFORM_FS_PATH_CAPACITY];
@@ -931,10 +1094,11 @@ bool break_crash_spool_read_pending(const BreakCrashSpool *s, u64 index,
     return true;
 }
 
-static bool bc_mark(BreakCrashSpool *s, u64 index, int target_class) {
-    if (!s) return false;
-    const char *target_dir = bc_class_dir(s, target_class);
-    if (!target_dir) return false;
+bool break_crash_spool_read_pending(const BreakCrashSpool *s, u64 index,
+                                    u8 **out_buf, u64 *out_len) {
+    if (!s || !out_buf || !out_len) return false;
+    *out_buf = NULL;
+    *out_len = 0;
     u64 *ids = NULL;
     u32 count = 0;
     if (!bc_list_ids(s->pending, &ids, &count)) return false;
@@ -942,9 +1106,14 @@ static bool bc_mark(BreakCrashSpool *s, u64 index, int target_class) {
         free(ids);
         return false;
     }
-    u64 id = ids[count - 1 - index]; /* newest-first, same as read */
+    u64 id = ids[count - 1 - index]; /* newest-first (documented) */
     free(ids);
+    return bc_read_pending_id(s, id, out_buf, out_len);
+}
 
+static bool bc_mark_id(BreakCrashSpool *s, u64 id, int target_class) {
+    const char *target_dir = bc_class_dir(s, target_class);
+    if (!target_dir) return false;
     char name[25];
     bc_id_to_name(id, name);
     char src[PLATFORM_FS_PATH_CAPACITY];
@@ -954,8 +1123,23 @@ static bool bc_mark(BreakCrashSpool *s, u64 index, int target_class) {
     if (rename(src, dst) != 0) return false; /* same filesystem by construction */
     bc_dir_fsync(s->pending);
     bc_dir_fsync(target_dir);
+    bc_meta_remove(s, id); /* retry state ends with the stay in pending/ */
     bc_enforce_retention(s, target_class);
     return true;
+}
+
+static bool bc_mark(BreakCrashSpool *s, u64 index, int target_class) {
+    if (!s) return false;
+    u64 *ids = NULL;
+    u32 count = 0;
+    if (!bc_list_ids(s->pending, &ids, &count)) return false;
+    if (index >= count) {
+        free(ids);
+        return false;
+    }
+    u64 id = ids[count - 1 - index]; /* newest-first, same as read */
+    free(ids);
+    return bc_mark_id(s, id, target_class);
 }
 
 bool break_crash_spool_mark_sent(BreakCrashSpool *s, u64 index) {
@@ -964,6 +1148,61 @@ bool break_crash_spool_mark_sent(BreakCrashSpool *s, u64 index) {
 
 bool break_crash_spool_mark_discarded(BreakCrashSpool *s, u64 index) {
     return bc_mark(s, index, BC_CLASS_DISCARDED);
+}
+
+/* ==========================================================================
+ *  Upload seam (Task 3) — caller-supplied transport, persisted retry/discard
+ * ========================================================================== */
+
+u32 break_crash_spool_upload_pending(BreakCrashSpool *s, BreakCrashUploadFn up,
+                                     void *user) {
+    if (!s || !up) return 0; /* INVALID-style no-op */
+    u64 *ids = NULL;
+    u32 count = 0;
+    if (!bc_list_ids(s->pending, &ids, &count)) return 0;
+    u8 *text = malloc(BREAK_CRASH_RECORD_MAX); /* serialize buffer, per pass */
+    if (!text) {
+        free(ids);
+        return 0;
+    }
+    u32 sent = 0;
+    u32 k;
+    for (k = 0; k < count; k++) {
+        u64 id = ids[count - 1 - k]; /* newest-first over the id snapshot */
+        u8 *buf = NULL;
+        u64 len = 0;
+        if (!bc_read_pending_id(s, id, &buf, &len)) continue; /* vanished/IO: skip */
+        BreakCrashRecord *r = break_crash_record_parse(buf, (usize)len);
+        free(buf);
+        if (!r) {
+            /* pending/ holds parseable records by construction; a foreign
+             * unparseable entry fails closed into discarded/, never ships */
+            (void)bc_mark_id(s, id, BC_CLASS_DISCARDED);
+            continue;
+        }
+        BreakCrashRecord *red = break_crash_record_redact(r);
+        break_crash_record_destroy(r);
+        usize n = red ? break_crash_record_serialize(red, text, BREAK_CRASH_RECORD_MAX)
+                      : 0;
+        break_crash_record_destroy(red);
+        if (!n) continue; /* allocation failure in practice: never ship
+                           * unredactable bytes; the record stays pending */
+        if (up(user, text, n)) {
+            if (bc_mark_id(s, id, BC_CLASS_SENT)) sent++;
+            /* a failed mark leaves the record pending: upload is
+             * at-least-once, the next pass re-ships (server dedups) */
+            continue;
+        }
+        u32 attempts = bc_meta_read_attempts(s, id) + 1;
+        if (attempts >= BREAK_CRASH_UPLOAD_ATTEMPTS_MAX) {
+            (void)bc_mark_id(s, id, BC_CLASS_DISCARDED); /* removes the sidecar */
+        } else {
+            (void)bc_meta_write_attempts(s, id, attempts); /* best-effort, documented */
+        }
+    }
+    free(text);
+    free(ids);
+    return sent;
 }
 
 /* ==========================================================================

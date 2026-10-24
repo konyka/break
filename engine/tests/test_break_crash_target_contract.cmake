@@ -1,4 +1,4 @@
-# Stage 5 Phase C Tasks 1+2 — break_crash target contract.
+# Stage 5 Phase C Tasks 1-3 — break_crash target contract.
 #
 # Pins (mirrors the test_break_update_target_contract.cmake shape):
 #   1. The break_crash target lives inside the if(BREAK_ENABLE_CRASH)
@@ -13,15 +13,16 @@
 #      break_crash (their target_link_libraries calls are single-line).
 #   4. Focused test registration pins (inline platform_fs.c +
 #      break_version.c precedent).
-#   5. nm gate: the production archive exports exactly the 33 public
-#      break_crash_* symbols (12 record + 10 builder + 7 spool + 4 capture).
+#   5. nm gate: the production archive exports exactly the 36 public
+#      break_crash_* symbols (14 record + 10 builder + 8 spool + 4 capture).
 #   6. Minimal archive link test: a tiny executable links ONLY
 #      libbreak_crash.a (plus the PAL TU src/platform/platform_fs.c and the
 #      build-identity TU src/core/break_version.c compiled inline — the
 #      test_break_update / test_break_version precedent, engine keeps sole
 #      production ownership of both) and runs one builder→finish→parse
 #      golden round-trip + one spool put/read/mark pass + one
-#      install/is_installed/double-install/uninstall smoke.
+#      install/is_installed/double-install/uninstall smoke + one
+#      redact/serialize round-trip and one upload pass smoke.
 
 if(NOT DEFINED ENGINE_CMAKE)
     message(FATAL_ERROR "ENGINE_CMAKE is required")
@@ -111,7 +112,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_crash_target_contract")
     message(FATAL_ERROR "missing test_break_crash_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 33 public symbols ------------------------------
+# --- 5. nm gate: exactly the 36 public symbols ------------------------------
 find_program(CRASH_CONTRACT_NM nm)
 if(NOT CRASH_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_crash export gate)")
@@ -136,7 +137,9 @@ set(expected_symbols
     break_crash_record_module_count
     break_crash_record_parse
     break_crash_record_pid
+    break_crash_record_redact
     break_crash_record_registers
+    break_crash_record_serialize
     break_crash_record_signo
     break_crash_record_stack_window
     break_crash_record_tid
@@ -158,6 +161,7 @@ set(expected_symbols
     break_crash_spool_open
     break_crash_spool_put_pending
     break_crash_spool_read_pending
+    break_crash_spool_upload_pending
     break_crash_uninstall)
 
 string(REPLACE "\n" ";" nm_lines "${nm_out}")
@@ -174,7 +178,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_crash.a must export exactly the 33 public symbols.\n"
+        "libbreak_crash.a must export exactly the 36 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 
@@ -189,6 +193,15 @@ file(WRITE "${link_main}" "
 #ifndef CRASH_LINK_WORK
 #error \"CRASH_LINK_WORK is required\"
 #endif
+/* Always-true transport for the upload smoke: verifies the shipped bytes
+ * parse (the pass ships redacted canonical text) and reports success. */
+static bool crash_link_up_true(void *user, const void *bytes, usize len) {
+    (void)user;
+    BreakCrashRecord *r = break_crash_record_parse(bytes, len);
+    if (!r) return false;
+    break_crash_record_destroy(r);
+    return true;
+}
 /* One builder→finish→parse golden round-trip + one spool
  * open/put/count/read/mark pass + one install/is_installed/double-install/
  * uninstall smoke, linking ONLY libbreak_crash.a (+ the inline PAL and
@@ -303,6 +316,46 @@ int main(void) {
         if (break_crash_is_installed()) return 36;
         if (break_crash_install(NULL)) return 37;
     }
+
+    /* Task 3 smoke from the bare archive: redact keeps the already-basename
+     * golden record byte-identical (idempotence pin), serialize round-trips,
+     * NULL forms are no-ops, and one always-true upload pass moves
+     * pending → sent (returned count 1). */
+    r = break_crash_record_parse(text, n);
+    if (!r) return 38;
+    {
+        BreakCrashRecord *red = break_crash_record_redact(r);
+        if (!red) return 39;
+        {
+            u8 ser[1024];
+            usize sn = break_crash_record_serialize(red, ser, sizeof(ser));
+            break_crash_record_destroy(red);
+            if (sn != n || memcmp(ser, text, n) != 0) return 40;
+        }
+    }
+    break_crash_record_destroy(r);
+    if (break_crash_record_redact(NULL)) return 41;
+    if (break_crash_record_serialize(NULL, text, n) != 0) return 42;
+    snprintf(root, sizeof(root), \"%s/link_upload_spool\", CRASH_LINK_WORK);
+    s = break_crash_spool_open(root);
+    if (!s) return 43;
+    /* rerun-idempotent (the work dir persists across ctest runs): pending
+     * must start empty (this checker never leaves pending residue here). */
+    if (break_crash_spool_count(s, 0) != 0ull) return 44;
+    sent0 = break_crash_spool_count(s, 1);
+    disc0 = break_crash_spool_count(s, 2);
+    if (!break_crash_spool_put_pending(s, text, n)) return 45;
+    if (break_crash_spool_upload_pending(s, NULL, NULL) != 0) return 46;
+    if (break_crash_spool_count(s, 0) != 1ull) return 47; /* NULL up: no-op */
+    if (break_crash_spool_upload_pending(s, crash_link_up_true, NULL) != 1) return 48;
+    if (break_crash_spool_count(s, 0) != 0ull) return 49;
+    if (sent0 < BREAK_CRASH_SPOOL_KEEP) {
+        if (break_crash_spool_count(s, 1) != sent0 + 1) return 50;
+    } else {
+        if (break_crash_spool_count(s, 1) != BREAK_CRASH_SPOOL_KEEP) return 51;
+        if (break_crash_spool_count(s, 2) != disc0 + 1) return 52;
+    }
+    break_crash_spool_destroy(s);
     return 0;
 }
 ")

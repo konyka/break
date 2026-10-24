@@ -1,10 +1,13 @@
 /* ==========================================================================
- *  test_break_crash.c — Stage 5 Phase C Tasks 1+2 tests: canonical crash
+ *  test_break_crash.c — Stage 5 Phase C Tasks 1-3 tests: canonical crash
  *  record ("break-crash-v1") builder/parse byte-level round-trip + rejection
  *  battery + builder clamps, the bounded spool (layout creation,
  *  put/read/mark, retention 16/16/16, inbox recovery, reopen persistence),
- *  and the Task 2 signal-capture fork tests (child installs, dies by a real
- *  signal, the parent recovers the inbox and parses the record).
+ *  the Task 2 signal-capture fork tests (child installs, dies by a real
+ *  signal, the parent recovers the inbox and parses the record), and the
+ *  Task 3 redaction/upload-seam tests (purity + basename idempotence + blob
+ *  passthrough, serialize round-trip, fake-uploader passes incl. the
+ *  crash-spool recovery acceptance scenario end-to-end).
  *
  *  The grammar is byte-pinned here: the Task 2 signal-side writer must
  *  produce byte-identical output (one grammar, two writers — see
@@ -1244,6 +1247,489 @@ TEST(spool_open_bounds) {
     rm_tree(root2);
 }
 
+/* ---- Task 3: redaction (pure pass) + serialization ------------------------ */
+
+TEST(redact_purity_basename_blob) {
+    /* a record mixing an already-basename name, a Windows-style path name
+     * ('\' is grammar-legal; '/' is not), and a separator-terminated name */
+    BreakCrashRecordBuilder *b = break_crash_record_builder_create();
+    ASSERT_NOT_NULL(b);
+    break_crash_record_builder_set_signal(b, 11, 1, 0xdeadbeefu);
+    break_crash_record_builder_set_process(b, 1234, 0x162e);
+    break_crash_record_builder_set_registers(b, 0x401000, 0x7fffffffe000ull,
+                                             0x7fffffffe100ull);
+    break_crash_record_builder_set_build_id(b, "abc123-x");
+    ASSERT_TRUE(break_crash_record_builder_add_module(b, "libc.so.6", 0x2000, 0x1f0000));
+    ASSERT_TRUE(break_crash_record_builder_add_module(b, "C:\\Users\\alice\\app.exe",
+                                                      0x1000, 0x5000));
+    ASSERT_TRUE(break_crash_record_builder_add_module(b, "C:\\", 0, 0x10));
+    static const u8 window[4] = {0x01, 0x23, 0xab, 0xcd};
+    static const u8 blob[3] = {0xde, 0xad, 0xff};
+    break_crash_record_builder_set_stack_window(b, window, 4);
+    break_crash_record_builder_set_context_blob(b, blob, 3);
+    u8 text[1024];
+    usize n = break_crash_record_builder_finish(b, text, sizeof(text));
+    break_crash_record_builder_destroy(b);
+    ASSERT_TRUE(n > 0);
+
+    BreakCrashRecord *r = break_crash_record_parse(text, n);
+    ASSERT_NOT_NULL(r);
+    /* purity snapshot: serialize BEFORE redact (also pins the canonical
+     * byte-identity serialize(parse(x)) == x) */
+    u8 before[1024];
+    usize bn = break_crash_record_serialize(r, before, sizeof(before));
+    ASSERT_EQ(bn, n);
+    ASSERT_TRUE(memcmp(before, text, n) == 0);
+
+    BreakCrashRecord *red = break_crash_record_redact(r);
+    ASSERT_NOT_NULL(red);
+
+    /* PURITY: the input record is unchanged by the redact call */
+    u8 after[1024];
+    ASSERT_EQ(break_crash_record_serialize(r, after, sizeof(after)), bn);
+    ASSERT_TRUE(memcmp(after, before, bn) == 0);
+
+    /* scalars + build-id kept verbatim */
+    ASSERT_EQ(break_crash_record_signo(red), 11);
+    ASSERT_EQ(break_crash_record_fault_addr(red), 0xdeadbeefull);
+    ASSERT_EQ(break_crash_record_pid(red), 1234ull);
+    ASSERT_EQ(break_crash_record_tid(red), 0x162eull);
+    u64 regs[3] = {0, 0, 0};
+    break_crash_record_registers(red, regs);
+    ASSERT_EQ(regs[0], 0x401000ull);
+    ASSERT_EQ(regs[1], 0x7fffffffe000ull);
+    ASSERT_EQ(regs[2], 0x7fffffffe100ull);
+    ASSERT_STR_EQ(break_crash_record_build_id(red), "abc123-x");
+
+    /* module names: basename over both separators; empty basename → placeholder */
+    ASSERT_EQ(break_crash_record_module_count(red), 3ull);
+    const char *name = NULL;
+    u64 off = 0, size = 0;
+    ASSERT_TRUE(break_crash_record_module_at(red, 0, &name, &off, &size));
+    ASSERT_STR_EQ(name, "libc.so.6"); /* already a basename: unchanged */
+    ASSERT_EQ(off, 0x2000ull);
+    ASSERT_EQ(size, 0x1f0000ull);
+    ASSERT_TRUE(break_crash_record_module_at(red, 1, &name, &off, &size));
+    ASSERT_STR_EQ(name, "app.exe");   /* C:\Users\alice\app.exe */
+    ASSERT_EQ(off, 0x1000ull);        /* offsets/sizes kept verbatim */
+    ASSERT_EQ(size, 0x5000ull);
+    ASSERT_TRUE(break_crash_record_module_at(red, 2, &name, &off, &size));
+    ASSERT_STR_EQ(name, "redacted");  /* "C:\" → empty basename → placeholder */
+    ASSERT_EQ(size, 0x10ull);
+
+    /* stack-window + context-blob PASSTHROUGH (app pre-redacts the blob) */
+    const u8 *bytes = NULL;
+    ASSERT_EQ(break_crash_record_stack_window(red, &bytes), 4u);
+    ASSERT_TRUE(memcmp(bytes, window, 4) == 0);
+    ASSERT_EQ(break_crash_record_context_blob(red, &bytes), 3u);
+    ASSERT_TRUE(memcmp(bytes, blob, 3) == 0);
+
+    /* IDEMPOTENCE: redact(redact(r)) serializes byte-identically to redact(r) */
+    BreakCrashRecord *red2 = break_crash_record_redact(red);
+    ASSERT_NOT_NULL(red2);
+    u8 s1[1024], s2[1024];
+    usize n1 = break_crash_record_serialize(red, s1, sizeof(s1));
+    usize n2 = break_crash_record_serialize(red2, s2, sizeof(s2));
+    ASSERT_TRUE(n1 > 0);
+    ASSERT_EQ(n2, n1);
+    ASSERT_TRUE(memcmp(s2, s1, n1) == 0);
+    break_crash_record_destroy(red2);
+
+    /* basename-only input (the golden shape the builder/capture produce):
+     * redact is a byte-identical no-op */
+    BreakCrashRecord *g = parse_cstr(GOLDEN_RECORD);
+    ASSERT_NOT_NULL(g);
+    BreakCrashRecord *gr = break_crash_record_redact(g);
+    ASSERT_NOT_NULL(gr);
+    usize gn = break_crash_record_serialize(gr, s1, sizeof(s1));
+    ASSERT_EQ(gn, (usize)strlen(GOLDEN_RECORD));
+    ASSERT_TRUE(memcmp(s1, GOLDEN_RECORD, gn) == 0);
+    break_crash_record_destroy(gr);
+    break_crash_record_destroy(g);
+
+    break_crash_record_destroy(red);
+    break_crash_record_destroy(r);
+    ASSERT_TRUE(break_crash_record_redact(NULL) == NULL);
+}
+
+TEST(serialize_roundtrip_and_overflow) {
+    /* golden byte-identity through parse → serialize */
+    BreakCrashRecord *g = parse_cstr(GOLDEN_RECORD);
+    ASSERT_NOT_NULL(g);
+    u8 out[1024];
+    usize n = break_crash_record_serialize(g, out, sizeof(out));
+    ASSERT_EQ(n, (usize)strlen(GOLDEN_RECORD));
+    ASSERT_TRUE(memcmp(out, GOLDEN_RECORD, n) == 0);
+    /* exact capacity works; one byte less overflows to 0 */
+    ASSERT_EQ(break_crash_record_serialize(g, out, n), n);
+    ASSERT_EQ(break_crash_record_serialize(g, out, n - 1), 0u);
+    ASSERT_EQ(break_crash_record_serialize(g, out, 0), 0u);
+    ASSERT_EQ(break_crash_record_serialize(g, NULL, n), 0u);
+    ASSERT_EQ(break_crash_record_serialize(NULL, out, sizeof(out)), 0u);
+    break_crash_record_destroy(g);
+
+    /* maximal record (64 modules × 255-char names + 4 KiB window + 4 KiB
+     * blob — the ~35.8 KB construction bound) serializes and round-trips */
+    BreakCrashRecordBuilder *b = break_crash_record_builder_create();
+    ASSERT_NOT_NULL(b);
+    break_crash_record_builder_set_signal(b, 4, 2, 0x1234);
+    break_crash_record_builder_set_process(b, 5, 6);
+    break_crash_record_builder_set_registers(b, 1, 2, 3);
+    char mname[256];
+    memset(mname, 'm', 255);
+    mname[255] = '\0';
+    int i;
+    for (i = 0; i < 64; i++) {
+        mname[0] = (char)('a' + (i % 26));
+        ASSERT_TRUE(break_crash_record_builder_add_module(b, mname, (u64)i, (u64)(i * 2)));
+    }
+    static u8 big[4096];
+    for (i = 0; i < 4096; i++) big[i] = (u8)i;
+    break_crash_record_builder_set_stack_window(b, big, sizeof(big));
+    break_crash_record_builder_set_context_blob(b, big, sizeof(big));
+    static u8 maxtext[BREAK_CRASH_RECORD_MAX];
+    usize mn = break_crash_record_builder_finish(b, maxtext, sizeof(maxtext));
+    break_crash_record_builder_destroy(b);
+    ASSERT_TRUE(mn > 0);
+    ASSERT_TRUE(mn <= BREAK_CRASH_RECORD_MAX);
+
+    BreakCrashRecord *r = break_crash_record_parse(maxtext, mn);
+    ASSERT_NOT_NULL(r);
+    static u8 out2[BREAK_CRASH_RECORD_MAX];
+    ASSERT_EQ(break_crash_record_serialize(r, out2, sizeof(out2)), mn);
+    ASSERT_TRUE(memcmp(out2, maxtext, mn) == 0);
+    ASSERT_EQ(break_crash_record_serialize(r, out2, mn - 1), 0u); /* overflow → 0 */
+    /* re-parse of the serialized maximal record keeps all 64 modules */
+    BreakCrashRecord *r2 = break_crash_record_parse(out2, mn);
+    ASSERT_NOT_NULL(r2);
+    ASSERT_EQ(break_crash_record_module_count(r2), 64ull);
+    const u8 *bytes = NULL;
+    ASSERT_EQ(break_crash_record_stack_window(r2, &bytes), 4096u);
+    ASSERT_EQ(break_crash_record_context_blob(r2, &bytes), 4096u);
+    break_crash_record_destroy(r2);
+    break_crash_record_destroy(r);
+}
+
+/* ---- Task 3: upload seam (fake caller-supplied transport) ------------------ */
+
+/* Recording fake transport: snapshots every shipped byte-blob, parses the
+ * shipped (redacted) record for its tid, and fails the calls selected by
+ * fail_mask. Shipped bytes that do NOT parse record tid == UINT64_MAX (a
+ * tripwire — the pass must only ever ship canonical text). */
+typedef struct {
+    u64 tids[32];
+    u8 *shots[32];
+    usize shot_len[32];
+    u32 calls;
+    u64 fail_mask; /* bit i set → call i returns false */
+} FakeUp;
+
+static bool fake_up(void *user, const void *record_bytes, usize len) {
+    FakeUp *f = (FakeUp *)user;
+    u32 k = f->calls;
+    f->calls++;
+    if (k >= 32) return true;
+    f->shot_len[k] = len;
+    f->shots[k] = malloc(len ? len : 1);
+    if (f->shots[k] && len) memcpy(f->shots[k], record_bytes, len);
+    BreakCrashRecord *r = break_crash_record_parse(record_bytes, len);
+    f->tids[k] = r ? break_crash_record_tid(r) : UINT64_MAX;
+    break_crash_record_destroy(r);
+    return !(f->fail_mask & (1ull << k));
+}
+
+static void fake_up_free(FakeUp *f) {
+    u32 i;
+    for (i = 0; i < f->calls && i < 32; i++) {
+        free(f->shots[i]);
+        f->shots[i] = NULL;
+    }
+}
+
+/* Counts pending-dir ".meta" sidecars (white-box; -1 on listing failure). */
+static int count_meta_files(const char *root) {
+    char dir[1100];
+    join2(dir, sizeof(dir), root, "pending");
+    PlatformDirEntry entries[64];
+    u32 count = 0;
+    if (!platform_list_dir(dir, entries, 64, &count)) return -1;
+    int n = 0;
+    u32 i;
+    for (i = 0; i < count; i++) {
+        usize nl = strlen(entries[i].name);
+        if (!entries[i].is_dir && nl >= 5 &&
+            memcmp(entries[i].name + nl - 5, ".meta", 5) == 0) n++;
+    }
+    return n;
+}
+
+/* Reads the sole pending-dir ".meta" sidecar; -1 unless exactly one exists. */
+static long read_single_meta(const char *root, u8 *buf, usize cap) {
+    char dir[1100];
+    join2(dir, sizeof(dir), root, "pending");
+    PlatformDirEntry entries[64];
+    u32 count = 0;
+    if (!platform_list_dir(dir, entries, 64, &count)) return -1;
+    int found = -1;
+    u32 i;
+    for (i = 0; i < count; i++) {
+        usize nl = strlen(entries[i].name);
+        if (!entries[i].is_dir && nl >= 5 &&
+            memcmp(entries[i].name + nl - 5, ".meta", 5) == 0) {
+            if (found >= 0) return -1; /* more than one */
+            found = (int)i;
+        }
+    }
+    if (found < 0) return -1;
+    char path[1200];
+    join2(path, sizeof(path), dir, entries[found].name);
+    return read_file(path, buf, cap);
+}
+
+TEST(upload_all_true_sends_all) {
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_all");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(put_tagged(s, 1));
+    ASSERT_TRUE(put_tagged(s, 2));
+    ASSERT_TRUE(put_tagged(s, 3));
+
+    /* expected newest-first stored bytes, captured BEFORE the upload moves
+     * the records (the spool stores full fidelity; redaction shapes only the
+     * shipped bytes — here identical, since captures hold basenames) */
+    u8 *want[3] = {NULL, NULL, NULL};
+    u64 wlen[3] = {0, 0, 0};
+    u64 i;
+    for (i = 0; i < 3; i++) {
+        ASSERT_TRUE(break_crash_spool_read_pending(s, i, &want[i], &wlen[i]));
+    }
+
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 3u);
+    ASSERT_EQ(up.calls, 3u);
+    /* counts moved: pending → sent */
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 3ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    /* newest-first visit order pinned */
+    ASSERT_EQ(up.tids[0], 3ull);
+    ASSERT_EQ(up.tids[1], 2ull);
+    ASSERT_EQ(up.tids[2], 1ull);
+    /* shipped bytes == stored bytes (redact is identity on basename records) */
+    for (i = 0; i < 3; i++) {
+        ASSERT_EQ(up.shot_len[i], (usize)wlen[i]);
+        ASSERT_TRUE(memcmp(up.shots[i], want[i], wlen[i]) == 0);
+    }
+    /* no sidecar residue: pending/ is empty of .meta files */
+    ASSERT_EQ(count_meta_files(root), 0);
+
+    /* the SPOOLED record was not rewritten by the upload: sent/ holds the
+     * original stored bytes */
+    {
+        char dir[1100];
+        join2(dir, sizeof(dir), root, "sent");
+        PlatformDirEntry entries[8];
+        u32 count = 0;
+        ASSERT_TRUE(platform_list_dir(dir, entries, 8, &count));
+        ASSERT_EQ(count, 3u);
+        u32 k;
+        for (k = 0; k < count; k++) {
+            char path[1200];
+            join2(path, sizeof(path), dir, entries[k].name);
+            static u8 fbuf[1024];
+            long fl = read_file(path, fbuf, sizeof(fbuf));
+            ASSERT_TRUE(fl > 0);
+            /* every sent file matches one of the stored blobs exactly */
+            bool matched = false;
+            for (i = 0; i < 3; i++) {
+                if ((u64)fl == wlen[i] && memcmp(fbuf, want[i], wlen[i]) == 0) {
+                    matched = true;
+                }
+            }
+            ASSERT_TRUE(matched);
+        }
+    }
+
+    /* a second pass over empty pending ships nothing */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 3u);
+
+    fake_up_free(&up);
+    for (i = 0; i < 3; i++) free(want[i]);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
+TEST(upload_all_false_attempts_persist_then_discard) {
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_fail");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(put_tagged(s, 42));
+    u8 *stored = NULL;
+    u64 stored_len = 0;
+    ASSERT_TRUE(break_crash_spool_read_pending(s, 0, &stored, &stored_len));
+
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    up.fail_mask = ~0ull; /* every call fails */
+    u8 mbuf[128];
+
+    /* pass 1 → attempts: 1 (the sidecar format pinned byte-exact) */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 1u);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 0ull);
+    ASSERT_EQ(count_meta_files(root), 1);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 1\n");
+    /* the failed pass shipped the redacted (here: identical) record bytes */
+    ASSERT_EQ(up.shot_len[0], (usize)stored_len);
+    ASSERT_TRUE(memcmp(up.shots[0], stored, stored_len) == 0);
+
+    /* pass 2 → attempts: 2 */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 2\n");
+
+    /* spool reopen: the retry state survives (crash-safe bookkeeping) */
+    break_crash_spool_destroy(s);
+    s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 2\n");
+
+    /* pass 3 → attempts: 3 (had the reopen reset it, this would read 1) */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 3\n");
+
+    /* pass 4 → attempts: 4; the record is still pending (never lost early) */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 4\n");
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+
+    /* pass 5: the 5th failure DISCARDS (attempts ≥ 5); the sidecar is gone */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 5u); /* exactly one up() per pass — no double visits */
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 1ull);
+    ASSERT_EQ(count_meta_files(root), 0);
+
+    /* the discarded record kept its stored bytes whole (forensics) */
+    {
+        static u8 fbuf[1024];
+        ASSERT_EQ(read_single_class_file(root, "discarded", fbuf, sizeof(fbuf)),
+                  (long)stored_len);
+        ASSERT_TRUE(memcmp(fbuf, stored, stored_len) == 0);
+    }
+
+    /* pass 6 on empty pending: no calls */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 5u);
+
+    fake_up_free(&up);
+    free(stored);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
+TEST(upload_mixed_outcomes_order) {
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_mix");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    u64 t;
+    for (t = 1; t <= 4; t++) ASSERT_TRUE(put_tagged(s, t));
+
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    up.fail_mask = (1ull << 1) | (1ull << 2); /* 2nd and 3rd calls fail */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 2u);
+    ASSERT_EQ(up.calls, 4u);
+    /* newest-first visit order: tids 4, 3, 2, 1 */
+    ASSERT_EQ(up.tids[0], 4ull);
+    ASSERT_EQ(up.tids[1], 3ull);
+    ASSERT_EQ(up.tids[2], 2ull);
+    ASSERT_EQ(up.tids[3], 1ull);
+    /* tids 4 and 1 sent; tids 3 and 2 stay pending with attempts: 1 each */
+    ASSERT_EQ(break_crash_spool_count(s, 0), 2ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 2ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    ASSERT_EQ(count_meta_files(root), 2);
+    u64 tid = 0;
+    ASSERT_TRUE(pending_tid(s, 0, &tid));
+    ASSERT_EQ(tid, 3ull);
+    ASSERT_TRUE(pending_tid(s, 1, &tid));
+    ASSERT_EQ(tid, 2ull);
+    {
+        u64 tids[8];
+        int nn = collect_class_tids(root, "sent", tids, 8);
+        ASSERT_EQ(nn, 2);
+        ASSERT_TRUE(tid_present(tids, nn, 4));
+        ASSERT_TRUE(tid_present(tids, nn, 1));
+    }
+
+    /* second pass all-true: the two retried records ship and leave pending;
+     * their sidecars are removed by the sent marks */
+    FakeUp up2;
+    memset(&up2, 0, sizeof(up2));
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up2), 2u);
+    ASSERT_EQ(up2.calls, 2u);
+    ASSERT_EQ(up2.tids[0], 3ull); /* newest-first again */
+    ASSERT_EQ(up2.tids[1], 2ull);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 4ull);
+    ASSERT_EQ(count_meta_files(root), 0);
+
+    fake_up_free(&up);
+    fake_up_free(&up2);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
+TEST(upload_null_uploader_noop) {
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_null");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    /* NULL uploader on empty pending */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, NULL, NULL), 0u);
+    /* real uploader on empty pending: never called */
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 0u);
+
+    ASSERT_TRUE(put_tagged(s, 7));
+    /* NULL uploader is an INVALID-style no-op: 0, nothing moved, no sidecar */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, NULL, NULL), 0u);
+    ASSERT_EQ(break_crash_spool_upload_pending(s, NULL, &up), 0u);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 0ull);
+    ASSERT_EQ(count_meta_files(root), 0);
+    /* NULL spool → 0 */
+    ASSERT_EQ(break_crash_spool_upload_pending(NULL, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 0u);
+    /* a working pass afterwards: the no-ops broke nothing */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 1u);
+    ASSERT_EQ(up.calls, 1u);
+    ASSERT_EQ(up.tids[0], 7ull);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 1ull);
+    ASSERT_EQ(count_meta_files(root), 0);
+
+    fake_up_free(&up);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
 /* ---- Task 2: signal capture (fork + waitpid; children die by signal) ---- */
 
 #if !defined(_WIN32)
@@ -1584,6 +2070,61 @@ TEST(crash_uninstall_no_record) {
 #endif
 }
 
+/* Task 3 acceptance scenario, end-to-end: a real crash captured by the
+ * Task 2 handler is recovered by the NEXT run's spool_open, redacted, and
+ * shipped through the caller-supplied transport seam. */
+TEST(crash_recovery_upload_end_to_end) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1); /* POSIX signal path only this phase (Windows stub) */
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_e2e");
+    pid_t pid = spawn_child(child_segv_null, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFSIGNALED(st));
+    ASSERT_EQ(WTERMSIG(st), SIGSEGV);
+
+    /* post-mortem: spool open recovers the crashed child's inbox → pending */
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    u8 *stored = NULL;
+    u64 stored_len = 0;
+    ASSERT_TRUE(break_crash_spool_read_pending(s, 0, &stored, &stored_len));
+
+    /* redact → serialize → upload through the caller-supplied seam */
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 1u);
+    ASSERT_EQ(up.calls, 1u);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 1), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    ASSERT_EQ(count_meta_files(root), 0); /* no retry sidecar on success */
+
+    /* the shipped bytes are the redacted canonical record; a real capture
+     * holds basename-only modules already, so redaction is byte-identical */
+    ASSERT_EQ(up.shot_len[0], (usize)stored_len);
+    ASSERT_TRUE(memcmp(up.shots[0], stored, stored_len) == 0);
+    BreakCrashRecord *r = break_crash_record_parse(up.shots[0], up.shot_len[0]);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(break_crash_record_signo(r), SIGSEGV);
+    ASSERT_EQ(break_crash_record_fault_addr(r), 0ull);
+    ASSERT_FALSE(common_record_fields_fail(r, pid));
+    break_crash_record_destroy(r);
+    free(up.shots[0]);
+    up.shots[0] = NULL;
+    fake_up_free(&up);
+    free(stored);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+#endif
+}
+
 /* -------------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -1608,9 +2149,16 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spool_reopen_persistence);
     RUN_TEST(spool_put_skips_existing_id);
     RUN_TEST(spool_open_bounds);
+    RUN_TEST(redact_purity_basename_blob);
+    RUN_TEST(serialize_roundtrip_and_overflow);
+    RUN_TEST(upload_all_true_sends_all);
+    RUN_TEST(upload_all_false_attempts_persist_then_discard);
+    RUN_TEST(upload_mixed_outcomes_order);
+    RUN_TEST(upload_null_uploader_noop);
     RUN_TEST(crash_segv_captures_record);
     RUN_TEST(crash_abrt_captures_record);
     RUN_TEST(crash_context_blob_captured);
     RUN_TEST(crash_double_install_refused);
     RUN_TEST(crash_uninstall_no_record);
+    RUN_TEST(crash_recovery_upload_end_to_end);
 TEST_MAIN_END()

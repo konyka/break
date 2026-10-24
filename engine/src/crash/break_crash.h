@@ -1,9 +1,9 @@
 #pragma once
 /* ==========================================================================
- *  break_crash — Stage 5 Phase C Tasks 1+2: the crash RECORD format
- *  (canonical text "break-crash-v1"), the bounded on-disk SPOOL, and the
- *  async-signal-safe capture (install/handler). Redaction and the upload
- *  seam are Task 3 and deliberately absent here. Zero new external
+ *  break_crash — Stage 5 Phase C Tasks 1-3: the crash RECORD format
+ *  (canonical text "break-crash-v1"), the bounded on-disk SPOOL, the
+ *  async-signal-safe capture (install/handler), the pure REDACTION pass,
+ *  and the caller-supplied UPLOAD seam. Zero new external
  *  dependencies; the only platform services consumed are the Stage 4/5 PAL
  *  (platform_fs.h: PlatformAtomicWriter / platform_mkdir / platform_file_size
  *  / platform_list_dir) plus C-standard rename/remove/fread, and the build
@@ -52,7 +52,8 @@
  *  both are enforced.
  *
  *  NULL discipline: every function tolerates a NULL handle — setters are
- *  no-ops, finish returns 0, spool ops return false, count returns 0,
+ *  no-ops, finish returns 0, serialize returns 0, redact returns NULL,
+ *  spool ops return false, count returns 0, upload_pending returns 0,
  *  scalar accessors return 0, build_id returns NULL, the window/blob
  *  accessors return 0 and set *out_bytes = NULL, module_at returns false,
  *  destroy(NULL) is a free(NULL)-style no-op. NULL out-params on a live
@@ -91,6 +92,46 @@ bool break_crash_record_module_at(const BreakCrashRecord *r, u64 i,
                                   const char **out_name, u64 *out_offset, u64 *out_size);
 usize break_crash_record_stack_window(const BreakCrashRecord *r, const u8 **out_bytes);
 usize break_crash_record_context_blob(const BreakCrashRecord *r, const u8 **out_bytes);
+
+/* ---- Task 3: redaction + serialization -------------------------------------
+ *
+ * Interface (plan 2026-10-24-stage5-crash-reporting.md, verbatim):
+ *
+ * / * Pure redaction pass per security_threat_model.md §6: module names → basename
+ *  * (idempotent; builder already stores basenames — pin), any absolute-path-looking
+ *  * field → basename, context blob kept as-is (app pre-redacted — documented).
+ *  * Returns a NEW record; NULL on parse anomaly (input should already be valid). * /
+ * BreakCrashRecord *break_crash_record_redact(const BreakCrashRecord *r);
+ * usize break_crash_record_serialize(const BreakCrashRecord *r, u8 *out, usize capacity); / * 0 on overflow * /
+ *
+ * Redaction field-level rules (the §6 client-side enforcement point):
+ *   KEPT verbatim: signo/code/fault_addr/pid/tid/rip/rsp/rbp (process-local
+ *     identifiers and addresses — not user data per the threat model;
+ *     required for server-side symbolization/correlation), build-id (the
+ *     [0-9a-z-] charset cannot encode a path), module load offsets/sizes,
+ *     stack-window bytes (raw faulting-thread memory — the capture-side
+ *     argv/env zone clamp already applied; needed for stack analysis),
+ *     context-blob bytes (PASSED THROUGH: the app pre-redacts the blob —
+ *     threat-model obligation, documented).
+ *   TRANSFORMED: module names → basename over BOTH '/' and '\' separators
+ *     (the record grammar already forbids '/', so a live record never holds
+ *     a '/'-path — this pins basename IDEMPOTENCE and covers the reachable
+ *     '\' case, e.g. "C:\Dir\app.exe" → "app.exe"). A name whose basename
+ *     is empty (it ended at a separator, e.g. "C:\") is replaced by the
+ *     placeholder "redacted" (§6 permits remove-or-placeholder; module
+ *     count/offsets stay aligned for symbolization).
+ * The input record is NEVER mutated (purity pin); the output is a NEW
+ * independently-owned record. NULL input → NULL; the pass re-serializes and
+ * re-parses its result, so a (practically unreachable) anomaly in the
+ * transformed content returns NULL — fail closed.
+ *
+ * serialize emits the SAME canonical bytes the builder produces (one
+ * normal-context writer, byte-pinned: serialize(parse(text)) == text);
+ * returns the exact byte count, or 0 when capacity is insufficient (a record
+ * is ≤ 64 KiB by construction, so capacity ≥ BREAK_CRASH_RECORD_MAX never
+ * overflows) or r/out is NULL. */
+BreakCrashRecord *break_crash_record_redact(const BreakCrashRecord *r);
+usize break_crash_record_serialize(const BreakCrashRecord *r, u8 *out, usize capacity); /* 0 on overflow */
 
 /* Builder (normal-context; the signal handler has its own signal-safe writer that
  * produces byte-identical format — same grammar, two writers, one pinned by tests):
@@ -167,6 +208,63 @@ bool break_crash_spool_put_pending(BreakCrashSpool *s, const void *record_bytes,
 bool break_crash_spool_read_pending(const BreakCrashSpool *s, u64 index, u8 **out_buf, u64 *out_len);
 bool break_crash_spool_mark_sent(BreakCrashSpool *s, u64 index);       /* pending → sent/ */
 bool break_crash_spool_mark_discarded(BreakCrashSpool *s, u64 index);  /* pending → discarded/ */
+
+/* ---- Task 3: upload seam (caller supplies transport; same pattern as Phase B
+ * BreakUpdateFetchFn) ---------------------------------------------------------
+ *
+ * Interface (plan 2026-10-24-stage5-crash-reporting.md, verbatim):
+ *
+ * / * Upload seam (caller supplies transport; same pattern as Phase B BreakUpdateFetchFn).
+ *  * Iterates pending newest-first: redact → serialize → up(); true → mark_sent,
+ *  * false → attempts++ persisted in a <id>.meta sidecar; attempts ≥ 5 → mark_discarded.
+ *  * Returns count successfully uploaded this pass. * /
+ * typedef bool (*BreakCrashUploadFn)(void *user, const void *record_bytes, usize len);
+ * u32 break_crash_spool_upload_pending(BreakCrashSpool *s, BreakCrashUploadFn up, void *user);
+ *
+ * Retry/discard policy and the sidecar contract (all pinned by tests):
+ *  - The pass iterates pending NEWEST-FIRST over a snapshot of ids (index
+ *    drift under the marks is impossible). Each record is visited at most
+ *    once per pass.
+ *  - Per record: read → parse → redact → serialize → up(). up() receives the
+ *    REDACTED canonical bytes. up()==true → the record moves pending→sent.
+ *    up()==false → its attempt count increments.
+ *  - Attempt counts persist in a sidecar next to the record:
+ *    pending/<id>.meta, canonical text (committed via PlatformAtomicWriter —
+ *    tmp+fsync+rename, so a crash mid-pass leaves the OLD or the NEW count,
+ *    never a torn file):
+ *        break-crash-meta-v1
+ *        attempts: <u32 decimal, no leading zeros>
+ *    The sidecar survives spool close/reopen (retry state is crash-safe).
+ *    When the count would reach BREAK_CRASH_UPLOAD_ATTEMPTS_MAX (5), the
+ *    record moves pending→discarded instead — the 5th failure discards.
+ *  - The sidecar's lifetime is bound to the record's stay in pending/: it is
+ *    removed whenever the record leaves pending by ANY path (mark_sent,
+ *    mark_discarded, retention quarantine). sent/ and discarded/ never hold
+ *    .meta files; pending/ holds at most BREAK_CRASH_SPOOL_KEEP of them.
+ *  - Fail closed: a pending entry whose bytes do not parse (foreign plant —
+ *    put/inbox validation makes it unreachable for spool-staged records)
+ *    moves to discarded/ WITHOUT an up() call. A redact/serialize failure
+ *    (an allocation failure in practice — the transform of a parsed record
+ *    always re-parses) SKIPS the record for this pass: the spool NEVER
+ *    ships unredactable bytes, and evidence is never dropped on a transient
+ *    resource error. A CORRUPT sidecar is NOT such an anomaly: attempts
+ *    read as 0 and the sidecar is rewritten
+ *    on the next failure (self-heals in one pass) — retry metadata is local
+ *    bookkeeping, and metadata corruption must never destroy crash evidence.
+ *  - Best-effort bookkeeping under local IO failure (documented): if a
+ *    sidecar WRITE fails the count is not advanced this pass (the record is
+ *    retried again later; a persistently unwritable spool degrades the
+ *    5-attempt bound — spool writeability is already a spool-wide
+ *    assumption, put_pending fails the same way). If mark_sent fails after
+ *    up()==true the record stays pending and is re-uploaded next pass
+ *    (upload is AT-LEAST-ONCE; server-side dedup is server business). A
+ *    record that vanished/read-failed mid-pass is skipped, never counted.
+ *  - NULL spool or NULL up → 0, an INVALID-style no-op (no side effects).
+ *    up() runs with *user opaque; it must not call back into the same spool
+ *    (the spool is single-owner, not reentrant). */
+#define BREAK_CRASH_UPLOAD_ATTEMPTS_MAX 5u
+typedef bool (*BreakCrashUploadFn)(void *user, const void *record_bytes, usize len);
+u32 break_crash_spool_upload_pending(BreakCrashSpool *s, BreakCrashUploadFn up, void *user);
 
 /* ==========================================================================
  *  Signal capture (Stage 5 Phase C Task 2): install-time pre-staging + an
