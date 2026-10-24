@@ -300,9 +300,66 @@ static snow_nb_packet_t break_net_parser_tls(BreakNetReactor *reactor,
         return SNOW_NB_PACKET_ERR;
     }
     free(cipher);
-    return break_net_parse_plaintext_frame(connection_context->tls_plain,
-                                           connection,
-                                           &connection_context->envelope);
+    /* The snow wrapper also appends every decrypted byte to its internal
+     * recv_buf (snow_ssl_drain_decrypted); we consume via `out` only, so
+     * drain the transcript here or it grows unboundedly for the connection's
+     * lifetime (peer-controlled). */
+    {
+        snow_network_buffer_t *wrapper_recv = snow_ssl_recv_buffer(ssl);
+        if (wrapper_recv != NULL &&
+            snow_network_buffer_move_header(
+                wrapper_recv, snow_network_buffer_length(wrapper_recv)) != SNOW_OK) {
+            return SNOW_NB_PACKET_ERR;
+        }
+    }
+    /* Frame every complete envelope currently buffered in tls_plain and
+     * pop it into a BreakNetEvent IMMEDIATELY (no recv_queue staging):
+     * one ciphertext burst can carry many envelopes, but snow's drive
+     * loop only fires on_packet for the tail entry pushed after a FULL
+     * return (snow_connection_tx.c:210-245) and stops once the wire
+     * buffer is empty (snow_transceiver.c:627-629) — staged siblings
+     * would sit until the next burst.  The FULL-advance invariant
+     * (:652-655) compares the wire buffer across ONE parser call, so the
+     * final call of a burst consumes the last ciphertext while reporting
+     * LESS; intermediate FULLs each consumed ciphertext. */
+    for (;;) {
+        snow_nb_packet_t result =
+            break_net_parse_plaintext_frame(connection_context->tls_plain,
+                                            connection,
+                                            &connection_context->envelope);
+        snow_recv_context_t *entry;
+        if (result != SNOW_NB_PACKET_FULL) return result;
+        entry = snow_connection_pop_recv(connection);
+        if (entry == NULL) return SNOW_NB_PACKET_ERR;  /* push without queue */
+        {
+            const void *data = NULL;
+            size_t size = 0u;
+            BreakNetEvent event = {0};
+            BreakNetMessageView view;
+            BreakNetEnvelope envelope;
+            snow_recv_context_buffer(entry, &data, &size);
+            event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+            event.connection_key = (uint64_t)snow_connection_uid(connection);
+            if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) ==
+                    BREAK_NET_ENVELOPE_OK &&
+                break_net_message_view_init(&view, envelope.message_id,
+                                            envelope.protocol_version, envelope.sequence,
+                                            envelope.payload, envelope.payload_size) == BREAK_NET_MESSAGE_OK &&
+                break_net_message_copy(&event.message, &view) == BREAK_NET_MESSAGE_OK) {
+                if (!break_net_event_push(reactor, &event)) {
+                    break_net_event_release(&event);
+                }
+            } else {
+                break_net_event_release(&event);
+            }
+        }
+        snow_recv_context_free(entry);
+        if (snow_network_buffer_empty(connection_context->tls_plain)) {
+            /* Nothing more can be framed until new ciphertext arrives;
+             * report LESS so the drive loop terminates on this burst. */
+            return SNOW_NB_PACKET_LESS;
+        }
+    }
 }
 
 static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
@@ -387,28 +444,38 @@ static void break_net_on_packet(snow_connection_t *connection,
                                 snow_recv_context_t *context, void *ud)
 {
     BreakNetReactor *reactor = (BreakNetReactor *)ud;
-    const void *data = NULL;
-    size_t size = 0u;
-    BreakNetEvent event = {0};
-    BreakNetMessageView view;
-    BreakNetEnvelope envelope;
-    snow_recv_context_buffer(context, &data, &size);
-    event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
-    event.connection_key = (uint64_t)snow_connection_uid(connection);
-    if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) !=
-            BREAK_NET_ENVELOPE_OK ||
-        break_net_message_view_init(&view, envelope.message_id,
-                                    envelope.protocol_version, envelope.sequence,
-                                    envelope.payload, envelope.payload_size) != BREAK_NET_MESSAGE_OK ||
-        break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
-        break_net_event_release(&event);
-        snow_recv_context_free(snow_connection_pop_recv(connection));
-        return;
+    /* `context` is only the hook's tail-entry hint; drain the whole queue
+     * from the front (snow's fwd hook fires at most once per complete
+     * package — snow_connection_tx.c:210-245).  TLS mode stages nothing
+     * here (break_net_parser_tls converts frames to events directly), so
+     * in practice the queue holds at most the plaintext path's one entry. */
+    (void)context;
+    for (;;) {
+        snow_recv_context_t *entry = snow_connection_pop_recv(connection);
+        const void *data = NULL;
+        size_t size = 0u;
+        BreakNetEvent event = {0};
+        BreakNetMessageView view;
+        BreakNetEnvelope envelope;
+        if (entry == NULL) return;
+        snow_recv_context_buffer(entry, &data, &size);
+        event.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+        event.connection_key = (uint64_t)snow_connection_uid(connection);
+        if (break_net_envelope_decode((const uint8_t *)data, size, &envelope) !=
+                BREAK_NET_ENVELOPE_OK ||
+            break_net_message_view_init(&view, envelope.message_id,
+                                        envelope.protocol_version, envelope.sequence,
+                                        envelope.payload, envelope.payload_size) != BREAK_NET_MESSAGE_OK ||
+            break_net_message_copy(&event.message, &view) != BREAK_NET_MESSAGE_OK) {
+            break_net_event_release(&event);
+            snow_recv_context_free(entry);
+            return;
+        }
+        if (!break_net_event_push(reactor, &event)) {
+            break_net_event_release(&event);
+        }
+        snow_recv_context_free(entry);
     }
-    if (!break_net_event_push(reactor, &event)) {
-        break_net_event_release(&event);
-    }
-    snow_recv_context_free(snow_connection_pop_recv(connection));
 }
 
 static void break_net_on_send_drained(snow_connection_t *connection, void *ud)
@@ -604,68 +671,92 @@ static snow_status_t break_net_tls_send_context_create(snow_send_context_t **out
     return status;
 }
 
+static void break_net_outbound_remove_at(BreakNetReactor *reactor, size_t index)
+{
+    size_t tail = (reactor->outbound_head + reactor->outbound_count) %
+                  BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+    size_t current = index;
+
+    break_net_message_release(&reactor->outbound[current].message);
+    while (current != tail) {
+        size_t next = (current + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+        if (next == tail) break;
+        reactor->outbound[current] = reactor->outbound[next];
+        current = next;
+    }
+    memset(&reactor->outbound[current], 0, sizeof(reactor->outbound[current]));
+    reactor->outbound_count--;
+}
+
 static void break_net_drain_outbound(BreakNetReactor *reactor)
 {
     for (;;) {
-        BreakNetOutboundCommand *command;
-        BreakNetConnectionIdentity *identity;
-        BreakNetEnvelope envelope = {0};
-        uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE];
-        size_t encoded_size = 0u;
-        snow_send_context_t *send = NULL;
-        snow_status_t status;
+        size_t scanned = 0u;
+        size_t index;
+        bool made_progress = false;
 
         platform_mutex_lock(&reactor->queue_mutex);
         if (reactor->outbound_count == 0u) {
             platform_mutex_unlock(&reactor->queue_mutex);
             return;
         }
-        command = &reactor->outbound[reactor->outbound_head];
-        reactor->outbound_attempts++;
-        identity = break_net_identity_find(reactor, command->connection_key);
-        if (identity == NULL || identity->send_recv == NULL || identity->closing) {
-            break_net_message_release(&command->message);
-            memset(command, 0, sizeof(*command));
-            reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
-            reactor->outbound_count--;
-            platform_mutex_unlock(&reactor->queue_mutex);
-            continue;
+        index = reactor->outbound_head;
+        while (scanned < reactor->outbound_count) {
+            BreakNetOutboundCommand *command = &reactor->outbound[index];
+            BreakNetConnectionIdentity *identity;
+            BreakNetEnvelope envelope = {0};
+            uint8_t encoded[BREAK_NET_ENVELOPE_MAX_SIZE];
+            size_t encoded_size = 0u;
+            snow_send_context_t *send = NULL;
+            snow_status_t status;
+
+            reactor->outbound_attempts++;
+            identity = break_net_identity_find(reactor, command->connection_key);
+            if (identity == NULL || identity->send_recv == NULL || identity->closing) {
+                break_net_outbound_remove_at(reactor, index);
+                made_progress = true;
+                break;
+            }
+            /* TLS: a command blocked by an unfinished handshake (or a failed
+             * send) must not freeze other connections.  Inspect each queued
+             * command at its actual ring index instead of rotating the head:
+             * removing a later ready command shifts the remaining entries
+             * left, preserving both the ring invariant and per-connection
+             * FIFO order.  Each scan is bounded by the current queue count. */
+            if (identity->ssl != NULL && !snow_ssl_is_handshaked(identity->ssl)) {
+                scanned++;
+                index = (index + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+                continue;
+            }
+            envelope.protocol_version = command->message.protocol_version;
+            envelope.message_id = command->message.message_id;
+            envelope.sequence = command->message.sequence;
+            envelope.payload = command->message.data;
+            envelope.payload_size = command->message.size;
+            status = break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
+                     BREAK_NET_ENVELOPE_OK
+                         ? SNOW_OK
+                         : SNOW_ERR_INVAL;
+            if (status == SNOW_OK) {
+                status = identity->ssl == NULL
+                             ? snow_send_context_create_with(&send, identity->send_recv,
+                                                             SNOW_SEND_CMD_DATA, encoded, encoded_size)
+                             : break_net_tls_send_context_create(&send, identity, encoded, encoded_size);
+            }
+            if (status == SNOW_OK) status = snow_net_thread_send(reactor->snow_thread, send);
+            if (status == SNOW_OK) {
+                send = NULL;
+                identity->pending_send_count++;
+                break_net_outbound_remove_at(reactor, index);
+                made_progress = true;
+            }
+            snow_send_context_free(send);
+            if (made_progress) break;
+            scanned++;
+            index = (index + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
         }
-        /* TLS: frames queued before the handshake completes wait at the head
-         * of the queue (no plaintext may leave, and snow_ssl_write refuses
-         * pre-handshake anyway); the next drain retries.  Head-of-line wait
-         * preserves per-connection outbound ordering. */
-        if (identity->ssl != NULL && !snow_ssl_is_handshaked(identity->ssl)) {
-            platform_mutex_unlock(&reactor->queue_mutex);
-            return;
-        }
-        envelope.protocol_version = command->message.protocol_version;
-        envelope.message_id = command->message.message_id;
-        envelope.sequence = command->message.sequence;
-        envelope.payload = command->message.data;
-        envelope.payload_size = command->message.size;
-        status = break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
-                 BREAK_NET_ENVELOPE_OK
-                     ? SNOW_OK
-                     : SNOW_ERR_INVAL;
-        if (status == SNOW_OK) {
-            status = identity->ssl == NULL
-                         ? snow_send_context_create_with(&send, identity->send_recv,
-                                                         SNOW_SEND_CMD_DATA, encoded, encoded_size)
-                         : break_net_tls_send_context_create(&send, identity, encoded, encoded_size);
-        }
-        if (status == SNOW_OK) status = snow_net_thread_send(reactor->snow_thread, send);
-        if (status == SNOW_OK) {
-            send = NULL;
-            identity->pending_send_count++;
-            break_net_message_release(&command->message);
-            memset(command, 0, sizeof(*command));
-            reactor->outbound_head = (reactor->outbound_head + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
-            reactor->outbound_count--;
-        }
-        snow_send_context_free(send);
         platform_mutex_unlock(&reactor->queue_mutex);
-        if (status != SNOW_OK) return;
+        if (!made_progress) return;
     }
 }
 

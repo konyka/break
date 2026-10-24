@@ -725,6 +725,217 @@ TEST(break_net_tls_verify_peer_rejects_certless_client)
     snow_acceptor_destroy(acceptor);
 }
 
+/* ------------------------------------------------------------------ */
+/* Review-round-1 regression scaffolding                               */
+/* ------------------------------------------------------------------ */
+
+typedef struct TlsTestServer {
+    BreakNetReactor *reactor;
+    snow_acceptor_t *acceptor;
+} TlsTestServer;
+
+static bool tls_test_server_start(TlsTestServer *server, uint32_t empty_timeout_ms)
+{
+    char cert[512];
+    char key[512];
+    BreakNetReactorConfig config = tls_test_config();
+    BreakNetTlsConfig cfg = {0};
+    config.empty_connection_timeout_ms = (int)empty_timeout_ms;
+    tls_test_fixture_path(cert, sizeof(cert), "snow_test_cert.pem");
+    tls_test_fixture_path(key, sizeof(key), "snow_test_key.pem");
+    cfg.cert_file = cert;
+    cfg.key_file = key;
+    server->reactor = break_net_reactor_create(&config);
+    server->acceptor = tls_test_acceptor();
+    if (server->reactor == NULL || server->acceptor == NULL) return false;
+    return break_net_reactor_set_tls(server->reactor, &cfg) &&
+           break_net_reactor_set_acceptor(server->reactor, server->acceptor) &&
+           break_net_reactor_start(server->reactor);
+}
+
+static void tls_test_server_stop(TlsTestServer *server)
+{
+    break_net_reactor_stop(server->reactor, 1000u);
+    break_net_reactor_destroy(server->reactor);
+    snow_acceptor_destroy(server->acceptor);
+}
+
+/* Build one PING envelope (4-byte LE payload = seq) and append it to out. */
+static void tls_test_append_ping(unsigned char *out, size_t *out_size, uint32_t seq)
+{
+    unsigned char frame[BREAK_NET_ENVELOPE_MAX_SIZE];
+    size_t frame_size = 0u;
+    unsigned char payload[4];
+    BreakNetEnvelope env = {0};
+    payload[0] = (unsigned char)seq;
+    payload[1] = (unsigned char)(seq >> 8u);
+    payload[2] = (unsigned char)(seq >> 16u);
+    payload[3] = (unsigned char)(seq >> 24u);
+    env.protocol_version = BREAK_NET_PROTOCOL_VERSION;
+    env.message_id = BREAK_NET_MESSAGE_ID_PING;
+    env.sequence = seq;
+    env.payload = payload;
+    env.payload_size = sizeof(payload);
+    if (break_net_envelope_encode(&env, frame, sizeof(frame), &frame_size) !=
+            BREAK_NET_ENVELOPE_OK) {
+        return;
+    }
+    memcpy(out + *out_size, frame, frame_size);
+    *out_size += frame_size;
+}
+
+/* Collect up to `want` MESSAGE_RECEIVED events; validates strict ordering
+ * (seq and 4-byte LE payload both equal 1..want).  Returns delivered count. */
+static size_t tls_test_collect_messages(BreakNetReactor *reactor, uint64_t key,
+                                        size_t want, uint64_t deadline_us,
+                                        bool *order_ok)
+{
+    size_t got = 0u;
+    *order_ok = true;
+    while (got < want && tls_test_monotonic_us() < deadline_us) {
+        BreakNetEvent event = {0};
+        if (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK) {
+            if (event.type == BREAK_NET_EVENT_MESSAGE_RECEIVED) {
+                const unsigned char *p = (const unsigned char *)event.message.data;
+                uint32_t word;
+                got++;
+                word = p != NULL
+                           ? (uint32_t)p[0] | ((uint32_t)p[1] << 8u) |
+                                 ((uint32_t)p[2] << 16u) | ((uint32_t)p[3] << 24u)
+                           : 0u;
+                if (event.connection_key != key ||
+                    event.message.message_id != BREAK_NET_MESSAGE_ID_PING ||
+                    event.message.sequence != (uint32_t)got ||
+                    event.message.size != 4u || word != (uint32_t)got) {
+                    *order_ok = false;
+                }
+            }
+            break_net_event_release(&event);
+        } else {
+            usleep(1000u);
+        }
+    }
+    return got;
+}
+
+/* Review probe A: one snow_ssl_write flight carries three envelopes; all
+ * three must be delivered from that single burst (no further traffic). */
+TEST(break_net_tls_multi_frame_single_flight_delivers_all)
+{
+    TlsTestServer server;
+    TlsTestClient client;
+    uint64_t deadline;
+    uint64_t key = 0u;
+    unsigned char flight[128];
+    size_t flight_size = 0u;
+    bool order_ok = false;
+    size_t got;
+    int i;
+
+    ASSERT_TRUE(tls_test_server_start(&server, 10000u));
+    ASSERT_TRUE(tls_test_client_open(&client, server.acceptor, false));
+    deadline = tls_test_monotonic_us() + TLS_TEST_DEADLINE_US;
+    ASSERT_TRUE(tls_test_client_handshake(&client, deadline));
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key));
+    for (i = 1; i <= 3; ++i) tls_test_append_ping(flight, &flight_size, (uint32_t)i);
+    ASSERT_EQ(flight_size, 3u * 22u);
+    ASSERT_TRUE(tls_test_client_send(&client, flight, flight_size));
+    got = tls_test_collect_messages(server.reactor, key, 3u, deadline, &order_ok);
+    ASSERT_EQ(got, 3u);
+    ASSERT_TRUE(order_ok);
+    tls_test_client_close(&client);
+    tls_test_server_stop(&server);
+}
+
+/* Review probe E: 200 pipelined frames (one flight per frame, no waiting)
+ * must all be delivered in order. */
+TEST(break_net_tls_pipelined_frames_all_delivered)
+{
+    TlsTestServer server;
+    TlsTestClient client;
+    uint64_t deadline;
+    uint64_t key = 0u;
+    bool order_ok = false;
+    size_t got;
+    int i;
+
+    ASSERT_TRUE(tls_test_server_start(&server, 10000u));
+    ASSERT_TRUE(tls_test_client_open(&client, server.acceptor, false));
+    deadline = tls_test_monotonic_us() + TLS_TEST_DEADLINE_US;
+    ASSERT_TRUE(tls_test_client_handshake(&client, deadline));
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key));
+    for (i = 1; i <= 200; ++i) {
+        unsigned char frame[32];
+        size_t frame_size = 0u;
+        tls_test_append_ping(frame, &frame_size, (uint32_t)i);
+        ASSERT_EQ(frame_size, 22u);
+        ASSERT_TRUE(tls_test_client_send(&client, frame, frame_size));
+    }
+    got = tls_test_collect_messages(server.reactor, key, 200u, deadline, &order_ok);
+    ASSERT_EQ(got, 200u);
+    ASSERT_TRUE(order_ok);
+    tls_test_client_close(&client);
+    tls_test_server_stop(&server);
+}
+
+/* Review I1: a connection whose handshake never completes must not freeze
+ * other connections' outbound traffic; its own command stays queued. */
+TEST(break_net_tls_blocked_handshake_does_not_freeze_peer)
+{
+    TlsTestServer server;
+    TlsTestClient bclient;
+    int fd_a;
+    uint64_t deadline;
+    uint64_t key_a = 0u;
+    uint64_t key_b = 0u;
+    unsigned char payload[4] = {0xcau, 0xfeu, 0xbau, 0xbeu};
+    snow_network_buffer_t *plain = NULL;
+    unsigned char frame[64];
+    size_t copied = 0u;
+    BreakNetEnvelope pong = {0};
+
+    ASSERT_TRUE(tls_test_server_start(&server, 10000u));
+    fd_a = tls_test_connect(server.acceptor);
+    ASSERT_TRUE(fd_a >= 0);
+    /* A is accepted (OPENED fires) but stays silent: no ClientHello, so the
+     * handshake never completes and nothing closes the connection. */
+    deadline = tls_test_monotonic_us() + TLS_TEST_DEADLINE_US;
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key_a));
+    ASSERT_EQ(break_net_reactor_send(server.reactor, key_a, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, payload,
+                                     sizeof(payload)), BREAK_NET_SEND_OK);
+    ASSERT_TRUE(tls_test_client_open(&bclient, server.acceptor, false));
+    ASSERT_TRUE(tls_test_client_handshake(&bclient, deadline));
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key_b));
+    ASSERT_NEQ(key_a, key_b);
+    ASSERT_EQ(break_net_reactor_send(server.reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, payload,
+                                     sizeof(payload)), BREAK_NET_SEND_OK);
+    ASSERT_EQ(snow_network_buffer_create(&plain), SNOW_OK);
+    while (snow_network_buffer_length(plain) < 18u + sizeof(payload)) {
+        ASSERT_EQ(tls_test_client_pump(&bclient, plain, deadline), 1);
+    }
+    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 18u + sizeof(payload),
+                                          &copied), SNOW_OK);
+    ASSERT_EQ(break_net_envelope_decode(frame, copied, &pong), BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(pong.message_id, BREAK_NET_MESSAGE_ID_PING);
+    ASSERT_EQ(pong.payload_size, sizeof(payload));
+    ASSERT_TRUE(memcmp(pong.payload, payload, sizeof(payload)) == 0);
+    snow_network_buffer_destroy(plain);
+    /* A's command never left the queue while B was served. */
+    ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 1u);
+
+    close(fd_a);
+    ASSERT_TRUE(tls_test_wait_identity_count(server.reactor, 1u, deadline));
+    while (tls_test_monotonic_us() < deadline &&
+           break_net_reactor_outbound_count(server.reactor) != 0u) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 0u);
+    tls_test_client_close(&bclient);
+    tls_test_server_stop(&server);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_net_tls_config_validation);
     RUN_TEST(break_net_tls_handshake_auth_ping_roundtrip);
@@ -732,4 +943,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_tls_plaintext_envelope_client_is_closed);
     RUN_TEST(break_net_tls_verify_peer_accepts_fixture_client_cert);
     RUN_TEST(break_net_tls_verify_peer_rejects_certless_client);
+    RUN_TEST(break_net_tls_multi_frame_single_flight_delivers_all);
+    RUN_TEST(break_net_tls_pipelined_frames_all_delivered);
+    RUN_TEST(break_net_tls_blocked_handshake_does_not_freeze_peer);
 TEST_MAIN_END()
