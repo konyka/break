@@ -51,12 +51,26 @@ const BreakNetMessageRegistry *break_net_message_registry_default(void)
 {
     static const BreakNetMessageRegistry registry = {
         {
-            {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u, BREAK_NET_MAX_PAYLOAD_SIZE,
+            {BREAK_NET_MESSAGE_ID_AUTH, 1u,
+#ifdef BREAK_ENABLE_CRYPTO
+             2u,
+#else
+             1u,
+#endif
+             BREAK_NET_MAX_PAYLOAD_SIZE,
              BREAK_NET_MESSAGE_PHASE_ANY, BREAK_NET_DUPLICATE_REJECT},
             {BREAK_NET_MESSAGE_ID_PING, 1u, 1u, BREAK_NET_MAX_PAYLOAD_SIZE,
-             BREAK_NET_MESSAGE_PHASE_ANY, BREAK_NET_DUPLICATE_IDEMPOTENT}
+             BREAK_NET_MESSAGE_PHASE_ANY, BREAK_NET_DUPLICATE_IDEMPOTENT},
+#ifdef BREAK_ENABLE_CRYPTO
+            {BREAK_NET_MESSAGE_ID_CHALLENGE, 1u, 1u, 16u,
+             BREAK_NET_MESSAGE_PHASE_ANY, BREAK_NET_DUPLICATE_REJECT}
+#endif
         },
+#ifdef BREAK_ENABLE_CRYPTO
+        3u
+#else
         2u
+#endif
     };
     return &registry;
 }

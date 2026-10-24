@@ -123,6 +123,16 @@
       "verify_path": "VulkanSDK/Bin/glslang.exe",
             "verify_platforms": ["windows"],
       "platforms": ["windows", "linux"]
+    },
+    {
+      "name": "snowflake",
+      "version": "d5d4a9287d81468506a3f1962dead16f72a3b5c1 (snowflake main HEAD 2026-10-24)",
+      "purpose": "runtime-optional (BREAK_ENABLE_SNOWFLAKE)",
+      "source": "path reference via SNOWFLAKE_SOURCE_DIR (external git checkout, not vendored; consumed via add_subdirectory, required target snow::net)",
+      "sha256": "n/a-commit-pinned-via-configure-check",
+      "verify_path": "",
+      "verify": "configure-time, inside engine/CMakeLists.txt if(BREAK_ENABLE_SNOWFLAKE): `git -C ${SNOWFLAKE_SOURCE_DIR} rev-parse HEAD` must equal BREAK_SNOWFLAKE_PIN (this entry's version commit), else FATAL_ERROR naming pinned/found/update-procedure; when BREAK_ENABLE_CRYPTO=ON the same block additionally FATAL_ERRORs unless the tree ships src/snow_openssl.c and reports SNOW_HAVE_OPENSSL=TRUE after add_subdirectory (fail-closed; the snow_openssl_stub.c NOSYS build is accepted only with BREAK_ENABLE_CRYPTO=OFF). Moving the pin requires updating BREAK_SNOWFLAKE_PIN, this entry, and docs/design/snowflake_c11_adapter.md in the same commit.",
+      "platforms": ["linux", "windows", "macos"]
     }
   ]
 }

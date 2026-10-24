@@ -299,6 +299,42 @@ if(BREAK_ENABLE_SNOWFLAKE)
             "BREAK_ENABLE_SNOWFLAKE requires SNOWFLAKE_SOURCE_DIR to point to "
             "a Snowflake source tree with CMakeLists.txt; got '${SNOWFLAKE_SOURCE_DIR}'")
     endif()
+    # Stage 5 Phase D Task 1: Snowflake is commit-pinned, fail-closed at
+    # configure time. The pin below is mirrored by the snowflake entry in
+    # engine/external/locked_dependencies.json and the pin policy in
+    # docs/design/snowflake_c11_adapter.md; all three move in one commit.
+    set(BREAK_SNOWFLAKE_PIN "d5d4a9287d81468506a3f1962dead16f72a3b5c1")  # snowflake main HEAD 2026-10-24
+    execute_process(
+        COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
+        RESULT_VARIABLE _break_snowflake_rev_result
+        OUTPUT_VARIABLE _break_snowflake_head
+        ERROR_VARIABLE _break_snowflake_rev_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_STRIP_TRAILING_WHITESPACE)
+    if(NOT _break_snowflake_rev_result STREQUAL "0")
+        message(FATAL_ERROR
+            "Snowflake pin check failed: `git -C \"${SNOWFLAKE_SOURCE_DIR}\" "
+            "rev-parse HEAD` did not succeed "
+            "(result: ${_break_snowflake_rev_result}; ${_break_snowflake_rev_error}). "
+            "BREAK_SNOWFLAKE_PIN requires commit ${BREAK_SNOWFLAKE_PIN}, so "
+            "SNOWFLAKE_SOURCE_DIR must be a git checkout of the pinned Snowflake "
+            "tree. Update procedure: to move the pin, update BREAK_SNOWFLAKE_PIN "
+            "in engine/CMakeLists.txt, the snowflake entry in "
+            "engine/external/locked_dependencies.json, and the pin policy in "
+            "docs/design/snowflake_c11_adapter.md in the same commit.")
+    endif()
+    if(NOT _break_snowflake_head STREQUAL "${BREAK_SNOWFLAKE_PIN}")
+        message(FATAL_ERROR
+            "Snowflake pin mismatch at SNOWFLAKE_SOURCE_DIR='${SNOWFLAKE_SOURCE_DIR}':\n"
+            "  pinned: ${BREAK_SNOWFLAKE_PIN}\n"
+            "  found:  ${_break_snowflake_head}\n"
+            "Update procedure: to move the pin, update BREAK_SNOWFLAKE_PIN in "
+            "engine/CMakeLists.txt, the snowflake entry in "
+            "engine/external/locked_dependencies.json, and the pin policy in "
+            "docs/design/snowflake_c11_adapter.md in the same commit.")
+    endif()
+    message(STATUS
+        "Break Snowflake adapter: pinned commit ${BREAK_SNOWFLAKE_PIN} verified")
     message(STATUS "Break Snowflake adapter: adding ${SNOWFLAKE_SOURCE_DIR}")
     set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
     set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
@@ -310,6 +346,40 @@ if(BREAK_ENABLE_SNOWFLAKE)
             "Snowflake source tree did not provide the required target snow::net")
     endif()
     message(STATUS "Break Snowflake adapter: using target snow::net")
+    # Stage 5 Phase D Task 1: fail-closed OpenSSL assertion. snow_net compiles
+    # snow_openssl_stub.c (every snow_ssl_* returns SNOW_ERR_NOSYS) when its
+    # quiet find_package(OpenSSL) fails; with BREAK_ENABLE_CRYPTO=ON that stub
+    # build is rejected here at configure time (no runtime NOSYS surprise).
+    # BREAK_ENABLE_CRYPTO=OFF + stub remains an accepted configuration
+    # (documented in docs/design/snowflake_c11_adapter.md). SNOW_HAVE_OPENSSL
+    # is the CACHE INTERNAL flag snow sets after its own detection, so this
+    # reads snow's actual decision rather than re-running find_package.
+    # NOTE: the conditions use the compound form "BREAK_ENABLE_CRYPTO AND ..."
+    # on purpose — test_break_crypto/update_target_contract.cmake locate the
+    # crypto gated block by the first bare gated-if line for BREAK_ENABLE_CRYPTO
+    # in this file, so no such bare line may exist above that block.
+    if(BREAK_ENABLE_CRYPTO AND NOT EXISTS "${SNOWFLAKE_SOURCE_DIR}/src/snow_openssl.c")
+        message(FATAL_ERROR
+            "BREAK_ENABLE_CRYPTO=ON requires Snowflake's OpenSSL wrapper, but "
+            "'${SNOWFLAKE_SOURCE_DIR}/src/snow_openssl.c' does not exist. "
+            "The pinned Snowflake tree (${BREAK_SNOWFLAKE_PIN}) ships this "
+            "file; a tree without it is not the pinned tree.")
+    endif()
+    if(BREAK_ENABLE_CRYPTO AND NOT SNOW_HAVE_OPENSSL)
+        message(FATAL_ERROR
+            "BREAK_ENABLE_CRYPTO=ON requires Snowflake built with OpenSSL, "
+            "but snow reported SNOW_HAVE_OPENSSL=FALSE: snow's own "
+            "find_package(OpenSSL QUIET) failed, so snow_net fell back to "
+            "snow_openssl_stub.c (all snow_ssl_* return SNOW_ERR_NOSYS). "
+            "Install OpenSSL development headers (libssl-dev / openssl-devel) "
+            "so snow detects OpenSSL, or configure with "
+            "-DBREAK_ENABLE_CRYPTO=OFF (stub-NOSYS is accepted only in that "
+            "configuration).")
+    endif()
+    if(BREAK_ENABLE_CRYPTO AND SNOW_HAVE_OPENSSL)
+        message(STATUS
+            "Break Snowflake adapter: snow OpenSSL enabled (SNOW_HAVE_OPENSSL=${SNOW_HAVE_OPENSSL})")
+    endif()
 endif()
 
 # Stage 5 Phase A Task 2: break_crypto — formal optional static library, a
@@ -327,7 +397,10 @@ endif()
 # layout, Task 2 chunked downloader with byte-level resume via the
 # caller-supplied BreakUpdateFetchFn seam — no transport code, Task 3
 # stage/activate/unstage pipeline). Keep this block free of nested if(): both
-# contract scripts extract it up to its first endif().
+# contract scripts extract it up to its first endif(); they also locate the
+# block by the first bare gated-if line for BREAK_ENABLE_CRYPTO in this file,
+# so no earlier bare line may exist (the Stage 5 Phase D Snowflake OpenSSL
+# assertion above therefore uses compound "BREAK_ENABLE_CRYPTO AND ...").
 if(BREAK_ENABLE_CRYPTO)
     find_package(OpenSSL REQUIRED)
     message(STATUS "Break crypto: using OpenSSL ${OPENSSL_VERSION}")
@@ -428,6 +501,10 @@ if(BREAK_ENABLE_SNOWFLAKE)
     target_include_directories(break_net PRIVATE
         ${SNOWFLAKE_SOURCE_DIR}/include)
     target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    if(BREAK_ENABLE_CRYPTO)
+        target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
+        target_link_libraries(break_net PUBLIC break_crypto)
+    endif()
 endif()
 
 # Product build identity: short git hash baked into break_version.c (engine)
@@ -3867,6 +3944,20 @@ endif()
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
+
+        # Stage 5 Phase D Task 2: TLS transport mode. The self-signed PEM
+        # fixtures are referenced in place from the pinned Snowflake tree
+        # (no copies); the macro mirrors snow's SNOW_TEST_SSL_FIXTURE_DIR
+        # stringize idiom.
+        add_executable(test_break_net_tls tests/test_break_net_tls.c)
+        target_include_directories(test_break_net_tls PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_tls PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_break_net_tls PRIVATE break_net)
+        add_test(NAME test_break_net_tls COMMAND test_break_net_tls)
+        set_tests_properties(test_break_net_tls PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;tls")
     endif()
 
     # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).

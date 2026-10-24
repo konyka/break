@@ -15,7 +15,37 @@ expose Snowflake concrete structs in its public headers.
 When enabled, the engine CMake configuration requires
 `SNOWFLAKE_SOURCE_DIR` and links the actual `snow::net` target. There is no
 fallback transport; enabling `BREAK_ENABLE_SNOWFLAKE` without a valid
-`SNOWFLAKE_SOURCE_DIR` fails configure with a fatal error.
+`SNOWFLAKE_SOURCE_DIR` fails configure with a fatal error. The tree must also
+match the commit pin described below.
+
+## Dependency pin (Stage 5 Phase D)
+
+Snowflake is consumed as a path-referenced external checkout, pinned by commit
+hash and verified fail-closed at configure time.
+
+- **Pinned commit:** `d5d4a9287d81468506a3f1962dead16f72a3b5c1`
+  (snowflake main HEAD 2026-10-24), held in `engine/CMakeLists.txt` as
+  `BREAK_SNOWFLAKE_PIN`.
+- **Verification mechanism:** inside `if(BREAK_ENABLE_SNOWFLAKE)`, immediately
+  after `SNOWFLAKE_SOURCE_DIR` resolution, configure runs
+  `git -C <dir> rev-parse HEAD` and compares it to `BREAK_SNOWFLAKE_PIN`.
+  A failed `rev-parse` (missing git, or a directory that is not a git
+  checkout) and any hash mismatch are both `FATAL_ERROR`; the mismatch message
+  names the pinned value, the found value, and this update procedure.
+- **Update procedure:** moving the pin is a single commit that changes all
+  three of (1) `BREAK_SNOWFLAKE_PIN` in `engine/CMakeLists.txt`, (2) the
+  `snowflake` entry in `engine/external/locked_dependencies.json`, (3) this
+  section. `locked_dependencies.json` records the pin metadata
+  (`sha256 = n/a-commit-pinned-via-configure-check`); the CMake gate is the
+  enforcement point, not the JSON file.
+- **OpenSSL assertion:** when `BREAK_ENABLE_CRYPTO=ON`, the same configure
+  block additionally requires the tree to ship `src/snow_openssl.c` and
+  requires `SNOW_HAVE_OPENSSL=TRUE` after `add_subdirectory` (snow's own
+  cached record of its `find_package(OpenSSL QUIET)` result). Otherwise
+  configure fails closed: a stub build where every `snow_ssl_*` returns
+  `SNOW_ERR_NOSYS` must never surprise a crypto-enabled consumer at runtime.
+  With `BREAK_ENABLE_CRYPTO=OFF` the stub-NOSYS build remains an accepted
+  configuration — plaintext transport does not call the TLS wrapper.
 
 ## Target graph
 

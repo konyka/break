@@ -781,7 +781,7 @@ TEST(break_net_adapter_loopback_wire_round_trip)
               BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(outgoing.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(outgoing.protocol_version, BREAK_NET_PROTOCOL_VERSION);
-    ASSERT_EQ(outgoing.sequence, 0u);
+    ASSERT_EQ(outgoing.sequence, 1u);
     ASSERT_EQ(outgoing.payload_size, sizeof(incoming_payload));
     ASSERT_TRUE(memcmp(outgoing.payload, incoming_payload, sizeof(incoming_payload)) == 0);
 
@@ -789,6 +789,525 @@ TEST(break_net_adapter_loopback_wire_round_trip)
     ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     snow_tcp_client_destroy(client);
     snow_endpoint_destroy(endpoint);
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+/* ------------------------------------------------------------------ */
+/* Review-round-2 regression scaffolding (outbound ring + FIFO)        */
+/* ------------------------------------------------------------------ */
+
+/* STEP-mode accept driver: step until CONNECTION_OPENED or deadline. */
+static uint64_t break_net_test_step_until_opened(BreakNetReactor *reactor,
+                                                 uint64_t deadline_us)
+{
+    while (break_net_monotonic_us() < deadline_us) {
+        BreakNetEvent event = {0};
+        if (!break_net_reactor_step(reactor, 5)) return 0u;
+        while (break_net_reactor_poll_event(reactor, &event) == BREAK_NET_EVENT_OK) {
+            uint64_t key = event.type == BREAK_NET_EVENT_CONNECTION_OPENED
+                               ? event.connection_key
+                               : 0u;
+            break_net_event_release(&event);
+            if (key != 0u) return key;
+        }
+    }
+    return 0u;
+}
+
+/* Poll (deadline-bounded) then recv what is readable; 0 on timeout/EOF. */
+static size_t break_net_test_recv_available(int fd, unsigned char *buf, size_t cap,
+                                            uint64_t deadline_us)
+{
+    struct pollfd pfd;
+    uint64_t now = break_net_monotonic_us();
+    int ms;
+    int ready;
+    ssize_t got;
+    if (cap == 0u) return 0u;
+    pfd.fd = fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    ms = now >= deadline_us ? 1 : (int)((deadline_us - now) / UINT64_C(1000));
+    if (ms <= 0) ms = 1;
+    ready = poll(&pfd, 1, ms);
+    if (ready <= 0 || (pfd.revents & (POLLIN | POLLERR | POLLHUP)) == 0) return 0u;
+    got = recv(fd, buf, cap, 0);
+    return got > 0 ? (size_t)got : 0u;
+}
+
+/* Decode as many complete PING frames as the buffer holds; each frame must
+ * carry a 4-byte LE payload equal to its 0-based ordinal. */
+static size_t break_net_test_scan_ping_frames(const unsigned char *buf,
+                                              size_t received, bool *order_ok)
+{
+    size_t frames = 0u;
+    *order_ok = true;
+    while ((frames + 1u) * 22u <= received) {
+        const unsigned char *frame = buf + frames * 22u;
+        BreakNetEnvelope env = {0};
+        uint32_t word;
+        const unsigned char *env_payload;
+        if (break_net_envelope_decode(frame, 22u, &env) != BREAK_NET_ENVELOPE_OK ||
+            env.message_id != BREAK_NET_MESSAGE_ID_PING || env.payload_size != 4u) {
+            *order_ok = false;
+            return frames;
+        }
+        env_payload = (const unsigned char *)env.payload;
+        word = (uint32_t)env_payload[0] | ((uint32_t)env_payload[1] << 8u) |
+               ((uint32_t)env_payload[2] << 16u) | ((uint32_t)env_payload[3] << 24u);
+        if (word != (uint32_t)frames) *order_ok = false;
+        frames++;
+    }
+    return frames;
+}
+
+/* Review N1: a full (256-entry, wrapped) ring must survive head removal
+ * without losing the tail command or leaking its payload. */
+TEST(break_net_adapter_outbound_full_ring_remove_preserves_tail)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    int client_fd;
+    uint64_t key;
+    uint64_t deadline;
+    unsigned char payload[4] = {0u, 0u, 0u, 0u};
+    unsigned char buf[8192];
+    size_t received = 0u;
+    size_t frames;
+    size_t i;
+    bool order_ok = false;
+
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    client_fd = break_net_test_connect(acceptor);
+    ASSERT_TRUE(client_fd >= 0);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(5000000);
+    key = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key != 0u);
+
+    /* Advance the ring head off slot 0 (stale-key commands are dropped by the
+     * next step's drain), so the full ring below wraps around slot 255->0. */
+    for (i = 0u; i < 60u; ++i) {
+        ASSERT_EQ(break_net_reactor_send(reactor, UINT64_C(0xEEEE),
+                                         BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 0u);
+
+    for (i = 0u; i < BREAK_NET_OUTBOUND_QUEUE_CAPACITY; ++i) {
+        payload[0] = (unsigned char)i;
+        payload[1] = (unsigned char)(i >> 8u);
+        ASSERT_EQ(break_net_reactor_send(reactor, key, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor),
+              (size_t)BREAK_NET_OUTBOUND_QUEUE_CAPACITY);
+
+    while (received < (size_t)BREAK_NET_OUTBOUND_QUEUE_CAPACITY * 22u &&
+           break_net_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        received += break_net_test_recv_available(client_fd, buf + received,
+                                                  sizeof(buf) - received, deadline);
+    }
+    ASSERT_EQ(received, (size_t)BREAK_NET_OUTBOUND_QUEUE_CAPACITY * 22u);
+    frames = break_net_test_scan_ping_frames(buf, received, &order_ok);
+    ASSERT_EQ(frames, (size_t)BREAK_NET_OUTBOUND_QUEUE_CAPACITY);
+    ASSERT_TRUE(order_ok);
+
+    close(client_fd);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_connection_identity_count_for_test(reactor) != 0u) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+    }
+    ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 0u);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+/* Review N1 boundary guard: non-full head drops, wrap-around removal order,
+ * and tail removal all preserve the surviving commands byte-for-byte. */
+TEST(break_net_adapter_outbound_wrap_and_tail_boundaries)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    int client_fd;
+    uint64_t key;
+    uint64_t deadline;
+    unsigned char payload[4] = {0u, 0u, 0u, 0u};
+    unsigned char buf[4096];
+    size_t received = 0u;
+    size_t frames;
+    size_t i;
+    bool order_ok = false;
+
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    client_fd = break_net_test_connect(acceptor);
+    ASSERT_TRUE(client_fd >= 0);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(5000000);
+    key = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key != 0u);
+
+    /* 200 stale-key commands dropped one by one at the head (non-full head
+     * removal x200), moving the head to slot 200. */
+    for (i = 0u; i < 200u; ++i) {
+        ASSERT_EQ(break_net_reactor_send(reactor, UINT64_C(0xEEEE),
+                                         BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 0u);
+
+    /* 100 good commands occupy slots 200..255,0..43 (wrapped); one trailing
+     * stale-key command lands at the tail (slot 44) and is dropped last. */
+    for (i = 0u; i < 100u; ++i) {
+        payload[0] = (unsigned char)i;
+        ASSERT_EQ(break_net_reactor_send(reactor, key, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    ASSERT_EQ(break_net_reactor_send(reactor, UINT64_C(0xEEEE),
+                                     BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, payload,
+                                     sizeof(payload)), BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 101u);
+
+    while (received < 100u * 22u && break_net_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        received += break_net_test_recv_available(client_fd, buf + received,
+                                                  sizeof(buf) - received, deadline);
+    }
+    ASSERT_EQ(received, 100u * 22u);
+    frames = break_net_test_scan_ping_frames(buf, received, &order_ok);
+    ASSERT_EQ(frames, 100u);
+    ASSERT_TRUE(order_ok);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_outbound_count(reactor) != 0u) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+    }
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 0u);
+
+    close(client_fd);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+/* Review N2: a permanently failing command (unregistered message id —
+ * accepted by the public send, rejected by envelope encode in the drain)
+ * must block only its own connection's FIFO; another connection still
+ * sends. */
+TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    int fd_a;
+    int fd_b;
+    uint64_t key_a;
+    uint64_t key_b;
+    uint64_t deadline;
+    uint64_t silent_until;
+    unsigned char poison_payload = 0x11u;
+    unsigned char good_a = 0xaau;
+    unsigned char good_b = 0xbbu;
+    unsigned char buf[64];
+    size_t received = 0u;
+    bool a_silent = true;
+    BreakNetEnvelope env = {0};
+
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    fd_a = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_a >= 0);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(5000000);
+    key_a = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_a != 0u);
+    fd_b = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_b >= 0);
+    key_b = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_b != 0u);
+    ASSERT_NEQ(key_a, key_b);
+
+    ASSERT_EQ(break_net_reactor_send(reactor, key_a, 0xbeefu,
+                                     BREAK_NET_PROTOCOL_VERSION, &poison_payload,
+                                     1u), BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_send(reactor, key_a, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, &good_a,
+                                     1u), BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_send(reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, &good_b,
+                                     1u), BREAK_NET_SEND_OK);
+
+    /* The other connection's frame must be delivered. */
+    while (received < 19u && break_net_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        received += break_net_test_recv_available(fd_b, buf + received,
+                                                  sizeof(buf) - received, deadline);
+    }
+    ASSERT_EQ(received, 19u);
+    ASSERT_EQ(break_net_envelope_decode(buf, received, &env), BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(env.message_id, BREAK_NET_MESSAGE_ID_PING);
+    ASSERT_EQ(env.payload_size, 1u);
+    ASSERT_EQ(((const unsigned char *)env.payload)[0], good_b);
+
+    /* The blocked connection must receive nothing: its successor command may
+     * not overtake the failed head.  Keep stepping to give an overtaking
+     * implementation every chance. */
+    silent_until = break_net_monotonic_us() + UINT64_C(500000);
+    while (break_net_monotonic_us() < silent_until) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        if (break_net_test_recv_available(fd_a, buf, sizeof(buf),
+                                          break_net_monotonic_us()) != 0u) {
+            a_silent = false;
+        }
+    }
+    ASSERT_TRUE(a_silent);
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 2u);
+
+    /* Closing A drops both retained commands through the stale/closing path. */
+    close(fd_a);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_outbound_count(reactor) != 0u) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+    }
+    ASSERT_EQ(break_net_reactor_outbound_count(reactor), 0u);
+    close(fd_b);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    int fd_a;
+    int fd_b;
+    uint64_t key_a;
+    uint64_t key_b;
+    uint64_t deadline;
+    unsigned char payload[4] = {0u};
+    unsigned char wire_a[3u * 22u] = {0u};
+    unsigned char wire_b[2u * 22u] = {0u};
+    size_t received_a = 0u;
+    size_t received_b = 0u;
+    size_t i;
+
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    fd_a = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_a >= 0);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(5000000);
+    key_a = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_a != 0u);
+    fd_b = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_b >= 0);
+    key_b = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_b != 0u);
+    ASSERT_NEQ(key_a, key_b);
+
+    for (i = 0u; i < 3u; ++i) {
+        payload[0] = (unsigned char)i;
+        ASSERT_EQ(break_net_reactor_send(reactor, key_a, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    for (i = 0u; i < 2u; ++i) {
+        payload[0] = (unsigned char)(0x80u + i);
+        ASSERT_EQ(break_net_reactor_send(reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    while ((received_a < sizeof(wire_a) || received_b < sizeof(wire_b)) &&
+           break_net_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        if (received_a < sizeof(wire_a)) {
+            received_a += break_net_test_recv_available(
+                fd_a, wire_a + received_a, sizeof(wire_a) - received_a, deadline);
+        }
+        if (received_b < sizeof(wire_b)) {
+            received_b += break_net_test_recv_available(
+                fd_b, wire_b + received_b, sizeof(wire_b) - received_b, deadline);
+        }
+    }
+    ASSERT_EQ(received_a, sizeof(wire_a));
+    ASSERT_EQ(received_b, sizeof(wire_b));
+    for (i = 0u; i < 3u; ++i) {
+        BreakNetEnvelope envelope = {0};
+        ASSERT_EQ(break_net_envelope_decode(wire_a + i * 22u, 22u, &envelope),
+                  BREAK_NET_ENVELOPE_OK);
+        ASSERT_EQ(envelope.sequence, i + 1u);
+    }
+    for (i = 0u; i < 2u; ++i) {
+        BreakNetEnvelope envelope = {0};
+        ASSERT_EQ(break_net_envelope_decode(wire_b + i * 22u, 22u, &envelope),
+                  BREAK_NET_ENVELOPE_OK);
+        ASSERT_EQ(envelope.sequence, i + 1u);
+    }
+
+    close(fd_a);
+    close(fd_b);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+static bool break_net_test_wait_for_connection_count(BreakNetReactor *reactor,
+                                                     size_t expected,
+                                                     uint64_t deadline_us)
+{
+    while (break_net_monotonic_us() < deadline_us) {
+        if (break_net_reactor_connection_identity_count_for_test(reactor) == expected)
+            return true;
+        usleep(1000u);
+    }
+    return false;
+}
+
+TEST(break_net_adapter_rate_limit_config_is_created_only)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    limits.global_accept_per_sec = 10u;
+    limits.global_burst = 1u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(0));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    ASSERT_FALSE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fds[3] = {-1, -1, -1};
+    uint64_t deadline;
+    size_t i;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    for (i = 0u; i < 3u; ++i) {
+        fds[i] = break_net_test_connect(acceptor);
+        ASSERT_TRUE(fds[i] >= 0);
+    }
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 3u, deadline));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(0));
+    for (i = 0u; i < 3u; ++i) close(fds[i]);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_global_burst_then_denies_immediate_accepts)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fd_first = -1;
+    int fd_second = -1;
+    int fd_later = -1;
+    uint64_t deadline;
+    uint64_t denied;
+    limits.global_accept_per_sec = 1u;
+    limits.global_burst = 1u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    fd_first = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_first >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 1u, deadline));
+    fd_second = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_second >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(1000000);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_admission_denied(reactor) == UINT64_C(0)) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(1));
+    denied = break_net_reactor_admission_denied(reactor);
+    usleep(1200000u);
+    fd_later = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_later >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 2u, deadline));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), denied);
+    close(fd_first);
+    close(fd_second);
+    close(fd_later);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_per_ip_window_denies_limit_plus_one)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fds[2] = {-1, -1};
+    int fd_denied = -1;
+    uint64_t deadline;
+    limits.per_ip_per_minute = 2u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    fds[0] = break_net_test_connect(acceptor);
+    fds[1] = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fds[0] >= 0);
+    ASSERT_TRUE(fds[1] >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 2u, deadline));
+    fd_denied = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_denied >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(1000000);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_admission_denied(reactor) == UINT64_C(0)) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(1));
+    ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 2u);
+    close(fds[0]);
+    close(fds[1]);
+    close(fd_denied);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
     break_net_reactor_destroy(reactor);
     snow_acceptor_destroy(acceptor);
 }
@@ -824,4 +1343,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_protocol_rejects_bad_sequences_without_queue_view);
     RUN_TEST(break_net_adapter_loopback_close_emits_event_and_releases_identity);
     RUN_TEST(break_net_adapter_loopback_wire_round_trip);
+    RUN_TEST(break_net_adapter_outbound_full_ring_remove_preserves_tail);
+    RUN_TEST(break_net_adapter_outbound_wrap_and_tail_boundaries);
+    RUN_TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only);
+    RUN_TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection);
+    RUN_TEST(break_net_adapter_rate_limit_config_is_created_only);
+    RUN_TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior);
+    RUN_TEST(break_net_adapter_global_burst_then_denies_immediate_accepts);
+    RUN_TEST(break_net_adapter_per_ip_window_denies_limit_plus_one);
 TEST_MAIN_END()
