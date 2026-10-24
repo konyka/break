@@ -1,6 +1,9 @@
 #include "network/break_net_adapter.h"
 #include "network/break_net_envelope.h"
 #include "network/break_net_protocol.h"
+#ifdef BREAK_ENABLE_CRYPTO
+#include "crypto/break_crypto.h"
+#endif
 
 #include "core/platform_thread.h"
 
@@ -55,8 +58,13 @@ typedef struct BreakNetConnectionIdentity {
     char ip[BREAK_NET_ADDRESS_TEXT_CAPACITY];
     snow_recv_context_t *send_recv;
     size_t pending_send_count;
+    uint32_t outbound_sequence;
     bool closing;
     bool valid;
+#ifdef BREAK_ENABLE_CRYPTO
+    u8 auth_server_nonce[16];
+    bool auth_server_nonce_valid;
+#endif
     /* TLS mode only (both NULL in plaintext mode).  `ssl` is the per-connection
      * server-role session; `tls_scratch` is the drain-side ciphertext buffer.
      * Both are released ONLY through the identity lifecycle (release_if_drained
@@ -75,6 +83,12 @@ typedef struct BreakNetConnectionIdentity {
     snow_ssl_t *ssl;
     snow_network_buffer_t *tls_scratch;
 } BreakNetConnectionIdentity;
+
+#ifdef BREAK_ENABLE_CRYPTO
+bool break_session_auth_configured_internal(void);
+bool break_net_reactor_auth_server_nonce_for_session(
+    BreakNetReactor *reactor, uint64_t connection_key, u8 out_nonce[16]);
+#endif
 
 static bool break_net_event_push(BreakNetReactor *reactor, BreakNetEvent *event);
 static void break_net_reactor_fail(BreakNetReactor *reactor);
@@ -432,6 +446,24 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
                 return;
             }
         }
+#ifdef BREAK_ENABLE_CRYPTO
+        {
+            if (break_session_auth_configured_internal()) {
+                if (!break_crypto_random(identity->auth_server_nonce, 16u) ||
+                    break_net_reactor_send(
+                        reactor, (uint64_t)snow_connection_uid(connection),
+                        BREAK_NET_MESSAGE_ID_CHALLENGE, 1u,
+                        identity->auth_server_nonce, 16u) != BREAK_NET_SEND_OK) {
+                    snow_socket_addr_free(addr);
+                    break_net_identity_abort(identity);
+                    free(context);
+                    break_net_reactor_fail(reactor);
+                    return;
+                }
+                identity->auth_server_nonce_valid = true;
+            }
+        }
+#endif
         snow_socket_addr_free(addr);
     }
     snow_connection_set_user(connection, context);
@@ -584,6 +616,24 @@ static BreakNetConnectionIdentity *break_net_identity_find(BreakNetReactor *reac
     }
     return NULL;
 }
+
+#ifdef BREAK_ENABLE_CRYPTO
+bool break_net_reactor_auth_server_nonce_for_session(
+    BreakNetReactor *reactor, uint64_t connection_key, u8 out_nonce[16])
+{
+    BreakNetConnectionIdentity *identity;
+    bool available = false;
+    if (reactor == NULL || connection_key == 0u || out_nonce == NULL) return false;
+    platform_mutex_lock(&reactor->queue_mutex);
+    identity = break_net_identity_find(reactor, connection_key);
+    if (identity != NULL && identity->auth_server_nonce_valid) {
+        memcpy(out_nonce, identity->auth_server_nonce, 16u);
+        available = true;
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return available;
+}
+#endif
 
 static void break_net_identity_release_if_drained(BreakNetConnectionIdentity *identity)
 {
@@ -755,13 +805,18 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
                 index = (index + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
                 continue;
             }
+            if (command->message.sequence == 0u &&
+                identity->outbound_sequence != UINT32_MAX) {
+                command->message.sequence = ++identity->outbound_sequence;
+            }
             envelope.protocol_version = command->message.protocol_version;
             envelope.message_id = command->message.message_id;
             envelope.sequence = command->message.sequence;
             envelope.payload = command->message.data;
             envelope.payload_size = command->message.size;
-            status = break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
-                     BREAK_NET_ENVELOPE_OK
+            status = command->message.sequence != 0u &&
+                     break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
+                         BREAK_NET_ENVELOPE_OK
                          ? SNOW_OK
                          : SNOW_ERR_INVAL;
             if (status == SNOW_OK) {

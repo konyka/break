@@ -4,6 +4,24 @@
 
 #include <limits.h>
 #include <stdlib.h>
+#include <string.h>
+
+#ifdef BREAK_ENABLE_CRYPTO
+#include "crypto/break_crypto.h"
+#include <stdatomic.h>
+#if defined(ENGINE_PLATFORM_WINDOWS) || defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <time.h>
+extern int clock_gettime(int, struct timespec *);
+#ifndef CLOCK_MONOTONIC
+#define CLOCK_MONOTONIC 1
+#endif
+#endif
+#endif
 
 #define BREAK_SESSION_DEFAULT_MAX 64u
 
@@ -17,6 +35,11 @@ typedef struct BreakSessionEntry {
     uint32_t ping_sequence;
     bool message_seen[BREAK_NET_REGISTRY_MAX_MESSAGES];
     uint32_t message_sequences[BREAK_NET_REGISTRY_MAX_MESSAGES];
+#ifdef BREAK_ENABLE_CRYPTO
+    u8 server_nonce[16];
+    bool server_nonce_valid;
+    u64 authenticated_at_us;
+#endif
 } BreakSessionEntry;
 
 typedef struct BreakSessionHandlerEntry {
@@ -34,7 +57,101 @@ struct BreakSessionManager {
     BreakSessionHandlerEntry handlers[BREAK_NET_MESSAGE_ID_MAX + 1u];
     BreakSessionApplyResult last_result;
     BreakSessionApplyStats stats;
+#ifdef BREAK_ENABLE_CRYPTO
+    u32 max_age_seconds;
+#endif
 };
+
+#ifdef BREAK_ENABLE_CRYPTO
+static atomic_flag break_session_auth_lock = ATOMIC_FLAG_INIT;
+static BreakNetAuthKeyFn break_session_auth_fn;
+static void *break_session_auth_user;
+static size_t break_session_non_new_count;
+
+extern bool break_net_reactor_auth_server_nonce_for_session(
+    BreakNetReactor *reactor, uint64_t connection_key, u8 out_nonce[16]);
+bool break_session_auth_configured_internal(void);
+
+static void break_session_auth_lock_acquire(void)
+{
+    while (atomic_flag_test_and_set_explicit(&break_session_auth_lock,
+                                             memory_order_acquire)) {
+    }
+}
+
+static void break_session_auth_lock_release(void)
+{
+    atomic_flag_clear_explicit(&break_session_auth_lock, memory_order_release);
+}
+
+bool break_session_auth_configured_internal(void)
+{
+    bool configured;
+    break_session_auth_lock_acquire();
+    configured = break_session_auth_fn != NULL;
+    break_session_auth_lock_release();
+    return configured;
+}
+
+bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user)
+{
+    bool accepted;
+    break_session_auth_lock_acquire();
+    accepted = break_session_non_new_count == 0u;
+    if (accepted) {
+        break_session_auth_fn = fn;
+        break_session_auth_user = fn != NULL ? user : NULL;
+    }
+    break_session_auth_lock_release();
+    return accepted;
+}
+
+static bool break_session_auth_callback(BreakNetAuthKeyFn *fn, void **user)
+{
+    break_session_auth_lock_acquire();
+    *fn = break_session_auth_fn;
+    *user = break_session_auth_user;
+    break_session_auth_lock_release();
+    return *fn != NULL;
+}
+
+static void break_session_state_store(BreakSessionEntry *entry, BreakSessionState state)
+{
+    bool account = (entry->state == BREAK_SESSION_NEW && state != BREAK_SESSION_NEW) ||
+                   (entry->state != BREAK_SESSION_CLOSED && state == BREAK_SESSION_CLOSED);
+    if (account) break_session_auth_lock_acquire();
+    entry->state = state;
+    if (account) {
+        if (state == BREAK_SESSION_CLOSED) {
+            if (break_session_non_new_count != 0u) --break_session_non_new_count;
+        } else {
+            ++break_session_non_new_count;
+        }
+        break_session_auth_lock_release();
+    }
+}
+
+static u64 break_session_monotonic_us(void)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS) || defined(_WIN32)
+    return (u64)GetTickCount64() * UINT64_C(1000);
+#else
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 0u;
+    return (u64)now.tv_sec * UINT64_C(1000000) + (u64)now.tv_nsec / UINT64_C(1000);
+#endif
+}
+
+void break_session_set_max_age(BreakSession *s, u32 max_age_seconds)
+{
+    if (s != NULL) s->max_age_seconds = max_age_seconds;
+}
+#else
+static void break_session_state_store(BreakSessionEntry *entry, BreakSessionState state)
+{
+    entry->state = state;
+}
+#endif
 
 static BreakSessionEntry *find_entry(BreakSessionManager *manager,
                                      BreakConnectionKey connection)
@@ -98,6 +215,24 @@ BreakSessionManager *break_session_manager_create(const BreakSessionConfig *conf
 void break_session_manager_destroy(BreakSessionManager *manager)
 {
     if (manager != NULL) {
+#ifdef BREAK_ENABLE_CRYPTO
+        size_t i;
+        size_t non_new = 0u;
+        for (i = 0u; i < manager->capacity; ++i) {
+            if (manager->entries[i].used &&
+                manager->entries[i].state != BREAK_SESSION_NEW &&
+                manager->entries[i].state != BREAK_SESSION_CLOSED) {
+                ++non_new;
+            }
+        }
+        break_session_auth_lock_acquire();
+        if (break_session_non_new_count >= non_new) {
+            break_session_non_new_count -= non_new;
+        } else {
+            break_session_non_new_count = 0u;
+        }
+        break_session_auth_lock_release();
+#endif
         free(manager->entries);
         free(manager);
     }
@@ -147,7 +282,7 @@ bool break_session_manager_transition(BreakSessionManager *manager,
          (state == BREAK_SESSION_AUTHENTICATED || state == BREAK_SESSION_CLOSING)) ||
         (entry->state == BREAK_SESSION_AUTHENTICATED && state == BREAK_SESSION_CLOSING) ||
         (entry->state == BREAK_SESSION_CLOSING && state == BREAK_SESSION_CLOSED)) {
-        entry->state = state;
+        break_session_state_store(entry, state);
         return true;
     }
     return false;
@@ -162,8 +297,15 @@ bool break_session_manager_begin_auth(BreakSessionManager *manager, BreakConnect
 bool break_session_manager_auth_succeeded(BreakSessionManager *manager,
                                           BreakConnectionKey connection)
 {
-    return break_session_manager_transition(manager, connection,
-                                             BREAK_SESSION_AUTHENTICATED);
+    bool transitioned = break_session_manager_transition(manager, connection,
+                                                          BREAK_SESSION_AUTHENTICATED);
+#ifdef BREAK_ENABLE_CRYPTO
+    if (transitioned) {
+        BreakSessionEntry *entry = find_entry(manager, connection);
+        entry->authenticated_at_us = break_session_monotonic_us();
+    }
+#endif
+    return transitioned;
 }
 
 bool break_session_manager_close(BreakSessionManager *manager,
@@ -199,6 +341,110 @@ static bool break_session_record(BreakSessionManager *manager,
     return result == BREAK_SESSION_APPLY_OK;
 }
 
+#ifdef BREAK_ENABLE_CRYPTO
+static bool break_session_auth_fail(BreakSessionManager *manager,
+                                    BreakConnectionKey connection,
+                                    BreakSessionApplyResult result)
+{
+    (void)break_session_manager_close(manager, connection, 0u);
+    return break_session_record(manager, result);
+}
+
+static bool break_session_auth_tag(BreakNetAuthKeyFn fn, void *user,
+                                   const u8 key_id[8], const u8 server_nonce[16],
+                                   const u8 client_nonce[16], u8 out_tag[32])
+{
+    u8 psk[32];
+    u8 context[40];
+    bool ok;
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, server_nonce, 16u);
+    memcpy(context + 24u, client_nonce, 16u);
+    ok = fn(user, key_id, psk) &&
+         break_crypto_hmac_sha256(psk, sizeof(psk), context, sizeof(context), out_tag);
+    memset(psk, 0, sizeof(psk));
+    memset(context, 0, sizeof(context));
+    return ok;
+}
+
+static bool break_session_auth_tag_equal(const u8 left[32], const u8 right[32])
+{
+    u8 difference = 0u;
+    size_t i;
+    for (i = 0u; i < 32u; ++i) difference |= (u8)(left[i] ^ right[i]);
+    return difference == 0u;
+}
+
+static bool break_session_auth_v2_received(
+    BreakSessionManager *manager, BreakSessionEntry *entry,
+    const BreakNetEvent *event, size_t definition_index,
+    BreakNetAuthKeyFn fn, void *user)
+{
+    const u8 *payload = (const u8 *)event->message.data;
+    u8 expected_tag[32];
+    if (event->message.protocol_version != 2u || event->message.size != 56u ||
+        payload == NULL || !entry->server_nonce_valid) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_HANDLER_FAILED);
+    }
+    if (entry->state == BREAK_SESSION_NEW &&
+        !break_session_manager_begin_auth(manager, event->connection_key)) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_INVALID);
+    }
+    if (entry->state != BREAK_SESSION_AUTHENTICATING ||
+        !break_session_auth_tag(fn, user, payload, entry->server_nonce,
+                                payload + 8u, expected_tag) ||
+        !break_session_auth_tag_equal(expected_tag, payload + 24u)) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_HANDLER_FAILED);
+    }
+    entry->message_seen[definition_index] = true;
+    entry->message_sequences[definition_index] = event->message.sequence;
+    entry->auth_seen = true;
+    if (!break_session_manager_auth_succeeded(manager, event->connection_key)) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_INVALID);
+    }
+    return break_session_record(manager, BREAK_SESSION_APPLY_OK);
+}
+
+static bool break_session_challenge_received(
+    BreakSessionManager *manager, BreakSessionEntry *entry,
+    const BreakNetEvent *event, size_t definition_index,
+    BreakNetAuthKeyFn fn, void *user)
+{
+    static const u8 zero_key_id[8] = {0u};
+    u8 client_nonce[16];
+    u8 payload[56];
+    if (event->message.protocol_version != 1u || event->message.size != 16u ||
+        event->message.data == NULL || entry->server_nonce_valid ||
+        entry->state != BREAK_SESSION_NEW ||
+        !break_session_manager_begin_auth(manager, event->connection_key)) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_HANDLER_FAILED);
+    }
+    memset(payload, 0, sizeof(payload));
+    if (!break_crypto_random(client_nonce, sizeof(client_nonce)) ||
+        !break_session_auth_tag(fn, user, zero_key_id,
+                                (const u8 *)event->message.data,
+                                client_nonce, payload + 24u)) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_HANDLER_FAILED);
+    }
+    memcpy(payload + 8u, client_nonce, sizeof(client_nonce));
+    if (break_net_reactor_send(manager->reactor, event->connection_key,
+                               BREAK_NET_MESSAGE_ID_AUTH, 2u,
+                               payload, sizeof(payload)) != BREAK_NET_SEND_OK) {
+        return break_session_auth_fail(manager, event->connection_key,
+                                       BREAK_SESSION_APPLY_HANDLER_FAILED);
+    }
+    entry->message_seen[definition_index] = true;
+    entry->message_sequences[definition_index] = event->message.sequence;
+    return break_session_record(manager, BREAK_SESSION_APPLY_OK);
+}
+#endif
+
 bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
                                                 const BreakNetEvent *event)
 {
@@ -220,6 +466,14 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
                                             : BREAK_SESSION_APPLY_DUPLICATE);
         }
         handled = break_session_manager_bind(manager, event->connection_key);
+#ifdef BREAK_ENABLE_CRYPTO
+        if (handled) {
+            entry = find_entry(manager, event->connection_key);
+            entry->server_nonce_valid = break_session_auth_configured_internal() &&
+                break_net_reactor_auth_server_nonce_for_session(
+                    manager->reactor, event->connection_key, entry->server_nonce);
+        }
+#endif
         return break_session_record(manager, handled ? BREAK_SESSION_APPLY_OK :
                                      BREAK_SESSION_APPLY_INVALID);
     case BREAK_NET_EVENT_CONNECTION_CLOSED:
@@ -259,6 +513,27 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
                 }
                 return break_session_record(manager, BREAK_SESSION_APPLY_DUPLICATE);
             }
+#ifdef BREAK_ENABLE_CRYPTO
+            {
+                BreakNetAuthKeyFn auth_fn;
+                void *auth_user;
+                bool auth_configured = break_session_auth_callback(&auth_fn, &auth_user);
+                if (event->message.message_id == BREAK_NET_MESSAGE_ID_CHALLENGE &&
+                    auth_configured) {
+                    return break_session_challenge_received(
+                        manager, entry, event, definition_index, auth_fn, auth_user);
+                }
+                if (event->message.message_id == BREAK_NET_MESSAGE_ID_AUTH &&
+                    (auth_configured || event->message.protocol_version == 2u)) {
+                    if (!auth_configured) {
+                        return break_session_auth_fail(manager, event->connection_key,
+                                                       BREAK_SESSION_APPLY_INVALID);
+                    }
+                    return break_session_auth_v2_received(
+                        manager, entry, event, definition_index, auth_fn, auth_user);
+                }
+            }
+#endif
             if (event->message.message_id == BREAK_NET_MESSAGE_ID_AUTH &&
                 entry->state == BREAK_SESSION_NEW &&
                 !break_session_manager_begin_auth(manager, event->connection_key)) {
@@ -340,10 +615,26 @@ size_t break_session_manager_poll(BreakSessionManager *manager, uint32_t max_eve
     for (i = 0u; i < manager->capacity && closed < (size_t)max_events; ++i) {
         if (manager->entries[i].used &&
             manager->entries[i].state == BREAK_SESSION_CLOSING) {
-            manager->entries[i].state = BREAK_SESSION_CLOSED;
+            break_session_state_store(&manager->entries[i], BREAK_SESSION_CLOSED);
             ++closed;
         }
     }
+#ifdef BREAK_ENABLE_CRYPTO
+    if (manager->max_age_seconds != 0u && closed < (size_t)max_events) {
+        u64 now = break_session_monotonic_us();
+        u64 max_age_us = (u64)manager->max_age_seconds * UINT64_C(1000000);
+        size_t expired = 0u;
+        for (i = 0u; i < manager->capacity && closed + expired < (size_t)max_events; ++i) {
+            BreakSessionEntry *entry = &manager->entries[i];
+            if (entry->used && entry->state == BREAK_SESSION_AUTHENTICATED &&
+                now >= entry->authenticated_at_us &&
+                now - entry->authenticated_at_us > max_age_us) {
+                break_session_state_store(entry, BREAK_SESSION_CLOSING);
+                ++expired;
+            }
+        }
+    }
+#endif
     return closed;
 }
 

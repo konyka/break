@@ -501,6 +501,10 @@ if(BREAK_ENABLE_SNOWFLAKE)
     target_include_directories(break_net PRIVATE
         ${SNOWFLAKE_SOURCE_DIR}/include)
     target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    if(BREAK_ENABLE_CRYPTO)
+        target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
+        target_link_libraries(break_net PUBLIC break_crypto)
+    endif()
 endif()
 
 # Product build identity: short git hash baked into break_version.c (engine)

@@ -17,6 +17,24 @@ typedef struct BreakNetReactor BreakNetReactor;
 typedef uint64_t BreakConnectionKey;
 typedef uint64_t BreakSessionId;
 
+#ifdef BREAK_ENABLE_CRYPTO
+#include "core/types.h"
+
+typedef BreakSessionManager BreakSession;
+/* CHALLENGE payload (message_id=3, v1): server_nonce[16]. AUTH v2 payload
+ * (message_id=1, version 2, 56 bytes): key_id[8] || client_nonce[16] || tag[32],
+ * where tag = HMAC-SHA256(psk, "BRKAUTH2" || server_nonce || client_nonce). */
+typedef bool (*BreakNetAuthKeyFn)(void *user, const u8 key_id[8], u8 out_psk[32]);
+/* Process-wide because the pinned interface has no manager parameter. Changes
+ * are accepted only while every session is NEW; NULL clears the configuration.
+ * The callback resolves key_id, so provisioning and rollover stay app-side.
+ * The built-in CHALLENGE client helper requests the all-zero key_id. */
+bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
+/* Optional session expiry (0 = no expiry, default); authenticated sessions
+ * older than max_age_seconds enter CLOSING at the next GameThread poll. */
+void break_session_set_max_age(BreakSession *s, u32 max_age_seconds);
+#endif
+
 typedef enum BreakSessionState {
     BREAK_SESSION_NEW = 0,
     BREAK_SESSION_AUTHENTICATING,

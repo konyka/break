@@ -488,7 +488,7 @@ TEST(break_net_tls_handshake_auth_ping_roundtrip)
               BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(ping.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(ping.protocol_version, BREAK_NET_PROTOCOL_VERSION);
-    ASSERT_EQ(ping.sequence, 0u); /* monotonic outbound sequence is Task 3 */
+    ASSERT_EQ(ping.sequence, 1u);
     ASSERT_EQ(ping.payload_size, sizeof(payload));
     ASSERT_TRUE(memcmp(ping.payload, payload, sizeof(payload)) == 0);
     snow_network_buffer_destroy(plain);

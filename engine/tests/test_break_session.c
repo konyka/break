@@ -4,6 +4,9 @@
 #include <network/break_net_message_registry.h>
 #include <network/break_net_events.h>
 #include <network/break_session.h>
+#ifdef BREAK_ENABLE_CRYPTO
+#include <crypto/break_crypto.h>
+#endif
 
 #include <stdint.h>
 #include <time.h>
@@ -707,7 +710,7 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
                                         &response), BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(response.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(response.protocol_version, BREAK_NET_PROTOCOL_VERSION);
-    ASSERT_EQ(response.sequence, 0u);
+    ASSERT_EQ(response.sequence, 1u);
     ASSERT_EQ(response.payload_size, 4u);
     ASSERT_TRUE(memcmp(response.payload, "pong", 4u) == 0);
 
@@ -745,6 +748,481 @@ TEST(break_session_wire_auth_reaches_handler_and_sends_response)
     snow_acceptor_destroy(acceptor);
 }
 
+TEST(break_session_registry_auth_versions_match_crypto_mode)
+{
+    const BreakNetMessageRegistry *registry = break_net_message_registry_default();
+    const BreakNetMessageDefinition *auth = break_net_message_registry_lookup(
+        registry, BREAK_NET_MESSAGE_ID_AUTH);
+    const BreakNetMessageDefinition *challenge = break_net_message_registry_lookup(
+        registry, BREAK_NET_MESSAGE_ID_CHALLENGE);
+
+    ASSERT_NOT_NULL(auth);
+    ASSERT_TRUE(break_net_message_definition_supports_version(auth, 1u));
+#ifdef BREAK_ENABLE_CRYPTO
+    ASSERT_TRUE(break_net_message_definition_supports_version(auth, 2u));
+    ASSERT_NOT_NULL(challenge);
+    ASSERT_EQ(challenge->payload_limit, 16u);
+    ASSERT_TRUE(break_net_message_definition_supports_version(challenge, 1u));
+#else
+    ASSERT_FALSE(break_net_message_definition_supports_version(auth, 2u));
+    ASSERT_TRUE(challenge == NULL);
+#endif
+}
+
+#ifdef BREAK_ENABLE_CRYPTO
+TEST(break_session_max_age_expires_at_poll)
+{
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    BreakNetEvent opened = {0};
+    BreakNetEvent auth = {0};
+    const unsigned char payload = 0x5au;
+    BreakNetMessageView view = {BREAK_NET_MESSAGE_ID_AUTH, 1u, 1u,
+                                &payload, sizeof(payload)};
+    uint64_t deadline;
+
+    ASSERT_NOT_NULL(manager);
+    opened.type = BREAK_NET_EVENT_CONNECTION_OPENED;
+    opened.connection_key = 0x701u;
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &opened));
+    ASSERT_TRUE(break_session_manager_set_message_handler(
+        manager, BREAK_NET_MESSAGE_ID_AUTH, break_test_auth_handler, NULL));
+    g_handler_result = true;
+    auth.type = BREAK_NET_EVENT_MESSAGE_RECEIVED;
+    auth.connection_key = 0x701u;
+    ASSERT_EQ(break_net_message_copy(&auth.message, &view), BREAK_NET_MESSAGE_OK);
+    ASSERT_TRUE(break_session_manager_apply_adapter_event(manager, &auth));
+    break_net_event_release(&auth);
+    break_session_set_max_age(manager, 1u);
+    ASSERT_EQ(break_session_manager_poll(manager, 1u), 0u);
+    ASSERT_EQ(break_session_manager_state(manager, 0x701u),
+              BREAK_SESSION_AUTHENTICATED);
+
+    deadline = break_session_monotonic_us() + UINT64_C(3000000);
+    while (break_session_monotonic_us() < deadline &&
+           break_session_manager_state(manager, 0x701u) ==
+               BREAK_SESSION_AUTHENTICATED) {
+        (void)break_session_manager_poll(manager, 1u);
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_session_manager_state(manager, 0x701u), BREAK_SESSION_CLOSING);
+    ASSERT_EQ(break_session_manager_poll(manager, 1u), 1u);
+    ASSERT_EQ(break_session_manager_state(manager, 0x701u), BREAK_SESSION_CLOSED);
+    break_session_manager_destroy(manager);
+}
+
+static const uint8_t break_session_auth_key_id[8] = {
+    't', 'e', 's', 't', '-', 'k', '0', '1'
+};
+static const uint8_t break_session_auth_psk[32] = {
+    0x00u, 0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0x77u,
+    0x88u, 0x99u, 0xaau, 0xbbu, 0xccu, 0xddu, 0xeeu, 0xffu,
+    0x10u, 0x21u, 0x32u, 0x43u, 0x54u, 0x65u, 0x76u, 0x87u,
+    0x98u, 0xa9u, 0xbau, 0xcbu, 0xdcu, 0xedu, 0xfeu, 0x0fu
+};
+
+typedef struct BreakSessionAuthKeys {
+    bool allow_default;
+} BreakSessionAuthKeys;
+
+static bool break_session_auth_key(void *user, const u8 key_id[8], u8 out_psk[32])
+{
+    BreakSessionAuthKeys *keys = (BreakSessionAuthKeys *)user;
+    static const u8 zero_id[8] = {0u};
+    if (keys == NULL || key_id == NULL || out_psk == NULL) return false;
+    if (memcmp(key_id, break_session_auth_key_id, 8u) != 0 &&
+        !(keys->allow_default && memcmp(key_id, zero_id, 8u) == 0)) {
+        return false;
+    }
+    memcpy(out_psk, break_session_auth_psk, 32u);
+    return true;
+}
+
+typedef struct BreakSessionAuthFixture {
+    BreakNetReactor *reactor;
+    BreakSessionManager *manager;
+    snow_acceptor_t *acceptor;
+    int fd;
+    uint64_t key;
+    uint8_t server_nonce[16];
+} BreakSessionAuthFixture;
+
+static snow_acceptor_t *break_session_auth_acceptor(void)
+{
+    snow_endpoint_t *endpoint = NULL;
+    snow_acceptor_t *acceptor = NULL;
+    if (snow_endpoint_create(&endpoint) != SNOW_OK ||
+        snow_endpoint_set_host(endpoint, "127.0.0.1") != SNOW_OK ||
+        snow_endpoint_set_port(endpoint, 0) != SNOW_OK ||
+        snow_acceptor_create(endpoint, &acceptor) != SNOW_OK) {
+        snow_endpoint_destroy(endpoint);
+        return NULL;
+    }
+    snow_endpoint_destroy(endpoint);
+    if (snow_acceptor_bind(acceptor, 1) != SNOW_OK) {
+        snow_acceptor_destroy(acceptor);
+        return NULL;
+    }
+    return acceptor;
+}
+
+static int break_session_auth_connect(snow_acceptor_t *acceptor)
+{
+    const snow_endpoint_t *bound = snow_acceptor_endpoint(acceptor);
+    struct sockaddr_in address = {0};
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons((uint16_t)snow_endpoint_port(bound));
+    if (connect(fd, (const struct sockaddr *)&address, sizeof(address)) != 0) {
+        close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+static void break_session_auth_pump(BreakSessionAuthFixture *fixture)
+{
+    BreakNetEvent event = {0};
+    (void)break_net_reactor_step(fixture->reactor, 1);
+    while (break_net_reactor_poll_event(fixture->reactor, &event) == BREAK_NET_EVENT_OK) {
+        if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED && fixture->key == 0u) {
+            fixture->key = event.connection_key;
+        }
+        (void)break_session_manager_apply_adapter_event(fixture->manager, &event);
+        break_net_event_release(&event);
+    }
+}
+
+static bool break_session_auth_read(BreakSessionAuthFixture *fixture,
+                                    uint8_t *wire, size_t size, uint64_t deadline)
+{
+    size_t received = 0u;
+    while (received < size && break_session_monotonic_us() < deadline) {
+        struct pollfd descriptor = {fixture->fd, POLLIN, 0};
+        break_session_auth_pump(fixture);
+        if (poll(&descriptor, 1u, 0) > 0 &&
+            (descriptor.revents & (POLLIN | POLLERR | POLLHUP)) != 0) {
+            ssize_t chunk = read(fixture->fd, wire + received, size - received);
+            if (chunk <= 0) break;
+            received += (size_t)chunk;
+        }
+    }
+    return received == size;
+}
+
+static void break_session_auth_fixture_close(BreakSessionAuthFixture *fixture)
+{
+    if (fixture->fd >= 0) {
+        close(fixture->fd);
+        fixture->fd = -1;
+    }
+    if (fixture->reactor != NULL && fixture->manager != NULL) {
+        uint64_t deadline = break_session_monotonic_us() + UINT64_C(2000000);
+        while (break_session_monotonic_us() < deadline &&
+               break_net_reactor_connection_identity_count_for_test(
+                   fixture->reactor) != 0u) {
+            break_session_auth_pump(fixture);
+        }
+        (void)break_session_manager_poll(fixture->manager, 64u);
+    }
+    if (fixture->reactor != NULL) {
+        (void)break_net_reactor_stop(fixture->reactor, 1000u);
+    }
+    break_session_manager_destroy(fixture->manager);
+    break_net_reactor_destroy(fixture->reactor);
+    if (fixture->acceptor != NULL) snow_acceptor_destroy(fixture->acceptor);
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->fd = -1;
+}
+
+static bool break_session_auth_fixture_open(BreakSessionAuthFixture *fixture)
+{
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
+                                             1000, 1000u, 1u};
+    BreakSessionConfig session_config = {0};
+    uint8_t challenge_wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 16u];
+    BreakNetEnvelope challenge = {0};
+    uint64_t deadline;
+    bool ok = false;
+
+    memset(fixture, 0, sizeof(*fixture));
+    fixture->fd = -1;
+    fixture->acceptor = break_session_auth_acceptor();
+    if (fixture->acceptor == NULL) goto cleanup;
+    fixture->fd = break_session_auth_connect(fixture->acceptor);
+    if (fixture->fd < 0) goto cleanup;
+    fixture->reactor = break_net_reactor_create(&reactor_config);
+    fixture->manager = break_session_manager_create(&session_config);
+    if (fixture->reactor == NULL || fixture->manager == NULL) goto cleanup;
+    if (!break_session_manager_attach_reactor(fixture->manager, fixture->reactor) ||
+        !break_net_reactor_set_acceptor(fixture->reactor, fixture->acceptor) ||
+        !break_net_reactor_start(fixture->reactor)) goto cleanup;
+    deadline = break_session_monotonic_us() + UINT64_C(5000000);
+    while (fixture->key == 0u && break_session_monotonic_us() < deadline) {
+        break_session_auth_pump(fixture);
+    }
+    if (fixture->key == 0u ||
+        !break_session_auth_read(fixture, challenge_wire, sizeof(challenge_wire),
+                                 deadline) ||
+        break_net_envelope_decode(challenge_wire, sizeof(challenge_wire),
+                                  &challenge) != BREAK_NET_ENVELOPE_OK ||
+        challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
+        challenge.protocol_version != 1u || challenge.sequence != 1u ||
+        challenge.payload_size != 16u) goto cleanup;
+    memcpy(fixture->server_nonce, challenge.payload, 16u);
+    if (break_session_manager_state(fixture->manager, fixture->key) !=
+        BREAK_SESSION_NEW) goto cleanup;
+    ok = true;
+cleanup:
+    if (!ok) break_session_auth_fixture_close(fixture);
+    return ok;
+}
+
+static bool break_session_auth_make_v2(const BreakSessionAuthFixture *fixture,
+                                       const uint8_t key_id[8],
+                                       const uint8_t client_nonce[16],
+                                       uint8_t *wire, size_t *wire_size)
+{
+    uint8_t payload[56];
+    uint8_t context[40];
+    BreakNetEnvelope auth;
+    memcpy(payload, key_id, 8u);
+    memcpy(payload + 8u, client_nonce, 16u);
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, fixture->server_nonce, 16u);
+    memcpy(context + 24u, client_nonce, 16u);
+    if (!break_crypto_hmac_sha256(break_session_auth_psk, 32u,
+                                  context, sizeof(context), payload + 24u)) {
+        return false;
+    }
+    auth = break_test_envelope(2u, BREAK_NET_MESSAGE_ID_AUTH, 0u, 1u,
+                               payload, sizeof(payload));
+    return break_net_envelope_encode(&auth, wire,
+                                     BREAK_NET_ENVELOPE_HEADER_SIZE + sizeof(payload),
+                                     wire_size) == BREAK_NET_ENVELOPE_OK;
+}
+
+static bool break_session_auth_wait_terminal(BreakSessionAuthFixture *fixture)
+{
+    uint64_t deadline = break_session_monotonic_us() + UINT64_C(5000000);
+    while (break_session_monotonic_us() < deadline) {
+        BreakSessionState state = break_session_manager_state(fixture->manager,
+                                                               fixture->key);
+        if (state == BREAK_SESSION_AUTHENTICATED || state == BREAK_SESSION_CLOSING ||
+            state == BREAK_SESSION_CLOSED) return true;
+        break_session_auth_pump(fixture);
+    }
+    return false;
+}
+
+TEST(break_session_auth_v2_loopback_authenticates)
+{
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture fixture;
+    uint8_t client_nonce[16];
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t wire_size = 0u;
+    size_t i;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_auth_fixture_open(&fixture));
+    for (i = 0u; i < sizeof(client_nonce); ++i) client_nonce[i] = (uint8_t)(i + 1u);
+    ASSERT_TRUE(break_session_auth_make_v2(&fixture, break_session_auth_key_id,
+                                           client_nonce, wire, &wire_size));
+    ASSERT_EQ(wire_size, sizeof(wire));
+    ASSERT_EQ(break_session_wire_write_all(fixture.fd, wire, wire_size),
+              (ssize_t)wire_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&fixture));
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.key),
+              BREAK_SESSION_AUTHENTICATED);
+    break_session_auth_fixture_close(&fixture);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_auth_v2_tampered_tag_closes)
+{
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture fixture;
+    uint8_t client_nonce[16] = {0x31u};
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t wire_size = 0u;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_auth_fixture_open(&fixture));
+    ASSERT_TRUE(break_session_auth_make_v2(&fixture, break_session_auth_key_id,
+                                           client_nonce, wire, &wire_size));
+    wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 24u] ^= 0x80u;
+    ASSERT_EQ(break_session_wire_write_all(fixture.fd, wire, wire_size),
+              (ssize_t)wire_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&fixture));
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.key),
+              BREAK_SESSION_CLOSING);
+    ASSERT_EQ(break_session_manager_poll(fixture.manager, 1u), 1u);
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.key),
+              BREAK_SESSION_CLOSED);
+    break_session_auth_fixture_close(&fixture);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_auth_v2_unknown_key_closes)
+{
+    static const uint8_t unknown_id[8] = {'n', 'o', 's', 'u', 'c', 'h', 'k', 'e'};
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture fixture;
+    uint8_t client_nonce[16] = {0x42u};
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t wire_size = 0u;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_auth_fixture_open(&fixture));
+    ASSERT_TRUE(break_session_auth_make_v2(&fixture, unknown_id, client_nonce,
+                                           wire, &wire_size));
+    ASSERT_EQ(break_session_wire_write_all(fixture.fd, wire, wire_size),
+              (ssize_t)wire_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&fixture));
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.key),
+              BREAK_SESSION_CLOSING);
+    break_session_auth_fixture_close(&fixture);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_auth_configured_rejects_v1)
+{
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture fixture;
+    BreakNetEnvelope auth = break_test_envelope(1u, BREAK_NET_MESSAGE_ID_AUTH,
+                                                0u, 1u, "plain", 5u);
+    uint8_t wire[BREAK_NET_ENVELOPE_HEADER_SIZE + 5u];
+    size_t wire_size = 0u;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_auth_fixture_open(&fixture));
+    g_handler_result = true;
+    g_auth_dispatches = 0u;
+    ASSERT_TRUE(break_session_manager_set_message_handler(
+        fixture.manager, BREAK_NET_MESSAGE_ID_AUTH, break_test_auth_handler, NULL));
+    ASSERT_EQ(break_net_envelope_encode(&auth, wire, sizeof(wire), &wire_size),
+              BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(break_session_wire_write_all(fixture.fd, wire, wire_size),
+              (ssize_t)wire_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&fixture));
+    ASSERT_EQ(break_session_manager_state(fixture.manager, fixture.key),
+              BREAK_SESSION_CLOSING);
+    ASSERT_EQ(g_auth_dispatches, 0u);
+    break_session_auth_fixture_close(&fixture);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_auth_v2_replay_on_new_connection_closes)
+{
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionAuthFixture first;
+    BreakSessionAuthFixture second;
+    uint8_t client_nonce[16] = {0x73u};
+    uint8_t first_nonce[16];
+    uint8_t replay[BREAK_NET_ENVELOPE_HEADER_SIZE + 56u];
+    size_t replay_size = 0u;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_auth_fixture_open(&first));
+    ASSERT_TRUE(break_session_auth_make_v2(&first, break_session_auth_key_id,
+                                           client_nonce, replay, &replay_size));
+    ASSERT_EQ(break_session_wire_write_all(first.fd, replay, replay_size),
+              (ssize_t)replay_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&first));
+    ASSERT_EQ(break_session_manager_state(first.manager, first.key),
+              BREAK_SESSION_AUTHENTICATED);
+    memcpy(first_nonce, first.server_nonce, sizeof(first_nonce));
+    break_session_auth_fixture_close(&first);
+
+    ASSERT_TRUE(break_session_auth_fixture_open(&second));
+    ASSERT_TRUE(memcmp(first_nonce, second.server_nonce, 16u) != 0);
+    ASSERT_EQ(break_session_wire_write_all(second.fd, replay, replay_size),
+              (ssize_t)replay_size);
+    ASSERT_TRUE(break_session_auth_wait_terminal(&second));
+    ASSERT_EQ(break_session_manager_state(second.manager, second.key),
+              BREAK_SESSION_CLOSING);
+    break_session_auth_fixture_close(&second);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_challenge_client_helper_answers_auth_v2)
+{
+    BreakSessionAuthKeys keys = {true};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u,
+                                             1000, 1000u, 1u};
+    BreakSessionConfig session_config = {0};
+    BreakNetReactor *reactor = NULL;
+    BreakSessionManager *manager = NULL;
+    snow_acceptor_t *acceptor = NULL;
+    BreakNetOwnedMessage reply = {0};
+    uint64_t connection = 0x909u;
+    uint64_t outbound_connection = 0u;
+    uint8_t server_nonce[16];
+    uint8_t zero_id[8] = {0u};
+    uint8_t context[40];
+    uint8_t expected_tag[32];
+    size_t i;
+
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    acceptor = break_session_auth_acceptor();
+    reactor = break_net_reactor_create(&reactor_config);
+    manager = break_session_manager_create(&session_config);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(manager);
+    ASSERT_TRUE(break_session_manager_attach_reactor(manager, reactor));
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, connection));
+    for (i = 0u; i < sizeof(server_nonce); ++i) server_nonce[i] = (uint8_t)(0xa0u + i);
+    ASSERT_TRUE(break_net_reactor_enqueue_message_for_test(
+        reactor, connection, BREAK_NET_MESSAGE_ID_CHALLENGE, 1u,
+        server_nonce, sizeof(server_nonce)));
+    ASSERT_EQ(break_session_manager_poll_adapter(manager, 8u), 2u);
+    ASSERT_EQ(break_session_manager_state(manager, connection),
+              BREAK_SESSION_AUTHENTICATING);
+    ASSERT_EQ(break_net_reactor_poll_outbound_for_test(
+                  reactor, &outbound_connection, &reply), BREAK_NET_EVENT_OK);
+    ASSERT_EQ(outbound_connection, connection);
+    ASSERT_EQ(reply.message_id, BREAK_NET_MESSAGE_ID_AUTH);
+    ASSERT_EQ(reply.protocol_version, 2u);
+    ASSERT_EQ(reply.size, 56u);
+    ASSERT_TRUE(memcmp(reply.data, zero_id, sizeof(zero_id)) == 0);
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, server_nonce, 16u);
+    memcpy(context + 24u, (const uint8_t *)reply.data + 8u, 16u);
+    ASSERT_TRUE(break_crypto_hmac_sha256(break_session_auth_psk, 32u,
+                                         context, sizeof(context), expected_tag));
+    ASSERT_TRUE(memcmp((const uint8_t *)reply.data + 24u, expected_tag, 32u) == 0);
+    break_net_message_release(&reply);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_session_manager_destroy(manager);
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+
+TEST(break_session_auth_configuration_is_new_state_only)
+{
+    BreakSessionAuthKeys keys = {0};
+    BreakSessionConfig config = {0};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+
+    ASSERT_NOT_NULL(manager);
+    ASSERT_TRUE(break_session_manager_bind(manager, 0x910u));
+    ASSERT_TRUE(break_session_set_auth(break_session_auth_key, &keys));
+    ASSERT_TRUE(break_session_manager_begin_auth(manager, 0x910u));
+    ASSERT_FALSE(break_session_set_auth(NULL, NULL));
+    ASSERT_TRUE(break_session_manager_close(manager, 0x910u, 0u));
+    ASSERT_EQ(break_session_manager_poll(manager, 1u), 1u);
+    break_session_manager_destroy(manager);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+}
+#endif
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_envelope_round_trip_preserves_fields);
     RUN_TEST(break_envelope_uses_little_endian_wire_order);
@@ -766,4 +1244,15 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_rejects_public_registry_count_out_of_bounds);
     RUN_TEST(break_session_poll_is_low_level_close_finalization);
     RUN_TEST(break_session_wire_auth_reaches_handler_and_sends_response);
+    RUN_TEST(break_session_registry_auth_versions_match_crypto_mode);
+#ifdef BREAK_ENABLE_CRYPTO
+    RUN_TEST(break_session_max_age_expires_at_poll);
+    RUN_TEST(break_session_auth_v2_loopback_authenticates);
+    RUN_TEST(break_session_auth_v2_tampered_tag_closes);
+    RUN_TEST(break_session_auth_v2_unknown_key_closes);
+    RUN_TEST(break_session_auth_configured_rejects_v1);
+    RUN_TEST(break_session_auth_v2_replay_on_new_connection_closes);
+    RUN_TEST(break_session_challenge_client_helper_answers_auth_v2);
+    RUN_TEST(break_session_auth_configuration_is_new_state_only);
+#endif
 TEST_MAIN_END()

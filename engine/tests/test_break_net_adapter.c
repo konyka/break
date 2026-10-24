@@ -781,7 +781,7 @@ TEST(break_net_adapter_loopback_wire_round_trip)
               BREAK_NET_ENVELOPE_OK);
     ASSERT_EQ(outgoing.message_id, BREAK_NET_MESSAGE_ID_PING);
     ASSERT_EQ(outgoing.protocol_version, BREAK_NET_PROTOCOL_VERSION);
-    ASSERT_EQ(outgoing.sequence, 0u);
+    ASSERT_EQ(outgoing.sequence, 1u);
     ASSERT_EQ(outgoing.payload_size, sizeof(incoming_payload));
     ASSERT_TRUE(memcmp(outgoing.payload, incoming_payload, sizeof(incoming_payload)) == 0);
 
@@ -1092,6 +1092,84 @@ TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only)
     snow_acceptor_destroy(acceptor);
 }
 
+TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    int fd_a;
+    int fd_b;
+    uint64_t key_a;
+    uint64_t key_b;
+    uint64_t deadline;
+    unsigned char payload[4] = {0u};
+    unsigned char wire_a[3u * 22u] = {0u};
+    unsigned char wire_b[2u * 22u] = {0u};
+    size_t received_a = 0u;
+    size_t received_b = 0u;
+    size_t i;
+
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    fd_a = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_a >= 0);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(5000000);
+    key_a = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_a != 0u);
+    fd_b = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_b >= 0);
+    key_b = break_net_test_step_until_opened(reactor, deadline);
+    ASSERT_TRUE(key_b != 0u);
+    ASSERT_NEQ(key_a, key_b);
+
+    for (i = 0u; i < 3u; ++i) {
+        payload[0] = (unsigned char)i;
+        ASSERT_EQ(break_net_reactor_send(reactor, key_a, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    for (i = 0u; i < 2u; ++i) {
+        payload[0] = (unsigned char)(0x80u + i);
+        ASSERT_EQ(break_net_reactor_send(reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                         BREAK_NET_PROTOCOL_VERSION, payload,
+                                         sizeof(payload)), BREAK_NET_SEND_OK);
+    }
+    while ((received_a < sizeof(wire_a) || received_b < sizeof(wire_b)) &&
+           break_net_monotonic_us() < deadline) {
+        ASSERT_TRUE(break_net_reactor_step(reactor, 5));
+        if (received_a < sizeof(wire_a)) {
+            received_a += break_net_test_recv_available(
+                fd_a, wire_a + received_a, sizeof(wire_a) - received_a, deadline);
+        }
+        if (received_b < sizeof(wire_b)) {
+            received_b += break_net_test_recv_available(
+                fd_b, wire_b + received_b, sizeof(wire_b) - received_b, deadline);
+        }
+    }
+    ASSERT_EQ(received_a, sizeof(wire_a));
+    ASSERT_EQ(received_b, sizeof(wire_b));
+    for (i = 0u; i < 3u; ++i) {
+        BreakNetEnvelope envelope = {0};
+        ASSERT_EQ(break_net_envelope_decode(wire_a + i * 22u, 22u, &envelope),
+                  BREAK_NET_ENVELOPE_OK);
+        ASSERT_EQ(envelope.sequence, i + 1u);
+    }
+    for (i = 0u; i < 2u; ++i) {
+        BreakNetEnvelope envelope = {0};
+        ASSERT_EQ(break_net_envelope_decode(wire_b + i * 22u, 22u, &envelope),
+                  BREAK_NET_ENVELOPE_OK);
+        ASSERT_EQ(envelope.sequence, i + 1u);
+    }
+
+    close(fd_a);
+    close(fd_b);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_rejects_null_config);
     RUN_TEST(break_net_adapter_start_without_acceptor_fails_closed);
@@ -1126,4 +1204,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_outbound_full_ring_remove_preserves_tail);
     RUN_TEST(break_net_adapter_outbound_wrap_and_tail_boundaries);
     RUN_TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only);
+    RUN_TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection);
 TEST_MAIN_END()
