@@ -571,6 +571,19 @@ MoltenVK 构建（`-DENGINE_VULKAN=ON`，与 CI 一致）`179/179`，`test_vulka
 在 macOS 上解析为 `opengl`（macOS 不支持，`rhi_gl.c` 编译失败），macOS 上必须显式给出
 `-DENGINE_VULKAN=ON` 或 `-DENGINE_RHI_BACKEND=metal`。
 
+2026-10-24 同步 @5e320ac9（R662–R687）后复核：两套构建 CTest 均 `179/179`（Metal 含 5 个
+手动 fuzz 目标，`-L graphics` `5/5`），本轮远程改动未引入 macOS 构建或测试回归。
+`engine_demo` 实机截图（`BREAK_SCREENSHOT=60 ... --frames 70`，须在 `engine/` 目录运行，
+shader 按相对路径加载）发现 Metal 的 `rhi_screenshot` 仍按旧的 bottom-up 约定反转行序，
+与 `rhi.h` 现行契约（ac15c54a 起：top-left 原点、各后端 top-down）相反，Metal 截图因此上下
+颠倒；已改为直接拷贝，`test_rhi_metal_resources` 新增 `screenshot_rows_are_top_down`
+（顶部半屏 scissor 画红、底部为清屏蓝，断言首行红末行蓝；修复前该用例失败）。
+已知缺口（非本轮回归，同步前的 b715881c 截图一致）：Metal 下 `engine_demo` 只有 UI 可见、
+3D 场景为黑——`rhi_metal.m` 的 `rhi_cmd_bind_material_textures_ibl`、
+`rhi_cmd_set_shadow_viewport`、`rhi_cmd_bind_texel_buffers`、深度状态等十余个入口仍是
+`not implemented` 桩，且多条渲染器管线的 bindings 创建失败，70 帧日志约 3000 条错误；
+MoltenVK 构建下同一场景正常渲染。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
