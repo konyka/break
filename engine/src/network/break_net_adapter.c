@@ -49,7 +49,7 @@ typedef struct BreakNetAdmissionState {
     BreakNetRateLimitConfig config;
     snow_ratelimiter_t *global;
     BreakNetAdmissionIpEntry per_ip[BREAK_NET_ADMISSION_IP_CAPACITY];
-    uint64_t denied;
+    _Atomic uint64_t denied;
 } BreakNetAdmissionState;
 
 typedef struct BreakNetOutboundCommand {
