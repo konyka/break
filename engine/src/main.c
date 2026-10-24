@@ -2270,6 +2270,8 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     return true;
 }
 
+#define MEGA_DIRECT_MAX_DRAWS 64u
+
 typedef struct {
     RHIBuffer vbo;
     RHIBuffer ibo;
@@ -2300,6 +2302,11 @@ typedef struct {
      * linear scan in mega_mat_groups_draw/indirect (called 12-17×/frame). */
     u32       group_cmd_offsets[MEGA_MAX_MAT_GROUPS + 1]; /* prefix sums */
     u32       group_cmd_list[16384];                     /* sorted by group */
+    /* R688: CPU copy of the baked draw cmds for small scenes. Point-shadow
+     * faces (24 per frame) draw these directly after a CPU sphere test;
+     * a per-face GPU cull + compact costs more than it saves at this size. */
+    DrawIndexedIndirectCmd direct_cmds[MEGA_DIRECT_MAX_DRAWS];
+    bool      direct_ready;
 } MegaBuffer;
 
 bool unified_cull_enabled = false;
@@ -2310,6 +2317,34 @@ bool gpucull_enabled = false;
 /* R441: material-indirect single-execute forward (texture array). Default on;
  * BREAK_MAT_INDIRECT=0 falls back to the R437 per-group loop. */
 bool mat_indirect_enabled = true;
+
+bool mega_direct_shadow_enabled = true;
+
+/* R688: point-shadow faces use mega_draw_direct_culled when this holds. */
+static bool mega_use_direct_shadow(const MegaBuffer *mb) {
+    return mega_direct_shadow_enabled && mb && mb->valid && mb->direct_ready;
+}
+
+/* Draws every baked cmd whose node sphere passes the frustum. The mega VBO /
+ * IBO and the depth pipeline must already be bound. Returns the draw count. */
+static u32 mega_draw_direct_culled(const MegaBuffer *mb, RHICmdBuffer *cmd,
+                                   const Mat4 *vp) {
+    Frustum f = frustum_from_vp(vp);
+    u32 n = 0u;
+    for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
+        u32 ni = mb->cmd_node_index[ci];
+        if (ni >= 16384u) continue;
+        const NodeSphere *ns = &mb->node_spheres[ni];
+        if (ns->r < 0.0f) continue;
+        Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+        if (!frustum_test_sphere(&f, ctr, ns->r)) continue;
+        rhi_cmd_draw_indexed_base(cmd, mb->direct_cmds[ci].index_count, 1u,
+                                  mb->direct_cmds[ci].first_index,
+                                  mb->direct_cmds[ci].vertex_offset);
+        n++;
+    }
+    return n;
+}
 
 static bool mega_use_unified_shadow(const MegaBuffer *mb) {
     return unified_shadow_enabled && gpucull_enabled && mb && mb->valid &&
@@ -4158,6 +4193,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
             mega_buf.draw_cmd_count    = mesh_cmd_count;
             mega_buf.total_index_count = total_idxs;
+            mega_buf.direct_ready = mesh_cmd_count <= MEGA_DIRECT_MAX_DRAWS;
+            if (mega_buf.direct_ready)
+                memcpy(mega_buf.direct_cmds, cmds, mesh_cmd_count * sizeof(cmds[0]));
             mega_buf.valid = mega_geom_ok;
             gpu_indirect_enabled = mega_geom_ok && indirect_ok;
             gpucull_enabled = mega_geom_ok && gpucull_ok;
@@ -4484,6 +4522,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         const char *sh = getenv("BREAK_UNIFIED_SHADOW");
         LOG_INFO("Unified shadow draw: on (%s)", sh ? "BREAK_UNIFIED_SHADOW=1" : "default mega-buffer");
     }
+    { const char *e = getenv("BREAK_MEGA_DIRECT_SHADOW"); if (e && !atoi(e)) mega_direct_shadow_enabled = false; }
+    if (mega_use_direct_shadow(&mega_buf))
+        LOG_INFO("Point-shadow mega draw: direct, CPU sphere cull (%u cmds; BREAK_MEGA_DIRECT_SHADOW=0 for GPU cull)",
+                 mega_buf.draw_cmd_count);
     if (occ_cull_enabled) LOG_INFO("Hi-Z Occlusion Cull: on (1-frame latency, opt-out BREAK_OCCLUSION=0)");
     /* R441: report the material-array single-execute path state at startup. */
     if (mat_indirect_enabled && mega_buf.array_system_ready && mega_buf.mats.ready) {
@@ -6809,7 +6851,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R170: Point-shadow faces — GPU compact, no camera Hi-Z. */
                             u32 vis_count = mega_buf.draw_cmd_count;
                             u32 face_idx = pli * POINT_SHADOW_FACES + pface;
-                            if (mega_use_unified_shadow(&mega_buf) &&
+                            if (mega_use_direct_shadow(&mega_buf)) {
+                                u32 nd = mega_draw_direct_culled(&mega_buf, cmd,
+                                                                 &pt_shadows.light_vp[face_idx]);
+                                draw_calls += nd;
+                            } else if (mega_use_unified_shadow(&mega_buf) &&
                                 mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
                                                           vis_count, NULL,
