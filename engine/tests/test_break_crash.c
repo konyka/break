@@ -7,7 +7,9 @@
  *  signal, the parent recovers the inbox and parses the record), and the
  *  Task 3 redaction/upload-seam tests (purity + basename idempotence + blob
  *  passthrough, serialize round-trip, fake-uploader passes incl. the
- *  crash-spool recovery acceptance scenario end-to-end).
+ *  crash-spool recovery acceptance scenario end-to-end), plus the Task 4
+ *  review pins (foreign attempts≥5 sidecar clamped as corrupt, corrupt-sidecar
+ *  self-heal in one pass, retention-overflow sidecar cleanup).
  *
  *  The grammar is byte-pinned here: the Task 2 signal-side writer must
  *  produce byte-identical output (one grammar, two writers — see
@@ -1730,6 +1732,140 @@ TEST(upload_null_uploader_noop) {
     rm_tree(root);
 }
 
+/* ---- Task 4 review pins: sidecar ≥max clamp + corrupt self-heal + retention cleanup ---- */
+
+TEST(upload_sidecar_u32max_clamped_as_corrupt) {
+    /* Review M2 pin: a FOREIGN but structurally canonical sidecar carrying
+     * attempts = u32-max must read as corrupt (0) — never wrap the increment
+     * to 0, which would grant the record unbounded retries. One failed pass
+     * self-heals it to "attempts: 1" and the ≤5 bound holds from there. */
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_u32max");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_TRUE(put_tagged(s, 7)); /* lands at id 1 */
+
+    char mpath[600];
+    join2(mpath, sizeof(mpath), root, "pending/1.meta");
+    static const char foreign[] = "break-crash-meta-v1\nattempts: 4294967295\n";
+    ASSERT_TRUE(put_file(mpath, foreign, strlen(foreign)));
+
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    up.fail_mask = ~0ull; /* every call fails */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 1u);
+    /* clamped → 0, incremented → 1 (without the clamp this pass would have
+     * wrapped to "attempts: 0"): NOT discarded, sidecar rewritten canonical */
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    u8 mbuf[128];
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 1\n");
+
+    /* passes 2-4 advance normally; pass 5 discards (the bound holds
+     * end-to-end from the clamped restart — the foreign value never granted
+     * a single extra retry) */
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+    ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 4\n");
+    ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 5u);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 1ull);
+    ASSERT_EQ(count_meta_files(root), 0);
+
+    fake_up_free(&up);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
+TEST(upload_corrupt_sidecar_self_heals_one_pass) {
+    /* Review M3 pin: a corrupt sidecar reads as 0 and is atomically rewritten
+     * by the next failed pass — self-heals in ONE pass, and the record (crash
+     * evidence) is never disturbed by metadata corruption. Three of the nine
+     * reviewer-verified corruption classes enter the tree: */
+    static const char *const shapes[3] = {
+        "totally foreign garbage, no magic at all\n", /* bad magic/prefix */
+        "break-crash-meta-v1\nattempts: 2",           /* missing final LF */
+        "break-crash-meta-v1\nattempts: 2a\n",        /* non-digit value */
+    };
+    int k;
+    for (k = 0; k < 3; k++) {
+        char root[512];
+        test_tmp(root, sizeof(root), "cr_up_heal");
+        BreakCrashSpool *s = break_crash_spool_open(root);
+        ASSERT_NOT_NULL(s);
+        ASSERT_TRUE(put_tagged(s, 9)); /* id 1 */
+        char mpath[600];
+        join2(mpath, sizeof(mpath), root, "pending/1.meta");
+        ASSERT_TRUE(put_file(mpath, shapes[k], strlen(shapes[k])));
+
+        FakeUp up;
+        memset(&up, 0, sizeof(up));
+        up.fail_mask = ~0ull;
+        ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+        ASSERT_EQ(up.calls, 1u);
+        /* read 0 → incremented to 1 → rewritten canonical, byte-exact */
+        ASSERT_EQ(break_crash_spool_count(s, 0), 1ull);
+        ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+        u8 mbuf[128];
+        ASSERT_TRUE(read_single_meta(root, mbuf, sizeof(mbuf)) > 0);
+        ASSERT_STR_EQ((const char *)mbuf, "break-crash-meta-v1\nattempts: 1\n");
+
+        fake_up_free(&up);
+        break_crash_spool_destroy(s);
+        rm_tree(root);
+    }
+}
+
+TEST(upload_retention_overflow_removes_sidecar) {
+    /* Review M3 pin: the sidecar's lifetime is bound to the record's stay in
+     * pending/ — when RETENTION (not a mark) quarantines the oldest pending
+     * record, its .meta goes with it. */
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_up_retmeta");
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    u64 t;
+    for (t = 1; t <= 16; t++) ASSERT_TRUE(put_tagged(s, t));
+
+    /* one all-failing pass: every pending record gets attempts: 1 */
+    FakeUp up;
+    memset(&up, 0, sizeof(up));
+    up.fail_mask = ~0ull;
+    ASSERT_EQ(break_crash_spool_upload_pending(s, fake_up, &up), 0u);
+    ASSERT_EQ(up.calls, 16u);
+    ASSERT_EQ(count_meta_files(root), 16);
+
+    /* the 17th put overflows pending → the oldest (tid 1) is quarantined to
+     * discarded/ AND its sidecar is removed (16 → 15 sidecars) */
+    ASSERT_TRUE(put_tagged(s, 17));
+    ASSERT_EQ(break_crash_spool_count(s, 0), 16ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 1ull);
+    ASSERT_EQ(count_meta_files(root), 15);
+    {
+        u64 tids[20];
+        int n = collect_class_tids(root, "discarded", tids, 20);
+        ASSERT_EQ(n, 1);
+        ASSERT_EQ(tids[0], 1ull);
+        /* discarded/ holds exactly the one .bcr — no .meta followed it */
+        char dir[1100];
+        join2(dir, sizeof(dir), root, "discarded");
+        PlatformDirEntry entries[8];
+        u32 count = 0;
+        ASSERT_TRUE(platform_list_dir(dir, entries, 8, &count));
+        ASSERT_EQ(count, 1u);
+    }
+
+    fake_up_free(&up);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+}
+
 /* ---- Task 2: signal capture (fork + waitpid; children die by signal) ---- */
 
 #if !defined(_WIN32)
@@ -2155,6 +2291,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(upload_all_false_attempts_persist_then_discard);
     RUN_TEST(upload_mixed_outcomes_order);
     RUN_TEST(upload_null_uploader_noop);
+    RUN_TEST(upload_sidecar_u32max_clamped_as_corrupt);
+    RUN_TEST(upload_corrupt_sidecar_self_heals_one_pass);
+    RUN_TEST(upload_retention_overflow_removes_sidecar);
     RUN_TEST(crash_segv_captures_record);
     RUN_TEST(crash_abrt_captures_record);
     RUN_TEST(crash_context_blob_captured);

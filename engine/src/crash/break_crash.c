@@ -826,6 +826,12 @@ static u32 bc_meta_read_attempts(const BreakCrashSpool *s, u64 id) {
         v = v * 10u + (u64)(c - '0');
     }
     if (v > 0xffffffffull) return 0;
+    /* ≥ ATTEMPTS_MAX is foreign/corrupt: the writer only ever emits 1..4 (the
+     * 5th failure discards the record instead), so a resting value ≥ 5 can
+     * never be spool-authored. Reading it raw would let a planted u32-max
+     * wrap the increment to 0 and grant unbounded retries — clamp to 0; the
+     * next failed pass rewrites the sidecar (self-heals). */
+    if (v >= BREAK_CRASH_UPLOAD_ATTEMPTS_MAX) return 0;
     return (u32)v;
 }
 
@@ -840,8 +846,12 @@ static bool bc_meta_write_attempts(BreakCrashSpool *s, u64 id, u32 attempts) {
     if (n <= 0 || (usize)n >= sizeof(text)) return false;
     PlatformAtomicWriter *w = platform_atomic_writer_open(path);
     if (!w) return false;
-    return platform_atomic_writer_write(w, text, (usize)n) &&
-           platform_atomic_writer_commit(w); /* consumes the writer */
+    bool ok = platform_atomic_writer_write(w, text, (usize)n);
+    /* commit ALWAYS runs: it consumes the writer on every outcome (closes the
+     * fd, unlinks the tmp on failure, frees the handle — platform_fs.c:361) —
+     * short-circuiting on a failed write would leak both. */
+    ok = platform_atomic_writer_commit(w) && ok;
+    return ok;
 }
 
 /* The sidecar's lifetime is bound to the record's stay in pending/: every
@@ -940,8 +950,10 @@ static bool bc_recover_inbox(BreakCrashSpool *s) {
             free(buf);
             return false;
         }
-        bool ok = platform_atomic_writer_write(w, buf, (usize)size) &&
-                  platform_atomic_writer_commit(w); /* consumes the writer */
+        bool ok = platform_atomic_writer_write(w, buf, (usize)size);
+        /* commit ALWAYS runs (consumes/cleans up the writer — see the
+         * bc_meta_write_attempts note) */
+        ok = platform_atomic_writer_commit(w) && ok;
         free(buf);
         if (!ok) return false; /* inbox left intact for the next open */
         s->next_id++;
@@ -1058,8 +1070,10 @@ bool break_crash_spool_put_pending(BreakCrashSpool *s, const void *record_bytes,
     }
     PlatformAtomicWriter *w = platform_atomic_writer_open(path);
     if (!w) return false;
-    bool ok = platform_atomic_writer_write(w, record_bytes, len) &&
-              platform_atomic_writer_commit(w); /* consumes the writer */
+    bool ok = platform_atomic_writer_write(w, record_bytes, len);
+    /* commit ALWAYS runs (consumes/cleans up the writer — see the
+     * bc_meta_write_attempts note) */
+    ok = platform_atomic_writer_commit(w) && ok;
     if (!ok) return false; /* the id stays unconsumed (no target was created) */
     s->next_id++;
     bc_enforce_retention(s, BC_CLASS_PENDING);
