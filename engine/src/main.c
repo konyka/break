@@ -2320,7 +2320,8 @@ bool mat_indirect_enabled = true;
 
 bool mega_direct_shadow_enabled = true;
 
-/* R688: point-shadow faces use mega_draw_direct_culled when this holds. */
+/* R688: point-shadow faces (and, R691, CSM cascades) use
+ * mega_draw_direct_culled when this holds. */
 static bool mega_use_direct_shadow(const MegaBuffer *mb) {
     return mega_direct_shadow_enabled && mb && mb->valid && mb->direct_ready;
 }
@@ -4534,7 +4535,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     }
     { const char *e = getenv("BREAK_MEGA_DIRECT_SHADOW"); if (e && !atoi(e)) mega_direct_shadow_enabled = false; }
     if (mega_use_direct_shadow(&mega_buf))
-        LOG_INFO("Point-shadow mega draw: direct, CPU sphere cull (%u cmds; BREAK_MEGA_DIRECT_SHADOW=0 for GPU cull)",
+        LOG_INFO("Shadow mega draw (CSM + point): direct, CPU sphere cull (%u cmds; BREAK_MEGA_DIRECT_SHADOW=0 for GPU cull)",
                  mega_buf.draw_cmd_count);
     if (occ_cull_enabled) LOG_INFO("Hi-Z Occlusion Cull: on (1-frame latency, opt-out BREAK_OCCLUSION=0)");
     /* R441: report the material-array single-execute path state at startup. */
@@ -6764,7 +6765,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     /* R170: Shadow uses GPU compact only — never camera Hi-Z or
                      * shared vis_flags staging (wrong VP / cross-view pollution). */
                     u32 vis_count = mega_buf.draw_cmd_count;
-                    if (mega_use_unified_shadow(&mega_buf) &&
+                    /* R691: CSM cascades take the R688 direct path too. Each
+                     * GPU cull ran fill + dispatch + barrier inside the shadow
+                     * pass; on VK every one of those ends and re-opens the
+                     * render pass (VK CSM was ~2x D3D12). */
+                    if (mega_use_direct_shadow(&mega_buf)) {
+                        draw_calls += mega_draw_direct_culled(&mega_buf, cmd,
+                                                              &render.cascade_vp[c]);
+                    } else if (mega_use_unified_shadow(&mega_buf) &&
                         mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                   &render.cascade_vp[c].e[0][0], vis_count, NULL,
                                                   render.depth_pipeline)) {

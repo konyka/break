@@ -1,6 +1,31 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R691 — 引擎性能：CSM 的 4 个 cascade 也改为 CPU 球体剔除 + 直接绘制
+
+### 根因
+R690 的子代理分段计时显示，VK 上 CSM 约是 D3D12 的 2 倍（0.41 vs 0.20 ms）。原因是每个 cascade 都要调一次 `mega_unified_cull_draw`，在 shadow pass 里面做 fill、compute dispatch 和 barrier。VK 每遇到其中一个操作，就得结束 render pass，之后再用 LOAD 重新打开；4 个 cascade 加起来是 6 次 render pass begin、23 个 pipeline barrier。这和 R688 解决点光阴影时遇到的问题是同一种。
+
+### 修复（`engine/src/main.c`）
+CSM 的 mega 绘制先检查 `mega_use_direct_shadow()`，满足就调用 `mega_draw_direct_culled(&mega_buf, cmd, &render.cascade_vp[c])`，用的是 R688 的同一个函数：CPU 用球体和 cascade 视锥做测试，通过的直接绘制。`BREAK_MEGA_DIRECT_SHADOW=0`（或者物体超过 64 个）时，CSM 和点光阴影一起退回 GPU 剔除路径。启动日志改为 `Shadow mega draw (CSM + point): direct ...`。
+
+### 数据（Release，RTX，fps_avg，R690 HEAD → R691，同一时段依次测）
+| | 前向 | 延迟 |
+|---|---|---|
+| D3D12 | 381 → 383 | 413 → 427 |
+| VK | 292 → 303（+3.7%） | 322 → 333（+3.6%） |
+| GL | 322 → 334（+3.9%） | 357 → 383（+7.2%） |
+
+R688 加 R691 合起来（同一个 exe，比较 `BREAK_MEGA_DIRECT_SHADOW=0/1`）：D3D12 前向 341 → 399，VK 前向 264 → 302，GL 前向 272 → 339，GL 延迟 302 → 379。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。
+- 截图：Debug 三后端，前向和延迟都在第 3 帧截图，对比 `BREAK_MEGA_DIRECT_SHADOW=0` 与 `=1`。GL 延迟差 0.001，几乎逐像素相同；其余是 0.02–0.36，差异来自粒子动画。日志无 WARN/ERROR。
+
+### 关于演示中的 10 个物理方块（未修改）
+`main.c` 里那 10 个 ECS 方块设的是 `mesh_index = 0`。这行代码从最初的提交 `43359afa` 就有了，当时 `assets/test.glb` 是唯一的网格，所以 mesh 0 就是 glb 里的场景网格（46356 个索引）。现在场景里已经有 `demo_build_showcase` 加进来的 `mesh_box`（36 个索引），这 10 个刚体也是 0.5³ 的盒子（`physics_body_create(..., vec3(0.5f,0.5f,0.5f), ...)`）。如果原本的意图是画方块，就应该换成盒子网格，每帧能少画约 46 万个索引。不过这会改变演示画面，所以留给使用者决定。
+
 ## 本轮更新：R690 — 引擎性能：延迟路径的 G-Buffer 按渲染分辨率分配（原来是窗口分辨率），延迟帧率 +24–34%
 
 ### 定位
