@@ -936,6 +936,72 @@ TEST(break_net_tls_blocked_handshake_does_not_freeze_peer)
     tls_test_server_stop(&server);
 }
 
+/* Review-round-2 boundary guard: with a blocked head (connection A never
+ * handshakes), removing a ready middle command shifts the tail left without
+ * reordering — both of B's frames arrive in FIFO order. */
+TEST(break_net_tls_blocked_head_middle_removal_keeps_order)
+{
+    TlsTestServer server;
+    TlsTestClient bclient;
+    int fd_a;
+    uint64_t deadline;
+    uint64_t key_a = 0u;
+    uint64_t key_b = 0u;
+    unsigned char blocked_payload[4] = {0x77u, 0x77u, 0x77u, 0x77u};
+    unsigned char first[4] = {1u, 0u, 0u, 0u};
+    unsigned char second[4] = {2u, 0u, 0u, 0u};
+    snow_network_buffer_t *plain = NULL;
+    unsigned char frame[64];
+    size_t copied = 0u;
+    BreakNetEnvelope env = {0};
+
+    ASSERT_TRUE(tls_test_server_start(&server, 10000u));
+    fd_a = tls_test_connect(server.acceptor);
+    ASSERT_TRUE(fd_a >= 0);
+    deadline = tls_test_monotonic_us() + TLS_TEST_DEADLINE_US;
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key_a));
+    ASSERT_EQ(break_net_reactor_send(server.reactor, key_a, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, blocked_payload,
+                                     sizeof(blocked_payload)), BREAK_NET_SEND_OK);
+    ASSERT_TRUE(tls_test_client_open(&bclient, server.acceptor, false));
+    ASSERT_TRUE(tls_test_client_handshake(&bclient, deadline));
+    ASSERT_TRUE(tls_test_wait_opened(server.reactor, deadline, &key_b));
+    ASSERT_EQ(break_net_reactor_send(server.reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, first,
+                                     sizeof(first)), BREAK_NET_SEND_OK);
+    ASSERT_EQ(break_net_reactor_send(server.reactor, key_b, BREAK_NET_MESSAGE_ID_PING,
+                                     BREAK_NET_PROTOCOL_VERSION, second,
+                                     sizeof(second)), BREAK_NET_SEND_OK);
+
+    ASSERT_EQ(snow_network_buffer_create(&plain), SNOW_OK);
+    while (snow_network_buffer_length(plain) < 2u * 22u) {
+        ASSERT_EQ(tls_test_client_pump(&bclient, plain, deadline), 1);
+    }
+    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 22u, &copied), SNOW_OK);
+    ASSERT_EQ(break_net_envelope_decode(frame, copied, &env), BREAK_NET_ENVELOPE_OK);
+    ASSERT_EQ(env.message_id, BREAK_NET_MESSAGE_ID_PING);
+    ASSERT_EQ(env.payload_size, 4u);
+    ASSERT_TRUE(memcmp(env.payload, first, sizeof(first)) == 0);
+    ASSERT_EQ(snow_network_buffer_move_header(plain, 22u), SNOW_OK);
+    ASSERT_EQ(snow_network_buffer_copy_to(plain, frame, 22u, &copied), SNOW_OK);
+    ASSERT_EQ(break_net_envelope_decode(frame, copied, &env), BREAK_NET_ENVELOPE_OK);
+    ASSERT_TRUE(memcmp(env.payload, second, sizeof(second)) == 0);
+    snow_network_buffer_destroy(plain);
+    /* A's blocked command never left; B's two were removed from the middle
+     * and the (new) tail without disturbing order. */
+    ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 1u);
+
+    close(fd_a);
+    ASSERT_TRUE(tls_test_wait_identity_count(server.reactor, 1u, deadline));
+    while (tls_test_monotonic_us() < deadline &&
+           break_net_reactor_outbound_count(server.reactor) != 0u) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_outbound_count(server.reactor), 0u);
+    tls_test_client_close(&bclient);
+    tls_test_server_stop(&server);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_net_tls_config_validation);
     RUN_TEST(break_net_tls_handshake_auth_ping_roundtrip);
@@ -946,4 +1012,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_tls_multi_frame_single_flight_delivers_all);
     RUN_TEST(break_net_tls_pipelined_frames_all_delivered);
     RUN_TEST(break_net_tls_blocked_handshake_does_not_freeze_peer);
+    RUN_TEST(break_net_tls_blocked_head_middle_removal_keeps_order);
 TEST_MAIN_END()

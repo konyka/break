@@ -673,14 +673,18 @@ static snow_status_t break_net_tls_send_context_create(snow_send_context_t **out
 
 static void break_net_outbound_remove_at(BreakNetReactor *reactor, size_t index)
 {
-    size_t tail = (reactor->outbound_head + reactor->outbound_count) %
+    /* Shift successors left starting at `index`.  The move source bound must
+     * be the last ACTIVE slot: with a full ring, (head + count) % capacity
+     * == head and a one-past-end bound would skip the shift entirely when
+     * removing the head — leaving a zeroed hole at the head and orphaning
+     * the tail command (lost send + leaked payload). */
+    size_t last = (reactor->outbound_head + reactor->outbound_count - 1u) %
                   BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
     size_t current = index;
 
     break_net_message_release(&reactor->outbound[current].message);
-    while (current != tail) {
+    while (current != last) {
         size_t next = (current + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
-        if (next == tail) break;
         reactor->outbound[current] = reactor->outbound[next];
         current = next;
     }
@@ -688,8 +692,25 @@ static void break_net_outbound_remove_at(BreakNetReactor *reactor, size_t index)
     reactor->outbound_count--;
 }
 
+static bool break_net_outbound_key_failed(const uint64_t *failed_keys,
+                                          size_t failed_count, uint64_t key)
+{
+    size_t i;
+    for (i = 0u; i < failed_count; ++i) {
+        if (failed_keys[i] == key) return true;
+    }
+    return false;
+}
+
 static void break_net_drain_outbound(BreakNetReactor *reactor)
 {
+    /* N2: keys whose head command failed (encode / send-context / pipe send)
+     * during THIS drain call; their queued successors are skipped so a later
+     * same-connection command can never overtake a failed one.  Other keys
+     * keep flowing.  Bounded by the queue capacity. */
+    uint64_t failed_keys[BREAK_NET_OUTBOUND_QUEUE_CAPACITY];
+    size_t failed_count = 0u;
+
     for (;;) {
         size_t scanned = 0u;
         size_t index;
@@ -710,6 +731,12 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
             snow_send_context_t *send = NULL;
             snow_status_t status;
 
+            if (break_net_outbound_key_failed(failed_keys, failed_count,
+                                              command->connection_key)) {
+                scanned++;
+                index = (index + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+                continue;
+            }
             reactor->outbound_attempts++;
             identity = break_net_identity_find(reactor, command->connection_key);
             if (identity == NULL || identity->send_recv == NULL || identity->closing) {
@@ -749,6 +776,13 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
                 identity->pending_send_count++;
                 break_net_outbound_remove_at(reactor, index);
                 made_progress = true;
+            } else if (failed_count < BREAK_NET_OUTBOUND_QUEUE_CAPACITY) {
+                /* Command stays queued; mark the key so later same-connection
+                 * commands are not attempted (FIFO), then keep scanning other
+                 * connections.  Permanent failures (e.g. an unregistered
+                 * message id that only envelope encode rejects) retry once per
+                 * drain call at worst. */
+                failed_keys[failed_count++] = command->connection_key;
             }
             snow_send_context_free(send);
             if (made_progress) break;
