@@ -1,6 +1,32 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R687 — 引擎性能：D3D12 自动曝光的循环改为展开；修复 mega-buffer 顶点偏移被加了两次
+
+### 1. D3D12 自动曝光比 GL/VK 慢 4.5 倍（`engine/shaders/luminance_hlsl.frag`）
+R686 之后的 postfx 逐 pass GPU 计时中，`tonemap_update_auto_exposure` 在 D3D12 上是 0.127 ms，GL 是 0.029 ms，VK 是 0.027 ms。这个 pass 只用 1 个像素做 16×16 共 256 次采样。HLSL 版本给两层循环都标了 `[loop]`，dxc 只能逐次串行发出依赖的 fetch；GLSL 那边的编译器会自动展开。把两层都改成 `[unroll]` 后，D3D12 降到 0.025 ms，与另外两个后端一致。整个 shaders 目录里只有这一处 `[loop]`。
+
+### 2. mega-buffer 的 vertex_offset 被加了两次（`engine/src/main.c`，mega bake）
+在给点光阴影做拆分（临时探针，已移除）时，我检查了 mega-buffer 的 bake 数据：`idata[ioff+ii] = src_i[ii] + vbase` 已经把顶点基址加进了索引，`cmds[cidx].vertex_offset` 却又设成了 `vbase`。实际取到的顶点号就变成 `idx + 2*vbase`。临时加的校验输出 `max_eff=31143 total_verts=15584 bad=4824`：除第 0 个节点（vbase=0）之外，其余 10 个节点的全部 4824 个索引都越过了 VBO 末尾。
+
+越界读的结果取决于后端：D3D12/VK 的 robust 访问返回 0，GL 读到的是驱动给的任意数据。所以这 10 个物体在 mega 路径下（前向、延迟、CSM、点光阴影都走这条路径）画成了退化三角形或错位的几何。修复：`vertex_offset = 0`，索引里已经是绝对值。
+
+对照：新加一个临时开关关掉 mega 路径，让每个节点用自己的 VBO 和 world_transform 绘制，作为参考图，在第 3 帧（场景动画还没跑开）截图。参考图中左下有一个白色物体：修复后的 mega 版本在同一位置出现了这个物体，修复前的版本没有，还缺了一块几何。逐像素平均差是修复后 0.50、修复前 0.57。第 30 帧的截图里三张图差异都更大（参考图自己连跑两次也差 3.0），原因是 demo 中随时间变化的内容，所以没有拿它做结论。
+
+### 数据（Release，RTX，fps_avg，R686 → R687）
+| | 前向 | 延迟 |
+|---|---|---|
+| D3D12 | 296–334 → 345 | 286–289 → 299 |
+| VK | 263–269 → 265 | 209–216 → 228 |
+| GL | 267 → 256 | 228–232 → 230 |
+
+D3D12 postfx 每帧 GPU 时间从 1.23 ms 降到 0.91 ms。GL/VK 的帧率在噪声范围内；第 2 项是正确性修复，不以提速为目的。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 186/187、vk 181/182、gl 178/179，唯一失败的都是已知的剪贴板用例 `test_platform_win32_runtime`（OpenClipboard failed，ToDesk 占用剪贴板）。
+- 截图：同一后端 R686 与 R687 对比，前向 0.27–0.96、延迟 0.03–1.22，日志无 WARN/ERROR。
+
 ## 本轮更新：R686 — 引擎性能：TSR 上采样去掉整屏复制 pass，Catmull-Rom 16 次采样降到 9 次
 
 ### 定位

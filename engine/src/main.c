@@ -4093,7 +4093,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 cmds[cidx].index_count    = m->index_count;
                 cmds[cidx].instance_count = 1;
                 cmds[cidx].first_index    = ioff;
-                cmds[cidx].vertex_offset  = (i32)vbase;
+                /* R687: idata already holds src_i + vbase (absolute into the
+                 * mega VBO). vertex_offset was vbase too, so every node after
+                 * the first fetched vertex idx + 2*vbase -- past the end of
+                 * the buffer for all 10 non-terrain nodes. */
+                cmds[cidx].vertex_offset  = 0;
                 cmds[cidx].first_instance = 0;
                 mega_buf.cmd_node_index[cidx] = ni;
 

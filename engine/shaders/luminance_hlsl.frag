@@ -19,10 +19,13 @@ Texture2D g_prev : register(t1, space0);
 SamplerState g_smp1 : register(s1, space0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
+    /* R687: [unroll], not [loop]. One pixel does all 256 taps; a rolled
+     * loop issues them one dependent fetch at a time (0.127 ms on RTX vs
+     * 0.028 ms for the GL/VK twins, whose compilers unroll). */
     const int N = 16;
     float luma_sum = 0.0f;
-    [loop] for (int y = 0; y < N; y++) {
-        [loop] for (int x = 0; x < N; x++) {
+    [unroll] for (int y = 0; y < N; y++) {
+        [unroll] for (int x = 0; x < N; x++) {
             float2 suv = (float2((float)x, (float)y) + 0.5f) / (float)N;
             float3 c = g_hdr.SampleLevel(g_smp, suv, 0.0f).rgb;
             luma_sum += log(max(dot(c, float3(0.2126f, 0.7152f, 0.0722f)), 0.001f));
