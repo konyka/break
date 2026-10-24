@@ -1170,6 +1170,148 @@ TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection)
     snow_acceptor_destroy(acceptor);
 }
 
+static bool break_net_test_wait_for_connection_count(BreakNetReactor *reactor,
+                                                     size_t expected,
+                                                     uint64_t deadline_us)
+{
+    while (break_net_monotonic_us() < deadline_us) {
+        if (break_net_reactor_connection_identity_count_for_test(reactor) == expected)
+            return true;
+        usleep(1000u);
+    }
+    return false;
+}
+
+TEST(break_net_adapter_rate_limit_config_is_created_only)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_STEP);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    limits.global_accept_per_sec = 10u;
+    limits.global_burst = 1u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(0));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    ASSERT_FALSE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fds[3] = {-1, -1, -1};
+    uint64_t deadline;
+    size_t i;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    for (i = 0u; i < 3u; ++i) {
+        fds[i] = break_net_test_connect(acceptor);
+        ASSERT_TRUE(fds[i] >= 0);
+    }
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 3u, deadline));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(0));
+    for (i = 0u; i < 3u; ++i) close(fds[i]);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_global_burst_then_denies_immediate_accepts)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fd_first = -1;
+    int fd_second = -1;
+    int fd_later = -1;
+    uint64_t deadline;
+    uint64_t denied;
+    limits.global_accept_per_sec = 1u;
+    limits.global_burst = 1u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    fd_first = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_first >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 1u, deadline));
+    fd_second = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_second >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(1000000);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_admission_denied(reactor) == UINT64_C(0)) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(1));
+    denied = break_net_reactor_admission_denied(reactor);
+    usleep(1200000u);
+    fd_later = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_later >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 2u, deadline));
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), denied);
+    close(fd_first);
+    close(fd_second);
+    close(fd_later);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
+TEST(break_net_adapter_per_ip_window_denies_limit_plus_one)
+{
+    BreakNetReactorConfig config = break_net_test_config(BREAK_NET_DRIVE_THREAD);
+    BreakNetReactor *reactor = break_net_reactor_create(&config);
+    snow_acceptor_t *acceptor = break_net_test_acceptor();
+    BreakNetRateLimitConfig limits = {0};
+    int fds[2] = {-1, -1};
+    int fd_denied = -1;
+    uint64_t deadline;
+    limits.per_ip_per_minute = 2u;
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_NOT_NULL(acceptor);
+    ASSERT_TRUE(break_net_reactor_set_acceptor(reactor, acceptor));
+    ASSERT_TRUE(break_net_reactor_set_rate_limits(reactor, &limits));
+    ASSERT_TRUE(break_net_reactor_start(reactor));
+    fds[0] = break_net_test_connect(acceptor);
+    fds[1] = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fds[0] >= 0);
+    ASSERT_TRUE(fds[1] >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(3000000);
+    ASSERT_TRUE(break_net_test_wait_for_connection_count(reactor, 2u, deadline));
+    fd_denied = break_net_test_connect(acceptor);
+    ASSERT_TRUE(fd_denied >= 0);
+    deadline = break_net_monotonic_us() + UINT64_C(1000000);
+    while (break_net_monotonic_us() < deadline &&
+           break_net_reactor_admission_denied(reactor) == UINT64_C(0)) {
+        usleep(1000u);
+    }
+    ASSERT_EQ(break_net_reactor_admission_denied(reactor), UINT64_C(1));
+    ASSERT_EQ(break_net_reactor_connection_identity_count_for_test(reactor), 2u);
+    close(fds[0]);
+    close(fds[1]);
+    close(fd_denied);
+    ASSERT_TRUE(break_net_reactor_stop(reactor, 1000u));
+    break_net_reactor_destroy(reactor);
+    snow_acceptor_destroy(acceptor);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_rejects_null_config);
     RUN_TEST(break_net_adapter_start_without_acceptor_fails_closed);
@@ -1205,4 +1347,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_net_adapter_outbound_wrap_and_tail_boundaries);
     RUN_TEST(break_net_adapter_outbound_failed_command_blocks_same_key_only);
     RUN_TEST(break_net_adapter_outbound_sequences_are_monotonic_per_connection);
+    RUN_TEST(break_net_adapter_rate_limit_config_is_created_only);
+    RUN_TEST(break_net_adapter_rate_limit_zeros_keep_legacy_behavior);
+    RUN_TEST(break_net_adapter_global_burst_then_denies_immediate_accepts);
+    RUN_TEST(break_net_adapter_per_ip_window_denies_limit_plus_one);
 TEST_MAIN_END()

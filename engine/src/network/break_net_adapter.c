@@ -8,6 +8,7 @@
 #include "core/platform_thread.h"
 
 #include <stdatomic.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +25,8 @@ extern int nanosleep(const struct timespec *, struct timespec *);
 #include <snow/recv_context.h>
 #include <snow/send_context.h>
 #include <snow/socket.h>
+#include <snow/ratelimiter.h>
+#include <snow/freqlimiter.h>
 
 enum BreakNetState {
     BREAK_NET_STATE_CREATED,
@@ -34,12 +37,25 @@ enum BreakNetState {
     BREAK_NET_STATE_FAILED
 };
 
+#define BREAK_NET_ADDRESS_TEXT_CAPACITY 108u
+#define BREAK_NET_ADMISSION_IP_CAPACITY 1024u
+
+typedef struct BreakNetAdmissionIpEntry {
+    char ip[BREAK_NET_ADDRESS_TEXT_CAPACITY];
+    snow_freqlimiter_t *limiter;
+} BreakNetAdmissionIpEntry;
+
+typedef struct BreakNetAdmissionState {
+    BreakNetRateLimitConfig config;
+    snow_ratelimiter_t *global;
+    BreakNetAdmissionIpEntry per_ip[BREAK_NET_ADMISSION_IP_CAPACITY];
+    uint64_t denied;
+} BreakNetAdmissionState;
+
 typedef struct BreakNetOutboundCommand {
     uint64_t connection_key;
     BreakNetOwnedMessage message;
 } BreakNetOutboundCommand;
-
-#define BREAK_NET_ADDRESS_TEXT_CAPACITY 108u
 
 typedef struct BreakNetConnectionContext {
     BreakNetEnvelopeContext envelope;
@@ -104,6 +120,8 @@ static void break_net_identity_mark_closed(BreakNetConnectionIdentity *identity)
 static void break_net_identity_mark_send_drained(BreakNetConnectionIdentity *identity);
 static void break_net_identity_on_closed(BreakNetReactor *reactor, uint64_t key);
 static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_t key);
+static void break_net_admission_destroy(BreakNetAdmissionState *admission);
+static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t port);
 static unsigned int break_net_new_connection_failure_for_test;
 static BreakNetStartFailureForTest break_net_start_failure_for_test;
 
@@ -143,6 +161,11 @@ struct BreakNetReactor {
     char *tls_key_file;
     char *tls_ca_file;
     int tls_verify_peer;
+    /* Admission rate limiting (CREATED-state configuration; immutable once
+     * start publishes it).  NULL means every admit is allowed.  Owned by the
+     * network driver thread after start; config/counter reads are synchronized
+     * through lifecycle_mutex. */
+    BreakNetAdmissionState *admission;
 };
 
 /* Frame exactly one envelope off a PLAINTEXT buffer (the wire buffer in
@@ -396,17 +419,23 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
     BreakNetConnectionContext *context =
         (BreakNetConnectionContext *)calloc(1u, sizeof(*context));
     BreakNetEvent event = {0};
+    uint64_t connection_key = (uint64_t)snow_connection_uid(connection);
+#ifdef BREAK_ENABLE_CRYPTO
+    u8 auth_nonce[16];
+    bool auth_nonce_valid = false;
+#endif
     if (context == NULL || break_net_new_connection_failure_for_test == 1) {
         free(context);
         break_net_new_connection_failure_for_test = 0;
         break_net_reactor_fail(reactor);
         return;
     }
+    platform_mutex_lock(&reactor->queue_mutex);
     {
         BreakNetConnectionIdentity *identity =
             break_net_new_connection_failure_for_test == 2
                 ? NULL
-                : break_net_identity_alloc(reactor, (uint64_t)snow_connection_uid(connection));
+                : break_net_identity_alloc(reactor, connection_key);
         snow_socket_addr_t *addr = NULL;
         if (identity == NULL || break_net_new_connection_failure_for_test == 3 ||
             snow_socket_addr_alloc(&addr) != SNOW_OK ||
@@ -419,6 +448,7 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
                 NULL, false, SNOW_CLOSE_CLIENT, 0) != SNOW_OK) {
             snow_socket_addr_free(addr);
             break_net_identity_abort(identity);
+            platform_mutex_unlock(&reactor->queue_mutex);
             free(context);
             break_net_reactor_fail(reactor);
             return;
@@ -441,34 +471,46 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
                 snow_network_buffer_create(&identity->tls_scratch) != SNOW_OK) {
                 snow_socket_addr_free(addr);
                 break_net_identity_abort(identity);
+                platform_mutex_unlock(&reactor->queue_mutex);
                 free(context);
                 break_net_reactor_fail(reactor);
                 return;
             }
         }
 #ifdef BREAK_ENABLE_CRYPTO
-        {
-            if (break_session_auth_configured_internal()) {
-                if (!break_crypto_random(identity->auth_server_nonce, 16u) ||
-                    break_net_reactor_send(
-                        reactor, (uint64_t)snow_connection_uid(connection),
-                        BREAK_NET_MESSAGE_ID_CHALLENGE, 1u,
-                        identity->auth_server_nonce, 16u) != BREAK_NET_SEND_OK) {
-                    snow_socket_addr_free(addr);
-                    break_net_identity_abort(identity);
-                    free(context);
-                    break_net_reactor_fail(reactor);
-                    return;
-                }
-                identity->auth_server_nonce_valid = true;
+        if (break_session_auth_configured_internal()) {
+            if (!break_crypto_random(identity->auth_server_nonce, 16u)) {
+                snow_socket_addr_free(addr);
+                break_net_identity_abort(identity);
+                platform_mutex_unlock(&reactor->queue_mutex);
+                free(context);
+                break_net_reactor_fail(reactor);
+                return;
             }
+            identity->auth_server_nonce_valid = true;
+            memcpy(auth_nonce, identity->auth_server_nonce, 16u);
+            auth_nonce_valid = true;
         }
 #endif
         snow_socket_addr_free(addr);
     }
+    platform_mutex_unlock(&reactor->queue_mutex);
+#ifdef BREAK_ENABLE_CRYPTO
+    /* break_net_reactor_send takes queue_mutex itself, so the CHALLENGE must
+     * be queued only after the identity updates above are unlocked; keeping
+     * it inside that lock self-deadlocks the accept path. */
+    if (auth_nonce_valid &&
+        break_net_reactor_send(reactor, connection_key,
+                               BREAK_NET_MESSAGE_ID_CHALLENGE, 1u,
+                               auth_nonce, 16u) != BREAK_NET_SEND_OK) {
+        break_net_reactor_fail(reactor);
+        free(context);
+        return;
+    }
+#endif
     snow_connection_set_user(connection, context);
     event.type = BREAK_NET_EVENT_CONNECTION_OPENED;
-    event.connection_key = (uint64_t)snow_connection_uid(connection);
+    event.connection_key = connection_key;
     (void)break_net_event_push(reactor, &event);
 }
 
@@ -1051,6 +1093,134 @@ bool break_net_reactor_is_tls(const BreakNetReactor *reactor)
     return tls;
 }
 
+static void break_net_admission_destroy(BreakNetAdmissionState *admission)
+{
+    size_t i;
+    if (admission == NULL) return;
+    snow_ratelimiter_free(admission->global);
+    for (i = 0u; i < BREAK_NET_ADMISSION_IP_CAPACITY; ++i) {
+        snow_freqlimiter_free(admission->per_ip[i].limiter);
+    }
+    free(admission);
+}
+
+static bool break_net_admission_is_enabled(const BreakNetRateLimitConfig *config)
+{
+    return config->global_accept_per_sec != 0u || config->global_burst != 0u ||
+           config->per_ip_per_minute != 0u;
+}
+
+static bool break_net_admission_config_valid(const BreakNetRateLimitConfig *config)
+{
+    if (!break_net_admission_is_enabled(config)) return true;
+    if ((config->global_accept_per_sec != 0u) != (config->global_burst != 0u)) {
+        return false;
+    }
+    return true;
+}
+
+static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t port)
+{
+    BreakNetAdmissionState *admission = (BreakNetAdmissionState *)admit_ud;
+    size_t first_free = BREAK_NET_ADMISSION_IP_CAPACITY;
+    size_t i;
+    bool allowed = true;
+    (void)port;
+
+    if (admission == NULL) return true;
+    if (ip == NULL) {
+        atomic_fetch_add_explicit(&admission->denied, UINT64_C(1), memory_order_relaxed);
+        return false;
+    }
+    if (admission->global != NULL &&
+        !snow_ratelimiter_try_acquire(admission->global, 1u)) {
+        allowed = false;
+    }
+    if (allowed && admission->config.per_ip_per_minute != 0u) {
+        for (i = 0u; i < BREAK_NET_ADMISSION_IP_CAPACITY; ++i) {
+            BreakNetAdmissionIpEntry *entry = &admission->per_ip[i];
+            if (entry->limiter == NULL) {
+                if (first_free == BREAK_NET_ADMISSION_IP_CAPACITY) first_free = i;
+                continue;
+            }
+            if (strncmp(entry->ip, ip, sizeof(entry->ip)) == 0) {
+                allowed = snow_freqlimiter_allow(entry->limiter);
+                goto done;
+            }
+        }
+        if (first_free != BREAK_NET_ADMISSION_IP_CAPACITY) {
+            BreakNetAdmissionIpEntry *entry = &admission->per_ip[first_free];
+            entry->limiter = snow_freqlimiter_new(
+                admission->config.per_ip_per_minute, UINT64_C(60000));
+            if (entry->limiter == NULL) {
+                atomic_fetch_add_explicit(&admission->denied, UINT64_C(1),
+                                          memory_order_relaxed);
+                return false;
+            }
+            snprintf(entry->ip, sizeof(entry->ip), "%s", ip);
+            allowed = snow_freqlimiter_allow(entry->limiter);
+        } else {
+            /* Table full: fail closed for NEW IPs only.  Known IPs still get
+             * measured instead of being mistaken for new ones. */
+            allowed = false;
+        }
+    }
+
+done:
+    if (!allowed) {
+        atomic_fetch_add_explicit(&admission->denied, UINT64_C(1),
+                                  memory_order_relaxed);
+    }
+    return allowed;
+}
+
+bool break_net_reactor_set_rate_limits(BreakNetReactor *r,
+                                        const BreakNetRateLimitConfig *cfg)
+{
+    BreakNetAdmissionState *admission = NULL;
+    bool accepted = false;
+    if (r == NULL || cfg == NULL || !break_net_admission_config_valid(cfg)) {
+        return false;
+    }
+    if (break_net_admission_is_enabled(cfg)) {
+        size_t i;
+        admission = (BreakNetAdmissionState *)calloc(1u, sizeof(*admission));
+        if (admission == NULL) return false;
+        admission->config = *cfg;
+        if (cfg->global_accept_per_sec != 0u) {
+            admission->global = snow_ratelimiter_new(
+                (double)cfg->global_accept_per_sec, cfg->global_burst);
+            if (admission->global == NULL) {
+                break_net_admission_destroy(admission);
+                return false;
+            }
+        }
+        for (i = 0u; i < BREAK_NET_ADMISSION_IP_CAPACITY; ++i) {
+            admission->per_ip[i].limiter = NULL;
+        }
+    }
+    platform_mutex_lock(&r->lifecycle_mutex);
+    if (r->state == BREAK_NET_STATE_CREATED && r->admission == NULL) {
+        r->admission = admission;
+        accepted = true;
+    }
+    platform_mutex_unlock(&r->lifecycle_mutex);
+    if (!accepted) break_net_admission_destroy(admission);
+    return accepted;
+}
+
+uint64_t break_net_reactor_admission_denied(const BreakNetReactor *r)
+{
+    BreakNetAdmissionState *admission;
+    if (r == NULL) return 0u;
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&r->lifecycle_mutex);
+    admission = r->admission;
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&r->lifecycle_mutex);
+    return admission == NULL ? 0u
+                             : atomic_load_explicit(&admission->denied,
+                                                    memory_order_relaxed);
+}
+
 void break_net_reactor_destroy(BreakNetReactor *reactor)
 {
     bool can_destroy;
@@ -1092,6 +1262,7 @@ void break_net_reactor_destroy(BreakNetReactor *reactor)
         reactor->outbound_count--;
     }
     platform_mutex_unlock(&reactor->queue_mutex);
+    break_net_admission_destroy(reactor->admission);
     /* Every derived snow_ssl_t died in the identity sweep above; the ctx may
      * go now (snow_ssl_ctx_free requires no live handles). */
     snow_ssl_ctx_free(reactor->tls_ctx);
@@ -1173,8 +1344,10 @@ bool break_net_reactor_start(BreakNetReactor *reactor)
         handlers.on_closed = break_net_on_closed;
         status = break_net_start_failure_for_test == BREAK_NET_START_FAIL_REGISTRATION
                      ? SNOW_ERR_INVAL
-                     : snow_net_thread_add_acceptor_with_handlers(
-                           reactor->snow_thread, reactor->acceptor, handlers, reactor);
+                     : snow_net_thread_add_acceptor_with_handlers_ex(
+                           reactor->snow_thread, reactor->acceptor, handlers, reactor,
+                           reactor->admission != NULL ? break_net_admission_admit : NULL,
+                           reactor->admission);
     }
     if (status != SNOW_OK) {
         break_net_reactor_start_failure_cleanup(reactor);

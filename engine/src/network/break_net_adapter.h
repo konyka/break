@@ -49,6 +49,18 @@ typedef struct BreakNetTlsConfig {
 bool break_net_reactor_set_tls(BreakNetReactor *reactor, const BreakNetTlsConfig *cfg);
 bool break_net_reactor_is_tls(const BreakNetReactor *reactor);
 
+typedef struct BreakNetRateLimitConfig {
+    uint32_t global_accept_per_sec;   /* token bucket rate; 0 = unlimited */
+    uint32_t global_burst;            /* bucket capacity; 0 = unlimited */
+    uint32_t per_ip_per_minute;       /* sliding-window accepts per source IP; 0 = unlimited */
+} BreakNetRateLimitConfig;
+/* CREATED state only. Uses snow ratelimiter/freqlimiter under the admit(ip,port) hook
+ * (snow_net_thread_add_acceptor_with_handlers_ex). Per-IP table ≤ 1024 entries;
+ * full table → deny NEW IPs (fail-closed, documented), known IPs still measured.
+ * All limiter state lives on the network driver thread (limiters are not thread-safe). */
+bool break_net_reactor_set_rate_limits(BreakNetReactor *r, const BreakNetRateLimitConfig *cfg);
+uint64_t break_net_reactor_admission_denied(const BreakNetReactor *r);   /* observable counter */
+
 bool break_net_reactor_step(BreakNetReactor *reactor, int timeout_ms);
 bool break_net_reactor_stop(BreakNetReactor *reactor, uint32_t timeout_ms);
 bool break_net_reactor_is_ready(const BreakNetReactor *reactor);
