@@ -1,6 +1,31 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R692 — 调查记录：VK postfx 比 D3D12 慢约 0.2 ms，原因是相互依赖的全屏 pass 之间必须串行（未修改代码）
+
+R690 的子代理测得 VK postfx 1.33 ms、D3D12 0.97 ms。这一轮专门调查原因，所有实验都已撤回。
+
+### 测量（Release，640×360，按帧奇偶交替的 GPU 计时器，每项 2–4 轮）
+- VK postfx 1.15–1.25 ms，D3D12 0.95–1.08 ms，GL 和 D3D12 持平。差距大约 0.15–0.25 ms。
+- 差距不集中在某一个效果上：每个 postfx 调用只比 D3D12 多 5–15 µs，关掉任意一个效果，两个后端减少的时间也差不多。
+- 差距和 pass 数量成正比：每多一个全屏 pass，VK 多 57 µs，D3D12 多 36 µs；同一个 pass 里每多一次 draw，VK 多 47 µs，D3D12 多 38 µs；一次空的 render pass begin/end，VK 5.7 µs，D3D12 1.5 µs。
+- VK 是 GPU 受限（fence 等待 2–3 ms），GPU 时钟相同，利用率 98%，所以 `vkAllocateDescriptorSets` / `vkUpdateDescriptorSets` 这类 CPU 开销不是原因。按 pass 缓存描述符集解决不了这个差距。
+
+### 没有效果的实验（变化都在 ±0.03 ms 的噪声范围内）
+- color 和/或 depth 的 loadOp 改为 DONT_CARE，depth 的 storeOp 改为 DONT_CARE。
+- 收窄 `vk_external_dep_color_depth` 的 src/dst 掩码：9 个 bit 逐个去掉、多种组合、BY_REGION、另换 5 套掩码，都没有效果。
+- offscreen pass 去掉 depth 附件（延迟 postfx 1.16 → 1.10 ms，处在边缘）、去掉 TRANSFER_SRC usage、改用 dedicated allocation、去掉 update-after-bind、调 sampler 的 maxLod / mip 模式、开 SPIR-V `-O`、去掉 GPU 计时器造成的 pass 中断。
+
+### 唯一明显的效果，但它不是修复
+外部依赖什么都不等（`dependencyCount = 0`，或者 src = TOP_OF_PIPE）时，postfx 降到 0.91–1.03 ms，10 倍 bloom 压力测试从 2.62 降到 1.74 ms，帧率 +3–7%。但这是直接去掉了同步，相邻 pass 之间有真实的读后写冒险；`dependencyCount = 0` 还会让管线和 render pass 不兼容。把正确的等待换成 pass 之前显式的 `vkCmdPipelineBarrier`（全掩码或最小掩码都试过），开销原样回来（2.56–2.58 ms）。结论：VK 多出的时间就是相互依赖的全屏 pass 之间必须的串行；D3D12 的驱动用隐式 SRV 转换处理，代价更低。
+
+### 能带来收益的方向（需要改结构，未做）
+- 减少 pass 数量：bloom extract 和第一次 blur 合并；SSS 的水平和垂直两步合并；sharpen 合进 TAA resolve；combined_color 和 lens_effects 合并。
+- bloom 链改成一次 compute dispatch，或者用 subpass。
+- postfx 的 FBO 加一个显式的「无 depth」标志，同时需要配套只有 color 的管线模板。
+
+探针脚本留在 `.tmp/`（`pfxsect.py`、`pfxcum.py`、`xpass.py`、`xdraw.py`、`xempty.py`、`xbloom.py`、`vk*_exp.py`）。
+
 ## 本轮更新：R691 — 引擎性能：CSM 的 4 个 cascade 也改为 CPU 球体剔除 + 直接绘制
 
 ### 根因
