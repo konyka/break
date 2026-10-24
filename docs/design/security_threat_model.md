@@ -11,7 +11,7 @@
 - **设计目标**：本文建议的接口、边界或验收标准，尚未实现。
 - **未实现/风险**：明确不在当前交付范围，不能由本文推断为已有能力。
 
-Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**；Phase A 收口（Task 5）时它们已交付为正式可选 target，本文 §4/§9/§12 已按收口状态更新。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
+Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**；Phase A 收口（Task 5）时它们已交付为正式可选 target，本文 §4/§9/§12 已按收口状态更新；Phase B 收口时 §4/§9/§10/§12 已按 update client 交付同步；Phase C 收口（Task 4）时 §6 脱敏契约获得 crash 通路的客户端执行点（`break_crash`），§9/§10/§12 已同步。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
 
 ## 2. 客户端信任边界
 
@@ -81,15 +81,15 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 
 TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10）。
 
-## 6. 崩溃数据隐私与脱敏契约
+## 6. 崩溃数据隐私与脱敏契约（Phase C 起具客户端执行点）
 
-属子项目 3；**脱敏契约先于任何上传实现存在**（当前无任何 crash capture/spool/upload 代码）。契约（**设计目标**）：
+属子项目 3。**脱敏契约先于上传实现存在；Phase C（2026-10-24，branch `sdd/stage5-crash-reporting`）起本契约在 crash 通路上有客户端执行点（当前已有，`break_crash`）**：① 捕获侧 privacy-by-omission——cmdline/env/用户名/peer 地址从不进入记录，栈窗口经 argv/env zone_lo 钳制（第 3 条的捕获侧执行点；`docs/design/crash_reporting.md` §1-2）；② 上传前纯函数 redact pass——模块名 basename（'/' 与 '\\' 双分隔符，幂等）、空 basename 占位符、context-blob 直通（第 1/3 条的上传侧执行点；blob 直通以 **app 预脱敏义务**为前提，crash_reporting.md §7）；③ 有界本地 spool 与恢复/重试/丢弃语义（第 5 条执行点，crash_reporting.md §4-5）。服务端符号化/聚类与真实上传传输仍**未实现**（§10）。契约条款（设计义务；crash 通路的客户端执行点如上）：
 
 1. **路径脱敏**：导出的任何文件路径只保留仓库相对/规范化形式；宿主机绝对路径、用户家目录片段一律移除或替换为占位符；
 2. **peer 脱敏**：IP 地址、端口、连接 identity、会话标识不原文落盘/上报；需要关联时用不可逆截断哈希；
 3. **用户数据脱敏**：命令行参数、环境变量、Lua/脚本 payload、聊天/昵称等用户生成内容默认不收集；确需记录时走白名单字段；
 4. **密钥/令牌零记录**：secrets、tokens、完整网络 payload 永不写入诊断产物（沿用 profiler 元数据 redaction 设计目标，`runtime_security.md:171`；泄漏风险已登记 `runtime_security.md:256`）；
-5. **本地 spool 同样有界**：spool 目录大小、文件数、单文件尺寸全部有上限；恢复语义（重启后重传/丢弃）由 Phase B/C 定义；
+5. **本地 spool 同样有界**：spool 目录大小、文件数、单文件尺寸全部有上限；恢复语义（重启后重传/丢弃）已由 Phase C 定义并交付（`crash_reporting.md` §4-5：inbox→pending 恢复 at-least-once、attempts ≤5 失败后丢弃、retention 16/16/16）；
 6. 上传实现存在之前，任何诊断导出（含 profiler Chrome trace/provenance sidecar）即适用第 1-4 条。
 
 ## 7. 重放保护与限速模型声明
@@ -115,7 +115,7 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 | 更新客户端离线机制（分块下载/字节级续传/A-B activation/rollback/channel 策略） | **当前已有**（Phase B Tasks 1-4；真实传输/灰度客户端逻辑/服务端未实现） |
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
 | 传输认证 / 密钥与会话生命周期 | 范围声明；实现属 Phase B/C，未实现 |
-| 崩溃数据脱敏契约 | 本文交付（契约）；capture/spool/upload 未实现 |
+| 崩溃数据脱敏契约 | 本文交付（契约）；**crash 通路客户端执行点当前已有**（Phase C `break_crash`：捕获侧 privacy-by-omission + 上传前 redact pass + 有界 spool/恢复语义）；服务端符号化与真实上传传输未实现 |
 | 重放/限速模型 | 本文交付（模型声明）；实现未实现 |
 
 ## 10. 明确 NOT delivered 清单
@@ -123,7 +123,7 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 以下各项**明确不在本阶段交付**，不得由本文任何设计目标推断为已有能力：
 
 1. Stage 5 子项目 2 的**在线半侧**：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
-2. Stage 5 子项目 3：crash context capture、local spool、redaction 实现、upload、symbolization（本文只交付脱敏契约）；
+2. Stage 5 子项目 3 的**服务端半侧与真实传输**：crash 符号化服务/聚类/回归统计、真实上传传输（HTTP/TLS/端点配置/认证）、GPU/RHI/网络/输入摘要捕获（app 经 context-blob 接缝的后续集成）、minidump/PE 格式、Windows SEH/VEH（`_WIN32` 为编译期 stub）——客户端半侧（capture/local spool/redaction 实现/upload seam/符号化契约）已由 Phase C 交付（`docs/design/crash_reporting.md`）；
 3. Stage 5 子项目 4：transport authentication 与 key/session lifecycle；
 4. Stage 5 子项目 5：replay protection、rate limit、server authority、client anti-tamper 的实现（本文只交付模型声明）；
 5. TLS 接线进 `break_net` adapter；
@@ -146,6 +146,8 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 - `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`：Phase A 计划；Global Constraints（`:13` snow_auth 不复用；`:15` OpenSSL fail-closed；`:16-17` 界限与无 oracle；`:21` 诚实范围）与 Tasks 2-4 接口（`:70-178`）。
 - `engine/src/update/break_update_client.h/.c`、`engine/tests/test_break_update_client.c`：update client 状态机 + 分块下载/字节级续传 + stage/activate/unstage/rollback 管线（**当前已有**，Phase B；43/43 三树绿；契约 nm 钉住 libbreak_update.a 恰 28 个导出 = 15 manifest/store + 13 client）；`docs/design/update_client.md`：状态机/盘上布局/续传/write-ahead/回滚策略/传输接缝契约与 A/B 槽窗口、崩溃代价、解析校验非认证的诚实边界。
 - `docs/superpowers/plans/2026-10-24-stage5-update-client.md`：Phase B 计划；台账 `.superpowers/sdd/2026-10-24-stage5-update-client/progress.md`。
+- `engine/src/crash/break_crash.h/.c`、`engine/tests/test_break_crash.c`、`engine/tests/test_break_crash_target_contract.cmake`：async-signal-safe crash capture + canonical 记录 + 有界 spool + 纯函数 redact + 上传 seam（**当前已有**，Phase C；36/36 三树绿；契约 nm 钉住 libbreak_crash.a 恰 36 个导出；engine/engine_demo/dxx_break/editor 禁链）；`docs/design/crash_reporting.md`：捕获清单/privacy-by-omission 表/handler 白名单/inbox→pending 恢复序列/retention+backoff/上传接缝契约/符号化契约与 NOT-delivered 清单（§6 契约的客户端执行点）。
+- `docs/superpowers/plans/2026-10-24-stage5-crash-reporting.md`：Phase C 计划；台账 `.superpowers/sdd/2026-10-24-stage5-crash-reporting/progress.md`。
 - `engine/src/core/break_version.h`、`engine/src/core/break_version.c`：版本/构建身份接口与实现（**当前已有**）。
 - `engine/tests/test_break_version.c`、`engine/CMakeLists.txt:409-423,435,531,3910-3915`：构建身份注入（git 短哈希 / `"unknown"` 回退，configure 时刻捕获、增量重建不刷新）、`engine` target 编入与测试注册证据。
 - `engine/CMakeLists.txt:44,313-339`：`BREAK_ENABLE_CRYPTO` 选项（默认 ON）与 `break_crypto`/`break_update` 正式可选 target 块（`find_package(OpenSSL REQUIRED)` fail-closed；OFF ⇒ 两 target 缺席；契约脚本按首 `endif()` 抽取该块，块内禁嵌套 if）。
