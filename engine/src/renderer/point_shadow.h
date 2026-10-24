@@ -5,7 +5,13 @@
 #include <math/math.h>
 #include <core/types.h>
 
-#define POINT_SHADOW_MAX_LIGHTS  8u
+/* R685: 4, not 8. Every consumer samples at most four shadow cubes:
+ * u_point_shadow_cubes[4] in the GLSL/VK lighting shaders, t10-t13 in the
+ * HLSL ones, and point_shadow_gather / light_system_set_point_shadow_indices
+ * truncate to 4. Lights 5-8 were rendered (24 extra cube faces, ~0.8 ms of
+ * GPU per frame) and never read. Raising this needs the shader arrays, the
+ * D3D12 t-registers and both truncations raised with it. */
+#define POINT_SHADOW_MAX_LIGHTS  4u
 #define POINT_SHADOW_DEFAULT_RES 512u
 #define POINT_SHADOW_FACES       6u
 

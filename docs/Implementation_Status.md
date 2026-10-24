@@ -1,6 +1,43 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R685 — 引擎性能：点光阴影只渲染被采样的 4 盏；首次建立 Release 基线
+
+### Release 基线
+此前所有帧率都是在 Debug 树（`build-gl/vk/d3d12-*` 都是 `CMAKE_BUILD_TYPE=Debug`）上测的。这一轮新建了 3 棵 Release 树：`build-rel-d3d12`（`ENGINE_D3D12_DEBUG=OFF`）、`build-rel-vk`、`build-rel-gl`（clang + Ninja，`ENGINE_BUILD_TESTS=OFF`，只构建 engine_demo）。Release 下 CPU 每帧只要 0.3–1.3ms，三个后端都受 GPU 限制。用整帧 GPU 计时器（临时探针，已移除）拆分 Release 前向每帧的 GPU 时间：
+
+| GPU 每帧 | D3D12 | GL |
+|---|---|---|
+| 整帧 | 3.8 ms | 4.9 ms |
+| 点光阴影（8 灯 × 6 面） | **1.55 ms** | **2.04 ms** |
+| scene | 0.64 | 1.14 |
+| postfx | 1.24 | 1.21 |
+| CSM | 0.15 | 0.29 |
+| particles | 0.04 | 0.02 |
+
+点光阴影是最大的一项，占整帧约 40%。（VK 的 GPU 计时器在整帧和点光阴影这两个区段都读到 0：VK 的 timestamp 不能跨 render pass 边界，这两个区段包含了 pass 切换，所以没测到。不影响结论。）
+
+### 根因：画了 8 个 cube，只读其中 4 个
+`POINT_SHADOW_MAX_LIGHTS = 8`，每帧给离相机最近的 8 盏点光各渲染一个 6 面 cube，共 48 面。可是所有消费方最多只读 4 个：GLSL/VK 光照着色器里是 `u_point_shadow_cubes[4]`，HLSL 是 t10–t13，`point_shadow_gather` 和 `light_system_set_point_shadow_indices` 也都截断到 4。第 5–8 盏的 24 个面每帧照常渲染，但从来没有被采样过。
+
+### 修复
+`point_shadow.h`：`POINT_SHADOW_MAX_LIGHTS` 从 8 改为 4，并在注释里写明，要调高这个值，必须同时调高着色器数组、D3D12 的 t 寄存器和两处截断。被采样的 4 盏点光不变：同样是按距离相机最近选出来的，排序方式也一样。
+
+### 数据（Release，RTX，`BREAK_BENCH_STATS=1`，480 帧，已排除预热帧）
+| fps_avg | 修复前 | 修复后 |
+|---|---|---|
+| D3D12 前向 | 255 | 294（+15%） |
+| D3D12 延迟 | 233 | 251 |
+| VK 前向 | 210 | 248（+18%） |
+| VK 延迟 | 187 | 196 |
+| GL 前向 | 194 | 241（+24%） |
+| GL 延迟 | 176 | 221（+26%） |
+
+### 验证
+- 截图：三个后端互相对比（前向 D3D12-GL 1.17、延迟 1.02），日志无 WARN/ERROR。
+- 修复前后的截图对比：差异只出现在粒子和移动光源的边缘，不在阴影区域。demo 本身每次运行都有时间相关的动画，所以同一份代码连跑两次也会有差异。为了确认，我在 GL 上做了对照：8 盏版本连跑两次差 0.318，4 盏版本连跑两次差 1.343，8 盏对 4 盏差 0.367 / 1.365。这几个差值处在同一量级，没有出现阴影变化带来的系统性差异。
+- 测试：WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。ctest：d3d12-debug 186/187、vk 181/182、gl 178/179，唯一失败的都是已知的剪贴板用例 `test_platform_win32_runtime`（ToDesk 占用剪贴板）。
+
 ## 本轮更新：R684 — GL 后端一直跑在核显上：导出 NvOptimusEnablement / AmdPowerXpressRequestHighPerformance
 
 ### 发现
