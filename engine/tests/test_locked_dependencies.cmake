@@ -31,7 +31,7 @@ if(dep_count EQUAL 0)
 endif()
 set(required_names cmake clang gcc msvc vulkan-sdk shaderc
     vulkan-validation-layers android-ndk xcode windows-sdk
-    d3d12-agility-sdk dxc glslang)
+    d3d12-agility-sdk dxc glslang snowflake)
 math(EXPR last "${dep_count} - 1")
 foreach(i RANGE ${last})
     foreach(field name version purpose source sha256 platforms)
@@ -57,7 +57,10 @@ foreach(i RANGE ${last})
     endif()
     list(REMOVE_ITEM required_names "${name}")
     string(JSON purpose GET "${json}" dependencies ${i} purpose)
-    if(NOT purpose MATCHES "^(build-only|test-only|runtime-shipped|system-provided)$")
+    # Stage 5 Phase D: runtime-optional (gated feature dependency, e.g.
+    # snowflake behind BREAK_ENABLE_SNOWFLAKE) may carry a "(gate)" qualifier.
+    if(NOT purpose MATCHES "^(build-only|test-only|runtime-shipped|system-provided)$"
+       AND NOT purpose MATCHES "^runtime-optional( \\(.+\\))?$")
         message(FATAL_ERROR "dependencies[${i}] (${name}) invalid purpose: ${purpose}")
     endif()
     string(JSON vpath ERROR_VARIABLE verr GET "${json}" dependencies ${i} verify_path)
