@@ -2,7 +2,9 @@
 
 ## 范围与状态
 
-本文记录仓库当前已经存在的 Session/Protocol C11 切片，而不是目标设计的完整承诺。实现位于 `engine/src/network/`，测试位于 `engine/tests/test_break_session.c` 和 `engine/tests/test_break_net_adapter.c`。
+本文记录仓库当前已经存在的 Session/Protocol C11 切片，而不是目标设计的完整承诺。实现位于 `engine/src/network/`，测试位于 `engine/tests/test_break_session.c`、`engine/tests/test_break_net_adapter.c` 和 `engine/tests/test_break_net_tls.c`。
+
+Stage 5 Phase D（2026-10-24，branch `sdd/stage5-transport-security`）起本切片增加：TLS 传输模式（§TLS 模式）、CHALLENGE/AUTH-v2 会话认证握手（§CHALLENGE/AUTH-v2）、出站单调序号（§outbound 当前边界）、准入限速（§准入限速）——信任链与安全契约全文见 `docs/design/transport_security.md`。
 
 构建目标事实：`break_net` 是 `engine/CMakeLists.txt` 顶层的正式静态库目标，只要 `BREAK_ENABLE_SNOWFLAKE=ON` 就会生成，独立于 `ENGINE_BUILD_TESTS`；它链接 `break_replication_core` 与 `snow::net`。`BREAK_ENABLE_SNOWFLAKE=ON` 且缺少有效 `SNOWFLAKE_SOURCE_DIR` 时配置以 FATAL_ERROR 失败（fail-closed）。基础 `engine` 目标保持 transport-neutral，不编译 Snowflake 头文件、不链接 `snow::net`/`break_net`；消费方显式 opt-in。`engine_demo` 与 `dxx_break` 均不消费 `break_net`，接入生产应用属于后续独立集成任务。测试可执行文件 `test_break_net_adapter`、`test_break_session`、`test_break_replication` 链接该正式 `break_net` 目标。
 
@@ -12,11 +14,12 @@
 - `BreakNetMessageRegistry` 的固定容量消息定义表；
 - `BreakNetEvent` 记录、adapter 有界事件队列和有界 outbound command 队列；
 - 不透明的 `BreakSessionManager` 及其 GameThread 侧状态迁移 API；
-- CTest 覆盖 envelope、little-endian 字节序、长度/ID/版本/序列错误、payload 拷贝、队列 FIFO、会话状态迁移和关闭后的拒绝行为；真实 loopback 覆盖 AUTH 入站、Session poll、handler dispatch、PING response、client close、`CLOSED` 和 stale 事件。
+- TLS 传输模式、CHALLENGE/AUTH-v2 认证握手、出站单调序号、准入限速（Stage 5 Phase D，见下文专节与 `docs/design/transport_security.md`）；
+- CTest 覆盖 envelope、little-endian 字节序、长度/ID/版本/序列错误、payload 拷贝、队列 FIFO、会话状态迁移和关闭后的拒绝行为；真实 loopback 覆盖 AUTH 入站、Session poll、handler dispatch、PING response、client close、`CLOSED` 和 stale 事件；TLS loopback 覆盖握手/加密往返/mTLS/负例。
 
 当前仍没有：
 
-- player authentication backend、ECS replication、AoI、Lua gameplay callback、editor RPC、online update 或额外 security 功能；
+- player authentication backend、ECS replication、AoI、Lua gameplay callback、editor RPC、online update 或服务端产品/反篡改代码；
 - Snowflake per-context completion/drop 通知不足，因此 adapter 仍以 send-drained/close 顺序和 pending 引用维护本地 identity 生命周期；
 - 自定义 registry 已用于 Session 的真实 wire codec 边界，但 envelope codec 当前仍以 default registry 为编码/解码入口。
 
@@ -103,12 +106,13 @@ typedef enum BreakNetEventType {
 
 `break_net_envelope_encode` 先查 default registry、版本、flags 和 payload limit，再检查 `size_t` 加法和输出 buffer 大小。`break_net_envelope_decode_with_context` 先检查最小 header、magic、payload 上限和“buffer 必须恰好等于 header + payload”，然后做 registry/版本/flags 校验，再做 sequence 校验。拒绝时输出 envelope 被清零；成功时 `payload` 仍是输入 buffer 内的借用指针，不由 decode 分配或释放。
 
-默认 registry 当前只有：
+默认 registry 当前只有（`BREAK_ENABLE_CRYPTO=ON` 时三行，OFF 时仅前两行、AUTH 收窄为 v1..1）：
 
 | ID | Version | Payload limit | Phase | Duplicate policy |
 |---:|---:|---:|---|---|
-| `BREAK_NET_MESSAGE_ID_AUTH == 1` | 1..1 | 64 KiB | `ANY` | `REJECT` |
+| `BREAK_NET_MESSAGE_ID_AUTH == 1` | 1..2（CRYPTO=ON）/ 1..1（OFF） | 64 KiB | `ANY` | `REJECT` |
 | `BREAK_NET_MESSAGE_ID_PING == 2` | 1..1 | 64 KiB | `ANY` | `IDEMPOTENT` |
+| `BREAK_NET_MESSAGE_ID_CHALLENGE == 3` | 1..1（仅 CRYPTO=ON） | 16 B | `ANY` | `REJECT` |
 
 registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版本区间、超过全局 payload 上限或满表。公共 `BreakSessionConfig.registry` 也拒绝 `count > BREAK_NET_REGISTRY_MAX_MESSAGES` 的 malformed registry，避免后续 lookup 越过固定定义表；registry 仍是 borrowed immutable storage，必须活到 manager destroy。当前 envelope codec 使用 `break_net_message_registry_default()`，没有把自定义 registry 传入 codec 的 API。`phase` 和 `duplicate_policy` 已记录在定义中；Session 在 GameThread apply/dispatch 阶段执行 phase、版本、payload limit 和 duplicate policy。默认 AUTH/PING 均为有意的 `ANY` phase：默认 registry 下 AUTH 在 `NEW` 中允许并成功后进入 `AUTHENTICATED`，PING 在 pre-auth `NEW` 中也允许且保持 `NEW`；自定义 registry 的 phase 仍严格限制（例如 `AUTHENTICATING` 定义在 `NEW` 中被拒绝）。默认 AUTH 重复策略为 `REJECT`，PING 重复策略为 `IDEMPOTENT`。测试 `break_session_default_registry_allows_auth_in_new_and_ping_pre_auth` 与 `break_session_uses_attached_registry_phase_and_duplicate_policy` 分别锁定这两个边界。
 
@@ -188,6 +192,18 @@ NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED
 
 关闭会形成不可逆的 close watermark：entry 转为 `CLOSING`/`CLOSED` 后，后续同 connection 的消息和重复生命周期事件不会改变状态，并由 apply-result API 分类为 stale（未知 connection 则为 unknown）。closed entry 不回收、不复用；因此 `max_sessions` 是 manager 生命周期内的 connection-key binding capacity，而不是同时在线容量。adapter event queue 仍由 GameThread 逐条 poll，事件 payload 在 apply 返回后由 caller 释放。
 
+## TLS 模式
+
+Stage 5 Phase D Task 2 起 adapter 支持服务端 TLS 接受模式（`BreakNetTlsConfig{cert_file,key_file,ca_file,verify_peer}` + `break_net_reactor_set_tls` + `break_net_reactor_is_tls`，CREATED 态仅一次）。配置后每条接受的连接必须先完成 TLS handshake 才有任何 envelope 解析；handshake 失败 fail-closed 关闭（零消息事件）。`verify_peer=1` 且 `ca_file==NULL` 直接拒绝配置（OpenSSL 语义下该组合是 VERIFY_NONE 伪装）。parser 在入口分流：`tls_ctx==NULL` 走原明文 parser（逐字节不变），否则走 TLS 路径（整段密文 burst 消费、握手/alert 密文锁外回注、握手完成同 burst 内排空残留应用密文防死锁）。所有 `snow_ssl_t` 触点都在 reactor 唯一驱动线程上（构造性满足）。限制：snow wrapper 吞并 `SSL_ERROR_ZERO_RETURN` 且无 TLS shutdown API——close_notify 与 TCP FIN 不可区分，adapter 以 TCP 层关闭事件为权威；无会话恢复（`SSL_SESS_CACHE_OFF`）。自签 fixture 证书仅供测试（`BREAK_TEST_SSL_FIXTURE_DIR` 宏注入）。全文见 `docs/design/transport_security.md` §2/§7/§8。
+
+## CHALLENGE / AUTH-v2
+
+Stage 5 Phase D Task 3 起（`BREAK_ENABLE_CRYPTO=ON`）Session 支持认证握手：accept 时每连接经 `break_crypto_random` 生成新鲜 16B `server_nonce` 并下发 CHALLENGE(id=3, v1, 16B)；客户端回 AUTH v2（严格 56B：`key_id[8] || client_nonce[16] || tag[32]`），tag = `HMAC-SHA256(psk, "BRKAUTH2" || server_nonce || client_nonce)`，PSK 由应用回调 `BreakNetAuthKeyFn` 按 key_id 解析（provisioning/rotation 留在 app 侧）。未知 key、tag 篡改、错误版本/长度、缺 nonce、配置后 AUTH v1 全部 fail-closed 进 CLOSING；常量时间 32 字节比较；认证只经 `break_crypto_hmac_sha256`/`break_crypto_random`（零自造密码学）。`break_session_set_auth(fn,user)` 为进程级配置（逐字接口无 manager 参数），仅在所有 session 为 NEW 且无认证操作在飞时可变更——操作租约钉住配置快照穿越首次状态迁移（review fix round 1），中途 set/clear 得 false。内置 CHALLENGE client helper 使用全零 key_id（裁决约定：接口无客户端 key 选择参数）。`break_session_set_max_age` 提供可选会话过期（单调时钟；过期扫描有界且不被 close 预算饿死）。重放论证：跨连接逐字节重放因 server_nonce 不同而失败，同连接靠 REJECT 策略 + 严格入站序号；post-auth 应用消息无独立 replay window（文档化边界）。全文见 `docs/design/transport_security.md` §3/§4。
+
+## 准入限速
+
+Stage 5 Phase D Task 4 起 adapter 支持 Snowflake admission hook 限速（`BreakNetRateLimitConfig{global_accept_per_sec,global_burst,per_ip_per_minute}` + `break_net_reactor_set_rate_limits`，CREATED 态仅一次）：全局 token bucket + 每 IP 滑窗（表固定 1024 项，满表 fail-closed 拒绝新 IP、已知 IP 继续计量）；拒绝发生在任何连接对象/identity/session 槽分配之前；拒绝计数为 `_Atomic uint64_t`（relaxed，跨线程公开观测），经 `break_net_reactor_admission_denied` 导出。全字段为 0 时不分配 admission 状态、注册 NULL admit，legacy 行为不变。已记录限制：admit 通过后建链失败不退还 token（保守方向）。全文见 `docs/design/transport_security.md` §5。
+
 ## adapter events 与 Snowflake callbacks
 
 adapter 源码中保留了真实 Snowflake `snow_conn_handlers_t` 所需的 callback 形状：
@@ -236,7 +252,7 @@ snow_status_t snow_net_thread_add_acceptor_with_handlers(
 
 ## outbound 当前边界
 
-`break_net_reactor_send(reactor, connection_key, message_id, protocol_version, data, size)` 把消息深拷贝到 256 项 outbound queue；驱动会编码 envelope 并接线到 Snowflake `snow_send_context_t`/`snow_net_thread_send`。成功入 Snowflake 后由 send-drained callback 释放对应 identity 的 pending 引用；close callback 只标记 closing，直到 pending 为零才释放其 recv context。失败路径立即释放临时 send context；stale UID 仍安全丢弃。队列满时立即返回 `BREAK_NET_SEND_OVERLOAD`，参数/消息拷贝失败返回 `BREAK_NET_SEND_INVALID`。adapter 已接线真实 outbound 路径，并由 session wire loopback 覆盖 AUTH 入站、handler dispatch、PING 出站 envelope 及 close/stop cleanup。当前 `break_net_reactor_send` 没有 sequence 参数，出站 envelope 的 sequence 按实际 API 为 0。`break_net_reactor_stop` 的 `timeout_ms` 是 bounded deadline：thread mode 等待 host exit，step mode 等待正在执行的 step driver 发布完成；超时统一返回 false 并保留 STOPPING、Snowflake reactor 和线程/step ownership，后续 stop 可完成清理。stop 不在 lifecycle lock 内调用 Snowflake step。
+`break_net_reactor_send(reactor, connection_key, message_id, protocol_version, data, size)` 把消息深拷贝到 256 项 outbound queue；驱动会编码 envelope 并接线到 Snowflake `snow_send_context_t`/`snow_net_thread_send`。成功入 Snowflake 后由 send-drained callback 释放对应 identity 的 pending 引用；close callback 只标记 closing，直到 pending 为零才释放其 recv context。失败路径立即释放临时 send context；stale UID 仍安全丢弃。队列满时立即返回 `BREAK_NET_SEND_OVERLOAD`，参数/消息拷贝失败返回 `BREAK_NET_SEND_INVALID`。adapter 已接线真实 outbound 路径，并由 session wire loopback 覆盖 AUTH 入站、handler dispatch、PING 出站 envelope 及 close/stop cleanup。**出站单调序号（Stage 5 Phase D Task 3 起）**：`break_net_reactor_send` 没有 sequence 参数；每个 connection identity 持有独立 `uint32_t outbound_sequence`（初始 0），首次实际 drain envelope 时分配 `++outbound_sequence`，peer 观察到 1、2、3…；重试已分配 command 保持相同 sequence，同连接 FIFO 与跨连接公平扫描不变；identity 复用时归零；到达 `UINT32_MAX` 后饱和不再递增/回绕（后续 command 走失败路径而不是发出 sequence 0）；encode/send 失败的命令留队且本次 drain 内同 connection_key 的后继一律跳过（同连接 FIFO 不可越过失败前项，其他连接不 HOL 阻塞）。入站 `decode_with_context` 的严格递增校验不变。`break_net_reactor_stop` 的 `timeout_ms` 是 bounded deadline：thread mode 等待 host exit，step mode 等待正在执行的 step driver 发布完成；超时统一返回 false 并保留 STOPPING、Snowflake reactor 和线程/step ownership，后续 stop 可完成清理。stop 不在 lifecycle lock 内调用 Snowflake step。
 
 ## 验证与边界
 

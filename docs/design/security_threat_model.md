@@ -11,7 +11,7 @@
 - **设计目标**：本文建议的接口、边界或验收标准，尚未实现。
 - **未实现/风险**：明确不在当前交付范围，不能由本文推断为已有能力。
 
-Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**；Phase A 收口（Task 5）时它们已交付为正式可选 target，本文 §4/§9/§12 已按收口状态更新；Phase B 收口时 §4/§9/§10/§12 已按 update client 交付同步；Phase C 收口（Task 4）时 §6 脱敏契约获得 crash 通路的客户端执行点（`break_crash`），§9/§10/§12 已同步。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
+Phase A 的实施计划是 `docs/superpowers/plans/2026-10-24-stage5-security-foundations.md`；本文只立契约与模型，各库（`break_crypto`/`break_update`/写侧 PAL）的交付状态以 `docs/Implementation_Status.md` 与该计划台账为准——在本文首次提交时它们全部是**设计目标**；Phase A 收口（Task 5）时它们已交付为正式可选 target，本文 §4/§9/§12 已按收口状态更新；Phase B 收口时 §4/§9/§10/§12 已按 update client 交付同步；Phase C 收口（Task 4）时 §6 脱敏契约获得 crash 通路的客户端执行点（`break_crash`），§9/§10/§12 已同步；Phase D 收口（Task 5）时 §5 传输认证与 §7 重放/限速获得交付执行点（TLS 模式、CHALLENGE/AUTH-v2、admission 限速，`docs/design/transport_security.md`），§8 Snowflake 未钉版风险由 configure 期 pin 门关闭，§5/§7/§8/§9/§10/§11/§12 已同步。Stage 5 的执行顺序依据是 roadmap Execution Order 第 7 条（`roadmap_2026-10-22.md:146-155`）。
 
 ## 2. 客户端信任边界
 
@@ -71,15 +71,15 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 
 **当前已有（Phase B Tasks 1-4 交付，2026-10-24，branch `sdd/stage5-update-client`，提交范围 `bb4a1a2e..HEAD`）**：update client 状态机 + A/B 槽（canonical state 文件 ≤64 KiB、write-ahead 持久化、fail-closed 解析）+ 分块下载器（chunk 粒度、`.part` 字节级续传、CAS 去重、流式 SHA-256 全量校验后入库）+ stage/activate/confirm/unstage/rollback 管线（**签名与策略先于一切传输**——VERIFY/POLICY 失败零 fetch 调用零磁盘写零状态变，三层钉死；min-rollback 地板 + staged 互斥 + unstage 语义），测试 `engine/tests/test_break_update_client.c` 43/43 三树绿。全部经调用方 `BreakUpdateFetchFn` 回调注入传输——**无任何 socket/HTTP/TLS/curl 代码**（grep 门核验）。签名后真实在线流程、灰度客户端逻辑、服务端仍**未实现**（§10）。契约文档 `docs/design/update_client.md`（含 A/B 槽窗口与崩溃代价的诚实边界）。
 
-## 5. 传输认证与密钥/会话生命周期（范围声明，Phase B/C）
+## 5. 传输认证与密钥/会话生命周期（Phase D 交付为库接缝）
 
-属 Stage 5 子项目 4，由后续 Phase B/C 计划交付；本阶段只立范围声明：
+属 Stage 5 子项目 4。**Phase D（2026-10-24，branch `sdd/stage5-transport-security`，Tasks 1-4）起交付为库级接缝（当前已有，loopback 证据）**，契约全文见 `docs/design/transport_security.md`：
 
-- **范围**：`break_net` adapter 的 TLS 接线、密钥生成/存储/轮换/吊销生命周期、会话密钥协商与过期、`snow`（Snowflake）TLS 能力的采用决策；
-- **现状**：`break_net` 是 Snowflake 条件的正式可选库（`engine/CMakeLists.txt:388-407`），当前只提供 bounded queue 与 lifecycle 契约，**无任何传输认证**；`runtime_security.md:119` 已明确 fragment 层正式接入前必须由 Stage 5 transport security contract 提供认证；
-- **本阶段声明**：在传输认证落地前，任何跨网消息都不具备来源认证与保密性；`break_net` 的使用者不得把现有 envelope/fragment 完整性检查当作安全边界。
-
-TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10）。
+- **TLS 传输模式（当前已有）**：`break_net` adapter 服务端 TLS 接受模式（`BreakNetTlsConfig` + `break_net_reactor_set_tls`）——TLS 为强制前置，handshake 失败 fail-closed 关闭；`verify_peer` 支持 mTLS；`snow` TLS 能力经钉版 Snowflake（`d5d4a928`，configure 期 fail-closed pin 门）采用，OpenSSL-stub 构建在 CRYPTO=ON 时 configure 期 FATAL 拒绝。限制如实记录：无 TLS shutdown API（close_notify 与 TCP FIN 不可区分）、无会话恢复（transport_security.md §8）。
+- **CHALLENGE/AUTH-v2 会话认证（当前已有，CRYPTO=ON 门控）**：16B 新鲜 server_nonce + 56B AUTH v2（`key_id || client_nonce || HMAC-SHA256(psk,"BRKAUTH2"||server_nonce||client_nonce)`），认证原语只经 `break_crypto_hmac_sha256`/`break_crypto_random`（§4 密码学纪律延伸，零自造）；全部失败路径 fail-closed 进 CLOSING；CRYPTO=OFF 树该面缺席（无 plaintext AUTH-v2 旁路）。
+- **密钥生命周期（仅接缝当前已有）**：`BreakNetAuthKeyFn` 回调按 8B key_id 解析 PSK——provisioning/存储/轮换/吊销全部留在 app 侧回调内；引擎不持有密钥材料。**每设备 provisioning tooling、轮换/吊销编排未交付**（§10），在其落地前认证接缝不是可部署的凭证体系。
+- **会话生命周期（当前已有）**：认证会话绑定 connection 生命周期（不可跨重连恢复）+ 可选 `max_age` 过期（单调时钟、有界扫描）+ 出站单调序号。
+- **声明不变**：fragment/envelope 完整性检查仍不是安全边界（§2）；认证握手只证明 PSK 持有，不证明客户端未被篡改（§2 成本模型）；**不存在"安全部署"声明**——无服务端产品、自签 fixture 仅供测试、生产 PKI 要求见 transport_security.md §7。
 
 ## 6. 崩溃数据隐私与脱敏契约（Phase C 起具客户端执行点）
 
@@ -92,16 +92,16 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 5. **本地 spool 同样有界**：spool 目录大小、文件数、单文件尺寸全部有上限；恢复语义（重启后重传/丢弃）已由 Phase C 定义并交付（`crash_reporting.md` §4-5：inbox→pending 恢复 at-least-once、attempts ≤5 失败后丢弃、retention 16/16/16）；
 6. 上传实现存在之前，任何诊断导出（含 profiler Chrome trace/provenance sidecar）即适用第 1-4 条。
 
-## 7. 重放保护与限速模型声明
+## 7. 重放保护与限速（Phase D 交付握手级重放论证 + 准入限速执行点）
 
-属子项目 5；本阶段交付**模型声明**（设计目标），实现未交付：
+属子项目 5。**Phase D（2026-10-24）起两项获执行点（当前已有）**，其余仍是模型声明：
 
-- **重放保护**：`runtime_security.md:254` 已要求 Stage 5 定义密钥、nonce、replay window、认证失败策略。模型：每条认证消息携带单调 nonce/sequence + 时间戳；接收方维护滑动 replay window，窗外重复一律拒绝并计数；窗口状态与会话密钥同生命周期。在传输认证（§5）不存在时，重放保护**不可能生效**——现有 sequence/tick 检查只防乱序不防重放；
-- **限速模型**：每连接/每身份的消息速率、字节速率、并发 assembly 数均有界（现有锚点：adapter 256 event/outbound 队列、fragment 16 MiB 总预算，`runtime_security.md:115-127`）；超限 fail-closed、显式计数、可导出；禁止静默丢弃后假报成功（沿用 `runtime_security.md:182` 的 observable-overload 总则）。
+- **重放保护（握手级已交付并有论证；一般消息级仍未交付）**：认证握手满足 nonce 新鲜性论证——每连接 128-bit CSPRNG `server_nonce` + 客户端 `client_nonce` 双双进入 HMAC tag，跨连接逐字节重放必败（测试钉住），同连接由 REJECT 重复策略 + 严格递增入站 sequence + 一次性 AUTH 迁移闭合；出站方向每连接单调 `outbound_sequence`（1 起、饱和不回绕）。**边界如实记录**：post-auth 应用消息无独立 replay window（仅有每连接顺序性），重连后入站序号随 identity 复用归零——反重放保证范围 = 认证握手 + 每连接排序，不延伸到跨重连的应用消息（transport_security.md §3）。`runtime_security.md:254` 要求的滑动 replay window（跨重连、应用消息级）仍**未实现**。
+- **限速（admission 级已交付执行点；消息/字节级仍未交付）**：Snowflake admission hook 上的全局 token bucket + 每 IP 滑窗（表 1024 项满表 fail-closed 拒新 IP），拒绝先于任何连接对象分配，`_Atomic uint64_t` 拒绝计数经 `break_net_reactor_admission_denied` 可导出（observable-overload 总则的执行点）；admit 后建链失败不退还 token（保守方向，已记录）。**每连接/每身份的消息速率、字节速率、并发 assembly 限速仍未实现**（模型声明不变，锚点：adapter 256 event/outbound 队列、fragment 16 MiB 总预算）。
 
 ## 8. 依赖与供应链风险记录
 
-- **Snowflake 未锁定（风险登记）**：`break_net` 依赖的 Snowflake 源码树经 `SNOWFLAKE_SOURCE_DIR` **路径引用**接入（`engine/CMakeLists.txt:293-311`，fail-closed：缺树即 `FATAL_ERROR`），但 Snowflake **不在** `engine/external/locked_dependencies.json`（2026-10-24 以 `grep -i snow` 验证无条目）——该依赖没有钉版/哈希锁定，供应链完整性与可复现性风险**未决**；缓解方向（vendoring 或入锁定清单）留给后续阶段决策，本阶段只记录风险；
+- **Snowflake 已钉版（Phase D Task 1 关闭本项风险）**：`break_net` 依赖的 Snowflake 源码树经 `SNOWFLAKE_SOURCE_DIR` 路径引用接入，自 2026-10-24 起由 configure 期 fail-closed pin 门钉在 `d5d4a9287d81468506a3f1962dead16f72a3b5c1`（`engine/CMakeLists.txt:295-383`：`git rev-parse HEAD` 不等即 `FATAL_ERROR` 并给出 pinned/found/update-procedure；非 git 树同样 FATAL）——且 Snowflake **已入** `engine/external/locked_dependencies.json`（snowflake 条目，verify 字段描述同一 pin 门，含 CRYPTO=ON 时对 OpenSSL wrapper 的双重断言）。移动 pin 要求同提交更新三处（CMakeLists/locked_dependencies/`docs/design/snowflake_c11_adapter.md`）；pin 移动曾两次按该程序执行（`7d40d19c→4f1d99b3→d5d4a928`，台账在案）。钉的是 commit 身份而非 worktree 洁净度（记录在案的固有限制）；
 - **OpenSSL（新增唯一外部依赖）**：系统 OpenSSL 3 libcrypto（EVP），维护中的原语来源；已落地为 `BREAK_ENABLE_CRYPTO` 选项（默认 ON）+ `find_package(OpenSSL REQUIRED)` fail-closed 查找——ON 且缺失即 `FATAL_ERROR`，OFF 则 `break_crypto`/`break_update` 两 target 缺席（`engine/CMakeLists.txt:44,313-339`，镜像 `BREAK_ENABLE_SNOWFLAKE` 惯例）；本 lane 实测系统库 3.5.9（`pkg-config --modversion openssl`）；系统库版本漂移风险由 locked_dependencies 流程后续登记；
 - **构建身份**：`BREAK_BUILD_ID` 注入 `git rev-parse --short=12 HEAD`，非 git 检出（如 clean-room 导出）回退 `"unknown"`（`engine/CMakeLists.txt:409-423`）——回退路径下产物不可追溯 commit，发布流程须以 git 检出构建为准。注意：该值在 CMake **configure 时刻**捕获，之后新提交上的增量重建**不刷新**它——stale until reconfigure（`engine/src/core/break_version.h` 头注释同述）；
 
@@ -114,9 +114,9 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 | 更新信任链离线验证侧（签名 manifest 格式 + CAS chunk store + 密码学原语 + 原子写 PAL） | **当前已有**（Phase A Tasks 2-4） |
 | 更新客户端离线机制（分块下载/字节级续传/A-B activation/rollback/channel 策略） | **当前已有**（Phase B Tasks 1-4；真实传输/灰度客户端逻辑/服务端未实现） |
 | 版本/构建身份 `break_version` 0.1.0+buildid | **当前已有**（`engine/src/core/break_version.h/.c`，测试 `engine/tests/test_break_version.c`） |
-| 传输认证 / 密钥与会话生命周期 | 范围声明；实现属 Phase B/C，未实现 |
+| 传输认证 / 密钥与会话生命周期 | **当前已有（库接缝，Phase D）**：TLS 模式 + CHALLENGE/AUTH-v2 + key_id 解析回调 + max_age；provisioning tooling/轮换编排未实现 |
 | 崩溃数据脱敏契约 | 本文交付（契约）；**crash 通路客户端执行点当前已有**（Phase C `break_crash`：捕获侧 privacy-by-omission + 上传前 redact pass + 有界 spool/恢复语义）；服务端符号化与真实上传传输未实现 |
-| 重放/限速模型 | 本文交付（模型声明）；实现未实现 |
+| 重放/限速 | **握手级重放论证 + admission 限速执行点当前已有**（Phase D）；应用消息级 replay window 与消息/字节级限速仍为模型声明，未实现 |
 
 ## 10. 明确 NOT delivered 清单
 
@@ -124,19 +124,18 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 
 1. Stage 5 子项目 2 的**在线半侧**：真实传输接线（HTTP/TLS/range 映射）、灰度（gray rollout）客户端逻辑、服务端与签名后的在线流程——客户端离线机制（chunked download、byte-level resume、A/B activation、rollback、channel policy 经 `compatible()`）已由 Phase B 交付（`docs/design/update_client.md`），但传输只经调用方 `BreakUpdateFetchFn` 回调注入，仓库内无任何 socket/HTTP/TLS/curl 代码；
 2. Stage 5 子项目 3 的**服务端半侧与真实传输**：crash 符号化服务/聚类/回归统计、真实上传传输（HTTP/TLS/端点配置/认证）、GPU/RHI/网络/输入摘要捕获（app 经 context-blob 接缝的后续集成）、minidump/PE 格式、Windows SEH/VEH（`_WIN32` 为编译期 stub）——客户端半侧（capture/local spool/redaction 实现/upload seam/符号化契约）已由 Phase C 交付（`docs/design/crash_reporting.md`）；
-3. Stage 5 子项目 4：transport authentication 与 key/session lifecycle；
-4. Stage 5 子项目 5：replay protection、rate limit、server authority、client anti-tamper 的实现（本文只交付模型声明）；
-5. TLS 接线进 `break_net` adapter；
-6. `snow`（Snowflake）TLS 使用；
+3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署；
+4. Stage 5 子项目 5 的**剩余半侧**：server authority 实现（§3 仍全部是设计目标枚举，无服务端代码）、client anti-tamper 实现（§2 成本模型文档 only，无代码）、应用消息级 replay window（跨重连/应用消息——Phase D 交付的是握手级 + 每连接顺序性）、消息/字节级限速（Phase D 交付的是 admission 级）；
 7. 任何服务端实现与 remote debug 通道（roadmap `:126`：release 无默认 remote debug 路径）；
 8. **update client 本地 state 与槽内 `update-version` 标记的认证（MAC/签名）未交付**——它们只受 canonical 解析校验与跨字段不变量保护，**是解析校验、非认证**（§4 契约要点末节）；对 update root 的本地写权限已等价完全篡改，故这不构成新边界，但任何"本地状态可信"的推断都不成立。
 
 ## 11. 未决风险
 
-- Snowflake 未钉版（§8）：路径引用依赖无哈希锁定，构建可复现性与供应链审计受限；
+- Snowflake pin 钉 commit 身份而非 worktree 洁净度（§8；pin 门本身已关闭"未钉版"风险，此为其固有限制记录）；
 - OpenSSL 系统库版本漂移：EVP 行为由宿主机库决定，尚未入 `locked_dependencies.json`；
 - OpenSSL OOM 路径不可注入测试：内存耗尽下的 EVP 失败路径无覆盖率声明（文档化，不假称覆盖）；
-- 密钥管理未定义：离线签名密钥的生成、保管、轮换、吊销流程属 Phase B/C，在其落地前签名体系不可投入真实发布；
+- 密钥管理未定义：离线签名密钥与 AUTH PSK 的生成、保管、轮换、吊销流程未交付（Phase D 交付的是 key_id→PSK 解析接缝），在其落地前签名体系与 AUTH 认证均不可投入真实发布；
+- Phase D 已知限制按文档记录在案（transport_security.md §8：无 TLS shutdown/ZERO_RETURN 区分、无会话恢复、零 key_id helper 约定、token 不退还、满 1024 表拒绝新 IP、进程级 auth 域、PSK memset 可被优化掉、clock_gettime 失败非 fail-closed）；
 - 本文所有"设计目标"条目均无实现证据；交付状态唯一事实来源是 `docs/Implementation_Status.md` 与各阶段台账（focused/test-only 不等于正式集成，`docs/Implementation_Status.md:215,223` 口径）。
 
 ## 12. 证据索引
@@ -148,6 +147,8 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 - `docs/superpowers/plans/2026-10-24-stage5-update-client.md`：Phase B 计划；台账 `.superpowers/sdd/2026-10-24-stage5-update-client/progress.md`。
 - `engine/src/crash/break_crash.h/.c`、`engine/tests/test_break_crash.c`、`engine/tests/test_break_crash_target_contract.cmake`：async-signal-safe crash capture + canonical 记录 + 有界 spool + 纯函数 redact + 上传 seam（**当前已有**，Phase C；36/36 三树绿；契约 nm 钉住 libbreak_crash.a 恰 36 个导出；engine/engine_demo/dxx_break/editor 禁链）；`docs/design/crash_reporting.md`：捕获清单/privacy-by-omission 表/handler 白名单/inbox→pending 恢复序列/retention+backoff/上传接缝契约/符号化契约与 NOT-delivered 清单（§6 契约的客户端执行点）。
 - `docs/superpowers/plans/2026-10-24-stage5-crash-reporting.md`：Phase C 计划；台账 `.superpowers/sdd/2026-10-24-stage5-crash-reporting/progress.md`。
+- `docs/design/transport_security.md`、`engine/src/network/break_net_adapter.{h,c}`、`engine/src/network/break_session.{h,c}`、`engine/src/network/break_net_message_registry.{h,c}`、`engine/tests/test_break_net_tls.c`（10）、`engine/tests/test_break_net_adapter.c`（38）、`engine/tests/test_break_session.c`（34）：TLS 传输模式 + CHALLENGE/AUTH-v2 + 出站单调序号 + admission 限速（**当前已有**，Phase D；三树全绿、连跑零 sanitizer 报告、全套件 203=202+1skip；libbreak_net.a nm 恰 63 导出）；`docs/design/snowflake_c11_adapter.md`：pin 政策。
+- `docs/superpowers/plans/2026-10-24-stage5-transport-security.md`：Phase D 计划；台账 `.superpowers/sdd/2026-10-24-stage5-transport-security/progress.md`。
 - `engine/src/core/break_version.h`、`engine/src/core/break_version.c`：版本/构建身份接口与实现（**当前已有**）。
 - `engine/tests/test_break_version.c`、`engine/CMakeLists.txt:409-423,435,531,3910-3915`：构建身份注入（git 短哈希 / `"unknown"` 回退，configure 时刻捕获、增量重建不刷新）、`engine` target 编入与测试注册证据。
 - `engine/CMakeLists.txt:44,313-339`：`BREAK_ENABLE_CRYPTO` 选项（默认 ON）与 `break_crypto`/`break_update` 正式可选 target 块（`find_package(OpenSSL REQUIRED)` fail-closed；OFF ⇒ 两 target 缺席；契约脚本按首 `endif()` 抽取该块，块内禁嵌套 if）。
@@ -155,7 +156,7 @@ TLS 接线进 `break_net` adapter 与 `snow` TLS 使用均**未交付**（§10�
 - `engine/src/update/break_update.h/.c`、`engine/tests/test_break_update.c`、`engine/tests/test_break_update_target_contract.cmake`：签名 manifest + CAS store、19/19 测试与契约（**当前已有**（Phase A）；该部分恰 15 个导出——Phase B 起归档合计 28 = 15 manifest/store + 13 client；unsigned-path 钉用真实测试公钥——OpenSSL 零公钥接受的消息相关性见库头注释块）。
 - `engine/src/platform/platform_fs.h/.c`（`PlatformAtomicWriter`/`platform_mkdir`/`platform_file_size`，编入 `engine` target `engine/CMakeLists.txt:446`）、`engine/tests/test_platform_fs_write.c`：原子写 PAL，10/10 测试（**当前已有（本 Phase）**；fsync file → rename → fsync dir；Win32 分支 compile-only）。
 - `engine/CMakeLists.txt:293-311,388-407`：Snowflake 路径引用 fail-closed 与 `break_net` 正式可选 target 证据（后者独立于 `ENGINE_BUILD_TESTS`，仅门控 `BREAK_ENABLE_SNOWFLAKE`）。
-- `engine/external/locked_dependencies.json`：锁定依赖清单；Snowflake 不在其中（2026-10-24 `grep -i snow` 验证无匹配）。
+- `engine/external/locked_dependencies.json`：锁定依赖清单；Snowflake 自 Phase D Task 1 起在其中（pin `d5d4a928`）。
 - `engine/src/network/break_replication_fragment.h:20-26`：FNV-1a checksum 字段（完整性检查，非认证）。
 - `engine/src/asset/vfs.h:5-12`：VFS 资源上限（16 mounts / 4096 entries / 128 MiB）。
 - `docs/design/session_protocol.md:21-37`：Session GameThread ownership 与队列语义。
