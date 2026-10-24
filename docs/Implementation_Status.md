@@ -1,6 +1,51 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R694 — 物理改为固定步长 1/60 s + 渲染插值：下落动画不再随帧节奏抖动；记录 D3D12/GL 的 vsync 帧节奏问题
+
+### 现象
+demo 中下落的物理物体看起来一卡一卡的。（R693 曾把它们换成盒子网格，用户反馈效果差，那个改动已经撤回，保留原来的外观。）
+
+### 定位
+记录了 1 号刚体每帧的 `engine.delta_time` 和 y（Release，默认 vsync 开）：
+
+| 后端 | 平均帧时间 | 中位数 | >15 ms 的帧 | 最长 |
+|---|---|---|---|---|
+| D3D12 | 13.5 ms（约 74 fps） | 3.3 ms | 142 / 369 | 45 ms |
+| GL | 12.5 ms | 4.8 ms | 126 / 369 | 56 ms |
+| VK | 4.1 ms | 4.1 ms | 0 / 369 | 6 ms |
+
+D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 ms，Present 0.3–0.5 ms，长的那一截全耗在下一帧 `rhi_frame_begin` 里等 frame fence（20–43 ms）。把 D3D12 的 SyncInterval 临时改成 0 之后，帧时间稳定在 3.1 ms、最长 6.9 ms，可见问题出在 vsync 下的 present 队列节奏上。VK 用 MAILBOX，不受影响。
+
+为什么 vsync present 会卡这么久没有确定。本机显示器挂在 AMD 核显上（240 Hz），渲染在 RTX 4060 Laptop 上，属于跨适配器呈现；同时 ToDesk 在运行。两者都可能有影响，没有逐一排除。
+
+物理原来每帧调用一次 `physics_step(physics, delta_time)`。帧时间的抖动直接变成位移的跳变；而且积分器每步乘一次 0.98 的速度阻尼，下落速度本身也依赖帧率（60 Hz 时终端速度约 8 m/s，300 Hz 时约 1.6 m/s）。
+
+### 修复（`engine/src/main.c`）
+- 帧时间累加进 `phys_accum`，按 `PHYS_FIXED_DT = 1/60 s` 逐步调用 `physics_step`。每帧最多 `PHYS_MAX_SUBSTEPS = 8` 步，卡顿时多出来的余量直接丢弃，避免越积越多。选 1/60 是因为引擎的设计帧率是 60（`EngineConfig.target_fps`），这样保持 demo 原本调好的手感。
+- 最后一步之前，把所有刚体的位置存进 `g_phys_prev_pos`。`sys_sync_transform_from_physics` 用 `g_phys_alpha = 余量 / 步长` 在上一步和当前步之间插值，结果写进 CTransform。跌出世界后被传送回原点的刚体，同时重置它的 prev，避免插值横穿整个场景。
+- 多个子步的 `collision_count` 加起来再写回，屏震和音效的统计仍按「这一帧」来算。
+- 慢动作（×0.25）仍然作用在累加的帧时间上。
+
+### 效果
+1 号刚体从 y = 6.5 落到 0.5：
+
+| | 用时 | 偏离光滑抛物线（RMS / 最大） |
+|---|---|---|
+| 修改前 D3D12 | 1.094 s | 0.0134 / 0.0400 |
+| 修改后 D3D12 | 0.998 s | 0.0102 / 0.0223 |
+| 修改后 VK（约 240 fps） | 1.020 s | 0.0104 / 0.0283 |
+
+修改后，两个帧节奏完全不同的后端，下落用时一致（约 1.0 s）。
+
+### 验证
+- ctest：vk 182/182、gl 179/179。d3d12-debug 186/187，唯一失败的是 `test_d3d12_warp_runtime`：那一次挂住了，超过 6 分钟后被我手动结束。这个测试不链接 `main.c`，不受这次改动影响（stash 掉本改动后 ninja 显示 `no work to do`，exe 是同一个）。同一个 exe 在 ctest 下又跑了 3 次（71 s、77 s、70 s 通过）、直接运行 1 次（81/81，debug layer 0 errors / 0 warnings），只有 1 次在 250 s 超时，所以判断是 WARP 偶发的挂起。
+- 截图：三后端俯视（`BREAK_CAM=0,14,0,0,-89`），第 30 帧，10 个物体保持原来的外观，日志无 WARN/ERROR。
+- 帧率（Release，fps_avg）：前向 D3D12 368、VK 301、GL 337，延迟 423 / 332 / 381，和 R691 一样处在噪声范围内（物理按 60 Hz 步进，比原来每帧一步还少）。
+
+### 未处理：D3D12/GL 的 vsync 帧节奏
+后续可以做：D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在帧开始时等待 waitable object，让节奏均匀。另外建议本地直接看一次（不通过 ToDesk），确认还有多少抖动是远程采集带来的。
+
 ## 本轮更新：R692 — 调查记录：VK postfx 比 D3D12 慢约 0.2 ms，原因是相互依赖的全屏 pass 之间必须串行（未修改代码）
 
 R690 的子代理测得 VK postfx 1.33 ms、D3D12 0.97 ms。这一轮专门调查原因，所有实验都已撤回。

@@ -276,6 +276,22 @@ static void forward_temporal_ubo_write_lit(RHIDevice *device, RHIBuffer ubo,
 /* ECS system: copy simulated rigid-body positions back into transforms and
  * respawn anything that fell out of the world. Each entity touches only its own
  * physics body (unique physics_id), so chunks dispatch safely across workers. */
+/* R694: physics runs at a fixed PHYS_FIXED_DT; the rendered transform is the
+ * body position interpolated between the last two steps by g_phys_alpha
+ * (accumulator remainder / step). g_phys_prev_pos holds each body's position
+ * before the last step of this frame; NULL (no step yet / OOM) means "use the
+ * current position" -- the pre-R694 behavior. */
+/* 1/60: the engine's design rate (EngineConfig target_fps 60). The
+ * integrator applies its 0.98 velocity damping once per step, so the step
+ * size sets the terminal fall speed (~8 m/s at 60 Hz, ~4 at 120 Hz); 60 Hz
+ * keeps the motion the demo was tuned for, now independent of render fps. */
+#define PHYS_FIXED_DT     (1.0f / 60.0f)
+#define PHYS_MAX_SUBSTEPS 8u
+static Vec3 *g_phys_prev_pos = NULL;
+static u32   g_phys_prev_cap = 0u;
+static u32   g_phys_prev_count = 0u;
+static f32   g_phys_alpha = 1.0f;
+
 static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     PhysicsWorld *physics = (PhysicsWorld *)user;
     CTransform *xs = (CTransform *)ecs_chunk_column(v, COMP_TRANSFORM);
@@ -284,13 +300,20 @@ static void sys_sync_transform_from_physics(EcsChunkView *v, void *user) {
     for (u32 i = 0; i < v->count; i++) {
         u32 pid = rs[i].physics_id;
         if (pid > 0 && pid < physics->count) {
-            xs[i].pos[0] = physics->bodies[pid].position.e[0];
-            xs[i].pos[1] = physics->bodies[pid].position.e[1];
-            xs[i].pos[2] = physics->bodies[pid].position.e[2];
-            if (xs[i].pos[1] < -20.0f) {
+            Vec3 cur = physics->bodies[pid].position;
+            Vec3 shown = cur;
+            if (g_phys_prev_pos && pid < g_phys_prev_count)
+                shown = vec3_lerp(g_phys_prev_pos[pid], cur, g_phys_alpha);
+            xs[i].pos[0] = shown.e[0];
+            xs[i].pos[1] = shown.e[1];
+            xs[i].pos[2] = shown.e[2];
+            if (cur.e[1] < -20.0f) {
                 xs[i].pos[0] = 0.0f; xs[i].pos[1] = 5.0f; xs[i].pos[2] = 0.0f;
                 physics->bodies[pid].position = vec3(0.0f, 5.0f, 0.0f);
                 physics->bodies[pid].velocity = vec3(0.0f, 0.0f, 0.0f);
+                /* R694: a teleport must not interpolate across the world. */
+                if (g_phys_prev_pos && pid < g_phys_prev_count)
+                    g_phys_prev_pos[pid] = vec3(0.0f, 5.0f, 0.0f);
                 /* R375: resting/static skip BVH refit after fall-respawn teleport. */
                 physics->bodies[pid].rest_frames = 0;
                 physics->bvh_dirty = true;
@@ -5618,7 +5641,45 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             eb->acceleration = vec3(0, 0, 0);
             eb->velocity = vec3(0, 1.5f * sinf((f32)total_time * 1.2f), 0);
         }
-        physics_step(physics, slow_motion ? (f32)engine.delta_time * 0.25f : (f32)engine.delta_time);
+        /* R694: fixed-step physics. It used to step once per frame with the
+         * raw frame time, so frame-pacing jitter (vsync presents alternating
+         * 3 ms / 25-45 ms on D3D12 and GL here) went straight into the motion
+         * -- and the per-step 0.98 velocity damping made the fall speed itself
+         * frame-rate dependent. Now the frame time feeds an accumulator that
+         * is drained in PHYS_FIXED_DT steps (capped, remainder dropped on a
+         * hitch); sys_sync_transform_from_physics draws the interpolated pose.
+         * Collision counters are summed over the sub-steps so the screen-shake
+         * / sfx bookkeeping below still sees one frame's worth. */
+        {
+            static f32 phys_accum = 0.0f;
+            f32 frame_dt = slow_motion ? (f32)engine.delta_time * 0.25f : (f32)engine.delta_time;
+            phys_accum += frame_dt;
+            u32 nsteps = (u32)(phys_accum / PHYS_FIXED_DT);
+            if (nsteps > PHYS_MAX_SUBSTEPS) {
+                nsteps = PHYS_MAX_SUBSTEPS;
+                phys_accum = (f32)nsteps * PHYS_FIXED_DT;
+            }
+            if (nsteps > 0u && physics->count > g_phys_prev_cap) {
+                u32 cap = physics->capacity > physics->count ? physics->capacity : physics->count;
+                Vec3 *np = (Vec3 *)realloc(g_phys_prev_pos, (usize)cap * sizeof(Vec3));
+                if (np) { g_phys_prev_pos = np; g_phys_prev_cap = cap; }
+            }
+            u32 col_sum = 0u;
+            for (u32 si = 0; si < nsteps; si++) {
+                if (si + 1u == nsteps && g_phys_prev_pos && physics->count <= g_phys_prev_cap) {
+                    for (u32 bi = 0; bi < physics->count; bi++)
+                        g_phys_prev_pos[bi] = physics->bodies[bi].position;
+                    g_phys_prev_count = physics->count;
+                }
+                physics_step(physics, PHYS_FIXED_DT);
+                col_sum += physics->collision_count;
+            }
+            if (nsteps > 0u) physics->collision_count = col_sum;
+            phys_accum -= (f32)nsteps * PHYS_FIXED_DT;
+            if (phys_accum < 0.0f) phys_accum = 0.0f;
+            g_phys_alpha = phys_accum / PHYS_FIXED_DT;
+            if (g_phys_alpha > 1.0f) g_phys_alpha = 1.0f;
+        }
         if (sfx_cooldown > 0.0f) sfx_cooldown -= (f32)engine.delta_time;
         if (physics->collision_count > prev_collision_count) {
             u32 new_cols = physics->collision_count - prev_collision_count;
@@ -9420,6 +9481,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     audio_system_destroy(audio);
     LOG_INFO("  audio done");
     physics_world_destroy(physics);
+    free(g_phys_prev_pos);
+    g_phys_prev_pos = NULL;
+    g_phys_prev_cap = 0u;
+    g_phys_prev_count = 0u;
     LOG_INFO("  physics done");
     particles_shutdown(&particles);
     LOG_INFO("  particles done");
