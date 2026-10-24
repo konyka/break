@@ -303,7 +303,7 @@ if(BREAK_ENABLE_SNOWFLAKE)
     # configure time. The pin below is mirrored by the snowflake entry in
     # engine/external/locked_dependencies.json and the pin policy in
     # docs/design/snowflake_c11_adapter.md; all three move in one commit.
-    set(BREAK_SNOWFLAKE_PIN "7d40d19c85115042555b6707ffebbfb4fadb8e38")  # snowflake main HEAD 2026-10-24
+    set(BREAK_SNOWFLAKE_PIN "4f1d99b3f8ce1fb48bd628d9d0be7ef1e4759233")  # snowflake main HEAD 2026-10-24
     execute_process(
         COMMAND git -C "${SNOWFLAKE_SOURCE_DIR}" rev-parse HEAD
         RESULT_VARIABLE _break_snowflake_rev_result

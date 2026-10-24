@@ -23,7 +23,7 @@ match the commit pin described below.
 Snowflake is consumed as a path-referenced external checkout, pinned by commit
 hash and verified fail-closed at configure time.
 
-- **Pinned commit:** `7d40d19c85115042555b6707ffebbfb4fadb8e38`
+- **Pinned commit:** `4f1d99b3f8ce1fb48bd628d9d0be7ef1e4759233`
   (snowflake main HEAD 2026-10-24), held in `engine/CMakeLists.txt` as
   `BREAK_SNOWFLAKE_PIN`.
 - **Verification mechanism:** inside `if(BREAK_ENABLE_SNOWFLAKE)`, immediately
