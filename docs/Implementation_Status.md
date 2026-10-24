@@ -1,6 +1,41 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R690 — 引擎性能：延迟路径的 G-Buffer 按渲染分辨率分配（原来是窗口分辨率），延迟帧率 +24–34%
+
+### 定位
+R689 之后，延迟路径帧率：D3D12 约 345，GL 约 274，VK 约 241。用子代理给 VK 分段计时（每个区段两个计时器按帧奇偶交替，VK 136/136 帧都读到了值）：VK 的 GPU 帧 3.95 ms，D3D12 2.90 ms；VK 在 `rhi_frame_begin` 里等 fence 约 3.1 ms，说明是 GPU 受限。
+
+逐项跳过之后，降幅最大的一项是 Hi-Z（VK 省 0.78 ms，GL/D3D12 各约 0.6 ms）。它读的是 G-Buffer 的 depth，而 G-Buffer 是 1280×720 的。
+
+### 根因（`engine/src/main.c`）
+`render_init` 里调用 `deferred_init(&rs->deferred, rs->device, w, h)` 时还不知道渲染缩放，所以 G-Buffer 按窗口大小 1280×720 分配。而场景 FBO、光照目标（R644 的 `deferred_set_lighting_target_size(dsys, rw, rh)`）、Hi-Z 都是 640×360。窗口改变大小时走的分支本来就会 `deferred_resize(..., rw, rh)`，但启动之后窗口不变，这个分支从来不会执行。
+
+于是延迟路径每帧都要填一个 4 倍大小的 G-Buffer（5 个颜色 MRT 加 depth），Hi-Z 也要从 4 倍大小的 depth 做 reduce，光照 pass 和 TAA 读的同样是这份全尺寸 G-Buffer。
+
+### 修复
+`rw/rh` 算出来之后，紧接着调用一次 `deferred_resize(&render.deferred, render.device, rw, rh)`，失败时退回前向路径（和 resize 分支的 R358 处理方式相同）。启动日志：`deferred: initialized (1280x720)` 之后会接着打印 `deferred: resized to 640x360`。
+
+### 数据（Release，RTX，延迟，fps_avg）
+| | 修改前 | 修改后 |
+|---|---|---|
+| D3D12 | 337–349 | 414–427（+22%） |
+| VK | 241 | 320–322（+33%） |
+| GL | 273–276 | 365–367（+34%） |
+
+前向路径不受影响。
+
+### 验证
+- WARP 81/81，debug layer 0 errors / 0 warnings；RTX 80/81（只有预期中的 [1]）。
+- ctest：d3d12-debug 187/187、vk 182/182、gl 179/179，全部通过。
+- 截图：Debug 三后端的延迟路径，在第 3 帧和第 30 帧分别对比修改前后，平均差 0.24–0.36，肉眼看不出区别；日志无 WARN/ERROR。
+
+### 还没做的（子代理找到的 VK 剩余开销）
+- VK 的 postfx 比 D3D12 多 0.36 ms：一帧里有 18 次 render pass begin、19 次 `vkAllocateDescriptorSets` 加 `vkUpdateDescriptorSets`。可以按 pass 加纹理的组合缓存描述符集；整屏覆盖写的 pass 改用 DONT_CARE load。
+- VK 的 CSM 约是 D3D12 的 2 倍（0.41 vs 0.20 ms）：每个 cascade 的 `mega_unified_cull_draw` 都在 shadow pass 内部做 fill、dispatch 和 barrier，VK 每次都要中断 pass 再用 LOAD 恢复。可以照 R688 的做法，用 CPU 剔除这 11 条命令。
+- `rhi_mrt_fbo_unbind` 在 VK 上会多开一个清 swapchain 的 pass，紧接着又被光照 pass 结束（`rhi_vk.c` 的 `rhi_offscreen_fbo_unbind`）。
+- 演示中那 10 个物理方块都设成了 `mesh_index = 0`，而 `assets/test.glb` 只有一个网格，就是 46356 个索引的主场景网格，所以每帧多画了 10 份完整场景。要先确认原本打算用的网格是哪个，再决定怎么改。
+
 ## 本轮更新：R689 — 引擎性能：GL 的 STREAM_READ 放置推迟到第一次 CPU 读，scene 段 GPU 1.48 → 0.89 ms
 
 ### 定位

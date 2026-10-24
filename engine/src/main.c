@@ -3655,6 +3655,16 @@ int main(int argc, char **argv) {
     f32 render_scale = render_scale_options[render_scale_idx];
     u32 rw = (u32)(w * render_scale); if (rw < 1) rw = 1;
     u32 rh = (u32)(h * render_scale); if (rh < 1) rh = 1;
+    /* R690: render_init allocates the G-Buffer at the window size before the
+     * render scale is known; the window-resize path below already resizes it
+     * to rw x rh. Without this the deferred path filled a 1280x720 G-Buffer
+     * (4x the 640x360 scene it lights into) and Hi-Z reduced that full-size
+     * depth every frame. */
+    deferred_resize(&render.deferred, render.device, rw, rh);
+    if (render.render_path == RENDER_PATH_DEFERRED && !render.deferred.initialized) {
+        render.render_path = RENDER_PATH_FORWARD;
+        LOG_WARN("Deferred resize to render scale failed; switched to FORWARD");
+    }
 
     const RHIFormat forward_formats[2] = {
         RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT
