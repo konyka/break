@@ -32,6 +32,23 @@ void break_net_reactor_destroy(BreakNetReactor *reactor);
 bool break_net_reactor_start(BreakNetReactor *reactor);
 /* Borrowed caller-owned Snowflake acceptor; valid only before start. */
 bool break_net_reactor_set_acceptor(BreakNetReactor *reactor, void *acceptor);
+
+typedef struct BreakNetTlsConfig {
+    const char *cert_file;   /* PEM; server cert — required */
+    const char *key_file;    /* PEM; matching key — required */
+    const char *ca_file;     /* PEM; optional (NULL) — client verification CA */
+    int verify_peer;         /* 0 = do not request client certs; 1 = require+verify */
+} BreakNetTlsConfig;
+/* CREATED state only; copies the strings. TLS is a server-side acceptor mode:
+ * with TLS set, EVERY accepted connection must complete a TLS handshake before any
+ * envelope parses; handshake failure closes the connection (fail-closed).
+ * false on: non-CREATED state, NULL, missing cert/key, snow built without OpenSSL.
+ * Also false on verify_peer != 0 with ca_file == NULL: "require+verify" without
+ * a CA silently degrades to verify-none in OpenSSL, so it is rejected outright.
+ * A second call after a successful one is rejected. */
+bool break_net_reactor_set_tls(BreakNetReactor *reactor, const BreakNetTlsConfig *cfg);
+bool break_net_reactor_is_tls(const BreakNetReactor *reactor);
+
 bool break_net_reactor_step(BreakNetReactor *reactor, int timeout_ms);
 bool break_net_reactor_stop(BreakNetReactor *reactor, uint32_t timeout_ms);
 bool break_net_reactor_is_ready(const BreakNetReactor *reactor);

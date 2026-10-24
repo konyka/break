@@ -3940,6 +3940,20 @@ endif()
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
+
+        # Stage 5 Phase D Task 2: TLS transport mode. The self-signed PEM
+        # fixtures are referenced in place from the pinned Snowflake tree
+        # (no copies); the macro mirrors snow's SNOW_TEST_SSL_FIXTURE_DIR
+        # stringize idiom.
+        add_executable(test_break_net_tls tests/test_break_net_tls.c)
+        target_include_directories(test_break_net_tls PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_net_tls PRIVATE
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_break_net_tls PRIVATE break_net)
+        add_test(NAME test_break_net_tls COMMAND test_break_net_tls)
+        set_tests_properties(test_break_net_tls PROPERTIES
+            TIMEOUT 20 LABELS "network;snowflake;tls")
     endif()
 
     # test_net_loop: platform-optimal event loop (kqueue/epoll/IOCP).

@@ -16,6 +16,8 @@ extern int nanosleep(const struct timespec *, struct timespec *);
 
 #include <snow/connection.h>
 #include <snow/net_thread.h>
+#include <snow/network_buffer.h>
+#include <snow/openssl.h>
 #include <snow/recv_context.h>
 #include <snow/send_context.h>
 #include <snow/socket.h>
@@ -38,6 +40,10 @@ typedef struct BreakNetOutboundCommand {
 
 typedef struct BreakNetConnectionContext {
     BreakNetEnvelopeContext envelope;
+    /* TLS mode only: decrypted-stream accumulator the parser frames envelopes
+     * from.  Created lazily on the first post-handshake decrypt; parser-only
+     * object (driver thread), destroyed when the context dies in on_closed. */
+    snow_network_buffer_t *tls_plain;
 } BreakNetConnectionContext;
 
 typedef struct BreakNetConnectionIdentity {
@@ -51,6 +57,23 @@ typedef struct BreakNetConnectionIdentity {
     size_t pending_send_count;
     bool closing;
     bool valid;
+    /* TLS mode only (both NULL in plaintext mode).  `ssl` is the per-connection
+     * server-role session; `tls_scratch` is the drain-side ciphertext buffer.
+     * Both are released ONLY through the identity lifecycle (release_if_drained
+     * / abort / reactor-destroy sweep), so an ssl handle outlives a close for
+     * exactly as long as the identity's deferred release demands — SSL free
+     * waits for pending_send_count to clear, same as send_recv.
+     *
+     * Threading contract: every snow_ssl_t touch — do_handshake/read inside
+     * break_net_parser, write inside break_net_drain_outbound, free in the
+     * identity lifecycle — happens on the reactor's single driver thread.
+     * THREAD mode runs break_net_drain_outbound + snow_net_thread_step (which
+     * fires every connection callback) on break_net_reactor_thread_main; STEP
+     * mode runs both inside break_net_reactor_step behind the step_driver
+     * flag.  The snow_ssl_t single-thread contract is satisfied by
+     * construction; no per-handle locking exists or is needed. */
+    snow_ssl_t *ssl;
+    snow_network_buffer_t *tls_scratch;
 } BreakNetConnectionIdentity;
 
 static bool break_net_event_push(BreakNetReactor *reactor, BreakNetEvent *event);
@@ -70,18 +93,57 @@ static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_
 static unsigned int break_net_new_connection_failure_for_test;
 static BreakNetStartFailureForTest break_net_start_failure_for_test;
 
-static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
-                                         snow_connection_t *connection,
-                                         void *ud)
+struct BreakNetReactor {
+    BreakNetReactorConfig config;
+    snow_net_thread_t *snow_thread;
+    snow_acceptor_t *acceptor;
+    enum BreakNetState state;
+    atomic_flag step_driver;
+    PlatformMutex lifecycle_mutex;
+    PlatformCond lifecycle_cond;
+    bool step_active;
+    uint32_t step_delay_ms_for_test;
+    PlatformThread host_thread;
+    bool host_thread_valid;
+    bool stop_cleanup_in_progress;
+    bool start_in_progress;
+    atomic_bool host_ready;
+    atomic_bool host_active;
+    atomic_bool host_exited;
+    PlatformMutex queue_mutex;
+    BreakNetEvent events[BREAK_NET_EVENT_QUEUE_CAPACITY];
+    size_t event_head;
+    size_t event_count;
+    BreakNetOutboundCommand outbound[BREAK_NET_OUTBOUND_QUEUE_CAPACITY];
+    size_t outbound_head;
+    size_t outbound_count;
+    size_t outbound_attempts;
+    BreakNetConnectionIdentity identities[BREAK_NET_CONNECTION_IDENTITY_CAPACITY];
+    /* TLS acceptor mode (CREATED-state configuration; immutable once start
+     * publishes it).  tls_ctx != NULL means TLS is required on every accepted
+     * connection.  The strings are owned copies of BreakNetTlsConfig; the ctx
+     * is owned and must outlive every derived snow_ssl_t, so it is freed in
+     * break_net_reactor_destroy AFTER the identity sweep. */
+    snow_ssl_ctx_t *tls_ctx;
+    char *tls_cert_file;
+    char *tls_key_file;
+    char *tls_ca_file;
+    int tls_verify_peer;
+};
+
+/* Frame exactly one envelope off a PLAINTEXT buffer (the wire buffer in
+ * plaintext mode, the decrypted accumulator in TLS mode).  This is the
+ * pre-TLS parser body, extracted unchanged: plaintext-mode wire behavior is
+ * byte-identical to before. */
+static snow_nb_packet_t break_net_parse_plaintext_frame(
+    snow_network_buffer_t *buffer, snow_connection_t *connection,
+    BreakNetEnvelopeContext *envelope_context)
 {
     uint8_t header[BREAK_NET_ENVELOPE_HEADER_SIZE];
     size_t available;
     size_t frame_size;
     uint32_t payload_size;
     BreakNetEnvelope envelope;
-    BreakNetConnectionContext *connection_context =
-        (BreakNetConnectionContext *)snow_connection_user(connection);
-    (void)ud;
     available = snow_network_buffer_length(buffer);
     if (available < BREAK_NET_ENVELOPE_HEADER_SIZE) return SNOW_NB_PACKET_LESS;
     if (snow_network_buffer_get_header(buffer, sizeof(header), header,
@@ -104,9 +166,8 @@ static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
             free(frame_header);
             return SNOW_NB_PACKET_ERR;
         }
-        if (break_net_envelope_decode_with_context(
-                connection_context != NULL ? &connection_context->envelope : NULL,
-                frame_header, frame_size, &envelope) != BREAK_NET_ENVELOPE_OK) {
+        if (break_net_envelope_decode_with_context(envelope_context,
+                                                   frame_header, frame_size, &envelope) != BREAK_NET_ENVELOPE_OK) {
             free(frame_header);
             return SNOW_NB_PACKET_ERR;
         }
@@ -130,6 +191,132 @@ static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
         return SNOW_NB_PACKET_ERR;
     }
     return SNOW_NB_PACKET_FULL;
+}
+
+/* Ship handshake/alert ciphertext produced by snow_ssl_do_handshake to the
+ * peer.  queue_mutex is NOT held across snow_connection_send: the eager
+ * direct-send path can fire on_send_drained synchronously, and that handler
+ * takes queue_mutex.  The send context references identity->send_recv
+ * (non-owning); snow's drain/free paths only ever read the embedded payload
+ * copy, so this reinjection does not join the pending_send_count accounting —
+ * documented in the Task 2 report. */
+static void break_net_tls_reinject(BreakNetReactor *reactor,
+                                   snow_connection_t *connection,
+                                   snow_network_buffer_t *out)
+{
+    size_t size = snow_network_buffer_length(out);
+    size_t copied = 0u;
+    uint8_t *flat;
+    snow_recv_context_t *send_recv = NULL;
+    snow_send_context_t *send = NULL;
+    if (size == 0u) return;
+    platform_mutex_lock(&reactor->queue_mutex);
+    {
+        BreakNetConnectionIdentity *identity =
+            break_net_identity_find(reactor, (uint64_t)snow_connection_uid(connection));
+        if (identity != NULL && !identity->closing) {
+            send_recv = identity->send_recv;
+        }
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    if (send_recv == NULL) return;
+    flat = (uint8_t *)malloc(size);
+    if (flat == NULL) return;
+    if (snow_network_buffer_copy_to(out, flat, size, &copied) != SNOW_OK ||
+        copied != size ||
+        snow_send_context_create_with(&send, send_recv, SNOW_SEND_CMD_DATA,
+                                      flat, size) != SNOW_OK) {
+        free(flat);
+        snow_send_context_free(send);
+        return;
+    }
+    free(flat);
+    if (snow_connection_send(connection, send) != SNOW_OK) {
+        snow_send_context_free(send);
+    }
+}
+
+/* TLS-mode inbound split.  Consumes the whole ciphertext burst from the wire
+ * buffer first (so the transceiver's FULL-advance invariant always holds),
+ * then: pre-handshake, feed snow_ssl_do_handshake (reply ciphertext
+ * re-injected; failure -> ERR -> fail-closed close); post-handshake (or right
+ * after a completing burst — OpenSSL keeps surplus app ciphertext in the
+ * rbio), decrypt via snow_ssl_read into the per-connection plaintext
+ * accumulator and frame envelopes off it through the unchanged plaintext
+ * path. */
+static snow_nb_packet_t break_net_parser_tls(BreakNetReactor *reactor,
+                                             snow_network_buffer_t *buffer,
+                                             snow_connection_t *connection,
+                                             BreakNetConnectionContext *connection_context)
+{
+    snow_ssl_t *ssl;
+    uint8_t *cipher = NULL;
+    size_t available = snow_network_buffer_length(buffer);
+    size_t copied = 0u;
+
+    if (connection_context == NULL) return SNOW_NB_PACKET_ERR;
+    platform_mutex_lock(&reactor->queue_mutex);
+    {
+        BreakNetConnectionIdentity *identity =
+            break_net_identity_find(reactor, (uint64_t)snow_connection_uid(connection));
+        ssl = identity != NULL ? identity->ssl : NULL;
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    if (ssl == NULL) return SNOW_NB_PACKET_ERR;
+
+    if (available != 0u) {
+        cipher = (uint8_t *)malloc(available);
+        if (cipher == NULL ||
+            snow_network_buffer_copy_to(buffer, cipher, available, &copied) != SNOW_OK ||
+            copied != available ||
+            snow_network_buffer_move_header(buffer, available) != SNOW_OK) {
+            free(cipher);
+            return SNOW_NB_PACKET_ERR;
+        }
+    }
+    if (!snow_ssl_is_handshaked(ssl)) {
+        snow_network_buffer_t *out = NULL;
+        int handshake_result;
+        if (snow_network_buffer_create(&out) != SNOW_OK) {
+            free(cipher);
+            return SNOW_NB_PACKET_ERR;
+        }
+        handshake_result = snow_ssl_do_handshake(ssl, out, cipher, available);
+        free(cipher);
+        cipher = NULL;
+        available = 0u;
+        break_net_tls_reinject(reactor, connection, out);
+        snow_network_buffer_destroy(out);
+        if (handshake_result != 0) return SNOW_NB_PACKET_ERR;
+        if (!snow_ssl_is_handshaked(ssl)) return SNOW_NB_PACKET_LESS;
+    }
+    if (connection_context->tls_plain == NULL &&
+        snow_network_buffer_create(&connection_context->tls_plain) != SNOW_OK) {
+        free(cipher);
+        return SNOW_NB_PACKET_ERR;
+    }
+    if (snow_ssl_read(ssl, cipher, available, connection_context->tls_plain) != 0) {
+        free(cipher);
+        return SNOW_NB_PACKET_ERR;
+    }
+    free(cipher);
+    return break_net_parse_plaintext_frame(connection_context->tls_plain,
+                                           connection,
+                                           &connection_context->envelope);
+}
+
+static snow_nb_packet_t break_net_parser(snow_network_buffer_t *buffer,
+                                         snow_connection_t *connection,
+                                         void *ud)
+{
+    BreakNetReactor *reactor = (BreakNetReactor *)ud;
+    BreakNetConnectionContext *connection_context =
+        (BreakNetConnectionContext *)snow_connection_user(connection);
+    if (reactor == NULL || reactor->tls_ctx == NULL) {
+        return break_net_parse_plaintext_frame(buffer, connection,
+            connection_context != NULL ? &connection_context->envelope : NULL);
+    }
+    return break_net_parser_tls(reactor, buffer, connection, connection_context);
 }
 
 static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
@@ -170,6 +357,24 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
         identity->thread_index = snow_net_thread_index(
             (const snow_net_thread_t *)snow_connection_net_thread(connection));
         identity->port = snow_connection_port(connection);
+        /* TLS acceptor mode: every accepted connection gets its server-role
+         * snow_ssl_t before any I/O callback can fire; the parser refuses to
+         * frame envelopes until the handshake completes.  tls_ctx is immutable
+         * after CREATED, so this read needs no lock (creation is ordered before
+         * break_net_reactor_start, which publishes the configuration to the
+         * driver thread via the host-thread spawn / step_driver flag). */
+        if (reactor->tls_ctx != NULL) {
+            identity->ssl = snow_ssl_new(reactor->tls_ctx);
+            if (identity->ssl == NULL ||
+                snow_ssl_init(identity->ssl, true) != SNOW_OK ||
+                snow_network_buffer_create(&identity->tls_scratch) != SNOW_OK) {
+                snow_socket_addr_free(addr);
+                break_net_identity_abort(identity);
+                free(context);
+                break_net_reactor_fail(reactor);
+                return;
+            }
+        }
         snow_socket_addr_free(addr);
     }
     snow_connection_set_user(connection, context);
@@ -226,37 +431,16 @@ static void break_net_on_closed(snow_connection_t *connection, snow_close_t reas
     event.reason = (uint32_t)reason;
     (void)break_net_event_push(reactor, &event);
     break_net_identity_on_closed(reactor, (uint64_t)snow_connection_uid(connection));
-    free(snow_connection_user(connection));
+    {
+        BreakNetConnectionContext *context =
+            (BreakNetConnectionContext *)snow_connection_user(connection);
+        if (context != NULL) {
+            snow_network_buffer_destroy(context->tls_plain);
+            free(context);
+        }
+    }
     snow_connection_set_user(connection, NULL);
 }
-
-struct BreakNetReactor {
-    BreakNetReactorConfig config;
-    snow_net_thread_t *snow_thread;
-    snow_acceptor_t *acceptor;
-    enum BreakNetState state;
-    atomic_flag step_driver;
-    PlatformMutex lifecycle_mutex;
-    PlatformCond lifecycle_cond;
-    bool step_active;
-    uint32_t step_delay_ms_for_test;
-    PlatformThread host_thread;
-    bool host_thread_valid;
-    bool stop_cleanup_in_progress;
-    bool start_in_progress;
-    atomic_bool host_ready;
-    atomic_bool host_active;
-    atomic_bool host_exited;
-    PlatformMutex queue_mutex;
-    BreakNetEvent events[BREAK_NET_EVENT_QUEUE_CAPACITY];
-    size_t event_head;
-    size_t event_count;
-    BreakNetOutboundCommand outbound[BREAK_NET_OUTBOUND_QUEUE_CAPACITY];
-    size_t outbound_head;
-    size_t outbound_count;
-    size_t outbound_attempts;
-    BreakNetConnectionIdentity identities[BREAK_NET_CONNECTION_IDENTITY_CAPACITY];
-};
 
 static bool break_net_wait_for_step_exit(BreakNetReactor *reactor, uint32_t timeout_ms)
 {
@@ -338,6 +522,8 @@ static void break_net_identity_release_if_drained(BreakNetConnectionIdentity *id
 {
     if (identity != NULL && identity->closing && identity->pending_send_count == 0u) {
         snow_recv_context_free(identity->send_recv);
+        snow_ssl_free(identity->ssl);
+        snow_network_buffer_destroy(identity->tls_scratch);
         memset(identity, 0, sizeof(*identity));
     }
 }
@@ -346,6 +532,8 @@ static void break_net_identity_abort(BreakNetConnectionIdentity *identity)
 {
     if (identity != NULL) {
         snow_recv_context_free(identity->send_recv);
+        snow_ssl_free(identity->ssl);
+        snow_network_buffer_destroy(identity->tls_scratch);
         memset(identity, 0, sizeof(*identity));
     }
 }
@@ -380,6 +568,42 @@ static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_
     platform_mutex_unlock(&reactor->queue_mutex);
 }
 
+/* TLS-mode outbound: encrypt the freshly encoded envelope via the
+ * connection's snow_ssl_t into the per-identity scratch buffer, then build
+ * the send context from the ciphertext.  Runs under queue_mutex from
+ * break_net_drain_outbound on the driver thread; snow_ssl_write over memory
+ * BIOs cannot re-enter the adapter, so the lock is safe to hold. */
+static snow_status_t break_net_tls_send_context_create(snow_send_context_t **out,
+                                                       BreakNetConnectionIdentity *identity,
+                                                       const uint8_t *encoded,
+                                                       size_t encoded_size)
+{
+    uint8_t *wire;
+    size_t wire_size;
+    size_t copied = 0u;
+    snow_status_t status;
+    snow_network_buffer_clear(identity->tls_scratch);
+    if (snow_ssl_write(identity->ssl, (const char *)encoded, encoded_size,
+                       identity->tls_scratch) != 0) {
+        return SNOW_ERR_INVAL;
+    }
+    wire_size = snow_network_buffer_length(identity->tls_scratch);
+    wire = (uint8_t *)malloc(wire_size);
+    if (wire == NULL) {
+        return SNOW_ERR_NOMEM;
+    }
+    if (snow_network_buffer_copy_to(identity->tls_scratch, wire, wire_size,
+                                    &copied) == SNOW_OK &&
+        copied == wire_size) {
+        status = snow_send_context_create_with(out, identity->send_recv,
+                                               SNOW_SEND_CMD_DATA, wire, wire_size);
+    } else {
+        status = SNOW_ERR_INVAL;
+    }
+    free(wire);
+    return status;
+}
+
 static void break_net_drain_outbound(BreakNetReactor *reactor)
 {
     for (;;) {
@@ -407,6 +631,14 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
             platform_mutex_unlock(&reactor->queue_mutex);
             continue;
         }
+        /* TLS: frames queued before the handshake completes wait at the head
+         * of the queue (no plaintext may leave, and snow_ssl_write refuses
+         * pre-handshake anyway); the next drain retries.  Head-of-line wait
+         * preserves per-connection outbound ordering. */
+        if (identity->ssl != NULL && !snow_ssl_is_handshaked(identity->ssl)) {
+            platform_mutex_unlock(&reactor->queue_mutex);
+            return;
+        }
         envelope.protocol_version = command->message.protocol_version;
         envelope.message_id = command->message.message_id;
         envelope.sequence = command->message.sequence;
@@ -414,9 +646,14 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
         envelope.payload_size = command->message.size;
         status = break_net_envelope_encode(&envelope, encoded, sizeof(encoded), &encoded_size) ==
                  BREAK_NET_ENVELOPE_OK
-                     ? snow_send_context_create_with(&send, identity->send_recv,
-                                                     SNOW_SEND_CMD_DATA, encoded, encoded_size)
+                     ? SNOW_OK
                      : SNOW_ERR_INVAL;
+        if (status == SNOW_OK) {
+            status = identity->ssl == NULL
+                         ? snow_send_context_create_with(&send, identity->send_recv,
+                                                         SNOW_SEND_CMD_DATA, encoded, encoded_size)
+                         : break_net_tls_send_context_create(&send, identity, encoded, encoded_size);
+        }
         if (status == SNOW_OK) status = snow_net_thread_send(reactor->snow_thread, send);
         if (status == SNOW_OK) {
             send = NULL;
@@ -558,6 +795,82 @@ bool break_net_reactor_set_acceptor(BreakNetReactor *reactor, void *acceptor)
     return accepted;
 }
 
+static char *break_net_tls_strdup(const char *s)
+{
+    size_t size = strlen(s) + 1u;
+    char *copy = (char *)malloc(size);
+    if (copy != NULL) memcpy(copy, s, size);
+    return copy;
+}
+
+bool break_net_reactor_set_tls(BreakNetReactor *reactor, const BreakNetTlsConfig *cfg)
+{
+    snow_ssl_ctx_opts_t opts;
+    snow_ssl_ctx_t *ctx;
+    char *cert_copy;
+    char *key_copy;
+    char *ca_copy = NULL;
+
+    if (reactor == NULL || cfg == NULL ||
+        cfg->cert_file == NULL || cfg->key_file == NULL) {
+        return false;
+    }
+    /* verify_peer without a CA is VERIFY_NONE in disguise (OpenSSL ignores
+     * SSL_VERIFY_FAIL_IF_NO_PEER_CERT unless SSL_VERIFY_PEER is set, and
+     * PEER is only armed by ca_file); reject instead of silently degrading. */
+    if (cfg->verify_peer != 0 && cfg->ca_file == NULL) {
+        return false;
+    }
+    memset(&opts, 0, sizeof(opts));
+    opts.cert_file = cfg->cert_file;
+    opts.key_file = cfg->key_file;
+    opts.ca_file = cfg->ca_file;
+    opts.verify_peer = cfg->verify_peer != 0;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_CREATED || reactor->tls_ctx != NULL) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    /* The factory loads + cross-checks the PEM pair (mismatched key fails
+     * closed) and returns NULL when snow is built without OpenSSL. */
+    ctx = snow_ssl_ctx_new(&opts, NULL);
+    if (ctx == NULL) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    cert_copy = break_net_tls_strdup(cfg->cert_file);
+    key_copy = break_net_tls_strdup(cfg->key_file);
+    if (cfg->ca_file != NULL) ca_copy = break_net_tls_strdup(cfg->ca_file);
+    if (cert_copy == NULL || key_copy == NULL ||
+        (cfg->ca_file != NULL && ca_copy == NULL)) {
+        free(cert_copy);
+        free(key_copy);
+        free(ca_copy);
+        snow_ssl_ctx_free(ctx);
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    reactor->tls_ctx = ctx;
+    reactor->tls_cert_file = cert_copy;
+    reactor->tls_key_file = key_copy;
+    reactor->tls_ca_file = ca_copy;
+    reactor->tls_verify_peer = cfg->verify_peer;
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    return true;
+}
+
+bool break_net_reactor_is_tls(const BreakNetReactor *reactor)
+{
+    bool tls;
+    if (reactor == NULL) {
+        return false;
+    }
+    platform_mutex_lock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    tls = reactor->tls_ctx != NULL;
+    platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
+    return tls;
+}
+
 void break_net_reactor_destroy(BreakNetReactor *reactor)
 {
     bool can_destroy;
@@ -583,6 +896,8 @@ void break_net_reactor_destroy(BreakNetReactor *reactor)
         size_t i;
         for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
             snow_recv_context_free(reactor->identities[i].send_recv);
+            snow_ssl_free(reactor->identities[i].ssl);
+            snow_network_buffer_destroy(reactor->identities[i].tls_scratch);
             memset(&reactor->identities[i], 0, sizeof(reactor->identities[i]));
         }
     }
@@ -597,6 +912,12 @@ void break_net_reactor_destroy(BreakNetReactor *reactor)
         reactor->outbound_count--;
     }
     platform_mutex_unlock(&reactor->queue_mutex);
+    /* Every derived snow_ssl_t died in the identity sweep above; the ctx may
+     * go now (snow_ssl_ctx_free requires no live handles). */
+    snow_ssl_ctx_free(reactor->tls_ctx);
+    free(reactor->tls_cert_file);
+    free(reactor->tls_key_file);
+    free(reactor->tls_ca_file);
     platform_mutex_destroy(&reactor->queue_mutex);
     platform_cond_destroy(&reactor->lifecycle_cond);
     platform_mutex_destroy(&reactor->lifecycle_mutex);
