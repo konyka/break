@@ -344,13 +344,14 @@ if(BREAK_ENABLE_CRYPTO)
     target_link_libraries(break_update PUBLIC break_crypto)
 endif()
 
-# Stage 5 Phase C Task 1: break_crash — the crash record format (canonical
-# text "break-crash-v1") + bounded on-disk spool. Record + spool ONLY:
-# signal capture is Task 2, redaction/upload seam Task 3. Formal optional
+# Stage 5 Phase C Tasks 1+2: break_crash — the crash record format (canonical
+# text "break-crash-v1") + bounded on-disk spool + async-signal-safe capture
+# (install/handler). Redaction/upload seam is Task 3. Formal optional
 # static library with ZERO external dependencies and no link libraries (the
-# write-side PAL is consumed header-only; callers link platform_fs
-# themselves — the tests compile the TU inline, the test_break_update
-# precedent). Independent of BREAK_ENABLE_CRYPTO and ENGINE_BUILD_TESTS;
+# write-side PAL and break_version are consumed header-only; callers link
+# platform_fs.c and break_version.c themselves — the tests compile the TUs
+# inline, the test_break_update / test_break_version precedent). Independent
+# of BREAK_ENABLE_CRYPTO and ENGINE_BUILD_TESTS;
 # engine, engine_demo, dxx_break, and editor never link it (pinned by
 # test_break_crash_target_contract). Keep this block free of nested if():
 # the contract script extracts it up to its first endif().
@@ -4031,15 +4032,18 @@ endif()
             LABELS "headless;update;platform_contract")
     endif()
 
-    # Stage 5 Phase C Task 1: break_crash record/spool tests link the formal
+    # Stage 5 Phase C Tasks 1+2: break_crash record/spool tests link the formal
     # library; platform_fs.c compiles inline (the test_break_update
-    # precedent — engine keeps sole production ownership of that TU). The
+    # precedent — engine keeps sole production ownership of that TU), and
+    # break_version.c compiles inline with the same BREAK_BUILD_ID (the
+    # test_break_version precedent) for the Task 2 build-id capture. The
     # contract ctest pins the option gate, the target shape + zero-dep rule,
     # the engine/engine_demo/dxx_break/editor no-link rule, the nm export
-    # gate (exactly 29 public symbols), and a minimal archive link test.
+    # gate (exactly 33 public symbols), and a minimal archive link test.
     if(BREAK_ENABLE_CRASH)
-        add_executable(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c)
+        add_executable(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c src/core/break_version.c)
         target_include_directories(test_break_crash PRIVATE ${TEST_INCLUDE_DIRS})
+        target_compile_definitions(test_break_crash PRIVATE BREAK_BUILD_ID="${BREAK_BUILD_ID}")
         target_link_libraries(test_break_crash PRIVATE break_crash m)
         add_test(NAME test_break_crash COMMAND test_break_crash)
         set_tests_properties(test_break_crash PROPERTIES LABELS "headless;crash")

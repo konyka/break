@@ -1,14 +1,16 @@
 #pragma once
 /* ==========================================================================
- *  break_crash — Stage 5 Phase C Task 1: the crash RECORD format (canonical
- *  text "break-crash-v1") and the bounded on-disk SPOOL. Signal capture
- *  (install/handler) is Task 2 and deliberately absent here; redaction and
- *  the upload seam are Task 3. Zero new external dependencies; the only
- *  platform services consumed are the Stage 4/5 PAL (platform_fs.h:
- *  PlatformAtomicWriter / platform_mkdir / platform_file_size /
- *  platform_list_dir) plus C-standard rename/remove/fread — callers link
- *  the PAL themselves (the tests compile src/platform/platform_fs.c inline,
- *  the test_break_update precedent).
+ *  break_crash — Stage 5 Phase C Tasks 1+2: the crash RECORD format
+ *  (canonical text "break-crash-v1"), the bounded on-disk SPOOL, and the
+ *  async-signal-safe capture (install/handler). Redaction and the upload
+ *  seam are Task 3 and deliberately absent here. Zero new external
+ *  dependencies; the only platform services consumed are the Stage 4/5 PAL
+ *  (platform_fs.h: PlatformAtomicWriter / platform_mkdir / platform_file_size
+ *  / platform_list_dir) plus C-standard rename/remove/fread, and the build
+ *  identity via break_version.h's break_version_string() — callers link the
+ *  PAL and break_version.c themselves (the tests compile
+ *  src/platform/platform_fs.c and src/core/break_version.c inline, the
+ *  test_break_update / test_break_version precedent).
  *
  *  Canonical record grammar (byte-pinned; the Task 2 signal-side writer
  *  produces BYTE-IDENTICAL output — one grammar, two writers, this header
@@ -165,3 +167,107 @@ bool break_crash_spool_put_pending(BreakCrashSpool *s, const void *record_bytes,
 bool break_crash_spool_read_pending(const BreakCrashSpool *s, u64 index, u8 **out_buf, u64 *out_len);
 bool break_crash_spool_mark_sent(BreakCrashSpool *s, u64 index);       /* pending → sent/ */
 bool break_crash_spool_mark_discarded(BreakCrashSpool *s, u64 index);  /* pending → discarded/ */
+
+/* ==========================================================================
+ *  Signal capture (Stage 5 Phase C Task 2): install-time pre-staging + an
+ *  async-signal-safe handler. POSIX (Linux tested) only: on _WIN32 this
+ *  section is a documented compile-time stub (install returns false, the
+ *  others are no-ops) — no SEH/VEH this phase.
+ *
+ *  Install pre-stages EVERYTHING the handler may need, because the handler
+ *  runs under async-signal-safety constraints:
+ *   - module list: /proc/self/maps parsed NOW (install time), ≤ 64
+ *     file-backed entries in capture order; contiguous same-path mappings
+ *     merge (load-offset = first-start − first-file-offset, size = end −
+ *     first-start); names are basenames validated against the grammar
+ *     charset (0x21-0x7E minus '/'), unnameable entries skipped.
+ *   - build id: break_version_string()'s "+" suffix (the BREAK_BUILD_ID
+ *     CMake injects), or "unknown" when there is no valid suffix.
+ *   - record buffer: a preallocated static 64 KiB buffer (the largest
+ *     formattable record is ~35.8 KB — the cap is unreachable, same
+ *     construction argument as the builder).
+ *   - context-blob slot: a preallocated static 4 KiB slot (empty until
+ *     break_crash_set_context_blob publishes).
+ *   - inbox fd: install performs a spool open/close pass (which recovers a
+ *     PREVIOUS run's crash.inbox into pending/ and leaves an empty inbox),
+ *     then open()s crash.inbox and HOLDS the fd. The handler never opens
+ *     anything.
+ *
+ *  Handler contract (pinned; byte-identical grammar to the builder — the
+ *  tests interlock the two writers through the Task 1 parser): one-shot
+ *  guard → format the record (siginfo signo/code/si_addr; ucontext
+ *  RIP/RSP/RBP on Linux x86-64, ZEROS on every other architecture —
+ *  documented degradation; plus pid/tid, build id, modules, stack window,
+ *  context blob) into the preallocated buffer → lseek(0)+write+fsync to the
+ *  pre-opened inbox → restore SIG_DFL, unblock, raise(sig) so the process
+ *  dies with the original semantics (core dump, WIFSIGNALED status); an
+ *  _exit(128+sig) backstop covers the blocked/ignored edge.
+ *
+ *  One-shot capture: exactly one crash per process run is captured. The
+ *  guard is a C11 atomic_flag (the always-lock-free type; C11 7.14.1.1
+ *  permits lock-free atomic operations in signal handlers) — any re-entry,
+ *  nested or on a racing second thread, goes straight to the restore/raise
+ *  tail without touching the record buffer. SA_NODEFER is NOT used and the
+ *  handler is NOT installed on an alternate stack (no SA_ONSTACK): a
+ *  stack-overflow SIGSEGV deep enough to break the handler's own frame
+ *  loses the record but still dies true (fail closed).
+ *
+ *  Stack window: up to 4 KiB at [rsp, rsp+4KiB) hex-encoded into the record.
+ *  The handler executes on the faulting thread's stack, so the window's
+ *  pages are the live frames; a read past the mapping's high end would
+ *  re-fault into the one-shot guard's die tail (record lost, death
+ *  semantics kept). Stack-overflow guard (pinned): when sig == SIGSEGV and
+ *  the fault address lies within rsp ± 8 KiB, the window is SKIPPED (the
+ *  stack's guard region is near — reading it would fault again); rsp == 0
+ *  also yields an empty window.
+ *
+ *  Privacy by omission, enforced at capture: the argv/env strings block
+ *  sits at the top of the initial [stack] mapping, and a shallow
+ *  main-thread crash's window would otherwise hex-dump cmdline/env
+ *  (usernames, HOME, secrets) — the threat model says those are NEVER
+ *  captured. Install computes zone_lo = the lowest argv[0]/environ string
+ *  address inside [stack] (glibc: argv[0] via program_invocation_name;
+ *  other libcs: environ only — documented degradation); the handler clamps
+ *  the window below zone_lo (a crash with rsp inside the zone yields an
+ *  empty window). Thread stacks carry no argv/env and are not clamped.
+ *
+ *  Handler async-signal-safety WHITELIST (the complete call set; review
+ *  verifies line-by-line):
+ *    siginfo_t / ucontext_t field reads — plain memory, no libc
+ *    atomic_flag_test_and_set           — C11 lock-free atomic (above)
+ *    getpid()                           — POSIX.1 async-signal-safe list
+ *    syscall(SYS_gettid)                — Linux: a direct trap through a
+ *                                         stateless libc trampoline (no
+ *                                         TLS, no locks; gettid cannot fail
+ *                                         so no errno write) — gettid(2) is
+ *                                         absent from the POSIX list only
+ *                                         because it is not POSIX
+ *    lseek, write, fsync                — POSIX.1 list (pre-opened fd)
+ *    signal, sigemptyset, sigaddset,
+ *    sigprocmask, raise, _exit          — POSIX.1 list (restore-and-die tail)
+ *    bs_* helpers                       — hand-rolled pure-memory hex append,
+ *                                         no libc at all
+ *  BANNED in the handler: malloc/free, stdio, open, locks/pthread, and any
+ *  libc beyond the whitelist (formatting is pure-memory by construction).
+ *
+ *  Thread/concurrency semantics (documented, pinned by review): install and
+ *  uninstall are NOT thread-safe — call install once at startup, uninstall
+ *  once at shutdown, from the same phase of the process. Second install
+ *  while installed → false; after uninstall a fresh install succeeds.
+ *  break_crash_set_context_blob is safe PRE-CRASH only (no locking): a
+ *  crash racing a publish may capture a torn blob; the app pre-redacts the
+ *  blob (threat-model obligation). NULL data clears the slot. */
+typedef struct BreakCrashConfig {
+    const char *spool_root;   /* created if missing; inbox pre-opened inside */
+} BreakCrashConfig;
+/* Installs handlers for SIGSEGV/SIGABRT/SIGILL/SIGFPE/SIGBUS. Pre-stages: module list
+ * (/proc/self/maps parsed NOW), build id (break_version), preallocated record buffer,
+ * pre-opened crash.inbox fd. Once per process; second call false. false on error.
+ * NOT thread-safe to install/uninstall concurrently (documented; install once at startup). */
+bool break_crash_install(const BreakCrashConfig *config);
+bool break_crash_is_installed(void);
+/* Publishes an app-owned recent-events snapshot, COPIED NOW into the preallocated slot
+ * (≤4KiB clamp). The app pre-redacts it (threat-model obligation). Safe pre-crash only. */
+void break_crash_set_context_blob(const void *data, usize len);
+/* Restores previous handlers; spool intact; inbox fd closed. */
+void break_crash_uninstall(void);

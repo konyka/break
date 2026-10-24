@@ -1,4 +1,4 @@
-# Stage 5 Phase C Task 1 — break_crash target contract.
+# Stage 5 Phase C Tasks 1+2 — break_crash target contract.
 #
 # Pins (mirrors the test_break_update_target_contract.cmake shape):
 #   1. The break_crash target lives inside the if(BREAK_ENABLE_CRASH)
@@ -6,18 +6,22 @@
 #   2. Source-list pin: break_crash is a formal STATIC library owning
 #      exactly one TU (src/crash/break_crash.c, one mention in the file);
 #      the engine target does not compile it. break_crash links NOTHING
-#      (zero dependencies — the PAL is consumed header-only; callers link
-#      platform_fs themselves).
+#      (zero dependencies — the PAL and break_version are consumed
+#      header-only; callers link platform_fs.c / break_version.c
+#      themselves).
 #   3. No-link pins: engine / engine_demo / dxx_break / editor never link
 #      break_crash (their target_link_libraries calls are single-line).
-#   4. Focused test registration pins (inline platform_fs.c precedent).
-#   5. nm gate: the production archive exports exactly the 29 public
-#      break_crash_* symbols (12 record + 10 builder + 7 spool).
+#   4. Focused test registration pins (inline platform_fs.c +
+#      break_version.c precedent).
+#   5. nm gate: the production archive exports exactly the 33 public
+#      break_crash_* symbols (12 record + 10 builder + 7 spool + 4 capture).
 #   6. Minimal archive link test: a tiny executable links ONLY
-#      libbreak_crash.a (plus the PAL TU src/platform/platform_fs.c compiled
-#      inline — the test_break_update precedent, engine keeps sole
-#      production ownership of it) and runs one builder→finish→parse
-#      golden round-trip + one spool put/read/mark pass.
+#      libbreak_crash.a (plus the PAL TU src/platform/platform_fs.c and the
+#      build-identity TU src/core/break_version.c compiled inline — the
+#      test_break_update / test_break_version precedent, engine keeps sole
+#      production ownership of both) and runs one builder→finish→parse
+#      golden round-trip + one spool put/read/mark pass + one
+#      install/is_installed/double-install/uninstall smoke.
 
 if(NOT DEFINED ENGINE_CMAKE)
     message(FATAL_ERROR "ENGINE_CMAKE is required")
@@ -94,8 +98,8 @@ foreach(line IN LISTS consumer_link_lines)
 endforeach()
 
 # --- 4. focused test registration pins -------------------------------------
-if(NOT cmake_text MATCHES "add_executable\\(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c\\)")
-    message(FATAL_ERROR "missing test_break_crash executable (with inline platform_fs.c)")
+if(NOT cmake_text MATCHES "add_executable\\(test_break_crash tests/test_break_crash.c src/platform/platform_fs.c src/core/break_version.c\\)")
+    message(FATAL_ERROR "missing test_break_crash executable (with inline platform_fs.c + break_version.c)")
 endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_break_crash PRIVATE break_crash")
     message(FATAL_ERROR "test_break_crash does not link break_crash")
@@ -107,7 +111,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_crash_target_contract")
     message(FATAL_ERROR "missing test_break_crash_target_contract registration")
 endif()
 
-# --- 5. nm gate: exactly the 29 public symbols ------------------------------
+# --- 5. nm gate: exactly the 33 public symbols ------------------------------
 find_program(CRASH_CONTRACT_NM nm)
 if(NOT CRASH_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_crash export gate)")
@@ -122,6 +126,8 @@ if(NOT nm_rc EQUAL 0)
 endif()
 
 set(expected_symbols
+    break_crash_install
+    break_crash_is_installed
     break_crash_record_build_id
     break_crash_record_context_blob
     break_crash_record_destroy
@@ -144,13 +150,15 @@ set(expected_symbols
     break_crash_record_builder_set_registers
     break_crash_record_builder_set_signal
     break_crash_record_builder_set_stack_window
+    break_crash_set_context_blob
     break_crash_spool_count
     break_crash_spool_destroy
     break_crash_spool_mark_discarded
     break_crash_spool_mark_sent
     break_crash_spool_open
     break_crash_spool_put_pending
-    break_crash_spool_read_pending)
+    break_crash_spool_read_pending
+    break_crash_uninstall)
 
 string(REPLACE "\n" ";" nm_lines "${nm_out}")
 set(actual_symbols "")
@@ -166,7 +174,7 @@ set(expected_sorted ${expected_symbols})
 list(SORT expected_sorted)
 if(NOT actual_symbols STREQUAL expected_sorted)
     message(FATAL_ERROR
-        "libbreak_crash.a must export exactly the 29 public symbols.\n"
+        "libbreak_crash.a must export exactly the 33 public symbols.\n"
         "expected: ${expected_sorted}\nactual: ${actual_symbols}")
 endif()
 
@@ -182,8 +190,9 @@ file(WRITE "${link_main}" "
 #error \"CRASH_LINK_WORK is required\"
 #endif
 /* One builder→finish→parse golden round-trip + one spool
- * open/put/count/read/mark pass, linking ONLY libbreak_crash.a (+ the
- * inline PAL TU). The golden bytes pin the Task 2 signal-writer grammar. */
+ * open/put/count/read/mark pass + one install/is_installed/double-install/
+ * uninstall smoke, linking ONLY libbreak_crash.a (+ the inline PAL and
+ * break_version TUs). The golden bytes pin the signal-writer grammar. */
 int main(void) {
     static const char GOLDEN[] =
         \"break-crash-v1\\n\"
@@ -279,6 +288,21 @@ int main(void) {
         if (break_crash_spool_count(s, 2) != disc0 + 1) return 31;
     }
     break_crash_spool_destroy(s);
+
+    /* Task 2 capture smoke from the bare archive: install arms, second
+     * install is refused, uninstall disarms; is_installed tracks. */
+    if (break_crash_is_installed()) return 32;
+    snprintf(root, sizeof(root), \"%s/link_install_spool\", CRASH_LINK_WORK);
+    {
+        BreakCrashConfig cfg = {root};
+        if (!break_crash_install(&cfg)) return 33;
+        if (!break_crash_is_installed()) return 34;
+        if (break_crash_install(&cfg)) return 35;
+        break_crash_set_context_blob(\"evidence\", 8);
+        break_crash_uninstall();
+        if (break_crash_is_installed()) return 36;
+        if (break_crash_install(NULL)) return 37;
+    }
     return 0;
 }
 ")
@@ -291,6 +315,7 @@ execute_process(
             "-DCRASH_LINK_WORK=\"${CRASH_CONTRACT_WORK}\""
             "${link_main}"
             "${CRASH_CONTRACT_INCLUDE}/platform/platform_fs.c"
+            "${CRASH_CONTRACT_INCLUDE}/core/break_version.c"
             "${CRASH_CONTRACT_ARCHIVE}"
             -o "${link_exe}"
     RESULT_VARIABLE link_rc
@@ -298,7 +323,7 @@ execute_process(
     ERROR_VARIABLE link_err)
 if(NOT link_rc EQUAL 0)
     message(FATAL_ERROR
-        "minimal link test failed to build (libbreak_crash.a + inline platform_fs.c): ${link_err}")
+        "minimal link test failed to build (libbreak_crash.a + inline platform_fs.c + break_version.c): ${link_err}")
 endif()
 execute_process(
     COMMAND "${link_exe}"

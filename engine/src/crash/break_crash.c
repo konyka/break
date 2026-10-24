@@ -1,24 +1,30 @@
-/* break_crash — Stage 5 Phase C Task 1 implementation: the canonical crash
- * record ("break-crash-v1") + the bounded on-disk spool. The grammar and
- * every behavioral contract are documented in break_crash.h; the parse
- * discipline mirrors the Phase A manifest parser (break_update.c): ASCII
- * subset + LF only, fixed key order, fixed-width lowercase hex, two passes
- * (validate everything BEFORE filling — allocation size here is a fixed
- * struct, never attacker-derived), NULL = the only oracle.
+/* break_crash — Stage 5 Phase C Tasks 1+2 implementation: the canonical crash
+ * record ("break-crash-v1"), the bounded on-disk spool, and the
+ * async-signal-safe capture (install/handler). The grammar and every
+ * behavioral contract are documented in break_crash.h; the parse discipline
+ * mirrors the Phase A manifest parser (break_update.c): ASCII subset + LF
+ * only, fixed key order, fixed-width lowercase hex, two passes (validate
+ * everything BEFORE filling — allocation size here is a fixed struct, never
+ * attacker-derived), NULL = the only oracle.
  *
- * Signal capture (Task 2) and redaction/upload (Task 3) are deliberately
- * absent. Zero external dependencies: the write-side PAL
- * (platform_fs.h) is consumed header-only and resolved at the consumer's
- * final link (the test_break_update precedent). */
+ * Redaction/upload (Task 3) are deliberately absent. Zero external
+ * dependencies: the write-side PAL (platform_fs.h) and the build identity
+ * (break_version.h) are consumed header-only and resolved at the consumer's
+ * final link (the test_break_update / test_break_version precedent). */
 
 #if !defined(_WIN32)
 /* glibc under -std=c11 (__STRICT_ANSI__) hides open(O_DIRECTORY)/fsync
- * without a feature test macro (the platform_fs.c precedent). */
+ * without a feature test macro (the platform_fs.c precedent); _GNU_SOURCE
+ * adds ucontext's REG_RIP/REG_RSP/REG_RBP indices. */
 #define _DEFAULT_SOURCE
+#if !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
 #endif
 
 #include <crash/break_crash.h>
 
+#include <core/break_version.h>
 #include <platform/platform_fs.h>
 
 #include <stdio.h>
@@ -27,6 +33,10 @@
 
 #if !defined(_WIN32)
 #include <fcntl.h>
+#include <signal.h>
+#include <stdatomic.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
 #include <unistd.h>
 #endif
 
@@ -955,3 +965,475 @@ bool break_crash_spool_mark_sent(BreakCrashSpool *s, u64 index) {
 bool break_crash_spool_mark_discarded(BreakCrashSpool *s, u64 index) {
     return bc_mark(s, index, BC_CLASS_DISCARDED);
 }
+
+/* ==========================================================================
+ *  Signal capture (Task 2) — POSIX; documented compile-time stub on _WIN32.
+ *
+ *  Everything the handler touches is pre-staged at install into static
+ *  storage (no allocation anywhere near the handler). The handler's full
+ *  call set is the whitelist table in break_crash.h; the bs_* helpers are
+ *  hand-rolled pure-memory (no libc) so the reviewer can line-verify.
+ * ========================================================================== */
+
+#if !defined(_WIN32)
+
+#define BC_CRASH_SIGNAL_COUNT 5
+static const int BC_CRASH_SIGNALS[BC_CRASH_SIGNAL_COUNT] = {
+    SIGSEGV, SIGABRT, SIGILL, SIGFPE, SIGBUS
+};
+
+static struct {
+    int installed;      /* normal-context flag (install/uninstall not thread-safe) */
+    int inbox_fd;       /* pre-opened crash.inbox fd, valid while installed */
+    char build_id[65];  /* grammar-validated at capture */
+    u32 module_count;
+    BcModule modules[BREAK_CRASH_MODULE_MAX];
+    u8 blob[BREAK_CRASH_CONTEXT_BLOB_MAX];
+    usize blob_len;
+    u8 record_buf[BREAK_CRASH_RECORD_MAX];
+    struct sigaction old_act[BC_CRASH_SIGNAL_COUNT];
+    /* Privacy zone (privacy-by-omission, capture-side enforcement): the
+     * argv/env strings block sits at the TOP of the initial [stack] mapping;
+     * a shallow main-thread crash's [rsp, rsp+4KiB) window would otherwise
+     * hex-dump cmdline/env (usernames, HOME, secrets) into the record —
+     * the threat model says those are NEVER captured. zone_lo = lowest
+     * argv/env string address; the handler clamps the window below it. */
+    u64 stack_lo;       /* [stack] mapping bounds (0/0 when absent) */
+    u64 stack_hi;
+    u64 zone_lo;        /* UINT64_MAX when no argv/env strings were found */
+} g_crash = {.inbox_fd = -1};
+
+/* One-shot capture guard, a separate static for ATOMIC_FLAG_INIT. */
+static atomic_flag g_crash_once = ATOMIC_FLAG_INIT;
+
+/* ---- install-time capture (normal context) ------------------------------- */
+
+/* Basename validated against the module-name grammar (1..255 chars of
+ * 0x21-0x7E minus '/'). */
+static bool bc_capture_name_ok(const char *name) {
+    usize n = strlen(name);
+    if (n < 1 || n > 255) return false;
+    usize i;
+    for (i = 0; i < n; i++) {
+        u8 c = (u8)name[i];
+        if (c < 0x21 || c > 0x7E || c == '/') return false;
+    }
+    return true;
+}
+
+/* Flushes the pending maps group (bias/size/path) into the module list. */
+static void bc_capture_flush(u64 bias, u64 size, const char *path) {
+    if (g_crash.module_count >= BREAK_CRASH_MODULE_MAX) return;
+    if (!path[0] || size == 0) return;
+    const char *slash = strrchr(path, '/');
+    const char *name = slash ? slash + 1 : path;
+    if (!bc_capture_name_ok(name)) return;
+    BcModule *m = &g_crash.modules[g_crash.module_count++];
+    m->offset = bias;
+    m->size = size;
+    strcpy(m->name, name); /* bounded by bc_capture_name_ok (≤255 + NUL) */
+}
+
+/* Parses /proc/self/maps NOW. Keeps ≤ 64 file-backed entries in capture
+ * order; contiguous same-path mappings merge into one entry whose
+ * load-offset is (first-start − first-file-offset) — the ELF load bias — and
+ * whose size spans the group. Non-'/' pathnames ([stack], [vdso], anon) and
+ * unnameable basenames are skipped. */
+static void bc_capture_modules(void) {
+    g_crash.module_count = 0;
+    FILE *fp = fopen("/proc/self/maps", "r");
+    if (!fp) return;
+
+    char line[2048];
+    char cur_path[1024];
+    u64 cur_start = 0, cur_end = 0, cur_bias = 0;
+    cur_path[0] = '\0';
+    while (fgets(line, sizeof(line), fp)) {
+        const char *p = line;
+        char *endp = NULL;
+        u64 start = strtoull(p, &endp, 16);
+        if (endp == p || *endp != '-') continue;
+        u64 end = strtoull(endp + 1, &endp, 16);
+        if (end <= start) continue;
+        p = endp;
+        /* skip the perms field, then parse the file offset */
+        while (*p == ' ') p++;
+        while (*p && *p != ' ') p++;
+        while (*p == ' ') p++;
+        u64 off = strtoull(p, &endp, 16);
+        if (endp == p) continue;
+        p = endp;
+        /* skip the dev and inode fields */
+        int f;
+        for (f = 0; f < 2; f++) {
+            while (*p == ' ') p++;
+            while (*p && *p != ' ') p++;
+        }
+        while (*p == ' ') p++;
+        /* path runs to EOL and may contain spaces; drop the EOL and a
+         * trailing " (deleted)" marker */
+        usize plen = strcspn(p, "\r\n");
+        while (plen > 0 && p[plen - 1] == ' ') plen--;
+        static const char DELETED[] = " (deleted)";
+        if (plen >= sizeof(DELETED) - 1 &&
+            memcmp(p + plen - (sizeof(DELETED) - 1), DELETED, sizeof(DELETED) - 1) == 0) {
+            plen -= sizeof(DELETED) - 1;
+        }
+
+        /* the main thread's stack mapping bounds feed the privacy-zone
+         * clamp (it is the only mapping that can hold argv/env strings) */
+        if (plen == 6 && memcmp(p, "[stack]", 6) == 0) {
+            g_crash.stack_lo = start;
+            g_crash.stack_hi = end;
+        }
+
+        if (plen > 0 && p[0] == '/' && plen < sizeof(cur_path) &&
+            plen == strlen(cur_path) && memcmp(p, cur_path, plen) == 0 &&
+            start == cur_end) {
+            cur_end = end; /* contiguous same-path mapping: extend the group */
+            continue;
+        }
+        bc_capture_flush(cur_bias, cur_end - cur_start, cur_path);
+        if (plen > 0 && p[0] == '/' && plen < sizeof(cur_path)) {
+            memcpy(cur_path, p, plen);
+            cur_path[plen] = '\0';
+            cur_start = start;
+            cur_end = end;
+            cur_bias = start - off;
+        } else {
+            cur_path[0] = '\0';
+            cur_start = cur_end = cur_bias = 0;
+        }
+    }
+    bc_capture_flush(cur_bias, cur_end - cur_start, cur_path);
+    fclose(fp);
+}
+
+/* Privacy zone = the argv/env strings block at the top of the initial
+ * stack: zone_lo = the lowest string address among argv[0] (glibc's
+ * program_invocation_name) and every environ[] entry. Candidates outside
+ * the [stack] mapping (when its bounds are known) are ignored — setenv()
+ * additions live on the heap and are never in the stack window anyway.
+ * UINT64_MAX when nothing was found (no clamp then; documented). Normal
+ * context (install); pure scans over live libc-owned pointers. */
+static void bc_capture_privacy_zone(void) {
+    g_crash.zone_lo = ~0ull;
+    u64 lo = g_crash.stack_lo, hi = g_crash.stack_hi;
+#if defined(__GLIBC__)
+    extern char *program_invocation_name; /* argv[0] string on the stack top */
+    if (program_invocation_name) {
+        u64 a = (u64)(uintptr_t)program_invocation_name;
+        if ((!lo && !hi) || (a >= lo && a < hi)) {
+            if (a < g_crash.zone_lo) g_crash.zone_lo = a;
+        }
+    }
+#endif
+    extern char **environ;
+    if (environ) {
+        char **e = environ;
+        for (; *e; e++) {
+            u64 a = (u64)(uintptr_t)*e;
+            if ((lo || hi) && !(a >= lo && a < hi)) continue;
+            if (a < g_crash.zone_lo) g_crash.zone_lo = a;
+        }
+    }
+}
+
+/* Build id = the "+" suffix of break_version_string(), validated against the
+ * grammar charset (≤ 64 chars of [0-9a-z-]); "unknown" otherwise. */
+static void bc_capture_build_id(void) {
+    const char *id = "unknown";
+    const char *v = break_version_string(); /* static storage, never NULL */
+    const char *plus = v ? strchr(v, '+') : NULL;
+    if (plus && plus[1]) {
+        usize n = strlen(plus + 1);
+        if (n <= 64) {
+            bool ok = true;
+            usize i;
+            for (i = 0; i < n; i++) {
+                char c = plus[1 + i];
+                if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || c == '-')) {
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok) id = plus + 1;
+        }
+    }
+    usize n = strlen(id);
+    memcpy(g_crash.build_id, id, n + 1);
+}
+
+/* ---- signal-side writer (handler context; whitelist only) ----------------- */
+
+/* Hand-rolled pure-memory helpers — the ONLY formatting the handler does.
+ * Byte-identical output to the builder (one grammar, two writers, pinned by
+ * the fork tests through the Task 1 parser). */
+static void bs_put(u8 **p, const char *s) {
+    while (*s) {
+        **p = (u8)*s;
+        (*p)++;
+        s++;
+    }
+}
+
+static void bs_hex(u8 **p, u64 v, usize width) {
+    static const char h[] = "0123456789abcdef";
+    usize i;
+    for (i = width; i-- > 0;) {
+        (*p)[i] = (u8)h[v & 15];
+        v >>= 4;
+    }
+    *p += width;
+}
+
+static void bs_hexbytes(u8 **p, const u8 *in, usize n) {
+    static const char h[] = "0123456789abcdef";
+    usize i;
+    for (i = 0; i < n; i++) {
+        (*p)[2 * i] = (u8)h[in[i] >> 4];
+        (*p)[2 * i + 1] = (u8)h[in[i] & 15];
+    }
+    *p += 2 * n;
+}
+
+/* Restore-and-die tail: default action back, the signal unblocked (it is
+ * blocked inside its own handler — no SA_NODEFER), then re-raised so the
+ * process dies with the original semantics (core dump, WIFSIGNALED). The
+ * _exit backstop covers the blocked/ignored edge; it is unreachable in the
+ * normal flow. */
+static void bc_crash_die(int sig) {
+    (void)signal(sig, SIG_DFL);
+    sigset_t set;
+    (void)sigemptyset(&set);
+    (void)sigaddset(&set, sig);
+    (void)sigprocmask(SIG_UNBLOCK, &set, (void *)0);
+    (void)raise(sig);
+    _exit(128 + sig);
+}
+
+static void bc_crash_handler(int sig, siginfo_t *info, void *uctx) {
+    /* One-shot guard: any re-entry (nested signal or a racing second
+     * crashing thread) goes straight to the die tail — no nested formatting,
+     * exactly one captured crash per process run. */
+    if (atomic_flag_test_and_set(&g_crash_once)) bc_crash_die(sig);
+
+    u64 rip = 0, rsp = 0, rbp = 0;
+#if defined(__x86_64__) && defined(__linux__)
+    if (uctx) {
+        const ucontext_t *uc = (const ucontext_t *)uctx;
+        rip = (u64)uc->uc_mcontext.gregs[REG_RIP];
+        rsp = (u64)uc->uc_mcontext.gregs[REG_RSP];
+        rbp = (u64)uc->uc_mcontext.gregs[REG_RBP];
+    }
+#else
+    (void)uctx; /* other architectures: registers are zero (documented) */
+#endif
+    u64 fault = info ? (u64)(uintptr_t)info->si_addr : 0;
+    u32 code = info ? (u32)info->si_code : 0;
+
+    /* Stack window [rsp, rsp+4KiB): the handler executes on the faulting
+     * thread's stack, so the window covers live frames. Skip it when a
+     * SIGSEGV's fault address lies within ±8 KiB of rsp (stack-overflow
+     * signature — the guard region is near) or rsp is zero. Then clamp the
+     * window below the argv/env privacy zone: a shallow main-thread crash
+     * must not hex-dump cmdline/env strings (usernames, HOME, secrets)
+     * into the record — privacy by omission, enforced at capture. */
+    const u8 *window = (const u8 *)0;
+    usize window_len = 0;
+    if (rsp != 0) {
+        bool skip = false;
+        if (sig == SIGSEGV) {
+            u64 lo = rsp > 8192u ? rsp - 8192u : 0u;
+            u64 hi = rsp < ~0ull - 8192u ? rsp + 8192u : ~0ull;
+            if (fault >= lo && fault <= hi) skip = true;
+        }
+        if (!skip) {
+            u64 wend = rsp < ~0ull - BREAK_CRASH_STACK_WINDOW_MAX
+                           ? rsp + BREAK_CRASH_STACK_WINDOW_MAX
+                           : ~0ull;
+            if (rsp >= g_crash.zone_lo) {
+                wend = rsp; /* crashing inside the argv/env zone: no window */
+            } else if (wend > g_crash.zone_lo) {
+                wend = g_crash.zone_lo;
+            }
+            window = (const u8 *)(uintptr_t)rsp;
+            window_len = (usize)(wend - rsp);
+        }
+    }
+
+    /* Format into the preallocated buffer. The maximal content (64 modules
+     * × 255-char names + 4 KiB window + 4 KiB blob) is 35746 bytes — the
+     * 64 KiB cap is unreachable by construction, same argument as the
+     * builder's. */
+    u8 *p = g_crash.record_buf;
+    bs_put(&p, "break-crash-v1\n");
+    bs_put(&p, "signo: ");
+    bs_hex(&p, (u64)(u32)sig, 8);
+    *p++ = '\n';
+    bs_put(&p, "code: ");
+    bs_hex(&p, (u64)code, 8);
+    *p++ = '\n';
+    bs_put(&p, "fault_addr: ");
+    bs_hex(&p, fault, 16);
+    *p++ = '\n';
+    bs_put(&p, "pid: ");
+    bs_hex(&p, (u64)(unsigned long)getpid(), 16);
+    *p++ = '\n';
+    bs_put(&p, "tid: ");
+    bs_hex(&p, (u64)(unsigned long)syscall(SYS_gettid), 16);
+    *p++ = '\n';
+    bs_put(&p, "rip: ");
+    bs_hex(&p, rip, 16);
+    *p++ = '\n';
+    bs_put(&p, "rsp: ");
+    bs_hex(&p, rsp, 16);
+    *p++ = '\n';
+    bs_put(&p, "rbp: ");
+    bs_hex(&p, rbp, 16);
+    *p++ = '\n';
+    bs_put(&p, "build-id: ");
+    bs_put(&p, g_crash.build_id);
+    *p++ = '\n';
+    u32 i;
+    for (i = 0; i < g_crash.module_count; i++) {
+        bs_put(&p, "module: ");
+        bs_hex(&p, g_crash.modules[i].offset, 16);
+        *p++ = ' ';
+        bs_hex(&p, g_crash.modules[i].size, 16);
+        *p++ = ' ';
+        bs_put(&p, g_crash.modules[i].name);
+        *p++ = '\n';
+    }
+    bs_put(&p, "stack-window:");
+    if (window_len) {
+        *p++ = ' ';
+        bs_hexbytes(&p, window, window_len);
+    }
+    *p++ = '\n';
+    bs_put(&p, "context-blob:");
+    if (g_crash.blob_len) {
+        *p++ = ' ';
+        bs_hexbytes(&p, g_crash.blob, g_crash.blob_len);
+    }
+    *p++ = '\n';
+
+    /* Flush to the pre-opened inbox (best-effort: any IO failure still dies
+     * true; a torn inbox is quarantined by the next open — fail closed). */
+    (void)lseek(g_crash.inbox_fd, 0, SEEK_SET);
+    const u8 *q = g_crash.record_buf;
+    usize left = (usize)(p - g_crash.record_buf);
+    while (left > 0) {
+        ssize_t w = write(g_crash.inbox_fd, q, left);
+        if (w <= 0) break;
+        q += (usize)w;
+        left -= (usize)w;
+    }
+    (void)fsync(g_crash.inbox_fd);
+
+    bc_crash_die(sig);
+}
+
+/* ---- public install/uninstall (normal context; not thread-safe) ----------- */
+
+bool break_crash_install(const BreakCrashConfig *config) {
+    if (!config || !config->spool_root || !config->spool_root[0]) return false;
+    if (g_crash.installed) return false; /* once per process while installed */
+
+    /* Pre-stage everything BEFORE any handler can run. */
+    bc_capture_modules();
+    bc_capture_privacy_zone();
+    bc_capture_build_id();
+    g_crash.blob_len = 0;
+
+    /* Spool open/close pass: creates the layout AND recovers a previous
+     * run's crash.inbox into pending/ (the crash-spool acceptance path),
+     * leaving an empty inbox behind. */
+    BreakCrashSpool *s = break_crash_spool_open(config->spool_root);
+    if (!s) return false;
+    break_crash_spool_destroy(s);
+
+    /* Normalize the root (strip trailing '/') like the spool, then open and
+     * HOLD the inbox fd (no O_TRUNC: the file is already empty; a foreign
+     * tail would fail the next open's parse and be quarantined — fail
+     * closed). */
+    const char *root = config->spool_root;
+    usize rn = strlen(root);
+    while (rn > 1 && root[rn - 1] == '/') rn--;
+    char rootbuf[PLATFORM_FS_PATH_CAPACITY];
+    if (rn + 1 > sizeof(rootbuf)) return false;
+    memcpy(rootbuf, root, rn);
+    rootbuf[rn] = '\0';
+    char inbox[PLATFORM_FS_PATH_CAPACITY];
+    if (!bc_join(inbox, sizeof(inbox), rootbuf, "crash.inbox")) return false;
+    int fd = open(inbox, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) return false;
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = bc_crash_handler;
+    sa.sa_flags = SA_SIGINFO; /* no SA_NODEFER, no SA_ONSTACK (documented) */
+    (void)sigfillset(&sa.sa_mask);
+    struct sigaction old[BC_CRASH_SIGNAL_COUNT];
+    int k;
+    for (k = 0; k < BC_CRASH_SIGNAL_COUNT; k++) {
+        if (sigaction(BC_CRASH_SIGNALS[k], &sa, &old[k]) != 0) {
+            while (--k >= 0) (void)sigaction(BC_CRASH_SIGNALS[k], &old[k], (void *)0);
+            (void)close(fd);
+            return false;
+        }
+    }
+    memcpy(g_crash.old_act, old, sizeof(old));
+    g_crash.inbox_fd = fd;
+    atomic_flag_clear(&g_crash_once);
+    g_crash.installed = 1;
+    return true;
+}
+
+bool break_crash_is_installed(void) {
+    return g_crash.installed != 0;
+}
+
+void break_crash_set_context_blob(const void *data, usize len) {
+    /* Pre-crash only (documented): no locking; a crash racing a publish may
+     * capture a torn blob. The app pre-redacts the contents. */
+    if (!data) {
+        g_crash.blob_len = 0;
+        return;
+    }
+    if (len > BREAK_CRASH_CONTEXT_BLOB_MAX) len = BREAK_CRASH_CONTEXT_BLOB_MAX;
+    if (len) memcpy(g_crash.blob, data, len);
+    g_crash.blob_len = len;
+}
+
+void break_crash_uninstall(void) {
+    if (!g_crash.installed) return;
+    int k;
+    for (k = 0; k < BC_CRASH_SIGNAL_COUNT; k++) {
+        (void)sigaction(BC_CRASH_SIGNALS[k], &g_crash.old_act[k], (void *)0);
+    }
+    (void)close(g_crash.inbox_fd);
+    g_crash.inbox_fd = -1;
+    g_crash.installed = 0;
+}
+
+#else /* _WIN32: documented compile-time stub (no SEH/VEH this phase) */
+
+bool break_crash_install(const BreakCrashConfig *config) {
+    (void)config;
+    return false;
+}
+
+bool break_crash_is_installed(void) {
+    return false;
+}
+
+void break_crash_set_context_blob(const void *data, usize len) {
+    (void)data;
+    (void)len;
+}
+
+void break_crash_uninstall(void) {
+}
+
+#endif

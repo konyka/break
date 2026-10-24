@@ -1,16 +1,26 @@
 /* ==========================================================================
- *  test_break_crash.c — Stage 5 Phase C Task 1 tests: canonical crash record
- *  ("break-crash-v1") builder/parse byte-level round-trip + rejection
- *  battery + builder clamps, and the bounded spool (layout creation,
- *  put/read/mark, retention 16/16/16, inbox recovery, reopen persistence).
+ *  test_break_crash.c — Stage 5 Phase C Tasks 1+2 tests: canonical crash
+ *  record ("break-crash-v1") builder/parse byte-level round-trip + rejection
+ *  battery + builder clamps, the bounded spool (layout creation,
+ *  put/read/mark, retention 16/16/16, inbox recovery, reopen persistence),
+ *  and the Task 2 signal-capture fork tests (child installs, dies by a real
+ *  signal, the parent recovers the inbox and parses the record).
  *
  *  The grammar is byte-pinned here: the Task 2 signal-side writer must
  *  produce byte-identical output (one grammar, two writers — see
- *  break_crash.h).
+ *  break_crash.h); the fork tests interlock the two through the Task 1
+ *  parser (a deviating signal writer fails to parse).
  * ========================================================================== */
+
+/* glibc under -std=c11 (__STRICT_ANSI__) hides sigaction/SA_SIGINFO/WIF*
+ * without a feature test macro (the test_platform_fs_write.c precedent). */
+#if !defined(_WIN32)
+#define _DEFAULT_SOURCE
+#endif
 
 #include "test_framework.h"
 
+#include <core/break_version.h>
 #include <crash/break_crash.h>
 #include <platform/platform_fs.h>
 
@@ -18,6 +28,21 @@
 
 #if !defined(_WIN32)
 #include <sys/stat.h> /* mkdir behind TEST_MKDIR (test_platform_fs_write precedent) */
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <signal.h>
+#endif
+
+#ifndef __has_feature
+#define __has_feature(x) 0
+#endif
+#if defined(__SANITIZE_ADDRESS__) || __has_feature(address_sanitizer)
+/* The fork-crash children install break_crash's own SIGSEGV handler over the
+ * ASan runtime's; state the permission explicitly (merged with, and
+ * overridden per-option by, any ASAN_OPTIONS in the environment). */
+const char *__asan_default_options(void) {
+    return "allow_user_segv_handler=1";
+}
 #endif
 
 /* ---- golden grammar fixture (byte-pinned) ------------------------------- */
@@ -740,6 +765,42 @@ static bool pending_tid(BreakCrashSpool *s, u64 index, u64 *out_tid) {
     return true;
 }
 
+/* White-box forensic (Task 2 review M1): reads EVERY file in <root>/<cls>
+ * and parses its tid, so retention tests pin WHICH records were quarantined
+ * or deleted, not just how many. Returns the file count, or -1 on any
+ * anomaly (missing dir, subdirectory, unreadable/unparseable file, > cap). */
+static int collect_class_tids(const char *root, const char *cls, u64 *tids, usize cap) {
+    char dir[1100];
+    join2(dir, sizeof(dir), root, cls);
+    PlatformDirEntry entries[64];
+    u32 count = 0;
+    if (!platform_list_dir(dir, entries, 64, &count)) return -1;
+    usize n = 0;
+    u32 i;
+    for (i = 0; i < count; i++) {
+        if (entries[i].is_dir) return -1;
+        if (n >= cap) return -1;
+        char path[1200];
+        join2(path, sizeof(path), dir, entries[i].name);
+        static u8 buf[70000];
+        long len = read_file(path, buf, sizeof(buf));
+        if (len <= 0) return -1;
+        BreakCrashRecord *r = break_crash_record_parse(buf, (usize)len);
+        if (!r) return -1;
+        tids[n++] = break_crash_record_tid(r);
+        break_crash_record_destroy(r);
+    }
+    return (int)n;
+}
+
+static bool tid_present(const u64 *tids, int n, u64 tid) {
+    int i;
+    for (i = 0; i < n; i++) {
+        if (tids[i] == tid) return true;
+    }
+    return false;
+}
+
 /* ---- spool: layout + put/read round-trip --------------------------------- */
 
 TEST(spool_fresh_open_creates_layout) {
@@ -892,6 +953,17 @@ TEST(spool_retention_sent_overflow) {
     ASSERT_EQ(break_crash_spool_count(s, 1), 16ull);
     ASSERT_EQ(break_crash_spool_count(s, 2), 1ull); /* oldest sent quarantined */
     break_crash_spool_destroy(s);
+
+    /* content pin (review M1): the quarantined record IS the oldest (tid 1),
+     * and sent/ retains exactly tids 2..17 */
+    u64 tids[20];
+    int n = collect_class_tids(root, "discarded", tids, 20);
+    ASSERT_EQ(n, 1);
+    ASSERT_EQ(tids[0], 1ull);
+    n = collect_class_tids(root, "sent", tids, 20);
+    ASSERT_EQ(n, 16);
+    u64 t;
+    for (t = 2; t <= 17; t++) ASSERT_TRUE(tid_present(tids, n, t));
     rm_tree(root);
 }
 
@@ -917,6 +989,15 @@ TEST(spool_retention_discarded_delete) {
     ASSERT_TRUE(pending_tid(s, 0, &tid));
     ASSERT_EQ(tid, 99ull);
     break_crash_spool_destroy(s);
+
+    /* content pin (review M1): the DELETED record is the oldest (tid 1);
+     * discarded/ retains exactly tids 2..17 */
+    u64 tids[20];
+    int n = collect_class_tids(root, "discarded", tids, 20);
+    ASSERT_EQ(n, 16);
+    ASSERT_FALSE(tid_present(tids, n, 1));
+    u64 t;
+    for (t = 2; t <= 17; t++) ASSERT_TRUE(tid_present(tids, n, t));
     rm_tree(root);
 }
 
@@ -1163,6 +1244,346 @@ TEST(spool_open_bounds) {
     rm_tree(root2);
 }
 
+/* ---- Task 2: signal capture (fork + waitpid; children die by signal) ---- */
+
+#if !defined(_WIN32)
+
+/* Deliberate null-page store: fault_addr must be 0 and rip nonzero.
+ * no_sanitize keeps ASan's shadow checks and UBSan's null-store check from
+ * intercepting the fault before the break_crash handler runs; noinline
+ * keeps the store out of the caller's frame. */
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((noinline, no_sanitize("address"), no_sanitize("undefined"), no_sanitize("thread")))
+#endif
+static void crash_null_store(void) {
+    *(volatile char *)0 = 0;
+}
+
+/* Deterministic context-blob pattern shared by the publishing child and the
+ * verifying parent (byte i = (i*7+3) & 0xff). */
+#define BLOB_PATTERN_PUBLISH 5000u /* publish > 4 KiB: the slot clamps */
+static void blob_pattern_fill(u8 *out, usize n) {
+    usize i;
+    for (i = 0; i < n; i++) out[i] = (u8)((i * 7u + 3u) & 0xffu);
+}
+
+/* Child bodies: plain code + _exit only (never ASSERT, never return into the
+ * test main, never stdio — fork duplicated the parent's buffers). Distinct
+ * exit codes pinpoint the failed step; 90 = body returned without dying. */
+
+static void child_segv_null(const char *root) {
+    BreakCrashConfig cfg = {root};
+    if (!break_crash_install(&cfg)) _exit(41);
+    if (!break_crash_is_installed()) _exit(42);
+    crash_null_store();
+    _exit(43);
+}
+
+static void child_abrt(const char *root) {
+    BreakCrashConfig cfg = {root};
+    if (!break_crash_install(&cfg)) _exit(41);
+    if (!break_crash_is_installed()) _exit(42);
+    abort();
+    _exit(43);
+}
+
+static void child_blob_segv(const char *root) {
+    static u8 blob[BLOB_PATTERN_PUBLISH];
+    blob_pattern_fill(blob, sizeof(blob));
+    BreakCrashConfig cfg = {root};
+    if (!break_crash_install(&cfg)) _exit(41);
+    break_crash_set_context_blob(blob, sizeof(blob)); /* clamps to 4 KiB */
+    crash_null_store();
+    _exit(43);
+}
+
+static void child_double_install(const char *root) {
+    BreakCrashConfig cfg = {root};
+    if (break_crash_is_installed()) _exit(40);
+    if (!break_crash_install(&cfg)) _exit(41);
+    if (!break_crash_is_installed()) _exit(42);
+    if (break_crash_install(&cfg)) _exit(44);       /* second install → false */
+    if (!break_crash_is_installed()) _exit(45);     /* still installed */
+    break_crash_uninstall();
+    if (break_crash_is_installed()) _exit(46);
+    if (!break_crash_install(&cfg)) _exit(47);      /* re-install after uninstall */
+    break_crash_uninstall();
+    _exit(0);
+}
+
+/* glibc ORs SA_RESTORER into every rt_sigaction install — including the
+ * restore itself — while a never-touched signal's queried flags lack it;
+ * mask it out of the disposition comparison (kernel-internal bit). */
+#ifndef SA_RESTORER
+#define SA_RESTORER 0x04000000u /* x86-64 Linux; only reachable behind _GNU_SOURCE */
+#endif
+
+/* glibc's sigaction QUERY fills only the kernel's first 64-bit mask word
+ * (rt_sigaction sigsetsize=8) and leaves the libc sigset_t tail holding
+ * stack garbage — compare the meaningful word only. */
+static u64 sigmask_word0(const sigset_t *m) {
+    u64 w;
+    memcpy(&w, m, sizeof(w));
+    return w;
+}
+
+static void child_uninstalled_segv(const char *root) {
+    BreakCrashConfig cfg = {root};
+    struct sigaction before;
+    struct sigaction after;
+    memset(&before, 0, sizeof(before));
+    memset(&after, 0, sizeof(after));
+    if (sigaction(SIGSEGV, (void *)0, &before) != 0) _exit(48);
+    if (!break_crash_install(&cfg)) _exit(41);
+    break_crash_uninstall();
+    if (break_crash_is_installed()) _exit(46);
+    if (sigaction(SIGSEGV, (void *)0, &after) != 0) _exit(49);
+    /* uninstall restored the pre-install disposition exactly (under a
+     * sanitizer runtime that is the runtime's own handler, not SIG_DFL) */
+    if ((before.sa_flags & ~SA_RESTORER) != (after.sa_flags & ~SA_RESTORER)) _exit(50);
+    if (sigmask_word0(&before.sa_mask) != sigmask_word0(&after.sa_mask)) _exit(51);
+    if ((before.sa_flags & SA_SIGINFO)
+            ? before.sa_sigaction != after.sa_sigaction
+            : before.sa_handler != after.sa_handler) _exit(52);
+    /* Die by a clean SIGSEGV regardless of any restored runtime handler:
+     * death-by-signal with NO record is the pinned post-uninstall state. */
+    (void)signal(SIGSEGV, SIG_DFL);
+    crash_null_store();
+    _exit(43);
+}
+
+static pid_t spawn_child(void (*fn)(const char *), const char *root) {
+    pid_t pid = fork();
+    if (pid == 0) {
+        fn(root);
+        _exit(90);
+    }
+    return pid;
+}
+
+static int wait_status(pid_t pid) {
+    int st = 0;
+    if (waitpid(pid, &st, 0) != pid) return -1;
+    return st;
+}
+
+/* Opens the spool (recovering the child's inbox into pending/), requires
+ * exactly one pending record and an empty discarded/, and returns that
+ * record's bytes (caller frees). */
+static bool fetch_recovered(const char *root, u8 **out_buf, u64 *out_len) {
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    if (!s) return false;
+    bool ok = break_crash_spool_count(s, 0) == 1ull &&
+              break_crash_spool_count(s, 2) == 0ull &&
+              break_crash_spool_read_pending(s, 0, out_buf, out_len);
+    break_crash_spool_destroy(s);
+    return ok;
+}
+
+/* The build id the child's install must have captured: the "+" suffix of
+ * break_version_string() (same TU compile, same BREAK_BUILD_ID), or
+ * "unknown" without one. */
+static const char *expected_build_id(void) {
+    const char *v = break_version_string();
+    const char *plus = v ? strchr(v, '+') : NULL;
+    return (plus && plus[1]) ? plus + 1 : "unknown";
+}
+
+/* Assertions every captured record shares: the child's pid/tid (main
+ * thread: tid == pid), nonzero rip, the build-id suffix, and a non-empty
+ * all-basename module list. */
+static int common_record_fields_fail(BreakCrashRecord *r, pid_t child_pid) {
+    int failed = 0;
+    u64 regs[3] = {0, 0, 0};
+    break_crash_record_registers(r, regs);
+    if (break_crash_record_pid(r) != (u64)child_pid) failed = 1;
+    if (break_crash_record_tid(r) != (u64)child_pid) failed = 1;
+    if (regs[0] == 0) failed = 1;                              /* rip nonzero */
+    if (regs[1] == 0) failed = 1;                              /* rsp nonzero */
+    if (strcmp(break_crash_record_build_id(r), expected_build_id()) != 0) failed = 1;
+    u64 mods = break_crash_record_module_count(r);
+    if (mods < 1) failed = 1;
+    u64 i;
+    for (i = 0; i < mods; i++) {
+        const char *name = NULL;
+        u64 off = 0, size = 0;
+        if (!break_crash_record_module_at(r, i, &name, &off, &size)) failed = 1;
+        else if (!name[0] || strchr(name, '/') != NULL) failed = 1; /* basename only */
+    }
+    return failed;
+}
+
+#endif /* !_WIN32 */
+
+#if !defined(_WIN32)
+/* Privacy pin helper: true when the lowercase-hex encoding of `plain`
+ * (e.g. an env string) appears in the raw record bytes — i.e. when the
+ * stack window leaked it. Hand-rolled bounded scan. */
+static bool raw_contains_hex_of(const u8 *hay, usize haylen, const char *plain) {
+    static const char h[] = "0123456789abcdef";
+    usize n = strlen(plain);
+    if (n < 4 || n > 256) return false; /* short patterns are not pinned */
+    u8 pat[512];
+    usize i;
+    for (i = 0; i < n; i++) {
+        pat[2 * i] = (u8)h[((const u8 *)plain)[i] >> 4];
+        pat[2 * i + 1] = (u8)h[((const u8 *)plain)[i] & 15];
+    }
+    if (haylen < 2 * n) return false;
+    for (i = 0; i + 2 * n <= haylen; i++) {
+        if (memcmp(hay + i, pat, 2 * n) == 0) return true;
+    }
+    return false;
+}
+#endif
+
+TEST(crash_segv_captures_record) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1); /* POSIX signal path only this phase (Windows stub) */
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_segv");
+    pid_t pid = spawn_child(child_segv_null, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFSIGNALED(st));                 /* died BY the signal... */
+    ASSERT_EQ(WTERMSIG(st), SIGSEGV);             /* ...with original semantics */
+
+    u8 *rec = NULL;
+    u64 rlen = 0;
+    ASSERT_TRUE(fetch_recovered(root, &rec, &rlen));
+    ASSERT_TRUE(rlen > 0 && rlen <= BREAK_CRASH_RECORD_MAX); /* ≤ 64 KiB */
+    BreakCrashRecord *r = break_crash_record_parse(rec, (usize)rlen);
+    ASSERT_NOT_NULL(r); /* signal writer byte-interlocked with the parser */
+    ASSERT_EQ(break_crash_record_signo(r), SIGSEGV);
+    ASSERT_EQ(break_crash_record_fault_addr(r), 0ull);
+    ASSERT_FALSE(common_record_fields_fail(r, pid));
+    const u8 *bytes = NULL;
+    usize win = break_crash_record_stack_window(r, &bytes);
+    ASSERT_TRUE(win > 0);                          /* stack window present */
+    ASSERT_TRUE(win <= BREAK_CRASH_STACK_WINDOW_MAX);
+    break_crash_record_destroy(r);
+    /* privacy-by-omission pin: the argv/env strings block at the top of the
+     * initial stack must NOT appear in the window — HOME is an original
+     * stack-zone env string of this very process tree (fork-inherited by
+     * the child), so without the zone clamp its hex encoding would be in
+     * the record here. Skipped when HOME is absent/short. */
+    const char *home = getenv("HOME");
+    if (home) {
+        ASSERT_FALSE(raw_contains_hex_of(rec, (usize)rlen, home));
+    }
+    free(rec);
+    rm_tree(root);
+#endif
+}
+
+TEST(crash_abrt_captures_record) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_abrt");
+    pid_t pid = spawn_child(child_abrt, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFSIGNALED(st));
+    ASSERT_EQ(WTERMSIG(st), SIGABRT);
+
+    u8 *rec = NULL;
+    u64 rlen = 0;
+    ASSERT_TRUE(fetch_recovered(root, &rec, &rlen));
+    ASSERT_TRUE(rlen > 0 && rlen <= BREAK_CRASH_RECORD_MAX);
+    BreakCrashRecord *r = break_crash_record_parse(rec, (usize)rlen);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ(break_crash_record_signo(r), SIGABRT);
+    ASSERT_FALSE(common_record_fields_fail(r, pid));
+    break_crash_record_destroy(r);
+    free(rec);
+    rm_tree(root);
+#endif
+}
+
+TEST(crash_context_blob_captured) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_blob");
+    pid_t pid = spawn_child(child_blob_segv, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFSIGNALED(st));
+    ASSERT_EQ(WTERMSIG(st), SIGSEGV);
+
+    u8 *rec = NULL;
+    u64 rlen = 0;
+    ASSERT_TRUE(fetch_recovered(root, &rec, &rlen));
+    BreakCrashRecord *r = break_crash_record_parse(rec, (usize)rlen);
+    ASSERT_NOT_NULL(r);
+    /* the published 5000-byte blob clamped to the 4 KiB slot, prefix kept */
+    static u8 want[BLOB_PATTERN_PUBLISH];
+    blob_pattern_fill(want, sizeof(want));
+    const u8 *bytes = NULL;
+    ASSERT_EQ(break_crash_record_context_blob(r, &bytes), (usize)BREAK_CRASH_CONTEXT_BLOB_MAX);
+    ASSERT_TRUE(memcmp(bytes, want, BREAK_CRASH_CONTEXT_BLOB_MAX) == 0);
+    break_crash_record_destroy(r);
+    free(rec);
+    rm_tree(root);
+#endif
+}
+
+TEST(crash_double_install_refused) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_dbl");
+    pid_t pid = spawn_child(child_double_install, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFEXITED(st));
+    ASSERT_EQ(WEXITSTATUS(st), 0);
+    /* no crash happened: the spool exists but holds no records */
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull);
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+#endif
+}
+
+TEST(crash_uninstall_no_record) {
+#if defined(_WIN32)
+    ASSERT_TRUE(1);
+#else
+    char root[512];
+    test_tmp(root, sizeof(root), "cr_uninst");
+    pid_t pid = spawn_child(child_uninstalled_segv, root);
+    ASSERT_TRUE(pid > 0);
+    int st = wait_status(pid);
+    ASSERT_TRUE(st >= 0);
+    ASSERT_TRUE(WIFSIGNALED(st));
+    ASSERT_EQ(WTERMSIG(st), SIGSEGV); /* still dies by SIGSEGV... */
+
+    BreakCrashSpool *s = break_crash_spool_open(root);
+    ASSERT_NOT_NULL(s);
+    ASSERT_EQ(break_crash_spool_count(s, 0), 0ull); /* ...but WITHOUT a record */
+    ASSERT_EQ(break_crash_spool_count(s, 2), 0ull);
+    char inbox[600];
+    join2(inbox, sizeof(inbox), root, "crash.inbox");
+    u64 size = 99;
+    ASSERT_TRUE(platform_file_size(inbox, &size));
+    ASSERT_EQ(size, 0ull);
+    break_crash_spool_destroy(s);
+    rm_tree(root);
+#endif
+}
+
 /* -------------------------------------------------------------------------- */
 
 TEST_MAIN_BEGIN()
@@ -1187,4 +1608,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(spool_reopen_persistence);
     RUN_TEST(spool_put_skips_existing_id);
     RUN_TEST(spool_open_bounds);
+    RUN_TEST(crash_segv_captures_record);
+    RUN_TEST(crash_abrt_captures_record);
+    RUN_TEST(crash_context_blob_captured);
+    RUN_TEST(crash_double_install_refused);
+    RUN_TEST(crash_uninstall_no_record);
 TEST_MAIN_END()
