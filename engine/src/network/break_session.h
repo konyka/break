@@ -26,10 +26,16 @@ typedef BreakSessionManager BreakSession;
  * where tag = HMAC-SHA256(psk, "BRKAUTH2" || server_nonce || client_nonce). */
 typedef bool (*BreakNetAuthKeyFn)(void *user, const u8 key_id[8], u8 out_psk[32]);
 /* Process-wide because the pinned interface has no manager parameter. Changes
- * are accepted only while every session is NEW; NULL clears the configuration.
+ * are accepted only while every session is NEW and no authentication message
+ * operation is active; NULL clears the configuration. An operation pins its
+ * snapshot and callback through its first state transition and final dispatch.
  * The callback resolves key_id, so provisioning and rollover stay app-side.
  * The built-in CHALLENGE client helper requests the all-zero key_id. */
 bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
+/* Test-only hook at the pinned snapshot point, before the first transition. */
+typedef void (*BreakSessionAuthTestHook)(void *user);
+void break_session_auth_set_test_hook_for_test(BreakSessionAuthTestHook hook,
+                                               void *user);
 /* Optional session expiry (0 = no expiry, default); authenticated sessions
  * older than max_age_seconds enter CLOSING at the next GameThread poll. */
 void break_session_set_max_age(BreakSession *s, u32 max_age_seconds);
@@ -82,7 +88,8 @@ typedef struct BreakSessionConfig {
 /* The manager is GameThread-owned and not thread-safe. */
 BreakSessionManager *break_session_manager_create(const BreakSessionConfig *config);
 void break_session_manager_destroy(BreakSessionManager *manager);
-/* Advances close finalization only; it does not poll the attached reactor. */
+/* Advances close finalization and configured expiry without polling the reactor.
+ * max_events bounds CLOSED finalization, not the capacity-bounded expiry scan. */
 size_t break_session_manager_poll(BreakSessionManager *manager, uint32_t max_events);
 bool break_session_manager_bind(BreakSessionManager *manager, BreakConnectionKey connection);
 bool break_session_manager_begin_auth(BreakSessionManager *manager, BreakConnectionKey connection);
@@ -96,7 +103,8 @@ bool break_session_manager_transition(BreakSessionManager *manager,
 bool break_session_manager_apply_event(BreakSessionManager *manager,
                                         BreakConnectionKey connection,
                                         BreakSessionEvent event);
-/* Applies one adapter event; message payload is borrowed for handler duration only. */
+/* Applies one adapter event; payload is borrowed for handler duration only.
+ * Registry-rejected messages record INVALID and enter CLOSING. */
 bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
                                                 const BreakNetEvent *event);
 /* Borrowed reactor; it must outlive detach (not currently exposed) or manager destroy. */
