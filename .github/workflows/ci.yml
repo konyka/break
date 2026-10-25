@@ -27,55 +27,11 @@ jobs:
   lane-headless-linux-clang:
     name: Linux + Clang/LLD (Release, headless)
     runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/konyka/break-ci-linux:latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-
-      - name: Restore apt package cache
-        # R682: .debs a previous run downloaded; apt only fetches what is
-        # missing, so a slow Azure mirror (R677-R681: stalls on varied
-        # packages) is only hit on a cache miss. GitHub's own action, no
-        # third-party dependency. The key changes with the workflow file,
-        # i.e. whenever a package list or pin changes.
-        uses: actions/cache@v5
-        with:
-          path: ~/apt-archives
-          key: apt-${{ runner.os }}-lane-headless-linux-clang-${{ hashFiles('.github/workflows/*.yml') }}
-          restore-keys: |
-            apt-${{ runner.os }}-lane-headless-linux-clang-
-
-      - name: Install dependencies
-        timeout-minutes: 20
-        run: |
-          APT_OPTS="-o Acquire::Retries=5 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o DPkg::Lock::Timeout=120 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true"
-          # R675: each attempt is capped and retried -- a hung mirror otherwise
-          # ate the whole step (R674 run: one job timed out at 10 min while
-          # every other job installed in ~1 min). man-db triggers are skipped.
-          sudo rm -f /var/lib/man-db/auto-update
-          mkdir -p "$HOME/apt-archives/partial"; sudo rm -f /etc/apt/apt.conf.d/docker-clean
-          # R677: each failed attempt publishes the tail of its output as
-          # ::warning:: annotations (job logs are not readable anonymously).
-          # R676: usage apt_retry <seconds-per-attempt> <apt-get args>. A failed
-          # attempt moves the runner off its Azure mirror to archive.ubuntu.com
-          # (R675 run: three 240 s attempts on the same stalled mirror).
-          apt_retry() { t=$1; shift; for i in 1 2 3; do if ( set -o pipefail; sudo timeout "$t" apt-get $APT_OPTS "$@" 2>&1 | tee /tmp/apt-attempt.log ); then return 0; fi; echo "::warning::apt-get $1 attempt $i failed or timed out after ${t}s; last output:"; tail -8 /tmp/apt-attempt.log | while IFS= read -r l; do echo "::warning::  $l"; done; sudo sed -i "s#http://azure.archive.ubuntu.com#http://archive.ubuntu.com#g" /etc/apt/sources.list /etc/apt/sources.list.d/*.sources /etc/apt/sources.list.d/*.list 2>/dev/null || true; sudo dpkg --configure -a || true; [ "$1" = install ] && sudo timeout 120 apt-get $APT_OPTS update || true; sleep 5; done; return 1; }
-          apt_retry 120 update
-          apt_retry 360 install -y --no-install-recommends \
-            clang lld llvm cmake ninja-build libx11-dev libxrandr-dev libgl1-mesa-dev \
-            libfreetype6-dev
-          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true  # R682: readable by the cache save
-
-      - name: Install CJK test font (optional)
-        # R679: fonts-noto-cjk (61 MB) is the download every stalled apt run
-        # was caught on (R677/R678 annotations). Only test_myui_font's CJK
-        # cases use it and they SKIP without it, so a stall here no longer
-        # fails the job.
-        continue-on-error: true
-        timeout-minutes: 7
-        run: |
-          sudo timeout 360 apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 -o Dir::Cache::Archives=$HOME/apt-archives -o Binary::apt::APT::Keep-Downloaded-Packages=true install -y --no-install-recommends fonts-noto-cjk \
-            || echo "::warning::fonts-noto-cjk not installed; the CJK font cases will SKIP"
-          sudo chown -R "$(id -u):$(id -g)" "$HOME/apt-archives" || true
 
       - name: Configure
         run: cmake -S engine -B build -G "Unix Makefiles" -DCMAKE_TOOLCHAIN_FILE="$GITHUB_WORKSPACE/engine/toolchain-clang-linux.cmake" -DCMAKE_BUILD_TYPE=Release -DENGINE_ENABLE_IPO=ON
