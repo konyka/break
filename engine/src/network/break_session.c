@@ -491,6 +491,30 @@ bool break_session_manager_apply_adapter_event(BreakSessionManager *manager,
     entry = find_entry(manager, event->connection_key);
     switch (event->type) {
     case BREAK_NET_EVENT_CONNECTION_OPENED:
+        if (entry != NULL && entry->state == BREAK_SESSION_CLOSED &&
+            manager->next_id != UINT64_MAX) {
+            /* Transport key reuse: snow connection uids are (list magic |
+             * slot), so a new connection on a recycled slot carries the key
+             * of a finished one. CLOSED is only finalized once the reactor
+             * event queue has drained (poll_adapter), so an OPENED observed
+             * against a CLOSED entry is a NEW connection, never a late event
+             * of the old one: reclaim the entry in place with a fresh session
+             * id. CLOSING entries keep the stale watermark below. bind()
+             * itself still refuses closed keys (explicit API contract). */
+            BreakConnectionKey key = entry->connection;
+            memset(entry, 0, sizeof(*entry));
+            entry->used = true;
+            entry->connection = key;
+            entry->id = manager->next_id++;
+            entry->state = BREAK_SESSION_NEW;
+            handled = true;
+#ifdef BREAK_ENABLE_CRYPTO
+            entry->server_nonce_valid = break_session_auth_configured_internal() &&
+                break_net_reactor_auth_server_nonce_for_session(
+                    manager->reactor, event->connection_key, entry->server_nonce);
+#endif
+            return break_session_record(manager, BREAK_SESSION_APPLY_OK);
+        }
         if (entry != NULL) {
             return break_session_record(manager,
                                         entry->state == BREAK_SESSION_CLOSING ||

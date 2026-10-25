@@ -120,7 +120,7 @@ registry 的最大定义数为 64；register 拒绝 ID 0、重复 ID、反向版
 
 `BreakSessionManager` 是 GameThread-owned 且非线程安全；所有创建、绑定、状态迁移、poll 和 apply 都必须由同一拥有者串行调用。`BreakSessionConfig.registry` 是 borrowed immutable registry，必须活到 manager destroy；attach 的 reactor 是 borrowed，必须活到 detach（当前没有独立 detach API）或 manager destroy；handler 和 `user_data` 均为 borrowed，且 handler 仅由 GameThread 调用。handler 收到的 message payload 只在 handler 调用期间有效。
 
-`max_sessions` 是 manager lifetime capacity：closed slots 不回收、不复用，因此它表示 manager 生命周期内可绑定的 connection 数，而不是同时在线数。真实 loopback Session 流程已验证 AUTH -> Session poll -> handler -> PING response -> client close -> `CLOSED`/stale。
+`max_sessions` 是 manager lifetime capacity：closed slots 不会分配给其他 key（同一 key 的新 open 原地重开，见下文），因此它表示 manager 生命周期内可绑定的不同 connection key 数，而不是同时在线数。真实 loopback Session 流程已验证 AUTH -> Session poll -> handler -> PING response -> client close -> `CLOSED`/stale。
 
 实际头文件 `engine/src/network/break_session.h` 的核心声明为：
 
@@ -179,9 +179,9 @@ NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED
 
 `break_session_manager_apply_adapter_event` 在 GameThread 上处理生命周期和消息：
 
-- `CONNECTION_OPENED`：调用 `bind`；active entry 的重复 open 分类为 duplicate，CLOSING/CLOSED entry 的迟到 open 分类为 stale，容量拒绝分类为 invalid；
+- `CONNECTION_OPENED`：调用 `bind`；active entry 的重复 open 分类为 duplicate，CLOSING entry 的迟到 open 分类为 stale，容量拒绝分类为 invalid。CLOSED entry 上的 open 视为 transport key 复用（snow connection uid = list magic | slot，slot 回收后新连接会携带旧 key）：因为 `CLOSED` 只在 reactor event queue 排空后才 finalize，此时的 open 必然属于新连接，entry 原地重置为 `NEW` 并分配新的 session ID（ID 耗尽时仍为 stale）。显式 `bind` API 仍拒绝已关闭的 key；
 - `CONNECTION_CLOSED` 或 `TRANSPORT_ERROR`：调用 `close`，进入 `CLOSING`；关闭后的事件保留为 stale；
-- `MESSAGE_RECEIVED`：先校验 manager 所附 registry（未配置时为 default registry）的版本、长度和 phase，再按 definition 的 duplicate policy dispatch；`REJECT` 对重复 sequence 返回 duplicate，`IDEMPOTENT` 对相同 sequence 返回成功但不再次调用 handler；AUTH 的状态迁移仍在 handler 成功后完成，失败进入 `CLOSING`。因此 AUTH/PING 的策略来自 registry definition，而不是 message ID 特判；未来注册项也遵循同一规则。
+- `MESSAGE_RECEIVED`：先校验 manager 所附 registry（未配置时为 default registry）的版本、长度和 phase，再按 definition 的 duplicate policy dispatch；`REJECT` 表示每个 session 至多一次（同一 id 的第二条消息无论 sequence 都返回 duplicate，AUTH/CHALLENGE 语义），`IDEMPOTENT` 对相同 sequence 返回成功但不再次调用 handler；AUTH 的状态迁移仍在 handler 成功后完成，失败进入 `CLOSING`。因此 AUTH/PING 的策略来自 registry definition，而不是 message ID 特判；未来注册项也遵循同一规则。
 - `SEND_DRAINED` 和未知事件：分类为 invalid。
 
 `break_session_manager_last_result` 暴露最近一次 apply 分类，`break_session_manager_apply_stats` 暴露 applied、unknown、stale、invalid、phase rejected、duplicate 和 handler failed 的累计计数。handler 收到的 `BreakNetOwnedMessage` 是 manager 当前事件的借用视图，只在 handler 调用期间有效；handler 必须复制需要保留的内容。
@@ -190,7 +190,7 @@ NEW -> AUTHENTICATING -> AUTHENTICATED -> CLOSING -> CLOSED
 
 ### stale event
 
-关闭会形成不可逆的 close watermark：entry 转为 `CLOSING`/`CLOSED` 后，后续同 connection 的消息和重复生命周期事件不会改变状态，并由 apply-result API 分类为 stale（未知 connection 则为 unknown）。closed entry 不回收、不复用；因此 `max_sessions` 是 manager 生命周期内的 connection-key binding capacity，而不是同时在线容量。adapter event queue 仍由 GameThread 逐条 poll，事件 payload 在 apply 返回后由 caller 释放。
+关闭会形成不可逆的 close watermark：entry 转为 `CLOSING`/`CLOSED` 后，后续同 connection 的消息和重复生命周期事件不会改变状态，并由 apply-result API 分类为 stale（未知 connection 则为 unknown）。closed entry 不会被其他 key 复用；同一 key 的新 `CONNECTION_OPENED` 会在原 entry 上重新开始（见上）。因此 `max_sessions` 是 manager 生命周期内可绑定的不同 connection key 数，而不是同时在线容量。adapter event queue 仍由 GameThread 逐条 poll，事件 payload 在 apply 返回后由 caller 释放。
 
 ## TLS 模式
 

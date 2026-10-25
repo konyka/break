@@ -339,8 +339,21 @@ if(BREAK_ENABLE_SNOWFLAKE)
     set(SNOW_BUILD_TESTS OFF CACHE BOOL "Snowflake tests are not part of Break builds" FORCE)
     set(SNOW_BUILD_EXAMPLES OFF CACHE BOOL "Snowflake examples are not part of Break builds" FORCE)
     set(SNOW_BUILD_BENCH OFF CACHE BOOL "Snowflake benchmarks are not part of Break builds" FORCE)
+    # Stage 4 Phase 4 Task 1 (documented deviation): snow::warnings is an
+    # INTERFACE library whose -Wconversion/-Wfloat-equal/-Wcast-qual/... flag
+    # set leaks directory-wide once snow is added via add_subdirectory. That
+    # flag set is snow's own posture for snow's code — Break's tree is -Wall
+    # -Wextra -Werror -pedantic clean and was never validated against the
+    # snow set (editor/myui TUs trip conversion/float-equal/cast-qual under
+    # it). Keep the strict flags scoped to the snow subtree and to targets
+    # that link snow targets (break_net and its tests — the Stage 5 Phase D
+    # status quo); the editor executable, test_editor_shell, and every other
+    # Break target keep the project-wide flag set exactly.
     add_subdirectory("${SNOWFLAKE_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/snowflake"
         EXCLUDE_FROM_ALL)
+    if(TARGET snow_warnings)
+        set_property(TARGET snow_warnings PROPERTY INTERFACE_COMPILE_OPTIONS "")
+    endif()
     if(NOT TARGET snow::net)
         message(FATAL_ERROR
             "Snowflake source tree did not provide the required target snow::net")
@@ -501,6 +514,10 @@ if(BREAK_ENABLE_SNOWFLAKE)
     target_include_directories(break_net PRIVATE
         ${SNOWFLAKE_SOURCE_DIR}/include)
     target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    # PUBLIC so every break_net consumer (the editor executable's
+    # editor_remote.c, test_editor_shell) compiles the real remote host,
+    # never the !BREAK_ENABLE_SNOWFLAKE stub surface.
+    target_compile_definitions(break_net PUBLIC BREAK_ENABLE_SNOWFLAKE=1)
     if(BREAK_ENABLE_CRYPTO)
         target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
         target_link_libraries(break_net PUBLIC break_crypto)
@@ -1462,10 +1479,24 @@ engine_link_rhi_backend(dxx_break)
 # from break_editor; engine's copy is never pulled for the same symbols.
 # Verified at link time and via `nm` (exactly one scene_save_binary
 # definition in the binary).
+#
+# Phase 4 Task 1: + editor_remote.c (the remote session host: STEP-mode
+# reactor + session manager + editor wire protocol handlers, all driven from
+# break_editor_shell_tick on the shell thread). The editor target is built
+# regardless of BREAK_ENABLE_SNOWFLAKE (as on master): with SNOWFLAKE=ON it
+# links break_net (whose PUBLIC BREAK_ENABLE_SNOWFLAKE=1 selects the real
+# remote host; break_crypto arrives transitively when BREAK_ENABLE_CRYPTO=ON);
+# with SNOWFLAKE=OFF editor_remote.c compiles its stub surface, so --remote
+# fails closed with a clear message. engine/engine_demo/dxx_break still link
+# neither break_editor/break_lua nor break_net (consumer no-link scan pins the
+# editor-only exception).
+# Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
+# view over editor_remote.h's read-only accessors, no new link).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_viewport3d.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
+    apps/editor/editor_remote.c apps/editor/editor_panel_network.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -1475,6 +1506,9 @@ target_include_directories(editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/external
 )
 target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
+if(BREAK_ENABLE_SNOWFLAKE)
+    target_link_libraries(editor PRIVATE break_net)
+endif()
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
@@ -3751,10 +3785,18 @@ endif()
     # production ownership of all three — exactly one definition per
     # binary). break_lua symbols arrive transitively: break_editor_test
     # links break_lua_test PUBLIC (Phase 3 Task 2).
+    # Phase 4 Task 1: + editor_remote.c (the remote session host the shell
+    # tick drives — the test exercises the plaintext seam over loopback) and
+    # a break_net link when BREAK_ENABLE_SNOWFLAKE=ON (the editor-remote
+    # tests are compiled only then — see the target_compile_definitions
+    # below; with snowflake OFF the suite is byte-identical to Phase 3).
+    # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
+    # pure view over the remote's read-only accessors).
     add_executable(test_editor_shell tests/test_editor_shell.c
         apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
+        apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
         src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
         src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
@@ -3762,6 +3804,10 @@ endif()
     target_include_directories(test_editor_shell PRIVATE
         ${TEST_INCLUDE_DIRS}
         ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+    # Phase 4 Task 3: the network panel pure-view source-scan pin reads the
+    # panel TU in place (the test_rhi_metal_* source-read precedent).
+    target_compile_definitions(test_editor_shell PRIVATE
+        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c)
     # Phase 3 Task 3: time.c needs the same platform feature macros the
     # engine target carries PUBLIC (the test_editor_lua precedent).
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -3769,6 +3815,14 @@ endif()
             ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
     elseif(ENGINE_PLATFORM STREQUAL "windows")
         target_compile_definitions(test_editor_shell PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+    endif()
+    if(BREAK_ENABLE_SNOWFLAKE)
+        # Phase 4 Task 2: TLS + AUTH-v2 remote tests reference the pinned
+        # Snowflake self-signed fixtures in place (test-only; the
+        # test_break_net_tls BREAK_TEST_SSL_FIXTURE_DIR idiom).
+        target_compile_definitions(test_editor_shell PRIVATE BREAK_EDITOR_REMOTE_TESTS=1
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
+        target_link_libraries(test_editor_shell PRIVATE break_net)
     endif()
     target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
     add_test(NAME test_editor_shell COMMAND test_editor_shell)

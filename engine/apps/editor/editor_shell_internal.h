@@ -7,6 +7,8 @@
  * functions (the editor_viewport3d.c precedent — cross-TU access goes
  * through declared functions, never struct poking).
  *
+ * Phase 4 Task 3 adds editor_panel_network.c on the same contract.
+ *
  * Lifecycle (both the real-window and the dummy-PAL test path):
  *   create  = CPU-side state only (assets model, Lua console core, profiler
  *             snapshot); called from shell_create_common AFTER the doc
@@ -66,3 +68,41 @@ void editor_panel_profiler_tick(EditorPanelProfiler *panel);
 usize editor_panel_profiler_row_count(const EditorPanelProfiler *panel);
 const char *editor_panel_profiler_row_text(const EditorPanelProfiler *panel,
                                            usize i);
+
+/* Network diagnostics panel (Phase 4 Task 3) — PURE VIEW over the borrowed
+ * host-attached remote (read-only editor_remote.h accessors only; never
+ * steps/sends/closes/transitions). Mirrors the profiler lifecycle; built
+ * into the diagnostics column (editor-right-panel) directly under the
+ * profiler at h:20%. The shell forwards every break_editor_shell_set_remote
+ * attach/detach through editor_panel_network_set_remote (forces a refresh
+ * on the next tick). remote == NULL renders one "remote: off" row. A build
+ * failure degrades to no network widgets (non-fatal, void per the plan's
+ * verbatim interface). */
+typedef struct BreakEditorPanelNetwork BreakEditorPanelNetwork;
+struct BreakEditorRemote;
+BreakEditorPanelNetwork *editor_panel_network_create(
+    BreakEditorShell *shell, struct BreakEditorRemote *remote);
+void editor_panel_network_destroy(BreakEditorPanelNetwork *p);
+void editor_panel_network_build(BreakEditorPanelNetwork *p,
+                                my_widget_t *parent);
+/* <= 4 Hz snapshot (250,000 us), never mutates; called from
+ * break_editor_shell_tick BEFORE the remote tick. */
+void editor_panel_network_tick(BreakEditorPanelNetwork *p);
+void editor_panel_network_set_remote(BreakEditorPanelNetwork *p,
+                                     struct BreakEditorRemote *remote);
+/* Test seam: injectable monotonic clock (NULL = time_microseconds). */
+void editor_panel_network_set_clock(BreakEditorPanelNetwork *p,
+                                    u64 (*clock)(void *user), void *user);
+uint32_t editor_panel_network_row_count(const BreakEditorPanelNetwork *p);
+const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p,
+                                          uint32_t index);
+
+/* Reverse-teardown seam (editor_remote.c): break_editor_shell_destroy calls
+ * this FIRST for its attached remote (while the doc is still alive). When
+ * the remote belongs to `shell`, it drops its back-pointer, destroys its
+ * doc-borrowing console core, and stops its reactor, so the orphaned remote
+ * is inert: a later tick is a no-op and break_editor_remote_destroy never
+ * touches the freed shell or its network panel. NULL remote / foreign shell
+ * is a no-op. */
+void editor_remote_shell_destroyed(struct BreakEditorRemote *r,
+                                   BreakEditorShell *shell);

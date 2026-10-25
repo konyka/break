@@ -6,6 +6,7 @@
 #include "editor_panels.h"
 #include "editor_shell_internal.h"
 #include "editor_viewport3d.h"
+#include "editor_remote.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -110,6 +111,13 @@ struct BreakEditorShell {
     EditorPanelAssets *assets_panel;
     EditorPanelLua *lua_panel;
     EditorPanelProfiler *profiler_panel;
+    /* Phase 4 Task 3: network diagnostics (pure view over `remote` below;
+     * diagnostics column, under the profiler). */
+    BreakEditorPanelNetwork *network_panel;
+
+    /* Phase 4 Task 1: host-attached remote session (BORROWED — DEFAULT OFF;
+     * the shell only ticks it, never creates or destroys it). */
+    BreakEditorRemote *remote;
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
@@ -1236,6 +1244,10 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         my_widget_unref(middle);
         return false;
     }
+    /* Phase 4 Task 3: the right column doubles as the diagnostics area —
+     * network panel directly under the profiler (h:20%, set by the panel
+     * build; a build failure is non-fatal: no network widgets) */
+    editor_panel_network_build(shell->network_panel, right_panel);
     shell_add_child(middle, right_panel, "w:28% h:100%");
     shell_add_child(root, middle, "w:100% h:1f");
 
@@ -1355,8 +1367,12 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     shell->assets_panel = editor_panel_assets_create(shell);
     shell->lua_panel = editor_panel_lua_create(shell);
     shell->profiler_panel = editor_panel_profiler_create(shell);
+    /* no remote at create (DEFAULT OFF): break_editor_shell_set_remote
+     * forwards later attaches to the panel */
+    shell->network_panel = editor_panel_network_create(shell, NULL);
     if (shell->assets_panel == NULL || shell->lua_panel == NULL ||
-        shell->profiler_panel == NULL) {
+        shell->profiler_panel == NULL || shell->network_panel == NULL) {
+        editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
         editor_panel_lua_destroy(shell->lua_panel);
         editor_panel_assets_destroy(shell->assets_panel);
@@ -1375,6 +1391,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         if (shell->root != NULL) {
             (void)my_widget_remove_child(content, shell->root);
         }
+        editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
         editor_panel_lua_destroy(shell->lua_panel);
         editor_panel_assets_destroy(shell->assets_panel);
@@ -1451,6 +1468,12 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
     }
+    /* a still-attached remote (host destroyed the shell first) is orphaned
+     * before anything is freed: it drops its back-pointer and its
+     * doc-borrowing console, so its later destroy never reaches this shell */
+    editor_remote_shell_destroyed(shell->remote, shell);
+    shell->remote = NULL;
+    editor_panel_network_set_remote(shell->network_panel, NULL);
     if (shell->owns_window) {
         /* the window teardown destroys the whole panel tree */
         (void)my_window_manager_close(shell->wm, shell->win);
@@ -1470,6 +1493,7 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
      * dummy-PAL path vp3d holds no GPU objects at all. The Phase 3 panels
      * free CPU-side state only (their widgets died with the tree above);
      * the Lua console borrows the doc, so panels go before the doc too. */
+    editor_panel_network_destroy(shell->network_panel);
     editor_panel_profiler_destroy(shell->profiler_panel);
     editor_panel_lua_destroy(shell->lua_panel);
     editor_panel_assets_destroy(shell->assets_panel);
@@ -1629,6 +1653,38 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
+    /* Phase 4 Task 3: the network view snapshots the attached remote at
+     * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
+     * remote tick, so a refresh never observes a half-applied frame. */
+    editor_panel_network_tick(shell->network_panel);
+    /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
+     * never creates one; editor_main --remote / tests attach it via
+     * break_editor_shell_set_remote) is driven exactly once per tick on the
+     * shell thread: one poll_adapter cycle, so the protocol handlers satisfy
+     * the doc/Lua/command owner-thread rule by construction. NULL = the
+     * pre-remote behavior, byte-identical. */
+    break_editor_remote_tick(shell->remote);
+}
+
+/* Phase 4 Task 1 host wiring (editor_remote.h): attaches/detaches the
+ * remote the shell tick drives. The shell BORROWS the remote — the host
+ * (tests / editor_main --remote) owns its lifetime and destroys it. */
+void break_editor_shell_set_remote(BreakEditorShell *shell,
+                                   BreakEditorRemote *remote) {
+    if (shell == NULL) {
+        return;
+    }
+    /* symmetric detach: break_editor_remote_destroy calls this with NULL to
+     * release the shell's borrow; a NEW remote must be attached explicitly
+     * (the shell never adopts one silently). */
+    shell->remote = remote;
+    /* Phase 4 Task 3: the network panel borrows the same remote (and drops
+     * it on detach — remote destroy detaches through here) */
+    editor_panel_network_set_remote(shell->network_panel, remote);
+}
+
+BreakEditorRemote *break_editor_shell_remote(BreakEditorShell *shell) {
+    return shell != NULL ? shell->remote : NULL;
 }
 
 /* ---------------- Phase 3 Task 3: panel accessors ---------------- */
@@ -1670,6 +1726,36 @@ const char *break_editor_shell_profiler_row_text(const BreakEditorShell *shell,
     return shell != NULL
                ? editor_panel_profiler_row_text(shell->profiler_panel, i)
                : NULL;
+}
+
+/* ---------------- Phase 4 Task 3: network panel accessors ---------------- */
+
+uint32_t break_editor_shell_network_row_count(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_network_row_count(shell->network_panel)
+                         : 0u;
+}
+
+const char *break_editor_shell_network_row_text(const BreakEditorShell *shell,
+                                                uint32_t index) {
+    return shell != NULL
+               ? editor_panel_network_row_text(shell->network_panel, index)
+               : NULL;
+}
+
+void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
+                                                   u64 (*clock)(void *user),
+                                                   void *user) {
+    if (shell == NULL) {
+        return;
+    }
+    editor_panel_network_set_clock(shell->network_panel, clock, user);
+}
+
+void break_editor_shell_network_tick_for_test(BreakEditorShell *shell) {
+    if (shell == NULL) {
+        return;
+    }
+    editor_panel_network_tick(shell->network_panel);
 }
 
 void break_editor_shell_render_viewport(BreakEditorShell *shell,
