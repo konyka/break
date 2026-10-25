@@ -37,7 +37,15 @@
 
 ### 验证
 - ctest：vk 182/182、gl 179/179 全部通过（含新增的 2 个物理用例）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
-- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，需要另外查，本次没有处理。已知的线索：系统日志里 11:15:37 有两条 `nvlddmkm` 事件 153（NVIDIA 驱动事件），此后同一个构建的 d3d12-debug demo（`ENGINE_D3D12_DEBUG` + 硬件适配器）也在启动时段错误，而 WARP 适配器和 Release 的 D3D12 demo 都正常。这台机器当时 E: 盘满了（0 字节可用），已清理 1.2 GB 临时截图后恢复，但崩溃没有因此消失，所以磁盘不是原因。可能需要重启或重新插拔驱动之后再看，我没有擅自重启。
+- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，下面是后续排查的结论。
+
+**排查结论（NVIDIA 驱动 32.0.16.2101 与 Agility 1.616 调试层不兼容）**：
+- 重启电脑之后问题依旧，磁盘也不是原因（清出空间后仍然崩溃）。
+- 写了一个独立的 C 小程序（只做 `D3D12GetDebugInterface` → `EnableDebugLayer` → `CreateDXGIFactory2` → `D3D12CreateDevice`）逐项排除：不开调试层时 NVIDIA 和 AMD 两个适配器都正常；开调试层时 AMD 适配器正常，NVIDIA 适配器在 `D3D12CreateDevice` 里崩溃（`D3D12Core.dll` 内访问冲突，`0xc0000005`）。
+- 再拆开部署的两个 DLL：Agility 1.616 的 `D3D12Core.dll` 搭配系统自带的 `d3d12SDKLayers.dll`（`C:\Windows\System32`，2026-10-14）可以正常运行；用 Agility 1.616 自带的 `d3d12SDKLayers.dll` 就崩溃。所以问题出在 Agility 1.616 的调试层与目前这版 NVIDIA 驱动（2026-10-19 发布）的组合上。
+- 验证：把 `build-d3d12-debug/d3d12SDKLayers.dll` 临时换成系统自带的那一个之后，6 个契约测试全部恢复，ctest 187/187，WARP 套件 81/81，RTX 套件 80/81（只有预期中的 [1]），硬件适配器上的 debug demo 也能正常启动。
+
+**注意**：这个替换只在本机的构建目录里做了，`engine/external/d3d12/agility` 里钉死的 Agility 1.616 文件和 `engine/CMakeLists.txt` 都没有改。`copy_if_different` 以后如果发现源文件和目标不一样，会把 Agility 的 `d3d12SDKLayers.dll` 又拷回来，崩溃会再次出现。需要保留本机修复的话，要么把 Agility 升级到新版本再验证，要么在本机重新建 `build-d3d12-debug` 之后手动再换一次。原来的 Agility 层文件备份在 `.tmp/d3d12SDKLayers_agility_1616.dll`。
 
 ## 本轮更新：R694 — 物理改为固定步长 1/60 s + 渲染插值：下落动画不再随帧节奏抖动；记录 D3D12/GL 的 vsync 帧节奏问题
 
