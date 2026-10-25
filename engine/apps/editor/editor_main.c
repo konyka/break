@@ -159,7 +159,7 @@ int main(int argc, char **argv) {
         !break_editor_remote_set_psk(remote, remote_cli.key_id,
                                      remote_cli.psk) ||
         !break_editor_remote_start(remote)) {
-      memset(remote_cli.psk, 0, sizeof(remote_cli.psk));
+      break_editor_remote_cli_wipe(&remote_cli);
       break_editor_remote_destroy(remote);
       break_editor_shell_destroy(shell);
       break_ui_destroy(ui);
@@ -169,7 +169,7 @@ int main(int argc, char **argv) {
                       "unreadable, port in use, or auth setup failed)\n");
       return 1;
     }
-    memset(remote_cli.psk, 0, sizeof(remote_cli.psk));
+    break_editor_remote_cli_wipe(&remote_cli);
     break_editor_shell_set_remote(shell, remote);
     fprintf(stderr,
             "editor: remote session (DEV TOOL, TLS + AUTH-v2) listening on "

@@ -40,6 +40,15 @@
 #include <editor/editor_lua.h>
 #include <editor/editor_protocol.h>
 
+/* Key-material wipe the optimizer cannot drop: a plain memset right before
+ * free()/return is a dead store and is removed at -O2. */
+static void remote_wipe(void *p, size_t n) {
+    volatile u8 *v = (volatile u8 *)p;
+    while (n-- != 0u) {
+        *v++ = 0u;
+    }
+}
+
 #ifdef BREAK_ENABLE_SNOWFLAKE
 
 #include <network/break_net_adapter.h>
@@ -802,7 +811,8 @@ void break_editor_remote_destroy(BreakEditorRemote *r) {
     remote_auth_uninstall(r);
 #endif
     break_editor_lua_destroy(r->console);
-    memset(r->psk, 0, sizeof(r->psk));
+    remote_wipe(r->psk, sizeof(r->psk));
+    remote_wipe(r->key_id, sizeof(r->key_id));
     free(r);
 }
 
@@ -1115,14 +1125,19 @@ static bool remote_psk_file_read(const char *path, u8 out[32]) {
     if (f == NULL) {
         return false;
     }
+    /* unbuffered: no stdio heap buffer is left holding the key bytes */
+    if (setvbuf(f, NULL, _IONBF, 0) != 0) {
+        fclose(f);
+        return false;
+    }
     n = fread(buf, 1u, sizeof(buf), f);
     fclose(f);
     if (n != 32u) {
-        memset(buf, 0, sizeof(buf));
+        remote_wipe(buf, sizeof(buf));
         return false;
     }
     memcpy(out, buf, 32u);
-    memset(buf, 0, sizeof(buf));
+    remote_wipe(buf, sizeof(buf));
     return true;
 }
 
@@ -1164,7 +1179,14 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
             strcmp(arg, "--remote-psk-hex") != 0 &&
             strcmp(arg, "--remote-psk-file") != 0 &&
             strcmp(arg, "--remote-key-id-hex") != 0) {
-            remote_cli_error(err, err_cap, "unknown option", arg);
+            /* never echo an inline "=value": it may be a PSK */
+            const char *eq = strchr(arg, '=');
+            if (eq != NULL && err != NULL && err_cap != 0u) {
+                snprintf(err, err_cap, "unknown option: %.*s=<redacted>",
+                         (int)(eq - arg), arg);
+            } else {
+                remote_cli_error(err, err_cap, "unknown option", arg);
+            }
             goto fail;
         }
         if (i + 1 >= argc || argv[i + 1] == NULL) {
@@ -1241,10 +1263,17 @@ bool break_editor_remote_cli_parse(int argc, char **argv,
     out->has_psk = true;
     return true;
 fail:
-    memset(out->psk, 0, sizeof(out->psk));
+    remote_wipe(out->psk, sizeof(out->psk));
     out->has_psk = false;
     out->enabled = false;
     return false;
+}
+
+void break_editor_remote_cli_wipe(BreakEditorRemoteCli *cli) {
+    if (cli != NULL) {
+        remote_wipe(cli->psk, sizeof(cli->psk));
+        cli->has_psk = false;
+    }
 }
 
 void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,

@@ -2221,6 +2221,17 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
         ASSERT_FALSE(remote_cli(3, argv, &cli));
     }
     {
+        /* an inline "=value" is never echoed: it may be the PSK */
+        char argbuf[96];
+        const char *argv[] = {"editor", "--remote", argbuf};
+        snprintf(argbuf, sizeof(argbuf), "--remote-psk-hex=%s", k_hex64);
+        err[0] = '\0';
+        ASSERT_FALSE(break_editor_remote_cli_parse(3, (char **)argv, &cli, err,
+                                                   sizeof(err)));
+        ASSERT_TRUE(strstr(err, "--remote-psk-hex") != NULL);
+        ASSERT_TRUE(strstr(err, "0001020304") == NULL);
+    }
+    {
         const char *argv[] = {"editor", "--remote", "--remote-cert"};
         ASSERT_FALSE(remote_cli(3, argv, &cli)); /* missing value */
     }
@@ -2258,6 +2269,12 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
         ASSERT_TRUE(cfg.rate_global_per_sec != 0u &&
                     cfg.rate_global_burst != 0u &&
                     cfg.rate_per_ip_per_minute != 0u);
+        break_editor_remote_cli_wipe(&cli);
+        ASSERT_FALSE(cli.has_psk);
+        for (i = 0u; i < 32u; i++) {
+            ASSERT_EQ(cli.psk[i], 0u);
+        }
+        break_editor_remote_cli_wipe(NULL);
     }
     {
         /* default port + all-zero key id when not given; dev PSK file of

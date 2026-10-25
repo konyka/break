@@ -112,6 +112,9 @@ typedef struct BreakEditorRemoteCli {
 bool break_editor_remote_cli_parse(int argc, char **argv,
                                    BreakEditorRemoteCli *out, char *err,
                                    size_t err_cap);
+/* Wipes the parsed PSK (a volatile store the optimizer keeps); call it as
+ * soon as the PSK has been handed to break_editor_remote_set_psk. */
+void break_editor_remote_cli_wipe(BreakEditorRemoteCli *cli);
 /* TLS-required, loopback-bound config with the default rate limits; the
  * strings stay borrowed from the cli (argv) storage. */
 void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,
