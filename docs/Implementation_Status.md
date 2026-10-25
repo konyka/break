@@ -1,6 +1,53 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R698 — Windows 全面复核（HEAD `ebd50ac3`，无代码改动）
+
+远程 `origin/master` 与本地一致（没有新提交），在这台 Windows 机器上对当前 HEAD 做了一轮完整复核，没有发现需要修复的问题。
+
+### 构建
+6 棵构建树（Debug：`build-d3d12-debug` / `build-vk` / `build-gl`；Release：`build-rel-d3d12` / `build-rel-vk` / `build-rel-gl`）全部增量重编，0 个警告、0 个错误。
+
+### 自动化测试
+| 构建树 | ctest 结果 |
+|---|---|
+| `build-d3d12-debug` | 187 / 187 |
+| `build-vk` | 182 / 182 |
+| `build-gl` | 179 / 179 |
+
+d3d12-debug 的 187/187 包括：此前崩溃的 6 个 D3D12 契约测试（R697 升级 Agility 后恢复）、`test_d3d12_sdk_lock`、以及 `test_platform_win32_runtime` 的剪贴板用例（ToDesk 已退出）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+
+### Windows 系统相关功能（单独逐个运行）
+| 测试 | 结果 |
+|---|---|
+| `test_platform_win32_runtime`（窗口 / 剪贴板 / DPI） | 15 / 15 |
+| `test_platform_wsi_lifecycle_win32`（Win32 WSI 生命周期） | 7 / 7 |
+| `test_myui_gl_desktop_win32` | 3 / 3 |
+| `test_monitor_selection`（多显示器选择） | 5 / 5 |
+| `test_platform_size_semantics` | 4 / 4 |
+| `test_platform_text` / `test_platform_display_media` | 19 / 19、8 / 8 |
+| `test_filewatch_backend`（ReadDirectoryChangesW） | 26 / 26 |
+| `test_input` | 30 / 30 |
+| `test_audio` / `test_network` / `test_vfs` | 17 / 17、18 / 18、33 / 33 |
+
+### 真机运行（本机直连，ToDesk 已关闭）
+三个后端 × 前向 / 延迟 × Debug / Release 共 12 个组合，每个跑 240 帧：全部正常退出（rc=0），日志中 WARN / ERROR / FATAL 为 0。
+
+| fps_avg | 前向 | 延迟 |
+|---|---|---|
+| Release D3D12 | 390 | 442 |
+| Release VK | 293 | 333 |
+| Release GL | 330 | 376 |
+| Debug D3D12（含调试层 + GPU 验证） | 71 | 79 |
+| Debug VK | 288 | 314 |
+| Debug GL | 329 | 380 |
+
+VK 的校验层统计输出 `VK validation messages this run: 0`，D3D12 调试层 0 条消息，没有对象泄漏。
+
+### 仍然存在、已知且与本轮无关
+- RTX 套件的测试 [78]（`gpu_timer_measures_the_gpu_time_of_a_recorded_region`，GPU 计时比值）在带 GPU-based validation 的硬件适配器上偶发失败，已在 R697 记录，关闭 GBV 后不再出现。
+- RTX 套件的测试 [1]（设备名应为 WARP）在硬件适配器上必然失败，属预期。
+
 ## 本轮更新：R697 — 依赖：D3D12 Agility SDK 1.616.0 → 1.619.6（修复调试层与 NVIDIA 32.0.16.2101 驱动的崩溃）
 
 ### 起因
