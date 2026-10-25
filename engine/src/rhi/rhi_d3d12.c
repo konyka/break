@@ -6,8 +6,8 @@
 #include <d3d12.h>
 
 /* Route d3d12.dll to the side-by-side Agility SDK deployed next to the
- * executable (Task 1 lock: version 1.616.0 -> SDK version 616). */
-__declspec(dllexport) const UINT D3D12SDKVersion = 616u;
+ * executable (lock: version 1.619.6 -> SDK version 619). */
+__declspec(dllexport) const UINT D3D12SDKVersion = 619u;
 __declspec(dllexport) const char *D3D12SDKPath = ".\\";
 #endif
 
@@ -1875,7 +1875,7 @@ static ID3D12GraphicsCommandList4 *rhi_d3d12_cmdlist4(
  * CreateCommittedResource (the runtime sets them automatically;
  * E_INVALIDARG otherwise), and the AS-only alias
  * D3D12_HEAP_FLAG_ALLOW_ONLY_RT_ACCELERATION_STRUCTURE_BUFFERS
- * postdates the pinned Agility 1.616 headers (Task 1 lock). */
+ * postdates the pinned Agility headers (lock: 1.619.6). */
 static HRESULT rhi_d3d12_as_create_storage(RHI_D3D12Context *ctx, UINT64 size,
                                            RHI_D3D12Resource *out) {
     D3D12_HEAP_PROPERTIES heap;

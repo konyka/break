@@ -524,7 +524,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   （`engine/tools/fetch_vulkan_sdk_windows.cmake`，版本 + SHA256 钉死）。
 - Android NDK r27c（27.2.12479018）；Xcode `>=15.4`（macOS 侧 glslc/spirv-cross/cmake/ninja
   的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
-- D3D12 Agility SDK 1.616.0（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
+- D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
 - Linux CI apt 钉版（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。
 
@@ -641,7 +641,7 @@ ctest --test-dir build-d3d12 -L graphics -R test_d3d12 --output-on-failure
 
 - 依赖锁定（`engine/external/d3d12/agility_sdk_lock.txt`，由 `test_d3d12_sdk_lock`
   做哈希校验）：Windows SDK 10.0.26100.0、Agility SDK
-  （Microsoft.Direct3D.D3D12）1.616.0、dxc 优先 vendored
+  （Microsoft.Direct3D.D3D12）1.619.6、dxc 优先 vendored
   `engine/external/VulkanSDK/Bin/dxc.exe`（CI 用 Windows SDK 自带 dxc）。
 - Agility SDK 获取：`cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`（NuGet
   下载 + 锁文件 SHA512 校验）；构建系统把 `D3D12Core.dll` / `d3d12SDKLayers.dll`

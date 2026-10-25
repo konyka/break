@@ -1,6 +1,35 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R697 — 依赖：D3D12 Agility SDK 1.616.0 → 1.619.6（修复调试层与 NVIDIA 32.0.16.2101 驱动的崩溃）
+
+### 起因
+R696 记录的问题：在 NVIDIA 驱动 32.0.16.2101 上，Agility 1.616.0 自带的 `d3d12SDKLayers.dll` 在 `D3D12CreateDevice`（硬件适配器 + 调试层）里崩溃，d3d12-debug 树有 7 个测试因此失败。当时只是本机把构建目录里的层 DLL 换成了系统自带的那一份，不够长久（`copy_if_different` 会把它换回来），所以这一轮把钉住的版本升上去。
+
+### 选版本
+NuGet 当前的稳定版最新是 1.619.6（D3D12SDKVersion 619，2026-09-14）；1.617 没有稳定版，之后有 1.618.x、1.619.x。预览版有 1.720/1.721，但生产代码不应依赖预览版。选 1.619.6 的另一个理由：它的发布说明里有针对调试层的一批修复（`.2` 的 SDKLayers 增强屏障修复，`.4`、`.5` 的状态跟踪和校验修复）。注意这个机器访问 `nuget.org` 会被重定向到 `nuget.azure.cn`，`file(DOWNLOAD)` 能跟随重定向，项目自己的获取脚本照常工作。
+
+### 先独立验证再升级
+在不动仓库的前提下，用一个只做「开调试层 → 创建设备」的小程序测试 1.619.6 的 `D3D12Core.dll` + `d3d12SDKLayers.dll`：NVIDIA 和 AMD 两个适配器、开/不开调试层共 3 种组合全部通过，没有崩溃。
+
+### 改动
+- `engine/external/d3d12/agility_sdk_lock.txt`：`agility=1.619.6`；`nupkg_sha512` 和 `dll_sha512`（`D3D12Core.dll`）按新包重新计算（nupkg 35,477,552 字节）。
+- `engine/tools/fetch_d3d12_agility_sdk.cmake`：`_version` 改为 1.619.6。
+- `engine/tests/test_d3d12_sdk_lock.cmake`：版本断言改为 1.619.6。
+- `engine/src/rhi/rhi_d3d12.c`：导出的 `D3D12SDKVersion` 从 616 改为 619，并更新两处注释。这个值必须与锁文件里的版本一致，`test_d3d12_sdk_lock` 会检查（`agility=1.<SDK>.<rev>` → SDK 版本 `<SDK>`）。
+- `docs/Build_Guide.md`：两处版本号。
+- 本机的 `engine/external/d3d12/agility/`（不入库）用项目自己的 `cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake` 重新获取，同时验证了获取脚本和哈希校验路径。头文件也随包升到了 1.619.6，并确认构建时 `copy_if_different` 把新的 `D3D12Core.dll` 和 `d3d12SDKLayers.dll` 部署到了两棵 D3D12 构建树。
+- 旧版本留作回滚用：可以用旧的锁文件（git 历史里 `agility_sdk_lock.txt` 的上一版）重新执行获取脚本。
+
+### 验证
+- d3d12-debug 树 ctest 187/187（之前是 180/187），包括 `test_d3d12_sdk_lock`（新哈希通过）和 6 个之前崩溃的契约测试。其中 `pipeline_contract` 和 `dxr_contract` 返回 77（跳过，当前硬件不支持对应特性）。
+- vk 182/182、gl 179/179。
+- WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+- RTX 套件：只有预期中的 [1]（设备名不是 WARP）；另外 [78] `gpu_timer_measures_the_gpu_time_of_a_recorded_region` 时有时无（`settled[i] > 1.5 * settled[j]`，GPU 计时的比值判断）。为了确认它和升级无关，把环境换回「Agility 1.616 核心 + 系统调试层」（升级前的绿色配置）连跑 6 次，[78] 同样 4/6 次失败；升级到 1.619.6 后 4 次里 2 次失败。关掉 GPU-based validation（`BREAK_D3D12_GBV=0`）之后 6 次全部只有 [1] 失败。所以这是该测试在带 GBV 的硬件适配器上本来就存在的偶发失败，不是这次升级引入的，没有处理。
+
+### CI 注意
+CI 的 4 个 job 在构建前都会执行 `cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake`，现在会下载 1.619.6，并由 `test_d3d12_sdk_lock` 核对新的哈希；哈希是我在本机下载的包上算出的，所以只要 NuGet 上的包没有被替换，CI 就会通过。这一点没有在 CI 上实际跑过。
+
 ## 本轮更新：R696 — 物理：低速撞击不再反弹（restitution 速度阈值），修复 demo 里云朵落地后的抖动
 
 ### 现象

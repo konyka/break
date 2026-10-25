@@ -1,6 +1,6 @@
 # Fetches the pinned Microsoft.Direct3D.D3D12 NuGet package into
 # engine/external/d3d12/agility/ and verifies it against the lock file.
-set(_version "1.616.0")
+set(_version "1.619.6")
 set(_dest "${CMAKE_CURRENT_LIST_DIR}/../external/d3d12/agility")
 set(_nupkg "${CMAKE_BINARY_DIR}/d3d12-agility-${_version}.nupkg")
 set(_url "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/${_version}")
