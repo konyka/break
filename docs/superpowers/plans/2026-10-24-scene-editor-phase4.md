@@ -89,10 +89,10 @@ uint32_t break_editor_remote_connections_snapshot(const BreakEditorRemote *r,
                                                   uint64_t *out_keys, uint32_t *out_states, uint32_t capacity);
 ```
 
-- [ ] RED: protocol parse tests + headless shell remote tests fail to build/link before implementation.
-- [ ] GREEN tests: plaintext-seam loopback (port-0, condition polling, test client over raw socket): DESCRIBE returns version/entity_count/dirty; LIST returns entity rows; SPAWN creates entity (doc entity_count +1) and is undoable (Ctrl+Z reverts — pin); REMOVE/RENAME/SET_FIELD map to undoable commands; UNDO/REDO apply; EVAL `return 1+2` returns ok with `lua| 3` in the console ring; unknown id/malformed payload/oversize → connection closed (fail closed); disabled remote (no start) leaves shell untouched; tick wiring is per-frame (poll_adapter called each tick — counter pin).
-- [ ] Lanes: build-sdd-p4, -asan, -tsan; editor lane green ×3; ASan ×3 / TSan ×5 zero reports on new tests; contract ctest updated and green.
-- [ ] Commit.
+- [x] RED: protocol parse tests + headless shell remote tests fail to build/link before implementation. *(closeout note: RED evidence lives with the Task 1–3 implementer runs; not re-run at Task 4 — GREEN re-verified at HEAD)*
+- [x] GREEN tests: plaintext-seam loopback (port-0, condition polling, test client over raw socket): DESCRIBE returns version/entity_count/dirty; LIST returns entity rows; SPAWN creates entity (doc entity_count +1) and is undoable (Ctrl+Z reverts — pin); REMOVE/RENAME/SET_FIELD map to undoable commands; UNDO/REDO apply; EVAL `return 1+2` returns ok with `lua| 3` in the console ring; unknown id/malformed payload/oversize → connection closed (fail closed); disabled remote (no start) leaves shell untouched; tick wiring is per-frame (poll_adapter called each tick — counter pin).
+- [x] Lanes: build-sdd-p4, -asan, -tsan; editor lane green ×3; ASan ×3 / TSan ×5 zero reports on new tests; contract ctest updated and green. *(re-verified at HEAD in Task 4: normal `build-sdd-p4-final`, `build-sdd-p4-asan` ×3, `build-sdd-p4-tsan` ×5, `test_editor_shell` 59/59, zero reports; contract 7/7 ×3)*
+- [x] Commit. (`1af632eb`)
 
 ### Task 2: TLS + CHALLENGE/AUTH-v2 wiring (required for remote; plaintext stays test-only)
 
@@ -103,10 +103,10 @@ uint32_t break_editor_remote_connections_snapshot(const BreakEditorRemote *r,
 
 **Interfaces:** `BreakEditorRemoteConfig` as in Task 1 (verbatim, unchanged). Editor-side auth config: a documented dev-key file path (32 raw bytes) or `--remote-psk-hex` argument feeding the `BreakNetAuthKeyFn` seam; **production provisioning explicitly out of scope** (documented).
 
-- [ ] RED: TLS+auth loopback tests fail before wiring (no TLS config path).
-- [ ] GREEN tests: full handshake over TLS + AUTH-v2 with test fixture certs (reuse `BREAK_TEST_SSL_FIXTURE_DIR` idiom): authenticated client issues DESCRIBE/SPAWN successfully; unauthenticated client (no AUTH v2 / bad tag / unknown key) → closed, zero doc effect; plaintext config → start false when `use_tls` true and certs missing; rate-limit denials observable via `break_editor_remote_admission_denied`; `use_tls=false` documented test-only path still works (Task 1 suite); main.c `--remote` flag absent → no listener (nm/behavior pin).
-- [ ] Lanes ×3 green; ASan ×3 / TSan ×5 zero reports; timeout-wrapped direct runs.
-- [ ] Commit.
+- [x] RED: TLS+auth loopback tests fail before wiring (no TLS config path). *(closeout note: RED evidence lives with the Task 1–3 implementer runs; not re-run at Task 4 — GREEN re-verified at HEAD)*
+- [x] GREEN tests: full handshake over TLS + AUTH-v2 with test fixture certs (reuse `BREAK_TEST_SSL_FIXTURE_DIR` idiom): authenticated client issues DESCRIBE/SPAWN successfully; unauthenticated client (no AUTH v2 / bad tag / unknown key) → closed, zero doc effect; plaintext config → start false when `use_tls` true and certs missing; rate-limit denials observable via `break_editor_remote_admission_denied`; `use_tls=false` documented test-only path still works (Task 1 suite); main.c `--remote` flag absent → no listener (nm/behavior pin).
+- [x] Lanes ×3 green; ASan ×3 / TSan ×5 zero reports; timeout-wrapped direct runs. *(re-verified at HEAD in Task 4: normal `build-sdd-p4-final`, `build-sdd-p4-asan` ×3, `build-sdd-p4-tsan` ×5, `test_editor_shell` 59/59, zero reports; contract 7/7 ×3)*
+- [x] Commit. (`7fc7a1ef` + review round 1 `ca9a2785`)
 
 ### Task 3: Network diagnostics panel (pure view)
 
@@ -130,10 +130,10 @@ uint32_t editor_panel_network_row_count(const BreakEditorPanelNetwork *p);
 const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p, uint32_t index);
 ```
 
-- [ ] RED: panel tests fail before implementation.
-- [ ] GREEN tests: panel rows populate after a loopback connect + commands (reactor/session counters match `break_session_manager_apply_stats` + reactor accessors byte-for-byte); ≤4 Hz throttle pinned (two ticks within 250 ms → row storage unchanged); remote==NULL → bounded "remote: off" row; panel never calls send/close/transition (source-scan + behavior pin); layout presence (panel registered under diagnostics area, documented placement).
-- [ ] Lanes ×3 green; ASan ×3 / TSan ×5 zero reports.
-- [ ] Commit.
+- [x] RED: panel tests fail before implementation. *(closeout note: RED evidence lives with the Task 1–3 implementer runs; not re-run at Task 4 — GREEN re-verified at HEAD)*
+- [x] GREEN tests: panel rows populate after a loopback connect + commands (reactor/session counters match `break_session_manager_apply_stats` + reactor accessors byte-for-byte); ≤4 Hz throttle pinned (two ticks within 250 ms → row storage unchanged); remote==NULL → bounded "remote: off" row; panel never calls send/close/transition (source-scan + behavior pin); layout presence (panel registered under diagnostics area, documented placement).
+- [x] Lanes ×3 green; ASan ×3 / TSan ×5 zero reports. *(re-verified at HEAD in Task 4: normal `build-sdd-p4-final`, `build-sdd-p4-asan` ×3, `build-sdd-p4-tsan` ×5, `test_editor_shell` 59/59, zero reports; contract 7/7 ×3)*
+- [x] Commit. (`5df792cd` + review round 1 `357be082`)
 
 ### Task 4: Validation and documentation closeout
 
@@ -141,12 +141,12 @@ const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p, uint
 - Create: `docs/design/editor_remote.md`
 - Modify: `docs/Implementation_Status.md`, `docs/design/roadmap_2026-10-22.md` (Stage 4 subproject 6 → network panel delivered, render debugger pending; subproject 7 → remote session delivered dev-tool form), `docs/superpowers/plans/2026-10-22-runtime-expansion-todo.md`
 
-- [ ] Clean normal tree: full default build + editor lane + break_net lanes green; `ENGINE_BUILD_TESTS=OFF` tree builds `editor`; nm: `editor` links break_net, engine/engine_demo/dxx_break zero break_net/break_crypto symbols (contract).
-- [ ] ASan/UBSan + TSan trees green, zero reports; contract ctests green ×3.
-- [ ] Full non-graphics/non-fuzz suite; classify failures per house convention.
-- [ ] Remote end-to-end over TLS+AUTH-v2 from a scripted client (test binary): connect → auth → describe → spawn → undo → disconnect; record the transcript in the report.
-- [ ] editor_remote.md: protocol reference (message table, payload layouts, error taxonomy), security model (TLS+AUTH-v2 required, dev-key provisioning non-production, default OFF, loopback-first bind, rate limits), threading model (shell thread = GameThread, STEP mode rationale), codec-boundary note (default-registry id space 4..19), NOT-delivered (remote load/save, remote render control, production credential system, WAN/multi-client management, remote undo-stack sharing, render debugger panel).
-- [ ] `git diff --check` clean on branch range.
+- [x] Clean normal tree: full default build + editor lane + break_net lanes green; `ENGINE_BUILD_TESTS=OFF` tree builds `editor`; nm: `editor` links break_net, engine/engine_demo/dxx_break zero break_net/break_crypto symbols (contract).
+- [x] ASan/UBSan + TSan trees green, zero reports; contract ctests green ×3.
+- [x] Full non-graphics/non-fuzz suite; classify failures per house convention. (203 = 202 passed + 1 Windows-only skip, 0 failed)
+- [x] Remote end-to-end over TLS+AUTH-v2 from a scripted client (test binary): connect → auth → describe → spawn → undo → disconnect; record the transcript in the report.
+- [x] editor_remote.md: protocol reference (message table, payload layouts, error taxonomy), security model (TLS+AUTH-v2 required, dev-key provisioning non-production, default OFF, loopback-first bind, rate limits), threading model (shell thread = GameThread, STEP mode rationale), codec-boundary note (default-registry id space 4..19), NOT-delivered (remote load/save, remote render control, production credential system, WAN/multi-client management, remote undo-stack sharing, render debugger panel).
+- [x] `git diff --check` clean on branch range.
 
 ## Cross-cutting Review Gates
 

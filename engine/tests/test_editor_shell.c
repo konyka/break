@@ -3182,6 +3182,95 @@ TEST(remote_tls_auth_v2_client_describe_and_spawn)
     break_editor_shell_destroy(shell);
 }
 
+static u32 rd32le(const u8 *p) {
+    return (u32)p[0] | ((u32)p[1] << 8u) | ((u32)p[2] << 16u) |
+           ((u32)p[3] << 24u);
+}
+
+/* Phase 4 closeout end-to-end: one scripted client over TLS + AUTH-v2 runs
+ * connect -> auth -> describe -> spawn -> remote undo -> disconnect and
+ * prints an "E2E|" transcript line per step (captured into
+ * docs/design/editor_remote.md). */
+TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    const u8 *pl;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    printf("  E2E| listen 127.0.0.1:<ephemeral> tls=%d\n",
+           break_editor_remote_is_tls(remote) ? 1 : 0);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    printf("  E2E| connect: TLS handshake ok; <- CHALLENGE id=%u v1 16B "
+           "server_nonce\n", (unsigned)BREAK_NET_MESSAGE_ID_CHALLENGE);
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    printf("  E2E| session state=%s\n",
+           break_editor_remote_state_name((u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&c, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(
+        tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_AUTHENTICATED));
+    printf("  E2E| -> AUTH id=%u v2 56B (key_id||client_nonce||hmac) ; "
+           "session state=%s\n", (unsigned)BREAK_NET_MESSAGE_ID_AUTH,
+           break_editor_remote_state_name((u32)BREAK_SESSION_AUTHENTICATED));
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    ASSERT_EQ(rsp.payload_size, 7u);
+    pl = (const u8 *)rsp.payload;
+    ASSERT_EQ(rd16(pl), BREAK_EDITOR_PROTO_VERSION);
+    ASSERT_EQ(rd32le(pl + 2u), 0u);
+    printf("  E2E| -> DESCRIBE id=%u 0B ; <- DESCRIBE id=%u %uB version=%u "
+           "entity_count=%u dirty=%u\n", (unsigned)BREAK_EDITOR_MSG_DESCRIBE,
+           (unsigned)rsp.message_id, (unsigned)rsp.payload_size,
+           (unsigned)rd16(pl), (unsigned)rd32le(pl + 2u), (unsigned)pl[6]);
+    {
+        u8 req[2 + 4];
+        wr16(req, 4u);
+        memcpy(req + 2u, "hero", 4u);
+        ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_SPAWN,
+                                    BREAK_EDITOR_PROTO_VERSION, req,
+                                    sizeof(req)));
+        ASSERT_TRUE(tls_client_recv(&c, &rsp));
+        ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SPAWN);
+        ASSERT_EQ(rsp.payload_size, 8u);
+        ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+        pl = (const u8 *)rsp.payload;
+        printf("  E2E| -> SPAWN id=%u 6B name=\"hero\" ; <- SPAWN id=%u %uB "
+               "entity={index=%u,generation=%u} ; doc entity_count=%u\n",
+               (unsigned)BREAK_EDITOR_MSG_SPAWN, (unsigned)rsp.message_id,
+               (unsigned)rsp.payload_size, (unsigned)rd32le(pl),
+               (unsigned)rd32le(pl + 4u),
+               (unsigned)break_editor_doc_entity_count(doc));
+    }
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_UNDO,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_UNDO);
+    ASSERT_EQ(rsp.payload_size, 1u);
+    pl = (const u8 *)rsp.payload;
+    ASSERT_EQ(pl[0], 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    printf("  E2E| -> UNDO id=%u 0B ; <- UNDO id=%u %uB applied=%u ; doc "
+           "entity_count=%u\n", (unsigned)BREAK_EDITOR_MSG_UNDO,
+           (unsigned)rsp.message_id, (unsigned)rsp.payload_size,
+           (unsigned)pl[0], (unsigned)break_editor_doc_entity_count(doc));
+    tls_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    printf("  E2E| disconnect: client closed ; remote connection_count=%u "
+           "admission_denied=%llu\n",
+           (unsigned)break_editor_remote_connection_count(remote),
+           (unsigned long long)break_editor_remote_admission_denied(remote));
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 /* mode 0 = no AUTH (command straight after the handshake), 1 = tampered
  * tag, 2 = unknown key id, 3 = AUTH v1 while v2 auth is configured. */
 static void tls_unauthenticated_case(int mode) {
@@ -3425,6 +3514,7 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(network_panel_refresh_never_mutates_remote_state);
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
+    RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
     RUN_REMOTE_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
     RUN_REMOTE_TEST(remote_tls_rate_limit_denials_observable);
