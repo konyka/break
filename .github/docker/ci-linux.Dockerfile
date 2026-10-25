@@ -22,11 +22,11 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         > /etc/apt/apt.conf.d/80-ci-retries \
  && apt-get update \
  && apt-get install -y --no-install-recommends \
-        ca-certificates curl git sudo xz-utils zstd \
+        ca-certificates curl git sudo xz-utils zstd python3 file procps make \
         build-essential gcc \
         clang lld llvm \
         clang-18 lld-18 llvm-18-tools \
-        cmake=3.28.* ninja-build \
+        cmake=3.28.* ninja-build pkg-config \
         libx11-dev libxrandr-dev \
         libgl1-mesa-dev libgl1-mesa-dri libegl1-mesa-dev libgles2-mesa-dev \
         libfreetype6-dev \

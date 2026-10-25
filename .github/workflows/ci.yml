@@ -29,6 +29,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -76,6 +79,9 @@ jobs:
       image: ghcr.io/konyka/break-ci-linux:latest
       # LeakSanitizer stops the world with ptrace; Docker blocks it by default.
       options: --cap-add=SYS_PTRACE --security-opt seccomp=unconfined
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -135,6 +141,9 @@ jobs:
       image: ghcr.io/konyka/break-ci-linux:latest
       # the "Lower the ASLR entropy" step writes vm.mmap_rnd_bits on the host kernel.
       options: --privileged
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -367,6 +376,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -458,6 +470,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -747,6 +762,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
@@ -806,6 +824,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -1071,6 +1092,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
@@ -1124,6 +1148,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
@@ -1355,6 +1382,9 @@ jobs:
     runs-on: ubuntu-24.04
     container:
       image: ghcr.io/konyka/break-ci-linux:latest
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
