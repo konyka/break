@@ -131,10 +131,12 @@ endif()
 
 # engine, engine_demo, and dxx_break must not link break_editor (and, since
 # Phase 3 Task 2, must not link break_lua either — the facade reaches the
-# editor executable only through break_editor). Their target_link_libraries
-# calls are single-line in this file, so a line-level scan is exact for the
-# current style. The engine target's vendored raw `lua` link is fine and is
-# not matched by the break_lua pattern.
+# editor executable only through break_editor; Phase 4 Task 1 extends the
+# pin: they must not link break_net either — the remote session host is an
+# editor-executable-only consumer). Their target_link_libraries calls are
+# single-line in this file, so a line-level scan is exact for the current
+# style. The engine target's vendored raw `lua` link is fine and is not
+# matched by the break_lua pattern.
 string(REGEX MATCHALL "target_link_libraries\\((engine|engine_demo|dxx_break)[^\n]*" consumer_link_lines "${cmake_text}")
 foreach(line IN LISTS consumer_link_lines)
     if(line MATCHES "break_editor")
@@ -142,6 +144,9 @@ foreach(line IN LISTS consumer_link_lines)
     endif()
     if(line MATCHES "break_lua")
         message(FATAL_ERROR "break_lua leaked into a consumer link line: ${line}")
+    endif()
+    if(line MATCHES "break_net")
+        message(FATAL_ERROR "break_net leaked into a consumer link line: ${line}")
     endif()
 endforeach()
 
@@ -235,17 +240,41 @@ endif()
 # after break_editor (it also arrived transitively via break_editor's PUBLIC
 # link). The engine/engine_demo/dxx_break no-link pins above are UNCHANGED —
 # they still link neither break_editor nor break_lua.
+#
+# Phase 4 Task 1 UPDATE: the editor executable carries editor_remote.c (the
+# remote session host) and therefore requires BREAK_ENABLE_SNOWFLAKE=ON —
+# the editor target moved INSIDE the BREAK_ENABLE_SNOWFLAKE block at the end
+# of the file (a SNOWFLAKE=OFF tree builds no editor executable) and links
+# break_net EXPLICITLY after engine. This is the documented editor-only
+# break_net exception: engine/engine_demo/dxx_break stay clean (the no-link
+# scan above now also pins break_net).
 if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c")
     message(FATAL_ERROR "missing formal editor executable target")
 endif()
 if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c apps/editor/editor_panels.c[^)]*apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c[^)]*apps/editor/editor_panel_profiler.c")
     message(FATAL_ERROR "editor must carry the three Phase 3 Task 3 panel TUs (assets/lua/profiler)")
 endif()
-if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE break_editor break_lua break_myui engine m")
-    message(FATAL_ERROR "editor must link break_editor FIRST, then break_lua, then break_myui/engine (scene_serial single-owner link order; Phase 3 Task 3 wires the Lua console panel into the binary)")
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_remote.c")
+    message(FATAL_ERROR "editor must carry apps/editor/editor_remote.c (Phase 4 Task 1 remote session host)")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE break_editor break_lua break_myui engine break_net m")
+    message(FATAL_ERROR "editor must link break_editor FIRST, then break_lua, break_myui/engine, then break_net (scene_serial single-owner link order; Phase 4 Task 1 wires the remote session host)")
+endif()
+# The remote host's real implementation is gated on BREAK_ENABLE_SNOWFLAKE;
+# break_net must export that definition PUBLIC or the editor executable
+# silently compiles the stub surface (remote unavailable) while linking.
+if(NOT cmake_text MATCHES "target_compile_definitions\\(break_net PUBLIC BREAK_ENABLE_SNOWFLAKE=1\\)")
+    message(FATAL_ERROR "break_net must export BREAK_ENABLE_SNOWFLAKE=1 PUBLIC so the editor compiles the real remote host")
 endif()
 if(NOT cmake_text MATCHES "engine_link_rhi_backend\\(editor\\)")
     message(FATAL_ERROR "editor does not go through engine_link_rhi_backend")
+endif()
+# The editor target must sit inside the BREAK_ENABLE_SNOWFLAKE gate: its
+# add_executable line appears after the break_net library block.
+string(FIND "${cmake_text}" "add_library(break_net STATIC" break_net_pos)
+string(FIND "${cmake_text}" "add_executable(editor apps/editor/editor_main.c" editor_exe_pos)
+if(break_net_pos LESS 0 OR editor_exe_pos LESS break_net_pos)
+    message(FATAL_ERROR "editor target must be defined after the break_net library (BREAK_ENABLE_SNOWFLAKE gate)")
 endif()
 
 # Phase 3 Task 3: the headless shell test compiles the panel TUs plus their
@@ -254,6 +283,15 @@ endif()
 # per binary, engine keeps sole production ownership.
 if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c[^)]*apps/editor/editor_panel_profiler.c[^)]*src/platform/platform_fs\\.c src/core/profiler\\.c src/platform/time\\.c")
     message(FATAL_ERROR "test_editor_shell must compile the Phase 3 panel TUs + platform_fs.c/profiler.c/time.c inline")
+endif()
+# Phase 4 Task 1: test_editor_shell also compiles editor_remote.c inline and
+# links break_net under the same SNOWFLAKE gate as the editor executable
+# (with SNOWFLAKE=OFF the test suite is byte-identical to Phase 3).
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_remote.c")
+    message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_remote.c inline (Phase 4 Task 1)")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_shell PRIVATE break_net")
+    message(FATAL_ERROR "test_editor_shell must link break_net (gated, Phase 4 Task 1)")
 endif()
 
 message(STATUS "break_editor target contract passed")

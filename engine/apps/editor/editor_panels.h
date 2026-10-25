@@ -223,3 +223,17 @@ usize break_editor_shell_lua_history_count(const BreakEditorShell *shell);
 usize break_editor_shell_profiler_row_count(const BreakEditorShell *shell);
 const char *break_editor_shell_profiler_row_text(const BreakEditorShell *shell,
                                                  usize i);
+
+/* ---------------- Phase 4 Task 1: remote session host wiring -------------- */
+
+struct BreakEditorRemote;
+/* Attaches the host-owned remote session the shell tick drives once per
+ * frame (DEFAULT OFF: NULL remote = the pre-remote behavior, byte-identical
+ * — pinned by remote_disabled_leaves_shell_untouched). The shell BORROWS
+ * the remote: the host (editor_main --remote / tests) owns its lifetime and
+ * destroys it. NULL shell is a no-op; NULL remote detaches. */
+void break_editor_shell_set_remote(BreakEditorShell *shell,
+                                   struct BreakEditorRemote *remote);
+/* Borrowed remote the shell tick drives (NULL when unattached — the
+ * default). */
+struct BreakEditorRemote *break_editor_shell_remote(BreakEditorShell *shell);

@@ -1233,6 +1233,913 @@ TEST(phase3_layout_assets_lua_profiler_panels_present)
     break_editor_shell_destroy(shell);
 }
 
+/* ---------------- Phase 4 Task 1: remote session host (plaintext seam) ----
+ * Compiled only when the build has BREAK_ENABLE_SNOWFLAKE=ON (CMake gates
+ * the break_net link and defines BREAK_EDITOR_REMOTE_TESTS); with snowflake
+ * OFF this suite is byte-identical to the Phase 3 one. */
+
+#ifdef BREAK_EDITOR_REMOTE_TESTS
+
+#include "editor_remote.h"
+
+#include <editor/editor_protocol.h>
+#include <network/break_net_adapter.h>
+#include <network/break_net_envelope.h>
+#include <network/break_session.h>
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <time.h>
+#include <unistd.h>
+
+static u64 remote_monotonic_us(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (u64)now.tv_sec * UINT64_C(1000000) +
+           (u64)now.tv_nsec / UINT64_C(1000);
+}
+
+/* get16/put16/put32: canonical little-endian lanes (the wire rule — no
+ * structs on the wire). */
+static u16 rd16(const void *p) {
+    const u8 *b = (const u8 *)p;
+    return (u16)((u16)b[0] | ((u16)b[1] << 8u));
+}
+static void wr16(u8 *p, u16 v) { p[0] = (u8)v; p[1] = (u8)(v >> 8u); }
+static void wr32(u8 *p, u32 v) {
+    p[0] = (u8)v; p[1] = (u8)(v >> 8u); p[2] = (u8)(v >> 16u);
+    p[3] = (u8)(v >> 24u);
+}
+
+typedef struct {
+    int fd;                  /* -1 = closed */
+    BreakEditorRemote *remote;
+    BreakEditorShell *shell;
+    u32 next_seq;            /* per-connection monotonically increasing */
+    bool saw_eof;
+} RemoteClient;
+
+/* One pump cycle: tick the shell — its per-frame wiring drives the
+ * attached remote's poll_adapter (the per-frame wiring pin) — then poll the
+ * client socket with a real kernel deadline so the test sleeps instead of
+ * spinning. */
+static void remote_client_pump(RemoteClient *c, int poll_ms) {
+    struct pollfd pfd;
+    break_editor_shell_tick(c->shell);
+    if (c->fd >= 0) {
+        pfd.fd = c->fd;
+        pfd.events = POLLIN;
+        pfd.revents = 0;
+        (void)poll(&pfd, 1, poll_ms);
+    } else if (poll_ms > 0) {
+        struct timespec ts = {0, (long)poll_ms * 1000000L};
+        nanosleep(&ts, NULL);
+    }
+}
+
+static void remote_client_close(RemoteClient *c) {
+    if (c->fd >= 0) {
+        close(c->fd);
+        c->fd = -1;
+    }
+}
+
+static void remote_client_connect(RemoteClient *c, BreakEditorShell *shell,
+                                  BreakEditorRemote *remote) {
+    struct sockaddr_in address;
+    u64 deadline;
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+    c->shell = shell;
+    c->remote = remote;
+    c->next_seq = 1u;
+    c->fd = socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_TRUE(c->fd >= 0);
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(break_editor_remote_port(remote));
+    ASSERT_EQ(connect(c->fd, (const struct sockaddr *)&address,
+                      sizeof(address)),
+              0);
+    /* wait until the host tracks the connection */
+    deadline = remote_monotonic_us() + UINT64_C(3000000);
+    while (remote_monotonic_us() < deadline) {
+        if (break_editor_remote_connection_count(remote) >= 1u) {
+            break;
+        }
+        remote_client_pump(c, 5);
+    }
+    ASSERT_TRUE(break_editor_remote_connection_count(remote) >= 1u);
+    /* let the plaintext-seam auto-auth complete before the first request
+     * leaves: remote_table_sync transitions NEW → AUTHENTICATED on the tick
+     * after the OPENED event is adopted, and a request arriving while the
+     * session is still NEW gets dropped without a response. */
+    {
+        u64 auth_deadline = remote_monotonic_us() + UINT64_C(3000000);
+        uint64_t keys[4];
+        uint32_t states[4];
+        uint32_t n = 0u;
+        while (remote_monotonic_us() < auth_deadline) {
+            n = break_editor_remote_connections_snapshot(remote, keys, states, 4u);
+            if (n >= 1u && states[0] == 2u /* BREAK_SESSION_AUTHENTICATED */) {
+                break;
+            }
+            remote_client_pump(c, 5);
+        }
+        ASSERT_TRUE(n >= 1u);
+        ASSERT_EQ(states[0], 2u);
+    }
+}
+
+/* Encodes + sends one request envelope (payload may be NULL with size 0).
+ * Well-formed messages only — payloads above the 4096 B protocol bound or
+ * unregistered ids are rejected by the client-side codec, so negative
+ * tests use remote_client_send_raw below. */
+static void remote_client_send(RemoteClient *c, u16 id, const u8 *payload,
+                               size_t payload_size) {
+    BreakNetEnvelope env;
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_EDITOR_PROTO_MAX_PAYLOAD];
+    size_t wire_size = 0u;
+    size_t off = 0u;
+    ASSERT_TRUE(payload_size <= BREAK_EDITOR_PROTO_MAX_PAYLOAD);
+    memset(&env, 0, sizeof(env));
+    env.protocol_version = BREAK_EDITOR_PROTO_VERSION;
+    env.message_id = id;
+    env.sequence = c->next_seq++;
+    env.payload = payload;
+    env.payload_size = payload_size;
+    ASSERT_EQ(break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size),
+              BREAK_NET_ENVELOPE_OK);
+    /* Deliver before returning: the request must reach the server before
+     * the following remote_client_recv starts pumping for the response,
+     * otherwise the deadline could pass with the frame still local. */
+    while (off < wire_size) {
+        ssize_t n = write(c->fd, wire + off, wire_size - off);
+        ASSERT_TRUE(n > 0);
+        off += (size_t)n;
+        remote_client_pump(c, 0);
+    }
+}
+
+/* Hand-crafts one envelope WITHOUT the codec (unknown ids / oversized
+ * payloads the codec refuses to encode — the fail-closed negative tests). */
+static void remote_client_send_raw(RemoteClient *c, u16 id,
+                                   const u8 *payload, size_t payload_size) {
+    u8 frame[BREAK_NET_ENVELOPE_HEADER_SIZE + 5000];
+    size_t off = 0u;
+    ASSERT_TRUE(payload_size <= 5000u);
+    ASSERT_TRUE(payload_size == 0u || payload != NULL);
+    wr32(frame, BREAK_NET_ENVELOPE_MAGIC);
+    wr16(frame + 4u, BREAK_EDITOR_PROTO_VERSION);
+    wr16(frame + 6u, id);
+    wr16(frame + 8u, 0u);
+    wr32(frame + 10u, c->next_seq++);
+    wr32(frame + 14u, (u32)payload_size);
+    if (payload_size != 0u) {
+        memcpy(frame + BREAK_NET_ENVELOPE_HEADER_SIZE, payload, payload_size);
+    }
+    off = 0u;
+    while (off < BREAK_NET_ENVELOPE_HEADER_SIZE + payload_size) {
+        ssize_t n = write(c->fd, frame + off,
+                          BREAK_NET_ENVELOPE_HEADER_SIZE + payload_size - off);
+        if (n <= 0) {
+            break; /* the server may close mid-write (fail closed) */
+        }
+        off += (size_t)n;
+    }
+}
+
+/* Reads exactly one response envelope, pumping the host between reads.
+ * Returns the payload size; the envelope is decoded into *out_env with
+ * out_env->payload pointing into the static buffer. Returns SIZE_MAX on a
+ * read failure (the callers assert against their expected size, which never
+ * equals SIZE_MAX). */
+static size_t remote_client_recv(RemoteClient *c, BreakNetEnvelope *out_env) {
+    static u8 buf[BREAK_NET_ENVELOPE_HEADER_SIZE +
+                  BREAK_EDITOR_PROTO_MAX_PAYLOAD];
+    size_t have = 0u;
+    size_t need;
+    u32 payload_size;
+    u64 deadline = remote_monotonic_us() + UINT64_C(3000000);
+    while (have < BREAK_NET_ENVELOPE_HEADER_SIZE &&
+           remote_monotonic_us() < deadline) {
+        struct pollfd pfd = {c->fd, POLLIN, 0};
+        remote_client_pump(c, 0);
+        if (poll(&pfd, 1, 10) > 0) {
+            ssize_t n = read(c->fd, buf + have, sizeof(buf) - have);
+            if (n <= 0) {
+                break;
+            }
+            have += (size_t)n;
+        }
+    }
+    if (have < BREAK_NET_ENVELOPE_HEADER_SIZE) {
+        return SIZE_MAX;
+    }
+    payload_size = (u32)buf[14] | ((u32)buf[15] << 8u) | ((u32)buf[16] << 16u) |
+                   ((u32)buf[17] << 24u);
+    need = BREAK_NET_ENVELOPE_HEADER_SIZE + (size_t)payload_size;
+    if (need > sizeof(buf)) {
+        return SIZE_MAX;
+    }
+    while (have < need && remote_monotonic_us() < deadline) {
+        struct pollfd pfd = {c->fd, POLLIN, 0};
+        remote_client_pump(c, 0);
+        if (poll(&pfd, 1, 10) > 0) {
+            ssize_t n = read(c->fd, buf + have, sizeof(buf) - have);
+            if (n <= 0) {
+                break;
+            }
+            have += (size_t)n;
+        }
+    }
+    if (have != need ||
+        break_net_envelope_decode(buf, have, out_env) != BREAK_NET_ENVELOPE_OK) {
+        return SIZE_MAX;
+    }
+    return out_env->payload_size;
+}
+
+static void remote_client_wait_eof(RemoteClient *c) {
+    u64 deadline = remote_monotonic_us() + UINT64_C(3000000);
+    u8 sink[64];
+    while (remote_monotonic_us() < deadline) {
+        struct pollfd pfd = {c->fd, POLLIN, 0};
+        int ready;
+        remote_client_pump(c, 0);
+        ready = poll(&pfd, 1, 10);
+        if (ready > 0 && (pfd.revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+            ssize_t n = read(c->fd, sink, sizeof(sink));
+            if (n == 0) {
+                c->saw_eof = true;
+                return;
+            }
+        }
+    }
+}
+
+/* Waits until the host drops the connection from its table. */
+static void remote_wait_connection_count(BreakEditorRemote *remote,
+                                         BreakEditorShell *shell, u32 want) {
+    u64 deadline = remote_monotonic_us() + UINT64_C(3000000);
+    while (remote_monotonic_us() < deadline) {
+        if (break_editor_remote_connection_count(remote) == want) {
+            return;
+        }
+        break_editor_shell_tick(shell);
+        {
+            struct timespec ts = {0, 1000000L};
+            nanosleep(&ts, NULL);
+        }
+    }
+}
+
+static BreakEditorRemote *remote_start_default(BreakEditorShell *shell) {
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_host = "127.0.0.1";
+    cfg.bind_port = 0u;
+    cfg.max_connections = 8u;
+    remote = break_editor_remote_create(shell, &cfg);
+    if (remote == NULL) {
+        printf("  FAIL: %s:%d: remote create returned NULL\n", __FILE__,
+               __LINE__);
+        g_test_fail++;
+        return NULL;
+    }
+    if (!break_editor_remote_start(remote)) {
+        printf("  FAIL: %s:%d: remote start failed\n", __FILE__, __LINE__);
+        g_test_fail++;
+        break_editor_remote_destroy(remote);
+        return NULL;
+    }
+    if (break_editor_remote_port(remote) == 0u) {
+        printf("  FAIL: %s:%d: remote port is 0 after start\n", __FILE__,
+               __LINE__);
+        g_test_fail++;
+        break_editor_remote_destroy(remote);
+        return NULL;
+    }
+    /* the shell tick drives the remote once per frame (borrowed — the test
+     * destroys the remote before the shell) */
+    break_editor_shell_set_remote(shell, remote);
+    return remote;
+}
+
+TEST(remote_protocol_ids_live_in_default_registry)
+{
+    /* The envelope codec only consults the default registry, so every editor
+     * id must be registered there with the 4096 B payload limit and v1. */
+    const struct {
+        u16 id;
+    } ids[] = {{BREAK_EDITOR_MSG_DESCRIBE}, {BREAK_EDITOR_MSG_LIST},
+               {BREAK_EDITOR_MSG_SPAWN},    {BREAK_EDITOR_MSG_REMOVE},
+               {BREAK_EDITOR_MSG_RENAME},   {BREAK_EDITOR_MSG_SET_FIELD},
+               {BREAK_EDITOR_MSG_UNDO},     {BREAK_EDITOR_MSG_REDO},
+               {BREAK_EDITOR_MSG_EVAL},     {BREAK_EDITOR_MSG_RESULT}};
+    const BreakNetMessageRegistry *registry = break_net_message_registry_default();
+    usize i;
+    for (i = 0u; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        const BreakNetMessageDefinition *def =
+            break_net_message_registry_lookup(registry, ids[i].id);
+        ASSERT_NOT_NULL(def);
+        ASSERT_EQ(def->minimum_version, 1u);
+        ASSERT_EQ(def->maximum_version, 1u);
+        ASSERT_EQ(def->payload_limit, (size_t)BREAK_EDITOR_PROTO_MAX_PAYLOAD);
+    }
+    /* 4..19 free space is claimed, not beyond */
+    ASSERT_TRUE(break_net_message_registry_lookup(registry, 20u) == NULL);
+}
+
+TEST(remote_describe_returns_version_entity_count_dirty)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    ASSERT_EQ(rd16(((const u8 *)rsp.payload)), BREAK_EDITOR_PROTO_VERSION);
+    ASSERT_EQ((u32)((const u8 *)rsp.payload)[2] | ((u32)((const u8 *)rsp.payload)[3] << 8u) |
+                  ((u32)((const u8 *)rsp.payload)[4] << 16u) | ((u32)((const u8 *)rsp.payload)[5] << 24u),
+              (u32)break_editor_doc_entity_count(doc));
+    ASSERT_EQ(((const u8 *)rsp.payload)[6], 0u); /* clean doc */
+    /* a spawn flips the dirty flag reported by the next DESCRIBE
+     * (name_len 0 = generated name) */
+    remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SPAWN);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[6], 1u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    u32 index, generation;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+
+    /* SPAWN "hero" → entity id {index, generation} */
+    {
+        u8 req[2 + 4];
+        wr16(req, 4u);
+        memcpy(req + 2u, "hero", 4u);
+        remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, req, 6u);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SPAWN);
+    index = (u32)((const u8 *)rsp.payload)[0] | ((u32)((const u8 *)rsp.payload)[1] << 8u) |
+            ((u32)((const u8 *)rsp.payload)[2] << 16u) | ((u32)((const u8 *)rsp.payload)[3] << 24u);
+    generation = (u32)((const u8 *)rsp.payload)[4] | ((u32)((const u8 *)rsp.payload)[5] << 8u) |
+                 ((u32)((const u8 *)rsp.payload)[6] << 16u) | ((u32)((const u8 *)rsp.payload)[7] << 24u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+
+    /* LIST → one row {id, "hero"} */
+    remote_client_send(&c, BREAK_EDITOR_MSG_LIST, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 2u + 8u + 2u + 4u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_LIST);
+    ASSERT_EQ(rd16(((const u8 *)rsp.payload)), 1u);
+    ASSERT_EQ(rd16(((const u8 *)rsp.payload) + 10u), 4u);
+    ASSERT_TRUE(memcmp(((const u8 *)rsp.payload) + 12u, "hero", 4u) == 0);
+
+    /* RENAME id → "villain" */
+    {
+        u8 req[17];
+        wr32(req, index);
+        wr32(req + 4u, generation);
+        wr16(req + 8u, 7u);
+        memcpy(req + 10u, "villain", 7u);
+        remote_client_send(&c, BREAK_EDITOR_MSG_RENAME, req, 17u);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RENAME);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    {
+        BreakEditorEntityId id = {index, generation};
+        const char *name = NULL;
+        BreakEditorEntityId got;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 0u, &got, &name));
+        ASSERT_STR_EQ(name, "villain");
+        ASSERT_TRUE(break_editor_entity_id_eq(got, id));
+    }
+
+    /* REMOVE id → removed=1, doc empty */
+    {
+        u8 req[8];
+        wr32(req, index);
+        wr32(req + 4u, generation);
+        remote_client_send(&c, BREAK_EDITOR_MSG_REMOVE, req, 8u);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+
+    /* Ctrl+Z on the shell undoes the REMOTE remove, then the rename, then
+     * the spawn — the command-stack 1:1 mapping pin. */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    {
+        const char *name = NULL;
+        BreakEditorEntityId got;
+        ASSERT_TRUE(break_editor_doc_entity_at(doc, 0u, &got, &name));
+        ASSERT_STR_EQ(name, "hero");
+    }
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_spawn_then_remote_undo_redo)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    /* UNDO applied=1 reverts the remote spawn (Ctrl+Z equivalence pin) */
+    remote_client_send(&c, BREAK_EDITOR_MSG_UNDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_UNDO);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    /* REDO re-applies it */
+    remote_client_send(&c, BREAK_EDITOR_MSG_REDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    /* UNDO on an empty undo side reports applied=0 (bounded, not an error) */
+    remote_client_send(&c, BREAK_EDITOR_MSG_UNDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    remote_client_send(&c, BREAK_EDITOR_MSG_UNDO, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_set_field_maps_component_and_field_names)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    u32 index, generation;
+    f32 value = 0.0f;
+    BreakEditorEntityId id;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    doc = break_editor_shell_doc(shell);
+    remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    index = (u32)((const u8 *)rsp.payload)[0] | ((u32)((const u8 *)rsp.payload)[1] << 8u) |
+            ((u32)((const u8 *)rsp.payload)[2] << 16u) | ((u32)((const u8 *)rsp.payload)[3] << 24u);
+    generation = (u32)((const u8 *)rsp.payload)[4] | ((u32)((const u8 *)rsp.payload)[5] << 8u) |
+                 ((u32)((const u8 *)rsp.payload)[6] << 16u) | ((u32)((const u8 *)rsp.payload)[7] << 24u);
+    id.index = index;
+    id.generation = generation;
+
+    /* SET_FIELD without the component → RESULT status=failed (never a
+     * half-applied record: no implicit component add on the wire path) */
+    ASSERT_FALSE(break_editor_doc_has_component(doc, id,
+                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+    {
+        u8 req[8 + 2 + 9 + 2 + 5 + 4];
+        size_t n = 0u;
+        f32 v = 1.5f;
+        wr32(req + n, index); n += 4u;
+        wr32(req + n, generation); n += 4u;
+        wr16(req + n, 9u); n += 2u;
+        memcpy(req + n, "Transform", 9u); n += 9u;
+        wr16(req + n, 5u); n += 2u;
+        memcpy(req + n, "pos.x", 5u); n += 5u;
+        memcpy(req + n, &v, 4u); n += 4u;
+        remote_client_send(&c, BREAK_EDITOR_MSG_SET_FIELD, req, n);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SET_FIELD);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 0u); /* ok=0: bounded failure */
+    ASSERT_FALSE(break_editor_doc_has_component(doc, id,
+                                                BREAK_EDITOR_COMPONENT_TRANSFORM));
+
+    /* Add the component through the shell UI (the undoable path), then the
+     * remote SET_FIELD succeeds and Ctrl+Z reverts it. */
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    emit_click(find(shell, "editor-component-add-64"));
+    ASSERT_TRUE(break_editor_doc_has_component(doc, id,
+                                               BREAK_EDITOR_COMPONENT_TRANSFORM));
+    {
+        u8 req[8 + 2 + 9 + 2 + 5 + 4];
+        size_t n = 0u;
+        f32 v = 1.5f;
+        wr32(req + n, index); n += 4u;
+        wr32(req + n, generation); n += 4u;
+        wr16(req + n, 9u); n += 2u;
+        memcpy(req + n, "Transform", 9u); n += 9u;
+        wr16(req + n, 5u); n += 2u;
+        memcpy(req + n, "pos.x", 5u); n += 5u;
+        memcpy(req + n, &v, 4u); n += 4u;
+        remote_client_send(&c, BREAK_EDITOR_MSG_SET_FIELD, req, n);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SET_FIELD);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 1.5f, 1e-6f);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_doc_get_field_f32(
+        doc, id, BREAK_EDITOR_COMPONENT_TRANSFORM, 0u, &value));
+    ASSERT_FLOAT_EQ(value, 0.0f, 1e-6f);
+
+    /* unknown component name → RESULT invalid */
+    {
+        u8 req[8 + 2 + 3 + 2 + 5 + 4];
+        size_t n = 0u;
+        f32 v = 1.0f;
+        wr32(req + n, index); n += 4u;
+        wr32(req + n, generation); n += 4u;
+        wr16(req + n, 3u); n += 2u;
+        memcpy(req + n, "Foo", 3u); n += 3u;
+        wr16(req + n, 5u); n += 2u;
+        memcpy(req + n, "pos.x", 5u); n += 5u;
+        memcpy(req + n, &v, 4u); n += 4u;
+        remote_client_send(&c, BREAK_EDITOR_MSG_SET_FIELD, req, n);
+    }
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 1u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_RESULT);
+    ASSERT_EQ(((const u8 *)rsp.payload)[0], BREAK_EDITOR_PROTO_STATUS_INVALID);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    u16 line_count;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    {
+        u8 req[2 + 10];
+        wr16(req, 10u);
+        memcpy(req + 2u, "return 1+2", 10u);
+        remote_client_send(&c, BREAK_EDITOR_MSG_EVAL, req, 12u);
+    }
+    {
+        size_t size = remote_client_recv(&c, &rsp);
+        const u8 *p;
+        size_t off;
+        u16 i;
+        bool found = false;
+        ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_EVAL);
+        ASSERT_TRUE(size >= 4u);
+        ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u); /* ok */
+        line_count = rd16(((const u8 *)rsp.payload) + 1u);
+        ASSERT_TRUE(line_count >= 1u);
+        p = ((const u8 *)rsp.payload) + 3u;
+        off = 0u;
+        for (i = 0u; i < line_count; i++) {
+            u16 len = rd16(p + off);
+            off += 2u;
+            ASSERT_TRUE(off + len <= size - 3u);
+            if (len == 6u && memcmp(p + off, "lua| 3", 6u) == 0) {
+                found = true;
+            }
+            off += len;
+        }
+        ASSERT_TRUE(found);
+    }
+    /* the shell's own console ring carries the same line (shared ring) */
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell), "lua| 3") !=
+                NULL);
+    /* a failing eval returns ok=0 with bounded "lua| error:" lines and
+     * ZERO partial record application (the console contract: a failed chunk
+     * discards its records). */
+    {
+        u8 req[2 + 16];
+        wr16(req, 16u);
+        memcpy(req + 2u, "error('boom', 0)", 16u);
+        remote_client_send(&c, BREAK_EDITOR_MSG_EVAL, req, 18u);
+    }
+    {
+        size_t size = remote_client_recv(&c, &rsp);
+        const u8 *pl;
+        bool has_error_line = false;
+        ASSERT_TRUE(size >= 3u);
+        pl = (const u8 *)rsp.payload;
+        ASSERT_EQ(pl[0], 0u);
+        {
+            u16 lines = rd16(pl + 1u);
+            size_t off = 3u;
+            u16 i;
+            ASSERT_TRUE(lines >= 1u);
+            for (i = 0u; i < lines; i++) {
+                u16 len = rd16(pl + off);
+                off += 2u;
+                if (len >= 11u && memcmp(pl + off, "lua| error:", 11u) == 0) {
+                    has_error_line = true;
+                }
+                off += len;
+            }
+        }
+        ASSERT_TRUE(has_error_line);
+        ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)),
+                  0u);
+    }
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    static u8 req[2 + 4094];
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    /* the largest payload the registry limit admits: 4096 B total = 2 B
+     * length + 4094 B text. The console core's own 4096 B input bound
+     * accepts it: the eval runs and reports its outcome as bounded lines
+     * (ok=1 — a bare 'xxxx' chunk is an expression whose value is
+     * unrepresentable, an error LINE, not a failed eval), connection up. */
+    wr16(req, 4094u);
+    memset(req + 2u, 'x', 4094u);
+    remote_client_send_raw(&c, BREAK_EDITOR_MSG_EVAL, req, sizeof(req));
+    {
+        size_t size = remote_client_recv(&c, &rsp);
+        ASSERT_TRUE(size >= 3u);
+        ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_EVAL);
+        ASSERT_EQ(((const u8 *)rsp.payload)[0], 1u);
+        ASSERT_EQ(break_editor_remote_connection_count(remote), 1u);
+    }
+    /* text_len > shipped bytes (4097 declared, 4094 sent — exact-parse
+     * mismatch) is a protocol error: fail closed — the handler returns
+     * false, the session manager closes the connection, and the table drops
+     * it. The client-side close below delivers the CLOSE event that
+     * finalizes the drop (the fail-closed path produces NO response — the
+     * authoritative observable is the connection-table count). */
+    wr16(req, 4097u);
+    remote_client_send_raw(&c, BREAK_EDITOR_MSG_EVAL, req, sizeof(req));
+    remote_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    /* a fresh connection still works (the remote never wedged) */
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_unknown_id_and_malformed_close_connection)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+
+    /* unknown id (77, unregistered): hand-crafted frame (the client-side
+     * codec refuses to encode unregistered ids) — the server's frame parser
+     * rejects it: fail closed, zero doc effect, connection closes. */
+    remote_client_send_raw(&c, 77u, NULL, 0u);
+    remote_client_wait_eof(&c);
+    ASSERT_TRUE(c.saw_eof);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)),
+              0u);
+
+    /* malformed payload (REMOVE declares 8-byte entity id, ships 3): the
+     * handler's exact-layout check fails closed (no response; the
+     * connection-table drop is the authoritative observable — the
+     * client-side close delivers the final CLOSE event). */
+    remote_client_close(&c);
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_REMOVE,
+                       (const u8[]){1u, 2u, 3u}, 3u);
+    remote_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+
+    /* oversize payload (5000 B > the 4096 B registry limit): hand-crafted
+     * frame — the server's frame parser rejects it against the registry
+     * payload_limit, fail closed. */
+    remote_client_close(&c);
+    remote_client_connect(&c, shell, remote);
+    {
+        static u8 payload5000[5000];
+        memset(payload5000, 0xa5u, sizeof(payload5000));
+        remote_client_send_raw(&c, BREAK_EDITOR_MSG_DESCRIBE, payload5000,
+                               sizeof(payload5000));
+        remote_client_wait_eof(&c);
+        ASSERT_TRUE(c.saw_eof);
+    }
+    /* remote still running; a fresh connection works */
+    remote_client_close(&c);
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_disabled_leaves_shell_untouched)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char status_snapshot[256];
+    char console_snapshot[1024];
+    ASSERT_NOT_NULL(shell);
+    /* never created, never started: ticks and shortcuts behave exactly as
+     * today (byte-identical status/console text across ticks) */
+    snprintf(status_snapshot, sizeof(status_snapshot), "%s",
+             break_editor_shell_status_text(shell));
+    snprintf(console_snapshot, sizeof(console_snapshot), "%s",
+             break_editor_shell_console_text(shell));
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_status_text(shell), status_snapshot);
+    ASSERT_STR_EQ(break_editor_shell_console_text(shell), console_snapshot);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'w', 0u));
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Translate");
+    /* created but never started: still untouched */
+    {
+        BreakEditorRemoteConfig cfg;
+        BreakEditorRemote *remote;
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.bind_host = "127.0.0.1";
+        cfg.max_connections = 4u;
+        remote = break_editor_remote_create(shell, &cfg);
+        ASSERT_NOT_NULL(remote);
+        ASSERT_FALSE(break_editor_remote_is_running(remote));
+        break_editor_shell_tick(shell);
+        ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Translate");
+        break_editor_remote_destroy(remote);
+    }
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_tick_wiring_polls_adapter_every_frame)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    u64 t0, t1;
+    ASSERT_NOT_NULL(shell);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    /* detached: the shell tick leaves the remote alone (default OFF
+     * discipline — the host wires it via break_editor_shell_set_remote) */
+    break_editor_shell_set_remote(shell, NULL);
+    ASSERT_TRUE(break_editor_shell_remote(shell) == NULL);
+    t0 = break_editor_remote_poll_count(remote);
+    break_editor_shell_tick(shell);
+    t1 = break_editor_remote_poll_count(remote);
+    ASSERT_EQ(t1, t0);
+    /* attached: exactly one poll_adapter cycle per shell tick */
+    break_editor_shell_set_remote(shell, remote);
+    ASSERT_TRUE(break_editor_shell_remote(shell) == remote);
+    break_editor_shell_tick(shell);
+    t1 = break_editor_remote_poll_count(remote);
+    ASSERT_TRUE(t1 > t0);
+    t0 = t1;
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    t1 = break_editor_remote_poll_count(remote);
+    ASSERT_TRUE(t1 >= t0 + 2u);
+    /* while a client is connected, each tick keeps polling */
+    remote_client_connect(&c, shell, remote);
+    t0 = break_editor_remote_poll_count(remote);
+    break_editor_shell_tick(shell);
+    t1 = break_editor_remote_poll_count(remote);
+    ASSERT_TRUE(t1 > t0);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_config_validation_and_snapshot)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    u64 keys[8];
+    u32 states[8];
+    u32 rows;
+    ASSERT_NOT_NULL(shell);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_host = "127.0.0.1";
+    cfg.max_connections = 33u; /* over the ≤ 32 cap */
+    ASSERT_TRUE(break_editor_remote_create(shell, &cfg) == NULL);
+    cfg.max_connections = 0u;  /* 0 = default cap */
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    /* TLS without cert/key fails closed at start */
+    {
+        BreakEditorRemoteConfig tls_cfg;
+        BreakEditorRemote *tls_remote;
+        memset(&tls_cfg, 0, sizeof(tls_cfg));
+        tls_cfg.bind_host = "127.0.0.1";
+        tls_cfg.max_connections = 4u;
+        tls_cfg.use_tls = true;
+        tls_remote = break_editor_remote_create(shell, &tls_cfg);
+        ASSERT_NOT_NULL(tls_remote);
+        ASSERT_FALSE(break_editor_remote_start(tls_remote));
+        ASSERT_FALSE(break_editor_remote_is_running(tls_remote));
+        break_editor_remote_destroy(tls_remote);
+    }
+    ASSERT_TRUE(break_editor_remote_start(remote));
+    ASSERT_EQ(break_editor_remote_admission_denied(remote), 0u);
+    /* attach the remote to the shell's per-frame tick (the host wiring —
+     * remote_start_default does this for the other tests) */
+    break_editor_shell_set_remote(shell, remote);
+    remote_client_connect(&c, shell, remote);
+    rows = break_editor_remote_connections_snapshot(remote, keys, states, 8u);
+    ASSERT_EQ(rows, 1u);
+    ASSERT_NEQ(keys[0], 0u);
+    ASSERT_EQ(states[0], (u32)BREAK_SESSION_AUTHENTICATED);
+    ASSERT_EQ(break_editor_remote_session_id(remote, keys[0]), 1u);
+    remote_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_null_and_bounded_calls_are_safe)
+{
+    break_editor_remote_destroy(NULL);
+    break_editor_remote_tick(NULL);
+    ASSERT_FALSE(break_editor_remote_is_running(NULL));
+    ASSERT_EQ(break_editor_remote_port(NULL), 0u);
+    ASSERT_EQ(break_editor_remote_admission_denied(NULL), 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(NULL), 0u);
+    ASSERT_EQ(break_editor_remote_connections_snapshot(NULL, NULL, NULL, 0u),
+              0u);
+    ASSERT_EQ(break_editor_remote_poll_count(NULL), 0u);
+    ASSERT_EQ(break_editor_remote_session_id(NULL, 1u), 0u);
+    ASSERT_TRUE(break_editor_remote_create(NULL, NULL) == NULL);
+}
+
+#endif /* BREAK_EDITOR_REMOTE_TESTS */
 
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
@@ -1268,4 +2175,18 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lua_panel_history_up_down_recall);
     RUN_TEST(profiler_panel_populates_rows_after_pumped_frame);
     RUN_TEST(phase3_layout_assets_lua_profiler_panels_present);
+#ifdef BREAK_EDITOR_REMOTE_TESTS
+    RUN_TEST(remote_protocol_ids_live_in_default_registry);
+    RUN_TEST(remote_describe_returns_version_entity_count_dirty);
+    RUN_TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin);
+    RUN_TEST(remote_spawn_then_remote_undo_redo);
+    RUN_TEST(remote_set_field_maps_component_and_field_names);
+    RUN_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
+    RUN_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
+    RUN_TEST(remote_unknown_id_and_malformed_close_connection);
+    RUN_TEST(remote_disabled_leaves_shell_untouched);
+    RUN_TEST(remote_tick_wiring_polls_adapter_every_frame);
+    RUN_TEST(remote_config_validation_and_snapshot);
+    RUN_TEST(remote_null_and_bounded_calls_are_safe);
+#endif
 TEST_MAIN_END()

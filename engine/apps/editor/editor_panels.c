@@ -6,6 +6,7 @@
 #include "editor_panels.h"
 #include "editor_shell_internal.h"
 #include "editor_viewport3d.h"
+#include "editor_remote.h"
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -110,6 +111,10 @@ struct BreakEditorShell {
     EditorPanelAssets *assets_panel;
     EditorPanelLua *lua_panel;
     EditorPanelProfiler *profiler_panel;
+
+    /* Phase 4 Task 1: host-attached remote session (BORROWED — DEFAULT OFF;
+     * the shell only ticks it, never creates or destroys it). */
+    BreakEditorRemote *remote;
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
@@ -1629,6 +1634,31 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
+    /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
+     * never creates one; editor_main --remote / tests attach it via
+     * break_editor_shell_set_remote) is driven exactly once per tick on the
+     * shell thread: one poll_adapter cycle, so the protocol handlers satisfy
+     * the doc/Lua/command owner-thread rule by construction. NULL = the
+     * pre-remote behavior, byte-identical. */
+    break_editor_remote_tick(shell->remote);
+}
+
+/* Phase 4 Task 1 host wiring (editor_remote.h): attaches/detaches the
+ * remote the shell tick drives. The shell BORROWS the remote — the host
+ * (tests / editor_main --remote) owns its lifetime and destroys it. */
+void break_editor_shell_set_remote(BreakEditorShell *shell,
+                                   BreakEditorRemote *remote) {
+    if (shell == NULL) {
+        return;
+    }
+    /* symmetric detach: break_editor_remote_destroy calls this with NULL to
+     * release the shell's borrow; a NEW remote must be attached explicitly
+     * (the shell never adopts one silently). */
+    shell->remote = remote;
+}
+
+BreakEditorRemote *break_editor_shell_remote(BreakEditorShell *shell) {
+    return shell != NULL ? shell->remote : NULL;
 }
 
 /* ---------------- Phase 3 Task 3: panel accessors ---------------- */

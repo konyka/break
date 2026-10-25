@@ -1437,6 +1437,38 @@ TEST(break_session_public_registry_over_limit_closes_authenticating)
     ASSERT_EQ(stats.invalid, 1u);
 }
 
+TEST(break_session_reopen_on_closed_key_rebinds_with_fresh_id)
+{
+    /* snow recycles connection-list slots, so a later connection can carry
+     * the key of a finished one: OPENED on a CLOSED entry is a new session
+     * (fresh id, NEW), while OPENED on a CLOSING entry stays stale. */
+    BreakSessionConfig config = {0};
+    BreakNetReactorConfig reactor_config = {BREAK_NET_DRIVE_STEP, 0, 4u, 0, 0u, 0u};
+    BreakSessionManager *manager = break_session_manager_create(&config);
+    BreakNetReactor *reactor = break_net_reactor_create(&reactor_config);
+    BreakSessionId first_id;
+
+    ASSERT_NOT_NULL(manager);
+    ASSERT_NOT_NULL(reactor);
+    ASSERT_TRUE(break_session_manager_attach_reactor(manager, reactor));
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, 0x303u));
+    ASSERT_EQ(break_session_manager_poll_adapter(manager, 1u), 1u);
+    first_id = break_session_manager_session_id(manager, 0x303u);
+    ASSERT_TRUE(break_session_manager_close(manager, 0x303u, 0u));
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, 0x303u));
+    ASSERT_EQ(break_session_manager_poll_adapter(manager, 1u), 1u);
+    ASSERT_EQ(break_session_manager_last_result(manager), BREAK_SESSION_APPLY_STALE);
+    ASSERT_EQ(break_session_manager_state(manager, 0x303u), BREAK_SESSION_CLOSED);
+    ASSERT_FALSE(break_session_manager_bind(manager, 0x303u));
+    ASSERT_TRUE(break_net_reactor_enqueue_opened_for_test(reactor, 0x303u));
+    ASSERT_EQ(break_session_manager_poll_adapter(manager, 1u), 1u);
+    ASSERT_EQ(break_session_manager_last_result(manager), BREAK_SESSION_APPLY_OK);
+    ASSERT_EQ(break_session_manager_state(manager, 0x303u), BREAK_SESSION_NEW);
+    ASSERT_TRUE(break_session_manager_session_id(manager, 0x303u) != first_id);
+    break_net_reactor_destroy(reactor);
+    break_session_manager_destroy(manager);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(break_envelope_round_trip_preserves_fields);
     RUN_TEST(break_envelope_uses_little_endian_wire_order);
@@ -1451,6 +1483,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(break_session_applies_adapter_lifecycle_without_taking_payload_ownership);
     RUN_TEST(break_session_polls_adapter_and_dispatches_auth_phase);
     RUN_TEST(break_session_stale_close_watermark_rejects_queued_message);
+    RUN_TEST(break_session_reopen_on_closed_key_rebinds_with_fresh_id);
     RUN_TEST(break_session_auth_handler_failure_closes_without_authenticating);
     RUN_TEST(break_session_ping_duplicate_is_idempotent_and_observable);
     RUN_TEST(break_session_uses_attached_registry_phase_and_duplicate_policy);
