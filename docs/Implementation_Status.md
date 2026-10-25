@@ -1,6 +1,38 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R700 — CI：Linux 各 lane 改用预装依赖的容器镜像，不再在 job 里 apt 安装
+
+### 动机
+Linux lane 过去每次运行都执行 `apt-get install`。Ubuntu 的 Azure 镜像站间歇性卡住，导致主 `CI` 工作流在 2026-10-23 的 10:03–16:23 之间连续 10 次失败，失败步骤全是 `Install dependencies`（最近 40 次里占 10 次）。之前的 R675–R682 加了每次尝试的超时、重试、换镜像站、apt 包缓存，只能降低概率，不能根除。
+
+### 做法
+- `.github/docker/ci-linux.Dockerfile`：基于 `ubuntu:24.04`，一次装好所有 Linux lane 需要的包，版本钉死与原来一致（`cmake=3.28.*`、`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`，clang-18、gcc、weston、Xvfb、mesa-vulkan-drivers、vulkan-validationlayers、fonts-noto-cjk 等），外加原来托管 runner 自带而这里要显式装的：`pkg-config`、`python3`、`file`、`procps`、`make`、`git`、`curl`；并配置 `git safe.directory '*'`（`clean-room` 的 `git archive` 需要）。
+- `.github/workflows/ci-image.yml`：Dockerfile 变化时构建并推送 `ghcr.io/konyka/break-ci-linux:latest`（同时打 commit sha 标签），每周日 02:41 UTC 再构建一次以获取安全更新；构建后跑一个冒烟检查。镜像匿名可拉取（用匿名令牌验证过），所以 PR 和 fork 的 job 不需要凭证。
+- `.github/workflows/ci.yml`：9 条 Linux lane 全部改为 `container: image: ghcr.io/konyka/break-ci-linux:latest`，并设默认 shell 为 bash（容器里默认 dash，没有 `set -o pipefail`）。删掉每条 lane 的 apt 缓存、`Install dependencies` / `Install pinned toolchain`、`Install CJK test font` 三个步骤，工作流文件净减约 400 行。
+  - ASan lane 加 `--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`（LeakSanitizer 要 ptrace，Docker 默认禁用）。
+  - TSan lane 加 `--privileged`（有一步要在内核里写 `vm.mmap_rnd_bits`）。
+- 保持不变：`lane-proton`（要 i386 多架构和 wine，只每周跑，本来就在 steamrt 容器里构建）、所有 Windows / macOS / iOS lane。
+
+### 迁移中踩到的问题（都已修）
+第一次全量迁移有 5 条 lane 失败，原因都是裸 Ubuntu 镜像缺了托管 runner 自带的东西：
+| 失败 | 原因 | 修复 |
+|---|---|---|
+| Wayland ×2：`Could NOT find PkgConfig` | 镜像里没有 `pkg-config` | 加进镜像 |
+| X11+Vulkan、validation、benchmark：`set: Illegal option -o pipefail` | 容器里 `run` 默认用 dash | `defaults.run.shell: bash` |
+| benchmark 用到 `python3` | 镜像里没有 | 加进镜像 |
+同时第一次试点（只迁 `lane-headless-linux-clang`）先单独跑通，再迁其余 9 条，避免一次性把整个 CI 搞红。
+
+### 迁移前后对比（同一套 lane，迁移前 run 40204094961，迁移后 run 40208340196）
+- 全部 20 个 job 成功；Linux 各 lane 的 job 总耗时相加 1045 s → 1043 s，基本持平：镜像拉取 20–33 s，与好的时候 apt 安装的耗时差不多。收益不在平均速度，而在去掉了会卡住的网络安装环节。
+- 逐个核对没有悄悄丢测试：能看到 ctest 计数的 lane（clean-room 168/168、headless-clang 167/167、ASan 5/5、X11+OpenGL 2/2、X11+Vulkan 5/5、validation 5/5）迁移前后完全一致，跳过数也一致；TSan、Wayland、benchmark 的 ctest 输出被重定向到文件，job 日志里看不到计数，改为比对 15 个 `evidence-receipt-*` 制品：所有 lane 的证据等级迁移前后完全相同。
+
+### 风险与后续
+- CI 现在依赖 GitHub 容器仓库（ghcr.io）可用。它比 Ubuntu 镜像站稳定得多，但不是零风险；出问题时 job 会在 `Initialize containers` 失败。
+- 改了 Dockerfile 才会重建镜像；改包版本要改 Dockerfile 并等 `ci-image` 工作流跑完，再触发 CI。工作流 `ci.yml` 里引用的是 `latest`，没有钉 digest；需要完全可复现的话可以把 digest 钉进 `ci.yml`。
+- 本机没有 Docker，镜像只在 GitHub 上构建验证过。
+- `lane-proton` 仍在 job 里用 apt，周跑，目前没出现问题，没有迁移。
+
 ## 本轮更新：R699 — 修复 WARP 套件偶发崩溃：D3D12 亮度着色器的 256 次采样不再完全展开
 
 ### 发现
