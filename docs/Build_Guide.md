@@ -584,6 +584,13 @@ shader 按相对路径加载）发现 Metal 的 `rhi_screenshot` 仍按旧的 bo
 `not implemented` 桩，且多条渲染器管线的 bindings 创建失败，70 帧日志约 3000 条错误；
 MoltenVK 构建下同一场景正常渲染。
 
+2026-10-25 同步 @51e2d1a7（R689–R694：GL 回读、延迟 G-buffer 尺寸、CSM 直接 mega draw、
+R694 固定步长物理）后复核：无冲突（`--ff-only`），MoltenVK 与 Metal 两套构建 CTest 均
+`179/179`，Metal `-L graphics` `5/5`，无需修复。`engine_demo` 截图：MoltenVK 3D 场景与 UI 朝向
+正确；Metal 仍只有 UI（既有缺口，日志错误数约 3000/70 帧，与上次持平）。R694 后物理改为
+1/60 s 固定步长，第 60 帧角色尚在下落（HUD `grounded: 0 (body 4294967295)`，即 UINT32_MAX
+未着地），第 300 帧已 `grounded: 1`，属预期行为变化。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
