@@ -79,8 +79,8 @@
 
 ## Stage 6 — Graphics API lifecycle
 
-- [ ] Audit existing Vulkan/D3D12/Metal/headless plans
-- [ ] Complete backend-specific remaining gaps in separate plans
+- [x] Audit existing Vulkan/D3D12/Metal/headless plans（2026-10-25，只读审计，产物 `docs/cross_engine/graphics_backend_audit.md`：逐后端状态、OpenGL 移除门 11 条件核对、17 项缺口及 owner；**未运行**任何 graphics/Metal/D3D12 测试，CI 产物未下载）
+- [ ] Complete backend-specific remaining gaps in separate plans（审计 §4 已列 17 项缺口；其中 #7 废弃标记机制、#8 `auto` 默认值、#10 `windows-d3d12.yml` 在 master 上失败（WARP push-constant write-drop 门）、#11 D3D12 consumer 对等 无现有 plan 覆盖，需新建；#1/#2/#3/#6 需要设备/runner/维护者动作）
 - [ ] Collect per-backend evidence
 - [ ] Maintain OpenGL deprecation/removal gate
 
