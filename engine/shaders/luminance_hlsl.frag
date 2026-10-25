@@ -19,12 +19,16 @@ Texture2D g_prev : register(t1, space0);
 SamplerState g_smp1 : register(s1, space0);
 
 float4 main(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target {
-    /* R687: [unroll], not [loop]. One pixel does all 256 taps; a rolled
-     * loop issues them one dependent fetch at a time (0.127 ms on RTX vs
-     * 0.028 ms for the GL/VK twins, whose compilers unroll). */
+    /* R687: the 16 taps of a row are independent, so unroll the inner loop
+     * and let the compiler overlap their fetches (a fully rolled loop issued
+     * them one dependent fetch at a time: 0.127 ms on RTX vs 0.028 ms for the
+     * GL/VK twins). R699: the outer loop stays [loop] -- fully unrolling all
+     * 256 taps made WARP's shader compiler crash intermittently (in about one
+     * run in seven of the WARP suite, always in the test that builds this
+     * shader). */
     const int N = 16;
     float luma_sum = 0.0f;
-    [unroll] for (int y = 0; y < N; y++) {
+    [loop] for (int y = 0; y < N; y++) {
         [unroll] for (int x = 0; x < N; x++) {
             float2 suv = (float2((float)x, (float)y) + 0.5f) / (float)N;
             float3 c = g_hdr.SampleLevel(g_smp, suv, 0.0f).rgb;

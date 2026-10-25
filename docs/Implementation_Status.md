@@ -1,6 +1,37 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R699 — 修复 WARP 套件偶发崩溃：D3D12 亮度着色器的 256 次采样不再完全展开
+
+### 发现
+R698 复核时查了 GitHub Actions：`windows-d3d12` 工作流在很多个最近的提交上失败（`ebd50ac3`、`a14cb44a`、`259f65ff`、`ad12f029`、`33ac35c8`、`41d9b08a`、`d1df5373`），失败的步骤在几个不同的位置（`WARP GPU-runtime floor`、`WARP push-constant write-drop gate`、`Real GPU runtime`），但这三步其实都是在跑 `test_d3d12_warp_runtime`。同一个代码状态在 CI 上有时成功（`fe87b109`、`5e9616da`、`c8f50b6e`），有时失败，是偶发的。本机的 R698 记录里「d3d12-debug ctest 187/187」那次碰巧通过。
+
+### 复现
+在本机用 `ENGINE_D3D12_WARP=1` 连续运行 `test_d3d12_warp_runtime.exe`：14 次里 2 次段错误（Segmentation fault），两次都死在同一个用例 `[37] tonemap_and_luminance_sidecars_match_the_aces_formula`——日志停在 `Tonemap: initialized` 之后。这个用例会创建 R687 改过的 `luminance_hlsl.frag` 着色器管线。CI 是 GitHub 的无 GPU 机器，只能用 WARP，这也解释了为什么它频繁失败。
+
+### 定位
+R687 把 `luminance_hlsl.frag` 的两层循环从 `[loop]` 全部改成 `[unroll]`，把 16×16 = 256 次纹理采样完全展开，好处是 RTX 上这一步从 0.127 ms 降到 0.025 ms。把这个着色器临时恢复成原来的 `[loop]` 后，同样的套件连续跑 16 次全部通过；而且这和 R687 的出现时间吻合（`5e320ac9`，10-24 10:37，在 `d1df5373` 之前）。推测是完全展开出的约 256 个采样及相关指令，在 WARP 的着色器 JIT 编译里偶发触发崩溃，没有进一步深究 WARP 内部。
+
+### 修复（`engine/shaders/luminance_hlsl.frag`）
+只展开内层循环（一行 16 次采样，彼此独立，GPU 可以把这 16 次取样重叠起来），外层的 16 行保留 `[loop]`。
+
+| 版本 | RTX 上 `tonemap_update_auto_exposure` | WARP 套件稳定性 |
+|---|---|---|
+| 原来（两层 `[loop]`） | 0.127 ms | 16 / 16 次通过 |
+| R687（两层 `[unroll]`） | 0.025 ms | 12 / 14 次通过，2 次崩溃 |
+| R699（内层 `[unroll]`、外层 `[loop]`） | 0.028 ms | 24 / 24 次通过 |
+
+这样保留了 R687 收益的约 97%（0.127 → 0.028 ms，GL / VK 版本约 0.028 ms），同时 WARP 不再崩溃。
+
+### 验证
+- d3d12-debug ctest 187/187、vk 182/182、gl 179/179；按 CI 的方式单独跑 headless 步骤（`ENGINE_LOCKED_DEPS_ALLOW_ABSENT=1 ctest -LE "graphics|fuzz"`）173/173；WARP 套件通过 `ctest -V` 跑时 `outside declared`（push-constant 写入被丢弃）计数为 0。
+- WARP 套件直接连续运行 24 次，全部 81/81。
+- Release D3D12 重新编译通过，`tonemap_update_auto_exposure` 实测 0.028 ms。
+
+### 说明
+- GitHub 上的运行日志需要管理员权限才能下载，我只能通过 API 看到失败的步骤名，没有拿到崩溃的原始日志，所以崩溃原因的推断来自本机复现。
+- 「偶发」意味着 CI 上单次通过不能证明已经修好；本机 24 次连续通过（未修时 14 次里 2 次崩溃）是主要证据。后续 CI 的结果可以再看一轮。
+
 ## 本轮更新：R698 — Windows 全面复核（HEAD `ebd50ac3`，无代码改动）
 
 远程 `origin/master` 与本地一致（没有新提交），在这台 Windows 机器上对当前 HEAD 做了一轮完整复核，没有发现需要修复的问题。
