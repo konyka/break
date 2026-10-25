@@ -69,6 +69,31 @@ u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 connection_ke
 /* Test-only accessors for diagnostics. */
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r);
 
+/* Phase 4 Task 3: READ-ONLY diagnostics accessors for the network panel
+ * (editor_panel_network.c). None of them steps the reactor, drains events,
+ * sends, closes, or transitions a session; NULL remote => zero/false.
+ * The stats struct mirrors BreakSessionApplyStats field-for-field so the
+ * panel needs no break_session header (it reaches the network only through
+ * this surface). */
+typedef struct BreakEditorRemoteSessionStats {
+    uint64_t applied;
+    uint64_t unknown;
+    uint64_t stale;
+    uint64_t invalid;
+    uint64_t phase_rejected;
+    uint64_t duplicate;
+    uint64_t handler_failed;
+} BreakEditorRemoteSessionStats;
+/* Copies break_session_manager_apply_stats; false (and *out zeroed) when
+ * the remote or its manager is absent. */
+bool break_editor_remote_session_stats(const BreakEditorRemote *r,
+                                       BreakEditorRemoteSessionStats *out);
+bool break_editor_remote_is_tls(const BreakEditorRemote *r);  /* reactor TLS mode */
+u64 break_editor_remote_outbound_count(const BreakEditorRemote *r); /* queued sends */
+/* Static name for a BreakSessionState value ("AUTHENTICATED", ...);
+ * "UNKNOWN" for anything out of range. */
+const char *break_editor_remote_state_name(uint32_t state);
+
 /* Phase 4 Task 2: CHALLENGE/AUTH-v2 PSK seam (DEV PATH, NON-PRODUCTION —
  * one static key_id -> 32-byte PSK pair supplied by the host, e.g. from
  * --remote-psk-hex / --remote-psk-file; no provisioning, rotation, or

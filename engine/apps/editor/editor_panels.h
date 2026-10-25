@@ -91,6 +91,10 @@
  *   - PROFILER view under the inspector (h:30%): pure view — snapshots
  *     profiler_last_frame() at <= 4 Hz from break_editor_shell_tick into
  *     top-N (N<=16) "<name> <ms> ms" rows; NEVER mutates profiler state.
+ *   - NETWORK diagnostics under the profiler (Phase 4 Task 3, h:20%; the
+ *     right column is the diagnostics area): pure view of the attached
+ *     remote's reactor/session/admission/connection state at <= 4 Hz;
+ *     "remote: off" when none is attached.
  *   The panel structs are opaque to the shell (one pointer each);
  *   cross-TU wiring goes through editor_shell_internal.h (the
  *   editor_viewport3d.c precedent).
@@ -104,6 +108,8 @@
  * x 1024 bytes + 255-codepoint edit cap (an edit-sourced line always fits a
  * history entry); profiler snapshot 16 rows x 80 bytes refreshed at <= 4 Hz;
  * assets/profiler paths and rows bounded by the Task 1 model caps.
+ * Phase 4 Task 3: network snapshot 16 rows x 96 bytes refreshed at <= 4 Hz
+ * (5 fixed rows + up to 11 connection rows).
  *
  * Threading: single-owner-thread convention, same as the document. */
 
@@ -237,3 +243,21 @@ void break_editor_shell_set_remote(BreakEditorShell *shell,
 /* Borrowed remote the shell tick drives (NULL when unattached — the
  * default). */
 struct BreakEditorRemote *break_editor_shell_remote(BreakEditorShell *shell);
+
+/* ---------------- Phase 4 Task 3: network diagnostics panel --------------- */
+
+/* Network panel snapshot rows (<= 16 rows x 96 bytes, refreshed at <= 4 Hz
+ * from break_editor_shell_tick; pure view over the attached remote — NEVER
+ * steps, sends, closes, or transitions). No remote attached => exactly one
+ * "remote: off" row. Row layout: editor_panel_network.c header. row_text
+ * returns a borrowed line, NULL out of range. */
+uint32_t break_editor_shell_network_row_count(const BreakEditorShell *shell);
+const char *break_editor_shell_network_row_text(const BreakEditorShell *shell,
+                                                uint32_t index);
+/* Test seams: inject the panel's monotonic clock (NULL = the platform
+ * clock) to pin the 250,000 us throttle deterministically, and tick ONLY
+ * the network panel (no remote step — stable sources for comparisons). */
+void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
+                                                   u64 (*clock)(void *user),
+                                                   void *user);
+void break_editor_shell_network_tick_for_test(BreakEditorShell *shell);

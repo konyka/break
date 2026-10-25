@@ -293,5 +293,14 @@ endif()
 if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_shell PRIVATE break_net")
     message(FATAL_ERROR "test_editor_shell must link break_net (gated, Phase 4 Task 1)")
 endif()
+# Phase 4 Task 3: the network diagnostics panel TU rides with editor_remote.c
+# in both the editor executable and the headless shell test (no new link —
+# it reads the remote only through editor_remote.h accessors).
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_panel_network.c")
+    message(FATAL_ERROR "editor must carry apps/editor/editor_panel_network.c (Phase 4 Task 3 network panel)")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_panel_network.c")
+    message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_panel_network.c inline (Phase 4 Task 3)")
+endif()
 
 message(STATUS "break_editor target contract passed")

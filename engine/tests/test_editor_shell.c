@@ -1233,6 +1233,170 @@ TEST(phase3_layout_assets_lua_profiler_panels_present)
     break_editor_shell_destroy(shell);
 }
 
+/* ---------------- Phase 4 Task 3: network diagnostics panel -------------
+ * Pure view over the borrowed remote (editor_panel_network.c). The panel
+ * clock is injectable (break_editor_shell_set_network_clock_for_test) so
+ * the <= 4 Hz throttle is pinned deterministically, without sleeps. */
+
+static u64 g_net_clock_us = 0u;
+
+static u64 net_test_clock(void *user) {
+    (void)user;
+    return g_net_clock_us;
+}
+
+typedef struct {
+    u32 count;
+    char rows[16][96];
+} NetRowsSnapshot;
+
+static void net_rows_capture(BreakEditorShell *shell, NetRowsSnapshot *out) {
+    u32 i;
+    memset(out, 0, sizeof(*out));
+    out->count = break_editor_shell_network_row_count(shell);
+    for (i = 0u; i < out->count && i < 16u; i++) {
+        const char *t = break_editor_shell_network_row_text(shell, i);
+        (void)snprintf(out->rows[i], sizeof(out->rows[i]), "%s",
+                       t != NULL ? t : "<null>");
+    }
+}
+
+static bool net_rows_equal(const NetRowsSnapshot *a, const NetRowsSnapshot *b) {
+    u32 i;
+    if (a->count != b->count) {
+        return false;
+    }
+    for (i = 0u; i < a->count && i < 16u; i++) {
+        if (strcmp(a->rows[i], b->rows[i]) != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+TEST(network_panel_remote_off_row)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_remote(shell) == NULL);
+    break_editor_shell_tick(shell);
+    /* remote == NULL: exactly one bounded "remote: off" row */
+    ASSERT_EQ(break_editor_shell_network_row_count(shell), 1u);
+    ASSERT_STR_EQ(break_editor_shell_network_row_text(shell, 0u), "remote: off");
+    ASSERT_TRUE(break_editor_shell_network_row_text(shell, 1u) == NULL);
+    ASSERT_TRUE(strlen(break_editor_shell_network_row_text(shell, 0u)) < 96u);
+    /* NULL-safe accessors */
+    ASSERT_EQ(break_editor_shell_network_row_count(NULL), 0u);
+    ASSERT_TRUE(break_editor_shell_network_row_text(NULL, 0u) == NULL);
+    break_editor_shell_set_network_clock_for_test(NULL, net_test_clock, NULL);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(network_panel_layout_in_diagnostics_column_under_profiler)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *profiler_panel;
+    my_widget_t *network_panel;
+    my_widget_t *right_panel;
+    ASSERT_NOT_NULL(shell);
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_NOT_NULL(find(shell, "editor-network-list"));
+    ASSERT_NOT_NULL(find(shell, "editor-network-label"));
+    profiler_panel = find(shell, "editor-profiler-panel");
+    network_panel = find(shell, "editor-network-panel");
+    right_panel = find(shell, "editor-right-panel");
+    ASSERT_NOT_NULL(profiler_panel);
+    ASSERT_NOT_NULL(network_panel);
+    ASSERT_NOT_NULL(right_panel);
+    /* diagnostics area: same right column as the profiler, directly below
+     * it (documented placement: inspector h:1f / profiler h:30% / network
+     * h:20%) */
+    ASSERT_TRUE(network_panel->parent == right_panel);
+    ASSERT_TRUE(profiler_panel->parent == right_panel);
+    ASSERT_EQ(network_panel->rect.x, profiler_panel->rect.x);
+    ASSERT_TRUE(network_panel->rect.y >=
+                profiler_panel->rect.y + profiler_panel->rect.h);
+    ASSERT_TRUE(network_panel->rect.h > 0);
+    ASSERT_TRUE(network_panel->rect.h * 10 >= right_panel->rect.h * 1);
+    ASSERT_TRUE(network_panel->rect.h * 10 <= right_panel->rect.h * 3);
+    break_editor_shell_destroy(shell);
+}
+
+/* Strips C comments so prose that names a forbidden call does not trip the
+ * scan (code tokens only). */
+static void net_strip_comments(char *s) {
+    char *r = s, *w = s;
+    while (*r != '\0') {
+        if (r[0] == '/' && r[1] == '*') {
+            r += 2;
+            while (*r != '\0' && !(r[0] == '*' && r[1] == '/')) {
+                r++;
+            }
+            if (*r != '\0') {
+                r += 2;
+            }
+            *w++ = ' ';
+        } else if (r[0] == '/' && r[1] == '/') {
+            while (*r != '\0' && *r != '\n') {
+                r++;
+            }
+        } else {
+            *w++ = *r++;
+        }
+    }
+    *w = '\0';
+}
+
+#define NET_PANEL_STR2(x) #x
+#define NET_PANEL_STR(x) NET_PANEL_STR2(x)
+
+TEST(network_panel_source_never_calls_send_close_transition)
+{
+    /* source-scan pin (the house test_rhi_metal_* source-read precedent):
+     * the panel TU reaches the network ONLY through the read-only
+     * editor_remote.h accessors — no transport/session headers, no send,
+     * close, transition, or lifecycle calls. */
+    static char src[65536];
+    static const char *const k_forbidden[] = {
+        "break_net_reactor_send",          "break_net_reactor_stop",
+        "break_net_reactor_step",          "break_net_reactor_poll_event",
+        "break_session_manager_close",     "break_session_manager_transition",
+        "break_session_manager_bind",      "break_session_manager_begin_auth",
+        "break_session_manager_auth_succeeded",
+        "break_session_manager_apply_event",
+        "break_session_manager_apply_adapter_event",
+        "break_session_manager_poll",      "break_session_manager_destroy",
+        "break_editor_remote_tick",        "break_editor_remote_start",
+        "break_editor_remote_destroy",     "break_editor_remote_set_psk",
+        "break_editor_remote_manager_for_test",
+        "break_editor_shell_set_remote",   "network/break_net",
+        "network/break_session",           "snow/",
+        "close(",                          "send(",
+        "break_editor_doc_",               "break_editor_undo",
+        "break_editor_redo"};
+    FILE *f = fopen(NET_PANEL_STR(BREAK_EDITOR_NETWORK_PANEL_SOURCE), "rb");
+    size_t n, i;
+    ASSERT_NOT_NULL(f);
+    n = fread(src, 1u, sizeof(src) - 1u, f);
+    fclose(f);
+    ASSERT_TRUE(n > 0u && n < sizeof(src) - 1u);
+    src[n] = '\0';
+    net_strip_comments(src);
+    /* positive control: the scan sees real code */
+    ASSERT_TRUE(strstr(src, "editor_panel_network_tick") != NULL);
+    ASSERT_TRUE(strstr(src, "break_editor_remote_session_stats") != NULL);
+    for (i = 0u; i < sizeof(k_forbidden) / sizeof(k_forbidden[0]); i++) {
+        if (strstr(src, k_forbidden[i]) != NULL) {
+            printf("  FAIL: %s:%d: panel source contains forbidden token "
+                   "\"%s\"\n",
+                   __FILE__, __LINE__, k_forbidden[i]);
+            g_test_fail++;
+            return;
+        }
+    }
+}
+
 /* ---------------- Phase 4 Task 1: remote session host (plaintext seam) ----
  * Compiled only when the build has BREAK_ENABLE_SNOWFLAKE=ON (CMake gates
  * the break_net link and defines BREAK_EDITOR_REMOTE_TESTS); with snowflake
@@ -2147,6 +2311,220 @@ TEST(remote_null_and_bounded_calls_are_safe)
     ASSERT_FALSE(break_editor_remote_set_psk(NULL, NULL, NULL));
 }
 
+/* ---------------- Phase 4 Task 3: network panel over a live remote ------- */
+
+static const char *net_state_name(u32 state) {
+    switch (state) {
+    case BREAK_SESSION_NEW: return "NEW";
+    case BREAK_SESSION_AUTHENTICATING: return "AUTHENTICATING";
+    case BREAK_SESSION_AUTHENTICATED: return "AUTHENTICATED";
+    case BREAK_SESSION_CLOSING: return "CLOSING";
+    case BREAK_SESSION_CLOSED: return "CLOSED";
+    default: return "UNKNOWN";
+    }
+}
+
+/* Expected rows, built from the AUTHORITATIVE sources (manager apply stats
+ * + reactor/remote accessors), independent of the panel's own reads. */
+static void net_expected_rows(BreakEditorRemote *remote,
+                              NetRowsSnapshot *out) {
+    BreakSessionApplyStats st;
+    u64 keys[32];
+    u32 states[32];
+    u32 n, i;
+    memset(out, 0, sizeof(*out));
+    memset(&st, 0, sizeof(st));
+    break_session_manager_apply_stats(
+        (const BreakSessionManager *)break_editor_remote_manager_for_test(
+            remote),
+        &st);
+    (void)snprintf(out->rows[0], 96u,
+                   "reactor: running=%u tls=%u outbound=%llu denied=%llu",
+                   break_editor_remote_is_running(remote) ? 1u : 0u,
+                   break_editor_remote_is_tls(remote) ? 1u : 0u,
+                   (unsigned long long)break_editor_remote_outbound_count(
+                       remote),
+                   (unsigned long long)break_editor_remote_admission_denied(
+                       remote));
+    (void)snprintf(out->rows[1], 96u,
+                   "session: applied=%llu unknown=%llu stale=%llu",
+                   (unsigned long long)st.applied,
+                   (unsigned long long)st.unknown,
+                   (unsigned long long)st.stale);
+    (void)snprintf(out->rows[2], 96u,
+                   "session: invalid=%llu phase_rejected=%llu",
+                   (unsigned long long)st.invalid,
+                   (unsigned long long)st.phase_rejected);
+    (void)snprintf(out->rows[3], 96u,
+                   "session: duplicate=%llu handler_failed=%llu",
+                   (unsigned long long)st.duplicate,
+                   (unsigned long long)st.handler_failed);
+    (void)snprintf(out->rows[4], 96u, "connections: %u",
+                   break_editor_remote_connection_count(remote));
+    n = break_editor_remote_connections_snapshot(remote, keys, states, 32u);
+    for (i = 0u; i < n && i < 11u; i++) {
+        (void)snprintf(out->rows[5u + i], 96u, "conn: key=%llu state=%s",
+                       (unsigned long long)keys[i], net_state_name(states[i]));
+    }
+    out->count = 5u + i;
+}
+
+TEST(network_panel_rows_match_session_stats_and_reactor_accessors)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakSessionApplyStats st;
+    NetRowsSnapshot got, want;
+    u32 i;
+    ASSERT_NOT_NULL(shell);
+    g_net_clock_us = UINT64_C(1000000);
+    break_editor_shell_set_network_clock_for_test(shell, net_test_clock, NULL);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    remote_client_send(&c, BREAK_EDITOR_MSG_SPAWN, (const u8[]){0u, 0u}, 2u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 8u);
+    /* commands really went through the manager (non-trivial counters) */
+    memset(&st, 0, sizeof(st));
+    break_session_manager_apply_stats(
+        (const BreakSessionManager *)break_editor_remote_manager_for_test(
+            remote),
+        &st);
+    ASSERT_TRUE(st.applied >= 2u);
+    /* past the throttle window: the panel-only tick re-snapshots (no
+     * remote tick runs, so the sources are stable for the comparison) */
+    g_net_clock_us += UINT64_C(250000);
+    break_editor_shell_network_tick_for_test(shell);
+    net_rows_capture(shell, &got);
+    net_expected_rows(remote, &want);
+    ASSERT_EQ(got.count, want.count);
+    ASSERT_EQ(got.count, 6u); /* reactor + 3 session + header + 1 conn */
+    for (i = 0u; i < got.count; i++) {
+        ASSERT_STR_EQ(got.rows[i], want.rows[i]);
+        ASSERT_TRUE(strlen(got.rows[i]) < 96u);
+    }
+    ASSERT_TRUE(strstr(got.rows[0], "running=1 tls=0") != NULL);
+    ASSERT_TRUE(strstr(got.rows[5], "state=AUTHENTICATED") != NULL);
+    ASSERT_TRUE(break_editor_shell_network_row_text(shell, got.count) == NULL);
+    remote_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    /* destroy detaches the shell borrow AND the panel's: the next refresh
+     * renders "remote: off" (no dangling read — ASan lane) */
+    break_editor_remote_destroy(remote);
+    g_net_clock_us += UINT64_C(250000);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_network_row_count(shell), 1u);
+    ASSERT_STR_EQ(break_editor_shell_network_row_text(shell, 0u), "remote: off");
+    break_editor_shell_destroy(shell);
+}
+
+TEST(network_panel_throttle_4hz_row_storage_unchanged_within_250ms)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    NetRowsSnapshot first, held, want, after;
+    ASSERT_NOT_NULL(shell);
+    g_net_clock_us = UINT64_C(5000000);
+    break_editor_shell_set_network_clock_for_test(shell, net_test_clock, NULL);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    /* attach forces a re-snapshot on the next tick (the clock is frozen,
+     * so this is the ONLY refresh until it advances) */
+    remote_client_connect(&c, shell, remote);
+    net_rows_capture(shell, &first);
+    ASSERT_TRUE(first.count >= 5u);
+    /* many ticks inside the window, while the sources DO change */
+    g_net_clock_us += UINT64_C(100000);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    g_net_clock_us += UINT64_C(149999); /* 249,999 us since the refresh */
+    break_editor_shell_tick(shell);
+    break_editor_shell_tick(shell);
+    net_rows_capture(shell, &held);
+    ASSERT_TRUE(net_rows_equal(&first, &held));
+    net_expected_rows(remote, &want);
+    ASSERT_FALSE(net_rows_equal(&want, &held)); /* stats moved underneath */
+    /* exactly 250,000 us: refreshes to the live values */
+    g_net_clock_us += UINT64_C(1);
+    break_editor_shell_network_tick_for_test(shell);
+    net_rows_capture(shell, &after);
+    net_expected_rows(remote, &want);
+    ASSERT_TRUE(net_rows_equal(&want, &after));
+    ASSERT_FALSE(net_rows_equal(&first, &after));
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(network_panel_refresh_never_mutates_remote_state)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakSessionApplyStats st0, st1;
+    const BreakSessionManager *mgr;
+    u64 keys0[8], keys1[8];
+    u32 states0[8], states1[8];
+    u32 n0, n1, i;
+    u64 polls0, denied0, outbound0;
+    usize entities0;
+    static char console0[8192];
+    ASSERT_NOT_NULL(shell);
+    g_net_clock_us = UINT64_C(9000000);
+    break_editor_shell_set_network_clock_for_test(shell, net_test_clock, NULL);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    mgr = (const BreakSessionManager *)break_editor_remote_manager_for_test(
+        remote);
+    memset(&st0, 0, sizeof(st0));
+    break_session_manager_apply_stats(mgr, &st0);
+    n0 = break_editor_remote_connections_snapshot(remote, keys0, states0, 8u);
+    polls0 = break_editor_remote_poll_count(remote);
+    denied0 = break_editor_remote_admission_denied(remote);
+    outbound0 = (u64)break_editor_remote_outbound_count(remote);
+    entities0 = break_editor_doc_entity_count(break_editor_shell_doc(shell));
+    (void)snprintf(console0, sizeof(console0), "%s",
+                   break_editor_shell_console_text(shell));
+    /* 8 panel-only refreshes (each past the window) */
+    for (i = 0u; i < 8u; i++) {
+        g_net_clock_us += UINT64_C(250000);
+        break_editor_shell_network_tick_for_test(shell);
+    }
+    ASSERT_TRUE(break_editor_shell_network_row_count(shell) >= 6u);
+    memset(&st1, 0, sizeof(st1));
+    break_session_manager_apply_stats(mgr, &st1);
+    ASSERT_EQ(memcmp(&st0, &st1, sizeof(st0)), 0);
+    n1 = break_editor_remote_connections_snapshot(remote, keys1, states1, 8u);
+    ASSERT_EQ(n1, n0);
+    for (i = 0u; i < n0; i++) {
+        ASSERT_EQ(keys1[i], keys0[i]);
+        ASSERT_EQ(states1[i], states0[i]);
+    }
+    ASSERT_EQ(break_editor_remote_poll_count(remote), polls0);
+    ASSERT_EQ(break_editor_remote_admission_denied(remote), denied0);
+    ASSERT_EQ((u64)break_editor_remote_outbound_count(remote), outbound0);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)),
+              entities0);
+    ASSERT_STR_EQ(break_editor_shell_console_text(shell), console0);
+    ASSERT_TRUE(break_editor_remote_is_running(remote));
+    /* the connection is still usable afterwards (no close was issued) */
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 /* ---------------- Phase 4 Task 2: --remote CLI (default OFF) ------------- */
 
 static bool remote_cli(int argc, const char **argv, BreakEditorRemoteCli *cli) {
@@ -2891,6 +3269,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lua_panel_history_up_down_recall);
     RUN_TEST(profiler_panel_populates_rows_after_pumped_frame);
     RUN_TEST(phase3_layout_assets_lua_profiler_panels_present);
+    RUN_TEST(network_panel_remote_off_row);
+    RUN_TEST(network_panel_layout_in_diagnostics_column_under_profiler);
+    RUN_TEST(network_panel_source_never_calls_send_close_transition);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_TEST(remote_describe_returns_version_entity_count_dirty);
@@ -2905,6 +3286,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(remote_config_validation_and_snapshot);
     RUN_TEST(remote_null_and_bounded_calls_are_safe);
     RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
+    RUN_TEST(network_panel_rows_match_session_stats_and_reactor_accessors);
+    RUN_TEST(network_panel_throttle_4hz_row_storage_unchanged_within_250ms);
+    RUN_TEST(network_panel_refresh_never_mutates_remote_state);
 #ifdef BREAK_ENABLE_CRYPTO
     RUN_TEST(remote_tls_auth_v2_client_describe_and_spawn);
     RUN_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);

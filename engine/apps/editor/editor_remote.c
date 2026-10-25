@@ -1004,6 +1004,59 @@ u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 key) {
     return break_session_manager_session_id(r->manager, key);
 }
 
+/* Phase 4 Task 3 read-only diagnostics surface (network panel). */
+bool break_editor_remote_session_stats(const BreakEditorRemote *r,
+                                       BreakEditorRemoteSessionStats *out) {
+    BreakSessionApplyStats st;
+    if (out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    if (r == NULL || r->manager == NULL) {
+        return false;
+    }
+    memset(&st, 0, sizeof(st));
+    break_session_manager_apply_stats(r->manager, &st);
+    out->applied = st.applied;
+    out->unknown = st.unknown;
+    out->stale = st.stale;
+    out->invalid = st.invalid;
+    out->phase_rejected = st.phase_rejected;
+    out->duplicate = st.duplicate;
+    out->handler_failed = st.handler_failed;
+    return true;
+}
+
+bool break_editor_remote_is_tls(const BreakEditorRemote *r) {
+    return r != NULL && r->reactor != NULL &&
+           break_net_reactor_is_tls(r->reactor);
+}
+
+u64 break_editor_remote_outbound_count(const BreakEditorRemote *r) {
+    if (r == NULL || r->reactor == NULL) {
+        return 0u;
+    }
+    return (u64)break_net_reactor_outbound_count(r->reactor);
+}
+
+const char *break_editor_remote_state_name(uint32_t state) {
+    switch ((BreakSessionState)state) {
+    case BREAK_SESSION_NEW:
+        return "NEW";
+    case BREAK_SESSION_AUTHENTICATING:
+        return "AUTHENTICATING";
+    case BREAK_SESSION_AUTHENTICATED:
+        return "AUTHENTICATED";
+    case BREAK_SESSION_CLOSING:
+        return "CLOSING";
+    case BREAK_SESSION_CLOSED:
+        return "CLOSED";
+    case BREAK_SESSION_UNKNOWN:
+    default:
+        return "UNKNOWN";
+    }
+}
+
 #else /* !BREAK_ENABLE_SNOWFLAKE — full stub surface (remote unavailable) */
 
 struct BreakEditorRemote {
@@ -1074,6 +1127,30 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
     (void)key_id;
     (void)psk;
     return false;
+}
+
+bool break_editor_remote_session_stats(const BreakEditorRemote *r,
+                                       BreakEditorRemoteSessionStats *out) {
+    (void)r;
+    if (out != NULL) {
+        memset(out, 0, sizeof(*out));
+    }
+    return false;
+}
+
+bool break_editor_remote_is_tls(const BreakEditorRemote *r) {
+    (void)r;
+    return false;
+}
+
+u64 break_editor_remote_outbound_count(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
+}
+
+const char *break_editor_remote_state_name(uint32_t state) {
+    (void)state;
+    return "UNKNOWN";
 }
 
 #endif /* BREAK_ENABLE_SNOWFLAKE */
