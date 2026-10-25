@@ -97,10 +97,10 @@
     },
     {
       "name": "d3d12-agility-sdk",
-      "version": "1.616.0",
+      "version": "1.619.6",
       "purpose": "runtime-shipped",
-      "source": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.616.0 (nupkg sha256 here; engine/external/d3d12/agility_sdk_lock.txt additionally pins nupkg + D3D12Core.dll SHA512)",
-      "sha256": "2c7b31f0e41192673ace986506c65b7cc7520610cfe5f30216152905e67ff5ba",
+      "source": "https://www.nuget.org/api/v2/package/Microsoft.Direct3D.D3D12/1.619.6 (nupkg sha256 here; engine/external/d3d12/agility_sdk_lock.txt additionally pins nupkg + D3D12Core.dll SHA512)",
+      "sha256": "08f0489281401aa430fc37322d6c3fc98a8025175aacd714c10d562f4963f1e9",
       "verify_path": "",
       "platforms": ["windows"]
     },

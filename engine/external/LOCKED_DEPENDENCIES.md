@@ -24,7 +24,7 @@
 | android-ndk | 27.2.12479018 (r27c) | build-only | android/native_window.h 查找（engine/CMakeLists.txt） |
 | xcode | >=15.4 | system-provided | Metal 工具链（xcrun metal）与 iOS SDK 来源 |
 | windows-sdk | 10.0.26100.0 | system-provided | D3D12/DXGI 头与 import lib |
-| d3d12-agility-sdk | 1.616.0 | runtime-shipped | D3D12Core.dll 随 Windows 发布包分发；`engine/tools/fetch_d3d12_agility_sdk.cmake` 拉取，`engine/external/d3d12/agility_sdk_lock.txt` 以 SHA512 复核 nupkg 与 D3D12Core.dll |
+| d3d12-agility-sdk | 1.619.6 | runtime-shipped | D3D12Core.dll 随 Windows 发布包分发；`engine/tools/fetch_d3d12_agility_sdk.cmake` 拉取，`engine/external/d3d12/agility_sdk_lock.txt` 以 SHA512 复核 nupkg 与 D3D12Core.dll |
 | dxc | 1.9.0.5399 | build-only | SDK 同捆；HLSL→DXIL gate |
 | glslang | 16.4.0 | build-only | SDK 同捆 glslang.exe；替代 unpinned 的 glslangValidator |
 
