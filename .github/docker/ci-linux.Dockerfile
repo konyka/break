@@ -37,6 +37,11 @@ RUN printf 'Acquire::Retries "5";\nAcquire::http::Timeout "30";\nAcquire::https:
         fonts-noto-cjk \
  && rm -rf /var/lib/apt/lists/*
 
+# actions/checkout leaves the workspace owned by the runner user while the job
+# runs as root inside the container; git then refuses the repo ("dubious
+# ownership"), which breaks `git archive` in tools/clean_room_build.sh.
+RUN git config --system --add safe.directory '*'
+
 # The lanes' `sudo` calls (sysctl for TSan, apt in the fallback path) expect a
 # passwordless sudo; the container runs as root so this is a harmless no-op
 # there, but keeps the same scripts working if the image is used as a user.
