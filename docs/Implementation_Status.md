@@ -37,7 +37,7 @@
 
 ### 验证
 - ctest：vk 182/182、gl 179/179 全部通过（含新增的 2 个物理用例）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
-- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，需要另外查（疑似驱动或调试层组件的变化），本次没有处理。
+- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，需要另外查，本次没有处理。已知的线索：系统日志里 11:15:37 有两条 `nvlddmkm` 事件 153（NVIDIA 驱动事件），此后同一个构建的 d3d12-debug demo（`ENGINE_D3D12_DEBUG` + 硬件适配器）也在启动时段错误，而 WARP 适配器和 Release 的 D3D12 demo 都正常。这台机器当时 E: 盘满了（0 字节可用），已清理 1.2 GB 临时截图后恢复，但崩溃没有因此消失，所以磁盘不是原因。可能需要重启或重新插拔驱动之后再看，我没有擅自重启。
 
 ## 本轮更新：R694 — 物理改为固定步长 1/60 s + 渲染插值：下落动画不再随帧节奏抖动；记录 D3D12/GL 的 vsync 帧节奏问题
 
