@@ -786,6 +786,17 @@ endif()
 add_library(stb_image STATIC external/stb_image_impl.c)
 target_include_directories(stb_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
+# Pure C11 port of the meshoptimizer v1.3 simplifier + vertex cache optimizer
+# (external/meshopt_c/README.md). Built with the engine's normal warning flags;
+# not linked into engine yet. Consumers include "meshopt_c/meshopt.h".
+add_library(meshopt_c STATIC
+    external/meshopt_c/simplifier.c
+    external/meshopt_c/vcacheoptimizer.c)
+target_include_directories(meshopt_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+if(NOT WIN32)
+    target_link_libraries(meshopt_c PUBLIC m)
+endif()
+
 add_library(stb_image_write STATIC external/stb_image_write_impl.c)
 target_include_directories(stb_image_write PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 
@@ -3151,6 +3162,12 @@ endif()
     target_include_directories(test_lod PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_lod PRIVATE m)
     add_test(NAME test_lod COMMAND test_lod)
+
+    # test_meshopt_c: invariants + bit-exact upstream v1.3 reference table
+    add_executable(test_meshopt_c tests/test_meshopt_c.c)
+    target_include_directories(test_meshopt_c PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_meshopt_c PRIVATE meshopt_c)
+    add_test(NAME test_meshopt_c COMMAND test_meshopt_c)
 
     # test_async_loader: needs async_loader.c + vfs.c + log.c
     add_executable(test_async_loader tests/test_async_loader.c

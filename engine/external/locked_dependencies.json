@@ -123,6 +123,20 @@
       "verify_path": "VulkanSDK/Bin/glslang.exe",
             "verify_platforms": ["windows"],
       "platforms": ["windows", "linux"]
+    },
+    {
+      "name": "meshoptimizer-c-port",
+      "version": "1.3 (pure C port)",
+      "purpose": "runtime-shipped",
+      "source": "vendored engine/external/meshopt_c (pure C11 port of https://github.com/zeux/meshoptimizer tag v1.3, commit 9e1f07b159d3cb777f1c67ed31fc11fd117986f4, MIT); upstream simplifier.cpp sha256 719303b6970398631e30724e8eebc6cd2e7e08b67fe8ab7cbf7eecafdaa08616, vcacheoptimizer.cpp 618429ef4db8ab9b16fde4e73dcf425d89452acbf103085478bc8b1761fa6689",
+      "sha256": "09c0de33a42ba72a3c834e559ecc1a05da9966a0a8f48763b2edd9c568b4d271",
+      "verify_path": "meshopt_c/simplifier.c",
+      "verify_extra": [
+        {"path": "meshopt_c/vcacheoptimizer.c", "sha256": "9908fd0802a6f6bb7c493b0833874106a24a12a939172ae97a49d342da83ba21"},
+        {"path": "meshopt_c/meshopt.h", "sha256": "307aa4f0405adf79e1976f03250c38cf1314e719e39e18e951e55df62990cbe4"},
+        {"path": "meshopt_c/LICENSE.md", "sha256": "f03037ca7bad1e3eb7f4a63fa6084a8baabd5ba30d3c239a9a7f35705d873e26"}
+      ],
+      "platforms": ["windows", "linux", "macos", "android", "ios"]
     }
   ]
 }
