@@ -21,12 +21,11 @@
  * AUTHENTICATED.
  *
  * Connection table discovery: poll_adapter drains events into the manager
- * but does not enumerate live connections, so the table discovers keys two
- * ways — the message handler inserts the key on first dispatch, and the
- * tick's bounded forward probe over candidate key values adopts live ones
- * (keys are small monotonically increasing integers in the current
- * adapter; the manager answers BREAK_SESSION_UNKNOWN for anything it does
- * not track). See remote_table_sync(). */
+ * but does not enumerate live connections, so the tick drains the reactor
+ * events itself and adopts keys from the authoritative OPENED events; the
+ * message handler also inserts the key on first dispatch. There is no key
+ * probing (snow connection uids are large, hash-derived values). See
+ * remote_table_sync(). */
 
 #include "editor_remote.h"
 #include "editor_shell_internal.h"

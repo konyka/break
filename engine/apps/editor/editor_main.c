@@ -89,6 +89,14 @@ int main(int argc, char **argv) {
     fprintf(stderr, "editor: %s\n", remote_err);
     return 2;
   }
+#ifndef BREAK_ENABLE_SNOWFLAKE
+  if (remote_cli.enabled) {
+    break_editor_remote_cli_wipe(&remote_cli);
+    fprintf(stderr, "editor: --remote unavailable: this build has no remote "
+                    "session support (configure with BREAK_ENABLE_SNOWFLAKE=ON)\n");
+    return 2;
+  }
+#endif
 
   memset(&cfg, 0, sizeof(cfg));
   cfg.width = w;

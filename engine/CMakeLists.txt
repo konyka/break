@@ -495,6 +495,35 @@ set_property(TARGET runtime_core PROPERTY C_STANDARD 11)
 target_include_directories(runtime_core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
+# Formal optional Snowflake network/session library. Produced whenever
+# BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
+# engine target stays transport-neutral and never links it. Consumers
+# (engine_demo and dxx_break excluded) opt into break_net explicitly.
+if(BREAK_ENABLE_SNOWFLAKE)
+    add_library(break_net STATIC
+        src/network/break_net_adapter.c
+        src/network/break_net_events.c
+        src/network/break_net_message.c
+        src/network/break_net_protocol.c
+        src/network/break_net_envelope.c
+        src/network/break_net_message_registry.c
+        src/network/break_session.c)
+    set_property(TARGET break_net PROPERTY C_STANDARD 11)
+    target_include_directories(break_net PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_include_directories(break_net PRIVATE
+        ${SNOWFLAKE_SOURCE_DIR}/include)
+    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
+    # PUBLIC so every break_net consumer (the editor executable's
+    # editor_remote.c, test_editor_shell) compiles the real remote host,
+    # never the !BREAK_ENABLE_SNOWFLAKE stub surface.
+    target_compile_definitions(break_net PUBLIC BREAK_ENABLE_SNOWFLAKE=1)
+    if(BREAK_ENABLE_CRYPTO)
+        target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
+        target_link_libraries(break_net PUBLIC break_crypto)
+    endif()
+endif()
+
 # Product build identity: short git hash baked into break_version.c (engine)
 # and into its test. Falls back to "unknown" outside a git checkout (e.g.
 # clean-room source exports) or when git is absent/fails.
@@ -1424,6 +1453,63 @@ target_include_directories(dxx_break PRIVATE
 target_link_libraries(dxx_break PRIVATE dxx_core break_myui engine m)
 engine_link_rhi_backend(dxx_break)
 
+# Stage 4 scene editor Phase 1 shell executable (Task 4). Top-level like the
+# break_editor library: built regardless of ENGINE_BUILD_TESTS and kept thin —
+# all panel logic lives in editor_panels.c so the headless dummy-PAL test
+# exercises it. src/myui/mypal/dummy/my_pal_dummy.c is compiled in because
+# editor_panels.c hosts break_editor_shell_create_for_test(); when MYUI_PAL
+# is a desktop port myui_core also carries the dummy PAL, and the archive
+# copy is then simply never pulled (the executable's own object defines the
+# symbols first) — no duplicate definitions.
+#
+# Phase 3 Task 3: + the three panel TUs (assets browser / Lua console /
+# profiler view; the panel structs are opaque to the shell — see
+# apps/editor/editor_shell_internal.h). The Lua console panel references
+# break_editor_lua_*, so editor_lua.o and the break_lua archive are now
+# pulled into the binary — break_lua is listed EXPLICITLY (it also arrives
+# via break_editor's PUBLIC link, Task 2); the contract ctest pins this
+# line. engine/engine_demo/dxx_break still link neither break_editor nor
+# break_lua (consumer no-link scan unchanged).
+#
+# Link-order note (carried review item): libbreak_editor.a and libengine.a
+# BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
+# engine compiles src/scene/scene_serial.c inline). Static archives only pull
+# objects to resolve still-undefined symbols, and break_editor is listed
+# FIRST, so editor_panels.o -> editor_scene.o -> scene_serial.o all resolve
+# from break_editor; engine's copy is never pulled for the same symbols.
+# Verified at link time and via `nm` (exactly one scene_save_binary
+# definition in the binary).
+#
+# Phase 4 Task 1: + editor_remote.c (the remote session host: STEP-mode
+# reactor + session manager + editor wire protocol handlers, all driven from
+# break_editor_shell_tick on the shell thread). The editor target is built
+# regardless of BREAK_ENABLE_SNOWFLAKE (as on master): with SNOWFLAKE=ON it
+# links break_net (whose PUBLIC BREAK_ENABLE_SNOWFLAKE=1 selects the real
+# remote host; break_crypto arrives transitively when BREAK_ENABLE_CRYPTO=ON);
+# with SNOWFLAKE=OFF editor_remote.c compiles its stub surface, so --remote
+# fails closed with a clear message. engine/engine_demo/dxx_break still link
+# neither break_editor/break_lua nor break_net (consumer no-link scan pins the
+# editor-only exception).
+# Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
+# view over editor_remote.h's read-only accessors, no new link).
+add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
+    apps/editor/editor_viewport3d.c
+    apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+    apps/editor/editor_panel_profiler.c
+    apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+    src/myui/mypal/dummy/my_pal_dummy.c)
+set_property(TARGET editor PROPERTY C_STANDARD 11)
+target_include_directories(editor PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    ${CMAKE_CURRENT_SOURCE_DIR}/external
+)
+target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
+if(BREAK_ENABLE_SNOWFLAKE)
+    target_link_libraries(editor PRIVATE break_net)
+endif()
+engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
     include(CheckIPOSupported)
@@ -4523,93 +4609,3 @@ endif()
     set_tests_properties(test_platform_size_contract PROPERTIES
         LABELS "platform_contract")
 endif()
-
-# ============================================================================
-# BREAK_ENABLE_SNOWFLAKE block: break_net + the Stage 4 editor executable
-# (Phase 4: the editor remote session host needs break_net, so the editor
-# target moved here — editor now requires BREAK_ENABLE_SNOWFLAKE=ON).
-# ============================================================================
-
-# Formal optional Snowflake network/session library. Produced whenever
-# BREAK_ENABLE_SNOWFLAKE=ON, independent of ENGINE_BUILD_TESTS; the base
-# engine target stays transport-neutral and never links it. Consumers
-# (engine_demo and dxx_break excluded) opt into break_net explicitly.
-if(BREAK_ENABLE_SNOWFLAKE)
-    add_library(break_net STATIC
-        src/network/break_net_adapter.c
-        src/network/break_net_events.c
-        src/network/break_net_message.c
-        src/network/break_net_protocol.c
-        src/network/break_net_envelope.c
-        src/network/break_net_message_registry.c
-        src/network/break_session.c)
-    set_property(TARGET break_net PROPERTY C_STANDARD 11)
-    target_include_directories(break_net PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    target_include_directories(break_net PRIVATE
-        ${SNOWFLAKE_SOURCE_DIR}/include)
-    target_link_libraries(break_net PUBLIC break_replication_core snow::net)
-    # PUBLIC so every break_net consumer (the editor executable's
-    # editor_remote.c, test_editor_shell) compiles the real remote host,
-    # never the !BREAK_ENABLE_SNOWFLAKE stub surface.
-    target_compile_definitions(break_net PUBLIC BREAK_ENABLE_SNOWFLAKE=1)
-    if(BREAK_ENABLE_CRYPTO)
-        target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
-        target_link_libraries(break_net PUBLIC break_crypto)
-    endif()
-
-# Stage 4 scene editor Phase 1 shell executable (Task 4). Top-level like the
-# break_editor library: built regardless of ENGINE_BUILD_TESTS and kept thin —
-# all panel logic lives in editor_panels.c so the headless dummy-PAL test
-# exercises it. src/myui/mypal/dummy/my_pal_dummy.c is compiled in because
-# editor_panels.c hosts break_editor_shell_create_for_test(); when MYUI_PAL
-# is a desktop port myui_core also carries the dummy PAL, and the archive
-# copy is then simply never pulled (the executable's own object defines the
-# symbols first) — no duplicate definitions.
-#
-# Phase 3 Task 3: + the three panel TUs (assets browser / Lua console /
-# profiler view; the panel structs are opaque to the shell — see
-# apps/editor/editor_shell_internal.h). The Lua console panel references
-# break_editor_lua_*, so editor_lua.o and the break_lua archive are now
-# pulled into the binary — break_lua is listed EXPLICITLY (it also arrives
-# via break_editor's PUBLIC link, Task 2); the contract ctest pins this
-# line. engine/engine_demo/dxx_break still link neither break_editor nor
-# break_lua (consumer no-link scan unchanged).
-#
-# Link-order note (carried review item): libbreak_editor.a and libengine.a
-# BOTH contain scene_serial.o (break_editor owns a copy since Task 2;
-# engine compiles src/scene/scene_serial.c inline). Static archives only pull
-# objects to resolve still-undefined symbols, and break_editor is listed
-# FIRST, so editor_panels.o -> editor_scene.o -> scene_serial.o all resolve
-# from break_editor; engine's copy is never pulled for the same symbols.
-# Verified at link time and via `nm` (exactly one scene_save_binary
-# definition in the binary).
-#
-# Phase 4 Task 1: + editor_remote.c (the remote session host: STEP-mode
-# reactor + session manager + editor wire protocol handlers, all driven from
-# break_editor_shell_tick on the shell thread). The remote needs break_net,
-# so the editor target requires BREAK_ENABLE_SNOWFLAKE=ON (the whole
-# BREAK_ENABLE_SNOWFLAKE block below, targets AND tests, is gated on it) and
-# links break_net EXPLICITLY (break_crypto arrives transitively when
-# BREAK_ENABLE_CRYPTO=ON). engine/engine_demo/dxx_break still link neither
-# break_editor/break_lua nor break_net (consumer no-link scan updated to
-# pin the editor-only exception).
-# Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
-# view over editor_remote.h's read-only accessors, no new link).
-add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
-    apps/editor/editor_viewport3d.c
-    apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
-    apps/editor/editor_panel_profiler.c
-    apps/editor/editor_remote.c apps/editor/editor_panel_network.c
-    src/myui/mypal/dummy/my_pal_dummy.c)
-set_property(TARGET editor PROPERTY C_STANDARD 11)
-target_include_directories(editor PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
-    ${CMAKE_CURRENT_SOURCE_DIR}/external
-)
-target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine break_net m)
-engine_link_rhi_backend(editor)
-
-endif() # BREAK_ENABLE_SNOWFLAKE (break_net + editor)
