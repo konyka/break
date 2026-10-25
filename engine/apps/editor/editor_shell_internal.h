@@ -96,3 +96,13 @@ void editor_panel_network_set_clock(BreakEditorPanelNetwork *p,
 uint32_t editor_panel_network_row_count(const BreakEditorPanelNetwork *p);
 const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p,
                                           uint32_t index);
+
+/* Reverse-teardown seam (editor_remote.c): break_editor_shell_destroy calls
+ * this FIRST for its attached remote (while the doc is still alive). When
+ * the remote belongs to `shell`, it drops its back-pointer, destroys its
+ * doc-borrowing console core, and stops its reactor, so the orphaned remote
+ * is inert: a later tick is a no-op and break_editor_remote_destroy never
+ * touches the freed shell or its network panel. NULL remote / foreign shell
+ * is a no-op. */
+void editor_remote_shell_destroyed(struct BreakEditorRemote *r,
+                                   BreakEditorShell *shell);

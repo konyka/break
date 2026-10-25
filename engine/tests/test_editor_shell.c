@@ -1245,6 +1245,7 @@ static u64 net_test_clock(void *user) {
     return g_net_clock_us;
 }
 
+#ifdef BREAK_EDITOR_REMOTE_TESTS
 typedef struct {
     u32 count;
     char rows[16][96];
@@ -1273,6 +1274,7 @@ static bool net_rows_equal(const NetRowsSnapshot *a, const NetRowsSnapshot *b) {
     }
     return true;
 }
+#endif /* BREAK_EDITOR_REMOTE_TESTS */
 
 TEST(network_panel_remote_off_row)
 {
@@ -1425,6 +1427,56 @@ TEST(network_panel_source_never_calls_send_close_transition)
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Test isolation: every remote a test creates is tracked, and
+ * RUN_REMOTE_TEST destroys any a failed test left behind (an early ASSERT
+ * return skips the test's own destroy). A leaked remote keeps its sessions
+ * non-NEW, which pins the process-global session auth domain and would
+ * cascade into the TLS tests' break_session_set_auth installs. */
+#define REMOTE_TRACK_MAX 8u
+static BreakEditorRemote *g_remote_live[REMOTE_TRACK_MAX];
+
+static BreakEditorRemote *remote_tracked_create(
+    BreakEditorShell *shell, const BreakEditorRemoteConfig *cfg) {
+    BreakEditorRemote *r = break_editor_remote_create(shell, cfg);
+    u32 i;
+    for (i = 0u; r != NULL && i < REMOTE_TRACK_MAX; i++) {
+        if (g_remote_live[i] == NULL) {
+            g_remote_live[i] = r;
+            break;
+        }
+    }
+    return r;
+}
+
+static void remote_tracked_destroy(BreakEditorRemote *r) {
+    u32 i;
+    for (i = 0u; r != NULL && i < REMOTE_TRACK_MAX; i++) {
+        if (g_remote_live[i] == r) {
+            g_remote_live[i] = NULL;
+        }
+    }
+    break_editor_remote_destroy(r);
+}
+
+static void remote_reap_leaked(void) {
+    u32 i;
+    for (i = 0u; i < REMOTE_TRACK_MAX; i++) {
+        if (g_remote_live[i] != NULL) {
+            BreakEditorRemote *r = g_remote_live[i];
+            g_remote_live[i] = NULL;
+            printf("  (reaped a remote leaked by a failed test)\n");
+            break_editor_remote_destroy(r);
+        }
+    }
+}
+
+#define break_editor_remote_create(shell, cfg) remote_tracked_create(shell, cfg)
+#define break_editor_remote_destroy(r) remote_tracked_destroy(r)
+#define RUN_REMOTE_TEST(name) do { \
+    RUN_TEST(name); \
+    remote_reap_leaked(); \
+} while (0)
 
 static u64 remote_monotonic_us(void) {
     struct timespec now;
@@ -2422,6 +2474,86 @@ TEST(network_panel_rows_match_session_stats_and_reactor_accessors)
     break_editor_shell_destroy(shell);
 }
 
+TEST(network_panel_shell_destroyed_before_attached_remote)
+{
+    /* reverse teardown: the host destroys the shell while the remote (and
+     * a live session) is still attached. The shell severs the remote's
+     * back-pointer, so the later remote tick/destroy never touch the freed
+     * shell, its network panel, or its doc (ASan lane pins zero reports). */
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    RemoteClient c;
+    BreakNetEnvelope rsp;
+    ASSERT_NOT_NULL(shell);
+    g_net_clock_us = UINT64_C(2000000);
+    break_editor_shell_set_network_clock_for_test(shell, net_test_clock, NULL);
+    remote = remote_start_default(shell);
+    ASSERT_NOT_NULL(remote);
+    remote_client_connect(&c, shell, remote);
+    remote_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+    ASSERT_EQ(remote_client_recv(&c, &rsp), 7u);
+    g_net_clock_us += UINT64_C(250000);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_network_row_count(shell) >= 6u);
+    break_editor_shell_destroy(shell);
+    /* the orphaned remote is stopped and inert (no handler can reach the
+     * freed doc; the tick is a no-op) */
+    ASSERT_FALSE(break_editor_remote_is_running(remote));
+    break_editor_remote_tick(remote);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 1u);
+    remote_client_close(&c);
+    break_editor_remote_destroy(remote);
+}
+
+TEST(network_panel_rows_bounded_with_more_than_11_connections)
+{
+    /* 13 live connections: 5 fixed rows + 11 connection rows = 16 (the
+     * storage cap); the header row still carries the full count */
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    RemoteClient c[13];
+    u32 i, n;
+    ASSERT_NOT_NULL(shell);
+    g_net_clock_us = UINT64_C(3000000);
+    break_editor_shell_set_network_clock_for_test(shell, net_test_clock, NULL);
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_host = "127.0.0.1";
+    cfg.max_connections = 16u;
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_start(remote));
+    break_editor_shell_set_remote(shell, remote);
+    for (i = 0u; i < 13u; i++) {
+        c[i].fd = -1;
+    }
+    for (i = 0u; i < 13u; i++) {
+        /* remote_client_connect only waits for count >= 1: adopt each
+         * connection before the next connect so the accept backlog drains */
+        remote_client_connect(&c[i], shell, remote);
+        remote_wait_connection_count(remote, shell, i + 1u);
+    }
+    n = break_editor_remote_connection_count(remote);
+    g_net_clock_us += UINT64_C(250000);
+    break_editor_shell_network_tick_for_test(shell);
+    for (i = 0u; i < 13u; i++) {
+        remote_client_close(&c[i]);
+    }
+    ASSERT_EQ(n, 13u);
+    ASSERT_EQ(break_editor_shell_network_row_count(shell), 16u);
+    ASSERT_STR_EQ(break_editor_shell_network_row_text(shell, 4u),
+                  "connections: 13");
+    for (i = 5u; i < 16u; i++) {
+        const char *t = break_editor_shell_network_row_text(shell, i);
+        ASSERT_NOT_NULL(t);
+        ASSERT_TRUE(strncmp(t, "conn: key=", 10u) == 0);
+        ASSERT_TRUE(strlen(t) < 96u);
+    }
+    ASSERT_TRUE(break_editor_shell_network_row_text(shell, 16u) == NULL);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
 TEST(network_panel_throttle_4hz_row_storage_unchanged_within_250ms)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -3273,27 +3405,29 @@ TEST_MAIN_BEGIN()
     RUN_TEST(network_panel_layout_in_diagnostics_column_under_profiler);
     RUN_TEST(network_panel_source_never_calls_send_close_transition);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
-    RUN_TEST(remote_protocol_ids_live_in_default_registry);
-    RUN_TEST(remote_describe_returns_version_entity_count_dirty);
-    RUN_TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin);
-    RUN_TEST(remote_spawn_then_remote_undo_redo);
-    RUN_TEST(remote_set_field_maps_component_and_field_names);
-    RUN_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
-    RUN_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
-    RUN_TEST(remote_unknown_id_and_malformed_close_connection);
-    RUN_TEST(remote_disabled_leaves_shell_untouched);
-    RUN_TEST(remote_tick_wiring_polls_adapter_every_frame);
-    RUN_TEST(remote_config_validation_and_snapshot);
-    RUN_TEST(remote_null_and_bounded_calls_are_safe);
-    RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
-    RUN_TEST(network_panel_rows_match_session_stats_and_reactor_accessors);
-    RUN_TEST(network_panel_throttle_4hz_row_storage_unchanged_within_250ms);
-    RUN_TEST(network_panel_refresh_never_mutates_remote_state);
+    RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
+    RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);
+    RUN_REMOTE_TEST(remote_spawn_list_rename_remove_roundtrip_and_ctrl_z_pin);
+    RUN_REMOTE_TEST(remote_spawn_then_remote_undo_redo);
+    RUN_REMOTE_TEST(remote_set_field_maps_component_and_field_names);
+    RUN_REMOTE_TEST(remote_eval_runs_on_shell_thread_and_returns_console_tail);
+    RUN_REMOTE_TEST(remote_eval_at_4096_boundary_and_len_mismatch_closes);
+    RUN_REMOTE_TEST(remote_unknown_id_and_malformed_close_connection);
+    RUN_REMOTE_TEST(remote_disabled_leaves_shell_untouched);
+    RUN_REMOTE_TEST(remote_tick_wiring_polls_adapter_every_frame);
+    RUN_REMOTE_TEST(remote_config_validation_and_snapshot);
+    RUN_REMOTE_TEST(remote_null_and_bounded_calls_are_safe);
+    RUN_REMOTE_TEST(remote_cli_default_off_and_fail_closed_flags);
+    RUN_REMOTE_TEST(network_panel_rows_match_session_stats_and_reactor_accessors);
+    RUN_REMOTE_TEST(network_panel_shell_destroyed_before_attached_remote);
+    RUN_REMOTE_TEST(network_panel_rows_bounded_with_more_than_11_connections);
+    RUN_REMOTE_TEST(network_panel_throttle_4hz_row_storage_unchanged_within_250ms);
+    RUN_REMOTE_TEST(network_panel_refresh_never_mutates_remote_state);
 #ifdef BREAK_ENABLE_CRYPTO
-    RUN_TEST(remote_tls_auth_v2_client_describe_and_spawn);
-    RUN_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
-    RUN_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
-    RUN_TEST(remote_tls_rate_limit_denials_observable);
+    RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
+    RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
+    RUN_REMOTE_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
+    RUN_REMOTE_TEST(remote_tls_rate_limit_denials_observable);
 #endif
 #endif
 TEST_MAIN_END()

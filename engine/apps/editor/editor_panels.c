@@ -1468,6 +1468,12 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
     }
+    /* a still-attached remote (host destroyed the shell first) is orphaned
+     * before anything is freed: it drops its back-pointer and its
+     * doc-borrowing console, so its later destroy never reaches this shell */
+    editor_remote_shell_destroyed(shell->remote, shell);
+    shell->remote = NULL;
+    editor_panel_network_set_remote(shell->network_panel, NULL);
     if (shell->owns_window) {
         /* the window teardown destroys the whole panel tree */
         (void)my_window_manager_close(shell->wm, shell->win);

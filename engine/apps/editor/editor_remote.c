@@ -31,6 +31,7 @@
 #include "editor_remote.h"
 #include "editor_shell_internal.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -816,6 +817,20 @@ void break_editor_remote_destroy(BreakEditorRemote *r) {
     free(r);
 }
 
+void editor_remote_shell_destroyed(BreakEditorRemote *r,
+                                   BreakEditorShell *shell) {
+    if (r == NULL || shell == NULL || r->shell != shell) {
+        return;
+    }
+    r->shell = NULL;
+    break_editor_lua_destroy(r->console);
+    r->console = NULL;
+    if (r->reactor != NULL && r->started) {
+        (void)break_net_reactor_stop(r->reactor, 1000u);
+    }
+    r->started = false;
+}
+
 bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
                                  const uint8_t psk[32]) {
 #ifdef BREAK_ENABLE_CRYPTO
@@ -837,8 +852,8 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
 bool break_editor_remote_start(BreakEditorRemote *r) {
     snow_endpoint_t *endpoint = NULL;
     snow_status_t status;
-    if (r == NULL || r->started) {
-        return false;
+    if (r == NULL || r->started || r->shell == NULL) {
+        return false; /* orphaned (shell destroyed) remotes stay inert */
     }
     /* fail closed: TLS needs cert + key (readability is checked by
      * break_net_reactor_set_tls below) AND the AUTH-v2 PSK — there is no
@@ -1004,7 +1019,25 @@ u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 key) {
     return break_session_manager_session_id(r->manager, key);
 }
 
-/* Phase 4 Task 3 read-only diagnostics surface (network panel). */
+/* Phase 4 Task 3 read-only diagnostics surface (network panel). The
+ * hand-maintained mirror must track BreakSessionApplyStats field-for-field:
+ * a field added, removed, or reordered upstream breaks the build here. */
+#define EDITOR_REMOTE_STATS_SAME(f)                                         \
+    _Static_assert(offsetof(BreakEditorRemoteSessionStats, f) ==            \
+                       offsetof(BreakSessionApplyStats, f),                 \
+                   "BreakEditorRemoteSessionStats drifted: " #f)
+EDITOR_REMOTE_STATS_SAME(applied);
+EDITOR_REMOTE_STATS_SAME(unknown);
+EDITOR_REMOTE_STATS_SAME(stale);
+EDITOR_REMOTE_STATS_SAME(invalid);
+EDITOR_REMOTE_STATS_SAME(phase_rejected);
+EDITOR_REMOTE_STATS_SAME(duplicate);
+EDITOR_REMOTE_STATS_SAME(handler_failed);
+_Static_assert(sizeof(BreakEditorRemoteSessionStats) ==
+                   sizeof(BreakSessionApplyStats),
+               "BreakEditorRemoteSessionStats drifted: field count");
+#undef EDITOR_REMOTE_STATS_SAME
+
 bool break_editor_remote_session_stats(const BreakEditorRemote *r,
                                        BreakEditorRemoteSessionStats *out) {
     BreakSessionApplyStats st;
@@ -1151,6 +1184,12 @@ u64 break_editor_remote_outbound_count(const BreakEditorRemote *r) {
 const char *break_editor_remote_state_name(uint32_t state) {
     (void)state;
     return "UNKNOWN";
+}
+
+void editor_remote_shell_destroyed(BreakEditorRemote *r,
+                                   BreakEditorShell *shell) {
+    (void)r;
+    (void)shell;
 }
 
 #endif /* BREAK_ENABLE_SNOWFLAKE */
