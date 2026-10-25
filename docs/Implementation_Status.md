@@ -17,7 +17,15 @@ demo 中下落的物理物体看起来一卡一卡的。（R693 曾把它们换�
 
 D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 ms，Present 0.3–0.5 ms，长的那一截全耗在下一帧 `rhi_frame_begin` 里等 frame fence（20–43 ms）。把 D3D12 的 SyncInterval 临时改成 0 之后，帧时间稳定在 3.1 ms、最长 6.9 ms，可见问题出在 vsync 下的 present 队列节奏上。VK 用 MAILBOX，不受影响。
 
-为什么 vsync present 会卡这么久没有确定。本机显示器挂在 AMD 核显上（240 Hz），渲染在 RTX 4060 Laptop 上，属于跨适配器呈现；同时 ToDesk 在运行。两者都可能有影响，没有逐一排除。
+**根因：ToDesk 远程会话（已验证）。** 上面这组数据是在 ToDesk 运行、用户远程操作时测的。关闭 ToDesk、在本机直接操作之后重测（默认 vsync 开，每个后端 2 轮、639 帧）：
+
+| 后端 | 平均帧时间 | 帧率 | p99 | 最长 | >15 ms 的帧 |
+|---|---|---|---|---|---|
+| D3D12 | 4.17 ms | 239.6 | 5.0 ms | 5.5 ms | 0 |
+| GL | 4.17 ms | 239.6 | 4.8 ms | 5.0 ms | 0 |
+| VK | 4.17–4.22 ms | 237–239 | 4.7 ms | 6.8 ms | 0 |
+
+三个后端的帧率都对准了显示器的 240 Hz，没有 3 ms / 25–45 ms 的交替。也就是说，D3D12/GL 在 vsync 下的卡顿完全是 ToDesk 抓屏占用呈现路径造成的，和引擎代码、显卡结构都无关。
 
 物理原来每帧调用一次 `physics_step(physics, delta_time)`。帧时间的抖动直接变成位移的跳变；而且积分器每步乘一次 0.98 的速度阻尼，下落速度本身也依赖帧率（60 Hz 时终端速度约 8 m/s，300 Hz 时约 1.6 m/s）。
 
@@ -44,7 +52,7 @@ D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 
 - 帧率（Release，fps_avg）：前向 D3D12 368、VK 301、GL 337，延迟 423 / 332 / 381，和 R691 一样处在噪声范围内（物理按 60 Hz 步进，比原来每帧一步还少）。
 
 ### 未处理：D3D12/GL 的 vsync 帧节奏
-**试过 waitable 交换链，已撤回。** 做法是 D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在 `rhi_frame_begin` 里先等待 waitable object。同一个 exe 交替测了 2 轮：
+**试过 waitable 交换链，已撤回（这是在 ToDesk 运行的环境下测的，结论仅对该环境有效；本机直连时本来就不需要）。** 做法是 D3D12 用 `DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT` 加 `SetMaximumFrameLatency(1)`，在 `rhi_frame_begin` 里先等待 waitable object。同一个 exe 交替测了 2 轮：
 
 | | 平均帧时间 | 帧率 | 中位数 | 标准差 | >15 ms 的帧 |
 |---|---|---|---|---|---|
@@ -53,9 +61,7 @@ D3D12 的帧时间呈 3 → 25 → 3 → 25 → 43 ms 交替。CPU 录制 1–2 
 
 抖动确实小了，但节奏被锁在约 30 fps，比原来的平均 74 fps 更差。
 
-同时取了 `IDXGISwapChain::GetFrameStatistics`：`SyncRefreshCount` / `SyncQPCTime` 一直是 0；`GetContainingOutput` 也拿不到 output（`output_on_this_adapter=0`），可见交换链所在的适配器上没有显示输出。也就是说 RTX 渲染出来的画面要跨适配器复制到 AMD 核显的输出（240 Hz）上，DXGI 不能直接对齐那边的 vblank。这和 VK 的 MAILBOX 完全平稳一致：VK 不等 vblank。
-
-所以 D3D12/GL 在 vsync 开启时的节奏，取决于这台笔记本的混合显卡呈现路径（以及 ToDesk）。引擎这边能做的 R694 已经做了：物理不再受影响。如果想要画面本身也平稳，可以先在 NVIDIA 控制面板里把显示模式切成「独显直连」（dGPU only / Advanced Optimus）再看；或者 demo 默认关闭 vsync，用帧率限制器（`fps_limits`）代替。后者是行为改动，需要另外决定。
+同时取了 `IDXGISwapChain::GetFrameStatistics`：ToDesk 运行时 `SyncRefreshCount` / `SyncQPCTime` 一直是 0。当时曾误判为混合显卡跨适配器呈现造成的。关闭 ToDesk 之后重测（见上）：`SyncRefreshCount` 每 60 帧恰好增加 60（与 240 Hz 一致），说明 DXGI 的刷新信息是正常的；只有 `GetContainingOutput` 仍返回 `DXGI_ERROR_NOT_FOUND`（0x887a0004，渲染所在的 RTX 适配器上没有显示输出，这是混合显卡笔记本的正常状态，不影响垂直同步）。因此卡顿是 ToDesk 的虚拟显示/抓屏造成的，「切独显直连」和「默认关闭 vsync」两个建议都不再需要。
 
 ## 本轮更新：R692 — 调查记录：VK postfx 比 D3D12 慢约 0.2 ms，原因是相互依赖的全屏 pass 之间必须串行（未修改代码）
 
