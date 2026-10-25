@@ -95,3 +95,24 @@
 - [x] `git diff --check`
 - [x] 文档自审：生命周期、shutdown 顺序、错误类别、容量/背压、Lua boundary、Asset/HotReload 状态机前后一致
 - [ ] Final independent code review
+
+## Deferred / not-done ledger (2026-10-25, master `b747d6ed`)
+
+> 集中记录已确认**没有做**的验证项与功能项，避免散落在各阶段注记里被遗漏。每项都应在后续单独立项（design → plan → TDD → review）后才能勾选。
+
+### Validation not done
+
+- [ ] 任何 **Windows 上的运行**：`editor.exe` 仅 `zig cc -target x86_64-windows-gnu` 交叉编译（Snowflake OFF 链接通过；Snowflake ON 因缺系统 `nghttp2` 链接受阻，仅对象文件编译通过），无 Windows 二进制被执行；`windows-latest` CI 通道或 Windows 机器才能关闭此项
+- [ ] **editor 协议专用 fuzzer**：现有 5 个 `fuzz_*` smoke（scene/net_packet/decode_image/vfs_pak/asset_gltf）已在 ASan+UBSan 跑过，但没有任何一个覆盖 editor 线协议 ids 4..13 的 handler 解析路径
+- [ ] **editor 人工交互验证**：无脚本化交互钩子；live 冒烟只覆盖启动 + 远端协议 E2E，不覆盖鼠标/键盘/gizmo/面板实际操作
+- [ ] 跨平台 native/CI 证据（macOS/Metal、Android、Wayland 等）未采集（见 Cross-cutting 第一条未勾选项）
+
+### Features not delivered (carried from earlier phases)
+
+- [ ] editor：remote load/save、remote render control、**render debugger 面板**、资源 **hot reload 集成**
+- [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享、服务端 transport close / 认证 deadline
+- [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
+- [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
+- [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获
+- [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）审计、缺口计划、逐后端证据、OpenGL 废弃门
+- [ ] Final independent code review
