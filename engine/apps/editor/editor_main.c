@@ -8,10 +8,17 @@
  * break_ui_render on the same command buffer; the panel widget blits the
  * resulting FBO texture during the UI pass.
  *
- * Optional argv[1]: scene path used as the Ctrl+S / palette-save target
- * (Phase 1 has no save-as dialog; loading is intentionally not wired to
- * argv — the document model supports it, the shell UI lands it in a later
- * phase).
+ * Optional positional argument: scene path used as the Ctrl+S /
+ * palette-save target (Phase 1 has no save-as dialog; loading is
+ * intentionally not wired to argv — the document model supports it, the
+ * shell UI lands it in a later phase).
+ *
+ * Phase 4 Task 2: the remote session is DEFAULT OFF — it is created only
+ * with --remote, which REQUIRES TLS (--remote-cert/--remote-key) and an
+ * AUTH-v2 dev PSK (--remote-psk-hex or --remote-psk-file; dev path, not a
+ * production credential system), binds 127.0.0.1, and applies the default
+ * admission rate limits (flag reference: editor_remote.h). Any invalid
+ * remote configuration exits non-zero before a listener exists.
  *
  * Phase 3 Task 3: the profiler PANEL (editor_panel_profiler.c) is a pure
  * view — the PRODUCER side lives here: the app enables the profiler and
@@ -20,6 +27,7 @@
 #include <string.h>
 
 #include "editor_panels.h"
+#include "editor_remote.h"
 
 #include <core/profiler.h>
 #include <editor/editor_scene.h>
@@ -69,6 +77,18 @@ int main(int argc, char **argv) {
   size_t font_count;
   u32 w = EDITOR_WIN_W, h = EDITOR_WIN_H;
   u32 drawable_w = EDITOR_WIN_W, drawable_h = EDITOR_WIN_H;
+  BreakEditorRemoteCli remote_cli;
+  BreakEditorRemote *remote = NULL;
+  char remote_err[160];
+
+  /* parsed before any window exists: a bad --remote config exits non-zero
+   * without ever opening a listener (fail closed) */
+  remote_err[0] = '\0';
+  if (!break_editor_remote_cli_parse(argc, argv, &remote_cli, remote_err,
+                                     sizeof(remote_err))) {
+    fprintf(stderr, "editor: %s\n", remote_err);
+    return 2;
+  }
 
   memset(&cfg, 0, sizeof(cfg));
   cfg.width = w;
@@ -126,10 +146,35 @@ int main(int argc, char **argv) {
     fprintf(stderr, "editor: break_editor_shell_create failed\n");
     return 1;
   }
-  if (argc > 1 && argv[1] != NULL &&
-      !break_editor_shell_set_scene_path(shell, argv[1])) {
+  if (remote_cli.scene_path != NULL &&
+      !break_editor_shell_set_scene_path(shell, remote_cli.scene_path)) {
     fprintf(stderr, "editor: scene path rejected (cap %u bytes)\n",
             BREAK_EDITOR_SCENE_PATH_CAPACITY);
+  }
+  if (remote_cli.enabled) {
+    BreakEditorRemoteConfig remote_cfg;
+    break_editor_remote_cli_to_config(&remote_cli, &remote_cfg);
+    remote = break_editor_remote_create(shell, &remote_cfg);
+    if (remote == NULL ||
+        !break_editor_remote_set_psk(remote, remote_cli.key_id,
+                                     remote_cli.psk) ||
+        !break_editor_remote_start(remote)) {
+      memset(remote_cli.psk, 0, sizeof(remote_cli.psk));
+      break_editor_remote_destroy(remote);
+      break_editor_shell_destroy(shell);
+      break_ui_destroy(ui);
+      rhi_device_destroy(device);
+      platform_destroy(platform);
+      fprintf(stderr, "editor: --remote failed to start (TLS cert/key "
+                      "unreadable, port in use, or auth setup failed)\n");
+      return 1;
+    }
+    memset(remote_cli.psk, 0, sizeof(remote_cli.psk));
+    break_editor_shell_set_remote(shell, remote);
+    fprintf(stderr,
+            "editor: remote session (DEV TOOL, TLS + AUTH-v2) listening on "
+            "127.0.0.1:%u\n",
+            (unsigned)break_editor_remote_port(remote));
   }
 
   /* Phase 3 Task 3: producer side of the profiler panel (the panel itself
@@ -174,6 +219,7 @@ int main(int argc, char **argv) {
     profiler_end_frame();
   }
 
+  break_editor_remote_destroy(remote);
   break_editor_shell_destroy(shell);
   break_ui_destroy(ui);
   rhi_device_destroy(device);

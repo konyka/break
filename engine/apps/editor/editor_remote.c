@@ -1,7 +1,7 @@
 /* BreakEditorRemote implementation — see editor_remote.h for the security
- * posture, the fail-closed rules, and the threading contract. Phase 4
- * Task 1 delivers the plaintext dev/test seam only (use_tls=false);
- * TLS + CHALLENGE/AUTH-v2 wiring is Task 2 scope.
+ * posture, the fail-closed rules, and the threading contract. The remote
+ * path is TLS + CHALLENGE/AUTH-v2 (Task 2); use_tls=false is the
+ * test-only plaintext seam.
  *
  * Shape: one STEP-mode reactor + one session manager + a bounded connection
  * table (capacity = max_connections, <= 32). Handlers run on the shell
@@ -12,12 +12,13 @@
  * the same eval contract) — the command stack stays the single mutation
  * path and Ctrl+Z reverts remote mutations (test pin).
  *
- * Plaintext seam auth note (documented dev path): with use_tls=false the
- * host walks each session NEW -> AUTHENTICATING -> AUTHENTICATED right after
- * the OPENED event binds it — Task 2 replaces this with the
- * CHALLENGE/AUTH-v2 handshake. The plaintext path is loopback-first
- * (default bind 127.0.0.1) and never the default (remote OFF unless
- * explicitly started).
+ * Auth: with a PSK installed (required for use_tls=true) sessions become
+ * AUTHENTICATED only through the break_session CHALLENGE/AUTH-v2 handshake.
+ * The plaintext test seam (use_tls=false, no PSK) instead walks each session
+ * NEW -> AUTHENTICATING -> AUTHENTICATED right after the OPENED event binds
+ * it; editor_main never reaches it (--remote requires TLS + PSK).
+ * remote_on_message refuses + closes any command on a session that is not
+ * AUTHENTICATED.
  *
  * Connection table discovery: poll_adapter drains events into the manager
  * but does not enumerate live connections, so the table discovers keys two
@@ -92,7 +93,80 @@ struct BreakEditorRemote {
     u32 rate_global_per_sec;
     u32 rate_global_burst;
     u32 rate_per_ip_per_minute;
+    bool has_psk;
+    bool auth_installed;            /* this remote owns the session auth domain */
+    u8 psk[32];
+    u8 key_id[8];
 };
+
+#ifdef BREAK_ENABLE_CRYPTO
+/* Process-global key slot behind break_session_set_auth (the session auth
+ * configuration is process-wide). The callback reads this static slot, not
+ * the remote, so a clear that the library refuses (another manager still
+ * holds non-NEW sessions) can never leave it pointing at freed memory:
+ * destroy wipes the slot and the callback then fails closed. */
+typedef struct {
+    bool valid;
+    u8 psk[32];
+    u8 key_id[8];
+} EditorRemoteAuthSlot;
+
+static EditorRemoteAuthSlot g_editor_remote_auth;
+
+static bool remote_auth_key(void *user, const u8 key_id[8], u8 out_psk[32]) {
+    const EditorRemoteAuthSlot *slot = (const EditorRemoteAuthSlot *)user;
+    u8 diff = 0u;
+    u32 i;
+    if (slot == NULL || !slot->valid) {
+        return false;
+    }
+    for (i = 0u; i < 8u; i++) {
+        diff |= (u8)(slot->key_id[i] ^ key_id[i]);
+    }
+    if (diff != 0u) {
+        return false; /* unknown key id: fail closed */
+    }
+    memcpy(out_psk, slot->psk, 32u);
+    return true;
+}
+
+static bool remote_auth_install(BreakEditorRemote *r) {
+    if (g_editor_remote_auth.valid) {
+        return false; /* one auth domain per process */
+    }
+    memcpy(g_editor_remote_auth.psk, r->psk, 32u);
+    memcpy(g_editor_remote_auth.key_id, r->key_id, 8u);
+    g_editor_remote_auth.valid = true;
+    if (!break_session_set_auth(remote_auth_key, &g_editor_remote_auth)) {
+        memset(&g_editor_remote_auth, 0, sizeof(g_editor_remote_auth));
+        return false;
+    }
+    r->auth_installed = true;
+    return true;
+}
+
+static void remote_auth_uninstall(BreakEditorRemote *r) {
+    if (!r->auth_installed) {
+        return;
+    }
+    memset(&g_editor_remote_auth, 0, sizeof(g_editor_remote_auth));
+    (void)break_session_set_auth(NULL, NULL);
+    r->auth_installed = false;
+}
+#endif
+
+/* The plaintext seam (use_tls=false, no PSK) is the only path that marks
+ * sessions AUTHENTICATED without AUTH v2. */
+static bool remote_auto_auth(const BreakEditorRemote *r) {
+    return !r->use_tls && !r->has_psk;
+}
+
+static void remote_plaintext_auth(BreakEditorRemote *r, u64 key) {
+    if (break_session_manager_state(r->manager, key) == BREAK_SESSION_NEW) {
+        (void)break_session_manager_begin_auth(r->manager, key);
+        (void)break_session_manager_auth_succeeded(r->manager, key);
+    }
+}
 
 /* ---------------- canonical little-endian payload lanes ---------------- */
 
@@ -118,9 +192,8 @@ static u32 proto_get32(const u8 *p) {
  * wire ids (4..13) are registered there (the documented codec boundary —
  * a manager-local registry that forgot an id would admit frames the codec
  * already accepted, so the manager must see the same table). Phase ANY +
- * version 1 matches the default registry's editor definitions; the
- * plaintext seam auto-authenticates sessions, and Task 2 tightens
- * authorization with CHALLENGE/AUTH-v2. */
+ * version 1 matches the default registry's editor definitions; the host's
+ * remote_on_message gate enforces AUTHENTICATED (and closes otherwise). */
 
 /* ---------------- connection table ---------------- */
 
@@ -174,10 +247,9 @@ static void remote_table_sync(BreakEditorRemote *r) {
             r->conn_count--;
             continue;
         }
-        if (state == BREAK_SESSION_NEW && !r->use_tls) {
-            /* plaintext dev seam: NEW -> AUTHENTICATING -> AUTHENTICATED */
-            (void)break_session_manager_begin_auth(r->manager, row->key);
-            (void)break_session_manager_auth_succeeded(r->manager, row->key);
+        if (state == BREAK_SESSION_NEW && remote_auto_auth(r)) {
+            /* plaintext test seam: NEW -> AUTHENTICATING -> AUTHENTICATED */
+            remote_plaintext_auth(r, row->key);
             state = break_session_manager_state(r->manager, row->key);
         }
         row->state = (u32)state;
@@ -240,8 +312,8 @@ static void remote_console_log(void *ctx, const char *line) {
 
 /* ---------------- protocol handlers ----------------
  * Return true to keep the connection up (a response was sent), false to
- * fail closed (the session manager closes the connection on a handler
- * failure). Malformed payloads are protocol errors: NO response, close.
+ * fail closed (remote_on_message closes the session on a handler failure).
+ * Malformed payloads are protocol errors: NO response, close.
  * Command failures on well-formed payloads answer RESULT invalid/failed. */
 
 static bool remote_handle_describe(BreakEditorRemote *r, u64 key,
@@ -557,14 +629,37 @@ static bool remote_handle_eval(BreakEditorRemote *r, u64 key, const u8 *p,
     return remote_respond(r, key, BREAK_EDITOR_MSG_EVAL, 0u, rsp, off);
 }
 
+static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
+                            const BreakNetOwnedMessage *message);
+
 /* Single dispatch entry registered for every editor message id. */
 static bool remote_on_message(BreakConnectionKey connection,
                               const BreakNetOwnedMessage *message,
                               void *user_data) {
     BreakEditorRemote *r = (BreakEditorRemote *)user_data;
+    bool ok;
+    remote_row_add(r, connection); /* first dispatch discovers the key */
+    if (remote_auto_auth(r)) {
+        remote_plaintext_auth(r, connection);
+    }
+    /* Authorization gate: editor ids are PHASE_ANY in the default registry,
+     * so the host refuses every command on a session that has not completed
+     * AUTH v2 (or the plaintext test seam) — and, like every handler
+     * failure, closes the session: the manager only auto-closes a failed
+     * AUTH handler, so the close is explicit here (fail closed). */
+    ok = break_session_manager_state(r->manager, connection) ==
+             BREAK_SESSION_AUTHENTICATED &&
+         remote_dispatch(r, connection, message);
+    if (!ok) {
+        (void)break_session_manager_close(r->manager, connection, 0u);
+    }
+    return ok;
+}
+
+static bool remote_dispatch(BreakEditorRemote *r, BreakConnectionKey connection,
+                            const BreakNetOwnedMessage *message) {
     const u8 *p = (const u8 *)message->data;
     size_t size = message->size;
-    remote_row_add(r, connection); /* first dispatch discovers the key */
     if (message->protocol_version != BREAK_EDITOR_PROTO_VERSION) {
         return false; /* fail closed */
     }
@@ -701,8 +796,32 @@ void break_editor_remote_destroy(BreakEditorRemote *r) {
     if (r->acceptor != NULL) {
         snow_acceptor_destroy(r->acceptor);
     }
+#ifdef BREAK_ENABLE_CRYPTO
+    /* after the manager is gone (its sessions no longer pin the global
+     * auth configuration), release the process-global auth domain */
+    remote_auth_uninstall(r);
+#endif
     break_editor_lua_destroy(r->console);
+    memset(r->psk, 0, sizeof(r->psk));
     free(r);
+}
+
+bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]) {
+#ifdef BREAK_ENABLE_CRYPTO
+    if (r == NULL || key_id == NULL || psk == NULL || r->started) {
+        return false;
+    }
+    memcpy(r->key_id, key_id, sizeof(r->key_id));
+    memcpy(r->psk, psk, sizeof(r->psk));
+    r->has_psk = true;
+    return true;
+#else
+    (void)r;
+    (void)key_id;
+    (void)psk;
+    return false; /* no AUTH-v2 without break_crypto: TLS start fails closed */
+#endif
 }
 
 bool break_editor_remote_start(BreakEditorRemote *r) {
@@ -711,9 +830,11 @@ bool break_editor_remote_start(BreakEditorRemote *r) {
     if (r == NULL || r->started) {
         return false;
     }
-    /* fail closed on incomplete TLS config (Task 2 wires the handshake; the
-     * config surface already validates) */
-    if (r->use_tls && (r->tls_cert[0] == '\0' || r->tls_key[0] == '\0')) {
+    /* fail closed: TLS needs cert + key (readability is checked by
+     * break_net_reactor_set_tls below) AND the AUTH-v2 PSK — there is no
+     * unauthenticated TLS command path */
+    if (r->use_tls && (r->tls_cert[0] == '\0' || r->tls_key[0] == '\0' ||
+                       !r->has_psk)) {
         return false;
     }
     if (snow_endpoint_create(&endpoint) != SNOW_OK) {
@@ -756,6 +877,13 @@ bool break_editor_remote_start(BreakEditorRemote *r) {
     if (!break_net_reactor_set_acceptor(r->reactor, r->acceptor)) {
         goto fail;
     }
+#ifdef BREAK_ENABLE_CRYPTO
+    /* installed before the first accept: the adapter issues the CHALLENGE
+     * nonce only while session auth is configured */
+    if (r->has_psk && !remote_auth_install(r)) {
+        goto fail;
+    }
+#endif
     if (!break_net_reactor_start(r->reactor)) {
         goto fail;
     }
@@ -764,6 +892,9 @@ bool break_editor_remote_start(BreakEditorRemote *r) {
     r->started = true;
     return true;
 fail:
+#ifdef BREAK_ENABLE_CRYPTO
+    remote_auth_uninstall(r);
+#endif
     (void)break_net_reactor_stop(r->reactor, 1000u);
     snow_acceptor_destroy(r->acceptor);
     r->acceptor = NULL;
@@ -927,4 +1058,212 @@ u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 key) {
     return 0u;
 }
 
+bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]) {
+    (void)r;
+    (void)key_id;
+    (void)psk;
+    return false;
+}
+
 #endif /* BREAK_ENABLE_SNOWFLAKE */
+
+/* ---------------- editor_main --remote flag plumbing ---------------- */
+
+static void remote_cli_error(char *err, size_t cap, const char *msg,
+                             const char *arg) {
+    if (err != NULL && cap != 0u) {
+        snprintf(err, cap, "%s%s%s", msg, arg != NULL ? ": " : "",
+                 arg != NULL ? arg : "");
+    }
+}
+
+static int remote_hex_nibble(char c) {
+    if (c >= '0' && c <= '9') {
+        return c - '0';
+    }
+    if (c >= 'a' && c <= 'f') {
+        return c - 'a' + 10;
+    }
+    if (c >= 'A' && c <= 'F') {
+        return c - 'A' + 10;
+    }
+    return -1;
+}
+
+static bool remote_hex_decode(const char *hex, u8 *out, size_t out_len) {
+    size_t i;
+    if (strlen(hex) != out_len * 2u) {
+        return false;
+    }
+    for (i = 0u; i < out_len; i++) {
+        int hi = remote_hex_nibble(hex[2u * i]);
+        int lo = remote_hex_nibble(hex[2u * i + 1u]);
+        if (hi < 0 || lo < 0) {
+            return false;
+        }
+        out[i] = (u8)((hi << 4) | lo);
+    }
+    return true;
+}
+
+/* Dev key file: exactly 32 raw bytes (a 33rd byte is an error). */
+static bool remote_psk_file_read(const char *path, u8 out[32]) {
+    u8 buf[33];
+    size_t n;
+    FILE *f = fopen(path, "rb");
+    if (f == NULL) {
+        return false;
+    }
+    n = fread(buf, 1u, sizeof(buf), f);
+    fclose(f);
+    if (n != 32u) {
+        memset(buf, 0, sizeof(buf));
+        return false;
+    }
+    memcpy(out, buf, 32u);
+    memset(buf, 0, sizeof(buf));
+    return true;
+}
+
+bool break_editor_remote_cli_parse(int argc, char **argv,
+                                   BreakEditorRemoteCli *out, char *err,
+                                   size_t err_cap) {
+    bool saw_remote_option = false;
+    bool saw_psk_hex = false, saw_psk_file = false;
+    int i;
+    if (out == NULL || (argc > 0 && argv == NULL)) {
+        remote_cli_error(err, err_cap, "invalid arguments", NULL);
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->port = (uint16_t)BREAK_EDITOR_REMOTE_DEFAULT_PORT;
+    for (i = 1; i < argc; i++) {
+        const char *arg = argv[i];
+        const char *value;
+        if (arg == NULL) {
+            continue;
+        }
+        if (strncmp(arg, "--remote", 8u) != 0) {
+            if (out->scene_path == NULL) {
+                out->scene_path = arg;
+                continue;
+            }
+            remote_cli_error(err, err_cap, "unexpected argument", arg);
+            goto fail;
+        }
+        if (strcmp(arg, "--remote") == 0) {
+            out->enabled = true;
+            continue;
+        }
+        saw_remote_option = true;
+        if (strcmp(arg, "--remote-port") != 0 &&
+            strcmp(arg, "--remote-cert") != 0 &&
+            strcmp(arg, "--remote-key") != 0 &&
+            strcmp(arg, "--remote-ca") != 0 &&
+            strcmp(arg, "--remote-psk-hex") != 0 &&
+            strcmp(arg, "--remote-psk-file") != 0 &&
+            strcmp(arg, "--remote-key-id-hex") != 0) {
+            remote_cli_error(err, err_cap, "unknown option", arg);
+            goto fail;
+        }
+        if (i + 1 >= argc || argv[i + 1] == NULL) {
+            remote_cli_error(err, err_cap, "missing value for", arg);
+            goto fail;
+        }
+        value = argv[++i];
+        if (strcmp(arg, "--remote-port") == 0) {
+            char *end = NULL;
+            unsigned long port = strtoul(value, &end, 10);
+            if (value[0] == '\0' || end == NULL || *end != '\0' || port == 0u ||
+                port > 65535u) {
+                remote_cli_error(err, err_cap, "invalid --remote-port", value);
+                goto fail;
+            }
+            out->port = (uint16_t)port;
+        } else if (strcmp(arg, "--remote-cert") == 0) {
+            out->cert_file = value;
+        } else if (strcmp(arg, "--remote-key") == 0) {
+            out->key_file = value;
+        } else if (strcmp(arg, "--remote-ca") == 0) {
+            out->ca_file = value;
+        } else if (strcmp(arg, "--remote-psk-hex") == 0) {
+            if (!remote_hex_decode(value, out->psk, sizeof(out->psk))) {
+                remote_cli_error(err, err_cap,
+                                 "--remote-psk-hex needs 64 hex digits", NULL);
+                goto fail;
+            }
+            saw_psk_hex = true;
+        } else if (strcmp(arg, "--remote-psk-file") == 0) {
+            if (!remote_psk_file_read(value, out->psk)) {
+                remote_cli_error(err, err_cap,
+                                 "--remote-psk-file must hold exactly 32 bytes",
+                                 value);
+                goto fail;
+            }
+            saw_psk_file = true;
+        } else {
+            if (!remote_hex_decode(value, out->key_id, sizeof(out->key_id))) {
+                remote_cli_error(err, err_cap,
+                                 "--remote-key-id-hex needs 16 hex digits",
+                                 NULL);
+                goto fail;
+            }
+        }
+    }
+    if (!out->enabled) {
+        if (saw_remote_option) {
+            remote_cli_error(err, err_cap, "--remote-* options need --remote",
+                             NULL);
+            goto fail;
+        }
+        return true;
+    }
+    if (saw_psk_hex && saw_psk_file) {
+        remote_cli_error(err, err_cap,
+                         "use one of --remote-psk-hex / --remote-psk-file",
+                         NULL);
+        goto fail;
+    }
+    if (out->cert_file == NULL || out->key_file == NULL) {
+        remote_cli_error(err, err_cap,
+                         "--remote requires TLS: --remote-cert and --remote-key",
+                         NULL);
+        goto fail;
+    }
+    if (!saw_psk_hex && !saw_psk_file) {
+        remote_cli_error(err, err_cap,
+                         "--remote requires AUTH-v2: --remote-psk-hex or "
+                         "--remote-psk-file",
+                         NULL);
+        goto fail;
+    }
+    out->has_psk = true;
+    return true;
+fail:
+    memset(out->psk, 0, sizeof(out->psk));
+    out->has_psk = false;
+    out->enabled = false;
+    return false;
+}
+
+void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,
+                                       BreakEditorRemoteConfig *out) {
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    out->bind_host = "127.0.0.1";
+    out->max_connections = 4u;
+    out->use_tls = true;
+    out->rate_global_per_sec = BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC;
+    out->rate_global_burst = BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST;
+    out->rate_per_ip_per_minute = BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN;
+    if (cli != NULL) {
+        out->bind_port = cli->port;
+        out->tls_cert_file = cli->cert_file;
+        out->tls_key_file = cli->key_file;
+        out->tls_ca_file = cli->ca_file;
+        out->tls_verify_peer = cli->ca_file != NULL ? 1 : 0;
+    }
+}

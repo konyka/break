@@ -3725,7 +3725,11 @@ endif()
         target_compile_definitions(test_editor_shell PRIVATE ENGINE_PLATFORM_WINDOWS=1)
     endif()
     if(BREAK_ENABLE_SNOWFLAKE)
-        target_compile_definitions(test_editor_shell PRIVATE BREAK_EDITOR_REMOTE_TESTS=1)
+        # Phase 4 Task 2: TLS + AUTH-v2 remote tests reference the pinned
+        # Snowflake self-signed fixtures in place (test-only; the
+        # test_break_net_tls BREAK_TEST_SSL_FIXTURE_DIR idiom).
+        target_compile_definitions(test_editor_shell PRIVATE BREAK_EDITOR_REMOTE_TESTS=1
+            BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
         target_link_libraries(test_editor_shell PRIVATE break_net)
     endif()
     target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)

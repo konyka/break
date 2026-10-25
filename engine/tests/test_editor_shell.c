@@ -1247,8 +1247,15 @@ TEST(phase3_layout_assets_lua_profiler_panels_present)
 #include <network/break_net_envelope.h>
 #include <network/break_session.h>
 
+#include <snow/network_buffer.h>
+#include <snow/openssl.h>
+#ifdef BREAK_ENABLE_CRYPTO
+#include <crypto/break_crypto.h>
+#endif
+
 #include <arpa/inet.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -2137,7 +2144,699 @@ TEST(remote_null_and_bounded_calls_are_safe)
     ASSERT_EQ(break_editor_remote_poll_count(NULL), 0u);
     ASSERT_EQ(break_editor_remote_session_id(NULL, 1u), 0u);
     ASSERT_TRUE(break_editor_remote_create(NULL, NULL) == NULL);
+    ASSERT_FALSE(break_editor_remote_set_psk(NULL, NULL, NULL));
 }
+
+/* ---------------- Phase 4 Task 2: --remote CLI (default OFF) ------------- */
+
+static bool remote_cli(int argc, const char **argv, BreakEditorRemoteCli *cli) {
+    char err[160];
+    err[0] = '\0';
+    return break_editor_remote_cli_parse(argc, (char **)argv, cli, err,
+                                         sizeof(err));
+}
+
+TEST(remote_cli_default_off_and_fail_closed_flags)
+{
+    static const char k_hex64[] =
+        "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    BreakEditorRemoteCli cli;
+    BreakEditorRemoteConfig cfg;
+    char err[160];
+    u32 i;
+    {
+        const char *argv[] = {"editor"};
+        ASSERT_TRUE(remote_cli(1, argv, &cli));
+        ASSERT_FALSE(cli.enabled); /* no flag: no remote, no listener */
+        ASSERT_TRUE(cli.scene_path == NULL);
+    }
+    {
+        const char *argv[] = {"editor", "scene.bscn"};
+        ASSERT_TRUE(remote_cli(2, argv, &cli));
+        ASSERT_FALSE(cli.enabled);
+        ASSERT_STR_EQ(cli.scene_path, "scene.bscn");
+    }
+    {
+        /* --remote requires TLS cert/key AND a PSK: fail closed */
+        const char *argv[] = {"editor", "--remote"};
+        err[0] = '\0';
+        ASSERT_FALSE(break_editor_remote_cli_parse(2, (char **)argv, &cli, err,
+                                                   sizeof(err)));
+        ASSERT_TRUE(err[0] != '\0');
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem"};
+        ASSERT_FALSE(remote_cli(6, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-psk-hex", k_hex64};
+        ASSERT_FALSE(remote_cli(4, argv, &cli)); /* no cert/key */
+    }
+    {
+        /* remote options without --remote are rejected (no silent no-op) */
+        const char *argv[] = {"editor", "--remote-port", "5000"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-port", "70000",
+                              "--remote-cert", "c.pem", "--remote-key", "k.pem",
+                              "--remote-psk-hex", k_hex64};
+        ASSERT_FALSE(remote_cli(10, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-psk-hex",
+                              "0011"};
+        ASSERT_FALSE(remote_cli(8, argv, &cli)); /* short PSK */
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                              "--remote-key", "k.pem", "--remote-psk-hex",
+                              k_hex64, "--remote-key-id-hex", "zz00000000000000"};
+        ASSERT_FALSE(remote_cli(10, argv, &cli)); /* non-hex key id */
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-bogus"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli));
+    }
+    {
+        const char *argv[] = {"editor", "--remote", "--remote-cert"};
+        ASSERT_FALSE(remote_cli(3, argv, &cli)); /* missing value */
+    }
+    {
+        const char *argv[] = {"editor",          "--remote",
+                              "--remote-port",   "5000",
+                              "--remote-cert",   "c.pem",
+                              "--remote-key",    "k.pem",
+                              "--remote-ca",     "ca.pem",
+                              "--remote-psk-hex", k_hex64,
+                              "--remote-key-id-hex", "6564697430303031",
+                              "my.bscn"};
+        ASSERT_TRUE(remote_cli(15, argv, &cli));
+        ASSERT_TRUE(cli.enabled);
+        ASSERT_EQ(cli.port, 5000u);
+        ASSERT_STR_EQ(cli.cert_file, "c.pem");
+        ASSERT_STR_EQ(cli.key_file, "k.pem");
+        ASSERT_STR_EQ(cli.ca_file, "ca.pem");
+        ASSERT_STR_EQ(cli.scene_path, "my.bscn");
+        ASSERT_TRUE(cli.has_psk);
+        for (i = 0u; i < 32u; i++) {
+            ASSERT_EQ(cli.psk[i], (u8)i);
+        }
+        ASSERT_TRUE(memcmp(cli.key_id, "edit0001", 8u) == 0);
+        break_editor_remote_cli_to_config(&cli, &cfg);
+        ASSERT_STR_EQ(cfg.bind_host, "127.0.0.1"); /* loopback-first */
+        ASSERT_EQ(cfg.bind_port, 5000u);
+        ASSERT_TRUE(cfg.use_tls); /* TLS is required for --remote */
+        ASSERT_STR_EQ(cfg.tls_cert_file, "c.pem");
+        ASSERT_EQ(cfg.rate_global_per_sec,
+                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC);
+        ASSERT_EQ(cfg.rate_global_burst, BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST);
+        ASSERT_EQ(cfg.rate_per_ip_per_minute,
+                  BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN);
+        ASSERT_TRUE(cfg.rate_global_per_sec != 0u &&
+                    cfg.rate_global_burst != 0u &&
+                    cfg.rate_per_ip_per_minute != 0u);
+    }
+    {
+        /* default port + all-zero key id when not given; dev PSK file of
+         * exactly 32 raw bytes */
+        static const char *k_psk_path = "editor_remote_cli_test.psk";
+        FILE *f = fopen(k_psk_path, "wb");
+        u8 raw[33];
+        ASSERT_NOT_NULL(f);
+        for (i = 0u; i < 33u; i++) {
+            raw[i] = (u8)(0xa0u + i);
+        }
+        ASSERT_EQ(fwrite(raw, 1u, 32u, f), 32u);
+        fclose(f);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_TRUE(remote_cli(8, argv, &cli));
+            ASSERT_EQ(cli.port, BREAK_EDITOR_REMOTE_DEFAULT_PORT);
+            ASSERT_TRUE(memcmp(cli.psk, raw, 32u) == 0);
+            for (i = 0u; i < 8u; i++) {
+                ASSERT_EQ(cli.key_id[i], 0u);
+            }
+            ASSERT_TRUE(cli.ca_file == NULL);
+        }
+        f = fopen(k_psk_path, "wb");
+        ASSERT_NOT_NULL(f);
+        ASSERT_EQ(fwrite(raw, 1u, 33u, f), 33u); /* wrong size: rejected */
+        fclose(f);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_FALSE(remote_cli(8, argv, &cli));
+        }
+        remove(k_psk_path);
+        {
+            const char *argv[] = {"editor", "--remote", "--remote-cert", "c.pem",
+                                  "--remote-key", "k.pem", "--remote-psk-file",
+                                  k_psk_path};
+            ASSERT_FALSE(remote_cli(8, argv, &cli)); /* missing file */
+        }
+    }
+}
+
+#ifdef BREAK_ENABLE_CRYPTO
+
+/* ---------------- Phase 4 Task 2: TLS + CHALLENGE/AUTH-v2 ----------------
+ * In-test TLS client (raw socket + client-role snow_ssl_t, the
+ * test_break_net_tls.c idiom). The host reactor is STEP-mode, so every wait
+ * loop ticks the shell (the server only progresses on the shell thread).
+ * Fixture PEMs are the pinned Snowflake self-signed test certs (test-only). */
+
+#ifndef BREAK_TEST_SSL_FIXTURE_DIR
+#error "BREAK_TEST_SSL_FIXTURE_DIR must be defined by the build system"
+#endif
+#define EDITOR_TLS_STR2(x) #x
+#define EDITOR_TLS_STR(x) EDITOR_TLS_STR2(x)
+
+static const u8 k_tls_psk[32] = {
+    0x10u, 0x21u, 0x32u, 0x43u, 0x54u, 0x65u, 0x76u, 0x87u,
+    0x98u, 0xa9u, 0xbau, 0xcbu, 0xdcu, 0xedu, 0xfeu, 0x0fu,
+    0x11u, 0x22u, 0x33u, 0x44u, 0x55u, 0x66u, 0x77u, 0x88u,
+    0x99u, 0xaau, 0xbbu, 0xccu, 0xddu, 0xeeu, 0xffu, 0x01u};
+static const u8 k_tls_key_id[8] = {'e', 'd', 'i', 't', '0', '0', '0', '1'};
+
+static void tls_fixture_path(char *out, size_t cap, const char *name) {
+    snprintf(out, cap, "%s/%s", EDITOR_TLS_STR(BREAK_TEST_SSL_FIXTURE_DIR),
+             name);
+}
+
+typedef struct {
+    int fd;
+    snow_ssl_ctx_t *ctx;
+    snow_ssl_t *ssl;
+    snow_network_buffer_t *plain;
+    BreakEditorShell *shell;
+    u32 next_seq;
+    u8 server_nonce[16];
+} TlsRemoteClient;
+
+static void tls_client_pump(TlsRemoteClient *c, int poll_ms) {
+    struct pollfd pfd = {c->fd, POLLIN, 0};
+    break_editor_shell_tick(c->shell);
+    (void)poll(&pfd, 1, poll_ms);
+}
+
+static bool tls_client_flush(TlsRemoteClient *c, snow_network_buffer_t *out) {
+    size_t size = snow_network_buffer_length(out);
+    size_t copied = 0u, off = 0u;
+    u8 *flat;
+    if (size == 0u) {
+        return true;
+    }
+    flat = (u8 *)malloc(size);
+    if (flat == NULL ||
+        snow_network_buffer_copy_to(out, flat, size, &copied) != SNOW_OK ||
+        copied != size) {
+        free(flat);
+        return false;
+    }
+    snow_network_buffer_clear(out);
+    while (off < size) {
+        ssize_t n = write(c->fd, flat + off, size - off);
+        if (n <= 0) {
+            free(flat);
+            return false;
+        }
+        off += (size_t)n;
+    }
+    free(flat);
+    return true;
+}
+
+/* One deadline-bounded read burst: 1 = bytes consumed, 0 = nothing yet,
+ * -1 = peer closed / TLS error. */
+static int tls_client_read_burst(TlsRemoteClient *c, snow_network_buffer_t *out,
+                                 bool handshake) {
+    u8 buf[4096];
+    struct pollfd pfd = {c->fd, POLLIN, 0};
+    ssize_t got;
+    break_editor_shell_tick(c->shell);
+    if (poll(&pfd, 1, 5) <= 0) {
+        return 0;
+    }
+    got = read(c->fd, buf, sizeof(buf));
+    if (got <= 0) {
+        return -1;
+    }
+    if (handshake) {
+        return snow_ssl_do_handshake(c->ssl, out, buf, (size_t)got) == 0 ? 1
+                                                                         : -1;
+    }
+    return snow_ssl_read(c->ssl, buf, (size_t)got, c->plain) == 0 ? 1 : -1;
+}
+
+static bool tls_client_send_wire(TlsRemoteClient *c, const u8 *wire,
+                                 size_t size) {
+    snow_network_buffer_t *out = NULL;
+    bool ok;
+    if (snow_network_buffer_create(&out) != SNOW_OK) {
+        return false;
+    }
+    ok = snow_ssl_write(c->ssl, (const char *)wire, size, out) == 0 &&
+         tls_client_flush(c, out);
+    snow_network_buffer_destroy(out);
+    return ok;
+}
+
+static bool tls_client_send(TlsRemoteClient *c, u16 id, u16 version,
+                            const u8 *payload, size_t size) {
+    BreakNetEnvelope env;
+    u8 wire[BREAK_NET_ENVELOPE_HEADER_SIZE + BREAK_EDITOR_PROTO_MAX_PAYLOAD];
+    size_t wire_size = 0u;
+    memset(&env, 0, sizeof(env));
+    env.protocol_version = version;
+    env.message_id = id;
+    env.sequence = c->next_seq++;
+    env.payload = payload;
+    env.payload_size = size;
+    if (break_net_envelope_encode(&env, wire, sizeof(wire), &wire_size) !=
+        BREAK_NET_ENVELOPE_OK) {
+        return false;
+    }
+    return tls_client_send_wire(c, wire, wire_size);
+}
+
+/* Reads one decrypted envelope; payload copied into the static buffer. */
+static bool tls_client_recv(TlsRemoteClient *c, BreakNetEnvelope *out_env) {
+    static u8 frame[BREAK_NET_ENVELOPE_HEADER_SIZE +
+                    BREAK_EDITOR_PROTO_MAX_PAYLOAD];
+    u64 deadline = remote_monotonic_us() + UINT64_C(5000000);
+    while (remote_monotonic_us() < deadline) {
+        size_t have = snow_network_buffer_length(c->plain);
+        if (have >= BREAK_NET_ENVELOPE_HEADER_SIZE) {
+            size_t n = 0u, need;
+            u32 payload_size;
+            if (snow_network_buffer_get_header(c->plain,
+                                               BREAK_NET_ENVELOPE_HEADER_SIZE,
+                                               frame, sizeof(frame), &n) !=
+                SNOW_OK) {
+                return false;
+            }
+            payload_size = (u32)frame[14] | ((u32)frame[15] << 8u) |
+                           ((u32)frame[16] << 16u) | ((u32)frame[17] << 24u);
+            need = BREAK_NET_ENVELOPE_HEADER_SIZE + (size_t)payload_size;
+            if (need > sizeof(frame)) {
+                return false;
+            }
+            if (have >= need) {
+                if (snow_network_buffer_get_header(c->plain, need, frame,
+                                                   sizeof(frame), &n) !=
+                        SNOW_OK ||
+                    n != need ||
+                    snow_network_buffer_move_header(c->plain, need) !=
+                        SNOW_OK) {
+                    return false;
+                }
+                return break_net_envelope_decode(frame, need, out_env) ==
+                       BREAK_NET_ENVELOPE_OK;
+            }
+        }
+        if (tls_client_read_burst(c, NULL, false) < 0) {
+            return false;
+        }
+    }
+    return false;
+}
+
+/* TCP connect + TLS handshake + CHALLENGE receive (server nonce captured). */
+static bool tls_client_open(TlsRemoteClient *c, BreakEditorShell *shell,
+                            BreakEditorRemote *remote) {
+    struct sockaddr_in address;
+    snow_ssl_ctx_opts_t opts;
+    snow_network_buffer_t *out = NULL;
+    BreakNetEnvelope challenge;
+    u64 deadline;
+    bool ok = false;
+    memset(c, 0, sizeof(*c));
+    c->shell = shell;
+    c->next_seq = 1u;
+    c->fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (c->fd < 0) {
+        return false;
+    }
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(break_editor_remote_port(remote));
+    if (connect(c->fd, (const struct sockaddr *)&address, sizeof(address)) !=
+        0) {
+        return false;
+    }
+    memset(&opts, 0, sizeof(opts));
+    c->ctx = snow_ssl_ctx_new(&opts, NULL);
+    c->ssl = c->ctx != NULL ? snow_ssl_new(c->ctx) : NULL;
+    if (c->ssl == NULL || snow_ssl_init(c->ssl, false) != SNOW_OK ||
+        snow_network_buffer_create(&c->plain) != SNOW_OK ||
+        snow_network_buffer_create(&out) != SNOW_OK) {
+        goto done;
+    }
+    if (snow_ssl_do_handshake(c->ssl, out, NULL, 0u) != 0 ||
+        !tls_client_flush(c, out)) {
+        goto done;
+    }
+    deadline = remote_monotonic_us() + UINT64_C(5000000);
+    while (!snow_ssl_is_handshaked(c->ssl) &&
+           remote_monotonic_us() < deadline) {
+        if (tls_client_read_burst(c, out, true) < 0 ||
+            !tls_client_flush(c, out)) {
+            goto done;
+        }
+    }
+    if (!snow_ssl_is_handshaked(c->ssl) || !tls_client_recv(c, &challenge) ||
+        challenge.message_id != BREAK_NET_MESSAGE_ID_CHALLENGE ||
+        challenge.protocol_version != 1u || challenge.payload_size != 16u) {
+        goto done;
+    }
+    memcpy(c->server_nonce, challenge.payload, 16u);
+    ok = true;
+done:
+    snow_network_buffer_destroy(out);
+    return ok;
+}
+
+static void tls_client_close(TlsRemoteClient *c) {
+    snow_network_buffer_destroy(c->plain);
+    snow_ssl_free(c->ssl);
+    snow_ssl_ctx_free(c->ctx);
+    if (c->fd >= 0) {
+        close(c->fd);
+    }
+    memset(c, 0, sizeof(*c));
+    c->fd = -1;
+}
+
+/* AUTH v2: key_id[8] || client_nonce[16] || HMAC-SHA256(psk, "BRKAUTH2" ||
+ * server_nonce || client_nonce). */
+static bool tls_client_send_auth(TlsRemoteClient *c, const u8 key_id[8],
+                                 const u8 psk[32], bool tamper) {
+    u8 payload[56];
+    u8 context[40];
+    u32 i;
+    memcpy(payload, key_id, 8u);
+    for (i = 0u; i < 16u; i++) {
+        payload[8u + i] = (u8)(0x5au + i);
+    }
+    memcpy(context, "BRKAUTH2", 8u);
+    memcpy(context + 8u, c->server_nonce, 16u);
+    memcpy(context + 24u, payload + 8u, 16u);
+    if (!break_crypto_hmac_sha256(psk, 32u, context, sizeof(context),
+                                  payload + 24u)) {
+        return false;
+    }
+    if (tamper) {
+        payload[24u] ^= 0x80u;
+    }
+    return tls_client_send(c, BREAK_NET_MESSAGE_ID_AUTH, 2u, payload,
+                           sizeof(payload));
+}
+
+static bool tls_wait_first_state(BreakEditorRemote *remote,
+                                 BreakEditorShell *shell, u32 want) {
+    u64 deadline = remote_monotonic_us() + UINT64_C(5000000);
+    while (remote_monotonic_us() < deadline) {
+        u64 keys[4];
+        u32 states[4];
+        if (break_editor_remote_connections_snapshot(remote, keys, states, 4u) >=
+                1u &&
+            states[0] == want) {
+            return true;
+        }
+        break_editor_shell_tick(shell);
+        {
+            struct timespec ts = {0, 1000000L};
+            nanosleep(&ts, NULL);
+        }
+    }
+    return false;
+}
+
+static BreakEditorRemoteConfig tls_remote_config(char *cert, char *key,
+                                                 size_t cap) {
+    BreakEditorRemoteConfig cfg;
+    tls_fixture_path(cert, cap, "snow_test_cert.pem");
+    tls_fixture_path(key, cap, "snow_test_key.pem");
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.bind_host = "127.0.0.1";
+    cfg.bind_port = 0u;
+    cfg.max_connections = 8u;
+    cfg.use_tls = true;
+    cfg.tls_cert_file = cert;
+    cfg.tls_key_file = key;
+    return cfg;
+}
+
+static BreakEditorRemote *tls_remote_start(BreakEditorShell *shell) {
+    char cert[512], key[512];
+    BreakEditorRemoteConfig cfg = tls_remote_config(cert, key, sizeof(cert));
+    BreakEditorRemote *remote = break_editor_remote_create(shell, &cfg);
+    if (remote == NULL || !break_editor_remote_set_psk(remote, k_tls_key_id,
+                                                       k_tls_psk) ||
+        !break_editor_remote_start(remote)) {
+        printf("  FAIL: %s:%d: TLS remote start failed\n", __FILE__, __LINE__);
+        g_test_fail++;
+        break_editor_remote_destroy(remote);
+        return NULL;
+    }
+    break_editor_shell_set_remote(shell, remote);
+    return remote;
+}
+
+TEST(remote_tls_auth_v2_client_describe_and_spawn)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    BreakNetEnvelope rsp;
+    BreakEditorDoc *doc;
+    ASSERT_NOT_NULL(shell);
+    doc = break_editor_shell_doc(shell);
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    /* TLS mode never auto-authenticates: the session waits in NEW */
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&c, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(
+        tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_AUTHENTICATED));
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    ASSERT_EQ(rsp.payload_size, 7u);
+    ASSERT_EQ(rd16(rsp.payload), BREAK_EDITOR_PROTO_VERSION);
+    {
+        u8 req[2 + 4];
+        wr16(req, 4u);
+        memcpy(req + 2u, "hero", 4u);
+        ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_SPAWN,
+                                    BREAK_EDITOR_PROTO_VERSION, req,
+                                    sizeof(req)));
+    }
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_SPAWN);
+    ASSERT_EQ(rsp.payload_size, 8u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    /* the remote spawn stays undoable from the local shell */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'z', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 0u);
+    tls_client_close(&c);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+/* mode 0 = no AUTH (command straight after the handshake), 1 = tampered
+ * tag, 2 = unknown key id, 3 = AUTH v1 while v2 auth is configured. */
+static void tls_unauthenticated_case(int mode) {
+    static const u8 k_unknown_id[8] = {'n', 'o', 's', 'u', 'c', 'h', 'k', 'y'};
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    BreakSessionApplyStats before, after;
+    BreakSessionManager *manager;
+    u64 deadline;
+    u8 spawn_req[2] = {0u, 0u};
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    manager = (BreakSessionManager *)break_editor_remote_manager_for_test(remote);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    if (mode == 1) {
+        ASSERT_TRUE(tls_client_send_auth(&c, k_tls_key_id, k_tls_psk, true));
+    } else if (mode == 2) {
+        ASSERT_TRUE(tls_client_send_auth(&c, k_unknown_id, k_tls_psk, false));
+    } else if (mode == 3) {
+        ASSERT_TRUE(tls_client_send(&c, BREAK_NET_MESSAGE_ID_AUTH, 1u,
+                                    (const u8 *)"plain", 5u));
+    }
+    /* the first editor command: refused, session closed (fail closed) */
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_SPAWN,
+                                BREAK_EDITOR_PROTO_VERSION, spawn_req,
+                                sizeof(spawn_req)));
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
+    /* every later command on the closed session is stale: no dispatch, no
+     * response bytes, zero doc effect */
+    break_session_manager_apply_stats(manager, &before);
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_SPAWN,
+                                BREAK_EDITOR_PROTO_VERSION, spawn_req,
+                                sizeof(spawn_req)));
+    deadline = remote_monotonic_us() + UINT64_C(5000000);
+    do {
+        tls_client_pump(&c, 1);
+        break_session_manager_apply_stats(manager, &after);
+    } while (after.stale < before.stale + 2u &&
+             remote_monotonic_us() < deadline);
+    ASSERT_TRUE(after.stale >= before.stale + 2u);
+    ASSERT_EQ(after.applied, before.applied);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
+    {
+        int burst;
+        do {
+            burst = tls_client_read_burst(&c, NULL, false);
+        } while (burst > 0);
+        ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
+    }
+    tls_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect)
+{
+    int mode;
+    for (mode = 0; mode < 4; mode++) {
+        int fail_before = g_test_fail;
+        tls_unauthenticated_case(mode);
+        if (g_test_fail != fail_before) {
+            printf("  (unauthenticated mode %d)\n", mode);
+            return;
+        }
+    }
+}
+
+TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char cert[512], key[512], missing[512];
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    ASSERT_NOT_NULL(shell);
+    tls_fixture_path(missing, sizeof(missing), "no_such_cert.pem");
+    /* TLS + PSK but unreadable cert file */
+    cfg = tls_remote_config(cert, key, sizeof(cert));
+    cfg.tls_cert_file = missing;
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_set_psk(remote, k_tls_key_id, k_tls_psk));
+    ASSERT_FALSE(break_editor_remote_start(remote));
+    ASSERT_FALSE(break_editor_remote_is_running(remote));
+    break_editor_remote_destroy(remote);
+    /* TLS + PSK but no key file */
+    cfg = tls_remote_config(cert, key, sizeof(cert));
+    cfg.tls_key_file = NULL;
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_set_psk(remote, k_tls_key_id, k_tls_psk));
+    ASSERT_FALSE(break_editor_remote_start(remote));
+    break_editor_remote_destroy(remote);
+    /* valid TLS certs but no auth configured: no unauthenticated TLS path */
+    cfg = tls_remote_config(cert, key, sizeof(cert));
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_FALSE(break_editor_remote_start(remote));
+    ASSERT_FALSE(break_editor_remote_is_running(remote));
+    /* the PSK seam is configure-before-start only */
+    ASSERT_FALSE(break_editor_remote_set_psk(remote, NULL, k_tls_psk));
+    ASSERT_FALSE(break_editor_remote_set_psk(remote, k_tls_key_id, NULL));
+    break_editor_remote_destroy(remote);
+    /* a started remote refuses a late PSK change; destroy clears the
+     * process-global session auth (a plaintext remote afterwards
+     * auto-authenticates again — pinned by the Task 1 suite order too) */
+    remote = tls_remote_start(shell);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_FALSE(break_editor_remote_set_psk(remote, k_tls_key_id, k_tls_psk));
+    break_editor_remote_destroy(remote);
+    ASSERT_TRUE(break_session_set_auth(NULL, NULL));
+    {
+        RemoteClient pc;
+        BreakNetEnvelope rsp;
+        BreakEditorRemote *plain = remote_start_default(shell);
+        ASSERT_NOT_NULL(plain);
+        remote_client_connect(&pc, shell, plain);
+        remote_client_send(&pc, BREAK_EDITOR_MSG_DESCRIBE, NULL, 0u);
+        ASSERT_EQ(remote_client_recv(&pc, &rsp), 7u);
+        remote_client_close(&pc);
+        break_editor_remote_destroy(plain);
+    }
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_tls_rate_limit_denials_observable)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char cert[512], key[512];
+    BreakEditorRemoteConfig cfg;
+    BreakEditorRemote *remote;
+    struct sockaddr_in address;
+    int fds[2] = {-1, -1};
+    u64 deadline;
+    int i;
+    ASSERT_NOT_NULL(shell);
+    cfg = tls_remote_config(cert, key, sizeof(cert));
+    cfg.rate_per_ip_per_minute = 1u;
+    remote = break_editor_remote_create(shell, &cfg);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(break_editor_remote_set_psk(remote, k_tls_key_id, k_tls_psk));
+    ASSERT_TRUE(break_editor_remote_start(remote));
+    break_editor_shell_set_remote(shell, remote);
+    ASSERT_EQ(break_editor_remote_admission_denied(remote), 0u);
+    memset(&address, 0, sizeof(address));
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(break_editor_remote_port(remote));
+    for (i = 0; i < 2; i++) {
+        fds[i] = socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_TRUE(fds[i] >= 0);
+        ASSERT_EQ(connect(fds[i], (const struct sockaddr *)&address,
+                          sizeof(address)),
+                  0);
+    }
+    deadline = remote_monotonic_us() + UINT64_C(5000000);
+    while (remote_monotonic_us() < deadline &&
+           (break_editor_remote_admission_denied(remote) < 1u ||
+            break_editor_remote_connection_count(remote) < 1u)) {
+        break_editor_shell_tick(shell);
+        {
+            struct timespec ts = {0, 1000000L};
+            nanosleep(&ts, NULL);
+        }
+    }
+    /* per-IP 1/min: the first connect is admitted, the second denied */
+    ASSERT_EQ(break_editor_remote_admission_denied(remote), 1u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 1u);
+    close(fds[0]);
+    close(fds[1]);
+    remote_wait_connection_count(remote, shell, 0u);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+#endif /* BREAK_ENABLE_CRYPTO */
 
 #endif /* BREAK_EDITOR_REMOTE_TESTS */
 
@@ -2188,5 +2887,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(remote_tick_wiring_polls_adapter_every_frame);
     RUN_TEST(remote_config_validation_and_snapshot);
     RUN_TEST(remote_null_and_bounded_calls_are_safe);
+    RUN_TEST(remote_cli_default_off_and_fail_closed_flags);
+#ifdef BREAK_ENABLE_CRYPTO
+    RUN_TEST(remote_tls_auth_v2_client_describe_and_spawn);
+    RUN_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
+    RUN_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
+    RUN_TEST(remote_tls_rate_limit_denials_observable);
+#endif
 #endif
 TEST_MAIN_END()

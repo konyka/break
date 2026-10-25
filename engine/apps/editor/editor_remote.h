@@ -1,6 +1,6 @@
 #pragma once
-/* BreakEditorRemote — Stage 4 scene editor Phase 4 Task 1: the remote
- * session host core. Owns a STEP-mode BreakNetReactor (the shell thread
+/* BreakEditorRemote — Stage 4 scene editor Phase 4: the remote session host
+ * (Task 1 core + Task 2 TLS/CHALLENGE/AUTH-v2 wiring). Owns a STEP-mode BreakNetReactor (the shell thread
  * drives it explicitly from break_editor_remote_tick — the shell thread IS
  * the GameThread, so every protocol handler runs on the doc/Lua/command
  * owner thread by construction; there is no cross-thread dispatch), a
@@ -11,17 +11,23 @@
  *
  * Security posture (Phase 4 plan Global Constraints): the remote session is
  * DEFAULT OFF — the shell never creates one on its own; a host (tests, or
- * Task 2's --remote flag plumbing) creates and starts it explicitly.
- * use_tls=false is the documented TEST/DEV plaintext seam only; TLS +
- * CHALLENGE/AUTH-v2 wiring is Task 2 scope (the config fields exist now so
- * the interface is verbatim-stable). The Task 1 plaintext seam auto-marks
- * sessions AUTHENTICATED on open (dev seam — documented, loopback-first);
- * use_tls=true without cert/key fails start (fail closed).
+ * editor_main's --remote flag) creates and starts it explicitly. The real
+ * remote path is use_tls=true: TLS transport + CHALLENGE/AUTH-v2 (the PSK
+ * seam below); start fails closed on missing/unreadable cert/key or a
+ * missing PSK. use_tls=false is the documented TEST-ONLY plaintext seam: it
+ * auto-marks sessions AUTHENTICATED on open (loopback-first, never reachable
+ * from editor_main).
  *
  * Fail closed: any unknown message id / malformed payload / oversize frame
- * is rejected by the envelope codec or the handler and closes the
- * connection; a handler-side command failure answers
- * BREAK_EDITOR_MSG_RESULT with a non-ok status instead.
+ * is rejected by the envelope codec or the handler and closes the session;
+ * an editor command on a session that is not AUTHENTICATED closes it with
+ * zero doc effect (the editor ids are PHASE_ANY in the default registry, so
+ * the host enforces authorization — PHASE_AUTHENTICATED would only reject,
+ * not close). A handler-side command failure on a well-formed payload
+ * answers BREAK_EDITOR_MSG_RESULT with a non-ok status instead. Session
+ * close is the break_session CLOSING watermark (later frames are stale and
+ * dropped); the TCP stream ends when the peer closes (the adapter exposes no
+ * server-side transport close — documented library boundary).
  *
  * Threading: single-owner-thread convention, same as the shell/document —
  * create/start/tick/destroy all run on the shell thread. The reactor's STEP
@@ -62,3 +68,51 @@ u64 break_editor_remote_poll_count(const BreakEditorRemote *r);
 u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 connection_key);
 /* Test-only accessors for diagnostics. */
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r);
+
+/* Phase 4 Task 2: CHALLENGE/AUTH-v2 PSK seam (DEV PATH, NON-PRODUCTION —
+ * one static key_id -> 32-byte PSK pair supplied by the host, e.g. from
+ * --remote-psk-hex / --remote-psk-file; no provisioning, rotation, or
+ * revocation exists). Copies both arrays; accepted only before start.
+ * start installs it as the process-global break_session_set_auth domain
+ * (one TLS remote per process; a second one fails start) and destroy
+ * clears it and wipes the key copies. use_tls=true without a PSK fails
+ * start: there is no unauthenticated TLS command path. */
+bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
+                                 const uint8_t psk[32]);
+
+/* ---------------- editor_main --remote flag plumbing ----------------
+ * DEFAULT OFF: without --remote no remote is created and nothing listens.
+ *   --remote                 enable (binds 127.0.0.1 — loopback only)
+ *   --remote-port N          default BREAK_EDITOR_REMOTE_DEFAULT_PORT
+ *   --remote-cert F --remote-key F [--remote-ca F]   TLS is REQUIRED;
+ *                            --remote-ca also requires+verifies client certs
+ *   --remote-psk-hex <64 hex> | --remote-psk-file F (exactly 32 raw bytes)
+ *   [--remote-key-id-hex <16 hex>]                   default all-zero id
+ * Missing TLS files or PSK, a malformed value, an unknown --remote-* flag,
+ * or any --remote-* option without --remote fails the parse (fail closed).
+ * The first non --remote* argument stays the optional scene path.
+ * Default admission rate limits: global 20 accepts/s (burst 40), 120 accepts
+ * per source IP per minute. */
+#define BREAK_EDITOR_REMOTE_DEFAULT_PORT 47700u
+#define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC 20u
+#define BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST 40u
+#define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN 120u
+
+typedef struct BreakEditorRemoteCli {
+    bool enabled;
+    uint16_t port;
+    const char *cert_file, *key_file, *ca_file; /* borrowed from argv */
+    bool has_psk;
+    uint8_t psk[32];
+    uint8_t key_id[8];
+    const char *scene_path;                     /* borrowed from argv */
+} BreakEditorRemoteCli;
+
+/* false + a NUL-terminated message in err (when err_cap > 0) on any error. */
+bool break_editor_remote_cli_parse(int argc, char **argv,
+                                   BreakEditorRemoteCli *out, char *err,
+                                   size_t err_cap);
+/* TLS-required, loopback-bound config with the default rate limits; the
+ * strings stay borrowed from the cli (argv) storage. */
+void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,
+                                       BreakEditorRemoteConfig *out);
