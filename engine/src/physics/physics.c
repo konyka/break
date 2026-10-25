@@ -444,6 +444,10 @@ void physics_push_body(PhysicsWorld *pw, u32 body_id, Vec3 normal, f32 depth) {
     b->rest_frames = 0;
 }
 
+/* Approach speed (m/s, along the contact normal) below which a contact does
+ * not bounce. 3 m/s is a ~0.46 m drop under gravity. */
+#define RESTITUTION_VEL_THRESHOLD 3.0f
+
 static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) {
     f32 inv_a = a->inv_mass;
     f32 inv_b = b->inv_mass;
@@ -489,6 +493,13 @@ static void resolve_contact(RigidBody *a, RigidBody *b, Vec3 normal, f32 depth) 
     if (vel_along_normal < 0.0f) return;
 
     f32 e = a->restitution < b->restitution ? a->restitution : b->restitution;
+    /* R696: restitution velocity threshold. A body landing at modest speed
+     * bounced 3-4 times (rest_frames never advanced past 0 and the demo's
+     * falling bodies visibly jittered on the ground: with e = 0.3 each bounce
+     * leaves 30% of the approach speed, and gravity re-accelerates it into the
+     * next contact). Impacts below RESTITUTION_VEL_THRESHOLD are perfectly
+     * inelastic (e = 0); harder impacts keep the full bounce. */
+    if (vel_along_normal < RESTITUTION_VEL_THRESHOLD) e = 0.0f;
     f32 j = -(1.0f + e) * vel_along_normal * inv_total;
 
     Vec3 impulse = vec3_scale(normal, j);

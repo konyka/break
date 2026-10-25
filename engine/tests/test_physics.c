@@ -210,6 +210,39 @@ TEST(same_frame_contact_no_tunnel)
     physics_world_destroy(pw);
 }
 
+TEST(low_speed_landing_does_not_bounce)
+{
+    /* R696: a box landing on a static floor below RESTITUTION_VEL_THRESHOLD
+     * (3 m/s) is perfectly inelastic: the closing velocity is removed, with no
+     * rebound left over. Before, restitution 0.3 gave a 0.3x rebound on every
+     * contact, so slow landings re-bounced several times. */
+    PhysicsWorld *pw = physics_world_create(64);
+    u32 floor_id = physics_body_create(pw, vec3(0, -1.5f, 0), vec3(5, 0.5f, 5), 0.0f, true, 0);
+    u32 box = physics_body_create(pw, vec3(0, -0.48f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    (void)floor_id;
+    pw->bodies[box].acceleration = vec3(0, 0, 0);
+    pw->bodies[box].velocity = vec3(0, -2.0f, 0);
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_TRUE(pw->collision_count > 0);
+    ASSERT_TRUE(pw->bodies[box].velocity.e[1] <= 0.0f);
+    ASSERT_TRUE(pw->bodies[box].velocity.e[1] > -0.5f);
+    physics_world_destroy(pw);
+}
+
+TEST(high_speed_landing_still_bounces)
+{
+    /* R696: above the threshold the contact keeps its restitution. */
+    PhysicsWorld *pw = physics_world_create(64);
+    physics_body_create(pw, vec3(0, -1.5f, 0), vec3(5, 0.5f, 5), 0.0f, true, 0);
+    u32 box = physics_body_create(pw, vec3(0, -0.46f, 0), vec3(0.5f, 0.5f, 0.5f), 1.0f, false, 0);
+    pw->bodies[box].acceleration = vec3(0, 0, 0);
+    pw->bodies[box].velocity = vec3(0, -8.0f, 0);
+    physics_step(pw, 1.0f/60.0f);
+    ASSERT_TRUE(pw->collision_count > 0);
+    ASSERT_TRUE(pw->bodies[box].velocity.e[1] > 1.0f);
+    physics_world_destroy(pw);
+}
+
 TEST(ground_respawn)
 {
     PhysicsWorld *pw = physics_world_create(64);
@@ -1303,6 +1336,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(collision_detection);
     RUN_TEST(collision_resolves_approach_velocity);
     RUN_TEST(same_frame_contact_no_tunnel);
+    RUN_TEST(low_speed_landing_does_not_bounce);
+    RUN_TEST(high_speed_landing_still_bounces);
     RUN_TEST(ground_respawn);
     RUN_TEST(raycast_hit);
     RUN_TEST(raycast_miss);

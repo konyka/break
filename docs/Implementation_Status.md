@@ -1,6 +1,44 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R696 — 物理：低速撞击不再反弹（restitution 速度阈值），修复 demo 里云朵落地后的抖动
+
+### 现象
+用户在本机直接操作（已关闭 ToDesk）时反馈：10 个云朵下落过程顺滑，但落地的时候有明显抖动，云的样子符合预期。
+
+### 定位（Release D3D12，记录 1 号刚体每个物理步的 y 和 vy）
+落地后它不是停住，而是连续弹了几次：
+
+| 帧 | 撞击前速度 | 撞击后速度 | 反弹高度 |
+|---|---|---|---|
+| 422 | −7.16 m/s | +2.15 m/s | 约 24 cm |
+| 489 | −5.04 m/s | +1.53 m/s | 约 12 cm |
+| 498 | −1.62 m/s | +0.52 m/s | 约 1.4 cm |
+
+每次的反弹率都是 0.30，等于 `physics_body_create` 里的默认 `restitution = 0.3`。每次反弹后重力又把它拉回地面，再撞一次，直到速度小到无法再跳起；`rest_frames` 在这期间一直是 0，对应一个持续约 1 秒的抖动。
+
+### 修复（`engine/src/physics/physics.c`）
+在 `resolve_contact` 里加了速度阈值：沿法线的接近速度低于 `RESTITUTION_VEL_THRESHOLD`（3 m/s，约 0.46 m 的落差）时，`e` 取 0，也就是完全非弹性，不再反弹；高于阈值时仍用原来的 restitution（0.3）。
+
+实测结果（同一个物体，Release D3D12）：
+
+| 撞击 | 撞击前速度 | 修改前反弹 | 修改后反弹 |
+|---|---|---|---|
+| 第 1 次 | −7.16 m/s | +2.15 m/s（24 cm） | +2.15 m/s（24 cm，高于阈值，保留） |
+| 第 2 次 | −5.04 m/s | +1.53 m/s（12 cm） | +1.53 m/s（12 cm，保留） |
+| 第 3 次 | −1.62 m/s | +0.52 m/s（1.4 cm） | 0（低于阈值，吸收） |
+
+也就是说，反弹从 3 次减到 2 次，去掉的是最后那次小的颤动。另一个变化是最终静止状态：修改前物体停在 y = −1.0 时，仍带着一个不会消失的 +0.0735 m/s 向上速度（`rest_frames` 始终为 0，每帧都在与地面接触）；修改后速度稳定为 0。
+
+**这个阈值是保守的，前两次较大的反弹仍然保留**。如果还想进一步减弱落地的弹跳感，可以把 `RESTITUTION_VEL_THRESHOLD` 调高：6 m/s 会去掉第 2 次反弹，只剩第 1 次（24 cm）；8 m/s 以上则全部不反弹（演示里的终端速度约 8 m/s，相当于 restitution 为 0）。需要看实际观感再定。
+
+### 测试
+`test_physics` 新增两个用例：`low_speed_landing_does_not_bounce`（2 m/s 撞击后向上速度不超过 0，且基本为 0）和 `high_speed_landing_still_bounces`（8 m/s 撞击后仍反弹，速度大于 1 m/s）。把修复拿掉之后，第一个用例失败（箱子向上弹起，`velocity.y <= 0` 不成立），修复后两个都通过：70/70。
+
+### 验证
+- ctest：vk 182/182、gl 179/179 全部通过（含新增的 2 个物理用例）。WARP 套件 81/81，debug layer 0 errors / 0 warnings。
+- d3d12-debug 树：180/187。失败的 7 个是 `test_d3d12_native_failure` / `device_contract` / `swapchain_contract` / `pipeline_contract` / `shader_contract` / `dxr_contract` 和 `rhi_swapchain_bench`，全部在默认硬件适配器 + D3D12 调试层下于 `D3D12Core.dll` 内崩溃（访问冲突 0xc0000005，偏移 `38b45bf7`），与本次改动无关：stash 掉 R696 的改动之后同样崩溃，而 `ENGINE_D3D12_WARP=1` 下 `device_contract` 通过，Release demo 在 RTX 上正常运行（fps_avg=304）。NVIDIA 驱动 32.0.16.2101 是 2026-10-19 的版本。这个崩溃在 R694 的验证（今天 09:00 前后，ctest 全绿）之后才出现，需要另外查（疑似驱动或调试层组件的变化），本次没有处理。
+
 ## 本轮更新：R694 — 物理改为固定步长 1/60 s + 渲染插值：下落动画不再随帧节奏抖动；记录 D3D12/GL 的 vsync 帧节奏问题
 
 ### 现象
