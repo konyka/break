@@ -130,7 +130,8 @@ FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3�
   - 生成：CesiumMan 4672/2336/1168 三角形，rel_err 0.0128/0.0257，8 个姿势，约 120 ms；BrainStem 59 个图元中 34 个达到门槛、33 个生成了级别，总计 61666/27504/13930 三角形，约 2.0 s（Release，一次性加载成本）；RiggedFigure 低于 512 三角形门槛，按设计不生成。
   - 运行：BrainStem 相机推远时 44 次换级、平均 13 个图元在淡入淡出、可见三角形降到 71%；CesiumMan 默认机位不换级，`BREAK_LOD_PIXEL_ERROR=400` 强制到 LOD2（三角形 25%）后正常绘制。VK Debug 下 BrainStem 0 条验证消息，D3D12 调试层下 0 条消息。
   - 没做到的：近距离肉眼检查关节。演示场景的地形在原点附近高约 1 m，这些模型的脚在 z=0，被地形埋住一半，演示相机也没有对准模型的开关；只看了远景截图，看不出关节细节。
-- 未验证：BSCN `N` 键重建路径（需要键盘输入，只做了编译与代码审查）；Metal；Linux 运行。
+- **BSCN 读档重建（补测）**：新增脚本钩子 `BREAK_BSCN_ROUNDTRIP_AT=f`，第 f 帧执行与 `B` 键相同的保存、第 f+10 帧执行与 `N` 键相同的读取（日志 `BSCN_ROUNDTRIP save/load at frame N`）。`BREAK_CAM_DOLLY=0.1 BREAK_BSCN_ROUNDTRIP_AT=40 BREAK_FRAMES=120`：VK Debug 默认场景、`BREAK_STRESS_LOD=50 BREAK_STRESS_LOD_ECS=50`（mega 51 次换级、ECS LOD 重建）、`BREAK_STRESS_LOD_SKIN=4`（读档后 `Skin LOD: on -- 4 skinned meshes` 重建，10 次换级）均正常退出、0 设备丢失、0 条验证消息；GL / D3D12 Release 跑 `BREAK_STRESS_LOD_SKIN=4` 同样重建，10 次换级，无 ERROR。测试会在 `engine/` 下生成 `scene_save.bscn` / `scene_state.bin`。
+- 未验证：Metal；Linux 运行。
 
 
 ## 本轮更新：FS3 — 尺寸变化只重建渲染目标，不再重编着色器（无标题栏全屏 任务 3）

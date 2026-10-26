@@ -7311,11 +7311,26 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             LOG_INFO("Gravity well: %s", gravity_well ? "ON (attracts entities to camera)" : "OFF");
         }
 
-        /* B: Save scene (BSCN binary)  N: Load scene  Shift+B: Export JSON */
-        if (input_key_pressed(platform_input(engine.platform), (i32)'b')) {
+        /* B: Save scene (BSCN binary)  N: Load scene  Shift+B: Export JSON.
+         * BREAK_BSCN_ROUNDTRIP_AT=f: scripted save at frame f and load at
+         * f+10 (the same code as B then N), so the reload path -- every LOD
+         * table rebuilt for the loaded scene -- runs in headless checks. */
+        static i64 bscn_roundtrip_at = -2;
+        if (bscn_roundtrip_at == -2) {
+            const char *e = getenv("BREAK_BSCN_ROUNDTRIP_AT");
+            bscn_roundtrip_at = (e && e[0]) ? atoll(e) : -1;
+        }
+        const bool bscn_script_save = bscn_roundtrip_at >= 0 &&
+                                      (i64)engine.frame_count == bscn_roundtrip_at;
+        const bool bscn_script_load = bscn_roundtrip_at >= 0 &&
+                                      (i64)engine.frame_count == bscn_roundtrip_at + 10;
+        if (bscn_script_save || bscn_script_load)
+            LOG_INFO("BSCN_ROUNDTRIP %s at frame %llu", bscn_script_save ? "save" : "load",
+                     (unsigned long long)engine.frame_count);
+        if (bscn_script_save || input_key_pressed(platform_input(engine.platform), (i32)'b')) {
             InputState *bs_inp = platform_input(engine.platform);
             /* R365: Shift is 289 on all platforms (was dead GLFW 340/344). */
-            bool shift_held = input_key_down(bs_inp, 289);
+            bool shift_held = !bscn_script_save && input_key_down(bs_inp, 289);
             if (shift_held) {
                 /* Export as JSON for debugging / interoperability. */
                 SerializeOptions opts = { .pretty_json = true };
@@ -7352,7 +7367,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_WARN("Scene state save failed");
             }
         }
-        if (input_key_pressed(platform_input(engine.platform), (i32)'n')) {
+        if (bscn_script_load || input_key_pressed(platform_input(engine.platform), (i32)'n')) {
             /* R381: load into a temp World first — only swap after success so a
              * corrupt BSCN cannot empty the live scene. Companion state runs
              * only after a successful swap (bare N must not rewrite pose/camera). */
