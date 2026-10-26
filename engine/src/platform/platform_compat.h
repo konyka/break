@@ -61,6 +61,9 @@ typedef enum {
     ENGINE_SURFACE_UNAVAILABLE = 0,
     ENGINE_SURFACE_HOST_NATIVE,
     ENGINE_SURFACE_ANDROID_NATIVE_WINDOW,
+    /* QNX Screen: the platform layer creates its own native window
+     * (screen_context/screen_window) — not host-injected. */
+    ENGINE_SURFACE_QNX_SCREEN,
 } EngineSurfaceStatus;
 
 typedef struct {
@@ -121,15 +124,21 @@ typedef struct {
 #define ENGINE_PLATFORM_COMPAT_VULKAN_SUPPORT ENGINE_VULKAN_SUPPORT_UNAVAILABLE
 #define ENGINE_PLATFORM_COMPAT_SUPPORT_EVIDENCE ENGINE_SUPPORT_EVIDENCE_NONE
 #elif defined(SIMULATE_QNX) || defined(ENGINE_PLATFORM_QNX)
-/* QNX Neutrino: no epoll/kqueue, so net_loop runs on POSIX poll(). The
- * headless milestone compiles the engine + myui (dummy PAL offscreen) for
- * the target; window/graphics stay fail-closed until a Screen WSI
- * integration exists, so no host surface is required or accepted. */
+/* QNX Neutrino: no epoll/kqueue, so net_loop runs on POSIX poll(). With the
+ * Screen window layer compiled in (ENGINE_QNX_SCREEN), the platform creates
+ * its own native window; GL/Vulkan via Screen remain future work, so the
+ * graphics APIs stay fail-closed. */
 #define ENGINE_PLATFORM_COMPAT_TARGET_FAMILY ENGINE_TARGET_FAMILY_QNX
 #define ENGINE_PLATFORM_COMPAT_NET_LOOP ENGINE_NET_LOOP_POLL
+#if defined(ENGINE_QNX_SCREEN)
+#define ENGINE_PLATFORM_COMPAT_GRAPHICS_API ENGINE_GRAPHICS_API_NONE
+#define ENGINE_PLATFORM_COMPAT_SURFACE ENGINE_SURFACE_QNX_SCREEN
+#define ENGINE_PLATFORM_COMPAT_REQUIRES_HOST_SURFACE 0
+#else
 #define ENGINE_PLATFORM_COMPAT_GRAPHICS_API ENGINE_GRAPHICS_API_NONE
 #define ENGINE_PLATFORM_COMPAT_SURFACE ENGINE_SURFACE_UNAVAILABLE
 #define ENGINE_PLATFORM_COMPAT_REQUIRES_HOST_SURFACE 0
+#endif
 #define ENGINE_PLATFORM_COMPAT_NATIVE_GRAPHICS_API ENGINE_NATIVE_GRAPHICS_API_NONE
 #define ENGINE_PLATFORM_COMPAT_TARGET_GRAPHICS_API ENGINE_TARGET_GRAPHICS_API_NONE
 #define ENGINE_PLATFORM_COMPAT_VULKAN_SUPPORT ENGINE_VULKAN_SUPPORT_UNAVAILABLE

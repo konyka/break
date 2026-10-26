@@ -53,6 +53,25 @@ TEST(simulated_descriptor)
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
               ENGINE_SUPPORT_EVIDENCE_NONE);
 #elif defined(SIMULATE_QNX)
+#if defined(ENGINE_QNX_SCREEN)
+    /* QNX + Screen window layer: the platform creates its own native window
+     * (screen_context/screen_window), so the surface exists while graphics
+     * (GL/Vulkan via Screen) and runtime receipts remain future work —
+     * evidence stays COMPILED. */
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_TARGET_FAMILY, ENGINE_TARGET_FAMILY_QNX);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_NET_LOOP, ENGINE_NET_LOOP_POLL);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_SURFACE, ENGINE_SURFACE_QNX_SCREEN);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_GRAPHICS_API, ENGINE_GRAPHICS_API_NONE);
+    ASSERT_FALSE(ENGINE_PLATFORM_COMPAT_REQUIRES_HOST_SURFACE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.native_graphics_api,
+              ENGINE_NATIVE_GRAPHICS_API_NONE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.vulkan_support,
+              ENGINE_VULKAN_SUPPORT_UNAVAILABLE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.target_graphics_api,
+              ENGINE_TARGET_GRAPHICS_API_NONE);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
+              ENGINE_SUPPORT_EVIDENCE_COMPILED);
+#else
     /* QNX headless milestone: engine + myui offscreen (dummy PAL) compile and
      * run without a host surface; graphics stays fail-closed until a Screen
      * WSI integration exists, so evidence tops out at COMPILED. */
@@ -69,6 +88,7 @@ TEST(simulated_descriptor)
               ENGINE_TARGET_GRAPHICS_API_NONE);
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
               ENGINE_SUPPORT_EVIDENCE_COMPILED);
+#endif
 #else
     ASSERT_TRUE(0);
 #endif

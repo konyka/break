@@ -48,7 +48,7 @@ RHI 后端编译为独立静态库（`engine_rhi_vulkan` / `engine_rhi_metal` / 
 | Android | Vulkan | COMPILED（host-injected `ANativeWindow`，无 runtime 收据） | 源码审查记录（`docs/rhi_backend_evidence.md`） |
 | Proton (Wine/vkd3d) | Vulkan（兼容参考） | compat-verified（不计入 Windows 原生证据） | `proton-d3d12.yml` / `lane-proton`（steamrt sniper 钉 digest，周跑） |
 | OHOS (HarmonyOS) | — | UNAVAILABLE（fail-closed） | 契约测试 `test_platform_compat_harmonyos` |
-| QNX (Neutrino) | —（headless：engine_rhi_headless fail-closed） | HEADLESS（SDP 8.0 qcc 交叉 100% + Neutrino x86_64 目标机 144/144 + perf 收据） | `test_platform_compat_qnx`；`test_net_loop_qnx`；`test_qnx_perf_smoke`；见 `docs/qnx_compat.md` |
+| QNX (Neutrino) | —（headless RHI fail-closed；Screen 窗口层已 COMPILED） | HEADLESS（SDP 8.0 qcc 交叉 100%×2 架构 + Neutrino x86_64 目标机 144/144 + perf 收据） | `test_platform_compat_qnx[_screen]`；`test_net_loop_qnx`；`test_qnx_perf_smoke`；见 `docs/qnx_compat.md` |
 | OpenGL（全部平台） | 兼容期保留（deprecated） | GPU_RUNTIME（Linux X11 CI 软渲染） | CI `lane-gpu-runtime-linux-gl`（DEPRECATED，v2.0.0 移除） |
 
 ## Documentation

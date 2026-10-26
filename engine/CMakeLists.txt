@@ -34,6 +34,10 @@ option(MYUI_HARFBUZZ "Optional OpenType shaping through HarfBuzz + FreeType" ON)
 option(MYUI_GLES2 "Enable the reusable myui GLES2 backend when available" ON)
 option(MYUI_GL_DESKTOP "Enable the reusable myui desktop OpenGL backend when available" ON)
 option(MYUI_VULKAN "Enable the reusable myui Vulkan backend when available" OFF)
+# QNX Screen window layer: compiled when the QNX SDP target provides
+# screen.h + libscreen (window_screen.c); otherwise the platform layer
+# stays the fail-closed window_mobile.c path.
+option(ENGINE_QNX_SCREEN "Compile the QNX Screen window layer when the SDP provides it" ON)
 option(ENGINE_BUILD_TESTS "Build unit tests" ON)
 set(ENGINE_RHI_BACKEND "auto" CACHE STRING
     "RHI backend selection: auto | opengl | vulkan | metal | d3d12")
@@ -488,6 +492,17 @@ if(ENGINE_BUILD_TESTS)
         add_test(NAME test_platform_compat_${_compat_lower}
             COMMAND test_platform_compat_${_compat_lower})
     endforeach()
+
+    # QNX Screen descriptor variant: same simulated harness with the Screen
+    # window layer compiled in — header-only, runs on every host lane.
+    add_executable(test_platform_compat_qnx_screen
+        tests/test_platform_compat_simulated.c)
+    target_include_directories(test_platform_compat_qnx_screen
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(test_platform_compat_qnx_screen PRIVATE
+        SIMULATE_QNX=1 ENGINE_QNX_SCREEN=1)
+    add_test(NAME test_platform_compat_qnx_screen
+        COMMAND test_platform_compat_qnx_screen)
 
     foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
@@ -1470,13 +1485,29 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
         "-framework CoreFoundation"
     )
 elseif(ENGINE_PLATFORM STREQUAL "qnx")
-    # QNX headless: window_mobile.c supplies the platform_* surface with a
-    # fail-closed platform_create (no native window host exists on QNX
-    # today); net_loop runs on poll(); sockets come from libsocket when
-    # present. Graphics is headless-only (see the RHI gates above).
-    target_compile_definitions(engine PUBLIC
-        ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
-    target_sources(engine PRIVATE src/platform/window_mobile.c)
+    # QNX: window layer is Screen when the SDP provides screen.h/libscreen
+    # (ENGINE_QNX_SCREEN — window_screen.c creates its own native window);
+    # otherwise window_mobile.c keeps platform_create fail-closed. Graphics
+    # above the window layer stays headless-only either way (RHI gates above).
+    if(ENGINE_QNX_SCREEN)
+        find_path(ENGINE_QNX_SCREEN_INCLUDE_DIR screen/screen.h)
+        find_library(ENGINE_QNX_SCREEN_LIBRARY screen)
+    endif()
+    if(ENGINE_QNX_SCREEN AND ENGINE_QNX_SCREEN_INCLUDE_DIR AND
+       ENGINE_QNX_SCREEN_LIBRARY)
+        message(STATUS "QNX Screen window layer: ${ENGINE_QNX_SCREEN_LIBRARY}")
+        target_compile_definitions(engine PUBLIC
+            ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1 _POSIX_C_SOURCE=200112L)
+        target_sources(engine PRIVATE src/platform/window_screen.c)
+        target_include_directories(engine PRIVATE ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+        target_link_libraries(engine PRIVATE ${ENGINE_QNX_SCREEN_LIBRARY})
+    else()
+        message(STATUS
+            "QNX Screen window layer unavailable; headless fail-closed platform")
+        target_compile_definitions(engine PUBLIC
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200112L)
+        target_sources(engine PRIVATE src/platform/window_mobile.c)
+    endif()
     if(ENGINE_HAVE_LIBSOCKET)
         target_link_libraries(engine PRIVATE socket)
     endif()

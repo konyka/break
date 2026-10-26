@@ -15,6 +15,10 @@
 #   - cwd stays the binary directory so bare-name data fallbacks resolve.
 
 ulimit -s 8192 2>/dev/null
+# Cross libs deployed beside the binaries (e.g. libscreen.so.1 when the
+# engine links the Screen window layer but the target image lacks it).
+LD_LIBRARY_PATH=/tmp/bt${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+export LD_LIBRARY_PATH
 cd /tmp/bt || exit 2
 list="${1:-cmds.txt}"
 pass=0; fail=0; failed=""

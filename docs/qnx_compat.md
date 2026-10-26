@@ -10,6 +10,12 @@ QNX Neutrino 目标的第一个里程碑：**headless 兼容层**。引擎核心
 QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）上 **144/144 通过**，
 证据等级由 COMPILED 升级为 **HEADLESS**。
 
+**2026-10-26 Screen 窗口层（追加）**：SDP 提供 `screen.h` + 双架构
+`libscreen.so`，新增 `window_screen.c`（ENGINE_QNX_SCREEN，默认探测启用）：
+平台层经 Screen API 自建原生窗口、轮询 close/pointer 事件；x86_64 与
+aarch64le 双架构交叉编译+链接 100%（**COMPILED**）。GL/Vulkan-via-Screen
+与运行时收据（需目标机 screen 服务）仍是后续工作。
+
 ## 1. 范围与证据等级
 
 | 能力 | 状态 | 证据 |
@@ -19,7 +25,8 @@ QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）上 **144/144 通过**，
 | 引擎核心（task/time/filewatch/network/audio/script/…） | **真机全量 HEADLESS** | QNX 8.0.0 x86_64 目标机 144/144（见 §5） |
 | myui（widget/layout/css/edit/echart/mvvm/离屏 vgcanvas） | **真机全量 HEADLESS** | 同上（myui 全部 headless 测试在目标机通过） |
 | 效率（吞吐下限断言） | 真机冒烟锁定 | `test_qnx_perf_smoke` 目标机实测见 §6 |
-| 窗口 / 图形 / Vulkan | **UNAVAILABLE，fail-closed** | `ENGINE_VULKAN=ON` 于 qnx 配置期直接 FATAL；RHI 解析为 `headless` |
+| 窗口层（QNX Screen） | **COMPILED**（x86_64 + aarch64le 交叉编译/链接） | `ENGINE_QNX_SCREEN` 默认探测启用；`test_platform_compat_qnx_screen`（描述符契约，host CI） |
+| 图形 API / Vulkan | **UNAVAILABLE，fail-closed** | `ENGINE_VULKAN=ON` 于 qnx 配置期直接 FATAL；RHI 解析为 `headless` |
 
 窗口/图形升级到 Screen WSI 的路径见 §7。
 
@@ -78,6 +85,27 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 - myui 全部 headless 测试（布局/CSS/编辑器/echart/MVVM/窗口管理/指标）
   与平台无关，QNX 平台定义下原样通过。
 
+### 2.6 Screen 窗口层（`engine/src/platform/window_screen.c`）
+
+- CMake 在 qnx 平台探测 SDP 的 `screen/screen.h` + `libscreen`（默认
+  `ENGINE_QNX_SCREEN=ON`）；toolchain 的 `CMAKE_FIND_ROOT_PATH` 同时挂
+  `$QNX_TARGET` 与 `$QNX_TARGET/<arch>`（QNX 多架构布局：头文件在
+  `usr/include`，库在 `<arch>/usr/lib`）；
+- 平台描述符随之切换：surface = `ENGINE_SURFACE_QNX_SCREEN`（平台自建
+  原生窗口，非宿主注入），图形 API 仍 fail-closed，证据 COMPILED；
+- `platform_create` 走 `screen_create_context(SCREEN_APPLICATION_CONTEXT)`
+  → `screen_create_window` → 属性（SIZE/FORMAT_RGBA8888/USAGE）→
+  `screen_flush_context`；目标机无 screen 服务时首步即失败、返回 NULL
+  （运行时优雅 fail-closed，headless 行为不受影响）；
+- `platform_poll` 非阻塞 `screen_get_event`：CLOSE → QUIT，
+  POINTER → 坐标（`input_set_mouse`）+ 左中右键（`input_set_key`，
+  `SCREEN_*_MOUSE_BUTTON` 掩码）；键盘/文本事件已排空、翻译与
+  滚轮/剪贴板/IME/显示器枚举留给图形里程碑（fail-closed 桩）；
+  尺寸查询实时读 `SCREEN_PROPERTY_SIZE` 并缓存；
+- WSI 句柄语义：`platform_window_native/surface_native` = `screen_window_t`，
+  `platform_display_native` = `screen_context_t`——正是未来
+  `vkCreateScreenSurfaceQNX` 所需的一对句柄。
+
 ## 3. TDD 记录
 
 | 循环 | 红 | 绿 |
@@ -88,6 +116,7 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | 效率冒烟 | `test_qnx_perf_smoke`（新） | 三条吞吐下限断言 + 实测打印 |
 | 真实 SDP 交叉编译 | qcc 构建失败：`_SC_NPROCESSORS_ONLN`/`CLOCK_MONOTONIC` 被 `-std=c11` 严格模式隐藏；`-lpthread`/`-ldl` 不存在（QNX 8 并入 libc）；独立网络测试缺 `-lsocket`；`__isfinitef` 需 `-lm` | toolchain 加 `-D_QNX_SOURCE` + 交叉 binutils；qnx 分支去 pthread/dl、补条件 socket/m 链接 |
 | 目标机运行 | 首轮 127/137：4 个 Memory fault（QNX 默认栈过小）、6 个数据路径/参数问题 | 运行器 `ulimit -s 8192`（README 的 8MB 栈假设）；`ENGINE_TEST_SOURCE_ROOT` 可覆盖 + 目标机部署布局；ctest 参数/WILL_FAIL 语义纳入运行器 → **144/144** |
+| Screen 窗口层 | `test_platform_compat_qnx_screen` 编译失败（`ENGINE_SURFACE_QNX_SCREEN` 不存在） | `platform_compat.h` 增加枚举与 ENGINE_QNX_SCREEN 描述符变体；`window_screen.c` 双架构交叉编译 100% |
 
 ## 4. 构建
 
@@ -136,15 +165,21 @@ cmake --build engine/build-qnx -j
 - 宿主 QNX 平台模拟树：全量构建通过；headless 套件 168 项全绿
   （`test_d3d12_dependency_gate` 为 Windows-only 设计内跳过）；
 - **真实 QNX SDP 8.0.0 交叉编译（qcc/gcc 12.2）：x86_64 与 aarch64le
-  双架构整树 100% 构建通过**（aarch64le 为 COMPILED 证据——本环境无
-  aarch64 目标机可运行；产物经 `file`/`ntoaarch64-strip` 校验为
-  AArch64 QNX 动态可执行）；
+  双架构整树 100% 构建通过**（含 Screen 窗口层：探测到 SDP 的
+  `screen.h`/`libscreen` 后 `ENGINE_QNX_SCREEN` 自动启用，`window_screen.c`
+  编译+链接；无 Screen 的环境自动回退 fail-closed 路径）。aarch64le 为
+  COMPILED 证据——本环境无 aarch64 目标机可运行；产物经
+  `file`/`ntoaarch64-strip` 校验为 AArch64 QNX 动态可执行；
 - **QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）：headless 套件
   144/144 命令通过**（含 myui 全部 headless 测试、net_loop/net/network/
   net_replication、task/ECS/规则引擎、verify 工具的 WILL_FAIL 语义用例；
   等价于宿主 `-LE "graphics|fuzz"` 选择，宿主-only 的 cmake 契约测试不在
-  目标机复刻）。目标机运行要点与运行器语义见 §4.1（脚本已入库
-  `engine/tools/qnx/`）；
+  目标机复刻）。Screen 窗口层合入后复跑 **145/145**（新增
+  `test_platform_compat_qnx_screen`；运行时需随行部署 `libscreen.so.1`
+  并设 `LD_LIBRARY_PATH=/tmp/bt`，运行器已内置）。注意 `test_vfs` 的
+  oversized-file 用例在目标机 /tmp 剩余空间临界时偶发失败（该测试不链接
+  engine，属环境敏感，复跑即过）。目标机运行要点与运行器语义见 §4.1
+  （脚本已入库 `engine/tools/qnx/`）；
 - 未验证（诚实边界）：aarch64le 目标机运行、非 VM 真硬件收据、
   图形/Screen 路径（设计即 fail-closed）。
 
@@ -167,8 +202,9 @@ cmake --build engine/build-qnx -j
 1. ~~真机：SDP 交叉编译 + Neutrino 目标跑套件与冒烟~~（已完成，2026-10-26：
    x86_64 交叉 100% + 目标机 144/144 + §6 收据；aarch64le 交叉 100%
    （COMPILED），aarch64le 目标机运行与非 VM 真硬件收据待补）；
-2. Screen WSI：`window_screen.c` + `ENGINE_SURFACE_*` 语义，
-   图形证据等级从 NONE 起步；
+2. Screen：窗口层已 COMPILED（`window_screen.c`，见 §2.6）；
+   剩余：GL/Vulkan-via-Screen（`vkCreateScreenSurfaceQNX` 句柄已就绪）、
+   键盘/滚轮/剪贴板/显示器事件映射、目标机（screen 服务）运行收据；
 3. Vulkan（QNX 平台 Vulkan driver via Screen）或 GLES2 后端：
    myui `MYUI_GLES2` 已是可复用后端，接入 Screen EGL；
 4. `ENGINE_NET_LOOP_POLL` 在高 fd 数下的 tunable（当前重建仅发生在
@@ -187,3 +223,5 @@ cmake --build engine/build-qnx -j
 - 工具链：`engine/toolchain-qnx.cmake`、`engine/CMakePresets.json`（`qnx-cross`）
 - fail-closed 修复：`engine/src/platform/platform_vk_surface.c`（`pvk_resolve` 条件定义）、
   `engine/src/platform/window_mobile.c`（QNX 守卫）
+- Screen 窗口层：`engine/src/platform/window_screen.c`、CMake 选项 `ENGINE_QNX_SCREEN`、
+  契约测试 `test_platform_compat_qnx_screen`

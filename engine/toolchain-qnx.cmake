@@ -65,7 +65,10 @@ set(CMAKE_AR "${QNX_AR}")
 set(CMAKE_RANLIB "${QNX_RANLIB}")
 set(CMAKE_STRIP "${QNX_STRIP}")
 
-set(CMAKE_FIND_ROOT_PATH "${QNX_TARGET_DIR}")
+# QNX multiarch layout: headers live under $QNX_TARGET/usr/include but the
+# per-arch libs (libscreen.so, ...) under $QNX_TARGET/<arch>/usr/lib — both
+# must be find roots or find_path/find_library disagree.
+set(CMAKE_FIND_ROOT_PATH "${QNX_TARGET_DIR}" "${QNX_TARGET_DIR}/${QNX_ARCH}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

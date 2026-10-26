@@ -8781,3 +8781,24 @@ gen_target_cmds.py (host) regenerates the headless command list from the
 cross build ctest registry (drops cmake -P contract tests, honours WILL_FAIL),
 run_target_suite.sh (target) runs it with ulimit -s 8192 and EXPECT_FAIL
 semantics; both under engine/tools/qnx/.
+
+## QNX Screen window layer (2026-10-26, feat/qnx-compat)
+
+window_screen.c adds a native QNX Screen platform layer (ENGINE_QNX_SCREEN,
+probe-enabled by default when the SDP provides screen.h + libscreen):
+screen_context/screen_window creation with RGBA8888 read/write usage, a
+non-blocking event pump mapping CLOSE and POINTER events (position + left/
+middle/right buttons) into InputState, live SCREEN_PROPERTY_SIZE queries, and
+WSI handles shaped for a future vkCreateScreenSurfaceQNX (window + context).
+When no screen service is reachable the layer fails closed at the first
+screen_create_context, so headless behaviour is unchanged. The platform
+descriptor gains ENGINE_SURFACE_QNX_SCREEN (self-created native window) with
+graphics APIs still fail-closed; contract coverage is the new
+test_platform_compat_qnx_screen on every host lane. The toolchain file now
+roots CMake find at both $QNX_TARGET and $QNX_TARGET/<arch> because QNX
+multiarch keeps headers in usr/include but libscreen.so in <arch>/usr/lib.
+
+Evidence: cross build 100% on both x86_64 and aarch64le (COMPILED); Linux
+headless suite 173/173 after the change. Remaining for the graphics
+milestone: GL/Vulkan via Screen, keyboard/text/wheel/clipboard/monitor
+events, and runtime receipts on a target running the screen service.
