@@ -621,6 +621,18 @@ pipeline` 日志门禁捕获该问题，补齐后再次验证两后端 70 帧截
 MoltenVK 全量 CTest 均 **186/186**（远程新增 6 项亦通过），Metal graphics **5/5**、资源测试
 **47/47**；上文所述渲染差异、未实现路径及证据等级复核状态不变。
 
+2026-10-26 同步 `@0e714f06`（R703/R704 LOD fade/cache）后，Metal consumer smoke 初次因
+离线 manifest 未覆盖 LOD 变体而 fail-closed。`engine/tools/compile_metal_shaders.sh` 补齐
+blinn/pbr 前向路径及 G-Buffer 静态、数组路径的实际 define 链（含 `FORWARD_MRT,LOD_FADE`
+和 `HAS_IBL,LOD_FADE`），生成 **124** 个 manifest 条目，修复提交为 `@83d672b7`。重新构建后
+Metal 全量 CTest **187/187**、graphics **5/5**、资源测试 **47/47**；MoltenVK 全量 CTest
+同样 **187/187**（两者仅 D3D12 dependency gate 按平台跳过）。两后端均完成
+`BREAK_SCREENSHOT=60 ... --frames 70` 实机运行，3D 场景和 UI 可见、朝向正确，日志无 manifest
+缺失、管线绑定或 fatal 错误。Metal 与 MoltenVK 的光照、材质和水面仍有差异，本次不宣称
+逐像素一致，也不升级证据等级。推送前远程又前进至 `@8eee4a58`（R705/R706），本地提交
+无冲突 rebase 后再次完成上述两套测试和 70 帧截图，结果保持 **187/187**、graphics **5/5**、
+资源 **47/47**。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
