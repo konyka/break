@@ -778,6 +778,7 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 ### 3.1 运行 engine_demo（Linux 桌面）
 
 - **Wayland/XWayland 节流**：在 Wayland 会话下 GL demo 走 XWayland，`glXSwapBuffers` 会被 Present 节流到 ~1 FPS（profiler 显示 `Frame: 1000 ms`，而引擎 dt 按 R147 钳制 0.1s）。脚本化截图/相机复现前请用 `vblank_mode=0 ./build_gl/engine_demo` 绕过节流，否则一秒的鼠标输入会在单帧内一次性生效。
+- 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。Win32、Cocoa 同步切换；X11、Wayland 以窗口管理器 / 合成器的回报为准（X11 无 EWMH 窗口管理器时退回 Motif 去装饰 + 移到显示器矩形）；QNX Screen 与移动端固定全屏。
 - 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
 
 ## 4. 编译选项与标准
