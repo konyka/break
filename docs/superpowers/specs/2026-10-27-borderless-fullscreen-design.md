@@ -1,6 +1,6 @@
 # 无标题栏全屏（borderless fullscreen）设计
 
-状态：**已实现**（FS1 状态机、FS2 API + Win32 + 演示接线、FS3 只重建渲染目标、FS4 X11/Wayland/Cocoa/QNX；见 `docs/Implementation_Status.md` 的 FS1–FS5 节）。验收第 3 条（切换帧 < 50 ms）**只部分达成**：GL / D3D12 的最差切换帧 48–87 ms（改前 131 / 137 ms），VK 107–112 ms（改前 264 ms，且每次切换都设备丢失，已修）。剩余耗时主要在 RHI 层逐个创建/销毁渲染目标（VK 每个纹理创建都提交一次布局转换并等待 fence，每个 FBO 销毁都 `vkDeviceWaitIdle`），下一步是批量创建 + 延迟销毁。用户要求：跨平台、运行时切换全屏/窗口、切换时渲染尽量流畅、TDD、测试通过后提交并维护文档。
+状态：**已实现**（FS1 状态机、FS2 API + Win32 + 演示接线、FS3 只重建渲染目标、FS4 X11/Wayland/Cocoa/QNX、FS6 VK 去掉 GPU 空等；见 `docs/Implementation_Status.md` 的 FS1–FS6 节）。验收第 3 条（切换帧 < 50 ms）：**VK 基本达成**，Release 最差切换帧中位 48.9 ms（3 轮 46.8 / 48.9 / 51.6 ms；FS5 时为 107–112 ms，改前 264 ms）。做法：交换链重建传 `oldSwapchain`，不再整机空等；FBO/纹理销毁改为按 fence 延迟释放，每帧回收有预算；新渲染目标的初始布局转换合并成一次提交。剩余耗时主要是驱动的 `vkCreateSwapchainKHR`（21–85 ms），波动大，偶尔仍略超 50 ms。**GL / D3D12 仍只部分达成**（最差切换帧 48–74 ms，本轮未改），剩余时间在逐个创建渲染目标上。用户要求：跨平台、运行时切换全屏/窗口、切换时渲染尽量流畅、TDD、测试通过后提交并维护文档。
 
 ## 1. 现状（已核实）
 

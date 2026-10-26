@@ -65,5 +65,21 @@ bool       rhi_acceleration_structure_get_vk_handle(
  * enabled. */
 u32  rhi_vk_validation_message_count(void);
 void rhi_vk_validation_message_count_reset(void);
+
+/* FS6: Vulkan synchronisation counters for the resize/fullscreen path
+ * (defined only by the VK backend; call sites must #ifdef ENGINE_VULKAN, the
+ * rhi_vk_set_alloc_failure_for_test precedent). device_wait_idle and
+ * queue_wait_idle count every vkDeviceWaitIdle / vkQueueWaitIdle the backend
+ * issues; deferred_destroys counts objects queued for fence-retired release,
+ * deferred_pending the ones not yet released; layout_batches counts
+ * submissions of the batched initial-layout command buffer. */
+typedef struct {
+    u64 device_wait_idle;
+    u64 queue_wait_idle;
+    u64 deferred_destroys;
+    u64 deferred_pending;
+    u64 layout_batches;
+} RHIVkSyncCounters;
+bool rhi_vk_sync_counters(const RHIDevice *dev, RHIVkSyncCounters *out);
 bool rhi_vk_validation_gate_active(void);
 void rhi_vk_validation_set_enabled(bool enabled);
