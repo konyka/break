@@ -77,6 +77,13 @@ typedef struct BreakNetConnectionIdentity {
     uint32_t outbound_sequence;
     bool closing;
     bool valid;
+    /* Server-side close (break_net_reactor_close): requested by any thread;
+     * armed by the next outbound drain (so every send queued before the
+     * request has already been handed to the transport); started by the
+     * driver thread right after the step that delivered those sends. */
+    bool close_requested;
+    bool close_armed;
+    bool close_started;
 #ifdef BREAK_ENABLE_CRYPTO
     u8 auth_server_nonce[16];
     bool auth_server_nonce_valid;
@@ -803,6 +810,22 @@ static void break_net_drain_outbound(BreakNetReactor *reactor)
     uint64_t failed_keys[BREAK_NET_OUTBOUND_QUEUE_CAPACITY];
     size_t failed_count = 0u;
 
+    /* Arm pending server closes BEFORE draining: a close requested before
+     * this point takes effect after the commands drained below are on the
+     * transport; one requested later waits for the next drain. */
+    platform_mutex_lock(&reactor->queue_mutex);
+    {
+        size_t i;
+        for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+            BreakNetConnectionIdentity *identity = &reactor->identities[i];
+            if (identity->valid && identity->close_requested &&
+                !identity->close_started) {
+                identity->close_armed = true;
+            }
+        }
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+
     for (;;) {
         size_t scanned = 0u;
         size_t index;
@@ -945,6 +968,61 @@ static void break_net_reactor_publish_ready(BreakNetReactor *reactor)
     platform_mutex_unlock(&reactor->lifecycle_mutex);
 }
 
+/* Driver thread, right after a snow step: starts every armed server close.
+ * Commands still queued for the key at this point could not be handed to
+ * the transport (TLS handshake unfinished, or a send failure); they are
+ * dropped, since the connection is going away. The close itself is
+ * snow's close-after-flush: whatever the transport already accepted is
+ * written first, then the socket closes and the normal on_closed path runs
+ * (CONNECTION_CLOSED event, identity release, reap). */
+static void break_net_process_server_closes(BreakNetReactor *reactor,
+                                            snow_net_thread_t *snow_thread)
+{
+    uint32_t uids[BREAK_NET_CONNECTION_IDENTITY_CAPACITY];
+    size_t count = 0u;
+    size_t i;
+    snow_connection_list_t *list;
+
+    platform_mutex_lock(&reactor->queue_mutex);
+    for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+        BreakNetConnectionIdentity *identity = &reactor->identities[i];
+        size_t scanned = 0u;
+        size_t index;
+        if (!identity->valid || !identity->close_armed || identity->close_started) {
+            continue;
+        }
+        identity->close_armed = false;
+        identity->close_started = true;
+        index = reactor->outbound_head;
+        while (scanned < reactor->outbound_count) {
+            if (reactor->outbound[index].connection_key == identity->key) {
+                break_net_outbound_remove_at(reactor, index);
+                continue; /* the successor shifted into `index` */
+            }
+            scanned++;
+            index = (index + 1u) % BREAK_NET_OUTBOUND_QUEUE_CAPACITY;
+        }
+        if (!identity->closing) {
+            uids[count++] = identity->uid;
+        }
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+
+    if (count == 0u || snow_thread == NULL) return;
+    list = snow_net_thread_connection_list(snow_thread);
+    if (list == NULL) return;
+    /* Outside queue_mutex: a close that completes immediately fires
+     * break_net_on_closed, which takes the mutex itself. */
+    for (i = 0u; i < count; ++i) {
+        snow_connection_t *connection = snow_connection_list_get(list, uids[i]);
+        if (connection == NULL || snow_connection_transceiver(connection) == NULL) {
+            continue;
+        }
+        snow_connection_set_close(connection);
+        (void)snow_connection_handle_output(connection);
+    }
+}
+
 static PLATFORM_THREAD_RET break_net_reactor_thread_main(PLATFORM_THREAD_ARG arg)
 {
     BreakNetReactor *reactor = (BreakNetReactor *)arg;
@@ -955,6 +1033,7 @@ static PLATFORM_THREAD_RET break_net_reactor_thread_main(PLATFORM_THREAD_ARG arg
     status = snow_net_thread_step(reactor->snow_thread,
                                   (int)reactor->config.step_timeout_ms);
     if (status == SNOW_OK) {
+        break_net_process_server_closes(reactor, reactor->snow_thread);
         break_net_reactor_publish_ready(reactor);
         for (;;) {
             break_net_drain_outbound(reactor);
@@ -963,6 +1042,7 @@ static PLATFORM_THREAD_RET break_net_reactor_thread_main(PLATFORM_THREAD_ARG arg
             if (status != SNOW_OK) {
                 break;
             }
+            break_net_process_server_closes(reactor, reactor->snow_thread);
             platform_mutex_lock(&reactor->lifecycle_mutex);
             if (reactor->state == BREAK_NET_STATE_STOPPING ||
                 reactor->state == BREAK_NET_STATE_FAILED) {
@@ -1432,6 +1512,9 @@ bool break_net_reactor_step(BreakNetReactor *reactor, int timeout_ms)
     }
     break_net_drain_outbound(reactor);
     status = snow_net_thread_step(snow_thread, timeout_ms);
+    if (status == SNOW_OK) {
+        break_net_process_server_closes(reactor, snow_thread);
+    }
     platform_mutex_lock(&reactor->lifecycle_mutex);
     reactor->step_active = false;
     platform_cond_broadcast(&reactor->lifecycle_cond);
@@ -1717,6 +1800,14 @@ BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
     }
     platform_mutex_unlock(&reactor->lifecycle_mutex);
     platform_mutex_lock(&reactor->queue_mutex);
+    {
+        BreakNetConnectionIdentity *identity =
+            break_net_identity_find(reactor, connection_key);
+        if (identity != NULL && identity->close_requested) {
+            platform_mutex_unlock(&reactor->queue_mutex);
+            return BREAK_NET_SEND_CLOSED;
+        }
+    }
     if (reactor->outbound_count == BREAK_NET_OUTBOUND_QUEUE_CAPACITY) {
         platform_mutex_unlock(&reactor->queue_mutex);
         return BREAK_NET_SEND_OVERLOAD;
@@ -1731,6 +1822,27 @@ BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
     reactor->outbound_count++;
     platform_mutex_unlock(&reactor->queue_mutex);
     return BREAK_NET_SEND_OK;
+}
+
+bool break_net_reactor_close(BreakNetReactor *reactor, uint64_t connection_key)
+{
+    BreakNetConnectionIdentity *identity;
+    bool accepted = false;
+    if (reactor == NULL || connection_key == 0u) return false;
+    platform_mutex_lock(&reactor->lifecycle_mutex);
+    if (reactor->state != BREAK_NET_STATE_STARTED) {
+        platform_mutex_unlock(&reactor->lifecycle_mutex);
+        return false;
+    }
+    platform_mutex_unlock(&reactor->lifecycle_mutex);
+    platform_mutex_lock(&reactor->queue_mutex);
+    identity = break_net_identity_find(reactor, connection_key);
+    if (identity != NULL && !identity->closing) {
+        identity->close_requested = true; /* idempotent */
+        accepted = true;
+    }
+    platform_mutex_unlock(&reactor->queue_mutex);
+    return accepted;
 }
 
 size_t break_net_reactor_outbound_count(BreakNetReactor *reactor)

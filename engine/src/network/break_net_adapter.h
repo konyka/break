@@ -91,6 +91,17 @@ BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
                                           const void *data, size_t size);
 size_t break_net_reactor_outbound_count(BreakNetReactor *reactor);
 
+/* Server-side close of one connection. Safe from any thread; never blocks.
+ * Every send queued for the key BEFORE this call is still written, then the
+ * transport closes after its send buffer drains (snow close-after-flush) and
+ * the normal CONNECTION_CLOSED event follows. Sends queued after the call
+ * return BREAK_NET_SEND_CLOSED. Commands that cannot reach the transport by
+ * then (TLS handshake unfinished, send failure) are dropped. Takes effect on
+ * the driver thread's next step. Returns true when the close is (or already
+ * was) pending; false for NULL/0, a reactor that is not started, or a key
+ * with no live connection (unknown, or already closed by the peer). */
+bool break_net_reactor_close(BreakNetReactor *reactor, uint64_t connection_key);
+
 /* Test-only: returns outbound send attempts made by the reactor driver. */
 size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor);
 
