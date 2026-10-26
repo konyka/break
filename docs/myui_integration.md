@@ -10,12 +10,39 @@ QNX 显式 Vulkan 只描述引擎 RHI 的编译路径，不能据此推断 myui 
 文本/IME、剪贴板、显示器枚举、相对鼠标及真实 Screen 输入注入仍未验证或保持
 fail-closed。目标机证据与性能边界见 `docs/qnx_compat.md`。
 
+## QNX 定时器、并发及时性与 pending 优化（2026-10-26）
+
+公共 `time_sleep_us()` 在 POSIX EINTR 后使用剩余时间续睡；`time_delta_since()`
+对未来时间戳返回 0，避免无符号下溢。`test_platform_time` 在 Linux 与 QNX
+均验证这些路径、永久错误退出和多线程单调读取，结果 **4/4**。
+
+`my_timer_manager_t` 由所属主循环拥有。其他线程通过 command/event 将创建、
+删除定时器的工作交给主循环，不能直接并发 add/remove/fire/destroy。pending
+提交使用一次线性扫描与压缩，OOM 时未提交项保持原顺序供重试；不再反复
+头删和全量重索引。238 个既有生命周期、嵌套回调、OOM 与释放测试在 Linux
+和 QNX 均通过。1 万个 callback-added timer 的中位提交耗时：Linux
+**90,175 → 80 µs**，QNX **106,278 → 72 µs**（各 5 轮）。
+
+`test_myui_timer_concurrency` 以 4 个 producer × 64 个 command 驱动 one-shot
+定时器，四个周期均完成 **256 次 command、256 次 timer 回调、0 失败**：
+
+| 周期 | Linux p50 / p95 / max | QNX p50 / p95 / p99 / max |
+|------|------------------------|----------------------------|
+| 1 ms | -29 / -16 / -14 µs | 179 / 204 / 205 / 205 µs |
+| 5 ms | -249 / -84 / -83 µs | -168 / 908 / 911 / 912 µs |
+| 16 ms | -110 / -94 / -91 µs | 640 / 662 / 663 / 665 µs |
+| 100 ms | -117 / -78 / -76 µs | 799 / 806 / 807 / 807 µs |
+
+负偏移来自当前毫秒时钟向下取整，不是时钟回拨，也不代表微秒级硬实时保证。
+延迟统计包括主循环调度；绝对耗时随机器和负载变化，不能仅据此声称全局最优。
+
 ## Timer 取消性能契约（2026-09-08）
 
 PAL timer manager 以 deadline min-heap 处理唤醒，同时以私有 ID 索引定位活动 timer。删除一个
 未执行 timer 不扫描同一 loop 的其他 timer：查找为均摊 O(1)，从 heap 摘除和恢复顺序为 O(log n)。
 callback 运行中的 timer 保持既有延迟失活语义；callback 新增的 pending timer 在最外层 fire
-结束后才进入 heap，索引位置在每次移动时同步更新。该优化不改变 PAL/UI 的单线程事件循环约束。
+结束后经一次线性扫描/压缩提交，未提交项在 OOM 时保留原顺序供重试。该优化不改变
+PAL/UI 的单线程事件循环约束。
 
 ## Vulkan 关闭时的 ABI 契约（2026-09-07）
 

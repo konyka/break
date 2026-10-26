@@ -36,6 +36,7 @@ u64 time_microseconds(void) {
 
 f64 time_delta_since(u64 last_us) {
     u64 now = time_microseconds();
+    if (now < last_us) return 0.0;
     return (f64)(now - last_us) / 1e6;
 }
 
@@ -53,6 +54,7 @@ void time_sleep_us(u64 microseconds) {
 }
 
 #else /* Linux / POSIX */
+#include <errno.h>
 #include <time.h>
 
 static u64 time_base_ns(void) {
@@ -74,6 +76,7 @@ u64 time_microseconds(void) {
 
 f64 time_delta_since(u64 last_us) {
     u64 now = time_microseconds();
+    if (now < last_us) return 0.0;
     return (f64)(now - last_us) / 1e6;
 }
 
@@ -82,7 +85,8 @@ void time_sleep_us(u64 microseconds) {
         .tv_sec  = (time_t)(microseconds / 1000000),
         .tv_nsec = (long)((microseconds % 1000000) * 1000),
     };
-    nanosleep(&ts, NULL);
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    }
 }
 
 #endif

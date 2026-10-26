@@ -9004,3 +9004,58 @@ filesystem; real Screen 2/2 and target shaderc 2/2 again; aarch64le default and
 Vulkan full builds remain 100%. The new LOD asset is deployed with the suite.
 The integrated GPU probe still fails at device creation because the loader has
 no ICD (`VK_KHR_surface` unavailable), preserving the honest GPU boundary.
+
+## QNX timer correctness, pending performance and concurrency receipts
+
+time_sleep_us now resumes POSIX nanosleep with the remaining duration after
+EINTR instead of silently returning early; time_delta_since clamps a future
+timestamp to zero on both Windows and POSIX. test_platform_time injects two
+interruptions and a permanent error, checks exact remaining durations and
+parallel monotonic reads, and passes 4/4 on Linux and QNX. my_timer.h documents
+loop ownership explicitly: cross-thread producers use command/event delivery
+to the owning loop, not direct manager calls.
+
+The timer pending commit no longer repeatedly removes index zero and reindexes
+the remainder. A linear compaction keeps uncommitted entries in their original
+order for OOM retry, while heap insertion and lifecycle semantics are unchanged.
+Median commit time for 10,000 callback-added timers dropped from 90,175 us to
+80 us on Linux and from 106,278 us to 72 us on QNX with the same compiler
+configuration. All 238 existing timer/window-manager tests pass in both
+environments. Four producer threads schedule 256 one-shot timers through the
+command queue: at 1, 5, 16 and 100 ms, Linux and QNX each complete 256 command
+executions, 256 timer callbacks and 256 command destructions with zero
+failures. QNX worst observed callback latency is 912 us; sub-millisecond
+negative offsets are clock quantization, not monotonic-clock rollback.
+
+Unfiltered Linux TSan passes 181/181 with no race report, including
+test_async_loader and the new concurrent timer test; twenty additional async
+loader TSan repetitions were also clean. The historical CI exclusion is removed
+instead of hiding a stale failure. This is current test evidence, not a claim of
+a race fix without a code change or a proof that all future races are impossible.
+Linux ASan/UBSan/LSan targeted timer and async-loader tests pass. QNX sanitizer
+build/runtime and remaining native Screen work are tracked separately below.
+
+## QNX sanitizer toolchain and on-target runtime
+
+QCC is now accepted by ENGINE_USE_UBSAN. Its driver propagates the sanitizer
+instrumentation flags but does not add the runtime to the final link, so the
+QCC-only branches link the actual SDP ASan/UBSan SONAMEs (libasan.so.8.0.0 and
+libubsan.so.1.0.0 here); other compiler paths are unchanged. Deployment creates
+the matching libasan.so.8/libubsan.so.1 aliases. A minimal C probe reproduces
+the missing __asan_init link failure before this change and links cleanly after.
+
+The QNX runtime initially rejected 1 GiB RAM, so the isolated VM was increased
+to 4 GiB. It then reported that ASLR was incompatible; following its own
+instruction, each test process was launched with on -ad rather than changing
+system ASLR policy or disabling the checks. With detect_leaks=1 and
+halt_on_error=1, test_platform_time (4/4), the pending benchmark, the
+four-producer concurrent timer test, and test_async_loader (17/17) complete on
+Neutrino with no ASan/UBSan report. Linux ASan/UBSan/LSan also passes all four
+focused tests. QNX TSan remains unverified because no runtime was found.
+
+Current full-suite regression after these changes: Linux Release 181/181; QNX
+x86_64 default 154/154 and complete Vulkan 155/155; native Screen 2/2 in both
+configurations; target shaderc 2/2; and default/Vulkan full builds on
+aarch64le. The lists now include test_platform_time, test_myui_timer_stress,
+and test_myui_timer_concurrency. These counts include every prior headless
+command plus the new timer tests, with no graphics/fuzz command relabelled.

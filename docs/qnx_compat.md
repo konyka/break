@@ -240,15 +240,14 @@ BREAK_QNX_SCREEN_REQUIRED=1 ./test_platform_qnx_screen_runtime
 
 以下为当前源码、隔离 VM 与独立文件系统上的最终复验结果：
 
-- **Linux 宿主回归（含远端 master 的 R703–R706 LOD 工作）：178/178 通过**
-  （`-LE "graphics|fuzz"`；`test_d3d12_dependency_gate` 为 Windows-only
-  设计内跳过）；
+- **Linux 宿主回归：181/181 通过**（`-LE "graphics|fuzz"`；
+  `test_d3d12_dependency_gate` 为 Windows-only 设计内跳过）；
 - **QNX SDP 8.0.0 x86_64 默认配置：全树 100% 构建**，目标机
-  **151/151 命令通过**，覆盖引擎核心、net_loop/network、task、规则引擎、
+  **154/154 命令通过**，覆盖引擎核心、net_loop/network、task、规则引擎、
   LOD/LOD cache/MSFT_lod、全部 myui headless 用例和 verify 工具的
   WILL_FAIL 语义；
 - **QNX x86_64 完整 Vulkan 配置：全树 100% 构建**，目标机
-  **152/152 命令通过**（默认清单 + `test_qnx_shaderc`）。默认与 Vulkan
+  **155/155 命令通过**（默认清单 + `test_qnx_shaderc`）。默认与 Vulkan
   使用不同部署根，`test_shader_io` 前后校验和一致；
 - **真实 Screen 窗口：2/2 通过**。软件虚拟显示器上创建/查询/显示/销毁
   `screen_context`、`screen_window`，尺寸/格式/usage/WSI 状态正确；
@@ -269,7 +268,7 @@ BREAK_QNX_SCREEN_REQUIRED=1 ./test_platform_qnx_screen_runtime
   myui 原生 Screen PAL、真实输入注入、文本/IME、剪贴板、显示器枚举、
   相对鼠标。不能把本节描述为“QNX 全部功能已验证”。
 
-历史目标机计数从 144/144 逐步扩展到 150/150；中间 147/150、148/151 等
+历史目标机计数从 144/144 逐步扩展到 154/154；中间 147/150、148/151 等
 失败均已定位：部署目录缺少 `tests/data`、`../src`/shader 回退路径错误、
 或部署清单缺失。相关修复与防假绿检查见 §3。
 
@@ -286,6 +285,50 @@ BREAK_QNX_SCREEN_REQUIRED=1 ./test_platform_qnx_screen_runtime
 三次均在 QNX 8.0.0 x86_64 QEMU/KVM、qcc/gcc 12.2 -O3 下通过；这是
 headless CPU/离屏吞吐收据，不是 GPU benchmark。后续运行继续把打印值
 回填本表，证据分级对齐 `docs/rhi_backend_evidence.md`。
+
+### 6.1 时钟与定时器优化
+
+`test_platform_time` 以故障注入验证 EINTR 后按剩余时间续睡、永久错误不
+忙循环、未来时间戳不造成无符号下溢以及多线程单调读取，Linux 与 QNX
+均为 **4/4**。`test_myui_window_manager` 的 238 个生命周期、OOM、嵌套
+回调和释放用例在两个环境均通过。
+
+定时器管理器由所属主循环拥有；跨线程通过 command/event 让主循环创建和
+销毁定时器，不直接并发调用 manager。pending 提交改为一次线性扫描/压缩，
+未提交项在 OOM 时保留原顺序供重试，避免反复头删和全量重索引。
+
+| pending 提交（1 万个，5 轮中位数） | 优化前 | 优化后 |
+|-----------------------------------|--------|--------|
+| Linux Release | 90,175 µs | 80 µs |
+| QNX x86_64 Release（同一编译参数） | 106,278 µs | 72 µs |
+
+`test_myui_timer_concurrency` 的 4 个 producer 各投递 64 个 command，
+每个 command 在主循环创建一个 one-shot timer。1/5/16/100 ms 四种周期在
+Linux 和 QNX 均为 **256 次 command、256 次 timer 回调、0 失败**。延迟相对
+期望触发时刻计算，负值来自毫秒向下取整，不表示单调时钟回拨；不把它
+解释为微秒级硬实时保证。
+
+| 周期 | Linux p50 / p95 / max | QNX p50 / p95 / p99 / max |
+|------|------------------------|----------------------------|
+| 1 ms | -29 / -16 / -14 µs | 179 / 204 / 205 / 205 µs |
+| 5 ms | -249 / -84 / -83 µs | -168 / 908 / 911 / 912 µs |
+| 16 ms | -110 / -94 / -91 µs | 640 / 662 / 663 / 665 µs |
+| 100 ms | -117 / -78 / -76 µs | 799 / 806 / 807 / 807 µs |
+
+### 6.2 消毒器与线程验证
+
+Linux 完整 TSan（不排除 `test_async_loader`）**181/181、无竞态报告**；
+另有 20 轮 async_loader TSan 定向重复。Linux ASan/UBSan/LSan 的
+时钟、pending、并发和 async_loader 定向测试 **4/4**。
+
+QNX 的 `ENGINE_USE_ASAN` / `ENGINE_USE_UBSAN` 也经过真实目标验证：
+QCC 需要按 SDP SONAME 显式链接运行库（本环境 `libasan.so.8` /
+`libubsan.so.1`），部署时提供 `.so.8.0.0` / `.so.1.0.0` 文件及对应
+SONAME 符号链接。1 GiB VM 被 ASan 拒绝后改用 4 GiB；按运行库提示仅对
+测试进程执行 `on -ad` 禁用 ASLR，不关闭系统默认 ASLR。随后
+`test_platform_time`、`test_myui_timer_stress`、`test_myui_timer_concurrency`
+和 `test_async_loader` 在 `detect_leaks=1`、`halt_on_error=1` 下通过，
+没有消毒器报告。QNX TSan runtime 当前未发现，不宣称 QNX TSan 已验证。
 
 ## 7. 升级路径（后续里程碑）
 
@@ -316,6 +359,9 @@ headless CPU/离屏吞吐收据，不是 GPU benchmark。后续运行继续把�
 - Screen 窗口层与运行测试：`engine/src/platform/window_screen.c`、
   `engine/tests/test_platform_qnx_screen_runtime.c`
 - shaderc 目标测试：`engine/tests/test_qnx_shaderc.c`
+- 时钟与定时器：`engine/src/platform/time.c`、`engine/src/myui/mypal/my_timer.c`、
+  `engine/tests/test_platform_time.c`、`engine/tests/test_myui_timer_stress.c`、
+  `engine/tests/test_myui_timer_concurrency.c`
 - 效率冒烟：`engine/tests/test_qnx_perf_smoke.c`
 - 目标机工作流：`engine/tools/qnx/gen_target_cmds.py`、
   `engine/tools/qnx/run_target_suite.sh`、

@@ -242,6 +242,12 @@ if(ENGINE_USE_ASAN)
         add_compile_options(-fsanitize=address -fno-omit-frame-pointer)
         add_link_options(-fsanitize=address)
     endif()
+    if(CMAKE_C_COMPILER_ID STREQUAL "QCC")
+        # QCC instruments the objects but does not add the runtime to the link.
+        find_library(ENGINE_QNX_ASAN_RUNTIME_LIBRARY
+            NAMES libasan.so.8.0.0 asan REQUIRED)
+        link_libraries(${ENGINE_QNX_ASAN_RUNTIME_LIBRARY})
+    endif()
 endif()
 # R630/R696: Windows Clang ASan binaries need clang_rt.asan_dynamic-<arch>.dll
 # beside them — the toolchain dir is never on PATH, so ASan builds only
@@ -267,12 +273,17 @@ if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC
     endif()
 endif()
 if(ENGINE_USE_UBSAN)
-    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang" AND NOT MSVC)
+    if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang|QCC" AND NOT MSVC)
         add_compile_options(-fsanitize=undefined -fno-omit-frame-pointer)
         add_link_options(-fsanitize=undefined)
+        if(CMAKE_C_COMPILER_ID STREQUAL "QCC")
+            find_library(ENGINE_QNX_UBSAN_RUNTIME_LIBRARY
+                NAMES libubsan.so.1.0.0 ubsan REQUIRED)
+            link_libraries(${ENGINE_QNX_UBSAN_RUNTIME_LIBRARY})
+        endif()
     else()
         message(FATAL_ERROR
-            "ENGINE_USE_UBSAN requires GCC or Clang; compiler ${CMAKE_C_COMPILER_ID} is unsupported")
+            "ENGINE_USE_UBSAN requires GCC, Clang or QCC; compiler ${CMAKE_C_COMPILER_ID} is unsupported")
     endif()
 endif()
 if(ENGINE_USE_TSAN)
@@ -2272,6 +2283,39 @@ endif()
     )
     target_link_libraries(test_myui_vggeometry PRIVATE myui_core m)
     add_test(NAME test_myui_vggeometry COMMAND test_myui_vggeometry)
+
+    add_executable(test_platform_time tests/test_platform_time.c src/platform/time.c)
+    target_include_directories(test_platform_time PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_platform_time PRIVATE Threads::Threads)
+    if(NOT WIN32 AND NOT APPLE)
+        target_link_options(test_platform_time PRIVATE "-Wl,--wrap=nanosleep")
+    endif()
+    add_test(NAME test_platform_time COMMAND test_platform_time)
+    set_tests_properties(test_platform_time PROPERTIES LABELS "headless;platform_contract")
+
+    add_executable(test_myui_timer_stress tests/test_myui_timer_stress.c src/platform/time.c)
+    target_include_directories(test_myui_timer_stress PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_myui_timer_stress PRIVATE myui_core m Threads::Threads)
+    if(NOT WIN32)
+        target_compile_definitions(test_platform_time PRIVATE _POSIX_C_SOURCE=200809L)
+        target_compile_definitions(test_myui_timer_stress PRIVATE _POSIX_C_SOURCE=200809L)
+    endif()
+    if(APPLE)
+        target_compile_definitions(test_platform_time PRIVATE _DARWIN_C_SOURCE)
+        target_compile_definitions(test_myui_timer_stress PRIVATE _DARWIN_C_SOURCE)
+    endif()
+    add_test(NAME test_myui_timer_stress COMMAND test_myui_timer_stress)
+    set_tests_properties(test_myui_timer_stress PROPERTIES LABELS "headless;timing")
+
+    add_executable(test_myui_timer_concurrency tests/test_myui_timer_concurrency.c
+        src/myui/mypal/break/my_pal_break.c)
+    target_include_directories(test_myui_timer_concurrency PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_myui_timer_concurrency PRIVATE
+        myui_core engine m Threads::Threads)
+    engine_link_rhi_backend(test_myui_timer_concurrency)
+    add_test(NAME test_myui_timer_concurrency COMMAND test_myui_timer_concurrency)
+    set_tests_properties(test_myui_timer_concurrency PROPERTIES
+        LABELS "headless;timing;concurrency" TIMEOUT 90)
 
     add_executable(test_myui_window_manager tests/test_myui_window_manager.c
         src/myui/mypal/dummy/my_pal_dummy.c)

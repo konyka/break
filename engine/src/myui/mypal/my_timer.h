@@ -15,6 +15,10 @@
  * While a callback runs, its entry is held in an inline current slot; timers
  * added by callbacks enter pending and are committed at the outermost fire
  * boundary, avoiding per-fire deferred allocation.
+ *
+ * A manager is confined to its owning main-loop thread. Producers on other
+ * threads must schedule changes through the PAL event/command queue rather
+ * than calling add/remove/fire/destroy directly on the same manager.
  */
 #ifndef MY_TIMER_H
 #define MY_TIMER_H

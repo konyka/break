@@ -317,7 +317,7 @@ cmake --build build-asan
 ```
 
 #### UndefinedBehaviorSanitizer 版本
-`ENGINE_USE_UBSAN` 默认为 OFF；GCC/Clang 开启后使用 `-fsanitize=undefined`，不改变默认构建：
+`ENGINE_USE_UBSAN` 默认为 OFF；GCC/Clang/QCC 开启后使用 `-fsanitize=undefined`，不改变默认构建。QCC 会按 SDP 的 SONAME 显式链接运行库，目标部署需提供对应库及别名。QNX ASan 建议至少 3 GiB RAM；ASLR 与消毒器不兼容时，按运行库提示用 `on -ad <test-binary>` 仅对测试进程禁用 ASLR。
 ```bash
 cd engine
 cmake -B build-ubsan -DENGINE_USE_UBSAN=ON
@@ -486,9 +486,9 @@ cmake --build build-gl
 |------|--------|------|
 | ENGINE_VULKAN | OFF | 启用 Vulkan 后端（可与 X11/Wayland 任一窗口后端组合）；macOS Cocoa 路径自动使用 Vulkan/MoltenVK |
 | ENGINE_ENABLE_WAYLAND | OFF | 启用 Wayland 窗口后端（与 X11 **编译时互斥**） |
-| ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
+| ENGINE_USE_ASAN | OFF | 启用 AddressSanitizer（GCC/Clang/QCC 使用 `-fsanitize=address`，MSVC 使用 `/fsanitize=address`） |
 | ENGINE_USE_TSAN | OFF | 启用 ThreadSanitizer（GCC/Clang 使用 `-fsanitize=thread`；用于线程安全专项验证） |
-| ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang 使用 `-fsanitize=undefined`；MSVC 不启用） |
+| ENGINE_USE_UBSAN | OFF | 启用 UndefinedBehaviorSanitizer（GCC/Clang/QCC 使用 `-fsanitize=undefined`；MSVC 不启用） |
 | ENGINE_BUILD_TESTS | ON | 构建并注册 CTest 测试；关闭后不注册测试 |
 | ENGINE_ENABLE_IPO | ON | Release 构建中在工具链支持时启用 IPO/LTO，仅作用于 `engine` 静态库 |
 | MYUI_FONT_FREETYPE | ON | 找到 FreeType 时启用 hinted 字形和 TTC 多字面选择；CJK 默认字体需要此选项 |

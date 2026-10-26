@@ -692,20 +692,26 @@ uint32_t my_timer_manager_fire(my_timer_manager_t* mgr) {
     return fired;
   }
   if (mgr->firing == 0) {
-    while ((t = (my_timer_entry_t*)my_darray_get(mgr->pending, 0u)) != NULL) {
+    size_t read_index = 0u;
+    size_t write_index = 0u;
+    while (read_index < mgr->pending->size) {
+      t = (my_timer_entry_t*)mgr->pending->items[read_index++];
       if (!t->active) {
-        (void)my_darray_remove_at(mgr->pending, 0u);
-        timer_pending_reindex_from(mgr, 0u);
         timer_entry_free(mgr, t);
-      } else if (timer_heap_push(mgr->timers, t) == MY_RET_OK) {
-        (void)my_darray_remove_at(mgr->pending, 0u);
-        timer_pending_reindex_from(mgr, 0u);
-        t->location = MY_TIMER_LOCATION_HEAP;
         continue;
-      } else {
+      }
+      if (timer_heap_push(mgr->timers, t) != MY_RET_OK) {
+        for (;;) {
+          mgr->pending->items[write_index] = t;
+          t->pending_index = write_index++;
+          t->location = MY_TIMER_LOCATION_PENDING;
+          if (read_index >= mgr->pending->size) break;
+          t = (my_timer_entry_t*)mgr->pending->items[read_index++];
+        }
         break;
       }
     }
+    mgr->pending->size = write_index;
     my_timer_sweep(mgr);
   }
   return fired;
