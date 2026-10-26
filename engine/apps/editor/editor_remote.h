@@ -26,8 +26,10 @@
  * not close). A handler-side command failure on a well-formed payload
  * answers BREAK_EDITOR_MSG_RESULT with a non-ok status instead. Session
  * close is the break_session CLOSING watermark (later frames are stale and
- * dropped); the TCP stream ends when the peer closes (the adapter exposes no
- * server-side transport close — documented library boundary).
+ * dropped), and the host then closes the transport too
+ * (break_net_reactor_close: responses already queued are flushed first).
+ * A connection that is still not authenticated auth_timeout_ms after it
+ * was first seen is closed the same way (10 s under --remote).
  *
  * Threading: single-owner-thread convention, same as the shell/document —
  * create/start/tick/destroy all run on the shell thread. The reactor's STEP
@@ -47,6 +49,10 @@ typedef struct BreakEditorRemoteConfig {
     const char *tls_cert_file, *tls_key_file, *tls_ca_file;  /* required when use_tls */
     int tls_verify_peer;
     uint32_t rate_global_per_sec, rate_global_burst, rate_per_ip_per_minute; /* 0 = unlimited */
+    /* A connection that has not authenticated this long after it was first
+     * seen is closed (transport included). 0 = no deadline (tests only;
+     * --remote always sets BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS). */
+    uint32_t auth_timeout_ms;
 } BreakEditorRemoteConfig;
 
 /* NULL shell or invalid config (over-cap max_connections) => NULL. */
@@ -89,6 +95,11 @@ typedef struct BreakEditorRemoteSessionStats {
 bool break_editor_remote_session_stats(const BreakEditorRemote *r,
                                        BreakEditorRemoteSessionStats *out);
 bool break_editor_remote_is_tls(const BreakEditorRemote *r);  /* reactor TLS mode */
+/* Server-side transport closes the host has issued (fail-closed sessions and
+ * auth-deadline evictions), and how many of them were auth-deadline
+ * evictions. 0 for NULL. */
+u64 break_editor_remote_server_closes(const BreakEditorRemote *r);
+u64 break_editor_remote_auth_timeouts(const BreakEditorRemote *r);
 u64 break_editor_remote_outbound_count(const BreakEditorRemote *r); /* queued sends */
 /* Static name for a BreakSessionState value ("AUTHENTICATED", ...);
  * "UNKNOWN" for anything out of range. */
@@ -117,11 +128,13 @@ bool break_editor_remote_set_psk(BreakEditorRemote *r, const uint8_t key_id[8],
  * or any --remote-* option without --remote fails the parse (fail closed).
  * The first non --remote* argument stays the optional scene path.
  * Default admission rate limits: global 20 accepts/s (burst 40), 120 accepts
- * per source IP per minute. */
+ * per source IP per minute. A connection that has not authenticated within
+ * 10 s is closed. */
 #define BREAK_EDITOR_REMOTE_DEFAULT_PORT 47700u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC 20u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST 40u
 #define BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN 120u
+#define BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS 10000u
 
 typedef struct BreakEditorRemoteCli {
     bool enabled;

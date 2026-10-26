@@ -2480,6 +2480,11 @@ TEST(remote_unknown_id_and_malformed_close_connection)
     remote_client_connect(&c, shell, remote);
     remote_client_send(&c, BREAK_EDITOR_MSG_REMOVE,
                        (const u8[]){1u, 2u, 3u}, 3u);
+    /* the handler fails closed and the server closes the transport: the
+     * client reads EOF without any response bytes */
+    c.saw_eof = false;
+    remote_client_wait_eof(&c);
+    ASSERT_TRUE(c.saw_eof);
     remote_client_close(&c);
     remote_wait_connection_count(remote, shell, 0u);
     ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
@@ -3062,6 +3067,9 @@ TEST(remote_cli_default_off_and_fail_closed_flags)
         ASSERT_TRUE(cfg.rate_global_per_sec != 0u &&
                     cfg.rate_global_burst != 0u &&
                     cfg.rate_per_ip_per_minute != 0u);
+        /* --remote always evicts peers that never authenticate */
+        ASSERT_EQ(cfg.auth_timeout_ms, BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS);
+        ASSERT_TRUE(cfg.auth_timeout_ms != 0u);
         break_editor_remote_cli_wipe(&cli);
         ASSERT_FALSE(cli.has_psk);
         for (i = 0u; i < 32u; i++) {
@@ -3333,6 +3341,18 @@ done:
     return ok;
 }
 
+/* Pumps until the server closes the stream (EOF / reset / TLS error) or
+ * 5 s pass. Any decrypted bytes stay in c->plain for the caller to check. */
+static bool tls_client_wait_eof(TlsRemoteClient *c) {
+    u64 deadline = remote_monotonic_us() + UINT64_C(5000000);
+    while (remote_monotonic_us() < deadline) {
+        if (tls_client_read_burst(c, NULL, false) < 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void tls_client_close(TlsRemoteClient *c) {
     snow_network_buffer_destroy(c->plain);
     snow_ssl_free(c->ssl);
@@ -3404,9 +3424,11 @@ static BreakEditorRemoteConfig tls_remote_config(char *cert, char *key,
     return cfg;
 }
 
-static BreakEditorRemote *tls_remote_start(BreakEditorShell *shell) {
+static BreakEditorRemote *tls_remote_start_timeout(BreakEditorShell *shell,
+                                                   u32 auth_timeout_ms) {
     char cert[512], key[512];
     BreakEditorRemoteConfig cfg = tls_remote_config(cert, key, sizeof(cert));
+    cfg.auth_timeout_ms = auth_timeout_ms;
     BreakEditorRemote *remote = break_editor_remote_create(shell, &cfg);
     if (remote == NULL || !break_editor_remote_set_psk(remote, k_tls_key_id,
                                                        k_tls_psk) ||
@@ -3418,6 +3440,10 @@ static BreakEditorRemote *tls_remote_start(BreakEditorShell *shell) {
     }
     break_editor_shell_set_remote(shell, remote);
     return remote;
+}
+
+static BreakEditorRemote *tls_remote_start(BreakEditorShell *shell) {
+    return tls_remote_start_timeout(shell, 0u);
 }
 
 TEST(remote_tls_auth_v2_client_describe_and_spawn)
@@ -3563,7 +3589,6 @@ static void tls_unauthenticated_case(int mode) {
     TlsRemoteClient c;
     BreakSessionApplyStats before, after;
     BreakSessionManager *manager;
-    u64 deadline;
     u8 spawn_req[2] = {0u, 0u};
     ASSERT_NOT_NULL(shell);
     remote = tls_remote_start(shell);
@@ -3586,30 +3611,15 @@ static void tls_unauthenticated_case(int mode) {
     remote_wait_connection_count(remote, shell, 0u);
     ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
     ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
-    /* every later command on the closed session is stale: no dispatch, no
-     * response bytes, zero doc effect */
+    /* the server now closes the transport too: the client reads EOF and
+     * never receives a response byte; the session saw no applied command */
     break_session_manager_apply_stats(manager, &before);
-    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
-                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
-    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_SPAWN,
-                                BREAK_EDITOR_PROTO_VERSION, spawn_req,
-                                sizeof(spawn_req)));
-    deadline = remote_monotonic_us() + UINT64_C(5000000);
-    do {
-        tls_client_pump(&c, 1);
-        break_session_manager_apply_stats(manager, &after);
-    } while (after.stale < before.stale + 2u &&
-             remote_monotonic_us() < deadline);
-    ASSERT_TRUE(after.stale >= before.stale + 2u);
+    ASSERT_TRUE(tls_client_wait_eof(&c));
+    ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
+    break_session_manager_apply_stats(manager, &after);
     ASSERT_EQ(after.applied, before.applied);
     ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
-    {
-        int burst;
-        do {
-            burst = tls_client_read_burst(&c, NULL, false);
-        } while (burst > 0);
-        ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
-    }
+    ASSERT_TRUE(break_editor_remote_server_closes(remote) >= 1u);
     tls_client_close(&c);
     break_editor_remote_destroy(remote);
     break_editor_shell_destroy(shell);
@@ -3626,6 +3636,64 @@ TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect)
             return;
         }
     }
+}
+
+TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    u64 started;
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start_timeout(shell, 300u);
+    ASSERT_NOT_NULL(remote);
+    /* taken before connecting: the host starts its deadline clock when it
+     * first sees the connection, which is later, so the gap is >= 300 ms */
+    started = remote_monotonic_us();
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    /* the client completes TLS but never sends AUTH: evicted by deadline */
+    ASSERT_TRUE(tls_client_wait_eof(&c));
+    ASSERT_TRUE(remote_monotonic_us() - started >= UINT64_C(300000));
+    ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
+    remote_wait_connection_count(remote, shell, 0u);
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
+    ASSERT_EQ(break_editor_remote_auth_timeouts(remote), 1u);
+    ASSERT_EQ(break_editor_doc_entity_count(break_editor_shell_doc(shell)), 0u);
+    tls_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(remote_tls_auth_deadline_spares_authenticated_client)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorRemote *remote;
+    TlsRemoteClient c;
+    BreakNetEnvelope rsp;
+    u64 until;
+    ASSERT_NOT_NULL(shell);
+    remote = tls_remote_start_timeout(shell, 300u);
+    ASSERT_NOT_NULL(remote);
+    ASSERT_TRUE(tls_client_open(&c, shell, remote));
+    ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
+    ASSERT_TRUE(tls_client_send_auth(&c, k_tls_key_id, k_tls_psk, false));
+    ASSERT_TRUE(
+        tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_AUTHENTICATED));
+    /* well past the deadline the session is still served */
+    until = remote_monotonic_us() + UINT64_C(700000);
+    while (remote_monotonic_us() < until) {
+        tls_client_pump(&c, 5);
+    }
+    ASSERT_EQ(break_editor_remote_connection_count(remote), 1u);
+    ASSERT_TRUE(tls_client_send(&c, BREAK_EDITOR_MSG_DESCRIBE,
+                                BREAK_EDITOR_PROTO_VERSION, NULL, 0u));
+    ASSERT_TRUE(tls_client_recv(&c, &rsp));
+    ASSERT_EQ(rsp.message_id, BREAK_EDITOR_MSG_DESCRIBE);
+    ASSERT_EQ(break_editor_remote_auth_timeouts(remote), 0u);
+    tls_client_close(&c);
+    break_editor_remote_destroy(remote);
+    break_editor_shell_destroy(shell);
 }
 
 TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth)
@@ -4332,6 +4400,8 @@ TEST_MAIN_BEGIN()
     RUN_REMOTE_TEST(remote_tls_auth_v2_client_describe_and_spawn);
     RUN_REMOTE_TEST(remote_tls_e2e_connect_auth_describe_spawn_undo_disconnect);
     RUN_REMOTE_TEST(remote_tls_unauthenticated_clients_closed_zero_doc_effect);
+    RUN_REMOTE_TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client);
+    RUN_REMOTE_TEST(remote_tls_auth_deadline_spares_authenticated_client);
     RUN_REMOTE_TEST(remote_tls_start_fails_closed_on_missing_certs_or_auth);
     RUN_REMOTE_TEST(remote_tls_rate_limit_denials_observable);
 #endif

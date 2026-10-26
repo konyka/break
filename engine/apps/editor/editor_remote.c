@@ -38,6 +38,7 @@
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_lua.h>
+#include <platform/time.h>
 #include <editor/editor_protocol.h>
 
 /* Key-material wipe the optimizer cannot drop: a plain memset right before
@@ -64,6 +65,8 @@ typedef struct {
     u64 key;      /* BreakConnectionKey; 0 = empty slot */
     u32 state;    /* BreakSessionState */
     bool active;  /* slot in use */
+    u64 seen_us;  /* first observed (auth deadline origin) */
+    bool transport_closed; /* break_net_reactor_close issued */
 } EditorRemoteConnRow;
 
 /* Eval output capture: the remote's console core logs every line BOTH into
@@ -102,6 +105,9 @@ struct BreakEditorRemote {
     u32 rate_global_per_sec;
     u32 rate_global_burst;
     u32 rate_per_ip_per_minute;
+    u32 auth_timeout_ms;
+    u64 server_closes;
+    u64 auth_timeouts;
     bool has_psk;
     bool auth_installed;            /* this remote owns the session auth domain */
     u8 psk[32];
@@ -226,12 +232,29 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
             r->rows[i].active = true;
             r->rows[i].key = key;
             r->rows[i].state = (u32)break_session_manager_state(r->manager, key);
+            r->rows[i].seen_us = time_microseconds();
+            r->rows[i].transport_closed = false;
             r->conn_count++;
             return;
         }
     }
     /* table full: the reactor's own max_connections cap (same bound) makes
      * this unreachable; fail closed is the manager/reactor's job. */
+}
+
+/* A session the host or the manager closed (fail closed, auth failure,
+ * deadline) also loses its transport: later frames are never read, and the
+ * connection slot is freed once the socket is gone. Responses queued before
+ * the close are still flushed first (break_net_reactor_close contract). */
+static void remote_close_transport(BreakEditorRemote *r,
+                                   EditorRemoteConnRow *row) {
+    if (row->transport_closed) {
+        return;
+    }
+    row->transport_closed = true;
+    if (break_net_reactor_close(r->reactor, row->key)) {
+        r->server_closes++;
+    }
 }
 
 /* Reconciles the table with manager truth: refresh states of tracked rows
@@ -249,6 +272,12 @@ static void remote_table_sync(BreakEditorRemote *r) {
             continue;
         }
         state = break_session_manager_state(r->manager, row->key);
+        if (state == BREAK_SESSION_CLOSED) {
+            /* the manager finalizes CLOSING -> CLOSED within the same tick,
+             * so the transport close is issued here as well, before the row
+             * goes away (no-op once the peer already disconnected) */
+            remote_close_transport(r, row);
+        }
         if (state == BREAK_SESSION_UNKNOWN || state == BREAK_SESSION_CLOSED) {
             row->active = false;
             row->key = 0u;
@@ -260,6 +289,20 @@ static void remote_table_sync(BreakEditorRemote *r) {
             /* plaintext test seam: NEW -> AUTHENTICATING -> AUTHENTICATED */
             remote_plaintext_auth(r, row->key);
             state = break_session_manager_state(r->manager, row->key);
+        }
+        /* auth deadline: a peer that is still not authenticated is evicted,
+         * session and transport */
+        if (r->auth_timeout_ms != 0u &&
+            (state == BREAK_SESSION_NEW ||
+             state == BREAK_SESSION_AUTHENTICATING) &&
+            time_microseconds() - row->seen_us >=
+                (u64)r->auth_timeout_ms * UINT64_C(1000)) {
+            (void)break_session_manager_close(r->manager, row->key, 0u);
+            state = break_session_manager_state(r->manager, row->key);
+            r->auth_timeouts++;
+        }
+        if (state == BREAK_SESSION_CLOSING) {
+            remote_close_transport(r, row);
         }
         row->state = (u32)state;
     }
@@ -734,6 +777,7 @@ BreakEditorRemote *break_editor_remote_create(
     r->rate_global_per_sec = cfg->rate_global_per_sec;
     r->rate_global_burst = cfg->rate_global_burst;
     r->rate_per_ip_per_minute = cfg->rate_per_ip_per_minute;
+    r->auth_timeout_ms = cfg->auth_timeout_ms;
     if (cfg->tls_cert_file != NULL) {
         if (strlen(cfg->tls_cert_file) >= sizeof(r->tls_cert)) {
             free(r);
@@ -944,7 +988,15 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
            break_net_reactor_poll_event(r->reactor, &event) ==
                BREAK_NET_EVENT_OK) {
         if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED) {
-            remote_row_add(r, event.connection_key);
+            EditorRemoteConnRow *row = remote_row_find(r, event.connection_key);
+            if (row != NULL) {
+                /* transport key reuse (snow uids recycle slots): this is a
+                 * NEW connection, so its deadline and close state restart */
+                row->seen_us = time_microseconds();
+                row->transport_closed = false;
+            } else {
+                remote_row_add(r, event.connection_key);
+            }
         }
         (void)break_session_manager_apply_adapter_event(r->manager, &event);
         break_net_event_release(&event);
@@ -1064,6 +1116,14 @@ bool break_editor_remote_is_tls(const BreakEditorRemote *r) {
            break_net_reactor_is_tls(r->reactor);
 }
 
+u64 break_editor_remote_server_closes(const BreakEditorRemote *r) {
+    return r != NULL ? r->server_closes : 0u;
+}
+
+u64 break_editor_remote_auth_timeouts(const BreakEditorRemote *r) {
+    return r != NULL ? r->auth_timeouts : 0u;
+}
+
 u64 break_editor_remote_outbound_count(const BreakEditorRemote *r) {
     if (r == NULL || r->reactor == NULL) {
         return 0u;
@@ -1168,6 +1228,16 @@ bool break_editor_remote_session_stats(const BreakEditorRemote *r,
         memset(out, 0, sizeof(*out));
     }
     return false;
+}
+
+u64 break_editor_remote_server_closes(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
+}
+
+u64 break_editor_remote_auth_timeouts(const BreakEditorRemote *r) {
+    (void)r;
+    return 0u;
 }
 
 bool break_editor_remote_is_tls(const BreakEditorRemote *r) {
@@ -1403,6 +1473,7 @@ void break_editor_remote_cli_to_config(const BreakEditorRemoteCli *cli,
     out->rate_global_per_sec = BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_SEC;
     out->rate_global_burst = BREAK_EDITOR_REMOTE_DEFAULT_RATE_BURST;
     out->rate_per_ip_per_minute = BREAK_EDITOR_REMOTE_DEFAULT_RATE_PER_IP_PER_MIN;
+    out->auth_timeout_ms = BREAK_EDITOR_REMOTE_DEFAULT_AUTH_TIMEOUT_MS;
     if (cli != NULL) {
         out->bind_port = cli->port;
         out->tls_cert_file = cli->cert_file;
