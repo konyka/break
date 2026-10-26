@@ -35,6 +35,7 @@
 #include <renderer/cinematic.h>
 #include <renderer/lod.h>
 #include <renderer/lod_gen.h>
+#include <renderer/lod_cache.h>
 #include <renderer/combined_post_process.h>
 #include <renderer/motion_history.h>
 #include <renderer/occlusion_cull.h>
@@ -2475,6 +2476,7 @@ typedef struct {
 } MegaLod;
 
 static MegaLod g_mega_lod;
+static LodCache g_lod_cache;
 static bool mega_lod_enabled = true;       /* BREAK_LOD (default 1) */
 static f32  mega_lod_pixel_error = 1.0f;   /* BREAK_LOD_PIXEL_ERROR */
 static u32  mega_lod_shadow_bias = 1u;     /* BREAK_LOD_SHADOW_BIAS */
@@ -2969,8 +2971,8 @@ static void mesh_lod_generate(RHIDevice *dev, const Mesh *m, u32 mesh_index, Lod
     u32 *ix = (u32 *)malloc(ib);
     if (v && ix && rhi_buffer_read(dev, m->vertex_buf, v, 0, vb) &&
         rhi_buffer_read(dev, m->index_buf, ix, 0, ib)) {
-        lod_generate_levels(v, m->vertex_count, 32u, ix, m->index_count,
-                            MEGA_LOD_LEVELS, ml);
+        lod_cache_generate(&g_lod_cache, v, m->vertex_count, 32u, ix, m->index_count,
+                           MEGA_LOD_LEVELS, ml);
     } else {
         LOG_WARN("LOD: failed to read mesh %u; LOD0 only", mesh_index);
     }
@@ -4911,6 +4913,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     else
         LOG_INFO("Forward clustered PBR: OFF (BREAK_FORWARD_CLUSTERED=0) — blinn forward family active");
     { const char *e = getenv("BREAK_LOD"); if (e && e[0] && !atoi(e)) mega_lod_enabled = false; }
+    /* R704: disk caching is strictly opt-in; unset/empty preserves the old
+     * generate-only call and performs no cache file I/O. */
+    lod_cache_init(&g_lod_cache, getenv("BREAK_LOD_CACHE"));
     { const char *e = getenv("BREAK_LOD_PIXEL_ERROR");
       if (e && e[0]) { f32 v = (f32)atof(e); if (v > 0.0f) mega_lod_pixel_error = v; } }
     { const char *e = getenv("BREAK_LOD_SHADOW_BIAS");
@@ -10661,6 +10666,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  g_ecs_lod.vis_tris_lod0_sum ? (f64)g_ecs_lod.vis_tris_sum / (f64)g_ecs_lod.vis_tris_lod0_sum : 1.0,
                  (unsigned long long)g_ecs_lod.transitions_sum, (f64)g_ecs_lod.draws_sum / fr,
                  (f64)g_ecs_lod.fading_sum / fr);
+    }
+    if (g_lod_cache.directory && g_lod_cache.directory[0]) {
+        const LodCacheStats *cs = &g_lod_cache.stats;
+        LOG_INFO("LOD_CACHE_STATS hits=%llu misses=%llu bytes_read=%llu bytes_written=%llu "
+                 "regen_ms=%.3f cache_io_ms=%.3f estimated_saved_ms=%.3f",
+                 (unsigned long long)cs->hits, (unsigned long long)cs->misses,
+                 (unsigned long long)cs->read_bytes, (unsigned long long)cs->write_bytes,
+                 cs->regenerate_ms, cs->io_ms, cs->saved_ms);
+        if (cs->io_failed)
+            LOG_WARN("LOD cache: writes disabled after an I/O error; scene loading continued");
     }
     ecs_lod_free(&g_ecs_lod, render.device);
     LOG_INFO("Shutting down...");

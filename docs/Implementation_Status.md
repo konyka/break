@@ -1,6 +1,20 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R704 — 运行时 LOD（二期 2.3）：简化级别的可选磁盘缓存
+
+### 做法
+- 新纯 C11 模块 `renderer/lod_cache.{c,h}` 包装 `lod_generate_levels`，mega 与 ECS 共用既有 `mesh_lod_generate` 入口。`BREAK_LOD_CACHE=<directory>` 是唯一开关，**默认关闭**；未设置/空字符串没有缓存文件 I/O，行为与之前相同，也不会默认写当前目录。目录必须已存在；不可写时只警告一次并继续生成/加载场景。
+- 键覆盖完整顶点/索引字节、数量、stride、max_levels、最小三角形数/停止比例、缓存格式版本和 meshopt_c 1030，使用两个独立 64-bit hash。80-byte little-endian 头保存键、源数量、级别数、scale 与上次生成耗时，随后是各级 count/rel_error 和 LOD1+ 索引。读取逐项检查 magic/version/key、溢出安全的文件长度、级别和三角形计数、有限误差以及所有索引 `< vertex_count`；损坏/截断/不匹配均回退重新生成。
+- 写入使用唯一临时文件 + 原子 rename（Windows `MoveFileExA` 替换既有文件），第二个 writer 后也保持有效文件。命中结果与重新生成的 `LodMeshLevels` 逐位相同。`LOD_CACHE_STATS` 汇总 hits/misses/read/write bytes、regen/I/O ms 和 estimated_saved_ms（文件中保存的冷生成时间减去命中读取时间）。
+- 新 `test_lod_cache` 5 个用例：键覆盖、逐位 round-trip、magic/version/hash/count/截断/body-index 腐败、不可写目录、第二 writer 与关闭路径。还临时移除了索引范围 guard，确认腐败测试随后失败，再恢复 guard。
+
+### 验证
+- build-vk/gl/d3d12-debug/ASan 均 0 警告；完整 ctest：188/188、185/185、193/193；ASan 标准 `-LE 'graphics|fuzz'` 177/177。
+- VK Release `BREAK_STRESS_LOD=200`：冷缓存 2 misses / 380320 bytes written，暖缓存 2 hits / 同 bytes read、0 writes，estimated_saved_ms=28.325；LOD 表与 MegaBuffer 日志逐行相同，冷/暖首帧 BMP 逐字节相同。未设置开关与冷运行截图也相同，且没有 cache stats 或缓存文件 I/O。VK validation 均为 0。
+- 合成大网格冷/暖：80k tris 56.03 → 5.26 ms；320k tris 283.23 → 22.42 ms，均返回 3 级。临时缓存目录已清理，scratch benchmark 未纳入提交。
+
+
 ## 本轮更新：R703b — 运行时 LOD（二期 2.2 后半）：MEGA 静态场景的抖动交叉淡入淡出
 
 ### 做法

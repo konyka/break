@@ -380,6 +380,7 @@ src/renderer/debug_viz.c
 src/renderer/lens_effects.c
     src/renderer/lod.c
     src/renderer/lod_gen.c
+    src/renderer/lod_cache.c
     src/renderer/ibl.c
     src/renderer/render_graph.c
     src/renderer/cmd_buffer.c
@@ -3276,6 +3277,12 @@ endif()
     target_include_directories(test_lod PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_lod PRIVATE meshopt_c m)
     add_test(NAME test_lod COMMAND test_lod)
+
+    # test_lod_cache: disk round-trip, keys, corruption guards, atomic writers
+    add_executable(test_lod_cache tests/test_lod_cache.c src/renderer/lod_cache.c src/renderer/lod_gen.c)
+    target_include_directories(test_lod_cache PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_lod_cache PRIVATE meshopt_c m)
+    add_test(NAME test_lod_cache COMMAND test_lod_cache)
 
     # test_meshopt_c: invariants + bit-exact upstream v1.3 reference table
     add_executable(test_meshopt_c tests/test_meshopt_c.c)
