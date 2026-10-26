@@ -11,6 +11,28 @@
 - **测试**：`test_vulkan` TEST 9 新增运行时改尺寸阶段（金字塔先长到 640x360 再变成 330x170 继续生成并剔除，要求结果仍为 {1,0} 且设备存活）。说明：这个阶段在修复前的代码上也能通过（单进程测试里的分配没有让被释放的视图真正失效），所以它防的是改尺寸路径本身的回归，修复的直接证据是演示程序：修复前 VK 默认设置下 3 种尺寸各自 100% 设备丢失，修复后 0 次；VK Debug 4 次窗口↔全屏往返 0 设备丢失、0 条验证消息。VK ctest 189/189；GCC `-Werror -pedantic` 语法检查通过。
 
 
+## 本轮更新：FS4 — 无标题栏全屏（四）：X11 / Wayland / Cocoa 真实实现 + QNX Screen 模拟测试
+
+### 做法（设计 §3.2，计划任务 4）
+- **X11**（`window_x11.c`）：先查根窗口 `_NET_SUPPORTING_WM_CHECK` + `_NET_SUPPORTED` 是否含 `_NET_WM_STATE_FULLSCREEN`。
+  - 有 EWMH WM：进入前用 `XGetGeometry` + `XTranslateCoordinates` 保存窗口矩形；已映射窗口发 `_NET_WM_STATE` ADD/REMOVE 客户端消息（source=1），未映射窗口直接改 `_NET_WM_STATE` 属性。**不再立即确认**：`PropertyNotify(_NET_WM_STATE)` 读回属性，按是否含 FULLSCREEN 调 `confirm`（WM 快捷键等外部切换也走这里）。
+  - 无 EWMH WM（CI 的裸 Xvfb）：保存原 `_MOTIF_WM_HINTS`，写 decorations=0，`XMoveResizeWindow` 到 `window_mode_fullscreen_rect`（RandR 显示器列表；无显示器时用根窗口尺寸），同步确认；离开时恢复原 hints（原来没有就删除）并移回保存的矩形。
+  - 每次确认按模式设置/删除 `_NET_WM_BYPASS_COMPOSITOR=1`。`start_fullscreen`：EWMH 下映射前写属性；回退路径下映射前就移到显示器矩形。显示器查询提前到 `start_fullscreen` 之前。
+- **Wayland**（`window_wayland.c`）：`set/unset_fullscreen` 后只 commit + flush，不确认；`xdg_toplevel.configure` 解析 `states` 数组中的 `XDG_TOPLEVEL_STATE_FULLSCREEN` 后 `confirm`，与挂起请求相反的 configure 视为拒绝（`fail`，之后带目标状态的 configure 按外部切换收敛）。离开全屏收到 0×0 configure 时恢复进入前保存的尺寸。`platform_needs_client_decoration` 全屏时为 false。`start_fullscreen` 仍在首次 commit 前 set，由首次 configure 确认。
+- **Cocoa**（`window_cocoa.m`）：不再用 `toggleFullScreen:`。进入：保存 `frame`/`styleMask`/`level`，`NSWindowStyleMaskBorderless`，`level = NSMainMenuWindowLevel + 1`，`presentationOptions = HideDock | HideMenuBar`，`setFrame:[[window screen] frame] display:YES`；离开：presentationOptions 恢复 Default，还原 styleMask、level、frame。两边都重新 `makeFirstResponder:` 内容视图，原来是 key window 的再 `makeKeyAndOrderFront:`，再调 `cocoa_update_drawable_size`（同时 windowDidResize 也会更新），同步确认。窗口改为 `BreakWindow` 子类：无边框时 `canBecomeKeyWindow/MainWindow = YES`（否则全屏丢键盘），无标题栏时 `constrainFrameRect:` 不把窗口挤到菜单栏下面。
+- **QNX Screen / 移动端**：语义不变（固定全屏）。新增 `test_platform_screen_simulated`：真实 `window_screen.c` 在主机上对假 Screen SDK（`tests/fake_qnx_screen/`）编译，验证 get=BORDERLESS、set(WINDOWED)=false、toggle 无效、无 CSD、NULL 安全；移动端已有 `test_platform_mobile_layer_*`。
+
+### 测试（TDD，测试先写）
+- `test_platform_x11_runtime`：+2 用例。进入后有界轮询（约 3 s）到模式 = BORDERLESS 且窗口根坐标矩形 = 显示器矩形（及 `platform_get_size`）；检查 `_NET_WM_BYPASS_COMPOSITOR`、EWMH 下 `_NET_WM_STATE` / 回退下 `_MOTIF_WM_HINTS`；离开恢复（回退路径比较位置+尺寸，EWMH 只比尺寸）；重复 set 幂等；`start_fullscreen` 铺满后能恢复到配置尺寸。日志打印走的是哪条路径。
+- `test_platform_wayland_runtime`：+2 用例。轮询直到 configure 确认；合成器接受则尺寸 = 某个输出（按 scale 换算的逻辑尺寸）、无 CSD、离开恢复 320×240；合成器不接受则模式必须保持 WINDOWED（不再假装成功）。日志打印 weston headless 是否接受。
+- `test_platform_cocoa_runtime`：+2 用例；该文件在 macOS 上改为按 Objective-C 编译（CMake `LANGUAGE OBJC`，与 window_cocoa.m 同样的 flags，链接 Cocoa），按标题从 `[NSApp windows]` 找窗口，断言 styleMask == Borderless、frame == screen frame、level > Normal；逻辑尺寸 = 某块屏幕、WSI 尺寸同步；离开恢复 320×240 且不再是无边框。
+
+### 验证
+- 本机（Windows）：build-vk Debug 0 警告；全量 ctest（除 `test_platform_win32_runtime` 单独跑，也通过）190/190 连续 3 次通过（之前有一次运行有 1 个失败，没有复现，也没有记下是哪个测试）。`test_platform_screen_simulated` 用 GCC `-Werror -pedantic` 和 clang 都通过。
+- GCC 15（msys64）`-std=c11 -Wall -Wextra -Werror -pedantic -fsyntax-only`，用 Debian 12 的 libx11/xrandr/wayland/xkbcommon 头文件 + 本地编译的 wayland-scanner 生成的协议头：`window_x11.c`、`window_wayland.c`（含 FRACTIONAL_SCALE；mingw 缺的 poll/mman/fcntl 用桩补齐）、`test_platform_x11_runtime.c`、`test_platform_wayland_runtime.c` 均无告警。未检查 XInput2 变体（没有头文件）。
+- **未在本机运行或编译**：X11/Wayland 运行时测试（等 CI 的 Xvfb / weston headless）；`window_cocoa.m` 与 Cocoa 测试（本机无法编译 Objective-C，只做了审读，以 macOS CI 为准）。weston headless 是否接受 fullscreen 未知，两种情况测试都能判定。CI 的 Xvfb 没有 WM，所以 EWMH 路径在 CI 上不会被执行。
+
+
 ## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
 
 ### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md`，计划任务 2）

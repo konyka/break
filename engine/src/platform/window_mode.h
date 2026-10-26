@@ -5,10 +5,11 @@
  * 2026-10-27-borderless-fullscreen-design.md). Header-only and free of native
  * calls so it is testable on every host (test_platform_window_mode).
  *
- * Win32 and Cocoa switch synchronously: request() then confirm() at once.
- * X11 and Wayland ask the window manager / compositor and confirm() from the
- * reply (_NET_WM_STATE PropertyNotify, xdg_toplevel configure states), which
- * may also report a switch nobody requested (a WM shortcut) or a refusal. */
+ * Win32, Cocoa and the X11 no-WM fallback switch synchronously: request()
+ * then confirm() at once. X11 (EWMH) and Wayland ask the window manager /
+ * compositor and confirm() from the reply (_NET_WM_STATE PropertyNotify,
+ * xdg_toplevel configure states), which may also report a switch nobody
+ * requested (a WM shortcut) or a refusal. */
 
 #include <platform/platform.h>
 #include <platform/monitor_selection.h>

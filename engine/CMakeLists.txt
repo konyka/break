@@ -506,6 +506,26 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_platform_compat_qnx_screen
         COMMAND test_platform_compat_qnx_screen)
 
+    # QNX Screen window layer compiled against a fake Screen SDK
+    # (tests/fake_qnx_screen): fixed borderless-fullscreen contract on every
+    # host lane (FS4).
+    if(NOT ENGINE_PLATFORM STREQUAL "qnx")
+        add_executable(test_platform_screen_simulated
+            tests/test_platform_screen_simulated.c
+            src/platform/window_screen.c
+            src/platform/input.c
+            src/platform/platform_config.c)
+        target_include_directories(test_platform_screen_simulated PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/tests
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/fake_qnx_screen)
+        target_compile_definitions(test_platform_screen_simulated PRIVATE
+            ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+        add_test(NAME test_platform_screen_simulated
+            COMMAND test_platform_screen_simulated)
+        set_tests_properties(test_platform_screen_simulated PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+
     # QNX Screen keymap: pure integer mapping, host-testable on every lane;
     # window_screen.c static-asserts the mirrored constants against
     # <sys/keycodes.h> on real cross builds.
@@ -2169,8 +2189,14 @@ if(ENGINE_BUILD_TESTS)
 
     if(ENGINE_PLATFORM STREQUAL "macos")
         add_executable(test_platform_cocoa_runtime tests/test_platform_cocoa_runtime.c)
+        # Objective-C so the FS4 fullscreen test can inspect the NSWindow
+        # (styleMask / frame / level); same flags as window_cocoa.m.
+        set_source_files_properties(tests/test_platform_cocoa_runtime.c PROPERTIES
+            LANGUAGE OBJC
+            COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
         target_include_directories(test_platform_cocoa_runtime PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m)
+        target_link_libraries(test_platform_cocoa_runtime PRIVATE engine m
+            "-framework Cocoa")
         engine_link_rhi_backend(test_platform_cocoa_runtime)
         add_test(NAME test_platform_cocoa_runtime COMMAND test_platform_cocoa_runtime)
         set_tests_properties(test_platform_cocoa_runtime PROPERTIES LABELS platform_runtime)
