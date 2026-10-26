@@ -121,6 +121,7 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | poll 后端 | `test_net_loop_qnx` 配置失败（后端源不存在） | `net_loop_poll.c` 实现 + 故障注入钩子 |
 | 平台接线 | 宿主 QNX 模拟构建失败（`task.c` nanosleep、`platform_vk_surface.c` unused-function、测试目标缺 qnx 分支） | 引擎/测试 CMake qnx 分支 + `pvk_resolve` WSI 条件定义 |
 | 效率冒烟 | `test_qnx_perf_smoke`（新） | 三条吞吐下限断言 + 实测打印 |
+| 宿主 CI | Windows 构建 `test_qnx_perf_smoke` 失败（无 `poll.h`/`sys/socket.h`/`clock_gettime`）；macOS `_SC_NPROCESSORS_ONLN` 被 `_POSIX_C_SOURCE` 隐藏 | 该目标仅在 linux/macos/qnx 构建；macOS 追加 `_DARWIN_C_SOURCE` |
 | 真实 SDP 交叉编译 | qcc 构建失败：`_SC_NPROCESSORS_ONLN`/`CLOCK_MONOTONIC` 被 `-std=c11` 严格模式隐藏；`-lpthread`/`-ldl` 不存在（QNX 8 并入 libc）；独立网络测试缺 `-lsocket`；`__isfinitef` 需 `-lm` | toolchain 加 `-D_QNX_SOURCE` + 交叉 binutils；qnx 分支去 pthread/dl、补条件 socket/m 链接 |
 | 目标机运行 | 首轮 127/137：4 个 Memory fault（QNX 默认栈过小）、6 个数据路径/参数问题 | 运行器 `ulimit -s 8192`（README 的 8MB 栈假设）；`ENGINE_TEST_SOURCE_ROOT` 可覆盖 + 目标机部署布局；ctest 参数/WILL_FAIL 语义纳入运行器 → **144/144** |
 | Screen 窗口层 | `test_platform_compat_qnx_screen` 编译失败（`ENGINE_SURFACE_QNX_SCREEN` 不存在） | `platform_compat.h` 增加枚举与 ENGINE_QNX_SCREEN 描述符变体；`window_screen.c` 双架构交叉编译 100% |

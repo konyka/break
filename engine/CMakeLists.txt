@@ -3409,24 +3409,32 @@ endif()
     # system, and the myui offscreen draw pipeline. Compiled with the QNX
     # platform define so the poll backend is the code under test; the same
     # binary shape runs on a QNX target (docs/qnx_compat.md).
-    add_executable(test_qnx_perf_smoke tests/test_qnx_perf_smoke.c
-        src/network/network.c src/platform/time.c src/network/net_loop_poll.c
-        src/task/task.c src/core/log.c)
-    target_include_directories(test_qnx_perf_smoke PRIVATE
-        ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
-    target_compile_definitions(test_qnx_perf_smoke PRIVATE
-        ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200809L)
-    target_link_libraries(test_qnx_perf_smoke PRIVATE myui_core m)
-    if(NOT ENGINE_PLATFORM STREQUAL "qnx")
-        # QNX 8 folds pthread into libc; hosts still need -lpthread.
-        target_link_libraries(test_qnx_perf_smoke PRIVATE pthread)
+    # POSIX-only (poll, BSD sockets, clock_gettime): not built on Windows.
+    if(ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "macos"
+       OR ENGINE_PLATFORM STREQUAL "qnx")
+        add_executable(test_qnx_perf_smoke tests/test_qnx_perf_smoke.c
+            src/network/network.c src/platform/time.c src/network/net_loop_poll.c
+            src/task/task.c src/core/log.c)
+        target_include_directories(test_qnx_perf_smoke PRIVATE
+            ${TEST_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+        target_compile_definitions(test_qnx_perf_smoke PRIVATE
+            ENGINE_PLATFORM_QNX=1 _POSIX_C_SOURCE=200809L)
+        if(ENGINE_PLATFORM STREQUAL "macos")
+            # _POSIX_C_SOURCE hides sysconf(_SC_NPROCESSORS_ONLN) on Darwin.
+            target_compile_definitions(test_qnx_perf_smoke PRIVATE _DARWIN_C_SOURCE)
+        endif()
+        target_link_libraries(test_qnx_perf_smoke PRIVATE myui_core m)
+        if(NOT ENGINE_PLATFORM STREQUAL "qnx")
+            # QNX 8 folds pthread into libc; hosts still need -lpthread.
+            target_link_libraries(test_qnx_perf_smoke PRIVATE pthread)
+        endif()
+        if(ENGINE_HAVE_LIBSOCKET)
+            target_link_libraries(test_qnx_perf_smoke PRIVATE socket)
+        endif()
+        add_test(NAME test_qnx_perf_smoke COMMAND test_qnx_perf_smoke)
+        set_tests_properties(test_qnx_perf_smoke PROPERTIES
+            LABELS "headless;platform_contract" TIMEOUT 90)
     endif()
-    if(ENGINE_HAVE_LIBSOCKET)
-        target_link_libraries(test_qnx_perf_smoke PRIVATE socket)
-    endif()
-    add_test(NAME test_qnx_perf_smoke COMMAND test_qnx_perf_smoke)
-    set_tests_properties(test_qnx_perf_smoke PROPERTIES
-        LABELS "headless;platform_contract" TIMEOUT 90)
 
     # test_net_replication: transform snapshot broadcast over UDP loopback
     add_executable(test_net_replication tests/test_net_replication.c
