@@ -1374,6 +1374,7 @@ jobs:
           test -s build-ios/metal_shaders/engine.metallib
           test -d build-ios/Debug-iphonesimulator/engine_demo.app
           test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
+          test "$(plutil -extract CFBundleIdentifier raw build-ios/Debug-iphonesimulator/engine_demo.app/Info.plist)" = "com.purecengine.engine_demo"
 
   clean-room:
     # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；
