@@ -1,7 +1,7 @@
 /* BreakEditorPanelRender — render debugger panel, a PURE VIEW
  * (docs/design/editor_render_debugger.md). Mirrors editor_panel_network.c:
- * create = CPU state, build = widgets into the diagnostics column under the
- * network panel, destroy = CPU state only, tick = throttled snapshot.
+ * create = CPU state, build = widgets beside the network panel in the shared
+ * diagnostics row, destroy = CPU state only, tick = throttled snapshot.
  *
  * SCOPE: the panel never creates, destroys, binds, records, submits or
  * presents anything. It reads the BORROWED device only through the

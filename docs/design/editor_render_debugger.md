@@ -50,7 +50,7 @@ The network and render debugger panels share one `h:20%` diagnostics row (`edito
 
 ## 7. Tests
 
-- Headless (dummy PAL, no device): one `render: no device` row; layout under the network panel; row bounds; throttle; NULL safety; source scan (no mutating `rhi_*` calls).
+- Headless (dummy PAL, no device): one `render: no device` row; layout beside the network panel in the shared diagnostics row; row bounds; throttle; NULL safety; source scan (no mutating `rhi_*` calls).
 - Headless with a fake device: `rhi_device_resource_usage` counts allocations and frees exactly (core-only test linked with `engine_rhi_headless`).
 - Viewport stats: counters after `break_editor_viewport3d_render` on the headless path are deterministic (render is a guarded no-op without a device → `skipped=no-device`).
 - Live (graphics, manual smoke): `editor` on Vulkan and on OpenGL (`BREAK_RHI_BACKEND=opengl`) — rows show the right backend, GPU name and non-zero draws; recorded as smoke evidence, not a ctest.
