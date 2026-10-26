@@ -1184,6 +1184,31 @@ TEST(pipeline_desc_contract_fields_have_defined_defaults)
     ASSERT_FALSE(rhi_mrt_formats_valid(NULL, 0u));
 }
 
+/* Render debugger (docs/design/editor_render_debugger.md §2): read-only slot
+ * usage from the core free list, exact across allocate/free, NULL-safe. */
+TEST(device_resource_usage_tracks_slots_exactly)
+{
+    RHIDevice *dev = rhi_test_device_create();
+    RHIHandle a, b;
+    u32 used = 99u, cap = 99u;
+    ASSERT_NOT_NULL(dev);
+    ASSERT_TRUE(rhi_device_resource_usage(dev, &used, &cap));
+    ASSERT_EQ(used, 0u);
+    ASSERT_TRUE(cap > 0u);
+    a = rhi_test_resource_create(dev);
+    b = rhi_test_resource_create(dev);
+    ASSERT_TRUE(rhi_device_resource_usage(dev, &used, NULL));
+    ASSERT_EQ(used, 2u);
+    rhi_test_resource_destroy(dev, a);
+    ASSERT_TRUE(rhi_device_resource_usage(dev, &used, &cap));
+    ASSERT_EQ(used, 1u);
+    rhi_test_resource_destroy(dev, b);
+    ASSERT_TRUE(rhi_device_resource_usage(dev, &used, NULL));
+    ASSERT_EQ(used, 0u);
+    ASSERT_FALSE(rhi_device_resource_usage(NULL, &used, &cap));
+    rhi_test_device_destroy(dev);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(resource_handles_are_scoped_to_their_device);
     RUN_TEST(acceleration_structure_descriptor_validation);
@@ -1243,4 +1268,5 @@ TEST_MAIN_BEGIN()
     RUN_TEST(create_compiled_rejects_null_handles_and_zero_dims);
     RUN_TEST(pipeline_bindings_fail_closed_on_stub_and_null);
     RUN_TEST(pipeline_desc_contract_fields_have_defined_defaults);
+    RUN_TEST(device_resource_usage_tracks_slots_exactly);
 TEST_MAIN_END()
