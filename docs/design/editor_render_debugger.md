@@ -1,6 +1,6 @@
 # Editor render debugger panel
 
-Status: design (2026-10-26). Stage 4 subproject 6 ("render panel" — the last missing diagnostics panel). Precedents: `editor_panel_profiler.c`, `editor_panel_network.c` (`docs/design/editor_remote.md` §4).
+Status: **delivered with limits** (2026-10-26, branch `sdd/editor-render-debugger`). Stage 4 subproject 6 ("render panel" — the last missing diagnostics panel). Precedents: `editor_panel_profiler.c`, `editor_panel_network.c` (`docs/design/editor_remote.md` §4).
 
 ## 1. Scope
 
@@ -46,7 +46,7 @@ At most 4 refreshes per second from `break_editor_shell_tick` (250 000 us), firs
 
 ## 6. Layout
 
-Right column, under the network panel, `h:20%`. Widget names `editor-render-panel`, `editor-render-label`, `editor-render-list`.
+The network and render debugger panels share one `h:20%` diagnostics row (`editor-diag-row`) in the right column: network on the left, render debugger on the right. This keeps the inspector/profiler vertical layout unchanged. Widget names `editor-render-panel`, `editor-render-label`, `editor-render-list`.
 
 ## 7. Tests
 
@@ -54,3 +54,15 @@ Right column, under the network panel, `h:20%`. Widget names `editor-render-pane
 - Headless with a fake device: `rhi_device_resource_usage` counts allocations and frees exactly (core-only test linked with `engine_rhi_headless`).
 - Viewport stats: counters after `break_editor_viewport3d_render` on the headless path are deterministic (render is a guarded no-op without a device → `skipped=no-device`).
 - Live (graphics, manual smoke): `editor` on Vulkan and on OpenGL (`BREAK_RHI_BACKEND=opengl`) — rows show the right backend, GPU name and non-zero draws; recorded as smoke evidence, not a ctest.
+
+## 8. Delivered and verified (2026-10-26)
+
+Implementation: `engine/apps/editor/editor_panel_render.c` (pure-view panel), `editor_panels.c/.h` (shell wiring and borrowed-device API), `editor_viewport3d.c/.h` (CPU last-render counters), and `rhi_device_resource_usage` in `engine/src/rhi/rhi.c`. `editor_main` attaches the device after shell creation and detaches it before shell/device destruction. `BreakEditorRenderSource` is injectable so headless tests need no GPU.
+
+- Headless `test_editor_shell`: 42/42 on the OpenGL tree, 65/65 on the Snowflake tree. New cases cover no-device rows, layout beside the network panel, device/capability/resource rows, viewport stats, 4 Hz throttling, device-lost status, NULL safety and the read-only source scan.
+- `test_rhi_capabilities`: 59/59 including exact resource-slot accounting.
+- Full non-graphics suites: OpenGL 204/204, Vulkan 205/205, multi-backend 205/205, Snowflake editor 208/208. Multi-backend graphics suite 8/8. `ENGINE_BUILD_TESTS=OFF` and Snowflake-off editor builds both succeed.
+- Live smoke on this host (X11; NVK Vulkan and Mesa OpenGL): a real editor was stopped under gdb, an entity named `smoke_proxy` and its Transform component were added through the real doc commands, and the process was allowed to render. Both backends reported `viewport: ready fbo=598x648`, `proxies=1 gizmo=0 draws=1 skipped=none`, plus the correct backend (`vulkan (platform-default)` or `opengl (explicit-env)`). The panel was sampled after its 4 Hz refresh; an earlier `not-rendered` sample was just the initial frame/layout state.
+- Source-scan mutation check: inserting `rhi_cmd_draw` into the read-only region fails `render_panel_source_is_read_only`.
+
+Remaining limits: no frame capture, per-draw/shader/texture inspection, GPU timing, render controls, or remote render control. Windows/macOS runtime and CI were not run. The panel is a diagnostic view, not a GPU correctness oracle.

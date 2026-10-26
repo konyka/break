@@ -118,6 +118,7 @@
 #include <editor/editor_doc.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_viewport.h>
+#include <rhi/rhi.h>
 
 struct my_window_t;
 struct my_widget_t;
@@ -261,3 +262,36 @@ void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
                                                    u64 (*clock)(void *user),
                                                    void *user);
 void break_editor_shell_network_tick_for_test(BreakEditorShell *shell);
+
+/* ---------------- render debugger panel ----------------
+ * Pure view (docs/design/editor_render_debugger.md): backend / GPU / caps /
+ * status / resource slots of the BORROWED render device plus the viewport's
+ * last-render stats, <= 16 rows x 96 bytes refreshed at <= 4 Hz from
+ * break_editor_shell_tick. NULL device renders one "render: no device" row.
+ * The host attaches the device after creating the shell and detaches it
+ * (NULL) before destroying the device. */
+void break_editor_shell_set_render_device(BreakEditorShell *shell,
+                                          RHIDevice *device);
+uint32_t break_editor_shell_render_row_count(const BreakEditorShell *shell);
+const char *break_editor_shell_render_row_text(const BreakEditorShell *shell,
+                                               uint32_t index);
+
+/* Read-only data sources the panel queries (production = the RHI and rollout
+ * queries; tests inject fakes so no GPU is needed). */
+typedef struct BreakEditorRenderSource {
+    bool (*device_info)(const void *dev, RHIDeviceInfo *out);
+    bool (*capabilities)(const void *dev, RHICapabilities *out);
+    RHIDeviceStatus (*status)(const void *dev);
+    u32 (*frame_index)(const void *dev);
+    bool (*resource_usage)(const void *dev, u32 *used, u32 *capacity);
+    const char *(*backend_name)(void);
+    const char *(*selection_reason)(void);
+} BreakEditorRenderSource;
+/* Test seams: NULL source = production RHI queries; NULL clock =
+ * time_microseconds (250,000 us throttle, first tick after create or after
+ * any device attach/detach always refreshes). */
+void break_editor_shell_set_render_source_for_test(
+    BreakEditorShell *shell, const BreakEditorRenderSource *source);
+void break_editor_shell_set_render_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user);

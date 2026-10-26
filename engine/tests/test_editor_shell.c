@@ -1353,14 +1353,20 @@ TEST(network_panel_layout_in_diagnostics_column_under_profiler)
     /* diagnostics area: same right column as the profiler, directly below
      * it (documented placement: inspector h:1f / profiler h:30% / network
      * h:20%) */
-    ASSERT_TRUE(network_panel->parent == right_panel);
-    ASSERT_TRUE(profiler_panel->parent == right_panel);
-    ASSERT_EQ(network_panel->rect.x, profiler_panel->rect.x);
-    ASSERT_TRUE(network_panel->rect.y >=
-                profiler_panel->rect.y + profiler_panel->rect.h);
-    ASSERT_TRUE(network_panel->rect.h > 0);
-    ASSERT_TRUE(network_panel->rect.h * 10 >= right_panel->rect.h * 1);
-    ASSERT_TRUE(network_panel->rect.h * 10 <= right_panel->rect.h * 3);
+    /* network sits in the shared diagnostics row (with the render debugger)
+     * directly under the profiler; the row keeps the documented h:20% */
+    {
+        my_widget_t *diag = find(shell, "editor-diag-row");
+        ASSERT_NOT_NULL(diag);
+        ASSERT_TRUE(diag->parent == right_panel);
+        ASSERT_TRUE(network_panel->parent == diag);
+        ASSERT_TRUE(profiler_panel->parent == right_panel);
+        ASSERT_TRUE(diag->rect.y >= profiler_panel->rect.y + profiler_panel->rect.h);
+        ASSERT_TRUE(diag->rect.h * 10 >= right_panel->rect.h * 1);
+        ASSERT_TRUE(diag->rect.h * 10 <= right_panel->rect.h * 3);
+        ASSERT_EQ(network_panel->rect.h, diag->rect.h);
+        ASSERT_TRUE(network_panel->rect.w > 0);
+    }
     break_editor_shell_destroy(shell);
 }
 
@@ -1437,6 +1443,207 @@ TEST(network_panel_source_never_calls_send_close_transition)
         }
     }
 }
+
+/* ---------------- render debugger panel (docs/design/editor_render_debugger.md) ---------------- */
+
+static u64 g_render_clock_us = 0u;
+static u64 render_test_clock(void *user) {
+    (void)user;
+    return g_render_clock_us;
+}
+
+/* Fake read-only source: what the panel would get from the RHI. */
+static int g_render_fake_lost;
+static u32 g_render_fake_used = 17u;
+static bool render_fake_info(const void *dev, RHIDeviceInfo *out) {
+    (void)dev;
+    memset(out, 0, sizeof(*out));
+    out->backend = RHI_BACKEND_VULKAN;
+    snprintf(out->device_name, sizeof(out->device_name), "%s",
+             "Fake GPU 9000 with a deliberately very long marketing name that must be truncated safely");
+    out->vendor_id = 0x10deu;
+    out->device_id = 0x2489u;
+    out->api_version = 4206592u; /* 1.3.0 */
+    out->driver_version = 12345u;
+    return true;
+}
+static bool render_fake_caps(const void *dev, RHICapabilities *out) {
+    (void)dev;
+    memset(out, 0, sizeof(*out));
+    out->backend = RHI_BACKEND_VULKAN;
+    out->shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
+    out->compute_supported = true;
+    out->indirect_draw_supported = true;
+    out->push_constants_supported = true;
+    out->max_push_constant_size = 256u;
+    out->color_sample_counts = 0x5u;
+    return true;
+}
+static RHIDeviceStatus render_fake_status(const void *dev) {
+    (void)dev;
+    return g_render_fake_lost ? RHI_DEVICE_STATUS_LOST : RHI_DEVICE_STATUS_READY;
+}
+static u32 render_fake_frame(const void *dev) { (void)dev; return 42u; }
+static bool render_fake_usage(const void *dev, u32 *used, u32 *cap) {
+    (void)dev;
+    *used = g_render_fake_used;
+    *cap = 4096u;
+    return true;
+}
+static const char *render_fake_backend(void) { return "vulkan"; }
+static const char *render_fake_reason(void) { return "platform-default"; }
+
+static const BreakEditorRenderSource k_render_fake_source = {
+    render_fake_info, render_fake_caps, render_fake_status, render_fake_frame,
+    render_fake_usage, render_fake_backend, render_fake_reason};
+
+static int g_render_fake_device;
+
+static bool render_row_has(BreakEditorShell *shell, const char *needle) {
+    u32 i, n = break_editor_shell_render_row_count(shell);
+    for (i = 0u; i < n; i++) {
+        const char *t = break_editor_shell_render_row_text(shell, i);
+        if (t != NULL && strstr(t, needle) != NULL) return true;
+    }
+    return false;
+}
+
+TEST(render_panel_no_device_row)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), 1u);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, 0u), "render: no device");
+    ASSERT_TRUE(break_editor_shell_render_row_text(shell, 1u) == NULL);
+    ASSERT_EQ(break_editor_shell_render_row_count(NULL), 0u);
+    ASSERT_TRUE(break_editor_shell_render_row_text(NULL, 0u) == NULL);
+    break_editor_shell_set_render_device(NULL, NULL); /* NULL shell: no-op */
+    break_editor_shell_destroy(shell);
+}
+
+TEST(render_panel_layout_beside_network_in_diagnostics_row)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *network_panel, *render_panel, *right_panel;
+    ASSERT_NOT_NULL(shell);
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_NOT_NULL(find(shell, "editor-render-list"));
+    ASSERT_NOT_NULL(find(shell, "editor-render-label"));
+    network_panel = find(shell, "editor-network-panel");
+    render_panel = find(shell, "editor-render-panel");
+    right_panel = find(shell, "editor-right-panel");
+    ASSERT_NOT_NULL(network_panel);
+    ASSERT_NOT_NULL(render_panel);
+    /* same diagnostics row as the network panel, to its right */
+    ASSERT_NOT_NULL(right_panel);
+    ASSERT_TRUE(render_panel->parent == network_panel->parent);
+    ASSERT_EQ(render_panel->rect.y, network_panel->rect.y);
+    ASSERT_EQ(render_panel->rect.h, network_panel->rect.h);
+    ASSERT_TRUE(render_panel->rect.x >= network_panel->rect.x + network_panel->rect.w);
+    ASSERT_TRUE(render_panel->rect.w > 0);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(render_panel_rows_from_device_source_and_viewport_stats)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    u32 i, n;
+    ASSERT_NOT_NULL(shell);
+    g_render_clock_us = UINT64_C(1000000);
+    g_render_fake_lost = 0;
+    g_render_fake_used = 17u;
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    break_editor_shell_tick(shell);
+    n = break_editor_shell_render_row_count(shell);
+    ASSERT_EQ(n, 8u);
+    for (i = 0u; i < n; i++) {
+        const char *t = break_editor_shell_render_row_text(shell, i);
+        ASSERT_NOT_NULL(t);
+        ASSERT_TRUE(strlen(t) < 96u);
+    }
+    ASSERT_TRUE(render_row_has(shell, "backend: vulkan (platform-default) status=ready frame=42"));
+    ASSERT_TRUE(render_row_has(shell, "gpu: Fake GPU 9000"));
+    ASSERT_TRUE(render_row_has(shell, "vendor=0x10de device=0x2489 api=1.3.0"));
+    ASSERT_TRUE(render_row_has(shell, "caps: shader=glsl_vk compute=1 indirect=1 push=256"));
+    ASSERT_TRUE(render_row_has(shell, "msaa=0x5"));
+    ASSERT_TRUE(render_row_has(shell, "resources: 17/4096 slots"));
+    ASSERT_TRUE(render_row_has(shell, "viewport: not-initialised"));
+    ASSERT_TRUE(render_row_has(shell, "skipped=not-rendered"));
+    /* detach: back to the single no-device row on the next tick */
+    break_editor_shell_set_render_device(shell, NULL);
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), 1u);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(render_panel_throttle_4hz_and_device_lost)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    g_render_clock_us = UINT64_C(2000000);
+    g_render_fake_lost = 0;
+    g_render_fake_used = 17u;
+    break_editor_shell_set_render_clock_for_test(shell, render_test_clock, NULL);
+    break_editor_shell_set_render_source_for_test(shell, &k_render_fake_source);
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
+    break_editor_shell_tick(shell); /* attach forces a refresh */
+    ASSERT_TRUE(render_row_has(shell, "resources: 17/4096"));
+    /* sources change inside the window: rows held */
+    g_render_fake_used = 99u;
+    g_render_fake_lost = 1;
+    g_render_clock_us += UINT64_C(249999);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "resources: 17/4096"));
+    ASSERT_TRUE(render_row_has(shell, "status=ready"));
+    /* exactly 250,000 us later: live values, including the lost device */
+    g_render_clock_us += UINT64_C(1);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(render_row_has(shell, "resources: 99/4096"));
+    ASSERT_TRUE(render_row_has(shell, "status=lost"));
+    break_editor_shell_destroy(shell);
+}
+
+#define RENDER_PANEL_STR2(x) #x
+#define RENDER_PANEL_STR(x) RENDER_PANEL_STR2(x)
+
+TEST(render_panel_source_is_read_only)
+{
+    /* source-scan pin: the panel reaches the renderer only through the
+     * read-only queries; it never creates, destroys, binds, records,
+     * submits or presents anything. */
+    static char src[65536];
+    static const char *const forbidden[] = {
+        "_create(", "_destroy(", "rhi_cmd_", "rhi_frame_begin", "rhi_frame_end",
+        "rhi_present", "rhi_device_resize", "rhi_set_vsync", "rhi_buffer_",
+        "rhi_texture_", "rhi_pipeline_", "rhi_screenshot", "rhi_device_idle"};
+    FILE *f = fopen(RENDER_PANEL_STR(BREAK_EDITOR_RENDER_PANEL_SOURCE), "rb");
+    size_t n, i;
+    char *body;
+    ASSERT_NOT_NULL(f);
+    n = fread(src, 1u, sizeof(src) - 1u, f);
+    fclose(f);
+    src[n] = '\0';
+    /* scan only the read-only region (between the BEGIN/END markers); the
+     * panel's own widget lifecycle below END is allowed to create/destroy */
+    body = strstr(src, "RENDER_PANEL_READONLY_BEGIN");
+    ASSERT_NOT_NULL(body);
+    {
+        char *end = strstr(body, "RENDER_PANEL_READONLY_END");
+        ASSERT_NOT_NULL(end);
+        *end = '\0';
+    }
+    net_strip_comments(body);
+    for (i = 0u; i < sizeof(forbidden) / sizeof(forbidden[0]); i++) {
+        if (strstr(body, forbidden[i]) != NULL)
+            printf("    forbidden token in render panel: %s\n", forbidden[i]);
+        ASSERT_TRUE(strstr(body, forbidden[i]) == NULL);
+    }
+}
+
 
 /* ---------------- Phase 4 Task 1: remote session host (plaintext seam) ----
  * Compiled only when the build has BREAK_ENABLE_SNOWFLAKE=ON (CMake gates
@@ -3533,6 +3740,11 @@ TEST_MAIN_BEGIN()
     RUN_TEST(network_panel_remote_off_row);
     RUN_TEST(network_panel_layout_in_diagnostics_column_under_profiler);
     RUN_TEST(network_panel_source_never_calls_send_close_transition);
+    RUN_TEST(render_panel_no_device_row);
+    RUN_TEST(render_panel_layout_beside_network_in_diagnostics_row);
+    RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
+    RUN_TEST(render_panel_throttle_4hz_and_device_lost);
+    RUN_TEST(render_panel_source_is_read_only);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);

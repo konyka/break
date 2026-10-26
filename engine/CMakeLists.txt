@@ -1580,6 +1580,7 @@ add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+        apps/editor/editor_panel_render.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -3930,6 +3931,7 @@ endif()
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+        apps/editor/editor_panel_render.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
         src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
         src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
@@ -3940,7 +3942,8 @@ endif()
     # Phase 4 Task 3: the network panel pure-view source-scan pin reads the
     # panel TU in place (the test_rhi_metal_* source-read precedent).
     target_compile_definitions(test_editor_shell PRIVATE
-        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c)
+        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c
+        BREAK_EDITOR_RENDER_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_render.c)
     # Phase 3 Task 3: time.c needs the same platform feature macros the
     # engine target carries PUBLIC (the test_editor_lua precedent).
     if(ENGINE_PLATFORM STREQUAL "linux")
