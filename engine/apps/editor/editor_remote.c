@@ -242,12 +242,6 @@ static void remote_row_add(BreakEditorRemote *r, u64 key) {
      * this unreachable; fail closed is the manager/reactor's job. */
 }
 
-/* Reconciles the table with manager truth: refresh states of tracked rows
- * (and drop them once the session is CLOSED). New keys are adopted where
- * they are authoritative — remote_observe_key() on the OPENED/CLOSED events
- * the tick drains below, and remote_on_message on first dispatch. There is
- * no enumeration API on the manager, and snow connection uids are large
- * (hash-derived), so a probe-the-keyspace scheme cannot work. */
 /* A session the host or the manager closed (fail closed, auth failure,
  * deadline) also loses its transport: later frames are never read, and the
  * connection slot is freed once the socket is gone. Responses queued before
@@ -263,6 +257,12 @@ static void remote_close_transport(BreakEditorRemote *r,
     }
 }
 
+/* Reconciles the table with manager truth: refresh states of tracked rows
+ * (and drop them once the session is CLOSED). New keys are adopted where
+ * they are authoritative — remote_observe_key() on the OPENED/CLOSED events
+ * the tick drains below, and remote_on_message on first dispatch. There is
+ * no enumeration API on the manager, and snow connection uids are large
+ * (hash-derived), so a probe-the-keyspace scheme cannot work. */
 static void remote_table_sync(BreakEditorRemote *r) {
     u32 i;
     for (i = 0u; i < r->capacity; i++) {
@@ -988,7 +988,15 @@ void break_editor_remote_tick(BreakEditorRemote *r) {
            break_net_reactor_poll_event(r->reactor, &event) ==
                BREAK_NET_EVENT_OK) {
         if (event.type == BREAK_NET_EVENT_CONNECTION_OPENED) {
-            remote_row_add(r, event.connection_key);
+            EditorRemoteConnRow *row = remote_row_find(r, event.connection_key);
+            if (row != NULL) {
+                /* transport key reuse (snow uids recycle slots): this is a
+                 * NEW connection, so its deadline and close state restart */
+                row->seen_us = time_microseconds();
+                row->transport_closed = false;
+            } else {
+                remote_row_add(r, event.connection_key);
+            }
         }
         (void)break_session_manager_apply_adapter_event(r->manager, &event);
         break_net_event_release(&event);

@@ -84,6 +84,13 @@ typedef struct BreakNetConnectionIdentity {
     bool close_requested;
     bool close_armed;
     bool close_started;
+    /* A stale `closing` identity whose snow slot (hence key) was reused by a
+     * new connection: its key is cleared at once so it can never shadow the
+     * new connection, and it is freed after the current driver step, once
+     * snow has consumed every send context still referencing its send_recv
+     * (snow drops a send to a dead connection without on_send_drained, so
+     * pending_send_count alone would keep it forever). */
+    bool retired;
 #ifdef BREAK_ENABLE_CRYPTO
     u8 auth_server_nonce[16];
     bool auth_server_nonce_valid;
@@ -439,8 +446,20 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
     }
     platform_mutex_lock(&reactor->queue_mutex);
     {
-        BreakNetConnectionIdentity *identity =
-            break_net_new_connection_failure_for_test == 2
+        BreakNetConnectionIdentity *identity;
+        {
+            size_t i;
+            for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
+                BreakNetConnectionIdentity *stale = &reactor->identities[i];
+                if (stale->valid && !stale->retired && stale->key == connection_key) {
+                    /* snow reused the slot: the old connection is gone */
+                    stale->retired = true;
+                    stale->closing = true;
+                    stale->key = 0u;
+                }
+            }
+        }
+        identity = break_net_new_connection_failure_for_test == 2
                 ? NULL
                 : break_net_identity_alloc(reactor, connection_key);
         snow_socket_addr_t *addr = NULL;
@@ -660,7 +679,8 @@ static BreakNetConnectionIdentity *break_net_identity_find(BreakNetReactor *reac
 {
     size_t i;
     for (i = 0u; i < BREAK_NET_CONNECTION_IDENTITY_CAPACITY; ++i) {
-        if (reactor->identities[i].valid && reactor->identities[i].key == key)
+        if (reactor->identities[i].valid && !reactor->identities[i].retired &&
+            reactor->identities[i].key == key)
             return &reactor->identities[i];
     }
     return NULL;
@@ -968,7 +988,8 @@ static void break_net_reactor_publish_ready(BreakNetReactor *reactor)
     platform_mutex_unlock(&reactor->lifecycle_mutex);
 }
 
-/* Driver thread, right after a snow step: starts every armed server close.
+/* Driver thread, right after a snow step: frees retired identities (see
+ * BreakNetConnectionIdentity.retired) and starts every armed server close.
  * Commands still queued for the key at this point could not be handed to
  * the transport (TLS handshake unfinished, or a send failure); they are
  * dropped, since the connection is going away. The close itself is
@@ -988,6 +1009,12 @@ static void break_net_process_server_closes(BreakNetReactor *reactor,
         BreakNetConnectionIdentity *identity = &reactor->identities[i];
         size_t scanned = 0u;
         size_t index;
+        if (identity->valid && identity->retired) {
+            /* the step that retired it has finished: snow's send pipe was
+             * drained at its end, so nothing references send_recv anymore */
+            break_net_identity_abort(identity);
+            continue;
+        }
         if (!identity->valid || !identity->close_armed || identity->close_started) {
             continue;
         }

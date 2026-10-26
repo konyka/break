@@ -99,7 +99,9 @@ size_t break_net_reactor_outbound_count(BreakNetReactor *reactor);
  * then (TLS handshake unfinished, send failure) are dropped. Takes effect on
  * the driver thread's next step. Returns true when the close is (or already
  * was) pending; false for NULL/0, a reactor that is not started, or a key
- * with no live connection (unknown, or already closed by the peer). */
+ * with no live connection (unknown, or already closed by the peer).
+ * TLS: the socket closes after the encrypted bytes are written, without a
+ * TLS close_notify, so strict clients may report an unexpected EOF. */
 bool break_net_reactor_close(BreakNetReactor *reactor, uint64_t connection_key);
 
 /* Test-only: returns outbound send attempts made by the reactor driver. */

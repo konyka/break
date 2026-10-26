@@ -3647,12 +3647,14 @@ TEST(remote_tls_auth_deadline_closes_idle_unauthenticated_client)
     ASSERT_NOT_NULL(shell);
     remote = tls_remote_start_timeout(shell, 300u);
     ASSERT_NOT_NULL(remote);
+    /* taken before connecting: the host starts its deadline clock when it
+     * first sees the connection, which is later, so the gap is >= 300 ms */
+    started = remote_monotonic_us();
     ASSERT_TRUE(tls_client_open(&c, shell, remote));
     ASSERT_TRUE(tls_wait_first_state(remote, shell, (u32)BREAK_SESSION_NEW));
-    started = remote_monotonic_us();
     /* the client completes TLS but never sends AUTH: evicted by deadline */
     ASSERT_TRUE(tls_client_wait_eof(&c));
-    ASSERT_TRUE(remote_monotonic_us() - started >= UINT64_C(250000));
+    ASSERT_TRUE(remote_monotonic_us() - started >= UINT64_C(300000));
     ASSERT_EQ(snow_network_buffer_length(c.plain), 0u);
     remote_wait_connection_count(remote, shell, 0u);
     ASSERT_EQ(break_editor_remote_connection_count(remote), 0u);
