@@ -1737,6 +1737,9 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
+    /* asset browser: throttled re-list of the current directory so files
+     * created/removed by external tools appear without navigating */
+    editor_panel_assets_tick(shell->assets_panel);
     /* Phase 4 Task 3: the network view snapshots the attached remote at
      * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
      * remote tick, so a refresh never observes a half-applied frame. */
@@ -1802,6 +1805,14 @@ bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
         return false;
     }
     return editor_panel_assets_set_root(shell->assets_panel, root_path);
+}
+
+void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user) {
+    if (shell != NULL) {
+        editor_panel_assets_set_clock(shell->assets_panel, clock, user);
+    }
 }
 
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell) {

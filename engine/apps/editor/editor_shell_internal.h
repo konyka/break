@@ -57,6 +57,9 @@ EditorPanelAssets *editor_panel_assets_create(BreakEditorShell *shell);
 void editor_panel_assets_destroy(EditorPanelAssets *panel);
 bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent);
 /* Re-roots the model (bounded false keeps the previous root). */
+void editor_panel_assets_tick(EditorPanelAssets *panel);
+void editor_panel_assets_set_clock(EditorPanelAssets *panel,
+                                   u64 (*clock)(void *user), void *user);
 bool editor_panel_assets_set_root(EditorPanelAssets *panel,
                                   const char *root_path);
 usize editor_panel_assets_row_count(const EditorPanelAssets *panel);

@@ -214,6 +214,11 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
  * process cwd). */
 bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
                                         const char *root_path);
+/* Test seam: injects the monotonic clock behind the browser's 1 s live
+ * refresh throttle (NULL = time_microseconds). */
+void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user);
 /* Assets panel row count INCLUDING the always-present ".." top row. */
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell);
 /* Borrowed assets path label text ("assets: /<rel>"). */

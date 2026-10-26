@@ -4062,6 +4062,100 @@ TEST(hot_reload_scene_switch_via_asset_browser_rewatches)
     TEST_RMDIR(dir_b);
 }
 
+static u64 g_assets_clock_us;
+static u64 assets_clock(void *user) {
+    (void)user;
+    return g_assets_clock_us;
+}
+
+TEST(assets_panel_live_refresh_shows_external_create_and_delete)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512], f_a[600], f_b[600];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_live");
+    TEST_MKDIR(dir);
+    snprintf(f_a, sizeof(f_a), "%s/a.txt", dir);
+    snprintf(f_b, sizeof(f_b), "%s/b.txt", dir);
+    hr_write_text(f_a, "a");
+    doc = break_editor_shell_doc(shell);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+
+    g_assets_clock_us = 1000000u;
+    break_editor_shell_set_assets_clock_for_test(shell, assets_clock, NULL);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u); /* ".." + a.txt */
+
+    hr_write_text(f_b, "b");
+    /* within the throttle interval nothing is re-listed */
+    break_editor_shell_tick(shell);
+    g_assets_clock_us += 500000u;
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    g_assets_clock_us += 600000u; /* 1.1 s since the root was set */
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 3u);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    ASSERT_NOT_NULL(list_row_by_text(list, "b.txt"));
+
+    remove(f_a);
+    g_assets_clock_us += 1100000u;
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    /* a directory-only change never touches the document */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+
+    break_editor_shell_destroy(shell);
+    remove(f_b);
+    TEST_RMDIR(dir);
+}
+
+TEST(assets_panel_live_refresh_survives_vanished_directory)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512], sub[600], keep[600];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_gone");
+    TEST_MKDIR(dir);
+    snprintf(sub, sizeof(sub), "%s/sub", dir);
+    snprintf(keep, sizeof(keep), "%s/keep.txt", dir);
+    TEST_MKDIR(sub);
+    hr_write_text(keep, "k");
+
+    g_assets_clock_us = 5000000u;
+    break_editor_shell_set_assets_clock_for_test(shell, assets_clock, NULL);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    emit_click(list_row_by_text(list, "sub/"));
+    ASSERT_TRUE(strstr(break_editor_shell_assets_path_text(shell), "/sub") !=
+                NULL);
+
+    break_editor_shell_tick(shell); /* the first tick only starts the interval */
+    TEST_RMDIR(sub);
+    g_assets_clock_us += 1100000u;
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_STR_EQ(break_editor_shell_assets_path_text(shell), "assets: /");
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    break_editor_shell_destroy(shell);
+    remove(keep);
+    TEST_RMDIR(dir);
+}
+
 TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -4184,6 +4278,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_external_edit_after_local_save_still_reloads);
     RUN_TEST(hot_reload_request_in_flight_during_save_is_dropped_as_stale);
     RUN_TEST(hot_reload_scene_switch_via_asset_browser_rewatches);
+    RUN_TEST(assets_panel_live_refresh_shows_external_create_and_delete);
+    RUN_TEST(assets_panel_live_refresh_survives_vanished_directory);
     RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
     RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
