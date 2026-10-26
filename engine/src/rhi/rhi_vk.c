@@ -1,3 +1,5 @@
+#include "rhi/rhi_backend_namespace.h"
+
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>

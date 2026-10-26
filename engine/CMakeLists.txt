@@ -2649,6 +2649,21 @@ endif()
     target_include_directories(test_rhi_rollout_log PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_rhi_rollout_log COMMAND test_rhi_rollout_log)
     set_tests_properties(test_rhi_rollout_log PROPERTIES LABELS "headless;platform_contract")
+
+    add_executable(test_rhi_dispatch tests/test_rhi_dispatch.c
+        src/rhi/dispatch/rhi_dispatch.c)
+    target_include_directories(test_rhi_dispatch PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_dispatch PRIVATE
+        TEST_RHI_DISPATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_dispatch.c")
+    add_test(NAME test_rhi_dispatch COMMAND test_rhi_dispatch)
+    set_tests_properties(test_rhi_dispatch PROPERTIES LABELS "headless;platform_contract")
+    add_test(NAME test_rhi_dispatch_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRHI_DISPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch
+            -DRHI_API_LIST=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_backend_api.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_dispatch_contract.cmake)
+    set_tests_properties(test_rhi_dispatch_contract PROPERTIES LABELS "headless;platform_contract")
+
     add_test(NAME test_rhi_rollout_config_contract
         COMMAND ${CMAKE_COMMAND}
             -DROLLOUT_JSON=${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json

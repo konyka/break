@@ -1,3 +1,5 @@
+#include "rhi/rhi_backend_namespace.h"
+
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
 #endif
