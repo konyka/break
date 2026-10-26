@@ -37,6 +37,27 @@
 - 未验证：X11/Wayland/Cocoa/QNX 运行（只做了审读，本机无系统头文件）；屏幕实拍确认无边框（本机锁屏，桌面截图只能拿到锁屏画面；无边框由运行时测试的样式与矩形断言保证）。
 
 
+## 本轮更新：R707c — 蒙皮网格运行时 LOD（三）：接入 `main.c`（加载时多姿势生成、当前姿势选级、淡入淡出、压力场景）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.2 / 3.4 / 3.5）
+- **生成**：`skin_lod_setup` 在 mega/ECS LOD 之后对每个 ≥ `LOD_GEN_MIN_TRIANGLES` 的 `SkinnedMesh` 用 `rhi_buffer_read` 读回顶点/索引，`lod_skin_joint_spheres` 算每关节包围球，`lod_skin_cache_generate`（共用 `g_lod_cache`）生成 LOD1/LOD2，各级索引放进每网格一个额外索引缓冲，共享原顶点缓冲。姿势：临时 `Skeleton`（`calloc`，不建关节缓冲、不上传，不碰 `render.skeleton`）对 `scene.anim_clips` 每个有通道的片段在 `[0, duration)` 均匀取样，总数 ≤ 8。每网格一行日志（levels、三角形、rel_err、poses、ms）和一行汇总。
+- **选级**：骨骼更新并上传后，`skin_lod_select` 用 `render.skeleton.current_pose`（即本帧上传的矩阵）做 `lod_skin_bounds`，按包围球表面距离走 `lod_select_by_screen_error`（`BREAK_LOD_PIXEL_ERROR` 共用，迟滞状态按蒙皮网格下标）。误差为绑定空间实测值 `rel_error · scale`。
+- **绘制**：前向 blinn、前向 clustered、延迟 G-buffer 三处逐网格循环改调 `skin_lod_draw`：LOD0 且未淡化时就是原来的 `bind_index_buffer + rhi_cmd_draw_indexed`；其他级别用额外索引缓冲 `rhi_cmd_draw_indexed_base`；淡化时两级各画一次 `rhi_cmd_draw_indexed_instanced_base`，`first_instance = lod_fade_pack_first_instance(0, ±k)`（高 16 位 k+16）。
+- **淡入淡出**：每网格一个 `LodFade`。着色器：GLSL `skinned{,_vk}.{vert,frag}`、`pbr_clustered_skin{,_vk}.vert`、`gbuffer_skinned{,_vk}.vert`、`gbuffer_skinned_vk.frag` 加 `#ifdef LOD_FADE` 块（读 `gl_BaseInstanceARB`，4×4 Bayer `discard`，与已有 lodfade 逐字相同）；clustered 蒙皮复用实例化变体的 `LOD_FADE` 片元，GL 延迟复用 `gbuffer.frag` 已有的块。D3D12 新增 `skinned_mrt_lodfade_hlsl.{vert,frag}`、`pbr_clustered_skin_lodfade_hlsl.vert`、`gbuffer_skinned_lodfade_hlsl.vert`（`SV_StartInstanceLocation`，构建时按 SM 6.8 编译），片元分别配 `pbr_clustered_lodfade_hlsl.frag` / `gbuffer_lodfade_hlsl.frag`。只有 `caps.indirect_first_instance_supported && lod_fade_seconds() > 0` 时才建 LOD_FADE 管线并开淡化，否则建原管线、直接切换。
+- **开关**：`BREAK_LOD=0` 不生成、不建缓冲、不打印 `Skin LOD` / `SKIN_LOD_STATS`，绘制走原调用。BSCN `N` 键恢复场景时先 `skin_lod_free` 再按新场景重建。
+- **压力场景** `BREAK_STRESS_LOD_SKIN=N`（N ≤ 16，超过钳到 16；场景已带骨骼时忽略）：每根管 96×104 段、19968 三角形、3 m 高、表面多频凹凸，独立 4 关节链（根平移、基部旋转、中段平移、中段旋转，权重在 1 m 与 2 m 处平滑过渡），一个 2.4 s 片段共 4N 个通道（N=16 用满 64），每根相位、弯曲轴不同，排在默认相机前方 2.5 m 间距网格上（底部不低于水面 y=-1）。它替换演示手臂（场景有蒙皮网格时绘制循环不画手臂，手臂的混合/IK 初始化也只在没有场景骨骼时运行）。
+- **统计**：`SKIN_LOD_STATS frames select_ms_avg vis_tris_avg vis_tris_lod0_avg ratio transitions fading_avg`（关机时）与调试 UI 一行 `Skin LOD: meshes L0/L1/L2 ...`。蒙皮网格本来就不剔除，vis_tris 是全部蒙皮网格实际绘制的三角形（淡化时两级之和）。
+
+### 验证
+- 构建：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（Release）0 个来自本改动的警告（只有既有的 SheenBidi Release 未用变量警告与 lld `--gc-sections` 提示）。三个 Debug 树 `ctest -j4 -E test_platform_win32_runtime`（先构建 5 个 fuzz 目标）：vk 188/188、gl 185/185、d3d12 193/193（含 `test_d3d12_warp_runtime`）。vk 树最终源码连跑 8 次全量，有 2 次 `test_vulkan` 在 Hi-Z 可见性检查处 VK device lost（`-j4` 并行 GPU 负载下）；单独跑 6/6 通过，该测试不链接 `main.c` / `deferred.c`，判断为既有的负载相关不稳定，未处理。GCC `-Werror -pedantic` 语法检查 `main.c`、`deferred.c` 通过；新 HLSL 由 dxc 编译通过。
+- 生成：12 根管每根 19968/9984/4992 三角形，rel_err L1 0.0027–0.0035、L2 0.0050–0.0063（scale 3.0），8 个姿势，Debug 约 0.75 s/根（共 9.2 s；`BREAK_LOD_CACHE` 可缓存）。
+- 真实运行（`BREAK_STRESS_LOD_SKIN=12 BREAK_CAM=0,2.5,0,0,-10 BREAK_CAM_DOLLY=0.3 BREAK_FRAMES=150`，Release）：九种组合 transitions 都是 24，fading_avg：VK clustered 3.61 / blinn 5.21 / 延迟 4.80，GL 0.33 / 0.21 / 0.09，D3D12 0.62 / 0.33 / 0.36（GL/D3D12 帧率低，250 ms 淡化覆盖的帧少）；ratio 0.31–0.74；无 ERROR。D3D12 blinn 前向本身约 16 fps（不开压力场景也一样，既有情况），150 帧需要超过 60 s，用 100 s 超时跑完。VK Debug 三条路径验证层 0；D3D12 Debug（调试层 + GBV）无调试层消息。
+- 截图（VK Debug，`BREAK_UI=0 BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`，第 60 帧动画中段，近处弯管裁剪）：LOD2（`BREAK_LOD_PIXEL_ERROR=1000`）、LOD1 混合、LOD0（`BREAK_LOD=0`）轮廓与弯折一致，两个弯折处无撕裂、无塌陷；淡化中（`BREAK_LOD_FADE_MS=100000`，fading_avg 11.81）表面连续无空洞。
+- 不变性：默认场景（无压力场景）对比 2584a56e 构建：日志按数字/行号归一化后 `BREAK_LOD=1` 只差一行帧率日志、`BREAK_LOD=0` 完全相同（默认场景的蒙皮手臂 48 三角形不生成 LOD，`Skin LOD` 行不出现）；第 55 帧截图差 > 8 的像素占 0.68%（LOD=1）/ 0.28%（LOD=0），同一基准构建连跑两次为 0.67%。
+- 性能（VK Release，12 根管，300 帧，3 次）：LOD 开 180.7 / 212.4 / 214.0 fps，`BREAK_LOD=0` 221.3 / 196.0 / 231.6 fps，三角形比约 0.45–0.51。24 万蒙皮三角形在这台 GPU 上不是瓶颈，差别在噪声内，看不出收益。
+- 未验证：BSCN `N` 键重建路径（需要键盘输入，只做了编译与代码审查）；真实 glTF 蒙皮资产（CesiumMan 等）；Metal；Linux 运行。
+
+
 ## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
 
 - **现象**：`test_d3d12_warp_runtime` 的 `debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次（测试故意制造的）RT/SRV 别名，实际 4 次；多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`。

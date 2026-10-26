@@ -36,6 +36,7 @@
 #include <renderer/lod.h>
 #include <renderer/lod_gen.h>
 #include <renderer/lod_cache.h>
+#include <renderer/lod_skin.h>
 #include <renderer/combined_post_process.h>
 #include <renderer/motion_history.h>
 #include <renderer/occlusion_cull.h>
@@ -715,8 +716,12 @@ static bool render_init(RenderState *rs, Platform *platform) {
             }
             /* R657: skinned variant. Joints are a structured buffer at t16;
              * the 64-byte joint vertex layout comes from .skinned_vertex. */
-            RHIShader csvs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_skin.vert", false);
-            RHIShader csfs = lod_fade_seconds() > 0.0f
+            /* R707c: with the skinned LOD fade on, the skinned variant takes
+             * the fade vertex twin and the shared fade pixel stage (cfs). */
+            const bool skin_fade = caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f;
+            RHIShader csvs = rhi_shader_create_path(rs->device, skin_fade
+                ? "shaders/pbr_clustered_skin_lodfade.vert" : "shaders/pbr_clustered_skin.vert", false);
+            RHIShader csfs = (lod_fade_seconds() > 0.0f && !skin_fade)
                 ? rhi_shader_create_path(rs->device, "shaders/pbr_clustered.frag", true)
                 : RHI_HANDLE_NULL;
             if (rhi_handle_valid(csvs)) {
@@ -849,11 +854,25 @@ static bool render_init(RenderState *rs, Platform *platform) {
             }
             /* R591: skinned variant vert (joints ride a vertex SSBO). */
             RHIShader csvs = RHI_HANDLE_NULL;
+            /* R707c: skinned LOD cross-fade -- LOD_FADE vert + the LOD_FADE
+             * frag shared with the instanced variant (cifs). */
+            bool csk_fade = false;
             if (csv) {
                 usize csvm_len = 0;
                 char *csv_mrt = shader_inject_define(csv, csvl, "FORWARD_MRT", &csvm_len);
-                csvs = rhi_shader_create(rs->device, csv_mrt ? csv_mrt : csv,
-                                         csv_mrt ? csvm_len : csvl, false);
+                if (caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f &&
+                    csv_mrt && rhi_handle_valid(cifs)) {
+                    usize vfl = 0;
+                    char *vf = shader_inject_define(csv_mrt, csvm_len, "LOD_FADE", &vfl);
+                    if (vf) csvs = rhi_shader_create(rs->device, vf, vfl, false);
+                    free(vf);
+                    csk_fade = rhi_handle_valid(csvs);
+                    if (!csk_fade)
+                        LOG_WARN("LOD fade: clustered skinned LOD_FADE variant failed; using the plain variant");
+                }
+                if (!rhi_handle_valid(csvs))
+                    csvs = rhi_shader_create(rs->device, csv_mrt ? csv_mrt : csv,
+                                             csv_mrt ? csvm_len : csvl, false);
                 free(csv_mrt);
             }
             /* R592: texture-array variant — own frag object (CLUSTERED_ARR
@@ -919,7 +938,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
                     cpd.vert = csvs;
                     cpd.uses_storage = true;
                     cpd.skinned_vertex = true;
+                    if (csk_fade) cpd.frag = cifs;
                     rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    cpd.frag = cfs;
                 }
                 if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
                     /* R592: array variant — no storage set (ubo stays at
@@ -1230,10 +1251,14 @@ instanced_pipeline_done:
      * "skinned_hlsl.vert", which does not exist, and the skinned meshes
      * were silently not drawn on this backend. */
     if (caps.shader_sidecar_paths) {
-        RHIShader svs = rhi_shader_create(rs->device,
-                                           "skinned_mrt_hlsl.vert", 0, false);
-        RHIShader sfs = rhi_shader_create(rs->device,
-                                           "skinned_mrt_hlsl.frag", 0, true);
+        /* R707c: skinned LOD cross-fade twins (first_instance dither). */
+        const bool skin_fade = caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f;
+        RHIShader svs = rhi_shader_create(rs->device, skin_fade
+                                           ? "skinned_mrt_lodfade_hlsl.vert"
+                                           : "skinned_mrt_hlsl.vert", 0, false);
+        RHIShader sfs = rhi_shader_create(rs->device, skin_fade
+                                           ? "skinned_mrt_lodfade_hlsl.frag"
+                                           : "skinned_mrt_hlsl.frag", 0, true);
         if (rhi_handle_valid(svs) && rhi_handle_valid(sfs)) {
             RHIPipelineDesc spd = {
                 .vert = svs, .frag = sfs,
@@ -1268,6 +1293,19 @@ instanced_pipeline_done:
             usize svm_len = 0, sfm_len = 0;
             char *svm = shader_inject_define(sv, svl, "FORWARD_MRT", &svm_len);
             char *sfm = shader_inject_define(sf, sfl, "FORWARD_MRT", &sfm_len);
+            /* R707c: skinned LOD cross-fade (dither discard) when it can run. */
+            if (caps.indirect_first_instance_supported && lod_fade_seconds() > 0.0f && svm && sfm) {
+                usize a = 0, b = 0;
+                char *svf = shader_inject_define(svm, svm_len, "LOD_FADE", &a);
+                char *sff = shader_inject_define(sfm, sfm_len, "LOD_FADE", &b);
+                if (svf && sff) {
+                    free(svm); free(sfm);
+                    svm = svf; svm_len = a;
+                    sfm = sff; sfm_len = b;
+                } else {
+                    free(svf); free(sff);
+                }
+            }
             RHIShader svs = rhi_shader_create(rs->device, svm ? svm : sv,
                                                svm ? svm_len : svl, false);
             RHIShader sfs = rhi_shader_create(rs->device, sfm ? sfm : sf,
@@ -3222,8 +3260,7 @@ static void mega_lod_upload_fade_commands(MegaBuffer *mb, RHICmdBuffer *cmd) {
  * the draw groups instances by (mesh, level). ECS instances are not drawn
  * by any shadow pass or the deferred G-buffer, so there is no shadow level.
  * Skinned meshes never go through this path (they are drawn per primitive
- * with the joint palette) and stay at LOD0: simplifying them needs
- * bone-weight-aware collapse, which the simplifier does not do.
+ * with the joint palette); their LOD is the separate SkinLod below (R707c).
  * BREAK_LOD=0 skips the setup and leaves `active` false, which keeps the
  * gather loop and the per-mesh draw on their pre-LOD code. */
 #define ECS_LOD_LEVELS LOD_GEN_MAX_LEVELS
@@ -3459,6 +3496,336 @@ static inline u8 ecs_lod_pick(EcsLod *E, u32 mesh, Entity e, const f32 pos[3],
     if (*fade_k < LOD_FADE_STEPS) E->vis_tris += tris[*fade_coarser];
     E->vis_tris_lod0 += tris[0];
     return (u8)lvl;
+}
+
+/* ---- Runtime LOD for skinned meshes (R707c) ----
+ * Every SkinnedMesh with >= LOD_GEN_MIN_TRIANGLES gets LOD1/LOD2 index lists
+ * from lod_skin_cache_generate (multi-pose simplification, measured skinned
+ * error; poses sampled from scene.anim_clips on a CPU-only Skeleton). The
+ * levels share LOD0's vertices and live in one extra index buffer per mesh;
+ * LOD0 keeps SkinnedMesh.index_buf and the original draw call. Each frame,
+ * after the skeleton update, the current pose gives a conservative bounding
+ * sphere (lod_skin_bounds over per-joint bind spheres) and the shared screen
+ * error selection + hysteresis picks the level. The cross-fade uses the R703
+ * LodFade with the signed dither in first_instance's high half (direct draws
+ * via rhi_cmd_draw_indexed_instanced_base); it is off when the backend drops
+ * first_instance or BREAK_LOD_FADE_MS=0. BREAK_LOD=0 never builds this. */
+#define SKIN_LOD_LEVELS LOD_GEN_MAX_LEVELS
+
+typedef struct {
+    bool       active;              /* at least one mesh has levels */
+    u32        mesh_count;          /* scene skinned meshes the tables were built for */
+    u32        joint_count;         /* skeleton joints the spheres were built for */
+    u8        *level_count;         /* [mesh] 1..SKIN_LOD_LEVELS */
+    u8        *level;               /* [mesh] committed level (hysteresis state) */
+    f32       *err;                 /* [mesh * L] bind-space error vs LOD0 */
+    u32       *tris;                /* [mesh * L] triangles per level */
+    u32       *first;               /* [mesh * L] first index in ibo (levels >= 1) */
+    u32       *count;               /* [mesh * L] index count per level */
+    RHIBuffer *ibo;                 /* [mesh] LOD1.. indices; invalid when 1 level */
+    LodSphere *spheres;             /* [mesh * joint_count] bind-pose joint spheres */
+    LodFade   *fade;                /* [mesh]; NULL = fade off */
+    u8        *draw_fine;           /* [mesh] this frame's level to draw */
+    u8        *draw_coarse;         /* [mesh] second level while fading */
+    u8        *draw_k;              /* [mesh] finer share 1..15 while fading, else 0 */
+    f32        fade_s;
+    /* last frame */
+    u32   level_meshes[SKIN_LOD_LEVELS];
+    u32   vis_tris, vis_tris_lod0, transitions, fading;
+    f64   select_ms;
+    /* session totals (SKIN_LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum;
+} SkinLod;
+
+static SkinLod g_skin_lod;
+
+/* Fade only when the backend delivers a direct draw's first_instance to the
+ * shader; the skinned pipelines are built with LOD_FADE under the same rule. */
+static f32 skin_lod_fade_seconds(const RHICapabilities *caps) {
+    return (caps && caps->indirect_first_instance_supported) ? lod_fade_seconds() : 0.0f;
+}
+
+static void skin_lod_free(SkinLod *S, RHIDevice *dev) {
+    if (!S) return;
+    if (S->ibo && dev) {
+        for (u32 i = 0; i < S->mesh_count; i++)
+            if (rhi_handle_valid(S->ibo[i])) rhi_buffer_destroy(dev, S->ibo[i]);
+    }
+    free(S->level_count); free(S->level); free(S->err); free(S->tris); free(S->first);
+    free(S->count); free(S->ibo); free(S->spheres); free(S->fade);
+    free(S->draw_fine); free(S->draw_coarse); free(S->draw_k);
+    u64 frames = S->frames, vt = S->vis_tris_sum, vt0 = S->vis_tris_lod0_sum;
+    u64 tr = S->transitions_sum, fa = S->fading_sum;
+    f64 sm = S->select_ms_sum;
+    memset(S, 0, sizeof(*S));
+    /* Session totals survive a rebuild (BSCN restore) for the shutdown log. */
+    S->frames = frames; S->vis_tris_sum = vt; S->vis_tris_lod0_sum = vt0;
+    S->transitions_sum = tr; S->fading_sum = fa; S->select_ms_sum = sm;
+}
+
+/* Up to LOD_SKIN_MAX_POSES skin-matrix sets sampled evenly over the clips'
+ * time axes on a CPU-only Skeleton (no joint buffers, never uploaded).
+ * Returns the pose count; *out is malloc'd (NULL when 0). */
+static u32 skin_lod_sample_poses(const Scene *scene, Mat4 **out) {
+    *out = NULL;
+    u32 jc = scene->joint_count;
+    if (jc == 0u || jc > SKELETON_MAX_JOINTS || !scene->joint_parents || !scene->inverse_bind)
+        return 0u;
+    u32 usable = 0u;
+    for (u32 c = 0; c < scene->anim_clip_count; c++)
+        if (scene->anim_clips[c].channel_count > 0u) usable++;
+    if (usable == 0u) return 0u;
+    Skeleton *sk = (Skeleton *)calloc(1, sizeof(Skeleton));
+    AnimClip *clip = (AnimClip *)malloc(sizeof(AnimClip));
+    Mat4 *poses = (Mat4 *)malloc((usize)LOD_SKIN_MAX_POSES * jc * sizeof(Mat4));
+    if (!sk || !clip || !poses) { free(sk); free(clip); free(poses); return 0u; }
+    sk->joint_count = jc;
+    for (u32 j = 0; j < jc; j++) {
+        sk->joint_parents[j] = scene->joint_parents[j];
+        sk->inverse_bind[j] = scene->inverse_bind[j];
+    }
+    u32 per_clip = LOD_SKIN_MAX_POSES / usable;
+    if (per_clip == 0u) per_clip = 1u;
+    u32 n = 0u;
+    for (u32 c = 0; c < scene->anim_clip_count && n < LOD_SKIN_MAX_POSES; c++) {
+        const AnimClip *src = &scene->anim_clips[c];
+        if (src->channel_count == 0u) continue;
+        *clip = *src;
+        for (u32 s = 0; s < per_clip && n < LOD_SKIN_MAX_POSES; s++) {
+            f32 dur = clip->duration > 0.0f ? clip->duration : 0.0f;
+            clip->time = dur * (f32)s / (f32)per_clip;
+            skeleton_evaluate(sk, clip, 0.0f);
+            memcpy(&poses[(usize)n * jc], sk->current_pose, (usize)jc * sizeof(Mat4));
+            n++;
+        }
+    }
+    free(sk);
+    free(clip);
+    if (n == 0u) { free(poses); return 0u; }
+    *out = poses;
+    return n;
+}
+
+static void skin_lod_setup(SkinLod *S, RHIDevice *dev, const Scene *scene, f32 fade_s) {
+    skin_lod_free(S, dev);
+    if (!dev || !scene || scene->skinned_mesh_count == 0u) return;
+    u32 jc = scene->joint_count;
+    if (jc == 0u || jc > LOD_SKIN_MAX_JOINTS) return;
+    const u32 L = SKIN_LOD_LEVELS, mc = scene->skinned_mesh_count;
+    S->mesh_count = mc;
+    S->joint_count = jc;
+    S->level_count = (u8 *)calloc(mc, 1);
+    S->level   = (u8 *)calloc(mc, 1);
+    S->err     = (f32 *)calloc((usize)mc * L, sizeof(f32));
+    S->tris    = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->first   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->count   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    S->ibo     = (RHIBuffer *)calloc(mc, sizeof(RHIBuffer));
+    S->spheres = (LodSphere *)calloc((usize)mc * jc, sizeof(LodSphere));
+    S->draw_fine   = (u8 *)calloc(mc, 1);
+    S->draw_coarse = (u8 *)calloc(mc, 1);
+    S->draw_k      = (u8 *)calloc(mc, 1);
+    S->fade_s = fade_s;
+    if (fade_s > 0.0f) {
+        S->fade = (LodFade *)calloc(mc, sizeof(LodFade));
+        if (!S->fade) {
+            LOG_WARN("Skin LOD: fade state alloc failed; level switches pop");
+            S->fade_s = 0.0f;
+        }
+    }
+    if (!S->level_count || !S->level || !S->err || !S->tris || !S->first || !S->count ||
+        !S->ibo || !S->spheres || !S->draw_fine || !S->draw_coarse || !S->draw_k) {
+        LOG_WARN("Skin LOD: table alloc failed; skinned meshes stay at LOD0");
+        skin_lod_free(S, dev);
+        return;
+    }
+    u64 t0 = time_microseconds();
+    Mat4 *poses = NULL;
+    u32 pose_count = skin_lod_sample_poses(scene, &poses);
+    u32 with_levels = 0u, eligible = 0u;
+    u64 tris_sum[SKIN_LOD_LEVELS] = {0};
+    for (u32 i = 0; i < mc; i++) {
+        const SkinnedMesh *sm = &scene->skinned_meshes[i];
+        S->level_count[i] = 1u;
+        S->tris[(usize)i * L] = sm->index_count / 3u;
+        S->count[(usize)i * L] = sm->index_count;
+        tris_sum[0] += sm->index_count / 3u;
+        for (u32 j = 0; j < jc; j++) S->spheres[(usize)i * jc + j].r = -1.0f;
+        if (sm->index_count / 3u < LOD_GEN_MIN_TRIANGLES || sm->vertex_count == 0u ||
+            !rhi_handle_valid(sm->vertex_buf) || !rhi_handle_valid(sm->index_buf))
+            continue;
+        eligible++;
+        u64 m0 = time_microseconds();
+        usize vb = (usize)sm->vertex_count * LOD_SKIN_VERTEX_STRIDE;
+        usize ib = (usize)sm->index_count * sizeof(u32);
+        f32 *v = (f32 *)malloc(vb);
+        u32 *ix = (u32 *)malloc(ib);
+        if (!v || !ix || !rhi_buffer_read(dev, sm->vertex_buf, v, 0, vb) ||
+            !rhi_buffer_read(dev, sm->index_buf, ix, 0, ib)) {
+            LOG_WARN("Skin LOD: failed to read skinned mesh %u; LOD0 only", i);
+            free(v); free(ix);
+            continue;
+        }
+        lod_skin_joint_spheres(v, sm->vertex_count, jc, &S->spheres[(usize)i * jc]);
+        LodMeshLevels ml;
+        memset(&ml, 0, sizeof(ml));
+        lod_skin_cache_generate(&g_lod_cache, v, sm->vertex_count, ix, sm->index_count,
+                                poses, pose_count, jc, L, &ml);
+        free(v); free(ix);
+        if (ml.level_count > 1u) {
+            u32 extra = 0u;
+            for (u32 l = 1; l < ml.level_count; l++) extra += ml.index_count[l];
+            u32 *lx = (u32 *)malloc((usize)extra * sizeof(u32));
+            if (lx) {
+                u32 off = 0u;
+                for (u32 l = 1; l < ml.level_count; l++) {
+                    memcpy(lx + off, ml.indices[l], (usize)ml.index_count[l] * sizeof(u32));
+                    S->first[(usize)i * L + l] = off;
+                    S->count[(usize)i * L + l] = ml.index_count[l];
+                    S->tris[(usize)i * L + l] = ml.index_count[l] / 3u;
+                    S->err[(usize)i * L + l] = ml.rel_error[l] * ml.scale;
+                    off += ml.index_count[l];
+                }
+                RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                     .size = (usize)extra * sizeof(u32),
+                                     .initial_data = lx };
+                S->ibo[i] = rhi_buffer_create(dev, &id);
+                free(lx);
+                if (rhi_handle_valid(S->ibo[i])) {
+                    S->level_count[i] = (u8)ml.level_count;
+                    with_levels++;
+                    for (u32 l = 1; l < ml.level_count; l++) tris_sum[l] += ml.index_count[l] / 3u;
+                }
+            }
+            if (!rhi_handle_valid(S->ibo[i]))
+                LOG_WARN("Skin LOD: skinned mesh %u level upload failed; LOD0 only", i);
+        }
+        LOG_INFO("Skin LOD: mesh %u levels=%u tris %u/%u/%u rel_err %.6f/%.6f scale %.3f poses=%u %.1f ms",
+                 i, S->level_count[i], ml.index_count[0] / 3u, ml.index_count[1] / 3u,
+                 ml.index_count[2] / 3u, ml.rel_error[1], ml.rel_error[2], ml.scale, pose_count,
+                 (f64)(time_microseconds() - m0) / 1000.0);
+        lod_mesh_levels_free(&ml);
+    }
+    free(poses);
+    S->active = with_levels > 0u;
+    LOG_INFO("Skin LOD: %s -- %u skinned meshes, %u eligible, %u with levels, %u joints, %u sampled poses, "
+             "tris L0=%llu L1=%llu L2=%llu, %.1f ms",
+             S->active ? "on" : "on (no skinned mesh simplified; inactive)", mc, eligible,
+             with_levels, jc, pose_count, (unsigned long long)tris_sum[0],
+             (unsigned long long)tris_sum[1], (unsigned long long)tris_sum[2],
+             (f64)(time_microseconds() - t0) / 1000.0);
+    if (S->active && S->fade_s > 0.0f)
+        LOG_INFO("Skin LOD: dithered cross-fade %.0f ms (BREAK_LOD_FADE_MS)", (f64)S->fade_s * 1000.0);
+    if (!S->active) skin_lod_free(S, dev);
+}
+
+/* Per-frame level selection under the current pose (the matrices uploaded to
+ * the joint buffer this frame). skin_mats has joint_count entries. */
+static void skin_lod_select(SkinLod *S, const Scene *scene, const Mat4 *skin_mats,
+                            u32 joint_count, Vec3 cam, f32 fov, f32 screen_h) {
+    if (!S->active || S->mesh_count != scene->skinned_mesh_count) return;
+    u64 t0 = time_microseconds();
+    f64 now = (f64)t0 / 1e6;
+    f32 pf = lod_screen_proj_factor(fov, screen_h);
+    const u32 L = SKIN_LOD_LEVELS;
+    bool pose_ok = joint_count == S->joint_count && skin_mats;
+    memset(S->level_meshes, 0, sizeof(S->level_meshes));
+    S->vis_tris = 0u;
+    S->vis_tris_lod0 = 0u;
+    S->transitions = 0u;
+    S->fading = 0u;
+    for (u32 i = 0; i < S->mesh_count; i++) {
+        u32 lc = S->level_count[i];
+        u32 cur = S->level[i];
+        u32 lvl = 0u;
+        const u32 *tris = &S->tris[(usize)i * L];
+        if (lc > 1u && pose_ok) {
+            const LodSphere *js = &S->spheres[(usize)i * S->joint_count];
+            LodSphere b = lod_skin_bounds(js, S->joint_count, skin_mats);
+            if (b.r >= 0.0f) {
+                f32 dx = b.c[0] - cam.e[0], dy = b.c[1] - cam.e[1], dz = b.c[2] - cam.e[2];
+                f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - b.r;
+                lvl = lod_select_by_screen_error(&S->err[(usize)i * L], lc, dist, pf,
+                                                 mega_lod_pixel_error, cur);
+            } else {
+                lvl = cur;
+            }
+        }
+        if (lvl != cur) S->transitions++;
+        S->level[i] = (u8)lvl;
+        S->level_meshes[lvl]++;
+        S->vis_tris_lod0 += tris[0];
+        u32 dfi = lvl, dco = lvl, dk = 0u;
+        if (S->fade) {
+            lod_fade_update(&S->fade[i], lvl, now, S->fade_s);
+            u32 fi = lvl, co = lvl;
+            u32 k = lod_fade_split(&S->fade[i], now, S->fade_s, &fi, &co);
+            if (fi >= lc) fi = lc - 1u;
+            if (co >= lc) co = lc - 1u;
+            if (fi != co && k > 0u && k < LOD_FADE_STEPS) {
+                dfi = fi; dco = co; dk = k;
+            } else {
+                dfi = dco = (fi == co || k >= LOD_FADE_STEPS) ? fi : co;
+            }
+        }
+        S->draw_fine[i] = (u8)dfi;
+        S->draw_coarse[i] = (u8)dco;
+        S->draw_k[i] = (u8)dk;
+        if (dk) {
+            S->fading++;
+            S->vis_tris += tris[dfi] + tris[dco];
+        } else {
+            S->vis_tris += tris[dfi];
+        }
+    }
+    S->select_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    S->frames++;
+    S->select_ms_sum += S->select_ms;
+    S->vis_tris_sum += S->vis_tris;
+    S->vis_tris_lod0_sum += S->vis_tris_lod0;
+    S->transitions_sum += S->transitions;
+    S->fading_sum += S->fading;
+}
+
+/* One level of skinned mesh si with first_instance fi (0 = no dither). */
+static u32 skin_lod_draw_level(RHICmdBuffer *cmd, const SkinLod *S, u32 si,
+                               const SkinnedMesh *sm, u32 level, u32 fi) {
+    const u32 L = SKIN_LOD_LEVELS;
+    if (level == 0u) {
+        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
+        if (fi) rhi_cmd_draw_indexed_instanced_base(cmd, sm->index_count, 1u, 0u, 0, fi);
+        else    rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+        return sm->index_count / 3u;
+    }
+    u32 n = S->count[(usize)si * L + level];
+    rhi_cmd_bind_index_buffer(cmd, S->ibo[si], 0, true);
+    if (fi) rhi_cmd_draw_indexed_instanced_base(cmd, n, 1u, S->first[(usize)si * L + level], 0, fi);
+    else    rhi_cmd_draw_indexed_base(cmd, n, 1u, S->first[(usize)si * L + level], 0);
+    return n / 3u;
+}
+
+/* Draw skinned mesh si (vertex buffer already bound, index_count > 0) at its
+ * selected level(s). Without skin LOD (or at LOD0, not fading) this is the
+ * original bind + rhi_cmd_draw_indexed. Returns the triangles drawn. */
+static u32 skin_lod_draw(RHICmdBuffer *cmd, const SkinLod *S, u32 scene_mesh_count,
+                         u32 si, const SkinnedMesh *sm) {
+    if (!S->active || S->mesh_count != scene_mesh_count || si >= S->mesh_count ||
+        S->level_count[si] <= 1u) {
+        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
+        rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+        return sm->index_count / 3u;
+    }
+    u32 k = S->draw_k[si];
+    if (k) {
+        u32 t = skin_lod_draw_level(cmd, S, si, sm, S->draw_fine[si],
+                    lod_fade_pack_first_instance(0u, (i32)lod_fade_dither_value(k, true)));
+        t += skin_lod_draw_level(cmd, S, si, sm, S->draw_coarse[si],
+                    lod_fade_pack_first_instance(0u, (i32)lod_fade_dither_value(k, false)));
+        return t;
+    }
+    return skin_lod_draw_level(cmd, S, si, sm, S->draw_fine[si], 0u);
 }
 
 static u32 draw_bench_mega = 0u;
@@ -3991,6 +4358,207 @@ static void demo_build_lod_stress_ecs(RHIDevice *dev, Scene *scene, World *world
     LOG_INFO("LOD stress (ECS): %u instanced entities (BREAK_STRESS_LOD_ECS=%u)", placed, n);
 }
 
+/* Skinned LOD stress scene (BREAK_STRESS_LOD_SKIN=N, N <= 16): N procedural
+ * bumpy tubes (~20k triangles each, 3 m tall) as scene skinned meshes, each
+ * with its own 4-joint chain, on a grid in front of the default camera. The
+ * scene rig replaces the R445 demo arm (the draw loops prefer scene skinned
+ * meshes, and the arm's blend/IK set-up only runs without a scene rig).
+ * One AnimClip drives every chain with 4 channels per chain (16 x 4 = 64 =
+ * SKELETON_MAX_CHANNELS): j0 translation (tube base, static), j1 rotation
+ * (bend about the base pivot at 1 m), j2 translation (+1 m, second pivot),
+ * j3 rotation (bend about the second pivot). j1 and j2 therefore share a skin
+ * matrix; the weights blend j0->j1 around 1 m and j2->j3 around 2 m. Each
+ * chain has its own phase and bend axis. Needs a scene without a rig. */
+#define SKIN_STRESS_MAX      16u
+#define SKIN_STRESS_SEGS     96u    /* around */
+#define SKIN_STRESS_RINGS    104u   /* along: 96 x 104 x 2 = 19968 triangles */
+#define SKIN_STRESS_HEIGHT   3.0f
+#define SKIN_STRESS_RADIUS   0.28f
+#define SKIN_STRESS_KEYS     9u
+
+static f32 skin_stress_smooth(f32 e0, f32 e1, f32 x) {
+    f32 t = (x - e0) / (e1 - e0);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return t * t * (3.0f - 2.0f * t);
+}
+
+static void demo_build_lod_stress_skin(RHIDevice *dev, Scene *scene, const Terrain *terrain, u32 n) {
+    if (!dev || !scene || n == 0u) return;
+    if (n > SKIN_STRESS_MAX) {
+        LOG_WARN("Skin LOD stress: N=%u clamped to %u (4 joints / 4 channels per chain)", n, SKIN_STRESS_MAX);
+        n = SKIN_STRESS_MAX;
+    }
+    if (scene->joint_count > 0u || scene->anim_clip_count > 0u || scene->skinned_mesh_count > 0u) {
+        LOG_WARN("Skin LOD stress: the loaded scene already has a rig; BREAK_STRESS_LOD_SKIN ignored");
+        return;
+    }
+    const u32 segs = SKIN_STRESS_SEGS, rings = SKIN_STRESS_RINGS;
+    const u32 vc = (rings + 1u) * (segs + 1u), ic = rings * segs * 6u;
+    const u32 jc = n * 4u;
+    f32 *vtx = (f32 *)calloc((usize)vc, LOD_SKIN_VERTEX_STRIDE);
+    u32 *idx = (u32 *)malloc((usize)ic * sizeof(u32));
+    usize jp_bytes = (usize)jc * sizeof(u32);
+    usize ib_off = (jp_bytes + 15u) & ~(usize)15u;
+    u8 *rig = (u8 *)calloc(1, ib_off + (usize)jc * sizeof(Mat4));
+    AnimClip *clip = (AnimClip *)calloc(1, sizeof(AnimClip));
+    SkinnedMesh *sms = (SkinnedMesh *)calloc(n, sizeof(SkinnedMesh));
+    if (!vtx || !idx || !rig || !clip || !sms) {
+        free(vtx); free(idx); free(rig); free(clip); free(sms);
+        LOG_WARN("Skin LOD stress: OOM");
+        return;
+    }
+    u32 *parents = (u32 *)rig;
+    Mat4 *inv_bind = (Mat4 *)(rig + ib_off);
+    for (u32 r = 0; r < rings; r++) {
+        for (u32 s = 0; s < segs; s++) {
+            u32 a = r * (segs + 1u) + s, b = a + segs + 1u;
+            u32 *t = &idx[(r * segs + s) * 6u];
+            t[0] = a; t[1] = b; t[2] = a + 1u;
+            t[3] = a + 1u; t[4] = b; t[5] = b + 1u;
+        }
+    }
+    static const u8 tube_a[4] = { 70, 150, 190, 255 }, tube_b[4] = { 40, 90, 130, 255 };
+    u32 mat = demo_scene_push_material(scene, demo_tex_pattern(dev, 0, tube_a, tube_b),
+                                       demo_tex_mr(dev, 0.0f, 0.6f));
+    anim_clip_init(clip, 2.4f, true);
+    u32 cols = 1u;
+    while (cols * cols < n) cols++;
+    const f32 pitch = 2.5f, h1 = SKIN_STRESS_HEIGHT / 3.0f, bw = 0.25f;
+    u32 placed = 0u;
+    for (u32 c = 0; c < n; c++) {
+        u32 cx = c % cols, cz = c / cols;
+        f32 bx = ((f32)cx - 0.5f * (f32)(cols - 1u)) * pitch;
+        f32 bz = -4.0f - (f32)cz * pitch * 1.6f;
+        /* Stand on the terrain, but never below the demo water plane (y = -1). */
+        f32 by = (terrain ? terrain_get_height(terrain, bx, bz) : 0.0f) - 0.05f;
+        if (by < -1.0f) by = -1.0f;
+        u32 j0 = c * 4u;
+        /* Joint bind frames: j0 at the base, j1 at the base (pivot via j0),
+         * j2/j3 at 2 m up. inverse_bind = inverse of the bind world. */
+        parents[j0 + 0u] = UINT32_MAX;
+        parents[j0 + 1u] = j0 + 0u;
+        parents[j0 + 2u] = j0 + 1u;
+        parents[j0 + 3u] = j0 + 2u;
+        f32 py1 = by + h1, py2 = by + 2.0f * h1;
+        inv_bind[j0 + 0u] = mat4_translation(-bx, -py1, -bz);
+        inv_bind[j0 + 1u] = mat4_translation(-bx, -py1, -bz);
+        inv_bind[j0 + 2u] = mat4_translation(-bx, -py2, -bz);
+        inv_bind[j0 + 3u] = mat4_translation(-bx, -py2, -bz);
+        f32 t0[1] = { 0.0f };
+        f32 root_t[4] = { bx, py1, bz, 0.0f };
+        f32 mid_t[4] = { 0.0f, h1, 0.0f, 0.0f };
+        anim_clip_add_channel(clip, j0 + 0u, ANIM_PATH_TRANSLATION, 1u, t0, root_t);
+        anim_clip_add_channel(clip, j0 + 2u, ANIM_PATH_TRANSLATION, 1u, t0, mid_t);
+        f32 times[SKIN_STRESS_KEYS], q1[SKIN_STRESS_KEYS][4], q3[SKIN_STRESS_KEYS][4];
+        f32 phase = (f32)c * 0.9f;
+        f32 ax = cosf((f32)c * 1.3f), az = sinf((f32)c * 1.3f);
+        for (u32 k = 0; k < SKIN_STRESS_KEYS; k++) {
+            f32 u = (f32)k / (f32)(SKIN_STRESS_KEYS - 1u);
+            times[k] = u * clip->duration;
+            f32 w = 6.2831853f * u + phase;
+            f32 a1 = 0.45f * sinf(w), a3 = 0.70f * sinf(w + 1.2f);
+            q1[k][0] = ax * sinf(0.5f * a1); q1[k][1] = 0.0f;
+            q1[k][2] = az * sinf(0.5f * a1); q1[k][3] = cosf(0.5f * a1);
+            q3[k][0] = -az * sinf(0.5f * a3); q3[k][1] = 0.0f;
+            q3[k][2] = ax * sinf(0.5f * a3); q3[k][3] = cosf(0.5f * a3);
+        }
+        anim_clip_add_channel(clip, j0 + 1u, ANIM_PATH_ROTATION, SKIN_STRESS_KEYS, times, &q1[0][0]);
+        anim_clip_add_channel(clip, j0 + 3u, ANIM_PATH_ROTATION, SKIN_STRESS_KEYS, times, &q3[0][0]);
+
+        /* Geometry in world (bind) space: a bumpy closed-side tube. */
+        memset(vtx, 0, (usize)vc * LOD_SKIN_VERTEX_STRIDE);
+        for (u32 r = 0; r <= rings; r++) {
+            f32 v = (f32)r / (f32)rings;
+            f32 y = v * SKIN_STRESS_HEIGHT;
+            for (u32 s = 0; s <= segs; s++) {
+                f32 th = (f32)s / (f32)segs * 6.2831853f;
+                f32 bump = 0.035f * sinf(7.0f * th + 9.0f * y + phase)
+                         + 0.020f * sinf(13.0f * th - 17.0f * y + 1.7f)
+                         + 0.012f * sinf(29.0f * y + 3.0f * th);
+                f32 taper = 1.0f - 0.25f * v;
+                f32 rr = SKIN_STRESS_RADIUS * taper + bump * taper;
+                f32 *vp = &vtx[(usize)(r * (segs + 1u) + s) * 16u];
+                vp[0] = bx + rr * cosf(th);
+                vp[1] = by + y;
+                vp[2] = bz + rr * sinf(th);
+                vp[6] = (f32)s / (f32)segs * 4.0f;
+                vp[7] = v * 6.0f;
+                u32 *jj = (u32 *)&vp[8];
+                f32 *ww = &vp[12];
+                f32 w01 = skin_stress_smooth(h1 - bw, h1 + bw, y);
+                f32 w23 = skin_stress_smooth(2.0f * h1 - bw, 2.0f * h1 + bw, y);
+                if (y < 1.5f * h1) {
+                    jj[0] = j0 + 0u; ww[0] = 1.0f - w01;
+                    jj[1] = j0 + 1u; ww[1] = w01;
+                } else {
+                    jj[0] = j0 + 2u; ww[0] = 1.0f - w23;
+                    jj[1] = j0 + 3u; ww[1] = w23;
+                }
+                jj[2] = jj[3] = j0;
+                ww[2] = ww[3] = 0.0f;
+            }
+        }
+        for (u32 t = 0; t < ic; t += 3u) {
+            f32 *p0 = &vtx[(usize)idx[t] * 16u], *p1 = &vtx[(usize)idx[t + 1u] * 16u];
+            f32 *p2 = &vtx[(usize)idx[t + 2u] * 16u];
+            f32 e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+            f32 e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+            f32 fn[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                          e1[0] * e2[1] - e1[1] * e2[0] };
+            for (u32 q = 0; q < 3u; q++)
+                for (u32 a = 0; a < 3u; a++) vtx[(usize)idx[t + q] * 16u + 3u + a] += fn[a];
+        }
+        for (u32 r = 0; r <= rings; r++) {
+            f32 *s0 = &vtx[(usize)(r * (segs + 1u)) * 16u];
+            f32 *s1 = &vtx[(usize)(r * (segs + 1u) + segs) * 16u];
+            for (u32 a = 3u; a < 6u; a++) { f32 m = s0[a] + s1[a]; s0[a] = m; s1[a] = m; }
+        }
+        for (u32 i = 0; i < vc; i++) {
+            f32 *nn = &vtx[(usize)i * 16u + 3u];
+            f32 l = sqrtf(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+            if (l > 1e-12f) { nn[0] /= l; nn[1] /= l; nn[2] /= l; }
+            else { nn[0] = 0.0f; nn[1] = 1.0f; nn[2] = 0.0f; }
+        }
+        RHIBufferDesc vd = { .usage = RHI_BUFFER_USAGE_VERTEX,
+                             .size = (usize)vc * LOD_SKIN_VERTEX_STRIDE, .initial_data = vtx };
+        RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                             .size = (usize)ic * sizeof(u32), .initial_data = idx };
+        SkinnedMesh *sm = &sms[placed];
+        sm->vertex_buf = rhi_buffer_create(dev, &vd);
+        sm->index_buf = rhi_buffer_create(dev, &id);
+        if (!rhi_handle_valid(sm->vertex_buf) || !rhi_handle_valid(sm->index_buf)) {
+            if (rhi_handle_valid(sm->vertex_buf)) rhi_buffer_destroy(dev, sm->vertex_buf);
+            if (rhi_handle_valid(sm->index_buf)) rhi_buffer_destroy(dev, sm->index_buf);
+            memset(sm, 0, sizeof(*sm));
+            continue;
+        }
+        sm->index_count = ic;
+        sm->vertex_count = vc;
+        sm->material_idx = mat == UINT32_MAX ? 0u : mat;
+        sm->skinned = true;
+        placed++;
+    }
+    free(vtx);
+    free(idx);
+    if (placed == 0u) {
+        free(rig); free(clip); free(sms);
+        LOG_WARN("Skin LOD stress: no tube uploaded");
+        return;
+    }
+    free(scene->skinned_meshes);
+    scene->skinned_meshes = sms;
+    scene->skinned_mesh_count = placed;
+    free(scene->joint_parents);
+    scene->joint_parents = parents;
+    scene->inverse_bind = inv_bind;
+    scene->joint_count = jc;
+    free(scene->anim_clips);
+    scene->anim_clips = clip;
+    scene->anim_clip_count = 1u;
+    LOG_INFO("Skin LOD stress: %u skinned tubes of %u vertices / %u triangles, %u joints, %u channels "
+             "(BREAK_STRESS_LOD_SKIN=%u)", placed, vc, ic / 3u, jc, clip->channel_count, n);
+}
+
 static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
                                 World *world, const Terrain *terrain,
                                 u32 *out_elevator_body) {
@@ -4428,6 +4996,8 @@ int main(int argc, char **argv) {
     if (!asset_load_gltf(&asset, model_path, &scene)) {
         LOG_WARN("No model loaded (%s)", model_path);
     }
+    { const char *e = getenv("BREAK_STRESS_LOD_SKIN");
+      if (e && atoi(e) > 0) demo_build_lod_stress_skin(render.device, &scene, &terrain, (u32)atoi(e)); }
 
     if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
         skeleton_set_joints(&render.skeleton, scene.joint_count, scene.joint_parents, scene.inverse_bind);
@@ -5681,6 +6251,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * for meshes the bake already simplified. */
         if (mega_lod_enabled)
             ecs_lod_setup(&g_ecs_lod, render.device, &scene, world, lod_levels, INSTANCE_DATA_CAP);
+        if (mega_lod_enabled)
+            skin_lod_setup(&g_skin_lod, render.device, &scene, skin_lod_fade_seconds(&render.caps));
         if (lod_levels) {
             for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
             free(lod_levels);
@@ -6710,6 +7282,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         if (asset_scene_restore(&asset, &bscn_scene, tex_base)) {
                             /* The ECS LOD tables index the old meshes' vertices. */
                             ecs_lod_free(&g_ecs_lod, render.device);
+                            skin_lod_free(&g_skin_lod, render.device);
                             asset_scene_free(&asset, &scene);
                             scene = bscn_scene; /* move; bscn_scene zeroed below */
                             memset(&bscn_scene, 0, sizeof(bscn_scene));
@@ -6721,6 +7294,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                                     scene.joint_parents, scene.inverse_bind);
                                 render.anim_clip = scene.anim_clips[0];
                             }
+                            if (mega_lod_enabled)
+                                skin_lod_setup(&g_skin_lod, render.device, &scene,
+                                               skin_lod_fade_seconds(&render.caps));
                             if (anim_blend_ready) {
                                 /* The blend state pointed into the old scene's
                                  * clips — re-init against the restored rig. */
@@ -7782,6 +8358,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               g_ecs_lod.fading, g_ecs_lod.vis_tris, g_ecs_lod.vis_tris_lod0, g_ecs_lod.draws,
                               g_ecs_lod.select_ms);
             }
+            if (g_skin_lod.active) {
+                debug_ui_text(&ui, "Skin LOD: meshes L0/L1/L2 %u/%u/%u  fading %u  tris %u (LOD0 %u)  sel %.3fms",
+                              g_skin_lod.level_meshes[0], g_skin_lod.level_meshes[1], g_skin_lod.level_meshes[2],
+                              g_skin_lod.fading, g_skin_lod.vis_tris, g_skin_lod.vis_tris_lod0,
+                              g_skin_lod.select_ms);
+            }
             if (combined_aa.use_combined || combined_color.use_combined) {
                 debug_ui_text(&ui, "--- CombinedPost ---");
                 debug_ui_text(&ui, "  TAA+FXAA=%s Tonemap+CG=%s",
@@ -8473,6 +9055,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             if (scene.skinned_mesh_count > 0 || rhi_handle_valid(render.skinned_vbo)) {
             skeleton_upload(&render.skeleton);
             }
+            if (g_skin_lod.active)
+                skin_lod_select(&g_skin_lod, &scene, render.skeleton.current_pose,
+                                render.skeleton.joint_count, camera.position, camera.fov, (f32)h);
         }
 
         /* ---- Forward path guard: skip entire forward scene pass when deferred is active ---- */
@@ -8576,13 +9161,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                     }
                     rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
+                    u32 sk_tris = 1u;
                     if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                        rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
-                        rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+                        sk_tris = skin_lod_draw(cmd, &g_skin_lod, scene.skinned_mesh_count, si, sm);
                     } else {
                         rhi_cmd_draw(cmd, 3, 1);
                     }
-                    draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
+                    draw_calls++; tri_count += sk_tris;
                 }
             } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
                 /* R445: the procedural arm geometry references joints 0-3 —
@@ -10086,13 +10671,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         gbuffer_bind_material(cmd, &render, mat, &scene); /* R580 */
                         rhi_cmd_bind_texel_buffers(cmd, skeleton_joint_slot(&render.skeleton), skeleton_joint_slot(&render.skeleton));
                         rhi_cmd_bind_vertex_buffer(cmd, sm->vertex_buf, 0);
+                        u32 sk_tris = 1u;
                         if (sm->index_count > 0 && rhi_handle_valid(sm->index_buf)) {
-                            rhi_cmd_bind_index_buffer(cmd, sm->index_buf, 0, true);
-                            rhi_cmd_draw_indexed(cmd, sm->index_count, 1);
+                            sk_tris = skin_lod_draw(cmd, &g_skin_lod, scene.skinned_mesh_count, si, sm);
                         } else {
                             rhi_cmd_draw(cmd, 3, 1);
                         }
-                        draw_calls++; tri_count += sm->index_count > 0 ? sm->index_count / 3 : 1;
+                        draw_calls++; tri_count += sk_tris;
                     }
                 } else if (rhi_handle_valid(render.skinned_vbo) && render.skeleton.joint_count >= 4u) {
                     /* R445: the procedural arm geometry references joints 0-3 --
@@ -10903,7 +11488,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (cs->io_failed)
             LOG_WARN("LOD cache: writes disabled after an I/O error; scene loading continued");
     }
+    if (g_skin_lod.frames > 0u) {
+        f64 fr = (f64)g_skin_lod.frames;
+        LOG_INFO("SKIN_LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu fading_avg=%.2f",
+                 (unsigned long long)g_skin_lod.frames, g_skin_lod.select_ms_sum / fr,
+                 (f64)g_skin_lod.vis_tris_sum / fr, (f64)g_skin_lod.vis_tris_lod0_sum / fr,
+                 g_skin_lod.vis_tris_lod0_sum ? (f64)g_skin_lod.vis_tris_sum / (f64)g_skin_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_skin_lod.transitions_sum, (f64)g_skin_lod.fading_sum / fr);
+    }
     ecs_lod_free(&g_ecs_lod, render.device);
+    skin_lod_free(&g_skin_lod, render.device);
     LOG_INFO("Shutting down...");
     world_destroy(world);
     motion_history_destroy(&node_motion_history);

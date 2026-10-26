@@ -34,18 +34,24 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
                                           const char *vert_path,
                                           const char *frag_path,
                                           const RHIPipelineDesc *base_desc) {
+    RHICapabilities caps;
+    bool have_caps = rhi_device_get_capabilities(dev, &caps);
+    /* R707c: the skinned G-Buffer variant fades through a direct draw's
+     * first_instance, so it also needs the backend to deliver that. */
+    bool skinned = vert_path && strstr(vert_path, "gbuffer_skinned") != NULL;
     bool lod_fade = lod_fade_seconds() > 0.0f && vert_path &&
         (strstr(vert_path, "gbuffer.") || strstr(vert_path, "gbuffer_vk.") ||
-         strstr(vert_path, "gbuffer_arr.") || strstr(vert_path, "gbuffer_arr_vk."));
-    RHICapabilities caps;
-    if (rhi_device_get_capabilities(dev, &caps) && caps.shader_sidecar_paths) {
+         strstr(vert_path, "gbuffer_arr.") || strstr(vert_path, "gbuffer_arr_vk.") ||
+         (skinned && have_caps && caps.indirect_first_instance_supported));
+    if (have_caps && caps.shader_sidecar_paths) {
         /* R644: D3D12 never compiles source in-process; the GLSL path
          * resolves to the precompiled <name>_hlsl sidecar. HAS_IBL is not
          * injected there: the sidecar is the no-IBL variant (the D3D12
          * cubemaps it would sample are stubs). */
         if (lod_fade) {
             bool arr = strstr(vert_path, "gbuffer_arr") != NULL;
-            vert_path = arr ? "shaders/gbuffer_arr_lodfade.vert" : "shaders/gbuffer_lodfade.vert";
+            vert_path = skinned ? "shaders/gbuffer_skinned_lodfade.vert"
+                      : arr ? "shaders/gbuffer_arr_lodfade.vert" : "shaders/gbuffer_lodfade.vert";
             frag_path = arr ? "shaders/gbuffer_arr_lodfade.frag" : "shaders/gbuffer_lodfade.frag";
         }
         RHIShader svs = rhi_shader_create_path(dev, vert_path, false);
