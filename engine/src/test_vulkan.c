@@ -4153,8 +4153,17 @@ static bool tv_test_grouped_compact(const TestRenderState *rs,
 
 /* TEST 11 body: R441 material texture-array single-execute forward.
  * scr_w/scr_h: presentable size for the screenshot readback. */
-static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr_h) {
-    /* R441: end-to-end gate for the texture-array material-indirect path.
+static const u32 tv_matarr_layers_of_quad[4] = { 1u, 2u, 3u, 0u };
+
+static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr_h,
+                                   bool direct) {
+    /* R707b: direct = true replays the same scene with one
+     * rhi_cmd_draw_indexed_instanced_base per visible quad (first_instance =
+     * layer, quad 2 skipped on the CPU) instead of the indirect execute, so
+     * the same quadrant pixels prove a DIRECT draw's first_instance reaches
+     * gl_BaseInstanceARB.
+     *
+     * R441: end-to-end gate for the texture-array material-indirect path.
      * 4 quads (one per screen quadrant) draw through ONE indirect execute;
      * each cmd's first_instance carries the sampler2DArray layer:
      *   quad0 red 64x64 (upsampled to 128), quad1 green 128x128 native,
@@ -4256,13 +4265,12 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             /* Ungrouped bake-order upload; first_instance = array layer.
              * quad2 (blue) gets layer 3 but is culled by visibility. */
             DrawIndexedIndirectCmd acmds[4];
-            const u32 layers_of_quad[4] = { 1u, 2u, 3u, 0u };
             for (u32 k = 0; k < 4; k++) {
                 acmds[k].index_count    = 6;
                 acmds[k].instance_count = 1;
                 acmds[k].first_index    = k * 6u;
                 acmds[k].vertex_offset  = (i32)(k * 4u);
-                acmds[k].first_instance = layers_of_quad[k];
+                acmds[k].first_instance = tv_matarr_layers_of_quad[k];
             }
             ids_ok = indirect_draw_init(&ids, rs->device, 4);
             if (ids_ok) indirect_draw_upload(&ids, rs->device, acmds, 4);
@@ -4305,9 +4313,11 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             RHICmdBuffer *cmd = rhi_frame_begin(rs->device);
             if (!cmd) break;
             rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 0.0f, 1.0f);
-            indirect_draw_upload_visibility(&ids, rs->device, vis, 4);
-            indirect_draw_compact_no_barrier(&ids, rs->device, cmd);
-            rhi_cmd_memory_barrier(cmd);
+            if (!direct) {
+                indirect_draw_upload_visibility(&ids, rs->device, vis, 4);
+                indirect_draw_compact_no_barrier(&ids, rs->device, cmd);
+                rhi_cmd_memory_barrier(cmd);
+            }
             /* R234-A: rebind graphics pipeline after compact compute, and
              * only THEN set the push constants — a set before the compact
              * would be flushed (and consumed) by the compute dispatch. */
@@ -4330,7 +4340,16 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
                 RHI_HANDLE_NULL, RHI_HANDLE_NULL, RHI_HANDLE_NULL, NULL, 0u);
             rhi_cmd_bind_vertex_buffer(cmd, arr_vbo, 0);
             rhi_cmd_bind_index_buffer(cmd, arr_ibo, 0, true);
-            indirect_draw_execute(&ids, rs->device);
+            if (direct) {
+                for (u32 k = 0; k < 4; k++) {
+                    if (!vis[k]) continue;
+                    rhi_cmd_draw_indexed_instanced_base(cmd, 6u, 1u, k * 6u,
+                                                        (i32)(k * 4u),
+                                                        tv_matarr_layers_of_quad[k]);
+                }
+            } else {
+                indirect_draw_execute(&ids, rs->device);
+            }
             rhi_frame_end(rs->device);
             /* R577: capture after frame_end (image still acquired, its final
              * content submitted) and before present — the only spec-legal
@@ -4416,13 +4435,17 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
         }
     }
 
-    bool exec_ok = (frames_ok == 3u) && (exec_count == frames_ok);
+    const u32 want_exec = direct ? 0u : frames_ok;
+    bool exec_ok = (frames_ok == 3u) && (exec_count == want_exec);
     if (!exec_ok)
-        LOG_ERROR("FAIL: execute draws=%u over %u frames, want exactly 1/frame",
-                  exec_count, frames_ok);
+        LOG_ERROR("FAIL: execute draws=%u over %u frames, want %u",
+                  exec_count, frames_ok, want_exec);
 
     bool matarr_pass = setup_ok && pixels_ok && exec_ok;
-    if (matarr_pass)
+    if (matarr_pass && direct)
+        LOG_INFO("PASS: material-array DIRECT draws (first_instance = layer via "
+                 "rhi_cmd_draw_indexed_instanced_base, quadrant pixels verified)");
+    else if (matarr_pass)
         LOG_INFO("PASS: material-array single execute (4 layers incl. fallback, "
                  "1 execute/frame, quadrant pixels + two-tone upsample verified)");
 
@@ -6454,9 +6477,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
         LOG_INFO("============================================");
         LOG_INFO("TEST 11: MATERIAL ARRAY SINGLE-EXECUTE DRAW");
         LOG_INFO("============================================");
-        bool matarr_pass = tv_test_material_array(&render, gw, gh);
+        bool matarr_pass = tv_test_material_array(&render, gw, gh, false);
         LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST %s",
                  matarr_pass ? "PASSED ✓" : "FAILED");
+
+        LOG_INFO("============================================");
+        LOG_INFO("TEST 11b: DIRECT DRAW FIRST_INSTANCE (R707b)");
+        LOG_INFO("============================================");
+        bool dfi_pass = tv_test_material_array(&render, gw, gh, true);
+        LOG_INFO("RESULT: DIRECT DRAW FIRST_INSTANCE TEST %s",
+                 dfi_pass ? "PASSED ✓" : "FAILED");
 
         LOG_INFO("============================================");
         LOG_INFO("TEST 12: DEFERRED GBUFFER ARRAY SINGLE-EXECUTE");
@@ -6495,7 +6525,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 
         /* R442: GL has no validation-layers concept — the VK VALIDATION GATE
          * is intentionally absent here; the pixel gates above are the check. */
-        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass;
+        bool all_pass = capability_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && golden_pass && ibl_pass && idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrf_pass && pbrc_pass && psh_pass && bindings_parity_pass;
         if (rhi_handle_valid(ibo)) rhi_buffer_destroy(render.device, ibo);
         if (rhi_handle_valid(vbo)) rhi_buffer_destroy(render.device, vbo);
         test_render_shutdown(&render);
@@ -7448,12 +7478,23 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
      * the GL build runs it in its own early-exit branch above. */
     u32 tw = 0, th = 0;
     platform_get_drawable_size(engine.platform, &tw, &th);
-    bool matarr_pass = tv_test_material_array(&render, tw, th);
+    bool matarr_pass = tv_test_material_array(&render, tw, th, false);
 
     if (matarr_pass) {
         LOG_INFO("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST PASSED ✓");
     } else {
         LOG_ERROR("RESULT: MATERIAL ARRAY SINGLE-EXECUTE TEST FAILED");
+    }
+
+    /* ---- TEST 11b: R707b direct-draw first_instance ---- */
+    LOG_INFO("============================================");
+    LOG_INFO("TEST 11b: DIRECT DRAW FIRST_INSTANCE (R707b)");
+    LOG_INFO("============================================");
+    bool dfi_pass = tv_test_material_array(&render, tw, th, true);
+    if (dfi_pass) {
+        LOG_INFO("RESULT: DIRECT DRAW FIRST_INSTANCE TEST PASSED ✓");
+    } else {
+        LOG_ERROR("RESULT: DIRECT DRAW FIRST_INSTANCE TEST FAILED");
     }
 
     /* ---- TEST 12: R442 deferred G-buffer material-array single execute ---- */
@@ -7535,7 +7576,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
 msaa_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
-idraw_pass && matarr_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
+idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
 validation_pass;
 
     LOG_INFO("============================================");

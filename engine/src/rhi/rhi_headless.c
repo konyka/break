@@ -222,6 +222,12 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
     (void)cmd; (void)index_count; (void)instance_count; (void)first_index;
     (void)vertex_offset;
 }
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
+    (void)cmd; (void)index_count; (void)instance_count; (void)first_index;
+    (void)vertex_offset; (void)first_instance;
+}
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,
                            u32 draw_count, u32 stride) {
     (void)dev; (void)cmd_buf; (void)offset; (void)draw_count; (void)stride;

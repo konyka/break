@@ -9433,6 +9433,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                     memcpy(instance_draw + (usize)k * 32,
                                            instance_data + (usize)E->bucket_order[c0 + k] * 32, 128);
                                 rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
+                                rhi_cmd_bind_pipeline(cmd, inst_clustered ? render.clustered_inst_pipeline :
+                                    (wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ?
+                                     render.wire_instanced_pipeline : render.instanced_pipeline));
                                 if (inst_clustered) {
                                     clustered_bind_material(cmd, &render, &render.cli, mat, &scene);
                                 } else {
@@ -9467,6 +9470,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
                     if (cnt == 0) continue;
                     rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
+                    /* Metal suspends the render encoder for the upload blit;
+                     * restore this draw's pipeline before binding its material
+                     * and vertex data into the resumed pass. */
+                    rhi_cmd_bind_pipeline(cmd, inst_clustered ? render.clustered_inst_pipeline :
+                        (wireframe_mode && rhi_handle_valid(render.wire_instanced_pipeline) ?
+                         render.wire_instanced_pipeline : render.instanced_pipeline));
                     Mesh *m = &scene.meshes[i];
                     Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
                     if (inst_clustered) {

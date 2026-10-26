@@ -1650,6 +1650,191 @@ TEST(indirect_start_instance_reaches_the_shader)
     rhi_shader_destroy(g_dev, fs);
 }
 
+/* R707b: the DIRECT twin of indirect_start_instance_reaches_the_shader.
+ * rhi_cmd_draw_indexed_instanced_base passes first_instance as
+ * DrawIndexedInstanced's StartInstanceLocation, and the vs_6_8 sidecar reads
+ * it through SV_StartInstanceLocation exactly as for ExecuteIndirect. Same
+ * scene, shading and colour table; the quad sits behind 3 junk indices and 2
+ * junk vertices so first_index and vertex_offset are exercised in the same
+ * call ({2 instances, start 1} also pins that the base, not the instance
+ * count, is read). caps.indirect_first_instance_supported gates the skinned
+ * LOD fade, which rides this entry point. */
+TEST(direct_start_instance_reaches_the_shader)
+{
+    static const float verts[8 * 8] = {
+        /*  pos                    normal        uv  */
+         9.0f,  9.0f,  0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         9.0f,  9.0f,  0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+        -1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 0.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f,
+         1.2f, -1.2f,  0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 0.0f,
+         1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   2.0f, 2.0f,
+        -1.2f,  1.05f, 0.00f,   0.0f, 0.0f, 1.0f,   0.0f, 2.0f
+    };
+    static const unsigned short indices[3 + 6] = {
+        7, 7, 7,   0, 1, 2, 3, 4, 5
+    };
+    static const unsigned char layer_red[2 * 2 * 4] = {
+        255, 0, 0, 255,   255, 0, 0, 255,
+        255, 0, 0, 255,   255, 0, 0, 255
+    };
+    static const unsigned char layer_green[2 * 2 * 4] = {
+        0, 255, 0, 255,   0, 255, 0, 255,
+        0, 255, 0, 255,   0, 255, 0, 255
+    };
+    static const unsigned char layer_blue[2 * 2 * 4] = {
+        0, 0, 255, 255,   0, 0, 255, 255,
+        0, 0, 255, 255,   0, 0, 255, 255
+    };
+    static const float identity[16] = {
+        1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1
+    };
+    static const unsigned char expect[3][4] = {
+        { 255,   0,   0, 255 },
+        {   0, 255,   0, 255 },
+        {   0,   0, 255, 255 }
+    };
+    static const struct { u32 instances; u32 start; int layer; } cases[4] = {
+        { 1u, 0u, 0 },
+        { 1u, 1u, 1 },
+        { 1u, 2u, 2 },
+        { 2u, 1u, 1 }
+    };
+    const RHIFormat formats[2] = {
+        RHI_FORMAT_R8G8B8A8_UNORM, RHI_FORMAT_R16G16_SFLOAT
+    };
+    RHIMRTFBO fbo = rhi_mrt_fbo_create(g_dev, 8u, 8u, formats, 2u);
+    RHITexture albedo_array;
+    RHIShader vs, fs;
+    RHIPipeline pipe;
+    RHIPipelineDesc pdesc;
+    RHIBufferDesc bdesc;
+    RHIBuffer vbo, ibo, temporal_ubo;
+    RHICmdBuffer *cmd;
+    unsigned char rt0[8 * 8 * 4];
+    unsigned short rt1[8 * 8 * 2];
+    const int on_warp = warp_adapter_is_warp(g_dev);
+    int c, pixel, i;
+
+    ASSERT_TRUE(rhi_handle_valid(fbo.fb));
+    {
+        RHICapabilities caps;
+        ASSERT_TRUE(rhi_device_get_capabilities(g_dev, &caps));
+        ASSERT_TRUE(caps.indirect_first_instance_supported);
+    }
+
+    vs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.vert", false);
+    fs = rhi_shader_create_path(g_dev, "shaders/blinn_phong_arr.frag", true);
+    ASSERT_TRUE(rhi_handle_valid(vs));
+    ASSERT_TRUE(rhi_handle_valid(fs));
+
+    albedo_array = rhi_texture_array_create(g_dev, 2u, 2u, 3u,
+                                            RHI_FORMAT_R8G8B8A8_UNORM);
+    ASSERT_TRUE(rhi_handle_valid(albedo_array));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 0u, layer_red,
+                                   sizeof(layer_red));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 1u, layer_green,
+                                   sizeof(layer_green));
+    rhi_texture_array_upload_layer(g_dev, albedo_array, 2u, layer_blue,
+                                   sizeof(layer_blue));
+
+    memset(&pdesc, 0, sizeof(pdesc));
+    pdesc.vert = vs; pdesc.frag = fs;
+    pdesc.vertex_stride = 32u;
+    pdesc.uses_textures = true;
+    pdesc.color_format = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_attachment_count = 2u;
+    pdesc.mrt_formats[0] = RHI_FORMAT_R8G8B8A8_UNORM;
+    pdesc.mrt_formats[1] = RHI_FORMAT_R16G16_SFLOAT;
+    pdesc.disable_culling = true;
+    pdesc.depth_write_disable = true;
+    pipe = rhi_pipeline_create(g_dev, &pdesc);
+    ASSERT_TRUE(rhi_handle_valid(pipe));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(verts);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(vbo));
+
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.size = sizeof(indices);
+    bdesc.usage = RHI_BUFFER_USAGE_INDEX;
+    bdesc.initial_data = indices;
+    ibo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_TRUE(rhi_handle_valid(ibo));
+
+    temporal_ubo = warp_forward_temporal_create(g_dev, 0.0f, 0.0f, -10.0f);
+    ASSERT_TRUE(rhi_handle_valid(temporal_ubo));
+
+    for (c = 0; c < 4; ++c) {
+        const int layer = cases[c].layer;
+        cmd = rhi_frame_begin(g_dev);
+        ASSERT_TRUE(cmd != NULL);
+        rhi_mrt_fbo_bind(cmd, &fbo);
+        rhi_cmd_bind_pipeline(cmd, pipe);
+        rhi_cmd_set_uniform_mat4(cmd, 0, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 64, identity);
+        rhi_cmd_set_uniform_mat4(cmd, 128, identity);
+        rhi_cmd_set_uniform_vec3(cmd, 192, 0.0f, -1.0f, 0.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 208, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_set_uniform_vec3(cmd, 224, 1.0f, 1.0f, 1.0f);
+        rhi_cmd_bind_uniform_buffer(cmd, temporal_ubo, 1u);
+        rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+        rhi_cmd_bind_index_buffer(cmd, ibo, 0u, false);
+        rhi_cmd_bind_texture(cmd, albedo_array, (RHISampler){0}, 0u);
+        rhi_cmd_draw_indexed_instanced_base(cmd, 6u, cases[c].instances, 3u, 2,
+                                            cases[c].start);
+        rhi_mrt_fbo_unbind(cmd, 64u, 64u);
+        ASSERT_EQ(rhi_frame_end_ex(g_dev), RHI_RESULT_OK);
+        ASSERT_EQ(rhi_present_ex(g_dev), RHI_RESULT_OK);
+
+        memset(rt0, 0, sizeof(rt0));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[0], rt0,
+                                            sizeof(rt0)));
+        for (pixel = 0; pixel < 64; ++pixel) {
+            i = pixel * 4;
+            if (rt0[i + 0] != expect[layer][0] ||
+                rt0[i + 1] != expect[layer][1] ||
+                rt0[i + 2] != expect[layer][2] ||
+                rt0[i + 3] != expect[layer][3]) {
+                printf("FAIL: direct {InstanceCount=%u, StartInstanceLocation=%u} "
+                       "on %s adapter rendered layer %d at pixel %d as "
+                       "(%u,%u,%u,%u), expected (%u,%u,%u,%u)\n",
+                       (unsigned)cases[c].instances,
+                       (unsigned)cases[c].start,
+                       on_warp ? "WARP" : "hardware", layer, pixel,
+                       (unsigned)rt0[i + 0], (unsigned)rt0[i + 1],
+                       (unsigned)rt0[i + 2], (unsigned)rt0[i + 3],
+                       (unsigned)expect[layer][0], (unsigned)expect[layer][1],
+                       (unsigned)expect[layer][2], (unsigned)expect[layer][3]);
+            }
+            ASSERT_EQ(rt0[i + 0], expect[layer][0]);
+            ASSERT_EQ(rt0[i + 1], expect[layer][1]);
+            ASSERT_EQ(rt0[i + 2], expect[layer][2]);
+            ASSERT_EQ(rt0[i + 3], expect[layer][3]);
+        }
+
+        memset(rt1, 0, sizeof(rt1));
+        ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], rt1,
+                                            sizeof(rt1)));
+        for (i = 0; i < 64 * 2; ++i) {
+            ASSERT_EQ(rt1[i], 0u);
+        }
+    }
+
+    rhi_mrt_fbo_destroy(g_dev, &fbo);
+    rhi_texture_destroy(g_dev, albedo_array);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, ibo);
+    rhi_buffer_destroy(g_dev, temporal_ubo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(mrt_fbo_clears_and_reads_independent_attachments) {
     const RHIFormat formats[2] = {
         RHI_FORMAT_R8G8B8A8_UNORM,
@@ -11499,6 +11684,7 @@ int main(void) {
     RUN_TEST(blinn_phong_mrt_sidecar_writes_velocity_to_rt1);
     RUN_TEST(blinn_phong_arr_sidecar_forwards_the_layer_into_pixels);
     RUN_TEST(indirect_start_instance_reaches_the_shader);
+    RUN_TEST(direct_start_instance_reaches_the_shader);
     RUN_TEST(shadow_map_create_publishes_a_depth_target_and_destroy_is_idempotent);
     RUN_TEST(ssgi_gather_early_out_and_blur_pass_through_are_exact);
     RUN_TEST(lens_flare_sidecar_matches_the_derived_64_pixel_table);

@@ -599,6 +599,7 @@ TEST(command_entrypoints_are_safe_without_current_device)
     rhi_cmd_draw_base(NULL, 1u, 1u, 0u);
     rhi_cmd_draw_indexed(NULL, 1u, 1u);
     rhi_cmd_draw_indexed_base(NULL, 1u, 1u, 0u, 0);
+    rhi_cmd_draw_indexed_instanced_base(NULL, 1u, 1u, 0u, 0, 1u);
     rhi_cmd_draw_indirect(NULL, RHI_HANDLE_NULL, 0u, 1u, 0u);
     rhi_cmd_draw_indexed_indirect(NULL, RHI_HANDLE_NULL, 0u, 1u, 0u);
     rhi_cmd_draw_indexed_indirect_count(NULL, RHI_HANDLE_NULL, 0u,

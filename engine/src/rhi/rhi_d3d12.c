@@ -4748,6 +4748,15 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count,
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
                                u32 instance_count, u32 first_index,
                                i32 vertex_offset) {
+    rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count,
+                                        first_index, vertex_offset, 0u);
+}
+/* R707b: StartInstanceLocation reaches the vs_6_8 sidecars through
+ * SV_StartInstanceLocation for direct draws too, so the shader-model cap
+ * indirect_first_instance_supported covers this entry point as well. */
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
     ID3D12GraphicsCommandList *list =
         rhi_d3d12_cmd_list((RHI_D3D12Context *)cmd);
     if (list == NULL) return;
@@ -4755,7 +4764,7 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count,
     rhi_d3d12_flush_samplers((RHI_D3D12Context *)cmd);
     rhi_d3d12_flush_uniform_staging((RHI_D3D12Context *)cmd);
     ID3D12GraphicsCommandList_DrawIndexedInstanced(list, index_count,
-        instance_count, first_index, vertex_offset, 0u);
+        instance_count, first_index, vertex_offset, first_instance);
 }
 UINT rhi_d3d12_indirect_args_valid(UINT indexed, UINT stride, UINT draw_count) {
     if (indexed)
