@@ -4241,6 +4241,75 @@ static f32 demo_rock_disp(f32 x, f32 y, f32 z) {
     return 1.0f + d;
 }
 
+/* BREAK_MODEL_VIEW: world-space bounds of the loaded model -- static nodes
+ * through their mesh AABB and world transform, skinned meshes from their
+ * vertices skinned by the first sampled animation pose (bind positions when
+ * the rig has no animation), read back once. Returns false when empty. */
+static bool demo_model_bounds(RHIDevice *dev, Scene *scene, Vec3 *out_min, Vec3 *out_max) {
+    Vec3 mn = vec3(1e30f, 1e30f, 1e30f), mx = vec3(-1e30f, -1e30f, -1e30f);
+    bool any = false;
+    scene_compute_world_transforms(scene);
+    for (u32 ni = 0; ni < scene->node_count; ni++) {
+        const SceneNode *nd = &scene->nodes[ni];
+        if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene->mesh_count) continue;
+        const Mesh *m = &scene->meshes[nd->mesh_index];
+        if (!(m->aabb_max.e[0] >= m->aabb_min.e[0])) continue;
+        const Mat4 *wt = &nd->world_transform;
+        for (int ci = 0; ci < 8; ci++) {
+            f32 l[3] = { (ci & 1) ? m->aabb_max.e[0] : m->aabb_min.e[0],
+                         (ci & 2) ? m->aabb_max.e[1] : m->aabb_min.e[1],
+                         (ci & 4) ? m->aabb_max.e[2] : m->aabb_min.e[2] };
+            for (int c = 0; c < 3; c++) {
+                f32 w = wt->e[0][c] * l[0] + wt->e[1][c] * l[1] + wt->e[2][c] * l[2] + wt->e[3][c];
+                if (w < mn.e[c]) mn.e[c] = w;
+                if (w > mx.e[c]) mx.e[c] = w;
+            }
+        }
+        any = true;
+    }
+    Mat4 *poses = NULL;
+    u32 pose_count = skin_lod_sample_poses(scene, &poses);
+    const u32 jc = scene->joint_count;
+    for (u32 si = 0; si < scene->skinned_mesh_count; si++) {
+        const SkinnedMesh *sm = &scene->skinned_meshes[si];
+        if (sm->vertex_count == 0u || !rhi_handle_valid(sm->vertex_buf)) continue;
+        usize vb = (usize)sm->vertex_count * LOD_SKIN_VERTEX_STRIDE;
+        f32 *v = (f32 *)malloc(vb);
+        if (v && rhi_buffer_read(dev, sm->vertex_buf, v, 0, vb)) {
+            for (u32 vi = 0; vi < sm->vertex_count; vi++) {
+                const f32 *src = &v[(usize)vi * (LOD_SKIN_VERTEX_STRIDE / sizeof(f32))];
+                f32 pos[3] = { src[0], src[1], src[2] };
+                if (pose_count > 0u) {
+                    const u32 *ji = (const u32 *)&src[8];
+                    const f32 *jw = &src[12];
+                    f32 acc[3] = { 0, 0, 0 }, wsum = 0.0f;
+                    for (int k = 0; k < 4; k++) {
+                        if (!(jw[k] > 0.0f) || ji[k] >= jc) continue;
+                        const Mat4 *M = &poses[ji[k]];
+                        for (int c = 0; c < 3; c++)
+                            acc[c] += jw[k] * (M->e[0][c] * src[0] + M->e[1][c] * src[1] +
+                                               M->e[2][c] * src[2] + M->e[3][c]);
+                        wsum += jw[k];
+                    }
+                    if (wsum > 0.0f)
+                        for (int c = 0; c < 3; c++) pos[c] = acc[c] / wsum;
+                }
+                for (int c = 0; c < 3; c++) {
+                    if (pos[c] < mn.e[c]) mn.e[c] = pos[c];
+                    if (pos[c] > mx.e[c]) mx.e[c] = pos[c];
+                }
+            }
+            any = true;
+        }
+        free(v);
+    }
+    free(poses);
+    if (!any) return false;
+    *out_min = mn;
+    *out_max = mx;
+    return true;
+}
+
 static void demo_build_lod_stress(RHIDevice *dev, Scene *scene, const Terrain *terrain, u32 n) {
     if (!dev || !scene || n == 0u) return;
     const u32 sectors = 160u, rings = 80u;
@@ -4998,6 +5067,25 @@ int main(int argc, char **argv) {
     }
     { const char *e = getenv("BREAK_STRESS_LOD_SKIN");
       if (e && atoi(e) > 0) demo_build_lod_stress_skin(render.device, &scene, &terrain, (u32)atoi(e)); }
+    /* BREAK_MODEL_VIEW=s: model inspection -- no terrain, water, showcase or
+     * falling boxes; the camera frames the loaded model's bounds from +Z at
+     * s times the fit distance (s=1 whole model, s<1 closer). BREAK_CAM
+     * still overrides the placement. */
+    f32 model_view_scale = 0.0f;
+    Vec3 model_view_min = vec3(0, 0, 0), model_view_max = vec3(0, 0, 0);
+    { const char *e = getenv("BREAK_MODEL_VIEW");
+      if (e && e[0] && atof(e) > 0.0) {
+          if (demo_model_bounds(render.device, &scene, &model_view_min, &model_view_max)) {
+              model_view_scale = (f32)atof(e);
+              LOG_INFO("BREAK_MODEL_VIEW: bounds (%.2f,%.2f,%.2f)-(%.2f,%.2f,%.2f), scale %.2f",
+                       model_view_min.e[0], model_view_min.e[1], model_view_min.e[2],
+                       model_view_max.e[0], model_view_max.e[1], model_view_max.e[2],
+                       model_view_scale);
+          } else {
+              LOG_WARN("BREAK_MODEL_VIEW: model has no geometry; ignored");
+          }
+      } }
+    const bool model_view = model_view_scale > 0.0f;
 
     if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
         skeleton_set_joints(&render.skeleton, scene.joint_count, scene.joint_parents, scene.inverse_bind);
@@ -5013,7 +5101,7 @@ int main(int argc, char **argv) {
     PhysicsWorld *physics = physics_world_create(256);
     u32 ground = physics_body_create(physics, vec3(0, -2, 0), vec3(20, 0.5f, 20), 0, true, 0);
 
-    for (u32 i = 0; i < 10; i++) {
+    for (u32 i = 0; i < (model_view ? 0u : 10u); i++) {
         Entity e = world_create_entity(world);
         CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
         if (!t) {
@@ -5042,8 +5130,9 @@ int main(int argc, char **argv) {
      * CCD wall, scripted-velocity elevator). Must run after asset_load_gltf
      * and before scene_compute_world_transforms / the bake. */
     u32 showcase_elevator_body = UINT32_MAX;
-    demo_build_showcase(render.device, &scene, physics, world, &terrain,
-                        &showcase_elevator_body);
+    if (!model_view)
+        demo_build_showcase(render.device, &scene, physics, world, &terrain,
+                            &showcase_elevator_body);
     { const char *e = getenv("BREAK_STRESS_LOD");
       if (e && atoi(e) > 0) demo_build_lod_stress(render.device, &scene, &terrain, (u32)atoi(e)); }
     { const char *e = getenv("BREAK_STRESS_LOD_ECS");
@@ -5168,6 +5257,16 @@ int main(int argc, char **argv) {
     platform_get_logical_size(engine.platform, &logical_w, &logical_h);
     /* R142: Guard against h==0 (window minimized) producing Inf/NaN aspect */
     camera_init(&camera, 1.047f, (f32)w / (f32)(h > 0 ? h : 1), 0.1f, 100.0f);
+    if (model_view) {
+        Vec3 c = vec3_scale(vec3_add(model_view_min, model_view_max), 0.5f);
+        f32 r = 0.5f * vec3_len(vec3_sub(model_view_max, model_view_min));
+        if (r < 0.01f) r = 0.01f;
+        f32 dist = model_view_scale * r / tanf(0.5f * camera.fov);
+        if (dist < 2.0f * camera.near_plane) dist = 2.0f * camera.near_plane;
+        camera.position = vec3(c.e[0], c.e[1], c.e[2] + dist);
+        LOG_INFO("BREAK_MODEL_VIEW: camera (%.2f,%.2f,%.2f) radius %.2f", camera.position.e[0],
+                 camera.position.e[1], camera.position.e[2], r);
+    }
     /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
      * headless screenshot verification. The terrain heightfield can bury the
      * default (0,2,8) eye point (AGL < 0) on some seeds; opt-in, default
@@ -8806,7 +8905,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (render.depth_loc_model >= 0) rhi_cmd_set_uniform_mat4(cmd, render.depth_loc_model, &frame_identity.e[0][0]);
                 if (render.depth_loc_lvp >= 0) rhi_cmd_set_uniform_mat4(cmd, render.depth_loc_lvp, &render.cascade_vp[c].e[0][0]);
 
-                if (rhi_handle_valid(terrain.vbo)) {
+                if (!model_view && rhi_handle_valid(terrain.vbo)) {
                     rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
                     rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
                     rhi_cmd_draw_indexed(cmd, terrain.index_count, 1);
@@ -8922,7 +9021,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         point_shadow_render_begin(&pt_shadows, cmd, pli, pface);
 
                         /* Render scene geometry into depth cubemap face. */
-                        if (rhi_handle_valid(terrain.vbo)) {
+                        if (!model_view && rhi_handle_valid(terrain.vbo)) {
                             /* R81-4: u_model=identity already set by point_shadow_render_begin. */
                             rhi_cmd_bind_vertex_buffer(cmd, terrain.vbo, 0);
                             rhi_cmd_bind_index_buffer(cmd, terrain.ibo, 0, true);
@@ -9220,14 +9319,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
          * effects (shoreline foam, underwater caustics/darkening via u_water_y/u_time).
          * It runs unconditionally — the clustered terrain draw below was always
          * depth-culled (same geometry, same depth, LESS test) and is now skipped. */
+        if (!model_view)
         terrain_render(&terrain, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
                        render.terrain_tex, active_sampler,
                        render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias,
                        water.water_y, (f32)total_time, fog_enabled ? 0.3f : 0.0f);
 
         water_update(&water, (f32)engine.delta_time);
-        water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
-                     render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
+        if (!model_view)
+            water_render(&water, cmd, &view.e[0][0], &proj.e[0][0], &camera.position.e[0],
+                         render.shadow_map.depth_tex, &render.cascade_vp[0].e[0][0], shadow_bias);
 
         /* R273: light population (clear + add_dir + 32× orbit add_point) moved
          * above the forward/deferred split so DEFERRED gets fresh lights too.
@@ -10844,7 +10945,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
 
             /* Render terrain. */
-            if (rhi_handle_valid(terrain.vbo)) {
+            if (!model_view && rhi_handle_valid(terrain.vbo)) {
                 gbuffer_bind_material(cmd, &render, NULL, &scene); /* R580 */
                 if (dsys->_loc_gbuf_model >= 0)
                     rhi_cmd_set_uniform_mat4(cmd, dsys->_loc_gbuf_model, &frame_identity.e[0][0]);

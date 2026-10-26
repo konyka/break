@@ -129,7 +129,10 @@ FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3�
 - **真实 glTF 蒙皮资产（补测）**：Khronos 样例 CesiumMan（19 关节、4672 三角形）、BrainStem（18 关节、59 个蒙皮图元）、RiggedFigure（256 三角形）只在本地下载使用、不入库。三后端 Release 各跑 150 帧：全部正常退出，0 设备丢失，0 条错误日志。
   - 生成：CesiumMan 4672/2336/1168 三角形，rel_err 0.0128/0.0257，8 个姿势，约 120 ms；BrainStem 59 个图元中 34 个达到门槛、33 个生成了级别，总计 61666/27504/13930 三角形，约 2.0 s（Release，一次性加载成本）；RiggedFigure 低于 512 三角形门槛，按设计不生成。
   - 运行：BrainStem 相机推远时 44 次换级、平均 13 个图元在淡入淡出、可见三角形降到 71%；CesiumMan 默认机位不换级，`BREAK_LOD_PIXEL_ERROR=400` 强制到 LOD2（三角形 25%）后正常绘制。VK Debug 下 BrainStem 0 条验证消息，D3D12 调试层下 0 条消息。
-  - 没做到的：近距离肉眼检查关节。演示场景的地形在原点附近高约 1 m，这些模型的脚在 z=0，被地形埋住一半，演示相机也没有对准模型的开关；只看了远景截图，看不出关节细节。
+  - 近距离检查（补测）：新增 `BREAK_MODEL_VIEW=s`（见下），CesiumMan / BrainStem 在 VK Debug 下 `s=0.55`、`BREAK_DOF=0 BREAK_BLOOM=0` 第 30、60 帧截图：肩、肘、髋、膝弯折处表面连续，无撕裂、无塌陷、无尖刺；GL / D3D12 Release 同机位截图一致，0 条 ERROR，VK 0 条验证消息。
+  - 近看时发现并修了一个加载器问题：glTF 关节的全局变换要包含它上面的非关节祖先节点（CesiumMan 是 `Z_UP` → `Armature` → 根关节），引擎的骨骼只沿关节父子链计算，把这些祖先丢了，所以这类模型在演示里是侧躺的（Y-up 引擎里按 Z-up 摆放）。现在 `asset_load_gltf` 把每个带非单位世界变换的非关节父节点变成一个额外的根关节（逆绑定为单位阵），用常量 T/R/S 通道复现该节点的世界变换（最多 8 个，且受 `SKELETON_MAX_JOINTS` / `SKELETON_MAX_CHANNELS` 限制，超出时打 WARN 保持原行为）；只在有动画时生效（没有动画的骨骼本来就不跑蒙皮矩阵）。两个模型修后都站立。新测试 `gltf_skin_root_keeps_non_joint_ancestor_transform` / `gltf_skin_root_identity_ancestor_adds_no_joint`（`test_asset_gltf` 52/52）。
+- **模型查看模式** `BREAK_MODEL_VIEW=s`（演示程序）：不画地形、水面，不建展示区与下落方块；相机放在模型包围盒中心 +Z 方向，距离为完整入画距离的 s 倍（s=1 整体，s<1 更近）。蒙皮网格的包围盒用第一个动画采样姿势蒙皮后的顶点算（启动时读回一次）。`BREAK_CAM` 仍可覆盖机位。
+- 测试附注：GL Debug 树一次 `ctest -j4` 里 `test_lod_cache` 失败一次，之后单独 4 次、全量 `-j4` 5 次都通过，没拿到失败输出，原因不明，未处理。
 - **BSCN 读档重建（补测）**：新增脚本钩子 `BREAK_BSCN_ROUNDTRIP_AT=f`，第 f 帧执行与 `B` 键相同的保存、第 f+10 帧执行与 `N` 键相同的读取（日志 `BSCN_ROUNDTRIP save/load at frame N`）。`BREAK_CAM_DOLLY=0.1 BREAK_BSCN_ROUNDTRIP_AT=40 BREAK_FRAMES=120`：VK Debug 默认场景、`BREAK_STRESS_LOD=50 BREAK_STRESS_LOD_ECS=50`（mega 51 次换级、ECS LOD 重建）、`BREAK_STRESS_LOD_SKIN=4`（读档后 `Skin LOD: on -- 4 skinned meshes` 重建，10 次换级）均正常退出、0 设备丢失、0 条验证消息；GL / D3D12 Release 跑 `BREAK_STRESS_LOD_SKIN=4` 同样重建，10 次换级，无 ERROR。测试会在 `engine/` 下生成 `scene_save.bscn` / `scene_state.bin`。
 - 未验证：Metal；Linux 运行。
 

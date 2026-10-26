@@ -740,6 +740,72 @@ typedef struct {
 /* R705: MSFT_lod is an unprocessed cgltf extension, so ids are parsed from its
  * raw JSON object text. Only a plain array of non-negative integers is
  * accepted; anything else makes the whole MSFT_lod graph invalid. */
+/* A skin root joint's global transform includes every ancestor node, joints
+ * or not (glTF 2.0 skinning: jointMatrix = globalTransform(joint) * IBM).
+ * The skeleton only walks joint parents, so each distinct non-joint parent of
+ * a root joint becomes one synthetic root joint whose constant T/R/S channels
+ * reproduce that parent's world transform. Up to GLTF_SKIN_MAX_ANCESTORS. */
+#define GLTF_SKIN_MAX_ANCESTORS 8u
+
+static bool gltf_mat_is_identity(const f32 *m) {
+    for (u32 i = 0; i < 16; i++) {
+        f32 want = (i % 5u == 0u) ? 1.0f : 0.0f;
+        if (fabsf(m[i] - want) > 1e-6f) return false;
+    }
+    return true;
+}
+
+/* Column-major affine matrix -> T, R (unit quaternion xyzw), S. A negative
+ * determinant is carried by negating the x scale. */
+static void gltf_decompose(const f32 *m, f32 t[3], f32 q[4], f32 sc[3]) {
+    f32 c[3][3];
+    for (u32 k = 0; k < 3; k++) {
+        f32 len = sqrtf(m[k * 4] * m[k * 4] + m[k * 4 + 1] * m[k * 4 + 1] +
+                        m[k * 4 + 2] * m[k * 4 + 2]);
+        sc[k] = len;
+        f32 inv = len > 0.0f ? 1.0f / len : 0.0f;
+        for (u32 r = 0; r < 3; r++) c[k][r] = m[k * 4 + r] * inv;
+    }
+    f32 det = c[0][0] * (c[1][1] * c[2][2] - c[2][1] * c[1][2]) -
+              c[1][0] * (c[0][1] * c[2][2] - c[2][1] * c[0][2]) +
+              c[2][0] * (c[0][1] * c[1][2] - c[1][1] * c[0][2]);
+    if (det < 0.0f) {
+        sc[0] = -sc[0];
+        for (u32 r = 0; r < 3; r++) c[0][r] = -c[0][r];
+    }
+    t[0] = m[12]; t[1] = m[13]; t[2] = m[14];
+    /* c[col][row]: rotation element R(row, col) = c[col][row]. */
+    f32 r00 = c[0][0], r11 = c[1][1], r22 = c[2][2];
+    f32 tr = r00 + r11 + r22;
+    if (tr > 0.0f) {
+        f32 s4 = sqrtf(tr + 1.0f) * 2.0f;
+        q[3] = 0.25f * s4;
+        q[0] = (c[1][2] - c[2][1]) / s4;
+        q[1] = (c[2][0] - c[0][2]) / s4;
+        q[2] = (c[0][1] - c[1][0]) / s4;
+    } else if (r00 > r11 && r00 > r22) {
+        f32 s4 = sqrtf(1.0f + r00 - r11 - r22) * 2.0f;
+        q[3] = (c[1][2] - c[2][1]) / s4;
+        q[0] = 0.25f * s4;
+        q[1] = (c[1][0] + c[0][1]) / s4;
+        q[2] = (c[2][0] + c[0][2]) / s4;
+    } else if (r11 > r22) {
+        f32 s4 = sqrtf(1.0f + r11 - r00 - r22) * 2.0f;
+        q[3] = (c[2][0] - c[0][2]) / s4;
+        q[0] = (c[1][0] + c[0][1]) / s4;
+        q[1] = 0.25f * s4;
+        q[2] = (c[2][1] + c[1][2]) / s4;
+    } else {
+        f32 s4 = sqrtf(1.0f + r22 - r00 - r11) * 2.0f;
+        q[3] = (c[0][1] - c[1][0]) / s4;
+        q[0] = (c[2][0] + c[0][2]) / s4;
+        q[1] = (c[2][1] + c[1][2]) / s4;
+        q[2] = 0.25f * s4;
+    }
+    f32 ql = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
+    if (ql > 0.0f) for (u32 i = 0; i < 4; i++) q[i] /= ql;
+}
+
 static bool gltf_lod_parse_ids(const cgltf_node *node, u32 node_index, GltfLodIds *out) {
     memset(out, 0, sizeof(*out));
     for (cgltf_size e = 0; e < node->extensions_count; e++) {
@@ -1453,6 +1519,8 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
      * per channel (O(channels × joints)). Kept alive through animation
      * parsing now and freed just before cgltf_free. */
     u32 *node_to_joint = NULL;
+    cgltf_node *skin_anc[GLTF_SKIN_MAX_ANCESTORS];
+    u32 skin_anc_count = 0u;
 
     if (data->skins_count > 0) {
         cgltf_skin *skin = &data->skins[0];
@@ -1465,11 +1533,37 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                      "dropped and affected vertices clamped (skinning will be incorrect)",
                      (u32)skin->joints_count, SKELETON_MAX_JOINTS);
         }
-        out_scene->joint_count = (u32)skin->joints_count;
+        /* Distinct non-joint parents of root joints with a non-identity
+         * world transform (only meaningful when a clip drives the rig). */
+        if (data->animations_count > 0) {
+            for (u32 jj = 0; jj < skin->joints_count; jj++) {
+                cgltf_node *par = skin->joints[jj]->parent;
+                if (!par) continue;
+                bool par_is_joint = false;
+                for (u32 kk = 0; kk < skin->joints_count && !par_is_joint; kk++)
+                    par_is_joint = skin->joints[kk] == par;
+                if (par_is_joint) continue;
+                bool seen = false;
+                for (u32 a = 0; a < skin_anc_count && !seen; a++) seen = skin_anc[a] == par;
+                if (seen) continue;
+                f32 wm[16];
+                cgltf_node_transform_world(par, wm);
+                if (gltf_mat_is_identity(wm)) continue;
+                if (skin_anc_count == GLTF_SKIN_MAX_ANCESTORS ||
+                    skin->joints_count + skin_anc_count + 1u > (cgltf_size)SKELETON_MAX_JOINTS) {
+                    LOG_WARN("glTF skin: ancestor transform above root joint %u dropped "
+                             "(joint limit)", jj);
+                    continue;
+                }
+                skin_anc[skin_anc_count++] = par;
+            }
+        }
+        cgltf_size total_joints = skin->joints_count + skin_anc_count;
+        out_scene->joint_count = (u32)total_joints;
         /* Single alloc: joint_parents (u32[]) + inverse_bind (Mat4[]) */
-        usize jp_bytes = skin->joints_count * sizeof(u32);
+        usize jp_bytes = total_joints * sizeof(u32);
         usize ib_off   = (jp_bytes + 15u) & ~(usize)15u;
-        u8 *skin_buf    = (u8 *)calloc(1, ib_off + skin->joints_count * sizeof(Mat4));
+        u8 *skin_buf    = (u8 *)calloc(1, ib_off + total_joints * sizeof(Mat4));
         if (!skin_buf) {
             LOG_ERROR("glTF: skin allocation failed");
             cgltf_free(data);
@@ -1499,9 +1593,16 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             if (joint->parent) {
                 u32 parent_node_idx = (u32)(joint->parent - data->nodes);
                 out_scene->joint_parents[ji] = node_to_joint[parent_node_idx];
+                for (u32 a = 0; a < skin_anc_count; a++)
+                    if (skin_anc[a] == joint->parent)
+                        out_scene->joint_parents[ji] = (u32)skin->joints_count + a;
             } else {
                 out_scene->joint_parents[ji] = UINT32_MAX;
             }
+        }
+        for (u32 a = 0; a < skin_anc_count; a++) {
+            out_scene->joint_parents[skin->joints_count + a] = UINT32_MAX;
+            out_scene->inverse_bind[skin->joints_count + a] = mat4_identity();
         }
         /* R415: node_to_joint NOT freed here — reused by the animation loop. */
 
@@ -1687,6 +1788,36 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 clip->channels[clip->channel_count - 1].interp = ANIM_INTERP_STEP;
             }
         }
+    }
+
+    /* Constant channels for the synthetic ancestor joints (identity parts
+     * are left out: an unanimated joint already evaluates to identity). */
+    if (out_scene->anim_clip_count > 0 && data->skins_count > 0) {
+        AnimClip *clip = &out_scene->anim_clips[0];
+        u32 first = (u32)data->skins[0].joints_count;
+        for (u32 a = 0; a < skin_anc_count; a++) {
+            f32 wm[16], t[3], q[4], sc[3];
+            cgltf_node_transform_world(skin_anc[a], wm);
+            gltf_decompose(wm, t, q, sc);
+            const f32 zero = 0.0f;
+            f32 tv[4] = { t[0], t[1], t[2], 0.0f };
+            f32 sv[4] = { sc[0], sc[1], sc[2], 0.0f };
+            bool need_t = fabsf(t[0]) + fabsf(t[1]) + fabsf(t[2]) > 0.0f;
+            bool need_r = fabsf(q[0]) + fabsf(q[1]) + fabsf(q[2]) > 0.0f;
+            bool need_s = fabsf(sc[0] - 1.0f) + fabsf(sc[1] - 1.0f) + fabsf(sc[2] - 1.0f) > 0.0f;
+            u32 need = (need_t ? 1u : 0u) + (need_r ? 1u : 0u) + (need_s ? 1u : 0u);
+            if (clip->channel_count + need > SKELETON_MAX_CHANNELS) {
+                LOG_WARN("glTF skin: no channel room for ancestor transform %u; "
+                         "rig keeps the joint-only hierarchy", a);
+                continue;
+            }
+            if (need_t) anim_clip_add_channel(clip, first + a, ANIM_PATH_TRANSLATION, 1u, &zero, tv);
+            if (need_r) anim_clip_add_channel(clip, first + a, ANIM_PATH_ROTATION, 1u, &zero, q);
+            if (need_s) anim_clip_add_channel(clip, first + a, ANIM_PATH_SCALE, 1u, &zero, sv);
+        }
+        if (skin_anc_count > 0)
+            LOG_INFO("glTF skin: %u non-joint ancestor transform(s) kept as root joint(s)",
+                     skin_anc_count);
     }
 
     free(node_to_joint); /* R415: kept alive through animation parsing */
