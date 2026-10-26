@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — 场景 Hot Reload 与资源浏览器实时列表（2026-10-26）
+
+- **交付**：`editor_hot_reload.{h,c}`：editor 宿主持有、shell 借用的热加载对象。旧版单文件 `FileWatcher` 只置 pending；shell tick 通过 Runtime Core `break_runtime_reload_request` 让 1 个 worker 经 VFS 读入暂存字节并校验 BSCN magic，shell 线程在 `commit_owner` 钩子里调用新增的 `break_editor_doc_load_bytes`（`scene_load_binary_memory` 是原文件读取体的内存形式，文件 API 为薄包装）。非法/不可读文件 → `FAILED_KEEP_OLD`，文档、名称、undo 保持；文档“脏且有命令历史”时跳过并记日志；Ctrl+S 后以内容哈希为基线（相同字节跳过），保存前已暂存的重载按 stale 丢弃；资源浏览器加载 `.bscn` 与 CLI 路径共用 `editor_shell_load_scene` 更新 `scene_path` 与监视目标；超长路径禁用监视并记日志，不截断。资源浏览器新增有界 `break_editor_assets_refresh`，shell tick 每秒最多重列一次当前目录，仅在列表变化时重绘。
+- **设计偏离（有记录）**：原计划用递归 `FileWatch` 监视资源根；实测 `filewatch_create_dir` 在仓库根目录耗时约 3 s、`engine/` 约 0.5 s，而浏览器默认根是 cwd，启动与换根都会卡顿，且其队列仅 32 项，改为每秒一次的单层重列。同理未使用 `notify_file_event/pump_events`（其启动的请求无句柄可 poll，槽位无法释放），宿主自行 request 并 poll。
+- **验证**：`test_editor_shell` 44→57（新增 13：11 个热加载用例用真实临时目录 + 真实 VFS/worker/文件监视，2 个列表实时刷新用例），`test_editor_assets` 19→21；4 个有意变异（去掉未保存编辑检查/stale 检查/同哈希检查/浏览器换监视）各使目标用例变红，去掉列表 tick 接线使两个列表用例变红；真实 editor 经 gdb 驱动，在多后端默认 Vulkan 与 OpenGL-only 构建上完成“文件出现 / 合法替换 / 非法替换 / 脏文档跳过”，控制台日志与计数符合预期。
+- **边界**：只热加载当前场景文件（无 shader/纹理）；单文件监视按整秒 mtime 比较，同一秒内多次写入可能合并；列表最多滞后 1 s；Windows/macOS/CI 未运行（Win32 与 kqueue/FSEvents 监视后端未改动也未验证）；live smoke 是编辑器内逻辑冒烟，不构成视觉或 GPU 正确性证据。设计与证据：`docs/design/editor_hot_reload.md`。
+
 ## 本轮更新：Stage 4 Scene Editor — Render Debugger Panel（2026-10-26）
 
 - **交付**：`editor_panel_render.c` 纯视图渲染诊断面板（右列与 network 面板共用一行，network 左、render 右，保持原布局）：backend/选择原因/status/frame、GPU 名称与 ID/API/driver、shader variant/compute/indirect/push constants/MSAA/damage、资源槽 used/capacity，以及 viewport 最近一帧的 FBO 尺寸、实体 proxy 数、gizmo 数、draw 数和 skip 原因。设备由 `editor_main` 借用挂载，销毁前摘除；无设备显示 `render: no device`。`rhi_device_resource_usage` 只读 core 查询；viewport 只记 CPU 计数，不做 GPU 回读。面板没有 capture、shader/texture 查看、GPU timing 或 render control。
