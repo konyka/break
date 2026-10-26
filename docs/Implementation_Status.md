@@ -1,6 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
+
+- **现象**：`test_d3d12_warp_runtime` 的 `debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次（测试故意制造的）RT/SRV 别名，实际 4 次；多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`。
+- **原因**：`a323c379`（恢复 Metal 前向渲染）把 `post_process_apply` 每个 pass 的顺序改成「先绑目标 FBO，再绑管线和源纹理」，因为 Metal 绑管线前必须有打开的 render pass。于是第 2、3、4 次模糊时，要写入的纹理正是上一 pass 刚读的源纹理，仍留在 D3D12 描述符表里，绑成渲染目标时触发 R643 别名诊断（没有实际读写冲突：下一次绑纹理前已经换了源）。
+- **修复**：这三处在绑目标之前先重新绑一次模糊管线，D3D12 换根签名会清空描述符表（`live_srv`），别名消失；Metal 上这只是在仍然打开的编码器上设一次状态，顺序约束不变；GL/VK 无影响。
+- **验证**：WARP 82/82（`1 aliases`）；三后端 Release 演示第 30 帧截图与改动前对比，差异与同一构建连跑两次的噪声同级（VK mean 0.025 vs 0.028，GL 0.011 vs 0.184，D3D12 0.030 vs 0.036）；ctest vk 188、gl 185、d3d12 193、ASan 177 全部通过；GCC `-Werror -pedantic` 语法检查通过。Metal 未在本机验证。
+
+
 ## 本轮更新：R707a — 蒙皮网格运行时 LOD（一）：纯 CPU 模块 `renderer/lod_skin`（多姿势减面 + 实测蒙皮误差 + 关节包围球 + 缓存键）
 
 ### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.1 / 3.3；尚未接入 `main.c`）

@@ -184,6 +184,13 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     if (pp->bloom_strength <= 0.0f) return;
     (void)screen_w; (void)screen_h; /* R196-B: kept for API; unbind removed */
 
+    /* Each pass binds its target before its pipeline (Metal needs the render
+     * pass open to bind a pipeline, a323c379). A blur pass whose target was
+     * the previous pass's source first rebinds the pipeline: that drops the
+     * source from the D3D12 descriptor tables, so the texture is never live
+     * as a shader resource while it becomes the render target (R643
+     * diagnostic). On Metal the extra bind only sets state on the encoder
+     * that is still open. */
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_bind_pipeline(cmd, pp->extract_pipe);
     if (pp->loc_threshold >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_threshold, pp->threshold);
@@ -196,18 +203,21 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe); /* drop the ping SRV first */
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_pong.color_tex, pp->sampler, 0);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe); /* drop the pong SRV first */
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
     rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 1.0f, 0.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe); /* drop the ping SRV first */
     rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
