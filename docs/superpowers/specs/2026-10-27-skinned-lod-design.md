@@ -1,6 +1,6 @@
 # 蒙皮网格运行时 LOD 设计
 
-状态：设计，用户已明确要求「现在就做，作为基本功能」。auto 模式下按下文推荐方案执行，偏差记录在 `docs/Implementation_Status.md`。
+状态：实现中。R707a 已完成 3.1 纯 CPU 模块与 3.3 缓存键（`renderer/lod_skin.{c,h}`、`lod_cache_generate_ex`，未接入 `main.c`）；3.2、3.4、3.5 待做。用户已明确要求「现在就做，作为基本功能」。auto 模式下按下文推荐方案执行，偏差记录在 `docs/Implementation_Status.md`。
 
 ## 1. 现状（已核实）
 

@@ -1,6 +1,26 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R707a — 蒙皮网格运行时 LOD（一）：纯 CPU 模块 `renderer/lod_skin`（多姿势减面 + 实测蒙皮误差 + 关节包围球 + 缓存键）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-skinned-lod-design.md` 3.1 / 3.3；尚未接入 `main.c`）
+- **减面**：`lod_generate_levels_skinned` 读 64 字节 `SkinnedVertex`。属性 = 法线（0.5）+ UV（1.0）+ 每个采样姿势的蒙皮后位置（除以绑定姿势 `meshopt_simplifyScale`，权重 1.0），最多 8 个姿势（超过时均匀抽取，首尾必选），共 ≤ 29 个属性。级别比例、误差上限、停止比例、`LockBorder`、顶点缓存优化与静态网格相同：`lod_gen.c` 把这条链抽成 `lod_generate_levels_attr`（调用方给属性与 `vertex_lock`），`lod_generate_levels` 改为调用它，输出逐位不变（`test_meshopt_c` / `test_lod` 不改）。无姿势时只用绑定姿势，并把「与相邻顶点主导关节不同」的顶点 `meshopt_SimplifyVertex_Lock` 锁住。
+- **蒙皮约定**：`Σ w_k · (M[j_k] · p)`；关节号 ≥ joint_count 钳到 joint_count−1（不崩溃，与 GPU 读越界不同但有定义）；权重和 ≤ 0 或非有限时用绑定位置。
+- **误差（实测）**：对绑定姿势和每个采样姿势，计算 LOD0 与 LODn 蒙皮后表面的对称偏差：LODn 丢掉的每个 LOD0 顶点到 LODn 最近三角形，以及 LODn 每个三角形的重心与三条边中点到 LOD0 最近三角形；最近三角形用均匀网格精确搜索（不是采样上限估计，所以比 `lod_authored_error` 快且不漏点）。取最大值 / scale，逐级非递减，覆盖 meshopt 的 `result_error`。
+- **包围**：`lod_skin_joint_spheres`（每关节：权重 > 0 的绑定顶点的 AABB 中心 + 最大距离）；`lod_skin_bounds` 把每个球按 `skin_mats[j]` 变换，半径乘 3×3 部分谱范数的上界（`AᵀA` 的 Gershgorin 行和开方，正交列时等于最大列范数，对含剪切的矩阵也保守），再逐个求并。
+- **缓存**：`lod_cache.c` 新增 `lod_cache_key_ex`（额外字节参与哈希；为空时与 `lod_cache_key` 相同）和 `lod_cache_generate_ex`（生成回调）。`lod_cache_generate` 改为调用 `_ex`，静态网格的键、文件格式和统计不变。`lod_skin_cache_key` / `lod_skin_cache_generate` 额外哈希 "SKIN" 标记、版本、joint_count、pose_count 与全部姿势矩阵。
+- **非法输入**：NULL、0 计数、索引越界、joint_count 为 0 或 > 128、poses 为 NULL、顶点或姿势含 NaN/Inf、max_levels ≤ 1，都返回 level_count=1。
+
+### 测试（新 `test_lod_skin`，8 个用例）
+- 级别索引都 < 顶点数、顶点数据逐字节不变、误差非递减；3 关节弯管（64×32 环，4096 三角形）在两个弯曲姿势下的实测 L1 误差：只按绑定姿势减面为 0.0539，多姿势为 0.0054（同为 6144 索引）；`rel_error·scale` ≥ 每个采样姿势和绑定姿势下的 `lod_authored_error` 实测值；20 个姿势时首尾姿势都被覆盖；无姿势时所有主导关节边界顶点都被保留；200 组随机姿势（含任意 3×3 线性部分）下所有蒙皮顶点都在 `lod_skin_bounds` 内；非法输入 13 种；关节越界与零权重的网格照常生成；缓存键随姿势、姿势数、关节数变化且不同于静态键，冷/热往返与直接生成逐位一致。
+- 变异检查（临时改代码、看到失败、已恢复）：去掉姿势属性权重 → 用例 2 失败（多姿势误差变成 0.0539）；跳过实测误差 → 用例 2/3/4 失败；包围半径不乘矩阵范数 → 用例 5 失败；不锁顶点 → 用例 4 失败；额外键不参与哈希 → 用例 7 失败。
+- 性能（20480 三角形弯管，8 个姿势，3 级）：clang -O2 162 ms（静态 `lod_generate_levels` 13 ms）、GCC -O1 213 ms、Debug 441 ms、ASan Debug 1110 ms。最初按顶点逐三角形穷举是 1077 ms（GCC -O1），改为网格精确最近邻并跳过 LODn 保留的顶点后降下来。
+
+### 验证
+- build-vk（Debug，VK）与 build-asan（Debug，`-fsanitize=address -fno-omit-frame-pointer`，GL）0 编译警告（仅 lld `--gc-sections` 提示）。`ctest -j4 -E test_platform_win32_runtime`：vk 188/188（fuzz 目标需显式构建）；ASan `-LE "graphics|fuzz"` 177/177。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。
+- 未验证：Linux LeakSanitizer（测试已释放所有分配，但没在 Linux 上跑过）；真实动画资产；GPU 端与 `main.c` 接入（后续步骤）。
+
 ## 本轮更新：R706 — 运行时 LOD：阴影级别 +1（`BREAK_LOD_SHADOW_BIAS`）伪影排查：未发现伪影，不改选择逻辑
 
 ### 结论

@@ -92,8 +92,9 @@ void lod_cache_init(LodCache *cache, const char *directory) {
     cache->directory = directory;
 }
 
-LodCacheKey lod_cache_key(const f32 *vertices, u32 vertex_count, u32 vertex_stride,
-                          const u32 *indices, u32 index_count, u32 max_levels) {
+LodCacheKey lod_cache_key_ex(const f32 *vertices, u32 vertex_count, u32 vertex_stride,
+                             const u32 *indices, u32 index_count, u32 max_levels,
+                             const void *extra_key, usize extra_key_size) {
     LodCacheKey key = { 1469598103934665603ull, 0x6a09e667f3bcc909ull };
     hash32(&key, LOD_CACHE_FORMAT_VERSION);
     hash32(&key, LOD_CACHE_MESHOPT_VERSION);
@@ -105,6 +106,12 @@ LodCacheKey lod_cache_key(const f32 *vertices, u32 vertex_count, u32 vertex_stri
     hash32(&key, float_bits(LOD_GEN_STOP_RATIO));
     hash_array(&key, vertices, vertex_count, vertex_stride);
     hash_array(&key, indices, index_count, (u32)sizeof(u32));
+    if (extra_key && extra_key_size > 0u) {
+        hash32(&key, 0x41525458u);
+        hash32(&key, (u32)extra_key_size);
+        hash32(&key, (u32)((u64)extra_key_size >> 32));
+        hash_bytes(&key, extra_key, extra_key_size);
+    }
     key.first ^= key.first >> 33;
     key.first *= 0xff51afd7ed558ccdull;
     key.first ^= key.first >> 33;
@@ -112,6 +119,12 @@ LodCacheKey lod_cache_key(const f32 *vertices, u32 vertex_count, u32 vertex_stri
     key.second *= 0x94d049bb133111ebull;
     key.second ^= key.second >> 31;
     return key;
+}
+
+LodCacheKey lod_cache_key(const f32 *vertices, u32 vertex_count, u32 vertex_stride,
+                          const u32 *indices, u32 index_count, u32 max_levels) {
+    return lod_cache_key_ex(vertices, vertex_count, vertex_stride, indices, index_count,
+                            max_levels, NULL, 0u);
 }
 
 bool lod_cache_path(char *out, usize out_size, const char *directory, LodCacheKey key) {
@@ -303,21 +316,46 @@ static bool atomic_write(const char *path, const u8 *data, usize size) {
     return ok;
 }
 
+typedef struct {
+    const f32 *vertices;
+    u32 vertex_count, vertex_stride;
+    const u32 *indices;
+    u32 index_count, max_levels;
+} LodCacheStaticArgs;
+
+static void generate_static(void *user, LodMeshLevels *out) {
+    const LodCacheStaticArgs *a = (const LodCacheStaticArgs *)user;
+    lod_generate_levels(a->vertices, a->vertex_count, a->vertex_stride, a->indices,
+                        a->index_count, a->max_levels, out);
+}
+
 void lod_cache_generate(LodCache *cache, const f32 *vertices, u32 vertex_count,
                         u32 vertex_stride, const u32 *indices, u32 index_count,
                         u32 max_levels, LodMeshLevels *out) {
-    if (!out) return;
+    LodCacheStaticArgs args = { vertices, vertex_count, vertex_stride, indices, index_count, max_levels };
+    lod_cache_generate_ex(cache, vertices, vertex_count, vertex_stride, indices, index_count,
+                          max_levels, NULL, 0u, generate_static, &args, out);
+}
+
+void lod_cache_generate_ex(LodCache *cache, const f32 *vertices, u32 vertex_count,
+                           u32 vertex_stride, const u32 *indices, u32 index_count,
+                           u32 max_levels, const void *extra_key, usize extra_key_size,
+                           LodCacheGenerateFn generate, void *user, LodMeshLevels *out) {
+    if (!out || !generate) return;
     memset(out, 0, sizeof(*out));
     if (!cache || !cache->directory || !cache->directory[0] ||
         !input_valid(vertices, vertex_count, vertex_stride, indices, index_count, max_levels)) {
-        lod_generate_levels(vertices, vertex_count, vertex_stride, indices, index_count, max_levels, out);
+        memset(out, 0, sizeof(*out));
+        generate(user, out);
         return;
     }
 
-    LodCacheKey key = lod_cache_key(vertices, vertex_count, vertex_stride, indices, index_count, max_levels);
+    LodCacheKey key = lod_cache_key_ex(vertices, vertex_count, vertex_stride, indices, index_count,
+                                       max_levels, extra_key, extra_key_size);
     char path[1024];
     if (!lod_cache_path(path, sizeof(path), cache->directory, key)) {
-        lod_generate_levels(vertices, vertex_count, vertex_stride, indices, index_count, max_levels, out);
+        memset(out, 0, sizeof(*out));
+        generate(user, out);
         return;
     }
     u64 max_file = LOD_CACHE_HEADER_SIZE + 3u * 8u + (u64)index_count * 2u * sizeof(u32);
@@ -343,7 +381,8 @@ void lod_cache_generate(LodCache *cache, const f32 *vertices, u32 vertex_count,
 
     cache->stats.misses++;
     f64 gen0 = cache_now_ms();
-    lod_generate_levels(vertices, vertex_count, vertex_stride, indices, index_count, max_levels, out);
+    memset(out, 0, sizeof(*out));
+    generate(user, out);
     f64 generation_ms = cache_now_ms() - gen0;
     cache->stats.regenerate_ms += generation_ms;
     if (cache->writes_disabled) return;
