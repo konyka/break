@@ -35,9 +35,35 @@ find_program(QNX_QPP q++ HINTS "${QNX_HOST_DIR}/usr/bin" REQUIRED)
 set(CMAKE_C_COMPILER "${QNX_QCC}")
 set(CMAKE_CXX_COMPILER "${QNX_QPP}")
 # -Vgcc_nto<arch> selects the gcc-fronted mode of qcc for the target arch.
-set(CMAKE_C_FLAGS_INIT "-Vgcc_nto${QNX_ARCH}")
-set(CMAKE_CXX_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -lang-c++")
+# -D_QNX_SOURCE restores qcc's native default feature set under -std=c11
+# (the engine builds with C_EXTENSIONS OFF, so __STRICT_ANSI__ would
+# otherwise hide non-POSIX names like _SC_NPROCESSORS_ONLN and QNX's
+# CLOCK_MONOTONIC exposure).
+set(CMAKE_C_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -D_QNX_SOURCE")
+set(CMAKE_CXX_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -D_QNX_SOURCE -lang-c++")
 set(CMAKE_SYSROOT "${QNX_TARGET_DIR}")
+
+# Target-prefixed binutils (ntoaarch64-ar / ntox86_64-ar / ...); without
+# these CMake falls back to the HOST ar/ranlib, which mis-handles foreign
+# architectures.
+if(QNX_ARCH STREQUAL "aarch64le")
+    set(QNX_BINUTILS_PREFIX "ntoaarch64")
+elseif(QNX_ARCH STREQUAL "x86_64")
+    set(QNX_BINUTILS_PREFIX "ntox86_64")
+elseif(QNX_ARCH STREQUAL "armle")
+    set(QNX_BINUTILS_PREFIX "ntoarm")
+else()
+    message(FATAL_ERROR "unsupported QNX_ARCH: ${QNX_ARCH}")
+endif()
+find_program(QNX_AR "${QNX_BINUTILS_PREFIX}-ar"
+    HINTS "${QNX_HOST_DIR}/usr/bin" REQUIRED)
+find_program(QNX_RANLIB "${QNX_BINUTILS_PREFIX}-ranlib"
+    HINTS "${QNX_HOST_DIR}/usr/bin" REQUIRED)
+find_program(QNX_STRIP "${QNX_BINUTILS_PREFIX}-strip"
+    HINTS "${QNX_HOST_DIR}/usr/bin" REQUIRED)
+set(CMAKE_AR "${QNX_AR}")
+set(CMAKE_RANLIB "${QNX_RANLIB}")
+set(CMAKE_STRIP "${QNX_STRIP}")
 
 set(CMAKE_FIND_ROOT_PATH "${QNX_TARGET_DIR}")
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)

@@ -5,20 +5,23 @@ QNX Neutrino 目标的第一个里程碑：**headless 兼容层**。引擎核心
 保持 fail-closed，直到集成 Screen WSI。本文记录架构决策、TDD 过程、
 验证状态与目标机操作步骤。
 
+**2026-10-26 真机收据**：QNX SDP 8.0.0（qcc/gcc 12.2）x86_64 交叉编译
+100% 通过；全部 headless 测试（144 条命令，含 WILL_FAIL 语义）在
+QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）上 **144/144 通过**，
+证据等级由 COMPILED 升级为 **HEADLESS**。
+
 ## 1. 范围与证据等级
 
 | 能力 | 状态 | 证据 |
 |------|------|------|
-| 平台描述符（`ENGINE_TARGET_FAMILY_QNX`） | 契约锁定 | `test_platform_compat_qnx`（模拟）、`test_platform_compat`（真机） |
-| net_loop（POSIX `poll()` 后端） | 全量语义验证 | `test_net_loop_qnx` 在宿主 CI 跑通用套件 + QNX 故障注入段 |
-| 引擎核心（task/time/filewatch/network/audio/script/…） | QNX 平台定义下全量 headless 套件 | 宿主 QNX 平台模拟：168 项全绿（见 §5） |
-| myui（widget/layout/css/edit/echart/mvvm/离屏 vgcanvas） | 同上 | 同上（myui 全部 headless 测试在 QNX 平台定义下通过） |
-| 效率（吞吐下限断言） | 冒烟锁定 | `test_qnx_perf_smoke`（宿主参考数据见 §6） |
+| 平台描述符（`ENGINE_TARGET_FAMILY_QNX`） | 契约锁定 | `test_platform_compat_qnx`（模拟）、`test_platform_compat`（真机，通过） |
+| net_loop（POSIX `poll()` 后端） | 全量语义验证 | `test_net_loop_qnx` 宿主 CI + `test_net_loop`/`test_net_replication` 真机通过 |
+| 引擎核心（task/time/filewatch/network/audio/script/…） | **真机全量 HEADLESS** | QNX 8.0.0 x86_64 目标机 144/144（见 §5） |
+| myui（widget/layout/css/edit/echart/mvvm/离屏 vgcanvas） | **真机全量 HEADLESS** | 同上（myui 全部 headless 测试在目标机通过） |
+| 效率（吞吐下限断言） | 真机冒烟锁定 | `test_qnx_perf_smoke` 目标机实测见 §6 |
 | 窗口 / 图形 / Vulkan | **UNAVAILABLE，fail-closed** | `ENGINE_VULKAN=ON` 于 qnx 配置期直接 FATAL；RHI 解析为 `headless` |
 
-证据等级为 **COMPILED**：真实 QNX SDP 交叉编译与目标机运行收据尚未产生
-（本仓库 CI 无 QNX SDP），升级路径见 §7。这与 iOS/Android 的 COMPILED
-等级、OHOS 的 UNAVAILABLE fail-closed 同一语义体系。
+窗口/图形升级到 Screen WSI 的路径见 §7。
 
 ## 2. 架构决策
 
@@ -83,6 +86,8 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | poll 后端 | `test_net_loop_qnx` 配置失败（后端源不存在） | `net_loop_poll.c` 实现 + 故障注入钩子 |
 | 平台接线 | 宿主 QNX 模拟构建失败（`task.c` nanosleep、`platform_vk_surface.c` unused-function、测试目标缺 qnx 分支） | 引擎/测试 CMake qnx 分支 + `pvk_resolve` WSI 条件定义 |
 | 效率冒烟 | `test_qnx_perf_smoke`（新） | 三条吞吐下限断言 + 实测打印 |
+| 真实 SDP 交叉编译 | qcc 构建失败：`_SC_NPROCESSORS_ONLN`/`CLOCK_MONOTONIC` 被 `-std=c11` 严格模式隐藏；`-lpthread`/`-ldl` 不存在（QNX 8 并入 libc）；独立网络测试缺 `-lsocket`；`__isfinitef` 需 `-lm` | toolchain 加 `-D_QNX_SOURCE` + 交叉 binutils；qnx 分支去 pthread/dl、补条件 socket/m 链接 |
+| 目标机运行 | 首轮 127/137：4 个 Memory fault（QNX 默认栈过小）、6 个数据路径/参数问题 | 运行器 `ulimit -s 8192`（README 的 8MB 栈假设）；`ENGINE_TEST_SOURCE_ROOT` 可覆盖 + 目标机部署布局；ctest 参数/WILL_FAIL 语义纳入运行器 → **144/144** |
 
 ## 4. 构建
 
@@ -94,10 +99,27 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 source /opt/qnx800/qnxsdp-env.sh   # 设置 QNX_HOST / QNX_TARGET
 cmake --preset qnx-cross           # engine/CMakePresets.json：aarch64le 默认
 cmake --build engine/build-qnx -j
-ctest --test-dir engine/build-qnx -LE "graphics|fuzz" --output-on-failure
 ```
 
-`QNX_ARCH` 可选 `aarch64le`（默认）/`x86_64`/`armle`。
+`QNX_ARCH` 可选 `aarch64le`（默认）/`x86_64`/`armle`。toolchain 自动选用
+`nto<arch>-ar/ranlib/strip` 交叉 binutils，并在 `-std=c11` 严格模式下补
+`-D_QNX_SOURCE`（否则 `_SC_NPROCESSORS_ONLN`、QNX 的 `CLOCK_MONOTONIC`
+暴露等被隐藏）。
+
+**在目标机跑 headless 套件**（本次验证用的工作流，x86_64 QEMU/KVM VM）：
+
+1. 配置目标构建时指向目标机上的源码副本（供读取仓库源码/资产的测试）：
+   `-DENGINE_TEST_SOURCE_ROOT=/tmp/bt`；
+2. 把构建产物二进制 + `engine/{src,shaders}` + `tests/data` + 字体
+   `assets/LiberationSans-Regular.ttf` 推到目标机 `/tmp/bt`（cwd 即 `/tmp/bt`，
+   `read_engine_source` 的 `../src` 候选路径用 `/tmp/src -> /tmp/bt/src`
+   符号链接满足）；
+3. 运行器要点：`ulimit -s 8192`（QNX 默认栈远小于 Linux 8MB 假设，
+   大局部数组测试会 Memory fault）；按 ctest 记录带全参数调用
+   verify 工具，并把 `WILL_FAIL` 测试的非零退出计为通过。
+
+ctest 无法直接在宿主驱动目标机（交叉产物宿主不可执行），上述运行器
+等价复刻了 `-LE "graphics|fuzz"` 的 headless 选择与判定语义。
 
 ### 4.2 宿主 QNX 平台模拟（无 SDP 时验证接线）
 
@@ -111,34 +133,40 @@ ctest --test-dir engine/build-qnx -LE "graphics|fuzz" --output-on-failure
 - Linux 宿主基线（改动前 master）：headless 套件 168 项全绿；
 - 宿主 QNX 平台模拟树：全量构建通过；headless 套件 168 项全绿
   （`test_d3d12_dependency_gate` 为 Windows-only 设计内跳过）；
-- `test_net_loop_qnx`：poll 后端在宿主跑通用语义套件（wakeup/批量/
-  压力/故障注入）全绿；
-- 未验证（诚实边界）：真实 QNX SDP 交叉编译、Neutrino 目标机上的
-  运行收据、libsocket 实际链接。
+- **真实 QNX SDP 8.0.0 交叉编译（qcc/gcc 12.2，x86_64）：整树 100% 构建通过**；
+- **QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）：headless 套件
+  144/144 命令通过**（含 myui 全部 headless 测试、net_loop/net/network/
+  net_replication、task/ECS/规则引擎、verify 工具的 WILL_FAIL 语义用例；
+  等价于宿主 `-LE "graphics|fuzz"` 选择，宿主-only 的 cmake 契约测试不在
+  目标机复刻）。目标机运行要点与运行器语义见 §4.1；
+- 未验证（诚实边界）：aarch64le 交叉编译（仅 x86_64 已跑）、真硬件
+  （非 VM）收据、图形/Screen 路径（设计即 fail-closed）。
 
 ## 6. 效率验证（test_qnx_perf_smoke）
 
-断言的吞吐下限（刻意宽松，sanitizer/慢 CI 下仍成立）与宿主参考值：
+断言的吞吐下限（刻意宽松，sanitizer/慢 CI 下仍成立）与实测值：
 
-| 子系统 | 断言下限 | 宿主参考（16 核 Linux, gcc -O3, 2026-10-26） |
-|--------|---------|----------------------------------------------|
-| poll net_loop 数据报 | ≥256/s | 397,824 datagrams/s |
-| task 系统（2 worker） | ≥5,000/s | 3,818,980 tasks/s |
-| myui 离屏 vg 管线 | ≥20,000 ops/s | 279,720,280 vg ops/s |
+| 子系统 | 断言下限 | 宿主参考（16 核 Linux, gcc -O3） | **QNX 8.0 目标机实测**（x86_64, KVM VM, qcc/gcc 12.2 -O3） |
+|--------|---------|----------------------------------|------------------------------------------------------------|
+| poll net_loop 数据报 | ≥256/s | 397,824 datagrams/s | **61,918 datagrams/s** |
+| task 系统（2 worker） | ≥5,000/s | 3,818,980 tasks/s | **1,775,253 tasks/s** |
+| myui 离屏 vg 管线 | ≥20,000 ops/s | 279,720,280 vg ops/s | **97,799,511 vg ops/s** |
 
-目标机运行后把打印值回填本表即可形成 runtime 收据（对齐
+目标机整套 144 项测试 7.6 秒跑完（含全部 myui headless 用例）。
+目标机后续运行把打印值继续回填本表即可累积收据（对齐
 `docs/rhi_backend_evidence.md` 的证据分级习惯）。
 
 ## 7. 升级路径（后续里程碑）
 
-1. 真机：SDP 交叉编译 + Neutrino 目标跑 §4.1 套件与 §6 冒烟，回填收据
-   （COMPILED → HEADLESS）；
+1. ~~真机：SDP 交叉编译 + Neutrino 目标跑套件与冒烟~~（已完成，2026-10-26：
+   x86_64 交叉 100%、目标机 144/144、§6 收据；aarch64le 交叉与真硬件收据待补）；
 2. Screen WSI：`window_screen.c` + `ENGINE_SURFACE_*` 语义，
    图形证据等级从 NONE 起步；
 3. Vulkan（QNX 平台 Vulkan driver via Screen）或 GLES2 后端：
    myui `MYUI_GLES2` 已是可复用后端，接入 Screen EGL；
 4. `ENGINE_NET_LOOP_POLL` 在高 fd 数下的 tunable（当前重建仅发生在
-   注册变更时，稳态零开销）。
+   注册变更时，稳态零开销）；
+5. 目标机套件纳入日常验证（可选：qconn/ssh 驱动的自建 CI lane）。
 
 ## 8. 相关文件
 

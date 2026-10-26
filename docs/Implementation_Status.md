@@ -8744,3 +8744,27 @@ headless suite green on both the untouched master baseline and a host-simulated
 QNX platform tree (CMAKE_SYSTEM_NAME=QNX). Honest boundary: no QNX SDP
 cross-compile or on-target receipts yet - evidence level is COMPILED; the
 Screen WSI integration and target runs are the follow-up milestone.
+
+## QNX on-target runtime receipts (2026-10-26, feat/qnx-compat)
+
+The QNX headless compatibility layer now carries real target receipts, upgrading
+its evidence level from COMPILED to HEADLESS. Cross-compiled with QNX SDP 8.0.0
+(qcc, gcc 12.2 frontend, x86_64) the full tree builds 100%; the complete
+headless suite - 144 commands including every myui headless test, the poll
+net_loop backend under test, network/replication, task system, rule engine,
+and the verify tools WILL_FAIL cases - passes 144/144 on a QNX 8.0.0 Neutrino
+x86_64 target (QEMU/KVM VM) in 7.6 s. test_qnx_perf_smoke on target: 61,918
+poll datagrams/s, 1,775,253 tasks/s, 97,799,511 myui offscreen vg ops/s
+(floors 256 / 5,000 / 20,000).
+
+Portability fixes driven by the real SDP and target: toolchain-qnx.cmake adds
+-D_QNX_SOURCE under -std=c11 (otherwise _SC_NPROCESSORS_ONLN and QNX clock
+exposure are hidden) and selects nto<arch> cross binutils; QNX 8 folds pthread
+and dl into libc so qnx link lines drop -lpthread/-ldl; standalone network
+test targets link -lsocket conditionally, net_replication gains -lm for
+__isfinitef; the on-target runner sets ulimit -s 8192 (QNX default stacks
+fault on tests with large local arrays) and honours ctest WILL_FAIL.
+ENGINE_TEST_SOURCE_ROOT becomes a cache override so tests reading repo
+sources/assets can be re-rooted onto the target copy. Remaining honest
+boundaries: aarch64le cross build, non-VM hardware receipts, and the Screen
+WSI graphics milestone stay open (docs/qnx_compat.md 5/7).
