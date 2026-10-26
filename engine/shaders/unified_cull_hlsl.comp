@@ -11,6 +11,10 @@
 // unbound state. Reads are Load() at the chosen mip: the engine's Hi-Z
 // sampler is NEAREST + CLAMP and the backend's static sampler is LINEAR +
 // WRAP, so Load with a clamped texel is the exact equivalent.
+//
+// t5 is the runtime LOD selection mask (GLSL `readonly buffer` binding 5,
+// one uint per draw; 0 = not the selected level, skip it). It is a host-
+// written UPLOAD-heap buffer, so an SRV.
 struct PushConsts {
     float4x4 u_cull_vp;            //  0
     int      u_cull_count;         // 64
@@ -32,6 +36,7 @@ RWByteAddressBuffer g_visible_draws : register(u2);
 RWByteAddressBuffer g_draw_count    : register(u3);
 RWByteAddressBuffer g_flags         : register(u4);
 Texture2D           g_hi_z          : register(t4);
+ByteAddressBuffer   g_selected      : register(t5);   // 1 = selected LOD level
 
 bool sphere_frustum_visible(float3 center, float radius) {
     float4 clip = mul(g_push.u_cull_vp, float4(center, 1.0));
@@ -78,6 +83,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     if (idx >= (uint)g_push.u_cull_count) return;
     float4 pr = asfloat(g_objects.Load4(idx * 16u));
     g_flags.Store(idx * 4u, 0u);
+    if (g_selected.Load(idx * 4u) == 0u) return;
     if (!sphere_frustum_visible(pr.xyz, pr.w)) return;
     if (g_push.u_cull_use_hi_z > 0.5 && !sphere_hi_z_visible(pr.xyz, pr.w)) return;
     g_flags.Store(idx * 4u, 1u);

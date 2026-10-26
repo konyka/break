@@ -67,3 +67,27 @@ void lod_set_strategy(LODSystem *sys, bool use_screen_size);
 
 /* ---- Helper: auto-generate thresholds from base distance ---- */
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance);
+
+/* ---- Screen-space geometric error selection (runtime mega LOD) ----
+ * errors[l] is the world-space geometric error of level l relative to LOD0
+ * (errors[0] = 0, non-decreasing). A level is acceptable when its error
+ * projects to <= pixel_err pixels. Returns the coarsest acceptable level,
+ * with a hysteresis band of +-LOD_SCREEN_HYSTERESIS around pixel_err:
+ * coarsening needs the coarser level at <= pixel_err*(1-h), refining starts
+ * only once the current level exceeds pixel_err*(1+h), so a camera hovering
+ * near a threshold never flips back and forth. */
+#define LOD_SCREEN_HYSTERESIS 0.2f
+#define LOD_SCREEN_MIN_DIST   1e-3f
+
+/* Pixels per world unit at distance 1: screen_h / (2 * tan(fov/2)). */
+f32 lod_screen_proj_factor(f32 fov, f32 screen_h);
+
+/* dist = distance from the camera to the nearest point of the object's
+ * bounding sphere (clamped to LOD_SCREEN_MIN_DIST). */
+u32 lod_select_by_screen_error(const f32 *errors, u32 count, f32 dist,
+                               f32 proj_factor, f32 pixel_err, u32 current_level);
+
+/* Convenience form: distance from |center - cam_pos| - radius. */
+u32 lod_select_screen_error(const f32 *errors, u32 count, Vec3 center, f32 radius,
+                            Vec3 cam_pos, f32 fov, f32 screen_h, f32 pixel_err,
+                            u32 current_level);

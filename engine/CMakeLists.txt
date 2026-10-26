@@ -344,6 +344,7 @@ src/renderer/water.c
 src/renderer/debug_viz.c
 src/renderer/lens_effects.c
     src/renderer/lod.c
+    src/renderer/lod_gen.c
     src/renderer/ibl.c
     src/renderer/render_graph.c
     src/renderer/cmd_buffer.c
@@ -788,7 +789,8 @@ target_include_directories(stb_image PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external
 
 # Pure C11 port of the meshoptimizer v1.3 simplifier + vertex cache optimizer
 # (external/meshopt_c/README.md). Built with the engine's normal warning flags;
-# not linked into engine yet. Consumers include "meshopt_c/meshopt.h".
+# linked into engine for the runtime mesh LOD generator (renderer/lod_gen.c).
+# Consumers include "meshopt_c/meshopt.h".
 add_library(meshopt_c STATIC
     external/meshopt_c/simplifier.c
     external/meshopt_c/vcacheoptimizer.c)
@@ -813,7 +815,7 @@ foreach(stb_target stb_truetype stb_image stb_image_write)
     endif()
 endforeach()
 
-target_link_libraries(engine PRIVATE glad lua stb_image)
+target_link_libraries(engine PRIVATE glad lua stb_image meshopt_c)
 
 set(MYUI_CORE_SOURCES
     src/myui/myc/my_mem.c
@@ -3162,10 +3164,10 @@ endif()
     endif()
     add_test(NAME test_task_singleton COMMAND test_task_singleton)
 
-    # test_lod: needs lod.c + math.c
-    add_executable(test_lod tests/test_lod.c src/renderer/lod.c src/math/math.c)
+    # test_lod: needs lod.c + lod_gen.c (meshopt_c) + math.c
+    add_executable(test_lod tests/test_lod.c src/renderer/lod.c src/renderer/lod_gen.c src/math/math.c)
     target_include_directories(test_lod PRIVATE ${TEST_INCLUDE_DIRS})
-    target_link_libraries(test_lod PRIVATE m)
+    target_link_libraries(test_lod PRIVATE meshopt_c m)
     add_test(NAME test_lod COMMAND test_lod)
 
     # test_meshopt_c: invariants + bit-exact upstream v1.3 reference table

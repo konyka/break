@@ -200,7 +200,7 @@ TEST(ibl_capture_uses_to_sun_direction)
  * to-sun direction, and emits only one standalone GPU dispatch per frame. */
 TEST(ibl_runtime_recapture_contract)
 {
-    static char src[524288];
+    static char src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "bool ibl_static = false"));
     ASSERT_NOT_NULL(strstr(src, "BREAK_IBL_STATIC"));
@@ -247,7 +247,7 @@ TEST(forward_velocity_uses_single_pass_mrt_contract)
     /* main.c is ~460 KB — the old 128 KB stack buffer silently truncated it
      * (the markers below live past the cut). Static, per the line-277
      * precedent, and sized with headroom. */
-    static char src[524288];
+    static char src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "FORWARD_MRT"));
     ASSERT_NOT_NULL(strstr(src, "RHI_FORMAT_R16G16_SFLOAT"));
@@ -340,7 +340,7 @@ TEST(hlsl_blinn_sidecars_mirror_glsl_twin_after_camera_moved_to_cbv)
     /* The engine publishes the CBV bytes: one struct, one buffer, both
      * backends. If it drifts from the sidecar the whole contract is a lie. */
     {
-        char src[524288];
+        static char src[1048576];
         ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
         ASSERT_NOT_NULL(strstr(src, "cam_pos[3]"));
         ASSERT_NOT_NULL(strstr(src, "forward_temporal_ubo"));
@@ -878,7 +878,7 @@ TEST(deferred_skinned_gbuffer_contract)
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.skinned_vertex"));
     ASSERT_NOT_NULL(strstr(src, "skinned_desc.uses_texel_buffer"));
 
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "dsys->gbuffer_skinned_pipeline"));
     ASSERT_NOT_NULL(strstr(main_src, "skeleton_upload(&render.skeleton)"));
@@ -915,7 +915,7 @@ TEST(deferred_skinned_gbuffer_regressions_are_guarded)
     m = push_member_by_name(members, n, "u_proj");     ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 128u);
     m = push_member_by_name(members, n, "u_prev_mvp"); ASSERT_NOT_NULL(m); ASSERT_EQ(m->offset, 192u);
 
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     const char *skinned = strstr(main_src,
                                  "rhi_cmd_bind_pipeline(cmd, dsys->gbuffer_skinned_pipeline)");
@@ -950,7 +950,7 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
 
     /* The bake excludes skinned nodes and pre-transforms positions + normals
      * into world space so u_model=identity works for the GPU-driven paths. */
-    static char main_src[524288];
+    static char main_src[1048576];
     ASSERT_TRUE(read_engine_source("main.c", main_src, sizeof(main_src)));
     ASSERT_NOT_NULL(strstr(main_src, "Vertices are pre-transformed to world space"));
     ASSERT_NOT_NULL(strstr(main_src, "nd->skinned"));
@@ -982,7 +982,7 @@ TEST(static_mega_geometry_contract_is_documented_and_unchanged)
  * R579-D), per-frame observability counter. */
 TEST(forward_clustered_opt_in_production_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "BREAK_FORWARD_CLUSTERED"));
     ASSERT_NOT_NULL(strstr(src, "fwd_static_pipeline"));
@@ -1020,7 +1020,7 @@ TEST(forward_clustered_opt_in_production_wiring)
  * clustered frag is reused unchanged (light texel set untouched). */
 TEST(forward_clustered_instanced_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_inst_pipeline"));
     /* 计划 E Task 2：路径由 caps.shader_variant 驱动（shader_variant_path），
@@ -1063,7 +1063,7 @@ TEST(forward_clustered_instanced_variant_wiring)
  * narrowed so clustered mapping applies). */
 TEST(forward_clustered_skinned_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_skin_pipeline"));
     /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
@@ -1103,7 +1103,7 @@ TEST(forward_clustered_skinned_variant_wiring)
  * gl_BaseInstanceARB as the layer (blinn_phong_arr precedent). */
 TEST(forward_clustered_array_variant_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "clustered_arr_pipeline"));
     /* 计划 E Task 2：caps 驱动变体路径（见 instanced 变体注释）。 */
@@ -1143,7 +1143,7 @@ TEST(forward_clustered_array_variant_wiring)
  * two passes key identically. */
 TEST(mat_array_bake_includes_normal_array)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* MatArraySet fifth array + unique-handle table + per-layer bake */
     ASSERT_NOT_NULL(strstr(src, "normal_array"));
@@ -1197,7 +1197,7 @@ TEST(deferred_gbuffer_normal_mapping_wiring)
     }
     /* The arr gbuffer path binds the R594 baked per-layer normal array
      * (forward clustered arr bind is the other consumer — count both). */
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     int nrm_bind_hits = 0;
     for (const char *p = src; (p = strstr(p, "mb->mats.normal_array")) != NULL; p++)
@@ -1214,7 +1214,7 @@ TEST(deferred_gbuffer_normal_mapping_wiring)
  * draw) and rebinds the blinn frame state. */
 TEST(forward_clustered_per_entity_fallback_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* Diagnostic env that forces the fallback branch (makes the path
      * exercisable without an instanced-pipeline failure). */
@@ -1235,7 +1235,7 @@ TEST(forward_clustered_per_entity_fallback_wiring)
  * set blinn lacks). BREAK_FORWARD_CLUSTERED=0 opts out back to blinn. */
 TEST(forward_clustered_default_on_after_bench)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     /* Default ON at declaration; env semantics inverted to opt-out. */
     ASSERT_NOT_NULL(strstr(src, "bool fwd_clustered_mode = true"));
@@ -1252,7 +1252,7 @@ TEST(forward_clustered_default_on_after_bench)
  * material by clustered_bind_material (default 1.0 = full effect). */
 TEST(forward_clustered_occlusion_strength_wiring)
 {
-    static char src[524288]; /* main.c > 460 KiB (line-238 precedent) */
+    static char src[1048576]; /* main.c > 512 KiB */
     ASSERT_TRUE(read_engine_source("main.c", src, sizeof(src)));
     ASSERT_NOT_NULL(strstr(src, "cl_loc_occ_strength"));
     ASSERT_NOT_NULL(strstr(src, "occlusion_strength : 1.0f"));

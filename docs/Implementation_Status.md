@@ -1,6 +1,46 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R701 — 运行时 LOD（一期）：纯 C 移植 meshoptimizer v1.3 简化器，mega 路径按屏幕误差选级
+
+设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md`（第二版，用户确认采纳第 9 节全部建议：3 级、像素误差 1.0、阴影比相机低 1 级、压力场景 N=200、简化器放 `engine/external/meshopt_c/`）。
+
+### R701a：纯 C 简化器（`engine/external/meshopt_c/`，提交 `7da2498a`）
+- 移植 meshoptimizer 正式版 v1.3（tag 提交 `9e1f07b1`，MIT，保留原许可证）：`meshopt_simplify`、`meshopt_simplifyWithAttributes`、`meshopt_simplifyScale`、`meshopt_optimizeVertexCache`。纯 C11，约 2300 行，不改算法、常量和浮点运算顺序。机械改动：RAII 分配器 → 固定块的 arena（分配失败返回 0，不崩溃），模板 → 具体函数，引用 → 指针，命名空间 → `static`。
+- `test_meshopt_c`：5 种网格 × 22 种参数共 110 个用例，结果（索引数、误差的二进制位、索引哈希）与上游 C++ 版本**逐位相同**；还检查了不变量（索引有效、无退化三角形、随目标单调、锁定边界确实保留）。把一个常量 0.25 改成 0.26，会有 23 个用例不一致，说明这张参考表能抓住移植偏差。速度与 C++ 版本相当或略快（20 万三角形网格：简化到 25% 约 25 ms）。
+- 登记进 `locked_dependencies.json` / `LOCKED_DEPENDENCIES.md`，四个文件都做 sha256 校验。
+
+### R701b：渲染接入
+- **生成**（`renderer/lod_gen.{c,h}`）：每个唯一网格在局部空间简化一次（按 `mesh_index` 去重），LOD1 = 50%、相对误差上限 0.02，LOD2 = 25%、0.05；属性加权（法线 0.5、UV 1.0），开 `meshopt_SimplifyLockBorder`，之后做顶点缓存优化。少于 512 三角形的网格不生成；某级剩下超过上一级的 85% 就停止。与设计的差别：每级都从 LOD0 简化，因此每级误差都是相对 LOD0 的。
+- **烘焙**：各级**共享 LOD0 的顶点**，只追加索引（绝对索引、`vertex_offset = 0`，沿用 R687 的约定）。命令按「节点 × 级别」连续排布（`node_cmd_base` / `cmd_level` / `cmd_node`）。所有级别放进节点原来的材质组，R437 分组 compact 和 R441 材质数组逻辑不变。新常量 `MEGA_MAX_CMDS = 16384`，`GPUCULL_MAX_OBJECTS` / `GPUCULL_MAX_DRAWS` 提到 16384（GPU 缓冲约多 1 MB），直接阴影路径的命令表改为按需分配（去掉了 64 条的上限）；超出时退回只用 LOD0 并打一条 WARN。
+- **选级**：每帧一次，用包围球心算距离，屏幕误差 = 世界误差 × 屏幕高度 / (2 · d · tan(fov/2))，选满足 ≤ 1 像素的最低细节级，±20% 迟滞带。阴影级别 = 相机级别 + 1（不超过最低级）。生成相机掩码 `selected[]` 与阴影掩码 `shadow_selected[]`。
+- **六条消费路径**：`unified_cull.comp`（GLSL binding 5）与 `unified_cull_hlsl.comp`（`register(t5)`）新增只读掩码，未选中级别直接跳过；R169 flags-only 把回读标志折回节点再叠加本帧选级，保证级别切换的那一帧不会两级都没画；R437、R441、4 处 CPU 节点剔除都乘上掩码；直接阴影路径每个节点只画阴影级别那一条。旧的 `cull.comp` 打包是按节点的，LOD 开启时该路径只用 LOD0。
+- **开关**：`BREAK_LOD=0` 完全不生成额外级别（命令数和日志与改动前逐字相同）；`BREAK_LOD_PIXEL_ERROR`、`BREAK_LOD_SHADOW_BIAS`；`BREAK_STRESS_LOD=N` 压力场景（N 个 25280 三角形的噪声位移球，单一网格）；`BREAK_LOD_SELFTEST=1` 烘焙表一致性检查；`BREAK_LOD_TRACE` / `BREAK_CAM_DOLLY` 用于迟滞检查。启动日志有 LOD 统计，调试 UI 有一行，退出时打印 `LOD_STATS`。
+- 测试：`test_lod` 从 20 个用例增加到 31 个（屏幕误差公式、迟滞带、扫描不闪烁、生成不变量、烘焙表校验）。`test_shader_io` 的读缓冲提到 1 MiB（`main.c` 超过 512 KiB 后这些测试读到的是被截断的文件）。
+
+### 验证（我在子代理之外独立复核了带 * 的项）
+- *6 棵构建树 0 警告 0 错误；*ctest d3d12-debug 188/188、vk 183/183、gl 180/180；*WARP 套件 2 次 81/81，debug layer 0 errors / 0 warnings。子代理另外在 D3D12 调试层 + GPU 验证下跑了压力场景的 8 种路径组合，0 条调试层消息。
+- *`BREAK_LOD=0` 回归（Release 三后端 × 前向/延迟，第 3 帧，与 stash 掉本改动的旧构建对比）：平均差 0.000–0.126，同一构建连跑两次本身的差异是 0.001–0.771；`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds` 和 `UnifiedCull: uploaded 11 draw cmds` 在新旧构建的 6 次运行里完全一致。
+- *演示场景 `BREAK_LOD=1` 对比 `BREAK_LOD=0`：平均差 0.002–0.061（只有地形网格有 LOD，其余都少于 512 三角形）。
+- 压力场景 N=200，前向，fps_avg（子代理 3 轮中位数；*我在 VK 上复测 2 轮：LOD 关 71.8 / 72.1，开 164.0 / 161.2，一致）：
+
+| 后端 | 相机 | LOD 关 | LOD 开 |
+|---|---|---|---|
+| D3D12 | 演示相机 `0,12,22,0,-25` | 105.5 | 242.5（×2.3） |
+| D3D12 | 远处 `0,35,20,0,-35` | 111.3 | 265.6（×2.4） |
+| VK | 演示相机 | 72.5 | 165.9（×2.3） |
+| VK | 远处 | 75.4 | 175.2（×2.3） |
+| GL | 演示相机 | 76.1 | 184.0（×2.4） |
+| GL | 远处 | 79.2 | 198.8（×2.5） |
+
+可见三角形从 492 万降到 124 万（25%）；*每帧选级 CPU 耗时 0.004 ms；生成耗时约 30–45 ms（串行）。
+- 迟滞：相机以 0.1 m/帧推远再拉近 900 帧，跟踪一个节点：推远时 0→1 在 8.09 m、1→2 在 14.0 m；拉近时 2→1 在 9.97 m、1→0 在 5.98 m，每个方向每级只切换一次，没有来回跳。
+
+### 已知限制 / 二期
+- ECS 实例化物体和蒙皮网格没有 LOD；没有磁盘缓存；没有抖动淡入；glTF `MSFT_lod` 不支持。
+- 约 5400 个节点（3 级）会碰到 16384 条命令的上限并整体退回 LOD0；没有测过 N=2000。
+- 阴影 +1 级只在演示相机的截图里看过，没有专门检查阴影瑕疵。
+
 ## 本轮更新：R700 — CI：Linux 各 lane 改用预装依赖的容器镜像，不再在 job 里 apt 安装
 
 ### 动机

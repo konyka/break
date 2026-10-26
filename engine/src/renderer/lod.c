@@ -1,4 +1,5 @@
 #include "lod.h"
+#include <math.h>
 #include <string.h>
 
 /* ---- Hysteresis to prevent LOD thrashing ---- */
@@ -329,6 +330,43 @@ void lod_set_bias(LODSystem *sys, f32 bias) {
 
 void lod_set_strategy(LODSystem *sys, bool use_screen_size) {
     sys->use_screen_size = use_screen_size;
+}
+
+f32 lod_screen_proj_factor(f32 fov, f32 screen_h) {
+    f32 t = tanf(fov * 0.5f);
+    if (!(t > 1e-6f)) t = 1e-6f;
+    return screen_h / (2.0f * t);
+}
+
+u32 lod_select_by_screen_error(const f32 *errors, u32 count, f32 dist,
+                               f32 proj_factor, f32 pixel_err, u32 current_level) {
+    if (!errors || count <= 1u || !(pixel_err > 0.0f)) return 0u;
+    u32 cur = current_level < count ? current_level : count - 1u;
+    if (!(dist > LOD_SCREEN_MIN_DIST)) dist = LOD_SCREEN_MIN_DIST;
+    f32 px_per_unit = proj_factor / dist;
+    f32 hi = pixel_err * (1.0f + LOD_SCREEN_HYSTERESIS);
+    f32 lo = pixel_err * (1.0f - LOD_SCREEN_HYSTERESIS);
+
+    if (errors[cur] * px_per_unit > hi) {
+        /* Refine: coarsest level at or below cur within the plain threshold
+         * (errors are non-decreasing, so scan down from cur). */
+        u32 l = cur;
+        while (l > 0u && errors[l] * px_per_unit > pixel_err) l--;
+        return l;
+    }
+    /* Coarsen only past the lower edge of the band. */
+    u32 l = cur;
+    while (l + 1u < count && errors[l + 1u] * px_per_unit <= lo) l++;
+    return l;
+}
+
+u32 lod_select_screen_error(const f32 *errors, u32 count, Vec3 center, f32 radius,
+                            Vec3 cam_pos, f32 fov, f32 screen_h, f32 pixel_err,
+                            u32 current_level) {
+    f32 d = sqrtf(lod_distance_sq(center, cam_pos)) - (radius > 0.0f ? radius : 0.0f);
+    return lod_select_by_screen_error(errors, count, d,
+                                      lod_screen_proj_factor(fov, screen_h),
+                                      pixel_err, current_level);
 }
 
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance) {

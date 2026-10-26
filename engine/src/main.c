@@ -34,6 +34,7 @@
 #include <renderer/lens_effects.h>
 #include <renderer/cinematic.h>
 #include <renderer/lod.h>
+#include <renderer/lod_gen.h>
 #include <renderer/combined_post_process.h>
 #include <renderer/motion_history.h>
 #include <renderer/occlusion_cull.h>
@@ -1822,8 +1823,14 @@ bool occ_cull_enabled = true;
  * paths (executed sequentially within a frame, never concurrently).
  * Replaces 11 stack-allocated 16-64KB arrays to prevent stack overflow on
  * constrained stacks (WASM 256KB, worker threads 512KB). */
-static u32 g_vis_flags[16384];   /* 64KB: used by mega_mat_groups_* and CPU cull */
-static u32 g_draw_vis[16384];    /* 64KB: used by unified vis paths */
+/* Mega-buffer command capacity: one cmd per (static node x LOD level). The
+ * unified cull's object table is one entry per cmd, so GPUCull is sized to
+ * match. */
+#define MEGA_MAX_CMDS 16384u
+_Static_assert(GPUCULL_MAX_OBJECTS >= MEGA_MAX_CMDS && GPUCULL_MAX_DRAWS >= MEGA_MAX_CMDS,
+               "GPUCull capacity must cover every mega cmd");
+static u32 g_vis_flags[MEGA_MAX_CMDS];   /* 64KB: used by mega_mat_groups_* and CPU cull */
+static u32 g_draw_vis[MEGA_MAX_CMDS];    /* 64KB: used by unified vis paths */
 static u8  g_node_vis[16384];    /* 16KB: used by legacy node vis paths */
 /* R438: per-frame count of forward mega-branch executions — logged next to
  * the R437 compact-dispatch log, then reset. */
@@ -2293,13 +2300,62 @@ static bool mat_array_set_build(MatArraySet *set, RHIDevice *dev, const Scene *s
     return true;
 }
 
-#define MEGA_DIRECT_MAX_DRAWS 64u
+/* ---- Runtime mesh LOD for the mega buffer (phase 1) ----
+ * Each static mega node bakes LOD0 plus up to LOD_GEN_MAX_LEVELS-1
+ * simplified index lists that reuse the node's LOD0 vertices (absolute
+ * indices, vertex_offset 0 -- the R687 convention). Commands are laid out
+ * node-major: node b owns [node_cmd_base[b], node_cmd_base[b] + levels).
+ * Every frame mega_lod_select picks a level per node from its screen-space
+ * geometric error and writes the per-cmd masks every consumer path ANDs with
+ * its visibility (camera: selected[], shadow passes: shadow_selected[]).
+ * BREAK_LOD=0 bakes LOD0 only and leaves `active` false, which keeps every
+ * path on its pre-LOD code. */
+#define MEGA_LOD_LEVELS LOD_GEN_MAX_LEVELS
+
+typedef struct {
+    bool  active;              /* levels baked and BREAK_LOD on */
+    u32   node_count;          /* dense mega nodes, bake order */
+    u32   cmd_count;
+    u32  *node_scene;          /* [node] scene node index */
+    u32  *node_cmd_base;       /* [node] first cmd */
+    u8   *node_level_count;    /* [node] 1..MEGA_LOD_LEVELS */
+    u8   *node_level;          /* [node] camera level (hysteresis state) */
+    u8   *node_shadow_level;   /* [node] min(level + shadow bias, count - 1) */
+    f32  *node_err;            /* [node * MEGA_LOD_LEVELS] world-space error vs LOD0 */
+    u32  *node_tris;           /* [node * MEGA_LOD_LEVELS] triangles per level */
+    u32  *node_vbase;          /* [node] first LOD0 vertex (validation) */
+    u32  *node_vcount;         /* [node] LOD0 vertex count (validation) */
+    u32  *cmd_node;            /* [cmd] dense node */
+    u8   *cmd_level;           /* [cmd] level */
+    u32  *selected;            /* [cmd] 1 = camera level */
+    u32  *shadow_selected;     /* [cmd] 1 = shadow level */
+    /* last selection */
+    u32   level_nodes[MEGA_LOD_LEVELS];   /* nodes per camera level */
+    u32   level_tris[MEGA_LOD_LEVELS];    /* triangles per camera level (all nodes) */
+    u32   vis_tris;            /* frustum-visible nodes, selected level */
+    u32   vis_tris_lod0;       /* same nodes at LOD0 */
+    u32   transitions;         /* camera level changes this frame */
+    u32   shadow_tris;         /* all nodes at their shadow level */
+    f64   select_ms;
+    /* session totals (LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum;
+} MegaLod;
+
+static MegaLod g_mega_lod;
+static bool mega_lod_enabled = true;       /* BREAK_LOD (default 1) */
+static f32  mega_lod_pixel_error = 1.0f;   /* BREAK_LOD_PIXEL_ERROR */
+static u32  mega_lod_shadow_bias = 1u;     /* BREAK_LOD_SHADOW_BIAS */
+static i32  mega_lod_trace_node = -1;      /* BREAK_LOD_TRACE=<dense node>: per-frame level log */
+static bool mega_lod_selftest = false;     /* BREAK_LOD_SELFTEST=1: bake-table check */
 
 typedef struct {
     RHIBuffer vbo;
     RHIBuffer ibo;
     u32       draw_cmd_count;
     u32       total_index_count;
+    u32       lod0_index_count;   /* indices of the LOD0 cmds only (== total without LOD levels) */
     bool      valid;
 
     /* R437: single merged system holding ALL groups' cmds (group-sorted).
@@ -2317,20 +2373,35 @@ typedef struct {
     MatArraySet mats;
     u32       mat_indices[MEGA_MAX_MAT_GROUPS];
     u32       mat_group_count;
-    i32       cmd_mat_group[16384];
-    u32       cmd_node_index[16384];
+    i32       cmd_mat_group[MEGA_MAX_CMDS];
+    /* cmd -> scene node; one-to-many once a node bakes several LOD levels. */
+    u32       cmd_node_index[MEGA_MAX_CMDS];
     NodeSphere node_spheres[16384];
     u32       sphere_count;
     /* R75-2: Pre-built inverse index — group→cmd list. Eliminates O(N×G)
      * linear scan in mega_mat_groups_draw/indirect (called 12-17×/frame). */
     u32       group_cmd_offsets[MEGA_MAX_MAT_GROUPS + 1]; /* prefix sums */
-    u32       group_cmd_list[16384];                     /* sorted by group */
-    /* R688: CPU copy of the baked draw cmds for small scenes. Point-shadow
-     * faces (24 per frame) draw these directly after a CPU sphere test;
-     * a per-face GPU cull + compact costs more than it saves at this size. */
-    DrawIndexedIndirectCmd direct_cmds[MEGA_DIRECT_MAX_DRAWS];
+    u32       group_cmd_list[MEGA_MAX_CMDS];             /* sorted by group */
+    /* R688: CPU copy of the baked draw cmds. Point-shadow faces (24 per
+     * frame) and CSM cascades draw these directly after a CPU sphere test;
+     * a per-face GPU cull + compact costs more than it saves. Heap, sized to
+     * draw_cmd_count (was a fixed 64-entry array that switched the direct
+     * path off for larger scenes). */
+    DrawIndexedIndirectCmd *direct_cmds;
     bool      direct_ready;
+    /* Runtime LOD tables (node x level layout + per-frame selection). */
+    MegaLod  *lod;
 } MegaBuffer;
+
+static inline bool mega_lod_on(const MegaBuffer *mb) {
+    return mb && mb->lod && mb->lod->active;
+}
+
+/* 1 when cmd ci is the camera-selected LOD level of its node (always 1 with
+ * LOD off). */
+static inline u32 mega_cmd_selected(const MegaBuffer *mb, u32 ci) {
+    return mega_lod_on(mb) ? mb->lod->selected[ci] : 1u;
+}
 
 bool unified_cull_enabled = false;
 bool unified_forward_enabled = false;
@@ -2355,6 +2426,23 @@ static u32 mega_draw_direct_culled(const MegaBuffer *mb, RHICmdBuffer *cmd,
                                    const Mat4 *vp) {
     Frustum f = frustum_from_vp(vp);
     u32 n = 0u;
+    if (mega_lod_on(mb)) {
+        /* Runtime LOD: one draw per node, its shadow-selected level. */
+        const MegaLod *L = mb->lod;
+        for (u32 b = 0; b < L->node_count; b++) {
+            u32 ni = L->node_scene[b];
+            const NodeSphere *ns = &mb->node_spheres[ni];
+            if (ns->r < 0.0f) continue;
+            Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+            if (!frustum_test_sphere(&f, ctr, ns->r)) continue;
+            const DrawIndexedIndirectCmd *dc =
+                &mb->direct_cmds[L->node_cmd_base[b] + L->node_shadow_level[b]];
+            rhi_cmd_draw_indexed_base(cmd, dc->index_count, 1u, dc->first_index,
+                                      dc->vertex_offset);
+            n++;
+        }
+        return n;
+    }
     for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
         u32 ni = mb->cmd_node_index[ci];
         if (ni >= 16384u) continue;
@@ -2385,11 +2473,13 @@ static bool mega_use_unified_vis(bool deferred_pass) {
 static bool mega_unified_cull_draw(GPUCullSystem *gc, RHIDevice *dev, RHICmdBuffer *cmd,
                                    const f32 *vp, u32 vis_count,
                                    OcclusionCullSystem *occ,
-                                   RHIPipeline restore_pipe) {
+                                   RHIPipeline restore_pipe,
+                                   u32 sel_kind /* GPUCULL_SELECT_* LOD mask */) {
     if (!gc->unified_ready || !unified_cull_enabled ||
-        vis_count == 0 || vis_count > GPUCULL_MAX_OBJECTS) {
+        vis_count == 0 || vis_count > MEGA_MAX_CMDS) {
         return false;
     }
+    gpucull_set_selection_kind(gc, sel_kind);
     RHITexture hi_z = RHI_HANDLE_NULL;
     u32 hz_w = 0u, hz_h = 0u;
     if (occ && occ->enabled && rhi_handle_valid(occ->hi_z_texture)) {
@@ -2410,9 +2500,10 @@ static bool mega_unified_vis_flags(GPUCullSystem *gc, RHICmdBuffer *cmd,
                                    const f32 *vp, u32 vis_count,
                                    OcclusionCullSystem *occ, u32 *out_flags) {
     if (!gc->unified_ready || !unified_cull_enabled ||
-        vis_count == 0 || vis_count > GPUCULL_MAX_OBJECTS || !out_flags) {
+        vis_count == 0 || vis_count > MEGA_MAX_CMDS || !out_flags) {
         return false;
     }
+    gpucull_set_selection_kind(gc, GPUCULL_SELECT_CAMERA);
     RHITexture hi_z = RHI_HANDLE_NULL;
     u32 hz_w = 0u, hz_h = 0u;
     if (occ && occ->enabled && rhi_handle_valid(occ->hi_z_texture)) {
@@ -2450,7 +2541,8 @@ static u32 mega_mat_groups_draw(RHICmdBuffer *cmd, RenderState *render, Scene *s
      * trivially, since there is only one compact left. */
     u32 total = mb->group_cmd_offsets[mb->mat_group_count];
     for (u32 ci = 0; ci < total; ci++) {
-        g_vis_flags[ci] = draw_vis ? draw_vis[mb->group_cmd_list[ci]] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[mb->group_cmd_list[ci]]
+                                   : mega_cmd_selected(mb, mb->group_cmd_list[ci]);
     }
     indirect_draw_upload_visibility(&mb->group_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->group_system, render->device, cmd);
@@ -2503,7 +2595,7 @@ static u32 mega_mat_arrays_draw(RHICmdBuffer *cmd, RenderState *render, MegaBuff
 
     u32 total = mb->draw_cmd_count;
     for (u32 ci = 0; ci < total; ci++)
-        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : mega_cmd_selected(mb, ci);
     indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
     rhi_cmd_memory_barrier(cmd);
@@ -2599,7 +2691,7 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
 
     u32 total = mb->draw_cmd_count;
     for (u32 ci = 0; ci < total; ci++)
-        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : 1u;
+        g_vis_flags[ci] = draw_vis ? draw_vis[ci] : mega_cmd_selected(mb, ci);
     indirect_draw_upload_visibility(&mb->array_system, render->device, g_vis_flags, total);
     indirect_draw_compact_no_barrier(&mb->array_system, render->device, cmd);
     rhi_cmd_memory_barrier(cmd);
@@ -2650,7 +2742,7 @@ static u32 mega_mat_arrays_draw_gbuffer(RHICmdBuffer *cmd, RenderState *render,
 static u32 mega_count_visible_draws(const MegaBuffer *mb, const u32 *draw_vis) {
     if (!mb || !mb->valid) return 0u;
     u32 n = mb->draw_cmd_count;
-    if (!draw_vis) return n;
+    if (!draw_vis) return mega_lod_on(mb) ? mb->lod->node_count : n;
     u32 vis = 0u;
     for (u32 i = 0; i < n; i++)
         if (draw_vis[i]) vis++;
@@ -2664,9 +2756,169 @@ static u32 mega_count_visible_node_vis(const MegaBuffer *mb, const u8 *node_vis)
         u32 ni = mb->cmd_node_index[ci];
         /* R155: Guard against ni >= 16384 — g_node_vis is [16384] but cmd_node_index
          * stores original node indices which can exceed 16384 when scene.node_count > 16384. */
+        if (!mega_cmd_selected(mb, ci)) continue;
         if (ni >= 16384 || node_vis[ni]) vis++;
     }
     return vis;
+}
+
+/* Runtime LOD, R169 flags-only path: the read-back flags are last frame's
+ * cull masked by last frame's selection. Fold them back to the node (visible
+ * if any level was visible) and apply THIS frame's selection, so a level
+ * switch never leaves a frame where neither level draws. */
+static void mega_lod_fold_vis(const MegaBuffer *mb, u32 *draw_vis) {
+    if (!mega_lod_on(mb) || !draw_vis) return;
+    const MegaLod *L = mb->lod;
+    for (u32 b = 0; b < L->node_count; b++) {
+        u32 base = L->node_cmd_base[b], lc = L->node_level_count[b];
+        u32 any = 0u;
+        for (u32 l = 0; l < lc; l++) any |= draw_vis[base + l];
+        for (u32 l = 0; l < lc; l++)
+            draw_vis[base + l] = (any && L->selected[base + l]) ? 1u : 0u;
+    }
+}
+
+static void mega_lod_free(MegaLod *L) {
+    if (!L) return;
+    free(L->node_scene); free(L->node_cmd_base); free(L->node_level_count);
+    free(L->node_level); free(L->node_shadow_level); free(L->node_err);
+    free(L->node_tris); free(L->node_vbase); free(L->node_vcount);
+    free(L->cmd_node); free(L->cmd_level); free(L->selected); free(L->shadow_selected);
+    memset(L, 0, sizeof(*L));
+}
+
+static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
+    memset(L, 0, sizeof(*L));
+    L->node_count = node_count;
+    L->cmd_count = cmd_count;
+    L->node_scene        = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_cmd_base     = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_level_count  = (u8 *)calloc(node_count, 1);
+    L->node_level        = (u8 *)calloc(node_count, 1);
+    L->node_shadow_level = (u8 *)calloc(node_count, 1);
+    L->node_err          = (f32 *)calloc((usize)node_count * MEGA_LOD_LEVELS, sizeof(f32));
+    L->node_tris         = (u32 *)calloc((usize)node_count * MEGA_LOD_LEVELS, sizeof(u32));
+    L->node_vbase        = (u32 *)calloc(node_count, sizeof(u32));
+    L->node_vcount       = (u32 *)calloc(node_count, sizeof(u32));
+    L->cmd_node          = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->cmd_level         = (u8 *)calloc(cmd_count, 1);
+    L->selected          = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->shadow_selected   = (u32 *)calloc(cmd_count, sizeof(u32));
+    if (!L->node_scene || !L->node_cmd_base || !L->node_level_count || !L->node_level ||
+        !L->node_shadow_level || !L->node_err || !L->node_tris || !L->node_vbase ||
+        !L->node_vcount || !L->cmd_node || !L->cmd_level || !L->selected ||
+        !L->shadow_selected) {
+        mega_lod_free(L);
+        return false;
+    }
+    return true;
+}
+
+/* Simplify every unique mesh used by a mega node once, in its local space.
+ * Returns scene->mesh_count entries (level_count 0 = mesh not used / not
+ * read), or NULL. */
+static LodMeshLevels *mega_lod_generate(RHIDevice *dev, const Scene *scene) {
+    if (!dev || !scene || scene->mesh_count == 0u) return NULL;
+    LodMeshLevels *out = (LodMeshLevels *)calloc(scene->mesh_count, sizeof(LodMeshLevels));
+    if (!out) return NULL;
+    u64 t0 = time_microseconds();
+    u32 meshes = 0u, simplified = 0u;
+    u64 tris[MEGA_LOD_LEVELS] = {0};
+    for (u32 ni = 0; ni < scene->node_count; ni++) {
+        const SceneNode *nd = &scene->nodes[ni];
+        if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene->mesh_count) continue;
+        const Mesh *m = &scene->meshes[nd->mesh_index];
+        if (m->vertex_count == 0 || m->index_count == 0) continue;
+        LodMeshLevels *ml = &out[nd->mesh_index];
+        if (ml->level_count != 0u) continue;
+        ml->level_count = 1u;
+        ml->index_count[0] = m->index_count;
+        meshes++;
+        if (m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) {
+            tris[0] += m->index_count / 3u;
+            continue;
+        }
+        usize vb = (usize)m->vertex_count * 32u, ib = (usize)m->index_count * sizeof(u32);
+        f32 *v = (f32 *)malloc(vb);
+        u32 *ix = (u32 *)malloc(ib);
+        if (v && ix && rhi_buffer_read(dev, m->vertex_buf, v, 0, vb) &&
+            rhi_buffer_read(dev, m->index_buf, ix, 0, ib)) {
+            lod_generate_levels(v, m->vertex_count, 32u, ix, m->index_count,
+                                MEGA_LOD_LEVELS, ml);
+        } else {
+            LOG_WARN("LOD: failed to read mesh %u; LOD0 only", nd->mesh_index);
+        }
+        free(v);
+        free(ix);
+        if (ml->level_count == 0u) { ml->level_count = 1u; ml->index_count[0] = m->index_count; }
+        if (ml->level_count > 1u) simplified++;
+        for (u32 l = 0; l < ml->level_count; l++) tris[l] += ml->index_count[l] / 3u;
+        LOG_DEBUG("LOD: mesh %u: %u levels, tris %u/%u/%u rel_err %.4f/%.4f scale %.3f",
+                  nd->mesh_index, ml->level_count, ml->index_count[0] / 3u,
+                  ml->index_count[1] / 3u, ml->index_count[2] / 3u,
+                  ml->rel_error[1], ml->rel_error[2], ml->scale);
+    }
+    f64 ms = (f64)(time_microseconds() - t0) / 1000.0;
+    LOG_INFO("LOD gen: %u unique meshes, %u simplified, unique-mesh tris L0=%llu L1=%llu L2=%llu, %.1f ms (serial)",
+             meshes, simplified, (unsigned long long)tris[0], (unsigned long long)tris[1],
+             (unsigned long long)tris[2], ms);
+    return out;
+}
+
+/* Per-frame camera/shadow level selection. Distance is measured from the
+ * camera to the node's bounding-sphere surface (center = mega node sphere,
+ * not the node origin). */
+static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
+                            const Frustum *fr) {
+    if (!mega_lod_on(mb)) return;
+    MegaLod *L = mb->lod;
+    u64 t0 = time_microseconds();
+    f32 pf = lod_screen_proj_factor(fov, screen_h);
+    memset(L->level_nodes, 0, sizeof(L->level_nodes));
+    memset(L->level_tris, 0, sizeof(L->level_tris));
+    L->vis_tris = 0u;
+    L->vis_tris_lod0 = 0u;
+    L->transitions = 0u;
+    L->shadow_tris = 0u;
+    for (u32 b = 0; b < L->node_count; b++) {
+        const NodeSphere *ns = &mb->node_spheres[L->node_scene[b]];
+        u32 lc = L->node_level_count[b];
+        u32 cur = L->node_level[b];
+        u32 lvl = 0u;
+        f32 dx = ns->cx - cam_pos.e[0], dy = ns->cy - cam_pos.e[1], dz = ns->cz - cam_pos.e[2];
+        if (lc > 1u) {
+            f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - (ns->r > 0.0f ? ns->r : 0.0f);
+            lvl = lod_select_by_screen_error(&L->node_err[(usize)b * MEGA_LOD_LEVELS], lc,
+                                             dist, pf, mega_lod_pixel_error, cur);
+        }
+        if (lvl != cur) L->transitions++;
+        u32 sl = lvl + mega_lod_shadow_bias;
+        if (sl > lc - 1u) sl = lc - 1u;
+        L->node_level[b] = (u8)lvl;
+        L->node_shadow_level[b] = (u8)sl;
+        u32 base = L->node_cmd_base[b];
+        for (u32 l = 0; l < lc; l++) {
+            L->selected[base + l] = (l == lvl) ? 1u : 0u;
+            L->shadow_selected[base + l] = (l == sl) ? 1u : 0u;
+        }
+        const u32 *tris = &L->node_tris[(usize)b * MEGA_LOD_LEVELS];
+        L->level_nodes[lvl]++;
+        L->level_tris[lvl] += tris[lvl];
+        L->shadow_tris += tris[sl];
+        if (fr && ns->r >= 0.0f) {
+            Vec3 c = {{ ns->cx, ns->cy, ns->cz }};
+            if (frustum_test_sphere(fr, c, ns->r)) {
+                L->vis_tris += tris[lvl];
+                L->vis_tris_lod0 += tris[0];
+            }
+        }
+    }
+    L->select_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    L->frames++;
+    L->select_ms_sum += L->select_ms;
+    L->vis_tris_sum += L->vis_tris;
+    L->vis_tris_lod0_sum += L->vis_tris_lod0;
+    L->transitions_sum += L->transitions;
 }
 
 static u32 draw_bench_mega = 0u;
@@ -2796,7 +3048,7 @@ static void mega_upload_unified_cull(GPUCullSystem *gc,
                                      GPUCullObject *uobj_buf) {
     if (!gc->unified_ready || !cmds || !cmd_node_index || !node_spheres || mesh_cmd_count == 0) return;
     if (!udc_buf || !uobj_buf) return;
-    if (mesh_cmd_count > GPUCULL_MAX_OBJECTS) mesh_cmd_count = GPUCULL_MAX_OBJECTS;
+    if (mesh_cmd_count > MEGA_MAX_CMDS) mesh_cmd_count = MEGA_MAX_CMDS;
 
     GPUCullDrawCmd *udc = udc_buf;
     GPUCullObject  *uobj = uobj_buf;
@@ -3064,6 +3316,112 @@ static void demo_showcase_entity(World *world, u32 mesh_index, u32 physics_id,
     if (rb) rb->physics_id = physics_id;
     CMeshRef *mr = world_add_component(world, e, COMP_MESH_REF);
     if (mr) mr->mesh_index = mesh_index;
+}
+
+/* Runtime LOD stress scene (BREAK_STRESS_LOD=N): N static nodes sharing one
+ * procedural ~25k-triangle "rock" (a UV sphere displaced by deterministic
+ * multi-octave sinusoids of the surface direction, so it has real surface
+ * detail and simplification carries real geometric error), laid out on a
+ * grid in front of the default camera. Appended before the mega bake, so
+ * every node goes through the mega path; the one shared mesh_index means
+ * LOD generation runs once. */
+static f32 demo_rock_disp(f32 x, f32 y, f32 z) {
+    f32 d = 0.050f * sinf(3.1f * x + 1.3f) * sinf(2.7f * y + 0.7f) * sinf(3.3f * z + 2.1f)
+          + 0.030f * sinf(7.0f * x + 5.0f * y + 0.4f) * sinf(6.0f * z - 4.0f * y + 1.1f)
+          + 0.018f * sinf(13.0f * x - 11.0f * z + 0.9f) * sinf(12.0f * y + 7.0f * x + 2.3f)
+          + 0.010f * sinf(29.0f * x + 23.0f * y - 19.0f * z + 0.2f)
+          + 0.006f * sinf(41.0f * z - 37.0f * x + 31.0f * y + 1.7f);
+    return 1.0f + d;
+}
+
+static void demo_build_lod_stress(RHIDevice *dev, Scene *scene, const Terrain *terrain, u32 n) {
+    if (!dev || !scene || n == 0u) return;
+    const u32 sectors = 160u, rings = 80u;
+    const f32 radius = 1.2f;
+    u32 vc = (rings + 1u) * (sectors + 1u);
+    u32 imax = rings * sectors * 6u;
+    DemoVert *v = (DemoVert *)calloc(vc, sizeof(DemoVert));
+    u32 *idx = (u32 *)malloc((usize)imax * sizeof(u32));
+    if (!v || !idx) { free(v); free(idx); LOG_WARN("LOD stress: OOM"); return; }
+    u32 k = 0;
+    for (u32 ri = 0; ri <= rings; ri++) {
+        f32 phi = (f32)ri / (f32)rings * 3.14159265f;
+        for (u32 si = 0; si <= sectors; si++) {
+            f32 th = (f32)si / (f32)sectors * 6.2831853f;
+            f32 dx = sinf(phi) * cosf(th), dy = cosf(phi), dz = sinf(phi) * sinf(th);
+            f32 r = radius * demo_rock_disp(dx, dy, dz);
+            DemoVert *dv = &v[k++];
+            dv->pos[0] = dx * r; dv->pos[1] = dy * r; dv->pos[2] = dz * r;
+            dv->uv[0] = (f32)si / (f32)sectors * 4.0f;
+            dv->uv[1] = (f32)ri / (f32)rings * 2.0f;
+        }
+    }
+    u32 ic = 0;
+    for (u32 ri = 0; ri < rings; ri++) {
+        for (u32 si = 0; si < sectors; si++) {
+            u32 a = ri * (sectors + 1u) + si, b = a + sectors + 1u;
+            /* Skip the zero-area triangles that touch a pole twice. */
+            if (ri != 0u) { idx[ic++] = a; idx[ic++] = b; idx[ic++] = a + 1u; }
+            if (ri != rings - 1u) { idx[ic++] = a + 1u; idx[ic++] = b; idx[ic++] = b + 1u; }
+        }
+    }
+    /* Smooth normals from the displaced geometry (area-weighted face normals). */
+    for (u32 t = 0; t < ic; t += 3) {
+        f32 *p0 = v[idx[t]].pos, *p1 = v[idx[t + 1]].pos, *p2 = v[idx[t + 2]].pos;
+        f32 e1[3] = { p1[0] - p0[0], p1[1] - p0[1], p1[2] - p0[2] };
+        f32 e2[3] = { p2[0] - p0[0], p2[1] - p0[1], p2[2] - p0[2] };
+        f32 fn[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2],
+                      e1[0] * e2[1] - e1[1] * e2[0] };
+        for (u32 j = 0; j < 3; j++)
+            for (u32 c = 0; c < 3; c++) v[idx[t + j]].nrm[c] += fn[c];
+    }
+    for (u32 i = 0; i < vc; i++) {
+        f32 *nn = v[i].nrm;
+        f32 l = sqrtf(nn[0] * nn[0] + nn[1] * nn[1] + nn[2] * nn[2]);
+        if (l > 1e-12f) { nn[0] /= l; nn[1] /= l; nn[2] /= l; }
+        else { nn[0] = 0.0f; nn[1] = 1.0f; nn[2] = 0.0f; }
+    }
+    /* Seam / pole duplicates: average so the duplicated vertices shade alike. */
+    for (u32 ri = 0; ri <= rings; ri++) {
+        DemoVert *s0 = &v[ri * (sectors + 1u)], *s1 = &v[ri * (sectors + 1u) + sectors];
+        for (u32 c = 0; c < 3; c++) {
+            f32 m = 0.5f * (s0->nrm[c] + s1->nrm[c]);
+            s0->nrm[c] = m; s1->nrm[c] = m;
+        }
+    }
+    for (u32 pole = 0; pole < 2u; pole++) {
+        u32 row = pole ? rings : 0u;
+        f32 sy = pole ? -1.0f : 1.0f;
+        for (u32 si = 0; si <= sectors; si++) {
+            f32 *nn = v[row * (sectors + 1u) + si].nrm;
+            nn[0] = 0.0f; nn[1] = sy; nn[2] = 0.0f;
+        }
+    }
+    u32 mesh = demo_scene_push_mesh(scene, demo_mesh_upload(dev, v, vc, idx, ic));
+    free(v);
+    free(idx);
+    if (mesh == UINT32_MAX) return;
+    static const u8 rock_a[4] = { 150, 130, 110, 255 }, rock_b[4] = { 110, 100, 90, 255 };
+    u32 mat = demo_scene_push_material(scene, demo_tex_pattern(dev, 0, rock_a, rock_b),
+                                       demo_tex_mr(dev, 0.0f, 0.85f));
+    if (mat == UINT32_MAX) return;
+    scene->meshes[mesh].material_idx = mat;
+
+    /* Grid in front of the default camera (looking down -Z), 6 m pitch,
+     * starting 6 m ahead of the origin and extending away from the camera. */
+    u32 cols = 1u;
+    while (cols * cols < n) cols++;
+    const f32 pitch = 6.0f;
+    u32 placed = 0;
+    for (u32 i = 0; i < n; i++) {
+        u32 cx = i % cols, cz = i / cols;
+        f32 x = ((f32)cx - 0.5f * (f32)(cols - 1u)) * pitch;
+        f32 z = -6.0f - (f32)cz * pitch;
+        f32 y = (terrain ? terrain_get_height(terrain, x, z) : 0.0f) + radius;
+        if (demo_scene_push_node(scene, mesh, mat, x, y, z)) placed++;
+    }
+    LOG_INFO("LOD stress: %u nodes of one %u-vertex / %u-triangle procedural mesh (BREAK_STRESS_LOD=%u)",
+             placed, vc, ic / 3u, n);
 }
 
 static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
@@ -3489,6 +3847,8 @@ int main(int argc, char **argv) {
     u32 showcase_elevator_body = UINT32_MAX;
     demo_build_showcase(render.device, &scene, physics, world, &terrain,
                         &showcase_elevator_body);
+    { const char *e = getenv("BREAK_STRESS_LOD");
+      if (e && atoi(e) > 0) demo_build_lod_stress(render.device, &scene, &terrain, (u32)atoi(e)); }
 
     if (netrep_enabled) {
         Entity ge = world_create_entity(world);
@@ -3632,6 +3992,15 @@ int main(int argc, char **argv) {
      * headless reproduction of camera-motion artifacts (TAA reprojection /
      * velocity stress). Composes with BREAK_CAM initial placement; 0/absent
      * keeps default behavior. */
+    /* BREAK_CAM_DOLLY=m: scripted per-frame move of m metres backwards
+     * along the view direction (negative = forwards); runtime LOD
+     * hysteresis check. */
+    f32 cam_dolly = 0.0f;
+    { const char *e = getenv("BREAK_CAM_DOLLY");
+      if (e && e[0]) {
+          cam_dolly = (f32)atof(e);
+          if (cam_dolly != 0.0f) LOG_INFO("BREAK_CAM_DOLLY: %.3f m/frame", cam_dolly);
+      } }
     f32 cam_spin_deg = 0.0f;
     { const char *e = getenv("BREAK_CAM_SPIN");
       if (e && e[0]) {
@@ -4069,9 +4438,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         LOG_INFO("Forward clustered PBR: ON (default since R597 — BREAK_FORWARD_CLUSTERED=0 opts out to blinn)");
     else
         LOG_INFO("Forward clustered PBR: OFF (BREAK_FORWARD_CLUSTERED=0) — blinn forward family active");
+    { const char *e = getenv("BREAK_LOD"); if (e && e[0] && !atoi(e)) mega_lod_enabled = false; }
+    { const char *e = getenv("BREAK_LOD_PIXEL_ERROR");
+      if (e && e[0]) { f32 v = (f32)atof(e); if (v > 0.0f) mega_lod_pixel_error = v; } }
+    { const char *e = getenv("BREAK_LOD_SHADOW_BIAS");
+      if (e && e[0]) { int v = atoi(e); mega_lod_shadow_bias = v > 0 ? (u32)v : 0u; } }
+    { const char *e = getenv("BREAK_LOD_TRACE"); if (e && e[0]) mega_lod_trace_node = atoi(e); }
+    { const char *e = getenv("BREAK_LOD_SELFTEST"); if (e && atoi(e)) mega_lod_selftest = true; }
     {
         typedef struct { f32 pos[3]; f32 nrm[3]; f32 uv[2]; } MegaVert;
         u32 total_verts = 0, total_idxs = 0, mesh_cmd_count = 0;
+        u32 mega_node_count = 0, lod0_idxs = 0;
         bool mega_sizes_ok = true;
 
         for (u32 ni = 0; ni < scene.node_count; ni++) {
@@ -4088,8 +4465,52 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             total_idxs  += m->index_count;
             mesh_cmd_count++;
         }
+        mega_node_count = mesh_cmd_count;
+        lod0_idxs = total_idxs;
 
-        if (mega_sizes_ok && mesh_cmd_count > 0 && mesh_cmd_count <= 16384) {
+        /* Runtime LOD: simplified levels per unique mesh, then node x level
+         * cmd / index totals. Over MEGA_MAX_CMDS (or u32 index overflow) the
+         * bake falls back to LOD0 only. BREAK_LOD=0 skips all of it. */
+        LodMeshLevels *lod_levels = NULL;
+        if (mega_lod_enabled && mega_sizes_ok && mesh_cmd_count > 0 &&
+            mesh_cmd_count <= MEGA_MAX_CMDS) {
+            lod_levels = mega_lod_generate(render.device, &scene);
+            if (lod_levels) {
+                u64 cmds_all = 0, idx_all = 0;
+                for (u32 ni = 0; ni < scene.node_count; ni++) {
+                    SceneNode *nd = &scene.nodes[ni];
+                    if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
+                    Mesh *m = &scene.meshes[nd->mesh_index];
+                    if (m->vertex_count == 0 || m->index_count == 0) continue;
+                    const LodMeshLevels *ml = &lod_levels[nd->mesh_index];
+                    u32 lc = ml->level_count ? ml->level_count : 1u;
+                    cmds_all += lc;
+                    idx_all += m->index_count;
+                    for (u32 l = 1; l < lc; l++) idx_all += ml->index_count[l];
+                }
+                if (cmds_all > MEGA_MAX_CMDS || idx_all > UINT32_MAX) {
+                    LOG_WARN("LOD: %llu cmds / %llu indices exceed the mega limits (%u cmds); baking LOD0 only",
+                             (unsigned long long)cmds_all, (unsigned long long)idx_all, MEGA_MAX_CMDS);
+                    for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+                    free(lod_levels);
+                    lod_levels = NULL;
+                } else {
+                    mesh_cmd_count = (u32)cmds_all;
+                    total_idxs = (u32)idx_all;
+                }
+            }
+        }
+
+        if (mega_sizes_ok && mesh_cmd_count > 0 && mesh_cmd_count <= MEGA_MAX_CMDS) {
+            bool lod_tables_ok = mega_lod_alloc(&g_mega_lod, mega_node_count, mesh_cmd_count);
+            if (!lod_tables_ok && lod_levels) {
+                LOG_WARN("LOD: table alloc failed; baking LOD0 only");
+                for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+                free(lod_levels);
+                lod_levels = NULL;
+                mesh_cmd_count = mega_node_count;
+                total_idxs = lod0_idxs;
+            }
             /* Single alloc: vdata + idata + cmds */
             usize v_bytes = (usize)total_verts * sizeof(MegaVert);
             usize i_off   = (v_bytes + 3u) & ~(usize)3u;
@@ -4107,7 +4528,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             MegaVert *vdata = (MegaVert *)mega_block;
             u32      *idata = (u32 *)(mega_block + i_off);
             DrawIndexedIndirectCmd *cmds = (DrawIndexedIndirectCmd *)(mega_block + c_off);
-            u32 voff = 0, ioff = 0, cidx = 0;
+            u32 voff = 0, ioff = 0, cidx = 0, bnode = 0;
 
             for (u32 ni = 0; ni < scene.node_count; ni++) {
                 SceneNode *nd = &scene.nodes[ni];
@@ -4158,21 +4579,60 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 free(src_v);
                 free(src_i);
 
-                /* Build indirect draw command for this scene node */
-                cmds[cidx].index_count    = m->index_count;
-                cmds[cidx].instance_count = 1;
-                cmds[cidx].first_index    = ioff;
-                /* R687: idata already holds src_i + vbase (absolute into the
-                 * mega VBO). vertex_offset was vbase too, so every node after
-                 * the first fetched vertex idx + 2*vbase -- past the end of
-                 * the buffer for all 10 non-terrain nodes. */
-                cmds[cidx].vertex_offset  = 0;
-                cmds[cidx].first_instance = 0;
-                mega_buf.cmd_node_index[cidx] = ni;
+                /* One indirect draw command per (node, LOD level). Level l>0
+                 * indexes the node's LOD0 vertices (shared, not duplicated). */
+                const LodMeshLevels *ml = lod_levels ? &lod_levels[nd->mesh_index] : NULL;
+                u32 lc = (ml && ml->level_count > 1u) ? ml->level_count : 1u;
+                f32 node_scale = 1.0f;
+                if (lc > 1u) {
+                    const Mat4 *wt = &nd->world_transform;
+                    f32 sx = sqrtf(wt->e[0][0]*wt->e[0][0] + wt->e[0][1]*wt->e[0][1] + wt->e[0][2]*wt->e[0][2]);
+                    f32 sy = sqrtf(wt->e[1][0]*wt->e[1][0] + wt->e[1][1]*wt->e[1][1] + wt->e[1][2]*wt->e[1][2]);
+                    f32 sz = sqrtf(wt->e[2][0]*wt->e[2][0] + wt->e[2][1]*wt->e[2][1] + wt->e[2][2]*wt->e[2][2]);
+                    node_scale = fmaxf(sx, fmaxf(sy, sz));
+                }
+                if (lod_tables_ok) {
+                    g_mega_lod.node_scene[bnode] = ni;
+                    g_mega_lod.node_cmd_base[bnode] = cidx;
+                    g_mega_lod.node_level_count[bnode] = (u8)lc;
+                    g_mega_lod.node_vbase[bnode] = vbase;
+                    g_mega_lod.node_vcount[bnode] = vc;
+                }
+                for (u32 l = 0; l < lc; l++) {
+                    u32 lic = m->index_count;
+                    if (l > 0u) {
+                        lic = ml->index_count[l];
+                        const u32 *li = ml->indices[l];
+                        for (u32 ii = 0; ii < lic; ii++)
+                            idata[ioff + ii] = li[ii] + vbase;
+                    }
+                    cmds[cidx].index_count    = lic;
+                    cmds[cidx].instance_count = 1;
+                    cmds[cidx].first_index    = ioff;
+                    /* R687: idata already holds src_i + vbase (absolute into the
+                     * mega VBO). vertex_offset was vbase too, so every node after
+                     * the first fetched vertex idx + 2*vbase -- past the end of
+                     * the buffer for all 10 non-terrain nodes. */
+                    cmds[cidx].vertex_offset  = 0;
+                    cmds[cidx].first_instance = 0;
+                    mega_buf.cmd_node_index[cidx] = ni;
+                    if (lod_tables_ok) {
+                        usize ek = (usize)bnode * MEGA_LOD_LEVELS + l;
+                        g_mega_lod.node_err[ek] = (l > 0u) ? ml->rel_error[l] * ml->scale * node_scale : 0.0f;
+                        g_mega_lod.node_tris[ek] = lic / 3u;
+                        g_mega_lod.cmd_node[cidx] = bnode;
+                        g_mega_lod.cmd_level[cidx] = (u8)l;
+                        g_mega_lod.selected[cidx] = (l == 0u) ? 1u : 0u;
+                        u32 sl0 = mega_lod_shadow_bias < lc - 1u ? mega_lod_shadow_bias : lc - 1u;
+                        g_mega_lod.shadow_selected[cidx] = (l == sl0) ? 1u : 0u;
+                        if (l == 0u) g_mega_lod.node_shadow_level[bnode] = (u8)sl0;
+                    }
+                    ioff += lic;
+                    cidx++;
+                }
 
                 voff += vc;
-                ioff += m->index_count;
-                cidx++;
+                bnode++;
             }
 
             if (!mega_block) {
@@ -4227,9 +4687,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
             mega_buf.draw_cmd_count    = mesh_cmd_count;
             mega_buf.total_index_count = total_idxs;
-            mega_buf.direct_ready = mesh_cmd_count <= MEGA_DIRECT_MAX_DRAWS;
+            mega_buf.lod0_index_count  = lod0_idxs;
+            mega_buf.direct_cmds = (DrawIndexedIndirectCmd *)malloc((usize)mesh_cmd_count * sizeof(cmds[0]));
+            mega_buf.direct_ready = mega_buf.direct_cmds != NULL;
             if (mega_buf.direct_ready)
                 memcpy(mega_buf.direct_cmds, cmds, mesh_cmd_count * sizeof(cmds[0]));
+            else
+                LOG_WARN("MegaBuffer: direct shadow cmd table alloc failed; direct shadow path off");
             mega_buf.valid = mega_geom_ok;
             gpu_indirect_enabled = mega_geom_ok && indirect_ok;
             gpucull_enabled = mega_geom_ok && gpucull_ok;
@@ -4244,6 +4708,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
                     Mesh *m = &scene.meshes[nd->mesh_index];
                     if (m->vertex_count == 0 || m->index_count == 0) continue;
+                    /* Every LOD level of a node joins the node's material group. */
+                    const LodMeshLevels *gml = lod_levels ? &lod_levels[nd->mesh_index] : NULL;
+                    u32 glc = (gml && gml->level_count > 1u) ? gml->level_count : 1u;
 
                     u32 mat_idx = nd->material_idx;
                     /* Find existing group or create new one */
@@ -4255,8 +4722,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         mega_buf.mat_indices[g] = mat_idx;
                         mega_buf.mat_group_count++;
                     }
-                    mega_buf.cmd_mat_group[gcmd] = (i32)g;
-                    gcmd++;
+                    for (u32 l = 0; l < glc; l++) {
+                        mega_buf.cmd_mat_group[gcmd] = (i32)g;
+                        gcmd++;
+                    }
                 }
 
                 /* R75-2: Build inverse index (group→cmd list) in O(N) — replaces
@@ -4462,12 +4931,72 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
 
-            LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds",
-                     total_verts, total_idxs, mesh_cmd_count);
+            if (lod_levels) {
+                LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds (LOD: %u nodes, LOD0 %u indices)",
+                         total_verts, total_idxs, mesh_cmd_count, mega_node_count, lod0_idxs);
+            } else {
+                LOG_INFO("MegaBuffer: %u verts, %u indices, %u draw cmds",
+                         total_verts, total_idxs, mesh_cmd_count);
+            }
+
+            if (lod_tables_ok && mega_buf.valid) {
+                mega_buf.lod = &g_mega_lod;
+                u32 multi = 0, lvl_nodes[MEGA_LOD_LEVELS] = {0};
+                u64 lvl_tris[MEGA_LOD_LEVELS] = {0};
+                for (u32 b = 0; b < g_mega_lod.node_count; b++) {
+                    u32 lc = g_mega_lod.node_level_count[b];
+                    if (lc > 1u) multi++;
+                    for (u32 l = 0; l < lc; l++) {
+                        lvl_nodes[l]++;
+                        lvl_tris[l] += g_mega_lod.node_tris[(usize)b * MEGA_LOD_LEVELS + l];
+                    }
+                }
+                g_mega_lod.active = mega_lod_enabled && multi > 0u;
+                if (!mega_lod_enabled)
+                    LOG_INFO("LOD: off (BREAK_LOD=0) -- LOD0 only, %u cmds", mesh_cmd_count);
+                else
+                    LOG_INFO("LOD: %s -- %u/%u nodes with levels; nodes per level %u/%u/%u, tris per level %llu/%llu/%llu; "
+                             "pixel_error=%.2f shadow_bias=%u",
+                             g_mega_lod.active ? "on" : "on (no mesh simplified; inactive)",
+                             multi, g_mega_lod.node_count, lvl_nodes[0], lvl_nodes[1], lvl_nodes[2],
+                             (unsigned long long)lvl_tris[0], (unsigned long long)lvl_tris[1],
+                             (unsigned long long)lvl_tris[2], mega_lod_pixel_error, mega_lod_shadow_bias);
+                if (mega_lod_selftest) {
+                    char lerr[256] = {0};
+                    bool ok = lod_bake_validate((const u32 *)cmds, mesh_cmd_count, idata, total_idxs,
+                                                total_verts, g_mega_lod.node_cmd_base,
+                                                g_mega_lod.node_level_count, g_mega_lod.node_vbase,
+                                                g_mega_lod.node_vcount, g_mega_lod.node_count,
+                                                g_mega_lod.cmd_node, g_mega_lod.cmd_level,
+                                                lerr, sizeof(lerr));
+                    /* cmd_node_index (cmd -> scene node) must agree with the dense tables. */
+                    for (u32 ci = 0; ok && ci < mesh_cmd_count; ci++) {
+                        if (mega_buf.cmd_node_index[ci] != g_mega_lod.node_scene[g_mega_lod.cmd_node[ci]]) {
+                            snprintf(lerr, sizeof(lerr), "cmd %u cmd_node_index %u != node_scene %u", ci,
+                                     mega_buf.cmd_node_index[ci], g_mega_lod.node_scene[g_mega_lod.cmd_node[ci]]);
+                            ok = false;
+                        }
+                        i32 mg = mega_buf.cmd_mat_group[ci];
+                        u32 b0 = g_mega_lod.node_cmd_base[g_mega_lod.cmd_node[ci]];
+                        if (ok && mg != mega_buf.cmd_mat_group[b0]) {
+                            snprintf(lerr, sizeof(lerr), "cmd %u material group %d != its LOD0 group %d",
+                                     ci, mg, mega_buf.cmd_mat_group[b0]);
+                            ok = false;
+                        }
+                    }
+                    if (ok) LOG_INFO("LOD_SELFTEST: PASS (%u cmds, %u nodes, %u indices, %u verts)",
+                                     mesh_cmd_count, g_mega_lod.node_count, total_idxs, total_verts);
+                    else    LOG_ERROR("LOD_SELFTEST: FAIL: %s", lerr);
+                }
+            }
 
             free(mega_block); /* single free: vdata + idata + cmds */
             } /* else mega bake succeeded */
             } /* R408: overflow-safe mega_block alloc */
+        }
+        if (lod_levels) {
+            for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
+            free(lod_levels);
         }
     }
 
@@ -5087,6 +5616,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         if (cam_spin_deg != 0.0f) {
             camera.yaw += cam_spin_deg * (3.14159265f / 180.0f);
             camera._cy = cosf(camera.yaw); camera._sy = sinf(camera.yaw);
+        }
+        if (cam_dolly != 0.0f) {
+            f32 dcp = cosf(camera.pitch), dsp = sinf(camera.pitch);
+            Vec3 dfwd = vec3(dcp * sinf(camera.yaw), dsp, -dcp * cosf(camera.yaw));
+            camera.position = vec3_sub(camera.position, vec3_scale(dfwd, cam_dolly));
         }
         if (recording_path && path_count < CAM_PATH_CAPACITY) {
             cam_path[path_count].px = camera.position.e[0];
@@ -6529,6 +7063,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               avg_u, draw_bench_gpu_uni_frames,
                               avg_l, draw_bench_gpu_leg_frames);
             }
+            if (mega_lod_on(&mega_buf)) {
+                const MegaLod *ul = mega_buf.lod;
+                debug_ui_text(&ui, "LOD: nodes L0/L1/L2 %u/%u/%u  tris %u/%u/%u  vis tris %u (LOD0 %u)  sel %.3fms",
+                              ul->level_nodes[0], ul->level_nodes[1], ul->level_nodes[2],
+                              ul->level_tris[0], ul->level_tris[1], ul->level_tris[2],
+                              ul->vis_tris, ul->vis_tris_lod0, ul->select_ms);
+            }
             if (combined_aa.use_combined || combined_color.use_combined) {
                 debug_ui_text(&ui, "--- CombinedPost ---");
                 debug_ui_text(&ui, "  TAA+FXAA=%s Tonemap+CG=%s",
@@ -6739,6 +7280,31 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         culled_count = 0;
         tri_count = 0; /* R445: matches the old loop-local redeclaration cadence */
 
+        /* Runtime LOD: pick every mega node's camera + shadow level once,
+         * before any pass, and publish the per-cmd masks for unified_cull. */
+        if (mega_lod_on(&mega_buf)) {
+            /* Output height, not the (TSR-scaled) render height: the error
+             * budget is in displayed pixels. */
+            mega_lod_select(&mega_buf, camera.position, camera.fov, (f32)h, &frame_frustum);
+            if (gpucull_sys.unified_ready) {
+                gpucull_upload_selection(&gpucull_sys, GPUCULL_SELECT_CAMERA,
+                                         mega_buf.lod->selected, mega_buf.draw_cmd_count);
+                gpucull_upload_selection(&gpucull_sys, GPUCULL_SELECT_SHADOW,
+                                         mega_buf.lod->shadow_selected, mega_buf.draw_cmd_count);
+            }
+            if (mega_lod_trace_node >= 0 && (u32)mega_lod_trace_node < mega_buf.lod->node_count) {
+                u32 tb = (u32)mega_lod_trace_node;
+                const NodeSphere *tns = &mega_buf.node_spheres[mega_buf.lod->node_scene[tb]];
+                f32 tdx = tns->cx - camera.position.e[0], tdy = tns->cy - camera.position.e[1],
+                    tdz = tns->cz - camera.position.e[2];
+                LOG_INFO("LOD_TRACE frame=%u node=%u dist=%.2f level=%u shadow=%u transitions=%u sel_ms=%.4f vis_tris=%u/%u",
+                         (unsigned)engine.frame_count, tb, sqrtf(tdx*tdx + tdy*tdy + tdz*tdz),
+                         mega_buf.lod->node_level[tb], mega_buf.lod->node_shadow_level[tb],
+                         mega_buf.lod->transitions, mega_buf.lod->select_ms,
+                         mega_buf.lod->vis_tris, mega_buf.lod->vis_tris_lod0);
+            }
+        }
+
         profiler_push("particles+csm");
         particles_compute(&particles, cmd, (f32)engine.delta_time);
 
@@ -6764,7 +7330,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
              * R82-1: Skip when unified cull is active — object data already uploaded
              * via gpucull_upload_objects_unified at init, legacy pack output never consumed. */
             bool legacy_gpucull_packed = false;
-            if (mega_buf.valid && gpu_indirect_enabled &&
+            if (mega_buf.valid && gpu_indirect_enabled && !mega_lod_on(&mega_buf) &&
                 gpucull_enabled && gpucull_sys.ready && !unified_cull_enabled) {
                 u32 vc_pre = mega_buf.draw_cmd_count;
                 if (vc_pre <= GPUCULL_MAX_OBJECTS) {
@@ -6836,7 +7402,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     } else if (mega_use_unified_shadow(&mega_buf) &&
                         mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                   &render.cascade_vp[c].e[0][0], vis_count, NULL,
-                                                  render.depth_pipeline)) {
+                                                  render.depth_pipeline, GPUCULL_SELECT_SHADOW)) {
                         draw_calls++;
                         draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                         draw_bench_mark_unified();
@@ -6849,6 +7415,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* CPU frustum culling per cascade */
                         Frustum shadow_frustum = frustum_from_vp(&render.cascade_vp[c]);
                         u32 obj_idx = 0;
+                        if (mega_lod_on(&mega_buf)) {
+                            /* Runtime LOD: flags are per cmd (node x level). */
+                            for (u32 ci = 0; ci < vis_count; ci++) {
+                                const NodeSphere *ns = &mega_buf.node_spheres[mega_buf.cmd_node_index[ci]];
+                                Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+                                g_vis_flags[ci] = (mega_buf.lod->shadow_selected[ci] && ns->r >= 0.0f &&
+                                                   frustum_test_sphere(&shadow_frustum, ctr, ns->r)) ? 1u : 0u;
+                            }
+                            obj_idx = vis_count;
+                        }
                         for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                             if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                             Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
@@ -6871,7 +7447,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                     draw_bench_mark_legacy();
                     }
-                    tri_count += mega_buf.total_index_count / 3;
+                    tri_count += mega_lod_on(&mega_buf) ? mega_buf.lod->shadow_tris
+                                                        : mega_buf.total_index_count / 3;
                 } else {
                 for (u32 ni = 0; ni < scene.node_count; ni++) {
                     SceneNode *node = &scene.nodes[ni];
@@ -6938,13 +7515,24 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 mega_unified_cull_draw(&gpucull_sys, render.device, cmd,
                                                           &pt_shadows.light_vp[face_idx].e[0][0],
                                                           vis_count, NULL,
-                                                          pt_shadows.depth_pipeline)) {
+                                                          pt_shadows.depth_pipeline,
+                                                          GPUCULL_SELECT_SHADOW)) {
                                 draw_calls++;
                                 draw_bench_add(1u, draw_bench_enabled ? mega_count_visible_draws(&mega_buf, NULL) : 0u);
                                 draw_bench_mark_unified();
                             } else {
                                 Frustum pface_frustum = frustum_from_vp(&pt_shadows.light_vp[face_idx]);
                                 u32 obj_idx = 0;
+                                if (mega_lod_on(&mega_buf)) {
+                                    /* Runtime LOD: flags are per cmd (node x level). */
+                                    for (u32 ci = 0; ci < vis_count; ci++) {
+                                        const NodeSphere *ns = &mega_buf.node_spheres[mega_buf.cmd_node_index[ci]];
+                                        Vec3 ctr = {{ ns->cx, ns->cy, ns->cz }};
+                                        g_vis_flags[ci] = (mega_buf.lod->shadow_selected[ci] && ns->r >= 0.0f &&
+                                                           frustum_test_sphere(&pface_frustum, ctr, ns->r)) ? 1u : 0u;
+                                    }
+                                    obj_idx = vis_count;
+                                }
                                 for (u32 ni = 0; ni < scene.node_count && ni < 16384 && obj_idx < vis_count; ni++) {
                                     if (mega_buf.node_spheres[ni].r < 0.0f) continue;
                                     Vec3 ctr = {{ mega_buf.node_spheres[ni].cx,
@@ -8366,6 +8954,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     if (mega_use_unified_vis(false) &&
                         mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                                mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
+                        mega_lod_fold_vis(&mega_buf, g_draw_vis);
                         /* g_draw_vis is bake-ordered — the array system consumes
                          * it directly; the grouped path re-sorts internally. */
                         /* R592: clustered array path — emit the frame state
@@ -8432,6 +9021,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                             g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                            if (!mega_cmd_selected(&mega_buf, ci)) g_draw_vis[ci] = 0;
                         }
                         /* R592: clustered array path — frame-state emission
                          * before the call (same reasoning as the unified
@@ -8466,6 +9056,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                             g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                             if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
+                            if (!mega_cmd_selected(&mega_buf, mega_buf.group_cmd_list[ci])) g_vis_flags[ci] = 0;
                         }
                         indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
                         indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
@@ -8750,6 +9341,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 if (mega_use_unified_vis(true) &&
                     mega_unified_vis_flags(&gpucull_sys, cmd, &curr_view_proj.e[0][0],
                                            mega_buf.draw_cmd_count, &occ_sys, g_draw_vis)) {
+                    mega_lod_fold_vis(&mega_buf, g_draw_vis);
                     /* g_draw_vis is bake-ordered — the array system consumes it
                      * directly; the grouped path re-sorts internally. */
                     u32 mc = def_mat_arr
@@ -8797,6 +9389,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                         g_draw_vis[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                         if (!node_occ_visible(ni)) g_draw_vis[ci] = 0;
+                        if (!mega_cmd_selected(&mega_buf, ci)) g_draw_vis[ci] = 0;
                     }
                 }
                 {
@@ -8842,6 +9435,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         /* R155: Guard against ni >= 16384 — g_node_vis is [16384]. */
                         g_vis_flags[ci] = (ni < 16384) ? g_node_vis[ni] : 1;
                         if (!node_occ_visible(ni)) g_vis_flags[ci] = 0;
+                        if (!mega_cmd_selected(&mega_buf, mega_buf.group_cmd_list[ci])) g_vis_flags[ci] = 0;
                     }
                     indirect_draw_upload_visibility(&mega_buf.group_system, render.device, g_vis_flags, total);
                     indirect_draw_compact_no_barrier(&mega_buf.group_system, render.device, cmd);
@@ -9462,6 +10056,15 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  bs_avg, bs_p99);
     }
 
+    if (g_mega_lod.frames > 0u) {
+        f64 fr = (f64)g_mega_lod.frames;
+        LOG_INFO("LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu",
+                 (unsigned long long)g_mega_lod.frames, g_mega_lod.select_ms_sum / fr,
+                 (f64)g_mega_lod.vis_tris_sum / fr, (f64)g_mega_lod.vis_tris_lod0_sum / fr,
+                 g_mega_lod.vis_tris_lod0_sum ? (f64)g_mega_lod.vis_tris_sum / (f64)g_mega_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_mega_lod.transitions_sum);
+    }
     LOG_INFO("Shutting down...");
     world_destroy(world);
     motion_history_destroy(&node_motion_history);
@@ -9539,6 +10142,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             rhi_texture_destroy(render.device, mega_buf.mats.normal_array);
         if (rhi_handle_valid(mega_buf.vbo)) rhi_buffer_destroy(render.device, mega_buf.vbo);
         if (rhi_handle_valid(mega_buf.ibo)) rhi_buffer_destroy(render.device, mega_buf.ibo);
+        free(mega_buf.direct_cmds);
+        mega_buf.direct_cmds = NULL;
+        mega_buf.lod = NULL;
+        mega_lod_free(&g_mega_lod);
         if (rhi_handle_valid(scene_fbo.fb)) rhi_offscreen_fbo_destroy(render.device, &scene_fbo);
         if (rhi_handle_valid(forward_scene.fb)) rhi_mrt_fbo_destroy(render.device, &forward_scene);
     LOG_INFO("  postfx done");

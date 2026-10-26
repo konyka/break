@@ -9,6 +9,8 @@ layout(local_size_x = 64) in;
  * if visible, atomically append its DrawIndexedIndirectCommand.
  *
  * Object i (binding 0) must correspond to draw command i (binding 1).
+ * Draw i is skipped unless selected[i] != 0 (binding 5): the runtime LOD
+ * mask, one entry per draw (several LOD levels of a node share its sphere).
  * Hi-Z sampler uses the compute sampler set (set 2 on Vulkan).
  */
 
@@ -34,6 +36,10 @@ layout(std430, binding = 3) buffer DrawCount {
 
 layout(std430, binding = 4) buffer VisibleFlags {
     uint flags[];
+};
+
+layout(std430, binding = 5) readonly buffer Selected {
+    uint selected[];
 };
 
 #ifdef VULKAN
@@ -110,6 +116,7 @@ void main() {
     vec3  center = objects[idx].pos_radius.xyz;
     float radius = objects[idx].pos_radius.w;
     flags[idx] = 0u;
+    if (selected[idx] == 0u) return;
     if (!sphere_frustum_visible(center, radius)) return;
     if (CULL_USE_HI_Z > 0.5 && !sphere_hi_z_visible(center, radius)) return;
 
