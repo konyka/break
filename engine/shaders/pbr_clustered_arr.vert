@@ -23,9 +23,12 @@ layout(std140, binding = 0) uniform ClusterArrTemporal {
 out vec2 v_velocity;
 #endif
 
-out vec3 vWorldPos;
-out vec3 vNormal;
-out vec2 vUV;
+/* Locations must match pbr_clustered.frag, whose base varyings carry
+ * explicit locations 0-2 (same as the other clustered vertex variants);
+ * vLayer and v_velocity stay name-matched. */
+layout(location = 0) out vec3 vWorldPos;
+layout(location = 1) out vec3 vNormal;
+layout(location = 2) out vec2 vUV;
 flat out uint vLayer;
 
 void main() {
