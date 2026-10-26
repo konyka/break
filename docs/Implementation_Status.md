@@ -1,6 +1,45 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R703a — 运行时 LOD（二期 2.2 前半）：ECS 实例化路径的抖动交叉淡入淡出
+
+mega 路径的淡入淡出（unified_cull 的 `selected[]` 掩码要允许一个节点同时显示两级）留给 R703b。
+
+### 做法
+- **纯逻辑**（`renderer/lod.{c,h}`）：`LodFade { level, from, start }`。`level` 是提交的级别，也就是迟滞的输入，与一期/R702 的选级完全相同；`from` 是正在淡出的级别。`lod_fade_update` 处理三种情况：空闲时换级开始淡入淡出；淡入淡出中选回 `from` 时反向（细级别占比在那一刻不变，剩余时间 = 已走过的时间，不会跳）；淡入淡出中出现第三个级别时，从当前占像素多的那一级重新开始（任何时刻最多两级）。`lod_fade_split` 给出细级别的占比 k（16 分之几）。`lod_bayer4` / `lod_fade_keep` 是着色器判定的 C 参考实现。
+- **抖动**：4×4 Bayer 有序抖动。细级别保留阈值 + 0.5 ≤ k 的像素，粗级别保留其余像素，每个像素恰好由其中一级覆盖。没有混合也没有排序，深度写入照常开启。
+- **ECS 实例**：选级后，正在淡入淡出（1 ≤ k ≤ 15）的实例在收集时被复制成两行：细级别行带 +k，粗级别行带 −k，各自进入 (网格, 级别) 分桶，和 R702 一样绘制。淡入淡出值放在实例行里上一帧模型矩阵第 0 列的 w 分量（`md[19]`）。仿射矩阵这个位置恒为 0，所以不需要新字段，也不改实例行布局；着色器读出后把它清零，再用于速度计算。
+- **着色器**：GLSL 用 `LOD_FADE` 宏注入，只用于实例化管线（blinn `instanced` 与 clustered `pbr_clustered_inst` + 它专用的一份 `pbr_clustered.frag`；静态、蒙皮、数组管线共用的那份片元着色器不带这个宏）。顶点着色器输出 `flat vLodFade`，片元着色器在开头 `discard`。D3D12 不能运行时注入宏，所以新增两个片元着色器副本 `instanced_mrt_lodfade_hlsl.frag`、`pbr_clustered_lodfade_hlsl.frag`（文件头注明要与原文件同步），两个实例化顶点着色器多输出 `TEXCOORD4`。淡入淡出关闭时创建的仍是原来的着色器和管线。
+- 首次看到的实体（或槽位被复用）直接用选中的级别，不做淡入。
+- **开关**：`BREAK_LOD_FADE_MS`（默认 250，0 = 关闭）；`BREAK_LOD=0` 时强制关闭。启动日志多一行 `ECS LOD: dithered cross-fade 250 ms`，`ECS_LOD_STATS` 多一个 `fading_avg` 字段，调试 UI 多一个 fading 计数。
+- **阴影**：ECS 实例本来就不画阴影（R702 已说明），因此没有阴影淡入淡出。
+- 测试：`test_lod` 36 → 43 个用例：Bayer 排列与两份掩码互补（k = 1..15 时细级别恰好占 k/16）、关闭时立即切换、粗化/细化的占比、单调性、中途反向时覆盖连续、第三级时从占优级别重新开始、与迟滞联用的扫描不会来回跳。
+
+### 验证
+- 构建：build-vk、build-gl、build-d3d12-debug、build-rel-vk 均 0 警告（D3D12 树的 dxc 编译了两个新片元着色器）。
+- ctest（主代理复跑，均 `-j4`）：build-vk 187/187、build-gl 184/184、build-d3d12-debug 192/192，全部通过。
+- 真实淡化冒烟（主代理复跑，Release，`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`、180 帧）：VK 12 次换级、fading_avg 6.27、0 条验证消息；GL 17 次、fading_avg 1.74；D3D12 17 次、fading_avg 1.83，均正常退出。VK 关闭 clustered 的 blinn 路径同样 12 次换级、fading_avg 6.27、0 条验证消息。此机位与运动确实跨过阈值；默认压力场景机位可能不触发换级（fading_avg=0），不能拿它验证淡化。
+- 与改动前（`bed3f6c1`，同一构建树）对比，第 3 帧截图 + 日志：
+
+| 场景 | 新 vs 旧 平均差 | 旧 vs 旧（噪声） |
+|---|---|---|
+| VK `BREAK_LOD=0` 前向 / 延迟 | 0.018 / 0.045 | 0.033 / 0.043 |
+| VK `BREAK_LOD_FADE_MS=0` / 加 ECS 压力场景 | 0.037 / 0.047 | 0.013 / 0.033 |
+| GL `BREAK_LOD=0` / `FADE_MS=0` | 0.005 / 0.050 | 0.120 / 0.059 |
+| D3D12 `BREAK_LOD=0` / `FADE_MS=0` | 0.000 / 0.000 | 0.000 / 0.000 |
+
+  `BREAK_LOD=0` 时 8 组日志去掉数字后逐行相同。`FADE_MS=0` 时唯一的差别是 `ECS_LOD_STATS` 多了 `fading_avg=0.00` 字段。命令数、上传数、每帧 execute/compact/emission 计数、`draws_avg`、`vis_tris_avg` 全部相同。
+- 校验层：VK Debug（验证层开启），ECS 压力场景 + 相机推远，clustered 与 blinn 实例化各跑一次，淡入淡出确实发生（`fading_avg` 1.67 / 2.73），`VK validation messages this run: 0`。D3D12 调试层 + GPU-based validation 跑了 3 种组合（淡入淡出开 clustered、开 blinn、关），0 条消息。GL 两种组合均正常退出。
+- 截图：VK Release，`BREAK_LOD_FADE_MS=3000`，关闭 TAA/运动模糊/DOF/bloom/锐化，相机推远时第 50 帧与 `FADE_MS=0` 对比：差异只在正处于淡入淡出的 5 块岩石轮廓上（4465 个像素）。放大后可见轮廓呈两级交错的点状边，没有空洞。两级的内部着色几乎相同，所以抖动在内部看不出来，这是预期的。
+- 性能（VK Release，ECS 压力场景 N=200，相机 0.1 m/帧推远，600 帧，2 轮）：淡入淡出关 191.5 / 192.6 fps，开 189.6 / 189.8 fps（约 −1.2%；平均每帧有 0.76 个实例处在淡入淡出中）。
+
+### 已知限制 / 未做
+- mega 路径的淡入淡出：R703b。
+- 淡入淡出期间该实例画两次，三角形数是两级之和（已计入 `vis_tris`）。
+- 实例缓冲满（10000 行）时，淡入淡出中的实例只画细级别那一行。
+- 没有测量淡入淡出的视觉效果是否「看不出跳变」，只确认了两级互补、没有空洞。
+
+
 ## 本轮更新：R702 — 运行时 LOD（二期 2.1）：ECS 实例化静态网格按实例选级，按 (网格, 级别) 分组绘制
 
 设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md` 第 8 节（二期状态）。

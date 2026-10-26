@@ -30,11 +30,19 @@ out vec2 v_velocity;
 layout(location = 0) out vec3 vWorldPos;
 layout(location = 1) out vec3 vNormal;
 layout(location = 2) out vec2 vUV;
+#ifdef LOD_FADE
+/* R703a: per-instance LOD cross-fade value (previous model column-0 w,
+ * always 0 for an affine matrix). */
+flat out float vLodFade;
+#endif
 
 void main() {
     int idx = gl_InstanceID * 8; /* GL twin: gl_InstanceID (VK: gl_InstanceIndex) */
     mat4 model = mat4(inst.data[idx], inst.data[idx + 1],
                       inst.data[idx + 2], inst.data[idx + 3]);
+#ifdef LOD_FADE
+    vLodFade = inst.data[idx + 4].w;
+#endif
 
     vec4 world_pos = model * vec4(aPos, 1.0);
     vWorldPos = world_pos.xyz;
@@ -44,6 +52,9 @@ void main() {
 #ifdef FORWARD_MRT
     mat4 prev_model = mat4(inst.data[idx + 4], inst.data[idx + 5],
                            inst.data[idx + 6], inst.data[idx + 7]);
+#ifdef LOD_FADE
+    prev_model[0].w = 0.0;  /* R703a: column-0 w carries the fade value */
+#endif
     vec4 prev_clip = u_prev_vp * prev_model * vec4(aPos, 1.0);
     v_velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
 #endif

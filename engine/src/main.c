@@ -476,6 +476,22 @@ static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
     rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
 }
 
+/* Runtime LOD cross-fade window (R703a): BREAK_LOD_FADE_MS (default 250,
+ * 0 = off), forced off by BREAK_LOD=0. Read here because render_init builds
+ * the fade pipeline variants before main parses the other LOD switches. */
+static f32 lod_fade_seconds(void) {
+    static int cached = 0;
+    static f32 v = 0.25f;
+    if (!cached) {
+        cached = 1;
+        const char *l = getenv("BREAK_LOD");
+        const char *e = getenv("BREAK_LOD_FADE_MS");
+        if (e && e[0]) { int ms = atoi(e); v = ms > 0 ? (f32)ms / 1000.0f : 0.0f; }
+        if (l && l[0] && !atoi(l)) v = 0.0f;
+    }
+    return v;
+}
+
 static bool render_init(RenderState *rs, Platform *platform) {
     void *window_native = platform_window_native(platform);
     void *surface_native = platform_surface_native(platform);
@@ -666,9 +682,17 @@ static bool render_init(RenderState *rs, Platform *platform) {
              * rows are a structured buffer at t16 (see the shader header). */
             RHIShader civs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_inst.vert", false);
             if (rhi_handle_valid(civs)) {
+                /* R703a: LOD cross-fade pixel stage for the instanced variant
+                 * only (the static/skinned/array pipelines keep the original). */
+                RHIShader cffs = lod_fade_seconds() > 0.0f
+                    ? rhi_shader_create(rs->device, "pbr_clustered_lodfade_hlsl.frag", 0, true)
+                    : RHI_HANDLE_NULL;
                 cpd.vert = civs;
                 cpd.uses_storage = true;
+                if (rhi_handle_valid(cffs)) cpd.frag = cffs;
                 rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.frag = cfs;
+                if (rhi_handle_valid(cffs)) rhi_shader_destroy(rs->device, cffs);
                 if (!rhi_handle_valid(rs->clustered_inst_pipeline))
                     LOG_WARN("clustered: D3D12 instanced sidecar pipeline creation failed");
                 rhi_shader_destroy(rs->device, civs);
@@ -754,12 +778,32 @@ static bool render_init(RenderState *rs, Platform *platform) {
                                             : rhi_shader_create(rs->device, cf, cfl, true));
             /* R590: instanced variant vert (instances ride a vertex SSBO;
              * the frag object is SHARED with the static pipeline). */
-            RHIShader civs = RHI_HANDLE_NULL;
+            RHIShader civs = RHI_HANDLE_NULL, cifs = RHI_HANDLE_NULL;
             if (civ) {
                 usize civm_len = 0;
                 char *civ_mrt = shader_inject_define(civ, civl, "FORWARD_MRT", &civm_len);
-                civs = rhi_shader_create(rs->device, civ_mrt ? civ_mrt : civ,
-                                         civ_mrt ? civm_len : civl, false);
+                /* R703a: with the LOD cross-fade on, the instanced variant gets
+                 * its own LOD_FADE vert + frag pair (dither discard); every
+                 * other clustered pipeline keeps the shared discard-free frag. */
+                if (lod_fade_seconds() > 0.0f && civ_mrt && cf_mrt) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(civ_mrt, civm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(cf_mrt, cfl_mrt, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        civs = rhi_shader_create(rs->device, vf, vfl, false);
+                        cifs = rhi_shader_create(rs->device, ff, ffl, true);
+                    }
+                    free(vf); free(ff);
+                    if (!rhi_handle_valid(civs) || !rhi_handle_valid(cifs)) {
+                        LOG_WARN("LOD fade: clustered instanced LOD_FADE variant failed; using the plain variant");
+                        if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
+                        if (rhi_handle_valid(cifs)) rhi_shader_destroy(rs->device, cifs);
+                        civs = cifs = RHI_HANDLE_NULL;
+                    }
+                }
+                if (!rhi_handle_valid(civs))
+                    civs = rhi_shader_create(rs->device, civ_mrt ? civ_mrt : civ,
+                                             civ_mrt ? civm_len : civl, false);
                 free(civ_mrt);
             }
             /* R591: skinned variant vert (joints ride a vertex SSBO). */
@@ -802,7 +846,9 @@ static bool render_init(RenderState *rs, Platform *platform) {
                      * must apply. */
                     cpd.vert = civs;
                     cpd.uses_storage = true;
+                    if (rhi_handle_valid(cifs)) cpd.frag = cifs;
                     rs->clustered_inst_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                    cpd.frag = cfs;
                 }
                 if (rhi_handle_valid(csvs)) {
                     /* R591: skinned variant — 64B joint vertex contract via
@@ -828,6 +874,7 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 rhi_shader_destroy(rs->device, cfs);
             }
             if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
+            if (rhi_handle_valid(cifs)) rhi_shader_destroy(rs->device, cifs);
             if (rhi_handle_valid(csvs)) rhi_shader_destroy(rs->device, csvs);
             if (rhi_handle_valid(cavs)) rhi_shader_destroy(rs->device, cavs);
             if (rhi_handle_valid(cafs)) rhi_shader_destroy(rs->device, cafs);
@@ -1007,8 +1054,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
         if (caps.shader_sidecar_paths) {
             RHIShader ivs = rhi_shader_create(rs->device,
                                               "instanced_mrt_hlsl.vert", 0, false);
+            /* R703a: LOD cross-fade twin of the pixel stage (dither discard). */
             RHIShader ifs = rhi_shader_create(rs->device,
-                                              "instanced_mrt_hlsl.frag", 0, true);
+                                              lod_fade_seconds() > 0.0f
+                                                  ? "instanced_mrt_lodfade_hlsl.frag"
+                                                  : "instanced_mrt_hlsl.frag", 0, true);
             if (rhi_handle_valid(ivs) && rhi_handle_valid(ifs)) {
                 RHIPipelineDesc ipd = {
                     .vert = ivs, .frag = ifs,
@@ -1044,6 +1094,19 @@ static bool render_init(RenderState *rs, Platform *platform) {
             usize ivm_len = 0, ifm_len = 0;
             char *ivm = shader_inject_define(iv, ivl, "FORWARD_MRT", &ivm_len);
             char *ifm = shader_inject_define(ifl_src, ifl, "FORWARD_MRT", &ifm_len);
+            /* R703a: LOD cross-fade (dither discard) when the fade is on. */
+            if (lod_fade_seconds() > 0.0f && ivm && ifm) {
+                usize a = 0, b = 0;
+                char *ivf = shader_inject_define(ivm, ivm_len, "LOD_FADE", &a);
+                char *iff = shader_inject_define(ifm, ifm_len, "LOD_FADE", &b);
+                if (ivf && iff) {
+                    free(ivm); free(ifm);
+                    ivm = ivf; ivm_len = a;
+                    ifm = iff; ifm_len = b;
+                } else {
+                    free(ivf); free(iff);
+                }
+            }
             RHIShader ivs = rhi_shader_create(rs->device, ivm ? ivm : iv,
                                                ivm ? ivm_len : ivl, false);
             RHIShader ifs = rhi_shader_create(rs->device, ifm ? ifm : ifl_src,
@@ -2962,14 +3025,16 @@ typedef struct {
     u8        *inst_level;         /* [inst_cap] level of this frame's instance k */
     u32       *bucket_off;         /* [mesh * L + 1] */
     u32       *bucket_order;       /* [inst_cap] */
+    LodFade   *fade;               /* [ECS_MAX_ENTITIES] cross-fade state (R703a); NULL = off */
+    f32        fade_s;             /* BREAK_LOD_FADE_MS / 1000 */
     /* last frame */
     u32   level_inst[ECS_LOD_LEVELS];
-    u32   vis_tris, vis_tris_lod0, transitions, draws;
+    u32   vis_tris, vis_tris_lod0, transitions, draws, fading;
     f64   select_ms;
     /* session totals (ECS_LOD_STATS at shutdown) */
     u64   frames;
     f64   select_ms_sum;
-    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, draws_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, draws_sum, fading_sum;
 } EcsLod;
 
 static EcsLod g_ecs_lod;
@@ -2982,14 +3047,14 @@ static void ecs_lod_free(EcsLod *E, RHIDevice *dev) {
     }
     free(E->mesh_level_count); free(E->mesh_err); free(E->mesh_tris); free(E->mesh_first);
     free(E->mesh_sphere); free(E->mesh_ibo); free(E->st.level); free(E->st.tag);
-    free(E->inst_level); free(E->bucket_off); free(E->bucket_order);
+    free(E->inst_level); free(E->bucket_off); free(E->bucket_order); free(E->fade);
     u64 frames = E->frames, vt = E->vis_tris_sum, vt0 = E->vis_tris_lod0_sum;
-    u64 tr = E->transitions_sum, dr = E->draws_sum;
+    u64 tr = E->transitions_sum, dr = E->draws_sum, fa = E->fading_sum;
     f64 sm = E->select_ms_sum;
     memset(E, 0, sizeof(*E));
     /* Session totals survive a rebuild (BSCN restore) for the shutdown log. */
     E->frames = frames; E->vis_tris_sum = vt; E->vis_tris_lod0_sum = vt0;
-    E->transitions_sum = tr; E->draws_sum = dr; E->select_ms_sum = sm;
+    E->transitions_sum = tr; E->draws_sum = dr; E->select_ms_sum = sm; E->fading_sum = fa;
 }
 
 /* Build the tables for every mesh an entity references (plus mesh 0).
@@ -3037,6 +3102,14 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
     E->inst_level  = (u8 *)calloc(inst_cap, 1);
     E->bucket_off  = (u32 *)calloc((usize)mc * L + 1u, sizeof(u32));
     E->bucket_order = (u32 *)calloc(inst_cap, sizeof(u32));
+    E->fade_s = lod_fade_seconds();
+    if (E->fade_s > 0.0f) {
+        E->fade = (LodFade *)calloc(ECS_MAX_ENTITIES, sizeof(LodFade));
+        if (!E->fade) {
+            LOG_WARN("ECS LOD: fade state alloc failed; level switches pop");
+            E->fade_s = 0.0f;
+        }
+    }
     if (!E->mesh_level_count || !E->mesh_err || !E->mesh_tris || !E->mesh_first ||
         !E->mesh_sphere || !E->mesh_ibo || !E->st.level || !E->st.tag || !E->inst_level ||
         !E->bucket_off || !E->bucket_order) {
@@ -3109,27 +3182,58 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
              E->active ? "on" : "on (no referenced mesh simplified; inactive)",
              entities, used_count, with_levels, reused, generated,
              (f64)(time_microseconds() - t0) / 1000.0);
+    if (E->active && E->fade_s > 0.0f)
+        LOG_INFO("ECS LOD: dithered cross-fade %.0f ms (BREAK_LOD_FADE_MS)", (f64)E->fade_s * 1000.0);
 }
 
 /* Camera level of one instance: translation-only CTransform, so the world
- * bounding sphere is the mesh's local sphere moved to pos. */
+ * bounding sphere is the mesh's local sphere moved to pos. The returned level
+ * is the one to draw. With the cross-fade on, the committed (hysteresis)
+ * level can differ from it while a fade runs: *fade_k < LOD_FADE_STEPS then
+ * means "draw the returned (finer) level with dither +k and *fade_coarser
+ * with dither -k". */
 static inline u8 ecs_lod_pick(EcsLod *E, u32 mesh, Entity e, const f32 pos[3],
-                              Vec3 cam, f32 pf) {
+                              Vec3 cam, f32 pf, f64 now, u32 *fade_k, u8 *fade_coarser) {
     u32 lc = E->mesh_level_count[mesh];
     u32 lvl = 0u;
+    *fade_k = LOD_FADE_STEPS;
+    *fade_coarser = 0u;
     if (lc > 1u) {
         const f32 *s = &E->mesh_sphere[mesh * 4u];
         f32 dx = pos[0] + s[0] - cam.e[0], dy = pos[1] + s[1] - cam.e[1], dz = pos[2] + s[2] - cam.e[2];
         f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - s[3];
         bool changed = false;
+        bool faded = E->fade && e.index < E->st.capacity;
+        bool fresh = faded && E->st.tag[e.index] != e.generation + 1u;
         lvl = lod_instance_select(&E->st, e.index, e.generation + 1u,
                                   &E->mesh_err[(usize)mesh * ECS_LOD_LEVELS], lc, dist, pf,
                                   mega_lod_pixel_error, &changed);
         if (changed) E->transitions++;
+        if (faded) {
+            LodFade *f = &E->fade[e.index];
+            /* First sighting of this entity (or a reused slot): no fade in. */
+            if (fresh) lod_fade_reset(f, lvl);
+            else       lod_fade_update(f, lvl, now, E->fade_s);
+            u32 fi = lvl, co = lvl;
+            u32 k = lod_fade_split(f, now, E->fade_s, &fi, &co);
+            if (fi >= lc) fi = lc - 1u;
+            if (co >= lc) co = lc - 1u;
+            if (fi == co || k >= LOD_FADE_STEPS) {
+                lvl = fi;
+            } else if (k == 0u) {
+                lvl = co;
+            } else {
+                lvl = fi;
+                *fade_k = k;
+                *fade_coarser = (u8)co;
+                E->fading++;
+            }
+        }
     }
     const u32 *tris = &E->mesh_tris[(usize)mesh * ECS_LOD_LEVELS];
     E->level_inst[lvl]++;
     E->vis_tris += tris[lvl];
+    if (*fade_k < LOD_FADE_STEPS) E->vis_tris += tris[*fade_coarser];
     E->vis_tris_lod0 += tris[0];
     return (u8)lvl;
 }
@@ -7323,9 +7427,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               ul->vis_tris, ul->vis_tris_lod0, ul->select_ms);
             }
             if (g_ecs_lod.active) {
-                debug_ui_text(&ui, "ECS LOD: inst L0/L1/L2 %u/%u/%u  vis tris %u (LOD0 %u)  draws %u  sel %.3fms",
+                debug_ui_text(&ui, "ECS LOD: inst L0/L1/L2 %u/%u/%u  fading %u  vis tris %u (LOD0 %u)  draws %u  sel %.3fms",
                               g_ecs_lod.level_inst[0], g_ecs_lod.level_inst[1], g_ecs_lod.level_inst[2],
-                              g_ecs_lod.vis_tris, g_ecs_lod.vis_tris_lod0, g_ecs_lod.draws,
+                              g_ecs_lod.fading, g_ecs_lod.vis_tris, g_ecs_lod.vis_tris_lod0, g_ecs_lod.draws,
                               g_ecs_lod.select_ms);
             }
             if (combined_aa.use_combined || combined_color.use_combined) {
@@ -8176,12 +8280,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             const bool ecs_lod = g_ecs_lod.active && g_ecs_lod.mesh_count == scene.mesh_count;
             u64 ecs_lod_t0 = 0u;
             f32 ecs_lod_pf = 0.0f;
+            f64 ecs_lod_now = 0.0;
             if (ecs_lod) {
                 ecs_lod_t0 = time_microseconds();
                 ecs_lod_pf = lod_screen_proj_factor(camera.fov, (f32)h);
+                ecs_lod_now = (f64)ecs_lod_t0 / 1e6;
                 memset(g_ecs_lod.level_inst, 0, sizeof(g_ecs_lod.level_inst));
                 g_ecs_lod.vis_tris = g_ecs_lod.vis_tris_lod0 = 0u;
-                g_ecs_lod.transitions = g_ecs_lod.draws = 0u;
+                g_ecs_lod.transitions = g_ecs_lod.draws = g_ecs_lod.fading = 0u;
             }
 
             if (mq && mq->match_count > 0) {
@@ -8229,10 +8335,31 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 } else {
                                     inst_mesh_idx[instance_count] = 0;
                                 }
-                                if (ecs_lod)
+                                if (ecs_lod) {
+                                    u32 fade_k;
+                                    u8 fade_co;
                                     g_ecs_lod.inst_level[instance_count] =
                                         ecs_lod_pick(&g_ecs_lod, inst_mesh_idx[instance_count],
-                                                     entity, et->pos, camera.position, ecs_lod_pf);
+                                                     entity, et->pos, camera.position, ecs_lod_pf,
+                                                     ecs_lod_now, &fade_k, &fade_co);
+                                    /* R703a: a fading instance is drawn twice --
+                                     * finer level with dither +k, coarser with -k.
+                                     * The value rides the previous model's
+
+                                     * column-0 w (md[19], always 0 for the
+                                     * translation-only model). */
+                                    if (fade_k < LOD_FADE_STEPS) {
+                                        if (instance_count + 1u < INSTANCE_DATA_CAP) {
+                                            md[19] = lod_fade_dither_value(fade_k, true);
+                                            f32 *md2 = md + 32;
+                                            memcpy(md2, md, 128);
+                                            md2[19] = lod_fade_dither_value(fade_k, false);
+                                            inst_mesh_idx[instance_count + 1u] = inst_mesh_idx[instance_count];
+                                            g_ecs_lod.inst_level[instance_count + 1u] = fade_co;
+                                            instance_count++;
+                                        }
+                                    }
+                                }
                                 instance_count++;
                             }
                         }
@@ -8248,6 +8375,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 g_ecs_lod.vis_tris_sum += g_ecs_lod.vis_tris;
                 g_ecs_lod.vis_tris_lod0_sum += g_ecs_lod.vis_tris_lod0;
                 g_ecs_lod.transitions_sum += g_ecs_lod.transitions;
+                g_ecs_lod.fading_sum += g_ecs_lod.fading;
             }
 
             {
@@ -10395,11 +10523,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     if (g_ecs_lod.frames > 0u) {
         f64 fr = (f64)g_ecs_lod.frames;
         LOG_INFO("ECS_LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
-                 "ratio=%.3f transitions=%llu draws_avg=%.2f",
+                 "ratio=%.3f transitions=%llu draws_avg=%.2f fading_avg=%.2f",
                  (unsigned long long)g_ecs_lod.frames, g_ecs_lod.select_ms_sum / fr,
                  (f64)g_ecs_lod.vis_tris_sum / fr, (f64)g_ecs_lod.vis_tris_lod0_sum / fr,
                  g_ecs_lod.vis_tris_lod0_sum ? (f64)g_ecs_lod.vis_tris_sum / (f64)g_ecs_lod.vis_tris_lod0_sum : 1.0,
-                 (unsigned long long)g_ecs_lod.transitions_sum, (f64)g_ecs_lod.draws_sum / fr);
+                 (unsigned long long)g_ecs_lod.transitions_sum, (f64)g_ecs_lod.draws_sum / fr,
+                 (f64)g_ecs_lod.fading_sum / fr);
     }
     ecs_lod_free(&g_ecs_lod, render.device);
     LOG_INFO("Shutting down...");

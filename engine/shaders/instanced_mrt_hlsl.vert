@@ -60,6 +60,7 @@ struct VSOut {
     float3 normal : TEXCOORD1;
     float2 uv : TEXCOORD2;
     float2 velocity : TEXCOORD3;
+    nointerpolation float lod_fade : TEXCOORD4;  // R703a LOD cross-fade (0 = none)
 };
 VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
            float2 aUV : TEXCOORD0, uint inst : SV_InstanceID) {
@@ -85,7 +86,8 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     float4 curr_clip = mul(g_push.u_proj, mul(g_push.u_view, world_pos));
     // FORWARD_MRT: the per-instance previous model comes from the instance
     // buffer, not the UBO -- GLSL indexes idx + 4 .. idx + 7.
-    float4 p0 = g_rows[idx + 4];
+    float4 p0 = float4(g_rows[idx + 4].xyz, 0.0f);
+    o.lod_fade = g_rows[idx + 4].w;   // R703a: cross-fade value (column-0 w)
     float4 p1 = g_rows[idx + 5];
     float4 p2 = g_rows[idx + 6];
     float4 p3 = g_rows[idx + 7];

@@ -414,6 +414,78 @@ u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag) {
     return st->tag[slot] == tag ? st->level[slot] : 0u;
 }
 
+void lod_fade_reset(LodFade *f, u32 level) {
+    if (!f) return;
+    f->level = (u8)level;
+    f->from = (u8)level;
+    f->start = 0.0;
+}
+
+static f32 lod_fade_progress(const LodFade *f, f64 now, f32 fade_s) {
+    if (!(fade_s > 0.0f)) return 1.0f;
+    f64 t = (now - f->start) / (f64)fade_s;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
+    return (f32)t;
+}
+
+bool lod_fade_update(LodFade *f, u32 new_level, f64 now, f32 fade_s) {
+    if (!f) return false;
+    if (!(fade_s > 0.0f)) {
+        bool ch = f->level != new_level;
+        lod_fade_reset(f, new_level);
+        return ch;
+    }
+    if (f->from != f->level && now - f->start >= (f64)fade_s) f->from = f->level;
+    if (new_level == f->level) return false;
+    if (f->from == f->level) {
+        f->level = (u8)new_level;
+        f->start = now;
+    } else {
+        f32 t = lod_fade_progress(f, now, fade_s);
+        if (new_level == f->from) {
+            /* Reverse: the outgoing level becomes the incoming one at the
+             * complementary progress, so the finer share stays put. */
+            f->from = f->level;
+            f->level = (u8)new_level;
+            f->start = now - (f64)(1.0f - t) * (f64)fade_s;
+        } else {
+            f->from = t >= 0.5f ? f->level : f->from;
+            f->level = (u8)new_level;
+            f->start = now;
+        }
+    }
+    return true;
+}
+
+u32 lod_fade_split(const LodFade *f, f64 now, f32 fade_s, u32 *finer, u32 *coarser) {
+    u32 a = f ? f->level : 0u, b = f ? f->from : 0u;
+    f32 t = (f && a != b) ? lod_fade_progress(f, now, fade_s) : 1.0f;
+    if (!f || a == b || t >= 1.0f) {
+        if (finer) *finer = a;
+        if (coarser) *coarser = a;
+        return LOD_FADE_STEPS;
+    }
+    bool incoming_finer = a < b;
+    f32 phi = incoming_finer ? t : 1.0f - t;   /* finer level's share */
+    u32 k = (u32)(phi * (f32)LOD_FADE_STEPS);
+    if (k > LOD_FADE_STEPS) k = LOD_FADE_STEPS;
+    if (finer) *finer = incoming_finer ? a : b;
+    if (coarser) *coarser = incoming_finer ? b : a;
+    return k;
+}
+
+u32 lod_bayer4(u32 x, u32 y) {
+    static const u8 m[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    return m[(y & 3u) * 4u + (x & 3u)];
+}
+
+bool lod_fade_keep(u32 bayer, f32 value) {
+    if (value == 0.0f) return true;
+    f32 b = (f32)bayer + 0.5f;
+    return value > 0.0f ? !(b > value) : !(b < -value);
+}
+
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance) {
     /* Default: each level doubles the distance */
     for (u32 i = 0; i < group->level_count && i < LOD_MAX_LEVELS; i++) {

@@ -119,3 +119,46 @@ u32 lod_instance_select(LodInstanceState *st, u32 slot, u32 tag,
                         f32 pixel_err, bool *changed);
 /* Stored level for (slot, tag) without updating it; 0 if not tracked. */
 u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag);
+
+/* ---- Dithered cross-fade between LOD levels (runtime LOD phase 2.2) ----
+ * A level switch shows both levels for fade_s seconds with complementary
+ * 4x4 ordered (Bayer) dither: the finer (lower-index) level keeps the pixels
+ * whose Bayer threshold is < k, the coarser level keeps the rest, where k
+ * (0..16) is the finer level's share in 16ths. Every pixel is covered by
+ * exactly one of the two, so no blending or sorting is needed and depth
+ * writes stay on. `level` is the committed (target) level -- the hysteresis
+ * input of lod_select_by_screen_error, unchanged from phase 1 -- and `from`
+ * the level fading out (== level when idle). */
+#define LOD_FADE_STEPS 16u
+
+typedef struct {
+    u8  level;
+    u8  from;
+    f64 start;   /* clock time the current fade began */
+} LodFade;
+
+/* Idle at level. */
+void lod_fade_reset(LodFade *f, u32 level);
+/* Apply this frame's selected level at clock time now. fade_s <= 0 switches
+ * instantly. A finished fade completes first. A new level while idle starts
+ * a fade from the current level. While fading: selecting `from` again
+ * reverses the fade with the same finer-level share (no pattern jump);
+ * selecting a third level restarts from whichever of the two levels covers
+ * more pixels. Returns true when the level changed. */
+bool lod_fade_update(LodFade *f, u32 new_level, f64 now, f32 fade_s);
+/* k = the finer level's share in 16ths at clock time now (0..16) and the
+ * two levels. Idle (or finished): *finer = *coarser = level, k = 16.
+ * k == 0 means draw only the coarser level, 16 only the finer one; 1..15
+ * means draw both with lod_fade_dither_value(+-k). */
+u32 lod_fade_split(const LodFade *f, f64 now, f32 fade_s, u32 *finer, u32 *coarser);
+static inline bool lod_fade_active(const LodFade *f) { return f->from != f->level; }
+
+/* The shader's per-draw u_lod_fade value: +k for the finer level, -k for the
+ * coarser one (k in 1..15); 0 = no dither. */
+static inline f32 lod_fade_dither_value(u32 k, bool finer) {
+    return finer ? (f32)k : -(f32)k;
+}
+/* Reference of the shader test: 4x4 Bayer threshold (0..15) of a pixel and
+ * whether a draw with u_lod_fade = value keeps it. */
+u32  lod_bayer4(u32 x, u32 y);
+bool lod_fade_keep(u32 bayer, f32 value);

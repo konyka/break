@@ -131,7 +131,8 @@ inject_defines() {
 # contract test pins this list). Row: <file> <comma-separated defines in
 # call order>. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
 # FORWARD_MRT (main.c:491-498), and the texture-array path appends
-# CLUSTERED_ARR (main.c:535). The deferred renderer injects HAS_IBL into
+# CLUSTERED_ARR (main.c:535); with the R703a LOD cross-fade on, the
+# instanced pipelines also append LOD_FADE. The deferred renderer injects HAS_IBL into
 # every fragment stage (deferred.c defrd_inject_define — byte-identical to
 # shader_inject_define on these #version-first files).
 VARIANTS='
@@ -143,10 +144,14 @@ pbr_clustered_vk.vert FORWARD_MRT
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR
 pbr_clustered_inst_vk.vert FORWARD_MRT
+pbr_clustered_inst_vk.vert FORWARD_MRT,LOD_FADE
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,LOD_FADE
 pbr_clustered_skin_vk.vert FORWARD_MRT
 pbr_clustered_arr_vk.vert FORWARD_MRT
 instanced_vk.vert FORWARD_MRT
 instanced_vk.frag FORWARD_MRT
+instanced_vk.vert FORWARD_MRT,LOD_FADE
+instanced_vk.frag FORWARD_MRT,LOD_FADE
 skinned_vk.vert FORWARD_MRT
 skinned_vk.frag FORWARD_MRT
 skybox_vk.frag FORWARD_MRT

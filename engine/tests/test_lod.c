@@ -698,6 +698,140 @@ TEST(lod_instance_select_reused_slot_starts_at_lod0) {
     ASSERT_EQ(lod_instance_select(NULL, 0, 1, err, 3, 100.0f, 500.0f, 1.0f, NULL), 2u);
 }
 
+/* ---- Dithered cross-fade (phase 2.2) ---- */
+
+TEST(lod_fade_bayer_is_a_permutation_and_masks_are_complementary) {
+    u32 seen = 0u;
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++) {
+            u32 b = lod_bayer4(x, y);
+            ASSERT_TRUE(b < 16u);
+            seen |= 1u << b;
+            ASSERT_EQ(lod_bayer4(x + 4u, y + 8u), b); /* tiles */
+        }
+    ASSERT_EQ(seen, 0xFFFFu);
+    /* For every share k in 1..15 each pixel is kept by exactly one of the
+     * two draws, and the finer draw keeps exactly k of 16. */
+    for (u32 k = 1; k < LOD_FADE_STEPS; k++) {
+        u32 finer_px = 0u;
+        for (u32 b = 0; b < 16u; b++) {
+            bool kf = lod_fade_keep(b, lod_fade_dither_value(k, true));
+            bool kc = lod_fade_keep(b, lod_fade_dither_value(k, false));
+            ASSERT_TRUE(kf != kc);
+            if (kf) finer_px++;
+        }
+        ASSERT_EQ(finer_px, k);
+    }
+    for (u32 b = 0; b < 16u; b++) ASSERT_TRUE(lod_fade_keep(b, 0.0f));
+}
+
+TEST(lod_fade_disabled_switches_instantly) {
+    LodFade f;
+    lod_fade_reset(&f, 0);
+    u32 fi = 9, co = 9;
+    ASSERT_TRUE(lod_fade_update(&f, 2, 1.0, 0.0f));
+    ASSERT_FALSE(lod_fade_active(&f));
+    ASSERT_EQ(lod_fade_split(&f, 1.0, 0.0f, &fi, &co), LOD_FADE_STEPS);
+    ASSERT_EQ(fi, 2u); ASSERT_EQ(co, 2u);
+    ASSERT_FALSE(lod_fade_update(&f, 2, 2.0, 0.0f));
+}
+
+TEST(lod_fade_coarsen_and_refine_shares) {
+    LodFade f;
+    u32 fi, co, k;
+    lod_fade_reset(&f, 0);
+    ASSERT_TRUE(lod_fade_update(&f, 1, 10.0, 0.25f));
+    ASSERT_TRUE(lod_fade_active(&f));
+    ASSERT_EQ(f.level, 1u);  /* committed level = hysteresis input */
+    /* Coarsening 0 -> 1: the finer level (0) fades out. */
+    k = lod_fade_split(&f, 10.0, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 16u);
+    k = lod_fade_split(&f, 10.125, 0.25f, &fi, &co);
+    ASSERT_EQ(k, 8u);
+    k = lod_fade_split(&f, 10.25, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 1u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 16u);
+    /* Same level next frame completes the fade. */
+    ASSERT_FALSE(lod_fade_update(&f, 1, 10.3, 0.25f));
+    ASSERT_FALSE(lod_fade_active(&f));
+    /* Refining 1 -> 0: the finer level (0) fades in. */
+    ASSERT_TRUE(lod_fade_update(&f, 0, 20.0, 0.25f));
+    k = lod_fade_split(&f, 20.0, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 0u);
+    k = lod_fade_split(&f, 20.0625, 0.25f, &fi, &co);
+    ASSERT_EQ(k, 4u);
+}
+
+TEST(lod_fade_share_is_monotonic_over_a_fade) {
+    LodFade f;
+    lod_fade_reset(&f, 2);
+    lod_fade_update(&f, 1, 0.0, 0.25f);  /* refine: finer share 0 -> 16 */
+    u32 prev = 0u;
+    for (int i = 0; i <= 100; i++) {
+        u32 fi, co;
+        u32 k = lod_fade_split(&f, (f64)i * 0.0025, 0.25f, &fi, &co);
+        ASSERT_TRUE(k >= prev);
+        prev = k;
+    }
+    ASSERT_EQ(prev, 16u);
+}
+
+TEST(lod_fade_reverse_keeps_coverage_continuous) {
+    LodFade f;
+    u32 fi, co;
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 0.2f);
+    u32 k0 = lod_fade_split(&f, 0.05, 0.2f, &fi, &co);  /* 25% in: finer 0 keeps 12/16 */
+    ASSERT_EQ(k0, 12u);
+    /* Back to 0 mid-fade: reverse, same split this instant, then LOD0 grows. */
+    ASSERT_TRUE(lod_fade_update(&f, 0, 0.05, 0.2f));
+    ASSERT_EQ(f.level, 0u); ASSERT_EQ(f.from, 1u);
+    u32 k1 = lod_fade_split(&f, 0.05, 0.2f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u);
+    ASSERT_TRUE(k1 + 1u >= k0 && k1 <= k0 + 1u);
+    ASSERT_TRUE(lod_fade_split(&f, 0.08, 0.2f, &fi, &co) > k1);
+    /* It ends at LOD0 after the remaining 25% of the window, not a full one. */
+    ASSERT_EQ(lod_fade_split(&f, 0.101, 0.2f, &fi, &co), 16u);
+    ASSERT_EQ(fi, 0u);
+}
+
+TEST(lod_fade_third_level_restarts_from_dominant_level) {
+    LodFade f;
+    u32 fi, co;
+    /* 0 -> 1, 30% in (LOD0 still dominant), then 2: fade 0 -> 2. */
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 1.0f);
+    ASSERT_TRUE(lod_fade_update(&f, 2, 0.3, 1.0f));
+    ASSERT_EQ(f.from, 0u); ASSERT_EQ(f.level, 2u);
+    ASSERT_EQ(lod_fade_split(&f, 0.3, 1.0f, &fi, &co), 16u);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 2u);
+    /* 0 -> 1, 70% in (LOD1 dominant), then 2: fade 1 -> 2. */
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 1.0f);
+    ASSERT_TRUE(lod_fade_update(&f, 2, 0.7, 1.0f));
+    ASSERT_EQ(f.from, 1u); ASSERT_EQ(f.level, 2u);
+    /* At most two levels at any time. */
+    lod_fade_split(&f, 0.8, 1.0f, &fi, &co);
+    ASSERT_EQ(fi, 1u); ASSERT_EQ(co, 2u);
+}
+
+TEST(lod_fade_with_hysteresis_sweep_no_ping_pong) {
+    /* Hysteresis runs on the committed level exactly as before; the fade
+     * only delays the visual. A jittered monotonic sweep still commits each
+     * level once per direction. */
+    const f32 err[3] = { 0.0f, 0.01f, 0.04f };
+    LodFade f;
+    lod_fade_reset(&f, 0);
+    u32 changes = 0u;
+    for (int i = 0; i < 4000; i++) {
+        f32 d = 1.0f + (f32)i * 0.05f + ((i & 1) ? 0.02f : -0.02f);
+        u32 nl = lod_select_by_screen_error(err, 3, d, 500.0f, 1.0f, f.level);
+        if (lod_fade_update(&f, nl, (f64)i / 60.0, 0.25f)) changes++;
+        ASSERT_TRUE(f.level >= f.from || !lod_fade_active(&f));
+    }
+    ASSERT_EQ(changes, 2u);
+    ASSERT_EQ(f.level, 2u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lod_init_defaults);
     RUN_TEST(lod_register_entity);
@@ -738,4 +872,12 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_bucket_instances_degenerate_inputs);
     RUN_TEST(lod_instance_select_hysteresis_per_slot);
     RUN_TEST(lod_instance_select_reused_slot_starts_at_lod0);
+    /* Dithered cross-fade */
+    RUN_TEST(lod_fade_bayer_is_a_permutation_and_masks_are_complementary);
+    RUN_TEST(lod_fade_disabled_switches_instantly);
+    RUN_TEST(lod_fade_coarsen_and_refine_shares);
+    RUN_TEST(lod_fade_share_is_monotonic_over_a_fade);
+    RUN_TEST(lod_fade_reverse_keeps_coverage_continuous);
+    RUN_TEST(lod_fade_third_level_restarts_from_dominant_level);
+    RUN_TEST(lod_fade_with_hysteresis_sweep_no_ping_pong);
 TEST_MAIN_END()

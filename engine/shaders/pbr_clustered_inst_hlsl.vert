@@ -47,6 +47,7 @@ struct VSOut {
     float3 normal : TEXCOORD1;
     float2 uv : TEXCOORD2;
     float2 velocity : TEXCOORD3;
+    nointerpolation float lod_fade : TEXCOORD4;  // R703a LOD cross-fade (0 = none)
 };
 
 VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
@@ -55,7 +56,8 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     int idx = (int)inst * 8;
     float4x4 model = transpose(float4x4(g_rows[idx + 0], g_rows[idx + 1],
                                         g_rows[idx + 2], g_rows[idx + 3]));
-    float4x4 prev_model = transpose(float4x4(g_rows[idx + 4], g_rows[idx + 5],
+    float4 prev_c0 = float4(g_rows[idx + 4].xyz, 0.0f);
+    float4x4 prev_model = transpose(float4x4(prev_c0, g_rows[idx + 5],
                                              g_rows[idx + 6], g_rows[idx + 7]));
     float4 world_pos = mul(model, float4(aPos, 1.0f));
     o.world = world_pos.xyz;
@@ -66,5 +68,9 @@ VSOut main(float3 aPos : POSITION, float3 aNormal : NORMAL,
     o.velocity = curr_clip.xy / curr_clip.w - prev_clip.xy / prev_clip.w;
     o.pos = curr_clip;
     o.pos.z = (o.pos.z + o.pos.w) * 0.5f;   // GL clip z [-w, w] -> D3D12 [0, w]
+    // R703a: the cross-fade value rides the previous model's column-0 w
+    // (always 0 for an affine matrix, so the transpose above is unaffected
+    // only in xyz -- it is cleared before use).
+    o.lod_fade = g_rows[idx + 4].w;
     return o;
 }
