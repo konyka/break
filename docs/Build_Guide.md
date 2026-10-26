@@ -1057,5 +1057,13 @@ xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
   CommandLineTools 时 `DEVELOPER_DIR` 由 CMake 自动烘焙为标准 Xcode 路径。
 - iOS 交叉编译时 manifest 生成器自动切换为宿主编译（`gen_metal_shader_manifest_host`，
   见 `engine/CMakeLists.txt` M6 注释）；`xcrun metal` 目标 SDK 切 `iphoneos`。
+- `engine_demo` 的 iOS target 设置 `MACOSX_BUNDLE_GUI_IDENTIFIER` 与 Xcode bundle ID
+  （`com.purecengine.engine_demo`）；CI 对最终 `Info.plist` 断言该 ID，避免只能 build-only
+  却无法安装。
+- 2026-10-26 本机用 Xcode 27.1 构建成功后，在 iOS 27.0 模拟器上 `simctl install` 通过；
+  但 `simctl launch --console-pty` 仍在 `engine.c:38` 以 `Failed to create platform` 退出。
+  原因是 `window_mobile.c` 要求宿主提供 `PlatformConfig.native_window`，而 `engine_init`
+  尚未接入 UIKit/CAMetalLayer 宿主；当前没有可复用的 iOS UIApplication 启动层，故不能宣称
+  iOS 已正常渲染，证据仍为 COMPILED，不计 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。
