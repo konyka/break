@@ -793,6 +793,11 @@ add_library(meshopt_c STATIC
     external/meshopt_c/simplifier.c
     external/meshopt_c/vcacheoptimizer.c)
 target_include_directories(meshopt_c PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    # Keep the simplifier's floating-point expression order bit-exact with the
+    # upstream reference table; AppleClang contracts a*b+c into FMA by default.
+    target_compile_options(meshopt_c PRIVATE -ffp-contract=off)
+endif()
 if(NOT WIN32)
     target_link_libraries(meshopt_c PUBLIC m)
 endif()
@@ -3167,6 +3172,10 @@ endif()
     add_executable(test_meshopt_c tests/test_meshopt_c.c)
     target_include_directories(test_meshopt_c PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_meshopt_c PRIVATE meshopt_c)
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+        # The procedural mesh generators must match the reference harness too.
+        target_compile_options(test_meshopt_c PRIVATE -ffp-contract=off)
+    endif()
     add_test(NAME test_meshopt_c COMMAND test_meshopt_c)
 
     # test_async_loader: needs async_loader.c + vfs.c + log.c
