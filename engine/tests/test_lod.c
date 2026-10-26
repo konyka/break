@@ -608,6 +608,61 @@ TEST(lod_bake_validate_catches_errors) {
     ASSERT_TRUE(bv_run(err));
 }
 
+TEST(lod_bake_validate_authored_vertex_ranges) {
+    u32 cmds[2 * 5] = { 6,1,0,0,0, 3,1,6,0,0 };
+    u32 idx[9] = { 0,1,2, 0,2,3, 4,5,6 };
+    u32 base[1] = { 0 }, vb[1] = { 0 }, vc[1] = { 4 }, cn[2] = { 0,0 };
+    u8 lc[1] = { 2 }, cl[2] = { 0,1 };
+    u32 cvb[2] = { 0,4 }, cvc[2] = { 4,4 };
+    char err[256] = {0};
+    ASSERT_TRUE(lod_bake_validate_ex(cmds, 2, idx, 9, 8, base, lc, vb, vc, 1,
+                                     cn, cl, cvb, cvc, err, sizeof(err)));
+    cvc[1] = 2;
+    ASSERT_FALSE(lod_bake_validate_ex(cmds, 2, idx, 9, 8, base, lc, vb, vc, 1,
+                                      cn, cl, cvb, cvc, err, sizeof(err)));
+}
+
+/* R705: grid of (n+1)^2 vertices on [0,1]^2 at height z = amp * x * y. */
+static void ae_grid(u32 n, f32 amp, f32 *v, u32 *ix) {
+    for (u32 y = 0; y <= n; y++) for (u32 x = 0; x <= n; x++) {
+        f32 *p = v + (usize)(y * (n + 1u) + x) * 8u;
+        memset(p, 0, 32);
+        p[0] = (f32)x / (f32)n; p[1] = (f32)y / (f32)n; p[2] = amp * p[0] * p[1];
+    }
+    u32 k = 0;
+    for (u32 y = 0; y < n; y++) for (u32 x = 0; x < n; x++) {
+        u32 a = y * (n + 1u) + x, b = a + n + 1u;
+        ix[k++] = a; ix[k++] = b; ix[k++] = a + 1u;
+        ix[k++] = a + 1u; ix[k++] = b; ix[k++] = b + 1u;
+    }
+}
+
+TEST(lod_authored_error_measures_deviation) {
+    static f32 bv[17 * 17 * 8], av[3 * 3 * 8];
+    static u32 bi[16 * 16 * 6], ai[2 * 2 * 6];
+    ae_grid(16, 0.0f, bv, bi);
+    ae_grid(2, 0.0f, av, ai);
+    /* Same plane, coarser tessellation: no deviation. */
+    f32 e0 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(e0 >= 0.0f && e0 < 1e-5f);
+    /* Lift the coarse mesh by 0.25: both directions see 0.25. */
+    for (u32 i = 0; i < 9; i++) av[i * 8u + 2u] = 0.25f;
+    f32 e1 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(fabsf(e1 - 0.25f) < 1e-4f);
+    /* Coarse plane vs curved base z = x*y: worst gap is interior (> 0). */
+    ae_grid(16, 1.0f, bv, bi);
+    ae_grid(2, 0.0f, av, ai);
+    f32 e2 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(e2 > 0.3f && e2 < 1.01f);
+    /* Invalid input. */
+    ai[5] = 9;
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32) < 0.0f);
+    ai[5] = 4;
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 23, 32) < 0.0f);
+    ASSERT_TRUE(lod_authored_error(NULL, 289, bi, 1536, av, 9, ai, 24, 32) < 0.0f);
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 8) < 0.0f);
+}
+
 /* ---- ECS instanced LOD: (mesh, level) bucketing + per-instance hysteresis ---- */
 
 TEST(lod_bucket_instances_groups_mesh_major_and_stable) {
@@ -891,6 +946,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_generate_levels_rejects_bad_indices);
     RUN_TEST(lod_bake_validate_accepts_consistent_tables);
     RUN_TEST(lod_bake_validate_catches_errors);
+    RUN_TEST(lod_bake_validate_authored_vertex_ranges);
+    RUN_TEST(lod_authored_error_measures_deviation);
     /* Runtime ECS instanced LOD */
     RUN_TEST(lod_bucket_instances_groups_mesh_major_and_stable);
     RUN_TEST(lod_bucket_instances_all_lod0_matches_per_mesh_order);

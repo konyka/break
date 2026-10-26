@@ -1,6 +1,21 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R705 — 运行时 LOD（二期）：glTF `MSFT_lod` 授权级别导入
+
+### 做法
+- **导入**（`asset/asset.c`）：cgltf 不解析 `MSFT_lod`，按未处理扩展的原始 JSON 读取 `ids`（只接受非负整数数组）。被引用节点仍加载网格资源，但 `has_mesh=false`，不作为独立节点渲染。基础网格的每个图元记录最多两个备选网格（`Mesh.authored_lod[2]` / `authored_lod_count`），多出的级别记日志后丢弃。越界、自引用、环、嵌套链接（备选节点本身带 `MSFT_lod`）、非整数/负数/超大 id 使整个文件回退到原自动简化，备选节点照常渲染；图元数不匹配、空网格、AABB 超出 LOD0 的 10% 对角线时只对该节点回退。由于不接受嵌套链接，环在构造上不可能出现，不需要遍历。
+- **顶点**：授权级别使用自己的顶点。mega 烘焙把备选网格的顶点（同一节点世界变换）追加在该节点 LOD0 顶点之后，索引仍是绝对 mega 索引、`vertex_offset=0`（R687 约定），所以六条可见性路径、unified cull 与 R703b 的 `first_instance` 打包都不需要改动。新 `lod_bake_validate_ex` 按命令检查顶点范围（`BREAK_LOD_SELFTEST`）。ECS 实例路径按 (网格, 级别) 绑定备选网格的顶点缓冲，索引仍放在每网格额外索引缓冲里。
+- **误差**：采用**实测几何偏差**，不用 `MSFT_screencoverage`（它依赖作者的视角假设，和引擎的像素误差阈值不可比）。`lod_authored_error` 计算对称 Hausdorff 估计（两个方向各取采样顶点到对方最近三角形的最大距离，采样数按约 1600 万次点-三角形测试设上限），按级别保持非递减，以 AABB 对角线为 scale 存入 `rel_error`，然后进入原屏幕误差选级、迟滞和淡入淡出。授权网格不会调用简化器，也不走 R704 磁盘缓存（在缓存之前返回）。
+- **测试**：`test_lod` 45 → 47（每命令顶点范围、偏差测量与非法输入）；`test_asset_gltf` 47 → 50（链接与隐藏、多于两级的截断，以及 8 种非法 id 回退）。新增小夹具 `assets/msft_lod_test.gltf`（78 KB：1352/200/32 三角形地形三级 + 一个 648 三角形自动简化网格）。
+
+### 验证
+- build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk 编译 0 警告（仅 lld `--gc-sections` 链接器提示与 Release 的第三方 SheenBidi 既有警告）；GCC `-Wall -Wextra -Werror -pedantic` 语法检查所有改动的 C 文件通过。
+- 完整 `ctest -j4 -E test_platform_win32_runtime`：三棵树除 `test_locked_dependencies` 外全部通过（该用例只因 worktree 没有被 git 忽略的 `external/VulkanSDK`，用主仓库 external 目录跑同一脚本为 OK）；D3D12 `test_d3d12_warp_runtime` 的 GPU timer 比例用例在并行 GPU 负载下偶发失败，单独重跑通过。fuzz 标签 5/5 通过（三棵树），`fuzz_asset_gltf` 额外以 MSFT 夹具为种子跑 800 次。
+- 夹具实跑（`BREAK_LOD_PIXEL_ERROR=4 BREAK_LOD_SELFTEST=1 BREAK_CAM=0,4,-6,0,-25 BREAK_CAM_DOLLY=1.0`，150 帧）：VK / GL / D3D12（debug layer + GPU-based validation）均显示 `mesh 0 uses 2 authored level(s)`、`LOD authored: rel_err=0.010217/0.049384`、`MegaBuffer: 2264 verts ... 16 draw cmds`、`LOD_SELFTEST: PASS`，`LOD_TRACE` 节点 0 依次 0→1→2，LOD_STATS transitions=4；ECS 实体（引用网格 0）transitions=10。VK 的 deferred、blinn、`BREAK_GPUCULL=1`、`BREAK_UNIFIED_FORWARD=0` 也都 PASS 且 validation=0；D3D12 无调试层消息。固定相机截图的授权 LOD1 几何完整。
+- 无扩展：以 HEAD 构建的 VK demo 对比 `test.glb` 默认与 `BREAK_LOD=0`，LOD gen / MegaBuffer / LOD 表 / SELFTEST 行逐字相同（15584 verts、89328 / 51180 indices、13 / 11 cmds），全部日志在数字与时间归一化后只差一行与时序有关的 Lua 心跳，validation 均为 0。
+
+
 ## 本轮更新：R704 — 运行时 LOD（二期 2.3）：简化级别的可选磁盘缓存
 
 ### 做法

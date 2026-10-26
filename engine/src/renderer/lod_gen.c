@@ -1,5 +1,6 @@
 #include "lod_gen.h"
 #include <meshopt_c/meshopt.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -66,12 +67,94 @@ void lod_generate_levels(const f32 *vertices, u32 vertex_count, u32 vertex_strid
     }
 }
 
-bool lod_bake_validate(const u32 *cmds, u32 cmd_count,
-                       const u32 *indices, u32 index_total, u32 vertex_total,
-                       const u32 *node_cmd_base, const u8 *node_level_count,
-                       const u32 *node_vbase, const u32 *node_vcount, u32 node_count,
-                       const u32 *cmd_node, const u8 *cmd_level,
-                       char *err, usize err_len) {
+static f32 lod_point_tri_d2(const f32 *p, const f32 *a, const f32 *b, const f32 *c) {
+    f32 ab[3], ac[3], ap[3], q[3];
+    for (u32 k = 0; k < 3u; k++) { ab[k] = b[k] - a[k]; ac[k] = c[k] - a[k]; ap[k] = p[k] - a[k]; }
+    f32 d1 = ab[0]*ap[0] + ab[1]*ap[1] + ab[2]*ap[2];
+    f32 d2 = ac[0]*ap[0] + ac[1]*ap[1] + ac[2]*ap[2];
+    if (d1 <= 0.0f && d2 <= 0.0f) { memcpy(q, a, sizeof(q)); goto done; }
+    f32 bp[3], cp[3];
+    for (u32 k = 0; k < 3u; k++) { bp[k] = p[k] - b[k]; cp[k] = p[k] - c[k]; }
+    f32 d3 = ab[0]*bp[0] + ab[1]*bp[1] + ab[2]*bp[2];
+    f32 d4 = ac[0]*bp[0] + ac[1]*bp[1] + ac[2]*bp[2];
+    if (d3 >= 0.0f && d4 <= d3) { memcpy(q, b, sizeof(q)); goto done; }
+    f32 vc = d1 * d4 - d3 * d2;
+    if (vc <= 0.0f && d1 >= 0.0f && d3 <= 0.0f && d1 - d3 > 0.0f) {
+        f32 t = d1 / (d1 - d3);
+        for (u32 k = 0; k < 3u; k++) q[k] = a[k] + t * ab[k];
+        goto done;
+    }
+    f32 d5 = ab[0]*cp[0] + ab[1]*cp[1] + ab[2]*cp[2];
+    f32 d6 = ac[0]*cp[0] + ac[1]*cp[1] + ac[2]*cp[2];
+    if (d6 >= 0.0f && d5 <= d6) { memcpy(q, c, sizeof(q)); goto done; }
+    f32 vb = d5 * d2 - d1 * d6;
+    if (vb <= 0.0f && d2 >= 0.0f && d6 <= 0.0f && d2 - d6 > 0.0f) {
+        f32 t = d2 / (d2 - d6);
+        for (u32 k = 0; k < 3u; k++) q[k] = a[k] + t * ac[k];
+        goto done;
+    }
+    f32 va = d3 * d6 - d5 * d4;
+    if (va <= 0.0f && (d4 - d3) >= 0.0f && (d5 - d6) >= 0.0f && (d4 - d3) + (d5 - d6) > 0.0f) {
+        f32 t = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        for (u32 k = 0; k < 3u; k++) q[k] = b[k] + t * (c[k] - b[k]);
+        goto done;
+    }
+    {
+        f32 sum = va + vb + vc;
+        if (!(sum > 0.0f)) { memcpy(q, a, sizeof(q)); goto done; } /* degenerate */
+        f32 v = vb / sum, w = vc / sum;
+        for (u32 k = 0; k < 3u; k++) q[k] = a[k] + ab[k] * v + ac[k] * w;
+    }
+done:;
+    f32 dx = p[0] - q[0], dy = p[1] - q[1], dz = p[2] - q[2];
+    return dx * dx + dy * dy + dz * dz;
+}
+
+static f32 lod_one_sided_d2(const f32 *pv, u32 pvc, const f32 *tv, const u32 *ti, u32 tic,
+                            u32 stride_f) {
+    u32 tris = tic / 3u;
+    u32 samples = LOD_AUTHORED_ERROR_BUDGET / (tris ? tris : 1u);
+    if (samples < 64u) samples = 64u;
+    if (samples > pvc) samples = pvc;
+    f32 worst = 0.0f;
+    for (u32 s = 0; s < samples; s++) {
+        u32 vi = (u32)((u64)s * pvc / samples);
+        const f32 *p = pv + (usize)vi * stride_f;
+        f32 best = 3.0e38f;
+        for (u32 t = 0; t < tris && best > 0.0f; t++) {
+            f32 d2 = lod_point_tri_d2(p, tv + (usize)ti[t * 3u] * stride_f,
+                                      tv + (usize)ti[t * 3u + 1u] * stride_f,
+                                      tv + (usize)ti[t * 3u + 2u] * stride_f);
+            if (d2 < best) best = d2;
+        }
+        if (best > worst) worst = best;
+    }
+    return worst;
+}
+
+f32 lod_authored_error(const f32 *base_v, u32 base_vc, const u32 *base_i, u32 base_ic,
+                       const f32 *alt_v, u32 alt_vc, const u32 *alt_i, u32 alt_ic,
+                       u32 vertex_stride) {
+    if (!base_v || !base_i || !alt_v || !alt_i || vertex_stride < 12u || vertex_stride % 4u ||
+        base_vc == 0u || alt_vc == 0u || base_ic < 3u || alt_ic < 3u ||
+        base_ic % 3u || alt_ic % 3u)
+        return -1.0f;
+    for (u32 i = 0; i < base_ic; i++) if (base_i[i] >= base_vc) return -1.0f;
+    for (u32 i = 0; i < alt_ic; i++) if (alt_i[i] >= alt_vc) return -1.0f;
+    u32 sf = vertex_stride / 4u;
+    f32 a = lod_one_sided_d2(alt_v, alt_vc, base_v, base_i, base_ic, sf);
+    f32 b = lod_one_sided_d2(base_v, base_vc, alt_v, alt_i, alt_ic, sf);
+    f32 e = sqrtf(a > b ? a : b);
+    return isfinite(e) ? e : -1.0f;
+}
+
+bool lod_bake_validate_ex(const u32 *cmds, u32 cmd_count,
+                          const u32 *indices, u32 index_total, u32 vertex_total,
+                          const u32 *node_cmd_base, const u8 *node_level_count,
+                          const u32 *node_vbase, const u32 *node_vcount, u32 node_count,
+                          const u32 *cmd_node, const u8 *cmd_level,
+                          const u32 *cmd_vbase, const u32 *cmd_vcount,
+                          char *err, usize err_len) {
 #define LBV_FAIL(...) do { if (err && err_len) snprintf(err, err_len, __VA_ARGS__); return false; } while (0)
     if (!cmds || !indices || !node_cmd_base || !node_level_count || !node_vbase ||
         !node_vcount || !cmd_node || !cmd_level)
@@ -103,7 +186,11 @@ bool lod_bake_validate(const u32 *cmds, u32 cmd_count,
             LBV_FAIL("cmd %u range [%u,+%u) exceeds %u indices", ci, fi, ic, index_total);
         u32 b = cmd_node[ci];
         if (b >= node_count) LBV_FAIL("cmd %u node %u >= %u", ci, b, node_count);
-        u32 lo = node_vbase[b], hi = node_vbase[b] + node_vcount[b];
+        u32 lo = cmd_vbase ? cmd_vbase[ci] : node_vbase[b];
+        u32 count = cmd_vcount ? cmd_vcount[ci] : node_vcount[b];
+        if (lo > vertex_total || count > vertex_total - lo)
+            LBV_FAIL("cmd %u vertex range [%u,+%u) exceeds %u", ci, lo, count, vertex_total);
+        u32 hi = lo + count;
         for (u32 k = 0; k < ic; k++) {
             u32 v = indices[fi + k] + (u32)vo;
             if (v >= vertex_total) LBV_FAIL("cmd %u index %u -> vertex %u >= %u", ci, k, v, vertex_total);
@@ -113,4 +200,15 @@ bool lod_bake_validate(const u32 *cmds, u32 cmd_count,
     }
     return true;
 #undef LBV_FAIL
+}
+
+bool lod_bake_validate(const u32 *cmds, u32 cmd_count,
+                       const u32 *indices, u32 index_total, u32 vertex_total,
+                       const u32 *node_cmd_base, const u8 *node_level_count,
+                       const u32 *node_vbase, const u32 *node_vcount, u32 node_count,
+                       const u32 *cmd_node, const u8 *cmd_level,
+                       char *err, usize err_len) {
+    return lod_bake_validate_ex(cmds, cmd_count, indices, index_total, vertex_total,
+                                node_cmd_base, node_level_count, node_vbase, node_vcount,
+                                node_count, cmd_node, cmd_level, NULL, NULL, err, err_len);
 }
