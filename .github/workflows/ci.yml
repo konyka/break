@@ -426,7 +426,7 @@ jobs:
            set +e
            ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
            rc_headless=$?
-           BREAK_WAYLAND_TRACE=1 ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
+           ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
            rc_runtime=$?
            set -e
            # Logs need auth to read: surface failing test names and FAIL
@@ -520,7 +520,7 @@ jobs:
           set +e
           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure > /tmp/ctest-wayland.log 2>&1
           rc_headless=$?
-          BREAK_WAYLAND_TRACE=1 ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
+          ctest --test-dir build -R '^test_platform_wayland_runtime$' --output-on-failure > /tmp/ctest-wayland-runtime.log 2>&1
           rc_runtime=$?
           set -e
           # Logs need auth to read: surface failing test names and FAIL

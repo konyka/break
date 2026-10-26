@@ -47,7 +47,8 @@ FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3�
 ### 验证
 - 本机（Windows）：build-vk Debug 0 警告；全量 ctest（除 `test_platform_win32_runtime` 单独跑，也通过）190/190 连续 3 次通过（之前有一次运行有 1 个失败，没有复现，也没有记下是哪个测试）。`test_platform_screen_simulated` 用 GCC `-Werror -pedantic` 和 clang 都通过。
 - GCC 15（msys64）`-std=c11 -Wall -Wextra -Werror -pedantic -fsyntax-only`，用 Debian 12 的 libx11/xrandr/wayland/xkbcommon 头文件 + 本地编译的 wayland-scanner 生成的协议头：`window_x11.c`、`window_wayland.c`（含 FRACTIONAL_SCALE；mingw 缺的 poll/mman/fcntl 用桩补齐）、`test_platform_x11_runtime.c`、`test_platform_wayland_runtime.c` 均无告警。未检查 XInput2 变体（没有头文件）。
-- **未在本机运行或编译**：X11/Wayland 运行时测试（等 CI 的 Xvfb / weston headless）；`window_cocoa.m` 与 Cocoa 测试（本机无法编译 Objective-C，只做了审读，以 macOS CI 为准）。weston headless 是否接受 fullscreen 未知，两种情况测试都能判定。CI 的 Xvfb 没有 WM，所以 EWMH 路径在 CI 上不会被执行。
+- **CI 结果（合并后补记）**：macOS Cocoa、macOS 原生 Metal、iOS、Linux X11（Xvfb，无 WM，走 Motif 回退路径）首轮即通过。Linux Wayland（weston headless）首轮失败：进入全屏被确认，但紧接着的 `unset_fullscreen` 一直没有 configure 回复。加了只在失败时输出的 `FAILINFO` 诊断（`BREAK_WAYLAND_TRACE=1` 时 configure 处理函数逐条打印）后定位：weston 只在带 buffer 的 commit 上把已 ack 的 configure 变成当前状态；测试窗口从不提交 buffer、而 `platform_set_window_mode` 在 ack 后没有 commit，于是 weston 拿 unset 请求和尚未生效的旧状态比，认为无需变化。修复（`5d8e2993`）：`platform_set_window_mode` 先 `wl_surface_commit` 让已 ack 的状态生效再发请求；运行时测试每次轮询都提交一个 64×64 shm buffer（真实游戏每帧都会提交）。此后 Wayland + OpenGL / Wayland + Vulkan 均通过，三条流水线全绿。
+- **未在本机运行或编译**：X11/Wayland 运行时测试（以 CI 为准）；`window_cocoa.m` 与 Cocoa 测试（本机无法编译 Objective-C，只做了审读，以 macOS CI 为准）。weston headless 是否接受 fullscreen 未知，两种情况测试都能判定。CI 的 Xvfb 没有 WM，所以 EWMH 路径在 CI 上不会被执行。
 
 
 ## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
