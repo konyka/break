@@ -29,7 +29,7 @@ The app calls the public `rhi_*` API exactly as before; no app source changes ar
 Facts this design relies on (verified 2026-10-26 against `libengine.a`, `libengine_rhi_opengl.a`, `libengine_rhi_vulkan.a`):
 - The core (`libengine.a`) and the backends export **disjoint** symbol sets: 72 core `rhi_*` functions, 132 backend `rhi_*` functions. The 132 are identical between GL and VK except five VK-only test helpers.
 - The two backend libraries share **no** global symbol outside those 132, so they can be linked into one binary once their API symbols are namespaced.
-- No code takes the address of a public `rhi_*` function.
+- No code takes the address of a public `rhi_*` function (verified before this work; the generated binding tables now take the addresses of the namespaced `rhi_gl_*` / `rhi_vk_*` functions, which is the mechanism itself).
 
 Mechanism:
 1. `engine/src/rhi/dispatch/rhi_backend_api.txt` lists the 132 backend API names and is the single source of truth.
@@ -52,7 +52,7 @@ The generated files are committed (no build-time code generation, no new build d
 4. Every failed entry emits `RHIEVT` `fallback` with the backend and result; a successful entry emits `backend_selected` with the backend actually used.
 5. If every entry fails, the function returns NULL and the last result is reported. Nothing is partially created: a failed backend create cleans up after itself, as in the single-backend builds.
 
-`rhi_runtime_active_backend()` reports the active backend name (`vulkan` / `opengl` / `none`) for diagnostics and tests. `rhi_rollout_compiled_backend()` still describes the build, not the runtime choice.
+`rhi_runtime_active_backend()` reports the active backend name (`vulkan` / `opengl` / `none`) for diagnostics and tests. In the multi-backend build `rhi_rollout_compiled_backend()` / `rhi_rollout_compiled_reason()` return the runtime choice once a device exists (see §8); single-backend builds keep the compile-time answer.
 
 Platform coupling: both backends can be created from the same `Platform`. X11 gives both the same window and display; Wayland gives GL the `wl_egl_window` and VK the `wl_surface`; Windows gives both the HWND. No window is recreated and no second window appears. (Verified on X11 only, §8.)
 

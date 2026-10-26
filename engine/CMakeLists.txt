@@ -954,8 +954,8 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
             src/rhi/rhi_runtime_backends.c)
         target_include_directories(engine_rhi_runtime PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
-        target_compile_definitions(engine_rhi_runtime PRIVATE
-            ENGINE_RHI_MULTI_BACKEND=1 ENGINE_VULKAN=1)
+        target_compile_definitions(engine_rhi_runtime PRIVATE ENGINE_VULKAN=1
+            PUBLIC ENGINE_RHI_MULTI_BACKEND=1)
         target_link_libraries(engine_rhi_runtime PUBLIC engine
             engine_rhi_vulkan engine_rhi_opengl)
     endif()
