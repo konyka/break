@@ -129,25 +129,32 @@ inject_defines() {
 # Actual define combinations triggered by engine call sites (grep
 # shader_inject_define engine/src/main.c engine/src/renderer/*.c — the
 # contract test pins this list). Row: <file> <comma-separated defines in
-# call order>. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
-# FORWARD_MRT (main.c:491-498), and the texture-array path appends
-# CLUSTERED_ARR (main.c:535); with the R703a LOD cross-fade on, the
-# instanced pipelines also append LOD_FADE. The deferred renderer injects HAS_IBL into
-# every fragment stage (deferred.c defrd_inject_define — byte-identical to
-# shader_inject_define on these #version-first files).
+# call order>. The forward paths append LOD_FADE when the LOD cross-fade is
+# enabled. pbr_clustered_vk.frag chains HAS_IBL -> HAS_POINT_SHADOW ->
+# FORWARD_MRT, and the texture-array path appends CLUSTERED_ARR before the
+# optional LOD_FADE. The deferred G-Buffer static/array vertex stages use
+# LOD_FADE; their fragment stages chain HAS_IBL -> LOD_FADE. All other
+# deferred fragment stages use HAS_IBL alone.
 VARIANTS='
 blinn_phong_vk.vert FORWARD_MRT
 blinn_phong_vk.frag FORWARD_MRT
+blinn_phong_vk.vert FORWARD_MRT,LOD_FADE
+blinn_phong_vk.frag FORWARD_MRT,LOD_FADE
 blinn_phong_arr_vk.vert FORWARD_MRT
 blinn_phong_arr_vk.frag FORWARD_MRT
+blinn_phong_arr_vk.vert FORWARD_MRT,LOD_FADE
+blinn_phong_arr_vk.frag FORWARD_MRT,LOD_FADE
 pbr_clustered_vk.vert FORWARD_MRT
+pbr_clustered_vk.vert FORWARD_MRT,LOD_FADE
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR
 pbr_clustered_inst_vk.vert FORWARD_MRT
 pbr_clustered_inst_vk.vert FORWARD_MRT,LOD_FADE
 pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,LOD_FADE
+pbr_clustered_vk.frag HAS_IBL,HAS_POINT_SHADOW,FORWARD_MRT,CLUSTERED_ARR,LOD_FADE
 pbr_clustered_skin_vk.vert FORWARD_MRT
 pbr_clustered_arr_vk.vert FORWARD_MRT
+pbr_clustered_arr_vk.vert FORWARD_MRT,LOD_FADE
 instanced_vk.vert FORWARD_MRT
 instanced_vk.frag FORWARD_MRT
 instanced_vk.vert FORWARD_MRT,LOD_FADE
@@ -163,8 +170,12 @@ particle.vert FORWARD_MRT
 particle.frag FORWARD_MRT
 deferred_light_vk.frag HAS_IBL
 gbuffer_vk.frag HAS_IBL
+gbuffer_vk.frag HAS_IBL,LOD_FADE
 gbuffer_arr_vk.frag HAS_IBL
+gbuffer_arr_vk.frag HAS_IBL,LOD_FADE
 gbuffer_skinned_vk.frag HAS_IBL
+gbuffer_vk.vert LOD_FADE
+gbuffer_arr_vk.vert LOD_FADE
 '
 
 process_one() {
