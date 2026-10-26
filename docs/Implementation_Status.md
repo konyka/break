@@ -140,7 +140,7 @@ FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3�
   - 近距离检查（补测）：新增 `BREAK_MODEL_VIEW=s`（见下），CesiumMan / BrainStem 在 VK Debug 下 `s=0.55`、`BREAK_DOF=0 BREAK_BLOOM=0` 第 30、60 帧截图：肩、肘、髋、膝弯折处表面连续，无撕裂、无塌陷、无尖刺；GL / D3D12 Release 同机位截图一致，0 条 ERROR，VK 0 条验证消息。
   - 近看时发现并修了一个加载器问题：glTF 关节的全局变换要包含它上面的非关节祖先节点（CesiumMan 是 `Z_UP` → `Armature` → 根关节），引擎的骨骼只沿关节父子链计算，把这些祖先丢了，所以这类模型在演示里是侧躺的（Y-up 引擎里按 Z-up 摆放）。现在 `asset_load_gltf` 把每个带非单位世界变换的非关节父节点变成一个额外的根关节（逆绑定为单位阵），用常量 T/R/S 通道复现该节点的世界变换（最多 8 个，且受 `SKELETON_MAX_JOINTS` / `SKELETON_MAX_CHANNELS` 限制，超出时打 WARN 保持原行为）；只在有动画时生效（没有动画的骨骼本来就不跑蒙皮矩阵）。两个模型修后都站立。新测试 `gltf_skin_root_keeps_non_joint_ancestor_transform` / `gltf_skin_root_identity_ancestor_adds_no_joint`（`test_asset_gltf` 52/52）。
 - **模型查看模式** `BREAK_MODEL_VIEW=s`（演示程序）：不画地形、水面，不建展示区与下落方块；相机放在模型包围盒中心 +Z 方向，距离为完整入画距离的 s 倍（s=1 整体，s<1 更近）。蒙皮网格的包围盒用第一个动画采样姿势蒙皮后的顶点算（启动时读回一次）。`BREAK_CAM` 仍可覆盖机位。
-- 测试附注：GL Debug 树一次 `ctest -j4` 里 `test_lod_cache` 失败一次，之后单独 4 次、全量 `-j4` 5 次都通过，没拿到失败输出，原因不明，未处理。
+- 测试附注（已查明并修复）：GL Debug 树一次 `ctest -j4` 里 `test_lod_cache` 偶发失败。原因是 `lod_cache_round_trip_is_identical_and_second_run_hits` 断言 `saved_ms > 0`，而 `saved_ms` = 文件里存的冷生成耗时 − 命中时的读取耗时：这个测试网格只要 4–10 ms 生成，读回刚写的文件也要 3.5–6.5 ms，并行负载下读取一慢就会变负。GCC 构建生成更快（约 4 ms），所以 R707a 记录的「GCC 下必失败」也是同一原因。代码本身没问题，改的是断言：校验 `saved_ms` 精确等于「按微秒截断的冷生成耗时 − 命中读取耗时」。验证：在读取前人为加 15 / 40 ms 延迟，旧断言失败、新断言通过；把 `saved_ms` 的累加删掉，新断言能报错；GCC 构建连跑 3 次 5/5（旧断言 3 次都失败）；GL `ctest -j8` 3 轮全过。
 - **BSCN 读档重建（补测）**：新增脚本钩子 `BREAK_BSCN_ROUNDTRIP_AT=f`，第 f 帧执行与 `B` 键相同的保存、第 f+10 帧执行与 `N` 键相同的读取（日志 `BSCN_ROUNDTRIP save/load at frame N`）。`BREAK_CAM_DOLLY=0.1 BREAK_BSCN_ROUNDTRIP_AT=40 BREAK_FRAMES=120`：VK Debug 默认场景、`BREAK_STRESS_LOD=50 BREAK_STRESS_LOD_ECS=50`（mega 51 次换级、ECS LOD 重建）、`BREAK_STRESS_LOD_SKIN=4`（读档后 `Skin LOD: on -- 4 skinned meshes` 重建，10 次换级）均正常退出、0 设备丢失、0 条验证消息；GL / D3D12 Release 跑 `BREAK_STRESS_LOD_SKIN=4` 同样重建，10 次换级，无 ERROR。测试会在 `engine/` 下生成 `scene_save.bscn` / `scene_state.bin`。
 - 未验证：Metal；Linux 运行。
 
@@ -208,7 +208,7 @@ FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3�
 
 ### 验证
 - build-vk（Debug，VK）与 build-asan（Debug，`-fsanitize=address -fno-omit-frame-pointer`，GL）0 编译警告（仅 lld `--gc-sections` 提示）。`ctest -j4 -E test_platform_win32_runtime`：vk 188/188（fuzz 目标需显式构建）；ASan `-LE "graphics|fuzz"` 177/177。
-- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查 `lod_skin.c`、`lod_gen.c`、`lod_cache.c`、`test_lod_skin.c` 通过；用 GCC 编译运行 `test_lod_skin` 8/8。GCC 编译的 `test_lod_cache` 有 1 个用例（`saved_ms > 0`）失败，用 master 源码同样失败，是计时相关的既有问题，与本改动无关；clang 树里通过。（后续已查明是断言依赖读写耗时，已修，见 R707c 测试附注。）
 - 未验证：Linux LeakSanitizer（测试已释放所有分配，但没在 Linux 上跑过）；真实动画资产；GPU 端与 `main.c` 接入（后续步骤）。
 
 

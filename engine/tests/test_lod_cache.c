@@ -115,11 +115,19 @@ TEST(lod_cache_round_trip_is_identical_and_second_run_hits) {
     assert_same(&cold, &want);
     ASSERT_EQ(c.stats.misses, 1u); ASSERT_EQ(c.stats.hits, 0u);
     ASSERT_TRUE(c.stats.write_bytes > 0u);
+    /* saved_ms = stored cold-generation time (whole microseconds) minus the
+     * hit's read time. Its sign depends on how fast the read was -- under a
+     * parallel ctest run a freshly written file can take longer to read than
+     * this small mesh took to generate -- so check the bookkeeping, not > 0. */
+    f64 cold_gen_ms = c.stats.regenerate_ms, io_before_hit = c.stats.io_ms;
+    ASSERT_TRUE(cold_gen_ms > 0.0);
     LodMeshLevels warm; lod_cache_generate(&c, v, vc, 40u, idx, ic, 3u, &warm);
     assert_same(&warm, &want);
     ASSERT_EQ(c.stats.hits, 1u); ASSERT_EQ(c.stats.misses, 1u);
     ASSERT_EQ(c.stats.read_bytes, c.stats.write_bytes);
-    ASSERT_TRUE(c.stats.saved_ms > 0.0);
+    f64 hit_io_ms = c.stats.io_ms - io_before_hit;
+    f64 stored_ms = floor(cold_gen_ms * 1000.0) / 1000.0;
+    ASSERT_TRUE(fabs(c.stats.saved_ms - (stored_ms - hit_io_ms)) < 2e-3);
     lod_mesh_levels_free(&cold); lod_mesh_levels_free(&warm); lod_mesh_levels_free(&want);
     remove(path); TEST_RMDIR(dir); free(v); free(idx);
 }
