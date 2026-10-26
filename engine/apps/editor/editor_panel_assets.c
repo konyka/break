@@ -149,14 +149,9 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                 char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];
                 if (break_editor_assets_abs_path(panel->assets, ei, path,
                                                  sizeof(path))) {
-                    if (break_editor_doc_load(break_editor_shell_doc(shell),
-                                              path)) {
-                        editor_shell_log(shell, "load %s", path);
-                    } else {
-                        editor_shell_log(shell, "load failed %s", path);
-                    }
-                    /* world swap + undo-stack clear: refresh everything */
-                    editor_shell_refresh_all(shell);
+                    /* world swap + undo-stack clear + scene path / watcher
+                     * update, all in the shell helper */
+                    (void)editor_shell_load_scene(shell, path);
                 }
             } else {
                 editor_shell_log(shell, "assets: '%s' is not a .bscn scene",

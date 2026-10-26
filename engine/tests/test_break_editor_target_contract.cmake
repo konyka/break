@@ -300,3 +300,22 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_
 endif()
 
 message(STATUS "break_editor target contract passed")
+
+# Editor asset hot reload: the host owns the Runtime Core coordinator. The
+# editor executable and the headless shell test both compile
+# editor_hot_reload.c; the executable links runtime_core, the test its
+# BREAK_RUNTIME_TESTING variant (exactly one coordinator copy per binary),
+# and neither engine, engine_demo nor dxx_break gains a runtime_core link
+# (test_runtime_core_target_contract pins that).
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_hot_reload.c")
+    message(FATAL_ERROR "editor must carry apps/editor/editor_hot_reload.c (editor asset hot reload)")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(editor PRIVATE runtime_core engine\\)")
+    message(FATAL_ERROR "editor must link runtime_core for the hot-reload coordinator")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_hot_reload.c[^)]*src/asset/vfs.c src/platform/filewatch.c")
+    message(FATAL_ERROR "test_editor_shell must compile editor_hot_reload.c + vfs.c + filewatch.c inline")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(test_editor_shell PRIVATE runtime_core_test\\)")
+    message(FATAL_ERROR "test_editor_shell must link runtime_core_test for the hot-reload coordinator")
+endif()
