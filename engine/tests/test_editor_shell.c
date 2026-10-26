@@ -11,12 +11,16 @@
 #if defined(_WIN32)
 #else
 #include <sys/stat.h>
+#include <time.h>
+#include <utime.h>
 #endif
 
+#include "editor_hot_reload.h"
 #include "editor_panels.h"
 #include "editor_viewport3d.h"
 
 #include <core/profiler.h>
+#include <platform/time.h>
 #include <editor/editor_cmd.h>
 #include <editor/editor_components.h>
 #include <editor/editor_gizmo.h>
@@ -3735,6 +3739,518 @@ TEST(remote_tls_rate_limit_denials_observable)
 
 #endif /* BREAK_EDITOR_REMOTE_TESTS */
 
+
+/* ---------------- editor asset hot reload ---------------- */
+
+/* The legacy single-file watcher compares mtimes at one-second resolution,
+ * so every simulated external edit forces a distinct future mtime instead of
+ * relying on wall-clock gaps. */
+static void hr_bump_mtime(const char *path) {
+#if defined(_WIN32)
+    (void)path;
+    time_sleep_us(1100000u);
+#else
+    static long bump = 100;
+    struct stat st;
+    struct utimbuf times;
+    bump += 10;
+    ASSERT_EQ(stat(path, &st), 0);
+    times.actime = st.st_atime;
+    times.modtime = time(NULL) + bump;
+    ASSERT_EQ(utime(path, &times), 0);
+#endif
+}
+
+static void hr_write_text(const char *path, const char *text) {
+    FILE *f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs(text, f);
+    fclose(f);
+}
+
+/* Simulates an external tool replacing the scene with `n` entities. */
+static void hr_external_scene(const char *path, u32 n) {
+    save_fixture_scene(path, n);
+    hr_bump_mtime(path);
+}
+
+#define HR_WAIT(shell_, cond_)                                              \
+    do {                                                                    \
+        int hr_i_;                                                          \
+        for (hr_i_ = 0; hr_i_ < 3000 && !(cond_); hr_i_++) {                \
+            break_editor_shell_tick(shell_);                                \
+            time_sleep_us(2000u);                                           \
+        }                                                                   \
+    } while (0)
+
+static void hr_settle(BreakEditorShell *shell, int ticks) {
+    int i;
+    for (i = 0; i < ticks; i++) {
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+}
+
+typedef struct HrFixture {
+    BreakEditorShell *shell;
+    BreakEditorHotReload *hr;
+    BreakEditorDoc *doc;
+    char dir[512];
+    char scene[600];
+    char sidecar[700];
+} HrFixture;
+
+static BreakEditorHotReloadStats hr_stats(const HrFixture *fx) {
+    BreakEditorHotReloadStats st;
+    memset(&st, 0, sizeof(st));
+    (void)break_editor_hot_reload_stats(fx->hr, &st);
+    return st;
+}
+
+/* Opens a shell with a hot-reload host watching <dir>/scene.bscn. When
+ * `file_entities` > 0 the scene file exists first and is loaded into the
+ * document (clean), so the watcher baseline matches the document. */
+static void hr_open(HrFixture *fx, const char *name, u32 file_entities) {
+    memset(fx, 0, sizeof(*fx));
+    test_tmp(fx->dir, sizeof(fx->dir), name);
+    TEST_MKDIR(fx->dir);
+    snprintf(fx->scene, sizeof(fx->scene), "%s/scene.bscn", fx->dir);
+    snprintf(fx->sidecar, sizeof(fx->sidecar), "%s" BREAK_EDITOR_SIDECAR_SUFFIX,
+             fx->scene);
+    fx->shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(fx->shell);
+    fx->doc = break_editor_shell_doc(fx->shell);
+    if (file_entities > 0u) {
+        save_fixture_scene(fx->scene, file_entities);
+        ASSERT_TRUE(break_editor_doc_load(fx->doc, fx->scene));
+        break_editor_shell_refresh(fx->shell);
+        ASSERT_FALSE(break_editor_doc_is_dirty(fx->doc));
+    }
+    fx->hr = break_editor_hot_reload_create(fx->shell);
+    ASSERT_NOT_NULL(fx->hr);
+    break_editor_shell_set_hot_reload(fx->shell, fx->hr);
+    ASSERT_TRUE(break_editor_shell_set_scene_path(fx->shell, fx->scene));
+}
+
+static void hr_close(HrFixture *fx) {
+    break_editor_shell_set_hot_reload(fx->shell, NULL);
+    break_editor_hot_reload_destroy(fx->hr);
+    break_editor_shell_destroy(fx->shell);
+    remove(fx->scene);
+    remove(fx->sidecar);
+    TEST_RMDIR(fx->dir);
+}
+
+TEST(hot_reload_valid_external_edit_replaces_document)
+{
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    hr_open(&fx, "editor_hr_valid", 1u);
+    st = hr_stats(&fx);
+    ASSERT_TRUE(st.watching);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 1u);
+
+    hr_external_scene(fx.scene, 3u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 3u);
+
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_EQ(break_editor_shell_outliner_count(fx.shell), 3u);
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.reloads, 1u);
+    ASSERT_EQ(st.failed, 0u);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(fx.shell),
+                       "hot reload") != NULL);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_creation_of_missing_scene_loads_it)
+{
+    HrFixture fx;
+    hr_open(&fx, "editor_hr_create", 0u);
+    ASSERT_TRUE(hr_stats(&fx).watching);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 0u);
+
+    hr_external_scene(fx.scene, 2u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 2u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 1u);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_invalid_external_edit_keeps_document_and_undo)
+{
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    hr_open(&fx, "editor_hr_invalid", 2u);
+    /* one undoable edit, saved so the document is clean again */
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_FALSE(break_editor_doc_is_dirty(fx.doc));
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(fx.doc)),
+              1u);
+
+    hr_write_text(fx.scene, "this is not a scene");
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, hr_stats(&fx).failed == 1u);
+
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.failed, 1u);
+    ASSERT_EQ(st.reloads, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(fx.doc)),
+              1u);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(fx.shell),
+                       "keeping current") != NULL);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_dirty_document_is_not_overwritten)
+{
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    hr_open(&fx, "editor_hr_dirty", 2u);
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_doc_is_dirty(fx.doc));
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+
+    hr_external_scene(fx.scene, 5u);
+    HR_WAIT(fx.shell, hr_stats(&fx).skipped_dirty == 1u);
+
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.skipped_dirty, 1u);
+    ASSERT_EQ(st.reloads, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_TRUE(break_editor_doc_is_dirty(fx.doc));
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(fx.shell), "skipped") !=
+                NULL);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_own_save_does_not_reload_or_erase_undo)
+{
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    hr_open(&fx, "editor_hr_ownsave", 0u);
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 's', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(file_exists(fx.scene));
+    hr_settle(fx.shell, 40);
+    ASSERT_EQ(hr_stats(&fx).reloads, 0u);
+
+    /* worst case: the filesystem reports a new mtime for the saved file; the
+     * content hash proves it is our own bytes, so nothing is reloaded */
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, hr_stats(&fx).skipped_same == 1u);
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.skipped_same, 1u);
+    ASSERT_EQ(st.reloads, 0u);
+    ASSERT_EQ(break_editor_cmd_stack_undo_count(break_editor_doc_stack(fx.doc)),
+              1u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 1u);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_external_edit_after_local_save_still_reloads)
+{
+    HrFixture fx;
+    hr_open(&fx, "editor_hr_after_save", 0u);
+    /* the save replaces the file by rename, which retires the inotify watch;
+     * the watcher must keep seeing later external edits */
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 's', MY_KEYMOD_CTRL));
+    hr_settle(fx.shell, 20);
+    ASSERT_EQ(hr_stats(&fx).reloads, 0u);
+
+    hr_external_scene(fx.scene, 4u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 4u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 4u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 1u);
+
+    hr_external_scene(fx.scene, 2u);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 2u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 2u);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_scene_without_sidecar_keeps_following_external_edits)
+{
+    HrFixture fx;
+    hr_open(&fx, "editor_hr_nosidecar", 0u);
+
+    /* an external tool writes only the .bscn: the load generates names and
+     * the document equals the file, so it must stay clean enough to follow
+     * the next external edit */
+    save_fixture_scene(fx.scene, 2u);
+    remove(fx.sidecar);
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 2u);
+    /* names were generated (dirty flag), but there is no user history */
+    ASSERT_EQ(break_editor_cmd_stack_size(break_editor_doc_stack(fx.doc)), 0u);
+
+    save_fixture_scene(fx.scene, 5u);
+    remove(fx.sidecar);
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 5u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 5u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 2u);
+    ASSERT_EQ(hr_stats(&fx).skipped_dirty, 0u);
+    hr_close(&fx);
+}
+
+TEST(hot_reload_request_in_flight_during_save_is_dropped_as_stale)
+{
+    HrFixture fx;
+    BreakEditorHotReloadStats st;
+    hr_open(&fx, "editor_hr_stale", 2u);
+
+    hr_external_scene(fx.scene, 4u);
+    break_editor_shell_tick(fx.shell); /* detects the change, issues the request */
+    ASSERT_EQ(hr_stats(&fx).requests, 1u);
+
+    /* the user saves before the staged bytes are committed */
+    emit_click(find(fx.shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx.shell, 's', MY_KEYMOD_CTRL));
+
+    HR_WAIT(fx.shell, hr_stats(&fx).skipped_stale == 1u);
+    hr_settle(fx.shell, 20);
+    st = hr_stats(&fx);
+    ASSERT_EQ(st.skipped_stale, 1u);
+    ASSERT_EQ(st.reloads, 0u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 3u);
+    ASSERT_FALSE(break_editor_doc_is_dirty(fx.doc));
+    hr_close(&fx);
+}
+
+TEST(hot_reload_scene_switch_via_asset_browser_rewatches)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorHotReload *hr;
+    BreakEditorDoc *doc;
+    BreakEditorHotReloadStats st;
+    char dir_a[512], dir_b[512], scene_a[600], scene_b[600];
+    char side_a[700], side_b[700];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir_a, sizeof(dir_a), "editor_hr_switch_a");
+    test_tmp(dir_b, sizeof(dir_b), "editor_hr_switch_b");
+    TEST_MKDIR(dir_a);
+    TEST_MKDIR(dir_b);
+    snprintf(scene_a, sizeof(scene_a), "%s/a.bscn", dir_a);
+    snprintf(scene_b, sizeof(scene_b), "%s/b.bscn", dir_b);
+    snprintf(side_a, sizeof(side_a), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, scene_a);
+    snprintf(side_b, sizeof(side_b), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, scene_b);
+    save_fixture_scene(scene_a, 1u);
+    save_fixture_scene(scene_b, 2u);
+    doc = break_editor_shell_doc(shell);
+    hr = break_editor_hot_reload_create(shell);
+    ASSERT_NOT_NULL(hr);
+    break_editor_shell_set_hot_reload(shell, hr);
+
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir_a));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    emit_click(list_row_by_text(list, "a.bscn"));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), scene_a);
+
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir_b));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    emit_click(list_row_by_text(list, "b.bscn"));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), scene_b);
+    ASSERT_TRUE(break_editor_hot_reload_stats(hr, &st));
+    ASSERT_TRUE(st.watching);
+
+    /* the previous scene is no longer watched */
+    hr_external_scene(scene_a, 6u);
+    hr_settle(shell, 60);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 2u);
+
+    /* the new one is */
+    hr_external_scene(scene_b, 4u);
+    HR_WAIT(shell, break_editor_doc_entity_count(doc) == 4u);
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 4u);
+
+    break_editor_shell_set_hot_reload(shell, NULL);
+    break_editor_hot_reload_destroy(hr);
+    break_editor_shell_destroy(shell);
+    remove(scene_a);
+    remove(side_a);
+    remove(scene_b);
+    remove(side_b);
+    TEST_RMDIR(dir_a);
+    TEST_RMDIR(dir_b);
+}
+
+static u64 g_assets_clock_us;
+static u64 assets_clock(void *user) {
+    (void)user;
+    return g_assets_clock_us;
+}
+
+TEST(assets_panel_live_refresh_shows_external_create_and_delete)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorDoc *doc;
+    char dir[512], f_a[600], f_b[600];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_live");
+    TEST_MKDIR(dir);
+    snprintf(f_a, sizeof(f_a), "%s/a.txt", dir);
+    snprintf(f_b, sizeof(f_b), "%s/b.txt", dir);
+    hr_write_text(f_a, "a");
+    doc = break_editor_shell_doc(shell);
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+
+    g_assets_clock_us = 1000000u;
+    break_editor_shell_set_assets_clock_for_test(shell, assets_clock, NULL);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u); /* ".." + a.txt */
+
+    hr_write_text(f_b, "b");
+    /* within the throttle interval nothing is re-listed */
+    break_editor_shell_tick(shell);
+    g_assets_clock_us += 500000u;
+    break_editor_shell_tick(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    g_assets_clock_us += 600000u; /* 1.1 s since the root was set */
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 3u);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    ASSERT_NOT_NULL(list_row_by_text(list, "b.txt"));
+
+    remove(f_a);
+    g_assets_clock_us += 1100000u;
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    /* a directory-only change never touches the document */
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    ASSERT_TRUE(break_editor_doc_is_dirty(doc));
+
+    break_editor_shell_destroy(shell);
+    remove(f_b);
+    TEST_RMDIR(dir);
+}
+
+TEST(assets_panel_live_refresh_survives_vanished_directory)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512], sub[600], keep[600];
+    my_widget_t *list;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_gone");
+    TEST_MKDIR(dir);
+    snprintf(sub, sizeof(sub), "%s/sub", dir);
+    snprintf(keep, sizeof(keep), "%s/keep.txt", dir);
+    TEST_MKDIR(sub);
+    hr_write_text(keep, "k");
+
+    g_assets_clock_us = 5000000u;
+    break_editor_shell_set_assets_clock_for_test(shell, assets_clock, NULL);
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    emit_click(list_row_by_text(list, "sub/"));
+    ASSERT_TRUE(strstr(break_editor_shell_assets_path_text(shell), "/sub") !=
+                NULL);
+
+    break_editor_shell_tick(shell); /* the first tick only starts the interval */
+    TEST_RMDIR(sub);
+    g_assets_clock_us += 1100000u;
+    break_editor_shell_tick(shell);
+    shell_paint(shell);
+    ASSERT_STR_EQ(break_editor_shell_assets_path_text(shell), "assets: /");
+    ASSERT_EQ(break_editor_shell_assets_row_count(shell), 2u);
+
+    break_editor_shell_destroy(shell);
+    remove(keep);
+    TEST_RMDIR(dir);
+}
+
+TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorHotReload *hr;
+    BreakEditorHotReloadStats st;
+    char path[400];
+    usize used;
+    ASSERT_NOT_NULL(shell);
+    hr = break_editor_hot_reload_create(shell);
+    ASSERT_NOT_NULL(hr);
+    break_editor_shell_set_hot_reload(shell, hr);
+
+    used = (usize)snprintf(path, sizeof(path), "/tmp/");
+    memset(path + used, 'a', 300u);
+    path[used + 300u] = '\0';
+    strcat(path, ".bscn");
+    /* the save target is still accepted (it has its own, larger bound) */
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, path));
+    ASSERT_STR_EQ(break_editor_shell_scene_path(shell), path);
+    ASSERT_TRUE(break_editor_hot_reload_stats(hr, &st));
+    ASSERT_FALSE(st.watching);
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "hot reload disabled") != NULL);
+
+    break_editor_shell_set_hot_reload(shell, NULL);
+    break_editor_hot_reload_destroy(hr);
+    break_editor_shell_destroy(shell);
+}
+
+TEST(hot_reload_teardown_in_either_order_is_safe)
+{
+    char dir[512];
+    char scene[600];
+    char sidecar[700];
+    BreakEditorShell *shell;
+    BreakEditorHotReload *hr;
+    test_tmp(dir, sizeof(dir), "editor_hr_teardown");
+    TEST_MKDIR(dir);
+    snprintf(scene, sizeof(scene), "%s/scene.bscn", dir);
+    snprintf(sidecar, sizeof(sidecar), "%s" BREAK_EDITOR_SIDECAR_SUFFIX, scene);
+
+    /* host destroys the hot-reload object while it is still attached */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    hr = break_editor_hot_reload_create(shell);
+    ASSERT_NOT_NULL(hr);
+    break_editor_shell_set_hot_reload(shell, hr);
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, scene));
+    break_editor_hot_reload_destroy(hr);
+    ASSERT_TRUE(break_editor_shell_hot_reload(shell) == NULL);
+    break_editor_shell_tick(shell);
+    break_editor_shell_destroy(shell);
+
+    /* host destroys the shell first, then the orphaned hot-reload object */
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    hr = break_editor_hot_reload_create(shell);
+    ASSERT_NOT_NULL(hr);
+    break_editor_shell_set_hot_reload(shell, hr);
+    ASSERT_TRUE(break_editor_shell_set_scene_path(shell, scene));
+    break_editor_shell_destroy(shell);
+    break_editor_hot_reload_tick(hr);
+    break_editor_hot_reload_destroy(hr);
+
+    remove(scene);
+    remove(sidecar);
+    TEST_RMDIR(dir);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
     RUN_TEST(add_entity_via_panel_button_increments_outliner);
@@ -3780,6 +4296,19 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);
     RUN_TEST(render_panel_source_is_read_only);
+    RUN_TEST(hot_reload_valid_external_edit_replaces_document);
+    RUN_TEST(hot_reload_creation_of_missing_scene_loads_it);
+    RUN_TEST(hot_reload_invalid_external_edit_keeps_document_and_undo);
+    RUN_TEST(hot_reload_dirty_document_is_not_overwritten);
+    RUN_TEST(hot_reload_own_save_does_not_reload_or_erase_undo);
+    RUN_TEST(hot_reload_external_edit_after_local_save_still_reloads);
+    RUN_TEST(hot_reload_scene_without_sidecar_keeps_following_external_edits);
+    RUN_TEST(hot_reload_request_in_flight_during_save_is_dropped_as_stale);
+    RUN_TEST(hot_reload_scene_switch_via_asset_browser_rewatches);
+    RUN_TEST(assets_panel_live_refresh_shows_external_create_and_delete);
+    RUN_TEST(assets_panel_live_refresh_survives_vanished_directory);
+    RUN_TEST(hot_reload_overlong_scene_path_disables_watch_without_truncating);
+    RUN_TEST(hot_reload_teardown_in_either_order_is_safe);
 #ifdef BREAK_EDITOR_REMOTE_TESTS
     RUN_REMOTE_TEST(remote_protocol_ids_live_in_default_registry);
     RUN_REMOTE_TEST(remote_describe_returns_version_entity_count_dirty);

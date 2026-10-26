@@ -1580,7 +1580,7 @@ add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
-        apps/editor/editor_panel_render.c
+        apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
 target_include_directories(editor PRIVATE
@@ -1593,6 +1593,10 @@ target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
 if(BREAK_ENABLE_SNOWFLAKE)
     target_link_libraries(editor PRIVATE break_net)
 endif()
+# Editor asset hot reload: the host owns a Runtime Core reload coordinator
+# (editor_hot_reload.c). runtime_core resolves vfs_*/profiler_*/time_* from
+# engine, so engine is repeated after it for static-archive ordering.
+target_link_libraries(editor PRIVATE runtime_core engine)
 engine_link_rhi_backend(editor)
 
 if(ENGINE_ENABLE_IPO)
@@ -3931,8 +3935,9 @@ endif()
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
-        apps/editor/editor_panel_render.c
+        apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
         src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
+        src/asset/vfs.c src/platform/filewatch.c src/platform/filewatch_backend.c
         src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
         src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
     set_property(TARGET test_editor_shell PROPERTY C_STANDARD 11)
@@ -3961,6 +3966,14 @@ endif()
             BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
         target_link_libraries(test_editor_shell PRIVATE break_net)
     endif()
+    # editor_hot_reload.c: Runtime Core coordinator (test variant) + the VFS
+    # and legacy file watcher compiled inline (exactly one definition each).
+    if(ENGINE_PLATFORM STREQUAL "linux")
+        target_link_libraries(test_editor_shell PRIVATE pthread)
+    elseif(ENGINE_PLATFORM STREQUAL "windows")
+        target_link_libraries(test_editor_shell PRIVATE kernel32)
+    endif()
+    target_link_libraries(test_editor_shell PRIVATE runtime_core_test)
     target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
     add_test(NAME test_editor_shell COMMAND test_editor_shell)
     set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")

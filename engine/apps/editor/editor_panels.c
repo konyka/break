@@ -7,6 +7,7 @@
 #include "editor_shell_internal.h"
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
+#include "editor_hot_reload.h"
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
 static bool g_editor_fail_diag_attach;
@@ -128,6 +129,9 @@ struct BreakEditorShell {
     /* Phase 4 Task 1: host-attached remote session (BORROWED — DEFAULT OFF;
      * the shell only ticks it, never creates or destroys it). */
     BreakEditorRemote *remote;
+
+    /* editor asset hot reload (BORROWED — host-owned, DEFAULT OFF) */
+    BreakEditorHotReload *hot_reload;
 
     bool palette_open;
     u32 palette_matches[EDITOR_PALETTE_COMMAND_COUNT];
@@ -829,6 +833,7 @@ static void shell_do_save(BreakEditorShell *shell) {
         return;
     }
     if (break_editor_doc_save(shell->doc, shell->scene_path)) {
+        break_editor_hot_reload_note_saved(shell->hot_reload);
         editor_shell_log(shell, "saved %s", shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "saved");
     } else {
@@ -1515,6 +1520,10 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
      * doc-borrowing console, so its later destroy never reaches this shell */
     editor_remote_shell_destroyed(shell->remote, shell);
     shell->remote = NULL;
+    /* same for an attached hot-reload object: it drops its shell pointer, so
+     * its later tick/destroy never reaches freed memory */
+    editor_hot_reload_shell_destroyed(shell->hot_reload, shell);
+    shell->hot_reload = NULL;
     editor_panel_network_set_remote(shell->network_panel, NULL);
     if (shell->owns_window) {
         /* the window teardown destroys the whole panel tree */
@@ -1637,6 +1646,38 @@ bool break_editor_shell_set_scene_path(BreakEditorShell *shell,
     }
     memcpy(shell->scene_path, path, len + 1u);
     shell->scene_path_set = true;
+    /* a path the watcher cannot take is reported on the console by the
+     * hot-reload object; the save target is still accepted */
+    (void)break_editor_hot_reload_set_scene(shell->hot_reload,
+                                            shell->scene_path);
+    return true;
+}
+
+const char *break_editor_shell_scene_path(const BreakEditorShell *shell) {
+    return shell != NULL && shell->scene_path_set ? shell->scene_path : "";
+}
+
+bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {
+    size_t len;
+    if (shell == NULL || path == NULL) {
+        return false;
+    }
+    len = strlen(path);
+    break_editor_gizmo_end_drag(shell->gizmo);
+    if (!break_editor_doc_load(shell->doc, path)) {
+        editor_shell_log(shell, "load failed %s", path);
+        editor_shell_refresh_all(shell);
+        return false;
+    }
+    editor_shell_log(shell, "load %s", path);
+    if (len > 0u && len + 1u <= sizeof(shell->scene_path)) {
+        memcpy(shell->scene_path, path, len + 1u);
+        shell->scene_path_set = true;
+        (void)break_editor_hot_reload_set_scene(shell->hot_reload,
+                                                shell->scene_path);
+    }
+    /* world swap + undo-stack clear: refresh everything */
+    editor_shell_refresh_all(shell);
     return true;
 }
 
@@ -1696,6 +1737,9 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (throttle documented in editor_panel_profiler.c); pure read,
      * never touches profiler state. */
     editor_panel_profiler_tick(shell->profiler_panel);
+    /* asset browser: throttled re-list of the current directory so files
+     * created/removed by external tools appear without navigating */
+    editor_panel_assets_tick(shell->assets_panel);
     /* Phase 4 Task 3: the network view snapshots the attached remote at
      * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
      * remote tick, so a refresh never observes a half-applied frame. */
@@ -1710,6 +1754,26 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * the doc/Lua/command owner-thread rule by construction. NULL = the
      * pre-remote behavior, byte-identical. */
     break_editor_remote_tick(shell->remote);
+    /* editor asset hot reload (DEFAULT OFF): external scene edits are staged
+     * by Runtime Core workers and committed here, on the shell thread. */
+    break_editor_hot_reload_tick(shell->hot_reload);
+}
+
+void break_editor_shell_set_hot_reload(BreakEditorShell *shell,
+                                       BreakEditorHotReload *hr) {
+    if (shell == NULL) {
+        return;
+    }
+    shell->hot_reload = hr;
+    if (hr != NULL) {
+        editor_hot_reload_attach(hr, shell);
+        (void)break_editor_hot_reload_set_scene(
+            hr, shell->scene_path_set ? shell->scene_path : NULL);
+    }
+}
+
+BreakEditorHotReload *break_editor_shell_hot_reload(BreakEditorShell *shell) {
+    return shell != NULL ? shell->hot_reload : NULL;
 }
 
 /* Phase 4 Task 1 host wiring (editor_remote.h): attaches/detaches the
@@ -1741,6 +1805,14 @@ bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
         return false;
     }
     return editor_panel_assets_set_root(shell->assets_panel, root_path);
+}
+
+void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user) {
+    if (shell != NULL) {
+        editor_panel_assets_set_clock(shell->assets_panel, clock, user);
+    }
 }
 
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell) {

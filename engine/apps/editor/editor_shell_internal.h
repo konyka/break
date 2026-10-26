@@ -37,6 +37,19 @@ typedef struct EditorPanelProfiler EditorPanelProfiler;
 void editor_shell_log(BreakEditorShell *shell, const char *fmt, ...);
 void editor_shell_refresh_all(BreakEditorShell *shell);
 
+/* Loads a .bscn scene file into the document and makes it the shell's scene
+ * path (Ctrl+S target) and hot-reload target. The scene path and watcher are
+ * only changed when the load succeeds. Used by the asset browser. */
+bool editor_shell_load_scene(BreakEditorShell *shell, const char *path);
+
+/* Hot-reload host wiring (editor_hot_reload.c): the shell calls these from
+ * its destroy/attach paths. */
+struct BreakEditorHotReload;
+void editor_hot_reload_shell_destroyed(struct BreakEditorHotReload *hr,
+                                       BreakEditorShell *shell);
+void editor_hot_reload_attach(struct BreakEditorHotReload *hr,
+                              BreakEditorShell *shell);
+
 /* Assets browser panel (model: BreakEditorAssets, Phase 3 Task 1). The
  * default root at create is "." (process cwd); a create failure of the
  * default model is degraded (empty panel + label note), never fatal. */
@@ -44,6 +57,9 @@ EditorPanelAssets *editor_panel_assets_create(BreakEditorShell *shell);
 void editor_panel_assets_destroy(EditorPanelAssets *panel);
 bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent);
 /* Re-roots the model (bounded false keeps the previous root). */
+void editor_panel_assets_tick(EditorPanelAssets *panel);
+void editor_panel_assets_set_clock(EditorPanelAssets *panel,
+                                   u64 (*clock)(void *user), void *user);
 bool editor_panel_assets_set_root(EditorPanelAssets *panel,
                                   const char *root_path);
 usize editor_panel_assets_row_count(const EditorPanelAssets *panel);

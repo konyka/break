@@ -34,6 +34,7 @@
 
 #include <editor/editor_assets.h>
 #include <editor/editor_scene.h>
+#include <platform/time.h>
 
 #include "myc/my_emitter.h"
 #include "myui/my_layout.h"
@@ -61,6 +62,11 @@ struct EditorPanelAssets {
     my_widget_t *path_label;   /* weak */
     EditorAssetsAdapter adapter;
     EditorAssetsRowCtx row_ctxs[EDITOR_ASSETS_ROW_CTX_POOL];
+    /* hot refresh: throttled re-list of the CURRENT directory */
+    u64 (*clock)(void *user); /* NULL = time_microseconds */
+    void *clock_user;
+    u64 last_refresh_us;
+    bool primed;
     /* label text cache: "assets: /" + rel (bounded by the model's caps) */
     char path_text[BREAK_EDITOR_ASSETS_PATH_CAPACITY + 16u];
 };
@@ -149,14 +155,9 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                 char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];
                 if (break_editor_assets_abs_path(panel->assets, ei, path,
                                                  sizeof(path))) {
-                    if (break_editor_doc_load(break_editor_shell_doc(shell),
-                                              path)) {
-                        editor_shell_log(shell, "load %s", path);
-                    } else {
-                        editor_shell_log(shell, "load failed %s", path);
-                    }
-                    /* world swap + undo-stack clear: refresh everything */
-                    editor_shell_refresh_all(shell);
+                    /* world swap + undo-stack clear + scene path / watcher
+                     * update, all in the shell helper */
+                    (void)editor_shell_load_scene(shell, path);
                 }
             } else {
                 editor_shell_log(shell, "assets: '%s' is not a .bscn scene",
@@ -318,6 +319,47 @@ bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
     return true;
 }
 
+/* Live listing: the retained UI only repaints on damage, so the directory
+ * the browser shows is re-listed at most once per EDITOR_ASSETS_REFRESH_US
+ * and the panel repaints only when the listing actually changed. A recursive
+ * watcher is deliberately not used: the default root is the process cwd
+ * (a full-tree inotify walk of a repository checkout took seconds), and one
+ * directory level is all the panel ever shows. */
+#define EDITOR_ASSETS_REFRESH_US 1000000u
+
+void editor_panel_assets_tick(EditorPanelAssets *panel) {
+    u64 now;
+    bool changed = false;
+    if (panel == NULL || panel->assets == NULL) {
+        return;
+    }
+    now = panel->clock != NULL ? panel->clock(panel->clock_user)
+                               : time_microseconds();
+    if (!panel->primed) {
+        /* the panel was just painted by build/set_root; start the interval */
+        panel->primed = true;
+        panel->last_refresh_us = now;
+        return;
+    }
+    if (now - panel->last_refresh_us < EDITOR_ASSETS_REFRESH_US) {
+        return;
+    }
+    panel->last_refresh_us = now;
+    (void)break_editor_assets_refresh(panel->assets, &changed);
+    if (changed) {
+        assets_panel_refresh(panel);
+    }
+}
+
+void editor_panel_assets_set_clock(EditorPanelAssets *panel,
+                                   u64 (*clock)(void *user), void *user) {
+    if (panel != NULL) {
+        panel->clock = clock;
+        panel->clock_user = user;
+        panel->primed = false;
+    }
+}
+
 bool editor_panel_assets_set_root(EditorPanelAssets *panel,
                                   const char *root_path) {
     BreakEditorAssets *fresh;
@@ -330,6 +372,7 @@ bool editor_panel_assets_set_root(EditorPanelAssets *panel,
     }
     break_editor_assets_destroy(panel->assets);
     panel->assets = fresh;
+    panel->primed = false;
     assets_panel_refresh(panel);
     return true;
 }

@@ -214,6 +214,11 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
  * process cwd). */
 bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
                                         const char *root_path);
+/* Test seam: injects the monotonic clock behind the browser's 1 s live
+ * refresh throttle (NULL = time_microseconds). */
+void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user);
 /* Assets panel row count INCLUDING the always-present ".." top row. */
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell);
 /* Borrowed assets path label text ("assets: /<rel>"). */
@@ -244,6 +249,20 @@ void break_editor_shell_set_remote(BreakEditorShell *shell,
 /* Borrowed remote the shell tick drives (NULL when unattached — the
  * default). */
 struct BreakEditorRemote *break_editor_shell_remote(BreakEditorShell *shell);
+
+/* ---------------- editor asset hot reload host wiring --------------- */
+
+struct BreakEditorHotReload;
+/* Attaches the host-owned hot-reload object the shell tick drives once per
+ * frame. The shell BORROWS it; the host creates and destroys it
+ * (break_editor_hot_reload_destroy detaches itself). Attaching points the
+ * object at the current scene path; NULL shell is a no-op, NULL detaches. */
+void break_editor_shell_set_hot_reload(BreakEditorShell *shell,
+                                       struct BreakEditorHotReload *hr);
+struct BreakEditorHotReload *break_editor_shell_hot_reload(
+    BreakEditorShell *shell);
+/* Configured scene path (Ctrl+S target); "" when none is set. */
+const char *break_editor_shell_scene_path(const BreakEditorShell *shell);
 
 /* ---------------- Phase 4 Task 3: network diagnostics panel --------------- */
 

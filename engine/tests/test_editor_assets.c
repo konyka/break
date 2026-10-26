@@ -837,6 +837,106 @@ TEST(model_oom_create_sweep) {
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }
 
+TEST(model_refresh_detects_create_delete_and_ignores_content_edits) {
+    char root[512];
+    char f1[700], f2[700];
+    bool changed = true;
+    test_tmp(root, sizeof(root), "assets_refresh");
+    ASSERT_TRUE(mk_dir(root));
+    join2(f1, sizeof(f1), root, "one.txt");
+    join2(f2, sizeof(f2), root, "two.txt");
+    ASSERT_TRUE(mk_file(f1));
+
+    BreakEditorAssets *a = break_editor_assets_create(root);
+    ASSERT_NOT_NULL(a);
+    ASSERT_EQ(break_editor_assets_count(a), 1u);
+
+    /* nothing changed: success, changed == false */
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_FALSE(changed);
+
+    /* a content-only edit does not change the listing */
+    {
+        FILE *fp = fopen(f1, "wb");
+        ASSERT_NOT_NULL(fp);
+        fputs("payload", fp);
+        fclose(fp);
+    }
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_FALSE(changed);
+
+    ASSERT_TRUE(mk_file(f2));
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_TRUE(changed);
+    ASSERT_EQ(break_editor_assets_count(a), 2u);
+    assert_entry(a, 0, "one.txt", false);
+    assert_entry(a, 1, "two.txt", false);
+
+    remove(f1);
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_TRUE(changed);
+    ASSERT_EQ(break_editor_assets_count(a), 1u);
+    assert_entry(a, 0, "two.txt", false);
+
+    /* a rename is a delete + create */
+    ASSERT_EQ(rename(f2, f1), 0);
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_TRUE(changed);
+    assert_entry(a, 0, "one.txt", false);
+
+    /* the filter is kept across a refresh */
+    break_editor_assets_set_filter(a, "bscn");
+    ASSERT_EQ(break_editor_assets_count(a), 0u);
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_FALSE(changed);
+    ASSERT_EQ(break_editor_assets_count(a), 0u);
+
+    /* NULL arguments are bounded failures; out_changed may be NULL */
+    ASSERT_FALSE(break_editor_assets_refresh(NULL, &changed));
+    ASSERT_TRUE(break_editor_assets_refresh(a, NULL));
+
+    break_editor_assets_destroy(a);
+    remove(f1);
+    ASSERT_TRUE(TEST_RMDIR(root) == 0);
+}
+
+TEST(model_refresh_falls_back_when_current_directory_vanishes) {
+    char root[512], sub[600], deeper[650], keep[700];
+    bool changed = false;
+    test_tmp(root, sizeof(root), "assets_refresh_gone");
+    ASSERT_TRUE(mk_dir(root));
+    join2(sub, sizeof(sub), root, "sub");
+    ASSERT_TRUE(mk_dir(sub));
+    join2(deeper, sizeof(deeper), sub, "deeper");
+    ASSERT_TRUE(mk_dir(deeper));
+    join2(keep, sizeof(keep), root, "keep.txt");
+    ASSERT_TRUE(mk_file(keep));
+
+    BreakEditorAssets *a = break_editor_assets_create(root);
+    ASSERT_NOT_NULL(a);
+    ASSERT_TRUE(break_editor_assets_enter(a, "sub"));
+    ASSERT_TRUE(break_editor_assets_enter(a, "deeper"));
+    ASSERT_STR_EQ(break_editor_assets_current_rel(a), "sub/deeper");
+
+    /* the whole sub tree disappears: the model walks up to the nearest
+     * directory that still lists, here the root */
+    ASSERT_TRUE(TEST_RMDIR(deeper) == 0);
+    ASSERT_TRUE(TEST_RMDIR(sub) == 0);
+    ASSERT_TRUE(break_editor_assets_refresh(a, &changed));
+    ASSERT_TRUE(changed);
+    ASSERT_STR_EQ(break_editor_assets_current_rel(a), "");
+    ASSERT_EQ(break_editor_assets_count(a), 1u);
+    assert_entry(a, 0, "keep.txt", false);
+
+    /* the root itself vanishes: coherent empty state, reported as failure */
+    remove(keep);
+    ASSERT_TRUE(TEST_RMDIR(root) == 0);
+    ASSERT_FALSE(break_editor_assets_refresh(a, &changed));
+    ASSERT_TRUE(changed);
+    ASSERT_EQ(break_editor_assets_count(a), 0u);
+    break_editor_assets_destroy(a);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(platform_list_basic_and_probe);
     RUN_TEST(platform_list_truncation_detectable);
@@ -859,4 +959,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(model_entries_capped_4096);
     RUN_TEST(model_escape_impossible);
     RUN_TEST(model_oom_create_sweep);
+    RUN_TEST(model_refresh_detects_create_delete_and_ignores_content_edits);
+    RUN_TEST(model_refresh_falls_back_when_current_directory_vanishes);
 TEST_MAIN_END()

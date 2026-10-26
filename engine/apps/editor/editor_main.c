@@ -13,6 +13,12 @@
  * intentionally not wired to argv — the document model supports it, the
  * shell UI lands it in a later phase).
  *
+ * Asset hot reload: the host owns a BreakEditorHotReload (editor_hot_reload.h)
+ * that watches the current scene file (the positional path, or the last
+ * .bscn loaded from the asset browser) and applies valid external edits to
+ * a clean document. It is torn down, with a bounded worker stop, before the
+ * shell.
+ *
  * Phase 4 Task 2: the remote session is DEFAULT OFF — it is created only
  * with --remote, which REQUIRES TLS (--remote-cert/--remote-key) and an
  * AUTH-v2 dev PSK (--remote-psk-hex or --remote-psk-file; dev path, not a
@@ -26,6 +32,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "editor_hot_reload.h"
 #include "editor_panels.h"
 #include "editor_remote.h"
 
@@ -78,6 +85,7 @@ int main(int argc, char **argv) {
   u32 drawable_w = EDITOR_WIN_W, drawable_h = EDITOR_WIN_H;
   BreakEditorRemoteCli remote_cli;
   BreakEditorRemote *remote = NULL;
+  BreakEditorHotReload *hot_reload = NULL;
   char remote_err[160];
 
   /* parsed before any window exists: a bad --remote config exits non-zero
@@ -145,6 +153,14 @@ int main(int argc, char **argv) {
   }
   /* render debugger panel: borrowed device, detached before teardown */
   break_editor_shell_set_render_device(shell, device);
+  /* asset hot reload: host-owned, shell-borrowed; attached BEFORE the scene
+   * path so the watcher starts on it. A failure only disables hot reload. */
+  hot_reload = break_editor_hot_reload_create(shell);
+  if (hot_reload == NULL) {
+    fprintf(stderr, "editor: hot reload unavailable (allocation failed)\n");
+  } else {
+    break_editor_shell_set_hot_reload(shell, hot_reload);
+  }
   if (remote_cli.scene_path != NULL &&
       !break_editor_shell_set_scene_path(shell, remote_cli.scene_path)) {
     fprintf(stderr, "editor: scene path rejected (cap %u bytes)\n",
@@ -160,6 +176,7 @@ int main(int argc, char **argv) {
         !break_editor_remote_start(remote)) {
       break_editor_remote_cli_wipe(&remote_cli);
       break_editor_remote_destroy(remote);
+      break_editor_hot_reload_destroy(hot_reload);
       break_editor_shell_set_render_device(shell, NULL);
       break_editor_shell_destroy(shell);
       break_ui_destroy(ui);
@@ -220,6 +237,9 @@ int main(int argc, char **argv) {
   }
 
   break_editor_remote_destroy(remote);
+  /* detaches itself, then stops the watcher and the coordinator workers
+   * (bounded) BEFORE the shell/document they commit into is destroyed */
+  break_editor_hot_reload_destroy(hot_reload);
   break_editor_shell_set_render_device(shell, NULL);
   break_editor_shell_destroy(shell);
   break_ui_destroy(ui);

@@ -76,3 +76,13 @@ bool break_editor_assets_entry_at(const BreakEditorAssets *assets, usize i, cons
 void break_editor_assets_set_filter(BreakEditorAssets *assets, const char *extensions_csv); /* e.g. "bscn,json,lua"; NULL/"" = all */
 const char *break_editor_assets_current_rel(const BreakEditorAssets *assets); /* borrowed, "" = root */
 bool break_editor_assets_abs_path(const BreakEditorAssets *assets, usize i, char *out, usize cap); /* bounded */
+/* Re-reads the CURRENT directory (hot reload / filesystem events). Keeps the
+ * filter and the relative position; allocates nothing. *out_changed (may be
+ * NULL) is set when the visible listing, the current directory, or the
+ * truncation flag differs from before, so a caller can skip repainting an
+ * unchanged panel. If the current directory vanished the model walks up to
+ * the nearest ancestor that still lists (out_changed == true, returns true);
+ * if even the root cannot be listed the model becomes a coherent empty
+ * listing at the root and this returns false (out_changed == true).
+ * Borrowed names from entry_at are invalidated when out_changed is true. */
+bool break_editor_assets_refresh(BreakEditorAssets *assets, bool *out_changed);

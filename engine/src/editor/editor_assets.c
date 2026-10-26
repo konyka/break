@@ -97,6 +97,26 @@ static bool assets_refresh(BreakEditorAssets *a) {
     return true;
 }
 
+/* FNV-1a over the visible listing, the relative path and the truncation
+ * flag (everything a panel renders). */
+static u64 listing_digest(const BreakEditorAssets *a) {
+    u64 h = 14695981039346656037ULL;
+    const unsigned char *p;
+    for (p = (const unsigned char *)a->rel; *p; p++) {
+        h = (h ^ *p) * 1099511628211ULL;
+    }
+    h = (h ^ (a->truncated ? 1u : 0u)) * 1099511628211ULL;
+    for (u32 i = 0; i < a->visible_count; i++) {
+        const PlatformDirEntry *e = &a->entries[a->visible[i]];
+        h = (h ^ (e->is_dir ? 2u : 3u)) * 1099511628211ULL;
+        for (p = (const unsigned char *)e->name; *p; p++) {
+            h = (h ^ *p) * 1099511628211ULL;
+        }
+        h = (h ^ 0xFFu) * 1099511628211ULL;
+    }
+    return h;
+}
+
 BreakEditorAssets *break_editor_assets_create(const char *root_path) {
     if (!root_path) return NULL;
     usize len = strlen(root_path);
@@ -219,6 +239,37 @@ bool break_editor_assets_up(BreakEditorAssets *assets) {
         (void)assets_refresh(assets);
         return false;
     }
+    return true;
+}
+
+bool break_editor_assets_refresh(BreakEditorAssets *assets, bool *out_changed) {
+    if (out_changed) *out_changed = false;
+    if (!assets) return false;
+
+    /* Compare against the pre-refresh state: the cached entries are
+     * overwritten in place, so keep an order-sensitive digest of the sorted
+     * listing (names, kinds) plus position and truncation. */
+    u64 before = listing_digest(assets);
+
+    while (!assets_refresh(assets)) {
+        if (assets->depth == 0) {
+            /* even the root is gone: coherent empty root state */
+            assets->rel[0] = '\0';
+            assets->entry_count = 0;
+            assets->visible_count = 0;
+            assets->truncated = false;
+            if (out_changed) *out_changed = true;
+            return false;
+        }
+        char *slash = strrchr(assets->rel, '/');
+        if (slash) {
+            *slash = '\0';
+        } else {
+            assets->rel[0] = '\0';
+        }
+        assets->depth--;
+    }
+    if (out_changed) *out_changed = listing_digest(assets) != before;
     return true;
 }
 
