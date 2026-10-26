@@ -602,6 +602,25 @@ R694 固定步长物理）后复核：无冲突（`--ff-only`），MoltenVK 与 
 两套均 `180/180`，Metal `-L graphics` `5/5`。`engine_demo` 截图：MoltenVK 的 3D 场景和 UI
 正常；Metal 仍只有 UI、3D 黑屏（既有缺口，70 帧约 3000 条错误，无变化）。
 
+2026-10-26 后续修复 Metal 默认 FORWARD 黑屏：① `rhi_pipeline_bindings_create/resolve` 从固定空桩
+改为持有 pipeline desc 副本并复用 VK 对齐的 offset 表，恢复全部命名 uniform 写入；② bloom 六个
+pass 改为先绑 FBO 再绑 pipeline/texture，避免 Metal encoder 切换丢弃绑定；③ 实现 IBL 材质/cubemap、
+RGBA32F texel buffer（4096 texel 行宽、16/17 槽位）和 graphics storage buffer 按 set 展开绑定，
+实例 upload blit 后显式重绑 pipeline；④ 实现阴影视口、MRT 单附件 clear、各目标 depth clear，
+深度状态与 depth-to-read 按 Metal/PSO 语义处理。`test_rhi_metal_resources` 由 44 增至 **47/47**，
+新增阴影像限、清深度保留颜色、跨 4096 行 texel 读取断言；consumer smoke 增加 bindings/pipeline
+坏日志门禁。MoltenVK 与 Metal 全量 CTest 均 `180/180`，Metal `-L graphics` `5/5`。
+`BREAK_SCREENSHOT=60 ... --frames 70` 实证 Metal 的 3D 场景已恢复、朝向正确，本次运行日志中
+`not implemented` 和 `without a bound graphics pipeline` 均未出现。与 MoltenVK 对比，构图接近，
+但水面、光照和物体细节仍有明显差异，尚不宣称逐像素一致；DEFERRED binder、indirect-count 等
+可选路径也未在本次补齐，证据等级保持待复核。
+
+随后获取并整合远程 `@bed3f6c1`（含 R701b/R702 LOD 与 QNX 支持）。新增 ECS LOD 分块绘制在
+每批实例 upload blit 后遗漏了实例管线重绑；Metal consumer smoke 的 `without a bound graphics
+pipeline` 日志门禁捕获该问题，补齐后再次验证两后端 70 帧截图及默认路径日志。最终 Metal 与
+MoltenVK 全量 CTest 均 **186/186**（远程新增 6 项亦通过），Metal graphics **5/5**、资源测试
+**47/47**；上文所述渲染差异、未实现路径及证据等级复核状态不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。

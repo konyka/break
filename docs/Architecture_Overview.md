@@ -396,14 +396,14 @@ same public validation results without inheriting API-specific state.
 新增 6 字段在每个后端（GL/VK/headless）有真实消费，并由 `test_rhi_capabilities` 契约测试钉死。
 
 **Shader 绑定与反射权威**——`shader_reflect_push_constants()`（`engine/src/core/shader_io.h`）
-按 std430 规则解析 GLSL `layout(push_constant)` 块，是 uniform/push 布局的唯一权威源；VK 后端在
-shader/pipeline create 时缓存反射结果，GL 走 `glGetActiveUniform`，slot 值全后端同源。每管线一次
-`rhi_pipeline_bindings_create()` 物化 name→slot 表（VK=push 字节偏移 / GL=location），取值用
-`rhi_pipeline_bindings_resolve()`（成员不存在返回 -1；反射 fail-closed 时不伪造槽位）。计划 E 已将
-412 个 legacy 逐名查询调用点全部迁移并删除 VK 手写 push offset 表；旧 API
-`rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 = rhi.h 声明 + 各后端实现 + 注释，调用点 0），
-随计划 F 的 OpenGL 退役删除。反射布局与实际 VK 布局的一致性由 `test_shader_io` 的
-反射×push 表交叉对照 gate 钉死（graphics + compute）。
+按 std430 规则解析 GLSL `layout(push_constant)` 块；VK 后端在 shader/pipeline create 时缓存反射结果，
+GL 走 `glGetActiveUniform`。每管线一次 `rhi_pipeline_bindings_create()` 物化 name→slot 表
+（VK=push 字节偏移 / GL=location），取值用 `rhi_pipeline_bindings_resolve()`（成员不存在返回 -1）。
+Metal 当前保存 `RHIPipelineDesc` 拥有副本，并通过与 VK golden 对齐的既有 offset 表解析，尚未迁移到
+GLSL 真反射；`test_rhi_metal_resources` 对两套 bindings API 的同名结果逐项比对。计划 E 已将 412 个
+legacy 逐名查询调用点全部迁移；旧 API `rhi_pipeline_get_uniform_location` 已 DEPRECATED（残留 =
+rhi.h 声明 + 各后端实现 + 注释，调用点 0），随计划 F 的 OpenGL 退役删除。反射布局与实际 VK 布局的
+一致性由 `test_shader_io` 的反射×push 表交叉对照 gate 钉死（graphics + compute）。
 
 **`RHI-ESCAPE` 逃生舱**——确实无法用 capability contract 表达的后端原生差异（native handle 桥接、
 VK 专属扩展计数器等）必须收进白名单块：命中行本身或其上一行携带 `RHI-ESCAPE` 注释。当前白名单
