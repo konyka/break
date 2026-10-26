@@ -184,41 +184,43 @@ void post_process_apply(PostProcess *pp, RHICmdBuffer *cmd, RHITexture scene_col
     if (pp->bloom_strength <= 0.0f) return;
     (void)screen_w; (void)screen_h; /* R196-B: kept for API; unbind removed */
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_bind_pipeline(cmd, pp->extract_pipe);
     if (pp->loc_threshold >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_threshold, pp->threshold);
     rhi_cmd_bind_texture(cmd, scene_color, pp->sampler, 0);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
     rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
-
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 1.0f, 0.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_pong.color_tex, pp->sampler, 0);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 1.0f, 0.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_ping.color_tex, pp->sampler, 0);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_pong);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
+    rhi_cmd_bind_pipeline(cmd, pp->blur_pipe);
     if (pp->loc_direction >= 0) rhi_cmd_set_uniform_vec2(cmd, pp->loc_direction, 0.0f, 1.0f);
     rhi_cmd_bind_texture(cmd, pp->fbo_pong.color_tex, pp->sampler, 0);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_ping);
     rhi_cmd_draw(cmd, 3, 1);
 
+    rhi_offscreen_fbo_bind(cmd, &pp->fbo_composite);
     rhi_cmd_bind_pipeline(cmd, pp->composite_pipe);
     /* R99-2: Use rhi_cmd_bind_material_textures — rhi_cmd_bind_texture ignores
      * the unit parameter in VK and binds all 9 slots to one texture. */
     rhi_cmd_bind_material_textures(cmd, scene_color, scene_color, scene_color,
                                    scene_color, pp->fbo_ping.color_tex, scene_color, pp->sampler);
     if (pp->loc_bloom_strength >= 0) rhi_cmd_set_uniform_f32(cmd, pp->loc_bloom_strength, pp->bloom_strength);
-    rhi_offscreen_fbo_bind(cmd, &pp->fbo_composite);
     rhi_cmd_draw(cmd, 3, 1);
 
     /* R196-B: skip intermediate swapchain CLEAR unbind. */

@@ -615,6 +615,151 @@ TEST(shadow_depth_pipeline_vertex_only_shader) {
     rhi_shader_destroy(g_dev, vs);
 }
 
+TEST(shadow_viewport_restricts_depth_writes) {
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIShadowMap sm;
+    RHICmdBuffer *cmd;
+    f32 depth[64u * 64u];
+    ASSERT_FALSE(handle_is_null(vs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.no_vertex_input = true;
+    desc.is_shadow_depth = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    sm = rhi_shadow_map_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(sm.depth_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_shadow_map(cmd, &sm);
+    rhi_cmd_set_shadow_viewport(cmd, 0u, 0u, 32u, 32u);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);  /* z=0.5 only in the top-left quadrant */
+    rhi_cmd_unbind_shadow_map(cmd, 64u, 64u);
+    end_frame();
+    memset(depth, 0, sizeof(depth));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, sm.depth_tex, depth,
+                                        sizeof(depth)));
+    ASSERT_TRUE(depth[0] == 0.5f);
+    ASSERT_TRUE(depth[31u * 64u + 31u] == 0.5f);
+    ASSERT_TRUE(depth[32u] == 1.0f);
+    ASSERT_TRUE(depth[32u * 64u] == 1.0f);
+    ASSERT_TRUE(depth[63u * 64u + 63u] == 1.0f);
+    rhi_shadow_map_destroy(g_dev, &sm);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+}
+
+TEST(clear_depth_preserves_color) {
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    f32 depth[64u * 64u];
+    u8 px[64u * 64u * 4u];
+    u32 i;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 3u, 1u);  /* red + depth 0.5 */
+    rhi_cmd_clear_depth(cmd);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.depth_tex, depth,
+                                        sizeof(depth)));
+    for (i = 0u; i < 64u * 64u; ++i) ASSERT_TRUE(depth[i] == 1.0f);
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+TEST(texel_buffers_cross_4096_texel_rows) {
+    static const char *k_msl_fs_texel =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "fragment float4 fs_main(texture2d<float> t0 [[texture(16)]],\n"
+        "                        texture2d<float> t1 [[texture(17)]]) {\n"
+        "  bool ok = all(t0.read(uint2(0, 0)) == float4(1, 2, 3, 4)) &&\n"
+        "            all(t0.read(uint2(0, 1)) == float4(5, 6, 7, 8)) &&\n"
+        "            all(t0.read(uint2(1, 1)) == float4(9, 10, 11, 12)) &&\n"
+        "            all(t1.read(uint2(2, 0)) == float4(13, 14, 15, 16));\n"
+        "  return ok ? float4(0, 1, 0, 1) : float4(1, 0, 0, 1);\n"
+        "}\n";
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_texel, true);
+    float *v0 = (float *)calloc(4098u * 4u, sizeof(float));
+    float v1[12] = {0};
+    RHIBufferDesc bdesc;
+    RHIBuffer b0, b1;
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    ASSERT_NOT_NULL(v0);
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    v0[0] = 1; v0[1] = 2; v0[2] = 3; v0[3] = 4;
+    v0[4096u * 4u + 0] = 5; v0[4096u * 4u + 1] = 6;
+    v0[4096u * 4u + 2] = 7; v0[4096u * 4u + 3] = 8;
+    v0[4097u * 4u + 0] = 9; v0[4097u * 4u + 1] = 10;
+    v0[4097u * 4u + 2] = 11; v0[4097u * 4u + 3] = 12;
+    v1[8] = 13; v1[9] = 14; v1[10] = 15; v1[11] = 16;
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_TEXEL;
+    bdesc.size = 4098u * 4u * sizeof(float);
+    bdesc.initial_data = v0;
+    b0 = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.size = sizeof(v1);
+    bdesc.initial_data = v1;
+    b1 = rhi_buffer_create(g_dev, &bdesc);
+    free(v0);
+    ASSERT_FALSE(handle_is_null(b0));
+    ASSERT_FALSE(handle_is_null(b1));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.uses_texel_buffer = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texel_buffers(cmd, b0, b1);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 255u, 0u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_buffer_destroy(g_dev, b0);
+    rhi_buffer_destroy(g_dev, b1);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(pipeline_invalid_shader_handle_rejected) {
     /* Fail closed: a garbage shader handle never produces a pipeline. */
     RHIPipelineDesc desc;
@@ -694,6 +839,7 @@ TEST(mrt_clear_color_after_bind_targets_mrt) {
     cmd = begin_frame();
     ASSERT_NOT_NULL(cmd);
     rhi_mrt_fbo_bind(cmd, &fbo);                        /* both -> (0,0,0,0) */
+    rhi_cmd_clear_color_attachment(cmd, 1u, 1.0f, 0.0f, 0.0f, 1.0f);
     rhi_cmd_clear_color(cmd, 0.0f, 0.0f, 1.0f, 1.0f);   /* att0 -> blue */
     rhi_mrt_fbo_unbind(cmd, 64u, 64u);
     end_frame();
@@ -704,7 +850,7 @@ TEST(mrt_clear_color_after_bind_targets_mrt) {
     memset(px, 0xFFu, sizeof(px));
     ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex[1], px,
                                         sizeof(px)));
-    assert_center_px(px, 64u, 64u, 0u, 0u, 0u, 0u);      /* untouched */
+    assert_center_px(px, 64u, 64u, 255u, 0u, 0u, 255u);  /* RGBA8: red preserved */
     rhi_mrt_fbo_destroy(g_dev, &fbo);
 }
 
@@ -2149,9 +2295,12 @@ TEST(push_offsets_match_vk_golden) {
         desc.frag = cfgs[ci].desc.is_compute ? cs : fs;
         pipe = rhi_pipeline_create(g_dev, &desc);
         ASSERT_FALSE(handle_is_null(pipe));
+        RHIPipelineBindings *bindings = rhi_pipeline_bindings_create(g_dev, pipe);
+        ASSERT_NOT_NULL(bindings);
         for (ni = 0u; ni < sizeof(k_push_names) / sizeof(k_push_names[0]); ++ni) {
             i32 off = rhi_pipeline_get_uniform_location(g_dev, pipe,
                                                         k_push_names[ni]);
+            ASSERT_EQ(rhi_pipeline_bindings_resolve(bindings, k_push_names[ni]), off);
             if (off >= 0) {
                 int wrote = snprintf(buf + pos, sizeof(buf) - pos,
                                      "%s %s %d\n", cfgs[ci].tag,
@@ -2160,6 +2309,7 @@ TEST(push_offsets_match_vk_golden) {
                 pos += (usize)wrote;
             }
         }
+        rhi_pipeline_bindings_destroy(g_dev, bindings);
         rhi_pipeline_destroy(g_dev, pipe);
     }
     rhi_shader_destroy(g_dev, vs);
@@ -2784,6 +2934,9 @@ int main(void) {
     RUN_TEST(mrt_five_attachments_create_and_clear);
     RUN_TEST(shadow_map_bind_clears_depth_to_one);
     RUN_TEST(shadow_depth_pipeline_vertex_only_shader);
+    RUN_TEST(shadow_viewport_restricts_depth_writes);
+    RUN_TEST(clear_depth_preserves_color);
+    RUN_TEST(texel_buffers_cross_4096_texel_rows);
     RUN_TEST(pipeline_invalid_shader_handle_rejected);
     RUN_TEST(offscreen_fbo_msaa_desc_fails_closed);
     RUN_TEST(cubemap_depth_fbo_bind_face_clears);

@@ -59,6 +59,8 @@ if(rc EQUAL 0)
     foreach(bad
             "device lost"
             "without an open render pass"
+            "without a bound graphics pipeline"
+            "bindings create failed"
             "not in the offline manifest"
             "FATAL")
         string(FIND "${log}" "${bad}" bad_pos)

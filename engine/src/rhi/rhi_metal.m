@@ -302,8 +302,8 @@ struct RHICmdBuffer {
     u32 bound_ubo_binding;
     /* Recorded storage-buffer binds (handles, generation-checked at replay).
      * Encoder state does not survive pass switches (I2 rule), so dispatch
-     * replays these, and pipelines with spvBufferSizeConstants also replay
-     * them on the vertex stage before the size table is fed. */
+     * replays these; graphics pipelines with storage bindings or
+     * spvBufferSizeConstants replay them on both stages. */
     RHIBuffer bound_storage[25];
     u32 bound_storage_mask;
     /* Suspended render pass (VK suspend/resume parity): a compute or blit
@@ -970,6 +970,7 @@ void rhi_vk_validation_set_enabled(bool enabled) {
  * are still in flight, matching the D3D12 retire-fence semantics. */
 typedef struct {
     id<MTLBuffer> buffer;
+    id<MTLTexture> texel_view;  /* cached RGBA32F view for RHI_BUFFER_USAGE_TEXEL */
     usize size;
     RHIBufferUsage usage;
     bool shared_mode;   /* MTLResourceStorageModeShared (host-visible) */
@@ -1527,31 +1528,59 @@ RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
     MetalBackend *mb;
     MetalBuffer *bb;
     bool private_mode;
+    usize allocation_size;
+    usize texel_count = 0u, texel_rows = 0u;
     u32 idx;
     if (dev == NULL || !rhi_buffer_desc_validate(desc)) return RHI_HANDLE_NULL;
     mb = (MetalBackend *)dev->backend_data;
     if (mb == NULL || mb->device_lost_latch) return RHI_HANDLE_NULL;
     private_mode = metal_buffer_wants_private(desc);
+    allocation_size = desc->size;
+    if ((desc->usage & RHI_BUFFER_USAGE_TEXEL) != 0) {
+        if (desc->size > (usize)-1 - 15u) return RHI_HANDLE_NULL;
+        texel_count = (desc->size + 15u) / 16u;
+        texel_rows = (texel_count + 4095u) / 4096u;
+        if (texel_rows > (usize)-1 / (4096u * 16u))
+            return RHI_HANDLE_NULL;
+        /* The MSL samplerBuffer conversion addresses a fixed 4096-wide 2D
+         * texture. Pad the physical allocation to complete rows; bb->size
+         * remains the caller's logical byte count. */
+        allocation_size = texel_rows * 4096u * 16u;
+    }
     bb = (MetalBuffer *)calloc(1u, sizeof(*bb));
     if (bb == NULL) return RHI_HANDLE_NULL;
     /* Factory methods are autoreleased; retain to survive the pool drain. */
     @autoreleasepool {
         MTLResourceOptions opts = private_mode
             ? MTLResourceStorageModePrivate : MTLResourceStorageModeShared;
-        if (desc->initial_data != NULL) {
+        if (desc->initial_data != NULL && allocation_size == desc->size) {
             /* initial_data implies shared mode by the rule above:
              * newBufferWithBytes: uploads at create. */
             bb->buffer = [[mb->device newBufferWithBytes:desc->initial_data
                                                  length:(NSUInteger)desc->size
                                                 options:opts] retain];
         } else {
-            bb->buffer = [[mb->device newBufferWithLength:(NSUInteger)desc->size
+            bb->buffer = [[mb->device newBufferWithLength:(NSUInteger)allocation_size
                                                   options:opts] retain];
+            if (desc->initial_data != NULL && bb->buffer != nil)
+                memcpy(bb->buffer.contents, desc->initial_data, desc->size);
+        }
+        if (bb->buffer != nil && texel_count != 0u) {
+            MTLTextureDescriptor *td = [MTLTextureDescriptor
+                texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                width:(NSUInteger)(texel_count < 4096u ? texel_count : 4096u)
+                height:(NSUInteger)texel_rows mipmapped:NO];
+            td.usage = MTLTextureUsageShaderRead;
+            td.storageMode = bb->buffer.storageMode;
+            bb->texel_view = [bb->buffer newTextureWithDescriptor:td
+                offset:0u bytesPerRow:(NSUInteger)(4096u * 16u)];
         }
     }
-    if (bb->buffer == nil) {
-        LOG_ERROR("rhi_metal: buffer allocation failed (%llu bytes)",
+    if (bb->buffer == nil || (texel_count != 0u && bb->texel_view == nil)) {
+        LOG_ERROR("rhi_metal: buffer/texel allocation failed (%llu bytes)",
                   (unsigned long long)desc->size);
+        [bb->texel_view release];
+        [bb->buffer release];
         free(bb);
         return RHI_HANDLE_NULL;
     }
@@ -1572,6 +1601,7 @@ void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
     bb = (MetalBuffer *)rhi_get_resource_typed(dev, buf, RHI_RES_BUFFER);
     if (bb == NULL) return;
     if (mb != NULL) metal_retire_drain(dev, mb);
+    [bb->texel_view release];
     [bb->buffer release];
     free(bb);
     rhi_free_slot(dev, buf);
@@ -2795,12 +2825,13 @@ void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h)
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_shadow_viewport not implemented");
-    (void)cmd;
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
+    /* Shadow atlas quadrants use top-left pixel coordinates and the full
+     * 0..1 depth range; each cascade must not overwrite its neighbours. */
+    rhi_cmd_set_viewport(cmd, (f32)x, (f32)y, (f32)w, (f32)h, 0.0f, 1.0f);
+    rhi_cmd_set_scissor_top_left(cmd, x, y, w, h);
 }
 
 /* Shared draw guards: open render pass + bound graphics pipeline; returns
@@ -2991,6 +3022,12 @@ static void metal_offscreen_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
                                          u32 w, u32 h, const f32 *rgba);
 static void metal_mrt_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
                                    u32 w, u32 h, const f32 *rgba);
+static void metal_mrt_attachment_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                   u32 w, u32 h, u32 attachment, const f32 *rgba);
+static void metal_offscreen_depth_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                               u32 w, u32 h);
+static void metal_mrt_depth_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                         u32 w, u32 h);
 static void metal_depth_target_clear_reopen(RHICmdBuffer *cmd, u8 kind,
                                             RHIHandle fb, u32 w, u32 h,
                                             u32 face);
@@ -3057,13 +3094,23 @@ void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
 }
 
 void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f32 g, f32 b, f32 a) {
-    LOG_ERROR("rhi_metal: rhi_cmd_clear_color_attachment not implemented");
-    (void)cmd;
-    (void)attachment;
-    (void)r;
-    (void)g;
-    (void)b;
-    (void)a;
+    f32 rgba[4];
+    RHIHandle target;
+    u32 w, h;
+    if (cmd == NULL || cmd->backend == NULL || attachment >= RHI_MRT_MAX_ATTACHMENTS)
+        return;
+    if (attachment == 0u) {
+        rhi_cmd_clear_color(cmd, r, g, b, a);
+        return;
+    }
+    metal_resume_render_pass_if_needed(cmd);
+    if (!cmd->render_pass_open || cmd->pass_kind != METAL_PASS_MRT) return;
+    target = cmd->pass_target;
+    w = cmd->pass_w;
+    h = cmd->pass_h;
+    rgba[0] = r; rgba[1] = g; rgba[2] = b; rgba[3] = a;
+    metal_end_render_encoder(cmd);
+    metal_mrt_attachment_clear_reopen(cmd, target, w, h, attachment, rgba);
 }
 
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
@@ -3156,10 +3203,10 @@ static void metal_flush_ubo(RHICmdBuffer *cmd, const MetalPipeline *pp) {
 
 /* Replays recorded storage binds lost to pass switches (I2 rule) and feeds
  * the spvBufferSizeConstants table at buffer(25) from the bound buffers'
- * byte sizes. Compute: every dispatch. Graphics: only pipelines whose
- * shader declares the table (vertex stage). Fail-closed: a missing or
- * stale binding logs and returns false so the caller can skip the draw or
- * dispatch. */
+ * byte sizes. Graphics replays both stages because the clustered, instanced,
+ * skinned and particle variants declare storage in different stages.
+ * Fail-closed: a missing or stale binding logs and returns false so the
+ * caller can skip the draw or dispatch. */
 static bool metal_flush_storage_and_bsc(RHICmdBuffer *cmd,
                                         const MetalPipeline *pp) {
     u32 sizes[RHI_METAL_BSC_MAX];
@@ -3178,7 +3225,7 @@ static bool metal_flush_storage_and_bsc(RHICmdBuffer *cmd,
                                      offset:0u
                                     atIndex:(NSUInteger)idx];
         }
-    } else if (need_bsc && cmd->render_encoder != nil) {
+    } else if ((need_bsc || pp->desc.uses_storage) && cmd->render_encoder != nil) {
         u32 idx;
         for (idx = 0u; idx < 25u; ++idx) {
             MetalBuffer *bb;
@@ -3189,6 +3236,9 @@ static bool metal_flush_storage_and_bsc(RHICmdBuffer *cmd,
             [cmd->render_encoder setVertexBuffer:bb->buffer
                                           offset:0u
                                          atIndex:(NSUInteger)idx];
+            [cmd->render_encoder setFragmentBuffer:bb->buffer
+                                            offset:0u
+                                           atIndex:(NSUInteger)idx];
         }
     }
     if (!need_bsc) return true;
@@ -3744,21 +3794,32 @@ i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const ch
     return metal_uniform_location(&pp->desc, name);
 }
 
-/* Plan E Task 5: reflection-driven bindings — fail-closed link stubs
- * (create NULL / resolve -1 / destroy no-op), mirroring rhi_headless.c.
- * main.c/test_vulkan.c call sites link against these until the Metal
- * reflection materialization lands; the table walk above stays the
- * legacy API's authority in the meantime. */
+/* Owned pipeline-layout snapshot: both bindings APIs resolve through the same
+ * VK-aligned offset table, and the copy keeps the names independent of the
+ * pipeline's lifetime. */
+struct RHIPipelineBindings {
+    RHIPipelineDesc desc;
+};
+
 RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
-    (void)dev; (void)pipe; return NULL;
+    MetalPipeline *pp;
+    RHIPipelineBindings *b;
+    if (dev == NULL) return NULL;
+    pp = (MetalPipeline *)rhi_get_resource_typed(dev, pipe, RHI_RES_PIPELINE);
+    if (pp == NULL) return NULL;
+    b = (RHIPipelineBindings *)calloc(1u, sizeof(*b));
+    if (b != NULL) b->desc = pp->desc;
+    return b;
 }
 
 void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
-    (void)dev; (void)b;
+    (void)dev;
+    free(b);
 }
 
 i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
-    (void)b; (void)name; return -1;
+    if (b == NULL || name == NULL) return -1;
+    return metal_uniform_location(&b->desc, name);
 }
 
 /* ---- Task 8: render-target payloads and FBO family ----
@@ -3968,8 +4029,35 @@ void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
 }
 
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_clear_depth not implemented");
-    (void)cmd;
+    u8 kind;
+    RHIHandle target;
+    u32 w, h, face;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (!cmd->render_pass_open) return;
+    kind = cmd->pass_kind;
+    target = cmd->pass_target;
+    w = cmd->pass_w;
+    h = cmd->pass_h;
+    face = cmd->pass_face;
+    metal_end_render_encoder(cmd);
+    switch (kind) {
+    case METAL_PASS_SCREEN:
+        metal_open_screen_pass(cmd, w, h, false /* depth Clear, color Load */);
+        break;
+    case METAL_PASS_OFFSCREEN:
+        metal_offscreen_depth_clear_reopen(cmd, target, w, h);
+        break;
+    case METAL_PASS_MRT:
+        metal_mrt_depth_clear_reopen(cmd, target, w, h);
+        break;
+    case METAL_PASS_SHADOW:
+    case METAL_PASS_CUBE_DEPTH:
+        metal_depth_target_clear_reopen(cmd, kind, target, w, h, face);
+        break;
+    default:
+        break;
+    }
 }
 
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
@@ -4066,40 +4154,57 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
 }
 
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_cubemap not implemented");
-    (void)cmd;
-    (void)cm;
-    (void)sampler;
-    (void)unit;
+    MetalTexture *cd;
+    MetalSampler *sd;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
+    cd = (MetalTexture *)rhi_get_resource_typed(g_current_device, cm,
+                                                RHI_RES_CUBEMAP);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (cd == NULL || sd == NULL) return;
+    [cmd->render_encoder setFragmentTexture:cd->texture atIndex:(NSUInteger)unit];
+    [cmd->render_encoder setFragmentSamplerState:sd->sampler atIndex:(NSUInteger)unit];
 }
 
+/* These calls are pipeline-state declarations on Metal too: skybox already
+ * selects LEQUAL + no depth write + no culling in its RHIPipelineDesc. */
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_depth_func_less_or_equal not implemented");
     (void)cmd;
 }
 
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_depth_func_less not implemented");
     (void)cmd;
 }
 
 void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_depth_mask not implemented");
     (void)cmd;
     (void)enabled;
 }
 
 void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
-    LOG_ERROR("rhi_metal: rhi_cmd_set_cull_face not implemented");
     (void)cmd;
     (void)enabled;
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_texel_buffers not implemented");
-    (void)cmd;
-    (void)buf0;
-    (void)buf1;
+    MetalBuffer *b0, *b1;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
+    b0 = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf0,
+                                               RHI_RES_BUFFER);
+    b1 = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf1,
+                                               RHI_RES_BUFFER);
+    if (b0 == NULL || b0->texel_view == nil) return;
+    if (b1 == NULL || b1->texel_view == nil) b1 = b0;
+    /* samplerBuffer flattening: set*16+binding. The shaders use both stages
+     * depending on the instanced/skinned/clustered variant. */
+    [cmd->render_encoder setVertexTexture:b0->texel_view atIndex:16u];
+    [cmd->render_encoder setVertexTexture:b1->texel_view atIndex:17u];
+    [cmd->render_encoder setFragmentTexture:b0->texel_view atIndex:16u];
+    [cmd->render_encoder setFragmentTexture:b1->texel_view atIndex:17u];
 }
 
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
@@ -4376,21 +4481,64 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITex
 }
 
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
-    LOG_ERROR("rhi_metal: rhi_cmd_bind_material_textures_ibl not implemented");
-    (void)cmd;
-    (void)albedo;
-    (void)mr;
-    (void)normal;
-    (void)emissive;
-    (void)occlusion;
-    (void)shadow;
-    (void)ssao;
-    (void)sampler;
-    (void)brdf_lut;
-    (void)irradiance_map;
-    (void)prefilter_map;
-    (void)point_shadow_cubes;
-    (void)point_shadow_count;
+    RHITexture handles[7];
+    id<MTLTexture> views[7];
+    MetalTexture *td_alb, *td_occ;
+    MetalTexture *cd_irr, *cd_pref, *cube_fallback = NULL;
+    MetalTexture *points[4] = { NULL, NULL, NULL, NULL };
+    MetalSampler *sd;
+    u32 i;
+    if (cmd == NULL || cmd->backend == NULL) return;
+    metal_resume_render_pass_if_needed(cmd);
+    if (cmd->render_encoder == nil) return;
+    td_alb = (MetalTexture *)rhi_get_resource_typed(g_current_device, albedo,
+                                                    RHI_RES_TEXTURE);
+    sd = (MetalSampler *)rhi_get_resource_typed(g_current_device, sampler,
+                                                RHI_RES_SAMPLER);
+    if (td_alb == NULL || sd == NULL) return;
+    handles[0] = albedo;
+    handles[1] = shadow;
+    handles[2] = mr;
+    handles[3] = normal;
+    handles[4] = emissive;
+    handles[5] = ssao;
+    handles[6] = brdf_lut;
+    for (i = 0u; i < 7u; ++i) {
+        MetalTexture *td = (MetalTexture *)rhi_get_resource_typed(
+            g_current_device, handles[i], RHI_RES_TEXTURE);
+        views[i] = td != NULL ? td->texture : td_alb->texture;
+    }
+    td_occ = (MetalTexture *)rhi_get_resource_typed(g_current_device, occlusion,
+                                                    RHI_RES_TEXTURE);
+    cd_irr = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+        irradiance_map, RHI_RES_CUBEMAP);
+    cd_pref = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+        prefilter_map, RHI_RES_CUBEMAP);
+    if (cd_irr != NULL) cube_fallback = cd_irr;
+    else if (cd_pref != NULL) cube_fallback = cd_pref;
+    if (point_shadow_count > 4u) point_shadow_count = 4u;
+    for (i = 0u; i < point_shadow_count && point_shadow_cubes != NULL; ++i) {
+        points[i] = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+            point_shadow_cubes[i], RHI_RES_CUBEMAP);
+        if (cube_fallback == NULL && points[i] != NULL) cube_fallback = points[i];
+    }
+    for (i = 0u; i < 7u; ++i)
+        [cmd->render_encoder setFragmentTexture:views[i] atIndex:(NSUInteger)i];
+    /* Cube slots must never receive a 2D albedo fallback. If no real cube is
+     * available, leave the optional slot unbound rather than violating the
+     * shader's texturecube argument type. */
+    if (cd_irr != NULL || cube_fallback != NULL)
+        [cmd->render_encoder setFragmentTexture:(cd_irr != NULL ? cd_irr : cube_fallback)->texture atIndex:7u];
+    if (cd_pref != NULL || cube_fallback != NULL)
+        [cmd->render_encoder setFragmentTexture:(cd_pref != NULL ? cd_pref : cube_fallback)->texture atIndex:8u];
+    [cmd->render_encoder setFragmentTexture:(td_occ != NULL ? td_occ : td_alb)->texture atIndex:9u];
+    for (i = 0u; i < 4u; ++i) {
+        MetalTexture *cd = points[i] != NULL ? points[i] : cube_fallback;
+        if (cd != NULL)
+            [cmd->render_encoder setFragmentTexture:cd->texture atIndex:(NSUInteger)(10u + i)];
+    }
+    for (i = 0u; i < 14u; ++i)
+        [cmd->render_encoder setFragmentSamplerState:sd->sampler atIndex:(NSUInteger)i];
 }
 
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd, RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal, RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count, RHISampler cube_sampler) {
@@ -4680,6 +4828,22 @@ static void metal_offscreen_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
                               false, rgba, true);
 }
 
+static void metal_offscreen_depth_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                               u32 w, u32 h) {
+    MetalFBOData *fd = (MetalFBOData *)rhi_get_resource_typed(
+        g_current_device, fb, RHI_RES_FRAMEBUFFER);
+    MetalTexture *color;
+    MetalTexture *depth;
+    if (fd == NULL) return;
+    color = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+        fd->color_tex, RHI_RES_TEXTURE);
+    depth = (MetalTexture *)rhi_get_resource_typed(g_current_device,
+        fd->depth_tex, RHI_RES_TEXTURE);
+    if (color == NULL || depth == NULL) return;
+    metal_offscreen_pass_open(cmd, fd, color, depth, fb, w, h,
+                              true /* color Load */, NULL, false /* depth Clear */);
+}
+
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
     metal_offscreen_fbo_bind_impl(cmd, fbo, false);
 }
@@ -4786,13 +4950,14 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     memset(fbo, 0, sizeof(*fbo));
 }
 
-/* Shared MRT pass builder. mode: 0 = R616 bind (all attachments Clear
- * (0,0,0,0), depth Clear 1.0); 1 = bind_load (all Load); 2 = C1 in-pass
- * clear_color reopen (attachment 0 Clear with clear_rgba, others + depth
- * Load — VK vkCmdClearAttachments clears color attachment 0 only). */
+/* Shared MRT pass builder. The low byte selects 0 = clear every attachment,
+ * 1 = load every attachment, 2+N = clear only attachment N with clear_rgba.
+ * Bit 0x100 independently requests a depth clear; mode 0 always clears depth. */
 static void metal_mrt_pass_open(RHICmdBuffer *cmd, MetalMRTFBOData *md,
                                 RHIHandle fb, u32 w, u32 h, u32 mode,
                                 const f32 *clear_rgba) {
+    const u32 color_mode = mode & 0xffu;
+    const bool depth_clear = color_mode == 0u || (mode & 0x100u) != 0u;
     @autoreleasepool {
         MTLRenderPassDescriptor *pass =
             [MTLRenderPassDescriptor renderPassDescriptor];
@@ -4803,17 +4968,18 @@ static void metal_mrt_pass_open(RHICmdBuffer *cmd, MetalMRTFBOData *md,
             if (ct == NULL) return;
             pass.colorAttachments[i].texture = ct->texture;
             pass.colorAttachments[i].storeAction = MTLStoreActionStore;
-            if (mode == 1u || (mode == 2u && i != 0u)) {
-                pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
-            } else {
+            if (color_mode == 0u ||
+                (color_mode >= 2u && i == color_mode - 2u)) {
                 pass.colorAttachments[i].loadAction = MTLLoadActionClear;
                 pass.colorAttachments[i].clearColor =
-                    (mode == 2u)
+                    (color_mode >= 2u)
                         ? MTLClearColorMake((double)clear_rgba[0],
                                             (double)clear_rgba[1],
                                             (double)clear_rgba[2],
                                             (double)clear_rgba[3])
                         : MTLClearColorMake(0.0, 0.0, 0.0, 0.0);
+            } else {
+                pass.colorAttachments[i].loadAction = MTLLoadActionLoad;
             }
         }
         {
@@ -4824,7 +4990,7 @@ static void metal_mrt_pass_open(RHICmdBuffer *cmd, MetalMRTFBOData *md,
         }
         pass.depthAttachment.storeAction = MTLStoreActionStore;
         pass.depthAttachment.loadAction =
-            mode == 0u ? MTLLoadActionClear : MTLLoadActionLoad;
+            depth_clear ? MTLLoadActionClear : MTLLoadActionLoad;
         pass.depthAttachment.clearDepth = 1.0;
         metal_open_render_pass(cmd, pass, w, h);
     }
@@ -4862,6 +5028,26 @@ static void metal_mrt_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
         return;
     }
     metal_mrt_pass_open(cmd, md, fb, w, h, 2u, rgba);
+}
+
+static void metal_mrt_attachment_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                   u32 w, u32 h, u32 attachment, const f32 *rgba) {
+    MetalMRTFBOData *md = (MetalMRTFBOData *)rhi_get_resource_typed(
+        g_current_device, fb, RHI_RES_MRT_FBO);
+    if (md == NULL || attachment >= md->attachment_count) {
+        LOG_ERROR("rhi_metal: clear attachment %u on an invalid MRT target",
+                  attachment);
+        return;
+    }
+    metal_mrt_pass_open(cmd, md, fb, w, h, 2u + attachment, rgba);
+}
+
+static void metal_mrt_depth_clear_reopen(RHICmdBuffer *cmd, RHIHandle fb,
+                                         u32 w, u32 h) {
+    MetalMRTFBOData *md = (MetalMRTFBOData *)rhi_get_resource_typed(
+        g_current_device, fb, RHI_RES_MRT_FBO);
+    if (md == NULL) return;
+    metal_mrt_pass_open(cmd, md, fb, w, h, 1u | 0x100u, NULL);
 }
 
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
@@ -5131,7 +5317,8 @@ void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
 
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
     MetalBuffer *bb;
-    id<MTLComputeCommandEncoder> enc;
+    MetalPipeline *pp;
+    u32 index = binding;
     if (cmd == NULL || cmd->backend == NULL) return;
     bb = (MetalBuffer *)rhi_get_resource_typed(g_current_device, buf,
                                                RHI_RES_BUFFER);
@@ -5142,13 +5329,32 @@ void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) 
                   (unsigned)binding);
         return;
     }
-    /* Recorded for dispatch/draw replay (encoder state does not survive
-     * pass switches) and for the buffer-size-constant table. */
-    cmd->bound_storage[binding] = buf;
-    cmd->bound_storage_mask |= 1u << binding;
-    enc = metal_ensure_compute_encoder(cmd);
+    pp = (MetalPipeline *)rhi_get_resource_typed(g_current_device,
+        cmd->bound_pipeline, RHI_RES_PIPELINE);
+    if (pp != NULL && !pp->is_compute) {
+        /* `binding` is within the shader's storage set, not an MSL argument
+         * index. Textures and texel buffers occupy the preceding sets. */
+        u32 set = (pp->desc.uses_textures ? 1u : 0u) +
+                  (pp->desc.uses_texel_buffer ? 1u : 0u);
+        index = set * 8u + binding;
+    }
+    if (index >= 25u) {
+        LOG_ERROR("rhi_metal: flattened storage index %u is reserved", index);
+        return;
+    }
+    cmd->bound_storage[index] = buf;
+    cmd->bound_storage_mask |= 1u << index;
+    if (pp != NULL && !pp->is_compute) {
+        if (cmd->render_encoder == nil) return;
+        [cmd->render_encoder setVertexBuffer:bb->buffer offset:0u
+                                     atIndex:(NSUInteger)index];
+        [cmd->render_encoder setFragmentBuffer:bb->buffer offset:0u
+                                       atIndex:(NSUInteger)index];
+        return;
+    }
+    id<MTLComputeCommandEncoder> enc = metal_ensure_compute_encoder(cmd);
     if (enc == nil) return;
-    [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)binding];
+    [enc setBuffer:bb->buffer offset:0u atIndex:(NSUInteger)index];
 }
 
 void rhi_cmd_bind_acceleration_structure( RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
@@ -5334,7 +5540,8 @@ void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler samp
 }
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
-    LOG_ERROR("rhi_metal: rhi_cmd_transition_depth_to_read not implemented");
+    /* Metal depth targets are created with ShaderRead usage and have no
+     * VK-style layout transition; the following pass change ends the writer. */
     (void)cmd;
     (void)depth_tex;
 }
