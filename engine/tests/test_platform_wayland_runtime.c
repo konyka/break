@@ -197,8 +197,10 @@ static bool wayland_wait_for_mode(Platform *platform, const WaylandTestBuffer *t
 {
     for (int attempt = 0; attempt < 3000; attempt++) {
         (void)platform_poll(platform);
-        if (platform_get_window_mode(platform) == mode) return true;
+        /* Present every poll, including the one that confirms: the acked
+         * configure only takes effect with a commit. */
         wayland_test_present(platform, tb);
+        if (platform_get_window_mode(platform) == mode) return true;
         wayland_sleep_ms(1);
     }
     return false;

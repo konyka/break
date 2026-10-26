@@ -2225,6 +2225,14 @@ bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
     action = platform_window_mode_request(&p->window_mode, mode);
     if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
     if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
+    /* Apply the last acked configure before asking for the opposite state.
+     * Weston makes an acked configure the toplevel's current state only on a
+     * commit; if no frame was presented since the ack it compares the new
+     * request with the old state, finds nothing to change and never sends
+     * the configure that would confirm it (CI trace: set_fullscreen confirmed,
+     * unset_fullscreen right after got no configure). A commit with no new
+     * attach keeps the current buffer and only applies pending state. */
+    wl_surface_commit(p->surface);
     if (action == PLATFORM_WINDOW_MODE_ACTION_ENTER) {
         if (p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED) {
             PlatformWindowRect windowed = {0, 0, p->width, p->height};
