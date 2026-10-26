@@ -156,7 +156,7 @@ TEST(lod_cache_rejects_truncation_magic_version_and_mismatch) {
     bad[first] = 0xFFu; bad[first + 1] = 0xFFu; bad[first + 2] = 0xFFu; bad[first + 3] = 0xFFu;
     ASSERT_TRUE(write_file(path, bad, size));
     regenerate_from_file(&c, path, v, vc, idx, ic, &want);
-    free(bad); free(good);
+    free(bad); free(good); lod_mesh_levels_free(&want);
     remove(path); TEST_RMDIR(dir); free(v); free(idx);
 }
 
