@@ -191,6 +191,12 @@ if(ENGINE_RHI_BACKEND STREQUAL "auto" AND NOT ENGINE_VULKAN AND
         # that lost the Vulkan packages falls back instead of failing on a
         # stale cached ON.
         set(ENGINE_VULKAN ON)
+        # Runtime fallback (docs/design/rhi_runtime_backend.md): the auto
+        # Vulkan build also links OpenGL as the last-resort backend and picks
+        # one at device creation. ENGINE_RHI_MULTI_BACKEND=OFF opts out.
+        if(NOT DEFINED ENGINE_RHI_MULTI_BACKEND OR ENGINE_RHI_MULTI_BACKEND)
+            set(_engine_rhi_multi_backend ON)
+        endif()
     else()
         message(WARNING
             "ENGINE_RHI_BACKEND=auto: Vulkan development files not found "
@@ -232,6 +238,16 @@ elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
 else()
     set(_rhi_backend_effective "opengl")
+endif()
+option(ENGINE_RHI_MULTI_BACKEND
+    "auto Vulkan builds also link OpenGL and select at runtime (fallback)" ON)
+if(NOT _engine_rhi_multi_backend OR NOT _rhi_backend_effective STREQUAL "vulkan")
+    set(_engine_rhi_multi_backend OFF)
+endif()
+set(ENGINE_RHI_MULTI_BACKEND_ACTIVE ${_engine_rhi_multi_backend} CACHE INTERNAL
+    "auto build links Vulkan + OpenGL with runtime selection" FORCE)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    message(STATUS "RHI runtime selection: vulkan -> opengl (multi-backend build)")
 endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
@@ -791,6 +807,12 @@ add_library(engine_rhi_opengl STATIC EXCLUDE_FROM_ALL src/rhi/rhi_gl.c)
 target_include_directories(engine_rhi_opengl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 target_link_libraries(engine_rhi_opengl PUBLIC engine PRIVATE glad)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    # Runtime fallback build: the GL backend exports rhi_gl_rhi_* only; the
+    # public rhi_* symbols come from engine_rhi_runtime's forwarders.
+    target_compile_definitions(engine_rhi_opengl PRIVATE
+        RHI_BACKEND_NAMESPACE_GL=1 ENGINE_RHI_MULTI_BACKEND=1)
+endif()
 
 add_library(engine_rhi_headless STATIC src/rhi/rhi_headless.c)
 target_include_directories(engine_rhi_headless PRIVATE
@@ -918,6 +940,25 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
     target_compile_definitions(engine_rhi_vulkan PRIVATE ENGINE_VULKAN=1)
     target_link_libraries(engine_rhi_vulkan PUBLIC engine
         PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        target_compile_definitions(engine_rhi_vulkan PRIVATE
+            RHI_BACKEND_NAMESPACE_VK=1 ENGINE_RHI_MULTI_BACKEND=1)
+        # Dispatch forwarders + runtime chain + both binding tables. The
+        # binding TUs include the rename headers, so they must see the same
+        # include dirs and ENGINE_VULKAN-gated declarations as the backends.
+        add_library(engine_rhi_runtime STATIC EXCLUDE_FROM_ALL
+            src/rhi/dispatch/rhi_dispatch.c
+            src/rhi/dispatch/rhi_api_bind_gl.c
+            src/rhi/dispatch/rhi_api_bind_vk.c
+            src/rhi/rhi_runtime.c
+            src/rhi/rhi_runtime_backends.c)
+        target_include_directories(engine_rhi_runtime PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+        target_compile_definitions(engine_rhi_runtime PRIVATE ENGINE_VULKAN=1
+            PUBLIC ENGINE_RHI_MULTI_BACKEND=1)
+        target_link_libraries(engine_rhi_runtime PUBLIC engine
+            engine_rhi_vulkan engine_rhi_opengl)
+    endif()
 endif()
 
 # Native D3D12 backend (plan D): Windows-only static library with real
@@ -1042,6 +1083,10 @@ function(engine_link_rhi_backend target)
         endif()
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         target_link_libraries(${target} PRIVATE engine_rhi_d3d12)
+    elseif(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        # Runtime selection: vulkan first, opengl as the last-resort fallback.
+        target_link_libraries(${target} PRIVATE engine_rhi_runtime
+            engine_rhi_vulkan engine_rhi_opengl)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")
@@ -2649,6 +2694,47 @@ endif()
     target_include_directories(test_rhi_rollout_log PRIVATE ${TEST_INCLUDE_DIRS})
     add_test(NAME test_rhi_rollout_log COMMAND test_rhi_rollout_log)
     set_tests_properties(test_rhi_rollout_log PROPERTIES LABELS "headless;platform_contract")
+
+    add_executable(test_rhi_dispatch tests/test_rhi_dispatch.c
+        src/rhi/dispatch/rhi_dispatch.c)
+    target_include_directories(test_rhi_dispatch PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_dispatch PRIVATE
+        TEST_RHI_DISPATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_dispatch.c")
+    add_test(NAME test_rhi_dispatch COMMAND test_rhi_dispatch)
+    set_tests_properties(test_rhi_dispatch PROPERTIES LABELS "headless;platform_contract")
+    add_executable(test_rhi_runtime_select tests/test_rhi_runtime_select.c
+        src/rhi/rhi_runtime.c src/rhi/dispatch/rhi_dispatch.c
+        src/rhi/rhi_rollout.c)
+    target_include_directories(test_rhi_runtime_select PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_runtime_select PRIVATE
+        ENGINE_RHI_ROLLOUT_CONFIG_VERSION=0)
+    add_test(NAME test_rhi_runtime_select COMMAND test_rhi_runtime_select)
+    set_tests_properties(test_rhi_runtime_select PROPERTIES LABELS "headless;platform_contract")
+    # Symbol shape of the linked app: forwarders + namespaced backends in the
+    # runtime-fallback build, plain single backend otherwise.
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        set(_rhi_multi_flag ON)
+    else()
+        set(_rhi_multi_flag OFF)
+    endif()
+    if(CMAKE_NM AND (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR
+                     ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl"))
+        add_test(NAME test_rhi_multi_backend_symbols
+            COMMAND ${CMAKE_COMMAND}
+                -DNM=${CMAKE_NM} -DAPP=$<TARGET_FILE:engine_demo>
+                -DAPI_LIST=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_backend_api.txt
+                -DMULTI=${_rhi_multi_flag}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_multi_backend_symbols.cmake)
+        set_tests_properties(test_rhi_multi_backend_symbols PROPERTIES
+            LABELS "headless;platform_contract")
+    endif()
+    add_test(NAME test_rhi_dispatch_contract
+        COMMAND ${CMAKE_COMMAND}
+            -DRHI_DISPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch
+            -DRHI_API_LIST=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_backend_api.txt
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_rhi_dispatch_contract.cmake)
+    set_tests_properties(test_rhi_dispatch_contract PROPERTIES LABELS "headless;platform_contract")
+
     add_test(NAME test_rhi_rollout_config_contract
         COMMAND ${CMAKE_COMMAND}
             -DROLLOUT_JSON=${CMAKE_CURRENT_SOURCE_DIR}/assets/rhi_backend_rollout.json
@@ -4328,6 +4414,30 @@ endif()
         COMMAND rhi_swapchain_bench ${CMAKE_CURRENT_BINARY_DIR}/rhi_receipt_local.json)
     set_tests_properties(rhi_swapchain_bench PROPERTIES
         LABELS "graphics;benchmark" SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+    # Runtime fallback on a real window: vulkan default, forced opengl
+    # fallback, and the BREAK_RHI_BACKEND=opengl override, each rendering and
+    # reading back through the backend the chain picked.
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        add_executable(test_rhi_runtime_fallback tests/test_rhi_runtime_fallback.c)
+        target_include_directories(test_rhi_runtime_fallback PRIVATE ${TEST_INCLUDE_DIRS})
+        target_link_libraries(test_rhi_runtime_fallback PRIVATE engine m)
+        engine_link_rhi_backend(test_rhi_runtime_fallback)
+        add_test(NAME test_rhi_runtime_fallback_default
+            COMMAND test_rhi_runtime_fallback vulkan default)
+        add_test(NAME test_rhi_runtime_fallback_forced
+            COMMAND test_rhi_runtime_fallback opengl forced)
+        add_test(NAME test_rhi_runtime_fallback_env_opengl
+            COMMAND test_rhi_runtime_fallback opengl env)
+        set_tests_properties(test_rhi_runtime_fallback_forced PROPERTIES
+            ENVIRONMENT "BREAK_RHI_FAIL_VULKAN=1")
+        set_tests_properties(test_rhi_runtime_fallback_env_opengl PROPERTIES
+            ENVIRONMENT "BREAK_RHI_BACKEND=opengl")
+        set_tests_properties(test_rhi_runtime_fallback_default
+            test_rhi_runtime_fallback_forced test_rhi_runtime_fallback_env_opengl
+            PROPERTIES LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77
+            TIMEOUT 60 RUN_SERIAL TRUE)
+    endif()
 
     # test_physics: needs physics.c + bvh.c + math.c + log.c
     add_executable(test_physics tests/test_physics.c

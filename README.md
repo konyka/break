@@ -18,7 +18,7 @@ cmake --build engine/build
 ctest --test-dir engine/build -LE graphics --output-on-failure
 ```
 
-**默认图形后端是 Vulkan（Linux / Windows）。** 配置阶段需要 Vulkan 加载器/头文件和 shaderc（例如 `libvulkan-dev libshaderc-dev`）；缺失时 `auto` 会打印警告并降级到 OpenGL，不会静默。明确要 OpenGL（最后降级方案 / 渲染对比基准）用 `-DENGINE_RHI_BACKEND=opengl`；明确要求 Vulkan、缺依赖就报错用 `-DENGINE_RHI_BACKEND=vulkan`。旧开关 `-DENGINE_VULKAN=OFF` 仍表示 OpenGL。
+**默认图形后端是 Vulkan（Linux / Windows）。** 配置阶段需要 Vulkan 加载器/头文件和 shaderc（例如 `libvulkan-dev libshaderc-dev`）；缺失时 `auto` 会打印警告并降级到 OpenGL，不会静默。明确要 OpenGL（最后降级方案 / 渲染对比基准）用 `-DENGINE_RHI_BACKEND=opengl`；明确要求 Vulkan、缺依赖就报错用 `-DENGINE_RHI_BACKEND=vulkan`。旧开关 `-DENGINE_VULKAN=OFF` 仍表示 OpenGL。默认构建同时链接 Vulkan 和 OpenGL：运行时 Vulkan 设备创建失败会自动在同一窗口降级到 OpenGL（`BREAK_RHI_BACKEND=opengl` 直接用 OpenGL，`BREAK_RHI_NO_FALLBACK=1` 禁止降级；详见 `docs/design/rhi_runtime_backend.md`）。
 
 The engine requires CMake 3.20 or newer. The default (Vulkan) build needs the
 Vulkan loader and headers plus shaderc; an X11 OpenGL build

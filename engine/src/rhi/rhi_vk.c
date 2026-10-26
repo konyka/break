@@ -1,3 +1,5 @@
+#include "rhi/rhi_backend_namespace.h"
+
 #include <vulkan/vulkan.h>
 #include <rhi/rhi_backend_internal.h>
 #include <rhi/rhi_native_vulkan.h>
@@ -2609,12 +2611,14 @@ static u32 rhi_format_bpp(RHIFormat fmt) {
 
 /* 计划 E Task 2：编译期单后端入口——VK 实现转发到自身后端。
  * 双句柄约定（rhi.h）：VK 消费 surface_native（Wayland 上为 wl_surface*）。 */
+#ifndef ENGINE_RHI_MULTI_BACKEND
 RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
                                       void *display_native, u32 w, u32 h) {
     (void)window_native;
     return rhi_device_create(RHI_BACKEND_VULKAN, surface_native,
                              display_native, w, h);
 }
+#endif /* multi-backend: rhi_runtime_backends.c owns the chain entry */
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     if (backend != RHI_BACKEND_VULKAN || !rhi_drawable_dimensions_valid(w, h)) {
