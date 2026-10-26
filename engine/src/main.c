@@ -2453,6 +2453,8 @@ typedef struct {
     u32  *node_vcount;         /* [node] LOD0 vertex count (validation) */
     u32  *cmd_node;            /* [cmd] dense node */
     u8   *cmd_level;           /* [cmd] level */
+    u32  *cmd_vbase;           /* [cmd] first vertex (authored levels differ from LOD0) */
+    u32  *cmd_vcount;          /* [cmd] vertex count */
     u32  *selected;            /* [cmd] 1 = camera-visible level (two while fading) */
     u32  *shadow_selected;     /* [cmd] 1 = shadow level, always instantaneous */
     LodFade *fade;             /* [node] R703b; NULL when BREAK_LOD_FADE_MS=0 */
@@ -2916,7 +2918,8 @@ static void mega_lod_free(MegaLod *L) {
     free(L->node_scene); free(L->node_cmd_base); free(L->node_level_count);
     free(L->node_level); free(L->node_shadow_level); free(L->node_err);
     free(L->node_tris); free(L->node_vbase); free(L->node_vcount);
-    free(L->cmd_node); free(L->cmd_level); free(L->selected); free(L->shadow_selected);
+    free(L->cmd_node); free(L->cmd_level); free(L->cmd_vbase); free(L->cmd_vcount);
+    free(L->selected); free(L->shadow_selected);
     free(L->fade); free(L->cmd_dither); free(L->cmd_upload); free(L->group_upload);
     memset(L, 0, sizeof(*L));
 }
@@ -2936,11 +2939,14 @@ static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
     L->node_vcount       = (u32 *)calloc(node_count, sizeof(u32));
     L->cmd_node          = (u32 *)calloc(cmd_count, sizeof(u32));
     L->cmd_level         = (u8 *)calloc(cmd_count, 1);
+    L->cmd_vbase         = (u32 *)calloc(cmd_count, sizeof(u32));
+    L->cmd_vcount        = (u32 *)calloc(cmd_count, sizeof(u32));
     L->selected          = (u32 *)calloc(cmd_count, sizeof(u32));
     L->shadow_selected   = (u32 *)calloc(cmd_count, sizeof(u32));
     if (!L->node_scene || !L->node_cmd_base || !L->node_level_count || !L->node_level ||
         !L->node_shadow_level || !L->node_err || !L->node_tris || !L->node_vbase ||
-        !L->node_vcount || !L->cmd_node || !L->cmd_level || !L->selected ||
+        !L->node_vcount || !L->cmd_node || !L->cmd_level || !L->cmd_vbase ||
+        !L->cmd_vcount || !L->selected ||
         !L->shadow_selected) {
         mega_lod_free(L);
         return false;
@@ -2961,9 +2967,83 @@ static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
     return true;
 }
 
+/* R705: glTF MSFT_lod levels (asset.c links them on the base Mesh). Each
+ * authored level keeps its own vertices; its error is the measured symmetric
+ * deviation from LOD0 (lod_authored_error, local units), made non-decreasing
+ * so the shared screen-error selection, hysteresis and fade apply unchanged.
+ * rel_error is stored relative to scale = local AABB diagonal so that
+ * rel_error * scale reproduces the measured value like simplifier levels.
+ * MSFT_screencoverage is not used. Returns false (ml = LOD0 only) on failure. */
+static bool mesh_lod_authored(RHIDevice *dev, const Scene *scene, const Mesh *m,
+                              LodMeshLevels *ml) {
+    if (m->authored_lod_count == 0u || m->vertex_count == 0u || m->index_count < 3u) return false;
+    memset(ml, 0, sizeof(*ml));
+    ml->level_count = 1u;
+    ml->index_count[0] = m->index_count;
+    usize bvb = (usize)m->vertex_count * 32u, bib = (usize)m->index_count * sizeof(u32);
+    f32 *base = (f32 *)malloc(bvb);
+    u32 *base_i = (u32 *)malloc(bib);
+    if (!base || !base_i || !rhi_buffer_read(dev, m->vertex_buf, base, 0, bvb) ||
+        !rhi_buffer_read(dev, m->index_buf, base_i, 0, bib)) {
+        free(base); free(base_i);
+        return false;
+    }
+    Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
+    f32 diag = vec3_len(ext);
+    ml->scale = diag > 1e-6f ? diag : 1.0f;
+    bool ok = true;
+    u32 n = m->authored_lod_count < MEGA_LOD_LEVELS - 1u ? m->authored_lod_count : MEGA_LOD_LEVELS - 1u;
+    for (u32 l = 1; l <= n && ok; l++) {
+        u32 alt_index = m->authored_lod[l - 1u];
+        if (alt_index >= scene->mesh_count) { ok = false; break; }
+        const Mesh *alt = &scene->meshes[alt_index];
+        if (!alt->vertex_count || alt->index_count < 3u || alt->index_count % 3u != 0u) {
+            ok = false;
+            break;
+        }
+        u32 *indices = (u32 *)malloc((usize)alt->index_count * sizeof(u32));
+        f32 *verts = (f32 *)malloc((usize)alt->vertex_count * 32u);
+        if (!indices || !verts ||
+            !rhi_buffer_read(dev, alt->index_buf, indices, 0, (usize)alt->index_count * sizeof(u32)) ||
+            !rhi_buffer_read(dev, alt->vertex_buf, verts, 0, (usize)alt->vertex_count * 32u)) {
+            free(indices); free(verts);
+            ok = false;
+            break;
+        }
+        f32 err = lod_authored_error(base, m->vertex_count, base_i, m->index_count,
+                                     verts, alt->vertex_count, indices, alt->index_count, 32u);
+        free(verts);
+        if (err < 0.0f) { free(indices); ok = false; break; }
+        f32 rel = err / ml->scale;
+        if (rel < ml->rel_error[l - 1u]) rel = ml->rel_error[l - 1u];
+        ml->indices[l] = indices;
+        ml->index_count[l] = alt->index_count;
+        ml->rel_error[l] = rel;
+        ml->level_count = l + 1u;
+    }
+    free(base); free(base_i);
+    if (!ok) {
+        lod_mesh_levels_free(ml);
+        ml->level_count = 1u;
+        ml->index_count[0] = m->index_count;
+        return false;
+    }
+    ml->authored = true;
+    return true;
+}
+
 /* Read one mesh back and simplify it in its local space (32-byte Vertex).
- * Always leaves ml->level_count >= 1. */
-static void mesh_lod_generate(RHIDevice *dev, const Mesh *m, u32 mesh_index, LodMeshLevels *ml) {
+ * Always leaves ml->level_count >= 1. Authored alternatives bypass both the
+ * simplifier and its disk cache; their own vertices are appended at bake time. */
+static void mesh_lod_generate(RHIDevice *dev, const Scene *scene, const Mesh *m,
+                              u32 mesh_index, LodMeshLevels *ml) {
+    if (mesh_lod_authored(dev, scene, m, ml)) {
+        LOG_INFO("LOD authored: mesh %u levels=%u rel_err=%.6f/%.6f scale=%.3f",
+                 mesh_index, ml->level_count, ml->rel_error[1], ml->rel_error[2], ml->scale);
+        return;
+    }
+    if (m->authored_lod_count > 0u)
+        LOG_WARN("LOD: authored mesh %u could not be used; generating LODs", mesh_index);
     ml->level_count = 1u;
     ml->index_count[0] = m->index_count;
     usize vb = (usize)m->vertex_count * 32u, ib = (usize)m->index_count * sizeof(u32);
@@ -2999,13 +3079,13 @@ static LodMeshLevels *mega_lod_generate(RHIDevice *dev, const Scene *scene) {
         LodMeshLevels *ml = &out[nd->mesh_index];
         if (ml->level_count != 0u) continue;
         meshes++;
-        if (m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) {
+        if (m->authored_lod_count == 0u && m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) {
             ml->level_count = 1u;
             ml->index_count[0] = m->index_count;
             tris[0] += m->index_count / 3u;
             continue;
         }
-        mesh_lod_generate(dev, m, nd->mesh_index, ml);
+        mesh_lod_generate(dev, scene, m, nd->mesh_index, ml);
         if (ml->level_count > 1u) simplified++;
         for (u32 l = 0; l < ml->level_count; l++) tris[l] += ml->index_count[l] / 3u;
         LOG_DEBUG("LOD: mesh %u: %u levels, tris %u/%u/%u rel_err %.4f/%.4f scale %.3f",
@@ -3149,6 +3229,7 @@ typedef struct {
     u32       *mesh_first;         /* [mesh * L] first index in mesh_ibo (levels >= 1) */
     f32       *mesh_sphere;        /* [mesh * 4] local AABB center xyz + half diagonal */
     RHIBuffer *mesh_ibo;           /* [mesh] LOD1.. indices; invalid when 1 level */
+    RHIBuffer *mesh_vbo;           /* [mesh * L] authored vertex buffers; invalid = share LOD0 */
     LodInstanceState st;           /* per entity slot (index, generation + 1) */
     u8        *inst_level;         /* [inst_cap] level of this frame's instance k */
     u32       *bucket_off;         /* [mesh * L + 1] */
@@ -3174,7 +3255,7 @@ static void ecs_lod_free(EcsLod *E, RHIDevice *dev) {
             if (rhi_handle_valid(E->mesh_ibo[i])) rhi_buffer_destroy(dev, E->mesh_ibo[i]);
     }
     free(E->mesh_level_count); free(E->mesh_err); free(E->mesh_tris); free(E->mesh_first);
-    free(E->mesh_sphere); free(E->mesh_ibo); free(E->st.level); free(E->st.tag);
+    free(E->mesh_sphere); free(E->mesh_ibo); free(E->mesh_vbo); free(E->st.level); free(E->st.tag);
     free(E->inst_level); free(E->bucket_off); free(E->bucket_order); free(E->fade);
     u64 frames = E->frames, vt = E->vis_tris_sum, vt0 = E->vis_tris_lod0_sum;
     u64 tr = E->transitions_sum, dr = E->draws_sum, fa = E->fading_sum;
@@ -3224,6 +3305,7 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
     E->mesh_first  = (u32 *)calloc((usize)mc * L, sizeof(u32));
     E->mesh_sphere = (f32 *)calloc((usize)mc * 4u, sizeof(f32));
     E->mesh_ibo    = (RHIBuffer *)calloc(mc, sizeof(RHIBuffer));
+    E->mesh_vbo    = (RHIBuffer *)calloc((usize)mc * L, sizeof(RHIBuffer));
     E->st.level    = (u8 *)calloc(ECS_MAX_ENTITIES, 1);
     E->st.tag      = (u32 *)calloc(ECS_MAX_ENTITIES, sizeof(u32));
     E->st.capacity = ECS_MAX_ENTITIES;
@@ -3239,7 +3321,7 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
         }
     }
     if (!E->mesh_level_count || !E->mesh_err || !E->mesh_tris || !E->mesh_first ||
-        !E->mesh_sphere || !E->mesh_ibo || !E->st.level || !E->st.tag || !E->inst_level ||
+        !E->mesh_sphere || !E->mesh_ibo || !E->mesh_vbo || !E->st.level || !E->st.tag || !E->inst_level ||
         !E->bucket_off || !E->bucket_order) {
         LOG_WARN("ECS LOD: table alloc failed; ECS instances stay at LOD0");
         free(used);
@@ -3259,7 +3341,7 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
         E->mesh_sphere[i * 4u + 3u] = vec3_len(ext) * 0.5f;
         if (!used[i]) continue;
         used_count++;
-        if (m->vertex_count == 0u || m->index_count / 3u < LOD_GEN_MIN_TRIANGLES ||
+        if (m->vertex_count == 0u || (m->authored_lod_count == 0u && m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) ||
             !rhi_handle_valid(m->vertex_buf) || !rhi_handle_valid(m->index_buf) ||
             !(m->aabb_max.e[0] >= m->aabb_min.e[0]))
             continue;
@@ -3272,7 +3354,7 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
         } else if (pre && pre[i].level_count == 1u) {
             continue; /* the mega path already tried this mesh: nothing to gain */
         } else {
-            mesh_lod_generate(dev, m, i, &own);
+            mesh_lod_generate(dev, scene, m, i, &own);
             ml = &own;
             generated++;
         }
@@ -3287,6 +3369,8 @@ static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *
                     E->mesh_first[(usize)i * L + l] = off;
                     E->mesh_tris[(usize)i * L + l] = ml->index_count[l] / 3u;
                     E->mesh_err[(usize)i * L + l] = ml->rel_error[l] * ml->scale;
+                    if (ml->authored && m->authored_lod[l - 1u] < scene->mesh_count)
+                        E->mesh_vbo[(usize)i * L + l] = scene->meshes[m->authored_lod[l - 1u]].vertex_buf;
                     off += ml->index_count[l];
                 }
                 RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
@@ -4954,6 +5038,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         }
         mega_node_count = mesh_cmd_count;
         lod0_idxs = total_idxs;
+        u32 lod0_verts = total_verts;
 
         /* Runtime LOD: simplified levels per unique mesh, then node x level
          * cmd / index totals. Over MEGA_MAX_CMDS (or u32 index overflow) the
@@ -4963,7 +5048,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             mesh_cmd_count <= MEGA_MAX_CMDS) {
             lod_levels = mega_lod_generate(render.device, &scene);
             if (lod_levels) {
-                u64 cmds_all = 0, idx_all = 0;
+                u64 cmds_all = 0, idx_all = 0, verts_all = total_verts;
                 for (u32 ni = 0; ni < scene.node_count; ni++) {
                     SceneNode *nd = &scene.nodes[ni];
                     if (!nd->has_mesh || nd->skinned || nd->mesh_index >= scene.mesh_count) continue;
@@ -4973,9 +5058,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     u32 lc = ml->level_count ? ml->level_count : 1u;
                     cmds_all += lc;
                     idx_all += m->index_count;
-                    for (u32 l = 1; l < lc; l++) idx_all += ml->index_count[l];
+                    for (u32 l = 1; l < lc; l++) {
+                        idx_all += ml->index_count[l];
+                        if (ml->authored && m->authored_lod[l - 1u] < scene.mesh_count)
+                            verts_all += scene.meshes[m->authored_lod[l - 1u]].vertex_count;
+                    }
                 }
-                if (cmds_all > MEGA_MAX_CMDS || idx_all > UINT32_MAX) {
+                if (cmds_all > MEGA_MAX_CMDS || idx_all > UINT32_MAX || verts_all > UINT32_MAX) {
                     LOG_WARN("LOD: %llu cmds / %llu indices exceed the mega limits (%u cmds); baking LOD0 only",
                              (unsigned long long)cmds_all, (unsigned long long)idx_all, MEGA_MAX_CMDS);
                     for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
@@ -4984,6 +5073,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 } else {
                     mesh_cmd_count = (u32)cmds_all;
                     total_idxs = (u32)idx_all;
+                    total_verts = (u32)verts_all;
                 }
             }
         }
@@ -4997,6 +5087,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 lod_levels = NULL;
                 mesh_cmd_count = mega_node_count;
                 total_idxs = lod0_idxs;
+                total_verts = lod0_verts;
             }
             /* Single alloc: vdata + idata + cmds */
             usize v_bytes = (usize)total_verts * sizeof(MegaVert);
@@ -5065,9 +5156,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     idata[ioff + ii] = src_i[ii] + vbase;
                 free(src_v);
                 free(src_i);
+                voff += vc;
 
-                /* One indirect draw command per (node, LOD level). Level l>0
-                 * indexes the node's LOD0 vertices (shared, not duplicated). */
+                /* One indirect draw command per (node, LOD level). Simplified
+                 * levels index the node's LOD0 vertices (shared); authored
+                 * MSFT_lod levels append their own vertices after them, so a
+                 * node's vertices are [vbase, voff) and every cmd keeps
+                 * vertex_offset 0 with absolute indices (R687). */
                 const LodMeshLevels *ml = lod_levels ? &lod_levels[nd->mesh_index] : NULL;
                 u32 lc = (ml && ml->level_count > 1u) ? ml->level_count : 1u;
                 f32 node_scale = 1.0f;
@@ -5086,21 +5181,44 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     g_mega_lod.node_vcount[bnode] = vc;
                 }
                 for (u32 l = 0; l < lc; l++) {
-                    u32 lic = m->index_count;
+                    u32 lic = m->index_count, level_vbase = vbase, level_vcount = vc;
                     if (l > 0u) {
                         lic = ml->index_count[l];
+                        if (ml->authored) {
+                            const Mesh *alt = &scene.meshes[m->authored_lod[l - 1u]];
+                            u32 avc = alt->vertex_count;
+                            MegaVert *av = (MegaVert *)malloc((usize)avc * sizeof(MegaVert));
+                            if (!av || !rhi_buffer_read(render.device, alt->vertex_buf, av, 0,
+                                                        (usize)avc * sizeof(MegaVert))) {
+                                free(av); free(mega_block); mega_block = NULL;
+                                LOG_WARN("Mega: failed to read authored LOD mesh %u", m->authored_lod[l - 1u]);
+                                break;
+                            }
+                            const Mat4 *wt = &nd->world_transform;
+                            for (u32 vi = 0; vi < avc; vi++) {
+                                f32 px = av[vi].pos[0], py = av[vi].pos[1], pz = av[vi].pos[2];
+                                vdata[voff+vi].pos[0] = wt->e[0][0]*px + wt->e[1][0]*py + wt->e[2][0]*pz + wt->e[3][0];
+                                vdata[voff+vi].pos[1] = wt->e[0][1]*px + wt->e[1][1]*py + wt->e[2][1]*pz + wt->e[3][1];
+                                vdata[voff+vi].pos[2] = wt->e[0][2]*px + wt->e[1][2]*py + wt->e[2][2]*pz + wt->e[3][2];
+                                f32 nx = av[vi].nrm[0], ny = av[vi].nrm[1], nz = av[vi].nrm[2];
+                                vdata[voff+vi].nrm[0] = wt->e[0][0]*nx + wt->e[1][0]*ny + wt->e[2][0]*nz;
+                                vdata[voff+vi].nrm[1] = wt->e[0][1]*nx + wt->e[1][1]*ny + wt->e[2][1]*nz;
+                                vdata[voff+vi].nrm[2] = wt->e[0][2]*nx + wt->e[1][2]*ny + wt->e[2][2]*nz;
+                                vdata[voff+vi].uv[0] = av[vi].uv[0]; vdata[voff+vi].uv[1] = av[vi].uv[1];
+                            }
+                            free(av);
+                            level_vbase = voff;
+                            level_vcount = avc;
+                            voff += avc;
+                        }
                         const u32 *li = ml->indices[l];
                         for (u32 ii = 0; ii < lic; ii++)
-                            idata[ioff + ii] = li[ii] + vbase;
+                            idata[ioff + ii] = li[ii] + level_vbase;
                     }
                     cmds[cidx].index_count    = lic;
                     cmds[cidx].instance_count = 1;
                     cmds[cidx].first_index    = ioff;
-                    /* R687: idata already holds src_i + vbase (absolute into the
-                     * mega VBO). vertex_offset was vbase too, so every node after
-                     * the first fetched vertex idx + 2*vbase -- past the end of
-                     * the buffer for all 10 non-terrain nodes. */
-                    cmds[cidx].vertex_offset  = 0;
+                    cmds[cidx].vertex_offset  = 0; /* absolute mega indices, R687 */
                     cmds[cidx].first_instance = 0;
                     mega_buf.cmd_node_index[cidx] = ni;
                     if (lod_tables_ok) {
@@ -5109,6 +5227,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                         g_mega_lod.node_tris[ek] = lic / 3u;
                         g_mega_lod.cmd_node[cidx] = bnode;
                         g_mega_lod.cmd_level[cidx] = (u8)l;
+                        g_mega_lod.cmd_vbase[cidx] = level_vbase;
+                        g_mega_lod.cmd_vcount[cidx] = level_vcount;
                         g_mega_lod.selected[cidx] = (l == 0u) ? 1u : 0u;
                         u32 sl0 = mega_lod_shadow_bias < lc - 1u ? mega_lod_shadow_bias : lc - 1u;
                         g_mega_lod.shadow_selected[cidx] = (l == sl0) ? 1u : 0u;
@@ -5117,8 +5237,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     ioff += lic;
                     cidx++;
                 }
-
-                voff += vc;
+                if (!mega_block) break;
                 bnode++;
             }
 
@@ -5455,12 +5574,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                              (unsigned long long)lvl_tris[2], mega_lod_pixel_error, mega_lod_shadow_bias);
                 if (mega_lod_selftest) {
                     char lerr[256] = {0};
-                    bool ok = lod_bake_validate((const u32 *)cmds, mesh_cmd_count, idata, total_idxs,
-                                                total_verts, g_mega_lod.node_cmd_base,
-                                                g_mega_lod.node_level_count, g_mega_lod.node_vbase,
-                                                g_mega_lod.node_vcount, g_mega_lod.node_count,
-                                                g_mega_lod.cmd_node, g_mega_lod.cmd_level,
-                                                lerr, sizeof(lerr));
+                    bool ok = lod_bake_validate_ex((const u32 *)cmds, mesh_cmd_count, idata, total_idxs,
+                                                   total_verts, g_mega_lod.node_cmd_base,
+                                                   g_mega_lod.node_level_count, g_mega_lod.node_vbase,
+                                                   g_mega_lod.node_vcount, g_mega_lod.node_count,
+                                                   g_mega_lod.cmd_node, g_mega_lod.cmd_level,
+                                                   g_mega_lod.cmd_vbase, g_mega_lod.cmd_vcount,
+                                                   lerr, sizeof(lerr));
                     /* cmd_node_index (cmd -> scene node) must agree with the dense tables. */
                     for (u32 ci = 0; ok && ci < mesh_cmd_count; ci++) {
                         if (mega_buf.cmd_node_index[ci] != g_mega_lod.node_scene[g_mega_lod.cmd_node[ci]]) {
@@ -9319,7 +9439,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                     bind_material(cmd, &render, mat, &scene);
                                     rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
                                 }
-                                rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
+                                RHIBuffer level_vbo = E->mesh_vbo[(usize)i * ECS_LOD_LEVELS + l];
+                                rhi_cmd_bind_vertex_buffer(cmd, rhi_handle_valid(level_vbo) ? level_vbo : m->vertex_buf, 0);
                                 if (l > 0u) {
                                     rhi_cmd_bind_index_buffer(cmd, E->mesh_ibo[i], 0, true);
                                     rhi_cmd_draw_indexed_base(cmd, E->mesh_tris[(usize)i * ECS_LOD_LEVELS + l] * 3u,

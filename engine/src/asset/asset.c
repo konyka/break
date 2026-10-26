@@ -731,6 +731,66 @@ static void gltf_read_vec3_attr(cgltf_accessor *acc, u32 count, u8 *dst, usize d
     }
 }
 
+typedef struct {
+    u32 ids[2];
+    u32 count;
+    bool present;
+} GltfLodIds;
+
+/* R705: MSFT_lod is an unprocessed cgltf extension, so ids are parsed from its
+ * raw JSON object text. Only a plain array of non-negative integers is
+ * accepted; anything else makes the whole MSFT_lod graph invalid. */
+static bool gltf_lod_parse_ids(const cgltf_node *node, u32 node_index, GltfLodIds *out) {
+    memset(out, 0, sizeof(*out));
+    for (cgltf_size e = 0; e < node->extensions_count; e++) {
+        const cgltf_extension *ext = &node->extensions[e];
+        if (strcmp(ext->name, "MSFT_lod") != 0) continue;
+        out->present = true;
+        const char *p = ext->data ? strstr(ext->data, "\"ids\"") : NULL;
+        if (!p) return false;
+        p = strchr(p + 5, '[');
+        if (!p) return false;
+        p++;
+        u32 total = 0;
+        for (;;) {
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (*p == ']') { p++; break; }
+            if (*p < '0' || *p > '9') return false;
+            u64 id = 0;
+            while (*p >= '0' && *p <= '9') {
+                id = id * 10u + (u32)(*p++ - '0');
+                if (id > UINT32_MAX) return false;
+            }
+            if (total < 2u) out->ids[total] = (u32)id;
+            total++;
+            if (total > 1024u) return false;
+            while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+            if (*p == ',') { p++; continue; }
+            if (*p == ']') { p++; break; }
+            return false;
+        }
+        out->count = total < 2u ? total : 2u;
+        if (total > 2u)
+            LOG_WARN("glTF MSFT_lod: node %u lists %u levels; keeping the first two, dropping %u",
+                     node_index, total, total - 2u);
+        return true;
+    }
+    return true;
+}
+
+static bool gltf_lod_graph_valid(const cgltf_data *data, const GltfLodIds *infos) {
+    for (u32 i = 0; i < data->nodes_count; i++) {
+        if (!infos[i].present) continue;
+        for (u32 j = 0; j < infos[i].count; j++) {
+            u32 id = infos[i].ids[j];
+            /* Direct alternatives only. Besides keeping the import bounded,
+             * rejecting nested links makes cycles impossible by construction. */
+            if (id >= data->nodes_count || id == i || infos[id].present) return false;
+        }
+    }
+    return true;
+}
+
 /* R431 (CONTENT LOSS): a glTF mesh with MULTIPLE PRIMITIVES (common: one
  * mesh, several materials) produces one Mesh/SkinnedMesh per primitive, but
  * the node used to keep only the FIRST — primitives 2..N were loaded yet
@@ -978,6 +1038,39 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
         free(image_tex_tried);
     }
 
+    /* R705: parse direct MSFT_lod links before emitting nodes so referenced
+     * alternatives can be hidden without hiding their mesh resources. */
+    GltfLodIds *lod_infos = NULL;
+    u32 *node_mesh_base = NULL, *node_static_prims = NULL;
+    u8 *node_lod_alt = NULL;
+    bool lod_graph = data->nodes_count > 0u;
+    if (lod_graph) {
+        lod_infos = (GltfLodIds *)calloc(data->nodes_count, sizeof(GltfLodIds));
+        node_mesh_base = (u32 *)malloc(data->nodes_count * sizeof(u32));
+        node_static_prims = (u32 *)calloc(data->nodes_count, sizeof(u32));
+        node_lod_alt = (u8 *)calloc(data->nodes_count, 1);
+        if (!lod_infos || !node_mesh_base || !node_static_prims || !node_lod_alt) {
+            free(lod_infos); free(node_mesh_base); free(node_static_prims); free(node_lod_alt);
+            lod_infos = NULL; node_mesh_base = NULL; node_static_prims = NULL; node_lod_alt = NULL;
+            lod_graph = false;
+            LOG_WARN("glTF MSFT_lod: metadata allocation failed; using generated LODs");
+        } else {
+            for (u32 ni = 0; ni < data->nodes_count; ni++) {
+                node_mesh_base[ni] = UINT32_MAX;
+                if (!gltf_lod_parse_ids(&data->nodes[ni], ni, &lod_infos[ni])) lod_graph = false;
+            }
+            if (!gltf_lod_graph_valid(data, lod_infos)) lod_graph = false;
+            if (lod_graph) {
+                for (u32 ni = 0; ni < data->nodes_count; ni++)
+                    for (u32 j = 0; j < lod_infos[ni].count; j++)
+                        node_lod_alt[lod_infos[ni].ids[j]] = 1u;
+            } else {
+                memset(node_lod_alt, 0, data->nodes_count);
+                LOG_WARN("glTF MSFT_lod: invalid ids or nested/cyclic links; using generated LODs");
+            }
+        }
+    }
+
     /* R431: next free slot in the appended duplicate-node range (after the
      * cgltf nodes); see gltf_primitive_node. */
     u32 extra_next = (u32)data->nodes_count;
@@ -1003,7 +1096,7 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
 
         if (!node->mesh) continue;
 
-        sn->has_mesh = true;
+        sn->has_mesh = node_lod_alt && node_lod_alt[ni] ? false : true;
 
         for (u32 pi = 0; pi < node->mesh->primitives_count; pi++) {
             cgltf_primitive *prim = &node->mesh->primitives[pi];
@@ -1272,6 +1365,11 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
                 m->index_count = idx_count;
                 m->vertex_count = vert_count;
                 m->material_idx = mat_idx;
+                if (node_mesh_base) {
+                    if (node_mesh_base[ni] == UINT32_MAX)
+                        node_mesh_base[ni] = out_scene->mesh_count - 1u;
+                    node_static_prims[ni]++;
+                }
                 m->aabb_min = vec3(1e30f, 1e30f, 1e30f);
                 m->aabb_max = vec3(-1e30f, -1e30f, -1e30f);
                 {
@@ -1297,6 +1395,54 @@ bool asset_load_gltf(AssetCtx *ctx, const char *path, Scene *out_scene) {
             }
         }
     }
+
+    if (lod_graph && lod_infos && node_mesh_base && node_static_prims) {
+        for (u32 ni = 0; ni < data->nodes_count; ni++) {
+            u32 levels = lod_infos[ni].count;
+            if (levels == 0u) continue;
+            u32 prims = node_static_prims[ni], first = node_mesh_base[ni];
+            bool ok = prims > 0u && first != UINT32_MAX && first + prims <= out_scene->mesh_count;
+            for (u32 j = 0; ok && j < levels; j++) {
+                u32 alt_node = lod_infos[ni].ids[j], alt_first = node_mesh_base[alt_node];
+                if (node_static_prims[alt_node] != prims || alt_first == UINT32_MAX ||
+                    alt_first + prims > out_scene->mesh_count) {
+                    ok = false;
+                    break;
+                }
+                for (u32 pi = 0; pi < prims; pi++) {
+                    const Mesh *base = &out_scene->meshes[first + pi];
+                    const Mesh *alt = &out_scene->meshes[alt_first + pi];
+                    if (alt->vertex_count == 0u || alt->index_count == 0u || alt->index_count % 3u != 0u) {
+                        ok = false;
+                        break;
+                    }
+                    /* Culling/LOD spheres come from LOD0's AABB, so an
+                     * alternative may exceed it by at most 10% of its diagonal. */
+                    f32 eps = 0.1f * vec3_len(vec3_sub(base->aabb_max, base->aabb_min)) + 1e-5f;
+                    for (u32 c = 0; c < 3u; c++) {
+                        if (alt->aabb_min.e[c] < base->aabb_min.e[c] - eps ||
+                            alt->aabb_max.e[c] > base->aabb_max.e[c] + eps) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    if (!ok) break;
+                }
+            }
+            if (!ok) {
+                LOG_WARN("glTF MSFT_lod: node %u has incompatible authored levels; using generated LODs", ni);
+                continue;
+            }
+            for (u32 pi = 0; pi < prims; pi++) {
+                Mesh *base = &out_scene->meshes[first + pi];
+                base->authored_lod_count = (u8)levels;
+                for (u32 j = 0; j < levels; j++)
+                    base->authored_lod[j] = node_mesh_base[lod_infos[ni].ids[j]] + pi;
+                LOG_INFO("glTF MSFT_lod: mesh %u uses %u authored level(s)", first + pi, levels);
+            }
+        }
+    }
+    free(lod_infos); free(node_mesh_base); free(node_static_prims); free(node_lod_alt);
 
     /* R431: include the appended duplicate nodes (extra_next advanced once
      * per duplicate created). */
