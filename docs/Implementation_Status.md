@@ -9,6 +9,14 @@ FS6 跑 GPU-assisted 验证时报出 15 条与切换无关的遗留消息，两�
 - **验证**：GPU-assisted 验证下前向 clustered、blinn、延迟、两次全屏切换 4 种跑法均 0 条消息（改前 15 条）；VK ctest 191/191；Debug/Release 0 警告；GCC 语法检查通过；截图与改动前对比，差异在同一版本连跑两次的噪声范围内（同版本 mean 0.03–0.06，新旧 mean 0.07–0.11，>24 的像素数同量级）。
 
 
+## 本轮更新：FS7 — GL 全屏切换：纹理延迟删除
+
+- **定位**（临时计时，已移除）：GL 一次切换的重建块 40–70 ms 里，`glDeleteTextures` 占 27–39 ms（本机 NVIDIA 驱动删一张大渲染目标要 0.3–0.5 ms，一次切换要换掉约 80 个），`glTexImage2D` 只有不到 1 ms，`glCheckFramebufferStatus` 只在第一次切换时有 10 ms。
+- **改动**（只改 `rhi_gl.c`）：`rhi_texture_destroy`（含 mip 视图）、`rhi_cubemap_destroy`、`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_cubemap_depth_fbo_destroy` 不再立刻删除 GL 纹理/渲染缓冲名，而是放进延迟队列；`rhi_frame_begin` 在等完帧槽 fence 后按每帧 2 ms 的预算从最老的开始删除（与 VK 回收队列同一策略），`gl_shutdown` 一次删完。纹理单元缓存与 FBO 绑定缓存仍在原调用点立即失效。GL 自身保证被删除名的存储在排队命令用完前一直有效，所以延迟只是挪开开销，不改变 GPU 读到的内容。队列扩容失败时退回同步删除。设备销毁路径（`rhi_device_destroy` 遍历槽位）仍同步删除。
+- **结果**（Release，2560x1600 ↔ 1280x720，每轮 4 次切换）：重建耗时从 40–70 ms 降到 16–31 ms（4 轮共 16 次）。最差切换帧 24–75 ms，没有稳定压到 50 ms 以下：剩下的时间不在重建块里，而在切换那一帧本身——离开全屏时 Win32 `SetWindowPlacement` 要 6–24 ms（试过给 `SetWindowPos` 加 `SWP_NOCOPYBITS`，没有改善，未保留），切换后第一帧呈现也会多出 20–40 ms（驱动侧换后缓冲尺寸）。这两部分不在引擎可控范围内，本轮不再处理。
+- **验证**：build-gl / build-rel-gl 0 条编译警告；GL Debug ctest 187/187，`test_platform_win32_runtime` 通过；GL Debug 演示两次切换后截图正常、无 GL 错误日志。`rhi_gl.c` 的 Linux（GLX）语法检查本机没有 GLX 头文件，以 CI 为准。
+- D3D12 本轮未改：重建块本来就只有 26–44 ms，最差帧同样落在切换后的呈现帧上（40–70 ms）。
+
 ## 本轮更新：FS6 — VK 全屏切换去掉 GPU 空等（交换链复用、延迟销毁、批量布局转换）
 
 FS5 之后 VK 的最差切换帧仍是 107–112 ms，耗时全在 RHI 层的同步等待上。本轮只改 `rhi_vk.c`（外加 `rhi_native_vulkan.h` 的计数器声明和 `test_vulkan.c` 的新测试）。
