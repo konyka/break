@@ -2472,7 +2472,7 @@ typedef struct {
     /* session totals (LOD_STATS at shutdown) */
     u64   frames;
     f64   select_ms_sum;
-    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum, shadow_tris_sum;
 } MegaLod;
 
 static MegaLod g_mega_lod;
@@ -3088,6 +3088,7 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
     L->vis_tris_lod0_sum += L->vis_tris_lod0;
     L->transitions_sum += L->transitions;
     L->fading_sum += L->fading;
+    L->shadow_tris_sum += L->shadow_tris;
 }
 
 static void mega_lod_update_cmds(RHICmdBuffer *cmd, RHIBuffer buf,
@@ -4689,6 +4690,15 @@ i32 inspector_mode = 0;
 i32 effect_preset = 0;
 f32 sun_azimuth = 1.03f;
 f32 sun_elevation = 0.93f;
+/* BREAK_SUN=azimuth_deg,elevation_deg: scripted sun for headless shadow
+ * checks (R706); absent keeps the default sun. */
+{ const char *e = getenv("BREAK_SUN");
+  float az = 0.0f, el = 0.0f;
+  if (e && e[0] && sscanf(e, "%f,%f", &az, &el) == 2) {
+      sun_azimuth = az * (3.14159265f / 180.0f);
+      sun_elevation = el * (3.14159265f / 180.0f);
+      LOG_INFO("BREAK_SUN: azimuth=%.1f elevation=%.1f deg", az, el);
+  } }
 bool wireframe_mode = false;
 bool nearest_filter = false;
 bool show_help = false;
@@ -10650,12 +10660,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     if (g_mega_lod.frames > 0u) {
         f64 fr = (f64)g_mega_lod.frames;
         LOG_INFO("LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
-                 "ratio=%.3f transitions=%llu fading_avg=%.2f",
+                 "ratio=%.3f transitions=%llu fading_avg=%.2f shadow_tris_avg=%.0f",
                  (unsigned long long)g_mega_lod.frames, g_mega_lod.select_ms_sum / fr,
                  (f64)g_mega_lod.vis_tris_sum / fr, (f64)g_mega_lod.vis_tris_lod0_sum / fr,
                  g_mega_lod.vis_tris_lod0_sum ? (f64)g_mega_lod.vis_tris_sum / (f64)g_mega_lod.vis_tris_lod0_sum : 1.0,
                  (unsigned long long)g_mega_lod.transitions_sum,
-                 (f64)g_mega_lod.fading_sum / fr);
+                 (f64)g_mega_lod.fading_sum / fr, (f64)g_mega_lod.shadow_tris_sum / fr);
     }
     if (g_ecs_lod.frames > 0u) {
         f64 fr = (f64)g_ecs_lod.frames;
