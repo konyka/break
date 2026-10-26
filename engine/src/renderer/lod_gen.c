@@ -16,28 +16,28 @@ void lod_mesh_levels_free(LodMeshLevels *levels) {
     memset(levels, 0, sizeof(*levels));
 }
 
-void lod_generate_levels(const f32 *vertices, u32 vertex_count, u32 vertex_stride,
-                         const u32 *indices, u32 index_count, u32 max_levels,
-                         LodMeshLevels *out) {
+void lod_generate_levels_attr(const f32 *positions, u32 vertex_count, u32 position_stride,
+                              const f32 *attributes, u32 attribute_stride,
+                              const f32 *attribute_weights, u32 attribute_count,
+                              const u8 *vertex_lock, const u32 *indices, u32 index_count,
+                              u32 max_levels, LodMeshLevels *out) {
     if (!out) return;
     memset(out, 0, sizeof(*out));
     out->level_count = 1u;
     out->index_count[0] = index_count;
-    if (!vertices || !indices || vertex_count == 0u || index_count == 0u) return;
+    if (!positions || !indices || vertex_count == 0u || index_count == 0u) return;
     if (max_levels > LOD_GEN_MAX_LEVELS) max_levels = LOD_GEN_MAX_LEVELS;
     if (max_levels <= 1u) return;
-    if (vertex_stride < 32u || (vertex_stride & 3u) != 0u) return;
+    if (position_stride < 12u || (position_stride & 3u) != 0u) return;
+    if (attribute_count > 32u || (attribute_count > 0u && (!attributes || !attribute_weights ||
+        attribute_stride < attribute_count * 4u || (attribute_stride & 3u) != 0u)))
+        return;
     if (index_count % 3u != 0u) return;
     if (index_count / 3u < LOD_GEN_MIN_TRIANGLES) return;
     for (u32 i = 0; i < index_count; i++)
         if (indices[i] >= vertex_count) return;
 
-    out->scale = meshopt_simplifyScale(vertices, vertex_count, vertex_stride);
-
-    /* Attributes: normal (weight 0.5) and uv (weight 1.0), read in place from
-     * the interleaved vertex (offset 12 = nrm3, 24 = uv2). */
-    static const f32 weights[5] = { 0.5f, 0.5f, 0.5f, 1.0f, 1.0f };
-    const f32 *attrs = vertices + 3;
+    out->scale = meshopt_simplifyScale(positions, vertex_count, position_stride);
 
     u32 prev_count = index_count;
     for (u32 l = 1; l < max_levels; l++) {
@@ -48,9 +48,10 @@ void lod_generate_levels(const f32 *vertices, u32 vertex_count, u32 vertex_strid
         if (!dst) break;
         f32 err = 0.0f;
         usize n = meshopt_simplifyWithAttributes(dst, indices, index_count,
-                                                 vertices, vertex_count, vertex_stride,
-                                                 attrs, vertex_stride, weights, 5,
-                                                 NULL, target, k_level_error[l],
+                                                 positions, vertex_count, position_stride,
+                                                 attributes, attribute_stride,
+                                                 attribute_weights, attribute_count,
+                                                 vertex_lock, target, k_level_error[l],
                                                  meshopt_SimplifyLockBorder, &err);
         if (n == 0u || n % 3u != 0u ||
             (f32)n > (f32)prev_count * LOD_GEN_STOP_RATIO) {
@@ -67,7 +68,22 @@ void lod_generate_levels(const f32 *vertices, u32 vertex_count, u32 vertex_strid
     }
 }
 
-static f32 lod_point_tri_d2(const f32 *p, const f32 *a, const f32 *b, const f32 *c) {
+void lod_generate_levels(const f32 *vertices, u32 vertex_count, u32 vertex_stride,
+                         const u32 *indices, u32 index_count, u32 max_levels,
+                         LodMeshLevels *out) {
+    if (!out) return;
+    memset(out, 0, sizeof(*out));
+    out->level_count = 1u;
+    out->index_count[0] = index_count;
+    if (!vertices || vertex_stride < 32u || (vertex_stride & 3u) != 0u) return;
+    /* Attributes: normal (weight 0.5) and uv (weight 1.0), read in place from
+     * the interleaved vertex (offset 12 = nrm3, 24 = uv2). */
+    static const f32 weights[5] = { 0.5f, 0.5f, 0.5f, 1.0f, 1.0f };
+    lod_generate_levels_attr(vertices, vertex_count, vertex_stride, vertices + 3, vertex_stride,
+                             weights, 5u, NULL, indices, index_count, max_levels, out);
+}
+
+f32 lod_point_triangle_d2(const f32 *p, const f32 *a, const f32 *b, const f32 *c) {
     f32 ab[3], ac[3], ap[3], q[3];
     for (u32 k = 0; k < 3u; k++) { ab[k] = b[k] - a[k]; ac[k] = c[k] - a[k]; ap[k] = p[k] - a[k]; }
     f32 d1 = ab[0]*ap[0] + ab[1]*ap[1] + ab[2]*ap[2];
@@ -122,7 +138,7 @@ static f32 lod_one_sided_d2(const f32 *pv, u32 pvc, const f32 *tv, const u32 *ti
         const f32 *p = pv + (usize)vi * stride_f;
         f32 best = 3.0e38f;
         for (u32 t = 0; t < tris && best > 0.0f; t++) {
-            f32 d2 = lod_point_tri_d2(p, tv + (usize)ti[t * 3u] * stride_f,
+            f32 d2 = lod_point_triangle_d2(p, tv + (usize)ti[t * 3u] * stride_f,
                                       tv + (usize)ti[t * 3u + 1u] * stride_f,
                                       tv + (usize)ti[t * 3u + 2u] * stride_f);
             if (d2 < best) best = d2;
