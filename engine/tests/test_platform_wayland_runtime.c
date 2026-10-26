@@ -253,6 +253,7 @@ TEST(wayland_borderless_fullscreen_follows_configure_states)
     platform_get_logical_size(platform, &width, &height);
     printf("  compositor %s fullscreen; logical size %ux%u\n",
            entered ? "honoured" : "did not honour", width, height);
+    if (!entered) printf("  FAILINFO fullscreen not honoured\n");
     if (entered) {
         if (!wayland_size_matches_any_output(platform))
             runtime_failure("fullscreen size does not match any output");
@@ -266,8 +267,12 @@ TEST(wayland_borderless_fullscreen_follows_configure_states)
 
     if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED))
         runtime_failure("platform_set_window_mode(WINDOWED) returned false");
-    if (!wayland_wait_for_mode(platform, &tb, PLATFORM_WINDOW_MODE_WINDOWED))
+    if (!wayland_wait_for_mode(platform, &tb, PLATFORM_WINDOW_MODE_WINDOWED)) {
+        platform_get_logical_size(platform, &width, &height);
+        printf("  FAILINFO after unset: entered=%d mode=%d size=%ux%u\n", (int)entered,
+               (int)platform_get_window_mode(platform), width, height);
         runtime_failure("leaving fullscreen was not confirmed");
+    }
     if (entered) {
         /* xdg-shell: a 0x0 configure after unset_fullscreen lets the client
          * pick its size, so the backend must return to the saved window. */

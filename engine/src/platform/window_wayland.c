@@ -13,6 +13,7 @@
 #include <wayland-egl.h>
 #include <xkbcommon/xkbcommon.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <errno.h>
@@ -875,6 +876,10 @@ static void xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *tl,
     Platform *p = data;
     PlatformWindowMode before = p->window_mode.current;
     PlatformWindowRect saved;
+    if (getenv("BREAK_WAYLAND_TRACE"))
+        fprintf(stdout, "  FAILINFO configure %dx%d fullscreen_state=%d pending=%d requested=%d current=%d\n",
+                w, h, (int)wayland_states_fullscreen(states), (int)p->window_mode.pending,
+                (int)p->window_mode.requested, (int)p->window_mode.current);
     wayland_confirm_from_configure(p, states);
     if ((w <= 0 || h <= 0) &&
         before == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN &&
