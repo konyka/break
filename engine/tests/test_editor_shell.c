@@ -866,6 +866,45 @@ TEST(viewport_render_without_device_is_bounded_noop)
     break_editor_shell_destroy(shell);
 }
 
+/* Render debugger (docs/design/editor_render_debugger.md §2): the viewport
+ * records CPU-side stats for its last render call — never a GPU readback.
+ * Headless: a tiny panel and a device whose init fails (the test RHI stubs
+ * report no capabilities) each land on a distinct skip reason. */
+TEST(viewport_last_stats_report_skip_reasons_headless)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorViewport3D *vp;
+    BreakEditorViewport3DStats st;
+    static int fake_device, fake_cmd;
+    ASSERT_NOT_NULL(shell);
+    vp = break_editor_shell_viewport3d(shell);
+    ASSERT_NOT_NULL(vp);
+
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(vp, &st));
+    ASSERT_EQ(st.init_state, BREAK_EDITOR_VIEWPORT3D_INIT_NOT_ATTEMPTED);
+    ASSERT_EQ(st.draws, 0u);
+    ASSERT_STR_EQ(break_editor_viewport3d_skip_name(st.skipped), "not-rendered");
+
+    break_editor_viewport3d_render(vp, break_editor_shell_doc(shell),
+                                   &fake_device, &fake_cmd, 8, 8);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(vp, &st));
+    ASSERT_STR_EQ(break_editor_viewport3d_skip_name(st.skipped), "panel-too-small");
+
+    break_editor_viewport3d_render(vp, break_editor_shell_doc(shell),
+                                   &fake_device, &fake_cmd, 200, 120);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(vp, &st));
+    ASSERT_EQ(st.init_state, BREAK_EDITOR_VIEWPORT3D_INIT_FAILED);
+    ASSERT_STR_EQ(break_editor_viewport3d_skip_name(st.skipped), "init-failed");
+    ASSERT_EQ(st.draws, 0u);
+    ASSERT_EQ(st.proxies, 0u);
+    ASSERT_EQ(st.gizmo_handles, 0u);
+
+    ASSERT_FALSE(break_editor_viewport3d_last_stats(NULL, &st));
+    ASSERT_FALSE(break_editor_viewport3d_last_stats(vp, NULL));
+    ASSERT_NOT_NULL(break_editor_viewport3d_skip_name(-1));
+    break_editor_shell_destroy(shell);
+}
+
 TEST(model_matrix_known_answers)
 {
     f32 m[16];
@@ -3482,6 +3521,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(camera_orbit_pan_zoom_via_pointer_and_wheel);
     RUN_TEST(viewport_render_without_device_is_bounded_noop);
     RUN_TEST(model_matrix_known_answers);
+    RUN_TEST(viewport_last_stats_report_skip_reasons_headless);
     RUN_TEST(assets_panel_lists_fixture_root);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

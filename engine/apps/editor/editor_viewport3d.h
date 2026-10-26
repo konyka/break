@@ -89,6 +89,41 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
                                     BreakEditorDoc *doc, void *rhi_device,
                                     void *rhi_cmd, int panel_w, int panel_h);
 
+/* Render debugger (docs/design/editor_render_debugger.md): CPU-side record of
+ * the LAST render() call — counters the pass already has, never a GPU
+ * readback. "skipped" names why nothing was drawn (or NONE when it was). */
+typedef enum {
+    BREAK_EDITOR_VIEWPORT3D_INIT_NOT_ATTEMPTED = 0,
+    BREAK_EDITOR_VIEWPORT3D_INIT_READY = 1,
+    BREAK_EDITOR_VIEWPORT3D_INIT_FAILED = 2
+} BreakEditorViewport3DInitState;
+
+typedef enum {
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NONE = 0,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NOT_RENDERED, /* no render() call yet */
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_PANEL_TOO_SMALL,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NO_CAMERA,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_DEVICE_CHANGED,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_INIT_FAILED,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_FBO_FAILED
+} BreakEditorViewport3DSkip;
+
+typedef struct BreakEditorViewport3DStats {
+    int init_state;   /* BreakEditorViewport3DInitState */
+    int skipped;      /* BreakEditorViewport3DSkip */
+    u32 fbo_w, fbo_h; /* 0 when no FBO exists */
+    u32 proxies;      /* entity proxy boxes drawn */
+    u32 gizmo_handles;/* gizmo handle boxes drawn */
+    u32 draws;        /* draw calls recorded (proxies + handles) */
+} BreakEditorViewport3DStats;
+
+/* False on NULL arguments. */
+bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
+                                        BreakEditorViewport3DStats *out);
+/* Stable short name for a skip reason ("none", "no-device", ...). */
+const char *break_editor_viewport3d_skip_name(int skipped);
+
 /* The current FBO color texture; RHI_HANDLE_NULL before the first successful
  * render (the widget paints a placeholder then). Borrowed. */
 RHITexture break_editor_viewport3d_color_texture(

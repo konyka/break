@@ -113,6 +113,10 @@ struct BreakEditorViewport3D {
     BreakEditorGizmo *gizmo;      /* borrowed (shell-owned) */
     BreakEditorEntityId selected;
 
+    /* render debugger: last render() call (CPU counters only) */
+    int last_skip;
+    u32 last_proxies, last_gizmo, last_draws;
+
     /* widget interaction state (one viewport widget per shell) */
     int drag_kind;
     f32 last_x, last_y;
@@ -121,7 +125,44 @@ struct BreakEditorViewport3D {
 /* ---------------- creation / destruction ---------------- */
 
 BreakEditorViewport3D *break_editor_viewport3d_create(void) {
-    return (BreakEditorViewport3D *)calloc(1u, sizeof(BreakEditorViewport3D));
+    BreakEditorViewport3D *vp =
+        (BreakEditorViewport3D *)calloc(1u, sizeof(BreakEditorViewport3D));
+    if (vp != NULL) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NOT_RENDERED;
+    }
+    return vp;
+}
+
+bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
+                                        BreakEditorViewport3DStats *out) {
+    if (vp == NULL || out == NULL) {
+        return false;
+    }
+    memset(out, 0, sizeof(*out));
+    out->init_state = vp->init_state;
+    out->skipped = vp->last_skip;
+    if (rhi_handle_valid(vp->fbo.fb)) {
+        out->fbo_w = vp->fbo_w;
+        out->fbo_h = vp->fbo_h;
+    }
+    out->proxies = vp->last_proxies;
+    out->gizmo_handles = vp->last_gizmo;
+    out->draws = vp->last_draws;
+    return true;
+}
+
+const char *break_editor_viewport3d_skip_name(int skipped) {
+    switch (skipped) {
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_NONE: return "none";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_NOT_RENDERED: return "not-rendered";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE: return "no-device";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_PANEL_TOO_SMALL: return "panel-too-small";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_NO_CAMERA: return "no-camera";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_DEVICE_CHANGED: return "device-changed";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_INIT_FAILED: return "init-failed";
+    case BREAK_EDITOR_VIEWPORT3D_SKIP_FBO_FAILED: return "fbo-failed";
+    default: return "unknown";
+    }
 }
 
 void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
@@ -358,6 +399,7 @@ static void vp_draw_box(BreakEditorViewport3D *vp, RHICmdBuffer *cmd,
     rhi_cmd_set_uniform_vec4(cmd, vp->loc_color, color[0], color[1], color[2],
                              color[3]);
     rhi_cmd_draw(cmd, 36u, 1u);
+    vp->last_draws++;
 }
 
 static bool vp_entity_transform(const BreakEditorDoc *doc,
@@ -390,26 +432,37 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
     Mat4 view, proj, view_proj;
     usize total, i;
 
-    if (vp == NULL || doc == NULL || dev == NULL || cmd == NULL) {
+    if (vp == NULL) {
+        return;
+    }
+    vp->last_proxies = vp->last_gizmo = vp->last_draws = 0u;
+    if (doc == NULL || dev == NULL || cmd == NULL) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE;
         return;
     }
     if (panel_w < EDITOR_VIEWPORT_MIN_PANEL ||
         panel_h < EDITOR_VIEWPORT_MIN_PANEL) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_PANEL_TOO_SMALL;
         return; /* plan bound: tiny panels skip the pass entirely */
     }
     if (vp->cam == NULL) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NO_CAMERA;
         return; /* view state not wired yet */
     }
     if (vp->device != NULL && vp->device != dev) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_DEVICE_CHANGED;
         return; /* device swap is unsupported (documented, bounded) */
     }
     if (!vp_lazy_init(vp, dev)) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_INIT_FAILED;
         return;
     }
     vp_fbo_ensure(vp, (u32)panel_w, (u32)panel_h);
     if (!rhi_handle_valid(vp->fbo.fb)) {
+        vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_FBO_FAILED;
         return;
     }
+    vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_NONE;
 
     /* Screen-constant gizmo sizing tracks the camera once per frame. */
     if (vp->gizmo != NULL) {
@@ -447,6 +500,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
             continue;
         }
         break_editor_viewport3d_model_matrix(pos, rot, scale, model);
+        vp->last_proxies++;
         vp_draw_box(vp, cmd, &view_proj, model,
                     break_editor_entity_id_eq(id, vp->selected)
                         ? k_selected_color
@@ -484,6 +538,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
                 continue;
             }
             color = k_gizmo_colors[part];
+            vp->last_gizmo++;
             {
                 static const f32 zero_rot[3] = {0.0f, 0.0f, 0.0f};
                 break_editor_viewport3d_model_matrix(center, zero_rot, extent,
