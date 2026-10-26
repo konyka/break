@@ -2220,13 +2220,6 @@ bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
     action = platform_window_mode_request(&p->window_mode, mode);
     if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
     if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
-    /* Apply the last acked configure before asking for the opposite state.
-     * The compositor only promotes an acked configure to its current state on
-     * a commit; without one (no frame presented since the ack, as in the
-     * runtime test) weston still believes the window is in the old mode, sees
-     * the new request as a no-op and never sends the configure that would
-     * confirm it. A commit with no new attach only applies pending state. */
-    wl_surface_commit(p->surface);
     if (action == PLATFORM_WINDOW_MODE_ACTION_ENTER) {
         if (p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED) {
             PlatformWindowRect windowed = {0, 0, p->width, p->height};
