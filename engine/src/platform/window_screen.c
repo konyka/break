@@ -1,12 +1,11 @@
 /*
  * window_screen.c — QNX Screen window layer (ENGINE_QNX_SCREEN).
  *
- * Milestone: COMPILED. The platform creates its own native window through
- * the QNX Screen API (screen_context/screen_window), polls Screen events
- * (close + pointer), and exposes the window/context handles for a future
- * GL/Vulkan-via-Screen RHI. Runtime receipts require a target running the
- * screen service; until then every graphics entry point above this layer
- * stays fail-closed (headless RHI, docs/qnx_compat.md §7).
+ * The platform creates its own native window through the QNX Screen API
+ * (screen_context/screen_window), polls close/pointer/keyboard events, and
+ * exposes the window/context handles to the Vulkan Screen WSI. The default
+ * RHI is headless; native-window and GPU runtime evidence is tracked
+ * separately in docs/qnx_compat.md.
  *
  * Not yet mapped (follow-up with the graphics milestone): text/IME,
  * clipboard, monitors, relative mouse mode. Those surface fail-closed
@@ -81,12 +80,19 @@ Platform *platform_create(const PlatformConfig *cfg)
     }
 
     int size[2] = { (int)cfg->width, (int)cfg->height };
-    (void)screen_set_window_property_iv(p->win, SCREEN_PROPERTY_SIZE, size);
     int format = SCREEN_FORMAT_RGBA8888;
-    (void)screen_set_window_property_iv(p->win, SCREEN_PROPERTY_FORMAT, &format);
     int usage = SCREEN_USAGE_READ | SCREEN_USAGE_WRITE;
-    (void)screen_set_window_property_iv(p->win, SCREEN_PROPERTY_USAGE, &usage);
-    (void)screen_flush_context(p->ctx, 0);
+#if defined(ENGINE_VULKAN)
+    usage |= SCREEN_USAGE_VULKAN;
+#endif
+    if (screen_set_window_property_iv(p->win, SCREEN_PROPERTY_SIZE, size) != 0 ||
+        screen_set_window_property_iv(p->win, SCREEN_PROPERTY_FORMAT, &format) != 0 ||
+        screen_set_window_property_iv(p->win, SCREEN_PROPERTY_USAGE, &usage) != 0 ||
+        screen_flush_context(p->ctx, 0) != 0) {
+        screen_destroy_handles(p);
+        free(p);
+        return NULL;
+    }
 
     p->width = cfg->width;
     p->height = cfg->height;

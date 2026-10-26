@@ -15,6 +15,10 @@
 #elif defined(ENGINE_PLATFORM_LINUX)
 #define VK_USE_PLATFORM_XLIB_KHR
 #include <X11/Xlib.h>
+#elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+/* vulkan_screen.h forward-declares struct _screen_context/_screen_window,
+ * so no <screen/screen.h> include is needed here. */
+#define VK_USE_PLATFORM_SCREEN_QNX
 #endif
 #include <vulkan/vulkan.h>
 
@@ -38,6 +42,22 @@ TEST(wayland_surface_create_info_abi) {
     ASSERT_EQ(PVK_STYPE_WAYLAND_SURFACE_CREATE_INFO_KHR,
               (u32)VK_STRUCTURE_TYPE_WAYLAND_SURFACE_CREATE_INFO_KHR);
 }
+#elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+TEST(screen_surface_create_info_abi_qnx) {
+    ASSERT_EQ(sizeof(PVkScreenSurfaceCreateInfo), sizeof(VkScreenSurfaceCreateInfoQNX));
+    ASSERT_EQ(offsetof(PVkScreenSurfaceCreateInfo, sType),
+              offsetof(VkScreenSurfaceCreateInfoQNX, sType));
+    ASSERT_EQ(offsetof(PVkScreenSurfaceCreateInfo, pNext),
+              offsetof(VkScreenSurfaceCreateInfoQNX, pNext));
+    ASSERT_EQ(offsetof(PVkScreenSurfaceCreateInfo, flags),
+              offsetof(VkScreenSurfaceCreateInfoQNX, flags));
+    ASSERT_EQ(offsetof(PVkScreenSurfaceCreateInfo, context),
+              offsetof(VkScreenSurfaceCreateInfoQNX, context));
+    ASSERT_EQ(offsetof(PVkScreenSurfaceCreateInfo, window),
+              offsetof(VkScreenSurfaceCreateInfoQNX, window));
+    ASSERT_EQ(PVK_STYPE_SCREEN_SURFACE_CREATE_INFO_QNX,
+              (u32)VK_STRUCTURE_TYPE_SCREEN_SURFACE_CREATE_INFO_QNX);
+}
 #elif defined(ENGINE_PLATFORM_MACOS)
 TEST(metal_surface_create_info_abi) {
     ASSERT_EQ(sizeof(PVkMetalSurfaceCreateInfo), sizeof(VkMetalSurfaceCreateInfoEXT));
@@ -59,6 +79,8 @@ TEST_MAIN_BEGIN()
     RUN_TEST(wayland_surface_create_info_abi);
 #elif defined(ENGINE_PLATFORM_MACOS)
     RUN_TEST(metal_surface_create_info_abi);
+#elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    RUN_TEST(screen_surface_create_info_abi_qnx);
 #endif
     RUN_TEST(dummy_when_no_host_branch);
 TEST_MAIN_END()

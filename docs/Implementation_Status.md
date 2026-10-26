@@ -8825,3 +8825,53 @@ rejection; engine vfs logic is unchanged.
 Verification: cross builds 100% (x86_64 + aarch64le, _Static_asserts pass);
 Linux headless 174/174; QNX target VM 146/146 (vfs case stable across
 repeated runs).
+
+## QNX Screen Vulkan WSI + explicit Vulkan backend milestone (2026-10-26)
+
+feat/qnx-compat now compiles a complete, explicitly selected Vulkan RHI on QNX
+while keeping the default RHI headless. The platform layer exposes
+VK_KHR_surface + VK_QNX_screen_surface, resolves vkCreateScreenSurfaceQNX
+through the caller's vkGetInstanceProcAddr, and passes the real Screen
+context/window handles. The minimal create-info ABI is pinned against the SDP
+Vulkan headers (size, every field offset, sType 1000378000). Failure paths are
+covered without a GPU: invalid arguments, missing native handles, missing
+entrypoint, successful creation, and driver-side creation failure with the
+output surface cleared. PlatformWsiBackend gains QNX at the end of the enum so
+existing backend values are unchanged; QNX no longer borrows the X11 identity.
+Explicit Vulkan windows add SCREEN_USAGE_VULKAN, enforced by a source contract.
+
+window_screen.c now fail-closes initialization: any SIZE/FORMAT/USAGE property
+or context flush error destroys the already-created context, window, and event.
+test_platform_qnx_screen_runtime injects each failure with linker wrapping and
+asserts all three handles are destroyed; it also validates the real software
+virtual-display window's size, RGBA8888 format, usage, WSI state, Vulkan
+extensions, and destroy path. The graphics test returns 77 without Screen and
+fails when BREAK_QNX_SCREEN_REQUIRED=1, so an unreachable service can never be
+silently counted as a pass.
+
+The QNX target workflow hardened as the suite grew. gen_target_cmds.py still
+replicates ctest's -LE "graphics|fuzz" selection; run_target_suite.sh now
+honours BREAK_QNX_TARGET_ROOT, rejects missing/unreadable command lists and
+zero runnable tests with exit 2 (the old script returned success for 0/0), and
+keeps the 8 MiB stack/EXPECT_FAIL semantics. test_shader_io reads shaders and
+engine sources through TEST_SOURCE_ROOT first while preserving its historical
+fallbacks, eliminating hidden /tmp/shaders or stale /tmp/src requirements.
+stage_screen_runtime.py stages the Screen software runtime closure and virtual
+display configuration without installing a Vulkan ICD. shaderc v2025.3 (pinned
+commit 8c2e602ce440b7739c95ff3d69cecb1adf6becda) cross-builds cleanly on both
+architectures with the final toolchain; q++ no longer receives the deprecated
+-lang-c++ option.
+
+Verification on an isolated QNX 8.0.0 x86_64 QEMU/KVM VM with separate default
+and Vulkan deployment roots: Linux 177/177; default QNX build 100% and target
+150/150; complete Vulkan build 100% and target 151/151; real Screen 2/2 in
+both configurations; target shaderc 2/2; test_shader_io 58/58 on Linux and
+target; perf floors pass (latest 37,766 poll datagrams/s, 568,877 tasks/s,
+50,314,465 myui vg ops/s). Deployed test binaries kept identical checksums
+before and after each full suite. aarch64le default and Vulkan trees build 100%
+but have no target runtime here. Honest boundary: the VM has no Vulkan
+ICD/GPU; test_vulkan reaches device creation and fails because
+VK_KHR_surface is unavailable, and vulkaninfo fails instance-version
+enumeration with ERROR_INITIALIZATION_FAILED. This is compile/native-window/
+CPU evidence, not GPU runtime, and myui still uses the dummy offscreen PAL
+(docs/qnx_compat.md).

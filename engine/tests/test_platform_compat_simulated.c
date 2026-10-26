@@ -53,11 +53,24 @@ TEST(simulated_descriptor)
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
               ENGINE_SUPPORT_EVIDENCE_NONE);
 #elif defined(SIMULATE_QNX)
-#if defined(ENGINE_QNX_SCREEN)
+#if defined(ENGINE_QNX_SCREEN) && defined(ENGINE_VULKAN)
+    /* QNX + Screen + explicit Vulkan opt-in: the WSI branch exists
+     * (vkCreateScreenSurfaceQNX), so the descriptor advertises the compiled
+     * Vulkan path; runtime still needs a target with a Vulkan driver. */
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_TARGET_FAMILY, ENGINE_TARGET_FAMILY_QNX);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_NET_LOOP, ENGINE_NET_LOOP_POLL);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT_SURFACE, ENGINE_SURFACE_QNX_SCREEN);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.vulkan_support,
+              ENGINE_VULKAN_SUPPORT_COMPILED);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.target_graphics_api,
+              ENGINE_TARGET_GRAPHICS_API_VULKAN);
+    ASSERT_EQ(ENGINE_PLATFORM_COMPAT.support_evidence,
+              ENGINE_SUPPORT_EVIDENCE_COMPILED);
+#elif defined(ENGINE_QNX_SCREEN)
     /* QNX + Screen window layer: the platform creates its own native window
-     * (screen_context/screen_window), so the surface exists while graphics
-     * (GL/Vulkan via Screen) and runtime receipts remain future work —
-     * evidence stays COMPILED. */
+     * (screen_context/screen_window). The default RHI is headless; explicit
+     * Vulkan has a separate compiled descriptor, and runtime receipts stay
+     * out of this compile-time contract. */
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT_TARGET_FAMILY, ENGINE_TARGET_FAMILY_QNX);
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT_NET_LOOP, ENGINE_NET_LOOP_POLL);
     ASSERT_EQ(ENGINE_PLATFORM_COMPAT_SURFACE, ENGINE_SURFACE_QNX_SCREEN);

@@ -1,5 +1,15 @@
 # myui 集成与 Break RHI 后端
 
+## QNX 兼容范围（2026-10-26）
+
+QNX 当前通过 `MYUI_PAL=dummy` 使用离屏软件路径；布局、CSS、文本排版、编辑器、
+图表、MVVM 和 vgcanvas 等 headless 测试可在 Neutrino 目标机运行。引擎的
+`window_screen.c` 提供原生 Screen 窗口与 Vulkan WSI 适配，**不等于独立 myui
+Screen PAL**：`MYUI_PAL` 尚无 `screen` 选项，也没有 myui 原生 Screen 窗口收据。
+QNX 显式 Vulkan 只描述引擎 RHI 的编译路径，不能据此推断 myui 已完成 GPU 渲染。
+文本/IME、剪贴板、显示器枚举、相对鼠标及真实 Screen 输入注入仍未验证或保持
+fail-closed。目标机证据与性能边界见 `docs/qnx_compat.md`。
+
 ## Timer 取消性能契约（2026-09-08）
 
 PAL timer manager 以 deadline min-heap 处理唤醒，同时以私有 ID 索引定位活动 timer。删除一个

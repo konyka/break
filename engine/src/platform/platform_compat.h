@@ -126,8 +126,8 @@ typedef struct {
 #elif defined(SIMULATE_QNX) || defined(ENGINE_PLATFORM_QNX)
 /* QNX Neutrino: no epoll/kqueue, so net_loop runs on POSIX poll(). With the
  * Screen window layer compiled in (ENGINE_QNX_SCREEN), the platform creates
- * its own native window; GL/Vulkan via Screen remain future work, so the
- * graphics APIs stay fail-closed. */
+ * its own native window. The default RHI is headless; explicit Vulkan uses
+ * the compiled Screen WSI branch, with runtime evidence reported separately. */
 #define ENGINE_PLATFORM_COMPAT_TARGET_FAMILY ENGINE_TARGET_FAMILY_QNX
 #define ENGINE_PLATFORM_COMPAT_NET_LOOP ENGINE_NET_LOOP_POLL
 #if defined(ENGINE_QNX_SCREEN)
@@ -140,8 +140,16 @@ typedef struct {
 #define ENGINE_PLATFORM_COMPAT_REQUIRES_HOST_SURFACE 0
 #endif
 #define ENGINE_PLATFORM_COMPAT_NATIVE_GRAPHICS_API ENGINE_NATIVE_GRAPHICS_API_NONE
+#if defined(ENGINE_VULKAN)
+/* Explicit opt-in (ENGINE_VULKAN=ON with the Screen window layer): the
+ * vkCreateScreenSurfaceQNX WSI branch is compiled; runtime still requires
+ * a target-side Vulkan driver. */
+#define ENGINE_PLATFORM_COMPAT_TARGET_GRAPHICS_API ENGINE_TARGET_GRAPHICS_API_VULKAN
+#define ENGINE_PLATFORM_COMPAT_VULKAN_SUPPORT ENGINE_VULKAN_SUPPORT_COMPILED
+#else
 #define ENGINE_PLATFORM_COMPAT_TARGET_GRAPHICS_API ENGINE_TARGET_GRAPHICS_API_NONE
 #define ENGINE_PLATFORM_COMPAT_VULKAN_SUPPORT ENGINE_VULKAN_SUPPORT_UNAVAILABLE
+#endif
 #define ENGINE_PLATFORM_COMPAT_SUPPORT_EVIDENCE ENGINE_SUPPORT_EVIDENCE_COMPILED
 #elif defined(ENGINE_PLATFORM_WINDOWS)
 #define ENGINE_PLATFORM_COMPAT_TARGET_FAMILY ENGINE_TARGET_FAMILY_WINDOWS

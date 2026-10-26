@@ -3,6 +3,10 @@
 #include <rhi/rhi.h>
 #include <stdio.h>
 
+#ifndef TEST_SOURCE_ROOT
+#error "TEST_SOURCE_ROOT must point to the engine source tree"
+#endif
+
 static bool read_shader_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
@@ -12,16 +16,19 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
     const char *slash = strrchr(self, '/');
     const char *backslash = strrchr(self, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
-    const char *candidates[4] = { NULL, name, NULL, NULL };
+    const char *candidates[5] = { NULL, NULL, name, NULL, NULL };
+    char source_rel[1024];
     char root_rel[1024];
+    snprintf(source_rel, sizeof(source_rel), "%s/shaders/%s", TEST_SOURCE_ROOT, name);
+    candidates[0] = source_rel;
     snprintf(root_rel, sizeof(root_rel), "../shaders/%s", name);
-    candidates[2] = root_rel;
+    candidates[3] = root_rel;
     if (slash) {
         snprintf(rel, sizeof(rel), "%.*s/../shaders/%s",
                  (int)(slash - self), self, name);
-        candidates[0] = rel;
+        candidates[1] = rel;
     }
-    for (usize i = 0; i < 3 && candidates[i]; i++) {
+    for (usize i = 0; i < 4 && candidates[i]; i++) {
         FILE *f = fopen(candidates[i], "rb");
         if (!f) continue;
         usize n = fread(buf, 1, cap - 1, f);
@@ -35,6 +42,7 @@ static bool read_shader_source(const char *name, char *buf, usize cap)
 static bool read_engine_source(const char *name, char *buf, usize cap)
 {
     char rel[1024];
+    char source_rel[1024];
     char root_rel[1024];
     /* MSVC does not merge separate __FILE__ expansions into one literal, so
      * `slash - __FILE__` across two expansions is garbage — expand it once. */
@@ -42,8 +50,10 @@ static bool read_engine_source(const char *name, char *buf, usize cap)
     const char *slash = strrchr(self, '/');
     const char *backslash = strrchr(self, '\\');
     if (!slash || (backslash && backslash > slash)) slash = backslash;
+    snprintf(source_rel, sizeof(source_rel), "%s/src/%s", TEST_SOURCE_ROOT, name);
     snprintf(root_rel, sizeof(root_rel), "../src/%s", name);
-    FILE *root_file = fopen(root_rel, "rb");
+    FILE *root_file = fopen(source_rel, "rb");
+    if (!root_file) root_file = fopen(root_rel, "rb");
     if (root_file) {
         usize n = fread(buf, 1, cap - 1, root_file);
         fclose(root_file);

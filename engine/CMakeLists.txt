@@ -186,10 +186,13 @@ if(ENGINE_RHI_BACKEND STREQUAL "metal" AND NOT APPLE)
     message(FATAL_ERROR
         "metal backend is UNAVAILABLE on this platform (native Metal requires macOS/iOS)")
 endif()
-if(ENGINE_PLATFORM STREQUAL "qnx" AND NOT ENGINE_RHI_BACKEND STREQUAL "auto")
-    # Fail closed: QNX has no window system / GL / Vulkan WSI in this tree.
+if(ENGINE_PLATFORM STREQUAL "qnx" AND NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
+   NOT ENGINE_RHI_BACKEND STREQUAL "vulkan")
+    # Fail closed: QNX graphics is Screen/Vulkan only; headless auto path is
+    # the default. Explicit vulkan additionally requires the Screen window
+    # layer and target-side shaderc (checked below/at the shaderc gate).
     message(FATAL_ERROR
-        "ENGINE_RHI_BACKEND=${ENGINE_RHI_BACKEND} is UNAVAILABLE on qnx (headless platform; Screen WSI is not integrated)")
+        "ENGINE_RHI_BACKEND=${ENGINE_RHI_BACKEND} is UNAVAILABLE on qnx (headless auto or Screen-based vulkan only)")
 endif()
 if(ENGINE_RHI_BACKEND STREQUAL "vulkan")
     set(ENGINE_VULKAN ON CACHE BOOL "Use Vulkan backend instead of OpenGL" FORCE)
@@ -207,9 +210,11 @@ if(ENGINE_RHI_BACKEND STREQUAL "metal")
     # metal 不改写 ENGINE_VULKAN（保持 OFF），兼容层语义仅服务 gl/vk。
 elseif(ENGINE_RHI_BACKEND STREQUAL "d3d12" AND WIN32)
     set(_rhi_backend_effective "d3d12")
-elseif(ENGINE_PLATFORM STREQUAL "qnx")
-    # QNX milestone is headless: every graphics entry point fails closed
-    # (engine_rhi_headless), matching the platform descriptor's evidence.
+elseif(ENGINE_PLATFORM STREQUAL "qnx" AND NOT ENGINE_VULKAN)
+    # QNX default milestone is headless: every graphics entry point fails
+    # closed (engine_rhi_headless), matching the platform descriptor's
+    # evidence. Explicit vulkan (ENGINE_VULKAN via backend or option) is
+    # resolved below in the qnx engine branch with the Screen layer.
     set(_rhi_backend_effective "headless")
 elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
@@ -219,10 +224,6 @@ endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
 message(STATUS "RHI backend: requested=${ENGINE_RHI_BACKEND}; effective=${ENGINE_RHI_BACKEND_EFFECTIVE}")
-if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN)
-    message(FATAL_ERROR
-        "ENGINE_VULKAN is UNAVAILABLE on qnx (no Screen/Vulkan WSI; headless platform)")
-endif()
 if(ENGINE_PLATFORM STREQUAL "android" AND ENGINE_VULKAN)
     find_path(ANDROID_NATIVE_WINDOW_INCLUDE_DIR android/native_window.h)
     if(NOT ENGINE_ANDROID_NATIVE_WINDOW OR NOT ANDROID_NATIVE_WINDOW_INCLUDE_DIR)
@@ -504,6 +505,17 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_platform_compat_qnx_screen
         COMMAND test_platform_compat_qnx_screen)
 
+    # QNX Screen + Vulkan descriptor variant: explicit opt-in path
+    # (ENGINE_VULKAN=ON with the Screen window layer).
+    add_executable(test_platform_compat_qnx_vk
+        tests/test_platform_compat_simulated.c)
+    target_include_directories(test_platform_compat_qnx_vk
+        PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_compile_definitions(test_platform_compat_qnx_vk PRIVATE
+        SIMULATE_QNX=1 ENGINE_QNX_SCREEN=1 ENGINE_VULKAN=1)
+    add_test(NAME test_platform_compat_qnx_vk
+        COMMAND test_platform_compat_qnx_vk)
+
     # QNX Screen keymap: pure integer mapping, host-testable on every lane;
     # window_screen.c static-asserts the mirrored constants against
     # <sys/keycodes.h> on real cross builds.
@@ -512,7 +524,7 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     add_test(NAME test_screen_keymap COMMAND test_screen_keymap)
 
-    foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
+    foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS QNX)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
         add_executable(test_platform_wsi_lifecycle_${_wsi_lower}
             tests/test_platform_wsi_lifecycle.c)
@@ -1495,8 +1507,8 @@ elseif(ENGINE_PLATFORM STREQUAL "macos")
 elseif(ENGINE_PLATFORM STREQUAL "qnx")
     # QNX: window layer is Screen when the SDP provides screen.h/libscreen
     # (ENGINE_QNX_SCREEN — window_screen.c creates its own native window);
-    # otherwise window_mobile.c keeps platform_create fail-closed. Graphics
-    # above the window layer stays headless-only either way (RHI gates above).
+    # otherwise window_mobile.c keeps platform_create fail-closed. The default
+    # RHI is headless; explicit Vulkan uses the Screen WSI and requires shaderc.
     if(ENGINE_QNX_SCREEN)
         find_path(ENGINE_QNX_SCREEN_INCLUDE_DIR screen/screen.h)
         find_library(ENGINE_QNX_SCREEN_LIBRARY screen)
@@ -1509,7 +1521,22 @@ elseif(ENGINE_PLATFORM STREQUAL "qnx")
         target_sources(engine PRIVATE src/platform/window_screen.c)
         target_include_directories(engine PRIVATE ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
         target_link_libraries(engine PRIVATE ${ENGINE_QNX_SCREEN_LIBRARY})
+        # Arm the QNX ABI pinning test (test_platform_vk_surface_abi) whenever
+        # the SDP ships Vulkan headers, even on the default headless build.
+        find_package(Vulkan QUIET)
+        if(ENGINE_VULKAN)
+            if(NOT TARGET Vulkan::Vulkan)
+                message(FATAL_ERROR
+                    "ENGINE_VULKAN on qnx requires the SDP Vulkan package (vulkan/vulkan.h + libvulkan)")
+            endif()
+            # vkCreateScreenSurfaceQNX WSI rides on the Screen window layer.
+            target_compile_definitions(engine PUBLIC ENGINE_VULKAN=1)
+        endif()
     else()
+        if(ENGINE_VULKAN)
+            message(FATAL_ERROR
+                "ENGINE_VULKAN on qnx requires the Screen window layer (screen.h/libscreen not found; headless default)")
+        endif()
         message(STATUS
             "QNX Screen window layer unavailable; headless fail-closed platform")
         target_compile_definitions(engine PUBLIC
@@ -1627,6 +1654,15 @@ if(ENGINE_BUILD_TESTS)
     endif()
     target_link_libraries(test_vulkan PRIVATE engine m)
     engine_link_rhi_backend(test_vulkan)
+
+    if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_VULKAN)
+        add_executable(test_qnx_shaderc tests/test_qnx_shaderc.c)
+        target_include_directories(test_qnx_shaderc PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${SHADERC_INCLUDE_DIR})
+        target_link_libraries(test_qnx_shaderc PRIVATE ${SHADERC_LIB})
+        add_test(NAME test_qnx_shaderc COMMAND test_qnx_shaderc)
+        set_tests_properties(test_qnx_shaderc PROPERTIES LABELS "headless")
+    endif()
 endif()
 
 add_executable(packer tools/packer.c)
@@ -2092,6 +2128,26 @@ if(ENGINE_BUILD_TESTS)
     target_link_libraries(test_platform_null_safety PRIVATE engine m)
     engine_link_rhi_backend(test_platform_null_safety)
     add_test(NAME test_platform_null_safety COMMAND test_platform_null_safety)
+
+    if(ENGINE_PLATFORM STREQUAL "qnx" AND ENGINE_QNX_SCREEN AND
+       ENGINE_QNX_SCREEN_INCLUDE_DIR AND ENGINE_QNX_SCREEN_LIBRARY)
+        add_executable(test_platform_qnx_screen_runtime
+            tests/test_platform_qnx_screen_runtime.c)
+        target_include_directories(test_platform_qnx_screen_runtime PRIVATE
+            ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+        target_link_options(test_platform_qnx_screen_runtime PRIVATE
+            "-Wl,--wrap=screen_set_window_property_iv"
+            "-Wl,--wrap=screen_flush_context"
+            "-Wl,--wrap=screen_destroy_context"
+            "-Wl,--wrap=screen_destroy_window"
+            "-Wl,--wrap=screen_destroy_event")
+        target_link_libraries(test_platform_qnx_screen_runtime PRIVATE engine m)
+        engine_link_rhi_backend(test_platform_qnx_screen_runtime)
+        add_test(NAME test_platform_qnx_screen_runtime
+            COMMAND test_platform_qnx_screen_runtime)
+        set_tests_properties(test_platform_qnx_screen_runtime PROPERTIES
+            LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+    endif()
 
     # Header-only WSI lifecycle contract; intentionally headless and engine-free.
     add_executable(test_platform_wsi_lifecycle tests/test_platform_wsi_lifecycle.c)
@@ -3185,6 +3241,18 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_platform_wsi_wiring_contract.cmake)
     set_tests_properties(test_platform_wsi_wiring_contract PROPERTIES
         LABELS "platform_contract")
+    add_executable(test_platform_vk_surface_qnx
+        tests/test_platform_vk_surface_qnx.c
+        src/platform/platform_vk_surface.c)
+    target_include_directories(test_platform_vk_surface_qnx PRIVATE
+        ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_platform_vk_surface_qnx PRIVATE
+        ENGINE_PLATFORM_QNX=1 ENGINE_QNX_SCREEN=1)
+    add_test(NAME test_platform_vk_surface_qnx
+        COMMAND test_platform_vk_surface_qnx)
+    set_tests_properties(test_platform_vk_surface_qnx PROPERTIES
+        LABELS "headless;platform_contract")
+
     if(TARGET Vulkan::Vulkan)
         add_executable(test_platform_vk_surface_abi
             tests/test_platform_vk_surface_abi.c)
@@ -3208,6 +3276,14 @@ endif()
         elseif(ENGINE_PLATFORM STREQUAL "macos")
             target_compile_definitions(test_platform_vk_surface_abi PRIVATE
                 ENGINE_PLATFORM_MACOS=1)
+        elseif(ENGINE_PLATFORM STREQUAL "qnx")
+            target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                ENGINE_PLATFORM_QNX=1)
+            if(ENGINE_QNX_SCREEN AND ENGINE_QNX_SCREEN_INCLUDE_DIR AND
+               ENGINE_QNX_SCREEN_LIBRARY)
+                target_compile_definitions(test_platform_vk_surface_abi PRIVATE
+                    ENGINE_QNX_SCREEN=1)
+            endif()
         endif()
         add_test(NAME test_platform_vk_surface_abi
             COMMAND test_platform_vk_surface_abi)
@@ -3633,6 +3709,8 @@ endif()
 
     add_executable(test_shader_io tests/test_shader_io.c src/core/shader_io.c src/core/log.c)
     target_include_directories(test_shader_io PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_shader_io PRIVATE
+        TEST_SOURCE_ROOT="${ENGINE_TEST_SOURCE_ROOT}")
     target_link_libraries(test_shader_io PRIVATE m)
     add_test(NAME test_shader_io COMMAND test_shader_io)
     set_tests_properties(test_shader_io PROPERTIES

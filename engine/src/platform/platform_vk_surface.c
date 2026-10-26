@@ -20,6 +20,8 @@ u32 platform_vk_required_instance_extensions(Platform *p, const char **out,
         "VK_KHR_wayland_surface",
 #elif defined(ENGINE_PLATFORM_ANDROID)
         "VK_KHR_android_surface",
+#elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+        "VK_QNX_screen_surface",
 #elif defined(ENGINE_PLATFORM_LINUX)
         "VK_KHR_xlib_surface",
 #endif
@@ -44,11 +46,12 @@ u32 platform_vk_instance_create_flags(Platform *p) {
 
 /* get_proc 返回 void *；函数指针与 void * 的互转全部经 memcpy，
  * 否则 -Wpedantic 报错（ISO C 不允许这两类指针直接强转）。
- * 仅在存在可用的平台 WSI 分支时定义；QNX/OHOS 等 fail-closed 平台
+ * 仅在存在可用的平台 WSI 分支时定义；OHOS 等 fail-closed 平台
  * 没有任何调用点，定义出来只会触发 -Werror=unused-function。 */
 #if defined(ENGINE_PLATFORM_WINDOWS) || defined(ENGINE_PLATFORM_MACOS) || \
     defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_WAYLAND) || \
     (defined(ENGINE_PLATFORM_ANDROID) && defined(ENGINE_ANDROID_NATIVE_WINDOW)) || \
+    (defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)) || \
     defined(ENGINE_PLATFORM_LINUX)
 static PVkCreateSurfaceFn pvk_resolve(void *vk_instance, void *vk_get_proc_addr,
                                       const char *entry_name) {
@@ -151,6 +154,24 @@ u64 platform_vk_create_surface_handles(void *surface_native,
     (void)surface_native; (void)display_native; (void)create;
     return PLATFORM_VK_SURFACE_ERROR_UNAVAILABLE;
 #endif
+#elif defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
+    {
+        PVkScreenSurfaceCreateInfo ci;
+        if (surface_native == NULL || display_native == NULL)
+            return PLATFORM_VK_SURFACE_ERROR_UNAVAILABLE;
+        ci.sType = PVK_STYPE_SCREEN_SURFACE_CREATE_INFO_QNX;
+        ci.pNext = NULL;
+        ci.flags = 0u;
+        ci.context = display_native;  /* screen_context_t（window_screen.c: platform_display_native）*/
+        ci.window = surface_native;   /* screen_window_t（window_screen.c: platform_surface_native）*/
+        create = pvk_resolve(vk_instance, vk_get_proc_addr, "vkCreateScreenSurfaceQNX");
+        if (create == NULL) return PLATFORM_VK_SURFACE_ERROR_PROC_MISSING;
+        if (create(vk_instance, &ci, NULL, out_surface) != 0) {
+            *out_surface = 0u;
+            return PLATFORM_VK_SURFACE_ERROR_CREATE_FAILED;
+        }
+        return PLATFORM_VK_SURFACE_OK;
+    }
 #elif defined(ENGINE_PLATFORM_LINUX)
     {
         PVkXlibSurfaceCreateInfo ci;

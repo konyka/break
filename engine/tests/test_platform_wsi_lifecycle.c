@@ -58,6 +58,9 @@ TEST(wsi_lifecycle_compiles_for_named_backend)
     ASSERT_EQ(platform_wsi_surface_init(&surface, true, 1u, 1u, 1u, 1u),
               PLATFORM_WSI_OK);
     ASSERT_EQ(surface.backend, PLATFORM_WSI_COMPILE_BACKEND);
+#if defined(SIMULATE_QNX)
+    ASSERT_EQ(surface.backend, PLATFORM_WSI_BACKEND_QNX);
+#endif
 }
 
 TEST(win32_wsi_contract_requires_direct_flip_discard_and_tearing_support)

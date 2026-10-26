@@ -6,14 +6,22 @@ endforeach()
 
 file(READ "${RHI_VK_SOURCE}" vk_text)
 file(READ "${ENGINE_CMAKE}" engine_cmake_text)
+get_filename_component(engine_source_dir "${ENGINE_CMAKE}" DIRECTORY)
+file(READ "${engine_source_dir}/src/platform/window_screen.c" qnx_screen_text)
+string(FIND "${qnx_screen_text}" "usage |= SCREEN_USAGE_VULKAN;" qnx_usage_offset)
+if(qnx_usage_offset EQUAL -1)
+    message(FATAL_ERROR
+        "QNX Vulkan windows must opt into SCREEN_USAGE_VULKAN")
+endif()
 
 # rhi_vk.c 不得再直接创建 WSI surface（token 级证据：创建调用已迁入 PAL）。
 foreach(forbidden_token
         "vkCreateWin32SurfaceKHR" "vkCreateXlibSurfaceKHR"
         "vkCreateWaylandSurfaceKHR" "vkCreateAndroidSurfaceKHR"
+        "vkCreateScreenSurfaceQNX"
         "VkMetalSurfaceCreateInfoEXT" "VkWin32SurfaceCreateInfoKHR"
         "VkXlibSurfaceCreateInfoKHR" "VkWaylandSurfaceCreateInfoKHR"
-        "VkAndroidSurfaceCreateInfoKHR")
+        "VkAndroidSurfaceCreateInfoKHR" "VkScreenSurfaceCreateInfoQNX")
     string(FIND "${vk_text}" "${forbidden_token}" forbidden_offset)
     if(NOT forbidden_offset EQUAL -1)
         message(FATAL_ERROR
@@ -30,7 +38,7 @@ if(pal_ext_offset EQUAL -1)
     message(FATAL_ERROR "rhi_vk.c must source instance extensions via platform_vk_required_instance_extensions")
 endif()
 
-# PAL 模块存在且五个平台分支齐备。
+# PAL 模块存在且六个平台分支齐备。
 if(NOT EXISTS "${VK_SURFACE_HEADER}")
     message(FATAL_ERROR "missing: ${VK_SURFACE_HEADER}")
 endif()
@@ -41,9 +49,10 @@ file(READ "${VK_SURFACE_SOURCE}" surface_text)
 foreach(required_token
         "ENGINE_PLATFORM_WINDOWS" "ENGINE_PLATFORM_WAYLAND"
         "ENGINE_PLATFORM_ANDROID" "ENGINE_PLATFORM_LINUX"
+        "ENGINE_PLATFORM_QNX"
         "vkCreateWin32SurfaceKHR" "vkCreateXlibSurfaceKHR"
         "vkCreateWaylandSurfaceKHR" "vkCreateAndroidSurfaceKHR"
-        "vkCreateMetalSurfaceEXT")
+        "vkCreateMetalSurfaceEXT" "vkCreateScreenSurfaceQNX")
     string(FIND "${surface_text}" "${required_token}" surface_offset)
     if(surface_offset EQUAL -1)
         message(FATAL_ERROR

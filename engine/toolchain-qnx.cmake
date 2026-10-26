@@ -9,10 +9,11 @@
 #
 # QNX_ARCH selects the Neutrino target: aarch64le (default), x86_64, armle.
 #
-# This is a headless configuration: the engine, net_loop (poll backend),
-# task system, and myui (dummy PAL offscreen) compile for the target;
-# window/graphics stays fail-closed until a Screen WSI integration exists
-# (docs/qnx_compat.md).
+# The default is headless: the engine, net_loop (poll backend), task system,
+# and myui (dummy PAL offscreen) compile for the target. When the SDP provides
+# Screen, window_screen.c and the Vulkan Screen WSI are also compiled; the
+# explicit Vulkan RHI additionally requires target-side shaderc. Runtime
+# evidence and remaining graphics boundaries are recorded in docs/qnx_compat.md.
 
 set(CMAKE_SYSTEM_NAME QNX)
 set(CMAKE_SYSTEM_VERSION 1)
@@ -40,7 +41,7 @@ set(CMAKE_CXX_COMPILER "${QNX_QPP}")
 # otherwise hide non-POSIX names like _SC_NPROCESSORS_ONLN and QNX's
 # CLOCK_MONOTONIC exposure).
 set(CMAKE_C_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -D_QNX_SOURCE")
-set(CMAKE_CXX_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -D_QNX_SOURCE -lang-c++")
+set(CMAKE_CXX_FLAGS_INIT "-Vgcc_nto${QNX_ARCH} -D_QNX_SOURCE")
 set(CMAKE_SYSROOT "${QNX_TARGET_DIR}")
 
 # Target-prefixed binutils (ntoaarch64-ar / ntox86_64-ar / ...); without

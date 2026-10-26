@@ -13,14 +13,24 @@
 #   - EXPECT_FAIL lines are ctest WILL_FAIL tests: nonzero exit is the pass
 #     condition there.
 #   - cwd stays the binary directory so bare-name data fallbacks resolve.
+#   - BREAK_QNX_TARGET_ROOT can isolate a deployment from other target jobs.
+#     Pass the same root to gen_target_cmds.py and configure the build with
+#     ENGINE_TEST_SOURCE_ROOT=<root>; the default remains /tmp/bt.
+#     Link <root-parent>/src to <root>/src for source-reading fallbacks
+#     (for example /tmp/src for /tmp/bt); use a separate VM for concurrent suites.
 
 ulimit -s 8192 2>/dev/null
+root="${BREAK_QNX_TARGET_ROOT:-/tmp/bt}"
 # Cross libs deployed beside the binaries (e.g. libscreen.so.1 when the
 # engine links the Screen window layer but the target image lacks it).
-LD_LIBRARY_PATH=/tmp/bt${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
+LD_LIBRARY_PATH="$root${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export LD_LIBRARY_PATH
-cd /tmp/bt || exit 2
+cd "$root" || exit 2
 list="${1:-cmds.txt}"
+if [ ! -f "$list" ] || [ ! -r "$list" ]; then
+    printf 'error: command list is not readable: %s\n' "$list" >&2
+    exit 2
+fi
 pass=0; fail=0; failed=""
 while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -43,6 +53,10 @@ while IFS= read -r line; do
         cp out_cmd.log "out_FAIL_$fail.log"
     fi
 done < "$list"
+if [ "$pass" -eq 0 ] && [ "$fail" -eq 0 ]; then
+    printf 'error: no runnable tests in %s\n' "$list" >&2
+    exit 2
+fi
 printf '\n=== QNX target results: %d passed, %d failed ===\n' "$pass" "$fail"
 [ -n "$failed" ] && printf 'failed:%s\n' "$failed"
 [ "$fail" -eq 0 ]

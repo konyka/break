@@ -16,7 +16,7 @@
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
 | Windows | MinGW GCC | 支持 | `toolchain-mingw.cmake` | Linux 交叉编译 |
-| QNX | qcc/q++ (SDP 7.1/8.0) | headless 兼容层 | `toolchain-qnx.cmake` | poll net_loop、headless RHI；见 `docs/qnx_compat.md` |
+| QNX | qcc/q++ (SDP 7.1/8.0) | headless + Screen；Vulkan COMPILED | `toolchain-qnx.cmake` | 默认 headless；显式 Vulkan 需要 Screen/shaderc，GPU runtime 待验证；见 `docs/qnx_compat.md` |
 
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
@@ -36,7 +36,7 @@
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
 - iOS/Android 的平台契约测试只证明编译路径与宿主注入边界；HarmonyOS 的 Vulkan 状态为 unavailable/unsupported，直到存在 native surface 实现。
-- QNX 由 CMake 识别为 `qnx`（`CMAKE_SYSTEM_NAME=QNX`），net_loop 使用 POSIX `poll()` 后端，RHI 解析为 headless（图形 fail-closed），myui 走 dummy PAL 离屏路径；交叉构建用 `cmake --preset qnx-cross`，架构与证据边界见 `docs/qnx_compat.md`。
+- QNX 由 CMake 识别为 `qnx`（`CMAKE_SYSTEM_NAME=QNX`），net_loop 使用 POSIX `poll()` 后端。默认 RHI 为 headless，myui 走 dummy PAL 离屏路径；SDP 提供 Screen 时启用原生窗口层。`ENGINE_RHI_BACKEND=vulkan` 或 `ENGINE_VULKAN=ON` 显式选择 Screen Vulkan WSI，需同时提供目标架构的 Vulkan/shaderc；其他显式后端配置期拒绝。交叉构建用 `cmake --preset qnx-cross`，命令、目标机运行和证据边界见 `docs/qnx_compat.md`。
 
 ## 2. 构建配置
 
@@ -75,8 +75,8 @@ cmake --build build-d3d12
 - **`engine/src/platform/platform_vk_surface.h`** 是 PAL 的 Vulkan surface 创建适配层，两个入口：
   - `platform_vk_create_surface(Platform*, ...)`：经 Platform 句柄创建（内部解包 `platform_surface_native`/`platform_display_native` 后转发到 handles 入口）；
   - `platform_vk_create_surface_handles(surface_native, display_native, ...)`：经裸原生句柄创建——`rhi_vk.c` 的 `vk_init` 持有的是裸句柄而非 `Platform`（`rhi_device_create` 公开 ABI 不变），故消费本入口；结果 surface 的销毁权仍在 `rhi_vk.c`（`vkDestroySurfaceKHR`）。Android 路径成功时本入口对 `ANativeWindow` 持有一个 acquire 引用，失败路径自行 release 回滚。
-  - uint64/void* 设计理由：分层规则要求 **platform 层不包含 `<vulkan/vulkan.h>`**——`VkInstance` 以 `void*` 传入、`VkSurfaceKHR`（不可分派 64 位句柄）以 `u64` 传出、`vkGetInstanceProcAddr` 以 `void*` 传入（调用方用 memcpy 桥接函数指针，避免 `-Wpedantic` 的函数指针/void* 强转）。五个 `vkCreate*SurfaceKHR` create-info 的最小 ABI 声明在 `platform_vk_surface_vkabi.h`，由 `test_platform_vk_surface_abi` 对照真实 `<vulkan/vulkan.h>` 逐字段钉死（漂移即编译期/测试期失败）。
-- **`engine/src/platform/platform_wsi.h`** 是 header-only 的 WSI 状态机（`PlatformWsiSurface`：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING），事件源在各 `window_*.c`（Win32/X11/Wayland/Cocoa/Android 五后端均已接入）；尺寸语义（logical 与 drawable 谁是输入，各平台方向不同）由 `platform_size.h` 单点定义，`window_*.c` 只准调用。消费方式：
+  - uint64/void* 设计理由：分层规则要求 **platform 层不包含 `<vulkan/vulkan.h>`**——`VkInstance` 以 `void*` 传入、`VkSurfaceKHR`（不可分派 64 位句柄）以 `u64` 传出、`vkGetInstanceProcAddr` 以 `void*` 传入（调用方用 memcpy 桥接函数指针，避免 `-Wpedantic` 的函数指针/void* 强转）。六个平台的 `vkCreate*Surface*` create-info 最小 ABI 声明在 `platform_vk_surface_vkabi.h`，由 `test_platform_vk_surface_abi` 对照真实 `<vulkan/vulkan.h>` 逐字段钉死（漂移即编译期/测试期失败）。QNX 分支使用 `VK_QNX_screen_surface` / `vkCreateScreenSurfaceQNX`，context/window 来自 Screen PAL。
+- **`engine/src/platform/platform_wsi.h`** 是 header-only 的 WSI 状态机（`PlatformWsiSurface`：UNAVAILABLE/CREATED/RESIZED/LOST/SUSPENDED/DESTROYING），事件源在各 `window_*.c`（Win32/X11/Wayland/Cocoa/Android/QNX Screen 后端均已接入）；尺寸语义（logical 与 drawable 谁是输入，各平台方向不同）由 `platform_size.h` 单点定义，`window_*.c` 只准调用。消费方式：
   - 帧进入 RHI 前查 `platform_wsi_frame_allowed()`——仅 CREATED/RESIZED 放行，SUSPENDED/LOST/DESTROYING/UNAVAILABLE 一律拒绝（应用层据此跳过渲染，而不是让后端在死 surface 上空转）；
   - 销毁门控：`rhi_device_attach_wsi()` 把状态机挂到设备上，`platform_wsi_rhi_teardown_allowed()` 在进入 DESTROYING 后拒绝销毁——销毁顺序契约为 `rhi_device_destroy_ex` 必须先于 `platform_destroy`。
 - **`rhi_swapchain_bench`**（`engine/tools/rhi_swapchain_bench.c`）：`./build-*/rhi_swapchain_bench <receipt.json>`，固定 600 帧 clear+present，输出符合 `docs/rhi_benchmark_receipt_schema.md` 的收据（`fps_avg`/`fps_p1`/`frame_ms_avg`/`frame_ms_p99`/`evidence_level=GPU_RUNTIME`/`runner` 等字段）；环境缺显示/GPU 时以退出码 77 标记 unavailable（不算通过，也不产出收据）。元数据由环境变量注入：`RECEIPT_TIMESTAMP`、`RECEIPT_RUNNER`、`RECEIPT_OS_VERSION`、`RECEIPT_BUILD_CONFIG`、`GIT_COMMIT`、`RECEIPT_CPU`、`RECEIPT_RAM`；收据用 `cmake -DRECEIPT=<json> -P engine/tests/test_rhi_benchmark_receipt_validate.cmake` 校验。
