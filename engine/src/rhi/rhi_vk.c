@@ -6943,10 +6943,8 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
 
     /* R436: Accumulate all of this pipeline's storage-image binds into ONE
      * set (mirrors the storage-buffer R90-1 pattern) so a shader using image
-     * units 0..3 sees every bound mip. The set is bound once per pipeline;
-     * updating an as-yet-unused set before the dispatch consumes it is valid. */
+     * units 0..3 sees every bound mip. */
     VkDescriptorSetLayout layout = vk->storage_image_layout;
-    bool need_bind = !vk->image_set_valid;
     if (!vk->image_set_valid) {
         VkDescriptorSetAllocateInfo dsai = {0};
         dsai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -6974,13 +6972,19 @@ void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32
     write.pImageInfo = &img_info;
 
     vkUpdateDescriptorSets(vk->device, 1, &write, 0, NULL);
-    if (need_bind) {
-        VkPipelineBindPoint bp = cpd->is_compute ?
-            VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-        vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
-            bp, cpd->layout,
-            cpd->storage_image_set, 1, &ds, 0, NULL);
-    }
+    /* Re-bind on EVERY storage-image bind, as C-BUF-3 does for storage
+     * buffers: the driver may snapshot descriptor contents at
+     * vkCmdBindDescriptorSets, so with a bind-once set the writes for units
+     * 1..3 were invisible to the dispatch. The Hi-Z chain then stored mips
+     * 1..3 through whatever views the set slot held before -- harmless while
+     * those views happened to stay alive, a write into freed memory (and
+     * VK_ERROR_DEVICE_LOST on the next frame) once a runtime resize
+     * recreated the pyramid. */
+    VkPipelineBindPoint bp = cpd->is_compute ?
+        VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
+    vkCmdBindDescriptorSets(vk->cmd_buffers[vk->current_frame],
+        bp, cpd->layout,
+        cpd->storage_image_set, 1, &ds, 0, NULL);
 }
 
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {

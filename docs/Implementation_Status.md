@@ -1,6 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：修复 VK 运行时改尺寸（窗口/全屏切换）后设备丢失
+
+- **现象**：VK 下任何运行时改尺寸（`G`/Alt+Enter 全屏切换、窗口拉伸）的下一帧 `VK_ERROR_DEVICE_LOST`，验证层 0 条消息；`BREAK_OCCLUSION=0` 可规避。启动时直接全屏不出现。FS2/FS3/R707c 都观察到（R707c 的 `test_vulkan` 偶发失败也是它）。
+- **定位**（逐步二分）：只重建 Hi-Z 金字塔（同一深度图、只换纹理）即可复现；不调 `occlusion_cull_generate_hi_z` 不复现；Hi-Z 的消费方（unified cull）全部关闭仍复现；只用 1 个输出 mip 不复现，2 个及以上复现；不销毁旧纹理不复现。
+- **根因**：`rhi_cmd_bind_image_texture`（VK）每个管线只在第一次 bind 时 `vkCmdBindDescriptorSets`，之后只 `vkUpdateDescriptorSets` 改同一个 set。规范允许驱动在 bind 命令记录时就读走描述符内容（C-BUF-3 已在 storage buffer 上踩过同一个坑），本机 NVIDIA 正是如此：单元 1..3 的写入对 dispatch 不可见，着色器写的是这块 set 内存里上一帧留下的视图。平时那些视图恰好还活着，只是 Hi-Z 的 mip 1..3 一直没被正确写；重建金字塔销毁旧纹理后，就成了往已释放显存写，下一帧设备丢失。
+- **修复**：storage image 与 storage buffer 一致，每次 bind 后都重新 `vkCmdBindDescriptorSets`。
+- **顺带修复**：程序化手臂（R445）的索引 `idata[i] = i` 用 144 个索引画 96 个顶点（GPU-assisted 验证报顶点越界，且只画出三分之二的面），改为每面两个三角形。
+- **测试**：`test_vulkan` TEST 9 新增运行时改尺寸阶段（金字塔先长到 640x360 再变成 330x170 继续生成并剔除，要求结果仍为 {1,0} 且设备存活）。说明：这个阶段在修复前的代码上也能通过（单进程测试里的分配没有让被释放的视图真正失效），所以它防的是改尺寸路径本身的回归，修复的直接证据是演示程序：修复前 VK 默认设置下 3 种尺寸各自 100% 设备丢失，修复后 0 次；VK Debug 4 次窗口↔全屏往返 0 设备丢失、0 条验证消息。VK ctest 189/189；GCC `-Werror -pedantic` 语法检查通过。
+
+
 ## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
 
 ### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md`，计划任务 2）

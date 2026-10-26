@@ -7424,15 +7424,61 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
                         LOG_ERROR("FAIL: Hi-Z dispatches=%u, want %u (segmented chain)",
                                   hiz_dispatches, want_dispatches);
 
-                    hiz_occ_ok = fallback_ok && real_ok && count_ok;
+                    /* Runtime resize phase (fullscreen toggle): recreate the
+                     * pyramid at another size and keep generating it. The
+                     * storage-image set used to be bound once per pipeline
+                     * and then updated, so on NVIDIA units 1..3 kept the
+                     * descriptors the same pool memory held last frame --
+                     * views of the destroyed pyramid. Writing through them
+                     * lost the device on the next frame (every demo
+                     * window/fullscreen switch). */
+                    bool resize_ok = false;
+                    /* Grow first (demo-sized pyramid, then back): the device
+                     * fault needs the destroyed pyramid's memory to really
+                     * go away, which small allocations may not do. */
+                    occlusion_cull_resize(&occ, 640u, 360u);
+                    occlusion_cull_resize(&occ, 660u, 340u);  /* -> 330x170 Hi-Z, 9 levels */
+                    if (occ.enabled && occ.hi_z_width == 330u && occ.hi_z_height == 170u) {
+                        for (u32 f = 0; f < 4; f++) {
+                            RHICmdBuffer *cmd = rhi_frame_begin(render.device);
+                            if (!cmd) break;
+                            rhi_offscreen_fbo_bind(cmd, &hz_fbo);
+                            rhi_cmd_bind_pipeline(cmd, render.pipeline);
+                            tv_bind_forward_temporal(cmd, &render, 0.0f, 0.0f, 5.0f);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_model, &quad.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_view,  &vp_id.e[0][0]);
+                            rhi_cmd_set_uniform_mat4(cmd, render.loc_proj,  &vp_id.e[0][0]);
+                            rhi_cmd_bind_texture(cmd, render.test_tex, render.sampler, 0);
+                            rhi_cmd_bind_vertex_buffer(cmd, vbo, 0);
+                            rhi_cmd_bind_index_buffer(cmd, ibo, 0, true);
+                            rhi_cmd_draw_indexed(cmd, 3, 1);
+                            rhi_offscreen_fbo_unbind(cmd, HW, HH);
+                            occlusion_cull_generate_hi_z(&occ, cmd, hz_fbo.depth_tex);
+                            gpucull_dispatch_unified(&uc, cmd, &vp_id.e[0][0], NULL,
+                                                     occ.hi_z_texture,
+                                                     occ.hi_z_width, occ.hi_z_height,
+                                                     RHI_HANDLE_NULL, true, true);
+                            rhi_frame_end(render.device);
+                            rhi_present(render.device);
+                        }
+                        if (rhi_device_idle_ex(render.device) == RHI_RESULT_OK) {
+                            flags[0] = flags[1] = 0xFFFFFFFFu;
+                            if (gpucull_read_vis_flags(&uc, 2, flags))
+                                resize_ok = (flags[0] == 1u && flags[1] == 0u);
+                        }
+                    }
+                    if (!resize_ok)
+                        LOG_ERROR("FAIL: Hi-Z after runtime resize (device lost or flags {%u,%u}, want {1,0})",
+                                  flags[0], flags[1]);
+
+                    hiz_occ_ok = fallback_ok && real_ok && count_ok && resize_ok;
                     tv_probe_device(render.device, "TEST 9 Hi-Z phases");
                 } else {
                     LOG_ERROR("FAIL: Hi-Z occlusion setup (occ=%d fbo=%d)",
                               (int)occ_ok, (int)rhi_handle_valid(hz_fbo.depth_tex));
                 }
                 if (hiz_occ_ok) {
-                    LOG_INFO("PASS: Hi-Z occlusion (fallback {1,1}, pyramid {1,0}, dispatches=%u)",
-                             count_ok ? (occ.hi_z_levels + 3u) / 4u : 0u);
+                    LOG_INFO("PASS: Hi-Z occlusion (fallback {1,1}, pyramid {1,0}, resize {1,0})");
                 }
                 rhi_offscreen_fbo_destroy(render.device, &hz_fbo);
                 if (occ_ok) occlusion_cull_shutdown(&occ);

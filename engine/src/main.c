@@ -1433,8 +1433,11 @@ instanced_pipeline_done:
             u32 ja = s;
             u32 jb = (s + 1 < seg_count) ? s + 1 : s;
             for (u32 fi = 0; fi < 6; fi++) {
+                /* Face fi is two triangles (a,b,c, a,c,d): its four corners
+                 * are indices 0,1,2,5 of the face's six. */
+                static const u32 corner_slot[4] = { 0u, 1u, 2u, 5u };
                 for (u32 fj = 0; fj < 4; fj++) {
-                    u32 oi = box_idx[fi * 6 + fj];
+                    u32 oi = box_idx[fi * 6 + corner_slot[fj]];
                     f32 *vp = (f32 *)(vdata + vi * 64);
                     memcpy(vp, seg_pos[oi], 12);
                     memcpy(vp + 3, box_norm[fi], 12);
@@ -1457,7 +1460,15 @@ instanced_pipeline_done:
             }
         }
 
-        for (u32 i = 0; i < icount; i++) idata[i] = i;
+        /* Two triangles per 4-vertex face. The old idata[i] = i drew 144
+         * indices into 96 vertices: an out-of-bounds vertex fetch every frame
+         * (reported by GPU-assisted validation), and the arm drew only the
+         * first two thirds of its faces. */
+        for (u32 f = 0; f < icount / 6u; f++) {
+            u32 b = f * 4u;
+            idata[f * 6u + 0u] = b + 0u; idata[f * 6u + 1u] = b + 1u; idata[f * 6u + 2u] = b + 2u;
+            idata[f * 6u + 3u] = b + 0u; idata[f * 6u + 4u] = b + 2u; idata[f * 6u + 5u] = b + 3u;
+        }
 
         RHIBufferDesc vbdesc = {0};
         vbdesc.usage = RHI_BUFFER_USAGE_VERTEX;
