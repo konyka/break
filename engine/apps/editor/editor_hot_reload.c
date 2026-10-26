@@ -11,6 +11,7 @@
 
 #include <asset/vfs.h>
 #include <core/log.h>
+#include <editor/editor_cmd.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_scene.h>
 #include <platform/filewatch.h>
@@ -200,7 +201,14 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     /* an open gizmo drag is closed first (same policy as external undo) */
     break_editor_gizmo_end_drag(break_editor_shell_gizmo(shell));
     doc = break_editor_shell_doc(shell);
-    if (break_editor_doc_is_dirty(doc)) {
+    /* "Local edits" = unsaved AND user-made: the document is dirty and has
+     * command history. Dirty alone is not enough (a scene loaded without a
+     * sidecar is dirty only for its generated names), and history alone is
+     * not enough (after Ctrl+S the document matches the file and the undo
+     * history is kept). Undoing back to the saved state stays dirty, which
+     * errs on the side of keeping the user's session. */
+    if (break_editor_doc_is_dirty(doc) &&
+        break_editor_cmd_stack_size(break_editor_doc_stack(doc)) > 0u) {
         hr->stats.skipped_dirty++;
         hr->outcome = HR_OUT_SKIPPED;
         hr_log(hr, "hot reload: external change to %s skipped (unsaved edits)",

@@ -3974,6 +3974,32 @@ TEST(hot_reload_external_edit_after_local_save_still_reloads)
     hr_close(&fx);
 }
 
+TEST(hot_reload_scene_without_sidecar_keeps_following_external_edits)
+{
+    HrFixture fx;
+    hr_open(&fx, "editor_hr_nosidecar", 0u);
+
+    /* an external tool writes only the .bscn: the load generates names and
+     * the document equals the file, so it must stay clean enough to follow
+     * the next external edit */
+    save_fixture_scene(fx.scene, 2u);
+    remove(fx.sidecar);
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 2u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 2u);
+    /* names were generated (dirty flag), but there is no user history */
+    ASSERT_EQ(break_editor_cmd_stack_size(break_editor_doc_stack(fx.doc)), 0u);
+
+    save_fixture_scene(fx.scene, 5u);
+    remove(fx.sidecar);
+    hr_bump_mtime(fx.scene);
+    HR_WAIT(fx.shell, break_editor_doc_entity_count(fx.doc) == 5u);
+    ASSERT_EQ(break_editor_doc_entity_count(fx.doc), 5u);
+    ASSERT_EQ(hr_stats(&fx).reloads, 2u);
+    ASSERT_EQ(hr_stats(&fx).skipped_dirty, 0u);
+    hr_close(&fx);
+}
+
 TEST(hot_reload_request_in_flight_during_save_is_dropped_as_stale)
 {
     HrFixture fx;
@@ -4276,6 +4302,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(hot_reload_dirty_document_is_not_overwritten);
     RUN_TEST(hot_reload_own_save_does_not_reload_or_erase_undo);
     RUN_TEST(hot_reload_external_edit_after_local_save_still_reloads);
+    RUN_TEST(hot_reload_scene_without_sidecar_keeps_following_external_edits);
     RUN_TEST(hot_reload_request_in_flight_during_save_is_dropped_as_stale);
     RUN_TEST(hot_reload_scene_switch_via_asset_browser_rewatches);
     RUN_TEST(assets_panel_live_refresh_shows_external_create_and_delete);

@@ -8,7 +8,7 @@ Delivered scope:
 - Watch the current `.bscn` scene file. External changes are read by Runtime Core workers and committed on the editor shell thread through `break_runtime_reload_commit_owner`.
 - A valid external scene replaces the document using the existing REPLACE/world-swap semantics; selection is reconciled and the whole shell refreshes.
 - A malformed, unreadable, or failed load leaves the current document, names, and undo history intact (`FAILED_KEEP_OLD`).
-- A local dirty document is never overwritten by an external event. The event is reported and skipped while dirty.
+- A document with unsaved local edits (dirty and command history) is never overwritten by an external event. The event is reported and skipped.
 - An editor-originated save suppresses its own next file event, so save does not reload the same bytes and erase undo history.
 - The asset browser's current directory listing refreshes on filesystem events through the existing structured directory watcher.
 - Asset-browser scene loads and the CLI scene path share the same `scene_path` and watcher.
@@ -39,7 +39,7 @@ The VFS mount is the scene's parent directory; the coordinator path is the scene
 
 - External valid BSCN: commit, clear stale selection through the existing selection sync, refresh the shell.
 - External invalid BSCN or a commit failure: `FAILED_KEEP_OLD`; no doc mutation, log the failure.
-- Dirty doc: do not commit, keep local edits and command history, log that the external change was skipped. No silent conflict resolution.
+- Unsaved local edits: if the document is dirty AND has command history, do not commit, keep the edits and history, and log that the external change was skipped. No silent conflict resolution. Neither signal alone is the criterion: a scene loaded without a sidecar is dirty only because its names were generated (no history), and after Ctrl+S the document is clean but keeps its undo history; both must still follow external edits. Undoing back to the saved state stays dirty (documented conservative doc behavior), so it is also kept.
 - Internal save: `break_editor_hot_reload_note_saved` suppresses one event for that scene. A subsequent real external edit is a new event and is processed normally.
 - Scene changes (CLI, asset browser): stop the old watcher/coordinator, create the new one only after a successful load/path update; failed path setup leaves the old scene/document intact.
 - Shutdown: `break_runtime_reload_shutdown` runs before `break_editor_hot_reload_destroy`; worker completion cannot race shell/doc destruction. A timeout is reported and does not claim a clean shutdown.

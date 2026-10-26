@@ -20,8 +20,11 @@
  * Rules:
  *  - an invalid, truncated or unreadable scene keeps the current document,
  *    names and undo history (FAILED_KEEP_OLD);
- *  - a dirty document is never overwritten; the change is reported and
- *    skipped;
+ *  - a document with unsaved local edits (dirty AND non-empty command
+ *    history) is never overwritten; the change is reported and skipped.
+ *    Dirty alone is not enough: a scene loaded without a sidecar is dirty
+ *    only for its generated names. History alone is not enough either: after
+ *    a save the document matches the file;
  *  - the editor's own saves are recognised by content hash and ignored;
  *  - staging that began before a local save is discarded as stale;
  *  - a scene path that does not fit the watcher/VFS bounds disables
@@ -47,7 +50,7 @@ typedef struct BreakEditorHotReloadStats {
     u64 requests;         /* reload requests issued to the coordinator */
     u64 reloads;          /* external scenes applied to the document */
     u64 failed;           /* invalid/unreadable/failed commits (old doc kept) */
-    u64 skipped_dirty;    /* skipped: the document has unsaved edits */
+    u64 skipped_dirty;    /* skipped: the document has local edits */
     u64 skipped_same;     /* skipped: bytes equal to what we last saved/loaded */
     u64 skipped_stale;    /* skipped: staging began before a local save */
 } BreakEditorHotReloadStats;
