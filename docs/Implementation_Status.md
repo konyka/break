@@ -8768,3 +8768,16 @@ ENGINE_TEST_SOURCE_ROOT becomes a cache override so tests reading repo
 sources/assets can be re-rooted onto the target copy. Remaining honest
 boundaries: aarch64le cross build, non-VM hardware receipts, and the Screen
 WSI graphics milestone stay open (docs/qnx_compat.md 5/7).
+
+## QNX aarch64le cross build + on-target suite scripts (2026-10-26)
+
+The QNX toolchain file is architecture-parameterized end to end: with
+QNX_ARCH=aarch64le the full tree cross-builds 100% under the same SDP 8.0.0
+(qcc, gcc 12.2 frontend, ntoaarch64 binutils) with zero source changes;
+artifacts verified as AArch64 QNX PIE executables. aarch64le stays at
+COMPILED evidence until an aarch64 target runs the suite. The on-target
+workflow used for the x86_64 144/144 receipts is now committed:
+gen_target_cmds.py (host) regenerates the headless command list from the
+cross build ctest registry (drops cmake -P contract tests, honours WILL_FAIL),
+run_target_suite.sh (target) runs it with ulimit -s 8192 and EXPECT_FAIL
+semantics; both under engine/tools/qnx/.

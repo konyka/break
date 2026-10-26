@@ -106,7 +106,8 @@ cmake --build engine/build-qnx -j
 `-D_QNX_SOURCE`（否则 `_SC_NPROCESSORS_ONLN`、QNX 的 `CLOCK_MONOTONIC`
 暴露等被隐藏）。
 
-**在目标机跑 headless 套件**（本次验证用的工作流，x86_64 QEMU/KVM VM）：
+**在目标机跑 headless 套件**（本次验证用的工作流，x86_64 QEMU/KVM VM；
+脚本已入库 `engine/tools/qnx/`）：
 
 1. 配置目标构建时指向目标机上的源码副本（供读取仓库源码/资产的测试）：
    `-DENGINE_TEST_SOURCE_ROOT=/tmp/bt`；
@@ -114,12 +115,13 @@ cmake --build engine/build-qnx -j
    `assets/LiberationSans-Regular.ttf` 推到目标机 `/tmp/bt`（cwd 即 `/tmp/bt`，
    `read_engine_source` 的 `../src` 候选路径用 `/tmp/src -> /tmp/bt/src`
    符号链接满足）；
-3. 运行器要点：`ulimit -s 8192`（QNX 默认栈远小于 Linux 8MB 假设，
-   大局部数组测试会 Memory fault）；按 ctest 记录带全参数调用
-   verify 工具，并把 `WILL_FAIL` 测试的非零退出计为通过。
-
-ctest 无法直接在宿主驱动目标机（交叉产物宿主不可执行），上述运行器
-等价复刻了 `-LE "graphics|fuzz"` 的 headless 选择与判定语义。
+3. 宿主侧生成命令清单：
+   `python3 engine/tools/qnx/gen_target_cmds.py <build-dir> <engine> /tmp/bt cmds.txt`
+   （等价复刻 `-LE "graphics|fuzz"` 选择，剔除需宿主 CMake 运行时的
+   `cmake -P` 契约测试，标注 `WILL_FAIL` 语义）；
+4. 目标机侧运行：`sh run_target_suite.sh cmds.txt`——要点：
+   `ulimit -s 8192`（QNX 默认栈远小于 Linux 8MB 假设，大局部数组测试会
+   Memory fault）；`EXPECT_FAIL` 前缀测试的非零退出计为通过。
 
 ### 4.2 宿主 QNX 平台模拟（无 SDP 时验证接线）
 
@@ -133,14 +135,18 @@ ctest 无法直接在宿主驱动目标机（交叉产物宿主不可执行）�
 - Linux 宿主基线（改动前 master）：headless 套件 168 项全绿；
 - 宿主 QNX 平台模拟树：全量构建通过；headless 套件 168 项全绿
   （`test_d3d12_dependency_gate` 为 Windows-only 设计内跳过）；
-- **真实 QNX SDP 8.0.0 交叉编译（qcc/gcc 12.2，x86_64）：整树 100% 构建通过**；
+- **真实 QNX SDP 8.0.0 交叉编译（qcc/gcc 12.2）：x86_64 与 aarch64le
+  双架构整树 100% 构建通过**（aarch64le 为 COMPILED 证据——本环境无
+  aarch64 目标机可运行；产物经 `file`/`ntoaarch64-strip` 校验为
+  AArch64 QNX 动态可执行）；
 - **QNX 8.0.0 Neutrino x86_64 目标机（QEMU/KVM VM）：headless 套件
   144/144 命令通过**（含 myui 全部 headless 测试、net_loop/net/network/
   net_replication、task/ECS/规则引擎、verify 工具的 WILL_FAIL 语义用例；
   等价于宿主 `-LE "graphics|fuzz"` 选择，宿主-only 的 cmake 契约测试不在
-  目标机复刻）。目标机运行要点与运行器语义见 §4.1；
-- 未验证（诚实边界）：aarch64le 交叉编译（仅 x86_64 已跑）、真硬件
-  （非 VM）收据、图形/Screen 路径（设计即 fail-closed）。
+  目标机复刻）。目标机运行要点与运行器语义见 §4.1（脚本已入库
+  `engine/tools/qnx/`）；
+- 未验证（诚实边界）：aarch64le 目标机运行、非 VM 真硬件收据、
+  图形/Screen 路径（设计即 fail-closed）。
 
 ## 6. 效率验证（test_qnx_perf_smoke）
 
@@ -159,7 +165,8 @@ ctest 无法直接在宿主驱动目标机（交叉产物宿主不可执行）�
 ## 7. 升级路径（后续里程碑）
 
 1. ~~真机：SDP 交叉编译 + Neutrino 目标跑套件与冒烟~~（已完成，2026-10-26：
-   x86_64 交叉 100%、目标机 144/144、§6 收据；aarch64le 交叉与真硬件收据待补）；
+   x86_64 交叉 100% + 目标机 144/144 + §6 收据；aarch64le 交叉 100%
+   （COMPILED），aarch64le 目标机运行与非 VM 真硬件收据待补）；
 2. Screen WSI：`window_screen.c` + `ENGINE_SURFACE_*` 语义，
    图形证据等级从 NONE 起步；
 3. Vulkan（QNX 平台 Vulkan driver via Screen）或 GLES2 后端：
@@ -175,6 +182,8 @@ ctest 无法直接在宿主驱动目标机（交叉产物宿主不可执行）�
 - poll 后端：`engine/src/network/net_loop_poll.c`、
   `engine/tests/test_net_loop.c`（QNX 段）、`engine/tests/test_net_loop_qnx`（CMake 目标）
 - 效率冒烟：`engine/tests/test_qnx_perf_smoke.c`
+- 目标机套件工作流：`engine/tools/qnx/gen_target_cmds.py`（宿主生成命令清单）、
+  `engine/tools/qnx/run_target_suite.sh`（目标机运行器）
 - 工具链：`engine/toolchain-qnx.cmake`、`engine/CMakePresets.json`（`qnx-cross`）
 - fail-closed 修复：`engine/src/platform/platform_vk_surface.c`（`pvk_resolve` 条件定义）、
   `engine/src/platform/window_mobile.c`（QNX 守卫）
