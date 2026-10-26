@@ -6565,13 +6565,20 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
 
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
                                u32 first_index, i32 vertex_offset) {
+    rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count,
+                                        first_index, vertex_offset, 0u);
+}
+
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
     (void)cmd;
     VKBackend *vk = vk_cmd_backend(cmd);
     if (!vk) return;
     vk_resume_pass_if_needed(vk);
     vk_flush_push_constants(vk);  /* R94-3: batch push constants */
     vkCmdDrawIndexed(vk->cmd_buffers[vk->current_frame], index_count, instance_count,
-                     first_index, vertex_offset, 0);
+                     first_index, vertex_offset, first_instance);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,

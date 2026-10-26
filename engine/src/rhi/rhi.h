@@ -618,6 +618,17 @@ void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count
 /* Like draw_indexed, with base index and vertex offset (mega-buffer / cmd replay). */
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count,
                                u32 first_index, i32 vertex_offset);
+/* R707b: draw_indexed_base plus a first_instance for DIRECT draws (the
+ * draw's firstInstance / base instance / StartInstanceLocation on each
+ * backend). Shaders see it as
+ * gl_BaseInstanceARB / SV_StartInstanceLocation, exactly like an indirect
+ * record's first_instance, so caps.indirect_first_instance_supported gates it
+ * too (R703b packs the LOD fade in the high 16 bits). first_instance = 0 is
+ * identical to rhi_cmd_draw_indexed_base. Metal: not implemented (logs, as
+ * draw_indexed_base does there). */
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance);
 /* ---- Indirect drawing (GPU-driven pipeline) ---- */
 /* Non-indexed DrawIndirect (VkDrawIndirectCommand / DrawArraysIndirect). */
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,

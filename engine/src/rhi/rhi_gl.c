@@ -1330,6 +1330,32 @@ static void gl_cmd_draw_indexed_base(void *cmd, u32 index_count, u32 instance_co
                                       indices, (GLsizei)instance_count, (GLint)vertex_offset);
 }
 
+/* R707b: GL 4.2 base-instance draw. Contexts are created as 4.5 core, where
+ * the entry point is core and indirect_first_instance_supported is reported
+ * true; a missing pointer is logged once and the draw drops the base. */
+static void gl_cmd_draw_indexed_base_instance(void *cmd, u32 index_count, u32 instance_count,
+                                              u32 first_index, i32 vertex_offset,
+                                              u32 first_instance) {
+    static bool s_warned = false;
+    (void)cmd;
+    const void *indices = (const void *)(uintptr_t)(
+        g_gl_index_offset + first_index * (usize)g_gl_index_stride);
+    if (!glDrawElementsInstancedBaseVertexBaseInstance) {
+        if (!s_warned) {
+            LOG_ERROR("rhi_gl: glDrawElementsInstancedBaseVertexBaseInstance unavailable; "
+                      "first_instance dropped");
+            s_warned = true;
+        }
+        glDrawElementsInstancedBaseVertex(g_gl_draw_mode, (GLsizei)index_count, g_gl_index_type,
+                                          indices, (GLsizei)instance_count, (GLint)vertex_offset);
+        return;
+    }
+    glDrawElementsInstancedBaseVertexBaseInstance(g_gl_draw_mode, (GLsizei)index_count,
+                                                  g_gl_index_type, indices,
+                                                  (GLsizei)instance_count, (GLint)vertex_offset,
+                                                  (GLuint)first_instance);
+}
+
 static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
     (void)cmd;
     glClearColor(r, g, b, a);
@@ -1986,6 +2012,19 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
         gl_cmd_draw_indexed(cmd, index_count, instance_count);
     else
         gl_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index, vertex_offset);
+}
+
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count,
+                                         u32 instance_count, u32 first_index,
+                                         i32 vertex_offset, u32 first_instance) {
+    if (first_instance == 0u) {
+        rhi_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index,
+                                  vertex_offset);
+        return;
+    }
+    if (!gl_cmd_device_ready(cmd)) return;
+    gl_cmd_draw_indexed_base_instance(cmd, index_count, instance_count, first_index,
+                                      vertex_offset, first_instance);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset,

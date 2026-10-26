@@ -1,6 +1,28 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R707b — 蒙皮 LOD 前置：直接绘制带 `first_instance` 的 RHI 入口
+
+### 做法
+- 新增 `rhi_cmd_draw_indexed_instanced_base(cmd, index_count, instance_count, first_index, vertex_offset, first_instance)`（`rhi.h` 紧跟 `draw_indexed_base`）。设计文档 3.4：蒙皮网格走直接绘制，淡入淡出值按 R703b 约定放在 `first_instance` 高 16 位，着色器读 `gl_BaseInstanceARB` / `SV_StartInstanceLocation`。
+- VK：`vkCmdDrawIndexed(..., first_instance)`；`rhi_cmd_draw_indexed_base` 改为它的 `first_instance=0` 薄包装（原实现就是传 0，逐字节等价）。
+- D3D12：`DrawIndexedInstanced(..., StartInstanceLocation=first_instance)`；`draw_indexed_base` 同样改为薄包装（原实现同样只是最后一个参数传 0）。`SV_StartInstanceLocation` 对直接绘制同样生效，`caps.indirect_first_instance_supported`（按 SM 6.8 探测）对新入口口径一致，WARP 测试已证实。
+- GL：`first_instance≠0` 用 `glDrawElementsInstancedBaseVertexBaseInstance`（GL 4.2 核心；上下文按 4.5 core 创建，与 `indirect_first_instance_supported=true` 一致；函数指针为空时记一次 ERROR 并退回无 base 的绘制）。`first_instance=0` 直接走原 `rhi_cmd_draw_indexed_base`，因此 `draw_indexed_base` 本身不动（它有 `first_index==0 && vertex_offset==0` 走 `glDrawElementsInstanced` 的特殊分支）。
+- Metal：与 `draw_indexed_base` 一样是 LOG_ERROR 桩（Metal 目前连 `draw_indexed_base` 都没实现）。headless、`tests/rhi_stubs.c`：空实现；`test_rhi_capabilities` 的 headless 空句柄调用表加上新入口。
+
+### 测试
+- `test_vulkan`（VK 与 GL 两棵树共用）新增 TEST 11b：复用 TEST 11 材质数组场景，但每个可见四边形用一次 `rhi_cmd_draw_indexed_instanced_base(6, 1, k*6, k*4, 层号)` 直接绘制，不跑间接 execute（execute 计数必须为 0），象限像素断言与 TEST 11 相同。
+- `test_d3d12_warp_runtime` 新增 `direct_start_instance_reaches_the_shader`：`indirect_start_instance_reaches_the_shader` 的直接绘制版，四组 {实例数, 起始实例} → 层 0/1/2/1，四边形前面垫 3 个垃圾索引和 2 个垃圾顶点，同时覆盖 `first_index` / `vertex_offset`；RT1 原始位为 0。
+- 变异检查：三后端把 `first_instance` 换成 0，三个测试都变红（VK/GL：全部象限变成层 0 的白色；D3D12：`StartInstanceLocation=1` 画出层 0 的红色）。
+
+### 已知
+- 基线（master f794e3b5）上 `test_d3d12_warp_runtime` 本来就红：`debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次 RT/SRV 别名，实际 4 次。多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`，由 a323c379（修 Metal 前向渲染）把 `post_process_apply` 里的 `rhi_offscreen_fbo_bind` 挪到 `bind_texture` 之前引起（把 `post_process.c` 还原到 a323c379^ 后 82/82 通过）。与本轮无关，本轮不修。
+
+### 验证
+- build-vk / build-gl / build-d3d12 Debug（含测试）：0 条编译警告（只有既有的 lld-link `--gc-sections` 提示）；改动的 C 文件均过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查（`rhi_d3d12.c` 除外；`rhi_gl.c` 的 Linux 路径需要 GLX 头，单独抽出新函数对 glad.h 检查）。
+- Metal 未在本机构建、未验证。
+
+
 ## 本轮更新：R706 — 运行时 LOD：阴影级别 +1（`BREAK_LOD_SHADOW_BIAS`）伪影排查：未发现伪影，不改选择逻辑
 
 ### 结论

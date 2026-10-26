@@ -2915,6 +2915,16 @@ void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_
     (void)vertex_offset;
 }
 
+void rhi_cmd_draw_indexed_instanced_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance) {
+    LOG_ERROR("rhi_metal: rhi_cmd_draw_indexed_instanced_base not implemented");
+    (void)cmd;
+    (void)index_count;
+    (void)instance_count;
+    (void)first_index;
+    (void)vertex_offset;
+    (void)first_instance;
+}
+
 /* Indirect arg ABIs are layout-identical between VK and Metal:
  * non-indexed {vertexCount, instanceCount, vertexStart, baseInstance} = 16B;
  * indexed {indexCount, instanceCount, firstIndex, vertexOffset(i32),
