@@ -10,12 +10,17 @@
 #include "rhi/rhi_rollout.h"
 
 static const char *g_active_name = "none";
+static const char *g_selection_reason = "none";
+
+static void deactivate(void);
 
 const char *rhi_runtime_active_backend(void) { return g_active_name; }
+const char *rhi_runtime_selection_reason(void) { return g_selection_reason; }
 
 void rhi_runtime_reset_for_test(void) {
-    rhi_dispatch_set_api(NULL);
-    g_active_name = "none";
+    deactivate();
+    g_selection_reason = "none";
+    rhi_rollout_set_runtime_selection(NULL, NULL);
 }
 
 static const char *runtime_getenv(const RHIRuntimeConfig *cfg, const char *n) {
@@ -55,6 +60,16 @@ static void activate(const RHIRuntimeBackendDesc *b) {
     g_active_name = b->name;
 }
 
+static void deactivate(void) {
+    rhi_dispatch_set_api(NULL);
+    g_active_name = "none";
+}
+
+static void record_selection(const RHIRuntimeBackendDesc *b, const char *reason) {
+    g_selection_reason = reason;
+    rhi_rollout_set_runtime_selection(b->name, reason);
+}
+
 /* Calls the backend factory with its table already installed: backend
  * create paths call other public rhi_* functions (they resolve to the
  * namespaced symbols directly inside the backend TU, but core helpers such
@@ -67,10 +82,7 @@ static RHIDevice *try_create(const RHIRuntimeBackendDesc *b, void *window_native
     activate(b);
     dev = b->create(b->use_surface_native ? surface_native : window_native,
                     display_native, w, h);
-    if (dev == NULL) {
-        rhi_dispatch_set_api(NULL);
-        g_active_name = "none";
-    }
+    if (dev == NULL) deactivate();
     return dev;
 }
 
@@ -114,8 +126,8 @@ RHIDevice *rhi_runtime_create_chain(const RHIRuntimeConfig *cfg,
                              w, h);
         }
         if (dev != NULL) {
-            emit("backend_selected", b->name, tried > 1u ? "config-fallback" : reason,
-                 "OK");
+            record_selection(b, tried > 1u ? "config-fallback" : reason);
+            emit("backend_selected", b->name, g_selection_reason, "OK");
             return dev;
         }
         emit("fallback", b->name, reason, "ERROR");
@@ -135,7 +147,10 @@ RHIDevice *rhi_runtime_create_explicit(const RHIRuntimeConfig *cfg,
         if (b->backend != backend) continue;
         /* explicit: the caller already passed the handle this backend wants */
         dev = try_create(b, window_native, window_native, display_native, w, h);
-        if (dev != NULL) emit("backend_selected", b->name, "platform-default", "OK");
+        if (dev != NULL) {
+            record_selection(b, "platform-default");
+            emit("backend_selected", b->name, g_selection_reason, "OK");
+        }
         return dev;
     }
     return NULL;

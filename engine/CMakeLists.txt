@@ -191,6 +191,12 @@ if(ENGINE_RHI_BACKEND STREQUAL "auto" AND NOT ENGINE_VULKAN AND
         # that lost the Vulkan packages falls back instead of failing on a
         # stale cached ON.
         set(ENGINE_VULKAN ON)
+        # Runtime fallback (docs/design/rhi_runtime_backend.md): the auto
+        # Vulkan build also links OpenGL as the last-resort backend and picks
+        # one at device creation. ENGINE_RHI_MULTI_BACKEND=OFF opts out.
+        if(NOT DEFINED ENGINE_RHI_MULTI_BACKEND OR ENGINE_RHI_MULTI_BACKEND)
+            set(_engine_rhi_multi_backend ON)
+        endif()
     else()
         message(WARNING
             "ENGINE_RHI_BACKEND=auto: Vulkan development files not found "
@@ -232,6 +238,16 @@ elseif(ENGINE_VULKAN)
     set(_rhi_backend_effective "vulkan")
 else()
     set(_rhi_backend_effective "opengl")
+endif()
+option(ENGINE_RHI_MULTI_BACKEND
+    "auto Vulkan builds also link OpenGL and select at runtime (fallback)" ON)
+if(NOT _engine_rhi_multi_backend OR NOT _rhi_backend_effective STREQUAL "vulkan")
+    set(_engine_rhi_multi_backend OFF)
+endif()
+set(ENGINE_RHI_MULTI_BACKEND_ACTIVE ${_engine_rhi_multi_backend} CACHE INTERNAL
+    "auto build links Vulkan + OpenGL with runtime selection" FORCE)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    message(STATUS "RHI runtime selection: vulkan -> opengl (multi-backend build)")
 endif()
 set(ENGINE_RHI_BACKEND_EFFECTIVE "${_rhi_backend_effective}" CACHE INTERNAL
     "Resolved RHI backend for this build" FORCE)
@@ -791,6 +807,12 @@ add_library(engine_rhi_opengl STATIC EXCLUDE_FROM_ALL src/rhi/rhi_gl.c)
 target_include_directories(engine_rhi_opengl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
 target_link_libraries(engine_rhi_opengl PUBLIC engine PRIVATE glad)
+if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+    # Runtime fallback build: the GL backend exports rhi_gl_rhi_* only; the
+    # public rhi_* symbols come from engine_rhi_runtime's forwarders.
+    target_compile_definitions(engine_rhi_opengl PRIVATE
+        RHI_BACKEND_NAMESPACE_GL=1 ENGINE_RHI_MULTI_BACKEND=1)
+endif()
 
 add_library(engine_rhi_headless STATIC src/rhi/rhi_headless.c)
 target_include_directories(engine_rhi_headless PRIVATE
@@ -918,6 +940,25 @@ if(ENGINE_VULKAN OR (ENGINE_PLATFORM STREQUAL "macos" AND
     target_compile_definitions(engine_rhi_vulkan PRIVATE ENGINE_VULKAN=1)
     target_link_libraries(engine_rhi_vulkan PUBLIC engine
         PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
+    if(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        target_compile_definitions(engine_rhi_vulkan PRIVATE
+            RHI_BACKEND_NAMESPACE_VK=1 ENGINE_RHI_MULTI_BACKEND=1)
+        # Dispatch forwarders + runtime chain + both binding tables. The
+        # binding TUs include the rename headers, so they must see the same
+        # include dirs and ENGINE_VULKAN-gated declarations as the backends.
+        add_library(engine_rhi_runtime STATIC EXCLUDE_FROM_ALL
+            src/rhi/dispatch/rhi_dispatch.c
+            src/rhi/dispatch/rhi_api_bind_gl.c
+            src/rhi/dispatch/rhi_api_bind_vk.c
+            src/rhi/rhi_runtime.c
+            src/rhi/rhi_runtime_backends.c)
+        target_include_directories(engine_rhi_runtime PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+        target_compile_definitions(engine_rhi_runtime PRIVATE
+            ENGINE_RHI_MULTI_BACKEND=1 ENGINE_VULKAN=1)
+        target_link_libraries(engine_rhi_runtime PUBLIC engine
+            engine_rhi_vulkan engine_rhi_opengl)
+    endif()
 endif()
 
 # Native D3D12 backend (plan D): Windows-only static library with real
@@ -1042,6 +1083,10 @@ function(engine_link_rhi_backend target)
         endif()
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "d3d12")
         target_link_libraries(${target} PRIVATE engine_rhi_d3d12)
+    elseif(ENGINE_RHI_MULTI_BACKEND_ACTIVE)
+        # Runtime selection: vulkan first, opengl as the last-resort fallback.
+        target_link_libraries(${target} PRIVATE engine_rhi_runtime
+            engine_rhi_vulkan engine_rhi_opengl)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan")
         target_link_libraries(${target} PRIVATE engine_rhi_vulkan)
     elseif(ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl")

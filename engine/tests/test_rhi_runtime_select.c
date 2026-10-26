@@ -1,6 +1,7 @@
 /* Runtime backend chain selection (docs/design/rhi_runtime_backend.md §4-§5).
  * Pure: fake backends, fake env, captured RHIEVT lines; no GPU. */
 #include "rhi/rhi_runtime.h"
+#include "rhi/rhi_rollout.h"
 #include "core/log.h"
 
 #include <stdarg.h>
@@ -99,6 +100,8 @@ int main(void) {
     CHECK(vk_got_window == &surface_h);
     CHECK(strcmp(rhi_runtime_active_backend(), "vulkan") == 0);
     CHECK(rhi_frame_index(dev) == 100u); /* forwarders now hit the VK table */
+    CHECK(strcmp(rhi_rollout_compiled_backend(), "vulkan") == 0);
+    CHECK(strcmp(rhi_rollout_compiled_reason(), "platform-default") == 0);
     CHECK(find("\"event\":\"backend_selected\",\"backend\":\"vulkan\"") != NULL);
     CHECK(find("\"event\":\"fallback\"") == NULL);
 
@@ -116,6 +119,10 @@ int main(void) {
         CHECK(fb != NULL && sel != NULL && fb < sel); /* order: fallback first */
         CHECK(find("\"reason\":\"config-fallback\"") != NULL);
     }
+    /* later RHIEVT lines (device_lost, ...) must name the backend in use */
+    CHECK(strcmp(rhi_rollout_compiled_backend(), "opengl") == 0);
+    CHECK(strcmp(rhi_rollout_compiled_reason(), "config-fallback") == 0);
+    CHECK(strcmp(rhi_runtime_selection_reason(), "config-fallback") == 0);
 
     /* 4. every entry fails -> NULL, stays "none", stub table still safe */
     reset(0, 0);
@@ -133,6 +140,7 @@ int main(void) {
     CHECK(dev == (RHIDevice *)&dev_gl);
     CHECK(vk_calls == 0u && gl_calls == 1u);
     CHECK(find("\"backend\":\"opengl\",\"reason\":\"explicit-env\"") != NULL);
+    CHECK(strcmp(rhi_rollout_compiled_reason(), "explicit-env") == 0);
 
     /* 6. BREAK_RHI_BACKEND=vulkan + vulkan failure -> no silent GL */
     reset(0, 1);

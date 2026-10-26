@@ -48,6 +48,10 @@ RHIDevice *rhi_runtime_create_explicit(const RHIRuntimeConfig *cfg,
 /* Backend name of the active table: "vulkan", "opengl", or "none". */
 const char *rhi_runtime_active_backend(void);
 
+/* RHIEVT reason of the last successful selection: "platform-default",
+ * "explicit-env" or "config-fallback" ("none" before any device). */
+const char *rhi_runtime_selection_reason(void);
+
 /* Test reset: back to the pre-device stub table and "none". */
 void rhi_runtime_reset_for_test(void);
 

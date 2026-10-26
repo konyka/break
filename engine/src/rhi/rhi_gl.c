@@ -1272,12 +1272,14 @@ static void gl_cmd_clear_color(void *cmd, f32 r, f32 g, f32 b, f32 a) {
 
 /* 计划 E Task 2：编译期单后端入口——GL 实现转发到自身后端。
  * 双句柄约定（rhi.h）：GL 消费 window_native（Wayland 上为 wl_egl_window*）。 */
+#ifndef ENGINE_RHI_MULTI_BACKEND
 RHIDevice *rhi_device_create_compiled(void *window_native, void *surface_native,
                                       void *display_native, u32 w, u32 h) {
     (void)surface_native;
     return rhi_device_create(RHI_BACKEND_OPENGL, window_native,
                              display_native, w, h);
 }
+#endif /* multi-backend: rhi_runtime_backends.c owns the chain entry */
 
 RHIDevice *rhi_device_create(RHIBackend backend, void *window_native, void *display_native, u32 w, u32 h) {
     if (backend != RHI_BACKEND_OPENGL || !rhi_drawable_dimensions_valid(w, h)) {
