@@ -8719,3 +8719,28 @@ the Vulkan engine target builds successfully and `git diff --check` remains
 the local documentation/source gate. Real X11, Wayland, Win32, macOS WSI
 matrices, allocator fault injection, device-lost recovery, and multi-device
 runtime teardown remain open validation work.
+
+## QNX headless platform support (2026-10-26)
+
+QNX Neutrino joins the platform matrix as a headless compatibility layer on
+branch feat/qnx-compat (docs/qnx_compat.md). The platform descriptor adds
+ENGINE_TARGET_FAMILY_QNX with a new ENGINE_NET_LOOP_POLL backend: Neutrino has
+no epoll/kqueue, so net_loop_poll.c keeps the interest set in userspace and
+rebuilds the pollfd array only on registration changes, with a non-blocking
+pipe for cross-thread wakeup. RHI resolution on qnx is headless and fails
+closed: ENGINE_VULKAN=ON or an explicit ENGINE_RHI_BACKEND is a configure-time
+FATAL_ERROR, engine_link_rhi_backend() links engine_rhi_headless, and
+window_mobile.c (now also compiled for QNX) rejects platform_create without a
+host-injected window. platform_vk_surface.c guards pvk_resolve behind the
+active WSI branches so fail-closed platforms stay -Werror clean. myui runs
+the dummy PAL offscreen path unchanged.
+
+TDD coverage: test_platform_compat_qnx (descriptor contract), test_net_loop_qnx
+(full generic net_loop semantics plus QNX fault injection against the poll
+backend, running in headless CI lanes), and test_qnx_perf_smoke (throughput
+floors for poll datagrams, task-system scheduling, and the myui offscreen vg
+pipeline; host reference rates in docs/qnx_compat.md). Verification: full
+headless suite green on both the untouched master baseline and a host-simulated
+QNX platform tree (CMAKE_SYSTEM_NAME=QNX). Honest boundary: no QNX SDP
+cross-compile or on-target receipts yet - evidence level is COMPILED; the
+Screen WSI integration and target runs are the follow-up milestone.

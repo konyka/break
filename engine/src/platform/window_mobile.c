@@ -1,6 +1,7 @@
 int platform_mobile_translation_unit;
 
-#if defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || defined(ENGINE_PLATFORM_HARMONYOS)
+#if defined(ENGINE_PLATFORM_IOS) || defined(ENGINE_PLATFORM_ANDROID) || \
+    defined(ENGINE_PLATFORM_HARMONYOS) || defined(ENGINE_PLATFORM_QNX)
 
 #include <platform/platform.h>
 #include <stdlib.h>

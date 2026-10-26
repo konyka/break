@@ -1908,6 +1908,11 @@ scissor、swapchain extent 与实际 drawable 一致。
 | Wayland | `wl_egl_window` + `wl_display` | `wl_surface` + `wl_display` | `text-input-v3`、非阻塞 pipe |
 | Win32 | `HWND` + `HINSTANCE` | `HWND` + `HINSTANCE` | IMM32、UTF-16 clipboard |
 | Cocoa | `CAMetalLayer` | `CAMetalLayer` | `NSTextInputClient`、pasteboard |
+| QNX（headless） | 无（dummy PAL 离屏） | 无（fail-closed） | dummy PAL 可控 clipboard 契约 |
+
+QNX 目标当前只使用 dummy PAL 离屏路径（`MYUI_PAL=dummy`）：窗口/WSI 不可用，
+RHI 解析为 headless；myui 全部 headless 测试与 `test_qnx_perf_smoke` 离屏
+吞吐冒烟在 QNX 平台定义下运行。详见 `docs/qnx_compat.md`。
 
 `platform_window_native()` 表示 OpenGL/EGL 目标，`platform_surface_native()` 表示
 Vulkan WSI 目标；应用不得仅凭“都是窗口句柄”互换这两个接口。

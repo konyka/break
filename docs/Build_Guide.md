@@ -16,6 +16,7 @@
 | Windows | MSVC (cl) | 支持 | `toolchain-msvc.cmake` | 原生 Windows 开发 |
 | Windows | Clang | 支持 | `toolchain-clang-win.cmake` | clang + lld-link |
 | Windows | MinGW GCC | 支持 | `toolchain-mingw.cmake` | Linux 交叉编译 |
+| QNX | qcc/q++ (SDP 7.1/8.0) | headless 兼容层 | `toolchain-qnx.cmake` | poll net_loop、headless RHI；见 `docs/qnx_compat.md` |
 
 ### 1.2 系统依赖（Linux）
 - X11 开发库 (libx11-dev、libxrandr-dev) 或 Wayland 开发库（二选一，编译时互斥)；Wayland 还需要 xkbcommon、wayland-scanner 和 wayland-protocols
@@ -29,12 +30,13 @@
 - Windows SDK
 - DirectX 11 SDK (可选，用于 platform 演示)
 
-### 1.4 macOS、iOS、Android 与 OHOS
+### 1.4 macOS、iOS、Android、OHOS 与 QNX
 - 平台图形元数据把性能基线与 Vulkan 证据分开：Linux/Windows 的 native baseline 是 OpenGL，macOS 是 Metal；macOS Vulkan 明确走 MoltenVK，不表示已实现 Metal RHI。Vulkan 证据级别使用 `compiled`、`headless`、`native-surface`、`GPU-runtime`、`benchmark-comparable`，不能把编译通过当作运行时支持。
 - macOS 由 CMake 识别为 `macos`，当前 Cocoa Vulkan 路径使用 Vulkan loader/MoltenVK、`shaderc_shared` 和 FreeType；仓库的 macOS CI 安装 `molten-vk`、`shaderc`、`freetype`。
 - iOS 由 CMake 识别为 `ios`，使用 kqueue 网络后端，但仓库没有声明 iOS runtime 或窗口渲染 CI 覆盖。
 - Android 由 CMake 识别为 `android`，使用 epoll；Vulkan 是宿主注入的 compile/integration 路径。启用 `ENGINE_VULKAN=ON` 时必须同时设置 `ENGINE_ANDROID_NATIVE_WINDOW=ON`，并让 CMake 找到 NDK 的 `android/native_window.h`；这不代表完整 Android runtime 支持。
 - iOS/Android 的平台契约测试只证明编译路径与宿主注入边界；HarmonyOS 的 Vulkan 状态为 unavailable/unsupported，直到存在 native surface 实现。
+- QNX 由 CMake 识别为 `qnx`（`CMAKE_SYSTEM_NAME=QNX`），net_loop 使用 POSIX `poll()` 后端，RHI 解析为 headless（图形 fail-closed），myui 走 dummy PAL 离屏路径；交叉构建用 `cmake --preset qnx-cross`，架构与证据边界见 `docs/qnx_compat.md`。
 
 ## 2. 构建配置
 
