@@ -240,13 +240,15 @@ BREAK_QNX_SCREEN_REQUIRED=1 ./test_platform_qnx_screen_runtime
 
 以下为当前源码、隔离 VM 与独立文件系统上的最终复验结果：
 
-- **Linux 宿主回归：177/177 通过**（`-LE "graphics|fuzz"`；
-  `test_d3d12_dependency_gate` 为 Windows-only 设计内跳过）；
+- **Linux 宿主回归（含远端 master 的 R703–R706 LOD 工作）：178/178 通过**
+  （`-LE "graphics|fuzz"`；`test_d3d12_dependency_gate` 为 Windows-only
+  设计内跳过）；
 - **QNX SDP 8.0.0 x86_64 默认配置：全树 100% 构建**，目标机
-  **150/150 命令通过**，覆盖引擎核心、net_loop/network、task、规则引擎、
-  全部 myui headless 用例和 verify 工具的 WILL_FAIL 语义；
+  **151/151 命令通过**，覆盖引擎核心、net_loop/network、task、规则引擎、
+  LOD/LOD cache/MSFT_lod、全部 myui headless 用例和 verify 工具的
+  WILL_FAIL 语义；
 - **QNX x86_64 完整 Vulkan 配置：全树 100% 构建**，目标机
-  **151/151 命令通过**（默认清单 + `test_qnx_shaderc`）。默认与 Vulkan
+  **152/152 命令通过**（默认清单 + `test_qnx_shaderc`）。默认与 Vulkan
   使用不同部署根，`test_shader_io` 前后校验和一致；
 - **真实 Screen 窗口：2/2 通过**。软件虚拟显示器上创建/查询/显示/销毁
   `screen_context`、`screen_window`，尺寸/格式/usage/WSI 状态正确；
@@ -273,15 +275,15 @@ BREAK_QNX_SCREEN_REQUIRED=1 ./test_platform_qnx_screen_runtime
 
 ## 6. 效率验证（test_qnx_perf_smoke）
 
-断言的吞吐下限（刻意宽松，sanitizer/慢 CI 下仍成立）与两次目标机实测：
+断言的吞吐下限（刻意宽松，sanitizer/慢 CI 下仍成立）与目标机实测：
 
-| 子系统 | 断言下限 | 首轮 x86_64 VM | 隔离 VM 最终复验 |
-|--------|---------|----------------|-------------------|
-| poll net_loop 数据报 | ≥256/s | 61,918 datagrams/s | 37,766 datagrams/s |
-| task 系统（2 worker） | ≥5,000/s | 1,775,253 tasks/s | 568,877 tasks/s |
-| myui 离屏 vg 管线 | ≥20,000 ops/s | 97,799,511 vg ops/s | 50,314,465 vg ops/s |
+| 子系统 | 断言下限 | 首轮 x86_64 VM | 隔离 VM 复验 | 合并 master 后最终复验 |
+|--------|---------|----------------|---------------|-------------------------|
+| poll net_loop 数据报 | ≥256/s | 61,918 datagrams/s | 37,766 datagrams/s | 74,603 datagrams/s |
+| task 系统（2 worker） | ≥5,000/s | 1,775,253 tasks/s | 568,877 tasks/s | 998,901 tasks/s |
+| myui 离屏 vg 管线 | ≥20,000 ops/s | 97,799,511 vg ops/s | 50,314,465 vg ops/s | 107,526,882 vg ops/s |
 
-两轮均在 QNX 8.0.0 x86_64 QEMU/KVM、qcc/gcc 12.2 -O3 下通过；这是
+三次均在 QNX 8.0.0 x86_64 QEMU/KVM、qcc/gcc 12.2 -O3 下通过；这是
 headless CPU/离屏吞吐收据，不是 GPU benchmark。后续运行继续把打印值
 回填本表，证据分级对齐 `docs/rhi_backend_evidence.md`。
 

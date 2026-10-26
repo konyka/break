@@ -8996,3 +8996,11 @@ VK_KHR_surface is unavailable, and vulkaninfo fails instance-version
 enumeration with ERROR_INITIALIZATION_FAILED. This is compile/native-window/
 CPU evidence, not GPU runtime, and myui still uses the dummy offscreen PAL
 (docs/qnx_compat.md).
+
+After merging origin/master 8eee4a58 (R703–R706 LOD fade/cache/MSFT_lod work),
+the integrated branch was rebuilt and rerun end to end: Linux 178/178; QNX
+x86_64 default 151/151 and complete Vulkan 152/152 on a second clean target
+filesystem; real Screen 2/2 and target shaderc 2/2 again; aarch64le default and
+Vulkan full builds remain 100%. The new LOD asset is deployed with the suite.
+The integrated GPU probe still fails at device creation because the loader has
+no ICD (`VK_KHR_surface` unavailable), preserving the honest GPU boundary.
