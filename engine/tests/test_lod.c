@@ -832,6 +832,31 @@ TEST(lod_fade_with_hysteresis_sweep_no_ping_pong) {
     ASSERT_EQ(f.level, 2u);
 }
 
+TEST(lod_fade_mega_commands_have_two_draws_only_mid_fade) {
+    LodFade f;
+    u32 selected[3];
+    i8 dither[3];
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 10.0, 0.25f);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.125, 0.25f, 3, selected, dither), 2u);
+    ASSERT_EQ(selected[0], 1u); ASSERT_EQ(selected[1], 1u); ASSERT_EQ(selected[2], 0u);
+    ASSERT_EQ(dither[0], 8); ASSERT_EQ(dither[1], -8); ASSERT_EQ(dither[2], 0);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.0, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 1u); ASSERT_EQ(selected[1], 0u); ASSERT_EQ(dither[0], 0);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.25, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 0u); ASSERT_EQ(selected[1], 1u); ASSERT_EQ(dither[1], 0);
+    lod_fade_update(&f, 0, 20.0, 0.25f);
+    ASSERT_EQ(lod_fade_write_commands(&f, 20.0, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 0u); ASSERT_EQ(selected[1], 1u);
+}
+
+TEST(lod_fade_mega_first_instance_preserves_material_layer) {
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, 0), 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, 8), (24u << 16) | 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, -8), (8u << 16) | 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(0x12340007u, 0), 7u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lod_init_defaults);
     RUN_TEST(lod_register_entity);
@@ -880,4 +905,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_fade_reverse_keeps_coverage_continuous);
     RUN_TEST(lod_fade_third_level_restarts_from_dominant_level);
     RUN_TEST(lod_fade_with_hysteresis_sweep_no_ping_pong);
+    RUN_TEST(lod_fade_mega_commands_have_two_draws_only_mid_fade);
+    RUN_TEST(lod_fade_mega_first_instance_preserves_material_layer);
 TEST_MAIN_END()

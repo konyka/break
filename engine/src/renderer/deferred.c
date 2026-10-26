@@ -18,6 +18,7 @@
  * ========================================================================== */
 
 #include <renderer/deferred.h>
+#include <renderer/lod.h>
 #include <core/log.h>
 #include <core/shader_io.h>
 
@@ -33,12 +34,20 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
                                           const char *vert_path,
                                           const char *frag_path,
                                           const RHIPipelineDesc *base_desc) {
+    bool lod_fade = lod_fade_seconds() > 0.0f && vert_path &&
+        (strstr(vert_path, "gbuffer.") || strstr(vert_path, "gbuffer_vk.") ||
+         strstr(vert_path, "gbuffer_arr.") || strstr(vert_path, "gbuffer_arr_vk."));
     RHICapabilities caps;
     if (rhi_device_get_capabilities(dev, &caps) && caps.shader_sidecar_paths) {
         /* R644: D3D12 never compiles source in-process; the GLSL path
          * resolves to the precompiled <name>_hlsl sidecar. HAS_IBL is not
          * injected there: the sidecar is the no-IBL variant (the D3D12
          * cubemaps it would sample are stubs). */
+        if (lod_fade) {
+            bool arr = strstr(vert_path, "gbuffer_arr") != NULL;
+            vert_path = arr ? "shaders/gbuffer_arr_lodfade.vert" : "shaders/gbuffer_lodfade.vert";
+            frag_path = arr ? "shaders/gbuffer_arr_lodfade.frag" : "shaders/gbuffer_lodfade.frag";
+        }
         RHIShader svs = rhi_shader_create_path(dev, vert_path, false);
         RHIShader sfs = rhi_shader_create_path(dev, frag_path, true);
         RHIPipeline spipe = RHI_HANDLE_NULL;
@@ -65,12 +74,28 @@ static RHIPipeline defrd_compile_pipeline(RHIDevice *dev,
         return RHI_HANDLE_NULL;
     }
 
-    RHIShader vs = rhi_shader_create(dev, vs_src, vs_len, false);
+    char *vs_use = vs_src;
+    usize vs_use_len = vs_len;
+    if (lod_fade) {
+        char *injected = shader_inject_define(vs_src, vs_len, "LOD_FADE", &vs_use_len);
+        if (injected) vs_use = injected;
+    }
+    RHIShader vs = rhi_shader_create(dev, vs_use, vs_use_len, false);
+    if (vs_use != vs_src) free(vs_use);
     free(vs_src);
 
     usize fs_use_len = fs_len;
     char *fs_use = shader_inject_define(fs_src, fs_len, "HAS_IBL", &fs_use_len);
     if (!fs_use) fs_use = fs_src;
+    if (lod_fade) {
+        usize fade_len = 0;
+        char *injected = shader_inject_define(fs_use, fs_use_len, "LOD_FADE", &fade_len);
+        if (injected) {
+            if (fs_use != fs_src) free(fs_use);
+            fs_use = injected;
+            fs_use_len = fade_len;
+        }
+    }
     RHIShader fs = rhi_shader_create(dev, fs_use, fs_use_len, true);
     if (fs_use != fs_src) free(fs_use);
     free(fs_src);

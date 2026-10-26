@@ -131,6 +131,10 @@ u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag);
  * the level fading out (== level when idle). */
 #define LOD_FADE_STEPS 16u
 
+/* Shared startup switch: BREAK_LOD_FADE_MS (default 250), forced off by
+ * BREAK_LOD=0. Used by forward and deferred pipeline construction. */
+f32 lod_fade_seconds(void);
+
 typedef struct {
     u8  level;
     u8  from;
@@ -162,3 +166,12 @@ static inline f32 lod_fade_dither_value(u32 k, bool finer) {
  * whether a draw with u_lod_fade = value keeps it. */
 u32  lod_bayer4(u32 x, u32 y);
 bool lod_fade_keep(u32 bayer, f32 value);
+
+/* Mega indirect draws: write one node's contiguous selection and signed-dither
+ * arrays. Returns the number of selected commands (one outside 1..15, two
+ * during a fade). The arrays have level_count entries and are fully written. */
+u32 lod_fade_write_commands(const LodFade *f, f64 now, f32 fade_s,
+                            u32 level_count, u32 *selected, i8 *dither);
+/* first_instance low 16 bits stay the material-array layer; a nonzero high
+ * half stores dither + 16. High half zero means no fade. */
+u32 lod_fade_pack_first_instance(u32 first_instance, i32 dither);

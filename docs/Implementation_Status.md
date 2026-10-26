@@ -1,6 +1,20 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R703b — 运行时 LOD（二期 2.2 后半）：MEGA 静态场景的抖动交叉淡入淡出
+
+### 做法
+- **每节点状态**：`MegaLod` 持有 R703a 的 `LodFade`，提交的级别仍是原屏幕误差 + 迟滞结果。`lod_fade_write_commands` 写节点连续命令的 `selected[]` 与 signed k：1..15 只允许细/粗两条相机命令，k=0/16 只留一条；反向与第三级变化继续由 `lod_fade_update/split` 处理。`shadow_selected[]` 和直接阴影仍按阴影偏置立即换级。
+- **命令负载**： signed k 打包在间接命令 `first_instance` 高 16 位（k+16；0 表示不抖动），低 16 位保留材质数组层。每帧只更新 grouped / material-array 两份相机命令缓冲；culling、compact 与 unified 掩码路径不变，不新增描述符、push/root 常量，也不占用运动矩阵。
+- **前向与延迟**：blinn、clustered 及其材质数组变体，以及 static / material-array G-buffer 都使用相同的 4×4 Bayer 互补 `discard`，所以延迟的所有附件共享同一几何覆盖。GLSL 以 `LOD_FADE` 注入；D3D12 使用独立 `*_lodfade_hlsl.*` sidecar 和构建期 DXIL。`BREAK_LOD_FADE_MS=0` 或 `BREAK_LOD=0` 仍创建原着色器/管线，选择掩码和命令上传走 R701 路径。
+- **统计/测试**：`LOD_STATS` 与调试 UI 增加 mega fading 计数；`test_lod` 43 → 45，只新增 mega 命令端点/双命令与材质层保持两个用例。
+
+### 验证
+- build-vk、build-gl、build-d3d12-debug 与三棵 Release 树均 0 警告；完整 `ctest -j4`：187/187、184/184、192/192（含 graphics）全部通过。
+- Release 三后端均运行 `BREAK_STRESS_LOD=200`、150 帧、`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`：clustered / blinn / deferred 各有实际换级和 mega fading；clustered 分别 208 次换级，fading_avg VK 119.00、GL 13.72、D3D12 12.44。VK 各路径 validation=0；D3D12 debug + GPU-based validation 同压力场景 208 次换级且无调试层消息。
+- VK `BREAK_LOD_FADE_MS=3000` 在第 105 帧保存并检查淡化中的截图（`BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`），岩石仍完整且 validation=0。
+
+
 ## 本轮更新：R703a — 运行时 LOD（二期 2.2 前半）：ECS 实例化路径的抖动交叉淡入淡出
 
 mega 路径的淡入淡出（unified_cull 的 `selected[]` 掩码要允许一个节点同时显示两级）留给 R703b。

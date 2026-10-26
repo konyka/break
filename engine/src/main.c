@@ -476,22 +476,6 @@ static void bind_forward_temporal(RenderState *render, RHICmdBuffer *cmd,
     rhi_cmd_bind_uniform_buffer(cmd, slot, 0u);
 }
 
-/* Runtime LOD cross-fade window (R703a): BREAK_LOD_FADE_MS (default 250,
- * 0 = off), forced off by BREAK_LOD=0. Read here because render_init builds
- * the fade pipeline variants before main parses the other LOD switches. */
-static f32 lod_fade_seconds(void) {
-    static int cached = 0;
-    static f32 v = 0.25f;
-    if (!cached) {
-        cached = 1;
-        const char *l = getenv("BREAK_LOD");
-        const char *e = getenv("BREAK_LOD_FADE_MS");
-        if (e && e[0]) { int ms = atoi(e); v = ms > 0 ? (f32)ms / 1000.0f : 0.0f; }
-        if (l && l[0] && !atoi(l)) v = 0.0f;
-    }
-    return v;
-}
-
 static bool render_init(RenderState *rs, Platform *platform) {
     void *window_native = platform_window_native(platform);
     void *surface_native = platform_surface_native(platform);
@@ -534,8 +518,13 @@ static bool render_init(RenderState *rs, Platform *platform) {
         LOG_INFO("blinn_phong: backend resolves shader sidecars; "
                  "loading shaders/blinn_phong_mrt.{vert,frag} as "
                  "blinn_phong_mrt_hlsl.{vert,frag}");
-        vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.vert", false);
-        fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.frag", true);
+        if (lod_fade_seconds() > 0.0f) {
+            vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt_lodfade.vert", false);
+            fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt_lodfade.frag", true);
+        } else {
+            vs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.vert", false);
+            fs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_mrt.frag", true);
+        }
     } else {
         char vs_path[128], fs_path[128];
         if (!shader_variant_path("shaders/blinn_phong.vert", (RHIShaderVariant)caps.shader_variant, vs_path, sizeof(vs_path)) ||
@@ -554,6 +543,17 @@ static bool render_init(RenderState *rs, Platform *platform) {
         usize vs_mrt_len = 0, fs_mrt_len = 0;
         char *vs_mrt = shader_inject_define(vs_src, vs_len, "FORWARD_MRT", &vs_mrt_len);
         char *fs_mrt = shader_inject_define(fs_src, fs_len, "FORWARD_MRT", &fs_mrt_len);
+        if (lod_fade_seconds() > 0.0f && vs_mrt && fs_mrt) {
+            usize vfl = 0, ffl = 0;
+            char *vf = shader_inject_define(vs_mrt, vs_mrt_len, "LOD_FADE", &vfl);
+            char *ff = shader_inject_define(fs_mrt, fs_mrt_len, "LOD_FADE", &ffl);
+            if (vf && ff) {
+                free(vs_mrt); free(fs_mrt);
+                vs_mrt = vf; vs_mrt_len = vfl; fs_mrt = ff; fs_mrt_len = ffl;
+            } else {
+                free(vf); free(ff);
+            }
+        }
         vs = rhi_shader_create(rs->device, vs_mrt ? vs_mrt : vs_src,
                                vs_mrt ? vs_mrt_len : vs_len, false);
         fs = rhi_shader_create(rs->device, fs_mrt ? fs_mrt : fs_src,
@@ -600,8 +600,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
             LOG_INFO("blinn_phong_arr: backend resolves shader sidecars; "
                      "loading shaders/blinn_phong_arr.{vert,frag} as "
                      "blinn_phong_arr_hlsl.{vert,frag}");
-            svs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_arr.vert", false);
-            sfs = rhi_shader_create_path(rs->device, "shaders/blinn_phong_arr.frag", true);
+            svs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                ? "shaders/blinn_phong_arr_lodfade.vert" : "shaders/blinn_phong_arr.vert", false);
+            sfs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                ? "shaders/blinn_phong_arr_lodfade.frag" : "shaders/blinn_phong_arr.frag", true);
         } else {
             usize avl = 0, afl = 0;
             char avs_path[128] = {0}, afs_path[128] = {0};
@@ -613,6 +615,17 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 usize avm_len = 0, afm_len = 0;
                 char *avm = shader_inject_define(avs, avl, "FORWARD_MRT", &avm_len);
                 char *afm = shader_inject_define(afs, afl, "FORWARD_MRT", &afm_len);
+                if (lod_fade_seconds() > 0.0f && avm && afm) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(avm, avm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(afm, afm_len, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        free(avm); free(afm);
+                        avm = vf; avm_len = vfl; afm = ff; afm_len = ffl;
+                    } else {
+                        free(vf); free(ff);
+                    }
+                }
                 svs = rhi_shader_create(rs->device, avm ? avm : avs,
                                         avm ? avm_len : avl, false);
                 sfs = rhi_shader_create(rs->device, afm ? afm : afs,
@@ -668,8 +681,10 @@ static bool render_init(RenderState *rs, Platform *platform) {
      * injected), and the instanced / skinned / array variants have no
      * sidecar, so those draws keep their blinn-family pipelines. */
     if (caps.shader_sidecar_paths) {
-        RHIShader cvs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered.vert", false);
-        RHIShader cfs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered.frag", true);
+        RHIShader cvs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+            ? "shaders/pbr_clustered_lodfade.vert" : "shaders/pbr_clustered.vert", false);
+        RHIShader cfs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+            ? "shaders/pbr_clustered_lodfade.frag" : "shaders/pbr_clustered.frag", true);
         if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
             RHIPipelineDesc cpd = {.vert = cvs, .frag = cfs, .uses_textures = true, .uses_texel_buffer = true, .disable_culling = true,
                                    .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
@@ -682,8 +697,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
              * rows are a structured buffer at t16 (see the shader header). */
             RHIShader civs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_inst.vert", false);
             if (rhi_handle_valid(civs)) {
-                /* R703a: LOD cross-fade pixel stage for the instanced variant
-                 * only (the static/skinned/array pipelines keep the original). */
+                /* R703a/R703b: instanced and static mega pipelines use the fade
+                 * pixel stage; skinned keeps a separate discard-free stage. */
                 RHIShader cffs = lod_fade_seconds() > 0.0f
                     ? rhi_shader_create(rs->device, "pbr_clustered_lodfade_hlsl.frag", 0, true)
                     : RHI_HANDLE_NULL;
@@ -700,21 +715,29 @@ static bool render_init(RenderState *rs, Platform *platform) {
             /* R657: skinned variant. Joints are a structured buffer at t16;
              * the 64-byte joint vertex layout comes from .skinned_vertex. */
             RHIShader csvs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_skin.vert", false);
+            RHIShader csfs = lod_fade_seconds() > 0.0f
+                ? rhi_shader_create_path(rs->device, "shaders/pbr_clustered.frag", true)
+                : RHI_HANDLE_NULL;
             if (rhi_handle_valid(csvs)) {
                 cpd.vert = csvs;
                 cpd.uses_storage = true;
                 cpd.skinned_vertex = true;
+                if (rhi_handle_valid(csfs)) cpd.frag = csfs;
                 rs->clustered_skin_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.frag = cfs;
                 if (!rhi_handle_valid(rs->clustered_skin_pipeline))
                     LOG_WARN("clustered: D3D12 skinned sidecar pipeline creation failed");
                 rhi_shader_destroy(rs->device, csvs);
             }
+            if (rhi_handle_valid(csfs)) rhi_shader_destroy(rs->device, csfs);
             /* R658: texture-array variant -- own pixel stage (Texture2DArray
              * registers, per-layer factor tables in the b1 cbuffer) and a
              * vertex stage that forwards first_instance as the layer. */
             {
-                RHIShader cavs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_arr.vert", false);
-                RHIShader cafs = rhi_shader_create_path(rs->device, "shaders/pbr_clustered_arr.frag", true);
+                RHIShader cavs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                    ? "shaders/pbr_clustered_arr_lodfade.vert" : "shaders/pbr_clustered_arr.vert", false);
+                RHIShader cafs = rhi_shader_create_path(rs->device, lod_fade_seconds() > 0.0f
+                    ? "shaders/pbr_clustered_arr_lodfade.frag" : "shaders/pbr_clustered_arr.frag", true);
                 if (rhi_handle_valid(cavs) && rhi_handle_valid(cafs)) {
                     cpd.vert = cavs;
                     cpd.frag = cafs;
@@ -776,6 +799,23 @@ static bool render_init(RenderState *rs, Platform *platform) {
             RHIShader cfs = cf_mrt ? rhi_shader_create(rs->device, cf_mrt, cfl_mrt, true)
                                    : (cf_ps ? rhi_shader_create(rs->device, cf_ps, cfl_ps, true)
                                             : rhi_shader_create(rs->device, cf, cfl, true));
+            RHIShader cmvs = RHI_HANDLE_NULL, cmfs = RHI_HANDLE_NULL;
+            if (lod_fade_seconds() > 0.0f && cv_mrt && cf_mrt) {
+                usize vfl = 0, ffl = 0;
+                char *vf = shader_inject_define(cv_mrt, cvl_mrt, "LOD_FADE", &vfl);
+                char *ff = shader_inject_define(cf_mrt, cfl_mrt, "LOD_FADE", &ffl);
+                if (vf && ff) {
+                    cmvs = rhi_shader_create(rs->device, vf, vfl, false);
+                    cmfs = rhi_shader_create(rs->device, ff, ffl, true);
+                }
+                free(vf); free(ff);
+                if (!rhi_handle_valid(cmvs) || !rhi_handle_valid(cmfs)) {
+                    LOG_WARN("LOD fade: clustered static LOD_FADE variant failed; using the plain variant");
+                    if (rhi_handle_valid(cmvs)) rhi_shader_destroy(rs->device, cmvs);
+                    if (rhi_handle_valid(cmfs)) rhi_shader_destroy(rs->device, cmfs);
+                    cmvs = cmfs = RHI_HANDLE_NULL;
+                }
+            }
             /* R590: instanced variant vert (instances ride a vertex SSBO;
              * the frag object is SHARED with the static pipeline). */
             RHIShader civs = RHI_HANDLE_NULL, cifs = RHI_HANDLE_NULL;
@@ -821,15 +861,31 @@ static bool render_init(RenderState *rs, Platform *platform) {
             RHIShader cavs = RHI_HANDLE_NULL, cafs = RHI_HANDLE_NULL;
             char *cf_arr = NULL;
             if (cav) {
-                usize cavm_len = 0;
+                usize cavm_len = 0, cfa_len = 0;
                 char *cav_mrt = shader_inject_define(cav, cavl, "FORWARD_MRT", &cavm_len);
-                cavs = rhi_shader_create(rs->device, cav_mrt ? cav_mrt : cav,
-                                         cav_mrt ? cavm_len : cavl, false);
-                free(cav_mrt);
-                usize cfa_len = 0;
                 cf_arr = cf_mrt ? shader_inject_define(cf_mrt, cfl_mrt, "CLUSTERED_ARR", &cfa_len) : NULL;
-                if (cf_arr)
-                    cafs = rhi_shader_create(rs->device, cf_arr, cfa_len, true);
+                char *cav_use = cav_mrt ? cav_mrt : cav;
+                char *caf_use = cf_arr;
+                usize cav_use_len = cav_mrt ? cavm_len : cavl;
+                usize caf_use_len = cfa_len;
+                if (lod_fade_seconds() > 0.0f && cav_mrt && cf_arr) {
+                    usize vfl = 0, ffl = 0;
+                    char *vf = shader_inject_define(cav_mrt, cavm_len, "LOD_FADE", &vfl);
+                    char *ff = shader_inject_define(cf_arr, cfa_len, "LOD_FADE", &ffl);
+                    if (vf && ff) {
+                        cav_use = vf; cav_use_len = vfl; caf_use = ff; caf_use_len = ffl;
+                    } else {
+                        free(vf); free(ff);
+                        vf = ff = NULL;
+                    }
+                    cavs = rhi_shader_create(rs->device, cav_use, cav_use_len, false);
+                    if (caf_use) cafs = rhi_shader_create(rs->device, caf_use, caf_use_len, true);
+                    free(vf); free(ff);
+                } else {
+                    cavs = rhi_shader_create(rs->device, cav_use, cav_use_len, false);
+                    if (caf_use) cafs = rhi_shader_create(rs->device, caf_use, caf_use_len, true);
+                }
+                free(cav_mrt);
             }
             free(cv); free(cf); free(cf_ibl); free(cf_ps); free(cv_mrt); free(cf_mrt); free(civ); free(csv); free(cav); free(cf_arr);
             if (rhi_handle_valid(cvs) && rhi_handle_valid(cfs)) {
@@ -837,7 +893,11 @@ static bool render_init(RenderState *rs, Platform *platform) {
                                        .color_format = RHI_FORMAT_R16G16B16A16_SFLOAT,
                                        .mrt_attachment_count = 2u,
                                        .mrt_formats = {RHI_FORMAT_R16G16B16A16_SFLOAT, RHI_FORMAT_R16G16_SFLOAT}};
+                if (rhi_handle_valid(cmvs) && rhi_handle_valid(cmfs)) {
+                    cpd.vert = cmvs; cpd.frag = cmfs;
+                }
                 rs->clustered_pipeline = rhi_pipeline_create(rs->device, &cpd);
+                cpd.vert = cvs; cpd.frag = cfs;
                 if (rhi_handle_valid(civs)) {
                     /* R590: NOT .is_instanced — that flag only reclassifies
                      * the uniform mapping to the blinn-instanced table (it
@@ -873,6 +933,8 @@ static bool render_init(RenderState *rs, Platform *platform) {
                 rhi_shader_destroy(rs->device, cvs);
                 rhi_shader_destroy(rs->device, cfs);
             }
+            if (rhi_handle_valid(cmvs)) rhi_shader_destroy(rs->device, cmvs);
+            if (rhi_handle_valid(cmfs)) rhi_shader_destroy(rs->device, cmfs);
             if (rhi_handle_valid(civs)) rhi_shader_destroy(rs->device, civs);
             if (rhi_handle_valid(cifs)) rhi_shader_destroy(rs->device, cifs);
             if (rhi_handle_valid(csvs)) rhi_shader_destroy(rs->device, csvs);
@@ -2390,20 +2452,26 @@ typedef struct {
     u32  *node_vcount;         /* [node] LOD0 vertex count (validation) */
     u32  *cmd_node;            /* [cmd] dense node */
     u8   *cmd_level;           /* [cmd] level */
-    u32  *selected;            /* [cmd] 1 = camera level */
-    u32  *shadow_selected;     /* [cmd] 1 = shadow level */
+    u32  *selected;            /* [cmd] 1 = camera-visible level (two while fading) */
+    u32  *shadow_selected;     /* [cmd] 1 = shadow level, always instantaneous */
+    LodFade *fade;             /* [node] R703b; NULL when BREAK_LOD_FADE_MS=0 */
+    i8   *cmd_dither;          /* [cmd] signed k, uploaded in first_instance high bits */
+    DrawIndexedIndirectCmd *cmd_upload;   /* [cmd] bake-order upload scratch */
+    DrawIndexedIndirectCmd *group_upload; /* [cmd] group-order upload scratch */
+    f32   fade_s;
     /* last selection */
     u32   level_nodes[MEGA_LOD_LEVELS];   /* nodes per camera level */
     u32   level_tris[MEGA_LOD_LEVELS];    /* triangles per camera level (all nodes) */
-    u32   vis_tris;            /* frustum-visible nodes, selected level */
+    u32   vis_tris;            /* frustum-visible commands, both levels while fading */
     u32   vis_tris_lod0;       /* same nodes at LOD0 */
     u32   transitions;         /* camera level changes this frame */
+    u32   fading;              /* nodes with two camera-visible commands */
     u32   shadow_tris;         /* all nodes at their shadow level */
     f64   select_ms;
     /* session totals (LOD_STATS at shutdown) */
     u64   frames;
     f64   select_ms_sum;
-    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, fading_sum;
 } MegaLod;
 
 static MegaLod g_mega_lod;
@@ -2847,6 +2915,7 @@ static void mega_lod_free(MegaLod *L) {
     free(L->node_level); free(L->node_shadow_level); free(L->node_err);
     free(L->node_tris); free(L->node_vbase); free(L->node_vcount);
     free(L->cmd_node); free(L->cmd_level); free(L->selected); free(L->shadow_selected);
+    free(L->fade); free(L->cmd_dither); free(L->cmd_upload); free(L->group_upload);
     memset(L, 0, sizeof(*L));
 }
 
@@ -2873,6 +2942,19 @@ static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
         !L->shadow_selected) {
         mega_lod_free(L);
         return false;
+    }
+    L->fade_s = lod_fade_seconds();
+    if (L->fade_s > 0.0f) {
+        L->fade = (LodFade *)calloc(node_count, sizeof(LodFade));
+        L->cmd_dither = (i8 *)calloc(cmd_count, 1);
+        L->cmd_upload = (DrawIndexedIndirectCmd *)malloc((usize)cmd_count * sizeof(DrawIndexedIndirectCmd));
+        L->group_upload = (DrawIndexedIndirectCmd *)malloc((usize)cmd_count * sizeof(DrawIndexedIndirectCmd));
+        if (!L->fade || !L->cmd_dither || !L->cmd_upload || !L->group_upload) {
+            LOG_WARN("Mega LOD: fade scratch alloc failed; level switches pop");
+            free(L->fade); free(L->cmd_dither); free(L->cmd_upload); free(L->group_upload);
+            L->fade = NULL; L->cmd_dither = NULL; L->cmd_upload = NULL; L->group_upload = NULL;
+            L->fade_s = 0.0f;
+        }
     }
     return true;
 }
@@ -2950,7 +3032,9 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
     L->vis_tris = 0u;
     L->vis_tris_lod0 = 0u;
     L->transitions = 0u;
+    L->fading = 0u;
     L->shadow_tris = 0u;
+    f64 now = (f64)t0 / 1e6;
     for (u32 b = 0; b < L->node_count; b++) {
         const NodeSphere *ns = &mb->node_spheres[L->node_scene[b]];
         u32 lc = L->node_level_count[b];
@@ -2968,10 +3052,16 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
         L->node_level[b] = (u8)lvl;
         L->node_shadow_level[b] = (u8)sl;
         u32 base = L->node_cmd_base[b];
-        for (u32 l = 0; l < lc; l++) {
-            L->selected[base + l] = (l == lvl) ? 1u : 0u;
-            L->shadow_selected[base + l] = (l == sl) ? 1u : 0u;
+        u32 draws = 1u;
+        if (L->fade) {
+            lod_fade_update(&L->fade[b], lvl, now, L->fade_s);
+            draws = lod_fade_write_commands(&L->fade[b], now, L->fade_s, lc,
+                                            L->selected + base, L->cmd_dither + base);
+            if (draws == 2u) L->fading++;
+        } else {
+            for (u32 l = 0; l < lc; l++) L->selected[base + l] = (l == lvl) ? 1u : 0u;
         }
+        for (u32 l = 0; l < lc; l++) L->shadow_selected[base + l] = (l == sl) ? 1u : 0u;
         const u32 *tris = &L->node_tris[(usize)b * MEGA_LOD_LEVELS];
         L->level_nodes[lvl]++;
         L->level_tris[lvl] += tris[lvl];
@@ -2979,7 +3069,12 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
         if (fr && ns->r >= 0.0f) {
             Vec3 c = {{ ns->cx, ns->cy, ns->cz }};
             if (frustum_test_sphere(fr, c, ns->r)) {
-                L->vis_tris += tris[lvl];
+                if (L->fade) {
+                    for (u32 l = 0; l < lc; l++)
+                        if (L->selected[base + l]) L->vis_tris += tris[l];
+                } else {
+                    L->vis_tris += tris[lvl];
+                }
                 L->vis_tris_lod0 += tris[0];
             }
         }
@@ -2990,6 +3085,36 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
     L->vis_tris_sum += L->vis_tris;
     L->vis_tris_lod0_sum += L->vis_tris_lod0;
     L->transitions_sum += L->transitions;
+    L->fading_sum += L->fading;
+}
+
+static void mega_lod_update_cmds(RHICmdBuffer *cmd, RHIBuffer buf,
+                                 const DrawIndexedIndirectCmd *cmds, u32 count) {
+    usize bytes = (usize)count * sizeof(*cmds);
+    for (usize off = 0; off < bytes; ) {
+        usize n = bytes - off;
+        if (n > 65536u) n = 65536u;
+        rhi_cmd_update_buffer(cmd, buf, off, (const u8 *)cmds + off, n);
+        off += n;
+    }
+}
+
+static void mega_lod_upload_fade_commands(MegaBuffer *mb, RHICmdBuffer *cmd) {
+    if (!mega_lod_on(mb) || !mb->lod->fade || !mb->direct_ready || !cmd) return;
+    MegaLod *L = mb->lod;
+    for (u32 ci = 0; ci < mb->draw_cmd_count; ci++) {
+        L->cmd_upload[ci] = mb->direct_cmds[ci];
+        L->cmd_upload[ci].first_instance =
+            lod_fade_pack_first_instance(L->cmd_upload[ci].first_instance, L->cmd_dither[ci]);
+    }
+    if (mb->group_system_ready) {
+        u32 total = mb->group_cmd_offsets[mb->mat_group_count];
+        for (u32 gi = 0; gi < total; gi++)
+            L->group_upload[gi] = L->cmd_upload[mb->group_cmd_list[gi]];
+        mega_lod_update_cmds(cmd, mb->group_system.all_draws_buf, L->group_upload, total);
+    }
+    if (mb->array_system_ready)
+        mega_lod_update_cmds(cmd, mb->array_system.all_draws_buf, L->cmd_upload, mb->draw_cmd_count);
 }
 
 /* ---- Runtime mesh LOD for ECS instanced meshes (phase 2.1) ----
@@ -5192,6 +5317,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     }
                 }
             }
+
+            /* Canonical CPU commands retain the final material layers; per-frame
+             * fade uploads add high bits without mutating this shadow-safe base. */
+            if (mega_buf.direct_ready)
+                memcpy(mega_buf.direct_cmds, cmds, mesh_cmd_count * sizeof(cmds[0]));
 
             /* Precompute per-node bounding sphere cache for fast visibility tests */
             mega_buf.sphere_count = 0;
@@ -7421,9 +7551,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
             if (mega_lod_on(&mega_buf)) {
                 const MegaLod *ul = mega_buf.lod;
-                debug_ui_text(&ui, "LOD: nodes L0/L1/L2 %u/%u/%u  tris %u/%u/%u  vis tris %u (LOD0 %u)  sel %.3fms",
+                debug_ui_text(&ui, "LOD: nodes L0/L1/L2 %u/%u/%u  tris %u/%u/%u  fading %u  vis tris %u (LOD0 %u)  sel %.3fms",
                               ul->level_nodes[0], ul->level_nodes[1], ul->level_nodes[2],
-                              ul->level_tris[0], ul->level_tris[1], ul->level_tris[2],
+                              ul->level_tris[0], ul->level_tris[1], ul->level_tris[2], ul->fading,
                               ul->vis_tris, ul->vis_tris_lod0, ul->select_ms);
             }
             if (g_ecs_lod.active) {
@@ -7648,6 +7778,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             /* Output height, not the (TSR-scaled) render height: the error
              * budget is in displayed pixels. */
             mega_lod_select(&mega_buf, camera.position, camera.fov, (f32)h, &frame_frustum);
+            mega_lod_upload_fade_commands(&mega_buf, cmd);
             if (gpucull_sys.unified_ready) {
                 gpucull_upload_selection(&gpucull_sys, GPUCULL_SELECT_CAMERA,
                                          mega_buf.lod->selected, mega_buf.draw_cmd_count);
@@ -10514,11 +10645,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     if (g_mega_lod.frames > 0u) {
         f64 fr = (f64)g_mega_lod.frames;
         LOG_INFO("LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
-                 "ratio=%.3f transitions=%llu",
+                 "ratio=%.3f transitions=%llu fading_avg=%.2f",
                  (unsigned long long)g_mega_lod.frames, g_mega_lod.select_ms_sum / fr,
                  (f64)g_mega_lod.vis_tris_sum / fr, (f64)g_mega_lod.vis_tris_lod0_sum / fr,
                  g_mega_lod.vis_tris_lod0_sum ? (f64)g_mega_lod.vis_tris_sum / (f64)g_mega_lod.vis_tris_lod0_sum : 1.0,
-                 (unsigned long long)g_mega_lod.transitions_sum);
+                 (unsigned long long)g_mega_lod.transitions_sum,
+                 (f64)g_mega_lod.fading_sum / fr);
     }
     if (g_ecs_lod.frames > 0u) {
         f64 fr = (f64)g_ecs_lod.frames;

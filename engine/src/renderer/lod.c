@@ -1,5 +1,6 @@
 #include "lod.h"
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* ---- Hysteresis to prevent LOD thrashing ---- */
@@ -414,6 +415,19 @@ u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag) {
     return st->tag[slot] == tag ? st->level[slot] : 0u;
 }
 
+f32 lod_fade_seconds(void) {
+    static int cached = 0;
+    static f32 v = 0.25f;
+    if (!cached) {
+        cached = 1;
+        const char *l = getenv("BREAK_LOD");
+        const char *e = getenv("BREAK_LOD_FADE_MS");
+        if (e && e[0]) { int ms = atoi(e); v = ms > 0 ? (f32)ms / 1000.0f : 0.0f; }
+        if (l && l[0] && !atoi(l)) v = 0.0f;
+    }
+    return v;
+}
+
 void lod_fade_reset(LodFade *f, u32 level) {
     if (!f) return;
     f->level = (u8)level;
@@ -484,6 +498,38 @@ bool lod_fade_keep(u32 bayer, f32 value) {
     if (value == 0.0f) return true;
     f32 b = (f32)bayer + 0.5f;
     return value > 0.0f ? !(b > value) : !(b < -value);
+}
+
+u32 lod_fade_write_commands(const LodFade *f, f64 now, f32 fade_s,
+                            u32 level_count, u32 *selected, i8 *dither) {
+    if (!selected || !dither || level_count == 0u) return 0u;
+    u32 fi = 0u, co = 0u;
+    u32 k = lod_fade_split(f, now, fade_s, &fi, &co);
+    if (fi >= level_count) fi = level_count - 1u;
+    if (co >= level_count) co = level_count - 1u;
+    for (u32 l = 0; l < level_count; l++) {
+        selected[l] = 0u;
+        dither[l] = 0;
+    }
+    if (fi == co || k >= LOD_FADE_STEPS) {
+        selected[fi] = 1u;
+    } else if (k == 0u) {
+        selected[co] = 1u;
+    } else {
+        selected[fi] = selected[co] = 1u;
+        dither[fi] = (i8)k;
+        dither[co] = -(i8)k;
+        return 2u;
+    }
+    return 1u;
+}
+
+u32 lod_fade_pack_first_instance(u32 first_instance, i32 dither) {
+    u32 layer = first_instance & 0xFFFFu;
+    if (dither == 0) return layer;
+    if (dither < -15) dither = -15;
+    if (dither > 15) dither = 15;
+    return layer | ((u32)(dither + 16) << 16);
 }
 
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance) {

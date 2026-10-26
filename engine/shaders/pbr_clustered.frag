@@ -407,8 +407,8 @@ vec2 parallax_occlusion_mapping(vec3 V, vec3 N, vec2 uv) {
 }
 
 #ifdef LOD_FADE
-/* R703a: only the instanced pipeline's fragment object is built with
- * LOD_FADE (its vertex stage writes vLodFade). */
+/* R703a/R703b: instanced and mega static/array fragment variants are built
+ * with LOD_FADE only when fading is enabled. */
 flat in float vLodFade;
 /* Runtime LOD cross-fade (R703a): vLodFade = +k keeps the pixels whose 4x4
  * Bayer threshold + 0.5 is <= k (finer level), -k keeps those >= k (coarser

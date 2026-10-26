@@ -1,4 +1,7 @@
 #version 450 core
+#ifdef LOD_FADE
+#extension GL_ARB_shader_draw_parameters : require
+#endif
 
 /* G-Buffer write pass -- vertex stage (Vulkan). */
 
@@ -18,7 +21,14 @@ layout(push_constant) uniform Push {
     mat4 u_prev_mvp;
 } pc;
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     vec4 wp     = pc.u_model * vec4(a_position, 1.0);
     v_world_pos = wp.xyz;
     v_normal    = mat3(pc.u_model) * a_normal;
