@@ -28,7 +28,7 @@ jobs:
             libfreetype6-dev fonts-noto-cjk
       - name: Configure / build / headless test
         run: |
-          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_BUILD_TYPE=Release
+          cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=clang-18 -DCMAKE_BUILD_TYPE=Release -DENGINE_RHI_BACKEND=opengl
           cmake --build build --parallel
           ctest --test-dir build -LE "graphics|fuzz" --output-on-failure
       - name: Report

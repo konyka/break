@@ -2,6 +2,8 @@
 
 适用范围：多后端 RHI（Vulkan / Metal / D3D12）+ OpenGL。
 
+**默认后端（维护者决定，2026-10-26）：Linux / Windows 默认 Vulkan。** `ENGINE_RHI_BACKEND=auto` 在配置期探测 Vulkan 加载器/头文件 + shaderc：齐全则选 Vulkan，缺失则带 `falling back to OpenGL` 警告降级到 OpenGL；契约测试 `test_rhi_backend_selection` 钉住这条规则。
+
 **OpenGL 策略（维护者决定，2026-10-26）：长期保留，不计划移除。** 它是 `fallback_chain` 的**最后一级**降级方案（Windows/Linux/steam-linux），同时是跨后端渲染效果对比的参考基准（`test_rhi_golden_parity`：VK golden ≈ sRGB(GL golden) 的垂直镜像）。原 "v2.0.0 删除 OpenGL" 计划作废。
 日志入口：运行时结构化行 `RHIEVT {...}`（event ∈ backend_selected/fallback/device_lost/present_failure/shader_failure）。
 
@@ -11,7 +13,7 @@
 |---|---|---|---|---|
 | `ENGINE_RHI_BACKEND`（CMake cache：auto/opengl/vulkan/metal/d3d12） | 构建期 | @konyka | 长期（无计划到期；每个 minor release 复审一次） | 重新 configure：`-DENGINE_RHI_BACKEND=<上一后端>`，重跑 headless 套件与对应 runtime lane |
 | `engine/assets/rhi_backend_rollout.json`（allowed/fallback_chain/config_version） | 发布配置 | @konyka | 每个 minor release 复审一次 | `git revert` 配置 commit → bump `config_version` → 重发；运行时不读远端，配置随二进制固化 |
-| OpenGL 最后降级 / 对比基准（`reason=compat-override` 路径） | 降级开关 | @konyka | 长期（无计划到期；每个 minor release 复审一次） | 引导用户设 `ENGINE_RHI_BACKEND=opengl` 重建；同一源码树即可，无需回退版本 |
+| OpenGL 最后降级 / 对比基准（`reason=compat-override` 路径） | 降级开关 | @konyka | 长期（无计划到期；每个 minor release 复审一次） | 引导用户设 `ENGINE_RHI_BACKEND=opengl`（或旧开关 `-DENGINE_VULKAN=OFF`）重建；同一源码树即可，无需回退版本 |
 
 治理规则：开关新增/变更必须更新本表（契约测试 `test_rhi_rollback_runbook_contract` 强制 owner/expiry/rollback 三列存在）；expiry 到期未处理的开关在下一个 release 评审中必须移除或续期。
 

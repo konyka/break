@@ -54,6 +54,20 @@ endforeach()
 #  - platforms with a GL backend in this repo: opengl allowed, and it is the
 #    final fallback_chain entry (exactly once, behind a primary backend);
 #  - platforms without one: opengl must not be advertised.
+# Default backend (maintainer decision 2026-10-26): Vulkan is the default on
+# Linux and Windows, so the Linux-family chains must start with it. Windows
+# keeps its native D3D12 first and Vulkan second; Android is Vulkan-only.
+foreach(plat linux steam-linux)
+    string(JSON first GET "${json}" platforms ${plat} fallback_chain 0)
+    if(NOT first STREQUAL "vulkan")
+        message(FATAL_ERROR "platforms.${plat}: vulkan must be the first (default) fallback_chain entry (got '${first}')")
+    endif()
+endforeach()
+string(JSON win_chain GET "${json}" platforms windows fallback_chain)
+string(FIND "${win_chain}" "\"vulkan\"" win_vk)
+if(win_vk EQUAL -1)
+    message(FATAL_ERROR "platforms.windows: vulkan must be in fallback_chain (default backend)")
+endif()
 set(gl_platforms windows linux steam-linux)
 set(non_gl_platforms android macos ios proton)
 foreach(plat IN LISTS gl_platforms)

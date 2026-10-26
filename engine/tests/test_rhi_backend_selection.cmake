@@ -77,6 +77,9 @@ endforeach()
 
 function(assert_configure_success backend expected_effective)
     set(binary_dir "${TEST_BINARY_DIR}/${backend}")
+    # A reused tree keeps its cached ENGINE_VULKAN, which would mask what a
+    # fresh `auto` configure resolves to.
+    file(REMOVE_RECURSE "${binary_dir}")
     execute_process(
         COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${binary_dir}"
             ${configure_overrides}
@@ -98,8 +101,98 @@ function(assert_configure_success backend expected_effective)
     endif()
 endfunction()
 
-assert_configure_success("auto" "opengl")
 assert_configure_success("opengl" "opengl")
+
+# Default backend (maintainer decision 2026-10-26): `auto` resolves to Vulkan
+# on Linux and Windows. Vulkan needs the loader headers + shaderc, so `auto`
+# degrades to OpenGL (the last-resort fallback) with a visible warning when
+# they are missing, while an explicit `vulkan` stays fail-closed. Apple keeps
+# its own native path (Metal) and is not part of this rule.
+function(configure_auto tag out_result out_text)
+    set(binary_dir "${TEST_BINARY_DIR}/auto-${tag}")
+    file(REMOVE_RECURSE "${binary_dir}")
+    execute_process(
+        COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${binary_dir}"
+            ${configure_overrides} ${ARGN}
+            -DENGINE_RHI_BACKEND=auto -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
+        RESULT_VARIABLE result
+        OUTPUT_VARIABLE output
+        ERROR_VARIABLE error_output)
+    set(effective "")
+    if(EXISTS "${binary_dir}/CMakeCache.txt")
+        file(STRINGS "${binary_dir}/CMakeCache.txt" effective_line
+            REGEX "^ENGINE_RHI_BACKEND_EFFECTIVE:INTERNAL=")
+        string(REGEX REPLACE "^[^=]*=" "" effective "${effective_line}")
+    endif()
+    set(${out_result} "${result}" PARENT_SCOPE)
+    set(${out_text} "${effective}|${output}${error_output}" PARENT_SCOPE)
+endfunction()
+
+if(APPLE)
+    assert_configure_success("auto" "opengl")
+else()
+    # An explicit vulkan configure tells us whether this host has the deps.
+    set(vk_dir "${TEST_BINARY_DIR}/vulkan")
+    file(REMOVE_RECURSE "${vk_dir}")
+    execute_process(
+        COMMAND "${CMAKE_BIN}" -S "${ENGINE_SOURCE_DIR}" -B "${vk_dir}"
+            ${configure_overrides}
+            -DENGINE_RHI_BACKEND=vulkan -DENGINE_BUILD_TESTS=OFF -DMYUI_PAL=dummy
+        RESULT_VARIABLE vk_result
+        OUTPUT_VARIABLE vk_output
+        ERROR_VARIABLE vk_error)
+
+    configure_auto(default auto_result auto_text)
+    if(NOT auto_result EQUAL 0)
+        message(FATAL_ERROR "auto must configure on every host:\n${auto_text}")
+    endif()
+    if(vk_result EQUAL 0)
+        if(NOT auto_text MATCHES "^vulkan\\|")
+            message(FATAL_ERROR
+                "auto must default to vulkan when Vulkan is available; got: ${auto_text}")
+        endif()
+        if(auto_text MATCHES "falling back to OpenGL")
+            message(FATAL_ERROR "auto warned about a fallback although Vulkan is available")
+        endif()
+    else()
+        if(NOT auto_text MATCHES "^opengl\\|")
+            message(FATAL_ERROR
+                "auto must fall back to opengl when Vulkan is unavailable; got: ${auto_text}")
+        endif()
+        if(NOT auto_text MATCHES "falling back to OpenGL")
+            message(FATAL_ERROR "auto fell back to OpenGL silently")
+        endif()
+    endif()
+
+    # Vulkan hidden from the probe: the fallback is deterministic and loud.
+    configure_auto(novulkan nv_result nv_text -DCMAKE_DISABLE_FIND_PACKAGE_Vulkan=ON)
+    if(NOT nv_result EQUAL 0)
+        message(FATAL_ERROR "auto without Vulkan must still configure:\n${nv_text}")
+    endif()
+    if(NOT nv_text MATCHES "^opengl\\|" OR NOT nv_text MATCHES "falling back to OpenGL")
+        message(FATAL_ERROR
+            "auto without Vulkan must fall back to opengl with a warning; got: ${nv_text}")
+    endif()
+
+    # Historical switch: an explicit -DENGINE_VULKAN=OFF still means OpenGL.
+    configure_auto(legacyoff lo_result lo_text -DENGINE_VULKAN=OFF)
+    if(NOT lo_result EQUAL 0 OR NOT lo_text MATCHES "^opengl\\|")
+        message(FATAL_ERROR "explicit ENGINE_VULKAN=OFF must keep selecting opengl; got: ${lo_text}")
+    endif()
+    if(lo_text MATCHES "falling back to OpenGL")
+        message(FATAL_ERROR "explicit ENGINE_VULKAN=OFF must not warn about a fallback")
+    endif()
+
+    # Explicit vulkan never degrades silently: it either configures to
+    # vulkan or fails closed (tested above through vk_result).
+    if(vk_result EQUAL 0)
+        file(STRINGS "${vk_dir}/CMakeCache.txt" vk_effective
+            REGEX "^ENGINE_RHI_BACKEND_EFFECTIVE:INTERNAL=vulkan$")
+        if(NOT vk_effective)
+            message(FATAL_ERROR "explicit vulkan configured but did not resolve to vulkan")
+        endif()
+    endif()
+endif()
 
 # metal: APPLE 平台必须配置成功且 EFFECTIVE=metal；其他平台必须 FATAL_ERROR
 # 且消息恰含 UNAVAILABLE（fail-closed，不得静默回退到其他后端）。

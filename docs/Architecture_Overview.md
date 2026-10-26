@@ -512,7 +512,7 @@ destroy/dormant 消息，并通过 BreakNetAdapter 有界 outbound queue 发送�
 
 ```bash
 # X11 + OpenGL 后端
-cmake -B build-gl -DENGINE_VULKAN=OFF && make -C build-gl
+cmake -B build-gl -DENGINE_RHI_BACKEND=opengl && make -C build-gl
 
 # X11 + Vulkan 后端
 cmake -B build-vk -DENGINE_VULKAN=ON && make -C build-vk

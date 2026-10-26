@@ -161,7 +161,45 @@ endif()
 option(ENGINE_USE_ASAN "Enable AddressSanitizer" OFF)
 option(ENGINE_USE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(ENGINE_USE_TSAN "Enable ThreadSanitizer" OFF)
+# ENGINE_RHI_BACKEND=auto defaults to Vulkan on Linux and Windows (maintainer
+# decision 2026-10-26). The legacy ENGINE_VULKAN switch only counts as an
+# explicit user choice when its cache entry predates this file's own default;
+# ENGINE_VULKAN_DEFAULTED marks trees whose entry was created by the option()
+# below, so a plain reconfigure keeps following the default.
+if(DEFINED CACHE{ENGINE_VULKAN} AND NOT ENGINE_VULKAN_DEFAULTED)
+    set(_engine_vulkan_user_choice TRUE)
+else()
+    set(_engine_vulkan_user_choice FALSE)
+endif()
 option(ENGINE_VULKAN "Use Vulkan backend instead of OpenGL" OFF)
+if(NOT _engine_vulkan_user_choice)
+    set(ENGINE_VULKAN_DEFAULTED ON CACHE INTERNAL
+        "ENGINE_VULKAN cache entry was created by the build default, not the user")
+endif()
+if(ENGINE_RHI_BACKEND STREQUAL "auto" AND NOT ENGINE_VULKAN AND
+   NOT _engine_vulkan_user_choice AND
+   (ENGINE_PLATFORM STREQUAL "linux" OR ENGINE_PLATFORM STREQUAL "windows"))
+    # Same probes (and VULKAN_SDK hints) as the hard requirement further down,
+    # so the default and the later REQUIRED checks cannot disagree.
+    find_package(Vulkan QUIET)
+    find_library(SHADERC_LIB NAMES shaderc_shared shaderc
+        HINTS "$ENV{VULKAN_SDK}/Lib" "$ENV{VULKAN_SDK}/lib")
+    find_path(SHADERC_INCLUDE_DIR NAMES shaderc/shaderc.h
+        HINTS "$ENV{VULKAN_SDK}/Include" "$ENV{VULKAN_SDK}/include")
+    if(Vulkan_FOUND AND SHADERC_LIB AND SHADERC_INCLUDE_DIR)
+        # Normal variable, not a cache write: a later reconfigure on a host
+        # that lost the Vulkan packages falls back instead of failing on a
+        # stale cached ON.
+        set(ENGINE_VULKAN ON)
+    else()
+        message(WARNING
+            "ENGINE_RHI_BACKEND=auto: Vulkan development files not found "
+            "(need the Vulkan loader/headers and shaderc); falling back to OpenGL, "
+            "the last-resort backend. Install them (e.g. libvulkan-dev libshaderc-dev) "
+            "to get the Vulkan default, pass -DENGINE_RHI_BACKEND=vulkan to make "
+            "missing Vulkan an error, or -DENGINE_RHI_BACKEND=opengl to choose OpenGL.")
+    endif()
+endif()
 if(NOT ENGINE_RHI_BACKEND STREQUAL "auto" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "opengl" AND
    NOT ENGINE_RHI_BACKEND STREQUAL "vulkan" AND
