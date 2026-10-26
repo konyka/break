@@ -6,7 +6,7 @@
 TEST(invalid_initialization_leaves_a_safe_engine_state)
 {
     Engine engine = {0};
-    const EngineConfig config = {640, 480, NULL, 60.0, false};
+    const EngineConfig config = {640, 480, NULL, 60.0, false, false};
 
     ASSERT_FALSE(engine_init(&engine, &config));
     ASSERT_EQ(engine.platform, NULL);
@@ -17,7 +17,7 @@ TEST(invalid_initialization_leaves_a_safe_engine_state)
 
 TEST(null_engine_arguments_are_rejected)
 {
-    const EngineConfig config = {640, 480, "Break", 60.0, false};
+    const EngineConfig config = {640, 480, "Break", 60.0, false, false};
 
     ASSERT_FALSE(engine_init(NULL, &config));
     ASSERT_FALSE(engine_frame(NULL));
@@ -27,7 +27,7 @@ TEST(null_engine_arguments_are_rejected)
 TEST(reinitialization_with_an_active_platform_is_rejected)
 {
     Engine engine = {0};
-    const EngineConfig config = {640, 480, "Break", 60.0, false};
+    const EngineConfig config = {640, 480, "Break", 60.0, false, false};
 
     engine.platform = (Platform *)(uintptr_t)1;
     ASSERT_FALSE(engine_init(&engine, &config));
@@ -37,9 +37,9 @@ TEST(reinitialization_with_an_active_platform_is_rejected)
 
 TEST(invalid_target_fps_is_rejected)
 {
-    const EngineConfig negative = {640, 480, "Break", -1.0, false};
-    const EngineConfig nan_value = {640, 480, "Break", NAN, false};
-    const EngineConfig infinite = {640, 480, "Break", INFINITY, false};
+    const EngineConfig negative = {640, 480, "Break", -1.0, false, false};
+    const EngineConfig nan_value = {640, 480, "Break", NAN, false, false};
+    const EngineConfig infinite = {640, 480, "Break", INFINITY, false, false};
     Engine engine = {0};
 
     ASSERT_FALSE(engine_init(&engine, &negative));

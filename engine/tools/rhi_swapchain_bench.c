@@ -26,7 +26,7 @@ static int cmp_f64(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    PlatformConfig cfg = { 640u, 480u, "rhi-swapchain-bench", NULL, NULL, false };
+    PlatformConfig cfg = { 640u, 480u, "rhi-swapchain-bench", NULL, NULL, false, false };
     static f64 frame_ms[BENCH_FRAMES];
     Platform *platform;
     RHIDevice *dev;

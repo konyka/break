@@ -4138,6 +4138,64 @@ static int bench_stats_cmp_f32(const void *a, const void *b) {
     return (x > y) - (x < y);
 }
 
+/* FS2: window-mode switch measurement. A switch is a set/toggle request;
+ * rebuild_ms is the time spent in the size-change rebuild block that follows
+ * it, max_frame_ms_next5 the longest raw frame over the 5 frames after it. */
+#define WINDOW_MODE_TOGGLE_MAX 64
+#define WINDOW_MODE_SWITCH_WATCH_FRAMES 5u
+typedef struct {
+    u64 frames[WINDOW_MODE_TOGGLE_MAX];   /* BREAK_TOGGLE_FULLSCREEN_AT */
+    u32 frame_count;
+    u32 next;
+    bool active;                          /* watching the frames after a switch */
+    u64 switch_frame;
+    u32 frames_seen;
+    f64 rebuild_ms;
+    f64 max_frame_ms;
+    u32 switches;
+    f64 worst_frame_ms;
+    f64 worst_rebuild_ms;
+} WindowModeSwitchStats;
+
+static void window_mode_stats_parse(WindowModeSwitchStats *s, const char *list) {
+    const char *p = list;
+    while (p != NULL && *p && s->frame_count < WINDOW_MODE_TOGGLE_MAX) {
+        char *end = NULL;
+        long long v = strtoll(p, &end, 10);
+        if (end == p) break;
+        if (v > 0) s->frames[s->frame_count++] = (u64)v;
+        p = end;
+        if (*p == ',') p++; else break;
+    }
+}
+
+static void window_mode_switch(WindowModeSwitchStats *s, Platform *platform, u64 frame) {
+    platform_toggle_fullscreen(platform);
+    s->active = true;
+    s->switch_frame = frame;
+    s->frames_seen = 0u;
+    s->rebuild_ms = 0.0;
+    s->max_frame_ms = 0.0;
+    s->switches++;
+}
+
+static void window_mode_switch_frame(WindowModeSwitchStats *s, Platform *platform,
+                                     f64 raw_frame_ms) {
+    u32 dw = 0u, dh = 0u;
+    if (!s->active) return;
+    if (raw_frame_ms > s->max_frame_ms) s->max_frame_ms = raw_frame_ms;
+    if (++s->frames_seen < WINDOW_MODE_SWITCH_WATCH_FRAMES) return;
+    platform_get_drawable_size(platform, &dw, &dh);
+    LOG_INFO("WINDOW_MODE_SWITCH frame=%llu mode=%s drawable=%ux%u rebuild_ms=%.2f max_frame_ms_next5=%.2f",
+             (unsigned long long)s->switch_frame,
+             platform_get_window_mode(platform) == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN
+                 ? "borderless_fullscreen" : "windowed",
+             dw, dh, s->rebuild_ms, s->max_frame_ms);
+    if (s->max_frame_ms > s->worst_frame_ms) s->worst_frame_ms = s->max_frame_ms;
+    if (s->rebuild_ms > s->worst_rebuild_ms) s->worst_rebuild_ms = s->rebuild_ms;
+    s->active = false;
+}
+
 /* R447 frame pacing ownership: presentation pacing belongs to exactly ONE
  * clock. While vsync is enabled the swapchain presents at refresh rate, so
  * the CPU target_fps limiter must stay disengaged — sleeping to 1/target on
@@ -4155,6 +4213,8 @@ int main(int argc, char **argv) {
     log_set_level(LOG_DEBUG);
 
     EngineConfig cfg = { .width = 1280, .height = 720, .title = "Pure C Engine - Phase 4", .target_fps = 60.0 };
+    /* FS2: BREAK_FULLSCREEN=1 starts in borderless fullscreen. */
+    { const char *e = getenv("BREAK_FULLSCREEN"); if (e && atoi(e)) cfg.start_fullscreen = true; }
     Engine engine = {0};
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
 
@@ -5629,6 +5689,11 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             auto_exit_frames = atoll(argv[ai + 1]);
     { const char *e = getenv("BREAK_BENCH_STATS");
       if (e) bench_stats_target = (u32)atoll(e); }
+    /* FS2: BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,... toggles the window mode at
+     * those frames (ascending) and logs WINDOW_MODE_SWITCH for each. */
+    WindowModeSwitchStats wm_stats;
+    memset(&wm_stats, 0, sizeof(wm_stats));
+    window_mode_stats_parse(&wm_stats, getenv("BREAK_TOGGLE_FULLSCREEN_AT"));
     if (bench_stats_target > 0u) {
         vsync_on = false;
         apply_frame_pacing(&engine, render.device, vsync_on, 0.0f); /* raw stats: no limiter */
@@ -5746,7 +5811,13 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             engine.frame_count > BENCH_STATS_WARMUP)
             bench_stats_ms[bench_stats_count++] =
                 (f32)(engine.raw_delta_time * 1000.0);
+        window_mode_switch_frame(&wm_stats, engine.platform, engine.raw_delta_time * 1000.0);
         if (auto_exit_frames > 0 && (i64)engine.frame_count >= auto_exit_frames) break;
+        while (wm_stats.next < wm_stats.frame_count &&
+               wm_stats.frames[wm_stats.next] <= engine.frame_count) {
+            if (wm_stats.frames[wm_stats.next++] == engine.frame_count)
+                window_mode_switch(&wm_stats, engine.platform, engine.frame_count);
+        }
         profiler_begin_frame();
 
         if (bench_frames > 0) {
@@ -6104,6 +6175,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             }
         }
 
+        u64 wm_rebuild_t0 = time_microseconds();
         bool need_rebuild = false;
         if (w != frame_w || h != frame_h) {
             PlatformWsiSurface wsi_snapshot;
@@ -6203,6 +6275,8 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             frame_h = h;
             } /* end successful scene_fbo recreate */
         }
+        if (wm_stats.active && need_rebuild)
+            wm_stats.rebuild_ms += (f64)(time_microseconds() - wm_rebuild_t0) / 1000.0;
 
         draw_bench_reset();
         if (playing_path && path_count > 0) {
@@ -7758,7 +7832,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (show_help && ui.visible) {
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
-            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G:Fullscreen");
+            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G/Alt+Enter:Fullscreen");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
             debug_ui_text(&ui, "WASD:Move  Shift+A/W/S/D:Brush/Teleport/Amb/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
@@ -8780,8 +8854,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_INFO("Spawned 3 entities (%u/%u bodies, %u/%u entities)", physics->count, physics->capacity, world->entity_count, ENTITY_SPAWN_CAP);
                     }
                 }
-                if (input_key_pressed(inp, (i32)'g')) {
-                    platform_toggle_fullscreen(engine.platform);
+                if (input_key_pressed(inp, (i32)'g') ||
+                    (input_key_down(inp, INPUT_KEY_ALT) && input_key_pressed(inp, 257))) {
+                    window_mode_switch(&wm_stats, engine.platform, engine.frame_count);
                 }
                 if (input_key_pressed(inp, (i32)'\'')) {
                     static const f32 rates[] = {200.0f, 500.0f, 1000.0f, 2000.0f, 5000.0f, 0.0f};
@@ -9196,7 +9271,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                     LOG_INFO("Terrain preset: %s", tnames[terrain_preset]);
                 }
                 /* R361: Enter (257) — was Tab, which also toggled the debug UI overlay. */
-                if (input_key_pressed(inp, 257)) {
+                if (input_key_pressed(inp, 257) && !input_key_down(inp, INPUT_KEY_ALT)) {
                     ComponentType sel_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
                     Query *sq = world_query(world, sel_types, 2);
                     u32 total = 0;
@@ -10955,6 +11030,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 #if defined(ENGINE_RHI_BACKEND_VULKAN)
     LOG_INFO("VK validation messages this run: %u", rhi_vk_validation_message_count());
 #endif
+    if (wm_stats.switches > 0u)
+        LOG_INFO("WINDOW_MODE_STATS switches=%u worst_frame_ms=%.2f worst_rebuild_ms=%.2f",
+                 wm_stats.switches, wm_stats.worst_frame_ms, wm_stats.worst_rebuild_ms);
     render_shutdown(&render);
     LOG_INFO("  render done");
     engine_shutdown(&engine);

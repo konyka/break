@@ -50,6 +50,9 @@ TEST(null_platform_queries_are_safe)
     ASSERT_FALSE(platform_window_begin_move(NULL));
     (void)platform_needs_client_decoration(NULL);
     platform_toggle_fullscreen(NULL);
+    ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN));
+    ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_WINDOWED));
+    ASSERT_EQ(platform_get_window_mode(NULL), PLATFORM_WINDOW_MODE_WINDOWED);
     platform_mouse_capture(NULL, true);
     platform_mouse_set_visible(NULL, false);
     platform_mouse_set_relative(NULL, true);

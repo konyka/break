@@ -13,6 +13,8 @@
 #include <platform/platform.h>
 #include <platform/monitor_selection.h>
 
+#include <string.h>
+
 #if defined(__GNUC__) || defined(__clang__)
 #define PLATFORM_WM_INLINE static inline __attribute__((unused))
 #else

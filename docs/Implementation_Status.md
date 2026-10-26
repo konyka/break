@@ -1,6 +1,32 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：FS2 — 无标题栏全屏（二）：公共 API + Win32 实现 + engine_demo 测量（基线）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md`，计划任务 2）
+- **API**（`platform.h`）：`platform_set_window_mode(p, mode)`（幂等；NULL、非法值、平台不支持返回 false）、`platform_get_window_mode(p)`（平台确认后的模式，NULL 为 WINDOWED）、`PlatformConfig.start_fullscreen`（放在结构体末尾，原有按位置初始化仍有效；`EngineConfig` 同样新增）。`platform_toggle_fullscreen` = `set(toggle_target)`。所有后端用 `window_mode.h` 状态机。
+- **Win32**：进入时保存 `GWL_STYLE` 与 `WINDOWPLACEMENT`（恢复最大化仍以它为准），去掉 `WS_OVERLAPPEDWINDOW | WS_MAXIMIZE`，**一次** `SetWindowPos(HWND_TOP, rcMonitor, SWP_FRAMECHANGED|SWP_NOOWNERZORDER)` 同时改样式与尺寸（只有 1 次 WM_SIZE，不 TOPMOST）；离开时恢复样式后 `SetWindowPlacement`（隐藏窗口保持隐藏）。旧实现保留 `WS_MAXIMIZE`，最大化窗口全屏时 `IsZoomed` 仍为真。`start_fullscreen` 在 `ShowWindow` 前进入全屏。Alt+Enter 的 `WM_SYSCHAR` 不再响提示音。
+- **X11 / Wayland / Cocoa**：仍是原来的原生调用（`_NET_WM_STATE` 消息 / `xdg_toplevel_set_fullscreen` / `toggleFullScreen:`），经状态机「请求后立即确认」；`start_fullscreen` 分别为映射前写 `_NET_WM_STATE`、首次提交前 `set_fullscreen`、创建后 set。读回确认与 Cocoa 无边框实现留给任务 4。**QNX Screen / 移动端**：`init_fixed(BORDERLESS_FULLSCREEN)`，`set(WINDOWED)` 返回 false。
+- **输入**：新增 `INPUT_KEY_ALT`（316），Win32/X11/Wayland/Cocoa 都映射。
+- **engine_demo**：`BREAK_FULLSCREEN=1`；`G` 或 Alt+Enter 切换（Alt+Enter 不再触发 Enter 选取）；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...`；每次切换输出 `WINDOW_MODE_SWITCH frame= mode= drawable= rebuild_ms= max_frame_ms_next5=`（rebuild_ms = 尺寸变化重建块耗时，只在块外计时，未改结构），退出时输出 `WINDOW_MODE_STATS`。VK 交换链日志加 `extent=`，D3D12 加 `swapchain resized to WxH`。帮助行改为 `G/Alt+Enter:Fullscreen`。
+
+### 基线（改 `*_resize` 之前；Release，2560×1600 显示器 ↔ 1280×720 窗口，切换帧 60/120/180/240）
+| 后端 | rebuild_ms（4 次） | max_frame_ms_next5（4 次） | 最差帧 |
+|---|---|---|---|
+| GL | 54.8 / 78.0 / 60.0 / 61.8 | 103.9 / 131.6 / 75.3 / 85.0 | 131.6 |
+| D3D12 | 120.7 / 68.0 / 126.3 / 71.8 | 135.0 / 110.2 / 137.3 / 92.6 | 137.3 |
+| VK（`BREAK_OCCLUSION=0`） | 227.4 / 214.0 / 241.7 / 251.9 | 232.4 / 243.1 / 247.1 / 263.7 | 263.7 |
+| GL（`BREAK_OCCLUSION=0`） | 50.2 / 67.6 / 50.4 / 73.1 | 83.5 / 98.1 / 63.5 / 95.0 | 98.1 |
+| D3D12（`BREAK_OCCLUSION=0`） | 90.9 / 73.3 / 108.2 / 66.7 | 103.8 / 91.9 / 117.6 / 80.0 | 117.6 |
+
+- **既有问题（与本改动无关）**：VK 在**运行时任何尺寸变化**后下一帧 `VK_ERROR_DEVICE_LOST`（进、出全屏两个方向都会，验证层 0 条）；`BREAK_OCCLUSION=0` 时消失，怀疑 Hi-Z（`occlusion_cull_resize` 之后）。用 master 的 Win32 切换代码同样复现。`BREAK_FULLSCREEN=1` 直接以 2560×1600 启动正常。需单独修。
+
+### 验证
+- TDD：`test_platform_win32_runtime` 新增 5 个用例（样式无 `WS_CAPTION|WS_THICKFRAME`、非 TOPMOST、窗口/客户区 = `rcMonitor`、模式查询、`platform_get_size`/drawable = 显示器；离开恢复样式与 `WINDOWPLACEMENT`；`SW_MAXIMIZE` 往返后 `IsZoomed`；重复 set 不产生 WM_SIZE、进出各恰好 1 次 WM_SIZE；非法模式拒绝；`start_fullscreen` 可见与隐藏两种）。旧实现 + 桩：30 条断言失败；新实现：全部通过。`test_platform_null_safety`、`test_platform_mobile_layer_*`（固定全屏语义）先链接失败、实现后通过。
+- 演示：VK Debug（`BREAK_OCCLUSION=0`）4 次切换验证层 0 条，交换链 `extent=2560x1600` / `1280x720`；D3D12 Debug（调试层 + GBV）4 次切换 0 条消息，`swapchain resized to 2560x1600`；全屏截图 2560×1600。
+- 未验证：X11/Wayland/Cocoa/QNX 运行（只做了审读，本机无系统头文件）；屏幕实拍确认无边框（本机锁屏，桌面截图只能拿到锁屏画面；无边框由运行时测试的样式与矩形断言保证）。
+
+
 ## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
 
 - **现象**：`test_d3d12_warp_runtime` 的 `debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次（测试故意制造的）RT/SRV 别名，实际 4 次；多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`。

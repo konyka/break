@@ -8,6 +8,7 @@ typedef struct {
     const char *title;
     f64       target_fps;
     bool      hide_window_until_first_frame;
+    bool      start_fullscreen;
 } EngineConfig;
 
 typedef struct {

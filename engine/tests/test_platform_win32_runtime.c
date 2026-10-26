@@ -548,6 +548,314 @@ TEST(ime_api_null_platform_is_rejected_without_fault)
     platform_ime_set_spot(NULL, 1, 2);
 }
 
+/* ---- Borderless fullscreen (FS2) ---- */
+
+static WNDPROC g_fs_prev_proc;
+static int g_fs_wm_size_count;
+
+static LRESULT CALLBACK fs_counting_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_SIZE) g_fs_wm_size_count++;
+    return CallWindowProcW(g_fs_prev_proc, hwnd, msg, wp, lp);
+}
+
+static void fs_count_wm_size(HWND hwnd)
+{
+    g_fs_wm_size_count = 0;
+    g_fs_prev_proc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                                (LONG_PTR)fs_counting_proc);
+}
+
+static void fs_uncount_wm_size(HWND hwnd)
+{
+    if (g_fs_prev_proc != NULL)
+        SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)g_fs_prev_proc);
+    g_fs_prev_proc = NULL;
+}
+
+static RECT fs_monitor_rect(HWND hwnd)
+{
+    MONITORINFO mi;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    return mi.rcMonitor;
+}
+
+static void fs_pump(Platform *platform)
+{
+    for (int i = 0; i < 3; i++) (void)platform_poll(platform);
+}
+
+/* Fullscreen invariants: no frame, not topmost, client == window == monitor,
+ * and the platform sizes report the monitor after a poll. */
+static bool fs_expect_fullscreen(Platform *platform, HWND hwnd)
+{
+    RECT mon = fs_monitor_rect(hwnd);
+    RECT client;
+    RECT window;
+    LONG style = GetWindowLongW(hwnd, GWL_STYLE);
+    LONG exstyle = GetWindowLongW(hwnd, GWL_EXSTYLE);
+    u32 mw = (u32)(mon.right - mon.left);
+    u32 mh = (u32)(mon.bottom - mon.top);
+    u32 w = 0u, h = 0u;
+    bool ok = true;
+
+    if ((style & (WS_CAPTION | WS_THICKFRAME)) != 0) {
+        record_failure("fullscreen window still has WS_CAPTION/WS_THICKFRAME");
+        ok = false;
+    }
+    if ((exstyle & WS_EX_TOPMOST) != 0) {
+        record_failure("fullscreen window must stay HWND_TOP, not TOPMOST");
+        ok = false;
+    }
+    GetClientRect(hwnd, &client);
+    GetWindowRect(hwnd, &window);
+    if ((u32)(client.right - client.left) != mw ||
+        (u32)(client.bottom - client.top) != mh) {
+        record_failure("fullscreen client rect is not the monitor size");
+        ok = false;
+    }
+    if (window.left != mon.left || window.top != mon.top ||
+        window.right != mon.right || window.bottom != mon.bottom) {
+        record_failure("fullscreen window rect is not the monitor rect");
+        ok = false;
+    }
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN) {
+        record_failure("platform_get_window_mode is not BORDERLESS_FULLSCREEN");
+        ok = false;
+    }
+    fs_pump(platform);
+    platform_get_size(platform, &w, &h);
+    if (w != mw || h != mh) {
+        record_failure("platform_get_size does not report the monitor size");
+        ok = false;
+    }
+    platform_get_drawable_size(platform, &w, &h);
+    if (w != mw || h != mh) {
+        record_failure("platform_get_drawable_size does not report the monitor size");
+        ok = false;
+    }
+    return ok;
+}
+
+TEST(fullscreen_enter_and_leave_restores_style_and_placement)
+{
+    PlatformConfig config = {320, 240, "break fullscreen"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    LONG style_before;
+    WINDOWPLACEMENT before;
+    WINDOWPLACEMENT after;
+    u32 w = 0u, h = 0u;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    fs_pump(platform);
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_WINDOWED)
+        record_failure("a new window must start WINDOWED");
+    style_before = GetWindowLongW(hwnd, GWL_STYLE);
+    memset(&before, 0, sizeof(before));
+    before.length = sizeof(before);
+    GetWindowPlacement(hwnd, &before);
+
+    fs_count_wm_size(hwnd);
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN))
+        record_failure("platform_set_window_mode(BORDERLESS) returned false");
+    if (g_fs_wm_size_count != 1)
+        record_failure("entering fullscreen must resize exactly once (one SetWindowPos)");
+    (void)fs_expect_fullscreen(platform, hwnd);
+
+    g_fs_wm_size_count = 0;
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED))
+        record_failure("platform_set_window_mode(WINDOWED) returned false");
+    if (g_fs_wm_size_count != 1)
+        record_failure("leaving fullscreen must resize exactly once");
+    fs_uncount_wm_size(hwnd);
+
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_WINDOWED)
+        record_failure("platform_get_window_mode is not WINDOWED after leaving");
+    if (GetWindowLongW(hwnd, GWL_STYLE) != style_before)
+        record_failure("leaving fullscreen did not restore GWL_STYLE");
+    memset(&after, 0, sizeof(after));
+    after.length = sizeof(after);
+    GetWindowPlacement(hwnd, &after);
+    if (memcmp(&after.rcNormalPosition, &before.rcNormalPosition,
+               sizeof(RECT)) != 0 || after.showCmd != before.showCmd)
+        record_failure("leaving fullscreen did not restore WINDOWPLACEMENT");
+    fs_pump(platform);
+    platform_get_size(platform, &w, &h);
+    if (w != 320u || h != 240u)
+        record_failure("platform_get_size is not the windowed size after leaving");
+    platform_destroy(platform);
+}
+
+TEST(fullscreen_round_trip_keeps_window_maximized)
+{
+    PlatformConfig config = {320, 240, "break fullscreen maximized"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    WINDOWPLACEMENT before;
+    WINDOWPLACEMENT after;
+    RECT max_rect;
+    RECT rect;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    ShowWindow(hwnd, SW_MAXIMIZE);
+    fs_pump(platform);
+    if (!IsZoomed(hwnd)) {
+        record_failure("ShowWindow(SW_MAXIMIZE) did not maximize the test window");
+        platform_destroy(platform);
+        return;
+    }
+    GetWindowRect(hwnd, &max_rect);
+    memset(&before, 0, sizeof(before));
+    before.length = sizeof(before);
+    GetWindowPlacement(hwnd, &before);
+
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN))
+        record_failure("platform_set_window_mode(BORDERLESS) returned false");
+    (void)fs_expect_fullscreen(platform, hwnd);
+    if (IsZoomed(hwnd))
+        record_failure("fullscreen window must not report maximized");
+
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED))
+        record_failure("platform_set_window_mode(WINDOWED) returned false");
+    fs_pump(platform);
+    if (!IsZoomed(hwnd))
+        record_failure("maximized window came back un-maximized");
+    if ((GetWindowLongW(hwnd, GWL_STYLE) & (WS_CAPTION | WS_THICKFRAME)) !=
+        (WS_CAPTION | WS_THICKFRAME))
+        record_failure("restored maximized window lost its frame style");
+    GetWindowRect(hwnd, &rect);
+    if (memcmp(&rect, &max_rect, sizeof(RECT)) != 0)
+        record_failure("restored maximized window rect differs from before");
+    memset(&after, 0, sizeof(after));
+    after.length = sizeof(after);
+    GetWindowPlacement(hwnd, &after);
+    if (memcmp(&after.rcNormalPosition, &before.rcNormalPosition, sizeof(RECT)) != 0)
+        record_failure("maximized round trip lost the restored (normal) rect");
+
+    ShowWindow(hwnd, SW_RESTORE);
+    fs_pump(platform);
+    if (IsZoomed(hwnd))
+        record_failure("SW_RESTORE after the round trip left the window maximized");
+    platform_destroy(platform);
+}
+
+TEST(fullscreen_set_is_idempotent_and_toggle_round_trips)
+{
+    PlatformConfig config = {320, 240, "break fullscreen idempotent"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    LONG style_before;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    fs_pump(platform);
+    style_before = GetWindowLongW(hwnd, GWL_STYLE);
+
+    fs_count_wm_size(hwnd);
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED))
+        record_failure("set(WINDOWED) while windowed must succeed");
+    if (g_fs_wm_size_count != 0)
+        record_failure("set(WINDOWED) while windowed must not touch the window");
+    (void)platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    g_fs_wm_size_count = 0;
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN))
+        record_failure("repeated set(BORDERLESS) must succeed");
+    if (g_fs_wm_size_count != 0)
+        record_failure("repeated set(BORDERLESS) must not resize again");
+    fs_uncount_wm_size(hwnd);
+    (void)fs_expect_fullscreen(platform, hwnd);
+    if (platform_set_window_mode(platform, (PlatformWindowMode)42))
+        record_failure("an invalid mode must be rejected");
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN)
+        record_failure("an invalid mode request changed the mode");
+
+    platform_toggle_fullscreen(platform);
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_WINDOWED)
+        record_failure("toggle from fullscreen did not go WINDOWED");
+    if (GetWindowLongW(hwnd, GWL_STYLE) != style_before)
+        record_failure("toggle back did not restore GWL_STYLE");
+    platform_toggle_fullscreen(platform);
+    (void)fs_expect_fullscreen(platform, hwnd);
+    platform_toggle_fullscreen(platform);
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_WINDOWED)
+        record_failure("second toggle round trip did not end WINDOWED");
+    platform_destroy(platform);
+}
+
+TEST(start_fullscreen_creates_the_window_fullscreen)
+{
+    PlatformConfig config = {320, 240, "break start fullscreen"};
+    Platform *platform;
+    HWND hwnd;
+    LONG style;
+    WINDOWPLACEMENT wp;
+    u32 w = 0u, h = 0u;
+
+    config.start_fullscreen = true;
+    platform = platform_create(&config);
+    if (platform == NULL) {
+        record_failure("platform_create(start_fullscreen) returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    if (!IsWindowVisible(hwnd))
+        record_failure("start_fullscreen window is not visible");
+    (void)fs_expect_fullscreen(platform, hwnd);
+
+    if (!platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED))
+        record_failure("leaving start_fullscreen returned false");
+    style = GetWindowLongW(hwnd, GWL_STYLE);
+    if ((style & WS_OVERLAPPEDWINDOW) != WS_OVERLAPPEDWINDOW)
+        record_failure("leaving start_fullscreen did not give a framed window");
+    memset(&wp, 0, sizeof(wp));
+    wp.length = sizeof(wp);
+    GetWindowPlacement(hwnd, &wp);
+    if (wp.showCmd != SW_SHOWNORMAL)
+        record_failure("leaving start_fullscreen did not give a normal window");
+    fs_pump(platform);
+    platform_get_size(platform, &w, &h);
+    if (w != 320u || h != 240u)
+        record_failure("leaving start_fullscreen did not give the configured size");
+    platform_destroy(platform);
+}
+
+TEST(start_fullscreen_hidden_window_stays_hidden_until_show)
+{
+    PlatformConfig config = {320, 240, "break start fullscreen hidden"};
+    Platform *platform;
+    HWND hwnd;
+
+    config.hide_window_until_first_frame = true;
+    config.start_fullscreen = true;
+    platform = platform_create(&config);
+    if (platform == NULL) {
+        record_failure("platform_create(start_fullscreen, hidden) returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    if (IsWindowVisible(hwnd))
+        record_failure("hidden start_fullscreen window became visible before show");
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN)
+        record_failure("hidden start_fullscreen window is not BORDERLESS_FULLSCREEN");
+    platform_window_show(platform);
+    (void)fs_expect_fullscreen(platform, hwnd);
+    platform_destroy(platform);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(platform_create_rejects_invalid_configuration_before_native_calls);
     RUN_TEST(invalid_utf8_title_is_rejected_without_creating_a_window);
@@ -564,4 +872,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ime_enable_disable_round_trips_through_imm32);
     RUN_TEST(ime_surrounding_and_spot_accept_cjk_and_hostile_input);
     RUN_TEST(ime_api_null_platform_is_rejected_without_fault);
+    RUN_TEST(fullscreen_enter_and_leave_restores_style_and_placement);
+    RUN_TEST(fullscreen_round_trip_keeps_window_maximized);
+    RUN_TEST(fullscreen_set_is_idempotent_and_toggle_round_trips);
+    RUN_TEST(start_fullscreen_creates_the_window_fullscreen);
+    RUN_TEST(start_fullscreen_hidden_window_stays_hidden_until_show);
 TEST_MAIN_END()

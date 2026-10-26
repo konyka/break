@@ -17,6 +17,7 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
         .height = cfg->height,
         .title  = cfg->title,
         .hide_window_until_first_frame = cfg->hide_window_until_first_frame,
+        .start_fullscreen = cfg->start_fullscreen,
     };
     if (!platform_config_valid(&pcfg)) return false;
 

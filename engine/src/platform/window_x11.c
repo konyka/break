@@ -3,6 +3,7 @@
 #include <platform/input.h>
 #include <platform/platform_text.h>
 #include <platform/monitor_selection.h>
+#include <platform/window_mode.h>
 #include <platform/platform_display_media.h>
 #include <core/log.h>
 #include "gamepad_linux.h"
@@ -40,7 +41,7 @@ struct Platform {
     u32         width;
     u32         height;
     bool        should_close;
-    bool        is_fullscreen;
+    PlatformWindowModeState window_mode;
     bool        mouse_captured;
     bool        mouse_visible;
     bool        mouse_relative;
@@ -504,6 +505,7 @@ static i32 x11_key_to_index(KeySym ks) {
     if (ks == XK_KP_Decimal || ks == XK_KP_Delete) return 315; /* lensfx / CA / vig cycle */
     if (ks == XK_Shift_L || ks == XK_Shift_R) return 289;
     if (ks == XK_Control_L || ks == XK_Control_R) return 290; /* R366: anim crossfade */
+    if (ks == XK_Alt_L || ks == XK_Alt_R) return INPUT_KEY_ALT;
     if (ks == XK_minus || ks == XK_underscore)  return (i32)'-';
     if (ks == XK_plus || ks == XK_equal)         return (i32)'=';
     if (ks == XK_parenleft || ks == XK_braceleft)   return (i32)'(';
@@ -857,6 +859,17 @@ Platform *platform_create(const PlatformConfig *cfg) {
                  ButtonPressMask | ButtonReleaseMask |
                  PointerMotionMask | StructureNotifyMask | FocusChangeMask |
                  PropertyChangeMask);
+
+    platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (cfg->start_fullscreen) {
+        /* EWMH: before the first map the client sets _NET_WM_STATE itself. */
+        XChangeProperty(p->display, p->window, p->wm_state, XA_ATOM, 32,
+                        PropModeReplace, (unsigned char *)&p->wm_fullscreen, 1);
+        (void)platform_window_mode_request(&p->window_mode,
+                                           PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+        platform_window_mode_confirm(&p->window_mode,
+                                     PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    }
 
     if (!cfg->hide_window_until_first_frame) {
         XMapWindow(p->display, p->window);
@@ -1426,20 +1439,40 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return true;
 }
 
-void platform_toggle_fullscreen(Platform *p) {
+/* Asks the WM through _NET_WM_STATE and confirms at once (FS2 interim:
+ * the PropertyNotify read-back that makes this accurate is a follow-up). */
+static void x11_send_fullscreen(Platform *p, bool fullscreen) {
     XEvent ev = {0};
-    if (p == NULL) return;
     ev.type = ClientMessage;
     ev.xclient.window = p->window;
     ev.xclient.message_type = p->wm_state;
     ev.xclient.format = 32;
-    ev.xclient.data.l[0] = p->is_fullscreen ? 0 : 1;
+    ev.xclient.data.l[0] = fullscreen ? 1 : 0;
     ev.xclient.data.l[1] = (long)p->wm_fullscreen;
     ev.xclient.data.l[2] = 0;
     XSendEvent(p->display, DefaultRootWindow(p->display), False,
                SubstructureRedirectMask | SubstructureNotifyMask, &ev);
     XFlush(p->display);
-    p->is_fullscreen = !p->is_fullscreen;
+}
+
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    PlatformWindowModeAction action;
+    if (p == NULL || p->display == NULL || !platform_window_mode_valid(mode)) return false;
+    action = platform_window_mode_request(&p->window_mode, mode);
+    if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
+    if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
+    x11_send_fullscreen(p, action == PLATFORM_WINDOW_MODE_ACTION_ENTER);
+    platform_window_mode_confirm(&p->window_mode, mode);
+    return true;
+}
+
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p != NULL ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+
+void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL) return;
+    (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
 }
 
 void platform_window_show(Platform *p) {

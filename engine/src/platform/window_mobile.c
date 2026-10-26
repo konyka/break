@@ -6,6 +6,7 @@ int platform_mobile_translation_unit;
 #include <platform/platform.h>
 #include <stdlib.h>
 #include <string.h>
+#include <platform/window_mode.h>
 
 struct Platform {
     void *native_window;
@@ -16,6 +17,7 @@ struct Platform {
     u64 media_generation;
     PlatformMediaContext media;
     PlatformWsiSurface wsi;
+    PlatformWindowModeState window_mode;
 };
 
 Platform *platform_create(const PlatformConfig *cfg)
@@ -33,6 +35,8 @@ Platform *platform_create(const PlatformConfig *cfg)
     p->height = cfg->height;
     (void)platform_wsi_surface_init(&p->wsi, true, cfg->width, cfg->height,
                                     cfg->width, cfg->height);
+    platform_window_mode_init_fixed(&p->window_mode,
+                                    PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
     p->media_generation = 1u;
     p->media.screen = true;
     p->media.capabilities = PLATFORM_MEDIA_CAP_POINTER_COARSE |
@@ -107,7 +111,18 @@ static void mobile_size(Platform *p, u32 *w, u32 *h) {
 void platform_get_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
 void platform_get_logical_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
 void platform_get_drawable_size(Platform *p, u32 *w, u32 *h) { mobile_size(p, w, h); }
-void platform_toggle_fullscreen(Platform *p) { (void)p; }
+/* The host surface is always the whole screen. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    if (!p || !platform_window_mode_valid(mode)) return false;
+    return platform_window_mode_request(&p->window_mode, mode) ==
+           PLATFORM_WINDOW_MODE_ACTION_NONE;
+}
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+void platform_toggle_fullscreen(Platform *p) {
+    if (p) (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
+}
 void platform_mouse_capture(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_visible(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_relative(Platform *p, bool v) { (void)p; (void)v; }

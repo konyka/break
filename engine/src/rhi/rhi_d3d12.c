@@ -1182,6 +1182,7 @@ HRESULT rhi_d3d12_swapchain_resize(RHI_D3D12Context *context,
         return hr;
     }
     swapchain->width = width; swapchain->height = height;
+    LOG_INFO("D3D12: swapchain resized to %ux%u", (unsigned)width, (unsigned)height);
     swapchain->current_index = IDXGISwapChain3_GetCurrentBackBufferIndex(
         (IDXGISwapChain3 *)swapchain->swapchain);
     for (i = 0u; i < RHI_D3D12_BACKBUFFER_COUNT; ++i) {

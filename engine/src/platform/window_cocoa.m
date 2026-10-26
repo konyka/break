@@ -15,6 +15,7 @@
 #include <platform/platform_size.h>
 #include <platform/input.h>
 #include <platform/platform_text.h>
+#include <platform/window_mode.h>
 #include <core/log.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +31,7 @@ struct Platform {
     InputState  input;
     u32         width, height;
     bool        should_close;
-    bool        is_fullscreen;
+    PlatformWindowModeState window_mode;
     bool        mouse_relative;
     bool        mouse_visible;
     PlatformCursor cursor;
@@ -176,6 +177,8 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
                   (flags & NSEventModifierFlagShift) != 0);
     input_set_key(&p->input, 290,
                   (flags & NSEventModifierFlagControl) != 0);
+    input_set_key(&p->input, INPUT_KEY_ALT,
+                  (flags & NSEventModifierFlagOption) != 0);
     /* CapsLock is sticky LED state — pulse a press edge on every polarity change
      * so CapsLock:AutoExp toggles once per keypress (not every other). */
     bool caps = (flags & NSEventModifierFlagCapsLock) != 0;
@@ -437,9 +440,13 @@ Platform *platform_create(const PlatformConfig *cfg) {
         [p->window setDelegate:del];
 
         [p->window center];
+        platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
         if (!cfg->hide_window_until_first_frame) {
             [p->window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:YES];
+        }
+        if (cfg->start_fullscreen) {
+            (void)platform_set_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
         }
 
         input_init(&p->input);
@@ -686,10 +693,26 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return true;
 }
 
-void platform_toggle_fullscreen(Platform *p) {
-    if (p == NULL || p->window == nil) return;
+/* FS2 interim: still the native toggleFullScreen:, confirmed at once; the
+ * borderless styleMask path is a follow-up. */
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    PlatformWindowModeAction action;
+    if (p == NULL || p->window == nil || !platform_window_mode_valid(mode)) return false;
+    action = platform_window_mode_request(&p->window_mode, mode);
+    if (action == PLATFORM_WINDOW_MODE_ACTION_NONE) return true;
+    if (action == PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED) return false;
     [p->window toggleFullScreen:nil];
-    p->is_fullscreen = !p->is_fullscreen;
+    platform_window_mode_confirm(&p->window_mode, mode);
+    return true;
+}
+
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p != NULL ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+
+void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL) return;
+    (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
 }
 
 void platform_mouse_capture(Platform *p, bool capture) {

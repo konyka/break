@@ -14,7 +14,7 @@ TEST(mobile_platform_exposes_host_state)
     int window;
     int display;
     const PlatformConfig config = {
-        320, 240, "Break mobile", &window, &display, false
+        320, 240, "Break mobile", &window, &display, false, false
     };
     Platform *platform = platform_create(&config);
     u32 width = 0u;
@@ -65,7 +65,18 @@ TEST(mobile_platform_exposes_host_state)
     ASSERT_EQ(platform_get_media_generation(platform), 1u);
     ASSERT_EQ(platform_get_monitor_count(platform), 0u);
 
+    ASSERT_EQ(platform_get_window_mode(platform),
+              PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_TRUE(platform_set_window_mode(platform,
+                                         PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN));
+    ASSERT_FALSE(platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED));
+    ASSERT_FALSE(platform_set_window_mode(platform, (PlatformWindowMode)7));
     platform_toggle_fullscreen(platform);
+    ASSERT_EQ(platform_get_window_mode(platform),
+              PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    platform_get_size(platform, &width, &height);
+    ASSERT_EQ(width, 320u);
+    ASSERT_EQ(height, 240u);
     platform_mouse_capture(platform, true);
     platform_mouse_set_visible(platform, false);
     platform_mouse_set_relative(platform, true);

@@ -35,6 +35,7 @@ typedef HANDLE DPI_AWARENESS_CONTEXT;
 #include <string.h>
 #include <wchar.h>
 #include <limits.h>  /* R564: INT_MAX clamp for bounded clipboard length */
+#include <platform/window_mode.h>
 
 struct Platform {
     HINSTANCE   hinstance;
@@ -43,7 +44,6 @@ struct Platform {
     InputState  input;
     u32         width, height;
     bool        should_close;
-    bool        is_fullscreen;
     bool        mouse_relative;
     bool        mouse_visible;  /* R427: desired cursor visibility (ShowCursor is counter-based) */
     PlatformCursor cursor;
@@ -56,7 +56,11 @@ struct Platform {
     HIMC        ime_context;
     i32         ime_spot_x;
     i32         ime_spot_y;
-    WINDOWPLACEMENT windowed_placement;  /* R566: keeps maximized state */
+    /* FS2: window_mode tracks the mode and the saved windowed rect;
+     * WINDOWPLACEMENT stays the source of truth for the restore (R566: it
+     * keeps the maximized state and the normal rect). */
+    PlatformWindowModeState window_mode;
+    WINDOWPLACEMENT windowed_placement;
     DWORD       windowed_style;
     u64         media_generation;
     PlatformMediaContext media_context;
@@ -151,6 +155,9 @@ static i32 win_vk_to_index(i32 vk_code, LPARAM lParam) {
     case VK_RSHIFT:   return 289;
     case VK_LCONTROL: return 290;
     case VK_RCONTROL: return 290;
+    case VK_MENU:     return INPUT_KEY_ALT;
+    case VK_LMENU:    return INPUT_KEY_ALT;
+    case VK_RMENU:    return INPUT_KEY_ALT;
     /* R360: disambiguate End/Insert dual-binds in main (reset/DOF/water). */
     case VK_PAUSE:    return 291;
     case VK_SCROLL:   return 292;
@@ -353,6 +360,11 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         return 0;
     }
+
+    /* Alt+Enter is an engine shortcut: no "no menu" beep for it. */
+    case WM_SYSCHAR:
+        if (wParam == VK_RETURN) return 0;
+        break;
 
     case WM_CHAR:
         if (p->ime_enabled && wParam >= 0x20 && wParam != 0x7Fu) {
@@ -591,6 +603,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
     SetWindowLongPtrW(p->hwnd, GWLP_USERDATA, (LONG_PTR)p);
 
     p->hdc = GetDC(p->hwnd);
+
+    platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (cfg->start_fullscreen)
+        (void)platform_set_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
 
     if (!cfg->hide_window_until_first_frame) {
         ShowWindow(p->hwnd, SW_SHOW);
@@ -1057,39 +1073,91 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return true;
 }
 
-void platform_toggle_fullscreen(Platform *p) {
-    if (p == NULL || p->hwnd == NULL) return;
-    if (!p->is_fullscreen) {
-        /* Save current windowed state. R566: GetWindowPlacement (unlike
-         * GetWindowRect) also captures the maximized/minimized show state
-         * and the restored (normal) rect, so a maximized window no longer
-         * comes back un-maximized after a fullscreen round-trip. */
-        p->windowed_style = (DWORD)GetWindowLongA(p->hwnd, GWL_STYLE);
-        p->windowed_placement.length = sizeof(p->windowed_placement);
-        GetWindowPlacement(p->hwnd, &p->windowed_placement);
+/* Enter: save GWL_STYLE + WINDOWPLACEMENT, then one SetWindowPos applies
+ * the frameless style (SWP_FRAMECHANGED) and the monitor rect together, so
+ * the client area changes size once. HWND_TOP, never TOPMOST. A maximized
+ * window is fullscreened from its maximized rect (WS_MAXIMIZE dropped with
+ * the frame) and SetWindowPlacement maximizes it again on leave. */
+static bool win_enter_fullscreen(Platform *p) {
+    MONITORINFO mi;
+    RECT wr;
+    DWORD style;
+    PlatformWindowRect saved;
 
-        /* Remove window decoration and maximize to monitor */
-        MONITORINFO mi;
-        mi.cbSize = sizeof(MONITORINFO);
-        HMONITOR mon = MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST);
-        GetMonitorInfoA(mon, &mi);
-
-        SetWindowLongA(p->hwnd, GWL_STYLE, (LONG)(p->windowed_style & ~WS_OVERLAPPEDWINDOW));
-        SetWindowPos(p->hwnd, HWND_TOP,
-                     mi.rcMonitor.left, mi.rcMonitor.top,
-                     mi.rcMonitor.right - mi.rcMonitor.left,
-                     mi.rcMonitor.bottom - mi.rcMonitor.top,
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
-    } else {
-        /* Restore windowed state (placement restores the show state too) */
-        SetWindowLongA(p->hwnd, GWL_STYLE, (LONG)p->windowed_style);
-        SetWindowPlacement(p->hwnd, &p->windowed_placement);
-        /* Apply the restored style's frame without moving the window. */
-        SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
-                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
-                     SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+    p->windowed_placement.length = sizeof(p->windowed_placement);
+    if (!GetWindowPlacement(p->hwnd, &p->windowed_placement)) return false;
+    style = (DWORD)GetWindowLongW(p->hwnd, GWL_STYLE);
+    p->windowed_style = style;
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfoW(MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        return false;
+    if (GetWindowRect(p->hwnd, &wr)) {
+        saved.x = wr.left;
+        saved.y = wr.top;
+        saved.width = (u32)(wr.right - wr.left);
+        saved.height = (u32)(wr.bottom - wr.top);
+        platform_window_mode_save_windowed(&p->window_mode, saved,
+                                           p->windowed_placement.showCmd == SW_SHOWMAXIMIZED);
     }
-    p->is_fullscreen = !p->is_fullscreen;
+    SetWindowLongW(p->hwnd, GWL_STYLE,
+                   (LONG)(style & ~(DWORD)(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE)));
+    if (!SetWindowPos(p->hwnd, HWND_TOP,
+                      mi.rcMonitor.left, mi.rcMonitor.top,
+                      mi.rcMonitor.right - mi.rcMonitor.left,
+                      mi.rcMonitor.bottom - mi.rcMonitor.top,
+                      SWP_NOOWNERZORDER | SWP_FRAMECHANGED)) {
+        SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)style);
+        return false;
+    }
+    return true;
+}
+
+/* Leave: restore the style, then SetWindowPlacement moves/sizes (and
+ * re-maximizes) the window in one step. A hidden window stays hidden: the
+ * placement's show command only applies when it is visible. */
+static bool win_leave_fullscreen(Platform *p) {
+    WINDOWPLACEMENT wp = p->windowed_placement;
+    bool visible = IsWindowVisible(p->hwnd) != FALSE;
+
+    SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)(p->windowed_style & ~(DWORD)WS_MAXIMIZE));
+    if (!visible) wp.showCmd = SW_HIDE;
+    if (!SetWindowPlacement(p->hwnd, &wp)) return false;
+    /* Apply the restored frame if the placement did not change the rect. */
+    SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                 SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    return true;
+}
+
+bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
+    bool ok = true;
+    if (p == NULL || p->hwnd == NULL || !platform_window_mode_valid(mode)) return false;
+    switch (platform_window_mode_request(&p->window_mode, mode)) {
+    case PLATFORM_WINDOW_MODE_ACTION_NONE:
+        return true;
+    case PLATFORM_WINDOW_MODE_ACTION_ENTER:
+        ok = win_enter_fullscreen(p);
+        break;
+    case PLATFORM_WINDOW_MODE_ACTION_LEAVE:
+        ok = win_leave_fullscreen(p);
+        break;
+    case PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED:
+    default:
+        return false;
+    }
+    if (ok) platform_window_mode_confirm(&p->window_mode, mode);
+    else platform_window_mode_fail(&p->window_mode);
+    return ok;
+}
+
+PlatformWindowMode platform_get_window_mode(Platform *p) {
+    return p != NULL ? p->window_mode.current : PLATFORM_WINDOW_MODE_WINDOWED;
+}
+
+void platform_toggle_fullscreen(Platform *p) {
+    if (p == NULL) return;
+    (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
 }
 
 void platform_mouse_capture(Platform *p, bool capture) {

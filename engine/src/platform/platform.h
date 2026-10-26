@@ -48,6 +48,9 @@ typedef struct {
     void *native_window;
     void *native_display;
     bool hide_window_until_first_frame;
+    /* Create the window already in PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN.
+     * Keep last: PlatformConfig is brace-initialised positionally. */
+    bool start_fullscreen;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
@@ -129,6 +132,12 @@ typedef enum {
     PLATFORM_WINDOW_MODE_WINDOWED = 0,
     PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN,
 } PlatformWindowMode;
+/* Idempotent. false for NULL, an invalid mode, or a mode the platform cannot
+ * enter (mobile / QNX Screen are always fullscreen). */
+bool                platform_set_window_mode(Platform *p, PlatformWindowMode mode);
+/* Last mode the platform confirmed; WINDOWED for NULL. */
+PlatformWindowMode  platform_get_window_mode(Platform *p);
+/* set_window_mode(toggle target of the latest request). */
 void                platform_toggle_fullscreen(Platform *p);
 void                platform_mouse_capture(Platform *p, bool capture);
 void                platform_mouse_set_visible(Platform *p, bool visible);
