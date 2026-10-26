@@ -1,6 +1,14 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：VK GPU-assisted 验证的两类遗留报错清零
+
+FS6 跑 GPU-assisted 验证时报出 15 条与切换无关的遗留消息，两类：
+- **`firstInstance` 未启用特性**：材质数组层号（R441）和 LOD 淡入淡出值（R703b）都放在间接命令的 `firstInstance` 里，但设备从未启用 `drawIndirectFirstInstance`（VUID-VkDrawIndexedIndirectCommand-firstInstance-00554），而 `caps.indirect_first_instance_supported` 在 VK 上被无条件报告为 true。修复：设备支持时启用该特性，能力位按实际结果报告（不支持的设备会走已有的回退：关闭材质数组路径、LOD 直接切换）。
+- **`u_ssao` 视图类型不匹配**：材质数组路径的 albedo 是 2D_ARRAY 视图，`rhi_cmd_bind_material_textures(_ibl)` 却用 albedo 视图填充空槽（binding 5 `u_ssao`、阴影、BRDF LUT 等，着色器里都是 `sampler2D`），违反 VUID-vkCmdDraw-viewType-07752。修复：后端按需创建一个 1×1 RGBA8 的 2D 图像，空槽统一用它填充（布局转换走 FS6 的批量布局命令缓冲，设备销毁时释放）。
+- **验证**：GPU-assisted 验证下前向 clustered、blinn、延迟、两次全屏切换 4 种跑法均 0 条消息（改前 15 条）；VK ctest 191/191；Debug/Release 0 警告；GCC 语法检查通过；截图与改动前对比，差异在同一版本连跑两次的噪声范围内（同版本 mean 0.03–0.06，新旧 mean 0.07–0.11，>24 的像素数同量级）。
+
+
 ## 本轮更新：FS6 — VK 全屏切换去掉 GPU 空等（交换链复用、延迟销毁、批量布局转换）
 
 FS5 之后 VK 的最差切换帧仍是 107–112 ms，耗时全在 RHI 层的同步等待上。本轮只改 `rhi_vk.c`（外加 `rhi_native_vulkan.h` 的计数器声明和 `test_vulkan.c` 的新测试）。

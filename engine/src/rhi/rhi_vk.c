@@ -376,6 +376,7 @@ typedef struct {
     bool             feat_independent_blend;   /* per-MRT-attachment blend state usable */
     bool             feat_draw_indirect_count;  /* vkCmdDraw*IndirectCount usable */
     bool             feat_multi_draw_indirect;  /* drawCount>1 in one indirect call */
+    bool             feat_draw_indirect_first_instance; /* nonzero firstInstance in indirect cmds */
     bool             feat_ray_tracing_pipeline;
     bool             feat_ray_query;
     bool             feat_acceleration_structure;
@@ -504,6 +505,13 @@ typedef struct {
     VkRenderPass shadow_render_pass;
     VkRenderPass render_pass_load;      /* LOAD-op twin of the swapchain pass */
     VkImageView shadow_tex_view;
+    /* 1x1 RGBA8 2D image for descriptor slots the caller left empty. The
+     * albedo view used to fill them, but a material-array albedo is a
+     * 2D_ARRAY view and those slots (u_ssao, shadow, IBL LUT ...) are
+     * sampler2D in the shaders: VUID-vkCmdDraw-viewType-07752. */
+    VkImage        fallback_2d_image;
+    VkDeviceMemory fallback_2d_memory;
+    VkImageView    fallback_2d_view;
     /* Template render passes for pipeline creation, keyed by color VkFormat, so
      * a pipeline is render-pass-compatible with the offscreen FBO it draws into
      * (matching color format + D32 depth + identical subpass layout). The
@@ -1312,6 +1320,34 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     vk_batch_image_layout(vk, image, VK_IMAGE_ASPECT_COLOR_BIT,
                           VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS,
                           layout);
+}
+
+static bool vk_create_attachment_image(VKBackend *vk, VkFormat format,
+                                       u32 width, u32 height,
+                                       VkSampleCountFlagBits samples,
+                                       VkImageUsageFlags usage,
+                                       VkImageAspectFlags aspect,
+                                       VkImage *out_image,
+                                       VkDeviceMemory *out_memory,
+                                       VkImageView *out_view);
+
+/* Plain 2D view for empty descriptor slots, created on first use (its layout
+ * transition rides the batched layout command buffer like any new target).
+ * Contents are undefined-but-valid: the slots it fills are not sampled by
+ * the shader bound with them, they only need a type-compatible descriptor. */
+static VkImageView vk_fallback_2d_view(VKBackend *vk) {
+    if (vk->fallback_2d_view != VK_NULL_HANDLE) return vk->fallback_2d_view;
+    if (!vk_create_attachment_image(vk, VK_FORMAT_R8G8B8A8_UNORM, 1u, 1u,
+                                    VK_SAMPLE_COUNT_1_BIT,
+                                    VK_IMAGE_USAGE_SAMPLED_BIT,
+                                    VK_IMAGE_ASPECT_COLOR_BIT,
+                                    &vk->fallback_2d_image,
+                                    &vk->fallback_2d_memory,
+                                    &vk->fallback_2d_view))
+        return VK_NULL_HANDLE;
+    vk_init_image_layout(vk, vk->fallback_2d_image,
+                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return vk->fallback_2d_view;
 }
 
 
@@ -2177,7 +2213,8 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
     dev->capabilities.hiz_supported = true;
     dev->capabilities.compute_supported = true;
     dev->capabilities.indirect_draw_supported = true;
-    dev->capabilities.indirect_first_instance_supported = true;
+    /* indirect_first_instance_supported is set once the device features are
+     * known (drawIndirectFirstInstance, below). */
     dev->capabilities.shader_variant = (u32)RHI_SHADER_VARIANT_GLSL_VK;
     /* R606: no sidecars on VK — rhi_shader_create_path returns the *_vk GLSL
      * file. blinn_phong_vk.vert declares ForwardTemporal at binding 0. */
@@ -2288,6 +2325,18 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
         enabled_features.multiDrawIndirect = VK_TRUE;
         vk->feat_multi_draw_indirect = true;
     }
+    /* The material-array layer (R441) and the LOD fade value (R703b) ride the
+     * indirect commands' firstInstance. A nonzero firstInstance there is only
+     * legal with drawIndirectFirstInstance (VUID-VkDrawIndexedIndirectCommand-
+     * firstInstance-00554); it was used without being enabled. The capability
+     * below now reports what the device really supports, so callers fall back
+     * when it is missing. */
+    if (supported_features2.features.drawIndirectFirstInstance) {
+        enabled_features.drawIndirectFirstInstance = VK_TRUE;
+        vk->feat_draw_indirect_first_instance = true;
+    }
+    dev->capabilities.indirect_first_instance_supported =
+        vk->feat_draw_indirect_first_instance;
 
     VkPhysicalDeviceVulkan12Features enabled_vk12 = {0};
     enabled_vk12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
@@ -2860,6 +2909,12 @@ static void vk_shutdown(RHIDevice *dev) {
             vk->layout_cb = VK_NULL_HANDLE;
         }
         vk_retire_collect(vk, true);
+        if (vk->fallback_2d_view) vkDestroyImageView(vk->device, vk->fallback_2d_view, NULL);
+        if (vk->fallback_2d_image) vkDestroyImage(vk->device, vk->fallback_2d_image, NULL);
+        if (vk->fallback_2d_memory) vkFreeMemory(vk->device, vk->fallback_2d_memory, NULL);
+        vk->fallback_2d_view = VK_NULL_HANDLE;
+        vk->fallback_2d_image = VK_NULL_HANDLE;
+        vk->fallback_2d_memory = VK_NULL_HANDLE;
     }
 
 #if defined(ENGINE_PLATFORM_ANDROID)
@@ -8041,21 +8096,25 @@ void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd,
     if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
 
     VkImageView alb_view = td_alb ? td_alb->view : VK_NULL_HANDLE;
+    /* Empty slots get a plain 2D view (see VKBackend.fallback_2d_view); the
+     * albedo view is kept only as the last resort if that cannot be made. */
+    VkImageView fb_view = vk_fallback_2d_view(vk);
+    if (fb_view == VK_NULL_HANDLE) fb_view = alb_view;
     /* Prefer the explicitly-passed shadow texture (e.g. CSM atlas); fall back to
-     * the legacy global binding, then albedo to keep the descriptor complete. */
+     * the legacy global binding, then the 2D fallback. */
     VkImageView shadow_view = td_shadow ? td_shadow->view
-                            : (vk->shadow_tex_view ? vk->shadow_tex_view : alb_view);
+                            : (vk->shadow_tex_view ? vk->shadow_tex_view : fb_view);
     VkImageView views[9];
-    views[0] = alb_view;
+    views[0] = alb_view ? alb_view : fb_view;
     views[1] = shadow_view;
-    views[2] = td_mr  ? td_mr->view  : alb_view;
-    views[3] = td_nrm ? td_nrm->view : alb_view;
-    views[4] = td_em  ? td_em->view  : alb_view;
-    views[5] = td_ssao ? td_ssao->view : alb_view;
-    /* IBL slots (6-8): use fallback alb_view when no IBL textures bound */
-    views[6] = alb_view;
-    views[7] = alb_view;
-    views[8] = alb_view;
+    views[2] = td_mr  ? td_mr->view  : fb_view;
+    views[3] = td_nrm ? td_nrm->view : fb_view;
+    views[4] = td_em  ? td_em->view  : fb_view;
+    views[5] = td_ssao ? td_ssao->view : fb_view;
+    /* IBL slots (6-8): fallback when no IBL textures are bound */
+    views[6] = fb_view;
+    views[7] = fb_view;
+    views[8] = fb_view;
 
     VkDescriptorImageInfo img_infos[9];
     memset(img_infos, 0, sizeof(img_infos));
@@ -8134,8 +8193,10 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     if (vkAllocateDescriptorSets(vk->device, &dsai, &ds) != VK_SUCCESS) return;
 
     VkImageView alb_view = td_alb ? td_alb->view : VK_NULL_HANDLE;
+    VkImageView fb_view = vk_fallback_2d_view(vk);
+    if (fb_view == VK_NULL_HANDLE) fb_view = alb_view;
     VkImageView shadow_view = td_shadow ? td_shadow->view
-                            : (vk->shadow_tex_view ? vk->shadow_tex_view : alb_view);
+                            : (vk->shadow_tex_view ? vk->shadow_tex_view : fb_view);
 
     bool use_pt_shadow = point_shadow_cubes && point_shadow_count > 0u;
     u32 pt_n = use_pt_shadow ? point_shadow_count : 0u;
@@ -8147,12 +8208,12 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     VkDescriptorImageInfo bind5_infos[4];
     memset(bind5_infos, 0, sizeof(bind5_infos));
     for (u32 i = 0u; i < 4u; i++) {
-        VkImageView v = alb_view;
+        VkImageView v = fb_view;
         if (pt_shadow_at_bind5 && i < pt_n) {
             VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(g_current_device, point_shadow_cubes[i], RHI_RES_TEXTURE);
             if (td && td->view != VK_NULL_HANDLE) v = td->view;
         } else if (!pt_shadow_at_bind5 && i == 0u) {
-            v = td_ssao ? td_ssao->view : alb_view;
+            v = td_ssao ? td_ssao->view : fb_view;
         }
         bind5_infos[i].sampler = sd->sampler;
         bind5_infos[i].imageView = v;
@@ -8191,7 +8252,7 @@ void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd,
     img_infos[4].imageView = td_em ? td_em->view : alb_view;
     img_infos[4].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     img_infos[6].sampler = sd->sampler;
-    img_infos[6].imageView = td_brdf ? td_brdf->view : alb_view;
+    img_infos[6].imageView = td_brdf ? td_brdf->view : fb_view;
     img_infos[6].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     img_infos[7].sampler = sd->sampler;
     img_infos[7].imageView = cd_irr ? cd_irr->view : alb_view;
