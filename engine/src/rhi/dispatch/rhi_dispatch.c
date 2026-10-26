@@ -2,11 +2,15 @@
 #include "rhi/dispatch/rhi_api.h"
 #include "core/log.h"
 
-static int g_stub_logged;
+#include <stdatomic.h>
+
+/* The table is swapped on the device-creating thread and read by every
+ * thread that issues rhi_* calls (e.g. the command-buffer submit thread):
+ * acquire/release keeps the table contents visible with the pointer. */
+static atomic_flag g_stub_logged = ATOMIC_FLAG_INIT;
 
 static void rhi_dispatch_stub_log_once(void) {
-    if (g_stub_logged) return;
-    g_stub_logged = 1;
+    if (atomic_flag_test_and_set_explicit(&g_stub_logged, memory_order_relaxed)) return;
     LOG_ERROR("RHI call before a device was created");
 }
 
@@ -1173,530 +1177,535 @@ static const RHIApi g_stub_api = {
     .rhi_texture_upload_mip = rhi_stub_rhi_texture_upload_mip,
 };
 
-static const RHIApi *g_active_api = &g_stub_api;
+static _Atomic(const RHIApi *) g_active_api = &g_stub_api;
 
 void rhi_dispatch_set_api(const RHIApi *api) {
-    g_active_api = api != NULL ? api : &g_stub_api;
+    atomic_store_explicit(&g_active_api, api != NULL ? api : &g_stub_api,
+                          memory_order_release);
+}
+
+static inline const RHIApi *rhi_dispatch_active(void) {
+    return atomic_load_explicit(&g_active_api, memory_order_acquire);
 }
 
 /* RHI_FORWARDERS_BEGIN */
 RHIAccelerationStructure rhi_backend_acceleration_structure_create(RHIDevice *dev, const RHIAccelerationStructureDesc *desc) {
-    return g_active_api->rhi_backend_acceleration_structure_create(dev, desc);
+    return rhi_dispatch_active()->rhi_backend_acceleration_structure_create(dev, desc);
 }
 
 void rhi_backend_acceleration_structure_destroy(RHIDevice *dev, RHIAccelerationStructure structure) {
-    g_active_api->rhi_backend_acceleration_structure_destroy(dev, structure);
+    rhi_dispatch_active()->rhi_backend_acceleration_structure_destroy(dev, structure);
 }
 
 u64 rhi_backend_acceleration_structure_get_device_address(RHIDevice *dev, RHIAccelerationStructure structure) {
-    return g_active_api->rhi_backend_acceleration_structure_get_device_address(dev, structure);
+    return rhi_dispatch_active()->rhi_backend_acceleration_structure_get_device_address(dev, structure);
 }
 
 bool rhi_backend_acceleration_structure_get_vk_handle(RHIDevice *dev, RHIAccelerationStructure structure, void **out_handle) {
-    return g_active_api->rhi_backend_acceleration_structure_get_vk_handle(dev, structure, out_handle);
+    return rhi_dispatch_active()->rhi_backend_acceleration_structure_get_vk_handle(dev, structure, out_handle);
 }
 
 bool rhi_backend_cmd_buffer_get_native_info(const RHIDevice *dev, const RHICmdBuffer *cmd, RHICmdBufferNativeInfo *out) {
-    return g_active_api->rhi_backend_cmd_buffer_get_native_info(dev, cmd, out);
+    return rhi_dispatch_active()->rhi_backend_cmd_buffer_get_native_info(dev, cmd, out);
 }
 
 bool rhi_backend_cmd_build_blas_one_triangle(RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure blas, const RHIBLASOneTriangleDesc *desc, RHIBuffer scratch_buffer, usize scratch_offset) {
-    return g_active_api->rhi_backend_cmd_build_blas_one_triangle(cmd, dev, blas, desc, scratch_buffer, scratch_offset);
+    return rhi_dispatch_active()->rhi_backend_cmd_build_blas_one_triangle(cmd, dev, blas, desc, scratch_buffer, scratch_offset);
 }
 
 bool rhi_backend_cmd_build_tlas_one_instance(RHICmdBuffer *cmd, RHIDevice *dev, RHIAccelerationStructure tlas, RHIBuffer instance_buffer, RHIBuffer scratch_buffer, usize scratch_offset) {
-    return g_active_api->rhi_backend_cmd_build_tlas_one_instance(cmd, dev, tlas, instance_buffer, scratch_buffer, scratch_offset);
+    return rhi_dispatch_active()->rhi_backend_cmd_build_tlas_one_instance(cmd, dev, tlas, instance_buffer, scratch_buffer, scratch_offset);
 }
 
 bool rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out) {
-    return g_active_api->rhi_backend_get_device_info(dev, out);
+    return rhi_dispatch_active()->rhi_backend_get_device_info(dev, out);
 }
 
 bool rhi_backend_get_native_device(const RHIDevice *dev, RHINativeDevice *out) {
-    return g_active_api->rhi_backend_get_native_device(dev, out);
+    return rhi_dispatch_active()->rhi_backend_get_native_device(dev, out);
 }
 
 bool rhi_backend_texture_get_native_info(const RHIDevice *dev, RHITexture texture, RHITextureNativeInfo *out) {
-    return g_active_api->rhi_backend_texture_get_native_info(dev, texture, out);
+    return rhi_dispatch_active()->rhi_backend_texture_get_native_info(dev, texture, out);
 }
 
 bool rhi_backend_tlas_one_instance_get_build_sizes(RHIDevice *dev, RHIBuffer instance_buffer, RHIAccelerationStructureBuildSizes *out_sizes) {
-    return g_active_api->rhi_backend_tlas_one_instance_get_build_sizes(dev, instance_buffer, out_sizes);
+    return rhi_dispatch_active()->rhi_backend_tlas_one_instance_get_build_sizes(dev, instance_buffer, out_sizes);
 }
 
 bool rhi_blas_one_triangle_get_build_sizes(RHIDevice *dev, const RHIBLASOneTriangleDesc *desc, RHIAccelerationStructureBuildSizes *out_sizes) {
-    return g_active_api->rhi_blas_one_triangle_get_build_sizes(dev, desc, out_sizes);
+    return rhi_dispatch_active()->rhi_blas_one_triangle_get_build_sizes(dev, desc, out_sizes);
 }
 
 RHIBuffer rhi_buffer_create(RHIDevice *dev, const RHIBufferDesc *desc) {
-    return g_active_api->rhi_buffer_create(dev, desc);
+    return rhi_dispatch_active()->rhi_buffer_create(dev, desc);
 }
 
 void rhi_buffer_destroy(RHIDevice *dev, RHIBuffer buf) {
-    g_active_api->rhi_buffer_destroy(dev, buf);
+    rhi_dispatch_active()->rhi_buffer_destroy(dev, buf);
 }
 
 void* rhi_buffer_map(RHIDevice *dev, RHIBuffer buf) {
-    return g_active_api->rhi_buffer_map(dev, buf);
+    return rhi_dispatch_active()->rhi_buffer_map(dev, buf);
 }
 
 bool rhi_buffer_read(RHIDevice *dev, RHIBuffer buf, void *dst, usize offset, usize size) {
-    return g_active_api->rhi_buffer_read(dev, buf, dst, offset, size);
+    return rhi_dispatch_active()->rhi_buffer_read(dev, buf, dst, offset, size);
 }
 
 void rhi_buffer_unmap(RHIDevice *dev, RHIBuffer buf) {
-    g_active_api->rhi_buffer_unmap(dev, buf);
+    rhi_dispatch_active()->rhi_buffer_unmap(dev, buf);
 }
 
 void rhi_buffer_update(RHIDevice *dev, RHIBuffer buf, const void *data, usize size) {
-    g_active_api->rhi_buffer_update(dev, buf, data, size);
+    rhi_dispatch_active()->rhi_buffer_update(dev, buf, data, size);
 }
 
 void rhi_buffer_update_region(RHIDevice *dev, RHIBuffer buf, usize offset, const void *data, usize size) {
-    g_active_api->rhi_buffer_update_region(dev, buf, offset, data, size);
+    rhi_dispatch_active()->rhi_buffer_update_region(dev, buf, offset, data, size);
 }
 
 void rhi_cmd_begin_render_pass(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_begin_render_pass(cmd);
+    rhi_dispatch_active()->rhi_cmd_begin_render_pass(cmd);
 }
 
 void rhi_cmd_bind_acceleration_structure(RHICmdBuffer *cmd, RHIAccelerationStructure structure, u32 binding) {
-    g_active_api->rhi_cmd_bind_acceleration_structure(cmd, structure, binding);
+    rhi_dispatch_active()->rhi_cmd_bind_acceleration_structure(cmd, structure, binding);
 }
 
 void rhi_cmd_bind_cubemap(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
-    g_active_api->rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
+    rhi_dispatch_active()->rhi_cmd_bind_cubemap(cmd, cm, sampler, unit);
 }
 
 void rhi_cmd_bind_cubemap_sampler(RHICmdBuffer *cmd, RHICubemap cm, RHISampler sampler, u32 unit) {
-    g_active_api->rhi_cmd_bind_cubemap_sampler(cmd, cm, sampler, unit);
+    rhi_dispatch_active()->rhi_cmd_bind_cubemap_sampler(cmd, cm, sampler, unit);
 }
 
 void rhi_cmd_bind_deferred_gbuf_textures(RHICmdBuffer *cmd, RHITexture albedo_metallic, RHITexture roughness_ao, RHITexture normal, RHITexture depth, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count, RHISampler cube_sampler) {
-    g_active_api->rhi_cmd_bind_deferred_gbuf_textures(cmd, albedo_metallic, roughness_ao, normal, depth, emissive, shadow, ssao, sampler, brdf_lut, irradiance_map, prefilter_map, point_shadow_cubes, point_shadow_count, cube_sampler);
+    rhi_dispatch_active()->rhi_cmd_bind_deferred_gbuf_textures(cmd, albedo_metallic, roughness_ao, normal, depth, emissive, shadow, ssao, sampler, brdf_lut, irradiance_map, prefilter_map, point_shadow_cubes, point_shadow_count, cube_sampler);
 }
 
 void rhi_cmd_bind_image_cubemap_face(RHICmdBuffer *cmd, RHICubemap cm, u32 face, u32 mip, u32 unit, bool write_only) {
-    g_active_api->rhi_cmd_bind_image_cubemap_face(cmd, cm, face, mip, unit, write_only);
+    rhi_dispatch_active()->rhi_cmd_bind_image_cubemap_face(cmd, cm, face, mip, unit, write_only);
 }
 
 void rhi_cmd_bind_image_texture(RHICmdBuffer *cmd, RHITexture tex, u32 unit, u32 mip_level, bool write_only) {
-    g_active_api->rhi_cmd_bind_image_texture(cmd, tex, unit, mip_level, write_only);
+    rhi_dispatch_active()->rhi_cmd_bind_image_texture(cmd, tex, unit, mip_level, write_only);
 }
 
 void rhi_cmd_bind_index_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, bool is_u32) {
-    g_active_api->rhi_cmd_bind_index_buffer(cmd, buf, offset, is_u32);
+    rhi_dispatch_active()->rhi_cmd_bind_index_buffer(cmd, buf, offset, is_u32);
 }
 
 void rhi_cmd_bind_material_textures(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture shadow, RHITexture ssao, RHISampler sampler) {
-    g_active_api->rhi_cmd_bind_material_textures(cmd, albedo, mr, normal, emissive, shadow, ssao, sampler);
+    rhi_dispatch_active()->rhi_cmd_bind_material_textures(cmd, albedo, mr, normal, emissive, shadow, ssao, sampler);
 }
 
 void rhi_cmd_bind_material_textures_ibl(RHICmdBuffer *cmd, RHITexture albedo, RHITexture mr, RHITexture normal, RHITexture emissive, RHITexture occlusion, RHITexture shadow, RHITexture ssao, RHISampler sampler, RHITexture brdf_lut, RHICubemap irradiance_map, RHICubemap prefilter_map, const RHITexture *point_shadow_cubes, u32 point_shadow_count) {
-    g_active_api->rhi_cmd_bind_material_textures_ibl(cmd, albedo, mr, normal, emissive, occlusion, shadow, ssao, sampler, brdf_lut, irradiance_map, prefilter_map, point_shadow_cubes, point_shadow_count);
+    rhi_dispatch_active()->rhi_cmd_bind_material_textures_ibl(cmd, albedo, mr, normal, emissive, occlusion, shadow, ssao, sampler, brdf_lut, irradiance_map, prefilter_map, point_shadow_cubes, point_shadow_count);
 }
 
 void rhi_cmd_bind_pipeline(RHICmdBuffer *cmd, RHIPipeline pipe) {
-    g_active_api->rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_dispatch_active()->rhi_cmd_bind_pipeline(cmd, pipe);
 }
 
 void rhi_cmd_bind_shadow_map(RHICmdBuffer *cmd, RHIShadowMap *sm) {
-    g_active_api->rhi_cmd_bind_shadow_map(cmd, sm);
+    rhi_dispatch_active()->rhi_cmd_bind_shadow_map(cmd, sm);
 }
 
 void rhi_cmd_bind_shadow_texture(RHICmdBuffer *cmd, RHITexture shadow_tex, RHISampler sampler) {
-    g_active_api->rhi_cmd_bind_shadow_texture(cmd, shadow_tex, sampler);
+    rhi_dispatch_active()->rhi_cmd_bind_shadow_texture(cmd, shadow_tex, sampler);
 }
 
 void rhi_cmd_bind_storage_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
-    g_active_api->rhi_cmd_bind_storage_buffer(cmd, buf, binding);
+    rhi_dispatch_active()->rhi_cmd_bind_storage_buffer(cmd, buf, binding);
 }
 
 void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf1) {
-    g_active_api->rhi_cmd_bind_texel_buffers(cmd, buf0, buf1);
+    rhi_dispatch_active()->rhi_cmd_bind_texel_buffers(cmd, buf0, buf1);
 }
 
 void rhi_cmd_bind_texture(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
-    g_active_api->rhi_cmd_bind_texture(cmd, tex, sampler, unit);
+    rhi_dispatch_active()->rhi_cmd_bind_texture(cmd, tex, sampler, unit);
 }
 
 void rhi_cmd_bind_texture_compute(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit) {
-    g_active_api->rhi_cmd_bind_texture_compute(cmd, tex, sampler, unit);
+    rhi_dispatch_active()->rhi_cmd_bind_texture_compute(cmd, tex, sampler, unit);
 }
 
 void rhi_cmd_bind_texture_mip(RHICmdBuffer *cmd, RHITexture tex, RHISampler sampler, u32 unit, u32 mip_level) {
-    g_active_api->rhi_cmd_bind_texture_mip(cmd, tex, sampler, unit, mip_level);
+    rhi_dispatch_active()->rhi_cmd_bind_texture_mip(cmd, tex, sampler, unit, mip_level);
 }
 
 void rhi_cmd_bind_textures_multi(RHICmdBuffer *cmd, RHITexture *textures, int count, RHISampler sampler) {
-    g_active_api->rhi_cmd_bind_textures_multi(cmd, textures, count, sampler);
+    rhi_dispatch_active()->rhi_cmd_bind_textures_multi(cmd, textures, count, sampler);
 }
 
 void rhi_cmd_bind_uniform_buffer(RHICmdBuffer *cmd, RHIBuffer buf, u32 binding) {
-    g_active_api->rhi_cmd_bind_uniform_buffer(cmd, buf, binding);
+    rhi_dispatch_active()->rhi_cmd_bind_uniform_buffer(cmd, buf, binding);
 }
 
 void rhi_cmd_bind_vertex_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset) {
-    g_active_api->rhi_cmd_bind_vertex_buffer(cmd, buf, offset);
+    rhi_dispatch_active()->rhi_cmd_bind_vertex_buffer(cmd, buf, offset);
 }
 
 void rhi_cmd_clear_color(RHICmdBuffer *cmd, f32 r, f32 g, f32 b, f32 a) {
-    g_active_api->rhi_cmd_clear_color(cmd, r, g, b, a);
+    rhi_dispatch_active()->rhi_cmd_clear_color(cmd, r, g, b, a);
 }
 
 void rhi_cmd_clear_color_attachment(RHICmdBuffer *cmd, u32 attachment, f32 r, f32 g, f32 b, f32 a) {
-    g_active_api->rhi_cmd_clear_color_attachment(cmd, attachment, r, g, b, a);
+    rhi_dispatch_active()->rhi_cmd_clear_color_attachment(cmd, attachment, r, g, b, a);
 }
 
 void rhi_cmd_clear_depth(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_clear_depth(cmd);
+    rhi_dispatch_active()->rhi_cmd_clear_depth(cmd);
 }
 
 void rhi_cmd_copy_buffer(RHICmdBuffer *cmd, RHIBuffer src, RHIBuffer dst, usize size) {
-    g_active_api->rhi_cmd_copy_buffer(cmd, src, dst, size);
+    rhi_dispatch_active()->rhi_cmd_copy_buffer(cmd, src, dst, size);
 }
 
 void rhi_cmd_dispatch(RHICmdBuffer *cmd, u32 x, u32 y, u32 z) {
-    g_active_api->rhi_cmd_dispatch(cmd, x, y, z);
+    rhi_dispatch_active()->rhi_cmd_dispatch(cmd, x, y, z);
 }
 
 void rhi_cmd_draw(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count) {
-    g_active_api->rhi_cmd_draw(cmd, vertex_count, instance_count);
+    rhi_dispatch_active()->rhi_cmd_draw(cmd, vertex_count, instance_count);
 }
 
 void rhi_cmd_draw_base(RHICmdBuffer *cmd, u32 vertex_count, u32 instance_count, u32 first_vertex) {
-    g_active_api->rhi_cmd_draw_base(cmd, vertex_count, instance_count, first_vertex);
+    rhi_dispatch_active()->rhi_cmd_draw_base(cmd, vertex_count, instance_count, first_vertex);
 }
 
 void rhi_cmd_draw_indexed(RHICmdBuffer *cmd, u32 index_count, u32 instance_count) {
-    g_active_api->rhi_cmd_draw_indexed(cmd, index_count, instance_count);
+    rhi_dispatch_active()->rhi_cmd_draw_indexed(cmd, index_count, instance_count);
 }
 
 void rhi_cmd_draw_indexed_base(RHICmdBuffer *cmd, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset) {
-    g_active_api->rhi_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index, vertex_offset);
+    rhi_dispatch_active()->rhi_cmd_draw_indexed_base(cmd, index_count, instance_count, first_index, vertex_offset);
 }
 
 void rhi_cmd_draw_indexed_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
-    g_active_api->rhi_cmd_draw_indexed_indirect(dev, cmd_buf, offset, draw_count, stride);
+    rhi_dispatch_active()->rhi_cmd_draw_indexed_indirect(dev, cmd_buf, offset, draw_count, stride);
 }
 
 void rhi_cmd_draw_indexed_indirect_count(RHIDevice *dev, RHIBuffer cmd_buf, u32 cmd_offset, RHIBuffer count_buf, u32 count_offset, u32 max_draws, u32 stride) {
-    g_active_api->rhi_cmd_draw_indexed_indirect_count(dev, cmd_buf, cmd_offset, count_buf, count_offset, max_draws, stride);
+    rhi_dispatch_active()->rhi_cmd_draw_indexed_indirect_count(dev, cmd_buf, cmd_offset, count_buf, count_offset, max_draws, stride);
 }
 
 void rhi_cmd_draw_indirect(RHIDevice *dev, RHIBuffer cmd_buf, u32 offset, u32 draw_count, u32 stride) {
-    g_active_api->rhi_cmd_draw_indirect(dev, cmd_buf, offset, draw_count, stride);
+    rhi_dispatch_active()->rhi_cmd_draw_indirect(dev, cmd_buf, offset, draw_count, stride);
 }
 
 void rhi_cmd_end_render_pass(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_end_render_pass(cmd);
+    rhi_dispatch_active()->rhi_cmd_end_render_pass(cmd);
 }
 
 void rhi_cmd_fill_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, usize size, u32 value) {
-    g_active_api->rhi_cmd_fill_buffer(cmd, buf, offset, size, value);
+    rhi_dispatch_active()->rhi_cmd_fill_buffer(cmd, buf, offset, size, value);
 }
 
 void rhi_cmd_memory_barrier(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_memory_barrier(cmd);
+    rhi_dispatch_active()->rhi_cmd_memory_barrier(cmd);
 }
 
 void rhi_cmd_push_constants(RHICmdBuffer *cmd, u32 offset, const void *data, u32 size) {
-    g_active_api->rhi_cmd_push_constants(cmd, offset, data, size);
+    rhi_dispatch_active()->rhi_cmd_push_constants(cmd, offset, data, size);
 }
 
 void rhi_cmd_set_cull_face(RHICmdBuffer *cmd, bool enabled) {
-    g_active_api->rhi_cmd_set_cull_face(cmd, enabled);
+    rhi_dispatch_active()->rhi_cmd_set_cull_face(cmd, enabled);
 }
 
 void rhi_cmd_set_depth_func_less(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_set_depth_func_less(cmd);
+    rhi_dispatch_active()->rhi_cmd_set_depth_func_less(cmd);
 }
 
 void rhi_cmd_set_depth_func_less_or_equal(RHICmdBuffer *cmd) {
-    g_active_api->rhi_cmd_set_depth_func_less_or_equal(cmd);
+    rhi_dispatch_active()->rhi_cmd_set_depth_func_less_or_equal(cmd);
 }
 
 void rhi_cmd_set_depth_mask(RHICmdBuffer *cmd, bool enabled) {
-    g_active_api->rhi_cmd_set_depth_mask(cmd, enabled);
+    rhi_dispatch_active()->rhi_cmd_set_depth_mask(cmd, enabled);
 }
 
 void rhi_cmd_set_scissor(RHICmdBuffer *cmd, i32 x, i32 y, u32 w, u32 h) {
-    g_active_api->rhi_cmd_set_scissor(cmd, x, y, w, h);
+    rhi_dispatch_active()->rhi_cmd_set_scissor(cmd, x, y, w, h);
 }
 
 void rhi_cmd_set_scissor_top_left(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
-    g_active_api->rhi_cmd_set_scissor_top_left(cmd, x, y, w, h);
+    rhi_dispatch_active()->rhi_cmd_set_scissor_top_left(cmd, x, y, w, h);
 }
 
 void rhi_cmd_set_shadow_viewport(RHICmdBuffer *cmd, u32 x, u32 y, u32 w, u32 h) {
-    g_active_api->rhi_cmd_set_shadow_viewport(cmd, x, y, w, h);
+    rhi_dispatch_active()->rhi_cmd_set_shadow_viewport(cmd, x, y, w, h);
 }
 
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size) {
-    g_active_api->rhi_cmd_set_uniform_bytes(cmd, location, data, size);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_bytes(cmd, location, data, size);
 }
 
 void rhi_cmd_set_uniform_f32(RHICmdBuffer *cmd, i32 location, f32 v) {
-    g_active_api->rhi_cmd_set_uniform_f32(cmd, location, v);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_f32(cmd, location, v);
 }
 
 void rhi_cmd_set_uniform_i32(RHICmdBuffer *cmd, i32 location, i32 v) {
-    g_active_api->rhi_cmd_set_uniform_i32(cmd, location, v);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_i32(cmd, location, v);
 }
 
 void rhi_cmd_set_uniform_mat4(RHICmdBuffer *cmd, i32 location, const f32 *m) {
-    g_active_api->rhi_cmd_set_uniform_mat4(cmd, location, m);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_mat4(cmd, location, m);
 }
 
 void rhi_cmd_set_uniform_vec2(RHICmdBuffer *cmd, i32 location, f32 x, f32 y) {
-    g_active_api->rhi_cmd_set_uniform_vec2(cmd, location, x, y);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_vec2(cmd, location, x, y);
 }
 
 void rhi_cmd_set_uniform_vec3(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z) {
-    g_active_api->rhi_cmd_set_uniform_vec3(cmd, location, x, y, z);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_vec3(cmd, location, x, y, z);
 }
 
 void rhi_cmd_set_uniform_vec4(RHICmdBuffer *cmd, i32 location, f32 x, f32 y, f32 z, f32 w) {
-    g_active_api->rhi_cmd_set_uniform_vec4(cmd, location, x, y, z, w);
+    rhi_dispatch_active()->rhi_cmd_set_uniform_vec4(cmd, location, x, y, z, w);
 }
 
 void rhi_cmd_set_viewport(RHICmdBuffer *cmd, f32 x, f32 y, f32 w, f32 h, f32 min_depth, f32 max_depth) {
-    g_active_api->rhi_cmd_set_viewport(cmd, x, y, w, h, min_depth, max_depth);
+    rhi_dispatch_active()->rhi_cmd_set_viewport(cmd, x, y, w, h, min_depth, max_depth);
 }
 
 void rhi_cmd_transition_depth_to_read(RHICmdBuffer *cmd, RHITexture depth_tex) {
-    g_active_api->rhi_cmd_transition_depth_to_read(cmd, depth_tex);
+    rhi_dispatch_active()->rhi_cmd_transition_depth_to_read(cmd, depth_tex);
 }
 
 void rhi_cmd_unbind_shadow_map(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    g_active_api->rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
+    rhi_dispatch_active()->rhi_cmd_unbind_shadow_map(cmd, screen_w, screen_h);
 }
 
 void rhi_cmd_update_buffer(RHICmdBuffer *cmd, RHIBuffer buf, usize offset, const void *data, usize size) {
-    g_active_api->rhi_cmd_update_buffer(cmd, buf, offset, data, size);
+    rhi_dispatch_active()->rhi_cmd_update_buffer(cmd, buf, offset, data, size);
 }
 
 RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
-    return g_active_api->rhi_cubemap_create(dev, desc);
+    return rhi_dispatch_active()->rhi_cubemap_create(dev, desc);
 }
 
 void rhi_cubemap_depth_fbo_bind_face(RHICmdBuffer *cmd, RHICubemapDepthFBO *fbo, u32 face) {
-    g_active_api->rhi_cubemap_depth_fbo_bind_face(cmd, fbo, face);
+    rhi_dispatch_active()->rhi_cubemap_depth_fbo_bind_face(cmd, fbo, face);
 }
 
 RHICubemapDepthFBO rhi_cubemap_depth_fbo_create(RHIDevice *dev, u32 size) {
-    return g_active_api->rhi_cubemap_depth_fbo_create(dev, size);
+    return rhi_dispatch_active()->rhi_cubemap_depth_fbo_create(dev, size);
 }
 
 void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
-    g_active_api->rhi_cubemap_depth_fbo_destroy(dev, fbo);
+    rhi_dispatch_active()->rhi_cubemap_depth_fbo_destroy(dev, fbo);
 }
 
 void rhi_cubemap_depth_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    g_active_api->rhi_cubemap_depth_fbo_unbind(cmd, screen_w, screen_h);
+    rhi_dispatch_active()->rhi_cubemap_depth_fbo_unbind(cmd, screen_w, screen_h);
 }
 
 void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
-    g_active_api->rhi_cubemap_destroy(dev, cm);
+    rhi_dispatch_active()->rhi_cubemap_destroy(dev, cm);
 }
 
 void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
-    g_active_api->rhi_cubemap_transition_to_read(dev, cm);
+    rhi_dispatch_active()->rhi_cubemap_transition_to_read(dev, cm);
 }
 
 void rhi_device_destroy(RHIDevice *dev) {
-    g_active_api->rhi_device_destroy(dev);
+    rhi_dispatch_active()->rhi_device_destroy(dev);
 }
 
 bool rhi_device_idle(RHIDevice *dev) {
-    return g_active_api->rhi_device_idle(dev);
+    return rhi_dispatch_active()->rhi_device_idle(dev);
 }
 
 bool rhi_device_lost(RHIDevice *dev) {
-    return g_active_api->rhi_device_lost(dev);
+    return rhi_dispatch_active()->rhi_device_lost(dev);
 }
 
 void rhi_device_resize(RHIDevice *dev, u32 w, u32 h) {
-    g_active_api->rhi_device_resize(dev, w, h);
+    rhi_dispatch_active()->rhi_device_resize(dev, w, h);
 }
 
 RHICmdBuffer * rhi_frame_begin(RHIDevice *dev) {
-    return g_active_api->rhi_frame_begin(dev);
+    return rhi_dispatch_active()->rhi_frame_begin(dev);
 }
 
 void rhi_frame_end(RHIDevice *dev) {
-    g_active_api->rhi_frame_end(dev);
+    rhi_dispatch_active()->rhi_frame_end(dev);
 }
 
 u32 rhi_frame_index(RHIDevice *dev) {
-    return g_active_api->rhi_frame_index(dev);
+    return rhi_dispatch_active()->rhi_frame_index(dev);
 }
 
 void rhi_gpu_timer_begin(RHIGPUTimer *t) {
-    g_active_api->rhi_gpu_timer_begin(t);
+    rhi_dispatch_active()->rhi_gpu_timer_begin(t);
 }
 
 RHIGPUTimer * rhi_gpu_timer_create(RHIDevice *dev) {
-    return g_active_api->rhi_gpu_timer_create(dev);
+    return rhi_dispatch_active()->rhi_gpu_timer_create(dev);
 }
 
 void rhi_gpu_timer_destroy(RHIDevice *dev, RHIGPUTimer *t) {
-    g_active_api->rhi_gpu_timer_destroy(dev, t);
+    rhi_dispatch_active()->rhi_gpu_timer_destroy(dev, t);
 }
 
 f64 rhi_gpu_timer_elapsed_ms(RHIGPUTimer *t) {
-    return g_active_api->rhi_gpu_timer_elapsed_ms(t);
+    return rhi_dispatch_active()->rhi_gpu_timer_elapsed_ms(t);
 }
 
 void rhi_gpu_timer_end(RHIGPUTimer *t) {
-    g_active_api->rhi_gpu_timer_end(t);
+    rhi_dispatch_active()->rhi_gpu_timer_end(t);
 }
 
 void rhi_mrt_fbo_bind(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
-    g_active_api->rhi_mrt_fbo_bind(cmd, fbo);
+    rhi_dispatch_active()->rhi_mrt_fbo_bind(cmd, fbo);
 }
 
 void rhi_mrt_fbo_bind_load(RHICmdBuffer *cmd, RHIMRTFBO *fbo) {
-    g_active_api->rhi_mrt_fbo_bind_load(cmd, fbo);
+    rhi_dispatch_active()->rhi_mrt_fbo_bind_load(cmd, fbo);
 }
 
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height, const RHIFormat *formats, u32 attachment_count) {
-    return g_active_api->rhi_mrt_fbo_create(dev, width, height, formats, attachment_count);
+    return rhi_dispatch_active()->rhi_mrt_fbo_create(dev, width, height, formats, attachment_count);
 }
 
 void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
-    g_active_api->rhi_mrt_fbo_destroy(dev, fbo);
+    rhi_dispatch_active()->rhi_mrt_fbo_destroy(dev, fbo);
 }
 
 void rhi_mrt_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    g_active_api->rhi_mrt_fbo_unbind(cmd, screen_w, screen_h);
+    rhi_dispatch_active()->rhi_mrt_fbo_unbind(cmd, screen_w, screen_h);
 }
 
 void rhi_offscreen_fbo_bind(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    g_active_api->rhi_offscreen_fbo_bind(cmd, fbo);
+    rhi_dispatch_active()->rhi_offscreen_fbo_bind(cmd, fbo);
 }
 
 void rhi_offscreen_fbo_bind_load(RHICmdBuffer *cmd, RHIOffscreenFBO *fbo) {
-    g_active_api->rhi_offscreen_fbo_bind_load(cmd, fbo);
+    rhi_dispatch_active()->rhi_offscreen_fbo_bind_load(cmd, fbo);
 }
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 height) {
-    return g_active_api->rhi_offscreen_fbo_create(dev, width, height);
+    return rhi_dispatch_active()->rhi_offscreen_fbo_create(dev, width, height);
 }
 
 RHIOffscreenFBO rhi_offscreen_fbo_create_desc(RHIDevice *dev, const RHIOffscreenFBODesc *desc) {
-    return g_active_api->rhi_offscreen_fbo_create_desc(dev, desc);
+    return rhi_dispatch_active()->rhi_offscreen_fbo_create_desc(dev, desc);
 }
 
 RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *dev, u32 width, u32 height, RHIFormat color_fmt) {
-    return g_active_api->rhi_offscreen_fbo_create_fmt(dev, width, height, color_fmt);
+    return rhi_dispatch_active()->rhi_offscreen_fbo_create_fmt(dev, width, height, color_fmt);
 }
 
 void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
-    g_active_api->rhi_offscreen_fbo_destroy(dev, fbo);
+    rhi_dispatch_active()->rhi_offscreen_fbo_destroy(dev, fbo);
 }
 
 void rhi_offscreen_fbo_set_clear_color(RHIDevice *dev, RHIOffscreenFBO *fbo, f32 r, f32 g, f32 b, f32 a) {
-    g_active_api->rhi_offscreen_fbo_set_clear_color(dev, fbo, r, g, b, a);
+    rhi_dispatch_active()->rhi_offscreen_fbo_set_clear_color(dev, fbo, r, g, b, a);
 }
 
 void rhi_offscreen_fbo_unbind(RHICmdBuffer *cmd, u32 screen_w, u32 screen_h) {
-    g_active_api->rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    rhi_dispatch_active()->rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
 }
 
 RHIPipelineBindings * rhi_pipeline_bindings_create(RHIDevice *dev, RHIPipeline pipe) {
-    return g_active_api->rhi_pipeline_bindings_create(dev, pipe);
+    return rhi_dispatch_active()->rhi_pipeline_bindings_create(dev, pipe);
 }
 
 void rhi_pipeline_bindings_destroy(RHIDevice *dev, RHIPipelineBindings *b) {
-    g_active_api->rhi_pipeline_bindings_destroy(dev, b);
+    rhi_dispatch_active()->rhi_pipeline_bindings_destroy(dev, b);
 }
 
 i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *name) {
-    return g_active_api->rhi_pipeline_bindings_resolve(b, name);
+    return rhi_dispatch_active()->rhi_pipeline_bindings_resolve(b, name);
 }
 
 RHIPipeline rhi_pipeline_create(RHIDevice *dev, const RHIPipelineDesc *desc) {
-    return g_active_api->rhi_pipeline_create(dev, desc);
+    return rhi_dispatch_active()->rhi_pipeline_create(dev, desc);
 }
 
 void rhi_pipeline_destroy(RHIDevice *dev, RHIPipeline pipe) {
-    g_active_api->rhi_pipeline_destroy(dev, pipe);
+    rhi_dispatch_active()->rhi_pipeline_destroy(dev, pipe);
 }
 
 i32 rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name) {
-    return g_active_api->rhi_pipeline_get_uniform_location(dev, pipe, name);
+    return rhi_dispatch_active()->rhi_pipeline_get_uniform_location(dev, pipe, name);
 }
 
 void rhi_present(RHIDevice *dev) {
-    g_active_api->rhi_present(dev);
+    rhi_dispatch_active()->rhi_present(dev);
 }
 
 RHISampler rhi_sampler_create(RHIDevice *dev, const RHISamplerDesc *desc) {
-    return g_active_api->rhi_sampler_create(dev, desc);
+    return rhi_dispatch_active()->rhi_sampler_create(dev, desc);
 }
 
 void rhi_sampler_destroy(RHIDevice *dev, RHISampler sampler) {
-    g_active_api->rhi_sampler_destroy(dev, sampler);
+    rhi_dispatch_active()->rhi_sampler_destroy(dev, sampler);
 }
 
 bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h, u8 *pixels, usize pixel_bytes) {
-    return g_active_api->rhi_screenshot(dev, x, y, w, h, pixels, pixel_bytes);
+    return rhi_dispatch_active()->rhi_screenshot(dev, x, y, w, h, pixels, pixel_bytes);
 }
 
 void rhi_set_vsync(RHIDevice *dev, bool enabled) {
-    g_active_api->rhi_set_vsync(dev, enabled);
+    rhi_dispatch_active()->rhi_set_vsync(dev, enabled);
 }
 
 RHIShader rhi_shader_create(RHIDevice *dev, const char *source, usize len, bool is_fragment) {
-    return g_active_api->rhi_shader_create(dev, source, len, is_fragment);
+    return rhi_dispatch_active()->rhi_shader_create(dev, source, len, is_fragment);
 }
 
 RHIShader rhi_shader_create_compute(RHIDevice *dev, const char *source, usize len) {
-    return g_active_api->rhi_shader_create_compute(dev, source, len);
+    return rhi_dispatch_active()->rhi_shader_create_compute(dev, source, len);
 }
 
 void rhi_shader_destroy(RHIDevice *dev, RHIShader shader) {
-    g_active_api->rhi_shader_destroy(dev, shader);
+    rhi_dispatch_active()->rhi_shader_destroy(dev, shader);
 }
 
 RHIShadowMap rhi_shadow_map_create(RHIDevice *dev, u32 width, u32 height) {
-    return g_active_api->rhi_shadow_map_create(dev, width, height);
+    return rhi_dispatch_active()->rhi_shadow_map_create(dev, width, height);
 }
 
 void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
-    g_active_api->rhi_shadow_map_destroy(dev, sm);
+    rhi_dispatch_active()->rhi_shadow_map_destroy(dev, sm);
 }
 
 RHITexture rhi_texture_array_create(RHIDevice *dev, u32 width, u32 height, u32 layers, RHIFormat fmt) {
-    return g_active_api->rhi_texture_array_create(dev, width, height, layers, fmt);
+    return rhi_dispatch_active()->rhi_texture_array_create(dev, width, height, layers, fmt);
 }
 
 void rhi_texture_array_upload_layer(RHIDevice *dev, RHITexture tex, u32 layer, const void *rgba8, usize size) {
-    g_active_api->rhi_texture_array_upload_layer(dev, tex, layer, rgba8, size);
+    rhi_dispatch_active()->rhi_texture_array_upload_layer(dev, tex, layer, rgba8, size);
 }
 
 RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
-    return g_active_api->rhi_texture_create(dev, desc);
+    return rhi_dispatch_active()->rhi_texture_create(dev, desc);
 }
 
 void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
-    g_active_api->rhi_texture_destroy(dev, tex);
+    rhi_dispatch_active()->rhi_texture_destroy(dev, tex);
 }
 
 bool rhi_texture_get_size(RHIDevice *dev, RHITexture tex, u32 *out_w, u32 *out_h) {
-    return g_active_api->rhi_texture_get_size(dev, tex, out_w, out_h);
+    return rhi_dispatch_active()->rhi_texture_get_size(dev, tex, out_w, out_h);
 }
 
 bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, usize size) {
-    return g_active_api->rhi_texture_read_pixels(dev, tex, dst_rgba8, size);
+    return rhi_dispatch_active()->rhi_texture_read_pixels(dev, tex, dst_rgba8, size);
 }
 
 void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
-    g_active_api->rhi_texture_transition_to_read(dev, tex);
+    rhi_dispatch_active()->rhi_texture_transition_to_read(dev, tex);
 }
 
 void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level, u32 width, u32 height, const void *data, usize size) {
-    g_active_api->rhi_texture_upload_mip(dev, tex, mip_level, width, height, data, size);
+    rhi_dispatch_active()->rhi_texture_upload_mip(dev, tex, mip_level, width, height, data, size);
 }
 /* RHI_FORWARDERS_END */

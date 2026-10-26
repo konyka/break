@@ -2657,6 +2657,14 @@ endif()
         TEST_RHI_DISPATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_dispatch.c")
     add_test(NAME test_rhi_dispatch COMMAND test_rhi_dispatch)
     set_tests_properties(test_rhi_dispatch PROPERTIES LABELS "headless;platform_contract")
+    add_executable(test_rhi_runtime_select tests/test_rhi_runtime_select.c
+        src/rhi/rhi_runtime.c src/rhi/dispatch/rhi_dispatch.c
+        src/rhi/rhi_rollout.c)
+    target_include_directories(test_rhi_runtime_select PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_rhi_runtime_select PRIVATE
+        ENGINE_RHI_ROLLOUT_CONFIG_VERSION=0)
+    add_test(NAME test_rhi_runtime_select COMMAND test_rhi_runtime_select)
+    set_tests_properties(test_rhi_runtime_select PROPERTIES LABELS "headless;platform_contract")
     add_test(NAME test_rhi_dispatch_contract
         COMMAND ${CMAKE_COMMAND}
             -DRHI_DISPATCH_DIR=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch

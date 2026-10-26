@@ -175,7 +175,7 @@ def render_stub(name, declaration):
 
 def render_forwarder(name, declaration):
     return_type, _, arg_declarations, call_args = declaration
-    call = f"g_active_api->{name}({call_args})"
+    call = f"rhi_dispatch_active()->{name}({call_args})"
     statement = ";" if return_type == "void" else f"return {call};"
     if return_type == "void":
         statement = f"    {call};"
@@ -190,11 +190,15 @@ def render_dispatch_c(api_names, declarations):
         '#include "rhi/dispatch/rhi_api.h"',
         '#include "core/log.h"',
         "",
-        "static int g_stub_logged;",
+        "#include <stdatomic.h>",
+        "",
+        "/* The table is swapped on the device-creating thread and read by every",
+        " * thread that issues rhi_* calls (e.g. the command-buffer submit thread):",
+        " * acquire/release keeps the table contents visible with the pointer. */",
+        "static atomic_flag g_stub_logged = ATOMIC_FLAG_INIT;",
         "",
         "static void rhi_dispatch_stub_log_once(void) {",
-        "    if (g_stub_logged) return;",
-        "    g_stub_logged = 1;",
+        "    if (atomic_flag_test_and_set_explicit(&g_stub_logged, memory_order_relaxed)) return;",
         '    LOG_ERROR("RHI call before a device was created");',
         "}",
         "",
@@ -208,10 +212,15 @@ def render_dispatch_c(api_names, declarations):
     lines.extend([
         "};",
         "",
-        "static const RHIApi *g_active_api = &g_stub_api;",
+        "static _Atomic(const RHIApi *) g_active_api = &g_stub_api;",
         "",
         "void rhi_dispatch_set_api(const RHIApi *api) {",
-        "    g_active_api = api != NULL ? api : &g_stub_api;",
+        "    atomic_store_explicit(&g_active_api, api != NULL ? api : &g_stub_api,",
+        "                          memory_order_release);",
+        "}",
+        "",
+        "static inline const RHIApi *rhi_dispatch_active(void) {",
+        "    return atomic_load_explicit(&g_active_api, memory_order_acquire);",
         "}",
         "",
         "/* RHI_FORWARDERS_BEGIN */",
