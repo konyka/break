@@ -82,7 +82,7 @@
 - [x] Audit existing Vulkan/D3D12/Metal/headless plans（2026-10-25，只读审计，产物 `docs/cross_engine/graphics_backend_audit.md`：逐后端状态、OpenGL 移除门 11 条件核对（该门已于 2026-10-26 随 OpenGL 长期保留的决定取消）、17 项缺口及 owner；**未运行**任何 graphics/Metal/D3D12 测试，CI 产物未下载）
 - [ ] Complete backend-specific remaining gaps in separate plans（审计 §4 已列 17 项缺口；其中 #7 废弃标记机制、#8 `auto` 默认值、#10 `windows-d3d12.yml` 在 master 上失败（WARP push-constant write-drop 门）、#11 D3D12 consumer 对等 无现有 plan 覆盖，需新建；#1/#2/#3/#6 需要设备/runner/维护者动作）
 - [ ] Collect per-backend evidence
-- [x] OpenGL policy（2026-10-26 维护者决定：**长期保留**——`fallback_chain` 最后一级降级方案 + 跨后端渲染对比基准，移除计划取消；`test_rhi_rollout_config_contract` 钉住链序与各平台 allowed，`test_rhi_golden_parity` 钉住 VK/GL golden 对应关系；GL goldens 已重生成，本机 GL/VK `test_vulkan` 均 ALL PASSED。**默认后端同日决定为 Vulkan**：`auto` 在 Linux/Windows 解析为 Vulkan（缺 Vulkan 依赖时带警告降级到 OpenGL），rollout v3 vulkan 居首，`test_rhi_backend_selection` 钉住；遗留决策：是否需要运行时降级到 OpenGL（需同时链接多个后端）——见审计 §3 第 5 条）
+- [x] OpenGL policy（2026-10-26 维护者决定：**长期保留**——`fallback_chain` 最后一级降级方案 + 跨后端渲染对比基准，移除计划取消；`test_rhi_rollout_config_contract` 钉住链序与各平台 allowed，`test_rhi_golden_parity` 钉住 VK/GL golden 对应关系；GL goldens 已重生成，本机 GL/VK `test_vulkan` 均 ALL PASSED。**默认后端同日决定为 Vulkan**：`auto` 在 Linux/Windows 解析为 Vulkan（缺 Vulkan 依赖时带警告降级到 OpenGL），rollout v3 vulkan 居首，`test_rhi_backend_selection` 钉住；**运行时降级同日交付**（branch `sdd/rhi-runtime-fallback`）：默认 `auto` 构建同时链接 Vulkan + OpenGL，设备创建失败即在同一窗口降级到 OpenGL，`BREAK_RHI_BACKEND` / `BREAK_RHI_NO_FALLBACK` 可控；本机 Linux X11 实测，Windows/Wayland 未验；契约 `docs/design/rhi_runtime_backend.md`）
 
 ## Cross-cutting validation
 
