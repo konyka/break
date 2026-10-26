@@ -8,17 +8,39 @@
  * screen service; until then every graphics entry point above this layer
  * stays fail-closed (headless RHI, docs/qnx_compat.md §7).
  *
- * Not yet mapped (follow-up with the graphics milestone): keyboard/text
- * events (drained, not translated), mouse wheel/relative mode, clipboard,
- * IME, monitors. Those surface fail-closed exactly like window_mobile.c.
+ * Not yet mapped (follow-up with the graphics milestone): text/IME,
+ * clipboard, monitors, relative mouse mode. Those surface fail-closed
+ * exactly like window_mobile.c.
  */
 
 #if defined(ENGINE_PLATFORM_QNX) && defined(ENGINE_QNX_SCREEN)
 
 #include <platform/platform.h>
+#include <platform/screen_keymap.h>
 #include <screen/screen.h>
+#include <sys/keycodes.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* The keymap mirrors <sys/keycodes.h> as raw integers so it stays
+ * host-testable (test_screen_keymap.c); pin the mirror to the real header
+ * at compile time on QNX cross builds. */
+_Static_assert(KEYCODE_PC_KEYS == SCREEN_KEYMAP_PC_KEYS,
+               "screen_keymap PC_KEYS base drifted from sys/keycodes.h");
+_Static_assert(KEYCODE_ESCAPE == SCREEN_KEYMAP_PC(0x1B), "ESCAPE drifted");
+_Static_assert(KEYCODE_RETURN == SCREEN_KEYMAP_PC(0x0D), "RETURN drifted");
+_Static_assert(KEYCODE_LEFT == SCREEN_KEYMAP_PC(0x51), "LEFT drifted");
+_Static_assert(KEYCODE_UP == SCREEN_KEYMAP_PC(0x52), "UP drifted");
+_Static_assert(KEYCODE_RIGHT == SCREEN_KEYMAP_PC(0x53), "RIGHT drifted");
+_Static_assert(KEYCODE_DOWN == SCREEN_KEYMAP_PC(0x54), "DOWN drifted");
+_Static_assert(KEYCODE_F1 == SCREEN_KEYMAP_PC(0xBE), "F1 drifted");
+_Static_assert(KEYCODE_F12 == SCREEN_KEYMAP_PC(0xC9), "F12 drifted");
+_Static_assert(KEYCODE_PG_UP == SCREEN_KEYMAP_PC(0x55), "PG_UP drifted");
+_Static_assert(KEYCODE_HOME == SCREEN_KEYMAP_PC(0x50), "HOME drifted");
+_Static_assert(KEYCODE_INSERT == SCREEN_KEYMAP_PC(0x63), "INSERT drifted");
+_Static_assert(KEYCODE_DELETE == SCREEN_KEYMAP_PC(0xFF), "DELETE drifted");
+_Static_assert(KEYCODE_LEFT_SHIFT == SCREEN_KEYMAP_PC(0xE1), "LSHIFT drifted");
+_Static_assert(KEYCODE_LEFT_CTRL == SCREEN_KEYMAP_PC(0xE3), "LCTRL drifted");
 
 struct Platform {
     screen_context_t ctx;
@@ -125,6 +147,27 @@ static void screen_apply_pointer(Platform *p)
         input_set_key(&p->input, INPUT_MOUSE_RIGHT,
                       (buttons[0] & SCREEN_RIGHT_MOUSE_BUTTON) != 0);
     }
+    /* Vertical wheel: upward ticks are positive (x11 parity: up = +1 dy). */
+    int wheel[1] = { 0 };
+    if (screen_get_event_property_iv(p->ev, SCREEN_PROPERTY_MOUSE_WHEEL,
+                                     wheel) == 0 && wheel[0] != 0) {
+        input_set_scroll(&p->input, 0.0f, (f32)wheel[0]);
+    }
+}
+
+static void screen_apply_keyboard(Platform *p)
+{
+    int sym[1] = { 0 };
+    int flags[1] = { 0 };
+    if (screen_get_event_property_iv(p->ev, SCREEN_PROPERTY_SYM, sym) != 0)
+        return;
+    if (screen_get_event_property_iv(p->ev, SCREEN_PROPERTY_FLAGS, flags) != 0)
+        return;
+    if ((flags[0] & KEY_SYM_VALID) == 0) return;
+    i32 engine_key = screen_keymap_sym_to_engine((u32)sym[0]);
+    if (engine_key < 0) return;
+    /* KEY_REPEAT keeps the key held; KEY_DOWN alone decides press/release. */
+    input_set_key(&p->input, engine_key, (flags[0] & KEY_DOWN) != 0);
 }
 
 PlatformEventResult platform_poll(Platform *p)
@@ -144,9 +187,12 @@ PlatformEventResult platform_poll(Platform *p)
         case SCREEN_EVENT_POINTER:
             screen_apply_pointer(p);
             break;
+        case SCREEN_EVENT_KEYBOARD:
+            screen_apply_keyboard(p);
+            break;
         default:
-            /* Keyboard/text/metadata events are drained but not translated
-             * yet; see the file header. */
+            /* Remaining metadata events are drained but not translated;
+             * see the file header. */
             break;
         }
         if (p->quit) break;

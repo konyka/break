@@ -8802,3 +8802,26 @@ Evidence: cross build 100% on both x86_64 and aarch64le (COMPILED); Linux
 headless suite 173/173 after the change. Remaining for the graphics
 milestone: GL/Vulkan via Screen, keyboard/text/wheel/clipboard/monitor
 events, and runtime receipts on a target running the screen service.
+
+## QNX Screen keyboard/wheel mapping + vfs test robustness (2026-10-26)
+
+window_screen.c now translates Screen keyboard and wheel events. The QNX
+key-symbol mapping (Unicode printables + KEYCODE_PC_KEYS offsets from
+sys/keycodes.h) to the engine key codes (same codes x11_key_to_index emits)
+lives in platform/screen_keymap.h as a pure inline integer function, so
+test_screen_keymap runs on every host lane; window_screen.c pins the mirrored
+constants to the real sys/keycodes.h with _Static_assert, making drift a
+compile error on cross builds. Pointer events also feed the vertical wheel
+(SCREEN_PROPERTY_MOUSE_WHEEL, upward positive, x11 parity). Text/IME,
+clipboard, monitors, and relative mouse stay fail-closed stubs.
+
+Also fixed a real target-environment sensitivity the QNX runs exposed:
+test_vfs oversized-file occasionally failed on the VM because qnx6 ftruncate
+"succeeds" while provisioning only the space the filesystem has free, so the
+file could land at or below VFS_MAX_FILE_BYTES and the vfs would correctly
+accept it. The test now verifies the >MAX precondition before asserting the
+rejection; engine vfs logic is unchanged.
+
+Verification: cross builds 100% (x86_64 + aarch64le, _Static_asserts pass);
+Linux headless 174/174; QNX target VM 146/146 (vfs case stable across
+repeated runs).

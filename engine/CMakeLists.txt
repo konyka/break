@@ -504,6 +504,14 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_platform_compat_qnx_screen
         COMMAND test_platform_compat_qnx_screen)
 
+    # QNX Screen keymap: pure integer mapping, host-testable on every lane;
+    # window_screen.c static-asserts the mirrored constants against
+    # <sys/keycodes.h> on real cross builds.
+    add_executable(test_screen_keymap tests/test_screen_keymap.c)
+    target_include_directories(test_screen_keymap PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_screen_keymap COMMAND test_screen_keymap)
+
     foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
         add_executable(test_platform_wsi_lifecycle_${_wsi_lower}

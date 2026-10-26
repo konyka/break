@@ -97,11 +97,18 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
   → `screen_create_window` → 属性（SIZE/FORMAT_RGBA8888/USAGE）→
   `screen_flush_context`；目标机无 screen 服务时首步即失败、返回 NULL
   （运行时优雅 fail-closed，headless 行为不受影响）；
-- `platform_poll` 非阻塞 `screen_get_event`：CLOSE → QUIT，
+- `platform_poll` 非阻塞 `screen_get_event`：CLOSE → QUIT；
   POINTER → 坐标（`input_set_mouse`）+ 左中右键（`input_set_key`，
-  `SCREEN_*_MOUSE_BUTTON` 掩码）；键盘/文本事件已排空、翻译与
-  滚轮/剪贴板/IME/显示器枚举留给图形里程碑（fail-closed 桩）；
+  `SCREEN_*_MOUSE_BUTTON` 掩码）+ 垂直滚轮（`SCREEN_PROPERTY_MOUSE_WHEEL`，
+  上为正，与 X11 约定一致）；KEYBOARD → `SCREEN_PROPERTY_SYM` +
+  `SCREEN_PROPERTY_FLAGS`（KEY_DOWN/KEY_REPEAT/KEY_SYM_VALID）经
+  `screen_keymap.h` 映射到与 X11 相同的引擎键码；
   尺寸查询实时读 `SCREEN_PROPERTY_SIZE` 并缓存；
+- `screen_keymap.h`：QNX 键符号（Unicode 可打印集 + `KEYCODE_PC_KEYS`
+  偏移）→ 引擎键码的纯整数映射，宿主全平台可测
+  （`test_screen_keymap`）；`window_screen.c` 以 `_Static_assert` 把镜像
+  常量钉死在真实 `<sys/keycodes.h>` 上，漂移即编译错误；
+  文本/IME/剪贴板/显示器枚举留给图形里程碑（fail-closed 桩）；
 - WSI 句柄语义：`platform_window_native/surface_native` = `screen_window_t`，
   `platform_display_native` = `screen_context_t`——正是未来
   `vkCreateScreenSurfaceQNX` 所需的一对句柄。
@@ -117,6 +124,8 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | 真实 SDP 交叉编译 | qcc 构建失败：`_SC_NPROCESSORS_ONLN`/`CLOCK_MONOTONIC` 被 `-std=c11` 严格模式隐藏；`-lpthread`/`-ldl` 不存在（QNX 8 并入 libc）；独立网络测试缺 `-lsocket`；`__isfinitef` 需 `-lm` | toolchain 加 `-D_QNX_SOURCE` + 交叉 binutils；qnx 分支去 pthread/dl、补条件 socket/m 链接 |
 | 目标机运行 | 首轮 127/137：4 个 Memory fault（QNX 默认栈过小）、6 个数据路径/参数问题 | 运行器 `ulimit -s 8192`（README 的 8MB 栈假设）；`ENGINE_TEST_SOURCE_ROOT` 可覆盖 + 目标机部署布局；ctest 参数/WILL_FAIL 语义纳入运行器 → **144/144** |
 | Screen 窗口层 | `test_platform_compat_qnx_screen` 编译失败（`ENGINE_SURFACE_QNX_SCREEN` 不存在） | `platform_compat.h` 增加枚举与 ENGINE_QNX_SCREEN 描述符变体；`window_screen.c` 双架构交叉编译 100% |
+| Screen 键映射 | `test_screen_keymap` 编译失败（头不存在） | `screen_keymap.h` 纯整数映射 + `_Static_assert` 钉死 `<sys/keycodes.h>` 镜像 |
+| 目标机 test_vfs 偶发 | qnx6 `ftruncate` 按剩余空间截断却返回成功 → >MAX 前置条件静默失效 | 测试前置校验实际文件大小（文件系统给不出 >MAX 稀疏文件时跳过断言；引擎逻辑本身正确） |
 
 ## 4. 构建
 
@@ -174,12 +183,13 @@ cmake --build engine/build-qnx -j
   144/144 命令通过**（含 myui 全部 headless 测试、net_loop/net/network/
   net_replication、task/ECS/规则引擎、verify 工具的 WILL_FAIL 语义用例；
   等价于宿主 `-LE "graphics|fuzz"` 选择，宿主-only 的 cmake 契约测试不在
-  目标机复刻）。Screen 窗口层合入后复跑 **145/145**（新增
-  `test_platform_compat_qnx_screen`；运行时需随行部署 `libscreen.so.1`
-  并设 `LD_LIBRARY_PATH=/tmp/bt`，运行器已内置）。注意 `test_vfs` 的
-  oversized-file 用例在目标机 /tmp 剩余空间临界时偶发失败（该测试不链接
-  engine，属环境敏感，复跑即过）。目标机运行要点与运行器语义见 §4.1
-  （脚本已入库 `engine/tools/qnx/`）；
+  目标机复刻）。Screen 窗口层与键映射合入后复跑 **146/146**（新增
+  `test_platform_compat_qnx_screen`、`test_screen_keymap`；运行时需随行
+  部署 `libscreen.so.1` 并设 `LD_LIBRARY_PATH=/tmp/bt`，运行器已内置）。
+  `test_vfs` oversized-file 用例曾在目标机偶发失败：根因是 qnx6
+  `ftruncate` 按剩余空间截断却返回成功，>MAX 前置条件静默失效（引擎
+  VFS 逻辑本身正确，测试已加前置校验修复）。目标机运行要点与运行器
+  语义见 §4.1（脚本已入库 `engine/tools/qnx/`）；
 - 未验证（诚实边界）：aarch64le 目标机运行、非 VM 真硬件收据、
   图形/Screen 路径（设计即 fail-closed）。
 
@@ -202,9 +212,10 @@ cmake --build engine/build-qnx -j
 1. ~~真机：SDP 交叉编译 + Neutrino 目标跑套件与冒烟~~（已完成，2026-10-26：
    x86_64 交叉 100% + 目标机 144/144 + §6 收据；aarch64le 交叉 100%
    （COMPILED），aarch64le 目标机运行与非 VM 真硬件收据待补）；
-2. Screen：窗口层已 COMPILED（`window_screen.c`，见 §2.6）；
-   剩余：GL/Vulkan-via-Screen（`vkCreateScreenSurfaceQNX` 句柄已就绪）、
-   键盘/滚轮/剪贴板/显示器事件映射、目标机（screen 服务）运行收据；
+2. Screen：窗口层已 COMPILED（`window_screen.c`，见 §2.6），键盘/滚轮
+   已映射（`screen_keymap.h`）；剩余：GL/Vulkan-via-Screen
+   （`vkCreateScreenSurfaceQNX` 句柄已就绪）、文本/IME/剪贴板/显示器
+   事件、目标机（screen 服务）运行收据；
 3. Vulkan（QNX 平台 Vulkan driver via Screen）或 GLES2 后端：
    myui `MYUI_GLES2` 已是可复用后端，接入 Screen EGL；
 4. `ENGINE_NET_LOOP_POLL` 在高 fd 数下的 tunable（当前重建仅发生在
