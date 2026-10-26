@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — editor 线协议 fuzzer（2026-10-26）
+
+- **交付**：`engine/tests/fuzz_editor_remote.c`（目标 `fuzz_editor_remote`，EXCLUDE_FROM_ALL，仅 `BREAK_ENABLE_SNOWFLAKE=ON` 时定义，`ENGINE_BUILD_FUZZ_SMOKE=ON` 时注册 `fuzz_editor_remote_smoke`）。无套接字：变异信封经真实 `break_net_envelope_decode`，再进入真实 `break_session_manager_apply_adapter_event`，由真实 `editor_remote.c` 处理器在 headless shell 和文档上执行。变异来源：对 id 4..13 的有效请求做结构化变异（长度通道边界值、插入/删除/截断、超出 4096 B）、线级损坏、直接注入任意 id/version/长度。每条负载是精确大小的堆拷贝，处理器越界读即 ASan 报告。
+- **不变量**：无 sanitizer 报告；消息未被 OK 应用时文档指纹（实体 id/名称/dirty/undo-redo 深度/全部已注册组件字段）必须不变（fail closed = 零文档影响）；文档保持良构；outliner 行数等于文档；连接表有界；会话表可恢复。
+- **证据**（`build-sdd-p4-asan`，ASan+UBSan）：8 个种子 x 20000 与另 40 个种子 x 20000，约 96 万条消息，全部 exit 0、零报告；id 4..13 每个约 900 次到达会话管理器，每个处理器都有被接受的样本。变异自检：去掉 RENAME 长度一致检查 → ASan heap-buffer-overflow；REMOVE 先改文档再 fail closed → 不变量在种子 1 第 466 次迭代触发；跳过授权门**未被发现**（纯文本接缝下所有会话自动认证，门无可拒绝），该项由 TLS 测试负责，fuzzer 不作此声明。
+- **边界**：不覆盖 TLS、CHALLENGE/AUTH-v2、套接字/适配层；Lua 语义只有少量小片段（受控制台既有指令预算限制）；单会话，无多连接交错；Windows/macOS/CI 未运行（CI fuzz 步骤按名称列目标，未修改）。设计与证据：`docs/design/editor_remote.md` 末节。
+
 ## 本轮更新：Stage 4 Scene Editor — 场景 Hot Reload 与资源浏览器实时列表（2026-10-26）
 
 - **交付**：`editor_hot_reload.{h,c}`：editor 宿主持有、shell 借用的热加载对象。旧版单文件 `FileWatcher` 只置 pending；shell tick 通过 Runtime Core `break_runtime_reload_request` 让 1 个 worker 经 VFS 读入暂存字节并校验 BSCN magic，shell 线程在 `commit_owner` 钩子里调用新增的 `break_editor_doc_load_bytes`（`scene_load_binary_memory` 是原文件读取体的内存形式，文件 API 为薄包装）。非法/不可读文件 → `FAILED_KEEP_OLD`，文档、名称、undo 保持；文档“脏且有命令历史”时跳过并记日志；Ctrl+S 后以内容哈希为基线（相同字节跳过），保存前已暂存的重载按 stale 丢弃；资源浏览器加载 `.bscn` 与 CLI 路径共用 `editor_shell_load_scene` 更新 `scene_path` 与监视目标；超长路径禁用监视并记日志，不截断。资源浏览器新增有界 `break_editor_assets_refresh`，shell tick 每秒最多重列一次当前目录，仅在列表变化时重绘。

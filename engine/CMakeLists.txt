@@ -4635,6 +4635,41 @@ endif()
     target_include_directories(fuzz_vfs_pak PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(fuzz_vfs_pak PRIVATE m)
 
+    # Mutation fuzzer for the editor remote session wire path (ids 4..13):
+    # mutated envelopes -> the real break_net codec -> the real session
+    # manager -> the real editor_remote.c handlers on a live headless shell
+    # and document, no sockets. Needs the remote host, so it exists only with
+    # Snowflake. Same source/link set as test_editor_shell (the shell TUs are
+    # compiled inline; exactly one definition per binary).
+    if(BREAK_ENABLE_SNOWFLAKE)
+        add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+            apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
+            apps/editor/editor_panel_profiler.c
+            apps/editor/editor_remote.c apps/editor/editor_panel_network.c
+            apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
+            src/platform/platform_fs.c src/core/profiler.c src/platform/time.c
+            src/asset/vfs.c src/platform/filewatch.c src/platform/filewatch_backend.c
+            src/myui/myr/my_vgcanvas_break_rhi.c src/core/shader_io.c
+            src/myui/mypal/dummy/my_pal_dummy.c tests/rhi_stubs.c)
+        set_property(TARGET fuzz_editor_remote PROPERTY C_STANDARD 11)
+        target_include_directories(fuzz_editor_remote PRIVATE
+            ${TEST_INCLUDE_DIRS}
+            ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor)
+        target_compile_definitions(fuzz_editor_remote PRIVATE
+            BREAK_EDITOR_SHELL_TESTING=1)
+        if(ENGINE_PLATFORM STREQUAL "linux")
+            target_compile_definitions(fuzz_editor_remote PRIVATE
+                ENGINE_PLATFORM_LINUX=1 _POSIX_C_SOURCE=199309L)
+            target_link_libraries(fuzz_editor_remote PRIVATE pthread)
+        elseif(ENGINE_PLATFORM STREQUAL "windows")
+            target_compile_definitions(fuzz_editor_remote PRIVATE ENGINE_PLATFORM_WINDOWS=1)
+            target_link_libraries(fuzz_editor_remote PRIVATE kernel32)
+        endif()
+        target_link_libraries(fuzz_editor_remote PRIVATE break_net
+            runtime_core_test break_editor_test myui_core m)
+    endif()
+
     if(ENGINE_BUILD_FUZZ_SMOKE)
         # Explicit fuzz lane only: these targets are EXCLUDE_FROM_ALL and are
         # built before CTest runs them, so ordinary CTest has no Not Run tests.
@@ -4647,6 +4682,10 @@ endif()
         set_tests_properties(fuzz_scene_serial_smoke fuzz_net_packet_smoke
             fuzz_decode_image_smoke fuzz_vfs_pak_smoke fuzz_asset_gltf_smoke
             PROPERTIES LABELS "fuzz")
+        if(BREAK_ENABLE_SNOWFLAKE)
+            add_test(NAME fuzz_editor_remote_smoke COMMAND fuzz_editor_remote 600 29)
+            set_tests_properties(fuzz_editor_remote_smoke PROPERTIES LABELS "fuzz")
+        endif()
     endif()
 
     # test_camera_frustum: needs camera.c + cull.c + frustum_cull.c + math.c
