@@ -1633,8 +1633,8 @@ target_link_libraries(engine_demo PRIVATE engine break_myui m)
 engine_link_rhi_backend(engine_demo)
 if(ENGINE_PLATFORM STREQUAL "ios")
     set_target_properties(engine_demo PROPERTIES
-        MACOSX_BUNDLE_GUI_IDENTIFIER "com.purecengine.engine_demo"
-        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.purecengine.engine_demo")
+        MACOSX_BUNDLE_GUI_IDENTIFIER "com.purecengine.engine-demo"
+        XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.purecengine.engine-demo")
 endif()
 # main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
 # against the Linux default 8 MB stack; the MSVC-family linker default
