@@ -608,6 +608,61 @@ TEST(lod_bake_validate_catches_errors) {
     ASSERT_TRUE(bv_run(err));
 }
 
+TEST(lod_bake_validate_authored_vertex_ranges) {
+    u32 cmds[2 * 5] = { 6,1,0,0,0, 3,1,6,0,0 };
+    u32 idx[9] = { 0,1,2, 0,2,3, 4,5,6 };
+    u32 base[1] = { 0 }, vb[1] = { 0 }, vc[1] = { 4 }, cn[2] = { 0,0 };
+    u8 lc[1] = { 2 }, cl[2] = { 0,1 };
+    u32 cvb[2] = { 0,4 }, cvc[2] = { 4,4 };
+    char err[256] = {0};
+    ASSERT_TRUE(lod_bake_validate_ex(cmds, 2, idx, 9, 8, base, lc, vb, vc, 1,
+                                     cn, cl, cvb, cvc, err, sizeof(err)));
+    cvc[1] = 2;
+    ASSERT_FALSE(lod_bake_validate_ex(cmds, 2, idx, 9, 8, base, lc, vb, vc, 1,
+                                      cn, cl, cvb, cvc, err, sizeof(err)));
+}
+
+/* R705: grid of (n+1)^2 vertices on [0,1]^2 at height z = amp * x * y. */
+static void ae_grid(u32 n, f32 amp, f32 *v, u32 *ix) {
+    for (u32 y = 0; y <= n; y++) for (u32 x = 0; x <= n; x++) {
+        f32 *p = v + (usize)(y * (n + 1u) + x) * 8u;
+        memset(p, 0, 32);
+        p[0] = (f32)x / (f32)n; p[1] = (f32)y / (f32)n; p[2] = amp * p[0] * p[1];
+    }
+    u32 k = 0;
+    for (u32 y = 0; y < n; y++) for (u32 x = 0; x < n; x++) {
+        u32 a = y * (n + 1u) + x, b = a + n + 1u;
+        ix[k++] = a; ix[k++] = b; ix[k++] = a + 1u;
+        ix[k++] = a + 1u; ix[k++] = b; ix[k++] = b + 1u;
+    }
+}
+
+TEST(lod_authored_error_measures_deviation) {
+    static f32 bv[17 * 17 * 8], av[3 * 3 * 8];
+    static u32 bi[16 * 16 * 6], ai[2 * 2 * 6];
+    ae_grid(16, 0.0f, bv, bi);
+    ae_grid(2, 0.0f, av, ai);
+    /* Same plane, coarser tessellation: no deviation. */
+    f32 e0 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(e0 >= 0.0f && e0 < 1e-5f);
+    /* Lift the coarse mesh by 0.25: both directions see 0.25. */
+    for (u32 i = 0; i < 9; i++) av[i * 8u + 2u] = 0.25f;
+    f32 e1 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(fabsf(e1 - 0.25f) < 1e-4f);
+    /* Coarse plane vs curved base z = x*y: worst gap is interior (> 0). */
+    ae_grid(16, 1.0f, bv, bi);
+    ae_grid(2, 0.0f, av, ai);
+    f32 e2 = lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32);
+    ASSERT_TRUE(e2 > 0.3f && e2 < 1.01f);
+    /* Invalid input. */
+    ai[5] = 9;
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 32) < 0.0f);
+    ai[5] = 4;
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 23, 32) < 0.0f);
+    ASSERT_TRUE(lod_authored_error(NULL, 289, bi, 1536, av, 9, ai, 24, 32) < 0.0f);
+    ASSERT_TRUE(lod_authored_error(bv, 289, bi, 1536, av, 9, ai, 24, 8) < 0.0f);
+}
+
 /* ---- ECS instanced LOD: (mesh, level) bucketing + per-instance hysteresis ---- */
 
 TEST(lod_bucket_instances_groups_mesh_major_and_stable) {
@@ -698,6 +753,165 @@ TEST(lod_instance_select_reused_slot_starts_at_lod0) {
     ASSERT_EQ(lod_instance_select(NULL, 0, 1, err, 3, 100.0f, 500.0f, 1.0f, NULL), 2u);
 }
 
+/* ---- Dithered cross-fade (phase 2.2) ---- */
+
+TEST(lod_fade_bayer_is_a_permutation_and_masks_are_complementary) {
+    u32 seen = 0u;
+    for (u32 y = 0; y < 4; y++)
+        for (u32 x = 0; x < 4; x++) {
+            u32 b = lod_bayer4(x, y);
+            ASSERT_TRUE(b < 16u);
+            seen |= 1u << b;
+            ASSERT_EQ(lod_bayer4(x + 4u, y + 8u), b); /* tiles */
+        }
+    ASSERT_EQ(seen, 0xFFFFu);
+    /* For every share k in 1..15 each pixel is kept by exactly one of the
+     * two draws, and the finer draw keeps exactly k of 16. */
+    for (u32 k = 1; k < LOD_FADE_STEPS; k++) {
+        u32 finer_px = 0u;
+        for (u32 b = 0; b < 16u; b++) {
+            bool kf = lod_fade_keep(b, lod_fade_dither_value(k, true));
+            bool kc = lod_fade_keep(b, lod_fade_dither_value(k, false));
+            ASSERT_TRUE(kf != kc);
+            if (kf) finer_px++;
+        }
+        ASSERT_EQ(finer_px, k);
+    }
+    for (u32 b = 0; b < 16u; b++) ASSERT_TRUE(lod_fade_keep(b, 0.0f));
+}
+
+TEST(lod_fade_disabled_switches_instantly) {
+    LodFade f;
+    lod_fade_reset(&f, 0);
+    u32 fi = 9, co = 9;
+    ASSERT_TRUE(lod_fade_update(&f, 2, 1.0, 0.0f));
+    ASSERT_FALSE(lod_fade_active(&f));
+    ASSERT_EQ(lod_fade_split(&f, 1.0, 0.0f, &fi, &co), LOD_FADE_STEPS);
+    ASSERT_EQ(fi, 2u); ASSERT_EQ(co, 2u);
+    ASSERT_FALSE(lod_fade_update(&f, 2, 2.0, 0.0f));
+}
+
+TEST(lod_fade_coarsen_and_refine_shares) {
+    LodFade f;
+    u32 fi, co, k;
+    lod_fade_reset(&f, 0);
+    ASSERT_TRUE(lod_fade_update(&f, 1, 10.0, 0.25f));
+    ASSERT_TRUE(lod_fade_active(&f));
+    ASSERT_EQ(f.level, 1u);  /* committed level = hysteresis input */
+    /* Coarsening 0 -> 1: the finer level (0) fades out. */
+    k = lod_fade_split(&f, 10.0, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 16u);
+    k = lod_fade_split(&f, 10.125, 0.25f, &fi, &co);
+    ASSERT_EQ(k, 8u);
+    k = lod_fade_split(&f, 10.25, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 1u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 16u);
+    /* Same level next frame completes the fade. */
+    ASSERT_FALSE(lod_fade_update(&f, 1, 10.3, 0.25f));
+    ASSERT_FALSE(lod_fade_active(&f));
+    /* Refining 1 -> 0: the finer level (0) fades in. */
+    ASSERT_TRUE(lod_fade_update(&f, 0, 20.0, 0.25f));
+    k = lod_fade_split(&f, 20.0, 0.25f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u); ASSERT_EQ(k, 0u);
+    k = lod_fade_split(&f, 20.0625, 0.25f, &fi, &co);
+    ASSERT_EQ(k, 4u);
+}
+
+TEST(lod_fade_share_is_monotonic_over_a_fade) {
+    LodFade f;
+    lod_fade_reset(&f, 2);
+    lod_fade_update(&f, 1, 0.0, 0.25f);  /* refine: finer share 0 -> 16 */
+    u32 prev = 0u;
+    for (int i = 0; i <= 100; i++) {
+        u32 fi, co;
+        u32 k = lod_fade_split(&f, (f64)i * 0.0025, 0.25f, &fi, &co);
+        ASSERT_TRUE(k >= prev);
+        prev = k;
+    }
+    ASSERT_EQ(prev, 16u);
+}
+
+TEST(lod_fade_reverse_keeps_coverage_continuous) {
+    LodFade f;
+    u32 fi, co;
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 0.2f);
+    u32 k0 = lod_fade_split(&f, 0.05, 0.2f, &fi, &co);  /* 25% in: finer 0 keeps 12/16 */
+    ASSERT_EQ(k0, 12u);
+    /* Back to 0 mid-fade: reverse, same split this instant, then LOD0 grows. */
+    ASSERT_TRUE(lod_fade_update(&f, 0, 0.05, 0.2f));
+    ASSERT_EQ(f.level, 0u); ASSERT_EQ(f.from, 1u);
+    u32 k1 = lod_fade_split(&f, 0.05, 0.2f, &fi, &co);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 1u);
+    ASSERT_TRUE(k1 + 1u >= k0 && k1 <= k0 + 1u);
+    ASSERT_TRUE(lod_fade_split(&f, 0.08, 0.2f, &fi, &co) > k1);
+    /* It ends at LOD0 after the remaining 25% of the window, not a full one. */
+    ASSERT_EQ(lod_fade_split(&f, 0.101, 0.2f, &fi, &co), 16u);
+    ASSERT_EQ(fi, 0u);
+}
+
+TEST(lod_fade_third_level_restarts_from_dominant_level) {
+    LodFade f;
+    u32 fi, co;
+    /* 0 -> 1, 30% in (LOD0 still dominant), then 2: fade 0 -> 2. */
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 1.0f);
+    ASSERT_TRUE(lod_fade_update(&f, 2, 0.3, 1.0f));
+    ASSERT_EQ(f.from, 0u); ASSERT_EQ(f.level, 2u);
+    ASSERT_EQ(lod_fade_split(&f, 0.3, 1.0f, &fi, &co), 16u);
+    ASSERT_EQ(fi, 0u); ASSERT_EQ(co, 2u);
+    /* 0 -> 1, 70% in (LOD1 dominant), then 2: fade 1 -> 2. */
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 0.0, 1.0f);
+    ASSERT_TRUE(lod_fade_update(&f, 2, 0.7, 1.0f));
+    ASSERT_EQ(f.from, 1u); ASSERT_EQ(f.level, 2u);
+    /* At most two levels at any time. */
+    lod_fade_split(&f, 0.8, 1.0f, &fi, &co);
+    ASSERT_EQ(fi, 1u); ASSERT_EQ(co, 2u);
+}
+
+TEST(lod_fade_with_hysteresis_sweep_no_ping_pong) {
+    /* Hysteresis runs on the committed level exactly as before; the fade
+     * only delays the visual. A jittered monotonic sweep still commits each
+     * level once per direction. */
+    const f32 err[3] = { 0.0f, 0.01f, 0.04f };
+    LodFade f;
+    lod_fade_reset(&f, 0);
+    u32 changes = 0u;
+    for (int i = 0; i < 4000; i++) {
+        f32 d = 1.0f + (f32)i * 0.05f + ((i & 1) ? 0.02f : -0.02f);
+        u32 nl = lod_select_by_screen_error(err, 3, d, 500.0f, 1.0f, f.level);
+        if (lod_fade_update(&f, nl, (f64)i / 60.0, 0.25f)) changes++;
+        ASSERT_TRUE(f.level >= f.from || !lod_fade_active(&f));
+    }
+    ASSERT_EQ(changes, 2u);
+    ASSERT_EQ(f.level, 2u);
+}
+
+TEST(lod_fade_mega_commands_have_two_draws_only_mid_fade) {
+    LodFade f;
+    u32 selected[3];
+    i8 dither[3];
+    lod_fade_reset(&f, 0);
+    lod_fade_update(&f, 1, 10.0, 0.25f);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.125, 0.25f, 3, selected, dither), 2u);
+    ASSERT_EQ(selected[0], 1u); ASSERT_EQ(selected[1], 1u); ASSERT_EQ(selected[2], 0u);
+    ASSERT_EQ(dither[0], 8); ASSERT_EQ(dither[1], -8); ASSERT_EQ(dither[2], 0);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.0, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 1u); ASSERT_EQ(selected[1], 0u); ASSERT_EQ(dither[0], 0);
+    ASSERT_EQ(lod_fade_write_commands(&f, 10.25, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 0u); ASSERT_EQ(selected[1], 1u); ASSERT_EQ(dither[1], 0);
+    lod_fade_update(&f, 0, 20.0, 0.25f);
+    ASSERT_EQ(lod_fade_write_commands(&f, 20.0, 0.25f, 3, selected, dither), 1u);
+    ASSERT_EQ(selected[0], 0u); ASSERT_EQ(selected[1], 1u);
+}
+
+TEST(lod_fade_mega_first_instance_preserves_material_layer) {
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, 0), 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, 8), (24u << 16) | 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(7u, -8), (8u << 16) | 7u);
+    ASSERT_EQ(lod_fade_pack_first_instance(0x12340007u, 0), 7u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lod_init_defaults);
     RUN_TEST(lod_register_entity);
@@ -732,10 +946,22 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_generate_levels_rejects_bad_indices);
     RUN_TEST(lod_bake_validate_accepts_consistent_tables);
     RUN_TEST(lod_bake_validate_catches_errors);
+    RUN_TEST(lod_bake_validate_authored_vertex_ranges);
+    RUN_TEST(lod_authored_error_measures_deviation);
     /* Runtime ECS instanced LOD */
     RUN_TEST(lod_bucket_instances_groups_mesh_major_and_stable);
     RUN_TEST(lod_bucket_instances_all_lod0_matches_per_mesh_order);
     RUN_TEST(lod_bucket_instances_degenerate_inputs);
     RUN_TEST(lod_instance_select_hysteresis_per_slot);
     RUN_TEST(lod_instance_select_reused_slot_starts_at_lod0);
+    /* Dithered cross-fade */
+    RUN_TEST(lod_fade_bayer_is_a_permutation_and_masks_are_complementary);
+    RUN_TEST(lod_fade_disabled_switches_instantly);
+    RUN_TEST(lod_fade_coarsen_and_refine_shares);
+    RUN_TEST(lod_fade_share_is_monotonic_over_a_fade);
+    RUN_TEST(lod_fade_reverse_keeps_coverage_continuous);
+    RUN_TEST(lod_fade_third_level_restarts_from_dominant_level);
+    RUN_TEST(lod_fade_with_hysteresis_sweep_no_ping_pong);
+    RUN_TEST(lod_fade_mega_commands_have_two_draws_only_mid_fade);
+    RUN_TEST(lod_fade_mega_first_instance_preserves_material_layer);
 TEST_MAIN_END()

@@ -1,6 +1,127 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R706 — 运行时 LOD：阴影级别 +1（`BREAK_LOD_SHADOW_BIAS`）伪影排查：未发现伪影，不改选择逻辑
+
+### 结论
+- 阴影 pass 比相机粗一级（默认 bias=1）在三后端都没有可见的自阴影痤疮、漏光或 peter-panning。截图差异和同一配置连跑两次的噪声同级，没有一个像素在亮/暗之间翻转。所以保留固定 +1，不加「按阴影贴图纹素误差选级」的逻辑（加了也不会选出不同的级别，见下）。
+- 原因在数量级上：压力岩石（mesh 7，节点缩放 1）L1/L2 的世界误差是 `rel_err × scale` = 7.7 / 15.2 mm；演示 glb（mesh 0）L1/L2 是 10 / 98 mm。CSM 每级联 1024² 象限，`2·extent/1024` 得纹素大小 12.9 / 16.0 / 33.6 / 133 mm（级联 0..3，splits 0.1/6.69/14.88/32.09/100），而深度比较的常数偏移 0.002 在正交深度范围 `2·extent` 上折合 26 / 33 / 69 / 272 mm。岩石的粗一级误差在任何级联都小于 1 纹素、远小于深度偏移；glb 只有 L2（98 mm）超过级联 0/1 的纹素，但相机在 L0 时 bias=1 只给到 L1（10 mm），相机自己选 L2 时阴影也夹在 L2。按纹素误差选级会得出同样的结果。
+
+### 测量（Release，`BREAK_STRESS_LOD=200 BREAK_UI=0 BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0 BREAK_LOD_FADE_MS=0`，第 80 帧截图，bias 0 vs 1 vs 2）
+- 必须关淡入淡出、晚一点截图：第 30 帧还在 R703b 淡入淡出里（fading_avg≈112），同 bias 连跑两次的噪声（mean 0.55、>24 的像素 1454）就和 bias 0↔1 的差一样大。关掉后同配置连跑噪声降到 mean 0.006、max 3。
+- 新增 `BREAK_SUN=方位角,仰角`（度，可选；未设置时与之前逐像素相同）用于低太阳。
+- 指标：逐像素 max 通道差；「明暗翻转」像素 = 亮度变化 >25% 且 >12/255。（左上 FPS 文字区域不计入。）
+
+| 场景（相机 / 太阳） | 后端 | 同配置噪声 max | bias 0↔1 max / >24 像素 / 翻转 | bias 0↔2 max / >24 / 翻转 |
+|---|---|---|---|---|
+| 近岩石 `0,3,-2,0,-5`，默认太阳 | VK | 3 | 6 / 0 / 0 | 7 / 0 / 0 |
+| 同上 | GL / D3D12 | 3 / 3 | 9 / 0 / 0，9 / 0 / 0 | 10 / 0 / 0，6 / 0 / 0 |
+| 近岩石斜看 `2,1.6,-3,-20,-8`，太阳 60°/6° | VK | — | 11 / 0 / 0 | 12 / 0 / 0 |
+| 同上 | GL / D3D12 | 6 / 8 | 29 / 6 / 14，10 / 0 / 0 | 13 / 0 / 0，15 / 0 / 0 |
+| `0,2,-2,0,-10`，太阳 90°/12° 和 60°/6° | VK | — | ≤12 / 0 / 0 | ≤12 / 0 / 0 |
+| glb 节点（mesh 0，相机 L0、阴影 L1/L2）`0,2,6,0,-10` | VK | — | 39 / 30 / 1 | 28 / 10 / 0 |
+| glb 节点中距（相机 L1）`0,2,10,0,-8`，太阳 180°/25° | VK | — | 38 / 44 / 8 | 41 / 54 / 8 |
+| 同上 | GL / D3D12 | 26 / 12 | 30 / 15 / 0，7 / 0 / 0 | 32 / 10 / 1，7 / 0 / 0 |
+
+- 看过的放大裁剪：VK 低太阳近岩石（300..620×240..420，b0 / b2 / 差热图，热图全黑）；GL 低太阳那 14 个翻转像素所在的岩石队列（300..680×80..210，×3 放大）是零散单像素，位于远处岩石轮廓和 PCSS 半影边上，没有成片痤疮或亮缝；VK glb 中距（720..940×230..400）差异只在球体剪影一圈（PCF 边缘的 1 像素级偏移），受光面内部为 0。
+- 截图和脚本在工作树的 `.r706/`（未提交）。
+
+### 性能（VK Release，N=200，600 帧，`BREAK_BENCH_STATS=600`，bias 0/1 交替；GPU 与另一代理共享，噪声大）
+- 新增 `LOD_STATS ... shadow_tris_avg=`：每级联一次的 mega 阴影三角形数（全部节点在其阴影级别，未做级联视锥剔除，与调试 UI 的 Tris 同口径）。
+- 演示相机 `0,12,22,0,-25`：shadow_tris 1273334 → 1270598（−0.2%，几乎所有节点相机已在 L2）；fps 152.6/152.0/141.6 vs 128.2/150.9/154.0。
+- 远相机 `0,35,20,0,-35`：同上三角形；fps 163.0/159.6 vs 158.9/124.8。
+- 近相机 `0,3,-2,0,-5`：1337940 → 1279654（−4.4%）；fps 140.5/136.5/137.8 vs 145.0/137.8/122.6。
+- bias 在这个压力场景里只省 0.2–4.4% 阴影三角形，fps 差在噪声内（单次 120 多的低值两边都有）。省得少是因为节点到相机的距离让多数节点相机级别已经是最粗的 L2，阴影无处再降。
+
+### 验证
+- build-vk/gl/d3d12 Debug（含测试）与 Release 三棵：0 条编译警告（只有既有的 lld-link `--gc-sections` 链接提示）；`main.c` GCC `-Wall -Wextra -Werror -pedantic` 语法检查通过。
+- ctest -j4（排除 ToDesk 剪贴板用例）：vk 187/187、gl 184/184、d3d12 192/192。
+- VK Debug 压力场景 + 低太阳、演示场景：`VK validation messages this run: 0`。
+- `BREAK_LOD=0` 演示场景与改动前构建：max 16（mean 0.04，粒子/噪声级），`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds` 相同；默认压力场景改动前后 max 3–4（有一次物理刚体落在镜头前造成整帧差异，重跑两次复现不了，是物理计时差，与本改动无关）。
+
+
+## 本轮更新：R705 — 运行时 LOD（二期）：glTF `MSFT_lod` 授权级别导入
+
+### 做法
+- **导入**（`asset/asset.c`）：cgltf 不解析 `MSFT_lod`，按未处理扩展的原始 JSON 读取 `ids`（只接受非负整数数组）。被引用节点仍加载网格资源，但 `has_mesh=false`，不作为独立节点渲染。基础网格的每个图元记录最多两个备选网格（`Mesh.authored_lod[2]` / `authored_lod_count`），多出的级别记日志后丢弃。越界、自引用、环、嵌套链接（备选节点本身带 `MSFT_lod`）、非整数/负数/超大 id 使整个文件回退到原自动简化，备选节点照常渲染；图元数不匹配、空网格、AABB 超出 LOD0 的 10% 对角线时只对该节点回退。由于不接受嵌套链接，环在构造上不可能出现，不需要遍历。
+- **顶点**：授权级别使用自己的顶点。mega 烘焙把备选网格的顶点（同一节点世界变换）追加在该节点 LOD0 顶点之后，索引仍是绝对 mega 索引、`vertex_offset=0`（R687 约定），所以六条可见性路径、unified cull 与 R703b 的 `first_instance` 打包都不需要改动。新 `lod_bake_validate_ex` 按命令检查顶点范围（`BREAK_LOD_SELFTEST`）。ECS 实例路径按 (网格, 级别) 绑定备选网格的顶点缓冲，索引仍放在每网格额外索引缓冲里。
+- **误差**：采用**实测几何偏差**，不用 `MSFT_screencoverage`（它依赖作者的视角假设，和引擎的像素误差阈值不可比）。`lod_authored_error` 计算对称 Hausdorff 估计（两个方向各取采样顶点到对方最近三角形的最大距离，采样数按约 1600 万次点-三角形测试设上限），按级别保持非递减，以 AABB 对角线为 scale 存入 `rel_error`，然后进入原屏幕误差选级、迟滞和淡入淡出。授权网格不会调用简化器，也不走 R704 磁盘缓存（在缓存之前返回）。
+- **测试**：`test_lod` 45 → 47（每命令顶点范围、偏差测量与非法输入）；`test_asset_gltf` 47 → 50（链接与隐藏、多于两级的截断，以及 8 种非法 id 回退）。新增小夹具 `assets/msft_lod_test.gltf`（78 KB：1352/200/32 三角形地形三级 + 一个 648 三角形自动简化网格）。
+
+### 验证
+- build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk 编译 0 警告（仅 lld `--gc-sections` 链接器提示与 Release 的第三方 SheenBidi 既有警告）；GCC `-Wall -Wextra -Werror -pedantic` 语法检查所有改动的 C 文件通过。
+- 完整 `ctest -j4 -E test_platform_win32_runtime`：三棵树除 `test_locked_dependencies` 外全部通过（该用例只因 worktree 没有被 git 忽略的 `external/VulkanSDK`，用主仓库 external 目录跑同一脚本为 OK）；D3D12 `test_d3d12_warp_runtime` 的 GPU timer 比例用例在并行 GPU 负载下偶发失败，单独重跑通过。fuzz 标签 5/5 通过（三棵树），`fuzz_asset_gltf` 额外以 MSFT 夹具为种子跑 800 次。
+- 夹具实跑（`BREAK_LOD_PIXEL_ERROR=4 BREAK_LOD_SELFTEST=1 BREAK_CAM=0,4,-6,0,-25 BREAK_CAM_DOLLY=1.0`，150 帧）：VK / GL / D3D12（debug layer + GPU-based validation）均显示 `mesh 0 uses 2 authored level(s)`、`LOD authored: rel_err=0.010217/0.049384`、`MegaBuffer: 2264 verts ... 16 draw cmds`、`LOD_SELFTEST: PASS`，`LOD_TRACE` 节点 0 依次 0→1→2，LOD_STATS transitions=4；ECS 实体（引用网格 0）transitions=10。VK 的 deferred、blinn、`BREAK_GPUCULL=1`、`BREAK_UNIFIED_FORWARD=0` 也都 PASS 且 validation=0；D3D12 无调试层消息。固定相机截图的授权 LOD1 几何完整。
+- 无扩展：以 HEAD 构建的 VK demo 对比 `test.glb` 默认与 `BREAK_LOD=0`，LOD gen / MegaBuffer / LOD 表 / SELFTEST 行逐字相同（15584 verts、89328 / 51180 indices、13 / 11 cmds），全部日志在数字与时间归一化后只差一行与时序有关的 Lua 心跳，validation 均为 0。
+
+
+## 本轮更新：R704 — 运行时 LOD（二期 2.3）：简化级别的可选磁盘缓存
+
+### 做法
+- 新纯 C11 模块 `renderer/lod_cache.{c,h}` 包装 `lod_generate_levels`，mega 与 ECS 共用既有 `mesh_lod_generate` 入口。`BREAK_LOD_CACHE=<directory>` 是唯一开关，**默认关闭**；未设置/空字符串没有缓存文件 I/O，行为与之前相同，也不会默认写当前目录。目录必须已存在；不可写时只警告一次并继续生成/加载场景。
+- 键覆盖完整顶点/索引字节、数量、stride、max_levels、最小三角形数/停止比例、缓存格式版本和 meshopt_c 1030，使用两个独立 64-bit hash。80-byte little-endian 头保存键、源数量、级别数、scale 与上次生成耗时，随后是各级 count/rel_error 和 LOD1+ 索引。读取逐项检查 magic/version/key、溢出安全的文件长度、级别和三角形计数、有限误差以及所有索引 `< vertex_count`；损坏/截断/不匹配均回退重新生成。
+- 写入使用唯一临时文件 + 原子 rename（Windows `MoveFileExA` 替换既有文件），第二个 writer 后也保持有效文件。命中结果与重新生成的 `LodMeshLevels` 逐位相同。`LOD_CACHE_STATS` 汇总 hits/misses/read/write bytes、regen/I/O ms 和 estimated_saved_ms（文件中保存的冷生成时间减去命中读取时间）。
+- 新 `test_lod_cache` 5 个用例：键覆盖、逐位 round-trip、magic/version/hash/count/截断/body-index 腐败、不可写目录、第二 writer 与关闭路径。还临时移除了索引范围 guard，确认腐败测试随后失败，再恢复 guard。
+
+### 验证
+- build-vk/gl/d3d12-debug/ASan 均 0 警告；完整 ctest：188/188、185/185、193/193；ASan 标准 `-LE 'graphics|fuzz'` 177/177。
+- VK Release `BREAK_STRESS_LOD=200`：冷缓存 2 misses / 380320 bytes written，暖缓存 2 hits / 同 bytes read、0 writes，estimated_saved_ms=28.325；LOD 表与 MegaBuffer 日志逐行相同，冷/暖首帧 BMP 逐字节相同。未设置开关与冷运行截图也相同，且没有 cache stats 或缓存文件 I/O。VK validation 均为 0。
+- 合成大网格冷/暖：80k tris 56.03 → 5.26 ms；320k tris 283.23 → 22.42 ms，均返回 3 级。临时缓存目录已清理，scratch benchmark 未纳入提交。
+
+
+## 本轮更新：R703b — 运行时 LOD（二期 2.2 后半）：MEGA 静态场景的抖动交叉淡入淡出
+
+### 做法
+- **每节点状态**：`MegaLod` 持有 R703a 的 `LodFade`，提交的级别仍是原屏幕误差 + 迟滞结果。`lod_fade_write_commands` 写节点连续命令的 `selected[]` 与 signed k：1..15 只允许细/粗两条相机命令，k=0/16 只留一条；反向与第三级变化继续由 `lod_fade_update/split` 处理。`shadow_selected[]` 和直接阴影仍按阴影偏置立即换级。
+- **命令负载**： signed k 打包在间接命令 `first_instance` 高 16 位（k+16；0 表示不抖动），低 16 位保留材质数组层。每帧只更新 grouped / material-array 两份相机命令缓冲；culling、compact 与 unified 掩码路径不变，不新增描述符、push/root 常量，也不占用运动矩阵。
+- **前向与延迟**：blinn、clustered 及其材质数组变体，以及 static / material-array G-buffer 都使用相同的 4×4 Bayer 互补 `discard`，所以延迟的所有附件共享同一几何覆盖。GLSL 以 `LOD_FADE` 注入；D3D12 使用独立 `*_lodfade_hlsl.*` sidecar 和构建期 DXIL。`BREAK_LOD_FADE_MS=0` 或 `BREAK_LOD=0` 仍创建原着色器/管线，选择掩码和命令上传走 R701 路径。
+- **统计/测试**：`LOD_STATS` 与调试 UI 增加 mega fading 计数；`test_lod` 43 → 45，只新增 mega 命令端点/双命令与材质层保持两个用例。
+
+### 验证
+- build-vk、build-gl、build-d3d12-debug 与三棵 Release 树均 0 警告；完整 `ctest -j4`：187/187、184/184、192/192（含 graphics）全部通过。
+- Release 三后端均运行 `BREAK_STRESS_LOD=200`、150 帧、`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`：clustered / blinn / deferred 各有实际换级和 mega fading；clustered 分别 208 次换级，fading_avg VK 119.00、GL 13.72、D3D12 12.44。VK 各路径 validation=0；D3D12 debug + GPU-based validation 同压力场景 208 次换级且无调试层消息。
+- VK `BREAK_LOD_FADE_MS=3000` 在第 105 帧保存并检查淡化中的截图（`BREAK_TAA=0 BREAK_MB=0 BREAK_BLOOM=0`），岩石仍完整且 validation=0。
+
+
+## 本轮更新：R703a — 运行时 LOD（二期 2.2 前半）：ECS 实例化路径的抖动交叉淡入淡出
+
+mega 路径的淡入淡出（unified_cull 的 `selected[]` 掩码要允许一个节点同时显示两级）留给 R703b。
+
+### 做法
+- **纯逻辑**（`renderer/lod.{c,h}`）：`LodFade { level, from, start }`。`level` 是提交的级别，也就是迟滞的输入，与一期/R702 的选级完全相同；`from` 是正在淡出的级别。`lod_fade_update` 处理三种情况：空闲时换级开始淡入淡出；淡入淡出中选回 `from` 时反向（细级别占比在那一刻不变，剩余时间 = 已走过的时间，不会跳）；淡入淡出中出现第三个级别时，从当前占像素多的那一级重新开始（任何时刻最多两级）。`lod_fade_split` 给出细级别的占比 k（16 分之几）。`lod_bayer4` / `lod_fade_keep` 是着色器判定的 C 参考实现。
+- **抖动**：4×4 Bayer 有序抖动。细级别保留阈值 + 0.5 ≤ k 的像素，粗级别保留其余像素，每个像素恰好由其中一级覆盖。没有混合也没有排序，深度写入照常开启。
+- **ECS 实例**：选级后，正在淡入淡出（1 ≤ k ≤ 15）的实例在收集时被复制成两行：细级别行带 +k，粗级别行带 −k，各自进入 (网格, 级别) 分桶，和 R702 一样绘制。淡入淡出值放在实例行里上一帧模型矩阵第 0 列的 w 分量（`md[19]`）。仿射矩阵这个位置恒为 0，所以不需要新字段，也不改实例行布局；着色器读出后把它清零，再用于速度计算。
+- **着色器**：GLSL 用 `LOD_FADE` 宏注入，只用于实例化管线（blinn `instanced` 与 clustered `pbr_clustered_inst` + 它专用的一份 `pbr_clustered.frag`；静态、蒙皮、数组管线共用的那份片元着色器不带这个宏）。顶点着色器输出 `flat vLodFade`，片元着色器在开头 `discard`。D3D12 不能运行时注入宏，所以新增两个片元着色器副本 `instanced_mrt_lodfade_hlsl.frag`、`pbr_clustered_lodfade_hlsl.frag`（文件头注明要与原文件同步），两个实例化顶点着色器多输出 `TEXCOORD4`。淡入淡出关闭时创建的仍是原来的着色器和管线。
+- 首次看到的实体（或槽位被复用）直接用选中的级别，不做淡入。
+- **开关**：`BREAK_LOD_FADE_MS`（默认 250，0 = 关闭）；`BREAK_LOD=0` 时强制关闭。启动日志多一行 `ECS LOD: dithered cross-fade 250 ms`，`ECS_LOD_STATS` 多一个 `fading_avg` 字段，调试 UI 多一个 fading 计数。
+- **阴影**：ECS 实例本来就不画阴影（R702 已说明），因此没有阴影淡入淡出。
+- 测试：`test_lod` 36 → 43 个用例：Bayer 排列与两份掩码互补（k = 1..15 时细级别恰好占 k/16）、关闭时立即切换、粗化/细化的占比、单调性、中途反向时覆盖连续、第三级时从占优级别重新开始、与迟滞联用的扫描不会来回跳。
+
+### 验证
+- 构建：build-vk、build-gl、build-d3d12-debug、build-rel-vk 均 0 警告（D3D12 树的 dxc 编译了两个新片元着色器）。
+- ctest（主代理复跑，均 `-j4`）：build-vk 187/187、build-gl 184/184、build-d3d12-debug 192/192，全部通过。
+- 真实淡化冒烟（主代理复跑，Release，`BREAK_CAM=0,3,-2,0,-5`、`BREAK_CAM_DOLLY=0.1`、`BREAK_LOD_FADE_MS=1000`、180 帧）：VK 12 次换级、fading_avg 6.27、0 条验证消息；GL 17 次、fading_avg 1.74；D3D12 17 次、fading_avg 1.83，均正常退出。VK 关闭 clustered 的 blinn 路径同样 12 次换级、fading_avg 6.27、0 条验证消息。此机位与运动确实跨过阈值；默认压力场景机位可能不触发换级（fading_avg=0），不能拿它验证淡化。
+- 与改动前（`bed3f6c1`，同一构建树）对比，第 3 帧截图 + 日志：
+
+| 场景 | 新 vs 旧 平均差 | 旧 vs 旧（噪声） |
+|---|---|---|
+| VK `BREAK_LOD=0` 前向 / 延迟 | 0.018 / 0.045 | 0.033 / 0.043 |
+| VK `BREAK_LOD_FADE_MS=0` / 加 ECS 压力场景 | 0.037 / 0.047 | 0.013 / 0.033 |
+| GL `BREAK_LOD=0` / `FADE_MS=0` | 0.005 / 0.050 | 0.120 / 0.059 |
+| D3D12 `BREAK_LOD=0` / `FADE_MS=0` | 0.000 / 0.000 | 0.000 / 0.000 |
+
+  `BREAK_LOD=0` 时 8 组日志去掉数字后逐行相同。`FADE_MS=0` 时唯一的差别是 `ECS_LOD_STATS` 多了 `fading_avg=0.00` 字段。命令数、上传数、每帧 execute/compact/emission 计数、`draws_avg`、`vis_tris_avg` 全部相同。
+- 校验层：VK Debug（验证层开启），ECS 压力场景 + 相机推远，clustered 与 blinn 实例化各跑一次，淡入淡出确实发生（`fading_avg` 1.67 / 2.73），`VK validation messages this run: 0`。D3D12 调试层 + GPU-based validation 跑了 3 种组合（淡入淡出开 clustered、开 blinn、关），0 条消息。GL 两种组合均正常退出。
+- 截图：VK Release，`BREAK_LOD_FADE_MS=3000`，关闭 TAA/运动模糊/DOF/bloom/锐化，相机推远时第 50 帧与 `FADE_MS=0` 对比：差异只在正处于淡入淡出的 5 块岩石轮廓上（4465 个像素）。放大后可见轮廓呈两级交错的点状边，没有空洞。两级的内部着色几乎相同，所以抖动在内部看不出来，这是预期的。
+- 性能（VK Release，ECS 压力场景 N=200，相机 0.1 m/帧推远，600 帧，2 轮）：淡入淡出关 191.5 / 192.6 fps，开 189.6 / 189.8 fps（约 −1.2%；平均每帧有 0.76 个实例处在淡入淡出中）。
+
+### 已知限制 / 未做
+- mega 路径的淡入淡出：R703b。
+- 淡入淡出期间该实例画两次，三角形数是两级之和（已计入 `vis_tris`）。
+- 实例缓冲满（10000 行）时，淡入淡出中的实例只画细级别那一行。
+- 没有测量淡入淡出的视觉效果是否「看不出跳变」，只确认了两级互补、没有空洞。
+
+
 ## 本轮更新：R702 — 运行时 LOD（二期 2.1）：ECS 实例化静态网格按实例选级，按 (网格, 级别) 分组绘制
 
 设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md` 第 8 节（二期状态）。

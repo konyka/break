@@ -1,4 +1,7 @@
 #version 430 core
+#ifdef LOD_FADE
+#extension GL_ARB_shader_draw_parameters : require
+#endif
 
 /* G-Buffer write pass -- vertex stage (GL).
  * Layout matches `pbr_clustered.vert`: pos + normal + uv from vertex stream;
@@ -18,7 +21,14 @@ uniform mat4 u_view;
 uniform mat4 u_proj;
 uniform mat4 u_prev_mvp;
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     vec4 wp     = u_model * vec4(a_position, 1.0);
     v_world_pos = wp.xyz;
     v_normal    = mat3(u_model) * a_normal;

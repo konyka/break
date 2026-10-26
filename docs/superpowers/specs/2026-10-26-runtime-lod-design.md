@@ -1,6 +1,6 @@
 # 运行时 LOD 设计（第二版，待确认）
 
-状态：**一期已实现**（R701，见 `docs/Implementation_Status.md`；与本设计的差别记录在那里）；**二期 2.1（ECS 实例化静态网格）已实现**（R702，见第 8 节）。以下为设计原文。 第一版（同名文件的上一次提交）经代码复核后发现若干错误与遗漏，本版逐条修正（见第 0 节）；减面按用户要求改为**纯 C 实现**（移植 meshoptimizer 的简化器，第 4 节）。
+状态：**一期已实现**（R701，见 `docs/Implementation_Status.md`；与本设计的差别记录在那里）；**二期 2.1（ECS 实例化静态网格）已实现**（R702，见第 8 节）；**二期 2.2 抖动交叉淡入淡出：ECS 实例化与 mega 路径均已实现（R703a/R703b）**；**二期 2.3 简化级别磁盘缓存已实现（R704，默认关闭，`BREAK_LOD_CACHE=<directory>` 启用）**；**glTF `MSFT_lod` 导入已实现（R705）**。阴影级别 +1 已做伪影排查（R706：三后端近/中距、低太阳下无可见痤疮/漏光，保留固定 bias，见下文阴影级别一段的附注）。以下为设计原文。 第一版（同名文件的上一次提交）经代码复核后发现若干错误与遗漏，本版逐条修正（见第 0 节）；减面按用户要求改为**纯 C 实现**（移植 meshoptimizer 的简化器，第 4 节）。
 
 ## 0. 第一版的问题清单（复核结果）
 
@@ -86,6 +86,8 @@
 
 阴影 pass 用 `min(相机级别 + LOD_SHADOW_BIAS, 最低级)`，默认 `LOD_SHADOW_BIAS = 1`；`BREAK_LOD_SHADOW_BIAS=0` 时与相机级别一致。理由：阴影贴图分辨率远低于屏幕（点光 512²、CSM 每级联一个象限），多降一级通常不可见，而阴影 pass 在本引擎里次数多（4 级联 + 24 个点光面）。若出现可见的「阴影漏光 / 自阴影痤疮」，再改为与相机一致。
 
+> R706 复核：粗一级的世界误差（压力岩石 7.7/15 mm，演示 glb L1 10 mm）都小于 CSM 级联 0 的纹素（约 13 mm）和深度常数偏移（约 26 mm），截图 bias 0/1/2 差异在噪声内，因此保留固定 +1。`BREAK_LOD_SHADOW_BIAS=N` 语义：阴影级别 = min(相机级别 + N, 最粗级)，0 = 与相机一致；退出时 `LOD_STATS shadow_tris_avg` 给出每级联的阴影三角形数。若以后有误差大的资产，按「误差 / 所在级联纹素」限制 bias 是首选改法。
+
 ## 4. 减面器：纯 C 移植 meshoptimizer
 
 ### 4.1 为什么移植而不是自写
@@ -166,7 +168,9 @@ meshoptimizer（MIT，作者 Arseny Kapoulkine；移植基准钉在正式发布�
 2. **二期**：ECS 实例化物体按 `(mesh, level)` 分组；抖动淡入（dithered crossfade）；glTF `MSFT_lod`；磁盘缓存。
    - **2.1 已实现（R702）**：被实体引用的网格在启动时生成 LOD1/LOD2（与 mega 共用 `lod_generate_levels`，mega 已简化的网格直接复用），各级共享 LOD0 顶点缓冲、索引放进每网格一个额外索引缓冲；收集实例时按实例选级（网格局部包围球平移到实例位置，同一屏幕误差公式与迟滞，迟滞状态按实体 index + generation 保存）；`lod_bucket_instances` 按 (网格, 级别) 稳定分桶，每桶一次实例化绘制（每次最多 512 行）。ECS 实例不进阴影 pass 与延迟 G-buffer（既有行为），所以没有阴影级别。`BREAK_LOD=0` 不建表、走原代码。压力场景 `BREAK_STRESS_LOD_ECS=N`。
    - 蒙皮网格保持 LOD0：简化器不考虑骨骼权重，折叠会合并受不同骨骼驱动的顶点；需要权重感知的减面，仍属「不做」。
-   - 未做：抖动淡入、`MSFT_lod`、磁盘缓存。
+   - **2.2 已实现（R703a/R703b）**：ECS 实例化路径在换级时两级同时画 `BREAK_LOD_FADE_MS` 毫秒（默认 250），淡入淡出值放在实例行上一帧模型矩阵第 0 列的 w 分量；mega 每节点保存同一 `LodFade`，`selected[]` 在 1..15 时允许细/粗两条命令，signed k 打包在间接命令 `first_instance` 高 16 位，低 16 位保留材质数组层。前向、材质数组与延迟 G-buffer 都使用 4×4 Bayer 互补抖动 + `discard`，深度写入照常；迟滞仍作用在提交的级别上。阴影不做淡入淡出，直接切换。
+   - **2.3 已实现（R704）**：`renderer/lod_cache` 以完整网格/参数的双 64-bit hash 为键，用带版本和计数的 little-endian 文件保存各级索引、相对误差、scale 和生成耗时；读取完整校验并回退重新生成，临时文件 + 原子 rename 写入。mega/ECS 共用，`BREAK_LOD_CACHE=<directory>` 显式启用（默认关闭），统计 hits/misses/bytes/estimated_saved_ms。
+   - **MSFT_lod 已实现（R705）**：`node.extensions.MSFT_lod.ids` 链接的节点作为该网格的 LOD1/LOD2（最多两级，多余的记日志丢弃），替代自动简化且不走 R704 缓存；备选节点本身不单独渲染。授权级别带自己的顶点：mega 烘焙把它们追加在节点 LOD0 顶点之后（`lod_bake_validate_ex` 按命令校验顶点范围），ECS 实例路径按级别绑定备选网格的顶点缓冲。误差为实测的对称几何偏差（点到三角形的 Hausdorff 估计），接入原屏幕误差选级、迟滞与淡入淡出；`MSFT_screencoverage` 不使用。
 3. 不做：HLOD、impostor、蒙皮网格 LOD。
 
 ## 9. 待决定（需要用户确认）

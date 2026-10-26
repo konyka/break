@@ -25,12 +25,23 @@ layout(push_constant) uniform Push {
     mat4 u_prev_mvp;
 } pc;
 
+#ifdef LOD_FADE
+layout(location = 5) flat out float vLodFade;
+#endif
 void main() {
+#ifdef LOD_FADE
+    uint fade_code = uint(gl_BaseInstanceARB) >> 16;
+    vLodFade = fade_code == 0u ? 0.0 : float(int(fade_code) - 16);
+#endif
     vec4 wp     = pc.u_model * vec4(a_position, 1.0);
     v_world_pos = wp.xyz;
     v_normal    = mat3(pc.u_model) * a_normal;
     v_texcoord  = a_texcoord;
+#ifdef LOD_FADE
+    v_layer     = uint(gl_BaseInstanceARB) & 0xFFFFu;
+#else
     v_layer     = uint(gl_BaseInstanceARB);
+#endif
     vec4 curr_clip = pc.u_proj * pc.u_view * wp;
     vec4 prev_clip = pc.u_prev_mvp * vec4(a_position, 1.0);
     vec2 curr_ndc = curr_clip.xy / curr_clip.w;
