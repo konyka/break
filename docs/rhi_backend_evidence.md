@@ -274,8 +274,14 @@ macOS 侧 8 提交（`3efd4df7..b8308c8e`：Metal compiled backend 接线、test
 | 2026-10-26 | 同上 | Apple M2 / Metal + MoltenVK | 获取远程 `@bed3f6c1` 后将本次两项提交 rebase 到其上；两套完整构建、全量 CTest、Metal graphics/资源测试及两后端 70 帧截图复验 | 远程新增 ECS LOD 分块绘制在实例 upload blit 后漏绑图形管线，被新增 consumer 日志门禁捕获；补齐重绑后两套全量 CTest 均 **186/186**（含远程新增 6 项），Metal graphics **5/5**、资源测试 **47/47**，截图仍可见正常朝向的 3D 场景与 UI。未使用 force push，远程提交均保留；渲染差异及证据等级复核状态与上一行相同 |
 | 2026-10-26 | 同上 | Apple M2 / Metal + MoltenVK | 同步 `@0e714f06`（R703/R704）并无冲突 rebase；`@83d672b7` 补齐 Metal 离线 LOD shader 变体后，两套全量 CTest、Metal graphics/资源测试及 `BREAK_SCREENSHOT=60 ... --frames 70` | 初次 Metal smoke 缺少 `blinn_phong_vk` 的 `FORWARD_MRT,LOD_FADE` manifest hash；补齐 blinn/pbr 与 G-Buffer 实际 define 链后 manifest **124** 条目。Metal **187/187**、graphics **5/5**、资源 **47/47**，MoltenVK **187/187**（D3D12 门按平台跳过）；两后端 3D/UI 均可见且朝向正确，无 manifest、管线绑定或 fatal 错误。推送前再同步 `@8eee4a58`（R705/R706）无冲突 rebase 并复验，以上结果保持。光照/材质/水面差异及证据等级复核状态不变，不宣称逐像素一致 |
 
-## 收据追加（iOS Simulator 构建与启动，2026-10-26）
+## 收据追加（iOS Simulator 构建与启动，2026-10-26/27）
 
 | 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
 |---|---|---|---|---|
-| 2026-10-26 | 本机（macOS 26.7.1，Apple M2；Xcode 27.1） | iPhone 18 Pro 模拟器（iOS 27.0）/ Metal | `cmake -S engine -B engine/build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF`；`xcodebuild ... -destination 'generic/platform=iOS Simulator' build`；`simctl install`；`simctl launch --console-pty` | 构建成功，`engine.metallib` 和 app 产物齐全；补齐 `com.purecengine.engine_demo` 后 `Info.plist` 含有效 ID、安装成功。启动到达 `engine_init` 后以 `Failed to create platform` 退出：`window_mobile.c` 需要宿主注入 `native_window`，当前没有 UIKit/CAMetalLayer UIApplication 启动层，未产生渲染帧。**iOS 保持 COMPILED，不构成 GPU_RUNTIME 证据** |
+| 2026-10-27 | 本机（macOS 26.7.1，Apple M2；Xcode 27.1） | iPhone 18 Pro 模拟器（iOS 27.0）/ Metal | `cmake -S engine -B engine/build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF`；`xcodebuild ... -destination 'generic/platform=iOS Simulator' build`；`simctl install`；`simctl launch --console-pty` | 构建成功，`engine.metallib` 和 app 产物齐全；补齐 `com.purecengine.engine-demo` 后 `Info.plist` 含有效 ID、安装成功。启动到达 `engine_init` 后以 `Failed to create platform` 退出：`window_mobile.c` 需要宿主注入 `native_window`，当前没有 UIKit/CAMetalLayer UIApplication 启动层，未产生渲染帧。**iOS 保持 COMPILED，不构成 GPU_RUNTIME 证据** |
+
+## 收据追加（macOS 最新基线复核，2026-10-27）
+
+| 日期 | 机器 | GPU / 后端 | 命令 | 结果 |
+|---|---|---|---|---|
+| 2026-10-27 | 本机（macOS 26.7.1，Apple M2） | Apple M2 / Metal + MoltenVK | 同步 `@52195e94` 后无冲突 rebase；分别执行 `cmake --build engine/build-macos-current --parallel 4 && ctest --test-dir engine/build-macos-current -j4 --output-on-failure` 与对应 `build-macos` 命令 | 两套全量 CTest 均 **190/190**，D3D12 dependency gate 按平台跳过；iOS 打包修复未造成 macOS 回归 |
