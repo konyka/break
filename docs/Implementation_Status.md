@@ -1,6 +1,29 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：FS6 — VK 全屏切换去掉 GPU 空等（交换链复用、延迟销毁、批量布局转换）
+
+FS5 之后 VK 的最差切换帧仍是 107–112 ms，耗时全在 RHI 层的同步等待上。本轮只改 `rhi_vk.c`（外加 `rhi_native_vulkan.h` 的计数器声明和 `test_vulkan.c` 的新测试）。
+
+- **A. 交换链重建**（`vk_recreate_swapchain`）：去掉 `vkDeviceWaitIdle`；旧交换链作为 `oldSwapchain` 交给 `vkCreateSwapchainKHR`。旧的 framebuffer、深度图和 render pass 进延迟销毁队列，下一帧的 fence 信号后释放。交换链本身、它的 image view 和 present 等待信号量可能还被呈现引擎占着，而这一点没有 fence 能报告，所以在此基础上再多等 `VK_MAX_FRAMES` 帧。新交换链在下一次 acquire 之前就换上，已退役的图像不会再被 present。
+- **B. 延迟销毁**：新增 `VKRetired` 队列。每帧提交一个序号（`submit_serial`），每个 fence 记下自己对应的序号。一个对象入队时记为「下一次帧提交的序号」，等这个序号之前的帧全部完成后才释放。`rhi_offscreen_fbo_destroy`、`rhi_mrt_fbo_destroy`、`rhi_texture_destroy` 不再 `vkDeviceWaitIdle` / `vk_wait_frames`。在帧外调用且所有帧都已完成时立即销毁（行为与原来相同）。每帧在 `rhi_frame_begin` 回收，单帧预算 2 ms：一次切换会退役约 300 个对象，其中 `vkFreeMemory` 每次 0.1–0.3 ms，集中在一帧里释放会多出 25–44 ms。设备销毁时（已空闲）全部释放；扩容失败时退回同步销毁（帧内则泄漏，不在命令缓冲引用期间销毁）。
+- **C. 批量布局转换**：`vk_init_image_layout` 不再每张图「分配命令缓冲 + 提交 + `vkQueueWaitIdle`」，改为把屏障记进共享的 `layout_cb`。所有图形队列提交都走 `vk_queue_submit`：有待提交的批次时，把它作为同一次 `vkQueueSubmit` 的第一个 batch，所以它一定在任何使用这些图像的命令之前执行，调用方的 fence 也覆盖它。屏障的第二作用域是 `ALL_COMMANDS`。MRT 和离屏 FBO 的屏障挪到最后一个「直接销毁」失败分支之后，批次里不会引用已经销毁的图像。
+- **一次切换会不会改尺寸两次**：不会。Win32 每次切换只发 1 次 WM_SIZE；FS3 的合并逻辑让 `rhi_device_resize` 在第 N 帧执行，渲染目标在第 N+1 帧重建（`rebuild_ms` 包含 `rhi_device_resize`）。剩下的大头是驱动本身的 `vkCreateSwapchainKHR`（2560x1600 时 21–85 ms，传 `oldSwapchain` 之后仍有这么多），另外 300 多次 `vkAllocateMemory` 共 8–17 ms。
+
+| VK Release，RTX 4060，2560x1600 ↔ 1280x720，每轮 4 次切换 | 最差切换帧 | 重建耗时 |
+|---|---|---|
+| FS5 基线（本轮实测） | 111.9 ms | 70–90 ms |
+| A+B+C（每帧回收不限预算） | 75.6 ms | 23–39 ms |
+| A+B+C + 2 ms 回收预算（最终，3 轮） | 48.9 / 51.6 / 46.8 ms（中位 48.9） | 20–47 ms |
+
+GL / D3D12 本轮未改动，复测（Release，各 2 轮）：GL 73.5 / 62.7 ms，D3D12 48.5 / 62.7 ms。它们剩余的时间同样花在逐个创建渲染目标上，D3D12 已经是延迟释放。
+
+- **测试**：`test_vulkan` 新增 FS6 阶段（`tv_test_fs6_resize_sync`）：6 个 FBO 渲染后，① 在帧内销毁一个本帧刚用过的 FBO；② 连续两次 `rhi_device_resize_ex`（此时还有帧在执行）；③ 帧外替换 3 个 FBO，再新建一个从不渲染的 FBO；然后要求这期间 `device_wait_idle == 0`、`queue_wait_idle == 0`（读 `rhi_vk_sync_counters`），延迟销毁和布局批次确实被执行到，5 个目标中心像素等于各自的清屏灰度，从不渲染的那个也能读回；再渲染 8 帧后延迟队列清空。反向验证过：在 FBO 销毁里临时加回 `vkDeviceWaitIdle`，测试报 `device_wait_idle=4` 并失败。
+- **验证**：build-vk、build-rel-vk、build-gl、build-d3d12 0 条编译警告（lld `--gc-sections` 提示是既有的）。ctest：VK 191/191（含 fuzz）、GL 188/188、D3D12 196/196。`test_vulkan`（验证层开启）0 条验证消息。VK Debug 演示 4 次切换：验证层 0 条；同步验证（`BREAK_VK_SYNC_VALIDATION=1`，本项目自己的开关）0 条。`rhi_vk.c` / `test_vulkan.c` 通过 GCC `-Wall -Wextra -Werror -pedantic` 语法检查。
+- **GPU-assisted 验证**（`VK_LAYER_ENABLES=VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT`，4 次切换）：15 条消息，全部是既有问题，与切换无关：`vkCmdDrawIndexedIndirectCount` 的 `firstInstance != 0`（需要 `drawIndirectFirstInstance` 特性），以及 binding 5 `u_ssao` 的视图类型是 2D_ARRAY 而着色器声明的是 2D。这两类本轮没有修。
+- **未验证**：Linux lavapipe（CI）上的行为；其他 GPU 和驱动上的 `vkCreateSwapchainKHR` 耗时。最差帧只是刚好压在 50 ms 附近（3 轮里有 1 轮 51.6 ms），驱动的交换链创建耗时波动很大。
+
+
 ## 本轮更新：FS5 — 无标题栏全屏：合并与整体验收
 
 FS1（`window_mode.h` 状态机）、FS2（API + Win32 + 演示接线）、FS3（尺寸变化只重建渲染目标）、FS4（X11 / Wayland / Cocoa / QNX）与 R707c（蒙皮 LOD 接入）合并，并修复了阻塞 VK 验收的设备丢失（见下一节）。

@@ -345,6 +345,28 @@ static PFN_vkBuildAccelerationStructuresKHR g_vk_build_as_host;
 static bool g_vk_host_as_supported;
 static PFN_vkGetAccelerationStructureDeviceAddressKHR g_vk_get_as_address;
 
+/* FS6: one Vulkan object whose destruction waits until the GPU is done with
+ * it. `serial` is the frame-submission serial (VKBackend.submit_serial) that
+ * may still reference the object; it is destroyed once a frame fence with an
+ * equal or later serial has signalled (a vkQueueSubmit fence also covers
+ * every earlier submission on the queue). */
+typedef struct {
+    VkObjectType type;
+    u64          serial;
+    union {
+        VkFramebuffer   framebuffer;
+        VkRenderPass    render_pass;
+        VkImageView     image_view;
+        VkImage         image;
+        VkDeviceMemory  memory;
+        VkSwapchainKHR  swapchain;
+        VkSemaphore     semaphore;
+        VkCommandBuffer cmd_buffer;
+        VkBuffer        buffer;
+        VkBufferView    buffer_view;
+    } h;
+} VKRetired;
+
 typedef struct {
     VkInstance       instance;
     VkDebugUtilsMessengerEXT debug_messenger; /* R438: VK_NULL_HANDLE unless debug build w/ ext */
@@ -493,6 +515,22 @@ typedef struct {
 
     shaderc_compiler_t shaderc_compiler;
     bool vsync;
+
+    /* FS6: fence-retired deferred destruction (see VKRetired). submit_serial
+     * counts frame submissions; fence_serial[i] is the serial last submitted
+     * with fences[i]; completed_serial is the newest serial known complete. */
+    VKRetired *retired;
+    u32        retired_count;
+    u32        retired_cap;
+    u64        submit_serial;
+    u64        fence_serial[VK_MAX_FRAMES];
+    bool       fence_done[VK_MAX_FRAMES];
+    u64        completed_serial;
+    /* FS6: initial-layout barriers of new render targets are batched into
+     * this one-shot command buffer and submitted ahead of the next queue
+     * submission (vk_queue_submit) instead of one submit + idle wait each. */
+    VkCommandBuffer layout_cb;
+    RHIVkSyncCounters sync_counters;
 } VKBackend;
 
 static bool vk_blas_buffer_address(VKBackend *vk, RHIDevice *dev,
@@ -683,7 +721,247 @@ static void vk_wait_frames(VKBackend *vk) {
             LOG_WARN("VK: vkWaitForFences failed in wait_frames");
             return;
         }
+        vk->fence_done[i] = true;
     }
+}
+
+/* ---- FS6: fence-retired deferred destruction ---- */
+
+static void vk_mark_all_complete(VKBackend *vk) {
+    for (u32 i = 0; i < VK_MAX_FRAMES; i++) vk->fence_done[i] = true;
+    vk->completed_serial = vk->submit_serial;
+}
+
+static VkResult vk_device_wait_idle(VKBackend *vk) {
+    vk->sync_counters.device_wait_idle++;
+    VkResult r = vkDeviceWaitIdle(vk->device);
+    vk_note_result(vk, r);
+    if (r == VK_SUCCESS) vk_mark_all_complete(vk);
+    return r;
+}
+
+static VkResult vk_queue_wait_idle(VKBackend *vk, VkQueue queue) {
+    vk->sync_counters.queue_wait_idle++;
+    VkResult r = vkQueueWaitIdle(queue);
+    vk_note_result(vk, r);
+    if (r == VK_SUCCESS && queue == vk->graphics_queue) vk_mark_all_complete(vk);
+    return r;
+}
+
+static void vk_retired_destroy(VKBackend *vk, const VKRetired *r) {
+    switch (r->type) {
+    case VK_OBJECT_TYPE_FRAMEBUFFER:
+        vkDestroyFramebuffer(vk->device, r->h.framebuffer, NULL); break;
+    case VK_OBJECT_TYPE_RENDER_PASS:
+        vkDestroyRenderPass(vk->device, r->h.render_pass, NULL); break;
+    case VK_OBJECT_TYPE_IMAGE_VIEW:
+        vkDestroyImageView(vk->device, r->h.image_view, NULL); break;
+    case VK_OBJECT_TYPE_IMAGE:
+        vkDestroyImage(vk->device, r->h.image, NULL); break;
+    case VK_OBJECT_TYPE_DEVICE_MEMORY:
+        vkFreeMemory(vk->device, r->h.memory, NULL); break;
+    case VK_OBJECT_TYPE_SWAPCHAIN_KHR:
+        vkDestroySwapchainKHR(vk->device, r->h.swapchain, NULL); break;
+    case VK_OBJECT_TYPE_SEMAPHORE:
+        vkDestroySemaphore(vk->device, r->h.semaphore, NULL); break;
+    case VK_OBJECT_TYPE_COMMAND_BUFFER:
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &r->h.cmd_buffer); break;
+    case VK_OBJECT_TYPE_BUFFER:
+        vkDestroyBuffer(vk->device, r->h.buffer, NULL); break;
+    case VK_OBJECT_TYPE_BUFFER_VIEW:
+        vkDestroyBufferView(vk->device, r->h.buffer_view, NULL); break;
+    default: break;
+    }
+}
+
+/* Refresh completed_serial from the frame fences without blocking. A fence
+ * only covers its own vkQueueSubmit call, so serial S is complete only when
+ * every frame submission <= S is: frames older than both slots' serials were
+ * waited before their slot was reused (rhi_frame_begin), so the answer is
+ * one below the oldest still-pending slot, or the newest serial if none is. */
+static void vk_retire_poll(VKBackend *vk) {
+    if (vk->device_lost) return;
+    u64 oldest_pending = UINT64_MAX;
+    u64 newest = 0u;
+    for (u32 i = 0; i < VK_MAX_FRAMES; i++) {
+        if (vk->fence_serial[i] > newest) newest = vk->fence_serial[i];
+        if (vk->fence_done[i] || vk->fences[i] == VK_NULL_HANDLE) continue;
+        if (vkGetFenceStatus(vk->device, vk->fences[i]) == VK_SUCCESS) {
+            vk->fence_done[i] = true;
+            continue;
+        }
+        if (vk->fence_serial[i] < oldest_pending)
+            oldest_pending = vk->fence_serial[i];
+    }
+    u64 done = oldest_pending == UINT64_MAX ? newest : oldest_pending - 1u;
+    if (done > vk->completed_serial) vk->completed_serial = done;
+}
+
+/* Per-frame host-time budget for releasing retired objects. vkFreeMemory of
+ * full-screen render targets costs ~0.1-0.3 ms each on desktop drivers, and a
+ * resize retires ~100 allocations at once; spreading them over a few frames
+ * keeps that cost out of a single frame. */
+#define VK_RETIRE_FRAME_BUDGET_US 2000u
+
+/* Destroy retired objects whose serial has completed, in queue order
+ * (dependants such as framebuffers were queued before their views/images).
+ * `budget_us` 0 means unbounded; otherwise release stops once the budget is
+ * spent and the rest stays queued in order for the next call. `all` releases
+ * everything; only valid once the device is idle. */
+static void vk_retire_collect_budget(VKBackend *vk, bool all, u32 budget_us) {
+    if (!vk || vk->retired_count == 0u) return;
+    if (!all) vk_retire_poll(vk);
+    u64 t0 = budget_us ? time_microseconds() : 0u;
+    bool out_of_budget = false;
+    u32 keep = 0u;
+    for (u32 i = 0; i < vk->retired_count; i++) {
+        if (!out_of_budget &&
+            (all || vk->retired[i].serial <= vk->completed_serial)) {
+            vk_retired_destroy(vk, &vk->retired[i]);
+            if (budget_us && time_microseconds() - t0 >= budget_us)
+                out_of_budget = true;
+        } else {
+            vk->retired[keep++] = vk->retired[i];
+        }
+    }
+    vk->retired_count = keep;
+    vk->sync_counters.deferred_pending = keep;
+    if (all) {
+        free(vk->retired);
+        vk->retired = NULL;
+        vk->retired_cap = 0u;
+    }
+}
+
+static void vk_retire_collect(VKBackend *vk, bool all) {
+    vk_retire_collect_budget(vk, all, 0u);
+}
+
+/* Queue `handle` for destruction once the GPU can no longer reference it.
+ * Anything recorded so far is covered by the next frame submission's fence
+ * (submit_serial + 1): a fence signal covers every earlier submission on the
+ * queue, including the batched layout command buffer. `delay` adds frames on
+ * top for objects the presentation engine may still hold (swapchain, its
+ * views and present semaphores), whose release no fence reports. With
+ * delay 0, outside a frame and with every frame fence already signalled,
+ * nothing can still reference the object, so it is destroyed immediately. */
+static void vk_retire_push(VKBackend *vk, const VKRetired *rp);
+
+static void vk_retire(VKBackend *vk, VkObjectType type, u32 delay,
+                      const void *handle) {
+    VKRetired r;
+    memset(&r, 0, sizeof(r));
+    r.type = type;
+    r.serial = vk->submit_serial + 1u + delay;
+    switch (type) {
+    case VK_OBJECT_TYPE_FRAMEBUFFER:    r.h.framebuffer = *(const VkFramebuffer *)handle; break;
+    case VK_OBJECT_TYPE_RENDER_PASS:    r.h.render_pass = *(const VkRenderPass *)handle; break;
+    case VK_OBJECT_TYPE_IMAGE_VIEW:     r.h.image_view = *(const VkImageView *)handle; break;
+    case VK_OBJECT_TYPE_IMAGE:          r.h.image = *(const VkImage *)handle; break;
+    case VK_OBJECT_TYPE_DEVICE_MEMORY:  r.h.memory = *(const VkDeviceMemory *)handle; break;
+    case VK_OBJECT_TYPE_SWAPCHAIN_KHR:  r.h.swapchain = *(const VkSwapchainKHR *)handle; break;
+    case VK_OBJECT_TYPE_SEMAPHORE:      r.h.semaphore = *(const VkSemaphore *)handle; break;
+    case VK_OBJECT_TYPE_COMMAND_BUFFER: r.h.cmd_buffer = *(const VkCommandBuffer *)handle; break;
+    case VK_OBJECT_TYPE_BUFFER:         r.h.buffer = *(const VkBuffer *)handle; break;
+    case VK_OBJECT_TYPE_BUFFER_VIEW:    r.h.buffer_view = *(const VkBufferView *)handle; break;
+    default: return;
+    }
+    vk->sync_counters.deferred_destroys++;
+    if (delay == 0u && !vk->frame_started && vk->layout_cb == VK_NULL_HANDLE) {
+        vk_retire_poll(vk);
+        if (vk->completed_serial >= vk->submit_serial &&
+            vk->retired_count == 0u) {
+            vk_retired_destroy(vk, &r);
+            return;
+        }
+    }
+    vk_retire_push(vk, &r);
+}
+
+static void vk_retire_push(VKBackend *vk, const VKRetired *rp) {
+    VKRetired r = *rp;
+    if (vk->retired_count == vk->retired_cap) {
+        u32 cap = vk->retired_cap ? vk->retired_cap * 2u : 64u;
+        VKRetired *grown = realloc(vk->retired, (size_t)cap * sizeof(*grown));
+        if (!grown) {
+            /* OOM: fall back to the historical synchronous destroy. While a
+             * frame is recording its command buffer may still reference the
+             * object, so it is leaked rather than destroyed under it. */
+            if (vk->frame_started) {
+                LOG_ERROR("VK: OOM queuing a deferred destroy; leaking object");
+                return;
+            }
+            if (vk_device_wait_idle(vk) != VK_SUCCESS)
+                LOG_WARN("VK: vkDeviceWaitIdle failed in retire fallback");
+            vk_retire_collect(vk, false);
+            vk_retired_destroy(vk, &r);
+            return;
+        }
+        vk->retired = grown;
+        vk->retired_cap = cap;
+    }
+    vk->retired[vk->retired_count++] = r;
+    vk->sync_counters.deferred_pending = vk->retired_count;
+}
+
+#define VK_RETIRE(vk, type, h) \
+    do { if ((h) != VK_NULL_HANDLE) vk_retire((vk), (type), 0u, &(h)); } while (0)
+#define VK_RETIRE_PRESENT(vk, type, h) \
+    do { if ((h) != VK_NULL_HANDLE) \
+        vk_retire((vk), (type), VK_MAX_FRAMES, &(h)); } while (0)
+
+/* Every graphics-queue submission goes through here. A pending initial-layout
+ * batch (vk_batch_image_layout) is submitted as the FIRST batch of the same
+ * vkQueueSubmit call, so it executes before any work that may use those
+ * images and the caller's fence (which covers every batch of the call)
+ * reports its completion. Callers submitting without a fence wait for the
+ * queue to idle. Either way the batch is complete before the next frame
+ * submission's fence signals, so its command buffer retires at that serial. */
+static VkResult vk_queue_submit(VKBackend *vk, u32 count, const VkSubmitInfo *si,
+                                VkFence fence) {
+    if (vk->layout_cb == VK_NULL_HANDLE || count != 1u)
+        return vkQueueSubmit(vk->graphics_queue, count, si, fence);
+    VkCommandBuffer cb = vk->layout_cb;
+    vk->layout_cb = VK_NULL_HANDLE;
+    VkResult r = vkEndCommandBuffer(cb);
+    if (r != VK_SUCCESS) {
+        LOG_FATAL("VK: failed to end layout batch command buffer");
+        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return vkQueueSubmit(vk->graphics_queue, count, si, fence);
+    }
+    VkSubmitInfo batches[2];
+    memset(&batches[0], 0, sizeof(batches[0]));
+    batches[0].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    batches[0].commandBufferCount = 1;
+    batches[0].pCommandBuffers = &cb;
+    batches[1] = si[0];
+    r = vkQueueSubmit(vk->graphics_queue, 2u, batches, fence);
+    if (r != VK_SUCCESS) {
+        /* Nothing from this call executed; drop the batch (the images keep
+         * their UNDEFINED layout, as after any failed submission). */
+        LOG_ERROR("VK: layout batch submit failed (res=%d)", (int)r);
+
+        vk_note_result(vk, r);
+        if (vk_queue_wait_idle(vk, vk->graphics_queue) == VK_SUCCESS)
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+        return r;
+    }
+    vk->sync_counters.layout_batches++;
+    VKRetired rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = VK_OBJECT_TYPE_COMMAND_BUFFER;
+    rec.serial = vk->submit_serial + 1u;
+    rec.h.cmd_buffer = cb;
+    vk_retire_push(vk, &rec);
+    return r;
+}
+
+bool rhi_vk_sync_counters(const RHIDevice *dev, RHIVkSyncCounters *out) {
+    if (!dev || !out || !dev->backend_data) return false;
+    const VKBackend *vk = (const VKBackend *)dev->backend_data;
+    *out = vk->sync_counters;
+    out->deferred_pending = vk->retired_count;
+    return true;
 }
 
 /* R576: device-fault forensics — after a DEVICE_LOST, report the driver's
@@ -978,28 +1256,35 @@ static void vk_external_dep_depth_only(VkSubpassDependency *dep) {
                        | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 }
 
-/* One-time-submit transition of a freshly created color image (all mips/layers)
- * from UNDEFINED to the given layout. Offscreen/MRT targets may be sampled by a
- * composite/post pass before their producing pass has ever rendered into them
- * (e.g. when an optional effect is disabled or its shader failed to build);
- * giving them a defined sampling layout up front avoids
- * VUID-vkCmdDraw-None-09600 (sampling an UNDEFINED image). */
-static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout layout) {
+/* Transition a freshly created image from UNDEFINED to `layout`. FS6: the
+ * barrier is recorded into the shared layout batch (vk->layout_cb), which
+ * vk_queue_submit submits ahead of the next graphics-queue submission, so
+ * creating N targets costs one submit and no host wait instead of N
+ * submit + vkQueueWaitIdle pairs. Every later use of the image is recorded
+ * into a command buffer submitted after the batch, so the queue's submission
+ * order makes the transition visible; the second scope is ALL_COMMANDS so a
+ * first use at any stage (draw, compute, transfer) is ordered after it. */
+static void vk_batch_image_layout(VKBackend *vk, VkImage image,
+                                  VkImageAspectFlags aspect, u32 levels,
+                                  u32 layers, VkImageLayout layout) {
     if (image == VK_NULL_HANDLE) return;
-    VkCommandBufferAllocateInfo cbai = {0};
-    cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cbai.commandPool = vk->cmd_pool;
-    cbai.commandBufferCount = 1;
-    VkCommandBuffer cb;
-    if (vkAllocateCommandBuffers(vk->device, &cbai, &cb) != VK_SUCCESS) return;
-    VkCommandBufferBeginInfo bi = {0};
-    bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
-        LOG_FATAL("VK: failed to begin command buffer");
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
-        return;
+    VkCommandBuffer cb = vk->layout_cb;
+    if (cb == VK_NULL_HANDLE) {
+        VkCommandBufferAllocateInfo cbai = {0};
+        cbai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cbai.commandPool = vk->cmd_pool;
+        cbai.commandBufferCount = 1;
+        if (vkAllocateCommandBuffers(vk->device, &cbai, &cb) != VK_SUCCESS) return;
+        VkCommandBufferBeginInfo bi = {0};
+        bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        if (vkBeginCommandBuffer(cb, &bi) != VK_SUCCESS) {
+            LOG_FATAL("VK: failed to begin layout batch command buffer");
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+            return;
+        }
+        vk->layout_cb = cb;
     }
 
     VkImageMemoryBarrier b = {0};
@@ -1009,32 +1294,24 @@ static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout lay
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.image = image;
-    b.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    b.subresourceRange.levelCount = VK_REMAINING_MIP_LEVELS;
-    b.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+    b.subresourceRange.aspectMask = aspect;
+    b.subresourceRange.levelCount = levels;
+    b.subresourceRange.layerCount = layers;
     b.srcAccessMask = 0;
-    b.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+        VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, NULL, 0, NULL, 1, &b);
+}
 
-    if (vkEndCommandBuffer(cb) != VK_SUCCESS) {
-        LOG_FATAL("VK: failed to end command buffer");
-        vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
-        return;
-    }
-    VkSubmitInfo si = {0};
-    si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
-        LOG_FATAL("VK: vkQueueSubmit failed in init_image_layout");
-        vk_dump_device_fault(vk, "init_image_layout");
-    }
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
-        LOG_FATAL("VK: vkQueueWaitIdle failed in init_image_layout");
-        vk_dump_device_fault(vk, "init_image_layout");
-    }
-    vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
+/* Colour render-target variant (all mips/layers). Offscreen/MRT targets may
+ * be sampled by a composite/post pass before their producing pass has ever
+ * rendered into them (e.g. when an optional effect is disabled or its shader
+ * failed to build); giving them a defined sampling layout up front avoids
+ * VUID-vkCmdDraw-None-09600 (sampling an UNDEFINED image). */
+static void vk_init_image_layout(VKBackend *vk, VkImage image, VkImageLayout layout) {
+    vk_batch_image_layout(vk, image, VK_IMAGE_ASPECT_COLOR_BIT,
+                          VK_REMAINING_MIP_LEVELS, VK_REMAINING_ARRAY_LAYERS,
+                          layout);
 }
 
 
@@ -1097,7 +1374,8 @@ static VkShaderModule vk_compile_glsl(VKBackend *vk, const char *source, usize l
 
 /* ---- Swapchain ---- */
 
-static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
+static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h,
+                                VkSwapchainKHR old_swapchain) {
     VkSurfaceCapabilitiesKHR caps;
     VkResult caps_res = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(vk->physical, vk->surface, &caps);
     int caps_ok = (caps_res == VK_SUCCESS);
@@ -1237,7 +1515,11 @@ static bool vk_create_swapchain(VKBackend *vk, u32 w, u32 h) {
              img_count, vk->vsync ? "on" : "off",
              extent.width, extent.height);
     sci.clipped = VK_TRUE;
-    sci.oldSwapchain = VK_NULL_HANDLE;
+    /* FS6: hand the old swapchain over so the driver can reuse its resources
+     * and keep presenting already-queued images while the new one is built.
+     * It is retired by this call (even on failure) and destroyed later
+     * through the deferred-retire list (vk_recreate_swapchain). */
+    sci.oldSwapchain = old_swapchain;
 
     VkResult res = vkCreateSwapchainKHR(vk->device, &sci, NULL, &vk->swapchain);
     if (res != VK_SUCCESS) {
@@ -1481,22 +1763,59 @@ static void vk_cleanup_swapchain(VKBackend *vk) {
     if (vk->swapchain) { vkDestroySwapchainKHR(vk->device, vk->swapchain, NULL); vk->swapchain = VK_NULL_HANDLE; }
 }
 
+/* FS6: move every swapchain-dependent object onto the deferred-retire list
+ * and return the old swapchain handle (still owned by the caller, who hands it
+ * to vkCreateSwapchainKHR as oldSwapchain and then retires it).
+ * Framebuffers, the depth target and the render passes are referenced only by
+ * frame command buffers, so the next frame fence releases them. The swapchain,
+ * its image views and the present-wait semaphores may still be held by the
+ * presentation engine for images queued before the switch; no fence reports
+ * that, so they wait VK_MAX_FRAMES further frames. Retired images are never
+ * presented again: the caller replaces vk->swapchain before the next acquire. */
+static VkSwapchainKHR vk_retire_swapchain_objects(VKBackend *vk) {
+    for (u32 i = 0; vk->framebuffers && i < vk->framebuffer_count; i++)
+        VK_RETIRE(vk, VK_OBJECT_TYPE_FRAMEBUFFER, vk->framebuffers[i]);
+    free(vk->framebuffers);
+    vk->framebuffers = NULL;
+    vk->framebuffer_count = 0u;
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, vk->depth_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, vk->depth_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, vk->depth_memory);
+    vk->depth_view = VK_NULL_HANDLE;
+    vk->depth_image = VK_NULL_HANDLE;
+    vk->depth_memory = VK_NULL_HANDLE;
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, vk->render_pass_load);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, vk->render_pass);
+    vk->render_pass_load = VK_NULL_HANDLE;
+    vk->render_pass = VK_NULL_HANDLE;
+    for (u32 i = 0; vk->swap_views && i < vk->swap_view_count; i++)
+        VK_RETIRE_PRESENT(vk, VK_OBJECT_TYPE_IMAGE_VIEW, vk->swap_views[i]);
+    free(vk->swap_views);
+    vk->swap_views = NULL;
+    vk->swap_view_count = 0u;
+    free(vk->swap_images);
+    vk->swap_images = NULL;
+    for (u32 i = 0; vk->render_semaphores && i < vk->render_semaphore_count; i++)
+        VK_RETIRE_PRESENT(vk, VK_OBJECT_TYPE_SEMAPHORE, vk->render_semaphores[i]);
+    free(vk->render_semaphores);
+    vk->render_semaphores = NULL;
+    vk->render_semaphore_count = 0u;
+    vk->swap_count = 0u;
+    VkSwapchainKHR old = vk->swapchain;
+    vk->swapchain = VK_NULL_HANDLE;
+    return old;
+}
+
 static RHIResult vk_recreate_swapchain(VKBackend *vk, u32 w, u32 h) {
-    VkResult idle_result = vkDeviceWaitIdle(vk->device);
-    if (idle_result != VK_SUCCESS) {
-        LOG_WARN("VK: vkDeviceWaitIdle failed in recreate_swapchain");
-        return vk_lifecycle_result(idle_result);
-    }
-    vk_cleanup_swapchain(vk);
-    if (vk->render_pass_load != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(vk->device, vk->render_pass_load, NULL);
-        vk->render_pass_load = VK_NULL_HANDLE;
-    }
-    if (vk->render_pass != VK_NULL_HANDLE) {
-        vkDestroyRenderPass(vk->device, vk->render_pass, NULL);
-        vk->render_pass = VK_NULL_HANDLE;
-    }
-    if (!vk_create_swapchain(vk, w, h)) {
+    if (vk->device_lost) return RHI_RESULT_DEVICE_LOST;
+    /* FS6: no device-wide idle wait. In-flight frames keep rendering into the
+     * old swapchain's images (alive until retired); the objects they use are
+     * released by the deferred-retire list once their fences signal. */
+    VkSwapchainKHR old_swapchain
+ = vk_retire_swapchain_objects(vk);
+    bool created = vk_create_swapchain(vk, w, h, old_swapchain);
+    VK_RETIRE_PRESENT(vk, VK_OBJECT_TYPE_SWAPCHAIN_KHR, old_swapchain);
+    if (!created) {
         /* R430: cannot recover mid-run; do not continue with NULL swapchain. */
         LOG_ERROR("VK: swapchain recreation failed");
         vk_cleanup_swapchain(vk);
@@ -2163,7 +2482,7 @@ static bool vk_init(RHIDevice *dev, void *window_native, void *display_native, u
                  (int)as_features.accelerationStructure);
     }
 
-    if (!vk_create_swapchain(vk, w, h)) {
+    if (!vk_create_swapchain(vk, w, h, VK_NULL_HANDLE)) {
         /* R430: fail init instead of running with a NULL swapchain. */
         vk_init_cleanup(dev, vk);
         return false;
@@ -2511,7 +2830,7 @@ bool rhi_device_idle(RHIDevice *dev) {
      * reported asynchronously and otherwise only surfaces at the next
      * fence wait, often far from the faulting test. A full idle wait makes
      * the loss observable at the probe site (test_vulkan bisection). */
-    VkResult r = vkDeviceWaitIdle(vk->device);
+    VkResult r = vk_device_wait_idle(vk);
     vk_note_result(vk, r); /* R578 */
     if (r != VK_SUCCESS) {
         LOG_ERROR("rhi_device_idle: vkDeviceWaitIdle = %d", (int)r);
@@ -2528,11 +2847,20 @@ bool rhi_device_lost(RHIDevice *dev) {
 static void vk_shutdown(RHIDevice *dev) {
     VKBackend *vk = vk_backend(dev);
     if (!vk) return;
-    if (vk->device != VK_NULL_HANDLE && vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk->device != VK_NULL_HANDLE && vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shutdown");
     /* R175: Device idle — free deferred mip-upload resources without waiting. */
     if (vk->device != VK_NULL_HANDLE && !vk_mip_upload_owned_by_other(vk))
         vk_mip_upload_reclaim(vk);
+    /* FS6: device idle — release every deferred destroy and an unsubmitted
+     * layout batch before the command pool and the device go away. */
+    if (vk->device != VK_NULL_HANDLE) {
+        if (vk->layout_cb != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &vk->layout_cb);
+            vk->layout_cb = VK_NULL_HANDLE;
+        }
+        vk_retire_collect(vk, true);
+    }
 
 #if defined(ENGINE_PLATFORM_ANDROID)
     if (vk->native_window) {
@@ -2662,7 +2990,7 @@ void rhi_device_destroy(RHIDevice *dev) {
         free(dev);
         return;
     }
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in device_destroy");
 
     /* The queue is idle, but each per-frame command buffer still RETAINS its
@@ -2912,6 +3240,11 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
         rhi_frame_owner_release(dev);
         return NULL;
     }
+    vk->fence_done[vk->current_frame] = true;
+    /* FS6: release deferred destroys whose frames have completed, within a
+     * per-frame budget (the rest follows on later frames). */
+    vk_retire_collect_budget(vk, false, VK_RETIRE_FRAME_BUDGET_US);
+
     VkResult reset_fence_res = vkResetFences(vk->device, 1, &vk->fences[vk->current_frame]);
     if (reset_fence_res != VK_SUCCESS) {
         rhi_device_set_lifecycle_result(dev, vk_lifecycle_result(reset_fence_res));
@@ -3057,7 +3390,7 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
     }
 
     /* Wait for all frames to complete before reading back. */
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS) {
+    if (vk_device_wait_idle(vk) != VK_SUCCESS) {
         LOG_WARN("VK: vkDeviceWaitIdle failed in screenshot");
         return false;
     }
@@ -3174,14 +3507,14 @@ bool rhi_screenshot(RHIDevice *dev, u32 x, u32 y, u32 w, u32 h,
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
+    if (vk_queue_submit(vk, 1, &submit, VK_NULL_HANDLE) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to submit screenshot command buffer");
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
         vkFreeMemory(vk->device, staging_mem, NULL);
         return false;
     }
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+    if (vk_queue_wait_idle(vk, vk->graphics_queue) != VK_SUCCESS) {
         LOG_WARN("VK: vkQueueWaitIdle failed in screenshot");
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cmd);
         vkDestroyBuffer(vk->device, staging_buf, NULL);
@@ -3343,8 +3676,12 @@ void rhi_frame_end(RHIDevice *dev) {
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &vk->render_semaphores[vk->image_index];
 
-    VkResult submit_res = vkQueueSubmit(vk->graphics_queue, 1, &si, vk->fences[vk->current_frame]);
+    VkResult submit_res = vk_queue_submit(vk, 1, &si, vk->fences[vk->current_frame]);
     vk_note_result(vk, submit_res); /* R578 */
+    if (submit_res == VK_SUCCESS) {
+        vk->fence_serial[vk->current_frame] = ++vk->submit_serial;
+        vk->fence_done[vk->current_frame] = false;
+    }
     if (submit_res != VK_SUCCESS) {
         rhi_device_set_lifecycle_result(dev,
                                         submit_res == VK_ERROR_DEVICE_LOST ?
@@ -4606,13 +4943,13 @@ static bool vk_buffer_staging_upload(VKBackend *vk, VkBuffer dst, usize dst_offs
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
+    if (vk_queue_submit(vk, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
         vkFreeMemory(vk->device, staging_mem, NULL);
         vkDestroyBuffer(vk->device, staging, NULL);
         return false;
     }
-    if (vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS)
+    if (vk_queue_wait_idle(vk, vk->graphics_queue) != VK_SUCCESS)
         LOG_WARN("VK: queue wait failed after buffer staging upload");
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
     vkDestroyBuffer(vk->device, staging, NULL);
@@ -4688,7 +5025,7 @@ static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_of
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    VkResult sr = vkQueueSubmit(vk->graphics_queue, 1, &si, VK_NULL_HANDLE);
+    VkResult sr = vk_queue_submit(vk, 1, &si, VK_NULL_HANDLE);
     vk_note_result(vk, sr); /* R578 */
     if (sr != VK_SUCCESS) {
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -4696,7 +5033,7 @@ static bool vk_buffer_staging_download(VKBackend *vk, VkBuffer src, usize src_of
         vkDestroyBuffer(vk->device, staging, NULL);
         return false;
     }
-    VkResult wr = vkQueueWaitIdle(vk->graphics_queue);
+    VkResult wr = vk_queue_wait_idle(vk, vk->graphics_queue);
     vk_note_result(vk, wr); /* R578 */
     if (wr != VK_SUCCESS)
         LOG_WARN("VK: queue wait failed after buffer staging download");
@@ -5130,8 +5467,8 @@ bool rhi_backend_cmd_build_blas_one_triangle(
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1u;
         submit.pCommandBuffers = &one_shot;
-        if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
-            vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+        if (vk_queue_submit(vk, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vk_queue_wait_idle(vk, vk->graphics_queue) != VK_SUCCESS) {
             vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
             vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
@@ -5306,8 +5643,8 @@ bool rhi_backend_cmd_build_tlas_one_instance(
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1u;
         submit.pCommandBuffers = &one_shot;
-        if (vkQueueSubmit(vk->graphics_queue, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
-            vkQueueWaitIdle(vk->graphics_queue) != VK_SUCCESS) {
+        if (vk_queue_submit(vk, 1u, &submit, VK_NULL_HANDLE) != VK_SUCCESS ||
+            vk_queue_wait_idle(vk, vk->graphics_queue) != VK_SUCCESS) {
             vkFreeCommandBuffers(vk->device, as_pool, 1u, &one_shot);
             vkDestroyCommandPool(vk->device, as_pool, NULL);
             return false;
@@ -5570,7 +5907,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        if (vkQueueSubmit(vk->graphics_queue, 1, &si, upload_fence) != VK_SUCCESS) {
+        if (vk_queue_submit(vk, 1, &si, upload_fence) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to submit texture staging commands");
             vkDestroyFence(vk->device, upload_fence, NULL);
             vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -5653,7 +5990,7 @@ RHITexture rhi_texture_create(RHIDevice *dev, const RHITextureDesc *desc) {
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        if (vkQueueSubmit(vk->graphics_queue, 1, &si, layout_fence) != VK_SUCCESS) {
+        if (vk_queue_submit(vk, 1, &si, layout_fence) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to submit texture layout commands");
             vkDestroyFence(vk->device, layout_fence, NULL);
             vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -5846,7 +6183,7 @@ void rhi_texture_upload_mip(RHIDevice *dev, RHITexture tex, u32 mip_level,
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+    if (vk_queue_submit(vk, 1, &si, fence) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to submit mip upload commands");
         vkDestroyFence(vk->device, fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
@@ -5974,7 +6311,7 @@ static bool vk_texture_sync_submit(VKBackend *vk, VkBuffer staging,
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &cb;
-    bool ok = vkQueueSubmit(vk->graphics_queue, 1, &si, fence) == VK_SUCCESS &&
+    bool ok = vk_queue_submit(vk, 1, &si, fence) == VK_SUCCESS &&
               vk_wait_fence(vk, fence) == VK_SUCCESS;
     vkDestroyFence(vk->device, fence, NULL);
     vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &cb);
@@ -6199,7 +6536,7 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
         u32 bpp = (cd->format == VK_FORMAT_R16G16B16A16_SFLOAT) ? 8u : 4u;
         VkDeviceSize data_size = (VkDeviceSize)cd->size * cd->size * bpp * 6u;
         if (size < (usize)data_size) return false;
-        if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+        if (vk_device_wait_idle(vk) != VK_SUCCESS)
             LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap readback");
         VkBuffer staging;
         VkDeviceMemory staging_mem;
@@ -6249,7 +6586,7 @@ bool rhi_texture_read_pixels(RHIDevice *dev, RHITexture tex, void *dst_rgba8, us
     if (size < (usize)data_size) return false;
 
     /* Bake-time sync readback — in-flight frames must not race the barrier. */
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in texture readback");
 
     VkBuffer staging;
@@ -6321,16 +6658,14 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
     if (vk->shadow_tex_view == td->view) vk->shadow_tex_view = VK_NULL_HANDLE;
     /* R176: Pending mip upload may still reference this image — reclaim first. */
     vk_mip_upload_reclaim(vk);
-    vk_wait_frames(vk);
+    /* FS6: fence-retired release instead of waiting for every frame. */
     for (u32 m = 0; m < VK_MAX_MIP_VIEWS; m++) {
-        if (td->mip_views[m] != VK_NULL_HANDLE) {
-            vkDestroyImageView(vk->device, td->mip_views[m], NULL);
-            td->mip_views[m] = VK_NULL_HANDLE;
-        }
+        VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, td->mip_views[m]);
+        td->mip_views[m] = VK_NULL_HANDLE;
     }
-    vkDestroyImageView(vk->device, td->view, NULL);
-    vkDestroyImage(vk->device, td->image, NULL);
-    vkFreeMemory(vk->device, td->memory, NULL);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, td->view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, td->image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, td->memory);
     free(td);
     rhi_free_slot(dev, tex);
 }
@@ -8343,7 +8678,7 @@ void rhi_shadow_map_destroy(RHIDevice *dev, RHIShadowMap *sm) {
     VKBackend *vk = vk_backend(dev);
     VKShadowData *sd = rhi_get_resource_typed(dev, sm->fbo, RHI_RES_FRAMEBUFFER);
     if (!sd) return;
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in shadow_map_destroy");
     /* Drop the cached fallback shadow view before it dangles (it aliases
      * sd->depth_view, destroyed just below). */
@@ -8618,7 +8953,7 @@ RHICubemap rhi_cubemap_create(RHIDevice *dev, const RHICubemapDesc *desc) {
         si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         si.commandBufferCount = 1;
         si.pCommandBuffers = &tmp_cb;
-        if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+        if (vk_queue_submit(vk, 1, &si, fence) != VK_SUCCESS) {
             LOG_FATAL("VK: failed to submit cubemap layout commands");
             vkDestroyFence(vk->device, fence, NULL);
             vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -8692,7 +9027,7 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     VKBackend *vk = vk_backend(dev);
     VKCubemapData *cd = rhi_get_resource_typed(dev, cm, RHI_RES_CUBEMAP);
     if (!cd) return;
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_destroy");
     for (u32 i = 0; i < 6; i++) {
         for (u32 m = 0; m < VK_MAX_MIP_VIEWS; m++) {
@@ -8714,7 +9049,7 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
 
     /* Prior compute writes ran in earlier queue submissions; make sure they
      * finished before re-transitioning, then barrier GENERAL -> SHADER_READ. */
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_transition_to_read");
 
     VkCommandBufferAllocateInfo cbai = {0};
@@ -8769,7 +9104,7 @@ void rhi_cubemap_transition_to_read(RHIDevice *dev, RHICubemap cm) {
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+    if (vk_queue_submit(vk, 1, &si, fence) != VK_SUCCESS) {
         LOG_WARN("VK: failed to submit cubemap transition commands");
         vkDestroyFence(vk->device, fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -8787,7 +9122,7 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(dev, tex, RHI_RES_TEXTURE);
     if (!td || td->image == VK_NULL_HANDLE) return;
 
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in texture_transition_to_read");
 
     VkCommandBufferAllocateInfo cbai = {0};
@@ -8842,7 +9177,7 @@ void rhi_texture_transition_to_read(RHIDevice *dev, RHITexture tex) {
     si.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     si.commandBufferCount = 1;
     si.pCommandBuffers = &tmp_cb;
-    if (vkQueueSubmit(vk->graphics_queue, 1, &si, fence) != VK_SUCCESS) {
+    if (vk_queue_submit(vk, 1, &si, fence) != VK_SUCCESS) {
         LOG_WARN("VK: failed to submit texture transition commands");
         vkDestroyFence(vk->device, fence, NULL);
         vkFreeCommandBuffers(vk->device, vk->cmd_pool, 1, &tmp_cb);
@@ -9280,23 +9615,27 @@ void rhi_cmd_bind_texel_buffers(RHICmdBuffer *cmd, RHIBuffer buf0, RHIBuffer buf
 
 /* ---- Offscreen FBO ---- */
 
+/* FS6: every object goes through the fence-retired list — destroyed at once
+ * when the GPU is provably idle, otherwise after the frames that may still
+ * reference it complete (replaces a vkDeviceWaitIdle per destroy). Creation
+ * failure paths reach here too; there the GPU has never seen the objects. */
 static void vk_offscreen_fbo_release(VKBackend *vk, VKFBOData *fd) {
     if (!vk || !fd) return;
-    if (fd->framebuffer) vkDestroyFramebuffer(vk->device, fd->framebuffer, NULL);
-    if (fd->render_pass) vkDestroyRenderPass(vk->device, fd->render_pass, NULL);
-    if (fd->render_pass_load) vkDestroyRenderPass(vk->device, fd->render_pass_load, NULL);
-    if (fd->color_view) vkDestroyImageView(vk->device, fd->color_view, NULL);
-    if (fd->color_image) vkDestroyImage(vk->device, fd->color_image, NULL);
-    if (fd->color_memory) vkFreeMemory(vk->device, fd->color_memory, NULL);
-    if (fd->msaa_color_view) vkDestroyImageView(vk->device, fd->msaa_color_view, NULL);
-    if (fd->msaa_color_image) vkDestroyImage(vk->device, fd->msaa_color_image, NULL);
-    if (fd->msaa_color_memory) vkFreeMemory(vk->device, fd->msaa_color_memory, NULL);
-    if (fd->depth_view) vkDestroyImageView(vk->device, fd->depth_view, NULL);
-    if (fd->depth_image) vkDestroyImage(vk->device, fd->depth_image, NULL);
-    if (fd->depth_memory) vkFreeMemory(vk->device, fd->depth_memory, NULL);
-    if (fd->msaa_depth_view) vkDestroyImageView(vk->device, fd->msaa_depth_view, NULL);
-    if (fd->msaa_depth_image) vkDestroyImage(vk->device, fd->msaa_depth_image, NULL);
-    if (fd->msaa_depth_memory) vkFreeMemory(vk->device, fd->msaa_depth_memory, NULL);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_FRAMEBUFFER, fd->framebuffer);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, fd->render_pass);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, fd->render_pass_load);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, fd->color_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, fd->color_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, fd->color_memory);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, fd->msaa_color_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, fd->msaa_color_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, fd->msaa_color_memory);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, fd->depth_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, fd->depth_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, fd->depth_memory);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, fd->msaa_depth_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, fd->msaa_depth_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, fd->msaa_depth_memory);
     free(fd);
 }
 
@@ -9390,10 +9729,6 @@ static RHIOffscreenFBO vk_offscreen_fbo_create(RHIDevice *dev, u32 width, u32 he
         free(fd);
         return fbo;
     }
-
-    /* Defined sampling layout for the case this target is sampled before it is
-     * ever rendered into (avoids VUID-vkCmdDraw-None-09600). */
-    vk_init_image_layout(vk, fd->color_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     ci.format = VK_FORMAT_D32_SFLOAT;
     /* R603: +TRANSFER_SRC so the wrapped depth texture (fbo.depth_tex) can
@@ -9617,6 +9952,13 @@ fbo_create_fail:
         return fbo;
     }
 
+    /* Defined sampling layout for the case this target is sampled before it is
+     * ever rendered into (avoids VUID-vkCmdDraw-None-09600). Recorded only
+     * now: the batched barrier must not reference an image a failure path
+     * above destroys directly; later failures release through the retire
+     * list, which outlives the batch. */
+    vk_init_image_layout(vk, fd->color_image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
     VKTextureData *td = calloc(1, sizeof(VKTextureData));
     if (!td) {
         /* R359: GPU FBO already live in fd — tear down before returning null. */
@@ -9695,8 +10037,12 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     VKBackend *vk = vk_backend(dev);
     VKFBOData *fd = rhi_get_resource_typed(dev, fbo->fb, RHI_RES_FRAMEBUFFER);
     if (!fd) return;
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
-        LOG_WARN("VK: vkDeviceWaitIdle failed in offscreen_fbo_destroy");
+    if (rhi_handle_valid(fbo->color_tex)) {
+        VKTextureData *ctd = (VKTextureData *)rhi_get_resource_typed(
+            dev, fbo->color_tex, RHI_RES_TEXTURE);
+        if (ctd && vk->shadow_tex_view == ctd->view)
+            vk->shadow_tex_view = VK_NULL_HANDLE;
+    }
     vk_offscreen_fbo_release(vk, fd);
     /* R425: free the VKTextureData structs behind the color/depth texture
      * slots (calloc'd at create) — the old code freed only the slots,
@@ -9935,12 +10281,16 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
     if (vk_allocate_memory(vk, &ai, out_mem) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to allocate MRT color memory (helper)");
         vkDestroyImage(vk->device, *out_img, NULL);
+        *out_img = VK_NULL_HANDLE;
+        *out_mem = VK_NULL_HANDLE;
         return;
     }
     if (vkBindImageMemory(vk->device, *out_img, *out_mem, 0) != VK_SUCCESS) {
         LOG_FATAL("VK: failed to bind MRT color image memory (helper)");
         vkFreeMemory(vk->device, *out_mem, NULL);
         vkDestroyImage(vk->device, *out_img, NULL);
+        *out_img = VK_NULL_HANDLE;
+        *out_mem = VK_NULL_HANDLE;
         return;
     }
 
@@ -9956,12 +10306,11 @@ static void vk_create_mrt_color_image(VKBackend *vk, VkFormat fmt,
         LOG_FATAL("VK: failed to create MRT color image view (helper)");
         vkFreeMemory(vk->device, *out_mem, NULL);
         vkDestroyImage(vk->device, *out_img, NULL);
+        *out_img = VK_NULL_HANDLE;
+        *out_mem = VK_NULL_HANDLE;
+        *out_view = VK_NULL_HANDLE;
         return;
     }
-
-    /* Defined sampling layout in case this G-buffer target is sampled before its
-     * pass renders into it (avoids VUID-vkCmdDraw-None-09600). */
-    vk_init_image_layout(vk, *out_img, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 }
 
 RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
@@ -10158,6 +10507,13 @@ RHIMRTFBO rhi_mrt_fbo_create(RHIDevice *dev, u32 width, u32 height,
         return fbo;
     }
 
+    /* Defined sampling layout in case a G-buffer target is sampled before its
+     * pass renders into it (avoids VUID-vkCmdDraw-None-09600). Recorded after
+     * the last direct-destroy failure path above (FS6 layout batch). */
+    for (u32 i = 0; i < attachment_count; i++)
+        vk_init_image_layout(vk, md->color_images[i],
+                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
     /* Register FBO handle. */
     u32 fidx = rhi_alloc_slot(dev);
     dev->slots[fidx].ptr  = md;
@@ -10221,29 +10577,30 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
     VKBackend *vk = vk_backend(dev);
     VKMRTFBOData *md = (VKMRTFBOData *)rhi_get_resource_typed(dev, fbo->fb, RHI_RES_MRT_FBO);
     if (!md) { memset(fbo, 0, sizeof(*fbo)); return; }
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
-        LOG_WARN("VK: vkDeviceWaitIdle failed in mrt_fbo_destroy");
 
-    vkDestroyFramebuffer(vk->device, md->framebuffer, NULL);
-    vkDestroyRenderPass(vk->device, md->render_pass, NULL);
-    if (md->render_pass_load) vkDestroyRenderPass(vk->device, md->render_pass_load, NULL);
+    /* FS6: fence-retired release instead of a vkDeviceWaitIdle per destroy. */
+    VK_RETIRE(vk, VK_OBJECT_TYPE_FRAMEBUFFER, md->framebuffer);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, md->render_pass);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_RENDER_PASS, md->render_pass_load);
     for (u32 i = 0; i < md->attachment_count; i++) {
-        vkDestroyImageView(vk->device, md->color_views[i], NULL);
-        vkDestroyImage(vk->device, md->color_images[i], NULL);
-        vkFreeMemory(vk->device, md->color_memories[i], NULL);
+        VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, md->color_views[i]);
+        VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, md->color_images[i]);
+        VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, md->color_memories[i]);
         /* Null the shared texture slot so device-destroy skips double-free. */
         if (rhi_handle_valid(fbo->color_tex[i])) {
             VKTextureData *td = (VKTextureData *)rhi_get_resource_typed(
                 dev, fbo->color_tex[i], RHI_RES_TEXTURE);
+            if (td && vk->shadow_tex_view == td->view)
+                vk->shadow_tex_view = VK_NULL_HANDLE;
             if (td) free(td);
             if (dev->slots[fbo->color_tex[i].index].ptr == td)
                 dev->slots[fbo->color_tex[i].index].ptr = NULL;
             rhi_free_slot(dev, fbo->color_tex[i]);
         }
     }
-    vkDestroyImageView(vk->device, md->depth_view, NULL);
-    vkDestroyImage(vk->device, md->depth_image, NULL);
-    vkFreeMemory(vk->device, md->depth_memory, NULL);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE_VIEW, md->depth_view);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_IMAGE, md->depth_image);
+    VK_RETIRE(vk, VK_OBJECT_TYPE_DEVICE_MEMORY, md->depth_memory);
     if (rhi_handle_valid(fbo->depth_tex)) {
         VKTextureData *dd = (VKTextureData *)rhi_get_resource_typed(
             dev, fbo->depth_tex, RHI_RES_TEXTURE);
@@ -10583,7 +10940,7 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
     VKCubemapDepthFBOData *cd = (VKCubemapDepthFBOData *)rhi_get_resource_typed(
         dev, fbo->fb, RHI_RES_CUBEMAP_DEPTH_FBO);
     if (!cd) { memset(fbo, 0, sizeof(*fbo)); return; }
-    if (vkDeviceWaitIdle(vk->device) != VK_SUCCESS)
+    if (vk_device_wait_idle(vk) != VK_SUCCESS)
         LOG_WARN("VK: vkDeviceWaitIdle failed in cubemap_depth_fbo_destroy");
 
     for (u32 face = 0; face < 6; face++) {

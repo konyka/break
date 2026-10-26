@@ -234,6 +234,167 @@ static bool tv_test_msaa_offscreen(const TestRenderState *rs, RHIBuffer vbo,
 #endif
 }
 
+/* FS6: resize-path synchronisation gate. Render-target churn and swapchain
+ * recreation (the fullscreen-switch path) must not stall the CPU on the GPU:
+ * FBO destroy goes through the fence-retired list (also when the FBO was used
+ * earlier in the frame being recorded), new targets get their initial layout
+ * from one batched submission, and rhi_device_resize hands the old swapchain
+ * to the new one. Checked: no vkDeviceWaitIdle / vkQueueWaitIdle during the
+ * churn, pixels of the surviving and the new targets, every retired object
+ * released a few frames later, and (via the suite's validation gate) no
+ * validation message for any of it. */
+#ifdef ENGINE_VULKAN
+#define TV_FS6_FBOS 6u
+#define TV_FS6_SIZE 64u
+
+static bool tv_fs6_render_targets(RHIDevice *dev, RHIOffscreenFBO *fbos,
+                                   u32 count, u32 screen_w, u32 screen_h,
+                                   i32 destroy_after_use) {
+    RHICmdBuffer *cmd = rhi_frame_begin(dev);
+    if (!cmd) return false;
+    for (u32 i = 0; i < count; i++) {
+        rhi_offscreen_fbo_bind(cmd, &fbos[i]);
+        rhi_offscreen_fbo_unbind(cmd, screen_w, screen_h);
+    }
+    /* The command buffer being recorded references this FBO; destroying it
+     * now must defer the release until the frame's fence has signalled. */
+    if (destroy_after_use >= 0)
+        rhi_offscreen_fbo_destroy(dev, &fbos[destroy_after_use]);
+    if (rhi_frame_end_ex(dev) != RHI_RESULT_OK) return false;
+    RHIResult pr = rhi_present_ex(dev);
+    return pr == RHI_RESULT_OK || pr == RHI_RESULT_OUT_OF_DATE;
+}
+
+
+static bool tv_fs6_check_gray(RHIDevice *dev, const RHIOffscreenFBO *fbo,
+                              u8 expect, const char *label) {
+    static u8 px[TV_FS6_SIZE * TV_FS6_SIZE * 4u];
+    if (!rhi_texture_read_pixels(dev, fbo->color_tex, px, sizeof(px))) {
+        LOG_ERROR("FAIL: FS6 %s readback failed", label);
+        return false;
+    }
+    const usize center = ((usize)(TV_FS6_SIZE / 2u) * TV_FS6_SIZE + TV_FS6_SIZE / 2u) * 4u;
+    for (u32 c = 0; c < 3u; c++) {
+        i32 d = (i32)px[center + c] - (i32)expect;
+        if (d < -2 || d > 2) {
+            LOG_ERROR("FAIL: FS6 %s pixel channel %u = %u, want %u", label, c,
+                      (unsigned)px[center + c], (unsigned)expect);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool tv_test_fs6_resize_sync(RHIDevice *dev, u32 screen_w, u32 screen_h) {
+    RHIOffscreenFBO fbos[TV_FS6_FBOS];
+    u8 gray[TV_FS6_FBOS];
+    memset(fbos, 0, sizeof(fbos));
+    bool ok = true;
+    for (u32 i = 0; i < TV_FS6_FBOS; i++) {
+        fbos[i] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+        if (!rhi_handle_valid(fbos[i].fb)) {
+            LOG_ERROR("FAIL: FS6 FBO %u create", i);
+            ok = false;
+            break;
+        }
+        gray[i] = (u8)(32u + 32u * i);
+        f32 g = (f32)gray[i] / 255.0f;
+        rhi_offscreen_fbo_set_clear_color(dev, &fbos[i], g, g, g, 1.0f);
+    }
+    if (ok) ok = tv_fs6_render_targets(dev, fbos, TV_FS6_FBOS, screen_w, screen_h, -1);
+
+    RHIVkSyncCounters before = {0}, after = {0};
+    if (!rhi_vk_sync_counters(dev, &before)) {
+        LOG_ERROR("FAIL: FS6 sync counters unavailable");
+        ok = false;
+    }
+    u64 t0 = time_microseconds();
+    if (ok) {
+        /* In-frame destroy of an FBO used by the frame being recorded. */
+        ok = tv_fs6_render_targets(dev, fbos, TV_FS6_FBOS, screen_w, screen_h, 0);
+        /* Two back-to-back swapchain recreations (window managers often
+         * deliver two sizes per switch), with frames still in flight. */
+        if (ok && rhi_device_resize_ex(dev, screen_w, screen_h) != RHI_RESULT_OK) {
+            LOG_ERROR("FAIL: FS6 first swapchain recreate");
+            ok = false;
+        }
+        if (ok && rhi_device_resize_ex(dev, screen_w, screen_h) != RHI_RESULT_OK) {
+            LOG_ERROR("FAIL: FS6 second swapchain recreate");
+            ok = false;
+        }
+        /* Out-of-frame churn: replace three targets, as a resize rebuild does. */
+        for (u32 i = 1; ok && i < 4u; i++) {
+            rhi_offscreen_fbo_destroy(dev, &fbos[i]);
+            fbos[i] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+            if (!rhi_handle_valid(fbos[i].fb)) {
+                LOG_ERROR("FAIL: FS6 FBO %u recreate", i);
+                ok = false;
+                break;
+            }
+            gray[i] = (u8)(200u - 16u * i);
+            f32 g = (f32)gray[i] / 255.0f;
+            rhi_offscreen_fbo_set_clear_color(dev, &fbos[i], g, g, g, 1.0f);
+        }
+        /* A never-rendered new target: its batched initial layout must land
+         * before the readback below (validation checks the layout). */
+        fbos[0] = rhi_offscreen_fbo_create(dev, TV_FS6_SIZE, TV_FS6_SIZE);
+        if (ok && !rhi_handle_valid(fbos[0].fb)) {
+            LOG_ERROR("FAIL: FS6 unrendered FBO create");
+            ok = false;
+        }
+        for (u32 f = 0; ok && f < 3u; f++)
+            ok = tv_fs6_render_targets(dev, fbos + 1, TV_FS6_FBOS - 1u,
+                                       screen_w, screen_h, -1);
+    }
+    f64 churn_ms = (f64)(time_microseconds() - t0) / 1000.0;
+    if (ok && rhi_vk_sync_counters(dev, &after)) {
+        u64 dev_idle = after.device_wait_idle - before.device_wait_idle;
+        u64 q_idle = after.queue_wait_idle - before.queue_wait_idle;
+        u64 deferred = after.deferred_destroys - before.deferred_destroys;
+        LOG_INFO("FS6: churn %.2f ms, device_wait_idle=%llu queue_wait_idle=%llu "
+                 "deferred=%llu pending=%llu layout_batches=%llu",
+                 churn_ms, (unsigned long long)dev_idle, (unsigned long long)q_idle,
+                 (unsigned long long)deferred,
+                 (unsigned long long)after.deferred_pending,
+                 (unsigned long long)(after.layout_batches - before.layout_batches));
+        if (dev_idle != 0u || q_idle != 0u) {
+            LOG_ERROR("FAIL: FS6 resize/destroy path waited for the GPU to idle");
+            ok = false;
+        }
+        if (deferred == 0u || after.layout_batches == before.layout_batches) {
+            LOG_ERROR("FAIL: FS6 deferred destroy / layout batch not exercised");
+            ok = false;
+        }
+    }
+    for (u32 i = 1; ok && i < TV_FS6_FBOS; i++) {
+        char label[32];
+        snprintf(label, sizeof(label), "fbo%u", i);
+        ok = tv_fs6_check_gray(dev, &fbos[i], gray[i], label);
+    }
+    if (ok) {
+        static u8 px[TV_FS6_SIZE * TV_FS6_SIZE * 4u];
+        if (!rhi_texture_read_pixels(dev, fbos[0].color_tex, px, sizeof(px))) {
+            LOG_ERROR("FAIL: FS6 unrendered FBO readback");
+            ok = false;
+        }
+    }
+    /* Retired objects (including the present-delayed swapchain ones) drain
+     * within a few frames. */
+    for (u32 f = 0; ok && f < 8u; f++)
+        ok = tv_fs6_render_targets(dev, fbos + 1, TV_FS6_FBOS - 1u,
+                                   screen_w, screen_h, -1);
+    if (ok && rhi_vk_sync_counters(dev, &after) && after.deferred_pending != 0u) {
+        LOG_ERROR("FAIL: FS6 %llu retired objects never released",
+                  (unsigned long long)after.deferred_pending);
+        ok = false;
+    }
+    for (u32 i = 0; i < TV_FS6_FBOS; i++)
+        if (rhi_handle_valid(fbos[i].fb)) rhi_offscreen_fbo_destroy(dev, &fbos[i]);
+    if (ok) LOG_INFO("PASS: FS6 resize-path sync (no idle waits, pixels, drain)");
+    return ok;
+}
+#endif
+
 /* Capture the presented frame, downsample, and compare against (or, with
  * GOLDEN_UPDATE=1, write) the reference PPM at `path` — implementation in
  * engine/tests/rhi_oracle.c (rhi_oracle_compare_frame); this wrapper is kept
@@ -6637,6 +6798,16 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
     bool msaa_pass = tv_test_msaa_offscreen(&render, vbo, ibo);
     LOG_INFO("RESULT: VULKAN 2x MSAA TEST %s", msaa_pass ? "PASSED ✓" : "FAILED");
 
+    bool fs6_pass = true;
+#ifdef ENGINE_VULKAN
+    LOG_INFO("============================================");
+    LOG_INFO("TEST: FS6 RESIZE-PATH SYNC (deferred destroy, batched layout, swapchain)");
+    LOG_INFO("============================================");
+    platform_get_drawable_size(engine.platform, &w, &h);
+    fs6_pass = tv_test_fs6_resize_sync(render.device, w, h);
+    LOG_INFO("RESULT: FS6 RESIZE-PATH SYNC TEST %s", fs6_pass ? "PASSED ✓" : "FAILED");
+#endif
+
     LOG_INFO("============================================");
     LOG_INFO("Stress test: 500 frames, texture bind, multi-draw");
     LOG_INFO("============================================");
@@ -7620,7 +7791,7 @@ pbrf_pass ? "PASSED ✓" : "FAILED");
 #endif
 
     bool all_pass = capability_pass && acceleration_structure_pass && blas_size_query_pass && motion_rt1_pass && f16rt_pass && mipup_pass && sampc_pass && rebind_pass && geom_pass && sgeom_pass && restore_pass && bufstaging_pass && buforder_pass && stress_pass && draw_pass && inst_pass && fbo_pass &&
-msaa_pass &&
+msaa_pass && fs6_pass &&
 compute_pass && combined_pass && ibl_pass && pbrf_pass && unified_pass &&
 idraw_pass && matarr_pass && dfi_pass && defarr_pass && gbf_pass && emi_pass && hdr_pass && nmap_pass && pbrc_pass && psh_pass && golden_pass && bindings_parity_pass &&
 validation_pass;
