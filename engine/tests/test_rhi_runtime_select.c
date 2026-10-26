@@ -181,6 +181,12 @@ int main(void) {
                                       &display_h, 640u, 480u);
     CHECK(dev == (RHIDevice *)&dev_gl);
     CHECK(strcmp(rhi_runtime_active_backend(), "opengl") == 0);
+    /* a failed create must not strand the live GL device on the stub table */
+    CHECK(rhi_runtime_create_explicit(&k_cfg, RHI_BACKEND_VULKAN, &surface_h,
+                                      &display_h, 640u, 480u) == NULL);
+    CHECK(strcmp(rhi_runtime_active_backend(), "opengl") == 0);
+    CHECK(rhi_frame_index(dev) == 200u);
+    CHECK(strcmp(rhi_rollout_compiled_backend(), "opengl") == 0);
     reset(1, 1);
     dev = rhi_runtime_create_explicit(&k_cfg, RHI_BACKEND_D3D12, &window_h,
                                       &display_h, 640u, 480u);

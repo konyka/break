@@ -10,6 +10,7 @@
 #include "rhi/rhi_rollout.h"
 
 static const char *g_active_name = "none";
+static const RHIApi *g_active_api;
 static const char *g_selection_reason = "none";
 
 static void deactivate(void);
@@ -55,15 +56,13 @@ static bool config_valid(const RHIRuntimeConfig *cfg) {
     return true;
 }
 
-static void activate(const RHIRuntimeBackendDesc *b) {
-    rhi_dispatch_set_api(b->api);
-    g_active_name = b->name;
+static void install(const RHIApi *api, const char *name) {
+    rhi_dispatch_set_api(api);
+    g_active_api = api;
+    g_active_name = name;
 }
 
-static void deactivate(void) {
-    rhi_dispatch_set_api(NULL);
-    g_active_name = "none";
-}
+static void deactivate(void) { install(NULL, "none"); }
 
 static void record_selection(const RHIRuntimeBackendDesc *b, const char *reason) {
     g_selection_reason = reason;
@@ -73,16 +72,20 @@ static void record_selection(const RHIRuntimeBackendDesc *b, const char *reason)
 /* Calls the backend factory with its table already installed: backend
  * create paths call other public rhi_* functions (they resolve to the
  * namespaced symbols directly inside the backend TU, but core helpers such
- * as rhi_device_create_ex go through the forwarders). On failure the table
- * goes back to the stub so nothing routes to a half-made backend. */
+ * as rhi_device_create_ex go through the forwarders). On failure the
+ * previously installed table (the stub, or the backend of a device that is
+ * still alive) comes back, so nothing routes to a half-made backend and a
+ * live device keeps working. */
 static RHIDevice *try_create(const RHIRuntimeBackendDesc *b, void *window_native,
                              void *surface_native, void *display_native,
                              u32 w, u32 h) {
+    const RHIApi *prev_api = g_active_api;
+    const char *prev_name = g_active_name;
     RHIDevice *dev;
-    activate(b);
+    install(b->api, b->name);
     dev = b->create(b->use_surface_native ? surface_native : window_native,
                     display_native, w, h);
-    if (dev == NULL) deactivate();
+    if (dev == NULL) install(prev_api, prev_name);
     return dev;
 }
 
