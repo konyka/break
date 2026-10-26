@@ -97,6 +97,25 @@ uint32_t editor_panel_network_row_count(const BreakEditorPanelNetwork *p);
 const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p,
                                           uint32_t index);
 
+/* Render debugger panel (editor_panel_render.c) — pure view over a borrowed
+ * RHI device + the viewport's last-render stats; same lifecycle as the
+ * network panel, built beside it in the shared diagnostics row at h:20%. */
+typedef struct BreakEditorPanelRender BreakEditorPanelRender;
+struct BreakEditorViewport3D;
+BreakEditorPanelRender *editor_panel_render_create(BreakEditorShell *shell);
+void editor_panel_render_destroy(BreakEditorPanelRender *p);
+void editor_panel_render_build(BreakEditorPanelRender *p, my_widget_t *parent);
+void editor_panel_render_tick(BreakEditorPanelRender *p,
+                              const struct BreakEditorViewport3D *vp);
+void editor_panel_render_set_device(BreakEditorPanelRender *p, void *device);
+void editor_panel_render_set_source(BreakEditorPanelRender *p,
+                                    const BreakEditorRenderSource *source);
+void editor_panel_render_set_clock(BreakEditorPanelRender *p,
+                                   u64 (*clock)(void *user), void *user);
+uint32_t editor_panel_render_row_count(const BreakEditorPanelRender *p);
+const char *editor_panel_render_row_text(const BreakEditorPanelRender *p,
+                                         uint32_t index);
+
 /* Reverse-teardown seam (editor_remote.c): break_editor_shell_destroy calls
  * this FIRST for its attached remote (while the doc is still alive). When
  * the remote belongs to `shell`, it drops its back-pointer, destroys its

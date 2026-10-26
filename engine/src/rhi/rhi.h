@@ -382,6 +382,11 @@ RHIResult  rhi_device_destroy_ex(RHIDevice *dev);
 void       rhi_device_attach_wsi(RHIDevice *dev, PlatformWsiSurface *wsi);
 bool       rhi_device_get_capabilities(const RHIDevice *dev, RHICapabilities *out);
 RHIDeviceStatus rhi_device_get_status(const RHIDevice *dev);
+/* Read-only diagnostics: resource slots in use and slot capacity, taken from
+ * the core free list (never touches the backend). Either out pointer may be
+ * NULL. False on a NULL device. */
+bool       rhi_device_resource_usage(const RHIDevice *dev, u32 *out_used,
+                                     u32 *out_capacity);
 bool       rhi_device_get_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_get_device_info(const RHIDevice *dev, RHIDeviceInfo *out);
 bool       rhi_backend_cmd_build_blas_one_triangle(

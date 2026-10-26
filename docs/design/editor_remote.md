@@ -142,7 +142,7 @@ Status values: every response was the per-id success response (no `RESULT` frame
 ## 9. NOT delivered
 
 - Remote load/save (load's world swap plus selection reconcile needs its own design; save is not exposed either).
-- Remote render control (camera, viewport, render settings) and the **render debugger panel** (Stage 4 subproject 6 stays partial).
+- Remote render control (camera, viewport, render settings). The **render debugger panel** is delivered separately as a local pure view (`docs/design/editor_render_debugger.md`), not as a remote-control surface.
 - A production credential system: per-device provisioning, rotation, revocation, key storage. The PSK is a dev path (`transport_security.md` §4).
 - WAN deployment and multi-client management (no user or role model, no per-client permissions, no session listing or kick control, no non-loopback bind flag).
 - Remote undo-stack sharing or collaboration semantics (remote and local commands share the one doc command stack; there is no per-client history, conflict handling, or change notification push).

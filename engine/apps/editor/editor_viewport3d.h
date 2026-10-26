@@ -5,11 +5,12 @@
  * routes pointer events into the Phase 2 CPU core (editor_viewport.h /
  * editor_gizmo.h).
  *
- * Layering: this is the ONLY editor file that talks to the RHI. All camera /
- * pick / gizmo math lives in the pure-CPU core (Tasks 1-2); the widget never
- * mutates the document except through the gizmo's undoable drag commands, and
- * camera moves (orbit/pan/zoom/focus) are view state — NOT undoable (plan
- * Global Constraints).
+ * Layering: this is the only editor file that creates or records GPU work.
+ * The render debugger panel performs read-only RHI queries separately. All
+ * camera / pick / gizmo math lives in the pure-CPU core (Tasks 1-2); the
+ * widget never mutates the document except through the gizmo's undoable drag
+ * commands, and camera moves (orbit/pan/zoom/focus) are view state — NOT
+ * undoable (plan Global Constraints).
  *
  * GPU object lifecycle: create() allocates NO GPU objects. The pipeline,
  * cube vertex buffer, and offscreen FBO are created lazily on the first
@@ -88,6 +89,41 @@ void break_editor_viewport3d_set_screen_size(BreakEditorViewport3D *vp,
 void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
                                     BreakEditorDoc *doc, void *rhi_device,
                                     void *rhi_cmd, int panel_w, int panel_h);
+
+/* Render debugger (docs/design/editor_render_debugger.md): CPU-side record of
+ * the LAST render() call — counters the pass already has, never a GPU
+ * readback. "skipped" names why nothing was drawn (or NONE when it was). */
+typedef enum {
+    BREAK_EDITOR_VIEWPORT3D_INIT_NOT_ATTEMPTED = 0,
+    BREAK_EDITOR_VIEWPORT3D_INIT_READY = 1,
+    BREAK_EDITOR_VIEWPORT3D_INIT_FAILED = 2
+} BreakEditorViewport3DInitState;
+
+typedef enum {
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NONE = 0,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NOT_RENDERED, /* no render() call yet */
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NO_DEVICE,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_PANEL_TOO_SMALL,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_NO_CAMERA,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_DEVICE_CHANGED,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_INIT_FAILED,
+    BREAK_EDITOR_VIEWPORT3D_SKIP_FBO_FAILED
+} BreakEditorViewport3DSkip;
+
+typedef struct BreakEditorViewport3DStats {
+    int init_state;   /* BreakEditorViewport3DInitState */
+    int skipped;      /* BreakEditorViewport3DSkip */
+    u32 fbo_w, fbo_h; /* 0 when no FBO exists */
+    u32 proxies;      /* entity proxy boxes drawn */
+    u32 gizmo_handles;/* gizmo handle boxes drawn */
+    u32 draws;        /* draw calls recorded (proxies + handles) */
+} BreakEditorViewport3DStats;
+
+/* False on NULL arguments. */
+bool break_editor_viewport3d_last_stats(const BreakEditorViewport3D *vp,
+                                        BreakEditorViewport3DStats *out);
+/* Stable short name for a skip reason ("none", "no-device", ...). */
+const char *break_editor_viewport3d_skip_name(int skipped);
 
 /* The current FBO color texture; RHI_HANDLE_NULL before the first successful
  * render (the widget paints a placeholder then). Borrowed. */

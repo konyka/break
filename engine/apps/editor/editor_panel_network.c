@@ -248,8 +248,9 @@ void editor_panel_network_build(BreakEditorPanelNetwork *p,
         my_widget_unref(section);
         return;
     }
-    /* diagnostics column, under the profiler: 20% of the right column */
-    (void)my_widget_set_layout_params(section, "w:100% h:20%");
+    /* diagnostics row under the profiler (the shell's h:20% editor-diag-row,
+     * shared with the render debugger): left half */
+    (void)my_widget_set_layout_params(section, "w:50% h:100%");
     if (my_widget_add_child(parent, section) == MY_RET_OK) {
         my_widget_unref(section); /* tree holds its own reference */
     } else {

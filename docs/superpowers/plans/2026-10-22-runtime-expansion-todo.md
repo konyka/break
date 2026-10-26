@@ -56,7 +56,7 @@
 - [x] Property transactions and undo/redo（Tasks 1+3：命令式 undo/redo、逐字节精确；`test_editor_doc`/`test_editor_cmd`/`test_editor_components`）
 - [ ] Asset browser and hot reload（asset browser **delivered-with-limits**：Phase 3 Tasks 1+3，`platform_list_dir` + `BreakEditorAssets` 模型 + 面板接线；默认 root=cwd、单击激活、快照 listing、32 槽点击池；**hot reload 集成仍未交付**）
 - [x] Viewport/gizmo/scene round-trip（scene save-load round-trip：Phase 1 Task 2 BSCN+sidecar、`test_editor_scene` 15/15；3D viewport/gizmo/相机：Phase 2 Tasks 1-4 交付——纯 CPU 相机/拾取/gizmo 状态机 + GPU 视口面板，editor lane 三树 8/8、全量 188/188、记录在案 live smoke（非 GPU 验证）；场景保真渲染/SCENE_NODES ownership 为 Phase 3+ 排除项，见 `docs/design/editor_viewport.md` §9）
-- [ ] Console/profiler/network/render panels（**partial**：profiler 面板已交付为本地纯视图——Phase 3 Task 3，top-N≤16、4 Hz 节流、从不修改 profiler 状态有测试钉住；Lua console 面板输出落共享 ring；**network 面板已交付**——Phase 4 Task 3，纯视图 reactor/session/admission/connection 行、≤16×96B、≤4 Hz、诊断列 profiler 下方；**render debugger 仍未交付**；Phase 1 另有有界 64×128B 动作日志环）
+- [x] Console/profiler/network/render panels（**delivered-with-limits**：render debugger 2026-10-26 已交付纯视图（`docs/design/editor_render_debugger.md`；无 capture/控制/GPU timing）；此前 **partial**：profiler 面板已交付为本地纯视图——Phase 3 Task 3，top-N≤16、4 Hz 节流、从不修改 profiler 状态有测试钉住；Lua console 面板输出落共享 ring；**network 面板已交付**——Phase 4 Task 3，纯视图 reactor/session/admission/connection 行、≤16×96B、≤4 Hz、诊断列 profiler 下方；**render debugger 已交付**（2026-10-26，纯视图，见 `docs/design/editor_render_debugger.md`）；Phase 1 另有有界 64×128B 动作日志环）
 - [x] Lua console + remote session（console：Phase 3 editor-local；**remote session dev-tool 形态已交付**——Phase 4 Tasks 1-2：STEP 模式 reactor 由 shell tick 驱动、handler 全在 shell 线程映射可 undo 命令、TLS + CHALLENGE/AUTH-v2 必需、默认 OFF、`--remote` 只绑 loopback + 默认限速、dev PSK（非生产凭证体系）；契约 `docs/design/editor_remote.md`；**未交付**：remote load/save、remote render control、WAN/多客户端管理、服务端 transport close/认证 deadline）
 - [x] Editor smoke and native UI evidence（headless：dummy PAL + PPM 冒烟测试三 lane 绿；native：`editor` 二进制 live X11 + OpenGL 4.6 Mesa 6 秒 smoke 零错误，Phase 1 Task 5 记录确切命令、Phase 2 Task 4 于终态复跑同型命令（`build-sdd-v4`，exit 124 超时即存活、两次运行日志逐字节相同）——不构成 GPU 验证；headless RHI 后端不存在，configure 拒绝 `ENGINE_RHI_BACKEND=headless`；脚本化交互钩子不存在，人工交互验证 pending）
 
@@ -109,7 +109,7 @@
 
 ### Features not delivered (carried from earlier phases)
 
-- [ ] editor：remote load/save、remote render control、**render debugger 面板**、资源 **hot reload 集成**
+- [ ] editor：remote load/save、remote render control、资源 **hot reload 集成**（render debugger 面板已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`）
 - [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享、服务端 transport close / 认证 deadline
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling

@@ -8,6 +8,13 @@
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
+static bool g_editor_fail_diag_attach;
+void break_editor_shell_fail_diag_attach_for_test(void) {
+    g_editor_fail_diag_attach = true;
+}
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -114,6 +121,9 @@ struct BreakEditorShell {
     /* Phase 4 Task 3: network diagnostics (pure view over `remote` below;
      * diagnostics column, under the profiler). */
     BreakEditorPanelNetwork *network_panel;
+    /* render debugger (pure view over the borrowed device + vp3d stats;
+     * diagnostics column, under the network panel) */
+    BreakEditorPanelRender *render_panel;
 
     /* Phase 4 Task 1: host-attached remote session (BORROWED — DEFAULT OFF;
      * the shell only ticks it, never creates or destroys it). */
@@ -1247,7 +1257,35 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     /* Phase 4 Task 3: the right column doubles as the diagnostics area —
      * network panel directly under the profiler (h:20%, set by the panel
      * build; a build failure is non-fatal: no network widgets) */
-    editor_panel_network_build(shell->network_panel, right_panel);
+    /* the network and render debugger panels share ONE h:20% row (network
+     * left, render right) so the column's vertical split is unchanged;
+     * build failures are non-fatal (no widgets for that panel) */
+    {
+        my_widget_t *diag = my_widget_create(NULL, "editor-diag-row");
+        if (diag != NULL) {
+            (void)my_widget_set_layouter(
+                diag, my_layouter_linear_create(NULL, true, 2));
+            (void)my_widget_set_layout_params(diag, "w:100% h:20%");
+            /* Attach the empty row BEFORE building either panel. If this
+             * append fails, the row dies empty and both weak list pointers
+             * stay NULL; building first would leave them dangling. */
+#ifdef BREAK_EDITOR_SHELL_TESTING
+            if (g_editor_fail_diag_attach) {
+                g_editor_fail_diag_attach = false;
+                my_widget_unref(diag);
+                diag = NULL;
+            }
+#endif
+            if (diag != NULL &&
+                my_widget_add_child(right_panel, diag) == MY_RET_OK) {
+                my_widget_unref(diag); /* tree holds its own reference */
+                editor_panel_network_build(shell->network_panel, diag);
+                editor_panel_render_build(shell->render_panel, diag);
+            } else if (diag != NULL) {
+                my_widget_unref(diag);
+            }
+        }
+    }
     shell_add_child(middle, right_panel, "w:28% h:100%");
     shell_add_child(root, middle, "w:100% h:1f");
 
@@ -1370,8 +1408,11 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     /* no remote at create (DEFAULT OFF): break_editor_shell_set_remote
      * forwards later attaches to the panel */
     shell->network_panel = editor_panel_network_create(shell, NULL);
+    shell->render_panel = editor_panel_render_create(shell);
     if (shell->assets_panel == NULL || shell->lua_panel == NULL ||
-        shell->profiler_panel == NULL || shell->network_panel == NULL) {
+        shell->profiler_panel == NULL || shell->network_panel == NULL ||
+        shell->render_panel == NULL) {
+        editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
         editor_panel_lua_destroy(shell->lua_panel);
@@ -1391,6 +1432,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         if (shell->root != NULL) {
             (void)my_widget_remove_child(content, shell->root);
         }
+        editor_panel_render_destroy(shell->render_panel);
         editor_panel_network_destroy(shell->network_panel);
         editor_panel_profiler_destroy(shell->profiler_panel);
         editor_panel_lua_destroy(shell->lua_panel);
@@ -1493,6 +1535,7 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
      * dummy-PAL path vp3d holds no GPU objects at all. The Phase 3 panels
      * free CPU-side state only (their widgets died with the tree above);
      * the Lua console borrows the doc, so panels go before the doc too. */
+    editor_panel_render_destroy(shell->render_panel);
     editor_panel_network_destroy(shell->network_panel);
     editor_panel_profiler_destroy(shell->profiler_panel);
     editor_panel_lua_destroy(shell->lua_panel);
@@ -1657,6 +1700,9 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
      * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
      * remote tick, so a refresh never observes a half-applied frame. */
     editor_panel_network_tick(shell->network_panel);
+    /* render debugger: <= 4 Hz pure read of the borrowed device and the
+     * viewport's last-render stats */
+    editor_panel_render_tick(shell->render_panel, shell->vp3d);
     /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
      * never creates one; editor_main --remote / tests attach it via
      * break_editor_shell_set_remote) is driven exactly once per tick on the
@@ -1763,10 +1809,18 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
                                         int drawable_w, int drawable_h,
                                         int logical_w, int logical_h) {
     int panel_w, panel_h;
-    if (shell == NULL || rhi_device == NULL || rhi_cmd == NULL ||
-        shell->vp3d == NULL || shell->viewport_widget == NULL ||
-        !shell->viewport_widget->visible) {
-        return; /* guarded no-op (dummy-PAL test path: no GPU, ever) */
+    if (shell == NULL || shell->vp3d == NULL) {
+        return;
+    }
+    if (rhi_device == NULL || rhi_cmd == NULL) {
+        /* Keep the render debugger honest even on the guarded no-device
+         * path: record the skip instead of leaving a stale prior frame. */
+        break_editor_viewport3d_render(shell->vp3d, shell->doc, rhi_device,
+                                       rhi_cmd, 0, 0);
+        return;
+    }
+    if (shell->viewport_widget == NULL || !shell->viewport_widget->visible) {
+        return; /* hidden viewport: no GPU work */
     }
     /* panel pixel size = logical rect x input scale */
     {
@@ -1779,4 +1833,40 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
                                             drawable_h);
     break_editor_viewport3d_render(shell->vp3d, shell->doc, rhi_device,
                                    rhi_cmd, panel_w, panel_h);
+}
+
+/* ---------------- render debugger panel accessors ---------------- */
+
+void break_editor_shell_set_render_device(BreakEditorShell *shell,
+                                          RHIDevice *device) {
+    if (shell != NULL) {
+        editor_panel_render_set_device(shell->render_panel, device);
+    }
+}
+
+uint32_t break_editor_shell_render_row_count(const BreakEditorShell *shell) {
+    return shell != NULL ? editor_panel_render_row_count(shell->render_panel)
+                         : 0u;
+}
+
+const char *break_editor_shell_render_row_text(const BreakEditorShell *shell,
+                                               uint32_t index) {
+    return shell != NULL
+               ? editor_panel_render_row_text(shell->render_panel, index)
+               : NULL;
+}
+
+void break_editor_shell_set_render_source_for_test(
+    BreakEditorShell *shell, const BreakEditorRenderSource *source) {
+    if (shell != NULL) {
+        editor_panel_render_set_source(shell->render_panel, source);
+    }
+}
+
+void break_editor_shell_set_render_clock_for_test(BreakEditorShell *shell,
+                                                  u64 (*clock)(void *user),
+                                                  void *user) {
+    if (shell != NULL) {
+        editor_panel_render_set_clock(shell->render_panel, clock, user);
+    }
 }

@@ -71,6 +71,12 @@ i32        rhi_pipeline_get_uniform_location(RHIDevice *d, RHIPipeline p, const 
 /* Plan E Task 5: reflection-driven bindings — fail-closed like the legacy
  * uniform-location stub above (create -> NULL, resolve -> -1). */
 bool       rhi_device_get_capabilities(const RHIDevice *d, RHICapabilities *out) { (void)d; if (out) memset(out, 0, sizeof(*out)); return false; }
+/* Render debugger read-only queries: fail closed like the caps stub. */
+bool       rhi_device_get_info(const RHIDevice *d, RHIDeviceInfo *out) { (void)d; if (out) memset(out, 0, sizeof(*out)); return false; }
+RHIDeviceStatus rhi_device_get_status(const RHIDevice *d) { (void)d; return RHI_DEVICE_STATUS_UNKNOWN; }
+bool       rhi_device_resource_usage(const RHIDevice *d, u32 *used, u32 *cap) { (void)d; if (used) *used = 0u; if (cap) *cap = 0u; return false; }
+const char *rhi_rollout_compiled_backend(void) { return "none"; }
+const char *rhi_rollout_compiled_reason(void) { return "none"; }
 RHIPipelineBindings *rhi_pipeline_bindings_create(RHIDevice *d, RHIPipeline p) { (void)d; (void)p; return NULL; }
 void       rhi_pipeline_bindings_destroy(RHIDevice *d, RHIPipelineBindings *b) { (void)d; (void)b; }
 i32        rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *n) { (void)b; (void)n; return -1; }

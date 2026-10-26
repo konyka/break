@@ -143,6 +143,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "editor: break_editor_shell_create failed\n");
     return 1;
   }
+  /* render debugger panel: borrowed device, detached before teardown */
+  break_editor_shell_set_render_device(shell, device);
   if (remote_cli.scene_path != NULL &&
       !break_editor_shell_set_scene_path(shell, remote_cli.scene_path)) {
     fprintf(stderr, "editor: scene path rejected (cap %u bytes)\n",
@@ -158,6 +160,7 @@ int main(int argc, char **argv) {
         !break_editor_remote_start(remote)) {
       break_editor_remote_cli_wipe(&remote_cli);
       break_editor_remote_destroy(remote);
+      break_editor_shell_set_render_device(shell, NULL);
       break_editor_shell_destroy(shell);
       break_ui_destroy(ui);
       rhi_device_destroy(device);
@@ -217,6 +220,7 @@ int main(int argc, char **argv) {
   }
 
   break_editor_remote_destroy(remote);
+  break_editor_shell_set_render_device(shell, NULL);
   break_editor_shell_destroy(shell);
   break_ui_destroy(ui);
   rhi_device_destroy(device);
