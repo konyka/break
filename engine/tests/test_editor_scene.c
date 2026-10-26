@@ -623,6 +623,79 @@ TEST(empty_doc_round_trip) {
     remove(sidecar);
 }
 
+
+static u8 *read_file_bytes(const char *path, usize *out_size) {
+    FILE *fp = fopen(path, "rb");
+    long size;
+    u8 *buf;
+    if (!fp) return NULL;
+    if (fseek(fp, 0, SEEK_END) != 0 || (size = ftell(fp)) < 0 ||
+        fseek(fp, 0, SEEK_SET) != 0) {
+        fclose(fp);
+        return NULL;
+    }
+    buf = (u8 *)malloc((usize)size + 1u);
+    if (!buf) { fclose(fp); return NULL; }
+    if (fread(buf, 1, (usize)size, fp) != (usize)size) {
+        free(buf);
+        fclose(fp);
+        return NULL;
+    }
+    fclose(fp);
+    *out_size = (usize)size;
+    return buf;
+}
+
+TEST(memory_scene_load_matches_file_load) {
+    char path[512];
+    test_tmp(path, sizeof(path), "editor_scene_memory.bscn");
+    char sidecar[600];
+    sidecar_path_of(path, sidecar, sizeof(sidecar));
+    BreakEditorDoc *src = make_doc_with_transform();
+    ASSERT_NOT_NULL(src);
+    BreakEditorEntityId a = break_editor_doc_add_entity(src, "memory-alpha");
+    ASSERT_TRUE(break_editor_entity_id_valid(a));
+    ASSERT_TRUE(put_transform(src, a, 7.0f));
+    ASSERT_TRUE(break_editor_doc_save(src, path));
+    break_editor_doc_destroy(src);
+
+    usize size = 0;
+    u8 *bytes = read_file_bytes(path, &size);
+    ASSERT_NOT_NULL(bytes);
+    BreakEditorDoc *doc = make_doc_with_transform();
+    ASSERT_NOT_NULL(doc);
+    ASSERT_TRUE(break_editor_doc_load_bytes(doc, path, bytes, size));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    BreakEditorEntityId id;
+    const char *name = NULL;
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &id, &name));
+    ASSERT_STR_EQ(name, "memory-alpha");
+    ASSERT_TRUE(transform_equals(doc, a, 7.0f));
+    ASSERT_FALSE(break_editor_doc_is_dirty(doc));
+    ASSERT_FALSE(break_editor_undo(doc)); /* same REPLACE/stack semantics */
+    break_editor_doc_destroy(doc);
+    free(bytes);
+    remove(path);
+    remove(sidecar);
+}
+
+TEST(memory_scene_load_rejects_bad_input_without_mutation) {
+    BreakEditorDoc *doc = break_editor_doc_create();
+    ASSERT_NOT_NULL(doc);
+    break_editor_doc_add_entity(doc, "keep-me");
+    const char invalid[] = "not a BSCN stream";
+    ASSERT_FALSE(break_editor_doc_load_bytes(doc, "unused.bscn", invalid,
+                                             sizeof(invalid) - 1u));
+    ASSERT_FALSE(break_editor_doc_load_bytes(doc, "unused.bscn", NULL, 4u));
+    ASSERT_EQ(break_editor_doc_entity_count(doc), 1u);
+    BreakEditorEntityId id;
+    const char *name = NULL;
+    ASSERT_TRUE(break_editor_doc_entity_at(doc, 0, &id, &name));
+    ASSERT_STR_EQ(name, "keep-me");
+    ASSERT_TRUE(break_editor_undo(doc)); /* failed load did not clear history */
+    break_editor_doc_destroy(doc);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(save_load_round_trip_names_generations_components);
     RUN_TEST(round_trip_with_destroyed_hole_compacts_indices_but_keeps_names);
@@ -639,4 +712,6 @@ TEST_MAIN_BEGIN()
     RUN_TEST(oom_injection_on_sidecar_read_buffer);
     RUN_TEST(null_and_bad_args_fail_bounded);
     RUN_TEST(empty_doc_round_trip);
+    RUN_TEST(memory_scene_load_matches_file_load);
+    RUN_TEST(memory_scene_load_rejects_bad_input_without_mutation);
 TEST_MAIN_END()

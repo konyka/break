@@ -460,8 +460,9 @@ bool break_editor_doc_save(BreakEditorDoc *doc, const char *path) {
     return true;
 }
 
-bool break_editor_doc_load(BreakEditorDoc *doc, const char *path) {
-    if (!doc || !path) return false;
+static bool doc_load_staged(BreakEditorDoc *doc, const char *path,
+                            const void *data, usize size) {
+    if (!doc || !path || !data || size == 0u) return false;
     char sidecar[BREAK_EDITOR_SCENE_PATH_CAPACITY];
     if (!sidecar_path(path, sidecar)) return false;
 
@@ -479,7 +480,7 @@ bool break_editor_doc_load(BreakEditorDoc *doc, const char *path) {
         if (sz) world_register_component(staging, t, sz);
     }
     /* NULL Scene: parse-and-discard (scene_serial.c:1596-1598). */
-    if (!scene_load_binary(staging, NULL, path)) {
+    if (!scene_load_binary_memory(staging, NULL, data, size)) {
         world_destroy(staging);
         return false; /* doc fully unchanged: entities, names, stack, dirty */
     }
@@ -510,4 +511,31 @@ bool break_editor_doc_load(BreakEditorDoc *doc, const char *path) {
     /* Dirty iff any generated-name fallback was used (header contract). */
     doc->dirty = used_fallback;
     return true;
+}
+
+
+bool break_editor_doc_load_bytes(BreakEditorDoc *doc, const char *path,
+                                  const void *data, usize size) {
+    return doc_load_staged(doc, path, data, size);
+}
+
+bool break_editor_doc_load(BreakEditorDoc *doc, const char *path) {
+    if (!doc || !path) return false;
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return false;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return false; }
+    long fsz = ftell(fp);
+    if (fseek(fp, 0, SEEK_SET) != 0 || fsz <= 0 ||
+        (u64)fsz > (u64)BSCN_MAX_FILE_BYTES) {
+        fclose(fp);
+        return false;
+    }
+    u8 *buf = (u8 *)malloc((usize)fsz);
+    if (!buf) { fclose(fp); return false; }
+    bool read_ok = fread(buf, 1, (usize)fsz, fp) == (usize)fsz;
+    fclose(fp);
+    if (!read_ok) { free(buf); return false; }
+    bool ok = doc_load_staged(doc, path, buf, (usize)fsz);
+    free(buf);
+    return ok;
 }

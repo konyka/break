@@ -113,3 +113,7 @@ bool break_editor_doc_save(BreakEditorDoc *doc, const char *path);
  * A successful load swaps the internal World: borrowed
  * break_editor_doc_world() pointers DANGLE — callers must re-fetch. */
 bool break_editor_doc_load(BreakEditorDoc *doc, const char *path);
+/* Hot-reload entry: parse the supplied BSCN bytes (borrowed for the call)
+ * instead of re-reading path. sidecar_path is still read from path at commit. */
+bool break_editor_doc_load_bytes(BreakEditorDoc *doc, const char *path,
+                                  const void *data, usize size);
