@@ -27,7 +27,7 @@ The shell has no RHI device today (the dummy-PAL test path has none at all). `br
 
 ## 4. Rows
 
-Fixed storage, 16 rows x 96 bytes, no allocation on refresh:
+Fixed storage, 16 rows x 96 bytes; refresh performs no RHI/GPU allocation. The retained UI may allocate bounded row widgets while rebuilding its visible list:
 
 ```
 [0] backend: <vulkan|opengl|metal|d3d12> (<reason>) status=<ready|lost|unknown> frame=<n>
@@ -59,10 +59,11 @@ The network and render debugger panels share one `h:20%` diagnostics row (`edito
 
 Implementation: `engine/apps/editor/editor_panel_render.c` (pure-view panel), `editor_panels.c/.h` (shell wiring and borrowed-device API), `editor_viewport3d.c/.h` (CPU last-render counters), and `rhi_device_resource_usage` in `engine/src/rhi/rhi.c`. `editor_main` attaches the device after shell creation and detaches it before shell/device destruction. `BreakEditorRenderSource` is injectable so headless tests need no GPU.
 
-- Headless `test_editor_shell`: 42/42 on the OpenGL tree, 65/65 on the Snowflake tree. New cases cover no-device rows, layout beside the network panel, device/capability/resource rows, viewport stats, 4 Hz throttling, device-lost status, NULL safety and the read-only source scan.
+- Headless `test_editor_shell`: 44/44 on the OpenGL tree, 67/67 on the Snowflake tree. New cases cover no-device rows, layout beside the network panel, device/capability/resource rows, viewport stats, 4 Hz throttling, device-lost status, NULL safety and the read-only source scan.
 - `test_rhi_capabilities`: 59/59 including exact resource-slot accounting.
 - Full non-graphics suites: OpenGL 204/204, Vulkan 205/205, multi-backend 205/205, Snowflake editor 208/208. Multi-backend graphics suite 8/8. `ENGINE_BUILD_TESTS=OFF` and Snowflake-off editor builds both succeed.
 - Live smoke on this host (X11; NVK Vulkan and Mesa OpenGL): a real editor was stopped under gdb, an entity named `smoke_proxy` and its Transform component were added through the real doc commands, and the process was allowed to render. Both backends reported `viewport: ready fbo=598x648`, `proxies=1 gizmo=0 draws=1 skipped=none`, plus the correct backend (`vulkan (platform-default)` or `opengl (explicit-env)`). The panel was sampled after its 4 Hz refresh; an earlier `not-rendered` sample was just the initial frame/layout state.
 - Source-scan mutation check: inserting `rhi_cmd_draw` into the read-only region fails `render_panel_source_is_read_only`.
+- Independent review found a shared-row attachment-failure UAF. The regression test forces the `editor-diag-row` attach to fail; before the fix ASan reported `heap-use-after-free` in `my_list_view_refresh`, after attaching the empty row before building the panels the same test passes. ASan+UBSan and TSan both report 67/67 with no sanitizer findings. A second regression covers the shell NULL-device path (`skipped=no-device`).
 
 Remaining limits: no frame capture, per-draw/shader/texture inspection, GPU timing, render controls, or remote render control. Windows/macOS runtime and CI were not run. The panel is a diagnostic view, not a GPU correctness oracle.

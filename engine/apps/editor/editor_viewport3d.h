@@ -5,11 +5,12 @@
  * routes pointer events into the Phase 2 CPU core (editor_viewport.h /
  * editor_gizmo.h).
  *
- * Layering: this is the ONLY editor file that talks to the RHI. All camera /
- * pick / gizmo math lives in the pure-CPU core (Tasks 1-2); the widget never
- * mutates the document except through the gizmo's undoable drag commands, and
- * camera moves (orbit/pan/zoom/focus) are view state — NOT undoable (plan
- * Global Constraints).
+ * Layering: this is the only editor file that creates or records GPU work.
+ * The render debugger panel performs read-only RHI queries separately. All
+ * camera / pick / gizmo math lives in the pure-CPU core (Tasks 1-2); the
+ * widget never mutates the document except through the gizmo's undoable drag
+ * commands, and camera moves (orbit/pan/zoom/focus) are view state — NOT
+ * undoable (plan Global Constraints).
  *
  * GPU object lifecycle: create() allocates NO GPU objects. The pipeline,
  * cube vertex buffer, and offscreen FBO are created lazily on the first

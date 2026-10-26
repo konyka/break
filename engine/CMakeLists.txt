@@ -3942,6 +3942,7 @@ endif()
     # Phase 4 Task 3: the network panel pure-view source-scan pin reads the
     # panel TU in place (the test_rhi_metal_* source-read precedent).
     target_compile_definitions(test_editor_shell PRIVATE
+        BREAK_EDITOR_SHELL_TESTING=1
         BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c
         BREAK_EDITOR_RENDER_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_render.c)
     # Phase 3 Task 3: time.c needs the same platform feature macros the

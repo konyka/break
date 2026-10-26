@@ -3,7 +3,7 @@
 ## 本轮更新：Stage 4 Scene Editor — Render Debugger Panel（2026-10-26）
 
 - **交付**：`editor_panel_render.c` 纯视图渲染诊断面板（右列与 network 面板共用一行，network 左、render 右，保持原布局）：backend/选择原因/status/frame、GPU 名称与 ID/API/driver、shader variant/compute/indirect/push constants/MSAA/damage、资源槽 used/capacity，以及 viewport 最近一帧的 FBO 尺寸、实体 proxy 数、gizmo 数、draw 数和 skip 原因。设备由 `editor_main` 借用挂载，销毁前摘除；无设备显示 `render: no device`。`rhi_device_resource_usage` 只读 core 查询；viewport 只记 CPU 计数，不做 GPU 回读。面板没有 capture、shader/texture 查看、GPU timing 或 render control。
-- **验证**：`test_editor_shell` OpenGL 42/42、Snowflake 65/65；`test_rhi_capabilities` 59/59；全量非图形 OpenGL 204/204、Vulkan 205/205、多后端 205/205、Snowflake 208/208；多后端 graphics 8/8；`ENGINE_BUILD_TESTS=OFF` 与 Snowflake-off editor 构建均通过。真实 X11 editor 用 gdb 创建实体和 Transform 后，Vulkan/OpenGL 均显示 `viewport: ready fbo=598x648`、`proxies=1 gizmo=0 draws=1 skipped=none`。4 Hz 节流、device-lost、只读源码扫描及变异检查通过。
+- **验证**：`test_editor_shell` OpenGL 44/44、Snowflake 67/67；`test_rhi_capabilities` 59/59；全量非图形 OpenGL 204/204、Vulkan 205/205、多后端 205/205、Snowflake 208/208；多后端 graphics 8/8；`ENGINE_BUILD_TESTS=OFF` 与 Snowflake-off editor 构建均通过。真实 X11 editor 用 gdb 创建实体和 Transform 后，Vulkan/OpenGL 均显示 `viewport: ready fbo=598x648`、`proxies=1 gizmo=0 draws=1 skipped=none`。4 Hz 节流、device-lost、只读源码扫描及变异检查通过；独立审查发现的共享诊断行挂载失败 UAF 已修复（先挂载空行再构建面板，强制失败回归测试在修复前 ASan 报 heap-use-after-free、修复后通过；ASan/TSan 67/67 零报告），另有 NULL device 的 `skipped=no-device` 回归。
 - **边界**：没有 frame capture、逐 draw/shader/texture 检查、GPU timing 或 render control；Windows/macOS/CI 未运行；诊断视图不等于 GPU 正确性证明。此前文档中 render debugger 的 pending 记录由此条取代。
 
 ## 本轮更新：Stage 4 Scene Editor Phase 4（Remote Session + Network Diagnostics Panel）Task 4 — 验证收口与文档 closeout（最新）

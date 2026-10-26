@@ -262,6 +262,11 @@ void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
                                                    u64 (*clock)(void *user),
                                                    void *user);
 void break_editor_shell_network_tick_for_test(BreakEditorShell *shell);
+#ifdef BREAK_EDITOR_SHELL_TESTING
+/* One-shot failure of the shared diagnostics row attachment, for the
+ * lifetime regression test. Never compiled into the production editor. */
+void break_editor_shell_fail_diag_attach_for_test(void);
+#endif
 
 /* ---------------- render debugger panel ----------------
  * Pure view (docs/design/editor_render_debugger.md): backend / GPU / caps /

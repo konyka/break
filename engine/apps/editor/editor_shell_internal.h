@@ -99,7 +99,7 @@ const char *editor_panel_network_row_text(const BreakEditorPanelNetwork *p,
 
 /* Render debugger panel (editor_panel_render.c) — pure view over a borrowed
  * RHI device + the viewport's last-render stats; same lifecycle as the
- * network panel, built under it in the diagnostics column at h:20%. */
+ * network panel, built beside it in the shared diagnostics row at h:20%. */
 typedef struct BreakEditorPanelRender BreakEditorPanelRender;
 struct BreakEditorViewport3D;
 BreakEditorPanelRender *editor_panel_render_create(BreakEditorShell *shell);

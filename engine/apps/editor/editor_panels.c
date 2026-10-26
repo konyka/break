@@ -8,6 +8,13 @@
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
+static bool g_editor_fail_diag_attach;
+void break_editor_shell_fail_diag_attach_for_test(void) {
+    g_editor_fail_diag_attach = true;
+}
+#endif
+
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -1258,9 +1265,25 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         if (diag != NULL) {
             (void)my_widget_set_layouter(
                 diag, my_layouter_linear_create(NULL, true, 2));
-            editor_panel_network_build(shell->network_panel, diag);
-            editor_panel_render_build(shell->render_panel, diag);
-            shell_add_child(right_panel, diag, "w:100% h:20%");
+            (void)my_widget_set_layout_params(diag, "w:100% h:20%");
+            /* Attach the empty row BEFORE building either panel. If this
+             * append fails, the row dies empty and both weak list pointers
+             * stay NULL; building first would leave them dangling. */
+#ifdef BREAK_EDITOR_SHELL_TESTING
+            if (g_editor_fail_diag_attach) {
+                g_editor_fail_diag_attach = false;
+                my_widget_unref(diag);
+                diag = NULL;
+            }
+#endif
+            if (diag != NULL &&
+                my_widget_add_child(right_panel, diag) == MY_RET_OK) {
+                my_widget_unref(diag); /* tree holds its own reference */
+                editor_panel_network_build(shell->network_panel, diag);
+                editor_panel_render_build(shell->render_panel, diag);
+            } else if (diag != NULL) {
+                my_widget_unref(diag);
+            }
         }
     }
     shell_add_child(middle, right_panel, "w:28% h:100%");
@@ -1786,10 +1809,18 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
                                         int drawable_w, int drawable_h,
                                         int logical_w, int logical_h) {
     int panel_w, panel_h;
-    if (shell == NULL || rhi_device == NULL || rhi_cmd == NULL ||
-        shell->vp3d == NULL || shell->viewport_widget == NULL ||
-        !shell->viewport_widget->visible) {
-        return; /* guarded no-op (dummy-PAL test path: no GPU, ever) */
+    if (shell == NULL || shell->vp3d == NULL) {
+        return;
+    }
+    if (rhi_device == NULL || rhi_cmd == NULL) {
+        /* Keep the render debugger honest even on the guarded no-device
+         * path: record the skip instead of leaving a stale prior frame. */
+        break_editor_viewport3d_render(shell->vp3d, shell->doc, rhi_device,
+                                       rhi_cmd, 0, 0);
+        return;
+    }
+    if (shell->viewport_widget == NULL || !shell->viewport_widget->visible) {
+        return; /* hidden viewport: no GPU work */
     }
     /* panel pixel size = logical rect x input scale */
     {

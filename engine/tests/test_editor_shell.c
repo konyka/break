@@ -905,6 +905,18 @@ TEST(viewport_last_stats_report_skip_reasons_headless)
     break_editor_shell_destroy(shell);
 }
 
+TEST(viewport_shell_wrapper_records_no_device)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorViewport3DStats st;
+    ASSERT_NOT_NULL(shell);
+    break_editor_shell_render_viewport(shell, NULL, NULL, 800, 480, 800, 480);
+    ASSERT_TRUE(break_editor_viewport3d_last_stats(
+        break_editor_shell_viewport3d(shell), &st));
+    ASSERT_STR_EQ(break_editor_viewport3d_skip_name(st.skipped), "no-device");
+    break_editor_shell_destroy(shell);
+}
+
 TEST(model_matrix_known_answers)
 {
     f32 m[16];
@@ -1522,6 +1534,23 @@ TEST(render_panel_no_device_row)
     break_editor_shell_destroy(shell);
 }
 
+TEST(render_panel_diag_attach_failure_does_not_leave_dangling_lists)
+{
+    BreakEditorShell *shell;
+    break_editor_shell_fail_diag_attach_for_test();
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    /* Both panels are forced to refresh on their first tick. The failed row
+     * attach must leave their weak list pointers NULL, never dangling. */
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(find(shell, "editor-diag-row") == NULL);
+    ASSERT_EQ(break_editor_shell_network_row_count(shell), 1u);
+    ASSERT_STR_EQ(break_editor_shell_network_row_text(shell, 0u), "remote: off");
+    ASSERT_EQ(break_editor_shell_render_row_count(shell), 1u);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, 0u), "render: no device");
+    break_editor_shell_destroy(shell);
+}
+
 TEST(render_panel_layout_beside_network_in_diagnostics_row)
 {
     BreakEditorShell *shell = break_editor_shell_create_for_test();
@@ -1619,7 +1648,11 @@ TEST(render_panel_source_is_read_only)
     static const char *const forbidden[] = {
         "_create(", "_destroy(", "rhi_cmd_", "rhi_frame_begin", "rhi_frame_end",
         "rhi_present", "rhi_device_resize", "rhi_set_vsync", "rhi_buffer_",
-        "rhi_texture_", "rhi_pipeline_", "rhi_screenshot", "rhi_device_idle"};
+        "rhi_texture_", "rhi_pipeline_", "rhi_screenshot", "rhi_device_idle",
+        "rhi_offscreen_fbo_", "rhi_device_attach_wsi", "rhi_rollout_set_",
+        "rhi_device_control_", "rhi_frame_submit", "rhi_frame_acquire",
+        "rhi_set_", "rhi_shader_",
+        "rhi_cubemap_", "rhi_framebuffer_"};
     FILE *f = fopen(RENDER_PANEL_STR(BREAK_EDITOR_RENDER_PANEL_SOURCE), "rb");
     size_t n, i;
     char *body;
@@ -3727,6 +3760,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(mid_drag_ctrl_z_commits_then_undoes_the_drag);
     RUN_TEST(camera_orbit_pan_zoom_via_pointer_and_wheel);
     RUN_TEST(viewport_render_without_device_is_bounded_noop);
+    RUN_TEST(viewport_shell_wrapper_records_no_device);
     RUN_TEST(model_matrix_known_answers);
     RUN_TEST(viewport_last_stats_report_skip_reasons_headless);
     RUN_TEST(assets_panel_lists_fixture_root);
@@ -3741,6 +3775,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(network_panel_layout_in_diagnostics_column_under_profiler);
     RUN_TEST(network_panel_source_never_calls_send_close_transition);
     RUN_TEST(render_panel_no_device_row);
+    RUN_TEST(render_panel_diag_attach_failure_does_not_leave_dangling_lists);
     RUN_TEST(render_panel_layout_beside_network_in_diagnostics_row);
     RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);

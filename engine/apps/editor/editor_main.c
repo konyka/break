@@ -160,6 +160,7 @@ int main(int argc, char **argv) {
         !break_editor_remote_start(remote)) {
       break_editor_remote_cli_wipe(&remote_cli);
       break_editor_remote_destroy(remote);
+      break_editor_shell_set_render_device(shell, NULL);
       break_editor_shell_destroy(shell);
       break_ui_destroy(ui);
       rhi_device_destroy(device);

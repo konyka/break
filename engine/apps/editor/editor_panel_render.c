@@ -11,7 +11,8 @@
  * viewport's CPU-side last-render stats. Pinned by
  * render_panel_source_is_read_only (source scan of the marked region).
  *
- * Rows (fixed storage, 16 rows x 96 bytes; refresh allocates nothing):
+ * Rows (fixed storage, 16 rows x 96 bytes; no RHI/GPU allocation on refresh;
+ * the retained UI may allocate bounded row widgets):
  *   device == NULL: exactly one row, "render: no device".
  *   otherwise:
  *     [0] backend: <name> (<reason>) status=<ready|lost|unknown> frame=<n>
