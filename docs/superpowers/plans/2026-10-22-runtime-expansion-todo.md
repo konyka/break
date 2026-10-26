@@ -110,7 +110,7 @@
 ### Features not delivered (carried from earlier phases)
 
 - [ ] editor：remote load/save、remote render control、shader/纹理 hot reload（render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
-- [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享、服务端 transport close / 认证 deadline
+- [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获

@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：break_net 服务端关闭连接 + editor remote 认证 deadline（2026-10-26）
+
+- **交付**：`break_net_reactor_close(reactor, key)`：任意线程发起、不阻塞；关闭前已排队的发送先写出，再由 Snowflake close-after-flush 关闭套接字，随后走正常的 `CONNECTION_CLOSED` 与 identity 释放；关闭后的发送返回 `BREAK_NET_SEND_CLOSED`。editor remote：会话因任何原因进入 CLOSING/CLOSED（授权门拒绝、畸形帧、AUTH 失败、注册表拒绝）时同时关闭传输；新增 `auth_timeout_ms`，`--remote` 固定 10 s，未认证连接到期即被关闭并计数（`break_editor_remote_auth_timeouts`）。此前“只有对端断开才释放连接槽、无认证 deadline”的限制由此解除。
+- **验证**：`test_break_net_adapter` 38→40、`test_editor_shell` 80→82（Snowflake 树），变异自检各自使目标用例变红；全量非图形 OpenGL 204/204、Vulkan 205/205、多后端 205/205、Snowflake 208/208；ASan/TSan 下 shell 82/82 x3、break_net 三个套件零报告；`fuzz_editor_remote` 普通树与 ASan 均干净。真实 `editor --remote`（默认 Vulkan，X11）+ Python TLS 客户端：静默未认证连接 11.05 s 后被服务端关闭，未认证发命令被关闭，已认证连接在 12 s 后仍被正常应答，其畸形 REMOVE 后被关闭；均零响应字节，editor 持续运行。
+- **边界**：deadline 每帧检查一次；认证后的会话没有空闲超时；live 运行中从违规帧到关闭约 2 s（单测为亚秒级，差异来自 editor 帧节奏，未做剖析）；Windows/macOS/CI 未运行。详见 `docs/design/editor_remote.md` 末节。
+
 ## 本轮更新：Stage 4 Scene Editor — editor 线协议 fuzzer（2026-10-26）
 
 - **交付**：`engine/tests/fuzz_editor_remote.c`（目标 `fuzz_editor_remote`，EXCLUDE_FROM_ALL，仅 `BREAK_ENABLE_SNOWFLAKE=ON` 时定义，`ENGINE_BUILD_FUZZ_SMOKE=ON` 时注册 `fuzz_editor_remote_smoke`）。无套接字：变异信封经真实 `break_net_envelope_decode`，再进入真实 `break_session_manager_apply_adapter_event`，由真实 `editor_remote.c` 处理器在 headless shell 和文档上执行。变异来源：对 id 4..13 的有效请求做结构化变异（长度通道边界值、插入/删除/截断、超出 4096 B）、线级损坏、直接注入任意 id/version/长度。每条负载是精确大小的堆拷贝，处理器越界读即 ASan 报告。

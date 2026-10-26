@@ -26,8 +26,10 @@
  * not close). A handler-side command failure on a well-formed payload
  * answers BREAK_EDITOR_MSG_RESULT with a non-ok status instead. Session
  * close is the break_session CLOSING watermark (later frames are stale and
- * dropped); the TCP stream ends when the peer closes (the adapter exposes no
- * server-side transport close — documented library boundary).
+ * dropped), and the host then closes the transport too
+ * (break_net_reactor_close: responses already queued are flushed first).
+ * A connection that is still not authenticated auth_timeout_ms after it
+ * was first seen is closed the same way (10 s under --remote).
  *
  * Threading: single-owner-thread convention, same as the shell/document —
  * create/start/tick/destroy all run on the shell thread. The reactor's STEP
