@@ -71,18 +71,20 @@ pattern, FNV-1a of the simplified index buffer and of the vertex-cache-optimized
 Mesh generators avoid libm transcendental functions so the inputs are identical everywhere.
 Results stay bit-exact for any build that does not contract `a*b+c` into FMA. clang on x86-64
 does not do this by default; with `-march=native` (or another target that has FMA), both the C++
-original and this port shift identically, but they no longer match the table, so build this
-library with `-ffp-contract=off` on such targets.
+original and this port shift identically, but they no longer match the table. AppleClang on
+ARM64 contracts by default, so CMake builds both this library and the reference-test mesh
+generators with `-ffp-contract=off`.
 
-To regenerate or verify the table against upstream C++ (throwaway harness, outside the repo):
+To regenerate or verify the table against upstream C++ (throwaway harness, outside the repo),
+use the same no-contraction setting for the generators and both implementations:
 
 ```sh
 mkdir -p .tmp/meshopt_ref/up && cd .tmp/meshopt_ref
 for f in src/simplifier.cpp src/vcacheoptimizer.cpp src/meshoptimizer.h; do
   curl -sL -o up/$(basename $f) https://raw.githubusercontent.com/zeux/meshoptimizer/v1.3/$f; done
-clang++ -O2 -c up/simplifier.cpp -o up_s.o && clang++ -O2 -c up/vcacheoptimizer.cpp -o up_v.o
-clang -std=c11 -O2 -DMESHOPT_C_REFERENCE_DUMP -I../../engine/external -c ../../engine/tests/test_meshopt_c.c -o dump.o
+clang++ -O2 -ffp-contract=off -c up/simplifier.cpp -o up_s.o && clang++ -O2 -ffp-contract=off -c up/vcacheoptimizer.cpp -o up_v.o
+clang -std=c11 -O2 -ffp-contract=off -DMESHOPT_C_REFERENCE_DUMP -I../../engine/external -c ../../engine/tests/test_meshopt_c.c -o dump.o
 clang++ dump.o up_s.o up_v.o -o dump_ref && ./dump_ref > ref.txt
-clang -O2 dump.o ../../engine/external/meshopt_c/simplifier.c ../../engine/external/meshopt_c/vcacheoptimizer.c -o dump_c && ./dump_c > c.txt
+clang -O2 -ffp-contract=off dump.o ../../engine/external/meshopt_c/simplifier.c ../../engine/external/meshopt_c/vcacheoptimizer.c -o dump_c && ./dump_c > c.txt
 diff ref.txt c.txt   # must be empty; ref.txt is the kExpected table in the test
 ```

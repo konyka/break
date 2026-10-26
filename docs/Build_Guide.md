@@ -591,6 +591,15 @@ R694 固定步长物理）后复核：无冲突（`--ff-only`），MoltenVK 与 
 1/60 s 固定步长，第 60 帧角色尚在下落（HUD `grounded: 0 (body 4294967295)`，即 UINT32_MAX
 未着地），第 300 帧已 `grounded: 1`，属预期行为变化。
 
+2026-10-26 同步 @7da2498a（18 个提交，含 R696 弹性阈值、R697 Agility SDK、R699 WARP
+着色器修复、Linux 预构建 CI 镜像及 R701a 纯 C11 meshoptimizer 移植）后复核：无冲突
+（`--ff-only`）。新增 `test_meshopt_c` 起初在 MoltenVK 与 Metal 两套构建均失败：AppleClang
+在 ARM64 默认将 `a*b+c` 融合为 FMA，使库计算及测试网格生成器的浮点结果偏离上游参考表；
+未放宽断言，改为对 `meshopt_c` 和 `test_meshopt_c` 固定 `-ffp-contract=off`，并同步更新
+`external/meshopt_c/README.md` 的参考表复现命令。修复前两套均 179/180、该测试失败，修复后
+两套均 `180/180`，Metal `-L graphics` `5/5`。`engine_demo` 截图：MoltenVK 的 3D 场景和 UI
+正常；Metal 仍只有 UI、3D 黑屏（既有缺口，70 帧约 3000 条错误，无变化）。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
