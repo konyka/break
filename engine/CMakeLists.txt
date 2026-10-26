@@ -514,6 +514,15 @@ if(ENGINE_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
     add_test(NAME test_screen_keymap COMMAND test_screen_keymap)
 
+    # Borderless-fullscreen window-mode state machine (platform/window_mode.h):
+    # pure, header-only, shared by every window backend.
+    add_executable(test_platform_window_mode tests/test_platform_window_mode.c)
+    target_include_directories(test_platform_window_mode PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
+    add_test(NAME test_platform_window_mode COMMAND test_platform_window_mode)
+    set_tests_properties(test_platform_window_mode PROPERTIES
+        LABELS "headless;platform_contract")
+
     foreach(_wsi_name IN ITEMS X11 WAYLAND WIN32 COCOA ANDROID IOS)
         string(TOLOWER "${_wsi_name}" _wsi_lower)
         add_executable(test_platform_wsi_lifecycle_${_wsi_lower}

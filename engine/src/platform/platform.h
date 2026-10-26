@@ -122,6 +122,13 @@ void                platform_get_size(Platform *p, u32 *w, u32 *h);
 void                platform_get_logical_size(Platform *p, u32 *w, u32 *h);
 /* Physical drawable size used by GL/Vulkan framebuffers and swapchains. */
 void                platform_get_drawable_size(Platform *p, u32 *w, u32 *h);
+/* Window mode. BORDERLESS_FULLSCREEN = no title bar or frame, covering the
+ * monitor the window is on, display mode unchanged (not exclusive), so the
+ * swapchain only resizes and Alt-Tab never blanks the screen. */
+typedef enum {
+    PLATFORM_WINDOW_MODE_WINDOWED = 0,
+    PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN,
+} PlatformWindowMode;
 void                platform_toggle_fullscreen(Platform *p);
 void                platform_mouse_capture(Platform *p, bool capture);
 void                platform_mouse_set_visible(Platform *p, bool visible);
