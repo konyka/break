@@ -621,7 +621,7 @@ static inline bool rhi_push_helper_range_ok(i32 location, u32 size, u32 range_si
  * offset). Kept for compatibility; new code should call rhi_cmd_push_constants. */
 void rhi_cmd_set_uniform_bytes(RHICmdBuffer *cmd, i32 location, const void *data, u32 size);
 /* DEPRECATED（计划 E）：新代码用 rhi_pipeline_bindings_create/resolve。
- * 保留至全部调用点迁移完成（Task 8 grep gate 清零），随后随 OpenGL 退役删除。 */
+ * 保留至全部调用点迁移完成（Task 8 grep gate 清零），删除时机另行决定（OpenGL 长期保留，不再随其退役）。 */
 i32  rhi_pipeline_get_uniform_location(RHIDevice *dev, RHIPipeline pipe, const char *name);
 
 /* ---- Plan E Task 5: reflection-driven pipeline bindings ---- */

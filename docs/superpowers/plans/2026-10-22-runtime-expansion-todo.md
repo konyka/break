@@ -79,10 +79,10 @@
 
 ## Stage 6 — Graphics API lifecycle
 
-- [x] Audit existing Vulkan/D3D12/Metal/headless plans（2026-10-25，只读审计，产物 `docs/cross_engine/graphics_backend_audit.md`：逐后端状态、OpenGL 移除门 11 条件核对、17 项缺口及 owner；**未运行**任何 graphics/Metal/D3D12 测试，CI 产物未下载）
+- [x] Audit existing Vulkan/D3D12/Metal/headless plans（2026-10-25，只读审计，产物 `docs/cross_engine/graphics_backend_audit.md`：逐后端状态、OpenGL 移除门 11 条件核对（该门已于 2026-10-26 随 OpenGL 长期保留的决定取消）、17 项缺口及 owner；**未运行**任何 graphics/Metal/D3D12 测试，CI 产物未下载）
 - [ ] Complete backend-specific remaining gaps in separate plans（审计 §4 已列 17 项缺口；其中 #7 废弃标记机制、#8 `auto` 默认值、#10 `windows-d3d12.yml` 在 master 上失败（WARP push-constant write-drop 门）、#11 D3D12 consumer 对等 无现有 plan 覆盖，需新建；#1/#2/#3/#6 需要设备/runner/维护者动作）
 - [ ] Collect per-backend evidence
-- [ ] Maintain OpenGL deprecation/removal gate
+- [x] OpenGL policy（2026-10-26 维护者决定：**长期保留**——`fallback_chain` 最后一级降级方案 + 跨后端渲染对比基准，移除计划取消；`test_rhi_rollout_config_contract` 钉住链序与各平台 allowed，`test_rhi_golden_parity` 钉住 VK/GL golden 对应关系；GL goldens 已重生成，本机 GL/VK `test_vulkan` 均 ALL PASSED。遗留决策：Linux `auto` 默认值、是否需要运行时降级到 OpenGL——见审计 §3 第 4、5 条）
 
 ## Cross-cutting validation
 
@@ -114,5 +114,5 @@
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
 - [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获
-- [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）审计、缺口计划、逐后端证据、OpenGL 废弃门
+- [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）缺口计划、逐后端证据（OpenGL 废弃门已取消，见 Stage 6 OpenGL policy）
 - [ ] Final independent code review

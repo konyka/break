@@ -4271,10 +4271,10 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
     }
 
     /* Readback: 4 quadrant samples (uv 0.25 / 0.75 per quad for the
-     * two-tone split). Non-flipped viewport on both backends; the readback
-     * row origin differs (VK top-down, GL bottom-up) but the NDC->row
-     * formula lands on the same index under either convention (R442:
-     * verified against both drivers). */
+     * two-tone split). Non-flipped viewport on both backends. rhi_screenshot
+     * returns top-down rows on both (rhi.h), so the NDC->row mapping differs:
+     * Vulkan maps NDC +Y to the bottom row, GL to the top row, and the GL
+     * sample row is mirrored below. */
     bool pixels_ok = false;
     if (setup_ok && frames_ok == 3u) {
         u32 pw = scr_w, ph = scr_h;
@@ -4291,6 +4291,10 @@ static bool tv_test_material_array(const TestRenderState *rs, u32 scr_w, u32 scr
             u8 rgb[4][2][3]; /* [quad][left/right sample][rgb] */
             for (u32 k = 0; k < 4; k++) {
                 u32 by = (u32)((qcy[k] + 1.0f) * 0.5f * (f32)ph);
+#ifndef ENGINE_VULKAN
+                if (by >= ph) by = ph - 1;
+                by = ph - 1u - by;
+#endif
                 /* uv 0.25 / 0.75 within the 0.9-NDC-wide quad. */
                 u32 xl = (u32)((qcx[k] - 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);
                 u32 xr = (u32)((qcx[k] + 0.45f * 0.5f + 1.0f) * 0.5f * (f32)pw);

@@ -1,5 +1,7 @@
 # 计划 F：发布、依赖锁定与 OpenGL 退役 — Implementation Plan
 
+> **2026-10-26：Task 6（OpenGL 删除）已取消。** 维护者决定 OpenGL 长期保留，作为最后降级方案和渲染对比基准；本计划其余 Task（0-5、7-10）不受影响。Task 6 的闸门脚本、migration notice、signoff 不再产出。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在计划 A–E 全部认证完成的前提下，锁定全部构建/测试/发布依赖、落地 clean-room 构建闸门、后端 rollout 配置与结构化日志、回滚 runbook、兼容期 OpenGL fallback 治理，最终在满足规格 §6 全部 11 条删除条件后以单独 breaking commit 删除 OpenGL 后端，并完成 CI lane 分离、文档收尾与新 major release 的签名发布。

@@ -9,9 +9,9 @@
 
 | 平台 × 后端 | 当前等级 | 依据 | 收据 |
 |---|---|---|---|
-| Linux X11 × OpenGL（兼容期，deprecated，计划 v2.0.0 移除——Task 6 闸门 BLOCKED） | GPU_RUNTIME | CI `lane-gpu-runtime-linux-gl`（DEPRECATED lane，Xvfb 软渲染 GL；原 `gl` job） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux-gl` artifact；软渲染收据如实标注） |
+| Linux X11 × OpenGL（长期保留：最后降级方案 + 渲染对比基准；原 Task 6 移除计划已于 2026-10-26 取消） | GPU_RUNTIME | CI `lane-gpu-runtime-linux-gl`（Xvfb 软渲染 GL；原 `gl` job） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux-gl` artifact；软渲染收据如实标注） |
 | Linux X11 × Vulkan | GPU_RUNTIME（lavapipe/llvmpipe，软渲染） | CI `lane-gpu-runtime-linux-vk`（原 `vk`+`linux-graphics-smoke` 合并）+ `lane-validation-linux-vk` + `lane-benchmark-linux-vk`（lavapipe 收据注明软渲染） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-gpu-runtime-linux` / `-validation-linux` / `-benchmark-linux-vk` artifacts）；历史绿 run 38979612930（@89f2d444，`vk`/`linux-graphics-smoke`） |
-| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl`（兼容期 DEPRECATED） / `lane-native-surface-wayland`（原 `wayland-vk`；weston headless） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-wayland{,-gl}` artifacts）；历史绿 run 38979612930（@89f2d444） |
+| Linux Wayland × GL/VK | NATIVE_SURFACE | CI `wayland-gl`（OpenGL 对比基准） / `lane-native-surface-wayland`（原 `wayland-vk`；weston headless） | CI run：https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-wayland{,-gl}` artifacts）；历史绿 run 38979612930（@89f2d444） |
 | Windows × Vulkan | GPU_RUNTIME（本机 + CI win32 runtime trio） | 本机 `build-win-vk/`、CI `lane-headless-windows-clang`（原 `windows-clang`；win32 runtime trio 另由 `lane-native-surface-win32` 出证） | 本机：`cmake --build build-win-vk && ctest --test-dir build-win-vk -LE "graphics|fuzz"` 全绿（2026-10-14，Task 1 记录）；CI：绿 run https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-headless-windows-clang` / `-native-surface-win32` artifacts；pinned Vulkan SDK 1.4.321.0）；历史绿 run 38979612930（@89f2d444） |
 | Windows × D3D12 | BENCHMARK_COMPARABLE（本机，真 GPU 全栈：设备/swapchain/资源/PSO/DXIL/DXR/debug 工具链 + benchmark 收据：d3d12 fps_avg = 同机 Vulkan 基线 122% ≥ 90% 阈值） | `engine/src/rhi/rhi_d3d12.c/h`：真实设备（计划 D Task 3）+ flip-model swapchain/acquire/submit/present/resize（Task 4）+ 资源/PSO/indirect（Task 5）+ HLSL→DXIL shader 路径（Task 6）+ DXR BLAS/TLAS fail-closed（Task 7）+ debug layer/GBV/DRED（Task 8） | 本机：NVIDIA GeForce RTX 4060 Laptop GPU（驱动 32.0.16.1742，Agility SDK 1.616.0），2026-10-15：`ctest --test-dir build-d3d12-debug -L graphics -R test_d3d12` 6/6 绿（含 WARP floor，gpu=WARP 标注）；全量 `ctest --test-dir build-d3d12-debug` 165/171（失败仅已知环境性/未构建项，与 D3D12 无关，见下方计划 D 收据追加）；CI：windows-d3d12 lane 绿 run https://github.com/konyka/break/actions/runs/38703749329 （@65d01ec，WARP floor），ci.yml 全 lane 绿 run https://github.com/konyka/break/actions/runs/38703749404；Task 7 六 lane 后全绿 run https://github.com/konyka/break/actions/runs/38990768014 （15 个 evidence-receipt artifact；hosted d3d12 由常开孪生 job 出 UNAVAILABLE 收据，真机 lane `lane-gpu-runtime-windows-d3d12` 待 `ENABLE_GPU_LANES`） ；benchmark（2026-10-17）：`docs/receipts/rhi_receipt_windows_d3d12_planf.json` + 基线 `docs/receipts/rhi_receipt_windows_vulkan_planf.json`（rhi_swapchain_bench 同场景 640×480 600 帧 vsync off，fps_avg 2174.19 vs 1779.58，ratio 1.222 ≥ 0.90；判定细节见尾部「收据追加（计划 F 前置：D3D12 benchmark）」） |
 | macOS × Vulkan(MoltenVK) | GPU_RUNTIME | CI `lane-native-surface-cocoa`（原 `macos-vulkan`；133/133 CTest 基线 2026-10-13） | CI run：绿 run https://github.com/konyka/break/actions/runs/38990768014 （@3c92a06b，2026-10-17，`evidence-receipt-native-surface-cocoa` artifact）；历史绿 run 38979612930（@89f2d444；brew 补 spirv-cross 后 headless 套件全绿） |
@@ -195,7 +195,7 @@
 - 计划 E（renderer/shader ABI 迁移）：**达成**——main.c 的 `rhi_pipeline_get_uniform_location` 调用点 = 0；renderer/ 的 `#ifdef ENGINE_VULKAN` = 0；DoD 七项见上方计划 E 完成度节。
 - 基线 headless 套件：**161 通过 / 0 失败**（build-gate, clang, Debug, commit 06b88c76，`ctest -LE "graphics|fuzz"`）；build-vk 同口径 162 通过 / 0 失败。
 
-**闸门结论**：计划 F Task 1-5、7-10 放行（不依赖 iOS 真机与 D3D12 benchmark）；**Task 6（OpenGL 删除）保持 BLOCKED**，解锁条件 = ① iOS × Metal GPU_RUNTIME 真机收据（当前无设备，UNAVAILABLE）② Windows × D3D12 BENCHMARK_COMPARABLE 收据（**2026-10-17 已达成**，见下方收据追加）③ 规格 OpenGL 删除条件全清单复核。另：CI 主 workflow 5 个先在失败 lane（计划 E 收尾登记的独立后续项）正在专项修复。
+**闸门结论**：计划 F Task 1-5、7-10 放行（不依赖 iOS 真机与 D3D12 benchmark）；**Task 6（OpenGL 删除）已取消（2026-10-26：OpenGL 长期保留）**；以下为取消前记录的解锁条件： ① iOS × Metal GPU_RUNTIME 真机收据（当前无设备，UNAVAILABLE）② Windows × D3D12 BENCHMARK_COMPARABLE 收据（**2026-10-17 已达成**，见下方收据追加）③ 规格 OpenGL 删除条件全清单复核。另：CI 主 workflow 5 个先在失败 lane（计划 E 收尾登记的独立后续项）正在专项修复。
 
 ## 收据追加（计划 F 前置：D3D12 benchmark，2026-10-17）
 
@@ -231,18 +231,18 @@
 | 3 rollout 配置与 RHIEVT | 版本化后端 rollout 配置（`assets/rhi_backend_rollout.json`）+ 结构化 RHIEVT 运行时日志 | c597833c | `test_rhi_opengl_compat_fallback_contract`（reason=compat-override 显式日志） |
 | 4 回滚 runbook 与开关治理 | `docs/rhi_rollback_runbook.md` + `.github/workflows/rollback-drill.yml`（D3D12/PIX 排查、开关治理） | 240f234d | `test_rhi_rollback_runbook_contract` + rollback-drill CI |
 | 5 兼容期 OpenGL fallback | 显式、可观测的 fallback（selector 收 opengl、白名单钉死、无隐藏 fallback 扫描） | 941b6c00 | `test_rhi_opengl_compat_fallback_contract`、`test_no_hidden_gl_fallback` |
-| 6 OpenGL 删除 | **BLOCKED**（闸门未全开：iOS 无真机 UNAVAILABLE；规格 OpenGL 删除条件未全部满足） | —（兼容期交付见 Task 5） | 解锁条件见上方「计划 F 前置确认」节；文档口径 = 兼容期保留（deprecated，v2.0.0 移除） |
+| 6 OpenGL 删除 | **已取消**（2026-10-26 决定：OpenGL 长期保留为最后降级 + 渲染对比基准） | —（降级交付见 Task 5；对比基准钉住见 `test_rhi_golden_parity`） | 口径 = 长期保留，无移除计划 |
 | 7 CI lane 收尾分离 | 六类 lane + 收据生成器/校验器/注册（`make_evidence_receipt.cmake`、`test_evidence_receipt_schema.cmake`）+ proton digest 钉版 | 05fca358、279c26a3、6b609142、75dd942a、eb3e94b5、b00672e7、3c92a06b | `test_evidence_receipt_schema`、`test_ci_lane_separation`（锚点迁移）；全绿 run 38990768014 |
 | 8 文档全集收尾 | README 后端矩阵终态、Build_Guide 锁定依赖节 + 六 lane 矩阵、Architecture_Overview 链接模型终态、Vulkan/Metal-D3D12 矩阵充实、本台账 Task 1-8 索引 | （本 commit） | 本表 + `test_rhi_evidence_register` 全行完整性 |
 
 ## 计划 F 完成记录（2026-10-17）
 
-**状态：Task 0/1/2/3/4/5/7/8/9/10 全部完成；Task 6（OpenGL 删除）保持 BLOCKED。**
+**状态：Task 0/1/2/3/4/5/7/8/9/10 全部完成；Task 6（OpenGL 删除）已于 2026-10-26 取消（OpenGL 长期保留）。**
 
 - 最终 CI 收据：run [38992609402](https://github.com/konyka/break/actions/runs/38992609402)（CI，17 success/3 skipped 设计内）+ [38992727134](https://github.com/konyka/break/actions/runs/38992727134)（proton-d3d12），15 个 `evidence-receipt-*` artifact（Task 8 已逐名入册）。
 - 本机终验（@baa5d021）：build-gate headless **170/170**、build-vk headless **171/171**、release_gate 1/1、clean-room（git archive + 锁定依赖物化 + vulkan-only 无 GL 断言）`CLEAN-ROOM OK`；`git diff --check` 干净、无未提交改动。
-- 版本：`project(PureCEngine VERSION 1.9.0)`（兼容期）；**v2.0.0 保留给 OpenGL 删除 release**。
-- Task 6 解锁条件（重申）：① iOS × Metal GPU_RUNTIME 真机收据（无设备，UNAVAILABLE）② 规格 §6 十一条删除条件全清单复核（Android/Linux/Steam Vulkan、macOS/iOS Metal、Windows D3D12 认证；renderer/UI 无 GL 依赖；无生产 consumer；头文件/GLAD/GL 库/GL shader 路径/GL runtime 测试从 release target 消失；禁用 GL 后 clean-room 成功；consumer link/startup；migration notice；可回滚版本；产品负责人书面确认）——届时 gate 脚本逐条可执行化（计划 F Task 6 brief）。
+- 版本：`project(PureCEngine VERSION 1.9.0)`；原 "v2.0.0 保留给 OpenGL 删除 release" 已作废。
+- Task 6 解锁条件（取消前记录，仅作历史）：① iOS × Metal GPU_RUNTIME 真机收据（无设备，UNAVAILABLE）② 规格 §6 十一条删除条件全清单复核（Android/Linux/Steam Vulkan、macOS/iOS Metal、Windows D3D12 认证；renderer/UI 无 GL 依赖；无生产 consumer；头文件/GLAD/GL 库/GL shader 路径/GL runtime 测试从 release target 消失；禁用 GL 后 clean-room 成功；consumer link/startup；migration notice；可回滚版本；产品负责人书面确认）——届时 gate 脚本逐条可执行化（计划 F Task 6 brief）。
 - 签名 tag 与 GitHub Release：**由 maintainer 执行**（本机无 GPG 私钥，rollback-drill 的 `git tag -v` 需签名 tag 存在；runbook §5.1 已记录流程）。
 
 ## 收据追加（macOS 本机复核，2026-10-17）

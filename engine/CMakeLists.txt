@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 # VERSION 语义（Task 9 semver 规则，docs/rhi_rollback_runbook.md §5）：
-#   major = 破坏性变更（如 OpenGL 删除→v2.0.0，保留给删除 release；Task 6 闸门 BLOCKED）；
+#   major = 破坏性变更（OpenGL 已决定长期保留，不占用 major 版号）；
 #   minor = 新后端/新能力；patch = 修复。版本唯一来源本 project() VERSION；
 #   tag 名 v<x.y.z> 与之严格相等（契约测试比对；tag 由 maintainer 发布时创建）。
 project(PureCEngine VERSION 1.9.0 LANGUAGES C)
@@ -2682,6 +2682,15 @@ endif()
     # backend resolves it (same pattern as the RHI contract tests above).
     target_link_libraries(test_rhi_oracle PRIVATE engine_rhi_headless m)
     add_test(NAME test_rhi_oracle COMMAND test_rhi_oracle)
+
+    # OpenGL is kept as the reference backend for rendering comparison: pins
+    # VK golden ~= srgb_encode(GL golden). Pure CPU over the committed PPMs.
+    add_executable(test_rhi_golden_parity tests/test_rhi_golden_parity.c)
+    target_link_libraries(test_rhi_golden_parity PRIVATE m)
+    add_test(NAME test_rhi_golden_parity
+        COMMAND test_rhi_golden_parity ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden)
+    set_tests_properties(test_rhi_golden_parity PROPERTIES
+        LABELS "headless;platform_contract")
 
     add_executable(test_rhi_fault_injection tests/test_rhi_fault_injection.c
         ${RHI_CORE_SOURCES} src/core/log.c)

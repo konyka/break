@@ -668,16 +668,16 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 
 | lane（.github/workflows/ci.yml） | runner | 后端 / 配置 | 收据 artifact |
 |---|---|---|---|
-| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL（兼容期），Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
-| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
-| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
+| lane-headless-linux-clang | ubuntu-24.04 | 默认 GL，Clang/LLD Release + IPO | evidence-receipt-headless-linux-clang |
+| lane-headless-linux-gcc-asan | ubuntu-24.04 | 默认 GL，GCC Debug + ASan/UBSan（+fuzz smoke） | evidence-receipt-headless-linux-gcc-asan |
+| lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL，GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
 | lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
-| lane-headless-windows-asan | windows-latest | 默认 GL（兼容期），Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-asan | windows-latest | 默认 GL，Clang Debug + ASan | evidence-receipt-headless-windows-asan |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
-| wayland-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
+| wayland-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
 | lane-native-surface-cocoa | macos-14 | Cocoa + MoltenVK，Debug | evidence-receipt-native-surface-cocoa |
-| lane-gpu-runtime-linux-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
+| lane-gpu-runtime-linux-gl（OpenGL 长期保留，对比基准） | ubuntu-latest | X11 + GL，Debug，Xvfb 软渲染 | evidence-receipt-gpu-runtime-linux-gl |
 | lane-gpu-runtime-linux-vk | ubuntu-24.04 | X11 + Vulkan，clang-18 Debug，Xvfb + lavapipe（软渲染，收据如实标注） | evidence-receipt-gpu-runtime-linux |
 | lane-gpu-runtime-macos-metal | macos-14 | Metal，Debug（hosted 无 Metal 会话时收据如实降级 HEADLESS） | evidence-receipt-gpu-runtime-macos-metal |
 | lane-gpu-runtime-windows-d3d12（+ 常开 unavailable 孪生 job） | self-hosted windows gpu（`ENABLE_GPU_LANES` 门控） | D3D12，Release（hosted WARP floor 在 windows-d3d12.yml） | evidence-receipt-gpu-runtime-windows-d3d12 |
@@ -822,8 +822,8 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 | lane 类 | job |
 |---|---|
 | headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan |
-| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ 兼容期 wayland-gl，DEPRECATED） |
-| GPU-runtime | lane-gpu-runtime-linux-gl（DEPRECATED）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
+| native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ wayland-gl，OpenGL 对比基准） |
+| GPU-runtime | lane-gpu-runtime-linux-gl（OpenGL 对比基准）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
 | validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |
 | benchmark | lane-benchmark-linux-vk（lavapipe，GPU_RUNTIME 收据）/ lane-benchmark-steam-deck-vk（真机 BENCHMARK_COMPARABLE，`ENABLE_GPU_LANES` 门控） |
 | proton | lane-proton（steamrt sniper 钉 digest 容器内构建 + ctest；兼容参考，不计 Windows 原生证据；仅 schedule/手动触发） |
