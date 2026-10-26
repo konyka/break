@@ -72,6 +72,14 @@ static void hash_bytes(LodCacheKey *key, const void *data, usize size) {
     key->second = b;
 }
 
+/* count * elem_size bytes, skipped when it would not fit in usize (a 32-bit
+ * host). elem_size is a parameter, not a constant, so 64-bit builds don't
+ * trip -Wtype-limits on a provably-true check. */
+static void hash_array(LodCacheKey *key, const void *data, u32 count, u32 elem_size) {
+    if (!data || elem_size == 0u || (usize)count > (usize)-1 / elem_size) return;
+    hash_bytes(key, data, (usize)count * elem_size);
+}
+
 static void hash32(LodCacheKey *key, u32 v) {
     u8 p[4];
     put32(p, v);
@@ -95,10 +103,8 @@ LodCacheKey lod_cache_key(const f32 *vertices, u32 vertex_count, u32 vertex_stri
     hash32(&key, max_levels);
     hash32(&key, LOD_GEN_MIN_TRIANGLES);
     hash32(&key, float_bits(LOD_GEN_STOP_RATIO));
-    if (vertices && vertex_stride && (usize)vertex_count <= (usize)-1 / vertex_stride)
-        hash_bytes(&key, vertices, (usize)vertex_count * vertex_stride);
-    if (indices && (usize)index_count <= (usize)-1 / sizeof(u32))
-        hash_bytes(&key, indices, (usize)index_count * sizeof(u32));
+    hash_array(&key, vertices, vertex_count, vertex_stride);
+    hash_array(&key, indices, index_count, (u32)sizeof(u32));
     key.first ^= key.first >> 33;
     key.first *= 0xff51afd7ed558ccdull;
     key.first ^= key.first >> 33;
