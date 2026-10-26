@@ -5224,6 +5224,14 @@ int main(int argc, char **argv) {
     gpu_shadow_timer = rhi_gpu_timer_create(render.device);
     gpu_forward_timer = rhi_gpu_timer_create(render.device);
     u32 frame_w = w, frame_h = h;
+    /* FS3: swapchain size last handed to rhi_device_resize (the swapchain
+     * follows the window at once; the render targets follow the coalesced
+     * request below). */
+    u32 dev_w = w, dev_h = h;
+    /* FS3: target rebuild request waiting for one quiet frame. */
+    bool rebuild_pending = false;
+    u32 pending_rw = 0, pending_rh = 0, pending_w = 0, pending_h = 0;
+    u64 pending_frame = 0;
     f64 total_time = 0.0;
     u32 taa_frame = 0;
     Mat4 prev_view_proj = mat4_identity();
@@ -6303,6 +6311,36 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
           if (screenshot_count == 0 && auto_exit_frames > 0)
               screenshot_frames[screenshot_count++] = auto_exit_frames;
       } }
+    /* FS3: BREAK_RESIZE_AT=frame:WxH[,frame:WxH...] forces the render size
+     * (rw x rh) from that frame on, driving the need_rebuild block below
+     * without a real window resize; each rebuild logs RESIZE_REBUILD. */
+    struct { i64 frame; u32 w, h; } resize_at[16];
+    int resize_at_count = 0;
+    u32 resize_force_w = 0, resize_force_h = 0;
+    { const char *e = getenv("BREAK_RESIZE_AT");
+      if (e) {
+          const char *p = e;
+          while (*p && resize_at_count < 16) {
+              char *end = NULL;
+              i64 fr = strtoll(p, &end, 10);
+              unsigned long rw_req = 0, rh_req = 0;
+              if (end == p || *end != ':') break;
+              p = end + 1;
+              rw_req = strtoul(p, &end, 10);
+              if (end == p || (*end != 'x' && *end != 'X')) break;
+              p = end + 1;
+              rh_req = strtoul(p, &end, 10);
+              if (end == p) break;
+              p = end;
+              if (fr > 0 && rw_req > 0 && rh_req > 0 && rw_req <= 16384 && rh_req <= 16384) {
+                  resize_at[resize_at_count].frame = fr;
+                  resize_at[resize_at_count].w = (u32)rw_req;
+                  resize_at[resize_at_count].h = (u32)rh_req;
+                  resize_at_count++;
+              }
+              if (*p == ',') p++; else break;
+          }
+      } }
     /* R446: BREAK_INSPECT=N — preset the F3 inspector mode (1..10) for headless
      * intermediate-buffer captures (composes with BREAK_SCREENSHOT; the
      * inspector present path already has its own pre-present hook). */
@@ -6767,15 +6805,56 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 w = wsi_snapshot.drawable_width;
                 h = wsi_snapshot.drawable_height;
             }
-            rhi_device_resize(render.device, w, h);
+            if (w != dev_w || h != dev_h) {
+                rhi_device_resize(render.device, w, h);
+                dev_w = w;
+                dev_h = h;
+            }
             camera.aspect = (f32)w / (f32)(h > 0 ? h : 1); /* R142: guard h==0 */
             need_rebuild = true;
         }
         u32 new_rw = (u32)(w * render_scale); if (new_rw < 1) new_rw = 1;
         u32 new_rh = (u32)(h * render_scale); if (new_rh < 1) new_rh = 1;
+        for (int ri = 0; ri < resize_at_count; ri++) {
+            if (resize_at[ri].frame == (i64)engine.frame_count) {
+                resize_force_w = resize_at[ri].w;
+                resize_force_h = resize_at[ri].h;
+                LOG_INFO("RESIZE_REQUEST frame=%llu rw=%u rh=%u",
+                         (unsigned long long)engine.frame_count, resize_force_w, resize_force_h);
+            }
+        }
+        if (resize_force_w > 0u) { new_rw = resize_force_w; new_rh = resize_force_h; }
         if (new_rw != rw || new_rh != rh) need_rebuild = true;
 
+        /* FS3: coalesce size changes. A new size is only rebuilt once it is
+         * still the requested size on the next frame; a change in between
+         * (window drag, fullscreen toggle settling) replaces the pending
+         * request, so only the final size is ever built. */
         if (need_rebuild) {
+            bool same_request = rebuild_pending && pending_rw == new_rw &&
+                                pending_rh == new_rh && pending_w == w && pending_h == h;
+            if (!same_request) {
+                if (rebuild_pending)
+                    LOG_INFO("RESIZE_COALESCE frame=%llu drop=%ux%u keep=%ux%u",
+                             (unsigned long long)engine.frame_count,
+                             pending_rw, pending_rh, new_rw, new_rh);
+                rebuild_pending = true;
+                pending_rw = new_rw; pending_rh = new_rh;
+                pending_w = w; pending_h = h;
+                pending_frame = engine.frame_count;
+                need_rebuild = false;
+            } else if (engine.frame_count == pending_frame) {
+                need_rebuild = false;
+            }
+        } else {
+            rebuild_pending = false;
+        }
+
+        if (need_rebuild) {
+            u64 rebuild_t0 = time_microseconds();
+            u64 rebuild_t_post = rebuild_t0, rebuild_t_tail = rebuild_t0;
+            u32 rebuild_fallbacks = 0;
+            rebuild_pending = false;
             /* R362: create into temp first — never destroy the live FBO until the
              * replacement is valid, and do not commit rw/rh/frame_* on failure
              * (otherwise same-size rebuild never retries → permanent blank). */
@@ -6805,48 +6884,76 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             forward_scene = new_forward;
             rw = new_rw;
             rh = new_rh;
-            post_process_shutdown(&postfx);
-            ssao_shutdown(&ssao);
-            taa_shutdown(&taa);
-            ssr_shutdown(&ssr_sys);
-            dof_shutdown(&dof_sys);
-            volumetric_shutdown(&vol);
-            tonemap_shutdown(&tonemap);
-            fxaa_shutdown(&fxaa_sys);
-            ssgi_shutdown(&ssgi_sys);
-            lens_flare_shutdown(&lens_flare);
-            sharpen_shutdown(&sharpen_sys);
-            motion_blur_shutdown(&motion_blur);
-            contact_shadow_shutdown(&contact_shadow);
-            sss_shutdown(&sss_sys);
-            upscale_shutdown(&upscale_sys);
-            color_grade_shutdown(&cg_sys);
-            god_rays_shutdown(&gr_sys);
-            debug_viz_shutdown(&debug_viz);
-            lens_effects_shutdown(&lens_fx);
-            combined_aa_shutdown(&combined_aa);
-            combined_color_shutdown(&combined_color);
-            post_process_init(&postfx, render.device, rw, rh);
-            ssao_init(&ssao, render.device, rw, rh);
-            taa_init(&taa, render.device, rw, rh);
-            ssr_init(&ssr_sys, render.device, rw, rh);
-            dof_init(&dof_sys, render.device, rw, rh);
-            volumetric_init(&vol, render.device, rw, rh);
-            tonemap_init(&tonemap, render.device);
-            fxaa_init(&fxaa_sys, render.device, rw, rh);
-            ssgi_init(&ssgi_sys, render.device, rw, rh);
-            lens_flare_init(&lens_flare, render.device, rw, rh);
-            sharpen_init(&sharpen_sys, render.device, rw, rh);
-            motion_blur_init(&motion_blur, render.device, rw, rh);
-            contact_shadow_init(&contact_shadow, render.device, rw, rh);
-            sss_init(&sss_sys, render.device, rw, rh);
-            upscale_init(&upscale_sys, render.device, rw, rh, w, h);
-            color_grade_init(&cg_sys, render.device, rw, rh);
-            god_rays_init(&gr_sys, render.device, rw, rh);
-            debug_viz_init(&debug_viz, render.device, rw, rh);
-            lens_effects_init(&lens_fx, render.device, rw, rh);
-            combined_aa_init(&combined_aa, render.device, rw, rh);
-            combined_color_init(&combined_color, render.device, rw, rh);
+            rebuild_t_post = time_microseconds();
+            /* FS3: only size-dependent targets are rebuilt; pipelines,
+             * bindings and samplers stay (each *_init used to recompile its
+             * shaders here). Tonemap/cinematic have no size-dependent targets.
+             * A system whose resize fails falls back to shutdown + init. */
+#define FS3_RESIZE_OR_REINIT(resize_ok, shutdown_call, init_call, label) \
+            do { if (!(resize_ok)) { LOG_WARN("RESIZE_FALLBACK %s", label); \
+                 shutdown_call; init_call; rebuild_fallbacks++; } } while (0)
+            FS3_RESIZE_OR_REINIT(post_process_resize(&postfx, render.device, rw, rh),
+                                 post_process_shutdown(&postfx),
+                                 post_process_init(&postfx, render.device, rw, rh), "post_process");
+            FS3_RESIZE_OR_REINIT(ssao_resize(&ssao, render.device, rw, rh),
+                                 ssao_shutdown(&ssao),
+                                 ssao_init(&ssao, render.device, rw, rh), "ssao");
+            FS3_RESIZE_OR_REINIT(taa_resize(&taa, render.device, rw, rh),
+                                 taa_shutdown(&taa),
+                                 taa_init(&taa, render.device, rw, rh), "taa");
+            FS3_RESIZE_OR_REINIT(ssr_resize(&ssr_sys, render.device, rw, rh),
+                                 ssr_shutdown(&ssr_sys),
+                                 ssr_init(&ssr_sys, render.device, rw, rh), "ssr");
+            FS3_RESIZE_OR_REINIT(dof_resize(&dof_sys, render.device, rw, rh),
+                                 dof_shutdown(&dof_sys),
+                                 dof_init(&dof_sys, render.device, rw, rh), "dof");
+            FS3_RESIZE_OR_REINIT(volumetric_resize(&vol, render.device, rw, rh),
+                                 volumetric_shutdown(&vol),
+                                 volumetric_init(&vol, render.device, rw, rh), "volumetric");
+            FS3_RESIZE_OR_REINIT(fxaa_resize(&fxaa_sys, render.device, rw, rh),
+                                 fxaa_shutdown(&fxaa_sys),
+                                 fxaa_init(&fxaa_sys, render.device, rw, rh), "fxaa");
+            FS3_RESIZE_OR_REINIT(ssgi_resize(&ssgi_sys, render.device, rw, rh),
+                                 ssgi_shutdown(&ssgi_sys),
+                                 ssgi_init(&ssgi_sys, render.device, rw, rh), "ssgi");
+            FS3_RESIZE_OR_REINIT(lens_flare_resize(&lens_flare, render.device, rw, rh),
+                                 lens_flare_shutdown(&lens_flare),
+                                 lens_flare_init(&lens_flare, render.device, rw, rh), "lens_flare");
+            FS3_RESIZE_OR_REINIT(sharpen_resize(&sharpen_sys, render.device, rw, rh),
+                                 sharpen_shutdown(&sharpen_sys),
+                                 sharpen_init(&sharpen_sys, render.device, rw, rh), "sharpen");
+            FS3_RESIZE_OR_REINIT(motion_blur_resize(&motion_blur, render.device, rw, rh),
+                                 motion_blur_shutdown(&motion_blur),
+                                 motion_blur_init(&motion_blur, render.device, rw, rh), "motion_blur");
+            FS3_RESIZE_OR_REINIT(contact_shadow_resize(&contact_shadow, render.device, rw, rh),
+                                 contact_shadow_shutdown(&contact_shadow),
+                                 contact_shadow_init(&contact_shadow, render.device, rw, rh), "contact_shadow");
+            FS3_RESIZE_OR_REINIT(sss_resize(&sss_sys, render.device, rw, rh),
+                                 sss_shutdown(&sss_sys),
+                                 sss_init(&sss_sys, render.device, rw, rh), "sss");
+            FS3_RESIZE_OR_REINIT(upscale_resize(&upscale_sys, render.device, rw, rh, w, h),
+                                 upscale_shutdown(&upscale_sys),
+                                 upscale_init(&upscale_sys, render.device, rw, rh, w, h), "upscale");
+            FS3_RESIZE_OR_REINIT(color_grade_resize(&cg_sys, render.device, rw, rh),
+                                 color_grade_shutdown(&cg_sys),
+                                 color_grade_init(&cg_sys, render.device, rw, rh), "color_grade");
+            FS3_RESIZE_OR_REINIT(god_rays_resize(&gr_sys, render.device, rw, rh),
+                                 god_rays_shutdown(&gr_sys),
+                                 god_rays_init(&gr_sys, render.device, rw, rh), "god_rays");
+            FS3_RESIZE_OR_REINIT(debug_viz_resize(&debug_viz, render.device, rw, rh),
+                                 debug_viz_shutdown(&debug_viz),
+                                 debug_viz_init(&debug_viz, render.device, rw, rh), "debug_viz");
+            FS3_RESIZE_OR_REINIT(lens_effects_resize(&lens_fx, render.device, rw, rh),
+                                 lens_effects_shutdown(&lens_fx),
+                                 lens_effects_init(&lens_fx, render.device, rw, rh), "lens_effects");
+            FS3_RESIZE_OR_REINIT(combined_aa_resize(&combined_aa, render.device, rw, rh),
+                                 combined_aa_shutdown(&combined_aa),
+                                 combined_aa_init(&combined_aa, render.device, rw, rh), "combined_aa");
+            FS3_RESIZE_OR_REINIT(combined_color_resize(&combined_color, render.device, rw, rh),
+                                 combined_color_shutdown(&combined_color),
+                                 combined_color_init(&combined_color, render.device, rw, rh), "combined_color");
+#undef FS3_RESIZE_OR_REINIT
+            rebuild_t_tail = time_microseconds();
             occlusion_cull_resize(&occ_sys, rw, rh);
             deferred_resize(&render.deferred, render.device, rw, rh);
             /* R358: resize may destroy deferred — fall back so 'p' path stays drawable. */
@@ -6857,6 +6964,19 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             frame_w = w;
             frame_h = h;
             } /* end successful scene_fbo recreate */
+            {
+                u64 rebuild_t1 = time_microseconds();
+                if (rebuild_t_post < rebuild_t0) rebuild_t_post = rebuild_t0;
+                if (rebuild_t_tail < rebuild_t_post) rebuild_t_tail = rebuild_t_post;
+                LOG_INFO("RESIZE_REBUILD frame=%llu rw=%u rh=%u w=%u h=%u fallbacks=%u "
+                         "ms=%.2f scene_ms=%.2f post_ms=%.2f tail_ms=%.2f",
+                         (unsigned long long)engine.frame_count, rw, rh, w, h,
+                         rebuild_fallbacks,
+                         (f64)(rebuild_t1 - rebuild_t0) / 1000.0,
+                         (f64)(rebuild_t_post - rebuild_t0) / 1000.0,
+                         (f64)(rebuild_t_tail - rebuild_t_post) / 1000.0,
+                         (f64)(rebuild_t1 - rebuild_t_tail) / 1000.0);
+            }
         }
         if (wm_stats.active && need_rebuild)
             wm_stats.rebuild_ms += (f64)(time_microseconds() - wm_rebuild_t0) / 1000.0;

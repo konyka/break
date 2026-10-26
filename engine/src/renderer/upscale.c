@@ -1,4 +1,5 @@
 #include "upscale.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -49,6 +50,15 @@ static RHIPipeline ups_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool upscale_targets_create(UpscaleSystem *s, RHIDevice *dev,
+                                   u32 display_w, u32 display_h) {
+    const PostTargetSpec t[2] = {
+        { &s->history[0], display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM },
+        { &s->history[1], display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
                   u32 render_w, u32 render_h,
                   u32 display_w, u32 display_h) {
@@ -78,8 +88,7 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
     if (!s->bind_pipe)
         LOG_WARN("Upscale: bindings create failed; uniform locations resolve -1");
 
-    s->history[0] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
-    s->history[1] = rhi_offscreen_fbo_create_fmt(dev, display_w, display_h, RHI_FORMAT_R8G8B8A8_UNORM);
+    (void)upscale_targets_create(s, dev, display_w, display_h);
     s->history_idx = 0;
     s->first_frame = true; /* R446: invalidate stale/uninitialized history */
 
@@ -112,6 +121,21 @@ bool upscale_init(UpscaleSystem *s, RHIDevice *dev,
 
     s->ready = true;
     LOG_INFO("Upscale: TSR initialized (%ux%u → %ux%u)", render_w, render_h, display_w, display_h);
+    return true;
+}
+
+bool upscale_resize(UpscaleSystem *s, RHIDevice *dev,
+                    u32 render_w, u32 render_h,
+                    u32 display_w, u32 display_h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!upscale_targets_create(s, dev, display_w, display_h)) {
+        LOG_WARN("Upscale: resize to %ux%u failed; keeping previous targets",
+                 display_w, display_h);
+        return false;
+    }
+    s->history_idx = 0;
+    s->first_frame = true;
+    LOG_INFO("Upscale: resized (%ux%u -> %ux%u)", render_w, render_h, display_w, display_h);
     return true;
 }
 

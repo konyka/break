@@ -1,4 +1,5 @@
 #include <renderer/volumetric.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <math/math.h>
 #include <stdio.h>
@@ -51,6 +52,13 @@ static RHIPipeline vol_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool volumetric_targets_create(VolumetricSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->vol_fbo, w, h, RHI_FORMAT_UNDEFINED },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 height) {
     memset(vol, 0, sizeof(*vol));
     vol->device = dev;
@@ -80,7 +88,7 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
      * Pass stays opt-in (vol_enabled default off), so no default cost. */
     u32 pw = width, ph = height;
 
-    vol->vol_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
+    (void)volumetric_targets_create(vol, dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -120,6 +128,15 @@ bool volumetric_init(VolumetricSystem *vol, RHIDevice *dev, u32 width, u32 heigh
 
     vol->ready = true;
     LOG_INFO("Volumetric: initialized (%ux%u, density=%.4f)", pw, ph, vol->fog_density);
+    return true;
+}
+
+bool volumetric_resize(VolumetricSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!volumetric_targets_create(s, dev, w, h)) {
+        LOG_WARN("Volumetric: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

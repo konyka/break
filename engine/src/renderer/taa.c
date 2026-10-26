@@ -1,4 +1,5 @@
 #include <renderer/taa.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -66,6 +67,14 @@ static RHIPipeline taa_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool taa_targets_create(TAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &s->history_fbo[0], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->history_fbo[1], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
     memset(taa, 0, sizeof(*taa));
     taa->device = dev;
@@ -103,8 +112,7 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
     if (!taa->bind_resolve)
         LOG_WARN("TAA: bindings create failed; uniform locations resolve -1");
 
-    taa->history_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    taa->history_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)taa_targets_create(taa, dev, width, height);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -137,6 +145,17 @@ bool taa_init(TAASystem *taa, RHIDevice *dev, u32 width, u32 height) {
 
     taa->ready = true;
     LOG_INFO("TAA: initialized (%ux%u)", width, height);
+    return true;
+}
+
+bool taa_resize(TAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!taa_targets_create(s, dev, w, h)) {
+        LOG_WARN("TAA: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
+    s->history_idx = 0;
+    s->first_frame = true;
     return true;
 }
 

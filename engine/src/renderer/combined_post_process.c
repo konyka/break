@@ -1,4 +1,5 @@
 #include "combined_post_process.h"
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,6 +71,14 @@ static RHISampler cpp_create_sampler(RHIDevice *dev) {
  * CombinedAA Implementation
  * ======================================================================== */
 
+static bool combined_aa_targets_create(CombinedAA *caa, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &caa->history_fbo[0], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &caa->history_fbo[1], w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     if (!caa || !dev) return false;
     memset(caa, 0, sizeof(*caa));
@@ -94,10 +103,7 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
         if (!caa->bind_combined)
             LOG_WARN("CombinedAA: bindings create failed; uniform locations resolve -1");
         caa->sampler = cpp_create_sampler(dev);
-        caa->history_fbo[0] = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
-        caa->history_fbo[1] = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
+        (void)combined_aa_targets_create(caa, dev, width, height);
         caa->history_idx = 0;
         caa->first_frame = true;
 
@@ -152,6 +158,20 @@ bool combined_aa_init(CombinedAA *caa, RHIDevice *dev, u32 width, u32 height) {
     caa->ready = true;
     LOG_INFO("CombinedAA: fallback chain initialized (%ux%u)", width, height);
     return true;
+}
+
+bool combined_aa_resize(CombinedAA *caa, RHIDevice *dev, u32 w, u32 h) {
+    if (!caa || !dev || !caa->ready || caa->device != dev) return false;
+    if (caa->use_combined) {
+        if (!combined_aa_targets_create(caa, dev, w, h)) {
+            LOG_WARN("CombinedAA: resize to %ux%u failed; keeping previous targets", w, h);
+            return false;
+        }
+        caa->history_idx = 0;
+        caa->first_frame = true;
+        return true;
+    }
+    return fxaa_resize(&caa->fxaa, dev, w, h) && taa_resize(&caa->taa, dev, w, h);
 }
 
 void combined_aa_shutdown(CombinedAA *caa) {
@@ -259,6 +279,13 @@ RHITexture combined_aa_get_output(CombinedAA *caa) {
  * CombinedColor Implementation
  * ======================================================================== */
 
+static bool combined_color_targets_create(CombinedColor *cc, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &cc->output_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 height) {
     if (!cc || !dev) return false;
     memset(cc, 0, sizeof(*cc));
@@ -283,8 +310,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
         if (!cc->bind_combined)
             LOG_WARN("CombinedColor: bindings create failed; uniform locations resolve -1");
         cc->sampler = cpp_create_sampler(dev);
-        cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
-            RHI_FORMAT_R16G16B16A16_SFLOAT);
+        (void)combined_color_targets_create(cc, dev, width, height);
 
         /* Cache all uniform locations */
         cc->loc_exposure    = rhi_pipeline_bindings_resolve(cc->bind_combined, "u_tm_exposure");
@@ -324,8 +350,7 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
     ok = cinematic_init(&cc->cinematic, dev) && ok;
 
     cc->sampler = cpp_create_sampler(dev);
-    cc->output_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height,
-        RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)combined_color_targets_create(cc, dev, width, height);
 
     if (ok && (!rhi_handle_valid(cc->output_fbo.fb) || !rhi_handle_valid(cc->sampler))) {
         LOG_WARN("CombinedColor: fallback FBO/sampler creation failed");
@@ -338,6 +363,17 @@ bool combined_color_init(CombinedColor *cc, RHIDevice *dev, u32 width, u32 heigh
 
     cc->ready = true;
     LOG_INFO("CombinedColor: fallback chain initialized (%ux%u)", width, height);
+    return true;
+}
+
+bool combined_color_resize(CombinedColor *cc, RHIDevice *dev, u32 w, u32 h) {
+    if (!cc || !dev || !cc->ready || cc->device != dev) return false;
+    if (!cc->use_combined && !color_grade_resize(&cc->color_grade, dev, w, h))
+        return false;
+    if (!combined_color_targets_create(cc, dev, w, h)) {
+        LOG_WARN("CombinedColor: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

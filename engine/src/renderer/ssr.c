@@ -1,4 +1,5 @@
 #include <renderer/ssr.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,13 @@ static RHIPipeline ssr_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool ssr_targets_create(SSRSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->ssr_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
     memset(ssr, 0, sizeof(*ssr));
     ssr->device = dev;
@@ -108,7 +116,7 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
      * Pass stays opt-in (ssr_enabled default off), so no default cost. */
     u32 pw = width, ph = height;
 
-    ssr->ssr_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)ssr_targets_create(ssr, dev, pw, ph);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -136,6 +144,15 @@ bool ssr_init(SSRSystem *ssr, RHIDevice *dev, u32 width, u32 height) {
 
     ssr->ready = true;
     LOG_INFO("SSR: initialized (%ux%u)", pw, ph);
+    return true;
+}
+
+bool ssr_resize(SSRSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!ssr_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSR: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 
