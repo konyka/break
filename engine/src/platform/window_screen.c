@@ -274,6 +274,17 @@ void platform_toggle_fullscreen(Platform *p)
 {
     if (p) (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
 }
+/* No window frame exists: only "undecorated" is accepted. */
+bool platform_set_window_decorated(Platform *p, bool decorated)
+{
+    return p && platform_window_mode_set_decorated(&p->window_mode, decorated) ==
+                    PLATFORM_DECORATION_ACTION_NONE;
+}
+bool platform_get_window_decorated(Platform *p) { return p && p->window_mode.decorated; }
+bool platform_window_title_bar_visible(Platform *p)
+{
+    return p && platform_window_mode_title_bar_visible(&p->window_mode);
+}
 void platform_mouse_capture(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_visible(Platform *p, bool v) { (void)p; (void)v; }
 void platform_mouse_set_relative(Platform *p, bool v) { (void)p; (void)v; }

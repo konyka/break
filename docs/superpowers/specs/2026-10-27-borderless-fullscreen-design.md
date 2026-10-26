@@ -73,6 +73,15 @@ typedef struct {
 - 引擎：每个迁移到 `*_resize` 的后处理系统，测试「resize 后管线 handle 不变、目标尺寸更新」（WARP / 无头后端可跑的放 ctest）。
 - 端到端：三后端 Release 用 `BREAK_TOGGLE_FULLSCREEN_AT` 自动来回切换，校验无验证层错误、切换帧时间，截图检查全屏画面铺满且无边框。
 
+## 4a. 后续：窗口模式下的标题栏开关（已实现）
+
+用户要求窗口系统跨平台支持「是否显示标题栏」。做法是在同一个状态机里加 `decorated` 偏好（见 `docs/Implementation_Status.md`「窗口标题栏开关」节）：
+
+- API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`，`PlatformConfig.undecorated`。
+- 只作用于窗口模式；切换时客户区的屏幕位置和大小不变，所以不触发渲染目标重建。全屏期间或模式请求未确认时的改动延后到回到窗口模式时生效（Win32 / Cocoa 离开全屏时恢复的是进入前的样式，X11 回退全屏恢复的是进入前的 Motif 提示，所以都要在确认后补做一次）。
+- 各后端：Win32 `WS_OVERLAPPEDWINDOW` ↔ `WS_POPUP|WS_SYSMENU|WS_MINIMIZEBOX|WS_MAXIMIZEBOX`，无标题栏最大化只铺工作区；X11 `_MOTIF_WM_HINTS.decorations`；Wayland 关闭 myui 客户端装饰；Cocoa 去掉 `Titled|Closable`；QNX Screen / 移动端固定无标题栏。
+- 不做：无标题栏窗口的拖动与缩放热区（应用自己画标题栏时调用 `platform_window_begin_move`；系统级缩放边框随标题栏一起去掉，Cocoa 保留 `Resizable`）。
+
 ## 5. 不做
 
 - 独占全屏（改显示器分辨率 / DXGI `SetFullscreenState`）：与无边框目标冲突，且 Alt-Tab 体验差。

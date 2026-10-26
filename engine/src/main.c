@@ -4817,6 +4817,18 @@ static void window_mode_stats_parse(WindowModeSwitchStats *s, const char *list) 
     }
 }
 
+/* Alt+T / BREAK_TOGGLE_TITLE_BAR_AT: flip the windowed title bar. The
+ * drawable size is logged so a run shows it did not change. */
+static void title_bar_toggle(Platform *platform, u64 frame) {
+    bool want = !platform_get_window_decorated(platform);
+    bool ok = platform_set_window_decorated(platform, want);
+    u32 dw = 0u, dh = 0u;
+    platform_get_drawable_size(platform, &dw, &dh);
+    LOG_INFO("TITLE_BAR_SWITCH frame=%llu decorated=%d ok=%d visible=%d drawable=%ux%u",
+             (unsigned long long)frame, want ? 1 : 0, ok ? 1 : 0,
+             platform_window_title_bar_visible(platform) ? 1 : 0, dw, dh);
+}
+
 static void window_mode_switch(WindowModeSwitchStats *s, Platform *platform, u64 frame) {
     platform_toggle_fullscreen(platform);
     s->active = true;
@@ -4863,6 +4875,8 @@ int main(int argc, char **argv) {
     EngineConfig cfg = { .width = 1280, .height = 720, .title = "Pure C Engine - Phase 4", .target_fps = 60.0 };
     /* FS2: BREAK_FULLSCREEN=1 starts in borderless fullscreen. */
     { const char *e = getenv("BREAK_FULLSCREEN"); if (e && atoi(e)) cfg.start_fullscreen = true; }
+    /* BREAK_UNDECORATED=1 starts the window without title bar. */
+    { const char *e = getenv("BREAK_UNDECORATED"); if (e && atoi(e)) cfg.undecorated = true; }
     Engine engine = {0};
     if (!engine_init(&engine, &cfg)) { LOG_FATAL("Engine init failed"); return 1; }
 
@@ -6537,6 +6551,28 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                wm_stats.frames[wm_stats.next] <= engine.frame_count) {
             if (wm_stats.frames[wm_stats.next++] == engine.frame_count)
                 window_mode_switch(&wm_stats, engine.platform, engine.frame_count);
+        }
+        /* BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...: scripted title-bar toggles
+         * (same as Alt+T), logged as TITLE_BAR_SWITCH. */
+        {
+            static u64 tb_frames[16];
+            static u32 tb_count, tb_next;
+            static bool tb_parsed;
+            if (!tb_parsed) {
+                const char *e = getenv("BREAK_TOGGLE_TITLE_BAR_AT");
+                tb_parsed = true;
+                while (e && *e && tb_count < 16u) {
+                    char *end = NULL;
+                    unsigned long long f = strtoull(e, &end, 10);
+                    if (end == e) break;
+                    tb_frames[tb_count++] = (u64)f;
+                    e = (*end == ',') ? end + 1 : end;
+                }
+            }
+            while (tb_next < tb_count && tb_frames[tb_next] <= engine.frame_count) {
+                if (tb_frames[tb_next++] == engine.frame_count)
+                    title_bar_toggle(engine.platform, engine.frame_count);
+            }
         }
         profiler_begin_frame();
 
@@ -8659,7 +8695,7 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
 
         if (show_help && ui.visible) {
             debug_ui_text(&ui, "=== CONTROLS (U to toggle) ===");
-            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G/Alt+Enter:Fullscreen");
+            debug_ui_text(&ui, "F1:Scale  F2:DebugViz  F3:Inspector  F:Wireframe  KP4:AA  V:VSync  T:Filter  G/Alt+Enter:Fullscreen  Alt+T:TitleBar");
             debug_ui_text(&ui, "L/J/I/K:Sun  O:TimeCycle  Z/X:ShadowBias  .:TimePreset  ;:TerrainPreset");
             debug_ui_text(&ui, "WASD:Move  Shift+A/W/S/D:Brush/Teleport/Amb/Mass  Scroll:FOV  9:Gravity  0:WaterColor");
             debug_ui_text(&ui, "Shift+9/0:CamSpeed  B:Save  N:Load  C:Background  Home:Presets  Pause:ResetAll  M:Bench");
@@ -9618,7 +9654,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                              vsync_on ? "off — vsync paces" :
                              engine.target_fps == 0.0f ? "unlimited" : "engaged");
                 }
-                if (input_key_pressed(inp, (i32)'t')) {
+                if (input_key_down(inp, INPUT_KEY_ALT) && input_key_pressed(inp, (i32)'t')) {
+                    title_bar_toggle(engine.platform, engine.frame_count);
+                } else if (input_key_pressed(inp, (i32)'t')) {
                     nearest_filter = !nearest_filter;
                     LOG_INFO("Tex filter: %s", nearest_filter ? "nearest" : "linear");
                 }

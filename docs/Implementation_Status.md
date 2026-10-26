@@ -1,6 +1,26 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：窗口标题栏开关（跨平台，TDD）
+
+- **API**（`platform/platform.h`）：`platform_set_window_decorated(p, bool)`、`platform_get_window_decorated(p)`、`platform_window_title_bar_visible(p)`，以及 `PlatformConfig.undecorated`（加在 `start_fullscreen` 之后；位置初始化的调用点已补齐）。语义：只影响**窗口模式**下的标题栏和边框；关掉后客户区位置和大小不变（交换链不重建）；全屏本来就没有标题栏，全屏期间或模式切换未完成时改动会被记下，回到窗口模式时再生效；重复调用幂等；没有窗口边框的平台（移动端、QNX Screen）只接受「无标题栏」，`set(true)` 返回 false。
+- **状态机**（`platform/window_mode.h`）：`PlatformWindowModeState` 加 `decorated`（偏好）和 `native_decorated`（原生窗口当前实际的边框）。`platform_window_mode_set_decorated` 返回 NONE / APPLY（窗口模式且空闲，立即改）/ DEFER（全屏或请求未确认）/ UNSUPPORTED；`decoration_stale` 判断回到窗口模式后还要不要补做；`title_bar_visible` = 已确认窗口模式且偏好为有标题栏。
+- **各后端**：
+  - Win32：有标题栏 = `WS_OVERLAPPEDWINDOW`；无标题栏 = `WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX`（任务栏按钮仍能最小化/还原）。按新样式（`AdjustWindowRectExForDpi`，按窗口 DPI）重算窗口矩形，一次 `SetWindowPos` 让客户区屏幕位置保持不变。无标题栏窗口最大化时处理 `WM_GETMINMAXINFO`，只铺满工作区，不盖住任务栏。离开全屏时先恢复保存的样式，再补做全屏期间的改动。
+  - X11：写 `_MOTIF_WM_HINTS.decorations=0`，恢复时删除该属性（交给窗口管理器默认值）；`undecorated` 在第一次映射前就写好。和无 EWMH 回退全屏共用同一个属性：回退全屏期间修改偏好时，同时更新回退路径里保存的提示，退出全屏恢复的就是新偏好；状态确认路径（`x11_confirm_window_mode`）和进入失败路径都会补做。
+  - Wayland：标题栏本来就是 myui 的客户端装饰，`platform_needs_client_decoration` 改为直接读 `title_bar_visible`，记录偏好即生效。
+  - Cocoa：无标题栏的样式掩码去掉 `Titled | Closable`，保留 `Resizable | Miniaturizable`；`frameRectForContentRect` 保持内容矩形不变；离开全屏后补做。
+  - 移动端 / QNX Screen：固定无标题栏。
+- **演示程序**：`BREAK_UNDECORATED=1` 以无标题栏窗口启动；Alt+T 切换（单按 T 仍是纹理过滤）；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 在指定帧自动切换，输出 `TITLE_BAR_SWITCH frame= decorated= ok= visible= drawable=`。帮助行加 `Alt+T:TitleBar`。
+- **测试**（先写测试、确认失败，再实现）：
+  - `test_platform_window_mode` 新增 6 个用例（默认值、窗口模式立即生效且幂等、全屏期间延后、进入全屏未确认时延后并在被拒后补做、固定平台、`stale` 跟踪），14/14。
+  - `test_platform_win32_runtime` 新增 5 个真实窗口用例：去掉标题栏后无 `WS_CAPTION|WS_THICKFRAME` 且为 `WS_POPUP`、客户区屏幕矩形不变、不发 `WM_SIZE`；无标题栏窗口经全屏往返后仍无标题栏且回到原客户区；全屏期间修改两个方向都在离开时生效；`undecorated` 配置直接建出无边框窗口、再加回标题栏客户区大小不变；无标题栏窗口最大化不超出工作区。临时把 APPLY 分支改成只记录状态、不改原生窗口时，5 个用例中 4 个失败（6 条断言），说明测试覆盖到了原生实现；剩下那个（全屏期间修改）走的是离开全屏时的补做路径，不经过 APPLY。
+  - `test_platform_null_safety`、`test_platform_mobile`、`test_platform_screen_simulated` 补了新 API 的断言。
+  - `test_platform_x11_runtime`（2 个）、`test_platform_wayland_runtime`（2 个）、`test_platform_cocoa_runtime`（2 个）新增用例，在 CI 上运行。
+- **验证**：7 棵构建树（VK / GL / D3D12 的 Debug 与 Release）0 条编译警告。ctest（`-E test_platform_win32_runtime`）：VK 190/190、GL 187/187、D3D12 195/195。第一轮里 VK 的 `test_net_replication` 和 GL 的 `test_mipmap_stream` 各失败过 1 次，单独各跑 3 次、以及最终全量复跑都通过，两者不涉及窗口代码。`test_platform_win32_runtime` 25 个用例中只有既有的 `clipboard_read_bounds_unterminated_unicode_text` 失败（`OpenClipboard failed`；本机 ToDesk 又在运行，它会占用剪贴板，改动前的代码同样失败）。演示程序 VK Debug：两次标题栏切换 + 两次全屏切换，drawable 始终 1280x720 → 1920x1080 → 1280x720，0 条验证消息；读窗口样式确认：有标题栏时窗口 1038x614、客户区 1024x576、含 `WS_CAPTION`，切换后窗口与客户区都是 1024x576、不含 `WS_CAPTION`；截图中标题栏消失、画面内容不变。GL / D3D12 Release 以 `BREAK_UNDECORATED=1` 启动并切换全屏和标题栏，正常退出、无 ERROR。
+- **未验证**：X11 / Wayland / Cocoa 的运行时行为本机无法运行（没有 X11/Wayland 头文件，WSL 的磁盘镜像缺失无法启动），以 CI 为准；X11 只验证 `_MOTIF_WM_HINTS` 属性，CI 的 Xvfb 没有窗口管理器，看不到真正的标题栏。
+- **说明**：本轮测的全屏切换最差帧（GL 140–350 ms，D3D12 24–270 ms）比 FS7 记录的高很多，用改动前的 master 同样复测为 142–520 ms，原因是本机 ToDesk 重新在运行（之前已确认它会拖慢呈现），不是本改动造成的；本轮没有重测 FS7 的数字。
+
 ## 本轮更新：VK GPU-assisted 验证的两类遗留报错清零
 
 FS6 跑 GPU-assisted 验证时报出 15 条与切换无关的遗留消息，两类：

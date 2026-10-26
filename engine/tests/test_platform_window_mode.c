@@ -164,7 +164,122 @@ TEST(window_mode_target_rect_covers_the_monitor_the_window_is_on)
                                                       rect(0, 0, 10u, 10u), &out));
 }
 
+/* ---- Title bar / frame while windowed ---- */
+
+TEST(decoration_defaults_on_for_windowed_and_off_for_fixed_platforms)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_TRUE(s.decorated);
+    ASSERT_TRUE(platform_window_mode_title_bar_visible(&s));
+    /* A window created fullscreen keeps the windowed preference. */
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_TRUE(s.decorated);
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+    platform_window_mode_init_fixed(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_FALSE(s.decorated);
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(NULL));
+}
+
+TEST(decoration_change_while_windowed_applies_now_and_is_idempotent)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, true),
+              PLATFORM_DECORATION_ACTION_NONE);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_APPLY);
+    ASSERT_FALSE(s.decorated);
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_NONE);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, true),
+              PLATFORM_DECORATION_ACTION_APPLY);
+    ASSERT_TRUE(platform_window_mode_title_bar_visible(&s));
+    ASSERT_EQ(platform_window_mode_set_decorated(NULL, true),
+              PLATFORM_DECORATION_ACTION_NONE);
+}
+
+TEST(decoration_change_while_fullscreen_is_deferred_to_leave)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    platform_window_mode_confirm(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    /* Fullscreen never shows a title bar; the preference waits for LEAVE. */
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_DEFER);
+    ASSERT_FALSE(s.decorated);
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+    (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    platform_window_mode_confirm(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, true),
+              PLATFORM_DECORATION_ACTION_APPLY);
+    ASSERT_TRUE(platform_window_mode_title_bar_visible(&s));
+}
+
+TEST(decoration_change_during_a_pending_enter_is_deferred)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    /* X11/Wayland: ENTER sent, the WM has not answered yet. The window is
+     * about to lose its frame anyway, so nothing native happens now. */
+    (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_DEFER);
+    /* WM refused: back to windowed, and now the preference must be applied. */
+    platform_window_mode_fail(&s);
+    ASSERT_TRUE(platform_window_mode_decoration_stale(&s));
+    platform_window_mode_decoration_applied(&s);
+    ASSERT_FALSE(platform_window_mode_decoration_stale(&s));
+    ASSERT_FALSE(platform_window_mode_title_bar_visible(&s));
+}
+
+TEST(decoration_fixed_platforms_only_accept_undecorated)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init_fixed(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_NONE);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, true),
+              PLATFORM_DECORATION_ACTION_UNSUPPORTED);
+    ASSERT_FALSE(s.decorated);
+}
+
+TEST(decoration_stale_tracks_what_the_native_window_shows)
+{
+    PlatformWindowModeState s;
+    platform_window_mode_init(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_FALSE(platform_window_mode_decoration_stale(&s));
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, false),
+              PLATFORM_DECORATION_ACTION_APPLY);
+    /* APPLY means the backend still has to change the native window. */
+    ASSERT_TRUE(platform_window_mode_decoration_stale(&s));
+    platform_window_mode_decoration_applied(&s);
+    ASSERT_FALSE(platform_window_mode_decoration_stale(&s));
+    /* Deferred while fullscreen: stale only once windowed again. */
+    (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    platform_window_mode_confirm(&s, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    ASSERT_EQ(platform_window_mode_set_decorated(&s, true),
+              PLATFORM_DECORATION_ACTION_DEFER);
+    ASSERT_FALSE(platform_window_mode_decoration_stale(&s));
+    (void)platform_window_mode_request(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    platform_window_mode_confirm(&s, PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_TRUE(platform_window_mode_decoration_stale(&s));
+    platform_window_mode_decoration_applied(&s);
+    ASSERT_FALSE(platform_window_mode_decoration_stale(&s));
+    ASSERT_FALSE(platform_window_mode_decoration_stale(NULL));
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(decoration_defaults_on_for_windowed_and_off_for_fixed_platforms);
+    RUN_TEST(decoration_change_while_windowed_applies_now_and_is_idempotent);
+    RUN_TEST(decoration_change_while_fullscreen_is_deferred_to_leave);
+    RUN_TEST(decoration_change_during_a_pending_enter_is_deferred);
+    RUN_TEST(decoration_fixed_platforms_only_accept_undecorated);
+    RUN_TEST(decoration_stale_tracks_what_the_native_window_shows);
     RUN_TEST(window_mode_starts_windowed_and_requests_are_idempotent);
     RUN_TEST(window_mode_rejects_invalid_arguments);
     RUN_TEST(window_mode_saves_windowed_rect_on_enter_and_restores_it_on_leave);

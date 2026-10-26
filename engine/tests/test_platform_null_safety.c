@@ -53,6 +53,10 @@ TEST(null_platform_queries_are_safe)
     ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN));
     ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_WINDOWED));
     ASSERT_EQ(platform_get_window_mode(NULL), PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_FALSE(platform_set_window_decorated(NULL, true));
+    ASSERT_FALSE(platform_set_window_decorated(NULL, false));
+    ASSERT_FALSE(platform_get_window_decorated(NULL));
+    ASSERT_FALSE(platform_window_title_bar_visible(NULL));
     platform_mouse_capture(NULL, true);
     platform_mouse_set_visible(NULL, false);
     platform_mouse_set_relative(NULL, true);

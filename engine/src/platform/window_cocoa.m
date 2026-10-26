@@ -132,6 +132,14 @@ static i32 cocoa_keycode_to_index(unsigned short kc, NSString *chars) {
 /* ---- Window: a borderless NSWindow refuses key/main status by default,
  * which would drop keyboard input while fullscreen (FS4). ---- */
 
+/* Windowed styles. Undecorated keeps resize / miniaturize (Dock click and
+ * Cmd-M still work) and only drops the title bar + close button frame. */
+static NSWindowStyleMask cocoa_windowed_style(bool decorated) {
+    NSWindowStyleMask style = NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable;
+    if (decorated) style |= NSWindowStyleMaskTitled | NSWindowStyleMaskClosable;
+    return style;
+}
+
 @interface BreakWindow : NSWindow
 @end
 
@@ -426,8 +434,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
 
         NSRect frame = NSMakeRect(0, 0, cfg->width, cfg->height);
-        NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
-                                  NSWindowStyleMaskResizable | NSWindowStyleMaskMiniaturizable;
+        NSWindowStyleMask style = cocoa_windowed_style(!cfg->undecorated);
         p->window = [[BreakWindow alloc] initWithContentRect:frame
                                                    styleMask:style
                                                      backing:NSBackingStoreBuffered
@@ -460,6 +467,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
         [p->window center];
         platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+        if (cfg->undecorated) {
+            (void)platform_window_mode_set_decorated(&p->window_mode, false);
+            platform_window_mode_decoration_applied(&p->window_mode);
+        }
         if (!cfg->hide_window_until_first_frame) {
             [p->window makeKeyAndOrderFront:nil];
             [NSApp activateIgnoringOtherApps:YES];
@@ -743,6 +754,40 @@ static void cocoa_leave_fullscreen(Platform *p) {
         [p->window setFrame:p->saved_frame display:YES];
 }
 
+/* Change the windowed title bar keeping the content rect where it is. */
+static void cocoa_apply_decoration(Platform *p) {
+    NSRect content = [p->window contentRectForFrameRect:[p->window frame]];
+    NSWindowStyleMask style = cocoa_windowed_style(p->window_mode.decorated);
+    [p->window setStyleMask:style];
+    [p->window setFrame:[p->window frameRectForContentRect:content] display:YES];
+    [p->window makeFirstResponder:p->view];
+    cocoa_update_drawable_size(p);
+    platform_window_mode_decoration_applied(&p->window_mode);
+}
+
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL || p->window == nil) return false;
+    switch (platform_window_mode_set_decorated(&p->window_mode, decorated)) {
+    case PLATFORM_DECORATION_ACTION_APPLY:
+        @autoreleasepool { cocoa_apply_decoration(p); }
+        return true;
+    case PLATFORM_DECORATION_ACTION_UNSUPPORTED:
+        return false;
+    case PLATFORM_DECORATION_ACTION_NONE:
+    case PLATFORM_DECORATION_ACTION_DEFER:
+    default:
+        return true;
+    }
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
+}
+
 bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
     PlatformWindowModeAction action;
     bool was_key;
@@ -763,6 +808,11 @@ bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
         cocoa_update_drawable_size(p);
     }
     platform_window_mode_confirm(&p->window_mode, mode);
+    /* A title-bar change made while fullscreen: the restored saved_style
+     * still has the old frame. */
+    if (platform_window_mode_decoration_stale(&p->window_mode)) {
+        @autoreleasepool { cocoa_apply_decoration(p); }
+    }
     return true;
 }
 

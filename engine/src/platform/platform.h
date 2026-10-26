@@ -49,8 +49,12 @@ typedef struct {
     void *native_display;
     bool hide_window_until_first_frame;
     /* Create the window already in PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN.
-     * Keep last: PlatformConfig is brace-initialised positionally. */
+     * New fields go after this one: PlatformConfig is brace-initialised
+     * positionally by existing callers. */
     bool start_fullscreen;
+    /* Create the windowed window without title bar and frame (see
+     * platform_set_window_decorated). */
+    bool undecorated;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
@@ -139,6 +143,19 @@ bool                platform_set_window_mode(Platform *p, PlatformWindowMode mod
 PlatformWindowMode  platform_get_window_mode(Platform *p);
 /* set_window_mode(toggle target of the latest request). */
 void                platform_toggle_fullscreen(Platform *p);
+/* Title bar + frame of the WINDOWED window. false = frameless window of the
+ * same client size and position (still movable through
+ * platform_window_begin_move, resizable only by the app). Fullscreen never
+ * has a title bar; a change made while fullscreen (or while a mode switch is
+ * in flight) is kept and applied when the window is windowed again.
+ * Idempotent. Returns false for NULL, or decorated=true on a platform that
+ * has no window frame (mobile, QNX Screen). */
+bool                platform_set_window_decorated(Platform *p, bool decorated);
+/* The windowed title-bar preference (false for NULL and frameless platforms). */
+bool                platform_get_window_decorated(Platform *p);
+/* A title bar is on screen now: windowed and decorated. Client-side
+ * decoration (Wayland/myui) also counts: see platform_needs_client_decoration. */
+bool                platform_window_title_bar_visible(Platform *p);
 void                platform_mouse_capture(Platform *p, bool capture);
 void                platform_mouse_set_visible(Platform *p, bool visible);
 void                platform_mouse_set_relative(Platform *p, bool relative);

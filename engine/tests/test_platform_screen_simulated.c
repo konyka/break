@@ -115,6 +115,10 @@ TEST(screen_window_is_fixed_borderless_fullscreen)
     platform_toggle_fullscreen(platform);
     ASSERT_EQ(platform_get_window_mode(platform), PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
     ASSERT_FALSE(platform_needs_client_decoration(platform));
+    ASSERT_FALSE(platform_get_window_decorated(platform));
+    ASSERT_FALSE(platform_window_title_bar_visible(platform));
+    ASSERT_TRUE(platform_set_window_decorated(platform, false));
+    ASSERT_FALSE(platform_set_window_decorated(platform, true));
     platform_get_size(platform, &width, &height);
     ASSERT_EQ(width, 640u);
     ASSERT_EQ(height, 360u);

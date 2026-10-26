@@ -9,6 +9,7 @@ typedef struct {
     f64       target_fps;
     bool      hide_window_until_first_frame;
     bool      start_fullscreen;
+    bool      undecorated;      /* windowed window without title bar */
 } EngineConfig;
 
 typedef struct {

@@ -324,6 +324,75 @@ TEST(wayland_start_fullscreen_is_confirmed_by_first_configure)
     platform_destroy(platform);
 }
 
+/* Title bar on Wayland is drawn by myui (client-side decoration), so hiding
+ * it means platform_needs_client_decoration turns false; the surface keeps
+ * its size. */
+TEST(wayland_title_bar_hide_and_show_drives_client_decoration)
+{
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break Wayland title bar"};
+    Platform *platform = platform_create(&config);
+    WaylandTestBuffer tb;
+    u32 width = 0;
+    u32 height = 0;
+
+    if (platform == NULL) {
+        runtime_failure("Wayland platform_create returned NULL");
+        return;
+    }
+    if (!wayland_test_buffer_init(platform, &tb))
+        runtime_failure("could not create the test shm buffer");
+    (void)platform_poll(platform);
+    wayland_test_present(platform, &tb);
+    if (!platform_get_window_decorated(platform) ||
+        !platform_window_title_bar_visible(platform) ||
+        !platform_needs_client_decoration(platform))
+        runtime_failure("a new Wayland window must have a (client-side) title bar");
+
+    if (!platform_set_window_decorated(platform, false))
+        runtime_failure("set_window_decorated(false) returned false");
+    if (platform_needs_client_decoration(platform))
+        runtime_failure("undecorated Wayland window still asks for client decorations");
+    if (platform_window_title_bar_visible(platform))
+        runtime_failure("undecorated Wayland window reports a visible title bar");
+    (void)platform_poll(platform);
+    platform_get_logical_size(platform, &width, &height);
+    if (width != 320u || height != 240u)
+        runtime_failure("hiding the title bar changed the surface size");
+
+    /* Deferred through fullscreen: decorated again while fullscreen. */
+    if (platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN) &&
+        wayland_wait_for_mode(platform, &tb, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN)) {
+        (void)platform_set_window_decorated(platform, true);
+        if (platform_needs_client_decoration(platform))
+            runtime_failure("fullscreen asks for client decorations");
+        (void)platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED);
+        if (!wayland_wait_for_mode(platform, &tb, PLATFORM_WINDOW_MODE_WINDOWED))
+            runtime_failure("leaving fullscreen was not confirmed");
+    } else {
+        printf("  compositor did not honour fullscreen; deferred path not exercised\n");
+        (void)platform_set_window_decorated(platform, true);
+    }
+    if (!platform_needs_client_decoration(platform))
+        runtime_failure("re-decorated Wayland window does not ask for client decorations");
+    wayland_test_buffer_destroy(&tb);
+    platform_destroy(platform);
+}
+
+TEST(wayland_undecorated_config_starts_without_client_decoration)
+{
+    const PlatformConfig config = {.width = 320, .height = 240,
+                                   .title = "Break Wayland undecorated",
+                                   .undecorated = true};
+    Platform *platform = platform_create(&config);
+    if (platform == NULL) {
+        runtime_failure("Wayland platform_create(undecorated) returned NULL");
+        return;
+    }
+    if (platform_get_window_decorated(platform) || platform_needs_client_decoration(platform))
+        runtime_failure("undecorated config Wayland window asks for client decorations");
+    platform_destroy(platform);
+}
+
 int main(void)
 {
     if (!wayland_runtime_available()) {
@@ -335,6 +404,8 @@ int main(void)
     RUN_TEST(wayland_media_snapshot_is_stable_between_queries);
     RUN_TEST(wayland_borderless_fullscreen_follows_configure_states);
     RUN_TEST(wayland_start_fullscreen_is_confirmed_by_first_configure);
+    RUN_TEST(wayland_title_bar_hide_and_show_drives_client_decoration);
+    RUN_TEST(wayland_undecorated_config_starts_without_client_decoration);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

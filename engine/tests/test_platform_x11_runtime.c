@@ -408,6 +408,128 @@ TEST(x11_start_fullscreen_covers_monitor_then_restores)
     platform_destroy(platform);
 }
 
+/* ---- Title bar on/off (windowed) ----
+ * X11 asks the WM through _MOTIF_WM_HINTS.decorations (the hint every
+ * reparenting WM honours); flags bit 1 = decorations field valid. A WM-less
+ * server (CI Xvfb) draws no title bar either way, so the property is the
+ * observable contract; the client geometry must not change. */
+
+static bool x11_motif_decorations(Display *display, Window window, bool *decorated)
+{
+    long values[5];
+    Atom motif = XInternAtom(display, "_MOTIF_WM_HINTS", False);
+    unsigned long n = x11_read_long_property(display, window, "_MOTIF_WM_HINTS",
+                                             motif, values, 5);
+    if (n < 3 || (values[0] & 2) == 0) {
+        *decorated = true; /* no hint: WM default, decorated */
+        return n == 0;
+    }
+    *decorated = values[2] != 0;
+    return true;
+}
+
+TEST(x11_title_bar_hide_and_show_sets_motif_hints)
+{
+    const PlatformConfig config = {.width = 320, .height = 240, .title = "Break X11 title bar"};
+    Platform *platform = platform_create(&config);
+    Display *display;
+    Window window;
+    bool decorated = false;
+    u32 width = 0;
+    u32 height = 0;
+
+    if (platform == NULL) {
+        runtime_failure("platform_create returned NULL");
+        return;
+    }
+    display = (Display *)platform_display_native(platform);
+    window = (Window)(uintptr_t)platform_window_native(platform);
+    (void)platform_poll(platform);
+    XSync(display, False);
+    if (!platform_get_window_decorated(platform) ||
+        !platform_window_title_bar_visible(platform))
+        runtime_failure("a new X11 window must be decorated");
+    if (!x11_motif_decorations(display, window, &decorated) || !decorated)
+        runtime_failure("a new X11 window must not disable decorations");
+
+    if (!platform_set_window_decorated(platform, false))
+        runtime_failure("set_window_decorated(false) returned false");
+    XSync(display, False);
+    if (!x11_motif_decorations(display, window, &decorated) || decorated)
+        runtime_failure("undecorated X11 window lacks _MOTIF_WM_HINTS decorations=0");
+    if (platform_get_window_decorated(platform) ||
+        platform_window_title_bar_visible(platform))
+        runtime_failure("decorated state did not follow set(false)");
+    if (platform_get_window_mode(platform) != PLATFORM_WINDOW_MODE_WINDOWED)
+        runtime_failure("hiding the title bar changed the window mode");
+    for (int i = 0; i < 20; i++) (void)platform_poll(platform);
+    platform_get_size(platform, &width, &height);
+    if (width != 320u || height != 240u)
+        runtime_failure("hiding the title bar changed the client size");
+
+    if (!platform_set_window_decorated(platform, true))
+        runtime_failure("set_window_decorated(true) returned false");
+    XSync(display, False);
+    if (!x11_motif_decorations(display, window, &decorated) || !decorated)
+        runtime_failure("re-decorated X11 window still disables decorations");
+    platform_destroy(platform);
+}
+
+TEST(x11_undecorated_survives_fullscreen_and_deferred_change_applies)
+{
+    const PlatformConfig config = {.width = 320, .height = 240,
+                                   .title = "Break X11 undecorated fullscreen",
+                                   .undecorated = true};
+    Platform *platform = platform_create(&config);
+    Display *display;
+    Window window;
+    PlatformWindowRect windowed;
+    PlatformWindowRect fullscreen;
+    bool decorated = true;
+    bool ewmh;
+
+    if (platform == NULL) {
+        runtime_failure("platform_create(undecorated) returned NULL");
+        return;
+    }
+    display = (Display *)platform_display_native(platform);
+    window = (Window)(uintptr_t)platform_window_native(platform);
+    ewmh = x11_root_has_ewmh_fullscreen(display);
+    (void)platform_poll(platform);
+    XSync(display, False);
+    if (platform_get_window_decorated(platform))
+        runtime_failure("undecorated config window reports decorated");
+    if (!x11_motif_decorations(display, window, &decorated) || decorated)
+        runtime_failure("undecorated config window lacks _MOTIF_WM_HINTS decorations=0");
+    if (!x11_window_root_rect(display, window, &windowed)) {
+        runtime_failure("XGetGeometry failed");
+        goto cleanup;
+    }
+    fullscreen = x11_expected_fullscreen_rect(platform, display, windowed);
+
+    (void)platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    if (!x11_wait_for_mode(platform, display, window,
+                           PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN, fullscreen, true))
+        runtime_failure("undecorated window did not go fullscreen");
+    /* Deferred: decorated again while fullscreen, applied on leave. */
+    if (!platform_set_window_decorated(platform, true))
+        runtime_failure("set_window_decorated(true) while fullscreen returned false");
+    if (platform_window_title_bar_visible(platform))
+        runtime_failure("fullscreen reports a visible title bar");
+    (void)platform_set_window_mode(platform, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (!x11_wait_for_mode(platform, display, window, PLATFORM_WINDOW_MODE_WINDOWED,
+                           windowed, !ewmh))
+        runtime_failure("leaving fullscreen did not restore the windowed rect");
+    XSync(display, False);
+    if (!x11_motif_decorations(display, window, &decorated) || !decorated)
+        runtime_failure("deferred decorated=true was not applied on leave");
+    if (!platform_window_title_bar_visible(platform))
+        runtime_failure("title bar not reported visible after leave");
+
+cleanup:
+    platform_destroy(platform);
+}
+
 int main(void)
 {
     if (!x11_runtime_available()) {
@@ -418,6 +540,8 @@ int main(void)
     RUN_TEST(x11_window_create_resize_and_destroy);
     RUN_TEST(x11_borderless_fullscreen_enter_leave_restores);
     RUN_TEST(x11_start_fullscreen_covers_monitor_then_restores);
+    RUN_TEST(x11_title_bar_hide_and_show_sets_motif_hints);
+    RUN_TEST(x11_undecorated_survives_fullscreen_and_deferred_change_applies);
     printf("\n=== Results: %d passed, %d failed, %d total ===\n",
            g_test_pass, g_test_fail, g_test_count);
     return g_test_fail > 0 ? 1 : 0;

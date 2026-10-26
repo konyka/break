@@ -1871,6 +1871,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
     xdg_toplevel_set_title(p->toplevel, cfg->title);
     xdg_toplevel_set_app_id(p->toplevel, "break-engine");
     platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (cfg->undecorated) {
+        (void)platform_window_mode_set_decorated(&p->window_mode, false);
+        platform_window_mode_decoration_applied(&p->window_mode);
+    }
     if (cfg->start_fullscreen) {
         /* Set before the initial commit so the first configure is fullscreen;
          * that configure (initial roundtrip below) confirms it. */
@@ -2411,9 +2415,28 @@ void platform_window_hide(Platform *p) { (void)p; }
 bool platform_needs_client_decoration(Platform *p) {
     /* xdg-shell has no mandatory server-decoration protocol; use myui's CSD
      * so title bars and dragging behave consistently across compositors.
-     * A fullscreen window has no title bar. */
-    return p == NULL ||
-           p->window_mode.current != PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN;
+     * A fullscreen or undecorated window has no title bar. */
+    return p == NULL || platform_window_mode_title_bar_visible(&p->window_mode);
+}
+
+/* The title bar is myui's client-side decoration, read through
+ * platform_needs_client_decoration each frame: recording the preference is
+ * all there is to apply, also when it was deferred through fullscreen. */
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL) return false;
+    if (platform_window_mode_set_decorated(&p->window_mode, decorated) ==
+        PLATFORM_DECORATION_ACTION_UNSUPPORTED)
+        return false;
+    platform_window_mode_decoration_applied(&p->window_mode);
+    return true;
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
 }
 
 bool platform_clipboard_set_text(Platform *p, const char *utf8) {

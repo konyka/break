@@ -752,12 +752,30 @@ static void x11_set_bypass_compositor(Platform *p, bool bypass) {
     }
 }
 
+/* Title bar of the windowed window: _MOTIF_WM_HINTS.decorations, the hint
+ * reparenting WMs honour (flags bit 1 = decorations field valid). Decorated
+ * deletes the property so the WM default applies. */
+static void x11_write_decorations(Platform *p, bool decorated) {
+    if (decorated) {
+        XDeleteProperty(p->display, p->window, p->motif_wm_hints);
+    } else {
+        long hints[X11_MWM_HINTS_ELEMENTS] = {X11_MWM_HINTS_DECORATIONS, 0, 0, 0, 0};
+        XChangeProperty(p->display, p->window, p->motif_wm_hints, p->motif_wm_hints,
+                        32, PropModeReplace, (unsigned char *)hints,
+                        (int)X11_MWM_HINTS_ELEMENTS);
+    }
+    platform_window_mode_decoration_applied(&p->window_mode);
+}
+
 /* Every confirmed mode goes through here so the compositor hint follows the
- * mode the window really is in. */
+ * mode the window really is in, and a title-bar change made while fullscreen
+ * is applied once the window is windowed again. */
 static void x11_confirm_window_mode(Platform *p, PlatformWindowMode mode) {
     platform_window_mode_confirm(&p->window_mode, mode);
     x11_set_bypass_compositor(
         p, p->window_mode.current == PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
+    if (platform_window_mode_decoration_stale(&p->window_mode))
+        x11_write_decorations(p, p->window_mode.decorated);
     XFlush(p->display);
 }
 
@@ -1075,6 +1093,10 @@ Platform *platform_create(const PlatformConfig *cfg) {
 
     platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
     x11_query_monitors(p);
+    if (cfg->undecorated) {
+        (void)platform_window_mode_set_decorated(&p->window_mode, false);
+        x11_write_decorations(p, false);
+    }
     if (cfg->start_fullscreen) {
         /* Before the first map: EWMH lets the client set _NET_WM_STATE
          * itself; without a WM the fallback moves the window right away. */
@@ -1094,6 +1116,8 @@ Platform *platform_create(const PlatformConfig *cfg) {
     }
 
     if (!cfg->hide_window_until_first_frame) {
+        /* (undecorated is applied above, before the first map, so the WM
+         * never shows the frame) */
         XMapWindow(p->display, p->window);
         XFlush(p->display);
     }
@@ -1687,6 +1711,10 @@ bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
         if (!platform_window_mode_restore_rect(&p->window_mode, &windowed) ||
             !x11_fallback_enter(p, windowed)) {
             platform_window_mode_fail(&p->window_mode);
+            if (platform_window_mode_decoration_stale(&p->window_mode)) {
+                x11_write_decorations(p, p->window_mode.decorated);
+                XFlush(p->display);
+            }
             return false;
         }
         x11_confirm_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
@@ -1708,6 +1736,40 @@ PlatformWindowMode platform_get_window_mode(Platform *p) {
 void platform_toggle_fullscreen(Platform *p) {
     if (p == NULL) return;
     (void)platform_set_window_mode(p, platform_window_mode_toggle_target(&p->window_mode));
+}
+
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL || p->display == NULL) return false;
+    switch (platform_window_mode_set_decorated(&p->window_mode, decorated)) {
+    case PLATFORM_DECORATION_ACTION_APPLY:
+        x11_write_decorations(p, decorated);
+        XFlush(p->display);
+        return true;
+    case PLATFORM_DECORATION_ACTION_UNSUPPORTED:
+        return false;
+    case PLATFORM_DECORATION_ACTION_DEFER:
+        /* The no-WM fallback restores the hints it saved on enter; make that
+         * restore carry the new preference too. */
+        if (p->fullscreen_fallback) {
+            p->saved_motif_hints_valid = !decorated;
+            if (!decorated) {
+                p->saved_motif_hints[0] = X11_MWM_HINTS_DECORATIONS;
+                for (u32 i = 1; i < X11_MWM_HINTS_ELEMENTS; i++) p->saved_motif_hints[i] = 0;
+            }
+        }
+        return true;
+    case PLATFORM_DECORATION_ACTION_NONE:
+    default:
+        return true;
+    }
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
 }
 
 void platform_window_show(Platform *p) {

@@ -34,6 +34,13 @@ typedef enum {
     PLATFORM_WINDOW_MODE_ACTION_UNSUPPORTED,  /* fixed-mode platform */
 } PlatformWindowModeAction;
 
+typedef enum {
+    PLATFORM_DECORATION_ACTION_NONE = 0,      /* preference unchanged */
+    PLATFORM_DECORATION_ACTION_APPLY,         /* windowed: change the native frame now */
+    PLATFORM_DECORATION_ACTION_DEFER,         /* fullscreen / entering: applied on LEAVE */
+    PLATFORM_DECORATION_ACTION_UNSUPPORTED,   /* fixed-mode platform has no frame */
+} PlatformDecorationAction;
+
 typedef struct {
     PlatformWindowMode current;    /* last mode the platform confirmed */
     PlatformWindowMode requested;  /* last mode asked for (== current when idle) */
@@ -42,6 +49,12 @@ typedef struct {
     bool saved_valid;
     bool saved_maximized;
     PlatformWindowRect saved;      /* windowed rect to restore on LEAVE */
+    /* Title bar + frame while windowed (platform_set_window_decorated).
+     * Fullscreen never shows one; the preference is kept for LEAVE.
+     * native_decorated is what the native windowed frame currently shows,
+     * so a backend can tell whether it still has to apply the preference. */
+    bool decorated;
+    bool native_decorated;
 } PlatformWindowModeState;
 
 PLATFORM_WM_INLINE bool platform_window_mode_valid(PlatformWindowMode mode)
@@ -58,6 +71,8 @@ PLATFORM_WM_INLINE void platform_window_mode_init(PlatformWindowModeState *s,
     if (!platform_window_mode_valid(mode)) mode = PLATFORM_WINDOW_MODE_WINDOWED;
     s->current = mode;
     s->requested = mode;
+    s->decorated = true;
+    s->native_decorated = true;
 }
 
 /* A platform whose surface is always the whole screen. */
@@ -65,7 +80,53 @@ PLATFORM_WM_INLINE void platform_window_mode_init_fixed(PlatformWindowModeState 
                                                         PlatformWindowMode mode)
 {
     platform_window_mode_init(s, mode);
-    if (s != NULL) s->fixed = true;
+    if (s != NULL) {
+        s->fixed = true;
+        s->decorated = false;
+        s->native_decorated = false;
+    }
+}
+
+/* Is a title bar on screen right now: windowed (confirmed, nothing pending)
+ * with the decorated preference. */
+PLATFORM_WM_INLINE bool platform_window_mode_title_bar_visible(const PlatformWindowModeState *s)
+{
+    if (s == NULL || s->fixed) return false;
+    return s->current == PLATFORM_WINDOW_MODE_WINDOWED && s->decorated;
+}
+
+/* Record the title-bar preference. APPLY: the window is windowed and idle,
+ * change the native frame now (then call decoration_applied). DEFER: the
+ * window is fullscreen or a mode request is in flight; the backend applies
+ * it when it is windowed again (see decoration_stale). */
+PLATFORM_WM_INLINE PlatformDecorationAction platform_window_mode_set_decorated(
+    PlatformWindowModeState *s, bool decorated)
+{
+    if (s == NULL) return PLATFORM_DECORATION_ACTION_NONE;
+    if (s->fixed)
+        return decorated ? PLATFORM_DECORATION_ACTION_UNSUPPORTED
+                         : PLATFORM_DECORATION_ACTION_NONE;
+    if (s->decorated == decorated) return PLATFORM_DECORATION_ACTION_NONE;
+    s->decorated = decorated;
+    if (s->pending || s->current != PLATFORM_WINDOW_MODE_WINDOWED)
+        return PLATFORM_DECORATION_ACTION_DEFER;
+    return PLATFORM_DECORATION_ACTION_APPLY;
+}
+
+/* Windowed and idle, but the native frame differs from the preference. */
+PLATFORM_WM_INLINE bool platform_window_mode_decoration_stale(const PlatformWindowModeState *s)
+{
+    if (s == NULL || s->fixed || s->pending ||
+        s->current != PLATFORM_WINDOW_MODE_WINDOWED)
+        return false;
+    return s->native_decorated != s->decorated;
+}
+
+/* The backend changed (or restored) the native windowed frame to match. */
+PLATFORM_WM_INLINE void platform_window_mode_decoration_applied(PlatformWindowModeState *s)
+{
+    if (s == NULL) return;
+    s->native_decorated = s->decorated;
 }
 
 /* What the backend has to do to reach `mode`. Asking again for the mode a

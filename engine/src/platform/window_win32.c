@@ -68,6 +68,17 @@ struct Platform {
     PlatformWsiSurface wsi;
 };
 
+/* Windowed frame styles: decorated = WS_OVERLAPPEDWINDOW; undecorated =
+ * WS_POPUP plus the system menu / minimize / maximize bits so the taskbar
+ * button still minimizes and restores the window. */
+#define WIN_UNDECORATED_STYLE (WS_POPUP | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX)
+#define WIN_FRAME_STYLE_MASK (WS_OVERLAPPEDWINDOW | WS_POPUP)
+
+static DWORD win_windowed_style(DWORD style, bool decorated) {
+    style &= ~(DWORD)WIN_FRAME_STYLE_MASK;
+    return style | (decorated ? (DWORD)WS_OVERLAPPEDWINDOW : (DWORD)WIN_UNDECORATED_STYLE);
+}
+
 typedef struct {
     UINT32 advanced_color_supported : 1;
     UINT32 advanced_color_active : 1;
@@ -326,6 +337,26 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         }
         return 0;
 
+    case WM_GETMINMAXINFO:
+        /* A WS_POPUP window maximizes over the whole monitor, taskbar
+         * included; an undecorated windowed window should maximize like any
+         * other window, onto the work area. */
+        if (p->window_mode.current == PLATFORM_WINDOW_MODE_WINDOWED &&
+            !p->window_mode.native_decorated) {
+            MINMAXINFO *mmi = (MINMAXINFO *)lParam;
+            MONITORINFO mi;
+            memset(&mi, 0, sizeof(mi));
+            mi.cbSize = sizeof(mi);
+            if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi)) {
+                mmi->ptMaxPosition.x = mi.rcWork.left - mi.rcMonitor.left;
+                mmi->ptMaxPosition.y = mi.rcWork.top - mi.rcMonitor.top;
+                mmi->ptMaxSize.x = mi.rcWork.right - mi.rcWork.left;
+                mmi->ptMaxSize.y = mi.rcWork.bottom - mi.rcWork.top;
+                return 0;
+            }
+        }
+        break;
+
     case WM_SETCURSOR:
         if (LOWORD(lParam) == HTCLIENT) {
             win_apply_cursor(p);
@@ -561,7 +592,7 @@ Platform *platform_create(const PlatformConfig *cfg) {
         return NULL;
     }
 
-    DWORD style = WS_OVERLAPPEDWINDOW;
+    DWORD style = win_windowed_style(0u, !cfg->undecorated);
     RECT rect = { 0, 0, (LONG)cfg->width, (LONG)cfg->height };
     AdjustWindowRect(&rect, style, FALSE);
 
@@ -605,6 +636,11 @@ Platform *platform_create(const PlatformConfig *cfg) {
     p->hdc = GetDC(p->hwnd);
 
     platform_window_mode_init(&p->window_mode, PLATFORM_WINDOW_MODE_WINDOWED);
+    if (cfg->undecorated) {
+        /* Created frameless already: record it, nothing to apply. */
+        (void)platform_window_mode_set_decorated(&p->window_mode, false);
+        platform_window_mode_decoration_applied(&p->window_mode);
+    }
     if (cfg->start_fullscreen)
         (void)platform_set_window_mode(p, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN);
 
@@ -1073,6 +1109,85 @@ bool platform_get_monitor_info(Platform *p, u32 index, MonitorInfo *out) {
     return true;
 }
 
+/* ---- Title bar on/off (windowed) ----
+ * Decorated = WS_OVERLAPPEDWINDOW. Undecorated = WS_POPUP plus the system
+ * menu / minimize / maximize bits, so the taskbar button still minimizes and
+ * restores it. The client area keeps its screen rect: the window rect is
+ * recomputed for the new style and applied in one SetWindowPos. */
+
+/* Window rect for a client rect under `style`, at the window's DPI when the
+ * system can tell (per-monitor v2 frames scale with the monitor). */
+static void win_window_rect_for_client(HWND hwnd, DWORD style, DWORD exstyle, RECT *r) {
+    typedef BOOL (WINAPI *PFN_AdjustForDpi)(LPRECT, DWORD, BOOL, DWORD, UINT);
+    typedef UINT (WINAPI *PFN_GetDpiForWindow)(HWND);
+    static PFN_AdjustForDpi adjust_for_dpi;
+    static PFN_GetDpiForWindow dpi_for_window;
+    static bool looked_up;
+    if (!looked_up) {
+        HMODULE user32 = GetModuleHandleA("user32.dll");
+        if (user32) {
+            adjust_for_dpi = (PFN_AdjustForDpi)(void (*)(void))
+                GetProcAddress(user32, "AdjustWindowRectExForDpi");
+            dpi_for_window = (PFN_GetDpiForWindow)(void (*)(void))
+                GetProcAddress(user32, "GetDpiForWindow");
+        }
+        looked_up = true;
+    }
+    if (adjust_for_dpi && dpi_for_window)
+        adjust_for_dpi(r, style, FALSE, exstyle, dpi_for_window(hwnd));
+    else
+        AdjustWindowRectEx(r, style, FALSE, exstyle);
+}
+
+static void win_apply_decoration(Platform *p) {
+    bool decorated = p->window_mode.decorated;
+    DWORD style = (DWORD)GetWindowLongW(p->hwnd, GWL_STYLE);
+    DWORD exstyle = (DWORD)GetWindowLongW(p->hwnd, GWL_EXSTYLE);
+    DWORD next = win_windowed_style(style, decorated);
+    if (IsZoomed(p->hwnd) || IsIconic(p->hwnd)) {
+        /* Keep the maximized/minimized placement; the frame follows the
+         * style on the next layout. */
+        SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)next);
+        SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    } else {
+        RECT r;
+        POINT tl = {0, 0};
+        GetClientRect(p->hwnd, &r);
+        ClientToScreen(p->hwnd, &tl);
+        OffsetRect(&r, tl.x, tl.y);
+        win_window_rect_for_client(p->hwnd, next, exstyle, &r);
+        SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)next);
+        SetWindowPos(p->hwnd, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                     SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+    platform_window_mode_decoration_applied(&p->window_mode);
+}
+
+bool platform_set_window_decorated(Platform *p, bool decorated) {
+    if (p == NULL || p->hwnd == NULL) return false;
+    switch (platform_window_mode_set_decorated(&p->window_mode, decorated)) {
+    case PLATFORM_DECORATION_ACTION_APPLY:
+        win_apply_decoration(p);
+        return true;
+    case PLATFORM_DECORATION_ACTION_UNSUPPORTED:
+        return false;
+    case PLATFORM_DECORATION_ACTION_NONE:
+    case PLATFORM_DECORATION_ACTION_DEFER:
+    default:
+        return true;
+    }
+}
+
+bool platform_get_window_decorated(Platform *p) {
+    return p != NULL && p->window_mode.decorated;
+}
+
+bool platform_window_title_bar_visible(Platform *p) {
+    return p != NULL && platform_window_mode_title_bar_visible(&p->window_mode);
+}
+
 /* Enter: save GWL_STYLE + WINDOWPLACEMENT, then one SetWindowPos applies
  * the frameless style (SWP_FRAMECHANGED) and the monitor rect together, so
  * the client area changes size once. HWND_TOP, never TOPMOST. A maximized
@@ -1100,6 +1215,8 @@ static bool win_enter_fullscreen(Platform *p) {
         platform_window_mode_save_windowed(&p->window_mode, saved,
                                            p->windowed_placement.showCmd == SW_SHOWMAXIMIZED);
     }
+    /* WS_POPUP stays when the windowed window was undecorated: it is the
+     * frameless style fullscreen needs anyway. */
     SetWindowLongW(p->hwnd, GWL_STYLE,
                    (LONG)(style & ~(DWORD)(WS_OVERLAPPEDWINDOW | WS_MAXIMIZE)));
     if (!SetWindowPos(p->hwnd, HWND_TOP,
@@ -1120,6 +1237,8 @@ static bool win_leave_fullscreen(Platform *p) {
     WINDOWPLACEMENT wp = p->windowed_placement;
     bool visible = IsWindowVisible(p->hwnd) != FALSE;
 
+    /* The saved style already carries the title bar the window had; a
+     * decoration change made while fullscreen is applied below. */
     SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)(p->windowed_style & ~(DWORD)WS_MAXIMIZE));
     if (!visible) wp.showCmd = SW_HIDE;
     if (!SetWindowPlacement(p->hwnd, &wp)) return false;
@@ -1148,6 +1267,8 @@ bool platform_set_window_mode(Platform *p, PlatformWindowMode mode) {
     }
     if (ok) platform_window_mode_confirm(&p->window_mode, mode);
     else platform_window_mode_fail(&p->window_mode);
+    if (platform_window_mode_decoration_stale(&p->window_mode))
+        win_apply_decoration(p);
     return ok;
 }
 
