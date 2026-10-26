@@ -1,4 +1,5 @@
 #include <renderer/ssao.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,6 +49,14 @@ static RHIPipeline ssao_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool ssao_targets_create(SSAOSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[2] = {
+        { &s->ssao_fbo, post_targets_half(w), post_targets_half(h), RHI_FORMAT_UNDEFINED },
+        { &s->blur_fbo, post_targets_half(w), post_targets_half(h), RHI_FORMAT_UNDEFINED },
+    };
+    return post_targets_replace(dev, t, 2u);
+}
+
 bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     memset(ssao, 0, sizeof(*ssao));
     ssao->device = dev;
@@ -85,8 +94,7 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
     if (pw < 1) pw = 1;
     if (ph < 1) ph = 1;
 
-    ssao->ssao_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
-    ssao->blur_fbo = rhi_offscreen_fbo_create(dev, pw, ph);
+    (void)ssao_targets_create(ssao, dev, width, height);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -113,6 +121,15 @@ bool ssao_init(SSAOSystem *ssao, RHIDevice *dev, u32 width, u32 height) {
 
     ssao->ready = true;
     LOG_INFO("SSAO: initialized (%ux%u, radius=%.2f)", pw, ph, ssao->radius);
+    return true;
+}
+
+bool ssao_resize(SSAOSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!ssao_targets_create(s, dev, w, h)) {
+        LOG_WARN("SSAO: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

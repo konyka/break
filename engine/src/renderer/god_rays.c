@@ -1,4 +1,5 @@
 #include "god_rays.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -49,6 +50,13 @@ static RHIPipeline gr_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool god_rays_targets_create(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R8G8B8A8_UNORM },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -76,7 +84,7 @@ bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("GodRays: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R8G8B8A8_UNORM);
+    (void)god_rays_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -102,6 +110,15 @@ bool god_rays_init(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("GodRays: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool god_rays_resize(GodRaysSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!god_rays_targets_create(s, dev, w, h)) {
+        LOG_WARN("GodRays: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

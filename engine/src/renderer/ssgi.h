@@ -26,6 +26,10 @@ typedef struct {
 } SSGISystem;
 
 bool ssgi_init(SSGISystem *ssgi, RHIDevice *dev, u32 width, u32 height);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool ssgi_resize(SSGISystem *s, RHIDevice *dev, u32 w, u32 h);
 void ssgi_shutdown(SSGISystem *ssgi);
 /* R550-A: color_tex is both the GI source and the incoming frame-chain
  * color; the final blur stage self-composites (scene + blurred GI) into

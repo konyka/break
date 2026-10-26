@@ -1,4 +1,5 @@
 #include "fxaa.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -68,6 +69,13 @@ static RHIPipeline fxaa_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool fxaa_targets_create(FXAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fxaa_fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     if (!fxaa || !dev) return false;
     fxaa->device = dev;
@@ -105,7 +113,7 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
     if (!fxaa->bind_pipe)
         LOG_WARN("FXAA: bindings create failed; uniform locations resolve -1");
 
-    fxaa->fxaa_fbo = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)fxaa_targets_create(fxaa, dev, width, height);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -130,6 +138,15 @@ bool fxaa_init(FXAASystem *fxaa, RHIDevice *dev, u32 width, u32 height) {
 
     fxaa->ready = true;
     LOG_INFO("FXAA: initialized (%ux%u)", width, height);
+    return true;
+}
+
+bool fxaa_resize(FXAASystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!fxaa_targets_create(s, dev, w, h)) {
+        LOG_WARN("FXAA: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

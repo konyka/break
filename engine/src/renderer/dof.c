@@ -1,4 +1,5 @@
 #include <renderer/dof.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +68,13 @@ static RHIPipeline dof_create_pipe(RHIDevice *dev,
     return pipe;
 }
 
+static bool dof_targets_create(DOFSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->dof_fbo, post_targets_half(w), post_targets_half(h), RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     memset(dof, 0, sizeof(*dof));
     dof->device = dev;
@@ -110,7 +118,7 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
     if (pw < 1) pw = 1;
     if (ph < 1) ph = 1;
 
-    dof->dof_fbo = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)dof_targets_create(dof, dev, width, height);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -136,6 +144,15 @@ bool dof_init(DOFSystem *dof, RHIDevice *dev, u32 width, u32 height) {
 
     dof->ready = true;
     LOG_INFO("DOF: initialized (%ux%u, focus=%.1f range=%.1f)", pw, ph, dof->focus_dist, dof->focus_range);
+    return true;
+}
+
+bool dof_resize(DOFSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!dof_targets_create(s, dev, w, h)) {
+        LOG_WARN("DOF: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

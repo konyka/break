@@ -1,4 +1,5 @@
 #include "sharpen.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -49,6 +50,13 @@ static RHIPipeline sh_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool sharpen_targets_create(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -76,7 +84,7 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("Sharpen: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create_fmt(dev, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)sharpen_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -100,6 +108,15 @@ bool sharpen_init(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
 
     s->ready = true;
     LOG_INFO("Sharpen: initialized (%ux%u)", w, h);
+    return true;
+}
+
+bool sharpen_resize(SharpenSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!sharpen_targets_create(s, dev, w, h)) {
+        LOG_WARN("Sharpen: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

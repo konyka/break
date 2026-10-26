@@ -1,4 +1,5 @@
 #include "debug_viz.h"
+#include <renderer/post_targets.h>
 #include <rhi/rhi.h>
 #include <core/log.h>
 #include <stdio.h>
@@ -49,6 +50,13 @@ static RHIPipeline dv_create_pipe(RHIDevice *dev, bool sidecar,
     return pipe;
 }
 
+static bool debug_viz_targets_create(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[1] = {
+        { &s->fbo, w, h, RHI_FORMAT_UNDEFINED },
+    };
+    return post_targets_replace(dev, t, 1u);
+}
+
 bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s || !dev) return false;
     memset(s, 0, sizeof(*s));
@@ -76,7 +84,7 @@ bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
     if (!s->bind_pipe)
         LOG_WARN("DebugViz: bindings create failed; uniform locations resolve -1");
 
-    s->fbo = rhi_offscreen_fbo_create(dev, w, h);
+    (void)debug_viz_targets_create(s, dev, w, h);
 
     RHISamplerDesc sdesc = {
         .min_filter = RHI_FILTER_LINEAR,
@@ -103,6 +111,15 @@ bool debug_viz_init(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
     s->loc_split3 = rhi_pipeline_bindings_resolve(s->bind_pipe, "u_dv_split3");
 
     s->ready = true;
+    return true;
+}
+
+bool debug_viz_resize(DebugVizSystem *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->dev != dev) return false;
+    if (!debug_viz_targets_create(s, dev, w, h)) {
+        LOG_WARN("DebugViz: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

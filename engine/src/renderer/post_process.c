@@ -1,4 +1,5 @@
 #include <renderer/post_process.h>
+#include <renderer/post_targets.h>
 #include <core/log.h>
 #include <math/math.h>
 #include <stdio.h>
@@ -47,6 +48,15 @@ static RHIPipeline pp_create_pipe(RHIDevice *dev, bool sidecar,
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
     return pipe;
+}
+
+static bool post_process_targets_create(PostProcess *s, RHIDevice *dev, u32 w, u32 h) {
+    const PostTargetSpec t[3] = {
+        { &s->fbo_ping, post_targets_half(w), post_targets_half(h), RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->fbo_pong, post_targets_half(w), post_targets_half(h), RHI_FORMAT_R16G16B16A16_SFLOAT },
+        { &s->fbo_composite, w, h, RHI_FORMAT_R16G16B16A16_SFLOAT },
+    };
+    return post_targets_replace(dev, t, 3u);
 }
 
 bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
@@ -131,9 +141,7 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
     if (pw < 1) pw = 1;
     if (ph < 1) ph = 1;
 
-    pp->fbo_ping = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    pp->fbo_pong = rhi_offscreen_fbo_create_fmt(dev, pw, ph, RHI_FORMAT_R16G16B16A16_SFLOAT);
-    pp->fbo_composite = rhi_offscreen_fbo_create_fmt(dev, width, height, RHI_FORMAT_R16G16B16A16_SFLOAT);
+    (void)post_process_targets_create(pp, dev, width, height);
     /* R349: composite is the apply target — include it in the readiness gate. */
     if (!rhi_handle_valid(pp->fbo_ping.fb) || !rhi_handle_valid(pp->fbo_pong.fb) ||
         !rhi_handle_valid(pp->fbo_composite.fb)) {
@@ -157,6 +165,15 @@ bool post_process_init(PostProcess *pp, RHIDevice *dev, u32 width, u32 height) {
 
     LOG_INFO("PostProcess: bloom initialized (%ux%u)", pw, ph);
     pp->ready = true;
+    return true;
+}
+
+bool post_process_resize(PostProcess *s, RHIDevice *dev, u32 w, u32 h) {
+    if (!s || !dev || !s->ready || s->device != dev) return false;
+    if (!post_process_targets_create(s, dev, w, h)) {
+        LOG_WARN("PostProcess: resize to %ux%u failed; keeping previous targets", w, h);
+        return false;
+    }
     return true;
 }
 

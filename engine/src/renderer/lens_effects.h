@@ -16,6 +16,10 @@ typedef struct {
 } LensEffectsSystem;
 
 bool lens_effects_init(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool lens_effects_resize(LensEffectsSystem *s, RHIDevice *dev, u32 w, u32 h);
 void lens_effects_shutdown(LensEffectsSystem *s);
 void lens_effects_apply(LensEffectsSystem *s, RHICmdBuffer *cmd,
                         RHITexture input_tex,

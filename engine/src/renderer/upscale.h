@@ -28,6 +28,11 @@ typedef struct {
 } UpscaleSystem;
 
 bool upscale_init(UpscaleSystem *s, RHIDevice *dev, u32 render_w, u32 render_h, u32 display_w, u32 display_h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool upscale_resize(UpscaleSystem *s, RHIDevice *dev, u32 render_w, u32 render_h,
+                    u32 display_w, u32 display_h);
 void upscale_shutdown(UpscaleSystem *s);
 void upscale_apply(UpscaleSystem *s, RHICmdBuffer *cmd,
                    RHITexture input_tex, RHITexture depth_tex,

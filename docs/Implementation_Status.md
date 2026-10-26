@@ -1,6 +1,44 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：FS3 — 尺寸变化只重建渲染目标，不再重编着色器（无标题栏全屏 任务 3）
+
+### 做法（设计 `docs/superpowers/specs/2026-10-27-borderless-fullscreen-design.md` 3.3）
+- **共用助手 `renderer/post_targets.h`**：每个系统用一张表（槽位、宽、高、格式）描述自己的尺寸相关 FBO；`post_targets_replace` 先全部新建，任何一个失败就销毁已建的并返回 false，旧目标原样保留（与 `main.c` R362 同一「先建后换」规则），全部成功才销毁旧的并替换。
+- **20 个系统新增 `*_resize(sys, dev, w, h)`**：post_process（bloom）、ssao、taa、ssr、dof、volumetric、fxaa、ssgi、lens_flare、sharpen、motion_blur、contact_shadow、sss、upscale（`upscale_resize(s, dev, rw, rh, dw, dh)`）、color_grade、god_rays、debug_viz、lens_effects、combined_aa、combined_color。每个系统的 init 原来直接建 FBO 的几行改为调用同一个静态 `*_targets_create`，其余（管线、反射表、采样器、uniform 位置、失败时 shutdown 的判据、日志）不变；resize 只调 `*_targets_create`。半分辨率目标统一用 `post_targets_half`（`/2` 且至少 1，与原来的钳制一致）。
+- **时间性历史**：taa、upscale、combined_aa（合并路径）resize 后 `history_idx = 0`、`first_frame = true`，下一帧不混合旧尺寸的历史；combined_aa 回退链调用内部 fxaa/taa 的 resize，combined_color 回退链调用内部 color_grade 的 resize。
+- **不迁移**：tonemap（只有 1×1 亮度目标）与 cinematic（无目标）没有尺寸相关资源，重建块不再动它们（以前每次尺寸变化都 shutdown+init，也会重编着色器、并把自动曝光的适应状态清零）。
+- **`main.c` 重建块**：scene_fbo / forward_scene（R362）、occlusion_cull_resize、deferred_resize 不变；后处理改为 `FS3_RESIZE_OR_REINIT(resize, shutdown, init)`，某个系统 resize 失败时只对它回退到完整 shutdown+init，并打印 `RESIZE_FALLBACK <名字>`。
+- **尺寸去抖**：新尺寸先记为待定，只有下一帧仍是同一尺寸才重建；期间尺寸再变就替换待定请求并打印 `RESIZE_COALESCE frame=.. drop=WxH keep=WxH`，所以同帧或相邻帧的多次变化只按最终尺寸重建一次（代价：尺寸变化后最多晚 1 帧重建，期间用旧目标渲染，画面为旧比例的拉伸）。`rhi_device_resize` 仍在窗口尺寸变化的当帧调用（交换链必须跟上窗口），并只在尺寸真正改变时调用一次。
+- **测量钩子**：`BREAK_RESIZE_AT=frame:WxH[,frame:WxH...]` 从指定帧起强制渲染尺寸 rw×rh（等价于 F1 改渲染比例，走完全相同的重建块），每次重建打印 `RESIZE_REBUILD frame=.. rw=.. rh=.. w=.. h=.. fallbacks=.. ms=.. scene_ms=.. post_ms=.. tail_ms=..`（scene = 场景 FBO，post = 后处理系统，tail = occlusion + deferred）。
+
+### 耗时（Release，1280×720 窗口，800×450 ↔ 960×540 来回 6 次 × 3 轮 = 18 次的中位数）
+
+| 后端 | 改动前 总计 / 后处理 | 改动后 总计 / 后处理 |
+|---|---|---|
+| D3D12 | 45.0 / 37.6 ms | 25.6 / 21.0 ms |
+| VK（`BREAK_OCCLUSION=0`，见下） | 130.7 / 110.8 ms | 74.8 ms（该轮二进制未带分项） |
+| GL | 64.5 / 39.6 ms | 100.6 / 31.8 ms |
+
+- 后处理部分三后端都下降（D3D12 −44%、VK −46% 总计、GL −20%）。剩余的后处理时间是每个 FBO 的创建/销毁本身：VK `rhi_offscreen_fbo_destroy` 每次 `vkDeviceWaitIdle`、D3D12 每次分配提交资源，这是 RHI 层的成本，不在本任务范围。
+- GL 总计中位数反而更高，来自 `scene_ms`（scene_fbo + forward MRT 重建，本任务未改动）的 160–720 ms 偶发尖峰，改动前后都有（改动前单次最高 588 ms），出现频率随机；测量期间其他代理同时在跑演示程序，GPU 有争用。只看后处理分项是 39.6 → 31.8 ms。
+
+### 测试（TDD，`test_d3d12_warp_runtime` 新增 4 个，先因缺少 `*_resize` 编译失败，实现后 86/86）
+- `post_process_resize_rebuilds_only_targets_and_still_blooms`：4 条管线与采样器 handle（index+generation）不变，ping/pong 6×3、composite 12×6（FBO 字段与 `rhi_texture_get_size` 双重检查），resize 后灰色输入经 bloom 链得到 0.5±0.01。
+- `taa_resize_keeps_the_pipeline_resets_history_and_resolves`：管线不变、两张历史目标 6×4、`first_frame` 重新置位且 `history_idx` 归零，resize 后的第一次 resolve 原样输出当前帧（逐像素 ±0.004）。
+- `fxaa_and_combined_aa_resize_keep_pipelines_and_resize_targets`、`every_post_system_resize_keeps_pipelines_and_resizes_targets`：其余 16 个系统逐个检查管线不变、目标尺寸正确；SSGI 请求 0×0 时半分辨率目标（钳到 1×1）先建成、全分辨率目标被 RHI 拒绝，验证回滚后旧目标 handle 与尺寸不变、系统仍 ready。
+- `debug_layer_reported_nothing_for_the_whole_suite` 仍为 0 错误 0 警告 1 个别名。
+
+### 验证
+- VK 已知问题（改动前同样存在）：Release 演示在第一次或第二次重建后 `VK: device lost`，`BREAK_OCCLUSION=0` 时消失，问题在 `occlusion_cull_resize`（先销毁 Hi-Z 纹理再新建）或 Hi-Z 相关路径，与后处理无关，未在本任务修复；VK 计时因此在 `BREAK_OCCLUSION=0` 下进行。
+- VK Debug（`BREAK_OCCLUSION=0`，含同帧去抖）：`VK validation messages this run: 0`；D3D12 Debug 树 `ENGINE_D3D12_DEBUG=1` 运行 6 次重建无调试层消息。
+- 截图（Release，UI 关，第 100 帧，两次重建在第 61/91 帧对齐；VK 加 `BREAK_OCCLUSION=0`）：改动前后逐像素平均差与改动前自己连跑的噪声同级——VK 新旧 0.38–1.61（旧旧 0.16–1.69），GL 0.46–3.27（旧旧 0.49–0.98、新新 0.69–3.14，新版第 2 次与所有图都差 ~3，是单次离群），D3D12 0.61–2.58（旧旧 1.18–2.35）。
+- D3D12 Release 一次运行出现过 `device removed 0x887a0006`（截图那次），重跑 3 次新版与 3 次旧版各 20 次连续重建均未复现；当时其他代理正在同一 GPU 上跑 D3D12 演示，未能确定原因。
+- 0 编译警告：build-vk / build-gl / build-d3d12（Debug）与 build-rel-vk / gl / d3d12（仅 lld `--gc-sections` 提示与 SheenBidi 既有警告）。`ctest -j4 -E test_platform_win32_runtime`：d3d12 194/194、gl 186/186、vk 188/189——失败的是 `test_vulkan` 的 UNIFIED GPU CULL（Hi-Z 后 device lost），单独重跑 4 次全部通过，master 构建同样通过，判断为与其他代理并发占用 GPU 时的偶发问题。
+- GCC（ucrt64）`-std=c11 -Wall -Wextra -Werror -pedantic` 语法检查全部改动 `.c` 通过。
+- 未验证：Metal（本机无）；真正的窗口尺寸变化 / 全屏切换（由任务 2 的 `BREAK_TOGGLE_FULLSCREEN_AT` 覆盖），本次只用渲染比例路径驱动同一重建块。
+
+
 ## 本轮更新：修复 windows-d3d12 自 `a323c379` 起变红（bloom 渲染目标/着色器资源别名）
 
 - **现象**：`test_d3d12_warp_runtime` 的 `debug_layer_reported_nothing_for_the_whole_suite` 期望 1 次（测试故意制造的）RT/SRV 别名，实际 4 次；多出的 3 次来自 `post_process_initialises_and_blits_on_d3d12`。

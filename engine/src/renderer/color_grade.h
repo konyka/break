@@ -17,6 +17,10 @@ typedef struct {
 } ColorGradeSystem;
 
 bool color_grade_init(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h);
+/* FS3: recreate only the size-dependent render targets; pipelines, bindings,
+ * samplers and uniform locations are kept. On failure the previous targets
+ * stay live and false is returned (the caller falls back to shutdown+init). */
+bool color_grade_resize(ColorGradeSystem *s, RHIDevice *dev, u32 w, u32 h);
 void color_grade_shutdown(ColorGradeSystem *s);
 void color_grade_apply(ColorGradeSystem *s, RHICmdBuffer *cmd,
                        RHITexture input_tex, f32 saturation, f32 contrast,
