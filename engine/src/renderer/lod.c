@@ -369,6 +369,51 @@ u32 lod_select_screen_error(const f32 *errors, u32 count, Vec3 center, f32 radiu
                                       pixel_err, current_level);
 }
 
+u32 lod_bucket_instances(const u32 *inst_mesh, const u8 *inst_level, u32 count,
+                         u32 mesh_count, u32 levels, u32 *offsets, u32 *order) {
+    if (!inst_mesh || !offsets || !order || mesh_count == 0u || levels == 0u) return 0u;
+    if (mesh_count > UINT32_MAX / levels - 1u) return 0u;
+    u32 k_total = mesh_count * levels;
+    memset(offsets, 0, ((usize)k_total + 1u) * sizeof(u32));
+    for (u32 i = 0; i < count; i++) {
+        if (inst_mesh[i] >= mesh_count) continue;
+        u32 l = inst_level ? inst_level[i] : 0u;
+        if (l >= levels) l = levels - 1u;
+        offsets[inst_mesh[i] * levels + l + 1u]++;
+    }
+    for (u32 k = 1; k <= k_total; k++) offsets[k] += offsets[k - 1u];
+    for (u32 i = 0; i < count; i++) {
+        if (inst_mesh[i] >= mesh_count) continue;
+        u32 l = inst_level ? inst_level[i] : 0u;
+        if (l >= levels) l = levels - 1u;
+        order[offsets[inst_mesh[i] * levels + l]++] = i;
+    }
+    /* offsets[k] now holds the end of bucket k; shift back to starts. */
+    for (u32 k = k_total; k >= 1u; k--) offsets[k] = offsets[k - 1u];
+    offsets[0] = 0u;
+    return offsets[k_total];
+}
+
+u32 lod_instance_select(LodInstanceState *st, u32 slot, u32 tag,
+                        const f32 *errors, u32 count, f32 dist, f32 proj_factor,
+                        f32 pixel_err, bool *changed) {
+    if (changed) *changed = false;
+    bool tracked = st && st->level && st->tag && slot < st->capacity && tag != 0u;
+    u32 cur = (tracked && st->tag[slot] == tag) ? st->level[slot] : 0u;
+    u32 lvl = lod_select_by_screen_error(errors, count, dist, proj_factor, pixel_err, cur);
+    if (tracked) {
+        if (changed && st->tag[slot] == tag && lvl != cur) *changed = true;
+        st->tag[slot] = tag;
+        st->level[slot] = (u8)lvl;
+    }
+    return lvl;
+}
+
+u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag) {
+    if (!st || !st->level || !st->tag || slot >= st->capacity || tag == 0u) return 0u;
+    return st->tag[slot] == tag ? st->level[slot] : 0u;
+}
+
 void lod_group_set_auto_thresholds(LODGroup *group, f32 base_distance) {
     /* Default: each level doubles the distance */
     for (u32 i = 0; i < group->level_count && i < LOD_MAX_LEVELS; i++) {

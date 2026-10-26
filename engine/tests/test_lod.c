@@ -608,6 +608,96 @@ TEST(lod_bake_validate_catches_errors) {
     ASSERT_TRUE(bv_run(err));
 }
 
+/* ---- ECS instanced LOD: (mesh, level) bucketing + per-instance hysteresis ---- */
+
+TEST(lod_bucket_instances_groups_mesh_major_and_stable) {
+    const u32 mesh[8] = { 1, 0, 1, 2, 0, 1, 7, 1 };
+    const u8  lvl[8]  = { 2, 0, 0, 1, 1, 2, 0, 9 };
+    u32 off[3 * 3 + 1], order[8];
+    u32 kept = lod_bucket_instances(mesh, lvl, 8, 3, 3, off, order);
+    ASSERT_EQ(kept, 7u); /* mesh 7 >= mesh_count is dropped */
+    ASSERT_EQ(off[0], 0u);
+    ASSERT_EQ(off[9], 7u);
+    /* bucket (mesh 0, L0) = {1}; (0, L1) = {4}; (1, L0) = {2}; (1, L2) = {0, 5, 7}
+     * (level 9 clamps to 2, input order kept); (2, L1) = {3}. */
+    ASSERT_EQ(off[1] - off[0], 1u); ASSERT_EQ(order[off[0]], 1u);
+    ASSERT_EQ(off[2] - off[1], 1u); ASSERT_EQ(order[off[1]], 4u);
+    ASSERT_EQ(off[3] - off[2], 0u);
+    ASSERT_EQ(off[4] - off[3], 1u); ASSERT_EQ(order[off[3]], 2u);
+    ASSERT_EQ(off[5] - off[4], 0u);
+    ASSERT_EQ(off[6] - off[5], 3u);
+    ASSERT_EQ(order[off[5]], 0u); ASSERT_EQ(order[off[5] + 1], 5u); ASSERT_EQ(order[off[5] + 2], 7u);
+    ASSERT_EQ(off[7] - off[6], 0u);
+    ASSERT_EQ(off[8] - off[7], 1u); ASSERT_EQ(order[off[7]], 3u);
+    ASSERT_EQ(off[9] - off[8], 0u);
+}
+
+TEST(lod_bucket_instances_all_lod0_matches_per_mesh_order) {
+    /* NULL levels = all LOD0: concatenating the buckets must reproduce the
+     * ungrouped per-mesh compaction order (mesh ascending, input order). */
+    u32 mesh[64];
+    for (u32 i = 0; i < 64; i++) mesh[i] = (i * 7u + 3u) % 5u;
+    u32 off[5 * 3 + 1], order[64];
+    ASSERT_EQ(lod_bucket_instances(mesh, NULL, 64, 5, 3, off, order), 64u);
+    u32 k = 0;
+    for (u32 m = 0; m < 5; m++) {
+        ASSERT_EQ(off[m * 3 + 1], off[m * 3 + 3]); /* L1/L2 empty */
+        for (u32 i = 0; i < 64; i++)
+            if (mesh[i] == m) { ASSERT_EQ(order[k], i); k++; }
+    }
+    ASSERT_EQ(k, 64u);
+}
+
+TEST(lod_bucket_instances_degenerate_inputs) {
+    const u32 mesh[2] = { 0, 0 };
+    u32 off[4], order[2];
+    ASSERT_EQ(lod_bucket_instances(NULL, NULL, 2, 1, 3, off, order), 0u);
+    ASSERT_EQ(lod_bucket_instances(mesh, NULL, 2, 0, 3, off, order), 0u);
+    ASSERT_EQ(lod_bucket_instances(mesh, NULL, 2, 1, 0, off, order), 0u);
+    ASSERT_EQ(lod_bucket_instances(mesh, NULL, 0, 1, 3, off, order), 0u);
+    ASSERT_EQ(off[0], 0u); ASSERT_EQ(off[3], 0u);
+}
+
+TEST(lod_instance_select_hysteresis_per_slot) {
+    const f32 err[3] = { 0.0f, 0.01f, 0.04f };
+    u8 lv[4] = {0};
+    u32 tg[4] = {0};
+    LodInstanceState st = { lv, tg, 4 };
+    bool ch = false;
+    /* Slot 0 coarsens to LOD1 at d=6.3 (see the band test above). */
+    ASSERT_EQ(lod_instance_select(&st, 0, 1, err, 3, 6.3f, 500.0f, 1.0f, &ch), 1u);
+    ASSERT_FALSE(ch); /* first sighting is not a transition */
+    /* In-band distance: slot 0 holds LOD1, a fresh slot 1 stays at LOD0. */
+    ASSERT_EQ(lod_instance_select(&st, 0, 1, err, 3, 5.0f, 500.0f, 1.0f, &ch), 1u);
+    ASSERT_FALSE(ch);
+    ASSERT_EQ(lod_instance_select(&st, 1, 1, err, 3, 5.0f, 500.0f, 1.0f, &ch), 0u);
+    ASSERT_EQ(lod_instance_level(&st, 0, 1), 1u);
+    ASSERT_EQ(lod_instance_level(&st, 1, 1), 0u);
+    /* Leaving the band refines and reports the change. */
+    ASSERT_EQ(lod_instance_select(&st, 0, 1, err, 3, 4.1f, 500.0f, 1.0f, &ch), 0u);
+    ASSERT_TRUE(ch);
+}
+
+TEST(lod_instance_select_reused_slot_starts_at_lod0) {
+    const f32 err[3] = { 0.0f, 0.01f, 0.04f };
+    u8 lv[2] = {0};
+    u32 tg[2] = {0};
+    LodInstanceState st = { lv, tg, 2 };
+    ASSERT_EQ(lod_instance_select(&st, 1, 5, err, 3, 100.0f, 500.0f, 1.0f, NULL), 2u);
+    /* Same slot, new generation tag: the old entity's LOD2 must not leak into
+     * the in-band decision of the new one. */
+    ASSERT_EQ(lod_instance_level(&st, 1, 6), 0u);
+    bool ch = true;
+    ASSERT_EQ(lod_instance_select(&st, 1, 6, err, 3, 5.0f, 500.0f, 1.0f, &ch), 0u);
+    ASSERT_FALSE(ch);
+    /* Untracked: slot out of range / tag 0 select statelessly from LOD0. */
+    ASSERT_EQ(lod_instance_select(&st, 9, 1, err, 3, 5.0f, 500.0f, 1.0f, NULL), 0u);
+    ASSERT_EQ(lod_instance_select(&st, 0, 0, err, 3, 100.0f, 500.0f, 1.0f, NULL), 2u);
+    ASSERT_EQ(lod_instance_level(&st, 0, 0), 0u);
+    ASSERT_EQ(tg[0], 0u);
+    ASSERT_EQ(lod_instance_select(NULL, 0, 1, err, 3, 100.0f, 500.0f, 1.0f, NULL), 2u);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(lod_init_defaults);
     RUN_TEST(lod_register_entity);
@@ -642,4 +732,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lod_generate_levels_rejects_bad_indices);
     RUN_TEST(lod_bake_validate_accepts_consistent_tables);
     RUN_TEST(lod_bake_validate_catches_errors);
+    /* Runtime ECS instanced LOD */
+    RUN_TEST(lod_bucket_instances_groups_mesh_major_and_stable);
+    RUN_TEST(lod_bucket_instances_all_lod0_matches_per_mesh_order);
+    RUN_TEST(lod_bucket_instances_degenerate_inputs);
+    RUN_TEST(lod_instance_select_hysteresis_per_slot);
+    RUN_TEST(lod_instance_select_reused_slot_starts_at_lod0);
 TEST_MAIN_END()

@@ -2814,6 +2814,26 @@ static bool mega_lod_alloc(MegaLod *L, u32 node_count, u32 cmd_count) {
     return true;
 }
 
+/* Read one mesh back and simplify it in its local space (32-byte Vertex).
+ * Always leaves ml->level_count >= 1. */
+static void mesh_lod_generate(RHIDevice *dev, const Mesh *m, u32 mesh_index, LodMeshLevels *ml) {
+    ml->level_count = 1u;
+    ml->index_count[0] = m->index_count;
+    usize vb = (usize)m->vertex_count * 32u, ib = (usize)m->index_count * sizeof(u32);
+    f32 *v = (f32 *)malloc(vb);
+    u32 *ix = (u32 *)malloc(ib);
+    if (v && ix && rhi_buffer_read(dev, m->vertex_buf, v, 0, vb) &&
+        rhi_buffer_read(dev, m->index_buf, ix, 0, ib)) {
+        lod_generate_levels(v, m->vertex_count, 32u, ix, m->index_count,
+                            MEGA_LOD_LEVELS, ml);
+    } else {
+        LOG_WARN("LOD: failed to read mesh %u; LOD0 only", mesh_index);
+    }
+    free(v);
+    free(ix);
+    if (ml->level_count == 0u) { ml->level_count = 1u; ml->index_count[0] = m->index_count; }
+}
+
 /* Simplify every unique mesh used by a mega node once, in its local space.
  * Returns scene->mesh_count entries (level_count 0 = mesh not used / not
  * read), or NULL. */
@@ -2831,26 +2851,14 @@ static LodMeshLevels *mega_lod_generate(RHIDevice *dev, const Scene *scene) {
         if (m->vertex_count == 0 || m->index_count == 0) continue;
         LodMeshLevels *ml = &out[nd->mesh_index];
         if (ml->level_count != 0u) continue;
-        ml->level_count = 1u;
-        ml->index_count[0] = m->index_count;
         meshes++;
         if (m->index_count / 3u < LOD_GEN_MIN_TRIANGLES) {
+            ml->level_count = 1u;
+            ml->index_count[0] = m->index_count;
             tris[0] += m->index_count / 3u;
             continue;
         }
-        usize vb = (usize)m->vertex_count * 32u, ib = (usize)m->index_count * sizeof(u32);
-        f32 *v = (f32 *)malloc(vb);
-        u32 *ix = (u32 *)malloc(ib);
-        if (v && ix && rhi_buffer_read(dev, m->vertex_buf, v, 0, vb) &&
-            rhi_buffer_read(dev, m->index_buf, ix, 0, ib)) {
-            lod_generate_levels(v, m->vertex_count, 32u, ix, m->index_count,
-                                MEGA_LOD_LEVELS, ml);
-        } else {
-            LOG_WARN("LOD: failed to read mesh %u; LOD0 only", nd->mesh_index);
-        }
-        free(v);
-        free(ix);
-        if (ml->level_count == 0u) { ml->level_count = 1u; ml->index_count[0] = m->index_count; }
+        mesh_lod_generate(dev, m, nd->mesh_index, ml);
         if (ml->level_count > 1u) simplified++;
         for (u32 l = 0; l < ml->level_count; l++) tris[l] += ml->index_count[l] / 3u;
         LOG_DEBUG("LOD: mesh %u: %u levels, tris %u/%u/%u rel_err %.4f/%.4f scale %.3f",
@@ -2919,6 +2927,211 @@ static void mega_lod_select(MegaBuffer *mb, Vec3 cam_pos, f32 fov, f32 screen_h,
     L->vis_tris_sum += L->vis_tris;
     L->vis_tris_lod0_sum += L->vis_tris_lod0;
     L->transitions_sum += L->transitions;
+}
+
+/* ---- Runtime mesh LOD for ECS instanced meshes (phase 2.1) ----
+ * Entities with CTransform + CMeshRef are drawn by the forward instanced
+ * path, one instanced draw per mesh. With LOD on, every mesh referenced by
+ * an entity at startup (plus mesh 0, the spawn default) gets the same
+ * LOD1/LOD2 index lists as the mega path (shared LOD0 vertices; the levels
+ * live in one extra index buffer per mesh, LOD0 keeps Mesh.index_buf). Each
+ * frame every frustum-visible instance picks its level from its screen-space
+ * error (bounding-sphere surface distance, hysteresis per entity slot), and
+ * the draw groups instances by (mesh, level). ECS instances are not drawn
+ * by any shadow pass or the deferred G-buffer, so there is no shadow level.
+ * Skinned meshes never go through this path (they are drawn per primitive
+ * with the joint palette) and stay at LOD0: simplifying them needs
+ * bone-weight-aware collapse, which the simplifier does not do.
+ * BREAK_LOD=0 skips the setup and leaves `active` false, which keeps the
+ * gather loop and the per-mesh draw on their pre-LOD code. */
+#define ECS_LOD_LEVELS LOD_GEN_MAX_LEVELS
+/* vkCmdUpdateBuffer's 65536-byte cap / 128 bytes per instance row. */
+#define ECS_LOD_DRAW_CHUNK 512u
+
+typedef struct {
+    bool       active;
+    u32        mesh_count;         /* scene meshes the tables were built for */
+    u32        inst_cap;
+    u8        *mesh_level_count;   /* [mesh] 1..ECS_LOD_LEVELS */
+    f32       *mesh_err;           /* [mesh * L] local-space error vs LOD0 */
+    u32       *mesh_tris;          /* [mesh * L] triangles per level */
+    u32       *mesh_first;         /* [mesh * L] first index in mesh_ibo (levels >= 1) */
+    f32       *mesh_sphere;        /* [mesh * 4] local AABB center xyz + half diagonal */
+    RHIBuffer *mesh_ibo;           /* [mesh] LOD1.. indices; invalid when 1 level */
+    LodInstanceState st;           /* per entity slot (index, generation + 1) */
+    u8        *inst_level;         /* [inst_cap] level of this frame's instance k */
+    u32       *bucket_off;         /* [mesh * L + 1] */
+    u32       *bucket_order;       /* [inst_cap] */
+    /* last frame */
+    u32   level_inst[ECS_LOD_LEVELS];
+    u32   vis_tris, vis_tris_lod0, transitions, draws;
+    f64   select_ms;
+    /* session totals (ECS_LOD_STATS at shutdown) */
+    u64   frames;
+    f64   select_ms_sum;
+    u64   vis_tris_sum, vis_tris_lod0_sum, transitions_sum, draws_sum;
+} EcsLod;
+
+static EcsLod g_ecs_lod;
+
+static void ecs_lod_free(EcsLod *E, RHIDevice *dev) {
+    if (!E) return;
+    if (E->mesh_ibo && dev) {
+        for (u32 i = 0; i < E->mesh_count; i++)
+            if (rhi_handle_valid(E->mesh_ibo[i])) rhi_buffer_destroy(dev, E->mesh_ibo[i]);
+    }
+    free(E->mesh_level_count); free(E->mesh_err); free(E->mesh_tris); free(E->mesh_first);
+    free(E->mesh_sphere); free(E->mesh_ibo); free(E->st.level); free(E->st.tag);
+    free(E->inst_level); free(E->bucket_off); free(E->bucket_order);
+    u64 frames = E->frames, vt = E->vis_tris_sum, vt0 = E->vis_tris_lod0_sum;
+    u64 tr = E->transitions_sum, dr = E->draws_sum;
+    f64 sm = E->select_ms_sum;
+    memset(E, 0, sizeof(*E));
+    /* Session totals survive a rebuild (BSCN restore) for the shutdown log. */
+    E->frames = frames; E->vis_tris_sum = vt; E->vis_tris_lod0_sum = vt0;
+    E->transitions_sum = tr; E->draws_sum = dr; E->select_ms_sum = sm;
+}
+
+/* Build the tables for every mesh an entity references (plus mesh 0).
+ * pre: the mega path's per-mesh levels (may be NULL or partial); meshes it
+ * already simplified are reused instead of simplified again. */
+static void ecs_lod_setup(EcsLod *E, RHIDevice *dev, const Scene *scene, World *world,
+                          const LodMeshLevels *pre, u32 inst_cap) {
+    ecs_lod_free(E, dev);
+    if (!dev || !scene || !world || scene->mesh_count == 0u || inst_cap == 0u) return;
+    const u32 L = ECS_LOD_LEVELS, mc = scene->mesh_count;
+    bool *used = (bool *)calloc(mc, sizeof(bool));
+    if (!used) return;
+    used[0] = true;
+    ComponentType qt[] = { COMP_TRANSFORM, COMP_MESH_REF };
+    Query *q = world_query(world, qt, 2);
+    u32 entities = 0u;
+    if (q) {
+        for (u32 mi = 0; mi < q->match_count; mi++) {
+            Archetype *a = q->matching[mi];
+            u32 mcol = UINT32_MAX;
+            for (u32 ki = 0; ki < a->key.count; ki++)
+                if (a->key.ids[ki] == COMP_MESH_REF) mcol = ki;
+            if (mcol == UINT32_MAX) continue;
+            for (Chunk *c = a->chunks; c; c = c->next) {
+                for (u32 ci = 0; ci < c->count; ci++) {
+                    const CMeshRef *em = (const CMeshRef *)((u8 *)c + a->offsets[mcol] + ci * sizeof(CMeshRef));
+                    used[em->mesh_index < mc ? em->mesh_index : 0u] = true;
+                    entities++;
+                }
+            }
+        }
+        query_done(q);
+    }
+    E->mesh_count = mc;
+    E->inst_cap = inst_cap;
+    E->mesh_level_count = (u8 *)calloc(mc, 1);
+    E->mesh_err    = (f32 *)calloc((usize)mc * L, sizeof(f32));
+    E->mesh_tris   = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    E->mesh_first  = (u32 *)calloc((usize)mc * L, sizeof(u32));
+    E->mesh_sphere = (f32 *)calloc((usize)mc * 4u, sizeof(f32));
+    E->mesh_ibo    = (RHIBuffer *)calloc(mc, sizeof(RHIBuffer));
+    E->st.level    = (u8 *)calloc(ECS_MAX_ENTITIES, 1);
+    E->st.tag      = (u32 *)calloc(ECS_MAX_ENTITIES, sizeof(u32));
+    E->st.capacity = ECS_MAX_ENTITIES;
+    E->inst_level  = (u8 *)calloc(inst_cap, 1);
+    E->bucket_off  = (u32 *)calloc((usize)mc * L + 1u, sizeof(u32));
+    E->bucket_order = (u32 *)calloc(inst_cap, sizeof(u32));
+    if (!E->mesh_level_count || !E->mesh_err || !E->mesh_tris || !E->mesh_first ||
+        !E->mesh_sphere || !E->mesh_ibo || !E->st.level || !E->st.tag || !E->inst_level ||
+        !E->bucket_off || !E->bucket_order) {
+        LOG_WARN("ECS LOD: table alloc failed; ECS instances stay at LOD0");
+        free(used);
+        ecs_lod_free(E, dev);
+        return;
+    }
+    u64 t0 = time_microseconds();
+    u32 with_levels = 0u, generated = 0u, reused = 0u, used_count = 0u;
+    for (u32 i = 0; i < mc; i++) {
+        const Mesh *m = &scene->meshes[i];
+        E->mesh_level_count[i] = 1u;
+        E->mesh_tris[(usize)i * L] = m->index_count / 3u;
+        Vec3 ext = vec3_sub(m->aabb_max, m->aabb_min);
+        E->mesh_sphere[i * 4u + 0u] = 0.5f * (m->aabb_min.e[0] + m->aabb_max.e[0]);
+        E->mesh_sphere[i * 4u + 1u] = 0.5f * (m->aabb_min.e[1] + m->aabb_max.e[1]);
+        E->mesh_sphere[i * 4u + 2u] = 0.5f * (m->aabb_min.e[2] + m->aabb_max.e[2]);
+        E->mesh_sphere[i * 4u + 3u] = vec3_len(ext) * 0.5f;
+        if (!used[i]) continue;
+        used_count++;
+        if (m->vertex_count == 0u || m->index_count / 3u < LOD_GEN_MIN_TRIANGLES ||
+            !rhi_handle_valid(m->vertex_buf) || !rhi_handle_valid(m->index_buf) ||
+            !(m->aabb_max.e[0] >= m->aabb_min.e[0]))
+            continue;
+        LodMeshLevels own;
+        memset(&own, 0, sizeof(own));
+        const LodMeshLevels *ml = NULL;
+        if (pre && pre[i].level_count > 1u) {
+            ml = &pre[i];
+            reused++;
+        } else if (pre && pre[i].level_count == 1u) {
+            continue; /* the mega path already tried this mesh: nothing to gain */
+        } else {
+            mesh_lod_generate(dev, m, i, &own);
+            ml = &own;
+            generated++;
+        }
+        if (ml->level_count > 1u) {
+            u32 extra = 0u;
+            for (u32 l = 1; l < ml->level_count; l++) extra += ml->index_count[l];
+            u32 *ix = (u32 *)malloc((usize)extra * sizeof(u32));
+            if (ix) {
+                u32 off = 0u;
+                for (u32 l = 1; l < ml->level_count; l++) {
+                    memcpy(ix + off, ml->indices[l], (usize)ml->index_count[l] * sizeof(u32));
+                    E->mesh_first[(usize)i * L + l] = off;
+                    E->mesh_tris[(usize)i * L + l] = ml->index_count[l] / 3u;
+                    E->mesh_err[(usize)i * L + l] = ml->rel_error[l] * ml->scale;
+                    off += ml->index_count[l];
+                }
+                RHIBufferDesc id = { .usage = RHI_BUFFER_USAGE_INDEX,
+                                     .size = (usize)extra * sizeof(u32),
+                                     .initial_data = ix };
+                E->mesh_ibo[i] = rhi_buffer_create(dev, &id);
+                free(ix);
+                if (rhi_handle_valid(E->mesh_ibo[i])) {
+                    E->mesh_level_count[i] = (u8)ml->level_count;
+                    with_levels++;
+                }
+            }
+            if (!rhi_handle_valid(E->mesh_ibo[i]))
+                LOG_WARN("ECS LOD: mesh %u level upload failed; LOD0 only", i);
+        }
+        lod_mesh_levels_free(&own);
+    }
+    free(used);
+    E->active = with_levels > 0u;
+    LOG_INFO("ECS LOD: %s -- %u entities, %u meshes referenced, %u with levels (%u reused from mega, %u simplified here), %.1f ms",
+             E->active ? "on" : "on (no referenced mesh simplified; inactive)",
+             entities, used_count, with_levels, reused, generated,
+             (f64)(time_microseconds() - t0) / 1000.0);
+}
+
+/* Camera level of one instance: translation-only CTransform, so the world
+ * bounding sphere is the mesh's local sphere moved to pos. */
+static inline u8 ecs_lod_pick(EcsLod *E, u32 mesh, Entity e, const f32 pos[3],
+                              Vec3 cam, f32 pf) {
+    u32 lc = E->mesh_level_count[mesh];
+    u32 lvl = 0u;
+    if (lc > 1u) {
+        const f32 *s = &E->mesh_sphere[mesh * 4u];
+        f32 dx = pos[0] + s[0] - cam.e[0], dy = pos[1] + s[1] - cam.e[1], dz = pos[2] + s[2] - cam.e[2];
+        f32 dist = sqrtf(dx * dx + dy * dy + dz * dz) - s[3];
+        bool changed = false;
+        lvl = lod_instance_select(&E->st, e.index, e.generation + 1u,
+                                  &E->mesh_err[(usize)mesh * ECS_LOD_LEVELS], lc, dist, pf,
+                                  mega_lod_pixel_error, &changed);
+        if (changed) E->transitions++;
+    }
+    const u32 *tris = &E->mesh_tris[(usize)mesh * ECS_LOD_LEVELS];
+    E->level_inst[lvl]++;
+    E->vis_tris += tris[lvl];
+    E->vis_tris_lod0 += tris[0];
+    return (u8)lvl;
 }
 
 static u32 draw_bench_mega = 0u;
@@ -3424,6 +3637,33 @@ static void demo_build_lod_stress(RHIDevice *dev, Scene *scene, const Terrain *t
              placed, vc, ic / 3u, n);
 }
 
+/* ECS variant (BREAK_STRESS_LOD_ECS=N): the same rock, but as N static ECS
+ * entities (CTransform + CMeshRef, no rigid body) on the same grid, so they
+ * render through the forward instanced path instead of the mega bake. */
+static void demo_build_lod_stress_ecs(RHIDevice *dev, Scene *scene, World *world,
+                                      const Terrain *terrain, u32 n) {
+    if (!world || n == 0u) return;
+    u32 nodes_before = scene->node_count;
+    demo_build_lod_stress(dev, scene, terrain, n);
+    if (scene->node_count == nodes_before) return;
+    u32 placed = 0;
+    for (u32 ni = nodes_before; ni < scene->node_count; ni++) {
+        SceneNode *nd = &scene->nodes[ni];
+        Entity e = world_create_entity(world);
+        CTransform *t = world_add_component(world, e, COMP_TRANSFORM);
+        CMeshRef *mr = world_add_component(world, e, COMP_MESH_REF);
+        if (!t || !mr) continue;
+        t->pos[0] = nd->local_transform.e[3][0];
+        t->pos[1] = nd->local_transform.e[3][1];
+        t->pos[2] = nd->local_transform.e[3][2];
+        mr->mesh_index = nd->mesh_index;
+        placed++;
+    }
+    /* The nodes only carried the layout; the entities replace them. */
+    scene->node_count = nodes_before;
+    LOG_INFO("LOD stress (ECS): %u instanced entities (BREAK_STRESS_LOD_ECS=%u)", placed, n);
+}
+
 static void demo_build_showcase(RHIDevice *dev, Scene *scene, PhysicsWorld *physics,
                                 World *world, const Terrain *terrain,
                                 u32 *out_elevator_body) {
@@ -3849,6 +4089,9 @@ int main(int argc, char **argv) {
                         &showcase_elevator_body);
     { const char *e = getenv("BREAK_STRESS_LOD");
       if (e && atoi(e) > 0) demo_build_lod_stress(render.device, &scene, &terrain, (u32)atoi(e)); }
+    { const char *e = getenv("BREAK_STRESS_LOD_ECS");
+      if (e && atoi(e) > 0)
+          demo_build_lod_stress_ecs(render.device, &scene, world, &terrain, (u32)atoi(e)); }
 
     if (netrep_enabled) {
         Entity ge = world_create_entity(world);
@@ -4994,6 +5237,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             } /* else mega bake succeeded */
             } /* R408: overflow-safe mega_block alloc */
         }
+        /* Runtime ECS LOD (phase 2.1): reuses the mega levels computed above
+         * for meshes the bake already simplified. */
+        if (mega_lod_enabled)
+            ecs_lod_setup(&g_ecs_lod, render.device, &scene, world, lod_levels, INSTANCE_DATA_CAP);
         if (lod_levels) {
             for (u32 mi = 0; mi < scene.mesh_count; mi++) lod_mesh_levels_free(&lod_levels[mi]);
             free(lod_levels);
@@ -6007,9 +6254,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                             tex_base[0] = '\0';
                         }
                         if (asset_scene_restore(&asset, &bscn_scene, tex_base)) {
+                            /* The ECS LOD tables index the old meshes' vertices. */
+                            ecs_lod_free(&g_ecs_lod, render.device);
                             asset_scene_free(&asset, &scene);
                             scene = bscn_scene; /* move; bscn_scene zeroed below */
                             memset(&bscn_scene, 0, sizeof(bscn_scene));
+                            if (mega_lod_enabled)
+                                ecs_lod_setup(&g_ecs_lod, render.device, &scene, world, NULL,
+                                              INSTANCE_DATA_CAP);
                             if (scene.joint_count > 0 && scene.anim_clip_count > 0) {
                                 skeleton_set_joints(&render.skeleton, scene.joint_count,
                                                     scene.joint_parents, scene.inverse_bind);
@@ -7070,6 +7322,12 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                               ul->level_tris[0], ul->level_tris[1], ul->level_tris[2],
                               ul->vis_tris, ul->vis_tris_lod0, ul->select_ms);
             }
+            if (g_ecs_lod.active) {
+                debug_ui_text(&ui, "ECS LOD: inst L0/L1/L2 %u/%u/%u  vis tris %u (LOD0 %u)  draws %u  sel %.3fms",
+                              g_ecs_lod.level_inst[0], g_ecs_lod.level_inst[1], g_ecs_lod.level_inst[2],
+                              g_ecs_lod.vis_tris, g_ecs_lod.vis_tris_lod0, g_ecs_lod.draws,
+                              g_ecs_lod.select_ms);
+            }
             if (combined_aa.use_combined || combined_color.use_combined) {
                 debug_ui_text(&ui, "--- CombinedPost ---");
                 debug_ui_text(&ui, "  TAA+FXAA=%s Tonemap+CG=%s",
@@ -7914,6 +8172,17 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
             ComponentType mesh_query_types[] = { COMP_TRANSFORM, COMP_MESH_REF };
             Query *mq = world_query_cached(world, mesh_query_types, 2);
             u32 instance_count = 0;
+            /* Runtime ECS LOD: per-instance camera level, picked while gathering. */
+            const bool ecs_lod = g_ecs_lod.active && g_ecs_lod.mesh_count == scene.mesh_count;
+            u64 ecs_lod_t0 = 0u;
+            f32 ecs_lod_pf = 0.0f;
+            if (ecs_lod) {
+                ecs_lod_t0 = time_microseconds();
+                ecs_lod_pf = lod_screen_proj_factor(camera.fov, (f32)h);
+                memset(g_ecs_lod.level_inst, 0, sizeof(g_ecs_lod.level_inst));
+                g_ecs_lod.vis_tris = g_ecs_lod.vis_tris_lod0 = 0u;
+                g_ecs_lod.transitions = g_ecs_lod.draws = 0u;
+            }
 
             if (mq && mq->match_count > 0) {
                 for (u32 mi = 0; mi < mq->match_count; mi++) {
@@ -7960,6 +8229,10 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                                 } else {
                                     inst_mesh_idx[instance_count] = 0;
                                 }
+                                if (ecs_lod)
+                                    g_ecs_lod.inst_level[instance_count] =
+                                        ecs_lod_pick(&g_ecs_lod, inst_mesh_idx[instance_count],
+                                                     entity, et->pos, camera.position, ecs_lod_pf);
                                 instance_count++;
                             }
                         }
@@ -7968,6 +8241,14 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                 }
             }
             /* cached query — no query_done() needed */
+            if (ecs_lod) {
+                g_ecs_lod.select_ms = (f64)(time_microseconds() - ecs_lod_t0) / 1000.0;
+                g_ecs_lod.frames++;
+                g_ecs_lod.select_ms_sum += g_ecs_lod.select_ms;
+                g_ecs_lod.vis_tris_sum += g_ecs_lod.vis_tris;
+                g_ecs_lod.vis_tris_lod0_sum += g_ecs_lod.vis_tris_lod0;
+                g_ecs_lod.transitions_sum += g_ecs_lod.transitions;
+            }
 
             {
                 InputState *input_state = platform_input(engine.platform);
@@ -8735,7 +9016,53 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  * scene mesh was drawn at EVERY entity transform, so adding the
                  * showcase meshes stacked all scene geometry onto all entities.
                  * Entities are few (<100), so an O(meshes x instances)
-                 * compaction per frame is negligible. */
+                 * compaction per frame is negligible.
+                 * Runtime ECS LOD: instances are bucketed by (mesh, level)
+                 * instead (one counting sort); level l >= 1 draws the mesh's
+                 * LOD vertices with its level index range. Buckets are drawn
+                 * in chunks of ECS_LOD_DRAW_CHUNK rows (vkCmdUpdateBuffer
+                 * limit). */
+                if (ecs_lod) {
+                    EcsLod *E = &g_ecs_lod;
+                    lod_bucket_instances(inst_mesh_idx, E->inst_level, instance_count,
+                                         scene.mesh_count, ECS_LOD_LEVELS,
+                                         E->bucket_off, E->bucket_order);
+                    for (u32 i = 0; i < scene.mesh_count; i++) {
+                        Mesh *m = &scene.meshes[i];
+                        Material *mat = (m->material_idx < scene.material_count) ? &scene.materials[m->material_idx] : NULL;
+                        for (u32 l = 0; l < ECS_LOD_LEVELS; l++) {
+                            u32 b0 = E->bucket_off[i * ECS_LOD_LEVELS + l];
+                            u32 b1 = E->bucket_off[i * ECS_LOD_LEVELS + l + 1u];
+                            for (u32 c0 = b0; c0 < b1; c0 += ECS_LOD_DRAW_CHUNK) {
+                                u32 cnt = b1 - c0 < ECS_LOD_DRAW_CHUNK ? b1 - c0 : ECS_LOD_DRAW_CHUNK;
+                                for (u32 k = 0; k < cnt; k++)
+                                    memcpy(instance_draw + (usize)k * 32,
+                                           instance_data + (usize)E->bucket_order[c0 + k] * 32, 128);
+                                rhi_cmd_update_buffer(cmd, inst_slot, 0u, instance_draw, cnt * 128u);
+                                if (inst_clustered) {
+                                    clustered_bind_material(cmd, &render, &render.cli, mat, &scene);
+                                } else {
+                                    bind_material(cmd, &render, mat, &scene);
+                                    rhi_cmd_bind_texel_buffers(cmd, inst_slot, inst_slot);
+                                }
+                                rhi_cmd_bind_vertex_buffer(cmd, m->vertex_buf, 0);
+                                if (l > 0u) {
+                                    rhi_cmd_bind_index_buffer(cmd, E->mesh_ibo[i], 0, true);
+                                    rhi_cmd_draw_indexed_base(cmd, E->mesh_tris[(usize)i * ECS_LOD_LEVELS + l] * 3u,
+                                                              cnt, E->mesh_first[(usize)i * ECS_LOD_LEVELS + l], 0);
+                                } else if (m->index_count > 0 && rhi_handle_valid(m->index_buf)) {
+                                    rhi_cmd_bind_index_buffer(cmd, m->index_buf, 0, true);
+                                    rhi_cmd_draw_indexed(cmd, m->index_count, cnt);
+                                } else {
+                                    rhi_cmd_draw(cmd, 3, cnt);
+                                }
+                                draw_calls++; E->draws++;
+                                tri_count += E->mesh_tris[(usize)i * ECS_LOD_LEVELS + l] * cnt;
+                            }
+                        }
+                    }
+                    E->draws_sum += E->draws;
+                } else
                 for (u32 i = 0; i < scene.mesh_count; i++) {
                     u32 cnt = 0;
                     for (u32 k = 0; k < instance_count; k++) {
@@ -10065,6 +10392,16 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
                  g_mega_lod.vis_tris_lod0_sum ? (f64)g_mega_lod.vis_tris_sum / (f64)g_mega_lod.vis_tris_lod0_sum : 1.0,
                  (unsigned long long)g_mega_lod.transitions_sum);
     }
+    if (g_ecs_lod.frames > 0u) {
+        f64 fr = (f64)g_ecs_lod.frames;
+        LOG_INFO("ECS_LOD_STATS frames=%llu select_ms_avg=%.4f vis_tris_avg=%.0f vis_tris_lod0_avg=%.0f "
+                 "ratio=%.3f transitions=%llu draws_avg=%.2f",
+                 (unsigned long long)g_ecs_lod.frames, g_ecs_lod.select_ms_sum / fr,
+                 (f64)g_ecs_lod.vis_tris_sum / fr, (f64)g_ecs_lod.vis_tris_lod0_sum / fr,
+                 g_ecs_lod.vis_tris_lod0_sum ? (f64)g_ecs_lod.vis_tris_sum / (f64)g_ecs_lod.vis_tris_lod0_sum : 1.0,
+                 (unsigned long long)g_ecs_lod.transitions_sum, (f64)g_ecs_lod.draws_sum / fr);
+    }
+    ecs_lod_free(&g_ecs_lod, render.device);
     LOG_INFO("Shutting down...");
     world_destroy(world);
     motion_history_destroy(&node_motion_history);

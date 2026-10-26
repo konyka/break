@@ -91,3 +91,31 @@ u32 lod_select_by_screen_error(const f32 *errors, u32 count, f32 dist,
 u32 lod_select_screen_error(const f32 *errors, u32 count, Vec3 center, f32 radius,
                             Vec3 cam_pos, f32 fov, f32 screen_h, f32 pixel_err,
                             u32 current_level);
+
+/* ---- Instanced draws grouped by (mesh, level) (runtime ECS LOD) ----
+ * Stable counting sort of count instances into mesh_count * levels buckets,
+ * key = mesh * levels + level (mesh-major, so all-LOD0 input yields the
+ * per-mesh order of an ungrouped draw). inst_level may be NULL (all LOD0);
+ * levels >= levels clamp to levels - 1; instances with mesh >= mesh_count
+ * are dropped. offsets receives mesh_count * levels + 1 entries: bucket k is
+ * order[offsets[k] .. offsets[k + 1]). Returns the number of kept instances
+ * (offsets[last]); 0 on invalid arguments. */
+u32 lod_bucket_instances(const u32 *inst_mesh, const u8 *inst_level, u32 count,
+                         u32 mesh_count, u32 levels, u32 *offsets, u32 *order);
+
+/* Per-instance hysteresis state for lod_select_by_screen_error, keyed by a
+ * slot (e.g. entity index) and a tag that changes when the slot is reused
+ * (e.g. entity generation + 1; tag 0 = never set). A slot whose stored tag
+ * differs starts from LOD0. Slots >= capacity select statelessly from LOD0.
+ * *changed (optional) is set when a tracked slot's level changed. */
+typedef struct {
+    u8  *level;     /* [capacity] */
+    u32 *tag;       /* [capacity] */
+    u32  capacity;
+} LodInstanceState;
+
+u32 lod_instance_select(LodInstanceState *st, u32 slot, u32 tag,
+                        const f32 *errors, u32 count, f32 dist, f32 proj_factor,
+                        f32 pixel_err, bool *changed);
+/* Stored level for (slot, tag) without updating it; 0 if not tracked. */
+u32 lod_instance_level(const LodInstanceState *st, u32 slot, u32 tag);

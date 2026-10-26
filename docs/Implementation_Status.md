@@ -1,6 +1,58 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：R702 — 运行时 LOD（二期 2.1）：ECS 实例化静态网格按实例选级，按 (网格, 级别) 分组绘制
+
+设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md` 第 8 节（二期状态）。
+
+### 现状（改动前核实）
+- 带 `CTransform + CMeshRef` 的实体走前向实例化路径：每帧收集视锥内实例（行 = 当前/上一帧模型矩阵，128 B），按 `mesh_index` 压缩后每个网格一次 `rhi_cmd_draw_indexed(mesh.index_count, cnt)`（R445）；实例行经 `rhi_cmd_update_buffer` 写入双槽实例缓冲。三后端同一段代码（blinn 实例化与 R590 clustered 实例化两种管线）。
+- ECS 实例**不进**任何阴影 pass、也不进延迟 G-buffer（只有前向画它们），所以本期没有阴影级别；`BREAK_LOD_SHADOW_BIAS` 对 ECS 实例无意义。
+- 蒙皮网格不走这条路径（逐图元绘制 + 骨骼调色板），保持 LOD0：简化器不考虑骨骼权重，折叠会把不同骨骼驱动的顶点合并，动起来会撕裂；需要按权重加属性/锁定的减面，不在本期范围。
+
+### 做法
+- **生成**（启动时，mega 烘焙之后）：所有被实体引用的网格（加上 mesh 0，运行时生成实体的默认网格）复用 `lod_generate_levels`；mega 路径已经简化过的网格直接复用其结果，不重复减面。各级**共享 LOD0 顶点缓冲**，LOD1/LOD2 的索引放进每个网格一个额外的索引缓冲（LOD0 仍用 `Mesh.index_buf`，不动）。误差 = `rel_error × scale`（局部空间；`CTransform` 只有平移，没有缩放）。
+- **选级**：收集实例时就地选级，距离用「网格局部 AABB 包围球平移到实例位置」后的球面距离，`lod_select_by_screen_error` 同一公式与 ±20% 迟滞，像素阈值共用 `BREAK_LOD_PIXEL_ERROR`。迟滞状态按实体槽位保存（新纯函数 `lod_instance_select`，键 = 实体 index，标签 = generation + 1；槽位被复用时从 LOD0 重新开始，不继承旧实体的级别）。
+- **绘制**：新纯函数 `lod_bucket_instances`（稳定计数排序，键 = 网格 × 3 + 级别，网格优先）把实例分桶；每个非空桶一次实例化绘制，级别 ≥ 1 用 `rhi_cmd_draw_indexed_base(级别索引数, cnt, first_index, 0)`。每次绘制最多 512 行（`vkCmdUpdateBuffer` 的 64 KiB 上限：原逐网格代码在同一网格超过 512 个实例时，VK 会拒绝这次更新并打 WARN。LOD 路径分块绘制；`BREAK_LOD=0` 走原代码，这个问题保留，以保证与改动前一致）。
+- **开关**：`BREAK_LOD=0` 不建表、不分配、不上传任何缓冲，收集循环和逐网格绘制走原来的代码。新增 `BREAK_STRESS_LOD_ECS=N`：与 `BREAK_STRESS_LOD` 同一块岩石、同一网格布局，但作为 N 个静态 ECS 实体（无刚体），不进 mega。启动日志 `ECS LOD: ...`，调试 UI 一行，退出时 `ECS_LOD_STATS`。
+- BSCN 加载（`N` 键）替换场景时先释放 ECS LOD 表，再按新场景重建。
+- 测试：`test_lod` 31 → 36 个用例（分桶：网格优先 + 稳定 + 越界钳制/丢弃；全 LOD0 时与原逐网格压缩顺序完全一致；退化输入；按槽位迟滞；槽位复用从 LOD0 开始）。
+
+### 验证
+- 构建：build-vk、build-gl、build-d3d12-debug、build-rel-vk/gl/d3d12 全部 0 警告 0 错误；新配置 `build-ci-asan`（clang + `-fsanitize=address`，同 CI 的 windows-clang-asan）编译 0 条编译器警告（只有既有的 3 条 `lld-link: ignoring unknown argument '--gc-sections'` 链接器提示，与本改动无关）。
+- ctest：vk 183/183、gl 180/180、d3d12-debug 188/188、ASan（`-LE "graphics|fuzz"`）172/172。ASan 版 `engine_demo` 跑 ECS 压力场景 40 帧，无 ASan 报告。
+- `BREAK_LOD=0` 回归（Release 三后端 × 前向/延迟，第 3 帧截图，与改动前 `51957033` 的构建对比；同时测旧构建连跑两次作为噪声基线）：
+
+| 后端/路径 | 新 vs 旧 平均差 | 旧 vs 旧（噪声） |
+|---|---|---|
+| VK 前向 / 延迟 | 0.112 / 0.044 | 0.095 / 0.014 |
+| GL 前向 / 延迟 | 0.243 / 0.001 | 0.625 / 0.000 |
+| D3D12 前向 / 延迟 | 0.046 / 0.129 | 0.046 / 0.037 |
+
+  6 组日志去掉行号和数字后逐行相同（没有新增或缺少的日志行）；`MegaBuffer: 15584 verts, 51180 indices, 11 draw cmds`、`UnifiedCull: uploaded 11 draw cmds`、每帧 execute/compact/emission 计数在新旧构建完全一致。
+- 校验层：VK Debug 构建（验证层开启）ECS 压力场景 clustered 与 blinn 实例化各一次，`VK validation messages this run: 0`；D3D12 调试层 + GPU-based validation，ECS 压力场景 4 种组合（LOD 开/关、blinn 前向、延迟），0 条调试层消息。
+- 性能（`BREAK_STRESS_LOD_ECS=200`，Release，前向，`BREAK_BENCH_STATS=600`，每组 3 轮）：
+
+| 后端 | 相机 | LOD 关 fps_avg | LOD 开 fps_avg |
+|---|---|---|---|
+| VK | 演示 `0,12,22,0,-25` | 104.1 / 103.9 / 103.7 | 195.2 / 194.6 / 191.7（×1.87） |
+| VK | 远处 `0,35,20,0,-35` | 108.6 / 108.9 / 108.6 | 210.5 / 210.9 / 211.0（×1.94） |
+| GL | 演示 | 96.6 / 95.6 / 95.5 | 175.9 / 175.4 / 173.8（×1.83） |
+| GL | 远处 | 99.9 / 100.7 / 100.5 | 192.3 / 187.3 / 191.1（×1.90） |
+| D3D12 | 演示 | 117.9 / 117.7 / 115.6 | 256.5 / 256.7 / 256.6（×2.19） |
+| D3D12 | 远处 | 124.3 / 124.7 / 123.8 | 279.4 / 279.0 / 258.2（×2.21） |
+
+  可见实例三角形 503 万 → 130 万（ratio 0.258）；每帧选级 + 统计 0.012–0.015 ms（VK Release）；LOD 开时每帧 ECS 实例化绘制 5 次（LOD 关时的次数没有单独记录；同一网格的实例分到 N 个级别就是 N 次绘制）。启动时 ECS 部分额外耗时约 68 ms（Debug，含一次 25k 三角形网格减面和索引上传）。
+- 迟滞：相机以 0.1 m/帧推远 900 帧（从岩石阵列旁出发）共 22 次级别切换，拉近 900 帧共 19 次（200 个实例的总和；只统计了总数，没有逐实例记录序列，来回跳靠 `test_lod` 的单元测试覆盖）。
+- 截图（VK，演示相机，LOD 开）人工看过：岩石阵列正常显示，远处实例没有空洞或错位三角形。
+
+### 已知限制
+- 蒙皮网格仍为 LOD0（原因见上）；ECS 实例没有阴影（既有行为，不是本期引入），所以没有阴影级别。
+- 运行时新增的实体若引用了启动时没有实体引用过的网格（mesh 0 除外），保持 LOD0；BSCN 加载后会按新场景重建。
+- 迟滞状态表按 `ECS_MAX_ENTITIES`（65536）分配，约 320 KB，LOD 开启时常驻。
+- 每次分块绘制都重新绑定材质（与原代码每网格一次一致；同一网格分到多个级别时多绑一次），没有做进一步合并。
+
+
 ## 本轮更新：R701 — 运行时 LOD（一期）：纯 C 移植 meshoptimizer v1.3 简化器，mega 路径按屏幕误差选级
 
 设计见 `docs/superpowers/specs/2026-10-26-runtime-lod-design.md`（第二版，用户确认采纳第 9 节全部建议：3 级、像素误差 1.0、阴影比相机低 1 级、压力场景 N=200、简化器放 `engine/external/meshopt_c/`）。
