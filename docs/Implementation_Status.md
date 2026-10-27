@@ -9336,3 +9336,13 @@ passes after it; Metal resource tests are 49/49, and both macOS CTest
 configurations remain 191/191. Metal and MoltenVK screenshots (HUD and an
 elevated BREAK_CAM view) show no magenta pixels, and the fullscreen/title-bar
 toggle demo still reports two rebuilds and two `ok=1` switches per backend.
+
+**Demo default camera above terrain (2026-10-28).** The `camera_init` eye
+point (0,2,8) sat inside the generated terrain (ground 4.19 m, HUD
+`Above: -2.19`), so the default view started inside a hill. `engine_demo` now
+lifts the default eye to at least 2 m above the ground below it and 1 m above
+the ground sampled 2/4/6 m ahead (-Z); it logs
+`Camera: lifted above terrain to y=6.19 (ground 4.19)`. `BREAK_MODEL_VIEW`
+(no terrain) is untouched, and `BREAK_CAM` still overrides the result. Both
+macOS CTest configurations are 191/191 and Metal graphics is 5/5. Metal and
+MoltenVK 70-frame runs report `Pos: (0.0,6.2,8.0)` and `Above: 2.00`.

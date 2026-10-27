@@ -5288,11 +5288,26 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
         camera.position = vec3(c.e[0], c.e[1], c.e[2] + dist);
         LOG_INFO("BREAK_MODEL_VIEW: camera (%.2f,%.2f,%.2f) radius %.2f", camera.position.e[0],
                  camera.position.e[1], camera.position.e[2], r);
+    } else {
+        /* The terrain heightfield rises above the camera_init eye point
+         * (0,2,8), which leaves the default view inside the hill. Keep the eye
+         * 2 m above the ground under it and 1 m above the ground in the first
+         * 6 m ahead along the view direction (-Z at yaw 0). */
+        f32 ex = camera.position.e[0], ez = camera.position.e[2];
+        f32 ground = terrain_get_height(&terrain, ex, ez);
+        f32 eye_y = ground + 2.0f;
+        for (int i = 1; i <= 3; i++) {
+            f32 ahead = terrain_get_height(&terrain, ex, ez - 2.0f * (f32)i) + 1.0f;
+            if (ahead > eye_y) eye_y = ahead;
+        }
+        if (camera.position.e[1] < eye_y) {
+            camera.position.e[1] = eye_y;
+            LOG_INFO("Camera: lifted above terrain to y=%.2f (ground %.2f)", eye_y, ground);
+        }
     }
     /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
-     * headless screenshot verification. The terrain heightfield can bury the
-     * default (0,2,8) eye point (AGL < 0) on some seeds; opt-in, default
-     * behavior unchanged. */
+     * headless screenshot verification. Overrides the terrain-lifted default
+     * eye point above. */
     { const char *e = getenv("BREAK_CAM");
       if (e && e[0]) {
           float cx = 0, cy = 0, cz = 0, cyaw = 0, cpitch = 0;
