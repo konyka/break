@@ -363,6 +363,28 @@ foreach(required_text
     endif()
 endforeach()
 
+# window_mobile.c calls ceil(); glibc keeps it in libm, which Windows' CRT does
+# not need, so a missing -lm only shows up on Linux link lines. Every
+# executable that compiles the file directly must link m.
+string(REGEX MATCHALL "add_executable\\(([^)]|\n)*window_mobile\\.c([^)]|\n)*\\)"
+    mobile_executables "${engine_cmake_text}")
+if(NOT mobile_executables)
+    message(FATAL_ERROR "no executable compiles window_mobile.c directly")
+endif()
+foreach(mobile_executable IN LISTS mobile_executables)
+    string(REGEX MATCH "add_executable\\(([^ \n)]+)" mobile_match "${mobile_executable}")
+    set(mobile_target "${CMAKE_MATCH_1}")
+    set(mobile_link_pattern
+        "target_link_libraries\\(${mobile_target}[^)]*[ \t\n]m[ \t\n)]")
+    string(REPLACE "$" "\\$" mobile_link_pattern "${mobile_link_pattern}")
+    string(REPLACE "{" "\\{" mobile_link_pattern "${mobile_link_pattern}")
+    string(REPLACE "}" "\\}" mobile_link_pattern "${mobile_link_pattern}")
+    if(NOT engine_cmake_text MATCHES "${mobile_link_pattern}")
+        message(FATAL_ERROR
+            "${mobile_target} compiles window_mobile.c but does not link libm")
+    endif()
+endforeach()
+
 string(FIND "${gl_text}" "rhi_backend_internal.h" gl_include_offset)
 if(gl_include_offset EQUAL -1)
     message(FATAL_ERROR "OpenGL backend must include the private internal contract")

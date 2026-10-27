@@ -2156,6 +2156,7 @@ if(ENGINE_BUILD_TESTS)
             PRIVATE ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_platform_mobile_layer_${_mobile_lower}
             PRIVATE ENGINE_PLATFORM_${_mobile_name}=1)
+        target_link_libraries(test_platform_mobile_layer_${_mobile_lower} PRIVATE m)
         add_test(NAME test_platform_mobile_layer_${_mobile_lower}
             COMMAND test_platform_mobile_layer_${_mobile_lower})
     endforeach()
