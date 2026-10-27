@@ -614,10 +614,18 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         HINTS /opt/homebrew/bin /usr/local/bin REQUIRED)
     find_program(ENGINE_METAL_XCRUN xcrun REQUIRED)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        set(METAL_SHADER_SDK iphoneos)
+        # Device and Simulator metallibs are incompatible. The SDK is fixed at
+        # configure time; an Xcode -destination alone cannot retarget this
+        # offline shader build.
+        if(CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
+            set(METAL_SHADER_SDK iphonesimulator)
+        else()
+            set(METAL_SHADER_SDK iphoneos)
+        endif()
     else()
         set(METAL_SHADER_SDK macosx)
     endif()
+    message(STATUS "Metal shader SDK: ${METAL_SHADER_SDK}")
     add_executable(gen_metal_shader_manifest
         tools/gen_metal_shader_manifest.c)
     target_include_directories(gen_metal_shader_manifest PRIVATE
@@ -1632,9 +1640,31 @@ add_executable(engine_demo src/main.c)
 target_link_libraries(engine_demo PRIVATE engine break_myui m)
 engine_link_rhi_backend(engine_demo)
 if(ENGINE_PLATFORM STREQUAL "ios")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist")
+    file(GLOB_RECURSE ENGINE_DEMO_IOS_RESOURCES CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/assets/*"
+        "${CMAKE_CURRENT_SOURCE_DIR}/shaders/*")
+    foreach(_resource IN LISTS ENGINE_DEMO_IOS_RESOURCES)
+        file(RELATIVE_PATH _resource_rel "${CMAKE_CURRENT_SOURCE_DIR}" "${_resource}")
+        get_filename_component(_resource_dir "${_resource_rel}" DIRECTORY)
+        set_property(SOURCE "${_resource}" PROPERTY
+            MACOSX_PACKAGE_LOCATION "${_resource_dir}")
+    endforeach()
+    set_source_files_properties(src/main.c PROPERTIES
+        LANGUAGE OBJC COMPILE_OPTIONS "-fno-objc-arc")
+    set_source_files_properties(src/apps/ios_main.m PROPERTIES
+        COMPILE_OPTIONS "-Wno-error;-Wno-pedantic;-fno-objc-arc")
+    target_sources(engine_demo PRIVATE src/apps/ios_main.m
+        ${ENGINE_DEMO_IOS_RESOURCES})
     set_target_properties(engine_demo PROPERTIES
         MACOSX_BUNDLE_GUI_IDENTIFIER "com.purecengine.engine-demo"
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/src/apps/ios_Info.plist"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
         XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.purecengine.engine-demo")
+    target_link_libraries(engine_demo PRIVATE
+        "-framework UIKit" "-framework QuartzCore" "-framework Metal"
+        "-framework Foundation" Threads::Threads)
 endif()
 # main() holds ~4.4 MB of renderer/subsystem structs as locals, sized
 # against the Linux default 8 MB stack; the MSVC-family linker default
@@ -2111,6 +2141,18 @@ if(ENGINE_BUILD_TESTS)
         add_test(NAME test_platform_mobile_layer_${_mobile_lower}
             COMMAND test_platform_mobile_layer_${_mobile_lower})
     endforeach()
+
+    add_executable(test_engine_mobile_host
+        tests/test_engine_mobile_host.c
+        src/engine.c
+        src/core/log.c
+        src/platform/window_mobile.c
+        src/platform/input.c
+        src/platform/platform_config.c)
+    target_include_directories(test_engine_mobile_host PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_engine_mobile_host PRIVATE ENGINE_PLATFORM_IOS=1)
+    target_link_libraries(test_engine_mobile_host PRIVATE m)
+    add_test(NAME test_engine_mobile_host COMMAND test_engine_mobile_host)
 
     add_executable(test_platform_display_media tests/test_platform_display_media.c
         src/platform/platform_display_media.c)

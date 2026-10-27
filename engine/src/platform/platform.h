@@ -55,6 +55,8 @@ typedef struct {
     /* Create the windowed window without title bar and frame (see
      * platform_set_window_decorated). */
     bool undecorated;
+    /* Host-provided mobile content scale; zero selects 1.0. */
+    f32 native_content_scale;
 } PlatformConfig;
 
 /* Keep native window dimensions representable on every supported backend. */
@@ -189,6 +191,9 @@ bool platform_wsi_surface_query(Platform *p, PlatformWsiSurface *out);
 /* 设备级 WSI 状态对象的非拥有指针（挂到 RHIDevice 用，见 rhi_device_attach_wsi；
  * Platform 拥有存储，生命周期长于任何 RHIDevice 使用窗口）。 */
 PlatformWsiSurface *platform_wsi_surface(Platform *p);
+/* 在移动宿主线程同步到引擎线程后调用；桌面后端不接管窗口尺寸，返回 false。 */
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale);
 /* 移动宿主回调（iOS/Android 的 host-injection 入口，window_mobile.c 真实实现；
  * 桌面后端是 no-op——桌面没有 OS 级 suspend/resume/surface-lost 事件，相应语义
  * 由 resize 与 DESTROYING 覆盖）。 */

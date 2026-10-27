@@ -14,7 +14,7 @@ TEST(mobile_platform_exposes_host_state)
     int window;
     int display;
     const PlatformConfig config = {
-        320, 240, "Break mobile", &window, &display, false, false, false
+        320, 240, "Break mobile", &window, &display, false, false, false, 0.0f
     };
     Platform *platform = platform_create(&config);
     u32 width = 0u;
@@ -92,7 +92,70 @@ TEST(mobile_platform_exposes_host_state)
     platform_destroy(platform);
 }
 
+TEST(mobile_platform_tracks_host_viewport_and_scale)
+{
+    int window;
+    u32 width = 0u, height = 0u;
+    PlatformWsiSurface wsi;
+    const PlatformConfig config = {
+        .width = 640, .height = 480, .title = "Retina",
+        .native_window = &window, .native_content_scale = 2.0f,
+    };
+    PlatformConfig invalid = config;
+    Platform *platform = platform_create(&config);
+
+    ASSERT_NEQ(platform, NULL);
+    platform_get_logical_size(platform, &width, &height);
+    ASSERT_EQ(width, 320u);
+    ASSERT_EQ(height, 240u);
+    platform_get_drawable_size(platform, &width, &height);
+    ASSERT_EQ(width, 640u);
+    ASSERT_EQ(height, 480u);
+    ASSERT_FLOAT_EQ(platform_get_dpi(platform), 192.0f, 0.001f);
+    ASSERT_FLOAT_EQ(platform_get_content_scale(platform), 2.0f, 0.001f);
+    ASSERT_EQ(platform_get_scale_factor(platform), 2);
+    ASSERT_TRUE(platform_wsi_surface_query(platform, &wsi));
+    ASSERT_EQ(wsi.logical_width, 320u);
+    ASSERT_EQ(wsi.drawable_width, 640u);
+
+    ASSERT_TRUE(platform_mobile_resize(platform, 400, 300, 800, 600, 2.0f));
+    platform_get_size(platform, &width, &height);
+    ASSERT_EQ(width, 400u);
+    ASSERT_EQ(height, 300u);
+    platform_get_drawable_size(platform, &width, &height);
+    ASSERT_EQ(width, 800u);
+    ASSERT_EQ(height, 600u);
+    ASSERT_TRUE(platform_wsi_surface_query(platform, &wsi));
+    ASSERT_EQ(wsi.state, PLATFORM_WSI_RESIZED);
+    ASSERT_EQ(wsi.logical_height, 300u);
+    ASSERT_EQ(wsi.drawable_height, 600u);
+
+    ASSERT_FALSE(platform_mobile_resize(NULL, 400, 300, 800, 600, 2.0f));
+    ASSERT_FALSE(platform_mobile_resize(platform, 0, 300, 800, 600, 2.0f));
+    ASSERT_FALSE(platform_mobile_resize(platform, 400, 300, 800, 600, NAN));
+    ASSERT_FALSE(platform_mobile_resize(platform, 400, 300, 800, 600, -1.0f));
+    platform_get_drawable_size(platform, &width, &height);
+    ASSERT_EQ(width, 800u);
+    ASSERT_EQ(height, 600u);
+
+    platform_mobile_notify_suspend(platform);
+    ASSERT_FALSE(platform_mobile_resize(platform, 200, 150, 400, 300, 2.0f));
+    ASSERT_TRUE(platform_wsi_surface_query(platform, &wsi));
+    ASSERT_FALSE(platform_wsi_frame_allowed(&wsi));
+    platform_mobile_notify_resume(platform);
+    ASSERT_TRUE(platform_mobile_resize(platform, 200, 150, 400, 300, 2.0f));
+    ASSERT_TRUE(platform_wsi_surface_query(platform, &wsi));
+    ASSERT_TRUE(platform_wsi_frame_allowed(&wsi));
+    platform_destroy(platform);
+
+    invalid.native_content_scale = NAN;
+    ASSERT_EQ(platform_create(&invalid), NULL);
+    invalid.native_content_scale = -1.0f;
+    ASSERT_EQ(platform_create(&invalid), NULL);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(mobile_platform_requires_host_window);
     RUN_TEST(mobile_platform_exposes_host_state);
+    RUN_TEST(mobile_platform_tracks_host_viewport_and_scale);
 TEST_MAIN_END()

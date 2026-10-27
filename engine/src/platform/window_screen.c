@@ -126,6 +126,12 @@ PlatformWsiSurface *platform_wsi_surface(Platform *p)
     return p != NULL ? &p->wsi : NULL;
 }
 
+bool platform_mobile_resize(Platform *p, u32 logical_width, u32 logical_height,
+                            u32 drawable_width, u32 drawable_height, f32 scale) {
+    (void)p; (void)logical_width; (void)logical_height;
+    (void)drawable_width; (void)drawable_height; (void)scale;
+    return false;
+}
 void platform_mobile_notify_suspend(Platform *p)   { (void)p; }
 void platform_mobile_notify_resume(Platform *p)    { (void)p; }
 void platform_mobile_notify_surface_lost(Platform *p) { (void)p; }

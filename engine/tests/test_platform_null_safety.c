@@ -53,6 +53,7 @@ TEST(null_platform_queries_are_safe)
     ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_BORDERLESS_FULLSCREEN));
     ASSERT_FALSE(platform_set_window_mode(NULL, PLATFORM_WINDOW_MODE_WINDOWED));
     ASSERT_EQ(platform_get_window_mode(NULL), PLATFORM_WINDOW_MODE_WINDOWED);
+    ASSERT_FALSE(platform_mobile_resize(NULL, 320, 240, 640, 480, 2.0f));
     ASSERT_FALSE(platform_set_window_decorated(NULL, true));
     ASSERT_FALSE(platform_set_window_decorated(NULL, false));
     ASSERT_FALSE(platform_get_window_decorated(NULL));

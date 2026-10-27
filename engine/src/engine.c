@@ -16,9 +16,12 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
         .width  = cfg->width,
         .height = cfg->height,
         .title  = cfg->title,
+        .native_window = cfg->native_window,
+        .native_display = cfg->native_display,
         .hide_window_until_first_frame = cfg->hide_window_until_first_frame,
         .start_fullscreen = cfg->start_fullscreen,
         .undecorated = cfg->undecorated,
+        .native_content_scale = cfg->native_content_scale,
     };
     if (!platform_config_valid(&pcfg)) return false;
 
@@ -40,6 +43,7 @@ bool engine_init(Engine *e, const EngineConfig *cfg) {
         LOG_FATAL("Failed to create platform");
         return false;
     }
+    e->host = cfg->host;
 
     e->delta_time    = 0.0;
     e->frame_count   = 0;
@@ -59,6 +63,7 @@ void engine_shutdown(Engine *e) {
         platform_destroy(e->platform);
         e->platform = NULL;
     }
+    e->host = NULL;
     LOG_INFO("Engine shutdown complete");
 }
 
@@ -87,6 +92,10 @@ bool engine_frame(Engine *e) {
 
     PlatformEventResult result = platform_poll(e->platform);
     if (result == PLATFORM_EVENT_QUIT) {
+        return false;
+    }
+    if (e->host != NULL && e->host->poll != NULL &&
+        !e->host->poll(e->host->context, e)) {
         return false;
     }
 

@@ -126,7 +126,7 @@ TEST(configuration_accepts_opaque_native_handles)
     int window;
     int display;
     const PlatformConfig config = {
-        640, 480, "Break", &window, &display, false, false, false
+        640, 480, "Break", &window, &display, false, false, false, 0.0f
     };
 
     ASSERT_TRUE(platform_config_valid(&config));

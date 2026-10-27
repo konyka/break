@@ -91,6 +91,8 @@ expect_file_contains("${eng_cmake}" "engine_metal_shaders")
 expect_file_contains("${eng_cmake}" "rhi_metal_shader_manifest.c")
 expect_file_contains("${eng_cmake}" "engine.metallib")
 expect_file_contains("${eng_cmake}" "find_program")
+expect_file_contains("${eng_cmake}" "CMAKE_OSX_SYSROOT MATCHES \"[Ss]imulator\"")
+expect_file_contains("${eng_cmake}" "set(METAL_SHADER_SDK iphonesimulator)")
 
 # 5. Runtime: manifest lookup in the backend.
 set(metal_m "${REPO_ROOT}/engine/src/rhi/rhi_metal.m")

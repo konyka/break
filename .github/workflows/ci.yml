@@ -1364,7 +1364,7 @@ jobs:
         run: brew install shaderc spirv-cross
 
       - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
 
       - name: Build (iOS Simulator destination)
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build
@@ -1374,7 +1374,12 @@ jobs:
           test -s build-ios/metal_shaders/engine.metallib
           test -d build-ios/Debug-iphonesimulator/engine_demo.app
           test -s build-ios/Debug-iphonesimulator/engine_demo.app/engine.metallib
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/assets/init.script
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/assets/LiberationSans-Regular.ttf
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/shaders/blinn_phong_vk.vert
+          test -s build-ios/Debug-iphonesimulator/engine_demo.app/shaders/blinn_phong_vk.frag
           test "$(plutil -extract CFBundleIdentifier raw build-ios/Debug-iphonesimulator/engine_demo.app/Info.plist)" = "com.purecengine.engine-demo"
+          test "$(plutil -extract UIApplicationSceneManifest.UISceneConfigurations.UIWindowSceneSessionRoleApplication.0.UISceneDelegateClassName raw build-ios/Debug-iphonesimulator/engine_demo.app/Info.plist)" = "IOSDemoSceneDelegate"
 
   clean-room:
     # headless 证据 lane：git archive 干净导出 + 仅锁定依赖（spec §8.2 headless 类；

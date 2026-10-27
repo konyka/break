@@ -1,3 +1,4 @@
+#include <apps/engine_demo.h>
 #include <engine.h>
 #include <rhi/rhi.h>
 #include "rhi/rhi_rollout.h"
@@ -4869,10 +4870,17 @@ static void apply_frame_pacing(Engine *e, RHIDevice *dev, bool vsync_enabled,
     e->target_fps = vsync_enabled ? 0.0f : limit_when_off;
 }
 
+#if !defined(ENGINE_PLATFORM_IOS)
 int main(int argc, char **argv) {
+    return engine_demo_main(argc, argv, NULL);
+}
+#endif
+
+int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
     log_set_level(LOG_DEBUG);
 
     EngineConfig cfg = { .width = 1280, .height = 720, .title = "Pure C Engine - Phase 4", .target_fps = 60.0 };
+    if (host_config != NULL) cfg = *host_config;
     /* FS2: BREAK_FULLSCREEN=1 starts in borderless fullscreen. */
     { const char *e = getenv("BREAK_FULLSCREEN"); if (e && atoi(e)) cfg.start_fullscreen = true; }
     /* BREAK_UNDECORATED=1 starts the window without title bar. */
@@ -6540,6 +6548,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
     u32 culled_count = 0;
 
     while (engine_frame(&engine)) {
+#if defined(ENGINE_PLATFORM_IOS)
+        @autoreleasepool {
+#endif
         arena_free_all(&frame_arena);
         if (bench_stats_target > 0u && bench_stats_count < 4096u &&
             engine.frame_count > BENCH_STATS_WARMUP)
@@ -11702,6 +11713,9 @@ struct { bool taa,fxaa,mb,dof,ssr,ssgi,cs,vol,lf,bloom,gr,sss,sharpen,cg,lensfx;
         profiler_pop();
 
         profiler_end_frame();
+#if defined(ENGINE_PLATFORM_IOS)
+        }
+#endif
     }
 
     if (bench_stats_target > 0u && bench_stats_count > 0u) {

@@ -760,6 +760,34 @@ TEST(texel_buffers_cross_4096_texel_rows) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+void rhi_test_metal_set_private_texel(bool enabled);
+
+TEST(texel_private_initial_upload_update_and_readback) {
+    u8 initial[64], update[16], out[64];
+    RHIBufferDesc desc;
+    RHIBuffer buf;
+    memset(&desc, 0, sizeof(desc));
+    desc.usage = RHI_BUFFER_USAGE_TEXEL;
+    desc.size = sizeof(initial);
+    desc.initial_data = initial;
+    for (u32 i = 0u; i < sizeof(initial); ++i) initial[i] = (u8)(i * 3u + 1u);
+    rhi_test_metal_set_private_texel(true);
+    buf = rhi_buffer_create(g_dev, &desc);
+    rhi_test_metal_set_private_texel(false);
+    ASSERT_FALSE(handle_is_null(buf));
+    ASSERT_TRUE(rhi_buffer_map(g_dev, buf) == NULL);
+    memset(out, 0, sizeof(out));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    ASSERT_TRUE(memcmp(out, initial, sizeof(initial)) == 0);
+    for (u32 i = 0u; i < sizeof(update); ++i) update[i] = (u8)(0xF0u - i);
+    rhi_buffer_update_region(g_dev, buf, 32u, update, sizeof(update));
+    ASSERT_TRUE(rhi_buffer_read(g_dev, buf, out, 0u, sizeof(out)));
+    ASSERT_TRUE(memcmp(out + 32u, update, sizeof(update)) == 0);
+    ASSERT_TRUE(memcmp(out, initial, 32u) == 0);
+    ASSERT_TRUE(memcmp(out + 48u, initial + 48u, 16u) == 0);
+    rhi_buffer_destroy(g_dev, buf);
+}
+
 TEST(pipeline_invalid_shader_handle_rejected) {
     /* Fail closed: a garbage shader handle never produces a pipeline. */
     RHIPipelineDesc desc;
@@ -2937,6 +2965,7 @@ int main(void) {
     RUN_TEST(shadow_viewport_restricts_depth_writes);
     RUN_TEST(clear_depth_preserves_color);
     RUN_TEST(texel_buffers_cross_4096_texel_rows);
+    RUN_TEST(texel_private_initial_upload_update_and_readback);
     RUN_TEST(pipeline_invalid_shader_handle_rejected);
     RUN_TEST(offscreen_fbo_msaa_desc_fails_closed);
     RUN_TEST(cubemap_depth_fbo_bind_face_clears);
