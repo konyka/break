@@ -1144,9 +1144,40 @@ static void win_apply_decoration(Platform *p) {
     DWORD style = (DWORD)GetWindowLongW(p->hwnd, GWL_STYLE);
     DWORD exstyle = (DWORD)GetWindowLongW(p->hwnd, GWL_EXSTYLE);
     DWORD next = win_windowed_style(style, decorated);
-    if (IsZoomed(p->hwnd) || IsIconic(p->hwnd)) {
-        /* Keep the maximized/minimized placement; the frame follows the
-         * style on the next layout. */
+    if (IsZoomed(p->hwnd)) {
+        /* A maximized rect depends on the frame (a framed window overhangs
+         * the work area by its border, a frameless one fills it exactly), so
+         * keeping the old rect leaves the window off by the border width.
+         * Change the style, then recompute the maximized position from
+         * WM_GETMINMAXINFO by placing it again; the restore rect and
+         * the maximized state are kept. */
+        /* native_decorated must already describe the new frame here:
+         * WM_GETMINMAXINFO reads it while the window is re-maximized. */
+        platform_window_mode_decoration_applied(&p->window_mode);
+        SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)next);
+        SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |
+                     SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        if (IsWindowVisible(p->hwnd)) {
+            /* Restore and maximize again inside one redraw-off span so the
+             * system recomputes the maximized rect for the new frame. */
+            WINDOWPLACEMENT wp;
+            memset(&wp, 0, sizeof(wp));
+            wp.length = sizeof(wp);
+            GetWindowPlacement(p->hwnd, &wp);
+            SendMessageW(p->hwnd, WM_SETREDRAW, FALSE, 0);
+            wp.showCmd = SW_SHOWNORMAL;
+            SetWindowPlacement(p->hwnd, &wp);
+            wp.showCmd = SW_SHOWMAXIMIZED;
+            SetWindowPlacement(p->hwnd, &wp);
+            SendMessageW(p->hwnd, WM_SETREDRAW, TRUE, 0);
+            RedrawWindow(p->hwnd, NULL, NULL,
+                         RDW_ERASE | RDW_FRAME | RDW_INVALIDATE | RDW_ALLCHILDREN);
+        }
+        return;
+    }
+    if (IsIconic(p->hwnd)) {
+        /* Minimized: only the style; the restore uses the new frame. */
         SetWindowLongW(p->hwnd, GWL_STYLE, (LONG)next);
         SetWindowPos(p->hwnd, NULL, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER |

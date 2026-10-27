@@ -188,6 +188,11 @@ typedef struct {
      * that copy had finished, so mapping it drained the whole pipeline
      * (~8 ms per frame in the demo). */
     GLsync frame_fence[2];
+    /* FS7 deferred deletion queue (see gl_retire_name). Per device: GL names
+     * belong to this device's context, so another device's frame or
+     * shutdown must never delete them. */
+    struct GLRetired *retired;
+    u32 retired_count, retired_cap;
 } GLBackend;
 
 /* Plan E Task 5: reflection-driven bindings — per-stage push-member name
@@ -410,54 +415,69 @@ static void gl_resolve_active_offscreen(void) {
  * Shutdown and a failed queue growth release synchronously. */
 #define GL_RETIRE_FRAME_BUDGET_US 2000u
 
-typedef struct {
+typedef struct GLRetired {
     GLuint name;
     bool   renderbuffer;
 } GLRetired;
 
-static GLRetired *g_gl_retired = NULL;
-static u32 g_gl_retired_count = 0u, g_gl_retired_cap = 0u;
-
-static void gl_retire_name(GLuint name, bool renderbuffer) {
-    if (name == 0u) return;
-    if (g_gl_retired_count == g_gl_retired_cap) {
-        u32 cap = g_gl_retired_cap ? g_gl_retired_cap * 2u : 256u;
-        GLRetired *n = (GLRetired *)realloc(g_gl_retired, (usize)cap * sizeof(GLRetired));
-        if (!n) {
-            if (renderbuffer) glDeleteRenderbuffers(1, &name);
-            else glDeleteTextures(1, &name);
-            return;
-        }
-        g_gl_retired = n;
-        g_gl_retired_cap = cap;
-    }
-    g_gl_retired[g_gl_retired_count].name = name;
-    g_gl_retired[g_gl_retired_count].renderbuffer = renderbuffer;
-    g_gl_retired_count++;
+static void gl_delete_name(GLuint name, bool renderbuffer) {
+    if (renderbuffer) glDeleteRenderbuffers(1, &name);
+    else glDeleteTextures(1, &name);
 }
 
-static void gl_retire_texture(GLuint name) { gl_retire_name(name, false); }
-static void gl_retire_renderbuffer(GLuint name) { gl_retire_name(name, true); }
+/* Queue `name` on `dev`'s context. Without a backend (or when the queue
+ * cannot grow) it is deleted at once, which is what destroy did before. */
+static void gl_retire_name(RHIDevice *dev, GLuint name, bool renderbuffer) {
+    GLBackend *gl;
+    if (name == 0u) return;
+    gl = dev != NULL ? (GLBackend *)dev->backend_data : NULL;
+    if (gl == NULL) {
+        gl_delete_name(name, renderbuffer);
+        return;
+    }
+    if (gl->retired_count == gl->retired_cap) {
+        u32 cap = gl->retired_cap ? gl->retired_cap * 2u : 256u;
+        GLRetired *n = (GLRetired *)realloc(gl->retired, (usize)cap * sizeof(GLRetired));
+        if (!n) {
+            gl_delete_name(name, renderbuffer);
+            return;
+        }
+        gl->retired = n;
+        gl->retired_cap = cap;
+    }
+    gl->retired[gl->retired_count].name = name;
+    gl->retired[gl->retired_count].renderbuffer = renderbuffer;
+    gl->retired_count++;
+}
 
-/* Release queued names oldest first; budget_us 0 releases everything. */
-static void gl_retire_collect(u32 budget_us) {
-    if (g_gl_retired_count == 0u) return;
+static void gl_retire_texture(RHIDevice *dev, GLuint name) { gl_retire_name(dev, name, false); }
+static void gl_retire_renderbuffer(RHIDevice *dev, GLuint name) { gl_retire_name(dev, name, true); }
+
+/* Release `gl`'s queued names oldest first, with its context current;
+ * budget_us 0 releases everything and frees the queue. */
+static void gl_retire_collect(GLBackend *gl, u32 budget_us) {
+    if (gl == NULL || gl->retired_count == 0u) {
+        if (gl != NULL && budget_us == 0u) {
+            free(gl->retired);
+            gl->retired = NULL;
+            gl->retired_cap = 0u;
+        }
+        return;
+    }
     u64 t0 = budget_us ? time_microseconds() : 0u;
     u32 i = 0u;
-    while (i < g_gl_retired_count) {
-        GLuint name = g_gl_retired[i].name;
-        if (g_gl_retired[i].renderbuffer) glDeleteRenderbuffers(1, &name);
-        else glDeleteTextures(1, &name);
+    while (i < gl->retired_count) {
+        gl_delete_name(gl->retired[i].name, gl->retired[i].renderbuffer);
         i++;
         if (budget_us && time_microseconds() - t0 >= budget_us) break;
     }
-    memmove(g_gl_retired, g_gl_retired + i,
-            (usize)(g_gl_retired_count - i) * sizeof(GLRetired));
-    g_gl_retired_count -= i;
-    if (g_gl_retired_count == 0u && budget_us == 0u) {
-        free(g_gl_retired);
-        g_gl_retired = NULL;
-        g_gl_retired_cap = 0u;
+    memmove(gl->retired, gl->retired + i,
+            (usize)(gl->retired_count - i) * sizeof(GLRetired));
+    gl->retired_count -= i;
+    if (gl->retired_count == 0u && budget_us == 0u) {
+        free(gl->retired);
+        gl->retired = NULL;
+        gl->retired_cap = 0u;
     }
 }
 
@@ -911,7 +931,7 @@ bool rhi_device_idle(RHIDevice *dev) {
 static void gl_shutdown(RHIDevice *dev) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
     if (!gl) return;
-    gl_retire_collect(0u);
+    gl_retire_collect(gl, 0u);
     for (int i = 0; i < 2; i++) {
         if (gl->frame_fence[i] != NULL) {
             glDeleteSync(gl->frame_fence[i]);
@@ -1578,7 +1598,7 @@ RHICmdBuffer *rhi_frame_begin(RHIDevice *dev) {
     g_current_device = dev;
     g_gl_frame_active = true;
     gl_wait_frame_slot(dev);
-    gl_retire_collect(GL_RETIRE_FRAME_BUDGET_US);
+    gl_retire_collect((GLBackend *)dev->backend_data, GL_RETIRE_FRAME_BUDGET_US);
     return (RHICmdBuffer *)gl_frame_begin(dev);
 }
 
@@ -2284,7 +2304,7 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
         if (td->mip_views[i]) {
             for (u32 u = 0; u < 16; u++)
                 if (g_tex_cache[u] == td->mip_views[i]) g_tex_cache[u] = 0;
-            gl_retire_texture(td->mip_views[i]);
+            gl_retire_texture(dev, td->mip_views[i]);
             td->mip_views[i] = 0;
         }
     }
@@ -2292,7 +2312,7 @@ void rhi_texture_destroy(RHIDevice *dev, RHITexture tex) {
         g_mip_clamp_tex = 0;
         g_mip_clamp_level = -1;
     }
-    gl_retire_texture(td->gl_tex);
+    gl_retire_texture(dev, td->gl_tex);
     free(td);
     rhi_free_slot(dev, tex);
 }
@@ -3034,7 +3054,7 @@ void rhi_cubemap_destroy(RHIDevice *dev, RHICubemap cm) {
     for (u32 i = 0; i < 16; i++) {
         if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
     }
-    gl_retire_texture(td->gl_tex);
+    gl_retire_texture(dev, td->gl_tex);
     free(td);
     rhi_free_slot(dev, cm);
 }
@@ -3436,10 +3456,10 @@ void rhi_offscreen_fbo_destroy(RHIDevice *dev, RHIOffscreenFBO *fbo) {
     glDeleteFramebuffers(1, &fd->gl_fbo);
     if (fd->resolve_fbo && fd->resolve_fbo != fd->gl_fbo)
         glDeleteFramebuffers(1, &fd->resolve_fbo);
-    gl_retire_texture(fd->color_tex);
-    gl_retire_texture(fd->depth_tex);
-    gl_retire_renderbuffer(fd->color_rb);
-    gl_retire_renderbuffer(fd->depth_rb);
+    gl_retire_texture(dev, fd->color_tex);
+    gl_retire_texture(dev, fd->depth_tex);
+    gl_retire_renderbuffer(dev, fd->color_rb);
+    gl_retire_renderbuffer(dev, fd->depth_rb);
     free(fd);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
@@ -3884,7 +3904,7 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
             for (u32 u = 0; u < 16; u++) {
                 if (g_tex_cache[u] == md->color_tex[i]) g_tex_cache[u] = 0;
             }
-            gl_retire_texture(md->color_tex[i]);
+            gl_retire_texture(dev, md->color_tex[i]);
         }
         /* The texture slot shares the same GLTextureData pointer; null it
          * out so device-destroy skips the double-free. */
@@ -3913,9 +3933,9 @@ void rhi_mrt_fbo_destroy(RHIDevice *dev, RHIMRTFBO *fbo) {
         }
         rhi_free_slot(dev, fbo->depth_tex);
     } else if (md->depth_rb) {
-        gl_retire_renderbuffer(md->depth_rb);
+        gl_retire_renderbuffer(dev, md->depth_rb);
     }
-    gl_retire_texture(md->depth_tex);
+    gl_retire_texture(dev, md->depth_tex);
     free(md);
     rhi_free_slot(dev, fbo->fb);
     memset(fbo, 0, sizeof(*fbo));
@@ -4082,7 +4102,7 @@ void rhi_cubemap_depth_fbo_destroy(RHIDevice *dev, RHICubemapDepthFBO *fbo) {
             for (u32 i = 0; i < 16; i++) {
                 if (g_tex_cache[i] == td->gl_tex) g_tex_cache[i] = 0;
             }
-            gl_retire_texture(td->gl_tex);
+            gl_retire_texture(dev, td->gl_tex);
             free(td);
         }
         rhi_free_slot(dev, fbo->depth_tex);

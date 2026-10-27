@@ -1074,7 +1074,60 @@ TEST(undecorated_maximized_window_is_not_covering_the_taskbar)
     platform_destroy(platform);
 }
 
+/* Hiding the title bar of an already maximized window: a maximized framed
+ * window overhangs the work area by its frame thickness, so the frameless
+ * window must be re-laid out to the work area, not keep that rect. */
+TEST(title_bar_hidden_while_maximized_fits_the_work_area)
+{
+    PlatformConfig config = {320, 240, "break title bar maximized"};
+    Platform *platform = platform_create(&config);
+    HWND hwnd;
+    MONITORINFO mi;
+    RECT window;
+
+    if (platform == NULL) {
+        record_failure("platform_create returned NULL");
+        return;
+    }
+    hwnd = (HWND)platform_window_native(platform);
+    ShowWindow(hwnd, SW_MAXIMIZE);
+    fs_pump(platform);
+    if (!IsZoomed(hwnd)) {
+        record_failure("ShowWindow(SW_MAXIMIZE) did not maximize the test window");
+        platform_destroy(platform);
+        return;
+    }
+    if (!platform_set_window_decorated(platform, false))
+        record_failure("set_window_decorated(false) on a maximized window returned false");
+    fs_pump(platform);
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi);
+    GetWindowRect(hwnd, &window);
+    if (!IsZoomed(hwnd))
+        record_failure("hiding the title bar un-maximized the window");
+    if (window.left != mi.rcWork.left || window.top != mi.rcWork.top ||
+        window.right != mi.rcWork.right || window.bottom != mi.rcWork.bottom) {
+        printf("  window=%ld,%ld,%ld,%ld work=%ld,%ld,%ld,%ld\n",
+               window.left, window.top, window.right, window.bottom,
+               mi.rcWork.left, mi.rcWork.top, mi.rcWork.right, mi.rcWork.bottom);
+        record_failure("maximized window without title bar does not exactly fill the work area");
+    }
+    /* And back: the framed maximized window gets its normal layout again. */
+    if (!platform_set_window_decorated(platform, true))
+        record_failure("set_window_decorated(true) on a maximized window returned false");
+    fs_pump(platform);
+    if (!IsZoomed(hwnd))
+        record_failure("showing the title bar un-maximized the window");
+    if ((GetWindowLongW(hwnd, GWL_STYLE) & DECO_FRAME_BITS) != DECO_FRAME_BITS)
+        record_failure("maximized window did not get its frame back");
+    ShowWindow(hwnd, SW_RESTORE);
+    fs_pump(platform);
+    platform_destroy(platform);
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(title_bar_hidden_while_maximized_fits_the_work_area);
     RUN_TEST(title_bar_hide_and_show_keeps_client_rect);
     RUN_TEST(undecorated_window_round_trips_through_fullscreen);
     RUN_TEST(title_bar_change_while_fullscreen_applies_on_leave);

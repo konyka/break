@@ -1,6 +1,32 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
 
+## 本轮更新：仓库缺陷排查（ASan + 扩展模糊测试 + clang 静态分析 + 近期代码复查）
+
+### 做了哪些检查
+- **ASan**（`build-ci-asan`，GL，Debug）：全量 ctest 187/187。之前 4 个 fuzz 冒烟用例显示为 Not Run，是因为 fuzz 目标不在默认构建里，补建后都通过。
+- **扩展模糊测试**（同一 ASan 构建）：`fuzz_scene_serial`、`fuzz_net_packet`、`fuzz_decode_image`、`fuzz_vfs_pak` 各用 4 个新种子，迭代数是冒烟测试的 10–50 倍（2 万到 10 万次），16 次运行全部无崩溃、无 ASan 报告。
+- **clang 静态分析**：`clang-tidy` 跑 `clang-analyzer-core/unix/security.ArrayBound/deadcode` 和若干 `bugprone-*`，覆盖 GL 构建里 `engine/src` 下 228 个 C 文件，得到 108 条不重复的告警。逐条看了 `core.*`、`unix.*`、`ArrayBound` 类的告警；`deadcode` 和整数除法类只是风格问题，没改；`external/`（miniaudio、cgltf、lua）是第三方代码，不改。
+- **人工复查本会话改过的代码**：GL 延迟删除、glTF 骨骼祖先节点、模型查看与 BSCN 读档钩子、标题栏开关。
+
+### 修复的缺陷（都先写失败的测试，再修）
+1. **GL 延迟删除队列是全局的**（`rhi_gl.c`，FS7 引入）：队列放在全局变量里，但 GL 的纹理名属于各自设备的上下文。同时存在两个 GL 设备时，A 设备的帧开始或关闭会在 A 的上下文里删 B 的纹理名，可能删错对象，或者在关闭时漏删、泄漏。改为把队列放进每个设备的 `GLBackend`，删除时传入所属设备；没有后端时立即删除，即原来的行为。当前演示程序只建一个设备，所以平时碰不到。这一条没有加自动测试：要两个真实的 GL 上下文，现有测试设施没有。验证方式是代码审查，加上 GL Debug / ASan 下演示程序全屏切换 + BSCN 读档运行无报错。
+2. **无标题栏的最大化窗口位置偏移**（`window_win32.c`，上一轮标题栏功能引入）：窗口已最大化时再去掉标题栏，只改样式、不重新布局，窗口保持「带边框最大化」的矩形，四边各超出工作区一个边框宽度（实测 -11,-11,2571,1539，工作区 0,0,2560,1528）。改为先还原再最大化（期间关重绘），让系统按新边框重新计算最大化矩形。新测试 `title_bar_hidden_while_maximized_fits_the_work_area`：改前失败，改后通过。
+3. **菜单宽度读未初始化变量**（`myui/widgets/my_menu.c`，原有问题，静态分析发现）：`menu_box_width` 在窗口字体不能测量文字时（字体没有 measure 接口，或测量失败），`my_font_measure` 不写 `tw`，后面直接拿 `tw` 算宽度，结果是随机值。改为测量失败时回退到按码点估算。新测试 `menu_width_is_defined_when_font_measure_fails`（`test_myui_window_manager`）：改前宽度是随机值、断言失败，改后是 98。
+
+### 看过但判定为误报或无需改动的告警
+- `asset.c` 越界、`platform_text.c` 空指针、`values.c` 空指针、`ir.c` 字符串越界、`render_graph.c` 未初始化、`my_node_view.c` 未初始化：调用链上都有静态分析器看不到的前置条件。比如 `re_facts_get` 在 facts 为 NULL 时返回非 OK，后面不会继续执行；`id_for` 对空字符串传入的长度就是 0。
+- `mipmap_stream.c` 释放后使用：分析器假设 `ctx->mgr` 为 NULL，但它在上一行刚赋过值。
+- `scene_serial.c` 的 malloc 大小类型不符：`u8` 块里放两个 `u32` 数组，是有意的单次分配。
+- `scene_state.c` 的流状态告警：每次读取都检查了返回值，失败时整体回滚到备份。
+- `cgltf_node_transform_world` 遇到父节点环会死循环？不会：`cgltf_validate` 会拒绝有环的文件，而加载器一定先调用它。
+
+### 验证
+- 7 棵构建树 0 警告。
+- ctest：VK 190/190、GL 187/187、D3D12 195/195、ASan 187/187。
+- `test_platform_win32_runtime` 26/26（这次连原来失败的剪贴板用例也通过了）。
+- GCC `-Werror -pedantic` 语法检查：改动的文件中能在本机编译的都通过；`rhi_gl.c` 需要 GLX 头文件，以 CI 为准。
+
 ## 本轮更新：窗口标题栏开关（跨平台，TDD）
 
 - **API**（`platform/platform.h`）：`platform_set_window_decorated(p, bool)`、`platform_get_window_decorated(p)`、`platform_window_title_bar_visible(p)`，以及 `PlatformConfig.undecorated`（加在 `start_fullscreen` 之后；位置初始化的调用点已补齐）。语义：只影响**窗口模式**下的标题栏和边框；关掉后客户区位置和大小不变（交换链不重建）；全屏本来就没有标题栏，全屏期间或模式切换未完成时改动会被记下，回到窗口模式时再生效；重复调用幂等；没有窗口边框的平台（移动端、QNX Screen）只接受「无标题栏」，`set(true)` 返回 false。

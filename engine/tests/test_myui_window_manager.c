@@ -7999,6 +7999,43 @@ TEST(window_close_invalidates_open_menu)
   my_pal_destroy(pal);
 }
 
+/* A window font whose measure fails (here: no measure entry) must not leave
+ * the menu width uninitialized; the box falls back to the codepoint estimate
+ * and stays a sane size. */
+static const my_font_vtable_t g_no_measure_font_vtable = {0};
+
+TEST(menu_width_is_defined_when_font_measure_fails)
+{
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_pal_main_loop_t* loop = my_pal_main_loop_create(pal);
+  my_window_manager_t* wm = my_window_manager_create(NULL, pal, loop);
+  my_window_t* win = my_window_create(NULL, pal, 400, 300, "main");
+  my_menu_t* menu = my_menu_create(NULL);
+  my_font_t font = {&g_no_measure_font_vtable};
+  my_widget_t* overlay = NULL;
+  my_widget_t* box = NULL;
+
+  ASSERT_NOT_NULL(win);
+  ASSERT_NOT_NULL(menu);
+  ASSERT_EQ(my_menu_add_item(menu, "abcdefghij", 1), MY_RET_OK);
+  ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_window_set_font(win, &font, 13);
+  ASSERT_EQ(my_menu_popup(win, menu, 10, 10, NULL, NULL), MY_RET_OK);
+  overlay = my_menu_widget(menu);
+  ASSERT_NOT_NULL(overlay);
+  box = my_widget_get_child(overlay, 0);
+  ASSERT_NOT_NULL(box);
+  /* 10 ASCII codepoints * 7 px + 28 px padding = 98; minimum width 80. */
+  ASSERT_EQ(box->rect.w, 98);
+  my_menu_dismiss(menu);
+  my_window_set_font(win, NULL, 0);
+  ASSERT_EQ(my_window_manager_close(wm, win), MY_RET_OK);
+  my_menu_destroy(menu);
+  my_window_manager_destroy(wm);
+  my_pal_main_loop_destroy(loop);
+  my_pal_destroy(pal);
+}
+
 TEST(window_close_invalidates_menu_with_external_window_ref)
 {
   my_pal_t* pal = my_pal_dummy_create(NULL);
@@ -8833,6 +8870,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(blur_handler_can_move_focus_to_another_widget);
     RUN_TEST(blur_handler_can_destroy_the_old_focused_widget);
     RUN_TEST(window_close_invalidates_open_menu);
+    RUN_TEST(menu_width_is_defined_when_font_measure_fails);
     RUN_TEST(window_close_invalidates_menu_with_external_window_ref);
     RUN_TEST(menu_detaches_when_window_manager_is_destroyed_first);
     RUN_TEST(menu_owned_callback_context_releases_once);
