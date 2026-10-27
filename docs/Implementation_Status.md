@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，无需修复
+
+- 同步了远程 7 个提交（iOS UIKit 主机、模拟器渲染、Metal 着色器 SDK 隔离、macOS 窗口模式文档）。对 Windows 有影响的只有：`EngineConfig` 新增 `native_window` / `native_display` / `native_content_scale` / `host`，`window_win32.c` 补了桌面用的 `platform_mobile_resize` 空实现，`audio.c` 的 iOS 模拟器分支，以及全平台构建的新测试 `test_engine_mobile_host`。
+- 在合并后的代码上重新配置并构建 GL、Vulkan、D3D12 Debug、ASan 四棵树（Clang 22.1.6 + Ninja）：0 条编译与链接警告。全量 ctest：GL 189/189、Vulkan（含验证层）192/192、D3D12 Debug 197/197、ASan（`-LE graphics`）186/186，每棵比上一轮多的 1 项就是 `test_engine_mobile_host`。这次 `test_platform_win32_runtime` 的剪贴板用例也通过。
+- 三后端 demo（30 帧，无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 39.3/31.1 ms、最差帧 58.6 ms；Vulkan 35.0/61.8 ms、最差帧 70.5 ms、验证层消息 0；D3D12 78.5/74.7 ms、最差帧 99.3 ms。`TITLE_BAR_SWITCH` 均 `ok=1`，绘制尺寸保持 1280x720，日志无 ERROR/FATAL；Vulkan 截图人工查看画面正常、HUD 方向正确。本机 ToDesk 仍在运行，切换耗时不作为性能基线。
+- 未验证：iOS / macOS / Linux 的运行时行为本机无法运行，以 CI 和对应平台的记录为准；MSVC、MinGW 工具链未在本机构建。
+
 ## 本轮更新：macOS Cocoa 窗口模式本机复核（2026-10-27）
 
 - 基于 `6a755113`，本次只复核并补充文档，没有改窗口实现。无标题栏全屏和窗口模式的标题栏开关均已有 Cocoa 原生实现、`engine_demo` 入口及自动测试，不是只有公共状态机。早前记录中的 Cocoa「未在本机验证」是当时 Windows 环境的限制。
