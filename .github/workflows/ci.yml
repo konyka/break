@@ -369,6 +369,164 @@ jobs:
           name: evidence-receipt-headless-windows-asan
           path: receipt.json
 
+  # MSVC 与 MinGW 没有别的 lane 覆盖；两者各自的编译器/链接器对同一份源码的诊断不同
+  # （MSVC /W4 /WX、GCC -Werror），在这里漂移过一次（见 docs/Implementation_Status.md）。
+  # 只跑 headless 套件，不宣称 GPU/窗口系统证据。
+  lane-headless-windows-msvc:
+    name: Windows + MSVC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # cl.exe is not on PATH by default; this exports the x64 MSVC environment
+      # (INCLUDE/LIB/PATH) to the following steps.
+      - name: Set up MSVC (x64)
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # Keep Configure/Build on the default shell: with `shell: bash` the runner
+      # prepends /usr/bin, whose GNU `link` shadows MSVC's link.exe.
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # The fuzz targets are EXCLUDE_FROM_ALL; without building them the
+      # *_smoke tests report Not Run.
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MSVC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-msvc
+          path: receipt.json
+
+  lane-headless-windows-mingw:
+    name: Windows + MinGW GCC (headless)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # Same d3d12 selector-contract prerequisite as the windows-clang job.
+      - name: Fetch Agility SDK (pinned)
+        run: cmake -P engine/tools/fetch_d3d12_agility_sdk.cmake
+
+      - name: Add Windows SDK dxc to PATH
+        shell: pwsh
+        run: |
+          $dxc = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\dxc.exe" |
+                 Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $dxc) { Write-Error "dxc.exe not found in the installed Windows SDKs"; exit 1 }
+          Add-Content $env:GITHUB_PATH $dxc.Directory.FullName
+
+      # The image ships a MinGW-w64 gcc, but its location is an image detail.
+      # Resolve it here and fail loudly rather than silently using another gcc.
+      - name: Locate MinGW-w64 GCC
+        shell: pwsh
+        run: |
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          if (-not $gcc) { Write-Error "gcc.exe not found on PATH"; exit 1 }
+          $target = & $gcc.Source -dumpmachine
+          Write-Output "gcc: $($gcc.Source)  target: $target"
+          if ($target -notmatch 'mingw') { Write-Error "gcc target is '$target', not MinGW"; exit 1 }
+          & $gcc.Source --version | Select-Object -First 1
+
+      - name: Configure
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Build fuzz targets
+        run: cmake --build build --target fuzz_scene_serial fuzz_net_packet fuzz_decode_image fuzz_vfs_pak fuzz_asset_gltf --parallel
+
+      - name: Test (headless suite)
+        env:
+          ENGINE_LOCKED_DEPS_ALLOW_ABSENT: 1
+        shell: bash
+        run: |
+          set +e
+          ctest --test-dir build -LE "graphics" --output-on-failure > "$RUNNER_TEMP/ctest.log" 2>&1
+          rc=$?
+          set -e
+          if [ $rc -ne 0 ]; then
+            grep -E 'FAIL|Failed|FAILED|Not Run|Timeout|Segmentation|CMake Error' "$RUNNER_TEMP/ctest.log" | head -40 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+            grep -A6 'CMake Error at' "$RUNNER_TEMP/ctest.log" | head -30 | while IFS= read -r line; do
+              echo "::error::ctx $line"
+            done
+            exit 1
+          fi
+
+      - name: Emit evidence receipt
+        if: always()
+        shell: bash
+        run: |
+          lvl=HEADLESS
+          if [ "${{ job.status }}" != "success" ]; then lvl=UNAVAILABLE; echo "job ${{ job.status }} -> evidence_level=UNAVAILABLE"; fi
+          cmake -DOUT=receipt.json -DPLATFORM=windows -DBACKEND=opengl \
+            -DEVIDENCE_LEVEL="$lvl" -DRUNNER="$RUNNER_NAME" \
+            -DCOMMAND_STR="ctest --test-dir build -LE graphics (MinGW GCC)" -DBUILD_CONFIG=Debug \
+            -DGPU=unknown \
+            -DDRIVER_VERSION=unknown -DCPU="$(uname -m)" -DRAM=unknown \
+            -P engine/tools/make_evidence_receipt.cmake
+          cmake -DRECEIPT=receipt.json -P engine/tests/test_evidence_receipt_schema.cmake
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: evidence-receipt-headless-windows-mingw
+          path: receipt.json
+
   # ---- lane: native-surface（真实 surface 创建/resize/销毁；evidence_level=NATIVE_SURFACE）----
   lane-native-surface-wayland:
     # 原 wayland-vk（brief :158）。

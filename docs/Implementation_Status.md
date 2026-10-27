@@ -1,8 +1,16 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：CI 新增 MSVC 与 MinGW 两条 headless lane
+
+- **新增**：`lane-headless-windows-msvc` 和 `lane-headless-windows-mingw`，都在 `windows-latest` 上，Debug，`-LE graphics`，先显式构建 5 个 fuzz 目标（它们是 `EXCLUDE_FROM_ALL`，不构建就是 Not Run）。和 Clang lane 一样先拉 Agility SDK、把 Windows SDK 的 `dxc` 加进 PATH（`test_rhi_backend_selection` 的 d3d12 子配置需要）。收据 artifact 为 `evidence-receipt-headless-windows-msvc` / `-mingw`，等级 HEADLESS，失败时降为 UNAVAILABLE，与其他 lane 一致。
+- **MSVC**：用 `ilammy/msvc-dev-cmd@v1` 载入 x64 环境（默认 PATH 上没有 `cl`），Configure/Build 保持默认 shell——该 action 的文档说明 `shell: bash` 会把 `/usr/bin` 放在前面，让 GNU `link` 遮住 MSVC 的 `link.exe`。测试步骤才用 bash。
+- **MinGW**：用镜像自带的 MinGW-w64 gcc。先有一步检查 `gcc -dumpmachine` 含 `mingw` 并打印路径与版本，找不到或目标不是 MinGW 就失败，而不是悄悄换成别的 gcc。
+- **本机已核对**：YAML 能解析（22 个 job，两条新 lane 各 10 个 step）；收据命令在本机原样跑通并通过 schema 校验；MSVC 树 `-LE graphics` 选中 186 项且含 fuzz 冒烟。`test_ci_lane_separation` 只检查 macOS/iOS 的 lane，不受影响。
+- **没有验证、风险明确**：这两条 lane 在 GitHub 上还没跑过，我无法在本机复现托管镜像。本机用的是 MSVC 19.51 / MSYS2 的 GCC 16.2，镜像是 Visual Studio 2022 的 MSVC 14.4x 和镜像自带的 gcc（文档写 15.2.0），版本都更老，可能报出本机没出现的诊断；镜像里 gcc 的位置和是否在 PATH 上也没有实证。首轮 CI 的真实结果在下面补记，若失败按真实日志修，不预先假设。
+
 ## 本轮更新：MSVC 与 MinGW 工具链在本机首次完整构建，修复 20 余处只在这两个编译器下出现的错误
 
-CI 只有 Clang（Windows）和 GCC/Clang（Linux），没有 MSVC 和 MinGW 的 lane，所以这两个工具链上的构建错误一直没人发现。本机有 Visual Studio 2026（cl 19.51.36260）和 MSYS2 UCRT64（GCC 16.2），按 `docs/Build_Guide.md` 的命令各构建了一遍，两边都在编译阶段失败。以下都是编译器真实报出的诊断，没有为了过编译放宽 `/WX` 或 `-Werror`。
+当时 CI 只有 Clang（Windows）和 GCC/Clang（Linux），没有 MSVC 和 MinGW 的 lane，所以这两个工具链上的构建错误一直没人发现。本机有 Visual Studio 2026（cl 19.51.36260）和 MSYS2 UCRT64（GCC 16.2），按 `docs/Build_Guide.md` 的命令各构建了一遍，两边都在编译阶段失败。以下都是编译器真实报出的诊断，没有为了过编译放宽 `/WX` 或 `-Werror`。
 
 ### MSVC（`/W4 /WX`，10 个文件）
 - `my_widget_class.c`：C4090，`memcpy` 在 const 指针数组之间拷贝（5 处）。改成逐元素拷贝的 `class_ptrs_copy`，语义不变。
@@ -20,7 +28,7 @@ CI 只有 Clang（Windows）和 GCC/Clang（Linux），没有 MSVC 和 MinGW 的
 ### 验证
 - MSVC 19.51.36260 全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟，先显式构建这些目标）`186/186`。MinGW GCC 16.2 同样 0 警告、`186/186`。过程中 `test_no_hidden_gl_fallback` 拦住了我新加头文件里注释写的 `WGL` 字样（该契约禁止未列入白名单的文件出现 GL 相关记号），已改掉注释而不是加白名单。
 - 这些修复碰到了所有配置共用的文件（`rhi_gl.c`、`window_win32.c`、`my_widget_class.c` 等），所以在 Clang 四棵树上重新回归：GL `189/189`、Vulkan（含验证层）`192/192`、D3D12 Debug `197/197`、ASan（`-LE graphics`）`186/186`，四棵树 0 条编译与链接警告。这一轮剪贴板可用，所以 `test_platform_win32_runtime` 的剪贴板用例也通过。
-- 未覆盖：MSVC / MinGW 的图形测试（只跑了 `-LE graphics`）；CI 仍没有这两个 lane，后续新增代码可能再次让它们构建失败，需要手动重跑。
+- 未覆盖：MSVC / MinGW 的图形测试（只跑了 `-LE graphics`）。随后新增了 `lane-headless-windows-msvc` 和 `lane-headless-windows-mingw`（见下一节），后续新增代码不再只能靠手动重跑发现。
 
 ## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，并修复 Linux 链接失败
 
