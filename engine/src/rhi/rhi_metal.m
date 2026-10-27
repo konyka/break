@@ -3593,7 +3593,11 @@ static i32 metal_uniform_location(const RHIPipelineDesc *desc, const char *name)
         if (strcmp(name, "total_draws") == 0)       return 0;
         return -1;
     }
-    if (desc->uses_storage) {
+    /* The clustered instanced/skinned variants (R590/R591) also carry a
+     * storage set for their vertex SSBO, but their push block is the
+     * clustered one below; only particle-style storage pipelines take this
+     * short table. */
+    if (desc->uses_storage && !clustered) {
         if (strcmp(name, "push.view") == 0)         return 0;
         if (strcmp(name, "push.proj") == 0)         return 64;
         return -1;

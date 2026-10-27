@@ -2354,6 +2354,52 @@ TEST(push_offsets_match_vk_golden) {
     }
 }
 
+TEST(clustered_storage_variant_keeps_clustered_push_table) {
+    /* R590/R591 clustered instanced/skinned pipelines set uses_storage for
+     * their vertex SSBO; they must still resolve the clustered push block
+     * (the particle-only storage table drops every lighting uniform, which
+     * left stale push bytes and rendered the instanced helmets magenta). */
+    static const char *k_vs =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "vertex float4 vs_main() { return float4(0.0); }\n";
+    static const char *k_fs =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "fragment float4 fs_main() { return float4(1.0); }\n";
+    static const struct { const char *name; i32 off; } k_expect[] = {
+        { "u_model", 0 }, { "u_view", 64 }, { "u_camera_pos", 128 },
+        { "u_ambient", 144 }, { "u_point_count", 176 },
+        { "u_dir_count", 180 }, { "u_mr_factor", 232 },
+        { "u_emissive_factor", 240 }, { "u_proj", -1 },
+    };
+    RHIShader vs = rhi_test_metal_shader_create_source(
+        g_dev, k_vs, (usize)strlen(k_vs), "vs_main", false);
+    RHIShader fs = rhi_test_metal_shader_create_source(
+        g_dev, k_fs, (usize)strlen(k_fs), "fs_main", true);
+    RHIPipelineDesc desc = { .uses_textures = true, .uses_texel_buffer = true,
+                             .uses_storage = true };
+    RHIPipeline pipe;
+    u32 i;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    desc.vert = vs;
+    desc.frag = fs;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    for (i = 0u; i < sizeof(k_expect) / sizeof(k_expect[0]); ++i)
+        ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, k_expect[i].name),
+                  k_expect[i].off);
+    desc.skinned_vertex = true;
+    rhi_pipeline_destroy(g_dev, pipe);
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    for (i = 0u; i < sizeof(k_expect) / sizeof(k_expect[0]); ++i)
+        ASSERT_EQ(rhi_pipeline_get_uniform_location(g_dev, pipe, k_expect[i].name),
+                  k_expect[i].off);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
 TEST(push_constants_out_of_range_dropped) {
     /* rhi_push_range_fits: writes beyond the declared range drop with a
      * warning and must not corrupt staging or crash the subsequent draw. */
@@ -2983,6 +3029,7 @@ int main(void) {
     RUN_TEST(gpu_timer_destroy_with_pending_sample_is_safe);
     RUN_TEST(manifest_real_shader_resolves);
     RUN_TEST(push_offsets_match_vk_golden);
+    RUN_TEST(clustered_storage_variant_keeps_clustered_push_table);
     RUN_TEST(push_constants_out_of_range_dropped);
     RUN_TEST(set_uniform_mat4_column0_as_color);
     RUN_TEST(push_replays_across_blit_interlude);

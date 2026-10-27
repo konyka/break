@@ -429,3 +429,12 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
    simctl 截图为 2622x1206，画面完整且 HUD 朝向正确。CI lane 仍 compile-only，
    真机 GPU_RUNTIME 未覆盖。详见 Build_Guide 的 Simulator 命令和
    `docs/rhi_backend_evidence.md` 的证据台账。
+10. **clustered 实例化品红色块（2026-10-27 已修）**：默认 FORWARD clustered 路径下，
+    ECS 实例化的 DamagedHelmet 在 Metal 渲染成大块品红，MoltenVK 正常。根因是
+    `metal_uniform_location` 先命中 `uses_storage` 短表（仅 `push.view/proj`，供粒子用），
+    而 R590/R591 的 clustered 实例化/蒙皮管线也设了 `uses_storage`（顶点 SSBO），
+    于是 `u_camera_pos`、`u_ambient`、光源计数和材质系数全部解析为 -1，片元读到
+    陈旧的 push 字节。修复后该短表只用于非 clustered 的 storage 管线，与 VK 反射结果
+    一致。`test_rhi_metal_resources` 新增
+    `clustered_storage_variant_keeps_clustered_push_table`（实例化与蒙皮两种变体），
+    该用例在修复前失败、修复后通过；截图中品红像素计数从 11719 降为 0。
