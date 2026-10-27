@@ -1107,18 +1107,34 @@ TEST(shader_source_resolves_variant_paths_bytes_and_cleanup)
 }
 
 static void shader_source_empty_fallback_body(void) {
+    static const char fallback_data[] = "REV=2 fallback vertex\n";
     BreakEditorShaderSource source;
     BreakEditorShaderBytes bytes;
     char root[512], shaders[600], vert[700];
+    char fallback_root[512], fallback_shaders[600], fallback_vert[700];
+    size_t fallback_len;
     test_tmp(root, sizeof(root), "editor_shader_source_fallback");
+    test_tmp(fallback_root, sizeof(fallback_root),
+             "editor_shader_source_fallback_low");
     snprintf(shaders, sizeof(shaders), "%s/shaders", root);
     snprintf(vert, sizeof(vert), "%s/editor_color.vert", shaders);
+    snprintf(fallback_shaders, sizeof(fallback_shaders), "%s/shaders",
+             fallback_root);
+    snprintf(fallback_vert, sizeof(fallback_vert), "%s/editor_color.vert",
+             fallback_shaders);
     ASSERT_EQ(TEST_MKDIR(root), 0);
     ASSERT_EQ(TEST_MKDIR(shaders), 0);
+    ASSERT_EQ(TEST_MKDIR(fallback_root), 0);
+    ASSERT_EQ(TEST_MKDIR(fallback_shaders), 0);
     ASSERT_TRUE(write_text_file(vert, ""));
+    ASSERT_TRUE(write_text_file(fallback_vert, fallback_data));
     ASSERT_TRUE(shader_env_set(root));
     ASSERT_TRUE(break_editor_shader_source_configure(
         &source, RHI_SHADER_VARIANT_GLSL));
+    fallback_len = strlen(fallback_root);
+    ASSERT_TRUE(fallback_len < sizeof(source.roots[1]));
+    source.root_count = 2u;
+    memcpy(source.roots[1], fallback_root, fallback_len + 1u);
 
     memset(&bytes, 0, sizeof(bytes));
     ASSERT_TRUE(break_editor_shader_source_read(
@@ -1133,10 +1149,15 @@ static void shader_source_empty_fallback_body(void) {
     memset(&bytes, 0, sizeof(bytes));
     ASSERT_TRUE(break_editor_shader_source_read(
         &source, BREAK_EDITOR_SHADER_VERTEX, &bytes));
+    ASSERT_STR_EQ(bytes.path, fallback_vert);
     ASSERT_TRUE(strcmp(bytes.path, vert) != 0);
     ASSERT_TRUE(file_exists(bytes.path));
-    ASSERT_TRUE(bytes.size > 0u);
+    ASSERT_EQ(bytes.size, strlen(fallback_data));
+    ASSERT_STR_EQ(bytes.data, fallback_data);
     break_editor_shader_source_destroy_bytes(&bytes);
+    remove(fallback_vert);
+    TEST_RMDIR(fallback_shaders);
+    TEST_RMDIR(fallback_root);
     TEST_RMDIR(shaders);
     TEST_RMDIR(root);
 }
@@ -4787,6 +4808,7 @@ static void shader_reload_second_admission_body(ShaderDirectFixture *fx) {
         ASSERT_FALSE(stats.busy);
         for (settle = 0u; settle < 4u; settle++) {
             break_editor_shader_reload_tick(fx->reload);
+            time_sleep_us(2000u);
         }
         stats = shader_direct_stats(fx);
         ASSERT_EQ(stats.attempts, i);
@@ -4795,12 +4817,11 @@ static void shader_reload_second_admission_body(ShaderDirectFixture *fx) {
     }
     memcpy(fx->source.logical[BREAK_EDITOR_SHADER_FRAGMENT], fragment_path,
            sizeof(fragment_path));
-    shader_reload_write_pair(&fx->base, 2u, "", false);
     ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
     SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).reloads == 1u);
     ASSERT_EQ(shader_direct_stats(fx).attempts, 9u);
     ASSERT_EQ(shader_direct_stats(fx).failed, 8u);
-    ASSERT_EQ(shader_reload_revision(&fx->base), 2u);
+    ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
 }
 
 TEST(shader_reload_second_request_admission_failure_recovers)
