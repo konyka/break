@@ -176,6 +176,14 @@ static void screen_apply_keyboard(Platform *p)
     input_set_key(&p->input, engine_key, (flags[0] & KEY_DOWN) != 0);
 }
 
+static bool screen_event_from_window(Platform *p)
+{
+    screen_window_t source = NULL;
+    return screen_get_event_property_pv(p->ev, SCREEN_PROPERTY_WINDOW,
+                                        (void **)&source) == 0 &&
+           source == p->win;
+}
+
 PlatformEventResult platform_poll(Platform *p)
 {
     if (!p) return PLATFORM_EVENT_QUIT;
@@ -190,11 +198,21 @@ PlatformEventResult platform_poll(Platform *p)
         case SCREEN_EVENT_CLOSE:
             p->quit = true;
             break;
+        case SCREEN_EVENT_MANAGER: {
+            int subtype = 0;
+            if (screen_event_from_window(p) &&
+                screen_get_event_property_iv(p->ev, SCREEN_PROPERTY_SUBTYPE,
+                                             &subtype) == 0 &&
+                subtype == 0x4d595543) {
+                p->quit = true;
+            }
+            break;
+        }
         case SCREEN_EVENT_POINTER:
-            screen_apply_pointer(p);
+            if (screen_event_from_window(p)) screen_apply_pointer(p);
             break;
         case SCREEN_EVENT_KEYBOARD:
-            screen_apply_keyboard(p);
+            if (screen_event_from_window(p)) screen_apply_keyboard(p);
             break;
         default:
             /* Remaining metadata events are drained but not translated;
@@ -252,6 +270,10 @@ static void screen_size(Platform *p, u32 *w, u32 *h)
             ch = (u32)size[1];
             p->width = cw;
             p->height = ch;
+            if (p->wsi.logical_width != cw || p->wsi.logical_height != ch ||
+                p->wsi.drawable_width != cw || p->wsi.drawable_height != ch) {
+                (void)platform_wsi_surface_resize(&p->wsi, cw, ch, cw, ch);
+            }
         }
     }
     if (w) *w = cw;

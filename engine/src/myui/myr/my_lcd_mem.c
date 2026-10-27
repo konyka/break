@@ -87,6 +87,14 @@ static void fill_row_bgra8888(uint8_t* row, uint32_t n, my_color_t c) {
   }
 }
 
+static void fill_row_rgba8888(uint8_t* row, uint32_t n, my_color_t c) {
+  uint8_t px[4] = {c.r, c.g, c.b, c.a};
+  uint32_t i;
+  for (i = 0; i < n; i++) {
+    memcpy(row + (size_t)i * 4, px, 4);
+  }
+}
+
 static void fill_mono_bits(my_lcd_mem_t* m, const my_rect_t* r, bool on) {
   int32_t x, y;
   for (y = r->y; y < r->y + r->h; y++) {
@@ -149,6 +157,9 @@ static my_ret_t lcd_mem_fill_rect(my_lcd_t* lcd, const my_rect_t* rect,
         break;
       case MY_PIXEL_FORMAT_BGRA8888:
         fill_row_bgra8888(row + (size_t)clipped.x * 4, n, color);
+        break;
+      case MY_PIXEL_FORMAT_RGBA8888:
+        fill_row_rgba8888(row + (size_t)clipped.x * 4, n, color);
         break;
       default:
         return MY_RET_NOT_SUPPORTED;
@@ -291,6 +302,15 @@ static void blend_row(my_lcd_mem_t* m, uint8_t* row, int32_t x0, uint32_t n,
       }
       break;
     }
+    case MY_PIXEL_FORMAT_RGBA8888: {
+      uint8_t* p = row + (size_t)x0 * 4u;
+      for (i = 0; i < n; i++, p += 4) {
+        p[0] = blend_ch(c.r, p[0], a);
+        p[1] = blend_ch(c.g, p[1], a);
+        p[2] = blend_ch(c.b, p[2], a);
+      }
+      break;
+    }
     case MY_PIXEL_FORMAT_MONO:
       for (i = 0; i < n; i++) {
         if (a >= 128) {
@@ -393,6 +413,19 @@ static my_ret_t lcd_mem_blend_span(my_lcd_t* lcd, int32_t x, int32_t y,
           p[0] = blend_ch(color.b, p[0], a);
           p[1] = blend_ch(color.g, p[1], a);
           p[2] = blend_ch(color.r, p[2], a);
+        }
+        break;
+      }
+      case MY_PIXEL_FORMAT_RGBA8888: {
+        uint8_t* p = row + (size_t)x * 4;
+        for (i = 0; i < n; i++, p += 4) {
+          uint8_t a = alpha[i];
+          if (a == 0) {
+            continue;
+          }
+          p[0] = blend_ch(color.r, p[0], a);
+          p[1] = blend_ch(color.g, p[1], a);
+          p[2] = blend_ch(color.b, p[2], a);
         }
         break;
       }

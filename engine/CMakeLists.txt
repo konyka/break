@@ -19,7 +19,7 @@ option(RULE_ENGINE_ENABLE_C11_PARALLEL "Enable the optional C11 rule match execu
 option(RULE_ENGINE_ENABLE_REDIS "Enable native Redis state provider (requires hiredis and a controlled integration service)" OFF)
 # MYUI_PAL option anchor
 set(MYUI_PAL "dummy" CACHE STRING
-    "myui PAL port: dummy | x11 | wayland | win32 | cocoa")
+    "myui PAL port: dummy | x11 | wayland | win32 | cocoa | screen")
 
 set(RULE_ENGINE_REDIS_SOURCE_DIR "" CACHE PATH
     "Redis source tree or hiredis source directory used to build the native client")
@@ -998,6 +998,10 @@ if(MYUI_BIDI)
     list(APPEND MYUI_CORE_SOURCES external/SheenBidi/Source/SheenBidi.c)
 endif()
 
+if(MYUI_PAL STREQUAL "screen" AND NOT ENGINE_PLATFORM STREQUAL "qnx")
+    message(FATAL_ERROR "MYUI_PAL=screen requires QNX Screen")
+endif()
+
 # MYUI_PAL x11 engine integration: compile the PAL dispatcher and the
 # real port into myui_core so in-tree consumers (myui_explorer) can use
 # my_pal_create() with a live desktop port.
@@ -1014,6 +1018,11 @@ elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
     list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
         src/myui/mypal/dummy/my_pal_dummy.c
         src/myui/mypal/cocoa/my_pal_cocoa.m)
+elseif(MYUI_PAL STREQUAL "screen" AND ENGINE_PLATFORM STREQUAL "qnx" AND
+       ENGINE_QNX_SCREEN)
+    list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
+        src/myui/mypal/dummy/my_pal_dummy.c
+        src/myui/mypal/screen/my_pal_screen.c src/platform/time.c)
 elseif(MYUI_PAL STREQUAL "wayland")
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(ENGINE_PAL_WL REQUIRED wayland-client wayland-egl egl)
@@ -1063,6 +1072,11 @@ elseif(MYUI_PAL STREQUAL "cocoa" AND APPLE)
     list(APPEND MYUI_CORE_SOURCES src/myui/mypal/my_pal.c
         src/myui/mypal/dummy/my_pal_dummy.c
         src/myui/mypal/cocoa/my_pal_cocoa.m)
+elseif(MYUI_PAL STREQUAL "screen" AND ENGINE_PLATFORM STREQUAL "qnx" AND
+       ENGINE_QNX_SCREEN)
+    target_compile_definitions(myui_core PUBLIC MYUI_PAL_SCREEN=1)
+    target_include_directories(myui_core PUBLIC ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(myui_core PUBLIC ${ENGINE_QNX_SCREEN_LIBRARY})
 elseif(MYUI_PAL STREQUAL "wayland")
     target_compile_definitions(myui_core PUBLIC MYUI_PAL_WAYLAND=1)
     target_include_directories(myui_core PUBLIC ${CMAKE_CURRENT_BINARY_DIR}
@@ -1525,6 +1539,11 @@ elseif(ENGINE_PLATFORM STREQUAL "qnx")
     if(ENGINE_QNX_SCREEN)
         find_path(ENGINE_QNX_SCREEN_INCLUDE_DIR screen/screen.h)
         find_library(ENGINE_QNX_SCREEN_LIBRARY screen)
+    endif()
+    if(MYUI_PAL STREQUAL "screen" AND
+       (NOT ENGINE_QNX_SCREEN OR NOT ENGINE_QNX_SCREEN_INCLUDE_DIR OR
+        NOT ENGINE_QNX_SCREEN_LIBRARY))
+        message(FATAL_ERROR "MYUI_PAL=screen requires QNX Screen headers and library")
     endif()
     if(ENGINE_QNX_SCREEN AND ENGINE_QNX_SCREEN_INCLUDE_DIR AND
        ENGINE_QNX_SCREEN_LIBRARY)
@@ -2160,6 +2179,17 @@ if(ENGINE_BUILD_TESTS)
             COMMAND test_platform_qnx_screen_runtime)
         set_tests_properties(test_platform_qnx_screen_runtime PROPERTIES
             LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+
+        add_executable(test_platform_screen_input_runtime
+            tests/test_platform_screen_input_runtime.c)
+        target_include_directories(test_platform_screen_input_runtime PRIVATE
+            ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+        target_link_libraries(test_platform_screen_input_runtime PRIVATE engine m)
+        engine_link_rhi_backend(test_platform_screen_input_runtime)
+        add_test(NAME test_platform_screen_input_runtime
+            COMMAND test_platform_screen_input_runtime)
+        set_tests_properties(test_platform_screen_input_runtime PROPERTIES
+            LABELS "graphics;platform_runtime;input" SKIP_RETURN_CODE 77 TIMEOUT 25)
     endif()
 
     # Header-only WSI lifecycle contract; intentionally headless and engine-free.
@@ -2264,6 +2294,91 @@ if(ENGINE_BUILD_TESTS)
     add_test(NAME test_mypal_wayland COMMAND test_mypal_wayland)
     set_tests_properties(test_mypal_wayland PROPERTIES
         LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+endif()
+
+if(MYUI_PAL STREQUAL "screen")
+    add_executable(test_mypal_screen_runtime tests/test_mypal_screen_runtime.c)
+    target_include_directories(test_mypal_screen_runtime PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(test_mypal_screen_runtime PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_mypal_screen_runtime COMMAND test_mypal_screen_runtime)
+    set_tests_properties(test_mypal_screen_runtime PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77)
+
+    add_executable(test_mypal_screen_failures tests/test_mypal_screen_failures.c)
+    target_include_directories(test_mypal_screen_failures PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    foreach(_screen_wrap IN ITEMS
+            screen_create_context screen_create_event screen_set_event_property_iv
+            screen_create_window screen_set_window_property_iv
+            screen_set_window_property_cv screen_create_window_buffers
+            screen_destroy_window_buffers screen_dequeue_window_render_buffer
+            screen_enqueue_render_buffer screen_get_buffer_property_pv
+            screen_get_buffer_property_iv screen_post_window screen_send_event
+            screen_flush_context screen_get_event screen_destroy_context
+            screen_destroy_window screen_destroy_event)
+        target_link_options(test_mypal_screen_failures PRIVATE
+            "-Wl,--wrap=${_screen_wrap}")
+    endforeach()
+    target_link_libraries(test_mypal_screen_failures PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_mypal_screen_failures COMMAND test_mypal_screen_failures)
+    set_tests_properties(test_mypal_screen_failures PROPERTIES
+        LABELS "graphics;platform_runtime;failure_injection" SKIP_RETURN_CODE 77)
+
+    add_executable(test_mypal_screen_concurrency tests/test_mypal_screen_concurrency.c)
+    target_include_directories(test_mypal_screen_concurrency PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_options(test_mypal_screen_concurrency PRIVATE
+        "-Wl,--wrap=screen_send_event")
+    target_link_libraries(test_mypal_screen_concurrency PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_mypal_screen_concurrency COMMAND test_mypal_screen_concurrency)
+    set_tests_properties(test_mypal_screen_concurrency PROPERTIES
+        LABELS "graphics;platform_runtime;concurrency" SKIP_RETURN_CODE 77)
+
+    add_executable(test_mypal_screen_present tests/test_mypal_screen_present.c)
+    target_include_directories(test_mypal_screen_present PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_options(test_mypal_screen_present PRIVATE
+        "-Wl,--wrap=screen_get_buffer_property_pv"
+        "-Wl,--wrap=screen_get_buffer_property_iv"
+        "-Wl,--wrap=screen_post_window")
+    target_link_libraries(test_mypal_screen_present PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_mypal_screen_present COMMAND test_mypal_screen_present)
+    set_tests_properties(test_mypal_screen_present PROPERTIES
+        LABELS "graphics;platform_runtime;performance" SKIP_RETURN_CODE 77
+        TIMEOUT 90)
+
+    add_executable(test_mypal_screen_stability tests/test_mypal_screen_stability.c)
+    target_include_directories(test_mypal_screen_stability PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    foreach(_screen_stability_wrap IN ITEMS
+            screen_create_context screen_destroy_context
+            screen_create_event screen_destroy_event
+            screen_create_window screen_destroy_window
+            screen_create_window_buffers screen_destroy_window_buffers
+            screen_post_window)
+        target_link_options(test_mypal_screen_stability PRIVATE
+            "-Wl,--wrap=${_screen_stability_wrap}")
+    endforeach()
+    target_link_libraries(test_mypal_screen_stability PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_mypal_screen_stability COMMAND test_mypal_screen_stability)
+    set_tests_properties(test_mypal_screen_stability PROPERTIES
+        LABELS "graphics;platform_runtime;stability;concurrency"
+        SKIP_RETURN_CODE 77 TIMEOUT 120)
+
+    add_executable(test_myui_screen_e2e tests/test_myui_screen_e2e.c)
+    target_include_directories(test_myui_screen_e2e PRIVATE
+        ${TEST_INCLUDE_DIRS} ${ENGINE_QNX_SCREEN_INCLUDE_DIR})
+    target_link_libraries(test_myui_screen_e2e PRIVATE myui_core m
+        ${ENGINE_QNX_SCREEN_LIBRARY} Threads::Threads)
+    add_test(NAME test_myui_screen_e2e COMMAND test_myui_screen_e2e)
+    set_tests_properties(test_myui_screen_e2e PROPERTIES
+        LABELS "graphics;platform_runtime;myui" SKIP_RETURN_CODE 77 TIMEOUT 20)
 endif()
 
 if(MYUI_PAL STREQUAL "x11")
@@ -2850,7 +2965,7 @@ endif()
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
     # configure；其他平台这些变量未定义/为空时不传。
     set(_rhi_selector_toolchain_defs)
-    foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+    foreach(_rhi_def CMAKE_PREFIX_PATH Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
             list(APPEND _rhi_selector_toolchain_defs "-D${_rhi_def}=${${_rhi_def}}")
         endif()

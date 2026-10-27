@@ -16,6 +16,8 @@
 #include "mypal/win32/my_pal_win32.h"
 #elif defined(MYUI_PAL_COCOA)
 #include "mypal/cocoa/my_pal_cocoa.h"
+#elif defined(MYUI_PAL_SCREEN)
+#include "mypal/screen/my_pal_screen.h"
 #endif
 
 my_pal_t* my_pal_create(const my_allocator_t* allocator) {
@@ -39,6 +41,8 @@ my_pal_t* my_pal_create(const my_allocator_t* allocator) {
   return my_pal_win32_create(allocator);
 #elif defined(MYUI_PAL_COCOA)
   return my_pal_cocoa_create(allocator);
+#elif defined(MYUI_PAL_SCREEN)
+  return my_pal_screen_create(allocator);
 #else
   return my_pal_dummy_create(allocator);
 #endif

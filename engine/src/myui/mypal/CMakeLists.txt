@@ -71,6 +71,18 @@ if(MYUI_PAL STREQUAL "x11")
   endif()
 endif()
 
+if(MYUI_PAL STREQUAL "screen")
+  if(NOT CMAKE_SYSTEM_NAME STREQUAL "QNX")
+    message(FATAL_ERROR "MYUI_PAL=screen requires QNX Screen")
+  endif()
+  find_path(MYUI_SCREEN_INCLUDE_DIR screen/screen.h REQUIRED)
+  find_library(MYUI_SCREEN_LIBRARY screen REQUIRED)
+  list(APPEND MYUI_PAL_SOURCES screen/my_pal_screen.c ../../platform/time.c)
+  set(MYUI_PAL_DEFINES MYUI_PAL_SCREEN=1)
+  list(APPEND MYUI_PAL_LIBS ${MYUI_SCREEN_LIBRARY})
+  list(APPEND MYUI_PAL_INCLUDES ${MYUI_SCREEN_INCLUDE_DIR})
+endif()
+
 add_library(mypal STATIC
   my_pal.c
   my_event.c

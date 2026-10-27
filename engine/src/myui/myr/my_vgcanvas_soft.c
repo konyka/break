@@ -1604,6 +1604,12 @@ static void pack_native(my_pixel_format_t fmt, const uint8_t* rgba,
       out[2] = r;
       out[3] = a;
       break;
+    case MY_PIXEL_FORMAT_RGBA8888:
+      out[0] = r;
+      out[1] = g;
+      out[2] = b;
+      out[3] = a;
+      break;
     case MY_PIXEL_FORMAT_MONO:
     default:
       out[0] = (uint8_t)(((uint32_t)r * 299 + (uint32_t)g * 587 +

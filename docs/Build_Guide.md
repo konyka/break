@@ -168,7 +168,13 @@ ctest --test-dir build-myui-tests \
 FreeType，独立 TTF/OTF 仍可通过 `stb_truetype` 使用，但可变 TTC（包括 Linux 的
 Noto Sans CJK）不可用。
 
-详细架构、渲染后端与 IME 状态见 `docs/myui_integration.md`。
+详细架构、渲染后端与 IME 状态见 `docs/myui_integration.md`。QNX 可选
+`MYUI_PAL=screen` 的交叉构建、独立部署和定向/稳定性测试入口见该文「构建
+与测试」及 `docs/qnx_compat.md` §4.4；这些 QNX ELF 必须在真实目标侧运行并保留
+远端 `timeout`，不能用上述宿主 CTest 代替。ASan/UBSan 的 `on -ad` 仅用于
+测试进程。引擎 `test_platform_screen_input_runtime` 的复验入口见
+`docs/qnx_compat.md` §4.3；最新/历史证据、长稳结果与完整回归边界见该文
+§5–§6，不把定向 accepted post 或编译成功当作 GPU/全树验收。
 
 ### 2.3 CMake 选项
 

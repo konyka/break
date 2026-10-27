@@ -2570,6 +2570,82 @@ TEST(window_record_dirty_reports_damage_in_owner_frame)
   my_pal_destroy(pal);
 }
 
+typedef struct window_dirty_frame_capture_t {
+  my_vgcanvas_vtable_t vtable;
+  my_ret_t (*backend_begin_frame)(my_vgcanvas_t* vg, const my_rect_t* dirty);
+  my_rect_t dirty;
+  size_t begin_calls;
+  my_ret_t backend_result;
+  bool has_dirty;
+} window_dirty_frame_capture_t;
+
+static window_dirty_frame_capture_t g_window_dirty_frame_capture;
+
+static my_ret_t window_dirty_capture_begin_frame(my_vgcanvas_t* vg,
+                                                 const my_rect_t* dirty) {
+  g_window_dirty_frame_capture.begin_calls++;
+  g_window_dirty_frame_capture.has_dirty = dirty != NULL;
+  if (dirty != NULL) {
+    g_window_dirty_frame_capture.dirty = *dirty;
+  }
+  g_window_dirty_frame_capture.backend_result =
+      g_window_dirty_frame_capture.backend_begin_frame(vg, dirty);
+  return g_window_dirty_frame_capture.backend_result;
+}
+
+TEST(window_paint_begins_with_union_of_dirty_rects)
+{
+  const my_rect_t first = {5, 7, 10, 12};
+  const my_rect_t second = {70, 45, 15, 10};
+  const my_rect_t expected = {5, 7, 80, 48};
+  my_pal_t* pal = my_pal_dummy_create(NULL);
+  my_window_t* win;
+  my_widget_t* root;
+  my_vgcanvas_t* canvas;
+  my_lcd_t* lcd;
+
+  ASSERT_NOT_NULL(pal);
+  win = my_window_create(NULL, pal, 120, 80, "dirty-union");
+  ASSERT_NOT_NULL(win);
+  root = my_window_widget(win);
+  lcd = my_pal_window_get_lcd(win->pal_window);
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  my_window_set_vgcanvas(win, canvas);
+  ASSERT_NOT_NULL(canvas->vtable);
+  ASSERT_NOT_NULL(canvas->vtable->begin_frame);
+
+  memset(&g_window_dirty_frame_capture, 0,
+         sizeof(g_window_dirty_frame_capture));
+  g_window_dirty_frame_capture.backend_begin_frame =
+      canvas->vtable->begin_frame;
+  g_window_dirty_frame_capture.vtable = *canvas->vtable;
+  g_window_dirty_frame_capture.vtable.begin_frame =
+      window_dirty_capture_begin_frame;
+  canvas->vtable = &g_window_dirty_frame_capture.vtable;
+
+  my_dirty_rects_clear(&win->dirty);
+  my_widget_invalidate(root, &first);
+  my_widget_invalidate(root, &second);
+  ASSERT_EQ(my_dirty_rects_count(&win->dirty), 2u);
+
+  my_window_paint(win);
+
+  ASSERT_EQ(g_window_dirty_frame_capture.begin_calls, 1u);
+  ASSERT_TRUE(g_window_dirty_frame_capture.has_dirty);
+  ASSERT_EQ(g_window_dirty_frame_capture.backend_result, MY_RET_OK);
+  ASSERT_EQ(g_window_dirty_frame_capture.dirty.x, expected.x);
+  ASSERT_EQ(g_window_dirty_frame_capture.dirty.y, expected.y);
+  ASSERT_EQ(g_window_dirty_frame_capture.dirty.w, expected.w);
+  ASSERT_EQ(g_window_dirty_frame_capture.dirty.h, expected.h);
+  ASSERT_EQ(my_dirty_rects_count(&win->dirty), 0u);
+
+  my_vgcanvas_destroy(canvas);
+  my_object_unref((my_object_t*)win);
+  my_pal_destroy(pal);
+}
+
 TEST(floating_plain_widget_does_not_crash_hit_test)
 {
   my_widget_t* root = my_widget_create(NULL, "root");
@@ -8618,6 +8694,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(ui_command_scope_keeps_sibling_commands_alive);
     RUN_TEST(injected_canvas_inherits_window_scale);
     RUN_TEST(window_record_dirty_reports_damage_in_owner_frame);
+    RUN_TEST(window_paint_begins_with_union_of_dirty_rects);
     RUN_TEST(dynamic_scale_reconfigures_injected_canvas_without_resize);
     RUN_TEST(floating_plain_widget_does_not_crash_hit_test);
     RUN_TEST(text_area_grows_capacity_exponentially);

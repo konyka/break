@@ -233,6 +233,174 @@ TEST(lcd_translucent_fill_rect_produces_expected_output)
   my_lcd_destroy(lcd);
 }
 
+static uint8_t rgba8888_expected_blend(uint8_t src, uint8_t dst,
+                                       uint8_t alpha) {
+  return (uint8_t)(((uint32_t)src * alpha +
+                    (uint32_t)dst * (255u - alpha)) / 255u);
+}
+
+TEST(lcd_rgba8888_opaque_fill_uses_memory_byte_order)
+{
+  const my_color_t color = {0x12, 0x34, 0x56, 0xFF};
+  const uint8_t expected[4] = {0x12, 0x34, 0x56, 0xFF};
+  my_lcd_t* lcd;
+  const uint8_t* pixels;
+  size_t i;
+
+  ASSERT_EQ(MY_PIXEL_FORMAT_RGB565, 0);
+  ASSERT_EQ(MY_PIXEL_FORMAT_RGB888, 1);
+  ASSERT_EQ(MY_PIXEL_FORMAT_ARGB8888, 2);
+  ASSERT_EQ(MY_PIXEL_FORMAT_BGRA8888, 3);
+  ASSERT_EQ(MY_PIXEL_FORMAT_MONO, 4);
+  ASSERT_EQ(MY_PIXEL_FORMAT_RGBA8888, 5);
+  ASSERT_EQ(my_pixel_format_bpp(MY_PIXEL_FORMAT_RGBA8888), 32u);
+
+  lcd = my_lcd_mem_create(NULL, 3, 2, MY_PIXEL_FORMAT_RGBA8888);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_EQ(my_lcd_mem_get_stride(lcd), 12u);
+  ASSERT_EQ(my_lcd_fill_rect(lcd, &(my_rect_t){0, 0, 3, 2}, color),
+            MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  ASSERT_NOT_NULL(pixels);
+  for (i = 0u; i < 6u; ++i) {
+    ASSERT_EQ(memcmp(pixels + i * 4u, expected, sizeof(expected)), 0);
+  }
+  my_lcd_destroy(lcd);
+}
+
+TEST(lcd_rgba8888_raw_stride_and_translucent_blending_match_reference)
+{
+  enum { width = 4, height = 3, stride = 20 };
+  const uint8_t alpha[4] = {0u, 63u, 128u, 255u};
+  const uint8_t fill_rgb[3] = {0xE3, 0x71, 0x29};
+  const uint8_t span_rgb[3] = {0xD4, 0x62, 0x18};
+  const my_color_t fill = {0xE3, 0x71, 0x29, 0x80};
+  const my_color_t span = {0xD4, 0x62, 0x18, 0xFF};
+  uint8_t storage[height * stride];
+  uint8_t source[width * height * 4];
+  uint8_t expected[width * height * 4];
+  my_lcd_t* lcd;
+  size_t i;
+  int x, y, c;
+
+  memset(storage, 0xCD, sizeof(storage));
+  lcd = my_lcd_mem_create_from_buffer(NULL, width, height,
+                                      MY_PIXEL_FORMAT_RGBA8888, storage, stride);
+  ASSERT_NOT_NULL(lcd);
+  ASSERT_TRUE(my_lcd_mem_get_buffer(lcd) == storage);
+  ASSERT_EQ(my_lcd_mem_get_stride(lcd), (uint32_t)stride);
+  for (i = 0u; i < (size_t)(width * height); ++i) {
+    source[i * 4u] = (uint8_t)(11u + 13u * i);
+    source[i * 4u + 1u] = (uint8_t)(37u + 11u * i);
+    source[i * 4u + 2u] = (uint8_t)(71u + 7u * i);
+    source[i * 4u + 3u] = (uint8_t)(53u + 9u * i);
+  }
+  memcpy(expected, source, sizeof(expected));
+  ASSERT_EQ(my_lcd_draw_pixels(lcd, source, 0, 0, width, height), MY_RET_OK);
+  for (y = 0; y < height; ++y) {
+    ASSERT_EQ(memcmp(storage + y * stride, expected + y * width * 4,
+                     width * 4), 0);
+    for (x = width * 4; x < stride; ++x) {
+      ASSERT_EQ(storage[y * stride + x], 0xCDu);
+    }
+  }
+
+  for (y = 0; y < 2; ++y) {
+    for (x = 1; x < 3; ++x) {
+      for (c = 0; c < 3; ++c) {
+        size_t offset = (size_t)(y * width + x) * 4u + (size_t)c;
+        expected[offset] = rgba8888_expected_blend(fill_rgb[c], source[offset],
+                                                   fill.a);
+      }
+    }
+  }
+  ASSERT_EQ(my_lcd_fill_rect(lcd, &(my_rect_t){1, 0, 2, 2}, fill), MY_RET_OK);
+  for (y = 0; y < height; ++y) {
+    ASSERT_EQ(memcmp(storage + y * stride, expected + y * width * 4,
+                     width * 4), 0);
+  }
+
+  ASSERT_EQ(my_lcd_draw_pixels(lcd, source, 0, 0, width, height), MY_RET_OK);
+  memcpy(expected, source, sizeof(expected));
+  for (x = 0; x < width; ++x) {
+    for (c = 0; c < 3; ++c) {
+      size_t offset = (size_t)(2 * width + x) * 4u + (size_t)c;
+      expected[offset] = rgba8888_expected_blend(span_rgb[c], source[offset],
+                                                 alpha[x]);
+    }
+  }
+  ASSERT_EQ(my_lcd_blend_span(lcd, 0, 2, alpha, width, span), MY_RET_OK);
+  for (y = 0; y < height; ++y) {
+    ASSERT_EQ(memcmp(storage + y * stride, expected + y * width * 4,
+                     width * 4), 0);
+    for (x = width * 4; x < stride; ++x) {
+      ASSERT_EQ(storage[y * stride + x], 0xCDu);
+    }
+  }
+  my_lcd_destroy(lcd);
+}
+
+TEST(soft_rgba8888_image_and_drawing_use_memory_byte_order)
+{
+  static const uint8_t image[8] = {0x81, 0x42, 0x24, 0xF0,
+                                   0x12, 0xA3, 0xB4, 0xC5};
+  const uint8_t background_rgb[3] = {0x11, 0x22, 0x33};
+  const uint8_t translucent_rgb[3] = {0xF0, 0x60, 0x20};
+  const my_color_t background = {0x11, 0x22, 0x33, 0xFF};
+  const my_color_t opaque = {0xE1, 0xD2, 0xC3, 0xFF};
+  const my_color_t translucent = {0xF0, 0x60, 0x20, 0x80};
+  const uint8_t opaque_rgba[4] = {0xE1, 0xD2, 0xC3, 0xFF};
+  uint8_t expected[4 * 3 * 4];
+  my_lcd_t* lcd;
+  my_vgcanvas_t* canvas;
+  const uint8_t* pixels;
+  size_t i;
+  int x, c;
+
+  for (i = 0u; i < 12u; ++i) {
+    expected[i * 4u] = background.r;
+    expected[i * 4u + 1u] = background.g;
+    expected[i * 4u + 2u] = background.b;
+    expected[i * 4u + 3u] = background.a;
+  }
+  memcpy(expected, image, sizeof(image));
+  memcpy(expected + 2u * 4u, opaque_rgba, sizeof(opaque_rgba));
+  memcpy(expected + 3u * 4u, opaque_rgba, sizeof(opaque_rgba));
+  for (x = 0; x < 4; ++x) {
+    for (c = 0; c < 3; ++c) {
+      expected[(size_t)(4 + x) * 4u + (size_t)c] =
+          rgba8888_expected_blend(translucent_rgb[c], background_rgb[c],
+                                  translucent.a);
+    }
+  }
+
+  lcd = my_lcd_mem_create(NULL, 4, 3, MY_PIXEL_FORMAT_RGBA8888);
+  ASSERT_NOT_NULL(lcd);
+  canvas = my_vgcanvas_soft_create(NULL, lcd);
+  ASSERT_NOT_NULL(canvas);
+  ASSERT_EQ(my_vgcanvas_set_scale_filter(canvas, MY_SCALE_FILTER_NEAREST),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_begin_frame(canvas, NULL), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(canvas, background), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 0, 4, 3}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_draw_image(canvas, image, 2, 1,
+                                   &(my_rectf_t){0, 0, 2, 1}, NULL),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(canvas, opaque), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){2, 0, 2, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_set_fill_color(canvas, translucent), MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_fill_rect(canvas, &(my_rectf_t){0, 1, 4, 1}),
+            MY_RET_OK);
+  ASSERT_EQ(my_vgcanvas_end_frame(canvas), MY_RET_OK);
+  pixels = my_lcd_mem_get_buffer(lcd);
+  ASSERT_NOT_NULL(pixels);
+  ASSERT_EQ(memcmp(pixels, expected, sizeof(expected)), 0);
+  my_vgcanvas_destroy(canvas);
+  my_lcd_destroy(lcd);
+}
+
 TEST(font_format_probing_and_backend_matrix)
 {
   /* R703: the vector-font format probe reads the container header —
@@ -1853,6 +2021,9 @@ TEST_MAIN_BEGIN()
     RUN_TEST(lcd_blend_division_by_255_approximation_is_exact);
   RUN_TEST(lcd_blend_span_produces_expected_output);
   RUN_TEST(lcd_translucent_fill_rect_produces_expected_output);
+    RUN_TEST(lcd_rgba8888_opaque_fill_uses_memory_byte_order);
+    RUN_TEST(lcd_rgba8888_raw_stride_and_translucent_blending_match_reference);
+    RUN_TEST(soft_rgba8888_image_and_drawing_use_memory_byte_order);
     RUN_TEST(font_format_probing_and_backend_matrix);
     RUN_TEST(soft_text_rendering_is_antialiased);
     RUN_TEST(vgcanvas_rejects_invalid_stroke_styles);

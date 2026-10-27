@@ -23,10 +23,11 @@ typedef enum my_pixel_format_t {
   MY_PIXEL_FORMAT_RGB888,     /**< 3 bytes/px: R,G,B */
   MY_PIXEL_FORMAT_ARGB8888,   /**< 4 bytes/px: A,R,G,B */
   MY_PIXEL_FORMAT_BGRA8888,   /**< 4 bytes/px: B,G,R,A */
-  MY_PIXEL_FORMAT_MONO        /**< 1 bit/px, MSB first, 1 = on (white) */
+  MY_PIXEL_FORMAT_MONO,       /**< 1 bit/px, MSB first, 1 = on (white) */
+  MY_PIXEL_FORMAT_RGBA8888    /**< 4 bytes/px: R,G,B,A */
 } my_pixel_format_t;
 
-/** @brief Bits per pixel of a format (16/24/32/32/1, 0 for invalid). */
+/** @brief Bits per pixel of a format (0 for invalid). */
 static inline uint32_t my_pixel_format_bpp(my_pixel_format_t format) {
   switch (format) {
     case MY_PIXEL_FORMAT_RGB565:
@@ -35,6 +36,7 @@ static inline uint32_t my_pixel_format_bpp(my_pixel_format_t format) {
       return 24;
     case MY_PIXEL_FORMAT_ARGB8888:
     case MY_PIXEL_FORMAT_BGRA8888:
+    case MY_PIXEL_FORMAT_RGBA8888:
       return 32;
     case MY_PIXEL_FORMAT_MONO:
       return 1;
@@ -50,7 +52,7 @@ typedef struct my_lcd_vtable_t {
   uint32_t (*get_width)(my_lcd_t* lcd);
   uint32_t (*get_height)(my_lcd_t* lcd);
   my_pixel_format_t (*get_format)(my_lcd_t* lcd);
-  /** @brief Begin a frame; dirty hints the redrawn region (may be NULL). */
+  /** @brief Begin a frame; dirty bounds all modified pixels, NULL means full. */
   my_ret_t (*begin_frame)(my_lcd_t* lcd, const my_rect_t* dirty);
   my_ret_t (*end_frame)(my_lcd_t* lcd);
   /** @brief Blit native-format pixels (row-major, w*h pixels) at (x,y). */

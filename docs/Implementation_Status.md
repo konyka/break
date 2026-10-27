@@ -9110,3 +9110,92 @@ configurations; target shaderc 2/2; and default/Vulkan full builds on
 aarch64le. The lists now include test_platform_time, test_myui_timer_stress,
 and test_myui_timer_concurrency. These counts include every prior headless
 command plus the new timer tests, with no graphics/fuzz command relabelled.
+
+After merging origin/master 2584a56e (skinned LOD and backend fixes), the
+integrated branch passes Linux 182/182, QNX x86_64 default 155/155 and complete
+Vulkan 156/156, native Screen 2/2, and target shaderc 2/2. aarch64le default
+and Vulkan full builds also pass. The merge is pushed to feat/qnx-compat before
+the new Screen PAL work begins.
+
+## QNX native myui Screen and stability receipts (2026-10-27)
+
+MYUI_PAL=screen now selects a real Screen software PAL rather than falling back
+to dummy. It owns a BGRA8888 double-buffered native window, dirty rectangles,
+resize, native keyboard/pointer/wheel and manager close, plus the common timer
+and UI command protocols. Native SIZE and BUFFER_SIZE stay synchronized. The
+LCD wrapper remains alive across buffer replacement, so a failed resize cannot
+leave the software canvas pointing at a freed LCD. Queue wakeups coalesce;
+batches of 64 queued events yield to timer scheduling, and quit drains only a
+finite snapshot of already queued events before returning. Engine Platform
+independently filters native input by source window, propagates native size to
+WSI, and accepts the documented manager-close subtype.
+
+The pre-integration validation snapshot passes Linux 182/182, graphics 4/4,
+TSan 182/182 and ASan/UBSan 182/182; QNX x86_64 default 155/155 and complete
+Vulkan 156/156 on-target; default and Vulkan native Screen each 2/2; target
+shaderc 2/2; and engine input/manager tests 4/4 in both normal and ASan/UBSan
+configurations, including foreign-window and unknown-subtype rejection. Six
+myui Screen test commands each total 30/30 in normal and ASan/UBSan
+configurations. The application E2E drives real controls, a 280x220 native
+resize, software-canvas recreation, accepted posts and manager close. See
+docs/qnx_compat.md for the exact, separately scoped counts and temporary logs.
+
+Both configurations complete 500/500 full PAL/window/loop lifecycles with 1500
+accepted posts, balanced native handles and zero live allocator errors. Their
+30-second throttled soaks execute and destroy 1,670,368 and 4,051,616 commands
+respectively, with zero FIFO/error/watchdog failures and frame/post counts
+balanced. One-second unthrottled regressions also complete all submitted
+commands while retaining frame progress. These are bounded test receipts, not
+claims of absolute optimality, hard real-time latency or zero future leaks.
+
+aarch64le default, Vulkan and Screen PAL trees cross-build as AArch64 QNX ELF;
+there is no ARM target runtime here. The latest Vulkan probe still fails device
+creation because the VM has no ICD exposing VK_KHR_surface. Physical GPU/HID,
+native text/IME/clipboard/monitor enumeration/relative mouse, ARM runtime and
+QNX TSan remain unverified; accepted software posts are not physical display
+or GPU evidence. Integration with origin/master 7b6e7738 and its subsequent
+full regression is a separate gate, not implied by these earlier results.
+
+## QNX Screen nonblocking and full-frame correctness (2026-10-27)
+
+Review-driven TDD added real regressions before implementation changes:
+test_mypal_screen_failures caught missing nonblocking flags and the missing
+EWOULDBLOCK-to-MY_RET_PENDING mapping; test_mypal_screen_present caught lost
+history across alternating buffers; test_myui_window_manager caught a first-rect
+only frame submission; and the native format/non-grey RGBA assertions failed on
+the old BGRA Screen path. Temporary red logs include
+/tmp/qnx-screen-nonblock-red.log, /tmp/qnx-screen-history-red2.log,
+/tmp/build-linux-myui-dirty/logs/test-red.log and
+/tmp/qnx-screen-rgba-project-red.log.
+
+Screen dequeue and post now use SCREEN_DONT_BLOCK and report temporary buffer
+exhaustion as MY_RET_PENDING, allowing timer progress and bounded retries. A CPU
+shadow restores the latest complete frame whenever a native buffer is acquired;
+it does not rely on per-slot native history. Failed posts accumulate unposted
+damage for the retry. my_window_paint submits the bounding box of every dirty
+rectangle instead of only the first. The native LCD and the software pixel path
+support RGBA8888 byte order, including opaque/translucent fills, spans and image
+packing. Hot-frame allocation and pointer/stride queries remain zero in the
+instrumented present tests.
+
+The six Screen commands total 33/33 in both normal and ASan/UBSan target runs;
+the generic software backend totals 47/47 on Linux, QNX normal and QNX
+ASan/UBSan. Normal target validation also completes 100 consecutive present
+runs (3/3 each). Both configurations complete 500/500 lifecycles with 1500
+accepted posts, balanced native handles and zero live allocator errors. Their
+30-second soaks complete 414,528 and 424,928 commands with 1,539 and 1,608
+accepted posts respectively; failed/FIFO/error/watchdog counts are all zero.
+The corresponding one-second unthrottled runs complete 8,443,068 and 3,315,805
+commands with frame progress and balanced command destruction. Logs are
+/tmp/qnx-screen-rgba-normal-suite1.log,
+/tmp/qnx-screen-rgba-asan-suite1.log,
+/tmp/qnx-screen-rgba-present100-stability30.log and
+/tmp/qnx-screen-rgba-asan-stability30.log.
+
+These are bounded pre-integration receipts, not proof of absolute optimality,
+zero future failures or GPU/physical-display correctness. A native RGBA probe
+completed 20,000 frames without content errors on the RGBA virtual display.
+The screen_read_window probe is unsupported there (ENOENT), so no final-display
+readback is claimed. Full Linux/QNX regression, upstream integration and the
+remaining GPU, ARM-runtime, native IME/clipboard/monitor and QNX TSan boundaries
+remain explicit gates.

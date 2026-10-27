@@ -1039,6 +1039,8 @@ void my_window_restore_dirty(my_window_t* win,
 void my_window_paint(my_window_t* win) {
   my_vgcanvas_t* vg;
   my_dirty_rects_t frame_dirty;
+  my_rect_t dirty_bounds;
+  size_t i;
   my_ret_t ret;
   my_window_t* held_win;
   if (win == NULL) {
@@ -1057,8 +1059,12 @@ void my_window_paint(my_window_t* win) {
   if (vg == NULL) {
     goto done;
   }
-  if (my_vgcanvas_begin_frame(vg, my_dirty_rects_get(&win->dirty, 0)) !=
-      MY_RET_OK) {
+  dirty_bounds = *my_dirty_rects_get(&win->dirty, 0);
+  for (i = 1; i < my_dirty_rects_count(&win->dirty); i++) {
+    my_rect_union(&dirty_bounds, my_dirty_rects_get(&win->dirty, i),
+                  &dirty_bounds);
+  }
+  if (my_vgcanvas_begin_frame(vg, &dirty_bounds) != MY_RET_OK) {
     goto done;
   }
   ret = window_record_dirty(win);

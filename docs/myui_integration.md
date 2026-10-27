@@ -1,14 +1,50 @@
 # myui 集成与 Break RHI 后端
 
-## QNX 兼容范围（2026-10-26）
+## QNX 兼容范围（2026-10-27）
 
-QNX 当前通过 `MYUI_PAL=dummy` 使用离屏软件路径；布局、CSS、文本排版、编辑器、
-图表、MVVM 和 vgcanvas 等 headless 测试可在 Neutrino 目标机运行。引擎的
-`window_screen.c` 提供原生 Screen 窗口与 Vulkan WSI 适配，**不等于独立 myui
-Screen PAL**：`MYUI_PAL` 尚无 `screen` 选项，也没有 myui 原生 Screen 窗口收据。
-QNX 显式 Vulkan 只描述引擎 RHI 的编译路径，不能据此推断 myui 已完成 GPU 渲染。
-文本/IME、剪贴板、显示器枚举、相对鼠标及真实 Screen 输入注入仍未验证或保持
-fail-closed。目标机证据与性能边界见 `docs/qnx_compat.md`。
+QNX 默认通过 `MYUI_PAL=dummy` 使用确定性的离屏软件路径；布局、CSS、文本排版、
+编辑器、图表、MVVM 和 vgcanvas 等 headless 测试可在 Neutrino 目标机运行。
+另有显式 `MYUI_PAL=screen` 原生软件 PAL，位于
+`engine/src/myui/mypal/screen/`，需要 `ENGINE_QNX_SCREEN=ON` 和 SDP 的 Screen
+头文件/库。该配置下 `my_pal_create` 直接返回 Screen 创建结果，失败时不回落
+dummy。
+
+Screen PAL 创建真实 `screen_window`，以 RGBA8888 软件 LCD 包装固定两个
+render buffer，执行非阻塞 dequeue/post 和 dirty `x/y/w/h` 提交；无可用 buffer
+时返回 `MY_RET_PENDING`，不卡住 timer/quit。两个 buffer 的 pointer/stride
+包装按需缓存，热路径不分配 myui 内存。CPU shadow 在每次取得 native buffer
+后恢复最近一次完整帧，避免双缓冲历史分叉；同帧多个 dirty rect 先汇总为
+bounding box，post 失败重试保留累计 damage。resize 只释放内部旧 buffer/mem
+包装，LCD 外包装保持稳定；原生 SIZE 与 BUFFER_SIZE 同步，失败时旧
+canvas/LCD 安全失败，恢复保留 OOM 类别。外部 native `SCREEN_PROPERTY_SIZE`
+变化会同步尺寸/LCD，SIZE property 事件转换为 `MY_EVENT_RESIZE`。
+
+主循环实现 run/quit/post_event/timer/command；空队列才发 wake、队列真正清空
+才重置 pending 状态，nested command 复用已有 wake。每批最多处理 64 个
+queued event 后重新调度 timer，避免 queue starvation；quit 后对退出时的
+已排队快照做有限 drain。原生键盘、指针、滚轮和 manager close 已接入，协作
+close subtype 为 `MY_PAL_SCREEN_MANAGER_CLOSE=0x4d595543u`。
+
+这条路径与引擎 `window_screen.c` 的 Platform/Vulkan WSI 适配、以及
+`mypal/break` + `my_vgcanvas_break_rhi` 的 Break 专有 RHI 桥是三层不同集成，
+不能互相替代证据。Screen PAL 的原生文本/IME、显示器枚举、相对鼠标和
+GL/Vulkan mount/surface slot 尚未实现，clipboard 返回
+`MY_RET_NOT_SUPPORTED`；显式 Vulkan canvas 可编译不等于 Screen PAL 已挂载
+Vulkan，更不代表存在 GPU/ICD。测试只在 begin 后采样当前 back buffer，不直接
+读取已 post 像素；当前虚拟显示器的 `screen_read_window` 返回 ENOENT，故
+accepted post 不是实际显示 FPS、最终显示像素、GPU 或物理显示验收。
+
+最新同树 6 个定向命令普通及 ASan/UBSan 各 **33/33**，包括非阻塞重试、
+非灰阶双缓冲历史和 present 帧一致性；RGBA 通用软件后端在 Linux、QNX 普通
+及 QNX ASan/UBSan 均为 **47/47**。E2E 已覆盖真实 SIZE/property 到
+**280x220**、根 widget、PAL size、LCD/canvas 重建和自动重绘；初轮 ASan
+实际 heap-use-after-free 已修，最终定向运行无消毒器报告。引擎
+input/manager 普通及 ASan/UBSan 各 **4/4**，包含异源/未知 manager subtype
+负向过滤。普通与 ASan 各完成 500/500 生命周期和 30 秒 soak，普通另有
+100 轮 present 复验；数据与口径见 `docs/qnx_compat.md` §5–§6。
+此前 Linux 普通/TSan/ASan/UBSan 各 182/182、graphics 4/4，QNX 默认
+155/155、Vulkan 156/156 已通过；最新修复及集成 `origin/master` 后仍须重新
+执行完整回归。
 
 ## QNX 定时器、并发及时性与 pending 优化（2026-10-26）
 
@@ -1396,9 +1432,11 @@ UI 配置不再支持 XML，loader 不再暴露 XML capability/API，`my_xml.*` 
 `.xml` 文件仍属于平台协议输入，与 myui UI schema 无关。
 
 集成基线是上游 `myui` commit `676bfd10f96992a3efa100d67118690063c279cf`。
-上游源码以 vendored 形式置于本仓库，平台与 RHI 适配层只在 `mypal/break`、
-`myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*` 中实现，避免把 Break API
-反向泄漏到 widget、MVVM 或文本排版核心。
+上游源码以 vendored 形式置于本仓库。Break 专有适配只位于 `mypal/break`、
+`myr/my_vgcanvas_break_rhi.c` 和 `src/ui/myui_break*`；通用原生 PAL 则按平台
+位于 `mypal/x11`、`mypal/wayland`、`mypal/win32`、`mypal/cocoa` 和
+`mypal/screen` 等目录。两者都不把 Break API 反向泄漏到 widget、MVVM 或文本
+排版核心。
 
 ## 目录
 
@@ -1406,7 +1444,9 @@ UI 配置不再支持 XML，loader 不再暴露 XML capability/API，`my_xml.*` 
 engine/
 ├── external/SheenBidi/            # BiDi + Arabic shaping
 ├── src/myui/
-│   ├── mypal/break/               # Break PAL adapter
+│   ├── mypal/dummy/               # 默认确定性离屏 PAL
+│   ├── mypal/screen/              # QNX Screen 原生窗口 + BGRA 软件 LCD PAL
+│   ├── mypal/break/               # Break 专有 Platform/RHI PAL 桥
 │   ├── myr/my_vgcanvas_break_rhi.c # Break RHI vgcanvas backend
 │   └── ...                        # myui core
 ├── src/ui/
@@ -1422,13 +1462,15 @@ engine/
 
 | 目标 | 说明 |
 |------|------|
-| `myui_core` | myui 核心静态库，包含 font/image/yaml/bidi/mvvm/widget 子系统 |
+| `myui_core` | myui 核心静态库，包含 font/image/yaml/bidi/mvvm/widget 子系统，并按 `MYUI_PAL` 编入对应 port |
 | `break_myui` | `my_pal_break` + RHI vgcanvas + `BreakUI` 桥 |
 | `dxx_core` | duanxianxia 视图构建器 |
 | `dxx_break` | Break-aware duanxianxia demo |
 
 | 选项 | 默认 | 说明 |
 |------|------|------|
+| `MYUI_PAL` | dummy | `dummy/x11/wayland/win32/cocoa/screen`；QNX 原生软件路径显式使用 `screen` |
+| `ENGINE_QNX_SCREEN` | ON | QNX 下探测 Screen 头文件/库并编译引擎窗口层；`MYUI_PAL=screen` 也必须开启 |
 | `MYUI_FONT_STB` | ON | stb_truetype 字体后端；`my_font_stb_create_ex()` 支持显式 TrueType Collection face index |
 | `MYUI_FONT_FREETYPE` | ON（找到 FreeType 时） | 启用 hinting、TTC 多字面和 CJK 默认字体 |
 | `MYUI_HARFBUZZ` | ON（同时找到 FreeType 与 HarfBuzz 时） | 优先使用 CMake package target，回退 pkg-config；启用 OpenType shaping |
@@ -1444,17 +1486,20 @@ engine/
 `${CMAKE_SOURCE_DIR}` 布局，也不会把顶层工程误当成头文件根。
 可复用入口按 `myc -> myr -> mypal -> myui -> mymvvm -> mymvvm_myui` 顺序加入。
 其中 `mypal` 默认提供无窗口系统的 dummy port；真实 X11 / Wayland / Win32 /
-Cocoa port 现已随树提供（`mypal/x11`、`mypal/wayland`、`mypal/win32`、
-`mypal/cocoa`），由 CMake 选项 `MYUI_PAL=x11|wayland|win32|cocoa|dummy`
-选择编入，平台库只在对应分支链接（默认 dummy 构建保持零平台依赖）。
+Cocoa / QNX Screen port 随树提供，由
+`MYUI_PAL=x11|wayland|win32|cocoa|screen|dummy` 选择编入，平台库只在对应
+分支链接（默认 dummy 构建保持零平台依赖）。`screen` 仅限 QNX，且不会静默
+回退 dummy。
+
 X11 与 Wayland port 在参考主机上经 `test_mypal_x11.c` /
-`test_mypal_wayland.c` 真机验证且 ASan 无泄漏；Win32/Cocoa 为
-compile-targeted。各 port 实现冻结的 `my_pal.h` 契约：窗口生命周期、
-`get_lcd` 呈现语义（XImage / wl_shm / DIB / NSBitmapImageRep）、
-`gl_enable` GL mount（EGL ES2 或 WGL/NSOpenGL + 桌面表回退）、
-事件到 `my_event_t` 的翻译、以及 `run/quit/post_event/timer` 主循环。配置回归
-`test_myr_dependency_config` 会检查五个模块的路径契约和 PAL target；隔离顶层构建已
-在关闭字体、YAML、BiDi 和图像可选项时完成 `87/87` 编译。
+`test_mypal_wayland.c` 真机验证且历史 ASan 运行无报告；Win32/Cocoa 为
+compile-targeted。桌面 port 实现窗口生命周期、各自 `get_lcd` 呈现语义
+（XImage / wl_shm / DIB / NSBitmapImageRep）、`gl_enable` GL mount、事件翻译
+以及主循环。Screen port 实现真实窗口、RGBA8888 双缓冲 LCD/post、native
+property resize、事件/timer/command 协议，但不实现 GL/Vulkan mount/surface；
+其 clipboard 为 `MY_RET_NOT_SUPPORTED`。配置回归
+`test_myr_dependency_config` 会检查五个模块的路径契约和 PAL target；隔离顶层构建
+历史记录为关闭字体、YAML、BiDi 和图像可选项时完成 `87/87` 编译。
 
 网络模块的 UDP 测试使用 `net_udp_create(0)` 获取内核临时端口，并通过
 `net_socket_get_local_address()` 构造 loopback 目标，不依赖固定端口或进程号哈希；该 API
@@ -1485,6 +1530,81 @@ cmake -S engine -B build-myui-wayland-vk -DENGINE_ENABLE_WAYLAND=ON -DENGINE_VUL
 cmake --build build-myui-wayland-vk --target dxx_break -j
 ```
 
+### QNX Screen PAL 定向构建与目标侧测试
+
+以下命令使用独立构建/部署根。`MYUI_PAL=screen` 的五个功能/性能测试和
+`test_mypal_screen_stability` 均带 `graphics` 标签，不在默认 headless 清单中；
+同树六个定向命令普通及 ASan/UBSan 最新结果各为内部 33/33，不代表全树。
+交叉产生的是 QNX ELF，宿主 CTest 不能直接执行，必须部署到真实 QNX 目标侧
+运行：
+
+```bash
+# 宿主；SDP 和三个路径均按实际环境替换。
+export QNX_SDP_ROOT=/opt/qnx800
+source "$QNX_SDP_ROOT/qnxsdp-env.sh"
+export QNX_SCREEN_BUILD=/tmp/build-qnx-myui-screen
+export QNX_SCREEN_TARGET_ROOT=/tmp/break-qnx-myui-screen
+export QNX_SCREEN_STAGE_HOST=/tmp/qnx-myui-screen-runtime
+cmake -S engine -B "$QNX_SCREEN_BUILD" \
+  -DCMAKE_TOOLCHAIN_FILE="$PWD/engine/toolchain-qnx.cmake" \
+  -DQNX_ARCH=x86_64 -DMYUI_PAL=screen -DENGINE_QNX_SCREEN=ON \
+  -DENGINE_BUILD_TESTS=ON \
+  -DENGINE_TEST_SOURCE_ROOT="$QNX_SCREEN_TARGET_ROOT"
+cmake --build "$QNX_SCREEN_BUILD" -j --target \
+  test_mypal_screen_runtime test_mypal_screen_failures \
+  test_mypal_screen_concurrency test_mypal_screen_present \
+  test_myui_screen_e2e test_mypal_screen_stability
+python3 engine/tools/qnx/stage_screen_runtime.py \
+  --arch x86_64 --output "$QNX_SCREEN_STAGE_HOST"
+```
+
+把六个测试二进制放到目标机 `$QNX_SCREEN_TARGET_ROOT/bin`，完整 runtime 树
+放到其 `runtime` 子目录，然后在目标机执行。远端 `timeout` 不可省略：
+
+```sh
+export QNX_SCREEN_TARGET_ROOT=/tmp/break-qnx-myui-screen
+export QNX_SCREEN_RUNTIME="$QNX_SCREEN_TARGET_ROOT/runtime"
+export QNX_SCREEN_TEST_BIN="$QNX_SCREEN_TARGET_ROOT/bin"
+export LD_LIBRARY_PATH="$QNX_SCREEN_RUNTIME/lib:$QNX_SCREEN_RUNTIME/usr/lib:$QNX_SCREEN_RUNTIME/lib/dll:$QNX_SCREEN_TEST_BIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+"$QNX_SCREEN_RUNTIME/sbin/screen" \
+  -c "$QNX_SCREEN_RUNTIME/graphics-virtual-display.conf" &
+cd "$QNX_SCREEN_TEST_BIN" || exit 2
+export BREAK_QNX_SCREEN_REQUIRED=1
+for screen_test in \
+    test_mypal_screen_runtime test_mypal_screen_failures \
+    test_mypal_screen_concurrency test_mypal_screen_present \
+    test_myui_screen_e2e
+do
+    timeout 120 "./$screen_test" || exit $?
+done
+
+# stability 默认 soak 为 10 秒；30 秒验收必须显式设置。
+BREAK_SCREEN_STRESS_MS=30000 timeout 120 ./test_mypal_screen_stability
+```
+
+ASan/UBSan 需独立构建/部署根，配置时添加
+`-DENGINE_USE_ASAN=ON -DENGINE_USE_UBSAN=ON`，并部署对应 QNX SONAME/别名。
+五个功能/性能测试分别按下面的方式启动，`on -ad` 只作用于测试进程，不全局
+关闭 ASLR：
+
+```sh
+timeout 120 on -ad env \
+  ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+  UBSAN_OPTIONS=halt_on_error=1 \
+  "./$screen_test"
+
+BREAK_SCREEN_STRESS_MS=30000 timeout 120 on -ad env \
+  ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 \
+  UBSAN_OPTIONS=halt_on_error=1 \
+  ./test_mypal_screen_stability
+```
+
+上述命令用于同条件复验。最新同树 6 个定向命令普通及 ASan/UBSan 各 33/33，
+500 次生命周期、30 秒 soak 和 1 秒无节流结果及测量口径见
+`docs/qnx_compat.md` §5–§6；最新修复和上游合并后的完整 Linux/QNX
+默认/Vulkan 套件仍须重验。引擎 manager 负向过滤已包含在定向 4/4 中，
+但不能把定向结果写成全部通过。
+
 运行 `dxx_break`：
 
 ```bash
@@ -1506,7 +1626,8 @@ cmake --build build-myui-wayland-vk --target dxx_break -j
 
 ### Break PAL (`my_pal_break`)
 
-包装已有 `Platform *` 和 `RHIDevice *`：
+本节是 Break 专有 Platform/RHI 桥，不是默认 dummy PAL，也不是 QNX Screen
+原生软件 PAL。它包装已有 `Platform *` 和 `RHIDevice *`：
 
 - 布局尺寸来自 `platform_get_logical_size()`；RHI device、swapchain、viewport 和
   BreakUI offscreen surface 使用 `platform_get_drawable_size()`。旧
@@ -1544,13 +1665,17 @@ cmake --build build-myui-wayland-vk --target dxx_break -j
 释放返回值，因此 edit/text-area 不再受早期 `256`/`4096` 字节临时缓冲限制。粘贴使用
 一次过滤、一次文档插入和一条 undo 记录，避免逐字符重分配的 O(n^2) 行为。
 
-所有平台的 clipboard 写入和外部 UTF-8 selection 在提交到 PAL 缓存前都按显式字节长度校验，拒绝
-overlong、surrogate、超出 `U+10FFFF`、截断序列和嵌入 NUL，避免恶意 selection 穿透到
-编辑器或 shaping；校验为单次 O(n) 扫描，不增加绘制路径开销。X11 与 Wayland 对本地和
-接收完成的文本使用同一规则，且都允许不含终止字节的最大 `16 MiB` payload，并额外保留
-一个 NUL 终止字节；Wayland 在达到上限时先用非阻塞单字节读取探测 EOF，恰好上限且已
+所有已实现 clipboard 的平台在写入和接收外部 UTF-8 selection、提交到 PAL
+缓存前都按显式字节长度校验，拒绝 overlong、surrogate、超出 `U+10FFFF`、
+截断序列和嵌入 NUL，避免恶意 selection 穿透到编辑器或 shaping；校验为单次
+O(n) 扫描，不增加绘制路径开销。X11 与 Wayland 对本地和接收完成的文本使用
+同一规则，且都允许不含终止字节的最大 `16 MiB` payload，并额外保留一个 NUL
+终止字节；Wayland 在达到上限时先用非阻塞单字节读取探测 EOF，恰好上限且已
 结束的传输成功，仍有额外字节或校验失败时丢弃本次传输，不污染旧缓存。
 
+- QNX Screen PAL 尚未实现原生 clipboard，三个 clipboard 入口均返回
+  `MY_RET_NOT_SUPPORTED`，分配式查询同时清空输出指针；不能套用 dummy 或
+  X11/Wayland 的缓存/异步读取语义。
 - Windows 使用 `CF_UNICODETEXT`；Cocoa 使用 `NSPasteboardTypeString`，二者同步读取。
 - X11 使用 `CLIPBOARD`/`UTF8_STRING`/`TARGETS`，含 `INCR` 分块传输；读取永不等待
   外部 owner。Wayland 使用 `wl_data_device` 和非阻塞 pipe，读取同样由 `platform_poll`
@@ -1945,11 +2070,14 @@ scissor、swapchain extent 与实际 drawable 一致。
 | Wayland | `wl_egl_window` + `wl_display` | `wl_surface` + `wl_display` | `text-input-v3`、非阻塞 pipe |
 | Win32 | `HWND` + `HINSTANCE` | `HWND` + `HINSTANCE` | IMM32、UTF-16 clipboard |
 | Cocoa | `CAMetalLayer` | `CAMetalLayer` | `NSTextInputClient`、pasteboard |
-| QNX（headless） | 无（dummy PAL 离屏） | 无（fail-closed） | dummy PAL 可控 clipboard 契约 |
+| QNX（dummy/headless） | 无（dummy PAL 离屏） | 无（fail-closed） | dummy PAL 可控 clipboard 契约 |
+| QNX（`MYUI_PAL=screen`，软件 LCD） | 未实现 GL mount slot | 未实现 Vulkan surface slot | 原生文本/IME 未实现；clipboard `MY_RET_NOT_SUPPORTED` |
 
-QNX 目标当前只使用 dummy PAL 离屏路径（`MYUI_PAL=dummy`）：窗口/WSI 不可用，
-RHI 解析为 headless；myui 全部 headless 测试与 `test_qnx_perf_smoke` 离屏
-吞吐冒烟在 QNX 平台定义下运行。详见 `docs/qnx_compat.md`。
+QNX 默认使用 dummy PAL 离屏路径，RHI 默认解析为 headless；显式
+`MYUI_PAL=screen` 则创建真实 `screen_window` 并通过 RGBA8888 双缓冲软件
+LCD/post 呈现，不需要也不证明 GPU。引擎 Platform 的 Screen Vulkan WSI 是另一条
+适配路径，不能填作 myui Screen PAL 的 Vulkan slot。同树定向、长稳结果、
+完整回归及物理显示边界详见 `docs/qnx_compat.md`。
 
 `platform_window_native()` 表示 OpenGL/EGL 目标，`platform_surface_native()` 表示
 Vulkan WSI 目标；应用不得仅凭“都是窗口句柄”互换这两个接口。
