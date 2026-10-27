@@ -1747,6 +1747,7 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
     /* render debugger: <= 4 Hz pure read of the borrowed device and the
      * viewport's last-render stats */
     editor_panel_render_tick(shell->render_panel, shell->vp3d);
+    break_editor_viewport3d_tick(shell->vp3d);
     /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
      * never creates one; editor_main --remote / tests attach it via
      * break_editor_shell_set_remote) is driven exactly once per tick on the
@@ -1913,6 +1914,9 @@ void break_editor_shell_set_render_device(BreakEditorShell *shell,
                                           RHIDevice *device) {
     if (shell != NULL) {
         editor_panel_render_set_device(shell->render_panel, device);
+        if (device != NULL) {
+            (void)break_editor_viewport3d_prepare(shell->vp3d, device);
+        }
     }
 }
 

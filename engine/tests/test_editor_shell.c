@@ -17,9 +17,15 @@
 
 #include "editor_hot_reload.h"
 #include "editor_panels.h"
+#include "editor_shader_reload.h"
 #include "editor_shader_source.h"
 #include "editor_viewport3d.h"
 #include "rhi_editor_fake.h"
+
+#include <stdatomic.h>
+#define BREAK_RUNTIME_TESTING 1
+#include <runtime/runtime_test_hooks.h>
+#undef BREAK_RUNTIME_TESTING
 
 #include <core/profiler.h>
 #include <platform/time.h>
@@ -2054,7 +2060,7 @@ TEST(render_panel_rows_from_device_source_and_viewport_stats)
     ASSERT_TRUE(render_row_has(shell, "caps: shader=glsl_vk compute=1 indirect=1 push=256"));
     ASSERT_TRUE(render_row_has(shell, "msaa=0x5"));
     ASSERT_TRUE(render_row_has(shell, "resources: 17/4096 slots"));
-    ASSERT_TRUE(render_row_has(shell, "viewport: not-initialised"));
+    ASSERT_TRUE(render_row_has(shell, "viewport: failed"));
     ASSERT_TRUE(render_row_has(shell, "skipped=not-rendered"));
     /* detach: back to the single no-device row on the next tick */
     break_editor_shell_set_render_device(shell, NULL);
@@ -4309,6 +4315,511 @@ static void hr_settle(BreakEditorShell *shell, int ticks) {
     }
 }
 
+/* ---------------- viewport shader reload ---------------- */
+
+typedef struct ShaderReloadLogCapture {
+    u32 calls;
+    char last[160];
+} ShaderReloadLogCapture;
+
+static void shader_reload_capture_log(void *user, const char *line) {
+    ShaderReloadLogCapture *capture = (ShaderReloadLogCapture *)user;
+    if (capture == NULL || line == NULL) {
+        return;
+    }
+    capture->calls++;
+    snprintf(capture->last, sizeof(capture->last), "%s", line);
+}
+
+typedef struct ShaderReloadFixture {
+    BreakEditorShell *shell;
+    BreakEditorViewport3D *vp;
+    int device;
+    char root[512];
+    char shaders[600];
+    char vert[700];
+    char frag[700];
+    ShaderReloadLogCapture log;
+} ShaderReloadFixture;
+
+static void shader_reload_fixture_close(ShaderReloadFixture *fx) {
+    if (fx->shell != NULL) {
+        break_editor_shell_set_render_device(fx->shell, NULL);
+        break_editor_shell_destroy(fx->shell);
+        fx->shell = NULL;
+        fx->vp = NULL;
+    }
+    remove(fx->vert);
+    remove(fx->frag);
+    if (fx->shaders[0] != '\0') {
+        TEST_RMDIR(fx->shaders);
+    }
+    if (fx->root[0] != '\0') {
+        TEST_RMDIR(fx->root);
+    }
+}
+
+static void shader_reload_fixture_open(ShaderReloadFixture *fx,
+                                       const char *name,
+                                       const char *initial_vert,
+                                       const char *initial_frag) {
+    memset(fx, 0, sizeof(*fx));
+    test_tmp(fx->root, sizeof(fx->root), name);
+    snprintf(fx->shaders, sizeof(fx->shaders), "%s/shaders", fx->root);
+    snprintf(fx->vert, sizeof(fx->vert), "%s/editor_color.vert", fx->shaders);
+    snprintf(fx->frag, sizeof(fx->frag), "%s/editor_color.frag", fx->shaders);
+    ASSERT_EQ(TEST_MKDIR(fx->root), 0);
+    ASSERT_EQ(TEST_MKDIR(fx->shaders), 0);
+    hr_write_text(fx->vert, initial_vert);
+    hr_write_text(fx->frag, initial_frag);
+    ASSERT_TRUE(shader_env_set(fx->root));
+    fx->shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(fx->shell);
+    fx->vp = break_editor_shell_viewport3d(fx->shell);
+    ASSERT_NOT_NULL(fx->vp);
+    break_editor_viewport3d_set_shader_reload_logger(
+        fx->vp, shader_reload_capture_log, &fx->log);
+    break_editor_shell_set_render_device(fx->shell,
+                                         (RHIDevice *)&fx->device);
+}
+
+static BreakEditorShaderReloadStats shader_reload_stats(
+    const ShaderReloadFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    memset(&stats, 0, sizeof(stats));
+    (void)break_editor_viewport3d_shader_reload_stats(fx->vp, &stats);
+    return stats;
+}
+
+static u32 shader_reload_revision(const ShaderReloadFixture *fx) {
+    BreakEditorViewport3DGpuState state;
+    break_editor_viewport3d_gpu_state_for_test(fx->vp, &state);
+    return editor_rhi_fake_pipeline_revision(state.pipeline);
+}
+
+static void shader_reload_write_pair(ShaderReloadFixture *fx, u32 revision,
+                                     const char *marker, bool bump) {
+    char vert[128], frag[128];
+    snprintf(vert, sizeof(vert), "REV=%u vertex%s\n", revision, marker);
+    snprintf(frag, sizeof(frag), "REV=%u fragment%s\n", revision, marker);
+    hr_write_text(fx->vert, vert);
+    hr_write_text(fx->frag, frag);
+    if (bump) {
+        hr_bump_mtime(fx->vert);
+        hr_bump_mtime(fx->frag);
+    }
+}
+
+static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    BreakEditorViewport3DGpuState before_bad, after_bad;
+    EditorRhiFakeStats fake_before_bad, fake_after_bad;
+    shader_reload_fixture_open(fx, "editor_shader_reload_watcher",
+                               "REV=1 vertex\n", "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->shell);
+    ASSERT_EQ(shader_reload_revision(fx), 1u);
+    stats = shader_reload_stats(fx);
+    ASSERT_TRUE(stats.watching);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_EQ(stats.attempts, 0u);
+
+    shader_reload_write_pair(fx, 2u, "", true);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 1u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.reloads, 1u);
+    ASSERT_EQ(stats.attempts, 1u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_TRUE(stats.events >= 1u);
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_APPLIED);
+    ASSERT_EQ(shader_reload_revision(fx), 2u);
+    ASSERT_TRUE(fx->log.calls >= 1u);
+    {
+        EditorRhiFakeStats fake;
+        editor_rhi_fake_stats(&fake);
+        ASSERT_EQ(fake.pipeline_destroys, 1u);
+        ASSERT_EQ(fake.binding_destroys, 1u);
+        ASSERT_EQ(fake.buffer_creates, 1u);
+    }
+
+    break_editor_viewport3d_gpu_state_for_test(fx->vp, &before_bad);
+    editor_rhi_fake_stats(&fake_before_bad);
+    shader_reload_write_pair(fx, 3u, " COMPILE_FAIL", true);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).failed == 1u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.failed, 1u);
+    ASSERT_EQ(stats.reloads, 1u);
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_FAILED_KEEP_OLD);
+    break_editor_viewport3d_gpu_state_for_test(fx->vp, &after_bad);
+    editor_rhi_fake_stats(&fake_after_bad);
+    ASSERT_TRUE(viewport_gpu_state_equal(&before_bad, &after_bad));
+    ASSERT_EQ(shader_reload_revision(fx), 2u);
+    ASSERT_TRUE(editor_fake_stats_equal(&fake_before_bad, &fake_after_bad));
+
+    shader_reload_write_pair(fx, 4u, "", true);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 2u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.reloads, 2u);
+    ASSERT_EQ(stats.failed, 1u);
+    ASSERT_EQ(stats.attempts, 3u);
+    ASSERT_EQ(shader_reload_revision(fx), 4u);
+    editor_rhi_fake_stats(&fake_after_bad);
+    ASSERT_EQ(fake_after_bad.pipeline_destroys,
+              fake_before_bad.pipeline_destroys + 1u);
+    ASSERT_EQ(fake_after_bad.binding_destroys,
+              fake_before_bad.binding_destroys + 1u);
+    ASSERT_EQ(fake_after_bad.buffer_creates, 1u);
+}
+
+TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_watcher_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_initial_recovery_body(ShaderReloadFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    EditorRhiFakeStats fake;
+    shader_reload_fixture_open(fx, "editor_shader_reload_initial",
+                               "REV=1 COMPILE_FAIL\n", "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->shell);
+    ASSERT_EQ(shader_reload_revision(fx), 0u);
+    stats = shader_reload_stats(fx);
+    ASSERT_TRUE(stats.watching);
+    ASSERT_EQ(stats.attempts, 0u);
+    hr_settle(fx->shell, 20);
+    ASSERT_EQ(shader_reload_stats(fx).attempts, 0u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 0u);
+    ASSERT_EQ(fake.buffer_creates, 0u);
+
+    shader_reload_write_pair(fx, 2u, "", true);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 1u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.attempts, 1u);
+    ASSERT_EQ(stats.reloads, 1u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_EQ(shader_reload_revision(fx), 2u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+    ASSERT_EQ(fake.buffer_creates, 1u);
+    ASSERT_EQ(fake.live_pipelines, 1u);
+    ASSERT_EQ(fake.live_bindings, 1u);
+    ASSERT_EQ(fake.live_buffers, 1u);
+}
+
+TEST(shader_reload_initial_failure_recovers_without_implicit_retry)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_initial_recovery_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_trailing_body(ShaderReloadFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    EditorRhiFakeStats fake;
+    u64 popped;
+    shader_reload_fixture_open(fx, "editor_shader_reload_trailing",
+                               "REV=1 vertex\n", "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->shell);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+    popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                  memory_order_acquire);
+    break_runtime_test_reload_set_gates(0u, 1u);
+    shader_reload_write_pair(fx, 2u, "", false);
+    ASSERT_TRUE(break_editor_viewport3d_request_shader_reload(fx->vp));
+    break_editor_shell_tick(fx->shell);
+    HR_WAIT(fx->shell,
+            atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                 memory_order_acquire) > popped);
+    stats = shader_reload_stats(fx);
+    ASSERT_TRUE(stats.busy);
+    ASSERT_EQ(stats.attempts, 1u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+    ASSERT_EQ(fx->log.calls, 0u);
+
+    shader_reload_write_pair(fx, 3u, "", false);
+    ASSERT_TRUE(break_editor_viewport3d_request_shader_reload(fx->vp));
+    break_editor_shell_tick(fx->shell);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 2u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.reloads, 2u);
+    ASSERT_TRUE(stats.attempts >= 2u);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_EQ(shader_reload_revision(fx), 3u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.buffer_creates, 1u);
+}
+
+TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_trailing_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+typedef struct ShaderDirectFixture {
+    ShaderReloadFixture base;
+    BreakEditorShaderSource source;
+    BreakEditorShaderReload *reload;
+} ShaderDirectFixture;
+
+static bool shader_direct_apply(void *user, const void *vert, usize vert_size,
+                                const void *frag, usize frag_size) {
+    ShaderDirectFixture *fx = (ShaderDirectFixture *)user;
+    return break_editor_viewport3d_reload_shader_source(
+        fx->base.vp, vert, vert_size, frag, frag_size);
+}
+
+static void shader_direct_open(ShaderDirectFixture *fx, const char *name) {
+    size_t root_len;
+    memset(fx, 0, sizeof(*fx));
+    shader_reload_fixture_open(&fx->base, name, "REV=1 vertex\n",
+                               "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->base.shell);
+    ASSERT_TRUE(break_editor_shader_source_configure(
+        &fx->source, RHI_SHADER_VARIANT_GLSL));
+    root_len = strlen(fx->base.root);
+    ASSERT_TRUE(root_len < sizeof(fx->source.roots[0]));
+    fx->source.root_count = 1u;
+    memcpy(fx->source.roots[0], fx->base.root, root_len + 1u);
+    fx->reload = break_editor_shader_reload_create(
+        &fx->source, shader_direct_apply, fx);
+    ASSERT_NOT_NULL(fx->reload);
+}
+
+static void shader_direct_close(ShaderDirectFixture *fx) {
+    if (fx->reload != NULL) {
+        break_editor_shader_reload_set_shutdown_timeout_for_test(fx->reload,
+                                                                 2000u);
+        break_editor_shader_reload_destroy(fx->reload);
+        fx->reload = NULL;
+    }
+    shader_reload_fixture_close(&fx->base);
+}
+
+static BreakEditorShaderReloadStats shader_direct_stats(
+    const ShaderDirectFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    memset(&stats, 0, sizeof(stats));
+    (void)break_editor_shader_reload_stats(fx->reload, &stats);
+    return stats;
+}
+
+#define SHADER_DIRECT_WAIT(fx_, cond_)                                       \
+    do {                                                                     \
+        int shader_i_;                                                       \
+        for (shader_i_ = 0; shader_i_ < 3000 && !(cond_); shader_i_++) {     \
+            break_editor_shader_reload_tick((fx_)->reload);                  \
+            time_sleep_us(2000u);                                            \
+        }                                                                    \
+    } while (0)
+
+static void shader_reload_one_sided_body(ShaderDirectFixture *fx) {
+    BreakEditorViewport3DGpuState before, after;
+    EditorRhiFakeStats fake;
+    shader_direct_open(fx, "editor_shader_reload_one_sided");
+    ASSERT_NOT_NULL(fx->reload);
+    break_editor_viewport3d_gpu_state_for_test(fx->base.vp, &before);
+    ASSERT_EQ(remove(fx->base.frag), 0);
+    ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+    SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).failed == 1u);
+    ASSERT_EQ(shader_direct_stats(fx).attempts, 1u);
+    ASSERT_EQ(shader_direct_stats(fx).failed, 1u);
+    break_editor_viewport3d_gpu_state_for_test(fx->base.vp, &after);
+    ASSERT_TRUE(viewport_gpu_state_equal(&before, &after));
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+
+    shader_reload_write_pair(&fx->base, 2u, "", false);
+    ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+    SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).reloads == 1u);
+    ASSERT_EQ(shader_direct_stats(fx).attempts, 2u);
+    ASSERT_EQ(shader_reload_revision(&fx->base), 2u);
+}
+
+TEST(shader_reload_one_sided_failure_preserves_pipeline)
+{
+    EditorShaderEnv env;
+    ShaderDirectFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_one_sided_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_direct_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_watch_unavailable_body(ShaderDirectFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    EditorRhiFakeStats fake;
+    shader_direct_open(fx, "editor_shader_reload_no_watch");
+    ASSERT_NOT_NULL(fx->reload);
+    memset(fx->source.roots[0], 'x', 240u);
+    fx->source.roots[0][240] = '\0';
+    break_editor_shader_reload_destroy(fx->reload);
+    fx->reload = break_editor_shader_reload_create(
+        &fx->source, shader_direct_apply, fx);
+    ASSERT_NOT_NULL(fx->reload);
+    stats = shader_direct_stats(fx);
+    ASSERT_FALSE(stats.watching);
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE);
+    ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+    SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).failed == 1u);
+    stats = shader_direct_stats(fx);
+    ASSERT_EQ(stats.attempts, 1u);
+    ASSERT_EQ(stats.failed, 1u);
+    ASSERT_FALSE(stats.busy);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.pipeline_creates, 1u);
+    ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
+}
+
+TEST(shader_reload_manual_request_survives_watch_unavailable)
+{
+    EditorShaderEnv env;
+    ShaderDirectFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_watch_unavailable_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_direct_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_claim_teardown_body(ShaderReloadFixture *fx) {
+    EditorRhiFakeStats fake;
+    shader_reload_fixture_open(fx, "editor_shader_reload_claim_stop",
+                               "REV=1 vertex\n", "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->shell);
+    break_runtime_test_reload_set_gates(1u, 0u);
+    ASSERT_TRUE(break_editor_viewport3d_request_shader_reload(fx->vp));
+    break_editor_shell_tick(fx->shell);
+    ASSERT_TRUE(shader_reload_stats(fx).busy);
+    ASSERT_EQ(shader_reload_stats(fx).attempts, 1u);
+    shader_reload_fixture_close(fx);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_shaders, 0u);
+    ASSERT_EQ(fake.live_pipelines, 0u);
+    ASSERT_EQ(fake.live_bindings, 0u);
+    ASSERT_EQ(fake.live_buffers, 0u);
+}
+
+TEST(shader_reload_inflight_claim_teardown_is_bounded)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_claim_teardown_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_shutdown_retry_body(ShaderDirectFixture *fx) {
+    u64 popped;
+    shader_direct_open(fx, "editor_shader_reload_stop_retry");
+    ASSERT_NOT_NULL(fx->reload);
+    popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                  memory_order_acquire);
+    break_runtime_test_reload_set_gates(0u, 1u);
+    ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+    break_editor_shader_reload_tick(fx->reload);
+    SHADER_DIRECT_WAIT(fx,
+        atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                             memory_order_acquire) > popped);
+    break_editor_shader_reload_set_shutdown_timeout_for_test(fx->reload, 0u);
+    ASSERT_FALSE(break_editor_shader_reload_shutdown(fx->reload));
+    break_runtime_test_reload_set_gates(0u, 0u);
+    break_editor_shader_reload_set_shutdown_timeout_for_test(fx->reload,
+                                                             2000u);
+    ASSERT_TRUE(break_editor_shader_reload_shutdown(fx->reload));
+    break_editor_shader_reload_destroy(fx->reload);
+    fx->reload = NULL;
+    ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
+}
+
+TEST(shader_reload_shutdown_timeout_can_retry)
+{
+    EditorShaderEnv env;
+    ShaderDirectFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_shutdown_retry_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_direct_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+TEST(shader_reload_unavailable_stats_and_null_calls)
+{
+    BreakEditorViewport3D *vp = break_editor_viewport3d_create();
+    BreakEditorShaderReloadStats stats;
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(break_editor_viewport3d_shader_reload_stats(vp, &stats));
+    ASSERT_FALSE(stats.watching);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE);
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_FALSE(break_editor_viewport3d_request_shader_reload(vp));
+    break_editor_viewport3d_tick(vp);
+    break_editor_viewport3d_set_shader_reload_logger(vp, NULL, NULL);
+    break_editor_viewport3d_tick(NULL);
+    ASSERT_FALSE(break_editor_viewport3d_request_shader_reload(NULL));
+    ASSERT_FALSE(break_editor_viewport3d_shader_reload_stats(NULL, &stats));
+    ASSERT_FALSE(break_editor_viewport3d_shader_reload_stats(vp, NULL));
+    break_editor_viewport3d_destroy(vp);
+}
+
 typedef struct HrFixture {
     BreakEditorShell *shell;
     BreakEditorHotReload *hr;
@@ -4820,6 +5331,14 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);
     RUN_TEST(render_panel_source_is_read_only);
+    RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
+    RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
+    RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
+    RUN_TEST(shader_reload_one_sided_failure_preserves_pipeline);
+    RUN_TEST(shader_reload_manual_request_survives_watch_unavailable);
+    RUN_TEST(shader_reload_inflight_claim_teardown_is_bounded);
+    RUN_TEST(shader_reload_shutdown_timeout_can_retry);
+    RUN_TEST(shader_reload_unavailable_stats_and_null_calls);
     RUN_TEST(hot_reload_valid_external_edit_replaces_document);
     RUN_TEST(hot_reload_creation_of_missing_scene_loads_it);
     RUN_TEST(hot_reload_invalid_external_edit_keeps_document_and_undo);

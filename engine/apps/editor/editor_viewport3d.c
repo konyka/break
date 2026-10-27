@@ -109,6 +109,11 @@ struct BreakEditorViewport3D {
     int init_state; /* 0 = not attempted, 1 = ready, 2 = failed (sticky) */
     int screen_w, screen_h;
 
+    BreakEditorShaderSource shader_source;
+    BreakEditorShaderReload *shader_reload;
+    BreakEditorShaderReloadLog shader_reload_log;
+    void *shader_reload_log_user;
+
     const BreakEditorCamera *cam; /* borrowed (shell-owned) */
     BreakEditorGizmo *gizmo;      /* borrowed (shell-owned) */
     BreakEditorEntityId selected;
@@ -169,6 +174,8 @@ void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
     if (vp == NULL) {
         return;
     }
+    break_editor_shader_reload_destroy(vp->shader_reload);
+    vp->shader_reload = NULL;
     if (vp->device != NULL) {
         if (rhi_handle_valid(vp->fbo.fb)) {
             rhi_offscreen_fbo_destroy(vp->device, &vp->fbo);
@@ -377,11 +384,51 @@ bool break_editor_viewport3d_reload_shader_source(
     return true;
 }
 
+static bool vp_shader_reload_apply(void *user, const void *vert,
+                                   usize vert_size, const void *frag,
+                                   usize frag_size) {
+    return break_editor_viewport3d_reload_shader_source(
+        (BreakEditorViewport3D *)user, vert, vert_size, frag, frag_size);
+}
+
+void break_editor_viewport3d_set_shader_reload_logger(
+    BreakEditorViewport3D *vp, BreakEditorShaderReloadLog log, void *user) {
+    if (vp == NULL) {
+        return;
+    }
+    vp->shader_reload_log = log;
+    vp->shader_reload_log_user = user;
+    break_editor_shader_reload_set_logger(vp->shader_reload, log, user);
+}
+
+void break_editor_viewport3d_tick(BreakEditorViewport3D *vp) {
+    if (vp != NULL) {
+        break_editor_shader_reload_tick(vp->shader_reload);
+    }
+}
+
+bool break_editor_viewport3d_request_shader_reload(BreakEditorViewport3D *vp) {
+    return vp != NULL &&
+           break_editor_shader_reload_request(vp->shader_reload);
+}
+
+bool break_editor_viewport3d_shader_reload_stats(
+    const BreakEditorViewport3D *vp, BreakEditorShaderReloadStats *out) {
+    if (vp == NULL || out == NULL) {
+        return false;
+    }
+    if (vp->shader_reload == NULL) {
+        memset(out, 0, sizeof(*out));
+        out->last_result = BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE;
+        return true;
+    }
+    return break_editor_shader_reload_stats(vp->shader_reload, out);
+}
+
 bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
                                      void *rhi_device) {
     RHIDevice *dev = (RHIDevice *)rhi_device;
     RHICapabilities caps;
-    BreakEditorShaderSource source;
     BreakEditorShaderBytes vert, frag;
     bool ok;
     if (vp == NULL || dev == NULL) {
@@ -402,23 +449,27 @@ bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
     vp->init_state = BREAK_EDITOR_VIEWPORT3D_INIT_FAILED;
     if (!rhi_device_get_capabilities(dev, &caps) ||
         !break_editor_shader_source_configure(
-            &source, (RHIShaderVariant)caps.shader_variant)) {
+            &vp->shader_source, (RHIShaderVariant)caps.shader_variant)) {
         fprintf(stderr, "editor viewport3d: shader variant resolution failed\n");
         return false;
     }
+    vp->shader_reload = break_editor_shader_reload_create(
+        &vp->shader_source, vp_shader_reload_apply, vp);
+    break_editor_shader_reload_set_logger(
+        vp->shader_reload, vp->shader_reload_log, vp->shader_reload_log_user);
     memset(&vert, 0, sizeof(vert));
     memset(&frag, 0, sizeof(frag));
-    if (!break_editor_shader_source_read(&source, BREAK_EDITOR_SHADER_VERTEX,
-                                         &vert) ||
-        !break_editor_shader_source_read(&source,
+    if (!break_editor_shader_source_read(
+            &vp->shader_source, BREAK_EDITOR_SHADER_VERTEX, &vert) ||
+        !break_editor_shader_source_read(&vp->shader_source,
                                          BREAK_EDITOR_SHADER_FRAGMENT, &frag)) {
         break_editor_shader_source_destroy_bytes(&vert);
         break_editor_shader_source_destroy_bytes(&frag);
         fprintf(stderr, "editor viewport3d: shader source read failed (%s / %s)\n",
-                break_editor_shader_source_path(&source,
-                                                BREAK_EDITOR_SHADER_VERTEX),
-                break_editor_shader_source_path(&source,
-                                                BREAK_EDITOR_SHADER_FRAGMENT));
+                break_editor_shader_source_path(
+                    &vp->shader_source, BREAK_EDITOR_SHADER_VERTEX),
+                break_editor_shader_source_path(
+                    &vp->shader_source, BREAK_EDITOR_SHADER_FRAGMENT));
         return false;
     }
     ok = break_editor_viewport3d_reload_shader_source(

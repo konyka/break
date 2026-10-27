@@ -148,6 +148,9 @@ foreach(line IN LISTS consumer_link_lines)
     if(line MATCHES "break_net")
         message(FATAL_ERROR "break_net leaked into a consumer link line: ${line}")
     endif()
+    if(line MATCHES "runtime_core")
+        message(FATAL_ERROR "runtime_core leaked into a consumer link line: ${line}")
+    endif()
 endforeach()
 
 # The focused tests link the test-only variant (BREAK_EDITOR_TESTING=1
@@ -299,9 +302,8 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_
     message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_panel_network.c inline (Phase 4 Task 3)")
 endif()
 
-# Viewport shader reload Task 1: the shared resolver has exactly one inline
-# copy in each viewport3d consumer (the formal break_editor library does not
-# own apps/editor TUs).
+# Viewport shader reload Tasks 1-2: the resolver and independent pair-reload
+# owner each have exactly one inline copy in every viewport3d consumer.
 if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_shader_source.c")
     message(FATAL_ERROR "editor must compile apps/editor/editor_shader_source.c")
 endif()
@@ -310,6 +312,18 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_
 endif()
 if(NOT cmake_text MATCHES "add_executable\\(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c[^)]*apps/editor/editor_shader_source.c")
     message(FATAL_ERROR "fuzz_editor_remote must compile apps/editor/editor_shader_source.c")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_shader_reload.c")
+    message(FATAL_ERROR "editor must compile apps/editor/editor_shader_reload.c")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_shader_reload.c")
+    message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_shader_reload.c")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c[^)]*apps/editor/editor_shader_reload.c")
+    message(FATAL_ERROR "fuzz_editor_remote must compile apps/editor/editor_shader_reload.c")
+endif()
+if(NOT cmake_text MATCHES "target_link_libraries\\(fuzz_editor_remote PRIVATE break_net[ \n]+runtime_core_test")
+    message(FATAL_ERROR "fuzz_editor_remote must link runtime_core_test")
 endif()
 
 message(STATUS "break_editor target contract passed")

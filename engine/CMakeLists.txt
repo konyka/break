@@ -1576,7 +1576,7 @@ engine_link_rhi_backend(dxx_break)
 # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
 # view over editor_remote.h's read-only accessors, no new link).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
-    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
+    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -1593,9 +1593,10 @@ target_link_libraries(editor PRIVATE break_editor break_lua break_myui engine m)
 if(BREAK_ENABLE_SNOWFLAKE)
     target_link_libraries(editor PRIVATE break_net)
 endif()
-# Editor asset hot reload: the host owns a Runtime Core reload coordinator
-# (editor_hot_reload.c). runtime_core resolves vfs_*/profiler_*/time_* from
-# engine, so engine is repeated after it for static-archive ordering.
+# Editor hot reload: the scene host and viewport each own a Runtime Core
+# coordinator (editor_hot_reload.c/editor_shader_reload.c). runtime_core
+# resolves vfs_*/profiler_*/time_* from engine, so engine is repeated after it
+# for static-archive ordering.
 target_link_libraries(editor PRIVATE runtime_core engine)
 engine_link_rhi_backend(editor)
 
@@ -3931,7 +3932,7 @@ endif()
     # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
     # pure view over the remote's read-only accessors).
     add_executable(test_editor_shell tests/test_editor_shell.c
-        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -4643,7 +4644,7 @@ endif()
     # compiled inline; exactly one definition per binary).
     if(BREAK_ENABLE_SNOWFLAKE)
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
-            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
             apps/editor/editor_panel_profiler.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
