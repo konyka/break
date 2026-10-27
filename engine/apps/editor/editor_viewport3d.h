@@ -92,6 +92,10 @@ bool break_editor_viewport3d_shader_reload_stats(
     const BreakEditorViewport3D *vp, BreakEditorShaderReloadStats *out);
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+/* Test-only owner replacement for panel integration fixtures. Ownership of
+ * reload transfers only on success; false retains the previous owner. */
+bool break_editor_viewport3d_replace_shader_reload_for_test(
+    BreakEditorViewport3D *vp, BreakEditorShaderReload *reload);
 void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
     BreakEditorViewport3D *vp, u32 timeout_ms);
 typedef struct {

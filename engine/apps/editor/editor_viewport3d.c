@@ -486,6 +486,24 @@ bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
 }
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+bool break_editor_viewport3d_replace_shader_reload_for_test(
+    BreakEditorViewport3D *vp, BreakEditorShaderReload *reload) {
+    if (vp == NULL) {
+        return false;
+    }
+    if (vp->shader_reload == reload) {
+        return true;
+    }
+    if (vp->shader_reload != NULL) {
+        if (!break_editor_shader_reload_shutdown(vp->shader_reload)) {
+            return false;
+        }
+        break_editor_shader_reload_destroy(vp->shader_reload);
+    }
+    vp->shader_reload = reload;
+    return true;
+}
+
 void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
     BreakEditorViewport3D *vp, u32 timeout_ms) {
     if (vp != NULL) {

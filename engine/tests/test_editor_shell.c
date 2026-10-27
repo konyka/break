@@ -4672,6 +4672,7 @@ typedef struct ShaderDirectFixture {
     ShaderReloadFixture base;
     BreakEditorShaderSource source;
     BreakEditorShaderReload *reload;
+    bool reload_in_viewport;
 } ShaderDirectFixture;
 
 static bool shader_direct_apply(void *user, const void *vert, usize vert_size,
@@ -4702,7 +4703,9 @@ static void shader_direct_close(ShaderDirectFixture *fx) {
     if (fx->reload != NULL) {
         break_editor_shader_reload_set_shutdown_timeout_for_test(fx->reload,
                                                                  2000u);
-        break_editor_shader_reload_destroy(fx->reload);
+        if (!fx->reload_in_viewport) {
+            break_editor_shader_reload_destroy(fx->reload);
+        }
         fx->reload = NULL;
     }
     shader_reload_fixture_close(&fx->base);
@@ -4816,10 +4819,7 @@ TEST(shader_reload_second_request_admission_failure_recovers)
     shader_env_restore(&env);
 }
 
-static void shader_reload_watch_unavailable_body(ShaderDirectFixture *fx) {
-    BreakEditorShaderReloadStats stats;
-    EditorRhiFakeStats fake;
-    shader_direct_open(fx, "editor_shader_reload_no_watch");
+static void shader_direct_recreate_without_watch(ShaderDirectFixture *fx) {
     ASSERT_NOT_NULL(fx->reload);
     memset(fx->source.roots[0], 'x', 240u);
     fx->source.roots[0][240] = '\0';
@@ -4827,6 +4827,13 @@ static void shader_reload_watch_unavailable_body(ShaderDirectFixture *fx) {
     fx->reload = break_editor_shader_reload_create(
         &fx->source, shader_direct_apply, fx);
     ASSERT_NOT_NULL(fx->reload);
+}
+
+static void shader_reload_watch_unavailable_body(ShaderDirectFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    EditorRhiFakeStats fake;
+    shader_direct_open(fx, "editor_shader_reload_no_watch");
+    shader_direct_recreate_without_watch(fx);
     stats = shader_direct_stats(fx);
     ASSERT_FALSE(stats.watching);
     ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE);
@@ -4850,6 +4857,69 @@ TEST(shader_reload_manual_request_survives_watch_unavailable)
     editor_rhi_fake_set_enabled(true);
     memset(&fx, 0, sizeof(fx));
     shader_reload_watch_unavailable_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_direct_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
+static void shader_reload_manual_only_diagnostic_body(ShaderDirectFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    u64 popped;
+    shader_direct_open(fx, "editor_shader_reload_manual_only_panel");
+    shader_direct_recreate_without_watch(fx);
+    stats = shader_direct_stats(fx);
+    ASSERT_FALSE(stats.watching);
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_TRUE(break_editor_viewport3d_replace_shader_reload_for_test(
+        fx->base.vp, fx->reload));
+    fx->reload_in_viewport = true;
+    g_render_clock_us = UINT64_C(3000000);
+    break_editor_shell_set_render_clock_for_test(fx->base.shell,
+                                                  render_test_clock, NULL);
+    break_editor_shell_tick(fx->base.shell);
+
+    popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                  memory_order_acquire);
+    break_runtime_test_reload_set_gates(0u, 1u);
+    ASSERT_TRUE(break_editor_viewport3d_request_shader_reload(fx->base.vp));
+    break_editor_shell_tick(fx->base.shell);
+    HR_WAIT(fx->base.shell,
+            atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                 memory_order_acquire) > popped);
+    stats = shader_direct_stats(fx);
+    ASSERT_FALSE(stats.watching);
+    ASSERT_TRUE(stats.busy);
+    ASSERT_EQ(stats.attempts, 1u);
+    g_render_clock_us += UINT64_C(250000);
+    break_editor_shell_tick(fx->base.shell);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(fx->base.shell, 8u),
+                  "shader reload: manual-only busy=1 applied=0 failed=0");
+
+    break_runtime_test_reload_set_gates(0u, 0u);
+    HR_WAIT(fx->base.shell, shader_direct_stats(fx).failed == 1u);
+    stats = shader_direct_stats(fx);
+    ASSERT_FALSE(stats.watching);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_EQ(stats.attempts, 1u);
+    ASSERT_EQ(stats.reloads, 0u);
+    ASSERT_EQ(stats.failed, 1u);
+    g_render_clock_us += UINT64_C(250000);
+    break_editor_shell_tick(fx->base.shell);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(fx->base.shell, 8u),
+                  "shader reload: manual-only busy=0 applied=0 failed=1");
+}
+
+TEST(shader_reload_manual_only_diagnostic_keeps_busy_and_counts)
+{
+    EditorShaderEnv env;
+    ShaderDirectFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_manual_only_diagnostic_body(&fx);
     break_runtime_test_reload_set_gates(0u, 0u);
     shader_direct_close(&fx);
     editor_rhi_fake_set_enabled(false);
@@ -4970,6 +5040,11 @@ static void shader_reload_shell_timeout_retry_body(ShaderReloadFixture *fx) {
     ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE);
     ASSERT_FALSE(stats.busy);
     ASSERT_FALSE(break_editor_viewport3d_request_shader_reload(vp));
+    break_editor_shell_set_render_device(shell, (RHIDevice *)&fx->device);
+    break_editor_shell_tick(shell);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, 8u),
+                  "shader reload: shutdown-pending busy=0 applied=0 failed=0");
+    break_editor_shell_set_render_device(shell, NULL);
     memset(&fx->log, 0, sizeof(fx->log));
     break_editor_viewport3d_set_shader_reload_logger(
         vp, shader_reload_capture_log, &fx->log);
@@ -5577,6 +5652,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_one_sided_failure_preserves_pipeline);
     RUN_TEST(shader_reload_second_request_admission_failure_recovers);
     RUN_TEST(shader_reload_manual_request_survives_watch_unavailable);
+    RUN_TEST(shader_reload_manual_only_diagnostic_keeps_busy_and_counts);
     RUN_TEST(shader_reload_inflight_claim_teardown_is_bounded);
     RUN_TEST(shader_reload_shutdown_timeout_can_retry);
     RUN_TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner);

@@ -23,8 +23,8 @@
  *     [5] resources: <used>/<capacity> slots
  *     [6] viewport: <ready|failed|not-initialised> fbo=<w>x<h>
  *     [7] viewport: proxies=<n> gizmo=<n> draws=<n> skipped=<reason>
- *     [8] shader reload: watching busy=<0|1> applied=<n> failed=<n>,
- *         or "shader reload: unavailable"
+ *     [8] shader reload: <watching|manual-only|shutdown-pending>
+ *         busy=<0|1> applied=<n> failed=<n>, or "shader reload: unavailable"
  *
  * THROTTLE: at most 4 refreshes per second (250,000 us) from
  * break_editor_shell_tick; the first tick after create and after any device
@@ -183,14 +183,19 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
         {
             BreakEditorShaderReloadStats reload;
             if (!break_editor_viewport3d_shader_reload_stats(vp, &reload) ||
-                !reload.watching) {
+                (reload.last_result == BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE &&
+                 reload.attempts == 0u)) {
                 (void)snprintf(p->rows[8], EDITOR_RENDER_ROW_BYTES,
                                "shader reload: unavailable");
             } else {
+                const char *state =
+                    reload.last_result == BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE
+                        ? "shutdown-pending"
+                        : (reload.watching ? "watching" : "manual-only");
                 (void)snprintf(
                     p->rows[8], EDITOR_RENDER_ROW_BYTES,
-                    "shader reload: watching busy=%u applied=%llu failed=%llu",
-                    reload.busy ? 1u : 0u,
+                    "shader reload: %s busy=%u applied=%llu failed=%llu",
+                    state, reload.busy ? 1u : 0u,
                     (unsigned long long)reload.reloads,
                     (unsigned long long)reload.failed);
             }
