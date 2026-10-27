@@ -636,6 +636,15 @@ Metal 全量 CTest **187/187**、graphics **5/5**、资源测试 **47/47**；Mol
 无冲突 rebase 后再次完成上述两套测试和 70 帧截图，结果保持 **187/187**、graphics **5/5**、
 资源 **47/47**。
 
+2026-10-27 日常同步与复核：本轮从 `@65f8aae0` 同步至 `@83f5670e`，累计 13 个远程
+提交，未发生冲突；iOS 修复 rebase 后也完成复验。Metal 与 MoltenVK 全量 CTest 均
+**191/191**（D3D12 dependency gate 按平台跳过），Metal `-L graphics` **5/5**、资源
+**48/48**、音频 **17/17**，指定的 5 个 fuzz targets 均构建。两后端分别执行
+`BREAK_SCREENSHOT=60 ./build-macos-current/engine_demo --frames 70` 和对应的
+`build-macos/engine_demo --frames 70`，实际查看截图后确认 3D 场景与 UI 可见、朝向正确；
+光照、材质与水面仍有差异，不宣称逐像素一致。远程新增 Win32、GL/myui 修复与本地
+iOS 改动均保留，未使用 force push。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
@@ -765,7 +774,7 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 | lane-benchmark-steam-deck-vk | self-hosted linux gpu-vulkan（`ENABLE_GPU_LANES` 门控） | Vulkan，RelWithDebInfo，真 GPU BENCHMARK_COMPARABLE 收据 | evidence-receipt-benchmark-steam-deck |
 | lane-proton（schedule 周一 03:23 UTC + 手动） | ubuntu-24.04 | steamrt sniper 钉 digest 容器内构建 + ctest（兼容参考） | evidence-receipt-proton |
 | clean-room（Task 2 交付，非 lane 命名） | ubuntu-24.04 | 钉版工具链 + git archive 干净导出 + Vulkan | — |
-| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib 断言 | — |
+| ios-metal-build（compile only） | macos-14 | iOS Simulator build-only + metallib、scene manifest 与资源入包断言 | — |
 
 ## 3. 构建产物
 
@@ -1047,11 +1056,30 @@ cmake --build build-metal --parallel
 ctest --test-dir build-metal -R test_rhi_metal --output-on-failure
 ./build-metal/engine_demo --frames 3          # consumer smoke（退出码 0）
 
-# iOS（build-only；模拟器证据 = compile only）
+# iOS Simulator（构建与本机运行；CI 仍为 compile-only）
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 cmake -S engine -B build-ios -G Xcode \
-    -DCMAKE_SYSTEM_NAME=iOS -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+    -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator \
+    -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
 xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
     -destination 'generic/platform=iOS Simulator' build
+
+# UDID 用 xcrun simctl list devices available 查询；已 Booted 时跳过 boot。
+UDID=替换为模拟器UDID
+xcrun simctl boot "$UDID"
+xcrun simctl bootstatus "$UDID" -b
+xcrun simctl install "$UDID" build-ios/Debug-iphonesimulator/engine_demo.app
+SIMCTL_CHILD_BREAK_SCREENSHOT=60 xcrun simctl launch --console-pty \
+    "$UDID" com.purecengine.engine-demo --frames 300
+
+# 持续运行期间可直接截取屏幕合成结果：
+xcrun simctl io "$UDID" screenshot /tmp/engine-ios-screen.png
+
+# 也可读取第 60 帧在 present 前的 RHI 截图：
+DATA_DIR=$(xcrun simctl get_app_container "$UDID" com.purecengine.engine-demo data)
+sips -s format png \
+    "$DATA_DIR/Library/Caches/PureCEngine/screenshot_0.bmp" \
+    --out /tmp/engine-ios-frame60.png
 ```
 
 说明：
@@ -1059,17 +1087,32 @@ xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo \
   产物 `metal_shaders/engine.metallib` 拷到各 consumer 旁；`xcode-select` 指向
   CommandLineTools 时 `DEVELOPER_DIR` 由 CMake 自动烘焙为标准 Xcode 路径。
 - iOS 交叉编译时 manifest 生成器自动切换为宿主编译（`gen_metal_shader_manifest_host`，
-  见 `engine/CMakeLists.txt` M6 注释）；`xcrun metal` 目标 SDK 切 `iphoneos`。
-- `engine_demo` 的 iOS target 设置 `MACOSX_BUNDLE_GUI_IDENTIFIER` 与 Xcode bundle ID
-  （`com.purecengine.engine-demo`）；CI 对最终 `Info.plist` 断言该 ID，避免只能 build-only
-  却无法安装。
-- 2026-10-26 本机用 Xcode 27.1 构建成功后，在 iOS 27.0 模拟器上 `simctl install` 通过；
-  但 `simctl launch --console-pty` 仍在 `engine_init` 中以 `Failed to create platform` 退出。
-  原因是 `window_mobile.c` 要求宿主提供 `PlatformConfig.native_window`，而 `engine_init`
-  尚未接入 UIKit/CAMetalLayer 宿主；当前没有可复用的 iOS UIApplication 启动层，故不能宣称
-  iOS 已正常渲染，证据仍为 COMPILED，不计 GPU_RUNTIME。
-- 2026-10-27 复核：远程同步至 `@52195e94` 后，macOS Metal 与 MoltenVK 全量 CTest 均
-  **190/190**。iOS bundle ID 统一为 `com.purecengine.engine-demo`（UTI 合法字符），重新构建
-  无相关警告，安装仍成功；启动时的宿主缺失问题不变。
+  见 `engine/CMakeLists.txt` M6 注释）。`xcrun metal` 的 SDK 与 `CMAKE_OSX_SYSROOT`
+  一致：设备为 `iphoneos`，Simulator 为 `iphonesimulator`。Xcode 的 `-destination`
+  不会改写这个自定义 shader 命令的 SDK；Simulator 必须显式配置对应 sysroot，不能复用
+  设备版 metallib。设备与 Simulator 建议使用不同构建目录。
+- `engine_demo` 的 iOS target 使用 `com.purecengine.engine-demo`。CI 对 bundle ID、
+  scene delegate、`engine.metallib` 以及 assets/shaders 入包结果做硬断言，但 lane 仍为
+  build-only，不提供 GPU_RUNTIME 收据。
+- `engine/src/apps/ios_main.m` 通过 `UIApplicationMain` + `UIWindowScene` 创建
+  `UIWindow`、Metal view 和 `CAMetalLayer`。UIKit 留在主线程，现有 demo 在 16 MiB
+  栈的专用引擎线程执行 `engine_demo_main`；`EngineConfig` 注入原生句柄、scale 和
+  宿主 poll。主线程同步 viewport、主触摸与 scene 生命周期，引擎线程串行应用；
+  后台等待条件变量而不获取 drawable，每帧有独立 Objective-C autoreleasepool。
+- assets/shaders 保持目录结构入包，启动时暂存到 app 自己的
+  `Library/Caches/PureCEngine` 并作为工作目录，截图、缓存和 trace 不写入只读 bundle。
+  工作目录会在再次启动时重建，不能当作持久用户存储。
+- iOS texel buffer 使用 private storage，初始数据与后续更新经 shared staging blit；
+  macOS 默认路径不变。Simulator 音频使用 miniaudio Null 后端（静音，不枚举输出设备），
+  避免无输出设备环境下 Core Audio 初始化超时；真机仍使用原默认后端，尚未实测。
+- 2026-10-27 本机 Xcode 27.1 / iPhone 18 Pro Simulator（iOS 27.0）实测：
+  124 个离线 shader 条目入包，`--frames 300` 完成并正常 shutdown；第 60 帧 RHI 截图
+  及运行中的 `simctl io screenshot` 均可见 3D 场景与 UI，方向正确，日志无 ERROR/FATAL。
+  同一进程切到 Safari 再返回时记录到 `iOS host: suspended` / `resumed`，恢复后继续出帧。
+  初始 viewport 为 logical 402x874、drawable 1206x2622、scale 3.0。
+- 当前验证边界：Hi-Z、indirect draw/GPU cull 与 GPU timer 仍有能力降级，不宣称可选路径
+  全齐；现有桌面 HUD 未做窄屏排版适配。旋转 resize、真实触摸交互和真机音频/Metal
+  仍待验证。Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，
+  不改变 OpenGL 删除 gate，也不宣称真机 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。

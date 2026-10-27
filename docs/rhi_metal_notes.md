@@ -415,10 +415,14 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
    UB——VK/D3D12 驱动容忍、Metal validation 拒绝——后端按 open pass 实际
    color0 重建管线态，见 f7bf5c7c）。
 7. **M4（iOS 量程）**：texture flatten 公式上界 34（set2b2）超 iOS [[texture]]
-   上限 31——iOS lane 启用渲染前需复评乘数（当前 iOS 仅 build-only 证据）。
+   上限 31。2026-10-27 本机 Simulator 的默认 FORWARD 已有真实帧与截图，但只覆盖
+   当前实际绑定组合；更大 set/binding 和真机 GPU family 的量程仍需复评，CI 仍 build-only。
 8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
-   时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释），
-   `xcrun metal` SDK 切 `iphoneos`。
-9. **iOS lifecycle 缺口（维持登记，不修）**：ios lane 三处标注为「compile
-   only」；Task 15 评估结论维持——无 iOS harness 的裸 CMake .app 的 simctl
-   boot+install 证据价值边际，后续若要 lifecycle 收据需先做最小 iOS harness。
+   时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释）。
+   `xcrun metal` SDK 与 `CMAKE_OSX_SYSROOT` 一致：设备 `iphoneos`、Simulator
+   `iphonesimulator`；不能将设备版 metallib 直接用于 Simulator。
+9. **iOS lifecycle（2026-10-27 已补本机 harness）**：`ios_main.m` 以 UIWindowScene
+   创建 Metal view，并接入 viewport、主触摸和 suspend/resume。本机已完成安装、
+   300 帧与正常 shutdown、RHI/屏幕截图及同进程后台恢复；CI lane 仍 compile-only，
+   真机 GPU_RUNTIME 未覆盖。详见 Build_Guide 的 Simulator 命令和
+   `docs/rhi_backend_evidence.md` 的证据台账。

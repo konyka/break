@@ -9241,3 +9241,35 @@ rejection; engine vfs logic is unchanged.
 Verification: cross builds 100% (x86_64 + aarch64le, _Static_asserts pass);
 Linux headless 174/174; QNX target VM 146/146 (vfs case stable across
 repeated runs).
+
+## iOS UIWindowScene host and Simulator rendering (2026-10-27)
+
+`engine/src/apps/ios_main.m` now supplies the production `UIApplicationMain`
+entry for `engine_demo`. UIKit owns a scene/window/view and its CAMetalLayer on
+the main thread; the existing C demo runs on a dedicated 16 MiB-stack engine
+thread through `engine_demo_main`, with native handles, Retina sizing and a
+host poll supplied through `EngineConfig`. Scene lifecycle and primary-touch
+events are synchronized onto the engine thread. Background waits do not acquire
+a drawable, and each frame has an Objective-C autorelease pool.
+
+The app bundles assets/shaders and a simulator-targeted metallib, stages a
+writable working directory under Library/Caches, and uses private texel-buffer
+storage with staged uploads on iOS. Simulator audio explicitly uses miniaudio's
+Null backend (silent); physical-device audio and GPU behavior remain unverified.
+CI remains compile-only, now checking the scene manifest and resources as well
+as the bundle identifier and metallib. This does not change iOS's COMPILED
+evidence level or the OpenGL removal gate.
+
+Verification on an iPhone 18 Pro Simulator (iOS 27.0, Xcode 27.1): 124 offline
+shader entries, `--frames 300` with orderly shutdown, visible 3D/UI in both RHI
+frame-60 and OS screenshots, and suspend/resume with continued rendering after
+returning from Safari. No ERROR/FATAL occurred in the successful run. The
+viewport is 402x874 logical versus 1206x2622 drawable at scale 3. Narrow-screen
+HUD layout, rotation and physical-touch testing remain open; optional Hi-Z,
+indirect/culling and GPU-timer paths still degrade where unsupported.
+
+On macOS, both MoltenVK and Metal full CTest configurations pass 191/191
+(the D3D12 dependency gate skips by platform). Metal graphics is 5/5, resource
+tests 48/48 and audio tests 17/17. Both backend demos render 3D/UI with correct
+orientation in 70-frame screenshot checks; their known lighting/material/water
+differences are not claimed to be pixel-identical.
