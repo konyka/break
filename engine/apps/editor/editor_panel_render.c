@@ -31,6 +31,8 @@
  * attach/detach always refreshes. Shell thread only. */
 
 #include "editor_shell_internal.h"
+
+#include <editor/editor_i18n.h>
 #include "editor_viewport3d.h"
 
 #include <stdio.h>
@@ -58,6 +60,7 @@ struct BreakEditorPanelRender {
     void *device;             /* borrowed RHIDevice; NULL = no device */
     const BreakEditorRenderSource *source;
     my_widget_t *list;        /* weak (owned by the window tree) */
+    my_widget_t *title;        /* weak */
     EditorRenderAdapter adapter;
     u64 (*clock)(void *user); /* NULL = time_microseconds */
     void *clock_user;
@@ -184,16 +187,17 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
             BreakEditorShaderReloadStats reload;
             if (!break_editor_viewport3d_shader_reload_stats(vp, &reload) ||
                 !reload.owner_present) {
-                (void)snprintf(p->rows[8], EDITOR_RENDER_ROW_BYTES,
-                               "shader reload: unavailable");
+                (void)snprintf(p->rows[8], EDITOR_RENDER_ROW_BYTES, "%s",
+                               break_editor_tr(BREAK_EDITOR_TR_LOG_SR_ROW_UNAVAILABLE));
             } else {
-                const char *state =
+                const char *state = break_editor_tr(
                     reload.stopping
-                        ? "shutdown-pending"
-                        : (reload.watching ? "watching" : "manual-only");
+                        ? BREAK_EDITOR_TR_LOG_SR_STATE_SHUTDOWN_PENDING
+                        : (reload.watching ? BREAK_EDITOR_TR_LOG_SR_STATE_WATCHING
+                                           : BREAK_EDITOR_TR_LOG_SR_STATE_MANUAL_ONLY));
                 (void)snprintf(
                     p->rows[8], EDITOR_RENDER_ROW_BYTES,
-                    "shader reload: %s busy=%u applied=%llu failed=%llu",
+                    break_editor_tr(BREAK_EDITOR_TR_LOG_SR_ROW_FMT),
                     state, reload.busy ? 1u : 0u,
                     (unsigned long long)reload.reloads,
                     (unsigned long long)reload.failed);
@@ -282,12 +286,13 @@ void editor_panel_render_build(BreakEditorPanelRender *p, my_widget_t *parent) {
         return;
     }
     (void)my_widget_set_layouter(section, my_layouter_linear_create(NULL, false, 2));
-    label = my_label_create(NULL, "Render (4 Hz)");
+    label = my_label_create(NULL, break_editor_tr(BREAK_EDITOR_TR_RENDER_TITLE));
     if (label == NULL) {
         my_widget_unref(section);
         return;
     }
     (void)my_widget_set_name(label, "editor-render-label");
+    p->title = label;
     (void)my_widget_set_layout_params(label, "w:100% h:22");
     if (my_widget_add_child(section, label) != MY_RET_OK) {
         my_widget_unref(label);
@@ -364,4 +369,11 @@ const char *editor_panel_render_row_text(const BreakEditorPanelRender *p,
         return NULL;
     }
     return p->rows[index];
+}
+
+void editor_panel_render_retranslate(BreakEditorPanelRender *panel) {
+    if (panel != NULL && panel->title != NULL) {
+        (void)my_label_set_text(panel->title,
+                                break_editor_tr(BREAK_EDITOR_TR_RENDER_TITLE));
+    }
 }

@@ -37,6 +37,8 @@
 
 #include "editor_shell_internal.h"
 
+#include <editor/editor_i18n.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -56,6 +58,7 @@ struct EditorPanelLua {
     BreakEditorShell *shell;      /* borrowed */
     BreakEditorLuaConsole *console; /* owned (NULL = degraded) */
     my_widget_t *edit;            /* weak (owned by the window tree) */
+    my_widget_t *title;           /* weak */
     char history[EDITOR_LUA_HISTORY_CAPACITY][EDITOR_LUA_HISTORY_BYTES];
     u32 history_count;
     u32 history_cursor; /* == history_count when not browsing */
@@ -114,7 +117,8 @@ static void on_lua_edit_activate(void *ctx, const char *event, void *data) {
     if (panel->console != NULL) {
         (void)break_editor_lua_eval(panel->console, text);
     } else {
-        editor_shell_log(panel->shell, "lua| error: console unavailable");
+        editor_shell_log(panel->shell, "%s",
+                         break_editor_tr(BREAK_EDITOR_TR_LOG_LUA_UNAVAILABLE));
     }
     if (panel->edit != NULL) {
         (void)my_edit_set_text(panel->edit, "");
@@ -201,12 +205,13 @@ bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_layouter(section,
                                  my_layouter_linear_create(NULL, false, 2));
-    label = my_label_create(NULL, "Lua");
+    label = my_label_create(NULL, break_editor_tr(BREAK_EDITOR_TR_LUA_TITLE));
     if (label == NULL) {
         my_widget_unref(section);
         return false;
     }
     (void)my_widget_set_name(label, "editor-lua-label");
+    panel->title = label;
     (void)my_widget_set_layout_params(label, "w:100% h:22");
     if (my_widget_add_child(section, label) == MY_RET_OK) {
         my_widget_unref(label); /* tree holds its own reference */
@@ -221,7 +226,7 @@ bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent) {
         return false;
     }
     (void)my_widget_set_name(panel->edit, "editor-lua-edit");
-    (void)my_edit_set_hint(panel->edit, "lua — Enter evaluates");
+    (void)my_edit_set_hint(panel->edit, break_editor_tr(BREAK_EDITOR_TR_LUA_HINT));
     (void)my_edit_set_max_len(panel->edit, EDITOR_LUA_EDIT_MAX_CODEPOINTS);
     (void)my_widget_on(panel->edit, "activate", on_lua_edit_activate, panel);
     (void)my_widget_on(panel->edit, "key_down", on_lua_edit_key_down, panel);
@@ -246,4 +251,18 @@ bool editor_panel_lua_build(EditorPanelLua *panel, my_widget_t *parent) {
 
 usize editor_panel_lua_history_count(const EditorPanelLua *panel) {
     return panel != NULL ? (usize)panel->history_count : 0u;
+}
+
+void editor_panel_lua_retranslate(EditorPanelLua *panel) {
+    if (panel == NULL) {
+        return;
+    }
+    if (panel->title != NULL) {
+        (void)my_label_set_text(panel->title,
+                                break_editor_tr(BREAK_EDITOR_TR_LUA_TITLE));
+    }
+    if (panel->edit != NULL) {
+        (void)my_edit_set_hint(panel->edit,
+                               break_editor_tr(BREAK_EDITOR_TR_LUA_HINT));
+    }
 }

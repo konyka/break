@@ -117,6 +117,7 @@
 #include <core/types.h>
 
 #include <editor/editor_doc.h>
+#include <editor/editor_i18n.h>
 #include <editor/editor_gizmo.h>
 #include <editor/editor_viewport.h>
 #include <rhi/rhi.h>
@@ -157,6 +158,15 @@ struct my_window_t *break_editor_shell_window(BreakEditorShell *shell);
 struct my_widget_t *break_editor_shell_root(BreakEditorShell *shell);
 usize break_editor_shell_outliner_count(const BreakEditorShell *shell);
 const char *break_editor_shell_tool_text(const BreakEditorShell *shell);
+
+/* Switches the editor UI language (editor_i18n.h) and re-applies it to the
+ * shell and every panel at once: toolbar, panel titles, tool label, status
+ * bar, inspector, palette rows and filter. Console lines already written keep
+ * their language; the switch itself is logged in the new one. The palette
+ * also offers "Language: English" / "语言：中文". false for a NULL shell or an
+ * unknown language (nothing changes). Shell thread only. */
+bool break_editor_shell_set_language(BreakEditorShell *shell,
+                                     BreakEditorLang lang);
 const char *break_editor_shell_status_text(const BreakEditorShell *shell);
 const char *break_editor_shell_console_text(const BreakEditorShell *shell);
 const char *break_editor_shell_name_edit_text(const BreakEditorShell *shell);

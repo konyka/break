@@ -16,6 +16,7 @@
 #endif
 
 #include "editor_hot_reload.h"
+#include <editor/editor_i18n.h>
 #include "editor_panels.h"
 #include "editor_shader_reload.h"
 #include "editor_shader_source.h"
@@ -43,6 +44,7 @@
 #include "myui/my_widget.h"
 #include "myui/my_window.h"
 #include "myui/widgets/my_button.h"
+#include "myui/widgets/my_label.h"
 #include "myui/widgets/my_edit.h"
 
 static void emit_click(my_widget_t *w) {
@@ -265,7 +267,7 @@ TEST(palette_opens_filters_and_escape_closes)
     ASSERT_NOT_NULL(shell);
     ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
     ASSERT_TRUE(break_editor_shell_palette_is_open(shell));
-    ASSERT_EQ(break_editor_shell_palette_count(shell), 10u);
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 12u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "tool"));
     ASSERT_EQ(break_editor_shell_palette_count(shell), 4u);
     ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "save"));
@@ -5774,8 +5776,109 @@ TEST(hot_reload_teardown_in_either_order_is_safe)
     TEST_RMDIR(dir);
 }
 
+/* ---------------- i18n ---------------- */
+
+static const char *label_text(BreakEditorShell *shell, const char *name) {
+    my_widget_t *w = find(shell, name);
+    return w != NULL ? ((const my_label_t *)w)->text : NULL;
+}
+
+static const char *button_text(BreakEditorShell *shell, const char *name) {
+    my_widget_t *w = find(shell, name);
+    return w != NULL ? ((const my_button_t *)w)->text : NULL;
+}
+
+/* a shell created while zh-CN is current shows Chinese chrome */
+TEST(i18n_shell_created_in_chinese_shows_chinese_text)
+{
+    BreakEditorShell *shell;
+    ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_ZH_CN));
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "工具：选择");
+    ASSERT_STR_EQ(button_text(shell, "editor-add-button"), "添加");
+    ASSERT_STR_EQ(button_text(shell, "editor-remove-button"), "删除");
+    ASSERT_STR_EQ(label_text(shell, "editor-outliner-label"), "大纲");
+    ASSERT_STR_EQ(label_text(shell, "editor-profiler-label"),
+                  "性能分析（前 16 项，4 Hz）");
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "编辑器已就绪\n");
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "实体=") != NULL);
+    break_editor_shell_destroy(shell);
+    ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US));
+}
+
+/* runtime switch through the palette: chrome follows immediately, earlier
+ * console lines keep their language */
+TEST(i18n_palette_switches_language_at_runtime)
+{
+    BreakEditorShell *shell;
+    ASSERT_TRUE(break_editor_i18n_set_lang(BREAK_EDITOR_LANG_EN_US));
+    shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'e', 0u));
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Rotate");
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Language"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 2u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "Chinese"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_ZH_CN);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "工具：旋转");
+    ASSERT_STR_EQ(button_text(shell, "editor-add-button"), "添加");
+    ASSERT_STR_EQ(label_text(shell, "editor-outliner-label"), "大纲");
+    ASSERT_STR_EQ(label_text(shell, "editor-render-label"), "渲染（4 Hz）");
+    ASSERT_STR_EQ(label_text(shell, "editor-network-label"), "网络（4 Hz）");
+    ASSERT_STR_EQ(label_text(shell, "editor-lua-label"), "Lua 控制台");
+    ASSERT_TRUE(strncmp(label_text(shell, "editor-assets-path"), "资源：", 9u) == 0);
+    ASSERT_TRUE(strstr(break_editor_shell_status_text(shell), "实体=") != NULL);
+    /* the line announcing the switch is already in the new language; the
+     * ready line written earlier stays English */
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "语言：中文\n");
+    ASSERT_TRUE(strstr(break_editor_shell_console_text(shell),
+                       "editor shell ready") != NULL);
+
+    /* palette now lists and filters Chinese command names */
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, 'p', MY_KEYMOD_CTRL));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 12u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "保存"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_palette_set_filter(shell, "English"));
+    ASSERT_EQ(break_editor_shell_palette_count(shell), 1u);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(shell, MY_KEY_RETURN, 0u));
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_EN_US);
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Rotate");
+    ASSERT_STR_EQ(button_text(shell, "editor-remove-button"), "Remove");
+    ASSERT_STR_EQ(label_text(shell, "editor-outliner-label"), "Outliner");
+    break_editor_shell_destroy(shell);
+}
+
+TEST(i18n_set_language_api_is_bounded)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    ASSERT_NOT_NULL(shell);
+    ASSERT_FALSE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_COUNT));
+    ASSERT_EQ(break_editor_i18n_lang(), BREAK_EDITOR_LANG_EN_US);
+    ASSERT_FALSE(break_editor_shell_set_language(NULL, BREAK_EDITOR_LANG_ZH_CN));
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    /* the inspector is rebuilt in the new language on selection change */
+    emit_click(find(shell, "editor-add-button"));
+    ASSERT_TRUE(break_editor_shell_select_index(shell, 0u));
+    ASSERT_STR_EQ(label_text(shell, "editor-inspector-name-label"), "名称");
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    ASSERT_STR_EQ(label_text(shell, "editor-inspector-name-label"), "Name");
+    break_editor_shell_destroy(shell);
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
+    RUN_TEST(i18n_shell_created_in_chinese_shows_chinese_text);
+    RUN_TEST(i18n_palette_switches_language_at_runtime);
+    RUN_TEST(i18n_set_language_api_is_bounded);
     RUN_TEST(add_entity_via_panel_button_increments_outliner);
     RUN_TEST(add_entity_via_palette_and_ctrl_z_removes_row);
     RUN_TEST(remove_selected_via_panel_button);

@@ -132,6 +132,14 @@ uint32_t editor_panel_render_row_count(const BreakEditorPanelRender *p);
 const char *editor_panel_render_row_text(const BreakEditorPanelRender *p,
                                          uint32_t index);
 
+/* Re-apply the current editor language (editor_i18n.h) to each panel's own
+ * titles and hints; called by break_editor_shell_set_language. NULL-safe. */
+void editor_panel_assets_retranslate(EditorPanelAssets *panel);
+void editor_panel_lua_retranslate(EditorPanelLua *panel);
+void editor_panel_profiler_retranslate(EditorPanelProfiler *panel);
+void editor_panel_network_retranslate(BreakEditorPanelNetwork *p);
+void editor_panel_render_retranslate(BreakEditorPanelRender *p);
+
 /* Reverse-teardown seam (editor_remote.c): break_editor_shell_destroy calls
  * this FIRST for its attached remote (while the doc is still alive). When
  * the remote belongs to `shell`, it drops its back-pointer, destroys its

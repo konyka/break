@@ -30,6 +30,8 @@
 
 #include "editor_shell_internal.h"
 
+#include <editor/editor_i18n.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -52,6 +54,7 @@ typedef struct {
 struct EditorPanelProfiler {
     BreakEditorShell *shell; /* borrowed (unused beyond create symmetry) */
     my_widget_t *list;       /* weak (owned by the window tree) */
+    my_widget_t *title;        /* weak */
     EditorProfilerAdapter adapter;
     u64 last_refresh_us;     /* 0 = never refreshed (next tick refreshes) */
     u32 row_count;
@@ -135,7 +138,7 @@ static void profiler_adapter_bind_row(my_list_adapter_t *adapter,
     if (index < a->panel->row_count) {
         (void)my_label_set_text(row, a->panel->rows[index]);
     } else {
-        (void)my_label_set_text(row, "<stale>");
+        (void)my_label_set_text(row, break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
     }
 }
 
@@ -176,12 +179,13 @@ bool editor_panel_profiler_build(EditorPanelProfiler *panel,
     }
     (void)my_widget_set_layouter(section,
                                  my_layouter_linear_create(NULL, false, 2));
-    label = my_label_create(NULL, "Profiler (top 16, 4 Hz)");
+    label = my_label_create(NULL, break_editor_tr(BREAK_EDITOR_TR_PROFILER_TITLE));
     if (label == NULL) {
         my_widget_unref(section);
         return false;
     }
     (void)my_widget_set_name(label, "editor-profiler-label");
+    panel->title = label;
     (void)my_widget_set_layout_params(label, "w:100% h:22");
     if (my_widget_add_child(section, label) == MY_RET_OK) {
         my_widget_unref(label); /* tree holds its own reference */
@@ -247,4 +251,11 @@ const char *editor_panel_profiler_row_text(const EditorPanelProfiler *panel,
         return NULL;
     }
     return panel->rows[i];
+}
+
+void editor_panel_profiler_retranslate(EditorPanelProfiler *panel) {
+    if (panel != NULL && panel->title != NULL) {
+        (void)my_label_set_text(panel->title,
+                                break_editor_tr(BREAK_EDITOR_TR_PROFILER_TITLE));
+    }
 }
