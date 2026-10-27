@@ -8019,6 +8019,7 @@ TEST(menu_width_is_defined_when_font_measure_fails)
   ASSERT_NOT_NULL(menu);
   ASSERT_EQ(my_menu_add_item(menu, "abcdefghij", 1), MY_RET_OK);
   ASSERT_EQ(my_window_manager_open(wm, win), MY_RET_OK);
+  my_widget_unref((my_widget_t *)win); /* the manager owns the window now */
   my_window_set_font(win, &font, 13);
   ASSERT_EQ(my_menu_popup(win, menu, 10, 10, NULL, NULL), MY_RET_OK);
   overlay = my_menu_widget(menu);
