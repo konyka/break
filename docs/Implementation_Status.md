@@ -6,7 +6,8 @@
 - **MSVC**：用 `ilammy/msvc-dev-cmd@v1` 载入 x64 环境（默认 PATH 上没有 `cl`），Configure/Build 保持默认 shell——该 action 的文档说明 `shell: bash` 会把 `/usr/bin` 放在前面，让 GNU `link` 遮住 MSVC 的 `link.exe`。测试步骤才用 bash。
 - **MinGW**：用镜像自带的 MinGW-w64 gcc。先有一步检查 `gcc -dumpmachine` 含 `mingw` 并打印路径与版本，找不到或目标不是 MinGW 就失败，而不是悄悄换成别的 gcc。
 - **本机已核对**：YAML 能解析（22 个 job，两条新 lane 各 10 个 step）；收据命令在本机原样跑通并通过 schema 校验；MSVC 树 `-LE graphics` 选中 186 项且含 fuzz 冒烟。`test_ci_lane_separation` 只检查 macOS/iOS 的 lane，不受影响。
-- **没有验证、风险明确**：这两条 lane 在 GitHub 上还没跑过，我无法在本机复现托管镜像。本机用的是 MSVC 19.51 / MSYS2 的 GCC 16.2，镜像是 Visual Studio 2022 的 MSVC 14.4x 和镜像自带的 gcc（文档写 15.2.0），版本都更老，可能报出本机没出现的诊断；镜像里 gcc 的位置和是否在 PATH 上也没有实证。首轮 CI 的真实结果在下面补记，若失败按真实日志修，不预先假设。
+- **首轮 CI 结果（`21f1ef21`）**：MinGW lane 成功。镜像里的 gcc 是 `C:\mingw64in\gcc.exe`，`-dumpmachine` 为 `x86_64-w64-mingw32`，版本 15.2.0（MinGW-Builds），构建 0 警告，测试通过——比本机 GCC 16.2 旧但没有暴露新诊断。MSVC lane 失败在 Build 步骤：镜像上是 Visual Studio 18 Enterprise 的 MSVC 14.51.36231，`main.c:5297` 报 C4456（`ground` 遮蔽上面第 5124 行的同名局部变量）。这是 `7b4365dc`（相机抬高）刚合入的代码，Clang/GCC 不报这条，MSVC 的 `/W4 /WX` 拒绝。本机先在合并后的代码上复现（`engine_demo` 单独构建 C2220+C4456），把内层变量改名 `ground_y` 后 MSVC 全量构建 0 诊断、Clang 构建通过。也就是说新 lane 第一次运行就抓到了一个其他 lane 都看不见的回归。
+- **仍然没有验证**：改名后的修复尚未经过 CI 复核；两条 lane 的完整测试数量与耗时，等修复后的那一轮结果再记录。
 
 ## 本轮更新：MSVC 与 MinGW 工具链在本机首次完整构建，修复 20 余处只在这两个编译器下出现的错误
 
