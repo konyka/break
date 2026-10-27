@@ -1,9 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
-## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，无需修复
+## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，并修复 Linux 链接失败
 
+- **更正**：上一版这一节写的是「无需修复」，结论错了。`6a755113`、`dba245c2` 以及我推上去的文档提交 `094ddf35` 在 Linux CI 上都失败（10 个 job 的 Build/Configure 步骤）：`window_mobile.c` 在 iOS 主机改动里新增了 `ceil()`（算逻辑尺寸），而 4 个 `test_platform_mobile_layer_{ios,android,harmonyos,qnx}` 直接编译这个文件、没有链接 libm，glibc 的 `ceil` 在 libm 里，所以报 `undefined reference to 'ceil'`。Windows 的 CRT 自带 `ceil`，macOS 的 libSystem 也包含，所以 Windows 本机和 macOS 的全量测试都不会暴露它，我当时只看了本机结果就下了结论。
+- **修复**：`test_platform_mobile_layer_*` 补 `target_link_libraries(... m)`（`test_engine_mobile_host` 本来就链了 m）。`test_rhi_backend_internal_contract` 新增一条检查：凡是直接编译 `window_mobile.c` 的可执行文件，其 `target_link_libraries` 必须带 `m`；补库之前该检查在本机失败（指向 `test_platform_mobile_layer_${_mobile_lower}`），补完通过。这是读 CMake 文本的检查，所以在 Windows 上也能提前发现这类只有 Linux 才暴露的缺库。
 - 同步了远程 7 个提交（iOS UIKit 主机、模拟器渲染、Metal 着色器 SDK 隔离、macOS 窗口模式文档）。对 Windows 有影响的只有：`EngineConfig` 新增 `native_window` / `native_display` / `native_content_scale` / `host`，`window_win32.c` 补了桌面用的 `platform_mobile_resize` 空实现，`audio.c` 的 iOS 模拟器分支，以及全平台构建的新测试 `test_engine_mobile_host`。
-- 在合并后的代码上重新配置并构建 GL、Vulkan、D3D12 Debug、ASan 四棵树（Clang 22.1.6 + Ninja）：0 条编译与链接警告。全量 ctest：GL 189/189、Vulkan（含验证层）192/192、D3D12 Debug 197/197、ASan（`-LE graphics`）186/186，每棵比上一轮多的 1 项就是 `test_engine_mobile_host`。这次 `test_platform_win32_runtime` 的剪贴板用例也通过。
+- 在合并后的代码上重新配置并构建 GL、Vulkan、D3D12 Debug、ASan 四棵树（Clang 22.1.6 + Ninja）：0 条编译与链接警告。补 `-lm` 之前的一轮全量 ctest 为 GL 189/189、Vulkan（含验证层）192/192、D3D12 Debug 197/197、ASan（`-LE graphics`）186/186，每棵比上一轮多的 1 项就是 `test_engine_mobile_host`；补 `-lm` 之后又完整重跑一轮：四棵树各只有 `test_platform_win32_runtime` 的剪贴板用例失败（GL 188/189、Vulkan 191/192、D3D12 196/197、ASan 185/186），其余全部通过。失败原因是这次本机剪贴板被占用：6 次探测都是 `ERROR_ACCESS_DENIED`，当时的剪贴板打开窗口属于 WindowsTerminal，与本次改动无关（上一轮剪贴板可用时该用例通过）。该用例的已知限制见上一节。
 - 三后端 demo（30 帧，无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 39.3/31.1 ms、最差帧 58.6 ms；Vulkan 35.0/61.8 ms、最差帧 70.5 ms、验证层消息 0；D3D12 78.5/74.7 ms、最差帧 99.3 ms。`TITLE_BAR_SWITCH` 均 `ok=1`，绘制尺寸保持 1280x720，日志无 ERROR/FATAL；Vulkan 截图人工查看画面正常、HUD 方向正确。本机 ToDesk 仍在运行，切换耗时不作为性能基线。
 - 未验证：iOS / macOS / Linux 的运行时行为本机无法运行，以 CI 和对应平台的记录为准；MSVC、MinGW 工具链未在本机构建。
 
