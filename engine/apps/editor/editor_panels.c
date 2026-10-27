@@ -23,6 +23,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #include <string.h>
 
 #include <editor/editor_cmd.h>
+#include <editor/editor_i18n.h>
 #include <editor/editor_components.h>
 #include <editor/editor_scene.h>
 
@@ -47,7 +48,7 @@ void break_editor_shell_fail_diag_attach_for_test(void) {
 #define EDITOR_ROW_CTX_POOL 64u
 #define EDITOR_FIELD_CTX_POOL \
     (BREAK_EDITOR_COMPONENT_REGISTRY_CAPACITY * 9u)
-#define EDITOR_PALETTE_COMMAND_COUNT 10u
+#define EDITOR_PALETTE_COMMAND_COUNT 12u
 #define EDITOR_TEST_WINDOW_W 800
 #define EDITOR_TEST_WINDOW_H 480
 
@@ -154,15 +155,14 @@ struct BreakEditorShell {
 
 /* ---------------- small helpers ---------------- */
 
-static const char *const k_tool_names[4] = {"Select", "Translate", "Rotate",
-                                            "Scale"};
+/* All user-visible text goes through break_editor_tr (editor_i18n.h). */
+static const BreakEditorTr k_tool_keys[4] = {
+    BREAK_EDITOR_TR_TOOL_SELECT, BREAK_EDITOR_TR_TOOL_TRANSLATE,
+    BREAK_EDITOR_TR_TOOL_ROTATE, BREAK_EDITOR_TR_TOOL_SCALE};
 
-/* Command palette entries; indices are the palette command id space. */
-static const char *const k_palette_commands[EDITOR_PALETTE_COMMAND_COUNT] = {
-    "Add Entity",      "Remove Selected", "Rename Selected",
-    "Save Scene",      "Undo",            "Redo",
-    "Tool: Select",    "Tool: Translate", "Tool: Rotate",
-    "Tool: Scale"};
+static const char *shell_tool_name(u32 tool) {
+    return break_editor_tr(k_tool_keys[tool & 3u]);
+}
 
 enum {
     PAL_ADD_ENTITY = 0,
@@ -174,8 +174,33 @@ enum {
     PAL_TOOL_SELECT,
     PAL_TOOL_TRANSLATE,
     PAL_TOOL_ROTATE,
-    PAL_TOOL_SCALE
+    PAL_TOOL_SCALE,
+    PAL_LANG_EN,
+    PAL_LANG_ZH
 };
+
+/* Current-language text of palette command `cmd` (bounded, never NULL). */
+static const char *shell_palette_text(u32 cmd, char *buf, size_t cap) {
+    static const BreakEditorTr plain[PAL_TOOL_SELECT] = {
+        BREAK_EDITOR_TR_CMD_ADD_ENTITY, BREAK_EDITOR_TR_CMD_REMOVE_SELECTED,
+        BREAK_EDITOR_TR_CMD_RENAME_SELECTED, BREAK_EDITOR_TR_CMD_SAVE_SCENE,
+        BREAK_EDITOR_TR_CMD_UNDO, BREAK_EDITOR_TR_CMD_REDO};
+    if (cmd < PAL_TOOL_SELECT) {
+        return break_editor_tr(plain[cmd]);
+    }
+    if (cmd <= PAL_TOOL_SCALE) {
+        (void)snprintf(buf, cap, break_editor_tr(BREAK_EDITOR_TR_CMD_TOOL_FMT),
+                       shell_tool_name(cmd - PAL_TOOL_SELECT));
+        return buf;
+    }
+    if (cmd == PAL_LANG_EN) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_LANG_EN);
+    }
+    if (cmd == PAL_LANG_ZH) {
+        return break_editor_tr(BREAK_EDITOR_TR_CMD_LANG_ZH);
+    }
+    return "?";
+}
 
 static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd);
 static void shell_palette_set_open(BreakEditorShell *shell, bool open);
@@ -237,7 +262,7 @@ static void shell_refresh_status(BreakEditorShell *shell) {
         snprintf(last, sizeof(last), "-");
     }
     (void)snprintf(shell->status_text, sizeof(shell->status_text),
-                   "entities=%llu dirty=%d last=%.100s note=%.100s",
+                   break_editor_tr(BREAK_EDITOR_TR_STATUS_FMT),
                    (unsigned long long)break_editor_doc_entity_count(
                        shell->doc),
                    break_editor_doc_is_dirty(shell->doc) ? 1 : 0, last,
@@ -246,12 +271,13 @@ static void shell_refresh_status(BreakEditorShell *shell) {
 }
 
 static void shell_refresh_tool_label(BreakEditorShell *shell) {
-    char buf[64];
+    char buf[96];
     if (shell == NULL || shell->tool_label == NULL) {
         return;
     }
-    (void)snprintf(buf, sizeof(buf), "Tool: %s",
-                   k_tool_names[shell->tool & 3u]);
+    (void)snprintf(buf, sizeof(buf),
+                   break_editor_tr(BREAK_EDITOR_TR_TOOL_LABEL_FMT),
+                   shell_tool_name(shell->tool));
     (void)my_label_set_text(shell->tool_label, buf);
 }
 
@@ -328,8 +354,20 @@ static const char *shell_entity_name(BreakEditorShell *shell,
 
 /* ---------------- inspector ---------------- */
 
+/* Names a freshly created widget (NULL passes through) so retranslation can
+ * find it later by name. */
+static my_widget_t *shell_named(my_widget_t *w, const char *name) {
+    if (w != NULL) {
+        (void)my_widget_set_name(w, name);
+    }
+    return w;
+}
+
 static void shell_add_child(my_widget_t *parent, my_widget_t *child,
                             const char *params) {
+    if (child == NULL) {
+        return;
+    }
     if (params != NULL) {
         (void)my_widget_set_layout_params(child, params);
     }
@@ -349,9 +387,9 @@ static void on_name_edit_activate(void *ctx, const char *event, void *data) {
         return;
     }
     if (break_editor_doc_rename_entity(shell->doc, shell->selected, text)) {
-        editor_shell_log(shell, "rename entity -> '%s'", text);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_FMT), text);
     } else {
-        editor_shell_log(shell, "rename failed (name cap %u bytes)",
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_FAILED_FMT),
                   BREAK_EDITOR_NAME_CAPACITY);
     }
     editor_shell_refresh_all(shell);
@@ -366,20 +404,20 @@ static void on_field_edit_activate(void *ctx, const char *event, void *data) {
     }
     (void)event;
     if (!break_editor_parse_f32(text, &value)) {
-        editor_shell_log(fc->shell, "invalid f32: '%s'", text);
+        editor_shell_log(fc->shell, break_editor_tr(BREAK_EDITOR_TR_LOG_INVALID_F32_FMT), text);
         editor_shell_refresh_all(fc->shell);
         return;
     }
     if (break_editor_doc_set_field_f32(fc->shell->doc, fc->shell->selected,
                                        fc->component_id, fc->field_index,
                                        value)) {
-        editor_shell_log(fc->shell, "set %s field %u = %g",
+        editor_shell_log(fc->shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SET_FIELD_FMT),
                   fc->component_id == BREAK_EDITOR_COMPONENT_TRANSFORM
                       ? "transform"
                       : "component",
                   (unsigned)fc->field_index, (double)value);
     } else {
-        editor_shell_log(fc->shell, "set field failed");
+        editor_shell_log(fc->shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SET_FIELD_FAILED));
     }
     editor_shell_refresh_all(fc->shell);
 }
@@ -401,18 +439,18 @@ static void on_component_button_click(void *ctx, const char *event,
         /* add button */
         if (break_editor_doc_add_component(shell->doc, shell->selected,
                                            fc->component_id)) {
-            editor_shell_log(shell, "add component %u", (unsigned)fc->component_id);
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ADD_COMPONENT_FMT), (unsigned)fc->component_id);
         } else {
-            editor_shell_log(shell, "add component %u failed",
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ADD_COMPONENT_FAILED_FMT),
                       (unsigned)fc->component_id);
         }
     } else {
         if (break_editor_doc_remove_component(shell->doc, shell->selected,
                                               fc->component_id)) {
-            editor_shell_log(shell, "remove component %u",
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_COMPONENT_FMT),
                       (unsigned)fc->component_id);
         } else {
-            editor_shell_log(shell, "remove component %u failed",
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_COMPONENT_FAILED_FMT),
                       (unsigned)fc->component_id);
         }
     }
@@ -435,7 +473,10 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
     shell->field_ctx_count = 0u;
 
     if (!shell_sync_selection(shell)) {
-        shell_add_child(insp, my_label_create(NULL, "No selection"),
+        shell_add_child(insp,
+                        shell_named(my_label_create(NULL, break_editor_tr(
+                                        BREAK_EDITOR_TR_NO_SELECTION)),
+                                    "editor-inspector-empty-label"),
                         "w:100% h:24");
         return;
     }
@@ -444,10 +485,15 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
     {
         const char *name = shell_entity_name(shell, shell->selected);
         my_widget_t *edit = my_edit_create(NULL);
-        shell_add_child(insp, my_label_create(NULL, "Name"), "w:100% h:22");
+        shell_add_child(insp,
+                        shell_named(my_label_create(
+                                        NULL, break_editor_tr(BREAK_EDITOR_TR_NAME)),
+                                    "editor-inspector-name-label"),
+                        "w:100% h:22");
         if (edit != NULL) {
             (void)my_widget_set_name(edit, "editor-name-edit");
-            (void)my_edit_set_hint(edit, "entity name");
+            (void)my_edit_set_hint(edit,
+                                   break_editor_tr(BREAK_EDITOR_TR_ENTITY_NAME_HINT));
             (void)my_edit_set_max_len(edit,
                                       BREAK_EDITOR_NAME_CAPACITY - 1u);
             (void)my_edit_set_text(edit, name != NULL ? name : "");
@@ -478,7 +524,8 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
             if (shell->field_ctx_count < EDITOR_FIELD_CTX_POOL) {
                 EditorFieldCtx *fc =
                     &shell->field_ctxs[shell->field_ctx_count++];
-                my_widget_t *btn = my_button_create(NULL, "Remove");
+                my_widget_t *btn = my_button_create(
+                    NULL, break_editor_tr(BREAK_EDITOR_TR_REMOVE));
                 fc->shell = shell;
                 fc->component_id = info.component_id;
                 fc->field_index = 1u; /* != 0 => remove */
@@ -554,7 +601,8 @@ static void shell_rebuild_inspector(BreakEditorShell *shell) {
             if (shell->field_ctx_count < EDITOR_FIELD_CTX_POOL) {
                 EditorFieldCtx *fc =
                     &shell->field_ctxs[shell->field_ctx_count++];
-                my_widget_t *btn = my_button_create(NULL, "Add");
+                my_widget_t *btn = my_button_create(
+                    NULL, break_editor_tr(BREAK_EDITOR_TR_ADD));
                 fc->shell = shell;
                 fc->component_id = info.component_id;
                 fc->field_index = 0u; /* 0 => add */
@@ -606,7 +654,9 @@ static void on_row_click(void *ctx, const char *event, void *data) {
         BreakEditorShell *shell = rc->shell;
         if (rc->index < shell->palette_match_count) {
             u32 cmd = shell->palette_matches[rc->index];
-            editor_shell_log(shell, "palette: %s", k_palette_commands[cmd]);
+            char text[96];
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PALETTE_FMT),
+                             shell_palette_text(cmd, text, sizeof(text)));
             shell_execute_palette_command(shell, cmd);
         }
         shell_palette_set_open(shell, false);
@@ -662,14 +712,18 @@ static void editor_adapter_bind_row(my_list_adapter_t *adapter,
             name != NULL) {
             (void)my_button_set_text(row, name);
         } else {
-            (void)my_button_set_text(row, "<stale>");
+            (void)my_button_set_text(row,
+                                     break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
         }
     } else {
         if (index < a->shell->palette_match_count) {
+            char text[96];
             (void)my_button_set_text(
-                row, k_palette_commands[a->shell->palette_matches[index]]);
+                row, shell_palette_text(a->shell->palette_matches[index], text,
+                                        sizeof(text)));
         } else {
-            (void)my_button_set_text(row, "<stale>");
+            (void)my_button_set_text(row,
+                                     break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
         }
     }
 }
@@ -726,7 +780,9 @@ bool break_editor_shell_palette_set_filter(BreakEditorShell *shell,
     }
     shell->palette_match_count = 0u;
     for (i = 0u; i < EDITOR_PALETTE_COMMAND_COUNT; i++) {
-        if (editor_str_contains_casefold(k_palette_commands[i], text)) {
+        char cmd_text[96];
+        if (editor_str_contains_casefold(
+                shell_palette_text(i, cmd_text, sizeof(cmd_text)), text)) {
             shell->palette_matches[shell->palette_match_count++] = i;
         }
     }
@@ -791,17 +847,17 @@ static void shell_do_add_entity(BreakEditorShell *shell) {
     BreakEditorEntityId id = break_editor_doc_add_entity(shell->doc, NULL);
     if (break_editor_entity_id_valid(id)) {
         const char *name = shell_entity_name(shell, id);
-        editor_shell_log(shell, "add entity '%s'", name != NULL ? name : "?");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ADD_ENTITY_FMT), name != NULL ? name : "?");
         shell->selected = id;
     } else {
-        editor_shell_log(shell, "add entity failed (bounded)");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ADD_ENTITY_FAILED));
     }
     editor_shell_refresh_all(shell);
 }
 
 static void shell_do_remove_selected(BreakEditorShell *shell) {
     if (!break_editor_entity_id_valid(shell->selected)) {
-        editor_shell_log(shell, "remove: no selection");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_NO_SELECTION));
         return;
     }
     {
@@ -816,10 +872,10 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
             name[0] = '\0';
         }
         if (break_editor_doc_remove_entity(shell->doc, shell->selected)) {
-            editor_shell_log(shell, "remove entity '%s'",
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_ENTITY_FMT),
                       name[0] != '\0' ? name : "?");
         } else {
-            editor_shell_log(shell, "remove entity failed");
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REMOVE_ENTITY_FAILED));
         }
     }
     editor_shell_refresh_all(shell);
@@ -827,17 +883,17 @@ static void shell_do_remove_selected(BreakEditorShell *shell) {
 
 static void shell_do_save(BreakEditorShell *shell) {
     if (!shell->scene_path_set) {
-        editor_shell_log(shell, "save: no scene path configured");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVE_NO_PATH));
         (void)snprintf(shell->note, sizeof(shell->note), "save: no path");
         shell_refresh_status(shell);
         return;
     }
     if (break_editor_doc_save(shell->doc, shell->scene_path)) {
         break_editor_hot_reload_note_saved(shell->hot_reload);
-        editor_shell_log(shell, "saved %s", shell->scene_path);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVED_FMT), shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "saved");
     } else {
-        editor_shell_log(shell, "save failed %s", shell->scene_path);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_SAVE_FAILED_FMT), shell->scene_path);
         (void)snprintf(shell->note, sizeof(shell->note), "save failed");
     }
     shell_refresh_status(shell);
@@ -856,10 +912,10 @@ static void shell_do_undo(BreakEditorShell *shell) {
         last[0] = '\0';
         (void)break_editor_cmd_stack_describe_last(
             break_editor_doc_stack(shell->doc), last);
-        editor_shell_log(shell, "undo ok (now last: %s)",
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_UNDO_OK_FMT),
                   last[0] != '\0' ? last : "-");
     } else {
-        editor_shell_log(shell, "undo: nothing to undo");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_UNDO_NOTHING));
     }
     editor_shell_refresh_all(shell);
 }
@@ -875,10 +931,10 @@ static void shell_do_redo(BreakEditorShell *shell) {
         last[0] = '\0';
         (void)break_editor_cmd_stack_describe_last(
             break_editor_doc_stack(shell->doc), last);
-        editor_shell_log(shell, "redo ok (now last: %s)",
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REDO_OK_FMT),
                   last[0] != '\0' ? last : "-");
     } else {
-        editor_shell_log(shell, "redo: nothing to redo");
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_REDO_NOTHING));
     }
     editor_shell_refresh_all(shell);
 }
@@ -893,7 +949,8 @@ static void shell_do_tool(BreakEditorShell *shell, u32 tool) {
                                     (BreakEditorGizmoMode)shell->tool);
     }
     shell_refresh_tool_label(shell);
-    editor_shell_log(shell, "tool %s", k_tool_names[shell->tool]);
+    editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_TOOL_FMT),
+                     shell_tool_name(shell->tool));
     shell_refresh_status(shell);
 }
 
@@ -904,9 +961,10 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
         const char *name = shell_entity_name(shell, shell->selected);
         break_editor_camera_focus(&shell->camera, shell->doc,
                                   shell->selected);
-        (void)snprintf(shell->note, sizeof(shell->note), "focus '%s'",
+        (void)snprintf(shell->note, sizeof(shell->note),
+                       break_editor_tr(BREAK_EDITOR_TR_NOTE_FOCUS_FMT),
                        name != NULL ? name : "?");
-        editor_shell_log(shell, "focus '%s' (camera target %.3g %.3g %.3g)",
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_FMT),
                   name != NULL ? name : "?", (double)shell->camera.target[0],
                   (double)shell->camera.target[1],
                   (double)shell->camera.target[2]);
@@ -914,8 +972,9 @@ static void shell_do_focus_selected(BreakEditorShell *shell) {
             my_widget_invalidate(shell->viewport_widget, NULL);
         }
     } else {
-        (void)snprintf(shell->note, sizeof(shell->note), "focus: no selection");
-        editor_shell_log(shell, "focus: no selection");
+        (void)snprintf(shell->note, sizeof(shell->note), "%s",
+                       break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_FOCUS_NO_SELECTION));
     }
     shell_refresh_status(shell);
 }
@@ -935,9 +994,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
             shell->name_edit != NULL && shell->win != NULL) {
             my_event_dispatcher_set_focus(&shell->win->dispatcher,
                                           shell->name_edit);
-            editor_shell_log(shell, "rename: edit the Name field, Enter commits");
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_HINT));
         } else {
-            editor_shell_log(shell, "rename: no selection");
+            editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_RENAME_NO_SELECTION));
         }
         break;
     case PAL_SAVE:
@@ -961,6 +1020,12 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
     case PAL_TOOL_SCALE:
         shell_do_tool(shell, 3u);
         break;
+    case PAL_LANG_EN:
+        (void)break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US);
+        break;
+    case PAL_LANG_ZH:
+        (void)break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN);
+        break;
     default:
         break;
     }
@@ -969,7 +1034,9 @@ static void shell_execute_palette_command(BreakEditorShell *shell, u32 cmd) {
 static void shell_execute_palette_first(BreakEditorShell *shell) {
     if (shell->palette_match_count > 0u) {
         u32 cmd = shell->palette_matches[0u];
-        editor_shell_log(shell, "palette: %s", k_palette_commands[cmd]);
+        char text[96];
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_PALETTE_FMT),
+                         shell_palette_text(cmd, text, sizeof(text)));
         shell_execute_palette_command(shell, cmd);
     }
     shell_palette_set_open(shell, false);
@@ -1047,7 +1114,8 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
     if (key == 'r' &&
         modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
         if (!break_editor_viewport3d_request_shader_reload(shell->vp3d)) {
-            editor_shell_log(shell, "shader reload: unavailable");
+            editor_shell_log(shell, "%s",
+                             break_editor_tr(BREAK_EDITOR_TR_LOG_SR_UNAVAILABLE));
         }
         return true;
     }
@@ -1114,6 +1182,64 @@ static void shell_on_root_key_down(void *ctx, const char *event, void *data) {
 
 /* Non-static: the Phase 3 assets panel calls this after a .bscn load (the
  * world swap invalidates the selection and every panel's displayed state). */
+static void shell_set_label(BreakEditorShell *shell, const char *name,
+                            const char *text) {
+    my_widget_t *w = my_widget_find_descendant(shell->root, name);
+    if (w != NULL) {
+        (void)my_label_set_text(w, text);
+    }
+}
+
+static void shell_set_button(BreakEditorShell *shell, const char *name,
+                             const char *text) {
+    my_widget_t *w = my_widget_find_descendant(shell->root, name);
+    if (w != NULL) {
+        (void)my_button_set_text(w, text);
+    }
+}
+
+/* Re-applies the current language to every text the shell and its panels
+ * own. Console lines already written are history and stay as they were. */
+static void shell_retranslate(BreakEditorShell *shell) {
+    if (shell->root != NULL) {
+        shell_set_button(shell, "editor-add-button",
+                         break_editor_tr(BREAK_EDITOR_TR_ADD));
+        shell_set_button(shell, "editor-remove-button",
+                         break_editor_tr(BREAK_EDITOR_TR_REMOVE));
+        shell_set_label(shell, "editor-outliner-label",
+                        break_editor_tr(BREAK_EDITOR_TR_OUTLINER));
+    }
+    if (shell->palette_edit != NULL) {
+        (void)my_edit_set_hint(shell->palette_edit,
+                               break_editor_tr(BREAK_EDITOR_TR_COMMAND_HINT));
+    }
+    editor_panel_assets_retranslate(shell->assets_panel);
+    editor_panel_lua_retranslate(shell->lua_panel);
+    editor_panel_profiler_retranslate(shell->profiler_panel);
+    editor_panel_network_retranslate(shell->network_panel);
+    editor_panel_render_retranslate(shell->render_panel);
+    /* palette rows and filter follow the current language */
+    if (shell->palette_open && shell->palette_edit != NULL) {
+        (void)break_editor_shell_palette_set_filter(
+            shell, my_edit_get_text(shell->palette_edit));
+    } else if (shell->palette_list != NULL) {
+        (void)my_list_view_refresh(shell->palette_list);
+    }
+    /* tool label, status bar and the inspector (rebuilt from scratch) */
+    editor_shell_refresh_all(shell);
+}
+
+bool break_editor_shell_set_language(BreakEditorShell *shell,
+                                     BreakEditorLang lang) {
+    if (shell == NULL || !break_editor_i18n_set_lang(lang)) {
+        return false;
+    }
+    shell_retranslate(shell);
+    editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LANGUAGE_FMT),
+                     break_editor_i18n_lang_name(lang));
+    return true;
+}
+
 void editor_shell_refresh_all(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
@@ -1124,6 +1250,7 @@ void editor_shell_refresh_all(BreakEditorShell *shell) {
     }
     shell_rebuild_inspector(shell);
     shell_refresh_status(shell);
+    shell_refresh_tool_label(shell);
 }
 
 /* ---------------- widget tree build ---------------- */
@@ -1166,7 +1293,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     }
     (void)my_widget_set_layouter(toolbar,
                                  my_layouter_linear_create(NULL, true, 4));
-    add_btn = my_button_create(NULL, "Add");
+    add_btn = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_ADD));
     if (add_btn == NULL) {
         my_widget_unref(toolbar);
         return false;
@@ -1174,7 +1301,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     (void)my_widget_set_name(add_btn, "editor-add-button");
     (void)my_widget_on(add_btn, "click", on_add_button_click, shell);
     shell_add_child(toolbar, add_btn, "w:64 h:24");
-    remove_btn = my_button_create(NULL, "Remove");
+    remove_btn = my_button_create(NULL, break_editor_tr(BREAK_EDITOR_TR_REMOVE));
     if (remove_btn == NULL) {
         my_widget_unref(toolbar);
         return false;
@@ -1182,7 +1309,7 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     (void)my_widget_set_name(remove_btn, "editor-remove-button");
     (void)my_widget_on(remove_btn, "click", on_remove_button_click, shell);
     shell_add_child(toolbar, remove_btn, "w:72 h:24");
-    shell->tool_label = my_label_create(NULL, "Tool: Select");
+    shell->tool_label = my_label_create(NULL, "");
     if (shell->tool_label == NULL) {
         my_widget_unref(toolbar);
         return false;
@@ -1208,7 +1335,10 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     }
     (void)my_widget_set_layouter(
         outliner_panel, my_layouter_linear_create(NULL, false, 2));
-    shell_add_child(outliner_panel, my_label_create(NULL, "Outliner"),
+    shell_add_child(outliner_panel,
+                    shell_named(my_label_create(
+                                    NULL, break_editor_tr(BREAK_EDITOR_TR_OUTLINER)),
+                                "editor-outliner-label"),
                     "w:100% h:22");
     shell->outliner_list = my_list_view_create(NULL);
     if (shell->outliner_list == NULL) {
@@ -1347,7 +1477,8 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
         return false;
     }
     (void)my_widget_set_name(shell->palette_edit, "editor-palette-edit");
-    (void)my_edit_set_hint(shell->palette_edit, "command");
+    (void)my_edit_set_hint(shell->palette_edit,
+                           break_editor_tr(BREAK_EDITOR_TR_COMMAND_HINT));
     (void)my_edit_set_max_len(shell->palette_edit, 63u);
     (void)my_widget_on(shell->palette_edit, "changed",
                        on_palette_edit_changed, shell);
@@ -1466,7 +1597,7 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     }
     /* shortcuts work before any widget is clicked */
     my_event_dispatcher_set_focus(&win->dispatcher, shell->root);
-    editor_shell_log(shell, "editor shell ready");
+    editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_READY));
     return shell;
 }
 
@@ -1688,11 +1819,11 @@ bool editor_shell_load_scene(BreakEditorShell *shell, const char *path) {
     len = strlen(path);
     break_editor_gizmo_end_drag(shell->gizmo);
     if (!break_editor_doc_load(shell->doc, path)) {
-        editor_shell_log(shell, "load failed %s", path);
+        editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_FAILED_FMT), path);
         editor_shell_refresh_all(shell);
         return false;
     }
-    editor_shell_log(shell, "load %s", path);
+    editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_LOAD_FMT), path);
     if (len > 0u && len + 1u <= sizeof(shell->scene_path)) {
         memcpy(shell->scene_path, path, len + 1u);
         shell->scene_path_set = true;

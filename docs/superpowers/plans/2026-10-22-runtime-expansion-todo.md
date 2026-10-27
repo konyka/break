@@ -59,6 +59,7 @@
 - [x] Console/profiler/network/render panels（**delivered-with-limits**：render debugger 2026-10-26 已交付纯视图（`docs/design/editor_render_debugger.md`；无 capture/控制/GPU timing）；此前 **partial**：profiler 面板已交付为本地纯视图——Phase 3 Task 3，top-N≤16、4 Hz 节流、从不修改 profiler 状态有测试钉住；Lua console 面板输出落共享 ring；**network 面板已交付**——Phase 4 Task 3，纯视图 reactor/session/admission/connection 行、≤16×96B、≤4 Hz、诊断列 profiler 下方；**render debugger 已交付**（2026-10-26，纯视图，见 `docs/design/editor_render_debugger.md`）；Phase 1 另有有界 64×128B 动作日志环）
 - [x] Lua console + remote session（console：Phase 3 editor-local；**remote session dev-tool 形态已交付**——Phase 4 Tasks 1-2：STEP 模式 reactor 由 shell tick 驱动、handler 全在 shell 线程映射可 undo 命令、TLS + CHALLENGE/AUTH-v2 必需、默认 OFF、`--remote` 只绑 loopback + 默认限速、dev PSK（非生产凭证体系）；契约 `docs/design/editor_remote.md`；**未交付**：remote load/save、remote render control、WAN/多客户端管理、服务端 transport close/认证 deadline）
 - [x] Editor smoke and native UI evidence（headless：dummy PAL + PPM 冒烟测试三 lane 绿；native：`editor` 二进制 live X11 + OpenGL 4.6 Mesa 6 秒 smoke 零错误，Phase 1 Task 5 记录确切命令、Phase 2 Task 4 于终态复跑同型命令（`build-sdd-v4`，exit 124 超时即存活、两次运行日志逐字节相同）——不构成 GPU 验证；headless RHI 后端不存在，configure 拒绝 `ENGINE_RHI_BACKEND=headless`；脚本化交互钩子不存在，人工交互验证 pending）
+- [x] Editor 乱码修复与 I18N（2026-10-27，branch `sdd/editor-i18n`：字体跨发行版查找 + 位图回退告警、en-US/zh-CN 表、`--lang`/环境变量、命令面板运行时切换、`test_source_encoding`；见 `docs/design/editor_i18n.md`；RTL/复杂整形、Windows/macOS 字体与 CI 未验证）
 
 ## Stage 5 — Online update/crash/security
 

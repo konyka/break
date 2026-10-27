@@ -1,5 +1,12 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — 乱码修复与 I18N（2026-10-27）
+
+- **根因**：`editor_main.c` 写死 Debian 字体路径，Fedora 等发行版找不到字体，myui 静默退回 8×8 ASCII 位图字体，所有中文与非 ASCII 字符显示为乱码；另 `engine/src/rhi/rhi.h` 约 30 行注释被 GBK 误读后存回。
+- **交付**：`break_editor_i18n`（`engine/src/editor/editor_i18n.{h,c}` + `editor_i18n_tables.c`）：枚举 key、en-US / zh-CN 两张表、`BREAK_LANG > LC_ALL > LC_MESSAGES > LANG` 选择、`--lang` 参数；全部 editor UI 文本（菜单、面板、命令面板、日志、热加载提示）走 `break_editor_tr`；命令面板新增 “Language: English / Language: 中文 (Chinese)” 运行时切换，各面板重建文本。`engine/apps/editor/editor_fonts.{h,c}`：可选 fontconfig + 跨发行版字体路径表，中文优先 CJK 字体；无字体或无 CJK 时打印警告，myui 位图回退也会 LOG_WARN。`rhi.h` 注释按 git 历史恢复，新增 `test_source_encoding` 扫描源码/shader/文档中的误读特征。
+- **验证**：`test_editor_i18n` 7/7、`test_editor_fonts` 6/6、`test_editor_shell` +3（Snowflake OFF 80、ON 105）、`test_source_encoding`（旧 rhi.h 失败、新版通过）；全量 ctest：OpenGL 207/207、Vulkan 208/208、Snowflake 211/211、多后端 208/208（均含 1 个 Windows-only skip）；ASan/TSan 下 shell 各 5 次、i18n、fonts 零报告；`fuzz_editor_remote` smoke 正常。真实窗口（Xwayland X11，NVK Vulkan 与 Mesa OpenGL）：gdb 确认中英文均使用矢量字体链；运行时切换前后截图所有文本面板均变化。
+- **边界**：未做 OCR，字形未自动读回；运行时切换经 gdb 注入（XTEST 在 Xwayland 下不送达）；只支持 en-US / zh-CN，不支持 RTL 与复杂字形整形；Windows/macOS 字体路径与无 fontconfig 环境未运行；CI 未运行。详见 `docs/design/editor_i18n.md`。
+
 ## 本轮更新：Stage 4 Scene Editor — viewport shader 热加载（2026-10-27）
 
 - **交付**：viewport 的 `editor_color` vertex/fragment shader 外部修改后自动重载。统一路径解析（`BREAK_SHADER_DIR` → `.` → `engine` → `../engine` → `../../engine`，按后端选 `_vk` 变体，超长根跳过不截断）；事务式 GPU 候选（shader/pipeline/bindings/uniform 全部成功才发布，任何失败保留完整旧状态，首次失败可恢复且不逐帧重试）；viewport 持有的独立 owner，一个 Runtime Core coordinator 把两个文件作为两个真实 VFS 请求，worker 只读不碰 RHI，两侧都 COMMITTED 后才在 shell tick（`frame_begin` 之前）提交；在途修改合并为一次尾随重载；`Ctrl+Shift+R` 只排队；console 与 render debugger 显示状态；shutdown 超时可重试，不释放仍被 worker 引用的资源。新增 opt-in `filewatch_add_with_missing`（删除也通知，用于高优先级目录删除后自动回退），原 `filewatch_add` 行为不变。

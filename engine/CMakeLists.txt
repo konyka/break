@@ -1155,7 +1155,7 @@ target_link_libraries(break_lua PUBLIC lua)
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
@@ -1581,8 +1581,21 @@ add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
         apps/editor/editor_panel_render.c apps/editor/editor_hot_reload.c
+    apps/editor/editor_fonts.c
     src/myui/mypal/dummy/my_pal_dummy.c)
 set_property(TARGET editor PROPERTY C_STANDARD 11)
+# Editor UI fonts (editor_fonts.c): fontconfig is optional; without it the
+# built-in per-platform path table is used.
+if(ENGINE_PLATFORM STREQUAL "linux")
+    find_package(PkgConfig QUIET)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(BREAK_EDITOR_FONTCONFIG QUIET IMPORTED_TARGET fontconfig)
+    endif()
+endif()
+if(BREAK_EDITOR_FONTCONFIG_FOUND)
+    target_compile_definitions(editor PRIVATE BREAK_EDITOR_FONTCONFIG=1)
+    target_link_libraries(editor PRIVATE PkgConfig::BREAK_EDITOR_FONTCONFIG)
+endif()
 target_include_directories(editor PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
     ${CMAKE_CURRENT_SOURCE_DIR}/src
@@ -3810,7 +3823,7 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -3880,6 +3893,39 @@ endif()
     target_link_libraries(test_editor_assets PRIVATE break_editor_test)
     add_test(NAME test_editor_assets COMMAND test_editor_assets)
     set_tests_properties(test_editor_assets PROPERTIES LABELS "headless;editor")
+
+    # Editor UI translations (docs/design/editor_i18n.md): table coverage,
+    # UTF-8 validity, format-shape parity, tag parsing and env priority.
+    add_executable(test_editor_i18n tests/test_editor_i18n.c)
+    target_include_directories(test_editor_i18n PRIVATE ${TEST_INCLUDE_DIRS})
+    target_compile_definitions(test_editor_i18n PRIVATE BREAK_EDITOR_TESTING=1)
+    target_link_libraries(test_editor_i18n PRIVATE break_editor_test)
+    add_test(NAME test_editor_i18n COMMAND test_editor_i18n)
+    set_tests_properties(test_editor_i18n PROPERTIES LABELS "headless;editor")
+
+    # Editor UI font discovery: distro layouts simulated under a temp root,
+    # plus a real-system check (fontconfig when available).
+    add_executable(test_editor_fonts tests/test_editor_fonts.c
+        apps/editor/editor_fonts.c)
+    target_include_directories(test_editor_fonts PRIVATE ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/apps/editor
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui)
+    target_link_libraries(test_editor_fonts PRIVATE break_editor_test)
+    if(BREAK_EDITOR_FONTCONFIG_FOUND)
+        target_compile_definitions(test_editor_fonts PRIVATE BREAK_EDITOR_FONTCONFIG=1)
+        target_link_libraries(test_editor_fonts PRIVATE PkgConfig::BREAK_EDITOR_FONTCONFIG)
+    endif()
+    add_test(NAME test_editor_fonts COMMAND test_editor_fonts)
+    set_tests_properties(test_editor_fonts PROPERTIES LABELS "headless;editor")
+
+    # Mojibake guard: UTF-8 text decoded as GBK and saved again (rhi.h had
+    # ~30 such comments). Scans engine sources, shaders and docs.
+    add_test(NAME test_source_encoding
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_encoding.cmake)
+    set_tests_properties(test_source_encoding PROPERTIES
+        LABELS "headless;platform_contract")
 
     # Stage 4 scene editor Phase 3 Task 2: Lua console core. Links BOTH test
     # variants: break_editor_test (BREAK_EDITOR_TESTING=1 editor allocation

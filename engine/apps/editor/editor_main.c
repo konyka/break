@@ -33,6 +33,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "editor_fonts.h"
 #include "editor_hot_reload.h"
 #include "editor_panels.h"
 #include "editor_remote.h"
@@ -49,45 +50,31 @@
 #define EDITOR_WIN_W 1280u
 #define EDITOR_WIN_H 800u
 
-static size_t preferred_fonts(my_font_source_t fonts[3]) {
-#if defined(__linux__)
-  fonts[0].path = "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc";
-  fonts[0].face_index = 0;
-  fonts[1].path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
-  fonts[1].face_index = 0;
-  return 2;
-#elif defined(ENGINE_PLATFORM_WINDOWS)
-  fonts[0].path = "C:/Windows/Fonts/msyh.ttc";
-  fonts[0].face_index = 0;
-  fonts[1].path = "C:/Windows/Fonts/simsun.ttc";
-  fonts[1].face_index = 0;
-  return 2;
-#elif defined(ENGINE_PLATFORM_MACOS)
-  fonts[0].path = "/System/Library/Fonts/PingFang.ttc";
-  fonts[0].face_index = 0;
-  fonts[1].path = "/System/Library/Fonts/STHeiti Light.ttc";
-  fonts[1].face_index = 0;
-  return 2;
-#else
-  (void)fonts;
-  return 0;
-#endif
-}
-
 int main(int argc, char **argv) {
   PlatformConfig cfg;
   Platform *platform;
   RHIDevice *device;
   BreakUI *ui;
   BreakEditorShell *shell;
-  my_font_source_t fonts[3] = {{NULL, 0}};
-  size_t font_count;
+  BreakEditorFontChain fonts;
+  BreakEditorLang lang = BREAK_EDITOR_LANG_EN_US;
+  char lang_err[96];
   u32 w = EDITOR_WIN_W, h = EDITOR_WIN_H;
   u32 drawable_w = EDITOR_WIN_W, drawable_h = EDITOR_WIN_H;
   BreakEditorRemoteCli remote_cli;
   BreakEditorRemote *remote = NULL;
   BreakEditorHotReload *hot_reload = NULL;
   char remote_err[160];
+
+  /* --lang <tag> (or BREAK_LANG / LC_ALL / LC_MESSAGES / LANG) selects the
+   * UI language; the option is removed before the remote/scene parser runs */
+  lang_err[0] = '\0';
+  if (!break_editor_cli_take_lang(&argc, argv, &lang, lang_err,
+                                  sizeof(lang_err))) {
+    fprintf(stderr, "editor: %s\n", lang_err);
+    return 2;
+  }
+  (void)break_editor_i18n_set_lang(lang);
 
   /* parsed before any window exists: a bad --remote config exits non-zero
    * without ever opening a listener (fail closed) */
@@ -131,11 +118,19 @@ int main(int argc, char **argv) {
   }
 
   ui = break_ui_create();
-  font_count = preferred_fonts(fonts);
+  /* vector fonts for the UI language: without them myui falls back to its
+   * 8x8 ASCII bitmap font and every non-ASCII character is a placeholder */
+  if (break_editor_font_candidates(lang, NULL, true, &fonts) == 0u) {
+    fprintf(stderr, "editor: no UI font found; text will use the built-in "
+                    "ASCII bitmap font (install Noto Sans CJK or DejaVu Sans)\n");
+  } else if (!fonts.has_cjk) {
+    fprintf(stderr, "editor: no CJK font found; Chinese text will not render "
+                    "(install Noto Sans CJK)\n");
+  }
   if (ui == NULL ||
       !break_ui_init_with_fonts(ui, platform, device,
-                                font_count > 0 ? fonts : NULL, font_count, w,
-                                h)) {
+                                fonts.count > 0u ? fonts.sources : NULL,
+                                fonts.count, w, h)) {
     break_ui_destroy(ui);
     rhi_device_destroy(device);
     platform_destroy(platform);

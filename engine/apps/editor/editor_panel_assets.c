@@ -28,6 +28,8 @@
 
 #include "editor_shell_internal.h"
 
+#include <editor/editor_i18n.h>
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -89,6 +91,12 @@ static EditorAssetsRowCtx *assets_row_ctx_alloc(EditorPanelAssets *panel,
     return NULL; /* bounded: the row still renders, click is degraded */
 }
 
+static void assets_panel_refresh(EditorPanelAssets *panel);
+
+void editor_panel_assets_retranslate(EditorPanelAssets *panel) {
+    assets_panel_refresh(panel); /* path label + rows in the current language */
+}
+
 static void assets_panel_refresh(EditorPanelAssets *panel) {
     const char *rel;
     if (panel == NULL) {
@@ -98,11 +106,11 @@ static void assets_panel_refresh(EditorPanelAssets *panel) {
               ? break_editor_assets_current_rel(panel->assets)
               : NULL;
     if (rel == NULL) {
-        (void)snprintf(panel->path_text, sizeof(panel->path_text),
-                       "assets: unavailable");
+        (void)snprintf(panel->path_text, sizeof(panel->path_text), "%s",
+                       break_editor_tr(BREAK_EDITOR_TR_ASSETS_UNAVAILABLE));
     } else {
         (void)snprintf(panel->path_text, sizeof(panel->path_text),
-                       "assets: /%s", rel);
+                       break_editor_tr(BREAK_EDITOR_TR_ASSETS_PATH_FMT), rel);
     }
     if (panel->path_label != NULL) {
         (void)my_label_set_text(panel->path_label, panel->path_text);
@@ -160,7 +168,7 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                     (void)editor_shell_load_scene(shell, path);
                 }
             } else {
-                editor_shell_log(shell, "assets: '%s' is not a .bscn scene",
+                editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ASSET_NOT_SCENE_FMT),
                                  name);
             }
         }
@@ -223,7 +231,8 @@ static void assets_adapter_bind_row(my_list_adapter_t *adapter,
                 (void)my_button_set_text(row, name);
             }
         } else {
-            (void)my_button_set_text(row, "<stale>");
+            (void)my_button_set_text(row,
+                                     break_editor_tr(BREAK_EDITOR_TR_STALE_ROW));
         }
     }
 }
@@ -271,7 +280,8 @@ bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
     }
     (void)my_widget_set_layouter(section,
                                  my_layouter_linear_create(NULL, false, 2));
-    panel->path_label = my_label_create(NULL, "assets:");
+    panel->path_label = my_label_create(
+        NULL, break_editor_tr(BREAK_EDITOR_TR_ASSETS_PREFIX));
     if (panel->path_label == NULL) {
         my_widget_unref(section);
         return false;

@@ -1,6 +1,7 @@
 #include "editor_shader_reload.h"
 
 #include <core/shader_io.h>
+#include <editor/editor_i18n.h>
 #include <platform/filewatch.h>
 #include <runtime/runtime_reload.h>
 
@@ -250,11 +251,11 @@ static void shader_finish_attempt(BreakEditorShaderReload *reload) {
     if (ok) {
         reload->stats.reloads++;
         reload->stats.last_result = BREAK_EDITOR_SHADER_RELOAD_APPLIED;
-        shader_log(reload, "shader reload: applied shader pair");
+        shader_log(reload, break_editor_tr(BREAK_EDITOR_TR_LOG_SR_APPLIED));
     } else {
         reload->stats.failed++;
         reload->stats.last_result = BREAK_EDITOR_SHADER_RELOAD_FAILED_KEEP_OLD;
-        shader_log(reload, "shader reload: failed; keeping current shaders");
+        shader_log(reload, break_editor_tr(BREAK_EDITOR_TR_LOG_SR_FAILED));
     }
     shader_clear_staging(reload);
     reload->attempt_failed = false;
@@ -390,9 +391,9 @@ void break_editor_shader_reload_set_logger(
     reload->log = log;
     reload->log_user = user;
     if (log != NULL && !reload->watching && !reload->stopped) {
-        shader_log(reload, reload->stuck
-                               ? "shader reload: unavailable; worker shutdown is still pending"
-                               : "shader reload: watch unavailable; manual reload remains available");
+        shader_log(reload, break_editor_tr(reload->stuck
+                                               ? BREAK_EDITOR_TR_LOG_SR_STUCK
+                                               : BREAK_EDITOR_TR_LOG_SR_MANUAL_ONLY));
     }
 }
 
@@ -419,8 +420,8 @@ bool break_editor_shader_reload_shutdown(BreakEditorShaderReload *reload) {
             reload->stuck = true;
             reload->stats.last_result = BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE;
             if (!was_stuck) {
-                shader_log(reload,
-                           "shader reload: worker shutdown timed out; owner retained");
+                shader_log(reload, break_editor_tr(
+                                       BREAK_EDITOR_TR_LOG_SR_SHUTDOWN_TIMEOUT));
             }
             return false;
         }

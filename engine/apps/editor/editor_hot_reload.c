@@ -13,6 +13,7 @@
 #include <core/log.h>
 #include <editor/editor_cmd.h>
 #include <editor/editor_gizmo.h>
+#include <editor/editor_i18n.h>
 #include <editor/editor_scene.h>
 #include <platform/filewatch.h>
 #include <runtime/runtime_reload.h>
@@ -188,7 +189,7 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     if (hr->request_epoch != hr->local_epoch) {
         hr->stats.skipped_stale++;
         hr->outcome = HR_OUT_SKIPPED;
-        hr_log(hr, "hot reload: dropped stale reload of %s (saved meanwhile)",
+        hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_STALE_FMT),
                hr->name);
         return BREAK_RUNTIME_FAILED;
     }
@@ -211,15 +212,14 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
         break_editor_cmd_stack_size(break_editor_doc_stack(doc)) > 0u) {
         hr->stats.skipped_dirty++;
         hr->outcome = HR_OUT_SKIPPED;
-        hr_log(hr, "hot reload: external change to %s skipped (unsaved edits)",
+        hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_SKIPPED_DIRTY_FMT),
                hr->name);
         return BREAK_RUNTIME_FAILED;
     }
     if (!break_editor_doc_load_bytes(doc, hr->scene_path, bytes, size)) {
         hr->stats.failed++;
         hr->outcome = HR_OUT_FAILED;
-        hr_log(hr, "hot reload: %s is not a loadable scene; keeping current "
-                   "document", hr->name);
+        hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_NOT_SCENE_FMT), hr->name);
         return BREAK_RUNTIME_FAILED;
     }
     hr->known_valid = true;
@@ -227,7 +227,7 @@ static BreakRuntimeError hr_commit(const char *path, const void *bytes,
     hr->stats.reloads++;
     hr->outcome = HR_OUT_APPLIED;
     editor_shell_refresh_all(shell);
-    hr_log(hr, "hot reload: reloaded %s (%u entities)", hr->name,
+    hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_RELOADED_FMT), hr->name,
            (unsigned)break_editor_doc_entity_count(doc));
     return BREAK_RUNTIME_OK;
 }
@@ -346,7 +346,7 @@ bool break_editor_hot_reload_set_scene(BreakEditorHotReload *hr,
         return true;
     }
     if (!hr_stop(hr)) {
-        hr_log(hr, "hot reload disabled: previous watcher did not stop in time");
+        hr_log(hr, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_HR_DISABLED_STUCK));
         return false;
     }
     hr->scene_path[0] = '\0';
@@ -360,7 +360,7 @@ bool break_editor_hot_reload_set_scene(BreakEditorHotReload *hr,
         !hr_split_path(scene_path, dir, sizeof(dir), hr->name,
                        sizeof(hr->name))) {
         hr->name[0] = '\0';
-        hr_log(hr, "hot reload disabled: scene path too long");
+        hr_log(hr, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_HR_DISABLED_PATH));
         return false;
     }
     memcpy(hr->scene_path, scene_path, len + 1u);
@@ -368,7 +368,7 @@ bool break_editor_hot_reload_set_scene(BreakEditorHotReload *hr,
     hr->vfs = vfs_create();
     if (hr->vfs == NULL || !vfs_mount_dir(hr->vfs, dir)) {
         (void)hr_stop(hr);
-        hr_log(hr, "hot reload disabled: cannot mount the scene directory");
+        hr_log(hr, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_HR_DISABLED_MOUNT));
         return false;
     }
     memset(&cfg, 0, sizeof(cfg));
@@ -383,7 +383,7 @@ bool break_editor_hot_reload_set_scene(BreakEditorHotReload *hr,
     if (break_runtime_reload_create(&cfg, &hr->reload) != BREAK_RUNTIME_OK) {
         hr->reload = NULL;
         (void)hr_stop(hr);
-        hr_log(hr, "hot reload disabled: coordinator start failed");
+        hr_log(hr, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_HR_DISABLED_COORD));
         return false;
     }
     hr_rebaseline(hr);
@@ -392,7 +392,7 @@ bool break_editor_hot_reload_set_scene(BreakEditorHotReload *hr,
     filewatch_add(&hr->watcher, hr->scene_path, hr_on_file_changed, hr);
     if (hr->watcher.count == 0u) {
         (void)hr_stop(hr);
-        hr_log(hr, "hot reload disabled: watcher rejected the scene path");
+        hr_log(hr, "%s", break_editor_tr(BREAK_EDITOR_TR_LOG_HR_DISABLED_WATCH));
         return false;
     }
     hr->watching = true;
@@ -406,8 +406,7 @@ static void hr_finish(BreakEditorHotReload *hr, BreakRuntimeReloadState state) {
         state != BREAK_RUNTIME_RELOAD_CANCELLED) {
         /* failed before the commit hook: unreadable file or not a BSCN */
         hr->stats.failed++;
-        hr_log(hr, "hot reload: %s is unreadable or not a scene; keeping "
-                   "current document", hr->name);
+        hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_UNREADABLE_FMT), hr->name);
     }
     hr->outcome = HR_OUT_NONE;
     hr->request = 0u;
@@ -445,7 +444,7 @@ void break_editor_hot_reload_tick(BreakEditorHotReload *hr) {
             hr->stats.requests++;
         } else {
             hr->stats.failed++;
-            hr_log(hr, "hot reload: could not start a reload of %s", hr->name);
+            hr_log(hr, break_editor_tr(BREAK_EDITOR_TR_LOG_HR_START_FAILED_FMT), hr->name);
         }
     }
 }

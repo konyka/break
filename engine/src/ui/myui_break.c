@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "core/log.h"
 #include "core/shader_io.h"
 #include "mypal/break/my_pal_break.h"
 #include "mypal/my_event.h"
@@ -426,6 +427,15 @@ bool break_ui_init_with_fonts(BreakUI *ui, Platform *platform,
                                        256);
   }
   if (ui->font == NULL) {
+    /* Only printable ASCII renders with this font; make the downgrade
+     * visible instead of silently showing placeholder glyphs. */
+    if (font_sources != NULL && font_source_count > 0) {
+      LOG_WARN("UI: no font in the chain could be loaded; using the built-in "
+               "8x8 ASCII bitmap font (non-ASCII text will not render)");
+    } else {
+      LOG_WARN("UI: no font given; using the built-in 8x8 ASCII bitmap font "
+               "(non-ASCII text will not render)");
+    }
     ui->font = my_font_bitmap_create(NULL);
   }
   if (ui->font != NULL) {
