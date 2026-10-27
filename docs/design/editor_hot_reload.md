@@ -13,7 +13,7 @@ Delivered scope:
 - The asset browser's current directory listing refreshes while the editor runs: at most once per second the shell re-lists the one directory the panel shows and repaints only if the listing changed.
 - Asset-browser scene loads and the CLI scene path share the same `scene_path` and watcher.
 
-NOT delivered: shader/texture hot reload inside the editor, VFS PAK enumeration, cross-device asset dependency graph, async GPU upload, render-scene/SCENE_NODES ownership, remote load/save, Windows/macOS runtime verification. `scene_load_binary` keeps its existing file-based behavior for other callers.
+Viewport shader hot reload was delivered later (2026-10-27) as its own subproject; see §7. Still NOT delivered: texture hot reload inside the editor, VFS PAK enumeration, cross-device asset dependency graph, async GPU upload, render-scene/SCENE_NODES ownership, remote load/save, Windows/macOS runtime verification. `scene_load_binary` keeps its existing file-based behavior for other callers.
 
 ## 2. Ownership and data flow
 
@@ -77,3 +77,21 @@ Not run: Windows and macOS (the Win32 and kqueue/FSEvents `FileWatcher` backends
 ## 6. Explicit lifecycle contract
 
 `create(shell)` allocates only the object; `set_scene` (called by the shell when a scene path is configured, a scene is loaded from the browser, or the object is attached) starts the VFS, coordinator and watcher, and stops the previous ones first. `tick` is shell-thread-only. `note_saved` is called by the shell after a successful Ctrl+S: it bumps the local epoch (so in-flight reloads become stale) and re-hashes the file as the new baseline. `destroy` detaches from a live shell, stops the watcher and shuts the coordinator down with a 2 s bound; if a worker does not stop in time it leaks the coordinator and the object rather than free them under a running thread, and logs an error. No worker callback references the shell.
+
+## 7. Viewport shader hot reload (delivered 2026-10-27)
+
+Design `docs/superpowers/specs/2026-10-27-editor-viewport-shader-reload-design.md`, plan `docs/superpowers/plans/2026-10-27-editor-viewport-shader-reload.md`. Separate owner from the scene reload above; the two share no state.
+
+- `editor_shader_source.{h,c}`: one bounded resolver for first load and reload. Roots in priority order: `BREAK_SHADER_DIR`, `.`, `engine`, `../engine`, `../../engine`; the backend variant (`_vk`) comes from the device caps. Over-long roots are skipped, never truncated.
+- `editor_viewport3d.c`: a transactional candidate build (VS, FS, pipeline, bindings, `u_mvp`/`u_color`, VBO when missing). Only a complete candidate is published; any failure leaves pipeline, bindings, locations and VBO untouched. A failed first load is recoverable by a later event or manual request, and never retried every frame.
+- `editor_shader_reload.{h,c}`: owned by the viewport. One Runtime Core coordinator (1 worker, 4 slots) requests the vertex and fragment files as two real VFS paths (roots mounted in reverse priority). The worker only reads and size-checks; the owner commit copies bytes; both terminal states must be COMMITTED before the shell-thread GPU apply, which happens in `break_editor_shell_tick`, before `frame_begin`. Changes during an attempt set one trailing pending flag.
+- Watching: every bounded candidate path is registered with `filewatch_add_with_missing`, an opt-in variant that also reports existing -> missing, so deleting a higher-priority pair falls back automatically. `filewatch_add` (scene reload, game `asset/hotreload.c`) keeps its old rule. The watcher is still a lossy whole-second mtime poll; `Ctrl+Shift+R` is the deterministic fallback.
+- `Ctrl+Shift+R` only queues a request (exact Ctrl+Shift chord; `R` and `Shift+R` stay Scale). Results go to the console; the render debugger shows `shader reload: watching|manual-only|shutdown-pending busy=.. applied=.. failed=..` or `unavailable` when no owner exists.
+- Shutdown is retryable: a worker that does not stop in time makes viewport/shell destroy return false and keep every borrowed resource; `editor_main` then reports retained resources instead of tearing down the device under a live worker.
+
+Evidence (branch `sdd/editor-shader-reload`):
+- Headless (real watcher/VFS/Runtime Core, fake RHI recording separate vertex and fragment revisions): `test_editor_shell` 77 (Snowflake OFF) / 102 (ON); `test_hotreload` 6 incl. the opt-in delete-notify rule. Mutations: feeding vertex bytes as fragment, and reverting to the legacy watcher, each turn the intended test red.
+- Full non-graphics suites: OpenGL 204/204, Vulkan 205/205, multi-backend 204 + 1 skip, Snowflake 208/208. ASan+UBSan and TSan: `test_editor_shell` 10 runs each at 102/102, `test_hotreload` and `test_runtime_reload` green, zero sanitizer reports; fuzz smoke 6/6.
+- Live, real windows (X11 via Xwayland on this host, NVK Vulkan and Mesa OpenGL, `/tmp/mb/editor` with `BREAK_SHADER_DIR` on a temporary shader copy, one proxy entity added through the document API under gdb): screenshot pixels of the proxy cube changed with each valid fragment edit (grey -> magenta -> cyan), stayed magenta after an invalid edit (the backend logged the compile error), did not change when content changed without an mtime change, and turned yellow after `Ctrl+Shift+R` (issued at the shell dispatcher via gdb, because XTEST keys did not reach the window under Xwayland). Same sequence on both backends. Artifacts: `.superpowers/sdd/2026-10-27-editor-viewport-shader-reload/live/`. OpenGL needed a longer settle time on one run; nothing else differed.
+
+Not delivered: texture hot reload (needs a real consumer first: an asset-browser image preview owning its own `RHITexture`), shader `#include` dependencies, device migration, async GPU compile, Windows/macOS/CI runs.
