@@ -10,7 +10,7 @@
 - `engine/apps/editor/editor_main.c:52-57` 的 Linux 字体路径是 Debian/Ubuntu 布局（`/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc`、`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf`）。本机是 Fedora，两个文件都不存在；Noto CJK 在 `/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc`。
 - `break_ui_init_with_fonts`（`engine/src/ui/myui_break.c:424-430`）在字体链全部加载失败时静默退回 `my_font_bitmap_create`：内置 8×8 位图字体，只覆盖 ASCII 32..126，被放大到 16px。gdb 在运行中的 editor 里确认 `ui->font->vtable == s_bitmap_vtable`。所以 ASCII 是粗糙的块状字，任何非 ASCII（中文、`—`、`…`）都变成同一个替代方块。
 - 没有任何日志提示字体加载失败，问题只能靠肉眼发现。
-- 次要发现：`engine/src/rhi/rhi.h` 有约 30 处注释里的 `—`（U+2014）被以 GBK 误读后保存成 `閳?`。只影响源码可读性，不影响运行，一并修复。
+- 次要发现：`engine/src/rhi/rhi.h` 有约 30 处注释里的 `—`（U+2014）被以 GBK 误读后保存成 U+9573 加一个替换字符（`→` 也有同样的损坏）。只影响源码可读性，不影响运行，一并修复。
 
 ## 2. 目标
 
@@ -59,7 +59,7 @@
 - `test_editor_i18n`（新，headless）：每种语言每个 key 非空且为合法 UTF-8；`zh-CN` 与 `en-US` 文本不同（防止漏翻）；缺失回退；`parse_lang` 各种 tag；环境优先级；格式 key 的 `snprintf` 往返。
 - `test_editor_shell`：设置 `zh-CN` 后创建 shell，工具栏/面板标题/工具标签显示中文；运行时经命令面板切换为英文后，同一批控件文本立即变化，`Tool:` 标签与当前工具一致，命令面板列表条目数不变；dummy-PAL PPM 冒烟仍通过。
 - `test_editor_fonts`（新）：用临时目录模拟路径表，候选只包含存在的文件、顺序随语言变化、存储有界不截断。fontconfig 部分以“可用时至少返回一个存在的文件”断言，不依赖具体字体名。
-- 源码检查：`rhi.h` 不再含 `閳`；新增一个 CTest 脚本扫描 `engine/` 与 `docs/` 中常见 GBK-误读标记（`閳`、`鈥`、`锛`、`銆`），防止回归。
+- 源码检查：`rhi.h` 不再含误读标记；新增 CTest 脚本 `test_source_encoding.cmake` 扫描 `engine/` 与 `docs/` 中常见的 GBK 误读标记（列表在脚本里），防止回归。
 - live：真实 editor 截图确认中文与英文都以矢量字体渲染（无块状 8×8 字），切换后截图变化。
 
 ## 7. 验收与交付

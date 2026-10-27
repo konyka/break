@@ -3918,6 +3918,15 @@ endif()
     add_test(NAME test_editor_fonts COMMAND test_editor_fonts)
     set_tests_properties(test_editor_fonts PROPERTIES LABELS "headless;editor")
 
+    # Mojibake guard: UTF-8 text decoded as GBK and saved again (rhi.h had
+    # ~30 such comments). Scans engine sources, shaders and docs.
+    add_test(NAME test_source_encoding
+        COMMAND ${CMAKE_COMMAND}
+            -DREPO_ROOT=${CMAKE_CURRENT_SOURCE_DIR}/..
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_source_encoding.cmake)
+    set_tests_properties(test_source_encoding PROPERTIES
+        LABELS "headless;platform_contract")
+
     # Stage 4 scene editor Phase 3 Task 2: Lua console core. Links BOTH test
     # variants: break_editor_test (BREAK_EDITOR_TESTING=1 editor allocation
     # hooks) and break_lua_test (BREAK_LUA_TESTING=1 Lua-side hooks — the
