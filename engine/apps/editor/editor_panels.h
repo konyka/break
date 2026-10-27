@@ -133,9 +133,11 @@ BreakEditorShell *break_editor_shell_create(struct my_window_t *win);
 /* Headless test path: dummy PAL + own 800x480 window, no RHI. */
 BreakEditorShell *break_editor_shell_create_for_test(void);
 
-/* NULL is a no-op. The real-window path detaches the panel tree from the
- * borrowed window; the test path tears down its window/wm/loop/pal. */
-void break_editor_shell_destroy(BreakEditorShell *shell);
+/* NULL returns true. The real-window path detaches the panel tree from the
+ * borrowed window; the test path tears down its window/wm/loop/pal. false
+ * means shader shutdown timed out: no other teardown ran and the same shell,
+ * document, viewport, logger and borrowed device remain alive for retry. */
+bool break_editor_shell_destroy(BreakEditorShell *shell);
 
 /* Shortcut router (see the header table). Returns true when the key was
  * consumed by a shortcut (or by the open palette's Escape/Return). */

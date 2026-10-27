@@ -170,12 +170,17 @@ const char *break_editor_viewport3d_skip_name(int skipped) {
     }
 }
 
-void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
+bool break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
     if (vp == NULL) {
-        return;
+        return true;
     }
-    break_editor_shader_reload_destroy(vp->shader_reload);
-    vp->shader_reload = NULL;
+    if (vp->shader_reload != NULL) {
+        if (!break_editor_shader_reload_shutdown(vp->shader_reload)) {
+            return false;
+        }
+        break_editor_shader_reload_destroy(vp->shader_reload);
+        vp->shader_reload = NULL;
+    }
     if (vp->device != NULL) {
         if (rhi_handle_valid(vp->fbo.fb)) {
             rhi_offscreen_fbo_destroy(vp->device, &vp->fbo);
@@ -191,6 +196,7 @@ void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
         }
     }
     free(vp);
+    return true;
 }
 
 void break_editor_viewport3d_set_view_state(BreakEditorViewport3D *vp,
@@ -480,6 +486,14 @@ bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
 }
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
+    BreakEditorViewport3D *vp, u32 timeout_ms) {
+    if (vp != NULL) {
+        break_editor_shader_reload_set_shutdown_timeout_for_test(
+            vp->shader_reload, timeout_ms);
+    }
+}
+
 void break_editor_viewport3d_gpu_state_for_test(
     const BreakEditorViewport3D *vp, BreakEditorViewport3DGpuState *out) {
     if (out == NULL) {

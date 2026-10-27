@@ -1511,10 +1511,17 @@ BreakEditorShell *break_editor_shell_create_for_test(void) {
     return shell;
 }
 
-void break_editor_shell_destroy(BreakEditorShell *shell) {
+bool break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
-        return;
+        return true;
     }
+    /* A timed-out shader worker retains pointers into the viewport. Stop it
+     * before any other teardown; false leaves the complete shell intact. */
+    if (shell->vp3d != NULL &&
+        !break_editor_viewport3d_destroy(shell->vp3d)) {
+        return false;
+    }
+    shell->vp3d = NULL;
     /* a still-attached remote (host destroyed the shell first) is orphaned
      * before anything is freed: it drops its back-pointer and its
      * doc-borrowing console, so its later destroy never reaches this shell */
@@ -1549,10 +1556,10 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
     editor_panel_profiler_destroy(shell->profiler_panel);
     editor_panel_lua_destroy(shell->lua_panel);
     editor_panel_assets_destroy(shell->assets_panel);
-    break_editor_viewport3d_destroy(shell->vp3d);
     break_editor_gizmo_destroy(shell->gizmo);
     break_editor_doc_destroy(shell->doc);
     free(shell);
+    return true;
 }
 
 /* ---------------- public inspection surface ---------------- */

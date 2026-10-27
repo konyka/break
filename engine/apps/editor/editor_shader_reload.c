@@ -386,8 +386,9 @@ void break_editor_shader_reload_set_logger(
     reload->log = log;
     reload->log_user = user;
     if (log != NULL && !reload->watching && !reload->stopped) {
-        shader_log(reload,
-                   "shader reload: watch unavailable; manual reload remains available");
+        shader_log(reload, reload->stuck
+                               ? "shader reload: unavailable; worker shutdown is still pending"
+                               : "shader reload: watch unavailable; manual reload remains available");
     }
 }
 

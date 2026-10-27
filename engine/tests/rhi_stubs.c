@@ -456,7 +456,19 @@ void rhi_shader_destroy(RHIDevice *d, RHIShader s) {
 static RHIOffscreenFBO stub_offscreen_fbo = {{0,0}, {0,0}, {0,0}, 0, 0, 1};
 
 RHIOffscreenFBO rhi_offscreen_fbo_create(RHIDevice *d, u32 w, u32 h)    { (void)d; (void)w; (void)h; return stub_offscreen_fbo; }
-RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *d, u32 w, u32 h, RHIFormat fmt) { (void)d; (void)w; (void)h; (void)fmt; return stub_offscreen_fbo; }
+RHIOffscreenFBO rhi_offscreen_fbo_create_fmt(RHIDevice *d, u32 w, u32 h, RHIFormat fmt) {
+    (void)d;
+    (void)w;
+    (void)h;
+    (void)fmt;
+#ifdef BREAK_EDITOR_SHELL_TESTING
+    if (g_editor_rhi_fake.enabled) {
+        RHIOffscreenFBO fbo = {{1, 1}, {2, 1}, {3, 1}, w, h, 1};
+        return fbo;
+    }
+#endif
+    return stub_offscreen_fbo;
+}
 void       rhi_offscreen_fbo_destroy(RHIDevice *d, RHIOffscreenFBO *fbo) { (void)d; (void)fbo; }
 void       rhi_offscreen_fbo_bind(RHICmdBuffer *c, RHIOffscreenFBO *fbo) { (void)c; (void)fbo; }
 void       rhi_offscreen_fbo_bind_load(RHICmdBuffer *c, RHIOffscreenFBO *fbo) { (void)c; (void)fbo; }

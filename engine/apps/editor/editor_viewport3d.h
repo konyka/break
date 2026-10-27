@@ -69,7 +69,9 @@ typedef struct BreakEditorShell BreakEditorShell;
 typedef struct BreakEditorViewport3D BreakEditorViewport3D;
 
 BreakEditorViewport3D *break_editor_viewport3d_create(void);
-void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp);
+/* false retains the viewport, reload owner, source/apply pointers, device and
+ * GPU objects for a later destroy retry after a worker shutdown timeout. */
+bool break_editor_viewport3d_destroy(BreakEditorViewport3D *vp);
 
 /* Initial one-shot GPU preparation through the shared shader resolver. The
  * device is borrowed and recorded before any fallible GPU/source step; device
@@ -90,6 +92,8 @@ bool break_editor_viewport3d_shader_reload_stats(
     const BreakEditorViewport3D *vp, BreakEditorShaderReloadStats *out);
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
+    BreakEditorViewport3D *vp, u32 timeout_ms);
 typedef struct {
     RHIPipeline pipeline;
     const void *bindings;
