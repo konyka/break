@@ -346,6 +346,9 @@ configure 时真实探测 `GLES2/gl2.h` 与导入库，stock Windows 无 SDK 时
 `test_platform_win32_runtime` 使用真实 Win32 窗口、`GetWindowTextW`、`WM_SIZE` 和平台销毁路径，
 不创建 graphics context；WM_SETTINGCHANGE/WM_DPICHANGED 以同步 `SendMessageW` 注入以兼容
 新版 Windows 的 `ERROR_MESSAGE_SYNC_ONLY` 限制。源码路径同时支持 `/` 与 `\\` 分隔符。
+该用例的剪贴板回归检查会改写系统剪贴板，并使用真实 CF_UNICODETEXT 验证无 NUL 终止输入的
+边界；运行前请保存需要保留的剪贴板内容。远程桌面剪贴板同步可能短时占用全局剪贴板，
+首次 `OpenClipboard` 最多重试约 5 秒；持续不可用仍判失败，不跳过检查。
 `test_vulkan` 与 `test_myui_gl_desktop_runtime` 需要真实 WGL/GPU 环境，因此保留 `graphics`
 标签并从 headless CI 中排除。
 

@@ -2456,7 +2456,7 @@ endif()
         target_compile_options(test_rhi_capabilities PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_capabilities PRIVATE -Wl,--gc-sections)
     endif()
@@ -2502,7 +2502,7 @@ endif()
         target_compile_options(test_rhi_fault_injection PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         # macOS ld has no --gc-sections; dead-code stripping is the default.
         target_link_options(test_rhi_fault_injection PRIVATE -Wl,--gc-sections)
     endif()
@@ -2564,7 +2564,7 @@ endif()
         target_compile_options(test_rhi_wsi_attach PRIVATE
             -ffunction-sections -fdata-sections)
     endif()
-    if(NOT APPLE)
+    if(NOT APPLE AND NOT (WIN32 AND (MSVC OR CMAKE_C_COMPILER_ID MATCHES "Clang")))
         target_link_options(test_rhi_wsi_attach PRIVATE -Wl,--gc-sections)
     endif()
     add_test(NAME test_rhi_wsi_attach COMMAND test_rhi_wsi_attach)
@@ -3058,6 +3058,9 @@ endif()
              -DRHI_PRESENT_HISTORY_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_present_history.c
              -DRHI_RT_TRACE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/renderer/rt_trace.c
              -DENGINE_CMAKE=${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt
+            -DENGINE_NINJA_FILE=${CMAKE_CURRENT_BINARY_DIR}/build.ninja
+            -DENGINE_SYSTEM_NAME=${CMAKE_SYSTEM_NAME}
+            -DENGINE_C_COMPILER_ID=${CMAKE_C_COMPILER_ID}
             -DRHI_GL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_gl.c
             -DRHI_VK_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_vk.c
             -DRHI_HEADLESS_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/rhi_headless.c

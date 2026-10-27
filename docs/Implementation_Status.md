@@ -1,5 +1,21 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Windows 同步复核与测试基础设施修复
+
+本轮从 `a848b3c9` 开始，`git fetch` 后本地与 `origin/master` 一致，无合并冲突。使用 Windows 本机的 Clang 22.1.6 + Ninja，复核 GL、Vulkan、D3D12 Debug 与 ASan 配置；未跟踪的 `.tmp/`、`.scratch-vkprobe/` 不纳入提交。没有改动渲染或网络协议实现。
+
+### 定位与修复
+1. **Windows RHI 测试链接参数不匹配**：`test_rhi_capabilities`、`test_rhi_fault_injection`、`test_rhi_wsi_attach` 在非 Apple 平台一律传入 `-Wl,--gc-sections`，Windows Clang/lld-link 因而各报一次忽略未知参数。改为排除 Windows MSVC/Clang，保留 Linux 与 Windows GNU/MinGW 的有效配置。`test_rhi_backend_internal_contract` 逐目标检查生成的 Ninja 链接块；旧全局计数检查会放过「其他目标凑够 3 条、目标自身缺参数」的夹具，新检查能准确失败。Windows 下三目标实际重链接已无该告警。
+2. **远程会话中的剪贴板测试等待不足（部分缓解，非根治）**：在 ToDesk 运行的会话中复现 `OpenClipboard` 的 `ERROR_ACCESS_DENIED`（直接以 NULL 窗口打开也同样被拒，系统不提供持有者窗口，所以没有仅凭进程名归因；引擎读写路径逐个检查过，所有返回分支都会 `CloseClipboard`）。原来的约 500 ms 重试会失败，`test_platform_win32_runtime` 将首次打开的有限重试改为 200×25 ms（约 5 秒），真实剪贴板写入、读取和无 NUL 终止数据的边界断言全部保留。效果只到「有时够用」：ToDesk 运行时曾连续 3 次 26/26，之后系统剪贴板又持续拒绝访问，超过 5 秒仍失败；剪贴板恢复可用后复测，GL 树连续 3 次、ASan 树 1 次均为 26/26。因此该用例仍依赖本机剪贴板没有被远程工具长期占用，不是引擎缺陷；独立 window station 隔离方案试过，被系统权限拒绝，未采用。是否要把「剪贴板长期不可用」改成跳过（返回 77），属于降低覆盖的决定，这里没有自行改。`docs/Build_Guide.md` 同步说明等待边界及测试会改写系统剪贴板。
+3. **UDP 测试固定端口冲突**：`test_net_replication` 的 PID 端口块不能保证跨进程唯一。新增受控占用回归后旧绑定稳定失败；6 条真实收发路径（7 个接收 socket）改为绑定端口 0，经 `net_socket_get_local_address` 取得实际端口，协议与收发断言不变。`peer_save_load` 另有独立的并发缺陷：64 字节路径缓冲区在当前 Windows `%TEMP%` 下至少需要 70 字节，4 个进程的路径都被截成同一个 `break_test_netrep_peers.tx`，PID 后缀丢失并导致读写覆盖；扩为 128 字节后并发复验通过。网络套件新增 1 个冲突用例，现共 53 项。
+
+### 验证
+- 链接修复红—绿验证：旧配置在生成的 Ninja 规则上失败，修复后通过；非法、合法 Ninja 夹具分别按预期失败、通过。GL/Vulkan/D3D12/ASan 构建日志均无编译或链接警告。
+- 最终代码状态的全量 ctest：GL 188/188、Vulkan（含验证层）191/191、D3D12 Debug 196/196（含 WARP 与硬件适配器）。ASan（`-LE graphics`，含 5 个 fuzz 冒烟）184/185，唯一失败是上面的剪贴板用例；剪贴板可用后复测该用例通过。
+- 网络套件在四棵构建树并行运行均 53/53；没有残留临时诊断插桩。
+- `test_d3d12_warp_runtime` 的 `gpu_timer_measures_the_gpu_time_of_a_recorded_region` 在第一轮 D3D12 全量里失败过一次（GPU 计时比值，本轮未改计时代码）；默认 GBV 配置单独连跑 3 次、之后两次全量 196/196 均通过。这是既有的间歇性问题，本轮没有处理，也没有放宽阈值。
+- 三后端 demo（`BREAK_FRAMES=30`，窗口无标题栏启动，第 8、16 帧切换全屏，第 22、26 帧切换标题栏，第 29 帧截图）均正常退出：GL 重建 30.5/39.4 ms、最差帧 61.0 ms；Vulkan 29.2/24.9 ms、最差帧 43.8 ms、验证层消息 0；D3D12 76.1/59.6 ms、最差帧 135.7 ms。三个后端 `TITLE_BAR_SWITCH` 的 `ok=1`、绘制尺寸保持 1280x720，日志无 ERROR/FATAL；三张截图人工查看画面正常、HUD 文字方向正确。机器上 ToDesk 仍在运行，已知会拖慢呈现，所以这些切换耗时不作为性能基线。
+- 未验证：X11 / Wayland / Cocoa / 其他平台由 CI 覆盖；Windows MSVC 与 MinGW 工具链未在本机构建。
 
 ## 本轮更新：仓库缺陷排查（ASan + 扩展模糊测试 + clang 静态分析 + 近期代码复查）
 

@@ -203,10 +203,11 @@ TEST(clipboard_read_bounds_unterminated_unicode_text)
         return;
     }
     /* OpenClipboard fails while another process momentarily holds the
-     * clipboard (viewers, history service); retry briefly. */
+     * clipboard (viewers, history service, remote clipboard synchronization).
+     * Wait up to about five seconds, but never skip the real clipboard checks. */
     {
         bool opened = false;
-        for (int attempt = 0; attempt < 20 && !opened; attempt++) {
+        for (int attempt = 0; attempt < 200 && !opened; attempt++) {
             if (attempt > 0) Sleep(25);
             opened = OpenClipboard((HWND)platform_window_native(platform)) != 0;
         }
