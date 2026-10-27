@@ -29,13 +29,13 @@
 #include "editor_viewport3d.h"
 
 #include "editor_panels.h"
+#include "editor_shader_source.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#include <core/shader_io.h>
 #include <editor/editor_components.h>
 #include <math/math.h>
 
@@ -109,6 +109,11 @@ struct BreakEditorViewport3D {
     int init_state; /* 0 = not attempted, 1 = ready, 2 = failed (sticky) */
     int screen_w, screen_h;
 
+    BreakEditorShaderSource shader_source;
+    BreakEditorShaderReload *shader_reload;
+    BreakEditorShaderReloadLog shader_reload_log;
+    void *shader_reload_log_user;
+
     const BreakEditorCamera *cam; /* borrowed (shell-owned) */
     BreakEditorGizmo *gizmo;      /* borrowed (shell-owned) */
     BreakEditorEntityId selected;
@@ -165,9 +170,16 @@ const char *break_editor_viewport3d_skip_name(int skipped) {
     }
 }
 
-void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
+bool break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
     if (vp == NULL) {
-        return;
+        return true;
+    }
+    if (vp->shader_reload != NULL) {
+        if (!break_editor_shader_reload_shutdown(vp->shader_reload)) {
+            return false;
+        }
+        break_editor_shader_reload_destroy(vp->shader_reload);
+        vp->shader_reload = NULL;
     }
     if (vp->device != NULL) {
         if (rhi_handle_valid(vp->fbo.fb)) {
@@ -184,6 +196,7 @@ void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp) {
         }
     }
     free(vp);
+    return true;
 }
 
 void break_editor_viewport3d_set_view_state(BreakEditorViewport3D *vp,
@@ -252,82 +265,48 @@ void break_editor_viewport3d_model_matrix(const f32 pos[3],
     memcpy(out16, m.e, sizeof(m.e));
 }
 
-/* ---------------- lazy GPU init ---------------- */
+/* ---------------- transactional GPU init / shader replacement ---------------- */
 
-/* Shader source lookup honoring BREAK_SHADER_DIR, then the engine-relative
- * prefixes (the myui_break.c break_ui_read_shader precedent). */
-static char *vp_read_shader(const char *path, usize *out_len) {
-    static const char *const prefixes[] = {"", "engine/", "../engine/",
-                                           "../../engine/"};
-    const char *env = getenv("BREAK_SHADER_DIR");
-    size_t i;
-    if (env != NULL && env[0] != '\0') {
-        char buf[1024];
-        char *src;
-        snprintf(buf, sizeof(buf), "%s/%s", env, path);
-        src = shader_read_file(buf, out_len);
-        if (src != NULL) {
-            return src;
-        }
+typedef struct {
+    RHIPipeline pipeline;
+    RHIPipelineBindings *bindings;
+    RHIBuffer vbo;
+    i32 loc_mvp, loc_color;
+    bool owns_vbo;
+} VpGpuCandidate;
+
+static void vp_candidate_discard(RHIDevice *dev, VpGpuCandidate *candidate) {
+    if (rhi_handle_valid(candidate->pipeline)) {
+        rhi_pipeline_destroy(dev, candidate->pipeline);
     }
-    for (i = 0u; i < sizeof(prefixes) / sizeof(prefixes[0]); i++) {
-        char buf[1024];
-        char *src;
-        snprintf(buf, sizeof(buf), "%s%s", prefixes[i], path);
-        src = shader_read_file(buf, out_len);
-        if (src != NULL) {
-            return src;
-        }
+    if (candidate->bindings != NULL) {
+        rhi_pipeline_bindings_destroy(dev, candidate->bindings);
     }
-    return NULL;
+    if (candidate->owns_vbo && rhi_handle_valid(candidate->vbo)) {
+        rhi_buffer_destroy(dev, candidate->vbo);
+    }
 }
 
-static RHIShader vp_load_shader(RHIDevice *dev, const char *path,
-                                bool fragment) {
-    usize len = 0u;
-    char *src = vp_read_shader(path, &len);
-    RHIShader shader;
-    if (src == NULL) {
-        return RHI_HANDLE_NULL;
-    }
-    shader = rhi_shader_create(dev, src, len, fragment);
-    free(src);
-    return shader;
-}
-
-/* Bounded one-shot init; failures are sticky (init_state = 2, logged once)
- * so a missing shader never spams per frame. */
-static bool vp_lazy_init(BreakEditorViewport3D *vp, RHIDevice *dev) {
-    RHICapabilities caps;
-    char vert_path[96], frag_path[96];
-    RHIShader vs, fs;
+static bool vp_candidate_build(BreakEditorViewport3D *vp,
+                               VpGpuCandidate *candidate, const void *vert,
+                               usize vert_size, const void *frag,
+                               usize frag_size) {
+    RHIDevice *dev = vp->device;
+    RHIShader vs = RHI_HANDLE_NULL, fs = RHI_HANDLE_NULL;
     RHIPipelineDesc desc;
     RHIBufferDesc bdesc;
-    if (vp->init_state == 1) {
-        return true;
-    }
-    if (vp->init_state == 2) {
+    memset(candidate, 0, sizeof(*candidate));
+    candidate->loc_mvp = -1;
+    candidate->loc_color = -1;
+    if (vert == NULL || frag == NULL) {
         return false;
     }
-    vp->init_state = 2; /* flipped to 1 only on full success */
-
-    if (!rhi_device_get_capabilities(dev, &caps) ||
-        !shader_variant_path("shaders/editor_color.vert",
-                             (RHIShaderVariant)caps.shader_variant, vert_path,
-                             sizeof(vert_path)) ||
-        !shader_variant_path("shaders/editor_color.frag",
-                             (RHIShaderVariant)caps.shader_variant, frag_path,
-                             sizeof(frag_path))) {
-        fprintf(stderr, "editor viewport3d: shader variant resolution failed\n");
-        return false;
-    }
-    vs = vp_load_shader(dev, vert_path, false);
-    fs = vp_load_shader(dev, frag_path, true);
+    vs = rhi_shader_create(dev, (const char *)vert, vert_size, false);
+    fs = rhi_shader_create(dev, (const char *)frag, frag_size, true);
     if (!rhi_handle_valid(vs) || !rhi_handle_valid(fs)) {
         if (rhi_handle_valid(vs)) rhi_shader_destroy(dev, vs);
         if (rhi_handle_valid(fs)) rhi_shader_destroy(dev, fs);
-        fprintf(stderr, "editor viewport3d: shader load failed (%s / %s)\n",
-                vert_path, frag_path);
+        fprintf(stderr, "editor viewport3d: shader load failed\n");
         return false;
     }
     memset(&desc, 0, sizeof(desc));
@@ -336,37 +315,217 @@ static bool vp_lazy_init(BreakEditorViewport3D *vp, RHIDevice *dev) {
     desc.vertex_stride = 12u; /* position-only vec3 (both backends) */
     desc.disable_culling = true;
     /* depth: default LESS + write on (the FBO bind clears depth to 1.0) */
-    vp->pipeline = rhi_pipeline_create(dev, &desc);
+    candidate->pipeline = rhi_pipeline_create(dev, &desc);
     rhi_shader_destroy(dev, vs);
     rhi_shader_destroy(dev, fs);
-    if (!rhi_handle_valid(vp->pipeline)) {
+    if (!rhi_handle_valid(candidate->pipeline)) {
         fprintf(stderr, "editor viewport3d: pipeline create failed\n");
-        return false;
+        goto fail;
     }
-    vp->bindings = rhi_pipeline_bindings_create(dev, vp->pipeline);
-    if (vp->bindings == NULL) {
+    candidate->bindings = rhi_pipeline_bindings_create(dev, candidate->pipeline);
+    if (candidate->bindings == NULL) {
         fprintf(stderr, "editor viewport3d: bindings create failed\n");
-        return false;
+        goto fail;
     }
-    vp->loc_mvp = rhi_pipeline_bindings_resolve(vp->bindings, "u_mvp");
-    vp->loc_color = rhi_pipeline_bindings_resolve(vp->bindings, "u_color");
-    if (vp->loc_mvp < 0 || vp->loc_color < 0) {
+    candidate->loc_mvp = rhi_pipeline_bindings_resolve(candidate->bindings,
+                                                        "u_mvp");
+    candidate->loc_color = rhi_pipeline_bindings_resolve(candidate->bindings,
+                                                          "u_color");
+    if (candidate->loc_mvp < 0 || candidate->loc_color < 0) {
         fprintf(stderr, "editor viewport3d: uniform resolve failed\n");
+        goto fail;
+    }
+    if (rhi_handle_valid(vp->cube_vbo)) {
+        candidate->vbo = vp->cube_vbo;
+    } else {
+        memset(&bdesc, 0, sizeof(bdesc));
+        bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+        bdesc.size = sizeof(k_cube_verts);
+        bdesc.initial_data = k_cube_verts;
+        candidate->vbo = rhi_buffer_create(dev, &bdesc);
+        candidate->owns_vbo = true;
+        if (!rhi_handle_valid(candidate->vbo)) {
+            fprintf(stderr, "editor viewport3d: cube vbo create failed\n");
+            goto fail;
+        }
+    }
+    return true;
+
+fail:
+    vp_candidate_discard(dev, candidate);
+    return false;
+}
+
+static void vp_candidate_publish(BreakEditorViewport3D *vp,
+                                 VpGpuCandidate *candidate) {
+    RHIPipeline old_pipeline = vp->pipeline;
+    RHIPipelineBindings *old_bindings = vp->bindings;
+    /* candidate->owns_vbo implies there was no live VBO to retire: the build
+     * reuses an existing one and creates its own only when none exists */
+    vp->pipeline = candidate->pipeline;
+    vp->bindings = candidate->bindings;
+    vp->loc_mvp = candidate->loc_mvp;
+    vp->loc_color = candidate->loc_color;
+    vp->cube_vbo = candidate->vbo;
+    vp->init_state = BREAK_EDITOR_VIEWPORT3D_INIT_READY;
+    if (rhi_handle_valid(old_pipeline)) {
+        rhi_pipeline_destroy(vp->device, old_pipeline);
+    }
+    if (old_bindings != NULL) {
+        rhi_pipeline_bindings_destroy(vp->device, old_bindings);
+    }
+}
+
+bool break_editor_viewport3d_reload_shader_source(
+    BreakEditorViewport3D *vp, const void *vert, usize vert_size,
+    const void *frag, usize frag_size) {
+    VpGpuCandidate candidate;
+    if (vp == NULL || vp->device == NULL ||
+        !vp_candidate_build(vp, &candidate, vert, vert_size, frag, frag_size)) {
         return false;
     }
-    memset(&bdesc, 0, sizeof(bdesc));
-    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
-    bdesc.size = sizeof(k_cube_verts);
-    bdesc.initial_data = k_cube_verts;
-    vp->cube_vbo = rhi_buffer_create(dev, &bdesc);
-    if (!rhi_handle_valid(vp->cube_vbo)) {
-        fprintf(stderr, "editor viewport3d: cube vbo create failed\n");
-        return false;
-    }
-    vp->device = dev;
-    vp->init_state = 1;
+    vp_candidate_publish(vp, &candidate);
     return true;
 }
+
+static bool vp_shader_reload_apply(void *user, const void *vert,
+                                   usize vert_size, const void *frag,
+                                   usize frag_size) {
+    return break_editor_viewport3d_reload_shader_source(
+        (BreakEditorViewport3D *)user, vert, vert_size, frag, frag_size);
+}
+
+void break_editor_viewport3d_set_shader_reload_logger(
+    BreakEditorViewport3D *vp, BreakEditorShaderReloadLog log, void *user) {
+    if (vp == NULL) {
+        return;
+    }
+    vp->shader_reload_log = log;
+    vp->shader_reload_log_user = user;
+    break_editor_shader_reload_set_logger(vp->shader_reload, log, user);
+}
+
+void break_editor_viewport3d_tick(BreakEditorViewport3D *vp) {
+    if (vp != NULL) {
+        break_editor_shader_reload_tick(vp->shader_reload);
+    }
+}
+
+bool break_editor_viewport3d_request_shader_reload(BreakEditorViewport3D *vp) {
+    return vp != NULL &&
+           break_editor_shader_reload_request(vp->shader_reload);
+}
+
+bool break_editor_viewport3d_shader_reload_stats(
+    const BreakEditorViewport3D *vp, BreakEditorShaderReloadStats *out) {
+    if (vp == NULL || out == NULL) {
+        return false;
+    }
+    if (vp->shader_reload == NULL) {
+        memset(out, 0, sizeof(*out));
+        out->last_result = BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE;
+        return true;
+    }
+    return break_editor_shader_reload_stats(vp->shader_reload, out);
+}
+
+bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
+                                     void *rhi_device) {
+    RHIDevice *dev = (RHIDevice *)rhi_device;
+    RHICapabilities caps;
+    BreakEditorShaderBytes vert, frag;
+    bool ok;
+    if (vp == NULL || dev == NULL) {
+        return false;
+    }
+    if (vp->device != NULL && vp->device != dev) {
+        return false;
+    }
+    if (vp->device == NULL) {
+        vp->device = dev;
+    }
+    if (vp->init_state == BREAK_EDITOR_VIEWPORT3D_INIT_READY) {
+        return true;
+    }
+    if (vp->init_state == BREAK_EDITOR_VIEWPORT3D_INIT_FAILED) {
+        return false;
+    }
+    vp->init_state = BREAK_EDITOR_VIEWPORT3D_INIT_FAILED;
+    if (!rhi_device_get_capabilities(dev, &caps) ||
+        !break_editor_shader_source_configure(
+            &vp->shader_source, (RHIShaderVariant)caps.shader_variant)) {
+        fprintf(stderr, "editor viewport3d: shader variant resolution failed\n");
+        return false;
+    }
+    vp->shader_reload = break_editor_shader_reload_create(
+        &vp->shader_source, vp_shader_reload_apply, vp);
+    break_editor_shader_reload_set_logger(
+        vp->shader_reload, vp->shader_reload_log, vp->shader_reload_log_user);
+    memset(&vert, 0, sizeof(vert));
+    memset(&frag, 0, sizeof(frag));
+    if (!break_editor_shader_source_read(
+            &vp->shader_source, BREAK_EDITOR_SHADER_VERTEX, &vert) ||
+        !break_editor_shader_source_read(&vp->shader_source,
+                                         BREAK_EDITOR_SHADER_FRAGMENT, &frag)) {
+        break_editor_shader_source_destroy_bytes(&vert);
+        break_editor_shader_source_destroy_bytes(&frag);
+        fprintf(stderr, "editor viewport3d: shader source read failed (%s / %s)\n",
+                break_editor_shader_source_path(
+                    &vp->shader_source, BREAK_EDITOR_SHADER_VERTEX),
+                break_editor_shader_source_path(
+                    &vp->shader_source, BREAK_EDITOR_SHADER_FRAGMENT));
+        return false;
+    }
+    ok = break_editor_viewport3d_reload_shader_source(
+        vp, vert.data, vert.size, frag.data, frag.size);
+    break_editor_shader_source_destroy_bytes(&vert);
+    break_editor_shader_source_destroy_bytes(&frag);
+    return ok;
+}
+
+#ifdef BREAK_EDITOR_SHELL_TESTING
+bool break_editor_viewport3d_replace_shader_reload_for_test(
+    BreakEditorViewport3D *vp, BreakEditorShaderReload *reload) {
+    if (vp == NULL) {
+        return false;
+    }
+    if (vp->shader_reload == reload) {
+        return true;
+    }
+    if (vp->shader_reload != NULL) {
+        if (!break_editor_shader_reload_shutdown(vp->shader_reload)) {
+            return false;
+        }
+        break_editor_shader_reload_destroy(vp->shader_reload);
+    }
+    vp->shader_reload = reload;
+    return true;
+}
+
+void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
+    BreakEditorViewport3D *vp, u32 timeout_ms) {
+    if (vp != NULL) {
+        break_editor_shader_reload_set_shutdown_timeout_for_test(
+            vp->shader_reload, timeout_ms);
+    }
+}
+
+void break_editor_viewport3d_gpu_state_for_test(
+    const BreakEditorViewport3D *vp, BreakEditorViewport3DGpuState *out) {
+    if (out == NULL) {
+        return;
+    }
+    memset(out, 0, sizeof(*out));
+    if (vp == NULL) {
+        return;
+    }
+    out->pipeline = vp->pipeline;
+    out->bindings = vp->bindings;
+    out->loc_mvp = vp->loc_mvp;
+    out->loc_color = vp->loc_color;
+    out->vbo = vp->cube_vbo;
+}
+#endif
 
 static void vp_fbo_ensure(BreakEditorViewport3D *vp, u32 w, u32 h) {
     if (vp->fbo_w == w && vp->fbo_h == h && rhi_handle_valid(vp->fbo.fb)) {
@@ -453,7 +612,7 @@ void break_editor_viewport3d_render(BreakEditorViewport3D *vp,
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_DEVICE_CHANGED;
         return; /* device swap is unsupported (documented, bounded) */
     }
-    if (!vp_lazy_init(vp, dev)) {
+    if (!break_editor_viewport3d_prepare(vp, dev)) {
         vp->last_skip = BREAK_EDITOR_VIEWPORT3D_SKIP_INIT_FAILED;
         return;
     }

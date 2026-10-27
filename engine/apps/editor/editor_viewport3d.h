@@ -12,12 +12,11 @@
  * commands, and camera moves (orbit/pan/zoom/focus) are view state — NOT
  * undoable (plan Global Constraints).
  *
- * GPU object lifecycle: create() allocates NO GPU objects. The pipeline,
- * cube vertex buffer, and offscreen FBO are created lazily on the first
- * render() call with a live device; the FBO is recreated only when the panel
- * pixel size changes. render() is a bounded no-op without a device/cmd, when
- * the panel is smaller than 32x32 px (plan bound), or when lazy init failed
- * (shaders/pipeline unavailable — logged once).
+ * GPU object lifecycle: create() allocates NO GPU objects. prepare(), called
+ * explicitly or when the shell attaches a non-NULL device, creates the shader
+ * pipeline and cube vertex buffer; render() can still perform that initial
+ * preparation and creates/recreates the FBO for its pixel size. render() is a
+ * bounded no-op without a device/cmd, below 32x32 px, or after init failure.
  *
  * Frame contract (editor_main.c): render() is called BETWEEN
  * break_ui_frame_begin() and break_ui_render() on the SAME command buffer.
@@ -62,13 +61,52 @@
 
 #include <rhi/rhi.h>
 
+#include "editor_shader_reload.h"
+
 struct my_widget_t;
 typedef struct BreakEditorShell BreakEditorShell;
 
 typedef struct BreakEditorViewport3D BreakEditorViewport3D;
 
 BreakEditorViewport3D *break_editor_viewport3d_create(void);
-void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp);
+/* false retains the viewport, reload owner, source/apply pointers, device and
+ * GPU objects for a later destroy retry after a worker shutdown timeout. */
+bool break_editor_viewport3d_destroy(BreakEditorViewport3D *vp);
+
+/* Initial one-shot GPU preparation through the shared shader resolver. The
+ * device is borrowed and recorded before any fallible GPU/source step; device
+ * migration is unsupported. Initial failure is sticky for frame-driven calls. */
+bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
+                                     void *rhi_device);
+/* Build and publish a complete shader candidate atomically. Failure preserves
+ * every live GPU field; an explicit call can recover initial INIT_FAILED. */
+bool break_editor_viewport3d_reload_shader_source(
+    BreakEditorViewport3D *vp, const void *vert, usize vert_size,
+    const void *frag, usize frag_size);
+
+void break_editor_viewport3d_set_shader_reload_logger(
+    BreakEditorViewport3D *vp, BreakEditorShaderReloadLog log, void *user);
+void break_editor_viewport3d_tick(BreakEditorViewport3D *vp);
+bool break_editor_viewport3d_request_shader_reload(BreakEditorViewport3D *vp);
+bool break_editor_viewport3d_shader_reload_stats(
+    const BreakEditorViewport3D *vp, BreakEditorShaderReloadStats *out);
+
+#ifdef BREAK_EDITOR_SHELL_TESTING
+/* Test-only owner replacement for panel integration fixtures. Ownership of
+ * reload transfers only on success; false retains the previous owner. */
+bool break_editor_viewport3d_replace_shader_reload_for_test(
+    BreakEditorViewport3D *vp, BreakEditorShaderReload *reload);
+void break_editor_viewport3d_set_shader_reload_shutdown_timeout_for_test(
+    BreakEditorViewport3D *vp, u32 timeout_ms);
+typedef struct {
+    RHIPipeline pipeline;
+    const void *bindings;
+    i32 loc_mvp, loc_color;
+    RHIBuffer vbo;
+} BreakEditorViewport3DGpuState;
+void break_editor_viewport3d_gpu_state_for_test(
+    const BreakEditorViewport3D *vp, BreakEditorViewport3DGpuState *out);
+#endif
 
 /* Borrowed view-state wiring (shell-owned camera/gizmo; selected entity for
  * the highlight tint). Call again whenever the selection changes; NULL

@@ -17,7 +17,8 @@
  * that watches the current scene file (the positional path, or the last
  * .bscn loaded from the asset browser) and applies valid external edits to
  * a clean document. It is torn down, with a bounded worker stop, before the
- * shell.
+ * shell. Shader shutdown timeout retains the shell, UI, device and platform
+ * rather than freeing borrowed state.
  *
  * Phase 4 Task 2: the remote session is DEFAULT OFF — it is created only
  * with --remote, which REQUIRES TLS (--remote-cert/--remote-key) and an
@@ -151,7 +152,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "editor: break_editor_shell_create failed\n");
     return 1;
   }
-  /* render debugger panel: borrowed device, detached before teardown */
+  /* render debugger panel: borrowed device, detached before teardown. Shader
+   * reload is viewport-owned; shell teardown stops it before device teardown. */
   break_editor_shell_set_render_device(shell, device);
   /* asset hot reload: host-owned, shell-borrowed; attached BEFORE the scene
    * path so the watcher starts on it. A failure only disables hot reload. */
@@ -178,7 +180,13 @@ int main(int argc, char **argv) {
       break_editor_remote_destroy(remote);
       break_editor_hot_reload_destroy(hot_reload);
       break_editor_shell_set_render_device(shell, NULL);
-      break_editor_shell_destroy(shell);
+      if (!break_editor_shell_destroy(shell)) {
+        fprintf(stderr, "editor: --remote failed to start (TLS cert/key "
+                        "unreadable, port in use, or auth setup failed)\n");
+        fprintf(stderr, "editor: shader reload shutdown timed out; retaining "
+                        "bounded process resources instead of freeing them\n");
+        return 1;
+      }
       break_ui_destroy(ui);
       rhi_device_destroy(device);
       platform_destroy(platform);
@@ -237,11 +245,13 @@ int main(int argc, char **argv) {
   }
 
   break_editor_remote_destroy(remote);
-  /* detaches itself, then stops the watcher and the coordinator workers
-   * (bounded) BEFORE the shell/document they commit into is destroyed */
   break_editor_hot_reload_destroy(hot_reload);
   break_editor_shell_set_render_device(shell, NULL);
-  break_editor_shell_destroy(shell);
+  if (!break_editor_shell_destroy(shell)) {
+    fprintf(stderr, "editor: shader reload shutdown timed out; retaining "
+                    "bounded process resources instead of freeing them\n");
+    return 1;
+  }
   break_ui_destroy(ui);
   rhi_device_destroy(device);
   platform_destroy(platform);

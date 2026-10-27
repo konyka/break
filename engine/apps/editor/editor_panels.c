@@ -1040,9 +1040,16 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             return true;
         }
     }
-    /* ASCII letters fold to lowercase; SHIFT is ignored for them */
+    /* ASCII letters fold to lowercase; the generic letter table ignores SHIFT */
     if (key >= 'A' && key <= 'Z') {
         key = key - 'A' + 'a';
+    }
+    if (key == 'r' &&
+        modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
+        if (!break_editor_viewport3d_request_shader_reload(shell->vp3d)) {
+            editor_shell_log(shell, "shader reload: unavailable");
+        }
+        return true;
     }
     relevant = (key >= 'a' && key <= 'z')
                    ? modifiers & (MY_KEYMOD_CTRL | MY_KEYMOD_ALT)
@@ -1372,6 +1379,13 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     return true;
 }
 
+static void shell_shader_reload_log(void *user, const char *line) {
+    BreakEditorShell *shell = (BreakEditorShell *)user;
+    if (shell != NULL && line != NULL) {
+        editor_shell_log(shell, "%s", line);
+    }
+}
+
 static BreakEditorShell *shell_create_common(my_window_t *win) {
     BreakEditorShell *shell;
     my_widget_t *content;
@@ -1402,6 +1416,8 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     break_editor_viewport3d_set_view_state(shell->vp3d, &shell->camera,
                                            shell->gizmo,
                                            BREAK_EDITOR_ENTITY_NULL);
+    break_editor_viewport3d_set_shader_reload_logger(
+        shell->vp3d, shell_shader_reload_log, shell);
     /* Phase 3 Task 3 panel CPU state (see editor_shell_internal.h): needs
      * the doc (the Lua console borrows it; the assets model lists ".").
      * Panel create fails only on allocation — a degraded assets model or
@@ -1511,10 +1527,17 @@ BreakEditorShell *break_editor_shell_create_for_test(void) {
     return shell;
 }
 
-void break_editor_shell_destroy(BreakEditorShell *shell) {
+bool break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
-        return;
+        return true;
     }
+    /* A timed-out shader worker retains pointers into the viewport. Stop it
+     * before any other teardown; false leaves the complete shell intact. */
+    if (shell->vp3d != NULL &&
+        !break_editor_viewport3d_destroy(shell->vp3d)) {
+        return false;
+    }
+    shell->vp3d = NULL;
     /* a still-attached remote (host destroyed the shell first) is orphaned
      * before anything is freed: it drops its back-pointer and its
      * doc-borrowing console, so its later destroy never reaches this shell */
@@ -1549,10 +1572,10 @@ void break_editor_shell_destroy(BreakEditorShell *shell) {
     editor_panel_profiler_destroy(shell->profiler_panel);
     editor_panel_lua_destroy(shell->lua_panel);
     editor_panel_assets_destroy(shell->assets_panel);
-    break_editor_viewport3d_destroy(shell->vp3d);
     break_editor_gizmo_destroy(shell->gizmo);
     break_editor_doc_destroy(shell->doc);
     free(shell);
+    return true;
 }
 
 /* ---------------- public inspection surface ---------------- */
@@ -1747,6 +1770,7 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
     /* render debugger: <= 4 Hz pure read of the borrowed device and the
      * viewport's last-render stats */
     editor_panel_render_tick(shell->render_panel, shell->vp3d);
+    break_editor_viewport3d_tick(shell->vp3d);
     /* Phase 4 Task 1: the host-attached remote (DEFAULT OFF — the shell
      * never creates one; editor_main --remote / tests attach it via
      * break_editor_shell_set_remote) is driven exactly once per tick on the
@@ -1913,6 +1937,9 @@ void break_editor_shell_set_render_device(BreakEditorShell *shell,
                                           RHIDevice *device) {
     if (shell != NULL) {
         editor_panel_render_set_device(shell->render_panel, device);
+        if (device != NULL) {
+            (void)break_editor_viewport3d_prepare(shell->vp3d, device);
+        }
     }
 }
 

@@ -80,7 +80,10 @@ editor 可执行
   解析）与立方体 VBO 在首个带活设备的 render 惰性创建；FBO 仅在面板
   像素尺寸变化时重建（plan bound）；面板 < 32×32 整体跳过；惰性初始化
   失败粘性记录（不再逐帧重试/刷屏）。设备中途更换 = 有界 no-op（不
-  支持，文档化）。
+  支持，文档化）。**2026-10-27 更新**：设备挂接时 `prepare` 先记录设备，
+  再经统一 resolver 读取 shader 并走事务式候选构建；粘性失败只阻止逐帧
+  重试，shader 热加载事件或 `Ctrl+Shift+R` 可以恢复；部分初始化的资源
+  不再泄漏。见 `docs/design/editor_hot_reload.md` §7。
 - **帧序（editor_main.c）**：`platform_poll → break_ui_pump →
   break_editor_shell_tick → break_ui_frame_begin（可能跳过）→
   break_editor_shell_render_viewport（同一 cmd；bind=clear 依 R617）→

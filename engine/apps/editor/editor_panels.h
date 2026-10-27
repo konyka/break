@@ -45,12 +45,13 @@
  * shortcuts work before any widget is clicked. Tests bypass dispatch and call
  * break_editor_shell_dispatch_key directly.
  *
- * Shortcut table (single table in editor_panels.c; letter keys ignore SHIFT,
+ * Shortcut routing (editor_panels.c; generic letter keys ignore SHIFT,
  * Ctrl/Alt must match exactly):
  *   Q/W/E/R   gizmo mode NONE/TRANSLATE/ROTATE/SCALE + tool label (Phase 2)
  *   F         focus the camera on the selected entity (Phase 2: real
  *             break_editor_camera_focus on the proxy AABB; view state, not
  *             undoable)
+ *   Ctrl+Shift+R queue a viewport shader reload (no GPU work in the callback)
  *   Ctrl+S    save to the path set via break_editor_shell_set_scene_path
  *   Ctrl+Z/Y  undo/redo via the doc command stack; mid-gizmo-drag they first
  *             END+COMMIT the in-progress drag (Task 3 policy, pinned by
@@ -133,9 +134,11 @@ BreakEditorShell *break_editor_shell_create(struct my_window_t *win);
 /* Headless test path: dummy PAL + own 800x480 window, no RHI. */
 BreakEditorShell *break_editor_shell_create_for_test(void);
 
-/* NULL is a no-op. The real-window path detaches the panel tree from the
- * borrowed window; the test path tears down its window/wm/loop/pal. */
-void break_editor_shell_destroy(BreakEditorShell *shell);
+/* NULL returns true. The real-window path detaches the panel tree from the
+ * borrowed window; the test path tears down its window/wm/loop/pal. false
+ * means shader shutdown timed out: no other teardown ran and the same shell,
+ * document, viewport, logger and borrowed device remain alive for retry. */
+bool break_editor_shell_destroy(BreakEditorShell *shell);
 
 /* Shortcut router (see the header table). Returns true when the key was
  * consumed by a shortcut (or by the open palette's Escape/Return). */
@@ -290,8 +293,8 @@ void break_editor_shell_fail_diag_attach_for_test(void);
 /* ---------------- render debugger panel ----------------
  * Pure view (docs/design/editor_render_debugger.md): backend / GPU / caps /
  * status / resource slots of the BORROWED render device plus the viewport's
- * last-render stats, <= 16 rows x 96 bytes refreshed at <= 4 Hz from
- * break_editor_shell_tick. NULL device renders one "render: no device" row.
+ * last-render/shader-reload stats, <= 16 rows x 96 bytes refreshed at <= 4 Hz
+ * from break_editor_shell_tick. NULL device renders one "render: no device" row.
  * The host attaches the device after creating the shell and detaches it
  * (NULL) before destroying the device. */
 void break_editor_shell_set_render_device(BreakEditorShell *shell,

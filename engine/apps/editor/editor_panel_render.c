@@ -8,7 +8,7 @@
  * BreakEditorRenderSource table (production: rhi_device_get_info /
  * _get_capabilities / _get_status / rhi_frame_index /
  * rhi_device_resource_usage and the rollout backend/reason) and the
- * viewport's CPU-side last-render stats. Pinned by
+ * viewport's CPU-side last-render/shader-reload stats. Pinned by
  * render_panel_source_is_read_only (source scan of the marked region).
  *
  * Rows (fixed storage, 16 rows x 96 bytes; no RHI/GPU allocation on refresh;
@@ -23,6 +23,8 @@
  *     [5] resources: <used>/<capacity> slots
  *     [6] viewport: <ready|failed|not-initialised> fbo=<w>x<h>
  *     [7] viewport: proxies=<n> gizmo=<n> draws=<n> skipped=<reason>
+ *     [8] shader reload: <watching|manual-only|shutdown-pending>
+ *         busy=<0|1> applied=<n> failed=<n>, or "shader reload: unavailable"
  *
  * THROTTLE: at most 4 refreshes per second (250,000 us) from
  * break_editor_shell_tick; the first tick after create and after any device
@@ -178,7 +180,26 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
                        (unsigned)st.proxies, (unsigned)st.gizmo_handles,
                        (unsigned)st.draws,
                        break_editor_viewport3d_skip_name(st.skipped));
-        p->row_count = 8u;
+        {
+            BreakEditorShaderReloadStats reload;
+            if (!break_editor_viewport3d_shader_reload_stats(vp, &reload) ||
+                !reload.owner_present) {
+                (void)snprintf(p->rows[8], EDITOR_RENDER_ROW_BYTES,
+                               "shader reload: unavailable");
+            } else {
+                const char *state =
+                    reload.stopping
+                        ? "shutdown-pending"
+                        : (reload.watching ? "watching" : "manual-only");
+                (void)snprintf(
+                    p->rows[8], EDITOR_RENDER_ROW_BYTES,
+                    "shader reload: %s busy=%u applied=%llu failed=%llu",
+                    state, reload.busy ? 1u : 0u,
+                    (unsigned long long)reload.reloads,
+                    (unsigned long long)reload.failed);
+            }
+        }
+        p->row_count = 9u;
     }
     if (p->list != NULL) {
         (void)my_list_view_refresh(p->list);

@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — viewport shader 热加载（2026-10-27）
+
+- **交付**：viewport 的 `editor_color` vertex/fragment shader 外部修改后自动重载。统一路径解析（`BREAK_SHADER_DIR` → `.` → `engine` → `../engine` → `../../engine`，按后端选 `_vk` 变体，超长根跳过不截断）；事务式 GPU 候选（shader/pipeline/bindings/uniform 全部成功才发布，任何失败保留完整旧状态，首次失败可恢复且不逐帧重试）；viewport 持有的独立 owner，一个 Runtime Core coordinator 把两个文件作为两个真实 VFS 请求，worker 只读不碰 RHI，两侧都 COMMITTED 后才在 shell tick（`frame_begin` 之前）提交；在途修改合并为一次尾随重载；`Ctrl+Shift+R` 只排队；console 与 render debugger 显示状态；shutdown 超时可重试，不释放仍被 worker 引用的资源。新增 opt-in `filewatch_add_with_missing`（删除也通知，用于高优先级目录删除后自动回退），原 `filewatch_add` 行为不变。
+- **验证**：`test_editor_shell` 77（Snowflake OFF）/102（ON），`test_hotreload` 6；全量非图形 OpenGL 204/204、Vulkan 205/205、多后端 204+1 skip、Snowflake 208/208；ASan/TSan 下 shell 各 10 次 102/102 零报告，fuzz smoke 6/6。真实窗口（Xwayland 上的 X11，NVK Vulkan 与 Mesa OpenGL）截图像素：合法修改改变代理立方体颜色，非法修改保持上一颜色，仅改内容不改 mtime 不重载，`Ctrl+Shift+R`（经 gdb 在 shell 分发入口注入，XTEST 在 Xwayland 下未送达窗口）后变色；两后端一致。
+- **边界**：纹理热加载未交付（需先有真实图片预览消费者）；无 `#include` 依赖、无异步 GPU 编译、无设备迁移；watcher 仍是整秒 mtime 轮询；Windows/macOS/CI 未运行。详见 `docs/design/editor_hot_reload.md` §7。
+
 ## 本轮更新：break_net 服务端关闭连接 + editor remote 认证 deadline（2026-10-26）
 
 - **交付**：`break_net_reactor_close(reactor, key)`：任意线程发起、不阻塞；关闭前已排队的发送先写出，再由 Snowflake close-after-flush 关闭套接字，随后走正常的 `CONNECTION_CLOSED` 与 identity 释放；关闭后的发送返回 `BREAK_NET_SEND_CLOSED`。editor remote：会话因任何原因进入 CLOSING/CLOSED（授权门拒绝、畸形帧、AUTH 失败、注册表拒绝）时同时关闭传输；新增 `auth_timeout_ms`，`--remote` 固定 10 s，未认证连接到期即被关闭并计数（`break_editor_remote_auth_timeouts`）。此前“只有对端断开才释放连接槽、无认证 deadline”的限制由此解除。
