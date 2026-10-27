@@ -360,7 +360,8 @@ static void vp_candidate_publish(BreakEditorViewport3D *vp,
                                  VpGpuCandidate *candidate) {
     RHIPipeline old_pipeline = vp->pipeline;
     RHIPipelineBindings *old_bindings = vp->bindings;
-    RHIBuffer old_vbo = vp->cube_vbo;
+    /* candidate->owns_vbo implies there was no live VBO to retire: the build
+     * reuses an existing one and creates its own only when none exists */
     vp->pipeline = candidate->pipeline;
     vp->bindings = candidate->bindings;
     vp->loc_mvp = candidate->loc_mvp;
@@ -372,9 +373,6 @@ static void vp_candidate_publish(BreakEditorViewport3D *vp,
     }
     if (old_bindings != NULL) {
         rhi_pipeline_bindings_destroy(vp->device, old_bindings);
-    }
-    if (candidate->owns_vbo && rhi_handle_valid(old_vbo)) {
-        rhi_buffer_destroy(vp->device, old_vbo);
     }
 }
 

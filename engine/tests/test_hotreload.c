@@ -6,7 +6,9 @@
 #if !defined(ENGINE_PLATFORM_WINDOWS)
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
+#include <utime.h>
 #endif
 
 static RHIShader  s_shader  = {1, 1};
@@ -149,7 +151,81 @@ TEST(filewatch_rejects_path_truncation)
     filewatch_shutdown(&watcher);
 }
 
+static int s_fw_calls[2];
+static void fw_count_cb(const char *path, void *user) {
+    (void)path;
+    (*(int *)user)++;
+}
+
+#if !defined(ENGINE_PLATFORM_WINDOWS)
+static void fw_set_mtime(const char *path, long offset) {
+    struct stat st;
+    struct utimbuf t;
+    ASSERT_EQ(stat(path, &st), 0);
+    t.actime = st.st_atime;
+    t.modtime = time(NULL) + offset;
+    ASSERT_EQ(utime(path, &t), 0);
+}
+#endif
+
+/* filewatch_add keeps its historical rule (deletion is silent);
+ * filewatch_add_with_missing additionally reports existing -> missing once,
+ * and both report the file reappearing. */
+TEST(filewatch_delete_notify_is_opt_in)
+{
+#if defined(ENGINE_PLATFORM_WINDOWS)
+    /* mtime forcing needs utime(); Windows keeps the shared rule untested. */
+    return;
+#else
+    char legacy[64], opt_in[64];
+    FileWatcher w;
+    test_tmp(legacy, sizeof legacy, "fw_legacy.txt");
+    test_tmp(opt_in, sizeof opt_in, "fw_optin.txt");
+    ASSERT_TRUE(write_file(legacy, 4, 'a'));
+    ASSERT_TRUE(write_file(opt_in, 4, 'b'));
+    fw_set_mtime(legacy, 100);
+    fw_set_mtime(opt_in, 100);
+    s_fw_calls[0] = s_fw_calls[1] = 0;
+
+    filewatch_init(&w);
+    filewatch_add(&w, legacy, fw_count_cb, &s_fw_calls[0]);
+    filewatch_add_with_missing(&w, opt_in, fw_count_cb, &s_fw_calls[1]);
+    ASSERT_EQ(w.count, 2u);
+    ASSERT_FALSE(w.entries[0].notify_missing);
+    ASSERT_TRUE(w.entries[1].notify_missing);
+
+    ASSERT_EQ(remove(legacy), 0);
+    ASSERT_EQ(remove(opt_in), 0);
+    filewatch_poll(&w);
+    filewatch_poll(&w); /* already missing: no repeat */
+    ASSERT_EQ(s_fw_calls[0], 0);
+    ASSERT_EQ(s_fw_calls[1], 1);
+
+    ASSERT_TRUE(write_file(legacy, 4, 'c'));
+    ASSERT_TRUE(write_file(opt_in, 4, 'd'));
+    fw_set_mtime(legacy, 200);
+    fw_set_mtime(opt_in, 200);
+    filewatch_poll(&w);
+    ASSERT_EQ(s_fw_calls[0], 1);
+    ASSERT_EQ(s_fw_calls[1], 2);
+
+    /* bounded: NULL watcher and over-long paths are rejected */
+    filewatch_add_with_missing(NULL, opt_in, fw_count_cb, NULL);
+    {
+        char longp[FILEWATCH_MAX_PATH + 1u];
+        memset(longp, 'x', sizeof(longp) - 1u);
+        longp[sizeof(longp) - 1u] = '\0';
+        filewatch_add_with_missing(&w, longp, fw_count_cb, NULL);
+        ASSERT_EQ(w.count, 2u);
+    }
+    filewatch_shutdown(&w);
+    remove(legacy);
+    remove(opt_in);
+#endif
+}
+
 TEST_MAIN_BEGIN()
+    RUN_TEST(filewatch_delete_notify_is_opt_in);
     RUN_TEST(hotreload_rejects_oversized_shader);
     RUN_TEST(hotreload_texture_rejects_path_truncation);
     RUN_TEST(hotreload_texture_failed_init_keeps_stdin);

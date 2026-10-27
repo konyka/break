@@ -63,6 +63,8 @@ static RHIShader   stub_shader   = {0, 0};
 typedef struct {
     RHIHandle handle;
     u32 revision, flags;
+    u32 vertex_revision, fragment_revision; /* pipelines only */
+    bool fragment;                          /* shaders only */
     bool live;
 } EditorRhiFakeObject;
 
@@ -199,6 +201,16 @@ u32 editor_rhi_fake_pipeline_revision(RHIPipeline pipeline) {
     i32 slot = editor_rhi_fake_find(g_editor_rhi_fake.pipelines, pipeline);
     return slot >= 0 ? g_editor_rhi_fake.pipelines[slot].revision : 0u;
 }
+
+u32 editor_rhi_fake_pipeline_stage_revision(RHIPipeline pipeline,
+                                            bool fragment) {
+    i32 slot = editor_rhi_fake_find(g_editor_rhi_fake.pipelines, pipeline);
+    if (slot < 0) {
+        return 0u;
+    }
+    return fragment ? g_editor_rhi_fake.pipelines[slot].fragment_revision
+                    : g_editor_rhi_fake.pipelines[slot].vertex_revision;
+}
 #endif
 
 RHIBuffer rhi_buffer_create(RHIDevice *d, const RHIBufferDesc *desc) {
@@ -273,9 +285,18 @@ RHIPipeline rhi_pipeline_create(RHIDevice *d, const RHIPipelineDesc *desc) {
                     EDITOR_RHI_FAKE_HAS_REVISION) != 0u
                        ? g_editor_rhi_fake.shaders[vert_slot].revision
                        : g_editor_rhi_fake.shaders[frag_slot].revision;
+        /* stage-swapped descriptors are a caller bug the fake must expose */
+        if (g_editor_rhi_fake.shaders[vert_slot].fragment ||
+            !g_editor_rhi_fake.shaders[frag_slot].fragment) {
+            return RHI_HANDLE_NULL;
+        }
         pipeline = editor_rhi_fake_object_create(
             g_editor_rhi_fake.pipelines, flags, revision);
         if (rhi_handle_valid(pipeline)) {
+            EditorRhiFakeObject *p =
+                &g_editor_rhi_fake.pipelines[pipeline.index - 1u];
+            p->vertex_revision = g_editor_rhi_fake.shaders[vert_slot].revision;
+            p->fragment_revision = g_editor_rhi_fake.shaders[frag_slot].revision;
             g_editor_rhi_fake.stats.pipeline_creates++;
             g_editor_rhi_fake.stats.live_pipelines++;
         }
@@ -412,7 +433,9 @@ void       rhi_sampler_destroy(RHIDevice *d, RHISampler s)              { (void)
 RHIShader rhi_shader_create(RHIDevice *d, const char *src, usize len,
                             bool is_frag) {
     (void)d;
+#ifndef BREAK_EDITOR_SHELL_TESTING
     (void)is_frag;
+#endif
 #ifdef BREAK_EDITOR_SHELL_TESTING
     if (g_editor_rhi_fake.enabled) {
         u32 revision = 0u;
@@ -427,6 +450,7 @@ RHIShader rhi_shader_create(RHIDevice *d, const char *src, usize len,
         shader = editor_rhi_fake_object_create(g_editor_rhi_fake.shaders,
                                                flags, revision);
         if (rhi_handle_valid(shader)) {
+            g_editor_rhi_fake.shaders[shader.index - 1u].fragment = is_frag;
             g_editor_rhi_fake.stats.live_shaders++;
         }
         return shader;

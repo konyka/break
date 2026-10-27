@@ -168,8 +168,10 @@ static void shader_watch_candidates(BreakEditorShaderReload *reload) {
                    logical_len);
             path[path_len] = '\0';
             before = reload->watcher.count;
-            filewatch_add(&reload->watcher, path, shader_on_file_changed,
-                          reload);
+            /* deletion must notify too: removing a higher-priority pair has
+             * to fall back to the next root without a manual request */
+            filewatch_add_with_missing(&reload->watcher, path,
+                                       shader_on_file_changed, reload);
             if (reload->watcher.count > before) {
                 reload->watching = true;
             }
@@ -369,6 +371,8 @@ bool break_editor_shader_reload_stats(
         return false;
     }
     *out = reload->stats;
+    out->owner_present = true;
+    out->stopping = reload->stopped || reload->stuck;
     out->watching = reload->watching && !reload->stopped && !reload->stuck;
     out->busy = !reload->stopped && !reload->stuck &&
                 (reload->pending || shader_attempt_active(reload));

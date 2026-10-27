@@ -183,13 +183,12 @@ static void render_panel_refresh(BreakEditorPanelRender *p,
         {
             BreakEditorShaderReloadStats reload;
             if (!break_editor_viewport3d_shader_reload_stats(vp, &reload) ||
-                (reload.last_result == BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE &&
-                 reload.attempts == 0u)) {
+                !reload.owner_present) {
                 (void)snprintf(p->rows[8], EDITOR_RENDER_ROW_BYTES,
                                "shader reload: unavailable");
             } else {
                 const char *state =
-                    reload.last_result == BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE
+                    reload.stopping
                         ? "shutdown-pending"
                         : (reload.watching ? "watching" : "manual-only");
                 (void)snprintf(

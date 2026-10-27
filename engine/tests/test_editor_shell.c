@@ -1251,14 +1251,15 @@ static bool editor_fake_stats_equal(const EditorRhiFakeStats *a,
 static void viewport_shader_candidate_body(void) {
     static const char good_frag[] = "fragment";
     static const struct {
-        const char *vert;
+        const char *vert, *frag;
         u32 pipeline_creates, pipeline_destroys, binding_destroys;
     } failures[] = {
-        {"REV=2 COMPILE_FAIL", 0u, 0u, 0u},
-        {"REV=2 LINK_FAIL", 0u, 0u, 0u},
-        {"REV=2 BINDINGS_FAIL", 1u, 1u, 0u},
-        {"REV=2 NO_MVP", 1u, 1u, 1u},
-        {"REV=2 NO_COLOR", 1u, 1u, 1u}
+        {"REV=2 COMPILE_FAIL", "fragment", 0u, 0u, 0u},
+        {"REV=2 vertex", "REV=2 COMPILE_FAIL", 0u, 0u, 0u},
+        {"REV=2 LINK_FAIL", "fragment", 0u, 0u, 0u},
+        {"REV=2 BINDINGS_FAIL", "fragment", 1u, 1u, 0u},
+        {"REV=2 NO_MVP", "fragment", 1u, 1u, 1u},
+        {"REV=2 NO_COLOR", "fragment", 1u, 1u, 1u}
     };
     BreakEditorViewport3D *vp;
     BreakEditorViewport3DGpuState before, after;
@@ -1296,7 +1297,7 @@ static void viewport_shader_candidate_body(void) {
         editor_rhi_fake_stats(&before_stats);
         ASSERT_FALSE(break_editor_viewport3d_reload_shader_source(
             vp, failures[i].vert, strlen(failures[i].vert),
-            good_frag, sizeof(good_frag) - 1u));
+            failures[i].frag, strlen(failures[i].frag)));
         break_editor_viewport3d_gpu_state_for_test(vp, &after);
         ASSERT_TRUE(viewport_gpu_state_equal(&before, &after));
         ASSERT_EQ(editor_rhi_fake_pipeline_revision(after.pipeline), 1u);
@@ -1314,6 +1315,22 @@ static void viewport_shader_candidate_body(void) {
         ASSERT_EQ(after_stats.binding_destroys,
                   before_stats.binding_destroys + failures[i].binding_destroys);
         ASSERT_EQ(after_stats.buffer_creates, before_stats.buffer_creates);
+    }
+
+    {
+        static const char prefix[] = "REV=2 vertex";
+        static const char suffix[] = "REV=9 COMPILE_FAIL";
+        char source[64];
+        size_t prefix_len = sizeof(prefix) - 1u;
+        memset(source, 'x', sizeof(source));
+        memcpy(source, prefix, prefix_len);
+        memcpy(source + prefix_len, suffix, sizeof(suffix) - 1u);
+        ASSERT_TRUE(break_editor_viewport3d_reload_shader_source(
+            vp, source, prefix_len, good_frag, sizeof(good_frag) - 1u));
+        break_editor_viewport3d_gpu_state_for_test(vp, &after);
+        ASSERT_EQ(editor_rhi_fake_pipeline_revision(after.pipeline), 2u);
+        editor_rhi_fake_stats(&after_stats);
+        ASSERT_EQ(after_stats.live_shaders, 0u);
     }
 
     break_editor_viewport3d_gpu_state_for_test(vp, &before);
@@ -1337,6 +1354,14 @@ static void viewport_shader_candidate_body(void) {
               before_stats.pipeline_destroys + 1u);
     ASSERT_EQ(after_stats.binding_destroys, before_stats.binding_destroys + 1u);
     ASSERT_EQ(after_stats.buffer_creates, before_stats.buffer_creates);
+
+    ASSERT_TRUE(break_editor_viewport3d_reload_shader_source(
+        vp, "REV=3 vertex", strlen("REV=3 vertex"),
+        "REV=2 fragment", strlen("REV=2 fragment")));
+    break_editor_viewport3d_gpu_state_for_test(vp, &after);
+    ASSERT_EQ(editor_rhi_fake_pipeline_revision(after.pipeline), 3u);
+    ASSERT_EQ(editor_rhi_fake_pipeline_stage_revision(after.pipeline, false), 3u);
+    ASSERT_EQ(editor_rhi_fake_pipeline_stage_revision(after.pipeline, true), 2u);
 
     before = after;
     ASSERT_FALSE(break_editor_viewport3d_prepare(vp, &other_device));
@@ -4419,6 +4444,17 @@ static u32 shader_reload_revision(const ShaderReloadFixture *fx) {
     return editor_rhi_fake_pipeline_revision(state.pipeline);
 }
 
+static void shader_reload_assert_stage_revisions(
+    const ShaderReloadFixture *fx, u32 vertex, u32 fragment) {
+    BreakEditorViewport3DGpuState state;
+    u32 got_vertex, got_fragment;
+    break_editor_viewport3d_gpu_state_for_test(fx->vp, &state);
+    got_vertex = editor_rhi_fake_pipeline_stage_revision(state.pipeline, false);
+    got_fragment = editor_rhi_fake_pipeline_stage_revision(state.pipeline, true);
+    ASSERT_EQ(got_vertex, vertex);
+    ASSERT_EQ(got_fragment, fragment);
+}
+
 static void shader_reload_write_pair(ShaderReloadFixture *fx, u32 revision,
                                      const char *marker, bool bump) {
     char vert[128], frag[128];
@@ -4508,6 +4544,7 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     ASSERT_EQ(render_stats.fbo_w, 800u);
     ASSERT_EQ(render_stats.fbo_h, 480u);
     ASSERT_EQ(shader_reload_revision(fx), 1u);
+    shader_reload_assert_stage_revisions(fx, 1u, 1u);
     stats = shader_reload_stats(fx);
     ASSERT_TRUE(stats.watching);
     ASSERT_FALSE(stats.busy);
@@ -4522,6 +4559,7 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     ASSERT_TRUE(stats.events >= 1u);
     ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_APPLIED);
     ASSERT_EQ(shader_reload_revision(fx), 2u);
+    shader_reload_assert_stage_revisions(fx, 2u, 2u);
     ASSERT_TRUE(fx->log.calls >= 1u);
     {
         EditorRhiFakeStats fake;
@@ -4543,6 +4581,7 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     editor_rhi_fake_stats(&fake_after_bad);
     ASSERT_TRUE(viewport_gpu_state_equal(&before_bad, &after_bad));
     ASSERT_EQ(shader_reload_revision(fx), 2u);
+    shader_reload_assert_stage_revisions(fx, 2u, 2u);
     ASSERT_TRUE(editor_fake_stats_equal(&fake_before_bad, &fake_after_bad));
 
     shader_reload_write_pair(fx, 4u, "", true);
@@ -4552,6 +4591,7 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     ASSERT_EQ(stats.failed, 1u);
     ASSERT_EQ(stats.attempts, 3u);
     ASSERT_EQ(shader_reload_revision(fx), 4u);
+    shader_reload_assert_stage_revisions(fx, 4u, 4u);
     editor_rhi_fake_stats(&fake_after_bad);
     ASSERT_EQ(fake_after_bad.pipeline_destroys,
               fake_before_bad.pipeline_destroys + 1u);
@@ -4669,6 +4709,7 @@ static void shader_reload_trailing_body(ShaderReloadFixture *fx) {
     ASSERT_TRUE(stats.attempts >= 2u);
     ASSERT_FALSE(stats.busy);
     ASSERT_EQ(shader_reload_revision(fx), 3u);
+    shader_reload_assert_stage_revisions(fx, 3u, 3u);
     editor_rhi_fake_stats(&fake);
     ASSERT_EQ(fake.buffer_creates, 1u);
 }
@@ -4703,11 +4744,12 @@ static bool shader_direct_apply(void *user, const void *vert, usize vert_size,
         fx->base.vp, vert, vert_size, frag, frag_size);
 }
 
-static void shader_direct_open(ShaderDirectFixture *fx, const char *name) {
+static void shader_direct_open_pair(ShaderDirectFixture *fx, const char *name,
+                                    const char *initial_vert,
+                                    const char *initial_frag) {
     size_t root_len;
     memset(fx, 0, sizeof(*fx));
-    shader_reload_fixture_open(&fx->base, name, "REV=1 vertex\n",
-                               "REV=1 fragment\n");
+    shader_reload_fixture_open(&fx->base, name, initial_vert, initial_frag);
     ASSERT_NOT_NULL(fx->base.shell);
     ASSERT_TRUE(break_editor_shader_source_configure(
         &fx->source, RHI_SHADER_VARIANT_GLSL));
@@ -4718,6 +4760,10 @@ static void shader_direct_open(ShaderDirectFixture *fx, const char *name) {
     fx->reload = break_editor_shader_reload_create(
         &fx->source, shader_direct_apply, fx);
     ASSERT_NOT_NULL(fx->reload);
+}
+
+static void shader_direct_open(ShaderDirectFixture *fx, const char *name) {
+    shader_direct_open_pair(fx, name, "REV=1 vertex\n", "REV=1 fragment\n");
 }
 
 static void shader_direct_close(ShaderDirectFixture *fx) {
@@ -4749,6 +4795,111 @@ static BreakEditorShaderReloadStats shader_direct_stats(
         }                                                                    \
     } while (0)
 
+typedef struct ShaderPromotionFixture {
+    ShaderDirectFixture direct;
+    char root[512];
+    char shaders[600];
+    char vert[700];
+    char frag[700];
+} ShaderPromotionFixture;
+
+static void shader_promotion_open(ShaderPromotionFixture *fx) {
+    size_t high_len, low_len;
+    memset(fx, 0, sizeof(*fx));
+    shader_direct_open_pair(&fx->direct, "editor_shader_reload_two_root_low",
+                            "REV=1 vertex\n", "REV=2 fragment\n");
+    ASSERT_NOT_NULL(fx->direct.base.shell);
+    test_tmp(fx->root, sizeof(fx->root), "editor_shader_reload_two_root_high");
+    snprintf(fx->shaders, sizeof(fx->shaders), "%s/shaders", fx->root);
+    snprintf(fx->vert, sizeof(fx->vert), "%s/editor_color.vert", fx->shaders);
+    snprintf(fx->frag, sizeof(fx->frag), "%s/editor_color.frag", fx->shaders);
+    ASSERT_EQ(TEST_MKDIR(fx->root), 0);
+    ASSERT_EQ(TEST_MKDIR(fx->shaders), 0);
+    break_editor_shader_reload_destroy(fx->direct.reload);
+    fx->direct.reload = NULL;
+    high_len = strlen(fx->root);
+    low_len = strlen(fx->direct.base.root);
+    ASSERT_TRUE(high_len < sizeof(fx->direct.source.roots[0]));
+    ASSERT_TRUE(low_len < sizeof(fx->direct.source.roots[1]));
+    fx->direct.source.root_count = 2u;
+    memcpy(fx->direct.source.roots[0], fx->root, high_len + 1u);
+    memcpy(fx->direct.source.roots[1], fx->direct.base.root, low_len + 1u);
+    fx->direct.reload = break_editor_shader_reload_create(
+        &fx->direct.source, shader_direct_apply, &fx->direct);
+    ASSERT_NOT_NULL(fx->direct.reload);
+}
+
+static void shader_promotion_close(ShaderPromotionFixture *fx) {
+    shader_direct_close(&fx->direct);
+    remove(fx->vert);
+    remove(fx->frag);
+    if (fx->shaders[0] != '\0') {
+        TEST_RMDIR(fx->shaders);
+    }
+    if (fx->root[0] != '\0') {
+        TEST_RMDIR(fx->root);
+    }
+}
+
+static void shader_reload_two_root_body(ShaderPromotionFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    shader_promotion_open(fx);
+    ASSERT_NOT_NULL(fx->direct.reload);
+    stats = shader_direct_stats(&fx->direct);
+    ASSERT_TRUE(stats.watching);
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_EQ(shader_reload_revision(&fx->direct.base), 1u);
+
+    shader_reload_assert_stage_revisions(&fx->direct.base, 1u, 2u);
+
+    /* the higher-priority pair appears: the watcher promotes both stages */
+    hr_write_text(fx->vert, "REV=4 vertex\n");
+    hr_write_text(fx->frag, "REV=3 fragment\n");
+    hr_bump_mtime(fx->vert);
+    hr_bump_mtime(fx->frag);
+    SHADER_DIRECT_WAIT(&fx->direct,
+                       shader_direct_stats(&fx->direct).reloads >= 1u &&
+                           !shader_direct_stats(&fx->direct).busy);
+    stats = shader_direct_stats(&fx->direct);
+    ASSERT_TRUE(stats.events >= 1u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_FALSE(stats.busy);
+    shader_reload_assert_stage_revisions(&fx->direct.base, 4u, 3u);
+
+    /* deleting it alone (no manual request) falls back to the lower root */
+    {
+        u64 events_before = stats.events;
+        u64 reloads_before = stats.reloads;
+        ASSERT_EQ(remove(fx->vert), 0);
+        ASSERT_EQ(remove(fx->frag), 0);
+        SHADER_DIRECT_WAIT(&fx->direct,
+                           shader_direct_stats(&fx->direct).reloads >
+                                   reloads_before &&
+                               !shader_direct_stats(&fx->direct).busy);
+        stats = shader_direct_stats(&fx->direct);
+        ASSERT_TRUE(stats.events > events_before);
+        ASSERT_EQ(stats.failed, 0u);
+        ASSERT_FALSE(stats.busy);
+        shader_reload_assert_stage_revisions(&fx->direct.base, 1u, 2u);
+    }
+}
+
+TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back)
+{
+    EditorShaderEnv env;
+    ShaderPromotionFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_two_root_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_promotion_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 static void shader_reload_one_sided_body(ShaderDirectFixture *fx) {
     BreakEditorViewport3DGpuState before, after;
     EditorRhiFakeStats fake;
@@ -4765,11 +4916,17 @@ static void shader_reload_one_sided_body(ShaderDirectFixture *fx) {
     editor_rhi_fake_stats(&fake);
     ASSERT_EQ(fake.pipeline_creates, 1u);
 
+    /* the delete above is itself a watcher event (opt-in missing notify), so
+     * an automatic attempt may also run; pin the outcome, not the count */
     shader_reload_write_pair(&fx->base, 2u, "", false);
     ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
-    SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).reloads == 1u);
-    ASSERT_EQ(shader_direct_stats(fx).attempts, 2u);
-    ASSERT_EQ(shader_reload_revision(&fx->base), 2u);
+    SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).reloads >= 1u &&
+                               !shader_direct_stats(fx).busy);
+    ASSERT_TRUE(shader_direct_stats(fx).attempts >= 2u);
+    ASSERT_TRUE(shader_direct_stats(fx).reloads >= 1u);
+    ASSERT_EQ(shader_direct_stats(fx).last_result,
+              BREAK_EDITOR_SHADER_RELOAD_APPLIED);
+    shader_reload_assert_stage_revisions(&fx->base, 2u, 2u);
 }
 
 TEST(shader_reload_one_sided_failure_preserves_pipeline)
@@ -4900,6 +5057,8 @@ static void shader_reload_manual_only_diagnostic_body(ShaderDirectFixture *fx) {
     break_editor_shell_set_render_clock_for_test(fx->base.shell,
                                                   render_test_clock, NULL);
     break_editor_shell_tick(fx->base.shell);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(fx->base.shell, 8u),
+                  "shader reload: manual-only busy=0 applied=0 failed=0");
 
     popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
                                   memory_order_acquire);
@@ -5670,6 +5829,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
     RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
+    RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);
     RUN_TEST(shader_reload_one_sided_failure_preserves_pipeline);
     RUN_TEST(shader_reload_second_request_admission_failure_recovers);
     RUN_TEST(shader_reload_manual_request_survives_watch_unavailable);

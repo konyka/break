@@ -9,7 +9,9 @@ typedef enum { BREAK_EDITOR_SHADER_RELOAD_IDLE = 0,
                BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE } BreakEditorShaderReloadResult;
 
 typedef struct {
-    bool watching; /* at least one candidate path registered */
+    bool owner_present; /* a reload owner exists (false: never created) */
+    bool stopping;      /* shutdown began; new requests are rejected */
+    bool watching;      /* at least one candidate path registered */
     bool busy;
     int last_result;
     u64 events, attempts, reloads, failed;
