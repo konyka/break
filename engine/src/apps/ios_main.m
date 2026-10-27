@@ -271,9 +271,12 @@ static bool ios_host_poll(void *context, Engine *engine)
     if (reset_input) input_release_all(input);
     for (u32 i = 0u; i < count; ++i) {
         input_set_mouse(input, events[i].x, events[i].y);
-        if (events[i].type != IOS_DEMO_TOUCH_MOVE)
-            input_set_key(input, INPUT_MOUSE_LEFT,
-                          events[i].type == IOS_DEMO_TOUCH_DOWN);
+        if (events[i].type != IOS_DEMO_TOUCH_MOVE) {
+            bool down = events[i].type == IOS_DEMO_TOUCH_DOWN;
+            input_set_key(input, INPUT_MOUSE_LEFT, down);
+            NSLog(@"iOS input: %s x=%.1f y=%.1f", down ? "down" : "up",
+                  (f64)events[i].x, (f64)events[i].y);
+        }
     }
     return true;
 }
