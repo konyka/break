@@ -1095,12 +1095,15 @@ sips -s format png \
   sysroot，不能复用设备版 metallib。设备与 Simulator 建议使用不同构建目录。
 - `engine_demo` 的 iOS target 使用 `com.purecengine.engine-demo`。CI 对 bundle ID、
   scene delegate、`engine.metallib` 以及 assets/shaders 入包结果做硬断言，但 lane 仍为
-  build-only，不提供 GPU_RUNTIME 收据。
+  build-only，不提供 GPU_RUNTIME 收据。按上面的 `engine_demo` scheme 构建；直接
+  `cmake --build build-ios` 会拉起 `ALL_BUILD` 中的 macOS 专用 Cocoa/OpenGL
+  `myui_explorer`，该桌面工具的全目标构建不是受支持的 iOS 验收入口。
 - `engine/src/apps/ios_main.m` 通过 `UIApplicationMain` + `UIWindowScene` 创建
   `UIWindow`、Metal view 和 `CAMetalLayer`。UIKit 留在主线程，现有 demo 在 16 MiB
   栈的专用引擎线程执行 `engine_demo_main`；`EngineConfig` 注入原生句柄、scale 和
-  宿主 poll。主线程同步 viewport、主触摸与 scene 生命周期，引擎线程串行应用；
-  后台等待条件变量而不获取 drawable，每帧有独立 Objective-C autoreleasepool。
+  宿主 poll。主线程同步 viewport、主触摸位置/主按钮 down/up 与 scene 生命周期，
+  引擎线程串行应用；后台等待条件变量而不获取 drawable，每帧有独立 Objective-C
+  autoreleasepool。
 - assets/shaders 保持目录结构入包，启动时暂存到 app 自己的
   `Library/Caches/PureCEngine` 并作为工作目录，截图、缓存和 trace 不写入只读 bundle。
   工作目录会在再次启动时重建，不能当作持久用户存储。
@@ -1112,9 +1115,16 @@ sips -s format png \
   及运行中的 `simctl io screenshot` 均可见 3D 场景与 UI，方向正确，日志无 ERROR/FATAL。
   同一进程切到 Safari 再返回时记录到 `iOS host: suspended` / `resumed`，恢复后继续出帧。
   初始 viewport 为 logical 402x874、drawable 1206x2622、scale 3.0。
+- 同日以本机 XCTest UI Automation harness 驱动 `XCUIDevice` 旋转和 `XCUICoordinate`
+  点击，测试 1/1 通过：窗口从 402x874 变为 874x402，点击后恢复 402x874。横屏点击
+  (437, 201) 后，系统日志确认引擎线程消费 `iOS input: down` / `up`，坐标一致。
+  横屏稳定期的 `simctl io screenshot` 为 2622x1206，3D/UI 铺满且 HUD 正立，
+  HUD 显示 `Render: 1311x603 -> 2622x1206`。本机 XCTest 的横屏截图附件存在按物理像素
+  方向保存和应用裁切黑区的呈现差异，不能据此判定渲染失败；朝向以实际 `simctl`
+  屏幕截图交叉核对。临时 harness 未注册为仓库或 CI 测试 target，CI 仍 compile-only。
 - 当前验证边界：Hi-Z、indirect draw/GPU cull 与 GPU timer 仍有能力降级，不宣称可选路径
-  全齐；现有桌面 HUD 未做窄屏排版适配。旋转 resize、真实触摸交互和真机音频/Metal
-  仍待验证。Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，
-  不改变 OpenGL 删除 gate，也不宣称真机 GPU_RUNTIME。
+  全齐；现有桌面 HUD 未做窄屏排版适配。真机旋转、物理触摸、音频/Metal 仍待验证。
+  Simulator 结果只登记为本地可见运行证据，iOS 等级保持 COMPILED，不改变 OpenGL
+  删除 gate，也不宣称真机 GPU_RUNTIME。
 - `METAL_DEVICE_WRAPPER_TYPE=1 ./engine_demo --frames 3` 开 Metal validation
   取证（encoder-state 类缺陷的唯一可靠观测，计划 C Task 11 方法学）。

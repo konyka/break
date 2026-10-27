@@ -146,15 +146,14 @@ drawable 数量背压覆盖。
 
 ### 已知边界
 
-`suspended` 标志**没有生产 setter**：唯一的置位入口是 `ENGINE_RHI_TEST`
+`suspended` 标志**没有生产 setter**：唯一的直接置位入口是 `ENGINE_RHI_TEST`
 钩子 `rhi_test_metal_set_suspended`（`rhi_metal.m` 私有导出，测试目标经
 `engine_rhi_metal` 库级 `ENGINE_RHI_TEST=1` 编译置位，先例同
-`engine_rhi_headless`）。生产路径的 iOS 暂停语义由 window_mobile.c 的
-host-injection 模型保证：宿主在 background 期间**自律不调用**任何 frame
-API（window_mobile.c 是纯注入壳，无事件上报钩子，本计划不给它加）。后端
-的 suspended 检查只是宿主误调时的防御性兜底，不构成完整的
-pause/resume 生命周期实现；iOS 模拟器 lifecycle 证据归 Task 15（Task 14
-评审 I-2：ios lane 降级为 compile only，见文末移交清单第 9 项）。
+`engine_rhi_headless`）。生产 iOS 生命周期由 `ios_main.m` 的 scene delegate
+和宿主 poll 实现：后台在条件变量上等待、不调用 frame API，恢复时经
+`platform_mobile_notify_resume` 更新 WSI。后端的 suspended 检查仍是宿主误调时
+的防御性兜底，它自身不构成完整的 pause/resume 生命周期。CI lane 保持
+compile-only；本机 Simulator 的 lifecycle 证据不升级 GPU_RUNTIME。
 
 ## Task 8：pipeline 字段映射 + FBO/MRT/shadow bind 契约（R616-R619）
 
@@ -425,6 +424,8 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
    实测产物为 macOS `platform 1`，不会混入 Simulator `platform 7`。
 9. **iOS lifecycle（2026-10-27 已补本机 harness）**：`ios_main.m` 以 UIWindowScene
    创建 Metal view，并接入 viewport、主触摸和 suspend/resume。本机已完成安装、
-   300 帧与正常 shutdown、RHI/屏幕截图及同进程后台恢复；CI lane 仍 compile-only，
+   300 帧与正常 shutdown、RHI/屏幕截图及同进程后台恢复。XCTest 旋转/点击 1/1
+   通过，窗口完成竖→横→竖切换，主按钮 down/up 由引擎线程消费；横屏稳定期的
+   simctl 截图为 2622x1206，画面完整且 HUD 朝向正确。CI lane 仍 compile-only，
    真机 GPU_RUNTIME 未覆盖。详见 Build_Guide 的 Simulator 命令和
    `docs/rhi_backend_evidence.md` 的证据台账。

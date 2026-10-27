@@ -9265,11 +9265,23 @@ shader entries, `--frames 300` with orderly shutdown, visible 3D/UI in both RHI
 frame-60 and OS screenshots, and suspend/resume with continued rendering after
 returning from Safari. No ERROR/FATAL occurred in the successful run. The
 viewport is 402x874 logical versus 1206x2622 drawable at scale 3. Narrow-screen
-HUD layout, rotation and physical-touch testing remain open; optional Hi-Z,
+HUD layout and physical-device testing remain open; optional Hi-Z,
 indirect/culling and GPU-timer paths still degrade where unsupported.
+
+A local XCTest UI Automation follow-up passes 1/1: the window changes from
+402x874 portrait to 874x402 landscape and back, and a tap at (437, 201) reaches
+the engine thread as matching `iOS input: down` / `up` log entries. A simctl
+screen capture during a sustained landscape phase is 2622x1206 with full-width
+3D/UI and upright HUD text. The engine reports 1311x603 internal rendering to
+that drawable. Local XCTest PNG attachments can preserve the physical-pixel
+orientation or crop the rotated application capture, so they are not sufficient
+orientation evidence by themselves; the simctl image resolves that ambiguity.
+The temporary harness is not a repository/CI test target. Physical-device
+rotation, touchscreen input, audio and Metal remain unverified.
 
 On macOS, both MoltenVK and Metal full CTest configurations pass 191/191
 (the D3D12 dependency gate skips by platform). Metal graphics is 5/5, resource
 tests 48/48 and audio tests 17/17. Both backend demos render 3D/UI with correct
 orientation in 70-frame screenshot checks; their known lighting/material/water
-differences are not claimed to be pixel-identical.
+differences are not claimed to be pixel-identical. The full CTest totals and
+Metal graphics result were reproduced after the iOS interaction follow-up.
