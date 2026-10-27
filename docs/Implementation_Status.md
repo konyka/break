@@ -9324,3 +9324,15 @@ tests 48/48 and audio tests 17/17. Both backend demos render 3D/UI with correct
 orientation in 70-frame screenshot checks; their known lighting/material/water
 differences are not claimed to be pixel-identical. The full CTest totals and
 Metal graphics result were reproduced after the iOS interaction follow-up.
+
+A Metal-only magenta artifact on the ECS-instanced helmets in the default
+clustered forward path is fixed: the clustered instanced/skinned pipelines set
+`uses_storage`, so `metal_uniform_location` resolved their lighting and material
+push members through the particle-only storage table (-1) and the fragment
+shader read stale push bytes. The storage table is now limited to non-clustered
+pipelines, matching VK reflection. A new regression case
+`clustered_storage_variant_keeps_clustered_push_table` fails before the fix and
+passes after it; Metal resource tests are 49/49, and both macOS CTest
+configurations remain 191/191. Metal and MoltenVK screenshots (HUD and an
+elevated BREAK_CAM view) show no magenta pixels, and the fullscreen/title-bar
+toggle demo still reports two rebuilds and two `ok=1` switches per backend.
