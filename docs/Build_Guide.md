@@ -1087,10 +1087,12 @@ sips -s format png \
   产物 `metal_shaders/engine.metallib` 拷到各 consumer 旁；`xcode-select` 指向
   CommandLineTools 时 `DEVELOPER_DIR` 由 CMake 自动烘焙为标准 Xcode 路径。
 - iOS 交叉编译时 manifest 生成器自动切换为宿主编译（`gen_metal_shader_manifest_host`，
-  见 `engine/CMakeLists.txt` M6 注释）。`xcrun metal` 的 SDK 与 `CMAKE_OSX_SYSROOT`
-  一致：设备为 `iphoneos`，Simulator 为 `iphonesimulator`。Xcode 的 `-destination`
-  不会改写这个自定义 shader 命令的 SDK；Simulator 必须显式配置对应 sysroot，不能复用
-  设备版 metallib。设备与 Simulator 建议使用不同构建目录。
+  见 `engine/CMakeLists.txt` M6 注释）。宿主工具通过 `xcrun --sdk macosx --show-sdk-path`
+  和主机目标三元组显式编译，并清理 Xcode 传入的 SDKROOT、编译/链接环境；在 Xcode
+  自动重配置时也不会误产 Simulator 可执行文件。`xcrun metal` 的 SDK 与
+  `CMAKE_OSX_SYSROOT` 一致：设备为 `iphoneos`，Simulator 为 `iphonesimulator`。Xcode 的
+  `-destination` 不会改写这个自定义 shader 命令的 SDK；Simulator 必须显式配置对应
+  sysroot，不能复用设备版 metallib。设备与 Simulator 建议使用不同构建目录。
 - `engine_demo` 的 iOS target 使用 `com.purecengine.engine-demo`。CI 对 bundle ID、
   scene delegate、`engine.metallib` 以及 assets/shaders 入包结果做硬断言，但 lane 仍为
   build-only，不提供 GPU_RUNTIME 收据。

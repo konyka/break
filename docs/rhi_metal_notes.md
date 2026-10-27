@@ -420,7 +420,9 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
 8. **M6（已处置）**：gen_metal_shader_manifest 宿主/目标分离——iOS 交叉编译
    时宿主编译 `gen_metal_shader_manifest_host`（CMakeLists M6 注释）。
    `xcrun metal` SDK 与 `CMAKE_OSX_SYSROOT` 一致：设备 `iphoneos`、Simulator
-   `iphonesimulator`；不能将设备版 metallib 直接用于 Simulator。
+   `iphonesimulator`；不能将设备版 metallib 直接用于 Simulator。宿主 manifest
+   工具另用 macOS 目标三元组及 SDK，并清理 Xcode 传入的目标环境；自动重配置
+   实测产物为 macOS `platform 1`，不会混入 Simulator `platform 7`。
 9. **iOS lifecycle（2026-10-27 已补本机 harness）**：`ios_main.m` 以 UIWindowScene
    创建 Metal view，并接入 viewport、主触摸和 suspend/resume。本机已完成安装、
    300 帧与正常 shutdown、RHI/屏幕截图及同进程后台恢复；CI lane 仍 compile-only，
