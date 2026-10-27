@@ -438,3 +438,28 @@ LOG_ERROR + no-op，已有断言）。bind 索引 28 与 flatten 护栏（`nb>27
     一致。`test_rhi_metal_resources` 新增
     `clustered_storage_variant_keeps_clustered_push_table`（实例化与蒙皮两种变体），
     该用例在修复前失败、修复后通过；截图中品红像素计数从 11719 降为 0。
+11. **默认画面发白、头盔缺失、上下镜像叠加（2026-10-28 已修，4 处）**：同一机位
+    （`BREAK_CAM=0,9,16,0,-25 BREAK_UI=0 BREAK_SCREENSHOT=60`）下，Metal 与 MoltenVK
+    的平均绝对差（mad，缩略图 0–255）从 32 降到约 7，blinn 路径 6.7，与 VK 同量级。
+    - `rhi_cmd_draw_indexed_base` / `rhi_cmd_draw_indexed_instanced_base` 之前只记
+      LOG_ERROR 不绘制。命令缓冲 replay、mega 阴影、LOD、ECS LOD 的间接外绘制全部
+      丢失。现按 `vkCmdDrawIndexed` 语义实现（`firstIndex` 折成字节偏移，
+      `vertex_offset`→`baseVertex`，`first_instance`→`baseInstance`）。
+    - storage buffer 绑定原先不分计算/图形，所有索引（0..24）在每次 storage 管线绘制时
+      重放。cluster 剔除的 `light_data`（计算）与粒子 SSBO 会覆盖 vertex buffer 索引 0
+      的网格顶点，头盔变成尖刺白块，且每帧不同。现在图形绑定单独记录
+      （`bound_gfx_storage[]`），只重放该管线自己的 `set*8..set*8+7` 范围。
+    - `rhi_cmd_bind_texel_buffers` 直接设到编码器、未记录。实例上传（blit）结束渲染
+      编码器后，clustered 光照网格纹理（16/17）丢失。现记录到 `cmd->bound_texel[2]`，
+      在 `metal_flush_push` 重放。
+    - 离屏和 MRT pass 之前用默认视口，NDC y=-1 落在纹理最后一行，与 VK/GL/D3D12
+      相反（后处理按 `uv = ndc*0.5+0.5` 采样）。运动模糊、SSS 等 pass 因此读到上下翻转的
+      输入，最终画面叠上一份镜像。现在离屏/MRT pass 使用负高度视口，屏幕 pass 不变。
+    - 另外：计算/blit 插入后保留已绑定图形管线；`rhi_cmd_bind_deferred_gbuf_textures`
+      由 stub 改为按 VK 槽位实现。
+    - 新增测试：`draw_indexed_base_honors_first_index_and_vertex_offset`、
+      `texel_buffers_replay_across_blit_interlude`、
+      `compute_storage_bind_does_not_clobber_graphics_vbo`、
+      `offscreen_viewport_stores_ndc_minus_y_in_row_zero`，修复前均失败。
+    - **未解决**：`BREAK_RENDER_PATH=deferred` 在 Metal 下仍整屏近黑（亮度 0.9，VK 为
+      37.9），日志无 ERROR。下一步查延迟光照 pass 的 push/UBO、G-Buffer 尺寸与合成。

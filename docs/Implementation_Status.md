@@ -9346,3 +9346,16 @@ the ground sampled 2/4/6 m ahead (-Z); it logs
 (no terrain) is untouched, and `BREAK_CAM` still overrides the result. Both
 macOS CTest configurations are 191/191 and Metal graphics is 5/5. Metal and
 MoltenVK 70-frame runs report `Pos: (0.0,6.2,8.0)` and `Above: 2.00`.
+
+**Metal default-view fidelity (2026-10-28).** Same camera and settings, Metal vs
+MoltenVK mean absolute difference dropped from about 32 to about 7 (blinn 6.7).
+Four Metal-only bugs were fixed in `rhi_metal.m`: `draw_indexed_base` and
+`draw_indexed_instanced_base` were log-only stubs; storage-buffer binds from
+compute passes leaked into graphics draws and overwrote the mesh vertex buffer;
+light-grid texel buffers were lost when a blit ended the render encoder; and
+offscreen/MRT passes used the unflipped viewport, so post passes sampled
+vertically mirrored input. `test_rhi_metal_resources` is 53/53 with four new
+cases that fail without their fix. Both macOS CTest configurations are 191/191
+and Metal graphics is 5/5. The window toggle demo still reports two `ok=1`
+switches on both backends. Open: `BREAK_RENDER_PATH=deferred` on Metal still
+renders near black.

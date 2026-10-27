@@ -760,6 +760,180 @@ TEST(texel_buffers_cross_4096_texel_rows) {
     rhi_shader_destroy(g_dev, fs);
 }
 
+TEST(texel_buffers_replay_across_blit_interlude) {
+    /* Clustered instanced forward regression: the per-mesh instance upload
+     * (rhi_cmd_update_buffer) is a blit interlude that ends the render
+     * encoder. The light_data/light_grid texel views bound before it are
+     * encoder state; the resumed pass's draw must re-bind textures 16/17
+     * (VK descriptor sets survive), or the fragment reads unbound texels. */
+    static const char *k_msl_fs_texel2 =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "fragment float4 fs_main(texture2d<float> t0 [[texture(16)]],\n"
+        "                        texture2d<float> t1 [[texture(17)]]) {\n"
+        "  bool ok = all(t0.read(uint2(0, 0)) == float4(1, 2, 3, 4)) &&\n"
+        "            all(t1.read(uint2(1, 0)) == float4(5, 6, 7, 8));\n"
+        "  return ok ? float4(0, 1, 0, 1) : float4(1, 0, 0, 1);\n"
+        "}\n";
+    RHIShader vs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_texel2, true);
+    float v0[4] = { 1, 2, 3, 4 };
+    float v1[8] = { 0, 0, 0, 0, 5, 6, 7, 8 };
+    RHIBufferDesc bdesc;
+    RHIBuffer b0, b1, scratch;
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 zero[16] = { 0 };
+    u8 px[64u * 64u * 4u];
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_TEXEL;
+    bdesc.size = sizeof(v0);
+    bdesc.initial_data = v0;
+    b0 = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.size = sizeof(v1);
+    bdesc.initial_data = v1;
+    b1 = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = sizeof(zero);
+    bdesc.initial_data = NULL;
+    scratch = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(b0));
+    ASSERT_FALSE(handle_is_null(b1));
+    ASSERT_FALSE(handle_is_null(scratch));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.uses_texel_buffer = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_texel_buffers(cmd, b0, b1);
+    rhi_cmd_update_buffer(cmd, scratch, 0u, zero, sizeof(zero)); /* ends encoder */
+    rhi_cmd_bind_pipeline(cmd, pipe);   /* resumes the pass with Load */
+    rhi_cmd_draw(cmd, 3u, 1u);          /* must re-bind textures 16/17 */
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 255u, 0u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_buffer_destroy(g_dev, scratch);
+    rhi_buffer_destroy(g_dev, b0);
+    rhi_buffer_destroy(g_dev, b1);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+static const char *k_msl_cs_write_index;
+
+TEST(compute_storage_bind_does_not_clobber_graphics_vbo) {
+    /* Clustered instanced forward regression: the cluster-cull dispatch
+     * binds storage 0/1 on the COMPUTE bind point. A graphics pipeline with
+     * uses_storage replays its recorded storage binds at draw time; if the
+     * compute records leak into that replay, index 0 lands on vertex
+     * buffer(0) and the mesh VBO is replaced by the light buffer (VK keeps
+     * separate bind points). Likewise a particle-style graphics pipeline's
+     * set-0 storage record must not replay into a textured+texel storage
+     * pipeline whose own storage set starts at index 16. The draw must
+     * read the real VBO. */
+    static const char *k_msl_vs_vbo =
+        "#include <metal_stdlib>\nusing namespace metal;\n"
+        "struct VIn { float3 p [[attribute(0)]]; };\n"
+        "vertex float4 vs_main(VIn in [[stage_in]]) {\n"
+        "    return float4(in.p, 1.0);\n"
+        "}\n";
+    f32 verts[9] = { -1.0f, -1.0f, 0.5f, 3.0f, -1.0f, 0.5f,
+                     -1.0f, 3.0f, 0.5f };
+    u32 junk[64];
+    RHIShader cs = rhi_test_metal_shader_create_source(
+        g_dev, k_msl_cs_write_index, (usize)strlen(k_msl_cs_write_index),
+        "cs_main", false);
+    RHIShader vs = make_shader(k_msl_vs_vbo, false);
+    RHIShader pvs = make_shader(k_msl_vs_passthrough, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline cpipe, ppipe, gpipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer sbuf, vbo;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    ASSERT_FALSE(handle_is_null(cs));
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(pvs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.is_compute = true;
+    desc.frag = cs;
+    cpipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(cpipe));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = pvs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.uses_storage = true;
+    ppipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(ppipe));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.vertex_stride = 12u;
+    desc.uses_textures = true;
+    desc.uses_texel_buffer = true;
+    desc.uses_storage = true;
+    desc.disable_culling = true;
+    gpipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(gpipe));
+    memset(junk, 0, sizeof(junk));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_STORAGE;
+    bdesc.size = sizeof(junk);
+    sbuf = rhi_buffer_create(g_dev, &bdesc);
+    bdesc.usage = RHI_BUFFER_USAGE_VERTEX;
+    bdesc.size = sizeof(verts);
+    bdesc.initial_data = verts;
+    vbo = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(sbuf));
+    ASSERT_FALSE(handle_is_null(vbo));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_cmd_bind_pipeline(cmd, cpipe);
+    rhi_cmd_bind_storage_buffer(cmd, sbuf, 0u);
+    rhi_cmd_dispatch(cmd, 1u, 1u, 1u);
+    rhi_cmd_memory_barrier(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, ppipe);           /* particle-style set-0 bind */
+    rhi_cmd_bind_storage_buffer(cmd, sbuf, 0u);
+    rhi_cmd_bind_pipeline(cmd, gpipe);
+    rhi_cmd_bind_vertex_buffer(cmd, vbo, 0u);
+    rhi_cmd_draw(cmd, 3u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, vbo);
+    rhi_buffer_destroy(g_dev, sbuf);
+    rhi_pipeline_destroy(g_dev, gpipe);
+    rhi_pipeline_destroy(g_dev, ppipe);
+    rhi_pipeline_destroy(g_dev, cpipe);
+    rhi_shader_destroy(g_dev, fs);
+    rhi_shader_destroy(g_dev, pvs);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, cs);
+}
+
 void rhi_test_metal_set_private_texel(bool enabled);
 
 TEST(texel_private_initial_upload_update_and_readback) {
@@ -1223,6 +1397,119 @@ TEST(draw_indirect_executes_arg_buffer) {
     assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
     rhi_offscreen_fbo_destroy(g_dev, &fbo);
     rhi_buffer_destroy(g_dev, args);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+static const char *k_msl_vs_six =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "vertex float4 vs_main(uint vid [[vertex_id]]) {\n"
+    "    float2 p[6] = { float2(0.0, 0.0), float2(0.0, 0.0), float2(0.0, 0.0),\n"
+    "                    float2(-1.0, -1.0), float2(3.0, -1.0),\n"
+    "                    float2(-1.0, 3.0) };\n"
+    "    return float4(p[min(vid, 5u)], 0.5, 1.0);\n"
+    "}\n";
+
+TEST(draw_indexed_base_honors_first_index_and_vertex_offset) {
+    /* Command-buffer replay, mega-buffer shadows and LOD draws go through
+     * draw_indexed_base. Indices {0,0,0,0,1,2} with first_index 3 and
+     * vertex_offset 3 must fetch vertices 3..5 (the full-screen triangle);
+     * ignoring either argument lands on the degenerate vertices 0..2. */
+    RHIShader vs = make_shader(k_msl_vs_six, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIBufferDesc bdesc;
+    RHIBuffer ibuf;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    u16 indices[6] = { 0u, 0u, 0u, 0u, 1u, 2u };
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    memset(&bdesc, 0, sizeof(bdesc));
+    bdesc.usage = RHI_BUFFER_USAGE_INDEX;
+    bdesc.size = sizeof(indices);
+    bdesc.initial_data = indices;
+    ibuf = rhi_buffer_create(g_dev, &bdesc);
+    ASSERT_FALSE(handle_is_null(ibuf));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_bind_index_buffer(cmd, ibuf, 0u, false);
+    rhi_cmd_draw_indexed_base(cmd, 3u, 1u, 3u, 3);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    assert_center_px(px, 64u, 64u, 0u, 0u, 255u, 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
+    rhi_buffer_destroy(g_dev, ibuf);
+    rhi_pipeline_destroy(g_dev, pipe);
+    rhi_shader_destroy(g_dev, vs);
+    rhi_shader_destroy(g_dev, fs);
+}
+
+static const char *k_msl_vs_lower_ndc_half =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "vertex float4 vs_main(uint vid [[vertex_id]]) {\n"
+    "    float2 p[6] = { float2(-1.0, -1.0), float2(1.0, -1.0),\n"
+    "                    float2(-1.0, 0.0), float2(-1.0, 0.0),\n"
+    "                    float2(1.0, -1.0), float2(1.0, 0.0) };\n"
+    "    return float4(p[vid], 0.5, 1.0);\n"
+    "}\n";
+
+TEST(offscreen_viewport_stores_ndc_minus_y_in_row_zero) {
+    /* VK/GL/D3D12 convention the post passes rely on (uv = ndc*0.5+0.5):
+     * an offscreen target keeps NDC y=-1 in memory row 0. A quad over
+     * NDC y in [-1,0] must therefore fill the first rows of the readback
+     * and leave the last rows at the clear color. */
+    RHIShader vs = make_shader(k_msl_vs_lower_ndc_half, false);
+    RHIShader fs = make_shader(k_msl_fs_red, true);
+    RHIPipelineDesc desc;
+    RHIPipeline pipe;
+    RHIOffscreenFBO fbo;
+    RHICmdBuffer *cmd;
+    u8 px[64u * 64u * 4u];
+    const u8 *top, *bottom;
+    ASSERT_FALSE(handle_is_null(vs));
+    ASSERT_FALSE(handle_is_null(fs));
+    memset(&desc, 0, sizeof(desc));
+    desc.vert = vs;
+    desc.frag = fs;
+    desc.no_vertex_input = true;
+    desc.disable_culling = true;
+    pipe = rhi_pipeline_create(g_dev, &desc);
+    ASSERT_FALSE(handle_is_null(pipe));
+    fbo = rhi_offscreen_fbo_create(g_dev, 64u, 64u);
+    ASSERT_FALSE(handle_is_null(fbo.color_tex));
+    cmd = begin_frame();
+    ASSERT_NOT_NULL(cmd);
+    rhi_offscreen_fbo_bind(cmd, &fbo);
+    rhi_cmd_bind_pipeline(cmd, pipe);
+    rhi_cmd_draw(cmd, 6u, 1u);
+    rhi_offscreen_fbo_unbind(cmd, 64u, 64u);
+    end_frame();
+    memset(px, 0, sizeof(px));
+    ASSERT_TRUE(rhi_texture_read_pixels(g_dev, fbo.color_tex, px, sizeof(px)));
+    top = px + ((usize)8u * 64u + 32u) * 4u;
+    bottom = px + ((usize)56u * 64u + 32u) * 4u;
+    ASSERT_EQ((u32)top[2], 255u);
+    ASSERT_EQ((u32)top[0], 0u);
+    ASSERT_TRUE(bottom[2] != 255u || bottom[3] != 255u);
+    rhi_offscreen_fbo_destroy(g_dev, &fbo);
     rhi_pipeline_destroy(g_dev, pipe);
     rhi_shader_destroy(g_dev, vs);
     rhi_shader_destroy(g_dev, fs);
@@ -3011,6 +3298,7 @@ int main(void) {
     RUN_TEST(shadow_viewport_restricts_depth_writes);
     RUN_TEST(clear_depth_preserves_color);
     RUN_TEST(texel_buffers_cross_4096_texel_rows);
+    RUN_TEST(texel_buffers_replay_across_blit_interlude);
     RUN_TEST(texel_private_initial_upload_update_and_readback);
     RUN_TEST(pipeline_invalid_shader_handle_rejected);
     RUN_TEST(offscreen_fbo_msaa_desc_fails_closed);
@@ -3019,12 +3307,15 @@ int main(void) {
     RUN_TEST(r445_pipeline_overrides_sticky_depth_state);
     RUN_TEST(pass_switch_invalidates_bound_pipeline);
     RUN_TEST(compute_dispatch_writes_indices);
+    RUN_TEST(compute_storage_bind_does_not_clobber_graphics_vbo);
     RUN_TEST(buffer_size_constants_fed_to_kernel);
     RUN_TEST(fill_buffer_pattern_and_clamp_readback);
     RUN_TEST(screenshot_clear_color_and_post_present_refused);
     RUN_TEST(screenshot_rows_are_top_down);
     RUN_TEST(draw_indirect_executes_arg_buffer);
     RUN_TEST(draw_indexed_indirect_executes_arg_buffer);
+    RUN_TEST(draw_indexed_base_honors_first_index_and_vertex_offset);
+    RUN_TEST(offscreen_viewport_stores_ndc_minus_y_in_row_zero);
     RUN_TEST(gpu_timer_roundtrip_smoke);
     RUN_TEST(gpu_timer_destroy_with_pending_sample_is_safe);
     RUN_TEST(manifest_real_shader_resolves);
