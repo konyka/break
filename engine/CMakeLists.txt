@@ -636,11 +636,39 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
     # Cross-compiling (iOS): host-compile a copy with the system
     # compiler at configure time and use it in the custom command.
     # Native (macOS): use the target as before.
+    # xcode-select points at CommandLineTools on this host; xcrun metal
+    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
+    # back to the standard Xcode path.
+    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
+        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
+    endif()
+    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
+        set(ENGINE_METAL_DEVELOPER_DIR
+            "/Applications/Xcode.app/Contents/Developer")
+    endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         set(METAL_SHADER_GEN
             ${CMAKE_CURRENT_BINARY_DIR}/gen_metal_shader_manifest_host)
         execute_process(
-            COMMAND cc -O1 -std=c11
+            COMMAND ${CMAKE_COMMAND} -E env
+                "DEVELOPER_DIR=${ENGINE_METAL_DEVELOPER_DIR}"
+                ${ENGINE_METAL_XCRUN} --sdk macosx --show-sdk-path
+            RESULT_VARIABLE metal_host_sdk_rc
+            OUTPUT_VARIABLE METAL_HOST_SDKROOT
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(NOT metal_host_sdk_rc EQUAL 0 OR METAL_HOST_SDKROOT STREQUAL "")
+            message(FATAL_ERROR "macOS host SDK for shader manifest generator unavailable")
+        endif()
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E env
+                --unset=SDKROOT --unset=CFLAGS --unset=CPPFLAGS
+                --unset=CXXFLAGS --unset=LDFLAGS --unset=CPATH
+                --unset=C_INCLUDE_PATH --unset=LIBRARY_PATH
+                --unset=DYLD_LIBRARY_PATH --unset=DYLD_FRAMEWORK_PATH
+                --unset=DYLD_FALLBACK_LIBRARY_PATH
+                --unset=DYLD_FALLBACK_FRAMEWORK_PATH
+                cc -target ${CMAKE_HOST_SYSTEM_PROCESSOR}-apple-macosx
+                -isysroot ${METAL_HOST_SDKROOT} -O1 -std=c11
                 -I${CMAKE_CURRENT_SOURCE_DIR}/src
                 -I${CMAKE_CURRENT_SOURCE_DIR}/external
                 ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_metal_shader_manifest.c
@@ -665,16 +693,6 @@ if(APPLE AND ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "metal")
         ${ENGINE_METAL_GLSLC} DIRECTORY)
     get_filename_component(ENGINE_METAL_SPIRV_CROSS_DIR
         ${ENGINE_METAL_SPIRV_CROSS} DIRECTORY)
-    # xcode-select points at CommandLineTools on this host; xcrun metal
-    # needs DEVELOPER_DIR=<Xcode>. Bake the configure-time value, falling
-    # back to the standard Xcode path.
-    if(NOT DEFINED ENGINE_METAL_DEVELOPER_DIR)
-        set(ENGINE_METAL_DEVELOPER_DIR "$ENV{DEVELOPER_DIR}")
-    endif()
-    if(ENGINE_METAL_DEVELOPER_DIR STREQUAL "")
-        set(ENGINE_METAL_DEVELOPER_DIR
-            "/Applications/Xcode.app/Contents/Developer")
-    endif()
     add_custom_command(
         OUTPUT ${METAL_SHADER_OUT_DIR}/engine.metallib
                ${METAL_SHADER_OUT_DIR}/rhi_metal_shader_manifest.c
