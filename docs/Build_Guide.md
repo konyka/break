@@ -406,7 +406,7 @@ cmake --build build-msvc-1451-audit --parallel
 ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
-上述配置在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下构建。早先记录的「完整构建通过、非图形 CTest `56/56`」只对当时的代码成立；CI 没有 MSVC lane，之后新增的代码曾让 MSVC 构建失败（10 个文件的 C4090/C4132/C4456/C4310/C4701），2026-10-27 已修复，并在 MSVC 19.51.36260 上重新验证：全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过，包括 `test_platform_win32_runtime`。因为 CI 不覆盖 MSVC，新增代码后需要在本机重跑上面三条命令。CI 另外显式构建并执行
+上述配置在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下构建。早先记录的「完整构建通过、非图形 CTest `56/56`」只对当时的代码成立；当时 CI 没有 MSVC lane，之后新增的代码曾让 MSVC 构建失败（10 个文件的 C4090/C4132/C4456/C4310/C4701），2026-10-27 已修复，并在 MSVC 19.51.36260 上重新验证：全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过，包括 `test_platform_win32_runtime`。现在 CI 有 `lane-headless-windows-msvc`（同样的配置与 `-LE graphics` 筛选），新增代码后以它为准；本机重跑上面三条命令仍可复现。CI 另外显式构建并执行
 `test_platform_config`、`test_platform_null_safety` 和 `test_platform_win32_runtime`，避免平台
 runtime 门禁仅依赖全量测试筛选。这提供的是非图形、headless
 Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
@@ -434,7 +434,7 @@ cmake --build build-mingw
 ctest --test-dir build-mingw -LE graphics --output-on-failure
 ```
 
-2026-10-27 在 MSYS2 UCRT64 的 GCC 16.2 上验证：此前构建失败（GCC 的 `-Werror` 拒绝 `GetProcAddress`/`wglGetProcAddress` 结果直接强转为函数指针、`net_loop_iocp.c` 的恒假比较、`PlatformConfig` 在 Win32 测试里的省略初始化、`verify_pak.c` 的 `snprintf` 截断），现已修复，全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过。函数指针转换统一走 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy，不触发 `-Wcast-function-type`/`-Wpedantic`）。CI 没有 MinGW lane，同样需要在本机重跑。
+2026-10-27 在 MSYS2 UCRT64 的 GCC 16.2 上验证：此前构建失败（GCC 的 `-Werror` 拒绝 `GetProcAddress`/`wglGetProcAddress` 结果直接强转为函数指针、`net_loop_iocp.c` 的恒假比较、`PlatformConfig` 在 Win32 测试里的省略初始化、`verify_pak.c` 的 `snprintf` 截断），现已修复，全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过。函数指针转换统一走 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy，不触发 `-Wcast-function-type`/`-Wpedantic`）。CI 现有 `lane-headless-windows-mingw`（镜像自带的 MinGW-w64 gcc，非 MSYS2 UCRT64 的 GCC 16.2，版本不同）。
 
 #### 使用 MinGW 交叉编译（Linux 主机）
 ```bash
@@ -763,6 +763,8 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 | lane-headless-linux-gcc-tsan | ubuntu-24.04 | 默认 GL（兼容期），GCC Debug + TSan | evidence-receipt-headless-linux-gcc-tsan |
 | lane-headless-windows-clang | windows-latest | Vulkan（+GL 默认），Clang Debug（含 win32 runtime trio 步） | evidence-receipt-headless-windows-clang |
 | lane-headless-windows-asan | windows-latest | 默认 GL（兼容期），Clang Debug + ASan | evidence-receipt-headless-windows-asan |
+| lane-headless-windows-msvc | windows-latest | 默认 GL，MSVC（`cl`，`/W4 /WX`）Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-msvc |
+| lane-headless-windows-mingw | windows-latest | 默认 GL，MinGW-w64 GCC Debug，`-LE graphics`（+fuzz smoke） | evidence-receipt-headless-windows-mingw |
 | lane-native-surface-wayland | ubuntu-24.04 | Wayland + Vulkan，Debug（weston headless） | evidence-receipt-native-surface-wayland |
 | wayland-gl（DEPRECATED，兼容期，Task 6 删） | ubuntu-latest | Wayland + GL，Debug | evidence-receipt-native-surface-wayland-gl |
 | lane-native-surface-win32 | windows-latest | Win32 原生 surface trio，Clang Debug | evidence-receipt-native-surface-win32 |
@@ -931,7 +933,7 @@ GitHub Actions workflow：`.github/workflows/ci.yml`。触发：push/PR 到 `mas
 
 | lane 类 | job |
 |---|---|
-| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan |
+| headless | lane-headless-linux-clang / -gcc-asan / -gcc-tsan / -windows-clang / -windows-asan / -windows-msvc / -windows-mingw |
 | native-surface | lane-native-surface-wayland / -win32 / -cocoa（+ 兼容期 wayland-gl，DEPRECATED） |
 | GPU-runtime | lane-gpu-runtime-linux-gl（DEPRECATED）/ -linux-vk / -macos-metal / -windows-d3d12（+ 常开 unavailable 孪生 job） |
 | validation | lane-validation-linux-vk（VK_LAYER_KHRONOS_validation，VUID 即红） |

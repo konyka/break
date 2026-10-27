@@ -5294,15 +5294,15 @@ int engine_demo_main(int argc, char **argv, const EngineConfig *host_config) {
          * 2 m above the ground under it and 1 m above the ground in the first
          * 6 m ahead along the view direction (-Z at yaw 0). */
         f32 ex = camera.position.e[0], ez = camera.position.e[2];
-        f32 ground = terrain_get_height(&terrain, ex, ez);
-        f32 eye_y = ground + 2.0f;
+        f32 ground_y = terrain_get_height(&terrain, ex, ez);
+        f32 eye_y = ground_y + 2.0f;
         for (int i = 1; i <= 3; i++) {
             f32 ahead = terrain_get_height(&terrain, ex, ez - 2.0f * (f32)i) + 1.0f;
             if (ahead > eye_y) eye_y = ahead;
         }
         if (camera.position.e[1] < eye_y) {
             camera.position.e[1] = eye_y;
-            LOG_INFO("Camera: lifted above terrain to y=%.2f (ground %.2f)", eye_y, ground);
+            LOG_INFO("Camera: lifted above terrain to y=%.2f (ground %.2f)", eye_y, ground_y);
         }
     }
     /* R445: BREAK_CAM=x,y,z[,yaw_deg,pitch_deg] — scripted camera placement for
