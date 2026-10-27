@@ -2245,7 +2245,7 @@ if(ENGINE_BUILD_TESTS)
     target_include_directories(test_platform_win32_runtime PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_win32_runtime PRIVATE engine m)
     engine_link_rhi_backend(test_platform_win32_runtime)
-    if(CMAKE_C_COMPILER_ID MATCHES "Clang")
+    if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(test_platform_win32_runtime PRIVATE
             -Wno-missing-field-initializers)
     endif()

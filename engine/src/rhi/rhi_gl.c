@@ -1,5 +1,6 @@
 #ifdef ENGINE_PLATFORM_WINDOWS
     #include <windows.h>
+    #include <platform/win_proc.h>
 #endif
 
 #include <glad.h>
@@ -588,8 +589,9 @@ static bool gl_init(RHIDevice *dev, void *window_native, void *display_native, u
     wglMakeCurrent(gl->hdc, temp_ctx);
 
     /* Get wglCreateContextAttribsARB */
-    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB =
-        (PFNWGLCREATECONTEXTATTRIBSARBPROC)wglGetProcAddress("wglCreateContextAttribsARB");
+    PFNWGLCREATECONTEXTATTRIBSARBPROC wglCreateContextAttribsARB = NULL;
+    WIN_PROC_LOAD(wglCreateContextAttribsARB,
+                  wglGetProcAddress("wglCreateContextAttribsARB"));
 
     if (wglCreateContextAttribsARB) {
         /* Create OpenGL 4.5 Core Profile context */
@@ -1258,7 +1260,8 @@ static void gl_set_vsync(RHIDevice *dev, bool enabled) {
     GLBackend *gl = (GLBackend *)dev->backend_data;
 #ifdef ENGINE_PLATFORM_WINDOWS
     typedef BOOL (WINAPI *PFNWGLSWAPINTERVALEXTPROC)(int);
-    PFNWGLSWAPINTERVALEXTPROC fn = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    PFNWGLSWAPINTERVALEXTPROC fn = NULL;
+    WIN_PROC_LOAD(fn, wglGetProcAddress("wglSwapIntervalEXT"));
     if (fn) {
         fn(enabled ? 1 : 0);
     }

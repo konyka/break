@@ -18,11 +18,11 @@ struct my_scroll_view_t {
   int32_t content_h;       /**< explicit height, 0 = auto */
 };
 
-static const my_widget_vtable_t s_sv_vtable;
+static const my_widget_vtable_t* sv_vtable_get(void);
 
 bool my_scroll_view_is_instance(const my_scroll_view_t* sv) {
   const my_widget_t* widget = (const my_widget_t*)sv;
-  return widget != NULL && widget->vtable == &s_sv_vtable;
+  return widget != NULL && widget->vtable == sv_vtable_get();
 }
 
 static int32_t sv_content_height(my_scroll_view_t* sv) {
@@ -132,6 +132,8 @@ static void sv_on_layout(my_widget_t* widget) {
 static const my_widget_vtable_t s_sv_vtable = {NULL, sv_on_event, sv_on_layout,
                                                sv_on_measure};
 
+static const my_widget_vtable_t* sv_vtable_get(void) { return &s_sv_vtable; }
+
 static void sv_destroy_chain(my_object_t* obj);
 
 static void sv_child_removed(my_widget_t* parent, my_widget_t* child) {
@@ -149,7 +151,7 @@ my_scroll_view_t* my_scroll_view_create(const my_allocator_t* allocator) {
   if (sv == NULL) {
     return NULL;
   }
-  if (my_widget_init((my_widget_t*)sv, allocator, &s_sv_vtable,
+  if (my_widget_init((my_widget_t*)sv, allocator, sv_vtable_get(),
                      "scroll_view") != MY_RET_OK) {
     my_mem_free(allocator, sv);
     return NULL;

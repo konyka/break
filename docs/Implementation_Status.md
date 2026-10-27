@@ -1,5 +1,27 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：MSVC 与 MinGW 工具链在本机首次完整构建，修复 20 余处只在这两个编译器下出现的错误
+
+CI 只有 Clang（Windows）和 GCC/Clang（Linux），没有 MSVC 和 MinGW 的 lane，所以这两个工具链上的构建错误一直没人发现。本机有 Visual Studio 2026（cl 19.51.36260）和 MSYS2 UCRT64（GCC 16.2），按 `docs/Build_Guide.md` 的命令各构建了一遍，两边都在编译阶段失败。以下都是编译器真实报出的诊断，没有为了过编译放宽 `/WX` 或 `-Werror`。
+
+### MSVC（`/W4 /WX`，10 个文件）
+- `my_widget_class.c`：C4090，`memcpy` 在 const 指针数组之间拷贝（5 处）。改成逐元素拷贝的 `class_ptrs_copy`，语义不变。
+- `my_button.c / my_node.c / my_node_view.c / my_rich_label.c / my_scroll_view.c`：C4132，`static const` vtable 先声明（无初始化）再定义。改成先声明一个返回 vtable 指针的访问函数，定义后再实现它；用上面的 `/W4 /WX` 最小样例确认旧写法失败、新写法通过。
+- `my_chart.c`：C4456，内层 `size_t index` 遮蔽外层同名变量（2 处），改为复用外层变量；外层变量因此需要初始化为 `CHART_HOVER_NONE`（MSVC 的 C4701 指出了未初始化的路径，原来被遮蔽掩盖）。
+- `my_echart_option_json.c` / `my_ui_loader.c`：C4701，局部变量 `dl`、`yaml_len` 可能未初始化，给初值 0。
+- `test_platform_text.c`：C4310，`(char)0xE4` 常量截断，改成字符串字面量的 `\x` 转义，字节完全相同。
+
+### MinGW（GCC 16.2，`-Wall -Wextra -Werror -pedantic`，11 处）
+- `GetProcAddress` / `wglGetProcAddress` 的结果直接强转成函数指针（`-Wcast-function-type`，`gamepad_win.c`、`window_win32.c` 6 处、`my_gl_desktop.c`、`rhi_gl.c` 2 处）。经 `void *` 中转会被 `-Wpedantic` 拒绝，所以新增 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy），与 `platform_vk_surface.c` 对 Vulkan 加载器的做法一致。MSVC 19.51、GCC、Clang 都编过这个宏。
+- `net_loop_iocp.c:196`：`(size_t)new_cap > (size_t)-1 / sizeof(*slots)` 在 64 位下恒假（`-Wtype-limits`）。先算出上限再比较，32 位 `size_t` 下检查仍然有效。
+- `test_platform_win32_runtime.c`：`PlatformConfig` 新增字段后位置初始化缺字段（`-Wmissing-field-initializers`，26 处）。该目标本来就只对 Clang 关掉这条警告，扩到 GNU。
+- `verify_pak.c`：Windows 分支的 `snprintf` 没检查截断（`-Wformat-truncation`），POSIX 分支早就检查了，Windows 分支对齐：截断时报错并继续。
+
+### 验证
+- MSVC 19.51.36260 全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟，先显式构建这些目标）`186/186`。MinGW GCC 16.2 同样 0 警告、`186/186`。过程中 `test_no_hidden_gl_fallback` 拦住了我新加头文件里注释写的 `WGL` 字样（该契约禁止未列入白名单的文件出现 GL 相关记号），已改掉注释而不是加白名单。
+- 这些修复碰到了所有配置共用的文件（`rhi_gl.c`、`window_win32.c`、`my_widget_class.c` 等），所以在 Clang 四棵树上重新回归：GL `189/189`、Vulkan（含验证层）`192/192`、D3D12 Debug `197/197`、ASan（`-LE graphics`）`186/186`，四棵树 0 条编译与链接警告。这一轮剪贴板可用，所以 `test_platform_win32_runtime` 的剪贴板用例也通过。
+- 未覆盖：MSVC / MinGW 的图形测试（只跑了 `-LE graphics`）；CI 仍没有这两个 lane，后续新增代码可能再次让它们构建失败，需要手动重跑。
+
 ## 本轮更新：Windows 同步 `dba245c2`（iOS 主机 + macOS 文档）后复核，并修复 Linux 链接失败
 
 - **更正**：上一版这一节写的是「无需修复」，结论错了。`6a755113`、`dba245c2` 以及我推上去的文档提交 `094ddf35` 在 Linux CI 上都失败（10 个 job 的 Build/Configure 步骤）：`window_mobile.c` 在 iOS 主机改动里新增了 `ceil()`（算逻辑尺寸），而 4 个 `test_platform_mobile_layer_{ios,android,harmonyos,qnx}` 直接编译这个文件、没有链接 libm，glibc 的 `ceil` 在 libm 里，所以报 `undefined reference to 'ceil'`。Windows 的 CRT 自带 `ceil`，macOS 的 libSystem 也包含，所以 Windows 本机和 macOS 的全量测试都不会暴露它，我当时只看了本机结果就下了结论。

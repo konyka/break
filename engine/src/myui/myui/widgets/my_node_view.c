@@ -69,10 +69,10 @@ typedef struct my_node_view_t {
   my_widget_t* child_grab; /**< weak, NULL = none */
 } my_node_view_t;
 
-static const my_widget_vtable_t s_nv_vtable;
+static const my_widget_vtable_t* nv_vtable_get(void);
 
 bool my_node_view_is_instance(const my_widget_t* widget) {
-  return widget != NULL && widget->vtable == &s_nv_vtable;
+  return widget != NULL && widget->vtable == nv_vtable_get();
 }
 
 #define NV_ZOOM_MIN 0.25f
@@ -1595,6 +1595,8 @@ static void nv_on_layout(my_widget_t* widget) {
 static const my_widget_vtable_t s_nv_vtable = {nv_paint, nv_event, nv_on_layout,
                                                NULL};
 
+static const my_widget_vtable_t* nv_vtable_get(void) { return &s_nv_vtable; }
+
 my_widget_t* my_node_view_create(const my_allocator_t* allocator) {
   my_node_view_t* v =
       (my_node_view_t*)my_mem_calloc(allocator, 1, sizeof(my_node_view_t));
@@ -1602,7 +1604,7 @@ my_widget_t* my_node_view_create(const my_allocator_t* allocator) {
   if (v == NULL) {
     return NULL;
   }
-  if (my_widget_init((my_widget_t*)v, allocator, &s_nv_vtable,
+  if (my_widget_init((my_widget_t*)v, allocator, nv_vtable_get(),
                      "node_view") != MY_RET_OK) {
     my_mem_free(allocator, v);
     return NULL;

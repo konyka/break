@@ -406,8 +406,7 @@ cmake --build build-msvc-1451-audit --parallel
 ctest --test-dir build-msvc-1451-audit -LE graphics --output-on-failure
 ```
 
-上述配置成功，完整构建在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下通过；重复构建无剩余工作。
-非图形 CTest `56/56` 通过，其中包括 `test_platform_win32_runtime`。CI 另外显式构建并执行
+上述配置在 `/W4 /WX /utf-8` 以及 `/experimental:c11atomics` 下构建。早先记录的「完整构建通过、非图形 CTest `56/56`」只对当时的代码成立；CI 没有 MSVC lane，之后新增的代码曾让 MSVC 构建失败（10 个文件的 C4090/C4132/C4456/C4310/C4701），2026-10-27 已修复，并在 MSVC 19.51.36260 上重新验证：全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过，包括 `test_platform_win32_runtime`。因为 CI 不覆盖 MSVC，新增代码后需要在本机重跑上面三条命令。CI 另外显式构建并执行
 `test_platform_config`、`test_platform_null_safety` 和 `test_platform_win32_runtime`，避免平台
 runtime 门禁仅依赖全量测试筛选。这提供的是非图形、headless
 Win32 平台证据，不证明 WGL、Vulkan、GPU、present 或图形 runtime，也不证明 Windows Vulkan 构建。
@@ -430,9 +429,12 @@ make -j$(nproc)
 #### 使用 MinGW（原生 Windows）
 ```bash
 cd engine
-cmake -B build-mingw -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
+cmake -B build-mingw -G Ninja -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_COMPILER=x86_64-w64-mingw32-gcc
 cmake --build build-mingw
+ctest --test-dir build-mingw -LE graphics --output-on-failure
 ```
+
+2026-10-27 在 MSYS2 UCRT64 的 GCC 16.2 上验证：此前构建失败（GCC 的 `-Werror` 拒绝 `GetProcAddress`/`wglGetProcAddress` 结果直接强转为函数指针、`net_loop_iocp.c` 的恒假比较、`PlatformConfig` 在 Win32 测试里的省略初始化、`verify_pak.c` 的 `snprintf` 截断），现已修复，全量构建 0 警告，非图形 CTest（含 5 个 fuzz 冒烟）`186/186` 通过。函数指针转换统一走 `platform/win_proc.h` 的 `WIN_PROC_LOAD`（memcpy，不触发 `-Wcast-function-type`/`-Wpedantic`）。CI 没有 MinGW lane，同样需要在本机重跑。
 
 #### 使用 MinGW 交叉编译（Linux 主机）
 ```bash
