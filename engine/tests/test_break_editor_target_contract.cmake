@@ -299,6 +299,19 @@ if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_
     message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_panel_network.c inline (Phase 4 Task 3)")
 endif()
 
+# Viewport shader reload Task 1: the shared resolver has exactly one inline
+# copy in each viewport3d consumer (the formal break_editor library does not
+# own apps/editor TUs).
+if(NOT cmake_text MATCHES "add_executable\\(editor apps/editor/editor_main.c[^)]*apps/editor/editor_shader_source.c")
+    message(FATAL_ERROR "editor must compile apps/editor/editor_shader_source.c")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(test_editor_shell tests/test_editor_shell.c[^)]*apps/editor/editor_shader_source.c")
+    message(FATAL_ERROR "test_editor_shell must compile apps/editor/editor_shader_source.c")
+endif()
+if(NOT cmake_text MATCHES "add_executable\\(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c[^)]*apps/editor/editor_shader_source.c")
+    message(FATAL_ERROR "fuzz_editor_remote must compile apps/editor/editor_shader_source.c")
+endif()
+
 message(STATUS "break_editor target contract passed")
 
 # Editor asset hot reload: the host owns the Runtime Core coordinator. The

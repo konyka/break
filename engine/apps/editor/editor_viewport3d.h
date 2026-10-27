@@ -70,6 +70,28 @@ typedef struct BreakEditorViewport3D BreakEditorViewport3D;
 BreakEditorViewport3D *break_editor_viewport3d_create(void);
 void break_editor_viewport3d_destroy(BreakEditorViewport3D *vp);
 
+/* Initial one-shot GPU preparation through the shared shader resolver. The
+ * device is borrowed and recorded before any fallible GPU/source step; device
+ * migration is unsupported. Initial failure is sticky for frame-driven calls. */
+bool break_editor_viewport3d_prepare(BreakEditorViewport3D *vp,
+                                     void *rhi_device);
+/* Build and publish a complete shader candidate atomically. Failure preserves
+ * every live GPU field; an explicit call can recover initial INIT_FAILED. */
+bool break_editor_viewport3d_reload_shader_source(
+    BreakEditorViewport3D *vp, const void *vert, usize vert_size,
+    const void *frag, usize frag_size);
+
+#ifdef BREAK_EDITOR_SHELL_TESTING
+typedef struct {
+    RHIPipeline pipeline;
+    const void *bindings;
+    i32 loc_mvp, loc_color;
+    RHIBuffer vbo;
+} BreakEditorViewport3DGpuState;
+void break_editor_viewport3d_gpu_state_for_test(
+    const BreakEditorViewport3D *vp, BreakEditorViewport3DGpuState *out);
+#endif
+
 /* Borrowed view-state wiring (shell-owned camera/gizmo; selected entity for
  * the highlight tint). Call again whenever the selection changes; NULL
  * camera disables rendering (bounded no-op). */

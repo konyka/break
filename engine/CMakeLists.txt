@@ -1576,7 +1576,7 @@ engine_link_rhi_backend(dxx_break)
 # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
 # view over editor_remote.h's read-only accessors, no new link).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
-    apps/editor/editor_viewport3d.c
+    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -3931,7 +3931,7 @@ endif()
     # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
     # pure view over the remote's read-only accessors).
     add_executable(test_editor_shell tests/test_editor_shell.c
-        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -4643,7 +4643,7 @@ endif()
     # compiled inline; exactly one definition per binary).
     if(BREAK_ENABLE_SNOWFLAKE)
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
-            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
             apps/editor/editor_panel_profiler.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
