@@ -1040,9 +1040,16 @@ bool break_editor_shell_dispatch_key(BreakEditorShell *shell, u32 key,
             return true;
         }
     }
-    /* ASCII letters fold to lowercase; SHIFT is ignored for them */
+    /* ASCII letters fold to lowercase; the generic letter table ignores SHIFT */
     if (key >= 'A' && key <= 'Z') {
         key = key - 'A' + 'a';
+    }
+    if (key == 'r' &&
+        modifiers == (MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT)) {
+        if (!break_editor_viewport3d_request_shader_reload(shell->vp3d)) {
+            editor_shell_log(shell, "shader reload: unavailable");
+        }
+        return true;
     }
     relevant = (key >= 'a' && key <= 'z')
                    ? modifiers & (MY_KEYMOD_CTRL | MY_KEYMOD_ALT)
@@ -1372,6 +1379,13 @@ static bool shell_build_panels(BreakEditorShell *shell, my_widget_t *content) {
     return true;
 }
 
+static void shell_shader_reload_log(void *user, const char *line) {
+    BreakEditorShell *shell = (BreakEditorShell *)user;
+    if (shell != NULL && line != NULL) {
+        editor_shell_log(shell, "%s", line);
+    }
+}
+
 static BreakEditorShell *shell_create_common(my_window_t *win) {
     BreakEditorShell *shell;
     my_widget_t *content;
@@ -1402,6 +1416,8 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
     break_editor_viewport3d_set_view_state(shell->vp3d, &shell->camera,
                                            shell->gizmo,
                                            BREAK_EDITOR_ENTITY_NULL);
+    break_editor_viewport3d_set_shader_reload_logger(
+        shell->vp3d, shell_shader_reload_log, shell);
     /* Phase 3 Task 3 panel CPU state (see editor_shell_internal.h): needs
      * the doc (the Lua console borrows it; the assets model lists ".").
      * Panel create fails only on allocation — a degraded assets model or

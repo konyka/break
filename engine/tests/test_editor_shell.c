@@ -2048,7 +2048,7 @@ TEST(render_panel_rows_from_device_source_and_viewport_stats)
     break_editor_shell_set_render_device(shell, (RHIDevice *)&g_render_fake_device);
     break_editor_shell_tick(shell);
     n = break_editor_shell_render_row_count(shell);
-    ASSERT_EQ(n, 8u);
+    ASSERT_EQ(n, 9u);
     for (i = 0u; i < n; i++) {
         const char *t = break_editor_shell_render_row_text(shell, i);
         ASSERT_NOT_NULL(t);
@@ -2062,6 +2062,8 @@ TEST(render_panel_rows_from_device_source_and_viewport_stats)
     ASSERT_TRUE(render_row_has(shell, "resources: 17/4096 slots"));
     ASSERT_TRUE(render_row_has(shell, "viewport: failed"));
     ASSERT_TRUE(render_row_has(shell, "skipped=not-rendered"));
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(shell, 8u),
+                  "shader reload: unavailable");
     /* detach: back to the single no-device row on the next tick */
     break_editor_shell_set_render_device(shell, NULL);
     break_editor_shell_tick(shell);
@@ -2111,8 +2113,9 @@ TEST(render_panel_source_is_read_only)
         "rhi_texture_", "rhi_pipeline_", "rhi_screenshot", "rhi_device_idle",
         "rhi_offscreen_fbo_", "rhi_device_attach_wsi", "rhi_rollout_set_",
         "rhi_device_control_", "rhi_frame_submit", "rhi_frame_acquire",
-        "rhi_set_", "rhi_shader_",
-        "rhi_cubemap_", "rhi_framebuffer_"};
+        "rhi_set_", "rhi_shader_", "rhi_cubemap_", "rhi_framebuffer_",
+        "break_editor_viewport3d_request_shader_reload(",
+        "break_editor_viewport3d_tick(", "break_editor_shader_reload_"};
     FILE *f = fopen(RENDER_PANEL_STR(BREAK_EDITOR_RENDER_PANEL_SOURCE), "rb");
     size_t n, i;
     char *body;
@@ -4377,8 +4380,6 @@ static void shader_reload_fixture_open(ShaderReloadFixture *fx,
     ASSERT_NOT_NULL(fx->shell);
     fx->vp = break_editor_shell_viewport3d(fx->shell);
     ASSERT_NOT_NULL(fx->vp);
-    break_editor_viewport3d_set_shader_reload_logger(
-        fx->vp, shader_reload_capture_log, &fx->log);
     break_editor_shell_set_render_device(fx->shell,
                                          (RHIDevice *)&fx->device);
 }
@@ -4410,6 +4411,64 @@ static void shader_reload_write_pair(ShaderReloadFixture *fx, u32 revision,
     }
 }
 
+static void shader_reload_manual_shortcut_body(ShaderReloadFixture *fx) {
+    BreakEditorShaderReloadStats stats;
+    EditorRhiFakeStats before, after;
+    shader_reload_fixture_open(fx, "editor_shader_reload_manual",
+                               "REV=1 vertex\n", "REV=1 fragment\n");
+    ASSERT_NOT_NULL(fx->shell);
+    ASSERT_TRUE(shader_reload_stats(fx).watching);
+    ASSERT_EQ(shader_reload_revision(fx), 1u);
+    shader_reload_write_pair(fx, 5u, "", false);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx->shell, 'r',
+                                                 MY_KEYMOD_SHIFT));
+    ASSERT_STR_EQ(break_editor_shell_tool_text(fx->shell), "Tool: Scale");
+    ASSERT_TRUE(break_editor_shell_dispatch_key(fx->shell, 'r',
+                                                 MY_KEYMOD_NONE));
+    ASSERT_STR_EQ(break_editor_shell_tool_text(fx->shell), "Tool: Scale");
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_FALSE(stats.busy);
+
+    editor_rhi_fake_stats(&before);
+    ASSERT_TRUE(break_editor_shell_dispatch_key(
+        fx->shell, 'r', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    stats = shader_reload_stats(fx);
+    ASSERT_TRUE(stats.busy);
+    ASSERT_EQ(stats.attempts, 0u);
+    editor_rhi_fake_stats(&after);
+    ASSERT_TRUE(editor_fake_stats_equal(&before, &after));
+    ASSERT_EQ(shader_reload_revision(fx), 1u);
+
+    HR_WAIT(fx->shell, shader_reload_stats(fx).reloads == 1u);
+    stats = shader_reload_stats(fx);
+    ASSERT_EQ(stats.attempts, 1u);
+    ASSERT_EQ(stats.reloads, 1u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_APPLIED);
+    ASSERT_EQ(shader_reload_revision(fx), 5u);
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(fx->shell)),
+                  "shader reload: applied shader pair\n");
+}
+
+TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi)
+{
+    EditorShaderEnv env;
+    ShaderReloadFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_manual_shortcut_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_reload_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     BreakEditorShaderReloadStats stats;
     BreakEditorViewport3DStats render_stats;
@@ -4419,6 +4478,8 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     shader_reload_fixture_open(fx, "editor_shader_reload_watcher",
                                "REV=1 vertex\n", "REV=1 fragment\n");
     ASSERT_NOT_NULL(fx->shell);
+    break_editor_viewport3d_set_shader_reload_logger(
+        fx->vp, shader_reload_capture_log, &fx->log);
     break_editor_viewport3d_render(
         fx->vp, break_editor_shell_doc(fx->shell), &fx->device, &cmd, 800, 480);
     ASSERT_TRUE(break_editor_viewport3d_last_stats(fx->vp, &render_stats));
@@ -4476,6 +4537,13 @@ static void shader_reload_watcher_body(ShaderReloadFixture *fx) {
     ASSERT_EQ(fake_after_bad.binding_destroys,
               fake_before_bad.binding_destroys + 1u);
     ASSERT_EQ(fake_after_bad.buffer_creates, 1u);
+
+    break_editor_shell_set_render_device(fx->shell,
+                                         (RHIDevice *)&fx->device);
+    break_editor_shell_tick(fx->shell);
+    ASSERT_EQ(break_editor_shell_render_row_count(fx->shell), 9u);
+    ASSERT_STR_EQ(break_editor_shell_render_row_text(fx->shell, 8u),
+                  "shader reload: watching busy=0 applied=2 failed=1");
 }
 
 TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers)
@@ -4548,6 +4616,8 @@ static void shader_reload_trailing_body(ShaderReloadFixture *fx) {
     shader_reload_fixture_open(fx, "editor_shader_reload_trailing",
                                "REV=1 vertex\n", "REV=1 fragment\n");
     ASSERT_NOT_NULL(fx->shell);
+    break_editor_viewport3d_set_shader_reload_logger(
+        fx->vp, shader_reload_capture_log, &fx->log);
     editor_rhi_fake_stats(&fake);
     ASSERT_EQ(fake.pipeline_creates, 1u);
     popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
@@ -4938,6 +5008,35 @@ TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner)
     editor_rhi_fake_set_enabled(false);
     editor_rhi_fake_reset();
     shader_env_restore(&env);
+}
+
+TEST(shader_reload_shortcut_without_owner_is_bounded)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    BreakEditorViewport3D *vp;
+    BreakEditorShaderReloadStats stats;
+    ASSERT_NOT_NULL(shell);
+    vp = break_editor_shell_viewport3d(shell);
+    ASSERT_NOT_NULL(vp);
+    ASSERT_TRUE(break_editor_viewport3d_shader_reload_stats(vp, &stats));
+    ASSERT_EQ(stats.last_result, BREAK_EDITOR_SHADER_RELOAD_UNAVAILABLE);
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_FALSE(stats.busy);
+
+    ASSERT_TRUE(break_editor_shell_dispatch_key(
+        shell, 'r', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    ASSERT_STR_EQ(last_console_line(break_editor_shell_console_text(shell)),
+                  "shader reload: unavailable\n");
+    ASSERT_STR_EQ(break_editor_shell_tool_text(shell), "Tool: Select");
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_viewport3d_shader_reload_stats(vp, &stats));
+    ASSERT_EQ(stats.attempts, 0u);
+    ASSERT_EQ(stats.reloads, 0u);
+    ASSERT_EQ(stats.failed, 0u);
+    ASSERT_FALSE(stats.busy);
+    ASSERT_FALSE(break_editor_shell_dispatch_key(
+        NULL, 'r', MY_KEYMOD_CTRL | MY_KEYMOD_SHIFT));
+    break_editor_shell_destroy(shell);
 }
 
 TEST(shader_reload_unavailable_stats_and_null_calls)
@@ -5471,6 +5570,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(render_panel_rows_from_device_source_and_viewport_stats);
     RUN_TEST(render_panel_throttle_4hz_and_device_lost);
     RUN_TEST(render_panel_source_is_read_only);
+    RUN_TEST(shader_reload_ctrl_shift_r_queues_without_sync_rhi);
     RUN_TEST(shader_reload_watcher_applies_pair_keeps_old_and_recovers);
     RUN_TEST(shader_reload_initial_failure_recovers_without_implicit_retry);
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
@@ -5480,6 +5580,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_inflight_claim_teardown_is_bounded);
     RUN_TEST(shader_reload_shutdown_timeout_can_retry);
     RUN_TEST(shader_reload_viewport_and_shell_shutdown_retry_same_owner);
+    RUN_TEST(shader_reload_shortcut_without_owner_is_bounded);
     RUN_TEST(shader_reload_unavailable_stats_and_null_calls);
     RUN_TEST(hot_reload_valid_external_edit_replaces_document);
     RUN_TEST(hot_reload_creation_of_missing_scene_loads_it);

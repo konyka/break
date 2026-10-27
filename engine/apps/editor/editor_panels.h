@@ -45,12 +45,13 @@
  * shortcuts work before any widget is clicked. Tests bypass dispatch and call
  * break_editor_shell_dispatch_key directly.
  *
- * Shortcut table (single table in editor_panels.c; letter keys ignore SHIFT,
+ * Shortcut routing (editor_panels.c; generic letter keys ignore SHIFT,
  * Ctrl/Alt must match exactly):
  *   Q/W/E/R   gizmo mode NONE/TRANSLATE/ROTATE/SCALE + tool label (Phase 2)
  *   F         focus the camera on the selected entity (Phase 2: real
  *             break_editor_camera_focus on the proxy AABB; view state, not
  *             undoable)
+ *   Ctrl+Shift+R queue a viewport shader reload (no GPU work in the callback)
  *   Ctrl+S    save to the path set via break_editor_shell_set_scene_path
  *   Ctrl+Z/Y  undo/redo via the doc command stack; mid-gizmo-drag they first
  *             END+COMMIT the in-progress drag (Task 3 policy, pinned by
@@ -292,8 +293,8 @@ void break_editor_shell_fail_diag_attach_for_test(void);
 /* ---------------- render debugger panel ----------------
  * Pure view (docs/design/editor_render_debugger.md): backend / GPU / caps /
  * status / resource slots of the BORROWED render device plus the viewport's
- * last-render stats, <= 16 rows x 96 bytes refreshed at <= 4 Hz from
- * break_editor_shell_tick. NULL device renders one "render: no device" row.
+ * last-render/shader-reload stats, <= 16 rows x 96 bytes refreshed at <= 4 Hz
+ * from break_editor_shell_tick. NULL device renders one "render: no device" row.
  * The host attaches the device after creating the shell and detaches it
  * (NULL) before destroying the device. */
 void break_editor_shell_set_render_device(BreakEditorShell *shell,

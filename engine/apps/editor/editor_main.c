@@ -152,7 +152,8 @@ int main(int argc, char **argv) {
     fprintf(stderr, "editor: break_editor_shell_create failed\n");
     return 1;
   }
-  /* render debugger panel: borrowed device, detached before teardown */
+  /* render debugger panel: borrowed device, detached before teardown. Shader
+   * reload is viewport-owned; shell teardown stops it before device teardown. */
   break_editor_shell_set_render_device(shell, device);
   /* asset hot reload: host-owned, shell-borrowed; attached BEFORE the scene
    * path so the watcher starts on it. A failure only disables hot reload. */
