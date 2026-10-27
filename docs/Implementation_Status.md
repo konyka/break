@@ -7,7 +7,8 @@
 - **MinGW**：用镜像自带的 MinGW-w64 gcc。先有一步检查 `gcc -dumpmachine` 含 `mingw` 并打印路径与版本，找不到或目标不是 MinGW 就失败，而不是悄悄换成别的 gcc。
 - **本机已核对**：YAML 能解析（22 个 job，两条新 lane 各 10 个 step）；收据命令在本机原样跑通并通过 schema 校验；MSVC 树 `-LE graphics` 选中 186 项且含 fuzz 冒烟。`test_ci_lane_separation` 只检查 macOS/iOS 的 lane，不受影响。
 - **首轮 CI 结果（`21f1ef21`）**：MinGW lane 成功。镜像里的 gcc 是 `C:\mingw64\bin\gcc.exe`，`-dumpmachine` 为 `x86_64-w64-mingw32`，版本 15.2.0（MinGW-Builds），构建 0 警告，测试通过——比本机 GCC 16.2 旧但没有暴露新诊断。MSVC lane 失败在 Build 步骤：镜像上是 Visual Studio 18 Enterprise 的 MSVC 14.51.36231，`main.c:5297` 报 C4456（`ground` 遮蔽上面第 5124 行的同名局部变量）。这是 `7b4365dc`（相机抬高）刚合入的代码，Clang/GCC 不报这条，MSVC 的 `/W4 /WX` 拒绝。本机先在合并后的代码上复现（`engine_demo` 单独构建 C2220+C4456），把内层变量改名 `ground_y` 后 MSVC 全量构建 0 诊断、Clang 构建通过。也就是说新 lane 第一次运行就抓到了一个其他 lane 都看不见的回归。
-- **仍然没有验证**：改名后的修复尚未经过 CI 复核；两条 lane 的完整测试数量与耗时，等修复后的那一轮结果再记录。
+- **修复后的 CI 结果（`939a1b21`）**：两条 lane 都成功。MSVC 14.51.36231 构建 44 秒、fuzz 目标 3 秒、测试 67 秒，总计约 2.5 分钟；MinGW 构建 57 秒、测试 62 秒，总计约 2.5 分钟。MSVC 日志里的 4 条 `D9025 overriding /W4 with /w` 是第三方源码目标故意 `/w` 关警告产生的命令行提示，不是代码诊断；没有 `warning C` 或 `error C`。MinGW 日志无任何 warning。
+- **没有验证**：ctest 的输出被重定向到文件、只在失败时才打印，所以 CI 日志里看不到通过的测试数量，这里只能确认测试步骤退出码为 0，不写具体数字；是否 186 项与本机一致没有从 CI 证实。镜像是 Visual Studio 18 Enterprise（MSVC 14.51）而不是我之前根据文档推测的 VS 2022——版本说明以实际日志为准。另外 `ilammy/msvc-dev-cmd@v1` 在日志里提示 Node.js 20 将弃用（目前被强制跑在 Node 24），以后可能需要升级该 action。
 
 ## 本轮更新：MSVC 与 MinGW 工具链在本机首次完整构建，修复 20 余处只在这两个编译器下出现的错误
 
