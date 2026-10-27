@@ -1,5 +1,13 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：macOS Cocoa 窗口模式本机复核（2026-10-27）
+
+- 基于 `6a755113`，本次只复核并补充文档，没有改窗口实现。无标题栏全屏和窗口模式的标题栏开关均已有 Cocoa 原生实现、`engine_demo` 入口及自动测试，不是只有公共状态机。早前记录中的 Cocoa「未在本机验证」是当时 Windows 环境的限制。
+- 在 macOS 上单独运行 `test_platform_window_mode` 与 `test_platform_cocoa_runtime`：状态机 14/14、真实 Cocoa 窗口 7/7。后者包含两个全屏用例（进出恢复、直接全屏启动）和两个标题栏用例（显隐保持内容矩形、无标题栏启动），直接检查 `NSWindow` 的 `styleMask`、屏幕矩形、窗口层级与内容矩形，不只检查引擎状态。
+- Metal 与 MoltenVK 各运行 70 帧自动演示：无标题栏启动，第 10、40 帧进出全屏，第 50、60 帧显示再隐藏标题栏，第 25 帧截图。两后端 drawable 均为 2560x1440 → 3360x2100 → 2560x1440，两次 `TITLE_BAR_SWITCH` 均为 `ok=1`，标题栏可见状态为 1 → 0，正常退出且无 ERROR/FATAL；MoltenVK 验证层消息为 0。
+- Metal 重建耗时为 2.60/5.56 ms，MoltenVK 为 2.11/4.50 ms；切换后五帧的最差帧时间分别为 82.39/27.29 ms 与 92.94/25.92 ms。这些是本轮本机短跑结果，不作为性能基线。
+- 两张全屏截图已人工查看，3D 场景与 HUD 可见、朝向正常。截图验证引擎内容；原生无边框、全屏矩形和标题栏状态由上述 Cocoa 运行时断言验证。交互按键与可复现的自动演示命令见 `docs/Build_Guide.md` 的「macOS 窗口模式与标题栏验证」。
+
 ## 本轮更新：Windows 同步复核与测试基础设施修复
 
 本轮从 `a848b3c9` 开始，`git fetch` 后本地与 `origin/master` 一致，无合并冲突。使用 Windows 本机的 Clang 22.1.6 + Ninja，复核 GL、Vulkan、D3D12 Debug 与 ASan 配置；未跟踪的 `.tmp/`、`.scratch-vkprobe/` 不纳入提交。没有改动渲染或网络协议实现。

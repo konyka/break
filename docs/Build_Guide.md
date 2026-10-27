@@ -793,6 +793,25 @@ frame-damage state 暂留在 `rhi.c`，因为 OpenGL/Vulkan 的 begin/end/presen
 - 窗口模式：`G` 或 Alt+Enter 在窗口与**无标题栏全屏**（铺满窗口所在显示器、不改显示器分辨率、不独占，Alt-Tab 不黑屏）之间切换，离开全屏恢复原位置、尺寸与最大化状态；`BREAK_FULLSCREEN=1` 以全屏启动；`BREAK_TOGGLE_FULLSCREEN_AT=f1,f2,...` 在指定帧自动切换，每次切换输出 `WINDOW_MODE_SWITCH`（重建耗时、之后 5 帧最长帧时间），退出时输出 `WINDOW_MODE_STATS`。`BREAK_RESIZE_AT=frame:WxH,...` 不改窗口、只按给定尺寸走同一重建路径，输出 `RESIZE_REBUILD`。API：`platform_set_window_mode` / `platform_get_window_mode`、`PlatformConfig.start_fullscreen`（`platform/platform.h`）。标题栏：Alt+T 切换窗口模式下的标题栏和边框（客户区位置和大小不变，全屏期间的改动在回到窗口时生效）；`BREAK_UNDECORATED=1` 以无标题栏窗口启动；`BREAK_TOGGLE_TITLE_BAR_AT=f1,f2,...` 自动切换并输出 `TITLE_BAR_SWITCH`。API：`platform_set_window_decorated` / `platform_get_window_decorated` / `platform_window_title_bar_visible`、`PlatformConfig.undecorated`。Win32 改窗口样式（无标题栏时最大化只铺满工作区）；X11 用 `_MOTIF_WM_HINTS`；Wayland 关掉 myui 的客户端装饰；Cocoa 去掉 `NSWindowStyleMaskTitled`；QNX Screen 与移动端固定无标题栏。Win32、Cocoa 同步切换；X11、Wayland 以窗口管理器 / 合成器的回报为准（X11 无 EWMH 窗口管理器时退回 Motif 去装饰 + 移到显示器矩形）；QNX Screen 与移动端固定全屏。
 - 脚本化钩子（均无默认值，不设即原行为）：`BREAK_FRAMES=N`（N 帧后退出）、`BREAK_SCREENSHOT=a,b,c`（R446 起支持逗号列表，逐帧截图到 screenshot_N.bmp）、`BREAK_CAM=x,y,z[,yaw,pitch]`（初始机位）、`BREAK_CAM_SPIN=deg`（R446，每帧 yaw 增量，复现相机运动伪影）、`BREAK_TAA=0` / `BREAK_MB=0`（R446，TAA/动态模糊开关，用于 A/B 对照）、`BREAK_SSR=1` / `BREAK_SSGI=1` / `BREAK_CS=1` / `BREAK_VOL=1` / `BREAK_LF=1`（R550-A，开启默认关闭的 SSR/SSGI/接触阴影/体积雾/镜头光晕——五路 pass 自 R550-A 起真实合成进帧链）、`BREAK_IBL_STATIC=1`（R559，禁用运行时 IBL rebake）、`BREAK_IBL_REBAKE_FRAMES=N`（R559，每 N 帧触发一次、用于无头验证；rebake 仍跨 42 帧完成）、`BREAK_JITTER=0`（关闭 Halton 抖动，便于隔离时间重投影伪影）、`BREAK_MODEL_VIEW=s`（模型查看：不画地形/水面/展示区，相机对准命令行加载的模型，s 为距离倍数，s<1 更近）、`BREAK_BSCN_ROUNDTRIP_AT=f`（第 f 帧按 `B` 键路径保存 BSCN，第 f+10 帧按 `N` 键路径读回，用于无头验证读档后 LOD 等状态重建；会在工作目录写 `scene_save.bscn` / `scene_state.bin`）。TSR 在初始化或分辨率重建后的第一帧只输出当前帧，不采样历史；随后才恢复历史重投影。
 
+### 3.2 macOS 窗口模式与标题栏验证
+
+交互演示：`G` 或 Alt+Enter 在窗口与无标题栏全屏之间切换，Alt+T 切换窗口模式的标题栏。`BREAK_FULLSCREEN=1` 直接全屏启动，`BREAK_UNDECORATED=1` 直接以无标题栏窗口启动。
+
+在 `engine/` 下执行以下命令，可单独运行公共状态机与真实 Cocoa 窗口测试，并自动演示全屏进出和标题栏显隐（Metal 构建目录示例为 `build-macos-current`）：
+
+```sh
+ctest --test-dir build-macos-current \
+  -R '^(test_platform_cocoa_runtime|test_platform_window_mode)$' -V
+
+BREAK_UNDECORATED=1 \
+BREAK_TOGGLE_FULLSCREEN_AT=10,40 \
+BREAK_TOGGLE_TITLE_BAR_AT=50,60 \
+BREAK_SCREENSHOT=25 \
+./build-macos-current/engine_demo --frames 70
+```
+
+Cocoa 测试直接断言 `NSWindow` 的全屏样式、屏幕矩形、窗口层级，以及标题栏显隐前后的内容矩形。demo 在第 10、40 帧进出全屏，第 50、60 帧显示再隐藏标题栏，第 25 帧保存全屏内容；对应日志为 `WINDOW_MODE_SWITCH`、`TITLE_BAR_SWITCH` 和退出时的 `WINDOW_MODE_STATS`。MoltenVK 演示将可执行文件替换为 `build-macos/engine_demo`。这些入口已集成在现有测试与 `engine_demo` 中，不需要单独的窗口模式 demo 程序。
+
 ## 4. 编译选项与标准
 
 ### 4.1 编译器警告
