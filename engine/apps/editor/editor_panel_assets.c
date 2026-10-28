@@ -13,6 +13,9 @@
  *   dir       => break_editor_assets_enter (single validated segment)
  *   *.bscn    => confirm-free break_editor_doc_load (Phase 2 documents the
  *                world swap + undo-stack clear; the console logs the load)
+ *   image     => (.png .jpg .jpeg .bmp .tga) the preview below the list
+ *                loads it and hot-reloads it on external edits
+ *                (editor_image_preview.h; the panel owns the preview)
  *   other     => bounded "not loadable" console note, nothing else happens
  * After a successful load the WHOLE shell refreshes (outliner/inspector/
  * status) because the doc's world was swapped and the selection may have
@@ -35,7 +38,13 @@
 #include <string.h>
 
 #include <editor/editor_assets.h>
+#include <editor/editor_image.h>
 #include <editor/editor_scene.h>
+
+#include "editor_image_preview.h"
+#include "myr/my_color.h"
+#include "myr/my_vgcanvas.h"
+#include "myr/my_vgcanvas_break_rhi.h"
 #include <platform/time.h>
 
 #include "myc/my_emitter.h"
@@ -71,6 +80,12 @@ struct EditorPanelAssets {
     bool primed;
     /* label text cache: "assets: /" + rel (bounded by the model's caps) */
     char path_text[BREAK_EDITOR_ASSETS_PATH_CAPACITY + 16u];
+    /* image preview (owned) + its widgets (weak) */
+    BreakEditorImagePreview *preview;
+    my_widget_t *preview_label;
+    my_widget_t *preview_image;
+    int preview_shown_result; /* last result reflected in the label */
+    u64 preview_shown_reloads;
 };
 
 /* ---------------- row rendering / activation ---------------- */
@@ -92,9 +107,107 @@ static EditorAssetsRowCtx *assets_row_ctx_alloc(EditorPanelAssets *panel,
 }
 
 static void assets_panel_refresh(EditorPanelAssets *panel);
+static void assets_preview_sync(EditorPanelAssets *panel);
 
 void editor_panel_assets_retranslate(EditorPanelAssets *panel) {
     assets_panel_refresh(panel); /* path label + rows in the current language */
+    if (panel != NULL) {
+        panel->preview_shown_result = -1; /* force the label text */
+        assets_preview_sync(panel);
+    }
+}
+
+/* ---------------- image preview ---------------- */
+
+static void assets_preview_log(void *user, const char *line) {
+    EditorPanelAssets *panel = (EditorPanelAssets *)user;
+    editor_shell_log(panel->shell, "%s", line);
+}
+
+/* Label text follows the preview state; the image widget repaints when a
+ * reload lands. Cheap: compares two cached values. */
+static void assets_preview_sync(EditorPanelAssets *panel) {
+    BreakEditorImagePreviewStats st;
+    BreakEditorTr key;
+    if (panel == NULL || panel->preview == NULL ||
+        !break_editor_image_preview_stats(panel->preview, &st)) {
+        return;
+    }
+    if (st.reloads != panel->preview_shown_reloads &&
+        panel->preview_image != NULL) {
+        my_widget_invalidate(panel->preview_image, NULL);
+    }
+    panel->preview_shown_reloads = st.reloads;
+    if (st.last_result == panel->preview_shown_result) {
+        return;
+    }
+    panel->preview_shown_result = st.last_result;
+    if (panel->preview_label == NULL) {
+        return;
+    }
+    if (st.has_image) {
+        char text[64];
+        (void)snprintf(text, sizeof(text), "%ux%u", (unsigned)st.width,
+                       (unsigned)st.height);
+        (void)my_label_set_text(panel->preview_label, text);
+        return;
+    }
+    key = st.last_result == BREAK_EDITOR_IMAGE_PREVIEW_BUSY
+              ? BREAK_EDITOR_TR_PREVIEW_LOADING
+          : st.last_result == BREAK_EDITOR_IMAGE_PREVIEW_EMPTY
+              ? BREAK_EDITOR_TR_PREVIEW_EMPTY
+              : BREAK_EDITOR_TR_PREVIEW_FAILED;
+    (void)my_label_set_text(panel->preview_label, break_editor_tr(key));
+}
+
+static void assets_preview_on_paint(my_widget_t *widget, my_vgcanvas_t *vg) {
+    EditorPanelAssets *panel;
+    BreakEditorImagePreviewStats st;
+    RHITexture tex;
+    float w, h, iw, ih, scale;
+    if (widget == NULL || vg == NULL) {
+        return;
+    }
+    w = (float)widget->rect.w;
+    h = (float)widget->rect.h;
+    my_vgcanvas_set_fill_color(vg, my_color_rgba(30u, 31u, 34u, 255u));
+    (void)my_vgcanvas_fill_rect(vg, &(my_rectf_t){0.0f, 0.0f, w, h});
+    panel = (EditorPanelAssets *)my_widget_get_user_data(widget);
+    if (panel == NULL || panel->preview == NULL ||
+        !break_editor_image_preview_stats(panel->preview, &st) ||
+        !st.has_image || st.width == 0u || st.height == 0u) {
+        return;
+    }
+    tex = break_editor_image_preview_texture(panel->preview);
+    if (!rhi_handle_valid(tex)) {
+        return; /* headless / no device: label still shows the size */
+    }
+    /* aspect fit, centered */
+    iw = (float)st.width;
+    ih = (float)st.height;
+    scale = w / iw < h / ih ? w / iw : h / ih;
+    iw *= scale;
+    ih *= scale;
+    (void)my_vgcanvas_break_rhi_blit_texture(vg, tex, (w - iw) * 0.5f,
+                                             (h - ih) * 0.5f, iw, ih);
+}
+
+static const my_widget_vtable_t s_assets_preview_vtable = {
+    assets_preview_on_paint, NULL, NULL, NULL};
+
+struct BreakEditorImagePreview *editor_panel_assets_preview(
+    EditorPanelAssets *panel) {
+    return panel != NULL ? panel->preview : NULL;
+}
+
+void editor_panel_assets_set_device(EditorPanelAssets *panel,
+                                    RHIDevice *device) {
+    if (panel != NULL) {
+        break_editor_image_preview_set_device(panel->preview, device);
+        if (panel->preview_image != NULL) {
+            my_widget_invalidate(panel->preview_image, NULL);
+        }
+    }
 }
 
 static void assets_panel_refresh(EditorPanelAssets *panel) {
@@ -166,6 +279,14 @@ static void on_assets_row_click(void *ctx, const char *event, void *data) {
                     /* world swap + undo-stack clear + scene path / watcher
                      * update, all in the shell helper */
                     (void)editor_shell_load_scene(shell, path);
+                }
+            } else if (break_editor_image_is_supported_name(name)) {
+                char path[BREAK_EDITOR_ASSETS_PATH_CAPACITY];
+                if (break_editor_assets_abs_path(panel->assets, ei, path,
+                                                 sizeof(path))) {
+                    (void)break_editor_image_preview_set_path(panel->preview,
+                                                              path);
+                    assets_preview_sync(panel);
                 }
             } else {
                 editor_shell_log(shell, break_editor_tr(BREAK_EDITOR_TR_LOG_ASSET_NOT_SCENE_FMT),
@@ -257,6 +378,11 @@ EditorPanelAssets *editor_panel_assets_create(BreakEditorShell *shell) {
      * empty panel — re-root later via editor_panel_assets_set_root) */
     panel->assets = break_editor_assets_create(".");
     panel->path_text[0] = '\0';
+    /* a preview create failure degrades to "no preview" (NULL-safe API) */
+    panel->preview = break_editor_image_preview_create();
+    break_editor_image_preview_set_logger(panel->preview, assets_preview_log,
+                                          panel);
+    panel->preview_shown_result = -1;
     return panel;
 }
 
@@ -264,7 +390,12 @@ void editor_panel_assets_destroy(EditorPanelAssets *panel) {
     if (panel == NULL) {
         return;
     }
-    /* CPU-side state only — the widgets belong to the window tree */
+    /* CPU-side state only — the widgets belong to the window tree. The
+     * preview's texture needs the device alive: the shell is destroyed
+     * before the device (editor_main), so this releases it in time. A
+     * preview whose worker does not stop in time is leaked, not freed
+     * under the worker (editor_image_preview_destroy contract). */
+    break_editor_image_preview_destroy(panel->preview);
     break_editor_assets_destroy(panel->assets);
     free(panel);
 }
@@ -325,6 +456,63 @@ bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
         my_widget_unref(section);
         return false;
     }
+    /* preview section: its own row under the browser, so the list keeps
+     * its height. State/size label + painted image area. */
+    {
+        my_widget_t *pv = my_widget_create(NULL, "editor-assets-preview-panel");
+        if (pv == NULL) {
+            return false;
+        }
+        (void)my_widget_set_layouter(pv, my_layouter_linear_create(NULL, false, 2));
+        panel->preview_label = my_label_create(
+            NULL, break_editor_tr(BREAK_EDITOR_TR_PREVIEW_EMPTY));
+        if (panel->preview_label == NULL) {
+            my_widget_unref(pv);
+            return false;
+        }
+        (void)my_widget_set_name(panel->preview_label,
+                                 "editor-assets-preview-label");
+        (void)my_widget_set_layout_params(panel->preview_label, "w:100% h:20");
+        if (my_widget_add_child(pv, panel->preview_label) == MY_RET_OK) {
+            my_widget_unref(panel->preview_label);
+        } else {
+            my_widget_unref(panel->preview_label);
+            panel->preview_label = NULL;
+            my_widget_unref(pv);
+            return false;
+        }
+        panel->preview_image = my_widget_create(NULL, "editor-assets-preview");
+        if (panel->preview_image == NULL ||
+            my_widget_subclass_init(panel->preview_image,
+                                    &s_assets_preview_vtable) != MY_RET_OK) {
+            if (panel->preview_image != NULL) {
+                my_widget_unref(panel->preview_image);
+            }
+            panel->preview_image = NULL;
+            my_widget_unref(pv);
+            return false;
+        }
+        (void)my_widget_set_name(panel->preview_image, "editor-assets-preview");
+        (void)my_widget_set_user_data(panel->preview_image, panel);
+        (void)my_widget_set_layout_params(panel->preview_image, "w:100% h:1f");
+        if (my_widget_add_child(pv, panel->preview_image) == MY_RET_OK) {
+            my_widget_unref(panel->preview_image);
+        } else {
+            my_widget_unref(panel->preview_image);
+            panel->preview_image = NULL;
+            my_widget_unref(pv);
+            return false;
+        }
+        (void)my_widget_set_layout_params(pv, "w:100% h:20%");
+        if (my_widget_add_child(parent, pv) == MY_RET_OK) {
+            my_widget_unref(pv);
+        } else {
+            my_widget_unref(pv);
+            panel->preview_label = NULL;
+            panel->preview_image = NULL;
+            return false;
+        }
+    }
     assets_panel_refresh(panel);
     return true;
 }
@@ -340,7 +528,11 @@ bool editor_panel_assets_build(EditorPanelAssets *panel, my_widget_t *parent) {
 void editor_panel_assets_tick(EditorPanelAssets *panel) {
     u64 now;
     bool changed = false;
-    if (panel == NULL || panel->assets == NULL) {
+    if (panel == NULL) {
+        return;
+    }
+    assets_preview_sync(panel); /* reflects the previous frame's preview tick */
+    if (panel->assets == NULL) {
         return;
     }
     now = panel->clock != NULL ? panel->clock(panel->clock_user)

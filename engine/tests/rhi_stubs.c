@@ -84,6 +84,8 @@ static struct {
     EditorRhiFakeObject shaders[EDITOR_RHI_FAKE_CAPACITY];
     EditorRhiFakeObject pipelines[EDITOR_RHI_FAKE_CAPACITY];
     EditorRhiFakeObject buffers[EDITOR_RHI_FAKE_CAPACITY];
+    EditorRhiFakeObject textures[EDITOR_RHI_FAKE_CAPACITY];
+    u32 texture_create_failures;
     RHIPipelineBindings bindings[EDITOR_RHI_FAKE_CAPACITY];
 } g_editor_rhi_fake;
 
@@ -193,6 +195,14 @@ void editor_rhi_fake_reset(void) {
 
 void editor_rhi_fake_set_enabled(bool enabled) {
     g_editor_rhi_fake.enabled = enabled;
+}
+
+bool editor_rhi_fake_texture_live(RHITexture texture) {
+    return editor_rhi_fake_find(g_editor_rhi_fake.textures, texture) >= 0;
+}
+
+void editor_rhi_fake_fail_texture_creates(u32 n) {
+    g_editor_rhi_fake.texture_create_failures = n;
 }
 
 void editor_rhi_fake_stats(EditorRhiFakeStats *out) {
@@ -428,8 +438,46 @@ i32 rhi_pipeline_bindings_resolve(const RHIPipelineBindings *b, const char *n) {
     return -1;
 }
 
-RHITexture rhi_texture_create(RHIDevice *d, const RHITextureDesc *desc) { (void)d; (void)desc; return stub_texture; }
-void       rhi_texture_destroy(RHIDevice *d, RHITexture t)              { (void)d; (void)t; }
+RHITexture rhi_texture_create(RHIDevice *d, const RHITextureDesc *desc) {
+    (void)d;
+#ifdef BREAK_EDITOR_SHELL_TESTING
+    if (g_editor_rhi_fake.enabled) {
+        RHITexture t;
+        if (desc == NULL || desc->width == 0u || desc->height == 0u) {
+            return RHI_HANDLE_NULL;
+        }
+        if (g_editor_rhi_fake.texture_create_failures > 0u) {
+            g_editor_rhi_fake.texture_create_failures--;
+            return RHI_HANDLE_NULL;
+        }
+        t = editor_rhi_fake_object_create(g_editor_rhi_fake.textures, 0u, 0u);
+        if (rhi_handle_valid(t)) {
+            g_editor_rhi_fake.stats.texture_creates++;
+            g_editor_rhi_fake.stats.live_textures++;
+            g_editor_rhi_fake.stats.last_texture_w = desc->width;
+            g_editor_rhi_fake.stats.last_texture_h = desc->height;
+        }
+        return t;
+    }
+#endif
+    (void)desc;
+    return stub_texture;
+}
+void rhi_texture_destroy(RHIDevice *d, RHITexture t) {
+    (void)d;
+#ifdef BREAK_EDITOR_SHELL_TESTING
+    if (g_editor_rhi_fake.enabled) {
+        i32 slot = editor_rhi_fake_find(g_editor_rhi_fake.textures, t);
+        if (slot >= 0) {
+            g_editor_rhi_fake.textures[slot].live = false;
+            g_editor_rhi_fake.stats.texture_destroys++;
+            g_editor_rhi_fake.stats.live_textures--;
+        }
+        return;
+    }
+#endif
+    (void)t;
+}
 
 RHISampler rhi_sampler_create(RHIDevice *d, const RHISamplerDesc *desc) { (void)d; (void)desc; return stub_sampler; }
 void       rhi_sampler_destroy(RHIDevice *d, RHISampler s)              { (void)d; (void)s; }

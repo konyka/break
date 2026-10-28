@@ -54,7 +54,7 @@
 - [x] Design editor shell and command routing（Phase 1 Task 4：`editor` + `BreakEditorShell` + 单表 `k_editor_shortcuts` + Ctrl+P 调色板；`test_editor_shell` 15/15）
 - [x] World outliner/entity inspector（Task 4：虚拟化 my_list_view outliner + inspector 组件节；同测试钉住）
 - [x] Property transactions and undo/redo（Tasks 1+3：命令式 undo/redo、逐字节精确；`test_editor_doc`/`test_editor_cmd`/`test_editor_components`）
-- [ ] Asset browser and hot reload（asset browser **delivered-with-limits**：Phase 3 Tasks 1+3，`platform_list_dir` + `BreakEditorAssets` 模型 + 面板接线；默认 root=cwd、单击激活、快照 listing、32 槽点击池；**场景 hot reload 已于 2026-10-26 交付**：当前 `.bscn` 由 Runtime Core worker 暂存、shell 线程提交，非法文件与未保存编辑保持原状，浏览器列表每秒重列当前目录，见 `docs/design/editor_hot_reload.md`；**viewport shader hot reload 已于 2026-10-27 交付**（见 `docs/design/editor_hot_reload.md` §7）；纹理 hot reload（需先有真实图片预览消费者）、VFS pak 枚举、Windows/macOS/CI 未交付）
+- [ ] Asset browser and hot reload（asset browser **delivered-with-limits**：Phase 3 Tasks 1+3，`platform_list_dir` + `BreakEditorAssets` 模型 + 面板接线；默认 root=cwd、单击激活、快照 listing、32 槽点击池；**场景 hot reload 已于 2026-10-26 交付**：当前 `.bscn` 由 Runtime Core worker 暂存、shell 线程提交，非法文件与未保存编辑保持原状，浏览器列表每秒重列当前目录，见 `docs/design/editor_hot_reload.md`；**viewport shader hot reload 已于 2026-10-27 交付**（见 `docs/design/editor_hot_reload.md` §7）；**图片预览纹理 hot reload 已于 2026-10-28 交付**（§8）；材质/场景纹理 hot reload、VFS pak 枚举、Windows/macOS 实机未交付）
 - [x] Viewport/gizmo/scene round-trip（scene save-load round-trip：Phase 1 Task 2 BSCN+sidecar、`test_editor_scene` 15/15；3D viewport/gizmo/相机：Phase 2 Tasks 1-4 交付——纯 CPU 相机/拾取/gizmo 状态机 + GPU 视口面板，editor lane 三树 8/8、全量 188/188、记录在案 live smoke（非 GPU 验证）；场景保真渲染/SCENE_NODES ownership 为 Phase 3+ 排除项，见 `docs/design/editor_viewport.md` §9）
 - [x] Console/profiler/network/render panels（**delivered-with-limits**：render debugger 2026-10-26 已交付纯视图（`docs/design/editor_render_debugger.md`；无 capture/控制/GPU timing）；此前 **partial**：profiler 面板已交付为本地纯视图——Phase 3 Task 3，top-N≤16、4 Hz 节流、从不修改 profiler 状态有测试钉住；Lua console 面板输出落共享 ring；**network 面板已交付**——Phase 4 Task 3，纯视图 reactor/session/admission/connection 行、≤16×96B、≤4 Hz、诊断列 profiler 下方；**render debugger 已交付**（2026-10-26，纯视图，见 `docs/design/editor_render_debugger.md`）；Phase 1 另有有界 64×128B 动作日志环）
 - [x] Lua console + remote session（console：Phase 3 editor-local；**remote session dev-tool 形态已交付**——Phase 4 Tasks 1-2：STEP 模式 reactor 由 shell tick 驱动、handler 全在 shell 线程映射可 undo 命令、TLS + CHALLENGE/AUTH-v2 必需、默认 OFF、`--remote` 只绑 loopback + 默认限速、dev PSK（非生产凭证体系）；契约 `docs/design/editor_remote.md`；**未交付**：remote load/save、remote render control、WAN/多客户端管理、服务端 transport close/认证 deadline）
@@ -103,17 +103,17 @@
 
 ### Validation not done
 
-- [ ] 任何 **Windows 上的运行**：`editor.exe` 仅 `zig cc -target x86_64-windows-gnu` 交叉编译（Snowflake OFF 链接通过；Snowflake ON 因缺系统 `nghttp2` 链接受阻，仅对象文件编译通过），无 Windows 二进制被执行；`windows-latest` CI 通道或 Windows 机器才能关闭此项
-- [ ] **editor 协议专用 fuzzer**：现有 5 个 `fuzz_*` smoke（scene/net_packet/decode_image/vfs_pak/asset_gltf）已在 ASan+UBSan 跑过，但没有任何一个覆盖 editor 线协议 ids 4..13 的 handler 解析路径
+- [x] **Windows 上的运行**（2026-10-28 关闭测试层面）：CI 的 MSVC / MinGW / Clang / Clang ASan headless lane 构建并运行 `ctest -LE graphics`（含 `test_editor_shell`、`test_editor_i18n`、`test_editor_fonts`、`test_release_config_contract`），运行 40655375019 全部通过；维护者另在 Windows 本机跑过 Clang 四树全量（见 `docs/Implementation_Status.md` 2026-10-28 “远程 170 个提交在 Windows 上的同步验证”）。**仍未做**：窗口化 `editor.exe` 在 Windows 上的真实交互运行
+- [x] **editor 协议专用 fuzzer**：2026-10-26 交付 `fuzz_editor_remote`（ids 4..13 全部处理器，经真实 envelope 解码与会话管理器；约 96 万条消息 ASan+UBSan 零报告），见 `docs/design/editor_remote.md` 末节
 - [ ] **editor 人工交互验证**：无脚本化交互钩子；live 冒烟只覆盖启动 + 远端协议 E2E，不覆盖鼠标/键盘/gizmo/面板实际操作
-- [ ] 跨平台 native/CI 证据（macOS/Metal、Android、Wayland 等）未采集（见 Cross-cutting 第一条未勾选项）
+- [ ] 跨平台 native/CI 证据：CI 已覆盖 Linux X11/Wayland（OpenGL/Vulkan lavapipe）、macOS Metal/MoltenVK、Windows headless、iOS 编译（运行 40655375019）；**未采集**：Android、Steam Deck 真机、D3D12 真 GPU、iOS 真机
 
 ### Features not delivered (carried from earlier phases)
 
-- [ ] editor：remote load/save、remote render control、纹理 hot reload（viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
+- [ ] editor：remote load/save、remote render control（资源浏览器图片预览的纹理 hot reload 已于 2026-10-28 交付，见 `docs/design/editor_hot_reload.md` §8；材质/场景纹理 hot reload 未做；viewport shader hot reload 已于 2026-10-27 交付；render debugger 面板与场景 hot reload 已于 2026-10-26 交付，见 `docs/design/editor_render_debugger.md`、`docs/design/editor_hot_reload.md`）
 - [ ] editor remote：生产凭证系统（provisioning/轮换/吊销）、WAN/多客户端管理、remote undo-stack 共享（服务端 transport close 与认证 deadline 已于 2026-10-26 交付，见 `docs/design/editor_remote.md` 末节）
 - [ ] Lua：LuaJIT 可选后端评估（gating：baseline 合同稳定）
-- [ ] Security：release 配置测试；server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
+- [ ] Security：server authority 实现；client anti-tamper 代码；应用消息级 replay window；消息/字节级限速；per-device key provisioning tooling
 - [ ] Update/crash：在线更新真实传输、灰度、服务端；crash 服务端符号化/聚类/回归统计、真实上传传输、GPU/RHI/网络/输入摘要捕获
 - [ ] Stage 6：各图形后端（Vulkan/D3D12/Metal/headless）缺口计划、逐后端证据（OpenGL 废弃门已取消，见 Stage 6 OpenGL policy）
 - [ ] X11 全屏在有窗口管理器的会话下不稳定：`test_platform_x11_runtime` 在 GNOME Xwayland（Mutter）上间歇失败，原因与调查记录见 `docs/Implementation_Status.md` 2026-10-28 条目；CI（Xvfb，无 WM）不受影响
