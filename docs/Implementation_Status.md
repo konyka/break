@@ -9369,3 +9369,16 @@ cases that fail without their fix. Both macOS CTest configurations are 191/191
 and Metal graphics is 5/5. The window toggle demo still reports two `ok=1`
 switches on both backends. Open: `BREAK_RENDER_PATH=deferred` on Metal still
 renders near black.
+
+**Metal deferred path (2026-10-28).** `BREAK_RENDER_PATH=deferred` rendered
+near black on Metal (luminance 0.7 vs 37.7 on MoltenVK). The G-Buffer pass
+wrote only about 1.7k of 921k pixels: the per-material `update_buffer` blit
+between `bind_material` and `bind_vertex_buffer` ended the render encoder,
+and the vertex-buffer and texture binds returned without resuming the
+suspended pass. The binds now resume the pass, and fragment textures,
+samplers and the vertex buffer are recorded and replayed on resume. Deferred
+luminance is 37.3 and the Metal vs MoltenVK mean absolute difference fell from
+37.0 to 4.5; forward paths stay at about 7. `test_rhi_metal_resources` is
+54/54 with one new case that fails without the fix. Both macOS CTest
+configurations are 191/191, Metal graphics is 5/5, and the window toggle demo
+still reports two `ok=1` switches per backend.
