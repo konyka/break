@@ -1287,8 +1287,9 @@ target_include_directories(lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
 # Lua calls libm (floor/pow/fmod/...). A static archive resolves left to right,
 # so the math library has to follow liblua.a on every consumer's link line;
 # an INTERFACE dependency guarantees that regardless of how a target orders
-# its own `m`. Windows' CRT carries the math functions itself.
-if(UNIX)
+# its own `m`. Windows' CRT and macOS's libSystem carry the math functions
+# themselves (a separate -lm there only makes ld warn about duplicates).
+if(UNIX AND NOT APPLE)
     target_link_libraries(lua PUBLIC m)
 endif()
 if(MSVC)
