@@ -19,6 +19,7 @@
 #endif
 
 #include "editor_hot_reload.h"
+#include "editor_image_preview.h"
 #include <editor/editor_i18n.h>
 #include "editor_panels.h"
 #include "editor_shader_reload.h"
@@ -27,6 +28,8 @@
 #include "rhi_editor_fake.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
+#include <stb_image_write.h>
 #define BREAK_RUNTIME_TESTING 1
 #include <runtime/runtime_test_hooks.h>
 #undef BREAK_RUNTIME_TESTING
@@ -5943,6 +5946,330 @@ TEST(i18n_set_language_api_is_bounded)
     break_editor_shell_destroy(shell);
 }
 
+/* ---------------- asset-browser image preview + texture hot reload ------- */
+
+typedef struct {
+    char root[512];
+    char a[700];
+    char b[700];
+    BreakEditorImagePreview *preview;
+    char log[8][160];
+    u32 log_count;
+} ImagePreviewFixture;
+
+static void img_mem_write(void *context, void *data, int size) {
+    FILE *f = (FILE *)context;
+    if (size > 0) {
+        (void)fwrite(data, 1u, (size_t)size, f);
+    }
+}
+
+/* Writes a w x h PNG whose pixels are all (shade, 0, 0, 255). */
+static void img_write_png(const char *path, int w, int h, u8 shade) {
+    static u8 px[64 * 64 * 4];
+    FILE *f;
+    int i;
+    ASSERT_TRUE(w > 0 && h > 0 && w <= 64 && h <= 64);
+    for (i = 0; i < w * h; i++) {
+        px[i * 4 + 0] = shade;
+        px[i * 4 + 1] = 0u;
+        px[i * 4 + 2] = 0u;
+        px[i * 4 + 3] = 255u;
+    }
+    f = fopen(path, "wb");
+    ASSERT_NOT_NULL(f);
+    ASSERT_TRUE(stbi_write_png_to_func(img_mem_write, f, w, h, 4, px, w * 4) != 0);
+    fclose(f);
+    hr_bump_mtime(path);
+}
+
+static void img_log(void *user, const char *line) {
+    ImagePreviewFixture *fx = (ImagePreviewFixture *)user;
+    if (fx->log_count < 8u) {
+        snprintf(fx->log[fx->log_count], sizeof(fx->log[0]), "%s", line);
+    }
+    fx->log_count++;
+}
+
+static void img_fixture_open(ImagePreviewFixture *fx, const char *name) {
+    memset(fx, 0, sizeof(*fx));
+    test_tmp(fx->root, sizeof(fx->root), name);
+    ASSERT_EQ(TEST_MKDIR(fx->root), 0);
+    snprintf(fx->a, sizeof(fx->a), "%s/a.png", fx->root);
+    snprintf(fx->b, sizeof(fx->b), "%s/b.png", fx->root);
+    fx->preview = break_editor_image_preview_create();
+    ASSERT_NOT_NULL(fx->preview);
+    break_editor_image_preview_set_logger(fx->preview, img_log, fx);
+}
+
+static void img_fixture_close(ImagePreviewFixture *fx) {
+    if (fx->preview != NULL) {
+        break_editor_image_preview_set_shutdown_timeout_for_test(fx->preview,
+                                                                 2000u);
+        break_editor_image_preview_destroy(fx->preview);
+        fx->preview = NULL;
+    }
+    remove(fx->a);
+    remove(fx->b);
+    TEST_RMDIR(fx->root);
+}
+
+static BreakEditorImagePreviewStats img_stats(const ImagePreviewFixture *fx) {
+    BreakEditorImagePreviewStats s;
+    memset(&s, 0, sizeof(s));
+    (void)break_editor_image_preview_stats(fx->preview, &s);
+    return s;
+}
+
+#define IMG_WAIT(fx_, cond_)                                                 \
+    do {                                                                     \
+        int img_i_;                                                          \
+        for (img_i_ = 0; img_i_ < 3000 && !(cond_); img_i_++) {              \
+            break_editor_image_preview_tick((fx_)->preview);                 \
+            time_sleep_us(2000u);                                            \
+        }                                                                    \
+    } while (0)
+
+static RHIDevice *img_fake_device(void) {
+    /* the fake RHI ignores the device pointer; any non-NULL value selects
+     * the "has a device" path */
+    return (RHIDevice *)(uintptr_t)0x1;
+}
+
+static void image_preview_load_reload_body(ImagePreviewFixture *fx) {
+    BreakEditorImagePreviewStats s;
+    EditorRhiFakeStats fake;
+    RHITexture first;
+    img_fixture_open(fx, "editor_image_preview_reload");
+    break_editor_image_preview_set_device(fx->preview, img_fake_device());
+    img_write_png(fx->a, 8, 4, 100u);
+    ASSERT_TRUE(break_editor_image_preview_set_path(fx->preview, fx->a));
+    ASSERT_TRUE(strcmp(break_editor_image_preview_path(fx->preview), fx->a) == 0);
+    IMG_WAIT(fx, img_stats(fx).reloads == 1u);
+    s = img_stats(fx);
+    ASSERT_EQ(s.reloads, 1u);
+    ASSERT_TRUE(s.has_image);
+    ASSERT_EQ(s.width, 8u);
+    ASSERT_EQ(s.height, 4u);
+    ASSERT_TRUE(s.watching);
+    ASSERT_EQ(s.last_result, BREAK_EDITOR_IMAGE_PREVIEW_APPLIED);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 1u);
+    ASSERT_EQ(fake.last_texture_w, 8u);
+    first = break_editor_image_preview_texture(fx->preview);
+    ASSERT_TRUE(editor_rhi_fake_texture_live(first));
+
+    /* external rewrite with a new size: watcher-driven reload */
+    img_write_png(fx->a, 16, 2, 200u);
+    IMG_WAIT(fx, img_stats(fx).reloads == 2u);
+    s = img_stats(fx);
+    ASSERT_EQ(s.reloads, 2u);
+    ASSERT_EQ(s.width, 16u);
+    ASSERT_EQ(s.height, 2u);
+    ASSERT_TRUE(s.events >= 1u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 2u);
+    ASSERT_EQ(fake.texture_destroys, 1u);
+    ASSERT_EQ(fake.live_textures, 1u);
+    ASSERT_FALSE(editor_rhi_fake_texture_live(first));
+    ASSERT_TRUE(fx->log_count >= 2u);
+}
+
+TEST(image_preview_loads_and_hot_reloads_texture)
+{
+    ImagePreviewFixture fx;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    image_preview_load_reload_body(&fx);
+    img_fixture_close(&fx);
+    {
+        EditorRhiFakeStats fake;
+        editor_rhi_fake_stats(&fake);
+        ASSERT_EQ(fake.live_textures, 0u); /* destroy released it */
+    }
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+static void image_preview_failure_keeps_old_body(ImagePreviewFixture *fx) {
+    BreakEditorImagePreviewStats s;
+    EditorRhiFakeStats fake;
+    RHITexture kept;
+    img_fixture_open(fx, "editor_image_preview_keep_old");
+    break_editor_image_preview_set_device(fx->preview, img_fake_device());
+    img_write_png(fx->a, 4, 4, 50u);
+    ASSERT_TRUE(break_editor_image_preview_set_path(fx->preview, fx->a));
+    IMG_WAIT(fx, img_stats(fx).reloads == 1u);
+    kept = break_editor_image_preview_texture(fx->preview);
+    ASSERT_TRUE(editor_rhi_fake_texture_live(kept));
+
+    /* garbage: probe fails on the worker */
+    hr_write_text(fx->a, "not an image at all");
+    hr_bump_mtime(fx->a);
+    IMG_WAIT(fx, img_stats(fx).failed == 1u && !img_stats(fx).busy);
+    s = img_stats(fx);
+    ASSERT_EQ(s.failed, 1u);
+    ASSERT_EQ(s.reloads, 1u);
+    ASSERT_EQ(s.width, 4u);
+    ASSERT_EQ(s.last_result, BREAK_EDITOR_IMAGE_PREVIEW_FAILED_KEEP_OLD);
+    ASSERT_TRUE(rhi_handle_valid(break_editor_image_preview_texture(fx->preview)));
+    ASSERT_TRUE(editor_rhi_fake_texture_live(kept));
+
+    /* a valid image whose GPU create fails also keeps the old texture */
+    editor_rhi_fake_fail_texture_creates(1u);
+    img_write_png(fx->a, 6, 6, 90u);
+    IMG_WAIT(fx, img_stats(fx).failed == 2u && !img_stats(fx).busy);
+    s = img_stats(fx);
+    ASSERT_EQ(s.failed, 2u);
+    ASSERT_EQ(s.width, 4u);
+    ASSERT_TRUE(editor_rhi_fake_texture_live(kept));
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_destroys, 0u);
+
+    /* recovery */
+    ASSERT_TRUE(break_editor_image_preview_request(fx->preview));
+    IMG_WAIT(fx, img_stats(fx).reloads == 2u);
+    ASSERT_EQ(img_stats(fx).width, 6u);
+    ASSERT_FALSE(editor_rhi_fake_texture_live(kept));
+}
+
+TEST(image_preview_failed_reload_keeps_current_texture)
+{
+    ImagePreviewFixture fx;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    image_preview_failure_keeps_old_body(&fx);
+    img_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+static void image_preview_switch_body(ImagePreviewFixture *fx) {
+    BreakEditorImagePreviewStats s;
+    EditorRhiFakeStats fake;
+    u64 popped;
+    img_fixture_open(fx, "editor_image_preview_switch");
+    break_editor_image_preview_set_device(fx->preview, img_fake_device());
+    img_write_png(fx->a, 3, 3, 10u);
+    img_write_png(fx->b, 5, 7, 20u);
+    /* hold the worker on a's request, then switch to b: a's late result
+     * must not become the preview */
+    popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                  memory_order_acquire);
+    break_runtime_test_reload_set_gates(0u, 1u);
+    ASSERT_TRUE(break_editor_image_preview_set_path(fx->preview, fx->a));
+    IMG_WAIT(fx, atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                      memory_order_acquire) > popped);
+    ASSERT_TRUE(img_stats(fx).busy);
+    ASSERT_TRUE(break_editor_image_preview_set_path(fx->preview, fx->b));
+    break_runtime_test_reload_set_gates(0u, 0u);
+    IMG_WAIT(fx, img_stats(fx).reloads == 1u && !img_stats(fx).busy);
+    s = img_stats(fx);
+    ASSERT_EQ(s.reloads, 1u);
+    ASSERT_EQ(s.width, 5u);
+    ASSERT_EQ(s.height, 7u);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 1u);
+    ASSERT_EQ(fake.last_texture_w, 5u);
+    ASSERT_TRUE(strcmp(break_editor_image_preview_path(fx->preview), fx->b) == 0);
+
+    /* only b is watched now: editing a does nothing */
+    img_write_png(fx->a, 9, 9, 30u);
+    {
+        int i;
+        for (i = 0; i < 300; i++) {
+            break_editor_image_preview_tick(fx->preview);
+            time_sleep_us(2000u);
+        }
+    }
+    ASSERT_EQ(img_stats(fx).reloads, 1u);
+    ASSERT_EQ(img_stats(fx).width, 5u);
+}
+
+TEST(image_preview_switching_files_drops_the_old_request)
+{
+    ImagePreviewFixture fx;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    image_preview_switch_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    img_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
+static void image_preview_headless_and_bounds_body(ImagePreviewFixture *fx) {
+    BreakEditorImagePreviewStats s;
+    EditorRhiFakeStats fake;
+    char long_path[BREAK_EDITOR_IMAGE_PREVIEW_PATH_CAPACITY + 16u];
+    img_fixture_open(fx, "editor_image_preview_headless");
+    s = img_stats(fx);
+    ASSERT_FALSE(s.has_image);
+    ASSERT_EQ(s.last_result, BREAK_EDITOR_IMAGE_PREVIEW_EMPTY);
+    ASSERT_FALSE(break_editor_image_preview_request(fx->preview));
+    ASSERT_FALSE(break_editor_image_preview_set_path(fx->preview, NULL));
+    ASSERT_FALSE(break_editor_image_preview_set_path(fx->preview, ""));
+    ASSERT_FALSE(break_editor_image_preview_set_path(fx->preview, "noslash.png"));
+    memset(long_path, 'x', sizeof(long_path) - 1u);
+    long_path[0] = '/';
+    long_path[sizeof(long_path) - 1u] = '\0';
+    ASSERT_FALSE(break_editor_image_preview_set_path(fx->preview, long_path));
+    ASSERT_TRUE(break_editor_image_preview_path(fx->preview)[0] == '\0');
+
+    /* no device: decodes and reports, creates no texture */
+    img_write_png(fx->a, 2, 3, 70u);
+    ASSERT_TRUE(break_editor_image_preview_set_path(fx->preview, fx->a));
+    IMG_WAIT(fx, img_stats(fx).reloads == 1u);
+    s = img_stats(fx);
+    ASSERT_TRUE(s.has_image);
+    ASSERT_EQ(s.width, 2u);
+    ASSERT_EQ(s.height, 3u);
+    ASSERT_FALSE(rhi_handle_valid(break_editor_image_preview_texture(fx->preview)));
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 0u);
+
+    /* attaching a device uploads the current image once */
+    break_editor_image_preview_set_device(fx->preview, img_fake_device());
+    break_editor_image_preview_tick(fx->preview);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.texture_creates, 1u);
+    ASSERT_TRUE(rhi_handle_valid(break_editor_image_preview_texture(fx->preview)));
+    /* detaching destroys it */
+    break_editor_image_preview_set_device(fx->preview, NULL);
+    editor_rhi_fake_stats(&fake);
+    ASSERT_EQ(fake.live_textures, 0u);
+    ASSERT_TRUE(img_stats(fx).has_image);
+
+    /* bounded shutdown with a held worker: false, then retry succeeds */
+    break_runtime_test_reload_set_gates(0u, 1u);
+    ASSERT_TRUE(break_editor_image_preview_request(fx->preview));
+    {
+        u64 popped = atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                          memory_order_acquire);
+        IMG_WAIT(fx, atomic_load_explicit(&g_break_runtime_test_reload_popped,
+                                          memory_order_acquire) > popped);
+    }
+    break_editor_image_preview_set_shutdown_timeout_for_test(fx->preview, 50u);
+    ASSERT_FALSE(break_editor_image_preview_shutdown(fx->preview));
+    ASSERT_EQ(img_stats(fx).last_result, BREAK_EDITOR_IMAGE_PREVIEW_UNAVAILABLE);
+    ASSERT_FALSE(break_editor_image_preview_set_path(fx->preview, fx->b));
+    break_runtime_test_reload_set_gates(0u, 0u);
+    break_editor_image_preview_set_shutdown_timeout_for_test(fx->preview, 2000u);
+    ASSERT_TRUE(break_editor_image_preview_shutdown(fx->preview));
+}
+
+TEST(image_preview_headless_device_switch_and_bounded_shutdown)
+{
+    ImagePreviewFixture fx;
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    image_preview_headless_and_bounds_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    img_fixture_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+}
+
 TEST_MAIN_BEGIN()
     RUN_TEST(shell_create_and_destroy);
     RUN_TEST(i18n_shell_created_in_chinese_shows_chinese_text);
@@ -6004,6 +6331,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);
     RUN_TEST(shader_reload_one_sided_failure_preserves_pipeline);
     RUN_TEST(shader_reload_dead_commit_commands_do_not_block_next_reload);
+    RUN_TEST(image_preview_loads_and_hot_reloads_texture);
+    RUN_TEST(image_preview_failed_reload_keeps_current_texture);
+    RUN_TEST(image_preview_switching_files_drops_the_old_request);
+    RUN_TEST(image_preview_headless_device_switch_and_bounded_shutdown);
     RUN_TEST(shader_reload_second_request_admission_failure_recovers);
     RUN_TEST(shader_reload_manual_request_survives_watch_unavailable);
     RUN_TEST(shader_reload_manual_only_diagnostic_keeps_busy_and_counts);
