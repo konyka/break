@@ -1284,6 +1284,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_compile_definitions(lua PRIVATE LUA_USE_IOS)
 endif()
 target_include_directories(lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+# Lua calls libm (floor/pow/fmod/...). A static archive resolves left to right,
+# so the math library has to follow liblua.a on every consumer's link line;
+# an INTERFACE dependency guarantees that regardless of how a target orders
+# its own `m`. Windows' CRT carries the math functions itself.
+if(UNIX)
+    target_link_libraries(lua PUBLIC m)
+endif()
 if(MSVC)
     target_compile_options(lua PRIVATE /w)
 else()
