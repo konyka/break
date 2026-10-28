@@ -1,6 +1,7 @@
 #include "re_internal.h"
 #include <ctype.h>
 #include <math.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -368,7 +369,13 @@ static void sb_append(re_strbuf_t *sb, const char *data, size_t size) {
     size_t capacity;
     char *grown;
     if (sb->status != RE_STATUS_OK || size == 0u) return;
-    if (sb->size > SIZE_MAX - size - 1u) { sb->status = RE_STATUS_LIMIT; return; }
+    /* No object exceeds PTRDIFF_MAX bytes; saying so also lets the
+     * optimizer bound the memcpy below (GCC 16 -O3 otherwise reports a
+     * SIZE_MAX bound on an inlined path). */
+    if (size > (size_t)PTRDIFF_MAX || sb->size > (size_t)PTRDIFF_MAX - size - 1u) {
+        sb->status = RE_STATUS_LIMIT;
+        return;
+    }
     need = sb->size + size + 1u;
     if (need > sb->capacity) {
         capacity = sb->capacity == 0u ? 32u : sb->capacity;

@@ -233,8 +233,12 @@ static usize bc_decode_hexblob(const u8 *line, usize n, const char *key, u8 *out
 /* Pass 2: fill the record (cannot fail — pass 1 validated every line). */
 static void bc_fill(BreakCrashRecord *r, const u8 *bytes, usize len) {
     BcCursor cur = {bytes, len, 0};
-    const u8 *line;
-    usize n;
+    /* Pass 1 guarantees every bc_next_line below succeeds; the initial
+     * values only matter if the two passes ever disagree, and then they
+     * keep the reads inside `bytes` instead of using an indeterminate
+     * pointer. */
+    const u8 *line = bytes;
+    usize n = 0;
     u64 v = 0;
 
     bc_next_line(&cur, &line, &n); /* magic — validated */

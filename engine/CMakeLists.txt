@@ -3483,6 +3483,22 @@ endif()
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_package_contract.cmake)
     set_tests_properties(test_release_package_contract PROPERTIES
         LABELS "headless;platform_contract;release_gate")
+    # Shipped-binary contract: no remote/update surface in the runtime
+    # binaries, test hooks held to a baseline allowlist, editor --remote fails
+    # closed. Runs in every configuration; the Release tree is the one that
+    # matters for shipping.
+    if(CMAKE_NM)
+        add_test(NAME test_release_config_contract
+            COMMAND ${CMAKE_COMMAND}
+                -DNM=${CMAKE_NM}
+                -DENGINE_DEMO=$<TARGET_FILE:engine_demo>
+                -DDXX_BREAK=$<TARGET_FILE:dxx_break>
+                -DEDITOR=$<TARGET_FILE:editor>
+                -DBUILD_TYPE=${CMAKE_BUILD_TYPE}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_release_config_contract.cmake)
+        set_tests_properties(test_release_config_contract PROPERTIES
+            LABELS "headless;platform_contract;release_gate")
+    endif()
     option(RHI_EVIDENCE_REQUIRE_LOCAL_FROZEN
         "Require local frozen RHI evidence files in test_rhi_evidence_register" OFF)
     add_test(NAME test_rhi_evidence_register

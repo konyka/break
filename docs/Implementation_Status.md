@@ -7,6 +7,26 @@
 - **CI**：MSVC / MinGW lane 的 configure 加 `-DENGINE_BUILD_FUZZ_SMOKE=ON`（该选项默认 OFF，不加则那一步显式构建的 5 个 fuzz 目标不再被测试注册）。
 - **验证**（本机 Windows，亲跑）：Clang 四棵树全量 ctest——OpenGL 223/223、Vulkan 226/226、D3D12 231/231、ASan 220/220（`-LE graphics`，`detect_leaks=0`）；MSVC（cl 19.51，`/W4 /WX`）构建 0 诊断、ctest 229/229（1 个 D3D12 依赖门 skip）；MinGW（GCC 16.2）构建 0 诊断、ctest 224/224，fuzz 冒烟 5/5。三后端 demo（全屏 ×2、标题栏 ×2 切换）GL/Vulkan/D3D12 均正常，Vulkan validation 消息 0，截图非空。`test_runtime_reload` 修复前 96 并发时 2 次挂起，修复后 96 并发 / 192 并发各 0 次挂起；`test_runtime_io` 96 并发 0 次。
 - **边界**：Linux 容器镜像 `ghcr.io/konyka/break-ci-linux` 与 macOS/iOS lane 的 OpenSSL 问题本轮未改、未验证（Linux 需镜像里装 `libssl-dev` 并重建镜像；这是 CI 镜像侧改动，非 Windows 范围）；`test_platform_win32_runtime` 的剪贴板用例依赖本机剪贴板未被其他进程占用；`ilammy/msvc-dev-cmd@v1` 的 Node 20 弃用提示按要求维持现状；lldb 缺 `python311.dll` 无法附加，挂起根因靠线程状态与计时器粒度探针（`Sleep(10)` 内 `GetTickCount64` 在 2000 次里有 30 次增量 ≤1 ms，QPC 为 0 次）确认。
+## 本轮更新：发布（Release）配置测试（2026-10-28）
+
+- **起因**：TODO 中“release 配置测试不存在”。本机此前从未构建过 Release 树（CI 的 Release lane 用 clang）。用 GCC 16.2 `-O3 -DNDEBUG` 配置多后端 + Snowflake 树后，构建在 6 处 `-Werror` 失败，构建通过后 `test_break_crash` 又有 4 项失败。
+- **修复（逐个查根因）**：
+  - `break_crash.c` `bc_fill`：`line`/`n` 未初始化即可能被使用（依赖“第一遍已校验”的跨函数不变量），改为指向记录起点的初值，两遍不一致时也不会读未定义指针；
+  - `rule_engine/builtins.c` `sb_append`：加 `PTRDIFF_MAX` 上界（任何对象都不超过它），优化器不再推出 SIZE_MAX 的 memcpy；
+  - `rhi_vk.c` `rhi_backend_get_device_info`：`strncpy` 在驱动名填满缓冲时不写结尾 NUL，依赖调用方事先清零；改为 `snprintf`（**真实缺陷**）；
+  - `test_platform_display_media.c`：三个用例声明 256 字节 EDID 却用 `make_edid(hdr=false)` 只清前 128 字节，扩展块校验和累加了未初始化栈内容（**测试缺陷**，结果取决于栈上残留）；
+  - `test_platform_fs_write.c` / `test_break_crash.c` 的 `join2`：路径截断会让测试作用于另一个文件，改为截断即 abort；
+  - `test_break_crash.c` `crash_null_store`：`*(volatile char *)0 = 0` 是 UB，GCC `-O3` 把整个函数删掉，子进程以 43 正常退出，**Release 构建实际上没有在测崩溃捕获**；改为经 volatile 对象取得空地址。
+- **新增 `test_release_config_contract`**（`engine/tests/test_release_config_contract.cmake`，标签 `release_gate`，所有配置都注册）：① `engine_demo`/`dxx_break` 不含 `break_net_`/`break_session_`/`break_update_`/`break_crypto_`/`break_editor_`/`snow_` 任何符号（无远程、无任何更新路径）；② 三个发布二进制中的 `*_for_test`/`*test_hook*` 必须在基线白名单内（26 个，现状），新增即失败；③ `editor --remote` 无 TLS 材料、`--remote-*` 无 `--remote` 均退出码 2。变异自检：白名单删一项、把 editor 当作运行时二进制、用 `/usr/bin/true` 冒充 editor，各自使门失败。
+- **验证**：Release 树（GCC 16 `-O3`，多后端 + Snowflake）全量 226/226、图形 7/7（不含 x11_runtime）；Debug 树 OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222；ASan/TSan 下 `test_break_crash`、`test_platform_display_media`、`test_platform_fs_write`、`test_editor_shell`、rule_engine 套件零报告。
+- **边界**：契约钉住的是现状——发布二进制仍带测试钩子（见 `docs/design/security_threat_model.md` §10 第 8 条）；未在 clang Release、MSVC、macOS 上运行本契约（nm 解析已兼容 Mach-O 前导下划线，但未实测）。
+
+## 本轮更新：`test_platform_x11_runtime` 在 GNOME Xwayland 上不稳定——调查结论（2026-10-28，未修）
+
+- **现象**：上游新增的 X11 全屏/标题栏用例在本机（Fedora GNOME，Mutter 作为 Xwayland 的窗口管理器）每次失败 0–8 项，纯 origin/master 同样如此；CI 在无窗口管理器的 Xvfb 上运行，走 motif + 自行移动/缩放的回退路径，不受影响。
+- **证据**（在 `window_x11.c` 临时加 MapNotify/ConfigureNotify/PropertyNotify(_NET_WM_STATE) 日志，多次运行）：① `XMapWindow` 之后、Mutter 完成映射之前 `XGetWindowAttributes` 仍报 IsUnmapped，此时全屏请求走“未映射时直接改 `_NET_WM_STATE`”分支，Mutter 映射时忽略它（最终状态只有 `_NET_WM_STATE_FOCUSED`）；② Mutter 在测试快速创建/销毁窗口时会把同一窗口取消映射再映射，并出现 1×1、320×203 等中间几何；离开全屏后偶尔恢复到 1×1。
+- **尝试过的两个修复**（均已还原）：记录“已请求映射”使映射竞态期间改走 ClientMessage——失败降到 1–2 项但仍不稳定；在 MapNotify 时按请求的模式补发——效果相同。按调试流程两次未根治即停止，不再叠加修改。
+- **结论与后续**：真实问题涉及 Mutter 对未带 `WM_NORMAL_HINTS` 的窗口的映射/几何处理，需要在有窗口管理器的环境（GNOME/KDE 原生 X11 会话或 CI 增加带 WM 的 lane）单独排查；本机图形 lane 验证时按名称排除该用例。`engine_demo` 的 Alt+Enter 在本机未做人工验证。
 
 ## 本轮更新：本地 master 与 origin/master 合流（2026-10-28）
 
