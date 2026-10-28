@@ -109,6 +109,7 @@ bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user)
     return accepted;
 }
 
+#ifdef BREAK_NET_TESTING
 static BreakSessionAuthTestHook break_session_auth_test_hook;
 static void *break_session_auth_test_hook_user;
 
@@ -118,6 +119,7 @@ void break_session_auth_set_test_hook_for_test(BreakSessionAuthTestHook hook,
     break_session_auth_test_hook = hook;
     break_session_auth_test_hook_user = user;
 }
+#endif
 
 static bool break_session_auth_operation_begin(BreakSessionManager *manager,
                                                BreakNetAuthKeyFn *fn, void **user)
@@ -128,9 +130,11 @@ static bool break_session_auth_operation_begin(BreakSessionManager *manager,
     *fn = break_session_auth_fn;
     *user = break_session_auth_user;
     break_session_auth_lock_release();
+#ifdef BREAK_NET_TESTING
     if (break_session_auth_test_hook != NULL) {
         break_session_auth_test_hook(break_session_auth_test_hook_user);
     }
+#endif
     return *fn != NULL;
 }
 

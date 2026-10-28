@@ -13,16 +13,9 @@ static const char *g_active_name = "none";
 static const RHIApi *g_active_api;
 static const char *g_selection_reason = "none";
 
-static void deactivate(void);
-
 const char *rhi_runtime_active_backend(void) { return g_active_name; }
 const char *rhi_runtime_selection_reason(void) { return g_selection_reason; }
 
-void rhi_runtime_reset_for_test(void) {
-    deactivate();
-    g_selection_reason = "none";
-    rhi_rollout_set_runtime_selection(NULL, NULL);
-}
 
 static const char *runtime_getenv(const RHIRuntimeConfig *cfg, const char *n) {
     return cfg->getenv_fn != NULL ? cfg->getenv_fn(n) : getenv(n);
@@ -62,7 +55,6 @@ static void install(const RHIApi *api, const char *name) {
     g_active_name = name;
 }
 
-static void deactivate(void) { install(NULL, "none"); }
 
 static void record_selection(const RHIRuntimeBackendDesc *b, const char *reason) {
     g_selection_reason = reason;
@@ -158,3 +150,11 @@ RHIDevice *rhi_runtime_create_explicit(const RHIRuntimeConfig *cfg,
     }
     return NULL;
 }
+
+#ifdef BREAK_RHI_RUNTIME_TESTING
+void rhi_runtime_reset_for_test(void) {
+    install(NULL, "none");
+    g_selection_reason = "none";
+    rhi_rollout_set_runtime_selection(NULL, NULL);
+}
+#endif

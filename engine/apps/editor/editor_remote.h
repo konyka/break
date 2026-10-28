@@ -72,8 +72,10 @@ uint32_t break_editor_remote_connections_snapshot(const BreakEditorRemote *r,
  * per-connection id for snapshot rows (0 when unknown). */
 u64 break_editor_remote_poll_count(const BreakEditorRemote *r);
 u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 connection_key);
-/* Test-only accessors for diagnostics. */
+#ifdef BREAK_EDITOR_SHELL_TESTING
+/* Test-only accessor (test builds only). */
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r);
+#endif
 
 /* Phase 4 Task 3: READ-ONLY diagnostics accessors for the network panel
  * (editor_panel_network.c). None of them steps the reactor, drains events,

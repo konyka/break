@@ -136,8 +136,20 @@ static void break_net_identity_on_closed(BreakNetReactor *reactor, uint64_t key)
 static void break_net_identity_on_send_drained(BreakNetReactor *reactor, uint64_t key);
 static void break_net_admission_destroy(BreakNetAdmissionState *admission);
 static bool break_net_admission_admit(void *admit_ud, const char *ip, uint16_t port);
+#ifdef BREAK_NET_TESTING
 static unsigned int break_net_new_connection_failure_for_test;
 static BreakNetStartFailureForTest break_net_start_failure_for_test;
+#else
+/* Release: the injection points below compare against constants and fold
+ * away; no writable test state ships. */
+#define break_net_new_connection_failure_for_test 0u
+#endif
+#ifdef BREAK_NET_TESTING
+#define BREAK_NET_START_FAIL_IS(kind) \
+    (break_net_start_failure_for_test == BREAK_NET_START_FAIL_##kind)
+#else
+#define BREAK_NET_START_FAIL_IS(kind) false
+#endif
 
 struct BreakNetReactor {
     BreakNetReactorConfig config;
@@ -148,7 +160,9 @@ struct BreakNetReactor {
     PlatformMutex lifecycle_mutex;
     PlatformCond lifecycle_cond;
     bool step_active;
+#ifdef BREAK_NET_TESTING
     uint32_t step_delay_ms_for_test;
+#endif
     PlatformThread host_thread;
     bool host_thread_valid;
     bool stop_cleanup_in_progress;
@@ -440,7 +454,9 @@ static void break_net_on_new_connection(snow_connection_t *connection, void *ud)
 #endif
     if (context == NULL || break_net_new_connection_failure_for_test == 1) {
         free(context);
+#ifdef BREAK_NET_TESTING
         break_net_new_connection_failure_for_test = 0;
+#endif
         break_net_reactor_fail(reactor);
         return;
     }
@@ -1382,6 +1398,7 @@ void break_net_reactor_destroy(BreakNetReactor *reactor)
     free(reactor);
 }
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_start_failure_for_test(BreakNetReactor *reactor,
                                               BreakNetStartFailureForTest failure)
 {
@@ -1392,7 +1409,9 @@ bool break_net_reactor_start_failure_for_test(BreakNetReactor *reactor,
     break_net_start_failure_for_test = BREAK_NET_START_FAIL_NONE;
     return result;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 int break_net_reactor_state_for_test(const BreakNetReactor *reactor)
 {
     int state;
@@ -1402,6 +1421,7 @@ int break_net_reactor_state_for_test(const BreakNetReactor *reactor)
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
     return state;
 }
+#endif
 
 bool break_net_reactor_start(BreakNetReactor *reactor)
 {
@@ -1430,7 +1450,7 @@ bool break_net_reactor_start(BreakNetReactor *reactor)
         break_net_reactor_start_failure_cleanup(reactor);
         return false;
     }
-    status = break_net_start_failure_for_test == BREAK_NET_START_FAIL_SETTER
+    status = BREAK_NET_START_FAIL_IS(SETTER)
                  ? SNOW_ERR_INVAL
                  : snow_net_thread_set_max_conn(reactor->snow_thread,
                                                 reactor->config.max_connections);
@@ -1449,7 +1469,7 @@ bool break_net_reactor_start(BreakNetReactor *reactor)
         handlers.on_packet = break_net_on_packet;
         handlers.on_send_drained = break_net_on_send_drained;
         handlers.on_closed = break_net_on_closed;
-        status = break_net_start_failure_for_test == BREAK_NET_START_FAIL_REGISTRATION
+        status = BREAK_NET_START_FAIL_IS(REGISTRATION)
                      ? SNOW_ERR_INVAL
                      : snow_net_thread_add_acceptor_with_handlers_ex(
                            reactor->snow_thread, reactor->acceptor, handlers, reactor,
@@ -1523,8 +1543,12 @@ bool break_net_reactor_step(BreakNetReactor *reactor, int timeout_ms)
         return false;
     }
     reactor->step_active = true;
+#ifdef BREAK_NET_TESTING
     delay_ms = reactor->step_delay_ms_for_test;
     reactor->step_delay_ms_for_test = 0u;
+#else
+    delay_ms = 0u;
+#endif
     snow_thread = reactor->snow_thread;
     platform_mutex_unlock(&reactor->lifecycle_mutex);
 
@@ -1698,6 +1722,7 @@ bool break_net_reactor_event_queue_empty(BreakNetReactor *reactor)
     return empty;
 }
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_enqueue_opened_for_test(BreakNetReactor *reactor,
                                                uint64_t connection_key)
 {
@@ -1707,7 +1732,9 @@ bool break_net_reactor_enqueue_opened_for_test(BreakNetReactor *reactor,
     if (!break_net_event_push(reactor, &event)) return false;
     return true;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_pending_send_close_contract_for_test(BreakNetReactor *reactor)
 {
     BreakNetConnectionIdentity *identity;
@@ -1738,7 +1765,9 @@ bool break_net_reactor_pending_send_close_contract_for_test(BreakNetReactor *rea
     snow_socket_addr_free(addr);
     return deferred && released;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_new_connection_failure_cleanup_for_test(
     BreakNetReactor *reactor, BreakNetNewConnectionFailureForTest failure)
 {
@@ -1765,7 +1794,9 @@ bool break_net_reactor_new_connection_failure_cleanup_for_test(
     snow_connection_free(connection);
     return cleaned && reusable;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_malformed_packet_cleanup_for_test(BreakNetReactor *reactor)
 {
     snow_connection_t *connection = NULL;
@@ -1788,7 +1819,9 @@ bool break_net_reactor_malformed_packet_cleanup_for_test(BreakNetReactor *reacto
     snow_connection_free(connection);
     return empty;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
                                                 uint64_t connection_key,
                                                 uint16_t message_id,
@@ -1808,6 +1841,7 @@ bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
     }
     return true;
 }
+#endif
 
 BreakNetSendResult break_net_reactor_send(BreakNetReactor *reactor,
                                           uint64_t connection_key,
@@ -1882,6 +1916,7 @@ size_t break_net_reactor_outbound_count(BreakNetReactor *reactor)
     return count;
 }
 
+#ifdef BREAK_NET_TESTING
 size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor)
 {
     size_t attempts;
@@ -1891,7 +1926,9 @@ size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor)
     platform_mutex_unlock(&reactor->queue_mutex);
     return attempts;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 size_t break_net_reactor_connection_identity_count_for_test(BreakNetReactor *reactor)
 {
     size_t count = 0u;
@@ -1903,7 +1940,9 @@ size_t break_net_reactor_connection_identity_count_for_test(BreakNetReactor *rea
     platform_mutex_unlock(&reactor->queue_mutex);
     return count;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_stop_pending_for_test(const BreakNetReactor *reactor)
 {
     bool pending;
@@ -1914,7 +1953,9 @@ bool break_net_reactor_stop_pending_for_test(const BreakNetReactor *reactor)
     platform_mutex_unlock((PlatformMutex *)(uintptr_t)&reactor->lifecycle_mutex);
     return pending;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 bool break_net_reactor_step_delay_for_test(BreakNetReactor *reactor, uint32_t delay_ms)
 {
     bool accepted = false;
@@ -1927,7 +1968,9 @@ bool break_net_reactor_step_delay_for_test(BreakNetReactor *reactor, uint32_t de
     platform_mutex_unlock(&reactor->lifecycle_mutex);
     return accepted;
 }
+#endif
 
+#ifdef BREAK_NET_TESTING
 BreakNetPollResult break_net_reactor_poll_outbound_for_test(
     BreakNetReactor *reactor, uint64_t *connection_key, BreakNetOwnedMessage *message)
 {
@@ -1950,3 +1993,4 @@ BreakNetPollResult break_net_reactor_poll_outbound_for_test(
     platform_mutex_unlock(&reactor->queue_mutex);
     return BREAK_NET_EVENT_OK;
 }
+#endif

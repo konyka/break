@@ -611,6 +611,26 @@ if(BREAK_ENABLE_SNOWFLAKE)
         target_compile_definitions(break_net PUBLIC BREAK_ENABLE_CRYPTO=1)
         target_link_libraries(break_net PUBLIC break_crypto)
     endif()
+    # Test variant: same sources with the BREAK_NET_TESTING seams (fault
+    # injection, step delay, queue probes, auth snapshot hook). Only the
+    # break_net/break_session unit tests link it; the editor and every other
+    # consumer link the seam-free break_net (test_release_config_contract).
+    if(ENGINE_BUILD_TESTS)
+        get_target_property(_break_net_sources break_net SOURCES)
+        add_library(break_net_test STATIC EXCLUDE_FROM_ALL ${_break_net_sources})
+        set_property(TARGET break_net_test PROPERTY C_STANDARD 11)
+        target_include_directories(break_net_test PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/src)
+        target_include_directories(break_net_test PRIVATE
+            ${SNOWFLAKE_SOURCE_DIR}/include)
+        target_link_libraries(break_net_test PUBLIC break_replication_core snow::net)
+        target_compile_definitions(break_net_test PUBLIC
+            BREAK_ENABLE_SNOWFLAKE=1 BREAK_NET_TESTING=1)
+        if(BREAK_ENABLE_CRYPTO)
+            target_compile_definitions(break_net_test PUBLIC BREAK_ENABLE_CRYPTO=1)
+            target_link_libraries(break_net_test PUBLIC break_crypto)
+        endif()
+    endif()
 endif()
 
 # Product build identity: short git hash baked into break_version.c (engine)
@@ -2943,7 +2963,7 @@ endif()
         src/rhi/rhi_rollout.c)
     target_include_directories(test_rhi_runtime_select PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rhi_runtime_select PRIVATE
-        ENGINE_RHI_ROLLOUT_CONFIG_VERSION=0)
+        ENGINE_RHI_ROLLOUT_CONFIG_VERSION=0 BREAK_RHI_RUNTIME_TESTING=1)
     add_test(NAME test_rhi_runtime_select COMMAND test_rhi_runtime_select)
     set_tests_properties(test_rhi_runtime_select PROPERTIES LABELS "headless;platform_contract")
     # Symbol shape of the linked app: forwarders + namespaced backends in the
@@ -3092,12 +3112,26 @@ endif()
         LABELS "headless;platform_contract")
 
     if(ENGINE_VULKAN)
+        # The allocation-failure seam is compiled only into this test
+        # variant of the Vulkan backend (plain single-backend shape, no
+        # namespace), so the shipped engine_rhi_vulkan never carries it.
+        add_library(engine_rhi_vulkan_alloc_fault STATIC EXCLUDE_FROM_ALL
+            src/rhi/rhi_vk.c)
+        target_include_directories(engine_rhi_vulkan_alloc_fault PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/external)
+        if(SHADERC_INCLUDE_DIR)
+            target_include_directories(engine_rhi_vulkan_alloc_fault PRIVATE
+                ${SHADERC_INCLUDE_DIR})
+        endif()
+        target_compile_definitions(engine_rhi_vulkan_alloc_fault
+            PRIVATE ENGINE_VULKAN=1 PUBLIC BREAK_RHI_VK_TESTING=1)
+        target_link_libraries(engine_rhi_vulkan_alloc_fault PUBLIC engine
+            PRIVATE Vulkan::Vulkan ${SHADERC_LIB})
         add_executable(test_rhi_vk_alloc_fault tests/test_rhi_vk_alloc_fault.c)
         target_include_directories(test_rhi_vk_alloc_fault PRIVATE ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_rhi_vk_alloc_fault PRIVATE engine m)
-        # rhi_vk.c（含 rhi_device_create 与 rhi_vk_set_alloc_failure_for_test）
-        # 编在 engine_rhi_vulkan；test_vulkan 同先例。
-        engine_link_rhi_backend(test_rhi_vk_alloc_fault)
+        target_compile_definitions(test_rhi_vk_alloc_fault PRIVATE ENGINE_VULKAN=1)
+        target_link_libraries(test_rhi_vk_alloc_fault PRIVATE
+            engine_rhi_vulkan_alloc_fault engine m)
         add_test(NAME test_rhi_vk_alloc_fault COMMAND test_rhi_vk_alloc_fault)
         set_tests_properties(test_rhi_vk_alloc_fault PROPERTIES
             LABELS graphics SKIP_RETURN_CODE 77 TIMEOUT 60)
@@ -4491,7 +4525,7 @@ endif()
         add_executable(test_break_net_adapter tests/test_break_net_adapter.c)
         target_include_directories(test_break_net_adapter PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_break_net_adapter PRIVATE break_net)
+        target_link_libraries(test_break_net_adapter PRIVATE break_net_test)
         add_test(NAME test_break_net_adapter COMMAND test_break_net_adapter)
         set_tests_properties(test_break_net_adapter PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake")
@@ -4499,7 +4533,7 @@ endif()
         add_executable(test_break_replication tests/test_break_replication.c)
         target_include_directories(test_break_replication PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
-        target_link_libraries(test_break_replication PRIVATE break_net)
+        target_link_libraries(test_break_replication PRIVATE break_net_test)
         add_test(NAME test_break_replication COMMAND test_break_replication)
         set_tests_properties(test_break_replication PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;replication")
@@ -4510,7 +4544,7 @@ endif()
         if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang|AppleClang")
             target_compile_options(test_break_session PRIVATE -Wno-type-limits -Wno-maybe-uninitialized)
         endif()
-        target_link_libraries(test_break_session PRIVATE break_net)
+        target_link_libraries(test_break_session PRIVATE break_net_test)
         add_test(NAME test_break_session COMMAND test_break_session)
         set_tests_properties(test_break_session PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;session")
@@ -4524,7 +4558,7 @@ endif()
             ${CMAKE_CURRENT_SOURCE_DIR}/src ${TEST_INCLUDE_DIRS})
         target_compile_definitions(test_break_net_tls PRIVATE
             BREAK_TEST_SSL_FIXTURE_DIR=${SNOWFLAKE_SOURCE_DIR}/tests/common/fixtures/ssl)
-        target_link_libraries(test_break_net_tls PRIVATE break_net)
+        target_link_libraries(test_break_net_tls PRIVATE break_net_test)
         add_test(NAME test_break_net_tls COMMAND test_break_net_tls)
         set_tests_properties(test_break_net_tls PROPERTIES
             TIMEOUT 20 LABELS "network;snowflake;tls")

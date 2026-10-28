@@ -132,8 +132,11 @@ typedef struct BreakEditorShell BreakEditorShell;
  * bounded failure (allocation). */
 BreakEditorShell *break_editor_shell_create(struct my_window_t *win);
 
-/* Headless test path: dummy PAL + own 800x480 window, no RHI. */
+#ifdef BREAK_EDITOR_SHELL_TESTING
+/* Headless test path: dummy PAL + own 800x480 window, no RHI. Test builds
+ * only, like every *_for_test seam in this header. */
 BreakEditorShell *break_editor_shell_create_for_test(void);
+#endif
 
 /* NULL returns true. The real-window path detaches the panel tree from the
  * borrowed window; the test path tears down its window/wm/loop/pal. false
@@ -227,11 +230,13 @@ void break_editor_shell_render_viewport(BreakEditorShell *shell,
  * process cwd). */
 bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
                                         const char *root_path);
+#ifdef BREAK_EDITOR_SHELL_TESTING
 /* Test seam: injects the monotonic clock behind the browser's 1 s live
  * refresh throttle (NULL = time_microseconds). */
 void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
                                                   u64 (*clock)(void *user),
                                                   void *user);
+#endif
 /* Assets panel row count INCLUDING the always-present ".." top row. */
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell);
 /* Borrowed assets path label text ("assets: /<rel>"). */
@@ -290,11 +295,11 @@ const char *break_editor_shell_network_row_text(const BreakEditorShell *shell,
 /* Test seams: inject the panel's monotonic clock (NULL = the platform
  * clock) to pin the 250,000 us throttle deterministically, and tick ONLY
  * the network panel (no remote step — stable sources for comparisons). */
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
                                                    u64 (*clock)(void *user),
                                                    void *user);
 void break_editor_shell_network_tick_for_test(BreakEditorShell *shell);
-#ifdef BREAK_EDITOR_SHELL_TESTING
 /* One-shot failure of the shared diagnostics row attachment, for the
  * lifetime regression test. Never compiled into the production editor. */
 void break_editor_shell_fail_diag_attach_for_test(void);
@@ -327,8 +332,10 @@ typedef struct BreakEditorRenderSource {
 /* Test seams: NULL source = production RHI queries; NULL clock =
  * time_microseconds (250,000 us throttle, first tick after create or after
  * any device attach/detach always refreshes). */
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_render_source_for_test(
     BreakEditorShell *shell, const BreakEditorRenderSource *source);
 void break_editor_shell_set_render_clock_for_test(BreakEditorShell *shell,
                                                   u64 (*clock)(void *user),
                                                   void *user);
+#endif

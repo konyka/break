@@ -104,6 +104,10 @@ size_t break_net_reactor_outbound_count(BreakNetReactor *reactor);
  * TLS close_notify, so strict clients may report an unexpected EOF. */
 bool break_net_reactor_close(BreakNetReactor *reactor, uint64_t connection_key);
 
+#ifdef BREAK_NET_TESTING
+/* Test seams below exist only in the break_net_test library
+ * (BREAK_NET_TESTING=1); the shipped break_net carries none of them. */
+
 /* Test-only: returns outbound send attempts made by the reactor driver. */
 size_t break_net_reactor_outbound_attempts_for_test(BreakNetReactor *reactor);
 
@@ -151,6 +155,7 @@ bool break_net_reactor_enqueue_message_for_test(BreakNetReactor *reactor,
 bool break_net_reactor_malformed_packet_cleanup_for_test(BreakNetReactor *reactor);
 /* Verifies close defers identity cleanup until the pending send is drained. */
 bool break_net_reactor_pending_send_close_contract_for_test(BreakNetReactor *reactor);
+#endif /* BREAK_NET_TESTING */
 
 #ifdef __cplusplus
 }

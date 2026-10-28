@@ -127,7 +127,7 @@ content-addressed chunk store（文件名 = 内容 SHA-256 hex；写入经 tmp+f
 3. Stage 5 子项目 4 的**凭证体系半侧**：per-device key provisioning tooling、轮换/吊销编排、密钥托管——TLS 模式、CHALLENGE/AUTH-v2、key_id 解析接缝、max_age 已由 Phase D 交付（`docs/design/transport_security.md`），但在 app 侧 provisioning 落地前认证接缝不可投入真实凭证部署；
 4. Stage 5 子项目 5 的**剩余半侧**：server authority 实现（§3 仍全部是设计目标枚举，无服务端代码）、client anti-tamper 实现（§2 成本模型文档 only，无代码）、应用消息级 replay window（跨重连/应用消息——Phase D 交付的是握手级 + 每连接顺序性）、消息/字节级限速（Phase D 交付的是 admission 级）；
 7. 任何服务端实现与 remote debug 通道（roadmap `:126`：release 无默认 remote debug 路径）；
-8. **发布产物中的测试钩子尚未清除**：`test_release_config_contract`（2026-10-28）钉住了现状而非理想——`engine_demo`/`dxx_break` 仍带 `rhi_runtime_reset_for_test`、`rhi_vk_set_alloc_failure_for_test` 与环境变量 `BREAK_RHI_FAIL_VULKAN`；`editor` 另带 `break_net_*_for_test`、`break_session_auth_set_test_hook_for_test` 等 24 个钩子（`break_net`/`break_session`/RHI runtime 是生产与测试共用的单一库，没有 `*_test` 变体）。这些钩子都只能由进程内代码调用，不构成远程入口，但属于发布面应当收窄的部分；契约以白名单棘轮防止新增；
+8. **运维用环境开关 `BREAK_RHI_FAIL_VULKAN` 仍在发布产物中**：它与 `BREAK_RHI_BACKEND`/`BREAK_RHI_NO_FALLBACK` 同属回滚 runbook 记录的运行时开关（强制走 OpenGL 降级路径），只能由本地环境设置，不构成远程入口。发布产物中的 `*_for_test` 测试钩子已于 2026-10-28 全部移出（`test_release_config_contract` 白名单为空）；
 9. **update client 本地 state 与槽内 `update-version` 标记的认证（MAC/签名）未交付**——它们只受 canonical 解析校验与跨字段不变量保护，**是解析校验、非认证**（§4 契约要点末节）；对 update root 的本地写权限已等价完全篡改，故这不构成新边界，但任何"本地状态可信"的推断都不成立。
 
 ## 11. 未决风险

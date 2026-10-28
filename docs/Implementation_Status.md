@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：发布产物移除全部测试钩子（2026-10-28）
+
+- **交付**：上一轮记录的 26 个 `*_for_test`/`test_hook` 符号已全部移出 `engine_demo`、`dxx_break`、`editor`；`test_release_config_contract` 的白名单改为空，任何新钩子进入发布二进制即失败。
+  - editor（7 个）：`editor_panels.c`/`editor_remote.c` 的测试入口与对应头文件声明放进 `#ifdef BREAK_EDITOR_SHELL_TESTING`（只有 `test_editor_shell`、`fuzz_editor_remote` 定义它），发布代码误用会在编译期报错而不是链接期；
+  - RHI（2 个）：`rhi_runtime_reset_for_test` 放进 `BREAK_RHI_RUNTIME_TESTING`（只有自行编译 `rhi_runtime.c` 的 `test_rhi_runtime_select` 定义）；`rhi_vk_set_alloc_failure_for_test` 与分配路径上的注入判断放进 `BREAK_RHI_VK_TESTING`，`test_rhi_vk_alloc_fault` 改链新增的测试变体库 `engine_rhi_vulkan_alloc_fault`；
+  - break_net/break_session（17 个）：全部测试入口、注入状态、`step_delay_ms_for_test` 字段与 auth 快照钩子放进 `BREAK_NET_TESTING`；新增测试变体库 `break_net_test`（同源码、`EXCLUDE_FROM_ALL`，仅 `ENGINE_BUILD_TESTS` 时定义），四个网络单测改链它；发布 `break_net` 中注入点以常量折叠掉。
+- **保留**：`BREAK_RHI_FAIL_VULKAN` 环境开关仍在发布产物中——它是回滚 runbook 记录的运维开关（强制走 OpenGL 降级），只能由本地环境设置。
+- **验证**：全量 ctest OpenGL 221/221、Vulkan 222/222、Snowflake 225/225、多后端 222/222、Release（GCC 16 `-O3`）226/226；图形 OpenGL 4/4、Vulkan 5/5、多后端 7/7、Release 7/7（均不含 x11_runtime）；`fuzz_editor_remote` 3000 次正常；ASan/TSan 下 `test_break_net_adapter` 42、`test_break_session` 35、`test_break_net_tls` 10、`test_break_replication` 7、`test_editor_shell` 105 全通过零报告。变异自检：把带钩子的 `test_editor_shell` 当作 editor 交给契约，报 13 个新钩子并失败。
+- **边界**：Windows/macOS 构建未运行（新增的 `#ifdef` 与 CMake 变体与平台无关，但未实测）。
+
 ## 本轮更新：发布（Release）配置测试（2026-10-28）
 
 - **起因**：TODO 中“release 配置测试不存在”。本机此前从未构建过 Release 树（CI 的 Release lane 用 clang）。用 GCC 16.2 `-O3 -DNDEBUG` 配置多后端 + Snowflake 树后，构建在 6 处 `-Werror` 失败，构建通过后 `test_break_crash` 又有 4 项失败。
