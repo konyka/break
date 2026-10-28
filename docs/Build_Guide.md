@@ -327,6 +327,23 @@ cmake --build build-ubsan
 
 ### 2.5 Windows 平台构建
 
+#### Windows 上的 OpenSSL（`BREAK_ENABLE_CRYPTO`，默认 ON）
+
+`break_crypto` / `break_update` 需要 OpenSSL libcrypto。CMake 自带的 `FindOpenSSL`
+只在 MSVC 分支里搜索安装器目录 `lib/VC/<arch>/<crt>`，所以：
+
+- **MSVC**：`find_package(OpenSSL)` 自己能找到 `C:/Program Files/OpenSSL*`，无需额外参数。
+- **Clang / MinGW**：`engine/CMakeLists.txt` 在配置期按顺序探测 `-DOPENSSL_ROOT_DIR`、
+  `%OPENSSL_ROOT_DIR%`、`%ProgramFiles%\OpenSSL`、`%ProgramFiles%\OpenSSL-Win64`、
+  `C:\OpenSSL-Win64`，命中安装器布局（`lib/VC/x64/MD/libcrypto.lib` 与 `libssl.lib`）后自动
+  设置 `LIB_EAY`/`SSL_EAY`。MSYS2/MinGW 自带 OpenSSL（编译器旁 `../lib/libcrypto.dll.a`）时直接使用，不探测安装器目录。
+  自动探测不到时手动传 `-DOPENSSL_ROOT_DIR=<前缀> -DLIB_EAY=<libcrypto.lib> -DSSL_EAY=<libssl.lib>`，
+  或 `-DBREAK_ENABLE_CRYPTO=OFF`。
+- 运行测试时 `libcrypto-*-x64.dll`（安装器的 `bin` 目录）须在 `PATH` 上。
+- 契约测试（crypto/update/crash）用 `llvm-nm`/`nm` 做导出符号检查，Windows 上会忽略 UCRT 内联的
+  `sprintf`/`_snprintf` 等头文件产物；最小链接用例使用与树一致的 CRT（MSVC 下 `/MD` 或 `/MDd`，
+  Clang ASan 树附带 `-D_DLL -D_MT --dependent-lib=msvcrt`）。
+
 #### Windows + Clang 验证
 
 本机已验证 Clang 22 + Ninja 原生构建；无 GPU 的 CI 仅运行非 `graphics` CTest：

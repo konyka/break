@@ -8,10 +8,13 @@
 
 #include <stdio.h>
 #include <string.h>
-#if defined(_WIN32)
-#else
 #include <sys/stat.h>
 #include <time.h>
+#if defined(_WIN32)
+#include <sys/utime.h>
+#define utime _utime
+#define utimbuf _utimbuf
+#else
 #include <utime.h>
 #endif
 
@@ -4321,10 +4324,6 @@ TEST(remote_tls_rate_limit_denials_observable)
  * so every simulated external edit forces a distinct future mtime instead of
  * relying on wall-clock gaps. */
 static void hr_bump_mtime(const char *path) {
-#if defined(_WIN32)
-    (void)path;
-    time_sleep_us(1100000u);
-#else
     static long bump = 100;
     struct stat st;
     struct utimbuf times;
@@ -4333,7 +4332,6 @@ static void hr_bump_mtime(const char *path) {
     times.actime = st.st_atime;
     times.modtime = time(NULL) + bump;
     ASSERT_EQ(utime(path, &times), 0);
-#endif
 }
 
 static void hr_write_text(const char *path, const char *text) {

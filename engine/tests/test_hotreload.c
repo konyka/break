@@ -213,13 +213,13 @@ TEST(filewatch_rejects_path_truncation)
     filewatch_shutdown(&watcher);
 }
 
+#if !defined(ENGINE_PLATFORM_WINDOWS)
 static int s_fw_calls[2];
 static void fw_count_cb(const char *path, void *user) {
     (void)path;
     (*(int *)user)++;
 }
 
-#if !defined(ENGINE_PLATFORM_WINDOWS)
 static void fw_set_mtime(const char *path, long offset) {
     struct stat st;
     struct utimbuf t;

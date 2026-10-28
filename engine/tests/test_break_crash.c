@@ -399,7 +399,7 @@ TEST(reject_battery_mutations) {
 
     /* byte >= 0x80 and a TAB are both outside the charset */
     memcpy(buf, GOLDEN_RECORD, glen + 1);
-    buf[bid - GOLDEN_RECORD] = (char)0x80;
+    buf[bid - GOLDEN_RECORD] = (char)(unsigned char)0x80;
     ASSERT_TRUE(break_crash_record_parse(buf, glen) == NULL);
     memcpy(buf, GOLDEN_RECORD, glen + 1);
     buf[bid - GOLDEN_RECORD] = '\t';

@@ -187,12 +187,10 @@ BreakLuaRuntime *break_lua_runtime_create(const BreakLuaRuntimeConfig *config)
 
     /* Module registry (Task 2): one bounded array, preallocated so module
      * admission never needs to grow it. max_modules is validated against
-     * BREAK_LUA_MAX_MODULES above, so this multiply cannot wrap; the guard
-     * documents the bound explicitly. */
-    if (max_modules > (u32)(SIZE_MAX / sizeof(BreakLuaModule))) {
-        free(runtime);
-        return NULL;
-    }
+     * BREAK_LUA_MAX_MODULES above, so this multiply cannot wrap; the
+     * compile-time check below pins that bound for every target width. */
+    _Static_assert(BREAK_LUA_MAX_MODULES <= SIZE_MAX / sizeof(BreakLuaModule),
+                   "module registry allocation must not overflow size_t");
     runtime->modules =
         break_lua_test_calloc((usize)max_modules * sizeof(BreakLuaModule));
     if (!runtime->modules) {

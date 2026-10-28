@@ -145,7 +145,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_update_target_contract")
 endif()
 
 # --- 5. nm gate: exactly the 28 public symbols ------------------------------
-find_program(UPDATE_CONTRACT_NM nm)
+find_program(UPDATE_CONTRACT_NM NAMES nm llvm-nm)
 if(NOT UPDATE_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_update export gate)")
 endif()
@@ -196,6 +196,12 @@ foreach(line IN LISTS nm_lines)
         set(sym "${CMAKE_MATCH_1}")
         if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
             string(REGEX REPLACE "^_" "" sym "${sym}")
+        endif()
+        # UCRT <stdio.h> inline helpers are emitted as external definitions
+        # by clang on Windows; they are header artifacts, not library API.
+        if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND sym MATCHES
+           "^(__local_stdio_printf_options|__local_stdio_scanf_options|_?v?s?n?printf|_?v?snprintf(_l)?|_vsprintf_l|_?sprintf|_vsscanf_l|_?sscanf)$")
+            continue()
         endif()
         list(APPEND actual_symbols "${sym}")
     endif()
