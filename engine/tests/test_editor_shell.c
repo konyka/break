@@ -4976,6 +4976,19 @@ static void shader_reload_second_admission_body(ShaderDirectFixture *fx) {
            sizeof(fragment_path));
     ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
     SHADER_DIRECT_WAIT(fx, shader_direct_stats(fx).reloads == 1u);
+    {
+        /* ASSERT_EQ prints only the expression; keep the counters in the log
+         * so a CI-only failure of this case can be diagnosed. */
+        BreakEditorShaderReloadStats final_stats = shader_direct_stats(fx);
+        if (final_stats.attempts != 9u || final_stats.failed != 8u) {
+            printf("  second_admission final: attempts=%llu reloads=%llu failed=%llu busy=%d last_result=%d events=%llu\n",
+                   (unsigned long long)final_stats.attempts,
+                   (unsigned long long)final_stats.reloads,
+                   (unsigned long long)final_stats.failed,
+                   (int)final_stats.busy, (int)final_stats.last_result,
+                   (unsigned long long)final_stats.events);
+        }
+    }
     ASSERT_EQ(shader_direct_stats(fx).attempts, 9u);
     ASSERT_EQ(shader_direct_stats(fx).failed, 8u);
     ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
