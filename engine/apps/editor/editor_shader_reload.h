@@ -44,6 +44,10 @@ void break_editor_shader_reload_set_logger(
     BreakEditorShaderReload *reload, BreakEditorShaderReloadLog log, void *user);
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+/* Runs between the vertex and the fragment admission of an attempt, so a
+ * test can let the worker get ahead of the owner thread there. */
+void break_editor_shader_reload_set_between_requests_for_test(
+    BreakEditorShaderReload *reload, void (*fn)(void *user), void *user);
 void break_editor_shader_reload_set_shutdown_timeout_for_test(
     BreakEditorShaderReload *reload, u32 timeout_ms);
 #endif

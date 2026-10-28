@@ -41,6 +41,10 @@ struct BreakEditorShaderReload {
 
     u32 shutdown_timeout_ms;
     BreakEditorShaderReloadStats stats;
+#ifdef BREAK_EDITOR_SHELL_TESTING
+    void (*between_requests_for_test)(void *user);
+    void *between_requests_user;
+#endif
 };
 
 static usize shader_bounded_length(const char *text, usize capacity) {
@@ -319,7 +323,15 @@ static void shader_start_attempt(BreakEditorShaderReload *reload) {
             reload->source->logical[BREAK_EDITOR_SHADER_VERTEX],
             &reload->requests[BREAK_EDITOR_SHADER_VERTEX]) != BREAK_RUNTIME_OK) {
         reload->attempt_failed = true;
-    } else if (break_runtime_reload_request(
+    } else if (
+#ifdef BREAK_EDITOR_SHELL_TESTING
+               (reload->between_requests_for_test != NULL
+                    ? (reload->between_requests_for_test(
+                           reload->between_requests_user),
+                       true)
+                    : true) &&
+#endif
+               break_runtime_reload_request(
                    reload->reload,
                    reload->source->logical[BREAK_EDITOR_SHADER_FRAGMENT],
                    &reload->requests[BREAK_EDITOR_SHADER_FRAGMENT]) !=
@@ -340,12 +352,20 @@ void break_editor_shader_reload_tick(BreakEditorShaderReload *reload) {
     if (reload->watcher_live) {
         filewatch_poll(&reload->watcher);
     }
+    /* Pump the owner commit queue on every tick, not only during an
+     * attempt: a request cancelled after its worker already queued a commit
+     * command leaves that dead command in the bounded queue until the pump
+     * reclaims it. Pumping only while active let dead commands from
+     * immediately-failed attempts fill the queue, and the next valid reload
+     * was rejected as a commit overload. Outside an attempt no live request
+     * exists, so this only reclaims dead commands. */
+    if (break_runtime_reload_commit_owner(
+            reload->reload, SHADER_RELOAD_COMMITS_PER_TICK, &done) !=
+            BREAK_RUNTIME_OK &&
+        shader_attempt_active(reload)) {
+        reload->attempt_failed = true;
+    }
     if (shader_attempt_active(reload)) {
-        if (break_runtime_reload_commit_owner(
-                reload->reload, SHADER_RELOAD_COMMITS_PER_TICK, &done) !=
-            BREAK_RUNTIME_OK) {
-            reload->attempt_failed = true;
-        }
         shader_consume(reload, BREAK_EDITOR_SHADER_VERTEX);
         shader_consume(reload, BREAK_EDITOR_SHADER_FRAGMENT);
         if (!shader_attempt_active(reload)) {
@@ -454,6 +474,14 @@ void break_editor_shader_reload_destroy(BreakEditorShaderReload *reload) {
 }
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
+void break_editor_shader_reload_set_between_requests_for_test(
+    BreakEditorShaderReload *reload, void (*fn)(void *user), void *user) {
+    if (reload != NULL) {
+        reload->between_requests_for_test = fn;
+        reload->between_requests_user = user;
+    }
+}
+
 void break_editor_shader_reload_set_shutdown_timeout_for_test(
     BreakEditorShaderReload *reload, u32 timeout_ms) {
     if (reload != NULL) {

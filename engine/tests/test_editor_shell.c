@@ -4994,6 +4994,64 @@ static void shader_reload_second_admission_body(ShaderDirectFixture *fx) {
     ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
 }
 
+/* Deterministic form of the CI-only failure of the case below. An attempt
+ * whose fragment admission fails cancels the vertex request; if the worker
+ * already published that request's commit command, the command stays in the
+ * bounded owner queue (capacity 4) until the owner pump reclaims it. The pump
+ * used to run only while an attempt was active, so dead commands from
+ * back-to-back failed attempts were never reclaimed and the next valid reload
+ * was rejected as a commit overload. The seam lets the worker reach the
+ * commit publish between the two admissions (what a preempted owner thread
+ * does on a loaded CI runner). */
+static void shader_dead_commit_let_worker_run(void *user) {
+    (void)user;
+    time_sleep_us(30000u);
+}
+
+static void shader_reload_dead_commit_body(ShaderDirectFixture *fx) {
+    char fragment_path[96];
+    u32 i;
+    shader_direct_open(fx, "editor_shader_reload_dead_commit");
+    ASSERT_NOT_NULL(fx->reload);
+    memcpy(fragment_path, fx->source.logical[BREAK_EDITOR_SHADER_FRAGMENT],
+           sizeof(fragment_path));
+    fx->source.logical[BREAK_EDITOR_SHADER_FRAGMENT][0] = '\0';
+    break_editor_shader_reload_set_between_requests_for_test(
+        fx->reload, shader_dead_commit_let_worker_run, NULL);
+    for (i = 1u; i <= 6u; i++) {
+        ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+        break_editor_shader_reload_tick(fx->reload); /* fails at once */
+        ASSERT_EQ(shader_direct_stats(fx).failed, i);
+        ASSERT_FALSE(shader_direct_stats(fx).busy);
+    }
+    break_editor_shader_reload_set_between_requests_for_test(fx->reload, NULL,
+                                                             NULL);
+    memcpy(fx->source.logical[BREAK_EDITOR_SHADER_FRAGMENT], fragment_path,
+           sizeof(fragment_path));
+    ASSERT_TRUE(break_editor_shader_reload_request(fx->reload));
+    SHADER_DIRECT_WAIT(fx, !shader_direct_stats(fx).busy &&
+                               shader_direct_stats(fx).attempts == 7u);
+    ASSERT_EQ(shader_direct_stats(fx).reloads, 1u);
+    ASSERT_EQ(shader_direct_stats(fx).failed, 6u);
+    ASSERT_EQ(shader_reload_revision(&fx->base), 1u);
+}
+
+TEST(shader_reload_dead_commit_commands_do_not_block_next_reload)
+{
+    EditorShaderEnv env;
+    ShaderDirectFixture fx;
+    ASSERT_TRUE(shader_env_save(&env));
+    editor_rhi_fake_reset();
+    editor_rhi_fake_set_enabled(true);
+    memset(&fx, 0, sizeof(fx));
+    shader_reload_dead_commit_body(&fx);
+    break_runtime_test_reload_set_gates(0u, 0u);
+    shader_direct_close(&fx);
+    editor_rhi_fake_set_enabled(false);
+    editor_rhi_fake_reset();
+    shader_env_restore(&env);
+}
+
 TEST(shader_reload_second_request_admission_failure_recovers)
 {
     EditorShaderEnv env;
@@ -5945,6 +6003,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(shader_reload_worker_stages_off_rhi_and_trailing_uses_latest);
     RUN_TEST(shader_reload_two_root_watch_promotes_and_delete_falls_back);
     RUN_TEST(shader_reload_one_sided_failure_preserves_pipeline);
+    RUN_TEST(shader_reload_dead_commit_commands_do_not_block_next_reload);
     RUN_TEST(shader_reload_second_request_admission_failure_recovers);
     RUN_TEST(shader_reload_manual_request_survives_watch_unavailable);
     RUN_TEST(shader_reload_manual_only_diagnostic_keeps_busy_and_counts);

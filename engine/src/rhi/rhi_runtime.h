@@ -52,7 +52,10 @@ const char *rhi_runtime_active_backend(void);
  * "explicit-env" or "config-fallback" ("none" before any device). */
 const char *rhi_runtime_selection_reason(void);
 
-/* Test reset: back to the pre-device stub table and "none". */
+#ifdef BREAK_RHI_RUNTIME_TESTING
+/* Test reset: back to the pre-device stub table and "none". Compiled only
+ * into test_rhi_runtime_select, which builds rhi_runtime.c itself. */
 void rhi_runtime_reset_for_test(void);
+#endif
 
 #endif

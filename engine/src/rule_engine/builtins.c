@@ -371,8 +371,10 @@ static void sb_append(re_strbuf_t *sb, const char *data, size_t size) {
     if (sb->status != RE_STATUS_OK || size == 0u) return;
     /* No object exceeds PTRDIFF_MAX bytes; saying so also lets the
      * optimizer bound the memcpy below (GCC 16 -O3 otherwise reports a
-     * SIZE_MAX bound on an inlined path). */
-    if (size > (size_t)PTRDIFF_MAX || sb->size > (size_t)PTRDIFF_MAX - size - 1u) {
+     * SIZE_MAX bound on an inlined path). `size >= PTRDIFF_MAX` is rejected
+     * up front because PTRDIFF_MAX - size - 1u would wrap for size ==
+     * PTRDIFF_MAX and let need = sb->size + size + 1u exceed the bound. */
+    if (size >= (size_t)PTRDIFF_MAX || sb->size > (size_t)PTRDIFF_MAX - size - 1u) {
         sb->status = RE_STATUS_LIMIT;
         return;
     }

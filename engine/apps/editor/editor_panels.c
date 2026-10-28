@@ -1605,6 +1605,7 @@ BreakEditorShell *break_editor_shell_create(struct my_window_t *win) {
     return shell_create_common(win);
 }
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 BreakEditorShell *break_editor_shell_create_for_test(void) {
     my_pal_t *pal;
     my_pal_main_loop_t *loop;
@@ -1657,6 +1658,7 @@ BreakEditorShell *break_editor_shell_create_for_test(void) {
     shell->owns_window = true;
     return shell;
 }
+#endif
 
 bool break_editor_shell_destroy(BreakEditorShell *shell) {
     if (shell == NULL) {
@@ -1962,6 +1964,7 @@ bool break_editor_shell_set_assets_root(BreakEditorShell *shell,
     return editor_panel_assets_set_root(shell->assets_panel, root_path);
 }
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
                                                   u64 (*clock)(void *user),
                                                   void *user) {
@@ -1969,6 +1972,7 @@ void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
         editor_panel_assets_set_clock(shell->assets_panel, clock, user);
     }
 }
+#endif
 
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell) {
     return shell != NULL
@@ -2015,6 +2019,7 @@ const char *break_editor_shell_network_row_text(const BreakEditorShell *shell,
                : NULL;
 }
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
                                                    u64 (*clock)(void *user),
                                                    void *user) {
@@ -2023,13 +2028,16 @@ void break_editor_shell_set_network_clock_for_test(BreakEditorShell *shell,
     }
     editor_panel_network_set_clock(shell->network_panel, clock, user);
 }
+#endif
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_network_tick_for_test(BreakEditorShell *shell) {
     if (shell == NULL) {
         return;
     }
     editor_panel_network_tick(shell->network_panel);
 }
+#endif
 
 void break_editor_shell_render_viewport(BreakEditorShell *shell,
                                         void *rhi_device, void *rhi_cmd,
@@ -2086,13 +2094,16 @@ const char *break_editor_shell_render_row_text(const BreakEditorShell *shell,
                : NULL;
 }
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_render_source_for_test(
     BreakEditorShell *shell, const BreakEditorRenderSource *source) {
     if (shell != NULL) {
         editor_panel_render_set_source(shell->render_panel, source);
     }
 }
+#endif
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void break_editor_shell_set_render_clock_for_test(BreakEditorShell *shell,
                                                   u64 (*clock)(void *user),
                                                   void *user) {
@@ -2100,3 +2111,4 @@ void break_editor_shell_set_render_clock_for_test(BreakEditorShell *shell,
         editor_panel_render_set_clock(shell->render_panel, clock, user);
     }
 }
+#endif

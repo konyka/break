@@ -8,11 +8,8 @@
 # 1. engine_demo / dxx_break carry no transport, session, update, crypto,
 #    crash-upload or editor-remote code at all (no remote surface, no update
 #    path of any kind, signed or not).
-# 2. Test hooks (`*_for_test`, `*test_hook*`) in shipped binaries are a
-#    ratchet: every one present must be on the allowlist below. The list is
-#    the 2026-10-28 baseline; removing an entry is progress, adding one fails
-#    the gate. Known gap: break_net / break_session / the RHI runtime are
-#    single production+test libraries, so their hooks still ship.
+# 2. No test hooks (`*_for_test`, `*test_hook*`) in shipped binaries: the
+#    allowlist below is empty and must stay so.
 # 3. editor: --remote fails closed (exit 2, before any window or listener)
 #    without TLS material, and any --remote-* option without --remote is
 #    rejected. Runs headless (no DISPLAY needed: the parser exits first).
@@ -25,37 +22,10 @@ foreach(var NM ENGINE_DEMO DXX_BREAK)
     endif()
 endforeach()
 
-set(hook_allowlist
-    # editor shell (apps/editor/editor_panels.c, editor_remote.c)
-    break_editor_remote_manager_for_test
-    break_editor_shell_create_for_test
-    break_editor_shell_network_tick_for_test
-    break_editor_shell_set_assets_clock_for_test
-    break_editor_shell_set_network_clock_for_test
-    break_editor_shell_set_render_clock_for_test
-    break_editor_shell_set_render_source_for_test
-    # break_net adapter (src/network/break_net_adapter.c)
-    break_net_new_connection_failure_for_test
-    break_net_reactor_connection_identity_count_for_test
-    break_net_reactor_enqueue_message_for_test
-    break_net_reactor_enqueue_opened_for_test
-    break_net_reactor_malformed_packet_cleanup_for_test
-    break_net_reactor_new_connection_failure_cleanup_for_test
-    break_net_reactor_outbound_attempts_for_test
-    break_net_reactor_pending_send_close_contract_for_test
-    break_net_reactor_poll_outbound_for_test
-    break_net_reactor_start_failure_for_test
-    break_net_reactor_state_for_test
-    break_net_reactor_step_delay_for_test
-    break_net_reactor_stop_pending_for_test
-    break_net_start_failure_for_test
-    # break_session auth (src/network/break_session.c)
-    break_session_auth_set_test_hook_for_test
-    break_session_auth_test_hook
-    break_session_auth_test_hook_user
-    # RHI runtime / Vulkan backend
-    rhi_runtime_reset_for_test
-    rhi_vk_set_alloc_failure_for_test)
+# Empty since 2026-10-28: every *_for_test seam lives behind a *_TESTING
+# define compiled only into a test variant (break_net_test,
+# engine_rhi_vulkan_alloc_fault, test_editor_shell, ...). Keep it empty.
+set(hook_allowlist "")
 
 function(release_defined_symbols binary out_var)
     execute_process(COMMAND "${NM}" --defined-only "${binary}"
@@ -105,8 +75,7 @@ foreach(binary IN LISTS shipped)
             if(idx EQUAL -1)
                 string(APPEND errors
                     "${binary}: new test hook ${sym} ships in a release binary "
-                    "(compile it only into a *_test variant, or extend the "
-                    "baseline in this file with a documented reason)\n")
+                    "(compile it only into a *_TESTING test variant)\n")
             endif()
         endif()
     endforeach()

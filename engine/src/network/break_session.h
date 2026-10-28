@@ -32,10 +32,13 @@ typedef bool (*BreakNetAuthKeyFn)(void *user, const u8 key_id[8], u8 out_psk[32]
  * The callback resolves key_id, so provisioning and rollover stay app-side.
  * The built-in CHALLENGE client helper requests the all-zero key_id. */
 bool break_session_set_auth(BreakNetAuthKeyFn fn, void *user);
-/* Test-only hook at the pinned snapshot point, before the first transition. */
+#ifdef BREAK_NET_TESTING
+/* Test-only hook at the pinned snapshot point, before the first transition
+ * (break_net_test library only). */
 typedef void (*BreakSessionAuthTestHook)(void *user);
 void break_session_auth_set_test_hook_for_test(BreakSessionAuthTestHook hook,
                                                void *user);
+#endif
 /* Optional session expiry (0 = no expiry, default); authenticated sessions
  * older than max_age_seconds enter CLOSING at the next GameThread poll. */
 void break_session_set_max_age(BreakSession *s, u32 max_age_seconds);

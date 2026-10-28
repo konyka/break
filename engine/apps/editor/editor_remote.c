@@ -1059,9 +1059,11 @@ u64 break_editor_remote_poll_count(const BreakEditorRemote *r) {
     return r != NULL ? r->poll_count : 0u;
 }
 
+#ifdef BREAK_EDITOR_SHELL_TESTING
 void *break_editor_remote_manager_for_test(BreakEditorRemote *r) {
     return r != NULL ? (void *)r->manager : NULL;
 }
+#endif
 
 u64 break_editor_remote_session_id(const BreakEditorRemote *r, u64 key) {
     if (r == NULL || r->manager == NULL) {

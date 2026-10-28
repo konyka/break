@@ -1027,14 +1027,18 @@ static u32 vk_find_memory(VKBackend *vk, u32 type_filter, VkMemoryPropertyFlags 
     return UINT32_MAX;
 }
 
+#ifdef BREAK_RHI_VK_TESTING
 static bool g_vk_test_alloc_failure = false;
 void rhi_vk_set_alloc_failure_for_test(bool enable) {
     g_vk_test_alloc_failure = enable;
 }
+#endif
 
 static VkResult vk_allocate_memory(VKBackend *vk, VkMemoryAllocateInfo *info,
                                    VkDeviceMemory *out_memory) {
+#ifdef BREAK_RHI_VK_TESTING
     if (g_vk_test_alloc_failure) return VK_ERROR_OUT_OF_HOST_MEMORY;
+#endif
     if (!vk || !info || !out_memory || info->memoryTypeIndex == UINT32_MAX)
         return VK_ERROR_INITIALIZATION_FAILED;
     return vkAllocateMemory(vk->device, info, NULL, out_memory);
