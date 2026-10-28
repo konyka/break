@@ -214,7 +214,7 @@ TEST(platform_list_name_bounds) {
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
 TEST(platform_list_stat_join_overflow_skips_entry) {
     /* POSIX lane: builds a real directory whose path is just below the
      * 1024-byte bound, containing one file whose joined stat path crosses
@@ -257,7 +257,9 @@ TEST(platform_list_stat_join_overflow_skips_entry) {
     }
     ASSERT_TRUE(TEST_RMDIR(dir) == 0);
 }
+#endif /* !_WIN32 && !__APPLE__ (macOS PATH_MAX 1024 forbids creating the 1024-byte path) */
 
+#if !defined(_WIN32)
 TEST(platform_list_lstat_failure_skips_entry_not_listing) {
     /* Non-root only: permission bits don't bind euid 0. */
     if (geteuid() == 0) return;
@@ -943,8 +945,10 @@ TEST_MAIN_BEGIN()
     RUN_TEST(platform_list_empty_dir);
     RUN_TEST(platform_list_error_paths);
     RUN_TEST(platform_list_name_bounds);
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__APPLE__)
     RUN_TEST(platform_list_stat_join_overflow_skips_entry);
+#endif
+#if !defined(_WIN32)
     RUN_TEST(platform_list_lstat_failure_skips_entry_not_listing);
     RUN_TEST(platform_list_symlink_not_followed);
 #endif

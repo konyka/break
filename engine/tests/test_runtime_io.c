@@ -122,9 +122,9 @@ static void uncooperative_worker(void *arg)
     u32 guard = 0u;
     atomic_store_explicit(&ctx->ran, 1u, memory_order_release);
     /* Deliberately ignores the stop request; only the test flag frees it. */
-    while (guard++ < 400000u &&
+    while (guard++ < 5000u &&
            atomic_load_explicit(&ctx->test_release, memory_order_acquire) == 0u) {
-        platform_thread_yield();
+        test_sleep_ms(1);
     }
 }
 

@@ -37,9 +37,13 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdatomic.h>
+#include <unistd.h>
+#if defined(__linux__)
 #include <sys/syscall.h>
 #include <ucontext.h>
-#include <unistd.h>
+#elif defined(__APPLE__)
+#include <pthread.h>
+#endif
 #endif
 
 /* ==========================================================================
@@ -1465,6 +1469,20 @@ static void bc_crash_die(int sig) {
     _exit(128 + sig);
 }
 
+/* Kernel thread id for the record. Linux: gettid; macOS: syscall(2) is
+ * deprecated, pthread_threadid_np gives the same per-thread 64-bit id. */
+static u64 bc_thread_id(void) {
+#if defined(__linux__)
+    return (u64)(unsigned long)syscall(SYS_gettid);
+#elif defined(__APPLE__)
+    uint64_t tid = 0;
+    (void)pthread_threadid_np((pthread_t)0, &tid);
+    return (u64)tid;
+#else
+    return 0;
+#endif
+}
+
 static void bc_crash_handler(int sig, siginfo_t *info, void *uctx) {
     /* One-shot guard: any re-entry (nested signal or a racing second
      * crashing thread) goes straight to the die tail — no nested formatting,
@@ -1534,7 +1552,7 @@ static void bc_crash_handler(int sig, siginfo_t *info, void *uctx) {
     bs_hex(&p, (u64)(unsigned long)getpid(), 16);
     *p++ = '\n';
     bs_put(&p, "tid: ");
-    bs_hex(&p, (u64)(unsigned long)syscall(SYS_gettid), 16);
+    bs_hex(&p, bc_thread_id(), 16);
     *p++ = '\n';
     bs_put(&p, "rip: ");
     bs_hex(&p, rip, 16);

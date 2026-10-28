@@ -3371,7 +3371,7 @@ endif()
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
     # configure；其他平台这些变量未定义/为空时不传。
     set(_rhi_selector_toolchain_defs)
-    foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR)
+    foreach(_rhi_def Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
             list(APPEND _rhi_selector_toolchain_defs "-D${_rhi_def}=${${_rhi_def}}")
         endif()
@@ -4693,6 +4693,7 @@ endif()
                 -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
                 -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
+                -DCRYPTO_CONTRACT_LIBCRYPTO=$<$<BOOL:${APPLE}>:${OPENSSL_CRYPTO_LIBRARY}>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
         set_tests_properties(test_break_crypto_target_contract PROPERTIES
             LABELS "headless;crypto;platform_contract")
@@ -4740,6 +4741,7 @@ endif()
                 -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
                 -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
+                -DUPDATE_CONTRACT_LIBCRYPTO=$<$<BOOL:${APPLE}>:${OPENSSL_CRYPTO_LIBRARY}>
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
         set_tests_properties(test_break_update_target_contract PROPERTIES
             LABELS "headless;update;platform_contract")

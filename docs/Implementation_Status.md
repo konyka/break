@@ -9695,3 +9695,39 @@ luminance is 37.3 and the Metal vs MoltenVK mean absolute difference fell from
 54/54 with one new case that fails without the fix. Both macOS CTest
 configurations are 191/191, Metal graphics is 5/5, and the window toggle demo
 still reports two `ok=1` switches per backend.
+
+### 2026-10-28 Post-merge macOS fixes (remote 165 commits)
+
+Merging the remote line (editor i18n, runtime RHI selection, crypto/update/
+crash modules) into the local Metal work had no textual conflicts, but the
+pure remote tree did not build or pass on macOS either (verified in a detached
+worktree at `46c00163`: `break_crash.c` and `test_break_update.c` failed to
+compile; eight tests failed). Fixes, all macOS-scoped:
+
+- `break_crash.c`: `<ucontext.h>`/`<sys/syscall.h>` only under `__linux__`; the
+  thread id comes from `pthread_threadid_np` on macOS (`syscall` is deprecated
+  there and `-Werror` rejects it).
+- `test_break_update.c`: `ZERO_SIG_B64 + 1` became `&ZERO_SIG_B64[1]`
+  (`-Wstring-plus-int`), same behaviour.
+- Mach-O prefixes C symbols with `_`: the `nm` gates in the crypto, update,
+  crash and multi-backend-symbol contract tests now strip it on Darwin.
+- OpenSSL is not on the default search path: `OPENSSL_ROOT_DIR` is forwarded
+  to the nested selector configure (`test_rhi_backend_selection`), and the
+  crypto/update link checks receive `OPENSSL_CRYPTO_LIBRARY` instead of a bare
+  `-lcrypto` on Apple.
+- `test_break_crash`: on macOS the record must carry a real tid; rip/rsp, the
+  stack window and the module list (`/proc/self/maps`) are Linux x86_64
+  captures and are not asserted there.
+- `test_editor_fonts`: the Fedora/Debian layout cases are Linux tables; a
+  macOS layout case covers the Helvetica/PingFang chain and ordering.
+- `test_editor_assets`: the 1024-byte path-join overflow case is skipped on
+  macOS (`PATH_MAX` is 1024, so the fixture directory cannot be created).
+- `test_runtime_io`: the uncooperative worker slept-polls (1 ms, 5 s cap)
+  instead of a yield loop that could exhaust its guard before the 30 ms stop
+  timeout under load.
+
+Result: Metal configuration 225/225 (D3D12 gate skipped by design), graphics
+5/5, `test_rhi_metal_resources` 54/54; MoltenVK configuration 226/226 with
+graphics 4/4. After the merge the deferred Metal image is still 37.3 mean
+luminance (MoltenVK 37.7) with mean absolute difference 4.5, the default path
+7.1, and the window toggle demo reports two `ok=1` per backend.

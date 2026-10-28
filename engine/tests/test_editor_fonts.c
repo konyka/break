@@ -43,6 +43,7 @@ static void remove_tree(const char *root, const char *const *rels, size_t n) {
     }
 }
 
+#if !defined(__APPLE__)
 static bool chain_has(const BreakEditorFontChain *c, const char *suffix) {
     for (usize i = 0u; i < c->count; i++) {
         size_t a = strlen(c->paths[i]), b = strlen(suffix);
@@ -52,7 +53,35 @@ static bool chain_has(const BreakEditorFontChain *c, const char *suffix) {
     }
     return false;
 }
+#endif
 
+#if defined(__APPLE__)
+static const char *const k_macos[] = {
+    "/System/Library/Fonts/Helvetica.ttc",
+    "/System/Library/Fonts/PingFang.ttc",
+};
+
+/* macOS layout: Latin first for en-US, CJK first for zh-CN. */
+TEST(fonts_macos_layout_orders_by_language)
+{
+    char root[256];
+    BreakEditorFontChain c;
+    test_tmp(root, sizeof(root), "editor_fonts_macos");
+    for (size_t i = 0u; i < 2u; i++) touch(root, k_macos[i]);
+
+    ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_EN_US, root,
+                                           false, &c), 2u);
+    ASSERT_TRUE(c.has_cjk);
+    ASSERT_TRUE(strstr(c.paths[0], "Helvetica.ttc") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "PingFang.ttc") != NULL);
+
+    ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_ZH_CN, root,
+                                           false, &c), 2u);
+    ASSERT_TRUE(strstr(c.paths[0], "PingFang.ttc") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "Helvetica.ttc") != NULL);
+    remove_tree(root, k_macos, 2u);
+}
+#else
 static const char *const k_fedora[] = {
     "/usr/share/fonts/google-noto-sans-cjk-vf-fonts/NotoSansCJK-VF.ttc",
     "/usr/share/fonts/google-droid-sans-fonts/DroidSans.ttf",
@@ -117,6 +146,8 @@ TEST(fonts_latin_only_reports_missing_cjk)
     ASSERT_FALSE(c.has_cjk);
     remove_tree(root, latin, 1u);
 }
+
+#endif /* __APPLE__ */
 
 TEST(fonts_empty_root_finds_nothing_and_bad_args_are_bounded)
 {
@@ -198,9 +229,13 @@ TEST(cli_take_lang_strips_option_and_keeps_other_arguments)
 }
 
 TEST_MAIN_BEGIN()
+#if defined(__APPLE__)
+    RUN_TEST(fonts_macos_layout_orders_by_language);
+#else
     RUN_TEST(fonts_fedora_layout_orders_by_language);
     RUN_TEST(fonts_debian_layout_still_found);
     RUN_TEST(fonts_latin_only_reports_missing_cjk);
+#endif
     RUN_TEST(fonts_empty_root_finds_nothing_and_bad_args_are_bounded);
     RUN_TEST(fonts_real_system_candidates_exist_and_are_unique);
     RUN_TEST(cli_take_lang_strips_option_and_keeps_other_arguments);
