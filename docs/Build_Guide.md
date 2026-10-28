@@ -327,6 +327,23 @@ cmake --build build-ubsan
 
 ### 2.5 Windows 平台构建
 
+#### Windows 上的 OpenSSL（`BREAK_ENABLE_CRYPTO`，默认 ON）
+
+`break_crypto` / `break_update` 需要 OpenSSL libcrypto。CMake 自带的 `FindOpenSSL`
+只在 MSVC 分支里搜索安装器目录 `lib/VC/<arch>/<crt>`，所以：
+
+- **MSVC**：`find_package(OpenSSL)` 自己能找到 `C:/Program Files/OpenSSL*`，无需额外参数。
+- **Clang / MinGW**：`engine/CMakeLists.txt` 在配置期按顺序探测 `-DOPENSSL_ROOT_DIR`、
+  `%OPENSSL_ROOT_DIR%`、`%ProgramFiles%\OpenSSL`、`%ProgramFiles%\OpenSSL-Win64`、
+  `C:\OpenSSL-Win64`，命中安装器布局（`lib/VC/x64/MD/libcrypto.lib` 与 `libssl.lib`）后自动
+  设置 `LIB_EAY`/`SSL_EAY`。MSYS2/MinGW 自带 OpenSSL（编译器旁 `../lib/libcrypto.dll.a`）时直接使用，不探测安装器目录。
+  自动探测不到时手动传 `-DOPENSSL_ROOT_DIR=<前缀> -DLIB_EAY=<libcrypto.lib> -DSSL_EAY=<libssl.lib>`，
+  或 `-DBREAK_ENABLE_CRYPTO=OFF`。
+- 运行测试时 `libcrypto-*-x64.dll`（安装器的 `bin` 目录）须在 `PATH` 上。
+- 契约测试（crypto/update/crash）用 `llvm-nm`/`nm` 做导出符号检查，Windows 上会忽略 UCRT 内联的
+  `sprintf`/`_snprintf` 等头文件产物；最小链接用例使用与树一致的 CRT（MSVC 下 `/MD` 或 `/MDd`，
+  Clang ASan 树附带 `-D_DLL -D_MT --dependent-lib=msvcrt`）。
+
 #### Windows + Clang 验证
 
 本机已验证 Clang 22 + Ninja 原生构建；无 GPU 的 CI 仅运行非 `graphics` CTest：
@@ -539,7 +556,7 @@ loop owner 线程调用；只有 `net_loop_wakeup` 可从其他线程调用。IO
   的 pin 见 LOCKED_DEPENDENCIES.md 注记）；Windows SDK 10.0.26100.0。
 - D3D12 Agility SDK 1.619.6（runtime-shipped；`engine/external/d3d12/agility_sdk_lock.txt`
   以 SHA512 复核 nupkg 与 D3D12Core.dll）。
-- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
+- Linux CI 依赖（noble）：`libvulkan-dev=1.3.275.*`、`libshaderc-dev=2023.8*`、`cmake=3.28.*`；另需 `libssl-dev`（noble 为 OpenSSL 3.0.x，未钉小版本，随 apt 安全更新），`BREAK_ENABLE_CRYPTO` 默认开启时缺它整个 Linux configure 都会失败。自 R700 起这些包预装在容器镜像 `ghcr.io/konyka/break-ci-linux:latest` 里（`.github/docker/ci-linux.Dockerfile`，由 `.github/workflows/ci-image.yml` 构建发布），Linux lane 在镜像里运行，job 里不再执行 `apt-get install`。要改包或版本：改 Dockerfile，等 `ci-image` 工作流构建完成后再触发 CI。注意：同一次 push 会同时启动 `ci-image` 与 `CI`，此时 Linux lane 拉到的仍是旧镜像（2026-10-28 加 `libssl-dev` 时就是这样：10 个 Linux 任务拉到旧镜像 digest 全部 configure 失败），需要在镜像发布后再推一次提交或手动触发 `CI`（`workflow_dispatch`；只读令牌无权限重跑，需在 GitHub 页面操作）。`lane-proton`（周跑，需要 i386 + wine）仍在 job 里 apt 安装。
 
 禁止使用 "latest" 或未钉版系统包构建 release。缺失依赖的平台在 CI/台账中标记 UNAVAILABLE，
 不得伪造证据。
@@ -652,6 +669,20 @@ Metal 全量 CTest **187/187**、graphics **5/5**、资源测试 **47/47**；Mol
 `build-macos/engine_demo --frames 70`，实际查看截图后确认 3D 场景与 UI 可见、朝向正确；
 光照、材质与水面仍有差异，不宣称逐像素一致。远程新增 Win32、GL/myui 修复与本地
 iOS 改动均保留，未使用 force push。
+
+2026-10-28 同步与代码 review：本轮从 `@fb0eb120` 快进（`--ff-only`）到 `@e92ac1bc`，累计
+15 个远程提交（Windows Clang/MSVC/MinGW 构建修复、Release 配置的 shipped-binary 契约
+`test_release_config_contract`、Linux CI 镜像与 OpenSSL/libm 修复），无冲突。Metal 全量
+CTest **226/226**、graphics **5/5**，MoltenVK **227/227**（两者仅 D3D12 dependency gate
+按平台跳过）。review 发现并修复三处：(1) `sb_append`（`rule_engine/builtins.c`）新加的
+溢出判断在 `size == PTRDIFF_MAX` 时 `PTRDIFF_MAX - size - 1u` 回绕，放过了 `need`
+超过 `PTRDIFF_MAX` 的请求，改为 `size >= PTRDIFF_MAX` 先行拒绝；(2) 远程为 Linux 链接
+顺序给 `lua` 目标加的 `PUBLIC m` 在 macOS 上让每个链接 lua 的目标都出现
+`ld: ignoring duplicate libraries: '-lm'`，改为仅非 Apple 的 UNIX 添加（libSystem 自带
+数学函数）；(3) 仓库根目录的 `Testing/Temporary/*`（ctest 输出）被误跟踪，取消跟踪并
+加入 `.gitignore`。`editor` 目标自身的 `m engine ... engine` 重复链接仍会产生同类提示，
+属远程既有写法、无功能影响，本次未改。本轮无渲染代码变化，未重复实机截图，证据等级
+不变。
 
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、

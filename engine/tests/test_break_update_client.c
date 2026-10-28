@@ -1457,7 +1457,7 @@ static void corrupt_resume_case(const char *name, const char *resume_line,
                                 const char *part_hex, usize part_len,
                                 const u8 *content, u64 content_len,
                                 const char *hex) {
-    static const u8 zeros[2048];
+    static const u8 zeros[2048] = {0};
     char state[1024];
     int r = snprintf(state, sizeof(state),
                      L_MAGIC L_CUR_N L_STG_N L_PEND_N L_CONF_N L_CVER_N L_PVER_N

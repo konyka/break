@@ -754,12 +754,14 @@ TEST(frame_error_record_clamps_boundary_length_inputs)
     break_lua_runtime_destroy(rt);
 }
 
+#if !defined(_WIN32)
 static PLATFORM_THREAD_RET frame_begin_probe_worker(PLATFORM_THREAD_ARG arg)
 {
     (void)arg;
     break_lua_runtime_begin_frame(g_probe_rt, 0.1);
     return PLATFORM_THREAD_RETURN;
 }
+#endif
 
 TEST(frame_dispatch_rejects_non_owner_thread_with_abort)
 {

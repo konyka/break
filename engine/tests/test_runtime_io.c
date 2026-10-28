@@ -1026,6 +1026,11 @@ TEST(io_facade_alloc_failure_injection)
     BreakRuntimeOwnedMessage *msg = NULL;
 
     ASSERT_NOT_NULL(vfs);
+    /* Park the worker before it can claim: the request must stay QUEUED so the
+     * cancel below cannot race a read that has already completed (cancel then
+     * correctly answers REJECTED). */
+    break_runtime_test_io_set_gates(1u, 0u);
+
     memset(&cfg, 0, sizeof(cfg));
     cfg.vfs = vfs;
     cfg.worker_count = 1u;
@@ -1054,6 +1059,7 @@ TEST(io_facade_alloc_failure_injection)
     break_runtime_message_release(msg);
     break_runtime_io_request_release(req);
 
+    break_runtime_test_io_set_gates(0u, 0u);
     ASSERT_EQ(break_runtime_io_shutdown(2000u), BREAK_RUNTIME_OK);
     vfs_destroy(vfs);
 }

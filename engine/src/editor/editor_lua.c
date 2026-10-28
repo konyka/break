@@ -398,7 +398,7 @@ static void console_release_refs(BreakEditorLuaConsole *c, u32 *refs,
 static void console_apply_set(BreakEditorLuaConsole *c,
                               const BreakLuaEcsRecord *rec,
                               BreakEditorEntityId target) {
-    BreakEditorComponentInfo info;
+    BreakEditorComponentInfo info = {0};
     bool found = false;
     u32 field_index = 0u;
     usize count = break_editor_doc_component_count(c->doc);

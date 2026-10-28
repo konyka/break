@@ -60,8 +60,16 @@ static bool file_exists(const char *path) {
 static void chain_add(BreakEditorFontChain *c, const char *root,
                       const char *path, int face, bool cjk) {
     usize root_len = root != NULL ? strlen(root) : 0u;
-    usize path_len = strlen(path);
+    usize path_len;
     char *dst;
+#if defined(_WIN32)
+    /* A test/sysroot prefix replaces the drive: "<root>/Windows/Fonts/x".
+     * Without a root the absolute path is used as is. */
+    if (root_len > 0u && path[0] != '\0' && path[1] == ':') {
+        path += 2;
+    }
+#endif
+    path_len = strlen(path);
     if (c->count >= BREAK_EDITOR_FONT_MAX_CANDIDATES ||
         root_len + path_len >= BREAK_EDITOR_FONT_PATH_MAX) {
         return; /* full, or too long to store without truncation */

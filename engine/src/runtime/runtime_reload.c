@@ -152,8 +152,20 @@ static u64 reload_now_ns(void)
     }
     return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
 #else
-    /* Millisecond resolution is sufficient for reload-scale deadlines. */
-    return (u64)GetTickCount64() * 1000000ULL;
+    /* GetTickCount64 only advances every ~15.6 ms, so a 1 ms deadline can
+     * stay un-expired across a 10 ms sleep; QueryPerformanceCounter keeps
+     * sub-millisecond deadlines honest. */
+    LARGE_INTEGER freq;
+    LARGE_INTEGER counter;
+    u64 f;
+    u64 c;
+    if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0 ||
+        !QueryPerformanceCounter(&counter)) {
+        return (u64)GetTickCount64() * 1000000ULL;
+    }
+    f = (u64)freq.QuadPart;
+    c = (u64)counter.QuadPart;
+    return (c / f) * 1000000000ULL + (c % f) * 1000000000ULL / f;
 #endif
 }
 

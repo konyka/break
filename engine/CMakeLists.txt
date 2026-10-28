@@ -484,6 +484,57 @@ if(BREAK_ENABLE_SNOWFLAKE)
     endif()
 endif()
 
+# Windows non-MSVC toolchains (Clang, MinGW GCC): FindOpenSSL only searches the
+# installer layout "lib/VC/<arch>/<crt>" in its MSVC branch, so for these
+# compilers hand it the installer's import libraries explicitly (the common
+# Windows OpenSSL installers and the GitHub Windows runner image share this
+# layout). An explicit -DOPENSSL_ROOT_DIR or %OPENSSL_ROOT_DIR% is tried first.
+# The runtime DLL must be on PATH when the tests run. MSVC resolves OpenSSL on
+# its own and is left untouched.
+set(_ossl_mingw_native FALSE)
+if(MINGW)
+    # A MinGW toolchain that ships its own OpenSSL (MSYS2 etc.) is used as is.
+    get_filename_component(_ossl_cc_dir "${CMAKE_C_COMPILER}" DIRECTORY)
+    if(EXISTS "${_ossl_cc_dir}/../lib/libcrypto.dll.a" OR
+       EXISTS "${_ossl_cc_dir}/../lib/libcrypto.a")
+        set(_ossl_mingw_native TRUE)
+    endif()
+endif()
+if(WIN32 AND NOT MSVC AND BREAK_ENABLE_CRYPTO AND NOT LIB_EAY AND
+   NOT _ossl_mingw_native)
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_ossl_vc_dir "lib/VC/x64/MD")
+    else()
+        set(_ossl_vc_dir "lib/VC/x86/MD")
+    endif()
+    set(_ossl_roots "${OPENSSL_ROOT_DIR}" "$ENV{OPENSSL_ROOT_DIR}")
+    foreach(_ossl_pf ProgramFiles ProgramW6432)
+        if(DEFINED ENV{${_ossl_pf}})
+            list(APPEND _ossl_roots
+                "$ENV{${_ossl_pf}}/OpenSSL" "$ENV{${_ossl_pf}}/OpenSSL-Win64")
+        endif()
+    endforeach()
+    list(APPEND _ossl_roots "C:/Program Files/OpenSSL"
+        "C:/Program Files/OpenSSL-Win64" "C:/OpenSSL-Win64")
+    foreach(_ossl_root IN LISTS _ossl_roots)
+        if(NOT _ossl_root)
+            continue()
+        endif()
+        file(TO_CMAKE_PATH "${_ossl_root}" _ossl_root)
+        if(EXISTS "${_ossl_root}/${_ossl_vc_dir}/libcrypto.lib" AND
+           EXISTS "${_ossl_root}/${_ossl_vc_dir}/libssl.lib")
+            set(OPENSSL_ROOT_DIR "${_ossl_root}" CACHE PATH
+                "OpenSSL installation root")
+            set(LIB_EAY "${_ossl_root}/${_ossl_vc_dir}/libcrypto.lib" CACHE
+                FILEPATH "OpenSSL libcrypto import library")
+            set(SSL_EAY "${_ossl_root}/${_ossl_vc_dir}/libssl.lib" CACHE
+                FILEPATH "OpenSSL libssl import library")
+            message(STATUS "OpenSSL (Windows installer layout): ${_ossl_root}")
+            break()
+        endif()
+    endforeach()
+endif()
+
 # Stage 5 Phase A Task 2: break_crypto — formal optional static library, a
 # thin C11 wrapper over the system OpenSSL 3 libcrypto EVP API (SHA-256 /
 # HMAC-SHA256 / Ed25519 verify / CSPRNG; zero home-grown crypto).
@@ -1253,6 +1304,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     target_compile_definitions(lua PRIVATE LUA_USE_IOS)
 endif()
 target_include_directories(lua PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/external)
+# Lua calls libm (floor/pow/fmod/...). A static archive resolves left to right,
+# so the math library has to follow liblua.a on every consumer's link line;
+# an INTERFACE dependency guarantees that regardless of how a target orders
+# its own `m`. Windows' CRT and macOS's libSystem carry the math functions
+# themselves (a separate -lm there only makes ld warn about duplicates).
+if(UNIX AND NOT APPLE)
+    target_link_libraries(lua PUBLIC m)
+endif()
 if(MSVC)
     target_compile_options(lua PRIVATE /w)
 else()
@@ -2973,8 +3032,12 @@ endif()
     else()
         set(_rhi_multi_flag OFF)
     endif()
-    if(CMAKE_NM AND (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR
-                     ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl"))
+    # COFF executables linked by lld-link / link.exe carry no symbol table
+    # (debug info is CodeView), so the nm gate only applies off Windows or to
+    # GNU ld (MinGW) images.
+    if(CMAKE_NM AND (NOT WIN32 OR MINGW) AND
+       (ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "vulkan" OR
+        ENGINE_RHI_BACKEND_EFFECTIVE STREQUAL "opengl"))
         add_test(NAME test_rhi_multi_backend_symbols
             COMMAND ${CMAKE_COMMAND}
                 -DNM=${CMAKE_NM} -DAPP=$<TARGET_FILE:engine_demo>
@@ -4715,6 +4778,34 @@ endif()
     # formal library; the contract ctest pins the target shape, the
     # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
     # (exactly 8 public symbols), and a minimal archive-only link test.
+    # Link-check library for the crypto/update contract scripts. macOS has no
+    # libcrypto on the default search path; Windows has no -lcrypto at all.
+    # Resolved here (not inside a generator expression: MSVC's
+    # OPENSSL_CRYPTO_LIBRARY is an optimized;...;debug;... list whose
+    # semicolons would split the genex).
+    # The contract scripts link a bare compiler invocation against the tree's
+    # archives; with cl.exe that defaults to the static CRT, which cannot
+    # resolve the dynamic-CRT imports the archives carry.
+    set(BREAK_CONTRACT_CRT_FLAGS "")
+    if(MSVC)
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            set(BREAK_CONTRACT_CRT_FLAGS "/MDd")
+        else()
+            set(BREAK_CONTRACT_CRT_FLAGS "/MD")
+        endif()
+    elseif(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # A bare clang driver picks its default linker by build: LLVM 20 on the
+        # GitHub runner uses MSVC link.exe, which cannot resolve the __imp_
+        # CRT imports the tree's archives carry (LNK1120). The tree's own
+        # targets link with lld-link; do the same here.
+        set(BREAK_CONTRACT_CRT_FLAGS "-fuse-ld=lld-link")
+    endif()
+    set(BREAK_CONTRACT_LIBCRYPTO "")
+    if(APPLE)
+        set(BREAK_CONTRACT_LIBCRYPTO "${OPENSSL_CRYPTO_LIBRARY}")
+    elseif(WIN32)
+        set(BREAK_CONTRACT_LIBCRYPTO "$<TARGET_LINKER_FILE:OpenSSL::Crypto>")
+    endif()
     if(BREAK_ENABLE_CRYPTO)
         add_executable(test_break_crypto tests/test_break_crypto.c)
         target_include_directories(test_break_crypto PRIVATE ${TEST_INCLUDE_DIRS})
@@ -4726,8 +4817,14 @@ endif()
         # their instrumentation flags or the archive's sanitizer runtime
         # references would not resolve.
         set(BREAK_CRYPTO_CONTRACT_SAN "")
-        if(ENGINE_USE_ASAN)
+        string(APPEND BREAK_CRYPTO_CONTRACT_SAN " ${BREAK_CONTRACT_CRT_FLAGS}")
+        if(ENGINE_USE_ASAN OR CMAKE_C_FLAGS MATCHES "fsanitize=address")
             string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=address")
+            if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+                # Match the tree's dynamic-CRT flags or the static ASan runtime
+                # collides with the archive's msvcrt (duplicate malloc/free).
+                string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -D_DLL -D_MT -Xclang --dependent-lib=msvcrt")
+            endif()
         endif()
         if(ENGINE_USE_UBSAN)
             string(APPEND BREAK_CRYPTO_CONTRACT_SAN " -fsanitize=undefined")
@@ -4743,7 +4840,7 @@ endif()
                 -DCRYPTO_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DCRYPTO_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/crypto_contract_tmp
                 -DCRYPTO_CONTRACT_SAN=${BREAK_CRYPTO_CONTRACT_SAN}
-                -DCRYPTO_CONTRACT_LIBCRYPTO=$<$<BOOL:${APPLE}>:${OPENSSL_CRYPTO_LIBRARY}>
+                -DCRYPTO_CONTRACT_LIBCRYPTO=${BREAK_CONTRACT_LIBCRYPTO}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_crypto_target_contract.cmake)
         set_tests_properties(test_break_crypto_target_contract PROPERTIES
             LABELS "headless;crypto;platform_contract")
@@ -4773,8 +4870,14 @@ endif()
         # Sanitizer trees propagate their flags to the contract's
         # system-compiler link test (the crypto contract precedent).
         set(BREAK_UPDATE_CONTRACT_SAN "")
-        if(ENGINE_USE_ASAN)
+        string(APPEND BREAK_UPDATE_CONTRACT_SAN " ${BREAK_CONTRACT_CRT_FLAGS}")
+        if(ENGINE_USE_ASAN OR CMAKE_C_FLAGS MATCHES "fsanitize=address")
             string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=address")
+            if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+                # Match the tree's dynamic-CRT flags or the static ASan runtime
+                # collides with the archive's msvcrt (duplicate malloc/free).
+                string(APPEND BREAK_UPDATE_CONTRACT_SAN " -D_DLL -D_MT -Xclang --dependent-lib=msvcrt")
+            endif()
         endif()
         if(ENGINE_USE_UBSAN)
             string(APPEND BREAK_UPDATE_CONTRACT_SAN " -fsanitize=undefined")
@@ -4791,7 +4894,7 @@ endif()
                 -DUPDATE_CONTRACT_INCLUDE=${CMAKE_CURRENT_SOURCE_DIR}/src
                 -DUPDATE_CONTRACT_WORK=${CMAKE_CURRENT_BINARY_DIR}/update_contract_tmp
                 -DUPDATE_CONTRACT_SAN=${BREAK_UPDATE_CONTRACT_SAN}
-                -DUPDATE_CONTRACT_LIBCRYPTO=$<$<BOOL:${APPLE}>:${OPENSSL_CRYPTO_LIBRARY}>
+                -DUPDATE_CONTRACT_LIBCRYPTO=${BREAK_CONTRACT_LIBCRYPTO}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_break_update_target_contract.cmake)
         set_tests_properties(test_break_update_target_contract PROPERTIES
             LABELS "headless;update;platform_contract")
@@ -4816,8 +4919,14 @@ endif()
         # Sanitizer trees propagate their flags to the contract's
         # system-compiler link test (the crypto/update contract precedent).
         set(BREAK_CRASH_CONTRACT_SAN "")
-        if(ENGINE_USE_ASAN)
+        string(APPEND BREAK_CRASH_CONTRACT_SAN " ${BREAK_CONTRACT_CRT_FLAGS}")
+        if(ENGINE_USE_ASAN OR CMAKE_C_FLAGS MATCHES "fsanitize=address")
             string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=address")
+            if(WIN32 AND CMAKE_C_COMPILER_ID MATCHES "Clang" AND NOT MSVC)
+                # Match the tree's dynamic-CRT flags or the static ASan runtime
+                # collides with the archive's msvcrt (duplicate malloc/free).
+                string(APPEND BREAK_CRASH_CONTRACT_SAN " -D_DLL -D_MT -Xclang --dependent-lib=msvcrt")
+            endif()
         endif()
         if(ENGINE_USE_UBSAN)
             string(APPEND BREAK_CRASH_CONTRACT_SAN " -fsanitize=undefined")

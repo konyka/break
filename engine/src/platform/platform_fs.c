@@ -99,10 +99,10 @@ bool platform_list_dir(const char *path, PlatformDirEntry *entries, u32 capacity
 
 /* ---------------------------------------------------------------- */
 /* Stage 5 Phase A Task 3: write-side PAL — Win32 branch.            */
-/* COMPILE-ONLY on this lane (no Windows lane in this repo state):   */
-/* correct by inspection, mirroring the POSIX branch step for step.  */
+/* Exercised by test_platform_fs_write on the Windows lanes.         */
 /* CreateFile/WriteFile/FlushFileBuffers (the _fsync equivalent)/    */
-/* MoveFileEx(REPLACE_EXISTING). See platform_fs.h for the contract. */
+/* MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH). See platform_fs.h   */
+/* for the contract.                                                 */
 /* ---------------------------------------------------------------- */
 
 struct PlatformAtomicWriter {
@@ -180,26 +180,19 @@ bool platform_atomic_writer_write(PlatformAtomicWriter *w, const void *data, usi
 bool platform_atomic_writer_commit(PlatformAtomicWriter *w) {
     if (!w) return false;
     /* Ordering (durability contract, platform_fs.h):
-     *   FlushFileBuffers file → CloseHandle → MoveFileEx over target →
-     *   FlushFileBuffers on the directory. Any pre-rename failure deletes
-     *   the tmp (target untouched); the handle is consumed on every
-     *   outcome. */
+     *   FlushFileBuffers file → CloseHandle → MoveFileEx over target with
+     *   MOVEFILE_WRITE_THROUGH. Windows has no directory fsync:
+     *   FlushFileBuffers on a directory handle needs GENERIC_WRITE and
+     *   fails with ERROR_ACCESS_DENIED for it, so the rename itself is made
+     *   durable by WRITE_THROUGH (the call returns after the move is on
+     *   disk). Any pre-rename failure deletes the tmp (target untouched);
+     *   the handle is consumed on every outcome. */
     bool ok = !w->failed;
     if (ok && !FlushFileBuffers(w->h)) ok = false;
     if (!CloseHandle(w->h)) ok = false;
     w->h = INVALID_HANDLE_VALUE;
-    if (ok && !MoveFileExA(w->tmp_path, w->target_path, MOVEFILE_REPLACE_EXISTING)) ok = false;
-    if (ok) {
-        HANDLE dh = CreateFileA(w->dir_path, GENERIC_READ,
-                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                NULL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, NULL);
-        if (dh == INVALID_HANDLE_VALUE) {
-            ok = false;
-        } else {
-            if (!FlushFileBuffers(dh)) ok = false;
-            CloseHandle(dh);
-        }
-    }
+    if (ok && !MoveFileExA(w->tmp_path, w->target_path,
+                           MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) ok = false;
     if (!ok) DeleteFileA(w->tmp_path); /* no residue; harmless if moved */
     free(w);
     return ok;

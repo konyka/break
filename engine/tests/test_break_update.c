@@ -379,7 +379,7 @@ TEST(byte_and_layout_strictness) {
     buf[10] = 0x7F;
     ASSERT_TRUE(parse_cstr(buf) == NULL);
     memcpy(buf, GOLDEN_MANIFEST, sizeof(GOLDEN_MANIFEST));
-    buf[10] = (char)0x80;
+    buf[10] = (char)(unsigned char)0x80;
     ASSERT_TRUE(parse_cstr(buf) == NULL);
 
     /* embedded NUL → NULL (explicit length, not strlen) */

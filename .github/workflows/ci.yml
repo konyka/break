@@ -401,7 +401,7 @@ jobs:
       # Keep Configure/Build on the default shell: with `shell: bash` the runner
       # prepends /usr/bin, whose GNU `link` shadows MSVC's link.exe.
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=cl -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -481,7 +481,7 @@ jobs:
           & $gcc.Source --version | Select-Object -First 1
 
       - name: Configure
-        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF
+        run: cmake -S engine -B build -G Ninja -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug -DENGINE_VULKAN=OFF -DENGINE_ENABLE_IPO=OFF -DENGINE_BUILD_FUZZ_SMOKE=ON
 
       - name: Build
         run: cmake --build build --parallel
@@ -947,7 +947,7 @@ jobs:
 
       - name: Test X11/OpenGL runtime
         run: |
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb-gl.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb-gl.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -1029,7 +1029,7 @@ jobs:
           test -x "$(command -v Xvfb)"
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           xvfb_pid=$!
           trap 'kill "$xvfb_pid"' EXIT
           export DISPLAY=:99
@@ -1274,7 +1274,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
@@ -1341,7 +1341,7 @@ jobs:
           vk_icd="$(find /usr/share/vulkan/icd.d -maxdepth 1 -type f -name '*lvp*.json' -print -quit)"
           test -n "$vk_icd"
           export VK_ICD_FILENAMES="$vk_icd"
-          Xvfb :99 -screen 0 1280x720x24 -ac >/tmp/xvfb.log 2>&1 &
+          Xvfb :99 -screen 0 1280x720x24 -ac -noreset >/tmp/xvfb.log 2>&1 &
           trap 'kill $!' EXIT
           export DISPLAY=:99
           until xdpyinfo >/dev/null 2>&1; do sleep 0.1; done
@@ -1522,7 +1522,7 @@ jobs:
         run: brew install shaderc spirv-cross
 
       - name: Configure (iOS, metal)
-        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF
+        run: cmake -S engine -B build-ios -G Xcode -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator -DENGINE_RHI_BACKEND=metal -DENGINE_BUILD_TESTS=OFF -DBREAK_ENABLE_CRYPTO=OFF
 
       - name: Build (iOS Simulator destination)
         run: xcodebuild -project build-ios/PureCEngine.xcodeproj -scheme engine_demo -destination 'generic/platform=iOS Simulator' build

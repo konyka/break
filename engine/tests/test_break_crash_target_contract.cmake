@@ -113,7 +113,7 @@ if(NOT cmake_text MATCHES "add_test\\(NAME test_break_crash_target_contract")
 endif()
 
 # --- 5. nm gate: exactly the 36 public symbols ------------------------------
-find_program(CRASH_CONTRACT_NM nm)
+find_program(CRASH_CONTRACT_NM NAMES nm llvm-nm)
 if(NOT CRASH_CONTRACT_NM)
     message(FATAL_ERROR "nm not found (required for the break_crash export gate)")
 endif()
@@ -172,6 +172,12 @@ foreach(line IN LISTS nm_lines)
         set(sym "${CMAKE_MATCH_1}")
         if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Darwin")
             string(REGEX REPLACE "^_" "" sym "${sym}")
+        endif()
+        # UCRT <stdio.h> inline helpers are emitted as external definitions
+        # by clang on Windows; they are header artifacts, not library API.
+        if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Windows" AND sym MATCHES
+           "^(__local_stdio_printf_options|__local_stdio_scanf_options|_?v?s?n?printf|_?v?snprintf(_l)?|_vsprintf_l|_?sprintf|_vsscanf_l|_?sscanf)$")
+            continue()
         endif()
         list(APPEND actual_symbols "${sym}")
     endif()
@@ -310,6 +316,18 @@ int main(void) {
      * install is refused, uninstall disarms; is_installed tracks. */
     if (break_crash_is_installed()) return 32;
     snprintf(root, sizeof(root), \"%s/link_install_spool\", CRASH_LINK_WORK);
+#if defined(_WIN32)
+    /* Documented compile-time stub on Windows (no SEH/VEH yet): install is
+     * refused and nothing is ever armed. */
+    {
+        BreakCrashConfig cfg = {root};
+        if (break_crash_install(&cfg)) return 33;
+        if (break_crash_is_installed()) return 34;
+        break_crash_set_context_blob(\"evidence\", 8);
+        break_crash_uninstall();
+        if (break_crash_install(NULL)) return 37;
+    }
+#else
     {
         BreakCrashConfig cfg = {root};
         if (!break_crash_install(&cfg)) return 33;
@@ -320,6 +338,7 @@ int main(void) {
         if (break_crash_is_installed()) return 36;
         if (break_crash_install(NULL)) return 37;
     }
+#endif
 
     /* Task 3 smoke from the bare archive: redact keeps the already-basename
      * golden record byte-identical (idempotence pin), serialize round-trips,

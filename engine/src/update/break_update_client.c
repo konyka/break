@@ -14,6 +14,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(_WIN32)
+#include <direct.h>
+#endif
+
 #define UPC_STATE_MAX_BYTES (64u * 1024u) /* state file ≤ 64 KiB */
 #define UPC_HEX_NAME_LEN    64u
 #define UPC_TEXT_CAP        512u /* worst-case serialized state ≈ 326 bytes */
@@ -849,13 +853,21 @@ static bool upc_slot_path(const BreakUpdateClient *c, char slot,
     return true;
 }
 
+/* Removes one emptied directory. POSIX remove() also rmdir's directories,
+ * but the Windows CRT remove() only deletes files, so Win32 uses _rmdir. */
+static bool upc_remove_dir(const char *path) {
+#if defined(_WIN32)
+    return _rmdir(path) == 0;
+#else
+    return remove(path) == 0;
+#endif
+}
+
 /* Removes the file or directory tree at path (post-order), depth-bounded;
  * an absent path is success. Entries are re-listed after each drained batch
  * so a directory holding more entries than one listing's capacity still
- * empties. Files and emptied directories both go through ISO-C remove()
- * (POSIX remove() unlinks files and rmdir's directories; Win32 is
- * compile-only this phase — no new _WIN32 branches, plan Global
- * Constraints). Fails closed: any unremovable entry → false. */
+ * empties. Files go through ISO-C remove(), emptied directories through
+ * upc_remove_dir. Fails closed: any unremovable entry -> false. */
 static bool upc_remove_tree_at(const char *path, unsigned depth) {
     PlatformDirEntry entries[16];
     u32 count = 0;
@@ -885,7 +897,7 @@ static bool upc_remove_tree_at(const char *path, unsigned depth) {
         count = 0;
         if (!platform_list_dir(path, entries, 16, &count)) return false;
     }
-    return remove(path) == 0; /* the now-empty directory itself */
+    return upc_remove_dir(path); /* the now-empty directory itself */
 }
 
 /* Clears a slot's staged content: the files/ tree and the update-version

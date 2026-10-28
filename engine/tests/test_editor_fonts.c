@@ -43,7 +43,7 @@ static void remove_tree(const char *root, const char *const *rels, size_t n) {
     }
 }
 
-#if !defined(__APPLE__)
+#if !defined(__APPLE__) && !defined(_WIN32)
 static bool chain_has(const BreakEditorFontChain *c, const char *suffix) {
     for (usize i = 0u; i < c->count; i++) {
         size_t a = strlen(c->paths[i]), b = strlen(suffix);
@@ -80,6 +80,49 @@ TEST(fonts_macos_layout_orders_by_language)
     ASSERT_TRUE(strstr(c.paths[0], "PingFang.ttc") != NULL);
     ASSERT_TRUE(strstr(c.paths[1], "Helvetica.ttc") != NULL);
     remove_tree(root, k_macos, 2u);
+}
+#elif defined(_WIN32)
+static const char *const k_windows[] = {
+    "/Windows/Fonts/segoeui.ttf",
+    "/Windows/Fonts/msyh.ttc",
+};
+
+/* Windows layout: Latin first for en-US and CJK first for zh-CN; a Latin-only
+ * system reports no CJK so the host can warn. */
+TEST(fonts_windows_layout_orders_by_language)
+{
+    char root[256];
+    BreakEditorFontChain c;
+    test_tmp(root, sizeof(root), "editor_fonts_windows");
+    for (size_t i = 0u; i < 2u; i++) touch(root, k_windows[i]);
+
+    ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_EN_US, root,
+                                           false, &c), 2u);
+    ASSERT_TRUE(c.has_cjk);
+    ASSERT_TRUE(strstr(c.paths[0], "segoeui.ttf") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "msyh.ttc") != NULL);
+    for (usize i = 0u; i < c.count; i++) {
+        ASSERT_TRUE(c.sources[i].path == c.paths[i]);
+    }
+
+    ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_ZH_CN, root,
+                                           false, &c), 2u);
+    ASSERT_TRUE(strstr(c.paths[0], "msyh.ttc") != NULL);
+    ASSERT_TRUE(strstr(c.paths[1], "segoeui.ttf") != NULL);
+    remove_tree(root, k_windows, 2u);
+}
+
+TEST(fonts_windows_latin_only_reports_missing_cjk)
+{
+    char root[256];
+    static const char *const latin[] = {"/Windows/Fonts/segoeui.ttf"};
+    BreakEditorFontChain c;
+    test_tmp(root, sizeof(root), "editor_fonts_windows_latin");
+    touch(root, latin[0]);
+    ASSERT_EQ(break_editor_font_candidates(BREAK_EDITOR_LANG_ZH_CN, root,
+                                           false, &c), 1u);
+    ASSERT_FALSE(c.has_cjk);
+    remove_tree(root, latin, 1u);
 }
 #else
 static const char *const k_fedora[] = {
@@ -231,6 +274,9 @@ TEST(cli_take_lang_strips_option_and_keeps_other_arguments)
 TEST_MAIN_BEGIN()
 #if defined(__APPLE__)
     RUN_TEST(fonts_macos_layout_orders_by_language);
+#elif defined(_WIN32)
+    RUN_TEST(fonts_windows_layout_orders_by_language);
+    RUN_TEST(fonts_windows_latin_only_reports_missing_cjk);
 #else
     RUN_TEST(fonts_fedora_layout_orders_by_language);
     RUN_TEST(fonts_debian_layout_still_found);

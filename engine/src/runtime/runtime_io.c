@@ -136,9 +136,20 @@ static u64 io_now_ns(void)
     }
     return (u64)ts.tv_sec * 1000000000ULL + (u64)ts.tv_nsec;
 #else
-    /* GetTickCount64 has millisecond resolution; deadlines are IO-scale, so
-     * this is sufficient for the Win32 lane. */
-    return (u64)GetTickCount64() * 1000000ULL;
+    /* GetTickCount64 only advances every ~15.6 ms, so a short deadline can
+     * stay un-expired across a longer sleep; QueryPerformanceCounter keeps
+     * sub-millisecond deadlines honest. */
+    LARGE_INTEGER freq;
+    LARGE_INTEGER counter;
+    u64 f;
+    u64 c;
+    if (!QueryPerformanceFrequency(&freq) || freq.QuadPart <= 0 ||
+        !QueryPerformanceCounter(&counter)) {
+        return (u64)GetTickCount64() * 1000000ULL;
+    }
+    f = (u64)freq.QuadPart;
+    c = (u64)counter.QuadPart;
+    return (c / f) * 1000000000ULL + (c % f) * 1000000000ULL / f;
 #endif
 }
 

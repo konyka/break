@@ -190,10 +190,19 @@ TEST(platform_list_name_bounds) {
     /* 255-byte name fits exactly (name[256] incl NUL). Filesystems cap
      * component names at 255 bytes (NAME_MAX), so a 256+-byte name cannot
      * be created on this lane and the skip guard for it is covered by the
-     * stat-join overflow test below + code inspection. */
+     * stat-join overflow test below + code inspection. Win32 ANSI file APIs
+     * additionally cap the whole path at MAX_PATH (260 incl NUL), so there the
+     * name is the longest one that still fits under the temp root. */
     char long_name[256];
-    memset(long_name, 'n', 255);
-    long_name[255] = '\0';
+    usize long_len = 255;
+#if defined(_WIN32)
+    if (strlen(root) + 1 + long_len + 1 > 259) {
+        ASSERT_TRUE(strlen(root) + 2 < 259);
+        long_len = 259 - strlen(root) - 2;
+    }
+#endif
+    memset(long_name, 'n', long_len);
+    long_name[long_len] = '\0';
     char p[900];
     join2(p, sizeof(p), root, long_name);
     ASSERT_TRUE(mk_file(p));
@@ -207,7 +216,7 @@ TEST(platform_list_name_bounds) {
     ASSERT_EQ(count, 2u);
     long i_long = find_entry(entries, count, long_name);
     ASSERT_TRUE(i_long >= 0);
-    ASSERT_EQ(strlen(entries[i_long].name), 255u);
+    ASSERT_EQ(strlen(entries[i_long].name), long_len);
 
     remove(p);
     remove(s);
@@ -763,12 +772,12 @@ TEST(model_entries_capped_4096) {
      * the platform-level out_count > capacity pin covers truncation
      * detectability. */
     ASSERT_EQ(break_editor_assets_count(a), 4096u);
-    const char *name = NULL;
+    const char *entry_name = NULL;
     bool is_dir = true;
-    ASSERT_TRUE(break_editor_assets_entry_at(a, 0, &name, &is_dir));
+    ASSERT_TRUE(break_editor_assets_entry_at(a, 0, &entry_name, &is_dir));
     ASSERT_FALSE(is_dir);
-    ASSERT_TRUE(break_editor_assets_entry_at(a, 4095, &name, &is_dir));
-    ASSERT_FALSE(break_editor_assets_entry_at(a, 4096, &name, &is_dir));
+    ASSERT_TRUE(break_editor_assets_entry_at(a, 4095, &entry_name, &is_dir));
+    ASSERT_FALSE(break_editor_assets_entry_at(a, 4096, &entry_name, &is_dir));
 
     break_editor_assets_destroy(a);
     for (int i = 0; i < 4100; i++) {
