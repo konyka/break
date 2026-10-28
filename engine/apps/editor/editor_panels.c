@@ -1896,6 +1896,10 @@ void break_editor_shell_tick(BreakEditorShell *shell) {
     /* asset browser: throttled re-list of the current directory so files
      * created/removed by external tools appear without navigating */
     editor_panel_assets_tick(shell->assets_panel);
+    /* image preview: pump its reload owner and swap a finished texture
+     * before frame_begin, like the shader owner */
+    break_editor_image_preview_tick(
+        editor_panel_assets_preview(shell->assets_panel));
     /* Phase 4 Task 3: the network view snapshots the attached remote at
      * <= 4 Hz (pure read — editor_panel_network.c); it runs BEFORE the
      * remote tick, so a refresh never observes a half-applied frame. */
@@ -2076,10 +2080,18 @@ void break_editor_shell_set_render_device(BreakEditorShell *shell,
                                           RHIDevice *device) {
     if (shell != NULL) {
         editor_panel_render_set_device(shell->render_panel, device);
+        editor_panel_assets_set_device(shell->assets_panel, device);
         if (device != NULL) {
             (void)break_editor_viewport3d_prepare(shell->vp3d, device);
         }
     }
+}
+
+bool break_editor_shell_image_preview_stats(const BreakEditorShell *shell,
+                                            BreakEditorImagePreviewStats *out) {
+    return shell != NULL &&
+           break_editor_image_preview_stats(
+               editor_panel_assets_preview(shell->assets_panel), out);
 }
 
 uint32_t break_editor_shell_render_row_count(const BreakEditorShell *shell) {

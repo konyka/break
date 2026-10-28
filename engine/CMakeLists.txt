@@ -1360,11 +1360,12 @@ target_link_libraries(break_lua PUBLIC lua)
 # engine target (its platform siblings live there) and the editor
 # executable resolves platform_list_dir from libengine.a; editor tests
 # compile the TU inline instead (test_editor_assets).
-add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
+add_library(break_editor STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c)
 set_property(TARGET break_editor PROPERTY C_STANDARD 11)
 target_include_directories(break_editor PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(break_editor PUBLIC break_ecs_replication)
 target_link_libraries(break_editor PUBLIC break_lua)
+target_link_libraries(break_editor PRIVATE stb_image)
 
 # Vendored stb single-header implementations are shared by the engine asset
 # pipeline, myui's font/image backends, and the dxx application.
@@ -1798,7 +1799,7 @@ engine_link_rhi_backend(dxx_break)
 # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
 # view over editor_remote.h's read-only accessors, no new link).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
-    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -4230,13 +4231,14 @@ endif()
     # ENGINE_BUILD_TESTS) stays hook-free and is never linked into engine,
     # engine_demo, or dxx_break. The variant links break_lua_test (not
     # break_lua) so console-core tests share the Lua-side injection hooks.
-    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c)
+    add_library(break_editor_test STATIC src/editor/editor_doc.c src/editor/editor_cmd.c src/editor/editor_scene.c src/editor/editor_components.c src/editor/editor_viewport.c src/editor/editor_gizmo.c src/scene/scene_serial.c src/physics/bvh.c src/math/math.c src/editor/editor_assets.c src/editor/editor_lua.c src/editor/editor_i18n.c src/editor/editor_i18n_tables.c src/editor/editor_image.c)
     set_property(TARGET break_editor_test PROPERTY C_STANDARD 11)
     target_include_directories(break_editor_test PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_compile_definitions(break_editor_test PRIVATE BREAK_EDITOR_TESTING=1)
     target_link_libraries(break_editor_test PUBLIC break_ecs_replication)
     target_link_libraries(break_editor_test PUBLIC break_lua_test)
+    target_link_libraries(break_editor_test PRIVATE stb_image)
 
     add_executable(test_editor_doc tests/test_editor_doc.c)
     target_include_directories(test_editor_doc PRIVATE ${TEST_INCLUDE_DIRS})
@@ -4309,6 +4311,12 @@ endif()
     target_link_libraries(test_editor_i18n PRIVATE break_editor_test)
     add_test(NAME test_editor_i18n COMMAND test_editor_i18n)
     set_tests_properties(test_editor_i18n PROPERTIES LABELS "headless;editor")
+
+    add_executable(test_editor_image tests/test_editor_image.c)
+    target_include_directories(test_editor_image PRIVATE ${TEST_INCLUDE_DIRS})
+    target_link_libraries(test_editor_image PRIVATE break_editor_test stb_image_write)
+    add_test(NAME test_editor_image COMMAND test_editor_image)
+    set_tests_properties(test_editor_image PROPERTIES LABELS "headless;editor")
 
     # Editor UI font discovery: distro layouts simulated under a temp root,
     # plus a real-system check (fontconfig when available).
@@ -4385,7 +4393,7 @@ endif()
     # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
     # pure view over the remote's read-only accessors).
     add_executable(test_editor_shell tests/test_editor_shell.c
-        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -4428,7 +4436,7 @@ endif()
         target_link_libraries(test_editor_shell PRIVATE kernel32)
     endif()
     target_link_libraries(test_editor_shell PRIVATE runtime_core_test)
-    target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core m)
+    target_link_libraries(test_editor_shell PRIVATE break_editor_test myui_core stb_image_write m)
     add_test(NAME test_editor_shell COMMAND test_editor_shell)
     set_tests_properties(test_editor_shell PROPERTIES LABELS "headless;editor")
 
@@ -5234,7 +5242,7 @@ endif()
     # compiled inline; exactly one definition per binary).
     if(BREAK_ENABLE_SNOWFLAKE)
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
-            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
             apps/editor/editor_panel_profiler.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c

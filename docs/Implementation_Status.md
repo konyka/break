@@ -1,5 +1,11 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：Stage 4 Scene Editor — 资源浏览器图片预览与纹理热加载（2026-10-28）
+
+- **交付**：资源浏览器点击 `.png/.jpg/.jpeg/.bmp/.tga` 在列表下方打开预览（尺寸/状态文字 + 等比显示的图片）；外部修改该文件后自动重载。`break_editor_image`（stb_image 头部探测与 RGBA8 解码，单边 0 或超过 4096 一律拒绝）；`editor_image_preview`（资源面板持有）：Runtime Core 重载协调器（1 个 worker）+ 挂在文件所在目录的 VFS + 该文件的监视；worker 只探测头部，owner 线程在 commit 钩子里解码（Runtime Core 钩子只传原始字节，4096 上限约束解码耗时），shell tick 里先建新 `RHITexture` 成功后再销毁旧的；任何失败（读不到、探测、解码、建纹理）都保留当前纹理；每 tick 泵提交队列。同目录换文件取消在途请求并改监视，跨目录重建协调器；无设备时仍解码并报告尺寸，接上设备时上传一次。新增 i18n 键 6 个（中英）。
+- **验证**：`test_editor_image` 5/5；`test_editor_shell` 新增 5 例（Snowflake ON 111/111），去掉尺寸上限、换文件不取消、面板不接图片分支三处变异各自使目标用例变红；ASan/TSan 下 `test_editor_shell` 各 3 次 111/111 零报告；满载下 40/40；全量 ctest OpenGL 222/222、Vulkan 223/223、Snowflake 226/226、多后端 223/223、Release 227/227（含 `test_release_config_contract`，发布 editor 无新测试钩子）；图形 4/5/7/7（不含 x11_runtime）。实机（Xwayland X11，NVK Vulkan 与 Mesa OpenGL）：64x32 红图显示，外部改成 32x64 绿图后替换（区域变窄变高），改成乱码后保持绿图（`reloads=2 failed=1`）；上红下蓝测试图在两后端都正立。选择文件经 gdb 在 shell tick 注入（XTEST 在 Xwayland 下不送达）。
+- **边界**：只覆盖预览这一个消费者，材质/场景纹理、mip、sRGB、多预览未做；解码在 owner 线程；Windows/macOS 未实机运行。详见 `docs/design/editor_hot_reload.md` §8。
+
 ## 本轮更新：修复 shader 热加载在高负载下误判失败（2026-10-28）
 
 - **问题**：远端记录的 Linux CI 间歇失败 `shader_reload_second_request_admission_failure_recovers`（`failed` 应为 8 实为 9）。本机空闲 30 次不复现；所有核满载时 20 次失败 5 次，打印 `attempts=9 reloads=0 failed=9`。
