@@ -20,6 +20,7 @@
 
 #include "editor_hot_reload.h"
 #include "editor_image_preview.h"
+#include "editor_theme.h"
 #include <editor/editor_i18n.h>
 #include "editor_panels.h"
 #include "editor_shader_reload.h"
@@ -498,46 +499,48 @@ TEST(ppm_smoke_paints_expected_theme_colors)
     pixels = my_lcd_mem_get_buffer(lcd);
     stride = my_lcd_mem_get_stride(lcd);
     ASSERT_NOT_NULL(pixels);
-    /* Discriminating discriminant: the default theme overrides the window
-     * bg to 0xF5F5F5FF (my_theme.c:1127-1128), consumed by the window's
-     * on_paint (my_window.c:110-111); the normal-state button bg is
-     * 0xE0E0E0FF (my_theme.c:1129-1130). A NEVER-painted dummy lcd stays
-     * zero-filled, so all counts are 0 unless a frame was actually
-     * rendered — comparing against the pre-theme rgb(32,32,32) fallback
-     * would count 100% of the frame in BOTH cases.
-     * Phase 2 Task 3 recalibration: the frame now contains the 3D viewport
-     * panel (placeholder rgb(30,31,34), ~376x334 = ~125k px on the dummy
-     * canvas where no FBO exists) under the open palette (420x300 = 126k
-     * px), so the window bg legitimately covers only ~25-35% of the frame
-     * (was >50% in the Phase 1 layout). The threshold keeps its
-     * discriminating power (never-painted = 0) and the viewport placeholder
-     * count is pinned directly. */
+    /* Discriminating discriminant (recalibrated 2026-10-28 for the editor
+     * sheet, editor_theme.c): tool-window surfaces paint the window colour
+     * #2B2D30, content surfaces (lists, console) #1E1F22, and the viewport
+     * panel its placeholder rgb(30,31,34). A never-painted dummy lcd stays
+     * zero-filled, so every count is 0 unless a frame was rendered; the
+     * three colours are distinct, so each count is pinned on its own. The
+     * lcd is BGRA8888 on some configs: accept either channel order. */
     for (y = 0u; y < 480u; y++) {
         for (x = 0u; x < 800u; x++) {
             const uint8_t *p = pixels + y * stride + x * 4u;
-            if (p[0] == 245u && p[1] == 245u && p[2] == 245u) {
+            if ((p[0] == 0x2bu && p[1] == 0x2du && p[2] == 0x30u) ||
+                (p[0] == 0x30u && p[1] == 0x2du && p[2] == 0x2bu)) {
                 bg_count++;
-            } else if (p[0] == 224u && p[1] == 224u && p[2] == 224u) {
+            } else if ((p[0] == 0x1eu && p[1] == 0x1fu && p[2] == 0x22u) ||
+                       (p[0] == 0x22u && p[1] == 0x1fu && p[2] == 0x1eu)) {
+                /* content colour: lists, console, outliner rows and the
+                 * viewport placeholder (the same #1E1F22) */
                 button_count++;
-            } else if ((p[0] == 30u && p[1] == 31u && p[2] == 34u) ||
-                       (p[0] == 34u && p[1] == 31u && p[2] == 30u)) {
-                /* placeholder rgb(30,31,34): the dummy lcd pixel format is
-                 * BGRA8888 on some configs (my_vgcanvas_soft.c fill path),
-                 * so accept either channel order (the gray theme probes
-                 * above are order-agnostic, which is why they never cared) */
-                viewport_count++;
             }
         }
     }
-    printf("    (ppm smoke: %zu window-bg px, %zu button-bg px, %zu viewport "
+    printf("    (ppm smoke: %zu tool-window px, %zu content px, %zu viewport "
            "placeholder px)\n",
            bg_count, button_count, viewport_count);
-    /* window bg still paints broadly (the palette only covers part of it) */
-    ASSERT_TRUE(bg_count > (800u * 480u) / 5u);
-    /* ...and the toolbar/outliner-row buttons painted their bg */
-    ASSERT_TRUE(button_count > 100u);
-    /* ...and the viewport panel painted its placeholder (dummy path: no FBO) */
-    ASSERT_TRUE(viewport_count > 100000u);
+    /* tool windows paint broadly (the palette only covers part of them) */
+    ASSERT_TRUE(bg_count > (800u * 480u) / 10u);
+    /* ...and the lists, console and viewport placeholder (dummy path: no
+     * FBO, ~125k px) painted the content colour */
+    ASSERT_TRUE(button_count > 150000u);
+    /* the viewport panel itself is the placeholder colour at its centre */
+    {
+        my_widget_t *vpw = find(shell, "editor-viewport");
+        int32_t gx = 0, gy = 0;
+        const uint8_t *p;
+        ASSERT_NOT_NULL(vpw);
+        my_widget_local_to_global(vpw, &gx, &gy);
+        gx += vpw->rect.w / 2;
+        gy += vpw->rect.h - 4; /* below the open palette */
+        p = pixels + (uint32_t)gy * stride + (uint32_t)gx * 4u;
+        viewport_count = (p[1] == 31u && (p[0] == 30u || p[0] == 34u)) ? 1u : 0u;
+        ASSERT_EQ(viewport_count, 1u);
+    }
     break_editor_shell_destroy(shell);
 }
 
@@ -1632,6 +1635,58 @@ TEST(assets_panel_image_row_opens_the_preview)
     remove(png);
     remove(txt);
     TEST_RMDIR(dir);
+}
+
+/* The editor applies its JetBrains New UI dark sheet at shell create
+ * (editor_theme.c): widgets resolve the palette through the real cascade. */
+TEST(shell_applies_the_new_ui_dark_theme)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    my_widget_t *w;
+    ASSERT_NOT_NULL(shell);
+    w = find(shell, "editor-toolbar");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_WINDOW);
+    w = find(shell, "editor-remove-button");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_WINDOW);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_HOVER, "bg_color", 0u),
+              BREAK_EDITOR_THEME_HOVER);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "fg_color", 0u),
+              BREAK_EDITOR_THEME_TEXT);
+    ASSERT_EQ(my_widget_style_get_int(w, MY_STATE_NORMAL, "round_radius", -1), 4);
+    w = find(shell, "editor-add-button");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_ACCENT);
+    w = find(shell, "editor-outliner");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_CONTENT);
+    w = find(shell, "editor-console");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_BG_CONTENT);
+    w = find(shell, "editor-status");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "fg_color", 0u),
+              BREAK_EDITOR_THEME_TEXT_SECONDARY);
+    /* labels sit on their panel: no light base-theme bg */
+    w = find(shell, "editor-outliner-label");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 1u) &
+                  0xFFu,
+              0u);
+    /* the sheet survives a language switch (panels are retranslated, not
+     * rebuilt) */
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_ZH_CN));
+    w = find(shell, "editor-add-button");
+    ASSERT_EQ(my_widget_style_get_color(w, MY_STATE_NORMAL, "bg_color", 0u),
+              BREAK_EDITOR_THEME_ACCENT);
+    ASSERT_TRUE(break_editor_shell_set_language(shell, BREAK_EDITOR_LANG_EN_US));
+    break_editor_shell_destroy(shell);
 }
 
 TEST(assets_panel_navigation_updates_rows)
@@ -6374,6 +6429,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_shader_candidate_failures_preserve_live_state);
     RUN_TEST(viewport_shader_initial_failure_recovers_through_explicit_reload);
     RUN_TEST(assets_panel_lists_fixture_root);
+    RUN_TEST(shell_applies_the_new_ui_dark_theme);
     RUN_TEST(assets_panel_navigation_updates_rows);
     RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);

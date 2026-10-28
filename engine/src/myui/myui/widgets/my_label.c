@@ -12,9 +12,13 @@ static void label_on_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                           my_color_to_rgba32(label->bg));
   uint32_t fg = my_widget_style_get_color(widget, MY_STATE_NORMAL, MY_STYLE_FG_COLOR,
                                           my_color_to_rgba32(label->fg));
-  my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(bg));
-  my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
-                                          (float)widget->rect.h});
+  /* a label is transparent unless a theme (or the label) gives it a bg:
+   * panels under it keep their own colour */
+  if ((bg & 0xFFu) != 0u) {
+    my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(bg));
+    my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
+                                            (float)widget->rect.h});
+  }
   if (label->text != NULL) {
     int32_t tw = 0, th = 0;
     int32_t font_size =
@@ -83,7 +87,7 @@ my_widget_t* my_label_create(const my_allocator_t* allocator, const char* text) 
       return NULL;
     }
   }
-  label->bg = my_color_rgb(48, 48, 48);
+  label->bg = my_color_rgba(0, 0, 0, 0); /* transparent unless themed */
   label->fg = my_color_rgb(230, 230, 230);
   ((my_widget_t*)label)->enable = false; /* labels are non-interactive */
   ((my_widget_t*)label)->widget_type = "label";

@@ -1,5 +1,15 @@
 # Break 引擎 — 实现状态矩阵（唯一事实来源）
 
+## 本轮更新：编辑器文字重影修复 + JetBrains New UI 暗色主题（2026-10-28）
+
+- **文字重影（已修，根因）**：实机截图里同一段工具栏文字在无输入的情况下，第 3 帧到第 70 帧全黑像素从 348 增到 594，逐帧变粗变糊；同一画布单独画字形的 GPU 读回是干净的。原因：Break RHI vgcanvas 对矩形和路径执行裁剪，但字形四边形和纹理四边形（`draw_image`、`blit_texture`）不裁剪。保留式 UI 每帧只按脏矩形裁剪重绘整棵控件树，于是每次局部重绘都把所有文字再混合一遍叠在上一帧的字形上。修复：字形与纹理四边形按裁剪矩形切割并按比例调整 UV。新增 `test_myui_break_rhi_clip`（真实设备、离屏读回）：裁剪外不出字/图、半裁剪只留交集；修复前两例皆红，修复后 Vulkan 与 OpenGL 皆绿。实机：同一文字各帧完全一致（54 暗 / 479 中间灰，帧 3/6/70/悬停后相同），字形边缘为正常抗锯齿。
+- **主题**：参照 CLion（JetBrains New UI 暗色）配色：窗口/工具窗 `#2B2D30`、内容区（列表、控制台、视口外框）`#1E1F22`、分隔 `#393B40`、正文 `#DFE1E5`、次要文字 `#9DA0A8`、主按钮强调色 `#3574F0`、悬停选中 `#2E436E`、按钮与输入框 4 px 圆角 1 px 边框、UI 字号 13 px。实现为 editor 自带的 myui CSS（`apps/editor/editor_theme.{h,c}`），shell 创建时经 `my_window_set_css_style` 应用；未使用 JetBrains 资产。
+- **myui 为此所做的修改**（`test_myui_widget_paint` 5 例，修复前 4 例红）：按钮边框改为与填充同半径的圆角并支持 `border-width`（原来在圆角填充外画方框，四角露出）；无 vtable 的普通容器在主题设置 `bg_color` 时绘制背景（否则透明，行为不变）；label 默认透明，仅在主题设置背景时填充。
+- **测试**：`test_editor_shell` 新增主题用例（工具栏/按钮各状态/主按钮/列表/控制台/状态栏/标签背景经真实级联解析到调色板，切换语言后保持）；旧的“浅色主题像素计数”冒烟用例按新调色板重新校准（判别力不变：未绘制的画布计数为 0）。实机（`--input-script` 截图）：Vulkan 与 OpenGL 各区域取色与调色板一致，无残留浅色面板。
+- **环境注记**：本次实机期间本机 X（Xwayland + Mutter）的垂直同步 present 降到约 1.4 FPS（`glxgears` 同样），OpenGL 后端在 `glXSwapBuffers` 等待；`vblank_mode=0` 下两后端完整交互脚本全部通过。这不是代码回归（当天早些时候通过的 master 构建同样卡住）。
+- **验证**：全量 ctest OpenGL 224/224、Vulkan 225/225、Snowflake 228/228、多后端 225/225、Release 229/229；图形 OpenGL 5/5、Vulkan 6/6、多后端 8/8、Release 8/8（含新 `test_myui_break_rhi_clip`，不含 x11_runtime）；ASan/TSan `test_editor_shell` 各 3 次 112/112 零报告；满载 40/40。
+- **边界**：无图标、工具窗标签页、浅色主题与主题切换界面；未内置 JetBrains Mono/Inter 字体，沿用现有字体链；Windows/macOS 未实机运行。设计：`docs/superpowers/specs/2026-10-28-editor-text-and-clion-theme-design.md`。
+
 ## 本轮更新：Stage 4 Scene Editor — 脚本化交互验证，并修复 BreakUI 吞掉鼠标按键（2026-10-28）
 
 - **起因**：TODO 中“editor 人工交互验证”未做。本机 Xwayland + Mutter 下 XTEST 指针移动能到达 X11 窗口，按键与鼠标按钮事件到不了（探针窗口只收到 FocusIn/Enter/Motion），所以此前实机检查都靠 gdb 直接调用，从未走过输入路径。

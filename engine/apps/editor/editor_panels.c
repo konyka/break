@@ -8,6 +8,7 @@
 #include "editor_viewport3d.h"
 #include "editor_remote.h"
 #include "editor_hot_reload.h"
+#include "editor_theme.h"
 
 #ifdef BREAK_EDITOR_SHELL_TESTING
 static bool g_editor_fail_diag_attach;
@@ -1594,6 +1595,11 @@ static BreakEditorShell *shell_create_common(my_window_t *win) {
         break_editor_doc_destroy(shell->doc);
         free(shell);
         return NULL;
+    }
+    /* JetBrains New UI dark look (editor_theme.c); a sheet that fails to
+     * parse keeps the default theme and is logged, never fatal */
+    if (!break_editor_theme_apply(win)) {
+        editor_shell_log(shell, "theme: the editor style sheet did not apply");
     }
     /* shortcuts work before any widget is clicked */
     my_event_dispatcher_set_focus(&win->dispatcher, shell->root);

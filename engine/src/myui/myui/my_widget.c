@@ -512,6 +512,15 @@ void my_widget_paint(my_widget_t* widget, my_vgcanvas_t* vg) {
                                          (float)widget->rect.h});
   if (widget->vtable != NULL && widget->vtable->on_paint != NULL) {
     widget->vtable->on_paint(widget, vg);
+  } else if (widget->vtable == NULL) {
+    /* plain container: transparent unless the theme sets bg_color */
+    uint32_t bg = my_widget_style_get_color(widget, MY_STATE_NORMAL,
+                                            MY_STYLE_BG_COLOR, 0u);
+    if ((bg & 0xFFu) != 0u) {
+      my_vgcanvas_set_fill_color(vg, my_color_from_rgba32(bg));
+      my_vgcanvas_fill_rect(vg, &(my_rectf_t){0, 0, (float)widget->rect.w,
+                                              (float)widget->rect.h});
+    }
   }
   for (i = 0; i < n; i++) {
     if (children[i] != NULL && children[i]->parent == widget) {

@@ -1799,7 +1799,7 @@ engine_link_rhi_backend(dxx_break)
 # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel: pure
 # view over editor_remote.h's read-only accessors, no new link).
 add_executable(editor apps/editor/editor_main.c apps/editor/editor_panels.c
-    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
+    apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_theme.c
     apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
     apps/editor/editor_panel_profiler.c
     apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -2839,6 +2839,19 @@ if(ENGINE_BUILD_TESTS)
     engine_link_rhi_backend(test_imgui_compat)
     add_test(NAME test_imgui_compat COMMAND test_imgui_compat)
 
+    add_executable(test_myui_break_rhi_clip tests/test_myui_break_rhi_clip.c
+        src/myui/myr/my_vgcanvas_break_rhi.c)
+    target_include_directories(test_myui_break_rhi_clip PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_break_rhi_clip PRIVATE myui_core engine m)
+    engine_link_rhi_backend(test_myui_break_rhi_clip)
+    add_test(NAME test_myui_break_rhi_clip COMMAND test_myui_break_rhi_clip
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(test_myui_break_rhi_clip PROPERTIES
+        LABELS "graphics;platform_runtime" SKIP_RETURN_CODE 77 TIMEOUT 60)
+
     add_executable(test_break_ui_damage tests/test_break_ui_damage.c
         src/ui/myui_break_damage.c
         src/myui/mypal/dummy/my_pal_dummy.c)
@@ -2878,6 +2891,14 @@ endif()
     )
     target_link_libraries(test_myui_vggeometry PRIVATE myui_core m)
     add_test(NAME test_myui_vggeometry COMMAND test_myui_vggeometry)
+
+    add_executable(test_myui_widget_paint tests/test_myui_widget_paint.c)
+    target_include_directories(test_myui_widget_paint PRIVATE
+        ${TEST_INCLUDE_DIRS}
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/myui
+    )
+    target_link_libraries(test_myui_widget_paint PRIVATE myui_core m)
+    add_test(NAME test_myui_widget_paint COMMAND test_myui_widget_paint)
 
     add_executable(test_myui_window_manager tests/test_myui_window_manager.c
         src/myui/mypal/dummy/my_pal_dummy.c)
@@ -4409,7 +4430,7 @@ endif()
     # Phase 4 Task 3: + editor_panel_network.c (network diagnostics panel,
     # pure view over the remote's read-only accessors).
     add_executable(test_editor_shell tests/test_editor_shell.c
-        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
+        apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_theme.c
         apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
         apps/editor/editor_panel_profiler.c
         apps/editor/editor_remote.c apps/editor/editor_panel_network.c
@@ -5258,7 +5279,7 @@ endif()
     # compiled inline; exactly one definition per binary).
     if(BREAK_ENABLE_SNOWFLAKE)
         add_executable(fuzz_editor_remote EXCLUDE_FROM_ALL tests/fuzz_editor_remote.c
-            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c
+            apps/editor/editor_panels.c apps/editor/editor_viewport3d.c apps/editor/editor_shader_source.c apps/editor/editor_shader_reload.c apps/editor/editor_image_preview.c apps/editor/editor_theme.c
             apps/editor/editor_panel_assets.c apps/editor/editor_panel_lua.c
             apps/editor/editor_panel_profiler.c
             apps/editor/editor_remote.c apps/editor/editor_panel_network.c
