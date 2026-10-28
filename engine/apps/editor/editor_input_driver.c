@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "myui/my_widget.h"
+#include "myui/widgets/my_button.h"
 
 #define DRIVER_MAX_SCRIPT_BYTES (64u * 1024u)
 
@@ -93,12 +94,39 @@ void break_editor_input_driver_destroy(BreakEditorInputDriver *d) {
 
 /* ---- hooks ---- */
 
+/* "list@text": the realized row of a list view whose button text is
+ * `text` (rows are the list's direct children). */
+static my_widget_t *drv_find_row(my_widget_t *list, const char *text) {
+    usize i, n;
+    if (list == NULL) return NULL;
+    n = my_widget_child_count(list);
+    for (i = 0; i < n; i++) {
+        my_widget_t *row = my_widget_get_child(list, i);
+        if (row != NULL && my_button_is_instance(row)) {
+            const my_button_t *b = (const my_button_t *)row;
+            if (b->text != NULL && strcmp(b->text, text) == 0) return row;
+        }
+    }
+    return NULL;
+}
+
 static bool drv_locate(void *user, const char *name, f32 fx, f32 fy, f32 *x,
                        f32 *y) {
     BreakEditorInputDriver *d = (BreakEditorInputDriver *)user;
-    my_widget_t *w = my_widget_find_descendant(break_editor_shell_root(d->shell),
-                                               name);
+    my_widget_t *root = break_editor_shell_root(d->shell);
+    my_widget_t *w;
+    const char *at = strchr(name, '@');
     int32_t gx = 0, gy = 0;
+    if (at != NULL) {
+        char list_name[64];
+        usize ln = (usize)(at - name);
+        if (ln == 0u || ln >= sizeof(list_name)) return false;
+        memcpy(list_name, name, ln);
+        list_name[ln] = '\0';
+        w = drv_find_row(my_widget_find_descendant(root, list_name), at + 1);
+    } else {
+        w = my_widget_find_descendant(root, name);
+    }
     if (w == NULL || w->rect.w <= 0 || w->rect.h <= 0) return false;
     my_widget_local_to_global(w, &gx, &gy);
     *x = (f32)gx + fx * (f32)w->rect.w;
@@ -128,7 +156,8 @@ static const char *selected_name(BreakEditorShell *shell) {
 
 /* Checks: entities <n> | selected <name|none> | tool <none|w|e|r> |
  * undo <n> | palette <open|closed> | preview_reloads <n> |
- * pos_x_changed | log_contains <text> */
+ * pos_x_above <v> | pos_x_below <v> (selected entity's Transform) |
+ * log_contains <text> | print (diagnostic line, always passes) */
 static bool drv_expect(void *user, const char *what) {
     BreakEditorInputDriver *d = (BreakEditorInputDriver *)user;
     BreakEditorShell *shell = d->shell;
@@ -173,6 +202,17 @@ static bool drv_expect(void *user, const char *what) {
         return sscanf(arg, "%ld", &n) == 1 &&
                break_editor_shell_image_preview_stats(shell, &st) &&
                (long)st.reloads == n;
+    }
+    if (strcmp(key, "pos_x_above") == 0 || strcmp(key, "pos_x_below") == 0) {
+        f32 x = 0.0f;
+        double limit = 0.0;
+        if (sscanf(arg, "%lf", &limit) != 1 ||
+            !break_editor_doc_get_field_f32(doc, break_editor_shell_selected(shell),
+                                            BREAK_EDITOR_COMPONENT_TRANSFORM,
+                                            0u, &x)) {
+            return false;
+        }
+        return key[6] == 'a' ? (double)x > limit : (double)x < limit;
     }
     if (strcmp(key, "log_contains") == 0) {
         return arg[0] != '\0' &&

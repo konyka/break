@@ -105,7 +105,7 @@
 
 - [x] **Windows 上的运行**（2026-10-28 关闭测试层面）：CI 的 MSVC / MinGW / Clang / Clang ASan headless lane 构建并运行 `ctest -LE graphics`（含 `test_editor_shell`、`test_editor_i18n`、`test_editor_fonts`、`test_release_config_contract`），运行 40655375019 全部通过；维护者另在 Windows 本机跑过 Clang 四树全量（见 `docs/Implementation_Status.md` 2026-10-28 “远程 170 个提交在 Windows 上的同步验证”）。**仍未做**：窗口化 `editor.exe` 在 Windows 上的真实交互运行
 - [x] **editor 协议专用 fuzzer**：2026-10-26 交付 `fuzz_editor_remote`（ids 4..13 全部处理器，经真实 envelope 解码与会话管理器；约 96 万条消息 ASan+UBSan 零报告），见 `docs/design/editor_remote.md` 末节
-- [ ] **editor 人工交互验证**：无脚本化交互钩子；live 冒烟只覆盖启动 + 远端协议 E2E，不覆盖鼠标/键盘/gizmo/面板实际操作
+- [x] **editor 交互验证**（2026-10-28）：`--input-script` 脚本化输入经真实 `InputState` → BreakUI → myui → 控件/快捷键/gizmo，Vulkan 与 OpenGL 实机脚本覆盖工具栏、检查器、视口拾取、gizmo 拖拽、撤销/重做、命令面板、资源浏览器预览，全部通过；首跑发现并修复 BreakUI 吞掉所有鼠标按键的缺陷。见 `docs/design/editor_input_script.md`。**仍未做**：IME 文字、编辑框输入、拖放、右/中键相机拖动、Windows/macOS
 - [ ] 跨平台 native/CI 证据：CI 已覆盖 Linux X11/Wayland（OpenGL/Vulkan lavapipe）、macOS Metal/MoltenVK、Windows headless、iOS 编译（运行 40655375019）；**未采集**：Android、Steam Deck 真机、D3D12 真 GPU、iOS 真机
 
 ### Features not delivered (carried from earlier phases)
