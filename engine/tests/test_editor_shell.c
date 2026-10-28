@@ -1500,6 +1500,12 @@ static void save_fixture_scene(const char *path, u32 n) {
 /* Iterates the realized (painted) rows of a list_view and returns the first
  * row whose button text equals `text` (rows are direct children of the
  * list — my_list_view.c my_widget_add_child(self, row)). */
+static void img_shell_write(void *context, void *data, int size) {
+    if (size > 0) {
+        (void)fwrite(data, 1u, (size_t)size, (FILE *)context);
+    }
+}
+
 static my_widget_t *list_row_by_text(my_widget_t *list, const char *text) {
     usize i, n;
     if (list == NULL || text == NULL) {
@@ -1565,6 +1571,66 @@ TEST(assets_panel_lists_fixture_root)
     remove(f1);
     remove(f2);
     TEST_RMDIR(sub);
+    TEST_RMDIR(dir);
+}
+
+/* Image rows open the preview (texture hot reload, 2026-10-28); .bscn rows
+ * still load scenes and other files still log "not loadable". */
+TEST(assets_panel_image_row_opens_the_preview)
+{
+    BreakEditorShell *shell = break_editor_shell_create_for_test();
+    char dir[512];
+    char png[700];
+    char txt[700];
+    my_widget_t *list;
+    my_widget_t *row;
+    BreakEditorImagePreviewStats st;
+    int i;
+    ASSERT_NOT_NULL(shell);
+    test_tmp(dir, sizeof(dir), "editor_shell_assets_image");
+    TEST_MKDIR(dir);
+    snprintf(png, sizeof(png), "%s/pic.png", dir);
+    snprintf(txt, sizeof(txt), "%s/note.txt", dir);
+    {
+        static u8 px[6 * 4 * 4];
+        FILE *f;
+        memset(px, 0x7f, sizeof(px));
+        f = fopen(png, "wb");
+        ASSERT_NOT_NULL(f);
+        ASSERT_TRUE(stbi_write_png_to_func(img_shell_write, f, 6, 4, 4, px, 24) != 0);
+        fclose(f);
+    }
+    ASSERT_TRUE(write_text_file(txt, "n"));
+    ASSERT_TRUE(break_editor_shell_set_assets_root(shell, dir));
+    shell_paint(shell);
+    ASSERT_NOT_NULL(find(shell, "editor-assets-preview"));
+    ASSERT_TRUE(break_editor_shell_image_preview_stats(shell, &st));
+    ASSERT_FALSE(st.has_image);
+    list = find(shell, "editor-assets-list");
+    ASSERT_NOT_NULL(list);
+    row = list_row_by_text(list, "pic.png");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    for (i = 0; i < 3000; i++) {
+        ASSERT_TRUE(break_editor_shell_image_preview_stats(shell, &st));
+        if (st.reloads == 1u) break;
+        break_editor_shell_tick(shell);
+        time_sleep_us(2000u);
+    }
+    ASSERT_EQ(st.reloads, 1u);
+    ASSERT_EQ(st.width, 6u);
+    ASSERT_EQ(st.height, 4u);
+    /* a non-image, non-scene file leaves the preview alone */
+    row = list_row_by_text(list, "note.txt");
+    ASSERT_NOT_NULL(row);
+    emit_click(row);
+    break_editor_shell_tick(shell);
+    ASSERT_TRUE(break_editor_shell_image_preview_stats(shell, &st));
+    ASSERT_TRUE(st.has_image);
+    ASSERT_EQ(st.width, 6u);
+    break_editor_shell_destroy(shell);
+    remove(png);
+    remove(txt);
     TEST_RMDIR(dir);
 }
 
@@ -6309,6 +6375,7 @@ TEST_MAIN_BEGIN()
     RUN_TEST(viewport_shader_initial_failure_recovers_through_explicit_reload);
     RUN_TEST(assets_panel_lists_fixture_root);
     RUN_TEST(assets_panel_navigation_updates_rows);
+    RUN_TEST(assets_panel_image_row_opens_the_preview);
     RUN_TEST(assets_panel_bscn_activation_loads_doc_and_clears_undo);
     RUN_TEST(lua_panel_eval_routes_result_to_console_ring);
     RUN_TEST(lua_panel_spawn_updates_outliner_and_ctrl_z_reverts);

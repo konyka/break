@@ -22,6 +22,7 @@
  *
  * Threading: single-owner-thread convention, same as the shell/document. */
 
+#include <rhi/rhi.h>
 #include "editor_panels.h"
 
 #include "myui/my_widget.h"
@@ -64,6 +65,12 @@ bool editor_panel_assets_set_root(EditorPanelAssets *panel,
                                   const char *root_path);
 usize editor_panel_assets_row_count(const EditorPanelAssets *panel);
 const char *editor_panel_assets_path_text(const EditorPanelAssets *panel);
+/* Image preview owned by the assets panel (editor_image_preview.h): the
+ * shell forwards the render device and reads the stats. */
+struct BreakEditorImagePreview *editor_panel_assets_preview(
+    EditorPanelAssets *panel);
+void editor_panel_assets_set_device(EditorPanelAssets *panel,
+                                    RHIDevice *device);
 
 /* Lua console panel (core: BreakEditorLuaConsole, Phase 3 Task 2). A NULL
  * console (core create failure) degrades eval to a bounded error line. */

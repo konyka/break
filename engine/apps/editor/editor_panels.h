@@ -114,6 +114,7 @@
  *
  * Threading: single-owner-thread convention, same as the document. */
 
+#include "editor_image_preview.h"
 #include <core/types.h>
 
 #include <editor/editor_doc.h>
@@ -241,6 +242,10 @@ void break_editor_shell_set_assets_clock_for_test(BreakEditorShell *shell,
 usize break_editor_shell_assets_row_count(const BreakEditorShell *shell);
 /* Borrowed assets path label text ("assets: /<rel>"). */
 const char *break_editor_shell_assets_path_text(const BreakEditorShell *shell);
+/* Image preview under the asset list: clicking an image row loads it, and
+ * external edits of that file reload it (editor_image_preview.h). */
+bool break_editor_shell_image_preview_stats(const BreakEditorShell *shell,
+                                            BreakEditorImagePreviewStats *out);
 
 /* Lua console history depth (bounded at 32 entries; my_edit has no history
  * recall, so the panel owns it — Up/Down set_text). */
