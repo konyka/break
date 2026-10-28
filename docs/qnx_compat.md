@@ -207,6 +207,8 @@ QNX Neutrino 没有 epoll/kqueue，`poll()` 是原生就绪通知机制。在 po
 | Screen 显示器与 DPI（2026-10-28） | 原实现无枚举，宿主新增用例出现 49 个断言失败；极端物理尺寸另复现 float→int UB | 真实显示器枚举、主屏关联、失败清零及 DPI 饱和换算；宿主普通及 ASan/UBSan 各 12/12，目标显示器 runtime 各 3/3 |
 | myui 输入能力（2026-10-28） | 剪贴板/IME/cursor 占位实现红灯；初版 keycap 文本有重复事件，虚拟驱动的 cursor flush 返回 ENOTSUP | 进程内剪贴板、非原生 IME 状态、Unicode 去重、相对位移和真实 session 路径；普通及 ASan/UBSan runtime 14/14、failures 17/17。当前驱动不支持 cursor，验证的是明确错误与资源回收，不是正向形状验收 |
 | QNX 完整部署（2026-10-28） | 新测试盘首轮 144/157，12 项缺二进制/动态库，网络压测另有一次丢包，独立复测 17/17 | 部署补齐且保留真实失败记录；QNX 默认清单 157/157、Vulkan 清单 158/158；不删除失败项或以编译替代目标执行 |
+| 新上游模块与临时目录（2026-10-28） | 源码宏指向不存在的目标路径；`RLIMIT_FSIZE` 不可用；crash 线程 ID 为 0，卸载后 SIGSEGV 被掩码；旧 `/tmp` 分区写满导致大文件创建失败 | 源码按目标根部署；write 错误注入；真实线程 ID、调用方掩码保存及两阶段恢复，crash 普通/ASan 36/36；`TMPDIR` 指向独立测试盘，大文件场景 17/17、editor shell 80/80、fs 10/10。超长路径仅对 ENAMETOOLONG 显式标记边界 |
+| 自定义 OpenSSL 与消毒器契约（2026-10-28） | 自定义根下 `-lcrypto` 链接失败；ASan 的 `___asan_globals_registered` 被误计为产品导出符号 | 传递真实 include/library 路径，RHI/crypto/update 三个契约普通及 ASan 均 3/3；过滤消毒器合成符号，不关闭检查或测试 |
 
 ## 4. 构建
 
@@ -233,12 +235,14 @@ cmake --build /tmp/build-qnx -j
 1. 选择部署根（通常 `/tmp/bt`，也可用独立测试盘上的目录），配置时把
    `ENGINE_TEST_SOURCE_ROOT` 指向该根；
 2. 部署清单中的二进制，并保留源目录形状：`engine/src` → `<root>/src`、
-   `engine/shaders` → `<root>/shaders`、`engine/tests/data` →
-   `<root>/tests/data`、`engine/assets` → `<root>/assets`。仅复制
+   `engine/apps` → `<root>/apps`、`engine/shaders` → `<root>/shaders`、
+   `engine/tests/data` → `<root>/tests/data`、`engine/tests/golden` →
+   `<root>/tests/golden`、`engine/assets` → `<root>/assets`。仅复制
    `tests/data` 到根目录会生成错误的 `<root>/data`；全新 VM 上不能依赖旧目录。
    二进制须按清单逐项部署，不能只复制 `test_*`：demo、verify 和 fuzz 可执行
-   文件同样在清单中；默认配置也可能需要 `libscreen.so.1`，ABI/Vulkan 配置
-   还需要 `libvulkan.so.1`、`libshaderc_shared.so.1` 和 `libc++.so.2`；
+   文件同样在清单中；默认配置也可能需要 `libscreen.so.1` 和 `libcrypto.so.3`，
+   ABI/Vulkan 配置还需要 `libvulkan.so.1`、`libshaderc_shared.so.1` 和
+   `libc++.so.2`；
 3. 将 `<根父目录>/src` 链接到 `<root>/src`（例如 `/tmp/bt` 使用 `/tmp/src`），
    满足部分测试的 `../src` 回退读取。默认/Vulkan 配置应使用不同部署根，
    避免覆盖二进制和混用 shaderc；不同源码树并发验证应使用独立 VM；
@@ -247,7 +251,9 @@ cmake --build /tmp/build-qnx -j
    它复刻 `-LE "graphics|fuzz"`，剔除宿主 CMake 脚本测试并保留 WILL_FAIL；
 5. 将清单复制为 `<root>/cmds.txt`，目标侧运行：
    `BREAK_QNX_TARGET_ROOT=<root> timeout 1800 sh <root>/run_target_suite.sh cmds.txt`。
-   运行器设置 8 MiB 栈和正确的动态库路径，EXPECT_FAIL 的非零退出计为通过；
+   运行器设置 8 MiB 栈和正确的动态库路径，EXPECT_FAIL 的非零退出计为通过。
+   测试临时目录默认为 `<root>/tmp`，可用 `BREAK_QNX_TMPDIR` 覆盖；不要依赖
+   `/tmp` 所在的小容量 IFS 或原系统分区，尤其创建大文件时必须检查空间；
 6. graphics 标签测试不在清单内，必须另外部署和运行（见 §4.3/§4.4）。部署前用
    `df -h` 和 `df -g` 同时检查块与 inode；QNX6 可在有空闲块时因 inode 用尽
    返回 ENOSPC。交叉构建目录中的 QNX ELF 不能由宿主 CTest 直接执行。

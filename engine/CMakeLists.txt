@@ -3217,7 +3217,7 @@ endif()
         src/rhi/dispatch/rhi_dispatch.c)
     target_include_directories(test_rhi_dispatch PRIVATE ${TEST_INCLUDE_DIRS})
     target_compile_definitions(test_rhi_dispatch PRIVATE
-        TEST_RHI_DISPATCH_SOURCE="${CMAKE_CURRENT_SOURCE_DIR}/src/rhi/dispatch/rhi_dispatch.c")
+        TEST_RHI_DISPATCH_SOURCE="${ENGINE_TEST_SOURCE_ROOT}/src/rhi/dispatch/rhi_dispatch.c")
     add_test(NAME test_rhi_dispatch COMMAND test_rhi_dispatch)
     set_tests_properties(test_rhi_dispatch PROPERTIES LABELS "headless;platform_contract")
     add_executable(test_rhi_runtime_select tests/test_rhi_runtime_select.c
@@ -3657,7 +3657,7 @@ endif()
     # libvulkan.dylib，自动发现必败），把外层已解析的路径透传给嵌套
     # configure；其他平台这些变量未定义/为空时不传。
     set(_rhi_selector_toolchain_defs)
-    foreach(_rhi_def CMAKE_PREFIX_PATH Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR)
+    foreach(_rhi_def CMAKE_PREFIX_PATH Vulkan_LIBRARY Vulkan_INCLUDE_DIR SHADERC_LIB SHADERC_INCLUDE_DIR OPENSSL_ROOT_DIR OPENSSL_CRYPTO_LIBRARY OPENSSL_SSL_LIBRARY OPENSSL_INCLUDE_DIR)
         if(DEFINED ${_rhi_def} AND NOT "${${_rhi_def}}" STREQUAL "")
             list(APPEND _rhi_selector_toolchain_defs "-D${_rhi_def}=${${_rhi_def}}")
         endif()
@@ -4611,8 +4611,8 @@ endif()
     # panel TU in place (the test_rhi_metal_* source-read precedent).
     target_compile_definitions(test_editor_shell PRIVATE
         BREAK_EDITOR_SHELL_TESTING=1
-        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_network.c
-        BREAK_EDITOR_RENDER_PANEL_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/apps/editor/editor_panel_render.c)
+        BREAK_EDITOR_NETWORK_PANEL_SOURCE=${ENGINE_TEST_SOURCE_ROOT}/apps/editor/editor_panel_network.c
+        BREAK_EDITOR_RENDER_PANEL_SOURCE=${ENGINE_TEST_SOURCE_ROOT}/apps/editor/editor_panel_render.c)
     # Phase 3 Task 3: time.c needs the same platform feature macros the
     # engine target carries PUBLIC (the test_editor_lua precedent).
     if(ENGINE_PLATFORM STREQUAL "linux")
@@ -4980,6 +4980,9 @@ endif()
     add_executable(test_platform_fs_write tests/test_platform_fs_write.c src/platform/platform_fs.c)
     target_include_directories(test_platform_fs_write PRIVATE ${TEST_INCLUDE_DIRS})
     target_link_libraries(test_platform_fs_write PRIVATE m)
+    if(ENGINE_PLATFORM STREQUAL "qnx")
+        target_link_options(test_platform_fs_write PRIVATE "-Wl,--wrap=write")
+    endif()
     add_test(NAME test_platform_fs_write COMMAND test_platform_fs_write)
     set_tests_properties(test_platform_fs_write PROPERTIES LABELS "headless;platform")
 
@@ -4987,8 +4990,9 @@ endif()
     # formal library; the contract ctest pins the target shape, the
     # engine/engine_demo/dxx_break/editor no-link rule, the nm export gate
     # (exactly 8 public symbols), and a minimal archive-only link test.
-    # Link-check library for the crypto/update contract scripts. macOS has no
-    # libcrypto on the default search path; Windows has no -lcrypto at all.
+    # Link-check library for the crypto/update contract scripts. Custom
+    # OpenSSL roots (including macOS) need the resolved path; Windows has no
+    # -lcrypto at all.
     # Resolved here (not inside a generator expression: MSVC's
     # OPENSSL_CRYPTO_LIBRARY is an optimized;...;debug;... list whose
     # semicolons would split the genex).
@@ -5010,7 +5014,7 @@ endif()
         set(BREAK_CONTRACT_CRT_FLAGS "-fuse-ld=lld-link")
     endif()
     set(BREAK_CONTRACT_LIBCRYPTO "")
-    if(APPLE)
+    if(OPENSSL_CRYPTO_LIBRARY)
         set(BREAK_CONTRACT_LIBCRYPTO "${OPENSSL_CRYPTO_LIBRARY}")
     elseif(WIN32)
         set(BREAK_CONTRACT_LIBCRYPTO "$<TARGET_LINKER_FILE:OpenSSL::Crypto>")

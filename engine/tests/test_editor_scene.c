@@ -21,6 +21,10 @@
 
 #include <stdio.h>
 #include <string.h>
+#if defined(__QNX__)
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 /* Test-local transform component (Task 3 owns the real registry). The doc's
  * World has no components registered by default; the shell/test registers
@@ -462,8 +466,21 @@ TEST(oversize_bscn_rejected_by_scene_serial_cap) {
     ASSERT_NOT_NULL(fp);
     u32 magic = BSCN_MAGIC;
     ASSERT_EQ(fwrite(&magic, 1, sizeof(magic), fp), sizeof(magic));
+#if defined(__QNX__)
+    u8 zeros[4096] = {0};
+    u64 remaining = (u64)BSCN_MAX_FILE_BYTES + 1u - (u64)sizeof(magic);
+    while (remaining > 0u) {
+        size_t chunk = remaining > sizeof(zeros) ? sizeof(zeros) : (size_t)remaining;
+        ASSERT_EQ(fwrite(zeros, 1, chunk, fp), chunk);
+        remaining -= (u64)chunk;
+    }
+    struct stat st;
+    ASSERT_EQ(fstat(fileno(fp), &st), 0);
+    ASSERT_EQ((u64)st.st_size, (u64)BSCN_MAX_FILE_BYTES + 1u);
+#else
     ASSERT_EQ(fseek(fp, (long)BSCN_MAX_FILE_BYTES, SEEK_SET), 0);
     ASSERT_EQ(fputc(0, fp), 0);
+#endif
     ASSERT_EQ(fclose(fp), 0);
 
     ASSERT_FALSE(scene_probe_binary(path));

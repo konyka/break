@@ -32,6 +32,20 @@
 #include <signal.h>
 #endif
 
+#if defined(__QNX__)
+#include <errno.h>
+#include <unistd.h>
+static bool g_inject_write_failure;
+ssize_t __real_write(int fd, const void *data, size_t len);
+ssize_t __wrap_write(int fd, const void *data, size_t len) {
+    if (g_inject_write_failure) {
+        errno = EFBIG;
+        return -1;
+    }
+    return __real_write(fd, data, len);
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Fixture helpers                                                     */
 /* ------------------------------------------------------------------ */
@@ -208,26 +222,29 @@ TEST(abort_idempotent_null_noop) {
 /* Catching (not blocking) SIGXFSZ: a blocked SIGXFSZ would stay PENDING and
  * kill the process when the mask is restored. A caught signal is consumed by
  * the handler, and the limit-crossing write(2) still fails EFBIG. */
+#if !defined(__QNX__)
 static volatile sig_atomic_t g_sigxfsz_seen;
 static void on_sigxfsz(int sig) {
     (void)sig;
     g_sigxfsz_seen = 1;
 }
+#endif
 
 TEST(write_failure_latches_then_commit_fails_clean) {
-    /* Deterministic write-failure injection: RLIMIT_FSIZE soft = 64 with
-     * SIGXFSZ caught → the crossing write(2) fails EFBIG. Contract: the
-     * failed write returns false and LATCHES (later writes false), and
-     * commit on a latched writer fails closed (false, no rename, no tmp
-     * residue, target never created). RLIMIT_FSIZE binds euid 0 too, so no
-     * geteuid skip here. Nothing may ASSERT between setrlimit and the
-     * restore — a bail-out would leak the 64-byte limit into later tests. */
+    /* POSIX uses a 64-byte RLIMIT_FSIZE with SIGXFSZ caught. QNX has no
+     * working RLIMIT_FSIZE, so its link wrapper returns the same EFBIG from
+     * the real write call. Both verify latching and fail-closed cleanup. */
     char root[512];
     test_tmp(root, sizeof(root), "fsw_wfail");
     ASSERT_TRUE(mk_dir(root));
     char target[600];
     join2(target, sizeof(target), root, "big.bin");
-
+    int limited = 1;
+    PlatformAtomicWriter *w;
+#if defined(__QNX__)
+    g_inject_write_failure = true;
+    w = platform_atomic_writer_open(target);
+#else
     struct sigaction sa, prev_sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = on_sigxfsz;
@@ -239,28 +256,33 @@ TEST(write_failure_latches_then_commit_fails_clean) {
     g_sigxfsz_seen = 0;
     struct rlimit rl = prev_rl;
     rl.rlim_cur = 64;
-    int limited = (setrlimit(RLIMIT_FSIZE, &rl) == 0);
-    PlatformAtomicWriter *w = limited ? platform_atomic_writer_open(target) : NULL;
+    limited = (setrlimit(RLIMIT_FSIZE, &rl) == 0);
+    w = limited ? platform_atomic_writer_open(target) : NULL;
+#endif
     u8 buf[128];
     memset(buf, 0xAB, sizeof(buf));
     int w1 = 1, w2 = 1, committed = 1;
     if (w) {
-        w1 = platform_atomic_writer_write(w, buf, sizeof(buf)); /* crosses 64 */
-        w2 = platform_atomic_writer_write(w, buf, 1);           /* latched */
-        committed = platform_atomic_writer_commit(w);           /* fail closed */
+        w1 = platform_atomic_writer_write(w, buf, sizeof(buf));
+        w2 = platform_atomic_writer_write(w, buf, 1);
+        committed = platform_atomic_writer_commit(w);
     }
+#if defined(__QNX__)
+    g_inject_write_failure = false;
+#else
     setrlimit(RLIMIT_FSIZE, &prev_rl);
     sigaction(SIGXFSZ, &prev_sa, NULL);
+    ASSERT_TRUE(g_sigxfsz_seen);
+#endif
 
     ASSERT_TRUE(limited);
     ASSERT_NOT_NULL(w);
-    ASSERT_TRUE(g_sigxfsz_seen); /* the limit really fired */
     ASSERT_FALSE(w1);
     ASSERT_FALSE(w2);
     ASSERT_FALSE(committed);
     u8 out[8];
-    ASSERT_EQ(read_file(target, out, sizeof(out)), -1); /* target absent */
-    ASSERT_EQ(dir_count(root), 0u);                     /* tmp cleaned */
+    ASSERT_EQ(read_file(target, out, sizeof(out)), -1);
+    ASSERT_EQ(dir_count(root), 0u);
 
     ASSERT_TRUE(TEST_RMDIR(root) == 0);
 }

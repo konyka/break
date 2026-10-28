@@ -18,9 +18,14 @@
 #     ENGINE_TEST_SOURCE_ROOT=<root>; the default remains /tmp/bt.
 #     Link <root-parent>/src to <root>/src for source-reading fallbacks
 #     (for example /tmp/src for /tmp/bt); use a separate VM for concurrent suites.
+#   - BREAK_QNX_TMPDIR defaults to <root>/tmp so tests do not fill the IFS or
+#     an unrelated small partition; set it to override that isolated location.
 
 ulimit -s 8192 2>/dev/null
 root="${BREAK_QNX_TARGET_ROOT:-/tmp/bt}"
+TMPDIR="${BREAK_QNX_TMPDIR:-$root/tmp}"
+mkdir -p "$TMPDIR" || exit 2
+export TMPDIR
 # Cross libs deployed beside the binaries (e.g. libscreen.so.1 when the
 # engine links the Screen window layer but the target image lacks it).
 LD_LIBRARY_PATH="$root${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"

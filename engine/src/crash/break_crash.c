@@ -41,7 +41,7 @@
 #if defined(__linux__)
 #include <sys/syscall.h>
 #include <ucontext.h>
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) || defined(__QNX__)
 #include <pthread.h>
 #endif
 #endif
@@ -1253,6 +1253,7 @@ static struct {
     usize blob_len;
     u8 record_buf[BREAK_CRASH_RECORD_MAX];
     struct sigaction old_act[BC_CRASH_SIGNAL_COUNT];
+    sigset_t process_mask;
     /* Privacy zone (privacy-by-omission, capture-side enforcement): the
      * argv/env strings block sits at the TOP of the initial [stack] mapping;
      * a shallow main-thread crash's [rsp, rsp+4KiB) window would otherwise
@@ -1473,8 +1474,8 @@ static void bc_crash_die(int sig) {
     _exit(128 + sig);
 }
 
-/* Kernel thread id for the record. Linux: gettid; macOS: syscall(2) is
- * deprecated, pthread_threadid_np gives the same per-thread 64-bit id. */
+/* Process-local thread id for the record. QNX pthread_t identifies the
+ * Neutrino thread; the main thread is 1, not necessarily the process id. */
 static u64 bc_thread_id(void) {
 #if defined(__linux__)
     return (u64)(unsigned long)syscall(SYS_gettid);
@@ -1482,6 +1483,8 @@ static u64 bc_thread_id(void) {
     uint64_t tid = 0;
     (void)pthread_threadid_np((pthread_t)0, &tid);
     return (u64)tid;
+#elif defined(__QNX__)
+    return (u64)(uintptr_t)pthread_self();
 #else
     return 0;
 #endif
@@ -1644,6 +1647,12 @@ bool break_crash_install(const BreakCrashConfig *config) {
     int fd = open(inbox, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
     if (fd < 0) return false;
 
+#if defined(__QNX__)
+    if (sigprocmask(SIG_SETMASK, (void *)0, &g_crash.process_mask) != 0) {
+        (void)close(fd);
+        return false;
+    }
+#endif
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = bc_crash_handler;
@@ -1654,6 +1663,9 @@ bool break_crash_install(const BreakCrashConfig *config) {
     for (k = 0; k < BC_CRASH_SIGNAL_COUNT; k++) {
         if (sigaction(BC_CRASH_SIGNALS[k], &sa, &old[k]) != 0) {
             while (--k >= 0) (void)sigaction(BC_CRASH_SIGNALS[k], &old[k], (void *)0);
+#if defined(__QNX__)
+            (void)sigprocmask(SIG_SETMASK, &g_crash.process_mask, (void *)0);
+#endif
             (void)close(fd);
             return false;
         }
@@ -1681,12 +1693,30 @@ void break_crash_set_context_blob(const void *data, usize len) {
     g_crash.blob_len = len;
 }
 
+#if defined(__QNX__)
+static void bc_crash_noop(int sig) {
+    (void)sig;
+}
+#endif
+
 void break_crash_uninstall(void) {
     if (!g_crash.installed) return;
     int k;
     for (k = 0; k < BC_CRASH_SIGNAL_COUNT; k++) {
+#if defined(__QNX__)
+        /* QNX can retain the default action's mask. Apply the saved mask
+         * through a non-default action before restoring the previous one. */
+        struct sigaction clear;
+        memset(&clear, 0, sizeof(clear));
+        clear.sa_handler = bc_crash_noop;
+        clear.sa_mask = g_crash.process_mask;
+        (void)sigaction(BC_CRASH_SIGNALS[k], &clear, (void *)0);
+#endif
         (void)sigaction(BC_CRASH_SIGNALS[k], &g_crash.old_act[k], (void *)0);
     }
+#if defined(__QNX__)
+    (void)sigprocmask(SIG_SETMASK, &g_crash.process_mask, (void *)0);
+#endif
     (void)close(g_crash.inbox_fd);
     g_crash.inbox_fd = -1;
     g_crash.installed = 0;

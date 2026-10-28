@@ -40,7 +40,9 @@ static inline const char *test_tmp(char *buf, size_t cap, const char *name) {
     norm[i] = '\0';
     snprintf(buf, cap, "%s/break_%s_%d", norm, name, (int)TEST_GETPID());
 #else
-    snprintf(buf, cap, "/tmp/break_%s_%d", name, (int)TEST_GETPID());
+    const char *tmp = getenv("TMPDIR");
+    if (!tmp || !*tmp) tmp = "/tmp";
+    snprintf(buf, cap, "%s/break_%s_%d", tmp, name, (int)TEST_GETPID());
 #endif
     return buf;
 }
@@ -56,7 +58,8 @@ static inline const char *test_tmp_root(void) {
     root[i] = '\0';
     return root;
 #else
-    return "/tmp";
+    const char *tmp = getenv("TMPDIR");
+    return tmp && *tmp ? tmp : "/tmp";
 #endif
 }
 

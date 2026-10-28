@@ -1960,6 +1960,15 @@ static u64 sigmask_word0(const sigset_t *m) {
     return w;
 }
 
+static bool same_signal_mask(const sigset_t *a, const sigset_t *b) {
+#if defined(__QNX__)
+    /* QNX normalizes other mask bits; check SIGSEGV and its delivery below. */
+    return (sigismember(a, SIGSEGV) > 0) == (sigismember(b, SIGSEGV) > 0);
+#else
+    return sigmask_word0(a) == sigmask_word0(b);
+#endif
+}
+
 static void child_uninstalled_segv(const char *root) {
     BreakCrashConfig cfg = {root};
     struct sigaction before;
@@ -1973,15 +1982,27 @@ static void child_uninstalled_segv(const char *root) {
     if (sigaction(SIGSEGV, (void *)0, &after) != 0) _exit(49);
     /* uninstall restored the pre-install disposition exactly (under a
      * sanitizer runtime that is the runtime's own handler, not SIG_DFL) */
-    if ((before.sa_flags & ~SA_RESTORER) != (after.sa_flags & ~SA_RESTORER)) _exit(50);
-    if (sigmask_word0(&before.sa_mask) != sigmask_word0(&after.sa_mask)) _exit(51);
+    if ((before.sa_flags & ~SA_RESTORER) != (after.sa_flags & ~SA_RESTORER)) {
+        fprintf(stderr, "uninstall flags: before=%lx after=%lx\n",
+                (unsigned long)before.sa_flags, (unsigned long)after.sa_flags);
+        _exit(50);
+    }
+    if (!same_signal_mask(&before.sa_mask, &after.sa_mask)) {
+        fprintf(stderr, "uninstall mask: before=%llx after=%llx\n",
+                (unsigned long long)sigmask_word0(&before.sa_mask),
+                (unsigned long long)sigmask_word0(&after.sa_mask));
+        _exit(51);
+    }
     if ((before.sa_flags & SA_SIGINFO)
             ? before.sa_sigaction != after.sa_sigaction
-            : before.sa_handler != after.sa_handler) _exit(52);
+            : before.sa_handler != after.sa_handler) {
+        fprintf(stderr, "uninstall handler differs\n");
+        _exit(52);
+    }
     /* Die by a clean SIGSEGV regardless of any restored runtime handler:
      * death-by-signal with NO record is the pinned post-uninstall state. */
     (void)signal(SIGSEGV, SIG_DFL);
-    crash_null_store();
+    (void)raise(SIGSEGV);
     _exit(43);
 }
 
@@ -2022,28 +2043,28 @@ static const char *expected_build_id(void) {
     return (plus && plus[1]) ? plus + 1 : "unknown";
 }
 
-/* Assertions every captured record shares: the child's pid/tid (main
- * thread: tid == pid), nonzero rip, the build-id suffix, and a non-empty
- * all-basename module list. */
+/* Assertions every captured record shares: the child's pid, real thread id,
+ * build-id suffix, and platform-supported register/module evidence. */
 static int common_record_fields_fail(BreakCrashRecord *r, pid_t child_pid) {
     int failed = 0;
     u64 regs[3] = {0, 0, 0};
     break_crash_record_registers(r, regs);
     if (break_crash_record_pid(r) != (u64)child_pid) failed = 1;
 #if defined(__APPLE__)
-    /* macOS thread ids are not pids, and register capture is Linux
-     * x86_64 only (see break_crash.c): require a real tid, skip regs. */
     if (break_crash_record_tid(r) == 0) failed = 1;
+    (void)regs;
+#elif defined(__QNX__)
+    if (break_crash_record_tid(r) != 1u) failed = 1;
     (void)regs;
 #else
     if (break_crash_record_tid(r) != (u64)child_pid) failed = 1;
-    if (regs[0] == 0) failed = 1;                              /* rip nonzero */
-    if (regs[1] == 0) failed = 1;                              /* rsp nonzero */
+    if (regs[0] == 0) failed = 1;
+    if (regs[1] == 0) failed = 1;
 #endif
     if (strcmp(break_crash_record_build_id(r), expected_build_id()) != 0) failed = 1;
     u64 mods = break_crash_record_module_count(r);
-#if defined(__APPLE__)
-    /* Module capture parses /proc/self/maps (Linux only): empty on macOS. */
+#if defined(__APPLE__) || defined(__QNX__)
+    /* /proc/self/maps is Linux-only; other platforms may have no module list. */
 #else
     if (mods < 1) failed = 1;
 #endif
@@ -2105,7 +2126,7 @@ TEST(crash_segv_captures_record) {
     ASSERT_FALSE(common_record_fields_fail(r, pid));
     const u8 *bytes = NULL;
     usize win = break_crash_record_stack_window(r, &bytes);
-#if !defined(__APPLE__) /* rsp (hence the window) is captured on Linux x86_64 only */
+#if !defined(__APPLE__) && !defined(__QNX__) /* Linux x86_64 register capture */
     ASSERT_TRUE(win > 0);                          /* stack window present */
 #endif
     ASSERT_TRUE(win <= BREAK_CRASH_STACK_WINDOW_MAX);
