@@ -684,6 +684,23 @@ CTest **226/226**、graphics **5/5**，MoltenVK **227/227**（两者仅 D3D12 de
 属远程既有写法、无功能影响，本次未改。本轮无渲染代码变化，未重复实机截图，证据等级
 不变。
 
+2026-10-28 晚间同步与 review：从 `@4326287e` 快进到 `@6c7cf70d`（17 个远程提交：编辑器
+图片预览与纹理热重载、`BREAK_EDITOR_INPUT_SCRIPT` 脚本化输入回放（默认 OFF）、BreakUI
+丢鼠标按键修复、发布二进制去掉测试钩子），无冲突。Metal CTest **228/228**、graphics
+**5/5**，MoltenVK **229/229**。用 `-DBREAK_EDITOR_INPUT_SCRIPT=ON` 单独构建编辑器，按脚本
+回放按键并截图：`test_editor_input_script` 通过，该配置下 `test_release_config_contract`
+按设计报“带 input replay 符号”（macOS 上符号 `_` 前缀处理确实生效）。实机截图暴露
+两处 Metal 缺陷并已修复（`rhi_metal.m`）：(1) `rhi_cmd_set_viewport` 在离屏/MRT pass 上
+不翻转，而 myui 画布在 `rhi_end_frame` 里用它重设视口，整屏 UI 存成上下颠倒（VK 已按
+目标约定处理，见 `rhi_vk.c`）；现在离屏/MRT pass 用负高度视口，swapchain 与深度 pass
+不变；(2) `editor_color` 管线的 `u_mvp@0`/`u_color@64` 在 Metal 的 push 偏移表里缺失，
+编辑器 3D 视口初始化报 `uniform resolve failed`；现按 12 字节顶点步长的管线补上这两项，
+其它描述符仍走原表（`push_offsets_match_vk_golden` 不变）。新增 `test_rhi_metal_resources`
+用例 `set_viewport_on_offscreen_keeps_ndc_minus_y_in_row_zero` 与
+`editor_color_pipeline_resolves_mvp_and_color`，回退修复后两者均失败。修复后编辑器截图
+方向正确、日志不再有 `uniform resolve failed`；视口内是空场景的清屏深灰，3D 代理几何
+的像素级效果本轮未单独验证，证据等级不变。
+
 RHI 第一阶段还提供统一的设备健康状态查询 `rhi_device_get_status()`。`UNKNOWN` 表示
 没有有效设备，`READY` 表示设备可用，`LOST` 表示后端报告设备丢失；该接口是后续 Vulkan、
 Metal、D3D12 后端共用的生命周期合同。
